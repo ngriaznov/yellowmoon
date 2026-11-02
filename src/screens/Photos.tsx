@@ -11,7 +11,7 @@ import { perfCount } from "../perf";
 import { useAppState, useCurrentPhoto, useCurrentSettings, useStore } from "../state/context";
 import { lookLabeller, looksInDisplayOrder } from "../state/looks";
 import { folderSubline, isReady, photoName } from "../state/photo";
-import { hiddenByPhoto, hiddenFromSimpleView, MAIN_ID } from "../state/settingsGraph";
+import { hiddenByPhoto, hiddenFromSimpleView, MAIN_ID, nodeOf } from "../state/settingsGraph";
 import type { AppStore } from "../state/store";
 import { useShortcuts } from "../state/useShortcuts";
 import { fitZoomExact, fitZoomOf, showsWhole, ZOOMS, zoomKey, zoomStep } from "../state/zoom";
@@ -23,6 +23,7 @@ import { Menu } from "./Menu";
 import { Divider } from "./nodes/Divider";
 import { GraphArea } from "./nodes/GraphArea";
 import { nodesGlyphText, NodesNotice } from "./nodes/NodesNotice";
+import { useNodeGraph } from "./nodes/useNodeGraph";
 import { useNodeLayout } from "./nodes/useNodeLayout";
 import type { PickMode } from "./PickLayer";
 import { PhotoView } from "./PhotoView";
@@ -244,6 +245,13 @@ export function Photos() {
   const nodeLayout = useNodeLayout(nodesOn);
   // The photos whose graph has more than the simple view shows (a glyph on their thumbnails): a Map that is the same while the answer is.
   const hiddenNodes = useAppState((s) => hiddenByPhoto(s.settings));
+  // The node the graph and the panel are on: the one that was chosen while the photo has it (an undo may take it away), else Main.
+  const graphSettings = rs?.settings ?? null;
+  const onNode = graphSettings && nodeOf(graphSettings, selectedNode) ? selectedNode : MAIN_ID;
+  const graph = useNodeGraph({ store, settings: graphSettings, photoId: photo?.id ?? null, selected: onNode, select: setSelectedNode });
+  // Until N-05 gives every node its own picture, a card shows the photo's thumbnail, the filmstrip's.
+  const photoThumbnail = photo ? thumbnails[photo.id] : undefined;
+  const thumbnailOf = useCallback((): string | undefined => photoThumbnail, [photoThumbnail]);
 
   // In the Export panel the filmstrip dims the photos that won't be exported.
   const included = useMemo(
@@ -416,9 +424,21 @@ export function Photos() {
           return true;
         case "remove-photo":
           // The Export panel works on the photos as they are; Back to photos, then remove. The node view has no filmstrip: its Delete is
-          // the graph's (N-08), never a photo's.
+          // the graph's (`delete-node`), never a photo's.
           if (panel === "export" || view === "nodes") return false;
           void store.removeCurrentPhoto();
+          return true;
+        // The graph's keys (`docs/23` §7.7): Delete (the selected link, else the selected node), B, and ⌥← and ⌥→. Not while the graph is
+        // read only (Crop, Export).
+        case "delete-node":
+        case "bypass-node":
+        case "move-node-earlier":
+        case "move-node-later":
+          if (view !== "nodes" || cropping || panel === "export") return false;
+          if (shortcut.action === "delete-node") graph.deleteSelection();
+          else if (shortcut.action === "bypass-node") graph.toggleBypass();
+          else if (shortcut.action === "move-node-earlier") graph.moveEarlier();
+          else graph.moveLater();
           return true;
         case "pick-all":
           void store.pickAll();
@@ -478,6 +498,7 @@ export function Photos() {
           if (picking) setPicking(null);
           else if (crop.session) crop.session.cancel();
           else if (panel === "export") store.closeExport();
+          else if (view === "nodes" && graph.escape()) return true;
           else if (fullScreen.on) fullScreen.leave();
           else return false;
           return true;
@@ -644,7 +665,11 @@ export function Photos() {
             count={photos.length}
             onPrevious={() => stepPhoto(-1)}
             onNext={() => stepPhoto(1)}
-            selected={selectedNode}
+            settings={graphSettings}
+            photoKey={photo?.id ?? null}
+            selected={onNode}
+            graph={graph}
+            thumbnailOf={thumbnailOf}
             expanded={nodeLayout.expanded}
             onToggleExpanded={nodeLayout.toggleExpanded}
             dimmed={cropping || exporting}

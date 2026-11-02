@@ -103,6 +103,7 @@ import {
   mainOf,
   mainGradePatch,
   nodeIdOfKey,
+  nodeOf,
   OUTPUT_ID,
   outputOf,
   outputPatch,
@@ -372,7 +373,8 @@ function directFields(stored: object, resolved: object, patch: object, direct: R
  * bypass, trim and masks; the Output's look, intensity and sharpening. Contrast, saturation, highlights, shadows, black and the shadows
  * and highlights wheels of Main are Auto or a value (`docs/19` section 5) and need no resolving either: Auto is the photo's Auto value,
  * which the mirror already has (`estimates`). What waits for the core's reply: the Input's exposure, white balance, sharpening and noise
- * reduction (their Auto resolves in the core), every other corrector, and a patch that adds or removes a node or gives links.
+ * reduction (their Auto resolves in the core), the grade and masks of every other corrector, and a patch that adds or removes a node or
+ * gives links. Another corrector's place, name, bypass and trim are direct, as Main's are (the node view's cards).
  */
 export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): ResolvedSettings {
   let settings = rs.settings;
@@ -399,6 +401,13 @@ export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): Resolve
       change(id, () => (next?.stored ?? stored) as CorrectorItem);
       values = { ...values, main: (next?.resolved ?? resolved) as ResolvedCorrector };
       if (next) auto = { ...auto, main: next.auto };
+    } else if (typeof id === "number" && nodeOf(settings, id)?.kind === "corrector") {
+      // Another corrector (the node view's cards): the fields that need no resolving, so that a card dropped where it was moved, a name
+      // typed and a bypass pressed show at once. Its grade and masks, and a node added or removed, wait for the core's reply.
+      const have = values.nodes.find((n) => n.id === id);
+      const { stored, resolved } = directFields(nodeOf(settings, id) as CorrectorItem, have ?? {}, node, DIRECT_MAIN);
+      change(id, () => stored as CorrectorItem);
+      if (have) values = { ...values, nodes: values.nodes.map((n) => (n.id === id ? (resolved as ResolvedCorrector) : n)) };
     }
   }
   return settings === rs.settings && values === rs.values && auto === rs.auto ? rs : { ...rs, settings, values, auto };

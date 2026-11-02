@@ -872,6 +872,363 @@ span.ym-filmstrip__thumb {
   background-position: 9px 9px;
   box-shadow: inset 0 2px 8px rgb(0 0 0 / 0.35);
 }
+
+/* The graph (docs/23 §7.2, N-08): @xyflow/react's canvas over the dotted ground, with our own cards, markers, ports and links. The geometry
+   repeats src/screens/nodes/graphLayout.ts (a card is 150 × 112, its ports stick out 9 px; one grid unit is 214 × 150); the pictures are
+   design/nodes/html/pages/states.html and 05.html. */
+.ym-flow {
+  position: absolute;
+  inset: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.ym-flow .react-flow {
+  --xy-background-color: transparent;
+  --ym-link: color-mix(in oklch, var(--ink) 42%, transparent);
+  font-family: inherit;
+}
+.ym-flow .react-flow__node {
+  cursor: default;
+}
+/* xyflow's corner link ("React Flow") would open its page in the webview itself and be one more Tab stop; the library's licence (MIT) is in
+   THIRD-PARTY.md with the others (docs/14). */
+.ym-flow .react-flow__attribution {
+  display: none;
+}
+.ym-link-markers {
+  position: absolute;
+  pointer-events: none;
+}
+.ym-arrow {
+  fill: color-mix(in oklch, var(--ink) 58%, transparent);
+}
+.ym-arrow--key {
+  fill: var(--mask);
+}
+.ym-arrow--selected {
+  fill: var(--tab-look);
+}
+
+/* A card: the name above, a box of a thumbnail band and a footer, a ring when selected, the ports on its sides. */
+.ym-gnode {
+  position: relative;
+  width: 150px;
+  height: 112px;
+  color: var(--glass-label);
+}
+.ym-gnode[data-dead] .ym-gnode__box,
+.ym-gnode[data-dead] .ym-gnode__name {
+  opacity: 0.45;
+}
+.ym-gnode[data-dead] .ym-port {
+  opacity: 0.45;
+}
+.ym-gnode__name {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  overflow: hidden;
+  color: var(--glass-label-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 15px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ym-gnode[data-selected] .ym-gnode__name {
+  color: var(--glass-label);
+}
+.ym-gnode[data-bypass] .ym-gnode__name {
+  color: var(--glass-label-tertiary);
+}
+.ym-gnode__rename {
+  position: absolute;
+  right: -10px;
+  bottom: 100%;
+  left: -10px;
+  width: auto;
+  height: 24px;
+  margin-bottom: 2px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.ym-gnode__box {
+  position: relative;
+  box-sizing: border-box;
+  width: 150px;
+  height: 112px;
+  overflow: hidden;
+  border: 1px solid var(--rim);
+  border-radius: 14px;
+  background: oklch(0.2 0 0);
+  box-shadow:
+    0 8px 18px rgb(0 0 0 / 0.38),
+    inset 0 0 0 0.5px rgb(255 255 255 / 0.04);
+  cursor: pointer;
+}
+.ym-gnode__box:focus-visible {
+  outline: var(--glass-ring-width, 3px) solid var(--focus);
+  outline-offset: 7px;
+}
+.ym-gnode__thumb {
+  position: relative;
+  height: 81px;
+  overflow: hidden;
+  background: var(--code-bg);
+}
+.ym-gnode__thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+.ym-gnode[data-bypass] .ym-gnode__thumb img {
+  opacity: 0.5;
+  filter: grayscale(0.6);
+}
+.ym-gnode__slash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(to top right, transparent calc(50% - 0.75px), rgb(255 255 255 / 0.55) calc(50% - 0.75px), rgb(255 255 255 / 0.55) calc(50% + 0.75px), transparent calc(50% + 0.75px));
+}
+.ym-gnode__foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 7px;
+  border-top: 1px solid var(--rim);
+}
+.ym-gnode__num {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--ink) 16%, transparent);
+  box-shadow: inset 0 0 0 1px var(--rim);
+  color: var(--glass-label);
+  font-size: 10.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+.ym-gnode__tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  color: var(--glass-label-secondary);
+}
+.ym-gnode__tools svg {
+  display: block;
+}
+.ym-gnode__mask {
+  color: var(--mask);
+}
+.ym-gnode__ring {
+  position: absolute;
+  inset: -4px;
+  display: none;
+  border: 2px solid var(--tab-look);
+  border-radius: 17px;
+  pointer-events: none;
+}
+.ym-gnode[data-selected] .ym-gnode__ring {
+  display: block;
+}
+/* A link is selected: the card the panel is on keeps a quiet ring, so that the link is the one thing that is selected. */
+.ym-gnode[data-quiet] .ym-gnode__ring,
+.ym-marker[data-quiet] .ym-marker__dot::after {
+  border-color: var(--rim);
+}
+
+/* The Input and the Output: a 32 px disc with a lock, the name under it. */
+.ym-marker {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  color: var(--glass-label-secondary);
+}
+.ym-marker__dot {
+  position: relative;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
+  border: 1.5px solid color-mix(in oklch, var(--ink) 55%, transparent);
+  border-radius: 50%;
+  background: oklch(0.22 0 0);
+  box-shadow: 0 5px 12px rgb(0 0 0 / 0.35);
+  color: var(--glass-label-secondary);
+  cursor: pointer;
+}
+.ym-marker__dot svg {
+  width: 13px;
+  height: 13px;
+}
+.ym-marker__dot:focus-visible {
+  outline: var(--glass-ring-width, 3px) solid var(--focus);
+  outline-offset: 8px;
+}
+.ym-marker[data-selected] .ym-marker__dot::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border: 2px solid var(--tab-look);
+  border-radius: 50%;
+}
+.ym-marker__word {
+  position: absolute;
+  top: 39px;
+  left: 50%;
+  color: var(--glass-label-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  transform: translateX(-50%);
+}
+.ym-marker[data-selected] .ym-marker__word {
+  color: var(--glass-label);
+}
+
+/* A port: a triangle (an input) or a square (an output), light grey for a picture and the mask accent for a key. xyflow places the box; the
+   press lands on the larger target around it. While a link is dragged the inputs that take it light up and the others dim. */
+.ym-port.react-flow__handle {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  color: oklch(0.82 0 0);
+  pointer-events: none;
+}
+.ym-port[data-port="key"] {
+  color: var(--mask);
+}
+.ym-port[data-port="key"]:not([data-linked]) {
+  opacity: 0.55;
+}
+.ym-port__glyph {
+  display: block;
+  pointer-events: none;
+}
+.ym-port__square {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: currentColor;
+}
+.ym-port__hit {
+  position: absolute;
+  inset: -9px -8px;
+  pointer-events: auto;
+  cursor: crosshair;
+}
+.ym-port[data-side="in"]:not([data-linked]) .ym-port__hit {
+  cursor: default;
+}
+.ym-port[data-side="in"][data-linked] .ym-port__hit {
+  cursor: grab;
+}
+.ym-port[data-state="lit"] {
+  filter: drop-shadow(0 0 4px currentColor);
+  opacity: 1;
+}
+.ym-port[data-state="lit"] .ym-port__glyph {
+  transform: scale(1.35);
+}
+.ym-port[data-state="dim"] {
+  opacity: 0.25;
+}
+.ym-port[data-hover] .ym-port__glyph {
+  transform: scale(1.7);
+}
+.ym-flow[data-linking] .ym-port[data-side="in"] .ym-port__hit {
+  cursor: copy;
+}
+
+/* A link. */
+.ym-link .react-flow__edge-path {
+  stroke: var(--ym-link);
+  stroke-width: 1.6px;
+  stroke-linecap: round;
+}
+.ym-link[data-kind="key"] .react-flow__edge-path {
+  stroke: var(--mask);
+  stroke-dasharray: 5 4;
+}
+.ym-link[data-selected] .react-flow__edge-path,
+.ym-link[data-drop] .react-flow__edge-path {
+  stroke: var(--tab-look);
+  stroke-width: 3px;
+}
+.ym-link:hover .react-flow__edge-path {
+  stroke-width: 2.4px;
+}
+.react-flow__edge:has(.ym-link[data-selected]) {
+  outline: none;
+}
+/* The link being drawn or carried follows the pointer from the output it left. */
+.ym-draft {
+  position: absolute;
+  overflow: visible;
+  pointer-events: none;
+}
+.ym-draft path {
+  fill: none;
+  stroke: color-mix(in oklch, var(--ink) 75%, transparent);
+  stroke-width: 1.8px;
+  stroke-linecap: round;
+}
+.ym-draft[data-kind="key"] path {
+  stroke: var(--mask);
+  stroke-dasharray: 5 4;
+}
+.ym-graph-hint {
+  position: absolute;
+  color: var(--glass-label-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+/* The zoom control at the bottom right: "−", the zoom, "+" and Fit. */
+.ym-zoom {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ym-zoom__value {
+  min-width: 42px;
+  color: var(--glass-label-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.ym-more-menu {
+  min-width: 14rem;
+}
+
 /* "‹ 2 of 7 ›": two icon buttons and the count between them. */
 .ym-switcher {
   display: inline-flex;

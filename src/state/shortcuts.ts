@@ -8,8 +8,10 @@
  * control uses them itself (a text box, a slider with its knob, a menu, a dialog) or a mode (crop, pick white) is on. W (Pick white: it
  * opens the Colour tab and starts picking, and a second W ends it), F (full screen) and N (the node view, `docs/23` §7.7) are not keys held
  * down, and not letters typed into a menu or a list (their type-ahead); F and N are not pressed while cropping. A toggles Auto crop
- * while the Crop panel is open, and is nothing otherwise (⌘A picks all). In the node view Delete and Backspace never remove a photo (the
- * photos are out of sight there); they will remove the selected node (`docs/23` §7.7, N-08).
+ * while the Crop panel is open, and is nothing otherwise (⌘A picks all). **In the node view** (`docs/23` §7.7) Delete and Backspace never
+ * remove a photo (the photos are out of sight there): they are `delete-node`, which removes the selected link if one is selected, else
+ * the selected node; B bypasses the selected node; ⌥← and ⌥→ move the focused node earlier or later; and the arrow keys belong to the
+ * graph while it has the focus (they move the selection from card to card), so they switch no photo there.
  */
 import type { TabId } from "../components/tabs";
 
@@ -35,6 +37,10 @@ export type ShortcutAction =
   | "auto-crop"
   | "pick-white"
   | "nodes"
+  | "delete-node"
+  | "bypass-node"
+  | "move-node-earlier"
+  | "move-node-later"
   | "full-screen"
   | "copy-settings"
   | "paste-settings"
@@ -69,7 +75,7 @@ export interface ShortcutContext {
   tab?: TabId;
   /** A modal-like mode is on (crop, pick white, pick colour): the number keys that pick looks are ignored. */
   mode?: "crop" | "pick-white" | "pick-color" | null;
-  /** The node view is on: Delete and Backspace never mean "remove the photo on screen". */
+  /** The node view is on: Delete and Backspace never mean "remove the photo on screen", and B and ⌥← ⌥→ are the graph's. */
   nodeView?: boolean;
 }
 
@@ -104,11 +110,18 @@ function inMenuOrDialog(target: EventTarget | null): boolean {
   return el.closest('[role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"]') !== null;
 }
 
+/** True when the target is in the node view's graph: its cards take the arrow keys, ⌥← and ⌥→ (`docs/23` §7.7). */
+function inGraph(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  return !!el && typeof el.closest === "function" && el.closest("[data-graph]") !== null;
+}
+
 /** True when the target uses the left and right arrows itself. */
 function usesHorizontalArrows(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (!el || typeof el.tagName !== "string") return false;
   if (isTextTarget(el)) return true;
+  if (inGraph(el)) return true; // a card of the graph: the arrows move the selection
   if (el.tagName.toLowerCase() === "input" && (el as HTMLInputElement).type === "range") return true;
   const role = el.getAttribute("role");
   if (role && ["slider", "radio", "tab", "menuitemradio", "menuitem", "application"].includes(role)) return true;
@@ -173,6 +186,11 @@ export function shortcutFor(event: KeyLike, context: ShortcutContext = {}): Shor
         return null;
     }
   }
+  // ⌥← and ⌥→ with a card of the graph focused: the node goes earlier or later. (⌥ with an arrow moves by a word in a text box.)
+  if (context.nodeView && event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey && (key === "ArrowLeft" || key === "ArrowRight")) {
+    if (event.repeat || isTextTarget(event.target) || !inGraph(event.target)) return null;
+    return { action: key === "ArrowLeft" ? "move-node-earlier" : "move-node-later" };
+  }
   if (event.metaKey || event.ctrlKey || event.altKey) return null;
 
   if (key === "Escape") return { action: "escape" };
@@ -190,9 +208,13 @@ export function shortcutFor(event: KeyLike, context: ShortcutContext = {}): Shor
       // A mode (crop, Pick white) has its own use of the keys; with Shift the key is not this shortcut. A key held down removes one
       // photo, not the whole strip (only the last removal can be undone).
       if (event.shiftKey || event.repeat || context.mode || usesDeleteKey(event.target)) return null;
-      // The node view has no filmstrip, so a photo is never removed there; the key is the graph's (N-08 returns its action here).
-      if (context.nodeView) return null;
+      // The node view has no filmstrip, so a photo is never removed there; the key is the graph's: the selected link, else the selected node.
+      if (context.nodeView) return { action: "delete-node" };
       return { action: "remove-photo" };
+    case "b":
+      // Bypass the selected node (`docs/23` §7.7): one press, one change, and not a letter typed into a menu or a list.
+      if (!context.nodeView || event.repeat || context.mode === "crop" || inMenuOrDialog(event.target)) return null;
+      return { action: "bypass-node" };
     case "p":
       return { action: "toggle-pick" };
     case "\\":

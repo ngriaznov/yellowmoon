@@ -26,6 +26,8 @@ const divider = (page: Page) => page.getByRole("separator", { name: "Resize the 
 const cell = (page: Page) => page.locator("[data-viewport]");
 const graph = (page: Page) => page.getByRole("region", { name: "Node editor" });
 const expand = (page: Page) => page.getByRole("button", { name: "Expand", exact: true });
+/** The header's zoom button ("Fit 15%"); the canvas has its own "Fit the graph". */
+const fitButton = (page: Page) => page.getByRole("navigation", { name: "Actions" }).getByRole("button", { name: /^Fit/ });
 
 /** A box, as the layout makes it. */
 interface Box {
@@ -192,7 +194,7 @@ test.describe("the divider", () => {
     await expect(divider(page)).toBeVisible();
     await settle(page);
     const calls = await recordCalls(page, "viewportSetRect");
-    const fit = (await page.getByRole("button", { name: /^Fit/ }).textContent())!.trim();
+    const fit = (await fitButton(page).textContent())!.trim();
     const before = await geometry(page);
     const at = { x: before.divider.x + before.divider.width / 2, y: before.divider.y + before.divider.height / 2 };
 
@@ -216,7 +218,7 @@ test.describe("the divider", () => {
     expect(told.width).toBeCloseTo(up.cell.width, 0);
     expect(told.height).toBeCloseTo(up.cell.height, 0);
     expect(told.scale).toBe(2);
-    await expect(page.getByRole("button", { name: /^Fit/ })).not.toHaveText(fit);
+    await expect(fitButton(page)).not.toHaveText(fit);
     // The graph's toolbar kept its 44 px.
     expect(up.bar.height).toBeCloseTo(44, 0);
     await expect(divider(page)).toHaveAttribute("aria-valuenow", String(Math.round(((before.graph.height + 60) / 825) * 100)));
@@ -361,18 +363,22 @@ test.describe("Expand", () => {
 });
 
 test.describe("the toolbar and the photo switcher", () => {
-  test("Add node, Bypass and Delete at the left; the switcher, Show mask and Expand at the right; the canvas is empty", async ({ page }) => {
+  test("Add node, Bypass, Delete and More at the left; the switcher, Show mask and Expand at the right; Main selected", async ({ page }) => {
     await photos(page);
     await nodesButton(page).click();
     const bar = page.getByRole("group", { name: "Graph tools" });
-    await expect(bar.getByRole("button")).toHaveText(["Add node", "Bypass", "Delete", "", "", "Show mask", "Expand"]);
+    await expect(bar.getByRole("button")).toHaveText(["Add node", "Bypass", "Delete", "", "", "", "Show mask", "Expand"]);
+    await expect(bar.getByRole("button", { name: "More" })).toBeVisible();
     const places = await bar.getByRole("button").evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().left)));
     expect([...places].sort((a, b) => a - b)).toEqual(places);
     await expect(bar.getByRole("button", { name: "Previous photo" })).toBeVisible();
     await expect(bar.getByRole("button", { name: "Next photo" })).toBeVisible();
-    for (const name of ["Bypass", "Delete", "Show mask"]) await expect(bar.getByRole("button", { name })).toHaveAttribute("aria-disabled", "true");
+    // Main is selected: it can be bypassed but not deleted ("Bypass it instead"); the mask view comes later (N-11).
+    await expect(bar.getByRole("button", { name: "Bypass" })).not.toHaveAttribute("aria-disabled", "true");
+    await expect(bar.getByRole("button", { name: "Delete" })).toHaveAttribute("aria-disabled", "true");
+    await expect(bar.getByRole("button", { name: "Delete" })).toHaveAccessibleDescription("Main can't be deleted. Bypass it instead.");
+    await expect(bar.getByRole("button", { name: "Show mask" })).toHaveAttribute("aria-disabled", "true");
     await expect(bar.getByRole("button", { name: "Show mask" })).toHaveAccessibleDescription("Show mask (M)");
-    await expect(page.locator(".ym-graph__canvas")).toBeEmpty();
     await expect(page.locator(".ym-graph__canvas")).toHaveAttribute("data-selected-node", "1");
   });
 
@@ -583,5 +589,1048 @@ test.describe("a photo that has nodes, in the simple view", () => {
     await expect(page.getByRole("button", { name: "Show DSC04204, picked, node 1 has masks or a trim" })).toBeVisible();
     await page.keyboard.press("ArrowLeft");
     await expect(page.getByRole("status").filter({ hasText: "that these controls don't show" })).toHaveCount(0);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// The graph (docs/23 section 7.2, task N-08): the markers, the cards, the ports, the links drawn by hand, the editing and the keys.
+// ---------------------------------------------------------------------------------------------------------------------------------
+
+/** The graph's canvas. */
+const canvas = (page: Page) => page.locator(".ym-graph__canvas");
+/** A card or a marker by its node id (`1`, `"input"`). */
+const card = (page: Page, id: number | string) => page.locator(`[data-node-card="${id}"]`);
+/** The press target of a port of a node. */
+const portOf = (page: Page, node: number | string, port: "picture" | "key", side: "in" | "out") =>
+  page.locator(`.ym-port__hit[data-port-node="${node}"][data-port-name="${port}"][data-port-side="${side}"]`);
+/** The links as xyflow ids ("1.picture>2.picture"), sorted. */
+const linkIds = (page: Page): Promise<string[]> =>
+  page.locator(".react-flow__edge").evaluateAll((els) => els.map((el) => el.getAttribute("data-id") ?? "").sort());
+const linkOf = (page: Page, id: string) => page.locator(`.react-flow__edge[data-id="${id}"]`);
+const errorBar = (page: Page) => page.getByRole("alert");
+const undo = (page: Page) => page.keyboard.press("Meta+z");
+const redo = (page: Page) => page.keyboard.press("Meta+Shift+z");
+
+interface Pt {
+  x: number;
+  y: number;
+}
+const centreOf = async (locator: Locator): Promise<Pt> => {
+  const b = await box(locator);
+  return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+};
+
+/** Presses at a point, drags to another in steps and lets go. */
+async function dragBetween(page: Page, from: Pt, to: Pt, steps = 14): Promise<void> {
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(to.x, to.y, { steps });
+  await page.mouse.up();
+}
+
+/** The node view of the photo with four nodes: Main, Mountain (2), Sky (3), Warmth (4) in a line. */
+async function fourNodes(page: Page): Promise<void> {
+  await photosWithNodes(page);
+  await nodesButton(page).click();
+  await expect(card(page, 4)).toBeVisible();
+  await settle(page);
+}
+
+/** The node view of a photo with Main alone. */
+async function mainAlone(page: Page): Promise<void> {
+  await photos(page);
+  await nodesButton(page).click();
+  await expect(card(page, 1)).toBeVisible();
+  await settle(page);
+}
+
+/** The picture links of the four-node line. */
+const LINE = ["1.picture>2.picture", "2.picture>3.picture", "3.picture>4.picture", "4.picture>output.picture", "input.picture>1.picture"];
+
+test.describe("the graph: markers, cards, ports and links", () => {
+  test("draws the Input, the four cards and the Output with their numbers, names and five picture links", async ({ page }) => {
+    await fourNodes(page);
+    await expect(card(page, "input")).toHaveAccessibleName("Input");
+    await expect(card(page, "output")).toHaveAccessibleName("Output");
+    await expect(card(page, 1)).toHaveAccessibleName("Node 1, Main");
+    await expect(card(page, 2)).toHaveAccessibleName("Node 2, Mountain, picture from node 1");
+    await expect(card(page, 3)).toHaveAccessibleName("Node 3, Sky, picture from node 2");
+    await expect(card(page, 4)).toHaveAccessibleName("Node 4, Warmth, picture from node 3");
+    // The numbers on the chips, and the names above the cards.
+    await expect(canvas(page).locator(".ym-gnode__num")).toHaveText(["01", "02", "03", "04"]);
+    await expect(canvas(page).locator(".ym-gnode__name")).toHaveText(["Main", "Mountain", "Sky", "Warmth"]);
+    await expect(canvas(page).locator(".ym-marker__word")).toHaveText(["Input", "Output"]);
+    expect(await linkIds(page)).toEqual(LINE);
+    // A card is 150 × 112 px at 100 % zoom, with a thumbnail band of 81 px and a footer of 30.
+    await expect(page.locator(".ym-zoom__value")).toHaveText("100%");
+    const big = await box(card(page, 2));
+    expect(big.width).toBeCloseTo(150, 0);
+    expect(big.height).toBeCloseTo(112, 0);
+    expect((await box(canvas(page).locator(".ym-gnode__thumb").first())).height).toBeCloseTo(81, 0);
+    expect((await box(canvas(page).locator(".ym-gnode__foot").first())).height).toBeCloseTo(30, 0);
+    // Four cards a unit apart: 214 px from one to the next, 64 px between them.
+    const [a, b] = [await box(card(page, 1)), await box(card(page, 2))];
+    expect(b.x - a.x).toBeCloseTo(214, 0);
+    // Every card shows a thumbnail (the photo's own until N-05).
+    await expect(canvas(page).locator(".ym-gnode__thumb img")).toHaveCount(4);
+  });
+
+  test("puts four ports on every card (a picture in and out, a key in and out) and one on each marker", async ({ page }) => {
+    await fourNodes(page);
+    for (const id of [1, 2, 3, 4]) {
+      for (const port of ["picture", "key"] as const) {
+        await expect(portOf(page, id, port, "in")).toHaveCount(1);
+        await expect(portOf(page, id, port, "out")).toHaveCount(1);
+      }
+    }
+    await expect(portOf(page, "input", "picture", "out")).toHaveCount(1);
+    await expect(portOf(page, "output", "picture", "in")).toHaveCount(1);
+    await expect(portOf(page, "input", "picture", "in")).toHaveCount(0);
+    // A picture port is light grey and a key port the mask accent, a triangle in and a square out.
+    const colours = await page.evaluate(() => {
+      const of = (selector: string): string => getComputedStyle(document.querySelector(selector)!).color;
+      return {
+        picture: of('.ym-gnode .ym-port[data-port="picture"][data-side="in"]'),
+        key: of('.ym-gnode .ym-port[data-port="key"][data-side="in"]'),
+        mask: getComputedStyle(document.documentElement).getPropertyValue("--mask").trim(),
+      };
+    });
+    expect(colours.mask).toBe("#ff6fd2");
+    expect(colours.key).toBe("rgb(255, 111, 210)");
+    expect(colours.picture).not.toBe(colours.key);
+    await expect(canvas(page).locator('.ym-port[data-port="picture"][data-side="in"] svg')).not.toHaveCount(0);
+    await expect(canvas(page).locator('.ym-port[data-port="picture"][data-side="out"] .ym-port__square')).not.toHaveCount(0);
+  });
+
+  test("with Main alone says 'Add a node to change only part of the photo.'", async ({ page }) => {
+    await mainAlone(page);
+    await expect(canvas(page).getByText("Add a node to change only part of the photo.")).toBeVisible();
+    expect(await linkIds(page)).toEqual(["1.picture>output.picture", "input.picture>1.picture"]);
+    await expect(card(page, 1)).toHaveAccessibleName("Node 1, Main");
+    // With another node the line goes.
+    await page.getByRole("button", { name: "Add node" }).click();
+    await page.getByRole("menuitem", { name: /Corrector/ }).click();
+    await expect(card(page, 2)).toBeVisible();
+    await expect(canvas(page).getByText("Add a node to change only part of the photo.")).toHaveCount(0);
+  });
+
+  test("the selected card has a 2 px yellow ring, the others none, and a click, or an arrow key, moves it", async ({ page }) => {
+    await fourNodes(page);
+    const ring = (id: number) => canvas(page).locator(`.ym-gnode:has([data-node-card="${id}"]) .ym-gnode__ring`);
+    await expect(card(page, 1)).toHaveAttribute("aria-pressed", "true");
+    await expect(ring(1)).toBeVisible();
+    await expect(ring(2)).toBeHidden();
+    const style = await ring(1).evaluate((el) => {
+      const c = getComputedStyle(el);
+      return { width: c.borderTopWidth, colour: c.borderTopColor, tab: getComputedStyle(document.documentElement).getPropertyValue("--tab-look").trim() };
+    });
+    expect(style.width).toBe("2px");
+    expect(style.colour).toBe("rgb(255, 194, 14)");
+    expect(style.tab).toBe("#ffc20e");
+    await card(page, 3).click();
+    await expect(card(page, 3)).toHaveAttribute("aria-pressed", "true");
+    await expect(card(page, 1)).toHaveAttribute("aria-pressed", "false");
+    await expect(canvas(page)).toHaveAttribute("data-selected-node", "3");
+    // Arrow keys move the selection to the neighbour in that direction, and the focus with it.
+    await page.keyboard.press("ArrowRight");
+    await expect(card(page, 4)).toHaveAttribute("aria-pressed", "true");
+    await expect(card(page, 4)).toBeFocused();
+    await page.keyboard.press("ArrowRight");
+    await expect(card(page, "output")).toHaveAttribute("aria-pressed", "true");
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowLeft");
+    await expect(card(page, 3)).toBeFocused();
+    // The arrows moved no photo: still the fourth of twelve.
+    await expect(page.getByRole("group", { name: "Photos" })).toContainText("4 of 12");
+    // Nothing to the left of the Input.
+    await card(page, "input").click();
+    await page.keyboard.press("ArrowLeft");
+    await expect(card(page, "input")).toBeFocused();
+  });
+
+  test("selecting a node moves nothing but the selection: no patch is sent", async ({ page }) => {
+    await fourNodes(page);
+    const calls = await recordCalls(page, "updateSettings");
+    await card(page, 2).click();
+    await card(page, 3).click();
+    await page.keyboard.press("ArrowRight");
+    expect(await calls()).toHaveLength(0);
+  });
+
+  test("is one Tab stop: the selected card, and arrows move between the cards", async ({ page }) => {
+    await fourNodes(page);
+    // Of everything in the canvas that a Tab can reach, one is the graph (the selected card) and the rest are the zoom control's buttons.
+    const stops = await canvas(page).evaluate((root) => {
+      const tabbable = [...root.querySelectorAll<HTMLElement>('a[href], button, input, select, textarea, [tabindex]')].filter(
+        (el) => el.tabIndex >= 0 && !el.hasAttribute("disabled") && el.getClientRects().length > 0,
+      );
+      return tabbable.map((el) => el.getAttribute("aria-label") ?? el.className);
+    });
+    expect(stops.filter((s) => /^Node |^Input$|^Output$/.test(s))).toEqual(["Node 1, Main"]);
+    expect(stops.filter((s) => /^Zoom|^Fit/.test(s))).toEqual(["Zoom out", "Zoom in", "Fit the graph"]);
+    expect(stops).toHaveLength(4);
+    // Tab from the toolbar's last button goes through the graph's one stop, then the zoom control, and out.
+    await page.getByRole("button", { name: "Expand" }).focus();
+    await page.keyboard.press("Tab");
+    await expect(card(page, 1)).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("button", { name: "Zoom out" })).toBeFocused();
+    // The selection is the stop: after choosing Sky, Tab lands on Sky.
+    await card(page, 3).click();
+    await page.getByRole("button", { name: "Expand" }).focus();
+    await page.keyboard.press("Tab");
+    await expect(card(page, 3)).toBeFocused();
+  });
+
+  test("a card that is not connected to the output is dimmed to 45 % with 'Not connected to the output.'", async ({ page }) => {
+    await fourNodes(page);
+    // Take Warmth's link to the Output away by replacing it: Main's output goes to the Output instead.
+    await dragBetween(page, await centreOf(portOf(page, 1, "picture", "out")), await centreOf(portOf(page, "output", "picture", "in")));
+    await expect.poll(() => linkIds(page)).toContain("1.picture>output.picture");
+    for (const id of [2, 3, 4]) {
+      await expect(card(page, id)).toHaveAccessibleName(new RegExp(`not connected`));
+      await expect(canvas(page).locator(`.ym-gnode:has([data-node-card="${id}"])`)).toHaveAttribute("data-dead", "true");
+      const opacity = await card(page, id).evaluate((el) => getComputedStyle(el).opacity);
+      expect(Number(opacity)).toBeCloseTo(0.45, 2);
+    }
+    await card(page, 3).hover();
+    await expect(page.getByRole("tooltip")).toHaveText("Not connected to the output.");
+    // Linking it again brings it back.
+    await dragBetween(page, await centreOf(portOf(page, 4, "picture", "out")), await centreOf(portOf(page, "output", "picture", "in")));
+    for (const id of [2, 3, 4]) await expect(card(page, id)).not.toHaveAccessibleName(/not connected/);
+  });
+
+  test("a long name is cut at about ten letters on the card, with the whole name as its tooltip", async ({ page }) => {
+    await fourNodes(page);
+    await canvas(page).locator(".ym-gnode__name").nth(1).dblclick();
+    const field = canvas(page).getByRole("textbox", { name: "Node name" });
+    await field.fill("A very long name for a node");
+    await field.press("Enter");
+    const name = canvas(page).locator(".ym-gnode__name").nth(1);
+    await expect(name).toHaveText("A very lo…");
+    await name.hover();
+    await expect(page.getByRole("tooltip")).toHaveText("A very long name for a node");
+    // The card's own name carries the whole name.
+    await expect(card(page, 2)).toHaveAccessibleName(/^Node 2, A very long name for a node/);
+  });
+
+  test("a bypassed card shows its picture at half strength with a slash, and says so", async ({ page }) => {
+    await fourNodes(page);
+    await card(page, 3).click();
+    await page.keyboard.press("b");
+    await expect(card(page, 3)).toHaveAccessibleName(/^Node 3, Sky, bypassed/);
+    const thumb = canvas(page).locator(".ym-gnode:has([data-node-card='3'])");
+    await expect(thumb.locator(".ym-gnode__slash")).toBeVisible();
+    expect(Number(await thumb.locator(".ym-gnode__thumb img").evaluate((el) => getComputedStyle(el).opacity))).toBeCloseTo(0.5, 2);
+    await expect(thumb.locator(".ym-gnode__tools")).toBeVisible();
+    await expect(canvas(page).locator(".ym-gnode:has([data-node-card='2']) .ym-gnode__slash")).toHaveCount(0);
+  });
+});
+
+test.describe("the graph: adding, deleting, bypassing, renaming and moving", () => {
+  test("Add node › Corrector adds a node after the selected one, selects it, and undo and redo take it away and bring it back", async ({ page }) => {
+    await fourNodes(page);
+    await card(page, 2).click();
+    await page.getByRole("button", { name: "Add node" }).click();
+    await page.getByRole("menuitem", { name: /Corrector/ }).click();
+    // The new node is node 5 by id and number 3 in the flow: Main → Mountain → new → Sky → Warmth.
+    await expect(card(page, 5)).toHaveAttribute("aria-pressed", "true");
+    await expect(card(page, 5)).toHaveAccessibleName("Node 3, Corrector, picture from node 2");
+    expect(await linkIds(page)).toEqual(
+      ["1.picture>2.picture", "2.picture>5.picture", "3.picture>4.picture", "4.picture>output.picture", "5.picture>3.picture", "input.picture>1.picture"],
+    );
+    // Numbers follow the flow: Sky is 4 and Warmth 5 now.
+    await expect(card(page, 3)).toHaveAccessibleName(/^Node 4, Sky/);
+    await expect(card(page, 4)).toHaveAccessibleName(/^Node 5, Warmth/);
+    await expect(canvas(page).locator(".ym-gnode:has([data-node-card='5']) .ym-gnode__num")).toHaveText("03");
+    await expect(canvas(page).locator(".ym-gnode:has([data-node-card='3']) .ym-gnode__num")).toHaveText("04");
+    await expect(canvas(page).locator(".ym-gnode__num")).toHaveCount(5);
+    // One unit right of Mountain, and the nodes after it one unit right.
+    const at = async (id: number) => (await box(card(page, id))).x;
+    expect((await at(5)) - (await at(2))).toBeCloseTo(214, 0);
+    expect((await at(3)) - (await at(5))).toBeCloseTo(214 * 1, 0);
+    // One undo step.
+    await undo(page);
+    await expect(card(page, 5)).toHaveCount(0);
+    expect(await linkIds(page)).toEqual(LINE);
+    await expect(card(page, 3)).toHaveAccessibleName(/^Node 3, Sky/);
+    // The page is on Main again, where the removed node's selection falls to.
+    await expect(canvas(page)).toHaveAttribute("data-selected-node", "1");
+    await redo(page);
+    await expect(card(page, 5)).toBeVisible();
+    expect((await linkIds(page)).length).toBe(6);
+  });
+
+  test("with the Input selected adds after Main, and with the Output selected into the Output's link", async ({ page }) => {
+    await fourNodes(page);
+    await card(page, "input").click();
+    await page.getByRole("button", { name: "Add node" }).click();
+    await page.getByRole("menuitem", { name: /Corrector/ }).click();
+    await expect(card(page, 5)).toHaveAccessibleName("Node 2, Corrector, picture from node 1");
+    await undo(page);
+    await expect(card(page, 5)).toHaveCount(0);
+    await card(page, "output").click();
+    await page.getByRole("button", { name: "Add node" }).click();
+    await page.getByRole("menuitem", { name: /Corrector/ }).click();
+    // Node 5 was made and undone: its id is used up, so this one is 6.
+    await expect(card(page, 6)).toHaveAccessibleName("Node 5, Corrector, picture from node 4");
+    expect(await linkIds(page)).toContain("6.picture>output.picture");
+  });
+
+  test("the new node's id is not one a deleted node had, and is selected with Delete available", async ({ page }) => {
+    await fourNodes(page);
+    await card(page, 4).click();
+    await page.keyboard.press("Delete");
+    await expect(card(page, 4)).toHaveCount(0);
+    await page.getByRole("button", { name: "Add node" }).click();
+    await page.getByRole("menuitem", { name: /Corrector/ }).click();
+    // Node 4 is gone; the next id is 5 (one more than the largest the page has used), not 4 again.
+    await expect(card(page, 5)).toBeVisible();
+    await expect(card(page, 4)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Delete" })).not.toHaveAttribute("aria-disabled", "true");
+  });
+
+  test("Add node's Corrector is off at 64 nodes, with 'A photo can have up to 64 nodes.'", async ({ page }) => {
+    await openApp(page, MOCKUP);
+    const nodes: Record<string, unknown> = {};
+    const links: unknown[] = [{ from: { node: "input", port: "picture" }, to: { node: 1, port: "picture" } }];
+    for (let id = 2; id <= 64; id++) {
+      nodes[String(id)] = { kind: "corrector", name: `N${id}`, pos: [(id - 1) % 16, Math.floor((id - 1) / 16)] };
+    }
+    for (let id = 1; id < 64; id++) links.push({ from: { node: id, port: "picture" }, to: { node: id + 1, port: "picture" } });
+    links.push({ from: { node: 64, port: "picture" }, to: { node: "output", port: "picture" } });
+    await configureMock(page, { initialSettings: { DSC04204: { nodes, links } } as never });
+    await openPhotos(page);
+    await nodesButton(page).click();
+    await expect(card(page, 64)).toBeAttached();
+    await page.getByRole("button", { name: "Add node" }).click();
+    const item = page.getByRole("menuitem", { name: /Corrector/ });
+    await expect(item).toHaveAttribute("aria-disabled", "true");
+    await expect(item).toHaveAccessibleDescription("A photo can have up to 64 nodes.");
+    await item.hover();
+    await expect(page.getByRole("tooltip")).toHaveText("A photo can have up to 64 nodes.");
+    // A click adds nothing.
+    await item.click({ force: true });
+    await expect(card(page, 65)).toHaveCount(0);
+  });
+
+  test("Delete (the toolbar, the key, More › Delete node) reconnects the neighbours and selects the previous node; one undo puts it back", async ({ page }) => {
+    await fourNodes(page);
+    // The toolbar.
+    await card(page, 3).click();
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await expect(card(page, 3)).toHaveCount(0);
+    expect(await linkIds(page)).toEqual(["1.picture>2.picture", "2.picture>4.picture", "4.picture>output.picture", "input.picture>1.picture"]);
+    await expect(card(page, 2)).toHaveAttribute("aria-pressed", "true");
+    await expect(card(page, 4)).toHaveAccessibleName("Node 3, Warmth, picture from node 2");
+    await undo(page);
+    await expect(card(page, 3)).toBeVisible();
+    expect(await linkIds(page)).toEqual(LINE);
+    // The key, from the card.
+    await card(page, 2).click();
+    await page.keyboard.press("Delete");
+    await expect(card(page, 2)).toHaveCount(0);
+    await expect(card(page, 1)).toHaveAttribute("aria-pressed", "true");
+    await undo(page);
+    // Backspace, and More › Delete node.
+    await card(page, 4).click();
+    await page.keyboard.press("Backspace");
+    await expect(card(page, 4)).toHaveCount(0);
+    await undo(page);
+    await expect(card(page, 4)).toBeVisible();
+    await card(page, 4).click();
+    await page.getByRole("button", { name: "More" }).click();
+    await page.getByRole("menuitem", { name: "Delete node" }).click();
+    await expect(card(page, 4)).toHaveCount(0);
+    expect(await linkIds(page)).toEqual(["1.picture>2.picture", "2.picture>3.picture", "3.picture>output.picture", "input.picture>1.picture"]);
+  });
+
+  test("Delete is never Main ('Main can't be deleted. Bypass it instead.'), the Input or the Output, and never a photo", async ({ page }) => {
+    await fourNodes(page);
+    const del = page.getByRole("button", { name: "Delete", exact: true });
+    await expect(del).toHaveAttribute("aria-disabled", "true");
+    await expect(del).toHaveAccessibleDescription("Main can't be deleted. Bypass it instead.");
+    await page.keyboard.press("Delete");
+    await expect(card(page, 1)).toBeVisible();
+    // The key on Main says so in the error bar and removes nothing.
+    await card(page, 1).focus();
+    await page.keyboard.press("Delete");
+    await expect(errorBar(page)).toHaveText(/Main can't be deleted. Bypass it instead./);
+    expect(await linkIds(page)).toEqual(LINE);
+    await card(page, "input").click();
+    await expect(del).toHaveAccessibleDescription("The input and the output can't be deleted.");
+    await page.keyboard.press("Delete");
+    await expect(errorBar(page)).toHaveText(/The input and the output can't be deleted./);
+    await card(page, "output").click();
+    await expect(del).toHaveAttribute("aria-disabled", "true");
+    // The session still has its twelve photos.
+    await expect(page.getByRole("group", { name: "Photos" })).toContainText("4 of 12");
+    await page.getByRole("button", { name: "More" }).click();
+    await expect(page.getByRole("menuitem", { name: "Delete node" })).toHaveCount(0);
+  });
+
+  test("Bypass (the toolbar, B) toggles the selected node, Main too, and is refused for the Input and the Output", async ({ page }) => {
+    await fourNodes(page);
+    const bypass = page.getByRole("button", { name: "Bypass", exact: true });
+    await card(page, 2).click();
+    await bypass.click();
+    await expect(bypass).toHaveAttribute("aria-pressed", "true");
+    await expect(card(page, 2)).toHaveAccessibleName(/bypassed/);
+    await bypass.click();
+    await expect(bypass).toHaveAttribute("aria-pressed", "false");
+    await expect(card(page, 2)).not.toHaveAccessibleName(/bypassed/);
+    // B, with the card focused: one undo step each way.
+    await page.keyboard.press("b");
+    await expect(card(page, 2)).toHaveAccessibleName(/bypassed/);
+    await undo(page);
+    await expect(card(page, 2)).not.toHaveAccessibleName(/bypassed/);
+    await redo(page);
+    await expect(card(page, 2)).toHaveAccessibleName(/bypassed/);
+    // Main can be bypassed.
+    await card(page, 1).click();
+    await page.keyboard.press("b");
+    await expect(card(page, 1)).toHaveAccessibleName("Node 1, Main, bypassed");
+    // The Input and the Output cannot.
+    await card(page, "input").click();
+    await expect(bypass).toHaveAttribute("aria-disabled", "true");
+    await expect(bypass).toHaveAccessibleDescription("The input and the output can't be bypassed.");
+    await page.keyboard.press("b");
+    await expect(errorBar(page)).toHaveText(/The input and the output can't be bypassed./);
+  });
+
+  test("B is a letter in a menu and in a text box, not a bypass", async ({ page }) => {
+    await fourNodes(page);
+    await card(page, 2).click();
+    await canvas(page).locator(".ym-gnode__name").nth(1).dblclick();
+    const field = canvas(page).getByRole("textbox", { name: "Node name" });
+    await field.press("Control+a");
+    await page.keyboard.type("Bob");
+    await expect(field).toHaveValue("Bob");
+    await expect(card(page, 2)).not.toHaveAccessibleName(/bypassed/);
+    await field.press("Escape");
+    await expect(canvas(page).locator(".ym-gnode__name").nth(1)).toHaveText("Mountain");
+  });
+
+  test("Rename: double-click the name, Return accepts, Esc cancels, 1 to 32 characters, one undo step", async ({ page }) => {
+    await fourNodes(page);
+    const name = (n: number) => canvas(page).locator(".ym-gnode__name").nth(n);
+    await expect(name(1)).toHaveText("Mountain");
+    await name(1).hover();
+    await expect(page.getByRole("tooltip")).toHaveText("Double-click to rename");
+    await name(1).dblclick();
+    const field = canvas(page).getByRole("textbox", { name: "Node name" });
+    await expect(field).toBeFocused();
+    await expect(field).toHaveValue("Mountain");
+    await expect(field).toHaveAttribute("maxlength", "32");
+    // Esc cancels.
+    await field.fill("Hills");
+    await field.press("Escape");
+    await expect(field).toHaveCount(0);
+    await expect(name(1)).toHaveText("Mountain");
+    // Return accepts, trimmed.
+    await name(1).dblclick();
+    await field.fill("  Hills  ");
+    await field.press("Enter");
+    await expect(name(1)).toHaveText("Hills");
+    await expect(card(page, 2)).toHaveAccessibleName(/^Node 2, Hills/);
+    // An empty name changes nothing.
+    await name(1).dblclick();
+    await field.fill("   ");
+    await field.press("Enter");
+    await expect(name(1)).toHaveText("Hills");
+    // Leaving the box accepts it.
+    await name(2).dblclick();
+    await field.fill("Cloud");
+    await page.getByRole("button", { name: "Expand" }).focus();
+    await expect(name(2)).toHaveText("Cloud");
+    // Undo: one step each.
+    await undo(page);
+    await expect(name(2)).toHaveText("Sky");
+    await undo(page);
+    await expect(name(1)).toHaveText("Mountain");
+    await redo(page);
+    await expect(name(1)).toHaveText("Hills");
+  });
+
+  test("Rename, from More › Rename; the Input and the Output have no Rename and no double-click", async ({ page }) => {
+    await fourNodes(page);
+    await card(page, 3).click();
+    await page.getByRole("button", { name: "More" }).click();
+    await page.getByRole("menuitem", { name: "Rename" }).click();
+    const field = canvas(page).getByRole("textbox", { name: "Node name" });
+    await expect(field).toBeFocused();
+    await field.fill("Blue");
+    await field.press("Enter");
+    await expect(card(page, 3)).toHaveAccessibleName(/^Node 3, Blue/);
+    await card(page, "input").click();
+    await page.getByRole("button", { name: "More" }).click();
+    await expect(page.getByRole("menuitem", { name: "Rename" })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await canvas(page).locator(".ym-marker__word").first().dblclick();
+    await expect(canvas(page).getByRole("textbox")).toHaveCount(0);
+  });
+
+  test("a card moves by dragging: its place is pos only, the links follow, and one undo puts it back", async ({ page }) => {
+    await fourNodes(page);
+    const calls = await recordCalls(page, "updateSettings");
+    const before = await box(card(page, 3));
+    await dragBetween(page, { x: before.x + 75, y: before.y + 40 }, { x: before.x + 75 + 40, y: before.y + 40 + 80 });
+    await expect.poll(async () => (await box(card(page, 3))).y).toBeGreaterThan(before.y + 70);
+    const after = await box(card(page, 3));
+    expect(after.x - before.x).toBeCloseTo(40, -1);
+    // One patch: the place, nothing rewired.
+    const sent = await calls();
+    expect(sent).toHaveLength(1);
+    const patch = sent[0]!.args[1] as { nodes: Record<string, { pos: number[] }>; links?: unknown };
+    expect(Object.keys(patch.nodes)).toEqual(["3"]);
+    expect(Object.keys(patch.nodes["3"]!)).toEqual(["pos"]);
+    expect(patch.links).toBeUndefined();
+    expect(await linkIds(page)).toEqual(LINE);
+    // The card is selected by the drag.
+    await expect(card(page, 3)).toHaveAttribute("aria-pressed", "true");
+    // Undo puts it back.
+    await undo(page);
+    await expect.poll(async () => Math.round((await box(card(page, 3))).y)).toBe(Math.round(before.y));
+    await expect.poll(async () => Math.round((await box(card(page, 3))).x)).toBe(Math.round(before.x));
+    await redo(page);
+    await expect.poll(async () => (await box(card(page, 3))).y).toBeGreaterThan(before.y + 70);
+  });
+
+  test("the Input and the Output cannot be dragged (a drag on one pans the canvas), and a click without a move sends nothing", async ({ page }) => {
+    await fourNodes(page);
+    const calls = await recordCalls(page, "updateSettings");
+    const input = await box(card(page, "input"));
+    const main = await box(card(page, 1));
+    await dragBetween(page, { x: input.x + 16, y: input.y + 16 }, { x: input.x + 16, y: input.y + 60 });
+    // The whole graph moved with the canvas: the Input is where it was beside Main.
+    const [input2, main2] = [await box(card(page, "input")), await box(card(page, 1))];
+    expect(input2.y - main2.y).toBeCloseTo(input.y - main.y, 0);
+    expect(await calls()).toHaveLength(0);
+    const c = await box(card(page, 2));
+    await page.mouse.click(c.x + 75, c.y + 40);
+    expect(await calls()).toHaveLength(0);
+  });
+});
+
+/** The middle of the straight link between two cards' ports, where a click lands on it. */
+async function linkMiddle(page: Page, from: number | string, to: number | string, port: "picture" | "key" = "picture"): Promise<Pt> {
+  const [a, b] = [await centreOf(portOf(page, from, port, "out")), await centreOf(portOf(page, to, port, "in"))];
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
+/** The inputs that are lit while a link is dragged, as "node:port". */
+const litInputs = (page: Page): Promise<string[]> =>
+  canvas(page)
+    .locator('.ym-port[data-state="lit"]')
+    .evaluateAll((els) => els.map((el) => `${el.getAttribute("data-nodeid")}:${el.getAttribute("data-handleid")}`).sort());
+const dimInputs = (page: Page): Promise<string[]> =>
+  canvas(page)
+    .locator('.ym-port[data-state="dim"]')
+    .evaluateAll((els) => els.map((el) => `${el.getAttribute("data-nodeid")}:${el.getAttribute("data-handleid")}`).sort());
+
+test.describe("the graph: links drawn by hand", () => {
+  test("drag from an output to an input: the inputs that take it light up and the others dim, and a release on one makes the link", async ({ page }) => {
+    await fourNodes(page);
+    const from = await centreOf(portOf(page, 2, "key", "out"));
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    const over = await centreOf(portOf(page, 4, "key", "in"));
+    await page.mouse.move((from.x + over.x) / 2, from.y + 60, { steps: 6 });
+    // A key goes to a key input downstream of it: Sky's and Warmth's. Nothing else lights (Main's is upstream, Mountain's own is a circle).
+    expect(await litInputs(page)).toEqual(["3:key", "4:key"]);
+    expect((await dimInputs(page)).length).toBeGreaterThan(5);
+    expect(await dimInputs(page)).toContain("3:picture");
+    // The link follows the pointer from the output that stays.
+    await expect(canvas(page).locator(".ym-draft")).toHaveAttribute("data-kind", "key");
+    await page.mouse.move(over.x, over.y, { steps: 6 });
+    await expect(canvas(page).locator('.ym-port[data-hover="true"]')).toHaveCount(1);
+    await page.mouse.up();
+    await expect.poll(() => linkIds(page)).toContain("2.key>4.key");
+    // Nothing is lit any more, the link is a dashed one in the mask accent, and the picture links are as they were.
+    expect(await litInputs(page)).toEqual([]);
+    await expect(canvas(page).locator(".ym-draft")).toHaveCount(0);
+    const style = await linkOf(page, "2.key>4.key").locator(".react-flow__edge-path").evaluate((el) => {
+      const c = getComputedStyle(el);
+      return { dash: c.strokeDasharray, colour: c.stroke };
+    });
+    expect(style.colour).toBe("rgb(255, 111, 210)");
+    expect(style.dash).not.toBe("none");
+    expect(await linkIds(page)).toEqual([...LINE, "2.key>4.key"].sort());
+    // The picture links are drawn solid and grey.
+    const picture = await linkOf(page, "1.picture>2.picture").locator(".react-flow__edge-path").evaluate((el) => getComputedStyle(el).strokeDasharray);
+    expect(picture).toBe("none");
+    // One undo step.
+    await undo(page);
+    await expect.poll(() => linkIds(page)).toEqual(LINE);
+    await redo(page);
+    await expect.poll(() => linkIds(page)).toContain("2.key>4.key");
+    // Node 4 is told what feeds it.
+    await expect(card(page, 4)).toHaveAccessibleName("Node 4, Warmth, picture from node 3, key from node 2");
+  });
+
+  test("a picture goes to picture inputs only, never to Main's, and an output may feed any number of inputs", async ({ page }) => {
+    await fourNodes(page);
+    const from = await centreOf(portOf(page, 1, "picture", "out"));
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + 40, from.y + 70, { steps: 5 });
+    // Main's own link is Main → Mountain (a no-op if dropped back), Sky's and Warmth's replace theirs, and the Output's too.
+    expect(await litInputs(page)).toEqual(["2:picture", "3:picture", "4:picture", "output:picture"]);
+    expect(await dimInputs(page)).toContain("1:picture");
+    expect(await dimInputs(page)).toContain("2:key");
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+    await expect(canvas(page).locator(".ym-draft")).toHaveCount(0);
+    expect(await linkIds(page)).toEqual(LINE);
+    // A second branch from Main's output: to a node that has no picture link yet is made by dropping on its input after it is freed.
+    await dragBetween(page, await centreOf(portOf(page, 3, "picture", "in")), { x: from.x + 40, y: from.y + 110 });
+    await expect.poll(() => linkIds(page)).not.toContain("2.picture>3.picture");
+    await dragBetween(page, from, await centreOf(portOf(page, 3, "picture", "in")));
+    await expect.poll(() => linkIds(page)).toContain("1.picture>3.picture");
+    // Main now feeds Mountain and Sky.
+    expect(await linkIds(page)).toEqual(["1.picture>2.picture", "1.picture>3.picture", "3.picture>4.picture", "4.picture>output.picture", "input.picture>1.picture"]);
+    await expect(card(page, 2)).toHaveAccessibleName(/^Node 2, Mountain, not connected/);
+  });
+
+  test("dropping on an occupied input replaces its link, in one step", async ({ page }) => {
+    await fourNodes(page);
+    const calls = await recordCalls(page, "updateSettings");
+    await dragBetween(page, await centreOf(portOf(page, 1, "picture", "out")), await centreOf(portOf(page, 3, "picture", "in")));
+    await expect.poll(() => linkIds(page)).toContain("1.picture>3.picture");
+    expect(await linkIds(page)).toEqual(["1.picture>2.picture", "1.picture>3.picture", "3.picture>4.picture", "4.picture>output.picture", "input.picture>1.picture"]);
+    // One patch, links only.
+    const sent = await calls();
+    expect(sent).toHaveLength(1);
+    expect(Object.keys(sent[0]!.args[1] as object)).toEqual(["links"]);
+    // Mountain is not on a path to the output now: dimmed.
+    await expect(card(page, 2)).toHaveAccessibleName(/not connected/);
+    await undo(page);
+    await expect.poll(() => linkIds(page)).toEqual(LINE);
+    await expect(card(page, 2)).not.toHaveAccessibleName(/not connected/);
+    await redo(page);
+    await expect.poll(() => linkIds(page)).toContain("1.picture>3.picture");
+  });
+
+  test("a drop on the Output's input replaces the Output's link", async ({ page }) => {
+    await fourNodes(page);
+    await dragBetween(page, await centreOf(portOf(page, 2, "picture", "out")), await centreOf(portOf(page, "output", "picture", "in")));
+    await expect.poll(() => linkIds(page)).toContain("2.picture>output.picture");
+    expect(await linkIds(page)).not.toContain("4.picture>output.picture");
+    await expect(card(page, 3)).toHaveAccessibleName(/not connected/);
+    await expect(card(page, 4)).toHaveAccessibleName(/not connected/);
+    await undo(page);
+    await expect.poll(() => linkIds(page)).toEqual(LINE);
+  });
+
+  test("pick up a link's end from its input: drop it on empty canvas to remove it, one undo step", async ({ page }) => {
+    await fourNodes(page);
+    const input = await centreOf(portOf(page, 3, "picture", "in"));
+    const empty = { x: input.x - 20, y: input.y + 100 };
+    await page.mouse.move(input.x, input.y);
+    await page.mouse.down();
+    await page.mouse.move(empty.x, empty.y, { steps: 8 });
+    // The link has come away from the port: it is not drawn between Mountain and Sky while it is carried, and the line follows the pointer.
+    await expect(linkOf(page, "2.picture>3.picture")).toHaveCount(0);
+    await expect(canvas(page).locator(".ym-draft")).toHaveCount(1);
+    // The input that had it lights up again (putting it back is allowed), with the others of its type.
+    expect(await litInputs(page)).toContain("3:picture");
+    await page.mouse.up();
+    await expect.poll(() => linkIds(page)).toEqual(["1.picture>2.picture", "3.picture>4.picture", "4.picture>output.picture", "input.picture>1.picture"]);
+    // Sky read the Input now, and is still on the way to the Output.
+    await expect(card(page, 3)).not.toHaveAccessibleName(/picture from/);
+    await undo(page);
+    await expect.poll(() => linkIds(page)).toEqual(LINE);
+  });
+
+  test("pick up a link's end and drop it on another input: the link moves there, replacing what was there", async ({ page }) => {
+    await fourNodes(page);
+    // Mountain → Sky is picked up at Sky and dropped on Warmth's picture input (which Sky fed).
+    await dragBetween(page, await centreOf(portOf(page, 3, "picture", "in")), await centreOf(portOf(page, 4, "picture", "in")));
+    await expect.poll(() => linkIds(page)).toContain("2.picture>4.picture");
+    expect(await linkIds(page)).toEqual(["1.picture>2.picture", "2.picture>4.picture", "4.picture>output.picture", "input.picture>1.picture"]);
+    await expect(card(page, 3)).toHaveAccessibleName(/not connected/);
+    await undo(page);
+    await expect.poll(() => linkIds(page)).toEqual(LINE);
+  });
+
+  test("a picked-up link dropped back on its own input, or let go with Esc, changes nothing", async ({ page }) => {
+    await fourNodes(page);
+    const calls = await recordCalls(page, "updateSettings");
+    const input = await centreOf(portOf(page, 3, "picture", "in"));
+    await dragBetween(page, input, { x: input.x - 3, y: input.y + 2 }, 4);
+    await dragBetween(page, input, input, 2);
+    // A drag that comes back to its input.
+    await page.mouse.move(input.x, input.y);
+    await page.mouse.down();
+    await page.mouse.move(input.x - 60, input.y + 80, { steps: 6 });
+    await page.mouse.move(input.x, input.y, { steps: 6 });
+    await page.mouse.up();
+    expect(await linkIds(page)).toEqual(LINE);
+    // Esc while carried.
+    await page.mouse.move(input.x, input.y);
+    await page.mouse.down();
+    await page.mouse.move(input.x - 60, input.y + 80, { steps: 6 });
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+    expect(await linkIds(page)).toEqual(LINE);
+    expect(await calls()).toHaveLength(0);
+    await expect(errorBar(page)).toHaveCount(0);
+  });
+
+  test("a click on a link selects it (thicker, yellow); Delete removes it and not the node; Esc or a click elsewhere lets go", async ({ page }) => {
+    await fourNodes(page);
+    const mid = await linkMiddle(page, 2, 3);
+    const path = linkOf(page, "2.picture>3.picture").locator(".react-flow__edge-path");
+    const widthOf = async (): Promise<number> => parseFloat(await path.evaluate((el) => getComputedStyle(el).strokeWidth));
+    const thin = await widthOf();
+    await page.mouse.click(mid.x, mid.y);
+    await expect(linkOf(page, "2.picture>3.picture")).toHaveClass(/selected/);
+    expect(await widthOf()).toBeGreaterThan(thin);
+    expect(await path.evaluate((el) => getComputedStyle(el).stroke)).toBe("rgb(255, 194, 14)");
+    // The card the panel is on keeps its quiet ring.
+    await expect(canvas(page).locator(".ym-gnode[data-quiet]")).toHaveCount(1);
+    // Esc lets go.
+    await page.keyboard.press("Escape");
+    await expect(linkOf(page, "2.picture>3.picture")).not.toHaveClass(/selected/);
+    await page.mouse.click(mid.x, mid.y);
+    await expect(linkOf(page, "2.picture>3.picture")).toHaveClass(/selected/);
+    // A click on the empty canvas lets go too.
+    const bare = await box(canvas(page));
+    await page.mouse.click(bare.x + bare.width / 2, bare.y + bare.height - 30);
+    await expect(linkOf(page, "2.picture>3.picture")).not.toHaveClass(/selected/);
+    // Delete takes the link away, not the node that is selected (Main).
+    await page.mouse.click(mid.x, mid.y);
+    await page.keyboard.press("Delete");
+    await expect.poll(() => linkIds(page)).toEqual(["1.picture>2.picture", "3.picture>4.picture", "4.picture>output.picture", "input.picture>1.picture"]);
+    await expect(card(page, 1)).toBeVisible();
+    await undo(page);
+    await expect.poll(() => linkIds(page)).toEqual(LINE);
+    // Backspace and the toolbar's Delete do it too.
+    await page.mouse.click(mid.x, mid.y);
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await expect.poll(() => linkIds(page)).not.toContain("2.picture>3.picture");
+    await expect(card(page, 3)).toBeVisible();
+  });
+
+  test("a right click on a link offers Delete link", async ({ page }) => {
+    await fourNodes(page);
+    const mid = await linkMiddle(page, 3, 4);
+    await page.mouse.click(mid.x, mid.y, { button: "right" });
+    const item = page.getByRole("menuitem", { name: "Delete link" });
+    await expect(item).toBeVisible();
+    await expect(linkOf(page, "3.picture>4.picture")).toHaveClass(/selected/);
+    await item.click();
+    await expect.poll(() => linkIds(page)).not.toContain("3.picture>4.picture");
+    await expect(card(page, 4)).toBeVisible();
+  });
+
+  test("the refusals say why in the error bar and change nothing: Main's input, the Output's link, a circle", async ({ page }) => {
+    await fourNodes(page);
+    const calls = await recordCalls(page, "updateSettings");
+    // Anything but the Input on Main's picture input.
+    await dragBetween(page, await centreOf(portOf(page, 2, "picture", "out")), await centreOf(portOf(page, 1, "picture", "in")));
+    await expect(errorBar(page)).toHaveText(/Main always takes its picture from the input\./);
+    expect(await linkIds(page)).toEqual(LINE);
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    // Picking Input → Main up: it does not come away.
+    const main = await centreOf(portOf(page, 1, "picture", "in"));
+    await dragBetween(page, main, { x: main.x - 30, y: main.y + 90 });
+    await expect(errorBar(page)).toHaveText(/Main always takes its picture from the input\./);
+    await expect(linkOf(page, "input.picture>1.picture")).toHaveCount(1);
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    // The Output's link cannot be taken away.
+    const output = await centreOf(portOf(page, "output", "picture", "in"));
+    await dragBetween(page, output, { x: output.x - 40, y: output.y + 110 });
+    await expect(errorBar(page)).toHaveText(/The output needs a picture\. Link another node to it instead\./);
+    expect(await linkIds(page)).toEqual(LINE);
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    // A circle: Warmth's picture back to Mountain's input, and a key through the pictures.
+    await dragBetween(page, await centreOf(portOf(page, 4, "picture", "out")), await centreOf(portOf(page, 2, "picture", "in")));
+    await expect(errorBar(page)).toHaveText(/That would link the nodes in a circle\./);
+    expect(await linkIds(page)).toEqual(LINE);
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    await dragBetween(page, await centreOf(portOf(page, 4, "key", "out")), await centreOf(portOf(page, 2, "key", "in")));
+    await expect(errorBar(page)).toHaveText(/That would link the nodes in a circle\./);
+    expect(await linkIds(page)).toEqual(LINE);
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    // A key on a picture input.
+    await dragBetween(page, await centreOf(portOf(page, 2, "key", "out")), await centreOf(portOf(page, 3, "picture", "in")));
+    await expect(errorBar(page)).toHaveText(/A link joins a picture to a picture, or a key to a key\./);
+    expect(await linkIds(page)).toEqual(LINE);
+    // None of it reached the core.
+    expect(await calls()).toHaveLength(0);
+  });
+
+  test("a drop on nothing, or a press on an input with no link, does nothing at all", async ({ page }) => {
+    await fourNodes(page);
+    const calls = await recordCalls(page, "updateSettings");
+    const out = await centreOf(portOf(page, 2, "picture", "out"));
+    await dragBetween(page, out, { x: out.x + 20, y: out.y + 120 });
+    await dragBetween(page, await centreOf(portOf(page, 3, "key", "in")), { x: out.x, y: out.y + 120 });
+    expect(await linkIds(page)).toEqual(LINE);
+    expect(await calls()).toHaveLength(0);
+    await expect(errorBar(page)).toHaveCount(0);
+  });
+
+  test("a link's end can be a key's: pick up a key link and remove it", async ({ page }) => {
+    await fourNodes(page);
+    await dragBetween(page, await centreOf(portOf(page, 2, "key", "out")), await centreOf(portOf(page, 3, "key", "in")));
+    await expect.poll(() => linkIds(page)).toContain("2.key>3.key");
+    const input = await centreOf(portOf(page, 3, "key", "in"));
+    await dragBetween(page, input, { x: input.x - 30, y: input.y + 70 });
+    await expect.poll(() => linkIds(page)).toEqual(LINE);
+  });
+});
+
+test.describe("the graph: reordering", () => {
+  test("a card dropped with its centre over a picture link goes into it, which lights up while it is over; one undo step", async ({ page }) => {
+    await fourNodes(page);
+    const calls = await recordCalls(page, "updateSettings");
+    // Mountain is dragged to the middle of the link Sky → Warmth.
+    const c = await box(card(page, 2));
+    const target = await linkMiddle(page, 3, 4);
+    const start = { x: c.x + 75, y: c.y + 40 };
+    const centre = { x: c.x + 75, y: c.y + 56 };
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(start.x + (target.x - centre.x), start.y + (target.y - centre.y), { steps: 14 });
+    await expect(canvas(page).locator(".ym-link[data-drop]")).toHaveCount(1);
+    await expect(linkOf(page, "3.picture>4.picture").locator(".ym-link")).toHaveAttribute("data-drop", "true");
+    await page.mouse.up();
+    // Main → Sky → Mountain → Warmth, with Mountain selected and one patch (the node's place, the neighbours', and the links).
+    await expect.poll(() => linkIds(page)).toEqual(["1.picture>3.picture", "2.picture>4.picture", "3.picture>2.picture", "4.picture>output.picture", "input.picture>1.picture"]);
+    await expect(card(page, 2)).toHaveAttribute("aria-pressed", "true");
+    await expect(card(page, 2)).toHaveAccessibleName("Node 3, Mountain, picture from node 3".replace("from node 3", "from node 2"));
+    await expect(card(page, 3)).toHaveAccessibleName(/^Node 2, Sky/);
+    await expect(canvas(page).locator(".ym-link[data-drop]")).toHaveCount(0);
+    const sent = await calls();
+    expect(sent).toHaveLength(1);
+    expect(Object.keys(sent[0]!.args[1] as object).sort()).toEqual(["links", "nodes"]);
+    await undo(page);
+    await expect.poll(() => linkIds(page)).toEqual(LINE);
+    await expect(card(page, 3)).toHaveAccessibleName(/^Node 3, Sky/);
+    await redo(page);
+    await expect.poll(() => linkIds(page)).toContain("3.picture>2.picture");
+  });
+
+  test("a card dropped on a link that is not under its centre, or on its own links, is only moved", async ({ page }) => {
+    await fourNodes(page);
+    const calls = await recordCalls(page, "updateSettings");
+    const c = await box(card(page, 3));
+    // A short drag down: the centre is nowhere near a link.
+    await dragBetween(page, { x: c.x + 75, y: c.y + 40 }, { x: c.x + 75, y: c.y + 40 + 90 });
+    expect(await linkIds(page)).toEqual(LINE);
+    const patch = (await calls())[0]!.args[1] as { links?: unknown };
+    expect(patch.links).toBeUndefined();
+  });
+
+  test("nothing goes before Main: a drop on the link Input → Main, and Main itself, are refused", async ({ page }) => {
+    await fourNodes(page);
+    const c = await box(card(page, 3));
+    const target = await linkMiddle(page, "input", 1);
+    const centre = { x: c.x + 75, y: c.y + 56 };
+    await dragBetween(page, { x: c.x + 75, y: c.y + 40 }, { x: c.x + 75 + (target.x - centre.x), y: c.y + 40 + (target.y - centre.y) });
+    // That link does not light up, and the drop is a move, not a reorder.
+    expect(await linkIds(page)).toEqual(LINE);
+    // Main dragged onto a link is only moved.
+    const m = await box(card(page, 1));
+    const sky = await linkMiddle(page, 3, 4);
+    await dragBetween(page, { x: m.x + 75, y: m.y + 40 }, { x: m.x + 75 + (sky.x - (m.x + 75)), y: m.y + 40 + (sky.y - (m.y + 56)) });
+    expect(await linkIds(page)).toEqual(LINE);
+  });
+
+  test("⌥→ and ⌥← move the focused node later and earlier; Main and the first after Main say why not", async ({ page }) => {
+    await fourNodes(page);
+    await card(page, 2).click();
+    await page.keyboard.press("Alt+ArrowRight");
+    await expect.poll(() => linkIds(page)).toEqual(["1.picture>3.picture", "2.picture>4.picture", "3.picture>2.picture", "4.picture>output.picture", "input.picture>1.picture"]);
+    await expect(card(page, 2)).toHaveAccessibleName(/^Node 3, Mountain/);
+    await page.keyboard.press("Alt+ArrowLeft");
+    await expect.poll(() => linkIds(page)).toEqual(LINE);
+    // Mountain is the first after Main: nothing goes before Main.
+    await page.keyboard.press("Alt+ArrowLeft");
+    await expect(errorBar(page)).toHaveText(/Nothing can go before Main\./);
+    expect(await linkIds(page)).toEqual(LINE);
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    // The last node cannot go later.
+    await card(page, 4).click();
+    await page.keyboard.press("Alt+ArrowRight");
+    await expect(errorBar(page)).toHaveText(/This node is already the last one before the output\./);
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    // Main cannot be reordered.
+    await card(page, 1).click();
+    await page.keyboard.press("Alt+ArrowRight");
+    await expect(errorBar(page)).toHaveText(/Main can't be moved\. It always comes first\./);
+    expect(await linkIds(page)).toEqual(LINE);
+    // The arrows alone still move the selection, ⌥ moved no photo.
+    await expect(page.getByRole("group", { name: "Photos" })).toContainText("4 of 12");
+  });
+
+  test("More › Move earlier and Move later do the same, and Main has neither", async ({ page }) => {
+    await fourNodes(page);
+    await card(page, 4).click();
+    await page.getByRole("button", { name: "More" }).click();
+    await expect(page.getByRole("menuitem", { name: "Move later" })).toHaveAttribute("aria-disabled", "true");
+    await page.getByRole("menuitem", { name: "Move earlier" }).click();
+    await expect.poll(() => linkIds(page)).toEqual(["1.picture>2.picture", "2.picture>4.picture", "3.picture>output.picture", "4.picture>3.picture", "input.picture>1.picture"]);
+    await expect(card(page, 4)).toHaveAccessibleName(/^Node 3, Warmth/);
+    await page.getByRole("button", { name: "More" }).click();
+    await page.getByRole("menuitem", { name: "Move later" }).click();
+    await expect.poll(() => linkIds(page)).toEqual(LINE);
+    await card(page, 1).click();
+    await page.getByRole("button", { name: "More" }).click();
+    await expect(page.getByRole("menuitem", { name: "Move earlier" })).toHaveCount(0);
+    await expect(page.getByRole("menuitem", { name: "Move later" })).toHaveCount(0);
+    await expect(page.getByRole("menuitem", { name: "Delete node" })).toHaveAttribute("aria-disabled", "true");
+    await expect(page.getByRole("menuitem", { name: "Rename" })).toBeVisible();
+  });
+
+  test("a move that would make a circle is refused: 'That would link the nodes in a circle.'", async ({ page }) => {
+    await fourNodes(page);
+    // Mountain's key feeds Warmth's key input, so Warmth cannot go before Mountain.
+    await dragBetween(page, await centreOf(portOf(page, 2, "key", "out")), await centreOf(portOf(page, 4, "key", "in")));
+    await expect.poll(() => linkIds(page)).toContain("2.key>4.key");
+    const before = await linkIds(page);
+    // ⌥← from Warmth puts it before Sky (fine); twice puts it before Mountain, which makes the circle.
+    await card(page, 4).click();
+    await page.keyboard.press("Alt+ArrowLeft");
+    await expect.poll(() => linkIds(page)).toContain("4.picture>3.picture");
+    await page.keyboard.press("Alt+ArrowLeft");
+    await expect(errorBar(page)).toHaveText(/That would link the nodes in a circle\./);
+    expect(await linkIds(page)).toContain("4.picture>3.picture");
+    expect(await linkIds(page)).not.toEqual(before);
+    // The same by dropping a card on a link: Warmth onto Main → Mountain.
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    await undo(page);
+    await expect.poll(() => linkIds(page)).toEqual(before);
+    const c = await box(card(page, 4));
+    const target = await linkMiddle(page, 1, 2);
+    const centre = { x: c.x + 75, y: c.y + 56 };
+    await dragBetween(page, { x: c.x + 75, y: c.y + 40 }, { x: c.x + 75 + (target.x - centre.x), y: c.y + 40 + (target.y - centre.y) });
+    await expect(errorBar(page)).toHaveText(/That would link the nodes in a circle\./);
+    expect(await linkIds(page)).toEqual(before);
+  });
+});
+
+test.describe("the graph: the More menu's keyboard path", () => {
+  test("Link picture to ▸ lists the inputs the node can be linked to, by number and name, and the Output; choosing one makes the link", async ({ page }) => {
+    await fourNodes(page);
+    await card(page, 2).click();
+    await page.getByRole("button", { name: "More" }).click();
+    await page.getByRole("menuitem", { name: "Link picture to" }).click();
+    const items = page.getByRole("menuitem").filter({ hasText: /^(Node|Output)/ });
+    await expect(items).toHaveText(["Node 4, Warmth", "Output"]);
+    await page.getByRole("menuitem", { name: "Output", exact: true }).click();
+    await expect.poll(() => linkIds(page)).toContain("2.picture>output.picture");
+    await expect(card(page, 4)).toHaveAccessibleName(/not connected/);
+    await undo(page);
+    await expect.poll(() => linkIds(page)).toEqual(LINE);
+  });
+
+  test("Link key to ▸ makes a key link; Remove link ▸ lists the node's links and removes one", async ({ page }) => {
+    await fourNodes(page);
+    await card(page, 2).click();
+    await page.getByRole("button", { name: "More" }).click();
+    await page.getByRole("menuitem", { name: "Link key to" }).click();
+    await expect(page.getByRole("menuitem").filter({ hasText: /^Node/ })).toHaveText(["Node 3, Sky", "Node 4, Warmth"]);
+    await page.getByRole("menuitem", { name: "Node 4, Warmth" }).click();
+    await expect.poll(() => linkIds(page)).toContain("2.key>4.key");
+    await expect(card(page, 4)).toHaveAccessibleName("Node 4, Warmth, picture from node 3, key from node 2");
+    // Remove link ▸: the picture links of Mountain and its key link.
+    await page.getByRole("button", { name: "More" }).click();
+    await page.getByRole("menuitem", { name: "Remove link" }).click();
+    await expect(page.getByRole("menuitem").filter({ hasText: /^(Picture|Key)/ })).toHaveText(["Picture from Node 1, Main", "Picture to Node 3, Sky", "Key to Node 4, Warmth"]);
+    await page.getByRole("menuitem", { name: "Key to Node 4, Warmth" }).click();
+    await expect.poll(() => linkIds(page)).toEqual(LINE);
+    await expect(card(page, 4)).toHaveAccessibleName("Node 4, Warmth, picture from node 3");
+  });
+
+  test("the same rules apply: Remove link on Input → Main says why not, and the Input's menu has Link picture to only", async ({ page }) => {
+    await fourNodes(page);
+    await card(page, 1).click();
+    await page.getByRole("button", { name: "More" }).click();
+    await page.getByRole("menuitem", { name: "Remove link" }).click();
+    await page.getByRole("menuitem", { name: "Picture from Input" }).click();
+    await expect(errorBar(page)).toHaveText(/Main always takes its picture from the input\./);
+    expect(await linkIds(page)).toEqual(LINE);
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    await card(page, "output").click();
+    await page.getByRole("button", { name: "More" }).click();
+    await page.getByRole("menuitem", { name: "Remove link" }).click();
+    await page.getByRole("menuitem", { name: "Picture from Node 4, Warmth" }).click();
+    await expect(errorBar(page)).toHaveText(/The output needs a picture\. Link another node to it instead\./);
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    await card(page, "input").click();
+    await page.getByRole("button", { name: "More" }).click();
+    const names = await page.getByRole("menuitem").allTextContents();
+    expect(names.map((n) => n.trim())).toEqual(["Link picture to", "Remove link"]);
+    await page.getByRole("menuitem", { name: "Link picture to" }).click();
+    await expect(page.getByRole("menuitem").filter({ hasText: /^(Node|Output)/ })).toHaveText(["Node 2, Mountain", "Node 3, Sky", "Node 4, Warmth", "Output"]);
+  });
+});
+
+test.describe("the graph: zoom and pan", () => {
+  test("the zoom control has '−', '100%', '+' and 'Fit' at the bottom right, from 25 % to 200 %", async ({ page }) => {
+    await fourNodes(page);
+    const zoom = page.locator(".ym-zoom");
+    await expect(zoom.getByRole("button")).toHaveText(["", "", "Fit"]);
+    await expect(zoom.getByRole("button", { name: "Zoom out" })).toBeVisible();
+    await expect(zoom.getByRole("button", { name: "Zoom in" })).toBeVisible();
+    await expect(zoom.getByRole("button", { name: "Fit the graph" })).toHaveText("Fit");
+    await expect(page.locator(".ym-zoom__value")).toHaveText("100%");
+    // At the canvas's bottom right.
+    const [z, c] = [await box(zoom), await box(canvas(page))];
+    expect(c.x + c.width - (z.x + z.width)).toBeCloseTo(12, 0);
+    expect(c.y + c.height - (z.y + z.height)).toBeCloseTo(12, 0);
+    // The sizes of the cards follow the zoom.
+    await zoom.getByRole("button", { name: "Zoom in" }).click();
+    await expect(page.locator(".ym-zoom__value")).toHaveText("125%");
+    await expect.poll(async () => (await box(card(page, 1))).width).toBeCloseTo(187.5, 0);
+    await zoom.getByRole("button", { name: "Zoom out" }).click();
+    await zoom.getByRole("button", { name: "Zoom out" }).click();
+    await expect(page.locator(".ym-zoom__value")).toHaveText("80%");
+    for (let i = 0; i < 8; i++) if (await zoom.getByRole("button", { name: "Zoom out" }).isEnabled()) await zoom.getByRole("button", { name: "Zoom out" }).click();
+    await expect(page.locator(".ym-zoom__value")).toHaveText("25%");
+    await expect(zoom.getByRole("button", { name: "Zoom out" })).toHaveAttribute("aria-disabled", "true");
+    for (let i = 0; i < 12; i++) if ((await zoom.getByRole("button", { name: "Zoom in" }).getAttribute("aria-disabled")) !== "true") await zoom.getByRole("button", { name: "Zoom in" }).click();
+    await expect(page.locator(".ym-zoom__value")).toHaveText("200%");
+    await expect(zoom.getByRole("button", { name: "Zoom in" })).toHaveAttribute("aria-disabled", "true");
+    // Fit shows the whole graph again, at 100 % when it fits.
+    await zoom.getByRole("button", { name: "Fit the graph" }).click();
+    await expect(page.locator(".ym-zoom__value")).not.toHaveText("200%");
+    const [input, output, area] = [await box(card(page, "input")), await box(card(page, "output")), await box(canvas(page))];
+    expect(input.x).toBeGreaterThanOrEqual(area.x);
+    expect(output.x + output.width).toBeLessThanOrEqual(area.x + area.width);
+  });
+
+  test("a scroll pans, ⌘-scroll and a pinch zoom, a drag on the empty canvas pans, and the page never scrolls", async ({ page }) => {
+    await fourNodes(page);
+    const area = await box(canvas(page));
+    const at = { x: area.x + 200, y: area.y + 60 };
+    const first = await box(card(page, 1));
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.wheel(0, 120);
+    await expect.poll(async () => (await box(card(page, 1))).y).toBeLessThan(first.y - 20);
+    await page.mouse.wheel(80, 0);
+    await expect.poll(async () => (await box(card(page, 1))).x).toBeLessThan(first.x - 20);
+    // ⌘ and a scroll zooms.
+    await page.keyboard.down("Meta");
+    await page.mouse.wheel(0, -240);
+    await page.keyboard.up("Meta");
+    await expect.poll(async () => parseInt((await page.locator(".ym-zoom__value").textContent()) ?? "100")).toBeGreaterThan(100);
+    // A pinch is a scroll with Control held.
+    await page.keyboard.down("Control");
+    await page.mouse.wheel(0, 400);
+    await page.keyboard.up("Control");
+    await expect.poll(async () => parseInt((await page.locator(".ym-zoom__value").textContent()) ?? "100")).toBeLessThan(100);
+    // Nothing of the page scrolled.
+    expect(await page.evaluate(() => [document.scrollingElement?.scrollTop, document.scrollingElement?.scrollLeft, window.scrollY])).toEqual([0, 0, 0]);
+    // A drag on the empty canvas pans it.
+    await page.getByRole("button", { name: "Fit the graph" }).click();
+    await expect(card(page, 1)).toBeVisible();
+    const moved = await box(card(page, 1));
+    await dragBetween(page, { x: area.x + 400, y: area.y + 290 }, { x: area.x + 460, y: area.y + 310 });
+    await expect.poll(async () => (await box(card(page, 1))).x).toBeCloseTo(moved.x + 60, -1);
+    expect(await linkIds(page)).toEqual(LINE);
   });
 });

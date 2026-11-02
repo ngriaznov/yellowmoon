@@ -17,8 +17,10 @@ const LATER: ReadonlyArray<{ name: string; line: string; icon: ReactNode }> = [
 export const LATER_TOOLTIP = "Not in the first version";
 
 export interface AddNodeMenuProps {
-  /** Adds a corrector after the selected node. Without it the item is off: the graph that takes it comes with the cards (N-08). */
+  /** Adds a corrector after the selected node. Without it the item is off. */
   onAddCorrector?: () => void;
+  /** Why a node cannot be added now ("A photo can have up to 64 nodes."): the item is off, and the sentence is its tooltip. */
+  blocked?: string | null;
 }
 
 function Line({ name, line }: { name: string; line: string }) {
@@ -31,11 +33,12 @@ function Line({ name, line }: { name: string; line: string }) {
 }
 
 /**
- * "Add node ▾" (`docs/23` §7.4): a glass menu that opens upward from the toolbar, over the photo. Corrector first; then, after a rule,
+ * "Add node ▾" (`docs/23` §7.4): a glass menu that opens upward from the toolbar, over the photo. Corrector first (it adds a node after the
+ * selected one, and is off at 64 nodes with the sentence as its tooltip); then, after a rule,
  * Parallel, Layer, Splitter and combiner and Outside, greyed with the tag "Later" and `aria-disabled` (Radix sets it), each with the
  * tooltip "Not in the first version".
  */
-export function AddNodeMenu({ onAddCorrector }: AddNodeMenuProps) {
+export function AddNodeMenu({ onAddCorrector, blocked = null }: AddNodeMenuProps) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -45,10 +48,20 @@ export function AddNodeMenu({ onAddCorrector }: AddNodeMenuProps) {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" aria-label="Add node" className="ym-add-node-menu">
-        <DropdownMenuItem disabled={!onAddCorrector} onSelect={() => onAddCorrector?.()}>
-          <SlidersVerticalIcon aria-hidden="true" />
-          <Line name="Corrector" line="Grades all or part of the photo." />
-        </DropdownMenuItem>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuItem
+              disabled={!onAddCorrector || blocked !== null}
+              className="data-disabled:pointer-events-auto"
+              aria-description={blocked ?? undefined}
+              onSelect={() => onAddCorrector?.()}
+            >
+              <SlidersVerticalIcon aria-hidden="true" />
+              <Line name="Corrector" line="Grades all or part of the photo." />
+            </DropdownMenuItem>
+          </TooltipTrigger>
+          {blocked !== null ? <TooltipContent side="right">{blocked}</TooltipContent> : null}
+        </Tooltip>
         <DropdownMenuSeparator />
         {LATER.map((item) => (
           <Tooltip key={item.name}>

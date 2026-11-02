@@ -111,7 +111,7 @@ describe("the Nodes button", () => {
     fireEvent.keyDown(document.body, { key: "n", repeat: true });
     expect(inNodeView()).toBe(true);
     // A menu: the zoom menu's type-ahead.
-    await h!.user.click(screen.getByRole("button", { name: /^Fit/ }));
+    await h!.user.click(within(header()).getByRole("button", { name: /^Fit/ }));
     const menu = await screen.findByRole("menu");
     fireEvent.keyDown(within(menu).getAllByRole("menuitemradio")[0]!, { key: "n" });
     expect(inNodeView()).toBe(true);
@@ -231,22 +231,27 @@ describe("layout A", () => {
     expect(screenEl().style.getPropertyValue("--editor-h")).toBe("381px");
   });
 
-  it("has the toolbar of docs/23 §7.3 over an empty canvas, and the photo switcher in it", async () => {
+  it("has the toolbar of docs/23 §7.3 over the graph, and the photo switcher in it", async () => {
     await setup();
     await openNodeView();
     const bar = within(graph()).getByRole("group", { name: "Graph tools" });
     const labels = within(bar).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent?.trim());
-    expect(labels).toEqual(["Add node", "Bypass", "Delete", "Previous photo", "Next photo", "Show mask", "Expand"]);
-    // Until the graph is drawn (N-08) and the masks are (N-11), these are off.
-    for (const name of ["Bypass", "Delete", "Show mask"]) expect(within(bar).getByRole("button", { name })).toHaveAttribute("aria-disabled", "true");
+    // More is the node's menu (N-08); the node's head, with the panel (N-09), takes it over.
+    expect(labels).toEqual(["Add node", "Bypass", "Delete", "More", "Previous photo", "Next photo", "Show mask", "Expand"]);
+    // With Main selected: Bypass is on (and not pressed), Delete says why it is off, Show mask waits for the mask view (N-11).
+    expect(within(bar).getByRole("button", { name: "Bypass" })).not.toHaveAttribute("aria-disabled");
     expect(within(bar).getByRole("button", { name: "Bypass" })).toHaveAttribute("aria-pressed", "false");
+    expect(within(bar).getByRole("button", { name: "Bypass" })).toHaveAccessibleDescription("Bypass this node (B)");
+    expect(within(bar).getByRole("button", { name: "Delete" })).toHaveAttribute("aria-disabled", "true");
+    expect(within(bar).getByRole("button", { name: "Delete" })).toHaveAccessibleDescription("Main can't be deleted. Bypass it instead.");
+    expect(within(bar).getByRole("button", { name: "Show mask" })).toHaveAttribute("aria-disabled", "true");
     expect(within(bar).getByRole("button", { name: "Show mask" })).toHaveAccessibleDescription("Show mask (M)");
     expect(within(bar).getByRole("button", { name: "Show mask" })).toHaveAttribute("aria-pressed", "false");
     expect(within(bar).getByRole("button", { name: "Expand" })).toHaveAttribute("aria-pressed", "false");
     expect(within(bar).getByRole("button", { name: "Expand" })).not.toHaveAttribute("aria-disabled");
-    expect(graph().querySelector(".ym-graph__canvas")).toBeEmptyDOMElement();
-    // Main is selected, as the panel's first node.
+    // Main is selected, as the panel's first node, and the canvas draws the graph.
     expect(graph().querySelector(".ym-graph__canvas")).toHaveAttribute("data-selected-node", "1");
+    expect(graph().querySelector(".ym-graph__canvas")).not.toBeEmptyDOMElement();
   });
 
   it("dims the graph and makes it read only while Crop or Export shows", async () => {
@@ -284,8 +289,8 @@ describe("the Add node menu", () => {
       expect(item).toHaveAccessibleDescription("Not in the first version");
       expect(within(item).getByText("Later")).toBeInTheDocument();
     }
-    // The graph that takes a node comes with N-08: the first item is off until then.
-    expect(items[0]).toHaveAttribute("aria-disabled", "true");
+    // Corrector adds a node after the selected one: it is on, and has no tag.
+    expect(items[0]).not.toHaveAttribute("aria-disabled");
     expect(within(items[0]!).queryByText("Later")).toBeNull();
     await h!.user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());

@@ -330,14 +330,88 @@ describe("the shortcut table of docs/11", () => {
     expect(act(key("n", {}, document.createElement("button")))).toBe("nodes");
   });
 
-  it("Delete and Backspace never remove a photo in the node view (the photos are out of sight there)", () => {
+  it("Delete and Backspace never remove a photo in the node view (the photos are out of sight there): they are the graph's", () => {
     expect(act(key("Delete"), { nodeView: false })).toBe("remove-photo");
-    expect(act(key("Delete"), { nodeView: true })).toBeNull();
-    expect(act(key("Backspace"), { nodeView: true })).toBeNull();
-    // The arrows still switch photos there.
+    expect(act(key("Delete"), { nodeView: true })).toBe("delete-node");
+    expect(act(key("Backspace"), { nodeView: true })).toBe("delete-node");
+    // Not held down, not with Shift, and not where the key is the control's own.
+    expect(act(key("Delete", { repeat: true }), { nodeView: true })).toBeNull();
+    expect(act(key("Delete", { shiftKey: true }), { nodeView: true })).toBeNull();
+    const field = document.createElement("input");
+    field.type = "text";
+    expect(act(key("Delete", {}, field), { nodeView: true })).toBeNull();
+    const slider = document.createElement("input");
+    slider.type = "range";
+    expect(act(key("Backspace", {}, slider), { nodeView: true })).toBeNull();
+    const menu = document.createElement("div");
+    menu.setAttribute("role", "menu");
+    const item = document.createElement("div");
+    item.setAttribute("role", "menuitem");
+    menu.append(item);
+    expect(act(key("Delete", {}, item), { nodeView: true })).toBeNull();
+    // Not while a mode (crop, Pick white) has its own use of the key.
+    expect(act(key("Delete"), { nodeView: true, mode: "pick-white" })).toBeNull();
+    // Outside the photos' own strip, the photo-level keys are as before: P picks, and the arrows switch photos away from the graph.
     expect(act(key("ArrowRight"), { nodeView: true })).toBe("next-photo");
     expect(act(key("ArrowLeft"), { nodeView: true })).toBe("previous-photo");
     expect(act(key("p"), { nodeView: true })).toBe("toggle-pick");
+  });
+
+  describe("the graph's keys (docs/23 §7.7)", () => {
+    /** An element inside the graph's canvas, a card. */
+    const card = (): HTMLElement => {
+      const canvas = document.createElement("div");
+      canvas.setAttribute("data-graph", "");
+      const el = document.createElement("div");
+      el.setAttribute("role", "button");
+      canvas.append(el);
+      return el;
+    };
+
+    it("B bypasses the selected node: one press, in the node view only, and not typed into a menu, a list or a text box", () => {
+      expect(act(key("b"), { nodeView: true })).toBe("bypass-node");
+      expect(act(key("B", { shiftKey: true }), { nodeView: true })).toBe("bypass-node");
+      expect(act(key("b"), { nodeView: false })).toBeNull();
+      expect(act(key("b"))).toBeNull();
+      expect(act(key("b", { repeat: true }), { nodeView: true })).toBeNull();
+      expect(act(key("b"), { nodeView: true, mode: "crop" })).toBeNull();
+      const field = document.createElement("input");
+      field.type = "text";
+      expect(act(key("b", {}, field), { nodeView: true })).toBeNull();
+      const menu = document.createElement("div");
+      menu.setAttribute("role", "menu");
+      const item = document.createElement("div");
+      menu.append(item);
+      expect(act(key("b", {}, item), { nodeView: true })).toBeNull();
+      expect(act(cmd("b"), { nodeView: true })).toBeNull();
+    });
+
+    it("⌥← and ⌥→ move the focused node earlier or later, with a card of the graph focused", () => {
+      expect(act(key("ArrowLeft", { altKey: true }, card()), { nodeView: true })).toBe("move-node-earlier");
+      expect(act(key("ArrowRight", { altKey: true }, card()), { nodeView: true })).toBe("move-node-later");
+      // Not outside the graph, not in the simple view, not in a text box, not with another modifier or held down.
+      expect(act(key("ArrowLeft", { altKey: true }), { nodeView: true })).toBeNull();
+      expect(act(key("ArrowLeft", { altKey: true }, card()), { nodeView: false })).toBeNull();
+      const field = document.createElement("input");
+      field.type = "text";
+      expect(act(key("ArrowRight", { altKey: true }, field), { nodeView: true })).toBeNull();
+      expect(act(key("ArrowRight", { altKey: true, shiftKey: true }, card()), { nodeView: true })).toBeNull();
+      expect(act(key("ArrowRight", { altKey: true, metaKey: true }, card()), { nodeView: true })).toBeNull();
+      expect(act(key("ArrowRight", { altKey: true, repeat: true }, card()), { nodeView: true })).toBeNull();
+    });
+
+    it("the arrows belong to the graph while a card has the focus: they switch no photo there, and switch them everywhere else", () => {
+      for (const arrow of ["ArrowLeft", "ArrowRight"]) {
+        expect(act(key(arrow, {}, card()), { nodeView: true })).toBeNull();
+        expect(act(key(arrow), { nodeView: true })).not.toBeNull();
+      }
+      expect(act(key("ArrowUp", {}, card()), { nodeView: true })).toBeNull();
+      expect(act(key("ArrowDown", {}, card()), { nodeView: true })).toBeNull();
+    });
+
+    it("Delete on a card of the graph is the graph's", () => {
+      expect(act(key("Delete", {}, card()), { nodeView: true })).toBe("delete-node");
+    });
   });
 
   it("A toggles Auto crop while the Crop panel is open, and is nothing anywhere else", () => {
