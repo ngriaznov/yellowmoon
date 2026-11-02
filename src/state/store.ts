@@ -25,6 +25,7 @@ import type {
   AutoStatus,
   AppError,
   BalanceSetting,
+  BrushStroke,
   ChromaSample,
   ChromaScatter,
   CliLinkStatus,
@@ -88,6 +89,8 @@ import type {
 } from "../api/types";
 import { filterArwPaths } from "../components/useWindowDrop";
 import { clampToDisc, movingPin, WARP_COORD_LIMIT, WARP_MAX_PINS } from "../components/warpMath";
+import { BRUSH_FULL, brushPointCount, DEFAULT_BRUSH, MAX_BRUSH_POINTS } from "./brushStrokes";
+import type { BrushSettings } from "./brushStrokes";
 import { COLOR_RANGE_REACH } from "./maskRows";
 import { isTauri } from "../env";
 import { defaultExportOptions, defaultScope, sameOptions } from "../export/options";
@@ -271,6 +274,17 @@ export interface AppState {
    * counts as none. Its handles show on the photo, whatever tab the panel is on.
    */
   maskRow: number | null;
+  /**
+   * The brush the next strokes of a Brush row are drawn with (`docs/23` §7.6): the BRUSH card's Paint · Erase, Size and Hardness. Window
+   * state like `maskRow`: not saved, not undone, and a stroke that is drawn keeps what it was drawn with.
+   */
+  brush: BrushSettings;
+  /**
+   * The Brush tool is on for the selected row (`docs/23` §7.6): a drag on the photo paints. Adding a Brush row, a click on a Brush row and a
+   * click on Paint or Erase turn it on; Esc, another row, another node and another photo turn it off. Whether the cursor and the drawing
+   * surface show also depends on the screen (Crop, Export, Before and a pick hide them: `Photos`).
+   */
+  brushTool: boolean;
   /** The kinds of mask this machine can make, once asked (`mask_kinds`, `ensureMaskKinds`): what the Add mask menu lists. */
   maskKinds: readonly MaskKind[] | null;
   /** Undo and redo are available for the current photo. */
@@ -357,6 +371,8 @@ export function initialState(): AppState {
     chromaScatter: null,
     warpPin: null,
     maskRow: null,
+    brush: DEFAULT_BRUSH,
+    brushTool: false,
     maskKinds: null,
     canUndo: false,
     canRedo: false,
@@ -1265,6 +1281,7 @@ export class AppStore {
       chromaScatter: null,
       warpPin: null,
       maskRow: null,
+      brushTool: false,
       zoom: { kind: "fit" },
       before: false,
       stats,
@@ -1499,6 +1516,7 @@ export class AppStore {
       chromaScatter: null,
       warpPin: null,
       maskRow: null,
+      brushTool: false,
       zoom: { kind: "fit" },
       before: false,
       stats: this.state.stats && { ...this.state.stats, zoom_percent: null, fit_percent: null },
@@ -2167,9 +2185,43 @@ export class AppStore {
     await this.update(patchOf(node, { masks: { edit: { [String(row)]: { center } } } }), true);
   }
 
-  /** Selects a row of the selected node's masks (an index into its `masks.items`), or none. */
+  /**
+   * Selects a row of the selected node's masks (an index into its `masks.items`), or none. A row change ends the Brush tool of the row that
+   * was selected, and so does selecting a row again: the caller that wants the tool turns it on afterwards ({@link Store.setBrushTool}).
+   */
   selectMaskRow(index: number | null): void {
-    if (index !== this.state.maskRow) this.set({ maskRow: index });
+    if (index !== this.state.maskRow || this.state.brushTool) this.set({ maskRow: index, brushTool: false });
+  }
+
+  /** Turns the Brush tool of the selected row on or off (`docs/23` §7.6). */
+  setBrushTool(on: boolean): void {
+    if (on !== this.state.brushTool) this.set({ brushTool: on });
+  }
+
+  /** Sets the brush the next strokes are drawn with (size, hardness, paint or erase). The strokes already drawn keep theirs. */
+  setBrush(change: Partial<BrushSettings>): void {
+    const next = { ...this.state.brush, ...change };
+    if (next.size !== this.state.brush.size || next.hardness !== this.state.brush.hardness || next.erase !== this.state.brush.erase) this.set({ brush: next });
+  }
+
+  /**
+   * Appends a stroke to a Brush row (`docs/23` §3.7): one `masks.edit` row patch with `strokes_append`, sent when the pointer is released. One
+   * undo step, whose inverse is `strokes_keep` with the old count (`diffSettings`). A row that is not a Brush row any more (taken away or
+   * moved while the stroke was being mapped) takes nothing. A stroke that would take the row over 100,000 points is refused with the core's
+   * sentence in the error bar, before anything is sent, and changes nothing. Resolves with whether the stroke was sent.
+   */
+  async addStroke(node: number, row: number, stroke: BrushStroke, photoId: PhotoId | null = this.currentId()): Promise<boolean> {
+    if (photoId === null) return false;
+    const rs = this.state.settings[photoId];
+    const item = rs ? nodeOf(rs.settings, node) : undefined;
+    const target = item?.kind === "corrector" ? item.masks.items[row] : undefined;
+    if (target?.kind !== "brush" || stroke.points.length === 0) return false;
+    if (brushPointCount(target) + stroke.points.length > MAX_BRUSH_POINTS) {
+      this.fail({ scope: "render", message: BRUSH_FULL });
+      return false;
+    }
+    await this.update(patchOf(node, { masks: { edit: { [String(row)]: { strokes_append: [stroke] } } } }), true, photoId);
+    return true;
   }
 
   /** Asks which kinds of mask this machine can make, once (`mask_kinds`): the Add mask menu lists exactly these. A failure leaves the menu without items. */
