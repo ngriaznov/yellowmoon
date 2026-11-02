@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { openApp, openPhotos, setValue } from "./helpers/app";
+import { configureMock, openApp, openPhotos, setValue } from "./helpers/app";
+import { FOUR_NODES } from "./helpers/states";
 
 // Accessibility basics (docs/11, a preview of M4-04) in a real browser: every control has a role and a name, every screen has one
 // main landmark, the keyboard alone gets through the main flow, and every stop of the Tab order shows the 3 px focus ring.
@@ -55,6 +56,51 @@ async function toWizard(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Import →" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Choose what to import" })).toBeVisible();
 }
+
+test.describe("the node view", () => {
+  // docs/23 §7.8: the divider, the toolbar's toggles, the switcher and the menu items have names (the cards, the ports and the node panel's tabs
+  // come with N-08 to N-12, and `a11y.spec.ts` walks them then).
+  test("every control is named, there is one main and one banner, the divider is a separator with a name and a value, the Add node menu's items are named and the later ones disabled", async ({ page }) => {
+    await openApp(page, MOCKUP);
+    await openPhotos(page);
+    await page.getByRole("button", { name: "Nodes", exact: true }).click();
+    await expect(page.getByRole("separator", { name: "Resize the graph" })).toBeVisible();
+    let snapshot = await expectNamed(page, "the node view");
+    expect(count(snapshot, "main")).toBe(1);
+    expect(count(snapshot, "banner")).toBe(1);
+    expect(snapshot).toMatch(/- separator "Resize the graph"/);
+    expect(snapshot).toMatch(/- region "Node editor"/);
+    expect(snapshot).toMatch(/- group "Graph tools"/);
+    expect(snapshot).toMatch(/- group "Photos"/);
+    for (const name of ["Add node", "Bypass", "Delete", "Previous photo", "Next photo", "Show mask", "Expand"]) expect(snapshot, name).toMatch(new RegExp(`- button "${name}"`));
+    // Toggles say whether they are pressed; the Nodes button too.
+    expect(snapshot).toMatch(/- button "Nodes" \[pressed\]/);
+    expect(snapshot).toMatch(/- button "Expand"\n/);
+    await page.getByRole("button", { name: "Expand", exact: true }).click();
+    snapshot = await expectNamed(page, "the node view, expanded");
+    expect(snapshot).toMatch(/- button "Expand" \[pressed\]/);
+    // The menu.
+    await page.getByRole("button", { name: "Add node" }).click();
+    await expect(page.getByRole("menu", { name: "Add node" })).toBeVisible();
+    snapshot = await expectNamed(page, "the Add node menu");
+    for (const name of ["Corrector", "Parallel", "Layer", "Splitter and combiner", "Outside"]) expect(snapshot, name).toContain(`- menuitem "${name}`);
+    for (const name of ["Parallel", "Layer", "Splitter and combiner", "Outside"]) {
+      await expect(page.getByRole("menuitem", { name: new RegExp(`^${name}`) })).toHaveAttribute("aria-disabled", "true");
+    }
+  });
+
+  test("a photo that has nodes: the notice is a named status with a link, the thumbnail's name says it has nodes", async ({ page }) => {
+    await openApp(page, MOCKUP);
+    await configureMock(page, { initialSettings: { DSC04204: { nodes: FOUR_NODES.nodes, links: FOUR_NODES.links } } as never });
+    await openPhotos(page);
+    const snapshot = await expectNamed(page, "a photo that has nodes");
+    expect(snapshot).toMatch(/- status:\n?\s*- text: .*This photo has 4 nodes\./s);
+    expect(snapshot).toMatch(/- button "Open nodes"/);
+    expect(snapshot).toMatch(/- button "Show DSC04204, picked, 4 nodes"/);
+    // A status is a polite live region by its role: the notice is read once, when it appears.
+    await expect(page.getByRole("status").filter({ hasText: "This photo has 4 nodes." })).toBeVisible();
+  });
+});
 
 test.describe("names and landmarks", () => {
   test("Start: every control is named, one main landmark, one h1", async ({ page }) => {
@@ -456,6 +502,23 @@ test.describe("focus ring", () => {
     const seen = await walk(page, 30);
     expect(seen.filter((s) => !s.ring)).toEqual([]);
     expect(seen.length).toBe(30);
+  });
+
+  test("every stop of the node view's Tab order has the ring: the header, the divider, the toolbar's buttons, then the panel", async ({ page }) => {
+    await openApp(page, MOCKUP);
+    await openPhotos(page);
+    await page.getByRole("button", { name: "Nodes", exact: true }).click();
+    await expect(page.getByRole("separator", { name: "Resize the graph" })).toBeVisible();
+    await page.getByRole("button", { name: "Nodes", exact: true }).focus();
+    const seen = await walk(page, 16);
+    expect(seen.filter((s) => !s.ring)).toEqual([]);
+    const labels = seen.map((s) => s.label);
+    // The divider comes after the header and before the toolbar; the arrows of the switcher are stops with names.
+    expect(labels.indexOf("Resize the graph")).toBeGreaterThan(-1);
+    expect(labels.indexOf("Resize the graph")).toBeLessThan(labels.indexOf("Add node"));
+    for (const name of ["Add node", "Previous photo", "Next photo", "Expand"]) expect(labels, name).toContain(name);
+    // The disabled ones stay in the order (aria-disabled, not disabled) and say so.
+    for (const name of ["Bypass", "Delete", "Show mask"]) expect(labels, name).toContain(name);
   });
 
   test("every stop of the Lens tab has the ring: the list is one stop, then Reset and the three sliders with their boxes", async ({ page }) => {

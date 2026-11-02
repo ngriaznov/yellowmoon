@@ -130,3 +130,44 @@ describe("contrast of the tab colours of the dark glass interface", () => {
     expect(json.light["tab-lens-ink"]).toBe(glassToken("tab-lens-ink"));
   });
 });
+
+// The mask accent (`docs/23` section 7): orchid pink, #FF6FD2, black text on it. It is the colour of the Mask tab, the mask tint over the photo, the
+// key ports and key links, so it is checked as the tab colours are: text on it, and it against the pane and the ground it is drawn on; and it must
+// not be mistaken for a tab (the Detail peach is the closest, and the Lens violet).
+describe("contrast of the mask accent", () => {
+  it("is orchid pink in the tokens of the design and of the app, and in tokens.json", () => {
+    expect(token("mask")).toBe("#ff6fd2");
+    expect(token("mask-ink")).toBe("#000000");
+    const design = readFileSync(resolve(import.meta.dirname, "../../design/tokens.css"), "utf8");
+    expect(/--mask:\s*#ff6fd2/i.test(design), "--mask in design/tokens.css").toBe(true);
+    expect(/--mask-ink:\s*#000000/i.test(design), "--mask-ink in design/tokens.css").toBe(true);
+    const json = JSON.parse(readFileSync(resolve(import.meta.dirname, "../../design/tokens.json"), "utf8")) as { light: Record<string, string> };
+    expect(json.light.mask).toBe("#ff6fd2");
+    expect(json.light["mask-ink"]).toBe("#000000");
+  });
+
+  it("takes black text at 4.5:1 and shows on the glass pane and on the ground at 3:1 (the numbers of design/nodes/mockup-notes.md: 8.5, 5.3 and 7.7)", () => {
+    const ink = contrast(token("mask"), token("mask-ink"));
+    const pane = contrast(token("mask"), PANE);
+    const ground = contrast(token("mask"), GROUND);
+    expect(ink, `black on the mask accent: ${ink.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5);
+    expect(pane, `mask accent on the pane: ${pane.toFixed(2)}:1`).toBeGreaterThanOrEqual(3);
+    expect(ground, `mask accent on the ground: ${ground.toFixed(2)}:1`).toBeGreaterThanOrEqual(3);
+    expect(ink).toBeCloseTo(8.5, 1);
+    expect(ground).toBeCloseTo(7.7, 1);
+    expect(pane).toBeCloseTo(5.3, 1);
+  });
+
+  it("the Mask tab takes it as its accent, as the tabs take theirs", () => {
+    expect(/\[data-tab="mask"\]\s*\{\s*--primary:\s*var\(--mask\);\s*--primary-foreground:\s*var\(--mask-ink\);\s*--ring:\s*var\(--mask\);/.test(glass)).toBe(true);
+  });
+
+  it("is no closer to a tab colour than the closest two tab colours are to each other", () => {
+    let closestTabs = Infinity;
+    for (const [i, a] of TABS.entries()) for (const b of TABS.slice(i + 1)) closestTabs = Math.min(closestTabs, oklabDistance(glassToken(`tab-${a}`), glassToken(`tab-${b}`)));
+    for (const tab of TABS) {
+      const distance = oklabDistance(token("mask"), glassToken(`tab-${tab}`));
+      expect(distance, `mask to ${tab}: ${distance.toFixed(3)}, the closest pair of the tabs is ${closestTabs.toFixed(3)}`).toBeGreaterThanOrEqual(closestTabs);
+    }
+  });
+});

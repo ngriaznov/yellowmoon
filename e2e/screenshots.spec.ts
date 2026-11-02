@@ -4,7 +4,7 @@ import type { MockOptions } from "../src/api.mock";
 import type { GradePatch } from "../src/api/types";
 import { configureMock, lookTilesLoaded, openApp, openPhotos, showUpdateReady } from "./helpers/app";
 import { compareScreen } from "./helpers/compare";
-import { WARP_PINS } from "./helpers/states";
+import { FOUR_NODES, WARP_PINS } from "./helpers/states";
 
 /** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
 const manual = (value: number) => ({ kind: "manual", value }) as const;
@@ -108,6 +108,19 @@ test.describe("Photos", () => {
     await tab(page, "Light");
     await expect(page.locator(".ym-histogram path").first()).toHaveAttribute("d", /L/);
     await compareScreen(page, "photos-light");
+  });
+
+  test("A photo that has four nodes: the notice under the tab row, the glyph on its thumbnail (photos-has-nodes.png)", async ({ page }) => {
+    // docs/23 section 6, screen 04 of design/nodes: node 1 keeps the mockup's grade, and Mountain, Sky and Warmth follow it. The Light tab, as the
+    // mockup has it; the simple view shows the photo with all four nodes applied.
+    await photos(page, {
+      DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE }, ...FOUR_NODES.nodes }, links: FOUR_NODES.links },
+    } as never);
+    await tab(page, "Light");
+    await expect(page.locator(".ym-histogram path").first()).toHaveAttribute("d", /L/);
+    await expect(page.getByText("This photo has 4 nodes.", { exact: false })).toBeVisible();
+    await expect(page.locator(".ym-filmstrip__nodes")).toHaveCount(1);
+    await compareScreen(page, "photos-has-nodes");
   });
 
   test("Colour (photos-color.png)", async ({ page }) => {

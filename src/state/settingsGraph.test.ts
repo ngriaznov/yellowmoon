@@ -8,6 +8,8 @@ import {
   defaultSettings,
   diffGraph,
   foldPatches,
+  hiddenByPhoto,
+  hiddenFromSimpleView,
   inCanonicalOrder,
   INPUT_ID,
   inputOf,
@@ -92,6 +94,73 @@ describe("the selectors", () => {
     expect(node.grade.contrast).toEqual(manual(0));
     expect(node.grade.color_balance.shadows).toEqual({ kind: "manual", point: [0, 0] });
     expect(node.name).toBe("Corrector");
+  });
+});
+
+describe("what the simple view cannot show (docs/23 §6)", () => {
+  /** The default graph with Main changed. */
+  const withMain = (change: Partial<ReturnType<typeof mainOf>>): DevelopSettings => {
+    const base = defaultSettings();
+    return { nodes: { ...base.nodes, items: base.nodes.items.map((item) => (item.kind === "corrector" && item.id === MAIN_ID ? { ...item, ...change } : item)) } };
+  };
+
+  it("is nothing for the default graph, and for a graph whose only change is in the Input, Main's grade or the Output", () => {
+    expect(hiddenFromSimpleView(defaultSettings())).toBeNull();
+    const grade = { ...mainOf(defaultSettings()).grade, contrast: manual(30), curve: { ...mainOf(defaultSettings()).grade.curve, luma: [[0, 0], [0.5, 0.6], [1, 1]] as Array<[number, number]> } };
+    expect(hiddenFromSimpleView(withMain({ grade }))).toBeNull();
+    const base = defaultSettings();
+    const changed: DevelopSettings = {
+      nodes: { ...base.nodes, items: base.nodes.items.map((item) => (item.kind === "output" ? { ...item, look: "builtin:signature", look_intensity: 40 } : item)) },
+    };
+    expect(hiddenFromSimpleView(changed)).toBeNull();
+  });
+
+  it("counts the correctors, Main included, when there is more than Main", () => {
+    expect(hiddenFromSimpleView(graph())).toEqual({ kind: "nodes", count: 3 });
+    const base = defaultSettings();
+    const two: DevelopSettings = { nodes: { ...base.nodes, items: [inputOf(base), mainOf(base), newCorrector(2, [1, 0]), outputOf(base)] } };
+    expect(hiddenFromSimpleView(two)).toEqual({ kind: "nodes", count: 2 });
+    const four: DevelopSettings = {
+      nodes: { ...base.nodes, items: [inputOf(base), mainOf(base), newCorrector(2, [1, 0]), newCorrector(3, [2, 0]), newCorrector(4, [3, 0]), outputOf(base)] },
+    };
+    expect(hiddenFromSimpleView(four)).toEqual({ kind: "nodes", count: 4 });
+  });
+
+  it("is Main when Main alone has a trim, a mask or a bypass", () => {
+    const trim = (patch: Partial<ReturnType<typeof mainOf>["trim"]>) => withMain({ trim: { ...mainOf(defaultSettings()).trim, ...patch } });
+    expect(hiddenFromSimpleView(trim({ exposure_ev: 0.3 }))).toEqual({ kind: "main" });
+    expect(hiddenFromSimpleView(trim({ temperature: -10 }))).toEqual({ kind: "main" });
+    expect(hiddenFromSimpleView(trim({ tint: 5 }))).toEqual({ kind: "main" });
+    expect(hiddenFromSimpleView(withMain({ bypass: true }))).toEqual({ kind: "main" });
+    const row: MaskItem = { kind: "linear", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.5, 0.5], angle_deg: 0, feather: 0.2 };
+    expect(hiddenFromSimpleView(withMain({ masks: { invert: false, items: [row] } }))).toEqual({ kind: "main" });
+    // A trim of 0 is no trim, and an inverted empty mask list is no mask.
+    expect(hiddenFromSimpleView(trim({ exposure_ev: 0 }))).toBeNull();
+    expect(hiddenFromSimpleView(withMain({ masks: { invert: true, items: [] } }))).toBeNull();
+  });
+
+  it("says nodes before it says Main when both are so", () => {
+    const base = graph();
+    const trimmed: DevelopSettings = {
+      nodes: { ...base.nodes, items: base.nodes.items.map((item) => (item.kind === "corrector" && item.id === MAIN_ID ? { ...item, bypass: true } : item)) },
+    };
+    expect(hiddenFromSimpleView(trimmed)).toEqual({ kind: "nodes", count: 3 });
+  });
+
+  it("is told by the photo, and the same Map comes back while the answer is the same (a slider move does not make the screen draw again)", () => {
+    const rs = (settings: DevelopSettings) => ({ settings });
+    const first = hiddenByPhoto({ 1: rs(defaultSettings()), 2: rs(graph()), 3: rs(withMain({ bypass: true })) });
+    expect([...first]).toEqual([
+      [2, { kind: "nodes", count: 3 }],
+      [3, { kind: "main" }],
+    ]);
+    // Other documents, the same answer: the same Map.
+    const again = hiddenByPhoto({ 1: rs(defaultSettings()), 2: rs(graph()), 3: rs(withMain({ bypass: true })) });
+    expect(again).toBe(first);
+    expect(hiddenByPhoto({ 1: rs(defaultSettings()) })).toEqual(new Map());
+    expect(hiddenByPhoto({ 4: rs(defaultSettings()) })).toBe(hiddenByPhoto({}));
+    // A different answer is a different Map.
+    expect(hiddenByPhoto({ 2: rs(graph()) })).not.toBe(first);
   });
 });
 

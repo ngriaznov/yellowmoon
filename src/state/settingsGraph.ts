@@ -105,6 +105,56 @@ export function mainGradeOf(settings: DevelopSettings): NodeGrade {
 }
 
 // ---------------------------------------------------------------------------
+// What the simple view cannot show (`docs/23` section 6: the notice and the filmstrip glyph)
+// ---------------------------------------------------------------------------
+
+/**
+ * What of a photo's graph the simple view does not show: more than Main (`nodes`, with the number of correctors, Main included), or Main
+ * alone with a trim, masks or a bypass (`main`).
+ */
+export type HiddenFromSimpleView = { kind: "nodes"; count: number } | { kind: "main" };
+
+const hiddenOf = new WeakMap<DevelopSettings, HiddenFromSimpleView | null>();
+
+/**
+ * What the simple view cannot show of this graph, or null when it shows all of it. The simple view reads the Input, Main's grade and the
+ * Output, so the graph has something hidden when it has another corrector, or when Main has a trim, a mask row or a bypass. The Input's
+ * and the Output's fields all have a control, and Main's grade is the simple view's own.
+ */
+export function hiddenFromSimpleView(settings: DevelopSettings): HiddenFromSimpleView | null {
+  const known = hiddenOf.get(settings);
+  if (known !== undefined) return known;
+  const correctors = correctorsOf(settings);
+  const main = correctors.find((item) => item.id === MAIN_ID);
+  let hidden: HiddenFromSimpleView | null = null;
+  if (correctors.length > 1) hidden = { kind: "nodes", count: correctors.length };
+  else if (main && (main.bypass || main.masks.items.length > 0 || main.trim.exposure_ev !== 0 || main.trim.temperature !== 0 || main.trim.tint !== 0)) {
+    hidden = { kind: "main" };
+  }
+  hiddenOf.set(settings, hidden);
+  return hidden;
+}
+
+let lastByPhoto: { key: string; map: ReadonlyMap<number, HiddenFromSimpleView> } = { key: "", map: new Map() };
+
+/**
+ * The photos whose graph the simple view does not show all of, for the filmstrip's glyph: those whose settings the window holds (the ones
+ * that were shown, or that a paste reached). The answer is the same Map while nothing about it changes, so a screen that reads it from
+ * the store is not drawn again by every slider move.
+ */
+export function hiddenByPhoto(settings: Readonly<Record<number, { settings: DevelopSettings }>>): ReadonlyMap<number, HiddenFromSimpleView> {
+  const found: Array<[number, HiddenFromSimpleView]> = [];
+  for (const [id, rs] of Object.entries(settings)) {
+    const hidden = hiddenFromSimpleView(rs.settings);
+    if (hidden) found.push([Number(id), hidden]);
+  }
+  const key = found.map(([id, hidden]) => `${id}:${hidden.kind === "nodes" ? hidden.count : "main"}`).join(";");
+  if (key === lastByPhoto.key) return lastByPhoto.map;
+  lastByPhoto = { key, map: new Map(found) };
+  return lastByPhoto.map;
+}
+
+// ---------------------------------------------------------------------------
 // Patch builders
 // ---------------------------------------------------------------------------
 

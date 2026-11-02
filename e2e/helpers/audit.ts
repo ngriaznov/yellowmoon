@@ -12,10 +12,11 @@ export const HAS_COUNTERPART: ReadonlyArray<readonly [string, string]> = [
   [".ym-cube-list > li", "Item"], [".ym-wizard__option", "Item"], [".ym-wizard__watch", "Item"], [".ym-wizard__callout", "Item"],
   [".ym-wizard__waiting", "Item"], [".ym-wizard__problem", "Item"], [".ym-wizard__received > li", "Item"], [".ym-error-bar", "Item"],
   [".ym-wizard__package", "Item"], [".ym-info-row", "Item"], [".ym-switch-row", "Item"], [".ym-auto-row", "Item"],
-  [".ym-drop-zone__notice", "Item"], [".ym-develop__notice", "Item"], [".ym-about-dialog__adobe", "Item"],
+  [".ym-drop-zone__notice", "Item"], [".ym-develop__notice", "Item"], [".ym-about-dialog__adobe", "Item"], [".ym-nodes-notice", "Item"],
   [".ym-drop-zone", "Card"], [".ym-wizard__tile", "Card"],
-  [".ym-photo-cell__before", "Badge"], [".ym-photo-cell__chip", "Badge"], [".ym-photo-cell__readout", "Badge"],
-  ["[role=progressbar]", "Progress"], ["hr, [role=separator]", "Separator"], ["kbd", "Kbd"], ["progress", "Progress"], ["select", "Select"],
+  [".ym-photo-cell__before", "Badge"], [".ym-photo-cell__chip", "Badge"], [".ym-photo-cell__readout", "Badge"], [".ym-menu-later", "Badge"],
+  // The graph's divider is a focusable window splitter, which glasscn's static Separator is not: it is listed below.
+  ["[role=progressbar]", "Progress"], ["hr, [role=separator]:not(.ym-divider)", "Separator"], ["kbd", "Kbd"], ["progress", "Progress"], ["select", "Select"],
   ["input, textarea", "Input"], ["button, [role=button]", "Button"], ["[role=switch]", "Switch"], ["[role=slider]", "Slider"], ["[role=tab]", "Tabs"],
   ["[role=radio]:not([role=radio][aria-checked]) ", "Segmented control"],
 ];
@@ -30,6 +31,9 @@ export const NO_COUNTERPART: ReadonlyArray<readonly [string, string]> = [
   [".ym-moon", "moon mark"], [".ym-card", "tool-panel section (a ruled band of one glass pane, by the layout rule; glasscn's Card is a floating pane)"],
   [".ym-title-block", "title block (a tinted band of the pane)"], [".ym-field", "label + control row (glasscn has no Field)"],
   [".ym-photo-cell__camera", "camera line over the photo (text)"],
+  [".ym-divider", "graph divider (a focusable window splitter; glasscn's Separator is a static hairline)"],
+  [".ym-graph__canvas", "graph canvas (empty until N-08; then @xyflow/react's)"], [".ym-viewer", "photo row (paper beside the cell in the node view)"],
+  [".ym-filmstrip__nodes", "nodes glyph on a filmstrip thumbnail"],
   [".ym-wizard__tile-picture img, .ym-look-tile__picture img", "look picture"],
 ];
 

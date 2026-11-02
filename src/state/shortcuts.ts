@@ -6,9 +6,10 @@
  * table: they stay the system's Copy and Paste). The arrows are left to the control that has focus when
  * it uses them (a slider, the filmstrip, the tabs). Delete and Backspace remove the photo on screen from the filmstrip, except where a
  * control uses them itself (a text box, a slider with its knob, a menu, a dialog) or a mode (crop, pick white) is on. W (Pick white: it
- * opens the Colour tab and starts picking, and a second W ends it) and F (full screen) are not keys held down, and not letters typed
- * into a menu or a list (their type-ahead); F is not pressed while cropping. A toggles Auto crop
- * while the Crop panel is open, and is nothing otherwise (⌘A picks all).
+ * opens the Colour tab and starts picking, and a second W ends it), F (full screen) and N (the node view, `docs/23` §7.7) are not keys held
+ * down, and not letters typed into a menu or a list (their type-ahead); F and N are not pressed while cropping. A toggles Auto crop
+ * while the Crop panel is open, and is nothing otherwise (⌘A picks all). In the node view Delete and Backspace never remove a photo (the
+ * photos are out of sight there); they will remove the selected node (`docs/23` §7.7, N-08).
  */
 import type { TabId } from "../components/tabs";
 
@@ -33,6 +34,7 @@ export type ShortcutAction =
   | "crop"
   | "auto-crop"
   | "pick-white"
+  | "nodes"
   | "full-screen"
   | "copy-settings"
   | "paste-settings"
@@ -67,6 +69,8 @@ export interface ShortcutContext {
   tab?: TabId;
   /** A modal-like mode is on (crop, pick white, pick colour): the number keys that pick looks are ignored. */
   mode?: "crop" | "pick-white" | "pick-color" | null;
+  /** The node view is on: Delete and Backspace never mean "remove the photo on screen". */
+  nodeView?: boolean;
 }
 
 /** True when the target takes typed text. */
@@ -186,6 +190,8 @@ export function shortcutFor(event: KeyLike, context: ShortcutContext = {}): Shor
       // A mode (crop, Pick white) has its own use of the keys; with Shift the key is not this shortcut. A key held down removes one
       // photo, not the whole strip (only the last removal can be undone).
       if (event.shiftKey || event.repeat || context.mode || usesDeleteKey(event.target)) return null;
+      // The node view has no filmstrip, so a photo is never removed there; the key is the graph's (N-08 returns its action here).
+      if (context.nodeView) return null;
       return { action: "remove-photo" };
     case "p":
       return { action: "toggle-pick" };
@@ -200,6 +206,10 @@ export function shortcutFor(event: KeyLike, context: ShortcutContext = {}): Shor
       // switch it on and off), and not a letter typed into a menu or a list (their type-ahead).
       if (event.repeat || inMenuOrDialog(event.target)) return null;
       return { action: "pick-white" };
+    case "n":
+      // The node view (docs/23 §7.7): one press, one change, as F and W, and not a letter typed into a menu or a list. Crop needs its panel.
+      if (event.repeat || context.mode === "crop" || inMenuOrDialog(event.target)) return null;
+      return { action: "nodes" };
     case "a":
       // Auto crop (`docs/20-auto-crop.md` §1): only in the Crop panel, one press one change, as F.
       if (context.mode !== "crop" || event.repeat || inMenuOrDialog(event.target)) return null;

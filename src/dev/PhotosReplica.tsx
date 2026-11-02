@@ -413,7 +413,10 @@ export function PhotosReplica({
             Before
           </Button>
           <Button variant="header">Crop</Button>
-          <Button variant="header">Pick white</Button>
+          <Button variant="header" pressed={false}>
+            Nodes
+          </Button>
+          <Button variant="header">Add photos</Button>
           <Button variant="header" aria-haspopup="menu" className="rp-fit">
             Fit 34%
             <span className="rp-caret" aria-hidden="true" />

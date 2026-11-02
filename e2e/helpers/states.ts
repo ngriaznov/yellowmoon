@@ -8,8 +8,9 @@ import { configureMock, dropFiles, failNext, lookTilesLoaded, openApp, openPhoto
 // with Reset to default), the two of the Auto providers (`docs/22` section 12.9: Preferences with every provider listed and the dropdown
 // open, and the consent dialog), the one of Auto crop (`docs/20`: the Crop panel with Auto on and its note) and the three of the Lens tab
 // (`docs/21`: no lens, a lens chosen at its start amounts, and the lens data missing), and the one of Pick white with the CPU note under its hint
-// (`docs/23` section 8; state 17 is Pick white alone). A state is a function that leaves a page in it;
-// the numbers in the names are only an order.
+// (`docs/23` section 8; state 17 is Pick white alone), the node view with its empty canvas (N-07: the toolbar, the divider, the photo switcher;
+// N-08 to N-12 add 43 to 48) and the simple view of a photo that has four nodes, with the notice (state 49). A state is a function that leaves a
+// page in it; the numbers in the names are only an order.
 
 const MOCKUP = { mockCurrent: 3, mockPicked: "2,3,4" } as const;
 const LL4 = "ARRI_LookLibrary_LogC4.zip";
@@ -50,6 +51,25 @@ async function start(page: Page, options: Options = { mockLooks: 0 }): Promise<v
   await showUpdateReady(page);
 }
 
+/**
+ * What the mockup's 4th photo has when its graph has four nodes (`design/nodes/04-simple-photo-has-nodes.jpg`): Main, then Mountain, Sky and
+ * Warmth in a line (a node patch: the new ids give their kind, the links are the line). It is the mock's `initialSettings` of that photo.
+ */
+export const FOUR_NODES = {
+  nodes: {
+    "2": { kind: "corrector", name: "Mountain", pos: [1, 0] },
+    "3": { kind: "corrector", name: "Sky", pos: [2, 0] },
+    "4": { kind: "corrector", name: "Warmth", pos: [3, 0] },
+  },
+  links: [
+    { from: { node: "input", port: "picture" }, to: { node: 1, port: "picture" } },
+    { from: { node: 1, port: "picture" }, to: { node: 2, port: "picture" } },
+    { from: { node: 2, port: "picture" }, to: { node: 3, port: "picture" } },
+    { from: { node: 3, port: "picture" }, to: { node: 4, port: "picture" } },
+    { from: { node: 4, port: "picture" }, to: { node: "output", port: "picture" } },
+  ],
+} as const;
+
 /** The Photos screen on the mockup's state (DSC04204 current, three picked), with the mockup's settings on the current photo. */
 async function photos(page: Page, options: Options = MOCKUP, settings: boolean | Record<string, unknown> = true): Promise<void> {
   await openApp(page, options);
@@ -58,6 +78,17 @@ async function photos(page: Page, options: Options = MOCKUP, settings: boolean |
     const extra = settings === true ? {} : settings;
     await configureMock(page, { initialSettings: { DSC04204: { nodes: { "1": { grade: { ...MOCKUP_GRADE, ...extra } } } } } as never });
   }
+  await openPhotos(page);
+  await showUpdateReady(page);
+  await page.waitForTimeout(300);
+}
+
+/** The Photos screen as `photos` leaves it, on a photo whose graph has four nodes: Main (with the mockup's grade) and three more. */
+async function photosWithNodes(page: Page): Promise<void> {
+  await openApp(page, MOCKUP);
+  await configureMock(page, {
+    initialSettings: { DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE }, ...FOUR_NODES.nodes }, links: FOUR_NODES.links } } as never,
+  });
   await openPhotos(page);
   await showUpdateReady(page);
   await page.waitForTimeout(300);
@@ -407,6 +438,29 @@ export const STATES: readonly PageState[] = [
       await p.getByRole("option", { name: "Claude Code" }).click();
       await expect(p.getByRole("dialog", { name: "Send photos to Claude Code?" })).toBeVisible();
       await p.waitForTimeout(400);
+    },
+  ],
+  // The node view (docs/23 section 7.1, N-07), opened with the Nodes button: the photo on top, the divider, the graph under it with its toolbar and
+  // an empty canvas (the cards come with N-08), the photo switcher in place of the filmstrip, the panel as before.
+  [
+    "42-nodes-default",
+    async (p) => {
+      await photos(p);
+      await p.getByRole("button", { name: "Nodes", exact: true }).click();
+      await expect(p.getByRole("separator", { name: "Resize the graph" })).toBeVisible();
+      await expect(p.getByRole("group", { name: "Photos" })).toContainText("4 of 12");
+      await p.waitForTimeout(300);
+    },
+  ],
+  // The simple view of a photo that has four nodes (docs/23 section 6, N-07; screen 04 of design/nodes): the notice under the tab row, with
+  // Open nodes at the end of its text, and the nodes glyph on the photo's thumbnail. The Light tab, as the mockup has it.
+  [
+    "49-simple-has-nodes",
+    async (p) => {
+      await photosWithNodes(p);
+      await tab(p, "Light");
+      await expect(p.getByText("This photo has 4 nodes.", { exact: false })).toBeVisible();
+      await expect(p.locator(".ym-filmstrip__nodes")).toHaveCount(1);
     },
   ],
   // Pick white in the Colour tab (docs/23 section 8, N-06), started with W from the Look tab, with "Rendering on the CPU" under its hint:

@@ -1,7 +1,9 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { FocusEvent, KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuShortcut, ContextMenuTrigger } from "@/components/glass/context-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/glass/tooltip";
 import { cx } from "./cx";
+import { NodesGlyph } from "./NodesGlyph";
 import { Tag } from "./Tag";
 import type { TabId } from "./tabs";
 
@@ -22,6 +24,11 @@ export interface FilmstripPhoto {
   picked?: boolean;
   /** Export mode only: this photo will be exported. Others are dimmed. */
   included?: boolean;
+  /**
+   * What the photo's graph has that the simple view does not show, in words ("4 nodes", "Node 1 has masks or a trim"): the thumbnail
+   * carries the nodes glyph at its bottom left with these words as its tooltip, and its name says them too (`docs/23` §6).
+   */
+  nodes?: string;
 }
 
 export interface FilmstripProps {
@@ -218,6 +225,16 @@ export function Filmstrip({
         </span>
       ) : null}
       {photo.picked ? <span className="ym-filmstrip__picked" aria-hidden="true" /> : null}
+      {photo.nodes ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="ym-filmstrip__nodes" data-nodes={photo.nodes}>
+              <NodesGlyph />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{photo.nodes}</TooltipContent>
+        </Tooltip>
+      ) : null}
     </>
   );
 
@@ -226,6 +243,7 @@ export function Filmstrip({
       photo.name,
       photo.status === "failed" ? "can't open" : photo.status === "developing" ? "developing" : null,
       photo.picked ? "picked" : null,
+      photo.nodes ? photo.nodes.charAt(0).toLowerCase() + photo.nodes.slice(1) : null,
       mode === "export" && photo.included ? "will be exported" : null,
     ]
       .filter(Boolean)

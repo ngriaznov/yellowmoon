@@ -1,7 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
 import { Aurora } from "@/components/glass/aurora";
 import { ChevronDownIcon } from "lucide-react";
-import type { ColorSpace, PhotoSummary, RenderStats, ResolvedSettings, ViewportMode } from "../api/types";
+import type { ColorSpace, NodeId, PhotoSummary, RenderStats, ResolvedSettings, ViewportMode } from "../api/types";
 import { Button, Filmstrip, filmstripCaption, TabBar, tabPanelProps, TitleBlock, useLatest, useTabShortcuts, useWindowDrop } from "../components";
 import { exportModel } from "../export/model";
 import { cellLabel, summarise } from "../export/run";
@@ -10,6 +11,7 @@ import { perfCount } from "../perf";
 import { useAppState, useCurrentPhoto, useCurrentSettings, useStore } from "../state/context";
 import { lookLabeller, looksInDisplayOrder } from "../state/looks";
 import { folderSubline, isReady, photoName } from "../state/photo";
+import { hiddenByPhoto, hiddenFromSimpleView, MAIN_ID } from "../state/settingsGraph";
 import type { AppStore } from "../state/store";
 import { useShortcuts } from "../state/useShortcuts";
 import { fitZoomExact, fitZoomOf, showsWhole, ZOOMS, zoomKey, zoomStep } from "../state/zoom";
@@ -18,6 +20,10 @@ import { useCropSession } from "./crop/useCropSession";
 import { ExportPanel } from "./export/ExportPanel";
 import { ExportCell, Header } from "./Header";
 import { Menu } from "./Menu";
+import { Divider } from "./nodes/Divider";
+import { GraphArea } from "./nodes/GraphArea";
+import { nodesGlyphText, NodesNotice } from "./nodes/NodesNotice";
+import { useNodeLayout } from "./nodes/useNodeLayout";
 import type { PickMode } from "./PickLayer";
 import { PhotoView } from "./PhotoView";
 import { lookSlugOf } from "./preview";
@@ -164,9 +170,11 @@ function ExportCellContainer({ store }: { store: AppStore }) {
 
 /**
  * The Photos screen (`design/mockups/photos.html`, `docs/11-ui.md` §Photos): the header with
- * Before, Crop, Add photos and the zoom menu, the photo, the filmstrip and the tool panel with its
+ * Before, Crop, Nodes, Add photos and the zoom menu, the photo, the filmstrip and the tool panel with its
  * seven tabs. The Crop panel and the Export panel replace the tool panel. F shows the photo alone, filling the window
- * (`docs/11` §Full screen).
+ * (`docs/11` §Full screen). Nodes (N) is the node view (`docs/23` §7.1, layout A): the photo on top, a divider, the graph under it in
+ * place of the filmstrip (its toolbar holds the photo switcher), the panel as before. Which view is on, the divider and Expand belong to the
+ * window, as the tab does: nothing about them is saved.
  */
 export function Photos() {
   perfCount("Photos");
@@ -188,6 +196,9 @@ export function Photos() {
   const preferences = useAppState((s) => (s.panel === "export" ? s.preferences : null));
   const overlay = useAppState((s) => s.overlay);
   const [tab, setTab] = useState<TabId>("look");
+  // The simple view (today's Photos) or the node view (`docs/23`), and the node the graph is on. Both are the window's: nothing is kept.
+  const [view, setView] = useState<"simple" | "nodes">("simple");
+  const [selectedNode, setSelectedNode] = useState<NodeId>(MAIN_ID);
   // Pick white (Colour › White balance, or W) or Pick colour (Colour › Colour warp): one crosshair layer over the photo, so the two are
   // exclusive. `picked` is what was asked for; `picking` (below, once the crop and the tab are known) is what is on.
   const [picked, setPicking] = useState<PickMode | null>(null);
@@ -223,9 +234,16 @@ export function Photos() {
   const photoId = photo?.id ?? null;
   useEffect(() => {
     setPicking(null);
+    // A node of the last photo may not be on this one.
+    setSelectedNode(MAIN_ID);
   }, [photoId]);
   // Full screen (F): the photo alone. The Export panel and Crop need the panel, so neither shares the window with it.
   const fullScreen = useFullScreen(!cropping && panel !== "export");
+  // The node view's layout is on while the view is and the window is not full screen (the photo alone is the whole window then).
+  const nodesOn = view === "nodes" && !fullScreen.on;
+  const nodeLayout = useNodeLayout(nodesOn);
+  // The photos whose graph has more than the simple view shows (a glyph on their thumbnails): a Map that is the same while the answer is.
+  const hiddenNodes = useAppState((s) => hiddenByPhoto(s.settings));
 
   // In the Export panel the filmstrip dims the photos that won't be exported.
   const included = useMemo(
@@ -238,15 +256,19 @@ export function Photos() {
 
   const strip: FilmstripPhoto[] = useMemo(
     () =>
-      photos.map((p) => ({
-        id: p.id,
-        name: photoName(p.file_name),
-        src: thumbnails[p.id],
-        status: p.status.kind === "ready" ? "ready" : p.status.kind === "skipped" ? "failed" : "developing",
-        picked: p.picked,
-        included: included?.has(p.id) ?? false,
-      })),
-    [photos, thumbnails, included],
+      photos.map((p) => {
+        const nodes = hiddenNodes.get(p.id);
+        return {
+          id: p.id,
+          name: photoName(p.file_name),
+          src: thumbnails[p.id],
+          status: p.status.kind === "ready" ? "ready" : p.status.kind === "skipped" ? "failed" : "developing",
+          picked: p.picked,
+          included: included?.has(p.id) ?? false,
+          nodes: nodes ? nodesGlyphText(nodes) : undefined,
+        };
+      }),
+    [photos, thumbnails, included, hiddenNodes],
   );
 
   /** Leaving a photo ends a crop in progress without keeping it. */
@@ -283,6 +305,18 @@ export function Photos() {
     if (crop.session) return;
     setPicking(null);
     void store.step(direction);
+  };
+
+  /** The Nodes button and N: the other view. Picking ends, as it does on any change of what the cell is for (`docs/11` §Pick white). */
+  const toggleNodes = (): void => {
+    setPicking(null);
+    setView((was) => (was === "nodes" ? "simple" : "nodes"));
+  };
+  /** "Open nodes" of the simple view's notice: the node view, with Main selected. */
+  const openNodes = (): void => {
+    setPicking(null);
+    setSelectedNode(MAIN_ID);
+    setView("nodes");
   };
 
   const showTab = (next: TabId): void => {
@@ -381,8 +415,9 @@ export function Photos() {
           void store.togglePick();
           return true;
         case "remove-photo":
-          // The Export panel works on the photos as they are; Back to photos, then remove.
-          if (panel === "export") return false;
+          // The Export panel works on the photos as they are; Back to photos, then remove. The node view has no filmstrip: its Delete is
+          // the graph's (N-08), never a photo's.
+          if (panel === "export" || view === "nodes") return false;
           void store.removeCurrentPhoto();
           return true;
         case "pick-all":
@@ -418,6 +453,13 @@ export function Photos() {
           fullScreen.leave();
           togglePickWhite();
           return true;
+        // The node view needs the header and the panel, as Crop does: full screen ends first. Not from the Export panel (the graph is
+        // read only there) or while cropping.
+        case "nodes":
+          if (cropping || panel === "export") return false;
+          fullScreen.leave();
+          toggleNodes();
+          return true;
         case "full-screen":
           // Not from the Export panel or Crop, which are the panel.
           if (cropping || panel === "export") return false;
@@ -446,9 +488,16 @@ export function Photos() {
           return false;
       }
     },
-    { tab: panel === "tools" ? tab : undefined, mode: cropping ? "crop" : picking === "white" ? "pick-white" : picking === "color" ? "pick-color" : null },
+    {
+      tab: panel === "tools" ? tab : undefined,
+      mode: cropping ? "crop" : picking === "white" ? "pick-white" : picking === "color" ? "pick-color" : null,
+      nodeView: view === "nodes",
+    },
     overlay === null,
   );
+
+  // What the simple view cannot show of this photo (`docs/23` §6); the node view's panel is the node's, so it has no notice.
+  const hidden = view === "simple" && photo && rs && isReady(photo) ? hiddenFromSimpleView(rs.settings) : null;
 
   let panelNode;
   if (crop.session) {
@@ -459,6 +508,7 @@ export function Photos() {
     panelNode = (
       <aside aria-label="Tools" className="ym-tools" hidden={fullScreen.on || undefined}>
         <TabBar value={tab} onChange={setTab} />
+        {hidden ? <NodesNotice hidden={hidden} onOpen={openNodes} /> : null}
         <div className="ym-tools__scroll" {...tabPanelProps(tab)}>
           <TitleBlock tab={tab} />
           {photo && rs && isReady(photo) ? (
@@ -508,6 +558,8 @@ export function Photos() {
       data-count={COUNT_IN_HEADER ? "header" : undefined}
       data-dragging={dragging || undefined}
       data-fullscreen={fullScreen.on || undefined}
+      data-nodes={nodesOn || undefined}
+      style={nodesOn ? ({ "--editor-h": `${nodeLayout.editor}px`, "--viewer-h": `${nodeLayout.viewer}px` } as CSSProperties) : undefined}
     >
       <Aurora className="ym-aurora" animate={false} />
       <Header
@@ -539,6 +591,9 @@ export function Photos() {
             <Button variant="header" pressed={cropping} disabled={!rs} onClick={() => (cropping ? crop.session?.cancel() : startCrop())} title="Crop (C)">
               Crop
             </Button>
+            <Button variant="header" pressed={view === "nodes"} disabled={cropping} onClick={toggleNodes} title="Nodes (N)">
+              Nodes
+            </Button>
             <AddPhotosButton store={store} />
             <ZoomMenu store={store} photo={photo} rs={rs} cell={cell} />
             {picking === "color" ? (
@@ -558,18 +613,44 @@ export function Photos() {
         )}
       </Header>
 
-      <PhotoView
-        store={store}
-        photo={photo}
-        rs={rs}
-        lookName={lookName}
-        before={before}
-        compactCaption={exporting}
-        picking={picking}
-        onPicked={onPicked}
-        crop={crop.session}
-        onRect={onRect}
-      />
+      <div className="ym-viewer">
+        <PhotoView
+          store={store}
+          photo={photo}
+          rs={rs}
+          lookName={lookName}
+          before={before}
+          compactCaption={exporting}
+          picking={picking}
+          onPicked={onPicked}
+          crop={crop.session}
+          onRect={onRect}
+        />
+      </div>
+
+      {nodesOn ? (
+        <>
+          <Divider
+            editor={nodeLayout.editor}
+            area={nodeLayout.area}
+            min={nodeLayout.min}
+            max={nodeLayout.max}
+            onResize={nodeLayout.setEditor}
+            onNudge={nodeLayout.nudge}
+            onReset={nodeLayout.reset}
+          />
+          <GraphArea
+            position={session && session.current_index !== null ? session.current_index + 1 : null}
+            count={photos.length}
+            onPrevious={() => stepPhoto(-1)}
+            onNext={() => stepPhoto(1)}
+            selected={selectedNode}
+            expanded={nodeLayout.expanded}
+            onToggleExpanded={nodeLayout.toggleExpanded}
+            dimmed={cropping || exporting}
+          />
+        </>
+      ) : null}
 
       <PhotoStrip
         mode={exporting ? "export" : "browse"}
@@ -580,7 +661,7 @@ export function Photos() {
         onTogglePick={togglePickOf}
         onRemove={exporting ? undefined : removePhoto}
         onRemovePicked={exporting ? undefined : removePicked}
-        hidden={fullScreen.on}
+        hidden={fullScreen.on || nodesOn}
       />
 
       {panelNode}

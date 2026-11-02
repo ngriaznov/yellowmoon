@@ -50,8 +50,10 @@ describe("the native viewport", () => {
     const cell = await setup({ viewport: "native" });
     await waitFor(() => expect(document.documentElement).toHaveAttribute("data-native-viewport"));
     // screens.css makes the root, the body, #root and the Photos screen transparent; a new box between the cell and the screen would
-    // paint paper over the photo.
-    expect(cell.parentElement).toHaveAttribute("data-screen", "photos");
+    // paint paper over the photo. The only one is the photo's wrapper, which makes no box in the simple view (`display: contents`) and in
+    // the node view paints only beside the cell (`nodeview.node.test.ts`).
+    expect(cell.parentElement).toHaveClass("ym-viewer");
+    expect(cell.parentElement?.parentElement).toHaveAttribute("data-screen", "photos");
     h!.unmount();
     h = undefined;
     expect(document.documentElement).not.toHaveAttribute("data-native-viewport");
@@ -62,7 +64,7 @@ describe("the native viewport", () => {
     document.documentElement.setAttribute("style", "background: #ffffff; color-scheme: light");
     const cell = await setup({ viewport: "native" });
     await waitFor(() => expect(document.documentElement).toHaveAttribute("data-native-viewport"));
-    const screen = cell.parentElement as HTMLElement;
+    const screen = cell.closest<HTMLElement>(".ym-screen")!;
     for (const el of [document.documentElement, document.body, screen]) {
       expect(el.style.getPropertyValue("background-color")).toBe("transparent");
       expect(el.style.getPropertyPriority("background-color")).toBe("important");

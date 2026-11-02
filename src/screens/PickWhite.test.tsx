@@ -61,12 +61,12 @@ describe("the row in the White balance card", () => {
     expect(within(white).getByRole("button", { name: "Reset" })).toBeInTheDocument();
   });
 
-  it("is not a header button: the header's cells are Before, Crop, Add photos and Fit, on every tab", async () => {
+  it("is not a header button: the header's cells are Before, Crop, Nodes, Add photos and Fit, on every tab", async () => {
     await setup();
     for (const name of ["Look", "Colour", "RAW"]) {
       await openTab(h, name);
       const labels = within(screen.getByRole("navigation", { name: "Actions" })).getAllByRole("button").map((b) => b.textContent);
-      expect(labels, name).toEqual(["Before", "Crop", "Add photos", expect.stringMatching(/^Fit/)]);
+      expect(labels, name).toEqual(["Before", "Crop", "Nodes", "Add photos", expect.stringMatching(/^Fit/)]);
     }
   });
 

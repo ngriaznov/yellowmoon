@@ -316,4 +316,22 @@ describe("Filmstrip remove menu", () => {
     );
     expect(screen.getByRole("button", { name: "Elsewhere" })).toHaveFocus();
   });
+
+  it("marks a photo that has nodes with the glyph at its thumbnail's bottom left, says so in its name, and gives the words as a tooltip", async () => {
+    const photos: FilmstripPhoto[] = [
+      { id: 1, name: "DSC04201", src: "a.png" },
+      { id: 2, name: "DSC04202", src: "b.png", picked: true, nodes: "4 nodes" },
+      { id: 3, name: "DSC04203", src: "c.png", nodes: "Node 1 has masks or a trim" },
+    ];
+    const { container } = render(<Filmstrip photos={photos} currentId={2} />);
+    const glyphs = container.querySelectorAll(".ym-filmstrip__nodes");
+    expect(glyphs).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Show DSC04201" }).querySelector(".ym-filmstrip__nodes")).toBeNull();
+    const withNodes = screen.getByRole("button", { name: "Show DSC04202, picked, 4 nodes" });
+    expect(withNodes.querySelector(".ym-filmstrip__nodes")).toHaveAttribute("data-nodes", "4 nodes");
+    expect(withNodes.querySelector(".ym-filmstrip__nodes svg")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByRole("button", { name: "Show DSC04203, node 1 has masks or a trim" })).toBeInTheDocument();
+    await userEvent.setup().hover(glyphs[0] as HTMLElement);
+    expect(await screen.findByRole("tooltip", {}, { timeout: 2000 })).toHaveTextContent("4 nodes");
+  });
 });

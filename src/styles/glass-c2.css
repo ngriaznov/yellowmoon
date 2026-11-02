@@ -60,6 +60,8 @@ html.dark {
 [data-tab="curve"] { --primary: var(--tab-curve); --primary-foreground: var(--tab-curve-ink); --ring: var(--tab-curve); }
 [data-tab="raw"] { --primary: var(--tab-raw); --primary-foreground: var(--tab-raw-ink); --ring: var(--tab-raw); }
 [data-tab="lens"] { --primary: var(--tab-lens); --primary-foreground: var(--tab-lens-ink); --ring: var(--tab-lens); }
+/* The Mask tab of a corrector (docs/23 §7.6) has the mask accent, as the other tabs have theirs: --mask in tokens.css. */
+[data-tab="mask"] { --primary: var(--mask); --primary-foreground: var(--mask-ink); --ring: var(--mask); }
 
 body {
   font-family: var(--font);
@@ -600,16 +602,20 @@ html:has(.ym-screen[data-screen="photos"]) #root {
    --filmstrip-min-h); each thumbnail is as tall as that row less the tool panel's inset (--pad-panel, 24 px) above and below, so the space
    from a thumbnail to the edge of its cell is the space from a control to the edge of the tool panel. The row is a size container so
    the thumbnails can read its height; the scroller keeps the same inset on its left and right. */
+/* The strip's ground, shared with the node view's graph and its divider (`.ym-graph`, `.ym-divider`): the neutral graphite of 2026-10-17, the same grey as
+   the panes and a little darker at the foot. --strip-alpha is how much of the colour covers the glass (100% is an opaque surface). */
+.ym-filmstrip,
+.ym-graph,
+.ym-divider {
+  --strip-alpha: 96%;
+  --strip-neutral: linear-gradient(to bottom, color-mix(in oklch, oklch(0.27 0 0) var(--strip-alpha), transparent), color-mix(in oklch, oklch(0.17 0 0) var(--strip-alpha), transparent));
+}
 .ym-filmstrip {
   @apply glass rounded-none;
   --strip-inset: var(--pad-panel);
   --strip-gap: 8px;
   /* The strip has a surface of its own, so the warm part of the aurora no longer sits under warm thumbnails. Three tried, one
-     chosen: change --strip-surface to --strip-neutral, --strip-graphite, --strip-blue or --strip-tab and nothing else. --strip-alpha is how much of the
-     colour covers the glass (100% is an opaque surface; less lets the aurora and the blur through). */
-  --strip-alpha: 96%;
-  /* The neutral graphite ground (2026-10-17): the strip is the same grey as the panes, a little darker at the foot. */
-  --strip-neutral: linear-gradient(to bottom, color-mix(in oklch, oklch(0.27 0 0) var(--strip-alpha), transparent), color-mix(in oklch, oklch(0.17 0 0) var(--strip-alpha), transparent));
+     chosen: change --strip-surface to --strip-neutral, --strip-graphite, --strip-blue or --strip-tab and nothing else. */
   --strip-graphite: linear-gradient(to bottom, color-mix(in oklch, oklch(0.3 0.008 255) var(--strip-alpha), transparent), color-mix(in oklch, oklch(0.2 0.008 255) var(--strip-alpha), transparent));
   --strip-blue: linear-gradient(to bottom, color-mix(in oklch, oklch(0.27 0.045 232) var(--strip-alpha), transparent), color-mix(in oklch, oklch(0.165 0.035 240) var(--strip-alpha), transparent));
   --strip-tab: linear-gradient(to bottom, color-mix(in oklab, color-mix(in oklab, var(--primary) 9%, oklch(0.23 0.004 255)) var(--strip-alpha), transparent), color-mix(in oklab, color-mix(in oklab, var(--primary) 3%, oklch(0.16 0.004 255)) var(--strip-alpha), transparent));
@@ -697,6 +703,27 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   background: var(--tab-look);
   box-shadow: 0 0 0 2px #000;
 }
+/* The nodes glyph of a photo whose graph the simple view does not show (docs/23 §6): a small glass square at the thumbnail's bottom left, the
+   chips' tint and rim; its tooltip says what the graph has ("4 nodes"). */
+.ym-filmstrip__nodes {
+  position: absolute;
+  bottom: 5px;
+  left: 5px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  box-sizing: border-box;
+  border: 1px solid rgb(255 255 255 / 0.22);
+  border-radius: 7px;
+  background: rgb(14 14 18 / 0.74);
+  color: rgb(255 255 255 / 0.9);
+}
+.ym-filmstrip__nodes svg {
+  width: 12px;
+  height: 12px;
+}
 .ym-filmstrip__thumb[data-in-export="true"][aria-current="true"] {
   border-width: 3px;
 }
@@ -721,6 +748,210 @@ span.ym-filmstrip__thumb {
   line-height: 14px;
   white-space: nowrap;
   pointer-events: none;
+}
+
+/* ---- Node view (docs/23 §7.1, layout A) ---------------------------------------------------------------------------------------------- */
+/* In the simple view the photo's wrapper makes no box: the cell is a grid item of the screen, as it was. In the node view (`data-nodes`,
+   not in full screen) the screen is five areas: the header, the photo on top at the left, the 10 px divider, the graph under it (its
+   height is --editor-h, the divider's place, set by Photos; the photo gets the rest), and the 400 px panel at the right, full height.
+   The photo cell is still 3:2: as wide as the row is tall times 1.5 (--viewer-h), or the whole column when that is narrower; the paper
+   on both sides of it is the wrapper's own, drawn beside the cell and never over it (the native viewport shows through the cell). */
+.ym-viewer {
+  display: contents;
+}
+.ym-screen[data-screen="photos"][data-nodes="true"] {
+  --divider-h: 10px;
+  grid-template-columns: minmax(0, 1fr) var(--panel-w);
+  grid-template-rows: var(--header-h) minmax(0, 1fr) var(--divider-h) var(--editor-h);
+  grid-template-areas:
+    "header header"
+    "photo tools"
+    "divider tools"
+    "graph tools";
+}
+.ym-screen[data-nodes="true"] .ym-header {
+  grid-area: header;
+}
+.ym-screen[data-nodes="true"] .ym-viewer {
+  grid-area: photo;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.ym-screen[data-nodes="true"] .ym-viewer::before,
+.ym-screen[data-nodes="true"] .ym-viewer::after {
+  content: "";
+  flex: 1 1 0;
+  align-self: stretch;
+  min-width: 0;
+  background: var(--paper);
+}
+.ym-screen[data-nodes="true"] .ym-viewer > .ym-photo-cell {
+  flex: 0 1 calc(var(--viewer-h) * 1.5);
+  width: auto;
+  min-width: 0;
+  margin: 0;
+}
+.ym-screen[data-nodes="true"] .ym-divider {
+  grid-area: divider;
+}
+.ym-screen[data-nodes="true"] .ym-graph {
+  grid-area: graph;
+}
+.ym-screen[data-nodes="true"] .ym-tools {
+  grid-area: tools;
+}
+
+/* The divider: a window splitter between the photo and the graph, in the strip's ground, with a grab handle. */
+.ym-divider {
+  position: relative;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  cursor: row-resize;
+  touch-action: none;
+  background: var(--strip-neutral);
+  border-top: 1px solid var(--rim);
+}
+.ym-divider__grip {
+  width: 44px;
+  height: 4px;
+  border-radius: 4px;
+  background: color-mix(in oklch, var(--ink) 30%, transparent);
+  transition: background-color var(--glass-duration) ease-out;
+}
+.ym-divider:hover .ym-divider__grip,
+.ym-divider[data-dragging="true"] .ym-divider__grip {
+  background: color-mix(in oklch, var(--ink) 55%, transparent);
+}
+.ym-divider:focus-visible {
+  outline: var(--glass-ring-width) solid var(--ring);
+  outline-offset: -3px;
+}
+
+/* The graph area: a 44 px toolbar in the strip's ground and the canvas under it (docs/23 §7.3). */
+.ym-graph {
+  @apply glass rounded-none;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--strip-neutral);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-width: 0;
+}
+.ym-graph[data-dimmed="true"] {
+  opacity: 0.45;
+}
+.ym-graph__bar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  height: 44px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-graph__spacer {
+  flex: 1;
+}
+.ym-graph__canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background-color: oklch(0.125 0 0);
+  background-image: radial-gradient(circle, color-mix(in oklch, var(--ink) 16%, transparent) 1px, transparent 1.3px);
+  background-size: 18px 18px;
+  background-position: 9px 9px;
+  box-shadow: inset 0 2px 8px rgb(0 0 0 / 0.35);
+}
+/* "‹ 2 of 7 ›": two icon buttons and the count between them. */
+.ym-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--glass-label-secondary);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+}
+.ym-switcher__count {
+  padding: 0 6px;
+  white-space: nowrap;
+}
+/* The Add node menu opens over the photo: a wide glass list, each item a name with a quiet line under it and, for what comes later, a tag. */
+.ym-add-node-menu {
+  min-width: 22rem;
+}
+.ym-menu-line {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ym-menu-line__name {
+  font-size: var(--fs-body);
+  line-height: 1.25;
+}
+.ym-menu-line__text {
+  color: var(--glass-label-tertiary);
+  font-size: var(--fs-small);
+  line-height: 1.3;
+}
+.ym-menu-later {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--glass-label-tertiary);
+  font-size: 11px;
+  font-weight: var(--fw-bold);
+}
+
+/* The notice of a photo that has more than the simple view shows (docs/23 §6): a pinned strip under the tab row, a glass pill (the chips'
+   tint and rim) with the nodes glyph, two lines of text and the link Open nodes at the end of the second. */
+.ym-tools__nodes {
+  flex-shrink: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-nodes-notice {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid rgb(255 255 255 / 0.2);
+  border-radius: 16px;
+  background: rgb(14 14 18 / 0.74);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.ym-nodes-notice [data-slot="item-media"] {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  color: var(--glass-label-secondary);
+}
+.ym-nodes-notice__link {
+  display: inline;
+  height: auto;
+  padding: 0;
+  font-size: 12.5px;
+  font-weight: var(--fw-bold);
+  line-height: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+  vertical-align: baseline;
 }
 
 /* ---- Export panel ---------------------------------------------------------------------------------------------------------------- */

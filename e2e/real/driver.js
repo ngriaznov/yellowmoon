@@ -160,7 +160,7 @@
 
     // 5. Pick white through the shell.
     key("w");
-    const layer = await waitFor("the pick-white layer", () => q(".ym-pick-white"), 5000);
+    const layer = await waitFor("the pick-white layer", () => q(".ym-pick-layer"), 5000);
     const lb = layer.getBoundingClientRect();
     layer.dispatchEvent(new MouseEvent("click", { clientX: lb.left + lb.width * config.pickAt[0], clientY: lb.top + lb.height * config.pickAt[1], bubbles: true }));
     const outcome = await waitFor("a pick or an error", () => {
@@ -286,7 +286,7 @@
       picture.y = (box.height - picture.h) / 2;
       for (const [u, v] of spots) {
         key("w");
-        const layer = await waitFor("the pick-white layer", () => q(".ym-pick-white"), 5000);
+        const layer = await waitFor("the pick-white layer", () => q(".ym-pick-layer"), 5000);
         const lb = layer.getBoundingClientRect();
         layer.dispatchEvent(new MouseEvent("click", { clientX: lb.left + picture.x + picture.w * u, clientY: lb.top + picture.y + picture.h * v, bubbles: true }));
         const outcome = await waitFor("a pick or an error", () => {

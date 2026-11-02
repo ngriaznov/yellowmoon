@@ -290,6 +290,56 @@ describe("the shortcut table of docs/11", () => {
     expect(act(key("f", {}, document.createElement("button")))).toBe("full-screen");
   });
 
+  it("N switches between the simple view and the node view, with or without Shift, on any tab and in any mode but crop", () => {
+    expect(act(key("n"))).toBe("nodes");
+    expect(act(key("N", { shiftKey: true }))).toBe("nodes");
+    expect(act(key("N"))).toBe("nodes");
+    for (const tab of ["look", "lens", "light", "color", "detail", "curve", "raw"] as const) expect(act(key("n"), { tab }), tab).toBe("nodes");
+    expect(act(key("n"), { mode: "pick-white" })).toBe("nodes");
+    expect(act(key("n"), { mode: "pick-color" })).toBe("nodes");
+    expect(act(key("n"), { nodeView: true })).toBe("nodes");
+    // Crop needs its panel, as it does for F.
+    expect(act(key("n"), { mode: "crop" })).toBeNull();
+  });
+
+  it("N is not the node view with ⌘, ⌃ or ⌥, in a text box, on a key held down, or in a menu, a list or a dialog", () => {
+    expect(act(cmd("n"))).toBeNull();
+    expect(act(key("n", { ctrlKey: true }))).toBeNull();
+    expect(act(key("n", { altKey: true }))).toBeNull();
+    for (const type of ["text", "search"]) {
+      const input = document.createElement("input");
+      input.type = type;
+      expect(act(key("n", {}, input))).toBeNull();
+    }
+    expect(act(key("n", {}, document.createElement("textarea")))).toBeNull();
+    expect(act({ ...key("n"), repeat: true })).toBeNull();
+    expect(act({ ...key("n"), repeat: false })).toBe("nodes");
+    expect(act({ ...key("n"), defaultPrevented: true })).toBeNull();
+    for (const role of ["menu", "listbox", "dialog"]) {
+      const box = document.createElement("div");
+      box.setAttribute("role", role);
+      const item = document.createElement("div");
+      item.setAttribute("role", role === "menu" ? "menuitem" : "option");
+      box.append(item);
+      expect(act(key("n", {}, item)), role).toBeNull();
+    }
+    // A slider or a button with focus does not use N: it is still the node view.
+    const slider = document.createElement("input");
+    slider.type = "range";
+    expect(act(key("n", {}, slider))).toBe("nodes");
+    expect(act(key("n", {}, document.createElement("button")))).toBe("nodes");
+  });
+
+  it("Delete and Backspace never remove a photo in the node view (the photos are out of sight there)", () => {
+    expect(act(key("Delete"), { nodeView: false })).toBe("remove-photo");
+    expect(act(key("Delete"), { nodeView: true })).toBeNull();
+    expect(act(key("Backspace"), { nodeView: true })).toBeNull();
+    // The arrows still switch photos there.
+    expect(act(key("ArrowRight"), { nodeView: true })).toBe("next-photo");
+    expect(act(key("ArrowLeft"), { nodeView: true })).toBe("previous-photo");
+    expect(act(key("p"), { nodeView: true })).toBe("toggle-pick");
+  });
+
   it("A toggles Auto crop while the Crop panel is open, and is nothing anywhere else", () => {
     expect(act(key("a"), { mode: "crop" })).toBe("auto-crop");
     expect(act(key("A", { shiftKey: true }), { mode: "crop" })).toBe("auto-crop");
