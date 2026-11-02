@@ -53,13 +53,19 @@ pub const MAX_MASK_ROWS: usize = 64;
 // The photo frame
 // ---------------------------------------------------------------------------------------------
 
+/// The narrowest a shape's edge is made, in output pixels, **in total and centred on the edge**: the coverage
+/// of a hard edge by one pixel (`docs/algorithms/06` section 4, the lead's decision of 2026-11-02). A shape's
+/// transition is `max(its feather, MIN_RAMP_PIXELS ε_px)` wide, centred on the contour the feather alone would
+/// have, so a hard edge previews as it exports.
+pub const MIN_RAMP_PIXELS: f64 = 1.0;
+
 /// What a render knows about the photo frame: its aspect and the size of one output pixel in it.
 ///
 /// Lengths in the settings are fractions of the photo's **long edge** `L`. The frame is `W x H` photo
 /// pixels (the photo as the camera oriented it, after the lens corrections), so a pixel at `(x, y)` is
 /// at `((x - cx) W, (y - cy) H) / L` from a centre `(cx, cy)` in those units, and a circle is a circle
-/// on any photo. `pixel` is `1 / u_px`: one output pixel in the same units, which is the narrowest a
-/// shape's edge is made (`docs/17` K8).
+/// on any photo. `pixel` is `1 / u_px`: one output pixel in the same units, and [`PhotoFrame::ramp`] the
+/// narrowest a shape's edge is made (`docs/17` K8).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PhotoFrame {
     /// `(W, H) / L`: one of them is 1.
@@ -69,6 +75,12 @@ pub struct PhotoFrame {
 }
 
 impl PhotoFrame {
+    /// The narrowest transition of a shape's edge in units of `L`: [`MIN_RAMP_PIXELS`] output pixels.
+    #[must_use]
+    pub fn ramp(&self) -> f64 {
+        MIN_RAMP_PIXELS * self.pixel
+    }
+
     /// The frame of a `width x height` photo (any unit) whose output pixel is `pixel` of that unit.
     /// A zero or non-finite size reads as a square photo of one unit.
     #[must_use]
@@ -391,11 +403,11 @@ impl MaskOp {
             OpKind::Linear => {
                 let Some(spot) = spot else { return 0.0 };
                 let (x, y) = frame_xy(p[0], p[1], &spot);
-                // The signed distance from the centre line along n = (-sin, cos), and the half-width of
-                // the transition, at least one output pixel.
+                // The signed distance from the centre line along n = (-sin, cos), and the width of the
+                // transition, centred on the line: the feather, and at least one output pixel.
                 let s = -p[2] * x + p[3] * y;
-                let h = (0.5 * p[4]).max(spot.frame.pixel);
-                1.0 - smooth_step((s + h) / (2.0 * h))
+                let w = p[4].max(spot.frame.ramp());
+                1.0 - smooth_step((s + 0.5 * w) / w)
             }
             OpKind::Radial => {
                 let Some(spot) = spot else { return 0.0 };
@@ -404,9 +416,12 @@ impl MaskOp {
                 let u = (p[3] * x + p[2] * y) / p[4];
                 let w = (-p[2] * x + p[3] * y) / p[5];
                 let d = (u * u + w * w).sqrt();
-                // The ramp, in units of d: the feather, and at least one pixel on the narrower side.
-                let q = p[6].max(spot.frame.pixel / p[4].min(p[5]));
-                1.0 - smooth_step((d - (1.0 - q)) / q)
+                // The ramp, in units of d: the feather, and at least one pixel on the narrower side. It is
+                // centred on the contour the feather alone has, d = 1 - f/2 (the feather runs inwards from the
+                // outline), so with a feather of a pixel or more it is [1 - f, 1] and at Feather 0 it is one
+                // pixel centred on the outline.
+                let q = p[6].max(spot.frame.ramp() / p[4].min(p[5]));
+                1.0 - smooth_step((d - (1.0 - 0.5 * p[6] - 0.5 * q)) / q)
             }
             OpKind::Color => {
                 let a = dot(E1, v_in.0) - p[0];

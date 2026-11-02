@@ -347,8 +347,8 @@ struct ChainU {
     stopn: [u32; 4],
     /// x: the first mask row in the records' buffer, in `vec4` rows (after the records).
     mrow: [u32; 4],
-    /// The photo frame ([`PhotoFrame`]): the photo's width and height over its long edge, and one output
-    /// pixel in units of the long edge.
+    /// The photo frame ([`PhotoFrame`]): the photo's width and height over its long edge, and the narrowest
+    /// edge ramp ([`PhotoFrame::ramp`]) in units of the long edge.
     photo: [f32; 4],
 }
 
@@ -1509,7 +1509,7 @@ impl PreparedChain {
             u.photo = [
                 frame.aspect[0] as f32,
                 frame.aspect[1] as f32,
-                frame.pixel as f32,
+                frame.ramp() as f32,
                 0.0,
             ];
         }

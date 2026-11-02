@@ -81,7 +81,7 @@ struct ChainU {
     plan: vec4<u32>,     // x: this pass's first record in `nodes`, y: its steps, z: bit 0: the plan's last pass (it writes `out`), w: the plan's result (a reference, see REF_*)
     stopn: vec4<u32>,    // x: the record at which stops 11 and 12 end (NODE_NONE: none), y, z, w: 0
     mrow: vec4<u32>,     // x: the first mask row in `nodes`, in vec4 rows (after the records), y, z, w: 0
-    photo: vec4<f32>,    // the photo frame: x, y: the photo's width and height over its long edge, z: one output pixel in units of the long edge, w: 0
+    photo: vec4<f32>,    // the photo frame: x, y: the photo's width and height over its long edge, z: the narrowest edge ramp (MIN_RAMP_PIXELS output pixels) in units of the long edge, w: 0
 };
 
 // One step of the plan with the node it runs (docs/23 section 5.4): the flags and the wiring of the step, then the node's
@@ -778,27 +778,28 @@ fn mask_select(kind: u32, p0: vec4<f32>, p1: vec4<f32>, v_in: vec3<f32>, l_in: f
         if (CU.sp.w == 0u) {
             return 0.0;
         }
-        // The signed distance from the centre line along n = (-sin, cos) in units of the long edge, and the half-width of the
-        // transition, at least one output pixel.
+        // The signed distance from the centre line along n = (-sin, cos) in units of the long edge, and the width of the
+        // transition, centred on the line: the feather, and at least one output pixel (CU.photo.z).
         let x = (pos.x - p0.x) * CU.photo.x;
         let y = (pos.y - p0.y) * CU.photo.y;
         let s = -p0.z * x + p0.w * y;
-        let h = max(0.5 * p1.x, CU.photo.z);
-        return 1.0 - smooth01((s + h) / (2.0 * h));
+        let w = max(p1.x, CU.photo.z);
+        return 1.0 - smooth01((s + 0.5 * w) / w);
     }
     if (kind == MK_RADIAL) {
         if (CU.sp.w == 0u) {
             return 0.0;
         }
         // The pixel rotated by -angle in units of the radii, and the ramp q in units of d: the feather, and at least one
-        // output pixel on the narrower side.
+        // output pixel on the narrower side, centred on the contour the feather alone has (d = 1 - f/2), so that a feather
+        // of a pixel or more runs from 1 - f to the outline and Feather 0 is one pixel centred on the outline.
         let x = (pos.x - p0.x) * CU.photo.x;
         let y = (pos.y - p0.y) * CU.photo.y;
         let u = (p0.w * x + p0.z * y) / p1.x;
         let w = (-p0.z * x + p0.w * y) / p1.y;
         let d = sqrt(u * u + w * w);
         let q = max(p1.z, CU.photo.z / min(p1.x, p1.y));
-        return 1.0 - smooth01((d - (1.0 - q)) / q);
+        return 1.0 - smooth01((d - (1.0 - 0.5 * p1.z - 0.5 * q)) / q);
     }
     if (kind == MK_COLOR) {
         let a = dot(E1, v_in) - p0.x;
