@@ -1439,10 +1439,10 @@ span.ym-filmstrip__thumb {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   min-height: 54px;
   box-sizing: border-box;
-  padding: 6px 8px 6px 12px;
+  padding: 6px 6px 6px 8px;
   border: 1px solid var(--rim);
   border-radius: 14px;
   background: color-mix(in oklch, var(--ink) 6%, transparent);
@@ -1456,15 +1456,28 @@ span.ym-filmstrip__thumb {
 .ym-mask-row[data-off] .ym-mask-row__select {
   opacity: 0.55;
 }
-/* The on/off switch at the row's left, before the kind's icon: glasscn's small capsule (44 × 20 px). */
+/* The on/off switch at the row's left, before the kind's icon: glasscn's small capsule, made compact here (28 × 16 px) so the subtitle fits at the panel's
+   default width. glasscn's `hit-area` keeps a 24 px square around it for the pointer. */
 .ym-mask-row__switch {
   flex-shrink: 0;
+}
+.ym-mask-row .ym-mask-row__switch[data-size="sm"] {
+  width: 28px;
+  height: 16px;
+  padding: 2px;
+}
+.ym-mask-row .ym-mask-row__switch[data-size="sm"] > [data-slot="switch-thumb"] {
+  width: 16px;
+  height: 12px;
+}
+.ym-mask-row .ym-mask-row__switch[data-size="sm"] > [data-slot="switch-thumb"][data-state="checked"] {
+  margin-inline-start: 8px;
 }
 .ym-mask-row__select {
   display: flex;
   flex: 1;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   min-width: 0;
   padding: 0;
   border: 0;
@@ -1500,20 +1513,14 @@ span.ym-filmstrip__thumb {
   font-size: 13.5px;
   font-weight: var(--fw-heavy);
 }
+/* A subtitle wraps to a second line when it does not fit, so the row grows; it is never cut with an ellipsis. */
 .ym-mask-row__sub {
-  overflow: hidden;
   color: var(--glass-label-secondary);
   font-size: 12px;
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* A Subject or People row on a computer that cannot make it says a whole sentence ("Subject masks need a Mac that supports them", `docs/23` §3.10): it wraps, so the row grows, instead of ending in an ellipsis. */
-.ym-mask-row__sub[data-unsupported] {
-  overflow: visible;
   line-height: 1.25;
-  text-overflow: clip;
   white-space: normal;
+  overflow-wrap: anywhere;
 }
 /* "Finding…" while a raster is being made for the first time on a photo (a Background row's blur map): a small spinner before the words. */
 .ym-mask-row__sub[data-finding] {
@@ -1979,4 +1986,9 @@ span.ym-filmstrip__thumb {
    (docs/11 §Desktop feel). glasscn's own buttons set no cursor, and the base rule `button { cursor: default }` is the arrow. */
 button[data-slot="button"][data-variant="link"]:not([aria-disabled="true"]) {
   cursor: pointer;
+}
+/* The span that carries a switch's tooltip: as wide as the switch, no more. */
+.ym-switch-tip {
+  display: inline-flex;
+  flex-shrink: 0;
 }

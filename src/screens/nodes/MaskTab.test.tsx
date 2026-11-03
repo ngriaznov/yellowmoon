@@ -179,7 +179,8 @@ describe("a row's controls: the switch, Add | Subtract, Invert this mask, Show t
   it("the switch is the row's first control, before the kind's icon, and the row has five Tab stops: switch, name, Add | Subtract, Invert, eye", async () => {
     await setup();
     const row = rowOf("Radial mask, Feather 45");
-    expect(row.firstElementChild).toBe(within(row).getByRole("switch"));
+    // The switch sits in the span that carries its tooltip, which is the row's first child.
+    expect(row.firstElementChild).toBe(within(row).getByRole("switch").parentElement);
     // Tab from the switch walks the row's controls and then leaves it.
     within(row).getByRole("switch").focus();
     const walked: string[] = [];

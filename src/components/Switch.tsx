@@ -38,9 +38,10 @@ export function Switch({ checked, onChange, label, disabled = false, tab, id, cl
   if (!title) return control;
   return (
     <Tooltip>
-      {/* On hover only, as a Button's: on focus the tooltip would take the first Esc. */}
+      {/* On hover only, as a Button's: on focus the tooltip would take the first Esc. The trigger is a span around the switch: on the switch itself it would
+          write its own `data-state` ("closed") over the switch's ("checked"), and the capsule would lose its fill. */}
       <TooltipTrigger asChild onFocus={(event) => event.preventDefault()}>
-        {control}
+        <span className="ym-switch-tip">{control}</span>
       </TooltipTrigger>
       <TooltipContent>{title}</TooltipContent>
     </Tooltip>
