@@ -55,7 +55,7 @@ use ym_ml::bokeh_net::BokehNet;
 
 use super::color::{
     ColorKey, ColorPlan, GradeKey, GradePlan, GradeRequest, LookProvider, PhotoSource, color_key,
-    color_plan, grade_key_to, grade_plan_to, has_background_row,
+    color_plan, grade_key_to, grade_plan_to, has_background_row, only_row,
 };
 use super::geometry::Geometry;
 use super::raw::{
@@ -1846,9 +1846,10 @@ impl<'a> Job<'a> {
     pub fn mask_key(&self) -> Option<String> {
         let (v, g) = self.mask.as_ref()?;
         Some(format!(
-            "mask:{}:{:?}:{}",
+            "mask:{}:{:?}:{:?}:{}",
             v.node,
             v.style,
+            v.row,
             g.as_ref()
                 .map(|g| format!("{:?}", g.key))
                 .unwrap_or_default()
@@ -1888,7 +1889,24 @@ impl<'a> Job<'a> {
             self.mask = None;
             return Ok(());
         }
-        let plan = self.grade_to(target, true, PlanStop::Mask(view.node))?;
+        // A row view reads the photo as if the node had that row alone (`color::only_row`); a row the node does not have
+        // is the node's own view.
+        let only = view
+            .row
+            .and_then(|r| only_row(&self.src.settings, view.node, r as usize));
+        let (view, plan) = match only {
+            Some(settings) => {
+                let src = PhotoSource {
+                    settings,
+                    ..self.src.clone()
+                };
+                (view, self.grade_to_in(&src, target, true, PlanStop::Mask(view.node))?)
+            }
+            None => {
+                let view = MaskView { row: None, ..view };
+                (view, self.grade_to(target, true, PlanStop::Mask(view.node))?)
+            }
+        };
         self.mask = Some((view, Some(plan)));
         Ok(())
     }
@@ -3137,8 +3155,9 @@ impl<'a> Job<'a> {
         dither: bool,
     ) -> Result<GradeKey, RenderError> {
         let color = self.color()?;
-        let background = self.background_for(PlanStop::Output)?;
-        let objects = self.objects_for(PlanStop::Output)?;
+        let settings = &self.src.settings;
+        let background = self.background_for(settings, PlanStop::Output)?;
+        let objects = self.objects_for(settings, PlanStop::Output)?;
         let req = GradeRequest {
             target,
             dither,
@@ -3165,9 +3184,21 @@ impl<'a> Job<'a> {
         dither: bool,
         stop: PlanStop,
     ) -> Result<Arc<GradePlan>, RenderError> {
+        self.grade_to_in(self.src, target, dither, stop)
+    }
+
+    /// [`Job::grade_to`] for the settings of `src`, which is the request's photo or the photo as the mask view of one
+    /// row reads it ([`Job::prepare_mask_view`]).
+    fn grade_to_in(
+        &mut self,
+        src: &PhotoSource,
+        target: OutputTarget,
+        dither: bool,
+        stop: PlanStop,
+    ) -> Result<Arc<GradePlan>, RenderError> {
         let color = self.color()?;
-        let background = self.background_for(stop)?;
-        let objects = self.objects_for(stop)?;
+        let background = self.background_for(&src.settings, stop)?;
+        let objects = self.objects_for(&src.settings, stop)?;
         let req = GradeRequest {
             target,
             dither,
@@ -3177,7 +3208,7 @@ impl<'a> Job<'a> {
         };
         // Build the plan's key without building the chain: the key is part of the plan, so the
         // cheap way to know whether a cached plan matches is to build the key text first.
-        let wanted = grade_key_to(self.src, &color, &req, stop);
+        let wanted = grade_key_to(src, &color, &req, stop);
         let cached = {
             let mut st = lock(&self.g.state);
             let cache = st.grade.get_or_insert_with(|| ByteLru::new(8));
@@ -3191,7 +3222,7 @@ impl<'a> Job<'a> {
             return Ok(plan);
         }
         let t = Instant::now();
-        let plan = Arc::new(grade_plan_to(self.src, &color, &req, stop)?);
+        let plan = Arc::new(grade_plan_to(src, &color, &req, stop)?);
         self.runs.grade_plans += 1;
         self.timings.plans_ms += t.elapsed().as_secs_f64() * 1000.0;
         for w in &plan.warnings {

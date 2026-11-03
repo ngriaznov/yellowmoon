@@ -150,7 +150,7 @@ fn gpu() -> Option<Arc<Gpu>> {
 
 fn view(style: Option<MaskStyle>, node: u32) -> ViewportState {
     let mut st = ViewportState::new(ViewportRect::cell(CELL, CELL, 1.0));
-    st.mask_view = style.map(|style| MaskView { node, style });
+    st.mask_view = style.map(|style| MaskView { node, style, row: None });
     st
 }
 
@@ -692,7 +692,7 @@ fn a_magnified_view_takes_the_overlay_too() {
         for style in [MaskStyle::MaskOnly, MaskStyle::Overlay] {
             let mut st = ViewportState::new(ViewportRect::cell(CELL, CELL, 1.0));
             st.set_mode(ViewportMode::Percent { value: percent }, image);
-            st.mask_view = Some(MaskView { node: 1, style });
+            st.mask_view = Some(MaskView { node: 1, style, row: None });
             let (a, b) = (fresh(&on_gpu, &src, &st), fresh(&cpu, &src, &st));
             let (worst, mean) = differ(&a, &b);
             eprintln!("{percent} %, {style:?}: device against CPU largest {worst}, mean {mean:.4}");
@@ -733,4 +733,238 @@ fn a_device_without_the_tail_makes_the_overlay_on_the_cpu() {
     let b = fresh(&renderer(None, None), &src, &st);
     let (worst, _) = differ(&a, &b);
     assert!(worst <= 2, "{worst}");
+}
+
+// ---- One row's mask (the eye of a mask row, `docs/23` section 5.8) -----------------------------------
+
+/// A row of the mask view of node `node`: Mask only or Overlay, row `row`.
+fn row_view(style: MaskStyle, node: u32, row: u32) -> ViewportState {
+    let mut st = view(Some(style), node);
+    if let Some(v) = st.mask_view.as_mut() {
+        v.row = Some(row);
+    }
+    st
+}
+
+fn with_row(mut row: Value, extra: Value) -> Value {
+    if let (Some(r), Some(e)) = (row.as_object_mut(), extra.as_object()) {
+        r.extend(e.clone());
+    }
+    row
+}
+
+fn brush_row() -> Value {
+    json!({
+        "kind": "brush", "mode": "add",
+        "strokes": [{ "size": 0.2, "hardness": 0.5, "erase": false, "points": [[0.25, 0.5], [0.75, 0.5]] }],
+    })
+}
+
+fn brightness_row() -> Value {
+    json!({ "kind": "brightness_range", "mode": "add", "low": 0.3, "high": 0.8, "softness": 0.4 })
+}
+
+fn main_with(rows: Vec<Value>, invert: bool) -> DevelopSettings {
+    let mut n = node(1, json!({}), rows);
+    n["masks"]["invert"] = json!(invert);
+    doc(vec![n], line(&[1]))
+}
+
+/// The Mask only frame of Main when it has these rows alone.
+fn alone(r: &Renderer, d: &Developed, row: Value) -> RenderedFrame {
+    let src = with(&d.source(), main_with(vec![row], false));
+    frame(r, &src, &view(Some(MaskStyle::MaskOnly), 1))
+}
+
+#[test]
+fn a_row_shows_its_own_mask_and_not_the_nodes_invert_or_the_other_rows() {
+    let d = photo();
+    let r = renderer(None, None);
+    let left = radial([0.25, 0.5], [0.15, 0.2], 0.3);
+    let right = radial([0.75, 0.5], [0.15, 0.2], 0.3);
+    // Two rows and the node's Invert: the node's mask is neither row.
+    let src = with(
+        &d.source(),
+        main_with(vec![left.clone(), right.clone()], true),
+    );
+    let node_view = frame(&r, &src, &view(Some(MaskStyle::MaskOnly), 1));
+    let first = frame(&r, &src, &row_view(MaskStyle::MaskOnly, 1, 0));
+    let second = frame(&r, &src, &row_view(MaskStyle::MaskOnly, 1, 1));
+    assert_eq!(first.rgba, alone(&r, &d, left).rgba);
+    assert_eq!(second.rgba, alone(&r, &d, right).rgba);
+    assert_ne!(first.rgba, node_view.rgba);
+    assert_ne!(first.rgba, second.rgba);
+    assert!(all_paper_above_and_below(&first));
+    // The left oval is white in the first view and black in the second; the node's Invert is not there.
+    assert!(m_at(&first, 75, 150) > 0.98, "{}", m_at(&first, 75, 150));
+    assert!(m_at(&first, 225, 150) < 0.01);
+    assert!(m_at(&second, 75, 150) < 0.01);
+    assert!(m_at(&second, 225, 150) > 0.98);
+}
+
+#[test]
+fn a_rows_own_invert_and_opacity_are_in_its_view() {
+    let d = photo();
+    let r = renderer(None, None);
+    let base = radial([0.5, 0.5], [0.3, 0.2], 0.3);
+    let src = with(
+        &d.source(),
+        main_with(
+            vec![
+                with_row(base.clone(), json!({ "opacity": 0.5 })),
+                with_row(base.clone(), json!({ "invert": true, "opacity": 0.75 })),
+                base,
+            ],
+            false,
+        ),
+    );
+    let half = frame(&r, &src, &row_view(MaskStyle::MaskOnly, 1, 0));
+    let inverted = frame(&r, &src, &row_view(MaskStyle::MaskOnly, 1, 1));
+    let full = frame(&r, &src, &row_view(MaskStyle::MaskOnly, 1, 2));
+    for (x, y) in [(150, 150), (3, 52), (200, 150), (235, 150)] {
+        let s = m_at(&full, x, y);
+        assert!(
+            (m_at(&half, x, y) - 0.5 * s).abs() <= 1.5 / 255.0,
+            "opacity at ({x}, {y})"
+        );
+        assert!(
+            (m_at(&inverted, x, y) - 0.75 * (1.0 - s)).abs() <= 1.5 / 255.0,
+            "invert and opacity at ({x}, {y})"
+        );
+    }
+}
+
+#[test]
+fn a_subtract_row_shows_the_mask_it_takes_away_as_a_positive_mask() {
+    let d = photo();
+    let r = renderer(None, None);
+    let big = radial([0.5, 0.5], [0.45, 0.3], 0.3);
+    let small = radial([0.5, 0.5], [0.15, 0.1], 0.3);
+    let src = with(
+        &d.source(),
+        main_with(
+            vec![big, with_row(small.clone(), json!({ "mode": "subtract" }))],
+            false,
+        ),
+    );
+    let taken = frame(&r, &src, &row_view(MaskStyle::MaskOnly, 1, 1));
+    assert_eq!(taken.rgba, alone(&r, &d, small).rgba);
+    assert!(m_at(&taken, 150, 150) > 0.98, "white where it cuts");
+    assert!(m_at(&taken, 3, 52) < 0.01, "black elsewhere");
+}
+
+#[test]
+fn a_range_row_and_a_raster_row_shown_alone_are_their_own_masks() {
+    let d = photo();
+    let r = renderer(None, None);
+    let rows = vec![
+        radial([0.5, 0.5], [0.1, 0.1], 0.3),
+        brightness_row(),
+        with_row(brush_row(), json!({ "opacity": 0.8, "invert": true })),
+    ];
+    let src = with(&d.source(), main_with(rows.clone(), true));
+    for (i, row) in rows.iter().enumerate().skip(1) {
+        let shown = frame(&r, &src, &row_view(MaskStyle::MaskOnly, 1, i as u32));
+        assert_eq!(shown.rgba, alone(&r, &d, row.clone()).rgba, "row {i}");
+    }
+    // The brush: painted band along the middle, inverted and at 0.8, so about 0 on the stroke and 0.8 off it.
+    let brushed = frame(&r, &src, &row_view(MaskStyle::MaskOnly, 1, 2));
+    assert!(m_at(&brushed, 150, 150) < 0.05);
+    assert!((m_at(&brushed, 150, 60) - 0.8).abs() < 0.03);
+    // The brightness range is not flat on the patchwork.
+    let range = frame(&r, &src, &row_view(MaskStyle::MaskOnly, 1, 1));
+    let values: Vec<u8> = ROWS
+        .step_by(10)
+        .flat_map(|y| (0..range.width).step_by(20).map(move |x| (x, y)))
+        .map(|(x, y)| px(&range, x, y)[0])
+        .collect();
+    assert!(values.iter().max() != values.iter().min());
+}
+
+#[test]
+fn a_row_that_is_off_can_be_shown() {
+    let d = photo();
+    let r = renderer(None, None);
+    let oval = radial([0.5, 0.5], [0.3, 0.2], 0.3);
+    let src = with(
+        &d.source(),
+        main_with(vec![with_row(oval.clone(), json!({ "enabled": false }))], false),
+    );
+    // The node's own view has no rows on: m is 1. The row's view is the row.
+    let node_view = frame(&r, &src, &view(Some(MaskStyle::MaskOnly), 1));
+    assert_eq!(m_at(&node_view, 3, 52), 1.0);
+    let shown = frame(&r, &src, &row_view(MaskStyle::MaskOnly, 1, 0));
+    assert_eq!(shown.rgba, alone(&r, &d, oval).rgba);
+}
+
+#[test]
+fn a_row_the_node_does_not_have_is_the_nodes_view_and_a_node_it_does_not_have_is_the_photo() {
+    let d = photo();
+    let r = renderer(None, None);
+    let src = with(&d.source(), main_radial());
+    for style in [MaskStyle::Overlay, MaskStyle::MaskOnly] {
+        let node_view = frame(&r, &src, &view(Some(style), 1));
+        assert_eq!(
+            frame(&r, &src, &row_view(style, 1, 5)).rgba,
+            node_view.rgba,
+            "{style:?}"
+        );
+        let plain = frame(&r, &src, &view(None, 1));
+        assert_eq!(frame(&r, &src, &row_view(style, 7, 0)).rgba, plain.rgba);
+    }
+}
+
+#[test]
+fn the_frame_cache_keeps_the_rows_apart_and_overlay_tints_the_rows_mask() {
+    let d = photo();
+    let r = renderer(None, None);
+    let src = with(
+        &d.source(),
+        main_with(
+            vec![
+                radial([0.25, 0.5], [0.15, 0.2], 0.3),
+                radial([0.75, 0.5], [0.15, 0.2], 0.3),
+            ],
+            false,
+        ),
+    );
+    let (a, b) = (
+        frame(&r, &src, &row_view(MaskStyle::Overlay, 1, 0)),
+        frame(&r, &src, &row_view(MaskStyle::Overlay, 1, 1)),
+    );
+    assert_ne!(a.rgba, b.rgba);
+    assert_eq!(a.rgba, frame(&r, &src, &row_view(MaskStyle::Overlay, 1, 0)).rgba);
+    // The overlay is the formula on the plain frame with the row's mask.
+    let plain = frame(&r, &src, &view(None, 1));
+    let only = frame(&r, &src, &row_view(MaskStyle::MaskOnly, 1, 0));
+    let (worst, mean) = formula_error(&plain, &only, &a);
+    eprintln!("Overlay of a row against the formula: largest {worst:.2}, mean {mean:.3}");
+    assert!(worst <= 3.0 && mean < 1.0);
+}
+
+#[test]
+fn the_device_shows_a_rows_mask_as_the_cpu_does() {
+    let Some(gpu) = gpu() else { return };
+    let d = photo();
+    let src = with(
+        &d.source(),
+        main_with(
+            vec![
+                radial([0.3, 0.5], [0.2, 0.2], 0.3),
+                with_row(brush_row(), json!({ "mode": "subtract", "opacity": 0.9 })),
+                brightness_row(),
+            ],
+            true,
+        ),
+    );
+    let on_gpu = renderer(Some(&gpu), None);
+    let cpu = renderer(None, None);
+    for row in 0..3u32 {
+        let st = row_view(MaskStyle::MaskOnly, 1, row);
+        let (a, b) = (fresh(&on_gpu, &src, &st), fresh(&cpu, &src, &st));
+        assert_eq!(a.report.device, ComputeDevice::Gpu);
+        let (worst, mean) = differ(&a, &b);
+        eprintln!("row {row}, device against CPU: largest {worst} codes, mean {mean:.4}");
+        assert!(worst <= 1, "row {row}: {worst} codes");
+    }
 }

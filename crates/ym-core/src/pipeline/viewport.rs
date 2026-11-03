@@ -112,6 +112,11 @@ pub struct MaskView {
     pub node: u32,
     /// Overlay or Mask only.
     pub style: MaskStyle,
+    /// The row of the node whose own mask is shown instead of the node's (its place in the node's list, off rows
+    /// included): the row as it enters the node's fold (`docs/23` section 5.8). `None` shows the node's mask. A
+    /// row the node does not have shows the node's mask.
+    #[serde(default)]
+    pub row: Option<u32>,
 }
 
 /// Pointer input over the photo (`viewport_input`). Coordinates are CSS pixels in the cell.

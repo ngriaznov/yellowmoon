@@ -31,6 +31,7 @@ use super::{Job, lock};
 use crate::pipeline::RenderError;
 use crate::pipeline::color::uses_background;
 use crate::pipeline::geometry::oriented_to_sensor;
+use crate::settings::DevelopSettings;
 use crate::pipeline::raw::RawParamsKey;
 
 /// The next key of a blur map: every map the core makes has one of its own, so a plane or a grade plan made from an
@@ -105,9 +106,10 @@ impl Job<'_> {
     /// The errors of [`Job::blur_entry`].
     pub(crate) fn background_for(
         &mut self,
+        settings: &DevelopSettings,
         stop: PlanStop,
     ) -> Result<Option<Arc<BlurMap>>, RenderError> {
-        if !uses_background(&self.src.settings, stop) {
+        if !uses_background(settings, stop) {
             return Ok(None);
         }
         Ok(Some(Arc::clone(&self.blur_entry()?.photo)))

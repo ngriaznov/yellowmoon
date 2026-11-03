@@ -683,10 +683,11 @@ impl Job<'_> {
     /// The errors of the picture and the model for an export, which makes the features itself; [`RenderError::Cancelled`].
     pub(crate) fn objects_for(
         &mut self,
+        settings: &DevelopSettings,
         stop: PlanStop,
     ) -> Result<Option<Arc<ObjectPlanes>>, RenderError> {
-        let objects = self.object_planes_for(stop)?;
-        let vision = self.vision_planes_for(stop)?;
+        let objects = self.object_planes_for(settings, stop)?;
+        let vision = self.vision_planes_for(settings, stop)?;
         if vision.is_empty() {
             return Ok(objects);
         }
@@ -700,9 +701,10 @@ impl Job<'_> {
     /// The planes of the Object rows alone (see [`Job::objects_for`]).
     fn object_planes_for(
         &mut self,
+        settings: &DevelopSettings,
         stop: PlanStop,
     ) -> Result<Option<Arc<ObjectPlanes>>, RenderError> {
-        let rows: Vec<ObjectMask> = object_rows(&self.src.settings, stop)
+        let rows: Vec<ObjectMask> = object_rows(settings, stop)
             .into_iter()
             .filter(|o| asks_for_mask(o))
             .cloned()

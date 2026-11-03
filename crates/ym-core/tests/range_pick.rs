@@ -153,6 +153,7 @@ fn mask_only() -> ViewportState {
     st.mask_view = Some(MaskView {
         node: NODE,
         style: MaskStyle::MaskOnly,
+        row: None,
     });
     st
 }

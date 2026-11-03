@@ -183,7 +183,7 @@ pub enum SettingsError {
     /// A flat settings document of Yellowmoon 0.1 (`docs/23` section 3.12). Nothing was saved in 0.1,
     /// so there is nothing to carry over.
     #[error(
-        "This settings file is in the old form of Yellowmoon 0.1. Settings are now a graph of nodes: `ym render --help` shows the new form, and `ym render --json` prints a photo's settings in it."
+        "This settings file is in the old form of Yellowmoon 0.1. Settings are now a graph of nodes: `ym render --help` shows the new form."
     )]
     OldForm,
     /// A mask row patch names another kind than the row's.
@@ -208,7 +208,7 @@ pub enum SettingsError {
 }
 
 /// The sentence a flat document of Yellowmoon 0.1 is refused with.
-pub const OLD_FORM_SENTENCE: &str = "This settings file is in the old form of Yellowmoon 0.1. Settings are now a graph of nodes: `ym render --help` shows the new form, and `ym render --json` prints a photo's settings in it.";
+pub const OLD_FORM_SENTENCE: &str = "This settings file is in the old form of Yellowmoon 0.1. Settings are now a graph of nodes: `ym render --help` shows the new form.";
 
 /// The top-level names of a settings document of Yellowmoon 0.1 (`docs/23` section 3.12). A
 /// document that has no `nodes` and only these keys is refused with [`SettingsError::OldForm`].

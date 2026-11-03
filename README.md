@@ -119,12 +119,12 @@ You only do this once. After that Yellowmoon opens like any other app, and the u
 
 ```
 ym render ~/Pictures/2026-10-04 --look neutral --format jpeg --long-edge 3000
-ym info DSC04204.ARW --json
+ym info DSC04204.ARW
 ym render DSC04204.ARW --auto-provider yellowmoon   # Default Auto, the same on every computer
 ym render DSC04204.ARW --auto-provider claude       # Claude Code grades it (sends a small copy of the photo to Anthropic)
 ym looks import ~/Downloads/<ARRI look package>.zip
-ym render DSC04204.ARW --json | jq .settings       # a photo's settings: a graph of nodes
 ym render DSC04204.ARW --settings graph.json        # settings that need more than the flags: other nodes, masks, links
+                                                    # (an export's XMP holds a photo's settings as ym:Settings, in the same form)
 ym doctor                                           # the Masks line lists the kinds of mask this computer can make
 ```
 

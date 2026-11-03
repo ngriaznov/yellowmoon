@@ -195,6 +195,7 @@ fn mask_frame(r: &Renderer, src: &PhotoSource, state: &ViewportState) -> Rendere
     state.mask_view = Some(MaskView {
         node: 1,
         style: MaskStyle::MaskOnly,
+        row: None,
     });
     r.viewport_frame(
         src,

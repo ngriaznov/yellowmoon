@@ -91,6 +91,11 @@ export const commands = {
 	node: number,
 	/**  Overlay or Mask only. */
 	style: MaskStyle,
+	/**
+	 *  The row of that corrector whose own mask is shown instead of the corrector's (its place in the list, rows
+	 *  that are off included); `None` shows the corrector's mask (`docs/23` section 5.8).
+	 */
+	row?: number | null,
 } | null) => __TAURI_INVOKE<null>("viewport_set_mode", { mode, maskView }),
 	/**  `set_before(before)`: the photo before the look and the display transform. */
 	setBefore: (before: boolean) => __TAURI_INVOKE<null>("set_before", { before }),
@@ -1775,6 +1780,11 @@ export type MaskView = {
 	node: number,
 	/**  Overlay or Mask only. */
 	style: MaskStyle,
+	/**
+	 *  The row of that corrector whose own mask is shown instead of the corrector's (its place in the list, rows
+	 *  that are off included); `None` shows the corrector's mask (`docs/23` section 5.8).
+	 */
+	row?: number | null,
 };
 
 /**

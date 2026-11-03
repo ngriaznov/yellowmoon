@@ -41,7 +41,7 @@ use crate::pipeline::RenderError;
 use crate::pipeline::color::{PhotoSource, vision_kinds, vision_kinds_to};
 use crate::pipeline::vision::VisionPhase;
 use crate::session::PhotoId;
-use crate::settings::{MaskKind, MaskSupport, MaskUnavailable};
+use crate::settings::{DevelopSettings, MaskKind, MaskSupport, MaskUnavailable};
 use crate::vision::{
     VisionError, VisionKind, VisionMask, VisionMasks, VisionSupport, plane_codes, plane_key,
 };
@@ -618,9 +618,10 @@ impl Job<'_> {
     /// the errors of the picture.
     pub(crate) fn vision_planes_for(
         &mut self,
+        settings: &DevelopSettings,
         stop: PlanStop,
     ) -> Result<Vec<(VisionKind, Arc<SourcePlane>)>, RenderError> {
-        let wanted = vision_kinds_to(&self.src.settings, stop);
+        let wanted = vision_kinds_to(settings, stop);
         if wanted.is_empty() {
             return Ok(Vec::new());
         }

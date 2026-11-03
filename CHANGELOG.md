@@ -9,7 +9,7 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
-Nodes and masks: a node view for grading part of a photo, with masks that are drawn, found from a range of colour or brightness, or found by a model. The pipeline version is 0.9.0 (was 0.8.2). Photos with a curve and a look other than Neutral come out a little differently; every other photo comes out as before. **`ym render --json` and `ym info --json` print a photo's settings, and the Auto estimates, in a new shape, and settings files of Yellowmoon 0.1 are refused.**
+Nodes and masks: a node view for grading part of a photo, with masks that are drawn, found from a range of colour or brightness, or found by a model. The pipeline version is 0.9.0 (was 0.8.2). Photos with a curve and a look other than Neutral come out a little differently; every other photo comes out as before. **`--json` is no longer part of `ym`, and settings files of Yellowmoon 0.1 are refused.**
 
 ### Added
 
@@ -22,8 +22,8 @@ Nodes and masks: a node view for grading part of a photo, with masks that are dr
 ### Changed
 
 - **The curve comes before the look.** The tone curve now acts on the picture before the look is applied, and the look is the Output's. A photo with a curve and a look other than Neutral comes out a little differently (the curve now acts on the picture the look sees); a photo with no curve, or the Neutral look, is byte for byte what it was. The looks of ARRI's Rec.709 sets already ran the curve first. The pipeline version is 0.9.0.
-- **`ym render --json` and `ym info --json` changed shape.** A photo's `settings` is now `{ "nodes": { "items": [ … ], "links": [ … ] } }`, with the Input, the correctors and the Output as items, so `settings.contrast` is `settings.nodes.items[…].grade.contrast`, in the item with `"id": 1`. The `auto` object groups Auto's numbers by the node they are for: `auto.exposure_ev` is `auto.input.exposure_ev`, and the grade's values are in `auto.main`. A script that reads either needs to follow. The flags of `ym render` are unchanged, and `ym render --json | jq .settings` fed back with `--settings` makes the same file.
-- **Settings files of Yellowmoon 0.1 are refused.** A `--settings` file in the flat form of 0.1 (`{ "look": …, "contrast": … }`) stops `ym` with exit 2 and the sentence "This settings file is in the old form of Yellowmoon 0.1. Settings are now a graph of nodes: `ym render --help` shows the new form, and `ym render --json` prints a photo's settings in it." Settings were never saved in 0.1 (the only copies are the XMP of an exported file and `ym render --json`), so the app has nothing to carry over.
+- **`--json` is no longer part of `ym`.** `ym render --json` and `ym info --json` are hidden: they are out of the help and the documentation, and Yellowmoon's own tools and tests keep using them. They may come back later. A photo's settings are in the `ym:Settings` of an export's XMP, and they read back with `--settings`. The flags of `ym render` are unchanged. (`ym doctor --json`, `ym looks list --json` and `ym lenses list --json` stay.)
+- **Settings files of Yellowmoon 0.1 are refused.** A `--settings` file in the flat form of 0.1 (`{ "look": …, "contrast": … }`) stops `ym` with exit 2 and the sentence "This settings file is in the old form of Yellowmoon 0.1. Settings are now a graph of nodes: `ym render --help` shows the new form." Settings were never saved in 0.1 (the only copy is the XMP of an exported file), so the app has nothing to carry over.
 - **A JPEG's XMP that is too long is left out with a note.** A graph with a lot of brush work can pin more settings than a JPEG's XMP packet holds (65,502 bytes); the export then says "The settings of this photo are too long for a JPEG's XMP, so they are not recorded." in `notes`. TIFF, PNG and DNG have no such limit.
 
 ### Credits

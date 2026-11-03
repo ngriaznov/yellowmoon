@@ -82,7 +82,7 @@ const H_RUN: &str = "Run";
 /// Arguments of `ym render`.
 #[derive(Debug, Args)]
 #[command(
-    after_help = "Examples:\n  ym render ~/Pictures/2026-10-04 --look neutral --format jpeg --long-edge 3000 --out ~/Exports\n  fd -e ARW . /Volumes/A1 | ym render - --json --format tiff --bits 16 > results.jsonl\n  ym render DSC04204.ARW --exposure-offset -0.5 --wb 5200,4\n\nSettings are a graph of nodes. The options set fields of three of them: the Input (--exposure, --exposure-offset, --wb, --light, --lens, --flares, --edges, --anamorphic, --nr, --sharpen, --rolloff, --no-neural, --no-highlight-recovery, --no-lens, --no-ca, --auto-crop), node 1, Main (--contrast, --brightness, --highlights, --shadows, --white, --black, --saturation) and the Output (--look, --intensity, --output-sharpening). Everything else goes in a JSON file given with --settings: other nodes, masks and links, colour balance, curves, crop, orientation, white pick. The file is a graph, for example {\"nodes\":{\"items\":[{\"id\":1,\"grade\":{\"contrast\":{\"kind\":\"manual\",\"value\":20}}}]}}; --json prints a photo's settings in that form. A file in the form of Yellowmoon 0.1 is refused. Options given alongside --settings override it. A file with several photos' settings is an object keyed by file name."
+    after_help = "Examples:\n  ym render ~/Pictures/2026-10-04 --look neutral --format jpeg --long-edge 3000 --out ~/Exports\n  fd -e ARW . /Volumes/A1 | ym render - --format tiff --bits 16 --out ~/Exports\n  ym render DSC04204.ARW --exposure-offset -0.5 --wb 5200,4\n\nSettings are a graph of nodes. The options set fields of three of them: the Input (--exposure, --exposure-offset, --wb, --light, --lens, --flares, --edges, --anamorphic, --nr, --sharpen, --rolloff, --no-neural, --no-highlight-recovery, --no-lens, --no-ca, --auto-crop), node 1, Main (--contrast, --brightness, --highlights, --shadows, --white, --black, --saturation) and the Output (--look, --intensity, --output-sharpening). Everything else goes in a JSON file given with --settings: other nodes, masks and links, colour balance, curves, crop, orientation, white pick. The file is a graph, for example {\"nodes\":{\"items\":[{\"id\":1,\"grade\":{\"contrast\":{\"kind\":\"manual\",\"value\":20}}}]}}; the `ym:Settings` of an export's XMP holds a photo's settings in that form. A file in the form of Yellowmoon 0.1 is refused. Options given alongside --settings override it. A file with several photos' settings is an object keyed by file name."
 )]
 pub struct RenderArgs {
     /// Files or folders to render; `-` reads file paths from stdin, one per line. Folders are walked
@@ -106,7 +106,7 @@ pub struct RenderArgs {
     /// so that `--display aces2 photo.ARW` is read whole and the usage error comes before any photo.
     #[arg(long, value_name = "WORD", num_args = 0..=1, require_equals = true, default_missing_value = "", hide = true, help_heading = H_LOOK)]
     pub display: Option<String>,
-    /// A JSON file of settings, or `-` for stdin: a graph of nodes (`ym render --json` prints one).
+    /// A JSON file of settings, or `-` for stdin: a graph of nodes (the `ym:Settings` of an export's XMP is one).
     /// It covers what these options can't: other nodes and their masks, links, colour balance
     /// (`{ "kind": "auto" }` puts a shadows or highlights wheel of Main back to Auto), curves, crop,
     /// orientation, white pick.
@@ -232,8 +232,10 @@ pub struct RenderArgs {
     /// Photos read and analysed at the same time. The export itself renders one photo at a time.
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=64), help_heading = H_RUN)]
     pub jobs: Option<u32>,
-    /// Print one JSON object per file on stdout, as each file finishes.
-    #[arg(long, help_heading = H_RUN)]
+    /// Print one JSON object per file on stdout, as each file finishes. Hidden from the help and
+    /// not promised to users: Yellowmoon's own tools (`tools/golden`) and tests use it
+    /// (`docs/13-testing.md`).
+    #[arg(long, hide = true, help_heading = H_RUN)]
     pub json: bool,
     /// Stop with exit code 4 when there is no usable GPU, instead of using the CPU.
     #[arg(long, conflicts_with = "cpu", help_heading = H_RUN)]
@@ -679,8 +681,9 @@ pub struct InfoArgs {
     #[arg(required = true, value_name = "FILES")]
     pub files: Vec<PathBuf>,
     /// Print one JSON object per file instead of text (the shape of `render --json` without
-    /// `output` and `timings_ms`).
-    #[arg(long)]
+    /// `output` and `timings_ms`). Hidden from the help and not promised to users
+    /// (`docs/13-testing.md`).
+    #[arg(long, hide = true)]
     pub json: bool,
     /// Force a camera profile, for comparisons (for example `sony-ilce-7rm4`).
     #[arg(long, value_name = "ID")]

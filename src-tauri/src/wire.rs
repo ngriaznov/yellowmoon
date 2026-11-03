@@ -2766,6 +2766,10 @@ pub struct MaskView {
     pub node: u32,
     /// Overlay or Mask only.
     pub style: MaskStyle,
+    /// The row of that corrector whose own mask is shown instead of the corrector's (its place in the list, rows
+    /// that are off included); `None` shows the corrector's mask (`docs/23` section 5.8).
+    #[serde(default)]
+    pub row: Option<u32>,
 }
 
 /// A kind of mask row (`docs/23` section 3.3), as the row's `kind` is written: what `mask_kinds` lists and the Add

@@ -4398,7 +4398,7 @@ fn a_white_balance_that_came_from_a_picked_white_is_copied_as_the_manual_kelvin_
 #[test]
 fn the_form_of_yellowmoon_0_1_is_refused_with_its_sentence() {
     // The only test that holds a flat document (`docs/23` section 3.12).
-    const SENTENCE: &str = "This settings file is in the old form of Yellowmoon 0.1. Settings are now a graph of nodes: `ym render --help` shows the new form, and `ym render --json` prints a photo's settings in it.";
+    const SENTENCE: &str = "This settings file is in the old form of Yellowmoon 0.1. Settings are now a graph of nodes: `ym render --help` shows the new form.";
     assert_eq!(ym_core::settings::OLD_FORM_SENTENCE, SENTENCE);
     assert_eq!(SettingsError::OldForm.to_string(), SENTENCE);
     for flat in [

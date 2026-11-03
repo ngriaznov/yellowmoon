@@ -4,6 +4,8 @@ import { defineConfig } from "@playwright/test";
 // Chromium is the build that ships in /opt/pw-browsers (1194 = Playwright 1.56.x).
 export default defineConfig({
   testDir: "e2e",
+  // e2e/built/ runs on the built app (playwright.built.config.ts, `npm run e2e:built`).
+  testIgnore: "built/**",
   // Every spec runs on the mock with timers it controls, so nothing here waits for real time. The generous limits are for a busy
   // machine (CI runners share their CPUs), not for slow tests.
   timeout: 60_000,

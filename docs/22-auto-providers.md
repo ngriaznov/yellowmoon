@@ -807,6 +807,8 @@ As `docs/19` section 8 says for Apple: `doctor --bench`, `looks bake --preview`,
 
 ### 14.1 `--json` (D2)
 
+From 0.2.0 `render --json` and `info --json` are hidden flags for Yellowmoon's own tools and tests, not promised to users (`docs/13-testing.md`); the shape below is theirs. `doctor --json` is a different command and stays documented.
+
 - `auto_source`: `rule`, `apple`, `claude` or `agy`: which Auto made the photo's automatic values (a failed photo that takes its burst's steps counts as the provider).
 - `auto_advisor` (new, after `apple_auto`; every photo `info` develops, and in `render` every photo a provider acted on): keys sorted, all present:
 

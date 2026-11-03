@@ -259,12 +259,14 @@ fn the_cli_documentation_and_the_help_agree() {
         assert_eq!(list(opener), want, "the paragraph's flags for {opener}");
     }
     // The `--settings` text of the help names the node-first form.
-    assert!(help.contains("a graph of nodes (`ym render --json` prints one)"));
+    assert!(help.contains("a graph of nodes (the `ym:Settings` of an export's XMP is one)"));
+    // `--json` is a hidden flag: it is in neither the help nor the closing paragraph.
+    assert!(!help.contains("--json"), "--json is hidden from the help");
     // The example in the paragraph is a document the core reads.
     let example = paragraph
         .split("for example ")
         .nth(1)
-        .and_then(|rest| rest.split("; --json").next())
+        .and_then(|rest| rest.split("; the `ym:Settings`").next())
         .expect("the example of the paragraph");
     let (s, clamped) =
         DevelopSettings::from_json(example, &LookId::neutral()).expect("the example reads");

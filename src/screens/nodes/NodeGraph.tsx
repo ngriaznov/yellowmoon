@@ -120,6 +120,10 @@ function Canvas(props: NodeGraphProps) {
         data: { id },
         width: box.w,
         height: box.h,
+        // The size is ours (the card is drawn at exactly this size), so it is also what the node measures. Without `measured`, xyflow takes each
+        // new node object as a node that was never measured and drops the position of its ports (`parseHandles` in @xyflow/system); the links
+        // of that node are then not drawn until the node is measured again, and in the built app that second measurement can fail to come
+        // (the node element is only observed again when the render sees it uninitialised), so the links stayed gone after a few drags.
         draggable: !isMarker(id),
         selectable: false,
         focusable: false,

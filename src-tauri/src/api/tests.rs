@@ -1330,6 +1330,7 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
             Some(&MaskView {
                 node: 1,
                 style: MaskStyle::Overlay,
+                row: None,
             }),
         )
         .expect("mask view");
@@ -1340,13 +1341,14 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
         on.mask_view,
         Some(CoreView {
             node: 1,
-            style: CoreStyle::Overlay
+            style: CoreStyle::Overlay,
+            row: None
         })
     );
     assert_eq!(on.mode, zoomed.mode);
     assert_eq!(on.centre, zoomed.centre);
 
-    // Another style, another node.
+    // Another style, another node, and one row of it.
     let n = h.api.viewport().frames_presented();
     h.api
         .viewport_set_mode(
@@ -1354,6 +1356,7 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
             Some(&MaskView {
                 node: 2,
                 style: MaskStyle::MaskOnly,
+                row: Some(3),
             }),
         )
         .expect("mask view");
@@ -1363,7 +1366,8 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
         h.api.viewport().snapshot_synced().1.mask_view,
         Some(CoreView {
             node: 2,
-            style: CoreStyle::MaskOnly
+            style: CoreStyle::MaskOnly,
+            row: Some(3)
         })
     );
 
@@ -1393,6 +1397,7 @@ fn a_mask_view_belongs_to_its_photo() {
             Some(&MaskView {
                 node: 1,
                 style: MaskStyle::MaskOnly,
+                row: None,
             }),
         )
         .expect("mask view");

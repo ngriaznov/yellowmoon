@@ -658,6 +658,26 @@ fn mask_rows(
     }
 }
 
+/// The settings as the mask view of one row reads them (`docs/23` section 5.8): corrector `node` has only row `row`, on, added,
+/// with its own Invert and Opacity kept, no Invert of the node's own and no key link, so that the node's mask `m` is that row's
+/// `a`: its source, its raster steps, its own Invert and its Opacity, as it enters the node's fold. A Subtract row is shown as
+/// the positive mask it takes away, and a row with the eye off can be shown. `None` when the node has no such row.
+#[must_use]
+pub fn only_row(s: &DevelopSettings, node: u32, row: usize) -> Option<DevelopSettings> {
+    let mut only = s.clone();
+    let masks = &mut only.nodes.corrector_mut(node)?.masks;
+    let mut item = masks.items.get(row)?.clone();
+    item.mode = crate::settings::MaskMode::Add;
+    item.enabled = true;
+    masks.items = vec![item];
+    masks.invert = false;
+    let to = NodeId::Corrector(node);
+    only.nodes
+        .links
+        .retain(|l| !(l.to.node == to && l.to.port == Port::Key));
+    Some(only)
+}
+
 /// A node's mask rows as `ym_color`'s: the enabled rows in order (a row with the eye off is absent), each
 /// with its kind, mode, Invert and Opacity, and the node's Invert. A raster row (Brush and Background now; Object,
 /// Subject and People when they are built) is a [`MaskKind::Raster`] whose plane is its place among the
