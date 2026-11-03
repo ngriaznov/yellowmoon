@@ -88,7 +88,7 @@ A parity bound has two columns, software (lavapipe, the CPU-like rounding) and h
 
 ### Device residency
 
-`crates/ym-gpu/tests/gpu_residency.rs` and `crates/ym-core/tests/gpu_residency.rs` (in the `gpu-lavapipe` job and on Metal; the fault cases need `--features fault-injection`): a tile, a fit-view group or a 100 % tile kept on the device reads back as the host one bit for bit (1 x 1 to whole tiles, odd origins, every CFA phase), the export tail fed device tiles gives the bands host tiles give, view frames are the same with `resident_caches` on and off, a pixel readout leaves the caches on the device, a cache that holds device tiles beside a CPU tile (`tile@3`) gives the host frame, the pool ledger returns to its baseline after an export, after navigation and after `forget`, and a tile takes at most three submissions. The 50 MP gate (`fifty_megapixels_through_the_chain_and_the_tail_stay_under_two_gib`, `#[ignore]`, run with `--release -- --ignored`): 8436 x 5624, 54 tiles, peak 600 MiB of device memory against 2 GiB, back to 0 afterwards, measured on lavapipe; the Metal job runs it too.
+`crates/ym-gpu/tests/gpu_residency.rs` and `crates/ym-core/tests/gpu_residency.rs` (in the `gpu-lavapipe` job and on Metal; the fault cases need `--features fault-injection`): a tile, a fit-view group or a 100 % tile kept on the device reads back as the host one bit for bit (1 x 1 to whole tiles, odd origins, every CFA phase), the export tail fed device tiles gives the bands host tiles give, view frames are the same with `resident_caches` on and off, a pixel readout leaves the caches on the device, a cache that holds device tiles beside a CPU tile (`tile@3`) gives the host frame, the pool ledger returns to its baseline after an export, after navigation and after `forget`, and a tile takes at most three submissions. After a device fault (`oom`), the frame of the recovered device is exactly the frame of a device given the CPU's group; against the frame of the device's own group it may differ in at most 10 bytes of 240,000 by at most 4 codes on every adapter, lavapipe included (the two groups differ in last bits and the output's dither rounds a few bytes apart; the owner, 2026-11-03). The 50 MP gate (`fifty_megapixels_through_the_chain_and_the_tail_stay_under_two_gib`, `#[ignore]`, run with `--release -- --ignored`): 8436 x 5624, 54 tiles, peak 600 MiB of device memory against 2 GiB, back to 0 afterwards, measured on lavapipe; the Metal job runs it too.
 
 ### `ym doctor --bench` and `tools/dev/mac-gpu-check.sh`
 
@@ -103,6 +103,57 @@ A parity bound has two columns, software (lavapipe, the CPU-like rounding) and h
 ### Times and the cache
 
 Recorded on the 4-core development machine with Mesa lavapipe, debug build: `gpu_determinism` 130 s with two test threads (189 s with one), `gpu_faults` 63 s, `golden check --device gpu --subset tools/golden/gpu-subset.txt --jobs 2` 42 s (53 s on a busier machine), `ym doctor --bench` on a 1 MP file about 43 s. The Metal job's timeout is 150 minutes: with a warm dependency cache the suites take about 50 minutes, and the large tests, the golden subset, the real photo and the bench add to that; the first run of a new cache key is cold. `mac-gpu.yml` keeps one Rust cache for both arm64 runners (`shared-key: metal-arm64`), saved also when a test fails (`cache-on-failure`) and only from `main`, `claude/**` and manual runs, so that a pull request cannot push the macOS caches out of the repository's 10 GB; the real-photo files have a cache of their own.
+
+## `ym`'s hidden `--json` (for Yellowmoon's own tools)
+
+`ym render --json` and `ym info --json` are hidden flags (clap `hide = true`) from 0.2.0: they are in no help, no README and no user documentation, and the owner has not promised them to users (2026-11-03: "Hide --json for 0.2.0 ... Can come back later"). They stay because `tools/golden`, the parity tests, the snapshot tests and the shell's tests read the report. **The shape below is not promised and may change** without a note in `CHANGELOG.md`; change it together with its readers. A user finds a photo's settings in the `ym:Settings` of an export's XMP (`docs/09`), and `--settings` reads them back. `doctor --json`, `looks list --json` and `lenses list --json` are different commands with their own, listed options, and stay as they are. With the flag, stdout carries one object per line instead of the paths of the files, the progress line is not drawn, and per-file errors are in the object, not on stderr. The values keep the exact characters of a file name and are escaped the way JSON does it (DEL and the C1 controls as `\u007f`, `\u0085` … `\u009f`).
+
+One object per input file, written when that file finishes, in completion order:
+
+```json
+{
+  "input": "/Volumes/A1/DSC04204.ARW",
+  "output": "/Users/me/Pictures/Lisbon export/DSC04204_neutral.jpg",
+  "status": "ok",
+  "camera": { "body": "Sony A1", "model_id": 384, "profile": "sony-ilce-7rm4", "profile_version": "1.2.0", "match": "default" },
+  "look": { "id": "builtin:neutral", "intensity": 100 },
+  "auto": { "input": { "exposure_ev": 0.81, "kelvin": 5450, "tint": 0,
+                       "sharpen": { "amount": 80, "radius_px": 0.8 }, "noise_reduction": { "luminance": 20, "color": 30, "detail": 50 } },
+            "main": { "contrast": 15, "saturation": 0, "highlights": -20, "shadows": 0, "black": 0,
+                      "balance_shadows": [-0.476, -0.275], "balance_highlights": [0, 0] },
+            "source": "apple", "apple": { "state": "answered", "...": "…" }, "apple_steps": { "...": "…" },
+            "light_class": "daylight", "light_confidence": 0.82, "noise": { "a": 1.9e-5, "b": 3.1e-7 } },
+  "auto_source": "apple",
+  "apple_auto": { "state": "answered", "reason": null, "model": "AFM 3 Core", "os": "27.0.1 (27A404)",
+                  "instructions": "default", "instructions_sha256": "932b96907b63", "prompt": 3, "table": 2,
+                  "steps": { "exposure": -1, "highlights": -1, "shadows": null, "blacks": null, "contrast": 1, "white": 0,
+                             "tint": null, "saturation": 0, "shadow_color": "teal", "shadow_color_strength": 2,
+                             "highlight_color": "none", "highlight_color_strength": null },
+                  "scene": "Harbour in morning light", "plan": "Cool, crisp morning with teal shadows" },
+  "auto_advisor": { "provider": "apple", "state": "answered", "...": "docs/22-auto-providers.md section 14.1" },
+  "settings": { "nodes": { "items": [ "…" ], "links": [ "…" ] } },
+  "device": "cpu",
+  "timings_ms": { "decode": 310, "develop": 2410, "encode": 180 },
+  "pipeline_version": "0.9.0",
+  "error": null
+}
+```
+
+On failure: `"status": "error"`, `"output": null`, `"error": { "kind": "unsupported", "message": "…" }`. `info --json` prints the same object without `output` and `timings_ms`.
+
+**Key order.** Keys come in the order of the example (`input`, `output`, `status`, `camera`, `look`, `auto`, `auto_source`, `apple_auto`, `auto_advisor`, `settings`, `device`, `timings_ms`, `notes`, `pipeline_version`, `error`; `render` writes `apple_auto` and `auto_advisor` only for a photo a provider acted on). The order is kept by the CLI itself, not by a `serde_json` feature: `preserve_order` would reorder the `ym:Settings` inside every file the binary writes, and the CLI must write the app's bytes (`tools/ci/check_serde_order.sh`). Inside the `apple_auto` and `auto_advisor` objects and below the top level, keys are sorted.
+
+**Fields.**
+
+- `input` is an absolute path. `status` is `ok`, `skipped` (`--skip-existing` and the file was there: `output` is the existing file, nothing was rendered) or `error`.
+- `camera` has `make`, `model`, `model_id`, `body`, `firmware`, `arw_version`, `profile` (the id), `profile_name` (`A7R IV`), `profile_version`, `match` (`exact`, `sensor_family`, `default` or `forced`), `stand_in` and `reduced`.
+- `auto` is the `AutoEstimates` of `src/api/types.ts`, **grouped by the node each number is for** (`docs/23` §3.9): `auto.input` has the exposure, Kelvin and tint and what Auto sharpening and noise reduction resolve to (`sharpen`, `noise_reduction`), `auto.main` the Auto contrast, saturation, highlights, shadows and black and the two wheels' points (`balance_shadows`, `balance_highlights`); beside them, for the photo, are which Auto made them (`source`), where the photo stands with Apple Auto (`apple`, `apple_steps`), the light class and confidence and the noise model. The values include Apple Auto's answer. (Until 0.2.0 these keys were flat in `auto`; a script that read `auto.exposure_ev` reads `auto.input.exposure_ev` now.)
+- `settings` is the document an export records as `ym:Settings`, **node-first** (`docs/23` §3): `{ "nodes": { "items": [ … ], "links": [ … ] } }`, with the nodes in the order Input, the correctors by id, Output, the links in the order of their ends, and every default written out. The Input's and Main's exposure, contrast, saturation, highlights, shadows, black, wheels, sharpening and noise reduction that were Auto are written as the numbers they resolved to, and white balance stays Auto when it was. Feeding it back with `--settings` reproduces the file byte for byte (a settings file without a field reads that field at its default). Until 0.2.0 it was flat (`settings.contrast`); it is `settings.nodes.items[…].grade.contrast` now, in the item with `"id": 1`.
+- `device` is where the pictures of the export were made, `cpu` or `gpu` (`ExportReport.device`, the path the export actually took): `gpu` when any stage of it ran on the device (the raw chain of a tile, the export tail), else `cpu`, also for a photo that a device error sent back to the CPU, whose `notes` then carry the reason. A strict job reads both, so a silent fallback cannot pass. `null` for a file that was skipped; a failure object has none.
+- `timings_ms` is `decode` (reading the mosaic, which overlaps the render of the photo before it), `develop` (the render) and `encode`.
+- `notes` are the plain-words notes of the render: the classical demosaic, a device error that sent the photo back to the CPU, and, from 0.2.0, **"The settings of this photo are too long for a JPEG's XMP, so they are not recorded."** when a JPEG's XMP packet (65,502 bytes) cannot hold the pinned `ym:Settings` of a graph with a lot of brush work (TIFF, PNG and DNG have no such limit; `docs/09`). A Subject or People mask the machine cannot make is not a note: it fails the photo (`error.kind` `mask`, *Settings*).
+- `info --json` adds the metadata blocks (`exposure`, `dimensions`, `raw`, `black`, `white`, `wb_as_shot`, `levels_source`, `lens_corrections`, `tone_curve`, `preview`, `gps`). For a file that has metadata but cannot be developed yet (ARW 6.0), `look`, `auto`, `auto_source`, `apple_auto` and `settings` are null and `notes` says why.
+- A failure that happens after the photo was developed (a look that is gone) still carries `camera`, `look`, `auto` and `settings`; one before (not an ARW file) has `input`, `output`, `status`, `pipeline_version` and `error` only.
 
 ## Performance logging and the viewport job
 
