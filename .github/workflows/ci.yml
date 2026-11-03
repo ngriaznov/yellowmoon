@@ -228,6 +228,13 @@ jobs:
       # the runner opens no Metal adapter. YM_REQUIRE_GPU (above) makes a missing adapter a failure.
       - name: Renderer on the GPU against the CPU reference, with device faults injected
         run: cargo test -p ym-core --release --features fault-injection --test render_gpu --test render_sharpen --test render_graph --test gpu_reduced --test gpu_export --test gpu_determinism --test gpu_faults --test device_frames --test render_lens
+      # N-20: the device suites of the node work that only skipped on `ci.yml` until now (the macOS `rust` job opens no Metal adapter). Measured on
+      # lavapipe in release on 2026-11-03 (a four-core machine): mask_raster 54 s, mask_background 20 s, render_before 13 s, render_nodes 11 s,
+      # tile_lights 9 s, mask_view 7 s, node_thumbs 4 s, range_pick 3 s, gpu_policy 1 s; about 2.5 minutes with the build on top. `gpu_residency` is
+      # not here: its `faults::a_device_that_is_out_of_memory_hands_the_group_over_to_the_cpu_and_recovers` finds one code off on lavapipe (the
+      # open question to the owner in docs/STATUS.md), so the suite would turn this job red.
+      - name: The node, mask, thumbnail and policy suites on the device
+        run: cargo test -p ym-core --release --features fault-injection --test mask_background --test mask_raster --test mask_view --test node_thumbs --test range_pick --test render_before --test render_nodes --test tile_lights --test gpu_policy
       - name: The app and ym give the same exports on the GPU
         env:
           YELLOWMOON_GPU: "on"

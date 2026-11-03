@@ -289,6 +289,27 @@ fn json_blocks(section: &str) -> Vec<String> {
 }
 
 #[test]
+fn the_settings_example_of_the_readme_is_a_settings_file_the_core_reads() {
+    let readme = read("README.md");
+    let start = readme.find("## Command line").expect("the section");
+    let blocks = json_blocks(&readme[start..]);
+    assert_eq!(blocks.len(), 1, "the one example file");
+    let value: Value = serde_json::from_str(&blocks[0]).expect("the example is JSON");
+    let (settings, clamped) =
+        DevelopSettings::from_value(value, &LookId::neutral()).expect("the example reads");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    assert_eq!(
+        settings.nodes.corrector(2).map(|c| c.name.as_str()),
+        Some("Sky")
+    );
+    assert_eq!(
+        settings.nodes.corrector(2).map(|c| c.masks.items.len()),
+        Some(1)
+    );
+    assert_eq!(settings.nodes.links.len(), 3);
+}
+
+#[test]
 fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     let doc = read("docs/10-cli.md");
     let start = doc

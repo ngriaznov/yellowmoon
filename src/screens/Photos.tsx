@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Aurora } from "@/components/glass/aurora";
 import { ChevronDownIcon } from "lucide-react";
@@ -14,6 +14,7 @@ import { folderSubline, isReady, photoName } from "../state/photo";
 import { MASK_KIND_NAME } from "../state/graphOps";
 import { hiddenByPhoto, hiddenFromSimpleView, INPUT_ID, MAIN_ID, nodeOf, OUTPUT_ID } from "../state/settingsGraph";
 import type { AppStore } from "../state/store";
+import type { Shortcut } from "../state/shortcuts";
 import { useShortcuts } from "../state/useShortcuts";
 import { fitZoomExact, fitZoomOf, showsWhole, ZOOMS, zoomKey, zoomStep } from "../state/zoom";
 import { CropPanel } from "./crop/CropPanel";
@@ -514,8 +515,7 @@ export function Photos() {
     [],
   );
 
-  useShortcuts(
-    (shortcut) => {
+  const onShortcut = (shortcut: Shortcut): boolean => {
       switch (shortcut.action) {
         case "open-files":
           void store.openDialog("files");
@@ -638,7 +638,19 @@ export function Photos() {
         default:
           return false;
       }
-    },
+  };
+  // The View menu's Nodes item (`docs/11` §Menus) does what N does, with the same guards. It is not a menu shortcut: N types.
+  const shortcutRef = useRef(onShortcut);
+  shortcutRef.current = onShortcut;
+  useEffect(() => {
+    store.nodesCommand = () => shortcutRef.current({ action: "nodes" });
+    return () => {
+      store.nodesCommand = null;
+    };
+  }, [store]);
+
+  useShortcuts(
+    onShortcut,
     {
       // The number keys pick looks on the Look tab, which in the node view is the Output's.
       tab: panel === "tools" ? (view === "nodes" ? nodeTab : tab) : undefined,

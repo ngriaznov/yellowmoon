@@ -522,12 +522,12 @@ impl Renderer {
     /// frame, at [`OBJECT_PICTURE_PX`] on the long edge, Neutral look, no output sharpening, sRGB, 8 bits. Made on the CPU
     /// reference path by a renderer of its own that has no device, so that the features, the masks and the exports made from
     /// them are the same bytes on every machine. Its caches are dropped when the picture is done: the photo's graph in this
-    /// renderer's own memory is no use to anything else.
+    /// renderer's own memory is no use to anything else. Always made again: [`Renderer::object_picture`] keeps it.
     ///
     /// # Errors
     ///
     /// [`RenderError`] for unusable data or a cancelled job.
-    pub(crate) fn object_picture(
+    pub(crate) fn object_picture_made(
         &self,
         src: &PhotoSource,
         cancel: &CancelToken,
@@ -536,6 +536,31 @@ impl Renderer {
         let picture = reference.whole_picture(&object_source(src), OBJECT_PICTURE_PX, cancel);
         reference.forget(src.id);
         picture
+    }
+
+    /// [`Renderer::object_picture_made`], kept: `hash` names the picture (the FNV-1a of [`Renderer::object_key`], which equal
+    /// pictures share) and the latest one is kept, so a photo with Object rows and Subject or People rows makes it once for
+    /// its two workers (the second waits for the first and takes its picture), and an export takes the viewer's.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job.
+    pub(crate) fn object_picture(
+        &self,
+        src: &PhotoSource,
+        hash: u64,
+        cancel: &CancelToken,
+    ) -> Result<Arc<AdvisorPicture>, RenderError> {
+        let mut kept = self.object_picture_slot();
+        if let Some((have, picture)) = kept.as_ref()
+            && *have == hash
+        {
+            return Ok(Arc::clone(picture));
+        }
+        let picture = Arc::new(self.object_picture_made(src, cancel)?);
+        self.count_object_picture();
+        *kept = Some((hash, Arc::clone(&picture)));
+        Ok(picture)
     }
 
     /// `src` as it is, whole, at `long_edge` px on the long edge at most, in sRGB, 8 bits (see

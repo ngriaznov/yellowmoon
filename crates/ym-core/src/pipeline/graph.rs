@@ -883,6 +883,13 @@ struct Inner {
     /// The renderer that makes SAM's pictures: no graphics device, so the pictures are the CPU reference path's
     /// (`Renderer::object_reference`).
     object_reference: std::sync::OnceLock<Result<Renderer, RenderError>>,
+    /// The latest picture SAM and Vision read, with the hash of its key (`Renderer::object_key`): the Object worker and the
+    /// Subject and People worker of a photo with rows of both kinds read the same 1024 px picture, made once
+    /// (`Renderer::object_picture`). The lock is held while the picture is made, so the second worker waits for the first
+    /// and takes its picture.
+    object_picture: Mutex<Option<(u64, Arc<crate::apple_auto::AdvisorPicture>)>>,
+    /// How many of those pictures were made (not taken from the slot).
+    object_pictures_made: AtomicU64,
     /// Who hears when the Subject and People worker starts or ends its work for a photo
     /// (`Renderer::set_vision_listener`).
     vision_listener: Mutex<Option<vision::VisionListener>>,
@@ -991,6 +998,8 @@ impl Renderer {
                 lens_cameras: Mutex::new(HashMap::new()),
                 object_listener: Mutex::new(None),
                 object_reference: std::sync::OnceLock::new(),
+                object_picture: Mutex::new(None),
+                object_pictures_made: AtomicU64::new(0),
                 vision_listener: Mutex::new(None),
             }),
         })
@@ -1320,12 +1329,34 @@ impl Renderer {
     pub fn forget(&self, id: PhotoId) {
         lock(&self.inner.graphs).retain(|(p, _)| *p != id);
         lock(&self.inner.thumbnail_details).remove(&id);
+        *lock(&self.inner.object_picture) = None;
+    }
+
+    /// The slot that keeps the latest picture SAM and Vision read (`Renderer::object_picture`), locked.
+    pub(super) fn object_picture_slot(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Option<(u64, Arc<crate::apple_auto::AdvisorPicture>)>> {
+        lock(&self.inner.object_picture)
+    }
+
+    pub(super) fn count_object_picture(&self) {
+        self.inner
+            .object_pictures_made
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// How many pictures for SAM and Vision this renderer has made, not counting the ones taken from the latest (a test's
+    /// check that a photo with Object and Subject rows makes its picture once).
+    #[must_use]
+    pub fn object_pictures_made(&self) -> u64 {
+        self.inner.object_pictures_made.load(Ordering::Relaxed)
     }
 
     /// Forgets everything (the session closed).
     pub fn forget_all(&self) {
         lock(&self.inner.graphs).clear();
         lock(&self.inner.thumbnail_details).clear();
+        *lock(&self.inner.object_picture) = None;
     }
 
     /// The detail statistic of the latest thumbnail rendered for a photo

@@ -1838,6 +1838,8 @@ export type MenuAction =
 "clear_picks" | 
 /**  Before / after. */
 "before_after" | 
+/**  Open or close the node view (the Nodes button and N). */
+"nodes" | 
 /**  Fit. */
 "fit" | 
 /**  100 %. */

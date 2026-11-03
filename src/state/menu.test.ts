@@ -74,3 +74,18 @@ describe("the Edit menu's settings items", () => {
     }
   });
 });
+
+describe("the View menu's Nodes item", () => {
+  it("asks the Photos screen to toggle the node view, unless a dialog is open or no screen listens", async () => {
+    const store = createStore(createMockApi({ speed: Number.POSITIVE_INFINITY }), 0);
+    // No Photos screen: nothing happens, and nothing throws.
+    await runMenuAction(store, "nodes");
+    const command = vi.fn(() => true);
+    store.nodesCommand = command;
+    await runMenuAction(store, "nodes");
+    expect(command).toHaveBeenCalledTimes(1);
+    store.openOverlay("preferences");
+    await runMenuAction(store, "nodes");
+    expect(command).toHaveBeenCalledTimes(1);
+  });
+});

@@ -818,7 +818,12 @@ impl Serialize for MaskItem {
 impl<'de> Deserialize<'de> for MaskItem {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         match Value::deserialize(deserializer)? {
-            Value::Object(map) => Self::from_map(map).map_err(serde::de::Error::custom),
+            // A `Parse` error already says "The settings can't be read:" where the document is read; the inner
+            // text alone goes up, so the sentence is not said twice.
+            Value::Object(map) => Self::from_map(map).map_err(|e| match e {
+                SettingsError::Parse(text) => serde::de::Error::custom(text),
+                other => serde::de::Error::custom(other),
+            }),
             other => Err(serde::de::Error::custom(format!(
                 "a mask must be an object, not {other}"
             ))),

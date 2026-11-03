@@ -3215,6 +3215,8 @@ pub enum MenuAction {
     ClearPicks,
     /// Before / after.
     BeforeAfter,
+    /// Open or close the node view (the Nodes button and N).
+    Nodes,
     /// Fit.
     Fit,
     /// 100 %.

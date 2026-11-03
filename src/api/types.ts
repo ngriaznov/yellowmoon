@@ -1615,6 +1615,7 @@ export type MenuAction =
   | "pick_all"
   | "clear_picks"
   | "before_after"
+  | "nodes"
   | "fit"
   | "zoom_100"
   | "zoom_in"

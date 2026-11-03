@@ -720,6 +720,11 @@ export class AppStore {
   private starting = false;
   /** Runs a menu item that needs the webview (`menu_action`); set by `App`, which knows the screens. */
   menuHandler: ((action: MenuAction) => void) | null = null;
+  /**
+   * The View menu's Nodes item: the Photos screen, which owns the node view, sets it while it is on screen. It does what N does and
+   * answers whether it did anything (not in Crop or the Export panel); with no Photos screen it is `null`.
+   */
+  nodesCommand: (() => boolean) | null = null;
 
   /**
    * `batchMs` is how long event-driven changes may wait to be drawn together (about two frames);

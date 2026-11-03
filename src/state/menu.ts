@@ -71,6 +71,10 @@ export async function runMenuAction(store: AppStore, action: MenuAction): Promis
     case "before_after":
       await store.toggleBefore();
       return;
+    case "nodes":
+      // The Photos screen owns the node view; a dialog has the keyboard and the menu alike.
+      if (state.overlay === null) store.nodesCommand?.();
+      return;
     case "fit":
       await store.setZoom({ kind: "fit" });
       return;

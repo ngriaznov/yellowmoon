@@ -1133,7 +1133,12 @@ impl<'de> Deserialize<'de> for NodeGraph {
     /// has the user's default look.
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = Value::deserialize(deserializer)?;
-        Self::read(value, &LookId::neutral()).map_err(de::Error::custom)
+        // A `Parse` error already says "The settings can't be read:" where the document is read; the inner text
+        // alone goes up, so the sentence is not said twice.
+        Self::read(value, &LookId::neutral()).map_err(|e| match e {
+            SettingsError::Parse(text) => de::Error::custom(text),
+            other => de::Error::custom(other),
+        })
     }
 }
 

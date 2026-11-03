@@ -154,14 +154,25 @@ fn run_bench(path: &Path, args: &DoctorArgs, console: &mut Console) -> u8 {
     }
 }
 
-fn hash_models(dir: &Path, skip: &[&str]) -> Vec<ModelFile> {
+/// The Object model's weights as the list of weights names them (`data/models/`, `ym_ml::sam2::WEIGHTS_FILE`).
+const OBJECT_WEIGHTS_NAME: &str = "sam2/sam2.1_hiera_small.f16.safetensors";
+
+/// The weights under `dir` with their hashes. `known` is a file whose hash the report has already made (its path
+/// relative to `dir` and its SHA-256): it is not read a second time.
+fn hash_models(dir: &Path, skip: &[&str], known: Option<(&str, &str)>) -> Vec<ModelFile> {
     let mut files = Vec::new();
-    collect_models(dir, dir, skip, &mut files);
+    collect_models(dir, dir, skip, known, &mut files);
     files.sort_by(|a, b| a.name.cmp(&b.name));
     files
 }
 
-fn collect_models(root: &Path, dir: &Path, skip: &[&str], out: &mut Vec<ModelFile>) {
+fn collect_models(
+    root: &Path,
+    dir: &Path,
+    skip: &[&str],
+    known: Option<(&str, &str)>,
+    out: &mut Vec<ModelFile>,
+) {
     let Ok(read) = std::fs::read_dir(dir) else {
         return;
     };
@@ -172,29 +183,37 @@ fn collect_models(root: &Path, dir: &Path, skip: &[&str], out: &mut Vec<ModelFil
             continue;
         }
         if path.is_dir() {
-            collect_models(root, &path, skip, out);
+            collect_models(root, &path, skip, known, out);
         } else if path
             .extension()
             .is_some_and(|e| matches!(e.to_str(), Some("json" | "safetensors" | "onnx" | "bin")))
-            && let Ok(sha256) = ym_looks::manifest::hash_file(&path)
         {
             let relative = path
                 .strip_prefix(root)
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            out.push(ModelFile {
-                name: relative,
-                sha256,
-            });
+            let sha256 = match known {
+                Some((name, sha256)) if name == relative => Some(sha256.to_owned()),
+                _ => ym_looks::manifest::hash_file(&path).ok(),
+            };
+            if let Some(sha256) = sha256 {
+                out.push(ModelFile {
+                    name: relative,
+                    sha256,
+                });
+            }
         }
     }
 }
 
-/// Whether the Object model's weights are in the data folder and load: the file is read and checked against its line of
-/// `SHA256SUMS`, so a truncated or changed file is `weights_missing` here as it is for an export.
-fn object_model_loads(data_folder: &Path) -> bool {
-    ObjectModel::probe(data_folder).is_some_and(|m| m.sam().is_ok())
+/// The SHA-256 of the Object model's weights when they are in the data folder and load: the file is read once and
+/// checked against its line of `SHA256SUMS`, so a truncated or changed file gives `None` here (`weights_missing`) as it
+/// does for an export. The same hash goes in the report's list of weights, so the 77 MB file is read once.
+fn object_model_sha256(data_folder: &Path) -> Option<String> {
+    let model = ObjectModel::probe(data_folder)?;
+    let sam = model.sam().ok()?;
+    Some(sam.sha256().to_owned())
 }
 
 fn build() -> Result<Report, Failure> {
@@ -203,7 +222,11 @@ fn build() -> Result<Report, Failure> {
     let models = data_folder.join("models");
     // The illuminant models of `models/illum/` are the shipped estimator parameters; everything
     // else under `models/` (the demosaic network, `jdd/`) is a weight file.
-    let all = hash_models(&models, &["metrics"]);
+    let object_sha256 = object_model_sha256(&data_folder);
+    let known = object_sha256
+        .as_deref()
+        .map(|sha256| (OBJECT_WEIGHTS_NAME, sha256));
+    let all = hash_models(&models, &["metrics"], known);
     let (illuminant_models, weights): (Vec<_>, Vec<_>) =
         all.into_iter().partition(|m| m.name.starts_with("illum/"));
 
@@ -234,7 +257,7 @@ fn build() -> Result<Report, Failure> {
         auto: auto_report(&prefs.get()),
         weights,
         masks: MaskSupport::new(
-            object_model_loads(&data_folder),
+            object_sha256.is_some(),
             // The probe, once: Vision answers for Subject and People, or the reason it cannot (not a Mac, macOS too old,
             // a Mac that cannot run the requests).
             VisionMasks::new(ym_apple::system_vision()).support(),
@@ -822,6 +845,35 @@ mod tests {
     #[test]
     fn the_report_says_what_it_includes_and_what_it_leaves_out() {
         assert!(INCLUDES.contains("does not include photos, file names, locations"));
+    }
+
+    #[test]
+    fn a_hash_the_report_already_has_is_not_made_again() {
+        let dir = tempfile::tempdir().expect("a folder");
+        for (name, bytes) in [(OBJECT_WEIGHTS_NAME, "sam"), ("crop/a.safetensors", "crop")] {
+            let path = dir.path().join(name);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("a folder");
+            std::fs::write(path, bytes).expect("a file");
+        }
+        // A made-up hash for the known file shows that the file was not read: the other one is hashed.
+        let files = hash_models(dir.path(), &[], Some((OBJECT_WEIGHTS_NAME, "feedface")));
+        let sha = |name: &str| {
+            files
+                .iter()
+                .find(|f| f.name == name)
+                .map(|f| f.sha256.clone())
+        };
+        assert_eq!(sha(OBJECT_WEIGHTS_NAME).as_deref(), Some("feedface"));
+        let crop = sha("crop/a.safetensors").expect("listed");
+        assert_eq!(crop.len(), 64);
+        assert_ne!(crop, "feedface");
+        let plain = hash_models(dir.path(), &[], None);
+        assert_eq!(plain.len(), 2);
+        assert_eq!(
+            plain[1].sha256.len(),
+            64,
+            "without a known hash all are made"
+        );
     }
 
     use ym_core::apple_auto::{AdvisorInfo, Availability, InstructionsId};

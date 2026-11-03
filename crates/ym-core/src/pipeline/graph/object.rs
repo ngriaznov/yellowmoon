@@ -321,7 +321,7 @@ impl Renderer {
         let started = Instant::now();
         let sam = model.sam()?;
         let loaded_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let picture = self.object_picture(src, cancel)?;
+        let picture = self.object_picture(src, fnv(key), cancel)?;
         let picture_ms = started.elapsed().as_secs_f64() * 1000.0 - loaded_ms;
         let (width, height) = (picture.width, picture.height);
         let pic = Picture::new(width, height, &picture.rgb).map_err(ml_error)?;
@@ -591,8 +591,8 @@ impl Renderer {
         }
     }
 
-    /// The picture SAM looks at for this photo ([`object_source`]), as `(width, height, rgb)`: for checks and diagnostics, like
-    /// [`Renderer::blur_map`].
+    /// The picture SAM looks at for this photo ([`object_source`]), as `(width, height, rgb)`, made again each time: for checks
+    /// and diagnostics, like [`Renderer::blur_map`].
     ///
     /// # Errors
     ///
@@ -602,7 +602,7 @@ impl Renderer {
         src: &PhotoSource,
         cancel: &CancelToken,
     ) -> Result<(usize, usize, Vec<u8>), RenderError> {
-        let p = self.object_picture(src, cancel)?;
+        let p = self.object_picture_made(src, cancel)?;
         Ok((p.width, p.height, p.rgb))
     }
 

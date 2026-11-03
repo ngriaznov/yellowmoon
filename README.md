@@ -55,6 +55,7 @@ I don't intend to compete with existing raw processors or to replace any of them
 - Exports JPEG, TIFF, PNG, and DNG with your look baked in.
 - A command-line tool, `ym`, with the same results as the app, for scripts and batch jobs.
 - Auto can ask a grader to fine-tune each photo: Apple's on-device model on macOS 27, or the Claude Code or Antigravity you have installed (below).
+- Nodes and masks, behind a button. The **Nodes** button turns a photo into a small graph (the Input, corrector nodes you add, the Output) so you can grade part of it: a corrector takes masks that are shapes (Linear, Radial), ranges of colour or brightness, painted strokes (Brush), the out-of-focus background, an object you click (found by SAM 2.1 small, bundled, run on your Mac's processor), or the main subject and people (Apple's Vision, on Macs that support it). Show mask (M) shows what a mask selects. The simple view stays the default, and nothing about nodes or masks is saved with a photo.
 
 ## How the colour works
 
@@ -124,13 +125,26 @@ ym render DSC04204.ARW --auto-provider claude       # Claude Code grades it (sen
 ym looks import ~/Downloads/<ARRI look package>.zip
 ym render DSC04204.ARW --json | jq .settings       # a photo's settings: a graph of nodes
 ym render DSC04204.ARW --settings graph.json        # settings that need more than the flags: other nodes, masks, links
+ym doctor                                           # the Masks line lists the kinds of mask this computer can make
 ```
 
-From 0.2.0 a photo's settings are a graph of nodes (the Input, node 1 Main, any other nodes, the Output): each flag sets a field of one of them, and `--settings` takes the whole graph (`docs/10-cli.md` has the form, with an example). A settings file in the form of Yellowmoon 0.1 is refused with a sentence that says so.
+From 0.2.0 a photo's settings are a graph of nodes (the Input, node 1 Main, any other nodes, the Output): each flag sets a field of one of them, and `--settings` takes the whole graph, or only the part you change. A file that adds a second node, Sky, with a Linear mask and a cooler trim:
+
+```json
+{ "nodes": { "items": [
+    { "id": 2, "kind": "corrector", "name": "Sky", "trim": { "temperature": -18 },
+      "masks": { "items": [ { "kind": "linear", "center": [0.5, 0.2], "feather": 0.25 } ] } } ],
+  "links": [
+    { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+    { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+    { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } }
+```
+
+A mask of the kinds `object`, `subject`, `people` and `background` is found from the photo when `ym` exports it, so the same file gives the same mask in the app; `subject` and `people` need a Mac that supports Apple's Vision, and a photo that needs a mask this computer cannot make fails with a sentence that says what to do, and is not written. `ym doctor` prints a **Masks** line with the kinds this computer can make and why it cannot make the others. A settings file in the form of Yellowmoon 0.1 is refused with a sentence that says so, and `ym render --json` and `ym info --json` print settings in the new form. `docs/10-cli.md` has the rest.
 
 ## Licence and credits
 
-Apache-2.0. Model weights in `data/models/` carry the licence their model card states (a model trained on ShareAlike data is CC BY-SA 4.0, with its own `LICENSE` file). See `NOTICE` for third-party data and credits, including ARRI's published ALEXA colour matrices (via the Academy's aces-dev, AMPAS licence) and Weta's Sony sensor measurements (rawtoaces-data, Apache-2.0).
+Apache-2.0. Model weights in `data/models/` carry the licence their model card states (a model trained on ShareAlike data is CC BY-SA 4.0, with its own `LICENSE` file). See `NOTICE` for third-party data and credits, including Meta's SAM 2.1 small weights for Object masks (Apache-2.0), ARRI's published ALEXA colour matrices (via the Academy's aces-dev, AMPAS licence) and Weta's Sony sensor measurements (rawtoaces-data, Apache-2.0).
 
 This product includes DNG technology under license by Adobe.
 

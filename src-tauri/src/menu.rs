@@ -12,8 +12,8 @@
 //! the three settings items, whose keys ⇧⌘C, ⇧⌘V and ⌥⇧⌘V are the webview's too: ⇧⌘V and ⌥⇧⌘V mean
 //! "Paste and Match Style" in other apps, and a key that the page leaves alone in a text box falls
 //! through to the menu on macOS and would paste the settings onto photos from there. The menu
-//! shows all of these items without a key. The single-key shortcuts (P, Z, C, W, \ and the arrows)
-//! are not menu shortcuts for the same reason.
+//! shows all of these items without a key. The single-key shortcuts (P, Z, C, W, N, \ and the arrows)
+//! are not menu shortcuts for the same reason: View › Nodes shows no key.
 //!
 //! Three items change with what is open: Copy Settings needs a developed current photo, Paste
 //! Settings something copied as well, and Paste Settings to Picked something copied and a picked
@@ -225,6 +225,7 @@ pub fn spec() -> Vec<Menus> {
                     None,
                     MenuAction::BeforeAfter,
                 ),
+                web("nodes", "Nodes", None, MenuAction::Nodes),
                 web("fit", "Fit", None, MenuAction::Fit),
                 web("zoom_100", "100%", None, MenuAction::Zoom100),
                 web(
@@ -518,6 +519,7 @@ mod tests {
             "Clear Picks",
             // View
             "Before/After",
+            "Nodes",
             "Fit",
             "100%",
             "Zoom In",
@@ -592,6 +594,7 @@ mod tests {
             MenuAction::PickAll,
             MenuAction::ClearPicks,
             MenuAction::BeforeAfter,
+            MenuAction::Nodes,
             MenuAction::Fit,
             MenuAction::Zoom100,
             MenuAction::ZoomIn,
@@ -697,6 +700,34 @@ mod tests {
                 ("paste_settings", false),
                 ("paste_settings_to_picked", true)
             ]
+        );
+    }
+
+    #[test]
+    fn the_nodes_item_is_in_the_view_menu_with_no_key() {
+        // N is a plain letter that types, so it is the webview's, as P, Z, C and W are (`docs/11` §Menus).
+        let view = spec()
+            .into_iter()
+            .find(|m| m.title == "View")
+            .expect("View");
+        let labels: Vec<&str> = view
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Item { label, .. } => Some(*label),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels[..2], ["Before/After", "Nodes"]);
+        let nodes = items().into_iter().find(|i| i.0 == "nodes").expect("nodes");
+        assert_eq!(
+            nodes,
+            ("nodes", "Nodes", None, Do::Webview(MenuAction::Nodes))
+        );
+        assert_eq!(action_for("nodes"), Some(Do::Webview(MenuAction::Nodes)));
+        assert_eq!(
+            serde_json::to_value(MenuAction::Nodes).expect("json"),
+            "nodes"
         );
     }
 

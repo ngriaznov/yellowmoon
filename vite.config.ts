@@ -49,6 +49,17 @@ export default defineConfig({
         main: resolve(import.meta.dirname, "index.html"),
         components: resolve(import.meta.dirname, "components.html"),
       },
+      output: {
+        // Two big libraries are their own files, so that no chunk reaches Vite's 500 kB warning: React (react-dom alone is about 180 kB
+        // minified) and the node view's graph library (xyflow and what it brings: d3's zoom and drag, zustand). They load with the page,
+        // not on demand: the app is local, and a lazy import would make the node view wait for a file it can already have (and its tests
+        // wait for a tick).
+        manualChunks(id) {
+          if (/node_modules\/(react|react-dom|scheduler)\//.test(id)) return "react";
+          if (/node_modules\/(@xyflow|d3-[a-z-]+|zustand|classcat|use-sync-external-store)\//.test(id)) return "graph";
+          return undefined;
+        },
+      },
     },
     // The script and style syntax is lowered to Safari 17, which macOS 14 ships: the oldest macOS the app runs on
     // (`minimumSystemVersion` in src-tauri/tauri.conf.json; owner's decision of 2026-10-17, docs/16). The dark glass interface's CSS

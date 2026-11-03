@@ -37,7 +37,6 @@ use ym_gpu::queue::CancelToken;
 
 use super::object::fnv;
 use super::{Job, PhotoGraph, Renderer, lock};
-use crate::apple_auto::AdvisorPicture;
 use crate::pipeline::RenderError;
 use crate::pipeline::color::{PhotoSource, vision_kinds, vision_kinds_to};
 use crate::pipeline::vision::VisionPhase;
@@ -518,7 +517,7 @@ impl Renderer {
         cancel: &CancelToken,
     ) -> Result<Vec<MadeMask>, RenderError> {
         let started = Instant::now();
-        let picture: AdvisorPicture = self.object_picture(src, cancel)?;
+        let picture = self.object_picture(src, hash, cancel)?;
         let picture_ms = started.elapsed().as_secs_f64() * 1000.0;
         let mut out = Vec::with_capacity(kinds.len());
         for &kind in kinds {

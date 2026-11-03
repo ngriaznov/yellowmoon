@@ -826,6 +826,54 @@ fn the_picture_vision_reads_is_the_inputs_picture_the_one_the_object_mask_reads(
     assert_eq!(again, rgb);
 }
 
+/// A photo with an Object row and a Subject row has two workers that read one 1024 px picture: it is made once, and the
+/// second worker takes the first's (N-20).
+#[test]
+fn a_photo_with_object_and_subject_rows_makes_its_picture_once() {
+    let Some(model) = ym_core::pipeline::ObjectModel::probe(&data_root()) else {
+        assert!(
+            std::env::var_os("YM_REQUIRE_SAM2").is_none(),
+            "YM_REQUIRE_SAM2 is set and data/models/sam2 is missing"
+        );
+        eprintln!("[vision] data/models/sam2 is absent: skipped");
+        return;
+    };
+    let provider = Probe::new(FakeVision::new());
+    let r = Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            object_model: Some(model),
+            ..options(
+                Some(provider.clone()),
+                RenderOptions::default().full_tile_px,
+            )
+        },
+    )
+    .expect("render thread");
+    let d = disc_photo();
+    let object = row(
+        "object",
+        json!({ "points": [[0.45, 0.5, true]], "box": null }),
+    );
+    let src = with_rows(&d.source(), vec![object, subject()]);
+    assert_eq!(r.object_pictures_made(), 0);
+    r.object_prepare(&src);
+    r.vision_prepare(&src);
+    wait_until("the features", 240, || r.object_ready(&src));
+    wait_until("the Vision worker", 60, || !r.vision_worker_alive(src.id));
+    assert_eq!(provider.pictures().len(), 1, "Vision asked for the Subject");
+    assert_eq!(
+        r.object_pictures_made(),
+        1,
+        "the Object worker and the Vision worker read one picture"
+    );
+    // And it is the picture Object reads: the bytes are the ones made again.
+    let (_, _, rgb) = r
+        .object_picture_of(&src, &CancelToken::new())
+        .expect("the picture");
+    assert_eq!(provider.pictures()[0].1.rgb, rgb);
+}
+
 #[test]
 fn subject_and_people_are_separate_requests_with_separate_planes() {
     let provider = fake();
