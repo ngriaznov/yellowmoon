@@ -17,8 +17,8 @@
 //! * **Fall back** (`--features fault-injection`): a device that fails under a frame whose group is
 //!   resident gives the CPU's frame bit for bit with the note, the group read back or made again on
 //!   the CPU, and the next frame, on the recovered device, is the frame a device gives for the CPU's
-//!   group bit for bit, and the resident one (bit for bit on a software adapter; a hardware adapter
-//!   has a bound of its own, as the CPU's group is not the device's in the last bits).
+//!   group bit for bit, and the resident one (within [`HARDWARE_BYTES`] bytes of [`HARDWARE_CODES`]
+//!   codes on every adapter, as the CPU's group is not the device's in the last bits).
 //!
 //! Skipped, loudly, when no adapter opens, unless `YM_REQUIRE_GPU=1` turns that into a failure.
 mod common;
@@ -700,9 +700,12 @@ mod faults {
                 &again,
                 "the recovered device, against a device that is given the CPU's group",
             );
-            // And the frame the resident group gave, that the device made its own group for. Bit for
-            // bit where the device's arithmetic is the CPU's (lavapipe); on a hardware adapter the
-            // two groups differ in last bits and a few bytes follow ([`HARDWARE_BYTES`]).
+            // And the frame the resident group gave, that the device made its own group for. The two
+            // groups differ in last bits on every adapter, lavapipe included (at most 3e-7, inside
+            // the group gate), and C13's dither turns a value just under a boundary into a one-code
+            // flip: 0 to 6 bytes of 240 000 on lavapipe, 5 on Metal. Owner's decision, 2026-11-03
+            // ("lose bounds on gpu_residency"): software adapters get the hardware's slack
+            // ([`HARDWARE_BYTES`], [`HARDWARE_CODES`]). The comparison above stays exact.
             let (differing, most) = differences(&resident_frame, &again, "the recovered device");
             let info = gpu.info();
             let _ = writeln!(
@@ -711,20 +714,16 @@ mod faults {
                 info.name,
                 again.rgba.len()
             );
-            let (bytes, codes) = if info.is_software {
-                (0, 0)
-            } else {
-                (HARDWARE_BYTES, HARDWARE_CODES)
-            };
             assert!(
-                differing <= bytes && most <= codes,
-                "the recovered device: {differing} bytes differ by at most {most} codes (allowed: {bytes} bytes, {codes} codes)"
+                differing <= HARDWARE_BYTES && most <= HARDWARE_CODES,
+                "the recovered device: {differing} bytes differ by at most {most} codes (allowed: {HARDWARE_BYTES} bytes, {HARDWARE_CODES} codes)"
             );
         }
     }
 
-    /// What a hardware adapter may differ in, between the frame of the device's own group and the
-    /// frame of the CPU's group after a device fault (software adapters: nothing). The CPU reduces
+    /// What any adapter may differ in, between the frame of the device's own group and the
+    /// frame of the CPU's group after a device fault (software adapters too since the owner's
+    /// decision of 2026-11-03; they had none before). The CPU reduces
     /// the group in its reference arithmetic and the device in f32 with the platform's math, so the
     /// two groups differ in last bits (on Metal, 50 MP reduced groups against the CPU: 6.4e-7 to
     /// 3.9e-5 of white, `gpu_reduced`), and
