@@ -68,6 +68,10 @@ test("the links stay drawn through many drags, pans and selections", async ({ pa
   await page.mouse.wheel(0, -200);
   await page.keyboard.up("Meta");
   await expectLinks(page, "after a zoom");
+  // The drops and the pan can leave a card outside the canvas, where the page clips it and the graph bar is over its box. A person brings the
+  // graph back with Fit; so does the test, and it then clicks a card that lies inside the canvas.
+  await page.getByRole("button", { name: "Fit the graph" }).click();
+  await expectLinks(page, "after Fit");
   await page.locator('[data-node-card="3"]').click();
   await expectLinks(page, "after a selection");
   await page.mouse.click(canvas.x + canvas.width / 2, canvas.y + canvas.height - 6);
