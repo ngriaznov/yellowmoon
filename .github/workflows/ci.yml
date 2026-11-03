@@ -64,6 +64,10 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run e2e
+      # The production build, served by `vite preview`: xyflow's stylesheet and the chunking only behave as in the app there
+      # (the links that vanished after a drag, the grey picked link and the grab cursor passed on the dev server).
+      - name: e2e against the production build
+        run: npm run e2e:built
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
