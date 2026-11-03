@@ -1447,6 +1447,10 @@ fn open_app_gpu(enabled: bool, budget: ym_core::scheduler::MemoryBudget) -> GpuS
             "YELLOWMOON_GPU=require, but no graphics device opened ({reason}); using the CPU"
         );
     }
+    // Every kernel compiles in the background now, one job each at `Export` priority (a frame outranks
+    // them), so that no viewer frame waits for a shader compile on first use (the eye of a mask row cost
+    // 210 ms on Metal for the tint kernel). The jobs run on; the handles are not needed.
+    drop(slot.warm_up_for_viewer());
     slot
 }
 

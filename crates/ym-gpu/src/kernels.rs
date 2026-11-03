@@ -124,6 +124,7 @@ impl Kernels {
             return Ok(p.clone());
         }
         ctx.fault().on_pipeline(id.name())?;
+        let started = std::time::Instant::now();
         let source = shader_source(self.mode, id);
         let scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = ctx
@@ -145,6 +146,8 @@ impl Kernels {
         if let Some(err) = pollster::block_on(scope.pop()) {
             return Err(GpuError::Shader(format!("{}: {err}", id.name())));
         }
+        ctx.counters_shared()
+            .count_pipeline(started.elapsed().as_micros() as u64);
         self.pipelines.borrow_mut().insert(id, pipeline.clone());
         Ok(pipeline)
     }

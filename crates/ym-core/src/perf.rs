@@ -13,7 +13,7 @@
 //!   source_upload=0.0x1 guide_record=0.2x1 raster_record=1.9x1 colour_record=0.6x1 tail_record=0.4x1
 //!   submit=0.8x1 wait=88.0x1 cpu_raster=0.0x0 raster_rows=1 raster_window=1730x1155 |
 //!   color_plans=0 grade_plans=1 color_passes=1 output_passes=1 | uploads=2/0.0MiB readbacks=0/0.0MiB
-//!   submissions=1 dispatches=211 plane_builds=1 plane_hits=0
+//!   submissions=1 dispatches=211 plane_builds=1 plane_hits=0 pipelines=0/0.0ms
 //! gpu passes (ms x count): mask raster fold 41.2x62, color chain 20.3x2, ...
 //! ```
 //!
@@ -139,7 +139,7 @@ impl FrameProbe {
             let mib = |b: u64| b as f64 / 1_048_576.0;
             let _ = write!(
                 line,
-                " | uploads={}/{:.1}MiB readbacks={}/{:.1}MiB submissions={} dispatches={} plane_builds={} plane_hits={}",
+                " | uploads={}/{:.1}MiB readbacks={}/{:.1}MiB submissions={} dispatches={} plane_builds={} plane_hits={} pipelines={}/{:.1}ms",
                 d.uploads,
                 mib(d.uploaded_bytes),
                 d.readbacks,
@@ -147,7 +147,9 @@ impl FrameProbe {
                 d.submissions,
                 d.dispatches,
                 d.plane_builds,
-                d.plane_hits
+                d.plane_hits,
+                d.pipelines,
+                d.pipeline_micros as f64 / 1000.0
             );
             let passes = gpu.take_pass_times();
             tracing::info!(target: TARGET, "{line}");

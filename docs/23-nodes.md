@@ -937,6 +937,10 @@ The plan and the owner's later answers fixed the product; these are the readings
 
 *(Filled in by the tasks as they land: what each task decided, what it measured, and what differs from this file.)*
 
+### The first frame of a row's eye (2026-11-03)
+
+The 210 ms in `tail_record` of the first `mask_view=row` frame was a shader compile: the application never ran the kernel warm-up, so `Tint` and `Encode` (the overlay's tail) compiled inside that frame. The application now warms every kernel at start-up in the background (`GpuSlot::warm_up_for_viewer`, `docs/17` section 7), and the `ym::perf` line says `pipelines=N/Xms` for what a frame built; `tests/mask_first_use.rs` proves that no mask view builds one after the warm-up.
+
 ### N-02 · Node-first settings in the core, the CLI and the shell's Rust side
 
 **The split.** The lead moved the shell's Rust side into N-02 (section 13): `src-tauri/src/wire.rs`, the commands that touch settings, `src/api/bindings.ts` and the Rust tests of `src-tauri`. N-02b keeps `src/api/types.ts`, `contract.ts`, the store, the tabs, the mock and their tests. Between the two, `npm test` and `tsc -b` fail on the contract; three Rust tests that read `src/api/types.ts` are `#[ignore = "N-02b"]` (`bindings::tests::field_names_match_the_typescript_contract` and, in `crates/ym-core/tests/settings.rs`, `the_rust_types_have_the_fields_of_the_typescript_interfaces` and `resolved_settings_have_the_shape_of_the_typescript_type`). Their bodies are already node-first: they name the interfaces N-02b writes (`NodesSettings`, `InputNode`, `OutputNode`, `CorrectorNode`, `NodeTrim`, `NodeGrade`, `MaskSettings`, `NodeLink`, `NodeRef`, `ResolvedValues`, `ResolvedInput`, `ResolvedOutput`, `ResolvedCorrector`, `GradeValues`, `AutoFlags`, `InputAutoFlags`, `MainAutoFlags`, `AutoEstimates`, `InputEstimates`, `MainEstimates`), so N-02b removes the three ignores and the tests say what is missing.

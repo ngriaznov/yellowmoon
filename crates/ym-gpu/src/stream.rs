@@ -73,6 +73,8 @@ pub struct Counters {
     dispatches: AtomicU64,
     plane_builds: AtomicU64,
     plane_hits: AtomicU64,
+    pipelines: AtomicU64,
+    pipeline_micros: AtomicU64,
     /// A test's switch: no raster plane is kept or served on this device.
     planes_off: AtomicBool,
     /// GPU time per pass label, from the timestamp queries of the lists that were timed (empty unless the
@@ -148,6 +150,12 @@ impl Counters {
         self.plane_hits.fetch_add(hits, Ordering::Relaxed);
     }
 
+    /// One compute pipeline built (the shader compiled), which took `micros` microseconds.
+    pub(crate) fn count_pipeline(&self, micros: u64) {
+        self.pipelines.fetch_add(1, Ordering::Relaxed);
+        self.pipeline_micros.fetch_add(micros, Ordering::Relaxed);
+    }
+
     /// Whether the kept raster planes are switched off ([`Counters::set_planes_kept`]).
     pub(crate) fn planes_kept_off(&self) -> bool {
         self.planes_off.load(Ordering::Relaxed)
@@ -170,6 +178,8 @@ impl Counters {
             dispatches: self.dispatches.load(Ordering::Relaxed),
             plane_builds: self.plane_builds.load(Ordering::Relaxed),
             plane_hits: self.plane_hits.load(Ordering::Relaxed),
+            pipelines: self.pipelines.load(Ordering::Relaxed),
+            pipeline_micros: self.pipeline_micros.load(Ordering::Relaxed),
         }
     }
 }
@@ -193,6 +203,11 @@ pub struct CounterSnapshot {
     pub plane_builds: u64,
     /// Raster rows whose planes a view's pass copied from the planes kept on the device instead.
     pub plane_hits: u64,
+    /// Compute pipelines built (shaders compiled). A frame that builds one waited for the compiler; the
+    /// warm-up builds them all before the first frame needs them (`docs/17-gpu.md` section 7).
+    pub pipelines: u64,
+    /// Microseconds those builds took.
+    pub pipeline_micros: u64,
 }
 
 impl CounterSnapshot {
@@ -208,6 +223,8 @@ impl CounterSnapshot {
             dispatches: self.dispatches.saturating_sub(earlier.dispatches),
             plane_builds: self.plane_builds.saturating_sub(earlier.plane_builds),
             plane_hits: self.plane_hits.saturating_sub(earlier.plane_hits),
+            pipelines: self.pipelines.saturating_sub(earlier.pipelines),
+            pipeline_micros: self.pipeline_micros.saturating_sub(earlier.pipeline_micros),
         }
     }
 }

@@ -620,6 +620,34 @@ impl GpuSlot<Gpu> {
         let gpu = self.gpu.as_ref()?;
         self.stages().intersects(used).then(|| warm_up(gpu))
     }
+
+    /// Starts the compile of every kernel for the viewer, one `Export`-priority job a kernel in
+    /// [`KernelId::ALL`] order ([`warm_up_each`]), so that a viewport frame queued meanwhile runs between two
+    /// kernels instead of behind all of them. Empty when no device is used. The application calls it when it
+    /// opens the device; no frame then builds a pipeline (`docs/17-gpu.md` section 7).
+    #[must_use]
+    pub fn warm_up_for_viewer(&self) -> Vec<JobHandle<Result<usize, GpuError>>> {
+        match (&self.gpu, self.is_using()) {
+            (Some(gpu), true) => warm_up_each(gpu),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// [`warm_up`] as one job a kernel, queued at once in [`KernelId::ALL`] order. Viewport, tile and thumbnail
+/// jobs outrank `Export` ones, so a frame that arrives while the kernels compile waits for the kernel in
+/// progress, not for the rest. Each job resolves to 1.
+pub fn warm_up_each(gpu: &Gpu) -> Vec<JobHandle<Result<usize, GpuError>>> {
+    KernelId::ALL
+        .into_iter()
+        .map(|id| {
+            gpu.submit(JobSpec::new(Priority::Export), move |ctx, token| {
+                token.check()?;
+                ctx.kernels().pipeline(ctx, id)?;
+                Ok(1)
+            })
+        })
+        .collect()
 }
 
 /// Compiles every kernel on the device thread, as a job of `Export` priority (it queues behind
