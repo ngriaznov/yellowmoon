@@ -194,6 +194,19 @@ test.describe("Photos", () => {
     await compareScreen(page, "photos-nodes-mask-only");
   });
 
+  test("The node view: Mountain's two rows, the Radial's eye on in Mask only: that one row's mask, positive, and Show mask off (photos-nodes-mask-eye.png)", async ({ page }) => {
+    // docs/23 section 5.8 and 7.6: each row has its on/off switch at the left and its eye at the right; the eye of the Radial row (Subtract and inverted)
+    // is on and pressed in the mask accent, so the photo shows the mask that row takes away as a positive mask, in the View card's style (Mask only), and
+    // the toolbar's Show mask is off.
+    await maskTab(page, 2, ROWS_07B);
+    await page.getByRole("radio", { name: "Mask only", exact: true }).click();
+    await page.getByRole("button", { name: "Show this mask" }).last().click();
+    await expect(page.getByRole("button", { name: "Hide this mask" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Show mask" })).toHaveAttribute("aria-pressed", "false");
+    await expect(page.locator(".ym-photo-cell__image")).toHaveAttribute("src", /data-mask-view/);
+    await compareScreen(page, "photos-nodes-mask-eye");
+  });
+
   test("The node view: Main's Brush row with two strokes, one painted and one erased, its BRUSH card and the cursor circle on the photo (photos-nodes-mask-brush.png)", async ({ page }) => {
     // docs/23 section 7.6 (there is no mockup for Brush): the Masks card with the Brush row selected ("Brush", "2 strokes"), the BRUSH card under it (Paint · Erase, Size,
     // Hardness, then Refine edges at 0, Feather, Grow, Opacity), the View card with Overlay, the stroke painted over the sky and the hill in the mask accent with the
