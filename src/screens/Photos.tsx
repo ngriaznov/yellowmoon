@@ -1,9 +1,9 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Aurora } from "@/components/glass/aurora";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, CropIcon, SquareSplitHorizontalIcon } from "lucide-react";
 import type { ColorSpace, NodeId, PhotoSummary, RenderStats, ResolvedSettings, ViewportMode } from "../api/types";
-import { Button, FIRST_NODE_TAB, Filmstrip, filmstripCaption, NODE_FOR_SIMPLE_TAB, NODE_TABS, TabBar, tabPanelProps, TitleBlock, useLatest, useTabShortcuts, useWindowDrop } from "../components";
+import { Button, FIRST_NODE_TAB, Filmstrip, filmstripCaption, NODE_FOR_SIMPLE_TAB, NODE_TABS, NodesGlyph, TabBar, tabPanelProps, TitleBlock, useLatest, useTabShortcuts, useWindowDrop } from "../components";
 import { exportModel } from "../export/model";
 import { cellLabel, summarise } from "../export/run";
 import type { FilmstripPhoto, PanelKind, TabId } from "../components";
@@ -780,14 +780,14 @@ export function Photos() {
           </>
         ) : (
           <>
-            <Button variant="header" pressed={before} onClick={() => void store.toggleBefore()} title="Before and after (\)">
-              Before
+            <Button variant="header" pressed={before} onClick={() => void store.toggleBefore()} title="Before and after (\)" icon={<SquareSplitHorizontalIcon aria-hidden="true" />}>
+              <span className="ym-header-label">Before</span>
             </Button>
-            <Button variant="header" pressed={cropping} disabled={!rs} onClick={() => (cropping ? crop.session?.cancel() : startCrop())} title="Crop (C)">
-              Crop
+            <Button variant="header" pressed={cropping} disabled={!rs} onClick={() => (cropping ? crop.session?.cancel() : startCrop())} title="Crop (C)" icon={<CropIcon aria-hidden="true" />}>
+              <span className="ym-header-label">Crop</span>
             </Button>
-            <Button variant="header" pressed={view === "nodes"} disabled={cropping} onClick={toggleNodes} title="Nodes (N)">
-              Nodes
+            <Button variant="header" pressed={view === "nodes"} disabled={cropping} onClick={toggleNodes} title="Nodes (N)" icon={<NodesGlyph />}>
+              <span className="ym-header-label">Nodes</span>
             </Button>
             <AddPhotosButton store={store} />
             <ZoomMenu store={store} photo={photo} rs={rs} cell={cell} />

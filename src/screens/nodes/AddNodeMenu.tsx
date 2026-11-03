@@ -1,4 +1,4 @@
-import { ChevronDownIcon, ChevronsRightIcon, LayersIcon, ScanIcon, SlidersVerticalIcon, SplitIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronsRightIcon, LayersIcon, SlidersVerticalIcon, SplitIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/glass/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/glass/dropdown-menu";
@@ -10,7 +10,6 @@ const LATER: ReadonlyArray<{ name: string; line: string; icon: ReactNode }> = [
   { name: "Parallel", line: "Grade branches side by side.", icon: <ChevronsRightIcon aria-hidden="true" /> },
   { name: "Layer", line: "Blend one branch over another.", icon: <LayersIcon aria-hidden="true" /> },
   { name: "Splitter and combiner", line: "Split a picture, then join it again.", icon: <SplitIcon aria-hidden="true" /> },
-  { name: "Outside", line: "Everything outside a mask.", icon: <ScanIcon aria-hidden="true" /> },
 ];
 
 /** What the greyed items say when the pointer rests on them. */
@@ -35,7 +34,7 @@ function Line({ name, line }: { name: string; line: string }) {
 /**
  * "Add node ▾" (`docs/23` §7.4): a glass menu that opens upward from the toolbar, over the photo. Corrector first (it adds a node after the
  * selected one, and is off at 64 nodes with the sentence as its tooltip); then, after a rule,
- * Parallel, Layer, Splitter and combiner and Outside, greyed with the tag "Later" and `aria-disabled` (Radix sets it), each with the
+ * Parallel, Layer and Splitter and combiner, greyed with the tag "Later" and `aria-disabled` (Radix sets it), each with the
  * tooltip "Not in the first version".
  */
 export function AddNodeMenu({ onAddCorrector, blocked = null }: AddNodeMenuProps) {

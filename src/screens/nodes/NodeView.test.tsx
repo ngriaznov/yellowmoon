@@ -279,14 +279,14 @@ describe("layout A", () => {
 });
 
 describe("the Add node menu", () => {
-  it("opens upward from the button: Corrector, then Parallel, Layer, Splitter and combiner and Outside, greyed with 'Later'", async () => {
+  it("opens upward from the button: Corrector, then Parallel, Layer and Splitter and combiner, greyed with 'Later'", async () => {
     await setup();
     await openNodeView();
     await h!.user.click(within(graph()).getByRole("button", { name: "Add node" }));
     const menu = await screen.findByRole("menu", { name: "Add node" });
     expect(menu).toHaveAttribute("data-side", "top");
     const items = within(menu).getAllByRole("menuitem");
-    expect(items.map((i) => i.querySelector(".ym-menu-line__name")?.textContent)).toEqual(["Corrector", "Parallel", "Layer", "Splitter and combiner", "Outside"]);
+    expect(items.map((i) => i.querySelector(".ym-menu-line__name")?.textContent)).toEqual(["Corrector", "Parallel", "Layer", "Splitter and combiner"]);
     expect(within(items[0]!).getByText("Grades all or part of the photo.")).toBeInTheDocument();
     for (const item of items.slice(1)) {
       expect(item).toHaveAttribute("aria-disabled", "true");

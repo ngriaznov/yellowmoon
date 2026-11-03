@@ -38,6 +38,19 @@ describe("the header", () => {
     expect(screen.queryByRole("button", { name: "Pick white" })).toBeNull();
   });
 
+  it("gives Before, Crop and Nodes an icon before the label, and keeps each name", async () => {
+    await setup();
+    for (const name of ["Before", "Crop", "Nodes"]) {
+      const button = screen.getByRole("button", { name });
+      const svg = button.querySelector("svg");
+      expect(svg, name).not.toBeNull();
+      expect(svg).toHaveAttribute("aria-hidden", "true");
+      // The icon comes first, then the label.
+      expect(button.firstElementChild).toBe(svg);
+      expect(button.querySelector(".ym-header-label")?.textContent).toBe(name);
+    }
+  });
+
   it("shows the render status from render_stats", async () => {
     await setup();
     expect(await screen.findByText("Neural · 42 ms · Display P3")).toBeInTheDocument();

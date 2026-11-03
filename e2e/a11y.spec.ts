@@ -100,8 +100,8 @@ test.describe("the node view", () => {
     await page.getByRole("button", { name: "Add node" }).click();
     await expect(page.getByRole("menu", { name: "Add node" })).toBeVisible();
     snapshot = await expectNamed(page, "the Add node menu");
-    for (const name of ["Corrector", "Parallel", "Layer", "Splitter and combiner", "Outside"]) expect(snapshot, name).toContain(`- menuitem "${name}`);
-    for (const name of ["Parallel", "Layer", "Splitter and combiner", "Outside"]) {
+    for (const name of ["Corrector", "Parallel", "Layer", "Splitter and combiner"]) expect(snapshot, name).toContain(`- menuitem "${name}`);
+    for (const name of ["Parallel", "Layer", "Splitter and combiner"]) {
       await expect(page.getByRole("menuitem", { name: new RegExp(`^${name}`) })).toHaveAttribute("aria-disabled", "true");
     }
   });

@@ -19,7 +19,7 @@ The maths is in `docs/algorithms/06-masks.md` (the node's order, the two trims, 
 - **A real graph in the data and the engine.** Nodes, typed ports and links are the format from version 1, and the core evaluates a compiled plan (section 5.2). The interface edits the graph by inserting, deleting, reordering and moving nodes, and by **drawing links by hand**: drag from an output port to an input port, as in Resolve and other node editors (the owner, 2026-11-01; section 7.2).
 - **Pick white moves** from the header into the Colour tab (section 8).
 
-**Not in this version.** Parallel, Layer, Splitter and combiner, and Outside nodes (the Add node menu shows them as "Later"; the format, the validator and the plan are built so they can be added as new node kinds without changing the format); DCTL and OpenFX; presets and nodes shared across photos; the list view (dropped by the owner); a "pick neutral" in a corrector.
+**Not in this version.** Parallel, Layer, and Splitter and combiner nodes (the Add node menu shows them as "Later"; the format, the validator and the plan are built so they can be added as new node kinds without changing the format); DCTL and OpenFX; presets and nodes shared across photos; the list view (dropped by the owner); a "pick neutral" in a corrector.
 
 ### 1.2 The three zones
 
@@ -202,7 +202,7 @@ A graph with a **key link**, a node that only makes a mask for another (a dead p
 
 ### 3.2 The nodes
 
-Every item has `id`, `kind` and `pos`. **`id`** is `"input"`, `"output"` or an integer 1 to 2³¹ − 1 (Main is 1); it is stable within the photo and is used by links, selection, thumbnails and undo. A number on a card is not the id: it is the node's place in the flow (section 7.2). New ids are one more than the largest the page has used in the session, so an id is not reused after a delete. **`kind`** is `input`, `output` or `corrector` (the id `"input"` is always kind `input`, and so on); any other kind is refused (section 3.5), and Parallel, Layer, Splitter and combiner and Outside will be new values. **`pos`** is `[x, y]`, finite numbers in −1000 to 1000, in grid units: the card's place on the canvas (one unit is 214 px across and 150 px down at 100 % zoom). A document may leave it out: the core then places the nodes in a row by their number, the Input first and the Output last, at y = 0 (the default graph is −1, 0 and 1). It is always written, it travels with copy and paste and with undo like the rest, and it lives in memory only.
+Every item has `id`, `kind` and `pos`. **`id`** is `"input"`, `"output"` or an integer 1 to 2³¹ − 1 (Main is 1); it is stable within the photo and is used by links, selection, thumbnails and undo. A number on a card is not the id: it is the node's place in the flow (section 7.2). New ids are one more than the largest the page has used in the session, so an id is not reused after a delete. **`kind`** is `input`, `output` or `corrector` (the id `"input"` is always kind `input`, and so on); any other kind is refused (section 3.5), and Parallel, Layer and Splitter and combiner will be new values. **`pos`** is `[x, y]`, finite numbers in −1000 to 1000, in grid units: the card's place on the canvas (one unit is 214 px across and 150 px down at 100 % zoom). A document may leave it out: the core then places the nodes in a row by their number, the Input first and the Output last, at y = 0 (the default graph is −1, 0 and 1). It is always written, it travels with copy and paste and with undo like the rest, and it lives in memory only.
 
 A node has only the fields of its kind below; another field is an unknown field and is refused.
 
@@ -481,7 +481,7 @@ The core **compiles the graph into a plan** (`ym_color::plan`; `docs/algorithms/
 - **Order.** A topological order over the picture and key links, with ties broken by Main first, then the card's `pos` (x then y), then the id. A card's number is its place in the same order over *all* nodes, dead ones included.
 - **Registers.** Each step reads a picture register and writes one, and reads and writes key slots. All of it is per pixel.
 - **One pass.** A run of per-pixel nodes on one picture path **fuses into the one colour pass** with the node loop, as planned; keys fed through key links are kept per pixel in that pass. This version has no joins, so **every v1 graph compiles into one pass** unless it needs more than 8 pictures or 16 keys alive at once (only a hand-written graph with many branches can).
-- **Several passes.** Joins (the mixers of a later version: Parallel, Layer, Splitter and combiner, Outside) will split the plan into several passes with f32 buffers between them. **The compiler is written for that from the start**: it knows passes, the values that cross from one to the next and the buffers that carry them, and v1 only ever asks it for one, except for the over-wide case above, which has its own test.
+- **Several passes.** Joins (the mixers of a later version: Parallel, Layer, Splitter and combiner) will split the plan into several passes with f32 buffers between them. **The compiler is written for that from the start**: it knows passes, the values that cross from one to the next and the buffers that carry them, and v1 only ever asks it for one, except for the over-wide case above, which has its own test.
 - **Stops.** A thumbnail is the plan compiled to end at a node's picture and then run through the Output; the mask view is the plan compiled to end at a node's `m`.
 
 ### 5.3 CPU reference
@@ -638,7 +638,6 @@ A glass menu that opens upward from the button over the photo:
 | Parallel | "Grade branches side by side." | greyed, tag "Later" |
 | Layer | "Blend one branch over another." | greyed, tag "Later" |
 | Splitter and combiner | "Split a picture, then join it again." | greyed, tag "Later" |
-| Outside | "Everything outside a mask." | greyed, tag "Later" |
 
 The greyed items are `aria-disabled`, with the tooltip "Not in the first version".
 
@@ -936,6 +935,8 @@ The plan and the owner's later answers fixed the product; these are the readings
 ## 15. As built
 
 *(Filled in by the tasks as they land: what each task decided, what it measured, and what differs from this file.)*
+
+- Outside removed from the add-node menu (the owner, 2026-11-03).
 
 ### The first frame of a row's eye (2026-11-03)
 

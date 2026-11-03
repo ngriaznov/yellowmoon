@@ -396,10 +396,10 @@ test.describe("the toolbar and the photo switcher", () => {
     await expect(menu).toBeVisible();
     const m = await box(menu);
     expect(m.y + m.height).toBeLessThanOrEqual(b.y + 1);
-    await expect(menu.getByRole("menuitem")).toHaveCount(5);
+    await expect(menu.getByRole("menuitem")).toHaveCount(4);
     await expect(menu.getByRole("menuitem").first()).toContainText("Corrector");
     await expect(menu.getByRole("menuitem").first()).toContainText("Grades all or part of the photo.");
-    for (const name of ["Parallel", "Layer", "Splitter and combiner", "Outside"]) {
+    for (const name of ["Parallel", "Layer", "Splitter and combiner"]) {
       const item = menu.getByRole("menuitem", { name: new RegExp(`^${name}`) });
       await expect(item).toHaveAttribute("aria-disabled", "true");
       await expect(item).toContainText("Later");
