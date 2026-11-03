@@ -172,6 +172,9 @@ fn one_node(rows: Vec<Value>) -> DevelopSettings {
     settings(vec![node(2, 1.0, rows, json!({}))], line())
 }
 
+/// What the mask view shows: nothing, or a style and a row.
+type Shown = Option<(MaskStyle, Option<u32>)>;
+
 fn view(zoom_100: bool, mask: Option<(MaskStyle, Option<u32>)>) -> ViewportState {
     let mut st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
     if zoom_100 {
@@ -200,11 +203,7 @@ fn frame(r: &Renderer, src: &PhotoSource, st: &ViewportState) -> RenderedFrame {
 
 /// Renders the photo in every state of the list, each at Fit and at 100 % with a pan between two frames, and says
 /// what went wrong: a frame the CPU made, a "graphics card" note, or an ended route.
-fn route_problems(
-    r: &Renderer,
-    src: &PhotoSource,
-    states: &[(&str, Option<(MaskStyle, Option<u32>)>)],
-) -> Vec<String> {
+fn route_problems(r: &Renderer, src: &PhotoSource, states: &[(&str, Shown)]) -> Vec<String> {
     let mut problems = Vec::new();
     for (what, mask) in states {
         for zoom_100 in [false, true] {
@@ -237,7 +236,7 @@ fn route_problems(
 }
 
 /// Every view the viewer can ask for with the mask row(s) in node 2.
-fn all_states() -> Vec<(&'static str, Option<(MaskStyle, Option<u32>)>)> {
+fn all_states() -> Vec<(&'static str, Shown)> {
     vec![
         ("photo", None),
         ("overlay", Some((MaskStyle::Overlay, None))),
@@ -250,7 +249,7 @@ fn all_states() -> Vec<(&'static str, Option<(MaskStyle, Option<u32>)>)> {
     ]
 }
 
-fn check(r: &Renderer, src: &PhotoSource, states: &[(&str, Option<(MaskStyle, Option<u32>)>)]) {
+fn check(r: &Renderer, src: &PhotoSource, states: &[(&str, Shown)]) {
     let problems = route_problems(r, src, states);
     assert!(problems.is_empty(), "{problems:#?}");
 }
@@ -581,6 +580,7 @@ fn a_refused_check_costs_one_cpu_frame_and_leaves_the_route_open() {
         for _ in 0..2 {
             let next = frame(&r, &src, &st);
             assert_eq!(next.report.device, ComputeDevice::Gpu, "{style:?}");
+            assert!(!next.report.device_refused, "{style:?}");
             assert!(
                 !next
                     .report
@@ -629,4 +629,36 @@ fn a_true_device_fault_still_ends_the_route_and_the_viewport_says_the_cpu() {
             "{fault:?}"
         );
     }
+}
+
+/// Frames that never asked the device do not say it refused: one served from the cache (the report of the frame that
+/// was refused is not repeated), and one of paper only.
+#[cfg(feature = "fault-injection")]
+#[test]
+fn a_cache_hit_and_a_paper_frame_are_not_refusals() {
+    use ym_gpu::device::GpuFault;
+    let Some(gpu) = gpu() else { return };
+    let d = photo();
+    let src = d.source().with_settings(one_node(vec![brush_painted()]));
+    let r = renderer(&gpu, None);
+    let st = view(false, None);
+    let cached = FrameOptions::default();
+    gpu.set_fault(Some(GpuFault::FailInvalid(1)));
+    let refused = r
+        .viewport_frame(&src, &st, &cached, &CancelToken::new())
+        .expect("frame");
+    gpu.set_fault(None);
+    assert!(refused.report.device_refused);
+    // The same view again is the cache's.
+    let hit = r
+        .viewport_frame(&src, &st, &cached, &CancelToken::new())
+        .expect("frame");
+    assert!(!hit.report.device_refused, "{:?}", hit.report.notes);
+    // A cell the photo is not in (panned far off at 100 %) is paper only.
+    let mut off = view(true, None);
+    off.centre = [40.0, 40.0];
+    let paper = r
+        .viewport_frame(&src, &off, &cached, &CancelToken::new())
+        .expect("frame");
+    assert!(!paper.report.device_refused);
 }

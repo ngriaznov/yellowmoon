@@ -47,9 +47,9 @@
 //! the sharp tiles included, and whichever way it ends: shown, stopped, failed), the worker holds a
 //! [`BusyGuard`], which tells the webview `viewport_busy { busy: true, cpu, finding }`, where `cpu` says that
 //! the renderer runs the photo's raw stages or views on the CPU (`Renderer::raw_on_cpu`, asked as the round
-//! starts and asked again when its frame is back, so that a round whose frame the CPU made because the device
-//! failed during it says `cpu: true` at once, while the tile pass is still running, and not only from the next
-//! round on) and `finding` that the round makes the photo's first blur map for a Background mask
+//! starts and asked again when its frame is back, together with the frame report's `device_refused`, so that a
+//! round whose frame the CPU made because the device failed during it, for good or for this frame only, says
+//! `cpu: true` at once, while the tile pass is still running, and not only from the next round on) and `finding` that the round makes the photo's first blur map for a Background mask
 //! (`Renderer::finding_masks`, asked the same way; the mask rows say "Finding…"), and `busy: false` when
 //! it is dropped. Only a change is sent, and the shell's throttle
 //! merges what a stream of rounds sends. The photo cell shows "Rendering on the CPU" from it. While the core's
@@ -1372,8 +1372,9 @@ impl Shared {
             }
         };
         lock(&self.state).last_error = None;
-        // The pill from the first CPU frame: a frame the device failed on is on screen with the CPU's word.
-        busy.frame_came_back(core.renderer.raw_on_cpu(photo));
+        // The pill from the first CPU frame: a frame the device failed on (the route ended, or only this frame was
+        // refused) is on screen with the CPU's word.
+        busy.frame_came_back(core.renderer.raw_on_cpu(photo) || frame.report.device_refused);
         self.present(&frame, photo, requested_at);
         if !frame.sharp {
             // The zoom needs full-resolution tiles that were not ready: compute them at tile
@@ -1730,6 +1731,7 @@ mod tests {
                 runs: ym_core::pipeline::StageRuns::default(),
                 timings: ym_core::pipeline::StageTimings::default(),
                 notes: Vec::new(),
+                device_refused: false,
                 zoom: None,
                 lens: None,
             },

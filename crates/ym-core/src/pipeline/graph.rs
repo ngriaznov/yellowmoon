@@ -461,6 +461,11 @@ pub struct RenderReport {
     /// Plain-words notes: why the classical path ran, a look that was replaced by Neutral, lens
     /// tables that were ignored.
     pub notes: Vec<String>,
+    /// True when this request asked the device and a device error (a true fault, or a per-frame one: one of our input
+    /// checks refused, a buffer did not fit) made the CPU do the work. False for a request that never asked the device
+    /// (a frame served from the cache, a frame of paper only, no device, a route that had already ended). The viewport
+    /// says "Rendering on the CPU" from it at once, so a state that refuses every frame is seen at the first.
+    pub device_refused: bool,
     /// The zoom of the frame, for a viewport frame ([`Renderer::viewport_frame`] sets it, also on a
     /// frame served from the cache); `None` for every other request.
     pub zoom: Option<FrameZoom>,
@@ -1709,6 +1714,8 @@ pub(crate) struct Job<'a> {
     pub runs: StageRuns,
     pub timings: StageTimings,
     pub notes: Vec<String>,
+    /// A device error made the CPU do work of this request ([`RenderReport::device_refused`]).
+    device_refused: bool,
     started: Instant,
     params: Option<RawParams>,
     /// The decoded area of this request (see [`Job::frame`]).
@@ -1817,6 +1824,7 @@ impl<'a> Job<'a> {
             runs: StageRuns::default(),
             timings: StageTimings::default(),
             notes: Vec::new(),
+            device_refused: false,
             started: Instant::now(),
             params: None,
             frame: None,
@@ -2030,6 +2038,7 @@ impl<'a> Job<'a> {
             runs: self.runs,
             timings: self.timings,
             notes: std::mem::take(&mut self.notes),
+            device_refused: self.device_refused,
             zoom: None,
             lens,
         };
@@ -2486,6 +2495,7 @@ impl<'a> Job<'a> {
     /// device again.
     fn group_gpu_failed(&mut self, error: &GpuError) -> Result<(), RenderError> {
         let reason = error.to_string();
+        self.device_refused = true;
         tracing::warn!(error = %reason, "the device failed on a reduced group; the CPU takes over");
         if matches!(error, GpuError::Shader(_)) {
             self.r.inner.raw_gpu_disabled.store(true, Ordering::SeqCst);
@@ -2998,6 +3008,7 @@ impl<'a> Job<'a> {
     /// [`RenderError::Gpu`] under a strict policy.
     pub(crate) fn view_gpu_failed(&mut self, error: &GpuError) -> Result<(), RenderError> {
         let reason = error.to_string();
+        self.device_refused = true;
         if matches!(error, GpuError::InvalidInput(_)) {
             if self.g.view_input_warned.swap(true, Ordering::SeqCst) {
                 tracing::debug!(error = %reason, "a view was refused by an input check; the CPU makes this frame");
