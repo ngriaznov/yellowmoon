@@ -93,6 +93,52 @@ impl VisionProvider for Probe {
     }
 }
 
+/// A provider whose probe is held shut until `open`, as the first Vision request of a run can take a moment.
+#[derive(Debug)]
+struct SlowProbe {
+    inner: FakeVision,
+    open: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl SlowProbe {
+    fn new(inner: FakeVision) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            open: Mutex::new(false),
+            cv: Condvar::new(),
+        })
+    }
+
+    fn open(&self) {
+        *self.open.lock().unwrap() = true;
+        self.cv.notify_all();
+    }
+}
+
+impl VisionProvider for SlowProbe {
+    fn probe(&self) -> VisionSupport {
+        let mut open = self.open.lock().unwrap();
+        while !*open {
+            open = self.cv.wait(open).unwrap();
+        }
+        drop(open);
+        self.inner.probe()
+    }
+
+    fn mask(&self, kind: VisionKind, picture: &VisionPicture) -> Result<VisionMask, VisionError> {
+        self.inner.mask(kind, picture)
+    }
+}
+
+/// Everything the renderer's listener hears, in order.
+fn listen(r: &Renderer) -> Arc<Mutex<Vec<VisionPhase>>> {
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&heard);
+    r.set_vision_listener(Arc::new(move |_, phase| sink.lock().unwrap().push(phase)));
+    heard
+}
+
 fn options(provider: Option<Arc<dyn VisionProvider>>, tile: usize) -> RenderOptions {
     RenderOptions {
         vision: provider.map(VisionMasks::new),
@@ -196,10 +242,11 @@ fn wait_until(what: &str, secs: u64, mut done: impl FnMut() -> bool) {
     }
 }
 
-/// The row appears: the worker is wanted, and the test waits until it has ended its work for the photo.
+/// The row appears: the worker is wanted, and the test waits until its thread has ended (which is after the probe, and
+/// after the masks, if the computer can make them; `vision_working` is the rows' "Finding…", false until the probe says yes).
 fn make_ready(r: &Renderer, src: &PhotoSource) {
     r.vision_prepare(src);
-    wait_until("the Vision worker", 60, || !r.vision_working(src.id));
+    wait_until("the Vision worker", 60, || !r.vision_worker_alive(src.id));
 }
 
 /// A photo with a bright disc on a darker ground (its brightness centroid is the disc), at `cx` of the width.
@@ -467,22 +514,142 @@ fn a_row_this_computer_cannot_make_is_the_mask_error_with_the_sentence_of_the_sp
 fn a_view_shows_an_unsupported_row_selecting_nothing_and_the_photo_renders() {
     let d = disc_photo();
     let plain = frame(&renderer_with(None, 1024), &d.source(), &picture_view());
-    for provider in [
-        None,
-        Some(Arc::new(NoVision) as Arc<dyn VisionProvider>),
-        Some(Arc::new(
-            FakeVision::new().with_support(VisionSupport::neither(MaskUnavailable::NotSupported)),
-        ) as Arc<dyn VisionProvider>),
-    ] {
-        let r = renderer_with(provider, 1024);
-        let src = with_rows(&d.source(), vec![subject(), people()]);
-        // The node's trim of a stop acts only through its mask, which is empty: the photo is the plain photo.
-        let f = frame(&r, &src, &picture_view());
-        assert_eq!(f.rgba, plain.rgba);
-        // And nothing asks for a mask: the worker does not run.
+    let cannot =
+        FakeVision::new().with_support(VisionSupport::neither(MaskUnavailable::NotSupported));
+    let counted = Arc::new(cannot);
+    // The probe runs on a worker, so a frame may meet it done or not; nothing below may depend on which. With `known_first`
+    // it has answered before the frame, as it has in the app (the shell asks at launch).
+    for known_first in [false, true] {
+        for (what, provider) in [
+            ("no provider", None),
+            (
+                "not a Mac",
+                Some(Arc::new(NoVision) as Arc<dyn VisionProvider>),
+            ),
+            (
+                "a Mac that cannot run the requests",
+                Some(counted.clone() as Arc<dyn VisionProvider>),
+            ),
+        ] {
+            let what = format!("{what}, probe known first: {known_first}");
+            let r = renderer_with(provider, 1024);
+            let heard = listen(&r);
+            let src = with_rows(&d.source(), vec![subject(), people()]);
+            if known_first {
+                let _ = r.vision_support();
+            }
+            // The node's trim of a stop acts only through its mask, which is empty: the photo is the plain photo.
+            let f = frame(&r, &src, &picture_view());
+            assert_eq!(f.rgba, plain.rgba, "{what}");
+            // And nothing asks for a mask, nothing says "Finding…", and no request reaches the provider.
+            r.vision_prepare(&src);
+            assert!(!r.vision_working(src.id), "{what}: working");
+            assert!(!r.finding_masks(src.id, &src.settings), "{what}: finding");
+            // The probe answers (this waits for it, as `mask_kinds` does) and a worker that was asking it ends.
+            let _ = r.vision_support();
+            wait_until("a worker that asked the probe to end", 60, || {
+                !r.vision_worker_alive(src.id)
+            });
+            assert!(!r.vision_working(src.id), "{what}: working after the probe");
+            assert!(!r.finding_masks(src.id, &src.settings), "{what}");
+            assert_eq!(r.vision_makes(src.id), 0, "{what}: a request was made");
+            assert_eq!(coverage(&frame(&r, &src, &mask_view(2))), 0.0, "{what}");
+            assert_eq!(
+                *heard.lock().unwrap(),
+                [],
+                "{what}: the page was told of a worker"
+            );
+            // Once the probe is known, nothing starts a worker for the rows.
+            let workers = r.vision_workers(src.id);
+            if known_first {
+                assert_eq!(workers, 0, "{what}: a worker was started");
+            }
+            r.vision_prepare(&src);
+            let _ = frame(&r, &src, &picture_view());
+            let _ = frame(&r, &src, &mask_view(2));
+            assert_eq!(r.vision_workers(src.id), workers, "{what}: a new worker");
+            assert!(!r.vision_worker_alive(src.id), "{what}");
+            assert!(!r.vision_working(src.id), "{what}");
+        }
+    }
+    assert_eq!(counted.masks_made(), 0, "the provider was never asked");
+    assert_eq!(
+        counted.probes(),
+        2,
+        "one probe for each of the two renderers"
+    );
+}
+
+#[test]
+fn a_viewer_never_waits_for_the_probe_and_the_rows_say_finding_only_once_it_says_yes() {
+    for supported in [true, false] {
+        let support = if supported {
+            VisionSupport::BOTH
+        } else {
+            VisionSupport::neither(MaskUnavailable::NotSupported)
+        };
+        let provider = SlowProbe::new(FakeVision::new().with_support(support));
+        let r = renderer(provider.clone());
+        let heard = listen(&r);
+        let d = disc_photo();
+        let plain = frame(&r, &d.source(), &picture_view());
+        let src = with_rows(&d.source(), vec![subject()]);
+        // The probe is held shut. (A safety net only: a frame that waited for it would end here after half a minute.)
+        let net = Arc::clone(&provider);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(30));
+            net.open();
+        });
+
+        let t = Instant::now();
+        let first = frame(&r, &src, &picture_view());
         r.vision_prepare(&src);
+        assert!(
+            t.elapsed() < Duration::from_secs(25),
+            "the viewer waited for the probe ({:?}), supported: {supported}",
+            t.elapsed()
+        );
+        assert_eq!(first.rgba, plain.rgba, "the row selected nothing");
+        // A worker is asking the probe; until it answers nothing is claimed.
+        assert!(
+            r.vision_worker_alive(src.id),
+            "a worker waits for the probe"
+        );
+        assert!(!r.vision_working(src.id), "supported: {supported}");
+        assert!(!r.finding_masks(src.id, &src.settings));
+        assert_eq!(r.vision_workers(src.id), 1, "one worker, not one a frame");
+        assert_eq!(r.vision_makes(src.id), 0);
+
+        provider.open();
+        wait_until("the worker to end", 60, || !r.vision_worker_alive(src.id));
         assert!(!r.vision_working(src.id));
-        assert_eq!(coverage(&frame(&r, &src, &mask_view(2))), 0.0);
+        if supported {
+            // The probe said yes: the rows said "Finding…" until the mask was there.
+            wait_until("the listener to hear the end", 60, || {
+                matches!(
+                    heard.lock().unwrap().last(),
+                    Some(VisionPhase::Finished { .. })
+                )
+            });
+            assert_eq!(
+                *heard.lock().unwrap(),
+                [
+                    VisionPhase::Started,
+                    VisionPhase::Finished {
+                        nothing_found: vec![]
+                    }
+                ]
+            );
+            assert_eq!(r.vision_makes(src.id), 1);
+            assert!(coverage(&frame(&r, &src, &mask_view(2))) > 0.02);
+        } else {
+            // The probe said no: the worker ended without a word, and no request was made.
+            assert_eq!(*heard.lock().unwrap(), []);
+            assert_eq!(r.vision_makes(src.id), 0);
+            assert_eq!(provider.inner.masks_made(), 0);
+            assert_eq!(coverage(&frame(&r, &src, &mask_view(2))), 0.0);
+            assert_eq!(r.vision_workers(src.id), 1, "and none after it");
+        }
     }
 }
 
@@ -503,6 +670,9 @@ fn a_viewer_never_waits_the_row_selects_nothing_until_the_mask_is_made() {
     let plain = frame(&r, &d.source(), &picture_view());
     let src = with_rows(&d.source(), vec![subject()]);
     provider.shut();
+    // The probe has answered, as it has in the app (the shell asks at launch): the rows say "Finding…" from the first
+    // frame. (Before it has, they say nothing yet; `a_viewer_never_waits_for_the_probe…` holds the probe shut.)
+    let _ = r.vision_support();
 
     // A frame with the row: it comes back at once, with the row selecting nothing, and the worker is asked for the mask.
     let t = Instant::now();
@@ -534,7 +704,13 @@ fn a_viewer_never_waits_the_row_selects_nothing_until_the_mask_is_made() {
 
     // Vision answers: the worker ends, the listener hears it, and the next frame has the mask.
     provider.open();
-    wait_until("the worker to end", 60, || !r.vision_working(src.id));
+    wait_until("the listener to hear the end", 60, || {
+        matches!(
+            heard.lock().unwrap().last(),
+            Some((_, VisionPhase::Finished { .. }))
+        )
+    });
+    assert!(!r.vision_working(src.id));
     assert!(!r.finding_masks(src.id, &src.settings));
     let made = frame(&r, &src, &picture_view());
     assert!(made.rgba != plain.rgba, "the row acts");
@@ -689,15 +865,18 @@ fn nothing_found_gives_an_empty_mask_and_is_reported_not_retried() {
     let provider =
         Probe::new(FakeVision::new().answering(VisionKind::People, FakeAnswer::NothingFound));
     let r = renderer(provider.clone());
-    let heard = Arc::new(Mutex::new(Vec::<VisionPhase>::new()));
-    {
-        let heard = Arc::clone(&heard);
-        r.set_vision_listener(Arc::new(move |_, phase| heard.lock().unwrap().push(phase)));
-    }
+    let heard = listen(&r);
     let d = disc_photo();
     let plain = frame(&r, &d.source(), &picture_view());
     let src = with_rows(&d.source(), vec![people()]);
     make_ready(&r, &src);
+    // (The listener hears the end just after the worker's thread has cleared its flags.)
+    wait_until("the listener to hear the end", 60, || {
+        matches!(
+            heard.lock().unwrap().last(),
+            Some(VisionPhase::Finished { .. })
+        )
+    });
     assert_eq!(r.vision_nothing_found(src.id), [MaskKind::People]);
     assert_eq!(
         heard.lock().unwrap().last(),

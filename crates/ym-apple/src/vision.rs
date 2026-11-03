@@ -244,7 +244,8 @@ mod tests {
     }
 
     /// The probe on this Mac: each request ran on a 64 x 64 picture, or the reason it did not. A virtual Mac (a CI runner)
-    /// may not run them: the answer is printed plainly and the test passes, unless `YM_REQUIRE_VISION` is set.
+    /// may not run them: the answer is printed plainly and the test passes, unless `YM_REQUIRE_VISION` is set (CI's macOS
+    /// `rust` job sets it: its runners run the requests).
     #[cfg(ym_apple_vision)]
     #[test]
     fn the_probe_answers_for_each_request_on_this_mac() {
@@ -282,6 +283,11 @@ mod tests {
         let picture = test_picture();
         for kind in VisionKind::ALL {
             if !support.of(kind).is_supported() {
+                assert!(
+                    std::env::var_os("YM_REQUIRE_VISION").is_none(),
+                    "YM_REQUIRE_VISION is set and {} is not supported on this Mac",
+                    kind.label()
+                );
                 println!("{} is not supported on this Mac: skipped", kind.label());
                 continue;
             }

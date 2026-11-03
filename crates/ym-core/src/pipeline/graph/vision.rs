@@ -15,6 +15,12 @@
 //!   exposure makes one mask, not a hundred) and the row selects nothing until the listener ([`VisionPhase`]) tells the
 //!   page to draw again. While the picture changes it keeps the latest mask of the request it has, as Object does, so the
 //!   mask stays put during a drag. The app says "Finding…" under the row meanwhile (`viewport_busy.finding`).
+//! * **The probe comes first, and an unsupported row costs nothing.** The worker asks the computer what it supports
+//!   before anything else (the probe is one 64 x 64 request per run, and it usually ran already: the shell asks at
+//!   launch). A request the computer refuses is never asked for: where the probe has run, nothing starts a worker for it
+//!   ([`VisionMasks::not_refused`]); where it has not run yet, the worker that asks it ends without a word once the answer
+//!   is no, without "Finding…" ([`VisionSlot::working`] is true only for a worker that holds something this computer can
+//!   make) and without reaching the provider. A viewer never waits for the probe either way.
 //! * **An export makes its own mask** from the same picture when the photo has none for it, so its bytes depend on
 //!   nothing but the file and the settings (and this Mac's Vision), and `ym` and the app agree.
 //! * **Nothing found** is a result too: `S0` is 0 (the row has no plane) and the page says "Nothing found". A request
@@ -98,8 +104,13 @@ struct SlotState {
     wanted: Option<Wanted>,
     /// The worker is making masks now.
     running: Option<Running>,
-    /// A background worker is alive for the photo.
+    /// A background worker thread is alive for the photo (it may still be waiting for the probe).
     worker: bool,
+    /// The worker holds something this computer can make, from the moment the probe allowed it until the worker ends:
+    /// the rows say "Finding…" meanwhile. False while the probe has not answered, and always false where it said no.
+    finding: bool,
+    /// How many workers were started for the photo (for the tests and the log).
+    workers: u64,
     /// How many requests reached the provider for the photo, workers and exports together (for the tests and the log).
     makes: u64,
 }
@@ -133,10 +144,20 @@ impl VisionSlot {
         }
     }
 
-    /// Whether the worker is making masks for the photo, or will be in a moment ("Finding…").
+    /// Whether the worker is making masks for the photo, or will be in a moment ("Finding…"). Never true for a request
+    /// the probe refused.
     pub(crate) fn working(&self) -> bool {
-        let st = lock(&self.state);
-        st.worker || st.running.is_some()
+        lock(&self.state).finding
+    }
+
+    /// Whether a worker thread is alive for the photo, even one that only waits for the probe.
+    pub(crate) fn worker_alive(&self) -> bool {
+        lock(&self.state).worker
+    }
+
+    /// How many workers were started for the photo.
+    pub(crate) fn workers(&self) -> u64 {
+        lock(&self.state).workers
     }
 
     /// How many requests reached the provider for the photo.
@@ -252,10 +273,25 @@ impl Renderer {
         }
     }
 
-    /// Whether the worker is making Subject or People masks for the photo, or will be in a moment ("Finding…").
+    /// Whether the worker is making Subject or People masks for the photo, or will be in a moment ("Finding…"). False
+    /// while the probe has not answered and wherever it said no.
     #[must_use]
     pub fn vision_working(&self, id: PhotoId) -> bool {
         self.existing_graph(id).is_some_and(|g| g.vision.working())
+    }
+
+    /// Whether a background worker thread is alive for the photo, including one that only waits for the probe and ends
+    /// without a word when the answer is no.
+    #[must_use]
+    pub fn vision_worker_alive(&self, id: PhotoId) -> bool {
+        self.existing_graph(id)
+            .is_some_and(|g| g.vision.worker_alive())
+    }
+
+    /// How many background workers were started for the photo since its graph was made.
+    #[must_use]
+    pub fn vision_workers(&self, id: PhotoId) -> u64 {
+        self.existing_graph(id).map_or(0, |g| g.vision.workers())
     }
 
     /// How many requests reached the provider for the photo since its graph was made.
@@ -273,16 +309,13 @@ impl Renderer {
 
     /// Asks for the Subject and People masks of the photo's picture in the background (`docs/23` section 4.5: "when the
     /// row appears"). Returns at once, probe included: the worker asks the computer. Nothing is done when the renderer has
-    /// no provider, the photo has no such row, or the masks are made already or being made.
+    /// no provider, the photo has no such row, the probe has said that this computer cannot make the rows' requests, or
+    /// the masks are made already or being made.
     pub fn vision_prepare(&self, src: &PhotoSource) {
         let Some(masks) = self.vision_masks() else {
             return;
         };
-        let mut kinds = vision_kinds(&src.settings);
-        // Once the probe is known, a request this computer cannot run is not asked for.
-        if let Some(known) = masks.support_if_known() {
-            kinds.retain(|&k| known.of(k).is_supported());
-        }
+        let kinds = masks.not_refused(vision_kinds(&src.settings));
         if kinds.is_empty() {
             return;
         }
@@ -304,9 +337,12 @@ impl Renderer {
         let hash = fnv(key);
         {
             let mut st = lock(&graph.vision.state);
+            // The probe's answer if there is one: a request it refused starts nothing and is never "Finding…".
+            let known = masks.support_if_known();
             let mut missing: Vec<VisionKind> = kinds
                 .iter()
                 .copied()
+                .filter(|&k| known.is_none_or(|s| s.of(k).is_supported()))
                 .filter(|&k| !st.entries.iter().any(|e| e.picture == hash && e.kind == k))
                 .collect();
             if missing.is_empty() {
@@ -337,10 +373,16 @@ impl Renderer {
                 kinds: missing,
                 at: Instant::now(),
             });
+            // The probe said yes to something wanted: the rows say "Finding…" from now on. While it has not answered, the
+            // worker says so once it has.
+            if known.is_some() {
+                st.finding = true;
+            }
             if st.worker {
                 return;
             }
             st.worker = true;
+            st.workers += 1;
         }
         let renderer = self.clone();
         let (worker_graph, worker_masks) = (Arc::clone(graph), Arc::clone(masks));
@@ -351,15 +393,33 @@ impl Renderer {
             tracing::error!(error = %e, "the Vision worker could not start");
             let mut st = lock(&graph.vision.state);
             st.worker = false;
+            st.finding = false;
             st.wanted = None;
         }
     }
 
-    /// The background worker of a photo: asks the computer what it supports, then makes what is wanted, one picture at a
-    /// time, until nothing is. A wish is taken once it has been left alone for [`PREPARE_DEBOUNCE`], so a stream of them
-    /// makes one mask, of the last picture.
+    /// The background worker of a photo: asks the computer what it supports first, then makes what is wanted, one picture
+    /// at a time, until nothing is. A wish is taken once it has been left alone for [`PREPARE_DEBOUNCE`], so a stream of
+    /// them makes one mask, of the last picture. Where the computer can make nothing that is wanted, the worker ends
+    /// without a word: no listener hears of it and the rows never say "Finding…".
     fn vision_worker(&self, graph: &Arc<PhotoGraph>, masks: &Arc<VisionMasks>) {
         let id = graph.id();
+        // The probe runs here, off the thread that asked and before the wait: once per run, and known already in the
+        // usual case.
+        let support = masks.support();
+        {
+            let mut st = lock(&graph.vision.state);
+            if let Some(w) = st.wanted.as_mut() {
+                w.kinds.retain(|&k| support.of(k).is_supported());
+            }
+            if st.wanted.as_ref().is_none_or(|w| w.kinds.is_empty()) {
+                st.wanted = None;
+                st.worker = false;
+                st.finding = false;
+                return;
+            }
+            st.finding = true;
+        }
         self.vision_notify(id, VisionPhase::Started);
         loop {
             let wanted = {
@@ -367,6 +427,7 @@ impl Renderer {
                 match &st.wanted {
                     None => {
                         st.worker = false;
+                        st.finding = false;
                         break;
                     }
                     Some(w) if w.at.elapsed() < PREPARE_DEBOUNCE => {
@@ -382,8 +443,8 @@ impl Renderer {
             if self.is_retired(id) {
                 continue;
             }
-            // The probe runs here, off the thread that asked: once per run.
-            let support = masks.support();
+            // (A wish made before the probe answered is filtered above; one made after it is filtered when it is made. This
+            // one covers a wish that raced the probe.)
             let kinds: Vec<VisionKind> = wanted
                 .kinds
                 .iter()

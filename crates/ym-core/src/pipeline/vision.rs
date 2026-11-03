@@ -7,11 +7,12 @@ use crate::settings::MaskKind;
 /// ([`Renderer::set_vision_listener`](super::Renderer::set_vision_listener)).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VisionPhase {
-    /// A worker started for the photo: the probe, the picture and the requests are on their way. The rows say
-    /// "Finding…".
+    /// A worker started work for the photo: the probe has said yes to a request that is wanted, and the picture and the
+    /// requests are on their way. The rows say "Finding…". A worker that finds the probe saying no to everything wanted
+    /// ends without telling anyone: no `Started` and no `Finished`.
     Started,
-    /// The worker ended its work for the photo. A frame that selected nothing for want of a mask should be drawn again,
-    /// and the rows whose request found nothing say "Nothing found".
+    /// The worker ended its work for the photo (after a `Started`). A frame that selected nothing for want of a mask
+    /// should be drawn again, and the rows whose request found nothing say "Nothing found".
     Finished {
         /// The requests whose newest result for the photo found nothing (as mask kinds).
         nothing_found: Vec<MaskKind>,

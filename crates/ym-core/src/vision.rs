@@ -269,6 +269,17 @@ impl VisionMasks {
         self.support.get().copied()
     }
 
+    /// The requests among `kinds` that the probe has not refused. While the probe has not run, all of them: this never
+    /// waits for it, so a viewer can call it; whoever acts on the answer must be ready to meet a refusal later
+    /// (the background worker asks the probe first and drops what it refuses).
+    #[must_use]
+    pub fn not_refused(&self, mut kinds: Vec<VisionKind>) -> Vec<VisionKind> {
+        if let Some(known) = self.support_if_known() {
+            kinds.retain(|&k| known.of(k).is_supported());
+        }
+        kinds
+    }
+
     /// The requests this computer can run.
     #[must_use]
     pub fn kinds(&self) -> Vec<VisionKind> {
