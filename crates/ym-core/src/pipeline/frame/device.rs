@@ -71,7 +71,7 @@ use ym_gpu::kernels::color::{NodeStop, PreparedChain, Stop, release_tables};
 use ym_gpu::kernels::copy::{Piece, encode_gather};
 use ym_gpu::kernels::encode::{C13, Encoding, encode_c13};
 use ym_gpu::kernels::magnify::{MagnifyTarget, encode_magnify};
-use ym_gpu::kernels::mask_raster::{RasterJob, encode_raster_planes};
+use ym_gpu::kernels::mask_raster::{PlaneKey, RasterJob, encode_raster_planes_kept};
 use ym_gpu::kernels::output_sharpen::{FusedC13, PreparedSharpen};
 use ym_gpu::kernels::sampler::encode_sample_at;
 use ym_gpu::kernels::tint::encode_tint;
@@ -589,6 +589,8 @@ pub(super) struct GrownInput {
     pub input: DeviceInput,
     /// Where it lies, and where the planes go.
     pub read: super::RasterRead,
+    /// What the planes are kept under on the device (the rows add their own).
+    pub key: PlaneKey,
 }
 
 /// The colour chain prepared on the device, with the render's photo frame when the input has the pixels' places in the
@@ -619,16 +621,13 @@ fn prepared_for(
     if chain.uses_rasters()
         && let Some(grown) = rasters
     {
-        let wide = {
-            let _span = perf::span(Stage::WideImage);
-            input_image(ctx, passes, &grown.input)?
-        };
         let r = &grown.read;
-        let planes = encode_raster_planes(
+        // The planes of a row that was made before (this frame's other chain, an earlier frame) are copied; the
+        // wider picture and the guide are made only when some row has none.
+        let planes = encode_raster_planes_kept(
             passes,
             &prepared,
             chain,
-            &wide,
             &RasterJob {
                 frame: r.frame,
                 grown: r.grown,
@@ -636,9 +635,12 @@ fn prepared_for(
                 extent: r.extent,
                 photo: frame,
             },
+            &grown.key,
+            |passes| {
+                let _span = perf::span(Stage::WideImage);
+                input_image(ctx, passes, &grown.input)
+            },
         )?;
-        // The picture must outlive the submission.
-        let _ = passes.keep(wide.buf);
         prepared = prepared.with_rasters(planes);
     }
     Ok(prepared)

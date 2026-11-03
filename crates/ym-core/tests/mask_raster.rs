@@ -18,7 +18,10 @@ use ym_core::pipeline::{
     NeutralOnly, PhotoSource, RenderOptions, Renderer, ViewportRect, ViewportState,
     unmakeable_mask,
 };
-use ym_core::settings::{DevelopSettings, MaskKind, mask_kinds, mask_unavailable};
+use ym_core::settings::{
+    AutoOr, Crop, CropAspect, DevelopSettings, ExposureValue, MaskKind, NormRect, Orientation,
+    WhiteBalanceValue, mask_kinds, mask_unavailable,
+};
 use ym_export::{BitDepth, ExportOptions, FormatKind, IfExists};
 use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
 use ym_gpu::queue::CancelToken;
@@ -937,4 +940,247 @@ fn a_retina_size_view_with_a_brush_row_is_made_on_the_device_in_bands() {
     let (worst, mean) = frame_difference(&device, &other);
     eprintln!("a retina-size view cut elsewhere: {worst} codes, mean {mean:.6}");
     assert!(worst <= 1 && mean < 0.01, "{worst} codes, mean {mean}");
+}
+
+// ---- the planes kept on the device (docs/23 section 5.6) -----------------------------------------------
+
+/// Node 2: an exposure trim of `ev` stops behind these mask rows.
+fn node_2_trim(ev: f64, rows: Vec<Value>) -> Value {
+    json!({
+        "id": 2, "kind": "corrector", "pos": [1.0, 0.0],
+        "trim": { "exposure_ev": ev },
+        "masks": { "invert": false, "items": rows },
+    })
+}
+
+/// A Brush row with Feather 0.3 and Refine edges 0.5, with these fields changed.
+fn kept_row(extra: Value) -> Value {
+    let mut fields = json!({ "feather": 0.3, "refine": 0.5 });
+    if let (Some(f), Some(e)) = (fields.as_object_mut(), extra.as_object()) {
+        f.extend(e.clone());
+    }
+    brush(0.25, 0.5, &[[0.35, 0.45], [0.6, 0.55]], fields)
+}
+
+fn uncached(r: &Renderer, s: &PhotoSource, st: &ViewportState) -> ym_core::pipeline::RenderedFrame {
+    r.viewport_frame(
+        s,
+        st,
+        &FrameOptions {
+            no_cache: true,
+            ..FrameOptions::default()
+        },
+        &CancelToken::new(),
+    )
+    .expect("frame")
+}
+
+/// The frame of `s`, and the rows whose planes the device made for it and copied for it.
+fn counted(
+    gpu: &Gpu,
+    r: &Renderer,
+    s: &PhotoSource,
+    st: &ViewportState,
+) -> (ym_core::pipeline::RenderedFrame, u64, u64) {
+    let before = gpu.counters();
+    let f = uncached(r, s, st);
+    assert_eq!(f.report.device, ComputeDevice::Gpu);
+    let d = gpu.counters().since(before);
+    (f, d.plane_builds, d.plane_hits)
+}
+
+fn edit(src: &PhotoSource, f: impl FnOnce(&mut DevelopSettings)) -> PhotoSource {
+    let mut s = src.settings.clone();
+    f(&mut s);
+    src.with_settings(s)
+}
+
+#[test]
+fn a_row_s_plane_is_made_again_only_when_something_it_is_made_of_changes() {
+    let Some(gpu) = gpu() else { return };
+    let d = photo();
+    let src = d.source();
+    let r = device_renderer(Arc::clone(&gpu), 1024);
+    let st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+    let with_row = |ev: f64, extra: Value| with(&src, graph(vec![node_2_trim(ev, vec![kept_row(extra)])]));
+
+    // The first frame makes the row's plane.
+    let (_, builds, hits) = counted(&gpu, &r, &with_row(1.0, json!({})), &st);
+    assert_eq!((builds, hits), (1, 0), "the first frame");
+    // Nothing the plane is made of moves: the node's exposure, and the row's Opacity, Mode and Invert, which
+    // act in the colour pass.
+    for (what, s) in [
+        ("the node's exposure", with_row(2.0, json!({}))),
+        ("the row's Opacity", with_row(1.0, json!({ "opacity": 0.5 }))),
+        ("the row's Mode", with_row(1.0, json!({ "mode": "subtract" }))),
+        ("the row's Invert", with_row(1.0, json!({ "invert": true }))),
+    ] {
+        let (_, builds, hits) = counted(&gpu, &r, &s, &st);
+        assert_eq!((builds, hits), (0, 1), "{what}");
+    }
+    // The row's own edges are in the plane.
+    for (what, extra) in [
+        ("Feather", json!({ "feather": 0.42 })),
+        ("Grow", json!({ "grow": 0.2 })),
+        ("Refine edges", json!({ "refine": 0.63 })),
+    ] {
+        let (_, builds, hits) = counted(&gpu, &r, &with_row(1.0, extra), &st);
+        assert_eq!((builds, hits), (1, 0), "{what}");
+    }
+    // The guide is the Input's luma: the Input's exposure and white balance are in a refined row's plane.
+    let exposure = |ev: f64| {
+        edit(&with_row(1.0, json!({})), |s| {
+            s.input_mut().exposure = AutoOr::Manual(ExposureValue { ev })
+        })
+    };
+    let (_, builds, hits) = counted(&gpu, &r, &exposure(0.5), &st);
+    assert_eq!((builds, hits), (1, 0), "the Input's exposure");
+    let (_, builds, hits) = counted(&gpu, &r, &exposure(0.5), &st);
+    assert_eq!((builds, hits), (0, 1), "the same Input again");
+    let (_, builds, hits) = counted(
+        &gpu,
+        &r,
+        &edit(&with_row(1.0, json!({})), |s| {
+            s.input_mut().white_balance = AutoOr::Manual(WhiteBalanceValue {
+                kelvin: 3900.0,
+                tint: 5.0,
+            })
+        }),
+        &st,
+    );
+    assert_eq!((builds, hits), (1, 0), "the Input's white balance");
+    // A row that does not refine its edges has no guide: the Input does not move its plane.
+    let plain = |ev: f64| {
+        edit(
+            &with(
+                &src,
+                graph(vec![node_2_trim(
+                    1.0,
+                    vec![kept_row(json!({ "refine": 0.0 }))],
+                )]),
+            ),
+            |s| s.input_mut().exposure = AutoOr::Manual(ExposureValue { ev }),
+        )
+    };
+    let (_, builds, _) = counted(&gpu, &r, &plain(0.2), &st);
+    assert_eq!(builds, 1, "the first frame of a row with no Refine edges");
+    let (_, builds, hits) = counted(&gpu, &r, &plain(0.9), &st);
+    assert_eq!((builds, hits), (0, 1), "the Input under a row with no Refine edges");
+    // Where the pixels are in the photo: a crop and a turn.
+    let cropped = edit(&with_row(1.0, json!({})), |s| {
+        s.input_mut().crop = Some(Crop {
+            rect: NormRect {
+                x: 0.1,
+                y: 0.1,
+                width: 0.8,
+                height: 0.8,
+            },
+            angle_deg: 0.0,
+            aspect: CropAspect::Free,
+            auto: false,
+        })
+    });
+    let (_, builds, hits) = counted(&gpu, &r, &cropped, &st);
+    assert_eq!((builds, hits), (1, 0), "a crop");
+    let turned = edit(&with_row(1.0, json!({})), |s| {
+        s.input_mut().orientation = Orientation::Deg90
+    });
+    let (_, builds, hits) = counted(&gpu, &r, &turned, &st);
+    assert_eq!((builds, hits), (1, 0), "a turn");
+    // The same sizes, other places: a crop moved without changing its size, and a turn the other way. Only the
+    // geometry tells these from the frames before them.
+    let moved = edit(&cropped, |s| {
+        if let Some(c) = s.input_mut().crop.as_mut() {
+            c.rect.x = 0.15;
+        }
+    });
+    let (_, builds, hits) = counted(&gpu, &r, &moved, &st);
+    assert_eq!((builds, hits), (1, 0), "a crop moved without a change of size");
+    let turned_back = edit(&turned, |s| s.input_mut().orientation = Orientation::Deg270);
+    let (_, builds, hits) = counted(&gpu, &r, &turned_back, &st);
+    assert_eq!((builds, hits), (1, 0), "a turn the other way");
+    // A pan of a view at 100 %.
+    let at = |x: f64| {
+        let mut v = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+        v.mode = ym_core::pipeline::ViewportMode::Percent { value: 100.0 };
+        v.centre = [x, 0.5];
+        v
+    };
+    let s = with_row(1.0, json!({}));
+    let (_, builds, _) = counted(&gpu, &r, &s, &at(0.5));
+    assert_eq!(builds, 1, "the first frame at 100 %");
+    let (_, builds, hits) = counted(&gpu, &r, &s, &at(0.5));
+    assert_eq!((builds, hits), (0, 1), "the same view again");
+    let (_, builds, hits) = counted(&gpu, &r, &s, &at(0.53));
+    assert_eq!((builds, hits), (1, 0), "a pan");
+}
+
+#[test]
+fn a_row_with_its_eye_off_leaves_the_planes_of_the_others_alone() {
+    let Some(gpu) = gpu() else { return };
+    let d = photo();
+    let src = d.source();
+    let r = device_renderer(Arc::clone(&gpu), 1024);
+    let st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+    let first = kept_row(json!({}));
+    let second = kept_row(json!({ "grow": 0.1 }));
+    let both = with(&src, graph(vec![node_2_trim(1.0, vec![first.clone(), second.clone()])]));
+    let (_, builds, hits) = counted(&gpu, &r, &both, &st);
+    assert_eq!((builds, hits), (2, 0));
+    let mut off = second;
+    off["enabled"] = json!(false);
+    let one_off = with(&src, graph(vec![node_2_trim(1.0, vec![first, off])]));
+    let (_, builds, hits) = counted(&gpu, &r, &one_off, &st);
+    assert_eq!((builds, hits), (0, 1), "the first row's plane stays");
+}
+
+/// A viewport state whose mask view shows node 2 in `style`, `None` for the photo.
+fn state(zoom_100: bool, style: Option<MaskStyle>) -> ViewportState {
+    let mut st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+    if zoom_100 {
+        st.mode = ym_core::pipeline::ViewportMode::Percent { value: 100.0 };
+    }
+    st.mask_view = style.map(|style| MaskView {
+        node: 2,
+        style,
+        row: None,
+    });
+    st
+}
+
+#[test]
+fn a_frame_made_from_kept_planes_is_the_frame_made_without_them() {
+    let Some(gpu) = gpu() else { return };
+    let d = photo();
+    let src = d.source();
+    let r = device_renderer(Arc::clone(&gpu), 1024);
+    let at = |ev: f64| with(&src, graph(vec![node_2_trim(ev, vec![kept_row(json!({ "grow": 0.1 }))])]));
+    for zoom_100 in [false, true] {
+        for style in [None, Some(MaskStyle::Overlay), Some(MaskStyle::MaskOnly)] {
+            let what = format!("100 % {zoom_100}, {style:?}");
+            let st = state(zoom_100, style);
+            // The first frame makes the planes, the second is made from them.
+            let _ = counted(&gpu, &r, &at(0.5), &st);
+            let (kept, builds, hits) = counted(&gpu, &r, &at(1.5), &st);
+            assert_eq!(builds, 0, "{what}: nothing made again");
+            assert!(hits > 0, "{what}: the planes are copied");
+            gpu.set_planes_kept(false);
+            let (plain, builds, hits) = counted(&gpu, &r, &at(1.5), &st);
+            gpu.set_planes_kept(true);
+            assert!(builds > 0 && hits == 0, "{what}: the switch is off");
+            assert_eq!(kept.rgba, plain.rgba, "{what}");
+        }
+    }
+}
+
+#[test]
+fn show_mask_overlay_makes_a_row_s_plane_once_for_its_two_chains() {
+    let Some(gpu) = gpu() else { return };
+    let d = photo();
+    let src = d.source();
+    let r = device_renderer(Arc::clone(&gpu), 1024);
+    let s = with(&src, graph(vec![node_2_trim(1.0, vec![kept_row(json!({ "grow": 0.15 }))])]));
+    let (_, builds, hits) = counted(&gpu, &r, &s, &state(false, Some(MaskStyle::Overlay)));
+    assert_eq!(builds, 1, "one plane made for the photo's chain and the mask's chain");
+    assert_eq!(hits, 1, "the second chain copies it");
 }

@@ -1258,6 +1258,7 @@ pub fn release_tables(ctx: &GpuContext) {
         cell.borrow_mut()
             .retain(|(owner, _)| owner.as_ptr() != id && owner.strong_count() > 0);
     });
+    super::mask_raster::release_planes(ctx);
 }
 
 /// The dither thresholds buffer of the device (4096 f32, `y * 64 + x`), shared by the encode kernel

@@ -93,7 +93,7 @@ use ym_gpu::cpu::tint::overlay_interleaved;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError};
 use ym_gpu::kernels::copy::Piece;
-use ym_gpu::kernels::mask_raster::{largest_tile_for, tile_halo};
+use ym_gpu::kernels::mask_raster::{PlaneKey, largest_tile_for, tile_halo};
 use ym_gpu::pool::PooledBuffer;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::tail::{TailRoute, colour_device_tile_to_host, colour_tile_to_host};
@@ -103,7 +103,7 @@ use self::device::{
     Rgba8, TailJob, TailWork, Upload, ViewRoute,
 };
 pub use self::export_tail::{BAND_DEPTH, GpuBands, TailRequest};
-use super::color::{GradePlan, PhotoSource};
+use super::color::{GradePlan, PhotoSource, color_key};
 use super::geometry::{Affine, Geometry, Grid, oriented_to_sensor, sensor_to_oriented};
 use super::graph::{
     Backing, ComputeDevice, Job, PartSource, Pixels, RenderReport, Renderer, ResidentPart,
@@ -874,10 +874,31 @@ fn grown_input(
     let Some(read) = read else { return Ok(None) };
     let prepared = prepare_view(job, &read.spec)?;
     let (input, _) = prepared.device_input(job, route, true)?;
+    let key = plane_key(job, &read.spec)?;
     Ok(Some(GrownInput {
         input,
         read: read.clone(),
+        key,
     }))
+}
+
+/// What names the raster planes of a view's rows besides the rows themselves (`ym_gpu::kernels::mask_raster::PlaneKey`,
+/// `docs/23` section 5.6): the photo; where every pixel of the wider picture is in the photo (the geometry, the lens,
+/// the view's map to the final image, its size and scale); and what the guide of Refine edges is made of (the raw
+/// group's parameters and the colour group, the Input's). A node's grade, Opacity, Mode, Invert, eye and Bypass are
+/// not in it: they act in the colour pass, after the planes.
+fn plane_key(job: &mut Job<'_>, spec: &ViewSpec) -> Result<PlaneKey, RenderError> {
+    let params = job.params()?;
+    let geometry = job.geometry()?;
+    let lens = job.lens_key()?;
+    Ok(PlaneKey {
+        owner: job.g.uid(),
+        place: format!(
+            "{geometry:?}|{:?}|{}x{}|{:?}|{}|{}|{lens:?}",
+            spec.view_to_final, spec.out_w, spec.out_h, spec.k, spec.before, spec.coarse_only
+        ),
+        guide: format!("{:?}|{:?}", params.key(), color_key(job.src)),
+    })
 }
 
 /// Whether the wider picture of the raster masks (when there is one) fits the route's bindings: the picture of

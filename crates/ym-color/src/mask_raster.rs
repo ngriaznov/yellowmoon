@@ -206,10 +206,18 @@ impl RasterSource {
     /// The plane for a photo of this aspect (`(W, H) / L`, one of them 1). A made plane is returned as it is.
     #[must_use]
     pub fn plane(&self, aspect: [f64; 2]) -> Arc<SourcePlane> {
+        self.plane_among(aspect, 0)
+    }
+
+    /// [`RasterSource::plane`] for a render with `live` raster rows: the caches that keep the plane keep at least
+    /// `max(floor, live)` planes (and stay within a byte cap), so that a plan with more than eight rows does not
+    /// draw them again on every frame.
+    #[must_use]
+    pub fn plane_among(&self, aspect: [f64; 2], live: usize) -> Arc<SourcePlane> {
         match self {
             Self::Plane(p) => Arc::clone(p),
-            Self::Brush(b) => brush_plane(b, aspect),
-            Self::Background(b) => background_plane(b),
+            Self::Brush(b) => brush_plane_among(b, aspect, live),
+            Self::Background(b) => background_plane_among(b, live),
         }
     }
 }
@@ -848,12 +856,22 @@ impl RasterRow {
     /// that has no guide skips that step.
     #[must_use]
     pub fn plane(&self, job: &PlaneJob<'_>) -> Vec<u16> {
+        self.plane_among(job, 0)
+    }
+
+    /// [`RasterRow::plane`] in a set of `live` rows ([`RasterSource::plane_among`]).
+    ///
+    /// # Panics
+    ///
+    /// As [`RasterRow::plane`].
+    #[must_use]
+    pub fn plane_among(&self, job: &PlaneJob<'_>, live: usize) -> Vec<u16> {
         assert!(
             job.grown.contains(&job.window),
             "the window of a raster plane is inside the area it is computed over"
         );
         let steps = RasterSteps::of(self.grow, self.feather, self.refine, job.u_px());
-        let src = self.source.plane(job.photo.aspect);
+        let src = self.source.plane_among(job.photo.aspect, live);
         let g = job.grown;
         // Step 2: the resample (a pixel outside the photo is 0).
         let taps = resample_taps(src.width.max(src.height), job.u_px());
@@ -957,7 +975,11 @@ impl RasterSet {
         CpuPlanes {
             width: job.window.w,
             height: job.window.h,
-            planes: self.rows.iter().map(|r| r.plane(job)).collect(),
+            planes: self
+                .rows
+                .iter()
+                .map(|r| r.plane_among(job, self.rows.len()))
+                .collect(),
         }
     }
 }
@@ -1164,8 +1186,12 @@ pub fn draw_brush(brush: &BrushStrokes, aspect: [f64; 2]) -> SourcePlane {
     }
 }
 
-/// How many Brush planes the cache keeps (8 MiB each at 2048 px).
+/// How many Brush planes the cache keeps at least (8 MiB each at 2048 px).
 const BRUSH_CACHE_PLANES: usize = 8;
+
+/// The most bytes the Brush cache holds beyond its [`BRUSH_CACHE_PLANES`] (a plan with many live Brush rows keeps
+/// a plane for each, as long as they fit this).
+const BRUSH_CACHE_BYTES: usize = 256 << 20;
 
 type BrushCache = Mutex<VecDeque<((u64, usize, usize), Arc<SourcePlane>)>>;
 
@@ -1178,6 +1204,13 @@ fn brush_cache() -> &'static BrushCache {
 /// the same strokes were drawn for the same proportions lately, else drawn now ([`draw_brush`]).
 #[must_use]
 pub fn brush_plane(brush: &BrushStrokes, aspect: [f64; 2]) -> Arc<SourcePlane> {
+    brush_plane_among(brush, aspect, 0)
+}
+
+/// [`brush_plane`] for a render with `live` raster rows: the cache keeps at least `max(8, live)` planes, within
+/// [`BRUSH_CACHE_BYTES`] beyond the first eight.
+#[must_use]
+pub fn brush_plane_among(brush: &BrushStrokes, aspect: [f64; 2], live: usize) -> Arc<SourcePlane> {
     let long = BRUSH_PLANE_PX;
     let width = ((aspect[0].clamp(0.0, 1.0) * long as f64).round() as usize).clamp(1, long);
     let height = ((aspect[1].clamp(0.0, 1.0) * long as f64).round() as usize).clamp(1, long);
@@ -1196,8 +1229,12 @@ pub fn brush_plane(brush: &BrushStrokes, aspect: [f64; 2]) -> Arc<SourcePlane> {
     let plane = Arc::new(draw_brush(brush, aspect));
     let mut cache = brush_cache().lock().unwrap_or_else(PoisonError::into_inner);
     cache.push_back((key, Arc::clone(&plane)));
-    while cache.len() > BRUSH_CACHE_PLANES {
-        cache.pop_front();
+    let keep = BRUSH_CACHE_PLANES.max(live);
+    let mut bytes: usize = cache.iter().map(|(_, p)| p.data.len() * 2).sum();
+    while cache.len() > keep || (bytes > BRUSH_CACHE_BYTES && cache.len() > BRUSH_CACHE_PLANES) {
+        if let Some((_, old)) = cache.pop_front() {
+            bytes -= old.data.len() * 2;
+        }
     }
     plane
 }
@@ -1309,6 +1346,12 @@ fn background_cache() -> &'static BackgroundCache {
 /// from the cached map, and Feather, Grow and Refine edges, which are not in the key, never do.
 #[must_use]
 pub fn background_plane(src: &BackgroundSource) -> Arc<SourcePlane> {
+    background_plane_among(src, 0)
+}
+
+/// [`background_plane`] for a render with `live` raster rows: the cache keeps at least `max(16, live)` planes.
+#[must_use]
+pub fn background_plane_among(src: &BackgroundSource, live: usize) -> Arc<SourcePlane> {
     let key = src.key();
     {
         let mut cache = background_cache()
@@ -1336,7 +1379,7 @@ pub fn background_plane(src: &BackgroundSource) -> Arc<SourcePlane> {
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     cache.push_back((key, Arc::clone(&plane)));
-    while cache.len() > BACKGROUND_CACHE_PLANES {
+    while cache.len() > BACKGROUND_CACHE_PLANES.max(live) {
         cache.pop_front();
     }
     plane

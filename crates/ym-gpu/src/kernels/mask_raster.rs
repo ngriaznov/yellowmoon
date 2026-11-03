@@ -29,7 +29,8 @@
 //! design binding is made smaller by the caller (tiles are exact, so the size does not change a pixel).
 
 use std::cell::RefCell;
-use std::sync::{Arc, Weak};
+use std::fmt::Write as _;
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
@@ -262,6 +263,7 @@ pub fn largest_tile_for(halo: usize, wanted: usize) -> usize {
 struct SourceEntry {
     key: (u64, usize, usize),
     buf: Arc<PooledBuffer>,
+    bytes: u64,
 }
 
 thread_local! {
@@ -269,11 +271,22 @@ thread_local! {
     static SOURCES: RefCell<Vec<(Weak<Counters>, Vec<SourceEntry>)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// How many source planes a device keeps (8 MiB each at 2048 px).
+/// How many source planes a device keeps at least (8 MiB each at 2048 px); a plan with more live raster rows
+/// keeps one for each, within [`kept_bytes_cap`].
 const SOURCES_KEPT: usize = 8;
 
+/// The most bytes of kept planes (sources, and the raster planes of [`PlaneKey`]) a device holds: 128 MiB, and an
+/// eighth of the pool's budget (`docs/17-gpu.md` section 6: the resident caches take a fraction of it).
+fn kept_bytes_cap(ctx: &GpuContext) -> u64 {
+    (128u64 << 20).min(ctx.pool().budget() / 8)
+}
+
 /// The device copy of `plane` (u16 codes, two to a word), uploaded the first time and kept.
-fn source_buffer(ctx: &GpuContext, plane: &SourcePlane) -> Result<Arc<PooledBuffer>, GpuError> {
+fn source_buffer(
+    ctx: &GpuContext,
+    plane: &SourcePlane,
+    live: usize,
+) -> Result<Arc<PooledBuffer>, GpuError> {
     let key = (plane.key, plane.width, plane.height);
     SOURCES.with(|cell| {
         let mut slots = cell.borrow_mut();
@@ -298,21 +311,161 @@ fn source_buffer(ctx: &GpuContext, plane: &SourcePlane) -> Result<Arc<PooledBuff
         held.push(SourceEntry {
             key,
             buf: Arc::clone(&buf),
+            bytes: bytes.len() as u64,
         });
-        while held.len() > SOURCES_KEPT {
-            held.remove(0);
+        // At least eight planes, and one for every live raster row; beyond eight, within the byte cap.
+        let keep = SOURCES_KEPT.max(live);
+        let cap = kept_bytes_cap(ctx);
+        let mut total: u64 = held.iter().map(|e| e.bytes).sum();
+        while held.len() > keep || (total > cap && held.len() > SOURCES_KEPT) {
+            total -= held.remove(0).bytes;
         }
         Ok(buf)
     })
 }
 
-/// Drops the source planes this device holds (their buffers go back to the pool).
+/// Drops the source planes this device holds, and the raster planes it keeps ([`release_planes`]); their buffers go
+/// back to the pool.
 pub fn release_sources(ctx: &GpuContext) {
     SOURCES.with(|cell| {
         let id = Arc::as_ptr(ctx.counters_shared());
         cell.borrow_mut()
             .retain(|(owner, _)| owner.as_ptr() != id && owner.strong_count() > 0);
     });
+    release_planes(ctx);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The raster planes kept on the device
+// ---------------------------------------------------------------------------------------------
+
+/// What names the raster planes of a view's rows (`docs/23-nodes.md` section 5.6): a row's plane is the same on
+/// every frame whose [`PlaneKey`] and whose row (source, Grow, Feather and Refine edges) are the same, and a slider of a
+/// node's grade, an Opacity, a Mode, an Invert, the eye or Bypass is none of them: those act in the colour pass,
+/// after the plane.
+///
+/// The caller names what the pass cannot see; the pass adds what it can (the windows, the photo's frame, the
+/// size of an output pixel, and the row).
+#[derive(Debug, Clone)]
+pub struct PlaneKey {
+    /// The photo the planes belong to; [`forget_planes_of`] drops them when it leaves the renderer.
+    pub owner: u64,
+    /// Where every pixel of the windows is in the photo: the raw parameters that make the pixels' places (the
+    /// lens), the geometry (crop, turn, straighten), the view's map to the final image, its size and scale.
+    pub place: String,
+    /// What the guide of Refine edges is made of: the Input's luma of the sampled picture (the raw group's
+    /// parameters and the colour group: white balance, exposure, the roll-offs). Only the rows that refine
+    /// their edges carry it.
+    pub guide: String,
+}
+
+/// A kept plane: one row's u16 codes over the `extent`, as the packed buffer of [`RasterPlanes`] holds them.
+struct PlaneEntry {
+    owner: u64,
+    key: String,
+    buf: Arc<PooledBuffer>,
+    bytes: u64,
+}
+
+/// The planes one device keeps, most recently used last, and those a submission that has not been made yet will fill.
+struct DevicePlanes {
+    device: Weak<Counters>,
+    held: Vec<PlaneEntry>,
+    /// Planes recorded by the list with this id: served to that list only (Show mask Overlay makes the rows of
+    /// its second chain from the first chain's), and kept when the list is submitted. A list that is dropped
+    /// leaves its planes here, where the next list's lookup throws them away: they were never filled.
+    staged: Vec<(u64, PlaneEntry)>,
+}
+
+static PLANES: Mutex<Vec<DevicePlanes>> = Mutex::new(Vec::new());
+
+fn with_planes<R>(device: &Arc<Counters>, f: impl FnOnce(&mut DevicePlanes) -> R) -> R {
+    let mut all = PLANES.lock().unwrap_or_else(PoisonError::into_inner);
+    all.retain(|d| d.device.strong_count() > 0);
+    let at = match all
+        .iter()
+        .position(|d| std::ptr::eq(d.device.as_ptr(), Arc::as_ptr(device)))
+    {
+        Some(i) => i,
+        None => {
+            all.push(DevicePlanes {
+                device: Arc::downgrade(device),
+                held: Vec::new(),
+                staged: Vec::new(),
+            });
+            all.len() - 1
+        }
+    };
+    f(&mut all[at])
+}
+
+/// The kept plane `key` of `owner`, or the one the list `list` recorded.
+fn plane_lookup(ctx: &GpuContext, list: u64, owner: u64, key: &str) -> Option<Arc<PooledBuffer>> {
+    with_planes(ctx.counters_shared(), |d| {
+        d.staged.retain(|(id, _)| *id == list);
+        if let Some((_, e)) = d.staged.iter().find(|(_, e)| e.owner == owner && e.key == key) {
+            return Some(Arc::clone(&e.buf));
+        }
+        let i = d.held.iter().position(|e| e.owner == owner && e.key == key)?;
+        let e = d.held.remove(i);
+        let buf = Arc::clone(&e.buf);
+        d.held.push(e);
+        Some(buf)
+    })
+}
+
+/// Keeps the staged planes of `list` now that it was submitted, oldest planes out beyond `cap` bytes.
+fn plane_commit(device: &Weak<Counters>, list: u64, cap: u64) {
+    let Some(device) = device.upgrade() else {
+        return;
+    };
+    with_planes(&device, |d| {
+        let staged = std::mem::take(&mut d.staged);
+        for (id, e) in staged {
+            if id != list {
+                continue;
+            }
+            d.held.retain(|h| !(h.owner == e.owner && h.key == e.key));
+            d.held.push(e);
+        }
+        let mut total: u64 = d.held.iter().map(|e| e.bytes).sum();
+        while total > cap && !d.held.is_empty() {
+            total -= d.held.remove(0).bytes;
+        }
+    });
+}
+
+/// Drops the raster planes this device keeps (their buffers go back to the pool). `release_tables` and
+/// [`release_sources`] call it: a device that lets go of what it holds lets go of these.
+pub fn release_planes(ctx: &GpuContext) {
+    let id = Arc::as_ptr(ctx.counters_shared());
+    let mut all = PLANES.lock().unwrap_or_else(PoisonError::into_inner);
+    all.retain(|d| d.device.strong_count() > 0 && !std::ptr::eq(d.device.as_ptr(), id));
+}
+
+/// Drops the kept raster planes of the photo `owner` on every device: it left the renderer's photos.
+pub fn forget_planes_of(owner: u64) {
+    let mut all = PLANES.lock().unwrap_or_else(PoisonError::into_inner);
+    for d in all.iter_mut() {
+        d.held.retain(|e| e.owner != owner);
+        d.staged.retain(|(_, e)| e.owner != owner);
+    }
+}
+
+/// Drops the kept raster planes of every photo on every device.
+pub fn forget_all_planes() {
+    PLANES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clear();
+}
+
+/// The bytes of raster planes this device keeps (a test's and a diagnosis's number; the pool ledger counts them).
+#[must_use]
+pub fn kept_plane_bytes(ctx: &GpuContext) -> u64 {
+    with_planes(ctx.counters_shared(), |d| {
+        d.held.iter().map(|e| e.bytes).sum()
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -462,12 +615,30 @@ fn ceil_div(a: i64, b: i64) -> i64 {
     -((-a).div_euclid(b))
 }
 
+/// The sampler's image the pass reads: one the caller made, or one the pass made (and keeps alive).
+enum Wide<'s> {
+    Borrowed(&'s GpuImage),
+    Owned(GpuImage),
+}
+
+impl Wide<'_> {
+    fn image(&self) -> &GpuImage {
+        match self {
+            Wide::Borrowed(i) => i,
+            Wide::Owned(i) => i,
+        }
+    }
+}
+
 /// Records the raster planes of `chain` for the window `job` on the device and returns them.
 ///
 /// `sampled` is the sampler's six-plane image of `job.grown` (`encode_sample_at` with positions): its pixel `(0, 0)`
 /// is the grid's `(grown.x, grown.y)`. `prepared` is the chain prepared for the same photo frame
 /// ([`PreparedChain::with_photo_frame`]); it makes the Input's luma, the guide of Refine edges, from the sampled
 /// image when a row refines its edges. The planes cover `job.extent` (`job.window`, which must lie inside `job.grown`, with 0 around it when the extent is larger).
+///
+/// This makes every row's plane and keeps none: an export tile reads nothing another pass made
+/// ([`encode_raster_planes_kept`] is the viewport's).
 ///
 /// # Errors
 ///
@@ -480,6 +651,82 @@ pub fn encode_raster_planes(
     sampled: &GpuImage,
     job: &RasterJob,
 ) -> Result<RasterPlanes, GpuError> {
+    encode_rows(passes, prepared, chain, job, None, |_| {
+        Ok(Wide::Borrowed(sampled))
+    })
+}
+
+/// [`encode_raster_planes`] for a view's frames, which keeps what it makes: each row's quantised plane stays on the
+/// device under its [`PlaneKey`] and its row's source, Grow, Feather and Refine edges, and the next frame with the
+/// same key copies it instead of making it again (`docs/23` section 5.6). `wide` makes the sampler's image of
+/// `job.grown`; it is called only when some row has no kept plane, and so is the guide.
+///
+/// A plane is kept when the list is submitted, and a list that is dropped keeps none. The planes of a frame are
+/// bit for bit the planes the same pass makes with nothing kept ([`Gpu::set_planes_kept`]).
+///
+/// # Errors
+///
+/// As [`encode_raster_planes`]; `wide`'s errors.
+pub fn encode_raster_planes_kept<'p, W>(
+    passes: &mut PassList<'p>,
+    prepared: &PreparedChain,
+    chain: &ColorChain,
+    job: &RasterJob,
+    key: &PlaneKey,
+    wide: W,
+) -> Result<RasterPlanes, GpuError>
+where
+    W: FnOnce(&mut PassList<'p>) -> Result<GpuImage, GpuError>,
+{
+    encode_rows(passes, prepared, chain, job, Some(key), |p| {
+        wide(p).map(Wide::Owned)
+    })
+}
+
+/// The text a row's plane is kept under: the pass's windows and the photo's frame, the caller's place, the row, and
+/// (for a row that refines its edges) the guide's.
+fn row_key(
+    key: &PlaneKey,
+    job: &RasterJob,
+    row: &ym_color::mask_raster::RasterRow,
+    guided: bool,
+) -> String {
+    let mut k = String::with_capacity(key.place.len() + 256);
+    let _ = write!(
+        k,
+        "{:?}|{:?}|{:?}|{:?}|{:x}|{:x}|{:x}|{:x}|{:x}|{:x}|{}",
+        job.frame,
+        job.grown,
+        job.window,
+        job.extent,
+        job.photo.aspect[0].to_bits(),
+        job.photo.aspect[1].to_bits(),
+        job.photo.pixel.to_bits(),
+        row.source.key(),
+        row.grow.to_bits(),
+        row.feather.to_bits(),
+        row.refine.to_bits(),
+    );
+    k.push('|');
+    k.push_str(&key.place);
+    if guided {
+        k.push('|');
+        k.push_str(&key.guide);
+    }
+    k
+}
+
+fn encode_rows<'p, 's, W>(
+    passes: &mut PassList<'p>,
+    prepared: &PreparedChain,
+    chain: &ColorChain,
+    job: &RasterJob,
+    cache: Option<&PlaneKey>,
+    wide: W,
+) -> Result<RasterPlanes, GpuError>
+where
+    W: FnOnce(&mut PassList<'p>) -> Result<Wide<'s>, GpuError>,
+{
     let ctx = passes.context();
     let set: &RasterSet = chain.rasters();
     if set.is_empty() {
@@ -497,13 +744,6 @@ pub fn encode_raster_planes(
             job.frame
         )));
     }
-    if sampled.planes != 6 || (sampled.width, sampled.height) != (g.w, g.h) {
-        return Err(GpuError::InvalidInput(format!(
-            "the raster pass reads the six-plane image of the grown window ({} x {}), not {} planes of {} x {}",
-            g.w, g.h, sampled.planes, sampled.width, sampled.height
-        )));
-    }
-    perf::note_raster(set.rows.len(), g.w, g.h);
     let u_px = 1.0 / job.photo.pixel;
     let steps: Vec<RasterSteps> = set.steps(u_px);
     let (gw, gh) = (g.w as i32, g.h as i32);
@@ -515,8 +755,75 @@ pub fn encode_raster_planes(
         )));
     }
 
+    // The output.
+    let stride = even(e.w);
+    let plane_words = stride * e.h / 2;
+    let plane_bytes = (plane_words * 4) as u64;
+    let out_bytes = (set.rows.len() * plane_words * 4) as u64;
+    let list = passes.id();
+    let cache = cache.filter(|_| !ctx.counters_shared().planes_kept_off());
+    let usage = if cache.is_some() {
+        STORAGE_OUT | wgpu::BufferUsages::COPY_DST
+    } else {
+        STORAGE_OUT
+    };
+    let out = Arc::new(ctx.pool().acquire("raster planes", out_bytes.max(4), usage)?);
+    passes.hold(Arc::clone(&out));
+
+    // The rows that have a kept plane are copied into place; the others are made.
+    let keys: Vec<Option<String>> = set
+        .rows
+        .iter()
+        .zip(&steps)
+        .map(|(row, st)| cache.map(|k| row_key(k, job, row, st.guided.is_some())))
+        .collect();
+    let mut todo: Vec<usize> = Vec::with_capacity(set.rows.len());
+    let mut hits = 0u64;
+    for (index, key) in keys.iter().enumerate() {
+        let kept = cache
+            .zip(key.as_deref())
+            .and_then(|(k, text)| plane_lookup(ctx, list, k.owner, text));
+        match kept {
+            Some(buf) => {
+                passes.encoder().copy_buffer_to_buffer(
+                    &buf,
+                    0,
+                    &out,
+                    index as u64 * plane_bytes,
+                    plane_bytes,
+                );
+                passes.hold(buf);
+                hits += 1;
+            }
+            None => todo.push(index),
+        }
+    }
+    ctx.counters_shared().count_planes(todo.len() as u64, hits);
+    let plane = RasterPlanes {
+        buf: Arc::clone(&out),
+        width: e.w,
+        height: e.h,
+        stride,
+        planes: set.rows.len(),
+        row0: 0,
+        rows_held: e.h,
+    };
+    if todo.is_empty() {
+        return Ok(plane);
+    }
+
+    let wide_image = wide(passes)?;
+    let sampled = wide_image.image();
+    if sampled.planes != 6 || (sampled.width, sampled.height) != (g.w, g.h) {
+        return Err(GpuError::InvalidInput(format!(
+            "the raster pass reads the six-plane image of the grown window ({} x {}), not {} planes of {} x {}",
+            g.w, g.h, sampled.planes, sampled.width, sampled.height
+        )));
+    }
+    perf::note_raster(todo.len(), g.w, g.h);
+
     // The guide.
-    let guide = if set.needs_guide(u_px) {
+    let guide = if todo.iter().any(|&i| steps[i].guided.is_some()) {
         let _span = perf::span(Stage::GuideRecord);
         let image = GpuImage::alloc(ctx, "raster guide", g.w, g.h, 4, Placement::whole(g.w, g.h))?;
         prepared.encode_stage(
@@ -540,8 +847,8 @@ pub fn encode_raster_planes(
         let ch = ceil_div(g.y + g.h as i64, s) - floor_div(g.y, s);
         (cw as usize, ch as usize)
     };
-    let scan_len = steps
-        .iter()
+    let made = || todo.iter().map(|&i| &steps[i]);
+    let scan_len = made()
         .filter_map(|st| st.guided.as_ref().filter(|gf| gf.step > 1))
         .map(|gf| {
             let (cw, ch) = coarse(gf.step);
@@ -549,8 +856,7 @@ pub fn encode_raster_planes(
         })
         .fold(n, usize::max);
     let rest = 2 * n + 2 * scan_len;
-    let need = steps
-        .iter()
+    let need = made()
         .map(|st| match &st.guided {
             None => rest,
             Some(gf) if gf.step == 1 => rest + (FULL_SLOTS - 4) * n,
@@ -563,16 +869,6 @@ pub fn encode_raster_planes(
         .unwrap_or(rest);
     let work = passes.scratch("raster work", (need * 4) as u64)?;
     let scans = [(2 * n) as i32, (2 * n + scan_len) as i32];
-
-    // The output.
-    let stride = even(e.w);
-    let plane_words = stride * e.h / 2;
-    let out_bytes = (set.rows.len() * plane_words * 4) as u64;
-    let out = Arc::new(
-        ctx.pool()
-            .acquire("raster planes", out_bytes.max(4), STORAGE_OUT)?,
-    );
-    passes.hold(Arc::clone(&out));
 
     let frame_fine = [
         job.frame.x as i32,
@@ -602,12 +898,15 @@ pub fn encode_raster_planes(
     let mut record = perf::span(Stage::RasterRecord);
     // The source's time is its own span's, not the record's.
     let mut source_ms = 0.0;
-    for (index, (row, st)) in set.rows.iter().zip(&steps).enumerate() {
+    let cap = kept_bytes_cap(ctx);
+    let mut staged = false;
+    for &index in &todo {
+        let (row, st) = (&set.rows[index], &steps[index]);
         let started = perf::enabled().then(Instant::now);
-        let src: Arc<SourcePlane> = row.source.plane(job.photo.aspect);
+        let src: Arc<SourcePlane> = row.source.plane_among(job.photo.aspect, set.rows.len());
         let made = started.map(|t| t.elapsed().as_secs_f64() * 1000.0);
         let started = perf::enabled().then(Instant::now);
-        let s0 = source_buffer(ctx, &src)?;
+        let s0 = source_buffer(ctx, &src, set.rows.len())?;
         let uploaded = started.map(|t| t.elapsed().as_secs_f64() * 1000.0);
         if let (Some(made), Some(uploaded)) = (made, uploaded) {
             perf::record(Stage::Source, made);
@@ -773,19 +1072,46 @@ pub fn encode_raster_planes(
                 rec.dispatch(u, (e.w, e.h), true)?;
             }
         }
+        // Keep the row's plane: a copy of it, filled by this list and served once the list is submitted. A device
+        // that cannot hold the copy (the budget) keeps none, and the frame is the same.
+        if let (Some(k), Some(text)) = (cache, keys[index].as_ref())
+            && plane_bytes <= cap
+            && let Ok(kept) = ctx.pool().acquire(
+                "raster plane (kept)",
+                plane_bytes.max(4),
+                wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            )
+        {
+            passes.encoder().copy_buffer_to_buffer(
+                &out,
+                index as u64 * plane_bytes,
+                &kept,
+                0,
+                plane_bytes,
+            );
+            let entry = PlaneEntry {
+                owner: k.owner,
+                key: text.clone(),
+                buf: Arc::new(kept),
+                bytes: plane_bytes,
+            };
+            with_planes(ctx.counters_shared(), |d| d.staged.push((list, entry)));
+            staged = true;
+        }
     }
     if let Some(r) = record.as_mut() {
         r.subtract(source_ms);
     }
-    Ok(RasterPlanes {
-        buf: out,
-        width: e.w,
-        height: e.h,
-        stride,
-        planes: set.rows.len(),
-        row0: 0,
-        rows_held: e.h,
-    })
+    drop(record);
+    if staged {
+        let device = Arc::downgrade(ctx.counters_shared());
+        passes.on_submit(move || plane_commit(&device, list, cap));
+    }
+    if let Wide::Owned(image) = wide_image {
+        // The picture must outlive the submission.
+        let _ = passes.keep(image.buf);
+    }
+    Ok(plane)
 }
 
 #[cfg(test)]

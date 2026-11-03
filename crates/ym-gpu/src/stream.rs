@@ -31,7 +31,7 @@
 //! poison mode of `crate::pool` makes visible).
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -58,6 +58,8 @@ const MAX_TIMED_PASSES: u32 = 512;
 // Counters
 // ---------------------------------------------------------------------------------------------
 
+static NEXT_LIST: AtomicU64 = AtomicU64::new(1);
+
 /// What the device has been asked to do, counted since it opened. Read with
 /// [`GpuContext::counters`] or [`crate::device::Gpu::counters`]; subtract two snapshots to measure a
 /// region ([`CounterSnapshot::since`]).
@@ -69,6 +71,10 @@ pub struct Counters {
     readback_bytes: AtomicU64,
     submissions: AtomicU64,
     dispatches: AtomicU64,
+    plane_builds: AtomicU64,
+    plane_hits: AtomicU64,
+    /// A test's switch: no raster plane is kept or served on this device.
+    planes_off: AtomicBool,
     /// GPU time per pass label, from the timestamp queries of the lists that were timed (empty unless the
     /// device was opened with [`GpuConfig::timestamps`](crate::device::GpuConfig::timestamps)).
     passes: Mutex<BTreeMap<String, PassTotal>>,
@@ -136,6 +142,23 @@ impl Counters {
         self.dispatches.fetch_add(n, Ordering::Relaxed);
     }
 
+    /// `builds` raster rows whose planes were made and `hits` that were copied from the kept planes.
+    pub(crate) fn count_planes(&self, builds: u64, hits: u64) {
+        self.plane_builds.fetch_add(builds, Ordering::Relaxed);
+        self.plane_hits.fetch_add(hits, Ordering::Relaxed);
+    }
+
+    /// Whether the kept raster planes are switched off ([`Counters::set_planes_kept`]).
+    pub(crate) fn planes_kept_off(&self) -> bool {
+        self.planes_off.load(Ordering::Relaxed)
+    }
+
+    /// Switches the kept raster planes of this device on (the default) or off, for a test that holds a frame made
+    /// with them to the frame made without.
+    pub fn set_planes_kept(&self, on: bool) {
+        self.planes_off.store(!on, Ordering::Relaxed);
+    }
+
     /// The current values.
     pub fn snapshot(&self) -> CounterSnapshot {
         CounterSnapshot {
@@ -145,6 +168,8 @@ impl Counters {
             readback_bytes: self.readback_bytes.load(Ordering::Relaxed),
             submissions: self.submissions.load(Ordering::Relaxed),
             dispatches: self.dispatches.load(Ordering::Relaxed),
+            plane_builds: self.plane_builds.load(Ordering::Relaxed),
+            plane_hits: self.plane_hits.load(Ordering::Relaxed),
         }
     }
 }
@@ -164,6 +189,10 @@ pub struct CounterSnapshot {
     pub submissions: u64,
     /// Compute dispatches recorded by [`PassList::dispatch`].
     pub dispatches: u64,
+    /// Raster rows whose planes were made (resample, Grow, Feather, Refine edges, quantise) by a view's pass.
+    pub plane_builds: u64,
+    /// Raster rows whose planes a view's pass copied from the planes kept on the device instead.
+    pub plane_hits: u64,
 }
 
 impl CounterSnapshot {
@@ -177,6 +206,8 @@ impl CounterSnapshot {
             readback_bytes: self.readback_bytes.saturating_sub(earlier.readback_bytes),
             submissions: self.submissions.saturating_sub(earlier.submissions),
             dispatches: self.dispatches.saturating_sub(earlier.dispatches),
+            plane_builds: self.plane_builds.saturating_sub(earlier.plane_builds),
+            plane_hits: self.plane_hits.saturating_sub(earlier.plane_hits),
         }
     }
 }
@@ -490,6 +521,8 @@ pub struct PassList<'a> {
     reads: Vec<ReadSlot>,
     dispatches: u32,
     timestamps: Option<TimestampState>,
+    id: u64,
+    after_submit: Vec<Box<dyn FnOnce() + Send>>,
 }
 
 impl std::fmt::Debug for PassList<'_> {
@@ -523,7 +556,20 @@ impl<'a> PassList<'a> {
             reads: Vec::new(),
             dispatches: 0,
             timestamps,
+            id: NEXT_LIST.fetch_add(1, Ordering::Relaxed),
+            after_submit: Vec::new(),
         }
+    }
+
+    /// A number no other list of the process has.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Runs `f` once the list has been submitted (not when it is dropped without a submission, nor when the
+    /// submission fails): what a cache that keeps a buffer this list fills must wait for before it serves it.
+    pub fn on_submit(&mut self, f: impl FnOnce() + Send + 'static) {
+        self.after_submit.push(Box::new(f));
     }
 
     /// The device context the list records for.
@@ -712,6 +758,9 @@ impl<'a> PassList<'a> {
         ctx.counters_shared()
             .count_dispatches(u64::from(dispatches));
         let submission = ctx.submit([self.encoder.finish()])?;
+        for f in std::mem::take(&mut self.after_submit) {
+            f();
+        }
         Ok(Pending {
             device: ctx.device.clone(),
             health: ctx.health_arc(),

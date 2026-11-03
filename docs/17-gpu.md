@@ -87,6 +87,7 @@ Checked offline in `tests/shaders_naga.rs` (MSL, SPIR-V and HLSL translation, th
 - The 200 MB expanded sigma map is built only when the CPU runs the chain; the device expands the half-resolution plane itself, with the CPU's rule (`sigma(x, y) = plane[y/2][x/2] * gain(cell centre)`).
 - The reduced path normalises the mosaic once on the device from the resident `u16` words, where the CPU normalises it twice (for the sigma plane and for `reduced_bayer`).
 - With resident caches the cache budget is `min(cpu_bytes / 6, gpu_bytes / 8)`.
+- The viewer keeps the quantised raster planes of its rows and the source planes of those rows on the device (`kernels/mask_raster.rs`, `docs/23` section 15, *Speed*): each kind takes at most `min(128 MiB, pool budget / 8)` per device (the source planes keep at least eight planes whatever that comes to), counted by the pool ledger like any buffer, dropped by `release_tables` and `release_sources` and with the photo's graph. A plane the pool cannot hold is not kept; the frame is the same.
 
 ## 9. Errors and fallback
 

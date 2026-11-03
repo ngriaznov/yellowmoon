@@ -541,9 +541,20 @@ struct GraphState {
     lens_flare_tiles: Option<ByteLru<lens::TileKey, Arc<Vec<f64>>>>,
 }
 
+impl Drop for PhotoGraph {
+    /// The photo left the renderer's kept photos (closed, or the least recently used beyond
+    /// `MemoryBudget::max_photos`): the raster planes its views kept on the device go with it.
+    fn drop(&mut self) {
+        ym_gpu::kernels::mask_raster::forget_planes_of(self.uid);
+    }
+}
+
 /// The stage caches of one photo.
 pub struct PhotoGraph {
     id: PhotoId,
+    /// A number no other graph of the process has (an id alone repeats across renderers): what the raster planes
+    /// this photo's views keep on the device are kept under (`ym_gpu::kernels::mask_raster::PlaneKey::owner`).
+    uid: u64,
     state: Mutex<GraphState>,
     counters: StageCounters,
     budget: MemoryBudget,
@@ -586,8 +597,10 @@ impl std::fmt::Debug for PhotoGraph {
 
 impl PhotoGraph {
     fn new(id: PhotoId, budget: MemoryBudget) -> Self {
+        static NEXT_UID: AtomicU64 = AtomicU64::new(1);
         Self {
             id,
+            uid: NEXT_UID.fetch_add(1, Ordering::Relaxed),
             state: Mutex::new(GraphState::default()),
             counters: StageCounters::default(),
             budget,
@@ -601,6 +614,11 @@ impl PhotoGraph {
             vision: vision::VisionSlot::default(),
             pins: AtomicU32::new(0),
         }
+    }
+
+    /// The number the photo's kept raster planes are named by.
+    pub(crate) fn uid(&self) -> u64 {
+        self.uid
     }
 
     /// The photo's raw words on the device, when they are there.

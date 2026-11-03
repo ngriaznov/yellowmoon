@@ -746,3 +746,71 @@ fn the_device_makes_the_same_frames_and_masks_as_the_cpu_with_a_background_row()
         }
     }
 }
+
+// ---- the planes kept on the device (docs/23 section 5.6) --------------------------------------------------
+
+/// A frame made from the planes the device kept is the frame made without them, for a Background row at Fit and at
+/// 100 %, as the photo, in Overlay and in Mask only.
+#[test]
+fn a_frame_made_from_kept_planes_is_the_frame_made_without_them_with_a_background_row() {
+    let Some(gpu) = gpu() else { return };
+    let d = lights_of(640, 480, 1, (0.0, 1.0), 5, 4, 0.15);
+    let src = d.source();
+    let r = Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            gpu: Some(Arc::clone(&gpu)),
+            gpu_stages: GpuStages::ALL
+                .difference(GpuStages::RAW_CHAIN)
+                .difference(GpuStages::RAW_FRONT),
+            background: PAPER,
+            ..RenderOptions::default()
+        },
+    )
+    .expect("render thread");
+    let options = FrameOptions {
+        no_cache: true,
+        ..FrameOptions::default()
+    };
+    let render = |s: &PhotoSource, st: &ViewportState| {
+        let before = gpu.counters();
+        let f = r
+            .viewport_frame(s, st, &options, &CancelToken::new())
+            .expect("frame");
+        assert_eq!(f.report.device, ComputeDevice::Gpu);
+        let d = gpu.counters().since(before);
+        (f, d.plane_builds, d.plane_hits)
+    };
+    let at = |ev: f64| {
+        with(
+            &src,
+            graph_with_trim(
+                ev,
+                vec![background(json!({ "feather": 0.3, "grow": 0.2, "refine": 0.5 }))],
+            ),
+        )
+    };
+    for zoom_100 in [false, true] {
+        for style in [None, Some(MaskStyle::Overlay), Some(MaskStyle::MaskOnly)] {
+            let what = format!("100 % {zoom_100}, {style:?}");
+            let mut st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+            if zoom_100 {
+                st.mode = ym_core::pipeline::ViewportMode::Percent { value: 100.0 };
+            }
+            st.mask_view = style.map(|style| MaskView {
+                node: 2,
+                style,
+                row: None,
+            });
+            let _ = render(&at(0.5), &st);
+            let (kept, builds, hits) = render(&at(1.5), &st);
+            assert_eq!(builds, 0, "{what}: nothing made again");
+            assert!(hits > 0, "{what}: the planes are copied");
+            gpu.set_planes_kept(false);
+            let (plain, builds, hits) = render(&at(1.5), &st);
+            gpu.set_planes_kept(true);
+            assert!(builds > 0 && hits == 0, "{what}: the switch is off");
+            assert_eq!(kept.rgba, plain.rgba, "{what}");
+        }
+    }
+}

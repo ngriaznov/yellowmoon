@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! YELLOWMOON_DATA=$PWD/data cargo run --release -p ym-core --example mask_frame -- \
-//!     <file.ARW> [--gpu] [--cases a,b,c,d,e,e2] [--frames 5] [--zoom fit|100|both] [--mask-view]
+//!     <file.ARW> [--gpu] [--cases a,b,c,d,e,e2] [--frames 5] [--zoom fit|100|both] [--mask-view] [--no-kept-planes]
 //! ```
 //!
 //! Opens one real photo, then renders viewer frames of a 1600 x 1060 px cell the way the node view does
@@ -237,6 +237,11 @@ fn main() {
     });
     if let Some(g) = &gpu {
         println!("device: {}", g.info());
+        // `--no-kept-planes`: the device keeps no raster plane between frames (the speed work's "before").
+        if flag("--no-kept-planes") {
+            g.set_planes_kept(false);
+            println!("kept raster planes: off");
+        }
     }
     let r = Renderer::new(
         Arc::new(NeutralOnly),

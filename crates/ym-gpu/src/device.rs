@@ -1135,6 +1135,12 @@ impl Gpu {
         self.shared.counters.snapshot()
     }
 
+    /// Switches the raster planes a view keeps on the device on (the default) or off: a test that holds a frame made
+    /// with them to the frame made without calls it (`kernels::mask_raster::encode_raster_planes_kept`).
+    pub fn set_planes_kept(&self, on: bool) {
+        self.shared.counters.set_planes_kept(on);
+    }
+
     /// Takes the GPU time per pass label that the timestamp queries measured since the last call, and
     /// starts the totals again from zero. Empty unless the device was opened with
     /// [`GpuConfig::timestamps`] on an adapter that has `TIMESTAMP_QUERY` (`ym doctor --bench`).
