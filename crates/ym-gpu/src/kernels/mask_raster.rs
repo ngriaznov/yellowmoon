@@ -403,10 +403,17 @@ fn with_planes<R>(device: &Arc<Counters>, f: impl FnOnce(&mut DevicePlanes) -> R
 fn plane_lookup(ctx: &GpuContext, list: u64, owner: u64, key: &str) -> Option<Arc<PooledBuffer>> {
     with_planes(ctx.counters_shared(), |d| {
         d.staged.retain(|(id, _)| *id == list);
-        if let Some((_, e)) = d.staged.iter().find(|(_, e)| e.owner == owner && e.key == key) {
+        if let Some((_, e)) = d
+            .staged
+            .iter()
+            .find(|(_, e)| e.owner == owner && e.key == key)
+        {
             return Some(Arc::clone(&e.buf));
         }
-        let i = d.held.iter().position(|e| e.owner == owner && e.key == key)?;
+        let i = d
+            .held
+            .iter()
+            .position(|e| e.owner == owner && e.key == key)?;
         let e = d.held.remove(i);
         let buf = Arc::clone(&e.buf);
         d.held.push(e);
@@ -767,7 +774,10 @@ where
     } else {
         STORAGE_OUT
     };
-    let out = Arc::new(ctx.pool().acquire("raster planes", out_bytes.max(4), usage)?);
+    let out = Arc::new(
+        ctx.pool()
+            .acquire("raster planes", out_bytes.max(4), usage)?,
+    );
     passes.hold(Arc::clone(&out));
 
     // The rows that have a kept plane are copied into place; the others are made.

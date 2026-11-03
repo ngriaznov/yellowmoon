@@ -1002,7 +1002,8 @@ fn a_row_s_plane_is_made_again_only_when_something_it_is_made_of_changes() {
     let src = d.source();
     let r = device_renderer(Arc::clone(&gpu), 1024);
     let st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
-    let with_row = |ev: f64, extra: Value| with(&src, graph(vec![node_2_trim(ev, vec![kept_row(extra)])]));
+    let with_row =
+        |ev: f64, extra: Value| with(&src, graph(vec![node_2_trim(ev, vec![kept_row(extra)])]));
 
     // The first frame makes the row's plane.
     let (_, builds, hits) = counted(&gpu, &r, &with_row(1.0, json!({})), &st);
@@ -1011,8 +1012,14 @@ fn a_row_s_plane_is_made_again_only_when_something_it_is_made_of_changes() {
     // act in the colour pass.
     for (what, s) in [
         ("the node's exposure", with_row(2.0, json!({}))),
-        ("the row's Opacity", with_row(1.0, json!({ "opacity": 0.5 }))),
-        ("the row's Mode", with_row(1.0, json!({ "mode": "subtract" }))),
+        (
+            "the row's Opacity",
+            with_row(1.0, json!({ "opacity": 0.5 })),
+        ),
+        (
+            "the row's Mode",
+            with_row(1.0, json!({ "mode": "subtract" })),
+        ),
         ("the row's Invert", with_row(1.0, json!({ "invert": true }))),
     ] {
         let (_, builds, hits) = counted(&gpu, &r, &s, &st);
@@ -1065,7 +1072,11 @@ fn a_row_s_plane_is_made_again_only_when_something_it_is_made_of_changes() {
     let (_, builds, _) = counted(&gpu, &r, &plain(0.2), &st);
     assert_eq!(builds, 1, "the first frame of a row with no Refine edges");
     let (_, builds, hits) = counted(&gpu, &r, &plain(0.9), &st);
-    assert_eq!((builds, hits), (0, 1), "the Input under a row with no Refine edges");
+    assert_eq!(
+        (builds, hits),
+        (0, 1),
+        "the Input under a row with no Refine edges"
+    );
     // Where the pixels are in the photo: a crop and a turn.
     let cropped = edit(&with_row(1.0, json!({})), |s| {
         s.input_mut().crop = Some(Crop {
@@ -1095,7 +1106,11 @@ fn a_row_s_plane_is_made_again_only_when_something_it_is_made_of_changes() {
         }
     });
     let (_, builds, hits) = counted(&gpu, &r, &moved, &st);
-    assert_eq!((builds, hits), (1, 0), "a crop moved without a change of size");
+    assert_eq!(
+        (builds, hits),
+        (1, 0),
+        "a crop moved without a change of size"
+    );
     let turned_back = edit(&turned, |s| s.input_mut().orientation = Orientation::Deg270);
     let (_, builds, hits) = counted(&gpu, &r, &turned_back, &st);
     assert_eq!((builds, hits), (1, 0), "a turn the other way");
@@ -1124,7 +1139,10 @@ fn a_row_with_its_eye_off_leaves_the_planes_of_the_others_alone() {
     let st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
     let first = kept_row(json!({}));
     let second = kept_row(json!({ "grow": 0.1 }));
-    let both = with(&src, graph(vec![node_2_trim(1.0, vec![first.clone(), second.clone()])]));
+    let both = with(
+        &src,
+        graph(vec![node_2_trim(1.0, vec![first.clone(), second.clone()])]),
+    );
     let (_, builds, hits) = counted(&gpu, &r, &both, &st);
     assert_eq!((builds, hits), (2, 0));
     let mut off = second;
@@ -1154,7 +1172,15 @@ fn a_frame_made_from_kept_planes_is_the_frame_made_without_them() {
     let d = photo();
     let src = d.source();
     let r = device_renderer(Arc::clone(&gpu), 1024);
-    let at = |ev: f64| with(&src, graph(vec![node_2_trim(ev, vec![kept_row(json!({ "grow": 0.1 }))])]));
+    let at = |ev: f64| {
+        with(
+            &src,
+            graph(vec![node_2_trim(
+                ev,
+                vec![kept_row(json!({ "grow": 0.1 }))],
+            )]),
+        )
+    };
     for zoom_100 in [false, true] {
         for style in [None, Some(MaskStyle::Overlay), Some(MaskStyle::MaskOnly)] {
             let what = format!("100 % {zoom_100}, {style:?}");
@@ -1179,8 +1205,17 @@ fn show_mask_overlay_makes_a_row_s_plane_once_for_its_two_chains() {
     let d = photo();
     let src = d.source();
     let r = device_renderer(Arc::clone(&gpu), 1024);
-    let s = with(&src, graph(vec![node_2_trim(1.0, vec![kept_row(json!({ "grow": 0.15 }))])]));
+    let s = with(
+        &src,
+        graph(vec![node_2_trim(
+            1.0,
+            vec![kept_row(json!({ "grow": 0.15 }))],
+        )]),
+    );
     let (_, builds, hits) = counted(&gpu, &r, &s, &state(false, Some(MaskStyle::Overlay)));
-    assert_eq!(builds, 1, "one plane made for the photo's chain and the mask's chain");
+    assert_eq!(
+        builds, 1,
+        "one plane made for the photo's chain and the mask's chain"
+    );
     assert_eq!(hits, 1, "the second chain copies it");
 }

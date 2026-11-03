@@ -786,7 +786,9 @@ fn a_frame_made_from_kept_planes_is_the_frame_made_without_them_with_a_backgroun
             &src,
             graph_with_trim(
                 ev,
-                vec![background(json!({ "feather": 0.3, "grow": 0.2, "refine": 0.5 }))],
+                vec![background(
+                    json!({ "feather": 0.3, "grow": 0.2, "refine": 0.5 }),
+                )],
             ),
         )
     };
