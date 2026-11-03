@@ -1497,6 +1497,13 @@ span.ym-filmstrip__thumb {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A Subject or People row on a computer that cannot make it says a whole sentence ("Subject masks need a Mac that supports them", `docs/23` §3.10): it wraps, so the row grows, instead of ending in an ellipsis. */
+.ym-mask-row__sub[data-unsupported] {
+  overflow: visible;
+  line-height: 1.25;
+  text-overflow: clip;
+  white-space: normal;
+}
 /* "Finding…" while a raster is being made for the first time on a photo (a Background row's blur map): a small spinner before the words. */
 .ym-mask-row__sub[data-finding] {
   display: flex;

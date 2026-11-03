@@ -78,7 +78,9 @@ export function MaskRows({ rows, selected, onSelect, onEdit, onRemove, onMove, f
                           {busyText}
                         </span>
                       ) : (
-                        <span className="ym-mask-row__sub">{maskSubtitle(row, vision)}</span>
+                        <span className="ym-mask-row__sub" data-unsupported={isUnsupported(row, vision) || undefined} title={isUnsupported(row, vision) ? maskSubtitle(row, vision) : undefined}>
+                          {maskSubtitle(row, vision)}
+                        </span>
                       )}
                     </span>
                   </button>

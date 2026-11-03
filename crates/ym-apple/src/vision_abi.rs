@@ -47,6 +47,8 @@ pub(crate) fn status_of_probe(code: i32) -> VisionStatus {
     match code {
         PROBE_SUPPORTED => VisionStatus::Supported,
         PROBE_MACOS_TOO_OLD => VisionStatus::Unsupported(MaskUnavailable::MacosTooOld),
+        PROBE_NOT_SUPPORTED => VisionStatus::Unsupported(MaskUnavailable::NotSupported),
+        // A code the bridge should never give.
         _ => VisionStatus::Unsupported(MaskUnavailable::NotSupported),
     }
 }
