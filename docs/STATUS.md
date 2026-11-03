@@ -246,6 +246,7 @@ N-20 found and fixed on the way: a selected link was grey (#555) in the built ap
 
 **Reviews and decisions**
 
+- **N-H5, checkpoint 4: the release candidate of 0.2.0 (2026-11-03).** Build run 41579659716 (artifact `Yellowmoon-7a49f77-aarch64`), on 7a49f77 with CI green on every job. It is checkpoint 3's build plus N-20: View › Nodes in the menu bar, a selected link in the accent colour (it was grey in the built app), one 1024 px picture shared by the Object and Subject/People masks, and the 0.2.0 CHANGELOG. The final test of the whole plan, all of checkpoint 3's list included; the owner's OK releases 0.2.0 (after the Mac GPU run on the same commit is green).
 - **N-H4, checkpoint 3 (2026-11-03).** The test DMG with every kind of mask: Build run 41565616325 (artifact `Yellowmoon-17b2c65-aarch64`). In the node view, on a node's Mask tab, try:
   - **Object**: click the subject (the row says "Getting ready…" the first time on a photo while SAM prepares it, then "Finding…"), the pill "Object found · 0.4 s" with the click's time, Alt-click to take a part away, Remove point, a Box drag; a click on nothing says so in the error bar and changes nothing; Undo takes a click back. Please note how long "Getting ready…" lasts on a 24 MP photo (the encoder; 3 to 5 s on a 4-core x86 machine) and how long a click takes in the pill.
   - **Subject** and **People** (Apple Vision; hidden on a Mac that cannot make them): on a portrait and on a landscape ("Nothing found").
