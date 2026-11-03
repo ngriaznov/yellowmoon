@@ -1708,7 +1708,11 @@ impl PreparedChain {
                 let ub = passes.uniform("chain uniform", &u)?;
                 passes.dispatch(
                     KernelId::Color,
-                    "color chain",
+                    if matches!(output, ColorOutput::Stage(Stop::Guide)) {
+                        "color chain guide"
+                    } else {
+                        "color chain"
+                    },
                     &self.entries(&ub, src, out, &records, &scratch),
                     (gx, gy, 1),
                 )?;

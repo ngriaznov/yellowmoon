@@ -52,7 +52,7 @@
 //! thread before it is submitted (the upload planes, the sampler's grid, the bounding box of the
 //! photo), and everything it returns is converted on the render thread afterwards.
 
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::Duration;
 
 use rayon::prelude::*;
@@ -75,6 +75,7 @@ use ym_gpu::kernels::mask_raster::{RasterJob, encode_raster_planes};
 use ym_gpu::kernels::output_sharpen::{FusedC13, PreparedSharpen};
 use ym_gpu::kernels::sampler::encode_sample_at;
 use ym_gpu::kernels::tint::encode_tint;
+use ym_gpu::perf::{self, Split, Stage};
 use ym_gpu::pool::PooledBuffer;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::stream::{PassList, ReadId, upload_bytes};
@@ -203,21 +204,35 @@ impl ViewRoute {
         D: Send + 'static,
         R: Send + 'static,
     {
+        // The spans of `ym_gpu::perf` (`YM_PERF`) are kept per thread: the job's own go back to this thread's
+        // split when it is done.
+        let device_split = ym_gpu::perf::enabled().then(|| Arc::new(Mutex::new(Split::default())));
+        let sink = device_split.clone();
         let handle =
             self.gpu
                 .submit_with_token(self.spec, self.token.clone(), move |ctx, token| {
                     ctx.check_alive()?;
-                    match work(ctx, token, &data) {
+                    if sink.is_some() {
+                        ym_gpu::perf::begin();
+                    }
+                    let result = match work(ctx, token, &data) {
                         Err(GpuError::OutOfBudget { .. } | GpuError::BufferTooLarge { .. }) => {
                             ctx.pool().trim();
                             release_tables(ctx);
                             work(ctx, token, &data)
                         }
                         other => other,
+                    };
+                    if let Some(sink) = &sink {
+                        *sink.lock().unwrap_or_else(PoisonError::into_inner) = ym_gpu::perf::take();
                     }
+                    result
                 });
         loop {
             if let Some(done) = handle.wait_timeout(POLL) {
+                if let Some(split) = &device_split {
+                    ym_gpu::perf::add(&split.lock().unwrap_or_else(PoisonError::into_inner));
+                }
                 return done?;
             }
             if self.token.is_cancelled() {
@@ -469,7 +484,14 @@ fn finish_rgba(
     dst: Arc<PooledBuffer>,
     read: Option<ReadId>,
 ) -> Result<Rgba8, GpuError> {
-    let mut done = passes.submit()?.finish()?;
+    let pending = {
+        let _span = perf::span(Stage::Submit);
+        passes.submit()?
+    };
+    let mut done = {
+        let _span = perf::span(Stage::Wait);
+        pending.finish()?
+    };
     Ok(match read {
         Some(read) => Rgba8::Host(done.take(read)),
         None => Rgba8::Device(dst),
@@ -578,7 +600,10 @@ fn prepared_for(
     input: &DeviceInput,
     rasters: Option<&GrownInput>,
 ) -> Result<PreparedChain, GpuError> {
-    let mut prepared = PreparedChain::new(ctx, chain)?;
+    let mut prepared = {
+        let _span = perf::span(Stage::ColourRecord);
+        PreparedChain::new(ctx, chain)?
+    };
     // A chain compiled to a node's mask (the mask view) ends the nodes at that node and writes `m` as grey code
     // values, as the CPU chain does (`ColorChain::shows_mask`).
     if let PlanStop::Mask(node) = chain.params().nodes.plan.stop {
@@ -594,7 +619,10 @@ fn prepared_for(
     if chain.uses_rasters()
         && let Some(grown) = rasters
     {
-        let wide = input_image(ctx, passes, &grown.input)?;
+        let wide = {
+            let _span = perf::span(Stage::WideImage);
+            input_image(ctx, passes, &grown.input)?
+        };
         let r = &grown.read;
         let planes = encode_raster_planes(
             passes,
@@ -858,7 +886,10 @@ pub(super) fn plain_job(
 ) -> Result<Rgba8, GpuError> {
     token.check()?;
     let mut passes = PassList::new(ctx, "view plain");
-    let sampled = input_image(ctx, &mut passes, &job.input)?;
+    let sampled = {
+        let _span = perf::span(Stage::InputImage);
+        input_image(ctx, &mut passes, &job.input)?
+    };
     let prepared = prepared_for(
         ctx,
         &mut passes,
@@ -869,6 +900,7 @@ pub(super) fn plain_job(
     let (w, h) = (sampled.width, sampled.height);
     let bytes = (w * h * 4) as u64;
     let dst = passes.keep(ctx.pool().acquire("view rgba8", bytes, IMAGE_USAGE)?);
+    let colour = perf::span(Stage::ColourRecord);
     prepared.encode_rgba8(
         &mut passes,
         &sampled,
@@ -881,6 +913,7 @@ pub(super) fn plain_job(
         w,
         (0, 0),
     )?;
+    drop(colour);
     let read = (!keeps(job.output))
         .then(|| passes.read(&dst, 0, bytes))
         .transpose()?;
@@ -931,7 +964,10 @@ pub(super) fn display_job(
 ) -> Result<DisplayOut, GpuError> {
     token.check()?;
     let mut passes = PassList::new(ctx, "view display");
-    let sampled = input_image(ctx, &mut passes, &job.input)?;
+    let sampled = {
+        let _span = perf::span(Stage::InputImage);
+        input_image(ctx, &mut passes, &job.input)?
+    };
     let prepared = prepared_for(
         ctx,
         &mut passes,
@@ -949,14 +985,17 @@ pub(super) fn display_job(
         sampled.planes.min(4),
         Placement::whole(w, h),
     )?;
-    prepared.encode_stage(
-        &mut passes,
-        &sampled,
-        Rect::whole(w, h),
-        Stop::C12,
-        &display,
-        (0, 0),
-    )?;
+    {
+        let _span = perf::span(Stage::ColourRecord);
+        prepared.encode_stage(
+            &mut passes,
+            &sampled,
+            Rect::whole(w, h),
+            Stop::C12,
+            &display,
+            (0, 0),
+        )?;
+    }
     // The mask chain over the same pixels: `m` as grey code values in the planes of an image of its own.
     let mask = job
         .mask
@@ -971,14 +1010,17 @@ pub(super) fn display_job(
                 sampled.planes.min(4),
                 Placement::whole(w, h),
             )?;
-            prepared.encode_stage(
-                &mut passes,
-                &sampled,
-                Rect::whole(w, h),
-                Stop::C13,
-                &image,
-                (0, 0),
-            )?;
+            {
+                let _span = perf::span(Stage::ColourRecord);
+                prepared.encode_stage(
+                    &mut passes,
+                    &sampled,
+                    Rect::whole(w, h),
+                    Stop::C13,
+                    &image,
+                    (0, 0),
+                )?;
+            }
             Ok(image)
         })
         .transpose()?;
@@ -986,6 +1028,7 @@ pub(super) fn display_job(
         .tail
         .as_ref()
         .map(|tail| {
+            let _span = perf::span(Stage::TailRecord);
             record_tail(
                 ctx,
                 &mut passes,
@@ -1003,7 +1046,14 @@ pub(super) fn display_job(
         None
     };
     token.check()?;
-    let mut done = passes.submit()?.finish()?;
+    let pending = {
+        let _span = perf::span(Stage::Submit);
+        passes.submit()?
+    };
+    let mut done = {
+        let _span = perf::span(Stage::Wait);
+        pending.finish()?
+    };
     let mut out = DisplayOut::default();
     if let Some((dst, read)) = tail_read {
         out.rgba = Some(match read {
@@ -1043,6 +1093,7 @@ pub(super) fn tail_job(
 ) -> Result<Rgba8, GpuError> {
     token.check()?;
     let mut passes = PassList::new(ctx, "view tail");
+    let tail_span = perf::span(Stage::TailRecord);
     let (dst, read) = record_tail(
         ctx,
         &mut passes,
@@ -1052,6 +1103,7 @@ pub(super) fn tail_job(
         &job.tail,
         !keeps(job.output),
     )?;
+    drop(tail_span);
     token.check()?;
     finish_rgba(passes, dst, read)
 }

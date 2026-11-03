@@ -1434,8 +1434,11 @@ fn open_app_gpu(enabled: bool, budget: ym_core::scheduler::MemoryBudget) -> GpuS
     if !enabled {
         return GpuSlot::off(budget);
     }
+    // GPU pass times (timestamp queries, where the adapter has them) when `YM_PERF` is on: the `gpu passes`
+    // line of `ym::perf`. Off, nothing is timed.
     let slot = GpuOpener::new(gpu_policy(), budget)
         .with_pipeline_cache_dir(ym_gpu::device::default_pipeline_cache_dir())
+        .with_timestamps(crate::perf::enabled())
         .open();
     // `require` is strict, and a window has no exit code to say so with: the application goes on
     // with the CPU, loudly, rather than quietly looking as if the device were in use.

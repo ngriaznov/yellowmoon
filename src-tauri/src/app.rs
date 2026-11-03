@@ -97,6 +97,8 @@ fn start(app: &mut App, frames: &Arc<FrameStore>) -> AppState {
     if perf::enabled() {
         perf::watch_main_thread(app.handle().clone());
     }
+    // The core's `frame` and `gpu passes` lines (`ym_core::perf`) follow the same switch.
+    ym_core::perf::set_enabled(perf::enabled());
     let emitter: Arc<dyn Emitter> = Arc::new(TauriEmitter::new(app.handle().clone()));
     let cli = CliLink::locate()
         .map_err(|e| tracing::warn!(error = %e, "no command-line tool next to the app"))

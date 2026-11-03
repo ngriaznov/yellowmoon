@@ -555,6 +555,7 @@ impl PreparedView {
         route: &ViewRoute,
         positions: bool,
     ) -> Result<(DeviceInput, Option<Bounds>), RenderError> {
+        let _span = ym_gpu::perf::span(ym_gpu::perf::Stage::DeviceInput);
         let (w, h) = (self.width, self.height);
         if route.stages.sampler
             && let ViewSource::Image {
@@ -898,13 +899,16 @@ fn cpu_view_rasters(
     let prepared = prepare_view(job, &rr.spec)?;
     let grid = prepared.photo_grid();
     let sampled = sample_routed(job, &prepared, ctx.route)?;
-    let planes = cpu_rasters(
-        chain,
-        &sampled,
-        grid.as_ref(),
-        (0, 0),
-        (rr.frame, rr.grown, rr.window),
-    );
+    let planes = {
+        let _span = ym_gpu::perf::span(ym_gpu::perf::Stage::CpuRaster);
+        cpu_rasters(
+            chain,
+            &sampled,
+            grid.as_ref(),
+            (0, 0),
+            (rr.frame, rr.grown, rr.window),
+        )
+    };
     let at = (
         (rr.window.x - rr.extent.x) as usize,
         (rr.window.y - rr.extent.y) as usize,
@@ -2624,6 +2628,7 @@ pub(crate) fn prepare_view(
     job: &mut Job<'_>,
     spec: &ViewSpec,
 ) -> Result<PreparedView, RenderError> {
+    let _span = ym_gpu::perf::span(ym_gpu::perf::Stage::Prepare);
     prepare_view_with(job, spec, true)
 }
 
@@ -3038,7 +3043,23 @@ impl Renderer {
             dither_origin: (0, 0),
             output,
         };
-        let mut frame = render_view(job, &spec)?;
+        // The `ym::perf` line of the frame (`crate::perf`); `None`, and nothing measured, unless `YM_PERF` is on.
+        let probe = crate::perf::FrameProbe::start(
+            self.options().gpu.clone(),
+            super::color::uses_rasters(&job.src.settings),
+            match mask_view {
+                None => "none",
+                Some(v) if v.row.is_some() => "row",
+                Some(v) if v.style == MaskStyle::MaskOnly => "mask_only",
+                Some(_) => "overlay",
+            },
+            zoom,
+        );
+        let result = render_view(job, &spec);
+        if let Some(probe) = probe {
+            probe.finish(&result);
+        }
+        let mut frame = result?;
         // The zoom belongs to the request, not to the pixels (a cached frame is served for the
         // same view): say what this request asked for.
         frame.report.zoom = Some(FrameZoom {

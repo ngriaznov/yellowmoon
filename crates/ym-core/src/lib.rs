@@ -37,6 +37,7 @@ pub mod data_dir;
 pub mod export;
 pub mod export_queue;
 pub mod looks;
+pub mod perf;
 pub mod pipeline;
 pub mod preferences;
 pub mod scheduler;

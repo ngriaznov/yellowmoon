@@ -52,7 +52,7 @@ pub const MAX_GROUPS_PER_DIMENSION: u32 = 65_535;
 pub const CHUNK_BYTES: u64 = 64 << 20;
 
 /// Passes of one list that can be timed; later passes run untimed.
-const MAX_TIMED_PASSES: u32 = 128;
+const MAX_TIMED_PASSES: u32 = 512;
 
 // ---------------------------------------------------------------------------------------------
 // Counters

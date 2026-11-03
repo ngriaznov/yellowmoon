@@ -30,6 +30,7 @@
 
 use std::cell::RefCell;
 use std::sync::{Arc, Weak};
+use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use ym_color::display::ColorChain;
@@ -43,6 +44,7 @@ use crate::cpu::sampler::SamplerGrid;
 use crate::cpu::{Placement, tiling::Rect};
 use crate::device::{GpuContext, GpuError};
 use crate::image::GpuImage;
+use crate::perf::{self, Stage};
 use crate::pool::PooledBuffer;
 use crate::stream::{Counters, PassList};
 use crate::tiles::DESIGN_BINDING_BYTES;
@@ -337,9 +339,18 @@ impl Rec<'_, '_> {
         let gy = h.div_ceil(16).max(1);
         let ub = self.passes.uniform("mask raster uniform", &u)?;
         let guide = self.guide.map_or(&self.samp.buf, |g| &g.buf);
+        let label = match u.op[0] {
+            0 => "mask raster resample",
+            1 | 8 => "mask raster fold",
+            2 => "mask raster mul",
+            3 => "mask raster coef",
+            4 => "mask raster block",
+            5 | 6 => "mask raster final",
+            _ => "mask raster quantise",
+        };
         self.passes.dispatch(
             KernelId::MaskRaster,
-            "mask raster",
+            label,
             &[
                 (0, ub.binding()),
                 (1, self.work.binding()),
@@ -492,6 +503,7 @@ pub fn encode_raster_planes(
             g.w, g.h, sampled.planes, sampled.width, sampled.height
         )));
     }
+    perf::note_raster(set.rows.len(), g.w, g.h);
     let u_px = 1.0 / job.photo.pixel;
     let steps: Vec<RasterSteps> = set.steps(u_px);
     let (gw, gh) = (g.w as i32, g.h as i32);
@@ -505,6 +517,7 @@ pub fn encode_raster_planes(
 
     // The guide.
     let guide = if set.needs_guide(u_px) {
+        let _span = perf::span(Stage::GuideRecord);
         let image = GpuImage::alloc(ctx, "raster guide", g.w, g.h, 4, Placement::whole(g.w, g.h))?;
         prepared.encode_stage(
             passes,
@@ -586,9 +599,21 @@ pub fn encode_raster_planes(
         h: gh,
     };
 
+    let mut record = perf::span(Stage::RasterRecord);
+    // The source's time is its own span's, not the record's.
+    let mut source_ms = 0.0;
     for (index, (row, st)) in set.rows.iter().zip(&steps).enumerate() {
+        let started = perf::enabled().then(Instant::now);
         let src: Arc<SourcePlane> = row.source.plane(job.photo.aspect);
+        let made = started.map(|t| t.elapsed().as_secs_f64() * 1000.0);
+        let started = perf::enabled().then(Instant::now);
         let s0 = source_buffer(ctx, &src)?;
+        let uploaded = started.map(|t| t.elapsed().as_secs_f64() * 1000.0);
+        if let (Some(made), Some(uploaded)) = (made, uploaded) {
+            perf::record(Stage::Source, made);
+            perf::record(Stage::SourceUpload, uploaded);
+            source_ms += made + uploaded;
+        }
         passes.hold(Arc::clone(&s0));
         let taps = ym_color::mask_raster::resample_taps(src.width.max(src.height), u_px);
         let shrink = src.width.max(src.height) as f64 / u_px;
@@ -748,6 +773,9 @@ pub fn encode_raster_planes(
                 rec.dispatch(u, (e.w, e.h), true)?;
             }
         }
+    }
+    if let Some(r) = record.as_mut() {
+        r.subtract(source_ms);
     }
     Ok(RasterPlanes {
         buf: out,
