@@ -582,11 +582,13 @@ impl ColorChain {
         self.steps.iter().any(|(_, n)| n.masks().needs_position())
     }
 
-    /// Whether any mask row of the plan's nodes reads a raster plane: the render then makes the planes of
+    /// Whether any mask row of the plan's nodes reads a raster plane that exists: the render then makes the planes of
     /// [`ColorChain::rasters`] over its window before the colour pass ([`crate::mask_raster`]).
     #[must_use]
     pub fn uses_rasters(&self) -> bool {
-        self.steps.iter().any(|(_, n)| n.masks().needs_rasters())
+        // A raster row with no plane (a Background row before its map exists, an Object row with no point) is
+        // in the nodes but not in the set: it selects nothing, and a chain with only such rows has no planes to make.
+        !self.params.rasters.is_empty() && self.steps.iter().any(|(_, n)| n.masks().needs_rasters())
     }
 
     /// The raster rows of the chain, in plane order.

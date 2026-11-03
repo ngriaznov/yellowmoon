@@ -1219,3 +1219,36 @@ fn show_mask_overlay_makes_a_row_s_plane_once_for_its_two_chains() {
     );
     assert_eq!(hits, 1, "the second chain copies it");
 }
+
+#[test]
+fn a_raster_row_with_no_plane_keeps_the_view_on_the_device() {
+    // An Object row with no point and no box has no plane and selects nothing (a Background row before its map
+    // exists is the same). The chain has a raster row in its nodes and none in its set: the device must not be asked
+    // for planes (it said "the chain has no raster row", and the photo's views went to the CPU for good).
+    let Some(gpu) = gpu() else { return };
+    let d = photo();
+    let src = d.source();
+    let r = device_renderer(Arc::clone(&gpu), 1024);
+    let cpu = renderer_with_tile(1024);
+    let s = with(
+        &src,
+        graph(vec![node_2(vec![json!({ "kind": "object", "points": [] })])]),
+    );
+    let st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+    for ev in 0..2 {
+        let _ = ev;
+        let f = uncached(&r, &s, &st);
+        assert_eq!(f.report.device, ComputeDevice::Gpu, "the device made the frame");
+        assert!(f.report.notes.is_empty(), "{:?}", f.report.notes);
+    }
+    let reference = uncached(&cpu, &s, &st);
+    let device = uncached(&r, &s, &st);
+    let worst = device
+        .rgba
+        .iter()
+        .zip(&reference.rgba)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap_or(0);
+    assert!(worst <= 3, "{worst} codes");
+}
