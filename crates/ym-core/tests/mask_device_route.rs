@@ -18,8 +18,8 @@ use ym_core::pipeline::{
 };
 use ym_core::settings::{DevelopSettings, MaskKind, MaskUnavailable, mask_kinds};
 use ym_core::vision::{
-    FakeVision, VisionError, VisionKind, VisionMask, VisionMasks, VisionPicture,
-    VisionProvider, VisionStatus, VisionSupport,
+    FakeVision, VisionError, VisionKind, VisionMask, VisionMasks, VisionPicture, VisionProvider,
+    VisionStatus, VisionSupport,
 };
 use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
 use ym_gpu::queue::CancelToken;
@@ -218,7 +218,12 @@ fn route_problems(
                 if f.report.device != ComputeDevice::Gpu {
                     problems.push(format!("{at}: the frame is {:?}", f.report.device));
                 }
-                for n in f.report.notes.iter().filter(|n| n.contains("graphics card")) {
+                for n in f
+                    .report
+                    .notes
+                    .iter()
+                    .filter(|n| n.contains("graphics card"))
+                {
                     problems.push(format!("{at}: note {n}"));
                 }
                 if r.raw_on_cpu(src.id) {
@@ -301,7 +306,10 @@ fn unsupported() -> Arc<dyn VisionProvider> {
 fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while !done() {
-        assert!(std::time::Instant::now() < end, "timed out waiting for {what}");
+        assert!(
+            std::time::Instant::now() < end,
+            "timed out waiting for {what}"
+        );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
@@ -343,7 +351,10 @@ fn rows_with_no_plane_yet_are_skipped_not_refused() {
         ("brush, no stroke", vec![brush_empty()]),
         ("object, no point", vec![object_empty()]),
         ("background, before its map", vec![background()]),
-        ("all of them", vec![brush_empty(), object_empty(), background()]),
+        (
+            "all of them",
+            vec![brush_empty(), object_empty(), background()],
+        ),
         (
             "empty ones beside a painted brush",
             vec![brush_empty(), brush_painted(), object_empty()],
@@ -465,10 +476,157 @@ fn two_chains_where_one_has_planes_and_one_has_none() {
         )
     };
     for (name, s) in [
-        ("planes then none", both(vec![brush_painted()], vec![object_empty()])),
-        ("none then planes", both(vec![object_empty()], vec![brush_painted()])),
+        (
+            "planes then none",
+            both(vec![brush_painted()], vec![object_empty()]),
+        ),
+        (
+            "none then planes",
+            both(vec![object_empty()], vec![brush_painted()]),
+        ),
     ] {
         eprintln!("{name}");
         check(&r, &src.with_settings(s), &all_states());
+    }
+}
+
+#[test]
+fn an_object_row_with_a_point_but_no_model_and_a_retina_cell() {
+    let Some(gpu) = gpu() else { return };
+    let d = photo();
+    let src = d.source();
+    let r = renderer(&gpu, Some(Arc::new(FakeVision::new())));
+    // Points, and nobody to turn them into a plane (no model is loaded in this renderer).
+    let pointed = row(
+        "object",
+        json!({ "points": [[0.4, 0.5, true], [0.7, 0.4, false]] }),
+    );
+    let s = src.with_settings(one_node(vec![pointed]));
+    check(&r, &s, &all_states());
+    // A retina-size cell with every kind at once.
+    let everything = src.with_settings(one_node(vec![
+        linear(),
+        radial(),
+        colour_range(),
+        brightness_range(),
+        brush_painted(),
+        background(),
+        object_empty(),
+        subject(),
+        people(),
+    ]));
+    let mut problems = Vec::new();
+    for (zoom_100, style) in [
+        (false, None),
+        (true, None),
+        (false, Some(MaskStyle::Overlay)),
+        (true, Some(MaskStyle::MaskOnly)),
+    ] {
+        let mut st = ViewportState::new(ViewportRect::cell(1100.0, 760.0, 2.0));
+        if zoom_100 {
+            st.mode = ViewportMode::Percent { value: 100.0 };
+        }
+        st.mask_view = style.map(|style| MaskView {
+            node: 2,
+            style,
+            row: None,
+        });
+        for pan in 0..2 {
+            if pan == 1 {
+                st.centre = [0.4, 0.55];
+            }
+            let f = frame(&r, &everything, &st);
+            if f.report.device != ComputeDevice::Gpu || r.raw_on_cpu(everything.id) {
+                problems.push(format!(
+                    "100 % {zoom_100}, {style:?}, pan {pan}: {:?} {:?}",
+                    f.report.device, f.report.notes
+                ));
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+// ---- our own checks do not end the route -------------------------------------------------------------------
+
+/// `invalid kernel input` is our validation, raised before any device work (`docs/17-gpu.md` section 9): the frame
+/// it refuses is the CPU's, with the usual note, and the next frame is the device's. Needs
+/// `--features fault-injection` (without it the test is empty).
+#[cfg(feature = "fault-injection")]
+#[test]
+fn a_refused_check_costs_one_cpu_frame_and_leaves_the_route_open() {
+    use ym_gpu::device::GpuFault;
+    let Some(gpu) = gpu() else { return };
+    let d = photo();
+    let src = d.source().with_settings(one_node(vec![brush_painted()]));
+    let r = renderer(&gpu, None);
+    for style in [None, Some(MaskStyle::Overlay)] {
+        let st = view(false, style.map(|s| (s, None)));
+        let _ = frame(&r, &src, &st);
+        assert!(!r.raw_on_cpu(src.id));
+        gpu.set_fault(Some(GpuFault::FailInvalid(1)));
+        let refused = frame(&r, &src, &st);
+        assert_eq!(refused.report.device, ComputeDevice::Cpu, "{style:?}");
+        assert!(
+            refused
+                .report
+                .notes
+                .iter()
+                .any(|n| n.contains("invalid kernel input")),
+            "{:?}",
+            refused.report.notes
+        );
+        assert!(!r.raw_on_cpu(src.id), "{style:?}: the route is still open");
+        // The fault fired once: the next frame, and the one after it, are the device's.
+        for _ in 0..2 {
+            let next = frame(&r, &src, &st);
+            assert_eq!(next.report.device, ComputeDevice::Gpu, "{style:?}");
+            assert!(
+                !next
+                    .report
+                    .notes
+                    .iter()
+                    .any(|n| n.contains("graphics card")),
+                "{:?}",
+                next.report.notes
+            );
+        }
+        // And the CPU's frame is the device's within the kernels' tolerance.
+        let worst = refused
+            .rgba
+            .iter()
+            .zip(&frame(&r, &src, &st).rgba)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        assert!(worst <= 3, "{style:?}: {worst} codes");
+        gpu.set_fault(None);
+    }
+}
+
+/// A true device fault still ends the photo's views for good, and the viewport says so (`raw_on_cpu` is what its
+/// "Rendering on the CPU" asks): a shader that does not compile ends the views for the process, a lost device for
+/// every renderer on it.
+#[cfg(feature = "fault-injection")]
+#[test]
+fn a_true_device_fault_still_ends_the_route_and_the_viewport_says_the_cpu() {
+    use ym_gpu::device::GpuFault;
+    for fault in [GpuFault::Shader, GpuFault::Lost] {
+        // A device of its own: nothing has compiled on it yet, so the fault meets the first frame.
+        let Some(gpu) = self::gpu() else { return };
+        let d = photo();
+        let src = d.source().with_settings(one_node(vec![brush_painted()]));
+        let r = renderer(&gpu, None);
+        assert!(!r.raw_on_cpu(src.id));
+        gpu.set_fault(Some(fault));
+        let st = view(false, None);
+        let _ = frame(&r, &src, &st);
+        gpu.set_fault(None);
+        assert!(r.raw_on_cpu(src.id), "{fault:?}: the route ended");
+        assert_eq!(
+            frame(&r, &src, &st).report.device,
+            ComputeDevice::Cpu,
+            "{fault:?}"
+        );
     }
 }

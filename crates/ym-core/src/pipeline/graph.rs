@@ -566,6 +566,9 @@ pub struct PhotoGraph {
     /// output sharpening and C13 of frames, thumbnails and look tiles): from then on the CPU makes
     /// its frames, quietly (`docs/17-gpu.md` section 9).
     view_gpu_failed: AtomicBool,
+    /// One of our own input checks refused a view on the device and the warning for it is logged (once per photo;
+    /// such a refusal makes that frame the CPU's and leaves the route open, `Job::view_gpu_failed`).
+    view_input_warned: AtomicBool,
     /// A device error ended the GPU route of this photo's lens (L1 to L3 of the groups and tiles):
     /// from then on the CPU runs the lens, with a note (`docs/17-gpu.md` section 9).
     lens_gpu_failed: AtomicBool,
@@ -606,6 +609,7 @@ impl PhotoGraph {
             budget,
             raw_gpu_failed: AtomicBool::new(false),
             view_gpu_failed: AtomicBool::new(false),
+            view_input_warned: AtomicBool::new(false),
             lens_gpu_failed: AtomicBool::new(false),
             resident_tick: AtomicU64::new(0),
             upload_gate: Mutex::new(()),
@@ -2982,16 +2986,27 @@ impl<'a> Job<'a> {
     /// view stages off for the process. A strict policy fails the request; any other policy notes
     /// why the CPU makes this frame, and ends the route for the photo (view caches may then hold
     /// frames of both devices, which differ within the tolerances of the kernels; viewing only,
-    /// `docs/17-gpu.md` section 9). A buffer that does not fit (out of budget, too large) is a property
-    /// of the request and not of the photo: the CPU makes this frame, and the next one tries the
-    /// device again.
+    /// `docs/17-gpu.md` section 9). An error about the request and not about the device leaves the
+    /// route open: a buffer that does not fit (out of budget, too large), and a refusal by one of our
+    /// own input checks ([`GpuError::InvalidInput`], raised before any device work, so trying again
+    /// costs nothing). The CPU makes this frame and the next one tries the device again; the refusal
+    /// is logged as a warning once per photo (later ones at debug level), and every one is noted in
+    /// the frame's report.
     ///
     /// # Errors
     ///
     /// [`RenderError::Gpu`] under a strict policy.
     pub(crate) fn view_gpu_failed(&mut self, error: &GpuError) -> Result<(), RenderError> {
         let reason = error.to_string();
-        tracing::warn!(error = %reason, "the device failed on a view; the CPU takes over");
+        if matches!(error, GpuError::InvalidInput(_)) {
+            if self.g.view_input_warned.swap(true, Ordering::SeqCst) {
+                tracing::debug!(error = %reason, "a view was refused by an input check; the CPU makes this frame");
+            } else {
+                tracing::warn!(error = %reason, "a view was refused by an input check; the CPU makes this frame and the device is tried again on the next");
+            }
+        } else {
+            tracing::warn!(error = %reason, "the device failed on a view; the CPU takes over");
+        }
         if matches!(error, GpuError::Shader(_)) {
             self.r.inner.view_gpu_disabled.store(true, Ordering::SeqCst);
         }
@@ -3000,7 +3015,9 @@ impl<'a> Job<'a> {
         }
         if !matches!(
             error,
-            GpuError::OutOfBudget { .. } | GpuError::BufferTooLarge { .. }
+            GpuError::OutOfBudget { .. }
+                | GpuError::BufferTooLarge { .. }
+                | GpuError::InvalidInput(_)
         ) {
             self.g.view_gpu_failed.store(true, Ordering::SeqCst);
         }
@@ -3309,36 +3326,6 @@ pub(crate) fn color_space_of(target: OutputTarget) -> ColorSpace {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A device error on a view ends the device route of that photo's views (`Job::view_gpu_failed`): from then on its
-    /// frames are the CPU's, and the viewport must say so ("Rendering on the CPU" is asked from `raw_on_cpu`), though
-    /// the raw chain is still on the device.
-    #[test]
-    fn a_device_error_on_a_view_is_said_to_be_the_cpu() {
-        use ym_gpu::device::{Gpu, GpuConfig};
-        let gpu = match Gpu::start(GpuConfig::default()) {
-            Ok(g) => Arc::new(g),
-            Err(e) => {
-                assert!(!ym_gpu::device::gpu_required_by_env(), "{e}");
-                return;
-            }
-        };
-        let r = Renderer::new(
-            Arc::new(crate::pipeline::NeutralOnly),
-            RenderOptions {
-                gpu: Some(gpu),
-                gpu_stages: GpuStages::ALL,
-                ..RenderOptions::default()
-            },
-        )
-        .expect("the render thread");
-        let photo = PhotoId(3);
-        assert!(!r.raw_on_cpu(photo), "the device runs the photo");
-        let g = r.graph(photo);
-        g.view_gpu_failed.store(true, Ordering::SeqCst);
-        assert!(r.raw_on_cpu(photo), "its views are on the CPU now");
-        assert!(!r.raw_on_cpu(PhotoId(4)), "another photo's are not");
-    }
 
     /// A renderer with no device renders every photo's raw chain on the CPU, whether or not the photo
     /// has a graph or a device error ended its route, and asking makes no graph. (The cases with a

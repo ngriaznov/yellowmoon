@@ -46,8 +46,10 @@
 //! **Busy.** From just before a round asks for its frame until the round is over (the pass that makes
 //! the sharp tiles included, and whichever way it ends: shown, stopped, failed), the worker holds a
 //! [`BusyGuard`], which tells the webview `viewport_busy { busy: true, cpu, finding }`, where `cpu` says that
-//! the renderer runs the photo's raw stages on the CPU (`Renderer::raw_on_cpu`, asked as the round
-//! starts) and `finding` that the round makes the photo's first blur map for a Background mask
+//! the renderer runs the photo's raw stages or views on the CPU (`Renderer::raw_on_cpu`, asked as the round
+//! starts and asked again when its frame is back, so that a round whose frame the CPU made because the device
+//! failed during it says `cpu: true` at once, while the tile pass is still running, and not only from the next
+//! round on) and `finding` that the round makes the photo's first blur map for a Background mask
 //! (`Renderer::finding_masks`, asked the same way; the mask rows say "Finding…"), and `busy: false` when
 //! it is dropped. Only a change is sent, and the shell's throttle
 //! merges what a stream of rounds sends. The photo cell shows "Rendering on the CPU" from it. While the core's
@@ -956,6 +958,7 @@ const IDLE: ViewportBusy = ViewportBusy {
 struct BusyGuard<'a> {
     shared: &'a Shared,
     cpu: bool,
+    finding: bool,
 }
 
 impl<'a> BusyGuard<'a> {
@@ -967,7 +970,26 @@ impl<'a> BusyGuard<'a> {
             cpu,
             finding,
         });
-        Self { shared, cpu }
+        Self {
+            shared,
+            cpu,
+            finding,
+        }
+    }
+
+    /// The round's frame is back; `on_cpu` is the renderer's answer now (`Renderer::raw_on_cpu`). When the device route
+    /// ended during that frame (a device error made the frame on the CPU and the photo's views stay there), the round
+    /// says `cpu` at once, while it is still busy with the tile pass, and not only from the next round on. Never
+    /// takes it back within the round.
+    fn frame_came_back(&mut self, on_cpu: bool) {
+        if on_cpu && !self.cpu {
+            self.cpu = true;
+            self.shared.tell_busy(ViewportBusy {
+                busy: true,
+                cpu: true,
+                finding: self.finding,
+            });
+        }
     }
 }
 
@@ -1313,7 +1335,7 @@ impl Shared {
             FrameOutput::Host
         };
         // Busy from here until the round returns, the tile pass included.
-        let _busy = BusyGuard::new(
+        let mut busy = BusyGuard::new(
             self,
             core.renderer.raw_on_cpu(photo),
             core.renderer.finding_masks(photo, &src.settings),
@@ -1350,6 +1372,8 @@ impl Shared {
             }
         };
         lock(&self.state).last_error = None;
+        // The pill from the first CPU frame: a frame the device failed on is on screen with the CPU's word.
+        busy.frame_came_back(core.renderer.raw_on_cpu(photo));
         self.present(&frame, photo, requested_at);
         if !frame.sharp {
             // The zoom needs full-resolution tiles that were not ready: compute them at tile
@@ -2206,6 +2230,37 @@ mod tests {
         };
         drop(BusyGuard::new(&shared, false, true));
         assert_eq!(busy_events(&events)[6..], [finding, busy(false, false)]);
+    }
+
+    /// A round whose frame came back from the CPU because the device failed during it says `cpu` at once, while it is
+    /// still busy (the tile pass), and keeps saying it when it ends; a frame back from the device changes nothing.
+    #[test]
+    fn a_round_whose_frame_the_cpu_made_says_cpu_before_it_ends() {
+        let (vp, events) = controller();
+        let shared = vp.shared();
+        let mut round = BusyGuard::new(&shared, false, true);
+        round.frame_came_back(false);
+        assert_eq!(
+            busy_events(&events).len(),
+            1,
+            "the device made it: nothing new"
+        );
+        round.frame_came_back(true);
+        let finding = |cpu| ViewportBusy {
+            busy: true,
+            cpu,
+            finding: true,
+        };
+        assert_eq!(
+            busy_events(&events),
+            [finding(false), finding(true)],
+            "still busy, now on the CPU"
+        );
+        round.frame_came_back(true);
+        round.frame_came_back(false);
+        assert_eq!(busy_events(&events).len(), 2, "said once, never taken back");
+        drop(round);
+        assert_eq!(busy_events(&events)[2..], [busy(false, true)]);
     }
 
     /// While the core makes Subject or People masks in the background the viewport is busy and finding, whatever the rounds say: the

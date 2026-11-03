@@ -212,6 +212,7 @@ impl ViewRoute {
             self.gpu
                 .submit_with_token(self.spec, self.token.clone(), move |ctx, token| {
                     ctx.check_alive()?;
+                    ctx.inject_view_fault()?;
                     if sink.is_some() {
                         ym_gpu::perf::begin();
                     }

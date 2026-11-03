@@ -844,6 +844,16 @@ impl GpuContext {
         self.fault.on_tile()
     }
 
+    /// The hook every job of a view calls once: with the `fault-injection` feature and an `invalid@N` fault armed,
+    /// the `N`th call fails as one of our own input checks would; otherwise it does nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::InvalidInput`] for the injected fault.
+    pub fn inject_view_fault(&self) -> Result<(), GpuError> {
+        self.fault.on_view()
+    }
+
     /// The hook the upload of a photo's raw words calls once: with the `fault-injection` feature
     /// and an `upload@N` fault armed, the `N`th call fails; otherwise it does nothing.
     ///

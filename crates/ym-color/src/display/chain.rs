@@ -588,7 +588,7 @@ impl ColorChain {
     pub fn uses_rasters(&self) -> bool {
         // A raster row with no plane (a Background row before its map exists, an Object row with no point) is
         // in the nodes but not in the set: it selects nothing, and a chain with only such rows has no planes to make.
-        self.steps.iter().any(|(_, n)| n.masks().needs_rasters())
+        !self.params.rasters.is_empty() && self.steps.iter().any(|(_, n)| n.masks().needs_rasters())
     }
 
     /// The raster rows of the chain, in plane order.

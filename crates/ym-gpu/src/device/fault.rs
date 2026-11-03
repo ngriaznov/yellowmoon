@@ -41,13 +41,18 @@ pub enum GpuFault {
     /// how a test makes a *re*-upload fail (the photo's words were let go in the middle of an
     /// export, a device that has filled up with other photos' since).
     FailUpload(u64),
+    /// The `n`th job of a view (a frame's colour pass, sampler or planes; counted by
+    /// [`crate::device::GpuContext::inject_view_fault`], from 1) is refused by one of our own checks and fails
+    /// with [`GpuError::InvalidInput`] (`invalid@N`). Fires once. A refused check is raised before any device
+    /// work, so the frame goes to the CPU and the device route stays open (`docs/17-gpu.md` section 9).
+    FailInvalid(u64),
 }
 
 #[cfg(feature = "fault-injection")]
 impl std::str::FromStr for GpuFault {
     type Err = String;
 
-    /// Parses `oom`, `shader`, `lost`, `cancel@N`, `tile@N` or `upload@N` (N from 1).
+    /// Parses `oom`, `shader`, `lost`, `cancel@N`, `tile@N`, `upload@N` or `invalid@N` (N from 1).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
         let at = |rest: &str| {
@@ -67,9 +72,11 @@ impl std::str::FromStr for GpuFault {
                     Ok(GpuFault::FailTile(at(n)?))
                 } else if let Some(n) = s.strip_prefix("upload@") {
                     Ok(GpuFault::FailUpload(at(n)?))
+                } else if let Some(n) = s.strip_prefix("invalid@") {
+                    Ok(GpuFault::FailInvalid(at(n)?))
                 } else {
                     Err(format!(
-                        "`{s}` is not a fault: use oom, shader, lost, cancel@N, tile@N or upload@N"
+                        "`{s}` is not a fault: use oom, shader, lost, cancel@N, tile@N, upload@N or invalid@N"
                     ))
                 }
             }
@@ -211,6 +218,24 @@ impl FaultState {
         Ok(())
     }
 
+    /// Called once per job of a view; `FailInvalid(n)` fails the `n`th with [`GpuError::InvalidInput`].
+    #[inline]
+    pub(crate) fn on_view(&self) -> Result<(), GpuError> {
+        #[cfg(feature = "fault-injection")]
+        if let Some(Some(n)) = self.hit(
+            |f| matches!(f, GpuFault::FailInvalid(_)),
+            |f, n| match f {
+                GpuFault::FailInvalid(at) if at == n => Some(n),
+                _ => None,
+            },
+        ) {
+            return Err(GpuError::InvalidInput(format!(
+                "injected fault at view job {n}"
+            )));
+        }
+        Ok(())
+    }
+
     /// Called once per tile by the chains; `FailTile(n)` fails the `n`th.
     #[inline]
     pub(crate) fn on_tile(&self) -> Result<(), GpuError> {
@@ -240,6 +265,10 @@ mod tests {
         assert_eq!("cancel@3".parse::<GpuFault>(), Ok(GpuFault::CancelAtJob(3)));
         assert_eq!("tile@12".parse::<GpuFault>(), Ok(GpuFault::FailTile(12)));
         assert_eq!("upload@2".parse::<GpuFault>(), Ok(GpuFault::FailUpload(2)));
+        assert_eq!(
+            "invalid@4".parse::<GpuFault>(),
+            Ok(GpuFault::FailInvalid(4))
+        );
         for bad in [
             "", "oom@1", "cancel@0", "cancel@x", "tile@", "tile@-1", "upload@0", "upload", "boom",
         ] {
@@ -269,6 +298,10 @@ mod tests {
             "the second upload"
         );
         assert!(f.on_upload(8, 0, 16).is_ok(), "once");
+        f.arm(Some(GpuFault::FailInvalid(2)));
+        assert!(f.on_view().is_ok());
+        assert!(matches!(f.on_view(), Err(GpuError::InvalidInput(_))));
+        assert!(f.on_view().is_ok(), "once");
         assert!(f.on_tile().is_ok() && f.on_allocation(1, 0, 10).is_ok());
         f.arm(None);
         assert!(f.on_allocation(1, 0, 10).is_ok());

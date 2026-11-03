@@ -1307,7 +1307,10 @@ fn only_nodes_with_a_shape_ask_for_positions() {
     // A raster row needs the places of the pixels to make its plane, and reads the plane.
     let raster = with(vec![MaskRow::new(MaskKind::Raster { plane: 0 })]);
     assert!(raster.uses_photo_position());
-    assert!(raster.uses_rasters());
+    // It reads a plane only when the chain's RasterSet holds one: with an empty set (a row with no plane yet) there is
+    // nothing to make, and the device must not be asked (`tests/mask_raster.rs` checks the non-empty set).
+    assert!(raster.rasters().rows.is_empty());
+    assert!(!raster.uses_rasters());
     assert!(!with(vec![linear([0.5, 0.5], 0.0, 0.2)]).uses_rasters());
     assert!(with(vec![linear([0.5, 0.5], 0.0, 0.2)]).uses_photo_position());
     assert!(with(vec![radial([0.5, 0.5], [0.2, 0.2], 0.0, 0.2)]).uses_photo_position());
