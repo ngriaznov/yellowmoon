@@ -3487,8 +3487,8 @@ pub struct ExportBusy {
 pub struct ViewportBusy {
     /// A frame, or the tiles a frame needs, is being made.
     pub busy: bool,
-    /// The raw stages of the photo run on the CPU (no usable graphics card, a device error ended the
-    /// route, the device is lost, or a method the device does not run).
+    /// The photo's frames run on the CPU (no usable graphics card, a device error ended the raw route or the
+    /// view route, the device is lost, or a method the device does not run).
     pub cpu: bool,
     /// The round makes the photo's first blur map for a Background mask (`docs/23` section 7.6): the
     /// rows of that kind say "Finding…" until the round ends. False for every other round, and once the

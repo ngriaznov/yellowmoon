@@ -669,7 +669,7 @@ pub fn encode_raster_planes(
 /// `job.grown`; it is called only when some row has no kept plane, and so is the guide.
 ///
 /// A plane is kept when the list is submitted, and a list that is dropped keeps none. The planes of a frame are
-/// bit for bit the planes the same pass makes with nothing kept ([`Gpu::set_planes_kept`]).
+/// bit for bit the planes the same pass makes with nothing kept ([`crate::device::Gpu::set_planes_kept`]).
 ///
 /// # Errors
 ///

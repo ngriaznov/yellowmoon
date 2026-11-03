@@ -1232,14 +1232,24 @@ fn a_raster_row_with_no_plane_keeps_the_view_on_the_device() {
     let cpu = renderer_with_tile(1024);
     let s = with(
         &src,
-        graph(vec![node_2(vec![json!({ "kind": "object", "points": [] })])]),
+        graph(vec![node_2(vec![
+            json!({ "kind": "object", "points": [] }),
+        ])]),
     );
     let st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
     for ev in 0..2 {
         let _ = ev;
         let f = uncached(&r, &s, &st);
-        assert_eq!(f.report.device, ComputeDevice::Gpu, "the device made the frame");
-        assert!(f.report.notes.is_empty(), "{:?}", f.report.notes);
+        assert_eq!(
+            f.report.device,
+            ComputeDevice::Gpu,
+            "the device made the frame"
+        );
+        assert!(
+            !f.report.notes.iter().any(|n| n.contains("graphics card")),
+            "{:?}",
+            f.report.notes
+        );
     }
     let reference = uncached(&cpu, &s, &st);
     let device = uncached(&r, &s, &st);

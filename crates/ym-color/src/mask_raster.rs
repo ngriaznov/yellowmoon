@@ -1208,7 +1208,7 @@ pub fn brush_plane(brush: &BrushStrokes, aspect: [f64; 2]) -> Arc<SourcePlane> {
 }
 
 /// [`brush_plane`] for a render with `live` raster rows: the cache keeps at least `max(8, live)` planes, within
-/// [`BRUSH_CACHE_BYTES`] beyond the first eight.
+/// 256 MiB beyond the first eight.
 #[must_use]
 pub fn brush_plane_among(brush: &BrushStrokes, aspect: [f64; 2], live: usize) -> Arc<SourcePlane> {
     let long = BRUSH_PLANE_PX;

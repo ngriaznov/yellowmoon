@@ -1137,7 +1137,13 @@ impl Renderer {
             RawDevice::of(&opts, &self.inner, graph.as_deref(), GpuStages::RAW_CHAIN),
             RawDevice::On(_)
         );
-        !on_device || !device_runs_demosaic(&opts) || !device_runs_denoise(&opts)
+        // The view stages too: a device error on a view ends the device route of the photo's views
+        // (`Job::view_gpu_failed`), and a shader that fails ends it for the process. Those frames are the CPU's.
+        let views_on_cpu = graph
+            .as_deref()
+            .is_some_and(|g| g.view_gpu_failed.load(Ordering::SeqCst))
+            || self.inner.view_gpu_disabled.load(Ordering::SeqCst);
+        !on_device || !device_runs_demosaic(&opts) || !device_runs_denoise(&opts) || views_on_cpu
     }
 
     /// Whether the core is making a raster mask of these settings for the first time (`docs/23` section 7.6): the
@@ -3303,6 +3309,36 @@ pub(crate) fn color_space_of(target: OutputTarget) -> ColorSpace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A device error on a view ends the device route of that photo's views (`Job::view_gpu_failed`): from then on its
+    /// frames are the CPU's, and the viewport must say so ("Rendering on the CPU" is asked from `raw_on_cpu`), though
+    /// the raw chain is still on the device.
+    #[test]
+    fn a_device_error_on_a_view_is_said_to_be_the_cpu() {
+        use ym_gpu::device::{Gpu, GpuConfig};
+        let gpu = match Gpu::start(GpuConfig::default()) {
+            Ok(g) => Arc::new(g),
+            Err(e) => {
+                assert!(!ym_gpu::device::gpu_required_by_env(), "{e}");
+                return;
+            }
+        };
+        let r = Renderer::new(
+            Arc::new(crate::pipeline::NeutralOnly),
+            RenderOptions {
+                gpu: Some(gpu),
+                gpu_stages: GpuStages::ALL,
+                ..RenderOptions::default()
+            },
+        )
+        .expect("the render thread");
+        let photo = PhotoId(3);
+        assert!(!r.raw_on_cpu(photo), "the device runs the photo");
+        let g = r.graph(photo);
+        g.view_gpu_failed.store(true, Ordering::SeqCst);
+        assert!(r.raw_on_cpu(photo), "its views are on the CPU now");
+        assert!(!r.raw_on_cpu(PhotoId(4)), "another photo's are not");
+    }
 
     /// A renderer with no device renders every photo's raw chain on the CPU, whether or not the photo
     /// has a graph or a device error ended its route, and asking makes no graph. (The cases with a
