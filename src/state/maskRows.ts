@@ -4,12 +4,23 @@
  * (`docs/algorithms/06` §4.5): Feather and Softness 0 to 100 are 0 to 1, a Colour range's Width is `0.005 + 0.295 · (x / 100)²`, Low and
  * High are the code values times 100.
  */
-import type { MaskItem, MaskKind, MaskMode, MaskPatch, MasksPatch } from "../api/types";
+import type { DevelopSettings, MaskItem, MaskKind, MaskMode, MaskPatch, MasksPatch } from "../api/types";
 import { widthSlider } from "../screens/tools/maskScales";
 import { MASK_KIND_NAME } from "./graphOps";
 import { GETTING_READY } from "./objectMask";
+import { nodeOf } from "./settingsGraph";
 
 export { widthSlider };
+
+/**
+ * What tells one list of a node's mask rows from another for an eye that is an index into it (`docs/23` §7.6): the kinds in order. A row's own
+ * fields are not in it, so editing a row keeps its eye; adding, removing and moving a row (an undo or a paste too) changes it. Empty for no node.
+ */
+export function maskRowKinds(settings: DevelopSettings | null, node: number | null): string {
+  if (settings === null || node === null) return "";
+  const item = nodeOf(settings, node);
+  return item?.kind === "corrector" ? item.masks.items.map((row) => row.kind).join(",") : "";
+}
 
 /** What the subtitle of a raster row says while the core makes its mask for the first time (`docs/23` §7.6). */
 export const FINDING = "Finding…";

@@ -126,12 +126,12 @@ describe("the Masks card", () => {
 
   it("selects the row that a control or the keyboard moves into", async () => {
     await setup();
-    await h!.user.click(within(rowOf("Radial mask, Feather 45")).getByRole("button", { name: "Show this mask" }));
+    await h!.user.click(within(rowOf("Radial mask, Feather 45")).getByRole("switch", { name: "Turn this mask off" }));
     expect(rowOf("Radial mask, Feather 45")).toHaveAttribute("data-selected");
   });
 });
 
-describe("a row's controls: Add | Subtract, Invert this mask, Show this mask", () => {
+describe("a row's controls: the switch, Add | Subtract, Invert this mask, Show this mask", () => {
   it("Add | Subtract writes the row's mode as a row patch, and is one undo step", async () => {
     const spy = await setup();
     const radial = rowOf("Radial mask, Feather 45");
@@ -159,16 +159,101 @@ describe("a row's controls: Add | Subtract, Invert this mask, Show this mask", (
     await waitFor(() => expect(radial).toHaveAttribute("aria-pressed", "false"));
   });
 
-  it("the eye writes enabled: a row that is off counts as absent and is dimmed", async () => {
+  it("the switch writes enabled: a row that is off counts as absent and is dimmed, and it is one undo step", async () => {
     const spy = await setup();
-    const eye = within(rowOf("Radial mask, Feather 45")).getByRole("button", { name: "Show this mask" });
-    expect(eye).toHaveAttribute("aria-pressed", "true");
-    await h!.user.click(eye);
+    const radial = (): HTMLElement => rowOf("Radial mask, Feather 45");
+    const on = within(radial()).getByRole("switch", { name: "Turn this mask off" });
+    expect(on).toBeChecked();
+    expect(radial()).not.toHaveAttribute("data-off");
+    await h!.user.click(on);
     await waitFor(() => expect(patches(spy).at(-1)).toEqual(edit(3, 1, { enabled: false })));
-    expect(eye).toHaveAttribute("aria-pressed", "false");
-    expect(rowOf("Radial mask, Feather 45")).toHaveAttribute("data-off");
+    const off = within(radial()).getByRole("switch", { name: "Turn this mask on" });
+    expect(off).not.toBeChecked();
+    expect(radial()).toHaveAttribute("data-off");
+    expect(h!.store.getState().canUndo).toBe(true);
     await undo();
-    await waitFor(() => expect(eye).toHaveAttribute("aria-pressed", "true"));
+    await waitFor(() => expect(within(radial()).getByRole("switch", { name: "Turn this mask off" })).toBeChecked());
+    expect(radial()).not.toHaveAttribute("data-off");
+  });
+
+  it("the switch is the row's first control, before the kind's icon, and the row has five Tab stops: switch, name, Add | Subtract, Invert, eye", async () => {
+    await setup();
+    const row = rowOf("Radial mask, Feather 45");
+    expect(row.firstElementChild).toBe(within(row).getByRole("switch"));
+    // Tab from the switch walks the row's controls and then leaves it.
+    within(row).getByRole("switch").focus();
+    const walked: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      await h!.user.tab();
+      const at = document.activeElement as HTMLElement | null;
+      if (!at || !row.contains(at)) break;
+      walked.push(at.getAttribute("aria-label") ?? at.getAttribute("role") ?? at.tagName);
+    }
+    // After the switch: the row's own button, the checked Add | Subtract segment, Invert and the eye.
+    expect(walked).toHaveLength(4);
+    expect(walked.at(-1)).toBe("Show this mask");
+  });
+
+  it("the eye shows this row's mask on the photo and writes nothing: view state, not a patch, one row at a time, off again with a second click", async () => {
+    const spy = await setup();
+    const store = h!.store;
+    const eyeOf = (name: string): HTMLElement => within(rowOf(name)).getByRole("button", { name: /^(Show|Hide) this mask$/ });
+    const object = eyeOf("Object mask, 2 points");
+    const radial = eyeOf("Radial mask, Feather 45");
+    expect(object).toHaveAttribute("aria-label", "Show this mask");
+    expect(object).toHaveAttribute("aria-pressed", "false");
+    await h!.user.click(radial);
+    expect(store.getState().maskEye).toBe(1);
+    expect(store.getState().maskShown).toEqual({ node: 3, style: "overlay", row: 1 });
+    expect(radial).toHaveAttribute("aria-pressed", "true");
+    expect(radial).toHaveAttribute("aria-label", "Hide this mask");
+    // One row at a time.
+    await h!.user.click(object);
+    expect(store.getState().maskEye).toBe(0);
+    expect(store.getState().maskShown).toEqual({ node: 3, style: "overlay", row: 0 });
+    expect(eyeOf("Radial mask, Feather 45")).toHaveAttribute("aria-pressed", "false");
+    await h!.user.click(eyeOf("Object mask, 2 points"));
+    expect(store.getState().maskEye).toBeNull();
+    expect(store.getState().maskShown).toBeNull();
+    expect(patches(spy)).toEqual([]);
+    expect(store.getState().canUndo).toBe(false);
+  });
+
+  it("the eye can show a row that is off", async () => {
+    await setup();
+    const row = rowOf("Radial mask, Feather 45");
+    await h!.user.click(within(row).getByRole("switch", { name: "Turn this mask off" }));
+    await waitFor(() => expect(rowOf("Radial mask, Feather 45")).toHaveAttribute("data-off"));
+    await h!.user.click(within(rowOf("Radial mask, Feather 45")).getByRole("button", { name: "Show this mask" }));
+    expect(h!.store.getState().maskShown).toEqual({ node: 3, style: "overlay", row: 1 });
+  });
+
+  it("Esc, M, another node, the Before view and a change of the rows end the eye", async () => {
+    await setup();
+    const store = h!.store;
+    const eye = (): HTMLElement => within(rowOf("Radial mask, Feather 45")).getByRole("button", { name: /^(Show|Hide) this mask$/ });
+    // Esc.
+    await h!.user.click(eye());
+    expect(store.getState().maskEye).toBe(1);
+    await h!.user.keyboard("{Escape}");
+    await waitFor(() => expect(store.getState().maskEye).toBeNull());
+    // M: Show mask on, the eye off.
+    await h!.user.click(eye());
+    await h!.user.keyboard("m");
+    await waitFor(() => expect(store.getState().maskEye).toBeNull());
+    expect(store.getState().maskView.on).toBe(true);
+    expect(store.getState().maskShown).toEqual({ node: 3, style: "overlay" });
+    await h!.user.keyboard("m");
+    expect(store.getState().maskView.on).toBe(false);
+    // The Before view.
+    await h!.user.click(eye());
+    await h!.user.keyboard("\\");
+    await waitFor(() => expect(store.getState().maskEye).toBeNull());
+    // Another node.
+    await h!.user.keyboard("\\");
+    await h!.user.click(eye());
+    fireEvent.click(screen.getByRole("button", { name: /^Node 2, Mountain/ }));
+    await waitFor(() => expect(store.getState().maskEye).toBeNull());
   });
 });
 
@@ -654,9 +739,9 @@ describe("the SUBJECT and PEOPLE cards, rows and menu items (docs/23 §3.10 and 
     expect(rowButton("People mask, People")).toBeInTheDocument();
   });
 
-  it("a row with the eye off does not say 'Nothing found'", async () => {
+  it("a row that is off does not say 'Nothing found'", async () => {
     await vision();
-    await h!.user.click(within(rowOf("People mask, People")).getByRole("button", { name: "Show this mask" }));
+    await h!.user.click(within(rowOf("People mask, People")).getByRole("switch", { name: "Turn this mask off" }));
     await waitFor(() => expect(masks(2)[1]?.enabled).toBe(false));
     found(["people"]);
     expect(rowButton("People mask, People")).toBeInTheDocument();
@@ -764,10 +849,10 @@ describe("the handles on the photo", () => {
     await placeCell();
     await h!.user.click(rowButton("Radial mask, Feather 45"));
     await waitFor(() => expect(layer()).not.toBeNull());
-    // The eye off: none.
-    await h!.user.click(within(rowOf("Radial mask, Feather 45")).getByRole("button", { name: "Show this mask" }));
+    // The row off: none.
+    await h!.user.click(within(rowOf("Radial mask, Feather 45")).getByRole("switch", { name: "Turn this mask off" }));
     await waitFor(() => expect(layer()).toBeNull());
-    await h!.user.click(within(rowOf("Radial mask, Feather 45")).getByRole("button", { name: "Show this mask" }));
+    await h!.user.click(within(rowOf("Radial mask, Feather 45")).getByRole("switch", { name: "Turn this mask on" }));
     await waitFor(() => expect(layer()).not.toBeNull());
     // An Object row has none (its points are N-18's).
     await h!.user.click(rowButton("Object mask, 2 points"));

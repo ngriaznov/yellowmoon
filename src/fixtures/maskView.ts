@@ -333,6 +333,15 @@ function maskContent(masks: MaskSettings, box: MaskRect, found: VisionFound): st
 }
 
 /**
+ * The masks a mask view draws (`docs/23` §5.8): the node's own, or, for a row's view, that row alone as it enters the node's fold: on whatever its eye
+ * says, added whatever its mode, with its own Invert and Opacity, and no Invert of the node's. A row the node does not have is the node's own view.
+ */
+export function masksOfView(masks: MaskSettings, row: number | null | undefined): MaskSettings {
+  const item = row === null || row === undefined ? undefined : masks.items[row];
+  return item ? { invert: false, items: [{ ...item, enabled: true, mode: "add" }] } : masks;
+}
+
+/**
  * The SVG that draws a mask view over the picture at `box` (in the frame's pixels): `Overlay` tints the accent where the mask is 1,
  * `Mask only` paints the mask as grey over black. An empty string for no view.
  */

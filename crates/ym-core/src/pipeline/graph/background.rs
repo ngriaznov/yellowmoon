@@ -31,8 +31,8 @@ use super::{Job, lock};
 use crate::pipeline::RenderError;
 use crate::pipeline::color::uses_background;
 use crate::pipeline::geometry::oriented_to_sensor;
-use crate::settings::DevelopSettings;
 use crate::pipeline::raw::RawParamsKey;
+use crate::settings::DevelopSettings;
 
 /// The next key of a blur map: every map the core makes has one of its own, so a plane or a grade plan made from an
 /// older map (another photo, other raw parameters) is never taken for this one's.

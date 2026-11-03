@@ -150,7 +150,11 @@ fn gpu() -> Option<Arc<Gpu>> {
 
 fn view(style: Option<MaskStyle>, node: u32) -> ViewportState {
     let mut st = ViewportState::new(ViewportRect::cell(CELL, CELL, 1.0));
-    st.mask_view = style.map(|style| MaskView { node, style, row: None });
+    st.mask_view = style.map(|style| MaskView {
+        node,
+        style,
+        row: None,
+    });
     st
 }
 
@@ -692,7 +696,11 @@ fn a_magnified_view_takes_the_overlay_too() {
         for style in [MaskStyle::MaskOnly, MaskStyle::Overlay] {
             let mut st = ViewportState::new(ViewportRect::cell(CELL, CELL, 1.0));
             st.set_mode(ViewportMode::Percent { value: percent }, image);
-            st.mask_view = Some(MaskView { node: 1, style, row: None });
+            st.mask_view = Some(MaskView {
+                node: 1,
+                style,
+                row: None,
+            });
             let (a, b) = (fresh(&on_gpu, &src, &st), fresh(&cpu, &src, &st));
             let (worst, mean) = differ(&a, &b);
             eprintln!("{percent} %, {style:?}: device against CPU largest {worst}, mean {mean:.4}");
@@ -888,7 +896,10 @@ fn a_row_that_is_off_can_be_shown() {
     let oval = radial([0.5, 0.5], [0.3, 0.2], 0.3);
     let src = with(
         &d.source(),
-        main_with(vec![with_row(oval.clone(), json!({ "enabled": false }))], false),
+        main_with(
+            vec![with_row(oval.clone(), json!({ "enabled": false }))],
+            false,
+        ),
     );
     // The node's own view has no rows on: m is 1. The row's view is the row.
     let node_view = frame(&r, &src, &view(Some(MaskStyle::MaskOnly), 1));
@@ -933,7 +944,10 @@ fn the_frame_cache_keeps_the_rows_apart_and_overlay_tints_the_rows_mask() {
         frame(&r, &src, &row_view(MaskStyle::Overlay, 1, 1)),
     );
     assert_ne!(a.rgba, b.rgba);
-    assert_eq!(a.rgba, frame(&r, &src, &row_view(MaskStyle::Overlay, 1, 0)).rgba);
+    assert_eq!(
+        a.rgba,
+        frame(&r, &src, &row_view(MaskStyle::Overlay, 1, 0)).rgba
+    );
     // The overlay is the formula on the plain frame with the row's mask.
     let plain = frame(&r, &src, &view(None, 1));
     let only = frame(&r, &src, &row_view(MaskStyle::MaskOnly, 1, 0));

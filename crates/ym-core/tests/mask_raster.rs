@@ -595,7 +595,11 @@ fn the_mask_view_shows_the_brush_plane_on_the_cpu_and_on_the_device() {
     );
     let st = |style| {
         let mut st = ViewportState::new(ViewportRect::cell(300.0, 300.0, 1.0));
-        st.mask_view = Some(MaskView { node: 2, style, row: None });
+        st.mask_view = Some(MaskView {
+            node: 2,
+            style,
+            row: None,
+        });
         st
     };
     let only = st(MaskStyle::MaskOnly);

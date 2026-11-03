@@ -470,10 +470,10 @@ describe("the tool starts and ends", () => {
     await h!.user.click(within(tools()).getByRole("tab", { name: "Light" }));
     expect(layer()).not.toBeNull();
     await h!.user.click(within(tools()).getByRole("tab", { name: "Mask" }));
-    await h!.user.click(within(within(rowList()).getAllByRole("listitem")[1] as HTMLElement).getByRole("button", { name: "Show this mask" }));
+    await h!.user.click(within(within(rowList()).getAllByRole("listitem")[1] as HTMLElement).getByRole("switch", { name: "Turn this mask off" }));
     await waitFor(() => expect(layer()).toBeNull());
     expect(within(card("Brush")).getByText("This mask is off. Turn it on to draw.")).toBeInTheDocument();
-    await h!.user.click(within(within(rowList()).getAllByRole("listitem")[1] as HTMLElement).getByRole("button", { name: "Show this mask" }));
+    await h!.user.click(within(within(rowList()).getAllByRole("listitem")[1] as HTMLElement).getByRole("switch", { name: "Turn this mask on" }));
     await waitFor(() => expect(layer()).not.toBeNull());
   });
 

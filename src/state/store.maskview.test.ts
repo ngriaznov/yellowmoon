@@ -109,3 +109,74 @@ describe("the store's mask view", () => {
     await vi.waitFor(() => expect(api.viewport.maskView).toBeNull());
   });
 });
+
+describe("the store's mask row eye (docs/23 §5.8, §7.6)", () => {
+  it("shows one row of the node on show, in the View card's style, and writes no settings and no undo step", async () => {
+    const { api, store, sent } = await opened();
+    const updates = vi.spyOn(api, "updateSettings");
+    store.setMaskNode(2);
+    store.setMaskEye(1);
+    expect(store.getState().maskEye).toBe(1);
+    expect(views(sent)).toEqual([{ node: 2, style: "overlay", row: 1 }]);
+    store.setMaskView({ style: "mask_only" });
+    expect(views(sent).at(-1)).toEqual({ node: 2, style: "mask_only", row: 1 });
+    // Choosing a style with the eye on does not turn Show mask on.
+    expect(store.getState().maskView).toEqual({ on: false, style: "mask_only" });
+    expect(updates).not.toHaveBeenCalled();
+    expect(store.getState().canUndo).toBe(false);
+    await vi.waitFor(() => expect(api.viewport.maskView).toEqual({ node: 2, style: "mask_only", row: 1 }));
+  });
+
+  it("is one row at a time: another row's eye moves it, null turns it off, the same row again changes nothing", async () => {
+    const { store, sent } = await opened();
+    store.setMaskNode(2);
+    store.setMaskEye(0);
+    store.setMaskEye(0);
+    store.setMaskEye(3);
+    store.setMaskEye(null);
+    store.setMaskEye(null);
+    expect(views(sent)).toEqual([{ node: 2, style: "overlay", row: 0 }, { node: 2, style: "overlay", row: 3 }, null]);
+  });
+
+  it("is exclusive with Show mask: the eye turns it off, and turning it on (the toggle, M) turns the eye off", async () => {
+    const { store, sent } = await opened();
+    store.setMaskNode(2);
+    store.setMaskView({ on: true });
+    store.setMaskEye(1);
+    expect(store.getState().maskView.on).toBe(false);
+    expect(views(sent)).toEqual([{ node: 2, style: "overlay" }, { node: 2, style: "overlay", row: 1 }]);
+    store.toggleMaskView();
+    expect(store.getState().maskEye).toBeNull();
+    expect(store.getState().maskView.on).toBe(true);
+    expect(views(sent).at(-1)).toEqual({ node: 2, style: "overlay" });
+    // The style segment turns Show mask on, as it did, when no eye is on, and ends an eye that is on.
+    store.setMaskEye(0);
+    store.setMaskView({ on: true });
+    expect(store.getState().maskEye).toBeNull();
+  });
+
+  it("ends with the node: another node, none, a new photo, the Before view; and it cannot start without a node", async () => {
+    const { store, sent } = await opened();
+    store.setMaskEye(0);
+    expect(store.getState().maskEye).toBeNull();
+    expect(sent).not.toHaveBeenCalled();
+    store.setMaskNode(2);
+    store.setMaskEye(0);
+    store.setMaskNode(2);
+    expect(store.getState().maskEye).toBe(0);
+    store.setMaskNode(3);
+    expect(store.getState().maskEye).toBeNull();
+    store.setMaskEye(2);
+    store.setMaskNode(null);
+    expect(store.getState().maskEye).toBeNull();
+    store.setMaskNode(3);
+    store.setMaskEye(2);
+    await store.setCurrent(5);
+    expect(store.getState().maskEye).toBeNull();
+    store.setMaskNode(3);
+    store.setMaskEye(2);
+    await store.setBefore(true);
+    expect(store.getState().maskEye).toBeNull();
+    expect(views(sent).at(-1)).toBeNull();
+  });
+});

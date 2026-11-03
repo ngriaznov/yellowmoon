@@ -809,6 +809,8 @@ describe("viewport", () => {
   it("records the mask view of viewport_set_mode, takes it away with null or a new photo, and draws it only in the fallback frame", async () => {
     await api.viewportSetMode({ kind: "fit" }, { node: 1, style: "overlay" });
     expect(api.viewport.maskView).toEqual({ node: 1, style: "overlay" });
+    await api.viewportSetMode({ kind: "fit" }, { node: 1, style: "mask_only", row: 2 });
+    expect(api.viewport.maskView).toEqual({ node: 1, style: "mask_only", row: 2 });
     await api.viewportSetMode({ kind: "fit" }, null);
     expect(api.viewport.maskView).toBeNull();
     await api.viewportSetMode({ kind: "fit" }, { node: 1, style: "mask_only" });

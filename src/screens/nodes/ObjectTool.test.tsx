@@ -330,7 +330,7 @@ describe("Esc, Crop, a pick and Before", () => {
     await setup(/^Node 2, Mountain/);
     await h!.user.click(within(rowList()).getByRole("button", { name: /^Object mask, 1 point/ }));
     await waitFor(() => expect(layer()).not.toBeNull());
-    await h!.user.click(within(within(rowList()).getAllByRole("listitem")[0] as HTMLElement).getByRole("button", { name: "Show this mask" }));
+    await h!.user.click(within(within(rowList()).getAllByRole("listitem")[0] as HTMLElement).getByRole("switch", { name: "Turn this mask off" }));
     await waitFor(() => expect(layer()).toBeNull());
     expect(within(card("Object")).getByText("This mask is off. Turn it on to find an object.")).toBeInTheDocument();
   });

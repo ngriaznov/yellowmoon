@@ -164,7 +164,7 @@ export const ALREADY_OPEN_NOTICE = "These photos are already open.";
 
 /** Whether two mask views are the same one (a node and a style, or none). */
 function sameMaskView(a: MaskView | null, b: MaskView | null): boolean {
-  return a === b || (a !== null && b !== null && a.node === b.node && a.style === b.style);
+  return a === b || (a !== null && b !== null && a.node === b.node && a.style === b.style && (a.row ?? null) === (b.row ?? null));
 }
 
 /** What Photos says after files were added to the session: "Added 3 photos. 2 were already open." */
@@ -247,6 +247,11 @@ export interface AppState {
    * selected node changes ({@link Store.setMaskNode}).
    */
   maskView: MaskViewState;
+  /**
+   * The mask row whose eye is on (`docs/23` §5.8, §7.6): the index of a row of the node on show, or null. View state like {@link AppState.maskView}: not
+   * saved, not undone, not copied. At most one; it and Show mask are never on together; the style is the View card's.
+   */
+  maskEye: number | null;
   /** The mask view the core was last told to draw: what {@link AppState.maskView} comes to for the node on show (the browser build's fixture draws it). */
   maskShown: MaskView | null;
   /** "Apply to" on the Look card. */
@@ -384,6 +389,7 @@ export function initialState(): AppState {
     before: false,
     zoom: { kind: "fit" },
     maskView: { on: false, style: "overlay" },
+    maskEye: null,
     maskShown: null,
     applyScope: "this",
     collapsedLookLibraries: [],
@@ -1334,6 +1340,7 @@ export class AppStore {
       chromaScatter: null,
       warpPin: null,
       maskRow: null,
+      maskEye: null,
       brushTool: false,
       objectTool: false,
       objectPill: null,
@@ -1571,6 +1578,7 @@ export class AppStore {
       chromaScatter: null,
       warpPin: null,
       maskRow: null,
+      maskEye: null,
       brushTool: false,
       objectTool: false,
       objectPill: null,
@@ -1973,7 +1981,9 @@ export class AppStore {
 
   async setBefore(before: boolean): Promise<void> {
     if (before === this.state.before) return;
-    this.set({ before });
+    // The Before view has no mask (`docs/23` §5.8): a row's eye ends there.
+    this.set(before && this.state.maskEye !== null ? { before, maskEye: null } : { before });
+    if (before) this.syncMaskView();
     try {
       await this.api.setBefore(before);
     } catch (error) {
@@ -1992,15 +2002,37 @@ export class AppStore {
    */
   setMaskView(change: Partial<MaskViewState>): void {
     const next = { ...this.state.maskView, ...change };
+    const eye = this.state.maskEye;
+    // With a row's eye on the style is the eye's: choosing one changes how that row shows and leaves Show mask off.
+    if (eye !== null && change.on === undefined) {
+      if (next.style === this.state.maskView.style) return;
+      this.set({ maskView: next });
+      this.syncMaskView();
+      return;
+    }
     if (change.style !== undefined && change.on === undefined) next.on = true;
-    if (next.on === this.state.maskView.on && next.style === this.state.maskView.style) return;
-    this.set({ maskView: next });
+    if (next.on === this.state.maskView.on && next.style === this.state.maskView.style && eye === null) return;
+    // Show mask on ends the eye: one mask at a time.
+    this.set(next.on && eye !== null ? { maskView: next, maskEye: null } : { maskView: next });
     this.syncMaskView();
   }
 
-  /** M and the toolbar toggle: the view on or off, with the style it last had. */
+  /** M and the toolbar toggle: the view on or off, with the style it last had. With a row's eye on it turns the eye off and Show mask on. */
   toggleMaskView(): void {
-    this.setMaskView({ on: !this.state.maskView.on });
+    this.setMaskView({ on: this.state.maskEye !== null ? true : !this.state.maskView.on });
+  }
+
+  /**
+   * A mask row's eye (`docs/23` §5.8, §7.6): shows that row's own mask on the photo, in the style of the View card, or ends it (`null`). One row at a
+   * time: turning one on turns the others off, and Show mask off. It is view state, not settings: no patch, no undo step. Ignored while there is no
+   * corrector on show. It ends with the node (another node, the Input or the Output, the simple view, full screen, Crop, Export), with the photo, in the
+   * Before view, in a pick and on Esc; the page ends it when the node's rows change place.
+   */
+  setMaskEye(row: number | null): void {
+    if (row !== null && this.maskNode === null) return;
+    if (row === this.state.maskEye) return;
+    this.set(row === null ? { maskEye: null } : { maskEye: row, maskView: { ...this.state.maskView, on: false } });
+    this.syncMaskView();
   }
 
   /**
@@ -2009,6 +2041,8 @@ export class AppStore {
    * again when there is a node. The core is told whenever this, the view or the style changes, and again for a new photo.
    */
   setMaskNode(node: number | null): void {
+    // A row's eye is for one node: another node, or none, ends it.
+    if (node !== this.maskNode && this.state.maskEye !== null) this.set({ maskEye: null });
     this.maskNode = node;
     this.syncMaskView();
   }
@@ -2019,8 +2053,14 @@ export class AppStore {
    */
   private syncMaskView(): void {
     const { on, style } = this.state.maskView;
+    const eye = this.state.maskEye;
     const photo = this.currentId();
-    const wanted: MaskView | null = on && this.maskNode !== null && photo !== null ? { node: this.maskNode, style } : null;
+    const node = this.maskNode;
+    let wanted: MaskView | null = null;
+    if (node !== null && photo !== null) {
+      if (eye !== null) wanted = { node, style, row: eye };
+      else if (on) wanted = { node, style };
+    }
     if (!sameMaskView(this.state.maskShown, wanted)) this.set({ maskShown: wanted });
     const sent = this.maskSent;
     const has = sent === null ? undefined : sent.photo === photo ? sent.view : null;

@@ -890,7 +890,10 @@ span.ym-filmstrip__thumb {
   --ym-link: color-mix(in oklch, var(--ink) 42%, transparent);
   font-family: inherit;
 }
-.ym-flow .react-flow__node {
+/* One class more than xyflow's `.react-flow__node.draggable { cursor: grab }`, which has the specificity of a bare `.ym-flow .react-flow__node` and, in
+   the built app, its sheet loads after this one and wins (every card showed a grab hand; the dev server loads ours last). A card is picked up
+   by its body without a hand: the pointer stays an arrow, as in `design/nodes`. */
+.ym-flow .react-flow .react-flow__node {
   cursor: default;
 }
 /* xyflow's corner link ("React Flow") would open its page in the webview itself and be one more Tab stop; the library's licence (MIT) is in
@@ -1449,8 +1452,13 @@ span.ym-filmstrip__thumb {
   border-color: transparent;
   box-shadow: 0 0 0 2px var(--mask);
 }
+/* A row that is off is dimmed: its name and kind; its switch, Add | Subtract and tools stay as they are, so it can be turned on. */
 .ym-mask-row[data-off] .ym-mask-row__select {
   opacity: 0.55;
+}
+/* The on/off switch at the row's left, before the kind's icon: glasscn's small capsule (44 × 20 px). */
+.ym-mask-row__switch {
+  flex-shrink: 0;
 }
 .ym-mask-row__select {
   display: flex;
@@ -1532,8 +1540,9 @@ span.ym-filmstrip__thumb {
   box-shadow: none;
 }
 .ym-mask-row__tool[data-tool="eye"][aria-pressed="true"] {
-  background: transparent;
-  color: var(--ink);
+  background: color-mix(in oklch, var(--mask) 24%, transparent);
+  color: var(--mask);
+  box-shadow: inset 0 0 0 1px var(--mask);
 }
 .ym-mask-row__tool[data-tool="eye"][aria-pressed="false"] {
   color: var(--glass-label-secondary);

@@ -1900,11 +1900,17 @@ impl<'a> Job<'a> {
                     settings,
                     ..self.src.clone()
                 };
-                (view, self.grade_to_in(&src, target, true, PlanStop::Mask(view.node))?)
+                (
+                    view,
+                    self.grade_to_in(&src, target, true, PlanStop::Mask(view.node))?,
+                )
             }
             None => {
                 let view = MaskView { row: None, ..view };
-                (view, self.grade_to(target, true, PlanStop::Mask(view.node))?)
+                (
+                    view,
+                    self.grade_to(target, true, PlanStop::Mask(view.node))?,
+                )
             }
         };
         self.mask = Some((view, Some(plan)));

@@ -13,7 +13,7 @@ const MOCKUP = { mockCurrent: 3, mockPicked: "2,3,4" } as const;
 /** A Radial at the middle of the photo, as the screenshots have it on Main. */
 const RADIAL = { kind: "radial", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.5, 0.5], radii: [0.3, 0.2], angle_deg: 0, feather: 0.4 };
 
-type MaskView = { node: number; style: "overlay" | "mask_only" } | null;
+type MaskView = { node: number; style: "overlay" | "mask_only"; row?: number | null } | null;
 const maskView = (page: Page): Promise<MaskView> => page.evaluate(() => window.__yellowmoon!.mockApi.viewport.maskView as MaskView);
 const showMask = (page: Page) => page.getByRole("group", { name: "Graph tools" }).getByRole("button", { name: "Show mask" });
 const card = (page: Page, id: number | string) => page.locator(`[data-node-card="${id}"]`);
@@ -380,16 +380,16 @@ test.describe("the handles on the photo", () => {
     await expect.poll(async () => (await rowsOf(page, 4))[0]?.angle_deg).toBeCloseTo(90, 0);
   });
 
-  test("they are the selected row's, on whatever tab the panel shows, and hide with the eye, Crop and a pick", async ({ page }) => {
+  test("they are the selected row's, on whatever tab the panel shows, and hide with the row's switch, Crop and a pick", async ({ page }) => {
     await warmth(page);
     await addMask(page, "Radial");
     await page.getByRole("tab", { name: "Colour", exact: true }).click();
     await expect(layer(page)).toBeVisible();
     await expect(page.getByText("MASK · RADIAL")).toBeVisible();
     await page.getByRole("tab", { name: "Mask", exact: true }).click();
-    await page.getByRole("button", { name: "Show this mask" }).click();
+    await page.getByRole("switch", { name: "Turn this mask off" }).click();
     await expect(layer(page)).toHaveCount(0);
-    await page.getByRole("button", { name: "Show this mask" }).click();
+    await page.getByRole("switch", { name: "Turn this mask on" }).click();
     await expect(layer(page)).toBeVisible();
     await page.getByRole("button", { name: "Crop", exact: true }).click();
     await expect(layer(page)).toHaveCount(0);
@@ -421,7 +421,7 @@ test.describe("the handles on the photo", () => {
 });
 
 test.describe("the rows", () => {
-  test("Subtract, a row's Invert, the node's Invert and the eye each change the mask view, and each is a toggle of the row", async ({ page }) => {
+  test("Subtract, a row's Invert, the node's Invert and the switch each change the mask view, and each is a toggle of the row", async ({ page }) => {
     await warmth(page);
     await addMask(page, "Radial");
     await page.getByRole("radio", { name: "Mask only" }).click();
@@ -447,12 +447,83 @@ test.describe("the rows", () => {
     await expect.poll(() => picture(page)).toContain('filter="url(#mvinvert)"');
     await page.getByRole("region", { name: "Masks" }).getByRole("button", { name: "Invert", exact: true }).click();
     await expect.poll(async () => (await masksOf(page, 4))?.invert).toBe(false);
-    // The eye: a row that is off counts as absent, so the node's mask is the whole photo.
-    await row.getByRole("button", { name: "Show this mask" }).click();
+    // The switch: a row that is off counts as absent, so the node's mask is the whole photo.
+    await row.getByRole("switch", { name: "Turn this mask off" }).click();
     await expect.poll(async () => (await rowsOf(page, 4))[0]?.enabled).toBe(false);
     await expect.poll(() => picture(page)).not.toContain("radialGradient");
-    await row.getByRole("button", { name: "Show this mask" }).click();
+    await row.getByRole("switch", { name: "Turn this mask on" }).click();
     await expect.poll(() => picture(page)).toContain("radialGradient");
+  });
+
+  test("a row's eye shows that row's mask alone, one at a time; Show mask, M, Esc and the Before view end it; the eye writes nothing", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Radial");
+    await addMask(page, "Linear");
+    await page.getByRole("radio", { name: "Mask only" }).click();
+    await showMask(page).click();
+    expect(await maskView(page)).toBeNull();
+    const writes = await recordCalls(page, "updateSettings");
+    const eye = (i: number) => rowList(page).getByRole("listitem").nth(i).getByRole("button", { name: /^(Show|Hide) this mask$/ });
+    // Row 0, the Radial: its own gradient, in the style of the View card, and Show mask stays off.
+    await eye(0).click();
+    await expect(eye(0)).toHaveAttribute("aria-pressed", "true");
+    await expect(eye(0)).toHaveAccessibleName("Hide this mask");
+    expect(await maskView(page)).toEqual({ node: 4, style: "mask_only", row: 0 });
+    await expect(showMask(page)).toHaveAttribute("aria-pressed", "false");
+    await expect.poll(() => picture(page)).toContain("radialGradient");
+    expect(await picture(page)).not.toContain("linearGradient");
+    // Row 1: the first goes off, the picture is the Linear.
+    await eye(1).click();
+    expect(await maskView(page)).toEqual({ node: 4, style: "mask_only", row: 1 });
+    await expect(eye(0)).toHaveAttribute("aria-pressed", "false");
+    await expect.poll(() => picture(page)).toContain("linearGradient");
+    expect(await picture(page)).not.toContain("radialGradient");
+    // The style comes from the View card, and choosing one leaves the eye on.
+    await page.getByRole("radio", { name: "Overlay" }).click();
+    expect(await maskView(page)).toEqual({ node: 4, style: "overlay", row: 1 });
+    await expect(showMask(page)).toHaveAttribute("aria-pressed", "false");
+    // M turns Show mask on and the eye off.
+    await blur(page);
+    await page.keyboard.press("m");
+    await expect(eye(1)).toHaveAttribute("aria-pressed", "false");
+    await expect(showMask(page)).toHaveAttribute("aria-pressed", "true");
+    expect(await maskView(page)).toEqual({ node: 4, style: "overlay" });
+    // The eye turns Show mask off; Esc ends the eye.
+    await eye(0).click();
+    await expect(showMask(page)).toHaveAttribute("aria-pressed", "false");
+    await page.keyboard.press("Escape");
+    await expect(eye(0)).toHaveAttribute("aria-pressed", "false");
+    expect(await maskView(page)).toBeNull();
+    // The Before view ends it.
+    await eye(0).click();
+    await page.getByRole("button", { name: "Before", exact: true }).click();
+    await expect(eye(0)).toHaveAttribute("aria-pressed", "false");
+    await page.getByRole("button", { name: "Before", exact: true }).click();
+    expect(await maskView(page)).toBeNull();
+    // None of it wrote the settings.
+    expect(await writes()).toEqual([]);
+  });
+
+  test("the eye ends with the node, and shows a row that is off; the switch turns a row off, and Undo turns it back", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Radial");
+    const row = rowList(page).getByRole("listitem").first();
+    await row.getByRole("button", { name: "Show this mask" }).click();
+    expect(await maskView(page)).toEqual({ node: 4, style: "overlay", row: 0 });
+    // The switch: one patch, the row is dimmed, and its eye still shows it.
+    await row.getByRole("switch", { name: "Turn this mask off" }).click();
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.enabled).toBe(false);
+    await expect(row).toHaveAttribute("data-off", "true");
+    expect(await maskView(page)).toEqual({ node: 4, style: "overlay", row: 0 });
+    await blur(page);
+    await page.keyboard.press("Meta+z");
+    await expect.poll(async () => (await rowsOf(page, 4))[0]?.enabled).toBe(true);
+    await expect(row.getByRole("switch", { name: "Turn this mask off" })).toBeChecked();
+    // Another node ends the eye.
+    await card(page, 3).click();
+    await expect.poll(() => maskView(page)).toBeNull();
+    await card(page, 4).click();
+    await expect(row.getByRole("button", { name: "Show this mask" })).toHaveAttribute("aria-pressed", "false");
   });
 
   test("Delete takes out the selected row, and the context menu moves a row and deletes it", async ({ page }) => {
@@ -964,8 +1035,8 @@ test.describe("the Background mask", () => {
     expect(greys[1]).toBe(0);
     expect(greys[2]).toBeGreaterThan(100);
     expect(greys[2]).toBeLessThan(255);
-    // The eye off: the row is absent, so the node (with no row left) shows the whole photo.
-    await rowList(page).getByRole("button", { name: "Show this mask" }).click();
+    // The row off: it is absent, so the node (with no row left) shows the whole photo.
+    await rowList(page).getByRole("switch", { name: "Turn this mask off" }).click();
     await expect.poll(async () => await picture(page)).not.toContain("data-background-row");
   });
 

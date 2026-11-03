@@ -3,7 +3,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 import { Item } from "@/components/glass/item";
 import { Spinner } from "@/components/glass/spinner";
 import type { MaskItem, MaskMode } from "../../api/types";
-import { Button, Segmented } from "../../components";
+import { Button, Segmented, Switch } from "../../components";
 import type { SegmentedOption } from "../../components";
 import { FINDING, isFinding, isUnsupported, maskRowLabel, maskRowName, maskSubtitle, objectBusyText } from "../../state/maskRows";
 import type { ObjectBusy, VisionRows } from "../../state/maskRows";
@@ -29,8 +29,12 @@ export interface MaskRowsProps {
   rows: readonly MaskItem[];
   /** The selected row, or none. */
   selected: number | null;
+  /** The row whose eye is on (its mask is on the photo), or none. */
+  eye?: number | null;
+  /** The eye of a row, or null to turn it off: view state, no patch. */
+  onEye?: (index: number | null) => void;
   onSelect: (index: number) => void;
-  /** A change to a row: its mode, its Invert, its eye. */
+  /** A change to a row: its mode, its Invert, its on/off switch (`enabled`). */
   onEdit: (index: number, edit: { mode?: MaskMode; invert?: boolean; enabled?: boolean }) => void;
   /** Takes the row out (Delete or Backspace on a selected row, or the context menu's Delete mask). */
   onRemove: (index: number) => void;
@@ -54,7 +58,7 @@ export interface MaskRowsProps {
  * ready…" while SAM's encoder runs and "Finding…" while a click is answered. A Subject or People row on a computer that cannot make it says "Subject
  * masks need a Mac that supports them" and one whose mask found nothing says "Nothing found".
  */
-export function MaskRows({ rows, selected, onSelect, onEdit, onRemove, onMove, finding = false, object, vision }: MaskRowsProps) {
+export function MaskRows({ rows, selected, eye = null, onEye, onSelect, onEdit, onRemove, onMove, finding = false, object, vision }: MaskRowsProps) {
   if (rows.length === 0) return null;
   return (
     <ul className="ym-mask-rows" aria-label="Masks of this node" data-mask-rows="">
@@ -68,6 +72,14 @@ export function MaskRows({ rows, selected, onSelect, onEdit, onRemove, onMove, f
               {/* glasscn's `Item`, as the Camera card's rows are. Choosing the row, or a control in it, selects it. */}
               <Item asChild size="sm" className="ym-mask-row" data-selected={selected === i || undefined} data-off={!row.enabled || undefined}>
                 <li data-index={i} onClick={() => onSelect(i)}>
+                  <Switch
+                    size="sm"
+                    className="ym-mask-row__switch"
+                    checked={row.enabled}
+                    label={row.enabled ? "Turn this mask off" : "Turn this mask on"}
+                    title={row.enabled ? "Turn this mask off" : "Turn this mask on"}
+                    onChange={(enabled) => onEdit(i, { enabled })}
+                  />
                   <button type="button" className="ym-mask-row__select" aria-label={maskRowLabel(row, finding, object, vision)} aria-pressed={selected === i}>
                     <span className="ym-mask-row__icon">{MASK_KIND_ICON[row.kind]}</span>
                     <span className="ym-mask-row__text" aria-hidden="true">
@@ -101,13 +113,13 @@ export function MaskRows({ rows, selected, onSelect, onEdit, onRemove, onMove, f
                     variant="quiet"
                     size="sm"
                     className="ym-mask-row__tool"
-                    pressed={row.enabled}
+                    pressed={eye === i}
                     data-tool="eye"
-                    aria-label="Show this mask"
-                    title="Show this mask"
-                    onClick={() => onEdit(i, { enabled: !row.enabled })}
+                    aria-label={eye === i ? "Hide this mask" : "Show this mask"}
+                    title={eye === i ? "Hide this mask" : "Show this mask"}
+                    onClick={() => onEye?.(eye === i ? null : i)}
                   >
-                    {row.enabled ? <EyeIcon aria-hidden="true" /> : <EyeOffIcon aria-hidden="true" />}
+                    {eye === i ? <EyeIcon aria-hidden="true" /> : <EyeOffIcon aria-hidden="true" />}
                   </Button>
                 </li>
               </Item>

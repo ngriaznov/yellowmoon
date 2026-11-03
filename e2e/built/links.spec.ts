@@ -51,9 +51,9 @@ test("the links stay drawn through many drags, pans and selections", async ({ pa
   await page.getByRole("button", { name: "Nodes", exact: true }).click();
   await expectLinks(page, "when the graph opens");
 
-  // Quick drops, one after the other with no pause: the case that lost the links (30 of them showed it within a minute).
-  for (let i = 0; i < 40; i++) {
-    await drag(page, 1 + (i % 4), i % 3 ? 10 : -10, i % 2 ? 30 : -30);
+  // Quick drops, one after the other with no pause: the case that lost the links (it showed in 1 run of 3 within 40 drops).
+  for (let i = 0; i < 60; i++) {
+    await drag(page, 1 + (i % 4), i < 30 ? 10 : -10, i % 2 ? 30 : -30);
     await expectLinks(page, `after drop ${i + 1}`);
   }
 
@@ -72,4 +72,22 @@ test("the links stay drawn through many drags, pans and selections", async ({ pa
   await expectLinks(page, "after a selection");
   await page.mouse.click(canvas.x + canvas.width / 2, canvas.y + canvas.height - 6);
   await expectLinks(page, "after a click on the canvas");
+});
+
+test("xyflow's stylesheet does not win over ours in the built app", async ({ page }) => {
+  await openApp(page, { mockCurrent: 3, mockPicked: "2,3,4" });
+  await configureMock(page, { initialSettings: { DSC04204: { nodes: FOUR_NODES.nodes, links: FOUR_NODES.links } } as never });
+  await openPhotos(page);
+  await page.getByRole("button", { name: "Nodes", exact: true }).click();
+  await expectLinks(page, "when the graph opens");
+  // A card is an arrow, not xyflow's grab hand (`.react-flow__node.draggable`).
+  await expect(page.locator(".react-flow__node").first()).toHaveCSS("cursor", "default");
+  // A picked link is thick and in the accent, not xyflow's grey #555.
+  const line = (await page.locator(".react-flow__edge-path").nth(1).boundingBox())!;
+  await page.mouse.click(line.x + line.width / 2, line.y + line.height / 2);
+  await page.mouse.move(5, 5);
+  const path = page.locator(".react-flow__edge:has(.ym-link[data-selected]) .react-flow__edge-path");
+  await expect(path).toHaveCSS("stroke-width", "3px");
+  const stroke = await path.evaluate((el) => getComputedStyle(el).stroke);
+  expect(stroke).not.toMatch(/85, 85, 85|#555/);
 });

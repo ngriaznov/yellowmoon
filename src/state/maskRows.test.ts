@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MaskItem } from "../api/types";
-import { FINDING, foundNothing, isFinding, isUnsupported, maskRowLabel, maskRowName, maskSubtitle, NOTHING_FOUND, UNSUPPORTED_ROW, widthSlider } from "./maskRows";
+import { FINDING, foundNothing, isFinding, isUnsupported, maskRowKinds, maskRowLabel, maskRowName, maskSubtitle, NOTHING_FOUND, UNSUPPORTED_ROW, widthSlider } from "./maskRows";
 import type { VisionRows } from "./maskRows";
 
 const base = { mode: "add", invert: false, enabled: true, opacity: 1 } as const;
@@ -118,5 +118,15 @@ describe("a Subject or People row (docs/23 §3.10 and §7.6, N-19)", () => {
     // The other kinds do not care.
     const linear: MaskItem = { ...base, kind: "linear", center: [0.5, 0.5], angle_deg: 0, feather: 0.2 };
     expect(isUnsupported(linear, cannot("subject", "people"))).toBe(false);
+  });
+});
+
+describe("the kinds an eye's index is checked against (docs/23 §7.6)", () => {
+  it("lists a node's row kinds in order, and nothing for no node, the Input or the Output", () => {
+    expect(maskRowKinds(null, 1)).toBe("");
+    const settings = { nodes: { items: [{ id: "input", kind: "input" }, { id: 2, kind: "corrector", masks: { invert: false, items: [{ ...base, kind: "linear" }, { ...base, kind: "brush" }] } }] } };
+    expect(maskRowKinds(settings as never, 2)).toBe("linear,brush");
+    expect(maskRowKinds(settings as never, null)).toBe("");
+    expect(maskRowKinds(settings as never, 9)).toBe("");
   });
 });

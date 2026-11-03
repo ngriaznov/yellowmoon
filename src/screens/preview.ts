@@ -7,7 +7,7 @@
 import type { MaskKind, MaskView, PhotoSummary, ResolvedSettings } from "../api/types";
 import { developScene, flatScene, previewDataUrl } from "../fixtures/grade";
 import type { PreviewOptions } from "../fixtures/grade";
-import { maskViewSvg, turnMatrix, visionFoundIn } from "../fixtures/maskView";
+import { maskViewSvg, masksOfView, turnMatrix, visionFoundIn } from "../fixtures/maskView";
 import { nodeOf } from "../state/settingsGraph";
 import { SCENES, SVG_HEIGHT, SVG_WIDTH } from "../fixtures/scenes";
 import { photoName } from "../state/photo";
@@ -50,7 +50,7 @@ export function previewUrl(
   };
   const over: PreviewOptions["over"] =
     mask && node?.kind === "corrector"
-      ? (box) => maskViewSvg(mask.style, node.masks, box, { width: SVG_WIDTH, height: SVG_HEIGHT, matrix: turnMatrix(turn, SVG_WIDTH, SVG_HEIGHT) }, found)
+      ? (box) => maskViewSvg(mask.style, masksOfView(node.masks, mask.row), box, { width: SVG_WIDTH, height: SVG_HEIGHT, matrix: turnMatrix(turn, SVG_WIDTH, SVG_HEIGHT) }, found)
       : undefined;
   const geometry: PreviewOptions = rs
     ? { orientation: rs.values.input.orientation, angle_deg: rs.values.input.crop?.angle_deg ?? 0, crop: rs.values.input.crop?.rect ?? null, over }

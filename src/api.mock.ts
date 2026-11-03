@@ -132,7 +132,7 @@ import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
 import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cropMath";
 import { copiedPatch, pastedOnto, refusalOfPatch, validateGraph } from "./fixtures/graph";
-import { hasBackgroundRow, hasObjectRow, maskViewSvg, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
+import { hasBackgroundRow, hasObjectRow, maskViewSvg, masksOfView, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
 import { diffSettings } from "./state/history";
 import { cardStates, linkInto } from "./state/graphOps";
 import {
@@ -1667,7 +1667,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       subject: scene.subject && options.maskKinds.includes("subject") && (ready?.has("subject") ?? false),
       people: scene.people && options.maskKinds.includes("people") && (ready?.has("people") ?? false),
     };
-    return maskViewSvg(view.style, node.masks, { x: fit.x * width, y: fit.y * height, width: fit.width * width, height: fit.height * height }, frame, found);
+    return maskViewSvg(view.style, masksOfView(node.masks, view.row), { x: fit.x * width, y: fit.y * height, width: fit.width * width, height: fit.height * height }, frame, found);
   }
 
   /** The picture of the cell the fallback viewport would send: the developed scene letterboxed on paper, as many pixels as the cell has. */

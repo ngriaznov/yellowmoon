@@ -81,6 +81,7 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
   const inverted = corrector?.masks.invert ?? false;
   const stored = useAppState((s) => s.maskRow);
   const kinds = useAppState((s) => s.maskKinds);
+  const eye = useAppState((s) => s.maskEye);
   const finding = useAppState((s) => s.viewportBusy.busy && s.viewportBusy.finding);
   // SAM's encoder is getting the photo ready, or a click is being answered (`docs/23` §7.6): the Object rows say so.
   const preparing = useAppState((s) => s.objectPreparing.includes(rs.photo_id));
@@ -121,6 +122,7 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
     if (rows[index]?.kind === "object") store.setObjectTool(true);
   };
   const remove = (index: number): void => {
+    store.setMaskEye(null);
     send(withoutMask(rows, index));
     store.selectMaskRow(selectionAfterRemove(index, rows.length));
     onPickRange(false);
@@ -128,12 +130,14 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
   const move = (index: number, by: -1 | 1): void => {
     const patch = movedMask(rows, index, by);
     if (!patch) return;
+    store.setMaskEye(null);
     send(patch);
     if (selected === index) store.selectMaskRow(index + by);
     else if (selected === index + by) store.selectMaskRow(index);
   };
   const edit = (index: number, change: { mode?: MaskMode; invert?: boolean; enabled?: boolean }): void => send(editRow(index, change));
   const reset = (): void => {
+    store.setMaskEye(null);
     send({ items: [], invert: false });
     store.selectMaskRow(null);
     onPickRange(false);
@@ -168,7 +172,7 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
             </>
           }
         >
-          <MaskRows rows={rows} selected={selected} onSelect={select} onEdit={edit} onRemove={remove} onMove={move} finding={finding} object={objectBusy} vision={vision} />
+          <MaskRows rows={rows} selected={selected} eye={eye} onEye={(index) => store.setMaskEye(index)} onSelect={select} onEdit={edit} onRemove={remove} onMove={move} finding={finding} object={objectBusy} vision={vision} />
           <RowNote>{MASKS_ADD_UP}</RowNote>
         </Card>
       </div>

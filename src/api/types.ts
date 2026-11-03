@@ -1197,6 +1197,11 @@ export interface MaskView {
   /** The corrector whose mask is shown. */
   node: number;
   style: MaskStyle;
+  /**
+   * The row of that corrector whose own mask is shown instead of the corrector's (its place in the list, rows that are off included): the row
+   * as it enters the node's fold, with its own Invert and Opacity (`docs/23` §5.8). Left out, or `null`, for the corrector's mask.
+   */
+  row?: number | null;
 }
 
 /**

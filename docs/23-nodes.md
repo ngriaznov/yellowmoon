@@ -259,7 +259,7 @@ The crop and the turn are the Input's framing: they are data of the Input, and t
 | `kind` | `object`, `subject`, `people`, `background`, `linear`, `radial`, `brush`, `color_range`, `brightness_range` | none |
 | `mode` | `"add"` or `"subtract"` | `"add"` |
 | `invert` | bool, this mask alone | false |
-| `enabled` | bool; off (the eye) counts as absent | true |
+| `enabled` | bool; off (the row's switch) counts as absent | true |
 | `opacity` | 0 to 1 | 1 |
 
 and, by kind (sizes are fractions of the photo's long edge; points are in the photo frame, section 3.6):
@@ -426,7 +426,7 @@ The formulas are in `docs/algorithms/06` section 3. In words:
 4. **Ranges** (Keys) combine among themselves the same way into `K`.
 5. **The node's mask** is `m = R · K` (a range keeps only its part of what the regions gave; a node with only ranges uses the range alone). With no regions `R = 1`; with no ranges `K = 1`; with nothing at all `m = 1`, the whole photo.
 6. The node's Invert gives `m = 1 − m`.
-7. A switched-off row (the eye) counts as absent.
+7. A switched-off row (the row's switch) counts as absent.
 
 A row that selects nothing (an Object row with no point, a Subject row on a Mac that cannot make one) is present with `a = 0`, so a node whose only mask is empty changes nothing.
 
@@ -523,6 +523,14 @@ The core renders it: the photo is a native layer under a transparent page, and t
 - **Mask only** shows `m` as grey: the code value after C13 is `m`.
 
 The mask view belongs to the node view and to a corrector. While the Input or the Output is selected, Show mask is off (`aria-disabled`, tooltip "The input and the output have no mask.") and the frame is the photo; the view's on or off and its style are kept, and they apply again when a corrector is selected. A corrector without mask rows or a key input shows its `m` of 1: the whole photo tinted, or white. Leaving the node view (or opening Crop or Export) ends the mask view in the core; coming back restores it as it was (lead's decision 2026-11-02: the spec was silent).
+
+**One row's mask (the row's eye; the owner, 2026-11-03).** Each mask row has an **eye** that shows that one row's mask on the photo, in the style the View card has (Overlay or Mask only). Show mask and the eye ask the core the same question with one more word: `mask_view` is `{ node, style, row }`, and a `row` (its place in the node's list, rows that are off included) shows the row, not the node's `m`. The row is shown **as it enters the node's fold**: its source (the shape, the range on the node's input, or the raster plane), then, for a raster row, its Grow, Feather and Refine edges, then **its own Invert**, then **its Opacity**; that is the row's `a` of `docs/algorithms/06`. The node's Invert, the other rows, the key input and the row's Add or Subtract are **not** applied: a Subtract row shows the mask it takes away, as a positive mask. A row that is off can still be shown (it is the row's mask, not the node's). A `row` the node does not have is the node's own view; a node it does not have is the photo, as before.
+
+- **The core.** The plan is the same plan, compiled to the node's `m`, over the photo as if the node had that one row alone, on, added and with its own Invert and Opacity, no Invert of its own and no key link (`color::only_row`); so the CPU, the device, the raster planes (only that row's are made), Overlay and Mask only, the frame cache (the key names the row) and the bands all work as they do for the node's view, and nothing else of the photo, an export or a thumbnail changes.
+- **View state, not settings.** The eye writes no patch and makes no undo step; it is not copied, pasted, saved or exported. The store keeps it as `maskEye` (a row index of the node on show, or none).
+- **One at a time, and not with Show mask.** Turning a row's eye on turns the others off, and turns Show mask off; turning Show mask on (the toolbar's toggle or M) turns the eye off. Choosing a style on the View card while an eye is on changes how that row shows, and leaves Show mask off; with no eye on, choosing a style turns Show mask on, as before.
+- **What ends it.** Selecting another node, the Input or the Output, leaving the node view (the simple view, full screen), opening Crop or Export, another photo, the Before view, starting a pick (Pick white, Pick colour), **Esc** (after a pick, the Brush tool and the Object tool, which Esc ends first), and a change of the node's list of rows (a row added, removed or moved, Reset, an undo or a paste that changes the kinds in order). A change to a row's fields does not end it. (Show mask keeps its choice across nodes and photos; the eye is for one node, so it does not.)
+- **The row's switch.** The eye used to be the row's on/off. That is now a small **on/off switch** (glasscn's `Switch`, size small) at the row's left, before the kind's icon; section 7.6.
 
 The mask view is a view: it is not in an export, the Before view, a thumbnail or the pixel readout. It is made on the device with the colour pass when the renderer's stages allow, and on the CPU otherwise, with the same gates as a view (one 10-bit code). **Shape handles and SAM points are drawn by the page over the photo,** like the crop frame, in the cell's CSS pixels (`viewport_map_points`).
 
@@ -700,7 +708,7 @@ Three cards fit without scrolling at 1440 × 900 with **two mask rows** (the hea
 
 Only the kinds that `mask_kinds` lists are shown. Subject and People are **hidden**, not greyed out, where this Mac does not support them (section 3.10). Adding a row selects it and starts its tool.
 
-**A row.** An icon for the kind, the name in bold (Object, Radial, …) with its subtitle under it, a segmented **Add | Subtract**, an **Invert** icon toggle (this mask alone; accessible name "Invert this mask"; pressed in the mask accent), and an **eye** toggle (the row is used or absent; "Show this mask"). The selected row has a 2 px ring in the mask accent. The row's accessible name is the kind, "mask" and the subtitle ("Object mask, 2 points", "Radial mask, Feather 45"). Removing a row: select it and press Delete or Backspace, or right-click for **Move up · Move down · Delete mask**.
+**A row.** An icon for the kind, the name in bold (Object, Radial, …) with its subtitle under it, a segmented **Add | Subtract**, an **Invert** icon toggle (this mask alone; accessible name "Invert this mask"; pressed in the mask accent), and an **eye** toggle that shows this row's mask on the photo (section 5.8: "Show this mask", and "Hide this mask" while it is on; pressed in the mask accent; one row at a time; view state, no patch). At the row's **left**, before the kind's icon, a small **on/off switch** (glasscn's `Switch`, `sm`; "Turn this mask off" while the row is on and "Turn this mask on" while it is off, as the label and the tooltip): it writes the row's `enabled` (one patch, one undo step), and a row that is off is dimmed and counts as absent. The selected row has a 2 px ring in the mask accent. The row's accessible name is the kind, "mask" and the subtitle ("Object mask, 2 points", "Radial mask, Feather 45"). Removing a row: select it and press Delete or Backspace, or right-click for **Move up · Move down · Delete mask**.
 
 | Kind | Subtitle |
 |---|---|
@@ -738,7 +746,7 @@ Sliders are the standard slider; Refine edges and Opacity show percent, the othe
 - *Radial:* the outline, the inner (feather) ring, a centre handle, handles for the two radii and a rotate handle.
 - *Brush:* a cursor circle at the brush size; a stroke is drawn on the photo while the pointer is down and sent when it is released (one undo step). **A stroke is stored simplified:** the page drops the points nearer than 1/8 of the brush size to the line between their neighbours, so a document stays small (the sanity bound of 100,000 is for files).
 - *Colour range:* with Pick colour on, a click samples the chroma of the node's input (`sample_chroma`) and sets the centre; Esc ends the pick.
-- The handles are those of the **selected row of the selected node**, in the node view, whatever tab the panel shows (mockup 09 draws a Linear's handles over the Colour tab); a row that is off (its eye) shows none (lead's decision 2026-11-02: the spec was silent).
+- The handles are those of the **selected row of the selected node**, in the node view, whatever tab the panel shows (mockup 09 draws a Linear's handles over the Colour tab); a row that is off (its switch) shows none (lead's decision 2026-11-02: the spec was silent).
 - Handles hide while Crop or a pick shows. **Esc** ends a pick or a mask tool first, as now.
 
 ### 7.7 Keys
@@ -792,7 +800,7 @@ Pick white **moves into the Colour tab**, as part of this feature (task N-06, be
 | `viewport_map_points(points, from)` | Maps points between the photo frame and the cell, for handles and outlines. `from` is `"photo"` (points `[x, y]` in the photo frame, answered as CSS pixels from the cell's corner, which may lie outside the cell) or `"cell"` (CSS pixels, answered as photo-frame fractions, `null` for a point on the paper). The webview never converts itself: the straightening, the turn, the crop and the lens's bend are the core's |
 | `mask_find(photo_id, node, mask, prompt)` | Runs SAM for an Object row (`mask` is the row's index in the node's `masks.items`). `prompt` is `{ kind: "point", x, y, positive }` or `{ kind: "box", x0, y0, x1, y1 }` in the photo frame. Answers **found** with the row's new `points` and `box` (and the decoder's `took_ms`) or **nothing found**. **Only a found answer changes settings**: the page sends it as one row patch, one undo step. It waits for the encoder if it is still running. The core caches the mask it found, so the render that follows does not run the decoder again |
 | `mask_kinds()` | The kinds of mask this machine can make now (`MaskKind[]`), in the menu's order: Object when the SAM weights are there; Subject and People each where the Vision probe said yes; Background, the shapes and the ranges always. The Add mask menu lists exactly these |
-| `viewport_set_mode(mode, mask_view)` | Gains a second argument, `mask_view`: `{ node, style }` with `style` `"overlay"` or `"mask_only"`, or `null` for no mask view (section 5.8) |
+| `viewport_set_mode(mode, mask_view)` | Gains a second argument, `mask_view`: `{ node, style, row }` with `style` `"overlay"` or `"mask_only"` and `row` left out or `null` for the node's mask, or the place of one of its rows for that row's own mask (the row's eye, section 5.8); or `null` for no mask view |
 | `histogram(photo_id, at)`, `chroma_scatter(photo_id, at)`, `sample_chroma(x, y, at, tap)` | Gain `at`: a node's id, `"input"` or a number (left out: Main, 1). The Light and Curve tabs and the Colour warp and Colour range read the signal at the selected node (section 7.5). `sample_chroma` also takes `tap`, `"warp_input"` (left out) or `"node_input"`: the Colour warp's Pick colour reads the input of the node's warp (after its trim and grade, where its pins act), a Colour range's the picture the node reads (before them, where the range selects, section 4.2). Both are chroma in the axes `e1`, `e2` of C9 |
 
 **Events:** `vision_state { photo_id, nothing_found: MaskKind[] }` (N-19): the core's worker for the Subject and People masks of a photo has ended its work, and `nothing_found` lists the kinds whose newest mask for the photo found nothing (their rows say "Nothing found"). While the worker runs the viewport is `viewport_busy { busy: true, finding: true }` whatever the rounds say (the round that asked for the masks ends at once). `node_thumbnails_ready { photo_id, thumbnails: [{ node, url }] }` (only the thumbnails that changed; PNGs of about 160 px on the `ym-frame` scheme, the address of a picture, never its bytes). The error scope `mask` carries the plain sentences of this file ("This copy of Yellowmoon has no Object model. Reinstall the app.", the Subject sentence of section 3.10).

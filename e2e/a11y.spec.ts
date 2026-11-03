@@ -705,6 +705,7 @@ test.describe("the node panel", () => {
     expect(snapshot).toContain('- radiogroup "Radial mask, add or subtract"');
     expect(snapshot.match(/- button "Invert this mask"/g)).toHaveLength(2);
     expect(snapshot.match(/- button "Show this mask"/g)).toHaveLength(2);
+    expect(snapshot.match(/- switch "Turn this mask off"/g)).toHaveLength(2);
     expect(snapshot).toMatch(/- button "Add mask"/);
     expect(snapshot).toMatch(/- button "Invert"/);
     await expect(page.getByRole("button", { name: "Add mask" })).not.toHaveAttribute("aria-disabled", "true");

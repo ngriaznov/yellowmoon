@@ -9,6 +9,7 @@ import { cellLabel, summarise } from "../export/run";
 import type { FilmstripPhoto, PanelKind, TabId } from "../components";
 import { perfCount } from "../perf";
 import { useAppState, useCurrentPhoto, useCurrentSettings, useStore } from "../state/context";
+import { maskRowKinds } from "../state/maskRows";
 import { lookLabeller, looksInDisplayOrder } from "../state/looks";
 import { folderSubline, isReady, photoName } from "../state/photo";
 import { MASK_KIND_NAME } from "../state/graphOps";
@@ -288,6 +289,13 @@ export function Photos() {
   }, [store, maskNode, photoOnScreen]);
   // Leaving the screen ends it.
   useEffect(() => () => store.setMaskNode(null), [store]);
+  // A mask row's eye is an index into the node's rows (`docs/23` §7.6): it ends when the rows come to be other rows (one is added, removed or moved,
+  // an undo, a paste), and when a pick starts. The node, the photo, the Before view and Esc end it in the store and below.
+  const maskRowsKey = `${photoOnScreen}:${maskNode}:${maskRowKinds(graphSettings, maskNode)}`;
+  useEffect(() => store.setMaskEye(null), [store, maskRowsKey]);
+  useEffect(() => {
+    if (picking !== null) store.setMaskEye(null);
+  }, [store, picking]);
   // The photos whose graph has more than the simple view shows (a glyph on their thumbnails): a Map that is the same while the answer is.
   const hiddenNodes = useAppState((s) => hiddenByPhoto(s.settings));
   const graph = useNodeGraph({ store, settings: graphSettings, photoId: photo?.id ?? null, selected: onNode, select: setSelectedNode });
@@ -626,6 +634,7 @@ export function Photos() {
           if (picking) setPicking(null);
           else if (brush && !before) store.setBrushTool(false);
           else if (object && objectAsked && !before) store.setObjectTool(false);
+          else if (store.getState().maskEye !== null) store.setMaskEye(null);
           else if (crop.session) crop.session.cancel();
           else if (panel === "export") store.closeExport();
           else if (view === "nodes" && graph.escape()) return true;

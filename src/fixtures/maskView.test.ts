@@ -1,7 +1,7 @@
 /** The mask view on the mock's flat scene (`maskView.ts`): the shapes the page tests and the reference screenshots rely on. */
 import { describe, expect, it } from "vitest";
 import type { MaskItem, MaskSettings } from "../api/types";
-import { backgroundValue, BLUR_RAMP_MIN, hasBackgroundRow, MASK_ACCENT, maskViewSvg, MOCK_BLUR, OVERLAY_WEIGHT } from "./maskView";
+import { backgroundValue, BLUR_RAMP_MIN, hasBackgroundRow, MASK_ACCENT, maskViewSvg, masksOfView, MOCK_BLUR, OVERLAY_WEIGHT } from "./maskView";
 import type { DevelopSettings } from "../api/types";
 
 const BOX = { x: 100, y: 50, width: 600, height: 400 };
@@ -208,5 +208,27 @@ describe("a Background row on the flat scene (docs/algorithms/06 §5.4)", () => 
     expect(hasBackgroundRow(graph([background()]))).toBe(true);
     expect(hasBackgroundRow(graph([background({ enabled: false })]))).toBe(false);
     expect(hasBackgroundRow(graph([radial()]))).toBe(false);
+  });
+});
+
+describe("masksOfView (a row's own mask, docs/23 §5.8)", () => {
+  const items = [radial({ center: [0.2, 0.5] }), radial({ center: [0.8, 0.5], mode: "subtract", invert: true, enabled: false, opacity: 0.5 })];
+
+  it("is the node's own masks without a row, and for a row the node does not have", () => {
+    const own = masks(items, true);
+    expect(masksOfView(own, null)).toBe(own);
+    expect(masksOfView(own, undefined)).toBe(own);
+    expect(masksOfView(own, 2)).toBe(own);
+  });
+
+  it("is that row alone: added, on, with its own Invert and Opacity, and no Invert of the node's", () => {
+    const only = masksOfView(masks(items, true), 1);
+    expect(only.invert).toBe(false);
+    expect(only.items).toEqual([{ ...items[1], mode: "add", enabled: true }]);
+    // Drawn, it is the row's gradient over black: a Subtract row reads as the positive mask it takes away, and the other row is not there.
+    const svg = maskViewSvg("mask_only", only, BOX);
+    expect(svg).toContain("translate(580 250)");
+    expect(svg).not.toContain("translate(220 250)");
+    expect(svg).toMatch(/<mask [^>]*><rect [^>]*fill="#000"\/>/);
   });
 });
