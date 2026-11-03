@@ -163,9 +163,9 @@ html:has(.ym-screen[data-screen="photos"]) #root {
     display: none;
   }
 }
-/* Before, Crop and Nodes have an icon and a label. Where the header has no room for the labels (the same breakpoint), the label is
-   visually hidden and stays the button's accessible name; the tooltip says it too. */
-@media (max-width: 1273px) {
+/* Before, Crop and Nodes have an icon and a label. Where the header has no room for the labels (below 1360 px: at 1300 px the header
+   overflowed by 32 px with them), the label is visually hidden and stays the button's accessible name; the tooltip says it too. */
+@media (max-width: 1359px) {
   .ym-header-label {
     position: absolute;
     width: 1px;
