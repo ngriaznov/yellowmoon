@@ -884,6 +884,9 @@ span.ym-filmstrip__thumb {
 }
 .ym-flow .react-flow {
   --xy-background-color: transparent;
+  /* xyflow's own rule for a selected or focused link (.react-flow__edge.selected .react-flow__edge-path) has the specificity of ours below, and in
+     the built app its sheet loads after this one and wins (a grey #555 link); its variable carries our yellow whichever rule wins. */
+  --xy-edge-stroke-selected: var(--tab-look);
   --ym-link: color-mix(in oklch, var(--ink) 42%, transparent);
   font-family: inherit;
 }
