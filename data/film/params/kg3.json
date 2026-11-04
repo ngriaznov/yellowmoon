@@ -1,0 +1,10 @@
+{
+  "_header": {
+    "licence": "Apache-2.0",
+    "kind": "analytic stand-in, NOT Schott's curve",
+    "note": "The enlarger lamp sits behind Schott KG3 heat-absorbing glass. Schott's transmittance table could not be reached on 2026-11-04: their product page (https://www.schott.com/shop/advanced-optics/en/Matt-Filter-Plates/KG3/c/glass-KG3) and data sheet (https://media.schott.com/api/public/content/9c99b2068750426ebaf1e459548a5bef) were found by search, but the spectral curve is a chart and was not fetched as numbers. So this file is a smooth low-pass edge near 700 nm: transmittance = peak * 0.5 * erfc((l - edge_nm) / width_nm). The peak 0.86 is chosen so that the visible transmittance is near the 78 to 87 percent that Schott's page lists for 1 to 3 mm of KG3; the edge and width are chosen, not read. To replace it, put the table in 'points' as [wavelength_nm, transmittance] pairs from Schott's data sheet and add its URL and date here; the engine uses 'points' when there are at least two."
+  },
+  "peak": 0.86,
+  "edge_nm": 700.0,
+  "width_nm": 70.0
+}

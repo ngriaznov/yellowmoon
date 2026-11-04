@@ -11295,6 +11295,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ym-film"
+version = "0.2.0"
+dependencies = [
+ "png 0.18.1",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.21",
+ "ym-color",
+]
+
+[[package]]
 name = "ym-gpu"
 version = "0.2.0"
 dependencies = [

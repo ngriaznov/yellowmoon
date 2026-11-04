@@ -1,0 +1,14 @@
+{
+  "_header": {
+    "licence": "Apache-2.0",
+    "note": "Yellowmoon's own numbers, chosen by hand. Nothing here is taken from another program or fitted to a profile.",
+    "model": "Inter-layer inhibition by DIR couplers (Hunt, The Reproduction of Colour, 6th ed., chapter 15). Each layer's effective log10 exposure is lowered in proportion to the dye densities formed in the layers: log E'_i = log E_i - amount * sum_j M[i][j] * D_j. Row i is the layer that is inhibited, column j the layer whose density inhibits it. Order: red-sensitive (cyan dye), green-sensitive (magenta dye), blue-sensitive (yellow dye).",
+    "choice": "A moderate default: the inhibition between different layers (0.03 to 0.14) is larger than a layer's own (0.06), which is what makes saturated colours richer without changing a neutral ramp. The film's curves in the engine are the profile's curves without couplers, found so that a neutral ramp still reproduces the profile's density_curves for these numbers. The largest slope of any curve in the data is 0.9 density per decade, so 1 - sum_j M[i][j] * slope_j stays above 0.7 and the curves can always be undone.",
+    "amount": "FilmParams.coupler_amount scales the matrix. 1 is the profile's curves on a neutral ramp; 0 turns the couplers off and leaves the steeper curves without couplers."
+  },
+  "matrix": [
+    [0.06, 0.12, 0.03],
+    [0.14, 0.06, 0.10],
+    [0.04, 0.14, 0.06]
+  ]
+}

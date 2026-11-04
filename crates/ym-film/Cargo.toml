@@ -1,0 +1,23 @@
+[package]
+name = "ym-film"
+description = "The Film node's engine: a colour film, enlarger, print and scan simulation (CPU reference, f64)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+ym-color.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# SHA-256 of the profile files against SHA256SUMS (MIT OR Apache-2.0, already in the workspace).
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# The sanity sheet is a PNG (MIT OR Apache-2.0, already in the workspace). Tests only.
+png.workspace = true

@@ -1,0 +1,12 @@
+{
+  "_header": {
+    "licence": "Apache-2.0",
+    "note": "Yellowmoon's own numbers, chosen by hand from the general shape of dichroic colour-printing filters; not fitted to a vendor's curve and not taken from another program.",
+    "lamp": "A tungsten-halogen enlarger lamp is close to a 3400 K black body (Planck's law), behind a heat-absorbing glass (kg3.json).",
+    "filters": "Yellow, magenta and cyan dichroic filters in Kodak colour-compensation (CC) units: 100 units = density 1.0 at the filter's densest. The shape is a smooth error-function edge: density(l) = 0.5 erfc((l - edge) / width) for a falling edge, 0.5 erfc((edge - l) / width) for a rising one, and the product of a rising and a falling edge for the magenta band. yellow stops blue (dense below edge_nm), magenta stops green (dense between edge_nm and edge2_nm), cyan stops red (dense above edge_nm). The density is scaled by the CC value / 100."
+  },
+  "lamp_k": 3400.0,
+  "yellow":  { "edge_nm": 500.0, "width_nm": 16.0 },
+  "magenta": { "edge_nm": 490.0, "width_nm": 12.0, "edge2_nm": 595.0, "width2_nm": 14.0 },
+  "cyan":    { "edge_nm": 595.0, "width_nm": 20.0 }
+}
