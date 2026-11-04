@@ -441,3 +441,74 @@ mod fallback {
         }
     }
 }
+
+/// Times of the device route on lavapipe (`cargo test --release -p ym-core --test render_film_device -- --ignored
+/// --nocapture timings`), to set against the CPU's in `render_film.rs`: the first tables (baked and uploaded), a view of
+/// the fit size, and a full-resolution export of 24 MP, with a Film node at its defaults (halation and grain on).
+#[test]
+#[ignore = "a measurement, not a check"]
+fn timings() {
+    use std::time::Instant;
+    let Some(gpu) = gpu(false) else { return };
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(6000, 4000, white, Layout::Uniform, 0.12)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let src = d.source();
+    let r = renderer(Some(gpu), 1024);
+    let st = ViewportState::new(ViewportRect::cell(1600.0, 1066.0, 1.0));
+    let timed = |s: &PhotoSource| {
+        let t = Instant::now();
+        let f = r
+            .viewport_frame(
+                s,
+                &st,
+                &FrameOptions {
+                    no_cache: true,
+                    ..FrameOptions::default()
+                },
+                &CancelToken::new(),
+            )
+            .expect("frame");
+        (t.elapsed().as_secs_f64(), f.width, f.height, f.report.device)
+    };
+    let (plain, w, h, _) = timed(&src);
+    let (plain2, ..) = timed(&src);
+    let filmed = src.with_settings(one_film(json!({})));
+    let (cold, _, _, dev) = timed(&filmed);
+    let (warm_same, ..) = timed(&filmed);
+    let (seed, ..) = timed(&src.with_settings(one_film(json!({ "grain": { "seed": 1 } }))));
+    let (exposure, ..) = timed(&src.with_settings(one_film(json!({ "film": { "exposure_ev": 0.5 } }))));
+    say(&format!(
+        "view {w}x{h} ({dev:?}): without the node {plain:.2} s ({plain2:.2} s again), first with it (tables baked and uploaded) {cold:.2} s, again {warm_same:.2} s, new seed {seed:.2} s, new exposure {exposure:.2} s"
+    ));
+    for (what, settings) in [("with a Film node", one_film(json!({}))), ("without it", one_film(json!({ "bypass": true })))] {
+        let home = tempfile::tempdir().expect("dir");
+        let ctx = ExportContext::new(renderer(gpu_of(&r), 1024)).with_home(Some(home.path().to_path_buf()));
+        let mut photo = ExportPhoto::from_session(&d.session, d.id).expect("export photo");
+        photo.source = photo.source.with_settings(settings);
+        let opts = ExportOptions {
+            format: FormatKind::Png,
+            bit_depth: BitDepth::Eight,
+            destination: Some(home.path().to_path_buf()),
+            if_exists: IfExists::Replace,
+            ..ExportOptions::default()
+        };
+        let t = Instant::now();
+        let report = export_photo(&ctx, &photo, &ExportParams::new(opts), &ExportControl::none())
+            .expect("export");
+        say(&format!(
+            "export {}x{} ({:.1} MP) {what}: {:.1} s ({:?})",
+            report.rendered.0,
+            report.rendered.1,
+            f64::from(report.rendered.0) * f64::from(report.rendered.1) / 1e6,
+            t.elapsed().as_secs_f64(),
+            report.device
+        ));
+    }
+}
+
+fn gpu_of(r: &Renderer) -> Option<Arc<Gpu>> {
+    r.options().gpu.clone()
+}

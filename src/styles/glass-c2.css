@@ -2202,7 +2202,7 @@ button[data-slot="button"][data-variant="link"]:not([aria-disabled="true"]) {
 /* The note on the Output's Look tab while a Film node is live (design/film/10). */
 .ym-film-note {
   align-items: flex-start;
-  margin: 14px 0 0;
+  margin: 14px 12px 0;
   font-size: 13px;
   line-height: 1.45;
 }
