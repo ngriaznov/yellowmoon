@@ -799,6 +799,10 @@ test.describe("the graph: markers, cards, ports and links", () => {
       const opacity = await card(page, id).evaluate((el) => getComputedStyle(el).opacity);
       expect(Number(opacity)).toBeCloseTo(0.45, 2);
     }
+    // The drag ended with the pointer over the graph: a tooltip that the cards' new places opened under it closes when the pointer leaves
+    // (Radix keeps one open for its grace area while the pointer is on its way to it), so wait for none before the card is hovered.
+    await page.mouse.move(5, 5);
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
     await card(page, 3).hover();
     await expect(page.getByRole("tooltip")).toHaveText("Not connected to the output.");
     // Linking it again brings it back.
