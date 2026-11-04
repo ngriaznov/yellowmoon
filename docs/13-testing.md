@@ -134,7 +134,7 @@ One object per input file, written when that file finishes, in completion order:
   "settings": { "nodes": { "items": [ "…" ], "links": [ "…" ] } },
   "device": "cpu",
   "timings_ms": { "decode": 310, "develop": 2410, "encode": 180 },
-  "pipeline_version": "0.9.0",
+  "pipeline_version": "0.10.0",
   "error": null
 }
 ```
