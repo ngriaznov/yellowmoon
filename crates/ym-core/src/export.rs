@@ -100,6 +100,9 @@ pub use ym_export::naming::default_destination;
 /// template gives (see [`WrittenFiles`]).
 pub const SAME_NAME_IN_JOB_NOTE: &str = "Another photo of this export has the same file name, so this one was saved with a number instead of replacing it.";
 
+/// The note of a DNG made from a photo with a Film node (`docs/24` section 4.5): the node is in the pixels.
+pub const DNG_FILM_NOTE: &str = "The Film node is baked into this DNG, halation and grain included. Another app cannot take it out.";
+
 /// The note on a JPEG whose `ym:Settings` was left out because the XMP packet would not fit a JPEG
 /// segment (`docs/23` section 3.9): a graph with a lot of brush work. TIFF, PNG and DNG have no
 /// such limit.
@@ -1235,6 +1238,11 @@ fn export_photo_unguarded(
         },
         exif,
     };
+
+    // A DNG carries the Film node in its pixels (the passes run at the DNG's own grid).
+    if is_dng && crate::pipeline::color::has_film(&photo.source.settings) {
+        notes.push(DNG_FILM_NOTE.to_owned());
+    }
 
     // A JPEG's XMP is one segment of 65,502 bytes: the pinned settings of a graph with a lot of brush
     // work may not fit. The file then says nothing of them, and the report says so.

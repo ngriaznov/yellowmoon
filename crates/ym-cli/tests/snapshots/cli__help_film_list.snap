@@ -1,0 +1,13 @@
+---
+source: crates/ym-cli/tests/cli.rs
+expression: "help(&[\"film\", \"list\"])"
+---
+List the film stocks and papers with their ids, kinds, ISO numbers and matching papers
+
+Usage: ym film list [OPTIONS]
+
+Options:
+      --json     Print the list as JSON
+  -q, --quiet    Print only errors on stderr
+  -v, --verbose  Print what is happening on stderr: stages, timings and notes
+  -h, --help     Print help

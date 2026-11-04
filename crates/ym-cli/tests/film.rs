@@ -29,14 +29,25 @@ fn the_list_shows_the_stocks_and_papers_with_their_matching_papers() {
             .collect()
     };
     let portra = row("kodak_portra_400");
-    assert!(portra.contains(&"400") && portra.contains(&"kodak_portra_endura"), "{portra:?}");
+    assert!(
+        portra.contains(&"400") && portra.contains(&"kodak_portra_endura"),
+        "{portra:?}"
+    );
     // A slide has no print; a cine negative's print film is hidden, so a still paper stands in.
     assert_eq!(row("fujifilm_velvia_100").last(), Some(&"-"));
-    assert_eq!(row("kodak_vision3_500t").last(), Some(&"kodak_portra_endura"));
-    assert!(!l.iter().any(|r| r.contains("kodak_2383") || r.contains("kodak_2393")));
+    assert_eq!(
+        row("kodak_vision3_500t").last(),
+        Some(&"kodak_portra_endura")
+    );
+    assert!(
+        !l.iter()
+            .any(|r| r.contains("kodak_2383") || r.contains("kodak_2393"))
+    );
     assert_eq!(
         l.last().map(String::as_str),
-        Some("Modelled on published data. Film profiles by Andrea Volpato (spektrafilm), CC BY-SA 4.0. Not affiliated with Kodak or Fujifilm.")
+        Some(
+            "Modelled on published data. Film profiles by Andrea Volpato (spektrafilm), CC BY-SA 4.0. Not affiliated with Kodak or Fujifilm."
+        )
     );
 }
 
@@ -51,10 +62,20 @@ fn the_json_is_the_catalogue() {
     let stocks = v["stocks"].as_array().unwrap();
     let papers = v["papers"].as_array().unwrap();
     assert_eq!((stocks.len(), papers.len()), (20, 6));
-    let mut keys: Vec<&str> = stocks[0].as_object().unwrap().keys().map(String::as_str).collect();
+    let mut keys: Vec<&str> = stocks[0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
     keys.sort_unstable();
     assert_eq!(keys, ["id", "iso", "kind", "maker", "name", "paper"]);
-    let mut keys: Vec<&str> = papers[0].as_object().unwrap().keys().map(String::as_str).collect();
+    let mut keys: Vec<&str> = papers[0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
     keys.sort_unstable();
     assert_eq!(keys, ["id", "maker", "name"]);
     for s in stocks {
@@ -83,11 +104,7 @@ fn a_missing_film_folder_is_a_usage_error_with_a_plain_sentence() {
     let sb = Sandbox::new();
     let empty = sb.root().join("empty-data");
     std::fs::create_dir_all(&empty).unwrap();
-    let out = sb
-        .ym_data(&empty)
-        .args(["film", "list"])
-        .assert()
-        .code(2);
+    let out = sb.ym_data(&empty).args(["film", "list"]).assert().code(2);
     let err = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
     assert!(err.contains("Yellowmoon's film data is missing."), "{err}");
 }
@@ -101,10 +118,16 @@ fn doctor_says_how_many_profiles_and_which_data_version() {
         .lines()
         .find(|l| l.starts_with("Film "))
         .unwrap_or_else(|| panic!("a Film row in {text}"));
-    assert!(row.trim_end().ends_with("28 profiles, data version 0.3.2"), "{row}");
+    assert!(
+        row.trim_end().ends_with("28 profiles, data version 0.3.2"),
+        "{row}"
+    );
     let out = sb.ym().args(["doctor", "--json"]).assert().success();
     let v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
-    assert_eq!(v["film"], json!({ "profiles": 28, "data_version": "0.3.2", "problem": null }));
+    assert_eq!(
+        v["film"],
+        json!({ "profiles": 28, "data_version": "0.3.2", "problem": null })
+    );
 }
 
 #[test]
@@ -123,7 +146,14 @@ fn a_settings_file_with_a_film_node_renders_and_an_unknown_stock_is_a_usage_erro
     std::fs::write(&file, doc("fujifilm_velvia_100").to_string()).unwrap();
     let out = sb
         .ym()
-        .args(["render", "--json", "--cpu", "--auto-provider", "yellowmoon", "--out"])
+        .args([
+            "render",
+            "--json",
+            "--cpu",
+            "--auto-provider",
+            "yellowmoon",
+            "--out",
+        ])
         .arg(sb.root().join("out"))
         .arg("--settings")
         .arg(&file)
@@ -133,7 +163,10 @@ fn a_settings_file_with_a_film_node_renders_and_an_unknown_stock_is_a_usage_erro
     let objects = json_lines(&out.get_output().stdout);
     assert_eq!(objects.len(), 1);
     let items = objects[0]["settings"]["nodes"]["items"].as_array().unwrap();
-    let film = items.iter().find(|i| i["kind"] == json!("film")).expect("the film node");
+    let film = items
+        .iter()
+        .find(|i| i["kind"] == json!("film"))
+        .expect("the film node");
     assert_eq!(film["film"]["stock"], json!("fujifilm_velvia_100"));
     // An unknown stock stops before any photo is opened, with the sentence of docs/24.
     std::fs::write(&file, doc("kodak_nope").to_string()).unwrap();

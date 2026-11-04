@@ -1613,6 +1613,27 @@ mod tests {
     }
 
     #[test]
+    fn the_newton_settings_are_generated_from_ym_color_not_typed() {
+        use ym_color::display::cine;
+        let src = shader_source(StorageMode::F32, KernelId::FilmColourOut);
+        for (n, v) in cine::kernel_refine_scalars() {
+            let want = if n.ends_with("ITERATIONS") {
+                format!("const FX_{n}: u32 = {}u;", v as u32)
+            } else {
+                format!("const FX_{n}: f32 = {:?};", v as f32)
+            };
+            assert!(src.contains(&want), "missing {want}");
+        }
+        // The shader's own text uses the names, not the numbers.
+        let ret = include_str!("../shaders/film_return.wgsl");
+        for typed in ["0.7", "0.25", "0.001", "1.0e-13", "10.0, 0.1"] {
+            assert!(!ret.contains(typed), "{typed} is typed in film_return.wgsl");
+        }
+        assert_eq!(cine::STEP_LIMIT, 0.7);
+        assert_eq!(cine::STEP_SCALES, [1.0, 0.5, 0.25]);
+    }
+
+    #[test]
     fn a_taps_buffer_sums_to_one() {
         for sigma in [0.3, 1.0, 3.9, 12.0] {
             let w = gauss_taps(sigma);

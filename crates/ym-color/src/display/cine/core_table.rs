@@ -397,7 +397,11 @@ fn refine(mut q: Vec3, goal: Vec3, steps: usize) -> Vec3 {
         if let Some(ji) = inverse3(&j) {
             let step = [0, 1, 2].map(|i| -(ji[i][0] * r[0] + ji[i][1] * r[1] + ji[i][2] * r[2]));
             let size = step[0].abs().max(step[1].abs()).max(step[2].abs());
-            let scale = if size > STEP_LIMIT { STEP_LIMIT / size } else { 1.0 };
+            let scale = if size > STEP_LIMIT {
+                STEP_LIMIT / size
+            } else {
+                1.0
+            };
             for s in STEP_SCALES.map(|f| f * scale) {
                 let qn = [0, 1, 2].map(|i| q[i] + s * step[i]);
                 if let Some((rn, cn)) = better(qn) {
@@ -426,7 +430,8 @@ fn refine(mut q: Vec3, goal: Vec3, steps: usize) -> Vec3 {
                 }
                 let Some(inv) = inverse3(&m) else { continue };
                 let step = [0, 1, 2].map(|i| {
-                    (-(inv[i][0] * g[0] + inv[i][1] * g[1] + inv[i][2] * g[2])).clamp(-STEP_LIMIT, STEP_LIMIT)
+                    (-(inv[i][0] * g[0] + inv[i][1] * g[1] + inv[i][2] * g[2]))
+                        .clamp(-STEP_LIMIT, STEP_LIMIT)
                 });
                 let qn = [0, 1, 2].map(|i| q[i] + step[i]);
                 if let Some((rn, cn)) = better(qn) {

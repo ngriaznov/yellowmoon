@@ -567,22 +567,52 @@ fn the_film_documentation_the_help_and_ym_film_list_agree() {
     // The columns of the text, and the keys of the JSON, are the documented ones.
     let text = sb.ym().args(["film", "list"]).assert().success();
     let text = String::from_utf8_lossy(&text.get_output().stdout).into_owned();
-    let header: Vec<&str> = text.lines().next().unwrap().split("  ").filter(|c| !c.trim().is_empty()).map(str::trim).collect();
+    let header: Vec<&str> = text
+        .lines()
+        .next()
+        .unwrap()
+        .split("  ")
+        .filter(|c| !c.trim().is_empty())
+        .map(str::trim)
+        .collect();
     assert_eq!(header, ["ID", "NAME", "KIND", "ISO", "MATCHING PAPER"]);
-    assert!(film.contains("the columns ID, NAME, KIND"), "docs/10 names the columns");
+    assert!(
+        film.contains("the columns ID, NAME, KIND"),
+        "docs/10 names the columns"
+    );
     for column in &header {
         assert!(film.contains(column), "{column}");
     }
     let json = sb.ym().args(["film", "list", "--json"]).assert().success();
     let v: Value = serde_json::from_slice(&json.get_output().stdout).expect("JSON");
     for key in v.as_object().unwrap().keys() {
-        assert!(film.contains(&format!("\"{key}\"")), "docs/10 names the key {key}");
+        assert!(
+            film.contains(&format!("\"{key}\"")),
+            "docs/10 names the key {key}"
+        );
     }
-    for key in v["stocks"][0].as_object().unwrap().keys().chain(v["papers"][0].as_object().unwrap().keys()) {
-        assert!(film.contains(&format!("\"{key}\"")), "docs/10 names the key {key}");
+    for key in v["stocks"][0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .chain(v["papers"][0].as_object().unwrap().keys())
+    {
+        assert!(
+            film.contains(&format!("\"{key}\"")),
+            "docs/10 names the key {key}"
+        );
     }
-    for kind in v["stocks"].as_array().unwrap().iter().map(|s| s["kind"].as_str().unwrap()).collect::<BTreeSet<_>>() {
-        assert!(film.contains(&format!("`{kind}`")), "docs/10 names the kind {kind}");
+    for kind in v["stocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["kind"].as_str().unwrap())
+        .collect::<BTreeSet<_>>()
+    {
+        assert!(
+            film.contains(&format!("`{kind}`")),
+            "docs/10 names the kind {kind}"
+        );
     }
 
     // The credit line and the refusals are word for word the code's.
@@ -598,7 +628,13 @@ fn the_film_documentation_the_help_and_ym_film_list_agree() {
     // The Film row of `ym doctor`.
     let doctor = sb.ym().arg("doctor").assert().success();
     let doctor = String::from_utf8_lossy(&doctor.get_output().stdout).into_owned();
-    let row = doctor.lines().find(|l| l.starts_with("Film ")).expect("a Film row");
+    let row = doctor
+        .lines()
+        .find(|l| l.starts_with("Film "))
+        .expect("a Film row");
     let value = row.trim_start_matches("Film").trim();
-    assert!(film.contains(&format!("`{value}`")), "docs/10 shows the row `{value}`");
+    assert!(
+        film.contains(&format!("`{value}`")),
+        "docs/10 shows the row `{value}`"
+    );
 }

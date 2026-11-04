@@ -821,6 +821,8 @@ pub enum NodeKind {
     Output,
     /// A corrector.
     Corrector,
+    /// A Film node (`docs/24`).
+    Film,
 }
 
 /// A port of a node: a picture or a key (a mask).
@@ -1159,6 +1161,82 @@ pub struct CorrectorNode {
     pub masks: MaskSettings,
 }
 
+/// A Film node's `film`: the negative.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct FilmStockSettings {
+    /// The profile id of a camera film (`ym film list`).
+    pub stock: String,
+    /// Stops, -4 to 4; 0 is the Input's exposure.
+    pub exposure_ev: Num,
+}
+
+/// The enlarger's filtration, as shifts from neutral in Kodak CC units, -50 to 50.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct PrintLights {
+    /// Cyan.
+    pub c: Num,
+    /// Magenta.
+    pub m: Num,
+    /// Yellow.
+    pub y: Num,
+}
+
+/// A Film node's `print`: the enlarger and the paper.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct PrintSettings {
+    /// The paper's profile id; null is the stock's matching paper (a slide takes none).
+    pub paper: Option<String>,
+    /// Stops, -3 to 3; 0 keeps the app's brightness.
+    pub exposure_ev: Num,
+    /// The enlarger's filtration.
+    pub lights: PrintLights,
+}
+
+/// A Film node's `halation`, in percent (100 is the stock's own).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct HalationSettings {
+    /// 0 to 300.
+    pub amount: Num,
+    /// 50 to 200.
+    pub size: Num,
+}
+
+/// A Film node's `grain`, in percent (100 is the stock's own).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct GrainSettings {
+    /// 0 to 200.
+    pub amount: Num,
+    /// 50 to 200.
+    pub size: Num,
+    /// Not in the interface; it keeps the grain a function of the settings.
+    pub seed: u32,
+}
+
+/// A Film node: a colour negative, an enlarger, a print and a scan (`docs/24` section 4.5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct FilmNode {
+    /// 2 to 2147483647 (correctors and Film nodes share the numbers).
+    pub id: NodeId,
+    /// The card's name, 1 to 32 characters.
+    pub name: String,
+    /// A bypassed node passes its picture through.
+    pub bypass: bool,
+    /// The card's place on the canvas, in grid units.
+    pub pos: [Num; 2],
+    /// The negative.
+    pub film: FilmStockSettings,
+    /// The enlarger and the paper.
+    pub print: PrintSettings,
+    /// Halation.
+    pub halation: HalationSettings,
+    /// Grain.
+    pub grain: GrainSettings,
+    /// How much of the film look is applied, 0 to 100 percent.
+    pub strength: Num,
+    /// The masks.
+    pub masks: MaskSettings,
+}
+
 /// A node of the graph, told by its `kind`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1169,6 +1247,8 @@ pub enum NodeItem {
     Output(OutputNode),
     /// A corrector.
     Corrector(CorrectorNode),
+    /// A Film node.
+    Film(FilmNode),
 }
 
 /// The graph of a photo: its nodes and the links between them (`docs/23` section 3.1).
@@ -1379,6 +1459,76 @@ pub struct CurvesPatch {
     pub blue: Option<Vec<[Num; 2]>>,
 }
 
+/// A Film node's `film` to change. Serialising leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct FilmStockPatch {
+    /// New stock (a profile id).
+    #[serde(default)]
+    pub stock: Option<String>,
+    /// New film exposure in stops.
+    #[serde(default)]
+    pub exposure_ev: Option<Num>,
+}
+
+/// A Film node's enlarger lights to change. Serialising leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct LightsPatch {
+    /// New cyan.
+    #[serde(default)]
+    pub c: Option<Num>,
+    /// New magenta.
+    #[serde(default)]
+    pub m: Option<Num>,
+    /// New yellow.
+    #[serde(default)]
+    pub y: Option<Num>,
+}
+
+/// A Film node's `print` to change. Serialising leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct PrintPatch {
+    /// New paper; `null` is the stock's matching paper.
+    #[serde(default, deserialize_with = "double_option")]
+    #[specta(type = Option<String>)]
+    pub paper: Option<Option<String>>,
+    /// New print exposure in stops.
+    #[serde(default)]
+    pub exposure_ev: Option<Num>,
+    /// Lights to change.
+    #[serde(default)]
+    pub lights: Option<LightsPatch>,
+}
+
+/// A Film node's `halation` to change. Serialising leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct HalationPatch {
+    /// New amount, percent.
+    #[serde(default)]
+    pub amount: Option<Num>,
+    /// New size, percent.
+    #[serde(default)]
+    pub size: Option<Num>,
+}
+
+/// A Film node's `grain` to change. Serialising leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct GrainPatch {
+    /// New amount, percent.
+    #[serde(default)]
+    pub amount: Option<Num>,
+    /// New size, percent.
+    #[serde(default)]
+    pub size: Option<Num>,
+    /// New seed.
+    #[serde(default)]
+    pub seed: Option<u32>,
+}
+
 /// A corrector's trims to change. Serialising leaves absent fields out (see [`NodePatch`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
@@ -1430,6 +1580,26 @@ pub struct GradePatch {
     #[serde(default)]
     pub curve: Option<CurvesPatch>,
 }
+
+/// Serialises a patch struct as one entry per field that is present.
+macro_rules! serialize_present {
+    ($ty:ty, $($field:ident),* $(,)?) => {
+        impl Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(None)?;
+                $(if let Some(v) = &self.$field { map.serialize_entry(stringify!($field), v)?; })*
+                map.end()
+            }
+        }
+    };
+}
+
+serialize_present!(FilmStockPatch, stock, exposure_ev);
+serialize_present!(LightsPatch, c, m, y);
+serialize_present!(PrintPatch, paper, exposure_ev, lights);
+serialize_present!(HalationPatch, amount, size);
+serialize_present!(GrainPatch, amount, size, seed);
 
 impl Serialize for TrimPatch {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -1672,6 +1842,21 @@ pub struct NodePatch {
     /// Masks to change.
     #[serde(default)]
     pub masks: Option<MasksPatch>,
+    /// A Film node's negative to change.
+    #[serde(default)]
+    pub film: Option<FilmStockPatch>,
+    /// A Film node's enlarger and paper to change.
+    #[serde(default)]
+    pub print: Option<PrintPatch>,
+    /// A Film node's halation to change.
+    #[serde(default)]
+    pub halation: Option<HalationPatch>,
+    /// A Film node's grain to change.
+    #[serde(default)]
+    pub grain: Option<GrainPatch>,
+    /// New Strength of a Film node, percent.
+    #[serde(default)]
+    pub strength: Option<Num>,
 }
 
 impl Serialize for NodePatch {
@@ -1706,6 +1891,11 @@ impl Serialize for NodePatch {
             trim,
             grade,
             masks,
+            film,
+            print,
+            halation,
+            grain,
+            strength,
         );
         map.end()
     }

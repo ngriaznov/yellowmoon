@@ -147,3 +147,57 @@ fn a_view_shows_the_film_node_and_stays_on_the_cpu() {
     assert_ne!(plain.rgba, filmed.rgba);
     assert_eq!(filmed.report.device, ym_core::pipeline::ComputeDevice::Cpu);
 }
+
+/// Times of the CPU path (`cargo test --release -p ym-core --test render_film -- --ignored --nocapture timings`):
+/// the first tables, a view of the fit size, and a full-resolution export of 24 MP, with a Film node at its
+/// defaults (halation and grain on).
+#[test]
+#[ignore = "a measurement, not a check"]
+fn timings() {
+    use std::time::Instant;
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(6000, 4000, white, Layout::Uniform, 0.12)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let src = d.source();
+    let r = renderer(1024, 0);
+    let st = ViewportState::new(ViewportRect::cell(1600.0, 1066.0, 1.0));
+    let frame = |s: &PhotoSource| {
+        let t = Instant::now();
+        let f = r
+            .viewport_frame(s, &st, &FrameOptions::default(), &CancelToken::new())
+            .expect("frame");
+        (t.elapsed().as_secs_f64(), f.width, f.height)
+    };
+    let (plain, w, h) = frame(&src);
+    let filmed = with(&src, graph(json!({})));
+    let (cold, ..) = frame(&filmed);
+    let (grain_only, ..) = frame(&with(&src, graph(json!({ "grain": { "seed": 1 } }))));
+    let (warm, ..) = frame(&with(
+        &src,
+        graph(json!({ "film": { "exposure_ev": 0.5 } })),
+    ));
+    eprintln!(
+        "view {w}x{h}: without the node {plain:.2} s, first with it (tables baked) {cold:.2} s, new seed {grain_only:.2} s, new exposure {warm:.2} s"
+    );
+    let t = Instant::now();
+    let a = srgb(&r, &filmed);
+    eprintln!(
+        "export {}x{} ({:.1} MP) with a Film node: {:.1} s",
+        a.width,
+        a.height,
+        (a.width * a.height) as f64 / 1e6,
+        t.elapsed().as_secs_f64()
+    );
+    let t = Instant::now();
+    let _ = srgb(&r, &src);
+    eprintln!("the same export without it: {:.1} s", t.elapsed().as_secs_f64());
+    let (built_chains, built_models) = ym_core::film::FilmEngine::shared(&data_root())
+        .map(|e| e.built())
+        .unwrap_or_default();
+    eprintln!(
+        "built: {built_chains} chains, {built_models} models, {:?}",
+        ym_core::film::FilmEngine::shared(&data_root()).map(|e| e.baker().built())
+    );
+}

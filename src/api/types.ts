@@ -355,7 +355,7 @@ export type Orientation = 0 | 90 | 180 | 270;
 export type NodeId = "input" | "output" | number;
 
 /** What a node is. */
-export type NodeKind = "input" | "output" | "corrector";
+export type NodeKind = "input" | "output" | "corrector" | "film";
 
 /** A port of a node: a picture (the LogC4 picture) or a key (a mask). */
 export type Port = "picture" | "key";
@@ -515,11 +515,72 @@ export interface CorrectorNode {
   masks: MaskSettings;
 }
 
+/** A Film node's negative (`docs/24` section 4.5). */
+export interface FilmStockSettings {
+  /** The profile id of a camera film (`ym film list`). */
+  stock: string;
+  /** Stops, -4 to 4; 0 is the Input's exposure. */
+  exposure_ev: number;
+}
+
+/** The enlarger's filtration, shifts from neutral in Kodak CC units, -50 to 50. */
+export interface PrintLights {
+  c: number;
+  m: number;
+  y: number;
+}
+
+/** A Film node's enlarger and paper. */
+export interface PrintSettings {
+  /** The paper's profile id; null is the stock's matching paper (a slide takes none). */
+  paper: string | null;
+  /** Stops, -3 to 3; 0 keeps the app's brightness. */
+  exposure_ev: number;
+  lights: PrintLights;
+}
+
+/** A Film node's halation, in percent (100 is the stock's own). */
+export interface HalationSettings {
+  /** 0 to 300. */
+  amount: number;
+  /** 50 to 200. */
+  size: number;
+}
+
+/** A Film node's grain, in percent (100 is the stock's own). */
+export interface GrainSettings {
+  /** 0 to 200. */
+  amount: number;
+  /** 50 to 200. */
+  size: number;
+  /** Not in the interface; it keeps the grain a function of the settings. */
+  seed: number;
+}
+
+/** A Film node: a colour negative, an enlarger, a print and a scan (`docs/24` section 4.5). */
+export interface FilmNode {
+  /** 2 to 2³¹ − 1; correctors and Film nodes share the numbers. */
+  id: NodeId;
+  /** The card's name, 1 to 32 characters. */
+  name: string;
+  /** A bypassed node passes its picture through. */
+  bypass: boolean;
+  pos: NodePos;
+  film: FilmStockSettings;
+  print: PrintSettings;
+  halation: HalationSettings;
+  grain: GrainSettings;
+  /** How much of the film look is applied, 0 to 100 percent. */
+  strength: number;
+  masks: MaskSettings;
+}
+
 /** A node of the graph, told by its `kind`. */
 export type NodeItem =
   | ({ kind: "input" } & InputNode)
   | ({ kind: "output" } & OutputNode)
-  | ({ kind: "corrector" } & CorrectorNode);
+  | ({ kind: "corrector" } & CorrectorNode)
+  | ({ kind: "film" } & FilmNode);
 
 /** The graph of a photo: its nodes, the Input first, the correctors by id, the Output last, and the links between them. */
 export interface NodesSettings {
@@ -625,6 +686,14 @@ export interface NodePatch {
   trim?: TrimPatch;
   grade?: GradePatch;
   masks?: MasksPatch;
+  /** A Film node's negative. */
+  film?: Partial<FilmStockSettings>;
+  /** A Film node's enlarger and paper; `paper: null` is the matching paper. */
+  print?: { paper?: string | null; exposure_ev?: number; lights?: Partial<PrintLights> };
+  halation?: Partial<HalationSettings>;
+  grain?: Partial<GrainSettings>;
+  /** A Film node's Strength, percent. */
+  strength?: number;
 }
 
 /**

@@ -63,6 +63,11 @@ expression: shape(&v)
     "table": "number"
   },
   "data_folder": "string",
+  "film": {
+    "data_version": "string",
+    "problem": "null",
+    "profiles": "number"
+  },
   "gpu": {
     "available": "bool",
     "reason": "string"

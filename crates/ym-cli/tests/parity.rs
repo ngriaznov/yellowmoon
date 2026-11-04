@@ -1188,15 +1188,30 @@ fn a_film_node_is_the_same_files_through_the_app_path_and_the_binary() {
     let from_cli = cli_export(
         &sb,
         &[&arw],
-        &["--format", "png", "--bits", "16", "--settings", file.to_str().expect("utf-8")],
+        &[
+            "--format",
+            "png",
+            "--bits",
+            "16",
+            "--settings",
+            file.to_str().expect("utf-8"),
+        ],
         &sb.root().join("cli-png"),
     );
     assert_same_files(&from_app, &from_cli, "a film node, png16");
     // The file says which film data made it, and a repeat export is the same file.
     let xmp = String::from_utf8_lossy(&bytes(&from_app[0])).into_owned();
-    assert!(xmp.contains("<ym:FilmData>kodak_portra_400 on kodak_portra_endura; profiles 0.3.2; engine "));
+    assert!(
+        xmp.contains(
+            "<ym:FilmData>kodak_portra_400 on kodak_portra_endura; profiles 0.3.2; engine "
+        )
+    );
     let again = app.export(options, &sb.root().join("app-png-again"));
-    assert_eq!(bytes(&again[0]), bytes(&from_app[0]), "a repeat export is the same file");
+    assert_eq!(
+        bytes(&again[0]),
+        bytes(&from_app[0]),
+        "a repeat export is the same file"
+    );
 }
 
 /// Whether this machine has SAM's weights (`data/models/sam2`, `tools/fetch/sam2.sh`): the Object tests need them and say so and pass without

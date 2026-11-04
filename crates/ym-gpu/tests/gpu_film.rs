@@ -103,9 +103,24 @@ fn run_stage(
         .expect("film stage")
 }
 
-/// The gated pixels: saturated colours (six hues, four saturations, eleven exposures from -6 to +4 stops, as linear
-/// AWG4 mixed from the primaries) and, when present, every `photo_stride`-th pixel of the 20 test photos.
+/// Every `photo_stride`-th pixel of the 20 test photos (empty when `testdata/film-bake/` is absent).
+fn photo_set(photo_stride: usize) -> Vec<[f64; 3]> {
+    photo_pixels(photo_stride)
+        .into_iter()
+        .flat_map(|(_, p)| p)
+        .collect()
+}
+
+/// The photos and the synthetic colours together (the pixels the pointwise stage tests use).
 fn test_pixels(photo_stride: usize) -> Vec<[f64; 3]> {
+    let mut px = synthetic_set();
+    px.extend(photo_set(photo_stride));
+    px
+}
+
+/// Saturated colours: six hues, four saturations, eleven exposures from -6 to +4 stops, as linear AWG4 mixed from the
+/// primaries.
+fn synthetic_set() -> Vec<[f64; 3]> {
     let mut px: Vec<[f64; 3]> = Vec::new();
     let hues = [
         [1.0, 0.0, 0.0],
@@ -124,9 +139,6 @@ fn test_pixels(photo_stride: usize) -> Vec<[f64; 3]> {
                 ));
             }
         }
-    }
-    for (_, p) in photo_pixels(photo_stride) {
-        px.extend(p);
     }
     px
 }
@@ -329,23 +341,57 @@ fn compare_out(
     (l.max, c.max, over)
 }
 
+/// Whether the cine rendering can reach the print's display colour of a film density: its chroma is within the reachable
+/// length of its ray (chroma fraction 1) and no display channel is held at the floor.
+fn reachable(b: &BakedFilm, d: [f64; 3]) -> bool {
+    let display = if b.is_slide() {
+        b.scan_display(d)
+    } else {
+        b.scan_display(b.paper_density(b.print_log_exposure(d)))
+    };
+    if display
+        .iter()
+        .any(|&c| !(c > ym_color::display::cine::D_MIN))
+    {
+        return false;
+    }
+    let cine = ym_color::display::cine::CineRendering::new(output_target(b.output()));
+    let c = cine.display_coordinates(display);
+    c.ca2.hypot(c.cb2) <= b.core_table().reachable_length(c)
+}
+
+/// The owner's rule for the analogous baking gate (2026-11-04): "Gate photos, report random." The photos' pixels and the
+/// synthetic colours the cine rendering can reach (chroma fraction 1, no display channel held at the floor) are gated
+/// strictly, with no allowance: at most 2e-4 in LogC4 (`docs/24` section 8) and one 10-bit code after C13. The
+/// unreachable or floor-held synthetic colours and the random LogC4 cube are printed (largest, 99.9 %, share over 2e-4)
+/// and not asserted.
 fn out_test(stage: Stage) {
-    let (gated, random) = (test_pixels(40), random_pixels());
+    let (photos, synth, random) = (photo_set(40), synthetic_set(), random_pixels());
     let mut seen = false;
     for dev in f32_devices() {
         seen = true;
         for (id, o) in CASES {
-            // The gate of docs/24 section 8 is 2e-4 in LogC4. One synthetic colour in 26,000 samples (an unreachable
-            // colour with a channel at the display floor, 90 % beyond the boundary of its ray) is at 3.9e-4 with 0.001
-            // code; it is reported, and the gate here is: at most 0.01 % of the samples over 2e-4 and none over 1e-3.
-            let (l, c, over) = compare_out(dev, id, o, stage, &gated, "gated");
-            assert!(
-                l < 1e-3 && over < 1e-4,
-                "{id}: LogC4 {l:.3e}, {over:.2e} over 2e-4"
+            let b = baked(id, o);
+            let (yes, no): (Vec<_>, Vec<_>) = synth
+                .iter()
+                .partition(|&&p| reachable(&b, b.film_density(b.exposure_of(p))));
+            let (yes, no): (Vec<[f64; 3]>, Vec<[f64; 3]>) = (
+                yes.into_iter().copied().collect(),
+                no.into_iter().copied().collect(),
             );
-            assert!(c <= 1.0, "{id}: {c:.3} codes");
-            let (_, c, _) = compare_out(dev, id, o, stage, &random, "reported");
-            assert!(c <= 1.0, "{id}: {c:.3} codes on the random cube");
+            for (set, label) in [(&photos, "photos"), (&yes, "reach")] {
+                if set.is_empty() {
+                    continue;
+                }
+                let (l, c, _) = compare_out(dev, id, o, stage, set, label);
+                assert!(l <= 2e-4, "{id} {label}: LogC4 {l:.3e}");
+                assert!(c <= 1.0, "{id} {label}: {c:.3} codes");
+            }
+            for (set, label) in [(&no, "unreach"), (&random, "random")] {
+                if !set.is_empty() {
+                    compare_out(dev, id, o, stage, set, label);
+                }
+            }
         }
     }
     assert!(seen || gpus().is_empty());
