@@ -8,6 +8,8 @@
 // CPU's order and kept by the first that lowers the residual (`found`); no loop count depends on the data.
 // Every constant is a `CINE_*` of the generated block or an `FX_*` of kernels/film.rs, written from the CPU side.
 
+const RT_DBG: u32 = 0u;
+
 fn fr_exp(x: f32) -> f32 {
     return exp(clamp(x, -80.0, 80.0));
 }
@@ -573,7 +575,21 @@ fn rt_main(gid: vec3<u32>) {
         let dp = vec3<f32>(pc_curve(0u, lp.x), pc_curve(1u, lp.y), pc_curve(2u, lp.z));
         display = rt_t3b(fu.h[1].y, t3b_lo, t3b_hi, fu.p[3].w, dp);
     }
-    let out = rt_return(display);
+    var out = rt_return(display);
+    if (RT_DBG == 1u) {
+        out = display;
+    }
+    if (RT_DBG == 2u) {
+        out = rt_display_side(display);
+    }
+    if (RT_DBG == 3u) {
+        let c = rt_display_side(display);
+        let st = rt_start(c);
+        out = st.q;
+        if (st.rho <= st.rho_max) {
+            out = rt_refine(st.q, vec3<f32>(log(max(c.x, 1.0e-37)), c.y, c.z), fu.op.w);
+        }
+    }
     for (var c = 0u; c < 3u; c++) {
         dst[fx_b(x, y, c)] = out[c];
     }

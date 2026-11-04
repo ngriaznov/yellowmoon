@@ -735,7 +735,18 @@ fn rec2020_worst_pixels() {
     let Some(gpu) = gpu(true) else { return };
     let d = photo();
     let film = json!({ "grain": { "amount": 0 }, "halation": { "amount": 0 } });
-    let settings = one_film(film);
+    let mut settings = one_film(film);
+    if std::env::var("YM_NOSHARP").is_ok() {
+        let mut doc = serde_json::to_value(&settings).expect("json");
+        if let Some(items) = doc["nodes"]["items"].as_array_mut() {
+            for n in items.iter_mut() {
+                if n["kind"] == "output" || n["id"] == "output" {
+                    n["output_sharpening"] = json!(0);
+                }
+            }
+        }
+        settings = settings_of(doc);
+    }
     let plain = d.source().settings.clone();
     let home = tempfile::tempdir().expect("dir");
     let sp = match std::env::var("YM_SPACE").as_deref() {
@@ -802,4 +813,118 @@ fn dng_dark_pixels() {
             &dev.rgb[3 * p..3 * p + 3], &cpu.rgb[3 * p..3 * p + 3], &plain.rgb[3 * p..3 * p + 3]
         ));
     }
+}
+
+#[test]
+#[ignore = "a diagnostic"]
+fn display_linear_vs_dng() {
+    let Some(gpu) = gpu(true) else { return };
+    let d = photo();
+    let film = json!({ "grain": { "amount": 0 }, "halation": { "amount": 0 } });
+    let src = d.source().with_settings(one_film(film));
+    let tgt = FullTarget::DisplayLinear(OutputTarget::Rec2020);
+    let run = |r: &Renderer, t: FullTarget| {
+        r.render_full(&src, &FullRequest { target: t }, &CancelToken::new()).expect("render")
+    };
+    let dev = run(&renderer(Some(Arc::clone(&gpu)), 256), tgt);
+    let cpu = run(&renderer(None, 256), tgt);
+    let dng_dev = run(&renderer(Some(gpu), 256), FullTarget::DngLinearAwg4);
+    let dng_cpu = run(&renderer(None, 256), FullTarget::DngLinearAwg4);
+    let (w, h) = (dev.width, dev.height);
+    let n = w * h;
+    let mut order: Vec<usize> = (0..n).collect();
+    let err = |p: usize| (0..3).map(|c| (dev.rgb[3 * p + c] - cpu.rgb[3 * p + c]).abs()).fold(0.0, f32::max);
+    order.sort_by(|&a, &b| err(b).total_cmp(&err(a)));
+    for &p in order.iter().take(5) {
+        // 180 degrees: the DNG is unturned.
+        let q = n - 1 - p;
+        let cine = ym_color::display::cine::CineRendering::new(OutputTarget::Rec2020);
+        let f = |v: &[f32]| {
+            let a = ym_color::gamut::LinearAwg4([f64::from(v[0]), f64::from(v[1]), f64::from(v[2])]);
+            cine.forward(a)
+        };
+        say(&format!(
+            "({}, {}) display dev {:?} cpu {:?}\n   dng(180) dev {:?} cpu {:?}\n   f64 forward of dng dev {:?} of dng cpu {:?}",
+            p % w, p / w, &dev.rgb[3*p..3*p+3], &cpu.rgb[3*p..3*p+3],
+            &dng_dev.rgb[3*q..3*q+3], &dng_cpu.rgb[3*q..3*q+3],
+            f(&dng_dev.rgb[3*q..3*q+3]), f(&dng_cpu.rgb[3*q..3*q+3])
+        ));
+    }
+}
+
+/// F-08c: is the PNG of the device the encoding of its own display-linear picture?
+#[test]
+#[ignore = "a diagnostic"]
+fn png_against_display_linear() {
+    let Some(gpu) = gpu(true) else { return };
+    let d = photo();
+    let film = json!({ "grain": { "amount": 0 }, "halation": { "amount": 0 } });
+    let mut settings = one_film(film);
+    if std::env::var("YM_NOSHARP").is_ok() {
+        let mut doc = serde_json::to_value(&settings).expect("json");
+        if let Some(items) = doc["nodes"]["items"].as_array_mut() {
+            for n in items.iter_mut() {
+                if n["kind"] == "output" || n["id"] == "output" {
+                    n["output_sharpening"] = json!(0);
+                }
+            }
+        }
+        settings = settings_of(doc);
+    }
+    let src = d.source().with_settings(settings.clone());
+    let tgt = FullTarget::DisplayLinear(OutputTarget::Rec2020);
+    let run = |r: &Renderer| {
+        r.render_full(&src, &FullRequest { target: tgt }, &CancelToken::new()).expect("render")
+    };
+    let home = tempfile::tempdir().expect("dir");
+    let sp = ColorSpace::Rec2020;
+    let (_, png_dev) = export_in(&d, &settings, renderer(Some(Arc::clone(&gpu)), 256), home.path(), sp);
+    let (_, png_cpu) = export_in(&d, &settings, renderer(None, 256), home.path(), sp);
+    let dl_dev = run(&renderer(Some(gpu), 256));
+    let dl_cpu = run(&renderer(None, 256));
+    let enc = |v: &[f32]| -> Vec<u32> {
+        v.chunks_exact(3)
+            .flat_map(|t| {
+                ym_color::encode::OutputSpace::Rec2020
+                    .encode_clamped([f64::from(t[0]), f64::from(t[1]), f64::from(t[2])])
+                    .map(|c| (c * 65535.0).round() as u32)
+            })
+            .collect()
+    };
+    let (e_dev, e_cpu) = (enc(&dl_dev.rgb), enc(&dl_cpu.rgb));
+    if let Ok(dir) = std::env::var("YM_DUMP") {
+        let bytes: Vec<u8> = dl_cpu.rgb.iter().flat_map(|v| v.to_le_bytes()).collect();
+        std::fs::write(format!("{dir}/dl_cpu.f32"), bytes).expect("dump");
+        let bytes: Vec<u8> = png_dev.iter().chain(&png_cpu).flat_map(|v| v.to_le_bytes()).collect();
+        std::fs::write(format!("{dir}/png_both.u32"), bytes).expect("dump");
+    }
+    let (w, h) = (dl_cpu.width, dl_cpu.height);
+    for (name, f) in [
+        ("hflip", (|x: usize, y: usize, w: usize, h: usize| (w - 1 - x, y)) as fn(usize, usize, usize, usize) -> (usize, usize)),
+        ("vflip", |x, y, _w, h| (x, h - 1 - y)),
+        ("180", |x, y, w, h| (w - 1 - x, h - 1 - y)),
+    ] {
+        let mut t = vec![0u32; e_cpu.len()];
+        for y in 0..h {
+            for x in 0..w {
+                let (sx, sy) = f(x, y, w, h);
+                for c in 0..3 {
+                    t[3 * (y * w + x) + c] = e_cpu[3 * (sy * w + sx) + c];
+                }
+            }
+        }
+        say(&format!("{name}: png cpu vs flipped dl cpu {:?}", code_diff(&png_cpu, &t)));
+    }
+    say(&format!("png dev vs png cpu {:?}", code_diff(&png_dev, &png_cpu)));
+    say(&format!("dl dev vs dl cpu (encoded) {:?}", code_diff(&e_dev, &e_cpu)));
+    // The same CPU sharpening of both display-linear pictures: how far does it turn their difference?
+    let sh = ym_gpu::cpu::output_sharpen::OutputSharpen::screen().with_amount_pct(100.0);
+    let s_dev = sh.apply_interleaved(dl_dev.width, dl_dev.height, &dl_dev.rgb, 1.0).expect("sharpen");
+    let s_cpu = sh.apply_interleaved(dl_cpu.width, dl_cpu.height, &dl_cpu.rgb, 1.0).expect("sharpen");
+    let (a, b) = (enc(&s_dev), enc(&s_cpu));
+    say(&format!("CPU-sharpened dl dev vs dl cpu (encoded) {:?}", code_diff(&a, &b)));
+    say(&format!("CPU-sharpened dl cpu vs png cpu {:?}", code_diff(&b, &png_cpu)));
+    say(&format!("CPU-sharpened dl dev vs png dev {:?}", code_diff(&a, &png_dev)));
+    say(&format!("png cpu vs dl cpu {:?}", code_diff(&png_cpu, &e_cpu)));
+    say(&format!("png dev vs dl dev {:?}", code_diff(&png_dev, &e_dev)));
 }

@@ -114,7 +114,7 @@ test.describe("the flow", () => {
       await expect(tabs(page).getByRole("tab", { name })).toHaveAttribute("aria-selected", "true");
       await expect.poll(() => page.getByRole("tabpanel").evaluate((el) => getComputedStyle(el).getPropertyValue("--primary").trim())).toBe(accent);
       // Yellow is for buttons: no tab paints its title block in its colour.
-      expect(await page.locator(".ym-title-block").evaluate((el) => getComputedStyle(el).backgroundColor)).not.toMatch(/^rgb\(/);
+      expect(await page.locator(".ym-title-block:visible").evaluate((el) => getComputedStyle(el).backgroundColor)).not.toMatch(/^rgb\(/);
     }
   });
 

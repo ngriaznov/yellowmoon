@@ -182,7 +182,8 @@ test.describe("sliders and their boxes", () => {
     await page.mouse.move(at.x + at.width / 2 + 40, at.y + at.height / 2, { steps: 5 });
     await page.mouse.up();
     await expect(box(page, "Exposure")).not.toHaveValue(start);
-    const track = page.locator('[data-slot="slider"]').first();
+    // The track of this slider: the tabs that were opened stay built and hidden (U-02), so the first track of the page may be another's.
+    const track = knob.locator('xpath=ancestor::*[@data-slot="slider"][1]');
     const tb = (await track.boundingBox())!;
     await page.mouse.dblclick(tb.x + tb.width * 0.2, tb.y + tb.height / 2);
     await expect(box(page, "Exposure")).toHaveValue(start);

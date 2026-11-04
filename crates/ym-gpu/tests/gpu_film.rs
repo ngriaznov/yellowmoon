@@ -614,3 +614,58 @@ fn diagnose_blacks() {
         }
     }
 }
+
+/// F-08c diagnostic: the error of the device's intermediate (selected by `RT_DBG` in film_return.wgsl; the env var
+/// `YM_DBG` says which one this build holds: 1 display, 2 display side, 3 the refined coordinates, 0 the LogC4) over the
+/// reachable colours of the photos and the synthetic set, in Rec.2020 and Display P3.
+#[test]
+#[ignore = "diagnostic: F-08c, per-stage error"]
+fn diagnose_stage_error() {
+    let mode: u32 = std::env::var("YM_DBG").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let mut px = synthetic_set();
+    px.extend(photo_set(24));
+    let (w0, _) = (64, 0);
+    for dev in f32_devices() {
+        for (id, o) in [("kodak_portra_400", Output::Rec2020), ("kodak_portra_400", Output::DisplayP3), ("fujifilm_velvia_100", Output::Rec2020)] {
+            let b = baked(id, o);
+            let sel: Vec<[f64; 3]> = px
+                .iter()
+                .copied()
+                .filter(|&p| reachable(&b, b.film_density(b.exposure_of(p))))
+                .collect();
+            let (w, h) = side(w0, sel.len());
+            let dens = densities(&b, &sel);
+            let input = planar(&dens, w, h);
+            let got = run_stage(dev, &colour_data(&b), Stage::ColourOut, &input, w, h);
+            let cine = ym_color::display::cine::CineRendering::new(output_target(o));
+            let mut worst = [0.0f64; 3];
+            let mut at = [0usize; 3];
+            let mut sum = [0.0f64; 3];
+            for i in 0..sel.len() {
+                let q = [0, 1, 2].map(|c| f64::from(input[c * w * h + i]));
+                let dp = if b.is_slide() { q } else { b.paper_density(b.print_log_exposure(q)) };
+                let display = b.scan_display(dp);
+                let want: [f64; 3] = match mode {
+                    1 => display,
+                    2 => {
+                        let c = cine.display_coordinates(display);
+                        [c.y2, c.ca2, c.cb2]
+                    }
+                    3 => b.core_table().invert(cine.display_coordinates(display)).coordinates,
+                    _ => b.colour_out(q),
+                };
+                for c in 0..3 {
+                    let g = f64::from(got[c * w * h + i]);
+                    let e = (g - want[c]).abs();
+                    sum[c] += e;
+                    if e > worst[c] {
+                        worst[c] = e;
+                        at[c] = i;
+                    }
+                }
+            }
+            let n = sel.len() as f64;
+            println!("mode {mode} {id} {o:?} n {}: max {worst:?} mean {:?} at {at:?}", sel.len(), sum.map(|s| s / n));
+        }
+    }
+}

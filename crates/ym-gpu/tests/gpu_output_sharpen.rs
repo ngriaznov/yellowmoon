@@ -2265,3 +2265,69 @@ fn the_passes_pin_every_rounding_the_limiter_sees() {
         );
     }
 }
+
+/// F-08c diagnostic: the device's sharpening of a dumped Film picture (Rec.2020 display-linear, 640 x 420, interleaved
+/// f32; `YM_DUMP_FILE`) against the CPU's, in linear light and in Rec.2020 16-bit codes.
+#[test]
+#[ignore = "diagnostic: F-08c, needs YM_DUMP_FILE"]
+fn a_dumped_film_picture_sharpens_alike() {
+    let Ok(path) = std::env::var("YM_DUMP_FILE") else {
+        return;
+    };
+    let bytes = std::fs::read(path).expect("dump");
+    let v: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    let (w, h) = (640, 420);
+    let mut img = RgbImage::new(w, h);
+    for p in 0..w * h {
+        for c in 0..3 {
+            img.data[c * w * h + p] = v[3 * p + c];
+        }
+    }
+    let sh = OutputSharpen::screen().with_amount_pct(100.0);
+    let cpu = sh.apply(&img, 1.0).expect("cpu");
+    {
+        let space = ym_color::encode::OutputSpace::Rec2020;
+        let code = |x: f32| (space.encode_clamped([f64::from(x); 3])[0] * 65535.0).round();
+        for rel in [6e-8, 1.2e-7, 3e-7, 6e-7, 1.2e-6] {
+            let mut rng = Rng(77);
+            let mut noisy = img.clone();
+            for x in &mut noisy.data {
+                *x = (f64::from(*x) * (1.0 + rel * (2.0 * rng.unit() - 1.0))) as f32;
+            }
+            let out = sh.apply(&noisy, 1.0).expect("cpu");
+            let worst = out
+                .data
+                .iter()
+                .zip(&cpu.data)
+                .map(|(a, b)| (code(*a) - code(*b)).abs())
+                .fold(0.0, f64::max);
+            println!("relative noise {rel:e} on the picture: CPU-sharpened codes worst {worst}");
+        }
+    }
+    for dev in gpus() {
+        let g = gpu_sharpen(dev, &sh, 1.0, &img);
+        let space = ym_color::encode::OutputSpace::Rec2020;
+        let code = |x: f32| (space.encode_clamped([f64::from(x); 3])[0] * 65535.0).round();
+        let (mut worst_lin, mut worst_code, mut at) = (0.0f64, 0.0f64, 0usize);
+        for (i, (a, b)) in g.data.iter().zip(&cpu.data).enumerate() {
+            worst_lin = worst_lin.max(f64::from((a - b).abs()));
+            let cd = (code(*a) - code(*b)).abs();
+            if cd > worst_code {
+                worst_code = cd;
+                at = i;
+            }
+        }
+        let (c, p) = (at / (w * h), at % (w * h));
+        println!(
+            "device vs CPU sharpening: linear {worst_lin:.2e}, codes {worst_code} at ({}, {}) ch {c}: device {:e} cpu {:e} input {:e}",
+            p % w,
+            p / w,
+            g.data[at],
+            cpu.data[at],
+            img.data[at]
+        );
+    }
+}
