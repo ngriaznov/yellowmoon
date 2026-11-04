@@ -139,12 +139,10 @@ fn params(g: &PlanGraph, stop: plan::Stop, strengths: &[f64], corrector: bool) -
 }
 
 /// The chain of the render, and for each Film node the prefix chain that makes its input.
-fn chains_of(
-    strengths: &[f64],
-    corrector: bool,
-) -> (Arc<ColorChain>, Vec<(u32, Arc<ColorChain>)>) {
+fn chains_of(strengths: &[f64], corrector: bool) -> (Arc<ColorChain>, Vec<(u32, Arc<ColorChain>)>) {
     let g = graph(strengths.len() as u32, corrector);
-    let whole = ColorChain::new(&params(&g, plan::Stop::Output, strengths, corrector)).expect("chain");
+    let whole =
+        ColorChain::new(&params(&g, plan::Stop::Output, strengths, corrector)).expect("chain");
     let prefixes = (0..strengths.len() as u32)
         .map(|i| {
             let id = 2 + i;
@@ -162,10 +160,7 @@ fn stack_of(
     prefixes: &[(u32, Arc<ColorChain>)],
     frame: Frame,
 ) -> (FilmStack, Vec<FilmFrame>) {
-    let frames: Vec<FilmFrame> = films
-        .iter()
-        .map(|(id, o, s)| film(id, *o, *s))
-        .collect();
+    let frames: Vec<FilmFrame> = films.iter().map(|(id, o, s)| film(id, *o, *s)).collect();
     let steps = frames
         .iter()
         .zip(prefixes)
@@ -463,7 +458,9 @@ fn the_pictures_of_one_node_and_of_two_in_a_line_are_the_cpus() {
             for ((gn, ga, gv), (wn, wa, wv)) in got.iter().zip(&want) {
                 assert_eq!((gn, ga), (wn, wa));
                 let d = max_diff(gv, wv);
-                println!("{n} node(s), node {gn}: picture {ga:?}, largest difference {d:.2e} in LogC4");
+                println!(
+                    "{n} node(s), node {gn}: picture {ga:?}, largest difference {d:.2e} in LogC4"
+                );
                 assert!(d < LOGC4_GATE, "node {gn}: {d}");
             }
         }
@@ -482,7 +479,11 @@ fn the_chain_with_a_film_node_and_a_corrector_after_it_is_the_cpus() {
     let mut seen = false;
     for dev in f32_devices() {
         seen = true;
-        for (strengths, corrector) in [(vec![0.7], true), (vec![1.0, 0.6], true), (vec![0.5], false)] {
+        for (strengths, corrector) in [
+            (vec![0.7], true),
+            (vec![1.0, 0.6], true),
+            (vec![0.5], false),
+        ] {
             let films = &two()[..strengths.len()];
             let (chain, prefixes) = chains_of(&strengths, corrector);
             let (stack, frames) = stack_of(films, &prefixes, FRAME);
@@ -514,13 +515,18 @@ fn the_chain_with_a_film_node_and_a_corrector_after_it_is_the_cpus() {
             let frame = (FRAME.width, FRAME.height);
             let whole = device_chain(&dev.gpu, &stack, &chain, frame, need, Stop::C10, None);
             let d = max_diff(&whole, &want_planar);
-            println!("{strengths:?} corrector {corrector}: C10 largest difference {d:.2e} in LogC4");
+            println!(
+                "{strengths:?} corrector {corrector}: C10 largest difference {d:.2e} in LogC4"
+            );
             assert!(d < LOGC4_GATE, "{strengths:?}: {d}");
             // The window cut into bands of rows by the plan buffer's limit: the same bits.
             let band = 4 * (3 * strengths.len() as u64 + 3) * need.w as u64 * 37;
             let banded = device_chain(&dev.gpu, &stack, &chain, frame, need, Stop::C10, Some(band));
             assert!(
-                whole.iter().zip(&banded).all(|(a, b)| a.to_bits() == b.to_bits()),
+                whole
+                    .iter()
+                    .zip(&banded)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
                 "{strengths:?}: bands differ from the whole window"
             );
         }
@@ -539,7 +545,12 @@ fn tiles_a_repeat_and_a_clean_pool_are_the_same_bits() {
         let whole = Area::whole(FRAME.width, FRAME.height);
         let all = device_pictures(&dev.gpu, &stack, frame, whole);
         // Two tile sizes at several origins, grain and the halos of both nodes in.
-        for (x, y, w, h) in [(0i64, 0i64, 97usize, 61usize), (233, 120, 97, 61), (300, 200, 301, 200), (543, 366, 97, 61)] {
+        for (x, y, w, h) in [
+            (0i64, 0i64, 97usize, 61usize),
+            (233, 120, 97, 61),
+            (300, 200, 301, 200),
+            (543, 366, 97, 61),
+        ] {
             let tile = Area { x, y, w, h };
             let part = device_pictures(&dev.gpu, &stack, frame, tile);
             for ((_, pa, pv), (_, wa, wv)) in part.iter().zip(&all) {
@@ -551,7 +562,11 @@ fn tiles_a_repeat_and_a_clean_pool_are_the_same_bits() {
                         for xx in ov.x..ov.x1() {
                             let a = pv[c * pn + (yy - pa.y) as usize * pa.w + (xx - pa.x) as usize];
                             let b = wv[c * wn + (yy - wa.y) as usize * wa.w + (xx - wa.x) as usize];
-                            assert_eq!(a.to_bits(), b.to_bits(), "tile {tile:?} at ({xx},{yy}) c{c}");
+                            assert_eq!(
+                                a.to_bits(),
+                                b.to_bits(),
+                                "tile {tile:?} at ({xx},{yy}) c{c}"
+                            );
                         }
                     }
                 }
@@ -559,14 +574,20 @@ fn tiles_a_repeat_and_a_clean_pool_are_the_same_bits() {
         }
         let again = device_pictures(&dev.gpu, &stack, frame, whole);
         for ((_, _, a), (_, _, b)) in all.iter().zip(&again) {
-            assert!(a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()), "a repeat differs");
+            assert!(
+                a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()),
+                "a repeat differs"
+            );
         }
         if dev.mode == StorageMode::F32
             && let Some(clean) = start_unpoisoned(StoragePreference::Auto)
         {
             let plain = device_pictures(&clean, &stack, frame, whole);
             for ((_, _, a), (_, _, b)) in all.iter().zip(&plain) {
-                assert!(a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()), "a clean pool differs");
+                assert!(
+                    a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()),
+                    "a clean pool differs"
+                );
             }
         }
         println!("tiles 97x61 and 301x200 at four origins, a repeat and a clean pool: bit for bit");
@@ -675,11 +696,20 @@ fn a_node_with_a_picture_missing_is_refused_not_guessed() {
             .gpu
             .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
                 let mut passes = PassList::new(ctx, "refused");
-                let src = GpuImage::upload_rgb(ctx, "tile", &camera((64, 48), Area::whole(64, 48)))?;
-                let out = GpuImage::alloc(ctx, "out", 64, 48, 3, ym_gpu::cpu::Placement::whole(64, 48))?;
+                let src =
+                    GpuImage::upload_rgb(ctx, "tile", &camera((64, 48), Area::whole(64, 48)))?;
+                let out =
+                    GpuImage::alloc(ctx, "out", 64, 48, 3, ym_gpu::cpu::Placement::whole(64, 48))?;
                 // No pictures at all: the chain runs a Film node and has none for it.
                 let prepared = PreparedChain::new(ctx, &chain)?;
-                prepared.encode_stage(&mut passes, &src, GRect::whole(64, 48), Stop::C10, &out, (0, 0))?;
+                prepared.encode_stage(
+                    &mut passes,
+                    &src,
+                    GRect::whole(64, 48),
+                    Stop::C10,
+                    &out,
+                    (0, 0),
+                )?;
                 Ok(())
             })
             .expect_err("no pictures");
@@ -689,10 +719,20 @@ fn a_node_with_a_picture_missing_is_refused_not_guessed() {
         dev.gpu
             .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
                 let mut passes = PassList::new(ctx, "empty");
-                let src = GpuImage::upload_rgb(ctx, "tile", &camera((64, 48), Area::whole(64, 48)))?;
-                let out = GpuImage::alloc(ctx, "out", 64, 48, 3, ym_gpu::cpu::Placement::whole(64, 48))?;
-                let prepared = PreparedChain::new(ctx, &chain)?.with_film(Arc::new(FilmPictures::empty()), (0, 0));
-                prepared.encode_stage(&mut passes, &src, GRect::whole(64, 48), Stop::C10, &out, (0, 0))?;
+                let src =
+                    GpuImage::upload_rgb(ctx, "tile", &camera((64, 48), Area::whole(64, 48)))?;
+                let out =
+                    GpuImage::alloc(ctx, "out", 64, 48, 3, ym_gpu::cpu::Placement::whole(64, 48))?;
+                let prepared = PreparedChain::new(ctx, &chain)?
+                    .with_film(Arc::new(FilmPictures::empty()), (0, 0));
+                prepared.encode_stage(
+                    &mut passes,
+                    &src,
+                    GRect::whole(64, 48),
+                    Stop::C10,
+                    &out,
+                    (0, 0),
+                )?;
                 passes.submit()?.finish()?;
                 Ok(())
             })

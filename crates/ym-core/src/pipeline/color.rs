@@ -871,8 +871,9 @@ pub fn uses_rasters(s: &DevelopSettings) -> bool {
     })
 }
 
-/// Whether the photo's plan has a Film node that does something (not bypassed, Strength above 0): the picture then
-/// takes the CPU road (`docs/24` section 3.9, `frame::film_pass`) until the device runs the Film passes.
+/// Whether the photo's plan has a Film node that does something (not bypassed, Strength above 0): the picture then has
+/// the Film passes (`docs/24` section 3.9; on the device `docs/24` section 3.9c, on the CPU `frame::film_pass`), and a DNG
+/// says so.
 #[must_use]
 pub fn has_film(s: &DevelopSettings) -> bool {
     let Ok(plan) = node_plan(&s.nodes, Stop::Output) else {

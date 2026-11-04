@@ -79,6 +79,14 @@
 //! A window whose planes would pass the design binding ([`crate::tiles::DESIGN_BINDING_BYTES`]) is cut
 //! into bands of rows, which is exact because the chain is pointwise. A plan of one pass binds a stand-in.
 //!
+//! **Film nodes (F-08b, `docs/24` section 3.9c).** A Film node is a step whose picture the render made before the colour
+//! pass (`kernels::film_stack`): its record has `N_FILM`, its Strength in `gain.x`, and when it does something
+//! (`N_FILM_LIVE`) the first plane of its picture in `ctl.w`. The pictures are the **first planes of the pass buffers**
+//! (three for each live Film node in plan order, the buffers that cross between passes after them), copied in from the
+//! Film images by [`PreparedChain::with_film`] for each band of the window; a picture that does not cover the band is
+//! zero there. The step computes its mask as a corrector does and blends `out = in + m (film - in)` with `m` the mask
+//! times Strength, the node's key output; no new binding.
+//!
 //! **Stops.** [`PreparedChain::with_node_stop`] ends the plan after a node (the Output then runs on that
 //! node's picture: a thumbnail) or at a node's mask `m` (grey code values: the mask view); kernel stops 11
 //! and 12, the node's record in `stopn`.
@@ -118,9 +126,9 @@ use ym_color::plan::{BufferKind, KeyRef, MAIN_NODE, PictureRef, PlanResult};
 use ym_color::tone::ToneParams;
 use ym_color::warp::{WARP_MAX_PINS, Warp};
 
-use super::film_stack::FilmPictures;
 use super::copy::encode_copy_into;
 use super::film::FilmImage;
+use super::film_stack::FilmPictures;
 use super::mask_raster::RasterPlanes;
 use super::shader::{KernelId, table};
 use super::util::{OutKind, PixelData, STORAGE_IN, STORAGE_OUT, even, image_bytes, sample_bytes};

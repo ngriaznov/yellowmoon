@@ -2,6 +2,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MockOptions } from "../../api.mock";
 import { FAILURE_ZIPS, PACKAGE_ZIPS } from "../../api.mock";
+import { FILM_CREDIT, FILM_CREDIT_NAME, FILM_CREDIT_URL } from "../../fixtures/filmCredit";
 import { openPhotos, renderApp } from "../../test/harness";
 import { updater } from "../../updater";
 import type { Harness } from "../../test/harness";
@@ -219,15 +220,11 @@ describe("About", () => {
   it("carries the film credit line with its two links and the trademark line (docs/24 section 4.6)", async () => {
     const dialog = await openAbout();
     const film = within(dialog).getByRole("region", { name: "Film" });
-    await waitFor(() =>
-      expect(film).toHaveTextContent(
-        "Modelled on published data. Film profiles by Andrea Volpato (spektrafilm), CC BY-SA 4.0. Not affiliated with Kodak or Fujifilm.",
-      ),
-    );
+    await waitFor(() => expect(film).toHaveTextContent(FILM_CREDIT));
     expect(within(film).getByText("Kodak, Portra, Vision3, Fujifilm and Velvia are trademarks of their owners.")).toBeInTheDocument();
-    await h!.user.click(within(film).getByRole("button", { name: "Andrea Volpato (spektrafilm)" }));
+    await h!.user.click(within(film).getByRole("button", { name: FILM_CREDIT_NAME }));
     await h!.user.click(within(film).getByRole("button", { name: "CC BY-SA 4.0" }));
-    expect(h!.api.system.opened).toEqual(["https://github.com/andreavolpato/spektrafilm", "https://creativecommons.org/licenses/by-sa/4.0/"]);
+    expect(h!.api.system.opened).toEqual([FILM_CREDIT_URL, "https://creativecommons.org/licenses/by-sa/4.0/"]);
   });
 
   it("opens the project's page in the browser and closes with Done", async () => {

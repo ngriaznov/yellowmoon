@@ -29,7 +29,7 @@ use ym_core::pipeline::{
     RenderOptions, RenderedFrame, Renderer, ViewportMode, ViewportRect, ViewportState,
 };
 use ym_core::settings::DevelopSettings;
-use ym_export::{BitDepth, ExportOptions, FormatKind, IfExists};
+use ym_export::{BitDepth, ColorSpace, ExportOptions, FormatKind, IfExists};
 use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
 use ym_gpu::queue::CancelToken;
 
@@ -96,11 +96,13 @@ fn one_film(film: Value) -> DevelopSettings {
     node.as_object_mut()
         .unwrap()
         .extend(film.as_object().unwrap().clone());
-    settings_of(json!({ "nodes": { "items": [ { "id": 1 }, node ], "links": [
+    settings_of(
+        json!({ "nodes": { "items": [ { "id": 1 }, node ], "links": [
         { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
         { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
         { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } },
-    ] } }))
+    ] } }),
+    )
 }
 
 /// Halation, grain, a Linear mask and Strength below 100.
@@ -200,7 +202,10 @@ fn the_viewport_frame_is_the_devices_and_agrees_with_the_cpu() {
             say(&format!(
                 "view, {at}: largest {max} codes, {over} pixel values over 1, mean {mean:.4}"
             ));
-            assert!(max <= 2 && over < got.rgba.len() / 2000, "{at}: {max}, {over}");
+            assert!(
+                max <= 2 && over < got.rgba.len() / 2000,
+                "{at}: {max}, {over}"
+            );
             // The node is in the picture: the same photo without it is not this frame.
             let plain = frame(&device, &d.source(), &st);
             assert_ne!(plain.rgba, got.rgba, "{at}");
@@ -229,26 +234,52 @@ fn export(
     r: Renderer,
     out: &Path,
 ) -> (ExportReport, Vec<u32>) {
+    export_in(d, settings, r, out, ColorSpace::Srgb)
+}
+
+fn export_in(
+    d: &Developed,
+    settings: &DevelopSettings,
+    r: Renderer,
+    out: &Path,
+    space: ColorSpace,
+) -> (ExportReport, Vec<u32>) {
     let ctx = ExportContext::new(r).with_home(Some(out.to_path_buf()));
     let mut photo = ExportPhoto::from_session(&d.session, d.id).expect("export photo");
     photo.source = photo.source.with_settings(settings.clone());
     let opts = ExportOptions {
         format: FormatKind::Png,
         bit_depth: BitDepth::Sixteen,
+        color_space: space,
         destination: Some(out.to_path_buf()),
         if_exists: IfExists::Replace,
         ..ExportOptions::default()
     };
-    let report = export_photo(&ctx, &photo, &ExportParams::new(opts), &ExportControl::none())
-        .expect("export");
+    let report = export_photo(
+        &ctx,
+        &photo,
+        &ExportParams::new(opts),
+        &ExportControl::none(),
+    )
+    .expect("export");
     let (_, _, codes) = decode_png16(&report.path);
     (report, codes)
 }
 
 fn code_diff(a: &[u32], b: &[u32]) -> (u32, f64) {
     assert_eq!(a.len(), b.len());
-    let max = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
-    let mean = a.iter().zip(b).map(|(x, y)| f64::from(x.abs_diff(*y))).sum::<f64>() / a.len() as f64;
+    let max = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| x.abs_diff(*y))
+        .max()
+        .unwrap_or(0);
+    let mean = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| f64::from(x.abs_diff(*y)))
+        .sum::<f64>()
+        / a.len() as f64;
     (max, mean)
 }
 
@@ -264,7 +295,12 @@ fn the_export_tail_runs_the_film_node_on_the_device_and_agrees_with_the_cpu() {
         ("two nodes and a corrector", two_films()),
     ] {
         let home = tempfile::tempdir().expect("dir");
-        let (dev_report, dev) = export(&d, &settings, renderer(Some(Arc::clone(&gpu)), 256), home.path());
+        let (dev_report, dev) = export(
+            &d,
+            &settings,
+            renderer(Some(Arc::clone(&gpu)), 256),
+            home.path(),
+        );
         let (cpu_report, cpu) = export(&d, &settings, renderer(None, 256), home.path());
         assert_eq!(dev_report.device, ComputeDevice::Gpu, "{what}");
         assert_eq!(cpu_report.device, ComputeDevice::Cpu, "{what}");
@@ -281,6 +317,32 @@ fn the_export_tail_runs_the_film_node_on_the_device_and_agrees_with_the_cpu() {
     }
 }
 
+/// A Rec.2020 and a Display P3 export have the tables of their own gamut (`ym_film::Output::Rec2020`), on the device and
+/// on the CPU alike.
+#[test]
+fn wide_gamut_exports_agree_with_the_cpu() {
+    let Some(gpu) = gpu(true) else { return };
+    let d = photo();
+    let settings = one_film(busy());
+    for space in [ColorSpace::Rec2020, ColorSpace::DisplayP3] {
+        let home = tempfile::tempdir().expect("dir");
+        let (dev_report, dev) = export_in(
+            &d,
+            &settings,
+            renderer(Some(Arc::clone(&gpu)), 256),
+            home.path(),
+            space,
+        );
+        let (_, cpu) = export_in(&d, &settings, renderer(None, 256), home.path(), space);
+        assert_eq!(dev_report.device, ComputeDevice::Gpu, "{space:?}");
+        let (max, mean) = code_diff(&dev, &cpu);
+        say(&format!(
+            "export in {space:?}: largest {max} of 65535, mean {mean:.2}"
+        ));
+        assert!(max <= TEN_BIT_CODE, "{space:?}: {max}");
+    }
+}
+
 #[test]
 fn tiles_poison_and_repeats_do_not_change_a_bit_on_the_device() {
     let Some(poisoned) = gpu(true) else { return };
@@ -288,12 +350,27 @@ fn tiles_poison_and_repeats_do_not_change_a_bit_on_the_device() {
     let d = photo();
     let settings = one_film(busy());
     let home = tempfile::tempdir().expect("dir");
-    let (_, whole) = export(&d, &settings, renderer(Some(Arc::clone(&poisoned)), 1024), home.path());
+    let (_, whole) = export(
+        &d,
+        &settings,
+        renderer(Some(Arc::clone(&poisoned)), 1024),
+        home.path(),
+    );
     for tile in [97usize, 160, 256] {
-        let (_, got) = export(&d, &settings, renderer(Some(Arc::clone(&poisoned)), tile), home.path());
+        let (_, got) = export(
+            &d,
+            &settings,
+            renderer(Some(Arc::clone(&poisoned)), tile),
+            home.path(),
+        );
         assert_eq!(got, whole, "tile {tile}");
     }
-    let (_, again) = export(&d, &settings, renderer(Some(Arc::clone(&poisoned)), 1024), home.path());
+    let (_, again) = export(
+        &d,
+        &settings,
+        renderer(Some(Arc::clone(&poisoned)), 1024),
+        home.path(),
+    );
     assert_eq!(again, whole, "a repeat");
     let (_, clean) = export(&d, &settings, renderer(Some(plain), 160), home.path());
     assert_eq!(clean, whole, "a device with a clean pool");
@@ -397,7 +474,8 @@ mod fallback {
         let settings = one_film(busy());
         let home = tempfile::tempdir().expect("dir");
         let cpu_dir = tempfile::tempdir().expect("dir");
-        let ctx = ExportContext::new(renderer(None, 256)).with_home(Some(home.path().to_path_buf()));
+        let ctx =
+            ExportContext::new(renderer(None, 256)).with_home(Some(home.path().to_path_buf()));
         let mut photo = ExportPhoto::from_session(&d.session, d.id).expect("export photo");
         photo.source = photo.source.with_settings(settings);
         let cpu = export_photo(
@@ -428,8 +506,10 @@ mod fallback {
             let done = done.unwrap_or_else(|e| panic!("{fault:?}: {e}"));
             assert_eq!(done.device, ComputeDevice::Cpu, "{fault:?}");
             assert!(
-                done.notes.iter().any(|n| n
-                    .contains("The graphics card could not render this photo, so the CPU did")),
+                done.notes
+                    .iter()
+                    .any(|n| n
+                        .contains("The graphics card could not render this photo, so the CPU did")),
                 "{fault:?}: {:?}",
                 done.notes
             );
@@ -471,7 +551,12 @@ fn timings() {
                 &CancelToken::new(),
             )
             .expect("frame");
-        (t.elapsed().as_secs_f64(), f.width, f.height, f.report.device)
+        (
+            t.elapsed().as_secs_f64(),
+            f.width,
+            f.height,
+            f.report.device,
+        )
     };
     let (plain, w, h, _) = timed(&src);
     let (plain2, ..) = timed(&src);
@@ -479,13 +564,18 @@ fn timings() {
     let (cold, _, _, dev) = timed(&filmed);
     let (warm_same, ..) = timed(&filmed);
     let (seed, ..) = timed(&src.with_settings(one_film(json!({ "grain": { "seed": 1 } }))));
-    let (exposure, ..) = timed(&src.with_settings(one_film(json!({ "film": { "exposure_ev": 0.5 } }))));
+    let (exposure, ..) =
+        timed(&src.with_settings(one_film(json!({ "film": { "exposure_ev": 0.5 } }))));
     say(&format!(
         "view {w}x{h} ({dev:?}): without the node {plain:.2} s ({plain2:.2} s again), first with it (tables baked and uploaded) {cold:.2} s, again {warm_same:.2} s, new seed {seed:.2} s, new exposure {exposure:.2} s"
     ));
-    for (what, settings) in [("with a Film node", one_film(json!({}))), ("without it", one_film(json!({ "bypass": true })))] {
+    for (what, settings) in [
+        ("with a Film node", one_film(json!({}))),
+        ("without it", one_film(json!({ "bypass": true }))),
+    ] {
         let home = tempfile::tempdir().expect("dir");
-        let ctx = ExportContext::new(renderer(gpu_of(&r), 1024)).with_home(Some(home.path().to_path_buf()));
+        let ctx = ExportContext::new(renderer(gpu_of(&r), 1024))
+            .with_home(Some(home.path().to_path_buf()));
         let mut photo = ExportPhoto::from_session(&d.session, d.id).expect("export photo");
         photo.source = photo.source.with_settings(settings);
         let opts = ExportOptions {
@@ -496,8 +586,13 @@ fn timings() {
             ..ExportOptions::default()
         };
         let t = Instant::now();
-        let report = export_photo(&ctx, &photo, &ExportParams::new(opts), &ExportControl::none())
-            .expect("export");
+        let report = export_photo(
+            &ctx,
+            &photo,
+            &ExportParams::new(opts),
+            &ExportControl::none(),
+        )
+        .expect("export");
         say(&format!(
             "export {}x{} ({:.1} MP) {what}: {:.1} s ({:?})",
             report.rendered.0,

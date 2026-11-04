@@ -255,7 +255,7 @@ The crop and the turn are the Input's framing: they are data of the Input, and t
 | `grain` | `{ amount 0…200, size 50…200, seed }` | `{ 100, 100, 0 }` | `seed` is not in the interface |
 | `strength` | 0…100 (percent) | 100 | the node's mask is its masks times Strength |
 
-A stock or paper that is not in `data/film/` (or of the wrong kind) is refused with `Unknown film stock "x". Run "ym film list" to see the stocks.` There is no Auto in a Film node. A Film node is a live node when the Output needs its picture, and it renders on the CPU until the device runs the Film passes (`docs/24` §3.9).
+A stock or paper that is not in `data/film/` (or of the wrong kind) is refused with `Unknown film stock "x". Run "ym film list" to see the stocks.` There is no Auto in a Film node. A Film node is a live node when the Output needs its picture, and it renders on the device like any node (`docs/24` §3.9c), on the CPU when the device refuses the frame.
 
 **Auto belongs to the photo's Main.** Auto (the Automatic card, Apple Auto, Claude Code, Antigravity, `docs/19`, `docs/22`) grades the photo's Input and Main and writes nothing else. So:
 
@@ -511,6 +511,7 @@ The core **compiles the graph into a plan** (`ym_color::plan`; `docs/algorithms/
 - **A step** is `{ node record, picture register in, picture register out, key slot in, key slot out }`. A record holds the trim gain (three f32), the grade parameters, the warp pins, the base of its curve tables, and the node's mask rows (`MaskOp` records: kind, mode, invert, opacity, eight parameters, the raster plane's index).
 - **Stops.** `CU.mode.x` keeps its values; value 11 stops after the node `CU.mode.y` and runs the Output (thumbnails); value 12 ends at that node's `m` (the mask view, section 5.8).
 - **Identity.** A node at its identity, a bypassed node and a graph whose only node is Main at defaults run no node code beyond Main's own C9, C9b and C11, on the expressions of 0.8.2, so a default graph gives lavapipe the same bytes as before wherever the kernel's expressions are unchanged.
+- **Film nodes (F-08b, `docs/24` section 3.9c).** A Film step is not per pixel: the render makes the node's picture before the colour pass (the prefix chain, then the Film passes, `kernels/film_stack.rs`) and the step reads it from the first planes of the pass buffers (binding 8; three planes for each live Film node, no new binding) and blends it by the node's mask times Strength, `out = in + m (film - in)`. The mask is the plan loop's `node_mask`; the key output is `m`, bypassed or not. A graph with a Film node runs on the device like any other.
 - **Parity gates** keep today's numbers: 2e-4 in LogC4 for the grade, now with up to 16 nodes and 8 masks each; one 10-bit code after C12 and C13; for the raster masks a stated bound set in N-13 (starting number: 4e-4 absolute on the mask plane).
 
 ### 5.5 The raster mask pass

@@ -38,7 +38,10 @@ fn the_scan_in_rec2020_is_the_same_colour_as_in_display_p3() {
             }
         }
     }
-    assert!(worst < 5e-3, "the scan differs between outputs: {worst:.3e}");
+    assert!(
+        worst < 5e-3,
+        "the scan differs between outputs: {worst:.3e}"
+    );
 }
 
 #[test]
@@ -53,6 +56,9 @@ fn the_return_stage_of_rec2020_reaches_a_finite_scene_colour_and_keeps_a_neutral
         let back = baked.return_to_logc4([grey, grey, grey]);
         assert!(back.iter().all(|v| v.is_finite()), "{grey}: {back:?}");
         let spread = back.iter().fold(0.0_f64, |a, v| a.max((v - back[1]).abs()));
-        assert!(spread < 1e-3, "{grey}: a neutral comes back with a cast {spread:.2e}");
+        assert!(
+            spread < 1e-3,
+            "{grey}: a neutral comes back with a cast {spread:.2e}"
+        );
     }
 }

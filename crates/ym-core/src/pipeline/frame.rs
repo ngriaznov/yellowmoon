@@ -3758,7 +3758,8 @@ impl Renderer {
         // A tile of a Film node is read that much wider on every side, so a small tile spends most of its work on
         // the halo: the CPU's tiles are larger (tiles equal the whole frame, so the size is free). The device's are
         // held to the design binding above, which a larger tile would pass.
-        let tile = if film_render.is_some() && tile >= FILM_TILE_FROM_PX && device_colour.is_none() {
+        let tile = if film_render.is_some() && tile >= FILM_TILE_FROM_PX && device_colour.is_none()
+        {
             tile.max(FILM_TILE_PX)
         } else {
             tile

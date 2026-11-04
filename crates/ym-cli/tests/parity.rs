@@ -1162,13 +1162,31 @@ fn film_node() -> serde_json::Value {
 }
 
 /// The Film node's pictures are the app's and the binary's alike, in JPEG, TIFF 16 and DNG (`graph_leg`) and in PNG 16:
-/// the CPU makes them on both sides, whatever the device (`docs/24` section 3.9; F-08b moves the passes to it).
+/// the CPU makes them on both sides (`docs/24` section 3.9).
 #[test]
 fn a_film_node_is_the_same_files_through_the_app_path_and_the_binary() {
-    graph_leg("a film node", film_node(), 1, false);
+    film_leg(false);
+}
+
+/// The device leg of the Film node (F-08b, `docs/24` section 3.9c): the app's core has the device and the binary
+/// `YELLOWMOON_GPU=on`; the Film passes run on it on both sides, and the files are the same byte for byte.
+#[test]
+fn a_film_node_is_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
+    film_leg(true);
+}
+
+fn film_leg(device: bool) {
+    graph_leg("a film node", film_node(), 1, device);
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");
-    let app = App::open(&[&arw]);
+    let app = if device {
+        let Some(app) = App::open_on_device(&[&arw]) else {
+            return;
+        };
+        app
+    } else {
+        App::open(&[&arw])
+    };
     let (settings, clamped) =
         DevelopSettings::from_value(film_node(), &app.core.looks.effective_default())
             .expect("settings");
@@ -1185,7 +1203,12 @@ fn a_film_node_is_the_same_files_through_the_app_path_and_the_binary() {
         ..ExportOptions::default()
     };
     let from_app = app.export(options.clone(), &sb.root().join("app-png"));
-    let from_cli = cli_export(
+    let env: &[(&str, &str)] = if device {
+        &[("YELLOWMOON_GPU", "on")]
+    } else {
+        &[]
+    };
+    let from_cli = cli_export_env(
         &sb,
         &[&arw],
         &[
@@ -1197,6 +1220,7 @@ fn a_film_node_is_the_same_files_through_the_app_path_and_the_binary() {
             file.to_str().expect("utf-8"),
         ],
         &sb.root().join("cli-png"),
+        env,
     );
     assert_same_files(&from_app, &from_cli, "a film node, png16");
     // The file says which film data made it, and a repeat export is the same file.

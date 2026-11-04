@@ -5,7 +5,7 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SettingsPatch } from "../../api/types";
-import { FILM_CREDIT } from "../../fixtures/filmCredit";
+import { FILM_CREDIT, FILM_CREDIT_NAME, FILM_CREDIT_URL } from "../../fixtures/filmCredit";
 import { nodeOf } from "../../state/settingsGraph";
 import type { FilmItem } from "../../state/settingsGraph";
 import { openPhotos, openTab, renderApp, sliderOf, tools, valueOf } from "../../test/harness";
@@ -89,8 +89,8 @@ describe("the Film tab", () => {
 
   it("opens the project's page in the browser from the credit line", async () => {
     await setup();
-    await h!.user.click(within(tools()).getByRole("button", { name: "Andrea Volpato (spektrafilm)" }));
-    expect(h!.api.system.opened).toEqual(["https://github.com/andreavolpato/spektrafilm"]);
+    await h!.user.click(within(tools()).getByRole("button", { name: FILM_CREDIT_NAME }));
+    expect(h!.api.system.opened).toEqual([FILM_CREDIT_URL]);
   });
 
   it("sends the node's own patch for Exposure and Strength, and Reset puts the card back", async () => {
