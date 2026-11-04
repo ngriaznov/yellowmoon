@@ -774,6 +774,30 @@ struct Plan {
     halos: Halos,
 }
 
+/// The passes of a frame as plain data (`FilmFrame::device_plan`).
+#[derive(Debug, Clone)]
+pub struct DevicePlan<'a> {
+    /// The Gaussians of P2 (scatter and halation), with the weight of each per channel; the centre weight is
+    /// one minus their sum, and a term narrower than [`MIN_SIGMA_PX`] stays at the pixel.
+    pub halation: Vec<Term>,
+    /// The Gaussians of the inhibitor's spread (P3), empty when the diffusion is off.
+    pub diffusion: Vec<Term>,
+    /// Whether P3 spreads the inhibitor (a diffusion and a film with couplers).
+    pub diffuse: bool,
+    /// The dye cloud's sigma in pixels.
+    pub cloud_px: f64,
+    /// The halos.
+    pub halos: Halos,
+    /// Whether the grain pass runs.
+    pub grain_on: bool,
+    /// The factor of the grain's amplitude: pixels per um times Amount times Size.
+    pub grain_scale: f64,
+    /// The grain's seed.
+    pub grain_seed: u32,
+    /// The calibrated grain.
+    pub grain: &'a GrainModel,
+}
+
 /// An error of a tile run.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SpatialError {
@@ -814,6 +838,20 @@ impl FilmFrame {
         Self {
             baked: Arc::new(baked),
             model: Arc::new(model),
+            settings,
+        }
+    }
+
+    /// [`FilmFrame::new`] with a spatial model that is shared (an engine keeps one per stock).
+    #[must_use]
+    pub fn with_shared_model(
+        baked: BakedFilm,
+        model: Arc<SpatialModel>,
+        settings: SpatialSettings,
+    ) -> Self {
+        Self {
+            baked: Arc::new(baked),
+            model,
             settings,
         }
     }
@@ -879,6 +917,25 @@ impl FilmFrame {
             diffusion,
             cloud_px,
             halos,
+        }
+    }
+
+    /// The plan of the passes at a frame size as plain data, for the device kernels (`crates/ym-gpu`
+    /// `kernels::film`): the Gaussians of P2 and P3 with their weights, the dye cloud, the halos and the grain.
+    #[must_use]
+    pub fn device_plan(&self, frame: Frame) -> DevicePlan<'_> {
+        let plan = self.plan(frame);
+        let s = &self.settings;
+        DevicePlan {
+            diffuse: !plan.diffusion.is_empty() && baked_has_couplers(&self.baked),
+            halation: plan.halation,
+            diffusion: plan.diffusion,
+            cloud_px: plan.cloud_px,
+            halos: plan.halos,
+            grain_on: s.grain_amount > 0.0,
+            grain_scale: frame.px_per_um() * s.grain_amount * s.grain_size,
+            grain_seed: s.grain_seed,
+            grain: &self.model.grain,
         }
     }
 

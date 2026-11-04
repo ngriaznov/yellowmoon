@@ -28,14 +28,29 @@ use serde::Deserialize;
 
 use crate::profile::StockKind;
 
+/// The constants of the hash, in this order: the seed's xor, the multipliers of `x`, `y` and of
+/// `channel * 8 + sublayer`, the multiplier and the addend of the word number, and the two multipliers of
+/// [`fmix32`]. The device kernel is handed these words (`docs/17` K7: no number is typed twice); the shifts of
+/// the finalizer (16, 13, 16) are its structure.
+pub const HASH_CONSTANTS: [u32; 8] = [
+    0x9e37_79b9,
+    0x85eb_ca77,
+    0xc2b2_ae3d,
+    0x27d4_eb2f,
+    0x1656_67b1,
+    0x6a09_e667,
+    0x85eb_ca6b,
+    0xc2b2_ae35,
+];
+
 /// The finalizer of murmur3 (a bijection on `u32`).
 #[inline]
 #[must_use]
 pub fn fmix32(mut h: u32) -> u32 {
     h ^= h >> 16;
-    h = h.wrapping_mul(0x85eb_ca6b);
+    h = h.wrapping_mul(HASH_CONSTANTS[6]);
     h ^= h >> 13;
-    h = h.wrapping_mul(0xc2b2_ae35);
+    h = h.wrapping_mul(HASH_CONSTANTS[7]);
     h ^= h >> 16;
     h
 }
@@ -44,11 +59,12 @@ pub fn fmix32(mut h: u32) -> u32 {
 #[inline]
 #[must_use]
 pub fn hash32(seed: u32, x: u32, y: u32, channel: u32, sublayer: u32, k: u32) -> u32 {
-    let mut h = fmix32(seed ^ 0x9e37_79b9);
-    h = fmix32(h ^ x.wrapping_mul(0x85eb_ca77));
-    h = fmix32(h ^ y.wrapping_mul(0xc2b2_ae3d));
-    h = fmix32(h ^ (channel.wrapping_mul(8).wrapping_add(sublayer)).wrapping_mul(0x27d4_eb2f));
-    fmix32(h ^ k.wrapping_mul(0x1656_67b1).wrapping_add(0x6a09_e667))
+    let c = HASH_CONSTANTS;
+    let mut h = fmix32(seed ^ c[0]);
+    h = fmix32(h ^ x.wrapping_mul(c[1]));
+    h = fmix32(h ^ y.wrapping_mul(c[2]));
+    h = fmix32(h ^ (channel.wrapping_mul(8).wrapping_add(sublayer)).wrapping_mul(c[3]));
+    fmix32(h ^ k.wrapping_mul(c[4]).wrapping_add(c[5]))
 }
 
 /// `sqrt(3) / 131072`: the factor that turns the integer sum of four centred 16-bit uniforms into a unit normal.
@@ -79,7 +95,7 @@ pub fn normal(seed: u32, x: u32, y: u32, channel: u32, sublayer: u32) -> f64 {
 /// The number of sublayers.
 pub const N_SUBLAYERS: usize = 3;
 /// Entries of a grain amplitude table.
-const LUT_ENTRIES: usize = 1024;
+pub const LUT_ENTRIES: usize = 1024;
 
 #[derive(Deserialize)]
 struct RmsFile {
@@ -266,6 +282,19 @@ impl GrainModel {
             rms_x1000,
             fallback,
         }
+    }
+
+    /// The amplitude table of sublayer `s` of channel `c`: [`LUT_ENTRIES`] values (1,024) at densities `0` to
+    /// [`GrainModel::d_top`]`[c]`, linear between them (the device kernel reads these).
+    #[must_use]
+    pub fn table(&self, c: usize, s: usize) -> &[f64] {
+        &self.lut[c * N_SUBLAYERS + s]
+    }
+
+    /// The density at which each channel's amplitude table ends.
+    #[must_use]
+    pub fn d_top(&self) -> [f64; 3] {
+        self.d_top
     }
 
     /// The amplitude of sublayer `s` of channel `c` at density `d`, in density times um (divide by the pixel's

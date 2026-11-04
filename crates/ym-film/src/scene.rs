@@ -92,6 +92,18 @@ impl SceneStage {
         }
     }
 
+    /// The matrix from linear AWG4 to the adapted XYZ (rows), for the device kernel.
+    #[must_use]
+    pub fn to_adapted_xyz(&self) -> Mat3 {
+        self.to_adapted_xyz
+    }
+
+    /// The polygon of the spectral locus the soft compression measures against, for the device kernel.
+    #[must_use]
+    pub fn locus(&self) -> &[[f64; 2]] {
+        &self.locus
+    }
+
     /// The chromaticity of the reference white.
     #[must_use]
     pub fn white_xy(&self) -> [f64; 2] {

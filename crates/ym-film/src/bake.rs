@@ -560,6 +560,40 @@ pub struct BakedTaps {
     pub logc4: Vec3,
 }
 
+/// What a device kernel reads of a [`BakedFilm`] (`BakedFilm::device_parts`): the numbers the CPU stages
+/// derive per pixel (the film exposure and the print exposure are folded into `log10_gain` and
+/// `print_log10_shift`) and the tables, by reference.
+#[derive(Debug, Clone, Copy)]
+pub struct DeviceParts<'a> {
+    /// Rows of the matrix from linear AWG4 to the adapted XYZ (stage 1).
+    pub scene_to_xyz: [[f64; 3]; 3],
+    /// The reference white's chromaticity.
+    pub scene_white_xy: [f64; 2],
+    /// The locus polygon of the soft gamut compression.
+    pub scene_locus: &'a [[f64; 2]],
+    /// `log10` of the factor from `luminance / 0.18 * T1` to the raw exposure: the mid-grey placement, the
+    /// film exposure and the film's gain.
+    pub log10_gain: f64,
+    /// The coupler amount (0: no couplers).
+    pub coupler_amount: f64,
+    /// The coupler matrix `M`.
+    pub coupler_matrix: [[f64; 3]; 3],
+    /// The print exposure shift of the log-exposure after T3a (`print_stops * log10 2`).
+    pub print_log10_shift: f64,
+    /// T1.
+    pub t1: &'a T1,
+    /// The 1D tables.
+    pub curves: &'a Curves,
+    /// T3a (none for a slide).
+    pub t3a: Option<&'a Table3>,
+    /// T3b′.
+    pub t3b: &'a Table3,
+    /// The output T3b′ was baked for.
+    pub output: Output,
+    /// The core table of the return.
+    pub core: &'static CoreTable,
+}
+
 /// The chain's colour part from tables. Cheap to clone (the tables are shared).
 #[derive(Debug, Clone)]
 pub struct BakedFilm {
@@ -639,6 +673,26 @@ impl BakedFilm {
     #[must_use]
     pub fn t3b(&self) -> &Arc<Table3> {
         &self.t3b
+    }
+
+    /// Everything a device kernel reads of this film, as plain data and borrows (`crates/ym-gpu` `kernels::film`).
+    #[must_use]
+    pub fn device_parts(&self) -> DeviceParts<'_> {
+        DeviceParts {
+            scene_to_xyz: self.scene.to_adapted_xyz(),
+            scene_white_xy: self.scene.white_xy(),
+            scene_locus: self.scene.locus(),
+            log10_gain: self.x_mid + self.exposure_ev * LOG10_2 + self.film_gain,
+            coupler_amount: self.amount,
+            coupler_matrix: self.matrix,
+            print_log10_shift: self.print_stops * LOG10_2,
+            t1: &self.t1,
+            curves: &self.curves,
+            t3a: self.t3a.as_deref(),
+            t3b: &self.t3b,
+            output: self.output,
+            core: self.core,
+        }
     }
 
     /// The core table of the per-pixel return (shared by the process).

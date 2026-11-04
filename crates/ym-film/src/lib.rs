@@ -46,8 +46,12 @@ pub use chain::{FilmChain, PaperChoice, Taps};
 pub use data::{DataDirError, find_data_dir};
 pub use error::FilmError;
 pub use params::{FilmParams, Output};
-pub use profile::{Names, Profile, StockKind, StockName};
+pub use profile::{Names, NamesHeader, Profile, StockKind, StockName};
 pub use spectra::{ReferenceSpectra, Spectra, TableSpectra};
+
+/// The credit line for the film and paper data, where a file or a listing says which data made it
+/// (`docs/24` section 6.2).
+pub const CREDIT_LINE: &str = "Modelled on published data. Film profiles by Andrea Volpato (spektrafilm), CC BY-SA 4.0. Not affiliated with Kodak or Fujifilm.";
 
 /// Number of wavelength samples: 380 to 780 nm in 5 nm steps.
 pub const N_LAMBDA: usize = 81;

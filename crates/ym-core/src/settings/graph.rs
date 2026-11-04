@@ -18,6 +18,10 @@ use serde_json::{Map, Value};
 use ym_color::wb::LightSource;
 use ym_looks::library::LookId;
 
+use super::film::{
+    FILM_EXPOSURE_RANGE_EV, FilmNode, GRAIN_AMOUNT_RANGE, HALATION_AMOUNT_RANGE, LIGHTS_RANGE,
+    PRINT_EXPOSURE_RANGE_EV, SIZE_RANGE, STRENGTH_RANGE,
+};
 use super::masks::MaskSettings;
 use super::{
     AutoOr, BalanceSetting, ColorBalance, ColorBalancePoint, ColorWarp, ContrastSetting, Crop,
@@ -44,6 +48,8 @@ pub const TRIM_RANGE: (f64, f64) = (-100.0, 100.0);
 pub const MAIN_NAME: &str = "Main";
 /// The name a new corrector has.
 pub const DEFAULT_NAME: &str = "Corrector";
+/// The name a new Film node has.
+pub const DEFAULT_FILM_NAME: &str = "Film";
 
 // ---------------------------------------------------------------------------------------------
 // Rules
@@ -159,7 +165,8 @@ impl NodeId {
     /// Main, corrector 1.
     pub const MAIN: NodeId = NodeId::Corrector(MAIN_ID);
 
-    /// The kind a node with this id must be.
+    /// The kind a node with this id is **when the graph is not at hand**: a numbered node reads as a corrector.
+    /// A Film node has a number too, and [`NodeGraph::kind_of`] tells the two apart.
     #[must_use]
     pub fn kind(self) -> NodeKind {
         match self {
@@ -264,6 +271,8 @@ pub enum NodeKind {
     Output,
     /// A corrector.
     Corrector,
+    /// A Film node (`docs/24`).
+    Film,
 }
 
 impl NodeKind {
@@ -274,6 +283,7 @@ impl NodeKind {
             Self::Input => "an input",
             Self::Output => "an output",
             Self::Corrector => "a corrector",
+            Self::Film => "a film node",
         }
     }
 
@@ -284,6 +294,7 @@ impl NodeKind {
             Self::Input => "An input",
             Self::Output => "An output",
             Self::Corrector => "A corrector",
+            Self::Film => "A film node",
         }
     }
 
@@ -294,6 +305,7 @@ impl NodeKind {
             Self::Input => "input",
             Self::Output => "output",
             Self::Corrector => "corrector",
+            Self::Film => "film",
         }
     }
 
@@ -307,6 +319,7 @@ impl NodeKind {
             "input" => Ok(Self::Input),
             "output" => Ok(Self::Output),
             "corrector" => Ok(Self::Corrector),
+            "film" => Ok(Self::Film),
             other => Err(GraphError::UnknownKind(other.to_owned())),
         }
     }
@@ -687,6 +700,8 @@ pub struct NodeGraph {
     pub main: CorrectorNode,
     /// Every other corrector by id.
     pub extra: BTreeMap<u32, CorrectorNode>,
+    /// The Film nodes by id. They share the number space of the correctors (an id is one or the other).
+    pub films: BTreeMap<u32, FilmNode>,
     /// The Output.
     pub output: OutputNode,
     /// The links.
@@ -702,6 +717,7 @@ impl NodeGraph {
             input: InputNode::default(),
             main: CorrectorNode::main(),
             extra: BTreeMap::new(),
+            films: BTreeMap::new(),
             output: OutputNode::with_look(look),
             links: Self::default_links(),
         }
@@ -746,11 +762,51 @@ impl NodeGraph {
         1 + self.extra.len()
     }
 
-    /// The ids of every node in written order: the Input, the correctors by id, the Output.
+    /// The Film node with this id.
+    #[must_use]
+    pub fn film(&self, id: u32) -> Option<&FilmNode> {
+        self.films.get(&id)
+    }
+
+    /// The Film node with this id, to change.
+    pub fn film_mut(&mut self, id: u32) -> Option<&mut FilmNode> {
+        self.films.get_mut(&id)
+    }
+
+    /// The number of numbered nodes: the correctors (Main included) and the Film nodes.
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.corrector_count() + self.films.len()
+    }
+
+    /// The numbered nodes with their kinds, by id.
+    #[must_use]
+    pub fn numbered(&self) -> Vec<(u32, NodeKind)> {
+        let mut v: Vec<(u32, NodeKind)> = self
+            .correctors()
+            .map(|(id, _)| (id, NodeKind::Corrector))
+            .chain(self.films.keys().map(|id| (*id, NodeKind::Film)))
+            .collect();
+        v.sort_by_key(|(id, _)| *id);
+        v
+    }
+
+    /// What kind of node `id` is in this graph, or `None` when the graph has no such node.
+    #[must_use]
+    pub fn kind_of(&self, id: NodeId) -> Option<NodeKind> {
+        match id {
+            NodeId::Input => Some(NodeKind::Input),
+            NodeId::Output => Some(NodeKind::Output),
+            NodeId::Corrector(n) if self.films.contains_key(&n) => Some(NodeKind::Film),
+            NodeId::Corrector(n) => self.corrector(n).map(|_| NodeKind::Corrector),
+        }
+    }
+
+    /// The ids of every node in written order: the Input, the numbered nodes by id, the Output.
     #[must_use]
     pub fn ids(&self) -> Vec<NodeId> {
         std::iter::once(NodeId::Input)
-            .chain(self.correctors().map(|(id, _)| NodeId::Corrector(id)))
+            .chain(self.numbered().into_iter().map(|(id, _)| NodeId::Corrector(id)))
             .chain(std::iter::once(NodeId::Output))
             .collect()
     }
@@ -758,10 +814,7 @@ impl NodeGraph {
     /// Whether the graph has this node.
     #[must_use]
     pub fn has(&self, id: NodeId) -> bool {
-        match id {
-            NodeId::Input | NodeId::Output => true,
-            NodeId::Corrector(n) => self.corrector(n).is_some(),
-        }
+        self.kind_of(id).is_some()
     }
 
     /// A node's place in the written order (its index in `items`).
@@ -769,8 +822,14 @@ impl NodeGraph {
     pub fn item_index(&self, id: NodeId) -> usize {
         match id {
             NodeId::Input => 0,
-            NodeId::Corrector(n) => 1 + self.correctors().take_while(|(i, _)| *i < n).count(),
-            NodeId::Output => 1 + self.corrector_count(),
+            NodeId::Corrector(n) => {
+                1 + self
+                    .numbered()
+                    .into_iter()
+                    .take_while(|(i, _)| *i < n)
+                    .count()
+            }
+            NodeId::Output => 1 + self.node_count(),
         }
     }
 
@@ -780,7 +839,10 @@ impl NodeGraph {
         match id {
             NodeId::Input => Some(self.input.pos),
             NodeId::Output => Some(self.output.pos),
-            NodeId::Corrector(n) => self.corrector(n).map(|c| c.pos),
+            NodeId::Corrector(n) => self
+                .corrector(n)
+                .map(|c| c.pos)
+                .or_else(|| self.film(n).map(|f| f.pos)),
         }
     }
 
@@ -790,13 +852,15 @@ impl NodeGraph {
         if unplaced.contains(&NodeId::Input) {
             self.input.pos = INPUT_POS;
         }
-        let count = self.corrector_count();
-        let ids: Vec<u32> = self.correctors().map(|(id, _)| id).collect();
-        for (k, id) in ids.into_iter().enumerate() {
-            if unplaced.contains(&NodeId::Corrector(id))
-                && let Some(c) = self.corrector_mut(id)
-            {
+        let count = self.node_count();
+        for (k, (id, _)) in self.numbered().into_iter().enumerate() {
+            if !unplaced.contains(&NodeId::Corrector(id)) {
+                continue;
+            }
+            if let Some(c) = self.corrector_mut(id) {
                 c.pos = [k as f64, 0.0];
+            } else if let Some(f) = self.film_mut(id) {
+                f.pos = [k as f64, 0.0];
             }
         }
         if unplaced.contains(&NodeId::Output) {
@@ -820,7 +884,7 @@ impl NodeGraph {
     ///
     /// The first rule that is broken, as a [`GraphError`].
     pub fn check(&self) -> Result<(), GraphError> {
-        if self.corrector_count() > MAX_CORRECTORS {
+        if self.node_count() > MAX_CORRECTORS {
             return Err(GraphError::TooManyNodes);
         }
         let ports_out = |n: NodeId| match n {
@@ -934,10 +998,21 @@ impl Serialize for NodeGraph {
             }
             Ok(v)
         }
-        let mut items = Vec::with_capacity(self.corrector_count() + 2);
+        let mut items = Vec::with_capacity(self.node_count() + 2);
         items.push(item(NodeId::Input, NodeKind::Input, &self.input)?);
-        for (id, c) in self.correctors() {
-            items.push(item(NodeId::Corrector(id), NodeKind::Corrector, c)?);
+        for (id, kind) in self.numbered() {
+            match kind {
+                NodeKind::Film => {
+                    if let Some(f) = self.film(id) {
+                        items.push(item(NodeId::Corrector(id), NodeKind::Film, f)?);
+                    }
+                }
+                _ => {
+                    if let Some(c) = self.corrector(id) {
+                        items.push(item(NodeId::Corrector(id), NodeKind::Corrector, c)?);
+                    }
+                }
+            }
         }
         items.push(item(NodeId::Output, NodeKind::Output, &self.output)?);
         let mut map = serializer.serialize_map(Some(2))?;
@@ -972,6 +1047,9 @@ pub(crate) fn node_fields(kind: NodeKind) -> &'static [&'static str] {
         ],
         NodeKind::Output => &["look", "look_intensity", "output_sharpening"],
         NodeKind::Corrector => &["name", "bypass", "trim", "grade", "masks"],
+        NodeKind::Film => &[
+            "name", "bypass", "film", "print", "halation", "grain", "strength", "masks",
+        ],
     }
 }
 
@@ -1044,6 +1122,7 @@ impl NodeGraph {
                 (NodeId::Input, None | Some(NodeKind::Input)) => NodeKind::Input,
                 (NodeId::Output, None | Some(NodeKind::Output)) => NodeKind::Output,
                 (NodeId::Corrector(_), Some(NodeKind::Corrector)) => NodeKind::Corrector,
+                (NodeId::Corrector(n), Some(NodeKind::Film)) if n != MAIN_ID => NodeKind::Film,
                 (NodeId::Corrector(n), None) if n == MAIN_ID => NodeKind::Corrector,
                 (NodeId::Corrector(_), None) => {
                     return Err(GraphError::NeedsKind(id.to_string()).into());
@@ -1077,6 +1156,14 @@ impl NodeGraph {
                     }
                     graph.output = out;
                 }
+                NodeId::Corrector(n) if kind == NodeKind::Film => {
+                    let named = map.contains_key("name");
+                    let mut node: FilmNode = read_node(map)?;
+                    if !named {
+                        node.name = DEFAULT_FILM_NAME.to_owned();
+                    }
+                    graph.films.insert(n, node);
+                }
                 NodeId::Corrector(n) => {
                     let named = map.contains_key("name");
                     let graded = map.contains_key("grade");
@@ -1105,7 +1192,8 @@ impl NodeGraph {
         if let Some(v) = links {
             graph.links = serde_json::from_value(v).map_err(parse_error)?;
         }
-        if !graph.extra.is_empty() && !placed.contains(&NodeId::Output) {
+        if (!graph.extra.is_empty() || !graph.films.is_empty()) && !placed.contains(&NodeId::Output)
+        {
             // Correctors were added: the Output goes to the end of the row.
             unplaced.insert(NodeId::Output);
         }
@@ -1117,8 +1205,13 @@ impl NodeGraph {
 /// Whether `key` is a field of some node kind (so that a known field on the wrong kind is told
 /// from a typo, which serde reports with its own words).
 fn is_field_of_some_kind(key: &str) -> bool {
-    [NodeKind::Input, NodeKind::Output, NodeKind::Corrector]
-        .iter()
+    [
+        NodeKind::Input,
+        NodeKind::Output,
+        NodeKind::Corrector,
+        NodeKind::Film,
+    ]
+    .iter()
         .any(|k| node_fields(*k).contains(&key))
 }
 

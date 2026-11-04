@@ -437,9 +437,23 @@ pub struct StockName {
     pub hidden: bool,
 }
 
+/// The `_header` of `names.json`: the parts the program reads.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NamesHeader {
+    /// The version of the spektrafilm profiles the folder holds (`ATTRIBUTION.md`).
+    #[serde(default)]
+    pub profile_version: Option<String>,
+    /// The line that goes with every stock name: "Modelled on published data. Not affiliated with ...".
+    #[serde(default)]
+    pub disclaimer: Option<String>,
+}
+
 /// The parsed `names.json`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Names {
+    /// The header: the profile data version and the disclaimer.
+    #[serde(rename = "_header", default)]
+    pub header: NamesHeader,
     /// Every stock.
     pub stocks: Vec<StockName>,
 }
@@ -458,6 +472,12 @@ impl Names {
         })?;
         serde_json::from_slice(&bytes)
             .map_err(|e| FilmError::data("names.json", format!("it does not parse ({e})")))
+    }
+
+    /// The version of the profile data (for example `0.3.2`), or `unknown` when `names.json` does not say.
+    #[must_use]
+    pub fn profile_version(&self) -> &str {
+        self.header.profile_version.as_deref().unwrap_or("unknown")
     }
 
     /// The row for `id`.
