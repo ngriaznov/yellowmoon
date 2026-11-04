@@ -2,7 +2,7 @@
 
 A **Film node** is a node that makes a photo look as if it had been shot on a colour film, printed on paper and scanned. It simulates a negative, an enlarger, a print and a scan, from published film and paper data, with our own engine (`ym-film`, Apache-2.0). The film and paper profiles are Andrea Volpato's spektrafilm profiles (CC BY-SA 4.0), shipped unmodified as separate, credited data files. This file covers what the node is, where it sits in the graph and how it keeps the picture's colour, the engine, the controls, the data and its licences, the tests, the risks and the tasks.
 
-**Status: Planned, not scheduled. Comes after milestone N (0.2.0) when the owner schedules it.**
+**Status: Scheduled (the owner, 2026-11-04: "let's continue film-node now and actually add film node"), on branch `film` after 0.2.0. The mockup round (F-01) is the first step.**
 
 It is **not in 0.2.0**. Nothing here is built, and the Add node menu of `docs/23` does not list the Film node until it is. **There are no mockups yet.** The owner's process is "first we imagine UI, then we plan": a mockup round (F-01) comes before the node is built, and §4 is a brief for that round, not a design. The facts behind this file, with sources and quotes, are in `research/film-spektrafilm-2026-11-01.md`. The owner's decisions are in §1.3 and `docs/16` (*Licensing and data*).
 
@@ -43,6 +43,16 @@ A slide film (a positive) skips the print and is scanned directly. Cine negative
 | "Ok, spektrafilm has it's own license, check it out: https://github.com/andreavolpato/spektrafilm" | the licence check: code GPL-3.0, profiles CC BY-SA 4.0 (`research/film-spektrafilm-2026-11-01.md` §2) |
 | The recommendation was our own Apache-2.0 engine that reads the film and paper profiles, shipped as CC BY-SA 4.0 data with full credit. The owner: **"ok, do a new branch and describe how we will ship spektrafilm as a new Film node that we will add later"** | this plan: the engine is ours, the data is Andrea Volpato's, the node comes after milestone N |
 | **"Credited, of course"** | the credit lines of §6.2 |
+
+**Decided 2026-11-04** (F-H0, F-H2 and items 1, 3, 4 and 9 of §9):
+
+| Question | The owner's answer | What it means |
+|---|---|---|
+| Schedule (F-H0) | "let's continue film-node now and actually add film node" | milestone F starts now, on branch `film` |
+| Write to the author and to hanatos (§7, F-H2) | **"It's fine just to mention Volpato"** | no letter; the profiles are credited to Andrea Volpato as §6.2 says. The engine is written clean-room from the papers (§3.1 stays in force: the shingle check of F-06 and the module headers), and its own spectral table (§3.3). F-H2 is closed and F-03 does not wait |
+| Variant A or B (§2) | **A: back to scene colour** | the node returns LogC4 / AWG4 through the inverse of the cine rendering; A+ stays an optimisation for after F-04 |
+| Stock names (§6.5) | **Real names with the disclaimer** (option 1) | "Kodak Portra 400" as data in `data/film/params/names.json`, with "Modelled on published data. Not affiliated with Kodak or Fujifilm." The trademark check (F-H4, with M4-H3) still comes before a release |
+| CIE tables (§6.4, §9 item 9) | **Ship them as a separate credited file** | `data/film/cie/` with its own `LICENSE` and credit, as the profiles |
 
 Shipping CC BY-SA data as separate, credited files is new for this project (weights trained on CC BY-SA data are the earlier case, `docs/14` rule 5); these answers allow it. `docs/14` and `docs/16` record it.
 
