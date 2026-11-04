@@ -66,6 +66,7 @@ impl Scan {
         let (to_xyz, from_xyz) = match output {
             Output::Srgb => (m.rec709_to_xyz, m.xyz_to_rec709),
             Output::DisplayP3 => (m.p3_to_xyz, m.xyz_to_p3),
+            Output::Rec2020 => (m.rec2020_to_xyz, m.xyz_to_rec2020),
         };
         let d50_white = cie.xyz_of_light(&ill, true);
         let d65_white = xy_to_xyz(D65_XY);

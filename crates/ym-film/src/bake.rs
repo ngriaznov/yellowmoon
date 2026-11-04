@@ -1225,6 +1225,7 @@ impl Baker {
             output: match chain.params().output {
                 Output::Srgb => 0,
                 Output::DisplayP3 => 1,
+                Output::Rec2020 => 2,
             },
             size,
             power: power.to_bits(),

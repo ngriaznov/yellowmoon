@@ -332,3 +332,112 @@ fn the_colour_stage_of_a_dng_with_a_film_node_runs_on_the_device_and_agrees_with
     assert!(max < 2e-2, "{max}");
     let _ = OutputTarget::Srgb;
 }
+
+// ---- the fallback (`docs/17-gpu.md` section 9) ---------------------------------------------------------------
+
+/// `--features fault-injection` (without it these tests are empty).
+#[cfg(feature = "fault-injection")]
+mod fallback {
+    use super::*;
+    use ym_gpu::device::GpuFault;
+
+    fn bytes(path: &Path) -> Vec<u8> {
+        std::fs::read(path).expect("read")
+    }
+
+    fn png_options(out: &Path) -> ExportOptions {
+        ExportOptions {
+            format: FormatKind::Png,
+            bit_depth: BitDepth::Sixteen,
+            destination: Some(out.to_path_buf()),
+            if_exists: IfExists::Replace,
+            ..ExportOptions::default()
+        }
+    }
+
+    /// A frame our own check refuses is the CPU's, with the note, and the next frame is the device's: a Film node is
+    /// no different from the other kernels, and the viewport's pill says CPU for the frame that was refused
+    /// (`RenderReport::device_refused`).
+    #[test]
+    fn a_refused_film_frame_costs_one_cpu_frame_and_leaves_the_route_open() {
+        let Some(gpu) = gpu(true) else { return };
+        let d = photo();
+        let src = d.source().with_settings(one_film(busy()));
+        let r = renderer(Some(Arc::clone(&gpu)), 256);
+        let st = view(false);
+        let device = frame(&r, &src, &st);
+        assert_eq!(device.report.device, ComputeDevice::Gpu);
+        gpu.set_fault(Some(GpuFault::FailInvalid(1)));
+        let refused = frame(&r, &src, &st);
+        gpu.set_fault(None);
+        assert_eq!(refused.report.device, ComputeDevice::Cpu);
+        assert!(refused.report.device_refused);
+        assert!(
+            refused
+                .report
+                .notes
+                .iter()
+                .any(|n| n.contains("invalid kernel input")),
+            "{:?}",
+            refused.report.notes
+        );
+        assert!(!r.raw_on_cpu(src.id), "the route is still open");
+        let (max, ..) = frame_diff(&refused, &device);
+        assert!(max <= 3, "{max} codes");
+        let next = frame(&r, &src, &st);
+        assert_eq!(next.report.device, ComputeDevice::Gpu);
+        assert!(!next.report.device_refused);
+    }
+
+    /// A device error in the export makes the whole photo again on the CPU: the CPU export, bit for bit, with the note.
+    #[test]
+    fn a_device_error_on_a_film_export_makes_the_photo_again_on_the_cpu_bit_for_bit() {
+        let Some(gpu) = gpu(true) else { return };
+        let d = photo();
+        let settings = one_film(busy());
+        let home = tempfile::tempdir().expect("dir");
+        let cpu_dir = tempfile::tempdir().expect("dir");
+        let ctx = ExportContext::new(renderer(None, 256)).with_home(Some(home.path().to_path_buf()));
+        let mut photo = ExportPhoto::from_session(&d.session, d.id).expect("export photo");
+        photo.source = photo.source.with_settings(settings);
+        let cpu = export_photo(
+            &ctx,
+            &photo,
+            &ExportParams::new(png_options(cpu_dir.path())),
+            &ExportControl::none(),
+        )
+        .expect("cpu export");
+        for fault in [GpuFault::Shader, GpuFault::OutOfBudget, GpuFault::Lost] {
+            // A device that is lost stays lost: each case gets a device of its own.
+            let own = if matches!(fault, GpuFault::Lost) {
+                Arc::new(Gpu::start(GpuConfig::default()).expect("device"))
+            } else {
+                Arc::clone(&gpu)
+            };
+            let ctx = ExportContext::new(renderer(Some(Arc::clone(&own)), 256))
+                .with_home(Some(home.path().to_path_buf()));
+            let out = tempfile::tempdir().expect("dir");
+            own.set_fault(Some(fault));
+            let done = export_photo(
+                &ctx,
+                &photo,
+                &ExportParams::new(png_options(out.path())),
+                &ExportControl::none(),
+            );
+            own.set_fault(None);
+            let done = done.unwrap_or_else(|e| panic!("{fault:?}: {e}"));
+            assert_eq!(done.device, ComputeDevice::Cpu, "{fault:?}");
+            assert!(
+                done.notes.iter().any(|n| n
+                    .contains("The graphics card could not render this photo, so the CPU did")),
+                "{fault:?}: {:?}",
+                done.notes
+            );
+            assert_eq!(
+                bytes(&done.path),
+                bytes(&cpu.path),
+                "{fault:?}: the fallback is not the CPU export"
+            );
+        }
+    }
+}

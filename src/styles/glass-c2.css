@@ -2143,7 +2143,7 @@ button[data-slot="button"][data-variant="link"]:not([aria-disabled="true"]) {
 /* The Print tab of a slide: the sentence, then the controls dimmed. */
 .ym-film-slide {
   margin: 0;
-  padding: 14px 0 6px;
+  padding: 14px var(--pad-panel) 6px;
   color: var(--glass-label);
   font-size: var(--fs-body);
   font-weight: var(--fw-bold);
@@ -2184,7 +2184,7 @@ button[data-slot="button"][data-variant="link"]:not([aria-disabled="true"]) {
 /* The credit line at the foot of the Film tab and in About. */
 .ym-film-credit {
   margin: 0;
-  padding: 18px 0 8px;
+  padding: 18px var(--pad-panel) 8px;
   color: var(--glass-label-secondary);
   font-size: 13px;
   line-height: 1.5;

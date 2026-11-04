@@ -247,13 +247,15 @@ impl std::fmt::Debug for FilmEngine {
 }
 
 /// The output the baked film is made for (`docs/24` section 2.2: the scan is in the output's primaries).
-/// A Rec.2020 export uses the Display P3 tables.
+/// A Rec.2020 export uses its own tables (the print is scanned and returned in the Rec.2020 gamut); the viewport and a
+/// Display P3 export use the Display P3 ones, an sRGB export the sRGB ones.
 #[must_use]
 pub fn film_output(target: ym_color::display::OutputTarget) -> Output {
     use ym_color::display::OutputTarget as T;
     match target {
         T::Srgb => Output::Srgb,
-        T::Viewport | T::DisplayP3 | T::Rec2020 => Output::DisplayP3,
+        T::Viewport | T::DisplayP3 => Output::DisplayP3,
+        T::Rec2020 => Output::Rec2020,
     }
 }
 
@@ -532,6 +534,7 @@ fn output_to_xyz(output: Output) -> [[f64; 3]; 3] {
     match output {
         Output::Srgb => m.rec709_to_xyz,
         Output::DisplayP3 => m.p3_to_xyz,
+        Output::Rec2020 => m.rec2020_to_xyz,
     }
 }
 

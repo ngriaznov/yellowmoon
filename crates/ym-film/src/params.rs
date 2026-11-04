@@ -20,6 +20,8 @@ pub enum Output {
     Srgb,
     /// Display P3 primaries (the viewport and a P3 export).
     DisplayP3,
+    /// Rec.2020 primaries (a Rec.2020 export): the print is scanned and returned in its own gamut.
+    Rec2020,
 }
 
 impl Output {
@@ -29,6 +31,7 @@ impl Output {
         match self {
             Self::Srgb => OutputTarget::Srgb,
             Self::DisplayP3 => OutputTarget::DisplayP3,
+            Self::Rec2020 => OutputTarget::Rec2020,
         }
     }
 }

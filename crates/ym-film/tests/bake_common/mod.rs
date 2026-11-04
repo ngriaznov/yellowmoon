@@ -75,6 +75,7 @@ pub fn output_space(o: Output) -> OutputSpace {
     match o {
         Output::Srgb => OutputSpace::Srgb,
         Output::DisplayP3 => OutputSpace::DisplayP3,
+        Output::Rec2020 => OutputSpace::Rec2020,
     }
 }
 

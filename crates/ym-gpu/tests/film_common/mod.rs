@@ -78,6 +78,7 @@ pub fn output_to_xyz(o: Output) -> [[f64; 3]; 3] {
     match o {
         Output::Srgb => m.rec709_to_xyz,
         Output::DisplayP3 => m.p3_to_xyz,
+        Output::Rec2020 => m.rec2020_to_xyz,
     }
 }
 
@@ -221,6 +222,7 @@ pub fn output_space(o: Output) -> OutputSpace {
     match o {
         Output::Srgb => OutputSpace::Srgb,
         Output::DisplayP3 => OutputSpace::DisplayP3,
+        Output::Rec2020 => OutputSpace::Rec2020,
     }
 }
 
@@ -228,6 +230,7 @@ pub fn output_target(o: Output) -> OutputTarget {
     match o {
         Output::Srgb => OutputTarget::Srgb,
         Output::DisplayP3 => OutputTarget::DisplayP3,
+        Output::Rec2020 => OutputTarget::Rec2020,
     }
 }
 
