@@ -46,3 +46,31 @@ fn t3b_regions() {
         eprintln!("{nm}: n {n} max {:.2} p99 {:.2} med {:.3}", v[n-1], v[n*99/100], v[n/2]);
     }
 }
+
+#[test]
+fn worst() {
+    let out = Output::DisplayP3;
+    let cine = CineRendering::new(out.target());
+    let space = output_space(out);
+    let c = chain("kodak_portra_400", out);
+    let b = baker(4);
+    let f = b.bake(&c, &BakeSettings { t3b_size: 65, ..BakeSettings::of(&c) }).unwrap();
+    let hi = f.t3b().axis_max();
+    let mut rng = Rng(3);
+    let mut rows = Vec::new();
+    for _ in 0..40000 {
+        let d = [hi[0]*rng.unit(), hi[1]*rng.unit(), hi[2]*rng.unit()];
+        let disp = c.scan_stage().display(d);
+        let inv = cine.inverse(disp);
+        let exact = ym_color::logc::logc4_encode_rgb(inv.scene.0);
+        let q = f.t3b().sample(d);
+        let ca = codes10(&cine, space, exact);
+        let cq = codes10(&cine, space, q);
+        let e = (0..3).map(|k| (ca[k]-cq[k]).abs()).fold(0.0, f64::max);
+        rows.push((e, d, disp, inv.chroma_fraction, exact, q, ca, cq));
+    }
+    rows.sort_by(|a,b| b.0.partial_cmp(&a.0).unwrap());
+    for r in rows.iter().take(8) {
+        eprintln!("err {:.1} D {:.3?} disp {:.3?} cf {:.3} exact {:.3?} interp {:.3?}\n   codes {:.1?} vs {:.1?}", r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7);
+    }
+}
