@@ -240,3 +240,67 @@ pub fn mild_colours(n: usize, seed: u64) -> Vec<[f64; 3]> {
         })
         .collect()
 }
+
+/// The stocks, sizes and outputs a report run covers, from the environment (so one command runs all of it and a
+/// shorter one runs a part): `YM_BAKE_STOCKS` (comma-separated ids; default the eight), `YM_BAKE_SIZES` (T3b
+/// sizes; default `65,81,97`), `YM_BAKE_OUTPUTS` (`p3`, `srgb`; default both), `YM_BAKE_STRIDE` (every n-th pixel
+/// of the photos in each direction; default 6).
+pub struct ReportPlan {
+    pub stocks: Vec<String>,
+    pub sizes: Vec<usize>,
+    pub outputs: Vec<ym_film::Output>,
+    pub stride: usize,
+}
+
+impl ReportPlan {
+    pub fn from_env() -> Self {
+        let get = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let list = |k: &str| get(k).map(|v| v.split(',').map(str::to_owned).collect::<Vec<_>>());
+        Self {
+            stocks: list("YM_BAKE_STOCKS")
+                .unwrap_or_else(|| EIGHT.iter().map(|s| (*s).to_owned()).collect()),
+            sizes: list("YM_BAKE_SIZES").map_or_else(
+                || vec![65, 81, 97],
+                |v| v.iter().filter_map(|s| s.parse().ok()).collect(),
+            ),
+            outputs: list("YM_BAKE_OUTPUTS").map_or_else(
+                || vec![ym_film::Output::DisplayP3, ym_film::Output::Srgb],
+                |v| {
+                    v.iter()
+                        .map(|s| {
+                            if s == "srgb" {
+                                ym_film::Output::Srgb
+                            } else {
+                                ym_film::Output::DisplayP3
+                            }
+                        })
+                        .collect()
+                },
+            ),
+            stride: get("YM_BAKE_STRIDE")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(6),
+        }
+    }
+}
+
+/// Every pixel of every photo in one list.
+pub fn photo_pixels(stride: usize) -> Vec<[f64; 3]> {
+    load_photos(stride)
+        .iter()
+        .flat_map(|p| p.pixels.iter().copied())
+        .collect()
+}
+
+/// The 10-bit codes of two lists of LogC4 colours compared pairwise: the largest difference of each pair.
+pub fn code_diffs(
+    cine: &CineRendering,
+    space: OutputSpace,
+    a: &[[f64; 3]],
+    b: &[[f64; 3]],
+) -> Vec<(f64, u32)> {
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| code_diff(cine, space, *x, *y))
+        .collect()
+}

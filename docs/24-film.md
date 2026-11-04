@@ -53,6 +53,9 @@ A slide film (a positive) skips the print and is scanned directly. Cine negative
 | Variant A or B (§2) | **A: back to scene colour** | the node returns LogC4 / AWG4 through the inverse of the cine rendering; A+ stays an optimisation for after F-04 |
 | Stock names (§6.5) | **Real names with the disclaimer** (option 1) | "Kodak Portra 400" as data in `data/film/params/names.json`, with "Modelled on published data. Not affiliated with Kodak or Fujifilm." The trademark check (F-H4, with M4-H3) still comes before a release |
 | CIE tables (§6.4, §9 item 9) | **Ship them as a separate credited file** | `data/film/cie/` with its own `LICENSE` and credit, as the profiles |
+| Tune our models toward the oracle (§8, F-06) | **"Tune toward its outputs"** | our enlarger, lamp, paper exposure and spectral reading are fitted to spektrafilm's outputs only (black box, never its code), as the window was; the oracle's gates stay as written |
+| The baking error on random colours (§3.8a, §8, F-04) | **"Gate photos, report random"** | the gate holds on every pixel of the 20 test photos × the 8 stocks; random colours are measured and reported, not gated |
+| Grain amplitude without data-sheet figures (§3.9a, F-05) | **"Formula for now"** | every stock uses the ISO formula of `data/film/params/grain.json` until per-stock RMS granularity is entered |
 | Running spektrafilm as the test oracle (§3.1, §8) | **"You can use spectrafilm, but never commit its code into our repo"** | its Python runs from a scratch virtualenv as a separate process, as a black-box oracle (F-06); none of its files enters the repository; the fixtures are numbers (CC BY-SA 4.0, credited) |
 
 Shipping CC BY-SA data as separate, credited files is new for this project (weights trained on CC BY-SA data are the earlier case, `docs/14` rule 5); these answers allow it. `docs/14` and `docs/16` record it.
