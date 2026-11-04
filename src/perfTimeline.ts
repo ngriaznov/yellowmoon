@@ -206,7 +206,7 @@ export function installTimeline(enabled: boolean, send: (json: string) => void, 
   win.addEventListener("pointermove", move, { capture: true, passive: true });
   win.addEventListener("keydown", key, { capture: true, passive: true });
   win.addEventListener("pointerdown", down, { capture: true, passive: true });
-  const observer = new win.MutationObserver(() => timeline.mutated());
+  const observer = new MutationObserver(() => timeline.mutated());
   observer.observe(win.document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
   timeline.start();
   return () => {

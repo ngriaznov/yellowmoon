@@ -48,6 +48,12 @@ export const commands = {
 	getSettings: (photoId: PhotoId) => __TAURI_INVOKE<ResolvedSettings>("get_settings", { photoId }),
 	/**  `update_settings(photo_id, patch)`: any control change; returns the settings resolved. */
 	updateSettings: (photoId: PhotoId, patch: SettingsPatch) => __TAURI_INVOKE<ResolvedSettings>("update_settings", { photoId, patch }),
+	/**
+	 *  `perf_report(report)`: the page's stamps of the slider ticks and clicks of the last second, as a string of JSON
+	 *  (`src/perfTimeline.ts`), joined with the shell's own and written to the local log (`timeline`). Sent only when the page was told to
+	 *  measure (`YM_PERF`); with the switch off it does nothing. Nothing leaves the machine.
+	 */
+	perfReport: (report: string) => __TAURI_INVOKE<null>("perf_report", { report }),
 	/**  `apply_look(scope, look_id, intensity)`: to This photo, the Picked photos or All. */
 	applyLook: (scope: ApplyScope, lookId: LookId, intensity: number) => __TAURI_INVOKE<null>("apply_look", { scope, lookId, intensity }),
 	/**  `rerun_auto(photo_id)`: recomputes the automatic estimates. */

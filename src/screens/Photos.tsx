@@ -26,6 +26,7 @@ import { Menu } from "./Menu";
 import { Divider } from "./nodes/Divider";
 import { GraphArea } from "./nodes/GraphArea";
 import type { GraphAreaProps } from "./nodes/GraphArea";
+import { useGraphView } from "./nodes/graphView";
 import { hasHandles } from "./nodes/maskGeometry";
 import { NodePanel } from "./nodes/NodePanel";
 import { nodesGlyphText, NodesNotice } from "./nodes/NodesNotice";
@@ -215,38 +216,45 @@ function ExportCellContainer({ store }: { store: AppStore }) {
   return <ExportCell label={label} current={exporting} progress={progress} onClick={() => (store.getState().panel === "export" ? store.closeExport() : store.openExport())} />;
 }
 
-type NodeLayoutValue = ReturnType<typeof useNodeLayout>;
-
 interface GraphHostProps extends Omit<GraphAreaProps, "expanded" | "onToggleExpanded" | "hidden"> {
   /** The node view is on. Off, the graph stays built and hidden. */
   active: boolean;
-  layout: NodeLayoutValue;
+  /** The divider's place and Expand (`useNodeLayout`), as values and stable functions: the host is drawn again only when one of them changes. */
+  editor: number;
+  area: number;
+  min: number;
+  max: number;
+  expanded: boolean;
+  onResize: (editorPx: number) => void;
+  onNudge: (deltaPx: number) => void;
+  onResetDivider: () => void;
+  onToggleExpanded: () => void;
+}
+
+/** Whether two sets of props hold the same values, one by one. */
+function sameProps<P extends object>(a: P, b: P): boolean {
+  const x = a as Record<string, unknown>;
+  const y = b as Record<string, unknown>;
+  const keys = Object.keys(x);
+  return keys.length === Object.keys(y).length && keys.every((key) => Object.is(x[key], y[key]));
 }
 
 /**
  * The divider and the graph of the node view. Opening the node view builds the graph (xyflow, the cards, their shadows), which takes 300 to
  * 500 ms; the first opening pays it and closing only hides it, so the next opening is a change of `hidden` (U-02). While it is hidden
- * it is not drawn again when the screen draws.
+ * it is not drawn again when the screen draws, and while it is shown it is drawn again only when its props change: the settings it gets are
+ * the graph's view of them (`useGraphView`), the same object through a drag of the panel's sliders.
  */
 const GraphHost = memo(
-  function GraphHost({ active, layout, ...area }: GraphHostProps) {
+  function GraphHost({ active, editor, area, min, max, expanded, onResize, onNudge, onResetDivider, onToggleExpanded, ...graph }: GraphHostProps) {
     return (
       <>
-        <Divider
-          editor={layout.editor}
-          area={layout.area}
-          min={layout.min}
-          max={layout.max}
-          onResize={layout.setEditor}
-          onNudge={layout.nudge}
-          onReset={layout.reset}
-          hidden={!active}
-        />
-        <GraphArea {...area} expanded={layout.expanded} onToggleExpanded={layout.toggleExpanded} hidden={!active} />
+        <Divider editor={editor} area={area} min={min} max={max} onResize={onResize} onNudge={onNudge} onReset={onResetDivider} hidden={!active} />
+        <GraphArea {...graph} expanded={expanded} onToggleExpanded={onToggleExpanded} hidden={!active} />
       </>
     );
   },
-  (prev, next) => !prev.active && !next.active,
+  (prev, next) => (!prev.active && !next.active) || sameProps(prev, next),
 );
 
 /**
@@ -385,6 +393,7 @@ export function Photos() {
   // The photos whose graph has more than the simple view shows (a glyph on their thumbnails): a Map that is the same while the answer is.
   const hiddenNodes = useAppState((s) => hiddenByPhoto(s.settings));
   const graph = useNodeGraph({ store, settings: graphSettings, photoId: photo?.id ?? null, selected: onNode, select: setSelectedNode });
+  const graphView = useGraphView(graphSettings);
   // A card shows the picture after its node (`docs/23` §5.7), which the store asks the core for while the node view is on (when a change
   // has landed, never during a drag). Until a node's first picture arrives its card shows the photo's thumbnail, the filmstrip's.
   useEffect(() => (nodesOn ? store.watchNodeThumbnails() : undefined), [store, nodesOn]);
@@ -840,6 +849,9 @@ export function Photos() {
   }
 
   const exporting = panel === "export";
+  const onPreviousPhoto = useStableCallback(() => stepPhoto(-1));
+  const onNextPhoto = useStableCallback(() => stepPhoto(1));
+  const onToggleMask = useStableCallback(() => store.toggleMaskView());
   const onCropButton = useStableCallback(() => (cropping ? crop.session?.cancel() : startCrop()));
   const onNodesButton = useStableCallback(toggleNodes);
 
@@ -931,19 +943,27 @@ export function Photos() {
       {showGraph ? (
         <GraphHost
           active={nodesOn}
-          layout={nodeLayout}
+          editor={nodeLayout.editor}
+          area={nodeLayout.area}
+          min={nodeLayout.min}
+          max={nodeLayout.max}
+          expanded={nodeLayout.expanded}
+          onResize={nodeLayout.setEditor}
+          onNudge={nodeLayout.nudge}
+          onResetDivider={nodeLayout.reset}
+          onToggleExpanded={nodeLayout.toggleExpanded}
           position={session && session.current_index !== null ? session.current_index + 1 : null}
           count={photos.length}
-          onPrevious={() => stepPhoto(-1)}
-          onNext={() => stepPhoto(1)}
-          settings={graphSettings}
+          onPrevious={onPreviousPhoto}
+          onNext={onNextPhoto}
+          settings={graphView}
           photoKey={photo?.id ?? null}
           selected={onNode}
           graph={graph}
           thumbnailOf={thumbnailOf}
           dimmed={cropping || exporting}
           maskOn={maskOn}
-          onToggleMask={() => store.toggleMaskView()}
+          onToggleMask={onToggleMask}
         />
       ) : null}
 

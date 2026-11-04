@@ -1,6 +1,8 @@
 import { Item, ItemContent, ItemDescription, ItemTitle } from "@/components/glass/item";
 import { RadioGroup, RadioGroupItem } from "@/components/glass/radio-group";
+import type { ReactNode } from "react";
 import { cx } from "./cx";
+import { memoStable, sameWithOptions } from "./stable";
 
 /** One choice of a `ChoiceList`. */
 export interface ChoiceOption<T extends string> {
@@ -28,7 +30,7 @@ export interface ChoiceListProps<T extends string> {
  * the arrows move and choose, wrapping at the ends). A click anywhere on a row chooses it. The chosen row is ringed in the tab colour, as
  * the look in use is, and its circle takes the same colour; a row's accessible name is its name followed by its line.
  */
-export function ChoiceList<T extends string>({ options, value, onChange, label, disabled = false, className }: ChoiceListProps<T>) {
+function ChoiceListImpl<T extends string>({ options, value, onChange, label, disabled = false, className }: ChoiceListProps<T>) {
   return (
     <RadioGroup aria-label={label} value={value} onValueChange={(next) => onChange(next as T)} disabled={disabled} className={cx("ym-choice-list", className)}>
       {options.map((option) => (
@@ -51,3 +53,6 @@ export function ChoiceList<T extends string>({ options, value, onChange, label, 
     </RadioGroup>
   );
 }
+
+/** Drawn again only when its data changes, not for new `onChange` or `options` objects with the same content (U-02). */
+export const ChoiceList = memoStable(ChoiceListImpl as (props: ChoiceListProps<string>) => ReactNode, ["onChange"], sameWithOptions) as typeof ChoiceListImpl;

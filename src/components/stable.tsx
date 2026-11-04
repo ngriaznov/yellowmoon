@@ -8,8 +8,8 @@ import type { ComponentType } from "react";
  * element passed as a prop or as children is a new object at every render of the caller, so a component that takes one still draws with
  * its caller: use this where the props are data.
  */
-export function memoStable<P extends object>(Inner: ComponentType<P>, handlers: readonly string[]): ComponentType<P> {
-  const Memo = memo(Inner) as ComponentType<P>;
+export function memoStable<P extends object>(Inner: ComponentType<P>, handlers: readonly string[], equal?: (prev: Readonly<P>, next: Readonly<P>) => boolean): ComponentType<P> {
+  const Memo = memo(Inner, equal) as ComponentType<P>;
   function Stable(props: P) {
     const latest = useRef(props);
     latest.current = props;
@@ -29,3 +29,21 @@ export function memoStable<P extends object>(Inner: ComponentType<P>, handlers: 
 
 /** The handlers of the buttons and toggles the screens pass as new functions at every render. */
 export const BUTTON_HANDLERS = ["onClick", "onKeyDown", "onPointerDown", "onMouseDown", "onFocus", "onBlur", "onPressedChange", "onAuto", "onOff"] as const;
+
+/**
+ * A comparison of props for a component with a list of options (`Segmented`, `ChoiceList`): the options are rebuilt at each render of the
+ * caller, so they count as the same when each holds the same fields; every other prop is compared as it is.
+ */
+export function sameWithOptions<P extends { options: ReadonlyArray<object> }>(prev: Readonly<P>, next: Readonly<P>): boolean {
+  const a = prev as unknown as Record<string, unknown>;
+  const b = next as unknown as Record<string, unknown>;
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const key of keys) {
+    if (key === "options") continue;
+    if (!Object.is(a[key], b[key])) return false;
+  }
+  const x = prev.options as ReadonlyArray<Record<string, unknown>>;
+  const y = next.options as ReadonlyArray<Record<string, unknown>>;
+  return x.length === y.length && x.every((option, i) => Object.entries(option).every(([field, value]) => Object.is(value, y[i]?.[field])) && Object.keys(option).length === Object.keys(y[i] ?? {}).length);
+}

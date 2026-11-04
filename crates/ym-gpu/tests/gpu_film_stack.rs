@@ -51,14 +51,6 @@ fn f32_devices() -> impl Iterator<Item = &'static TestGpu> {
 
 /// The camera RGB of the photo over `rect` (absolute pixels), planar: the test image of `film_common` decoded to linear
 /// light, a function of the absolute place only, so every window of it agrees with every other.
-/// A scale on the scene's light, to make it dark (`YM_DARK`, a diagnostic).
-fn dark_scale() -> f64 {
-    std::env::var("YM_DARK")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1.0)
-}
-
 fn camera(frame: (usize, usize), rect: Area) -> RgbImage {
     let aspect = frame.1 as f64 / frame.0 as f64;
     let (w, h) = (rect.w, rect.h);
@@ -72,7 +64,7 @@ fn camera(frame: (usize, usize), rect: Area) -> RgbImage {
             );
             let lin = logc4_decode_rgb(v);
             for c in 0..3 {
-                data[c * w * h + y * w + x] = (lin[c] * dark_scale()) as f32;
+                data[c * w * h + y * w + x] = lin[c] as f32;
             }
         }
     }
@@ -466,30 +458,6 @@ fn the_pictures_of_one_node_and_of_two_in_a_line_are_the_cpus() {
             for ((gn, ga, gv), (wn, wa, wv)) in got.iter().zip(&want) {
                 assert_eq!((gn, ga), (wn, wa));
                 let d = max_diff(gv, wv);
-                if std::env::var_os("YM_DIAG").is_some() {
-                    let mut worst = (0.0f32, 0usize);
-                    for (i, (a, b)) in gv.iter().zip(wv).enumerate() {
-                        if (a - b).abs() > worst.0 {
-                            worst = ((a - b).abs(), i);
-                        }
-                    }
-                    let n = ga.w * ga.h;
-                    println!(
-                        "  worst at plane {} pixel ({}, {}): device {} cpu {} (channels cpu {:?})",
-                        worst.1 / n,
-                        (worst.1 % n) % ga.w,
-                        (worst.1 % n) / ga.w,
-                        gv[worst.1],
-                        wv[worst.1],
-                        [0, 1, 2].map(|c| wv[c * n + worst.1 % n])
-                    );
-                    // The error against the CPU where the picture is dark (LogC4 under 0.1).
-                    let dark = (0..3 * n)
-                        .filter(|&i| wv[i] < 0.1)
-                        .map(|i| (gv[i] - wv[i]).abs())
-                        .fold(0.0f32, f32::max);
-                    println!("  largest error where the CPU picture is under 0.1: {dark:.2e}");
-                }
                 println!(
                     "{n} node(s), node {gn}: picture {ga:?}, largest difference {d:.2e} in LogC4"
                 );

@@ -1,6 +1,7 @@
-import type { KeyboardEvent } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { SegmentedControl, SegmentedControlItem } from "@/components/glass/segmented-control";
 import { cx } from "./cx";
+import { memoStable, sameWithOptions } from "./stable";
 import type { TabId } from "./tabs";
 
 /** One option of a `Segmented`. */
@@ -34,7 +35,7 @@ export interface SegmentedProps<T extends string> {
  * glasscn's segmented control: a soft track and one raised thumb that slides to the chosen segment (drag it to scrub). The group keeps
  * `role="radiogroup"` with a `role="radio"` per segment; arrows move the selection, Home and End jump to the ends.
  */
-export function Segmented<T extends string>({ options, value, onChange, label, size = "md", columns, tab, fit = false, className }: SegmentedProps<T>) {
+function SegmentedImpl<T extends string>({ options, value, onChange, label, size = "md", columns, tab, fit = false, className }: SegmentedProps<T>) {
   // A radio group selects as the arrows move; Radix's toggle group only moves the focus. Caught before Radix sees the key.
   const onKeyDownCapture = (event: KeyboardEvent<HTMLDivElement>): void => {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -78,3 +79,6 @@ export function Segmented<T extends string>({ options, value, onChange, label, s
     </SegmentedControl>
   );
 }
+
+/** Drawn again only when its data changes, not for new `onChange` or `options` objects with the same content (U-02). */
+export const Segmented = memoStable(SegmentedImpl as (props: SegmentedProps<string>) => ReactNode, ["onChange"], sameWithOptions) as typeof SegmentedImpl;

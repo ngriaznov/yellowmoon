@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DevelopSettings, NodeId, NodeLink, NodePos, NodeRef, PhotoId } from "../../api/types";
 import {
   connect,
@@ -132,7 +132,7 @@ export function useNodeGraph({ store, settings, photoId, selected, select }: Use
     [select],
   );
 
-  return {
+  const actions: NodeGraphActions = {
     selectedLink,
     renaming,
     renamingIn,
@@ -188,6 +188,31 @@ export function useNodeGraph({ store, settings, photoId, selected, select }: Use
     },
     refuse,
   };
+  return useStableActions(actions);
+}
+
+/**
+ * The same actions with functions that never change (each calls the newest) and an object that changes only with the three values it holds.
+ * The operations are closures made at each render, and the graph, memoised, would draw again at each tick of a slider drag for a new
+ * function that does the same (U-02).
+ */
+function useStableActions(actions: NodeGraphActions): NodeGraphActions {
+  const latest = useRef(actions);
+  latest.current = actions;
+  const proxies = useMemo(() => {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(actions)) {
+      if (typeof value === "function") out[key] = (...args: unknown[]) => (latest.current as unknown as Record<string, (...a: unknown[]) => unknown>)[key]?.(...args);
+    }
+    // The set of operations is fixed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return out;
+  }, []);
+  const { selectedLink, renaming, renamingIn } = actions;
+  return useMemo(
+    () => ({ ...proxies, selectedLink, renaming, renamingIn }) as unknown as NodeGraphActions,
+    [proxies, selectedLink, renaming, renamingIn],
+  );
 }
 
 /** True when the Delete key, the toolbar's Delete and More › Delete node may remove this node. */

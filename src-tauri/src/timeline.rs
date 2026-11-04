@@ -287,13 +287,25 @@ fn tick_line(seq: u64, page: &PageTick, shell: &ShellTick) -> (String, Option<f6
     let line = format!(
         "tick seq={seq} final={} {} {} {} {} {} {} {} {} {} (ms)",
         page.is_final,
-        field("input_to_sent", page_between(page.t_input, Some(page.t_sent))),
+        field(
+            "input_to_sent",
+            page_between(page.t_input, Some(page.t_sent))
+        ),
         field("ipc_in", between(sent_us, Some(shell.ipc_in_us))),
         field("handle", between(Some(shell.ipc_in_us), shell.ipc_out_us)),
         field("ipc_back", between(shell.ipc_out_us, reply_us)),
-        field("request_to_present_called", between(shell.request_us, shell.present_called_us)),
-        field("request_to_presented", between(shell.request_us, shell.presented_us)),
-        field("page_painted", page_between(page.t_input.or(Some(page.t_sent)), page.t_painted)),
+        field(
+            "request_to_present_called",
+            between(shell.request_us, shell.present_called_us)
+        ),
+        field(
+            "request_to_presented",
+            between(shell.request_us, shell.presented_us)
+        ),
+        field(
+            "page_painted",
+            page_between(page.t_input.or(Some(page.t_sent)), page.t_painted)
+        ),
         field("input_to_presented", input_to_presented),
         field("sent_to_presented", between(sent_us, shell.presented_us)),
     );
@@ -305,7 +317,10 @@ fn click_line(click: &PageClick) -> String {
         "click kind={} label={:?} {} (ms)",
         click.kind,
         click.label,
-        field("to_painted", page_between(Some(click.t_input), click.t_painted))
+        field(
+            "to_painted",
+            page_between(Some(click.t_input), click.t_painted)
+        )
     )
 }
 
@@ -317,7 +332,8 @@ fn rank(sorted: &[f64], percent: usize) -> f64 {
 }
 
 fn window_line(window: &Aggregate) -> Option<String> {
-    if window.input_to_presented_ms.is_empty() && window.pointer_moves == 0 && window.unmatched == 0 {
+    if window.input_to_presented_ms.is_empty() && window.pointer_moves == 0 && window.unmatched == 0
+    {
         return None;
     }
     let mut sorted = window.input_to_presented_ms.clone();
@@ -455,9 +471,15 @@ mod tests {
         assert!(line.contains("input_to_presented=16.0"), "{line}");
         assert!(line.contains("page_painted=25.0"), "{line}");
         let window = t.take_window_line().expect("a window line");
-        assert!(window.contains("ticks 1, input_to_presented p50 16.0"), "{window}");
+        assert!(
+            window.contains("ticks 1, input_to_presented p50 16.0"),
+            "{window}"
+        );
         assert!(window.contains("over 8.3 ms 1, over 16.7 ms 0"), "{window}");
-        assert!(window.contains("pointer events 3, frames shown 1"), "{window}");
+        assert!(
+            window.contains("pointer events 3, frames shown 1"),
+            "{window}"
+        );
         assert_eq!(t.take_window_line(), None, "the next window starts empty");
     }
 
@@ -477,7 +499,10 @@ mod tests {
         {
             let inner = t.lock();
             assert_eq!(inner.ticks[0].presented_us, Some(200));
-            assert_eq!(inner.ticks[1].presented_us, None, "its frame is the next one");
+            assert_eq!(
+                inner.ticks[1].presented_us, None,
+                "its frame is the next one"
+            );
         }
         t.round_at(210);
         t.presented_at(250);
@@ -507,7 +532,11 @@ mod tests {
         t.merge(&report(r#"{"page":"a","start":true}"#));
         let lines = t.merge(&report(r#"{"page":"a","ticks":[{"n":9,"t_sent":1.0}]}"#));
         assert!(lines[0].contains("unmatched"), "{}", lines[0]);
-        assert!(t.take_window_line().expect("a line").contains("unmatched 1"));
+        assert!(
+            t.take_window_line()
+                .expect("a line")
+                .contains("unmatched 1")
+        );
     }
 
     #[test]
@@ -516,7 +545,10 @@ mod tests {
         let lines = t.merge(&report(
             r#"{"page":"a","clicks":[{"kind":"tab","label":"Colour","t_input":10.0,"t_painted":71.5}]}"#,
         ));
-        assert_eq!(lines, vec![r#"click kind=tab label="Colour" to_painted=61.5 (ms)"#.to_owned()]);
+        assert_eq!(
+            lines,
+            vec![r#"click kind=tab label="Colour" to_painted=61.5 (ms)"#.to_owned()]
+        );
     }
 
     #[test]

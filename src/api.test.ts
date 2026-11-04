@@ -50,6 +50,7 @@ const calls: Row[] = [
   ["copySettings", () => tauriApi.copySettings(3), "copy_settings", { photoId: 3 }],
   ["pasteSettings", () => tauriApi.pasteSettings([4, 5], mainGradePatch({ contrast: manual(4) })), "paste_settings", { photoIds: [4, 5], patch: mainGradePatch({ contrast: manual(4) }) }],
   ["setMenuState", () => tauriApi.setMenuState({ copy_settings: true, paste_settings: false, paste_settings_to_picked: false }), "set_menu_state", { state: { copy_settings: true, paste_settings: false, paste_settings_to_picked: false } }, true],
+  ["perfReport", () => tauriApi.perfReport('{"page":"x"}'), "perf_report", { report: '{"page":"x"}' }, true],
   // `at` is the node the signal is read at (`docs/01`); left out it goes as null, which the core reads as Main.
   ["histogram", () => tauriApi.histogram(3), "histogram", { photoId: 3, at: null }],
   ["histogram (at a corrector)", () => tauriApi.histogram(3, 2), "histogram", { photoId: 3, at: 2 }],

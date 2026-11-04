@@ -707,8 +707,14 @@ mod tests {
     #[test]
     fn the_page_is_told_what_was_asked_for() {
         assert_eq!(page_script_for(false, false), None);
-        assert_eq!(page_script_for(true, false).as_deref(), Some("window.__YM_PERF__ = true;"));
-        assert_eq!(page_script_for(false, true).as_deref(), Some("window.__YM_GLASS__ = \"off\";"));
+        assert_eq!(
+            page_script_for(true, false).as_deref(),
+            Some("window.__YM_PERF__ = true;")
+        );
+        assert_eq!(
+            page_script_for(false, true).as_deref(),
+            Some("window.__YM_GLASS__ = \"off\";")
+        );
         assert_eq!(
             page_script_for(true, true).as_deref(),
             Some("window.__YM_PERF__ = true;window.__YM_GLASS__ = \"off\";")

@@ -209,8 +209,9 @@ pub async fn update_settings(
 /// measure (`YM_PERF`); with the switch off it does nothing. Nothing leaves the machine.
 #[tauri::command]
 #[specta::specta]
-pub async fn perf_report(report: String) {
+pub async fn perf_report(report: String) -> Result<(), AppError> {
     crate::timeline::report(&report);
+    Ok(())
 }
 
 /// `apply_look(scope, look_id, intensity)`: to This photo, the Picked photos or All.
