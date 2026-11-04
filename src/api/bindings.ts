@@ -157,6 +157,18 @@ export const commands = {
 	 */
 	lookThumbnail: (photoId: PhotoId, lookId: LookId) => __TAURI_INVOKE<string>("look_thumbnail", { photoId, lookId }),
 	/**
+	 *  `film_catalogue()` (`docs/24` section 4.1): the camera films and papers the Film node's pickers list, from `names.json`, with the
+	 *  credit, disclaimer and trademark lines.
+	 */
+	filmCatalogue: () => __TAURI_INVOKE<FilmCatalogue>("film_catalogue"),
+	/**
+	 *  `film_tile(photo_id, node, stock)` (`docs/24` section 4.4): the photo through one stock in Film node `node`, at the photo's
+	 *  settings. The answer is the address of a PNG of at most 240 px on the `ym-frame` scheme
+	 *  (`ym-frame://localhost/<launch>/look-<photo>-<n>.png`), made at the thumbnails' priority and cancelled when the person moves to
+	 *  another photo.
+	 */
+	filmTile: (photoId: PhotoId, node: number, stock: string) => __TAURI_INVOKE<string>("film_tile", { photoId, node, stock }),
+	/**
 	 *  `node_thumbnails(photo_id)` (`docs/23` sections 5.7 and 9): asks for the thumbnails of every node of
 	 *  the photo. Answers `null` at once; the pictures that changed arrive as a `node_thumbnails_ready`
 	 *  event, each the address of a PNG on the `ym-frame` scheme.
@@ -1077,6 +1089,22 @@ export type ExposureSetting =
 /**  Absolute exposure in stops, -4 to +4. */
 ev: number };
 
+/**  `film_catalogue`: what the Film node's pickers list, and the lines About and the Film tab carry. */
+export type FilmCatalogue = {
+	/**  The camera films that are offered, in the order of the picker. */
+	stocks: FilmStockInfo[],
+	/**  The still papers that are offered. */
+	papers: FilmPaperInfo[],
+	/**  The version of the film data ("0.3.2"). */
+	profile_version: string,
+	/**  The credit line of the film data: "Modelled on published data. Film profiles by …, CC BY-SA 4.0. Not affiliated with Kodak or Fujifilm." */
+	credit: string,
+	/**  "Modelled on published data. Not affiliated with Kodak or Fujifilm." */
+	disclaimer: string,
+	/**  "Kodak, Portra, Vision3, Fujifilm and Velvia are trademarks of their owners." */
+	trademarks: string,
+};
+
 /**  A Film node: a colour negative, an enlarger, a print and a scan (`docs/24` section 4.5). */
 export type FilmNode = {
 	/**  2 to 2147483647 (correctors and Film nodes share the numbers). */
@@ -1099,6 +1127,30 @@ export type FilmNode = {
 	strength: number,
 	/**  The masks. */
 	masks: MaskSettings,
+};
+
+/**  One still paper of the Film node's paper picker. */
+export type FilmPaperInfo = {
+	/**  The profile id. */
+	id: string,
+	/**  The name shown to the person. */
+	name: string,
+};
+
+/**  One camera film of the Film node's picker (`docs/24` section 4.1), from `names.json` through the core. */
+export type FilmStockInfo = {
+	/**  The profile id. */
+	id: string,
+	/**  The name shown to the person ("Kodak Portra 400"). */
+	name: string,
+	/**  `colour_negative`, `cine_negative` or `slide`. */
+	kind: string,
+	/**  The maker. */
+	group: string,
+	/**  The ISO number. */
+	iso: number | null,
+	/**  The profile id of the paper "Matching paper" means for it; null for a slide. */
+	matching_paper: string | null,
 };
 
 /**  A Film node's `film` to change. Serialising leaves absent fields out (see [`NodePatch`]). */

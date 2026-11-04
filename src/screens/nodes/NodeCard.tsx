@@ -6,7 +6,7 @@ import { Input } from "@/components/glass/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/glass/tooltip";
 import { cardName, chipText } from "../../state/graphOps";
 import { nodeOf } from "../../state/settingsGraph";
-import type { CorrectorItem } from "../../state/settingsGraph";
+import type { CardItem } from "../../state/settingsGraph";
 import { Port } from "./Port";
 import { useGraphUi } from "./graphUi";
 
@@ -22,7 +22,7 @@ export function shortName(name: string): string {
 /** What a card's footer tells about its masks: the AI kinds (Object, Subject, People, Background) and the others. */
 const AI_KINDS: ReadonlySet<string> = new Set(["object", "subject", "people", "background"]);
 
-export function maskGlyphsOf(node: CorrectorItem): { ai: boolean; plain: boolean } {
+export function maskGlyphsOf(node: Pick<CardItem, "masks">): { ai: boolean; plain: boolean } {
   let ai = false;
   let plain = false;
   for (const row of node.masks.items) {
@@ -146,7 +146,7 @@ export function NodeCard({ data }: NodeProps) {
   const ui = useGraphUi();
   const id = (data as { id: NodeId }).id;
   const node = nodeOf(ui.settings, id);
-  if (!node || node.kind !== "corrector") return null;
+  if (!node || (node.kind !== "corrector" && node.kind !== "film")) return null;
   const state = ui.states.get(node.id as number);
   const dead = state?.live === false;
   const selected = ui.selected === id;

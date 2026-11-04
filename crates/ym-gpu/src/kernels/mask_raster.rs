@@ -228,13 +228,31 @@ pub fn grown_tile(
     w: usize,
     h: usize,
 ) -> Area {
+    grown_tile_with(chain, grid, frame, off, w, h, 0)
+}
+
+/// [`grown_tile`] with `extra` more pixels on every side: the Film nodes' halos, which the masks' receptive field adds
+/// to (`docs/24` section 3.9c).
+#[must_use]
+pub fn grown_tile_with(
+    chain: &ColorChain,
+    grid: &SamplerGrid,
+    frame: (usize, usize),
+    off: (usize, usize),
+    w: usize,
+    h: usize,
+    extra: usize,
+) -> Area {
     let tile = Area {
         x: off.0 as i64,
         y: off.1 as i64,
         w,
         h,
     };
-    tile.grown(tile_halo(chain, grid), &Area::whole(frame.0, frame.1))
+    tile.grown(
+        tile_halo(chain, grid) + extra,
+        &Area::whole(frame.0, frame.1),
+    )
 }
 
 /// The largest storage binding a raster pass over a `grown` window makes: the f32 scratch (seven planes at full

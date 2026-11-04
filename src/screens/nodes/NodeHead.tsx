@@ -8,7 +8,7 @@ import { cardStates, chipText, headLine } from "../../state/graphOps";
 import { nodeOf } from "../../state/settingsGraph";
 
 /** The tooltip and accessible name of the head's Reset, by kind of node (`docs/23` §7.5). */
-const RESET_TEXT = { input: "Reset input", output: "Reset output", corrector: "Reset this node" } as const;
+const RESET_TEXT = { input: "Reset input", output: "Reset output", corrector: "Reset this node", film: "Reset this node" } as const;
 
 export interface NodeHeadProps {
   settings: DevelopSettings;
@@ -46,7 +46,7 @@ export function NodeHead({ settings, node, renaming, onStartRename, onRename, on
   }, [renaming]);
   if (!item) return null;
   const states = cardStates(settings);
-  const corrector = item.kind === "corrector";
+  const corrector = item.kind === "corrector" || item.kind === "film";
   const title = item.kind === "input" ? "Input" : item.kind === "output" ? "Output" : item.name;
   const finish = (value: string | null, restoreFocus: boolean): void => {
     if (finished.current) return;
@@ -109,7 +109,7 @@ export function NodeHead({ settings, node, renaming, onStartRename, onRename, on
             onClick={onBypass}
           />
         ) : null}
-        <Button variant="header" className="ym-nodehead__btn" aria-label={RESET_TEXT[item.kind === "film" ? "corrector" : item.kind]} title={RESET_TEXT[item.kind === "film" ? "corrector" : item.kind]} icon={<RotateCcwIcon aria-hidden="true" />} onClick={onReset} />
+        <Button variant="header" className="ym-nodehead__btn" aria-label={RESET_TEXT[item.kind]} title={RESET_TEXT[item.kind]} icon={<RotateCcwIcon aria-hidden="true" />} onClick={onReset} />
         {more}
       </div>
     </div>

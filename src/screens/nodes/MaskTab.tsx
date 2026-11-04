@@ -76,7 +76,7 @@ export interface MaskTabProps {
  */
 export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabProps) {
   const item = nodeOf(rs.settings, node);
-  const corrector = item?.kind === "corrector" ? item : null;
+  const corrector = item?.kind === "corrector" || item?.kind === "film" ? item : null;
   const rows = corrector?.masks.items ?? [];
   const inverted = corrector?.masks.invert ?? false;
   const stored = useAppState((s) => s.maskRow);

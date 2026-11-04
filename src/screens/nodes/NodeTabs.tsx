@@ -4,10 +4,13 @@
  * Re-run (decision 21). The Input's controls write the Input and the Output's the Output; a corrector's write that corrector, Main included
  * (Main keeps its Auto semantics, every other corrector has plain numbers with the detent and Reset at 0).
  */
+import { InfoIcon } from "lucide-react";
+import { Item, ItemContent } from "@/components/glass/item";
 import { AutoToggle, Card, formats, ResetLink, Slider } from "../../components";
 import type { NodeId } from "../../api/types";
 import type { TabId } from "../../components";
-import { inputPatch, MAIN_ID, patchOf, resolvedCorrector } from "../../state/settingsGraph";
+import { cardStates } from "../../state/graphOps";
+import { filmsOf, inputPatch, MAIN_ID, nodeOf, patchOf, resolvedCorrector } from "../../state/settingsGraph";
 import { ColourBalanceCard, WhiteBalanceCard } from "../tools/ColorTab";
 import type { ColorTabProps } from "../tools/ColorTab";
 import { ColorWarpCard } from "../tools/ColorWarpCard";
@@ -20,6 +23,8 @@ import { LookCard } from "../tools/LookTab";
 import { RawTab } from "../tools/RawTab";
 import { AUTO } from "../tools/shared";
 import type { TabProps } from "../tools/shared";
+import { OUTPUT_FILM_NOTE } from "./filmData";
+import { FilmCard, GrainTab, HalationTab, PrintTab } from "./FilmTabs";
 import { MaskTab } from "./MaskTab";
 
 // ---- The Input ------------------------------------------------------------------------------------------------------------------------
@@ -159,7 +164,20 @@ export function CorrectorCurveTab({ store, photo, rs, node }: CorrectorTabProps)
 
 /** Output › Look: the Look card, today's (Intensity, Apply to, search, the libraries), one look per photo. */
 export function OutputLookTab({ store, photo, rs }: TabProps) {
-  return <LookCard store={store} photo={photo} rs={rs} />;
+  // The Output's look acts after a live Film node (`docs/24` section 4.6): the note says how to see the print as it is scanned.
+  const states = cardStates(rs.settings);
+  const filmLive = filmsOf(rs.settings).some((film) => !film.bypass && states.get(film.id as number)?.live !== false);
+  return (
+    <>
+      {filmLive ? (
+        <Item variant="muted" size="sm" className="ym-film-note" role="note">
+          <InfoIcon aria-hidden="true" />
+          <ItemContent>{OUTPUT_FILM_NOTE}</ItemContent>
+        </Item>
+      ) : null}
+      <LookCard store={store} photo={photo} rs={rs} />
+    </>
+  );
 }
 
 /** Output › Detail: the Sharpening card with the Output row only. */
@@ -200,6 +218,21 @@ export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite
   }
   if (node === "output") {
     return tab === "detail" ? <OutputDetailTab store={store} photo={photo} rs={rs} /> : <OutputLookTab store={store} photo={photo} rs={rs} />;
+  }
+  const item = nodeOf(rs.settings, node);
+  if (item?.kind === "film") {
+    switch (tab) {
+      case "print":
+        return <PrintTab store={store} rs={rs} node={item.id as number} item={item} />;
+      case "halation":
+        return <HalationTab store={store} rs={rs} node={item.id as number} item={item} />;
+      case "grain":
+        return <GrainTab store={store} rs={rs} node={item.id as number} item={item} />;
+      case "mask":
+        return <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} />;
+      default:
+        return <FilmCard store={store} photo={photo} rs={rs} node={item.id as number} item={item} />;
+    }
   }
   switch (tab) {
     case "color":

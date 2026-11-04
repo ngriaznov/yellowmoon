@@ -1380,10 +1380,9 @@ fn export_photo_unguarded(
         if let Some(why) = ctx.renderer.export_tail_refused() {
             return Err(ExportError::Render(RenderError::Gpu(why)));
         }
-        // A Film node has no device kernel yet: such a photo is made on the CPU (`pipeline::frame::film_pass`).
-        if ctx.renderer.export_tail_enabled()
-            && !crate::pipeline::color::has_film(&photo.source.settings)
-        {
+        // A Film node runs on the device too: its pictures are made for each tile before the colour pass
+        // (`pipeline::frame::film_pass`, `ym_gpu::kernels::film_stack`).
+        if ctx.renderer.export_tail_enabled() {
             let began = Instant::now();
             let request = TailRequest {
                 target: output_target(options.color_space),

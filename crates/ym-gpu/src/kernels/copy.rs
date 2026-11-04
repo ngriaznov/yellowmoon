@@ -25,7 +25,7 @@ struct CopyU {
     src: [u32; 4],
     /// Destination row stride, plane length, column and row of its first pixel.
     dst: [u32; 4],
-    /// Width, height, planes.
+    /// Width, height, planes, and the destination's first sample (0 but for [`encode_copy_into`]).
     size: [u32; 4],
 }
 
@@ -98,6 +98,56 @@ pub fn encode_copy_rect(
         ),
     )?;
     Ok(())
+}
+
+/// Records the copy of `rect` of `src` (planes 0 to `planes - 1`) into a plain buffer of planes, not an image: the
+/// destination's rows are `stride` samples, its planes `plane` samples apart, and the first plane starts at sample `base`.
+/// The colour pass's plan buffer takes the Film nodes' pictures this way (`docs/24` section 3.9c). The pixel
+/// `(rect.x, rect.y)` of `src` goes to `(0, 0)` of the destination.
+///
+/// # Errors
+///
+/// [`GpuError::InvalidInput`] for an empty rectangle or one outside `src`, or more planes than `src` has.
+pub fn encode_copy_into(
+    passes: &mut PassList<'_>,
+    src: &GpuImage,
+    rect: Rect,
+    planes: usize,
+    dst: &crate::pool::PooledBuffer,
+    layout: (usize, usize, usize),
+) -> Result<(), GpuError> {
+    let (stride, plane, base) = layout;
+    if rect.is_empty() || rect.x1() > src.width || rect.y1() > src.height || planes > src.planes {
+        return Err(GpuError::InvalidInput(format!(
+            "copy: the rectangle {rect:?} of {planes} planes is empty or outside the {} x {} source of {} planes",
+            src.width, src.height, src.planes
+        )));
+    }
+    let u = CopyU {
+        src: [
+            src.stride as u32,
+            src.plane_len() as u32,
+            rect.x as u32,
+            rect.y as u32,
+        ],
+        dst: [stride as u32, plane as u32, 0, 0],
+        size: [rect.w as u32, rect.h as u32, planes as u32, base as u32],
+    };
+    let ub = passes.uniform("copy uniform", &u)?;
+    passes.dispatch(
+        KernelId::Copy,
+        "copy into planes",
+        &[
+            (0, ub.binding()),
+            (1, src.buf.binding()),
+            (2, dst.binding()),
+        ],
+        (
+            (rect.w as u32).div_ceil(GROUP),
+            (rect.h as u32).div_ceil(GROUP),
+            1,
+        ),
+    )
 }
 
 /// Records the copy of `rect` of `src` into a new image of its own, which keeps the placement of the

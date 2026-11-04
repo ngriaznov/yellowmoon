@@ -1653,6 +1653,43 @@ export interface CliLinkResult {
 /** What `open_dialog` offers. */
 export type OpenKind = "files" | "folder";
 
+/** One camera film of the Film node's picker (`docs/24` section 4.1); the list is `names.json` through the core. */
+export interface FilmStockInfo {
+  /** The profile id ("kodak_portra_400"). */
+  id: string;
+  /** The name shown to the person ("Kodak Portra 400"). */
+  name: string;
+  /** The group of the picker: `colour_negative`, `cine_negative` or `slide` (see `FILM_GROUPS`). */
+  kind: string;
+  /** The maker. */
+  group: string;
+  iso: number | null;
+  /** The profile id of the paper "Matching paper" means for it; null for a slide. */
+  matching_paper: string | null;
+}
+
+/** One still paper of the Film node's paper picker. */
+export interface FilmPaperInfo {
+  id: string;
+  name: string;
+}
+
+/** `film_catalogue`: what the Film node's pickers list, and the credit lines (`docs/24` sections 4.6, 6.2 and 6.5). */
+export interface FilmCatalogue {
+  /** The 20 camera films in the order of the picker. */
+  stocks: FilmStockInfo[];
+  /** The 6 still papers (the cine print films are not listed). */
+  papers: FilmPaperInfo[];
+  /** The version of the film data ("0.3.2"). */
+  profile_version: string;
+  /** The credit line of the film data (`docs/24` section 6.2); the Film tab and About show it with its link. */
+  credit: string;
+  /** "Modelled on published data. Not affiliated with Kodak or Fujifilm." */
+  disclaimer: string;
+  /** "Kodak, Portra, Vision3, Fujifilm and Velvia are trademarks of their owners." */
+  trademarks: string;
+}
+
 /** What the app knows about itself, for About (addition). */
 export interface AppInfo {
   /** The app and CLI version: "0.1.0". */

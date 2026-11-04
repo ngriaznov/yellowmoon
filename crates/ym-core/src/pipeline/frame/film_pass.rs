@@ -19,10 +19,11 @@
 //! of an export of the same size), so a tile equals the same pixels of the whole frame bit for bit: the grain's
 //! hash and the halation's frame edge are functions of those coordinates and never of the tile.
 //!
-//! **Where the decision to use the CPU is made.** The device kernel has no Film step, so a frame whose chain
-//! [`ColorChain::has_films`] is rendered on the CPU: [`render_view`](super::render_view) drops the view's device
-//! route, [`Renderer::render_full_on`](super::Renderer) leaves the DNG's colour stage and the export tail off, and
-//! `export::export_one` skips the export tail ([`crate::pipeline::color::has_film`]). F-08b wires the device route.
+//! **The device route (F-08b).** [`FilmRender::device_stack`] hands the same steps, as plain data, to
+//! `ym_gpu::kernels::film_stack::FilmStack`: the prefix chain, the node's passes over the photo's extent and its baked
+//! tables (named by their identity, so the device keeps them and a change of exposure uploads nothing). The areas are the
+//! same ones ([`FilmRender::read_area`], [`FilmRender::total_halo`]), and the pictures are made on the device
+//! (`docs/24` section 3.9c). A device error on a frame falls back to the CPU path of this module, as the other kernels do.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -34,6 +35,7 @@ use ym_color::plan::Stop;
 use ym_film::spatial::{FilmFrame, Frame as FilmFrameExtent, Plane, Rect as FilmRect, RunOptions};
 use ym_gpu::cpu::Rect;
 use ym_gpu::cpu::sampler::{GridPositions, Sampled, SamplerGrid};
+use ym_gpu::kernels::film_stack::{FilmNodeSpec, FilmStack};
 
 use super::{Job, RenderError};
 use crate::film::FilmEngine;
@@ -132,7 +134,7 @@ struct FilmStepRun {
     id: u32,
     film: FilmFrame,
     halo: usize,
-    prefix: ColorChain,
+    prefix: Arc<ColorChain>,
 }
 
 /// The Film nodes of one chain, ready to make their pictures over areas of one photo extent.
@@ -206,7 +208,7 @@ impl FilmRender {
             if let Some(step) = params.films.get_mut(&id) {
                 step.bypass = true;
             }
-            let prefix = ColorChain::new(&params).map_err(|e| film_error(&e))?;
+            let prefix = Arc::new(ColorChain::new(&params).map_err(|e| film_error(&e))?);
             steps.push(FilmStepRun {
                 id,
                 film,
@@ -228,6 +230,27 @@ impl FilmRender {
     /// after another reads the other's picture over its own halo).
     pub(crate) fn total_halo(&self) -> usize {
         self.steps.iter().map(|s| s.halo).sum()
+    }
+
+    /// The Film nodes as plain data for the device (`ym_gpu::kernels::film_stack`): the prefix chain, the passes over the
+    /// photo's extent, the scalars and the tables of each.
+    pub(crate) fn device_stack(&self) -> FilmStack {
+        let extent = FilmFrameExtent {
+            width: self.frame.w,
+            height: self.frame.h,
+        };
+        let steps = self
+            .steps
+            .iter()
+            .map(|s| FilmNodeSpec {
+                node: s.id,
+                prefix: Arc::clone(&s.prefix),
+                plan: Arc::new(crate::film::device_plan(&s.film, extent)),
+                scalars: crate::film::device_scalars(s.film.baked()),
+                tables: crate::film::device_tables(s.film.baked()),
+            })
+            .collect();
+        FilmStack::new(self.frame, steps)
     }
 
     /// The area the first Film node reads for `need`: `need` grown by every halo, cut to the photo's extent.

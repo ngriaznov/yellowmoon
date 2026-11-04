@@ -954,6 +954,24 @@ fn grown_fits(grown: Option<&GrownInput>, route: &ViewRoute) -> bool {
     grown.is_none_or(|g| g.input.fits(route))
 }
 
+/// The Film nodes of `chain` as the device runs them over the wider picture `rr` describes, or `None` for a chain with no
+/// live Film node or a view with nothing of the photo in it (`docs/24` section 3.9c).
+///
+/// # Errors
+///
+/// [`RenderError::Color`] when the film data is missing or damaged.
+fn device_film(
+    job: &Job<'_>,
+    chain: &ColorChain,
+    rr: Option<&RasterRead>,
+) -> Result<Option<Arc<ym_gpu::kernels::film_stack::FilmStack>>, RenderError> {
+    let Some(rr) = rr.filter(|_| chain.has_films()) else {
+        return Ok(None);
+    };
+    Ok(FilmRender::build(job, chain, rr.frame, rr.spec.target)?
+        .map(|film| Arc::new(film.device_stack())))
+}
+
 /// The raster planes of a CPU colour pass, over the picture it makes: sampled over the area the masks look at
 /// ([`RasterRead`]), made over the part that has the photo, and placed in the picture with 0 around them.
 fn cpu_view_rasters(
@@ -1780,6 +1798,7 @@ fn plain_pass(
         // A frame that does not fit one binding is made on the CPU, quietly (a view cut into bands
         // never gets here: `banded`).
         if input.fits(r) && grown_fits(rasters.as_ref(), r) {
+            let film = device_film(job, &grade.chain, rr.as_ref().filter(|_| !spec.before))?;
             let data = PlainJob {
                 input,
                 chain: Arc::clone(&grade.chain),
@@ -1788,6 +1807,7 @@ fn plain_pass(
                 origin: spec.dither_origin,
                 output: spec.output,
                 rasters,
+                film,
             };
             let Some(rgba) = attempt(job, r.run(data, device::plain_job))? else {
                 return Ok(Flow::Cpu);
@@ -1902,6 +1922,11 @@ fn build_display(
         let bounds = plan.window.or(own);
         let rasters = grown_input(job, r, rr.as_ref())?;
         if input.fits(r) && grown_fits(rasters.as_ref(), r) {
+            let film = device_film(job, &grade.chain, rr.as_ref())?;
+            let mask_film = match plan.mask {
+                Some(g) => device_film(job, &g.chain, rr.as_ref())?,
+                None => None,
+            };
             let data = DisplayJob {
                 input,
                 bounds,
@@ -1912,6 +1937,8 @@ fn build_display(
                 gpu: r.gpu_ref(),
                 output: read.output,
                 rasters,
+                film,
+                mask_film,
             };
             let Some(out) = attempt(job, r.run(data, device::display_job))? else {
                 return Ok(None);
@@ -2025,6 +2052,8 @@ fn build_display_in_bands(
             // No tail: the job reads the display-linear frame back for the CPU, and makes no RGBA8.
             output: FrameOutput::Host,
             rasters,
+            film: device_film(job, &grade.chain, rr.as_ref())?,
+            mask_film: None,
         };
         let Some(out) = attempt(job, route.run(data, device::display_job))? else {
             return Ok(None);
@@ -2943,11 +2972,10 @@ pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedF
     }
     // The overlay is made whole on the device (sampler or upload, colour pass, the mask chain, the stage, the
     // tint and C13 in one job) or whole on the CPU; a device whose stages do not cover that leaves it to the CPU.
-    // A Film node has no kernel yet (F-08b): a frame whose chain runs one is made on the CPU, whole (`film_pass`).
-    let films = grade.chain.has_films() || job.overlay_grade().is_some_and(|g| g.chain.has_films());
+    // A Film node runs on the device: its pictures are made before the colour pass, in the same job (`film_pass`,
+    // `ym_gpu::kernels::film_stack`); a device error on the frame is answered on the CPU as for any other kernel.
     let route = job
         .view_gpu()?
-        .filter(|_| !films)
         .map(|gpu| ViewRoute::new(&job, gpu, spec.gpu_priority))
         .filter(|r| !overlay || (r.stages.color && r.stages.tail));
     let gpu = route.as_ref().map(ViewRoute::gpu_ref);
@@ -3716,12 +3744,21 @@ impl Renderer {
         // section 5.2) and cut: a tile is sampled, guided and coloured over `grown` and its pixels are the window.
         let frame_area = Area::whole(fw, fh);
         let raster_halo = tile_halo(&grade.chain, &grid.sampler_grid());
+        // The colour stage of a DNG's renders runs on the device when the export tail is on; the
+        // frame stays on the host. A device error there, or in the raw chain, makes the whole render
+        // again on the CPU: one file is wholly device or wholly CPU, never a mix of tiles.
+        let mut device_colour = if request.target.is_dng() {
+            export_tail::dng_colour_gpu(&mut job)?
+        } else {
+            None
+        };
         // Tiles equal the whole frame, so a tile may be any size: one whose grown window would pass the design
-        // binding is made smaller (`docs/17-gpu.md` section 4).
-        let tile = largest_tile_for(raster_halo, tile);
+        // binding is made smaller (`docs/17-gpu.md` section 4). The Film nodes read their halos beyond the masks'.
+        let tile = largest_tile_for(raster_halo + film_halo, tile);
         // A tile of a Film node is read that much wider on every side, so a small tile spends most of its work on
-        // the halo: the tiles are larger (tiles equal the whole frame, so the size is free).
-        let tile = if film_render.is_some() && tile >= FILM_TILE_FROM_PX {
+        // the halo: the CPU's tiles are larger (tiles equal the whole frame, so the size is free). The device's are
+        // held to the design binding above, which a larger tile would pass.
+        let tile = if film_render.is_some() && tile >= FILM_TILE_FROM_PX && device_colour.is_none() {
             tile.max(FILM_TILE_PX)
         } else {
             tile
@@ -3731,15 +3768,9 @@ impl Renderer {
         let threads = job.options().threads;
         let strict = job.options().gpu_strict;
         let tiles_total = (fw.div_ceil(tile) * fh.div_ceil(tile)).max(1);
-        // The colour stage of a DNG's renders runs on the device when the export tail is on; the
-        // frame stays on the host. A device error there, or in the raw chain, makes the whole render
-        // again on the CPU: one file is wholly device or wholly CPU, never a mix of tiles.
-        let mut device_colour = if request.target.is_dng() && film_render.is_none() {
-            export_tail::dng_colour_gpu(&mut job)?
-        } else {
-            None
-        };
         let colour_on_device = device_colour.is_some();
+        // The Film nodes as the device runs them (the same steps as the CPU's `film_render`).
+        let film_stack = film_render.as_ref().map(|f| Arc::new(f.device_stack()));
         let spec = JobSpec::new(Priority::Export).owned_by(u64::from(src.id.0));
         let mut best_fraction = 0.0f32;
         'render: loop {
@@ -3798,6 +3829,7 @@ impl Renderer {
                                     tw,
                                     th,
                                     Arc::clone(&grade.chain),
+                                    film_stack.clone(),
                                     stop,
                                 ),
                                 TileImage::Host(image) => colour_tile_to_host(
@@ -3810,6 +3842,7 @@ impl Renderer {
                                     tw,
                                     th,
                                     Arc::clone(&grade.chain),
+                                    film_stack.clone(),
                                     stop,
                                 ),
                             };

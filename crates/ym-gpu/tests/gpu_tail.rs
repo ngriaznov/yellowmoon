@@ -185,6 +185,7 @@ fn spec_of(
         }),
         space,
         format,
+        films: None,
     }
 }
 
@@ -831,6 +832,7 @@ fn one_tile_read_back_is_the_cpu_colour_pass() {
                 w,
                 h,
                 Arc::clone(&ch),
+                None,
                 stop,
             )
             .expect("tile");

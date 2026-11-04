@@ -37,6 +37,7 @@ pub mod data_dir;
 pub mod export;
 pub mod export_queue;
 pub mod film;
+pub mod film_tiles;
 pub mod looks;
 pub mod perf;
 pub mod pipeline;

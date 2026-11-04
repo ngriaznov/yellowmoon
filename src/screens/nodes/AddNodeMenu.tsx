@@ -1,4 +1,4 @@
-import { ChevronDownIcon, ChevronsRightIcon, LayersIcon, SlidersVerticalIcon, SplitIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronsRightIcon, FilmIcon, LayersIcon, SlidersVerticalIcon, SplitIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/glass/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/glass/dropdown-menu";
@@ -18,6 +18,8 @@ export const LATER_TOOLTIP = "Not in the first version";
 export interface AddNodeMenuProps {
   /** Adds a corrector after the selected node. Without it the item is off. */
   onAddCorrector?: () => void;
+  /** Adds a Film node after the selected node (`docs/24`). Without it the item is off. */
+  onAddFilm?: () => void;
   /** Why a node cannot be added now ("A photo can have up to 64 nodes."): the item is off, and the sentence is its tooltip. */
   blocked?: string | null;
 }
@@ -37,7 +39,7 @@ function Line({ name, line }: { name: string; line: string }) {
  * Parallel, Layer and Splitter and combiner, greyed with the tag "Later" and `aria-disabled` (Radix sets it), each with the
  * tooltip "Not in the first version".
  */
-export function AddNodeMenu({ onAddCorrector, blocked = null }: AddNodeMenuProps) {
+export function AddNodeMenu({ onAddCorrector, onAddFilm, blocked = null }: AddNodeMenuProps) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -57,6 +59,20 @@ export function AddNodeMenu({ onAddCorrector, blocked = null }: AddNodeMenuProps
             >
               <SlidersVerticalIcon aria-hidden="true" />
               <Line name="Corrector" line="Grades all or part of the photo." />
+            </DropdownMenuItem>
+          </TooltipTrigger>
+          {blocked !== null ? <TooltipContent side="right">{blocked}</TooltipContent> : null}
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuItem
+              disabled={!onAddFilm || blocked !== null}
+              className="data-disabled:pointer-events-auto"
+              aria-description={blocked ?? undefined}
+              onSelect={() => onAddFilm?.()}
+            >
+              <FilmIcon aria-hidden="true" />
+              <Line name="Film" line="Models a colour negative, a print and a scan." />
             </DropdownMenuItem>
           </TooltipTrigger>
           {blocked !== null ? <TooltipContent side="right">{blocked}</TooltipContent> : null}

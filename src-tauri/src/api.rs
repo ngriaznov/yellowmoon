@@ -1114,6 +1114,71 @@ impl AppApi {
         Ok(self.frames.put_look_tile(photo.0, &look.0, png))
     }
 
+    /// `film_catalogue`: the stocks and papers the Film node's pickers list (`names.json` through the core).
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `render` and "Yellowmoon's film data is missing. Reinstall the app." when the list cannot be read.
+    pub fn film_catalogue(&self) -> Result<crate::wire::FilmCatalogue, AppError> {
+        let c = ym_core::film_tiles::film_catalogue().ok_or_else(|| {
+            AppError::new(
+                ErrorScope::Render,
+                "Yellowmoon's film data is missing. Reinstall the app.",
+            )
+        })?;
+        Ok(crate::wire::FilmCatalogue {
+            stocks: c
+                .stocks
+                .into_iter()
+                .map(|s| crate::wire::FilmStockInfo {
+                    id: s.id,
+                    name: s.name,
+                    kind: s.kind.to_owned(),
+                    group: s.group,
+                    iso: s.iso,
+                    matching_paper: s.matching_paper,
+                })
+                .collect(),
+            papers: c
+                .papers
+                .into_iter()
+                .map(|p| crate::wire::FilmPaperInfo {
+                    id: p.id,
+                    name: p.name,
+                })
+                .collect(),
+            profile_version: c.profile_version,
+            credit: c.credit,
+            disclaimer: c.disclaimer,
+            trademarks: c.trademarks,
+        })
+    }
+
+    /// `film_tile`: the photo as it is developed now with the stock of Film node `node` replaced by `stock`. The PNG stays here
+    /// and is served on the `ym-frame` scheme like a look tile (the same store, its budget and its photo-by-photo forgetting); the
+    /// answer is its address. It runs at the thumbnails' priority and moving to another photo cancels it.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `render` for a node the photo does not have, a stock that is not offered, or a cancelled render.
+    pub fn film_tile(&self, photo: PhotoId, node: u32, stock: &str) -> Result<String, AppError> {
+        let src =
+            PhotoSource::from_session(&self.core.session, core_id(photo)).map_err(session_error)?;
+        let png =
+            ym_core::film_tiles::spawn_film_tile(&self.core.renderer, src, node, stock.to_owned())
+                .wait()
+                .map_err(job_error)?
+                .map_err(AppError::from)?;
+        self.core
+            .session
+            .view(core_id(photo))
+            .map_err(session_error)?;
+        // A look tile's store keeps it: the key names the node and the stock, so a tile for the same pair replaces the older.
+        Ok(self
+            .frames
+            .put_look_tile(photo.0, &format!("film:{node}:{stock}"), png))
+    }
+
     /// `looks_import`: a zip, a folder or a `.cube` file; `input` answers the generic question for
     /// `.cube` files that match no ARRI package. Progress arrives as `looks_import_progress`.
     ///

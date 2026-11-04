@@ -934,7 +934,11 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) 
         if ((nu(ni, R_CTL).x & N_MAIN) != 0u) {
             stage = main_stage;
         }
-        let nv = node_apply(ni, v_in, c7, from_input, stage);
+        let film = (nu(ni, R_CTL).x & N_FILM) != 0u;
+        var nv = v_in;
+        if (!film) {
+            nv = node_apply(ni, v_in, c7, from_input, stage);
+        }
         if (stage != 0u) {
             return NodesOut(nv, true);
         }
@@ -962,7 +966,23 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) 
             m = node_mask(ni, v_in, c7, from_input, pos, rpix, key_in, has_key);
         }
         var out_v = nv;
-        if (blends && !skipped) {
+        if (film) {
+            // A Film node (docs/24 section 3.9c): the picture the Film passes made, in the first planes of `pbuf`, blended by the
+            // node's mask times its Strength (`R_GAIN.x`), as the CPU's `run_film`: m is also the key output, bypass or not.
+            m = 1.0;
+            if (blends || key_written) {
+                m = node_mask(ni, v_in, c7, from_input, pos, rpix, key_in, has_key);
+            }
+            m = m * nf(ni, R_GAIN).x;
+            if ((ctl & N_FILM_LIVE) != 0u && m != 0.0) {
+                let made = plane_pic(nu(ni, R_CTL).w, n, pix);
+                if (m == 1.0) {
+                    out_v = made;
+                } else {
+                    out_v = v_in + m * (made - v_in);
+                }
+            }
+        } else if (blends && !skipped) {
             if (m == 0.0) {
                 out_v = v_in;
             } else if (m != 1.0) {

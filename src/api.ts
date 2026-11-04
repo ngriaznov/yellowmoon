@@ -37,6 +37,7 @@ import type {
   ExportJobId,
   HistogramData,
   LensInfo,
+  FilmCatalogue,
   LookId,
   Look,
   LookInput,
@@ -220,6 +221,18 @@ export interface Api {
    */
   lookThumbnail(photoId: PhotoId, lookId: LookId): Promise<string>;
   /**
+   * `film_catalogue` (`docs/24` §4.1, F-09): the camera films and the still papers the Film node's pickers list, with the credit,
+   * disclaimer and trademark lines. Read once. Rejects with scope `render` ("Yellowmoon's film data is missing. Reinstall the app.")
+   * when the data cannot be read.
+   */
+  filmCatalogue(): Promise<FilmCatalogue>;
+  /**
+   * `film_tile` (`docs/24` §4.4, F-09): the photo as it is developed now with the stock of Film node `node` replaced by `stock`, for
+   * the stock picker's tiles. Like `lookThumbnail`: the address of a PNG of at most 240 px on the `ym-frame` scheme, made at the
+   * thumbnails' priority and cancelled when the person moves to another photo. A new request is a new address.
+   */
+  filmTile(photoId: PhotoId, node: number, stock: string): Promise<string>;
+  /**
    * `node_thumbnails` (`docs/23` §5.7, §9): asks for the thumbnails of every node of the photo, dead ones included: each is the photo
    * after that node and then through the Output, about 160 px on the long edge. Resolves at once; the pictures that changed since the
    * page was told arrive as a `node_thumbnails_ready` event (an address each, on the `ym-frame` scheme). Ask after a change has landed,
@@ -389,6 +402,8 @@ export const tauriApi: Api = {
   lensList: () => commands.lensList(),
   looksList: () => commands.looksList(),
   lookThumbnail: (photoId, lookId) => commands.lookThumbnail(photoId, lookId),
+  filmCatalogue: () => commands.filmCatalogue(),
+  filmTile: (photoId, node, stock) => commands.filmTile(photoId, node, stock),
   nodeThumbnails: (photoId) => unit(commands.nodeThumbnails(photoId)),
   looksImport: (path, input) => commands.looksImport(path, input ?? null),
   looksRecognise: (path) => commands.looksRecognise(path),

@@ -7,7 +7,8 @@
  * (`validateGraph`), and both answer the plain sentence to show, or null.
  */
 import type { DevelopSettings, NodeId, NodeItem, NodeKind, NodeLink, NodePatch, Port, ResolvedSettings, SettingsPatch } from "../api/types";
-import { clone, correctorsOf, INPUT_ID, MAIN_ID, nodeAsPatch, nodeIdOfKey, nodeOf, OUTPUT_ID } from "../state/settingsGraph";
+import { MOCK_FILM_PAPERS, MOCK_FILM_STOCKS } from "./film";
+import { cardsOf, clone, INPUT_ID, MAIN_ID, nodeAsPatch, nodeIdOfKey, nodeOf, OUTPUT_ID } from "../state/settingsGraph";
 
 /** Most corrector nodes a photo can have, Main included (`docs/23` section 3.5). */
 export const MAX_NODES = 64;
@@ -130,8 +131,17 @@ function hasCycle(ids: readonly NodeId[], links: readonly NodeLink[]): boolean {
   return seen < ids.length;
 }
 
+/** The core's refusals of a Film node's stock and paper (`docs/24` section 4.5). */
+function filmProblem(item: NodeItem): string | null {
+  if (item.kind !== "film") return null;
+  if (!MOCK_FILM_STOCKS.some((s) => s.id === item.film.stock)) return `Unknown film stock "${item.film.stock}". Run "ym film list" to see the stocks.`;
+  const paper = item.print.paper;
+  if (paper !== null && !MOCK_FILM_PAPERS.some((p) => p.id === paper)) return `Unknown film paper "${paper}". Run "ym film list" to see the papers.`;
+  return null;
+}
+
 function maskProblem(item: NodeItem): string | null {
-  if (item.kind !== "corrector") return null;
+  if (item.kind !== "corrector" && item.kind !== "film") return null;
   if (item.masks.items.length > MAX_MASKS) return GRAPH_TEXT.tooManyMasks;
   let brush = 0;
   for (const row of item.masks.items) {
@@ -155,9 +165,9 @@ export function validateGraph(settings: DevelopSettings): string | null {
   }
   const main = nodeOf(settings, MAIN_ID);
   if (!ids.has(INPUT_ID) || !ids.has(OUTPUT_ID) || main?.kind !== "corrector") return GRAPH_TEXT.missingFixed;
-  if (correctorsOf(settings).length > MAX_NODES) return GRAPH_TEXT.tooManyNodes;
+  if (cardsOf(settings).length > MAX_NODES) return GRAPH_TEXT.tooManyNodes;
   for (const item of items) {
-    const problem = maskProblem(item);
+    const problem = filmProblem(item) ?? maskProblem(item);
     if (problem) return problem;
   }
   const taken = new Map<string, number>();
@@ -201,7 +211,7 @@ export function copiedPatch(rs: ResolvedSettings): SettingsPatch {
   for (const item of rs.settings.nodes.items) {
     const patch = nodeAsPatch(item) as Record<string, unknown>;
     if (item.kind === "input") for (const field of COPY_LEAVES_OUT) delete patch[field];
-    if (item.kind === "corrector") {
+    if (item.kind === "corrector" || item.kind === "film") {
       patch.masks = {
         invert: item.masks.invert,
         items: item.masks.items.map((row) => (row.kind === "object" ? { ...clone(row), points: [], box: null } : clone(row))),
@@ -235,7 +245,7 @@ export function pastedOnto(target: DevelopSettings, patch: SettingsPatch): Setti
   const out: SettingsPatch = { ...patch, nodes };
   if (patch.links !== undefined) {
     const given = new Set(Object.keys(nodes).map(nodeIdOfKey));
-    const extra = correctorsOf(target)
+    const extra = cardsOf(target)
       .map((item) => item.id)
       .filter((id) => id !== MAIN_ID && !given.has(id));
     out.remove = [...new Set([...(patch.remove ?? []), ...extra])];

@@ -18,11 +18,12 @@ use crate::system;
 use crate::wire::{
     self, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
     CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate,
-    ExportJob, ExportJobId, HistogramData, LensInfo, Look, LookId, LookInput, LooksImportResult,
-    MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView, MenuState, NodeId, Num, OpenKind,
-    Orientation, PasteReport, PhotoId, PixelSample, Preferences, PreferencesPatch,
-    ResolvedSettings, SessionChange, SessionState, SettingsPatch, SourceRecognition,
-    ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, WatchStatus,
+    ExportJob, ExportJobId, FilmCatalogue, HistogramData, LensInfo, Look, LookId, LookInput,
+    LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView, MenuState,
+    NodeId, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample, Preferences,
+    PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
+    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
+    WatchStatus,
 };
 
 /// The managed state: the command handlers, or why the application could not start.
@@ -457,6 +458,29 @@ pub async fn look_thumbnail(
     run(&state, move |api| api.look_thumbnail(photo_id, &look_id)).await
 }
 
+/// `film_catalogue()` (`docs/24` section 4.1): the camera films and papers the Film node's pickers list, from `names.json`, with the
+/// credit, disclaimer and trademark lines.
+#[tauri::command]
+#[specta::specta]
+pub async fn film_catalogue(state: State<'_, AppState>) -> Result<FilmCatalogue, AppError> {
+    run(&state, |api| api.film_catalogue()).await
+}
+
+/// `film_tile(photo_id, node, stock)` (`docs/24` section 4.4): the photo through one stock in Film node `node`, at the photo's
+/// settings. The answer is the address of a PNG of at most 240 px on the `ym-frame` scheme
+/// (`ym-frame://localhost/<launch>/look-<photo>-<n>.png`), made at the thumbnails' priority and cancelled when the person moves to
+/// another photo.
+#[tauri::command]
+#[specta::specta]
+pub async fn film_tile(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+    node: u32,
+    stock: String,
+) -> Result<String, AppError> {
+    run(&state, move |api| api.film_tile(photo_id, node, &stock)).await
+}
+
 /// `node_thumbnails(photo_id)` (`docs/23` sections 5.7 and 9): asks for the thumbnails of every node of
 /// the photo. Answers `null` at once; the pictures that changed arrive as a `node_thumbnails_ready`
 /// event, each the address of a PNG on the `ym-frame` scheme.
@@ -778,6 +802,8 @@ pub fn builder() -> Builder<tauri::Wry> {
             lens_list,
             looks_list,
             look_thumbnail,
+            film_catalogue,
+            film_tile,
             node_thumbnails,
             looks_import,
             looks_recognise,

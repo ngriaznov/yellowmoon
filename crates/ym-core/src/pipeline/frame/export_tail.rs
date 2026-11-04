@@ -46,6 +46,7 @@ use ym_gpu::kernels::mask_raster::{largest_tile_for, tile_halo};
 use ym_gpu::queue::{CancelToken, JobError, JobHandle, JobSpec, Priority};
 use ym_gpu::tail::{Band, BandData, BandFormat, ExportTail, TailRoute, TailSharpen, TailSpec};
 
+use super::film_pass::FilmRender;
 use super::{FullImage, FullRequest, FullTarget};
 use crate::app::gpu::GpuStages;
 use crate::pipeline::color::PhotoSource;
@@ -499,7 +500,17 @@ impl Renderer {
         } else {
             0
         };
-        let halo_allowance = 160usize + job.lens_halo()? + bend;
+        let grade = job.grade(request.target, false)?;
+        // The Film nodes of the chain, as the device runs them: each tile is read that much wider on every side.
+        let films = FilmRender::build(
+            &job,
+            &grade.chain,
+            ym_color::mask_raster::Area::whole(fw, fh),
+            request.target,
+        )?
+        .map(|f| Arc::new(f.device_stack()));
+        let film_halo = films.as_ref().map_or(0, |f| f.total_halo());
+        let halo_allowance = 160usize + job.lens_halo()? + bend + film_halo;
         let per_px = 12u64 * 12; // twelve f32 planes of working set per tile pixel, a generous bound
         let working = ((tile + halo_allowance) as u64).pow(2) * per_px;
         let frame_extra = job.frame()?.extra_bytes() as u64;
@@ -512,11 +523,11 @@ impl Renderer {
             .ledger()
             .try_reserve(working + frame_extra + sigma_map)
             .map_err(|_| RenderError::Memory)?;
-        let grade = job.grade(request.target, false)?;
         let grid = baked.grid((plan.out_w, plan.out_h), (fw, fh));
-        // The raster masks of the nodes are made over each tile grown by their receptive field; tiles equal the
-        // whole frame, so a tile whose grown window would pass the design binding is made smaller.
-        let raster_halo = tile_halo(&grade.chain, &grid.sampler_grid());
+        // The raster masks of the nodes are made over each tile grown by their receptive field, and the Film nodes read
+        // their halos beyond it; tiles equal the whole frame, so a tile whose grown window would pass the design binding
+        // is made smaller.
+        let raster_halo = tile_halo(&grade.chain, &grid.sampler_grid()) + film_halo;
         let tile = largest_tile_for(raster_halo, tile);
         let frame_area = ym_color::mask_raster::Area::whole(fw, fh);
         let sharpen = (request.output_sharpening_pct > 0.0).then(|| TailSharpen {
@@ -538,6 +549,7 @@ impl Renderer {
                 sharpen,
                 space: request.space.output_space(),
                 format: request.format(),
+                films,
             },
         )
         .map_err(|e| self.tail_error(&e))?;

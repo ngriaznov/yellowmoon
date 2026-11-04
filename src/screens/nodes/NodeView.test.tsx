@@ -279,16 +279,18 @@ describe("layout A", () => {
 });
 
 describe("the Add node menu", () => {
-  it("opens upward from the button: Corrector, then Parallel, Layer and Splitter and combiner, greyed with 'Later'", async () => {
+  it("opens upward from the button: Corrector, Film, then Parallel, Layer and Splitter and combiner, greyed with 'Later'", async () => {
     await setup();
     await openNodeView();
     await h!.user.click(within(graph()).getByRole("button", { name: "Add node" }));
     const menu = await screen.findByRole("menu", { name: "Add node" });
     expect(menu).toHaveAttribute("data-side", "top");
     const items = within(menu).getAllByRole("menuitem");
-    expect(items.map((i) => i.querySelector(".ym-menu-line__name")?.textContent)).toEqual(["Corrector", "Parallel", "Layer", "Splitter and combiner"]);
+    expect(items.map((i) => i.querySelector(".ym-menu-line__name")?.textContent)).toEqual(["Corrector", "Film", "Parallel", "Layer", "Splitter and combiner"]);
     expect(within(items[0]!).getByText("Grades all or part of the photo.")).toBeInTheDocument();
-    for (const item of items.slice(1)) {
+    expect(within(items[1]!).getByText("Models a colour negative, a print and a scan.")).toBeInTheDocument();
+    expect(items[1]).not.toHaveAttribute("aria-disabled");
+    for (const item of items.slice(2)) {
       expect(item).toHaveAttribute("aria-disabled", "true");
       expect(item).toHaveAccessibleDescription("Not in the first version");
       expect(within(item).getByText("Later")).toBeInTheDocument();

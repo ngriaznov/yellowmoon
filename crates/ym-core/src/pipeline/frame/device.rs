@@ -70,6 +70,7 @@ use ym_gpu::image::{GpuImage, IMAGE_USAGE};
 use ym_gpu::kernels::color::{NodeStop, PreparedChain, Stop, release_tables};
 use ym_gpu::kernels::copy::{Piece, encode_gather};
 use ym_gpu::kernels::encode::{C13, Encoding, encode_c13};
+use ym_gpu::kernels::film_stack::{FilmPictures, FilmStack};
 use ym_gpu::kernels::magnify::{MagnifyTarget, encode_magnify};
 use ym_gpu::kernels::mask_raster::{PlaneKey, RasterJob, encode_raster_planes_kept};
 use ym_gpu::kernels::output_sharpen::{FusedC13, PreparedSharpen};
@@ -602,6 +603,7 @@ fn prepared_for(
     chain: &ColorChain,
     input: &DeviceInput,
     rasters: Option<&GrownInput>,
+    film: Option<&FilmStack>,
 ) -> Result<PreparedChain, GpuError> {
     let mut prepared = {
         let _span = perf::span(Stage::ColourRecord);
@@ -616,6 +618,34 @@ fn prepared_for(
         return Ok(prepared);
     };
     prepared = prepared.with_photo_frame(frame);
+    // The Film nodes of the plan: their pictures are made from the wider picture the raster masks look at (grown by the
+    // Film halos too, `raster_read`) before the colour pass, which blends them by the nodes' masks (`docs/24` section 3.9c).
+    // With nothing of the photo in the view there is no wider picture and no pixel that reads a Film picture.
+    if !prepared.live_films().is_empty() {
+        prepared = match (rasters, film) {
+            (Some(grown), Some(stack)) => {
+                let r = &grown.read;
+                let wide = {
+                    let _span = perf::span(Stage::WideImage);
+                    input_image(ctx, passes, &grown.input)?
+                };
+                let photo = grown.input.photo_frame();
+                let pictures = {
+                    let _span = perf::span(Stage::ColourRecord);
+                    stack.encode(ctx, passes, &wide, r.grown, r.window, photo)?
+                };
+                // The wider picture lives until the work has finished.
+                let _ = passes.keep(wide.buf);
+                prepared.with_film(pictures, (r.extent.x, r.extent.y))
+            }
+            (None, _) => prepared.with_film(Arc::new(FilmPictures::empty()), (0, 0)),
+            (Some(_), None) => {
+                return Err(GpuError::InvalidInput(
+                    "the plan runs a Film node and the job has no Film passes for it".to_owned(),
+                ));
+            }
+        };
+    }
     // The raster masks of the nodes (`docs/23` section 5.5): their planes are made over the picture the colour pass
     // makes, from a sampled picture that goes on beyond it by the masks' receptive field, as far as the photo does.
     // The pixels of the picture that are paper have no plane.
@@ -877,8 +907,10 @@ pub(super) struct PlainJob {
     pub origin: (usize, usize),
     /// Where the finished frame goes.
     pub output: FrameOutput,
-    /// The wider picture the raster masks of the chain look at, when it has any.
+    /// The wider picture the raster masks and the Film nodes of the chain look at, when it has any.
     pub rasters: Option<GrownInput>,
+    /// The Film nodes of the chain, when it has a live one.
+    pub film: Option<Arc<FilmStack>>,
 }
 
 /// The RGBA8 frame of a [`PlainJob`].
@@ -899,6 +931,7 @@ pub(super) fn plain_job(
         &job.chain,
         &job.input,
         job.rasters.as_ref(),
+        job.film.as_deref(),
     )?;
     let (w, h) = (sampled.width, sampled.height);
     let bytes = (w * h * 4) as u64;
@@ -944,8 +977,13 @@ pub(super) struct DisplayJob {
     pub gpu: Weak<Gpu>,
     /// Where the RGBA8 frame of the tail goes.
     pub output: FrameOutput,
-    /// The wider picture the raster masks of the chain (and of the mask chain) look at, when they have any.
+    /// The wider picture the raster masks and the Film nodes of the chain (and of the mask chain) look at, when they have
+    /// any.
     pub rasters: Option<GrownInput>,
+    /// The Film nodes of the chain, when it has a live one.
+    pub film: Option<Arc<FilmStack>>,
+    /// The Film nodes of the mask chain, when it has a live one.
+    pub mask_film: Option<Arc<FilmStack>>,
 }
 
 /// What a [`DisplayJob`] made.
@@ -977,6 +1015,7 @@ pub(super) fn display_job(
         &job.chain,
         &job.input,
         job.rasters.as_ref(),
+        job.film.as_deref(),
     )?;
     let (w, h) = (sampled.width, sampled.height);
     // The frame has the pixels and the letterbox mask: the position planes of the sampled picture stay behind.
@@ -1004,7 +1043,14 @@ pub(super) fn display_job(
         .mask
         .as_ref()
         .map(|chain| -> Result<GpuImage, GpuError> {
-            let prepared = prepared_for(ctx, &mut passes, chain, &job.input, job.rasters.as_ref())?;
+            let prepared = prepared_for(
+                ctx,
+                &mut passes,
+                chain,
+                &job.input,
+                job.rasters.as_ref(),
+                job.mask_film.as_deref(),
+            )?;
             let image = GpuImage::alloc(
                 ctx,
                 "view mask",

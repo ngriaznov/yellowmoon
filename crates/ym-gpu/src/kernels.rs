@@ -56,6 +56,7 @@ pub mod diffraction;
 pub mod encode;
 pub mod false_color;
 pub mod film;
+pub mod film_stack;
 pub mod guided;
 pub mod highlights;
 pub mod lens;

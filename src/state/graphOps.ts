@@ -8,10 +8,10 @@
  * plan's order of section 5.2 computed here as the core computes it), so the canvas, the menus and the keys cannot disagree about a rule.
  * The core validates whatever is sent (`crates/ym-core/src/settings/graph.rs`); these functions never send a graph it would refuse.
  */
-import type { DevelopSettings, LookId, NodeId, NodeLink, NodePatch, NodePos, NodeRef, Port, SettingsPatch } from "../api/types";
+import type { DevelopSettings, LookId, NodeId, NodeItem, NodeLink, NodePatch, NodePos, NodeRef, Port, SettingsPatch } from "../api/types";
 import {
   applyPatch,
-  correctorsOf,
+  cardsOf,
   defaultGrade,
   defaultInput,
   INPUT_ID,
@@ -20,12 +20,14 @@ import {
   neutralGrade,
   NEUTRAL_LOOK,
   newCorrector,
+  newFilm,
+  DEFAULT_STOCK,
   nodeAsPatch,
   nodeOf,
   OUTPUT_ID,
   same,
 } from "./settingsGraph";
-import type { CorrectorItem } from "./settingsGraph";
+import type { CardItem } from "./settingsGraph";
 
 /** Most corrector nodes a photo can have, Main included (`docs/23` section 3.5). */
 export const MAX_CORRECTORS = 64;
@@ -33,6 +35,8 @@ export const MAX_CORRECTORS = 64;
 export const MAX_NAME_LENGTH = 32;
 /** The name a new node has. */
 export const DEFAULT_NAME = "Corrector";
+/** The name a new Film node has. */
+export const FILM_DEFAULT_NAME = "Film";
 /** The ids a node can have: 1 to 2³¹ − 1. */
 const MAX_ID = 2 ** 31 - 1;
 /** `pos` is clamped to this, as the core clamps it. */
@@ -198,9 +202,9 @@ export interface CardState {
  */
 export function cardStates(settings: DevelopSettings): Map<number, CardState> {
   const links = settings.nodes.links;
-  const nodes = correctorsOf(settings);
+  const nodes = cardsOf(settings);
   const byId = new Map(nodes.map((n) => [n.id as number, n]));
-  const needs = (node: CorrectorItem): number[] => {
+  const needs = (node: CardItem): number[] => {
     const out: number[] = [];
     for (const port of ["picture", "key"] as const) {
       const from = sourceOf(links, node.id, port);
@@ -208,15 +212,15 @@ export function cardStates(settings: DevelopSettings): Map<number, CardState> {
     }
     return out;
   };
-  const precedes = (a: CorrectorItem, b: CorrectorItem): number =>
+  const precedes = (a: CardItem, b: CardItem): number =>
     Number(a.id !== MAIN_ID) - Number(b.id !== MAIN_ID) || a.pos[0] - b.pos[0] || a.pos[1] - b.pos[1] || (a.id as number) - (b.id as number);
 
   const waiting = new Map<number, Set<number>>(nodes.map((n) => [n.id as number, new Set(needs(n))]));
   const order: number[] = [];
   while (waiting.size > 0) {
-    const ready = [...waiting].filter(([, deps]) => deps.size === 0).map(([id]) => byId.get(id) as CorrectorItem);
+    const ready = [...waiting].filter(([, deps]) => deps.size === 0).map(([id]) => byId.get(id) as CardItem);
     // A validated graph has no circle; a broken one still gets a total order rather than a loop.
-    const pool = ready.length > 0 ? ready : [...waiting.keys()].map((id) => byId.get(id) as CorrectorItem);
+    const pool = ready.length > 0 ? ready : [...waiting.keys()].map((id) => byId.get(id) as CardItem);
     const next = pool.reduce((best, n) => (precedes(n, best) < 0 ? n : best));
     waiting.delete(next.id as number);
     for (const deps of waiting.values()) deps.delete(next.id as number);
@@ -231,7 +235,7 @@ export function cardStates(settings: DevelopSettings): Map<number, CardState> {
     const id = todo.pop() as number;
     if (live.has(id) || !byId.has(id)) continue;
     live.add(id);
-    todo.push(...needs(byId.get(id) as CorrectorItem));
+    todo.push(...needs(byId.get(id) as CardItem));
   }
   return new Map(order.map((id, i) => [id, { number: i + 1, live: live.has(id) }]));
 }
@@ -268,6 +272,9 @@ export const hasPatch = (outcome: GraphOutcome): outcome is { ok: true } & Graph
 // Add, delete, bypass, rename, move
 // ---------------------------------------------------------------------------
 
+/** True for a node that has a card: a corrector or a Film node. */
+const isCard = (node: NodeItem): node is CardItem => node.kind === "corrector" || node.kind === "film";
+
 /** The id a new node gets: one more than the largest the page has used in the session (`usedMax`), so a deleted id is not reused. */
 export function nextNodeId(settings: DevelopSettings, usedMax = 0): number {
   const largest = Math.max(usedMax, ...settings.nodes.items.map((item) => (typeof item.id === "number" ? item.id : 0)));
@@ -287,7 +294,7 @@ function shifted(settings: DevelopSettings, ids: ReadonlySet<NodeId>, skip: Node
   const out: Record<string, { pos: NodePos }> = {};
   if (delta <= 0) return out;
   for (const item of settings.nodes.items) {
-    if (item.kind !== "corrector" || item.id === skip || !ids.has(item.id)) continue;
+    if (!isCard(item) || item.id === skip || !ids.has(item.id)) continue;
     out[String(item.id)] = { pos: clampPos([item.pos[0] + delta, item.pos[1]]) };
   }
   return out;
@@ -304,10 +311,10 @@ function slotFor(settings: DevelopSettings, after: NodeId, into: NodeLink | unde
   if (!base) return null;
   const before = into ? nodeOf(settings, into.to.node) : undefined;
   if (base.kind === "input") {
-    return before && before.kind === "corrector" ? { pos: clampPos([before.pos[0], before.pos[1]]), delta: 1 } : { pos: clampPos([0, 0]), delta: 0 };
+    return before && isCard(before) ? { pos: clampPos([before.pos[0], before.pos[1]]), delta: 1 } : { pos: clampPos([0, 0]), delta: 0 };
   }
   const pos = clampPos([base.pos[0] + 1, base.pos[1]]);
-  const delta = before && before.kind === "corrector" ? Math.max(0, pos[0] + 1 - before.pos[0]) : 0;
+  const delta = before && isCard(before) ? Math.max(0, pos[0] + 1 - before.pos[0]) : 0;
   return { pos, delta };
 }
 
@@ -327,6 +334,11 @@ export function addNode(id: number, pos: NodePos, name = DEFAULT_NAME): Record<s
   return { [String(id)]: nodeAsPatch(newCorrector(id, clampPos(pos), name)) };
 }
 
+/** A new Film node (`docs/24` section 4.5), Portra 400 on its matching paper, as a patch that adds it whole. */
+export function addFilmNode(id: number, pos: NodePos, name = FILM_DEFAULT_NAME): Record<string, NodePatch> {
+  return { [String(id)]: nodeAsPatch(newFilm(id, clampPos(pos), name)) };
+}
+
 /**
  * **Add after the selected node** (`docs/23` section 7.2): the new node goes into the selected node's outgoing picture link. With S
  * selected and a link S → T the result is S → N → T; with several such links N goes into the one that leads to the Output, else the first;
@@ -334,8 +346,8 @@ export function addNode(id: number, pos: NodePos, name = DEFAULT_NAME): Record<s
  * Output's incoming link. N's `pos` is the node's plus one unit to the right, the nodes downstream of N move one unit right (as far as
  * it takes to leave N its unit: none where a gap is), and N is selected. Refused at 64 nodes.
  */
-export function insertAfter(settings: DevelopSettings, selected: NodeId, options: { usedMax?: number; name?: string } = {}): GraphOutcome {
-  if (correctorsOf(settings).length >= MAX_CORRECTORS) return refuse(GRAPH_OP_TEXT.tooMany);
+export function insertAfter(settings: DevelopSettings, selected: NodeId, options: { usedMax?: number; name?: string; kind?: "corrector" | "film" } = {}): GraphOutcome {
+  if (cardsOf(settings).length >= MAX_CORRECTORS) return refuse(GRAPH_OP_TEXT.tooMany);
   const links = settings.nodes.links;
   let after: NodeId = selected === INPUT_ID ? MAIN_ID : selected;
   let into: NodeLink | undefined;
@@ -349,7 +361,8 @@ export function insertAfter(settings: DevelopSettings, selected: NodeId, options
   if (!slot) return refuse(GRAPH_OP_TEXT.gone);
   const id = nextNodeId(settings, options.usedMax);
   const next = putAfter(links, id, after, into);
-  const nodes = { ...addNode(id, slot.pos, options.name), ...shifted(settings, downstreamOf(next, id), id, slot.delta) };
+  const added = options.kind === "film" ? addFilmNode(id, slot.pos, options.name) : addNode(id, slot.pos, options.name);
+  const nodes = { ...added, ...shifted(settings, downstreamOf(next, id), id, slot.delta) };
   return done({ nodes, links: next }, id);
 }
 
@@ -376,7 +389,7 @@ export function remove(settings: DevelopSettings, id: NodeId): GraphOutcome {
 export function toggleBypass(settings: DevelopSettings, id: NodeId): GraphOutcome {
   const node = nodeOf(settings, id);
   if (!node) return refuse(GRAPH_OP_TEXT.gone);
-  if (node.kind !== "corrector") return refuse(GRAPH_OP_TEXT.noBypass);
+  if (!isCard(node)) return refuse(GRAPH_OP_TEXT.noBypass);
   return done({ nodes: { [String(id)]: { bypass: !node.bypass } } });
 }
 
@@ -396,6 +409,15 @@ export function resetNode(settings: DevelopSettings, id: NodeId, defaults: { loo
     patch = fields;
   } else if (node.kind === "output") {
     patch = { look: defaults.look ?? NEUTRAL_LOOK, look_intensity: 100, output_sharpening: 100 };
+  } else if (node.kind === "film") {
+    // Every number back to its default; the stock goes back to Portra 400 on its matching paper. The grain's seed, the masks, the name and the bypass stay.
+    patch = {
+      film: { stock: DEFAULT_STOCK, exposure_ev: 0 },
+      print: { paper: null, exposure_ev: 0, lights: { c: 0, m: 0, y: 0 } },
+      halation: { amount: 100, size: 100 },
+      grain: { amount: 100, size: 100 },
+      strength: 100,
+    };
   } else {
     patch = { trim: { exposure_ev: 0, temperature: 0, tint: 0 }, grade: node.id === MAIN_ID ? defaultGrade() : neutralGrade() };
   }
@@ -413,7 +435,7 @@ export const cleanName = (name: string): string => Array.from(name.trim()).slice
 export function rename(settings: DevelopSettings, id: NodeId, name: string): GraphOutcome {
   const node = nodeOf(settings, id);
   if (!node) return refuse(GRAPH_OP_TEXT.gone);
-  if (node.kind !== "corrector") return refuse(GRAPH_OP_TEXT.noRename);
+  if (node.kind !== "corrector" && node.kind !== "film") return refuse(GRAPH_OP_TEXT.noRename);
   const clean = cleanName(name);
   return clean === "" || clean === node.name ? nothing : done({ nodes: { [String(id)]: { name: clean } } });
 }
@@ -639,7 +661,7 @@ export function joinWords(words: readonly string[]): string {
 }
 
 /** The kinds of a node's enabled mask rows, in the order of the rows, each named once. */
-export function maskKindNames(node: Pick<CorrectorItem, "masks">): string[] {
+export function maskKindNames(node: Pick<CardItem, "masks">): string[] {
   const names: string[] = [];
   for (const row of node.masks.items) {
     const name = MASK_KIND_NAME[row.kind] ?? row.kind;
@@ -658,13 +680,14 @@ export function headLine(settings: DevelopSettings, id: NodeId, states: Readonly
   if (!node) return "";
   if (node.kind === "input") return "Turns the camera's data into the scene.";
   if (node.kind === "output") return "Cine rendering, look and export";
-  if (node.bypass) return "Corrector · bypassed";
-  if (states.get(node.id as number)?.live === false) return "Corrector · not connected";
+  const label = node.kind === "film" ? "Film" : "Corrector";
+  if (node.bypass) return `${label} · bypassed`;
+  if (states.get(node.id as number)?.live === false) return `${label} · not connected`;
   const rows = node.masks.items;
-  if (rows.length === 0) return "Corrector · whole photo";
+  if (rows.length === 0) return `${label} · whole photo`;
   const only = rows[0];
-  if (rows.length === 1 && only) return `Corrector · ${MASK_KIND_NAME[only.kind] ?? only.kind}`;
-  return `Corrector · ${rows.length} masks`;
+  if (rows.length === 1 && only) return `${label} · ${MASK_KIND_NAME[only.kind] ?? only.kind}`;
+  return `${label} · ${rows.length} masks`;
 }
 
 /**

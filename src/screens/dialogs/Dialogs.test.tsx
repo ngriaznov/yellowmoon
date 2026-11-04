@@ -216,6 +216,20 @@ describe("About", () => {
     ).toBeInTheDocument();
   });
 
+  it("carries the film credit line with its two links and the trademark line (docs/24 section 4.6)", async () => {
+    const dialog = await openAbout();
+    const film = within(dialog).getByRole("region", { name: "Film" });
+    await waitFor(() =>
+      expect(film).toHaveTextContent(
+        "Modelled on published data. Film profiles by Andrea Volpato (spektrafilm), CC BY-SA 4.0. Not affiliated with Kodak or Fujifilm.",
+      ),
+    );
+    expect(within(film).getByText("Kodak, Portra, Vision3, Fujifilm and Velvia are trademarks of their owners.")).toBeInTheDocument();
+    await h!.user.click(within(film).getByRole("button", { name: "Andrea Volpato (spektrafilm)" }));
+    await h!.user.click(within(film).getByRole("button", { name: "CC BY-SA 4.0" }));
+    expect(h!.api.system.opened).toEqual(["https://github.com/andreavolpato/spektrafilm", "https://creativecommons.org/licenses/by-sa/4.0/"]);
+  });
+
   it("opens the project's page in the browser and closes with Done", async () => {
     const dialog = await openAbout();
     await h!.user.click(within(dialog).getByRole("button", { name: "Yellowmoon on GitHub" }));

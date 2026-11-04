@@ -32,6 +32,8 @@ export interface NodeGraphActions {
   selectLink: (link: NodeLink | null) => void;
   /** Add node › Corrector: after the selected node. */
   addCorrector: () => void;
+  /** Add node › Film: after the selected node (`docs/24`). */
+  addFilm: () => void;
   /** The key Delete and the toolbar's Delete: the selected link, else the selected node. */
   deleteSelection: () => void;
   deleteNode: (id?: NodeId) => void;
@@ -137,6 +139,7 @@ export function useNodeGraph({ store, settings, photoId, selected, select }: Use
     selectNode,
     selectLink: setSelectedLink,
     addCorrector: () => act((s, here) => insertAfter(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),
+    addFilm: () => act((s, here) => insertAfter(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0, kind: "film", name: "Film" })),
     deleteSelection: () => {
       const { selectedLink: link } = latest.current;
       if (link) {
@@ -152,7 +155,7 @@ export function useNodeGraph({ store, settings, photoId, selected, select }: Use
     startRename: (id, where = "card") => {
       const target = id ?? latest.current.selected;
       const node = latest.current.settings ? nodeOf(latest.current.settings, target) : undefined;
-      if (node?.kind === "corrector") {
+      if (node?.kind === "corrector" || node?.kind === "film") {
         select(target);
         setRenamingIn(where);
         setRenaming(target);

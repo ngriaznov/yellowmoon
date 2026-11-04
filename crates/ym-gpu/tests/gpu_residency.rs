@@ -1180,6 +1180,7 @@ fn tail_spec(
         }),
         space: OutputSpace::Srgb,
         format,
+        films: None,
     }
 }
 

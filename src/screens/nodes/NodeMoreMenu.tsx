@@ -46,7 +46,7 @@ export interface NodeMoreMenuProps {
 export function NodeMoreMenu({ settings, node, onRename, onMoveEarlier, onMoveLater, onLink, onRemoveLink, onDelete, side = "top", buttonClassName }: NodeMoreMenuProps) {
   const item = nodeOf(settings, node);
   const states = cardStates(settings);
-  const corrector = item?.kind === "corrector";
+  const corrector = item?.kind === "corrector" || item?.kind === "film";
   const reorder = reorderAvailability(settings, node);
   const pictureTo = linkTargets(settings, { node, port: "picture" });
   const keyTo = corrector ? linkTargets(settings, { node, port: "key" }) : [];

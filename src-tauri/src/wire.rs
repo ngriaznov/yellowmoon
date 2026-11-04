@@ -3352,6 +3352,49 @@ pub struct CliLinkStatus {
     pub path: Option<String>,
 }
 
+/// One camera film of the Film node's picker (`docs/24` section 4.1), from `names.json` through the core.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct FilmStockInfo {
+    /// The profile id.
+    pub id: String,
+    /// The name shown to the person ("Kodak Portra 400").
+    pub name: String,
+    /// `colour_negative`, `cine_negative` or `slide`.
+    pub kind: String,
+    /// The maker.
+    pub group: String,
+    /// The ISO number.
+    pub iso: Option<u32>,
+    /// The profile id of the paper "Matching paper" means for it; null for a slide.
+    pub matching_paper: Option<String>,
+}
+
+/// One still paper of the Film node's paper picker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct FilmPaperInfo {
+    /// The profile id.
+    pub id: String,
+    /// The name shown to the person.
+    pub name: String,
+}
+
+/// `film_catalogue`: what the Film node's pickers list, and the lines About and the Film tab carry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct FilmCatalogue {
+    /// The camera films that are offered, in the order of the picker.
+    pub stocks: Vec<FilmStockInfo>,
+    /// The still papers that are offered.
+    pub papers: Vec<FilmPaperInfo>,
+    /// The version of the film data ("0.3.2").
+    pub profile_version: String,
+    /// The credit line of the film data: "Modelled on published data. Film profiles by …, CC BY-SA 4.0. Not affiliated with Kodak or Fujifilm."
+    pub credit: String,
+    /// "Modelled on published data. Not affiliated with Kodak or Fujifilm."
+    pub disclaimer: String,
+    /// "Kodak, Portra, Vision3, Fujifilm and Velvia are trademarks of their owners."
+    pub trademarks: String,
+}
+
 /// What the app knows about itself, for About.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct AppInfo {

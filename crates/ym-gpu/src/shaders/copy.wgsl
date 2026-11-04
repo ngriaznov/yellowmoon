@@ -9,7 +9,7 @@
 struct CopyU {
     src: vec4<u32>,   // row stride, plane length, column and row of the rectangle's first pixel
     dst: vec4<u32>,   // row stride, plane length, column and row of its first pixel in the destination
-    size: vec4<u32>,  // rectangle width, height, planes, 0
+    size: vec4<u32>,  // rectangle width, height, planes, the destination's first sample (0 for an image; the Film pictures' place in the colour pass's plan buffer)
 };
 
 @group(0) @binding(0) var<uniform> pu: CopyU;
@@ -22,7 +22,7 @@ fn copy_main(gid: vec3<u32>) {
     }
     for (var c = 0u; c < pu.size.z; c = c + 1u) {
         let at_src = c * pu.src.y + (pu.src.w + gid.y) * pu.src.x + pu.src.z + gid.x;
-        let at_dst = c * pu.dst.y + (pu.dst.w + gid.y) * pu.dst.x + pu.dst.z + gid.x;
+        let at_dst = pu.size.w + c * pu.dst.y + (pu.dst.w + gid.y) * pu.dst.x + pu.dst.z + gid.x;
         dst[at_dst] = src[at_src];
     }
 }

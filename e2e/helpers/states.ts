@@ -176,6 +176,36 @@ export const BACKGROUND_ROW = { kind: "background", mode: "add", invert: false, 
 /** A Colour range on Warmth (node 4), whose Mask tab it is. */
 export const WARMTH_RANGE = { kind: "color_range", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.06, 0.04], width: 0.05, softness: 0.5 } as const;
 
+/** The graph of the Film node's screens (`design/film`): Main, then Film (node 2, Portra 400 on its matching paper) after it, in a line. */
+export const FILM_NODES = {
+  nodes: { "2": { kind: "film", name: "Film", pos: [1, 0] } },
+  links: [
+    { from: { node: "input", port: "picture" }, to: { node: 1, port: "picture" } },
+    { from: { node: 1, port: "picture" }, to: { node: 2, port: "picture" } },
+    { from: { node: 2, port: "picture" }, to: { node: "output", port: "picture" } },
+  ],
+} as const;
+
+/**
+ * The node view of the mockup's photo with a Film node after Main (`design/film`), Film (node 2) selected, on the tab `tab` of its panel.
+ * `film` is what the Film node is given besides its defaults (a stock, a mask row).
+ */
+export async function filmView(page: Page, tab = "Film", film: Record<string, unknown> = {}): Promise<void> {
+  await openApp(page, MOCKUP);
+  await configureMock(page, {
+    initialSettings: { DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE }, "2": { ...FILM_NODES.nodes["2"], ...film } }, links: FILM_NODES.links } } as never,
+  });
+  await openPhotos(page);
+  await showUpdateReady(page);
+  await page.getByRole("button", { name: "Nodes", exact: true }).click();
+  await expect(page.locator('[data-node-card="2"]')).toBeVisible();
+  await page.locator('[data-node-card="2"]').click();
+  await expect(page.locator('[data-node-card="2"]')).toHaveAttribute("aria-pressed", "true");
+  if (tab !== "Film") await page.getByRole("tab", { name: tab, exact: true }).click();
+  await expect(page.getByRole("tab", { name: tab, exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.waitForTimeout(400);
+}
+
 /** The Photos screen as `photos` leaves it, on a photo whose graph has four nodes: Main (with the mockup's grade) and three more. */
 async function photosWithNodes(page: Page): Promise<void> {
   await openApp(page, MOCKUP);
@@ -774,6 +804,104 @@ export const STATES: readonly PageState[] = [
       await expect(p.getByRole("button", { name: "Subject mask, Foreground" })).toBeVisible();
       await expect(p.locator(".ym-photo-cell__image")).toHaveAttribute("src", /data-vision-row/);
       await p.waitForTimeout(300);
+    },
+  ],
+  // The Film node's screens (docs/24 section 4, task F-09; design/film 01 to 11). The Add node menu with Film under Corrector (01); the Film tab with its Stock, Exposure,
+  // Strength and the credit line (02); the Stock picker as tiles, open, every tile made (04); the Print tab (05) and its paper list (05b); a slide stock on the Print
+  // tab, dimmed (07); Halation (08c) and Grain (08a); the Mask tab with one Radial row (09); the Output's note (10); About with the film credit (11).
+  [
+    "66-film-add-node-menu",
+    async (p) => {
+      await photos(p);
+      await p.getByRole("button", { name: "Nodes", exact: true }).click();
+      await p.getByRole("button", { name: "Add node" }).click();
+      await expect(p.getByRole("menuitem", { name: /Film/ })).toBeVisible();
+      await p.getByRole("menuitem", { name: /Film/ }).hover();
+      await p.waitForTimeout(300);
+    },
+  ],
+  [
+    "67-film-tab",
+    async (p) => {
+      await filmView(p);
+      await expect(p.getByRole("button", { name: "Stock, Kodak Portra 400" })).toBeVisible();
+      await expect(p.getByText("Colour negative · ISO 400")).toBeVisible();
+    },
+  ],
+  [
+    "68-film-stock-picker",
+    async (p) => {
+      await filmView(p);
+      await p.getByRole("button", { name: /^Stock, / }).click();
+      const picker = p.getByRole("dialog", { name: "Film stocks" });
+      await expect(picker).toBeVisible();
+      await expect(picker.locator("img")).toHaveCount(20, { timeout: 20000 });
+      await p.waitForTimeout(400);
+    },
+  ],
+  [
+    "69-film-print-tab",
+    async (p) => {
+      await filmView(p, "Print");
+      await expect(p.getByRole("combobox", { name: "Paper" })).toHaveText("Matching paper");
+    },
+  ],
+  [
+    "70-film-paper-list",
+    async (p) => {
+      await filmView(p, "Print");
+      await p.getByRole("combobox", { name: "Paper" }).click();
+      await expect(p.getByRole("option")).toHaveCount(7);
+      await p.waitForTimeout(300);
+    },
+  ],
+  [
+    "71-film-slide-print-tab",
+    async (p) => {
+      await filmView(p, "Print", { film: { stock: "fujifilm_velvia_100" } });
+      await expect(p.getByText("Slide film is scanned as it is. There is no print.")).toBeVisible();
+    },
+  ],
+  [
+    "72-film-halation-tab",
+    async (p) => {
+      await filmView(p, "Halation");
+      await expect(p.getByRole("slider", { name: "Amount" })).toBeVisible();
+    },
+  ],
+  [
+    "73-film-grain-tab",
+    async (p) => {
+      await filmView(p, "Grain");
+      await expect(p.getByRole("slider", { name: "Amount" })).toBeVisible();
+    },
+  ],
+  [
+    "74-film-mask-tab",
+    async (p) => {
+      await filmView(p, "Mask", {
+        masks: { invert: false, items: [{ kind: "radial", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.5, 0.5], radii: [0.3, 0.2], angle_deg: 0, feather: 0.45 }] },
+      });
+      await expect(p.getByRole("region", { name: "Masks" })).toBeVisible();
+    },
+  ],
+  [
+    "75-film-output-note",
+    async (p) => {
+      await filmView(p);
+      await p.locator('[data-node-card="output"]').click();
+      await expect(p.getByText("The look acts after the Film node. Choose Neutral to see the print as scanned.")).toBeVisible();
+    },
+  ],
+  [
+    "76-film-about",
+    async (p) => {
+      await filmView(p);
+      await p.evaluate(() => window.__yellowmoon!.mockApi.emitEvent("menu_action", { action: "about" }));
+      const dialog = p.getByRole("dialog", { name: "About Yellowmoon" });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByRole("region", { name: "Film" })).toContainText("CC BY-SA 4.0");
+      await p.waitForTimeout(400);
     },
   ],
   // The simple view of a photo that has four nodes (docs/23 section 6, N-07; screen 04 of design/nodes): the notice under the tab row, with

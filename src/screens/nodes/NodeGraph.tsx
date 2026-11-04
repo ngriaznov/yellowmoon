@@ -6,7 +6,7 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import type { DevelopSettings, NodeId, NodeLink, NodePos, NodeRef } from "../../api/types";
 import { cardStates, GRAPH_OP_TEXT, inputStates, sameLink, sameRef } from "../../state/graphOps";
 import type { InputState } from "../../state/graphOps";
-import { correctorsOf, INPUT_ID, MAIN_ID, OUTPUT_ID } from "../../state/settingsGraph";
+import { cardsOf, INPUT_ID, MAIN_ID, OUTPUT_ID } from "../../state/settingsGraph";
 import { CARD_H, CARD_W, isMarker, layoutGraph, linkUnder, neighbourIn, portPoint, posOf } from "./graphLayout";
 import type { Direction, GraphLayout, XY } from "./graphLayout";
 import { GraphUiContext, portKey } from "./graphUi";
@@ -269,7 +269,7 @@ function Canvas(props: NodeGraphProps) {
     [overLink, onMove, onReorder],
   );
 
-  const only = correctorsOf(settings).length === 1;
+  const only = cardsOf(settings).length === 1;
   const main = layout.boxes.get(MAIN_ID);
   const output = layout.boxes.get(OUTPUT_ID);
   return (

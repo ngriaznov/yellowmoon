@@ -59,7 +59,8 @@ use crate::device::{Gpu, GpuContext, GpuError};
 use crate::image::GpuImage;
 use crate::kernels::color::{PreparedChain, Stop, release_tables};
 use crate::kernels::encode::{C13, Encoding, band_bytes, encode_c13, row_words};
-use crate::kernels::mask_raster::{RasterJob, encode_raster_planes, grown_tile};
+use crate::kernels::film_stack::{FilmPictures, FilmStack};
+use crate::kernels::mask_raster::{RasterJob, encode_raster_planes, grown_tile_with};
 use crate::kernels::output_sharpen::PreparedSharpen;
 use crate::kernels::resize::{PreparedTaps, Taps, encode_resize_h, encode_resize_v};
 use crate::kernels::sampler::encode_sample_at;
@@ -139,6 +140,9 @@ pub struct TailSpec {
     pub space: OutputSpace,
     /// 8 or 16 bits.
     pub format: BandFormat,
+    /// The Film nodes of the chain, when it has a live one: their pictures are made on the device for each tile, from
+    /// the tile grown by their halos (`docs/24` section 3.9c). The tiles the host hands in must be grown the same.
+    pub films: Option<Arc<FilmStack>>,
 }
 
 /// The device, the queue priority and owner, and the cancel token every job of a tail carries.
@@ -396,6 +400,7 @@ struct TileData {
     w: usize,
     h: usize,
     chain: Arc<ColorChain>,
+    films: Option<Arc<FilmStack>>,
     targets: Vec<SlabTarget>,
 }
 
@@ -408,17 +413,45 @@ fn prepare_tile(
     ctx: &GpuContext,
     passes: &mut PassList<'_>,
     chain: &Arc<ColorChain>,
+    films: Option<&FilmStack>,
     grid: &SamplerGrid,
     frame: (usize, usize),
     off: (usize, usize),
     (w, h): (usize, usize),
     sampled: &GpuImage,
 ) -> Result<PreparedTile, GpuError> {
-    let grown = grown_tile(chain, grid, frame, off, w, h);
+    let grown = grown_tile_with(
+        chain,
+        grid,
+        frame,
+        off,
+        w,
+        h,
+        films.map_or(0, FilmStack::total_halo),
+    );
     let mut prepared = PreparedChain::new(ctx, chain)?;
     if sampled.planes == 6 {
         prepared = prepared.with_photo_frame(grid.photo_frame());
     }
+    // The Film nodes of the plan: their pictures over the tile, from the sampled picture (which holds what the first node
+    // reads), made before the colour pass.
+    let pictures = if prepared.live_films().is_empty() {
+        None
+    } else {
+        let Some(stack) = films else {
+            return Err(GpuError::InvalidInput(
+                "the plan runs a Film node and the tail has no Film passes for it".to_owned(),
+            ));
+        };
+        let tile = ym_color::mask_raster::Area {
+            x: off.0 as i64,
+            y: off.1 as i64,
+            w,
+            h,
+        };
+        let photo = (sampled.planes == 6).then(|| grid.photo_frame());
+        Some(stack.encode(ctx, passes, sampled, grown, tile, photo)?)
+    };
     let at = (
         (off.0 as i64 - grown.x) as usize,
         (off.1 as i64 - grown.y) as usize,
@@ -446,15 +479,20 @@ fn prepare_tile(
     } else {
         None
     };
-    Ok((prepared, planes, at))
+    Ok((prepared, planes, at, pictures))
 }
 
 /// The raster planes of a tile.
 type RasterPlanesOf = crate::kernels::mask_raster::RasterPlanes;
 
-/// A tile ready to be coloured: the prepared chain, its raster planes (`None` for a chain with no raster row) and
-/// where the tile starts in the sampled image.
-type PreparedTile = (PreparedChain, Option<RasterPlanesOf>, (usize, usize));
+/// A tile ready to be coloured: the prepared chain, its raster planes (`None` for a chain with no raster row), where the
+/// tile starts in the sampled image, and the pictures of its Film nodes (`None` for a chain with none).
+type PreparedTile = (
+    PreparedChain,
+    Option<RasterPlanesOf>,
+    (usize, usize),
+    Option<Arc<FilmPictures>>,
+);
 
 /// Uploads a tile's camera RGB, samples it, colours it to C12 and writes it into its slabs.
 fn tile_job(ctx: &GpuContext, token: &CancelToken, d: &TileData) -> Result<(), GpuError> {
@@ -471,7 +509,15 @@ fn tile_job(ctx: &GpuContext, token: &CancelToken, d: &TileData) -> Result<(), G
     // The mask shapes and the raster masks of the nodes read the pixels' places in the photo: the sampler writes
     // them, over the tile grown by the raster planes' receptive field.
     let positions = d.chain.uses_photo_position();
-    let grown = grown_tile(&d.chain, &d.grid, d.frame, d.off, d.w, d.h);
+    let grown = grown_tile_with(
+        &d.chain,
+        &d.grid,
+        d.frame,
+        d.off,
+        d.w,
+        d.h,
+        d.films.as_deref().map_or(0, FilmStack::total_halo),
+    );
     let sampled = encode_sample_at(
         &mut passes,
         src,
@@ -482,10 +528,11 @@ fn tile_job(ctx: &GpuContext, token: &CancelToken, d: &TileData) -> Result<(), G
         grown.h,
         positions,
     )?;
-    let (prepared, planes, at) = prepare_tile(
+    let (prepared, planes, at, pictures) = prepare_tile(
         ctx,
         &mut passes,
         &d.chain,
+        d.films.as_deref(),
         &d.grid,
         d.frame,
         d.off,
@@ -493,10 +540,17 @@ fn tile_job(ctx: &GpuContext, token: &CancelToken, d: &TileData) -> Result<(), G
         &sampled,
     )?;
     for t in &d.targets {
-        let chain = match &planes {
+        let mut chain = match &planes {
             Some(p) => prepared.with_rasters(p.rows(t.tile_row0, t.rows)),
             None => prepared.clone(),
         };
+        if let Some(p) = &pictures {
+            // The slab's rows start `tile_row0` rows into the tile.
+            chain = chain.with_film(
+                Arc::clone(p),
+                (d.off.0 as i64, (d.off.1 + t.tile_row0) as i64),
+            );
+        }
         chain.encode_stage(
             &mut passes,
             &sampled,
@@ -915,6 +969,7 @@ impl<'a> ExportTail<'a> {
             w,
             h,
             chain: Arc::clone(&self.spec.chain),
+            films: self.spec.films.clone(),
             targets,
         };
         self.run(data, tile_job)
@@ -1079,6 +1134,7 @@ struct HostTileData {
     w: usize,
     h: usize,
     chain: Arc<ColorChain>,
+    films: Option<Arc<FilmStack>>,
     stop: Stop,
 }
 
@@ -1100,7 +1156,15 @@ fn host_tile_job(
     // The mask shapes and the raster masks of the nodes read the pixels' places in the photo: the sampler writes
     // them, over the tile grown by the raster planes' receptive field.
     let positions = d.chain.uses_photo_position();
-    let grown = grown_tile(&d.chain, &d.grid, d.frame, d.off, d.w, d.h);
+    let grown = grown_tile_with(
+        &d.chain,
+        &d.grid,
+        d.frame,
+        d.off,
+        d.w,
+        d.h,
+        d.films.as_deref().map_or(0, FilmStack::total_halo),
+    );
     let sampled = encode_sample_at(
         &mut passes,
         src,
@@ -1111,10 +1175,11 @@ fn host_tile_job(
         grown.h,
         positions,
     )?;
-    let (prepared, planes, at) = prepare_tile(
+    let (prepared, planes, at, pictures) = prepare_tile(
         ctx,
         &mut passes,
         &d.chain,
+        d.films.as_deref(),
         &d.grid,
         d.frame,
         d.off,
@@ -1123,6 +1188,10 @@ fn host_tile_job(
     )?;
     let prepared = match planes {
         Some(p) => prepared.with_rasters(p),
+        None => prepared,
+    };
+    let prepared = match pictures {
+        Some(p) => prepared.with_film(p, (d.off.0 as i64, d.off.1 as i64)),
         None => prepared,
     };
     let out = GpuImage::alloc(
@@ -1178,6 +1247,7 @@ pub fn colour_tile_to_host(
     w: usize,
     h: usize,
     chain: Arc<ColorChain>,
+    films: Option<Arc<FilmStack>>,
     stop: Stop,
 ) -> Result<Vec<f32>, GpuError> {
     route.run(
@@ -1190,6 +1260,7 @@ pub fn colour_tile_to_host(
             w,
             h,
             chain,
+            films,
             stop,
         },
         host_tile_job,
@@ -1214,6 +1285,7 @@ pub fn colour_device_tile_to_host(
     w: usize,
     h: usize,
     chain: Arc<ColorChain>,
+    films: Option<Arc<FilmStack>>,
     stop: Stop,
 ) -> Result<Vec<f32>, GpuError> {
     if region.planes != 3 {
@@ -1232,6 +1304,7 @@ pub fn colour_device_tile_to_host(
             w,
             h,
             chain,
+            films,
             stop,
         },
         host_tile_job,

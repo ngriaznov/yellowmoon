@@ -125,7 +125,8 @@ import { version as APP_VERSION } from "../package.json";
 import { fixtureUrl } from "./fixtures";
 import { clampPins } from "./components/warpMath";
 import { adjustScene, developScene, nodeScene, previewSvg, signalScene } from "./fixtures/grade";
-import type { Adjustment } from "./fixtures/grade";
+import type { Adjustment, NodeLook } from "./fixtures/grade";
+import { filmScene, mockFilmCatalogue, MOCK_FILM_STOCKS, sceneThroughFilms } from "./fixtures/film";
 import { hexChroma, sceneScatter } from "./fixtures/warp";
 import { sceneHistogram } from "./fixtures/histogram";
 import { scenePng, hexToRgb } from "./fixtures/png";
@@ -146,13 +147,14 @@ import {
   MAIN_ID,
   mainGradePatch,
   mainOf,
+  neutralGrade,
   nodeOf,
   OUTPUT_ID,
   outputOf,
   outputPatch,
   withoutLook,
 } from "./state/settingsGraph";
-import type { CorrectorItem, InputItem } from "./state/settingsGraph";
+import type { CorrectorItem, FilmItem, InputItem } from "./state/settingsGraph";
 import { bytesToUrl } from "./state/photo";
 
 // ---------------------------------------------------------------------------
@@ -744,13 +746,32 @@ function clampCorrector(s: CorrectorItem): CorrectorItem {
   };
 }
 
+/** A Film node in its ranges (`docs/24` section 4.1): the name trimmed and cut, every number clamped, the lights on their half-unit grid. */
+function clampFilm(s: FilmItem): FilmItem {
+  const name = s.name.trim().slice(0, 32);
+  const half = (v: number): number => Math.round(clamp(v, -50, 50) * 2) / 2;
+  return {
+    ...s,
+    name: name === "" ? "Film" : name,
+    film: { ...s.film, exposure_ev: clamp(s.film.exposure_ev, -4, 4) },
+    print: {
+      ...s.print,
+      // A slide has no paper, whatever the settings hold (`docs/24` section 3.9).
+      exposure_ev: clamp(s.print.exposure_ev, -3, 3),
+      lights: { c: half(s.print.lights.c), m: half(s.print.lights.m), y: half(s.print.lights.y) },
+    },
+    halation: { amount: clamp(s.halation.amount, 0, 300), size: clamp(s.halation.size, 50, 200) },
+    grain: { ...s.grain, amount: clamp(s.grain.amount, 0, 200), size: clamp(s.grain.size, 50, 200) },
+    strength: clamp(s.strength, 0, 100),
+  };
+}
+
 /** Clamps every value to the ranges of `docs/01` §DevelopSettings, node by node, as the core does. */
 export function clampSettings(s: DevelopSettings): DevelopSettings {
   const items = s.nodes.items.map((item): NodeItem => {
     if (item.kind === "input") return clampInput(item);
     if (item.kind === "output") return { ...item, look_intensity: clamp(item.look_intensity, 0, 100), output_sharpening: clamp(item.output_sharpening, 0, 200) };
-    // The mock has no Film node's panel yet (F-09): the node goes through as it is.
-    if (item.kind === "film") return item;
+    if (item.kind === "film") return clampFilm(item);
     return clampCorrector(item);
   });
   return { nodes: { items, links: s.nodes.links } };
@@ -2063,7 +2084,23 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
 
   /** The photo as it is developed now: adjusted by what differs from Automatic, moved by its colour warp, then through its look. */
   function developed(rec: PhotoRecord, lookId: LookId = outputOf(rec.settings).look, intensity = outputOf(rec.settings).look_intensity): Scene {
-    return developScene(rec.scene, { slug: lookSlug(lookId), intensity }, adjustmentOf(rec, true));
+    return developScene(throughFilms(rec), { slug: lookSlug(lookId), intensity }, adjustmentOf(rec, true));
+  }
+
+  /** What a Film node does in the mock: its stock's flat-shape grading at its Strength. */
+  function filmLook(item: FilmItem): NodeLook {
+    return {
+      bypass: item.bypass,
+      trim: { exposure_ev: 0, temperature: 0, tint: 0 },
+      grade: neutralGrade(),
+      apply: (scene) => filmScene(scene, item.film.stock, item.strength),
+      key: [item.film.stock, item.strength],
+    };
+  }
+
+  /** The photo's scene through every live Film node (the mock draws their stocks flat). */
+  function throughFilms(rec: PhotoRecord, settings: DevelopSettings = rec.settings): Scene {
+    return sceneThroughFilms(rec.scene, settings);
   }
 
   /** The photo's colours where the colour warp takes them: adjusted, not yet warped, not yet through the look (`docs/02` C9b). */
@@ -2082,16 +2119,16 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     emit("thumbnail_ready", { id, url });
   }
 
-  /** The correctors on the picture path from the Input to a node, in order (a node with no picture link reads the Input). */
-  function pictureChain(settings: DevelopSettings, node: number): CorrectorItem[] {
-    const chain: CorrectorItem[] = [];
+  /** The correctors and Film nodes on the picture path from the Input to a node, in order (a node with no picture link reads the Input). */
+  function pictureChain(settings: DevelopSettings, node: number): NodeLook[] {
+    const chain: NodeLook[] = [];
     const seen = new Set<number>();
     let at: NodeId | undefined = node;
     while (typeof at === "number" && !seen.has(at)) {
       seen.add(at);
       const item = nodeOf(settings, at);
-      if (!item || item.kind !== "corrector") break;
-      chain.unshift(item);
+      if (!item || (item.kind !== "corrector" && item.kind !== "film")) break;
+      chain.unshift(item.kind === "film" ? filmLook(item) : item);
       at = linkInto(settings.nodes.links, { node: at, port: "picture" })?.from.node;
     }
     return chain;
@@ -2126,7 +2163,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const nodes = cardStates(settings);
     for (const node of nodes.keys()) {
       const chain = pictureChain(settings, node);
-      const key = JSON.stringify([input, look, chain.map((n) => [n.bypass, n.trim, n.grade])]);
+      const key = JSON.stringify([input, look, chain.map((n) => [n.bypass, n.trim, n.grade, n.key])]);
       if (told.get(node)?.key === key) continue;
       const url = bytesToUrl(Array.from(scenePng(nodeScene(rec.scene, input, chain, look), ...NODE_THUMB_SIZE)));
       told.set(node, { key, url });
@@ -2950,6 +2987,18 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         if (look.missing) fail("looks", "File missing or changed. Import again.");
         // The shell answers with an address (`ym-frame://…/look-<photo>-<n>.png`); here a `blob:` URL stands for it, new for every request.
         return bytesToUrl(Array.from(scenePng(developed(rec, lookId, 100))));
+      }),
+    filmCatalogue: () => run("filmCatalogue", () => mockFilmCatalogue()),
+    filmTile: (photoId, node, stock) =>
+      run("filmTile", (): string => {
+        const rec = photo(photoId);
+        if (nodeOf(rec.settings, node)?.kind !== "film") fail("render", `This photo has no Film node ${node}.`);
+        if (!MOCK_FILM_STOCKS.some((s) => s.id === stock)) fail("render", `Unknown film stock "${stock}". Run "ym film list" to see the stocks.`);
+        // The photo as it is now with this node's stock replaced, through the Output's look (an address, as the shell answers).
+        const settings = applyPatch(rec.settings, { nodes: { [String(node)]: { film: { stock } } } });
+        const output = outputOf(settings);
+        const scene = developScene(throughFilms(rec, settings), { slug: lookSlug(output.look), intensity: output.look_intensity }, adjustmentOf(rec, true));
+        return bytesToUrl(Array.from(scenePng(scene)));
       }),
     nodeThumbnails: (photoId) =>
       run("nodeThumbnails", (): void => {

@@ -62,6 +62,8 @@ html.dark {
 [data-tab="lens"] { --primary: var(--tab-lens); --primary-foreground: var(--tab-lens-ink); --ring: var(--tab-lens); }
 /* The Mask tab of a corrector (docs/23 §7.6) has the mask accent, as the other tabs have theirs: --mask in tokens.css. */
 [data-tab="mask"] { --primary: var(--mask); --primary-foreground: var(--mask-ink); --ring: var(--mask); }
+/* The tabs of a Film node (docs/24 section 4.1) take the Look tab's yellow (screens 02 to 08 of design/film). */
+[data-tab="film"], [data-tab="print"], [data-tab="halation"], [data-tab="grain"] { --primary: var(--tab-look); --primary-foreground: var(--tab-look-ink); --ring: var(--tab-look); }
 
 body {
   font-family: var(--font);
@@ -2006,4 +2008,222 @@ button[data-slot="button"][data-variant="link"]:not([aria-disabled="true"]) {
 .ym-switch-tip {
   display: inline-flex;
   flex-shrink: 0;
+}
+
+/* ---- The Film node's panel (docs/24 section 4, design/film) ------------------------------------------------------------------------- */
+/* The Stock field: a glass field like the Select's trigger, which opens the tiles. */
+.ym-stock-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: var(--spacing-control, 2.5rem);
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--glass-radius-control);
+  background: var(--color-fill);
+  box-shadow: inset 0 0 0 1px var(--glass-border);
+  color: var(--glass-label);
+  font: inherit;
+  font-size: var(--fs-body);
+  text-align: left;
+  cursor: default;
+}
+.ym-stock-field[aria-expanded="true"] {
+  background: var(--color-fill-strong);
+}
+.ym-stock-field:focus-visible {
+  outline: var(--glass-ring-width) solid var(--ring);
+  outline-offset: 2px;
+}
+.ym-stock-field[data-disabled="true"] {
+  opacity: 0.6;
+}
+.ym-stock-field__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ym-stock-field svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--glass-label-secondary);
+}
+.ym-film-select {
+  width: 100%;
+}
+/* The quiet line under a field ("Colour negative · ISO 400", the matching paper's name, the lights' hint). */
+.ym-film-line {
+  margin: 6px 0 0 var(--label-col);
+  padding-left: var(--gap-row);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.ym-film-line:last-child {
+  margin-bottom: 10px;
+}
+.ym-film-line[role="status"] {
+  color: var(--glass-label);
+}
+/* The tiles: six columns, no scrolling, over the photo from the panel's right edge. */
+.ym-stock-picker {
+  width: min(784px, calc(100vw - 32px));
+  gap: 14px;
+  padding: 18px 16px 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.ym-stock-picker__heading {
+  margin: 0 0 8px 2px;
+  color: var(--glass-label-secondary);
+  font-size: 11px;
+  font-weight: var(--fw-heavy);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.ym-stock-picker__grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px 10px;
+}
+.ym-stock-tile {
+  gap: 4px;
+}
+.ym-stock-tile .ym-look-tile__picture {
+  background: var(--color-fill);
+}
+.ym-stock-tile__card {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  color: var(--glass-label-secondary);
+  font-size: 11px;
+  line-height: 1.25;
+  text-align: center;
+}
+.ym-stock-tile__check {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.ym-stock-tile__check svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 3;
+}
+.ym-stock-tile__name {
+  max-width: 100%;
+  font-size: var(--fs-label);
+  font-weight: var(--fw-semibold);
+  line-height: 1.25;
+  white-space: normal;
+}
+.ym-stock-tile__iso {
+  color: var(--glass-label-secondary);
+  font-size: 11px;
+}
+.ym-stock-tile[aria-pressed="true"] .ym-stock-tile__name {
+  font-weight: var(--fw-heavy);
+}
+/* The Print tab of a slide: the sentence, then the controls dimmed. */
+.ym-film-slide {
+  margin: 0;
+  padding: 14px 0 6px;
+  color: var(--glass-label);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-bold);
+  line-height: 1.4;
+}
+.ym-film-print[data-slide] > section {
+  opacity: 0.4;
+}
+.ym-film-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 4px 0 8px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--primary);
+  font: inherit;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-heavy);
+  cursor: default;
+}
+.ym-film-more:disabled {
+  color: var(--glass-label-tertiary);
+}
+.ym-film-more:focus-visible {
+  outline: var(--glass-ring-width) solid var(--ring);
+  outline-offset: 2px;
+}
+.ym-film-more svg {
+  width: 16px;
+  height: 16px;
+  transition: rotate var(--glass-duration) var(--glass-ease);
+}
+.ym-film-more svg[data-open] {
+  rotate: 90deg;
+}
+/* The credit line at the foot of the Film tab and in About. */
+.ym-film-credit {
+  margin: 0;
+  padding: 18px 0 8px;
+  color: var(--glass-label-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ym-film-credit__link {
+  display: inline;
+  height: auto;
+  padding: 0;
+  font-size: inherit;
+  font-weight: var(--fw-semibold);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: normal;
+}
+/* The note on the Output's Look tab while a Film node is live (design/film/10). */
+.ym-film-note {
+  align-items: flex-start;
+  margin: 14px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.ym-film-note svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  color: var(--glass-label-secondary);
+}
+.ym-about-dialog__film-credit {
+  margin: 0;
+  font-size: var(--fs-body);
+  line-height: 1.5;
+}
+.ym-about-dialog__film-credit .ym-film-credit__link {
+  font-weight: var(--fw-semibold);
+}
+.ym-about-dialog__film-legal {
+  margin: 8px 0 0;
+  color: var(--glass-label-secondary);
+  font-size: 12.5px;
+  line-height: 1.5;
 }

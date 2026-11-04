@@ -3,7 +3,7 @@ import type { CSSProperties } from "react";
 import { Aurora } from "@/components/glass/aurora";
 import { ChevronDownIcon, CropIcon, SquareSplitHorizontalIcon } from "lucide-react";
 import type { ColorSpace, NodeId, PhotoSummary, RenderStats, ResolvedSettings, ViewportMode } from "../api/types";
-import { Button, FIRST_NODE_TAB, Filmstrip, filmstripCaption, NODE_FOR_SIMPLE_TAB, NODE_TABS, NodesGlyph, TabBar, tabPanelProps, TitleBlock, useLatest, useTabShortcuts, useWindowDrop } from "../components";
+import { Button, FIRST_NODE_TAB, Filmstrip, filmstripCaption, NODE_FOR_SIMPLE_TAB, NODE_TABS, NodesGlyph, simpleTabOf, TabBar, tabPanelProps, TitleBlock, useLatest, useTabShortcuts, useWindowDrop } from "../components";
 import { exportModel } from "../export/model";
 import { cellLabel, summarise } from "../export/run";
 import type { FilmstripPhoto, PanelKind, TabId } from "../components";
@@ -234,7 +234,9 @@ export function Photos() {
   const selectedItem = graphSettings ? nodeOf(graphSettings, selectedNode) : undefined;
   const onNode = selectedItem ? selectedNode : MAIN_ID;
   // A Film node has the corrector's panel until its own tabs are built (F-09, `docs/24` §4.1).
-  const onKind: PanelKind = selectedItem?.kind === "film" ? "corrector" : (selectedItem?.kind ?? "corrector");
+  const onKind: PanelKind = selectedItem?.kind ?? "corrector";
+  // A corrector and a Film node both have masks (`docs/24` section 4.3).
+  const hasMasks = onKind === "corrector" || onKind === "film";
   const nodeTab = nodeTabs[onKind];
   const nodeTabList = NODE_TABS[onKind];
   const onNodeNow = useLatest(onNode);
@@ -247,10 +249,10 @@ export function Photos() {
   // The Mask tab's pick (Pick colour of a Colour range, `docs/23` §7.6) belongs to the Mask tab of the node view and to the Colour range row
   // that is selected: it ends with the tab, the node or the photo, as the others do, and with the row.
   const maskRow = useAppState((s) => s.maskRow);
-  const maskRows = selectedItem?.kind === "corrector" ? selectedItem.masks.items : [];
+  const maskRows = selectedItem?.kind === "corrector" || selectedItem?.kind === "film" ? selectedItem.masks.items : [];
   const rowIndex = maskRow !== null && maskRow < maskRows.length ? maskRow : null;
   const selectedMask = rowIndex === null ? undefined : maskRows[rowIndex];
-  const rangeShown = panel === "tools" && view === "nodes" && nodeTab === "mask" && onKind === "corrector" && !cropping && selectedMask?.kind === "color_range" && selectedMask.enabled;
+  const rangeShown = panel === "tools" && view === "nodes" && nodeTab === "mask" && hasMasks && !cropping && selectedMask?.kind === "color_range" && selectedMask.enabled;
   const picking: PickMode | null =
     asked !== null && asked.node === onNode && (asked.mode === "range" ? rangeShown : colourShown) ? asked.mode : null;
   /** Starts a pick on the selected node, or ends it (null). */
@@ -283,7 +285,7 @@ export function Photos() {
   // in the simple view or full screen), not while Crop or Export shows, and only on a corrector: the Input and the Output have no mask. The
   // view's on and style are the store's and come back with the node; the core is told when any of them changes, and for a new photo.
   const maskOn = useAppState((s) => s.maskView.on);
-  const maskNode = nodesOn && !cropping && panel !== "export" && graphSettings !== null && onKind === "corrector" && typeof onNode === "number" ? onNode : null;
+  const maskNode = nodesOn && !cropping && panel !== "export" && graphSettings !== null && hasMasks && typeof onNode === "number" ? onNode : null;
   const photoOnScreen = photo?.id ?? null;
   useEffect(() => {
     store.setMaskNode(maskNode);
@@ -381,7 +383,7 @@ export function Photos() {
   const toggleNodes = (): void => {
     setPicking(null);
     if (view === "simple") {
-      const target = NODE_FOR_SIMPLE_TAB[tab === "mask" ? "light" : tab];
+      const target = NODE_FOR_SIMPLE_TAB[simpleTabOf(tab)];
       setSelectedNode(target.kind === "input" ? INPUT_ID : target.kind === "output" ? OUTPUT_ID : MAIN_ID);
       setNodeTabs((was) => ({ ...was, [target.kind]: target.tab }));
     }
@@ -391,7 +393,7 @@ export function Photos() {
   const openNodes = (): void => {
     setPicking(null);
     setSelectedNode(MAIN_ID);
-    const target = NODE_FOR_SIMPLE_TAB[tab === "mask" ? "light" : tab];
+    const target = NODE_FOR_SIMPLE_TAB[simpleTabOf(tab)];
     if (target.kind === "corrector") setNodeTabs((was) => ({ ...was, corrector: target.tab }));
     setView("nodes");
   };
@@ -479,7 +481,7 @@ export function Photos() {
   // while Crop or Export shows (the graph is read only), none while a pick is on (PhotoView), none for a row that is off or a kind with no handles.
   const maskHandles = useMemo(
     () =>
-      nodesOn && !cropping && panel !== "export" && onKind === "corrector" && typeof onNode === "number" && rowIndex !== null && hasHandles(selectedMask)
+      nodesOn && !cropping && panel !== "export" && hasMasks && typeof onNode === "number" && rowIndex !== null && hasHandles(selectedMask)
         ? { node: onNode, index: rowIndex, row: selectedMask }
         : null,
     [nodesOn, cropping, panel, onKind, onNode, rowIndex, selectedMask],
@@ -490,7 +492,7 @@ export function Photos() {
   const brushAsked = useAppState((s) => s.brushTool);
   const brush = useMemo(
     () =>
-      brushAsked && nodesOn && !cropping && panel !== "export" && onKind === "corrector" && typeof onNode === "number" && rowIndex !== null && selectedMask?.kind === "brush" && selectedMask.enabled
+      brushAsked && nodesOn && !cropping && panel !== "export" && hasMasks && typeof onNode === "number" && rowIndex !== null && selectedMask?.kind === "brush" && selectedMask.enabled
         ? { node: onNode, index: rowIndex }
         : null,
     [brushAsked, nodesOn, cropping, panel, onKind, onNode, rowIndex, selectedMask],
@@ -500,7 +502,7 @@ export function Photos() {
   const objectAsked = useAppState((s) => s.objectTool);
   const object = useMemo(
     () =>
-      nodesOn && !cropping && panel !== "export" && onKind === "corrector" && typeof onNode === "number" && rowIndex !== null && selectedMask?.kind === "object" && selectedMask.enabled
+      nodesOn && !cropping && panel !== "export" && hasMasks && typeof onNode === "number" && rowIndex !== null && selectedMask?.kind === "object" && selectedMask.enabled
         ? { node: onNode, index: rowIndex, row: selectedMask }
         : null,
     [nodesOn, cropping, panel, onKind, onNode, rowIndex, selectedMask],

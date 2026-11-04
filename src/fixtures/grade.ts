@@ -147,6 +147,10 @@ export interface NodeLook {
   bypass: boolean;
   trim: NodeTrim;
   grade: NodeGrade;
+  /** A node that is not a corrector (a Film node) says what it does to a scene itself; its trims and grade are then neutral. */
+  apply?: (scene: Scene) => Scene;
+  /** What `apply` depends on, for a cache key. */
+  key?: unknown;
 }
 
 const manualValue = (setting: PercentSetting): number => (setting.kind === "manual" ? setting.value : 0);
@@ -154,6 +158,7 @@ const manualValue = (setting: PercentSetting): number => (setting.kind === "manu
 /** One corrector's change to a scene, as far as the flat shapes show it: the trims and Brightness as light and warmth, Saturation and Contrast on the colours, the colour warp's pins. A node at its identity, or bypassed, returns the scene. */
 export function adjustForNode(scene: Scene, node: NodeLook): Scene {
   if (node.bypass) return scene;
+  if (node.apply) return node.apply(scene);
   const { trim, grade } = node;
   // The trims and Brightness are the Input's adjustments again: a stop of exposure, a step of warmth, a step of tint, then the pins.
   let out = adjustScene(scene, {

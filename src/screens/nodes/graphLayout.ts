@@ -10,7 +10,7 @@
  * Pure functions, tested without a screen (`graphLayout.test.ts`).
  */
 import type { DevelopSettings, NodeId, NodeLink, NodePos, NodeRef } from "../../api/types";
-import { correctorsOf, INPUT_ID, MAIN_ID, OUTPUT_ID } from "../../state/settingsGraph";
+import { cardsOf, INPUT_ID, MAIN_ID, OUTPUT_ID } from "../../state/settingsGraph";
 
 /** One grid unit, in pixels (`docs/23` §3.2). */
 export const UNIT_W = 214;
@@ -65,7 +65,7 @@ export const posOf = (at: XY): NodePos => [at.x / UNIT_W, at.y / UNIT_H];
  */
 export function layoutGraph(settings: DevelopSettings, moved: ReadonlyMap<NodeId, XY> = new Map()): GraphLayout {
   const boxes = new Map<NodeId, Box>();
-  for (const node of correctorsOf(settings)) {
+  for (const node of cardsOf(settings)) {
     const at = moved.get(node.id) ?? originOf(node.pos);
     boxes.set(node.id, { x: at.x, y: at.y, w: CARD_W, h: CARD_H });
   }

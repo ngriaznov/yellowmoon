@@ -38,6 +38,7 @@ import type {
   ExportJob,
   ExportOptions,
   ExportProgress,
+  FilmCatalogue,
   GradePatch,
   GradeValues,
   HistogramData,
@@ -110,7 +111,7 @@ import { RequestLimiter } from "./requestLimiter";
 import {
   applyMasks,
   applyPatch,
-  correctorsOf,
+  cardsOf,
   foldPatches,
   INPUT_ID,
   inputOf,
@@ -512,6 +513,9 @@ export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): Resolve
       const next = node.grade && have ? directGrade(stored as CorrectorItem, resolved as ResolvedCorrector, withoutAuto(node.grade), NO_ESTIMATES, NO_FLAGS) : null;
       change(id, () => (next?.stored ?? stored) as CorrectorItem);
       if (have) values = { ...values, nodes: values.nodes.map((n) => (n.id === id ? ((next?.resolved ?? resolved) as ResolvedCorrector) : n)) };
+    } else if (typeof id === "number" && nodeOf(settings, id)?.kind === "film") {
+      // A Film node (`docs/24`): its fields are plain numbers and ids, so the page folds the patch in at once, as the core will.
+      settings = applyPatch(settings, { nodes: { [key]: node } });
     }
   }
   return settings === rs.settings && values === rs.values && auto === rs.auto ? rs : { ...rs, settings, values, auto };
@@ -679,6 +683,12 @@ export class AppStore {
   private readonly lookThumbs = new Map<PhotoId, { key: string; urls: Map<LookId, LookThumb> }>();
   /** Holds the look tiles' requests to {@link LOOK_THUMBNAIL_CONCURRENCY} at a time; what waits is dropped when its photo or settings change. */
   private readonly thumbLimiter = new RequestLimiter<{ photoId: PhotoId; key: string }>(LOOK_THUMBNAIL_CONCURRENCY);
+  /** The Film node's stock tiles (`docs/24` section 4.4): by photo, the Film node and the settings up to it, each stock's picture. In memory only. */
+  private readonly filmTiles = new Map<PhotoId, { key: string; urls: Map<string, LookThumb> }>();
+  /** One stock tile at a time, in the order they are asked for (the list's order): the core makes each at the thumbnails' priority. */
+  private readonly filmTileLimiter = new RequestLimiter<{ photoId: PhotoId; key: string }>(1);
+  /** The Film node's list of stocks and papers, read once. */
+  private filmCatalogueRead: Promise<FilmCatalogue> | null = null;
   private rect: ViewportRect | null = null;
   /** The corrector the node view has selected and shows (`setMaskNode`); null in the simple view, while Crop or Export shows and on the Input and the Output. */
   private maskNode: number | null = null;
@@ -1060,7 +1070,7 @@ export class AppStore {
   private forgetGoneNodeThumbnails(id: PhotoId, settings: DevelopSettings): void {
     const kept = this.state.nodeThumbnails[id];
     if (!kept) return;
-    const present = new Set(correctorsOf(settings).map((n) => n.id as number));
+    const present = new Set(cardsOf(settings).map((n) => n.id as number));
     const gone = Object.keys(kept)
       .map(Number)
       .filter((node) => !present.has(node));
@@ -1333,6 +1343,7 @@ export class AppStore {
     // Wheel and drag input that has not been sent was meant for the photo that is left, and so were the tiles not yet asked for.
     this.viewportQueue.clear();
     this.thumbLimiter.supersede((t) => t.photoId !== id);
+    this.filmTileLimiter.supersede((t) => t.photoId !== id);
     this.set({
       session: { ...session, current_index: index },
       histogram: null,
@@ -1572,6 +1583,7 @@ export class AppStore {
   private currentChanged(): Partial<AppState> {
     this.viewportQueue.clear();
     this.thumbLimiter.supersede(() => true);
+    this.filmTileLimiter.supersede(() => true);
     return {
       histogram: null,
       middleReadout: null,
@@ -1591,7 +1603,13 @@ export class AppStore {
   /** The Look tab's tiles of photos that left are let go (the shell's addresses are not ours to free; the mock's `blob:` ones are). */
   private forgetLookThumbsOf(ids: ReadonlySet<PhotoId>): void {
     this.thumbLimiter.supersede((t) => ids.has(t.photoId));
+    this.filmTileLimiter.supersede((t) => ids.has(t.photoId));
     for (const id of ids) {
+      const tiles = this.filmTiles.get(id);
+      if (tiles) {
+        for (const thumb of tiles.urls.values()) void thumb.promise.then(releaseUrl, () => {});
+        this.filmTiles.delete(id);
+      }
       const entry = this.lookThumbs.get(id);
       if (!entry) continue;
       for (const thumb of entry.urls.values()) void thumb.promise.then(releaseUrl, () => {});
@@ -2276,7 +2294,7 @@ export class AppStore {
     }
     if (!sample || this.currentId() !== id) return;
     const item = this.state.settings[id] ? nodeOf(this.state.settings[id].settings, node) : undefined;
-    const target = item?.kind === "corrector" ? item.masks.items[row] : undefined;
+    const target = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[row] : undefined;
     if (target?.kind !== "color_range") return;
     const center = clampToDisc([sample.a, sample.b], COLOR_RANGE_REACH);
     await this.update(patchOf(node, { masks: { edit: { [String(row)]: { center } } } }), true);
@@ -2318,7 +2336,7 @@ export class AppStore {
     const run = async (): Promise<boolean> => {
       const rs = this.state.settings[id];
       const item = rs ? nodeOf(rs.settings, node) : undefined;
-      const target = item?.kind === "corrector" ? item.masks.items[row] : undefined;
+      const target = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[row] : undefined;
       if (target?.kind !== "object") return false;
       this.set({ objectFinding: id });
       try {
@@ -2375,7 +2393,7 @@ export class AppStore {
     if (photoId === null) return false;
     const rs = this.state.settings[photoId];
     const item = rs ? nodeOf(rs.settings, node) : undefined;
-    const target = item?.kind === "corrector" ? item.masks.items[row] : undefined;
+    const target = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[row] : undefined;
     if (target?.kind !== "brush" || stroke.points.length === 0) return false;
     if (brushPointCount(target) + stroke.points.length > MAX_BRUSH_POINTS) {
       this.fail({ scope: "render", message: BRUSH_FULL });
@@ -2911,8 +2929,73 @@ export class AppStore {
     }, URL_GRACE_MS);
   }
 
+  /**
+   * The list of stocks and papers of the Film node (`film_catalogue`), read once. A failure is not kept: the next ask reads again, so
+   * the picker that said "Yellowmoon's film data is missing" recovers when the data is back.
+   */
+  filmCatalogue(): Promise<FilmCatalogue> {
+    if (!this.filmCatalogueRead) {
+      const read = this.api.filmCatalogue();
+      this.filmCatalogueRead = read;
+      read.catch(() => {
+        if (this.filmCatalogueRead === read) this.filmCatalogueRead = null;
+      });
+    }
+    return this.filmCatalogueRead;
+  }
+
+  /**
+   * The photo through one stock in Film node `node`, as an image URL, for a tile of the stock picker (`docs/24` section 4.4). `key`
+   * stands for everything about the photo up to and including the node except its stock: the tiles are made again when it changes.
+   * Kept per photo for the session, in memory; a request that failed is not kept. One request is out at a time, in the order they
+   * are asked for; what waits is dropped when the photo's settings change or the person moves to another photo
+   * (`Superseded`, as for {@link lookThumbnail}).
+   */
+  filmTile(photoId: PhotoId, node: number, stock: string, key: string): Promise<string> {
+    const picture = `${node} ${key}`;
+    let entry = this.filmTiles.get(photoId);
+    if (!entry || entry.key !== picture) {
+      if (entry) {
+        this.releaseLater([...entry.urls.values()]);
+        this.filmTileLimiter.supersede((t) => t.photoId === photoId && t.key !== picture);
+      }
+      entry = { key: picture, urls: new Map() };
+      this.filmTiles.set(photoId, entry);
+    }
+    const cache = entry.urls;
+    let tile = cache.get(stock);
+    if (!tile) {
+      const request = this.filmTileLimiter.run({ photoId, key: picture }, () => this.api.filmTile(photoId, node, stock));
+      const made: LookThumb = { promise: request, url: null };
+      tile = made;
+      cache.set(stock, made);
+      made.promise.then(
+        (url) => {
+          made.url = url;
+        },
+        () => {
+          if (cache.get(stock) === made) cache.delete(stock);
+        },
+      );
+    }
+    return tile.promise;
+  }
+
+  /** Drops the address of a stock tile whose picture did not load (the shell keeps a bounded amount of tiles); the next {@link filmTile} asks again. */
+  forgetFilmTile(photoId: PhotoId, node: number, stock: string, key: string, url: string): void {
+    const entry = this.filmTiles.get(photoId);
+    if (entry?.key !== `${node} ${key}`) return;
+    const tile = entry.urls.get(stock);
+    if (tile?.url !== url) return;
+    entry.urls.delete(stock);
+    this.releaseLater([tile]);
+  }
+
   private releaseLookThumbs(): void {
     this.thumbLimiter.supersede(() => true);
+    this.filmTileLimiter.supersede(() => true);
+    for (const entry of this.filmTiles.values()) for (const tile of entry.urls.values()) void tile.promise.then(releaseUrl, () => {});
+    this.filmTiles.clear();
     for (const entry of this.lookThumbs.values()) for (const thumb of entry.urls.values()) void thumb.promise.then(releaseUrl, () => {});
     this.lookThumbs.clear();
   }

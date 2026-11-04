@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use ym_film::bake::{BakeSettings, Baker, ENGINE_VERSION};
-use ym_film::spatial::{FilmFrame, SpatialModel, SpatialSettings};
+use ym_film::bake::{BakeSettings, BakedFilm, Baker, ENGINE_VERSION};
+use ym_film::spatial::{FilmFrame, Frame as FilmExtent, SpatialModel, SpatialSettings};
 use ym_film::{
     CREDIT_LINE, FilmChain, FilmError, FilmParams, Names, Output, PaperChoice, StockKind,
     StockName, TableSpectra,
@@ -497,4 +497,152 @@ pub fn film_data_of(settings: &crate::settings::DevelopSettings) -> Option<Strin
         nodes.join(", "),
         catalogue.profile_version()
     ))
+}
+
+// ---------------------------------------------------------------------------------------------
+// The device's view of a baked film (`docs/24` section 3.9c)
+// ---------------------------------------------------------------------------------------------
+
+use ym_gpu::kernels::film::{
+    CoreData, CurveSet, FilmColourData, FilmPlan, FilmScalars, GaussTerm, GrainData, Table3Data,
+};
+use ym_gpu::kernels::film_stack::FilmTables;
+
+fn device_curves(c: &[ym_film::bake::Curve1; 3]) -> CurveSet {
+    CurveSet {
+        lo: [0, 1, 2].map(|i| c[i].domain().0),
+        hi: [0, 1, 2].map(|i| c[i].domain().1),
+        data: c.iter().flat_map(|k| k.data().iter().copied()).collect(),
+    }
+}
+
+fn device_table3(t: &ym_film::bake::Table3) -> Table3Data {
+    Table3Data {
+        size: t.size(),
+        lo: t.axis_min(),
+        hi: t.axis_max(),
+        power: t.power(),
+        data: t.data().to_vec(),
+    }
+}
+
+/// The matrix from the output's linear primaries to XYZ (D65), for the device's colour-out pass.
+fn output_to_xyz(output: Output) -> [[f64; 3]; 3] {
+    let m = ym_color::gamut::matrices();
+    match output {
+        Output::Srgb => m.rec709_to_xyz,
+        Output::DisplayP3 => m.p3_to_xyz,
+    }
+}
+
+/// The scalars of a baked film (the film exposure, the print exposure, the coupler amount and the output's matrix): what
+/// a change of exposure moves, with no table in it.
+#[must_use]
+pub fn device_scalars(b: &BakedFilm) -> FilmScalars {
+    let p = b.device_parts();
+    FilmScalars {
+        scene_to_xyz: p.scene_to_xyz,
+        white_xy: p.scene_white_xy,
+        knee: ym_film::scene::KNEE,
+        limit: ym_film::scene::LIMIT,
+        log10_gain: p.log10_gain,
+        coupler_amount: p.coupler_amount,
+        coupler_matrix: p.coupler_matrix,
+        print_log10_shift: p.print_log10_shift,
+        output_to_xyz: output_to_xyz(p.output),
+    }
+}
+
+/// The plain data of a baked film: its tables and scalars, for [`ym_gpu::kernels::film::FilmDevice::upload`].
+#[must_use]
+pub fn device_colour_data(b: &BakedFilm) -> FilmColourData {
+    let p = b.device_parts();
+    let core = p.core;
+    let d = core.dims();
+    let (s_lo, s_span) = core.level_axis();
+    FilmColourData {
+        scalars: device_scalars(b),
+        locus: p.scene_locus.to_vec(),
+        t1_dims: {
+            let (nx, ny) = p.t1.dims();
+            [nx, ny]
+        },
+        t1_step: p.t1.step(),
+        t1: p.t1.data().to_vec(),
+        film0: device_curves(&p.curves.film0),
+        paper: p.curves.paper.as_ref().map(device_curves),
+        t3a: p.t3a.map(device_table3),
+        t3b: device_table3(p.t3b),
+        core: CoreData {
+            dims: [d.ns, d.nt, d.nk],
+            steps: core.steps() as u32,
+            s_lo,
+            s_span,
+            ln_reach: core.ln_reach().to_vec(),
+            nodes: core.data().iter().flatten().copied().collect(),
+        },
+    }
+}
+
+/// The passes of a film frame over a photo of `frame` pixels, as plain data.
+#[must_use]
+pub fn device_plan(f: &FilmFrame, frame: FilmExtent) -> FilmPlan {
+    let p = f.device_plan(frame);
+    let term = |t: &ym_film::spatial::Term| GaussTerm {
+        sigma_px: t.sigma_px,
+        weight: t.weight,
+    };
+    FilmPlan {
+        frame: (frame.width, frame.height),
+        halation: p.halation.iter().map(term).collect(),
+        diffusion: p.diffusion.iter().map(term).collect(),
+        diffuse: p.diffuse,
+        cloud_px: p.cloud_px,
+        grain: p.grain_on.then(|| {
+            let mut lut = Vec::with_capacity(9 * ym_film::grain::LUT_ENTRIES);
+            for c in 0..3 {
+                for s in 0..3 {
+                    lut.extend(p.grain.table(c, s).iter().map(|&v| v as f32));
+                }
+            }
+            GrainData {
+                lut,
+                d_top: p.grain.d_top(),
+                scale: p.grain_scale,
+                seed: p.grain_seed,
+                hash: ym_film::grain::HASH_CONSTANTS,
+            }
+        }),
+    }
+}
+
+/// How a baked film's tables are found on the device and built when they are not there: named by the identity of the
+/// baked tables (the engine's caches hand the same `Arc`s to every frame made from the same stock, paper, lights and
+/// output, so a change of exposure, print exposure or coupler amount, which are scalars, uploads nothing) and built
+/// from `baked` on a miss. The tables are held by the key, so an address cannot name two sets.
+#[must_use]
+pub fn device_tables(baked: &BakedFilm) -> FilmTables {
+    use std::any::Any;
+    let t1 = Arc::clone(baked.t1());
+    let curves = Arc::clone(baked.curves());
+    let t3a = baked.t3a().map(Arc::clone);
+    let t3b = Arc::clone(baked.t3b());
+    let address = |p: *const ()| p as usize;
+    let key = vec![
+        address(Arc::as_ptr(&t1).cast()),
+        address(Arc::as_ptr(&curves).cast()),
+        t3a.as_ref().map_or(0, |t| address(Arc::as_ptr(t).cast())),
+        address(Arc::as_ptr(&t3b).cast()),
+        baked.output() as usize,
+    ];
+    let mut keep: Vec<Arc<dyn Any + Send + Sync>> = vec![t1, curves, t3b];
+    if let Some(t) = t3a {
+        keep.push(t);
+    }
+    let owner = baked.clone();
+    FilmTables {
+        key,
+        keep,
+        build: Arc::new(move || device_colour_data(&owner)),
+    }
 }

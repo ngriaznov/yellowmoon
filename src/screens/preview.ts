@@ -5,6 +5,7 @@
  * aren't one of the twelve fixtures have no picture.
  */
 import type { MaskKind, MaskView, PhotoSummary, ResolvedSettings } from "../api/types";
+import { sceneThroughFilms } from "../fixtures/film";
 import { developScene, flatScene, previewDataUrl } from "../fixtures/grade";
 import type { PreviewOptions } from "../fixtures/grade";
 import { maskViewSvg, masksOfView, turnMatrix, visionFoundIn } from "../fixtures/maskView";
@@ -49,7 +50,7 @@ export function previewUrl(
     people: inScene.people && (vision.kinds?.includes("people") ?? true) && !vision.finding,
   };
   const over: PreviewOptions["over"] =
-    mask && node?.kind === "corrector"
+    mask && (node?.kind === "corrector" || node?.kind === "film")
       ? (box) => maskViewSvg(mask.style, masksOfView(node.masks, mask.row), box, { width: SVG_WIDTH, height: SVG_HEIGHT, matrix: turnMatrix(turn, SVG_WIDTH, SVG_HEIGHT) }, found)
       : undefined;
   const geometry: PreviewOptions = rs
@@ -58,7 +59,7 @@ export function previewUrl(
   if (!rs || before) return previewDataUrl(before ? flatScene(scene) : scene, geometry);
   const { values, estimates } = rs;
   const graded = developScene(
-    scene,
+    sceneThroughFilms(scene, rs.settings),
     { slug: lookSlugOf(values.output.look), intensity: values.output.look_intensity },
     {
       ev: values.input.exposure_ev,

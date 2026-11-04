@@ -19,7 +19,7 @@ export { widthSlider };
 export function maskRowKinds(settings: DevelopSettings | null, node: number | null): string {
   if (settings === null || node === null) return "";
   const item = nodeOf(settings, node);
-  return item?.kind === "corrector" ? item.masks.items.map((row) => row.kind).join(",") : "";
+  return item?.kind === "corrector" || item?.kind === "film" ? item.masks.items.map((row) => row.kind).join(",") : "";
 }
 
 /** What the subtitle of a raster row says while the core makes its mask for the first time (`docs/23` §7.6). */

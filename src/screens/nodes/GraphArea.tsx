@@ -2,7 +2,7 @@ import { Maximize2Icon } from "lucide-react";
 import type { DevelopSettings, NodeId } from "../../api/types";
 import { Button } from "../../components";
 import { GRAPH_OP_TEXT, MAX_CORRECTORS } from "../../state/graphOps";
-import { correctorsOf, INPUT_ID, MAIN_ID, nodeOf, OUTPUT_ID } from "../../state/settingsGraph";
+import { cardsOf, INPUT_ID, MAIN_ID, nodeOf, OUTPUT_ID } from "../../state/settingsGraph";
 import { AddNodeMenu } from "./AddNodeMenu";
 import { NodeGraph } from "./NodeGraph";
 import { PhotoSwitcher } from "./PhotoSwitcher";
@@ -47,18 +47,19 @@ function deleteReason(id: NodeId, link: boolean): string | null {
  */
 export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, expanded, onToggleExpanded, dimmed, maskOn = false, onToggleMask, ...switcher }: GraphAreaProps) {
   const node = settings ? nodeOf(settings, selected) : undefined;
-  const count = settings ? correctorsOf(settings).length : 0;
-  const bypassOff = node?.kind !== "corrector";
+  const count = settings ? cardsOf(settings).length : 0;
+  const isCard = node?.kind === "corrector" || node?.kind === "film";
+  const bypassOff = !isCard;
   const deleteOff = deleteReason(selected, graph.selectedLink !== null);
   // The Input and the Output have no mask: the view's on or off is kept and applies again on a corrector.
-  const maskOff = node?.kind !== "corrector";
+  const maskOff = !isCard;
   return (
     <section aria-label="Node editor" className="ym-graph" data-dimmed={dimmed || undefined} inert={dimmed || undefined}>
       <div role="group" aria-label="Graph tools" className="ym-graph__bar">
-        <AddNodeMenu onAddCorrector={settings ? graph.addCorrector : undefined} blocked={count >= MAX_CORRECTORS ? GRAPH_OP_TEXT.tooMany : null} />
+        <AddNodeMenu onAddCorrector={settings ? graph.addCorrector : undefined} onAddFilm={settings ? graph.addFilm : undefined} blocked={count >= MAX_CORRECTORS ? GRAPH_OP_TEXT.tooMany : null} />
         <Button
           variant="header"
-          pressed={node?.kind === "corrector" && node.bypass}
+          pressed={(node?.kind === "corrector" || node?.kind === "film") && node.bypass}
           disabled={bypassOff}
           title={bypassOff ? GRAPH_OP_TEXT.noBypass : "Bypass this node (B)"}
           onClick={graph.toggleBypass}

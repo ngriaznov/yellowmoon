@@ -118,6 +118,9 @@ use ym_color::plan::{BufferKind, KeyRef, MAIN_NODE, PictureRef, PlanResult};
 use ym_color::tone::ToneParams;
 use ym_color::warp::{WARP_MAX_PINS, Warp};
 
+use super::film_stack::FilmPictures;
+use super::copy::encode_copy_into;
+use super::film::FilmImage;
 use super::mask_raster::RasterPlanes;
 use super::shader::{KernelId, table};
 use super::util::{OutKind, PixelData, STORAGE_IN, STORAGE_OUT, even, image_bytes, sample_bytes};
@@ -125,7 +128,7 @@ use super::util::{storage_buffer, unpack};
 use crate::cpu::RgbImage;
 use crate::cpu::tiling::Rect;
 use crate::device::{GpuContext, GpuError, StorageMode};
-use crate::image::GpuImage;
+use crate::image::{GpuImage, IMAGE_USAGE};
 use crate::pool::PooledBuffer;
 use crate::queue::CancelToken;
 use crate::stream::{Counters, PassList, Pending, ReadId, upload_bytes};
@@ -257,6 +260,13 @@ pub(crate) const NODE_BLEND: u32 = 64;
 pub(crate) const NODE_INVERT: u32 = 128;
 /// A mask row reads the luma of the node's input (`N_LUMA`, a Brightness range).
 pub(crate) const NODE_LUMA: u32 = 256;
+/// The node is a Film node (`N_FILM`): its picture is not computed per pixel but read from the planes of the plan buffer
+/// that hold the picture the Film passes made, and blended by the mask times Strength (`gain.x`). Set for every Film
+/// step; [`NODE_FILM_LIVE`] says whether it has a picture.
+pub(crate) const NODE_FILM: u32 = 512;
+/// The Film node does something (`N_FILM_LIVE`: not bypassed, Strength above 0); `ctl.w` is the first plane of the plan
+/// buffer that holds its picture.
+pub(crate) const NODE_FILM_LIVE: u32 = 1024;
 /// The mask row is subtracted (`MF_SUBTRACT`, in `MaskOpU::head.y`).
 pub(crate) const MASK_SUBTRACT: u32 = 1;
 /// The mask row is inverted (`MF_INVERT`).
@@ -1010,6 +1020,8 @@ impl ChainTables {
             steps: plan.steps,
             result: plan.result,
             planes: plan.planes,
+            films: plan.films,
+            film_pictures: None,
             node_stop: None,
             photo: None,
             rasters: None,
@@ -1047,8 +1059,11 @@ struct NodePlan {
     passes: Arc<Vec<PassSpan>>,
     steps: Arc<Vec<StepAt>>,
     result: u32,
-    /// The planes of `pbuf` a pixel needs: the sum over the plan's buffers (three for a picture, one for a key).
+    /// The planes of `pbuf` a pixel needs: three for each live Film node (first), then the sum over the plan's buffers
+    /// (three for a picture, one for a key).
     planes: u32,
+    /// The live Film nodes of the plan, in plan order: the picture of the `k`-th is at planes `3k..3k+3` of `pbuf`.
+    films: Arc<Vec<u32>>,
     curves: Arc<PooledBuffer>,
 }
 
@@ -1066,9 +1081,20 @@ impl NodePlan {
                 plan.step_count()
             )));
         }
-        // The planes of the buffers that cross from one pass to the next.
+        // The Film nodes that do something keep their pictures in the first planes of the plan buffer (the render makes
+        // them before the colour pass, `docs/24` section 3.9c); the buffers that cross from one pass to the next follow.
+        let films: Vec<u32> = plan
+            .steps()
+            .filter(|s| {
+                params
+                    .films
+                    .get(&s.node)
+                    .is_some_and(|f| !f.bypass && f.strength > 0.0)
+            })
+            .map(|s| s.node)
+            .collect();
         let mut plane_of = Vec::with_capacity(plan.buffers.len());
-        let mut planes = 0u32;
+        let mut planes = 3 * films.len() as u32;
         for kind in &plan.buffers {
             plane_of.push(planes);
             planes += match kind {
@@ -1137,6 +1163,15 @@ impl NodePlan {
                     r.ctl[2] = curve_bits[next_set];
                     r.ctl[3] = 4 * next_set as u32;
                     next_set += 1;
+                }
+            }
+            // A Film node: its picture is read from the plan buffer, its Strength is in the gain's first lane.
+            if let Some(film) = params.films.get(&step.node) {
+                bits |= NODE_FILM;
+                r.gain = [film.strength as f32, 0.0, 0.0, 0.0];
+                if let Some(k) = films.iter().position(|&n| n == step.node) {
+                    bits |= NODE_FILM_LIVE;
+                    r.ctl[3] = 3 * k as u32;
                 }
             }
             // The mask rows (`ym_color::mask`): the same rows, derived once, as the CPU reads. A node blends when
@@ -1216,6 +1251,7 @@ impl NodePlan {
             steps: Arc::new(steps),
             result,
             planes,
+            films: Arc::new(films),
             curves,
         })
     }
@@ -1253,6 +1289,7 @@ fn with_tables<R>(
 /// references). The pool ledger counts the tables as in use until then, which a test about "the
 /// ledger returns to its baseline" must account for.
 pub fn release_tables(ctx: &GpuContext) {
+    super::film_stack::release(ctx);
     TABLES.with(|cell| {
         let id = Arc::as_ptr(ctx.counters_shared());
         cell.borrow_mut()
@@ -1314,6 +1351,11 @@ pub struct PreparedChain {
     result: u32,
     /// The planes of the pass buffers a pixel needs.
     planes: u32,
+    /// The live Film nodes of the plan, in plan order (their pictures are the first planes of the pass buffers).
+    films: Arc<Vec<u32>>,
+    /// The pictures the Film nodes made, and the absolute pixel of the window's (0, 0) in the photo's extent
+    /// ([`PreparedChain::with_film`]).
+    film_pictures: Option<(Arc<FilmPictures>, (i64, i64))>,
     /// Where kernel stops 11 and 12 end, when the chain was given one.
     node_stop: Option<(NodeStop, StepAt)>,
     /// The render's photo frame, for the mask shapes ([`PreparedChain::with_photo_frame`]).
@@ -1328,6 +1370,9 @@ pub struct PreparedChain {
     before: BeforePoint,
     dither: bool,
 }
+
+/// A Film picture with the place of a window's first pixel in it.
+type FilmPicture = (Arc<FilmImage>, i64, i64);
 
 /// A stop inside the plan's nodes (`docs/23` section 5.4): [`PreparedChain::with_node_stop`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1473,6 +1518,23 @@ impl PreparedChain {
         let mut chain = self.clone();
         chain.rasters = Some(planes);
         chain
+    }
+
+    /// The same chain with the pictures the Film nodes of its plan made (`docs/24` section 3.9c): the plan buffer's first
+    /// planes take the part of each picture under the window being coloured, and a Film step blends it by its mask and
+    /// Strength. `origin` is the absolute pixel (in the photo's extent, the coordinates the pictures are in) of the
+    /// window's pixel (0, 0). A picture must cover the window (a pixel it does not cover is zero).
+    #[must_use]
+    pub fn with_film(&self, pictures: Arc<FilmPictures>, origin: (i64, i64)) -> Self {
+        let mut chain = self.clone();
+        chain.film_pictures = Some((pictures, origin));
+        chain
+    }
+
+    /// The Film nodes of the plan that need a picture, in plan order.
+    #[must_use]
+    pub fn live_films(&self) -> &[u32] {
+        &self.films
     }
 
     /// The passes of the plan (one dispatch each; one for the default graph).
@@ -1664,6 +1726,8 @@ impl PreparedChain {
                 )));
             }
         }
+        // The pictures of the Film nodes the plan runs: one for each, or the frame is not this chain's to make.
+        let film_images = self.film_images_for()?;
         // Rows per band: the whole window, unless the pass buffers would not fit one binding.
         let plane_bytes_per_row = 4 * u64::from(self.planes) * out_window.width.max(1) as u64;
         let band_rows = if self.planes == 0 {
@@ -1671,13 +1735,17 @@ impl PreparedChain {
         } else {
             ((self.buffer_limit / plane_bytes_per_row) as usize).clamp(1, out_window.height.max(1))
         };
+        let scratch_bytes = plane_bytes_per_row * band_rows.min(out_window.height) as u64;
         let scratch = if self.planes == 0 {
             Arc::clone(&self.stand_in)
+        } else if film_images.is_empty() {
+            passes.scratch("plan buffers", scratch_bytes)?
         } else {
-            passes.scratch(
-                "plan buffers",
-                plane_bytes_per_row * band_rows.min(out_window.height) as u64,
-            )?
+            // The Film pictures are copied in, and a picture that does not cover the window is cleared first.
+            let buffer = ctx
+                .pool()
+                .acquire("plan buffers", scratch_bytes.max(4), IMAGE_USAGE)?;
+            passes.keep(buffer)
         };
         let limit = ctx.info().limits.max_compute_workgroups_per_dimension as usize;
         let mut r0 = 0;
@@ -1702,6 +1770,7 @@ impl PreparedChain {
             }
             let span = self.passes_for(base.mode[0]);
             let last = *span.end();
+            self.copy_films(passes, &film_images, &scratch, (out_band.width, rows, r0))?;
             for p in span {
                 let mut u = base;
                 let pass = self.passes[p];
@@ -1724,6 +1793,92 @@ impl PreparedChain {
             }
         }
         Ok(kind)
+    }
+
+    /// The pictures of the live Film nodes, in plan order, each with the place of the window's first pixel in it; `None`
+    /// for a node the pictures do not hold (nothing of the photo is under the window). An error when the chain has a
+    /// live Film node and was given no pictures at all.
+    fn film_images_for(&self) -> Result<Vec<Option<FilmPicture>>, GpuError> {
+        if self.films.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some((pictures, origin)) = &self.film_pictures else {
+            return Err(GpuError::InvalidInput(format!(
+                "the plan runs {} Film node(s) and the chain was given no pictures for them",
+                self.films.len()
+            )));
+        };
+        Ok(self
+            .films
+            .iter()
+            .map(|&node| {
+                pictures.get(node).map(|image| {
+                    (
+                        Arc::clone(image),
+                        origin.0 - i64::from(image.rect.x0),
+                        origin.1 - i64::from(image.rect.y0),
+                    )
+                })
+            })
+            .collect())
+    }
+
+    /// Puts the part of each Film picture under the band (rows `r0..r0 + rows` of a window `width` wide) into the first
+    /// planes of the plan buffer; what a picture does not cover is zero.
+    fn copy_films(
+        &self,
+        passes: &mut PassList<'_>,
+        images: &[Option<FilmPicture>],
+        scratch: &Arc<PooledBuffer>,
+        (width, rows, r0): (usize, usize, usize),
+    ) -> Result<(), GpuError> {
+        if images.is_empty() {
+            return Ok(());
+        }
+        let n = width * rows;
+        // The pixels of the band a picture covers: window column x is picture column x + dx, row y is y + dy.
+        let mut whole = true;
+        let mut covers = Vec::with_capacity(images.len());
+        for item in images {
+            let Some((image, dx, dy)) = item else {
+                whole = false;
+                covers.push((0, 0, 0, 0));
+                continue;
+            };
+            let x0 = (-dx).max(0);
+            let x1 = (i64::from(image.rect.width()) - dx).min(width as i64);
+            let y0 = (-(dy + r0 as i64)).max(0);
+            let y1 = (i64::from(image.rect.height()) - dy - r0 as i64).min(rows as i64);
+            if x0 != 0 || y0 != 0 || x1 != width as i64 || y1 != rows as i64 {
+                whole = false;
+            }
+            covers.push((x0, y0, x1, y1));
+        }
+        if !whole {
+            passes
+                .encoder()
+                .clear_buffer(scratch, 0, Some((3 * images.len() * n * 4) as u64));
+        }
+        for (k, (item, (x0, y0, x1, y1))) in images.iter().zip(covers).enumerate() {
+            let Some((image, dx, dy)) = item else {
+                continue;
+            };
+            if x1 <= x0 || y1 <= y0 {
+                continue;
+            }
+            // The rectangle of the picture, and where it lands in the band.
+            let rect = Rect::new(
+                (x0 + dx) as usize,
+                (y0 + dy + r0 as i64) as usize,
+                (x1 - x0) as usize,
+                (y1 - y0) as usize,
+            );
+            // The copy kernel places the rectangle's (0, 0) at the destination's `at`, which a plain buffer of planes
+            // does not have: the base sample carries the offset instead.
+            let base = 3 * k * n + y0 as usize * width + x0 as usize;
+            encode_copy_into(passes, &image.img, rect, 3, scratch, (width, n, base))?;
+        }
+        Ok(())
     }
 
     /// Encodes the dispatches of the kernel over an `out_w x out_h` window of `src` (planar image

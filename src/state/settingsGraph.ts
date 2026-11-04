@@ -43,6 +43,10 @@ export type InputItem = Extract<NodeItem, { kind: "input" }>;
 export type OutputItem = Extract<NodeItem, { kind: "output" }>;
 /** A corrector (Main or another) as an item of the graph. */
 export type CorrectorItem = Extract<NodeItem, { kind: "corrector" }>;
+/** A Film node as an item of the graph (`docs/24`). */
+export type FilmItem = Extract<NodeItem, { kind: "film" }>;
+/** A node that has a card in the node view and a number: a corrector (Main included) or a Film node. */
+export type CardItem = CorrectorItem | FilmItem;
 
 // ---------------------------------------------------------------------------
 // Selectors
@@ -99,6 +103,16 @@ export function withoutLook(settings: DevelopSettings): object {
 /** Every corrector of the graph, Main included, in the order the document lists them (by id). */
 export function correctorsOf(settings: DevelopSettings): CorrectorItem[] {
   return settings.nodes.items.filter((item): item is CorrectorItem => item.kind === "corrector");
+}
+
+/** Every node that has a card, in the order the document lists them: the correctors and the Film nodes, by id. */
+export function cardsOf(settings: DevelopSettings): CardItem[] {
+  return settings.nodes.items.filter((item): item is CardItem => item.kind === "corrector" || item.kind === "film");
+}
+
+/** The Film nodes of the graph. */
+export function filmsOf(settings: DevelopSettings): FilmItem[] {
+  return settings.nodes.items.filter((item): item is FilmItem => item.kind === "film");
 }
 
 /** Main's grade: the shorthand for `mainOf(settings).grade`. */
@@ -194,6 +208,8 @@ export type InputPatch = Pick<
 export type OutputPatch = Pick<NodePatch, "pos" | "look" | "look_intensity" | "output_sharpening">;
 /** What a patch of a corrector (Main included) may carry. */
 export type CorrectorPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "trim" | "grade" | "masks">;
+/** What a patch of a Film node may carry. */
+export type FilmPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "film" | "print" | "halation" | "grain" | "strength" | "masks">;
 
 /**
  * The patch that changes the fields of one node: `patchOf("input", { exposure })`, `patchOf(1, { grade: { contrast } })`,
@@ -202,7 +218,7 @@ export type CorrectorPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "trim" 
  */
 export function patchOf(node: typeof INPUT_ID, partial: InputPatch): SettingsPatch;
 export function patchOf(node: typeof OUTPUT_ID, partial: OutputPatch): SettingsPatch;
-export function patchOf(node: number, partial: CorrectorPatch): SettingsPatch;
+export function patchOf(node: number, partial: CorrectorPatch | FilmPatch): SettingsPatch;
 export function patchOf(node: NodeId, partial: NodePatch): SettingsPatch {
   return { nodes: { [String(node)]: partial } };
 }
@@ -348,6 +364,28 @@ export function newCorrector(id: number, pos: NodePos, name = "Corrector"): Corr
   };
 }
 
+/** The stock a new Film node starts with (`docs/24` section 4.2). */
+export const DEFAULT_STOCK = "kodak_portra_400";
+/** The name a new Film node has. */
+export const FILM_NAME = "Film";
+
+/** A new Film node (`docs/24` section 4.5): Portra 400 on its matching paper, every number at its default, no masks. */
+export function newFilm(id: number, pos: NodePos, name = FILM_NAME): FilmItem {
+  return {
+    kind: "film",
+    id,
+    name,
+    bypass: false,
+    pos,
+    film: { stock: DEFAULT_STOCK, exposure_ev: 0 },
+    print: { paper: null, exposure_ev: 0, lights: { c: 0, m: 0, y: 0 } },
+    halation: { amount: 100, size: 100 },
+    grain: { amount: 100, size: 100, seed: 0 },
+    strength: 100,
+    masks: { invert: false, items: [] },
+  };
+}
+
 /** The default links: Input → Main → Output. */
 export function defaultLinks(): NodeLink[] {
   return [
@@ -372,7 +410,7 @@ export function inCanonicalOrder(items: readonly NodeItem[]): NodeItem[] {
 // ---------------------------------------------------------------------------
 
 /** The fields of a corrector patch that are partial objects whose own fields merge one by one. */
-const MERGED_FIELDS: ReadonlySet<string> = new Set(["trim", "grade"]);
+const MERGED_FIELDS: ReadonlySet<string> = new Set(["trim", "grade", "film", "print", "halation", "grain"]);
 
 function foldRows(first: Record<string, MaskPatch> | undefined, second: Record<string, MaskPatch> | undefined): Record<string, MaskPatch> | undefined {
   if (!first) return second;
@@ -408,7 +446,11 @@ function foldNode(first: NodePatch, second: NodePatch): NodePatch {
   for (const [field, value] of Object.entries(second)) {
     if (value === undefined) continue;
     const earlier = out[field];
-    if (MERGED_FIELDS.has(field) && isObject(earlier) && isObject(value)) out[field] = { ...earlier, ...value };
+    if (field === "print" && isObject(earlier) && isObject(value)) {
+      // The lights are a part of their own: a yellow and a magenta dragged in turn are both kept.
+      const lights = isObject(earlier.lights) || isObject(value.lights) ? { ...(earlier.lights as object), ...(value.lights as object) } : undefined;
+      out[field] = lights ? { ...earlier, ...value, lights } : { ...earlier, ...value };
+    } else if (MERGED_FIELDS.has(field) && isObject(earlier) && isObject(value)) out[field] = { ...earlier, ...value };
     else if (field === "masks" && isObject(earlier) && isObject(value)) out[field] = foldMasks(earlier as MasksPatch, value as MasksPatch);
     else out[field] = value;
   }
@@ -483,7 +525,7 @@ function applyGrade(grade: NodeGrade, patch: GradePatch): NodeGrade {
 
 /** A node with a node patch applied: whole fields replace, `rolloff`, `decode`, `lens`, `trim`, `grade` and `masks` merge their parts. */
 function applyNode(item: NodeItem, patch: NodePatch): NodeItem {
-  const { kind: _kind, rolloff, decode, lens, trim, grade, masks, ...fields } = patch;
+  const { kind: _kind, rolloff, decode, lens, trim, grade, masks, film, print, halation, grain, ...fields } = patch;
   const next: Record<string, unknown> = { ...item };
   for (const [key, value] of Object.entries(fields)) if (value !== undefined) next[key] = value;
   if (item.kind === "input") {
@@ -496,6 +538,14 @@ function applyNode(item: NodeItem, patch: NodePatch): NodeItem {
     if (grade) next.grade = applyGrade(item.grade, grade);
     if (masks) next.masks = applyMasks(item.masks, masks);
   }
+  if (item.kind === "film") {
+    // The parts of a Film node merge field by field, as the core merges them (`docs/24` section 4.5).
+    if (film) next.film = { ...item.film, ...film };
+    if (print) next.print = { ...item.print, ...print, lights: { ...item.print.lights, ...print.lights } };
+    if (halation) next.halation = { ...item.halation, ...halation };
+    if (grain) next.grain = { ...item.grain, ...grain };
+    if (masks) next.masks = applyMasks(item.masks, masks);
+  }
   return next as unknown as NodeItem;
 }
 
@@ -504,6 +554,7 @@ function addedNode(id: NodeId, patch: NodePatch, correctors: number): NodeItem {
   const pos: NodePos = patch.pos ?? [correctors, 0];
   if (patch.kind === "input") return applyNode(defaultInput(pos), patch);
   if (patch.kind === "output") return applyNode(defaultOutput(NEUTRAL_LOOK, pos), patch);
+  if (patch.kind === "film") return applyNode(newFilm(typeof id === "number" ? id : MAIN_ID, pos), patch);
   return applyNode(newCorrector(typeof id === "number" ? id : MAIN_ID, pos), patch);
 }
 
@@ -521,7 +572,7 @@ export function applyPatch(settings: DevelopSettings, patch: SettingsPatch): Dev
       const current = items[at] as NodeItem;
       items = items.map((item, i) => (i === at ? applyNode(current, nodePatch) : item));
     } else if (nodePatch.kind !== undefined) {
-      items = [...items, addedNode(id, nodePatch, items.filter((item) => item.kind === "corrector").length)];
+      items = [...items, addedNode(id, nodePatch, items.filter((item) => item.kind === "corrector" || item.kind === "film").length)];
     }
   }
   let links = settings.nodes.links;
@@ -650,7 +701,7 @@ export function diffGraph(before: DevelopSettings, after: DevelopSettings): Grap
         }
         nb[key] = gb;
         na[key] = ga;
-      } else if (key === "masks" && item.kind === "corrector" && old.kind === "corrector") {
+      } else if (key === "masks" && (item.kind === "corrector" || item.kind === "film") && (old.kind === "corrector" || old.kind === "film")) {
         const d = diffMasks(old.masks, item.masks);
         if (d) {
           nb[key] = d.before;
