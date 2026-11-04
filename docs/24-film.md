@@ -4,7 +4,7 @@ A **Film node** is a node that makes a photo look as if it had been shot on a co
 
 **Status: Scheduled (the owner, 2026-11-04: "let's continue film-node now and actually add film node"), on branch `film` after 0.2.0. The mockup round (F-01) is the first step.**
 
-It is **not in 0.2.0**. Nothing here is built, and the Add node menu of `docs/23` does not list the Film node until it is. **There are no mockups yet.** The owner's process is "first we imagine UI, then we plan": a mockup round (F-01) comes before the node is built, and §4 is a brief for that round, not a design. The facts behind this file, with sources and quotes, are in `research/film-spektrafilm-2026-11-01.md`. The owner's decisions are in §1.3 and `docs/16` (*Licensing and data*).
+It is **not in 0.2.0**. Nothing here is built, and the Add node menu of `docs/23` does not list the Film node until it is. **The mockups are in `design/film/`** (F-01, 2026-11-04), waiting for the owner's choices (F-H1, §4). The owner's process is "first we imagine UI, then we plan": a mockup round (F-01) comes before the node is built, and §4 is a brief for that round, not a design. The facts behind this file, with sources and quotes, are in `research/film-spektrafilm-2026-11-01.md`. The owner's decisions are in §1.3 and `docs/16` (*Licensing and data*).
 
 **In short.**
 
@@ -240,28 +240,29 @@ The per-pixel work is about 200 floating-point operations, three table lookups (
 
 ## 4. Controls
 
-**No mockups yet.** What follows is a brief for the mockup round (F-01). Names, ranges and defaults are proposals; the owner approves them with the mockups (F-H1).
+The mockups are in **`design/film/`** (F-01, 2026-11-04): 15 pictures, `index.html` and `README.md`. They draw the interface around hand-made film pictures; this section follows them, and **this file wins where they differ**. Four choices are still open and are marked "Option A / Option B, the owner chooses (F-H1)". Names, ranges and defaults are proposals; the owner approves them with the mockups (F-H1).
 
 ### 4.1 The node's tabs
 
-The panel of a Film node (`docs/23` §7.5) has the tabs **Film · Print · Halation · Grain · Mask**. (Halation and Grain could share one tab; that is a mockup question.)
+The panel of a Film node (`docs/23` §7.5) has the tabs **Film · Print · Halation · Grain · Mask**, with the head line "Film · whole photo" (screens 02, 08c). **Halation and Grain: Option A / Option B, the owner chooses (F-H1).** Option A is the five tabs above (08a, 08c). Option B is four tabs, **Film · Print · Grain · Mask**, where the one Grain tab holds a Halation card and a Grain card (08b); a better name than "Grain" for that tab may be needed.
 
 | Tab | Control | Range | Step | Default | What it does |
 |---|---|---|---|---|---|
-| Film | **Stock** | the 20 camera films, grouped Colour negative, Cine negative, Slide (the cine negatives wait for their print film, §6.4) | – | Portra 400 | the profile read for stages 1 to 6 |
+| Film | **Stock** | the 20 camera films, grouped Colour negative, Cine negative, Slide (the cine negatives wait for their print film, §6.4). **Picker: Option A / Option B, the owner chooses (F-H1):** A is a grouped list with the ISO on each row (03); B is tiles with a small render of the open photo in each stock (04, six columns, no scrolling; 20 small renders when it opens) | – | Portra 400 | the profile read for stages 1 to 6. A quiet line under the field gives the kind and ISO ("Colour negative · ISO 400"); both come from `names.json` |
 | Film | **Exposure** | −4…+4 EV | 0.05 | 0 | exposes the negative more or less; the print follows. 0 is the Input's exposure |
 | Film | **Strength** | 0–100 % | 1 | 100 | how much of the film look is applied (a node-wide mask value) |
-| Print | **Paper** | "Matching paper" and the 6 papers and 2 print films | – | Matching paper | the print profile; "Matching" is the stock's own `target_print` |
+| Print | **Paper** | "Matching paper" and the 6 papers (the 2 cine print films stay hidden until §6.4 is settled, 05b) | – | Matching paper | the print profile; "Matching" is the stock's own `target_print`, whose name a quiet line shows under the field |
 | Print | **Print exposure** | −3…+3 stops | 0.05 | 0 | the lamp's exposure of the paper; 0 keeps the app's brightness |
-| Print | **Lights** Yellow, Magenta | −50…+50 | 0.5 | 0 | the enlarger's filtration, in Kodak CC units, as shifts from neutral. 0 is neutral for this pair |
-| Print | **Cyan** (under More) | −50…+50 | 0.5 | 0 | the same for cyan; mostly equal to a change of exposure |
+| Print | **Lights** Yellow, Magenta. **Option A / Option B, the owner chooses (F-H1):** A is two sliders (05); B is a colour pad with one handle for both and two number fields (06) | −50…+50 | 0.5 | 0 | the enlarger's filtration, in Kodak CC units, as shifts from neutral. 0 is neutral for this pair; the hint "0 is neutral for this film and paper." sits under them |
+| Print | **Cyan** (under More, both options) | −50…+50 | 0.5 | 0 | the same for cyan; mostly equal to a change of exposure |
+| Print | **Brightness** (under More; **Option, the owner chooses (F-H1):** offered or left out) | As the app · As printed | – | As the app | As the app (default) places the print so that adding the node does not change the picture's brightness (§3.6). As printed leaves the paper's own (12). §9 item 10 |
 | Halation | **Amount** | 0–300 % | 1 | 100 | 100 is the stock's own (set by its antihalation layer) |
 | Halation | **Size** | 50–200 % | 1 | 100 | the spread |
 | Grain | **Amount** | 0–200 % | 1 | 100 | 100 is the stock's own granularity |
 | Grain | **Size** | 50–200 % | 1 | 100 | the particle size |
 | Mask | as the correctors' Mask tab (`docs/23` §7.6) | | | | |
 
-A slide stock disables the Print tab: "Slide film is scanned as it is. There is no print." The node's head, Bypass, Reset and rename are the correctors'.
+A slide stock dims the Print tab but leaves it openable, so the sentence can be read: "Slide film is scanned as it is. There is no print." The page holds that sentence and the controls greyed (07). The node's head, Bypass, Reset and rename are the correctors'. The Film tab ends with the credit line and its link (02); About carries the same line, the CC BY-SA 4.0 link and the trademark line (11).
 
 ### 4.2 Defaults and Auto
 
@@ -271,15 +272,25 @@ A new Film node is **Portra 400 on its matching paper** with every number at its
 
 The node takes masks, the same rows and rules as a corrector (`docs/23` §3.3 and §4), because variant A returns LogC4 (§2.6). With variant B it could not.
 
-### 4.4 What the mockup round has to answer
+### 4.4 What the mockup round answered, and what is still open
 
-1. The stock and paper pickers: a grouped list of names, or tiles with a small render of the photo (twenty renders; costly)?
-2. How the lights are shown: two sliders, or a small colour pad for yellow and magenta.
-3. Where the credit line sits (§6.2) and how a slide film's Print tab looks.
-4. How the Output tab explains that the look acts after the Film node.
-5. The names (§9, item 4): stock names as data, or neutral names.
-6. Whether "as printed" brightness is offered (§9, item 10).
-7. The card's thumbnail and the Add node menu entry.
+Answered (the owner approves with F-H1):
+
+1. **Credit line:** at the foot of the Film tab, with its link; also in About (02, 11).
+2. **Slide film's Print tab:** dimmed, openable, the sentence and greyed controls (07).
+3. **The Output tab:** the note under the tab row (10).
+4. **Names:** real names with the line, as data (§1.3); the picker rows and tiles show them (03, 04).
+5. **The card's thumbnail and the Add node entry:** the thumbnail is the node's own small picture of the photo; the entry sits under Corrector, enabled, the Later items follow (01, 02).
+6. **Masks:** the Mask tab is a corrector's (09).
+
+**Open, the owner chooses (F-H1):**
+
+1. **Stock picker:** Option A, a grouped list (03), or Option B, tiles (04; twenty small renders).
+2. **Lights:** Option A, two sliders (05), or Option B, a colour pad (06).
+3. **Halation and Grain:** Option A, two tabs (08a, 08c), or Option B, one tab holding both cards (08b).
+4. **Brightness:** "as the app" only, or the "As printed" control under More (12).
+
+**Found while drawing, settled by §6.4:** a cine negative's own `target_print` is the hidden Kodak 2383, so until a projector-lamp spectrum is sourced its "Matching paper" is a still paper, **Kodak Professional Portra Endura**, and the line under the field names it. Stock names come from `data/film/params/names.json` (F-02), which uses the profiles' own `info.name`: the mockups' "Kodak Portra 800 push 1" is "Kodak Portra 800 (Push 1)" in the app.
 
 ### 4.5 Settings and the format
 
@@ -306,7 +317,9 @@ A node of `kind: "film"` has these fields and no others (`docs/23` §3.2 rules: 
 Short, plain sentences, British spelling (`AGENTS.md`). Drafts:
 
 - Menu: "Film" / "Models a colour negative, a print and a scan."
-- Film tab: "Modelled on published data. Film profiles by Andrea Volpato (spektrafilm), CC BY-SA 4.0. Not affiliated with Kodak or Fujifilm." (a link to the project page opens in the system browser, like ARRI's page).
+- Film tab: "Modelled on published data. Film profiles by Andrea Volpato (spektrafilm), CC BY-SA 4.0. Not affiliated with Kodak or Fujifilm." (a link on "Andrea Volpato (spektrafilm)" opens the project page in the system browser, like ARRI's page).
+- About: the same line with a second link on "CC BY-SA 4.0", and "Kodak, Portra, Vision3, Fujifilm and Velvia are trademarks of their owners."
+- Print tab: "Matching paper" (the matching paper's name under it); the brightness control reads "As the app" and "As printed".
 - Slide: "Slide film is scanned as it is. There is no print."
 - Lights: "0 is neutral for this film and paper."
 - Output tab, while a Film node is live: "The look acts after the Film node. Choose Neutral to see the print as scanned."

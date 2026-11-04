@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yellowmoon Film node, mockups</title>
+<style>
+@font-face { font-family: Figtree; font-weight: 300 900; src: url("html/assets/fonts/figtree-latin-wght-normal.woff2") format("woff2"); }
+:root { color-scheme: dark; --bg:#0f0f10; --line:rgba(255,255,255,.14); --ink:#f2f2f2; --quiet:#a2a2a6; --yellow:#ffc20e; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 Figtree, system-ui, sans-serif; }
+header.top { position:sticky; top:0; z-index:5; background:rgba(15,15,16,.92); border-bottom:1px solid var(--line); padding:12px 16px; display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; }
+header.top h1 { font-size:15px; margin:0 12px 0 0; font-weight:800; }
+.chip { display:inline-grid; place-items:center; min-width:34px; height:28px; padding:0 8px; border-radius:9px; border:1px solid var(--line); color:var(--ink); text-decoration:none; font-weight:800; font-size:13px; }
+.chip:hover { border-color:var(--yellow); }
+main { max-width:1480px; margin:0 auto; padding:24px 16px 80px; }
+.intro { max-width:960px; color:#d4d4d8; margin-bottom:40px; }
+section { margin:0 0 72px; scroll-margin-top:64px; }
+.head { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+.head h2 { margin:0; font-size:22px; font-weight:800; }
+.num { display:inline-grid; place-items:center; min-width:38px; height:28px; border-radius:9px; background:rgba(255,255,255,.12); font-weight:800; font-size:14px; }
+.tag { padding:2px 10px; border-radius:99px; border:1px solid var(--yellow); color:var(--yellow); font-size:12px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+.shot { display:block; border-radius:14px; overflow:hidden; border:1px solid var(--line); }
+.shot img { display:block; width:100%; height:auto; }
+.cap { max-width:960px; padding-top:14px; }
+.cap ul { margin:0; padding-left:20px; color:#d4d4d8; } .cap li { margin:6px 0; }
+.cap code { background:rgba(255,255,255,.1); padding:1px 5px; border-radius:5px; }
+</style></head><body>
+<header class="top"><h1>Film node</h1>
+<a class="chip" href="#s01">01</a>
+<a class="chip" href="#s02">02</a>
+<a class="chip" href="#s03">03</a>
+<a class="chip" href="#s04">04</a>
+<a class="chip" href="#s05">05</a>
+<a class="chip" href="#s05b">05b</a>
+<a class="chip" href="#s06">06</a>
+<a class="chip" href="#s07">07</a>
+<a class="chip" href="#s08a">08a</a>
+<a class="chip" href="#s08c">08c</a>
+<a class="chip" href="#s08b">08b</a>
+<a class="chip" href="#s09">09</a>
+<a class="chip" href="#s10">10</a>
+<a class="chip" href="#s11">11</a>
+<a class="chip" href="#s12">12</a>
+</header><main>
+<p class="intro">Mockups of the Film node (F-01). Each picture is a page in <code>html/pages/</code> built from the app's own DOM and CSS at 1440 × 900, shot at 2×. The film pictures are hand-made illustrations of a print, not the engine's output. Where two screens carry an Option tag, the owner chooses (F-H1). <code>docs/24</code> wins over these pictures.</p>
+<section id="s01"><div class="head"><span class="num">01</span><h2>Add node menu</h2></div><a class="shot" href="01-add-node-menu.jpg"><img src="01-add-node-menu.jpg" alt="Add node menu" loading="lazy"></a><div class="cap"><ul><li>The menu on an untouched photo: <b>Corrector</b>, then <b>Film</b> ("Models a colour negative, a print and a scan."), a line, then Parallel, Layer and Splitter and combiner greyed with "Later". Outside is gone.</li><li>Film is enabled and is the only new row.</li></ul></div></section>
+<section id="s02"><div class="head"><span class="num">02</span><h2>The graph and the Film tab</h2></div><a class="shot" href="02-film-tab.jpg"><img src="02-film-tab.jpg" alt="The graph and the Film tab" loading="lazy"></a><div class="cap"><ul><li>Input, 01 Main, <b>02 Film</b>, Output. The Film node is selected; its card thumbnail is the hand-made film picture. The panel is on <b>Film</b>: Stock (Kodak Portra 400, with "Colour negative · ISO 400" under it), Exposure, Strength.</li><li>The credit line is at the foot of the tab, with its link to the project page (opens in the system browser).</li></ul></div></section>
+<section id="s03"><div class="head"><span class="num">03</span><h2>Stock picker, option A</h2><span class="tag">Option</span></div><a class="shot" href="03-stock-picker-a-list.jpg"><img src="03-stock-picker-a-list.jpg" alt="Stock picker, option A" loading="lazy"></a><div class="cap"><ul><li>A grouped list: Colour negative, Cine negative, Slide. Each row is the stock name and its ISO. The names, ISO and maker come from one data file (<code>names.json</code>).</li><li>It scrolls (20 rows and 3 headings). Cheap to build, and one file changes the names.</li></ul></div></section>
+<section id="s04"><div class="head"><span class="num">04</span><h2>Stock picker, option B</h2><span class="tag">Option</span></div><a class="shot" href="04-stock-picker-b-tiles.jpg"><img src="04-stock-picker-b-tiles.jpg" alt="Stock picker, option B" loading="lazy"></a><div class="cap"><ul><li>Tiles with a small render of this photo in each stock, same groups. All 20 fit without scrolling.</li><li>The tiles are hand-made here. In the app each is a real render of the open photo through the stock: 20 small renders when the picker opens.</li></ul></div></section>
+<section id="s05"><div class="head"><span class="num">05</span><h2>Print tab, Lights option A</h2><span class="tag">Option</span></div><a class="shot" href="05-print-tab-lights-a.jpg"><img src="05-print-tab-lights-a.jpg" alt="Print tab, Lights option A" loading="lazy"></a><div class="cap"><ul><li>Paper ("Matching paper", with the paper's name under it), Print exposure, then <b>Lights</b>: Yellow and Magenta sliders, the hint "0 is neutral for this film and paper.", and a <b>More</b> row that holds Cyan.</li></ul></div></section>
+<section id="s05b"><div class="head"><span class="num">05b</span><h2>The paper list</h2></div><a class="shot" href="05b-paper-list.jpg"><img src="05b-paper-list.jpg" alt="The paper list" loading="lazy"></a><div class="cap"><ul><li>"Matching paper" first, then the six papers. The cine print films (2383, 2393) are hidden until a projector lamp is sourced (docs/24 §6.4).</li></ul></div></section>
+<section id="s06"><div class="head"><span class="num">06</span><h2>Print tab, Lights option B</h2><span class="tag">Option</span></div><a class="shot" href="06-print-lights-b-pad.jpg"><img src="06-print-lights-b-pad.jpg" alt="Print tab, Lights option B" loading="lazy"></a><div class="cap"><ul><li>A colour pad for yellow and magenta (yellow to the right, magenta up), two number fields, and Centre. Cyan stays under More.</li><li>One handle moves both values, but it is harder to set one value alone, and the labels need the words Blue and Green for the opposite ends.</li></ul></div></section>
+<section id="s07"><div class="head"><span class="num">07</span><h2>A slide stock</h2></div><a class="shot" href="07-slide-stock.jpg"><img src="07-slide-stock.jpg" alt="A slide stock" loading="lazy"></a><div class="cap"><ul><li>Velvia 100: vivid, deep blacks. The Print tab stays openable but dimmed; its page says "Slide film is scanned as it is. There is no print." and the controls are greyed.</li></ul></div></section>
+<section id="s08a"><div class="head"><span class="num">08a</span><h2>Halation and Grain, option A: two tabs (Grain, at 100 %)</h2><span class="tag">Option</span></div><a class="shot" href="08a-grain-two-tabs-a.jpg"><img src="08a-grain-two-tabs-a.jpg" alt="Halation and Grain, option A: two tabs (Grain, at 100 %)" loading="lazy"></a><div class="cap"><ul><li>Tab row: Film, Print, Halation, Grain, Mask. Grain holds Amount and Size. The photo is at 100 % to show the grain.</li></ul></div></section>
+<section id="s08c"><div class="head"><span class="num">08c</span><h2>Halation and Grain, option A: the Halation tab</h2><span class="tag">Option</span></div><a class="shot" href="08c-halation-tab-a.jpg"><img src="08c-halation-tab-a.jpg" alt="Halation and Grain, option A: the Halation tab" loading="lazy"></a><div class="cap"><ul><li>The same option, on its Halation tab: Amount and Size.</li></ul></div></section>
+<section id="s08b"><div class="head"><span class="num">08b</span><h2>Halation and Grain, option B: one tab (at 100 %)</h2><span class="tag">Option</span></div><a class="shot" href="08b-grain-one-tab-b.jpg"><img src="08b-grain-one-tab-b.jpg" alt="Halation and Grain, option B: one tab (at 100 %)" loading="lazy"></a><div class="cap"><ul><li>Tab row: Film, Print, Grain, Mask. The one Grain tab holds a Halation card and a Grain card. Four tabs instead of five.</li></ul></div></section>
+<section id="s09"><div class="head"><span class="num">09</span><h2>The Mask tab</h2></div><a class="shot" href="09-mask-tab.jpg"><img src="09-mask-tab.jpg" alt="The Mask tab" loading="lazy"></a><div class="cap"><ul><li>The same as a corrector's: one Radial row, its overlay on the photo, the View card. Masks work on a Film node, because the node returns scene colour (variant A).</li></ul></div></section>
+<section id="s10"><div class="head"><span class="num">10</span><h2>The Output while a Film node is live</h2></div><a class="shot" href="10-output-look-note.jpg"><img src="10-output-look-note.jpg" alt="The Output while a Film node is live" loading="lazy"></a><div class="cap"><ul><li>The Output on its Look tab, with the note "The look acts after the Film node. Choose Neutral to see the print as scanned." under the tab row.</li></ul></div></section>
+<section id="s11"><div class="head"><span class="num">11</span><h2>About</h2></div><a class="shot" href="11-about.jpg"><img src="11-about.jpg" alt="About" loading="lazy"></a><div class="cap"><ul><li>The credit line with its links, the CC BY-SA 4.0 link, and "Kodak, Portra, Vision3, Fujifilm and Velvia are trademarks of their owners."</li></ul></div></section>
+<section id="s12"><div class="head"><span class="num">12</span><h2>Brightness: as the app, or as printed</h2><span class="tag">Option</span></div><a class="shot" href="12-brightness-option.jpg"><img src="12-brightness-option.jpg" alt="Brightness: as the app, or as printed" loading="lazy"></a><div class="cap"><ul><li>Under <b>More</b> on the Print tab: Cyan, then a two-segment control, <b>As the app</b> (default; adding the node does not change the brightness) and <b>As printed</b>.</li></ul></div></section>
+</main></body></html>
