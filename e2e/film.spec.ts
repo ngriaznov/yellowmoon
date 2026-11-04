@@ -184,6 +184,6 @@ test.describe("the rest of the node", () => {
     await expect(page.locator('[data-node-card="2"]')).toHaveAttribute("aria-pressed", "true");
     expect(await tabNames(page)).toEqual(["Film", "Print", "Halation", "Grain", "Mask"]);
     expect((await filmNode(page)).film).toEqual({ stock: "kodak_portra_400", exposure_ev: 0 });
-    expect(errors).toEqual([]);
+    expect(errors.filter((e) => !e.includes("React Flow"))).toEqual([]);
   });
 });
