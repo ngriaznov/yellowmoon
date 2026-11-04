@@ -45,7 +45,7 @@ BSD_NOTICE = (
     "The above copyright notice and this permission notice shall be included in all\n"
     "Copyright (c) Meta Platforms, Inc. and affiliates. https://github.com/facebookresearch/sam2\n"
     "spektrafilm by Andrea Volpato https://github.com/andreavolpato/spektrafilm data/film/spektrafilm/LICENSE\n"
-    "International Commission on Illumination (CIE) data/film/cie/LICENSE\n"
+    "International Commission on Illumination (CIE) data/film/cie/LICENSE and a table computed from it data/film/upsampling/LICENSE\n"
 )
 OFL = "Copyright 2022 The Figtree Project Authors\n\nSIL OPEN FONT LICENSE Version 1.1 - 26 February 2007\n"
 
@@ -296,8 +296,8 @@ class Bundle(unittest.TestCase):
             self.film_tree(root)
 
     def film_tree(self, root: Path) -> None:
-        """The two film data folders as the update scripts leave them: LICENSE, ATTRIBUTION.md, data files, SHA256SUMS."""
-        for folder, data in (("spektrafilm", "profiles/kodak_portra_400.json"), ("cie", "CIE_illum_D55.csv")):
+        """The three film data folders as the update scripts and the generator leave them: LICENSE, ATTRIBUTION.md, data files, SHA256SUMS."""
+        for folder, data in (("spektrafilm", "profiles/kodak_portra_400.json"), ("cie", "CIE_illum_D55.csv"), ("upsampling", "coeffs.f32")):
             base = root / "data" / "film" / folder
             (base / data).parent.mkdir(parents=True, exist_ok=True)
             (base / data).write_text("data " + data)
@@ -406,7 +406,7 @@ class Bundle(unittest.TestCase):
                 self.tree(Path(tmp), notice=BSD_NOTICE.replace(phrase, "x"))
                 problems = check_bundle.problems(Path(tmp))
             self.assertTrue(any(phrase in p for p in problems), (phrase, problems))
-        for phrase in ("International Commission on Illumination", "data/film/cie/LICENSE"):
+        for phrase in ("International Commission on Illumination", "data/film/cie/LICENSE", "and a table computed from it", "data/film/upsampling/LICENSE"):
             with tempfile.TemporaryDirectory() as tmp:
                 self.tree(Path(tmp), notice=BSD_NOTICE.replace(phrase, "x"))
                 problems = check_bundle.problems(Path(tmp))
@@ -419,7 +419,7 @@ class Bundle(unittest.TestCase):
         self.assertTrue(any("data/film" in p for p in problems), problems)
 
     def test_each_film_folder_needs_its_licence_attribution_and_sums(self):
-        for folder in ("spektrafilm", "cie"):
+        for folder in ("spektrafilm", "cie", "upsampling"):
             for name in ("LICENSE", "ATTRIBUTION.md", "SHA256SUMS"):
                 with tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
@@ -435,6 +435,15 @@ class Bundle(unittest.TestCase):
             (root / "data" / "film" / "cie" / "CIE_illum_D55.csv").write_text("changed")
             problems = check_bundle.problems(root)
         self.assertTrue(any("CIE_illum_D55.csv" in p and "does not match" in p for p in problems), problems)
+
+    def test_a_changed_upsampling_table_must_match_its_sums_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tree(root)
+            self.assertEqual(check_bundle.problems(root), [])
+            (root / "data" / "film" / "upsampling" / "coeffs.f32").write_text("changed")
+            problems = check_bundle.problems(root)
+        self.assertTrue(any("upsampling/coeffs.f32" in p and "does not match" in p for p in problems), problems)
 
     def test_the_licence_must_be_listed_in_the_sums(self):
         with tempfile.TemporaryDirectory() as tmp:

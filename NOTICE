@@ -227,7 +227,7 @@ UNDISCLOSED.
     of their owners; the names are used only to say which published data a
     profile models.
 
-12. CIE colour tables (data/film/cie/)
+12. CIE colour tables (data/film/cie/) and a table computed from it
     The CIE 1931 colour-matching functions (2 degree observer), CIE standard
     illuminant D50 and CIE illuminant D55, as published by the
     International Commission on Illumination (CIE), Vienna, in its data
@@ -241,3 +241,9 @@ UNDISCLOSED.
     the text is in data/film/cie/LICENSE); each dataset's metadata file, kept
     in that folder, states this licence. Used by the Film node. Not modified:
     the files are byte for byte as published; sums in data/film/cie/SHA256SUMS.
+    The table computed from the observer is the Film node's spectral
+    upsampling table (data/film/upsampling/; licence text in
+    data/film/upsampling/LICENSE, sums in data/film/upsampling/SHA256SUMS):
+    "Computed by Yellowmoon from CIE 1931 2 degree colour-matching functions
+    (CIE, CC BY-SA 4.0)". Modified by: Yellowmoon (computed, not copied). It
+    is Adapted Material and is shared under CC BY-SA 4.0 as well.

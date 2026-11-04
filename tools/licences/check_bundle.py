@@ -15,7 +15,8 @@
   and its SHA-256 must be the one in ``SHA256SUMS``; a placeholder line in ``SHA256SUMS`` is an error then and only a warning
   otherwise (the committed tree has no weights, so the CI job ``licences`` runs without the flag).
 * ``bundle.resources`` carries ``data/film`` and ``NOTICE`` has the items for the spektrafilm profiles (Andrea Volpato, CC BY-SA 4.0,
-  ``docs/24`` section 6) and the CIE tables. ``data/film/spektrafilm/`` and ``data/film/cie/`` each have ``LICENSE`` and
+  ``docs/24`` section 6) and the CIE tables, whose item 12 reads "and a table computed from it". ``data/film/spektrafilm/``, ``data/film/cie/`` and
+  ``data/film/upsampling/`` (our table, computed from the CIE observer, CC BY-SA 4.0) each have ``LICENSE`` and
   ``ATTRIBUTION.md``, and a ``SHA256SUMS`` that lists every other file (``LICENSE`` included), with hashes that match, and no
   line for a file that is gone. Removing the credit ends the CC BY-SA grant (section 6(a)), so this is a release stopper.
 
@@ -61,10 +62,13 @@ NOTICE_PHRASES = (
     ("data/film/spektrafilm/LICENSE", "the pointer to the spektrafilm licence text"),
     ("International Commission on Illumination", "the publisher of the CIE tables (CC BY-SA 4.0)"),
     ("data/film/cie/LICENSE", "the pointer to the CIE tables' licence text"),
+    ("and a table computed from it", "the credit for the upsampling table computed from the CIE observer (CC BY-SA 4.0 ShareAlike)"),
+    ("data/film/upsampling/LICENSE", "the pointer to the upsampling table's licence text"),
 )
 
-#: The two data folders under data/film/ that carry third-party CC BY-SA 4.0 data, and the files each must have.
-FILM_DIRS = (Path("data") / "film" / "spektrafilm", Path("data") / "film" / "cie")
+#: The data folders under data/film/ that carry CC BY-SA 4.0 data (the profiles and the CIE tables are third-party, the upsampling
+#: table is ours, computed from the CIE observer and so shared under the same licence), and the files each must have.
+FILM_DIRS = (Path("data") / "film" / "spektrafilm", Path("data") / "film" / "cie", Path("data") / "film" / "upsampling")
 FILM_REQUIRED = ("LICENSE", "ATTRIBUTION.md", "SHA256SUMS")
 #: Files of those folders that SHA256SUMS does not list: itself, and the attribution text we write.
 FILM_UNHASHED = ("SHA256SUMS", "ATTRIBUTION.md")

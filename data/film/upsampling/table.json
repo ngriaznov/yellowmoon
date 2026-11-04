@@ -1,0 +1,85 @@
+{
+  "Y_s": "Y of s(lambda) in the normalisation above; the engine's spectrum is Y_colour / Y_s * s(lambda)",
+  "cells_inside_locus": 21712,
+  "error": {
+    "file": "error.f32",
+    "layout": "[iy][ix] little-endian float32",
+    "meaning": "distance in xy between the cell and the chromaticity of its stored spectrum"
+  },
+  "flags": {
+    "0": "solved",
+    "1": "inpainted (outside the locus, or not reached)",
+    "file": "flags.u8",
+    "layout": "[iy][ix] uint8"
+  },
+  "form": "s(lambda) = sigmoid(c0 t^2 + c1 t + c2); sigmoid(z) = 0.5 + z / (2 sqrt(1 + z^2)); t = (lambda - 380) / 400",
+  "generator": "tools/film/upsampling/make_table.py",
+  "generator_sha256": "af07d76aa63b0e4366a0ddfb510b6cf48b565416847a4269a3ab2f207fa3ec0f",
+  "generator_version": "1.0.0",
+  "grid": {
+    "channels": [
+      "c0",
+      "c1",
+      "c2",
+      "Y_s"
+    ],
+    "layout": "coeffs.f32 is [iy][ix][4], iy the outer index, little-endian float32, row-major",
+    "node_position": "x = ix / 255, y = iy / 255 (nodes, corners included)",
+    "size": 256,
+    "x_range": [
+      0.0,
+      1.0
+    ],
+    "y_range": [
+      0.0,
+      1.0
+    ]
+  },
+  "inpainted_cells": 43961,
+  "inputs_sha256": {
+    "CIE_xyz_1931_2deg.csv": "fa663e3535a7e0763a745993a1f0a192eb0275ac46ad2d1befd7626841e713c1"
+  },
+  "luminance_target": {
+    "fall_exponent": 1.5,
+    "floor": 0.004,
+    "retry_fractions": [
+      1.0,
+      0.7,
+      0.5,
+      0.3,
+      0.15,
+      0.07,
+      0.03,
+      0.01,
+      0.003
+    ],
+    "y_white": 0.5
+  },
+  "name": "Yellowmoon spectral upsampling table",
+  "observer": {
+    "name": "CIE 1931 2 degree",
+    "normalisation": "XYZ = sum_j s(l_j) cmf(l_j) / sum_j ybar(l_j); a flat spectrum of 1 has XYZ = (1, 1, 1) to 1e-4",
+    "resampling": "decimation at 5 nm steps, 380..780 (exact, the source has 1 nm steps)",
+    "source": "data/film/cie/CIE_xyz_1931_2deg.csv (1 nm, 360..830)"
+  },
+  "outputs_sha256": {
+    "coeffs.f32": "af74a11e966a571502d91aae17cbbe127b2cbb5b7063f8224be22848bac36b09",
+    "error.f32": "a7c777cf391cd0d018acec51ed2bbda56033d701faaf7c65c9d784ae53a5a78e",
+    "flags.u8": "f041c70740a12415931720f28fa311108ba0b06eb80d7eee10c4f2f039b43504"
+  },
+  "solved_cells": 21575,
+  "solver": {
+    "lab_tolerance": 1e-07,
+    "method": "Levenberg-Marquardt in CIELAB, analytic Jacobian, warm start from the nearest solved neighbour"
+  },
+  "t_normalisation": {
+    "offset_nm": 380,
+    "span_nm": 400
+  },
+  "wavelengths_nm": {
+    "count": 81,
+    "max": 780,
+    "min": 380,
+    "step": 5
+  }
+}
