@@ -205,3 +205,39 @@ UNDISCLOSED.
     They are not trained or fine-tuned further; the program that runs them is
     ours (crates/ym-ml). Meta's training data are not part of this product.
     The model card is data/models/sam2/MODEL_CARD.md.
+
+11. Film profiles (data/film/spektrafilm/)
+    spektrafilm by Andrea Volpato
+    https://github.com/andreavolpato/spektrafilm
+    Licensed CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/;
+    the text is in data/film/spektrafilm/LICENSE, a byte copy of the author's
+    SPEKTRAFILM_LICENSE.txt).
+    Used by the Film node: 28 film and paper profiles (profile version 0.3.2),
+    taken from commit 3bb2c2d2801ff68b92019cf1dbcbb133d60832bc (2026-06-07).
+    Not modified: the files are byte for byte as published, and their SHA-256
+    sums are in data/film/spektrafilm/SHA256SUMS. Modified by: nobody.
+    The profiles were made by the author from Kodak and Fujifilm data sheets and
+    other published material. The original data belong to their holders.
+    They are plain data files read at run time; Yellowmoon's own code
+    (Apache-2.0) does not contain them. No LUT is made from them, shipped or
+    sold, and none of our models is trained on them or on their output.
+    Film profiles by Andrea Volpato (spektrafilm), CC BY-SA 4.0. Yellowmoon is
+    not affiliated with Andrea Volpato, Kodak or Fujifilm. Kodak, Portra,
+    Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm and Velvia are trademarks
+    of their owners; the names are used only to say which published data a
+    profile models.
+
+12. CIE colour tables (data/film/cie/)
+    The CIE 1931 colour-matching functions (2 degree observer), CIE standard
+    illuminant D50 and CIE illuminant D55, as published by the
+    International Commission on Illumination (CIE), Vienna, in its data
+    tables (https://cie.co.at/data-tables):
+      CIE 2019, Colour-matching functions of CIE 1931 standard colorimetric
+      observer, DOI: 10.25039/CIE.DS.xvudnb9b
+      CIE 2022, CIE standard illuminant D50, DOI: 10.25039/CIE.DS.etgmuqt5
+      CIE 2018, Relative spectral power distributions of CIE illuminant D55,
+      DOI: 10.25039/CIE.DS.qewfb3kp
+    Licensed CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/;
+    the text is in data/film/cie/LICENSE); each dataset's metadata file, kept
+    in that folder, states this licence. Used by the Film node. Not modified:
+    the files are byte for byte as published; sums in data/film/cie/SHA256SUMS.

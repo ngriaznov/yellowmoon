@@ -44,6 +44,8 @@ BSD_NOTICE = (
     "Copyright (c) 2026 Tim Mikeladze\n"
     "The above copyright notice and this permission notice shall be included in all\n"
     "Copyright (c) Meta Platforms, Inc. and affiliates. https://github.com/facebookresearch/sam2\n"
+    "spektrafilm by Andrea Volpato https://github.com/andreavolpato/spektrafilm data/film/spektrafilm/LICENSE\n"
+    "International Commission on Illumination (CIE) data/film/cie/LICENSE\n"
 )
 OFL = "Copyright 2022 The Figtree Project Authors\n\nSIL OPEN FONT LICENSE Version 1.1 - 26 February 2007\n"
 
@@ -261,10 +263,17 @@ class Bundle(unittest.TestCase):
         weights: bytes | None = None,
         card: str | None = "Apache-2.0, https://github.com/facebookresearch/sam2\n",
         ignore: str | None = "*.safetensors\n",
+        film: bool = True,
     ) -> None:
         (root / "src-tauri").mkdir(parents=True, exist_ok=True)
         resources = (
-            {"../NOTICE": "NOTICE", "../LICENSE": "LICENSE", "../THIRD-PARTY.md": "THIRD-PARTY.md", "../data/models": "data/models"}
+            {
+                "../NOTICE": "NOTICE",
+                "../LICENSE": "LICENSE",
+                "../THIRD-PARTY.md": "THIRD-PARTY.md",
+                "../data/models": "data/models",
+                "../data/film": "data/film",
+            }
             if resources is None
             else resources
         )
@@ -283,6 +292,19 @@ class Bundle(unittest.TestCase):
             (folder / "SHA256SUMS").write_text(sums)
         if weights is not None:
             (folder / SAM2_WEIGHTS).write_bytes(weights)
+        if film:
+            self.film_tree(root)
+
+    def film_tree(self, root: Path) -> None:
+        """The two film data folders as the update scripts leave them: LICENSE, ATTRIBUTION.md, data files, SHA256SUMS."""
+        for folder, data in (("spektrafilm", "profiles/kodak_portra_400.json"), ("cie", "CIE_illum_D55.csv")):
+            base = root / "data" / "film" / folder
+            (base / data).parent.mkdir(parents=True, exist_ok=True)
+            (base / data).write_text("data " + data)
+            (base / "LICENSE").write_text("Attribution-ShareAlike 4.0 International")
+            (base / "ATTRIBUTION.md").write_text("by someone")
+            lines = [f"{hashlib.sha256((base / name).read_bytes()).hexdigest()}  {name}\n" for name in (data, "LICENSE")]
+            (base / "SHA256SUMS").write_text("".join(sorted(lines, key=lambda line: line.split()[1])))
 
     def test_a_complete_tree_passes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -377,6 +399,67 @@ class Bundle(unittest.TestCase):
             (root / "data" / "models" / "sam2" / SAM2_WEIGHTS).unlink()
             self.assertEqual(check_bundle.main(["--require-weights", str(root)]), 1)
             self.assertEqual(check_bundle.main(["--nope", str(root)]), 2)
+
+    def test_the_film_notice_items_must_be_in_the_notice(self):
+        for phrase in ("Andrea Volpato", "github.com/andreavolpato/spektrafilm", "data/film/spektrafilm/LICENSE"):
+            with tempfile.TemporaryDirectory() as tmp:
+                self.tree(Path(tmp), notice=BSD_NOTICE.replace(phrase, "x"))
+                problems = check_bundle.problems(Path(tmp))
+            self.assertTrue(any(phrase in p for p in problems), (phrase, problems))
+        for phrase in ("International Commission on Illumination", "data/film/cie/LICENSE"):
+            with tempfile.TemporaryDirectory() as tmp:
+                self.tree(Path(tmp), notice=BSD_NOTICE.replace(phrase, "x"))
+                problems = check_bundle.problems(Path(tmp))
+            self.assertTrue(any(phrase in p for p in problems), (phrase, problems))
+
+    def test_the_film_folder_must_be_a_bundle_resource(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tree(Path(tmp), resources={"../NOTICE": "NOTICE", "../LICENSE": "LICENSE", "../THIRD-PARTY.md": "THIRD-PARTY.md", "../data/models": "data/models"})
+            problems = check_bundle.problems(Path(tmp))
+        self.assertTrue(any("data/film" in p for p in problems), problems)
+
+    def test_each_film_folder_needs_its_licence_attribution_and_sums(self):
+        for folder in ("spektrafilm", "cie"):
+            for name in ("LICENSE", "ATTRIBUTION.md", "SHA256SUMS"):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self.tree(root)
+                    (root / "data" / "film" / folder / name).unlink()
+                    problems = check_bundle.problems(root)
+                self.assertTrue(any(f"data/film/{folder}/{name}" in p for p in problems), (folder, name, problems))
+
+    def test_a_film_file_must_have_a_matching_sums_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tree(root)
+            (root / "data" / "film" / "cie" / "CIE_illum_D55.csv").write_text("changed")
+            problems = check_bundle.problems(root)
+        self.assertTrue(any("CIE_illum_D55.csv" in p and "does not match" in p for p in problems), problems)
+
+    def test_the_licence_must_be_listed_in_the_sums(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tree(root)
+            sums = root / "data" / "film" / "spektrafilm" / "SHA256SUMS"
+            sums.write_text("".join(line for line in sums.read_text().splitlines(True) if " LICENSE" not in line))
+            problems = check_bundle.problems(root)
+        self.assertTrue(any("LICENSE" in p and "SHA256SUMS" in p for p in problems), problems)
+
+    def test_a_file_the_sums_do_not_list_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tree(root)
+            (root / "data" / "film" / "spektrafilm" / "profiles" / "extra.json").write_text("{}")
+            problems = check_bundle.problems(root)
+        self.assertTrue(any("profiles/extra.json" in p and "not listed" in p for p in problems), problems)
+
+    def test_a_line_for_a_missing_file_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tree(root)
+            (root / "data" / "film" / "cie" / "CIE_illum_D55.csv").unlink()
+            problems = check_bundle.problems(root)
+        self.assertTrue(any("CIE_illum_D55.csv" in p and "missing" in p for p in problems), problems)
 
     def test_the_repository_itself_passes_without_the_weights(self):
         self.assertEqual(check_bundle.problems(REPO), [])

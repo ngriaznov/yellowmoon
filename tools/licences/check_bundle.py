@@ -14,6 +14,10 @@
 * With ``--require-weights`` (``release.yml`` and ``build.yml``, after ``tools/fetch/sam2.sh``) the weights file must also be there
   and its SHA-256 must be the one in ``SHA256SUMS``; a placeholder line in ``SHA256SUMS`` is an error then and only a warning
   otherwise (the committed tree has no weights, so the CI job ``licences`` runs without the flag).
+* ``bundle.resources`` carries ``data/film`` and ``NOTICE`` has the items for the spektrafilm profiles (Andrea Volpato, CC BY-SA 4.0,
+  ``docs/24`` section 6) and the CIE tables. ``data/film/spektrafilm/`` and ``data/film/cie/`` each have ``LICENSE`` and
+  ``ATTRIBUTION.md``, and a ``SHA256SUMS`` that lists every other file (``LICENSE`` included), with hashes that match, and no
+  line for a file that is gone. Removing the credit ends the CC BY-SA grant (section 6(a)), so this is a release stopper.
 
 Prints one line per problem and exits 1 when there is one. The bundle's other resources (data/...) are checked by tauri-build.
 """
@@ -33,6 +37,7 @@ REQUIRED_RESOURCES = {
     "NOTICE": "attributions (About points to it)",
     "LICENSE": "the Apache-2.0 text of Yellowmoon itself",
     "THIRD-PARTY.md": "the licence texts of the Rust crates, JavaScript packages and fonts (NOTICE item 8, About)",
+    "data/film": "the film profiles and CIE tables with their CC BY-SA 4.0 licences (docs/24 section 6)",
     "data/models": "the models, among them the SAM 2.1 small weights that tools/fetch/sam2.sh puts in data/models/sam2/ (docs/12)",
 }
 
@@ -51,7 +56,18 @@ NOTICE_PHRASES = (
     ("The above copyright notice and this permission notice shall be included in all", "the MIT conditions of the glasscn components"),
     ("Meta Platforms, Inc. and affiliates", "the copyright holder of the SAM 2.1 small weights (Apache-2.0), whose notice the licence requires in every copy"),
     ("github.com/facebookresearch/sam2", "the link to the SAM 2.1 weights' source (Apache-2.0 section 4)"),
+    ("Andrea Volpato", "the author of the spektrafilm profiles (CC BY-SA 4.0), who must be named in every copy"),
+    ("github.com/andreavolpato/spektrafilm", "the canonical source of the spektrafilm profiles, which the licence requires"),
+    ("data/film/spektrafilm/LICENSE", "the pointer to the spektrafilm licence text"),
+    ("International Commission on Illumination", "the publisher of the CIE tables (CC BY-SA 4.0)"),
+    ("data/film/cie/LICENSE", "the pointer to the CIE tables' licence text"),
 )
+
+#: The two data folders under data/film/ that carry third-party CC BY-SA 4.0 data, and the files each must have.
+FILM_DIRS = (Path("data") / "film" / "spektrafilm", Path("data") / "film" / "cie")
+FILM_REQUIRED = ("LICENSE", "ATTRIBUTION.md", "SHA256SUMS")
+#: Files of those folders that SHA256SUMS does not list: itself, and the attribution text we write.
+FILM_UNHASHED = ("SHA256SUMS", "ATTRIBUTION.md")
 
 
 def sha256_file(path: Path) -> str:
@@ -123,6 +139,34 @@ def sam2_problems(root: Path, require_weights: bool) -> list[str]:
     return found
 
 
+def film_problems(root: Path) -> list[str]:
+    """``data/film/spektrafilm/`` and ``data/film/cie/``: LICENSE, ATTRIBUTION.md, and a SHA256SUMS that matches every file."""
+    found: list[str] = []
+    for rel in FILM_DIRS:
+        folder = root / rel
+        name = rel.as_posix()
+        missing = [f for f in FILM_REQUIRED if not (folder / f).is_file()]
+        found += [f"{name}/{f} is missing: the CC BY-SA 4.0 grant needs the licence, the credit and the hashes beside the data" for f in missing]
+        if "SHA256SUMS" in missing:
+            continue
+        listed: dict[str, str] = {}
+        for line in (folder / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
+            fields = line.split(maxsplit=1)
+            if len(fields) == 2 and re.fullmatch(r"[0-9a-f]{64}", fields[0]):
+                listed[fields[1].strip().lstrip("*")] = fields[0]
+            elif line.strip():
+                found.append(f"{name}/SHA256SUMS has a line that is not '<sha-256>  <path>': {line.strip()[:60]}")
+        present = {p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file()}
+        for path in sorted(present - set(FILM_UNHASHED) - set(listed)):
+            found.append(f"{name}/{path} is not listed in {name}/SHA256SUMS: add it with tools/film/ or remove the file")
+        for path in sorted(set(listed) - present):
+            found.append(f"{name}/SHA256SUMS lists {path}, which is missing")
+        for path in sorted(set(listed) & present):
+            if sha256_file(folder / path) != listed[path]:
+                found.append(f"{name}/{path} does not match its line in {name}/SHA256SUMS: the data was changed (it must stay unmodified)")
+    return found
+
+
 def problems(root: Path, require_weights: bool = False) -> list[str]:
     """Everything that is missing, one sentence each."""
     found: list[str] = []
@@ -143,7 +187,7 @@ def problems(root: Path, require_weights: bool = False) -> list[str]:
     for phrase, why in NOTICE_PHRASES:
         if phrase not in text:
             found.append(f'NOTICE does not contain "{phrase}": {why}')
-    return found + sam2_problems(root, require_weights)
+    return found + sam2_problems(root, require_weights) + film_problems(root)
 
 
 def main(argv: list[str]) -> int:
@@ -162,7 +206,7 @@ def main(argv: list[str]) -> int:
             print(f"warning: {line}")
     if not found:
         weights = "; the SAM 2.1 weights are in place and match SHA256SUMS" if require_weights else ""
-        print(f"bundle check: NOTICE, LICENSE, THIRD-PARTY.md and data/models are bundled; NOTICE carries the BSD, MIT and Meta notices{weights}")
+        print(f"bundle check: NOTICE, LICENSE, THIRD-PARTY.md, data/models and data/film are bundled; NOTICE carries the BSD, MIT, Meta, spektrafilm and CIE notices; the film data folders match their sums{weights}")
     return 1 if found else 0
 
 

@@ -1,0 +1,118 @@
+{
+	"identifier": {
+		"identifier": "10.25039/CIE.DS.qewfb3kp",
+		"identifierType": "DOI"
+	},
+	"creators": [
+		{
+			"name": "International Commission on Illumination (CIE)",
+			"nameType": "Organizational"
+		}
+	],
+	"titles": [
+		{
+			"title": "Relative spectral power distributions of CIE illuminant D55"
+		}
+	],
+	"publisher": "International Commission on Illumination (CIE), Vienna, AT",
+	"publicationYear": "2018",
+	"subjects": [
+		{
+			"subject": "Colorimetry"
+		},
+		{
+			"subject": "Colour of objects"
+		},
+		{
+			"subject": "Colour vision"
+		},
+		{
+			"subject": "Perception of colour"
+		}
+	],
+	"language": "en",
+	"alternateIdentifiers": [
+		{
+			"alternateIdentifier": "CIE_illum_D55.csv",
+			"alternateIdentifierType": "fileName"
+		}
+	],
+	"relatedItems": [
+		{
+			"relatedItemIdentifier": "10.25039/tr.015.2018",
+			"relatedItemIdentifierType": "DOI",
+			"relationType": "IsPartOf",
+			"relatedItemType": "Report",
+			"titles": [
+				"CIE 015:2018 Colorimetry, 4th Edition"
+			]
+		}
+	],
+	"formats": [
+		"text/csv"
+	],
+	"types": {
+		"resourceType": "dataTable",
+		"resourceTypeGeneral": "Dataset"
+	},
+	"descriptions": [
+		{
+			"description": "Relative spectral power distributions of CIE illuminant D55, wavelength range: 380 nm to 780 nm, wavelength increment: 5 nm, original source: CIE 015:2018 table 5",
+			"descriptionType": "Abstract"
+		}
+	],
+	"rightsList": [
+		{
+			"rights": "Creative Commons Attribution-ShareAlike 4.0 International",
+			"rightsURI": "https://creativecommons.org/licenses/by-sa/4.0/",
+			"rightsIdentifier": "CC BY-SA 4.0"
+		}
+	],
+	"checksums": [
+		{
+			"hashMethod": "md5",
+			"checksum": "8b5678358f265567a0759b9800f17d7f"
+		},
+		{
+			"hashMethod": "sha256",
+			"checksum": "3e5aa1a8d5514df1928effef1615ab90e16c9a368ccfe513372cd8556c37bf4b"
+		}
+	],
+	"datatableInfo": {
+		"validations": [
+			{
+				"validationType": "sumOfColumns",
+				"validationValue": "[52380,7276.149]"
+			},
+			{
+				"validationType": "sampleRow",
+				"validationParameter": "26",
+				"validationValue": "425,69.746"
+			}
+		],
+		"interpolationMethod": "linear",
+		"extrapolationMethod": "zero",
+		"dataQuality": "approximated",
+		"columnHeaders": [
+			{
+				"title": "lambda",
+				"unit": "nm",
+				"quantity": "  ",
+				"wavelength_first": 300,
+				"wavelength_last": 780,
+				"wavelength_step": 5
+			},
+			{
+				"title": "CIE Illuminant D55",
+				"unit": "dimensionless",
+				"quantity": "spectral distribution",
+				"wavelength_first": 300,
+				"wavelength_last": 780,
+				"wavelength_step": 5
+			}
+		]
+	},
+	"schemaName": "CIEmetaDigitalProduct",
+	"schemaVersion": 4,
+	"schemaURL": "https://doi.org/10.25039/CIE.SC.4taqevcd"
+}

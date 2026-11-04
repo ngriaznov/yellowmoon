@@ -1,0 +1,112 @@
+{
+	"identifier": {
+		"identifier": "10.25039/CIE.DS.etgmuqt5",
+		"identifierType": "DOI"
+	},
+	"creators": [
+		{
+			"name": "International Commission on Illumination (CIE)",
+			"nameType": "Organizational"
+		}
+	],
+	"titles": [
+		{
+			"title": "CIE standard illuminant D50"
+		}
+	],
+	"publisher": "International Commission on Illumination (CIE), Vienna, AT",
+	"publicationYear": "2022",
+	"subjects": [
+		{
+			"subject": "Photometry"
+		},
+		{
+			"subject": "Objective photometry"
+		},
+		{
+			"subject": "Units. Constants"
+		}
+	],
+	"language": "en",
+	"alternateIdentifiers": [
+		{
+			"alternateIdentifier": "CIE_std_illum_D50.csv",
+			"alternateIdentifierType": "fileName"
+		}
+	],
+	"relatedItems": [
+		{
+			"relatedItemIdentifier": "10.25039/IS.ISO_CIE.11664-2.2022",
+			"relatedItemIdentifierType": "DOI",
+			"relationType": "IsPartOf",
+			"relatedItemType": "Standard",
+			"titles": [
+				"ISO/CIE 11664-2:2022 Colorimetry — Part 2: CIE Standard Illuminants"
+			]
+		}
+	],
+	"formats": [
+		"text/csv"
+	],
+	"types": {
+		"resourceType": "dataTable",
+		"resourceTypeGeneral": "Dataset"
+	},
+	"descriptions": [
+		{
+			"description": "CIE standard illuminant D50, wavelength range: 300 nm to 830 nm, wavelength increment: 1 nm, original source: ISO/CIE 11664-2:2022, Table B.1",
+			"descriptionType": "Abstract"
+		}
+	],
+	"rightsList": [
+		{
+			"rights": "Creative Commons Attribution-ShareAlike 4.0 International",
+			"rightsURI": "https://creativecommons.org/licenses/by-sa/4.0/",
+			"rightsIdentifier": "CC BY-SA 4.0"
+		}
+	],
+	"checksums": [
+		{
+			"hashMethod": "md5",
+			"checksum": "e72757c3078b58e78ba63051be4b27b0"
+		},
+		{
+			"hashMethod": "sha256",
+			"checksum": "b23049c6f7b266c1c1fbe147aa271e8930ca02d6e569c5ae1804c036faea4193"
+		}
+	],
+	"datatableInfo": {
+		"validations": [
+			{
+				"validationType": "sumOfColumns",
+				"validationValue": "[300015,39484.934570]"
+			},
+			{
+				"validationType": "sampleRow",
+				"validationParameter": "120",
+				"validationValue": "419,59.6817"
+			}
+		],
+		"interpolationMethod": "linear",
+		"extrapolationMethod": "zero",
+		"dataQuality": "nominal",
+		"columnHeaders": [
+			{
+				"title": "lambda",
+				"unit": "nm",
+				"quantity": "wavelength",
+				"wavelength_first": 300,
+				"wavelength_last": 830,
+				"wavelength_step": 1
+			},
+			{
+				"title": "S_D50(lambda)",
+				"unit": "dimensionless",
+				"quantity": "spectral distribution"
+			}
+		]
+	},
+	"schemaName": "CIEmetaDigitalProduct",
+	"schemaVersion": 4,
+	"schemaURL": "https://doi.org/10.25039/CIE.SC.4taqevcd"
+}

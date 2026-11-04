@@ -674,8 +674,10 @@ jobs:
         run: python3 -I -m unittest discover -s tools/licences -p 'test_*.py' -v
       - name: Generate THIRD-PARTY.md (fails on a package without a licence text)
         run: python3 tools/licences/generate.py
-      - name: The bundle carries THIRD-PARTY.md, NOTICE and LICENSE, and NOTICE carries the BSD conditions
+      - name: The bundle carries THIRD-PARTY.md, NOTICE and LICENSE, NOTICE carries the BSD conditions and the film credits, and the film data matches its sums
         run: python3 tools/licences/check_bundle.py
+      - name: Film policy (nothing under training/ reads data/film/; the name spektrafilm only in the credit lines and About)
+        run: python3 tools/licences/check_film_policy.py
       - uses: actions/upload-artifact@v4
         with:
           name: third-party

@@ -1,0 +1,236 @@
+{
+  "_header": {
+    "licence": "Apache-2.0",
+    "note": "This file is Yellowmoon's own work, Apache-2.0. Stock names, kinds, makers and ISO numbers are facts about the products; the display names are copied from the \"info.name\" field of each profile in data/film/spektrafilm/profiles/ (spektrafilm by Andrea Volpato, CC BY-SA 4.0, see data/film/spektrafilm/LICENSE). Nothing else of the profiles is copied here.",
+    "disclaimer": "Modelled on published data. Not affiliated with Kodak or Fujifilm. Kodak, Portra, Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm and Velvia are trademarks of their owners.",
+    "decision": "Real names with the disclaimer, owner, 2026-11-04 (docs/24 section 1.3 and 6.5). The trademark check (F-H4) comes before a release.",
+    "fields": {
+      "id": "the profile id and file name (profiles/<id>.json); code uses ids only",
+      "name": "label shown to the person",
+      "kind": "colour_negative | cine_negative | slide | paper | print_film",
+      "group": "the maker, for grouping in the picker",
+      "iso": "the number in the stock name (a push keeps the base number); null for papers and print films",
+      "print": "the profile id of the usual paper or print film (from info.target_print)",
+      "hidden": "true: not offered in the picker, hidden_reason says why"
+    },
+    "profile_version": "0.3.2"
+  },
+  "stocks": [
+    {
+      "id": "fujifilm_c200",
+      "name": "Fujifilm C200",
+      "kind": "colour_negative",
+      "group": "Fujifilm",
+      "iso": 200,
+      "print": "fujifilm_crystal_archive_typeii"
+    },
+    {
+      "id": "fujifilm_pro_400h",
+      "name": "Fujifilm Pro 400H",
+      "kind": "colour_negative",
+      "group": "Fujifilm",
+      "iso": 400,
+      "print": "fujifilm_crystal_archive_typeii"
+    },
+    {
+      "id": "fujifilm_xtra_400",
+      "name": "Fujifilm X-Tra 400",
+      "kind": "colour_negative",
+      "group": "Fujifilm",
+      "iso": 400,
+      "print": "fujifilm_crystal_archive_typeii"
+    },
+    {
+      "id": "kodak_ektar_100",
+      "name": "Kodak Ektar 100",
+      "kind": "colour_negative",
+      "group": "Kodak",
+      "iso": 100,
+      "print": "kodak_portra_endura"
+    },
+    {
+      "id": "kodak_gold_200",
+      "name": "Kodak Gold 200",
+      "kind": "colour_negative",
+      "group": "Kodak",
+      "iso": 200,
+      "print": "kodak_portra_endura"
+    },
+    {
+      "id": "kodak_portra_160",
+      "name": "Kodak Portra 160",
+      "kind": "colour_negative",
+      "group": "Kodak",
+      "iso": 160,
+      "print": "kodak_portra_endura"
+    },
+    {
+      "id": "kodak_portra_400",
+      "name": "Kodak Portra 400",
+      "kind": "colour_negative",
+      "group": "Kodak",
+      "iso": 400,
+      "print": "kodak_portra_endura"
+    },
+    {
+      "id": "kodak_portra_800",
+      "name": "Kodak Portra 800",
+      "kind": "colour_negative",
+      "group": "Kodak",
+      "iso": 800,
+      "print": "kodak_portra_endura"
+    },
+    {
+      "id": "kodak_portra_800_push1",
+      "name": "Kodak Portra 800 (Push 1)",
+      "kind": "colour_negative",
+      "group": "Kodak",
+      "iso": 800,
+      "print": "kodak_portra_endura"
+    },
+    {
+      "id": "kodak_portra_800_push2",
+      "name": "Kodak Portra 800 (Push 2)",
+      "kind": "colour_negative",
+      "group": "Kodak",
+      "iso": 800,
+      "print": "kodak_portra_endura"
+    },
+    {
+      "id": "kodak_ultramax_400",
+      "name": "Kodak Ultramax 400",
+      "kind": "colour_negative",
+      "group": "Kodak",
+      "iso": 400,
+      "print": "kodak_portra_endura"
+    },
+    {
+      "id": "kodak_verita_200d",
+      "name": "Kodak Verita 200D",
+      "kind": "cine_negative",
+      "group": "Kodak",
+      "iso": 200,
+      "print": "kodak_2383"
+    },
+    {
+      "id": "kodak_vision3_200t",
+      "name": "Kodak Vision3 200T",
+      "kind": "cine_negative",
+      "group": "Kodak",
+      "iso": 200,
+      "print": "kodak_2383"
+    },
+    {
+      "id": "kodak_vision3_250d",
+      "name": "Kodak Vision3 250D",
+      "kind": "cine_negative",
+      "group": "Kodak",
+      "iso": 250,
+      "print": "kodak_2383"
+    },
+    {
+      "id": "kodak_vision3_500t",
+      "name": "Kodak Vision3 500T",
+      "kind": "cine_negative",
+      "group": "Kodak",
+      "iso": 500,
+      "print": "kodak_2383"
+    },
+    {
+      "id": "kodak_vision3_50d",
+      "name": "Kodak Vision3 50D",
+      "kind": "cine_negative",
+      "group": "Kodak",
+      "iso": 50,
+      "print": "kodak_2383"
+    },
+    {
+      "id": "fujifilm_provia_100f",
+      "name": "Fujifilm Provia 100F",
+      "kind": "slide",
+      "group": "Fujifilm",
+      "iso": 100
+    },
+    {
+      "id": "fujifilm_velvia_100",
+      "name": "Fujifilm Velvia 100",
+      "kind": "slide",
+      "group": "Fujifilm",
+      "iso": 100
+    },
+    {
+      "id": "kodak_ektachrome_100",
+      "name": "Kodak Ektachrome 100",
+      "kind": "slide",
+      "group": "Kodak",
+      "iso": 100
+    },
+    {
+      "id": "kodak_kodachrome_64",
+      "name": "Kodak Kodachrome 64",
+      "kind": "slide",
+      "group": "Kodak",
+      "iso": 64
+    },
+    {
+      "id": "fujifilm_crystal_archive_typeii",
+      "name": "Fujifilm Crystal Archive Type II",
+      "kind": "paper",
+      "group": "Fujifilm",
+      "iso": null
+    },
+    {
+      "id": "kodak_ektacolor_edge",
+      "name": "Kodak Ektacolor Edge",
+      "kind": "paper",
+      "group": "Kodak",
+      "iso": null
+    },
+    {
+      "id": "kodak_endura_premier",
+      "name": "Kodak Professional Endura Premier",
+      "kind": "paper",
+      "group": "Kodak",
+      "iso": null
+    },
+    {
+      "id": "kodak_portra_endura",
+      "name": "Kodak Professional Portra Endura",
+      "kind": "paper",
+      "group": "Kodak",
+      "iso": null
+    },
+    {
+      "id": "kodak_supra_endura",
+      "name": "Kodak Professional Supra Endura",
+      "kind": "paper",
+      "group": "Kodak",
+      "iso": null
+    },
+    {
+      "id": "kodak_ultra_endura",
+      "name": "Kodak Professional Ultra Endura",
+      "kind": "paper",
+      "group": "Kodak",
+      "iso": null
+    },
+    {
+      "id": "kodak_2383",
+      "name": "Kodak Vision 2383",
+      "kind": "print_film",
+      "group": "Kodak",
+      "iso": null,
+      "hidden": true,
+      "hidden_reason": "No projector-lamp spectrum yet (docs/24 section 6.4): the cine print films cannot be viewed correctly, so they are not offered."
+    },
+    {
+      "id": "kodak_2393",
+      "name": "Kodak Vision Premier 2393",
+      "kind": "print_film",
+      "group": "Kodak",
+      "iso": null,
+      "hidden": true,
+      "hidden_reason": "No projector-lamp spectrum yet (docs/24 section 6.4): the cine print films cannot be viewed correctly, so they are not offered."
+    }
+  ]
+}
