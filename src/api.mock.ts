@@ -2834,6 +2834,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       run("setMenuState", () => {
         menuState = { ...state };
       }),
+    perfReport: () => run("perfReport", () => undefined),
     histogram: (photoId, at) =>
       run("histogram", (): HistogramData => {
         const rec = photo(photoId);

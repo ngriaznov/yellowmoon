@@ -723,6 +723,8 @@ impl Draw {
         // On the core's device this is the core's queue: the pass runs after the view job that
         // wrote the buffer, which was submitted before the frame was handed over.
         self.queue.submit([encoder.finish()]);
+        // For the timeline of a slider tick (`timeline`): the drawable goes to the display now.
+        crate::timeline::present_called();
         self.queue.present(target);
         drop(pass_timer);
         Ok(Some(drawn))

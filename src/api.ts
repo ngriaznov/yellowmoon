@@ -134,6 +134,12 @@ export interface Api {
   /** `set_menu_state` (addition, 2026-10-16): which of the Edit menu's settings items are available. */
   setMenuState(state: MenuState): Promise<void>;
   /**
+   * `perf_report` (addition, U-02): the page's stamps of the slider ticks and clicks of the last second, as a string of JSON
+   * (`src/perfTimeline.ts`). Sent only when the shell was started with `YM_PERF`; the shell joins it with its own stamps and writes the
+   * local log. Nothing leaves the machine.
+   */
+  perfReport(report: string): Promise<void>;
+  /**
    * `histogram`: the RGB histogram of the photo as it is rendered now (Light tab, Curve plot).
    * Addition to `docs/01`; ask again after every `render_stats` event. `at` (`docs/01`, `docs/23` §9) is the node whose signal it
    * is: `"input"` (the Input's output) or a corrector (the input of its curve); left out it is Main's, which is what the simple view
@@ -384,6 +390,7 @@ export const tauriApi: Api = {
   copySettings: (photoId) => narrowed(commands.copySettings(photoId)),
   pasteSettings: (photoIds, patch) => narrowed(commands.pasteSettings(photoIds, patch)),
   setMenuState: (state) => unit(commands.setMenuState(state)),
+  perfReport: (report) => unit(commands.perfReport(report)),
   histogram: (photoId, at) => commands.histogram(photoId, at ?? null),
   chromaScatter: (photoId, at) => commands.chromaScatter(photoId, at ?? null),
   suggestCrop: (photoId, aspect, orientation) => commands.suggestCrop(photoId, aspect, orientation),

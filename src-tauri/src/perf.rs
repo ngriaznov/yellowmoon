@@ -85,18 +85,47 @@ fn page_requested_by(variable: Option<&str>) -> bool {
     variable.is_some_and(|value| !(value.is_empty() || value == "0"))
 }
 
-/// What the page reads before its first script runs: `perfRequested` in `src/perf.ts` takes
-/// `window.__YM_PERF__ === true` as a request to measure.
+/// `YM_GLASS=off` (any case): the page draws no `backdrop-filter` anywhere, so the glass can be compared with and without its blur on
+/// the same machine (U-02). Any other value, and no value, leaves the look as it is.
+fn glass_off_by(variable: Option<&str>) -> bool {
+    variable.is_some_and(|value| value.eq_ignore_ascii_case("off"))
+}
+
+/// What the page reads before its first script runs: `window.__YM_PERF__ = true;` when [`page_requested`] (`perfRequested` in
+/// `src/perf.ts` takes it as a request to measure) and `window.__YM_GLASS__ = "off";` when `YM_GLASS=off` (`src/main.tsx` sets
+/// `data-glass="off"` on the page, which `glass-c2.css` turns into no `backdrop-filter`). `None` when neither is asked for.
+#[must_use]
+pub fn page_script() -> Option<String> {
+    page_script_for(
+        page_requested(),
+        glass_off_by(std::env::var("YM_GLASS").ok().as_deref()),
+    )
+}
+
+fn page_script_for(perf: bool, glass_off: bool) -> Option<String> {
+    let mut script = String::new();
+    if perf {
+        script.push_str(PAGE_FLAG_SCRIPT);
+    }
+    if glass_off {
+        script.push_str(GLASS_FLAG_SCRIPT);
+    }
+    (!script.is_empty()).then_some(script)
+}
+
+/// The request to measure, as the page reads it.
 const PAGE_FLAG_SCRIPT: &str = "window.__YM_PERF__ = true;";
 
-/// A plugin with no commands whose only job is an initialisation script: Tauri runs it in the main
-/// frame of every webview before the page's own scripts (the window of `tauri.conf.json`
-/// included, which a script added after the window exists would be too late for). It sets the
-/// flag [`page_requested`] stands for; add it to the builder only when that is true.
+/// The request for no blur, as the page reads it.
+const GLASS_FLAG_SCRIPT: &str = "window.__YM_GLASS__ = \"off\";";
+
+/// A plugin with no commands whose only job is an initialisation script (that of [`page_script`]): Tauri runs it in the main
+/// frame of every webview before the page's own scripts (the window of `tauri.conf.json` included, which a script added after the
+/// window exists would be too late for). Add it to the builder only when there is a script.
 #[must_use]
-pub fn page_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+pub fn script_plugin<R: tauri::Runtime>(script: String) -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("ym-perf")
-        .js_init_script(PAGE_FLAG_SCRIPT)
+        .js_init_script(script)
         .build()
 }
 
@@ -278,6 +307,10 @@ impl Counters {
     pub fn request(&self) {
         if self.live() {
             self.requests.fetch_add(1, Ordering::Relaxed);
+            // Only the shared instance feeds the timeline of a slider tick (`timeline`).
+            if self.gated {
+                crate::timeline::request();
+            }
         }
     }
 
@@ -285,6 +318,9 @@ impl Counters {
     pub fn round(&self) {
         if self.live() {
             self.rounds.fetch_add(1, Ordering::Relaxed);
+            if self.gated {
+                crate::timeline::round();
+            }
         }
     }
 
@@ -294,6 +330,9 @@ impl Counters {
             return;
         }
         self.presented.fetch_add(1, Ordering::Relaxed);
+        if self.gated {
+            crate::timeline::presented();
+        }
         if let Some(latency) = latency {
             let mut samples = self
                 .latencies_us
@@ -601,6 +640,9 @@ pub fn watch_main_thread<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
                 if Instant::now() >= report_at {
                     // The viewport line first: it is the one that says whether the app was in use.
                     let busy = log_viewport_window();
+                    // The slider ticks of the window, from the hand to the display (`timeline`).
+                    let ticks = crate::timeline::log_window();
+                    let busy = busy || ticks;
                     if busy || histogram.worst() >= Duration::from_millis(8) {
                         tracing::info!(target: TARGET, "{}", histogram.line());
                     }
@@ -650,7 +692,7 @@ mod tests {
     #[test]
     fn the_plugin_hands_the_page_its_flag_before_the_page_runs() {
         use tauri::plugin::Plugin;
-        let plugin = page_plugin::<tauri::Wry>();
+        let plugin = script_plugin::<tauri::Wry>(PAGE_FLAG_SCRIPT.to_owned());
         let script = plugin
             .initialization_script_2()
             .expect("the plugin has an initialisation script");
@@ -663,9 +705,24 @@ mod tests {
     }
 
     #[test]
+    fn the_page_is_told_what_was_asked_for() {
+        assert_eq!(page_script_for(false, false), None);
+        assert_eq!(page_script_for(true, false).as_deref(), Some("window.__YM_PERF__ = true;"));
+        assert_eq!(page_script_for(false, true).as_deref(), Some("window.__YM_GLASS__ = \"off\";"));
+        assert_eq!(
+            page_script_for(true, true).as_deref(),
+            Some("window.__YM_PERF__ = true;window.__YM_GLASS__ = \"off\";")
+        );
+        assert!(glass_off_by(Some("off")) && glass_off_by(Some("OFF")));
+        assert!(!glass_off_by(Some("on")) && !glass_off_by(Some("")) && !glass_off_by(None));
+        // `src/main.tsx` reads exactly this name.
+        assert!(include_str!("../../src/main.tsx").contains("__YM_GLASS__"));
+    }
+
+    #[test]
     fn the_plugin_registers_in_a_real_builder() {
         let app = tauri::test::mock_builder()
-            .plugin(page_plugin())
+            .plugin(script_plugin(PAGE_FLAG_SCRIPT.to_owned()))
             .build(tauri::test::mock_context(tauri::test::noop_assets()));
         assert!(app.is_ok(), "{:?}", app.err());
     }

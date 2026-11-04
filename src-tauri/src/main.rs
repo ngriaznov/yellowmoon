@@ -27,6 +27,7 @@ mod system;
 #[cfg(test)]
 mod testing;
 mod thumbs;
+mod timeline;
 mod viewport;
 mod wire;
 mod wizard;

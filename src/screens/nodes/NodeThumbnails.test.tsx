@@ -103,7 +103,8 @@ describe("the pictures on the cards", () => {
     await openNodeView();
     expect(asked).toHaveBeenCalledTimes(1);
     await h!.user.click(within(screen.getByRole("navigation", { name: "Actions" })).getByRole("button", { name: "Nodes" }));
-    await waitFor(() => expect(h!.container.querySelector('[data-node-card="4"]')).toBeNull());
+    // Closing the view hides the graph and keeps it built (U-02): the cards are still there, not shown.
+    await waitFor(() => expect(h!.container.querySelector(".ym-graph")).toHaveAttribute("hidden"));
     asked.mockClear();
     await h!.store.update(patchOf(3, { trim: { exposure_ev: 0.1 } }));
     await new Promise((resolve) => setTimeout(resolve, 20));

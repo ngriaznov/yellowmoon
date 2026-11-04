@@ -2227,3 +2227,12 @@ button[data-slot="button"][data-variant="link"]:not([aria-disabled="true"]) {
   font-size: 12.5px;
   line-height: 1.5;
 }
+
+/* YM_GLASS=off (or ?glass=off): the glass without its blur, so the cost of the blur can be compared on the same machine (U-02). The attribute
+   is set by src/main.tsx only when asked for; nothing here changes the look otherwise. */
+html[data-glass="off"] *,
+html[data-glass="off"] *::before,
+html[data-glass="off"] *::after {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}

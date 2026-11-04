@@ -106,6 +106,7 @@ import type { ExportRun } from "../export/run";
 import { diffSettings, PhotoHistory } from "./history";
 import type { HistoryEntry } from "./history";
 import { perfCount } from "../perf";
+import { stampTick } from "../perfTimeline";
 import { isReady, mergeSession, photoName, releaseUrl, removedNotice, restoredNotice, withoutPhotos, withRestoredPhotos } from "./photo";
 import { RequestLimiter } from "./requestLimiter";
 import { gestureHeld, onGestureEnd } from "./gestureHold";
@@ -2596,6 +2597,8 @@ export class AppStore {
     sender.busy = true;
     try {
       for (let item = sender.queue.shift(); item; item = sender.queue.shift()) {
+        // For the timeline of a slider tick (`src/perfTimeline.ts`): a function that does nothing unless the shell was started with YM_PERF.
+        const tick = stampTick(item.record !== null);
         try {
           const reply = await this.api.updateSettings(id, item.patch);
           if (item.record) {
@@ -2604,7 +2607,9 @@ export class AppStore {
           }
           // A newer patch is waiting: its reply will carry everything, so this one is skipped.
           if (sender.queue.length === 0 && this.state.settings[id]) this.setSettings(id, reply);
+          tick.replied();
         } catch (error) {
+          tick.replied(false);
           for (const waiting of sender.queue.splice(0)) for (const done of waiting.done) done();
           this.fail(error);
           await this.resyncSettings(id);

@@ -197,7 +197,20 @@ pub async fn update_settings(
     photo_id: PhotoId,
     patch: SettingsPatch,
 ) -> Result<ResolvedSettings, AppError> {
-    run(&state, move |api| api.update_settings(photo_id, &patch)).await
+    // Stamped for the timeline of a slider tick when `YM_PERF` is on (`timeline`): a flag check otherwise.
+    let tick = crate::timeline::begin_update();
+    let reply = run(&state, move |api| api.update_settings(photo_id, &patch)).await;
+    crate::timeline::end_update(tick);
+    reply
+}
+
+/// `perf_report(report)`: the page's stamps of the slider ticks and clicks of the last second, as a string of JSON
+/// (`src/perfTimeline.ts`), joined with the shell's own and written to the local log (`timeline`). Sent only when the page was told to
+/// measure (`YM_PERF`); with the switch off it does nothing. Nothing leaves the machine.
+#[tauri::command]
+#[specta::specta]
+pub async fn perf_report(report: String) {
+    crate::timeline::report(&report);
 }
 
 /// `apply_look(scope, look_id, intensity)`: to This photo, the Picked photos or All.
@@ -781,6 +794,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             restore_photos,
             get_settings,
             update_settings,
+            perf_report,
             apply_look,
             rerun_auto,
             copy_settings,
