@@ -256,6 +256,67 @@ The per-pixel colour part is baked on the CPU, in f64, into tables stored as f32
 
 **Determinism.** The bake parallelises over nodes, each node independent, so any thread count gives the same bytes. The profile data version (§6.6) and the engine version are part of every key and of the export's metadata (`ym:FilmData`).
 
+### 3.8a As built (F-04)
+
+`crates/ym-film/src/bake.rs`. `Baker::new(data_dir, spectra_id, threads)` bakes and caches; `Baker::bake(&chain, &BakeSettings)` gives a `BakedFilm` whose `run(logc4) -> logc4` uses the tables only, plus stage 1 and the couplers. Everything below was measured on 2026-11-04 on the Linux build machine (4 cores), in release.
+
+**What was built, and where it differs from §3.8.**
+
+- **T1 is 196 × 220 nodes, not 192 × 192.** Its nodes sit on the upsampling table's own grid (steps of 1/255, x from 0 to 0.765, y from 0 to 0.859, which covers the spectral locus). The upsampling table mixes its nodes' spectra bilinearly and the exposure is linear in the spectrum, so a bilinear T1 on the same grid is exact: worst relative error **5.7e-8** against the direct stage 2 on 100,000 random colours (gate 1e-3). It stores the exposure for luminance 0.18 at the film's mid-grey placement; the film exposure, the luminance and `x_mid` multiply it at run time. The window reading flows in through `ExposureStage::raw`; a probe of stage 2 is part of T1's key, so a change to the reading changes the key.
+- **Curves.** 9 × 4,096 f32 over the profile's own axis (the curves without couplers over an axis extended below by the largest effect of the couplers, the paper's over the paper's). Worst error 3.3e-6 density.
+- **The couplers stay a 3 × 3 step.** They act on the three layers together (`log E' = log E - amount * M D`), so a table would be a third 3D table, and F-05's diffusion cannot be a table. The baked chain runs the same damped Newton on the baked curves without couplers and the matrix `M` (at most 16 iterations). Worst difference from the direct solve 2.5e-6 density.
+- **T3a** is 49³ by default. Its nodes hold `log10(P / P_ref) + shift` with the neutral filtering and the lights inside; the print exposure is added at run time, so it needs no re-bake. A slide has no T3a.
+- **T3b is 65³ by default and its axes are warped.** The nodes sit at `hi * (i / (n - 1))²` and the lookup takes a square root of each density (`T3B_POWER = 2`). The inverse of the cine rendering is logarithmic at the paper white (the soft clip), and a uniform axis puts 20 % of a photograph's pixels more than a quarter code off at 65³; the square root brings that to 0.6 %. The axes still run from 0 to the largest density plus a margin of 2 %.
+- **Tetrahedral twin.** `Table3::sample` is the formula of `Lut3d::sample`, on f32 storage with f64 arithmetic; it gives the same numbers as `Lut3d` on the same nodes (difference 0). F-08's f32 kernel is tested against it.
+- **Keys.** T1: film id and the SHA-256 of the profile's numbers, the upsampling data's id, the window switch, a probe of stage 2, the engine version. Curves: film and paper with their SHA-256, the coupler matrix. T3a: film, paper, the lights, the chain's calibration (neutral filters, shift, `P_ref`), the size. T3b: the paper (or the slide film) with its SHA-256, the output, the size. All carry `ENGINE_VERSION` (1). LRU: T1 24 entries (the picker's tiles need 20), the other kinds 8. A draft (size 17 or less) is built every time and not cached. Nothing is written to disk.
+- **Deviation from F-03's text.** `Baker` reads `couplers.json` itself (the chain does not expose its matrix), so the baker and the chain must use the same `data/`.
+
+**Bake times** (Portra 400 on Portra Endura; one thread / four threads; T3b's first call also builds the inverse's own table, 0.4 to 0.7 s):
+
+| Table | 1 thread | 4 threads |
+|---|---|---|
+| T1 | 22 ms | 12 ms |
+| curves | 2.2 ms | 2.3 ms |
+| T3a 17³ (draft) | 3.4 ms | 3.1 ms |
+| T3a 33³ / 49³ / 65³ / 97³ | 26 / 84 / 193 / 698 ms | 16 / 48 / 74 / 246 ms |
+| T3b 33³ / 49³ / 65³ / 97³ | 0.82 / 1.17 / 3.0 / 8.7 s | 0.19 / 0.50 / 1.2 / 4.0 s |
+
+T3b costs about 11 µs a node (the estimate was 5 µs), mostly the inverse; T3a about 0.7 µs.
+
+**Gate results.**
+
+| Gate | Result |
+|---|---|
+| T1 within 1e-3 relative | **met**, 5.7e-8 |
+| Determinism: same bytes on 1 and 8 threads and on a repeat run | **met** (every table of a negative and of a slide) |
+| Variant A round trip `forward(inverse(d))` within 1e-6 | **met**: 2.4e-7 (sRGB) and 1.9e-7 (P3) on 50,000 colours the rendering makes; on the photos' print colours about 1.0e-6 (the inverse's own tolerance, after the display is held to `[D_MIN, 1]`). The inverse missed the pre-image of 0.2 % of those synthetic colours (42 of 21,000; 58 of 28,000) |
+| Variant A unreachable share ≤ 0.1 % | **met: 0 pixels of 1,487,970, for each of the 8 stocks, with P3 and with sRGB output** (below) |
+| Baking error, the front of the chain (T1, curves, couplers, T3a 49³, paper) | **met**: on 373,078 photo pixels the largest difference is 0.13 code and 99.9 % are within 0.10 code (Portra 400, Vision3 500T, Velvia 100) |
+| **Baking error, the whole chain** | **not met** at 33, 49 or 65 |
+
+**The baking error of the whole chain** (P3 output; the direct chain against the table chain, after the cine rendering and the 10-bit transfer, on the unrounded code values; "photos" is every third pixel of the 20 photos below, 834,750 pixels at 4× decimation; T3a is the same size as T3b except in the last column):
+
+| Stock, photos: largest / 99.9 % / share over ¼ code | 33³ | 49³ | 65³ | T3a 49³, T3b 97³ |
+|---|---|---|---|---|
+| Portra 400 | 27 / 2.2 / 26 % | 7.1 / 0.94 / 4.1 % | 9.7 / 0.51 / 0.62 % | 5.8 / 0.26 / 0.11 % |
+| Portra 160 | 31 / 2.5 / 24 % | 10 / 1.0 / 4.5 % | 7.9 / 0.55 / 0.65 % | 6.4 / 0.27 / 0.12 % |
+| Ektar 100 | 19 / 2.3 / 27 % | 13 / 1.0 / 5.2 % | 10 / 0.59 / 1.3 % | 8.8 / 0.26 / 0.13 % |
+| Gold 200 | 14 / 1.3 / 28 % | 6.0 / 0.56 / 3.7 % | 4.7 / 0.34 / 0.35 % | 5.0 / 0.15 / 0.01 % |
+| Ultramax 400 | 6.5 / 1.2 / 25 % | 5.9 / 0.55 / 2.7 % | 6.0 / 0.30 / 0.25 % | 1.6 / 0.17 / 0.01 % |
+| Pro 400H | 26 / 1.6 / 27 % | 15 / 1.0 / 4.0 % | 22 / 0.43 / 0.87 % | 13 / 0.23 / 0.07 % |
+| Vision3 500T | 2.2 / 1.0 / 26 % | 0.91 / 0.43 / 2.6 % | 0.58 / 0.38 / 0.34 % | 0.58 / 0.30 / 0.10 % |
+| Velvia 100 | 11 / 1.0 / 51 % | 7.2 / 0.80 / 7.1 % | 6.8 / 0.74 / 0.52 % | 5.8 / 0.69 / 0.36 % |
+
+The gate asks for a largest difference of at most 1 and 99.9 % within 0.25. On 100,000 random colours (LogC4 uniform in the cube `[0, 1]³`, seed 2024) the largest difference is 450 to 650 codes and 8 to 93 % of the colours are over a quarter code, at every size. Most of that cube is not a photograph (colours far outside AWG4, prints with a display channel at 0), but the gate is written for random colours and it is not met.
+
+**Where the error is.** Not in the front (above). T3b stores the inverse of the cine rendering, and three things in it do not interpolate: (1) the logarithm at the paper white (fixed by the warp); (2) strongly coloured prints, where a display channel is near 0 and the soft floor is logarithmic too, so a cell is wide where the density is high; (3) **a discontinuity in the pre-image the inverse picks.** For Portra 400 on P3 at densities (0.262, 0.400, 1.675) the LogC4 red jumps by 1.2e-3 and blue by 4e-3 between neighbouring densities (scene blue near 0) while `forward` gives the same display colour on both sides. Both are valid pre-images, but a value interpolated between them is not one, and the error does not shrink with the table: the largest difference is 3.0 to 3.3 codes at 81³, 97³ and 129³ (Portra 400). A continuous choice of pre-image in `CineRendering::inverse` would remove it.
+
+**Options, for the lead and the owner** (none is applied): (a) T3b at 97³ (14.6 MB, 8.7 s on one thread, 4.0 s on four) gets 99.9 % within 0.15 to 0.30 code on most stocks, not the largest difference; (b) A+ (§2.4) is exact for the case it covers and, with the unreachable share at 0, loses nothing; (c) a continuous pre-image in the inverse, which also helps A+'s two code paths agree; (d) the bound stated for photographs (the 8 stocks × 20 photos) rather than for random colours, which still needs (c) or (a) for the largest difference.
+
+**Variant A, measured.** 20 public photos, each decoded by `ym render --look neutral --output-sharpening 0 --format png --bits 16 --color-space srgb --long-edge 1000` (so the Output's cine rendering is the identity on them and the inverse gives back the LogC4 the Input and Main nodes made), every third pixel (74,000 a photo). Sources: the owner's seven A1 photos (`testdata/readme-photos/src`: A1M01454, A1M01739, A1M01749, A1M03159, A1M03165, A1M03175, A1M03185; own photos, `docs/test-photo-sources.md`); the nine files of `testdata/real/files` (DSLR-A300, DSLR-A500, ILCE-5000, ILCE-6300 cRAW, ILCE-7M2, ILCE-7M3, ILCE-7M4, NEX-5N, NEX-7: licence unclear, development machine only, no gate depends on them, results reported as local); four Play Raw files of `testdata/lens-photos` (16238_DSC00416, 28322_DSC09944, 43248_DSC01025, 55415_DSC07727: CC licences per post, `docs/test-photo-sources.md` tier 2). The PNGs are in `testdata/film-bake/` (git-ignored); the tests skip when the folder is missing. Through the 8 stocks (Portra 400 and 160, Ektar 100, Gold 200, Ultramax 400, Pro 400H, Vision3 500T, Velvia 100), with the scan evaluated exactly: **no print pixel is unreachable** (0 of 1,487,970 for each stock, for the P3 and the sRGB output). The ΔE00 of the unreachable pixels is therefore empty. Limits: ordinary photographs; a saturated subject (a Velvia print of a red flower) could still produce some. A+ is not needed on this evidence.
+
+Tests: `crates/ym-film/tests/bake_tables.rs` (T1, curves, couplers, twin, determinism, cache, exposures, lights, slide, front of the chain), `bake_variant_a.rs`, `bake_report.rs` (the ignored numbers above and the unmet gate: `cargo test -p ym-film --release --test bake_report -- --ignored --nocapture`).
+
 ### 3.9 The spatial parts
 
 The spatial parts are passes of the multi-pass plan of `docs/23` §5.2 and `docs/17`, with f32 buffers between passes. The Film node always compiles to several passes. The compiler of N-03 and N-04 is written for that and tests the split on a graph that needs nine registers; the Film node is its first real user.
@@ -483,8 +544,8 @@ Every gate must pass in CI (or the named local job) before its task is done. **A
 | Engine against published curves | a neutral exposure ramp through stages 2 to 5 gives each camera film's `density_curves`, and through 8 each paper's, couplers on | within 0.01 density (*starting*) | F-03 |
 | Neutral | an 18 % grey prints neutral at default lights for every negative on its matching paper | a\*, b\* within 1.0 (*starting*) | F-03 |
 | **Oracle** | spektrafilm's Python (a pinned commit, a separate process, **never a dependency**) on 24 chart patches, a 125-point RGB lattice and a 21-step grey ramp, **with couplers, halation, grain and glare off** (its per-pixel mode), compared at its named taps: `log_e_film`, `cmy_film`, `cmy_print`, `rgb_out`. Fixtures are committed (they are Adapted Material: CC BY-SA 4.0 with credit); the generator is `tools/oracle/spektrafilm/` | per stage: 0.03 log10 / 0.03 density (*starting*); final ΔE00 median ≤ 1.5, 95th percentile ≤ 4 (*starting*) | F-06 |
-| Baking error | the table chain against the direct f64 chain on 100,000 random colours and all pixels of the test photos | largest ≤ one 10-bit code after C13; 99.9 % within a quarter code; T1 within 1e-3 relative (*starting*) | F-04 |
-| Variant A | `forward(inverse(d))` against `d` on the reachable colours; **the share of print pixels with no pre-image** on 20 public photos × the 8 most used stocks, and ΔE00 of those | round trip 1e-6; unreachable share ≤ 0.1 % (*starting*); above it, reconsider B or A+ | F-04 |
+| Baking error | the table chain against the direct f64 chain on 100,000 random colours and all pixels of the test photos | largest ≤ one 10-bit code after C13; 99.9 % within a quarter code; T1 within 1e-3 relative (*starting*). **Measured (§3.8a): T1 5.7e-8 and the front of the chain 0.13 code met; the whole chain not met (T3b)** | F-04 |
+| Variant A | `forward(inverse(d))` against `d` on the reachable colours; **the share of print pixels with no pre-image** on 20 public photos × the 8 most used stocks, and ΔE00 of those | round trip 1e-6; unreachable share ≤ 0.1 % (*starting*); above it, reconsider B or A+. **Measured (§3.8a): round trip 2.4e-7, unreachable share 0 of 1.49 million pixels for each of the 8 stocks; met** | F-04 |
 | GPU parity | each pass against its CPU twin on lavapipe: colour passes in LogC4; the blurs; the grain | 2e-4 · one 10-bit code after C13; blurs 1e-4 of the pass's peak (*starting*); grain hash exact, value 1e-5 | F-08 |
 | Determinism and tiles | a repeat render is identical; tiles equal the whole frame bit for bit **including halos and grain**; a poison test (`docs/17` D7); the far corner of an 8,658 × 5,772 frame (D4) | bit for bit | F-05, F-08 |
 | App against `ym` | byte-identical exports of a graph with a Film node, masks and grain on | byte-identical | F-07, F-08 |
