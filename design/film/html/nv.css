@@ -1,0 +1,378 @@
+/* Mockup-only styles for the proposed node view. Everything here is built from the app's own tokens (design/tokens.css, glass-c2.css);
+   nothing in this file is product code. */
+
+:root {
+  /* The Mask tab's accent: orchid pink, black text on it 8.5:1, on the ground 7.7:1, on a glass pane 5.3:1 (Lens, #BD8CFF, is 8.4 / 7.6 / 5.3). */
+  --tab-mask: #ff6fd2;
+  --tab-mask-ink: #000000;
+}
+[data-tab="mask"] { --primary: var(--tab-mask); --primary-foreground: var(--tab-mask-ink); --ring: var(--tab-mask); }
+
+html, body { margin: 0; }
+body { overflow: hidden; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---- the node view's layout: photo row 555 px, graph 270 px ---------------------------------------------------------------------- */
+.ym-screen[data-screen="photos"][data-nodes="true"] {
+  grid-template-rows: var(--header-h) 555px 270px;
+}
+.nv-letterbox {
+  grid-column: 1;
+  grid-row: 2;
+  background: var(--paper);
+}
+.ym-screen[data-nodes="true"] .ym-photo-cell {
+  grid-column: 1;
+  grid-row: 2;
+  width: 832.5px;
+  height: 555px;
+  z-index: 1;
+}
+.ym-screen[data-nodes="true"] .ym-tools { grid-row: 2 / 4; }
+
+/* pinned strip under the tab row (the notice, screen 02) */
+.nv-notice-wrap { flex-shrink: 0; padding: 10px 12px; border-bottom: 1px solid var(--rim); }
+.nv-notice {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid rgb(255 255 255 / 0.2);
+  border-radius: 16px;
+  background: rgb(14 14 18 / 0.74);
+  color: #fff;
+  font-size: 12.5px; font-weight: 650; line-height: 1.35;
+}
+.nv-notice__glyph { flex-shrink: 0; width: 16px; height: 16px; color: var(--glass-label-secondary); }
+.nv-notice__text { flex: 1; min-width: 0; }
+
+/* ---- node glyph in the filmstrip --------------------------------------------------------------------------------------------------- */
+.nv-strip-glyph {
+  position: absolute; left: 5px; bottom: 5px; z-index: 2;
+  display: grid; place-items: center;
+  width: 20px; height: 20px;
+  border: 1px solid rgb(255 255 255 / 0.22);
+  border-radius: 7px;
+  background: rgb(14 14 18 / 0.74);
+  color: rgb(255 255 255 / 0.9);
+  pointer-events: none;
+}
+.nv-strip-glyph svg { width: 12px; height: 12px; }
+
+/* ---- the node head (top of the inspector) ----------------------------------------------------------------------------------------- */
+.nv-head { padding: 16px var(--pad-panel) 14px; }
+.nv-head__row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.nv-head .ym-title-block__title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.05; }
+.nv-head .ym-title-block__blurb { margin-top: 8px; max-width: none; }
+.nv-head__actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.nv-num {
+  display: inline-grid; place-items: center; flex-shrink: 0;
+  min-width: 22px; height: 18px; padding: 0 4px;
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--ink) 16%, transparent);
+  box-shadow: inset 0 0 0 1px var(--rim);
+  color: var(--glass-label);
+  font-size: 10.5px; font-weight: 800; letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.nv-num--lg { min-width: 34px; height: 26px; border-radius: 8px; font-size: 14px; }
+
+/* ---- the graph panel ---------------------------------------------------------------------------------------------------------------- */
+.nv-graph { display: flex; flex-direction: column; overflow: hidden; }
+.nv-bar {
+  display: flex; align-items: center; gap: 8px;
+  flex-shrink: 0; height: 44px; padding: 0 12px;
+  border-bottom: 1px solid var(--rim);
+}
+.nv-bar__sp { flex: 1; }
+.nv-switcher { display: inline-flex; align-items: center; gap: 2px; color: var(--glass-label-secondary); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.nv-switcher__n { padding: 0 6px; white-space: nowrap; }
+.nv-bar [data-slot="button"][data-size="icon"], .nv-iconbtn {
+  display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; color: var(--glass-label-secondary);
+}
+.nv-later {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 0 4px 0 10px; height: 24px; border-radius: 999px;
+  color: var(--glass-label-tertiary); font-size: 11px; font-weight: 700;
+}
+.nv-canvas {
+  position: relative; flex: 1; min-height: 0; overflow: hidden;
+  background-image: radial-gradient(circle, color-mix(in oklch, var(--ink) 15%, transparent) 1px, transparent 1.3px);
+  background-size: 16px 16px;
+  background-position: 8px 8px;
+}
+.nv-links { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.nv-links path { fill: none; stroke: color-mix(in oklch, var(--ink) 34%, transparent); stroke-width: 1.5; stroke-linecap: round; }
+.nv-links path[data-active="true"] { stroke: color-mix(in oklch, var(--ink) 58%, transparent); }
+.nv-links path[data-dim="true"] { stroke-dasharray: 3 4; opacity: 0.8; }
+.nv-hint { position: absolute; color: var(--glass-label-tertiary); font-size: 12px; font-weight: 600; text-align: center; }
+
+.nv-io {
+  position: absolute; display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  height: 50px; padding: 0 12px; box-sizing: border-box;
+  border: 1px solid var(--rim); border-radius: 16px;
+  background: color-mix(in oklch, var(--ink) 8%, oklch(0.2 0 0 / 0.9));
+  color: var(--glass-label);
+}
+.nv-io__top { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 800; }
+.nv-io__top svg { width: 12px; height: 12px; color: var(--glass-label-tertiary); }
+.nv-io__sub { font-size: 10.5px; font-weight: 600; color: var(--glass-label-secondary); white-space: nowrap; }
+.nv-dot {
+  position: absolute; width: 9px; height: 9px; box-sizing: border-box; border-radius: 50%;
+  background: oklch(0.27 0 0); border: 1.5px solid color-mix(in oklch, var(--ink) 62%, transparent);
+}
+
+.nv-node {
+  position: absolute; width: 132px; height: 92px; box-sizing: border-box;
+  border: 1px solid var(--rim); border-radius: 12px;
+  background: oklch(0.205 0 0);
+  box-shadow: 0 6px 14px rgb(0 0 0 / 0.32);
+  color: var(--glass-label);
+}
+.nv-node--small { width: 112px; height: 72px; }
+.nv-node[data-selected="true"] { outline: 2px solid var(--tab-look); outline-offset: 2px; }
+.nv-node__thumb { position: relative; height: 63px; border-radius: 11px 11px 0 0; overflow: hidden; background: var(--code-bg); }
+.nv-node--small .nv-node__thumb { height: 42px; }
+.nv-node__thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.nv-node__label { display: flex; align-items: center; gap: 5px; height: 27px; padding: 0 6px 0 7px; border-top: 1px solid var(--rim); }
+.nv-node--small .nv-node__label { height: 28px; }
+.nv-node__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 700; }
+.nv-badges { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; }
+.nv-badge { display: grid; place-items: center; width: 15px; height: 15px; color: var(--tab-mask); }
+.nv-badge svg { width: 12px; height: 12px; }
+.nv-badge--quiet { color: var(--glass-label-secondary); }
+.nv-node[data-bypass="true"] .nv-node__thumb img { opacity: 0.35; filter: grayscale(0.6); }
+.nv-node[data-bypass="true"] .nv-node__name { color: var(--glass-label-tertiary); }
+.nv-slash {
+  position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(to top right, transparent calc(50% - 0.75px), rgb(255 255 255 / 0.55) calc(50% - 0.75px), rgb(255 255 255 / 0.55) calc(50% + 0.75px), transparent calc(50% + 0.75px));
+}
+.nv-node .nv-dot { top: 41.5px; }
+.nv-node--small .nv-dot { top: 31.5px; }
+.nv-node .nv-dot--in { left: -5px; }
+.nv-node .nv-dot--out { right: -5px; }
+
+/* ---- the photo cell's overlays ------------------------------------------------------------------------------------------------------ */
+.nv-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.nv-point {
+  position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; box-sizing: border-box;
+  border: 2px solid #fff; border-radius: 50%;
+  background: rgb(14 14 18 / 0.5);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.5), 0 0 0 1px rgb(0 0 0 / 0.25);
+  display: grid; place-items: center; color: #fff;
+}
+.nv-point svg { width: 12px; height: 12px; stroke-width: 2.6; }
+.nv-found { gap: 7px !important; }
+.nv-found svg { width: 13px; height: 13px; color: var(--tab-mask); }
+
+/* ---- the Masks card's row -------------------------------------------------------------------------------------------------------------- */
+.nv-maskrow {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 56px; padding: 6px 8px 6px 12px;
+  border-radius: 14px; box-sizing: border-box;
+  background: color-mix(in oklch, var(--ink) 6%, transparent);
+}
+.nv-maskrow[data-selected="true"] { box-shadow: inset 0 0 0 2px var(--tab-mask); background: color-mix(in oklch, var(--ink) 9%, transparent); }
+.nv-maskrow__glyph { flex-shrink: 0; width: 18px; height: 18px; color: var(--tab-mask); }
+.nv-maskrow__text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.nv-maskrow__name { font-size: 14px; font-weight: 700; line-height: 1.2; }
+.nv-maskrow__sub { font-size: 12px; color: var(--glass-label-secondary); line-height: 1.25; }
+.nv-eye { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; flex-shrink: 0; }
+.nv-eye svg { width: 17px; height: 17px; }
+.ym-card__header .nv-addmask { margin-right: 4px; }
+
+/* a quiet one-line description under a menu item */
+.nv-mi { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.nv-mi__name { font-size: 14px; line-height: 1.25; }
+.nv-mi__desc { font-size: 12px; line-height: 1.3; color: var(--glass-label-tertiary); font-weight: 400; }
+.nv-menu-label { padding: 8px 10px 3px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--glass-label-tertiary); }
+.nv-menu-item[data-disabled] { opacity: 0.5; }
+.nv-menu-item { display: flex; align-items: center; gap: 10px; }
+.nv-menu-item__ico { flex-shrink: 0; width: 17px; height: 17px; color: var(--glass-label-secondary); }
+.nv-menu-item__tag { margin-left: auto; flex-shrink: 0; }
+
+/* the order list of the Layer node */
+.nv-order { display: flex; flex-direction: column; gap: 6px; }
+.nv-order__row {
+  display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px 0 8px; box-sizing: border-box;
+  border-radius: 12px; background: color-mix(in oklch, var(--ink) 7%, transparent); box-shadow: inset 0 0 0 1px var(--rim);
+}
+.nv-order__grip { width: 16px; height: 16px; color: var(--glass-label-tertiary); flex-shrink: 0; }
+.nv-order__name { flex: 1; font-size: 14px; font-weight: 700; }
+.nv-order__sub { font-size: 12px; color: var(--glass-label-secondary); }
+.nv-order__thumb { width: 44px; height: 28px; border-radius: 6px; overflow: hidden; flex-shrink: 0; }
+.nv-order__thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.nv-field { display: grid; grid-template-columns: var(--label-col) minmax(0, 1fr); align-items: center; column-gap: var(--gap-row); min-height: 44px; }
+.nv-field__label { font-size: var(--fs-label); font-weight: var(--fw-heavy); }
+
+.glass-materialize { animation: none !important; }
+
+/* ======================================================================================================================================
+   Node editor, version 2 (Resolve-style graph in the glass look): viewer on top, a divider, the editor below.
+   ====================================================================================================================================== */
+.ym-screen[data-screen="photos"][data-nodes="2"] {
+  grid-template-columns: minmax(0, 1fr) var(--panel-w);
+  grid-template-rows: var(--header-h) var(--viewer-h, 444px) 10px minmax(0, 1fr);
+}
+.ym-screen[data-nodes="2"] .nv-letterbox { grid-column: 1; grid-row: 2; }
+.ym-screen[data-nodes="2"] .ym-photo-cell { grid-column: 1; grid-row: 2; width: var(--photo-w, 666px); height: var(--photo-h, 444px); z-index: 1; }
+.ym-screen[data-nodes="2"] .ym-tools { grid-row: 2 / 5; }
+.ym-screen[data-nodes="2"] .nv2-divider { grid-column: 1; grid-row: 3; }
+.ym-screen[data-nodes="2"] .nv2-editor { grid-column: 1; grid-row: 4; }
+.ym-screen[data-nodes="2"][data-narrow="true"] .ym-photo-cell__camera { display: none; }
+
+.nv2-divider {
+  position: relative; cursor: row-resize;
+  background: var(--strip-neutral, linear-gradient(oklch(0.27 0 0), oklch(0.2 0 0)));
+  border-top: 1px solid var(--rim);
+  display: grid; place-items: center;
+}
+.nv2-divider::before { content: ""; width: 44px; height: 4px; border-radius: 4px; background: color-mix(in oklch, var(--ink) 30%, transparent); }
+.nv2-editor { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.nv2-bar { display: flex; align-items: center; gap: 8px; flex-shrink: 0; height: 44px; padding: 0 12px; border-bottom: 1px solid var(--rim);
+  background: var(--strip-neutral, oklch(0.22 0 0)); }
+.nv2-bar__sp { flex: 1; }
+.nv2-canvas {
+  position: relative; flex: 1; min-height: 0; overflow: hidden;
+  background-color: oklch(0.125 0 0);
+  background-image: radial-gradient(circle, color-mix(in oklch, var(--ink) 16%, transparent) 1px, transparent 1.3px);
+  background-size: 18px 18px; background-position: 9px 9px;
+  box-shadow: inset 0 2px 8px rgb(0 0 0 / 0.35);
+}
+.nv2-links { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.nv2-links path { fill: none; stroke-linecap: round; }
+.nv2-links .pic { stroke: color-mix(in oklch, var(--ink) 40%, transparent); stroke-width: 1.6; }
+.nv2-links .key { stroke: var(--tab-mask); stroke-width: 1.6; stroke-dasharray: 5 4; opacity: 0.95; }
+.nv2-links .pic-arrow { fill: color-mix(in oklch, var(--ink) 55%, transparent); }
+.nv2-links .key-arrow { fill: var(--tab-mask); }
+
+.nv2-node { position: absolute; }
+.nv2-name {
+  position: absolute; left: 0; right: 0; bottom: 100%; margin-bottom: 4px;
+  text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: 12px; font-weight: 700; color: var(--glass-label-secondary); letter-spacing: 0.01em;
+}
+.nv2-node[data-selected="true"] .nv2-name { color: var(--glass-label); }
+.nv2-box {
+  position: relative; box-sizing: border-box; overflow: hidden;
+  border: 1px solid var(--rim); border-radius: 14px;
+  background: oklch(0.2 0 0);
+  box-shadow: 0 8px 18px rgb(0 0 0 / 0.38), inset 0 0 0 0.5px rgb(255 255 255 / 0.04);
+}
+.nv2-node[data-selected="true"] .nv2-box { overflow: hidden; }
+.nv2-ring { position: absolute; inset: -4px; border: 2px solid var(--tab-look); border-radius: 17px; pointer-events: none; }
+.nv2-thumb { position: relative; overflow: hidden; background: var(--code-bg); }
+.nv2-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.nv2-row { display: flex; align-items: center; gap: 6px; padding: 0 7px 0 7px; border-top: 1px solid var(--rim); }
+.nv2-tools { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; color: var(--glass-label-secondary); }
+.nv2-tools svg { width: 13px; height: 13px; }
+.nv2-tools .mask { color: var(--tab-mask); }
+.nv2-node[data-bypass="true"] .nv2-thumb img { opacity: 0.32; filter: grayscale(0.7); }
+.nv2-node[data-bypass="true"] .nv2-name { color: var(--glass-label-tertiary); }
+.nv2-node .nv-slash { z-index: 2; }
+
+/* ports: light grey for the picture, the Mask accent for the key */
+.nv2-port { position: absolute; display: block; pointer-events: none; }
+.nv2-port svg { display: block; }
+.nv2-port.pic { color: oklch(0.82 0 0); }
+.nv2-port.key { color: var(--tab-mask); }
+.nv2-port.key[data-linked="false"] { opacity: 0.5; }
+.nv2-sq { width: 8px; height: 8px; border-radius: 2px; background: currentColor; }
+
+.nv2-mixer .nv2-box { border-radius: 16px; display: grid; place-items: center; background: oklch(0.225 0 0); }
+.nv2-mixer .nv2-glyph { width: 20px; height: 20px; color: var(--glass-label-secondary); }
+
+.nv2-marker { position: absolute; display: flex; flex-direction: column; align-items: center; gap: 7px; }
+.nv2-marker__dot {
+  position: relative; display: grid; place-items: center; width: 32px; height: 32px; box-sizing: border-box;
+  border: 1.5px solid color-mix(in oklch, var(--ink) 55%, transparent); border-radius: 50%;
+  background: oklch(0.22 0 0); color: var(--glass-label-secondary);
+  box-shadow: 0 5px 12px rgb(0 0 0 / 0.35);
+}
+.nv2-marker__dot svg { width: 13px; height: 13px; }
+.nv2-marker[data-selected="true"] .nv2-marker__dot::after { content: ""; position: absolute; inset: -5px; border: 2px solid var(--tab-look); border-radius: 50%; }
+.nv2-marker__word { font-size: 12px; font-weight: 700; color: var(--glass-label-secondary); }
+.nv2-marker[data-selected="true"] .nv2-marker__word { color: var(--glass-label); }
+
+.nv2-zoom { position: absolute; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 4px; }
+.nv2-zoom__val { min-width: 42px; text-align: center; font-size: 12px; font-weight: 700; color: var(--glass-label-secondary); font-variant-numeric: tabular-nums; }
+.nv2-hint { position: absolute; color: var(--glass-label-tertiary); font-size: 12px; font-weight: 600; text-align: center; }
+
+/* ======================================================================================================================================
+   Layout B: viewer and editor side by side, the node's tabs below in columns
+   ====================================================================================================================================== */
+.ym-screen[data-screen="photos"][data-nodes="b"] {
+  grid-template-columns: 864px minmax(0, 1fr);
+  grid-template-rows: var(--header-h) 370px minmax(0, 1fr);
+}
+.ym-screen[data-nodes="b"] .nv-letterbox { grid-column: 1; grid-row: 2; }
+.ym-screen[data-nodes="b"] .ym-photo-cell { grid-column: 1; grid-row: 2; width: 555px; height: 370px; z-index: 1; }
+.ym-screen[data-nodes="b"] .nv2-editor { grid-column: 2; grid-row: 2; border-left: 1px solid var(--rim); }
+.ym-screen[data-nodes="b"] .nv-palette { grid-column: 1 / 3; grid-row: 3; }
+.nv-palette { display: flex; flex-direction: column; min-height: 0; border-top: 1px solid var(--rim); }
+.nv-palette__bar { display: flex; align-items: center; gap: 12px; flex-shrink: 0; height: 56px; padding: 0 20px; border-bottom: 1px solid var(--rim); background: color-mix(in oklch, var(--ink) 7%, transparent); }
+.nv-palette__bar .ym-title-block__title { font-size: 26px; line-height: 1; }
+.nv-palette__blurb { color: var(--glass-label-secondary); font-size: 14px; margin-left: 4px; }
+.nv-palette__bar .sp { flex: 1; }
+.nv-palette__tabs { flex-shrink: 0; height: 46px; padding: 0 20px; border-bottom: 1px solid var(--rim); display: flex; }
+.nv-palette__tabs > [data-slot="tabs"] { width: 420px; }
+.nv-palette__cols { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+.nv-col { box-sizing: border-box; min-height: 0; overflow: hidden; border-right: 1px solid var(--rim); }
+.nv-col .ym-card { border-bottom: 1px solid var(--rim); }
+.nv-col .ym-card[data-last="true"] { border-bottom: 0; }
+.nv-col .ym-title-block { background: transparent; border-bottom: 0; padding: 20px 24px; }
+.nv-col .ym-title-block__blurb { max-width: 250px; }
+.nv-palette .nv-tabsfix [role="tablist"] { width: 100%; }
+
+.nv-palette > [data-slot="tabs"] > [data-slot="tabs-list"] { flex: none; width: 440px; }
+.nv-palette { grid-column: 1 / 3; }
+
+/* ======================================================================================================================================
+   Round 2: the compact node head, Pick white, mask rows, the list view
+   ====================================================================================================================================== */
+.nv-chead {
+  display: flex; align-items: center; gap: 9px; flex-shrink: 0; height: 52px; padding: 0 12px 0 16px; box-sizing: border-box;
+  background: color-mix(in oklch, var(--ink) 7%, transparent); border-bottom: 1px solid var(--rim);
+}
+.nv-chead__name { margin: 0; flex-shrink: 0; font-size: 20px; font-weight: 800; letter-spacing: -0.02em; line-height: 1; white-space: nowrap; }
+.nv-chead__sub { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 500; color: var(--glass-label-secondary); }
+.nv-chead__btns { display: inline-flex; gap: 4px; flex-shrink: 0; }
+.nv-ibtn { width: 28px !important; min-width: 28px !important; height: 28px !important; padding: 0 !important; display: inline-grid !important; place-items: center; }
+.nv-ibtn svg { width: 15px; height: 15px; }
+.nv-tip { position: fixed; z-index: 60; }
+
+.nv-pickrow { display: flex; align-items: center; justify-content: space-between; margin: 0 0 12px; }
+.nv-pickrow__right { display: inline-flex; align-items: center; gap: 8px; color: var(--glass-label-tertiary); font-size: 12px; font-weight: 600; }
+.nv-pick-on { --primary: var(--tab-look); --primary-foreground: var(--tab-look-ink); }
+
+/* mask rows */
+.nv-maskrows { display: flex; flex-direction: column; gap: 8px; }
+.nv-maskrow__glyph--shape { color: var(--glass-label-secondary); }
+.nv-maskrow .nv-iconbtn2 { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; flex-shrink: 0; min-width: 32px; }
+.nv-maskrow .nv-iconbtn2 svg { width: 16px; height: 16px; }
+.nv-maskrow { gap: 6px; padding: 6px 6px 6px 12px; }
+.nv-maskrow__text { margin-right: 4px; }
+
+/* the list view of the graph */
+.nv3-list { position: absolute; inset: 0; overflow: hidden; background: oklch(0.14 0 0); padding: 0; }
+.nv3-row { display: grid; grid-template-columns: 26px 36px 62px minmax(0, 1fr) auto 32px 32px; align-items: center; gap: 10px; height: 44px; padding: 0 14px 0 10px; border-bottom: 1px solid var(--rim); position: relative; }
+.nv3-row[data-selected="true"] { background: color-mix(in oklch, var(--ink) 9%, transparent); box-shadow: inset 0 0 0 2px var(--tab-look); }
+.nv3-row[data-fixed="true"] .nv3-grip { visibility: hidden; }
+.nv3-grip { color: var(--glass-label-tertiary); display: grid; place-items: center; }
+.nv3-grip svg { width: 16px; height: 16px; }
+.nv3-thumb { width: 62px; height: 32px; border-radius: 6px; overflow: hidden; box-shadow: inset 0 0 0 1px var(--rim); }
+.nv3-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.nv3-name { display: flex; align-items: baseline; gap: 10px; min-width: 0; white-space: nowrap; }
+.nv3-name b { font-size: 14px; font-weight: 800; }
+.nv3-name span { font-size: 12.5px; color: var(--glass-label-secondary); overflow: hidden; text-overflow: ellipsis; }
+.nv3-glyphs { display: inline-flex; gap: 6px; color: var(--tab-mask); }
+.nv3-glyphs svg { width: 14px; height: 14px; }
+.nv3-glyphs .quiet { color: var(--glass-label-secondary); }
+.nv3-chip { display: grid; place-items: center; }
+.nv3-chip .nv-num { }
+.nv3-chip .lock { display: grid; place-items: center; width: 24px; height: 18px; border-radius: 6px; background: color-mix(in oklch, var(--ink) 16%, transparent); box-shadow: inset 0 0 0 1px var(--rim); color: var(--glass-label-secondary); }
+.nv3-chip .lock svg { width: 11px; height: 11px; }
+.nv-found--plain svg { color: #fff !important; }
+
+.nv-notice { align-items: flex-start; padding: 9px 12px; }
+.nv-notice__glyph { margin-top: 2px; }
+.nv-notice__link { display: inline-block; vertical-align: baseline; white-space: nowrap; }
+.nv-notice__link button { height: auto !important; min-height: 0 !important; padding: 0 !important; font-size: 12.5px !important; font-weight: 700 !important; text-decoration: underline; text-underline-offset: 2px; }
