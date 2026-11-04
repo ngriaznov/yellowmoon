@@ -25,6 +25,7 @@
 // loop is the clearest form there.
 #![allow(clippy::needless_range_loop)]
 
+pub mod bake;
 pub mod chain;
 pub mod cie;
 pub mod data;

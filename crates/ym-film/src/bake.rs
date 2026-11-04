@@ -31,7 +31,7 @@
 //! **Determinism.** Every node is independent and the work is cut into contiguous runs of nodes, so any thread
 //! count gives the same bytes.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use sha2::{Digest, Sha256};
@@ -741,6 +741,14 @@ struct T3bKey {
     engine: u32,
 }
 
+fn matrix_bits(m: &[[f64; 3]; 3]) -> [u64; 9] {
+    let mut out = [0_u64; 9];
+    for (k, v) in m.iter().flatten().enumerate() {
+        out[k] = v.to_bits();
+    }
+    out
+}
+
 struct Lru<K, V> {
     cap: usize,
     items: Vec<(K, V)>,
@@ -917,10 +925,7 @@ impl Baker {
         let key = CurvesKey {
             film: stock_key(chain.film()),
             paper: chain.paper().map(stock_key),
-            matrix: self.couplers.iter().flatten().map(|v| v.to_bits()).collect::<Vec<_>>()
-                [..]
-                .try_into()
-                .unwrap_or([0; 9]),
+            matrix: matrix_bits(&self.couplers),
             engine: ENGINE_VERSION,
         };
         if let Some(t) = self.lock().curves.get(&key) {
@@ -1058,19 +1063,10 @@ impl Calibration {
                 )
             }
             None => {
-                // A slide: the gain is the difference the chain's tap shows at the grey with no exposure shift.
-                let mut at_zero = chain.params().clone();
-                at_zero.exposure_ev = 0.0;
+                // A slide: the gain is what the chain's tap at the grey shows beyond the exposure setting.
                 let probe = chain.exposure_stage().log_exposure(&light, 0.0);
-                let gain = if chain.params().exposure_ev == 0.0 {
-                    chain.run_tapped(grey).1.log_e_film[0] - probe[0]
-                } else {
-                    // The tap includes the exposure setting; take it out.
-                    chain.run_tapped(grey).1.log_e_film[0]
-                        - probe[0]
-                        - chain.params().exposure_ev * LOG10_2
-                };
-                (1.0, gain)
+                let tap = chain.run_tapped(grey).1.log_e_film;
+                (1.0, tap[0] - probe[0] - chain.params().exposure_ev * LOG10_2)
             }
         };
         Self {
@@ -1194,11 +1190,4 @@ fn bake_t3b(chain: &FilmChain, size: usize, threads: usize) -> Table3 {
     let hi = with_margin(densities_max(medium));
     let scan = chain.scan_stage();
     bake_table3(size, hi, threads, |d| chain.return_stage(scan.display(d)))
-}
-
-/// Where the baked tables live on disk: nowhere. (Kept as a function so a caller cannot ask.)
-#[doc(hidden)]
-#[must_use]
-pub fn cache_dir() -> Option<PathBuf> {
-    None
 }
