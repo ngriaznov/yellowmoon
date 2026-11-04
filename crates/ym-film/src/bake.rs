@@ -47,7 +47,6 @@
 //! **Determinism.** Every node is independent. The tables are cut into small runs of nodes that the threads take
 //! in turn from a queue, so any thread count gives the same bytes.
 
-use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use sha2::{Digest, Sha256};
