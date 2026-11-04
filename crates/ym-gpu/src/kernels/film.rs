@@ -24,11 +24,12 @@
 //! **Constants (K7).** The cine rendering's 57 constants and the derived scalars are the `CINE_*` of the common block
 //! (`ym_color::display::cine::kernel_scalars`), LogC4's are `LC4_*`, the core table's axes, sizes and Newton steps, the
 //! grain hash and the scene stage's knee and limit are written into the uniform block from the plain data. The settings
-//! that only the kernels have (the fixed iteration counts, `FX_*`) are generated here, once.
+//! that only the kernels have (the locus tolerance, the coupler step's counts, the table sizes, `FX_*`) are generated here, once; the core's Newton
+//! settings and the fixed counts of the display step come from `ym_color::display::cine::kernel_refine_scalars`.
 //!
 //! **Fixed counts (docs/17 K5, K8).** The CPU's loops with an exit on a tolerance run a fixed number of iterations on the
 //! device: the coupler step [`COUPLER_ITERATIONS`] with [`COUPLER_TRIALS`] halvings, the shared luminance of the display
-//! step [`Y2_ITERATIONS`], the cube-root inverse [`CBRT_ITERATIONS`] and the luminance floor [`FLOOR_ITERATIONS`]; the
+//! step, the cube-root inverse and the luminance floor (`cine::KERNEL_*_ITERATIONS`); the
 //! core's Newton steps are `CoreTable::steps()` (5), each trying its candidates in the CPU's order.
 //!
 //! **Fast-math (K8).** Every `pow`, `exp`, `log`, `sqrt`, division and comparison of the new shaders, and why it is safe:
@@ -82,14 +83,6 @@ pub const COUPLER_ITERATIONS: u32 = 12;
 pub const COUPLER_TRIALS: u32 = 4;
 /// The residual below which the coupler step stops moving.
 pub const COUPLER_TOL: f32 = 1e-9;
-/// Newton iterations for the shared luminance `Y2` of the display step (the CPU runs up to 40).
-pub const Y2_ITERATIONS: u32 = 10;
-/// Newton iterations of the smooth cube root's inverse (the CPU runs up to 40).
-pub const CBRT_ITERATIONS: u32 = 8;
-/// Newton iterations of the luminance floor's root (the CPU runs up to 40).
-pub const FLOOR_ITERATIONS: u32 = 10;
-/// The residual below which a Newton step of the core is skipped (`core_table.rs` `CONVERGED`).
-pub const CORE_CONVERGED: f64 = 1e-13;
 /// The upper limit of `ln Ys` the scene side accepts (a scene luminance of 5e8).
 pub const LN_YS_MAX: f64 = 20.0;
 /// A Gaussian narrower than this (pixels) is a delta (`ym_film::spatial::MIN_SIGMA_PX`).
@@ -113,7 +106,6 @@ pub(super) fn constants() -> String {
         ("LOG10_E", std::f64::consts::LOG10_E),
         ("PI", std::f64::consts::PI),
         ("D_MIN", cine::D_MIN),
-        ("CONVERGED", CORE_CONVERGED),
         ("NORMAL_SCALE", normal_scale()),
         (
             "CHROMA_CAP",
@@ -129,11 +121,17 @@ pub(super) fn constants() -> String {
         ("GRAIN_ENTRIES", GRAIN_ENTRIES as u32),
         ("COUPLER_ITERATIONS", COUPLER_ITERATIONS),
         ("COUPLER_TRIALS", COUPLER_TRIALS),
-        ("Y2_ITERATIONS", Y2_ITERATIONS),
-        ("CBRT_ITERATIONS", CBRT_ITERATIONS),
-        ("FLOOR_ITERATIONS", FLOOR_ITERATIONS),
     ] {
         let _ = writeln!(s, "const FX_{n}: u32 = {v}u;");
+    }
+    // The Newton settings of the core and the fixed iteration counts: `ym_color::display::cine::kernel_refine_scalars`
+    // (K7: the CPU's `refine` reads the same constants).
+    for (n, v) in cine::kernel_refine_scalars() {
+        if n.ends_with("ITERATIONS") {
+            let _ = writeln!(s, "const FX_{n}: u32 = {}u;", v as u32);
+        } else {
+            let _ = writeln!(s, "const FX_{n}: f32 = {};", f(v));
+        }
     }
     s
 }

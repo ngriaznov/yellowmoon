@@ -47,7 +47,45 @@ const BISECTIONS: usize = 24;
 /// The residual of the core below which a colour counts as reached.
 const SOLVED: f64 = 1e-8;
 /// The residual below which a Newton step is skipped (it would not move).
-const CONVERGED: f64 = 1e-13;
+pub const CONVERGED: f64 = 1e-13;
+/// The largest change of any coordinate in one Newton step (a larger step is scaled down to it), and the clamp of a
+/// least-squares step.
+pub const STEP_LIMIT: f64 = 0.7;
+/// The factors of the Newton step that are tried in turn; the first that lowers the residual is kept.
+pub const STEP_SCALES: [f64; 3] = [1.0, 0.5, 0.25];
+/// The damping `mu` of the least-squares candidates, tried in turn (times a third of the trace of `J^T J`).
+pub const LM_DAMPING: [f64; 3] = [1e-3, 1e-1, 10.0];
+/// The floor of the trace of `J^T J` in the least-squares damping.
+pub const LM_TRACE_FLOOR: f64 = 1e-30;
+
+/// The settings of [`CoreTable`]'s Newton steps as `(name, value)` pairs in f64, for a GPU kernel: `ym-gpu` writes them
+/// into the shader text (`FX_<NAME>`), so the kernel and `refine` apply the same numbers. The list also holds the
+/// fixed iteration counts the kernel runs where the CPU loops to a tolerance (the CPU runs up to 40), which are
+/// chosen against the CPU code (`docs/24` section 3.8c).
+#[must_use]
+pub fn kernel_refine_scalars() -> Vec<(&'static str, f64)> {
+    vec![
+        ("CONVERGED", CONVERGED),
+        ("STEP_LIMIT", STEP_LIMIT),
+        ("STEP_SCALE_0", STEP_SCALES[0]),
+        ("STEP_SCALE_1", STEP_SCALES[1]),
+        ("STEP_SCALE_2", STEP_SCALES[2]),
+        ("LM_MU_0", LM_DAMPING[0]),
+        ("LM_MU_1", LM_DAMPING[1]),
+        ("LM_MU_2", LM_DAMPING[2]),
+        ("LM_TRACE_FLOOR", LM_TRACE_FLOOR),
+        ("Y2_ITERATIONS", KERNEL_Y2_ITERATIONS as f64),
+        ("CBRT_ITERATIONS", KERNEL_CBRT_ITERATIONS as f64),
+        ("FLOOR_ITERATIONS", KERNEL_FLOOR_ITERATIONS as f64),
+    ]
+}
+
+/// Fixed Newton iterations of the kernel for the shared luminance `Y2` of the display step.
+pub const KERNEL_Y2_ITERATIONS: u32 = 10;
+/// Fixed Newton iterations of the kernel for the smooth cube root's inverse.
+pub const KERNEL_CBRT_ITERATIONS: u32 = 8;
+/// Fixed Newton iterations of the kernel for the luminance floor's root.
+pub const KERNEL_FLOOR_ITERATIONS: u32 = 10;
 /// The most the pre-image may move between two nodes for them to be on the same sheet (the march uses
 /// `jump_bound`).
 const NODE_JUMP: f64 = 0.15;
@@ -359,8 +397,8 @@ fn refine(mut q: Vec3, goal: Vec3, steps: usize) -> Vec3 {
         if let Some(ji) = inverse3(&j) {
             let step = [0, 1, 2].map(|i| -(ji[i][0] * r[0] + ji[i][1] * r[1] + ji[i][2] * r[2]));
             let size = step[0].abs().max(step[1].abs()).max(step[2].abs());
-            let scale = if size > 0.7 { 0.7 / size } else { 1.0 };
-            for s in [scale, 0.5 * scale, 0.25 * scale] {
+            let scale = if size > STEP_LIMIT { STEP_LIMIT / size } else { 1.0 };
+            for s in STEP_SCALES.map(|f| f * scale) {
                 let qn = [0, 1, 2].map(|i| q[i] + s * step[i]);
                 if let Some((rn, cn)) = better(qn) {
                     next = Some((qn, rn, cn));
@@ -380,15 +418,15 @@ fn refine(mut q: Vec3, goal: Vec3, steps: usize) -> Vec3 {
                     }
                 }
             }
-            let scale = (a[0][0] + a[1][1] + a[2][2]).max(1e-30) / 3.0;
-            for mu in [1e-3, 1e-1, 10.0] {
+            let scale = (a[0][0] + a[1][1] + a[2][2]).max(LM_TRACE_FLOOR) / 3.0;
+            for mu in LM_DAMPING {
                 let mut m = a;
                 for (p, row) in m.iter_mut().enumerate() {
                     row[p] += mu * scale;
                 }
                 let Some(inv) = inverse3(&m) else { continue };
                 let step = [0, 1, 2].map(|i| {
-                    (-(inv[i][0] * g[0] + inv[i][1] * g[1] + inv[i][2] * g[2])).clamp(-0.7, 0.7)
+                    (-(inv[i][0] * g[0] + inv[i][1] * g[1] + inv[i][2] * g[2])).clamp(-STEP_LIMIT, STEP_LIMIT)
                 });
                 let qn = [0, 1, 2].map(|i| q[i] + step[i]);
                 if let Some((rn, cn)) = better(qn) {

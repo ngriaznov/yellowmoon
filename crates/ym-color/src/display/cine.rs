@@ -30,7 +30,8 @@ use crate::consts::linalg::{self, Mat3};
 use crate::gamut::{LinearAwg4, matrices};
 
 pub use self::core_table::{
-    CoreDims, CoreTable, DEFAULT_NK, DEFAULT_NS, DEFAULT_NT, DEFAULT_STEPS, DisplayCoordinates,
+    CONVERGED, KERNEL_CBRT_ITERATIONS, KERNEL_FLOOR_ITERATIONS, KERNEL_Y2_ITERATIONS, LM_DAMPING,
+    LM_TRACE_FLOOR, STEP_LIMIT, STEP_SCALES, kernel_refine_scalars, CoreDims, CoreTable, DEFAULT_NK, DEFAULT_NS, DEFAULT_NT, DEFAULT_STEPS, DisplayCoordinates,
 };
 pub use self::inverse::CineInverse;
 

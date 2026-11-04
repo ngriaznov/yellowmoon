@@ -339,10 +339,10 @@ fn rt_refine(q0: vec3<f32>, goal: vec3<f32>, steps: u32) -> vec3<f32> {
         if (ji.ok) {
             let step = -vec3<f32>(dot(ji.r0, r), dot(ji.r1, r), dot(ji.r2, r));
             let size = max(abs(step.x), max(abs(step.y), abs(step.z)));
-            let scale = select(1.0, 0.7 / size, size > 0.7);
+            let scale = select(1.0, FX_STEP_LIMIT / size, size > FX_STEP_LIMIT);
             for (var k = 0u; k < 3u; k++) {
                 if (!found) {
-                    let sc = scale * select(select(0.25, 0.5, k == 1u), 1.0, k == 0u);
+                    let sc = scale * select(select(FX_STEP_SCALE_2, FX_STEP_SCALE_1, k == 1u), FX_STEP_SCALE_0, k == 0u);
                     let cand = q + sc * step;
                     let rr = rt_core(cand) - goal;
                     let cc = fr_norm_inf(rr);
@@ -364,13 +364,13 @@ fn rt_refine(q0: vec3<f32>, goal: vec3<f32>, steps: u32) -> vec3<f32> {
             let a1 = vec3<f32>(dot(col1, col0), dot(col1, col1), dot(col1, col2));
             let a2 = vec3<f32>(dot(col2, col0), dot(col2, col1), dot(col2, col2));
             let g = vec3<f32>(dot(col0, r), dot(col1, r), dot(col2, r));
-            let sc = max(a0.x + a1.y + a2.z, 1.0e-30) / 3.0;
+            let sc = max(a0.x + a1.y + a2.z, FX_LM_TRACE_FLOOR) / 3.0;
             for (var k = 0u; k < 3u; k++) {
                 if (!found) {
-                    let mu = select(select(10.0, 0.1, k == 1u), 0.001, k == 0u) * sc;
+                    let mu = select(select(FX_LM_MU_2, FX_LM_MU_1, k == 1u), FX_LM_MU_0, k == 0u) * sc;
                     let inv = rt_inverse3(a0 + vec3<f32>(mu, 0.0, 0.0), a1 + vec3<f32>(0.0, mu, 0.0), a2 + vec3<f32>(0.0, 0.0, mu));
                     if (inv.ok) {
-                        let step = clamp(-vec3<f32>(dot(inv.r0, g), dot(inv.r1, g), dot(inv.r2, g)), vec3<f32>(-0.7), vec3<f32>(0.7));
+                        let step = clamp(-vec3<f32>(dot(inv.r0, g), dot(inv.r1, g), dot(inv.r2, g)), vec3<f32>(-FX_STEP_LIMIT), vec3<f32>(FX_STEP_LIMIT));
                         let cand = q + step;
                         let rr = rt_core(cand) - goal;
                         let cc = fr_norm_inf(rr);

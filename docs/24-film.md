@@ -604,7 +604,7 @@ A node of `kind: "film"` has these fields and no others (`docs/23` §3.2 rules: 
 - `seed` is not in the interface; it keeps the grain a function of the settings (hard rule 8).
 - A Film node is a live node when the Output needs its picture, like any node. Copy and paste carry it. The DNG bakes it in (halation and grain too, at the DNG's grid) and the DNG note says so.
 - **`ym`**: no new flags (a Film node is not in the default graph, so the flags that set a field of Input, Main or the Output do not reach it). `--settings` carries a graph with a Film node. `ym film list [--json]` lists the stocks and papers with their ids and kinds. `ym doctor` gains a line `Film: 28 profiles, data version 0.3.2`. `docs/10` and the help change in the same commit (`crates/ym-cli/tests/docs.rs`).
-- `PIPELINE_VERSION`: no existing graph changes by a bit. The version still gets a minor step when the node lands, because an older build refuses a graph with a `film` node (F-07 decides with the owner).
+- `PIPELINE_VERSION`: no existing graph changes by a bit, and the version takes a minor step to **0.10.0** with the node, because an older build refuses a graph with a `film` node (the owner, 2026-11-04: "Minor step to 0.10.0"). Only the written version string changes (`ym --version`, `ym doctor`, `ym info`, `ym:PipelineVersion`).
 
 ### 4.6 Copy
 
