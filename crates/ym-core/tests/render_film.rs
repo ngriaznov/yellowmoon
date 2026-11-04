@@ -8,8 +8,8 @@ use common::*;
 use serde_json::{Value, json};
 use ym_color::display::OutputTarget;
 use ym_core::pipeline::{
-    FrameOptions, FullImage, FullRequest, FullTarget, NeutralOnly, PhotoSource, RenderOptions,
-    Renderer, ViewportRect, ViewportState,
+    FrameOptions, FullImage, FullRequest, FullTarget, MaskStyle, MaskView, NeutralOnly,
+    PhotoSource, RenderOptions, Renderer, ViewportRect, ViewportState,
 };
 use ym_core::settings::DevelopSettings;
 use ym_gpu::queue::CancelToken;
@@ -148,6 +148,47 @@ fn a_view_shows_the_film_node_and_stays_on_the_cpu() {
     assert_eq!(filmed.report.device, ym_core::pipeline::ComputeDevice::Cpu);
 }
 
+#[test]
+fn show_mask_and_node_thumbnails_work_for_a_film_node() {
+    let d = photo();
+    let src = with(&d.source(), graph(busy()));
+    let r = renderer(1024, 4);
+    // Mask only: the code value is the node's mask, here a Linear band times Strength 80 %; the Film node's picture
+    // is not made at all for it.
+    let mut st = ViewportState::new(ViewportRect::cell(300.0, 300.0, 1.0));
+    st.mask_view = Some(MaskView {
+        node: 2,
+        style: MaskStyle::MaskOnly,
+        row: None,
+    });
+    let frame = r
+        .viewport_frame(&src, &st, &FrameOptions::default(), &CancelToken::new())
+        .expect("mask view");
+    let row = |y: usize| -> Vec<u8> { (0..300).map(|x| frame.rgba[(y * 300 + x) * 4]).collect() };
+    let mid = row(150);
+    assert!(
+        mid.first() != mid.last(),
+        "the Linear mask is a ramp across the photo: {mid:?}"
+    );
+    assert!(
+        mid.iter().all(|v| *v <= 204),
+        "the mask is at most Strength, 80 %: {}",
+        mid.iter().max().unwrap()
+    );
+    // The photo's cards each get a picture, the Film node's included.
+    let thumbs = r
+        .node_thumbnails(&src, &CancelToken::new())
+        .expect("node thumbnails");
+    assert_eq!(
+        thumbs.iter().map(|t| t.node).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_ne!(
+        thumbs[0].png, thumbs[1].png,
+        "the Film node's card shows the film"
+    );
+}
+
 /// Times of the CPU path (`cargo test --release -p ym-core --test render_film -- --ignored --nocapture timings`):
 /// the first tables, a view of the fit size, and a full-resolution export of 24 MP, with a Film node at its
 /// defaults (halation and grain on).
@@ -192,7 +233,10 @@ fn timings() {
     );
     let t = Instant::now();
     let _ = srgb(&r, &src);
-    eprintln!("the same export without it: {:.1} s", t.elapsed().as_secs_f64());
+    eprintln!(
+        "the same export without it: {:.1} s",
+        t.elapsed().as_secs_f64()
+    );
     let (built_chains, built_models) = ym_core::film::FilmEngine::shared(&data_root())
         .map(|e| e.built())
         .unwrap_or_default();
