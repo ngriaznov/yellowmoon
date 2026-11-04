@@ -84,3 +84,61 @@ pub fn codes10(cine: &CineRendering, space: OutputSpace, logc4: [f64; 3]) -> [f6
     let display = cine.forward(LinearAwg4(logc4_decode_rgb(logc4)));
     space.encode_clamped(display).map(|v| v * 1023.0)
 }
+
+/// The folder of the LogC4 test photos: 16-bit sRGB PNGs that `ym render --look neutral --output-sharpening 0`
+/// made from the public ARW files (see `docs/24` section 3.8, *As built*).
+pub fn photo_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/film-bake")
+}
+
+/// A photo as LogC4 / AWG4 pixels, every `stride`-th pixel in each direction.
+pub struct Photo {
+    pub name: String,
+    pub pixels: Vec<[f64; 3]>,
+}
+
+/// Reads every PNG of [`photo_dir`] (sorted by name), decodes sRGB to display-linear and takes it back to the scene
+/// through the inverse of the cine rendering, which is the LogC4 the Output read (the look was Neutral).
+pub fn load_photos(stride: usize) -> Vec<Photo> {
+    use ym_color::display::OutputTarget;
+    use ym_color::logc::logc4_encode_rgb;
+    let cine = CineRendering::new(OutputTarget::Srgb);
+    let Ok(rd) = std::fs::read_dir(photo_dir()) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = rd
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "png"))
+        .collect();
+    files.sort();
+    let mut out = Vec::new();
+    for path in files {
+        let dec = png::Decoder::new(std::io::BufReader::new(
+            std::fs::File::open(&path).expect("open photo"),
+        ));
+        let mut reader = dec.read_info().expect("png header");
+        let mut buf = vec![0; reader.output_buffer_size().expect("png size")];
+        let info = reader.next_frame(&mut buf).expect("png frame");
+        assert_eq!(info.bit_depth, png::BitDepth::Sixteen, "16-bit PNG");
+        let ch = info.color_type.samples();
+        let (w, h) = (info.width as usize, info.height as usize);
+        let mut pixels = Vec::new();
+        for y in (0..h).step_by(stride) {
+            for x in (0..w).step_by(stride) {
+                let o = (y * w + x) * ch * 2;
+                let mut e = [0.0; 3];
+                for c in 0..3 {
+                    e[c] = f64::from(u16::from_be_bytes([buf[o + 2 * c], buf[o + 2 * c + 1]])) / 65535.0;
+                }
+                let lin = e.map(ym_color::encode::srgb_decode);
+                pixels.push(logc4_encode_rgb(cine.inverse(lin).scene.0));
+            }
+        }
+        let name = path
+            .file_stem()
+            .map_or_else(String::new, |s| s.to_string_lossy().replace("_neutral", ""));
+        out.push(Photo { name, pixels });
+    }
+    out
+}
