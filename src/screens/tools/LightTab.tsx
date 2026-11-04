@@ -8,6 +8,7 @@ import type { AppStore } from "../../state/store";
 import { ContrastSlider, ExposureSlider, PercentSlider } from "./controls";
 import { AUTO } from "./shared";
 import type { TabProps } from "./shared";
+import { usePaneActive } from "./pane";
 
 /** Drawn until the first histogram arrives, so the panel doesn't jump. */
 const EMPTY_HISTOGRAM = { red: [0, 0], green: [0, 0], blue: [0, 0] };
@@ -16,14 +17,15 @@ const EMPTY_HISTOGRAM = { red: [0, 0], green: [0, 0], blue: [0, 0] };
  * The histogram at the top of the Light tab, with the display values at the middle of the frame at its left and the photo's ISO, shutter
  * and aperture at its right. `at` is the node whose signal it is (`docs/01`): left out, Main's; the node view names the selected node.
  */
-export function LightHistogram({ store, photo, at }: { store: AppStore; photo: PhotoSummary; at?: NodeId }) {
+export const LightHistogram = memo(function LightHistogram({ store, photo, at }: { store: AppStore; photo: PhotoSummary; at?: NodeId }) {
   const histogram = useAppState((s) => s.histogram);
   const middle = useAppState((s) => s.middleReadout);
   const readout = middle ? `R ${middle.r}  G ${middle.g}  B ${middle.b}` : null;
 
   // The plot follows the frames the viewport draws, at most five times a second; the left caption reads the middle of the frame
   // (`store.watchHistogram`). Nothing is asked for per frame: every request is a job in the queue that also draws the viewport.
-  useEffect(() => store.watchHistogram({ readout: true, at }), [store, photo.id, at]);
+  const active = usePaneActive();
+  useEffect(() => (active ? store.watchHistogram({ readout: true, at }) : undefined), [store, photo.id, at, active]);
 
   return (
     <Histogram
@@ -32,7 +34,7 @@ export function LightHistogram({ store, photo, at }: { store: AppStore; photo: P
       right={`ISO ${photo.iso} · ${shutterLabel(photo.shutter_s)} · f/${Math.round(photo.aperture_f * 10) / 10}`}
     />
   );
-}
+});
 
 /**
  * The High dynamic range card: Highlights, Shadows, White and Black. On Main the three that can be Auto keep their Auto semantics and the

@@ -6,6 +6,7 @@ import type { ColorWarpPin } from "../../api/types";
 import { useAppState } from "../../state/context";
 import { gradeOf, MAIN_ID, patchOf } from "../../state/settingsGraph";
 import type { TabProps } from "./shared";
+import { usePaneActive } from "./pane";
 
 /** What the card says while no pin is selected. */
 export const WARP_HINT = "Drag a colour to move it. Lock holds a colour in place.";
@@ -45,7 +46,8 @@ export function ColorWarpCard({ store, photo, rs, node = MAIN_ID, pickingColor =
   // The photo's colours behind the plane follow the frames the viewport draws, at most five times a second (`store.watchChromaScatter`).
   // They are the colours at the input of this node's warp (`at`, `docs/01`); Main's are asked for without a node, as before nodes.
   const at = node === MAIN_ID ? undefined : node;
-  useEffect(() => store.watchChromaScatter({ at }), [store, photo.id, at]);
+  const active = usePaneActive();
+  useEffect(() => (active ? store.watchChromaScatter({ at }) : undefined), [store, photo.id, at, active]);
 
   const send = (next: ColorWarpPin[], final: boolean): void => void store.update(patchOf(node, { grade: { color_warp: { pins: next } } }), final, rs.photo_id);
   const pin = selected === null ? undefined : pins[selected];

@@ -350,7 +350,11 @@ fn wide_gamut_exports_agree_with_the_cpu() {
         // makes at the middle of its range.
         let linear = |c: u32| (f64::from(c) / 65535.0).powf(2.4);
         let in_linear = (linear(dev[at]) - linear(cpu[at])).abs();
-        let allowed = if space == ColorSpace::Rec2020 { 5.0e-5 } else { 0.0 };
+        let allowed = if space == ColorSpace::Rec2020 {
+            5.0e-5
+        } else {
+            0.0
+        };
         assert!(
             max <= TEN_BIT_CODE || in_linear <= allowed,
             "{space:?}: {max} codes, {in_linear:.2e} in linear light"

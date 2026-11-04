@@ -16,6 +16,8 @@ export interface DividerProps {
   onNudge: (deltaPx: number) => void;
   /** A double click: back to 45 %. */
   onReset: () => void;
+  /** The node view is closed but kept built: the divider takes no room and no focus (U-02). */
+  hidden?: boolean;
 }
 
 /**
@@ -24,7 +26,7 @@ export interface DividerProps {
  * Its value is the editor's share of the height under the header, in per cent; the bounds are 25 % and what leaves the photo 200 px.
  * Ours, with no counterpart in glasscn (its Separator is a static hairline).
  */
-export function Divider({ editor, area, min, max, onResize, onNudge, onReset }: DividerProps) {
+export function Divider({ editor, area, min, max, onResize, onNudge, onReset, hidden = false }: DividerProps) {
   const [dragging, setDragging] = useState(false);
   const start = useRef<{ y: number; editor: number } | null>(null);
   const onPointerDown = usePointerDrag({
@@ -61,6 +63,7 @@ export function Divider({ editor, area, min, max, onResize, onNudge, onReset }: 
       aria-valuemin={percent(min)}
       aria-valuemax={percent(max)}
       tabIndex={0}
+      hidden={hidden || undefined}
       className="ym-divider"
       data-dragging={dragging || undefined}
       onPointerDown={onPointerDown}

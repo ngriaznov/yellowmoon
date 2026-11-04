@@ -1,8 +1,11 @@
-import { useEffect, useId, useRef } from "react";
+import { memo, useCallback, useEffect, useId, useRef } from "react";
+import type { MutableRefObject } from "react";
 import { Slider as GlassSlider } from "@/components/glass/slider";
 import { cx } from "./cx";
 import { clampSnap, roundToStep, sameValue } from "./format";
+import { holdGesture } from "../state/gestureHold";
 import { useDraft, useFrameEmitter, useGestureCallback } from "./hooks";
+import type { GestureCallback } from "./hooks";
 import { ResetLink } from "./ResetLink";
 import type { TabId } from "./tabs";
 import { ValueBox } from "./ValueBox";
@@ -52,31 +55,62 @@ export interface SliderProps {
   className?: string;
 }
 
+/** A stable function that calls the newest `fn` (set while rendering, so a call from an effect of the same commit sees it). Undefined stays undefined. */
+function useProxy<A extends unknown[], R>(fn: ((...args: A) => R) | undefined): ((...args: A) => R) | undefined {
+  const ref: MutableRefObject<typeof fn> = useRef(fn);
+  ref.current = fn;
+  const proxy = useCallback((...args: A): R => (ref.current as (...a: A) => R)(...args), []);
+  return fn ? proxy : undefined;
+}
+
 /**
  * Slider row: a 92 px label, glasscn's slider (a soft track, an accent range that grows from the default, its small round 16 px knob that
  * turns into a lens while dragged), a 72 px value box and a 40 px Reset column, 38 px high. The knob is Radix's `role="slider"`, named by the label.
  *
  * Keys (Radix): arrows step, Shift+arrow or PageUp/PageDown ×10, Home/End to the limits; the same keys with ⌘, ⌃ or ⌥ are left alone. Double-click the track to reset. The component is
  * controlled; while a drag or a patch is in flight it shows its own value so the knob never lags behind the pointer.
+ *
+ * Speed: the callbacks a caller passes are new functions at every render of the caller, and a tab draws again at every tick of a drag.
+ * This outer part is cheap and keeps the newest callbacks behind stable ones; the row itself (`SliderRow`) is memoised on the data, so
+ * only the row that moves draws (U-02).
  */
-export function Slider({
+export function Slider({ onChange, onReset, format, parse, ...data }: SliderProps) {
+  const gesture = useGestureCallback(onChange);
+  const resetFn = useProxy(onReset);
+  const formatFn = useProxy(format);
+  const parseFn = useProxy(parse);
+  // The row does not see a new `format`, so what it would print for the ends and the value decides when it draws again.
+  const formatKey = format ? `${format(data.value)}|${data.defaultValue === undefined ? "" : format(data.defaultValue)}|${format(data.min)}|${format(data.max)}` : "";
+  return <SliderRow {...data} gesture={gesture} resetFn={resetFn} formatFn={formatFn} parseFn={parseFn} formatKey={formatKey} />;
+}
+
+type SliderRowProps = Omit<SliderProps, "onChange" | "onReset" | "format" | "parse"> & {
+  gesture: GestureCallback<SliderProps["onChange"]>;
+  resetFn: (() => void) | undefined;
+  formatFn: ((value: number) => string) | undefined;
+  parseFn: ValueBoxProps["parse"];
+  formatKey: string;
+};
+
+const SliderRow = memo(function SliderRow({
   label,
   value,
   min,
   max,
   step = 1,
   defaultValue,
-  format,
-  parse,
-  onChange,
-  onReset,
+  formatFn: format,
+  parseFn: parse,
+  gesture: onChangeRef,
+  resetFn: onReset,
+  formatKey,
   changed: changedProp,
   tab,
   disabled = false,
   resetColumn = true,
   id: idProp,
   className,
-}: SliderProps) {
+}: SliderRowProps) {
   const autoId = useId();
   const id = idProp ?? `ym-slider-${autoId}`;
   const labelId = `${id}-label`;
@@ -87,9 +121,15 @@ export function Slider({
   const changed = changedProp ?? (hasDefault && !sameValue(shown, defaultValue, step));
 
   // A drag reports to the `onChange` it began with, so the frame and the release after it cannot reach another photo (`useGestureCallback`).
-  const onChangeRef = useGestureCallback(onChange);
   const last = useRef(value);
   const pointerDown = useRef(false);
+  // While the knob is held the histogram, the readout and the scatter are not asked for (`holdGesture`).
+  const hold = useRef<(() => void) | null>(null);
+  const endHold = (): void => {
+    hold.current?.();
+    hold.current = null;
+  };
+  useEffect(() => endHold, []);
   const moved = useRef(false);
   const frames = useFrameEmitter<number>((v) => onChangeRef.current(v, false));
 
@@ -114,7 +154,7 @@ export function Slider({
   useEffect(() => {
     if (!format) return;
     control.current?.querySelector('[role="slider"]')?.setAttribute("aria-valuetext", format(shown));
-  }, [format, shown]);
+  }, [format, formatKey, shown]);
 
   const onValueChange = ([raw]: number[]): void => {
     if (disabled || raw === undefined) return;
@@ -139,6 +179,8 @@ export function Slider({
     if (moved.current) commit(last.current);
     moved.current = false;
     onChangeRef.end();
+    // After the final change is sent, so the extras the release asks for come after it in the core's queue.
+    endHold();
   };
 
   return (
@@ -174,6 +216,8 @@ export function Slider({
           }
           if (disabled) return;
           pointerDown.current = true;
+          endHold();
+          hold.current = holdGesture();
           moved.current = false;
           last.current = shown;
           onChangeRef.begin();
@@ -210,4 +254,4 @@ export function Slider({
       ) : null}
     </div>
   );
-}
+});

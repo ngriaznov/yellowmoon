@@ -3,7 +3,7 @@ import type { CSSProperties } from "react";
 import { Aurora } from "@/components/glass/aurora";
 import { ChevronDownIcon, CropIcon, SquareSplitHorizontalIcon } from "lucide-react";
 import type { ColorSpace, NodeId, PhotoSummary, RenderStats, ResolvedSettings, ViewportMode } from "../api/types";
-import { Button, FIRST_NODE_TAB, Filmstrip, filmstripCaption, NODE_FOR_SIMPLE_TAB, NODE_TABS, NodesGlyph, simpleTabOf, TabBar, tabPanelProps, TitleBlock, useLatest, useTabShortcuts, useWindowDrop } from "../components";
+import { Button, FIRST_NODE_TAB, Filmstrip, filmstripCaption, NODE_FOR_SIMPLE_TAB, NODE_TABS, NodesGlyph, simpleTabOf, TAB_IDS, TabBar, tabPanelProps, TitleBlock, useLatest, useStableCallback, useTabShortcuts, useWindowDrop } from "../components";
 import { exportModel } from "../export/model";
 import { cellLabel, summarise } from "../export/run";
 import type { FilmstripPhoto, PanelKind, TabId } from "../components";
@@ -25,6 +25,7 @@ import { ExportCell, Header } from "./Header";
 import { Menu } from "./Menu";
 import { Divider } from "./nodes/Divider";
 import { GraphArea } from "./nodes/GraphArea";
+import type { GraphAreaProps } from "./nodes/GraphArea";
 import { hasHandles } from "./nodes/maskGeometry";
 import { NodePanel } from "./nodes/NodePanel";
 import { nodesGlyphText, NodesNotice } from "./nodes/NodesNotice";
@@ -35,6 +36,7 @@ import { PhotoView } from "./PhotoView";
 import { lookSlugOf } from "./preview";
 import { useFullScreen } from "./useFullScreen";
 import { ColorTab } from "./tools/ColorTab";
+import { TabPane } from "./tools/pane";
 import { CurveTab } from "./tools/CurveTab";
 import { DetailTab } from "./tools/DetailTab";
 import { LensTab } from "./tools/LensTab";
@@ -90,14 +92,16 @@ function zoomView(zoom: ViewportMode, stats: RenderStats | null, estimate: numbe
 interface ZoomMenuProps {
   store: AppStore;
   photo: PhotoSummary | null;
-  rs: ResolvedSettings | null;
+  /** The Input's orientation and crop, which decide the Fit zoom's estimate. Two fields, not the Input: an Exposure drag changes the Input and must not draw the menu. */
+  orientation: ResolvedSettings["values"]["input"]["orientation"] | undefined;
+  crop: ResolvedSettings["values"]["input"]["crop"] | undefined;
   /** The photo cell's size, for the estimate of the Fit zoom. */
   cell: { width: number; height: number; scale: number } | null;
 }
 
 /** The header's zoom button and menu. It reads the zoom and `render_stats` itself: a wheel zoom or a frame redraws this button only. */
-const ZoomMenu = memo(function ZoomMenu({ store, photo, rs, cell }: ZoomMenuProps) {
-  const estimate = cell && photo ? fitZoomExact(cell, photo, rs?.values.input ?? null) : null;
+const ZoomMenu = memo(function ZoomMenu({ store, photo, orientation, crop, cell }: ZoomMenuProps) {
+  const estimate = cell && photo ? fitZoomExact(cell, photo, orientation === undefined ? null : { orientation, crop: crop ?? null }) : null;
   const label = useAppState((s) => zoomView(s.zoom, s.stats, estimate).label);
   const key = useAppState((s) => zoomView(s.zoom, s.stats, estimate).key);
   return (
@@ -157,6 +161,43 @@ const CopyPasteButtons = memo(function CopyPasteButtons({ store, canCopy }: { st
   );
 });
 
+interface HeaderActionsProps {
+  store: AppStore;
+  photo: PhotoSummary | null;
+  orientation: ResolvedSettings["values"]["input"]["orientation"] | undefined;
+  crop: ResolvedSettings["values"]["input"]["crop"] | undefined;
+  cell: { width: number; height: number; scale: number } | null;
+  before: boolean;
+  cropping: boolean;
+  /** Crop needs settings to crop. */
+  canCrop: boolean;
+  nodesOn: boolean;
+  onCrop: () => void;
+  onNodes: () => void;
+}
+
+/**
+ * Before, Crop, Nodes, Add photos and the zoom menu. They are data and two stable callbacks, so a tick of a slider drag, which gives the
+ * screen new settings, does not draw them (U-02).
+ */
+const HeaderActions = memo(function HeaderActions({ store, photo, orientation, crop, cell, before, cropping, canCrop, nodesOn, onCrop, onNodes }: HeaderActionsProps) {
+  return (
+    <>
+      <Button variant="header" pressed={before} onClick={() => void store.toggleBefore()} title="Before and after (\)" icon={<SquareSplitHorizontalIcon aria-hidden="true" />}>
+        <span className="ym-header-label">Before</span>
+      </Button>
+      <Button variant="header" pressed={cropping} disabled={!canCrop} onClick={onCrop} title="Crop (C)" icon={<CropIcon aria-hidden="true" />}>
+        <span className="ym-header-label">Crop</span>
+      </Button>
+      <Button variant="header" pressed={nodesOn} disabled={cropping} onClick={onNodes} title="Nodes (N)" icon={<NodesGlyph />}>
+        <span className="ym-header-label">Nodes</span>
+      </Button>
+      <AddPhotosButton store={store} />
+      <ZoomMenu store={store} photo={photo} orientation={orientation} crop={crop} cell={cell} />
+    </>
+  );
+});
+
 /**
  * The Export cell of the header. It reads the run and the picks itself, so a tile finishing in an export redraws this button, not the
  * screen.
@@ -173,6 +214,40 @@ function ExportCellContainer({ store }: { store: AppStore }) {
   const progress = useAppState((s) => (s.panel !== "export" && s.exportRun?.phase === "running" ? summarise(s.exportRun).percent : undefined));
   return <ExportCell label={label} current={exporting} progress={progress} onClick={() => (store.getState().panel === "export" ? store.closeExport() : store.openExport())} />;
 }
+
+type NodeLayoutValue = ReturnType<typeof useNodeLayout>;
+
+interface GraphHostProps extends Omit<GraphAreaProps, "expanded" | "onToggleExpanded" | "hidden"> {
+  /** The node view is on. Off, the graph stays built and hidden. */
+  active: boolean;
+  layout: NodeLayoutValue;
+}
+
+/**
+ * The divider and the graph of the node view. Opening the node view builds the graph (xyflow, the cards, their shadows), which takes 300 to
+ * 500 ms; the first opening pays it and closing only hides it, so the next opening is a change of `hidden` (U-02). While it is hidden
+ * it is not drawn again when the screen draws.
+ */
+const GraphHost = memo(
+  function GraphHost({ active, layout, ...area }: GraphHostProps) {
+    return (
+      <>
+        <Divider
+          editor={layout.editor}
+          area={layout.area}
+          min={layout.min}
+          max={layout.max}
+          onResize={layout.setEditor}
+          onNudge={layout.nudge}
+          onReset={layout.reset}
+          hidden={!active}
+        />
+        <GraphArea {...area} expanded={layout.expanded} onToggleExpanded={layout.toggleExpanded} hidden={!active} />
+      </>
+    );
+  },
+  (prev, next) => !prev.active && !next.active,
+);
 
 /**
  * The Photos screen (`design/mockups/photos.html`, `docs/11-ui.md` §Photos): the header with
@@ -202,6 +277,9 @@ export function Photos() {
   const preferences = useAppState((s) => (s.panel === "export" ? s.preferences : null));
   const overlay = useAppState((s) => s.overlay);
   const [tab, setTab] = useState<TabId>("look");
+  // The tabs that were opened: they stay mounted (hidden) so that coming back to one is a change of `hidden`, not a build.
+  const visited = useRef<Set<TabId>>(new Set());
+  visited.current.add(tab);
   // The simple view (today's Photos) or the node view (`docs/23`), and the node the graph is on. Both are the window's: nothing is kept.
   const [view, setView] = useState<"simple" | "nodes">("simple");
   const [selectedNode, setSelectedNode] = useState<NodeId>(MAIN_ID);
@@ -281,6 +359,11 @@ export function Photos() {
   // The node view's layout is on while the view is and the window is not full screen (the photo alone is the whole window then).
   const nodesOn = view === "nodes" && !fullScreen.on;
   const nodeLayout = useNodeLayout(nodesOn);
+  // The graph is built the first time the node view opens and stays built (hidden) when it closes, for the photo it was built for: another photo
+  // builds it again on the next opening (xyflow fits the view to a canvas that has a size).
+  const graphFor = useRef<number | string | null | undefined>(undefined);
+  if (nodesOn) graphFor.current = photo?.id ?? null;
+  const showGraph = nodesOn || (graphFor.current !== undefined && graphFor.current === (photo?.id ?? null));
   // Show mask (`docs/23` §5.8): the core draws the mask of the corrector the node view has selected. It is on only while the node view is (not
   // in the simple view or full screen), not while Crop or Export shows, and only on a corrector: the Input and the Output have no mask. The
   // view's on and style are the store's and come back with the node; the core is told when any of them changes, and for a new photo.
@@ -404,10 +487,10 @@ export function Photos() {
     setTab(next);
   };
   /** A tab of the selected node (a click, or ⌘1 to ⌘5): the node's kind remembers it. */
-  const showNodeTab = (next: TabId): void => {
+  const showNodeTab = useStableCallback((next: TabId): void => {
     store.setPanel("tools");
     setNodeTabs((was) => ({ ...was, [onKind]: next }));
-  };
+  });
   // ⌘1 to ⌘7 are the simple view's tabs; in the node view ⌘1 to ⌘5 are the selected node's own (a corrector's four, the Output's two).
   useTabShortcuts(
     (next) => {
@@ -708,36 +791,46 @@ export function Photos() {
         <TabBar value={tab} onChange={setTab} />
         {hidden ? <NodesNotice hidden={hidden} onOpen={openNodes} /> : null}
         <div className="ym-tools__scroll" {...tabPanelProps(tab)}>
-          <TitleBlock tab={tab} />
           {photo && rs && isReady(photo) ? (
-            tab === "look" ? (
-              <LookTab store={store} photo={photo} rs={rs} onOpenTab={setTab} />
-            ) : tab === "lens" ? (
-              <LensTab store={store} photo={photo} rs={rs} />
-            ) : tab === "light" ? (
-              <LightTab store={store} photo={photo} rs={rs} />
-            ) : tab === "color" ? (
-              <ColorTab
-                store={store}
-                photo={photo}
-                rs={rs}
-                pickingWhite={picking === "white"}
-                onPickWhite={setPickingWhite}
-                pickingColor={picking === "color"}
-                onPickColor={setPickingColor}
-              />
-            ) : tab === "detail" ? (
-              <DetailTab store={store} photo={photo} rs={rs} />
-            ) : tab === "curve" ? (
-              <CurveTab store={store} photo={photo} rs={rs} />
-            ) : (
-              <RawTab store={store} photo={photo} rs={rs} />
-            )
-          ) : photo && !isReady(photo) ? (
-            <p className="ym-tools__notice">
-              {photo.status.kind === "skipped" ? "There is nothing to adjust: this file can't be opened." : "This photo can be adjusted when it is developed."}
-            </p>
-          ) : null}
+            // A tab that was opened once stays mounted and hidden (`TabPane`): switching back mounts nothing. A tab that was never opened is not built.
+            TAB_IDS.filter((id) => id === tab || visited.current.has(id)).map((id) => (
+              <TabPane key={id} id={id} active={id === tab}>
+                <TitleBlock tab={id} />
+                {id === "look" ? (
+                  <LookTab store={store} photo={photo} rs={rs} onOpenTab={setTab} />
+                ) : id === "lens" ? (
+                  <LensTab store={store} photo={photo} rs={rs} />
+                ) : id === "light" ? (
+                  <LightTab store={store} photo={photo} rs={rs} />
+                ) : id === "color" ? (
+                  <ColorTab
+                    store={store}
+                    photo={photo}
+                    rs={rs}
+                    pickingWhite={picking === "white"}
+                    onPickWhite={setPickingWhite}
+                    pickingColor={picking === "color"}
+                    onPickColor={setPickingColor}
+                  />
+                ) : id === "detail" ? (
+                  <DetailTab store={store} photo={photo} rs={rs} />
+                ) : id === "curve" ? (
+                  <CurveTab store={store} photo={photo} rs={rs} />
+                ) : (
+                  <RawTab store={store} photo={photo} rs={rs} />
+                )}
+              </TabPane>
+            ))
+          ) : (
+            <>
+              <TitleBlock tab={tab} />
+              {photo && !isReady(photo) ? (
+                <p className="ym-tools__notice">
+                  {photo.status.kind === "skipped" ? "There is nothing to adjust: this file can't be opened." : "This photo can be adjusted when it is developed."}
+                </p>
+              ) : null}
+            </>
+          )}
         </div>
         <div className="ym-tools__foot" role="group" aria-label="Copy and paste settings">
           {copyPaste}
@@ -747,6 +840,8 @@ export function Photos() {
   }
 
   const exporting = panel === "export";
+  const onCropButton = useStableCallback(() => (cropping ? crop.session?.cancel() : startCrop()));
+  const onNodesButton = useStableCallback(toggleNodes);
 
   return (
     <div
@@ -783,17 +878,19 @@ export function Photos() {
           </>
         ) : (
           <>
-            <Button variant="header" pressed={before} onClick={() => void store.toggleBefore()} title="Before and after (\)" icon={<SquareSplitHorizontalIcon aria-hidden="true" />}>
-              <span className="ym-header-label">Before</span>
-            </Button>
-            <Button variant="header" pressed={cropping} disabled={!rs} onClick={() => (cropping ? crop.session?.cancel() : startCrop())} title="Crop (C)" icon={<CropIcon aria-hidden="true" />}>
-              <span className="ym-header-label">Crop</span>
-            </Button>
-            <Button variant="header" pressed={view === "nodes"} disabled={cropping} onClick={toggleNodes} title="Nodes (N)" icon={<NodesGlyph />}>
-              <span className="ym-header-label">Nodes</span>
-            </Button>
-            <AddPhotosButton store={store} />
-            <ZoomMenu store={store} photo={photo} rs={rs} cell={cell} />
+            <HeaderActions
+              store={store}
+              photo={photo}
+              orientation={rs?.values.input.orientation}
+              crop={rs?.values.input.crop}
+              cell={cell}
+              before={before}
+              cropping={cropping}
+              canCrop={rs !== null}
+              nodesOn={view === "nodes"}
+              onCrop={onCropButton}
+              onNodes={onNodesButton}
+            />
             {picking === "color" || picking === "range" ? (
               // Pick white's hint is a pill on the photo (`PickWhiteHint`); Pick colour's stays in the header (the Colour range's too).
               <span className="ym-status" data-hint="true" role="status">
@@ -831,34 +928,23 @@ export function Photos() {
         />
       </div>
 
-      {nodesOn ? (
-        <>
-          <Divider
-            editor={nodeLayout.editor}
-            area={nodeLayout.area}
-            min={nodeLayout.min}
-            max={nodeLayout.max}
-            onResize={nodeLayout.setEditor}
-            onNudge={nodeLayout.nudge}
-            onReset={nodeLayout.reset}
-          />
-          <GraphArea
-            position={session && session.current_index !== null ? session.current_index + 1 : null}
-            count={photos.length}
-            onPrevious={() => stepPhoto(-1)}
-            onNext={() => stepPhoto(1)}
-            settings={graphSettings}
-            photoKey={photo?.id ?? null}
-            selected={onNode}
-            graph={graph}
-            thumbnailOf={thumbnailOf}
-            expanded={nodeLayout.expanded}
-            onToggleExpanded={nodeLayout.toggleExpanded}
-            dimmed={cropping || exporting}
-            maskOn={maskOn}
-            onToggleMask={() => store.toggleMaskView()}
-          />
-        </>
+      {showGraph ? (
+        <GraphHost
+          active={nodesOn}
+          layout={nodeLayout}
+          position={session && session.current_index !== null ? session.current_index + 1 : null}
+          count={photos.length}
+          onPrevious={() => stepPhoto(-1)}
+          onNext={() => stepPhoto(1)}
+          settings={graphSettings}
+          photoKey={photo?.id ?? null}
+          selected={onNode}
+          graph={graph}
+          thumbnailOf={thumbnailOf}
+          dimmed={cropping || exporting}
+          maskOn={maskOn}
+          onToggleMask={() => store.toggleMaskView()}
+        />
       ) : null}
 
       <PhotoStrip

@@ -29,6 +29,8 @@ export interface GraphAreaProps extends PhotoSwitcherProps {
   maskOn?: boolean;
   /** The toolbar's Show mask: the same as M. */
   onToggleMask?: () => void;
+  /** The node view is closed but kept built (U-02): the area takes no room, is not drawn and is not drawn again. */
+  hidden?: boolean;
 }
 
 /** Why the toolbar's Delete is off for a node, or null when it is on. */
@@ -45,7 +47,7 @@ function deleteReason(id: NodeId, link: boolean): string | null {
  * the selected link first), with the sentence that says why when they are off; Show mask turns the core's mask view on and off (N-11; off on the Input and the Output). While Crop or
  * Export shows, the whole area is `inert` and dimmed.
  */
-export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, expanded, onToggleExpanded, dimmed, maskOn = false, onToggleMask, ...switcher }: GraphAreaProps) {
+export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, expanded, onToggleExpanded, dimmed, maskOn = false, onToggleMask, hidden = false, ...switcher }: GraphAreaProps) {
   const node = settings ? nodeOf(settings, selected) : undefined;
   const count = settings ? cardsOf(settings).length : 0;
   const isCard = node?.kind === "corrector" || node?.kind === "film";
@@ -54,7 +56,7 @@ export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, ex
   // The Input and the Output have no mask: the view's on or off is kept and applies again on a corrector.
   const maskOff = !isCard;
   return (
-    <section aria-label="Node editor" className="ym-graph" data-dimmed={dimmed || undefined} inert={dimmed || undefined}>
+    <section aria-label="Node editor" className="ym-graph" data-dimmed={dimmed || undefined} inert={dimmed || hidden || undefined} hidden={hidden || undefined}>
       <div role="group" aria-label="Graph tools" className="ym-graph__bar">
         <AddNodeMenu onAddCorrector={settings ? graph.addCorrector : undefined} onAddFilm={settings ? graph.addFilm : undefined} blocked={count >= MAX_CORRECTORS ? GRAPH_OP_TEXT.tooMany : null} />
         <Button

@@ -641,7 +641,13 @@ fn the_far_corner_of_an_8658_by_5772_frame_is_the_same_for_any_tile() {
 
 #[test]
 fn the_tables_are_uploaded_once_and_a_change_of_scalars_uploads_nothing() {
-    for dev in f32_devices() {
+    // A device of its own: the tests of this binary run at the same time on the shared ones, and the tables are kept
+    // per device.
+    let Some(own) = start_unpoisoned(StoragePreference::Auto) else {
+        return;
+    };
+    {
+        let dev = &own;
         let (_, prefixes) = chains_of(&[1.0], false);
         let (stack, _) = stack_of(&two()[..1], &prefixes, FRAME);
         let f = (FRAME.width, FRAME.height);
@@ -657,31 +663,23 @@ fn the_tables_are_uploaded_once_and_a_change_of_scalars_uploads_nothing() {
             })
             .expect("held")
         };
-        // The other tests of this binary share the device: start from none.
-        dev.gpu
-            .run(JobSpec::new(Priority::Viewport), |ctx, _| {
-                ym_gpu::kernels::color::release_tables(ctx);
-                Ok(())
-            })
-            .expect("release");
-        assert_eq!(held(&dev.gpu), 0);
-        let a = device_pictures(&dev.gpu, &stack, f, need);
-        assert_eq!(held(&dev.gpu), 1, "the tables are kept");
+        assert_eq!(held(dev), 0);
+        let a = device_pictures(dev, &stack, f, need);
+        assert_eq!(held(dev), 1, "the tables are kept");
         // Another exposure: the scalars differ, the tables are the same ones.
         let mut other = stack.steps()[0].clone();
         other.scalars.log10_gain += 0.3;
         let stack2 = FilmStack::new(stack.frame(), vec![other]);
-        let b = device_pictures(&dev.gpu, &stack2, f, need);
-        assert_eq!(held(&dev.gpu), 1, "a change of exposure uploads nothing");
+        let b = device_pictures(dev, &stack2, f, need);
+        assert_eq!(held(dev), 1, "a change of exposure uploads nothing");
         assert_ne!(a[0].2, b[0].2, "and the picture is another");
         // The pool lets go of them when asked.
-        dev.gpu
-            .run(JobSpec::new(Priority::Viewport), |ctx, _| {
-                ym_gpu::kernels::color::release_tables(ctx);
-                Ok(())
-            })
-            .expect("release");
-        assert_eq!(held(&dev.gpu), 0);
+        dev.run(JobSpec::new(Priority::Viewport), |ctx, _| {
+            ym_gpu::kernels::color::release_tables(ctx);
+            Ok(())
+        })
+        .expect("release");
+        assert_eq!(held(dev), 0);
     }
 }
 

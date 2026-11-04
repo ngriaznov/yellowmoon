@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/glass/tabs";
 import { cx } from "./cx";
 import { tabDomId, tabInfo, tabPanelDomId, TAB_IDS } from "./tabs";
@@ -18,7 +19,7 @@ export interface TabBarProps {
  * the tabs and select them (Home and End jump to the ends); ⌘1–⌘7 (⌘1–⌘5 in the node view) work from anywhere through `useTabShortcuts`. Each tab keeps the ids
  * `tabPanelProps(tab)` expects, so the panel the screen draws stays tied to it.
  */
-export function TabBar({ value, onChange, label = "Tool tabs", tabs = TAB_IDS, className }: TabBarProps) {
+export const TabBar = memo(function TabBar({ value, onChange, label = "Tool tabs", tabs = TAB_IDS, className }: TabBarProps) {
   return (
     <Tabs value={value} onValueChange={(next) => onChange(next as TabId)} className="block">
       <TabsList variant="line" aria-label={label} data-tab={value} className={cx("flex w-full", className)}>
@@ -30,4 +31,4 @@ export function TabBar({ value, onChange, label = "Tool tabs", tabs = TAB_IDS, c
       </TabsList>
     </Tabs>
   );
-}
+});

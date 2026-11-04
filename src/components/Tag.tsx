@@ -2,6 +2,7 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { Badge } from "@/components/glass/badge";
 import { Toggle } from "@/components/glass/toggle";
 import { cx } from "./cx";
+import { BUTTON_HANDLERS, memoStable } from "./stable";
 
 /**
  * Tag variants (`docs/11-ui.md` §Components).
@@ -126,7 +127,7 @@ export interface AutoToggleProps extends Omit<ButtonHTMLAttributes<HTMLButtonEle
  * is automatic; once something was changed it is off, and pressing it restores Auto. Pressing it while automatic does nothing, unless
  * `onOff` is given (the Crop panel's Auto, which switches both ways).
  */
-export function AutoToggle({ isAuto, onAuto, onOff, className, ...rest }: AutoToggleProps) {
+function AutoToggleImpl({ isAuto, onAuto, onOff, className, ...rest }: AutoToggleProps) {
   return (
     <Toggle
       {...rest}
@@ -143,3 +144,6 @@ export function AutoToggle({ isAuto, onAuto, onOff, className, ...rest }: AutoTo
     </Toggle>
   );
 }
+
+/** Drawn again only when its data changes, not for new `onAuto` and `onOff` functions (U-02). */
+export const AutoToggle = memoStable<AutoToggleProps>(AutoToggleImpl, BUTTON_HANDLERS);

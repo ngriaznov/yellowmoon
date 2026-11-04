@@ -5,6 +5,7 @@ import type { Curves } from "../../api/types";
 import { useAppState } from "../../state/context";
 import { gradeOf, MAIN_ID, patchOf } from "../../state/settingsGraph";
 import type { TabProps } from "./shared";
+import { usePaneActive } from "./pane";
 
 const CHANNELS = Object.keys(CURVE_CHANNEL_LABELS) as CurveChannel[];
 
@@ -31,7 +32,8 @@ export function CurveCard({ store, photo, rs, node = MAIN_ID }: TabProps & { nod
   const histogram = useAppState((s) => s.histogram);
   // The histogram behind the plot follows the frames the viewport draws, at most five times a second (`store.watchHistogram`).
   const at = node === MAIN_ID ? undefined : node;
-  useEffect(() => store.watchHistogram({ at }), [store, photo.id, at]);
+  const active = usePaneActive();
+  useEffect(() => (active ? store.watchHistogram({ at }) : undefined), [store, photo.id, at, active]);
   const background = useMemo(() => plotHistogram(channel, histogram), [channel, histogram]);
   const curve = gradeOf(rs.settings, node).curve;
 

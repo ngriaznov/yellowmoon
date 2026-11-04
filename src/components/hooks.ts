@@ -4,6 +4,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
+import { holdGesture } from "../state/gestureHold";
 
 /** A ref that always holds the newest value, for callbacks that outlive a render. */
 export function useLatest<T>(value: T): { readonly current: T } {
@@ -12,6 +13,16 @@ export function useLatest<T>(value: T): { readonly current: T } {
     ref.current = value;
   });
   return ref;
+}
+
+/**
+ * A function that never changes and calls the newest `fn` (set while rendering). For a callback handed to a memoised child, so that the
+ * child does not draw each time the parent does (U-02). Do not call it during a render.
+ */
+export function useStableCallback<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  const ref = useRef(fn);
+  ref.current = fn;
+  return useCallback((...args: A): R => ref.current(...args), []);
 }
 
 /** What `useGestureCallback` returns. */
@@ -135,7 +146,9 @@ export function usePointerDrag(handlers: PointerDragHandlers): (event: ReactPoin
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
       window.addEventListener("pointercancel", onCancel);
+      const endHold = holdGesture();
       stop.current = () => {
+        endHold();
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onCancel);

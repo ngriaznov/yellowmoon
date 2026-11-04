@@ -108,6 +108,8 @@ import type { HistoryEntry } from "./history";
 import { perfCount } from "../perf";
 import { isReady, mergeSession, photoName, releaseUrl, removedNotice, restoredNotice, withoutPhotos, withRestoredPhotos } from "./photo";
 import { RequestLimiter } from "./requestLimiter";
+import { gestureHeld, onGestureEnd } from "./gestureHold";
+import { share } from "./share";
 import {
   applyMasks,
   applyPatch,
@@ -835,7 +837,7 @@ export class AppStore {
       api.on("thumbnail_ready", (e) => this.onThumbnail(e)),
       api.on("node_thumbnails_ready", (e) => this.onNodeThumbnails(e)),
       api.on("render_stats", (stats) => {
-        this.later((s) => ({ ...s, stats }));
+        this.later((s) => (s.stats && share(s.stats, stats) === s.stats ? s : { ...s, stats }));
         this.scheduleHistogram();
         this.scheduleChromaScatter();
       }),
@@ -856,6 +858,7 @@ export class AppStore {
       api.on("viewport_busy", (e) => this.onViewportBusy(e)),
       api.on("object_state", (e) => this.onObjectState(e)),
       api.on("vision_state", (e) => this.onVisionState(e)),
+      onGestureEnd(() => this.afterGesture()),
     ];
     void this.load();
     return () => this.disconnect();
@@ -2524,9 +2527,14 @@ export class AppStore {
     this.writes.set(id, (this.writes.get(id) ?? 0) + 1);
   }
 
-  private setSettings(id: PhotoId, rs: ResolvedSettings): void {
+  private setSettings(id: PhotoId, next: ResolvedSettings): void {
     this.wrote(id);
-    this.set({ settings: { ...this.state.settings, [id]: rs } });
+    // The reply to a patch usually says what the page already shows (it folded the patch in at once): then nothing is stored and nobody
+    // redraws. What did change comes in as a copy that shares every part that did not (`share`), so a control that reads one field
+    // sees the same field (U-02).
+    const had = this.state.settings[id];
+    const rs = had ? share(had, next) : next;
+    if (rs !== had) this.set({ settings: { ...this.state.settings, [id]: rs } });
     // The node thumbnails follow every change that has landed: this asks, and the ask waits while a drag or a patch is still out.
     this.wantNodeThumbnails(id);
   }
@@ -3060,10 +3068,10 @@ export class AppStore {
 
   /** A frame was drawn: asks for the histogram once the throttle allows, if anybody watches it. */
   private scheduleHistogram(): void {
-    if (this.histogramWatchers === 0 || this.histogramTimer !== null) return;
+    if (this.histogramWatchers === 0 || this.histogramTimer !== null || gestureHeld()) return;
     this.histogramTimer = setTimeout(() => {
       this.histogramTimer = null;
-      if (this.histogramWatchers === 0) return;
+      if (this.histogramWatchers === 0 || gestureHeld()) return;
       void this.requestHistogram();
       if (this.readoutWatchers > 0) void this.refreshMiddleReadout();
     }, HISTOGRAM_THROTTLE_MS);
@@ -3143,11 +3151,18 @@ export class AppStore {
 
   /** A frame was drawn: asks for the scatter once the throttle allows, if anybody watches it. */
   private scheduleChromaScatter(): void {
-    if (this.scatterWatchers === 0 || this.scatterTimer !== null) return;
+    if (this.scatterWatchers === 0 || this.scatterTimer !== null || gestureHeld()) return;
     this.scatterTimer = setTimeout(() => {
       this.scatterTimer = null;
-      if (this.scatterWatchers > 0) void this.requestChromaScatter();
+      if (this.scatterWatchers > 0 && !gestureHeld()) void this.requestChromaScatter();
     }, HISTOGRAM_THROTTLE_MS);
+  }
+
+  /** The last gesture (a drag of a knob, a wheel, a pin) ended: the extras that were held back are asked for once. */
+  private afterGesture(): void {
+    if (this.histogramWatchers > 0) void this.requestHistogram();
+    if (this.readoutWatchers > 0) void this.refreshMiddleReadout();
+    if (this.scatterWatchers > 0) void this.requestChromaScatter();
   }
 
   // --- Undo and redo ------------------------------------------------------------------------
