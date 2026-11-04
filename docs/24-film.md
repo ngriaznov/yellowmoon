@@ -53,6 +53,7 @@ A slide film (a positive) skips the print and is scanned directly. Cine negative
 | Variant A or B (§2) | **A: back to scene colour** | the node returns LogC4 / AWG4 through the inverse of the cine rendering; A+ stays an optimisation for after F-04 |
 | Stock names (§6.5) | **Real names with the disclaimer** (option 1) | "Kodak Portra 400" as data in `data/film/params/names.json`, with "Modelled on published data. Not affiliated with Kodak or Fujifilm." The trademark check (F-H4, with M4-H3) still comes before a release |
 | CIE tables (§6.4, §9 item 9) | **Ship them as a separate credited file** | `data/film/cie/` with its own `LICENSE` and credit, as the profiles |
+| Running spektrafilm as the test oracle (§3.1, §8) | **"You can use spectrafilm, but never commit its code into our repo"** | its Python runs from a scratch virtualenv as a separate process, as a black-box oracle (F-06); none of its files enters the repository; the fixtures are numbers (CC BY-SA 4.0, credited) |
 
 Shipping CC BY-SA data as separate, credited files is new for this project (weights trained on CC BY-SA data are the earlier case, `docs/14` rule 5); these answers allow it. `docs/14` and `docs/16` record it.
 
