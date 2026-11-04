@@ -81,6 +81,8 @@ pub struct FilmChain {
     scene: SceneStage,
     exposure: ExposureStage,
     develop: Develop,
+    /// The coupler matrix `M` of `couplers.json` the develop stage was built with.
+    couplers: [[f64; 3]; 3],
     enlarger: Option<Enlarger>,
     scan: Scan,
     cine: CineRendering,
@@ -173,7 +175,8 @@ impl FilmChain {
         let reference = reference_spectrum(&film, &cie)?;
         let scene = SceneStage::new(&cie, &reference);
         let exposure = ExposureStage::new(&film, &cie, spectra, params.use_window)?;
-        let develop = Develop::new(&film, load_couplers(&root.join("params"))?)?;
+        let couplers = load_couplers(&root.join("params"))?;
+        let develop = Develop::new(&film, couplers)?;
         let (enlarger, scan) = match &paper {
             Some(p) => {
                 let parts = load_enlarger_parts(&root.join("params"))?;
@@ -195,6 +198,7 @@ impl FilmChain {
             scene,
             exposure,
             develop,
+            couplers,
             enlarger,
             scan,
             cine,
@@ -235,6 +239,14 @@ impl FilmChain {
     #[must_use]
     pub fn exposure_stage(&self) -> &ExposureStage {
         &self.exposure
+    }
+
+    /// The 3 x 3 coupler matrix `M` of `couplers.json` that stage 5 of this chain uses. The coupler amount that
+    /// scales it is [`FilmParams::coupler_amount`] of [`FilmChain::params`]. The baker takes both from the chain it
+    /// bakes, so a baked film and the chain itself can never use different couplers.
+    #[must_use]
+    pub fn couplers(&self) -> [[f64; 3]; 3] {
+        self.couplers
     }
 
     /// Stages 4 and 5.

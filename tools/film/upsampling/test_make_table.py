@@ -93,26 +93,73 @@ class CommittedTable(unittest.TestCase):
         y = self.obs.xyz(self.table[..., :3])[..., 1]
         self.assertLess(float(np.abs(y - self.table[..., 3]).max()), 1e-5, "Y_s is the Y of the stored spectrum")
 
-    def test_the_inpainting_stays_between_the_solved_values_and_is_smooth(self):
+    def reachable_cells(self) -> np.ndarray:
+        """Cells of the table a lookup can read: the corners of every bilinear cell that holds a chromaticity stage 1 can produce.
+
+        Stage 1 (``crates/ym-film/src/scene.rs``) compresses a chromaticity toward the film's reference white along the ray to the
+        locus; it approaches ``LIMIT`` = 0.985 of the distance and never reaches it. So the reachable set is the locus scaled by
+        0.985 about the white. The reference lights of the profiles are D55 and a 3200 K blackbody (the D50 white is added for the
+        rendering lights); a cell counts when any of them reaches it. The bilinear cell between nodes ``i`` and ``i + 1`` is
+        tested on a grid four times finer than the table.
+        """
+        limit = 0.985
+        poly = mt.locus_polygon(self.obs)
+        sub = 4
+        fine = np.arange(255 * sub + 1) / (255 * sub)
+        fx, fy = np.meshgrid(fine, fine)
+        inside = mt.inside_polygon(fx, fy, poly)
+        reach = np.zeros(fx.shape, dtype=bool)
+        for power in (spd(self.obs, "CIE_illum_D55.csv"), spd(self.obs, "CIE_std_illum_D50.csv"), planck(self.obs, 3200)):
+            xyz = power @ self.obs.m
+            white = np.array([xyz[0], xyz[1]]) / xyz.sum()
+            reach |= inside & (mt.relative_radius(fx, fy, poly, white) <= limit)
+        # Bilinear cell (iy, ix) holds the fine samples iy*sub .. iy*sub + sub (both ends: a point on a shared edge reads both).
+        cell = np.zeros((255, 255), dtype=bool)
+        for dy in range(sub + 1):
+            for dx in range(sub + 1):
+                cell |= reach[dy : dy + 255 * sub : sub, dx : dx + 255 * sub : sub]
+        corners = np.zeros((256, 256), dtype=bool)
+        for oy in (0, 1):
+            for ox in (0, 1):
+                corners[oy : oy + 255, ox : ox + 255] |= cell
+        return corners
+
+    def neighbour_change(self, cells: np.ndarray) -> np.ndarray:
+        """Largest change of the spectrum between each pair of 4-neighbours that are both in ``cells``."""
+        spectra = self.obs.spectrum(self.table[..., :3])
+        pairs = []
+        for a, b in ((np.s_[:, :-1], np.s_[:, 1:]), (np.s_[:-1], np.s_[1:])):
+            both = cells[a] & cells[b]
+            pairs.append(np.abs(spectra[b] - spectra[a]).max(axis=2)[both])
+        return np.concatenate(pairs)
+
+    def test_the_inpainting_stays_between_the_solved_values(self):
         solved = self.flags == 0
         for k in range(3):
             lo, hi = self.table[..., k][solved].min(), self.table[..., k][solved].max()
             filled = self.table[..., k][~solved]
             self.assertGreaterEqual(float(filled.min()), lo - 1e-3 * (hi - lo), "maximum principle of the Laplace fill")
             self.assertLessEqual(float(filled.max()), hi + 1e-3 * (hi - lo))
-        spectra = self.obs.spectrum(self.table[..., :3])
-        pairs = []
-        for axis, (a, b) in ((1, (np.s_[:, :-1], np.s_[:, 1:])), (0, (np.s_[:-1], np.s_[1:]))):
-            both = (self.flags[a] == 1) & (self.flags[b] == 1)
-            pairs.append(np.abs(spectra[b] - spectra[a]).max(axis=2)[both])
-        change = np.concatenate(pairs)
-        # Spectra near the locus are steps sharper than the 5 nm grid, so the largest change between neighbours is about 1 (an edge
-        # moves by a sample); the bulk of the inpainted area changes by far less (the median is 4e-5, the 75th percentile 5e-3, the 90th
-        # 0.06 with the luminance target of F-06b; 7e-7, 1e-5 and 0.01 with the first one, which was brighter at the locus). The
-        # inpainted cells are outside the locus, which stage 1 never reaches, apart from the rim of a bilinear lookup.
-        self.assertLess(float(np.percentile(change, 50)), 1e-4)
-        self.assertLess(float(np.percentile(change, 75)), 2e-2)
-        self.assertLess(float(np.percentile(change, 90)), 0.15)
+
+    def test_the_reachable_inpainted_cells_are_smooth(self):
+        # Smoothness of the inpainted cells a lookup can reach (the rim of a bilinear cell at the edge of the compressed locus).
+        # Spectra near the locus are steps sharper than the 5 nm grid, so the largest change between neighbours is about 1; the
+        # bulk changes by far less. The limits are the original ones of F-03a. They are asserted on the reachable cells only.
+        inpainted = self.flags == 1
+        reachable = inpainted & self.reachable_cells()
+        change = self.neighbour_change(reachable)
+        pct = {q: float(np.percentile(change, q)) for q in (50, 75, 90)}
+        print(f"\n  reachable inpainted cells: {int(reachable.sum())}, {len(change)} neighbour pairs; "
+              f"change median {pct[50]:.3g}, 75th {pct[75]:.3g}, 90th {pct[90]:.3g}", file=sys.stderr)
+        # Reported, not asserted: the inpainted cells nowhere near a reachable chromaticity (outside the locus).
+        far = inpainted & ~reachable
+        far_change = self.neighbour_change(far)
+        print(f"  unreachable inpainted cells: {int(far.sum())}, {len(far_change)} pairs; median "
+              f"{np.percentile(far_change, 50):.3g}, 75th {np.percentile(far_change, 75):.3g}, 90th {np.percentile(far_change, 90):.3g}",
+              file=sys.stderr)
+        self.assertLess(pct[50], 1e-4)
+        self.assertLess(pct[75], 1e-3)
+        self.assertLess(pct[90], 0.05)
 
     def test_ten_white_points_have_smooth_spectra_and_the_right_chromaticity(self):
         obs = self.obs

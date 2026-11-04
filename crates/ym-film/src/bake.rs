@@ -60,7 +60,7 @@ use crate::chain::FilmChain;
 use crate::error::FilmError;
 use crate::exposure::ExposureStage;
 use crate::math::{pow10, solve3};
-use crate::params::{Output, load_couplers};
+use crate::params::Output;
 use crate::profile::Profile;
 use crate::scene::{SceneLight, SceneStage};
 
@@ -1002,7 +1002,6 @@ pub struct BakeCounts {
 /// Bakes tables for chains and keeps them in memory: an LRU per kind (T1: [`T1_CACHE_ENTRIES`]; the others:
 /// [`CACHE_ENTRIES`]). Nothing is written to disk. Every key holds the profiles' SHA-256 and [`ENGINE_VERSION`].
 pub struct Baker {
-    couplers: [[f64; 3]; 3],
     spectra_id: String,
     threads: usize,
     caches: Mutex<Caches>,
@@ -1018,21 +1017,12 @@ impl std::fmt::Debug for Baker {
 }
 
 impl Baker {
-    /// A baker reading the coupler matrix from `<data_dir>/film/params/`, working on `threads` threads (at least
-    /// 1). `spectra_id` names the upsampling data the chains use (for example its SHA-256), and is part of T1's
-    /// key.
-    ///
-    /// # Errors
-    ///
-    /// [`FilmError`] when `couplers.json` is missing or damaged.
-    pub fn new(
-        data_dir: &Path,
-        spectra_id: impl Into<String>,
-        threads: usize,
-    ) -> Result<Self, FilmError> {
-        let couplers = load_couplers(&data_dir.join("film").join("params"))?;
-        Ok(Self {
-            couplers,
+    /// A baker working on `threads` threads (at least 1). `spectra_id` names the upsampling data the chains use
+    /// (for example its SHA-256), and is part of T1's key. The coupler matrix comes from each chain that is baked
+    /// ([`FilmChain::couplers`]), not from a file the baker reads itself.
+    #[must_use]
+    pub fn new(spectra_id: impl Into<String>, threads: usize) -> Self {
+        Self {
             spectra_id: spectra_id.into(),
             threads: threads.max(1),
             caches: Mutex::new(Caches {
@@ -1042,7 +1032,7 @@ impl Baker {
                 t3b: Lru::new(CACHE_ENTRIES),
                 built: BakeCounts::default(),
             }),
-        })
+        }
     }
 
     /// The threads a bake uses.
@@ -1055,7 +1045,6 @@ impl Baker {
     #[must_use]
     pub fn with_threads(&self, threads: usize) -> Self {
         Self {
-            couplers: self.couplers,
             spectra_id: self.spectra_id.clone(),
             threads: threads.max(1),
             caches: Mutex::new(Caches {
@@ -1121,13 +1110,13 @@ impl Baker {
         let key = CurvesKey {
             film: stock_key(chain.film()),
             paper: chain.paper().map(stock_key),
-            matrix: matrix_bits(&self.couplers),
+            matrix: matrix_bits(&chain.couplers()),
             engine: ENGINE_VERSION,
         };
         if let Some(t) = self.lock().curves.get(&key) {
             return t;
         }
-        let t = Arc::new(bake_curves(chain, &self.couplers));
+        let t = Arc::new(bake_curves(chain, &chain.couplers()));
         let mut c = self.lock();
         c.built.curves += 1;
         c.curves.put(key, Arc::clone(&t));
@@ -1216,7 +1205,7 @@ impl Baker {
             x_mid: chain.exposure_stage().mid_log_exposure(),
             film_gain: Calibration::of(chain).film_gain,
             amount: p.coupler_amount,
-            matrix: self.couplers,
+            matrix: chain.couplers(),
             exposure_ev: p.exposure_ev,
             print_stops: p.print_exposure_stops,
             t1: self.t1(chain),

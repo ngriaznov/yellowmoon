@@ -50,7 +50,7 @@ pub fn chain(film: &str, output: Output) -> FilmChain {
 }
 
 pub fn baker(threads: usize) -> Baker {
-    Baker::new(&data(), "upsampling-256", threads).expect("baker")
+    Baker::new("upsampling-256", threads)
 }
 
 /// A seeded generator (splitmix64): the same numbers on every platform.
