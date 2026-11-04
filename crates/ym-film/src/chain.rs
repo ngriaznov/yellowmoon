@@ -327,10 +327,12 @@ impl FilmChain {
         }
     }
 
-    /// Stage 10: a display colour back to LogC4 / AWG4 through the inverse of the cine rendering.
+    /// Stage 10: a display colour back to LogC4 / AWG4 through the inverse of the cine rendering, the continuous
+    /// one (`CineRendering::inverse_continuous`, `docs/24` section 3.8a): the pre-image is a continuous function
+    /// of the display colour, which is what T3b stores.
     #[must_use]
     pub fn return_stage(&self, display: Vec3) -> Vec3 {
-        logc4_encode_rgb(self.cine.inverse(display).scene.0)
+        logc4_encode_rgb(self.cine.inverse_continuous(display).scene.0)
     }
 
     /// The whole chain on one LogC4 / AWG4 pixel.

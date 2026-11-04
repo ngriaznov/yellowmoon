@@ -7,8 +7,33 @@
     "amount": "FilmParams.coupler_amount scales the matrix. 1 is the profile's curves on a neutral ramp; 0 turns the couplers off and leaves the steeper curves without couplers."
   },
   "matrix": [
-    [0.06, 0.12, 0.03],
-    [0.14, 0.06, 0.10],
-    [0.04, 0.14, 0.06]
-  ]
+    [
+      0.06,
+      0.12,
+      0.03
+    ],
+    [
+      0.14,
+      0.06,
+      0.1
+    ],
+    [
+      0.04,
+      0.14,
+      0.06
+    ]
+  ],
+  "diffusion": {
+    "note": "Pass P3 (docs/24 section 3.9). The inhibitor released by the developing dye spreads in the plane before it acts (Hunt chapter 15; James on adjacency and edge effects; Eberhard and Kostinsky effects, tens to hundreds of um). Chosen: a short Gaussian (sigma about 25 um, share 0.7) and a radial exponential tail with lambda = 100 um (share 0.3), the tail written as two Gaussians (sigma 0.55 and 1.7 lambda, shares 14.4 % and 85.6 %: the non-negative least-squares fit to exp(-r / lambda) in two dimensions, relative error within 32 % out to 3 lambda). The tail's inner Gaussian (55 um) is merged into the short one, which becomes 28 um with share 0.74. All sizes in micrometres on the film. The largest sigma, 170 um, sets the halo: 6 sigma = 1.0 mm.",
+    "shape": [
+      [
+        0.74,
+        28.0
+      ],
+      [
+        0.26,
+        170.0
+      ]
+    ]
+  }
 }

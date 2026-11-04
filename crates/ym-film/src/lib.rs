@@ -14,8 +14,8 @@
 //! | 9 | scan | [`scan`] |
 //! | 10 | return to LogC4 / AWG4 | [`chain`] |
 //!
-//! Stages 3 (scatter and halation) and 6 (grain) and the diffusion of stage 5 are spatial and belong to F-05.
-//! Baking into tables is F-04. Everything here is f64, deterministic, and has no `fma`.
+//! Stages 3 (scatter and halation) and 6 (grain) and the diffusion of stage 5 are spatial: [`spatial`] and
+//! [`grain`] (F-05). Baking into tables is F-04 ([`bake`]). Everything here is f64, deterministic, and has no `fma`.
 //!
 //! The crate is written from the published science, not from any film-simulation code: see the header of each
 //! module for the papers and data sheets it follows (`docs/24` section 3.1).
@@ -33,11 +33,13 @@ pub mod develop;
 pub mod enlarger;
 pub mod error;
 pub mod exposure;
+pub mod grain;
 pub mod math;
 pub mod params;
 pub mod profile;
 pub mod scan;
 pub mod scene;
+pub mod spatial;
 pub mod spectra;
 
 pub use chain::{FilmChain, PaperChoice, Taps};

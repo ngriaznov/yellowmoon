@@ -81,20 +81,40 @@ fn smooth_cbrt_inverse(q: f64) -> f64 {
 /// colour: the chroma is beyond the part of the limiter that can be undone, or the luminance floor has no
 /// root.
 fn scene_of(q: Vec3) -> Option<Vec3> {
+    scene_side(q, true)
+}
+
+/// The scene side for coordinates that may come from an interpolation (`strict` false): a chroma beyond the part
+/// of the limiter that can be undone is brought to its end, a luminance below the floor of the model is raised
+/// to it, and the root of the luminance floor is taken as it stands (the last iterate). The result is finite for
+/// every finite input; for coordinates that have a scene colour it is that colour.
+fn scene_side(q: Vec3, strict: bool) -> Option<Vec3> {
     let d = derived();
-    let (ca, cb) = (q[1], q[2]);
+    let (mut ca, mut cb) = (q[1], q[2]);
+    let mut ln_ys = q[0];
+    if !strict {
+        if ca.is_nan() || cb.is_nan() || ln_ys.is_nan() {
+            (ca, cb, ln_ys) = (0.0, 0.0, 0.0);
+        }
+        let hold = chroma_cap() * (1.0 - 1e-9);
+        let l = ca.hypot(cb);
+        if l > hold {
+            ca *= hold / l;
+            cb *= hold / l;
+        }
+        ln_ys = ln_ys.clamp(Y_MIN.ln() + 1e-9, 1e3);
+    }
     let limited = ca.hypot(cb);
-    if limited.is_nan() || limited > chroma_cap() || q[0].is_nan() || q[0] <= Y_MIN.ln() - 1e-9 {
+    if limited.is_nan() || limited > chroma_cap() || ln_ys.is_nan() || ln_ys <= Y_MIN.ln() - 1e-9 {
         return None;
     }
-    let (mut ca, mut cb) = (ca, cb);
     if limited > consts::CHI_K {
         let t = ((limited - consts::CHI_K) / (consts::CHI_M - consts::CHI_K)).min(1.0 - 1e-12);
         let chi = consts::CHI_K + (consts::CHI_M - consts::CHI_K) * t.atanh();
         ca *= chi / limited;
         cb *= chi / limited;
     }
-    let ym = q[0].exp();
+    let ym = ln_ys.exp();
     let x = d.xn * ym * smooth_cbrt_inverse(1.0 + ca);
     let z = d.zn * ym * smooth_cbrt_inverse(1.0 - cb);
     // The luminance floor, `Ys = smoothmax(Y, Yf(Y))`, by Newton from `Y = Ys`, an upper bound of the
@@ -129,9 +149,11 @@ fn scene_of(q: Vec3) -> Option<Vec3> {
         let step = (g / dg).clamp(-0.5 * y.abs() - 1e-12, 0.5 * y.abs() + 1e-12);
         y -= step;
     }
-    let back = (luminance_floor(x, y, z) - ym).abs();
-    if back.is_nan() || back > 1e-9 * ym {
-        return None;
+    if strict {
+        let back = (luminance_floor(x, y, z) - ym).abs();
+        if back.is_nan() || back > 1e-9 * ym {
+            return None;
+        }
     }
     Some(linalg::mul_vec(&d.xyz_to_awg4, [x, y, z]))
 }
@@ -563,6 +585,86 @@ fn solve_ray(y2: f64, ca2: f64, cb2: f64, start: Option<Vec3>) -> (Vec3, f64) {
         }
     }
     (last, 1.0)
+}
+
+/// The largest change of a polar coordinate that one step of the continuation may make for the step `dl` in
+/// the chroma fraction `lambda`: a larger change means the iteration has jumped to another sheet.
+fn jump_bound(dl: f64, rho2: f64) -> f64 {
+    0.3 + 3.0 * dl * (1.0 + rho2)
+}
+
+fn jump(a: Vec3, b: Vec3) -> f64 {
+    (a[0] - b[0])
+        .abs()
+        .max((a[1] - b[1]).abs())
+        .max((a[2] - b[2]).abs())
+}
+
+/// The pre-image on the sheet of the forward map that is connected to the neutral colour of the same display
+/// luminance, found by continuation along the ray `lambda * (ca2, cb2)`: the `lambda` marched in eighths from the
+/// neutral colour with the iteration (each step started from the previous solution, and refused when it moves
+/// the solution further than a continuous branch would), and bisected 24 times in the first eighth that fails.
+/// Returns the solution of the last `lambda` that has one, and that `lambda` (1 when the colour is reached).
+fn solve_connected(y2: f64, ca2: f64, cb2: f64) -> (Vec3, f64) {
+    let ly2 = y2.max(1e-300).ln();
+    let rho2 = ca2.hypot(cb2);
+    let neutral = [axis_s(y2), 0.0, 0.0];
+    let (q0, ok0) = newton(neutral, [ly2, 0.0, 0.0], 30);
+    let mut last = if ok0 { q0 } else { neutral };
+    let try_at = |from: Vec3, lambda: f64, dl: f64| -> Option<Vec3> {
+        let (q, ok) = newton(from, [ly2, lambda * ca2, lambda * cb2], 12);
+        (ok && scene_of(q).is_some() && jump(q, from) <= jump_bound(dl, rho2)).then_some(q)
+    };
+    let steps = 8;
+    let mut lambda_ok = 0.0;
+    for k in 1..=steps {
+        let lambda = f64::from(k) / f64::from(steps);
+        if let Some(q) = try_at(last, lambda, lambda - lambda_ok) {
+            last = q;
+            lambda_ok = lambda;
+        } else {
+            let (mut lo, mut hi) = (lambda_ok, lambda);
+            for _ in 0..24 {
+                let mid = 0.5 * (lo + hi);
+                if let Some(qm) = try_at(last, mid, mid - lo) {
+                    lo = mid;
+                    last = qm;
+                } else {
+                    hi = mid;
+                }
+            }
+            return (last, lo);
+        }
+    }
+    (last, 1.0)
+}
+
+/// The limited polar coordinates `(ln Ys, ca, cb)` of the continuous pre-image of a display colour (the sheet
+/// connected to the neutral colour, see [`solve_connected`]) and the share of the requested chroma that was
+/// kept.
+pub(super) fn invert_coordinates(r: &CineRendering, display: Vec3) -> (Vec3, f64) {
+    let d = derived();
+    let xyz2 = gamut_inverse(display, &r.to_xyz);
+    let y2 = xyz2[1].max(Y2_MIN);
+    let ca2 = (xyz2[0] / (d.xn * y2)).cbrt() - 1.0;
+    let cb2 = 1.0 - (xyz2[2] / (d.zn * y2)).cbrt();
+    let (q, lambda) = solve_connected(y2, ca2, cb2);
+    if scene_of(q).is_some() {
+        (q, lambda)
+    } else {
+        // The neutral colour of that luminance always has a pre-image.
+        (vec_neutral(y2), 0.0)
+    }
+}
+
+/// The scene colour of coordinates `q = (ln Ys, ca, cb)` that [`invert_coordinates`] returned, or of an
+/// interpolation between such coordinates (the lenient scene side of [`scene_side`]).
+pub(super) fn scene_from_coordinates(q: Vec3) -> Vec3 {
+    scene_side(q, false).unwrap_or_else(|| [0.18; 3])
+}
+
+fn vec_neutral(y2: f64) -> Vec3 {
+    [tone_inverse(y2.min(1.0)).max(1e-300).ln(), 0.0, 0.0]
 }
 
 /// The fast inverse of the cine rendering for one display colour.

@@ -1,0 +1,24 @@
+{
+  "_header": {
+    "licence": "Apache-2.0",
+    "note": "Yellowmoon's own numbers. Each is either read off the literature named next to it or chosen by hand and marked 'chosen'. Nothing is taken from another film-simulation program, its defaults or its profiles (docs/24 section 3.1).",
+    "model": "Pass P2 (docs/24 section 3.9). The raw exposure E of each layer is spread by a point spread function that sums to 1 (a uniform area is unchanged): (1 - w_scatter - w_halation_c) at the pixel, w_scatter in a Gaussian, w_halation_c in the halation shape. All sizes are micrometres on the film; the long edge of the photo is 36,000 um.",
+    "scatter": {
+      "sigma_um": 12.0,
+      "weight": 0.08,
+      "source": "chosen. Light scattered in the emulsion (turbidity) is what the film's own MTF shows: a Gaussian MTF exp(-2 pi^2 sigma^2 f^2) that falls to 50 % near 30 cycles/mm has sigma = 6 um (James, The Theory of the Photographic Process, 4th ed., chapter 20; Kodak data sheets' MTF graphs). 12 um with 8 % weight puts the 50 % point of the whole PSF at about 20 cycles/mm, the order of a colour negative's modulation transfer curve. Not controlled by the Halation sliders."
+    },
+    "halation": {
+      "shape": [
+        [0.4400, 60.0],
+        [0.5600, 204.0]
+      ],
+      "shape_note": "[share, sigma_um] pairs, the shares sum to 1. Light that passes the emulsion and reflects from the back of the support returns at a distance of about 2 t tan(theta) from where it left, with t the base thickness (about 120 um for 35 mm film, James chapter 21), so the halo is a few hundred um wide with a long tail. Chosen: a core of 35 % and a radial exponential tail with lambda = 120 um (65 %). The tail is written as two Gaussians (sigma 0.55 and 1.7 lambda) whose shares, 14.4 % and 85.6 %, are the non-negative least-squares fit to exp(-r / lambda) in two dimensions (radial profile, relative error weighted by sqrt r, r up to 6 lambda; the relative error stays within 32 % out to 3 lambda; three Gaussians fit no better). The tail's inner Gaussian (66 um) is merged into the core at 60 um. The largest sigma, 204 um, sets the halo: 6 sigma = 1.2 mm, 272 px at 8,000 px.",
+      "class_weight": { "strong": 0.012, "weak": 0.04, "none": 0.15 },
+      "class_note": "The fraction of the red layer's light that comes back, by the profile's info.antihalation. Chosen: a backing that absorbs most of the light that reaches it ('strong', a remjet or a dye layer) returns about a percent; a thin dye layer ('weak') a few percent; an unprotected base ('none') about 15 %, the order of the halation that classic unbacked emulsions show (James chapter 21). No shipped profile is 'none'; the class is read so that one can be.",
+      "channel_factor": [1.0, 0.5, 0.15],
+      "channel_note": "Order red, green, blue layer. Chosen from the layer order of a negative: the red-sensitive layer is next to the support and gets the reflected light most directly; the green layer is behind the red; the blue layer is on top, and the yellow filter layer between it and the green layer absorbs blue light on its way back (Hunt, chapter 15 on the layer structure)."
+    },
+    "max_total_weight": 0.9
+  }
+}

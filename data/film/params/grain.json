@@ -1,0 +1,22 @@
+{
+  "_header": {
+    "licence": "Apache-2.0",
+    "note": "Yellowmoon's own numbers. Each is read off the literature named next to it or chosen by hand and marked 'chosen'. Nothing is taken from another film-simulation program, its defaults or its profiles (docs/24 section 3.1).",
+    "model": "Pass P4 (docs/24 section 3.9). Dye density is carried by particles of a few sublayers (the profile's density_curves_layers: fast, medium, slow). In a pixel of area A a sublayer s has N_s = A / a_s particles, of which a fraction p_s = D_s / Dmax_s is developed; the developed count is binomial, so the density of the sublayer has variance Dmax_s^2 p_s (1 - p_s) / N_s = a_s Dmax_s^2 p_s (1 - p_s) / A. The sublayers are independent; the draw is Gaussian (sum of four uniforms) and the field is blurred by the dye cloud (Newson, Delon, Galerne, 'A stochastic film grain model for resolution-independent rendering', Computer Graphics Forum 36(8), 2017, the boolean model of discs; Hunt chapter 15; James chapter 21 on the binomial grain statistics).",
+    "calibration": "Selwyn's law: the standard deviation of density seen through an aperture of area A falls as 1 / sqrt(A), sigma_D(A) = G / sqrt(2A) with G the film's granularity constant. The data sheets give the diffuse RMS granularity (times 1000) at net density 1.0 read with a 48 um circular aperture (ISO 5 / ANSI PH2.40). The overall particle area of a layer is solved at build time so that the model gives that RMS at density 1.0 in an aperture of 1,810 um^2; a pixel then has the variance of its own area. Amount scales the standard deviation; Size scales the particle area by size^2 and the cloud blur by size.",
+    "aperture_um": 48.0,
+    "reference_density": 1.0,
+    "sublayer_area_rel": [1.0, 0.4, 0.16],
+    "sublayer_area_note": "chosen. The fast sublayer has the largest crystals; the profile's sublayer centres are about 1.2 log10 units apart, a factor 16 in speed, and speed grows a little slower than the crystal's area. These are the relative areas a_s / a_0.",
+    "cloud_sigma_um": 1.0,
+    "cloud_note": "chosen. The dye cloud around a developed crystal is about a micrometre across (Newson et al. 2017 use a disc radius of the order of the grain); the noise is blurred by this Gaussian and the amplitude is raised so that the variance stays the calibrated one: the blur changes the correlation, not the variance.",
+    "rms_x1000": {
+      "formula": "rms = base * (iso / 100)^exponent, times slide_factor for a slide film",
+      "base": 2.5,
+      "exponent": 0.34,
+      "slide_factor": 2.5,
+      "source": "FALLBACK for every stock. Kodak prints the diffuse RMS granularity as a graph against exposure (Vision3 and Portra data sheets) and Fujifilm a single class number; neither was readable as numbers on 2026-11-04, so no stock has its sheet's number yet. The formula is chosen to reproduce the usual range of published values for colour negatives (about 2.5 at ISO 100, 4 at ISO 400, 5 at ISO 800) and of slides (about 6 to 8 at ISO 100, whose granularity is quoted on the same scale). Per-stock numbers from the sheets go into 'stocks' and win over the formula.",
+      "stocks": {}
+    }
+  }
+}

@@ -306,6 +306,57 @@ impl CineRendering {
     pub fn inverse(&self, display: Vec3) -> CineInverse {
         inverse::invert(self, display)
     }
+
+    /// The continuous inverse: the same as [`CineRendering::inverse`] for the colours that have a pre-image on
+    /// the sheet of the forward map that is connected to the neutral axis, and a **continuous function of
+    /// `display`** (see [`CineRendering::inverse_coordinates`]). It is the entry point of the film node's bake
+    /// ([`CineRendering::inverse`] is unchanged and is what the DNG uses).
+    #[must_use]
+    pub fn inverse_continuous(&self, display: Vec3) -> CineInverse {
+        let c = self.inverse_coordinates(display);
+        CineInverse {
+            scene: scene_from_coordinates(c.coordinates),
+            chroma_fraction: c.chroma_fraction,
+        }
+    }
+
+    /// The pre-image of `display` as the limited polar coordinates `(ln Ys, ca, cb)` the scene side starts
+    /// from, chosen by a rule that is a continuous function of the display colour (`docs/02` C12, *Inverse*,
+    /// *Continuous pre-image*): the pre-image on the sheet of the forward map connected to the neutral colour of
+    /// the same display luminance along the ray of constant luminance and hue, found by continuation from the
+    /// neutral colour, never by a start-dependent search; for a colour that sheet cannot reach, the
+    /// pre-image of the nearest colour it can (the same nearest-reachable rule as [`CineRendering::inverse`]).
+    /// Deterministic and independent of the thread; a call costs about 20 us. [`scene_from_coordinates`] turns
+    /// the coordinates, or an interpolation between several of them, into a scene colour in closed form.
+    #[must_use]
+    pub fn inverse_coordinates(&self, display: Vec3) -> CineCoordinates {
+        let (coordinates, chroma_fraction) = inverse::invert_coordinates(self, display);
+        CineCoordinates {
+            coordinates,
+            chroma_fraction,
+        }
+    }
+}
+
+/// What [`CineRendering::inverse_coordinates`] returns.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CineCoordinates {
+    /// `(ln Ys, ca, cb)`: the log of the scene luminance after the floor, and the cube-root chroma coordinates
+    /// after the limiter (their length is below `CHI_K + (CHI_M - CHI_K) tanh 3`). Smooth in the display colour
+    /// where the scene colour is not, which is why a table can hold them (`docs/24` section 3.8a).
+    pub coordinates: Vec3,
+    /// The share of the requested chroma that was kept, as [`CineInverse::chroma_fraction`].
+    pub chroma_fraction: f64,
+}
+
+/// The scene colour of limited polar coordinates `(ln Ys, ca, cb)` (the closed-form scene side of the inverse):
+/// undo the chroma limiter (`atanh`), the two cube roots (a Newton iteration on a cubic each) and the luminance
+/// floor (a Newton iteration on the smooth maximum), then the matrix to AWG4. For coordinates between those of
+/// two pre-images (an interpolation) it holds the chroma to the end of the part of the limiter that can be
+/// undone and the luminance above the model's floor; the result is finite for every finite input.
+#[must_use]
+pub fn scene_from_coordinates(coordinates: Vec3) -> LinearAwg4 {
+    LinearAwg4(inverse::scene_from_coordinates(coordinates))
 }
 
 /// Every scalar a GPU kernel needs besides [`consts`]: the numeric settings and the values the equations
