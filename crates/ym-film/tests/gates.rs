@@ -308,7 +308,7 @@ fn the_cine_rendering_undoes_the_return_stage() {
                     let display = c.display_of(logc);
                     let held = display.map(|v| v.clamp(1e-6, 1.0));
                     total += 1;
-                    if cine.inverse(held).chroma_fraction < 1.0 - 1e-9 {
+                    if cine.inverse_continuous(held).chroma_fraction < 1.0 - 1e-9 {
                         continue;
                     }
                     reachable += 1;
