@@ -1337,7 +1337,7 @@ impl Shared {
         // Busy from here until the round returns, the tile pass included.
         let mut busy = BusyGuard::new(
             self,
-            core.renderer.raw_on_cpu(photo),
+            core.renderer.raw_on_cpu(photo) || ym_core::pipeline::color::has_film(&src.settings),
             core.renderer.finding_masks(photo, &src.settings),
         );
         let handle =
@@ -1374,7 +1374,12 @@ impl Shared {
         lock(&self.state).last_error = None;
         // The pill from the first CPU frame: a frame the device failed on (the route ended, or only this frame was
         // refused) is on screen with the CPU's word.
-        busy.frame_came_back(core.renderer.raw_on_cpu(photo) || frame.report.device_refused);
+        // A live Film node is made on the CPU until the device runs the Film passes (`docs/24` section 4.7).
+        busy.frame_came_back(
+            core.renderer.raw_on_cpu(photo)
+                || frame.report.device_refused
+                || ym_core::pipeline::color::has_film(&src.settings),
+        );
         self.present(&frame, photo, requested_at);
         if !frame.sharp {
             // The zoom needs full-resolution tiles that were not ready: compute them at tile

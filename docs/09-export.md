@@ -189,6 +189,7 @@ A Yellowmoon DNG opens in other raw editors looking like our render, and keeps r
 | C1 to C6: white balance (Kelvin, tint, light presets, Pick white), sensor map, exposure (Auto, manual, burst median) | pixels (`AsShotNeutral` 1, 1, 1: nothing of the white balance is left to undo in the other app) |
 | C7 highlight range and low-light toe, C8 LogC4 | pixels (the highlight range is a scene-linear gain like the rest of C7) |
 | The nodes, in the plan's order: trims, C9 grade (contrast, brightness, zones, colour balance, saturation, the Tone card), C9b colour warp and C11 curves of each | pixels |
+| A Film node (`docs/24-film.md`), in the plan's order: the negative, the print and the scan, with halation and grain made at the DNG's own grid (the photo frame, uncropped), then the return to LogC4 and the mask blend | pixels; the export report's note says it: "The Film node is baked into this DNG, halation and grain included. Another app cannot take it out." (`ym_core::export::DNG_FILM_NOTE`) |
 | C10 look (CDL and LUT) and its intensity, log-to-log; it acts after the nodes and their curves (pipeline 0.9.0) | pixels |
 | C10 look with its own display rendering (LogC3 to Rec.709) | **pixels, approximate**: the scene values the cine rendering turns into the look's picture (below) |
 | C12 the cine rendering | profile (tone curve and look table fitted to it) |

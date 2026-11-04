@@ -351,7 +351,7 @@ fn reachable(b: &BakedFilm, d: [f64; 3]) -> bool {
     };
     if display
         .iter()
-        .any(|&c| !(c > ym_color::display::cine::D_MIN))
+        .any(|&c| c.is_nan() || c <= ym_color::display::cine::D_MIN)
     {
         return false;
     }
