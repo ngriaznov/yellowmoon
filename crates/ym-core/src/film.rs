@@ -105,6 +105,22 @@ impl Catalogue {
         self.get(id).is_some_and(|s| s.kind == StockKind::Slide)
     }
 
+    /// The paper a film is printed on when the settings say `paper: null` (`docs/24` section 4.5): the stock's own
+    /// `print` of `names.json`, or, where that is a cine print film (hidden until `docs/24` section 6.4 is settled), the
+    /// still paper that stands in for it. `None` for a slide (it has no print) and for what is not a film.
+    #[must_use]
+    pub fn matching_paper(&self, id: &str) -> Option<String> {
+        let row = self.get(id)?;
+        match row.kind {
+            StockKind::ColourNegative | StockKind::CineNegative => {}
+            _ => return None,
+        }
+        match row.print.as_deref() {
+            Some(p) if self.is_paper(p) => Some(p.to_owned()),
+            _ => Some(ym_film::chain::FALLBACK_PAPER.to_owned()),
+        }
+    }
+
     /// The plain refusal for a stock that is not a camera film that is offered.
     ///
     /// # Errors
@@ -136,6 +152,46 @@ impl Catalogue {
     }
 }
 
+/// What `ym doctor` says about the film data of a data folder: how many profiles it holds, their version, and the
+/// file whose checksum does not match, if any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilmDataStatus {
+    /// Profiles with a file in `film/spektrafilm/profiles/`.
+    pub profiles: usize,
+    /// The data version of `names.json`.
+    pub data_version: String,
+    /// The first problem found (a missing file, a checksum that differs), in plain words.
+    pub problem: Option<String>,
+}
+
+/// Reads the film data of `data_root` for the doctor.
+///
+/// # Errors
+///
+/// [`FilmError`] when `names.json` cannot be read.
+pub fn data_status(data_root: &Path) -> Result<FilmDataStatus, FilmError> {
+    let catalogue = Catalogue::load(data_root)?;
+    let spektra = data_root.join("film").join("spektrafilm");
+    let profiles = catalogue
+        .rows()
+        .iter()
+        .filter(|r| {
+            spektra
+                .join("profiles")
+                .join(format!("{}.json", r.id))
+                .is_file()
+        })
+        .count();
+    let problem = ym_film::profile::verify_checksums(&spektra)
+        .err()
+        .map(|e| e.to_string());
+    Ok(FilmDataStatus {
+        profiles,
+        data_version: catalogue.profile_version().to_owned(),
+        problem,
+    })
+}
+
 // ---------------------------------------------------------------------------------------------
 // The engine
 // ---------------------------------------------------------------------------------------------
@@ -150,6 +206,19 @@ struct ChainKey {
     knobs: [u64; 5],
 }
 
+/// A film frame is cached by everything that makes it: the node's film, print, halation and grain, and the output.
+#[derive(Clone, PartialEq, Debug)]
+struct FrameKey {
+    film: crate::settings::FilmStockSettings,
+    print: crate::settings::PrintSettings,
+    halation: crate::settings::HalationSettings,
+    grain: crate::settings::GrainSettings,
+    output: u8,
+}
+
+/// How many film frames the engine keeps (cheap: they share the tables).
+const FRAME_CACHE: usize = 16;
+
 /// How many built chains the engine keeps (a chain holds the profiles and the calibration, not tables).
 const CHAIN_CACHE: usize = 8;
 /// How many spatial models the engine keeps.
@@ -161,10 +230,10 @@ const MODEL_CACHE: usize = 24;
 pub struct FilmEngine {
     data_root: PathBuf,
     spectra: Arc<TableSpectra>,
-    spectra_id: String,
     baker: Baker,
     chains: Mutex<Vec<(ChainKey, Arc<FilmChain>)>>,
     models: Mutex<Vec<(String, Arc<SpatialModel>)>>,
+    frames: Mutex<Vec<(FrameKey, FilmFrame)>>,
     /// The tables of a node's baked film that were built, for tests: (chains, models).
     built: Mutex<(u64, u64)>,
 }
@@ -226,9 +295,9 @@ impl FilmEngine {
             data_root: data_root.to_path_buf(),
             spectra: Arc::new(spectra),
             baker: Baker::new(spectra_id.clone(), threads),
-            spectra_id,
             chains: Mutex::new(Vec::new()),
             models: Mutex::new(Vec::new()),
+            frames: Mutex::new(Vec::new()),
             built: Mutex::new((0, 0)),
         })
     }
@@ -340,6 +409,32 @@ impl FilmEngine {
         target: ym_color::display::OutputTarget,
     ) -> Result<FilmFrame, FilmError> {
         let output = film_output(target);
+        let key = FrameKey {
+            film: node.film.clone(),
+            print: node.print.clone(),
+            halation: node.halation,
+            grain: node.grain,
+            output: output as u8,
+        };
+        {
+            let mut frames = lock(&self.frames);
+            if let Some(at) = frames.iter().position(|(k, _)| *k == key) {
+                let item = frames.remove(at);
+                let frame = item.1.clone();
+                frames.push(item);
+                return Ok(frame);
+            }
+        }
+        let frame = self.build_frame(node, output)?;
+        let mut frames = lock(&self.frames);
+        frames.push((key, frame.clone()));
+        while frames.len() > FRAME_CACHE {
+            frames.remove(0);
+        }
+        Ok(frame)
+    }
+
+    fn build_frame(&self, node: &FilmNode, output: Output) -> Result<FilmFrame, FilmError> {
         // A slide has no paper, whatever the settings hold.
         let paper = if self.is_slide(&node.film.stock) {
             None
@@ -366,9 +461,40 @@ impl FilmEngine {
     }
 }
 
-/// The text that names the film data in an export's XMP (`ym:FilmData`): the profile data version and the
-/// engine version, with the credit.
+/// The text of `ym:FilmData` (`docs/24` section 6.2): for each live Film node that does something, its stock and the
+/// paper it is printed on, then the version of the profile data, the engine's version and the credit; `None` for a
+/// photo without one. A slide has no paper. The data version is the one of the built-in copy of `names.json`.
 #[must_use]
-pub fn film_data_text(profile_version: &str) -> String {
-    format!("profiles {profile_version}; engine {ENGINE_VERSION}; {FILM_CREDIT}")
+pub fn film_data_of(settings: &crate::settings::DevelopSettings) -> Option<String> {
+    let plan =
+        crate::pipeline::color::node_plan(&settings.nodes, ym_color::plan::Stop::Output).ok()?;
+    let catalogue = catalogue()?;
+    let nodes: Vec<String> = plan
+        .node_ids()
+        .into_iter()
+        .filter_map(|id| settings.nodes.film(id))
+        .filter(|f| !f.is_inert())
+        .map(|f| {
+            let paper = if catalogue.is_slide(&f.film.stock) {
+                None
+            } else {
+                f.print
+                    .paper
+                    .clone()
+                    .or_else(|| catalogue.matching_paper(&f.film.stock))
+            };
+            match paper {
+                Some(p) => format!("{} on {p}", f.film.stock),
+                None => f.film.stock.clone(),
+            }
+        })
+        .collect();
+    if nodes.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}; profiles {}; engine {ENGINE_VERSION}; {FILM_CREDIT}",
+        nodes.join(", "),
+        catalogue.profile_version()
+    ))
 }

@@ -130,6 +130,7 @@ pub fn metadata() -> Metadata {
                 // Left out, so the golden files keep their bytes; `src/xmp.rs` tests them.
                 auto: None,
                 auto_advisor: None,
+                film_data: None,
                 settings: Some(serde_json::json!({"exposure": "auto", "contrast": 0})),
             },
         },

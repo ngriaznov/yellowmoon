@@ -36,6 +36,18 @@ pub struct NodeParams {
     pub masks: NodeMasks,
 }
 
+/// A Film node in the plan (`docs/24-film.md`). Its spatial passes cannot run per pixel, so the render makes them
+/// before the colour pass and hands the result to the chain ([`RasterPlanes::film`](crate::mask::RasterPlanes)); the
+/// node's [`NodeParams`] hold its masks and are otherwise the identity. The chain blends
+/// `out = in + m * (film - in)` with `m` the mask times `strength`, like a corrector.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FilmStep {
+    /// The node's Strength, 0 to 1.
+    pub strength: f64,
+    /// A bypassed node passes its picture through (its key output still carries `m`).
+    pub bypass: bool,
+}
+
 /// What Main has beyond the grade, warp and curves that [`ChainParams`](super::ChainParams) holds.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MainNode {

@@ -773,6 +773,32 @@ impl NodeGraph {
         self.films.get_mut(&id)
     }
 
+    /// The mask rows of a numbered node, whatever its kind (a corrector's or a Film node's).
+    #[must_use]
+    pub fn masks_of(&self, id: u32) -> Option<&MaskSettings> {
+        self.corrector(id)
+            .map(|c| &c.masks)
+            .or_else(|| self.films.get(&id).map(|f| &f.masks))
+    }
+
+    /// The mask rows of a numbered node, to change.
+    pub fn masks_of_mut(&mut self, id: u32) -> Option<&mut MaskSettings> {
+        if id == MAIN_ID {
+            return Some(&mut self.main.masks);
+        }
+        if self.extra.contains_key(&id) {
+            return self.extra.get_mut(&id).map(|c| &mut c.masks);
+        }
+        self.films.get_mut(&id).map(|f| &mut f.masks)
+    }
+
+    /// The masks of every numbered node, by id.
+    pub fn all_masks(&self) -> impl Iterator<Item = (u32, &MaskSettings)> {
+        self.correctors()
+            .map(|(id, c)| (id, &c.masks))
+            .chain(self.films.iter().map(|(id, f)| (*id, &f.masks)))
+    }
+
     /// The number of numbered nodes: the correctors (Main included) and the Film nodes.
     #[must_use]
     pub fn node_count(&self) -> usize {
@@ -806,7 +832,11 @@ impl NodeGraph {
     #[must_use]
     pub fn ids(&self) -> Vec<NodeId> {
         std::iter::once(NodeId::Input)
-            .chain(self.numbered().into_iter().map(|(id, _)| NodeId::Corrector(id)))
+            .chain(
+                self.numbered()
+                    .into_iter()
+                    .map(|(id, _)| NodeId::Corrector(id)),
+            )
             .chain(std::iter::once(NodeId::Output))
             .collect()
     }
@@ -1212,7 +1242,7 @@ fn is_field_of_some_kind(key: &str) -> bool {
         NodeKind::Film,
     ]
     .iter()
-        .any(|k| node_fields(*k).contains(&key))
+    .any(|k| node_fields(*k).contains(&key))
 }
 
 /// Reads the fields of one node (everything but `id` and `kind`) over its defaults.
@@ -1514,6 +1544,80 @@ impl CorrectorNode {
     }
 }
 
+impl FilmNode {
+    fn sanitise(&mut self, s: &mut Sanitiser, id: u32, prefix: &str) -> Result<(), SettingsError> {
+        let node = NodeId::Corrector(id);
+        let trimmed: String = self.name.trim().chars().take(MAX_NAME_CHARS).collect();
+        let trimmed = trimmed.trim().to_owned();
+        self.name = if trimmed.is_empty() {
+            DEFAULT_FILM_NAME.to_owned()
+        } else {
+            trimmed
+        };
+        clamp_pos(s, node, prefix, &mut self.pos)?;
+        // The stock and the paper must be in the data (`docs/24` section 4.5). A slide takes no paper: it reads
+        // as `null`, silently, like an Auto in a corrector other than Main.
+        if let Some(c) = crate::film::catalogue() {
+            c.check_stock(&self.film.stock)
+                .map_err(SettingsError::Film)?;
+            if c.is_slide(&self.film.stock) {
+                self.print.paper = None;
+            } else if let Some(p) = &self.print.paper {
+                c.check_paper(p).map_err(SettingsError::Film)?;
+            }
+        }
+        let (v, c) = clamp_to(
+            &format!("{prefix}.film.exposure_ev"),
+            self.film.exposure_ev,
+            FILM_EXPOSURE_RANGE_EV,
+        )?;
+        self.film.exposure_ev = v;
+        s.note(node, SettingsField::Film, c);
+        let mut changed = false;
+        for (name, v, range) in [
+            (
+                "exposure_ev",
+                &mut self.print.exposure_ev,
+                PRINT_EXPOSURE_RANGE_EV,
+            ),
+            ("lights.c", &mut self.print.lights.c, LIGHTS_RANGE),
+            ("lights.m", &mut self.print.lights.m, LIGHTS_RANGE),
+            ("lights.y", &mut self.print.lights.y, LIGHTS_RANGE),
+        ] {
+            let (x, c) = clamp_to(&format!("{prefix}.print.{name}"), *v, range)?;
+            *v = x;
+            changed |= c;
+        }
+        s.note(node, SettingsField::Print, changed);
+        let mut changed = false;
+        for (name, v, range) in [
+            ("amount", &mut self.halation.amount, HALATION_AMOUNT_RANGE),
+            ("size", &mut self.halation.size, SIZE_RANGE),
+        ] {
+            let (x, c) = clamp_to(&format!("{prefix}.halation.{name}"), *v, range)?;
+            *v = x;
+            changed |= c;
+        }
+        s.note(node, SettingsField::Halation, changed);
+        let mut changed = false;
+        for (name, v, range) in [
+            ("amount", &mut self.grain.amount, GRAIN_AMOUNT_RANGE),
+            ("size", &mut self.grain.size, SIZE_RANGE),
+        ] {
+            let (x, c) = clamp_to(&format!("{prefix}.grain.{name}"), *v, range)?;
+            *v = x;
+            changed |= c;
+        }
+        s.note(node, SettingsField::Grain, changed);
+        let (v, c) = clamp_to(&format!("{prefix}.strength"), self.strength, STRENGTH_RANGE)?;
+        self.strength = v;
+        s.note(node, SettingsField::Strength, c);
+        let changed = self.masks.sanitise(&format!("{prefix}.masks"))?;
+        s.note(node, SettingsField::Masks, changed);
+        Ok(())
+    }
+}
+
 impl NodeGraph {
     /// Clamps and normalises every node in place, checks the limits and the rules of the links and
     /// puts the links in written order. `clamped` collects what was changed.
@@ -1523,15 +1627,25 @@ impl NodeGraph {
     /// [`SettingsError::NotFinite`] for a number that is not a number, the errors of the curves,
     /// the crop and the masks, and [`SettingsError::Graph`] for a broken rule.
     pub(crate) fn sanitise(&mut self, s: &mut Sanitiser) -> Result<(), SettingsError> {
-        if self.corrector_count() > MAX_CORRECTORS {
+        if self.node_count() > MAX_CORRECTORS {
             return Err(GraphError::TooManyNodes.into());
         }
+        // An id is a corrector's or a Film node's, never both.
+        if let Some(id) = self
+            .films
+            .keys()
+            .find(|id| **id == MAIN_ID || self.extra.contains_key(id))
+        {
+            return Err(GraphError::DuplicateId(id.to_string()).into());
+        }
         self.input.sanitise(s, &format!("nodes.items[{}]", 0))?;
-        let ids: Vec<u32> = self.correctors().map(|(id, _)| id).collect();
-        for id in ids {
+        for (id, _) in self.numbered() {
             let index = self.item_index(NodeId::Corrector(id));
+            let prefix = format!("nodes.items[{index}]");
             if let Some(c) = self.corrector_mut(id) {
-                c.sanitise(s, id, &format!("nodes.items[{index}]"))?;
+                c.sanitise(s, id, &prefix)?;
+            } else if let Some(f) = self.film_mut(id) {
+                f.sanitise(s, id, &prefix)?;
             }
         }
         let index = self.item_index(NodeId::Output);

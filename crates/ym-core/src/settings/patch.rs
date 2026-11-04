@@ -7,6 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use ym_color::wb::LightSource;
 use ym_looks::library::LookId;
 
+use super::film::FilmNode;
 use super::graph::Sanitiser;
 use super::graph::{
     CorrectorNode, GraphError, InputNode, MAIN_ID, NodeId, NodeKind, NodeLink, NodePos, OutputNode,
@@ -190,6 +191,79 @@ impl GradePatch {
     }
 }
 
+/// A Film node's `film` to change.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilmStockPatch {
+    /// New stock (a profile id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stock: Option<String>,
+    /// New film exposure in stops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure_ev: Option<f64>,
+}
+
+/// A Film node's enlarger lights to change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LightsPatch {
+    /// New cyan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub c: Option<f64>,
+    /// New magenta.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub m: Option<f64>,
+    /// New yellow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<f64>,
+}
+
+/// A Film node's `print` to change.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrintPatch {
+    /// New paper; `null` is the stock's matching paper.
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub paper: Option<Option<String>>,
+    /// New print exposure in stops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure_ev: Option<f64>,
+    /// Lights to change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lights: Option<LightsPatch>,
+}
+
+/// A Film node's `halation` to change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HalationPatch {
+    /// New amount, percent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f64>,
+    /// New size, percent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<f64>,
+}
+
+/// A Film node's `grain` to change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrainPatch {
+    /// New amount, percent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f64>,
+    /// New size, percent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<f64>,
+    /// New seed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u32>,
+}
+
 /// A partial of one node's fields (`docs/23` section 3.7). It is one flat object whatever the kind:
 /// the fields of every kind are here, and a field the node's kind does not have is refused when the
 /// patch is applied ("A corrector has no field called “exposure”."). A node the graph does not have
@@ -281,6 +355,23 @@ pub struct NodePatch {
     /// Masks to change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub masks: Option<MasksPatch>,
+
+    // A Film node (`docs/24` section 4.5); `name`, `bypass` and `masks` above are its too.
+    /// The negative to change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub film: Option<FilmStockPatch>,
+    /// The enlarger and the paper to change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub print: Option<PrintPatch>,
+    /// Halation to change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub halation: Option<HalationPatch>,
+    /// Grain to change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grain: Option<GrainPatch>,
+    /// New Strength, percent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strength: Option<f64>,
 }
 
 /// A node-level patch of a photo's settings (`update_settings(photo_id, patch)`), `docs/23`
@@ -350,6 +441,8 @@ impl NodePatch {
             lens => "lens", crop => "crop", orientation => "orientation", look => "look",
             look_intensity => "look_intensity", output_sharpening => "output_sharpening",
             name => "name", bypass => "bypass", trim => "trim", grade => "grade", masks => "masks",
+            film => "film", print => "print", halation => "halation", grain => "grain",
+            strength => "strength",
         );
         v
     }
@@ -377,6 +470,11 @@ impl NodePatch {
             SettingsField::Pos => self.pos.is_some(),
             SettingsField::Trim => self.trim.is_some(),
             SettingsField::Masks => self.masks.is_some(),
+            SettingsField::Film => self.film.is_some(),
+            SettingsField::Print => self.print.is_some(),
+            SettingsField::Halation => self.halation.is_some(),
+            SettingsField::Grain => self.grain.is_some(),
+            SettingsField::Strength => self.strength.is_some(),
             grade_field => self
                 .grade
                 .as_ref()
@@ -401,6 +499,30 @@ impl NodePatch {
             .is_some_and(|m| *m == MasksPatch::default())
         {
             p.masks = None;
+        }
+        if p.film
+            .as_ref()
+            .is_some_and(|m| *m == FilmStockPatch::default())
+        {
+            p.film = None;
+        }
+        if p.print
+            .as_ref()
+            .is_some_and(|m| *m == PrintPatch::default())
+        {
+            p.print = None;
+        }
+        if p.halation
+            .as_ref()
+            .is_some_and(|m| *m == HalationPatch::default())
+        {
+            p.halation = None;
+        }
+        if p.grain
+            .as_ref()
+            .is_some_and(|m| *m == GrainPatch::default())
+        {
+            p.grain = None;
         }
         p == NodePatch::default()
     }
@@ -433,6 +555,11 @@ impl NodePatch {
             bypass,
             trim,
             masks,
+            film,
+            print,
+            halation,
+            grain,
+            strength,
         );
         if let Some(g) = other.grade {
             match &mut self.grade {
@@ -572,6 +699,74 @@ impl NodePatch {
             p.grade = Some(g);
         }
         Some(p)
+    }
+
+    /// The patch that carries one field of a Film node.
+    fn of_film_field(n: &FilmNode, field: SettingsField) -> Option<Self> {
+        let mut p = Self::default();
+        match field {
+            SettingsField::Name => p.name = Some(n.name.clone()),
+            SettingsField::Bypass => p.bypass = Some(n.bypass),
+            SettingsField::Pos => p.pos = Some(n.pos),
+            SettingsField::Masks => {
+                p.masks = Some(MasksPatch {
+                    invert: Some(n.masks.invert),
+                    items: Some(n.masks.items.clone()),
+                    edit: None,
+                });
+            }
+            SettingsField::Film => {
+                p.film = Some(FilmStockPatch {
+                    stock: Some(n.film.stock.clone()),
+                    exposure_ev: Some(n.film.exposure_ev),
+                });
+            }
+            SettingsField::Print => {
+                p.print = Some(PrintPatch {
+                    paper: Some(n.print.paper.clone()),
+                    exposure_ev: Some(n.print.exposure_ev),
+                    lights: Some(LightsPatch {
+                        c: Some(n.print.lights.c),
+                        m: Some(n.print.lights.m),
+                        y: Some(n.print.lights.y),
+                    }),
+                });
+            }
+            SettingsField::Halation => {
+                p.halation = Some(HalationPatch {
+                    amount: Some(n.halation.amount),
+                    size: Some(n.halation.size),
+                });
+            }
+            SettingsField::Grain => {
+                p.grain = Some(GrainPatch {
+                    amount: Some(n.grain.amount),
+                    size: Some(n.grain.size),
+                    seed: Some(n.grain.seed),
+                });
+            }
+            SettingsField::Strength => p.strength = Some(n.strength),
+            _ => return None,
+        }
+        Some(p)
+    }
+
+    /// A patch that holds every field of a Film node, with its `kind`, so that it adds the node when the photo
+    /// does not have it.
+    #[must_use]
+    pub fn whole_film(n: &FilmNode) -> Self {
+        let mut p = Self {
+            kind: Some(NodeKind::Film),
+            ..Self::default()
+        };
+        for f in SettingsField::ALL {
+            if f.belongs_to(NodeKind::Film)
+                && let Some(one) = Self::of_film_field(n, f)
+            {
+                p.absorb(one);
+            }
+        }
+        p
     }
 
     /// A patch that holds every field of an Input.
@@ -803,6 +998,68 @@ impl NodePatch {
         Ok(())
     }
 
+    fn apply_film(&self, next: &mut FilmNode, id: u32) -> Result<(), SettingsError> {
+        if let Some(v) = &self.name {
+            next.name.clone_from(v);
+        }
+        if let Some(v) = self.bypass {
+            next.bypass = v;
+        }
+        if let Some(f) = &self.film {
+            if let Some(v) = &f.stock {
+                next.film.stock.clone_from(v);
+            }
+            if let Some(v) = f.exposure_ev {
+                next.film.exposure_ev = v;
+            }
+        }
+        if let Some(pr) = &self.print {
+            if let Some(v) = &pr.paper {
+                next.print.paper.clone_from(v);
+            }
+            if let Some(v) = pr.exposure_ev {
+                next.print.exposure_ev = v;
+            }
+            if let Some(l) = &pr.lights {
+                if let Some(v) = l.c {
+                    next.print.lights.c = v;
+                }
+                if let Some(v) = l.m {
+                    next.print.lights.m = v;
+                }
+                if let Some(v) = l.y {
+                    next.print.lights.y = v;
+                }
+            }
+        }
+        if let Some(h) = &self.halation {
+            if let Some(v) = h.amount {
+                next.halation.amount = v;
+            }
+            if let Some(v) = h.size {
+                next.halation.size = v;
+            }
+        }
+        if let Some(g) = &self.grain {
+            if let Some(v) = g.amount {
+                next.grain.amount = v;
+            }
+            if let Some(v) = g.size {
+                next.grain.size = v;
+            }
+            if let Some(v) = g.seed {
+                next.grain.seed = v;
+            }
+        }
+        if let Some(v) = self.strength {
+            next.strength = v;
+        }
+        if let Some(m) = &self.masks {
+            m.apply(&mut next.masks, &NodeId::Corrector(id).to_string())?;
+        }
+        Ok(())
+    }
+
     /// Checks that every field the patch carries belongs to `kind`.
     fn check_kind(&self, kind: NodeKind) -> Result<(), GraphError> {
         let own = node_fields(kind);
@@ -833,7 +1090,8 @@ impl DevelopSettings {
                 continue;
             }
             for field in SettingsField::ALL {
-                if field.belongs_to(id.kind()) && !self.field_equals(other, id, field) {
+                let kind = self.nodes.kind_of(id).unwrap_or_else(|| id.kind());
+                if field.belongs_to(kind) && !self.field_equals(other, id, field) {
                     out.push(FieldRef { node: id, field });
                 }
             }
@@ -887,6 +1145,23 @@ impl DevelopSettings {
                     SettingsField::LookIntensity => a.look_intensity == b.look_intensity,
                     SettingsField::OutputSharpening => a.output_sharpening == b.output_sharpening,
                     SettingsField::Pos => a.pos == b.pos,
+                    _ => true,
+                }
+            }
+            NodeId::Corrector(n) if a.films.contains_key(&n) || b.films.contains_key(&n) => {
+                let (Some(a), Some(b)) = (a.film(n), b.film(n)) else {
+                    return true;
+                };
+                match field {
+                    SettingsField::Name => a.name == b.name,
+                    SettingsField::Bypass => a.bypass == b.bypass,
+                    SettingsField::Pos => a.pos == b.pos,
+                    SettingsField::Masks => a.masks == b.masks,
+                    SettingsField::Film => a.film == b.film,
+                    SettingsField::Print => a.print == b.print,
+                    SettingsField::Halation => a.halation == b.halation,
+                    SettingsField::Grain => a.grain == b.grain,
+                    SettingsField::Strength => a.strength.to_bits() == b.strength.to_bits(),
                     _ => true,
                 }
             }
@@ -990,7 +1265,8 @@ impl DevelopSettings {
                     return Err(GraphError::CannotRemove.into());
                 }
                 NodeId::Corrector(n) => {
-                    if next.nodes.extra.remove(n).is_none() {
+                    if next.nodes.extra.remove(n).is_none() && next.nodes.films.remove(n).is_none()
+                    {
                         return Err(GraphError::PatchUnknownNode(id.to_string()).into());
                     }
                     next.nodes
@@ -1003,32 +1279,50 @@ impl DevelopSettings {
         let mut added = Vec::new();
         for (id, np) in &patch.nodes {
             let exists = next.nodes.has(*id);
+            // The kind the node is, or the kind a new numbered node is given.
+            let actual = next.nodes.kind_of(*id).unwrap_or_else(|| match np.kind {
+                Some(NodeKind::Film) if matches!(id, NodeId::Corrector(_)) => NodeKind::Film,
+                _ => id.kind(),
+            });
             if let Some(k) = np.kind
-                && k != id.kind()
+                && k != actual
             {
                 return Err(GraphError::PatchWrongKind {
                     node: id.sentence(),
-                    actual: id.kind().with_article(),
+                    actual: actual.with_article(),
                     given: k.with_article(),
                 }
                 .into());
             }
             if !exists {
-                // Only a corrector can be new, and it must say what it is.
+                // Only a numbered node can be new, and it must say what it is.
                 let NodeId::Corrector(n) = *id else {
                     return Err(GraphError::PatchUnknownNode(id.to_string()).into());
                 };
                 if np.kind.is_none() {
                     return Err(GraphError::PatchUnknownNode(id.to_string()).into());
                 }
-                let node = CorrectorNode {
-                    pos: [next.nodes.corrector_count() as f64, 0.0],
-                    ..CorrectorNode::default()
-                };
-                next.nodes.extra.insert(n, node);
+                let pos = [next.nodes.node_count() as f64, 0.0];
+                if actual == NodeKind::Film {
+                    next.nodes.films.insert(
+                        n,
+                        FilmNode {
+                            pos,
+                            ..FilmNode::default()
+                        },
+                    );
+                } else {
+                    next.nodes.extra.insert(
+                        n,
+                        CorrectorNode {
+                            pos,
+                            ..CorrectorNode::default()
+                        },
+                    );
+                }
                 added.push(*id);
             }
-            np.check_kind(id.kind())?;
+            np.check_kind(actual)?;
             match *id {
                 NodeId::Input => {
                     let base = self.nodes.input.clone();
@@ -1049,6 +1343,11 @@ impl DevelopSettings {
                         if let Some(p) = np.pos {
                             c.pos = p;
                         }
+                    } else if let Some(f) = next.nodes.film_mut(n) {
+                        np.apply_film(f, n)?;
+                        if let Some(p) = np.pos {
+                            f.pos = p;
+                        }
                     }
                 }
             }
@@ -1061,8 +1360,9 @@ impl DevelopSettings {
         let mut changed = self.diff(&next);
         // The fields of a node the patch added are all new.
         for id in &added {
+            let kind = next.nodes.kind_of(*id).unwrap_or(NodeKind::Corrector);
             for field in SettingsField::ALL {
-                if field.belongs_to(NodeKind::Corrector) {
+                if field.belongs_to(kind) {
                     let r = FieldRef { node: *id, field };
                     if !changed.contains(&r) {
                         changed.push(r);
@@ -1270,6 +1570,10 @@ impl SettingsPatch {
             let one = match node {
                 NodeId::Input => NodePatch::of_input_field(&from.nodes.input, *field),
                 NodeId::Output => NodePatch::of_output_field(&from.nodes.output, *field),
+                NodeId::Corrector(n) if from.nodes.films.contains_key(&n) => from
+                    .nodes
+                    .film(n)
+                    .and_then(|f| NodePatch::of_film_field(f, *field)),
                 NodeId::Corrector(n) => from
                     .nodes
                     .corrector(n)
@@ -1296,10 +1600,12 @@ impl SettingsPatch {
         let (added, removed) = from.diff_nodes(to);
         patch.remove = removed;
         for id in added {
-            if let NodeId::Corrector(n) = id
-                && let Some(c) = to.nodes.corrector(n)
-            {
-                patch.nodes.insert(id, NodePatch::whole_corrector(c));
+            if let NodeId::Corrector(n) = id {
+                if let Some(c) = to.nodes.corrector(n) {
+                    patch.nodes.insert(id, NodePatch::whole_corrector(c));
+                } else if let Some(f) = to.nodes.film(n) {
+                    patch.nodes.insert(id, NodePatch::whole_film(f));
+                }
             }
         }
         let mut by_node: BTreeMap<NodeId, Vec<SettingsField>> = BTreeMap::new();
@@ -1321,17 +1627,42 @@ impl SettingsPatch {
     /// the Input and Main, a manual 0 in another corrector, `default_look` on the Output).
     #[must_use]
     pub fn reset(node: NodeId, field: SettingsField, default_look: &LookId) -> Self {
-        Self::of_field(&defaults_for(node, default_look), node, field)
+        Self::of_field(&defaults_for(node, default_look, false), node, field)
+    }
+
+    /// [`SettingsPatch::reset`] for a node of `settings`, which may be a Film node (it is told from a corrector
+    /// by the graph).
+    #[must_use]
+    pub fn reset_in(
+        settings: &DevelopSettings,
+        node: NodeId,
+        field: SettingsField,
+        default_look: &LookId,
+    ) -> Self {
+        let film = settings.nodes.kind_of(node) == Some(NodeKind::Film);
+        Self::of_field(&defaults_for(node, default_look, film), node, field)
     }
 
     /// The Reset patch of a node as its head's Reset has it: a corrector's trim and grade (not its
     /// name, bypass, position or masks), every field of the Input and of the Output.
     #[must_use]
     pub fn reset_node(node: NodeId, default_look: &LookId) -> Self {
+        Self::reset_node_of(node, node.kind(), default_look)
+    }
+
+    /// [`SettingsPatch::reset_node`] for a node of `settings`, which may be a Film node: its Reset puts the
+    /// stock, the print, halation, grain and Strength at their defaults.
+    #[must_use]
+    pub fn reset_node_in(settings: &DevelopSettings, node: NodeId, default_look: &LookId) -> Self {
+        let kind = settings.nodes.kind_of(node).unwrap_or_else(|| node.kind());
+        Self::reset_node_of(node, kind, default_look)
+    }
+
+    fn reset_node_of(node: NodeId, kind: NodeKind, default_look: &LookId) -> Self {
         let fields: Vec<SettingsField> = SettingsField::ALL
             .into_iter()
             .filter(|f| {
-                f.belongs_to(node.kind())
+                f.belongs_to(kind)
                     && !matches!(
                         f,
                         SettingsField::Name
@@ -1341,7 +1672,11 @@ impl SettingsPatch {
                     )
             })
             .collect();
-        Self::of_fields(&defaults_for(node, default_look), node, &fields)
+        Self::of_fields(
+            &defaults_for(node, default_look, kind == NodeKind::Film),
+            node,
+            &fields,
+        )
     }
 
     /// What Copy settings takes from a photo, to paste onto others (`docs/23` section 3.8): the
@@ -1384,6 +1719,15 @@ impl SettingsPatch {
                 .nodes
                 .insert(NodeId::Corrector(id), NodePatch::whole_corrector(&c));
         }
+        for (id, f) in &g.films {
+            let mut f = f.clone();
+            for row in &mut f.masks.items {
+                *row = row.emptied();
+            }
+            patch
+                .nodes
+                .insert(NodeId::Corrector(*id), NodePatch::whole_film(&f));
+        }
         patch
             .nodes
             .insert(NodeId::Output, NodePatch::whole_output(&g.output));
@@ -1405,7 +1749,7 @@ impl SettingsPatch {
         }
         if patch.links.is_some() {
             let given: BTreeSet<NodeId> = patch.nodes.keys().copied().collect();
-            for (id, _) in target.nodes.correctors() {
+            for (id, _) in target.nodes.numbered() {
                 let node = NodeId::Corrector(id);
                 if id != MAIN_ID && !given.contains(&node) && !patch.remove.contains(&node) {
                     patch.remove.push(node);
@@ -1418,12 +1762,16 @@ impl SettingsPatch {
 
 /// The settings a node's defaults are taken from: the default graph, with the node added as a new
 /// corrector when it is one (a manual 0 everywhere) and `default_look` on the Output.
-fn defaults_for(node: NodeId, default_look: &LookId) -> DevelopSettings {
+fn defaults_for(node: NodeId, default_look: &LookId, film: bool) -> DevelopSettings {
     let mut d = DevelopSettings::with_look(default_look.clone());
     if let NodeId::Corrector(n) = node
         && n != MAIN_ID
     {
-        d.nodes.extra.insert(n, CorrectorNode::default());
+        if film {
+            d.nodes.films.insert(n, FilmNode::default());
+        } else {
+            d.nodes.extra.insert(n, CorrectorNode::default());
+        }
     }
     d
 }

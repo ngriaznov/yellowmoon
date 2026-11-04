@@ -87,6 +87,8 @@ struct Report {
     masks: MaskSupport,
     illuminant_models: Vec<ModelFile>,
     profiles: Vec<(String, String, String)>,
+    /// The film data (`docs/24`): profiles and version, or why not.
+    film: Result<ym_core::film::FilmDataStatus, String>,
     looks_built_in: usize,
     looks_imported: usize,
     looks_missing: usize,
@@ -264,6 +266,7 @@ fn build() -> Result<Report, Failure> {
         ),
         illuminant_models,
         profiles,
+        film: ym_core::film::data_status(&data_folder).map_err(|e| e.to_string()),
         looks_built_in: looks
             .iter()
             .filter(|l| matches!(l.group, LookGroupInfo::BuiltIn))
@@ -605,6 +608,31 @@ fn masks_text(masks: MaskSupport) -> String {
     text
 }
 
+/// The `Film` row: `28 profiles, data version 0.3.2`, with the problem if the data has one.
+fn film_text(film: &Result<ym_core::film::FilmDataStatus, String>) -> String {
+    match film {
+        Ok(f) => {
+            let mut text = format!("{} profiles, data version {}", f.profiles, f.data_version);
+            if let Some(problem) = &f.problem {
+                text.push_str(&format!(" · {problem}"));
+            }
+            text
+        }
+        Err(why) => format!("missing ({why})"),
+    }
+}
+
+fn film_value(film: &Result<ym_core::film::FilmDataStatus, String>) -> Value {
+    match film {
+        Ok(f) => json!({
+            "profiles": f.profiles,
+            "data_version": f.data_version,
+            "problem": f.problem,
+        }),
+        Err(why) => json!({ "profiles": 0, "data_version": null, "problem": why }),
+    }
+}
+
 fn to_json(r: &Report) -> Value {
     json!({
         "includes": INCLUDES,
@@ -639,6 +667,7 @@ fn to_json(r: &Report) -> Value {
         "model_weights": model_values(&r.weights),
         "masks": masks_value(r.masks),
         "illuminant_models": model_values(&r.illuminant_models),
+        "film": film_value(&r.film),
         "profiles": r.profiles.iter().map(|(id, version, name)| json!({ "id": id, "version": version, "name": name })).collect::<Vec<_>>(),
         "looks": {
             "built_in": r.looks_built_in,
@@ -782,6 +811,7 @@ fn to_text(r: &Report) -> String {
         }
     }
     row("Masks", masks_text(r.masks));
+    row("Film", film_text(&r.film));
     for (i, m) in r.illuminant_models.iter().enumerate() {
         row(
             if i == 0 { "Illuminant models" } else { "" },

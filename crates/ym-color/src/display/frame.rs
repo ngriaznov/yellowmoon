@@ -376,6 +376,25 @@ impl ColorChain {
         })
     }
 
+    /// Renders camera RGB to the LogC4 / AWG4 value the chain has after its nodes and its look
+    /// ([`ColorChain::apply_logc4_pixel_at`]), f32, not clamped. The Film node reads the picture it takes in this
+    /// way (`docs/24`): a chain whose plan ends at the node's input and has no look.
+    ///
+    /// # Errors
+    ///
+    /// [`DisplayError::BadBuffer`] when `out` has the wrong length.
+    pub fn render_logc4_f32(
+        &self,
+        src: &Frame<'_>,
+        out_layout: Layout,
+        out: &mut [f32],
+        threads: usize,
+    ) -> Result<(), DisplayError> {
+        map_pixels(src, out, out_layout, threads, |rgb, x, y| {
+            to_f32(self.apply_logc4_pixel_at(rgb, src.spot(x, y)).0)
+        })
+    }
+
     /// Renders the DNG's pixels ([`ColorChain::apply_dng_pixel`]): C1 to C11 decoded back to linear
     /// AWG4 (f32, unclipped), or, when C12 is not the cine rendering ([`ColorChain::dng_inverts_display`]),
     /// the scene values that the cine rendering turns into the chain's picture.

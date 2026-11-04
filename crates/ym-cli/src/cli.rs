@@ -58,6 +58,9 @@ pub enum Command {
     /// Manage the look library.
     #[command(subcommand)]
     Looks(LooksCommand),
+    /// Show the film stocks and papers that a Film node of a `--settings` file can use.
+    #[command(subcommand)]
+    Film(FilmCommand),
     /// Show the lenses that `ym render --lens` can give a photo.
     #[command(subcommand)]
     Lenses(LensesCommand),
@@ -82,7 +85,7 @@ const H_RUN: &str = "Run";
 /// Arguments of `ym render`.
 #[derive(Debug, Args)]
 #[command(
-    after_help = "Examples:\n  ym render ~/Pictures/2026-10-04 --look neutral --format jpeg --long-edge 3000 --out ~/Exports\n  fd -e ARW . /Volumes/A1 | ym render - --format tiff --bits 16 --out ~/Exports\n  ym render DSC04204.ARW --exposure-offset -0.5 --wb 5200,4\n\nSettings are a graph of nodes. The options set fields of three of them: the Input (--exposure, --exposure-offset, --wb, --light, --lens, --flares, --edges, --anamorphic, --nr, --sharpen, --rolloff, --no-neural, --no-highlight-recovery, --no-lens, --no-ca, --auto-crop), node 1, Main (--contrast, --brightness, --highlights, --shadows, --white, --black, --saturation) and the Output (--look, --intensity, --output-sharpening). Everything else goes in a JSON file given with --settings: other nodes, masks and links, colour balance, curves, crop, orientation, white pick. The file is a graph, for example {\"nodes\":{\"items\":[{\"id\":1,\"grade\":{\"contrast\":{\"kind\":\"manual\",\"value\":20}}}]}}; the `ym:Settings` of an export's XMP holds a photo's settings in that form. A file in the form of Yellowmoon 0.1 is refused. Options given alongside --settings override it. A file with several photos' settings is an object keyed by file name."
+    after_help = "Examples:\n  ym render ~/Pictures/2026-10-04 --look neutral --format jpeg --long-edge 3000 --out ~/Exports\n  fd -e ARW . /Volumes/A1 | ym render - --format tiff --bits 16 --out ~/Exports\n  ym render DSC04204.ARW --exposure-offset -0.5 --wb 5200,4\n\nSettings are a graph of nodes. The options set fields of three of them: the Input (--exposure, --exposure-offset, --wb, --light, --lens, --flares, --edges, --anamorphic, --nr, --sharpen, --rolloff, --no-neural, --no-highlight-recovery, --no-lens, --no-ca, --auto-crop), node 1, Main (--contrast, --brightness, --highlights, --shadows, --white, --black, --saturation) and the Output (--look, --intensity, --output-sharpening). Everything else goes in a JSON file given with --settings: other nodes (correctors, and Film nodes whose stocks `ym film list` shows), masks and links, colour balance, curves, crop, orientation, white pick. The file is a graph, for example {\"nodes\":{\"items\":[{\"id\":1,\"grade\":{\"contrast\":{\"kind\":\"manual\",\"value\":20}}}]}}; the `ym:Settings` of an export's XMP holds a photo's settings in that form. A file in the form of Yellowmoon 0.1 is refused. Options given alongside --settings override it. A file with several photos' settings is an object keyed by file name."
 )]
 pub struct RenderArgs {
     /// Files or folders to render; `-` reads file paths from stdin, one per line. Folders are walked
@@ -773,6 +776,21 @@ pub enum LooksCommand {
     Default(LooksDefaultArgs),
     /// Developer tool: bake a parametric look to a 33-point LUT and render a contact sheet.
     Bake(LooksBakeArgs),
+}
+
+/// Subcommands of `ym film`.
+#[derive(Debug, Subcommand)]
+pub enum FilmCommand {
+    /// List the film stocks and papers with their ids, kinds, ISO numbers and matching papers.
+    List(FilmListArgs),
+}
+
+/// Arguments of `ym film list`.
+#[derive(Debug, Args)]
+pub struct FilmListArgs {
+    /// Print the list as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Subcommands of `ym lenses`.

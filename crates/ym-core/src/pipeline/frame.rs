@@ -75,6 +75,7 @@
 
 mod device;
 mod export_tail;
+mod film_pass;
 
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -83,7 +84,9 @@ use std::sync::{Arc, Weak};
 use rayon::prelude::*;
 use ym_color::consts::Vec3;
 use ym_color::display::{ColorChain, Frame, Layout, OutputTarget, View};
-use ym_color::mask::{PhotoFrame, PhotoMap, PhotoSpot, PixelAt, accent_display_linear};
+use ym_color::mask::{
+    PhotoFrame, PhotoMap, PhotoSpot, PixelAt, RasterPlanes, accent_display_linear,
+};
 use ym_color::mask_raster::{Area, CpuPlanes, PlaneJob};
 use ym_color::warp::chroma_of;
 use ym_gpu::cpu::magnify::{MagnifyMap, magnify_with};
@@ -103,6 +106,7 @@ use self::device::{
     Rgba8, TailJob, TailWork, Upload, ViewRoute,
 };
 pub use self::export_tail::{BAND_DEPTH, GpuBands, TailRequest};
+use self::film_pass::{Cover, FilmRender, OwnedPlanes};
 use super::color::{GradePlan, PhotoSource, color_key};
 use super::geometry::{Affine, Geometry, Grid, oriented_to_sensor, sensor_to_oriented};
 use super::graph::{
@@ -691,8 +695,39 @@ fn with_photo<'a>(frame: Frame<'a>, positions: &'a Option<PhotoPositions<'a>>) -
     }
 }
 
-/// `frame` with the raster planes of its window, when the chain has raster rows.
-fn with_rasters<'a>(frame: Frame<'a>, planes: &'a Option<CpuPlanes>) -> Frame<'a> {
+/// The edge of the tiles of an export that has a Film node (`film_pass`), in pixels.
+const FILM_TILE_PX: usize = 1536;
+/// The tile edge from which an export with a Film node takes [`FILM_TILE_PX`] instead (the default, 1024; a
+/// smaller tile was asked for on purpose, as the tests do to cut a frame into many).
+const FILM_TILE_FROM_PX: usize = 1024;
+
+/// What the colour pass of a chain reads besides its camera RGB: the raster planes of its mask rows, or, for a
+/// chain with a Film node, those and the pictures the Film nodes made (`film_pass`).
+pub(crate) enum Planes {
+    /// Raster planes over the picture, as ever.
+    Raster(CpuPlanes),
+    /// Raster planes over their window and the Film nodes' pictures, in absolute pixels.
+    Film(OwnedPlanes),
+}
+
+impl RasterPlanes for Planes {
+    fn value(&self, plane: usize, x: usize, y: usize) -> f64 {
+        match self {
+            Self::Raster(p) => p.value(plane, x, y),
+            Self::Film(p) => p.value(plane, x, y),
+        }
+    }
+
+    fn film(&self, node: u32, x: usize, y: usize) -> Option<[f32; 3]> {
+        match self {
+            Self::Raster(_) => None,
+            Self::Film(p) => p.film(node, x, y),
+        }
+    }
+}
+
+/// `frame` with the planes of its window, when the chain has any.
+fn with_rasters<'a>(frame: Frame<'a>, planes: &'a Option<Planes>) -> Frame<'a> {
     match planes {
         Some(p) => frame.with_rasters(p),
         None => frame,
@@ -825,11 +860,23 @@ fn raster_read(
     chains: &[&ColorChain],
     grid: Option<&SamplerGrid>,
 ) -> Result<Option<RasterRead>, RenderError> {
-    let Some(grid) = grid.filter(|_| chains.iter().any(|c| c.uses_rasters())) else {
+    let films = chains.iter().any(|c| c.has_films());
+    let Some(grid) = grid.filter(|_| films || chains.iter().any(|c| c.uses_rasters())) else {
         return Ok(None);
     };
-    let halo = raster_halo(chains, grid);
     let frame = view_frame(&read.view_to_final, job.final_size()?);
+    // The masks' receptive field, and the Film nodes' halos on top of it: the picture the colour pass makes is
+    // read that much wider (`film_pass`).
+    let mut halo = raster_halo(chains, grid);
+    if films {
+        let extent = Area::whole(frame.w, frame.h);
+        for chain in chains {
+            if let Some(film) = FilmRender::build(job, chain, extent, read.target)? {
+                halo += film.total_halo();
+                break;
+            }
+        }
+    }
     let picture = Area::whole(read.out_w, read.out_h);
     let window = picture.intersect(&frame);
     if window.is_empty() {
@@ -937,6 +984,49 @@ fn cpu_view_rasters(
     Ok(planes.map(|p| p.placed(at, rr.extent.w, rr.extent.h)))
 }
 
+/// The planes of a CPU colour pass: the raster planes, and for a chain with a Film node the pictures the Film nodes
+/// make over the picture (`film_pass`), from the wider picture `ctx.read` holds.
+fn cpu_view_planes(
+    job: &mut Job<'_>,
+    chain: &ColorChain,
+    ctx: RasterCtx<'_>,
+) -> Result<Option<Planes>, RenderError> {
+    if chain.has_films()
+        && let Some(rr) = ctx.read
+        && let Some(film) = FilmRender::build(job, chain, rr.frame, rr.spec.target)?
+    {
+        let prepared = prepare_view(job, &rr.spec)?;
+        let grid = prepared.photo_grid();
+        let sampled = sample_routed(job, &prepared, ctx.route)?;
+        let need = rr.window;
+        let wide = film.read_area(need);
+        let rasters = {
+            let _span = ym_gpu::perf::span(ym_gpu::perf::Stage::CpuRaster);
+            cpu_rasters(
+                chain,
+                &sampled,
+                grid.as_ref(),
+                (0, 0),
+                (rr.frame, rr.grown, wide),
+            )
+        }
+        .map(|p| (p, wide));
+        let cover = Cover {
+            sampled: &sampled,
+            area: rr.grown,
+            grid: grid.as_ref(),
+            grid_off: (0, 0),
+        };
+        let films = film.planes(job, need, &cover, rasters.as_ref().map(|(p, a)| (p, *a)))?;
+        return Ok(Some(Planes::Film(OwnedPlanes {
+            rasters,
+            films,
+            origin: (rr.extent.x, rr.extent.y),
+        })));
+    }
+    Ok(cpu_view_rasters(job, chain, ctx)?.map(Planes::Raster))
+}
+
 /// The colour chain C1 to C13 over `sampled` on the CPU reference path: RGBA8 with the letterbox
 /// painted (a frame that is not sharpened: amount 0, or the Before view).
 fn color_pass_cpu(
@@ -952,7 +1042,7 @@ fn color_pass_cpu(
     let (w, h) = (sampled.img.width, sampled.img.height);
     let n = w * h;
     let positions = photo_positions_of(&grade.chain, photo, (0, 0));
-    let rasters = cpu_view_rasters(job, &grade.chain, ctx)?;
+    let rasters = cpu_view_planes(job, &grade.chain, ctx)?;
     let frame = with_rasters(
         with_photo(
             Frame::planar(w, h, &sampled.img.data)
@@ -992,7 +1082,7 @@ fn display_linear_cpu(
     job.check()?;
     let (w, h) = (sampled.img.width, sampled.img.height);
     let positions = photo_positions_of(&grade.chain, photo, (0, 0));
-    let rasters = cpu_view_rasters(job, &grade.chain, ctx)?;
+    let rasters = cpu_view_planes(job, &grade.chain, ctx)?;
     let frame = with_rasters(
         with_photo(
             Frame::planar(w, h, &sampled.img.data)
@@ -1030,7 +1120,7 @@ fn mask_plane_cpu(
     job.check()?;
     let (w, h) = (sampled.img.width, sampled.img.height);
     let positions = photo_positions_of(&mask_grade.chain, photo, (0, 0));
-    let rasters = cpu_view_rasters(job, &mask_grade.chain, ctx)?;
+    let rasters = cpu_view_planes(job, &mask_grade.chain, ctx)?;
     let frame = with_rasters(
         with_photo(
             Frame::planar(w, h, &sampled.img.data)
@@ -2852,8 +2942,11 @@ pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedF
     }
     // The overlay is made whole on the device (sampler or upload, colour pass, the mask chain, the stage, the
     // tint and C13 in one job) or whole on the CPU; a device whose stages do not cover that leaves it to the CPU.
+    // A Film node has no kernel yet (F-08b): a frame whose chain runs one is made on the CPU, whole (`film_pass`).
+    let films = grade.chain.has_films() || job.overlay_grade().is_some_and(|g| g.chain.has_films());
     let route = job
         .view_gpu()?
+        .filter(|_| !films)
         .map(|gpu| ViewRoute::new(&job, gpu, spec.gpu_priority))
         .filter(|r| !overlay || (r.stages.color && r.stages.tail));
     let gpu = route.as_ref().map(ViewRoute::gpu_ref);
@@ -3573,7 +3666,29 @@ impl Renderer {
         } else {
             0
         };
-        let halo_allowance = 160usize + job.lens_halo()? + bend;
+        // The Film nodes of the chain read the photo wider than the pixels they make (`film_pass`).
+        let grade_for_film = job.grade(
+            match request.target {
+                FullTarget::DisplayLinear(t) => t,
+                FullTarget::DngLinearAwg4 | FullTarget::DngPreview => OutputTarget::Srgb,
+            },
+            false,
+        )?;
+        let film_extent = {
+            let (fw, fh) = geom.output_size(plan.out_w, plan.out_h);
+            Area::whole(fw, fh)
+        };
+        let film_render = FilmRender::build(
+            &job,
+            &grade_for_film.chain,
+            film_extent,
+            match request.target {
+                FullTarget::DisplayLinear(t) => t,
+                FullTarget::DngLinearAwg4 | FullTarget::DngPreview => OutputTarget::Srgb,
+            },
+        )?;
+        let film_halo = film_render.as_ref().map_or(0, FilmRender::total_halo);
+        let halo_allowance = 160usize + job.lens_halo()? + bend + film_halo;
         let per_px = 12u64 * 12; // twelve f32 planes of working set per tile pixel, a generous bound
         let working = ((tile + halo_allowance) as u64).pow(2) * per_px;
         let frame_extra = job.frame()?.extra_bytes() as u64;
@@ -3603,6 +3718,14 @@ impl Renderer {
         // Tiles equal the whole frame, so a tile may be any size: one whose grown window would pass the design
         // binding is made smaller (`docs/17-gpu.md` section 4).
         let tile = largest_tile_for(raster_halo, tile);
+        // A tile of a Film node is read that much wider on every side, so a small tile spends most of its work on
+        // the halo: the tiles are larger (tiles equal the whole frame, so the size is free).
+        let tile = if film_render.is_some() && tile >= FILM_TILE_FROM_PX {
+            tile.max(FILM_TILE_PX)
+        } else {
+            tile
+        };
+        let raster_halo = raster_halo + film_halo;
         let mut rgb = vec![0.0f32; fw * fh * 3];
         let threads = job.options().threads;
         let strict = job.options().gpu_strict;
@@ -3610,7 +3733,7 @@ impl Renderer {
         // The colour stage of a DNG's renders runs on the device when the export tail is on; the
         // frame stays on the host. A device error there, or in the raw chain, makes the whole render
         // again on the CPU: one file is wholly device or wholly CPU, never a mix of tiles.
-        let mut device_colour = if request.target.is_dng() {
+        let mut device_colour = if request.target.is_dng() && film_render.is_none() {
             export_tail::dng_colour_gpu(&mut job)?
         } else {
             None
@@ -3719,14 +3842,46 @@ impl Renderer {
                                 grown.h,
                             );
                             let sampler_grid = grid.sampler_grid();
-                            // The raster planes of the tile, from the picture over the grown area.
-                            let rasters = cpu_rasters(
-                                &grade.chain,
-                                &sampled_grown,
-                                Some(&sampler_grid),
-                                (gx, gy),
-                                (frame_area, grown, tile_area),
-                            );
+                            // The raster planes of the tile, from the picture over the grown area; with a Film
+                            // node, over the wider area its first node reads, and its nodes' pictures.
+                            let rasters = match &film_render {
+                                Some(film) => {
+                                    let wide = film.read_area(tile_area);
+                                    let planes = cpu_rasters(
+                                        &grade.chain,
+                                        &sampled_grown,
+                                        Some(&sampler_grid),
+                                        (gx, gy),
+                                        (frame_area, grown, wide),
+                                    )
+                                    .map(|p| (p, wide));
+                                    let cover = Cover {
+                                        sampled: &sampled_grown,
+                                        area: grown,
+                                        grid: Some(&sampler_grid),
+                                        grid_off: (gx, gy),
+                                    };
+                                    let films = film.planes(
+                                        &mut job,
+                                        tile_area,
+                                        &cover,
+                                        planes.as_ref().map(|(p, a)| (p, *a)),
+                                    )?;
+                                    Some(Planes::Film(OwnedPlanes {
+                                        rasters: planes,
+                                        films,
+                                        origin: (ox as i64, oy as i64),
+                                    }))
+                                }
+                                None => cpu_rasters(
+                                    &grade.chain,
+                                    &sampled_grown,
+                                    Some(&sampler_grid),
+                                    (gx, gy),
+                                    (frame_area, grown, tile_area),
+                                )
+                                .map(Planes::Raster),
+                            };
                             // The tile's own pixels of the sampled picture.
                             let sampled = if grown == tile_area {
                                 sampled_grown

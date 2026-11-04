@@ -223,6 +223,17 @@ pub enum KernelId {
     /// Copies a rectangle of a planar image into another (the crop of a tile, the parts of a
     /// cut demosaic core, the pieces of a window).
     Copy,
+    /// The Film node's P1: LogC4 / AWG4 to the raw exposure (the scene stage's gamut compression and T1).
+    FilmColourIn,
+    /// The Film node's Gaussians (P2's scatter and halation, the inhibitor's diffusion, the dye cloud): the rows and
+    /// columns of a direct sum, the cells of the coarse grid and their bilinear read back, the scale and the add.
+    FilmSpatial,
+    /// The Film node's P3: the curves without couplers, the per-pixel coupler step and the develop.
+    FilmDevelop,
+    /// The Film node's P4: the counter-based grain hash and the noise of the three sublayers.
+    FilmGrain,
+    /// The Film node's P5: T3a, the paper's curves, T3b′ and the per-pixel return of the cine rendering's inverse.
+    FilmColourOut,
     /// A permanent stub: the one placeholder that stays. It writes a NaN into its single
     /// storage binding and nothing else, so the tests of the pass list, the pool and a lost device,
     /// which need *a* dispatch with one binding, have one now that every other kernel is real.
@@ -241,7 +252,7 @@ impl KernelId {
     /// no render uses. [`KernelSet::kernels`] and `warm_up` compile in this order, so that what the
     /// first frame of the first photo waits for is compiled before what only a zoomed view or an
     /// export needs.
-    pub const ALL: [KernelId; 94] = [
+    pub const ALL: [KernelId; 99] = [
         // The fit view of a mosaic photo.
         KernelId::Prep,
         KernelId::PrepMask,
@@ -292,6 +303,12 @@ impl KernelId {
         KernelId::Magnify,
         KernelId::Tint,
         KernelId::MaskRaster,
+        // The Film node's passes (docs/24 section 3.9).
+        KernelId::FilmColourIn,
+        KernelId::FilmSpatial,
+        KernelId::FilmDevelop,
+        KernelId::FilmGrain,
+        KernelId::FilmColourOut,
         // The full-resolution raw chain (the 100 % view and the exports).
         KernelId::AdaptiveRatioPrepare,
         KernelId::AdaptiveRatioGreen,
@@ -440,6 +457,11 @@ impl KernelId {
             KernelId::RlOutput => "rl_output",
             KernelId::Resize => "resize",
             KernelId::Copy => "copy",
+            KernelId::FilmColourIn => "film_colour_in",
+            KernelId::FilmSpatial => "film_spatial",
+            KernelId::FilmDevelop => "film_develop",
+            KernelId::FilmGrain => "film_grain",
+            KernelId::FilmColourOut => "film_colour_out",
             KernelId::Probe => "probe",
         }
     }
@@ -482,6 +504,11 @@ impl KernelId {
             | KernelId::Magnify
             | KernelId::Tint
             | KernelId::MaskRaster
+            | KernelId::FilmColourIn
+            | KernelId::FilmSpatial
+            | KernelId::FilmDevelop
+            | KernelId::FilmGrain
+            | KernelId::FilmColourOut
             | KernelId::LensFieldPyramid
             | KernelId::LensFieldGather
             | KernelId::LensFieldFinish
@@ -595,6 +622,11 @@ impl KernelId {
             KernelId::Bin | KernelId::BinSigma => super::bin::body(self),
             KernelId::Resize => super::resize::body(),
             KernelId::Copy => super::copy::body(),
+            KernelId::FilmColourIn
+            | KernelId::FilmSpatial
+            | KernelId::FilmDevelop
+            | KernelId::FilmGrain
+            | KernelId::FilmColourOut => super::film::body(self),
             KernelId::Tint => super::tint::body(),
             KernelId::MaskRaster => include_str!("../shaders/mask_raster.wgsl").to_string(),
             KernelId::Probe => placeholder_body(self),

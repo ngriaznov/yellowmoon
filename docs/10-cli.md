@@ -17,6 +17,7 @@ The CLI is a second front end on the same core. A file rendered from the termina
 | `ym looks default <look>` | Set the default look. |
 | `ym looks bake <look.json> [--preview <ARW>…] [--out <dir>]` | Developer tool for the Signature look: bake to a 33-point LUT and render a contact sheet. |
 | `ym lenses list [--json]` | The seven lenses `--lens` knows, with ids, names, lines, starting amounts and design sources (`docs/21-lens-character.md`). |
+| `ym film list [--json]` | The film stocks and papers a Film node of a `--settings` file can name, with ids, kinds, ISO numbers and matching papers, and the credit line of the film data (`docs/24-film.md`). |
 | `ym doctor` | GPU (name, backend, limits), the graphics policy and the stages it runs, the memory budgets, runtime chosen, each Auto provider's state (Apple Intelligence, Claude Code, Antigravity), where `claude` and `agy` were found and which model answers, model weights and hashes, profiles and versions, imported looks count, preferences path, version. For bug reports. `ym doctor --bench FILE.ARW` times the render path on one photo instead. |
 | `ym --version` | Version, pipeline version, git SHA: `ym <version> (pipeline <pipeline version>, <sha>)`. |
 
@@ -166,7 +167,7 @@ A path the user named that cannot be a photo (it does not exist, or is not an AR
 
 ### The node-first form
 
-A settings file is `{ "nodes": { "items": [ … ], "links": [ … ] } }`. The items are the nodes: **`"input"`** (the raw, light and framing fields: `exposure`, `light_source`, `white_balance`, `white_pick`, `rolloff`, `decode`, `noise_reduction`, `sharpen`, `lens`, `crop`, `orientation`), **`"output"`** (`look`, `look_intensity`, `output_sharpening`) and the correctors, **1** (Main) and any others (`name`, `bypass`, `pos`, `trim`, `grade`, `masks`; the grade has the fields `contrast`, `brightness`, `highlights`, `shadows`, `white`, `black`, `color_balance`, `saturation`, `color_warp`, `curve`). Every field has the name and the type it always had in `ym:Settings`; it has moved into its node. The fixed three need not be listed, a listed node may be partial, and `links` left out are the default links (Input → Main → Output). The full rules, the ranges and the Auto rule (**only node 1 can be Auto**; in another corrector Auto reads as a manual 0) are `docs/23` §3.
+A settings file is `{ "nodes": { "items": [ … ], "links": [ … ] } }`. The items are the nodes: **`"input"`** (the raw, light and framing fields: `exposure`, `light_source`, `white_balance`, `white_pick`, `rolloff`, `decode`, `noise_reduction`, `sharpen`, `lens`, `crop`, `orientation`), **`"output"`** (`look`, `look_intensity`, `output_sharpening`) and the numbered nodes: the correctors, **1** (Main) and any others (`name`, `bypass`, `pos`, `trim`, `grade`, `masks`; the grade has the fields `contrast`, `brightness`, `highlights`, `shadows`, `white`, `black`, `color_balance`, `saturation`, `color_warp`, `curve`), and **Film nodes** (`"kind": "film"`: `name`, `bypass`, `pos`, `film`, `print`, `halation`, `grain`, `strength`, `masks`; `docs/24-film.md` §4.5). Every field has the name and the type it always had in `ym:Settings`; it has moved into its node. The fixed three need not be listed, a listed node may be partial, and `links` left out are the default links (Input → Main → Output). The full rules, the ranges and the Auto rule (**only node 1 can be Auto**; in another corrector Auto reads as a manual 0) are `docs/23` §3.
 
 A complete small file: the Input's exposure at +0.3 EV, Main's contrast at 20, a second corrector, Sky, with a Linear mask and a cooler trim, and the Output's Neutral look at 80 %:
 
@@ -249,11 +250,14 @@ Nothing is saved per photo: the settings live with the photo for this run, and e
 
 ### The help text
 
-`ym render --help` changes in three places (the snapshot `crates/ym-cli/tests/snapshots/cli__help_render.snap`; no other `--help` snapshot changes, and the flags' own lines are as they were):
+`ym render --help` changes in three places (the snapshot `crates/ym-cli/tests/snapshots/cli__help_render.snap`; the flags' own lines are as they were, and the other snapshots change only as the paragraph after this list says):
 
-- **The closing paragraph** (`after_help`, after the examples) says what the flags set and where the new form is. It reads: "Settings are a graph of nodes. The options set fields of three of them: the Input (--exposure, --exposure-offset, --wb, --light, --lens, --flares, --edges, --anamorphic, --nr, --sharpen, --rolloff, --no-neural, --no-highlight-recovery, --no-lens, --no-ca, --auto-crop), node 1, Main (--contrast, --brightness, --highlights, --shadows, --white, --black, --saturation) and the Output (--look, --intensity, --output-sharpening). Everything else goes in a JSON file given with --settings: other nodes, masks and links, colour balance, curves, crop, orientation, white pick. The file is a graph, for example {"nodes":{"items":[{"id":1,"grade":{"contrast":{"kind":"manual","value":20}}}]}}; the `ym:Settings` of an export's XMP holds a photo's settings in that form. A file in the form of Yellowmoon 0.1 is refused. Options given alongside --settings override it. A file with several photos' settings is an object keyed by file name." (It replaces the old "Per-photo settings beyond these options go in a JSON file given with --settings (the `ym:Settings` schema of an exported file)…".)
+- **The closing paragraph** (`after_help`, after the examples) says what the flags set and where the new form is. It reads: "Settings are a graph of nodes. The options set fields of three of them: the Input (--exposure, --exposure-offset, --wb, --light, --lens, --flares, --edges, --anamorphic, --nr, --sharpen, --rolloff, --no-neural, --no-highlight-recovery, --no-lens, --no-ca, --auto-crop), node 1, Main (--contrast, --brightness, --highlights, --shadows, --white, --black, --saturation) and the Output (--look, --intensity, --output-sharpening). Everything else goes in a JSON file given with --settings: other nodes (correctors, and Film nodes whose stocks `ym film list` shows), masks and links, colour balance, curves, crop, orientation, white pick. The file is a graph, for example {"nodes":{"items":[{"id":1,"grade":{"contrast":{"kind":"manual","value":20}}}]}}; the `ym:Settings` of an export's XMP holds a photo's settings in that form. A file in the form of Yellowmoon 0.1 is refused. Options given alongside --settings override it. A file with several photos' settings is an object keyed by file name." (It replaces the old "Per-photo settings beyond these options go in a JSON file given with --settings (the `ym:Settings` schema of an exported file)…".)
 - **The `--settings` option** reads: "A JSON file of settings, or `-` for stdin: a graph of nodes (the `ym:Settings` of an export's XMP is one). It covers what these options can't: other nodes and their masks, links, colour balance (`{ "kind": "auto" }` puts a shadows or highlights wheel of Main back to Auto), curves, crop, orientation, white pick."
 - **`--json`** is not in the help any more: it is a hidden flag (`hide = true`) of `render` and `info` that Yellowmoon's own tools and tests use (`docs/13-testing.md`, *`ym`'s hidden `--json`*). Where a user finds a photo's settings: the `ym:Settings` of an export's XMP, which `--settings` reads back.
+
+
+`ym --help` lists `film` among the commands ("Show the film stocks and papers that a Film node of a `--settings` file can use."; the snapshots `cli__help_ym.snap`, `cli__help_film.snap` and `cli__help_film_list.snap`), and the closing paragraph above names Film nodes and `ym film list`.
 
 ## Export options and preferences
 
@@ -330,6 +334,26 @@ A file name (a folder unpacked from a downloaded archive) or a tag in a file can
 - **`verify`** prints one line per missing or changed file and exits 1 when there is one.
 - **`default <look>`** takes what `--look` takes.
 - **`bake`** writes `<name>.cube` (33 points, `TITLE` the look's name) into `--out` (default: the folder of the look file) and, with `--preview`, `<name>_contact.png`: a row per photo, Neutral on the left and the baked look on the right, each 480 px on the long edge, in sRGB. The paths are printed on stdout.
+
+## `film`
+
+A Film node (`"kind": "film"`) makes the picture look as if it had been shot on a colour film, printed on paper and scanned (`docs/24-film.md`). It has no flag: it goes in a `--settings` file, for example
+
+```json
+{ "nodes": { "items": [
+  { "id": 2, "kind": "film", "film": { "stock": "kodak_portra_400" }, "grain": { "amount": 120 } }
+], "links": [
+  { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+  { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+  { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+] } }
+```
+
+A stock or paper that is not in the list is a usage error before any photo is opened: `Unknown film stock "x". Run "ym film list" to see the stocks.` (or `Unknown film paper "x". Run "ym film list" to see the papers.`). A photo with a live Film node is rendered on the CPU, whatever `--require-gpu` and `YELLOWMOON_GPU` say, until the device runs the Film passes (`docs/24` §3.9); it is slow (about 15 seconds for 24 MP on four threads for the Film node alone).
+
+- **`list`** prints a table with the columns ID, NAME, KIND (`colour negative`, `cine negative`, `slide`, `paper`), ISO and MATCHING PAPER (the paper `"paper": null` stands for; `-` for a slide and for a paper), the 20 film stocks first and then the 6 papers, in the order of `data/film/params/names.json`, then a blank line and the credit line: "Modelled on published data. Film profiles by Andrea Volpato (spektrafilm), CC BY-SA 4.0. Not affiliated with Kodak or Fujifilm." The two cine print films are not listed (they stay hidden until their lamp is sourced); a cine negative's matching paper is the still paper `kodak_portra_endura`, which stands in for them. `--json` prints `{ "stocks": [...], "papers": [...], "profile_version", "credit" }`: a stock is `{ "id", "name", "kind" (`colour_negative`, `cine_negative` or `slide`), "maker", "iso", "paper" }` (`paper` null for a slide) and a paper `{ "id", "name", "maker" }`. A missing or damaged `data/film` is exit 2 with "Yellowmoon's film data is missing." and what to do.
+- **The export's XMP** says which data made the picture: `ym:FilmData` holds, for each live Film node, `<stock> on <paper>` (a slide: the stock alone), then `profiles <data version>; engine <engine version>` and the credit line. A photo without a live Film node has no `ym:FilmData`.
+- **`ym doctor`** has a `Film` row, `28 profiles, data version 0.3.2` (the profile files present and the version of `names.json`; a checksum that does not match `SHA256SUMS` is added to the row), and `--json` a `film` object `{ "profiles", "data_version", "problem" }`.
 
 ## `lenses`
 

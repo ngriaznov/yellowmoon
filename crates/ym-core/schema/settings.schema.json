@@ -17,7 +17,7 @@
       "additionalProperties": false,
       "properties": {
         "items": {
-          "description": "The nodes, in no particular order when read (written Input, correctors by id, Output). The Input and the Output are items like the others and cannot be added to or taken out; at most 64 correctors, Main included.",
+          "description": "The nodes, in no particular order when read (written Input, numbered nodes by id, Output). The Input and the Output are items like the others and cannot be added to or taken out; at most 64 correctors and Film nodes together, Main included.",
           "type": "array",
           "maxItems": 66,
           "items": {
@@ -30,6 +30,9 @@
               },
               {
                 "$ref": "#/$defs/corrector_node"
+              },
+              {
+                "$ref": "#/$defs/film_node"
               }
             ]
           }
@@ -309,6 +312,156 @@
         },
         "grade": {
           "$ref": "#/$defs/grade"
+        },
+        "masks": {
+          "$ref": "#/$defs/masks"
+        }
+      }
+    },
+    "film_node": {
+      "description": "A Film node (docs/24): a colour negative, an enlarger, a print and a scan. A node with an id the default graph does not have must give its `kind`. The stock and the paper are profile ids of data/film/ (`ym film list`); a stock or paper that is not there is refused.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "description": "A numbered node's id: an integer 2 to 2147483647. Ids are unique within the photo, correctors and Film nodes together.",
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 2147483647
+        },
+        "kind": {
+          "const": "film"
+        },
+        "pos": {
+          "$ref": "#/$defs/pos"
+        },
+        "name": {
+          "description": "1 to 32 characters after trimming; a longer name is cut and an empty one reads as the default (\"Film\").",
+          "type": "string",
+          "default": "Film"
+        },
+        "bypass": {
+          "type": "boolean",
+          "default": false
+        },
+        "film": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "stock": {
+              "description": "The profile id of a camera film.",
+              "type": "string",
+              "default": "kodak_portra_400"
+            },
+            "exposure_ev": {
+              "type": "number",
+              "minimum": -4,
+              "maximum": 4,
+              "default": 0,
+              "description": "Stops; 0 is the Input's exposure."
+            }
+          }
+        },
+        "print": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "paper": {
+              "description": "The profile id of a paper; null is the stock's matching paper. A slide takes none (it reads as null).",
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "exposure_ev": {
+              "type": "number",
+              "minimum": -3,
+              "maximum": 3,
+              "default": 0,
+              "description": "Stops; 0 keeps the app's brightness."
+            },
+            "lights": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "c": {
+                  "type": "number",
+                  "minimum": -50,
+                  "maximum": 50,
+                  "default": 0
+                },
+                "m": {
+                  "type": "number",
+                  "minimum": -50,
+                  "maximum": 50,
+                  "default": 0
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": -50,
+                  "maximum": 50,
+                  "default": 0
+                }
+              }
+            }
+          }
+        },
+        "halation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 300,
+              "default": 100,
+              "description": "Percent; 100 is the stock's own."
+            },
+            "size": {
+              "type": "number",
+              "minimum": 50,
+              "maximum": 200,
+              "default": 100
+            }
+          }
+        },
+        "grain": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 200,
+              "default": 100,
+              "description": "Percent; 100 is the stock's own."
+            },
+            "size": {
+              "type": "number",
+              "minimum": 50,
+              "maximum": 200,
+              "default": 100
+            },
+            "seed": {
+              "description": "Not in the interface; it keeps the grain a function of the settings.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295,
+              "default": 0
+            }
+          }
+        },
+        "strength": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 100,
+          "description": "Percent: how much of the film look is applied."
         },
         "masks": {
           "$ref": "#/$defs/masks"

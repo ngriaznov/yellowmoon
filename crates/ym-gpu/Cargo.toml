@@ -42,6 +42,9 @@ fault-injection = []
 [dev-dependencies]
 # The synthetic lens folders of the tests of the lens kernels (`ym_lens::test_support`).
 ym-lens = { workspace = true, features = ["test-support"] }
+# The Film node's CPU reference, the twin the parity tests of `kernels::film` compare with. A dev-dependency only:
+# `ym-gpu` takes plain data (`kernels::film::FilmColourData`, `FilmPlan`) and no `ym-film` type in its API.
+ym-film.workspace = true
 png.workspace = true
 tiff.workspace = true
 serde_json.workspace = true

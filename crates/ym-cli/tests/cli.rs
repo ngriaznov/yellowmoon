@@ -80,6 +80,8 @@ fn help_snapshots_of_every_command() {
     insta::assert_snapshot!("help_looks_list", help(&["looks", "list"]));
     insta::assert_snapshot!("help_lenses", help(&["lenses"]));
     insta::assert_snapshot!("help_lenses_list", help(&["lenses", "list"]));
+    insta::assert_snapshot!("help_film", help(&["film"]));
+    insta::assert_snapshot!("help_film_list", help(&["film", "list"]));
     insta::assert_snapshot!("help_looks_import", help(&["looks", "import"]));
     insta::assert_snapshot!("help_looks_verify", help(&["looks", "verify"]));
     insta::assert_snapshot!("help_looks_default", help(&["looks", "default"]));

@@ -1229,6 +1229,7 @@ fn export_photo_unguarded(
                 // Which Auto made the values, and what the provider said (`docs/22` section 14.2).
                 auto: Some(photo.source.estimates.source().name().to_owned()),
                 auto_advisor: photo.source.estimates.apple.advisor_json(),
+                film_data: crate::film::film_data_of(&photo.source.settings),
                 settings: serde_json::to_value(photo.resolved.pinned_settings()).ok(),
             },
         },
@@ -1371,7 +1372,10 @@ fn export_photo_unguarded(
         if let Some(why) = ctx.renderer.export_tail_refused() {
             return Err(ExportError::Render(RenderError::Gpu(why)));
         }
-        if ctx.renderer.export_tail_enabled() {
+        // A Film node has no device kernel yet: such a photo is made on the CPU (`pipeline::frame::film_pass`).
+        if ctx.renderer.export_tail_enabled()
+            && !crate::pipeline::color::has_film(&photo.source.settings)
+        {
             let began = Instant::now();
             let request = TailRequest {
                 target: output_target(options.color_space),

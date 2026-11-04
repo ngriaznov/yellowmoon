@@ -117,6 +117,14 @@ pub trait RasterPlanes: Sync {
     /// The value in [0, 1] of plane `plane` at pixel `(x, y)` of the window (the u16 code over 65535). A plane
     /// the render does not have is 0.
     fn value(&self, plane: usize, x: usize, y: usize) -> f64;
+
+    /// The LogC4 / AWG4 picture the Film node `node` made at pixel `(x, y)` of the window (`docs/24`): the
+    /// spatial passes of a Film node cannot run per pixel, so the render makes them before the colour pass and
+    /// the chain reads the result here. `None` when the render has no picture for that node there; the node then
+    /// passes its input through.
+    fn film(&self, _node: u32, _x: usize, _y: usize) -> Option<[f32; 3]> {
+        None
+    }
 }
 
 /// Where a pixel is in the render's raster planes.

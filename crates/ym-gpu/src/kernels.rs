@@ -23,6 +23,8 @@
 //! * [`diffraction`]: the R8 diffraction deconvolution (nine passes of `diffraction.wgsl`,
 //!   f32 planes in every storage mode, the planner stays on the CPU), GPU against
 //!   `cpu::sharpen::diffraction`.
+//! * [`film`]: the Film node's passes P1 to P5 (colour in, the Gaussians, develop with the coupler step, grain, colour out
+//!   with the per-pixel return of the cine rendering's inverse), GPU against `ym-film`'s CPU code.
 //! * [`log_guided`]: the log-guided fast demosaic (all-float form, four dispatches), GPU
 //!   against `cpu::demosaic::log_guided::demosaic_float`.
 //! * [`output_sharpen`]: the output sharpening stage (luma unsharp mask with three threshold
@@ -53,6 +55,7 @@ pub mod detail;
 pub mod diffraction;
 pub mod encode;
 pub mod false_color;
+pub mod film;
 pub mod guided;
 pub mod highlights;
 pub mod lens;

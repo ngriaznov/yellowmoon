@@ -60,9 +60,9 @@ pub struct SceneStage {
 }
 
 /// The knee of the gamut compression, as a share of the distance to the locus.
-const KNEE: f64 = 0.85;
+pub const KNEE: f64 = 0.85;
 /// The distance the compression approaches, as a share of the distance to the locus.
-const LIMIT: f64 = 0.985;
+pub const LIMIT: f64 = 0.985;
 
 impl SceneStage {
     /// Builds the stage for a film whose reference light has the spectrum `reference`.

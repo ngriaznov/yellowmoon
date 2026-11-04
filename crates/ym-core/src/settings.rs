@@ -74,10 +74,16 @@ use ym_profiles::profile::Profile;
 use crate::auto::{AutoEstimates, AutoSummary, MainAuto};
 use crate::session::PhotoId;
 
+mod film;
 mod graph;
 mod masks;
 mod patch;
 
+pub use film::{
+    DEFAULT_STOCK, FILM_EXPOSURE_RANGE_EV, FilmNode, FilmStockSettings, GRAIN_AMOUNT_RANGE,
+    GrainSettings, HALATION_AMOUNT_RANGE, HalationSettings, LIGHTS_RANGE, PRINT_EXPOSURE_RANGE_EV,
+    PrintLights, PrintSettings, SIZE_RANGE, STRENGTH_RANGE,
+};
 pub use graph::{
     CorrectorNode, DEFAULT_NAME, GraphError, INPUT_POS, InputNode, MAIN_ID, MAIN_NAME,
     MAX_CORRECTORS, MAX_NAME_CHARS, NodeGrade, NodeGraph, NodeId, NodeKind, NodeLink, NodePos,
@@ -91,7 +97,10 @@ pub use masks::{
     mask_unavailable, mask_unavailable_with, unmakeable_mask_sentence,
     unmakeable_mask_sentence_with, unsupported_row_sentence,
 };
-pub use patch::{COPY_LEAVES_OUT, GradePatch, NodePatch, PatchReport, SettingsPatch, TrimPatch};
+pub use patch::{
+    COPY_LEAVES_OUT, FilmStockPatch, GradePatch, GrainPatch, HalationPatch, LightsPatch, NodePatch,
+    PatchReport, PrintPatch, SettingsPatch, TrimPatch,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Ranges (docs/01 table)
@@ -180,6 +189,10 @@ pub enum SettingsError {
     /// A rule of the graph is broken (`docs/23` section 3.5).
     #[error(transparent)]
     Graph(#[from] GraphError),
+    /// A Film node names a stock or a paper the program does not have (the sentence is the plain one of
+    /// `docs/24` section 4.5).
+    #[error("{0}")]
+    Film(String),
     /// A flat settings document of Yellowmoon 0.1 (`docs/23` section 3.12). Nothing was saved in 0.1,
     /// so there is nothing to carry over.
     #[error(
@@ -336,12 +349,22 @@ pub enum SettingsField {
     Trim,
     /// A corrector's `masks`.
     Masks,
+    /// A Film node's `film` (the stock and its exposure).
+    Film,
+    /// A Film node's `print` (the paper, the print exposure and the lights).
+    Print,
+    /// A Film node's `halation`.
+    Halation,
+    /// A Film node's `grain`.
+    Grain,
+    /// A Film node's `strength`.
+    Strength,
 }
 
 impl SettingsField {
     /// Every field, in the order of the settings table (the Output's and the Input's, then the grade's,
     /// then the corrector's own).
-    pub const ALL: [SettingsField; 29] = [
+    pub const ALL: [SettingsField; 34] = [
         SettingsField::Look,
         SettingsField::LookIntensity,
         SettingsField::Exposure,
@@ -371,6 +394,11 @@ impl SettingsField {
         SettingsField::Pos,
         SettingsField::Trim,
         SettingsField::Masks,
+        SettingsField::Film,
+        SettingsField::Print,
+        SettingsField::Halation,
+        SettingsField::Grain,
+        SettingsField::Strength,
     ];
 
     /// The JSON name of the field.
@@ -406,6 +434,11 @@ impl SettingsField {
             Self::Pos => "pos",
             Self::Trim => "trim",
             Self::Masks => "masks",
+            Self::Film => "film",
+            Self::Print => "print",
+            Self::Halation => "halation",
+            Self::Grain => "grain",
+            Self::Strength => "strength",
         }
     }
 
@@ -468,6 +501,18 @@ impl SettingsField {
                         Self::Name | Self::Bypass | Self::Pos | Self::Trim | Self::Masks
                     )
             }
+            NodeKind::Film => matches!(
+                self,
+                Self::Name
+                    | Self::Bypass
+                    | Self::Pos
+                    | Self::Masks
+                    | Self::Film
+                    | Self::Print
+                    | Self::Halation
+                    | Self::Grain
+                    | Self::Strength
+            ),
         }
     }
 
@@ -491,6 +536,11 @@ impl SettingsField {
             | Self::Bypass
             | Self::Trim
             | Self::Masks
+            | Self::Film
+            | Self::Print
+            | Self::Halation
+            | Self::Grain
+            | Self::Strength
             | Self::Contrast
             | Self::Brightness
             | Self::Highlights
@@ -2184,6 +2234,6 @@ mod tests {
                 format!("\"{}\"", f.name())
             );
         }
-        assert_eq!(SettingsField::ALL.len(), 29);
+        assert_eq!(SettingsField::ALL.len(), 34);
     }
 }

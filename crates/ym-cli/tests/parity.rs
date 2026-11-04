@@ -1145,6 +1145,60 @@ fn masked_nodes_are_the_same_files_through_the_app_path_and_the_binary() {
     graph_leg("masked nodes", masked_nodes(), 6, false);
 }
 
+/// A Film node (`docs/24` section 4.5) with a mask, halation and grain on, after Main (`docs/24` section 8, *App
+/// against `ym`*).
+fn film_node() -> serde_json::Value {
+    serde_json::json!({ "nodes": { "items": [
+        { "id": 2, "kind": "film", "pos": [1, 0], "film": { "stock": "kodak_portra_400", "exposure_ev": 0.3 },
+          "print": { "lights": { "y": 4 } },
+          "halation": { "amount": 200, "size": 110 }, "grain": { "amount": 150, "seed": 5 }, "strength": 90,
+          "masks": { "invert": false, "items": [
+              { "kind": "linear", "center": [0.5, 0.5], "angle_deg": 20, "feather": 0.4 } ] } }
+    ], "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+    ] } })
+}
+
+/// The Film node's pictures are the app's and the binary's alike, in JPEG, TIFF 16 and DNG (`graph_leg`) and in PNG 16:
+/// the CPU makes them on both sides, whatever the device (`docs/24` section 3.9; F-08b moves the passes to it).
+#[test]
+fn a_film_node_is_the_same_files_through_the_app_path_and_the_binary() {
+    graph_leg("a film node", film_node(), 1, false);
+    let sb = Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
+    let app = App::open(&[&arw]);
+    let (settings, clamped) =
+        DevelopSettings::from_value(film_node(), &app.core.looks.effective_default())
+            .expect("settings");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    app.core
+        .session
+        .replace_settings(app.photo, settings)
+        .expect("replace");
+    let file = sb.root().join("film.json");
+    std::fs::write(&file, film_node().to_string()).expect("write");
+    let options = ExportOptions {
+        format: FormatKind::Png,
+        bit_depth: BitDepth::Sixteen,
+        ..ExportOptions::default()
+    };
+    let from_app = app.export(options.clone(), &sb.root().join("app-png"));
+    let from_cli = cli_export(
+        &sb,
+        &[&arw],
+        &["--format", "png", "--bits", "16", "--settings", file.to_str().expect("utf-8")],
+        &sb.root().join("cli-png"),
+    );
+    assert_same_files(&from_app, &from_cli, "a film node, png16");
+    // The file says which film data made it, and a repeat export is the same file.
+    let xmp = String::from_utf8_lossy(&bytes(&from_app[0])).into_owned();
+    assert!(xmp.contains("<ym:FilmData>kodak_portra_400 on kodak_portra_endura; profiles 0.3.2; engine "));
+    let again = app.export(options, &sb.root().join("app-png-again"));
+    assert_eq!(bytes(&again[0]), bytes(&from_app[0]), "a repeat export is the same file");
+}
+
 /// Whether this machine has SAM's weights (`data/models/sam2`, `tools/fetch/sam2.sh`): the Object tests need them and say so and pass without
 /// them, unless `YM_REQUIRE_SAM2` makes that a failure (CI's other jobs fetch none).
 fn sam_weights() -> bool {

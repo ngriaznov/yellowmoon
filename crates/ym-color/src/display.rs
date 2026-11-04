@@ -65,7 +65,7 @@ pub mod trim;
 pub use chain::{BeforePoint, ChainParams, ColorChain, LookSetting, StageTrace, View};
 pub use dng_inverse::DNG_SCENE_LIMIT;
 pub use frame::{Frame, Layout};
-pub use node::{MainNode, NodeParams, NodeSet};
+pub use node::{FilmStep, MainNode, NodeParams, NodeSet};
 pub use trim::Trim;
 
 use crate::encode::OutputSpace;

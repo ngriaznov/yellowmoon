@@ -202,7 +202,7 @@ A graph with a **key link**, a node that only makes a mask for another (a dead p
 
 ### 3.2 The nodes
 
-Every item has `id`, `kind` and `pos`. **`id`** is `"input"`, `"output"` or an integer 1 to 2³¹ − 1 (Main is 1); it is stable within the photo and is used by links, selection, thumbnails and undo. A number on a card is not the id: it is the node's place in the flow (section 7.2). New ids are one more than the largest the page has used in the session, so an id is not reused after a delete. **`kind`** is `input`, `output` or `corrector` (the id `"input"` is always kind `input`, and so on); any other kind is refused (section 3.5), and Parallel, Layer and Splitter and combiner will be new values. **`pos`** is `[x, y]`, finite numbers in −1000 to 1000, in grid units: the card's place on the canvas (one unit is 214 px across and 150 px down at 100 % zoom). A document may leave it out: the core then places the nodes in a row by their number, the Input first and the Output last, at y = 0 (the default graph is −1, 0 and 1). It is always written, it travels with copy and paste and with undo like the rest, and it lives in memory only.
+Every item has `id`, `kind` and `pos`. **`id`** is `"input"`, `"output"` or an integer 1 to 2³¹ − 1 (Main is 1); it is stable within the photo and is used by links, selection, thumbnails and undo. A number on a card is not the id: it is the node's place in the flow (section 7.2). New ids are one more than the largest the page has used in the session, so an id is not reused after a delete. **`kind`** is `input`, `output`, `corrector` or `film` (the id `"input"` is always kind `input`, and so on; correctors and Film nodes share the numbers); any other kind is refused (section 3.5), and Parallel, Layer and Splitter and combiner will be new values. **`pos`** is `[x, y]`, finite numbers in −1000 to 1000, in grid units: the card's place on the canvas (one unit is 214 px across and 150 px down at 100 % zoom). A document may leave it out: the core then places the nodes in a row by their number, the Input first and the Output last, at y = 0 (the default graph is −1, 0 and 1). It is always written, it travels with copy and paste and with undo like the rest, and it lives in memory only.
 
 A node has only the fields of its kind below; another field is an unknown field and is refused.
 
@@ -244,6 +244,19 @@ The crop and the turn are the Input's framing: they are data of the Input, and t
 
 **The grade** has the fields and the types the settings have always had for them: `contrast`, `highlights`, `shadows`, `black` and `saturation` are `Auto` or `Manual { value }` in −100…100; `brightness` and `white` are plain numbers in −100…100; `color_balance` is `{ shadows, midtones, highlights }` with the shadows and highlights wheels `Auto` or `Manual { point }` and the midtones wheel a point `[a, b]` in the unit disc (longer vectors are scaled back to it); `color_warp` is the warp (`{ pins }`, at most 16 pins, each clamped as `docs/01` says); `curve` is the curve object (luma, red, green, blue, 2 to 16 points each, the identity by default). They mean what the same-named fields have always meant.
 
+**Film** (`kind` `film`, F-07; `docs/24-film.md` §4.5 has the whole format). A numbered node like a corrector (`picture` and `key` ports, masks, Bypass, a name that defaults to `"Film"`), with these fields and no others:
+
+| Field | Type / range | Default | Notes |
+|---|---|---|---|
+| `name`, `bypass`, `pos`, `masks` | as a corrector's | `"Film"`, false, – , none | |
+| `film` | `{ stock, exposure_ev −4…4 }` | `{ "kodak_portra_400", 0 }` | `stock` is a profile id of a camera film (`ym film list`) |
+| `print` | `{ paper, exposure_ev −3…3, lights { c, m, y −50…50 } }` | `{ null, 0, { 0, 0, 0 } }` | `paper: null` is the stock's matching paper; a slide takes none (it reads as `null`) |
+| `halation` | `{ amount 0…300, size 50…200 }` (percent) | `{ 100, 100 }` | |
+| `grain` | `{ amount 0…200, size 50…200, seed }` | `{ 100, 100, 0 }` | `seed` is not in the interface |
+| `strength` | 0…100 (percent) | 100 | the node's mask is its masks times Strength |
+
+A stock or paper that is not in `data/film/` (or of the wrong kind) is refused with `Unknown film stock "x". Run "ym film list" to see the stocks.` There is no Auto in a Film node. A Film node is a live node when the Output needs its picture, and it renders on the CPU until the device runs the Film passes (`docs/24` §3.9).
+
 **Auto belongs to the photo's Main.** Auto (the Automatic card, Apple Auto, Claude Code, Antigravity, `docs/19`, `docs/22`) grades the photo's Input and Main and writes nothing else. So:
 
 - In **Main** (id 1) a grade field may be Auto, and a missing one is Auto; this is what the default graph has, and what Re-run puts back.
@@ -283,6 +296,7 @@ The numbers are what the sliders show divided or scaled as `docs/algorithms/06` 
 |---|---|---|
 | Input (`"input"`) | none | `picture` |
 | a corrector (`"corrector"`) | `picture`, `key` | `picture`, `key` |
+| a Film node (`"film"`) | `picture`, `key` | `picture`, `key` |
 | Output (`"output"`) | `picture` | none |
 
 A `picture` carries the LogC4 picture as the node before made it. A `key` carries a mask. **A node's key output carries its final mask `m`** (after its Invert; it does not depend on its Bypass). **A node's key input feeds its mask as one more region term**: an implicit first row, added like a mask, with the linked node's `m` as its value (`docs/algorithms/06` section 3). A link names its two ends: `{ "from": { "node": <id | "input">, "port": … }, "to": { "node": <id | "output">, "port": … } }`.
@@ -307,7 +321,7 @@ A document or a patch that breaks the **graph rules** is refused with a plain er
 | no cycles, counting picture and key links together | "The nodes of this photo are linked in a circle. Remove a link." |
 | ids are unique | "Two nodes have the id 3." |
 | node kinds are known | "This settings file has a node of a kind (“parallel”) that this version of Yellowmoon does not have. Update Yellowmoon." |
-| at most 64 corrector nodes, Main included (the Input and the Output do not count) | "A photo can have up to 64 nodes." |
+| at most 64 numbered nodes (correctors and Film nodes), Main included (the Input and the Output do not count) | "A photo can have up to 64 nodes." |
 | at most 64 masks in a node | "A node can have up to 64 masks." |
 | at most 100,000 brush points in a mask, 256 points in an Object mask | "A brush mask can have up to 100,000 points." / "An Object mask can have up to 256 points." |
 | a patch does not remove the Input, the Output or Main | "The input, the output and node 1, Main, can't be removed." |
@@ -634,6 +648,7 @@ A glass menu that opens upward from the button over the photo:
 | Item | Line | State |
 |---|---|---|
 | **Corrector** | "Grades all or part of the photo." | enabled |
+| **Film** | "Models a colour negative, a print and a scan." | enabled when the interface (F-09) is built; the core has the node (F-07) |
 | *(separator)* | | |
 | Parallel | "Grade branches side by side." | greyed, tag "Later" |
 | Layer | "Blend one branch over another." | greyed, tag "Later" |

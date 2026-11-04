@@ -38,11 +38,12 @@
 //! C9. Their log code values are shown as if they were display code values: each channel clamped to
 //! `[0, 1]`, no transfer function, no primaries conversion.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
 use super::dng_inverse::DngDisplayInverse;
-use super::node::{MainStages, NodeParams, NodeSet, PreparedNode};
+use super::node::{FilmStep, MainStages, NodeParams, NodeSet, PreparedNode};
 use super::transform::PreparedDisplay;
 use super::{DisplayError, OutputTarget};
 use crate::camera_default::CameraDefault;
@@ -156,6 +157,11 @@ pub struct ChainParams {
     /// The raster rows of the plan's nodes in plane order (`MaskKind::Raster { plane }` is a place in it):
     /// where each row's `S0` comes from and the sizes of its steps. Empty when no node has one.
     pub rasters: RasterSet,
+    /// The Film nodes of the plan (`docs/24`), by id. Each has its [`NodeParams`] in
+    /// [`NodeSet::others`] (the identity, with its masks); the chain reads the picture the node made from
+    /// the render's planes ([`RasterPlanes::film`](crate::mask::RasterPlanes::film)). Empty for a photo without a
+    /// Film node, which then runs exactly as it did.
+    pub films: BTreeMap<u32, FilmStep>,
 }
 
 impl ChainParams {
@@ -197,6 +203,7 @@ impl ChainParams {
             before: BeforePoint::CameraDefault,
             camera_default: CameraDefault::neutral(),
             rasters: RasterSet::default(),
+            films: BTreeMap::new(),
         }
     }
 }
@@ -273,6 +280,8 @@ pub struct ColorChain {
     tone: PreparedTone,
     /// The plan's steps in order, each with its node ready to run.
     steps: Vec<(Step, PreparedNode)>,
+    /// The Film nodes the plan runs.
+    films: BTreeMap<u32, FilmStep>,
     /// How many buffers a pixel's plan uses (zero for a plan of one pass).
     buffers: usize,
     look: LookStage,
@@ -356,6 +365,12 @@ impl ColorChain {
             matrix: params.matrix,
             tone: params.tone.prepare(),
             steps,
+            films: params
+                .films
+                .iter()
+                .filter(|(id, _)| plan.steps().any(|s| s.node == **id))
+                .map(|(id, f)| (*id, *f))
+                .collect(),
             buffers: plan.buffers.len(),
             look,
             display: PreparedDisplay::new(params.output),
@@ -499,6 +514,28 @@ impl ColorChain {
             } else {
                 None
             };
+            if let Some(film) = self.films.get(&step.node) {
+                let need_mask = node.masks().blends(key.is_some()) || step.key_out.is_some();
+                let (out, m) =
+                    Self::run_film(*film, node, v_in, linear, (key, need_mask), at, step.node);
+                if let Some(o) = step.picture_out {
+                    if let Some(r) = o.register {
+                        registers[usize::from(r)] = out;
+                    }
+                    if let Some(b) = o.buffer {
+                        buffers[usize::from(b)] = out;
+                    }
+                }
+                if let Some(o) = step.key_out {
+                    if let Some(s) = o.slot {
+                        slots[usize::from(s)] = m;
+                    }
+                    if let Some(b) = o.buffer {
+                        buffers[usize::from(b)] = [m; 3];
+                    }
+                }
+                continue;
+            }
             let made = node.apply(v_in, linear, stages).0;
             // The mask: needed for the blend, and for the key output (also of a node that is skipped).
             let blends = node.masks().blends(key.is_some());
@@ -544,6 +581,65 @@ impl ColorChain {
         }
     }
 
+    /// A Film node on one pixel (`docs/24` section 2.6): `out = in + m (film - in)` in LogC4, with `film` the
+    /// picture the render made for the node at this pixel and `m` the node's mask times its Strength. Returns the
+    /// picture and `m` (the key output; it does not depend on Bypass). Without a picture for the pixel, or
+    /// bypassed, the node passes its input through.
+    fn run_film(
+        film: FilmStep,
+        node: &PreparedNode,
+        v_in: LogC4,
+        linear: Option<Vec3>,
+        (key, need_mask): (Option<f64>, bool),
+        at: PixelAt<'_>,
+        id: u32,
+    ) -> ([f64; 3], f64) {
+        let mask = if need_mask {
+            node.mask(key, v_in, linear, at)
+        } else {
+            1.0
+        };
+        let m = mask * film.strength;
+        if film.bypass || m == 0.0 {
+            return (v_in.0, m);
+        }
+        let made = at
+            .and_then(|spot| spot.raster)
+            .and_then(|r| r.planes.film(id, r.x, r.y));
+        let Some(made) = made else {
+            return (v_in.0, m);
+        };
+        let made = made.map(f64::from);
+        if m == 1.0 {
+            return (made, m);
+        }
+        (
+            [
+                v_in.0[0] + m * (made[0] - v_in.0[0]),
+                v_in.0[1] + m * (made[1] - v_in.0[1]),
+                v_in.0[2] + m * (made[2] - v_in.0[2]),
+            ],
+            m,
+        )
+    }
+
+    /// The ids of the Film nodes the plan runs, in the plan's order.
+    #[must_use]
+    pub fn film_nodes(&self) -> Vec<u32> {
+        self.steps
+            .iter()
+            .filter(|(s, _)| self.films.contains_key(&s.node))
+            .map(|(s, _)| s.node)
+            .collect()
+    }
+
+    /// Whether the plan runs a Film node that does something (not bypassed, Strength above 0; `docs/24`). Such a chain is for the CPU: the device kernel has no Film
+    /// step, and the render makes the node's planes before the colour pass.
+    #[must_use]
+    pub fn has_films(&self) -> bool {
+        self.films.values().any(|f| !f.bypass && f.strength > 0.0)
+    }
+
     fn stages(&self, camera_rgb: Vec3, at: PixelAt<'_>) -> Staged {
         let c6 = self.c1_to_c6(camera_rgb);
         let c7 = self.tone.apply_rgb(c6);
@@ -579,7 +675,7 @@ impl ColorChain {
     /// every pixel ([`Frame::with_photo`](super::Frame::with_photo)).
     #[must_use]
     pub fn uses_photo_position(&self) -> bool {
-        self.steps.iter().any(|(_, n)| n.masks().needs_position())
+        self.has_films() || self.steps.iter().any(|(_, n)| n.masks().needs_position())
     }
 
     /// Whether any mask row of the plan's nodes reads a raster plane that exists: the render then makes the planes of

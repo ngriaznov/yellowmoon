@@ -34,8 +34,8 @@ use ym_color::chain::FusedChain;
 use ym_color::consts::Vec3;
 use ym_color::curve::{Curve, CurveSet};
 use ym_color::display::{
-    BeforePoint, ChainParams, ColorChain, LookSetting, MainNode, NodeParams, NodeSet, OutputTarget,
-    Trim,
+    BeforePoint, ChainParams, ColorChain, FilmStep, LookSetting, MainNode, NodeParams, NodeSet,
+    OutputTarget, Trim,
 };
 use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::LookTransform;
@@ -665,7 +665,7 @@ fn mask_rows(
 #[must_use]
 pub fn only_row(s: &DevelopSettings, node: u32, row: usize) -> Option<DevelopSettings> {
     let mut only = s.clone();
-    let masks = &mut only.nodes.corrector_mut(node)?.masks;
+    let masks = only.nodes.masks_of_mut(node)?;
     let mut item = masks.items.get(row)?.clone();
     item.mode = crate::settings::MaskMode::Add;
     item.enabled = true;
@@ -696,9 +696,8 @@ pub fn uses_background(s: &DevelopSettings, stop: Stop) -> bool {
         return false;
     };
     plan.node_ids().into_iter().any(|id| {
-        s.nodes.corrector(id).is_some_and(|c| {
-            c.masks
-                .items
+        s.nodes.masks_of(id).is_some_and(|m| {
+            m.items
                 .iter()
                 .any(|r| r.enabled && matches!(r.shape, MaskShape::Background(_)))
         })
@@ -709,9 +708,8 @@ pub fn uses_background(s: &DevelopSettings, stop: Stop) -> bool {
 /// (the mask view can show a dead node's mask): the app says "Finding…" while the first blur map is made.
 #[must_use]
 pub fn has_background_row(s: &DevelopSettings) -> bool {
-    s.nodes.correctors().any(|(_, c)| {
-        c.masks
-            .items
+    s.nodes.all_masks().any(|(_, m)| {
+        m.items
             .iter()
             .any(|r| r.enabled && matches!(r.shape, MaskShape::Background(_)))
     })
@@ -733,8 +731,8 @@ pub fn uses_photo_position_to(s: &DevelopSettings, stop: Stop) -> bool {
     };
     plan.node_ids().into_iter().any(|id| {
         s.nodes
-            .corrector(id)
-            .is_some_and(|c| node_masks(&c.masks).prepare().needs_position())
+            .masks_of(id)
+            .is_some_and(|m| node_masks(m).prepare().needs_position())
     })
 }
 
@@ -758,10 +756,10 @@ pub fn unmakeable_mask_with(s: &DevelopSettings, support: MaskSupport) -> Option
     let plan = node_plan(&s.nodes, Stop::Output).ok()?;
     let mut planes = 0usize;
     for id in plan.node_ids() {
-        let Some(c) = s.nodes.corrector(id) else {
+        let Some(masks) = s.nodes.masks_of(id) else {
             continue;
         };
-        for row in c.masks.items.iter().filter(|r| r.enabled) {
+        for row in masks.items.iter().filter(|r| r.enabled) {
             if let Some(sentence) = crate::settings::unmakeable_mask_sentence_with(
                 support,
                 id,
@@ -788,13 +786,17 @@ pub fn object_rows(s: &DevelopSettings, stop: Stop) -> Vec<&ObjectMask> {
     };
     let mut rows = Vec::new();
     for id in plan.node_ids() {
-        if let Some(c) = s.nodes.corrector(id) {
-            rows.extend(c.masks.items.iter().filter(|r| r.enabled).filter_map(
-                |r| match &r.shape {
-                    MaskShape::Object(o) => Some(o),
-                    _ => None,
-                },
-            ));
+        if let Some(masks) = s.nodes.masks_of(id) {
+            rows.extend(
+                masks
+                    .items
+                    .iter()
+                    .filter(|r| r.enabled)
+                    .filter_map(|r| match &r.shape {
+                        MaskShape::Object(o) => Some(o),
+                        _ => None,
+                    }),
+            );
         }
     }
     rows
@@ -804,9 +806,8 @@ pub fn object_rows(s: &DevelopSettings, stop: Stop) -> Vec<&ObjectMask> {
 /// starts SAM's encoder in the background for the photo being looked at (`docs/23` section 4.4).
 #[must_use]
 pub fn has_object_row(s: &DevelopSettings) -> bool {
-    s.nodes.correctors().any(|(_, c)| {
-        c.masks
-            .items
+    s.nodes.all_masks().any(|(_, m)| {
+        m.items
             .iter()
             .any(|r| r.enabled && matches!(r.shape, MaskShape::Object(_)))
     })
@@ -821,9 +822,9 @@ pub fn vision_kinds_to(s: &DevelopSettings, stop: Stop) -> Vec<VisionKind> {
     };
     let mut kinds = Vec::new();
     for id in plan.node_ids() {
-        if let Some(c) = s.nodes.corrector(id) {
+        if let Some(masks) = s.nodes.masks_of(id) {
             kinds.extend(
-                c.masks
+                masks
                     .items
                     .iter()
                     .filter(|r| r.enabled)
@@ -843,10 +844,9 @@ pub fn vision_kinds_to(s: &DevelopSettings, stop: Stop) -> Vec<VisionKind> {
 pub fn vision_kinds(s: &DevelopSettings) -> Vec<VisionKind> {
     let mut kinds: Vec<VisionKind> = s
         .nodes
-        .correctors()
-        .flat_map(|(_, c)| {
-            c.masks
-                .items
+        .all_masks()
+        .flat_map(|(_, m)| {
+            m.items
                 .iter()
                 .filter(|r| r.enabled)
                 .filter_map(|r| VisionKind::of(crate::settings::MaskKind::of(&r.shape)))
@@ -866,9 +866,21 @@ pub fn uses_rasters(s: &DevelopSettings) -> bool {
     };
     plan.node_ids().into_iter().any(|id| {
         s.nodes
-            .corrector(id)
-            .is_some_and(|c| node_masks(&c.masks).prepare().needs_rasters())
+            .masks_of(id)
+            .is_some_and(|m| node_masks(m).prepare().needs_rasters())
     })
+}
+
+/// Whether the photo's plan has a Film node that does something (not bypassed, Strength above 0): the picture then
+/// takes the CPU road (`docs/24` section 3.9, `frame::film_pass`) until the device runs the Film passes.
+#[must_use]
+pub fn has_film(s: &DevelopSettings) -> bool {
+    let Ok(plan) = node_plan(&s.nodes, Stop::Output) else {
+        return false;
+    };
+    plan.node_ids()
+        .into_iter()
+        .any(|id| s.nodes.film(id).is_some_and(|f| !f.is_inert()))
 }
 
 /// The graph as the plan compiler reads it: every corrector with its place, its picture source
@@ -884,9 +896,11 @@ pub fn plan_graph(g: &NodeGraph) -> PlanGraph {
     };
     let nodes = g
         .correctors()
-        .map(|(id, c)| PlanNode {
+        .map(|(id, c)| (id, c.pos))
+        .chain(g.films.iter().map(|(id, f)| (*id, f.pos)))
+        .map(|(id, pos)| PlanNode {
             id,
-            pos: c.pos,
+            pos,
             picture: source_of(NodeId::Corrector(id), Port::Picture).map(|n| match n {
                 NodeId::Corrector(m) => PictureSource::Node(m),
                 NodeId::Input | NodeId::Output => PictureSource::Input,
@@ -923,18 +937,45 @@ fn node_set(
     stop: Stop,
     background: Option<&Arc<BlurMap>>,
     objects: Option<&Arc<ObjectPlanes>>,
-) -> Result<(NodeSet, RasterSet), RenderError> {
+) -> Result<
+    (
+        NodeSet,
+        RasterSet,
+        std::collections::BTreeMap<u32, FilmStep>,
+    ),
+    RenderError,
+> {
     let plan = node_plan(&s.nodes, stop)?;
     let mut rasters = RasterSet::default();
     let mut masks = std::collections::BTreeMap::new();
     for id in plan.node_ids() {
-        if let Some(c) = s.nodes.corrector(id) {
-            masks.insert(id, mask_rows(&c.masks, &mut rasters, background, objects));
+        if let Some(m) = s.nodes.masks_of(id) {
+            masks.insert(id, mask_rows(m, &mut rasters, background, objects));
         }
     }
     let mut others = std::collections::BTreeMap::new();
+    let mut films = std::collections::BTreeMap::new();
     for id in plan.node_ids() {
         if id == plan::MAIN_NODE {
+            continue;
+        }
+        if let Some(f) = s.nodes.film(id) {
+            // A Film node: the identity for the corrector machinery, with its masks; the chain reads its picture
+            // from the render's planes.
+            others.insert(
+                id,
+                NodeParams {
+                    masks: masks.remove(&id).unwrap_or_default(),
+                    ..NodeParams::default()
+                },
+            );
+            films.insert(
+                id,
+                FilmStep {
+                    strength: f.strength / 100.0,
+                    bypass: f.bypass,
+                },
+            );
             continue;
         }
         let Some(c) = s.nodes.corrector(id) else {
@@ -968,6 +1009,7 @@ fn node_set(
             others,
         },
         rasters,
+        films,
     ))
 }
 
@@ -1050,7 +1092,20 @@ fn nodes_key(
         if id == plan::MAIN_NODE {
             continue;
         }
-        if let Some(c) = s.nodes.corrector(id) {
+        if let Some(f) = s.nodes.film(id) {
+            // A Film node, by everything that makes its picture (not its name or place).
+            let _ = write!(
+                k,
+                "film{id}:{}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?};",
+                f.bypass,
+                f.film,
+                f.print,
+                f.halation,
+                f.grain,
+                f.strength.to_bits(),
+                node_masks(&f.masks),
+            );
+        } else if let Some(c) = s.nodes.corrector(id) {
             let _ = write!(
                 k,
                 "{id}:{}:{:?}:{:?}:{:?}:{:?}:{:?};",
@@ -1066,10 +1121,10 @@ fn nodes_key(
     // The raster rows by what makes their planes (a hash of the strokes, never the strokes) and their sizes:
     // the numbers above only say that a node has a raster row.
     for id in plan.node_ids() {
-        let Some(c) = s.nodes.corrector(id) else {
+        let Some(masks) = s.nodes.masks_of(id) else {
             continue;
         };
-        for row in c.masks.items.iter().filter(|r| r.enabled) {
+        for row in masks.items.iter().filter(|r| r.enabled) {
             match &row.shape {
                 MaskShape::Brush(b) => {
                     let key = strokes_key(
@@ -1215,9 +1270,10 @@ pub fn grade_plan_to(
     params.grade = grade_params(s, &src.estimates);
     params.warp = warp_params(s);
     params.curves = curve_set(s)?;
-    let (nodes, rasters) = node_set(s, stop, req.background, req.objects)?;
+    let (nodes, rasters, films) = node_set(s, stop, req.background, req.objects)?;
     params.nodes = nodes;
     params.rasters = rasters;
+    params.films = films;
     params.output = req.target;
     params.dither = req.dither;
     params.before = BeforePoint::CameraDefault;

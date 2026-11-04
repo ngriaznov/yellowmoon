@@ -540,3 +540,65 @@ fn the_sentence_for_the_form_of_yellowmoon_0_1_is_the_same_in_the_docs_and_in_th
         .code(2)
         .stderr(predicate::str::contains(OLD_FORM_SENTENCE));
 }
+
+/// The text of a `## `-section of docs/10, from its heading to the next.
+fn section(doc: &str, heading: &str) -> String {
+    let start = doc
+        .find(&format!("\n## {heading}\n"))
+        .unwrap_or_else(|| panic!("the section {heading}"));
+    let rest = &doc[start + 1..];
+    let end = rest[3..].find("\n## ").map_or(rest.len(), |n| n + 3);
+    rest[..end].to_owned()
+}
+
+#[test]
+fn the_film_documentation_the_help_and_ym_film_list_agree() {
+    let doc = read("docs/10-cli.md");
+    let film = section(&doc, "`film`");
+    let sb = Sandbox::new();
+
+    // `ym --help` lists the command, and the command lists `list`.
+    let top = sb.ym().arg("--help").assert().success();
+    let top = String::from_utf8_lossy(&top.get_output().stdout).into_owned();
+    assert!(top.contains("film"), "{top}");
+    let sub = sb.ym().args(["film", "--help"]).assert().success();
+    assert!(String::from_utf8_lossy(&sub.get_output().stdout).contains("list"));
+
+    // The columns of the text, and the keys of the JSON, are the documented ones.
+    let text = sb.ym().args(["film", "list"]).assert().success();
+    let text = String::from_utf8_lossy(&text.get_output().stdout).into_owned();
+    let header: Vec<&str> = text.lines().next().unwrap().split("  ").filter(|c| !c.trim().is_empty()).map(str::trim).collect();
+    assert_eq!(header, ["ID", "NAME", "KIND", "ISO", "MATCHING PAPER"]);
+    assert!(film.contains("the columns ID, NAME, KIND"), "docs/10 names the columns");
+    for column in &header {
+        assert!(film.contains(column), "{column}");
+    }
+    let json = sb.ym().args(["film", "list", "--json"]).assert().success();
+    let v: Value = serde_json::from_slice(&json.get_output().stdout).expect("JSON");
+    for key in v.as_object().unwrap().keys() {
+        assert!(film.contains(&format!("\"{key}\"")), "docs/10 names the key {key}");
+    }
+    for key in v["stocks"][0].as_object().unwrap().keys().chain(v["papers"][0].as_object().unwrap().keys()) {
+        assert!(film.contains(&format!("\"{key}\"")), "docs/10 names the key {key}");
+    }
+    for kind in v["stocks"].as_array().unwrap().iter().map(|s| s["kind"].as_str().unwrap()).collect::<BTreeSet<_>>() {
+        assert!(film.contains(&format!("`{kind}`")), "docs/10 names the kind {kind}");
+    }
+
+    // The credit line and the refusals are word for word the code's.
+    assert!(film.contains(ym_core::film::FILM_CREDIT), "the credit line");
+    assert_eq!(v["credit"], serde_json::json!(ym_core::film::FILM_CREDIT));
+    let catalogue = ym_core::film::catalogue().expect("the catalogue");
+    let stock = catalogue.check_stock("x").unwrap_err();
+    let paper = catalogue.check_paper("x").unwrap_err();
+    assert!(film.contains(&stock), "{stock}");
+    assert!(film.contains(&paper), "{paper}");
+    assert!(doc.contains(&stock) || film.contains(&stock));
+
+    // The Film row of `ym doctor`.
+    let doctor = sb.ym().arg("doctor").assert().success();
+    let doctor = String::from_utf8_lossy(&doctor.get_output().stdout).into_owned();
+    let row = doctor.lines().find(|l| l.starts_with("Film ")).expect("a Film row");
+    let value = row.trim_start_matches("Film").trim();
+    assert!(film.contains(&format!("`{value}`")), "docs/10 shows the row `{value}`");
+}

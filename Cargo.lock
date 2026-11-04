@@ -11218,6 +11218,7 @@ dependencies = [
  "ym-color",
  "ym-core",
  "ym-export",
+ "ym-film",
  "ym-gpu",
  "ym-lens",
  "ym-looks",
@@ -11264,6 +11265,7 @@ dependencies = [
  "ym-color",
  "ym-compose",
  "ym-export",
+ "ym-film",
  "ym-gpu",
  "ym-lens",
  "ym-looks",
@@ -11324,6 +11326,7 @@ dependencies = [
  "tracing",
  "wgpu",
  "ym-color",
+ "ym-film",
  "ym-lens",
  "ym-noise",
 ]
