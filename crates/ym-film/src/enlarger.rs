@@ -72,7 +72,8 @@ impl Enlarger {
         let mut p = [0.0; 3];
         for i in 0..N_LAMBDA {
             let dye = &self.neg_dye[i];
-            let mut dens = self.neg_base[i] + d_neg[0] * dye[0] + d_neg[1] * dye[1] + d_neg[2] * dye[2];
+            let mut dens =
+                self.neg_base[i] + d_neg[0] * dye[0] + d_neg[1] * dye[1] + d_neg[2] * dye[2];
             for (f, c) in cc.iter().enumerate() {
                 dens += c * 0.01 * self.filter_density[f][i];
             }

@@ -104,8 +104,12 @@ impl SceneStage {
     pub fn from_linear(&self, awg4: Vec3) -> SceneLight {
         let xyz = linalg::mul_vec(&self.to_adapted_xyz, awg4);
         let sum = xyz[0] + xyz[1] + xyz[2];
-        let luminance = if xyz[1].is_finite() { xyz[1].max(0.0) } else { 0.0 };
-        if !(sum > 0.0) || !sum.is_finite() {
+        let luminance = if xyz[1].is_finite() {
+            xyz[1].max(0.0)
+        } else {
+            0.0
+        };
+        if sum.is_nan() || sum <= 0.0 || !sum.is_finite() {
             return SceneLight {
                 x: self.white_xy[0],
                 y: self.white_xy[1],

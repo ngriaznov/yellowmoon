@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)]
 //! The F-03 gates of `docs/24` section 8, against the real profiles and a stand-in spectra source.
 
 use std::path::{Path, PathBuf};
@@ -10,7 +11,8 @@ use ym_film::cie::Cie;
 use ym_film::exposure::reference_spectrum;
 use ym_film::profile::verify_checksums;
 use ym_film::{
-    FilmChain, FilmError, FilmParams, Names, PaperChoice, Profile, ReferenceSpectra, Spectra, StockKind,
+    FilmChain, FilmError, FilmParams, Names, PaperChoice, Profile, ReferenceSpectra, Spectra,
+    StockKind, TableSpectra,
 };
 
 fn data() -> PathBuf {
@@ -21,7 +23,12 @@ fn names() -> Names {
     Names::load(&data().join("film/params")).expect("names.json")
 }
 
-fn spectra_for(film: &str) -> Arc<dyn Spectra> {
+fn spectra_for(_film: &str) -> Arc<dyn Spectra> {
+    Arc::new(TableSpectra::load(&data().join("film/upsampling")).expect("upsampling table"))
+}
+
+#[allow(dead_code)]
+fn stand_in_for(film: &str) -> Arc<dyn Spectra> {
     let cie = Cie::load(&data().join("film/cie")).expect("cie");
     let p = Profile::load(&data().join("film/spektrafilm/profiles"), film).expect("profile");
     let ill = reference_spectrum(&p, &cie).expect("reference light");
@@ -29,7 +36,8 @@ fn spectra_for(film: &str) -> Arc<dyn Spectra> {
 }
 
 fn chain(film: &str, paper: PaperChoice, params: FilmParams) -> FilmChain {
-    FilmChain::new(&data(), film, &paper, params, spectra_for(film)).unwrap_or_else(|e| panic!("{film}: {e}"))
+    FilmChain::new(&data(), film, &paper, params, spectra_for(film))
+        .unwrap_or_else(|e| panic!("{film}: {e}"))
 }
 
 fn films(kind: &[StockKind]) -> Vec<String> {
@@ -42,7 +50,11 @@ fn films(kind: &[StockKind]) -> Vec<String> {
 }
 
 fn cameras() -> Vec<String> {
-    films(&[StockKind::ColourNegative, StockKind::CineNegative, StockKind::Slide])
+    films(&[
+        StockKind::ColourNegative,
+        StockKind::CineNegative,
+        StockKind::Slide,
+    ])
 }
 
 fn lerp_curve(p: &Profile, c: usize, x: f64) -> f64 {
@@ -78,28 +90,49 @@ fn damaged_profiles_give_a_plain_error() {
     write("cut", &text[..text.len() / 2]);
     let e = Profile::load(tmp.path(), "cut").expect_err("truncated file");
     let msg = e.to_string();
-    assert!(msg.contains("cut.json") && msg.contains("not valid JSON"), "{msg}");
+    assert!(
+        msg.contains("cut.json") && msg.contains("not valid JSON"),
+        "{msg}"
+    );
 
     // A wrong wavelength grid: shift the first sample.
     let mut v: serde_json::Value = serde_json::from_str(&text).expect("json");
     v["data"]["wavelengths"][0] = serde_json::json!(381.0);
     write("grid", &v.to_string());
-    let msg = Profile::load(tmp.path(), "grid").expect_err("grid").to_string();
-    assert!(msg.contains("grid.json") && msg.contains("wavelength sample 0"), "{msg}");
+    let msg = Profile::load(tmp.path(), "grid")
+        .expect_err("grid")
+        .to_string();
+    assert!(
+        msg.contains("grid.json") && msg.contains("wavelength sample 0"),
+        "{msg}"
+    );
 
     // A wrong shape.
     let mut v: serde_json::Value = serde_json::from_str(&text).expect("json");
-    v["data"]["density_curves"].as_array_mut().expect("array").pop();
+    v["data"]["density_curves"]
+        .as_array_mut()
+        .expect("array")
+        .pop();
     write("shape", &v.to_string());
-    let msg = Profile::load(tmp.path(), "shape").expect_err("shape").to_string();
-    assert!(msg.contains("shape.json") && msg.contains("density_curves has 255 rows"), "{msg}");
+    let msg = Profile::load(tmp.path(), "shape")
+        .expect_err("shape")
+        .to_string();
+    assert!(
+        msg.contains("shape.json") && msg.contains("density_curves has 255 rows"),
+        "{msg}"
+    );
 
     // A value out of range.
     let mut v: serde_json::Value = serde_json::from_str(&text).expect("json");
     v["data"]["density_curves"][10][1] = serde_json::json!(40.0);
     write("range", &v.to_string());
-    let msg = Profile::load(tmp.path(), "range").expect_err("range").to_string();
-    assert!(msg.contains("range.json") && msg.contains("density"), "{msg}");
+    let msg = Profile::load(tmp.path(), "range")
+        .expect_err("range")
+        .to_string();
+    assert!(
+        msg.contains("range.json") && msg.contains("density"),
+        "{msg}"
+    );
 
     // A missing file.
     let e = Profile::load(tmp.path(), "absent").expect_err("missing");
@@ -130,7 +163,10 @@ fn neutral_ramp_reproduces_each_cameras_published_curves() {
             let light = c.scene_stage().run(logc4_encode_rgb([g; 3]));
             let log_e = c.exposure_stage().log_exposure(&light, 0.0);
             for ch in 0..3 {
-                assert!((log_e[ch] - x).abs() < 1e-9, "{id}: a neutral must give equal exposures");
+                assert!(
+                    (log_e[ch] - x).abs() < 1e-9,
+                    "{id}: a neutral must give equal exposures"
+                );
             }
             let d = c.develop_stage().couple(log_e, 1.0);
             for ch in 0..3 {
@@ -142,7 +178,10 @@ fn neutral_ramp_reproduces_each_cameras_published_curves() {
             }
         }
     }
-    println!("GATE published curves (stages 2 to 5, couplers on): worst error {:.5} density ({})", worst.0, worst.1);
+    println!(
+        "GATE published curves (stages 2 to 5, couplers on): worst error {:.5} density ({})",
+        worst.0, worst.1
+    );
     assert!(worst.0 < 0.01, "{worst:?}");
 }
 
@@ -152,7 +191,11 @@ fn papers_reproduce_their_published_curves() {
     let papers = films(&[StockKind::Paper]);
     assert_eq!(papers.len(), 6);
     for paper in &papers {
-        let c = chain("kodak_portra_400", PaperChoice::Id(paper.clone()), FilmParams::default());
+        let c = chain(
+            "kodak_portra_400",
+            PaperChoice::Id(paper.clone()),
+            FilmParams::default(),
+        );
         let p = c.paper().expect("paper");
         for k in -7..=7 {
             let g = 0.18 * 2f64.powf(f64::from(k) * 0.8);
@@ -166,7 +209,10 @@ fn papers_reproduce_their_published_curves() {
             }
         }
     }
-    println!("GATE published curves (through stage 8): worst error {:.5} density ({})", worst.0, worst.1);
+    println!(
+        "GATE published curves (through stage 8): worst error {:.5} density ({})",
+        worst.0, worst.1
+    );
     assert!(worst.0 < 0.01, "{worst:?}");
 }
 
@@ -185,7 +231,10 @@ fn grey_prints_neutral_and_at_the_right_brightness_for_every_pair() {
         let cine = CineRendering::new(FilmParams::default().output.target());
         let back = cine.forward(LinearAwg4(logc4_decode_rgb(out)));
         let target = cine.forward(LinearAwg4([0.18; 3]))[0];
-        assert!((target - 0.111).abs() < 5e-4, "the cine rendering's grey is {target}");
+        assert!(
+            (target - 0.111).abs() < 5e-4,
+            "the cine rendering's grey is {target}"
+        );
         // Negatives print neutral, so every channel is the grey; a slide is matched in luminance (its own grey is
         // not exactly neutral: a* and b* are reported, not gated).
         let dy = if c.paper().is_some() {
@@ -220,9 +269,18 @@ fn grey_prints_neutral_and_at_the_right_brightness_for_every_pair() {
     for l in &lines {
         println!("{l}");
     }
-    println!("GATE neutral: worst |a*|,|b*| {:.6} ({}) over the negatives", worst_ab.0, worst_ab.1);
-    println!("(not a gate) slides' own grey: worst |a*|,|b*| {:.3} ({})", worst_slide.0, worst_slide.1);
-    println!("GATE brightness: worst |display - 0.111| {:.6} ({})", worst_y.0, worst_y.1);
+    println!(
+        "GATE neutral: worst |a*|,|b*| {:.6} ({}) over the negatives",
+        worst_ab.0, worst_ab.1
+    );
+    println!(
+        "(not a gate) slides' own grey: worst |a*|,|b*| {:.3} ({})",
+        worst_slide.0, worst_slide.1
+    );
+    println!(
+        "GATE brightness: worst |display - 0.111| {:.6} ({})",
+        worst_y.0, worst_y.1
+    );
 }
 
 #[test]
@@ -230,13 +288,22 @@ fn the_cine_rendering_undoes_the_return_stage() {
     // Stage 10 then the forward cine rendering gives stage 9's display colour back, for reachable colours.
     let mut worst = 0.0_f64;
     let (mut total, mut reachable) = (0, 0);
-    for id in ["kodak_portra_400", "kodak_ektar_100", "fujifilm_velvia_100", "kodak_vision3_500t"] {
+    for id in [
+        "kodak_portra_400",
+        "kodak_ektar_100",
+        "fujifilm_velvia_100",
+        "kodak_vision3_500t",
+    ] {
         let c = chain(id, PaperChoice::Matching, FilmParams::default());
         let cine = CineRendering::new(c.params().output.target());
         for r in 0..5 {
             for g in 0..5 {
                 for b in 0..5 {
-                    let lin = [0.02 * 3f64.powi(r), 0.02 * 3f64.powi(g), 0.02 * 3f64.powi(b)];
+                    let lin = [
+                        0.02 * 3f64.powi(r),
+                        0.02 * 3f64.powi(g),
+                        0.02 * 3f64.powi(b),
+                    ];
                     let logc = logc4_encode_rgb(lin);
                     let display = c.display_of(logc);
                     let held = display.map(|v| v.clamp(1e-6, 1.0));
@@ -253,17 +320,23 @@ fn the_cine_rendering_undoes_the_return_stage() {
             }
         }
     }
-    println!("GATE return: worst round-trip error {worst:.2e} on {reachable} reachable of {total} colours");
+    println!(
+        "GATE return: worst round-trip error {worst:.2e} on {reachable} reachable of {total} colours"
+    );
     assert!(reachable > total / 2);
     assert!(worst <= 1e-6, "{worst}");
 }
 
 #[test]
 fn results_do_not_depend_on_the_thread_count_or_the_run() {
-    let c = chain("kodak_portra_400", PaperChoice::Matching, FilmParams::default());
+    let c = chain(
+        "kodak_portra_400",
+        PaperChoice::Matching,
+        FilmParams::default(),
+    );
     let pixels: Vec<[f64; 3]> = (0..1200)
         .map(|i| {
-            let f = |k: u32| 0.01 * 1.0035f64.powi(((i * 7 + k as i32 * 131) % 1500) as i32);
+            let f = |k: u32| 0.01 * 1.0035f64.powi((i * 7 + k as i32 * 131) % 1500);
             logc4_encode_rgb([f(1), f(2), f(3)])
         })
         .collect();
@@ -285,7 +358,10 @@ fn results_do_not_depend_on_the_thread_count_or_the_run() {
     let one = run(1);
     assert_eq!(one, run(8), "1 and 8 threads differ");
     assert_eq!(one, run(1), "two runs differ");
-    println!("GATE determinism: {} values identical on 1 and 8 threads and on a repeat", one.len());
+    println!(
+        "GATE determinism: {} values identical on 1 and 8 threads and on a repeat",
+        one.len()
+    );
 }
 
 #[test]
@@ -298,7 +374,11 @@ fn couplers_off_changes_saturation_but_not_the_grey() {
     let g = c.display_of(logc4_encode_rgb([0.18; 3]));
     let target = c.target_grey();
     assert!((c.scan_stage().luminance(g) - target).abs() < 1e-5);
-    let on = chain("kodak_portra_400", PaperChoice::Matching, FilmParams::default());
+    let on = chain(
+        "kodak_portra_400",
+        PaperChoice::Matching,
+        FilmParams::default(),
+    );
     let red = logc4_encode_rgb([0.4, 0.05, 0.03]);
     assert_ne!(c.run(red), on.run(red));
 }
@@ -321,4 +401,25 @@ fn wrong_stocks_are_refused() {
         spectra_for("kodak_portra_400"),
     );
     assert!(matches!(r, Err(FilmError::UnknownStock(_))));
+}
+
+#[test]
+fn the_real_table_gives_spectra_of_the_asked_chromaticity() {
+    let cie = Cie::load(&data().join("film/cie")).expect("cie");
+    let t = TableSpectra::load(&data().join("film/upsampling")).expect("table");
+    let mut worst = 0.0_f64;
+    for (x, y) in [
+        (0.3127, 0.3290),
+        (0.45, 0.41),
+        (0.2, 0.3),
+        (0.6, 0.35),
+        (0.15, 0.6),
+        (0.3333, 0.3333),
+    ] {
+        let s = t.spectrum(x, y);
+        let got = cie.xy_of_light(&s);
+        worst = worst.max((got[0] - x).abs()).max((got[1] - y).abs());
+    }
+    println!("real table: worst chromaticity miss {worst:.2e}");
+    assert!(worst < 1e-3, "{worst}");
 }

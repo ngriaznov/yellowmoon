@@ -6,10 +6,11 @@
 //! A [`Spectra`] is fed a chromaticity `(x, y)` and returns the 81 samples (380 to 780 nm, 5 nm) of a smooth emission
 //! spectrum whose luminance `Y` is 1. Two implementations:
 //!
-//! * [`TableSpectra`] reads our upsampling table (`data/film/upsampling/coeffs.f32`, made by `training/film/`):
-//!   little-endian f32 `[N][N][4]` = `(c0, c1, c2, Y_s)` over `x, y` in `[0, 1]`; the spectrum is
-//!   `sigmoid(c0 t^2 + c1 t + c2)` with `t = (l - 380) / 400` and `sigmoid(z) = 1/2 + z / (2 sqrt(1 + z^2))`; for
-//!   unit luminance it is divided by `Y_s`. The four numbers are interpolated bilinearly.
+//! * [`TableSpectra`] reads our upsampling table (`data/film/upsampling/coeffs.f32`, made by `training/film/`,
+//!   format in `docs/24` section 3.3): little-endian f32 `[N][N][4]` = `(c0, c1, c2, Y_s)`, node `(ix, iy)` at
+//!   `x = ix / (N-1)`, `y = iy / (N-1)`; a node's spectrum is `sigmoid(c0 t^2 + c1 t + c2) / Y_s` with
+//!   `t = (l - 380) / 400` and `sigmoid(z) = 1/2 + z / (2 sqrt(1 + z^2))`, evaluated in f64 (the coefficients
+//!   reach 2.4e5). Between nodes the four neighbours' *spectra* are mixed bilinearly, never the coefficients.
 //! * [`ReferenceSpectra`] is a stand-in that needs no table: the reference light's own spectrum for a neutral,
 //!   times a smooth sigmoid-of-a-quadratic factor that is solved so that the chromaticity is right. It is for
 //!   tests and for working before the table exists.
@@ -75,20 +76,29 @@ impl TableSpectra {
     /// As [`TableSpectra::load`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, FilmError> {
         let name = "upsampling/coeffs.f32";
-        if bytes.len() % 16 != 0 {
-            return Err(FilmError::data(name, "its size is not a whole number of (c0, c1, c2, Y) cells"));
+        if !bytes.len().is_multiple_of(16) {
+            return Err(FilmError::data(
+                name,
+                "its size is not a whole number of (c0, c1, c2, Y) cells",
+            ));
         }
         let cells = bytes.len() / 16;
         let n = (cells as f64).sqrt().round() as usize;
         if n < 2 || n * n != cells {
-            return Err(FilmError::data(name, format!("{cells} cells do not make a square table")));
+            return Err(FilmError::data(
+                name,
+                format!("{cells} cells do not make a square table"),
+            ));
         }
         let data: Vec<f32> = bytes
             .chunks_exact(4)
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect();
         if data.iter().any(|v| !v.is_finite()) {
-            return Err(FilmError::data(name, "it holds a value that is not a number"));
+            return Err(FilmError::data(
+                name,
+                "it holds a value that is not a number",
+            ));
         }
         Ok(Self { n, data })
     }
@@ -118,17 +128,25 @@ impl Spectra for TableSpectra {
         let ix = (fx.floor() as usize).min(self.n - 2);
         let iy = (fy.floor() as usize).min(self.n - 2);
         let (tx, ty) = (fx - ix as f64, fy - iy as f64);
-        let (a, b) = (self.cell(ix, iy), self.cell(ix + 1, iy));
-        let (c, d) = (self.cell(ix, iy + 1), self.cell(ix + 1, iy + 1));
-        let mut v = [0.0; 4];
-        for k in 0..4 {
-            v[k] = (a[k] * (1.0 - tx) + b[k] * tx) * (1.0 - ty) + (c[k] * (1.0 - tx) + d[k] * tx) * ty;
-        }
-        let s = sigmoid_quadratic([v[0], v[1], v[2]]);
-        let ys = if v[3].abs() > 1e-12 { v[3] } else { 1.0 };
+        // The four neighbours' spectra, each divided by its Y_s, mixed with the bilinear weights. Mixing the
+        // spectra and not the coefficients keeps the chromaticity right near the locus.
+        let nodes = [
+            (ix, iy, (1.0 - tx) * (1.0 - ty)),
+            (ix + 1, iy, tx * (1.0 - ty)),
+            (ix, iy + 1, (1.0 - tx) * ty),
+            (ix + 1, iy + 1, tx * ty),
+        ];
         let mut out = [0.0; N_LAMBDA];
-        for i in 0..N_LAMBDA {
-            out[i] = s[i] / ys;
+        for (jx, jy, w) in nodes {
+            if w == 0.0 {
+                continue;
+            }
+            let v = self.cell(jx, jy);
+            let ys = if v[3] > 0.0 { v[3] } else { 1.0 };
+            let s = sigmoid_quadratic([v[0], v[1], v[2]]);
+            for i in 0..N_LAMBDA {
+                out[i] += w * s[i] / ys;
+            }
         }
         out
     }

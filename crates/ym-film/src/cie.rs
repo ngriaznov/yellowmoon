@@ -53,16 +53,12 @@ impl Cie {
                 FilmError::data(name("CIE_xyz_1931_2deg.csv"), format!("no row for {nm} nm"))
             })?;
             cmf[i] = [a[0], a[1], a[2]];
-            s50[i] = d50
-                .get(&nm)
-                .ok_or_else(|| {
-                    FilmError::data(name("CIE_std_illum_D50.csv"), format!("no row for {nm} nm"))
-                })?[0];
-            s55[i] = d55
-                .get(&nm)
-                .ok_or_else(|| {
-                    FilmError::data(name("CIE_illum_D55.csv"), format!("no row for {nm} nm"))
-                })?[0];
+            s50[i] = d50.get(&nm).ok_or_else(|| {
+                FilmError::data(name("CIE_std_illum_D50.csv"), format!("no row for {nm} nm"))
+            })?[0];
+            s55[i] = d55.get(&nm).ok_or_else(|| {
+                FilmError::data(name("CIE_illum_D55.csv"), format!("no row for {nm} nm"))
+            })?[0];
         }
         Ok(Self {
             cmf,
@@ -132,17 +128,29 @@ fn read_columns(
         if fields.len() != n + 1 {
             return Err(FilmError::data(
                 &file,
-                format!("line {}: {} fields, expected {}", ln + 1, fields.len(), n + 1),
+                format!(
+                    "line {}: {} fields, expected {}",
+                    ln + 1,
+                    fields.len(),
+                    n + 1
+                ),
             ));
         }
         let nm: f64 = fields[0].parse().map_err(|_| {
-            FilmError::data(&file, format!("line {}: {:?} is not a wavelength", ln + 1, fields[0]))
+            FilmError::data(
+                &file,
+                format!("line {}: {:?} is not a wavelength", ln + 1, fields[0]),
+            )
         })?;
         let mut vals = Vec::with_capacity(n);
         for f in &fields[1..] {
-            let v: f64 = f.parse().ok().filter(|v: &f64| v.is_finite()).ok_or_else(|| {
-                FilmError::data(&file, format!("line {}: {f:?} is not a number", ln + 1))
-            })?;
+            let v: f64 = f
+                .parse()
+                .ok()
+                .filter(|v: &f64| v.is_finite())
+                .ok_or_else(|| {
+                    FilmError::data(&file, format!("line {}: {f:?} is not a number", ln + 1))
+                })?;
             vals.push(v);
         }
         map.insert(nm.round() as i64, vals);

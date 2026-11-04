@@ -92,7 +92,11 @@ impl ExposureStage {
                 plain += ill[i] * raw[i][c];
                 windowed += ill[i] * raw[i][c] * window[i];
             }
-            let k = if windowed > 0.0 { plain / windowed } else { 1.0 };
+            let k = if windowed > 0.0 {
+                plain / windowed
+            } else {
+                1.0
+            };
             for i in 0..N_LAMBDA {
                 sens[c][i] = raw[i][c] * window[i] * k;
             }
@@ -162,7 +166,9 @@ pub fn mid_log_exposure(profile: &Profile) -> f64 {
         let mut sum = 0.0;
         for &i in &defined {
             let m = profile.base_density[i]
-                + (0..3).map(|c| d[c] * profile.channel_density[i][c]).sum::<f64>();
+                + (0..3)
+                    .map(|c| d[c] * profile.channel_density[i][c])
+                    .sum::<f64>();
             let e = m - profile.midscale_neutral_density[i];
             sum += e * e;
         }

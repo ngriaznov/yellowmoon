@@ -123,8 +123,12 @@ impl Profile {
     fn parse(file: &str, bytes: &[u8]) -> Result<Self, FilmError> {
         let value: serde_json::Value = serde_json::from_slice(bytes)
             .map_err(|e| FilmError::data(file, format!("it is not valid JSON ({e})")))?;
-        let raw: RawProfile = serde_json::from_value(value)
-            .map_err(|e| FilmError::data(file, format!("a field is missing or has the wrong type ({e})")))?;
+        let raw: RawProfile = serde_json::from_value(value).map_err(|e| {
+            FilmError::data(
+                file,
+                format!("a field is missing or has the wrong type ({e})"),
+            )
+        })?;
         let id = raw.info.stock.clone();
         let d = raw.data;
         let bad = |what: String| FilmError::data(file, what);
@@ -226,22 +230,33 @@ impl Profile {
             )));
         }
         if window.iter().any(|v| !v.is_finite()) {
-            return Err(bad("the adaptation window holds a value that is not a number".into()));
+            return Err(bad(
+                "the adaptation window holds a value that is not a number".into(),
+            ));
         }
         if window.len() == 4 && (window[1] <= 0.0 || window[3] <= 0.0) {
-            return Err(bad("the adaptation window has a width that is not positive".into()));
+            return Err(bad(
+                "the adaptation window has a width that is not positive".into(),
+            ));
         }
 
         let kind = match raw.info.kind.as_str() {
             "negative" => ProfileType::Negative,
             "positive" => ProfileType::Positive,
-            other => return Err(bad(format!("info.type is {other:?}, expected negative or positive"))),
+            other => {
+                return Err(bad(format!(
+                    "info.type is {other:?}, expected negative or positive"
+                )));
+            }
         };
         Ok(Self {
             id,
             name: raw.info.name,
             kind,
-            target_print: raw.info.target_print.filter(|s| !s.is_empty() && s != "null"),
+            target_print: raw
+                .info
+                .target_print
+                .filter(|s| !s.is_empty() && s != "null"),
             reference_illuminant: raw.info.reference_illuminant,
             viewing_illuminant: raw.info.viewing_illuminant,
             log_sensitivity,
@@ -350,9 +365,9 @@ pub fn verify_checksums(root: &Path) -> Result<usize, FilmError> {
     })?;
     let mut n = 0;
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
-        let (hash, rel) = line
-            .split_once("  ")
-            .ok_or_else(|| FilmError::data("SHA256SUMS", format!("cannot read the line {line:?}")))?;
+        let (hash, rel) = line.split_once("  ").ok_or_else(|| {
+            FilmError::data("SHA256SUMS", format!("cannot read the line {line:?}"))
+        })?;
         let path = root.join(rel.trim());
         let bytes = std::fs::read(&path).map_err(|source| FilmError::Io {
             path: path.clone(),
@@ -361,7 +376,9 @@ pub fn verify_checksums(root: &Path) -> Result<usize, FilmError> {
         let got = Sha256::digest(&bytes);
         let got: String = got.iter().map(|b| format!("{b:02x}")).collect();
         if got != hash {
-            return Err(FilmError::Checksum { file: rel.trim().to_string() });
+            return Err(FilmError::Checksum {
+                file: rel.trim().to_string(),
+            });
         }
         n += 1;
     }

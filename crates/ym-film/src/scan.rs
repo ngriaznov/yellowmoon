@@ -118,7 +118,9 @@ impl Scan {
     /// The luminance `Y` of a display colour in this output.
     #[must_use]
     pub fn luminance(&self, display: Vec3) -> f64 {
-        self.rgb_to_xyz[1][0] * display[0] + self.rgb_to_xyz[1][1] * display[1] + self.rgb_to_xyz[1][2] * display[2]
+        self.rgb_to_xyz[1][0] * display[0]
+            + self.rgb_to_xyz[1][1] * display[1]
+            + self.rgb_to_xyz[1][2] * display[2]
     }
 
     /// CIELAB (D50) of a display colour: the output's RGB to XYZ, Bradford to D50, `Lab` against the D50 white.

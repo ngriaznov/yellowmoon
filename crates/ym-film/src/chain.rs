@@ -21,8 +21,9 @@ use std::sync::Arc;
 
 use ym_color::display::cine::CineRendering;
 use ym_color::gamut::LinearAwg4;
-use ym_color::logc::{logc4_encode_rgb, logc4_decode_rgb};
+use ym_color::logc::{logc4_decode_rgb, logc4_encode_rgb};
 
+use crate::Vec3;
 use crate::cie::Cie;
 use crate::develop::Develop;
 use crate::enlarger::Enlarger;
@@ -33,7 +34,6 @@ use crate::profile::{Names, Profile, StockKind};
 use crate::scan::{Scan, WhiteKind};
 use crate::scene::{SceneLight, SceneStage};
 use crate::spectra::Spectra;
-use crate::Vec3;
 
 const LOG10_2: f64 = std::f64::consts::LOG10_2;
 
@@ -144,7 +144,9 @@ impl FilmChain {
             let id = match paper {
                 PaperChoice::Id(id) => id.clone(),
                 PaperChoice::Matching => match film.target_print.as_deref() {
-                    Some(t) if names.get(t).is_some_and(|s| s.kind == StockKind::Paper) => t.to_string(),
+                    Some(t) if names.get(t).is_some_and(|s| s.kind == StockKind::Paper) => {
+                        t.to_string()
+                    }
                     _ => FALLBACK_PAPER.to_string(),
                 },
             };
@@ -180,7 +182,10 @@ impl FilmChain {
                     Scan::new(p, &cie, params.output, WhiteKind::PaperBase),
                 )
             }
-            None => (None, Scan::new(&film, &cie, params.output, WhiteKind::Light)),
+            None => (
+                None,
+                Scan::new(&film, &cie, params.output, WhiteKind::Light),
+            ),
         };
         let cine = CineRendering::new(params.output.target());
         let mut chain = Self {
@@ -350,7 +355,10 @@ impl FilmChain {
     fn calibration_error(&self, what: impl Into<String>) -> FilmError {
         FilmError::Calibration {
             film: self.film.id.clone(),
-            paper: self.paper.as_ref().map_or_else(|| "(none)".into(), |p| p.id.clone()),
+            paper: self
+                .paper
+                .as_ref()
+                .map_or_else(|| "(none)".into(), |p| p.id.clone()),
             what: what.into(),
         }
     }
@@ -394,7 +402,9 @@ impl FilmChain {
                 s.scan.luminance(d) - target
             };
             if f(self, lo) > 0.0 || f(self, hi) < 0.0 {
-                return Err(self.calibration_error("the slide cannot reach the grey with an exposure gain of 4 stops either way"));
+                return Err(self.calibration_error(
+                    "the slide cannot reach the grey with an exposure gain of 4 stops either way",
+                ));
             }
             for _ in 0..60 {
                 let mid = 0.5 * (lo + hi);
@@ -415,7 +425,9 @@ impl FilmChain {
             let flo = self.grey_lum(y, m, lo) - target;
             let fhi = self.grey_lum(y, m, hi) - target;
             if flo < 0.0 || fhi > 0.0 {
-                return Err(self.calibration_error("the grey cannot reach the target brightness within 3 stops"));
+                return Err(self.calibration_error(
+                    "the grey cannot reach the target brightness within 3 stops",
+                ));
             }
             for _ in 0..60 {
                 let mid = 0.5 * (lo + hi);
@@ -447,7 +459,9 @@ impl FilmChain {
                     [(ry[1] - r[1]) / h, (rm[1] - r[1]) / h],
                 ];
                 let Some(step) = crate::math::solve2(jac, [-r[0], -r[1]]) else {
-                    return Err(self.calibration_error("the filters do not change the grey's colour"));
+                    return Err(
+                        self.calibration_error("the filters do not change the grey's colour")
+                    );
                 };
                 let len = step[0].hypot(step[1]);
                 let cap = if len > 30.0 { 30.0 / len } else { 1.0 };

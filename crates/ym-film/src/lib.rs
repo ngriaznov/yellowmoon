@@ -21,6 +21,9 @@
 //! module for the papers and data sheets it follows (`docs/24` section 3.1).
 
 #![warn(missing_docs)]
+// The colour maths loops over the 81 samples and the three layers of several parallel arrays at once; an index
+// loop is the clearest form there.
+#![allow(clippy::needless_range_loop)]
 
 pub mod chain;
 pub mod cie;

@@ -7,7 +7,9 @@ use std::path::PathBuf;
 #[non_exhaustive]
 pub enum FilmError {
     /// A file could not be read.
-    #[error("Cannot read {path}: {source}. Check that the file exists and reinstall the app if it does not.")]
+    #[error(
+        "Cannot read {path}: {source}. Check that the file exists and reinstall the app if it does not."
+    )]
     Io {
         /// The file.
         path: PathBuf,

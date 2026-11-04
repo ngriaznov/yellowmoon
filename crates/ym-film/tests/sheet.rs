@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)]
 //! The sanity sheet (not a gate): the 24 ColorChecker patches through four stocks, into a PNG.
 //!
 //! The patches are the Ohta ColorChecker reflectances in `testdata/spectral/` (git-ignored; the test skips when
@@ -15,9 +16,8 @@ use ym_color::display::cine::CineRendering;
 use ym_color::gamut::{LinearAwg4, matrices};
 use ym_color::logc::logc4_encode_rgb;
 use ym_film::cie::{Cie, Light};
-use ym_film::exposure::reference_spectrum;
 use ym_film::scene::bradford;
-use ym_film::{FilmChain, FilmParams, Output, PaperChoice, Profile, ReferenceSpectra};
+use ym_film::{FilmChain, FilmParams, Output, PaperChoice, TableSpectra};
 
 fn data() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data")
@@ -25,12 +25,17 @@ fn data() -> PathBuf {
 
 fn srgb_oetf(v: f64) -> u8 {
     let v = v.clamp(0.0, 1.0);
-    let e = if v <= 0.003_130_8 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    let e = if v <= 0.003_130_8 {
+        12.92 * v
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    };
     (e * 255.0 + 0.5).floor() as u8
 }
 
 fn patches(cie: &Cie) -> Option<Vec<[f64; 3]>> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/spectral/reflectances_colorchecker_24.csv");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testdata/spectral/reflectances_colorchecker_24.csv");
     let text = std::fs::read_to_string(path).ok()?;
     let d50 = cie.light(Light::D50);
     let norm: f64 = (0..81).map(|i| d50[i] * cie.cmf[i][1]).sum();
@@ -38,7 +43,11 @@ fn patches(cie: &Cie) -> Option<Vec<[f64; 3]>> {
     let m = matrices();
     let mut out = Vec::new();
     for line in text.lines().skip(1).filter(|l| !l.trim().is_empty()) {
-        let r: Vec<f64> = line.split(',').skip(1).map(|v| v.trim().parse().unwrap_or(0.0)).collect();
+        let r: Vec<f64> = line
+            .split(',')
+            .skip(1)
+            .map(|v| v.trim().parse().unwrap_or(0.0))
+            .collect();
         if r.len() != 81 {
             return None;
         }
@@ -66,17 +75,21 @@ fn colorchecker_through_four_stocks() {
         output: Output::Srgb,
         ..FilmParams::default()
     };
-    let stocks = ["kodak_portra_400", "kodak_ektar_100", "fujifilm_velvia_100", "kodak_vision3_500t"];
-    let mut charts: Vec<Vec<[f64; 3]>> = vec![chart.iter().map(|p| cine.forward(LinearAwg4(*p))).collect()];
+    let stocks = [
+        "kodak_portra_400",
+        "kodak_ektar_100",
+        "fujifilm_velvia_100",
+        "kodak_vision3_500t",
+    ];
+    let mut charts: Vec<Vec<[f64; 3]>> =
+        vec![chart.iter().map(|p| cine.forward(LinearAwg4(*p))).collect()];
     for id in stocks {
-        let prof = Profile::load(&data().join("film/spektrafilm/profiles"), id).expect("profile");
-        let ill = reference_spectrum(&prof, &cie).expect("light");
         let c = FilmChain::new(
             &data(),
             id,
             &PaperChoice::Matching,
             params.clone(),
-            Arc::new(ReferenceSpectra::new(&cie, ill)),
+            Arc::new(TableSpectra::load(&data().join("film/upsampling")).expect("table")),
         )
         .expect("chain");
         let mut rows = Vec::new();
@@ -122,8 +135,14 @@ fn colorchecker_through_four_stocks() {
     w.write_image_data(&img).expect("data");
     drop(w);
     println!("sheet written to {}", out.display());
-    for (id, rows) in std::iter::once(&"cine rendering only").chain(stocks.iter()).zip(&charts) {
+    for (id, rows) in std::iter::once(&"cine rendering only")
+        .chain(stocks.iter())
+        .zip(&charts)
+    {
         let g = &rows[21];
-        println!("{id:<22} patch 22 (neutral 5) display {:.4} {:.4} {:.4}", g[0], g[1], g[2]);
+        println!(
+            "{id:<22} patch 22 (neutral 5) display {:.4} {:.4} {:.4}",
+            g[0], g[1], g[2]
+        );
     }
 }

@@ -15,10 +15,10 @@
 //! a neutral ramp with `amount = 1` gives `C_i` back, and a coloured exposure gets the interlayer inhibition on
 //! top (more saturation). With `amount = 0` the couplers are off and the density is `C0_i(log E_i)`.
 
+use crate::Vec3;
 use crate::error::FilmError;
 use crate::math::solve3;
 use crate::profile::Profile;
-use crate::Vec3;
 
 /// A monotone piecewise-cubic curve through `(x, y)` points, held flat outside.
 #[derive(Debug, Clone)]
@@ -139,7 +139,9 @@ impl Develop {
             let mut u = Vec::with_capacity(xs.len());
             let mut y = Vec::with_capacity(xs.len());
             for (k, x) in xs.iter().enumerate() {
-                let inhibition: f64 = (0..3).map(|j| matrix[i][j] * profile.density_curves[k][j]).sum();
+                let inhibition: f64 = (0..3)
+                    .map(|j| matrix[i][j] * profile.density_curves[k][j])
+                    .sum();
                 u.push(x - inhibition);
                 y.push(profile.density_curves[k][i]);
             }
@@ -248,7 +250,10 @@ mod tests {
     #[test]
     fn cubic_interpolates_and_stays_monotone() {
         let xs: Vec<f64> = (0..20).map(f64::from).collect();
-        let ys: Vec<f64> = xs.iter().map(|x| 1.0 / (1.0 + (-(x - 10.0) * 0.6).exp())).collect();
+        let ys: Vec<f64> = xs
+            .iter()
+            .map(|x| 1.0 / (1.0 + (-(x - 10.0) * 0.6).exp()))
+            .collect();
         let c = MonotoneCubic::new(xs.clone(), ys.clone());
         for (x, y) in xs.iter().zip(&ys) {
             assert!((c.eval(*x) - y).abs() < 1e-12);
