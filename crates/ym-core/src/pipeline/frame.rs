@@ -991,8 +991,9 @@ fn cpu_view_planes(
     chain: &ColorChain,
     ctx: RasterCtx<'_>,
 ) -> Result<Option<Planes>, RenderError> {
+    // The Before view runs no node, so it makes no Film picture.
     if chain.has_films()
-        && let Some(rr) = ctx.read
+        && let Some(rr) = ctx.read.filter(|rr| !rr.spec.before)
         && let Some(film) = FilmRender::build(job, chain, rr.frame, rr.spec.target)?
     {
         let prepared = prepare_view(job, &rr.spec)?;

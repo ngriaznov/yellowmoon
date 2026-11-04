@@ -639,7 +639,7 @@ export function joinWords(words: readonly string[]): string {
 }
 
 /** The kinds of a node's enabled mask rows, in the order of the rows, each named once. */
-export function maskKindNames(node: CorrectorItem): string[] {
+export function maskKindNames(node: Pick<CorrectorItem, "masks">): string[] {
   const names: string[] = [];
   for (const row of node.masks.items) {
     const name = MASK_KIND_NAME[row.kind] ?? row.kind;

@@ -749,6 +749,8 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
   const items = s.nodes.items.map((item): NodeItem => {
     if (item.kind === "input") return clampInput(item);
     if (item.kind === "output") return { ...item, look_intensity: clamp(item.look_intensity, 0, 100), output_sharpening: clamp(item.output_sharpening, 0, 200) };
+    // The mock has no Film node's panel yet (F-09): the node goes through as it is.
+    if (item.kind === "film") return item;
     return clampCorrector(item);
   });
   return { nodes: { items, links: s.nodes.links } };

@@ -109,7 +109,7 @@ export function NodeHead({ settings, node, renaming, onStartRename, onRename, on
             onClick={onBypass}
           />
         ) : null}
-        <Button variant="header" className="ym-nodehead__btn" aria-label={RESET_TEXT[item.kind]} title={RESET_TEXT[item.kind]} icon={<RotateCcwIcon aria-hidden="true" />} onClick={onReset} />
+        <Button variant="header" className="ym-nodehead__btn" aria-label={RESET_TEXT[item.kind === "film" ? "corrector" : item.kind]} title={RESET_TEXT[item.kind === "film" ? "corrector" : item.kind]} icon={<RotateCcwIcon aria-hidden="true" />} onClick={onReset} />
         {more}
       </div>
     </div>

@@ -233,7 +233,8 @@ export function Photos() {
   const graphSettings = rs?.settings ?? null;
   const selectedItem = graphSettings ? nodeOf(graphSettings, selectedNode) : undefined;
   const onNode = selectedItem ? selectedNode : MAIN_ID;
-  const onKind: PanelKind = selectedItem?.kind ?? "corrector";
+  // A Film node has the corrector's panel until its own tabs are built (F-09, `docs/24` §4.1).
+  const onKind: PanelKind = selectedItem?.kind === "film" ? "corrector" : (selectedItem?.kind ?? "corrector");
   const nodeTab = nodeTabs[onKind];
   const nodeTabList = NODE_TABS[onKind];
   const onNodeNow = useLatest(onNode);

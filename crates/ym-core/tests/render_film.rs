@@ -119,6 +119,41 @@ fn tiles_and_threads_do_not_change_a_bit_with_halation_grain_and_a_mask() {
     }
 }
 
+/// Two Film nodes in a line, then a corrector: the halos add up, and tiles still equal the whole frame.
+#[test]
+fn two_film_nodes_in_a_line_and_a_corrector_after_them_are_tile_exact() {
+    let d = photo();
+    let doc = json!({ "nodes": { "items": [
+        { "id": 2, "kind": "film", "pos": [1, 0], "film": { "stock": "kodak_portra_400" },
+          "grain": { "amount": 120, "seed": 2 }, "halation": { "amount": 250 } },
+        { "id": 3, "kind": "film", "pos": [2, 0], "film": { "stock": "fujifilm_velvia_100" },
+          "grain": { "amount": 80, "seed": 3 }, "strength": 60,
+          "masks": { "items": [ { "kind": "radial", "center": [0.4, 0.5], "radii": [0.3, 0.2], "feather": 0.5 } ] } },
+        { "id": 4, "kind": "corrector", "pos": [3, 0], "trim": { "exposure_ev": 0.4 } }
+    ], "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+        { "from": { "node": 3, "port": "picture" }, "to": { "node": 4, "port": "picture" } },
+        { "from": { "node": 4, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+    ] } });
+    let settings = serde_json::from_value::<DevelopSettings>(doc)
+        .expect("a document")
+        .validated()
+        .expect("a valid graph")
+        .0;
+    let src = with(&d.source(), settings);
+    let whole = bytes(&srgb(&renderer(1024, 4), &src));
+    assert_ne!(whole, bytes(&srgb(&renderer(1024, 4), &d.source())));
+    for (tile, threads) in [(130, 2), (200, 4)] {
+        assert_eq!(
+            bytes(&srgb(&renderer(tile, threads), &src)),
+            whole,
+            "tile {tile}"
+        );
+    }
+}
+
 #[test]
 fn a_repeat_export_is_identical_and_the_dng_bakes_the_node_in() {
     let d = photo();

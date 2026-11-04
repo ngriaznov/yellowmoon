@@ -503,7 +503,7 @@ The spatial parts are passes of the multi-pass plan of `docs/23` §5.2 and `docs
 
 **Halos** (settings at 100 %): 2,000 px long edge (frame 2,000 × 1,333): halation 80 px, diffusion 63 px, grain 0, total 143. 8,000 px: halation 320 px (272 for 6 σ and 48 for the coarse grid's cells), diffusion 251, grain 2, total 573. At 8,658 px: 343, 294, 2. Size 200 % doubles the widths.
 
-**Gates.**
+**Gates.** `cargo test -p ym-film -p ym-core -p ym-cli --release` with `YELLOWMOON_DATA` set to the workspace `data/` (a release build does not look in the source tree): 1,336 passed, 0 failed, 37 ignored; the shell's 189 tests and `npm test` (2,614) pass.
 
 | Gate | Result |
 |---|---|
@@ -638,17 +638,18 @@ The Film node in the core and in `ym`, on the CPU. Measured on 2026-11-04 on the
 
 **Caches and keys** (`ym_core::film::FilmEngine`, one per data folder, shared by the viewport, the thumbnails and the exports; memory only). `Baker` (`ym-film`): T1 by the stock's SHA-256, the upsampling table and the engine version (24 entries, so the picker's tiles fit), the curves, T3a (the lights are inside) and T3b′ (the output's primaries) by their inputs (8 each). On top of them a `FilmChain` per stock, paper, exposure, print exposure, lights and output (8) and a `FilmFrame` per film, print, halation, grain and output (16); the spatial model of each stock (24). The Film node's fields are in the grade key (`nodes_key`), so a change makes a new frame on the CPU, never a new raw group. The viewport and Display P3 and Rec.2020 exports use the Display P3 tables; sRGB exports the sRGB ones (the Rec.2020 case is a limitation: its print is returned through the Display P3 gamut).
 
-**Speed** (CPU; a 24 MP synthetic raw, Portra 400 at the defaults, halation and grain on). A 1,600 × 1,066 view: 1.6 s without the node, 4.8 s the first time with it (tables baked), 4.1 s for a new seed and 4.4 s for a new exposure (a new `FilmChain` is calibrated). The full export of 24 MP: 31 s without the node and 94 s with it (the Film passes with the chain before them run over tiles of 1,536 px grown by the halos, 2.4 times the pixels, with the tables' baking in it). This is the CPU fallback and not a speed target (§3.10, §9 item 11); `Renderer::viewport_busy` says "Rendering on the CPU" for it.
+**Speed** (CPU; a 24 MP synthetic raw, Portra 400 at the defaults, halation and grain on). A 1,600 × 1,066 view: 1.6 s without the node, 4.8 s the first time with it (tables baked), 4.1 s for a new seed and 4.4 s for a new exposure (a new `FilmChain` is calibrated). The full export of 24 MP: 31 s without the node and 94 s with it (the Film passes with the chain before them run over tiles of 1,536 px grown by the halos, 2.4 times the pixels, with the tables' baking in it). This is the CPU fallback and not a speed target (§3.10, §9 item 11); the viewport's `viewport_busy` says `cpu` for it from the first frame (`src-tauri/src/viewport.rs`, from `pipeline::color::has_film`), which is the "Rendering on the CPU" note of the photo cell (`docs/11`).
 
 **What the pixel readout, the histogram and the scatter do not see.** They read the chain pixel by pixel (`ColorChain::trace`) and a Film node's picture is not one: they show the picture as it would be without the node. The mask views, thumbnails and every export do see it. (F-09 decides whether the panels need more.)
 
-**Gates.**
+**Gates.** `cargo test -p ym-film -p ym-core -p ym-cli --release` with `YELLOWMOON_DATA` set to the workspace `data/` (a release build does not look in the source tree): 1,336 passed, 0 failed, 37 ignored; the shell's 189 tests and `npm test` (2,614) pass.
 
 | Gate | Result |
 |---|---|
 | App against `ym` | **met**: `crates/ym-cli/tests/parity.rs` `a_film_node_is_the_same_files_through_the_app_path_and_the_binary`: a Film node with a Linear mask, halation 200 %, grain 150 % (seed 5), Strength 90 %: JPEG, TIFF 16, DNG (`graph_leg`) and PNG 16 byte for byte; a repeat export is the same file; the picture is not the default graph's and the mask changes it |
 | CLI | **met**: `tests/docs.rs` `the_film_documentation_the_help_and_ym_film_list_agree` (columns, keys, kinds, the credit line, both refusals and the doctor row, word for word between `docs/10`, the help and the code), the help snapshots, `tests/film.rs` |
-| Determinism and tiles | **met**: `crates/ym-core/tests/render_film.rs`: tiles of 160, 97 and 256 px on 1, 3 and 4 threads equal the 1,024 px render bit for bit with halation, grain and a mask; a repeat DNG export is identical; a bypassed node and Strength 0 equal the graph without the node; the graphs without a Film node are the bytes they were (the existing golden and parity tests are unchanged, and the one version string that moved is `PIPELINE_VERSION`) |
+| Determinism and tiles | **met**: `crates/ym-core/tests/render_film.rs`: tiles of 160, 97 and 256 px on 1, 3 and 4 threads equal the 1,024 px render bit for bit with halation, grain and a mask; two Film nodes in a line with a corrector after them are tile-exact too (tiles of 130 and 200 px); a repeat DNG export is identical; a bypassed node and Strength 0 equal the graph without the node; the graphs without a Film node are the bytes they were (the existing golden and parity tests are unchanged, and the one version string that moved is `PIPELINE_VERSION`) |
+| Existing graphs | **unchanged by a bit**: `golden check` (the release `ym`, `--cpu`) 61 of 61 files identical to `expected.json`, ΔE00 0.000; `PIPELINE_VERSION` 0.10.0 changes only the written version string (`ym --version`, `ym doctor`, `ym info`, `ym:PipelineVersion`); `expected.json` keeps the version each picture was stored at (no picture changed, so `golden update` was not run) |
 | Validation | **met**: `crates/ym-core/tests/film_settings.rs`: the format and defaults, unknown fields, both refusal sentences and the kinds, a slide's paper, every clamp and its report, non-finite numbers, patches, add and remove, the wrong kind, undo, Reset, Copy and Paste, the schema and its ranges, the XMP text |
 
 ## 5. Where it fits in the spec set

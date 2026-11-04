@@ -47,7 +47,7 @@ function sentence(id: NodeId): string {
 
 /** "an input", "an output", "a corrector". */
 function article(kind: NodeKind): string {
-  return kind === "corrector" ? "a corrector" : `an ${kind}`;
+  return kind === "corrector" ? "a corrector" : kind === "film" ? "a film node" : `an ${kind}`;
 }
 
 const capital = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
@@ -71,6 +71,7 @@ const FIELDS: Readonly<Record<NodeKind, ReadonlySet<string>>> = {
   ]),
   output: new Set(["kind", "pos", "look", "look_intensity", "output_sharpening"]),
   corrector: new Set(["kind", "pos", "name", "bypass", "trim", "grade", "masks"]),
+  film: new Set(["kind", "pos", "name", "bypass", "film", "print", "halation", "grain", "strength", "masks"]),
 };
 
 /** The kind a node with this id has to be. */
@@ -90,7 +91,8 @@ export function refusalOfPatch(settings: DevelopSettings, patch: SettingsPatch):
     const have = nodeOf(settings, id);
     if (!have) {
       if (node.kind === undefined) return GRAPH_TEXT.patchUnknownNode(id);
-      if (node.kind !== kindOfId(id)) return GRAPH_TEXT.missingFixed;
+      // A numbered node may be a corrector or a Film node.
+      if (node.kind !== kindOfId(id) && !(node.kind === "film" && kindOfId(id) === "corrector")) return GRAPH_TEXT.missingFixed;
     } else if (node.kind !== undefined && node.kind !== have.kind) {
       return GRAPH_TEXT.patchWrongKind(id, have.kind, node.kind);
     }

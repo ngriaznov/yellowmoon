@@ -1077,6 +1077,46 @@ export type ExposureSetting =
 /**  Absolute exposure in stops, -4 to +4. */
 ev: number };
 
+/**  A Film node: a colour negative, an enlarger, a print and a scan (`docs/24` section 4.5). */
+export type FilmNode = {
+	/**  2 to 2147483647 (correctors and Film nodes share the numbers). */
+	id: "input" | "output" | number,
+	/**  The card's name, 1 to 32 characters. */
+	name: string,
+	/**  A bypassed node passes its picture through. */
+	bypass: boolean,
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
+	/**  The negative. */
+	film: FilmStockSettings,
+	/**  The enlarger and the paper. */
+	print: PrintSettings,
+	/**  Halation. */
+	halation: HalationSettings,
+	/**  Grain. */
+	grain: GrainSettings,
+	/**  How much of the film look is applied, 0 to 100 percent. */
+	strength: number,
+	/**  The masks. */
+	masks: MaskSettings,
+};
+
+/**  A Film node's `film` to change. Serialising leaves absent fields out (see [`NodePatch`]). */
+export type FilmStockPatch = {
+	/**  New stock (a profile id). */
+	stock?: string | null,
+	/**  New film exposure in stops. */
+	exposure_ev?: number | null,
+};
+
+/**  A Film node's `film`: the negative. */
+export type FilmStockSettings = {
+	/**  The profile id of a camera film (`ym film list`). */
+	stock: string,
+	/**  Stops, -4 to 4; 0 is the Input's exposure. */
+	exposure_ev: number,
+};
+
 /**
  *  A corrector's grade to change: the old patch's fields, under the same names. Serialising leaves
  *  absent fields out (see [`NodePatch`]).
@@ -1126,6 +1166,42 @@ export type GradeValues = {
 	color_warp: ColorWarp,
 	/**  `curve`. */
 	curve: Curves,
+};
+
+/**  A Film node's `grain` to change. Serialising leaves absent fields out (see [`NodePatch`]). */
+export type GrainPatch = {
+	/**  New amount, percent. */
+	amount?: number | null,
+	/**  New size, percent. */
+	size?: number | null,
+	/**  New seed. */
+	seed?: number | null,
+};
+
+/**  A Film node's `grain`, in percent (100 is the stock's own). */
+export type GrainSettings = {
+	/**  0 to 200. */
+	amount: number,
+	/**  50 to 200. */
+	size: number,
+	/**  Not in the interface; it keeps the grain a function of the settings. */
+	seed: number,
+};
+
+/**  A Film node's `halation` to change. Serialising leaves absent fields out (see [`NodePatch`]). */
+export type HalationPatch = {
+	/**  New amount, percent. */
+	amount?: number | null,
+	/**  New size, percent. */
+	size?: number | null,
+};
+
+/**  A Film node's `halation`, in percent (100 is the stock's own). */
+export type HalationSettings = {
+	/**  0 to 300. */
+	amount: number,
+	/**  50 to 200. */
+	size: number,
 };
 
 /**  Per-channel histogram of the current render, for the Light tab and the Curve plot. */
@@ -1323,6 +1399,16 @@ export type LightSource =
 "led" | 
 /**  Fluorescent. */
 "fluorescent";
+
+/**  A Film node's enlarger lights to change. Serialising leaves absent fields out (see [`NodePatch`]). */
+export type LightsPatch = {
+	/**  New cyan. */
+	c?: number | null,
+	/**  New magenta. */
+	m?: number | null,
+	/**  New yellow. */
+	y?: number | null,
+};
 
 /**  One entry of the look library. */
 export type Look = {
@@ -1934,7 +2020,11 @@ export type NodeItem =
 /**  A corrector. */
 {
 	kind: "corrector",
-} & CorrectorNode;
+} & CorrectorNode | 
+/**  A Film node. */
+{
+	kind: "film",
+} & FilmNode;
 
 /**  What a node is. */
 export type NodeKind = 
@@ -1943,7 +2033,9 @@ export type NodeKind =
 /**  The fixed Output. */
 "output" | 
 /**  A corrector. */
-"corrector";
+"corrector" | 
+/**  A Film node (`docs/24`). */
+"film";
 
 /**  A link from an output port to an input port (`docs/23` section 3.4). */
 export type NodeLink = {
@@ -2008,6 +2100,16 @@ export type NodePatch = {
 	grade?: GradePatch | null,
 	/**  Masks to change. */
 	masks?: MasksPatch | null,
+	/**  A Film node's negative to change. */
+	film?: FilmStockPatch | null,
+	/**  A Film node's enlarger and paper to change. */
+	print?: PrintPatch | null,
+	/**  A Film node's halation to change. */
+	halation?: HalationPatch | null,
+	/**  A Film node's grain to change. */
+	grain?: GrainPatch | null,
+	/**  New Strength of a Film node, percent. */
+	strength?: number | null,
 };
 
 /**  One end of a link: a node and one of its ports. */
@@ -2376,6 +2478,36 @@ export type PreferencesPatch = {
 	 *  text is refused.
 	 */
 	apple_auto_instructions?: string | null,
+};
+
+/**  The enlarger's filtration, as shifts from neutral in Kodak CC units, -50 to 50. */
+export type PrintLights = {
+	/**  Cyan. */
+	c: number,
+	/**  Magenta. */
+	m: number,
+	/**  Yellow. */
+	y: number,
+};
+
+/**  A Film node's `print` to change. Serialising leaves absent fields out (see [`NodePatch`]). */
+export type PrintPatch = {
+	/**  New paper; `null` is the stock's matching paper. */
+	paper?: string | null,
+	/**  New print exposure in stops. */
+	exposure_ev?: number | null,
+	/**  Lights to change. */
+	lights?: LightsPatch | null,
+};
+
+/**  A Film node's `print`: the enlarger and the paper. */
+export type PrintSettings = {
+	/**  The paper's profile id; null is the stock's matching paper (a slide takes none). */
+	paper: string | null,
+	/**  Stops, -3 to 3; 0 keeps the app's brightness. */
+	exposure_ev: number,
+	/**  The enlarger's filtration. */
+	lights: PrintLights,
 };
 
 /**  Where one provider stands (`docs/22` section 3.1; the core's `ProviderState`). */
