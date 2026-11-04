@@ -633,8 +633,8 @@ impl ColorChain {
             .collect()
     }
 
-    /// Whether the plan runs a Film node that does something (not bypassed, Strength above 0; `docs/24`). Such a chain is for the CPU: the device kernel has no Film
-    /// step, and the render makes the node's planes before the colour pass.
+    /// Whether the plan runs a Film node that does something (not bypassed, Strength above 0; `docs/24`). The render makes the node's picture before the colour pass
+    /// (on the CPU in `ym-core`'s `film_pass`, on the device in `ym-gpu`'s `film_stack`) and the chain blends it.
     #[must_use]
     pub fn has_films(&self) -> bool {
         self.films.values().any(|f| !f.bypass && f.strength > 0.0)
