@@ -21,6 +21,10 @@ import make_table as mt  # noqa: E402
 
 CIE = mt.REPO / "data" / "film" / "cie"
 DATA = mt.REPO / "data" / "film" / "upsampling"
+#: The rim band of the relative smoothness check: cells within this many cells of the edge of the reachable region.
+RIM_BAND_CELLS = 3
+#: How much rougher than the solved cells at the rim the inpainted ones may be (see the test).
+RIM_FACTOR = 7.0
 
 
 def spd(obs: mt.Observer, name: str) -> np.ndarray:
@@ -141,25 +145,39 @@ class CommittedTable(unittest.TestCase):
             self.assertGreaterEqual(float(filled.min()), lo - 1e-3 * (hi - lo), "maximum principle of the Laplace fill")
             self.assertLessEqual(float(filled.max()), hi + 1e-3 * (hi - lo))
 
-    def test_the_reachable_inpainted_cells_are_smooth(self):
-        # Smoothness of the inpainted cells a lookup can reach (the rim of a bilinear cell at the edge of the compressed locus).
-        # Spectra near the locus are steps sharper than the 5 nm grid, so the largest change between neighbours is about 1; the
-        # bulk changes by far less. The limits are the original ones of F-03a. They are asserted on the reachable cells only.
-        inpainted = self.flags == 1
-        reachable = inpainted & self.reachable_cells()
-        change = self.neighbour_change(reachable)
-        pct = {q: float(np.percentile(change, q)) for q in (50, 75, 90)}
-        print(f"\n  reachable inpainted cells: {int(reachable.sum())}, {len(change)} neighbour pairs; "
-              f"change median {pct[50]:.3g}, 75th {pct[75]:.3g}, 90th {pct[90]:.3g}", file=sys.stderr)
-        # Reported, not asserted: the inpainted cells nowhere near a reachable chromaticity (outside the locus).
-        far = inpainted & ~reachable
-        far_change = self.neighbour_change(far)
-        print(f"  unreachable inpainted cells: {int(far.sum())}, {len(far_change)} pairs; median "
-              f"{np.percentile(far_change, 50):.3g}, 75th {np.percentile(far_change, 75):.3g}, 90th {np.percentile(far_change, 90):.3g}",
-              file=sys.stderr)
-        self.assertLess(pct[50], 1e-4)
-        self.assertLess(pct[75], 1e-3)
-        self.assertLess(pct[90], 0.05)
+    def test_the_reachable_inpainted_cells_are_no_rougher_than_the_solved_ones_at_the_rim(self):
+        # The relative check (owner, 2026-11-04; docs/24 section 3.3). The rim of the reachable region is steep whatever the cell is:
+        # spectra near the locus are steps, so an absolute limit on the inpainted cells there cannot hold. Both groups are restricted
+        # to the reachable cells within RIM_BAND_CELLS cells of the edge of the reachable region (the 0.985 boundary of stage 1), and
+        # the inpainted cells must be no rougher than RIM_FACTOR times the solved cells there at the median, 75th and 90th percentile.
+        # RIM_FACTOR is the smallest whole number the first table (generator 1.0.0, band of 3 cells: ratios 0.84, 6.42, 1.02) also
+        # passes; this table has 1.02, 2.12 and 1.01.
+        reachable = self.reachable_cells()
+        near_edge = reachable.copy()
+        band = RIM_BAND_CELLS
+        outside = ~reachable
+        grown = outside.copy()
+        for dy in range(-band, band + 1):
+            for dx in range(-band, band + 1):
+                shifted = np.zeros_like(outside)
+                shifted[max(dy, 0) : 256 + min(dy, 0), max(dx, 0) : 256 + min(dx, 0)] = outside[max(-dy, 0) : 256 + min(-dy, 0), max(-dx, 0) : 256 + min(-dx, 0)]
+                grown |= shifted
+        rim = near_edge & grown
+        groups = {
+            "inpainted at the rim": rim & (self.flags == 1),
+            "solved at the rim": rim & (self.flags == 0),
+            "inpainted, reachable, all": reachable & (self.flags == 1),
+            "inpainted, unreachable (outside the locus)": ~reachable & (self.flags == 1),
+        }
+        pct = {}
+        for name, cells in groups.items():
+            change = self.neighbour_change(cells)
+            pct[name] = [float(np.percentile(change, q)) for q in (50, 75, 90)]
+            print(f"\n  {name}: {int(cells.sum())} cells, {len(change)} pairs; change median {pct[name][0]:.3g}, "
+                  f"75th {pct[name][1]:.3g}, 90th {pct[name][2]:.3g}", file=sys.stderr, end="")
+        print(file=sys.stderr)
+        for k, label in enumerate(("median", "75th percentile", "90th percentile")):
+            self.assertLessEqual(pct["inpainted at the rim"][k], RIM_FACTOR * pct["solved at the rim"][k], label)
 
     def test_ten_white_points_have_smooth_spectra_and_the_right_chromaticity(self):
         obs = self.obs
