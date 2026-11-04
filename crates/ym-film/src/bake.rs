@@ -56,7 +56,7 @@ const LOG10_2: f64 = std::f64::consts::LOG10_2;
 
 /// The version of the baking. It is part of every cache key (and of the export's `ym:FilmData`); raise it when a
 /// change to the engine alters what a table holds without altering its inputs.
-pub const ENGINE_VERSION: u32 = 2;
+pub const ENGINE_VERSION: u32 = 3;
 
 /// Entries of every 1D curve table.
 pub const CURVE_ENTRIES: usize = 4096;
@@ -322,6 +322,8 @@ pub enum Nodes {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Table3 {
     size: usize,
+    /// The lower end of each axis (0, or a little below it where a medium's densities dip under 0).
+    lo: Vec3,
     hi: Vec3,
     /// What the nodes hold, and so what [`Table3::sample`] does after the interpolation.
     nodes: Nodes,
@@ -341,7 +343,7 @@ impl Table3 {
         threads: usize,
         f: impl Fn(Vec3) -> Vec3 + Sync,
     ) -> Self {
-        bake_table3(size, hi, power, Nodes::Plain, threads, f)
+        bake_table3(size, [0.0; 3], hi, power, Nodes::Plain, threads, f)
     }
 
     /// Bakes a table whose nodes are `nodes` (see [`Nodes`]); `f` gives the stored value.
@@ -354,7 +356,21 @@ impl Table3 {
         threads: usize,
         f: impl Fn(Vec3) -> Vec3 + Sync,
     ) -> Self {
-        bake_table3(size, hi, power, nodes, threads, f)
+        bake_table3(size, [0.0; 3], hi, power, nodes, threads, f)
+    }
+
+    /// Like [`Table3::bake_nodes`] over `[lo, hi]` per channel (the densities of a profile dip a little below 0).
+    #[must_use]
+    pub fn bake_range(
+        size: usize,
+        lo: Vec3,
+        hi: Vec3,
+        power: f64,
+        nodes: Nodes,
+        threads: usize,
+        f: impl Fn(Vec3) -> Vec3 + Sync,
+    ) -> Self {
+        bake_table3(size, lo, hi, power, nodes, threads, f)
     }
 
     /// What the nodes hold.
@@ -375,10 +391,17 @@ impl Table3 {
         self.size
     }
 
-    /// The upper end of each axis (the lower end is 0).
+    /// The upper end of each axis.
     #[must_use]
     pub fn axis_max(&self) -> Vec3 {
         self.hi
+    }
+
+    /// The lower end of each axis (0 unless the table was baked with [`Table3::bake_range`] or by the baker, where
+    /// it is the smallest density of the profile, at most 0).
+    #[must_use]
+    pub fn axis_min(&self) -> Vec3 {
+        self.lo
     }
 
     /// The nodes as f32 `vec4` (the fourth is 0), red fastest: the layout of an f32 storage buffer.
@@ -418,9 +441,9 @@ impl Table3 {
             let v = if p[c].is_nan() {
                 0.0
             } else {
-                p[c].clamp(0.0, self.hi[c])
+                p[c].clamp(self.lo[c], self.hi[c])
             };
-            let u = v / self.hi[c];
+            let u = (v - self.lo[c]) / (self.hi[c] - self.lo[c]);
             let u = if self.power == 1.0 {
                 u
             } else if self.power == 2.0 {
@@ -498,6 +521,7 @@ fn f32x4(v: Vec3) -> [f32; 4] {
 
 fn bake_table3(
     size: usize,
+    lo: Vec3,
     hi: Vec3,
     power: f64,
     nodes: Nodes,
@@ -509,7 +533,8 @@ fn bake_table3(
     // `u * u` for the square (exact and the same on every platform); `powf` for any other warp.
     let at = |i: usize, c: usize| {
         let u = i as f64 / last;
-        hi[c]
+        lo[c]
+            + (hi[c] - lo[c])
             * if power == 1.0 {
                 u
             } else if power == 2.0 {
@@ -524,6 +549,7 @@ fn bake_table3(
     });
     Table3 {
         size,
+        lo,
         hi,
         nodes,
         power,
@@ -1264,6 +1290,18 @@ fn densities_max(p: &Profile) -> Vec3 {
     m
 }
 
+/// The smallest density of each channel, or 0 if that is lower: the profiles' curves dip to -0.0016 (the base
+/// subtracted), and a table that starts at 0 would hold those pixels at 0.
+fn densities_min(p: &Profile) -> Vec3 {
+    let mut m = [0.0_f64; 3];
+    for row in &p.density_curves {
+        for c in 0..3 {
+            m[c] = m[c].min(row[c]);
+        }
+    }
+    m
+}
+
 fn with_margin(m: Vec3) -> Vec3 {
     m.map(|v| (v * (1.0 + AXIS_MARGIN)).max(1e-3))
 }
@@ -1322,13 +1360,14 @@ fn bake_t3a(
     threads: usize,
 ) -> Table3 {
     let hi = with_margin(densities_max(chain.film()));
+    let lo = densities_min(chain.film());
     let cc = [
         cal.neutral[0] + lights.yellow_cc,
         cal.neutral[1] + lights.magenta_cc,
         lights.cyan_cc,
     ];
     let enl = chain.enlarger_stage();
-    bake_table3(size, hi, 1.0, Nodes::Plain, threads, |d| {
+    bake_table3(size, lo, hi, 1.0, Nodes::Plain, threads, |d| {
         let Some(enl) = enl else { return [0.0; 3] };
         let p = enl.light_on_paper(d, cc);
         // The chain adds `stops * log10 2` to this at run time; the shift of the brightness match is in the table.
@@ -1339,9 +1378,10 @@ fn bake_t3a(
 fn bake_t3b(chain: &FilmChain, size: usize, threads: usize) -> Table3 {
     let medium = chain.paper().unwrap_or_else(|| chain.film());
     let hi = with_margin(densities_max(medium));
+    let lo = densities_min(medium);
     let scan = chain.scan_stage();
     let cine = CineRendering::new(chain.params().output.target());
-    bake_table3(size, hi, T3B_POWER, Nodes::CineCoordinates, threads, |d| {
+    bake_table3(size, lo, hi, T3B_POWER, Nodes::CineCoordinates, threads, |d| {
         cine.inverse_coordinates(scan.display(d)).coordinates
     })
 }
