@@ -14,6 +14,8 @@
 * With ``--require-weights`` (``release.yml`` and ``build.yml``, after ``tools/fetch/sam2.sh``) the weights file must also be there
   and its SHA-256 must be the one in ``SHA256SUMS``; a placeholder line in ``SHA256SUMS`` is an error then and only a warning
   otherwise (the committed tree has no weights, so the CI job ``licences`` runs without the flag).
+* The fixtures of the Film node's oracle (``crates/ym-film/tests/oracle/``, F-06) are checked like the data folders below: they are
+  numbers computed from the CC BY-SA profiles, so they need ``LICENSE``, ``ATTRIBUTION.md`` and ``SHA256SUMS`` too.
 * ``bundle.resources`` carries ``data/film`` and ``NOTICE`` has the items for the spektrafilm profiles (Andrea Volpato, CC BY-SA 4.0,
   ``docs/24`` section 6) and the CIE tables, whose item 12 reads "and a table computed from it". ``data/film/spektrafilm/``, ``data/film/cie/`` and
   ``data/film/upsampling/`` (our table, computed from the CIE observer, CC BY-SA 4.0) each have ``LICENSE`` and
@@ -68,7 +70,14 @@ NOTICE_PHRASES = (
 
 #: The data folders under data/film/ that carry CC BY-SA 4.0 data (the profiles and the CIE tables are third-party, the upsampling
 #: table is ours, computed from the CIE observer and so shared under the same licence), and the files each must have.
-FILM_DIRS = (Path("data") / "film" / "spektrafilm", Path("data") / "film" / "cie", Path("data") / "film" / "upsampling")
+#: ``crates/ym-film/tests/oracle/`` holds the oracle's fixtures, numbers computed by spektrafilm from the CC BY-SA profiles (F-06),
+#: so they are Adapted Material and carry the same three files.
+FILM_DIRS = (
+    Path("data") / "film" / "spektrafilm",
+    Path("data") / "film" / "cie",
+    Path("data") / "film" / "upsampling",
+    Path("crates") / "ym-film" / "tests" / "oracle",
+)
 FILM_REQUIRED = ("LICENSE", "ATTRIBUTION.md", "SHA256SUMS")
 #: Files of those folders that SHA256SUMS does not list: itself, and the attribution text we write.
 FILM_UNHASHED = ("SHA256SUMS", "ATTRIBUTION.md")
@@ -144,7 +153,7 @@ def sam2_problems(root: Path, require_weights: bool) -> list[str]:
 
 
 def film_problems(root: Path) -> list[str]:
-    """``data/film/spektrafilm/`` and ``data/film/cie/``: LICENSE, ATTRIBUTION.md, and a SHA256SUMS that matches every file."""
+    """The film data folders (``FILM_DIRS``): LICENSE, ATTRIBUTION.md, and a SHA256SUMS that matches every file."""
     found: list[str] = []
     for rel in FILM_DIRS:
         folder = root / rel

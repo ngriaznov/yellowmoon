@@ -297,8 +297,8 @@ class Bundle(unittest.TestCase):
 
     def film_tree(self, root: Path) -> None:
         """The three film data folders as the update scripts and the generator leave them: LICENSE, ATTRIBUTION.md, data files, SHA256SUMS."""
-        for folder, data in (("spektrafilm", "profiles/kodak_portra_400.json"), ("cie", "CIE_illum_D55.csv"), ("upsampling", "coeffs.f32")):
-            base = root / "data" / "film" / folder
+        for folder, data in (("spektrafilm", "profiles/kodak_portra_400.json"), ("cie", "CIE_illum_D55.csv"), ("upsampling", "coeffs.f32"), ("oracle", "stage2.json")):
+            base = root / ("crates/ym-film/tests/oracle" if folder == "oracle" else f"data/film/{folder}")
             (base / data).parent.mkdir(parents=True, exist_ok=True)
             (base / data).write_text("data " + data)
             (base / "LICENSE").write_text("Attribution-ShareAlike 4.0 International")
@@ -419,14 +419,23 @@ class Bundle(unittest.TestCase):
         self.assertTrue(any("data/film" in p for p in problems), problems)
 
     def test_each_film_folder_needs_its_licence_attribution_and_sums(self):
-        for folder in ("spektrafilm", "cie", "upsampling"):
+        for folder in ("data/film/spektrafilm", "data/film/cie", "data/film/upsampling", "crates/ym-film/tests/oracle"):
             for name in ("LICENSE", "ATTRIBUTION.md", "SHA256SUMS"):
                 with tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
                     self.tree(root)
-                    (root / "data" / "film" / folder / name).unlink()
+                    (root / folder / name).unlink()
                     problems = check_bundle.problems(root)
-                self.assertTrue(any(f"data/film/{folder}/{name}" in p for p in problems), (folder, name, problems))
+                self.assertTrue(any(f"{folder}/{name}" in p for p in problems), (folder, name, problems))
+
+    def test_a_changed_oracle_fixture_must_match_its_sums_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tree(root)
+            self.assertEqual(check_bundle.problems(root), [])
+            (root / "crates" / "ym-film" / "tests" / "oracle" / "stage2.json").write_text("changed")
+            problems = check_bundle.problems(root)
+        self.assertTrue(any("oracle/stage2.json" in p and "does not match" in p for p in problems), problems)
 
     def test_a_film_file_must_have_a_matching_sums_line(self):
         with tempfile.TemporaryDirectory() as tmp:
