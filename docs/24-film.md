@@ -4,7 +4,7 @@ A **Film node** is a node that makes a photo look as if it had been shot on a co
 
 **Status: Scheduled (the owner, 2026-11-04: "let's continue film-node now and actually add film node"), on branch `film` after 0.2.0. The mockup round (F-01) is the first step.**
 
-It is **not in 0.2.0**. Nothing here is built, and the Add node menu of `docs/23` does not list the Film node until it is. **The mockups are in `design/film/`** (F-01, 2026-11-04), waiting for the owner's choices (F-H1, §4). The owner's process is "first we imagine UI, then we plan": a mockup round (F-01) comes before the node is built, and §4 is a brief for that round, not a design. The facts behind this file, with sources and quotes, are in `research/film-spektrafilm-2026-11-01.md`. The owner's decisions are in §1.3 and `docs/16` (*Licensing and data*).
+It is **not in 0.2.0**. Nothing here is built, and the Add node menu of `docs/23` does not list the Film node until it is. **The mockups are in `design/film/`** (F-01, 2026-11-04); the owner chose among their options on the same day (F-H1, §4.4). The owner's process is "first we imagine UI, then we plan": a mockup round (F-01) comes before the node is built, and §4 is a brief for that round, not a design. The facts behind this file, with sources and quotes, are in `research/film-spektrafilm-2026-11-01.md`. The owner's decisions are in §1.3 and `docs/16` (*Licensing and data*).
 
 **In short.**
 
@@ -283,12 +283,12 @@ Answered (the owner approves with F-H1):
 5. **The card's thumbnail and the Add node entry:** the thumbnail is the node's own small picture of the photo; the entry sits under Corrector, enabled, the Later items follow (01, 02).
 6. **Masks:** the Mask tab is a corrector's (09).
 
-**Open, the owner chooses (F-H1):**
+**Chosen by the owner (F-H1, 2026-11-04):**
 
-1. **Stock picker:** Option A, a grouped list (03), or Option B, tiles (04; twenty small renders).
-2. **Lights:** Option A, two sliders (05), or Option B, a colour pad (06).
-3. **Halation and Grain:** Option A, two tabs (08a, 08c), or Option B, one tab holding both cards (08b).
-4. **Brightness:** "as the app" only, or the "As printed" control under More (12).
+1. **Stock picker: Option B, tiles** (04): a small render of the photo in each of the 20 stocks. The tiles are drawn in the background at thumbnail size (the node thumbnails' size, `docs/23` §6), one stock at a time in the list's order, each appearing as it is ready; they are kept per photo and per the node's settings up to the Film node, in memory only, and the picker never waits for them (a tile not drawn yet shows the stock's name on a plain card). The table cache of §3.8 holds at least 20 T1 entries so the picker does not evict the photo's own. The list order and the groups are those of Option A.
+2. **Lights: Option A, two sliders** (05): Yellow and Magenta, Cyan under More.
+3. **Halation and Grain: Option A, two tabs** (08a, 08c): **Film · Print · Halation · Grain · Mask**.
+4. **Brightness: "As the app" only.** The "As printed" control (12) is not built; print exposure covers the rest.
 
 **Found while drawing, settled by §6.4:** a cine negative's own `target_print` is the hidden Kodak 2383, so until a projector-lamp spectrum is sourced its "Matching paper" is a still paper, **Kodak Professional Portra Endura**, and the line under the field names it. Stock names come from `data/film/params/names.json` (F-02), which uses the profiles' own `info.name`: the mockups' "Kodak Portra 800 push 1" is "Kodak Portra 800 (Push 1)" in the app.
 
