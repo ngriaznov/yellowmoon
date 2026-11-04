@@ -119,13 +119,15 @@ describe("the tiles of the Look tab", () => {
     expect(ask).toHaveBeenCalledTimes(3);
   });
 
-  it("do not observe the tiles of a section that is folded, and the observer lets go when the tab goes", async () => {
+  it("do not observe the tiles of a section that is folded, and the tab stays built, hidden, when another tab is shown", async () => {
     const { user } = await setup();
     const all = tileEls().length;
     await user.click(screen.getByRole("button", { name: /^Built in, 2 looks/ }));
     await waitFor(() => expect(observer().targets.size).toBe(all - 2));
     await user.click(screen.getByRole("tab", { name: "Light" }));
-    await waitFor(() => expect(observer().disconnected).toBe(true));
+    // A tab that was opened stays mounted and hidden (U-02): its tiles are not in view, so the observer reports none and nothing is asked for.
+    expect(document.querySelector('[data-pane="look"]')).toHaveAttribute("hidden");
+    expect(observer().disconnected).toBe(false);
   });
 
   it("refresh only while in view: one that left keeps its old picture, and asks again when it is back with other settings", async () => {
