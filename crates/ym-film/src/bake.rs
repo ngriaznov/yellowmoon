@@ -24,6 +24,10 @@
 //! `docs/02` C10), never trilinearly. The f32 `vec4` storage (the fourth entry is 0) is what the GPU reads.
 //! [`Table3::sample`] is its CPU twin: f32 storage, f64 arithmetic.
 //!
+//! **T3b's axes are warped.** The inverse of the cine rendering is logarithmic at the paper white (the soft clip),
+//! so T3b's nodes sit at the squares of a uniform grid ([`T3B_POWER`]): ten times the resolution near white, and
+//! the lookup takes a square root of each density. The curvature of `exp` at large density is what this costs.
+//!
 //! **Without a re-bake.** The film exposure multiplies T1's result ([`BakedFilm::set_exposure_ev`]) and the print
 //! exposure shifts the log-exposure after T3a ([`BakedFilm::set_print_stops`]). The lights are inside T3a, so they
 //! re-bake it, at [`DRAFT_SIZE`] while a slider moves and at the full size on request.
@@ -57,8 +61,12 @@ pub const CURVE_ENTRIES: usize = 4096;
 /// The size of the draft T3a, used while a lights slider moves.
 pub const DRAFT_SIZE: usize = 17;
 
-/// The size of the 3D tables when the caller does not choose (`docs/24` section 3.8 measures 33, 49 and 65).
-pub const DEFAULT_TABLE_SIZE: usize = 49;
+/// The size of T3a when the caller does not choose (`docs/24` section 3.8, *As built*).
+pub const DEFAULT_T3A_SIZE: usize = 49;
+
+/// The size of T3b when the caller does not choose. None of 33, 49 and 65 meets the baking gate; 65 is the
+/// largest of them (`docs/24` section 3.8, *As built*).
+pub const DEFAULT_T3B_SIZE: usize = 65;
 
 /// The sizes of the 3D tables that section 3.8 compares.
 pub const CANDIDATE_SIZES: [usize; 3] = [33, 49, 65];
@@ -74,6 +82,9 @@ pub const T1_NY: usize = 220;
 const AXIS_MARGIN: f64 = 0.02;
 /// The most iterations of the baked coupler step.
 const COUPLER_ITERATIONS: usize = 16;
+/// T3b's axis warp: nodes at the squares of a uniform grid, because the inverse of the cine rendering is singular
+/// (logarithmic) at the paper white.
+pub const T3B_POWER: f64 = 2.0;
 
 /// Cache sizes: T1 keeps enough entries for the stock picker's tiles (`docs/24` section 4.4); the others keep the
 /// eight of section 3.8.
@@ -132,13 +143,13 @@ pub struct BakeSettings {
 }
 
 impl BakeSettings {
-    /// The chain's own lights and [`DEFAULT_TABLE_SIZE`] for both tables.
+    /// The chain's own lights and the default sizes ([`DEFAULT_T3A_SIZE`], [`DEFAULT_T3B_SIZE`]).
     #[must_use]
     pub fn of(chain: &FilmChain) -> Self {
         Self {
             lights: Lights::of(chain),
-            t3a_size: DEFAULT_TABLE_SIZE,
-            t3b_size: DEFAULT_TABLE_SIZE,
+            t3a_size: DEFAULT_T3A_SIZE,
+            t3b_size: DEFAULT_T3B_SIZE,
         }
     }
 
@@ -298,10 +309,31 @@ pub struct Curves {
 pub struct Table3 {
     size: usize,
     hi: Vec3,
+    /// The axis warp: node `i` of `n` sits at density `hi * (i / (n - 1))^power`. 1 is a uniform axis.
+    power: f64,
     data: Vec<f32>,
 }
 
 impl Table3 {
+    /// Bakes `f` at the nodes of a `size`^3 table over `[0, hi]` per channel on `threads` threads. The bytes do
+    /// not depend on `threads`.
+    #[must_use]
+    pub fn bake(
+        size: usize,
+        hi: Vec3,
+        power: f64,
+        threads: usize,
+        f: impl Fn(Vec3) -> Vec3 + Sync,
+    ) -> Self {
+        bake_table3(size, hi, power, threads, f)
+    }
+
+    /// The axis warp (1 for a uniform axis, 2 for nodes at the squares of a uniform grid).
+    #[must_use]
+    pub fn power(&self) -> f64 {
+        self.power
+    }
+
     /// Nodes per side.
     #[must_use]
     pub fn size(&self) -> usize {
@@ -343,7 +375,15 @@ impl Table3 {
             } else {
                 p[c].clamp(0.0, self.hi[c])
             };
-            let pos = v / self.hi[c] * (n - 1) as f64;
+            let u = v / self.hi[c];
+            let u = if self.power == 1.0 {
+                u
+            } else if self.power == 2.0 {
+                u.sqrt()
+            } else {
+                u.powf(1.0 / self.power)
+            };
+            let pos = u * (n - 1) as f64;
             let i = (pos.floor() as usize).min(n - 2);
             idx[c] = i;
             frac[c] = pos - i as f64;
@@ -411,18 +451,29 @@ fn f32x4(v: Vec3) -> [f32; 4] {
     [g(v[0]), g(v[1]), g(v[2]), 0.0]
 }
 
-fn bake_table3(size: usize, hi: Vec3, threads: usize, f: impl Fn(Vec3) -> Vec3 + Sync) -> Table3 {
+fn bake_table3(
+    size: usize,
+    hi: Vec3,
+    power: f64,
+    threads: usize,
+    f: impl Fn(Vec3) -> Vec3 + Sync,
+) -> Table3 {
     let mut data = vec![0.0_f32; 4 * size * size * size];
     let last = (size - 1) as f64;
+    let at = |i: usize, c: usize| {
+        let u = i as f64 / last;
+        hi[c] * if power == 1.0 { u } else { u.powf(power) }
+    };
     fill(&mut data, threads, |n| {
         let (r, g, b) = (n % size, (n / size) % size, n / (size * size));
-        f32x4(f([
-            hi[0] * r as f64 / last,
-            hi[1] * g as f64 / last,
-            hi[2] * b as f64 / last,
-        ]))
+        f32x4(f([at(r, 0), at(g, 1), at(b, 2)]))
     });
-    Table3 { size, hi, data }
+    Table3 {
+        size,
+        hi,
+        power,
+        data,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1000,11 +1051,7 @@ impl Baker {
     /// # Errors
     ///
     /// [`FilmError::Data`] when `settings` asks for a table smaller than 2 nodes a side.
-    pub fn bake(
-        &self,
-        chain: &FilmChain,
-        settings: &BakeSettings,
-    ) -> Result<BakedFilm, FilmError> {
+    pub fn bake(&self, chain: &FilmChain, settings: &BakeSettings) -> Result<BakedFilm, FilmError> {
         if settings.t3a_size < 2 || settings.t3b_size < 2 {
             return Err(FilmError::data(
                 "bake settings",
@@ -1057,16 +1104,16 @@ impl Calibration {
                 let d = chain
                     .develop_stage()
                     .couple(log_e, chain.params().coupler_amount);
-                (
-                    enl.light_on_paper(d, [neutral[0], neutral[1], 0.0])[0],
-                    0.0,
-                )
+                (enl.light_on_paper(d, [neutral[0], neutral[1], 0.0])[0], 0.0)
             }
             None => {
                 // A slide: the gain is what the chain's tap at the grey shows beyond the exposure setting.
                 let probe = chain.exposure_stage().log_exposure(&light, 0.0);
                 let tap = chain.run_tapped(grey).1.log_e_film;
-                (1.0, tap[0] - probe[0] - chain.params().exposure_ev * LOG10_2)
+                (
+                    1.0,
+                    tap[0] - probe[0] - chain.params().exposure_ev * LOG10_2,
+                )
             }
         };
         Self {
@@ -1130,7 +1177,8 @@ fn bake_curves(chain: &FilmChain, matrix: &[[f64; 3]; 3]) -> Curves {
         .fold(0.0_f64, f64::max);
     let d_all = dmax[0].max(dmax[1]).max(dmax[2]);
     let lo0 = x0 - (row * d_all * 1.05 + 0.05).max(0.0);
-    let mk = |lo: f64, hi: f64, c: usize, f: &dyn Fn(f64) -> Vec3| Curve1::bake(lo, hi, |x| f(x)[c]);
+    let mk =
+        |lo: f64, hi: f64, c: usize, f: &dyn Fn(f64) -> Vec3| Curve1::bake(lo, hi, |x| f(x)[c]);
     let film_c = |x: f64| dev.curves([x; 3]);
     let film0_c = |x: f64| dev.couple([x; 3], 0.0);
     let paper = chain.enlarger_stage().map(|enl| {
@@ -1142,11 +1190,7 @@ fn bake_curves(chain: &FilmChain, matrix: &[[f64; 3]; 3]) -> Curves {
             )
         });
         let f = |x: f64| enl.paper_density([x; 3]);
-        [
-            mk(p0, p1, 0, &f),
-            mk(p0, p1, 1, &f),
-            mk(p0, p1, 2, &f),
-        ]
+        [mk(p0, p1, 0, &f), mk(p0, p1, 1, &f), mk(p0, p1, 2, &f)]
     });
     Curves {
         film: [
@@ -1177,7 +1221,7 @@ fn bake_t3a(
         lights.cyan_cc,
     ];
     let enl = chain.enlarger_stage();
-    bake_table3(size, hi, threads, |d| {
+    bake_table3(size, hi, 1.0, threads, |d| {
         let Some(enl) = enl else { return [0.0; 3] };
         let p = enl.light_on_paper(d, cc);
         // The chain adds `stops * log10 2` to this at run time; the shift of the brightness match is in the table.
@@ -1189,5 +1233,7 @@ fn bake_t3b(chain: &FilmChain, size: usize, threads: usize) -> Table3 {
     let medium = chain.paper().unwrap_or_else(|| chain.film());
     let hi = with_margin(densities_max(medium));
     let scan = chain.scan_stage();
-    bake_table3(size, hi, threads, |d| chain.return_stage(scan.display(d)))
+    bake_table3(size, hi, T3B_POWER, threads, |d| {
+        chain.return_stage(scan.display(d))
+    })
 }

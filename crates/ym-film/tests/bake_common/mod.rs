@@ -129,7 +129,8 @@ pub fn load_photos(stride: usize) -> Vec<Photo> {
                 let o = (y * w + x) * ch * 2;
                 let mut e = [0.0; 3];
                 for c in 0..3 {
-                    e[c] = f64::from(u16::from_be_bytes([buf[o + 2 * c], buf[o + 2 * c + 1]])) / 65535.0;
+                    e[c] = f64::from(u16::from_be_bytes([buf[o + 2 * c], buf[o + 2 * c + 1]]))
+                        / 65535.0;
                 }
                 let lin = e.map(ym_color::encode::srgb_decode);
                 pixels.push(logc4_encode_rgb(cine.inverse(lin).scene.0));
@@ -141,4 +142,101 @@ pub fn load_photos(stride: usize) -> Vec<Photo> {
         out.push(Photo { name, pixels });
     }
     out
+}
+
+/// What the 10-bit comparison of two chains found.
+#[derive(Debug, Clone, Copy)]
+pub struct CodeStats {
+    pub n: usize,
+    /// The largest difference in unrounded code values (any channel).
+    pub max: f64,
+    /// The difference that 99.9 % of the pixels stay within.
+    pub p999: f64,
+    /// The share of pixels that differ by more than a quarter code.
+    pub over_quarter: f64,
+    /// The largest difference of the rounded 10-bit codes.
+    pub max_quantised: u32,
+}
+
+impl CodeStats {
+    pub fn of(diffs: &mut [(f64, u32)]) -> Self {
+        diffs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let n = diffs.len();
+        let over = diffs.iter().filter(|d| d.0 > 0.25).count();
+        Self {
+            n,
+            max: diffs.last().map_or(0.0, |d| d.0),
+            p999: diffs[(n * 999 / 1000).min(n - 1)].0,
+            over_quarter: over as f64 / n as f64,
+            max_quantised: diffs.iter().map(|d| d.1).max().unwrap_or(0),
+        }
+    }
+}
+
+impl std::fmt::Display for CodeStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "n {:>7} max {:>7.3} p99.9 {:>6.3} >1/4: {:>7.4}% max rounded {}",
+            self.n,
+            self.max,
+            self.p999,
+            100.0 * self.over_quarter,
+            self.max_quantised
+        )
+    }
+}
+
+/// Runs `f` over `items` on `threads` threads (contiguous runs) and returns the results in order.
+pub fn par_map<T: Sync, R: Send>(
+    items: &[T],
+    threads: usize,
+    f: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
+    let per = items.len().div_ceil(threads.max(1)).max(1);
+    let mut out: Vec<Vec<R>> = Vec::new();
+    std::thread::scope(|s| {
+        let handles: Vec<_> = items
+            .chunks(per)
+            .map(|chunk| {
+                let f = &f;
+                s.spawn(move || chunk.iter().map(f).collect::<Vec<R>>())
+            })
+            .collect();
+        for h in handles {
+            out.push(h.join().expect("worker"));
+        }
+    });
+    out.into_iter().flatten().collect()
+}
+
+/// The 10-bit code difference between two LogC4 / AWG4 colours after the Output's cine rendering and C13.
+pub fn code_diff(cine: &CineRendering, space: OutputSpace, a: [f64; 3], b: [f64; 3]) -> (f64, u32) {
+    let (ca, cb) = (codes10(cine, space, a), codes10(cine, space, b));
+    let cont = (0..3).map(|k| (ca[k] - cb[k]).abs()).fold(0.0, f64::max);
+    let q = (0..3)
+        .map(|k| (ca[k].round() - cb[k].round()).abs() as u32)
+        .max()
+        .unwrap_or(0);
+    (cont, q)
+}
+
+/// 100,000 seeded random LogC4 / AWG4 colours, uniform in the cube `[lo, hi]^3`.
+pub fn random_colours(n: usize, seed: u64, lo: f64, hi: f64) -> Vec<[f64; 3]> {
+    let mut rng = Rng(seed);
+    (0..n)
+        .map(|_| [0, 1, 2].map(|_| lo + (hi - lo) * rng.unit()))
+        .collect()
+}
+
+/// Seeded colours near the neutral axis, as most of a photograph is: a grey from 0.2 to 0.5 in LogC4 and a
+/// chroma of up to about 0.06 on each channel.
+pub fn mild_colours(n: usize, seed: u64) -> Vec<[f64; 3]> {
+    let mut rng = Rng(seed);
+    (0..n)
+        .map(|_| {
+            let g = 0.2 + 0.3 * rng.unit();
+            [0, 1, 2].map(|_| g + 0.03 * (rng.unit() - 0.5))
+        })
+        .collect()
 }

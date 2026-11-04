@@ -12,9 +12,10 @@
 //!
 //! **Window.** `hanatos2025_adaptation_window_params` are four numbers: the centre and width (nm) of a rising
 //! error-function edge at the blue end and of a falling one at the red end, a band-pass multiplied onto the
-//! sensitivities: `W(l) = 1/2 erfc((c_b - l) / w_b) * 1/2 erfc((l - c_r) / w_r)`. The reading (the width is the
-//! divisor of the error function's argument, the red edge falls) is ours, from the research note and the
-//! numbers (blue edges at 400 to 456 nm, red edges at 580 to 630 nm). `W` is renormalised per layer by
+//! sensitivities: `W(l) = 1/2 erfc((c_b - l) / (w_b sqrt 2)) * 1/2 erfc((l - c_r) / (w_r sqrt 2))`, that is, each edge
+//! is a normal distribution's cumulative curve with the width as its standard deviation. The reading (the red edge
+//! falls; the width is a standard deviation) is ours, from the numbers (blue edges at 400 to 456 nm, red edges at 580
+//! to 630 nm) and fitted against outputs only: see `docs/24` section 3.7a, F-06. `W` is renormalised per layer by
 //! `k_c = sum ill S_c / sum ill S_c W` so the reference light `ill` gives the same raw values as without it. The
 //! surface correction is off.
 //!
@@ -49,6 +50,24 @@ impl std::fmt::Debug for ExposureStage {
     }
 }
 
+/// The factor between the width in the profile and the divisor of the error function's argument: the width is the standard
+/// deviation of a normal edge, `1/2 erfc(z / (w sqrt 2))`, not the divisor of `z` itself. See the module header.
+const WIDTH_SCALE: f64 = std::f64::consts::SQRT_2;
+
+/// The window of a profile's four numbers, one factor per sample (all 1 when the profile has none).
+#[must_use]
+pub fn window_of(params: &[f64]) -> Spectrum {
+    let mut window = [1.0; N_LAMBDA];
+    if params.len() == 4 {
+        for (i, w) in window.iter_mut().enumerate() {
+            let l = lambda_nm(i);
+            *w = rising_edge(l, params[0], params[1] * WIDTH_SCALE)
+                * falling_edge(l, params[2], params[3] * WIDTH_SCALE);
+        }
+    }
+    window
+}
+
 /// The spectrum of the film's reference light.
 ///
 /// # Errors
@@ -75,16 +94,28 @@ impl ExposureStage {
         spectra: Arc<dyn Spectra>,
         use_window: bool,
     ) -> Result<Self, FilmError> {
+        let window = if use_window {
+            window_of(&profile.window_params)
+        } else {
+            [1.0; N_LAMBDA]
+        };
+        Self::with_window(profile, cie, spectra, &window)
+    }
+
+    /// Builds the stage with an explicit window (one factor per sample, 1 for none). The diagnostics of `tests/oracle*.rs`
+    /// use it to compare readings of the profile's four window numbers.
+    ///
+    /// # Errors
+    ///
+    /// [`FilmError::ViewingLight`] when the reference light is unknown.
+    pub fn with_window(
+        profile: &Profile,
+        cie: &Cie,
+        spectra: Arc<dyn Spectra>,
+        window: &Spectrum,
+    ) -> Result<Self, FilmError> {
         let ill = reference_spectrum(profile, cie)?;
         let raw = profile.sensitivity();
-        let mut window = [1.0; N_LAMBDA];
-        if use_window && profile.window_params.len() == 4 {
-            let p = &profile.window_params;
-            for (i, w) in window.iter_mut().enumerate() {
-                let l = lambda_nm(i);
-                *w = rising_edge(l, p[0], p[1]) * falling_edge(l, p[2], p[3]);
-            }
-        }
         let mut sens = [[0.0; N_LAMBDA]; 3];
         for c in 0..3 {
             let (mut plain, mut windowed) = (0.0, 0.0);
