@@ -9,7 +9,7 @@
 //! | [`T1`] | chromaticity (2D) to raw exposure per unit scale (3) | 2 |
 //! | [`Curves`] | log exposure to density, 1D, 4,096 entries, 9 curves: the film's with and without couplers, the paper's | 4, 5, 8 |
 //! | T3a ([`Table3`]) | negative density (3D) to print log-exposure (3), the **lights** inside | 7 |
-//! | T3b ([`Table3`]) | print density (3D) to LogC4 / AWG4 (3), the inverse of the cine rendering inside | 9, 10 |
+//! | T3b ([`Table3`]) | print density (3D) to the cine rendering's inverse coordinates (3); [`Table3::sample`] finishes them to LogC4 / AWG4 in closed form | 9, 10 |
 //!
 //! A slide film has no T3a; its T3b reads the film's own dyes.
 //!
@@ -67,9 +67,9 @@ pub const DRAFT_SIZE: usize = 17;
 /// The size of T3a when the caller does not choose (`docs/24` section 3.8, *As built*).
 pub const DEFAULT_T3A_SIZE: usize = 49;
 
-/// The size of T3b when the caller does not choose. None of 33, 49 and 65 meets the baking gate; 65 is the
-/// largest of them (`docs/24` section 3.8, *As built*).
-pub const DEFAULT_T3B_SIZE: usize = 65;
+/// The size of T3b when the caller does not choose. The baking gate is met on the photos of three of the eight
+/// stocks at 97 and of none at 65 (`docs/24` section 3.8a); 97 is the best of the sizes measured.
+pub const DEFAULT_T3B_SIZE: usize = 97;
 
 /// The sizes of the 3D tables that section 3.8 compares.
 pub const CANDIDATE_SIZES: [usize; 3] = [33, 49, 65];

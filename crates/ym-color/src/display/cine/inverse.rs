@@ -660,7 +660,7 @@ pub(super) fn invert_coordinates(r: &CineRendering, display: Vec3) -> (Vec3, f64
 /// The scene colour of coordinates `q = (ln Ys, ca, cb)` that [`invert_coordinates`] returned, or of an
 /// interpolation between such coordinates (the lenient scene side of [`scene_side`]).
 pub(super) fn scene_from_coordinates(q: Vec3) -> Vec3 {
-    scene_side(q, false).unwrap_or_else(|| [0.18; 3])
+    scene_side(q, false).unwrap_or([0.18; 3])
 }
 
 fn vec_neutral(y2: f64) -> Vec3 {
