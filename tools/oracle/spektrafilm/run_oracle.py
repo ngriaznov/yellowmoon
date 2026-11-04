@@ -90,12 +90,52 @@ def run(image: np.ndarray, film: str, paper: str | None, collect: str, **kw) -> 
     return out.reshape(-1, 3)
 
 
+#: Density levels of the probes (``--probes``): film and print densities are put in at the taps ``cmy_film`` and ``cmy_print``
+#: (the same ``taps.inject`` mechanism as the paper white) so that one stage of the oracle is read on its own. The lattice is
+#: all triples of these levels.
+PROBE_LEVELS = [0.0, 0.25, 0.5, 0.8, 1.1, 1.4, 1.8, 2.3]
+
+
+def probe_lattice() -> np.ndarray:
+    """All triples of ``PROBE_LEVELS``, plus the 21-step neutral ramp from 0 to 2.5 (equal densities)."""
+    grid = np.array([[a, b, c] for a in PROBE_LEVELS for b in PROBE_LEVELS for c in PROBE_LEVELS])
+    ramp = np.repeat(np.linspace(0.0, 2.5, 21)[:, None], 3, axis=1)
+    return np.concatenate([grid, ramp], axis=0)
+
+
+def write_probes(out: Path) -> None:
+    """Writes ``probe_<stock>.json``: each stock's stage read on its own at injected densities.
+
+    * a negative film: ``cmy_film`` injected, read at ``log_e_print`` and ``cmy_print`` (the enlarger and the paper's curves),
+      and ``rgb_out`` (everything after the film);
+    * a paper (named by its film): ``cmy_print`` injected, read at ``rgb_out`` (the scan alone);
+    * a slide: ``cmy_film`` injected, read at ``rgb_out`` (the slide's scan alone).
+    """
+    dens = probe_lattice().reshape(-1, 1, 3)
+    for film, paper in STOCKS.items():
+        record = {"film": film, "paper": paper, "densities": np.round(dens.reshape(-1, 3), 6).tolist(), "taps": {}}
+        if paper:
+            record["taps"]["log_e_print"] = run(dens, film, paper, "log_e_print", inject="cmy_film")
+            record["taps"]["cmy_print"] = run(dens, film, paper, "cmy_print", inject="cmy_film")
+            record["taps"]["rgb_out_from_film"] = run(dens, film, paper, "rgb_out", inject="cmy_film")
+            record["taps"]["rgb_out_from_print"] = run(dens, film, paper, "rgb_out", inject="cmy_print")
+        else:
+            record["taps"]["rgb_out_from_film"] = run(dens, film, paper, "rgb_out", inject="cmy_film")
+        record["taps"] = {k: np.round(v, 6).tolist() for k, v in record["taps"].items()}
+        (out / f"probe_{film}.json").write_text(json.dumps(record, separators=(",", ":")) + "\n")
+        print("wrote probe", film)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--inputs", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--only", help="comma separated film ids")
+    parser.add_argument("--probes", action="store_true", help="write probe_<stock>.json (injected densities) instead of the fixtures")
     args = parser.parse_args()
+    if args.probes:
+        write_probes(args.out)
+        return
     inputs = json.loads(args.inputs.read_text())
     groups = [(name, np.array(inputs[name], dtype=np.float64)) for name in ("patches", "lattice", "ramp")]
     pixels = np.concatenate([g for _, g in groups], axis=0)

@@ -191,7 +191,15 @@ fn build(id: &str) -> FilmChain {
             output: Output::Srgb,
             ..FilmParams::default()
         },
-        Arc::new(TableSpectra::load(&data().join("film/upsampling")).expect("table")),
+        // `YM_TABLE=<dir>` swaps in another upsampling table (the study of F-06b: what a table made with another luminance
+        // target would give); the shipped one by default.
+        Arc::new(
+            TableSpectra::load(
+                &std::env::var_os("YM_TABLE")
+                    .map_or_else(|| data().join("film/upsampling"), PathBuf::from),
+            )
+            .expect("table"),
+        ),
     )
     .expect("chain")
 }

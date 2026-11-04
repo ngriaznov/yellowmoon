@@ -4,7 +4,7 @@ mod bake_common;
 use bake_common::*;
 use ym_color::consts::linalg;
 use ym_color::deltae::{d65_white_xyz, delta_e_2000, xyz_to_lab};
-use ym_color::display::cine::{CineRendering, D_MIN};
+use ym_color::display::cine::{CineRendering, CoreTable, D_MIN, scene_from_coordinates};
 use ym_color::gamut::{LinearAwg4, matrices};
 use ym_film::Output;
 use ym_film::bake::*;
@@ -49,6 +49,42 @@ fn round_trip_on_reachable_colours() {
     }
 }
 
+/// The same for the Film node's per-pixel return (`CoreTable`, step 1, Newton, the scene side): within 1e-6 on every
+/// colour it reports as reached, and the share it reports as not reached is the continuous inverse's.
+#[test]
+fn round_trip_of_the_per_pixel_return() {
+    let table = CoreTable::shared();
+    for out in [Output::Srgb, Output::DisplayP3] {
+        let cine = CineRendering::new(out.target());
+        let mut rng = Rng(11);
+        let (mut worst, mut n, mut beyond, mut disagree) = (0.0_f64, 0_usize, 0_usize, 0_usize);
+        for _ in 0..50_000 {
+            let scene =
+                [0, 1, 2].map(|_| 0.002 * (rng.unit() * 9.0).exp2() * (0.4 + 1.2 * rng.unit()));
+            let d = cine.forward(LinearAwg4(scene));
+            if d.iter().any(|v| *v < 1e-4 || *v > 0.9999) {
+                continue;
+            }
+            let q = cine.return_coordinates(table, d);
+            let reference = cine.inverse_continuous(d);
+            if q.chroma_fraction < 1.0 {
+                beyond += 1;
+                disagree += usize::from(reference.chroma_fraction >= 1.0);
+                continue;
+            }
+            let back = cine.forward(scene_from_coordinates(q.coordinates));
+            worst = worst.max((0..3).map(|c| (back[c] - d[c]).abs()).fold(0.0, f64::max));
+            n += 1;
+        }
+        eprintln!(
+            "{out:?}: per-pixel return, round trip over {n} colours worst {worst:.3e}; {beyond} not reached ({disagree} that the continuous inverse reaches)"
+        );
+        assert!(n > 20_000);
+        assert!(worst <= 1e-6, "round trip {worst:e}");
+        assert!(disagree * 1000 <= n, "{disagree} of {n}");
+    }
+}
+
 fn lab_of(output: Output, display: [f64; 3]) -> [f64; 3] {
     let m = matrices();
     let to_xyz = match output {
@@ -68,6 +104,9 @@ struct Share {
     unreachable: usize,
     de: Vec<f64>,
     worst_round_trip: f64,
+    /// The per-pixel return (the Film node's): colours not reached, and the round trip on the rest.
+    pp_unreachable: usize,
+    pp_round_trip: f64,
 }
 
 fn measure(film: &'static str, output: Output, photos: &[Photo]) -> Share {
@@ -90,7 +129,10 @@ fn measure(film: &'static str, output: Output, photos: &[Photo]) -> Share {
         unreachable: 0,
         de: Vec::new(),
         worst_round_trip: 0.0,
+        pp_unreachable: 0,
+        pp_round_trip: 0.0,
     };
+    let table = CoreTable::shared();
     for ph in photos {
         for p in &ph.pixels {
             let d = scan.display(f.scan_input(*p));
@@ -98,6 +140,17 @@ fn measure(film: &'static str, output: Output, photos: &[Photo]) -> Share {
             s.n += 1;
             let held = d.map(|v| v.clamp(D_MIN, 1.0));
             let back = cine.forward(inv.scene);
+            let pp = cine.return_coordinates(table, d);
+            if pp.chroma_fraction < 1.0 {
+                s.pp_unreachable += 1;
+            } else {
+                let back = cine.forward(scene_from_coordinates(pp.coordinates));
+                s.pp_round_trip = s.pp_round_trip.max(
+                    (0..3)
+                        .map(|k| (back[k] - held[k]).abs())
+                        .fold(0.0, f64::max),
+                );
+            }
             if inv.chroma_fraction < 1.0 {
                 s.unreachable += 1;
                 s.de.push(delta_e_2000(lab_of(output, d), lab_of(output, back)));
@@ -153,7 +206,7 @@ fn unreachable_share_on_photos() {
         for mut s in shares {
             let share = 100.0 * s.unreachable as f64 / s.n as f64;
             eprintln!(
-                "{output:?} {:22} unreachable {:>6.3}% ({} of {}) dE00 median {:.2} p95 {:.2} max {:.2}; round trip on the rest {:.1e}",
+                "{output:?} {:22} unreachable {:>6.3}% ({} of {}) dE00 median {:.2} p95 {:.2} max {:.2}; round trip on the rest {:.1e}; per-pixel return: {} not reached, round trip {:.1e}",
                 s.film,
                 share,
                 s.unreachable,
@@ -161,10 +214,16 @@ fn unreachable_share_on_photos() {
                 pct(&mut s.de, 0.5),
                 pct(&mut s.de, 0.95),
                 s.de.last().copied().unwrap_or(0.0),
-                s.worst_round_trip
+                s.worst_round_trip,
+                s.pp_unreachable,
+                s.pp_round_trip
             );
-            if share > 0.1 {
-                failed.push(format!("{output:?} {} {share:.3}%", s.film));
+            let pp_share = 100.0 * s.pp_unreachable as f64 / s.n as f64;
+            if share > 0.1 || pp_share > 0.1 || s.pp_round_trip > 1e-6 {
+                failed.push(format!(
+                    "{output:?} {} {share:.3}% / per-pixel {pp_share:.3}%, round trip {:.1e}",
+                    s.film, s.pp_round_trip
+                ));
             }
         }
     }

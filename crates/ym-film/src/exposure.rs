@@ -20,8 +20,8 @@
 //! surface correction is off.
 //!
 //! **Balance and placement.** Dividing by `R_c(white)` makes a neutral give three equal raw values. Scene 0.18
-//! lands at `log10 E = x_mid` on the profile's axis, where `x_mid` is the point at which the profile's curves and
-//! dyes reproduce its documented `midscale_neutral_density` (found by least squares; 0 for papers).
+//! lands at `log10 E = MID_GREY_LOG10` (-0.0095) on every profile's axis, where the oracle puts it (F-06b); the
+//! per-stock fit to the profile's `midscale_neutral_density` is kept as [`mid_log_exposure`] for diagnostics.
 
 use std::sync::Arc;
 
@@ -49,6 +49,12 @@ impl std::fmt::Debug for ExposureStage {
             .finish_non_exhaustive()
     }
 }
+
+/// The log10 raw exposure of scene 0.18 on the profile's axis, the same for every stock (F-06b). The oracle puts a
+/// neutral at 0.9786 of the exposure that the film's reference light gives a unit reflectance, on every profile
+/// (`log_e_film` of the grey is -0.0095 on all seven, window off), instead of finding a place per stock from the
+/// midscale density. [`mid_log_exposure`] keeps that per-stock reading for the diagnostics.
+pub const MID_GREY_LOG10: f64 = -0.0095;
 
 /// The factor between the width in the profile and the divisor of the error function's argument: the width is the standard
 /// deviation of a normal edge, `1/2 erfc(z / (w sqrt 2))`, not the divisor of `z` itself. See the module header.
@@ -115,7 +121,45 @@ impl ExposureStage {
         window: &Spectrum,
     ) -> Result<Self, FilmError> {
         let ill = reference_spectrum(profile, cie)?;
-        let raw = profile.sensitivity();
+        Self::with_light(profile, cie, spectra, window, &ill)
+    }
+
+    /// Builds the stage for an explicit reference light `ill` (the profile's own is [`reference_spectrum`]); the
+    /// diagnostics of `tests/oracle*.rs` use it to ask which light the oracle's balance corresponds to.
+    ///
+    /// # Errors
+    ///
+    /// Never today; the `Result` keeps the signature of [`ExposureStage::with_window`].
+    pub fn with_light(
+        profile: &Profile,
+        cie: &Cie,
+        spectra: Arc<dyn Spectra>,
+        window: &Spectrum,
+        ill: &Spectrum,
+    ) -> Result<Self, FilmError> {
+        Self::with_lens(profile, cie, spectra, window, ill, &[1.0; N_LAMBDA])
+    }
+
+    /// Builds the stage with a lens transmittance `lens` (one factor per sample) in front of the film: the ultraviolet
+    /// and infrared cut of a camera. It multiplies the sensitivities everywhere, the balance included.
+    ///
+    /// # Errors
+    ///
+    /// Never today; the `Result` keeps the signature of [`ExposureStage::with_light`].
+    pub fn with_lens(
+        profile: &Profile,
+        cie: &Cie,
+        spectra: Arc<dyn Spectra>,
+        window: &Spectrum,
+        ill: &Spectrum,
+        lens: &Spectrum,
+    ) -> Result<Self, FilmError> {
+        let mut raw = profile.sensitivity();
+        for (i, r) in raw.iter_mut().enumerate() {
+            for v in r.iter_mut() {
+                *v *= lens[i];
+            }
+        }
         let mut sens = [[0.0; N_LAMBDA]; 3];
         for c in 0..3 {
             let (mut plain, mut windowed) = (0.0, 0.0);
@@ -133,9 +177,13 @@ impl ExposureStage {
             }
         }
         let white = {
-            let xy = cie.xy_of_light(&ill);
+            let xy = cie.xy_of_light(ill);
             spectra.spectrum(xy[0], xy[1])
         };
+        // The balance is the response of the table's smooth white to the windowed sensitivities, so a neutral gives three
+        // equal raw values (the gate of `tests/gates.rs`). The oracle does not do this: it divides by the response
+        // without the window, so its neutral is off by +0.005, -0.005, -0.037 log10 (Portra 400) with the window on;
+        // the print's mid-grey normalisation absorbs that, and we keep the exact balance (F-06b).
         let mut white_resp = [0.0; 3];
         for c in 0..3 {
             white_resp[c] = (0..N_LAMBDA).map(|i| white[i] * sens[c][i]).sum();
@@ -144,7 +192,7 @@ impl ExposureStage {
             sens,
             spectra,
             white_resp,
-            x_mid: mid_log_exposure(profile),
+            x_mid: MID_GREY_LOG10,
         })
     }
 

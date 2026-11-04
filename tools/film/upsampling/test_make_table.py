@@ -107,10 +107,12 @@ class CommittedTable(unittest.TestCase):
             pairs.append(np.abs(spectra[b] - spectra[a]).max(axis=2)[both])
         change = np.concatenate(pairs)
         # Spectra near the locus are steps sharper than the 5 nm grid, so the largest change between neighbours is about 1 (an edge
-        # moves by a sample); the bulk of the inpainted area changes by far less (the median is 0, the 75th percentile 1e-5).
+        # moves by a sample); the bulk of the inpainted area changes by far less (the median is 4e-5, the 75th percentile 5e-3, the 90th
+        # 0.06 with the luminance target of F-06b; 7e-7, 1e-5 and 0.01 with the first one, which was brighter at the locus). The
+        # inpainted cells are outside the locus, which stage 1 never reaches, apart from the rim of a bilinear lookup.
         self.assertLess(float(np.percentile(change, 50)), 1e-4)
-        self.assertLess(float(np.percentile(change, 75)), 1e-3)
-        self.assertLess(float(np.percentile(change, 90)), 0.05)
+        self.assertLess(float(np.percentile(change, 75)), 2e-2)
+        self.assertLess(float(np.percentile(change, 90)), 0.15)
 
     def test_ten_white_points_have_smooth_spectra_and_the_right_chromaticity(self):
         obs = self.obs

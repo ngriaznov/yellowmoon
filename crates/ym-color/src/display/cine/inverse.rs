@@ -20,7 +20,7 @@ use crate::gamut::LinearAwg4;
 /// The residual of `(ln Y2, ca2, cb2)` below which the core has been inverted (the reference uses 1e-9).
 const RESIDUAL_TOL: f64 = 1e-7;
 /// The largest chroma after the limit that the scene side can undo: `chi_k + (chi_m - chi_k) tanh 3`.
-fn chroma_cap() -> f64 {
+pub(super) fn chroma_cap() -> f64 {
     consts::CHI_K + (consts::CHI_M - consts::CHI_K) * 3.0_f64.tanh()
 }
 
@@ -80,7 +80,7 @@ fn smooth_cbrt_inverse(q: f64) -> f64 {
 /// Scene AWG4 from the limited polar coordinates `(ln Ys, ca, cb)`, or `None` when they have no scene
 /// colour: the chroma is beyond the part of the limiter that can be undone, or the luminance floor has no
 /// root.
-fn scene_of(q: Vec3) -> Option<Vec3> {
+pub(super) fn scene_of(q: Vec3) -> Option<Vec3> {
     scene_side(q, true)
 }
 
@@ -226,19 +226,19 @@ fn gamut_inverse(display: Vec3, to_xyz: &Mat3) -> Vec3 {
 
 // ---- the core: chord iteration ---------------------------------------------------------------------------
 
-fn residual(q: Vec3, goal: Vec3) -> Vec3 {
+pub(super) fn residual(q: Vec3, goal: Vec3) -> Vec3 {
     let o = core::<f64>(q[0], q[1], q[2]);
     [o[0] - goal[0], o[1] - goal[1], o[2] - goal[2]]
 }
 
 /// The largest absolute component; infinite for a non-finite vector.
-fn norm_inf(r: Vec3) -> f64 {
+pub(super) fn norm_inf(r: Vec3) -> f64 {
     let m = r[0].abs().max(r[1].abs()).max(r[2].abs());
     if m.is_finite() { m } else { f64::INFINITY }
 }
 
 /// The inverse of a 3x3 matrix, `None` when it is singular.
-fn inverse3(a: &Mat3) -> Option<Mat3> {
+pub(super) fn inverse3(a: &Mat3) -> Option<Mat3> {
     let c00 = a[1][1] * a[2][2] - a[1][2] * a[2][1];
     let c01 = a[1][2] * a[2][0] - a[1][0] * a[2][2];
     let c02 = a[1][0] * a[2][1] - a[1][1] * a[2][0];
@@ -267,7 +267,7 @@ fn inverse3(a: &Mat3) -> Option<Mat3> {
 }
 
 /// The exact 3x3 Jacobian of the core at `q`, by forward-mode dual numbers.
-fn jacobian(q: Vec3) -> Mat3 {
+pub(super) fn jacobian(q: Vec3) -> Mat3 {
     let o = core::<Dual3>(
         Dual3::input(q[0], 0),
         Dual3::input(q[1], 1),
@@ -280,7 +280,7 @@ fn jacobian(q: Vec3) -> Mat3 {
 /// again only when a step fails to cut the largest residual by a factor of four; a step is limited to 0.7
 /// and halved up to six times while the residual does not fall. Returns the last `q` and whether the
 /// residual is below [`RESIDUAL_TOL`].
-fn newton(mut q: Vec3, goal: Vec3, max_iterations: usize) -> (Vec3, bool) {
+pub(super) fn newton(mut q: Vec3, goal: Vec3, max_iterations: usize) -> (Vec3, bool) {
     let mut r = residual(q, goal);
     let mut cost = norm_inf(r);
     let mut jinv: Option<Mat3> = None;
@@ -426,7 +426,7 @@ const NR: usize = 28;
 const R_MAX: f64 = 2.2;
 
 /// The level axis: the scene luminance of the neutral colour whose display luminance is `y2`.
-fn axis_s(y2: f64) -> f64 {
+pub(super) fn axis_s(y2: f64) -> f64 {
     tone_inverse(y2.clamp(1e-7, 1.0)).ln()
 }
 
@@ -621,11 +621,11 @@ fn solve_ray(y2: f64, ca2: f64, cb2: f64, start: Option<Vec3>) -> (Vec3, f64) {
 
 /// The largest change of a polar coordinate that one step of the continuation may make for the step `dl` in
 /// the chroma fraction `lambda`: a larger change means the iteration has jumped to another sheet.
-fn jump_bound(dl: f64, rho2: f64) -> f64 {
+pub(super) fn jump_bound(dl: f64, rho2: f64) -> f64 {
     0.3 + 3.0 * dl * (1.0 + rho2)
 }
 
-fn jump(a: Vec3, b: Vec3) -> f64 {
+pub(super) fn jump(a: Vec3, b: Vec3) -> f64 {
     (a[0] - b[0])
         .abs()
         .max((a[1] - b[1]).abs())
@@ -676,7 +676,7 @@ fn solve_connected(y2: f64, ca2: f64, cb2: f64) -> (Vec3, f64) {
 const FAST_JUMP: f64 = 0.005;
 
 /// The display side of a display colour: `(y2, ca2, cb2)`.
-fn display_side(r: &CineRendering, display: Vec3) -> (f64, f64, f64) {
+pub(super) fn display_side(r: &CineRendering, display: Vec3) -> (f64, f64, f64) {
     let d = derived();
     let xyz2 = gamut_inverse(display, &r.to_xyz);
     let y2 = xyz2[1].max(Y2_MIN);
@@ -716,34 +716,6 @@ pub(super) fn invert_coordinates(r: &CineRendering, display: Vec3) -> (Vec3, f64
         return (q, 1.0);
     }
     invert_coordinates_continuation(r, display)
-}
-
-/// The largest change of a polar coordinate between a neighbouring pre-image and the solution that
-/// [`invert_coordinates_from`] accepts as being on the same sheet.
-const NEIGHBOUR_JUMP: f64 = 0.004;
-/// The largest distance from the connected sheet's table that [`invert_coordinates_from`] accepts.
-const SHEET_VETO: f64 = 0.03;
-
-/// [`invert_coordinates`] for a display colour close to one whose pre-image `start` is known (and was reached,
-/// `chroma_fraction` 1): the chord iteration from `start`, accepted when it converges within eight steps and
-/// moves at most [`NEIGHBOUR_JUMP`] in every coordinate (a solution that close is on the same sheet), and
-/// otherwise [`invert_coordinates`]. A function of `(display, start)`.
-pub(super) fn invert_coordinates_from(
-    r: &CineRendering,
-    display: Vec3,
-    start: Vec3,
-) -> (Vec3, f64) {
-    let (y2, ca2, cb2) = display_side(r, display);
-    let (q, ok) = newton(start, [y2.ln(), ca2, cb2], 8);
-    // The table of the connected sheet vetoes a solution on another sheet that the neighbour's start reached.
-    if ok
-        && jump(q, start) <= NEIGHBOUR_JUMP
-        && jump(q, table_connected().lookup(y2, ca2, cb2)) <= SHEET_VETO
-        && scene_of(q).is_some()
-    {
-        return (q, 1.0);
-    }
-    invert_coordinates(r, display)
 }
 
 /// The scene colour of coordinates `q = (ln Ys, ca, cb)` that [`invert_coordinates`] returned, or of an

@@ -150,6 +150,100 @@ pub fn load_couplers(params: &Path) -> Result<[[f64; 3]; 3], FilmError> {
     Ok(f.matrix)
 }
 
+/// The enlarger as numbers: the lamp's temperature, the heat-absorbing glass's low-pass edge and the three filters'
+/// edges. The shipped `enlarger.json` plus `kg3.json` are read into [`EnlargerParts`] directly; this form exists for
+/// the fit of `tests/oracle_fit.rs` (F-06b), which found the hand-chosen numbers already as good as a fit to the oracle.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EnlargerModel {
+    /// The lamp's colour temperature, in kelvin.
+    pub lamp_k: f64,
+    /// The glass: transmittance `peak * 1/2 erfc((l - edge_nm) / width_nm)`.
+    pub glass: GlassEdge,
+    /// Yellow: dense below its edge.
+    pub yellow: BandEdge,
+    /// Magenta: dense between its two edges.
+    pub magenta: BandEdge,
+    /// Cyan: dense above its edge.
+    pub cyan: BandEdge,
+}
+
+/// The glass's low-pass edge.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct GlassEdge {
+    /// Transmittance in the pass band.
+    pub peak: f64,
+    /// Centre of the edge, in nm.
+    pub edge_nm: f64,
+    /// Width of the edge, in nm.
+    pub width_nm: f64,
+}
+
+/// One filter's edges, in nm.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct BandEdge {
+    /// Centre of the (first) edge.
+    #[serde(default)]
+    pub edge_nm: f64,
+    /// Width of the (first) edge.
+    #[serde(default)]
+    pub width_nm: f64,
+    /// For the band-stop (magenta): the long-wavelength edge.
+    #[serde(default)]
+    pub edge2_nm: f64,
+    /// Width of the second edge.
+    #[serde(default)]
+    pub width2_nm: f64,
+}
+
+impl EnlargerModel {
+    /// The optical parts as spectra.
+    ///
+    /// # Errors
+    ///
+    /// [`FilmError::Data`] when the lamp temperature or an edge is not a physical number.
+    pub fn parts(&self, file: &str) -> Result<EnlargerParts, FilmError> {
+        let bad = |what: String| FilmError::data(file, what);
+        if !(1000.0..=10000.0).contains(&self.lamp_k) {
+            return Err(bad(format!(
+                "lamp_k = {} is not a lamp temperature",
+                self.lamp_k
+            )));
+        }
+        let g = self.glass;
+        if g.peak <= 0.0 || g.width_nm <= 0.0 {
+            return Err(bad("the glass has no peak or no edge width".into()));
+        }
+        for (name, e) in [
+            ("yellow", self.yellow),
+            ("magenta", self.magenta),
+            ("cyan", self.cyan),
+        ] {
+            if e.width_nm <= 0.0 || (name == "magenta" && e.width2_nm <= 0.0) {
+                return Err(bad(format!(
+                    "the {name} filter has an edge width that is not positive"
+                )));
+            }
+        }
+        let mut glass = [0.0; N_LAMBDA];
+        let mut dens = [[0.0; N_LAMBDA]; 3];
+        for i in 0..N_LAMBDA {
+            let l = lambda_nm(i);
+            glass[i] = g.peak * falling_edge(l, g.edge_nm, g.width_nm);
+            // Yellow stops blue: dense below its edge. Magenta stops green: dense between its two edges. Cyan stops
+            // red: dense above its edge.
+            dens[0][i] = falling_edge(l, self.yellow.edge_nm, self.yellow.width_nm);
+            dens[1][i] = rising_edge(l, self.magenta.edge_nm, self.magenta.width_nm)
+                * falling_edge(l, self.magenta.edge2_nm, self.magenta.width2_nm);
+            dens[2][i] = rising_edge(l, self.cyan.edge_nm, self.cyan.width_nm);
+        }
+        Ok(EnlargerParts {
+            lamp_k: self.lamp_k,
+            glass,
+            filter_density: dens,
+        })
+    }
+}
+
 /// Reads the lamp, the glass and the filters (`enlarger.json` and `kg3.json`).
 ///
 /// # Errors
@@ -182,8 +276,6 @@ pub fn load_enlarger_parts(params: &Path) -> Result<EnlargerParts, FilmError> {
     let mut dens = [[0.0; N_LAMBDA]; 3];
     for i in 0..N_LAMBDA {
         let l = lambda_nm(i);
-        // Yellow stops blue: dense below its edge. Magenta stops green: dense between its two edges. Cyan stops
-        // red: dense above its edge.
         dens[0][i] = falling_edge(l, f.yellow.edge_nm, f.yellow.width_nm);
         dens[1][i] = rising_edge(l, f.magenta.edge_nm, f.magenta.width_nm)
             * falling_edge(l, f.magenta.edge2_nm, f.magenta.width2_nm);

@@ -6,8 +6,8 @@
 //! exposure axis is log10 relative exposure from -3 to 4 in 256 steps. The densitometric data come from Kodak
 //! and Fujifilm data sheets (the profile's `metadata.datasource` says so); this module only reads and checks them.
 //!
-//! Reading rules: a NaN in `log_sensitivity` is a sensitivity of 0; a NaN in `channel_density` is a dye density of
-//! 0 (undefined outside the measured range); a NaN in `base_density` takes the nearest defined value.
+//! Reading rules: a NaN in `log_sensitivity` is a sensitivity of 0; a NaN in `channel_density` or `base_density` takes
+//! the nearest defined value (undefined outside the measured range; F-06b, `docs/24` section 3.7a).
 
 use std::path::{Path, PathBuf};
 
@@ -79,7 +79,7 @@ pub struct Profile {
     pub log_sensitivity: Vec<Vec3>,
     /// The four numbers of the adaptation window (blue centre, blue width, red centre, red width in nm), or none.
     pub window_params: Vec<f64>,
-    /// Dye density per unit of density (cyan, magenta, yellow) per sample; undefined entries are 0.
+    /// Dye density per unit of density (cyan, magenta, yellow) per sample; undefined entries hold the nearest defined value.
     pub channel_density: Vec<Vec3>,
     /// The support, fog and mask density per sample; undefined entries hold the nearest defined value.
     pub base_density: Spectrum,
@@ -154,10 +154,24 @@ impl Profile {
         range_check(&log_sensitivity, -15.0, 4.0, "log_sensitivity", file)?;
         let channel_density = rows3(&d.channel_density, N_LAMBDA, "channel_density", file)?;
         range_check(&channel_density, -0.5, 4.0, "channel_density", file)?;
-        let channel_density: Vec<Vec3> = channel_density
-            .iter()
-            .map(|r| r.map(|v| if v.is_nan() { 0.0 } else { v }))
-            .collect();
+        // A dye density the profile leaves undefined (a paper's dyes before 410 nm and after 695 nm) holds its nearest
+        // defined value, as the base density does. Zero let a deep shadow leak red and blue through the dyes' ends
+        // (Portra Endura at density 2.5: red 1.9 times and blue 4 times the oracle's); holding the edge brings the
+        // scan of the oracle's own print densities from a 95th percentile of 4.4 to 0.96 dE00 (F-06b).
+        let mut channel_density = channel_density;
+        for c in 0..3 {
+            let mut column = [f64::NAN; N_LAMBDA];
+            for (i, row) in channel_density.iter().enumerate() {
+                column[i] = row[c];
+            }
+            if fill_nearest(&mut column).is_none() {
+                column = [0.0; N_LAMBDA];
+            }
+            for (i, row) in channel_density.iter_mut().enumerate() {
+                row[c] = column[i];
+            }
+        }
+        let channel_density: Vec<Vec3> = channel_density;
 
         if d.base_density.len() != N_LAMBDA {
             return Err(bad(format!(

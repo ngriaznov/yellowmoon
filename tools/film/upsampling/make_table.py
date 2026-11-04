@@ -14,8 +14,9 @@ other input is read: no film profile, no table of anyone else (docs/24 section 3
 
 Method, as the paper does it, with one change: the paper fits a reflectance under an illuminant to an RGB triple, three equations
 for three unknowns. We fit an emission to a chromaticity, two equations, so a third condition is needed: the luminance. Each cell
-gets a target luminance Y_t(x, y), smooth and falling from 0.5 at the white point to near 0 at the spectral locus (the sigmoid is
-bounded by 1, so saturated colours cannot be bright), and the three coefficients solve XYZ(s) = Y_t (x/y, 1, z/y) in CIELAB, with a
+gets a target luminance Y_t(x, y), smooth and falling from 0.2 at the white point to 0.03 at the spectral locus (the sigmoid is
+bounded by 1, so saturated colours cannot be bright; the three numbers of Y_t were chosen in F-06b against the stage-2 outputs of the
+oracle, see docs/24 section 3.3), and the three coefficients solve XYZ(s) = Y_t (x/y, 1, z/y) in CIELAB, with a
 Levenberg-Marquardt iteration and an analytic Jacobian. The cells are visited in order of their distance from the white point and
 each starts from its nearest solved neighbour. A cell that does not converge at Y_t is retried at a fraction of it; one that
 never converges is left for the inpainting. Cells outside the locus are not tried.
@@ -42,7 +43,7 @@ from scipy import sparse
 from scipy.sparse.linalg import spsolve
 
 #: Version of this generator, written to table.json. Change it when the output could change.
-GENERATOR_VERSION = "1.0.0"
+GENERATOR_VERSION = "1.1.0"
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -53,9 +54,12 @@ LAMBDA_MIN_NM = 380
 LAMBDA_MAX_NM = 780
 LAMBDA_STEP_NM = 5
 #: Target luminance at the white point and the exponent of its fall towards the locus: Y_t = Y_WHITE (1 - r)^FALL + Y_FLOOR.
-Y_WHITE = 0.5
-Y_FALL = 1.5
-Y_FLOOR = 0.004
+#: F-06b: chosen from a scan of these three numbers against the oracle's stage-2 outputs (a broad plateau, not a sharp minimum:
+#: the pooled RMS of stage 2 over the seven stocks was 0.046 log10 with 0.5, 1.5, 0.004 and is 0.035 here; 0.15 to 0.25, 0.7 to 1.4 and
+#: 0.02 to 0.05 are all within 0.001 of it). The first release of the table used 0.5, 1.5 and 0.004.
+Y_WHITE = 0.2
+Y_FALL = 1.0
+Y_FLOOR = 0.03
 #: Fractions of Y_t tried in turn when a cell does not converge at Y_t.
 Y_RETRY = (1.0, 0.7, 0.5, 0.3, 0.15, 0.07, 0.03, 0.01, 0.003)
 #: A fit is accepted when the CIELAB residual is below this (about 1e-9 in xy).

@@ -14,8 +14,8 @@
   },
   "form": "s(lambda) = sigmoid(c0 t^2 + c1 t + c2); sigmoid(z) = 0.5 + z / (2 sqrt(1 + z^2)); t = (lambda - 380) / 400",
   "generator": "tools/film/upsampling/make_table.py",
-  "generator_sha256": "af07d76aa63b0e4366a0ddfb510b6cf48b565416847a4269a3ab2f207fa3ec0f",
-  "generator_version": "1.0.0",
+  "generator_sha256": "00a32bdd89897fcbabf51d73e9b8fe712d55064a5b10ac5e4076ff439adeaa15",
+  "generator_version": "1.1.0",
   "grid": {
     "channels": [
       "c0",
@@ -35,13 +35,13 @@
       1.0
     ]
   },
-  "inpainted_cells": 43961,
+  "inpainted_cells": 43923,
   "inputs_sha256": {
     "CIE_xyz_1931_2deg.csv": "fa663e3535a7e0763a745993a1f0a192eb0275ac46ad2d1befd7626841e713c1"
   },
   "luminance_target": {
-    "fall_exponent": 1.5,
-    "floor": 0.004,
+    "fall_exponent": 1.0,
+    "floor": 0.03,
     "retry_fractions": [
       1.0,
       0.7,
@@ -53,7 +53,7 @@
       0.01,
       0.003
     ],
-    "y_white": 0.5
+    "y_white": 0.2
   },
   "name": "Yellowmoon spectral upsampling table",
   "observer": {
@@ -63,11 +63,11 @@
     "source": "data/film/cie/CIE_xyz_1931_2deg.csv (1 nm, 360..830)"
   },
   "outputs_sha256": {
-    "coeffs.f32": "af74a11e966a571502d91aae17cbbe127b2cbb5b7063f8224be22848bac36b09",
-    "error.f32": "a7c777cf391cd0d018acec51ed2bbda56033d701faaf7c65c9d784ae53a5a78e",
-    "flags.u8": "f041c70740a12415931720f28fa311108ba0b06eb80d7eee10c4f2f039b43504"
+    "coeffs.f32": "11e292187a4f7304a5e30996aa289e41fe3c0048bd7bf0884b5c362c8079d0f1",
+    "error.f32": "cfa5066ae2fceea8efa9a2306d3d7b1658b3f328b2a4ae2a09d4ab9c9c768c8e",
+    "flags.u8": "78ff55e38edf933d6b00555a574542ed134d911ad74126003f6814626270bd88"
   },
-  "solved_cells": 21575,
+  "solved_cells": 21613,
   "solver": {
     "lab_tolerance": 1e-07,
     "method": "Levenberg-Marquardt in CIELAB, analytic Jacobian, warm start from the nearest solved neighbour"

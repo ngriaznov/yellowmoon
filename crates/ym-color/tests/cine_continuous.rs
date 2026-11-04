@@ -111,23 +111,3 @@ fn the_fast_path_returns_the_continuation_s_pre_image_on_colours_the_rendering_m
         assert!(worst < 1e-4, "{target:?}: {worst:e}");
     }
 }
-
-#[test]
-fn a_start_from_a_neighbour_gives_the_same_pre_image_or_the_plain_answer() {
-    let r = CineRendering::new(OutputTarget::DisplayP3);
-    let mut accepted = 0;
-    for x in colours(1000) {
-        let d = r.forward(LinearAwg4(x));
-        let near = d.map(|v| (v * 1.003).min(1.0));
-        let start = r.inverse_coordinates(near);
-        let a = r.inverse_coordinates_from(d, &start);
-        let b = r.inverse_coordinates(d);
-        let worst = (0..3)
-            .map(|k| (a.coordinates[k] - b.coordinates[k]).abs())
-            .fold(0.0, f64::max);
-        accepted += usize::from(worst < 1e-4);
-        // A start that is not accepted gives exactly the plain answer.
-        assert!(worst < 1e-4 || a == b, "{worst:e}");
-    }
-    assert!(accepted > 900, "{accepted}");
-}

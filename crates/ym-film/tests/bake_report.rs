@@ -30,6 +30,7 @@ fn photo_stats(
             &c,
             &BakeSettings {
                 t3b_size: size,
+                t3b_power: t3b_power(),
                 ..BakeSettings::of(&c)
             },
         )
@@ -118,6 +119,7 @@ fn random_colours_by_class() {
                         &c,
                         &BakeSettings {
                             t3b_size: size,
+                            t3b_power: t3b_power(),
                             ..BakeSettings::of(&c)
                         },
                     )
@@ -208,7 +210,8 @@ fn whole_chain_on_photos() {
 }
 
 /// Bake times of Portra 400 on Portra Endura (`YM_BAKE_THREADS`, default `4`; run `1` and `4` as separate
-/// processes, each on a quiet machine). The inverse's own table is built first and timed apart.
+/// processes, each on a quiet machine): T1, the curves, T3a, T3b′ (the scan) and the core table of the per-pixel
+/// return, which is built once per process and does not depend on the film, the paper or the output.
 #[test]
 #[ignore = "prints bake times; run alone on a quiet machine"]
 fn bake_times() {
@@ -221,8 +224,11 @@ fn bake_times() {
     let lights = Lights::of(&c);
     let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
     let t = Instant::now();
-    let _ = CineRendering::new(Output::DisplayP3.target()).inverse_coordinates([0.5; 3]);
-    eprintln!("first use of the inverse (its table): {:.0} ms", ms(t));
+    let _ = ym_color::display::cine::CoreTable::build(Default::default(), threads);
+    eprintln!(
+        "{threads} thread(s): core table (once per process) {:.1} ms",
+        ms(t)
+    );
     let b = baker(threads);
     let t = Instant::now();
     let _ = b.t1(&c);
@@ -235,9 +241,46 @@ fn bake_times() {
         let _ = b.t3a(&c, lights, size);
         eprintln!("{threads} thread(s): T3a {size}^3 {:.1} ms", ms(t));
     }
-    for size in [33usize, 49, 65, 97, 113, 129] {
+    for size in [33usize, 49, 65, 97, 113, 129, 161] {
         let t = Instant::now();
         let _ = b.t3b(&c, size);
-        eprintln!("{threads} thread(s): T3b {size}^3 {:.1} ms", ms(t));
+        eprintln!("{threads} thread(s): T3b' {size}^3 {:.1} ms", ms(t));
     }
+    // A slide stock bakes only its own T3b'.
+    let slide = chain("fujifilm_velvia_100", Output::DisplayP3);
+    let t = Instant::now();
+    let _ = b.t3b(&slide, DEFAULT_T3B_SIZE);
+    eprintln!(
+        "{threads} thread(s): T3b' {DEFAULT_T3B_SIZE}^3 of a slide stock {:.1} ms",
+        ms(t)
+    );
+}
+
+/// The per-pixel cost of the colour part on the CPU, one thread (the numbers of F-05's 24 MP timing): the whole baked
+/// chain, and the return alone, on photo pixels of Portra 400.
+#[test]
+#[ignore = "prints per-pixel costs; run alone on a quiet machine"]
+fn per_pixel_cost() {
+    use std::time::Instant;
+    let pixels = photo_pixels(24);
+    if pixels.is_empty() {
+        return;
+    }
+    let c = chain("kodak_portra_400", Output::DisplayP3);
+    let f = baker(4).bake(&c, &BakeSettings::of(&c)).expect("bake");
+    let displays: Vec<[f64; 3]> = pixels.iter().map(|p| f.run_tapped(*p).1.display).collect();
+    let n = pixels.len() as f64;
+    let t = Instant::now();
+    let s: f64 = pixels.iter().map(|p| f.run(*p)[0]).sum();
+    let whole = t.elapsed().as_secs_f64() * 1e6 / n;
+    let t = Instant::now();
+    let s2: f64 = displays.iter().map(|d| f.return_to_logc4(*d)[0]).sum();
+    let ret = t.elapsed().as_secs_f64() * 1e6 / n;
+    let t = Instant::now();
+    let s3: f64 = pixels.iter().map(|p| f.exposure_of(*p)[0]).sum();
+    let front = t.elapsed().as_secs_f64() * 1e6 / n;
+    eprintln!(
+        "{} pixels: baked chain {whole:.2} us a pixel; the return alone {ret:.2}; stage 1 and 2 alone {front:.2} ({s:.1} {s2:.1} {s3:.1})",
+        pixels.len()
+    );
 }

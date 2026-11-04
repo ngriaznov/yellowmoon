@@ -34,7 +34,9 @@ $S/venv/bin/python tools/oracle/spektrafilm/run_oracle.py \
 cargo test -p ym-film --release --test oracle -- --nocapture
 ```
 
-`--only kodak_portra_400,...` runs some stocks. The inputs are written by `YM_ORACLE_WRITE_INPUTS=1 cargo test -p ym-film --release
+`--only kodak_portra_400,...` runs some stocks. `--probes` writes `probe_<film>.json` instead (F-06b): one stage read on its own at injected densities
+(`taps.inject`: `cmy_film` into the enlarger and the paper, `cmy_print` into the scan, a slide's `cmy_film` into its scan), so that a
+disagreement can be placed in the enlarger, the paper's curves or the scan without the stages before them. The inputs are written by `YM_ORACLE_WRITE_INPUTS=1 cargo test -p ym-film --release
 --test oracle -- --ignored write_inputs` (our own code; the ColorChecker patches need `testdata/spectral/`).
 
 ## What is switched on and off

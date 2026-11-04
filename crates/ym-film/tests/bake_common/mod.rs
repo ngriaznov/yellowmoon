@@ -304,3 +304,11 @@ pub fn code_diffs(
         .map(|(x, y)| code_diff(cine, space, *x, *y))
         .collect()
 }
+
+/// The axis warp of T3b′ for a report run: `YM_BAKE_POWER` (default the library's `T3B_POWER`).
+pub fn t3b_power() -> f64 {
+    std::env::var("YM_BAKE_POWER")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(ym_film::bake::T3B_POWER)
+}

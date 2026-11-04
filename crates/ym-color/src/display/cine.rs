@@ -17,6 +17,7 @@
 //! table of the inverse is built once per process, on first use, from the forward model alone.
 
 pub mod consts;
+mod core_table;
 mod inverse;
 mod real;
 
@@ -28,6 +29,9 @@ use crate::consts::Vec3;
 use crate::consts::linalg::{self, Mat3};
 use crate::gamut::{LinearAwg4, matrices};
 
+pub use self::core_table::{
+    CoreDims, CoreTable, DEFAULT_NK, DEFAULT_NS, DEFAULT_NT, DEFAULT_STEPS, DisplayCoordinates,
+};
 pub use self::inverse::CineInverse;
 
 // ---- numeric settings (all fixed, none fitted; `docs/02` C12, The equations) ---------------------------
@@ -331,28 +335,6 @@ impl CineRendering {
     #[must_use]
     pub fn inverse_coordinates(&self, display: Vec3) -> CineCoordinates {
         let (coordinates, chroma_fraction) = inverse::invert_coordinates(self, display);
-        CineCoordinates {
-            coordinates,
-            chroma_fraction,
-        }
-    }
-
-    /// [`CineRendering::inverse_coordinates`] for a display colour near one whose result `start` is known
-    /// (a neighbouring lattice node, say): the iteration starts from `start.coordinates` when its
-    /// `chroma_fraction` is 1 and is accepted when it stays within 0.02 of it in every coordinate, so it is the
-    /// same sheet; otherwise this is `inverse_coordinates`. A function of `(display, start)`; about 2 us when the
-    /// start is accepted.
-    #[must_use]
-    pub fn inverse_coordinates_from(
-        &self,
-        display: Vec3,
-        start: &CineCoordinates,
-    ) -> CineCoordinates {
-        let (coordinates, chroma_fraction) = if start.chroma_fraction >= 1.0 {
-            inverse::invert_coordinates_from(self, display, start.coordinates)
-        } else {
-            inverse::invert_coordinates(self, display)
-        };
         CineCoordinates {
             coordinates,
             chroma_fraction,

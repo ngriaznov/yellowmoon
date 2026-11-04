@@ -15,6 +15,7 @@ The generator is `tools/oracle/spektrafilm/`. `SHA256SUMS` lists every file of t
 | File | What it is |
 |---|---|
 | `inputs.json` | the inputs in linear ARRI Wide Gamut 4: 24 ColorChecker patches (Ohta reflectances under D50, adapted to D65), a 125-point RGB lattice (levels 0.04, 0.09, 0.18, 0.36, 0.72) and a 21-step grey ramp (1/3-stop steps, index 12 is 18 %). Written by our own `write_inputs` test; not derived from spektrafilm |
+| `probe_<film id>.json` | F-06b: one stage of the oracle read on its own, at densities put in by hand (`taps.inject`; the lattice is every triple of 0, 0.25, 0.5, 0.8, 1.1, 1.4, 1.8, 2.3, then a 21-step neutral ramp from 0 to 2.5). A negative: `cmy_film` in, `log_e_print` and `cmy_print` out (the enlarger and the paper's curves), and `rgb_out_from_film` (the whole print side); `rgb_out_from_print`: `cmy_print` in, `rgb_out` out (the scan of the paper alone). A slide: `rgb_out_from_film` (the slide's scan alone) |
 | `<film id>.json` | for one film, the taps `log_e_film`, `cmy_film`, `log_e_print`, `cmy_print`, `rgb_out` and `log_e_film_nowindow` (the adaptation window off) at every input, rounded to 1e-6; `paper_white_rgb`, the colour of a print with no density; the SHA-256 of `inputs.json` |
 
 Run with Python 3.13, numpy 2.5.4, scipy, colour-science 0.4.7, numba 0.68.1. spektrafilm's per-pixel mode: grain, couplers, halation,

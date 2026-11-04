@@ -165,11 +165,39 @@ fn bytes_do_not_depend_on_the_thread_count() {
             assert!(x == y, "{film}: table {k} differs between 1 and 8 threads");
             assert!(y == z, "{film}: table {k} differs on a repeat run");
         }
+        // The per-pixel return is a function of the pixel alone: the same bits from the three bakes.
+        let mut rng = Rng(77);
+        for _ in 0..300 {
+            let p = [0, 1, 2].map(|_| 0.1 + 0.5 * rng.unit());
+            let (x, y, z) = (one.run(p), eight.run(p), again.run(p));
+            assert!(x == y && y == z, "{film}: run({p:?}) differs");
+        }
         assert!(
             one.t3a().is_some() != (film == "fujifilm_velvia_100"),
             "a slide has no T3a"
         );
     }
+}
+
+/// The core table of the per-pixel return is shared by the whole process: the bakers, the outputs and the stocks
+/// use one, and it is the same bytes on any thread count (`docs/24` section 3.8c).
+#[test]
+fn the_core_table_is_shared_and_independent_of_the_stock_and_the_output() {
+    let c = chain("kodak_portra_400", Output::DisplayP3);
+    let s = BakeSettings {
+        t3a_size: 17,
+        t3b_size: 9,
+        ..BakeSettings::of(&c)
+    };
+    let a = baker(1).bake(&c, &s).unwrap();
+    let b = baker(3)
+        .bake(&chain("fujifilm_velvia_100", Output::Srgb), &s)
+        .unwrap();
+    assert!(std::ptr::eq(a.core_table(), b.core_table()));
+    assert!(std::ptr::eq(
+        a.core_table(),
+        ym_color::display::cine::CoreTable::shared()
+    ));
 }
 
 /// The cache keeps what it should, and a lights move re-bakes T3a alone.

@@ -4,8 +4,9 @@
 //! Hunt, *The Reproduction of Colour*, chapter 14; Lindbloom's published matrix) and CIE 15 (chromaticity).
 //!
 //! The picture is taken to be lit by the film's own reference light: a neutral in the picture is a neutral on the
-//! film (`docs/24` section 2.6). So the scene's XYZ (AWG4 white is D65) is adapted by Bradford from D65 to the
-//! reference light's white, and then turned into `(x, y)` and `Y`.
+//! film (`docs/24` section 2.6). So the scene is balanced to the reference light's white by a diagonal scaling of
+//! the AWG4 channels (the white balance of a camera's own primaries; F-06b chose it over the Bradford transform
+//! against the oracle), and the result is turned into `(x, y)` and `Y`.
 //!
 //! **Soft gamut compression.** A camera colour may lie outside the spectral locus (negative components, or a
 //! saturated primary: AWG4's red is on the locus). The chromaticity is moved along the ray from the reference
@@ -68,10 +69,14 @@ impl SceneStage {
     #[must_use]
     pub fn new(cie: &Cie, reference: &crate::Spectrum) -> Self {
         let m = matrices();
-        let d65 = ym_color::consts::xy_to_xyz(ym_color::consts::D65_XY);
         let ref_white = cie.xyz_of_light(reference, true);
-        let adapt = bradford(d65, ref_white);
-        let to_adapted_xyz = linalg::mul(&adapt, &m.awg4_to_xyz);
+        // White balance in the camera's own primaries (F-06b): each AWG4 channel is scaled by the reference white's
+        // coordinate there, so a neutral becomes the reference light and every other colour keeps its place relative
+        // to it. Against the oracle's stage 2 this beats the Bradford transform on all seven stocks (pooled RMS 0.046
+        // against 0.057 log10; Vision3 500T 0.098 against 0.121).
+        let white_rgb = linalg::mul_vec(&m.xyz_to_awg4, ref_white);
+        let balance = linalg::diag(white_rgb);
+        let to_adapted_xyz = linalg::mul(&m.awg4_to_xyz, &balance);
         let white_xy = cie.xy_of_light(reference);
         let mut locus = Vec::with_capacity(N_LAMBDA);
         for c in &cie.cmf {

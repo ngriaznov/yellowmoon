@@ -9,9 +9,9 @@
 //! | [`T1`] | chromaticity (2D) to raw exposure per unit scale (3) | 2 |
 //! | [`Curves`] | log exposure to density, 1D, 4,096 entries, 9 curves: the film's with and without couplers, the paper's | 4, 5, 8 |
 //! | T3a ([`Table3`]) | negative density (3D) to print log-exposure (3), the **lights** inside | 7 |
-//! | T3b ([`Table3`]) | print density (3D) to the cine rendering's inverse coordinates (3); [`Table3::sample`] finishes them to LogC4 / AWG4 in closed form | 9, 10 |
+//! | T3b′ ([`Table3`]) | print density (3D) to the **scan**: display-linear RGB in the output's primaries, unclamped | 9 |
 //!
-//! A slide film has no T3a; its T3b reads the film's own dyes.
+//! A slide film has no T3a; its T3b′ reads the film's own dyes.
 //!
 //! **What stays per pixel.** Stage 1 (the scene light: a Bradford step and the chroma compression, shared with the
 //! reference), and stage 5, the DIR couplers, as a *3 x 3 step*: a few Newton iterations on the baked curves
@@ -24,9 +24,17 @@
 //! `docs/02` C10), never trilinearly. The f32 `vec4` storage (the fourth entry is 0) is what the GPU reads.
 //! [`Table3::sample`] is its CPU twin: f32 storage, f64 arithmetic.
 //!
-//! **T3b's axes are warped.** The inverse of the cine rendering is logarithmic at the paper white (the soft clip),
-//! so T3b's nodes sit at the squares of a uniform grid ([`T3B_POWER`]): ten times the resolution near white, and
-//! the lookup takes a square root of each density. The curvature of `exp` at large density is what this costs.
+//! **The return is per pixel (F-04d).** Stage 10 sends the scan's display colour back to LogC4 / AWG4 through the
+//! inverse of the cine rendering. That map is not smooth (a clamp at the reachable edge, a fold, a logarithm at
+//! the floor), so no table of it keeps a code (`docs/24` section 3.8b: 161^3 and sRGB still missed). T3b′ holds
+//! the smooth part only, the scan; [`BakedFilm::return_to_logc4`] then runs the inverse per pixel: step 1 in closed
+//! form, the core inverse from [`CoreTable`] and a fixed number of Newton steps, the nearest-reachable clamp and the
+//! scene side in closed form (`ym_color::display::cine`, `docs/02` C12 *Per-pixel return*). The core table does
+//! not depend on the paper, the film or the output (the output enters in step 1), so it is built once per process.
+//!
+//! **T3b′'s axes are warped** ([`T3B_POWER`]): the scan is a sum of exponentials of the density, steepest in the
+//! highlights, where a code is widest in light; the nodes sit at a power of a uniform grid and the lookup takes
+//! the root.
 //!
 //! **Without a re-bake.** The film exposure multiplies T1's result ([`BakedFilm::set_exposure_ev`]) and the print
 //! exposure shifts the log-exposure after T3a ([`BakedFilm::set_print_stops`]). The lights are inside T3a, so they
@@ -36,18 +44,15 @@
 //! subtracted: down to -0.0016 for a slide, -0.001 for a paper), and a table that starts at 0 holds those
 //! densities, which are the highlights, at 0.
 //!
-//! **Determinism.** Every node is independent. T1, T3a and the curves are cut into small runs of nodes that the
-//! threads take in turn from a queue (a node's cost varies by a factor of ten across T3b); T3b is cut into rows of
-//! nodes (red fastest), each made by one thread in order, the start of a node being the prediction from the two
-//! before it in the row (`CineRendering::inverse_coordinates_from`). A node depends on its row and nothing else,
-//! so any thread count gives the same bytes.
+//! **Determinism.** Every node is independent. The tables are cut into small runs of nodes that the threads take
+//! in turn from a queue, so any thread count gives the same bytes.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use sha2::{Digest, Sha256};
 
-use ym_color::display::cine::{CineCoordinates, CineRendering, scene_from_coordinates};
+use ym_color::display::cine::{CineRendering, CoreTable};
 use ym_color::logc::logc4_encode_rgb;
 
 use crate::Vec3;
@@ -63,7 +68,7 @@ const LOG10_2: f64 = std::f64::consts::LOG10_2;
 
 /// The version of the baking. It is part of every cache key (and of the export's `ym:FilmData`); raise it when a
 /// change to the engine alters what a table holds without altering its inputs.
-pub const ENGINE_VERSION: u32 = 3;
+pub const ENGINE_VERSION: u32 = 4;
 
 /// Entries of every 1D curve table.
 pub const CURVE_ENTRIES: usize = 4096;
@@ -74,10 +79,10 @@ pub const DRAFT_SIZE: usize = 17;
 /// The size of T3a when the caller does not choose (`docs/24` section 3.8, *As built*).
 pub const DEFAULT_T3A_SIZE: usize = 49;
 
-/// The size of T3b when the caller does not choose: the smallest of the sizes measured at which the baking gate
-/// is met on the photos for all eight stocks with Display P3 output (`docs/24` section 3.8a; 97 misses by up to
-/// 2.5 codes, 129 by up to 1.5). 161 is 66 MB and bakes in about 9 s on four threads.
-pub const DEFAULT_T3B_SIZE: usize = 161;
+/// The size of T3b′ (the scan) when the caller does not choose: the smallest of the sizes measured at which the
+/// baking gate holds on the photos for all eight stocks with Display P3 and sRGB output (`docs/24` section 3.8c: 113
+/// misses Ektar 100 on sRGB by 0.04 code at 99.9 %). 129^3 is 34 MB; the scan costs 1.6 us a node.
+pub const DEFAULT_T3B_SIZE: usize = 129;
 
 /// The sizes of the 3D tables that section 3.8 compares.
 pub const CANDIDATE_SIZES: [usize; 3] = [33, 49, 65];
@@ -93,8 +98,8 @@ pub const T1_NY: usize = 220;
 const AXIS_MARGIN: f64 = 0.02;
 /// The most iterations of the baked coupler step.
 const COUPLER_ITERATIONS: usize = 16;
-/// T3b's axis warp: nodes at the squares of a uniform grid, because the inverse of the cine rendering is singular
-/// (logarithmic) at the paper white.
+/// T3b′'s axis warp: nodes at `lo + (hi - lo) * (i / (n - 1))^power`. The scan is a sum of exponentials of the
+/// density; a power above 1 puts more nodes in the highlights (low density), where it bends most.
 pub const T3B_POWER: f64 = 2.0;
 
 /// Cache sizes: T1 keeps enough entries for the stock picker's tiles (`docs/24` section 4.4); the others keep the
@@ -149,8 +154,10 @@ pub struct BakeSettings {
     pub lights: Lights,
     /// Nodes per side of T3a (ignored for a slide). [`DRAFT_SIZE`] gives a draft.
     pub t3a_size: usize,
-    /// Nodes per side of T3b.
+    /// Nodes per side of T3b′.
     pub t3b_size: usize,
+    /// The axis warp of T3b′ ([`T3B_POWER`] by default; 1 is a uniform axis).
+    pub t3b_power: f64,
 }
 
 impl BakeSettings {
@@ -161,6 +168,7 @@ impl BakeSettings {
             lights: Lights::of(chain),
             t3a_size: DEFAULT_T3A_SIZE,
             t3b_size: DEFAULT_T3B_SIZE,
+            t3b_power: T3B_POWER,
         }
     }
 
@@ -315,27 +323,14 @@ pub struct Curves {
     pub paper: Option<[Curve1; 3]>,
 }
 
-/// What the nodes of a [`Table3`] hold.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Nodes {
-    /// The value itself: [`Table3::sample`] is the interpolation.
-    Plain,
-    /// The limited polar coordinates `(ln Ys, ca, cb)` of the cine rendering's continuous pre-image
-    /// (`CineRendering::inverse_coordinates`): [`Table3::sample`] interpolates them and finishes in closed form
-    /// (`ym_color::display::cine::scene_from_coordinates`, then LogC4), so it returns LogC4 / AWG4. This is T3b.
-    CineCoordinates,
-}
-
-/// A 3D table: `size^3` nodes of f32 `vec4`, red fastest, over `[0, hi]` per channel; tetrahedral interpolation.
+/// A 3D table: `size^3` nodes of f32 `vec4`, red fastest, over `[lo, hi]` per channel; tetrahedral interpolation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Table3 {
     size: usize,
     /// The lower end of each axis (0, or a little below it where a medium's densities dip under 0).
     lo: Vec3,
     hi: Vec3,
-    /// What the nodes hold, and so what [`Table3::sample`] does after the interpolation.
-    nodes: Nodes,
-    /// The axis warp: node `i` of `n` sits at density `hi * (i / (n - 1))^power`. 1 is a uniform axis.
+    /// The axis warp: node `i` of `n` sits at density `lo + (hi - lo) * (i / (n - 1))^power`. 1 is a uniform axis.
     power: f64,
     data: Vec<f32>,
 }
@@ -364,89 +359,7 @@ impl Table3 {
         threads: usize,
         f: impl Fn(Vec3) -> Vec3 + Sync,
     ) -> Self {
-        bake_table3(size, lo, hi, power, Nodes::Plain, threads, f)
-    }
-
-    /// Bakes a [`Nodes::CineCoordinates`] table over `[lo, hi]` per channel. `f(density, previous)` gives the
-    /// pre-image of the display colour of the node's density; `start` is a prediction of the result from the
-    /// nodes before it in the row (red fastest) and `None` at the start of a row. A row is made by one thread in order, so the bytes
-    /// do not depend on `threads`.
-    #[must_use]
-    pub fn bake_cine(
-        size: usize,
-        lo: Vec3,
-        hi: Vec3,
-        power: f64,
-        threads: usize,
-        f: impl Fn(Vec3, Option<&CineCoordinates>) -> CineCoordinates + Sync,
-    ) -> Self {
-        let mut t = Table3 {
-            size,
-            lo,
-            hi,
-            nodes: Nodes::CineCoordinates,
-            power,
-            data: Vec::new(),
-        };
-        let density = |i: usize, j: usize, k: usize| {
-            [
-                t.node_density(i, 0),
-                t.node_density(j, 1),
-                t.node_density(k, 2),
-            ]
-        };
-        let mut data = vec![0.0_f32; 4 * size * size * size];
-        fill_rows::<4, _>(&mut data, size, threads, |row, out| {
-            let (j, k) = (row % size, row / size);
-            // The start for a node is the secant prediction from the two before it (the spacing of the nodes
-            // grows linearly along a warped axis), or the node before it when there is only one.
-            let mut last: [Option<CineCoordinates>; 2] = [None, None];
-            for (i, px) in out.chunks_exact_mut(4).enumerate() {
-                let start = match (last[0], last[1]) {
-                    (Some(a), Some(b)) if a.chroma_fraction >= 1.0 && b.chroma_fraction >= 1.0 => {
-                        let (d0, d1, d2) = (
-                            t.node_density(i - 2, 0),
-                            t.node_density(i - 1, 0),
-                            t.node_density(i, 0),
-                        );
-                        let ratio = (d2 - d1) / (d1 - d0);
-                        let q = [0, 1, 2].map(|c| {
-                            b.coordinates[c] + ratio * (b.coordinates[c] - a.coordinates[c])
-                        });
-                        Some(CineCoordinates {
-                            coordinates: q,
-                            ..b
-                        })
-                    }
-                    (_, Some(b)) => Some(b),
-                    _ => None,
-                };
-                let c = f(density(i, j, k), start.as_ref());
-                px.copy_from_slice(&f32x4(c.coordinates));
-                last = [last[1], Some(c)];
-            }
-        });
-        t.data = data;
-        t
-    }
-
-    /// The density at node `i` of axis `c`.
-    fn node_density(&self, i: usize, c: usize) -> f64 {
-        let u = i as f64 / (self.size - 1) as f64;
-        let w = if self.power == 1.0 {
-            u
-        } else if self.power == 2.0 {
-            u * u
-        } else {
-            u.powf(self.power)
-        };
-        self.lo[c] + (self.hi[c] - self.lo[c]) * w
-    }
-
-    /// What the nodes hold.
-    #[must_use]
-    pub fn nodes(&self) -> Nodes {
-        self.nodes
+        bake_table3(size, lo, hi, power, threads, f)
     }
 
     /// The axis warp (1 for a uniform axis, 2 for nodes at the squares of a uniform grid).
@@ -482,20 +395,9 @@ impl Table3 {
 
     /// Tetrahedral interpolation, the formula of `ym_color::lut::Lut3d::sample`: the cell is split into six
     /// tetrahedra by the order of the fractions, so the result is continuous across cells and exact at nodes. A
-    /// point outside the axes is held at the edge; NaN counts as 0. A [`Nodes::CineCoordinates`] table finishes
-    /// the interpolation (see [`Nodes`]) and returns LogC4 / AWG4.
+    /// point outside the axes is held at the edge; NaN counts as 0.
     #[must_use]
     pub fn sample(&self, p: Vec3) -> Vec3 {
-        let v = self.sample_stored(p);
-        match self.nodes {
-            Nodes::Plain => v,
-            Nodes::CineCoordinates => logc4_encode_rgb(scene_from_coordinates(v).0),
-        }
-    }
-
-    /// The interpolation of the stored values, before any finish (what the GPU's tetrahedral lookup returns).
-    #[must_use]
-    pub fn sample_stored(&self, p: Vec3) -> Vec3 {
         let n = self.size;
         let mut idx = [0_usize; 3];
         let mut frac = [0.0_f64; 3];
@@ -596,38 +498,6 @@ where
     });
 }
 
-/// Fills `out` (`W * size` floats a row) one row at a time: `f(row, row_slice)`. The threads take rows in turn from
-/// a shared queue; each row is made by one thread, so the bytes do not depend on `threads`.
-fn fill_rows<const W: usize, F>(out: &mut [f32], size: usize, threads: usize, f: F)
-where
-    F: Fn(usize, &mut [f32]) + Sync,
-{
-    let rows = out.len() / (W * size);
-    let threads = threads.clamp(1, rows.max(1));
-    if threads == 1 {
-        for (row, chunk) in out.chunks_mut(W * size).enumerate() {
-            f(row, chunk);
-        }
-        return;
-    }
-    let queue = Mutex::new(out.chunks_mut(W * size).enumerate());
-    std::thread::scope(|s| {
-        for _ in 0..threads {
-            let (f, queue) = (&f, &queue);
-            s.spawn(move || {
-                loop {
-                    let next = queue
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .next();
-                    let Some((row, chunk)) = next else { break };
-                    f(row, chunk);
-                }
-            });
-        }
-    });
-}
-
 fn f32x4(v: Vec3) -> [f32; 4] {
     let g = |x: f64| if x.is_finite() { x as f32 } else { 0.0 };
     [g(v[0]), g(v[1]), g(v[2]), 0.0]
@@ -638,7 +508,6 @@ fn bake_table3(
     lo: Vec3,
     hi: Vec3,
     power: f64,
-    nodes: Nodes,
     threads: usize,
     f: impl Fn(Vec3) -> Vec3 + Sync,
 ) -> Table3 {
@@ -666,7 +535,6 @@ fn bake_table3(
         size,
         lo,
         hi,
-        nodes,
         power,
         data,
     }
@@ -687,7 +555,9 @@ pub struct BakedTaps {
     pub log_e_print: Vec3,
     /// After stage 8: the paper's dye densities (zero for a slide).
     pub density_print: Vec3,
-    /// After T3b: LogC4 / AWG4.
+    /// After T3b′: the scan's display-linear RGB in the output's primaries, unclamped.
+    pub display: Vec3,
+    /// After the return: LogC4 / AWG4.
     pub logc4: Vec3,
 }
 
@@ -706,6 +576,8 @@ pub struct BakedFilm {
     t3a: Option<Arc<Table3>>,
     t3b: Arc<Table3>,
     output: Output,
+    cine: CineRendering,
+    core: &'static CoreTable,
 }
 
 impl BakedFilm {
@@ -734,7 +606,7 @@ impl BakedFilm {
         self.amount
     }
 
-    /// The output primaries T3b was baked for.
+    /// The output primaries T3b′ was baked for.
     #[must_use]
     pub fn output(&self) -> Output {
         self.output
@@ -764,10 +636,31 @@ impl BakedFilm {
         self.t3a.as_ref()
     }
 
-    /// T3b.
+    /// T3b′, the scan: print density (a slide's film density) to display-linear RGB.
     #[must_use]
     pub fn t3b(&self) -> &Arc<Table3> {
         &self.t3b
+    }
+
+    /// The core table of the per-pixel return (shared by the process).
+    #[must_use]
+    pub fn core_table(&self) -> &'static CoreTable {
+        self.core
+    }
+
+    /// Stage 10, per pixel: a display colour back to LogC4 / AWG4 through the inverse of the cine rendering, by
+    /// the rule of [`FilmChain::return_stage`] (the continuous pre-image): step 1 in closed form, the core inverse
+    /// from [`CoreTable`] and a fixed number of Newton steps, the nearest-reachable clamp, the scene side in
+    /// closed form, LogC4.
+    #[must_use]
+    pub fn return_to_logc4(&self, display: Vec3) -> Vec3 {
+        logc4_encode_rgb(self.cine.return_scene(self.core, display).0.0)
+    }
+
+    /// The scan of T3b′ for a print density (or a slide's film density): display-linear RGB, unclamped.
+    #[must_use]
+    pub fn scan_display(&self, density: Vec3) -> Vec3 {
+        self.t3b.sample(density)
     }
 
     /// Stage 2 from T1: the `log10` raw exposure of a scene light.
@@ -881,13 +774,14 @@ impl BakedFilm {
         let light = self.scene.run(logc4);
         let log_e_film = self.log_exposure(&light);
         let density_film = self.film_density(log_e_film);
-        let (log_e_print, density_print, out) = if self.is_slide() {
+        let (log_e_print, density_print, display) = if self.is_slide() {
             ([0.0; 3], [0.0; 3], self.t3b.sample(density_film))
         } else {
             let p = self.print_log_exposure(density_film);
             let dp = self.paper_density(p);
             (p, dp, self.t3b.sample(dp))
         };
+        let out = self.return_to_logc4(display);
         (
             out,
             BakedTaps {
@@ -895,6 +789,7 @@ impl BakedFilm {
                 density_film,
                 log_e_print,
                 density_print,
+                display,
                 logc4: out,
             },
         )
@@ -934,16 +829,17 @@ impl BakedFilm {
         ]
     }
 
-    /// Stages 7 to 10 (pass P5): a film density to LogC4 / AWG4 through the print (T3a, the paper, T3b), or for
-    /// a slide straight through T3b.
+    /// Stages 7 to 10 (pass P5): a film density to LogC4 / AWG4 through the print (T3a, the paper, T3b′ and the
+    /// per-pixel return), or for a slide straight through T3b′.
     #[must_use]
     pub fn colour_out(&self, density_film: Vec3) -> Vec3 {
-        if self.is_slide() {
+        let display = if self.is_slide() {
             self.t3b.sample(density_film)
         } else {
             self.t3b
                 .sample(self.paper_density(self.print_log_exposure(density_film)))
-        }
+        };
+        self.return_to_logc4(display)
     }
 
     /// The whole baked chain on one LogC4 / AWG4 pixel.
@@ -1037,6 +933,7 @@ struct T3bKey {
     slide: bool,
     output: u8,
     size: usize,
+    power: u64,
     engine: u32,
 }
 
@@ -1269,9 +1166,15 @@ impl Baker {
         Some(t)
     }
 
-    /// T3b for the chain's paper (or a slide's film) and output primaries (cached).
+    /// T3b′ (the scan) for the chain's paper (or a slide's film) and output primaries (cached).
     #[must_use]
     pub fn t3b(&self, chain: &FilmChain, size: usize) -> Arc<Table3> {
+        self.t3b_with(chain, size, T3B_POWER)
+    }
+
+    /// [`Baker::t3b`] with another axis warp.
+    #[must_use]
+    pub fn t3b_with(&self, chain: &FilmChain, size: usize, power: f64) -> Arc<Table3> {
         let slide = chain.paper().is_none();
         let medium = chain.paper().unwrap_or_else(|| chain.film());
         let key = T3bKey {
@@ -1282,12 +1185,13 @@ impl Baker {
                 Output::DisplayP3 => 1,
             },
             size,
+            power: power.to_bits(),
             engine: ENGINE_VERSION,
         };
         if let Some(t) = self.lock().t3b.get(&key) {
             return t;
         }
-        let t = Arc::new(bake_t3b(chain, size, self.threads));
+        let t = Arc::new(bake_t3b(chain, size, power, self.threads));
         let mut c = self.lock();
         c.built.t3b += 1;
         c.t3b.put(key, Arc::clone(&t));
@@ -1318,8 +1222,10 @@ impl Baker {
             t1: self.t1(chain),
             curves: self.curves(chain),
             t3a: self.t3a(chain, settings.lights, settings.t3a_size),
-            t3b: self.t3b(chain, settings.t3b_size),
+            t3b: self.t3b_with(chain, settings.t3b_size, settings.t3b_power),
             output: p.output,
+            cine: CineRendering::new(p.output.target()),
+            core: CoreTable::shared(),
         })
     }
 }
@@ -1482,7 +1388,7 @@ fn bake_t3a(
         lights.cyan_cc,
     ];
     let enl = chain.enlarger_stage();
-    bake_table3(size, lo, hi, 1.0, Nodes::Plain, threads, |d| {
+    bake_table3(size, lo, hi, 1.0, threads, |d| {
         let Some(enl) = enl else { return [0.0; 3] };
         let p = enl.light_on_paper(d, cc);
         // The chain adds `stops * log10 2` to this at run time; the shift of the brightness match is in the table.
@@ -1490,17 +1396,10 @@ fn bake_t3a(
     })
 }
 
-fn bake_t3b(chain: &FilmChain, size: usize, threads: usize) -> Table3 {
+fn bake_t3b(chain: &FilmChain, size: usize, power: f64, threads: usize) -> Table3 {
     let medium = chain.paper().unwrap_or_else(|| chain.film());
     let hi = with_margin(densities_max(medium));
     let lo = densities_min(medium);
     let scan = chain.scan_stage();
-    let cine = CineRendering::new(chain.params().output.target());
-    Table3::bake_cine(size, lo, hi, T3B_POWER, threads, |d, start| {
-        let display = scan.display(d);
-        match start {
-            Some(p) => cine.inverse_coordinates_from(display, p),
-            None => cine.inverse_coordinates(display),
-        }
-    })
+    bake_table3(size, lo, hi, power, threads, |d| scan.display(d))
 }
