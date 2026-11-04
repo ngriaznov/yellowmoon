@@ -444,7 +444,7 @@ impl Table {
     /// neutral colour, each node solved by the iteration from the one before it; a node with no
     /// pre-image keeps the last good one. Rays are independent, so the result does not depend on
     /// `threads`.
-    fn build(threads: usize) -> Table {
+    fn build(threads: usize, connected: bool) -> Table {
         let s_lo = axis_s(1e-7);
         let s_hi = axis_s(1.0);
         let ds = (s_hi - s_lo) / (NS - 1) as f64;
@@ -458,9 +458,31 @@ impl Table {
             let theta = 2.0 * PI * j as f64 / NT as f64 - PI;
             let mut out = [[0.0f32; 3]; NR];
             let mut previous = [s, 0.0, 0.0];
+            let mut ray_ended = false;
             for (k, node) in out.iter_mut().enumerate() {
                 let rho = k as f64 * dr;
                 let goal = [y2.ln(), rho * theta.cos(), rho * theta.sin()];
+                if connected {
+                    // The connected sheet only: a step is refused when the solution moves further than a
+                    // continuous branch would, and the ray then keeps its last good node to its end.
+                    if !ray_ended {
+                        let (q, ok) = newton(previous, goal, 20);
+                        if ok
+                            && scene_of(q).is_some()
+                            && jump(q, previous) <= jump_bound(dr / rho.max(dr), rho)
+                        {
+                            previous = q;
+                        } else {
+                            ray_ended = true;
+                        }
+                    }
+                    *node = [
+                        (previous[0] - s) as f32,
+                        previous[1] as f32,
+                        previous[2] as f32,
+                    ];
+                    continue;
+                }
                 let (mut q, mut ok) = newton(previous, goal, 20);
                 ok = ok && scene_of(q).is_some();
                 if !ok {
@@ -535,12 +557,22 @@ impl Table {
 }
 
 static TABLE: OnceLock<Table> = OnceLock::new();
+static TABLE_CONNECTED: OnceLock<Table> = OnceLock::new();
 
 /// The table, built on first use by every available core.
 fn table() -> &'static Table {
     TABLE.get_or_init(|| {
         let threads = std::thread::available_parallelism().map_or(1, usize::from);
-        Table::build(threads)
+        Table::build(threads, false)
+    })
+}
+
+/// The table of the connected sheet alone (the start of the fast path of [`invert_coordinates`]), built on first
+/// use by every available core.
+fn table_connected() -> &'static Table {
+    TABLE_CONNECTED.get_or_init(|| {
+        let threads = std::thread::available_parallelism().map_or(1, usize::from);
+        Table::build(threads, true)
     })
 }
 
@@ -639,15 +671,23 @@ fn solve_connected(y2: f64, ca2: f64, cb2: f64) -> (Vec3, f64) {
     (last, 1.0)
 }
 
-/// The limited polar coordinates `(ln Ys, ca, cb)` of the continuous pre-image of a display colour (the sheet
-/// connected to the neutral colour, see [`solve_connected`]) and the share of the requested chroma that was
-/// kept.
-pub(super) fn invert_coordinates(r: &CineRendering, display: Vec3) -> (Vec3, f64) {
+/// The largest change of a polar coordinate between the table's start and the solution that the fast path of
+/// [`invert_coordinates`] accepts as being on the same sheet.
+const FAST_JUMP: f64 = 0.005;
+
+/// The display side of a display colour: `(y2, ca2, cb2)`.
+fn display_side(r: &CineRendering, display: Vec3) -> (f64, f64, f64) {
     let d = derived();
     let xyz2 = gamut_inverse(display, &r.to_xyz);
     let y2 = xyz2[1].max(Y2_MIN);
     let ca2 = (xyz2[0] / (d.xn * y2)).cbrt() - 1.0;
     let cb2 = 1.0 - (xyz2[2] / (d.zn * y2)).cbrt();
+    (y2, ca2, cb2)
+}
+
+/// The continuation alone (see [`invert_coordinates`]): about 20 us a call.
+pub(super) fn invert_coordinates_continuation(r: &CineRendering, display: Vec3) -> (Vec3, f64) {
+    let (y2, ca2, cb2) = display_side(r, display);
     let (q, lambda) = solve_connected(y2, ca2, cb2);
     if scene_of(q).is_some() {
         (q, lambda)
@@ -655,6 +695,55 @@ pub(super) fn invert_coordinates(r: &CineRendering, display: Vec3) -> (Vec3, f64
         // The neutral colour of that luminance always has a pre-image.
         (vec_neutral(y2), 0.0)
     }
+}
+
+/// The limited polar coordinates `(ln Ys, ca, cb)` of the continuous pre-image of a display colour (the sheet
+/// connected to the neutral colour, see [`solve_connected`]) and the share of the requested chroma that was
+/// kept.
+///
+/// **Fast path.** The first-use table (`Table`) is built by continuation along rays from the neutral colour, so
+/// its start lies on the connected sheet. When the chord iteration from that start converges within six steps to
+/// a solution that has a scene colour and has moved at most [`FAST_JUMP`] in every coordinate, that solution is
+/// the connected sheet's, and it is returned at the cost of [`CineRendering::inverse`] (about 2 us). Anything
+/// else (a colour near a fold, the edge of the reachable set, a start the iteration leaves) takes the
+/// continuation. Both are deterministic functions of the display colour.
+pub(super) fn invert_coordinates(r: &CineRendering, display: Vec3) -> (Vec3, f64) {
+    let (y2, ca2, cb2) = display_side(r, display);
+    let goal = [y2.ln(), ca2, cb2];
+    let q0 = table_connected().lookup(y2, ca2, cb2);
+    let (q, ok) = newton(q0, goal, 6);
+    if ok && jump(q, q0) <= FAST_JUMP && scene_of(q).is_some() {
+        return (q, 1.0);
+    }
+    invert_coordinates_continuation(r, display)
+}
+
+/// The largest change of a polar coordinate between a neighbouring pre-image and the solution that
+/// [`invert_coordinates_from`] accepts as being on the same sheet.
+const NEIGHBOUR_JUMP: f64 = 0.004;
+/// The largest distance from the connected sheet's table that [`invert_coordinates_from`] accepts.
+const SHEET_VETO: f64 = 0.03;
+
+/// [`invert_coordinates`] for a display colour close to one whose pre-image `start` is known (and was reached,
+/// `chroma_fraction` 1): the chord iteration from `start`, accepted when it converges within eight steps and
+/// moves at most [`NEIGHBOUR_JUMP`] in every coordinate (a solution that close is on the same sheet), and
+/// otherwise [`invert_coordinates`]. A function of `(display, start)`.
+pub(super) fn invert_coordinates_from(
+    r: &CineRendering,
+    display: Vec3,
+    start: Vec3,
+) -> (Vec3, f64) {
+    let (y2, ca2, cb2) = display_side(r, display);
+    let (q, ok) = newton(start, [y2.ln(), ca2, cb2], 8);
+    // The table of the connected sheet vetoes a solution on another sheet that the neighbour's start reached.
+    if ok
+        && jump(q, start) <= NEIGHBOUR_JUMP
+        && jump(q, table_connected().lookup(y2, ca2, cb2)) <= SHEET_VETO
+        && scene_of(q).is_some()
+    {
+        return (q, 1.0);
+    }
+    invert_coordinates(r, display)
 }
 
 /// The scene colour of coordinates `q = (ln Ys, ca, cb)` that [`invert_coordinates`] returned, or of an

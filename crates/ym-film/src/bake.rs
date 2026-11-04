@@ -32,15 +32,22 @@
 //! exposure shifts the log-exposure after T3a ([`BakedFilm::set_print_stops`]). The lights are inside T3a, so they
 //! re-bake it, at [`DRAFT_SIZE`] while a slider moves and at the full size on request.
 //!
-//! **Determinism.** Every node is independent and the work is cut into contiguous runs of nodes, so any thread
-//! count gives the same bytes.
+//! **The axes start at the profile's lowest density.** Every profile's curves dip a little below 0 (the base is
+//! subtracted: down to -0.0016 for a slide, -0.001 for a paper), and a table that starts at 0 holds those
+//! densities, which are the highlights, at 0.
+//!
+//! **Determinism.** Every node is independent. T1, T3a and the curves are cut into small runs of nodes that the
+//! threads take in turn from a queue (a node's cost varies by a factor of ten across T3b); T3b is cut into rows of
+//! nodes (red fastest), each made by one thread in order, the start of a node being the prediction from the two
+//! before it in the row (`CineRendering::inverse_coordinates_from`). A node depends on its row and nothing else,
+//! so any thread count gives the same bytes.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use sha2::{Digest, Sha256};
 
-use ym_color::display::cine::{CineRendering, scene_from_coordinates};
+use ym_color::display::cine::{CineCoordinates, CineRendering, scene_from_coordinates};
 use ym_color::logc::logc4_encode_rgb;
 
 use crate::Vec3;
@@ -67,9 +74,10 @@ pub const DRAFT_SIZE: usize = 17;
 /// The size of T3a when the caller does not choose (`docs/24` section 3.8, *As built*).
 pub const DEFAULT_T3A_SIZE: usize = 49;
 
-/// The size of T3b when the caller does not choose. The baking gate is met on the photos of three of the eight
-/// stocks at 97 and of none at 65 (`docs/24` section 3.8a); 97 is the best of the sizes measured.
-pub const DEFAULT_T3B_SIZE: usize = 97;
+/// The size of T3b when the caller does not choose: the smallest of the sizes measured at which the baking gate
+/// is met on the photos for all eight stocks with Display P3 output (`docs/24` section 3.8a; 97 misses by up to
+/// 2.5 codes, 129 by up to 1.5). 161 is 66 MB and bakes in about 9 s on four threads.
+pub const DEFAULT_T3B_SIZE: usize = 161;
 
 /// The sizes of the 3D tables that section 3.8 compares.
 pub const CANDIDATE_SIZES: [usize; 3] = [33, 49, 65];
@@ -343,34 +351,96 @@ impl Table3 {
         threads: usize,
         f: impl Fn(Vec3) -> Vec3 + Sync,
     ) -> Self {
-        bake_table3(size, [0.0; 3], hi, power, Nodes::Plain, threads, f)
+        Self::bake_range(size, [0.0; 3], hi, power, threads, f)
     }
 
-    /// Bakes a table whose nodes are `nodes` (see [`Nodes`]); `f` gives the stored value.
-    #[must_use]
-    pub fn bake_nodes(
-        size: usize,
-        hi: Vec3,
-        power: f64,
-        nodes: Nodes,
-        threads: usize,
-        f: impl Fn(Vec3) -> Vec3 + Sync,
-    ) -> Self {
-        bake_table3(size, [0.0; 3], hi, power, nodes, threads, f)
-    }
-
-    /// Like [`Table3::bake_nodes`] over `[lo, hi]` per channel (the densities of a profile dip a little below 0).
+    /// Like [`Table3::bake`] over `[lo, hi]` per channel (the densities of a profile dip a little below 0).
     #[must_use]
     pub fn bake_range(
         size: usize,
         lo: Vec3,
         hi: Vec3,
         power: f64,
-        nodes: Nodes,
         threads: usize,
         f: impl Fn(Vec3) -> Vec3 + Sync,
     ) -> Self {
-        bake_table3(size, lo, hi, power, nodes, threads, f)
+        bake_table3(size, lo, hi, power, Nodes::Plain, threads, f)
+    }
+
+    /// Bakes a [`Nodes::CineCoordinates`] table over `[lo, hi]` per channel. `f(density, previous)` gives the
+    /// pre-image of the display colour of the node's density; `start` is a prediction of the result from the
+    /// nodes before it in the row (red fastest) and `None` at the start of a row. A row is made by one thread in order, so the bytes
+    /// do not depend on `threads`.
+    #[must_use]
+    pub fn bake_cine(
+        size: usize,
+        lo: Vec3,
+        hi: Vec3,
+        power: f64,
+        threads: usize,
+        f: impl Fn(Vec3, Option<&CineCoordinates>) -> CineCoordinates + Sync,
+    ) -> Self {
+        let mut t = Table3 {
+            size,
+            lo,
+            hi,
+            nodes: Nodes::CineCoordinates,
+            power,
+            data: Vec::new(),
+        };
+        let density = |i: usize, j: usize, k: usize| {
+            [
+                t.node_density(i, 0),
+                t.node_density(j, 1),
+                t.node_density(k, 2),
+            ]
+        };
+        let mut data = vec![0.0_f32; 4 * size * size * size];
+        fill_rows::<4, _>(&mut data, size, threads, |row, out| {
+            let (j, k) = (row % size, row / size);
+            // The start for a node is the secant prediction from the two before it (the spacing of the nodes
+            // grows linearly along a warped axis), or the node before it when there is only one.
+            let mut last: [Option<CineCoordinates>; 2] = [None, None];
+            for (i, px) in out.chunks_exact_mut(4).enumerate() {
+                let start = match (last[0], last[1]) {
+                    (Some(a), Some(b)) if a.chroma_fraction >= 1.0 && b.chroma_fraction >= 1.0 => {
+                        let (d0, d1, d2) = (
+                            t.node_density(i - 2, 0),
+                            t.node_density(i - 1, 0),
+                            t.node_density(i, 0),
+                        );
+                        let ratio = (d2 - d1) / (d1 - d0);
+                        let q = [0, 1, 2].map(|c| {
+                            b.coordinates[c] + ratio * (b.coordinates[c] - a.coordinates[c])
+                        });
+                        Some(CineCoordinates {
+                            coordinates: q,
+                            ..b
+                        })
+                    }
+                    (_, Some(b)) => Some(b),
+                    _ => None,
+                };
+                let c = f(density(i, j, k), start.as_ref());
+                px.copy_from_slice(&f32x4(c.coordinates));
+                last = [last[1], Some(c)];
+            }
+        });
+        t.data = data;
+        t
+    }
+
+    /// The density at node `i` of axis `c`.
+    fn node_density(&self, i: usize, c: usize) -> f64 {
+        let u = i as f64 / (self.size - 1) as f64;
+        let w = if self.power == 1.0 {
+            u
+        } else if self.power == 2.0 {
+            u * u
+        } else {
+            u.powf(self.power)
+        };
+        self.lo[c] + (self.hi[c] - self.lo[c]) * w
     }
 
     /// What the nodes hold.
@@ -410,18 +480,10 @@ impl Table3 {
         &self.data
     }
 
-    fn at(&self, r: usize, g: usize, b: usize) -> Vec3 {
-        let o = 4 * (r + self.size * (g + self.size * b));
-        [
-            f64::from(self.data[o]),
-            f64::from(self.data[o + 1]),
-            f64::from(self.data[o + 2]),
-        ]
-    }
-
     /// Tetrahedral interpolation, the formula of `ym_color::lut::Lut3d::sample`: the cell is split into six
     /// tetrahedra by the order of the fractions, so the result is continuous across cells and exact at nodes. A
-    /// point outside the axes is held at the edge; NaN counts as 0.
+    /// point outside the axes is held at the edge; NaN counts as 0. A [`Nodes::CineCoordinates`] table finishes
+    /// the interpolation (see [`Nodes`]) and returns LogC4 / AWG4.
     #[must_use]
     pub fn sample(&self, p: Vec3) -> Vec3 {
         let v = self.sample_stored(p);
@@ -458,27 +520,33 @@ impl Table3 {
         }
         let [i, j, k] = idx;
         let [fr, fg, fb] = frac;
-        let c000 = self.at(i, j, k);
-        let c111 = self.at(i + 1, j + 1, k + 1);
+        let node = |r: usize, g: usize, b: usize| 4 * (r + n * (g + n * b));
+        let c000 = node(i, j, k);
+        let c111 = node(i + 1, j + 1, k + 1);
         let (p1, p2, w0, w1, w2) = if fr > fg {
             if fg > fb {
-                (self.at(i + 1, j, k), self.at(i + 1, j + 1, k), fr, fg, fb)
+                (node(i + 1, j, k), node(i + 1, j + 1, k), fr, fg, fb)
             } else if fr > fb {
-                (self.at(i + 1, j, k), self.at(i + 1, j, k + 1), fr, fb, fg)
+                (node(i + 1, j, k), node(i + 1, j, k + 1), fr, fb, fg)
             } else {
-                (self.at(i, j, k + 1), self.at(i + 1, j, k + 1), fb, fr, fg)
+                (node(i, j, k + 1), node(i + 1, j, k + 1), fb, fr, fg)
             }
         } else if fb > fg {
-            (self.at(i, j, k + 1), self.at(i, j + 1, k + 1), fb, fg, fr)
+            (node(i, j, k + 1), node(i, j + 1, k + 1), fb, fg, fr)
         } else if fb > fr {
-            (self.at(i, j + 1, k), self.at(i, j + 1, k + 1), fg, fb, fr)
+            (node(i, j + 1, k), node(i, j + 1, k + 1), fg, fb, fr)
         } else {
-            (self.at(i, j + 1, k), self.at(i + 1, j + 1, k), fg, fr, fb)
+            (node(i, j + 1, k), node(i + 1, j + 1, k), fg, fr, fb)
         };
         let mut out = [0.0; 3];
         for c in 0..3 {
-            out[c] =
-                c000[c] + w0 * (p1[c] - c000[c]) + w1 * (p2[c] - p1[c]) + w2 * (c111[c] - p2[c]);
+            let (a, b, d, e) = (
+                f64::from(self.data[c000 + c]),
+                f64::from(self.data[p1 + c]),
+                f64::from(self.data[p2 + c]),
+                f64::from(self.data[c111 + c]),
+            );
+            out[c] = a + w0 * (b - a) + w1 * (d - b) + w2 * (e - d);
         }
         out
     }
@@ -488,16 +556,21 @@ impl Table3 {
 // Parallel filling
 // ---------------------------------------------------------------------------------------------------------
 
-/// Fills `out` (`4 * n` floats, `n` items) with `f(item)`, cutting the items into `threads` contiguous runs. The
-/// items are independent, so the bytes do not depend on `threads`.
-fn fill<F>(out: &mut [f32], threads: usize, f: F)
+/// Nodes in a work unit of [`fill`].
+const FILL_CHUNK: usize = 256;
+
+/// Fills `out` (`W * n` floats, `n` items) with `f(item)`. The items are cut into small runs that the threads take
+/// in turn from a shared queue (the cost of a node varies by a factor of ten across a table, so equal contiguous
+/// runs would leave most threads idle). The items are independent and each run is written by one thread, so the
+/// bytes do not depend on `threads`.
+fn fill<const W: usize, F>(out: &mut [f32], threads: usize, f: F)
 where
-    F: Fn(usize) -> [f32; 4] + Sync,
+    F: Fn(usize) -> [f32; W] + Sync,
 {
-    let n = out.len() / 4;
-    let threads = threads.clamp(1, n.max(1));
+    let n = out.len() / W;
+    let threads = threads.clamp(1, n.div_ceil(FILL_CHUNK).max(1));
     let run = |first: usize, chunk: &mut [f32]| {
-        for (k, px) in chunk.chunks_exact_mut(4).enumerate() {
+        for (k, px) in chunk.chunks_exact_mut(W).enumerate() {
             px.copy_from_slice(&f(first + k));
         }
     };
@@ -505,11 +578,52 @@ where
         run(0, out);
         return;
     }
-    let per = n.div_ceil(threads);
+    let queue = Mutex::new(out.chunks_mut(W * FILL_CHUNK).enumerate());
     std::thread::scope(|s| {
-        for (t, chunk) in out.chunks_mut(4 * per).enumerate() {
-            let run = &run;
-            s.spawn(move || run(t * per, chunk));
+        for _ in 0..threads {
+            let (run, queue) = (&run, &queue);
+            s.spawn(move || {
+                loop {
+                    let next = queue
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .next();
+                    let Some((i, chunk)) = next else { break };
+                    run(i * FILL_CHUNK, chunk);
+                }
+            });
+        }
+    });
+}
+
+/// Fills `out` (`W * size` floats a row) one row at a time: `f(row, row_slice)`. The threads take rows in turn from
+/// a shared queue; each row is made by one thread, so the bytes do not depend on `threads`.
+fn fill_rows<const W: usize, F>(out: &mut [f32], size: usize, threads: usize, f: F)
+where
+    F: Fn(usize, &mut [f32]) + Sync,
+{
+    let rows = out.len() / (W * size);
+    let threads = threads.clamp(1, rows.max(1));
+    if threads == 1 {
+        for (row, chunk) in out.chunks_mut(W * size).enumerate() {
+            f(row, chunk);
+        }
+        return;
+    }
+    let queue = Mutex::new(out.chunks_mut(W * size).enumerate());
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            let (f, queue) = (&f, &queue);
+            s.spawn(move || {
+                loop {
+                    let next = queue
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .next();
+                    let Some((row, chunk)) = next else { break };
+                    f(row, chunk);
+                }
+            });
         }
     });
 }
@@ -528,25 +642,26 @@ fn bake_table3(
     threads: usize,
     f: impl Fn(Vec3) -> Vec3 + Sync,
 ) -> Table3 {
-    let mut data = vec![0.0_f32; 4 * size * size * size];
     let last = (size - 1) as f64;
     // `u * u` for the square (exact and the same on every platform); `powf` for any other warp.
     let at = |i: usize, c: usize| {
         let u = i as f64 / last;
         lo[c]
             + (hi[c] - lo[c])
-            * if power == 1.0 {
-                u
-            } else if power == 2.0 {
-                u * u
-            } else {
-                u.powf(power)
-            }
+                * if power == 1.0 {
+                    u
+                } else if power == 2.0 {
+                    u * u
+                } else {
+                    u.powf(power)
+                }
     };
-    fill(&mut data, threads, |n| {
+    let density = |n: usize| {
         let (r, g, b) = (n % size, (n / size) % size, n / (size * size));
-        f32x4(f([at(r, 0), at(g, 1), at(b, 2)]))
-    });
+        [at(r, 0), at(g, 1), at(b, 2)]
+    };
+    let mut data = vec![0.0_f32; 4 * size * size * size];
+    fill(&mut data, threads, |n| f32x4(f(density(n))));
     Table3 {
         size,
         lo,
@@ -1381,7 +1496,11 @@ fn bake_t3b(chain: &FilmChain, size: usize, threads: usize) -> Table3 {
     let lo = densities_min(medium);
     let scan = chain.scan_stage();
     let cine = CineRendering::new(chain.params().output.target());
-    bake_table3(size, lo, hi, T3B_POWER, Nodes::CineCoordinates, threads, |d| {
-        cine.inverse_coordinates(scan.display(d)).coordinates
+    Table3::bake_cine(size, lo, hi, T3B_POWER, threads, |d, start| {
+        let display = scan.display(d);
+        match start {
+            Some(p) => cine.inverse_coordinates_from(display, p),
+            None => cine.inverse_coordinates(display),
+        }
     })
 }

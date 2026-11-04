@@ -15,7 +15,7 @@ fn round_trip_on_reachable_colours() {
     for out in [Output::Srgb, Output::DisplayP3] {
         let cine = CineRendering::new(out.target());
         let mut rng = Rng(11);
-        let (mut worst, mut n, mut missed) = (0.0_f64, 0_usize, 0_usize);
+        let (mut worst, mut n, mut missed) = ([0.0_f64; 2], [0_usize; 2], [0_usize; 2]);
         for _ in 0..50_000 {
             // A display colour the rendering makes: forward of a random scene colour (log-uniform luminance).
             let scene =
@@ -24,19 +24,28 @@ fn round_trip_on_reachable_colours() {
             if d.iter().any(|v| *v < 1e-4 || *v > 0.9999) {
                 continue;
             }
-            let inv = cine.inverse(d);
-            if inv.chroma_fraction < 1.0 {
-                // The inverse did not find a pre-image of a colour the rendering makes.
-                missed += 1;
-                continue;
+            // The plain inverse (the DNG's) and the continuous one (the film node's).
+            for (k, inv) in [cine.inverse(d), cine.inverse_continuous(d)]
+                .into_iter()
+                .enumerate()
+            {
+                if inv.chroma_fraction < 1.0 {
+                    // The inverse did not find a pre-image of a colour the rendering makes.
+                    missed[k] += 1;
+                    continue;
+                }
+                let back = cine.forward(inv.scene);
+                worst[k] = worst[k].max((0..3).map(|c| (back[c] - d[c]).abs()).fold(0.0, f64::max));
+                n[k] += 1;
             }
-            let back = cine.forward(inv.scene);
-            worst = worst.max((0..3).map(|k| (back[k] - d[k]).abs()).fold(0.0, f64::max));
-            n += 1;
         }
-        eprintln!("{out:?}: round trip over {n} colours, worst {worst:.3e}, {missed} not found");
-        assert!(n > 20_000);
-        assert!(worst <= 1e-6, "round trip {worst:e}");
+        eprintln!(
+            "{out:?}: round trip over {:?} colours (plain, continuous), worst {:.3e} and {:.3e}, {:?} not found",
+            n, worst[0], worst[1], missed
+        );
+        assert!(n[0] > 20_000 && n[1] > 20_000);
+        assert!(worst[0] <= 1e-6, "round trip {:e}", worst[0]);
+        assert!(worst[1] <= 1e-6, "round trip (continuous) {:e}", worst[1]);
     }
 }
 
@@ -85,7 +94,7 @@ fn measure(film: &'static str, output: Output, photos: &[Photo]) -> Share {
     for ph in photos {
         for p in &ph.pixels {
             let d = scan.display(f.scan_input(*p));
-            let inv = cine.inverse(d);
+            let inv = cine.inverse_continuous(d);
             s.n += 1;
             let held = d.map(|v| v.clamp(D_MIN, 1.0));
             let back = cine.forward(inv.scene);

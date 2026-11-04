@@ -336,6 +336,40 @@ impl CineRendering {
             chroma_fraction,
         }
     }
+
+    /// [`CineRendering::inverse_coordinates`] for a display colour near one whose result `start` is known
+    /// (a neighbouring lattice node, say): the iteration starts from `start.coordinates` when its
+    /// `chroma_fraction` is 1 and is accepted when it stays within 0.02 of it in every coordinate, so it is the
+    /// same sheet; otherwise this is `inverse_coordinates`. A function of `(display, start)`; about 2 us when the
+    /// start is accepted.
+    #[must_use]
+    pub fn inverse_coordinates_from(
+        &self,
+        display: Vec3,
+        start: &CineCoordinates,
+    ) -> CineCoordinates {
+        let (coordinates, chroma_fraction) = if start.chroma_fraction >= 1.0 {
+            inverse::invert_coordinates_from(self, display, start.coordinates)
+        } else {
+            inverse::invert_coordinates(self, display)
+        };
+        CineCoordinates {
+            coordinates,
+            chroma_fraction,
+        }
+    }
+
+    /// [`CineRendering::inverse_coordinates`] by the continuation alone (about 20 us a call): the definition of
+    /// the rule, which the fast path of `inverse_coordinates` is tested against. Use it as a reference.
+    #[must_use]
+    pub fn inverse_coordinates_reference(&self, display: Vec3) -> CineCoordinates {
+        let (coordinates, chroma_fraction) =
+            inverse::invert_coordinates_continuation(self, display);
+        CineCoordinates {
+            coordinates,
+            chroma_fraction,
+        }
+    }
 }
 
 /// What [`CineRendering::inverse_coordinates`] returns.
