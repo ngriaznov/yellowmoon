@@ -90,6 +90,7 @@ fn lab_of(output: Output, display: [f64; 3]) -> [f64; 3] {
     let to_xyz = match output {
         Output::Srgb => m.rec709_to_xyz,
         Output::DisplayP3 => m.p3_to_xyz,
+        Output::Rec2020 => m.rec2020_to_xyz,
     };
     xyz_to_lab(
         linalg::mul_vec(&to_xyz, display.map(|v| v.clamp(0.0, 1.0))),
