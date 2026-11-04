@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/tmp/claude-0/-home-user-yellowmoon/21063226-7ac2-5ae0-bec4-1d31a6166c2b/scratchpad/f06/venv/bin/python *)"
+    ]
+  }
+}
