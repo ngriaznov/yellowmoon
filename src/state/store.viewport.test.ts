@@ -8,6 +8,7 @@ import type { MockApi, MockOptions } from "../api.mock";
 import type { RenderStats, ViewportInput } from "../api/types";
 import { installManualRaf } from "../test/raf";
 import type { ManualRaf } from "../test/raf";
+import { holdGesture } from "./gestureHold";
 import { isSuperseded } from "./requestLimiter";
 import { createStore, HISTOGRAM_THROTTLE_MS, LOOK_THUMBNAIL_CONCURRENCY } from "./store";
 import type { AppStore } from "./store";
@@ -212,6 +213,45 @@ describe("the histogram", () => {
     expect(histogram.mock.calls.length).toBe(before + 1);
 
     unwatch();
+  });
+
+  it("waits for the hand: nothing is asked for while a gesture is held, and the extras come back once when it ends (U-02)", async () => {
+    const { api, store } = await opened({ current: 3 });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const histogram = vi.spyOn(api, "histogram");
+    const sample = vi.spyOn(api, "samplePixel");
+    const scatter = vi.spyOn(api, "chromaScatter");
+    const stopHistogram = store.watchHistogram({ readout: true });
+    const stopScatter = store.watchChromaScatter();
+    await vi.advanceTimersByTimeAsync(0);
+    histogram.mockClear();
+    sample.mockClear();
+    scatter.mockClear();
+
+    const release = holdGesture();
+    await frames(api, 1000);
+    expect(histogram, "a drag of a knob does not ask for the histogram").not.toHaveBeenCalled();
+    expect(sample).not.toHaveBeenCalled();
+    expect(scatter).not.toHaveBeenCalled();
+
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(histogram).toHaveBeenCalledTimes(1);
+    expect(sample).toHaveBeenCalledTimes(1);
+    expect(scatter).toHaveBeenCalledTimes(1);
+
+    // Two gestures at once (a knob and a pin): the extras wait for the last.
+    histogram.mockClear();
+    const a = holdGesture();
+    const b = holdGesture();
+    a();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(histogram).not.toHaveBeenCalled();
+    b();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(histogram).toHaveBeenCalledTimes(1);
+    stopHistogram();
+    stopScatter();
   });
 
   it("is not asked for once nobody watches, or while nobody has", async () => {

@@ -287,7 +287,6 @@ export function Photos() {
   const [tab, setTab] = useState<TabId>("look");
   // The tabs that were opened: they stay mounted (hidden) so that coming back to one is a change of `hidden`, not a build.
   const visited = useRef<Set<TabId>>(new Set());
-  visited.current.add(tab);
   // The simple view (today's Photos) or the node view (`docs/23`), and the node the graph is on. Both are the window's: nothing is kept.
   const [view, setView] = useState<"simple" | "nodes">("simple");
   const [selectedNode, setSelectedNode] = useState<NodeId>(MAIN_ID);
@@ -301,6 +300,10 @@ export function Photos() {
   const { dragging } = useWindowDrop({ onDrop: (paths) => void store.openPaths(paths), enabled: overlay === null });
   const [cell, setCell] = useState<{ width: number; height: number; scale: number } | null>(null);
   const crop = useCropSession(store, photo, rs);
+  // The tabs are kept while the tool panel is the panel; when Crop, the Export panel or the node view replaces it they go with it, and the next
+  // time only the tab on show is built (not all that were ever opened at once).
+  if (!crop.session && panel === "tools" && view === "simple") visited.current.add(tab);
+  else visited.current.clear();
 
   const ordered = useMemo(() => looksInDisplayOrder(looks ?? []), [looks]);
   // The look chip names the look alone, so a title that two libraries share says which one it is ("Film · LogC3").

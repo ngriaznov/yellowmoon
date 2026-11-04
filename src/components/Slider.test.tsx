@@ -350,3 +350,26 @@ describe("Slider dragging", () => {
     expect(onChange).toHaveBeenCalledWith(-18, true);
   });
 });
+
+describe("Slider drawing (U-02)", () => {
+  it("reports to the newest onChange of the parent when the parent draws with a new function", async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const view = render(<Slider label="Exposure" value={0.3} min={-4} max={4} step={0.01} defaultValue={0.3} format={formats.ev} onChange={first} />);
+    view.rerender(<Slider label="Exposure" value={0.3} min={-4} max={4} step={0.01} defaultValue={0.3} format={formats.ev} onChange={second} />);
+    const slider = screen.getByRole("slider", { name: "Exposure" });
+    slider.focus();
+    await userEvent.keyboard("{ArrowRight}");
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledWith(0.31, true);
+  });
+
+  it("uses the newest format, reset and parse too", async () => {
+    const reset = vi.fn();
+    const view = render(<Slider label="Exposure" value={1} min={-4} max={4} step={0.01} defaultValue={0} format={(v) => `a${v}`} onReset={() => undefined} onChange={() => undefined} />);
+    view.rerender(<Slider label="Exposure" value={1} min={-4} max={4} step={0.01} defaultValue={0} format={(v) => `b${v}`} onReset={reset} onChange={() => undefined} />);
+    expect(screen.getByRole("slider", { name: "Exposure" })).toHaveAttribute("aria-valuetext", "b1");
+    await userEvent.click(screen.getByRole("button", { name: "Reset Exposure" }));
+    expect(reset).toHaveBeenCalledTimes(1);
+  });
+});

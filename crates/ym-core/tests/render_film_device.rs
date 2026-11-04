@@ -726,3 +726,80 @@ fn where_the_dng_values_differ() {
         &cpu.rgb[3 * q..3 * q + 3]
     ));
 }
+
+/// F-08c diagnostic: the whole triplets of the worst pixels of the Rec.2020 export with a Film node, with and without
+/// the node on the CPU.
+#[test]
+#[ignore = "a diagnostic"]
+fn rec2020_worst_pixels() {
+    let Some(gpu) = gpu(true) else { return };
+    let d = photo();
+    let film = json!({ "grain": { "amount": 0 }, "halation": { "amount": 0 } });
+    let settings = one_film(film);
+    let plain = d.source().settings.clone();
+    let home = tempfile::tempdir().expect("dir");
+    let sp = match std::env::var("YM_SPACE").as_deref() {
+        Ok("p3") => ColorSpace::DisplayP3,
+        Ok("srgb") => ColorSpace::Srgb,
+        _ => ColorSpace::Rec2020,
+    };
+    let (rep, dev) = export_in(&d, &settings, renderer(Some(Arc::clone(&gpu)), 256), home.path(), sp);
+    let (ew, eh, _) = decode_png16(&rep.path);
+    say(&format!("export is {ew} x {eh}"));
+    let (_, cpu) = export_in(&d, &settings, renderer(None, 256), home.path(), sp);
+    let (_, pl) = export_in(&d, &plain, renderer(None, 256), home.path(), sp);
+    let mut order: Vec<usize> = (0..dev.len() / 3).collect();
+    order.sort_by_key(|&p| {
+        std::cmp::Reverse((0..3).map(|c| dev[3 * p + c].abs_diff(cpu[3 * p + c])).max().unwrap_or(0))
+    });
+    for &p in order.iter().take(12) {
+        let t = |v: &[u32]| [v[3 * p], v[3 * p + 1], v[3 * p + 2]];
+        say(&format!(
+            "pixel ({}, {}): device {:?} cpu {:?} no-film cpu {:?}",
+            p % ew,
+            p / ew,
+            t(&dev),
+            t(&cpu),
+            t(&pl)
+        ));
+    }
+}
+
+#[test]
+#[ignore = "a diagnostic"]
+fn rec2020_input_at_the_worst_pixel() {
+    let d = photo();
+    let src = d.source().with_settings(d.source().settings.clone());
+    let img = dng_image(&renderer(None, 256), &src);
+    for x in 488..494 {
+        let q = 103 * img.width + x;
+        say(&format!("plain DNG ({x}, 103): {:?}", &img.rgb[3 * q..3 * q + 3]));
+    }
+}
+
+#[test]
+#[ignore = "a diagnostic"]
+fn dng_dark_pixels() {
+    let Some(gpu) = gpu(true) else { return };
+    let d = photo();
+    let film = json!({ "grain": { "amount": 0 }, "halation": { "amount": 0 } });
+    let src = d.source().with_settings(one_film(film));
+    let plain = dng_image(&renderer(None, 256), &d.source().with_settings(d.source().settings.clone()));
+    let dev = dng_image(&renderer(Some(gpu), 256), &src);
+    let cpu = dng_image(&renderer(None, 256), &src);
+    say(&format!("dng {} x {}", dev.width, dev.height));
+    let n = dev.rgb.len() / 3;
+    let mut rows: Vec<(f32, usize)> = (0..n)
+        .filter(|&p| (0..3).any(|c| cpu.rgb[3 * p + c].abs() < 0.02))
+        .map(|p| ((0..3).map(|c| (dev.rgb[3 * p + c] - cpu.rgb[3 * p + c]).abs()).fold(0.0, f32::max), p))
+        .collect();
+    say(&format!("{} dark pixels", rows.len()));
+    rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+    for &(e, p) in rows.iter().take(8) {
+        say(&format!(
+            "({}, {}) err {e:.2e} dev {:?} cpu {:?} plain {:?}",
+            p % dev.width, p / dev.width,
+            &dev.rgb[3 * p..3 * p + 3], &cpu.rgb[3 * p..3 * p + 3], &plain.rgb[3 * p..3 * p + 3]
+        ));
+    }
+}

@@ -498,3 +498,119 @@ fn cost_per_pixel_on_lavapipe() {
         }
     }
 }
+
+/// F-08c diagnostic: Rec.2020 colour out, device against CPU, in 10-bit codes after C13 (the CPU's f64 forward for both),
+/// worst first, with the CPU's display colour of the print.
+#[test]
+#[ignore = "diagnostic: F-08c, Rec.2020 colour-out codes"]
+fn diagnose_rec2020_codes() {
+    let mut px = synthetic_set();
+    px.extend(random_pixels());
+    px.extend(photo_set(40));
+    let (w, h) = side(64, px.len());
+    for dev in f32_devices() {
+        for id in [
+            "kodak_portra_400",
+            "kodak_ektar_100",
+            "fujifilm_velvia_100",
+            "kodak_vision3_500t",
+        ] {
+            let o = Output::Rec2020;
+            let b = baked(id, o);
+            let dens = densities(&b, &px);
+            let input = planar(&dens, w, h);
+            let got = run_stage(dev, &colour_data(&b), Stage::ColourOut, &input, w, h);
+            let cine = ym_color::display::cine::CineRendering::new(output_target(o));
+            let space = output_space(o);
+            let mut rows = Vec::new();
+            for i in 0..px.len() {
+                let q = [0, 1, 2].map(|c| f64::from(input[c * w * h + i]));
+                let want = b.colour_out(q);
+                let g = [0, 1, 2].map(|c| f64::from(got[c * w * h + i]));
+                rows.push((code_diff(&cine, space, g, want) * 64.0, i, g, want, q));
+            }
+            rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+            println!("{id}: worst codes of 65535:");
+            for (e, i, g, want, q) in rows.iter().take(6) {
+                let dp = if b.is_slide() {
+                    *q
+                } else {
+                    b.paper_density(b.print_log_exposure(*q))
+                };
+                let display = b.scan_display(dp);
+                println!(
+                    "  {e:.1} px {i} display {display:?} dev {g:.7?} cpu {want:.7?} dens {q:.4?}",
+                );
+            }
+        }
+    }
+}
+
+/// F-08c diagnostic: a neutral wedge down to black through the whole chain, Rec.2020 against the others.
+#[test]
+#[ignore = "diagnostic: F-08c, neutral wedge"]
+fn diagnose_wedge() {
+    let px: Vec<[f64; 3]> = (0..60)
+        .map(|k| {
+            let lum = 0.18 * 2.0_f64.powf(-0.5 * f64::from(k));
+            ym_color::logc::logc4_encode_rgb([lum; 3])
+        })
+        .collect();
+    let (w, h) = side(64, px.len());
+    for dev in f32_devices() {
+        for o in [Output::Rec2020, Output::DisplayP3] {
+            let b = baked("kodak_portra_400", o);
+            let input = planar(&px, w, h);
+            let got = run_stage(dev, &colour_data(&b), Stage::Chain, &input, w, h);
+            let cine = ym_color::display::cine::CineRendering::new(output_target(o));
+            let space = output_space(o);
+            println!("{o:?}");
+            for i in 0..px.len() {
+                let q = [0, 1, 2].map(|c| f64::from(input[c * w * h + i]));
+                let want = b.run(q);
+                let g = [0, 1, 2].map(|c| f64::from(got[c * w * h + i]));
+                let dd = b.scan_display(b.paper_density(b.print_log_exposure(b.film_density(b.exposure_of(q)))));
+                println!(
+                    "  {i:2} codes {:7.2} display {:?} dev {:.7?} cpu {:.7?}",
+                    code_diff(&cine, space, g, want) * 64.0, dd, g, want
+                );
+            }
+        }
+    }
+}
+
+/// F-08c diagnostic: noisy near-black scene colours (some channels negative) through the whole chain.
+#[test]
+#[ignore = "diagnostic: F-08c, noisy blacks"]
+fn diagnose_blacks() {
+    let mut rng = Rng(0xB1AC);
+    let px: Vec<[f64; 3]> = (0..4096)
+        .map(|_| {
+            let amp = 10f64.powf(-5.0 + 2.5 * rng.unit());
+            ym_color::logc::logc4_encode_rgb([0, 1, 2].map(|_| amp * (2.0 * rng.unit() - 0.5)))
+        })
+        .collect();
+    let (w, h) = side(64, px.len());
+    for dev in f32_devices() {
+        for o in [Output::Rec2020, Output::DisplayP3] {
+            let b = baked("kodak_portra_400", o);
+            let input = planar(&px, w, h);
+            let got = run_stage(dev, &colour_data(&b), Stage::Chain, &input, w, h);
+            let cine = ym_color::display::cine::CineRendering::new(output_target(o));
+            let space = output_space(o);
+            let mut rows = Vec::new();
+            for i in 0..px.len() {
+                let q = [0, 1, 2].map(|c| f64::from(input[c * w * h + i]));
+                let want = b.run(q);
+                let g = [0, 1, 2].map(|c| f64::from(got[c * w * h + i]));
+                rows.push((code_diff(&cine, space, g, want) * 64.0, i, g, want, q));
+            }
+            rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+            println!("{o:?}: worst codes of 65535 (n {}):", px.len());
+            for (e, i, g, want, q) in rows.iter().take(6) {
+                let dd = b.scan_display(b.paper_density(b.print_log_exposure(b.film_density(b.exposure_of(*q)))));
+                println!("  {e:.1} px {i} in {q:.5?} display {dd:?} dev {g:.7?} cpu {want:.7?}");
+            }
+        }
+    }
+}

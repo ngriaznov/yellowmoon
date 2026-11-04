@@ -37,6 +37,25 @@ test.describe("the page audit: no element of ours where glasscn has one", () => 
   }
 });
 
+test.describe("YM_GLASS=off (?glass=off)", () => {
+  /** How many elements the page blurs the picture behind. */
+  const blurred = (page: Page) =>
+    page.evaluate(() => [...document.querySelectorAll("*")].filter((el) => getComputedStyle(el).backdropFilter.replace("none", "").trim() !== "").length);
+
+  test("turns the backdrop blur off everywhere and leaves the page as it is", async ({ page }) => {
+    await photos(page);
+    expect(await blurred(page), "the glass blurs what is behind it").toBeGreaterThan(0);
+    await expect(page.locator("html")).not.toHaveAttribute("data-glass", "off");
+    await openApp(page, { ...MOCKUP, glass: "off" });
+    await openPhotos(page);
+    await expect(page.locator("html")).toHaveAttribute("data-glass", "off");
+    expect(await blurred(page)).toBe(0);
+    // Only the blur: the controls are there, the tabs work.
+    await page.getByRole("tab", { name: "Colour" }).click();
+    await expect(page.getByRole("tab", { name: "Colour" })).toHaveAttribute("aria-selected", "true");
+  });
+});
+
 test.describe("tabs", () => {
   test("← and → move and select, ⌘4 selects Colour, and the panel is labelled by its tab", async ({ page }) => {
     await photos(page);
