@@ -95,6 +95,24 @@ fn graph(film: bool, main_ev: f64, film_ev: f64, after_ev: f64) -> DevelopSettin
     settings_of(json!({ "nodes": { "items": items, "links": links } }))
 }
 
+/// Input, Main, a corrector with a Brush mask (Refine edges on), a Film node, a corrector, Output: a raster mask row
+/// upstream of the Film node (F-08g).
+fn graph_raster(main_ev: f64, film_ev: f64, after_ev: f64) -> DevelopSettings {
+    let link = |a: Value, b: Value| json!({ "from": { "node": a, "port": "picture" }, "to": { "node": b, "port": "picture" } });
+    settings_of(json!({ "nodes": { "items": [
+        { "id": 1, "trim": { "exposure_ev": main_ev } },
+        { "id": 4, "kind": "corrector", "pos": [1, 0], "trim": { "exposure_ev": 0.8 },
+          "masks": { "invert": false, "items": [ { "kind": "brush", "mode": "add",
+            "strokes": [{ "size": 0.2, "hardness": 0.5, "erase": false, "points": [[0.35, 0.45], [0.6, 0.55]] }],
+            "feather": 0.3, "refine": 0.5 } ] } },
+        { "id": 2, "kind": "film", "pos": [2, 0], "film": { "exposure_ev": film_ev } },
+        { "id": 3, "kind": "corrector", "pos": [3, 0], "trim": { "exposure_ev": after_ev } },
+    ], "links": [
+        link(json!("input"), json!(1)), link(json!(1), json!(4)), link(json!(4), json!(2)),
+        link(json!(2), json!(3)), link(json!(3), json!("output")),
+    ] } }))
+}
+
 fn view(w: f64, h: f64, dpr: f64, percent_100: bool) -> ViewportState {
     let mut st = ViewportState::new(ViewportRect::cell(w, h, dpr));
     if percent_100 {
@@ -263,6 +281,47 @@ fn a_viewer_frame_with_a_film_node_is_cheap_by_the_counters() {
         gpu.counters().since(before).precise_dispatches > 0,
         "the export runs the compensated passes"
     );
+}
+
+/// A raster mask row before the Film node (F-08g): the frame is the device's, and once one has been made a change of the
+/// Film node, of Main or of a node after the Film node compiles nothing, bakes nothing and uploads no table: the raster
+/// planes are copied from the ones kept on the device, and the planes of the Film node's prefix chain too.
+#[test]
+fn a_viewer_frame_with_a_raster_mask_before_the_film_node_is_cheap_by_the_counters() {
+    let Some(gpu) = gpu() else { return };
+    let d = small();
+    let r = renderer(Arc::clone(&gpu));
+    let base = d.source();
+    for percent_100 in [false, true] {
+        let st = view(300.0, 200.0, 1.0, percent_100);
+        let first = timed(&r, &gpu, &base.with_settings(graph_raster(0.0, 0.0, 0.0)), &st);
+        row("first raster frame", &first);
+        let mut plain_ms = f64::MAX;
+        for _ in 0..3 {
+            let s = timed(&r, &gpu, &base.with_settings(graph(true, 0.0, 0.0, 0.0)), &st);
+            plain_ms = plain_ms.min(s.ms);
+        }
+        say(&format!("100 % {percent_100}: a Film frame without the raster mask {plain_ms:.1} ms"));
+        for (what, settings) in [
+            ("the same frame", graph_raster(0.0, 0.0, 0.0)),
+            ("a Film exposure", graph_raster(0.0, 0.5, 0.0)),
+            ("a Main exposure", graph_raster(0.4, 0.5, 0.0)),
+            ("a node after the Film node", graph_raster(0.4, 0.5, 0.3)),
+        ] {
+            let s = timed(&r, &gpu, &base.with_settings(settings), &st);
+            row(what, &s);
+            assert_eq!(s.pipelines, 0, "{what}: a pipeline was compiled");
+            assert_eq!(s.baked, 0, "{what}: a table was baked");
+            assert!(
+                s.uploaded_bytes < 1 << 20,
+                "{what}: {} bytes were uploaded",
+                s.uploaded_bytes
+            );
+            assert_eq!(s.submissions, 1, "{what}: the frame is one submission");
+            assert_eq!(s.readbacks, 1, "{what}: the frame is one readback");
+            assert_eq!(s.precise, 0, "{what}: a compensated pass ran in a view");
+        }
+    }
 }
 
 #[test]

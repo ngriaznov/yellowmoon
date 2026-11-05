@@ -496,9 +496,15 @@ fn prepare_tile(
         h,
     };
     let planes = if chain.uses_rasters() {
+        // The guide of Refine edges is a stage of the chain, which wants its Film pictures too (the window is the sampled
+        // picture, whose first pixel is `grown`'s).
+        let guide_chain = match &pictures {
+            Some(p) => prepared.with_film(Arc::clone(p), (grown.x, grown.y)),
+            None => prepared.clone(),
+        };
         Some(encode_raster_planes(
             passes,
-            &prepared,
+            &guide_chain,
             chain,
             sampled,
             &RasterJob {
