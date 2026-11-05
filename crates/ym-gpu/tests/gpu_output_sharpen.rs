@@ -2325,8 +2325,12 @@ fn a_dumped_film_picture_sharpens_alike() {
             let at = q[1] * w + q[0];
             println!(
                 "at ({v}): device codes {:?} cpu codes {:?}",
-                (0..3).map(|c| code(g.data[c * w * h + at])).collect::<Vec<_>>(),
-                (0..3).map(|c| code(cpu.data[c * w * h + at])).collect::<Vec<_>>()
+                (0..3)
+                    .map(|c| code(g.data[c * w * h + at]))
+                    .collect::<Vec<_>>(),
+                (0..3)
+                    .map(|c| code(cpu.data[c * w * h + at]))
+                    .collect::<Vec<_>>()
             );
         }
         let (c, p) = (at / (w * h), at % (w * h));
@@ -2347,7 +2351,10 @@ fn a_dumped_film_picture_sharpens_alike() {
 #[test]
 #[ignore = "diagnostic: F-08c, needs YM_DUMP_FILE, YM_DUMP_FILE2"]
 fn which_neighbours_carry_the_difference() {
-    let (Ok(p1), Ok(p2)) = (std::env::var("YM_DUMP_FILE"), std::env::var("YM_DUMP_FILE2")) else {
+    let (Ok(p1), Ok(p2)) = (
+        std::env::var("YM_DUMP_FILE"),
+        std::env::var("YM_DUMP_FILE2"),
+    ) else {
         return;
     };
     let read = |p: String| -> Vec<f32> {
@@ -2403,5 +2410,8 @@ fn which_neighbours_carry_the_difference() {
     let cs: Vec<f64> = (0..3)
         .map(|c| code(got.data[c * w * h + at]) - code(want.data[c * w * h + at]))
         .collect();
-    println!("whole picture: {cs:?}; input at the pixel {:?}", (0..3).map(|c| a[3 * at + c]).collect::<Vec<_>>());
+    println!(
+        "whole picture: {cs:?}; input at the pixel {:?}",
+        (0..3).map(|c| a[3 * at + c]).collect::<Vec<_>>()
+    );
 }

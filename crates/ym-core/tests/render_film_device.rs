@@ -65,7 +65,22 @@ fn photo() -> Developed {
 
 fn renderer(gpu: Option<Arc<Gpu>>, tile: usize) -> Renderer {
     let stages = if gpu.is_some() {
-        GpuStages::ALL
+        // F-08c diagnostic: YM_OFF is a list of stages to take off the device (raw, sampler, color, tail, front, lens).
+        let mut st = GpuStages::ALL;
+        if let Ok(off) = std::env::var("YM_OFF") {
+            for n in off.split(',') {
+                st = st.difference(match n {
+                    "raw" => GpuStages::RAW_CHAIN,
+                    "sampler" => GpuStages::SAMPLER,
+                    "color" => GpuStages::COLOR,
+                    "tail" => GpuStages::EXPORT_TAIL,
+                    "front" => GpuStages::RAW_FRONT,
+                    "lens" => GpuStages::LENS,
+                    _ => GpuStages::NONE,
+                });
+            }
+        }
+        st
     } else {
         GpuStages::NONE
     };
@@ -366,10 +381,11 @@ fn wide_gamut_exports_agree_with_the_cpu() {
 }
 
 /// The owner's gate (2026-11-04, "Hold it to the limit, fix it"): a Rec.2020 export of a graph with a Film node meets one
-/// 10-bit code too. **It does not yet**: 156 codes of 65,535 at a near-black sample (see `docs/24` section 3.9c), so the
-/// test is ignored until the cause is fixed; run it with `--ignored`.
+/// 10-bit code too. **It does not yet**: 156 codes of 65,535 at a near-black sample after output sharpening (F-08c,
+/// `docs/24` section 3.9c: the Film return is not the cause; the sharpener turns the device's f32 noise of 9e-7 in the
+/// picture into hundreds of codes at a sample it takes to black), so the test is ignored; run it with `--ignored`.
 #[test]
-#[ignore = "fails: the Film node's near-black colours in Rec.2020 are 156 codes off (docs/24 section 3.9c)"]
+#[ignore = "fails at 156 codes: output sharpening of the device's f32 picture at a near-black sample (docs/24 section 3.9c, F-08c)"]
 fn a_rec2020_export_with_a_film_node_meets_one_10_bit_code() {
     let Some(gpu) = gpu(true) else { return };
     let d = photo();
@@ -754,14 +770,25 @@ fn rec2020_worst_pixels() {
         Ok("srgb") => ColorSpace::Srgb,
         _ => ColorSpace::Rec2020,
     };
-    let (rep, dev) = export_in(&d, &settings, renderer(Some(Arc::clone(&gpu)), 256), home.path(), sp);
+    let (rep, dev) = export_in(
+        &d,
+        &settings,
+        renderer(Some(Arc::clone(&gpu)), 256),
+        home.path(),
+        sp,
+    );
     let (ew, eh, _) = decode_png16(&rep.path);
     say(&format!("export is {ew} x {eh}"));
     let (_, cpu) = export_in(&d, &settings, renderer(None, 256), home.path(), sp);
     let (_, pl) = export_in(&d, &plain, renderer(None, 256), home.path(), sp);
     let mut order: Vec<usize> = (0..dev.len() / 3).collect();
     order.sort_by_key(|&p| {
-        std::cmp::Reverse((0..3).map(|c| dev[3 * p + c].abs_diff(cpu[3 * p + c])).max().unwrap_or(0))
+        std::cmp::Reverse(
+            (0..3)
+                .map(|c| dev[3 * p + c].abs_diff(cpu[3 * p + c]))
+                .max()
+                .unwrap_or(0),
+        )
     });
     for &p in order.iter().take(12) {
         let t = |v: &[u32]| [v[3 * p], v[3 * p + 1], v[3 * p + 2]];
@@ -784,7 +811,10 @@ fn rec2020_input_at_the_worst_pixel() {
     let img = dng_image(&renderer(None, 256), &src);
     for x in 488..494 {
         let q = 103 * img.width + x;
-        say(&format!("plain DNG ({x}, 103): {:?}", &img.rgb[3 * q..3 * q + 3]));
+        say(&format!(
+            "plain DNG ({x}, 103): {:?}",
+            &img.rgb[3 * q..3 * q + 3]
+        ));
     }
 }
 
@@ -795,22 +825,35 @@ fn dng_dark_pixels() {
     let d = photo();
     let film = json!({ "grain": { "amount": 0 }, "halation": { "amount": 0 } });
     let src = d.source().with_settings(one_film(film));
-    let plain = dng_image(&renderer(None, 256), &d.source().with_settings(d.source().settings.clone()));
+    let plain = dng_image(
+        &renderer(None, 256),
+        &d.source().with_settings(d.source().settings.clone()),
+    );
     let dev = dng_image(&renderer(Some(gpu), 256), &src);
     let cpu = dng_image(&renderer(None, 256), &src);
     say(&format!("dng {} x {}", dev.width, dev.height));
     let n = dev.rgb.len() / 3;
     let mut rows: Vec<(f32, usize)> = (0..n)
         .filter(|&p| (0..3).any(|c| cpu.rgb[3 * p + c].abs() < 0.02))
-        .map(|p| ((0..3).map(|c| (dev.rgb[3 * p + c] - cpu.rgb[3 * p + c]).abs()).fold(0.0, f32::max), p))
+        .map(|p| {
+            (
+                (0..3)
+                    .map(|c| (dev.rgb[3 * p + c] - cpu.rgb[3 * p + c]).abs())
+                    .fold(0.0, f32::max),
+                p,
+            )
+        })
         .collect();
     say(&format!("{} dark pixels", rows.len()));
     rows.sort_by(|a, b| b.0.total_cmp(&a.0));
     for &(e, p) in rows.iter().take(8) {
         say(&format!(
             "({}, {}) err {e:.2e} dev {:?} cpu {:?} plain {:?}",
-            p % dev.width, p / dev.width,
-            &dev.rgb[3 * p..3 * p + 3], &cpu.rgb[3 * p..3 * p + 3], &plain.rgb[3 * p..3 * p + 3]
+            p % dev.width,
+            p / dev.width,
+            &dev.rgb[3 * p..3 * p + 3],
+            &cpu.rgb[3 * p..3 * p + 3],
+            &plain.rgb[3 * p..3 * p + 3]
         ));
     }
 }
@@ -824,7 +867,8 @@ fn display_linear_vs_dng() {
     let src = d.source().with_settings(one_film(film));
     let tgt = FullTarget::DisplayLinear(OutputTarget::Rec2020);
     let run = |r: &Renderer, t: FullTarget| {
-        r.render_full(&src, &FullRequest { target: t }, &CancelToken::new()).expect("render")
+        r.render_full(&src, &FullRequest { target: t }, &CancelToken::new())
+            .expect("render")
     };
     let dev = run(&renderer(Some(Arc::clone(&gpu)), 256), tgt);
     let cpu = run(&renderer(None, 256), tgt);
@@ -833,21 +877,31 @@ fn display_linear_vs_dng() {
     let (w, h) = (dev.width, dev.height);
     let n = w * h;
     let mut order: Vec<usize> = (0..n).collect();
-    let err = |p: usize| (0..3).map(|c| (dev.rgb[3 * p + c] - cpu.rgb[3 * p + c]).abs()).fold(0.0, f32::max);
+    let err = |p: usize| {
+        (0..3)
+            .map(|c| (dev.rgb[3 * p + c] - cpu.rgb[3 * p + c]).abs())
+            .fold(0.0, f32::max)
+    };
     order.sort_by(|&a, &b| err(b).total_cmp(&err(a)));
     for &p in order.iter().take(5) {
         // 180 degrees: the DNG is unturned.
         let q = n - 1 - p;
         let cine = ym_color::display::cine::CineRendering::new(OutputTarget::Rec2020);
         let f = |v: &[f32]| {
-            let a = ym_color::gamut::LinearAwg4([f64::from(v[0]), f64::from(v[1]), f64::from(v[2])]);
+            let a =
+                ym_color::gamut::LinearAwg4([f64::from(v[0]), f64::from(v[1]), f64::from(v[2])]);
             cine.forward(a)
         };
         say(&format!(
             "({}, {}) display dev {:?} cpu {:?}\n   dng(180) dev {:?} cpu {:?}\n   f64 forward of dng dev {:?} of dng cpu {:?}",
-            p % w, p / w, &dev.rgb[3*p..3*p+3], &cpu.rgb[3*p..3*p+3],
-            &dng_dev.rgb[3*q..3*q+3], &dng_cpu.rgb[3*q..3*q+3],
-            f(&dng_dev.rgb[3*q..3*q+3]), f(&dng_cpu.rgb[3*q..3*q+3])
+            p % w,
+            p / w,
+            &dev.rgb[3 * p..3 * p + 3],
+            &cpu.rgb[3 * p..3 * p + 3],
+            &dng_dev.rgb[3 * q..3 * q + 3],
+            &dng_cpu.rgb[3 * q..3 * q + 3],
+            f(&dng_dev.rgb[3 * q..3 * q + 3]),
+            f(&dng_cpu.rgb[3 * q..3 * q + 3])
         ));
     }
 }
@@ -874,11 +928,18 @@ fn png_against_display_linear() {
     let src = d.source().with_settings(settings.clone());
     let tgt = FullTarget::DisplayLinear(OutputTarget::Rec2020);
     let run = |r: &Renderer| {
-        r.render_full(&src, &FullRequest { target: tgt }, &CancelToken::new()).expect("render")
+        r.render_full(&src, &FullRequest { target: tgt }, &CancelToken::new())
+            .expect("render")
     };
     let home = tempfile::tempdir().expect("dir");
     let sp = ColorSpace::Rec2020;
-    let (_, png_dev) = export_in(&d, &settings, renderer(Some(Arc::clone(&gpu)), 256), home.path(), sp);
+    let (_, png_dev) = export_in(
+        &d,
+        &settings,
+        renderer(Some(Arc::clone(&gpu)), 256),
+        home.path(),
+        sp,
+    );
     let (_, png_cpu) = export_in(&d, &settings, renderer(None, 256), home.path(), sp);
     let dl_dev = run(&renderer(Some(gpu), 256));
     let dl_cpu = run(&renderer(None, 256));
@@ -897,12 +958,20 @@ fn png_against_display_linear() {
         std::fs::write(format!("{dir}/dl_cpu.f32"), bytes).expect("dump");
         let bytes: Vec<u8> = dl_dev.rgb.iter().flat_map(|v| v.to_le_bytes()).collect();
         std::fs::write(format!("{dir}/dl_dev.f32"), bytes).expect("dump");
-        let bytes: Vec<u8> = png_dev.iter().chain(&png_cpu).flat_map(|v| v.to_le_bytes()).collect();
+        let bytes: Vec<u8> = png_dev
+            .iter()
+            .chain(&png_cpu)
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
         std::fs::write(format!("{dir}/png_both.u32"), bytes).expect("dump");
     }
     let (w, h) = (dl_cpu.width, dl_cpu.height);
     for (name, f) in [
-        ("hflip", (|x: usize, y: usize, w: usize, h: usize| (w - 1 - x, y)) as fn(usize, usize, usize, usize) -> (usize, usize)),
+        (
+            "hflip",
+            (|x: usize, y: usize, w: usize, _h: usize| (w - 1 - x, y))
+                as fn(usize, usize, usize, usize) -> (usize, usize),
+        ),
         ("vflip", |x, y, _w, h| (x, h - 1 - y)),
         ("180", |x, y, w, h| (w - 1 - x, h - 1 - y)),
     ] {
@@ -915,31 +984,107 @@ fn png_against_display_linear() {
                 }
             }
         }
-        say(&format!("{name}: png cpu vs flipped dl cpu {:?}", code_diff(&png_cpu, &t)));
+        say(&format!(
+            "{name}: png cpu vs flipped dl cpu {:?}",
+            code_diff(&png_cpu, &t)
+        ));
     }
-    say(&format!("png dev vs png cpu {:?}", code_diff(&png_dev, &png_cpu)));
-    say(&format!("dl dev vs dl cpu (encoded) {:?}", code_diff(&e_dev, &e_cpu)));
+    say(&format!(
+        "png dev vs png cpu {:?}",
+        code_diff(&png_dev, &png_cpu)
+    ));
+    say(&format!(
+        "dl dev vs dl cpu (encoded) {:?}",
+        code_diff(&e_dev, &e_cpu)
+    ));
     // The same CPU sharpening of both display-linear pictures: how far does it turn their difference?
     let sh = ym_gpu::cpu::output_sharpen::OutputSharpen::screen().with_amount_pct(100.0);
-    let s_dev = sh.apply_interleaved(dl_dev.width, dl_dev.height, &dl_dev.rgb, 1.0).expect("sharpen");
-    let s_cpu = sh.apply_interleaved(dl_cpu.width, dl_cpu.height, &dl_cpu.rgb, 1.0).expect("sharpen");
+    let s_dev = sh
+        .apply_interleaved(dl_dev.width, dl_dev.height, &dl_dev.rgb, 1.0)
+        .expect("sharpen");
+    let s_cpu = sh
+        .apply_interleaved(dl_cpu.width, dl_cpu.height, &dl_cpu.rgb, 1.0)
+        .expect("sharpen");
     let (a, b) = (enc(&s_dev), enc(&s_cpu));
-    say(&format!("CPU-sharpened dl dev vs dl cpu (encoded) {:?}", code_diff(&a, &b)));
-    say(&format!("CPU-sharpened dl cpu vs png cpu {:?}", code_diff(&b, &png_cpu)));
-    say(&format!("CPU-sharpened dl dev vs png dev {:?}", code_diff(&a, &png_dev)));
+    say(&format!(
+        "CPU-sharpened dl dev vs dl cpu (encoded) {:?}",
+        code_diff(&a, &b)
+    ));
+    say(&format!(
+        "CPU-sharpened dl cpu vs png cpu {:?}",
+        code_diff(&b, &png_cpu)
+    ));
+    say(&format!(
+        "CPU-sharpened dl dev vs png dev {:?}",
+        code_diff(&a, &png_dev)
+    ));
     {
         let mut order: Vec<usize> = (0..a.len() / 3).collect();
-        let d = |p: usize| (0..3).map(|c| a[3 * p + c].abs_diff(png_dev[3 * p + c])).max().unwrap_or(0);
+        let d = |p: usize| {
+            (0..3)
+                .map(|c| a[3 * p + c].abs_diff(png_dev[3 * p + c]))
+                .max()
+                .unwrap_or(0)
+        };
         order.sort_by_key(|&p| std::cmp::Reverse(d(p)));
         for &p in order.iter().take(6) {
             let t = |v: &[u32]| [v[3 * p], v[3 * p + 1], v[3 * p + 2]];
             say(&format!(
                 "pixel ({}, {}): png dev {:?} CPU-sharpened dev picture {:?} png cpu {:?} dev picture {:?} cpu picture {:?}",
-                p % w, p / w, t(&png_dev), t(&a), t(&png_cpu),
-                &dl_dev.rgb[3 * p..3 * p + 3], &dl_cpu.rgb[3 * p..3 * p + 3]
+                p % w,
+                p / w,
+                t(&png_dev),
+                t(&a),
+                t(&png_cpu),
+                &dl_dev.rgb[3 * p..3 * p + 3],
+                &dl_cpu.rgb[3 * p..3 * p + 3]
             ));
         }
     }
-    say(&format!("png cpu vs dl cpu {:?}", code_diff(&png_cpu, &e_cpu)));
-    say(&format!("png dev vs dl dev {:?}", code_diff(&png_dev, &e_dev)));
+    say(&format!(
+        "png cpu vs dl cpu {:?}",
+        code_diff(&png_cpu, &e_cpu)
+    ));
+    say(&format!(
+        "png dev vs dl dev {:?}",
+        code_diff(&png_dev, &e_dev)
+    ));
+}
+
+/// F-08c diagnostic: writes the display-linear pictures of the CPU and of the device's `render_full` (`YM_DUMP/cpu.f32`,
+/// `dev.f32`), with a Film node or without (`YM_PLAIN`); `YM_OFF` takes stages off the device. (The tail's own picture
+/// before sharpening needs a temporary dump in `tail.rs` `band_job`: `win.encode_read`.)
+#[test]
+#[ignore = "a diagnostic"]
+fn tail_picture_against_cpu() {
+    let Some(gpu) = gpu(true) else { return };
+    let d = photo();
+    let film = json!({ "grain": { "amount": 0 }, "halation": { "amount": 0 } });
+    let settings = if std::env::var("YM_PLAIN").is_ok() {
+        d.source().settings.clone()
+    } else {
+        one_film(film)
+    };
+    let src = d.source().with_settings(settings.clone());
+    let tgt = FullTarget::DisplayLinear(OutputTarget::Rec2020);
+    let run = |r: &Renderer| {
+        r.render_full(&src, &FullRequest { target: tgt }, &CancelToken::new())
+            .expect("render")
+    };
+    let home = tempfile::tempdir().expect("dir");
+    let _ = export_in(
+        &d,
+        &settings,
+        renderer(Some(Arc::clone(&gpu)), 256),
+        home.path(),
+        ColorSpace::Rec2020,
+    );
+    let dl_dev = run(&renderer(Some(gpu), 256));
+    let dl_cpu = run(&renderer(None, 256));
+    if let Ok(dir) = std::env::var("YM_DUMP") {
+        for (name, img) in [("cpu", &dl_cpu), ("dev", &dl_dev)] {
+            let bytes: Vec<u8> = img.rgb.iter().flat_map(|v| v.to_le_bytes()).collect();
+            std::fs::write(format!("{dir}/{name}.f32"), bytes).expect("dump");
+        }
+    }
 }

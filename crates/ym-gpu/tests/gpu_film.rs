@@ -569,10 +569,15 @@ fn diagnose_wedge() {
                 let q = [0, 1, 2].map(|c| f64::from(input[c * w * h + i]));
                 let want = b.run(q);
                 let g = [0, 1, 2].map(|c| f64::from(got[c * w * h + i]));
-                let dd = b.scan_display(b.paper_density(b.print_log_exposure(b.film_density(b.exposure_of(q)))));
+                let dd = b.scan_display(
+                    b.paper_density(b.print_log_exposure(b.film_density(b.exposure_of(q)))),
+                );
                 println!(
                     "  {i:2} codes {:7.2} display {:?} dev {:.7?} cpu {:.7?}",
-                    code_diff(&cine, space, g, want) * 64.0, dd, g, want
+                    code_diff(&cine, space, g, want) * 64.0,
+                    dd,
+                    g,
+                    want
                 );
             }
         }
@@ -608,85 +613,10 @@ fn diagnose_blacks() {
             rows.sort_by(|a, b| b.0.total_cmp(&a.0));
             println!("{o:?}: worst codes of 65535 (n {}):", px.len());
             for (e, i, g, want, q) in rows.iter().take(6) {
-                let dd = b.scan_display(b.paper_density(b.print_log_exposure(b.film_density(b.exposure_of(*q)))));
+                let dd = b.scan_display(
+                    b.paper_density(b.print_log_exposure(b.film_density(b.exposure_of(*q)))),
+                );
                 println!("  {e:.1} px {i} in {q:.5?} display {dd:?} dev {g:.7?} cpu {want:.7?}");
-            }
-        }
-    }
-}
-
-/// F-08c diagnostic: the error of the device's intermediate (selected by `RT_DBG` in film_return.wgsl; the env var
-/// `YM_DBG` says which one this build holds: 1 display, 2 display side, 3 the refined coordinates, 0 the LogC4) over the
-/// reachable colours of the photos and the synthetic set, in Rec.2020 and Display P3.
-#[test]
-#[ignore = "diagnostic: F-08c, per-stage error"]
-fn diagnose_stage_error() {
-    let mode: u32 = std::env::var("YM_DBG").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-    let mut px = synthetic_set();
-    px.extend(photo_set(24));
-    let (w0, _) = (64, 0);
-    for dev in f32_devices() {
-        for (id, o) in [("kodak_portra_400", Output::Rec2020), ("kodak_portra_400", Output::DisplayP3), ("fujifilm_velvia_100", Output::Rec2020)] {
-            let b = baked(id, o);
-            let sel: Vec<[f64; 3]> = px
-                .iter()
-                .copied()
-                .filter(|&p| reachable(&b, b.film_density(b.exposure_of(p))))
-                .collect();
-            let (w, h) = side(w0, sel.len());
-            let dens = densities(&b, &sel);
-            let input = planar(&dens, w, h);
-            let got = run_stage(dev, &colour_data(&b), Stage::ColourOut, &input, w, h);
-            let cine = ym_color::display::cine::CineRendering::new(output_target(o));
-            let mut worst = [0.0f64; 3];
-            let mut at = [0usize; 3];
-            let mut sum = [0.0f64; 3];
-            for i in 0..sel.len() {
-                let q = [0, 1, 2].map(|c| f64::from(input[c * w * h + i]));
-                let dp = if b.is_slide() { q } else { b.paper_density(b.print_log_exposure(q)) };
-                let display = b.scan_display(dp);
-                let want: [f64; 3] = match mode {
-                    1 => display,
-                    2 => {
-                        let c = cine.display_coordinates(display);
-                        [c.y2, c.ca2, c.cb2]
-                    }
-                    3 => b.core_table().invert(cine.display_coordinates(display)).coordinates,
-                    _ => b.colour_out(q),
-                };
-                for c in 0..3 {
-                    let g = f64::from(got[c * w * h + i]);
-                    let e = (g - want[c]).abs();
-                    sum[c] += e;
-                    if e > worst[c] {
-                        worst[c] = e;
-                        at[c] = i;
-                    }
-                }
-            }
-            let n = sel.len() as f64;
-            println!("mode {mode} {id} {o:?} n {}: max {worst:?} mean {:?} at {at:?}", sel.len(), sum.map(|s| s / n));
-            for c in 0..3 {
-                let mut e: Vec<f64> = (0..sel.len())
-                    .map(|i| {
-                        let q = [0, 1, 2].map(|k| f64::from(input[k * w * h + i]));
-                        let dp = if b.is_slide() { q } else { b.paper_density(b.print_log_exposure(q)) };
-                        let display = b.scan_display(dp);
-                        let want: [f64; 3] = match mode {
-                            1 => display,
-                            2 => {
-                                let cc = cine.display_coordinates(display);
-                                [cc.y2, cc.ca2, cc.cb2]
-                            }
-                            3 => b.core_table().invert(cine.display_coordinates(display)).coordinates,
-                            _ => b.colour_out(q),
-                        };
-                        (f64::from(got[c * w * h + i]) - want[c]).abs()
-                    })
-                    .collect();
-                e.sort_by(f64::total_cmp);
-                let pc = |p: f64| e[((e.len() - 1) as f64 * p) as usize];
-                println!("   ch {c}: p50 {:.2e} p90 {:.2e} p99 {:.2e} p99.9 {:.2e}", pc(0.5), pc(0.9), pc(0.99), pc(0.999));
             }
         }
     }
@@ -700,7 +630,10 @@ fn diagnose_ulp_error() {
     let px = photo_set(7);
     let (w, h) = side(64, px.len());
     for dev in f32_devices() {
-        for (id, o) in [("kodak_portra_400", Output::Rec2020), ("kodak_portra_400", Output::DisplayP3)] {
+        for (id, o) in [
+            ("kodak_portra_400", Output::Rec2020),
+            ("kodak_portra_400", Output::DisplayP3),
+        ] {
             let b = baked(id, o);
             let dens = densities(&b, &px);
             let input = planar(&dens, w, h);
@@ -712,7 +645,11 @@ fn diagnose_ulp_error() {
                 let mut rnd: Vec<f64> = Vec::new();
                 for i in 0..px.len() {
                     let q = [0, 1, 2].map(|c| f64::from(inp[c * w * h + i]));
-                    let want = if name == "chain" { b.run(q) } else { b.colour_out(q) };
+                    let want = if name == "chain" {
+                        b.run(q)
+                    } else {
+                        b.colour_out(q)
+                    };
                     for c in 0..3 {
                         let ulp = f64::from(f32::EPSILON) * 0.5;
                         errs.push((f64::from(g[c * w * h + i]) - want[c]).abs() / ulp);
@@ -724,7 +661,12 @@ fn diagnose_ulp_error() {
                         .map(|i| {
                             let q = [0, 1, 2].map(|c| f64::from(inp[c * w * h + i]));
                             let want = b.colour_out(q);
-                            ((0..3).map(|c| (f64::from(g[c * w * h + i]) - want[c]).abs()).fold(0.0, f64::max), i)
+                            (
+                                (0..3)
+                                    .map(|c| (f64::from(g[c * w * h + i]) - want[c]).abs())
+                                    .fold(0.0, f64::max),
+                                i,
+                            )
                         })
                         .collect();
                     rows.sort_by(|a, b| b.0.total_cmp(&a.0));

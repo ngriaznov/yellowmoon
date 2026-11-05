@@ -8,8 +8,6 @@
 // CPU's order and kept by the first that lowers the residual (`found`); no loop count depends on the data.
 // Every constant is a `CINE_*` of the generated block or an `FX_*` of kernels/film.rs, written from the CPU side.
 
-const RT_DBG: u32 = 0u;
-
 fn fr_exp(x: f32) -> f32 {
     return exp(clamp(x, -80.0, 80.0));
 }
@@ -54,38 +52,27 @@ fn rt_hold(c: f32) -> f32 {
     return clamp(c, FX_D_MIN, 1.0);
 }
 
-// Undoes the soft ceiling of step 7 on one channel. `o` is the channel held to [D_MIN, 1] and `h` its headroom 1 - o,
-// which the caller takes without the rounding of the 1 (the display is within a few units of 1e-7 of its white at the
-// shoulder, where this function has a slope of 1 / sqrt(kh (1 - o)) and an error of 3e-8 in o is 1e-6 in the result).
-fn rt_ceiling_inverse(o: f32, h: f32) -> f32 {
+// Undoes the soft ceiling of step 7 on one channel.
+fn rt_ceiling_inverse(o: f32) -> f32 {
     let kh = CINE_KH;
     let z0 = 1.0 - kh;
     var z = o;
-    if (h < kh) {
+    if (o > z0) {
         // 1 - (o - z0) / kh = (1 - o) / kh with z0 = 1 - kh: written so that the fold at o = 1 (the display white, held
         // there) has no cancellation; the square root of a rounding error of 1e-7 would be 3e-4.
-        z = z0 + 2.0 * kh * (1.0 - sqrt(max(h / kh, 0.0)));
+        z = z0 + 2.0 * kh * (1.0 - sqrt(max((1.0 - o) / kh, 0.0)));
     }
     return z / (1.0 + kh);
 }
 
-// The channel's headroom, held like the channel itself: [0, 1 - D_MIN].
-fn rt_hold_head(h: f32) -> f32 {
-    if (is_nan_f(h)) {
-        return 1.0 - FX_D_MIN;
-    }
-    return clamp(h, 0.0, 1.0 - FX_D_MIN);
-}
-
 // Display RGB in the output's primaries to (Y2, ca2, cb2). `to_xyz` rows are fu.m[0..3] (the output's RGB to XYZ).
-// `head` is 1 - display, from the table's own arithmetic (`rt_t3b_head`).
-fn rt_display_side(display: vec3<f32>, head: vec3<f32>) -> vec3<f32> {
+fn rt_display_side(display: vec3<f32>) -> vec3<f32> {
     let kl = CINE_KL;
     let yw = fu.m[1].xyz;
     let v = vec3<f32>(
-        rt_ceiling_inverse(rt_hold(display.x), rt_hold_head(head.x)),
-        rt_ceiling_inverse(rt_hold(display.y), rt_hold_head(head.y)),
-        rt_ceiling_inverse(rt_hold(display.z), rt_hold_head(head.z)),
+        rt_ceiling_inverse(rt_hold(display.x)),
+        rt_ceiling_inverse(rt_hold(display.y)),
+        rt_ceiling_inverse(rt_hold(display.z)),
     );
     let y0 = dot(yw, v);
     var y2 = y0;
@@ -540,9 +527,9 @@ fn rt_scene_side(q: vec3<f32>) -> vec3<f32> {
     return mv3(XYZ_TO_AWG4_0, XYZ_TO_AWG4_1, XYZ_TO_AWG4_2, vec3<f32>(x, y, z));
 }
 
-// The whole return: a display colour to LogC4 / AWG4 (bake.rs `return_to_logc4`). `head` is 1 - display.
-fn rt_return(display: vec3<f32>, head: vec3<f32>) -> vec3<f32> {
-    let c = rt_display_side(display, head);
+// The whole return: a display colour to LogC4 / AWG4 (bake.rs `return_to_logc4`).
+fn rt_return(display: vec3<f32>) -> vec3<f32> {
+    let c = rt_display_side(display);
     let st = rt_start(c);
     var q = st.q;
     if (st.rho <= st.rho_max) {
@@ -579,31 +566,14 @@ fn rt_main(gid: vec3<u32>) {
     let t3b_lo = fu.p[3].xyz;
     let t3b_hi = fu.p[4].xyz;
     var display = vec3<f32>(0.0);
-    var head = vec3<f32>(0.0);
     if ((fu.op.z & 1u) != 0u) {
         display = rt_t3b(fu.h[1].y, t3b_lo, t3b_hi, fu.p[3].w, d);
-        head = rt_t3b_head(fu.h[1].y, t3b_lo, t3b_hi, fu.p[3].w, d);
     } else {
         let lp = rt_t3a(fu.h[1].x, fu.p[1].xyz, fu.p[2].xyz, fu.p[1].w, d) + vec3<f32>(fu.p[0].z);
         let dp = vec3<f32>(pc_curve(0u, lp.x), pc_curve(1u, lp.y), pc_curve(2u, lp.z));
         display = rt_t3b(fu.h[1].y, t3b_lo, t3b_hi, fu.p[3].w, dp);
-        head = rt_t3b_head(fu.h[1].y, t3b_lo, t3b_hi, fu.p[3].w, dp);
     }
-    var out = rt_return(display, head);
-    if (RT_DBG == 1u) {
-        out = display;
-    }
-    if (RT_DBG == 2u) {
-        out = rt_display_side(display, head);
-    }
-    if (RT_DBG == 3u) {
-        let c = rt_display_side(display, head);
-        let st = rt_start(c);
-        out = st.q;
-        if (st.rho <= st.rho_max) {
-            out = rt_refine(st.q, vec3<f32>(log(max(c.x, 1.0e-37)), c.y, c.z), fu.op.w);
-        }
-    }
+    let out = rt_return(display);
     for (var c = 0u; c < 3u; c++) {
         dst[fx_b(x, y, c)] = out[c];
     }
