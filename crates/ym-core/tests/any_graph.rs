@@ -602,22 +602,34 @@ fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size()
         let rows = |kinds: &[MaskKind], rng: &mut SplitMix64| -> Vec<Value> {
             kinds.iter().map(|k| row_json(*k, rng)).collect()
         };
-        for (what, kinds) in [
-            ("brush", vec![MaskKind::Brush]),
+        for (what, kinds, film) in [
+            ("brush", vec![MaskKind::Brush], false),
             (
                 "brush and background",
                 vec![MaskKind::Brush, MaskKind::Background],
+                false,
             ),
+            ("brush and a Film node", vec![MaskKind::Brush], true),
         ] {
-            let doc = json!({ "nodes": { "items": [
-                { "id": 1 },
-                { "id": 2, "kind": "corrector", "pos": [2, 0.0], "trim": { "exposure_ev": 0.8 },
-                  "masks": { "invert": false, "items": rows(&kinds, &mut rng) } },
-            ], "links": [
-                { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
-                { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
-                { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } },
-            ] } });
+            let mut items = vec![
+                json!({ "id": 1 }),
+                json!({ "id": 2, "kind": "corrector", "pos": [2, 0.0], "trim": { "exposure_ev": 0.8 },
+                  "masks": { "invert": false, "items": rows(&kinds, &mut rng) } }),
+            ];
+            let mut links = vec![
+                json!({ "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } }),
+                json!({ "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } }),
+            ];
+            let mut last = json!(2);
+            if film {
+                items.push(
+                    json!({ "id": 3, "kind": "film", "pos": [3, 0.0], "film": { "exposure_ev": 0.3 } }),
+                );
+                links.push(json!({ "from": { "node": 2, "port": "picture" }, "to": { "node": 3, "port": "picture" } }));
+                last = json!(3);
+            }
+            links.push(json!({ "from": { "node": last, "port": "picture" }, "to": { "node": "output", "port": "picture" } }));
+            let doc = json!({ "nodes": { "items": items, "links": links } });
             let settings = serde_json::from_value::<DevelopSettings>(doc)
                 .expect("a document")
                 .validated()
@@ -632,6 +644,18 @@ fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size()
                     st.mode = ViewportMode::Percent { value: pct };
                     let got = frame(&device, &src, &st);
                     let on_cpu = got.report.device != ComputeDevice::Gpu;
+                    // The same frame in the biggest binding: the tiles are the view in one piece (the stage of a tiled Film
+                    // view runs on the CPU, so within the CPU's bound and not bit for bit).
+                    if film && !on_cpu && kib < sizes[0] {
+                        let reference = renderer_with(Some(Arc::clone(&gpu)), 256, sizes[0] * 1024);
+                        let want = frame(&reference, &src, &st);
+                        let (max, over) = frame_diff(&got, &want);
+                        if max > 2 || over >= got.rgba.len() / 2000 {
+                            problems.push(format!(
+                                "{pw} px, {what}, binding {kib} KiB, zoom {pct} %: {max} codes from the big binding's frame, {over} values over 1"
+                            ));
+                        }
+                    }
                     let reasoned = got.report.cpu_reason.is_some()
                         && got.report.device_refused
                         && got.report.notes.iter().any(|n| n.contains("graphics card"));

@@ -851,15 +851,35 @@ pub(crate) struct RasterRead {
     pub origin: (i64, i64),
 }
 
-/// The receptive field of the raster masks of `chains` on a render with this grid, in output pixels (0 when no
-/// chain has a raster row).
-fn raster_halo(chains: &[&ColorChain], grid: &SamplerGrid) -> usize {
+/// How far the picture `read` makes is read beyond itself by the spatial steps of `chains`, in output pixels: the raster
+/// masks' receptive field and the Film nodes' halos, as the scheduler sums them (`ym_color::schedule`); 0 for a chain with
+/// no spatial step.
+fn view_reach(
+    job: &mut Job<'_>,
+    read: &ViewSpec,
+    chains: &[&ColorChain],
+    grid: &SamplerGrid,
+) -> Result<usize, RenderError> {
     let u_px = 1.0 / grid.photo_frame().pixel;
-    chains
+    let mut film = None;
+    if chains.iter().any(|c| c.has_films()) {
+        let frame = view_frame(&read.view_to_final, job.final_size()?);
+        let extent = Area::whole(frame.w, frame.h);
+        for chain in chains {
+            if let Some(f) = FilmRender::build(job, chain, extent, read.target)? {
+                film = Some(f);
+                break;
+            }
+        }
+    }
+    Ok(chains
         .iter()
-        .map(|c| c.schedule(u_px, &|_| None).total_reach())
+        .map(|c| {
+            c.schedule(u_px, &|id| film.as_ref().and_then(|f| f.reach_of(id)))
+                .total_reach()
+        })
         .max()
-        .unwrap_or(0)
+        .unwrap_or(0))
 }
 
 /// The raster read of the picture `read` makes for `chains`, or `None` when no chain has a raster row or none
@@ -2194,34 +2214,35 @@ fn build_display(
     }))
 }
 
-/// The display-linear frame of `read` made by the device in bands of `rows` rows: for a frame that
-/// does not fit one storage binding and whose tail the CPU runs (the colour pass alone is on, as under
-/// `Auto`). The colour chain is pointwise, so a band is a view of its own and the bands put together
-/// are the frame in one piece, which the CPU stage then works on whole. `None` after a device error
-/// (answered on the CPU by the caller).
+/// The display-linear frame of `read` made by the device in tiles of `shape` (columns, rows): bands of rows when the
+/// columns are the whole width, for a frame that does not fit one storage binding and whose tail the CPU runs (the colour
+/// pass alone is on, as under `Auto`; or a chain with a Film node cut in columns too, `Cut::Tiles`). The colour chain is
+/// pointwise and the Film and raster passes are tile-exact, so a tile is a view of its own and the tiles put together are
+/// the frame in one piece, which the CPU stage then works on whole. `None` after a device error (answered on the CPU by
+/// the caller).
 fn build_display_in_bands(
     job: &mut Job<'_>,
     route: &ViewRoute,
     read: &ViewSpec,
     grade: &GradePlan,
-    rows: usize,
+    shape: (usize, usize),
 ) -> Result<Option<Built>, RenderError> {
     let started = std::time::Instant::now();
     let (w, h) = (read.out_w, read.out_h);
-    let mut rgb: Vec<f32> = Vec::with_capacity(3 * w * h);
+    let mut rgb: Vec<f32> = vec![0.0; 3 * w * h];
     let mut outside: Option<Vec<u8>> = None;
     let (mut scale, mut sharp) = (1, true);
-    let mut done_rows = 0;
-    for band in device::bands_of(read, rows) {
+    for (x, y, tw, th) in tiles_of(w, h, shape.0, shape.1) {
         job.check()?;
-        let prepared = prepare_view(job, &band)?;
+        let tile = tile_of(read, x, y, tw, th);
+        let prepared = prepare_view(job, &tile)?;
         let (input, _) = prepared.device_input(job, route, grade.chain.uses_photo_position())?;
-        let rr = raster_read(job, &band, &[&grade.chain], prepared.photo_grid().as_ref())?;
+        let rr = raster_read(job, &tile, &[&grade.chain], prepared.photo_grid().as_ref())?;
         let rasters = grown_input(job, route, rr.as_ref(), &[&grade.chain])?;
         if !(input.fits(route) && grown_fits(rasters.as_ref(), route)) {
-            // The cut is made so that every band fits (`band_split`): a band that does not is the
+            // The cut is made so that every tile fits (`band_split`): one that does not is the
             // frame's buffers not fitting, answered as such.
-            let requested = 16 * band.out_w.next_multiple_of(2) as u64 * band.out_h as u64;
+            let requested = 16 * tile.out_w.next_multiple_of(2) as u64 * tile.out_h as u64;
             job.view_gpu_failed(&GpuError::BufferTooLarge {
                 requested,
                 limit: route.band_bytes,
@@ -2250,22 +2271,19 @@ fn build_display_in_bands(
         let Some((planes, planar)) = out.planar else {
             return Ok(None);
         };
-        let (band_rgb, band_outside) =
-            device::interleave_display(band.out_w, band.out_h, planes, &planar);
-        let band_px = band.out_w * band.out_h;
-        match (band_outside, outside.as_mut()) {
-            (Some(mask), Some(all)) => all.extend_from_slice(&mask),
-            (Some(mask), None) => {
-                let mut all = vec![0u8; w * done_rows];
-                all.extend_from_slice(&mask);
-                outside = Some(all);
-            }
-            (None, Some(all)) => all.resize(all.len() + band_px, 0),
-            (None, None) => {}
+        let (tile_rgb, tile_outside) = device::interleave_display(tw, th, planes, &planar);
+        for row in 0..th {
+            let to = 3 * ((y + row) * w + x);
+            rgb[to..to + 3 * tw].copy_from_slice(&tile_rgb[3 * row * tw..3 * (row + 1) * tw]);
         }
-        rgb.extend_from_slice(&band_rgb);
-        done_rows += band.out_h;
-        (scale, sharp) = (prepared.scale, sharp && prepared.sharp);
+        if let Some(mask) = tile_outside {
+            let all = outside.get_or_insert_with(|| vec![0u8; w * h]);
+            for row in 0..th {
+                let to = (y + row) * w + x;
+                all[to..to + tw].copy_from_slice(&mask[row * tw..(row + 1) * tw]);
+            }
+        }
+        (scale, sharp) = (scale.max(prepared.scale), sharp && prepared.sharp);
     }
     job.timings.pass_ms += millis(started);
     Ok(Some(Built {
@@ -2282,6 +2300,52 @@ fn build_display_in_bands(
         scale,
         sharp,
         device: ComputeDevice::Gpu,
+    }))
+}
+
+/// A frame without output sharpening made by the device a tile at a time (`Cut::Tiles`): each tile is a view of its own
+/// (`plain_pass`) read back as RGBA8 and put in its place in the frame. A tile that the device could not make, or made on
+/// the CPU, makes the whole frame on the CPU: never a frame of both.
+fn plain_in_tiles(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+    grade: &GradePlan,
+    route: &ViewRoute,
+    shape: (usize, usize),
+) -> Result<Flow, RenderError> {
+    let (w, h) = (spec.out_w, spec.out_h);
+    let mut rgba = vec![0u8; 4 * w * h];
+    let (mut scale, mut sharp, mut paper) = (1, true, true);
+    for (x, y, tw, th) in tiles_of(w, h, shape.0, shape.1) {
+        job.check()?;
+        let tile = ViewSpec {
+            output: FrameOutput::Host,
+            ..tile_of(spec, x, y, tw, th)
+        };
+        match plain_pass(job, &tile, grade, Some(route))? {
+            Flow::Done(done) if done.device == ComputeDevice::Gpu || done.paper => {
+                let Rgba8::Host(bytes) = done.rgba else {
+                    return Ok(Flow::Cpu);
+                };
+                for row in 0..th {
+                    let to = 4 * ((y + row) * w + x);
+                    rgba[to..to + 4 * tw].copy_from_slice(&bytes[4 * row * tw..4 * (row + 1) * tw]);
+                }
+                if !done.paper {
+                    paper = false;
+                    scale = scale.max(done.scale);
+                    sharp &= done.sharp;
+                }
+            }
+            Flow::Done(_) | Flow::Cpu => return Ok(Flow::Cpu),
+        }
+    }
+    Ok(Flow::Done(Done {
+        rgba: Rgba8::Host(rgba),
+        device: ComputeDevice::Gpu,
+        scale,
+        sharp,
+        paper,
     }))
 }
 
@@ -2408,15 +2472,26 @@ fn sharpened_pass(
         None => {
             // A frame the device colours that does not fit one binding, and whose tail the CPU runs
             // (the colour pass alone is on, as under `Auto`): the colour pass is pointwise, so the
-            // device makes it in bands of rows and the CPU gets the whole frame to sharpen.
-            let in_bands = match route {
-                Some(r) if r.stages.color && tail.is_none() => {
+            // device makes it in bands of rows and the CPU gets the whole frame to sharpen. A chain with a Film node
+            // whose wider picture passes the bindings in any rows is cut in columns too, whatever runs the tail; the
+            // mask view's overlay is made whole.
+            let cut = match route {
+                Some(r)
+                    if r.stages.color
+                        && mask_grade.is_none()
+                        && (tail.is_none() || grade.chain.has_films()) =>
+                {
                     band_split(job, &read, None, r, &[&grade.chain])?
                 }
-                _ => None,
+                _ => Cut::Whole,
             };
-            let built = match (in_bands, route) {
-                (Some(rows), Some(r)) => build_display_in_bands(job, r, &read, grade, rows)?,
+            let built = match (cut, route) {
+                (Cut::Rows(rows), Some(r)) if tail.is_none() => {
+                    build_display_in_bands(job, r, &read, grade, (read.out_w, rows))?
+                }
+                (Cut::Tiles(tw, th), Some(r)) => {
+                    build_display_in_bands(job, r, &read, grade, (tw, th))?
+                }
                 _ => {
                     let prepared = prepare_view(job, &read)?;
                     let plan = TailPlan {
@@ -2616,8 +2691,17 @@ fn banded(
     let overlay = job.overlay_grade();
     let mut chains: Vec<&ColorChain> = vec![&grade.chain];
     chains.extend(overlay.as_deref().map(|g| &*g.chain));
-    let Some(rows) = band_split(job, spec, sharpening, route, &chains)? else {
-        return whole(job, spec, grade, sharpening, Some(route), StageWindow::Own);
+    let rows = match band_split(job, spec, sharpening, route, &chains)? {
+        Cut::Rows(rows) => rows,
+        // A view whose wider picture passes the bindings in any rows: a frame without the stage is made a tile at a time;
+        // a sharpened one by `sharpened_pass`, which cuts its display-linear frame the same way.
+        Cut::Tiles(tw, th) if sharpening.is_none() => {
+            return plain_in_tiles(job, spec, grade, route, (tw, th));
+        }
+        Cut::Whole | Cut::Tiles(..) => {
+            return whole(job, spec, grade, sharpening, Some(route), StageWindow::Own);
+        }
+        Cut::Cpu => return whole(job, spec, grade, sharpening, Some(route), StageWindow::Own),
     };
     // The stage works on the bounding box of the photo in the view's frame: every band is given
     // the box of the view in one piece, cut to its rows (a band's own box is narrower where the
@@ -2725,12 +2809,12 @@ fn band_split(
     sharpening: Option<&ViewSharpening>,
     route: &ViewRoute,
     chains: &[&ColorChain],
-) -> Result<Option<usize>, RenderError> {
+) -> Result<Cut, RenderError> {
     let stages = route.stages;
     // Only a view the device colours is cut, and with output sharpening only when the device also
     // runs the stage (the CPU stage takes the whole frame: `build_display_in_bands`).
     if !(stages.color && (sharpening.is_none() || stages.tail)) {
-        return Ok(None);
+        return Ok(Cut::Whole);
     }
     let step = spec.view_to_final.m[0][0];
     let magnified = sharpening.is_some() && step.is_finite() && step < 1.0 - 1e-9;
@@ -2817,20 +2901,118 @@ fn band_split(
             }
         }
         if fits {
-            return Ok((rows < spec.out_h).then_some(rows));
+            return Ok(if rows < spec.out_h {
+                Cut::Rows(rows)
+            } else {
+                Cut::Whole
+            });
         }
         if rows == 1 {
-            // Not even one row fits: the device cannot take the view, the CPU makes it.
-            return Ok(None);
+            // Not even one row fits. A chain with a Film node reads a wider picture of at least (width + 2 reach) x
+            // (2 reach + 1) pixels in whatever rows it is cut to, so the view is cut in columns too; any other chain is
+            // not made in the device's bindings, and the CPU makes it.
+            if chains.iter().any(|c| c.has_films()) {
+                return tile_shape(job, spec, chains, route, &source_fits);
+            }
+            return Ok(Cut::Cpu);
         }
         // One more band each time: the same rows for every machine and the fewest bands that fit.
         rows = spec.out_h.div_ceil(bands.len() + 1).min(rows - 1);
     }
 }
 
-/// `read` grown by the receptive field of the raster masks of `chains` on every side (an upper bound of the wider
-/// picture their planes are made from, which is cut to the photo's extent), or `None` when no chain has a raster row
-/// or none of the photo is in `read`.
+/// The most tiles a view is cut into when its rows are not enough ([`tile_shape`]).
+const MAX_VIEW_TILES: usize = 256;
+
+/// How a view is cut for the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cut {
+    /// One pass.
+    Whole,
+    /// Bands of this many rows each, the full width.
+    Rows(usize),
+    /// Tiles of this many columns and rows: the colour pass is made by the device a tile at a time, each tile a view of its
+    /// own with its wider picture (the view's window grown by the reach the scheduler infers), and put together on the host
+    /// for the CPU to finish (`build_display_in_bands`, `plain_in_tiles`).
+    Tiles(usize, usize),
+    /// Not even the smallest tile fits the device's bindings: the CPU, with the reason.
+    Cpu,
+}
+
+/// The view `spec` of the tile of `w x h` pixels at `(x, y)` of it: a view of its own, with the dither counted from its
+/// place in the view.
+fn tile_of(spec: &ViewSpec, x: usize, y: usize, w: usize, h: usize) -> ViewSpec {
+    ViewSpec {
+        out_w: w,
+        out_h: h,
+        view_to_final: Affine::scale_translate(1.0, 1.0, x as f64, y as f64)
+            .then(&spec.view_to_final),
+        dither_origin: (spec.dither_origin.0 + x, spec.dither_origin.1 + y),
+        ..spec.clone()
+    }
+}
+
+/// The tiles of `w x h` pixels a `(width, height)` view is cut into, row by row: `(x, y, w, h)`.
+fn tiles_of(
+    width: usize,
+    height: usize,
+    tw: usize,
+    th: usize,
+) -> Vec<(usize, usize, usize, usize)> {
+    let mut tiles = Vec::new();
+    for y in (0..height).step_by(th.max(1)) {
+        for x in (0..width).step_by(tw.max(1)) {
+            tiles.push((x, y, tw.min(width - x), th.min(height - y)));
+        }
+    }
+    tiles
+}
+
+/// The size of the tiles a view is cut into when even one row of its wider picture passes the bindings (a chain with a
+/// Film node): the wider picture of a tile is the tile grown by the reach, so the tile is as large as the bindings allow
+/// after the reach is taken off its sides. `fits` is the cut's own test of a view (the wider picture, the camera window);
+/// the middle tile of the view is tested, the largest the photo's edge does not cut. [`Cut::Cpu`] when the reach alone
+/// fills the binding or there would be more than [`MAX_VIEW_TILES`] tiles.
+fn tile_shape(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+    chains: &[&ColorChain],
+    route: &ViewRoute,
+    fits: &dyn Fn(&mut Job<'_>, &ViewSpec) -> Result<bool, RenderError>,
+) -> Result<Cut, RenderError> {
+    let reach = match raster_grown(job, spec, chains)? {
+        Some(grown) => (grown.out_w - spec.out_w) / 2,
+        None => 0,
+    };
+    let cap_px = (route.band_bytes / 16) as usize;
+    let side = cap_px.isqrt().saturating_sub(2 * reach);
+    let mut tw = spec.out_w.min(side.max(2));
+    let mut th = spec.out_h.min(
+        (cap_px / (tw + 2 * reach + 1))
+            .saturating_sub(2 * reach)
+            .max(1),
+    );
+    loop {
+        if spec.out_w.div_ceil(tw) * spec.out_h.div_ceil(th) > MAX_VIEW_TILES {
+            return Ok(Cut::Cpu);
+        }
+        let (x, y) = ((spec.out_w - tw) / 2, (spec.out_h - th) / 2);
+        if fits(job, &tile_of(spec, x, y, tw, th))? {
+            return Ok(Cut::Tiles(tw, th));
+        }
+        if tw >= th && tw > 2 {
+            tw = (tw / 2).max(2);
+        } else if th > 1 {
+            th = (th / 2).max(1);
+        } else {
+            return Ok(Cut::Cpu);
+        }
+    }
+}
+
+/// `read` grown by the reach of the spatial steps of `chains` on every side (an upper bound of the wider picture a Film node
+/// reads, which is cut to the photo's extent), or `None` when no chain has a Film node (the raster planes are made in tiles
+/// and need no whole wider picture) or none of the photo is in `read`.
 fn raster_grown(
     job: &mut Job<'_>,
     read: &ViewSpec,
@@ -2838,14 +3020,14 @@ fn raster_grown(
 ) -> Result<Option<ViewSpec>, RenderError> {
     // Only a chain with a Film node needs the wider picture whole: the planes of the others are made in tiles when it does
     // not fit (`grown_input`), so it does not decide the cut.
-    if !chains.iter().any(|c| c.uses_rasters() && c.has_films()) {
+    if !chains.iter().any(|c| c.has_films()) {
         return Ok(None);
     }
     let prepared = prepare_view_with(job, read, false)?;
     let Some(grid) = prepared.photo_grid() else {
         return Ok(None);
     };
-    let halo = raster_halo(chains, &grid);
+    let halo = view_reach(job, read, chains, &grid)?;
     Ok((halo > 0).then(|| ViewSpec {
         out_w: read.out_w + 2 * halo,
         out_h: read.out_h + 2 * halo,
