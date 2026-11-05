@@ -574,6 +574,10 @@ pub struct PhotoGraph {
     /// One of our own input checks refused a view on the device and the warning for it is logged (once per photo;
     /// such a refusal makes that frame the CPU's and leaves the route open, `Job::view_gpu_failed`).
     view_input_warned: AtomicBool,
+    /// The last viewport frame of this photo was made by the CPU because the device refused or failed it, and no frame since
+    /// came from the device ([`Renderer::views_on_cpu`]): the route is open, so [`Renderer::raw_on_cpu`] says no, but the
+    /// next frame is expected to be the CPU's too, and the viewport says so from the start of its round.
+    view_refused_last: AtomicBool,
     /// A device error ended the GPU route of this photo's lens (L1 to L3 of the groups and tiles):
     /// from then on the CPU runs the lens, with a note (`docs/17-gpu.md` section 9).
     lens_gpu_failed: AtomicBool,
@@ -604,6 +608,16 @@ impl std::fmt::Debug for PhotoGraph {
 }
 
 impl PhotoGraph {
+    /// A viewport frame of the photo was made: `refused` when the CPU made it because the device refused or failed it,
+    /// `on_device` when the device made it. A frame from the cache (neither) says nothing new.
+    pub(crate) fn note_view_frame(&self, refused: bool, on_device: bool) {
+        if refused {
+            self.view_refused_last.store(true, Ordering::SeqCst);
+        } else if on_device {
+            self.view_refused_last.store(false, Ordering::SeqCst);
+        }
+    }
+
     fn new(id: PhotoId, budget: MemoryBudget) -> Self {
         static NEXT_UID: AtomicU64 = AtomicU64::new(1);
         Self {
@@ -615,6 +629,7 @@ impl PhotoGraph {
             raw_gpu_failed: AtomicBool::new(false),
             view_gpu_failed: AtomicBool::new(false),
             view_input_warned: AtomicBool::new(false),
+            view_refused_last: AtomicBool::new(false),
             lens_gpu_failed: AtomicBool::new(false),
             resident_tick: AtomicU64::new(0),
             upload_gate: Mutex::new(()),
@@ -1153,6 +1168,19 @@ impl Renderer {
             .is_some_and(|g| g.view_gpu_failed.load(Ordering::SeqCst))
             || self.inner.view_gpu_disabled.load(Ordering::SeqCst);
         !on_device || !device_runs_demosaic(&opts) || !device_runs_denoise(&opts) || views_on_cpu
+    }
+
+    /// Whether the viewport's next frame of the photo is expected to be the CPU's: [`Renderer::raw_on_cpu`], or the last
+    /// viewport frame was made by the CPU after the device refused it (a check of ours, a buffer that did not fit: the route
+    /// stays open and the device is tried again, but until a frame comes from the device the viewport says "Rendering on
+    /// the CPU" from the start of each round, not only after the CPU frame is back). Asking makes no graph and changes
+    /// nothing.
+    #[must_use]
+    pub fn views_on_cpu(&self, id: PhotoId) -> bool {
+        self.raw_on_cpu(id)
+            || self
+                .existing_graph(id)
+                .is_some_and(|g| g.view_refused_last.load(Ordering::SeqCst))
     }
 
     /// Whether the core is making a raster mask of these settings for the first time (`docs/23` section 7.6): the

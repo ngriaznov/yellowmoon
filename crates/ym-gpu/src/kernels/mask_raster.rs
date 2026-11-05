@@ -708,6 +708,26 @@ where
     })
 }
 
+/// [`encode_raster_planes`] over a sampled picture the caller already holds, which keeps what it makes when `key` is given
+/// ([`encode_raster_planes_kept`]'s cache) and nothing when it is `None`. The Film nodes' prefix chains use it: each makes
+/// its rows' planes over the area the node reads, from the one wider picture the first node reads.
+///
+/// # Errors
+///
+/// As [`encode_raster_planes`].
+pub fn encode_raster_planes_over(
+    passes: &mut PassList<'_>,
+    prepared: &PreparedChain,
+    chain: &ColorChain,
+    sampled: &GpuImage,
+    job: &RasterJob,
+    key: Option<&PlaneKey>,
+) -> Result<RasterPlanes, GpuError> {
+    encode_rows(passes, prepared, chain, job, key, |_| {
+        Ok(Wide::Borrowed(sampled))
+    })
+}
+
 /// The text a row's plane is kept under: the pass's windows and the photo's frame, the caller's place, the row, and
 /// (for a row that refines its edges) the guide's.
 fn row_key(

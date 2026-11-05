@@ -3203,6 +3203,14 @@ impl Renderer {
             probe.finish(&result);
         }
         let mut frame = result?;
+        // What the next round of the viewport is told at its start (`Renderer::views_on_cpu`): a frame the device refused is
+        // the CPU's, and so is the next until the device makes one. A frame from the cache says nothing new.
+        if let Some(graph) = self.existing_graph(src.id) {
+            graph.note_view_frame(
+                frame.report.device_refused,
+                frame.report.device == ComputeDevice::Gpu,
+            );
+        }
         // The zoom belongs to the request, not to the pixels (a cached frame is served for the
         // same view): say what this request asked for.
         frame.report.zoom = Some(FrameZoom {

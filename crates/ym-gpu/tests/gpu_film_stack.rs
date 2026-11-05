@@ -202,7 +202,7 @@ fn device_pictures(
     gpu.run(JobSpec::new(Priority::Viewport), move |ctx, _| {
         let mut passes = PassList::new(ctx, "film stack");
         let wide = GpuImage::upload_rgb(ctx, "wide", &wide_img)?;
-        let pictures = stack.encode(ctx, &mut passes, &wide, wide_area, need, None)?;
+        let pictures = stack.encode(ctx, &mut passes, &wide, wide_area, need, None, None)?;
         let reads: Vec<_> = ids
             .iter()
             .filter_map(|&n| pictures.get(n).map(|p| (n, p.clone())))
@@ -244,7 +244,7 @@ fn device_chain(
     gpu.run(JobSpec::new(Priority::Viewport), move |ctx, _| {
         let mut passes = PassList::new(ctx, "film chain");
         let wide = GpuImage::upload_rgb(ctx, "wide", &wide_img)?;
-        let pictures = stack.encode(ctx, &mut passes, &wide, wide_area, need, None)?;
+        let pictures = stack.encode(ctx, &mut passes, &wide, wide_area, need, None, None)?;
         let src = GpuImage::upload_rgb(ctx, "tile", &tile_img)?;
         let mut prepared = PreparedChain::new(ctx, &chain)?.with_film(pictures, (need.x, need.y));
         if let Some(bytes) = band_bytes {

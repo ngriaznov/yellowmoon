@@ -59,7 +59,7 @@ use crate::device::{Gpu, GpuContext, GpuError};
 use crate::image::GpuImage;
 use crate::kernels::color::{PreparedChain, Stop, release_tables};
 use crate::kernels::encode::{C13, Encoding, band_bytes, encode_c13, row_words};
-use crate::kernels::film_stack::{FilmPictures, FilmStack};
+use crate::kernels::film_stack::{FilmPictures, FilmRasters, FilmStack};
 use crate::kernels::mask_raster::{RasterJob, encode_raster_planes, grown_tile_with};
 use crate::kernels::output_sharpen::PreparedSharpen;
 use crate::kernels::resize::{PreparedTaps, Taps, encode_resize_h, encode_resize_v};
@@ -479,7 +479,11 @@ fn prepare_tile(
             h,
         };
         let photo = (sampled.planes == 6).then(|| grid.photo_frame());
-        Some(stack.encode(ctx, passes, sampled, grown, tile, photo)?)
+        let rasters = Some(FilmRasters {
+            frame: ym_color::mask_raster::Area::whole(frame.0, frame.1),
+            key: None,
+        });
+        Some(stack.encode(ctx, passes, sampled, grown, tile, photo, rasters)?)
     };
     let at = (
         (off.0 as i64 - grown.x) as usize,

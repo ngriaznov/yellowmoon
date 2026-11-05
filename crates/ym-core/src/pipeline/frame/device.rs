@@ -70,7 +70,7 @@ use ym_gpu::image::{GpuImage, IMAGE_USAGE};
 use ym_gpu::kernels::color::{NodeStop, PreparedChain, Stop, release_tables};
 use ym_gpu::kernels::copy::{Piece, encode_gather};
 use ym_gpu::kernels::encode::{C13, Encoding, encode_c13};
-use ym_gpu::kernels::film_stack::{FilmPictures, FilmStack};
+use ym_gpu::kernels::film_stack::{FilmPictures, FilmRasters, FilmStack};
 use ym_gpu::kernels::magnify::{MagnifyTarget, encode_magnify};
 use ym_gpu::kernels::mask_raster::{PlaneKey, RasterJob, encode_raster_planes_kept};
 use ym_gpu::kernels::output_sharpen::{FusedC13, PreparedSharpen};
@@ -634,18 +634,27 @@ fn prepared_for(
                 let photo = grown.input.photo_frame();
                 let pictures = {
                     let _span = perf::span(Stage::ColourRecord);
-                    stack.encode(ctx, passes, &wide, r.grown, r.window, photo)?
+                    stack.encode(
+                        ctx,
+                        passes,
+                        &wide,
+                        r.grown,
+                        r.window,
+                        photo,
+                        Some(FilmRasters {
+                            frame: r.frame,
+                            key: Some(&grown.key),
+                        }),
+                    )?
                 };
                 // The wider picture lives until the work has finished.
                 let _ = passes.keep(wide.buf);
                 prepared.with_film(pictures, (r.extent.x, r.extent.y))
             }
             (None, _) => prepared.with_film(Arc::new(FilmPictures::empty()), (0, 0)),
-            (Some(_), None) => {
-                return Err(GpuError::InvalidInput(
-                    "the plan runs a Film node and the job has no Film passes for it".to_owned(),
-                ));
-            }
+            // The job has no Film passes while the plan runs a Film node: the Before view (it runs no node, so no pixel
+            // reads a Film picture). Zero pictures are never read.
+            (Some(_), None) => prepared.with_film(Arc::new(FilmPictures::empty()), (0, 0)),
         };
     }
     // The raster masks of the nodes (`docs/23` section 5.5): their planes are made over the picture the colour pass

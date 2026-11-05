@@ -30,6 +30,7 @@ use ym_color::mask::PhotoFrame;
 use ym_color::mask_raster::Area;
 
 use super::color::{PreparedChain, Stop};
+use super::mask_raster::{PlaneKey, RasterJob, encode_raster_planes_over};
 use super::film::{
     FRect, FilmColourData, FilmDevice, FilmImage, FilmPlan, FilmScalars, encode_film_tile, halos,
 };
@@ -91,6 +92,15 @@ impl std::fmt::Debug for FilmTables {
             .field("key", &self.key)
             .finish_non_exhaustive()
     }
+}
+
+/// What the prefix chains of the Film nodes need to make the planes of their raster mask rows.
+#[derive(Debug, Clone, Copy)]
+pub struct FilmRasters<'a> {
+    /// The photo's extent: the planes' window sums are cut to it.
+    pub frame: Area,
+    /// What the planes are kept under on the device (a view's frames), or `None` to keep none (an export tile).
+    pub key: Option<&'a PlaneKey>,
 }
 
 /// One Film node of a plan, ready to run on the device.
@@ -183,8 +193,12 @@ impl FilmStack {
     /// # Errors
     ///
     /// [`GpuError::InvalidInput`] when `wide` does not cover what the first node reads, when a node's prefix chain has a
-    /// raster mask row (its planes would have to be made over the node's wider window: the CPU makes that frame), or
-    /// for a plan the kernels refuse; the pool's and the passes' errors.
+    /// raster mask row and `rasters` or `photo` is missing, or for a plan the kernels refuse; the pool's and the
+    /// passes' errors.
+    ///
+    /// The raster rows before a node make their planes over the area the node reads (`read[i]`), from `wide`, which is
+    /// grown by the masks' receptive field as well (`rasters.frame` is the photo's extent). A pixel's plane does not
+    /// depend on the window it is made in, so these equal the CPU's planes over the widest window.
     pub fn encode(
         &self,
         ctx: &GpuContext,
@@ -193,6 +207,7 @@ impl FilmStack {
         wide_area: Area,
         need: Area,
         photo: Option<PhotoFrame>,
+        rasters: Option<FilmRasters<'_>>,
     ) -> Result<Arc<FilmPictures>, GpuError> {
         let n = self.steps.len();
         let mut made = vec![Area::default(); n];
@@ -215,12 +230,6 @@ impl FilmStack {
         crate::perf::note_film(n, read[0].w, read[0].h);
         let mut done: Vec<(u32, Arc<FilmImage>)> = Vec::with_capacity(n);
         for (i, step) in self.steps.iter().enumerate() {
-            if step.prefix.uses_rasters() {
-                return Err(GpuError::InvalidInput(
-                    "film: a raster mask row upstream of a Film node needs its planes over the node's wider window"
-                        .to_owned(),
-                ));
-            }
             let a = read[i];
             let prefix_span = crate::perf::span(crate::perf::Stage::FilmPrefix);
             let mut prefix = PreparedChain::new(ctx, &step.prefix)?.fast(self.fast);
@@ -234,6 +243,34 @@ impl FilmStack {
                     }),
                     (a.x, a.y),
                 );
+            }
+            // The raster rows before the node: planes over the area the node reads.
+            let planes = if step.prefix.uses_rasters() {
+                let (Some(r), Some(frame)) = (rasters, photo.filter(|_| wide.planes == 6)) else {
+                    return Err(GpuError::InvalidInput(
+                        "film: a raster mask row before a Film node needs the photo frame and the six-plane picture"
+                            .to_owned(),
+                    ));
+                };
+                Some(encode_raster_planes_over(
+                    passes,
+                    &prefix,
+                    &step.prefix,
+                    wide,
+                    &RasterJob {
+                        frame: r.frame,
+                        grown: wide_area,
+                        window: a,
+                        extent: a,
+                        photo: frame,
+                    },
+                    r.key,
+                )?)
+            } else {
+                None
+            };
+            if let Some(p) = planes {
+                prefix = prefix.with_rasters(p);
             }
             // The node's input: LogC4 / AWG4 over the area it reads, in the planes the stage writes (a fourth one is the
             // letterbox mask; the Film kernels read the first three by the image's plane length).
