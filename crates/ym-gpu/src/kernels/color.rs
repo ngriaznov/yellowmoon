@@ -330,7 +330,7 @@ pub(crate) const REF_KEY: u32 = 4;
 /// (`docs/23` section 3.5).
 const MAX_STEPS: usize = 64;
 
-/// The per-frame uniform block of `color.wgsl` (`ChainU`), 608 bytes: window and mode, the chain's
+/// The per-frame uniform block of `color.wgsl` (`ChainU`), 704 bytes: window and mode, the chain's
 /// parameters (the fused matrix, C7, the look), the cine rendering's matrix from XYZ to the output's
 /// primaries (`cine_m0` to `cine_m2`), the Before view's camera default (`cam0` to `cam2`: the 3x3
 /// rows, `camt`: the tone curve's `n`, `s`, `k` and white level) and the pass (`plan`, `stopn`: module
@@ -380,6 +380,11 @@ struct ChainU {
     /// The raster planes (binding 7): x: words in a plane, y: the first row of this dispatch in the window, z: a
     /// plane's row stride in elements, w: the number of planes (0: none are bound).
     rst: [u32; 4],
+    /// The low parts of the f32 constants `m0` to `m2` (the f64 value minus its f32 rounding), for the colour pass's
+    /// compensated products (`precise.wgsl`, F-08d).
+    m_lo: [[f32; 4]; 3],
+    /// The gamut stage's rows in the form `1 + K0 s1 + K2 s2` ([`cine_white_rows`]): x: `K0`, y: `K2`, z, w: their low parts.
+    cine_lo: [[f32; 4]; 3],
 }
 
 /// One step of the plan with its node, as the storage buffer at binding 6 holds it (`NodeRec` in
@@ -463,6 +468,38 @@ impl Default for ChainU {
     fn default() -> Self {
         Self::zeroed()
     }
+}
+
+/// The rows of the gamut stage of the cine rendering in the form the colour pass evaluates: the stage is
+/// `M (XN t1^3, 1, ZN t2^3)` with `M (XN, 1, ZN) = (1, 1, 1)` (the D65 white is the white of every output), so a channel is
+/// `1 + K0 s1 + K2 s2` with `K0 = M_i0 XN`, `K2 = M_i2 ZN`, `s1 = t1^3 - 1` and `s2 = t2^3 - 1` formed from the small chroma
+/// terms (no `1 + c` rounded to f32 and cubed, no large terms that cancel). Per row: `K0` and `K2` as f32 and their low parts,
+/// formed in f64 (`precise.wgsl`, F-08d).
+fn cine_white_rows(m: &[[f64; 3]; 3]) -> [[f32; 4]; 3] {
+    let scalars = ym_color::display::cine::kernel_scalars();
+    let get = |name: &str| {
+        scalars
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map_or(1.0, |(_, v)| *v)
+    };
+    let (xn, zn) = (get("XN"), get("ZN"));
+    let mut out = [[0.0f32; 4]; 3];
+    for (row, o) in m.iter().zip(out.iter_mut()) {
+        let (k0, k2) = (row[0] * xn, row[2] * zn);
+        *o = [
+            k0 as f32,
+            k2 as f32,
+            (k0 - f64::from(k0 as f32)) as f32,
+            (k2 - f64::from(k2 as f32)) as f32,
+        ];
+    }
+    out
+}
+
+/// What the f32 rounding of each entry leaves out.
+fn lo_part(v: [f64; 3]) -> [f64; 3] {
+    v.map(|x| x - f64::from(x as f32))
 }
 
 fn f4(v: [f64; 3], w: f64) -> [f32; 4] {
@@ -987,6 +1024,10 @@ impl ChainTables {
         u.cine_m0 = f4(xyz_to_output[0], 0.0);
         u.cine_m1 = f4(xyz_to_output[1], 0.0);
         u.cine_m2 = f4(xyz_to_output[2], 0.0);
+        for k in 0..3 {
+            u.m_lo[k] = f4(lo_part(params.matrix[k]), 0.0);
+        }
+        u.cine_lo = cine_white_rows(&xyz_to_output);
         let tables = self.dither(ctx)?;
         // C13.
         u.sp[0] = u32::from(space == OutputSpace::Rec2020);
@@ -2318,7 +2359,7 @@ mod tests {
     use crate::kernels::shader_source;
 
     #[test]
-    fn the_per_frame_block_is_608_bytes_and_a_node_record_1200() {
+    fn the_per_frame_block_is_704_bytes_and_a_node_record_1200() {
         // The per-frame `ChainU` (`docs/17-gpu.md` section 11) was meant to be about 1 KB: the one uniform
         // block (K3 allows one) holds the frame's parameters. It was 992 bytes with the ACES 2 scalars; the
         // Before view's camera default added 64, and the colour warp (C9b) 1040 plus the grade's six rows
@@ -2326,14 +2367,14 @@ mod tests {
         // records (N-04, `docs/23` section 5.4), so a plan of 16 nodes does not make the uniform grow: the
         // block lost the grade, the zones, the balance and the warp (1136 bytes) and gained the pass (32). The
         // masks (N-10) added the place of the mask rows and the photo frame (32 more), the raster masks (N-13) the
-        // place of their planes (16 more); the rows themselves are in the storage buffer after the records,
+        // place of their planes (16 more), the compensated products of F-08d the low parts of the matrices (96 more); the rows themselves are in the storage buffer after the records,
         // 64 bytes each.
         // A record is the step's flags and wiring (3 rows), the gain (1), the grade (6), the warp's counts
         // (1) and its 16 moving (3 rows each) and 16 locked pins (1 row each): 75 rows of 16 bytes. Both are
         // far below the 64 KiB uniform binding the device asks for
         // (`max_uniform_buffer_binding_size` of `wgpu::Limits::default()`) and the 16 KiB of wgpu's
         // downlevel limits.
-        assert_eq!(size_of::<ChainU>(), 608);
+        assert_eq!(size_of::<ChainU>(), 704);
         assert_eq!(size_of::<ChainU>() % 16, 0);
         assert_eq!(size_of::<NodeRecU>(), 1200);
         assert_eq!(size_of::<NodeRecU>() % 16, 0);
@@ -2589,7 +2630,7 @@ mod tests {
                 .validate(&module)
                 .unwrap_or_else(|e| panic!("{mode:?}: {e:?}"));
             let (members, span) = wgsl_struct(&module, "CU");
-            let fields: [(&str, usize); 33] = [
+            let fields: [(&str, usize); 39] = [
                 ("dims", offset_of!(ChainU, dims)),
                 ("src", offset_of!(ChainU, src)),
                 ("origin", offset_of!(ChainU, origin)),
@@ -2623,6 +2664,12 @@ mod tests {
                 ("mrow", offset_of!(ChainU, mrow)),
                 ("photo", offset_of!(ChainU, photo)),
                 ("rst", offset_of!(ChainU, rst)),
+                ("m_lo0", offset_of!(ChainU, m_lo)),
+                ("m_lo1", offset_of!(ChainU, m_lo) + 16),
+                ("m_lo2", offset_of!(ChainU, m_lo) + 32),
+                ("cine_lo0", offset_of!(ChainU, cine_lo)),
+                ("cine_lo1", offset_of!(ChainU, cine_lo) + 16),
+                ("cine_lo2", offset_of!(ChainU, cine_lo) + 32),
             ];
             assert_eq!(members.len(), fields.len());
             for ((name, offset, _), (want, at)) in members.iter().zip(fields) {

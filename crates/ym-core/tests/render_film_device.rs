@@ -381,11 +381,10 @@ fn wide_gamut_exports_agree_with_the_cpu() {
 }
 
 /// The owner's gate (2026-11-04, "Hold it to the limit, fix it"): a Rec.2020 export of a graph with a Film node meets one
-/// 10-bit code too. **It does not yet**: 156 codes of 65,535 at a near-black sample after output sharpening (F-08c,
-/// `docs/24` section 3.9c: the Film return is not the cause; the sharpener turns the device's f32 noise of 9e-7 in the
-/// picture into hundreds of codes at a sample it takes to black), so the test is ignored; run it with `--ignored`.
+/// 10-bit code too. It failed at 156 codes of 65,535 at a near-black sample after output sharpening (F-08c: the sharpener
+/// turns the device's f32 noise of 9e-7 in the picture into hundreds of codes there); the colour pass in the export tail
+/// is now about twice as accurate (F-08d, `docs/24` section 3.9c) and the gate is met.
 #[test]
-#[ignore = "fails at 156 codes: output sharpening of the device's f32 picture at a near-black sample (docs/24 section 3.9c, F-08c)"]
 fn a_rec2020_export_with_a_film_node_meets_one_10_bit_code() {
     let Some(gpu) = gpu(true) else { return };
     let d = photo();
@@ -1052,8 +1051,8 @@ fn png_against_display_linear() {
 }
 
 /// F-08c diagnostic: writes the display-linear pictures of the CPU and of the device's `render_full` (`YM_DUMP/cpu.f32`,
-/// `dev.f32`), with a Film node or without (`YM_PLAIN`); `YM_OFF` takes stages off the device. (The tail's own picture
-/// before sharpening needs a temporary dump in `tail.rs` `band_job`: `win.encode_read`.)
+/// `dev.f32`), with a Film node or without (`YM_PLAIN`); `YM_OFF` takes stages off the device. (The colour pass's picture before
+/// sharpening is measured by `the_colour_pass_of_the_tail_is_close_to_the_cpus_before_output_sharpening`.)
 #[test]
 #[ignore = "a diagnostic"]
 fn tail_picture_against_cpu() {
@@ -1089,124 +1088,117 @@ fn tail_picture_against_cpu() {
     }
 }
 
-/// F-08d: the tail's picture before sharpening against the CPU's display-linear picture, per space, with and without a
-/// Film node. Needs the tail's temporary dump (`YM_TAIL_DUMP`), see `tail_picture_against_cpu`.
+/// F-08d: the colour pass of the export tail against the CPU's, as a number (`docs/24` section 3.9c). Output sharpening
+/// turns a relative error of 1e-6 in a picture sample into hundreds of codes at a near-black sample, so the picture the tail
+/// hands to the sharpener is held to a standard deviation of its relative error against the CPU's display-linear picture,
+/// per output space, with and without a Film node. The tail's picture is read by the probe of `ym-gpu`'s feature
+/// `tail-probe`, which is process-wide, so the test runs alone: `cargo test --release -p ym-core --features tail-probe
+/// --test render_film_device the_colour_pass_of_the_tail`; the raw chain stays on
+/// the CPU, so that the number is the colour pass's, the sampler's and the Film passes', not the raw chain's (its own
+/// differences at the chart's hard edges are in `docs/17`).
+///
+/// The aim is 2.5e-7 (a quarter of the 1e-6 that failed the gate). It is met for Rec.2020, the owner's decision; sRGB
+/// and Display P3 are held to a regression bound of 4e-7 and reported against the aim.
+#[cfg(feature = "tail-probe")]
 #[test]
-#[ignore = "a diagnostic"]
-fn tail_picture_error() {
+fn the_colour_pass_of_the_tail_is_close_to_the_cpus_before_output_sharpening() {
+    use std::sync::Mutex;
     let Some(gpu) = gpu(true) else { return };
     let d = photo();
     let film = json!({ "grain": { "amount": 0 }, "halation": { "amount": 0 } });
-    for (space, tgt) in [
-        (ColorSpace::Srgb, OutputTarget::Srgb),
-        (ColorSpace::DisplayP3, OutputTarget::DisplayP3),
-        (ColorSpace::Rec2020, OutputTarget::Rec2020),
+    let colour_only = GpuStages::ALL
+        .difference(GpuStages::RAW_CHAIN)
+        .difference(GpuStages::RAW_FRONT)
+        .difference(GpuStages::LENS);
+    let device = || {
+        Renderer::new(
+            Arc::new(NeutralOnly),
+            RenderOptions {
+                gpu: Some(Arc::clone(&gpu)),
+                gpu_stages: colour_only,
+                full_tile_px: 256,
+                data_root: Some(data_root()),
+                ..RenderOptions::default()
+            },
+        )
+        .expect("render thread")
+    };
+    let cpu = renderer(None, 256);
+    for (space, target, bound) in [
+        (ColorSpace::Srgb, OutputTarget::Srgb, 4e-7),
+        (ColorSpace::DisplayP3, OutputTarget::DisplayP3, 4e-7),
+        (ColorSpace::Rec2020, OutputTarget::Rec2020, 2.5e-7),
     ] {
         for (what, settings) in [
             ("plain", d.source().settings.clone()),
             ("film", one_film(film.clone())),
         ] {
-            let dir = tempfile::tempdir().expect("dir");
-            // SAFETY: a single-threaded diagnostic.
-            unsafe { std::env::set_var("YM_TAIL_DUMP", dir.path()) };
+            let bands = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&bands);
+            ym_gpu::tail::set_picture_probe(Some(Arc::new(move |band| {
+                sink.lock().expect("probe").push(band);
+            })));
             let home = tempfile::tempdir().expect("dir");
-            let _ = export_in(
-                &d,
-                &settings,
-                renderer(Some(Arc::clone(&gpu)), 256),
-                home.path(),
-                space,
-            );
-            unsafe { std::env::remove_var("YM_TAIL_DUMP") };
-            let src = d.source().with_settings(settings.clone());
-            let cpu = renderer(None, 256)
+            let _ = export_in(&d, &settings, device(), home.path(), space);
+            ym_gpu::tail::set_picture_probe(None);
+            let src = d.source().with_settings(settings);
+            let reference = cpu
                 .render_full(
                     &src,
                     &FullRequest {
-                        target: FullTarget::DisplayLinear(tgt),
+                        target: FullTarget::DisplayLinear(target),
                     },
                     &CancelToken::new(),
                 )
-                .expect("render");
-            let (w, h) = (cpu.width, cpu.height);
-            let (mut s, mut s2, mut n, mut mx) = (0f64, 0f64, 0usize, 0f64);
-            let mut all: Vec<f64> = Vec::new();
-            let watch: Option<(usize, usize)> = std::env::var("YM_PIX").ok().and_then(|v| {
-                let mut it = v.split(',').map(|t| t.parse::<usize>().ok());
-                Some((it.next()??, it.next()??))
-            });
-            let mut around: Vec<(usize, usize, usize, f64, f64)> = Vec::new();
-            for e in std::fs::read_dir(dir.path()).expect("dir") {
-                let b = std::fs::read(e.expect("e").path()).expect("read");
-                let u = |i: usize| u32::from_le_bytes(b[4 * i..4 * i + 4].try_into().unwrap()) as usize;
-                let (ww, wh, planes, _rx, ry, start) = (u(0), u(1), u(2), u(3), u(4), u(5));
-                assert_eq!(ww, w);
-                let f = |i: usize| f32::from_le_bytes(b[24 + 4 * i..28 + 4 * i].try_into().unwrap());
-                for y in 0..wh {
-                    let row = start + y - ry.min(0);
-                    let row = if start + y >= ry { start + y - ry } else { continue };
-                    let _ = row;
-                    let gy = start + y - ry;
-                    let _ = gy;
-                }
-                let _ = (planes, h);
-                // The window starts at picture row `start` (the dump names the window's first row); `ry` is the core's
-                // offset inside it, which is not needed here.
-                for y in 0..wh {
-                    let gy = start + y;
-                    if gy >= h { break; }
+                .expect("cpu render");
+            let (w, h) = (reference.width, reference.height);
+            let (mut sum, mut sum2, mut n, mut max) = (0.0f64, 0.0f64, 0usize, 0.0f64);
+            for band in bands.lock().expect("probe").iter() {
+                assert_eq!(band.width, w);
+                let plane = band.width * band.rows;
+                for y in 0..band.rows {
+                    let row = band.first_row + y;
+                    if row >= h {
+                        break;
+                    }
                     for x in 0..w {
                         for c in 0..3 {
-                            let dv = f64::from(f(c * ww * wh + y * ww + x));
-                            let cv = f64::from(cpu.rgb[3 * (gy * w + x) + c]);
-                            if let Some((px, py)) = watch
-                                && gx_in(x, gy, px, py, 4)
-                                && c == 1
-                            {
-                                around.push((x, gy, c, dv, cv));
-                            }
-                            if cv >= 1e-4 {
-                                let r = (dv - cv) / cv;
-                                s += r;
-                                s2 += r * r;
+                            let want = f64::from(reference.rgb[3 * (row * w + x) + c]);
+                            if want >= 1e-4 {
+                                let got = f64::from(band.data[c * plane + y * band.width + x]);
+                                let r = (got - want) / want;
+                                sum += r;
+                                sum2 += r * r;
                                 n += 1;
-                                mx = mx.max(r.abs());
-                                all.push(r.abs());
+                                max = max.max(r.abs());
                             }
                         }
                     }
                 }
             }
-            around.sort_by_key(|a| (a.1, a.0));
-            around.dedup_by_key(|a| (a.1, a.0));
-            for a in &around {
-                say(&format!(
-                    "  at ({}, {}) G: device {:.9e} cpu {:.9e} rel {:.2e}",
-                    a.0,
-                    a.1,
-                    a.3,
-                    a.4,
-                    (a.3 - a.4) / a.4
-                ));
-            }
-            let mean = s / n as f64;
-            all.sort_by(|a, b| a.total_cmp(b));
-            let q = |p: f64| all[((all.len() as f64 * p) as usize).min(all.len() - 1)];
-            let cut = all.len() * 999 / 1000;
-            let body = (all[..cut].iter().map(|r| r * r).sum::<f64>() / cut as f64).sqrt();
+            assert!(n > 0, "the probe saw no band");
+            let mean = sum / n as f64;
+            let std = (sum2 / n as f64 - mean * mean).max(0.0).sqrt();
             say(&format!(
-                "  percentiles |rel|: p50 {:.2e} p90 {:.2e} p99 {:.2e} p99.9 {:.2e}; rms without the top 0.1 % {body:.2e}",
-                q(0.5), q(0.9), q(0.99), q(0.999)
+                "tail picture {space:?} {what}: relative standard deviation {std:.2e} (aim 2.5e-7), largest {max:.1e}"
             ));
-            say(&format!(
-                "TAILERR {space:?} {what}: n {n} rel std {:.3e} rms {:.3e} max {mx:.2e}",
-                (s2 / n as f64 - mean * mean).max(0.0).sqrt(),
-                (s2 / n as f64).sqrt()
-            ));
+            assert!(std <= bound, "{space:?} {what}: {std:.3e} (bound {bound:e})");
         }
     }
 }
 
-fn gx_in(x: usize, y: usize, px: usize, py: usize, r: usize) -> bool {
-    x.abs_diff(px) <= r && y.abs_diff(py) <= r
+/// F-08d: the Rec.2020 export with a Film node over several photos (the gate's photo is one seed; the chart's hard edges
+/// are where the raw chain's decisions differ from the CPU's, which the colour pass cannot change). Reported, not asserted.
+#[test]
+#[ignore = "a diagnostic: seeds of the scene"]
+fn rec2020_film_exports_over_several_scenes() {
+    let Some(gpu) = gpu(true) else { return };
+    for seed in [5, 6, 7, 9, 10] {
+        let scene = Scene::new(640, 420, light("sony-ilce-7rm4", 4800.0), Layout::Patchwork, 0.5)
+            .noise(2e-4, 2e-6)
+            .seed(seed);
+        let d = Developed::new(&scene, MODEL);
+        let max = wide_gamut_diff(&gpu, &d, &one_film(busy()), ColorSpace::Rec2020, "film");
+        say(&format!("seed {seed}: largest {max} of 65535 (one 10-bit code is {TEN_BIT_CODE})"));
+    }
 }

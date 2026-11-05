@@ -195,6 +195,9 @@ fn the_film_passes_against_the_cpu_in_relative_terms() {
             ("kodak_portra_400", Output::Rec2020),
             ("kodak_portra_400", Output::DisplayP3),
             ("kodak_ektar_100", Output::Srgb),
+            ("kodak_ektar_100", Output::DisplayP3),
+            ("kodak_portra_400", Output::Srgb),
+            ("fujifilm_velvia_100", Output::DisplayP3),
         ] {
             let b = film(id, o, SpatialSettings::default()).baked().clone();
             report(id, o, &b, &px, dev);

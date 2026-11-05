@@ -38,6 +38,10 @@ ml = []
 # Fault injection for the fallback tests (`GpuFault`, `YM_GPU_FAULT`): out of budget, a bad shader, a lost
 # device, a cancel and a failing tile at a chosen job. Compiled out of every normal build.
 fault-injection = []
+# TEST-ONLY. `tail::set_picture_probe` hands a test the rendered picture of an export (display-linear, before output
+# sharpening and C13), band by band, as the colour pass wrote it, so that the picture's error against the CPU can be
+# measured (F-08d, `docs/24-film.md` section 3.9c). Compiled out of every normal build.
+tail-probe = []
 
 [dev-dependencies]
 # The synthetic lens folders of the tests of the lens kernels (`ym_lens::test_support`).

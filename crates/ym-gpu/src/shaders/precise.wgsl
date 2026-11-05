@@ -240,3 +240,28 @@ fn px_dot3(r: vec3<f32>, v: vec3<f32>) -> f32 {
 fn px_mv3(r0: vec3<f32>, r1: vec3<f32>, r2: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(px_dot3(r0, v), px_dot3(r1, v), px_dot3(r2, v));
 }
+
+// e^x - 1 with the relative accuracy of the result also for small |x| (no cancellation).
+fn px_expm1(x: f32) -> f32 {
+    let p = px_two_prod(x, PX_LOG2E_HI);
+    let lo = px_op(p.y + px_op(x * PX_LOG2E_LO));
+    return px_exp2m1(p.x, lo);
+}
+
+// ln(1 + x) for x >= 0 with the relative accuracy of the result also for small x: 2 atanh(x / (2 + x)) as a series below
+// 0.5 (s <= 0.2, short by 1e-10), and above that the log of the pair 1 + x.
+fn px_log1p(x: f32) -> f32 {
+    if (x < 0.5) {
+        let s = px_div(x, px_op(2.0 + x));
+        let s2 = px_op(s * s);
+        var q = 0.09090909090909091;
+        q = px_op(px_op(s2 * q) + PX_ATANH_9);
+        q = px_op(px_op(s2 * q) + PX_ATANH_7);
+        q = px_op(px_op(s2 * q) + PX_ATANH_5);
+        q = px_op(px_op(s2 * q) + PX_ATANH_3);
+        q = px_op(px_op(s2 * q) + 1.0);
+        return px_op(px_op(2.0 * s) * q);
+    }
+    let z = px_two_sum(1.0, x);
+    return px_op(px_log(z.x) + px_div(z.y, z.x));
+}

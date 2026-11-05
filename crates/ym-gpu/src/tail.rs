@@ -69,6 +69,35 @@ use crate::queue::{CancelToken, JobSpec};
 use crate::stream::PassList;
 use crate::tiles::DESIGN_BINDING_BYTES;
 
+/// The rendered picture of one chunk of an export, handed to a test's probe (feature `tail-probe`).
+#[cfg(feature = "tail-probe")]
+#[derive(Debug, Clone)]
+pub struct ProbeBand {
+    /// The picture row the window starts at.
+    pub first_row: usize,
+    /// Width of the window in pixels.
+    pub width: usize,
+    /// Height of the window in rows.
+    pub rows: usize,
+    /// The window's planes (the picture's three and the letterbox mask), planar f32.
+    pub data: Vec<f32>,
+}
+
+#[cfg(feature = "tail-probe")]
+type PictureProbe = Arc<dyn Fn(ProbeBand) + Send + Sync>;
+
+#[cfg(feature = "tail-probe")]
+static PICTURE_PROBE: std::sync::Mutex<Option<PictureProbe>> = std::sync::Mutex::new(None);
+
+/// Sets (or clears) the probe that receives every output-sharpening or encoding window of the exports that follow, as the
+/// colour pass wrote it. Feature `tail-probe`, for tests.
+#[cfg(feature = "tail-probe")]
+pub fn set_picture_probe(probe: Option<PictureProbe>) {
+    if let Ok(mut slot) = PICTURE_PROBE.lock() {
+        *slot = probe;
+    }
+}
+
 /// The largest storage binding of one piece of the tail: the design binding (128 MiB,
 /// `docs/17-gpu.md` section 4), a constant and not the device's limit, so that the cut does not
 /// depend on the machine.
@@ -684,15 +713,22 @@ fn band_job(ctx: &GpuContext, token: &CancelToken, d: &BandData2) -> Result<Vec<
         encode_c13(&mut passes, &win, rect, encoding, c13, &dst, 0, 0)?;
     }
     let read = passes.read(&dst, 0, bytes)?;
-    let dump = std::env::var("YM_TAIL_DUMP").ok().map(|dir| (dir, win.encode_read(&mut passes)));
+    #[cfg(feature = "tail-probe")]
+    let probe = PICTURE_PROBE
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .map(|p| (p, win.encode_read(&mut passes)));
     token.check()?;
     let mut done = passes.submit()?.finish()?;
-    if let Some((dir, Ok(rid))) = dump {
-        let v = win.take(&done, rid)?;
-        let mut b: Vec<u8> = Vec::new();
-        for x in [win.width as u32, win.height as u32, win.planes as u32, rect.x as u32, rect.y as u32, d.window.start as u32] { b.extend_from_slice(&x.to_le_bytes()); }
-        for x in v { b.extend_from_slice(&x.to_le_bytes()); }
-        let _ = std::fs::write(format!("{dir}/win_{}.bin", d.window.start), b);
+    #[cfg(feature = "tail-probe")]
+    if let Some((probe, Ok(window))) = probe {
+        probe(ProbeBand {
+            first_row: d.window.start,
+            width: win.width,
+            rows: win.height,
+            data: win.take(&done, window)?,
+        });
     }
     Ok(done.take(read))
 }

@@ -718,6 +718,9 @@ fn rows(name: &str, m: &Mat3) -> String {
     let mut s = String::new();
     for (i, r) in m.iter().enumerate() {
         let _ = writeln!(s, "const {name}_{i}: vec3<f32> = {};", vec3_row(r));
+        // The low part of each entry (the f64 value minus its f32 rounding), for the compensated products of `precise.wgsl`.
+        let lo = r.map(|v| v - f64::from(v as f32));
+        let _ = writeln!(s, "const {name}_{i}_LO: vec3<f32> = {};", vec3_row(&lo));
     }
     s
 }

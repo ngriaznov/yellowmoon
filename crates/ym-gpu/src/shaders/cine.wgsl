@@ -46,10 +46,23 @@ fn cine_harm(cs: f32, sn: f32, a: vec3<f32>, b: vec3<f32>) -> f32 {
     return dot(vec3<f32>(cs, sn, c2), a) + dot(vec3<f32>(s2, c3, s3), b);
 }
 
+// cine_cbrt_d(r) - 1 without the rounding of a number near 1: r e^g - 1 = (r - 1) + r (e^g - 1), g = ln(q) / 3. Away from
+// r = 1 (a colour far from the neutral axis, or a negative triple) the two terms are large and cancel, and the plain
+// form is the better one: the branch is on r alone and both forms are the same function.
+fn cine_cbrt_d_m1(r: f32) -> f32 {
+    if (r < 0.5 || r > 2.0) {
+        return px_op(cine_cbrt_d(r) - 1.0);
+    }
+    let q = px_div(CINE_ONE_PLUS_DELTA2, px_op(px_op(r * r) + CINE_DELTA2));
+    let g = px_op(px_log(q) * 0.3333333432674407);
+    return px_op(px_op(r - 1.0) + px_op(r * px_expm1(g)));
+}
+
 fn cine_display_linear(awg4: vec3<f32>) -> vec3<f32> {
     // 0, 1. The limit and the matrix to XYZ.
     let x = clamp(awg4, vec3<f32>(-CINE_SCENE_LIMIT), vec3<f32>(CINE_SCENE_LIMIT));
-    let xyz = px_mv3(AWG4_TO_XYZ_0, AWG4_TO_XYZ_1, AWG4_TO_XYZ_2, x);
+    let xyz = px_mv3(AWG4_TO_XYZ_0, AWG4_TO_XYZ_1, AWG4_TO_XYZ_2, x)
+        + vec3<f32>(dot(AWG4_TO_XYZ_0_LO, x), dot(AWG4_TO_XYZ_1_LO, x), dot(AWG4_TO_XYZ_2_LO, x));
     // 2. The luminance floor: a smooth maximum of Y and rho times the distance of the chromaticity from the
     // neutral axis. dX = X - XN Y and dZ = Z - ZN Y are linear in x, with the rows DX = row_X - XN row_Y and
     // DZ = row_Z - ZN row_Y (CINE_DX, CINE_DZ, formed in f64 on the host). AWG4's white maps to (XN, 1, ZN), so
@@ -74,8 +87,8 @@ fn cine_display_linear(awg4: vec3<f32>) -> vec3<f32> {
     let ys = max(smooth_max, CINE_Y_MIN);
     let ly = px_log(ys);
     // 3. Opponent coordinates relative to the colour's own luminance, and the soft limit of the chroma.
-    let ca0 = cine_cbrt_d(xyz.x / (CINE_XN * ys)) - 1.0;
-    let cb0 = 1.0 - cine_cbrt_d(xyz.z / (CINE_ZN * ys));
+    let ca0 = cine_cbrt_d_m1(px_div(xyz.x, px_op(CINE_XN * ys)));
+    let cb0 = -cine_cbrt_d_m1(px_div(xyz.z, px_op(CINE_ZN * ys)));
     let chi0 = sqrt(ca0 * ca0 + cb0 * cb0 + CINE_EPS_CHROMA);
     let excess = max(chi0 - CINE_CHI_K, 0.0);
     let limited = min(chi0, CINE_CHI_K)
@@ -87,7 +100,7 @@ fn cine_display_linear(awg4: vec3<f32>) -> vec3<f32> {
     let sn = cb / chi;
     // 4. The tone curve of the neutral axis: H = (1 + c Ys^-a)^-b, then the soft clip at the top.
     let u = (ly - CINE_LN_GREY) * CINE_INV_LN2;
-    let h = px_exp(-CINE_B * px_log(px_op(1.0 + px_op(CINE_C * px_exp(-CINE_A * ly)))));
+    let h = px_exp(-CINE_B * px_log1p(px_op(CINE_C * px_exp(-CINE_A * ly))));
     let ln_yt = px_log(cine_soft_clip(CINE_KAP * h, CINE_WC));
     // 5. Chroma, hue and lightness terms.
     let g0 = px_div(CINE_G_PEAK, px_op(1.0 + px_exp(CINE_GB * ly - CINE_GB_LYC)));
@@ -106,12 +119,27 @@ fn cine_display_linear(awg4: vec3<f32>) -> vec3<f32> {
     let ca2 = g * (ca * cd - cb * sd);
     let cb2 = g * (ca * sd + cb * cd);
     let y2 = px_exp(ln_yt + lr);
-    let t1 = 1.0 + ca2;
-    let t2 = 1.0 - cb2;
     // 7. The gamut stage on the output's own primaries, on channels relative to the luminance.
     let yd = max(y2, CINE_Y2_MIN);
-    let rel = px_mv3(CU.cine_m0.xyz, CU.cine_m1.xyz, CU.cine_m2.xyz, vec3<f32>(CINE_XN * t1 * t1 * t1, 1.0, CINE_ZN * t2 * t2 * t2))
-        * (y2 / yd);
+    // M (XN t1^3, 1, ZN t2^3) with M (XN, 1, ZN) = (1, 1, 1): a channel is 1 + K0 s1 + K2 s2, where s1 = t1^3 - 1 and
+    // s2 = t2^3 - 1 come from the small chroma terms ca2 and cb2 (t1 = 1 + ca2 rounded to f32 and cubed is 2e-7 off).
+    let s1 = px_op(ca2 * px_op(3.0 + px_op(ca2 * px_op(3.0 + ca2))));
+    let s2 = -px_op(cb2 * px_op(3.0 - px_op(cb2 * px_op(3.0 - cb2))));
+    var rel = vec3<f32>(0.0);
+    for (var i = 0u; i < 3u; i++) {
+        var row = CU.cine_lo0;
+        if (i == 1u) {
+            row = CU.cine_lo1;
+        } else if (i == 2u) {
+            row = CU.cine_lo2;
+        }
+        let a = px_two_prod(row.x, s1);
+        let b = px_two_prod(row.y, s2);
+        let sum = px_two_sum(a.x, b.x);
+        let w = px_two_sum(1.0, sum.x);
+        let lo = px_op(px_op(px_op(a.y + b.y) + sum.y) + px_op(w.y + px_op(px_op(row.z * s1) + px_op(row.w * s2))));
+        rel[i] = px_op(w.x + lo) * (y2 / yd);
+    }
     let r = max(rel, vec3<f32>(CINE_KL)) + CINE_KL * (vec3<f32>(px_exp(min(rel.x - CINE_KL, 0.0) / CINE_KL), px_exp(min(rel.y - CINE_KL, 0.0) / CINE_KL), px_exp(min(rel.z - CINE_KL, 0.0) / CINE_KL)) - vec3<f32>(1.0));
     let v = (1.0 + CINE_KH) * r * yd;
     return vec3<f32>(cine_soft_clip(v.x, CINE_KH), cine_soft_clip(v.y, CINE_KH), cine_soft_clip(v.z, CINE_KH));
