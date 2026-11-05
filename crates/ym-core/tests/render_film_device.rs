@@ -895,6 +895,8 @@ fn png_against_display_linear() {
     if let Ok(dir) = std::env::var("YM_DUMP") {
         let bytes: Vec<u8> = dl_cpu.rgb.iter().flat_map(|v| v.to_le_bytes()).collect();
         std::fs::write(format!("{dir}/dl_cpu.f32"), bytes).expect("dump");
+        let bytes: Vec<u8> = dl_dev.rgb.iter().flat_map(|v| v.to_le_bytes()).collect();
+        std::fs::write(format!("{dir}/dl_dev.f32"), bytes).expect("dump");
         let bytes: Vec<u8> = png_dev.iter().chain(&png_cpu).flat_map(|v| v.to_le_bytes()).collect();
         std::fs::write(format!("{dir}/png_both.u32"), bytes).expect("dump");
     }
@@ -925,6 +927,19 @@ fn png_against_display_linear() {
     say(&format!("CPU-sharpened dl dev vs dl cpu (encoded) {:?}", code_diff(&a, &b)));
     say(&format!("CPU-sharpened dl cpu vs png cpu {:?}", code_diff(&b, &png_cpu)));
     say(&format!("CPU-sharpened dl dev vs png dev {:?}", code_diff(&a, &png_dev)));
+    {
+        let mut order: Vec<usize> = (0..a.len() / 3).collect();
+        let d = |p: usize| (0..3).map(|c| a[3 * p + c].abs_diff(png_dev[3 * p + c])).max().unwrap_or(0);
+        order.sort_by_key(|&p| std::cmp::Reverse(d(p)));
+        for &p in order.iter().take(6) {
+            let t = |v: &[u32]| [v[3 * p], v[3 * p + 1], v[3 * p + 2]];
+            say(&format!(
+                "pixel ({}, {}): png dev {:?} CPU-sharpened dev picture {:?} png cpu {:?} dev picture {:?} cpu picture {:?}",
+                p % w, p / w, t(&png_dev), t(&a), t(&png_cpu),
+                &dl_dev.rgb[3 * p..3 * p + 3], &dl_cpu.rgb[3 * p..3 * p + 3]
+            ));
+        }
+    }
     say(&format!("png cpu vs dl cpu {:?}", code_diff(&png_cpu, &e_cpu)));
     say(&format!("png dev vs dl dev {:?}", code_diff(&png_dev, &e_dev)));
 }

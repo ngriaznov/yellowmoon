@@ -63,6 +63,12 @@
      outside it and the box clips that, so the aligned control leaves room for the ring (e2e/selection-frame.spec.ts, look tiles). */
   scroll-padding-block: 8px;
 }
+/* A tab pane that was opened and is not on show (src/screens/tools/pane.tsx): it keeps its width, so what it measured stays right, and takes no height. */
+.ym-tools__scroll > [data-pane][data-hidden] {
+  height: 0;
+  overflow: hidden;
+  contain: layout paint style; /* and visibility: hidden, set on the element */
+}
 .ym-tools__footer {
   display: flex;
   flex-shrink: 0;

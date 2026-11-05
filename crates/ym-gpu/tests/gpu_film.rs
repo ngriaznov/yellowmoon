@@ -666,6 +666,95 @@ fn diagnose_stage_error() {
             }
             let n = sel.len() as f64;
             println!("mode {mode} {id} {o:?} n {}: max {worst:?} mean {:?} at {at:?}", sel.len(), sum.map(|s| s / n));
+            for c in 0..3 {
+                let mut e: Vec<f64> = (0..sel.len())
+                    .map(|i| {
+                        let q = [0, 1, 2].map(|k| f64::from(input[k * w * h + i]));
+                        let dp = if b.is_slide() { q } else { b.paper_density(b.print_log_exposure(q)) };
+                        let display = b.scan_display(dp);
+                        let want: [f64; 3] = match mode {
+                            1 => display,
+                            2 => {
+                                let cc = cine.display_coordinates(display);
+                                [cc.y2, cc.ca2, cc.cb2]
+                            }
+                            3 => b.core_table().invert(cine.display_coordinates(display)).coordinates,
+                            _ => b.colour_out(q),
+                        };
+                        (f64::from(got[c * w * h + i]) - want[c]).abs()
+                    })
+                    .collect();
+                e.sort_by(f64::total_cmp);
+                let pc = |p: f64| e[((e.len() - 1) as f64 * p) as usize];
+                println!("   ch {c}: p50 {:.2e} p90 {:.2e} p99 {:.2e} p99.9 {:.2e}", pc(0.5), pc(0.9), pc(0.99), pc(0.999));
+            }
+        }
+    }
+}
+
+/// F-08c diagnostic: the device's LogC4 error in units of the last place of an f32 at the CPU value, for the whole
+/// chain and the colour-out pass alone, over the photos' pixels: percentiles.
+#[test]
+#[ignore = "diagnostic: F-08c, error in ulps"]
+fn diagnose_ulp_error() {
+    let px = photo_set(7);
+    let (w, h) = side(64, px.len());
+    for dev in f32_devices() {
+        for (id, o) in [("kodak_portra_400", Output::Rec2020), ("kodak_portra_400", Output::DisplayP3)] {
+            let b = baked(id, o);
+            let dens = densities(&b, &px);
+            let input = planar(&dens, w, h);
+            let got = run_stage(dev, &colour_data(&b), Stage::ColourOut, &input, w, h);
+            let scene = planar(&px, w, h);
+            let got_chain = run_stage(dev, &colour_data(&b), Stage::Chain, &scene, w, h);
+            for (name, g, inp) in [("colour out", &got, &input), ("chain", &got_chain, &scene)] {
+                let mut errs: Vec<f64> = Vec::new();
+                let mut rnd: Vec<f64> = Vec::new();
+                for i in 0..px.len() {
+                    let q = [0, 1, 2].map(|c| f64::from(inp[c * w * h + i]));
+                    let want = if name == "chain" { b.run(q) } else { b.colour_out(q) };
+                    for c in 0..3 {
+                        let ulp = f64::from(f32::EPSILON) * 0.5;
+                        errs.push((f64::from(g[c * w * h + i]) - want[c]).abs() / ulp);
+                        rnd.push((f64::from(want[c] as f32) - want[c]).abs() / ulp);
+                    }
+                }
+                if name == "colour out" && matches!(o, Output::Rec2020) {
+                    let mut rows: Vec<(f64, usize)> = (0..px.len())
+                        .map(|i| {
+                            let q = [0, 1, 2].map(|c| f64::from(inp[c * w * h + i]));
+                            let want = b.colour_out(q);
+                            ((0..3).map(|c| (f64::from(g[c * w * h + i]) - want[c]).abs()).fold(0.0, f64::max), i)
+                        })
+                        .collect();
+                    rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+                    for &(e, i) in rows.iter().step_by(rows.len() / 400).take(14) {
+                        let q = [0, 1, 2].map(|c| f64::from(inp[c * w * h + i]));
+                        let dp = b.paper_density(b.print_log_exposure(q));
+                        println!(
+                            "  err {e:.2e} dens {q:.4?} display {:.6?} dev {:.7?} cpu {:.7?}",
+                            b.scan_display(dp),
+                            [0, 1, 2].map(|c| g[c * w * h + i]),
+                            b.colour_out(q)
+                        );
+                    }
+                }
+                errs.sort_by(f64::total_cmp);
+                rnd.sort_by(f64::total_cmp);
+                let pc = |v: &[f64], p: f64| v[((v.len() - 1) as f64 * p) as usize];
+                println!(
+                    "{id} {o:?} {name} n {}: units of 6e-8 p50 {:.2} p90 {:.2} p99 {:.2} p99.9 {:.2} max {:.2}; the f32 rounding alone p50 {:.2} p99 {:.2} max {:.2}",
+                    px.len(),
+                    pc(&errs, 0.5),
+                    pc(&errs, 0.9),
+                    pc(&errs, 0.99),
+                    pc(&errs, 0.999),
+                    errs[errs.len() - 1],
+                    pc(&rnd, 0.5),
+                    pc(&rnd, 0.99),
+                    rnd[rnd.len() - 1]
+                );
+            }
         }
     }
 }

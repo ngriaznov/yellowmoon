@@ -22,6 +22,8 @@ async function setup(initialPins: ColorWarpPin[] = []): Promise<UpdateSpy> {
   h = renderApp({ current: 3, picked: [2, 3, 4], initialSettings: { DSC04204: mainGradePatch({ color_warp: { pins: initialPins } }) } });
   await openPhotos(h);
   await openTab(h, "Colour");
+  // The plane's canvases are drawn from the second animation frame (`useAfterFirstFrame`).
+  await screen.findByRole("group", { name: "Colour warp plane" });
   return vi.spyOn(h.api, "updateSettings");
 }
 

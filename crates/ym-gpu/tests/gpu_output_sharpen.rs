@@ -2320,6 +2320,15 @@ fn a_dumped_film_picture_sharpens_alike() {
                 at = i;
             }
         }
+        if let Ok(v) = std::env::var("YM_PX") {
+            let q: Vec<usize> = v.split(',').map(|s| s.parse().expect("number")).collect();
+            let at = q[1] * w + q[0];
+            println!(
+                "at ({v}): device codes {:?} cpu codes {:?}",
+                (0..3).map(|c| code(g.data[c * w * h + at])).collect::<Vec<_>>(),
+                (0..3).map(|c| code(cpu.data[c * w * h + at])).collect::<Vec<_>>()
+            );
+        }
         let (c, p) = (at / (w * h), at % (w * h));
         println!(
             "device vs CPU sharpening: linear {worst_lin:.2e}, codes {worst_code} at ({}, {}) ch {c}: device {:e} cpu {:e} input {:e}",
@@ -2330,4 +2339,69 @@ fn a_dumped_film_picture_sharpens_alike() {
             img.data[at]
         );
     }
+}
+
+/// F-08c diagnostic: which neighbours of one pixel carry its sharpened difference. The CPU picture plus the
+/// device-minus-CPU difference of a window of radius `r` around the pixel (`YM_DUMP_FILE` the CPU's Film picture,
+/// `YM_DUMP_FILE2` the device's, `YM_PX` as `x,y`), sharpened on the CPU, in Rec.2020 codes of the pixel's channels.
+#[test]
+#[ignore = "diagnostic: F-08c, needs YM_DUMP_FILE, YM_DUMP_FILE2"]
+fn which_neighbours_carry_the_difference() {
+    let (Ok(p1), Ok(p2)) = (std::env::var("YM_DUMP_FILE"), std::env::var("YM_DUMP_FILE2")) else {
+        return;
+    };
+    let read = |p: String| -> Vec<f32> {
+        std::fs::read(p)
+            .expect("dump")
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    };
+    let (a, b) = (read(p1), read(p2));
+    let (w, h) = (640usize, 420usize);
+    let px: Vec<usize> = std::env::var("YM_PX")
+        .unwrap_or_else(|_| "491,103".into())
+        .split(',')
+        .map(|s| s.parse().expect("number"))
+        .collect();
+    let (px, py) = (px[0], px[1]);
+    let make = |r: Option<usize>| {
+        let mut img = RgbImage::new(w, h);
+        for p in 0..w * h {
+            let (x, y) = (p % w, p / w);
+            let inside = r.is_none_or(|r| x.abs_diff(px) <= r && y.abs_diff(py) <= r);
+            for c in 0..3 {
+                img.data[c * w * h + p] = if inside { b[3 * p + c] } else { a[3 * p + c] };
+            }
+        }
+        img
+    };
+    let sh = OutputSharpen::screen().with_amount_pct(100.0);
+    let space = ym_color::encode::OutputSpace::Rec2020;
+    let code = |x: f32| (space.encode_clamped([f64::from(x); 3])[0] * 65535.0).round();
+    let base = sh.apply(&make(Some(usize::MAX)), 1.0).expect("cpu");
+    let _ = base;
+    let cpu_pic = {
+        let mut img = RgbImage::new(w, h);
+        for p in 0..w * h {
+            for c in 0..3 {
+                img.data[c * w * h + p] = a[3 * p + c];
+            }
+        }
+        img
+    };
+    let want = sh.apply(&cpu_pic, 1.0).expect("cpu");
+    let at = py * w + px;
+    for r in [0usize, 1, 2, 3, 5, 8, 12, 17, 25] {
+        let got = sh.apply(&make(Some(r)), 1.0).expect("cpu");
+        let cs: Vec<f64> = (0..3)
+            .map(|c| code(got.data[c * w * h + at]) - code(want.data[c * w * h + at]))
+            .collect();
+        println!("window radius {r}: code difference at the pixel {cs:?}");
+    }
+    let got = sh.apply(&make(None), 1.0).expect("cpu");
+    let cs: Vec<f64> = (0..3)
+        .map(|c| code(got.data[c * w * h + at]) - code(want.data[c * w * h + at]))
+        .collect();
+    println!("whole picture: {cs:?}; input at the pixel {:?}", (0..3).map(|c| a[3 * at + c]).collect::<Vec<_>>());
 }

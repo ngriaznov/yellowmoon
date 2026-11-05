@@ -19,7 +19,8 @@ describe("a tab pane", () => {
     expect(screen.getByText("active")).toBeVisible();
     view.rerender(pane(false, 0));
     const kept = view.container.querySelector("[data-pane]");
-    expect(kept).toHaveAttribute("hidden");
+    expect(kept).toHaveAttribute("data-hidden");
+    expect(kept).toHaveAttribute("aria-hidden", "true");
     expect(kept).toHaveTextContent("hidden");
     view.rerender(pane(true, 0));
     expect(screen.getByText("active")).toBeVisible();

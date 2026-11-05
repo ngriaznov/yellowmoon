@@ -6,7 +6,7 @@ import type { ColorWarpPin } from "../../api/types";
 import { useAppState } from "../../state/context";
 import { gradeOf, MAIN_ID, patchOf } from "../../state/settingsGraph";
 import type { TabProps } from "./shared";
-import { usePaneActive } from "./pane";
+import { useAfterFirstFrame, usePaneActive } from "./pane";
 
 /** What the card says while no pin is selected. */
 export const WARP_HINT = "Drag a colour to move it. Lock holds a colour in place.";
@@ -47,6 +47,7 @@ export function ColorWarpCard({ store, photo, rs, node = MAIN_ID, pickingColor =
   // They are the colours at the input of this node's warp (`at`, `docs/01`); Main's are asked for without a node, as before nodes.
   const at = node === MAIN_ID ? undefined : node;
   const active = usePaneActive();
+  const planeReady = useAfterFirstFrame();
   useEffect(() => (active ? store.watchChromaScatter({ at }) : undefined), [store, photo.id, at, active]);
 
   const send = (next: ColorWarpPin[], final: boolean): void => void store.update(patchOf(node, { grade: { color_warp: { pins: next } } }), final, rs.photo_id);
@@ -100,14 +101,19 @@ export function ColorWarpCard({ store, photo, rs, node = MAIN_ID, pickingColor =
             Delete pin
           </Button>
         </div>
-        <WarpPlane
-          pins={pins}
-          selected={selected}
-          onSelect={(index) => store.selectWarpPin(index)}
-          onChange={send}
-          tool={tool}
-          scatter={scatter?.points ?? null}
-        />
+        {planeReady ? (
+          <WarpPlane
+            pins={pins}
+            selected={selected}
+            onSelect={(index) => store.selectWarpPin(index)}
+            onChange={send}
+            tool={tool}
+            scatter={scatter?.points ?? null}
+          />
+        ) : (
+          // Same size as the plane, so nothing moves when it arrives one frame later.
+          <div className="ym-warp-plane" aria-hidden="true" />
+        )}
       </div>
       {!pin ? (
         <RowNote>{pins.length >= WARP_MAX_PINS ? WARP_LIMIT_HINT : WARP_HINT}</RowNote>

@@ -126,7 +126,7 @@ describe("the tiles of the Look tab", () => {
     await waitFor(() => expect(observer().targets.size).toBe(all - 2));
     await user.click(screen.getByRole("tab", { name: "Light" }));
     // A tab that was opened stays mounted and hidden (U-02): its tiles are not in view, so the observer reports none and nothing is asked for.
-    expect(document.querySelector('[data-pane="look"]')).toHaveAttribute("hidden");
+    expect(document.querySelector('[data-pane="look"]')).toHaveAttribute("data-hidden");
     expect(observer().disconnected).toBe(false);
   });
 

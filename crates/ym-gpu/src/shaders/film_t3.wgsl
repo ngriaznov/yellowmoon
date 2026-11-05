@@ -2,7 +2,16 @@
 // @TAB@ are replaced for T3a and T3b'. Needs fx_clamp_nan0 (film.wgsl).
 
 
-fn rt_@NAME@(size: u32, lo: vec3<f32>, hi: vec3<f32>, power: f32, p: vec3<f32>) -> vec3<f32> {
+// The first node and the three increments of the tetrahedral sum, so a caller that needs the sum's distance from a
+// round number (the display's headroom below 1) can take it without the rounding of the sum itself.
+struct T3Split_@NAME@ {
+    a: vec3<f32>,
+    t0: vec3<f32>,
+    t1: vec3<f32>,
+    t2: vec3<f32>,
+}
+
+fn rt_@NAME@_split(size: u32, lo: vec3<f32>, hi: vec3<f32>, power: f32, p: vec3<f32>) -> T3Split_@NAME@ {
     var idx = vec3<u32>(0u);
     var fr = vec3<f32>(0.0);
     for (var c = 0u; c < 3u; c++) {
@@ -61,5 +70,17 @@ fn rt_@NAME@(size: u32, lo: vec3<f32>, hi: vec3<f32>, power: f32, p: vec3<f32>) 
     let b = vec3<f32>(@TAB@[p1], @TAB@[p1 + 1u], @TAB@[p1 + 2u]);
     let d = vec3<f32>(@TAB@[p2], @TAB@[p2 + 1u], @TAB@[p2 + 2u]);
     let e = vec3<f32>(@TAB@[c111], @TAB@[c111 + 1u], @TAB@[c111 + 2u]);
-    return a + w.x * (b - a) + w.y * (d - b) + w.z * (e - d);
+    return T3Split_@NAME@(a, w.x * (b - a), w.y * (d - b), w.z * (e - d));
+}
+
+fn rt_@NAME@(size: u32, lo: vec3<f32>, hi: vec3<f32>, power: f32, p: vec3<f32>) -> vec3<f32> {
+    let s = rt_@NAME@_split(size, lo, hi, power, p);
+    return s.a + s.t0 + s.t1 + s.t2;
+}
+
+// 1 minus the sample, with the sum taken from the node's own complement (exact for a node in [0.5, 2]) so that the
+// headroom of a value just under 1 keeps the precision of the small number it is, not of the 1 it is taken from.
+fn rt_@NAME@_head(size: u32, lo: vec3<f32>, hi: vec3<f32>, power: f32, p: vec3<f32>) -> vec3<f32> {
+    let s = rt_@NAME@_split(size, lo, hi, power, p);
+    return vec3<f32>(1.0) - s.a - s.t0 - s.t1 - s.t2;
 }
