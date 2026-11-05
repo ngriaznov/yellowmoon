@@ -569,9 +569,11 @@ fn decode_png16_bytes(bytes: &[u8]) -> Vec<u32> {
         .collect()
 }
 
-/// Regression (G-11): a view at scale 1 (zoom 50 to 150 %) of a photo with raster masks was made on the CPU, quietly, when
-/// the wider picture the masks read did not fit one binding (the owner's 12 CPU frames of 198, 410 to 840 ms). The route is
-/// bands on the device whatever the binding size; a frame the CPU makes says why.
+/// Regression (G-11): a view at scale 1 (zoom 50 to 150 %) of a photo with raster masks was made on the CPU when the wider
+/// picture the masks read did not fit one binding (the owner's 12 CPU frames of 198, 410 to 840 ms). The planes of such a view
+/// are made in tiles (`plane_tiles`), so the route is the device's whatever the binding size, down to the size where the
+/// frame itself cannot be held: 1 MiB and up for a small photo, 4 MiB and up for a 1332 x 888 view of a 4000 px one. Below that
+/// the CPU may make the frame, never quietly: it says why, in the report and in the note.
 #[test]
 fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size() {
     let _serial = SERIAL
@@ -579,61 +581,70 @@ fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(gpu) = gpu() else { return };
     let white = light("sony-ilce-7rm4", 4800.0);
-    let scene = Scene::new(4000, 2668, white, Layout::Patchwork, 0.5)
-        .noise(2e-4, 2e-6)
-        .seed(5);
-    let d = Developed::new(&scene, MODEL);
-    let mut rng = SplitMix64(9);
-    let rows = |kinds: &[MaskKind], rng: &mut SplitMix64| -> Vec<Value> {
-        kinds.iter().map(|k| row_json(*k, rng)).collect()
-    };
     let mut problems = Vec::new();
-    for (what, kinds) in [
-        ("brush", vec![MaskKind::Brush]),
+    // (photo, the cell, the bindings in KiB, the smallest binding the device must make the frame at)
+    let cases: [((u32, u32), (f64, f64), &[u64], u64); 2] = [
         (
-            "brush and background",
-            vec![MaskKind::Brush, MaskKind::Background],
+            (640, 420),
+            (300.0, 200.0),
+            &[65_536, 4096, 1024, 512, 256, 128, 64],
+            1024,
         ),
-    ] {
-        let doc = json!({ "nodes": { "items": [
-            { "id": 1 },
-            { "id": 2, "kind": "corrector", "pos": [2, 0.0], "trim": { "exposure_ev": 0.8 },
-              "masks": { "invert": false, "items": rows(&kinds, &mut rng) } },
-        ], "links": [
-            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
-            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
-            { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } },
-        ] } });
-        let settings = serde_json::from_value::<DevelopSettings>(doc)
-            .expect("a document")
-            .validated()
-            .expect("a valid graph")
-            .0;
-        let src = d.source().with_settings(settings);
-        for kib in [131_072u64, 65_536, 16_384, 4096, 1024] {
-            let device = renderer_with(Some(Arc::clone(&gpu)), 256, kib * 1024);
-            let _ = frame(&device, &src, &view(false, false, None));
-            for pct in [50.0, 75.0, 100.0, 147.0] {
-                let mut st = ViewportState::new(ViewportRect::cell(1332.0, 888.0, 1.0));
-                st.mode = ViewportMode::Percent { value: pct };
-                let got = frame(&device, &src, &st);
-                let on_cpu = got.report.device != ComputeDevice::Gpu;
-                // A binding that cannot hold even one row of the masks' wider picture (narrower than the frame grown by
-                // twice their reach, a column of rows deep) is a resource limit; below 1 MiB this scene is there. The
-                // CPU may make such a frame, but never quietly: it says why, in the report and in the note.
-                let reasoned = got.report.cpu_reason.is_some()
-                    && got.report.device_refused
-                    && got.report.notes.iter().any(|n| n.contains("graphics card"));
-                if on_cpu && (kib >= 1024 || !reasoned) {
-                    problems.push(format!(
-                        "{what}, binding {kib} KiB, zoom {pct} %: {:?}, reason {:?}, notes {:?}",
-                        got.report.device, got.report.cpu_reason, got.report.notes
-                    ));
-                }
-                if !on_cpu && device.views_on_cpu(src.id) {
-                    problems.push(format!(
-                        "{what}, binding {kib} KiB, zoom {pct} %: views_on_cpu"
-                    ));
+        ((4000, 2668), (1332.0, 888.0), &[65_536, 4096], 4096),
+    ];
+    for ((pw, ph), (cw, ch), sizes, device_from) in cases {
+        let scene = Scene::new(pw, ph, white, Layout::Patchwork, 0.5)
+            .noise(2e-4, 2e-6)
+            .seed(5);
+        let d = Developed::new(&scene, MODEL);
+        let mut rng = SplitMix64(9);
+        let rows = |kinds: &[MaskKind], rng: &mut SplitMix64| -> Vec<Value> {
+            kinds.iter().map(|k| row_json(*k, rng)).collect()
+        };
+        for (what, kinds) in [
+            ("brush", vec![MaskKind::Brush]),
+            (
+                "brush and background",
+                vec![MaskKind::Brush, MaskKind::Background],
+            ),
+        ] {
+            let doc = json!({ "nodes": { "items": [
+                { "id": 1 },
+                { "id": 2, "kind": "corrector", "pos": [2, 0.0], "trim": { "exposure_ev": 0.8 },
+                  "masks": { "invert": false, "items": rows(&kinds, &mut rng) } },
+            ], "links": [
+                { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+                { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+                { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } },
+            ] } });
+            let settings = serde_json::from_value::<DevelopSettings>(doc)
+                .expect("a document")
+                .validated()
+                .expect("a valid graph")
+                .0;
+            let src = d.source().with_settings(settings);
+            for &kib in sizes {
+                let device = renderer_with(Some(Arc::clone(&gpu)), 256, kib * 1024);
+                let _ = frame(&device, &src, &view(false, false, None));
+                for pct in [50.0, 75.0, 100.0, 147.0] {
+                    let mut st = ViewportState::new(ViewportRect::cell(cw, ch, 1.0));
+                    st.mode = ViewportMode::Percent { value: pct };
+                    let got = frame(&device, &src, &st);
+                    let on_cpu = got.report.device != ComputeDevice::Gpu;
+                    let reasoned = got.report.cpu_reason.is_some()
+                        && got.report.device_refused
+                        && got.report.notes.iter().any(|n| n.contains("graphics card"));
+                    if on_cpu && (kib >= device_from || !reasoned) {
+                        problems.push(format!(
+                            "{pw} px, {what}, binding {kib} KiB, zoom {pct} %: {:?}, reason {:?}, notes {:?}",
+                            got.report.device, got.report.cpu_reason, got.report.notes
+                        ));
+                    }
+                    if !on_cpu && device.views_on_cpu(src.id) {
+                        problems.push(format!(
+                            "{pw} px, {what}, binding {kib} KiB, zoom {pct} %: views_on_cpu"
+                        ));
+                    }
                 }
             }
         }

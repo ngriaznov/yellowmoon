@@ -751,17 +751,12 @@ fn prepared_for(
             photo: frame,
         };
         let planes = match &grown.source {
-            GrownSource::Whole(input) => encode_raster_planes_kept(
-                passes,
-                &prepared,
-                chain,
-                &job,
-                &grown.key,
-                |passes| {
+            GrownSource::Whole(input) => {
+                encode_raster_planes_kept(passes, &prepared, chain, &job, &grown.key, |passes| {
                     let _span = perf::span(Stage::WideImage);
                     input_image(ctx, passes, input)
-                },
-            )?,
+                })?
+            }
             GrownSource::Tiles(tiles) => {
                 let regions: Vec<RasterTile> = tiles.iter().map(|t| t.tile).collect();
                 encode_raster_planes_tiled(

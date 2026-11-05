@@ -102,8 +102,8 @@ use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::tail::{TailRoute, colour_device_tile_to_host, colour_tile_to_host};
 
 use self::device::{
-    Bounds, CameraSource, DeviceDisplay, DeviceInput, DisplayJob, GatherJob, GrownInput, GrownSource,
-    PlainJob, PlaneTile, Rgba8, TailJob, TailWork, Upload, ViewRoute,
+    Bounds, CameraSource, DeviceDisplay, DeviceInput, DisplayJob, GatherJob, GrownInput,
+    GrownSource, PlainJob, PlaneTile, Rgba8, TailJob, TailWork, Upload, ViewRoute,
 };
 pub use self::export_tail::{BAND_DEPTH, GpuBands, TailRequest};
 use self::film_pass::{Cover, FilmRender, OwnedPlanes};
@@ -987,6 +987,9 @@ fn grown_input(
     }))
 }
 
+/// The most tiles a view's raster planes are made in ([`plane_tiles`]).
+const MAX_PLANE_TILES: usize = 256;
+
 /// The raster planes of a view in tiles: the picture the colour pass makes is cut into tiles (the fewest, the largest sides
 /// halved in turn until it works) whose wider pictures, each the tile's window grown by the masks' receptive field and cut
 /// to the photo's extent as the scheduler infers it, fit the route's bindings. A tile's first column is an even distance
@@ -1012,6 +1015,11 @@ fn plane_tiles(
     };
     let (mut tw, mut th) = (rr.extent.w.max(2) & !1, rr.extent.h.max(1));
     loop {
+        // More tiles than this is a device the view does not suit (a binding of a few hundred KiB): the CPU answers, with
+        // its reason, rather than a frame of thousands of passes.
+        if rr.extent.w.div_ceil(tw) * rr.extent.h.div_ceil(th) > MAX_PLANE_TILES {
+            return Ok(None);
+        }
         // The layout: columns from the picture's first, rows likewise; the last column and row take what is left.
         let mut layout: Vec<(Area, Area)> = Vec::new();
         let mut fits = true;

@@ -1735,6 +1735,7 @@ mod tests {
                 timings: ym_core::pipeline::StageTimings::default(),
                 notes: Vec::new(),
                 device_refused: false,
+                cpu_reason: None,
                 zoom: None,
                 lens: None,
             },

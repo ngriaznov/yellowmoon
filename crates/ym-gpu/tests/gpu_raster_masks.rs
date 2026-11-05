@@ -31,7 +31,9 @@ use ym_gpu::cpu::sampler::{GridPositions, SamplerGrid, SamplerWarp, sample_to_ca
 use ym_gpu::cpu::tiling::Rect;
 use ym_gpu::image::GpuImage;
 use ym_gpu::kernels::color::{PreparedChain, Stop};
-use ym_gpu::kernels::mask_raster::{RasterJob, RasterPlanes, encode_raster_planes};
+use ym_gpu::kernels::mask_raster::{
+    PlaneKey, RasterJob, RasterPlanes, RasterTile, encode_raster_planes, encode_raster_planes_tiled,
+};
 use ym_gpu::kernels::sampler::encode_sample_at;
 use ym_gpu::queue::{JobSpec, Priority};
 use ym_gpu::stream::PassList;
@@ -837,6 +839,129 @@ fn tiles_equal_the_whole_frame_bit_for_bit_halos_included() {
                     }
                     y += tile;
                 }
+            }
+        }
+    }
+}
+
+/// The planes of `window` made in `tile` by `tile` pieces of the `extent` in one call ([`encode_raster_planes_tiled`]), each from
+/// the sampled picture of its own grown window.
+#[allow(clippy::too_many_arguments)]
+fn device_planes_tiled(
+    dev: &TestGpu,
+    chain: &ColorChain,
+    img: &RgbImage,
+    grid: &SamplerGrid,
+    frame: Area,
+    window: Area,
+    extent: Area,
+    halo: usize,
+    tile: (usize, usize),
+) -> Vec<Vec<u16>> {
+    let (chain, img, grid) = (chain.clone(), img.clone(), *grid);
+    dev.gpu
+        .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
+            let src = GpuImage::upload_rgb(ctx, "raster source", &img)?;
+            let mut passes = PassList::new(ctx, "raster tiled");
+            let mut tiles = Vec::new();
+            for ty in (0..extent.h).step_by(tile.1) {
+                for tx in (0..extent.w).step_by(tile.0) {
+                    let e = Area {
+                        x: extent.x + tx as i64,
+                        y: extent.y + ty as i64,
+                        w: tile.0.min(extent.w - tx),
+                        h: tile.1.min(extent.h - ty),
+                    };
+                    let w = e.intersect(&window);
+                    if !w.is_empty() {
+                        tiles.push(RasterTile {
+                            extent: e,
+                            grown: w.grown(halo, &frame),
+                        });
+                    }
+                }
+            }
+            let prepared = PreparedChain::new(ctx, &chain)?.with_photo_frame(grid.photo_frame());
+            let key = PlaneKey {
+                owner: 0xD0_71E5,
+                place: "tiled".to_owned(),
+                guide: "g".to_owned(),
+            };
+            let planes = encode_raster_planes_tiled(
+                &mut passes,
+                &prepared,
+                &chain,
+                &RasterJob {
+                    frame,
+                    grown: window.grown(halo, &frame),
+                    window,
+                    extent,
+                    photo: grid.photo_frame(),
+                },
+                &key,
+                &tiles,
+                |i, passes| {
+                    let g = tiles[i].grown;
+                    encode_sample_at(
+                        passes,
+                        &src,
+                        (0, 0),
+                        &grid,
+                        (g.x as usize, g.y as usize),
+                        g.w,
+                        g.h,
+                        true,
+                    )
+                },
+            )?;
+            let read = passes.read(planes.buffer(), 0, planes.byte_len())?;
+            let _src = passes.keep(src.buf);
+            let done = passes.submit()?.finish()?;
+            let bytes = done.read(read).to_vec();
+            Ok(unpack(&bytes, &planes))
+        })
+        .expect("GPU raster planes in tiles")
+}
+
+/// A view's planes made in tiles (G-11, `docs/23` section 5.12) are the bytes the pass in one piece makes: over an extent with
+/// paper around the window, odd-sized, in tiles of even and uneven widths, with and without Refine edges.
+#[test]
+fn planes_made_in_tiles_are_the_planes_made_in_one_piece_bit_for_bit() {
+    let buffer = (360usize, 240usize);
+    let img = scene(buffer.0, buffer.1, 0x71E5);
+    let (grid, frame) = export_grid(buffer, 0.5); // 720 x 480
+    let window = Area {
+        x: 40,
+        y: 30,
+        w: 331,
+        h: 207,
+    };
+    let extent = Area {
+        x: 20,
+        y: 10,
+        w: 389,
+        h: 251,
+    };
+    for (name, rows) in [
+        ("grow, feather", vec![row(0.5, 0.4, 0.0)]),
+        ("refine", vec![row(0.0, 0.0, 0.7)]),
+        (
+            "all, two rows",
+            vec![row(0.3, 0.3, 0.5), row(-0.2, 0.0, 1.0)],
+        ),
+    ] {
+        let chain = chain_with(RasterSet { rows });
+        let halo = chain.rasters().halo(1.0 / grid.photo_frame().pixel);
+        for dev in gpus() {
+            if dev.mode.is_f16() {
+                continue;
+            }
+            let whole = device_planes_in(dev, &chain, &img, &grid, frame, window, extent, halo);
+            for tile in [(64usize, 50usize), (130, 97), (388, 250)] {
+                let got = device_planes_tiled(
+                    dev, &chain, &img, &grid, frame, window, extent, halo, tile,
+                );
+                assert_eq!(got, whole, "{name}: tiles of {tile:?}");
             }
         }
     }

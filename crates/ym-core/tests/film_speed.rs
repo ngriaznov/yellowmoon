@@ -14,7 +14,7 @@
 mod common;
 
 use std::io::Write as _;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use common::*;
@@ -32,6 +32,16 @@ use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
 use ym_gpu::queue::CancelToken;
 
 const MODEL: &str = "ILCE-7RM4";
+
+/// The Film engine and its baker are the process's (`FilmEngine::shared`), so their counters count every test that renders a
+/// Film node in this binary. The tests that read them one frame at a time run one after the other: with two tests on two
+/// threads (the Mac CI's `--test-threads=2`), the other test's first export bakes the Rec.2020/sRGB tables of its own output
+/// inside a measured frame, "a table was baked" for a frame that baked nothing (CI on c581338, all three Mac jobs).
+static ENGINE: Mutex<()> = Mutex::new(());
+
+fn engine_alone() -> std::sync::MutexGuard<'static, ()> {
+    ENGINE.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 fn gpu() -> Option<Arc<Gpu>> {
     match Gpu::start(GpuConfig {
@@ -132,6 +142,8 @@ struct Seen {
     readbacks: u64,
     builds: (u64, u64),
     baked: u64,
+    /// Which tables: T1, curves, T3a, T3b.
+    baked_kinds: [u64; 4],
     precise: u64,
 }
 
@@ -168,6 +180,15 @@ fn timed(r: &Renderer, gpu: &Gpu, src: &PhotoSource, st: &ViewportState) -> Seen
         readbacks: d.readbacks,
         builds: (now.0 - built.0, now.1 - built.1),
         precise: d.precise_dispatches,
+        baked_kinds: {
+            let b = engine.baker().built();
+            [
+                b.t1 - baked.t1,
+                b.curves - baked.curves,
+                b.t3a - baked.t3a,
+                b.t3b - baked.t3b,
+            ]
+        },
         baked: {
             let b = engine.baker().built();
             (b.t1 - baked.t1)
@@ -184,7 +205,7 @@ fn say(text: &str) {
 
 fn row(what: &str, s: &Seen) {
     say(&format!(
-        "{what:<34} {:>8.1} ms  {}x{}  uploads {} / {:.2} MiB  pipelines {}  dispatches {}  submissions {}  readbacks {}  chains+models built {:?}  bakes {}",
+        "{what:<34} {:>8.1} ms  {}x{}  uploads {} / {:.2} MiB  pipelines {}  dispatches {}  submissions {}  readbacks {}  chains+models built {:?}  bakes {} (t1, curves, t3a, t3b {:?})",
         s.ms,
         s.size.0,
         s.size.1,
@@ -195,7 +216,8 @@ fn row(what: &str, s: &Seen) {
         s.submissions,
         s.readbacks,
         s.builds,
-        s.baked
+        s.baked,
+        s.baked_kinds
     ));
 }
 
@@ -221,6 +243,7 @@ fn small() -> Developed {
 
 #[test]
 fn a_viewer_frame_with_a_film_node_is_cheap_by_the_counters() {
+    let _alone = engine_alone();
     let Some(gpu) = gpu() else { return };
     let d = small();
     let r = renderer(Arc::clone(&gpu));
@@ -245,7 +268,11 @@ fn a_viewer_frame_with_a_film_node_is_cheap_by_the_counters() {
         let s = timed(&r, &gpu, &base.with_settings(settings), &st);
         row(what, &s);
         assert_eq!(s.pipelines, 0, "{what}: a pipeline was compiled");
-        assert_eq!(s.baked, 0, "{what}: a table was baked");
+        assert_eq!(
+            s.baked, 0,
+            "{what}: a table was baked (t1, curves, t3a, t3b {:?})",
+            s.baked_kinds
+        );
         assert!(
             s.uploaded_bytes < 1 << 20,
             "{what}: {} bytes were uploaded (the Film tables are tens of MiB)",
@@ -288,6 +315,7 @@ fn a_viewer_frame_with_a_film_node_is_cheap_by_the_counters() {
 /// planes are copied from the ones kept on the device, and the planes of the Film node's prefix chain too.
 #[test]
 fn a_viewer_frame_with_a_raster_mask_before_the_film_node_is_cheap_by_the_counters() {
+    let _alone = engine_alone();
     let Some(gpu) = gpu() else { return };
     let d = small();
     let r = renderer(Arc::clone(&gpu));
@@ -323,7 +351,11 @@ fn a_viewer_frame_with_a_raster_mask_before_the_film_node_is_cheap_by_the_counte
             let s = timed(&r, &gpu, &base.with_settings(settings), &st);
             row(what, &s);
             assert_eq!(s.pipelines, 0, "{what}: a pipeline was compiled");
-            assert_eq!(s.baked, 0, "{what}: a table was baked");
+            assert_eq!(
+                s.baked, 0,
+                "{what}: a table was baked (t1, curves, t3a, t3b {:?})",
+                s.baked_kinds
+            );
             assert!(
                 s.uploaded_bytes < 1 << 20,
                 "{what}: {} bytes were uploaded",

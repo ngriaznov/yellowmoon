@@ -674,14 +674,20 @@ where
     W: FnOnce(&mut PassList<'p>) -> Result<GpuImage, GpuError>,
 {
     let mut wide = Some(wide);
-    encode_rows(passes, prepared, chain, job, Some(key), None, &mut |_, p| {
-        match wide.take() {
+    encode_rows(
+        passes,
+        prepared,
+        chain,
+        job,
+        Some(key),
+        None,
+        &mut |_, p| match wide.take() {
             Some(make) => make(p).map(Wide::Owned),
             None => Err(GpuError::InvalidInput(
                 "the raster pass asked for its picture twice".to_owned(),
             )),
-        }
-    })
+        },
+    )
 }
 
 /// [`encode_raster_planes_kept`] in tiles: the extent's planes are made one tile of `tiles` at a time, each from the
@@ -783,7 +789,8 @@ pub struct RasterTile {
 }
 
 /// The sampler's image of a tile: [`encode_raster_planes_tiled`] asks for tile `index`'s.
-type WideFor<'a, 'p, 's> = &'a mut dyn FnMut(usize, &mut PassList<'p>) -> Result<Wide<'s>, GpuError>;
+type WideFor<'a, 'p, 's> =
+    &'a mut dyn FnMut(usize, &mut PassList<'p>) -> Result<Wide<'s>, GpuError>;
 
 fn encode_rows<'p, 's>(
     passes: &mut PassList<'p>,
