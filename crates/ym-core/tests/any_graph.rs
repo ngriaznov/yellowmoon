@@ -583,7 +583,8 @@ fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size()
     let white = light("sony-ilce-7rm4", 4800.0);
     let mut problems = Vec::new();
     // (photo, the cell, the bindings in KiB, the smallest binding the device must make the frame at)
-    let cases: [((u32, u32), (f64, f64), &[u64], u64); 2] = [
+    type Case = ((u32, u32), (f64, f64), &'static [u64], u64);
+    let cases: [Case; 2] = [
         (
             (640, 420),
             (300.0, 200.0),
