@@ -60,6 +60,17 @@ const MAX_TIMED_PASSES: u32 = 512;
 
 static NEXT_LIST: AtomicU64 = AtomicU64::new(1);
 
+/// Invocations a dispatch is counted at per workgroup: the kernels use workgroups of 64 to 256, and the budget is an
+/// estimate of the work in a command buffer, not a measure.
+pub const INVOCATIONS_PER_GROUP: u64 = 256;
+
+/// The most work one submission holds before [`PassList::dispatch`] starts another: 32 million invocations, a few tens of
+/// milliseconds of simple passes on an M1, which is the job length K5 of `docs/17-gpu.md` asks for (the Metal watchdog
+/// and the Windows TDR kill a command buffer that runs for seconds, and a virtual GPU is slower than any of them). A
+/// command buffer that would pass it is submitted first and the rest goes into the next; the queue keeps the order, so the
+/// result is the same bytes. One dispatch is never cut: a pass over a plane of the design binding is 4.8 million pixels.
+pub const WORK_BUDGET: u64 = 32 << 20;
+
 /// What the device has been asked to do, counted since it opened. Read with
 /// [`GpuContext::counters`] or [`crate::device::Gpu::counters`]; subtract two snapshots to measure a
 /// region ([`CounterSnapshot::since`]).
@@ -78,6 +89,10 @@ pub struct Counters {
     precise_dispatches: AtomicU64,
     /// A test's switch: no raster plane is kept or served on this device.
     planes_off: AtomicBool,
+    /// The most invocations one submission may hold before the list starts another ([`WORK_BUDGET`] unless a test sets it).
+    work_budget: AtomicU64,
+    /// The most invocations a submission of more than one dispatch held (a submission of one dispatch cannot be cut).
+    max_split_work: AtomicU64,
     /// GPU time per pass label, from the timestamp queries of the lists that were timed (empty unless the
     /// device was opened with [`GpuConfig::timestamps`](crate::device::GpuConfig::timestamps)).
     passes: Mutex<BTreeMap<String, PassTotal>>,
@@ -163,6 +178,26 @@ impl Counters {
         self.precise_dispatches.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// The invocations a submission may hold, see [`WORK_BUDGET`].
+    pub(crate) fn work_budget(&self) -> u64 {
+        match self.work_budget.load(Ordering::Relaxed) {
+            0 => WORK_BUDGET,
+            n => n,
+        }
+    }
+
+    /// Sets the work budget of a submission (0: the default), for a test.
+    pub fn set_work_budget(&self, invocations: u64) {
+        self.work_budget.store(invocations, Ordering::Relaxed);
+    }
+
+    /// A submission that held `work` invocations in `dispatches` dispatches.
+    pub(crate) fn record_submission_work(&self, work: u64, dispatches: u32) {
+        if dispatches > 1 {
+            self.max_split_work.fetch_max(work, Ordering::Relaxed);
+        }
+    }
+
     /// Whether the kept raster planes are switched off ([`Counters::set_planes_kept`]).
     pub(crate) fn planes_kept_off(&self) -> bool {
         self.planes_off.load(Ordering::Relaxed)
@@ -188,6 +223,7 @@ impl Counters {
             pipelines: self.pipelines.load(Ordering::Relaxed),
             pipeline_micros: self.pipeline_micros.load(Ordering::Relaxed),
             precise_dispatches: self.precise_dispatches.load(Ordering::Relaxed),
+            max_split_work: self.max_split_work.load(Ordering::Relaxed),
         }
     }
 }
@@ -219,6 +255,10 @@ pub struct CounterSnapshot {
     /// Colour-chain and Film dispatches that ran the compensated arithmetic of the export. A viewer frame has none: a view
     /// runs the plain f32 arithmetic it had before F-08d (`docs/24` section 3.9c "Speed").
     pub precise_dispatches: u64,
+    /// The most invocations (workgroups x [`INVOCATIONS_PER_GROUP`]) any submission of more than one dispatch held since the
+    /// device opened: at most the work budget, which is what keeps one command buffer short (`docs/17-gpu.md` K5). Not a
+    /// difference of two readings: it is a maximum.
+    pub max_split_work: u64,
 }
 
 impl CounterSnapshot {
@@ -239,6 +279,7 @@ impl CounterSnapshot {
             precise_dispatches: self
                 .precise_dispatches
                 .saturating_sub(earlier.precise_dispatches),
+            max_split_work: self.max_split_work,
         }
     }
 }
@@ -554,6 +595,9 @@ pub struct PassList<'a> {
     timestamps: Option<TimestampState>,
     id: u64,
     after_submit: Vec<Box<dyn FnOnce() + Send>>,
+    /// Invocations and dispatches recorded in the encoder since the last submission of this list.
+    work: u64,
+    encoder_dispatches: u32,
 }
 
 impl std::fmt::Debug for PassList<'_> {
@@ -589,6 +633,8 @@ impl<'a> PassList<'a> {
             timestamps,
             id: NEXT_LIST.fetch_add(1, Ordering::Relaxed),
             after_submit: Vec::new(),
+            work: 0,
+            encoder_dispatches: 0,
         }
     }
 
@@ -695,6 +741,16 @@ impl<'a> PassList<'a> {
         if groups.0 == 0 || groups.1 == 0 || groups.2 == 0 {
             return Ok(());
         }
+        // A command buffer that would hold more than the work budget is submitted first (K5): the rest of the list goes into
+        // the next one. Timed lists keep one encoder (their query set is tied to it).
+        let work =
+            u64::from(groups.0) * u64::from(groups.1) * u64::from(groups.2) * INVOCATIONS_PER_GROUP;
+        if self.timestamps.is_none()
+            && self.encoder_dispatches > 0
+            && self.work + work > self.ctx.counters_shared().work_budget()
+        {
+            self.flush()?;
+        }
         let pipeline = self.ctx.kernels().pipeline(self.ctx, kernel)?;
         let bind_group = bind(self.ctx, &pipeline, label, entries);
         let timestamp_writes = self.timestamps.as_mut().and_then(|t| {
@@ -719,6 +775,32 @@ impl<'a> PassList<'a> {
         pass.dispatch_workgroups(groups.0, groups.1, groups.2);
         drop(pass);
         self.dispatches += 1;
+        self.encoder_dispatches += 1;
+        self.work += work;
+        Ok(())
+    }
+
+    /// Submits what is recorded so far as a command buffer of its own and goes on recording into a new one. The buffers the
+    /// list keeps stay alive until the whole list has finished, the readbacks it asked for are read after the last
+    /// submission, and what follows sees what came before (the queue runs submissions in order).
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::DeviceLost`] when the device is lost or tainted.
+    fn flush(&mut self) -> Result<(), GpuError> {
+        let fresh = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("view continued"),
+            });
+        let done = std::mem::replace(&mut self.encoder, fresh);
+        self.ctx.submit([done.finish()])?;
+        self.ctx
+            .counters_shared()
+            .record_submission_work(self.work, self.encoder_dispatches);
+        self.work = 0;
+        self.encoder_dispatches = 0;
         Ok(())
     }
 
@@ -788,6 +870,8 @@ impl<'a> PassList<'a> {
         let dispatches = self.dispatches;
         ctx.counters_shared()
             .count_dispatches(u64::from(dispatches));
+        ctx.counters_shared()
+            .record_submission_work(self.work, self.encoder_dispatches);
         let submission = ctx.submit([self.encoder.finish()])?;
         for f in std::mem::take(&mut self.after_submit) {
             f();

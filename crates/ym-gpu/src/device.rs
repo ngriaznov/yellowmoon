@@ -1151,6 +1151,12 @@ impl Gpu {
         self.shared.counters.set_planes_kept(on);
     }
 
+    /// Sets the most invocations one submission holds before a list starts another (0: [`crate::stream::WORK_BUDGET`]); a
+    /// test lowers it to see lists cut.
+    pub fn set_work_budget(&self, invocations: u64) {
+        self.shared.counters.set_work_budget(invocations);
+    }
+
     /// Takes the GPU time per pass label that the timestamp queries measured since the last call, and
     /// starts the totals again from zero. Empty unless the device was opened with
     /// [`GpuConfig::timestamps`] on an adapter that has `TIMESTAMP_QUERY` (`ym doctor --bench`).
