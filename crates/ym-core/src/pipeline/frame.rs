@@ -815,8 +815,16 @@ fn view_frame(view_to_final: &Affine, (fw, fh): (usize, usize)) -> Area {
     };
     let (ax, ay) = inverse.apply(0.0, 0.0);
     let (bx, by) = inverse.apply(fw as f64, fh as f64);
+    // A pixel whose centre is on the edge of the image is inside it. The edge lands on a centre exactly when the zoom
+    // makes the photo a whole number of pixels, and then the last digits of the map decide: the rows of a band of the
+    // view, mapped by a map moved by a whole row, found a different extent (315 or 316 rows at 75 %), which moved the Film
+    // grain between bands. A tolerance of a millionth of a pixel makes the extent the same for every part of a view.
+    const EDGE: f64 = 1e-6;
     let span = |a: f64, b: f64| {
-        let (lo, hi) = ((a.min(b) - 0.5).ceil(), (a.max(b) - 0.5).floor());
+        let (lo, hi) = (
+            (a.min(b) - 0.5 - EDGE).ceil(),
+            (a.max(b) - 0.5 + EDGE).floor(),
+        );
         if lo.is_finite() && hi.is_finite() && hi >= lo {
             (lo as i64, (hi - lo + 1.0) as usize)
         } else {

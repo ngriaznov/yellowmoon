@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Badge } from "@/components/glass/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/glass/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/glass/tooltip";
+import { OptionalTooltip } from "@/components/OptionalTooltip";
 import { Button } from "../../components";
 
 /** The kinds of node that come later (`docs/23` §7.4): shown greyed, so the menu says where the graph is going. */
@@ -49,7 +50,7 @@ export function AddNodeMenu({ onAddCorrector, onAddFilm, blocked = null }: AddNo
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" aria-label="Add node" className="ym-add-node-menu">
-        <Tooltip>
+        <OptionalTooltip text={blocked} side="right">
           <TooltipTrigger asChild>
             <DropdownMenuItem
               disabled={!onAddCorrector || blocked !== null}
@@ -61,9 +62,8 @@ export function AddNodeMenu({ onAddCorrector, onAddFilm, blocked = null }: AddNo
               <Line name="Corrector" line="Grades all or part of the photo." />
             </DropdownMenuItem>
           </TooltipTrigger>
-          {blocked !== null ? <TooltipContent side="right">{blocked}</TooltipContent> : null}
-        </Tooltip>
-        <Tooltip>
+        </OptionalTooltip>
+        <OptionalTooltip text={blocked} side="right">
           <TooltipTrigger asChild>
             <DropdownMenuItem
               disabled={!onAddFilm || blocked !== null}
@@ -75,8 +75,7 @@ export function AddNodeMenu({ onAddCorrector, onAddFilm, blocked = null }: AddNo
               <Line name="Film" line="Models a colour negative, a print and a scan." />
             </DropdownMenuItem>
           </TooltipTrigger>
-          {blocked !== null ? <TooltipContent side="right">{blocked}</TooltipContent> : null}
-        </Tooltip>
+        </OptionalTooltip>
         <DropdownMenuSeparator />
         {LATER.map((item) => (
           <Tooltip key={item.name}>

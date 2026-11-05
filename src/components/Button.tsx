@@ -3,7 +3,8 @@ import type { ButtonHTMLAttributes, MouseEvent, ReactNode, Ref } from "react";
 import { Button as GlassButton } from "@/components/glass/button";
 import { Kbd } from "@/components/glass/kbd";
 import { Toggle } from "@/components/glass/toggle";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/glass/tooltip";
+import { TooltipTrigger } from "@/components/glass/tooltip";
+import { OptionalTooltip } from "./OptionalTooltip";
 import { cx } from "./cx";
 import { BUTTON_HANDLERS, memoStable } from "./stable";
 
@@ -134,7 +135,7 @@ function ButtonImpl({
   // The tree is the same whether or not there is a title: a button whose title comes and goes (the wizard's Next, the Export panel's
   // estimate) keeps its element, so the focus stays on it. Without a title the span is inert (no content, no description).
   return (
-    <Tooltip>
+    <OptionalTooltip text={title}>
       {/* The tooltip opens on hover only. On focus it would take the first Esc (Radix dismisses the topmost layer and calls preventDefault,
           so the dialog or the mode behind it would need a second press); the reason is still read from the description, and the screens
           that lock a button say why in their own note. Radix skips its focus handler when this one calls preventDefault. */}
@@ -148,8 +149,7 @@ function ButtonImpl({
           ) : null}
         </span>
       </TooltipTrigger>
-      {title ? <TooltipContent>{title}</TooltipContent> : null}
-    </Tooltip>
+    </OptionalTooltip>
   );
 }
 

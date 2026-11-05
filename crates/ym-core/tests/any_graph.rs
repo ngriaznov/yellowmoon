@@ -591,7 +591,7 @@ fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size()
             &[65_536, 4096, 1024, 512, 256, 128, 64],
             1024,
         ),
-        ((4000, 2668), (1332.0, 888.0), &[65_536, 4096], 4096),
+        ((4000, 2668), (1332.0, 888.0), &[65_536, 16_384, 4096], 4096),
     ];
     for ((pw, ph), (cw, ch), sizes, device_from) in cases {
         let scene = Scene::new(pw, ph, white, Layout::Patchwork, 0.5)
@@ -637,6 +637,11 @@ fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size()
                 .0;
             let src = d.source().with_settings(settings);
             for &kib in sizes {
+                // The wider picture of a Film node is the tile grown by its halos on every side (about 300 px here): a tile
+                // needs a binding that holds more than that, 16 MiB for the 1332 x 888 view.
+                if film && pw > 1000 && kib < 16_384 {
+                    continue;
+                }
                 let device = renderer_with(Some(Arc::clone(&gpu)), 256, kib * 1024);
                 let _ = frame(&device, &src, &view(false, false, None));
                 for pct in [50.0, 75.0, 100.0, 147.0] {

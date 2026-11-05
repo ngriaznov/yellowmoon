@@ -1,10 +1,10 @@
 import type { NodeProps } from "@xyflow/react";
-import { useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useRef } from "react";
 import type { KeyboardEvent } from "react";
 import type { NodeId } from "../../api/types";
 import { Input } from "@/components/glass/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/glass/tooltip";
+import { OptionalTooltip } from "@/components/OptionalTooltip";
 import { cardName, chipText } from "../../state/graphOps";
 import { nodeOf } from "../../state/settingsGraph";
 import type { CardItem } from "../../state/settingsGraph";
@@ -138,21 +138,6 @@ export function CardName({ id, name }: { id: NodeId; name: string }) {
 }
 
 /**
- * The card's tooltip, "Not connected to the output.", which exists only while the card is dead. Radix closes a tooltip whose content is
- * mounted when the pointer leaves, but one without content stays "open" in its state: a pointer that crossed the card before it went dead
- * would leave the tooltip open, and it would appear on its own the moment the card went dead. So the state is kept only while dead.
- */
-function DeadTip({ dead, children }: { dead: boolean; children: ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <Tooltip open={dead && open} onOpenChange={(next) => setOpen(dead && next)}>
-      {children}
-      {dead ? <TooltipContent>Not connected to the output.</TooltipContent> : null}
-    </Tooltip>
-  );
-}
-
-/**
  * A corrector's card (`docs/23` §7.2): 150 × 112 px with the name above it, a thumbnail band of 81 px, and a footer of 30 px with the
  * number chip at the left and the mask glyphs at the right; the ports on its sides. Selected: a 2 px yellow ring. Bypassed: the picture
  * at half strength and a slash glyph. Dead (not on a path to the Output): the whole card at 45 % with the tooltip "Not connected to the
@@ -182,7 +167,7 @@ export function NodeCard({ data }: NodeProps) {
   return (
     <div className="ym-gnode" data-selected={selected || undefined} data-quiet={(selected && ui.linkSelected) || undefined} data-bypass={node.bypass || undefined} data-dead={dead || undefined}>
       <CardName id={id} name={node.name} />
-      <DeadTip dead={dead}>
+      <OptionalTooltip text={dead ? "Not connected to the output." : null}>
         <TooltipTrigger asChild>
           <div
             className="ym-gnode__box"
@@ -220,7 +205,7 @@ export function NodeCard({ data }: NodeProps) {
             </div>
           </div>
         </TooltipTrigger>
-      </DeadTip>
+      </OptionalTooltip>
       <span className="ym-gnode__ring" aria-hidden="true" />
       <Port node={id} port="picture" side="in" on="card" />
       <Port node={id} port="picture" side="out" on="card" />
