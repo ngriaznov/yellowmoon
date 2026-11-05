@@ -681,3 +681,64 @@ fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size()
     }
     assert!(problems.is_empty(), "{problems:#?}");
 }
+
+/// Regression (G-11): the device's row bands of a magnified view with a Film node (halation), before it a corrector with a
+/// feathered Brush, equal the view made in one piece. The last rows of the last band were wrong (up to 60 codes).
+#[test]
+fn device_bands_of_a_magnified_film_view_equal_the_view_in_one_piece() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(gpu) = gpu() else { return };
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let brush = json!({ "kind": "brush", "mode": "add", "feather": 0.051, "refine": 0.0,
+        "strokes": [{ "erase": false, "hardness": 0.5, "size": 0.2,
+            "points": [[0.4967, 0.3357], [0.6183, 0.5886]] }] });
+    let doc = json!({ "nodes": { "items": [
+        { "id": 1 },
+        { "id": 2, "kind": "corrector", "pos": [2, 0.0], "trim": { "exposure_ev": 0.8 },
+          "masks": { "invert": false, "items": [brush] } },
+        { "id": 3, "kind": "film", "pos": [3, 0.0], "film": { "exposure_ev": 0.3 },
+          "halation": { "amount": 50.0 }, "grain": { "amount": 0.0 } } ],
+      "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+        { "from": { "node": 3, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
+    let settings = serde_json::from_value::<DevelopSettings>(doc)
+        .expect("a document")
+        .validated()
+        .expect("a valid graph")
+        .0;
+    let src = d.source().with_settings(settings);
+    let mut st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+    st.mode = ViewportMode::Percent { value: 147.0 };
+    let whole = frame(
+        &renderer_with(Some(Arc::clone(&gpu)), 256, 64 << 20),
+        &src,
+        &st,
+    );
+    let bands = frame(
+        &renderer_with(Some(Arc::clone(&gpu)), 256, 1 << 20),
+        &src,
+        &st,
+    );
+    assert_eq!(
+        bands.report.device,
+        ComputeDevice::Gpu,
+        "{:?}",
+        bands.report.cpu_reason
+    );
+    let (max, over) = frame_diff(&bands, &whole);
+    let w = whole.width;
+    let bad: Vec<usize> = (0..whole.height).filter(|&y| (0..w * 4).any(|i| bands.rgba[y * w * 4 + i].abs_diff(whole.rgba[y * w * 4 + i]) > 2)).collect();
+    eprintln!("[probe] {}x{} bad rows {:?}", whole.width, whole.height, bad);
+    assert!(
+        max <= 2 && over < whole.rgba.len() / 2000,
+        "the bands differ from the view in one piece by {max} codes, {over} values over 1"
+    );
+}

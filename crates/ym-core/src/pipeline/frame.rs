@@ -945,6 +945,9 @@ fn raster_read(
         y: a.y - frame.y,
         ..a
     };
+    if std::env::var_os("YM_DEBUG_CUT").is_some() {
+        eprintln!("[rr] view {}x{} frame {frame:?} picture {picture:?} window {window:?} grown {grown:?} films {}", read.out_w, read.out_h, film.is_some());
+    }
     Ok(Some(RasterRead {
         spec,
         frame: Area::whole(frame.w, frame.h),
@@ -2701,13 +2704,6 @@ fn banded(
     let mut chains: Vec<&ColorChain> = vec![&grade.chain];
     chains.extend(overlay.as_deref().map(|g| &*g.chain));
     let rows = match band_split(job, spec, sharpening, route, &chains)? {
-        // A sharpened view with a Film node that must be cut is cut as display-linear tiles for the CPU stage
-        // (`sharpened_pass`), not as bands with the device's stage: the bands of a magnified view with a Film node, a
-        // feathered raster mask and halation differed from the view in one piece in the last rows of the last band (the
-        // device-stage bands of a Film chain are open, `docs/23` section 5.12).
-        Cut::Rows(_) if sharpening.is_some() && grade.chain.has_films() => {
-            return whole(job, spec, grade, sharpening, Some(route), StageWindow::Own);
-        }
         Cut::Rows(rows) => rows,
         // A view whose wider picture passes the bindings in any rows: a frame without the stage is made a tile at a time;
         // a sharpened one by `sharpened_pass`, which cuts its display-linear frame the same way.
