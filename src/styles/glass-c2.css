@@ -2077,6 +2077,9 @@ button[data-slot="button"][data-variant="link"]:not([aria-disabled="true"]) {
   padding: 18px 16px 16px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  /* It opens to the left, over the photo cell. In the app the page is transparent there and the photo is a native layer behind it, so
+     the backdrop blur has nothing to blur: the glass has to be dense on its own, or the names are lost on a bright photo. */
+  --glass-liquid-opacity: 92%;
 }
 .ym-stock-picker__heading {
   margin: 0 0 8px 2px;

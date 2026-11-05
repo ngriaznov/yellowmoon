@@ -93,7 +93,23 @@ test.describe("the Stock picker", () => {
       await page.getByRole("button", { name: /^Stock, / }).click();
       const picker = page.getByRole("dialog", { name: "Film stocks" });
       await expect(picker).toBeVisible();
-      await page.waitForTimeout(500);
+      // Settled: the box is the same on two frames in a row and the glass has materialised.
+      await picker.evaluate(
+        (el) =>
+          new Promise<void>((resolve) => {
+            let last = "";
+            let same = 0;
+            const tick = () => {
+              const r = el.getBoundingClientRect();
+              const now = `${r.left},${r.top},${r.width},${r.height},${getComputedStyle(el).opacity}`;
+              same = now === last ? same + 1 : 0;
+              last = now;
+              if (same >= 3 && getComputedStyle(el).opacity === "1") resolve();
+              else requestAnimationFrame(tick);
+            };
+            tick();
+          }),
+      );
       for (const name of ["Fujifilm Provia 100F", "Fujifilm Velvia 100", "Fujifilm C200"]) await expect(picker.getByRole("button", { name: new RegExp(`^${name}`) })).toHaveCount(1);
       const report = await picker.evaluate((el) => {
         const box = el.getBoundingClientRect();
@@ -108,7 +124,6 @@ test.describe("the Stock picker", () => {
         const over = cell ? Math.max(0, Math.min(box.right, cell.right) - Math.max(box.left, cell.left)) * Math.max(0, Math.min(box.bottom, cell.bottom) - Math.max(box.top, cell.top)) / (box.width * box.height) : -1;
         return { left: box.left, tiles, alpha, bg, over };
       });
-      console.log(width, JSON.stringify({ left: report.left, bg: report.bg, over: report.over }));
       expect(report.left).toBeGreaterThanOrEqual(0);
       expect(report.tiles.filter((t) => !t.inside || t.hidden)).toEqual([]);
       // In the app the page is transparent over the photo and the photo is a native layer: the backdrop blur has nothing to blur, so the
