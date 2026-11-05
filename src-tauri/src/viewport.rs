@@ -46,7 +46,8 @@
 //! **Busy.** From just before a round asks for its frame until the round is over (the pass that makes
 //! the sharp tiles included, and whichever way it ends: shown, stopped, failed), the worker holds a
 //! [`BusyGuard`], which tells the webview `viewport_busy { busy: true, cpu, finding }`, where `cpu` says that
-//! the renderer runs the photo's raw stages or views on the CPU (`Renderer::raw_on_cpu`, asked as the round
+//! the photo's views are drawn on the CPU (`Renderer::views_on_cpu`: its raw stages run there, or the device
+//! refused its last viewport frame and no device frame has come since; asked as the round
 //! starts and asked again when its frame is back, together with the frame report's `device_refused`, so that a
 //! round whose frame the CPU made because the device failed during it, for good or for this frame only, says
 //! `cpu: true` at once, while the tile pass is still running, and not only from the next round on) and `finding` that the round makes the photo's first blur map for a Background mask
@@ -962,7 +963,7 @@ struct BusyGuard<'a> {
 }
 
 impl<'a> BusyGuard<'a> {
-    /// Tells the webview the viewport is busy; `cpu`: the photo's raw stages run on the CPU; `finding`: the
+    /// Tells the webview the viewport is busy; `cpu`: the photo's views are drawn on the CPU (`Renderer::views_on_cpu`); `finding`: the
     /// round makes the photo's first blur map for a Background mask.
     fn new(shared: &'a Shared, cpu: bool, finding: bool) -> Self {
         shared.tell_busy(ViewportBusy {
@@ -977,7 +978,7 @@ impl<'a> BusyGuard<'a> {
         }
     }
 
-    /// The round's frame is back; `on_cpu` is the renderer's answer now (`Renderer::raw_on_cpu`). When the device route
+    /// The round's frame is back; `on_cpu` is the renderer's answer now (`Renderer::views_on_cpu`). When the device route
     /// ended during that frame (a device error made the frame on the CPU and the photo's views stay there), the round
     /// says `cpu` at once, while it is still busy with the tile pass, and not only from the next round on. Never
     /// takes it back within the round.
@@ -1337,7 +1338,7 @@ impl Shared {
         // Busy from here until the round returns, the tile pass included.
         let mut busy = BusyGuard::new(
             self,
-            core.renderer.raw_on_cpu(photo),
+            core.renderer.views_on_cpu(photo),
             core.renderer.finding_masks(photo, &src.settings),
         );
         let handle =
@@ -1376,7 +1377,7 @@ impl Shared {
         // refused) is on screen with the CPU's word.
         // A Film node runs on the device (`docs/24` section 3.9c): the pill is for a frame the device refused, which the
         // CPU's Film passes then made (`frame.report.device_refused`), like any other kernel.
-        busy.frame_came_back(core.renderer.raw_on_cpu(photo) || frame.report.device_refused);
+        busy.frame_came_back(core.renderer.views_on_cpu(photo) || frame.report.device_refused);
         self.present(&frame, photo, requested_at);
         if !frame.sharp {
             // The zoom needs full-resolution tiles that were not ready: compute them at tile
