@@ -14,6 +14,9 @@ mod film_common;
 
 use common::{TestGpu, gpus};
 use film_common::*;
+use ym_color::display::OutputTarget;
+use ym_color::display::cine::CineRendering;
+use ym_color::logc::logc4_encode_rgb;
 use ym_film::Output;
 use ym_film::bake::BakedFilm;
 use ym_film::math::pow10;
@@ -27,22 +30,79 @@ fn f32_devices() -> impl Iterator<Item = &'static TestGpu> {
     gpus().iter().filter(|d| d.mode == StorageMode::F32)
 }
 
+/// The pixels the bounds are measured on: the photos of `testdata/film-bake` when they are there (they are git-ignored, so
+/// not in CI), else a seeded spread of near-neutral LogC4 values. The fallback must stay inside the gamut compression's knee
+/// like the photos: P1's compression of a chromaticity near the locus (`ci_compress`) is plain f32 and is not what these
+/// bounds measure (`docs/24` section 3.9c, "What the bounds measure"). `YM_FILM_PRECISION_NO_PHOTOS=1` takes the fallback with the photos present (what CI runs). `YM_FILM_PRECISION_SATURATED=1` takes the old
+/// fallback, every channel uniform in 0.2 to 0.8, half of which is compressed: P1 is then 1.17e-6 (max 5.3e-5), as CI showed
+/// on 2026-11-05 when it had no photos.
 fn pixels() -> Vec<[f64; 3]> {
-    let mut px: Vec<[f64; 3]> = photo_pixels(40).into_iter().flat_map(|(_, p)| p).collect();
-    // The photo-free fallback: a seeded spread of LogC4 values.
+    let saturated = std::env::var_os("YM_FILM_PRECISION_SATURATED").is_some();
+    let no_photos = saturated || std::env::var_os("YM_FILM_PRECISION_NO_PHOTOS").is_some();
+    let mut px: Vec<[f64; 3]> = if no_photos {
+        Vec::new()
+    } else {
+        photo_pixels(40).into_iter().flat_map(|(_, p)| p).collect()
+    };
     if px.is_empty() {
         let mut rng = Rng(0xF08D);
+        let cine = CineRendering::new(OutputTarget::Srgb);
         px = (0..8000)
             .map(|_| {
-                [
-                    0.2 + 0.6 * rng.unit(),
-                    0.2 + 0.6 * rng.unit(),
-                    0.2 + 0.6 * rng.unit(),
-                ]
+                if saturated {
+                    [
+                        0.2 + 0.6 * rng.unit(),
+                        0.2 + 0.6 * rng.unit(),
+                        0.2 + 0.6 * rng.unit(),
+                    ]
+                } else {
+                    // A display colour of an ordinary picture (sRGB, within 0.1 of a grey), as the photos' pixels are.
+                    let grey = 0.08 + 0.84 * rng.unit();
+                    let e = [0, 1, 2].map(|_| (grey + 0.2 * (rng.unit() - 0.5)).clamp(0.0, 1.0));
+                    let lin = e.map(ym_color::encode::srgb_decode);
+                    logc4_encode_rgb(cine.inverse(lin).scene.0)
+                }
             })
             .collect();
     }
     px
+}
+
+/// Whether the scene stage compresses the chromaticity of the LogC4 pixel `px` (it lies beyond the knee, 0.85 of the way from
+/// the white to the locus), computed on the CPU in f64 as `ym_film::scene` does.
+fn is_compressed(b: &BakedFilm, px: [f64; 3]) -> bool {
+    let parts = b.device_parts();
+    let rgb = ym_color::logc::logc4_decode_rgb(px);
+    let m = parts.scene_to_xyz;
+    let xyz = [0, 1, 2].map(|i| m[i][0] * rgb[0] + m[i][1] * rgb[1] + m[i][2] * rgb[2]);
+    let sum = xyz[0] + xyz[1] + xyz[2];
+    if !(sum > 0.0 && sum.is_finite()) {
+        return false;
+    }
+    let w = parts.scene_white_xy;
+    let d = [xyz[0] / sum - w[0], xyz[1] / sum - w[1]];
+    let r = d[0].hypot(d[1]);
+    if r < 1e-12 {
+        return false;
+    }
+    let u = [d[0] / r, d[1] / r];
+    let loc = parts.scene_locus;
+    let mut best = f64::INFINITY;
+    for i in 0..loc.len() {
+        let (a, c) = (loc[i], loc[(i + 1) % loc.len()]);
+        let e = [c[0] - a[0], c[1] - a[1]];
+        let den = u[0] * e[1] - u[1] * e[0];
+        if den.abs() < 1e-18 {
+            continue;
+        }
+        let aw = [a[0] - w[0], a[1] - w[1]];
+        let t = (aw[0] * e[1] - aw[1] * e[0]) / den;
+        let s = (aw[0] * u[1] - aw[1] * u[0]) / den;
+        if t > 0.0 && (-1e-12..=1.0 + 1e-12).contains(&s) && t < best {
+            best = t;
+        }
+    }
+    best.is_finite() && r > ym_film::scene::KNEE * best
 }
 
 fn side(w: usize, n: usize) -> (usize, usize) {
@@ -186,6 +246,30 @@ fn report(id: &str, o: Output, b: &BakedFilm, px: &[[f64; 3]], dev: &TestGpu) ->
     let (p5s, p5m) = rel(&p5_got, &p5_want, 1e-4);
     println!("    P5 alone on the CPU's densities: display {p5s:.2e} (max {p5m:.1e})");
     let (e, em) = rel(&e_got, &e_want, 1e-6);
+    // P1 apart for the pixels the scene stage compresses (plain f32) and for the rest.
+    let comp: Vec<bool> = px.iter().map(|p| is_compressed(b, *p)).collect();
+    let pick = |want_compressed: bool| -> (Vec<f64>, Vec<f64>) {
+        (0..e_got.len())
+            .filter(|k| comp[k / 3] == want_compressed)
+            .map(|k| (e_got[k], e_want[k]))
+            .unzip()
+    };
+    let (cg, cw) = pick(true);
+    let (ug, uw) = pick(false);
+    let share = cg.len() as f64 / e_got.len() as f64;
+    if !cg.is_empty() {
+        let (cs, cm) = rel(&cg, &cw, 1e-6);
+        let (us, um) = rel(&ug, &uw, 1e-6);
+        println!(
+            "    P1 E: {:.1} % of the pixels compressed: those {cs:.2e} (max {cm:.1e}), the rest {us:.2e} (max {um:.1e})",
+            100.0 * share
+        );
+    }
+    assert!(
+        share <= 0.02 || std::env::var_os("YM_FILM_PRECISION_SATURATED").is_some(),
+        "{id} {o:?}: {:.1} % of the pixels are gamut-compressed; the bounds below are for in-gamut photos",
+        100.0 * share
+    );
     let (d, dm) = rel(&d_got, &d_want, 0.05);
     let (s, sm) = rel(&s_got, &s_want, 1e-4);
     println!(
