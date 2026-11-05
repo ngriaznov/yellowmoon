@@ -281,3 +281,7 @@ A view above 100 % is a device frame. When the device runs the tail, the colour 
 
 - The `viewport` job of `build.yml` shows the picture and the log line on a hosted Mac runner.
 - Smoothness of pan and zoom (also above 100 %) and the perf numbers need a physical Mac (M0-H4): `YM_PERF=1` prints `drawn zero-copy N uploaded M`, `acquire` and `pass` (`docs/13` "Performance logging and the viewport job"); zero-copy frames are expected at every zoom.
+
+## 18. The scheduler (G-11)
+
+The areas and the passes of every spatial step (the Film node's passes, the raster planes, the guide) come from one scheduler, `ym_color::schedule`, for the device and the CPU alike: steps declare a footprint (per pixel, or spatial with a reach and what they read), the scheduler infers each stage's area from the output's, and a device refusal is never the answer to a graph's shape (a resource limit is, with bands or tiles). The rules, the rule for adding a node and the random-graph test are in `docs/23-nodes.md` section 5.12.

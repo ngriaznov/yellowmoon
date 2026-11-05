@@ -623,6 +623,42 @@ impl ColorChain {
         )
     }
 
+    /// The scheduler's schedule of this chain (`crate::schedule`): the footprints of the plan's steps and of their mask
+    /// rows, in the plan's order, at a render with `u_px` output pixels along the photo's long edge. `film_reach_px`
+    /// gives a Film node's reach (its halo); `None` for a node that does nothing (bypassed, Strength 0, or not built),
+    /// which is then a corrector. Only footprints are consulted here, never the kind of a mask or node beyond what
+    /// [`StepKind::declared`](crate::schedule::StepKind::declared) and [`OpKind::declared`](crate::mask::OpKind::declared) say.
+    #[must_use]
+    pub fn schedule(
+        &self,
+        u_px: f64,
+        film_reach_px: &dyn Fn(u32) -> Option<usize>,
+    ) -> crate::schedule::Schedule {
+        use crate::schedule::StepKind;
+        let raster_reach = if self.params.rasters.is_empty() {
+            0
+        } else {
+            self.params.rasters.halo(u_px)
+        };
+        let mut declared = Vec::new();
+        for (step, node) in &self.steps {
+            let film = self
+                .films
+                .contains_key(&step.node)
+                .then(|| film_reach_px(step.node))
+                .flatten();
+            declared.push(match film {
+                Some(reach) => StepKind::Film.declared(reach),
+                None => StepKind::Corrector.declared(0),
+            });
+            if self.params.rasters.is_empty() {
+                continue;
+            }
+            declared.extend(node.masks().ops().iter().map(|o| o.kind.declared(raster_reach)));
+        }
+        crate::schedule::Schedule::new(declared)
+    }
+
     /// The ids of the Film nodes the plan runs, in the plan's order.
     #[must_use]
     pub fn film_nodes(&self) -> Vec<u32> {

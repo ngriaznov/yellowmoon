@@ -328,6 +328,40 @@ pub enum OpKind {
 }
 
 impl OpKind {
+    /// The kind's footprint for the scheduler (`crate::schedule`, `docs/23` section 5.12). **Exhaustive on purpose**: a new
+    /// kind of mask row does not compile until it says whether it is per pixel or spatial, how far it reads and what it
+    /// reads. `raster_reach_px` is the reach of the render's raster planes at its scale.
+    #[must_use]
+    pub fn declared(self, raster_reach_px: usize) -> crate::schedule::Declared {
+        use crate::schedule::{Declared, Footprint, Produces, Reads};
+        match self {
+            // Per pixel, from the pixel's own place in the photo.
+            Self::Linear | Self::Radial => Declared {
+                footprint: Footprint::PerPixel,
+                reads: Reads::default(),
+            },
+            // Per pixel, from the pixel of the node's input.
+            Self::Color | Self::Brightness => Declared {
+                footprint: Footprint::PerPixel,
+                reads: Reads {
+                    pictures: true,
+                    ..Reads::default()
+                },
+            },
+            // A plane made from the photo (the resample and the guide), then grown, feathered and guided.
+            Self::Raster => Declared {
+                footprint: Footprint::Spatial {
+                    reach_px: raster_reach_px,
+                    produces: Produces::Plane,
+                },
+                reads: Reads {
+                    source: true,
+                    ..Reads::default()
+                },
+            },
+        }
+    }
+
     /// The kernel's code for the kind.
     #[must_use]
     pub fn code(self) -> u32 {

@@ -32,6 +32,7 @@ use ym_color::display::{ColorChain, Frame as ColorFrame, Layout, OutputTarget};
 use ym_color::mask::RasterPlanes;
 use ym_color::mask_raster::{Area, CpuPlanes};
 use ym_color::plan::Stop;
+use ym_color::schedule::{Schedule, StepKind};
 use ym_film::spatial::{FilmFrame, Frame as FilmFrameExtent, Plane, Rect as FilmRect, RunOptions};
 use ym_gpu::cpu::Rect;
 use ym_gpu::cpu::sampler::{GridPositions, Sampled, SamplerGrid};
@@ -227,10 +228,24 @@ impl FilmRender {
         }))
     }
 
+    /// The reach of a Film node's picture (its halo), or `None` for a node that is not one of this render's.
+    pub(crate) fn reach_of(&self, node: u32) -> Option<usize> {
+        self.steps.iter().find(|s| s.id == node).map(|s| s.halo)
+    }
+
+    /// The scheduler's schedule of the Film nodes alone (`ym_color::schedule`): their made and read areas.
+    pub(crate) fn schedule(&self) -> Schedule {
+        Schedule::new(
+            self.steps
+                .iter()
+                .map(|s| StepKind::Film.declared(s.halo)),
+        )
+    }
+
     /// The pixels of the photo the Film nodes read beyond the pixels they make: the sum of their halos (a node
     /// after another reads the other's picture over its own halo).
     pub(crate) fn total_halo(&self) -> usize {
-        self.steps.iter().map(|s| s.halo).sum()
+        self.schedule().total_reach()
     }
 
     /// The Film nodes as plain data for the device (`ym_gpu::kernels::film_stack`): the prefix chain, the passes over the
@@ -257,8 +272,7 @@ impl FilmRender {
 
     /// The area the first Film node reads for `need`: `need` grown by every halo, cut to the photo's extent.
     pub(crate) fn read_area(&self, need: Area) -> Area {
-        need.intersect(&self.frame)
-            .grown(self.total_halo(), &self.frame)
+        self.schedule().infer(need, &self.frame).source
     }
 
     /// The pictures of the Film nodes over `need` (cut to the photo's extent). `rasters` are the raster planes
@@ -274,16 +288,8 @@ impl FilmRender {
         cover: &Cover<'_>,
         rasters: Option<(&CpuPlanes, Area)>,
     ) -> Result<FilmPlanes, RenderError> {
-        let n = self.steps.len();
-        // Backwards: what each node must make, and what it reads.
-        let mut made = vec![Area::default(); n];
-        let mut read = vec![Area::default(); n];
-        let mut want = need.intersect(&self.frame);
-        for i in (0..n).rev() {
-            made[i] = want;
-            read[i] = want.grown(self.steps[i].halo, &self.frame);
-            want = read[i];
-        }
+        let areas = self.schedule().infer(need, &self.frame);
+        let (made, read, want) = (areas.made, areas.read, areas.source);
         if want.is_empty() {
             return Ok(FilmPlanes::default());
         }

@@ -41,7 +41,6 @@ use ym_color::mask_raster::{Area, RasterSet, RasterSteps, SourcePlane};
 use super::color::{PreparedChain, Stop};
 use super::shader::KernelId;
 use super::util::{STORAGE_OUT, even, storage_buffer};
-use crate::cpu::sampler::SamplerGrid;
 use crate::cpu::{Placement, tiling::Rect};
 use crate::device::{GpuContext, GpuError};
 use crate::image::GpuImage;
@@ -205,43 +204,17 @@ impl RasterPlanes {
     }
 }
 
-/// The receptive field, in output pixels, of the raster planes of `chain` on a render with this grid
-/// (0 for a chain with no raster row): a tile is computed over itself grown by it.
-#[must_use]
-pub fn tile_halo(chain: &ColorChain, grid: &SamplerGrid) -> usize {
-    if chain.uses_rasters() {
-        chain.rasters().halo(1.0 / grid.photo_frame().pixel)
-    } else {
-        0
-    }
-}
-
 /// The window an export tile of `w x h` pixels at `off` of a `frame`-sized output is sampled, guided and
-/// coloured over: the tile grown by [`tile_halo`] on every side and cut to the frame. For a chain with no
-/// raster row it is the tile.
+/// coloured over: the tile's area as the scheduler infers it (`ym_color::schedule`), which is the tile grown by every
+/// spatial step's reach (the raster planes' and the Film nodes') and cut to the frame. For a chain with no spatial step it
+/// is the tile.
 #[must_use]
 pub fn grown_tile(
-    chain: &ColorChain,
-    grid: &SamplerGrid,
+    schedule: &ym_color::schedule::Schedule,
     frame: (usize, usize),
     off: (usize, usize),
     w: usize,
     h: usize,
-) -> Area {
-    grown_tile_with(chain, grid, frame, off, w, h, 0)
-}
-
-/// [`grown_tile`] with `extra` more pixels on every side: the Film nodes' halos, which the masks' receptive field adds
-/// to (`docs/24` section 3.9c).
-#[must_use]
-pub fn grown_tile_with(
-    chain: &ColorChain,
-    grid: &SamplerGrid,
-    frame: (usize, usize),
-    off: (usize, usize),
-    w: usize,
-    h: usize,
-    extra: usize,
 ) -> Area {
     let tile = Area {
         x: off.0 as i64,
@@ -249,10 +222,9 @@ pub fn grown_tile_with(
         w,
         h,
     };
-    tile.grown(
-        tile_halo(chain, grid) + extra,
-        &Area::whole(frame.0, frame.1),
-    )
+    schedule
+        .infer(tile, &Area::whole(frame.0, frame.1))
+        .source
 }
 
 /// The largest storage binding a raster pass over a `grown` window makes: the f32 scratch (seven planes at full

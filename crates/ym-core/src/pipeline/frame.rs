@@ -96,7 +96,7 @@ use ym_gpu::cpu::tint::overlay_interleaved;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError};
 use ym_gpu::kernels::copy::Piece;
-use ym_gpu::kernels::mask_raster::{PlaneKey, largest_tile_for, tile_halo};
+use ym_gpu::kernels::mask_raster::{PlaneKey, largest_tile_for};
 use ym_gpu::pool::PooledBuffer;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::tail::{TailRoute, colour_device_tile_to_host, colour_tile_to_host};
@@ -849,7 +849,12 @@ pub(crate) struct RasterRead {
 /// The receptive field of the raster masks of `chains` on a render with this grid, in output pixels (0 when no
 /// chain has a raster row).
 fn raster_halo(chains: &[&ColorChain], grid: &SamplerGrid) -> usize {
-    chains.iter().map(|c| tile_halo(c, grid)).max().unwrap_or(0)
+    let u_px = 1.0 / grid.photo_frame().pixel;
+    chains
+        .iter()
+        .map(|c| c.schedule(u_px, &|_| None).total_reach())
+        .max()
+        .unwrap_or(0)
 }
 
 /// The raster read of the picture `read` makes for `chains`, or `None` when no chain has a raster row or none
@@ -865,24 +870,36 @@ fn raster_read(
         return Ok(None);
     };
     let frame = view_frame(&read.view_to_final, job.final_size()?);
-    // The masks' receptive field, and the Film nodes' halos on top of it: the picture the colour pass makes is
-    // read that much wider (`film_pass`).
-    let mut halo = raster_halo(chains, grid);
-    if films {
+    // The picture the colour pass makes is read as wide as the scheduler infers for the chain's spatial steps: the masks'
+    // receptive field and the Film nodes' halos (`ym_color::schedule`). The Film nodes are those of the first chain that
+    // has any; the chains share their nodes.
+    let film = if films {
         let extent = Area::whole(frame.w, frame.h);
+        let mut found = None;
         for chain in chains {
             if let Some(film) = FilmRender::build(job, chain, extent, read.target)? {
-                halo += film.total_halo();
+                found = Some(film);
                 break;
             }
         }
-    }
+        found
+    } else {
+        None
+    };
     let picture = Area::whole(read.out_w, read.out_h);
     let window = picture.intersect(&frame);
     if window.is_empty() {
         return Ok(None);
     }
-    let grown = picture.grown(halo, &frame);
+    let u_px = 1.0 / grid.photo_frame().pixel;
+    let grown = chains
+        .iter()
+        .map(|c| {
+            c.schedule(u_px, &|id| film.as_ref().and_then(|f| f.reach_of(id)))
+                .infer(picture, &frame)
+                .source
+        })
+        .fold(Area::default(), |a, b| ym_color::schedule::union_area(a, b));
     let spec = ViewSpec {
         out_w: grown.w,
         out_h: grown.h,
@@ -3753,7 +3770,12 @@ impl Renderer {
         // The raster masks of the nodes are made over each tile grown by their receptive field (`docs/algorithms/06`
         // section 5.2) and cut: a tile is sampled, guided and coloured over `grown` and its pixels are the window.
         let frame_area = Area::whole(fw, fh);
-        let raster_halo = tile_halo(&grade.chain, &grid.sampler_grid());
+        // The scheduler's schedule of the chain (`ym_color::schedule`): the masks' planes and the Film nodes.
+        let schedule = grade
+            .chain
+            .schedule(1.0 / grid.sampler_grid().photo_frame().pixel, &|id| {
+                film_render.as_ref().and_then(|f| f.reach_of(id))
+            });
         // The colour stage of a DNG's renders runs on the device when the export tail is on; the
         // frame stays on the host. A device error there, or in the raw chain, makes the whole render
         // again on the CPU: one file is wholly device or wholly CPU, never a mix of tiles.
@@ -3764,7 +3786,7 @@ impl Renderer {
         };
         // Tiles equal the whole frame, so a tile may be any size: one whose grown window would pass the design
         // binding is made smaller (`docs/17-gpu.md` section 4). The Film nodes read their halos beyond the masks'.
-        let tile = largest_tile_for(raster_halo + film_halo, tile);
+        let tile = largest_tile_for(schedule.total_reach(), tile);
         // A tile of a Film node is read that much wider on every side, so a small tile spends most of its work on
         // the halo: the CPU's tiles are larger (tiles equal the whole frame, so the size is free). The device's are
         // held to the design binding above, which a larger tile would pass.
@@ -3774,7 +3796,6 @@ impl Renderer {
         } else {
             tile
         };
-        let raster_halo = raster_halo + film_halo;
         let mut rgb = vec![0.0f32; fw * fh * 3];
         let threads = job.options().threads;
         let strict = job.options().gpu_strict;
@@ -3800,7 +3821,7 @@ impl Renderer {
                         w: tw,
                         h: th,
                     };
-                    let grown = tile_area.grown(raster_halo, &frame_area);
+                    let grown = schedule.infer(tile_area, &frame_area).source;
                     let (gx, gy) = (grown.x as usize, grown.y as usize);
                     if grid.source_bounds(ox, oy, tw, th, 3).is_some()
                         && let Some((x0, y0, x1, y1)) =

@@ -42,7 +42,7 @@ use ym_gpu::cpu::RgbImage;
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
 use ym_gpu::cpu::tiling::Rect;
 use ym_gpu::device::{Gpu, GpuError};
-use ym_gpu::kernels::mask_raster::{largest_tile_for, tile_halo};
+use ym_gpu::kernels::mask_raster::largest_tile_for;
 use ym_gpu::queue::{CancelToken, JobError, JobHandle, JobSpec, Priority};
 use ym_gpu::tail::{Band, BandData, BandFormat, ExportTail, TailRoute, TailSharpen, TailSpec};
 
@@ -509,7 +509,7 @@ impl Renderer {
             request.target,
         )?
         .map(|f| Arc::new(f.device_stack()));
-        let film_halo = films.as_ref().map_or(0, |f| f.total_halo());
+        let film_halo = films.as_ref().map_or(0, |f| f.schedule().total_reach());
         let halo_allowance = 160usize + job.lens_halo()? + bend + film_halo;
         let per_px = 12u64 * 12; // twelve f32 planes of working set per tile pixel, a generous bound
         let working = ((tile + halo_allowance) as u64).pow(2) * per_px;
@@ -527,8 +527,12 @@ impl Renderer {
         // The raster masks of the nodes are made over each tile grown by their receptive field, and the Film nodes read
         // their halos beyond it; tiles equal the whole frame, so a tile whose grown window would pass the design binding
         // is made smaller.
-        let raster_halo = tile_halo(&grade.chain, &grid.sampler_grid()) + film_halo;
-        let tile = largest_tile_for(raster_halo, tile);
+        let schedule = ym_gpu::kernels::film_stack::FilmStack::schedule_of(
+            &grade.chain,
+            &grid.sampler_grid(),
+            films.as_deref(),
+        );
+        let tile = largest_tile_for(schedule.total_reach(), tile);
         let frame_area = ym_color::mask_raster::Area::whole(fw, fh);
         let sharpen = (request.output_sharpening_pct > 0.0).then(|| TailSharpen {
             params: OutputSharpen::screen().with_amount_pct(request.output_sharpening_pct),
@@ -577,7 +581,7 @@ impl Renderer {
                     w: tw,
                     h: th,
                 };
-                let grown = tile_area.grown(raster_halo, &frame_area);
+                let grown = schedule.infer(tile_area, &frame_area).source;
                 if grid.source_bounds(ox, oy, tw, th, 3).is_some()
                     && let Some((x0, y0, x1, y1)) =
                         grid.source_bounds(grown.x as usize, grown.y as usize, grown.w, grown.h, 3)

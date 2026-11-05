@@ -530,6 +530,8 @@ Tests: `crates/ym-film/tests/spatial.rs`.
 
 ### 3.9c As built (F-08b): the Film node on the device route
 
+*G-11: the areas below (the halo sum, the read area, the tile growth) are inferred by the generic scheduler, `ym_color::schedule`, from the Film node's and the raster rows' footprints (`docs/23-nodes.md` section 5.12); no ordering of nodes is a special case.*
+
 The Film node runs on the device for the viewport, thumbnails, look tiles, Show mask and every export (JPEG, TIFF, PNG, and the DNG's colour stage). Measured on 2026-11-04 on Mesa lavapipe (4 vCPUs shared with another job), release builds; the Metal run has not been done.
 
 **Where.** `crates/ym-gpu/src/kernels/film_stack.rs` (`FilmStack`, `FilmNodeSpec`, `FilmTables`, `FilmPictures`: plain data, no `ym-film` type), the Film step of the colour kernel (`color.wgsl` `run_nodes`, `kernels/color.rs` `NODE_FILM`, `PreparedChain::with_film`), the copy kernel's destination base (`encode_copy_into`), the tail (`tail.rs`: `TailSpec::films`, the tile grown by `FilmStack::total_halo`), and in the core `ym_core::film::{device_colour_data, device_plan, device_scalars, device_tables}` (the conversion of the F-08a template, `tests/film_common`), `FilmRender::device_stack`, `frame::device_film`, `device::prepared_for` and `export_tail.rs`. The three CPU-only checks of F-07 are gone (`render_view`, the DNG's colour stage in `render_full_on`, the export tail in `export.rs`); `viewport_busy` says CPU for a frame the device refused (`RenderReport::device_refused`) and for a photo whose views are on the CPU (`raw_on_cpu`), not for a Film node.

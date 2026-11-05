@@ -276,6 +276,15 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
+    /// Every kind. The scheduler's footprint list (`pipeline::schedule::step_kind`) is an exhaustive `match` over the same
+    /// kinds, and the random-graph test draws from this list (`docs/23` section 5.12).
+    pub const ALL: [NodeKind; 4] = [
+        NodeKind::Input,
+        NodeKind::Output,
+        NodeKind::Corrector,
+        NodeKind::Film,
+    ];
+
     /// "an input", "an output", "a corrector".
     #[must_use]
     pub fn with_article(self) -> &'static str {

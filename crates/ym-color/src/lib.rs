@@ -31,6 +31,7 @@ pub mod lut;
 pub mod mask;
 pub mod mask_raster;
 pub mod plan;
+pub mod schedule;
 pub mod sensor_map;
 pub mod spectral;
 pub mod tone;

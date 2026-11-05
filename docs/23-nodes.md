@@ -559,6 +559,31 @@ The mask view is a view: it is not in an export, the Before view, a thumbnail or
 
 The same input, settings and version give the same bytes (hard rule 8). Tiles equal the whole frame bit for bit, the raster masks' halos included; the plan, the registers and the raster passes depend on a pixel's own input and its receptive field and on nothing else (`docs/17` D4 to D8). The app and `ym` give byte-identical exports for the same graph, whatever the masks, Object included (SAM is deterministic) and Subject and People on the same Mac.
 
+### 5.12 The scheduler (G-11)
+
+Every node structure renders on the device when one is attached; no graph is refused for the way its nodes are connected. The areas and the order of the spatial steps are **inferred**, not written case by case (the owner, 2026-11-05: "Generic scheduler").
+
+**Footprint.** Each step declares one (`ym_color::schedule`):
+
+- *per pixel*, or *spatial* with a reach in output pixels at the render's scale (a Film node's halo, the raster planes' receptive field `H`);
+- what it makes: a picture at the node's output (Film) or a mask plane (the raster rows; all planes are one shared value);
+- what it reads: the camera picture, the planes, the earlier pictures;
+- its result must not depend on the window it is made in (tile invariance); a step that cannot say so is not allowed.
+
+**Rule for adding a node or a mask kind.** A kind has no footprint by default, so it does not compile without one. `StepKind::declared` and `OpKind::declared` in `ym-color` and `pipeline::schedule::{step_kind, op_kind}` in `ym-core` are `match`es with no wildcard arm. A new `NodeKind` or `MaskKind` stops the build until it is given a step kind or a row kind, and that kind's `declared` says per pixel or spatial, how far, and what it reads. The scheduler (`ColorChain::schedule`, `Schedule::infer`) consults the footprints only, never a kind; what is kind-specific stays inside the kind's own step (the kernel's inputs, a Film node's tables).
+
+**Bounds inference.** `Schedule::infer(need, frame)` walks backwards from the output's wanted area `need`. The Output is per pixel and reads everything over `need`. A spatial step makes the union of what its consumers read, cut to the photo's extent, and reads its inputs over that grown by its reach, cut to the extent. A value read by several consumers is made over the union (bounding box) of their reads. The result is the area of every Film picture, of the planes, and of the camera picture to sample. Along a line of Film nodes with raster rows it comes to `H + the sum of the halos`, as before.
+
+**Pass emission.** Plan order, forwards: per-pixel steps stay in the plan's passes (section 5.2, 5.4); each spatial step becomes its own passes over its made area (`kernels/film_stack.rs`, `kernels/mask_raster.rs`); values cross as pictures or planes kept on the device under keys that name what they are made of (section 5.6, `docs/24` section 3.9c), so a warm frame builds, bakes, compiles and uploads nothing.
+
+**Limits.** The one reason not to run on the device is a resource limit (a binding's size, the memory budget). The answer is bands or tiles (`largest_tile_for`, `banded`), not the CPU. A device error still makes the frame again on the CPU, with the note.
+
+**CPU path.** The CPU uses the same `Schedule` for its areas (`raster_read`, `FilmRender::planes`, the export tiles), so the two agree on areas by construction and the CPU reference keeps its pixels.
+
+**Known limit of this version.** A Film node is taken to read every Film node before it in the plan (the sum of halos), which is exact for a line and an upper bound for parallel branches; exact edges need the plan's picture registers. Over-reading changes no pixel, only work.
+
+**The random-graph test** (`crates/ym-core/tests/any_graph.rs`). A seeded generator builds graphs of one to five nodes with random order, key links, Bypass, Strength 0 and mask rows. Its node and mask kinds are drawn from `NodeKind::ALL` and `MaskKind::ALL`; the only exclusions are in `NOT_GENERATED_NODES` and `NOT_GENERATED_MASKS` at its top, each with its reason (the Input and Output are fixed; Object needs the SAM weights). The forced kinds cycle, and the run asserts that every generated kind appeared. Each graph is viewed at Fit and 100 % with Show mask on a row; it must be on the device, not refused, with `views_on_cpu` false, within the CPU bounds; a subset is exported (PNG 16, JPEG) within the export bounds and byte for byte across tile sizes. The seeds are a fixed set plus one rotating seed from `YM_GRAPH_SEED`, else `GITHUB_RUN_NUMBER`; every graph is printed with its seed, and a failing one with its settings JSON.
+
 ## 6. The simple view
 
 The simple view is today's Photos screen with these changes and no others. **It reads the simple graph:** every tab is a view of the Input, Main or the Output of the photo's graph through the store's selectors (section 2), and nothing visible changes from them.

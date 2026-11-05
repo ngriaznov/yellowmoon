@@ -28,6 +28,8 @@ use std::sync::{Arc, Weak};
 use ym_color::display::ColorChain;
 use ym_color::mask::PhotoFrame;
 use ym_color::mask_raster::Area;
+use ym_color::schedule::{Schedule, StepKind};
+use crate::cpu::sampler::SamplerGrid;
 
 use super::color::{PreparedChain, Stop};
 use super::film::{
@@ -171,18 +173,42 @@ impl FilmStack {
         self.frame
     }
 
-    /// The pixels the nodes read beyond the pixels they make: the sum of their halos (a node after another reads the
-    /// other's picture over its own halo).
+    /// The reach of a node's picture (its halo), or `None` for a node this stack does not hold.
     #[must_use]
-    pub fn total_halo(&self) -> usize {
-        self.steps.iter().map(FilmNodeSpec::halo).sum()
+    pub fn reach_of(&self, node: u32) -> Option<usize> {
+        self.steps
+            .iter()
+            .find(|s| s.node == node)
+            .map(FilmNodeSpec::halo)
+    }
+
+    /// The scheduler's schedule of `chain` with this stack's nodes as its Film steps (`ym_color::schedule`): the areas of
+    /// every spatial step come from it, for the CPU and the device alike.
+    #[must_use]
+    pub fn schedule_of(
+        chain: &ColorChain,
+        grid: &SamplerGrid,
+        films: Option<&FilmStack>,
+    ) -> Schedule {
+        chain.schedule(1.0 / grid.photo_frame().pixel, &|id| {
+            films.and_then(|f| f.reach_of(id))
+        })
+    }
+
+    /// The schedule of the Film nodes alone (no mask planes): their made and read areas.
+    #[must_use]
+    pub fn schedule(&self) -> Schedule {
+        Schedule::new(
+            self.steps
+                .iter()
+                .map(|s| StepKind::Film.declared(s.halo())),
+        )
     }
 
     /// The area the first node reads for `need`: `need` grown by every halo, cut to the photo's extent.
     #[must_use]
     pub fn read_area(&self, need: Area) -> Area {
-        need.intersect(&self.frame)
-            .grown(self.total_halo(), &self.frame)
+        self.schedule().infer(need, &self.frame).source
     }
 
     /// The pictures of the nodes over `need` (cut to the photo's extent), as passes of `passes`. `wide` is the sampled
@@ -211,14 +237,9 @@ impl FilmStack {
         rasters: Option<FilmRasters<'_>>,
     ) -> Result<Arc<FilmPictures>, GpuError> {
         let n = self.steps.len();
-        let mut made = vec![Area::default(); n];
-        let mut read = vec![Area::default(); n];
-        let mut want = need.intersect(&self.frame);
-        for i in (0..n).rev() {
-            made[i] = want;
-            read[i] = want.grown(self.steps[i].halo(), &self.frame);
-            want = read[i];
-        }
+        let areas = self.schedule().infer(need, &self.frame);
+        let (made, read) = (areas.made, areas.read);
+        let want = areas.source;
         if want.is_empty() {
             return Ok(Arc::new(FilmPictures::empty()));
         }
