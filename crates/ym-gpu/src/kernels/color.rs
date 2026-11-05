@@ -272,10 +272,6 @@ pub(crate) const NODE_LUMA: u32 = 256;
 /// that hold the picture the Film passes made, and blended by the mask times Strength (`gain.x`). Set for every Film
 /// step; [`NODE_FILM_LIVE`] says whether it has a picture.
 pub(crate) const NODE_FILM: u32 = 512;
-/// The planes of the plan buffer a live Film node takes: its LogC4 picture (three) and the exact display colour of each
-/// of its pixels, the shadow (three, all 0 where there is none).
-const FILM_PLANES: u32 = 6;
-
 /// The Film node does something (`N_FILM_LIVE`: not bypassed, Strength above 0); `ctl.w` is the first plane of the plan
 /// buffer that holds its picture.
 pub(crate) const NODE_FILM_LIVE: u32 = 1024;
@@ -330,7 +326,7 @@ pub(crate) const REF_KEY: u32 = 4;
 /// (`docs/23` section 3.5).
 const MAX_STEPS: usize = 64;
 
-/// The per-frame uniform block of `color.wgsl` (`ChainU`), 704 bytes: window and mode, the chain's
+/// The per-frame uniform block of `color.wgsl` (`ChainU`), 608 bytes: window and mode, the chain's
 /// parameters (the fused matrix, C7, the look), the cine rendering's matrix from XYZ to the output's
 /// primaries (`cine_m0` to `cine_m2`), the Before view's camera default (`cam0` to `cam2`: the 3x3
 /// rows, `camt`: the tone curve's `n`, `s`, `k` and white level) and the pass (`plan`, `stopn`: module
@@ -380,11 +376,6 @@ struct ChainU {
     /// The raster planes (binding 7): x: words in a plane, y: the first row of this dispatch in the window, z: a
     /// plane's row stride in elements, w: the number of planes (0: none are bound).
     rst: [u32; 4],
-    /// The low parts of the f32 constants `m0` to `m2` (the f64 value minus its f32 rounding), for the colour pass's
-    /// compensated products (`precise.wgsl`, F-08d).
-    m_lo: [[f32; 4]; 3],
-    /// The gamut stage's rows in the form `1 + K0 s1 + K2 s2` ([`cine_white_rows`]): x: `K0`, y: `K2`, z, w: their low parts.
-    cine_lo: [[f32; 4]; 3],
 }
 
 /// One step of the plan with its node, as the storage buffer at binding 6 holds it (`NodeRec` in
@@ -468,38 +459,6 @@ impl Default for ChainU {
     fn default() -> Self {
         Self::zeroed()
     }
-}
-
-/// The rows of the gamut stage of the cine rendering in the form the colour pass evaluates: the stage is
-/// `M (XN t1^3, 1, ZN t2^3)` with `M (XN, 1, ZN) = (1, 1, 1)` (the D65 white is the white of every output), so a channel is
-/// `1 + K0 s1 + K2 s2` with `K0 = M_i0 XN`, `K2 = M_i2 ZN`, `s1 = t1^3 - 1` and `s2 = t2^3 - 1` formed from the small chroma
-/// terms (no `1 + c` rounded to f32 and cubed, no large terms that cancel). Per row: `K0` and `K2` as f32 and their low parts,
-/// formed in f64 (`precise.wgsl`, F-08d).
-fn cine_white_rows(m: &[[f64; 3]; 3]) -> [[f32; 4]; 3] {
-    let scalars = ym_color::display::cine::kernel_scalars();
-    let get = |name: &str| {
-        scalars
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map_or(1.0, |(_, v)| *v)
-    };
-    let (xn, zn) = (get("XN"), get("ZN"));
-    let mut out = [[0.0f32; 4]; 3];
-    for (row, o) in m.iter().zip(out.iter_mut()) {
-        let (k0, k2) = (row[0] * xn, row[2] * zn);
-        *o = [
-            k0 as f32,
-            k2 as f32,
-            (k0 - f64::from(k0 as f32)) as f32,
-            (k2 - f64::from(k2 as f32)) as f32,
-        ];
-    }
-    out
-}
-
-/// What the f32 rounding of each entry leaves out.
-fn lo_part(v: [f64; 3]) -> [f64; 3] {
-    v.map(|x| x - f64::from(x as f32))
 }
 
 fn f4(v: [f64; 3], w: f64) -> [f32; 4] {
@@ -1024,10 +983,6 @@ impl ChainTables {
         u.cine_m0 = f4(xyz_to_output[0], 0.0);
         u.cine_m1 = f4(xyz_to_output[1], 0.0);
         u.cine_m2 = f4(xyz_to_output[2], 0.0);
-        for k in 0..3 {
-            u.m_lo[k] = f4(lo_part(params.matrix[k]), 0.0);
-        }
-        u.cine_lo = cine_white_rows(&xyz_to_output);
         let tables = self.dither(ctx)?;
         // C13.
         u.sp[0] = u32::from(space == OutputSpace::Rec2020);
@@ -1112,11 +1067,10 @@ struct NodePlan {
     passes: Arc<Vec<PassSpan>>,
     steps: Arc<Vec<StepAt>>,
     result: u32,
-    /// The planes of `pbuf` a pixel needs: six for each live Film node (first), then the sum over the plan's buffers
+    /// The planes of `pbuf` a pixel needs: three for each live Film node (first), then the sum over the plan's buffers
     /// (three for a picture, one for a key).
     planes: u32,
-    /// The live Film nodes of the plan, in plan order: the picture of the `k`-th is at planes `6k..6k+3` of `pbuf`, its
-    /// exact display colours (the shadow) at `6k+3..6k+6`.
+    /// The live Film nodes of the plan, in plan order: the picture of the `k`-th is at planes `3k..3k+3` of `pbuf`.
     films: Arc<Vec<u32>>,
     curves: Arc<PooledBuffer>,
 }
@@ -1148,7 +1102,7 @@ impl NodePlan {
             .map(|s| s.node)
             .collect();
         let mut plane_of = Vec::with_capacity(plan.buffers.len());
-        let mut planes = FILM_PLANES * films.len() as u32;
+        let mut planes = 3 * films.len() as u32;
         for kind in &plan.buffers {
             plane_of.push(planes);
             planes += match kind {
@@ -1225,7 +1179,7 @@ impl NodePlan {
                 r.gain = [film.strength as f32, 0.0, 0.0, 0.0];
                 if let Some(k) = films.iter().position(|&n| n == step.node) {
                     bits |= NODE_FILM_LIVE;
-                    r.ctl[3] = FILM_PLANES * k as u32;
+                    r.ctl[3] = 3 * k as u32;
                 }
             }
             // The mask rows (`ym_color::mask`): the same rows, derived once, as the CPU reads. A node blends when
@@ -1367,8 +1321,6 @@ pub(super) fn body() -> String {
         .unwrap_or((color, ""));
     let (template, after) = rest.split_once("//@END_LUT_FUNCS\n").unwrap_or(("", ""));
     let mut s = String::with_capacity(color.len() * 2);
-    s.push_str(include_str!("../shaders/precise.wgsl"));
-    s.push_str("fn px_zero() -> u32 {\n    return CU.flags.x;\n}\n\n");
     s.push_str(include_str!("../shaders/cine.wgsl"));
     s.push('\n');
     s.push_str(include_str!("../shaders/c13.wgsl"));
@@ -1694,8 +1646,6 @@ impl PreparedChain {
             code = node_stop.code();
             u.stopn[0] = at.record;
         }
-        // The live Film nodes: the colour pass looks for their pictures' exact display colours (`stopn.y`).
-        u.stopn[1] = self.films.len() as u32;
         u.mode = [code, kind.code(), bits, u32::from(dither)];
         Ok((u, kind))
     }
@@ -1910,20 +1860,13 @@ impl PreparedChain {
             if x0 != 0 || y0 != 0 || x1 != width as i64 || y1 != rows as i64 {
                 whole = false;
             }
-            // A picture without a shadow leaves its shadow planes zero: they are cleared.
-            if image.shadow.is_none() {
-                whole = false;
-            }
             covers.push((x0, y0, x1, y1));
         }
         if !whole {
-            passes.encoder().clear_buffer(
-                scratch,
-                0,
-                Some(u64::from(FILM_PLANES) * (images.len() * n * 4) as u64),
-            );
+            passes
+                .encoder()
+                .clear_buffer(scratch, 0, Some((3 * images.len() * n * 4) as u64));
         }
-        let per = FILM_PLANES as usize;
         for (k, (item, (x0, y0, x1, y1))) in images.iter().zip(covers).enumerate() {
             let Some((image, dx, dy)) = item else {
                 continue;
@@ -1940,11 +1883,8 @@ impl PreparedChain {
             );
             // The copy kernel places the rectangle's (0, 0) at the destination's `at`, which a plain buffer of planes
             // does not have: the base sample carries the offset instead.
-            let base = per * k * n + y0 as usize * width + x0 as usize;
+            let base = 3 * k * n + y0 as usize * width + x0 as usize;
             encode_copy_into(passes, &image.img, rect, 3, scratch, (width, n, base))?;
-            if let Some(shadow) = &image.shadow {
-                encode_copy_into(passes, shadow, rect, 3, scratch, (width, n, base + 3 * n))?;
-            }
         }
         Ok(())
     }
@@ -2359,7 +2299,7 @@ mod tests {
     use crate::kernels::shader_source;
 
     #[test]
-    fn the_per_frame_block_is_704_bytes_and_a_node_record_1200() {
+    fn the_per_frame_block_is_608_bytes_and_a_node_record_1200() {
         // The per-frame `ChainU` (`docs/17-gpu.md` section 11) was meant to be about 1 KB: the one uniform
         // block (K3 allows one) holds the frame's parameters. It was 992 bytes with the ACES 2 scalars; the
         // Before view's camera default added 64, and the colour warp (C9b) 1040 plus the grade's six rows
@@ -2367,14 +2307,14 @@ mod tests {
         // records (N-04, `docs/23` section 5.4), so a plan of 16 nodes does not make the uniform grow: the
         // block lost the grade, the zones, the balance and the warp (1136 bytes) and gained the pass (32). The
         // masks (N-10) added the place of the mask rows and the photo frame (32 more), the raster masks (N-13) the
-        // place of their planes (16 more), the compensated products of F-08d the low parts of the matrices (96 more); the rows themselves are in the storage buffer after the records,
+        // place of their planes (16 more); the rows themselves are in the storage buffer after the records,
         // 64 bytes each.
         // A record is the step's flags and wiring (3 rows), the gain (1), the grade (6), the warp's counts
         // (1) and its 16 moving (3 rows each) and 16 locked pins (1 row each): 75 rows of 16 bytes. Both are
         // far below the 64 KiB uniform binding the device asks for
         // (`max_uniform_buffer_binding_size` of `wgpu::Limits::default()`) and the 16 KiB of wgpu's
         // downlevel limits.
-        assert_eq!(size_of::<ChainU>(), 704);
+        assert_eq!(size_of::<ChainU>(), 608);
         assert_eq!(size_of::<ChainU>() % 16, 0);
         assert_eq!(size_of::<NodeRecU>(), 1200);
         assert_eq!(size_of::<NodeRecU>() % 16, 0);
@@ -2630,7 +2570,7 @@ mod tests {
                 .validate(&module)
                 .unwrap_or_else(|e| panic!("{mode:?}: {e:?}"));
             let (members, span) = wgsl_struct(&module, "CU");
-            let fields: [(&str, usize); 39] = [
+            let fields: [(&str, usize); 33] = [
                 ("dims", offset_of!(ChainU, dims)),
                 ("src", offset_of!(ChainU, src)),
                 ("origin", offset_of!(ChainU, origin)),
@@ -2664,12 +2604,6 @@ mod tests {
                 ("mrow", offset_of!(ChainU, mrow)),
                 ("photo", offset_of!(ChainU, photo)),
                 ("rst", offset_of!(ChainU, rst)),
-                ("m_lo0", offset_of!(ChainU, m_lo)),
-                ("m_lo1", offset_of!(ChainU, m_lo) + 16),
-                ("m_lo2", offset_of!(ChainU, m_lo) + 32),
-                ("cine_lo0", offset_of!(ChainU, cine_lo)),
-                ("cine_lo1", offset_of!(ChainU, cine_lo) + 16),
-                ("cine_lo2", offset_of!(ChainU, cine_lo) + 32),
             ];
             assert_eq!(members.len(), fields.len());
             for ((name, offset, _), (want, at)) in members.iter().zip(fields) {

@@ -986,7 +986,7 @@ mod tests {
     /// was fused into the next sum (the Metal model of the adaptive ratio: 617 935 samples of 2 638
     /// demosaic calls off the written order, against 0 with the OR). A barrier is a function whose
     /// body is `bitcast<f32>(bitcast<u32>(x) OP word)`; the test scans the text of every kernel,
-    /// and it must find the kernel families that have one (so that it cannot pass by finding
+    /// and it must find the six kernel families that have one (so that it cannot pass by finding
     /// none).
     #[test]
     fn every_fast_math_barrier_is_an_or_never_an_xor() {
@@ -1022,8 +1022,6 @@ mod tests {
                         "bm_dct",
                         "false_color",
                         "coarse_chroma",
-                        "color",
-                        "film",
                     ]
                     .into_iter()
                     .find(|f| name.starts_with(f))
@@ -1042,11 +1040,9 @@ mod tests {
                 "bin",
                 "bm_dct",
                 "coarse_chroma",
-                "color",
                 "detail",
                 "diffraction",
                 "false_color",
-                "film",
                 "guided",
                 "highlights",
                 "lens",

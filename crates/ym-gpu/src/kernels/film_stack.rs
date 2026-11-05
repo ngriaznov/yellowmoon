@@ -234,7 +234,6 @@ impl FilmStack {
             let input = FilmImage {
                 img: input,
                 rect: frect(a),
-                shadow: None,
             };
             let dev = device_tables(ctx, &step.tables)?.with_scalars(step.scalars.clone());
             let out = encode_film_tile(ctx, passes, &dev, &step.plan, &input, frect(made[i]))?;

@@ -83,12 +83,6 @@ struct ChainU {
     mrow: vec4<u32>,     // x: the first mask row in `nodes`, in vec4 rows (after the records), y, z, w: 0
     photo: vec4<f32>,    // the photo frame: x, y: the photo's width and height over its long edge, z: the narrowest edge ramp (MIN_RAMP_PIXELS output pixels) in units of the long edge, w: 0
     rst: vec4<u32>,      // the raster planes (binding 7): x: words in a plane, y: the first row of this dispatch in the window, z: a plane's row stride (elements), w: the planes (0: none)
-    m_lo0: vec4<f32>,    // the low parts of m0..m2 (the f64 value minus its f32 rounding), for the compensated products of precise.wgsl
-    m_lo1: vec4<f32>,
-    m_lo2: vec4<f32>,
-    cine_lo0: vec4<f32>,  // the gamut stage's rows as 1 + K0 s1 + K2 s2 (x: K0, y: K2, z, w: their low parts)
-    cine_lo1: vec4<f32>,
-    cine_lo2: vec4<f32>,
 };
 
 // One step of the plan with the node it runs (docs/23 section 5.4): the flags and the wiring of the step, then the node's
@@ -663,28 +657,13 @@ fn c11_curves(v: vec3<f32>, ni: u32) -> vec3<f32> {
 
 // ---- C12: the cine rendering -----------------------------------------------------------------------------
 
-// The cine rendering (cine.wgsl) for the output's primaries (`CU.cine_m*`) of C11's value `v` (`lin`: the same colour as linear AWG4). `exact` is the display colour the Film
-// pass asked its return for (0 where there is none): the return is the rendering's inverse, so for a colour it could reach
-// the rendering of its answer *is* that display colour, and the f32 round trip through LogC4, the inverse and the
-// rendering is only noise of about 1e-6 (docs/24 section 3.9c). Where the rendering agrees with it within `SNAP_TOLERANCE`
-// the exact colour is the answer; where it does not (a colour the rendering cannot make: the return gave the nearest one)
-// the rendering is.
-const SNAP_TOLERANCE: f32 = 2.0e-5;
-
-fn display_ours(lin: vec3<f32>, exact: vec3<f32>) -> vec3<f32> {
-    let made = cine_display_linear(lin);
-    if (exact.x > 0.0 && exact.y > 0.0 && exact.z > 0.0) {
-        let tol = SNAP_TOLERANCE * exact + vec3<f32>(1.0e-9);
-        let d = abs(made - exact);
-        if (d.x <= tol.x && d.y <= tol.y && d.z <= tol.z) {
-            return exact;
-        }
-    }
-    return made;
+// C11 decoded to linear AWG4, then the cine rendering (cine.wgsl) for the output's primaries (`CU.cine_m*`).
+fn display_ours(v: vec3<f32>) -> vec3<f32> {
+    return cine_display_linear(logc4_decode3(v));
 }
 
-fn c12_display(v: vec3<f32>, lin: vec3<f32>, exact: vec3<f32>) -> vec3<f32> {
-    let ours = display_ours(lin, exact);
+fn c12_display(v: vec3<f32>) -> vec3<f32> {
+    let ours = display_ours(v);
     if (CU.flags.z != 2u) {
         return ours;
     }
@@ -1071,8 +1050,7 @@ fn run_pixel(cam_in: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) -> vec3<f32
     if (stop == 9u && CU.lk.w == 2u) {
         return before_camera_default(cam);
     }
-    let c6 = px_mv3(CU.m0.xyz, CU.m1.xyz, CU.m2.xyz, cam)
-        + vec3<f32>(dot(CU.m_lo0.xyz, cam), dot(CU.m_lo1.xyz, cam), dot(CU.m_lo2.xyz, cam));
+    let c6 = mv3(CU.m0.xyz, CU.m1.xyz, CU.m2.xyz, cam);
     if (stop == 0u) {
         return c6;
     }
@@ -1086,7 +1064,7 @@ fn run_pixel(cam_in: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) -> vec3<f32
         let g = unit(logc4_encode(dot(Y_AWG4, c7)));
         return vec3<f32>(g, g, g);
     }
-    let c8 = px_logc4_encode3(c7);
+    let c8 = logc4_encode3(c7);
     if (stop == 2u) {
         return c8;
     }
@@ -1106,29 +1084,12 @@ fn run_pixel(cam_in: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) -> vec3<f32
     if (stop == 4u) {
         return c10;
     }
-    // C11's value is exactly a value we know more about: the Input's own C8 (its linear AWG4 is C7, with no decode of an
-    // encode), or a Film node's picture (the exact display colour its return was asked for). A bit-for-bit match, an
-    // integer test; a value any node, look or curve has touched matches neither.
-    var lin10 = vec3<f32>(0.0);
-    var exact = vec3<f32>(0.0);
-    let c10_bits = bitcast<vec3<u32>>(c10);
-    if (all(c10_bits == bitcast<vec3<u32>>(c8))) {
-        lin10 = c7;
-    } else {
-        lin10 = px_logc4_decode3(c10);
-        let n = CU.dims.x * CU.dims.y;
-        for (var k = 0u; k < CU.stopn.y; k++) {
-            if (all(c10_bits == bitcast<vec3<u32>>(plane_pic(6u * k, n, pix)))) {
-                exact = plane_pic(6u * k + 3u, n, pix);
-            }
-        }
-    }
     if (stop == 6u) {
         // The DNG's pixels: the last LogC4 value (the nodes, then the look) decoded to linear AWG4 (the inverse of
         // a display rendering that is not ours is the CPU's alone, ColorChain::apply_dng_pixel).
-        return lin10;
+        return logc4_decode3(c10);
     }
-    let c12 = c12_display(c10, lin10, exact);
+    let c12 = c12_display(c10);
     if (stop == 7u) {
         return c12;
     }
