@@ -222,9 +222,7 @@ pub fn grown_tile(
         w,
         h,
     };
-    schedule
-        .infer(tile, &Area::whole(frame.0, frame.1))
-        .source
+    schedule.infer(tile, &Area::whole(frame.0, frame.1)).source
 }
 
 /// The largest storage binding a raster pass over a `grown` window makes: the f32 scratch (seven planes at full
@@ -1129,6 +1127,12 @@ where
     }
     if let Wide::Owned(image) = wide_image {
         // The picture must outlive the submission.
+        let _ = passes.keep(image.buf);
+    }
+    // The guide too: the recorded passes read it until the list is submitted. Dropped here it would go back to the pool,
+    // where a later allocation of the same list could write it, or a trim destroy it ("Buffer with 'raster guide' label
+    // has been destroyed" at submit; the owner's log, 2026-11-05).
+    if let Some(image) = guide {
         let _ = passes.keep(image.buf);
     }
     Ok(plane)

@@ -899,7 +899,7 @@ fn raster_read(
                 .infer(picture, &frame)
                 .source
         })
-        .fold(Area::default(), |a, b| ym_color::schedule::union_area(a, b));
+        .fold(Area::default(), ym_color::schedule::union_area);
     let spec = ViewSpec {
         out_w: grown.w,
         out_h: grown.h,
@@ -963,6 +963,23 @@ fn plane_key(job: &mut Job<'_>, spec: &ViewSpec) -> Result<PlaneKey, RenderError
         ),
         guide: format!("{:?}|{:?}", params.key(), color_key(job.src)),
     })
+}
+
+/// A device job whose buffers do not fit one binding goes to the CPU, and says so: the reason is logged (once per change
+/// at warn, then at debug), shown as the CPU note, and carried in the frame's report (`RenderReport::cpu_reason`, the
+/// `route=cpu(...)` field of the `ym::perf` line). Nothing is quiet: a CPU frame always has a reason
+/// (`docs/23` section 5.12, *Limits*).
+fn refuse_size(
+    job: &mut Job<'_>,
+    input: &DeviceInput,
+    grown: Option<&GrownInput>,
+    route: &ViewRoute,
+) -> Result<(), RenderError> {
+    let (requested, limit) = input
+        .overflow(route)
+        .or_else(|| grown.and_then(|g| g.input.overflow(route)))
+        .unwrap_or((0, route.band_bytes));
+    job.view_gpu_failed(&GpuError::BufferTooLarge { requested, limit })
 }
 
 /// Whether the wider picture of the raster masks (when there is one) fits the route's bindings: the picture of
@@ -1839,6 +1856,7 @@ fn plain_pass(
                 paper: false,
             }));
         }
+        refuse_size(job, &input, rasters.as_ref(), r)?;
     }
     let sampled = sample_routed(job, &prepared, route)?;
     let started = std::time::Instant::now();
@@ -1992,6 +2010,7 @@ fn build_display(
                 device: ComputeDevice::Gpu,
             }));
         }
+        refuse_size(job, &input, rasters.as_ref(), r)?;
     }
     let sampled = sample_routed(job, prepared, route)?;
     let started = std::time::Instant::now();

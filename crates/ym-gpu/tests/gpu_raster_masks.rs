@@ -310,6 +310,24 @@ fn device_planes_in(
     extent: Area,
     halo: usize,
 ) -> Vec<Vec<u16>> {
+    device_planes_trimmed(dev, chain, img, grid, frame, window, extent, halo, false)
+}
+
+/// [`device_planes_in`] that, when `trim` is set, empties the pool's free lists between recording and submitting, as a
+/// tight budget does when another allocation of the same list needs room. A buffer a recorded pass uses that went back to
+/// the pool is destroyed then ("Buffer with 'raster guide' label has been destroyed" at submit).
+#[allow(clippy::too_many_arguments)]
+fn device_planes_trimmed(
+    dev: &TestGpu,
+    chain: &ColorChain,
+    img: &RgbImage,
+    grid: &SamplerGrid,
+    frame: Area,
+    window: Area,
+    extent: Area,
+    halo: usize,
+    trim: bool,
+) -> Vec<Vec<u16>> {
     let (chain, img, grid) = (chain.clone(), img.clone(), *grid);
     dev.gpu
         .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
@@ -342,6 +360,9 @@ fn device_planes_in(
             )?;
             let read = passes.read(planes.buffer(), 0, planes.byte_len())?;
             let _src = passes.keep(src.buf);
+            if trim {
+                ctx.pool().trim();
+            }
             let done = passes.submit()?.finish()?;
             let bytes = done.read(read).to_vec();
             Ok(unpack(&bytes, &planes))
@@ -441,6 +462,37 @@ fn the_device_planes_are_the_cpu_planes_within_the_stated_bound() {
         }
     }
     eprintln!("the largest difference over the cases: {worst_all:.2e}");
+}
+
+#[test]
+fn a_pool_trim_before_the_submit_destroys_nothing_a_recorded_pass_reads() {
+    // Regression (G-11): the guide of Refine edges went back to the pool when the pass was recorded, not when it was
+    // submitted, so a trim (or a later allocation) before the submit destroyed it.
+    let buffer = (480usize, 320usize);
+    let img = scene(buffer.0, buffer.1, 0x5EED);
+    let (grid, frame) = export_grid(buffer, 0.2);
+    let window = Area {
+        x: 1000,
+        y: 700,
+        w: 150,
+        h: 110,
+    };
+    for dev in gpus() {
+        if dev.mode.is_f16() {
+            continue;
+        }
+        let chain = chain_with(RasterSet {
+            rows: vec![row(0.3, 0.3, 0.6)],
+        });
+        let halo = chain.rasters().halo(1.0 / grid.photo_frame().pixel);
+        let kept =
+            device_planes_trimmed(dev, &chain, &img, &grid, frame, window, window, halo, true);
+        let plain = device_planes(dev, &chain, &img, &grid, frame, window, halo);
+        assert_eq!(
+            kept, plain,
+            "a trim between the record and the submit changed the planes"
+        );
+    }
 }
 
 #[test]

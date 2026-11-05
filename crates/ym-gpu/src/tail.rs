@@ -449,7 +449,13 @@ fn prepare_tile(
     (w, h): (usize, usize),
     sampled: &GpuImage,
 ) -> Result<PreparedTile, GpuError> {
-    let grown = grown_tile(&FilmStack::schedule_of(chain, grid, films), frame, off, w, h);
+    let grown = grown_tile(
+        &FilmStack::schedule_of(chain, grid, films),
+        frame,
+        off,
+        w,
+        h,
+    );
     let mut prepared = PreparedChain::new(ctx, chain)?;
     if sampled.planes == 6 {
         prepared = prepared.with_photo_frame(grid.photo_frame());

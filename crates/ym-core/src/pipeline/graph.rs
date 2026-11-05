@@ -466,6 +466,10 @@ pub struct RenderReport {
     /// (a frame served from the cache, a frame of paper only, no device, a route that had already ended). The viewport
     /// says "Rendering on the CPU" from it at once, so a state that refuses every frame is seen at the first.
     pub device_refused: bool,
+    /// Why the CPU made (part of) this request when the device was asked: the device's own words (an input check, a
+    /// buffer that does not fit one binding, an error). `None` when the device made it, or never was asked. Logged in
+    /// the `ym::perf` line as `route=cpu(reason)`.
+    pub cpu_reason: Option<String>,
     /// The zoom of the frame, for a viewport frame ([`Renderer::viewport_frame`] sets it, also on a
     /// frame served from the cache); `None` for every other request.
     pub zoom: Option<FrameZoom>,
@@ -1744,6 +1748,8 @@ pub(crate) struct Job<'a> {
     pub notes: Vec<String>,
     /// A device error made the CPU do work of this request ([`RenderReport::device_refused`]).
     device_refused: bool,
+    /// The first reason the CPU took over ([`RenderReport::cpu_reason`]).
+    cpu_reason: Option<String>,
     started: Instant,
     params: Option<RawParams>,
     /// The decoded area of this request (see [`Job::frame`]).
@@ -1853,6 +1859,7 @@ impl<'a> Job<'a> {
             timings: StageTimings::default(),
             notes: Vec::new(),
             device_refused: false,
+            cpu_reason: None,
             started: Instant::now(),
             params: None,
             frame: None,
@@ -2067,6 +2074,7 @@ impl<'a> Job<'a> {
             timings: self.timings,
             notes: std::mem::take(&mut self.notes),
             device_refused: self.device_refused,
+            cpu_reason: self.cpu_reason.take(),
             zoom: None,
             lens,
         };
@@ -3037,6 +3045,7 @@ impl<'a> Job<'a> {
     pub(crate) fn view_gpu_failed(&mut self, error: &GpuError) -> Result<(), RenderError> {
         let reason = error.to_string();
         self.device_refused = true;
+        self.cpu_reason.get_or_insert_with(|| reason.clone());
         if matches!(error, GpuError::InvalidInput(_)) {
             if self.g.view_input_warned.swap(true, Ordering::SeqCst) {
                 tracing::debug!(error = %reason, "a view was refused by an input check; the CPU makes this frame");

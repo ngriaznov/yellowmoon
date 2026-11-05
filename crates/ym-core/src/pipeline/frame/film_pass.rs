@@ -235,11 +235,7 @@ impl FilmRender {
 
     /// The scheduler's schedule of the Film nodes alone (`ym_color::schedule`): their made and read areas.
     pub(crate) fn schedule(&self) -> Schedule {
-        Schedule::new(
-            self.steps
-                .iter()
-                .map(|s| StepKind::Film.declared(s.halo)),
-        )
+        Schedule::new(self.steps.iter().map(|s| StepKind::Film.declared(s.halo)))
     }
 
     /// The pixels of the photo the Film nodes read beyond the pixels they make: the sum of their halos (a node

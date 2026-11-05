@@ -61,7 +61,10 @@ mod tests {
     fn every_kind_has_a_footprint() {
         for k in NodeKind::ALL {
             let d = node_footprint(k, 7);
-            assert_eq!(d.is_some(), !matches!(k, NodeKind::Input | NodeKind::Output));
+            assert_eq!(
+                d.is_some(),
+                !matches!(k, NodeKind::Input | NodeKind::Output)
+            );
         }
         for k in MaskKind::ALL {
             let spatial = matches!(mask_footprint(k, 5).footprint, Footprint::Spatial { .. });

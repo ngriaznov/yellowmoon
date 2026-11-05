@@ -25,11 +25,11 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::sync::{Arc, Weak};
 
+use crate::cpu::sampler::SamplerGrid;
 use ym_color::display::ColorChain;
 use ym_color::mask::PhotoFrame;
 use ym_color::mask_raster::Area;
 use ym_color::schedule::{Schedule, StepKind};
-use crate::cpu::sampler::SamplerGrid;
 
 use super::color::{PreparedChain, Stop};
 use super::film::{
@@ -198,11 +198,7 @@ impl FilmStack {
     /// The schedule of the Film nodes alone (no mask planes): their made and read areas.
     #[must_use]
     pub fn schedule(&self) -> Schedule {
-        Schedule::new(
-            self.steps
-                .iter()
-                .map(|s| StepKind::Film.declared(s.halo())),
-        )
+        Schedule::new(self.steps.iter().map(|s| StepKind::Film.declared(s.halo())))
     }
 
     /// The area the first node reads for `need`: `need` grown by every halo, cut to the photo's extent.

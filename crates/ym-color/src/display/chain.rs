@@ -654,7 +654,12 @@ impl ColorChain {
             if self.params.rasters.is_empty() {
                 continue;
             }
-            declared.extend(node.masks().ops().iter().map(|o| o.kind.declared(raster_reach)));
+            declared.extend(
+                node.masks()
+                    .ops()
+                    .iter()
+                    .map(|o| o.kind.declared(raster_reach)),
+            );
         }
         crate::schedule::Schedule::new(declared)
     }

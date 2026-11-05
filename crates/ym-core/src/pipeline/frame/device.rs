@@ -332,7 +332,7 @@ pub(super) enum CameraSource {
 
 impl CameraSource {
     /// Width and height of the window in pixels.
-    fn size(&self) -> (usize, usize) {
+    pub(super) fn size(&self) -> (usize, usize) {
         match self {
             Self::Host(image) => (image.width, image.height),
             Self::Resident { window, .. } => (window.w, window.h),
@@ -376,6 +376,36 @@ impl DeviceInput {
             } => Some(grid.photo_frame()),
             Self::Sampled(Upload::Positioned { frame, .. }) => Some(*frame),
             _ => None,
+        }
+    }
+
+    /// The first size of this input that passes the route's bindings, as `(bytes needed, bytes allowed)`, or `None` when it
+    /// fits. The same rule as [`DeviceInput::fits`], so a refusal can say what did not fit.
+    pub(super) fn overflow(&self, route: &ViewRoute) -> Option<(u64, u64)> {
+        let even = |n: usize| n.next_multiple_of(2) as u64;
+        let frame = |w: usize, h: usize| {
+            let need = 16 * even(w) * h as u64;
+            (need > route.band_bytes).then_some((need, route.band_bytes))
+        };
+        match self {
+            Self::Camera {
+                source,
+                width,
+                height,
+                ..
+            } => {
+                let (sw, sh) = source.size();
+                let need = 12 * even(sw) * sh as u64;
+                if need > route.source_bytes {
+                    Some((need, route.source_bytes))
+                } else {
+                    frame(*width, *height)
+                }
+            }
+            Self::Sampled(Upload::Rgb(s)) => frame(s.img.width, s.img.height),
+            Self::Sampled(
+                Upload::Masked { width, height, .. } | Upload::Positioned { width, height, .. },
+            ) => frame(*width, *height),
         }
     }
 

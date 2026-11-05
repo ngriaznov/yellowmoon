@@ -61,6 +61,9 @@ const GRAPHS_PER_SEED: usize = 3;
 /// Graphs of the rotating seed.
 const ROTATING_GRAPHS: usize = 3;
 
+/// The log is the process's: the tests that look at it run one at a time.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn gpu() -> Option<Arc<Gpu>> {
     match Gpu::start(GpuConfig {
         poison: true,
@@ -82,6 +85,10 @@ fn gpu() -> Option<Arc<Gpu>> {
 }
 
 fn renderer(gpu: Option<Arc<Gpu>>, tile: usize) -> Renderer {
+    renderer_with(gpu, tile, RenderOptions::default().view_band_bytes)
+}
+
+fn renderer_with(gpu: Option<Arc<Gpu>>, tile: usize, view_band_bytes: u64) -> Renderer {
     let stages = if gpu.is_some() {
         GpuStages::ALL
     } else {
@@ -95,6 +102,7 @@ fn renderer(gpu: Option<Arc<Gpu>>, tile: usize) -> Renderer {
             full_tile_px: tile,
             vision: Some(VisionMasks::new(Arc::new(FakeVision::new()))),
             data_root: Some(data_root()),
+            view_band_bytes,
             ..RenderOptions::default()
         },
     )
@@ -118,16 +126,23 @@ fn generated_masks() -> Vec<MaskKind> {
 }
 
 fn row_json(kind: MaskKind, rng: &mut SplitMix64) -> Value {
-    let f = |rng: &mut SplitMix64, lo: f64, hi: f64| lo + (hi - lo) * (rng.below(1000) as f64 / 999.0);
+    let f =
+        |rng: &mut SplitMix64, lo: f64, hi: f64| lo + (hi - lo) * (rng.below(1000) as f64 / 999.0);
     let mut r = match kind {
         MaskKind::Brush => json!({ "strokes": [{ "size": 0.2, "hardness": 0.5, "erase": false,
             "points": [[f(rng, 0.2, 0.5), f(rng, 0.3, 0.6)], [f(rng, 0.5, 0.8), f(rng, 0.4, 0.7)]] }],
             "feather": f(rng, 0.0, 0.6), "refine": f(rng, 0.0, 1.0) }),
         MaskKind::Background => json!({ "feather": f(rng, 0.0, 0.6), "refine": f(rng, 0.0, 1.0) }),
-        MaskKind::Subject | MaskKind::People => json!({ "grow": f(rng, -0.3, 0.3), "refine": f(rng, 0.0, 1.0) }),
+        MaskKind::Subject | MaskKind::People => {
+            json!({ "grow": f(rng, -0.3, 0.3), "refine": f(rng, 0.0, 1.0) })
+        }
         MaskKind::Object => json!({}),
-        MaskKind::Linear => json!({ "center": [0.5, 0.5], "angle_deg": f(rng, -40.0, 40.0), "feather": 0.3 }),
-        MaskKind::Radial => json!({ "center": [0.5, 0.5], "radii": [0.3, 0.2], "angle_deg": 0.0, "feather": 0.3 }),
+        MaskKind::Linear => {
+            json!({ "center": [0.5, 0.5], "angle_deg": f(rng, -40.0, 40.0), "feather": 0.3 })
+        }
+        MaskKind::Radial => {
+            json!({ "center": [0.5, 0.5], "radii": [0.3, 0.2], "angle_deg": 0.0, "feather": 0.3 })
+        }
         MaskKind::ColorRange => json!({ "center": [0.05, 0.0], "width": 0.2, "softness": 0.5 }),
         MaskKind::BrightnessRange => json!({ "low": 0.3, "high": 0.7, "softness": 0.4 }),
     };
@@ -188,7 +203,9 @@ fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKin
             NodeKind::Corrector => {
                 json!({ "id": id, "kind": "corrector", "pos": [id, 0.0], "trim": { "exposure_ev": 0.8 } })
             }
-            NodeKind::Input | NodeKind::Output => unreachable!("not generated: {NOT_GENERATED_NODES:?}"),
+            NodeKind::Input | NodeKind::Output => {
+                unreachable!("not generated: {NOT_GENERATED_NODES:?}")
+            }
         };
         if !rows[i].is_empty() {
             let items_json: Vec<Value> = rows[i].iter().map(|k| row_json(*k, &mut rng)).collect();
@@ -223,7 +240,7 @@ fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKin
         .enumerate()
         .filter(|(_, r)| !r.is_empty())
         .map(|(i, r)| (2 + i as u32, rng.below(r.len() as u64) as usize))
-        .nth(0);
+        .next();
     let compare = !used_masks
         .iter()
         .any(|k| matches!(k, MaskKind::Subject | MaskKind::People));
@@ -323,7 +340,6 @@ fn refusals(log: &str) -> Vec<String> {
         .collect()
 }
 
-
 fn say(text: &str) {
     let _ = writeln!(std::io::stderr(), "[any graph] {text}");
 }
@@ -369,18 +385,33 @@ fn the_generator_draws_from_the_kind_lists() {
     }
     // And a run holds every generated kind.
     let all = graphs();
-    let seen_nodes: BTreeSet<_> = all.iter().flat_map(|g| g.nodes.iter().map(|k| k.name())).collect();
-    let seen_masks: BTreeSet<_> = all.iter().flat_map(|g| g.masks.iter().map(|k| k.name())).collect();
+    let seen_nodes: BTreeSet<_> = all
+        .iter()
+        .flat_map(|g| g.nodes.iter().map(|k| k.name()))
+        .collect();
+    let seen_masks: BTreeSet<_> = all
+        .iter()
+        .flat_map(|g| g.masks.iter().map(|k| k.name()))
+        .collect();
     for k in generated_nodes() {
-        assert!(seen_nodes.contains(k.name()), "node kind {k:?} never generated");
+        assert!(
+            seen_nodes.contains(k.name()),
+            "node kind {k:?} never generated"
+        );
     }
     for k in generated_masks() {
-        assert!(seen_masks.contains(k.name()), "mask kind {k:?} never generated");
+        assert!(
+            seen_masks.contains(k.name()),
+            "mask kind {k:?} never generated"
+        );
     }
 }
 
 #[test]
 fn no_generated_graph_is_refused_by_the_device() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(gpu) = gpu() else { return };
     let white = light("sony-ilce-7rm4", 4800.0);
     let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
@@ -417,7 +448,11 @@ fn no_generated_graph_is_refused_by_the_device() {
             if let Some((node, row)) = g.masked {
                 states.push((
                     format!("Show mask row {row}, 100 % {zoom_100}"),
-                    view(zoom_100, false, Some((node, MaskStyle::Overlay, Some(row as u32)))),
+                    view(
+                        zoom_100,
+                        false,
+                        Some((node, MaskStyle::Overlay, Some(row as u32))),
+                    ),
                 ));
             }
         }
@@ -427,12 +462,20 @@ fn no_generated_graph_is_refused_by_the_device() {
             let at = format!("{name}: {what}");
             let got = frame(&device, &src, st);
             if got.report.device != ComputeDevice::Gpu || got.report.device_refused {
-                problems.push(format!("{at}: the frame is {:?}, refused {}", got.report.device, got.report.device_refused));
+                problems.push(format!(
+                    "{at}: the frame is {:?}, refused {}",
+                    got.report.device, got.report.device_refused
+                ));
             }
             if device.views_on_cpu(src.id) {
                 problems.push(format!("{at}: views_on_cpu"));
             }
-            for n in got.report.notes.iter().filter(|n| n.contains("graphics card")) {
+            for n in got
+                .report
+                .notes
+                .iter()
+                .filter(|n| n.contains("graphics card"))
+            {
                 problems.push(format!("{at}: note {n}"));
             }
             if g.compare {
@@ -441,7 +484,9 @@ fn no_generated_graph_is_refused_by_the_device() {
                 let (max, over) = frame_diff(&got, &want);
                 worst_view = (worst_view.0.max(max), worst_view.1.max(over));
                 if max > 2 || over >= got.rgba.len() / 2000 {
-                    problems.push(format!("{at}: against the CPU {max} codes, {over} values over 1"));
+                    problems.push(format!(
+                        "{at}: against the CPU {max} codes, {over} values over 1"
+                    ));
                 }
             }
         }
@@ -449,13 +494,22 @@ fn no_generated_graph_is_refused_by_the_device() {
             exports += 1;
             let home = tempfile::tempdir().expect("dir");
             for format in [FormatKind::Png, FormatKind::Jpeg] {
-                let (dev_on, notes, dev) =
-                    export(&d, &g.settings, renderer(Some(Arc::clone(&gpu)), 256), home.path(), format);
-                if dev_on != ComputeDevice::Gpu || notes.iter().any(|n| n.contains("graphics card")) {
-                    problems.push(format!("{name}: the {format:?} export is {dev_on:?}, notes {notes:?}"));
+                let (dev_on, notes, dev) = export(
+                    &d,
+                    &g.settings,
+                    renderer(Some(Arc::clone(&gpu)), 256),
+                    home.path(),
+                    format,
+                );
+                if dev_on != ComputeDevice::Gpu || notes.iter().any(|n| n.contains("graphics card"))
+                {
+                    problems.push(format!(
+                        "{name}: the {format:?} export is {dev_on:?}, notes {notes:?}"
+                    ));
                 }
                 if format == FormatKind::Png {
-                    let (_, _, cpu_bytes) = export(&d, &g.settings, renderer(None, 256), home.path(), format);
+                    let (_, _, cpu_bytes) =
+                        export(&d, &g.settings, renderer(None, 256), home.path(), format);
                     let max = decode_png16_bytes(&dev)
                         .iter()
                         .zip(decode_png16_bytes(&cpu_bytes))
@@ -464,13 +518,22 @@ fn no_generated_graph_is_refused_by_the_device() {
                         .unwrap_or(0);
                     worst_export = worst_export.max(max);
                     if max > TEN_BIT_CODE {
-                        problems.push(format!("{name}: the PNG export differs from the CPU's by {max} of 65535"));
+                        problems.push(format!(
+                            "{name}: the PNG export differs from the CPU's by {max} of 65535"
+                        ));
                     }
                 }
-                let (_, _, other) =
-                    export(&d, &g.settings, renderer(Some(Arc::clone(&gpu)), 97), home.path(), format);
+                let (_, _, other) = export(
+                    &d,
+                    &g.settings,
+                    renderer(Some(Arc::clone(&gpu)), 97),
+                    home.path(),
+                    format,
+                );
                 if other != dev {
-                    problems.push(format!("{name}: the {format:?} export at tile 97 is other bytes"));
+                    problems.push(format!(
+                        "{name}: the {format:?} export at tile 97 is other bytes"
+                    ));
                 }
             }
         }
@@ -479,12 +542,18 @@ fn no_generated_graph_is_refused_by_the_device() {
             problems.push(format!("{name}: log: {line}"));
         }
         if problems.len() > before {
-            say(&format!("{name} FAILED; settings to replay (or YM_GRAPH_SEED={}): {}", g.seed, g.json));
+            say(&format!(
+                "{name} FAILED; settings to replay (or YM_GRAPH_SEED={}): {}",
+                g.seed, g.json
+            ));
         }
     }
     say(&format!(
         "{} graphs ({n_film} with a Film node, {n_masked} with masks, {n_keys} key links), {exports} with exports; worst view {} codes, {} values over 1; worst PNG {worst_export} of 65535; {:?}",
-        all.len(), worst_view.0, worst_view.1, started.elapsed()
+        all.len(),
+        worst_view.0,
+        worst_view.1,
+        started.elapsed()
     ));
     assert!(problems.is_empty(), "{problems:#?}");
 }
@@ -498,4 +567,76 @@ fn decode_png16_bytes(bytes: &[u8]) -> Vec<u32> {
         .chunks_exact(2)
         .map(|c| u32::from(u16::from_be_bytes([c[0], c[1]])))
         .collect()
+}
+
+/// Regression (G-11): a view at scale 1 (zoom 50 to 150 %) of a photo with raster masks was made on the CPU, quietly, when
+/// the wider picture the masks read did not fit one binding (the owner's 12 CPU frames of 198, 410 to 840 ms). The route is
+/// bands on the device whatever the binding size; a frame the CPU makes says why.
+#[test]
+fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(gpu) = gpu() else { return };
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let mut rng = SplitMix64(9);
+    let rows = |kinds: &[MaskKind], rng: &mut SplitMix64| -> Vec<Value> {
+        kinds.iter().map(|k| row_json(*k, rng)).collect()
+    };
+    let mut problems = Vec::new();
+    for (what, kinds) in [
+        ("brush", vec![MaskKind::Brush]),
+        (
+            "brush and background",
+            vec![MaskKind::Brush, MaskKind::Background],
+        ),
+    ] {
+        let doc = json!({ "nodes": { "items": [
+            { "id": 1 },
+            { "id": 2, "kind": "corrector", "pos": [2, 0.0], "trim": { "exposure_ev": 0.8 },
+              "masks": { "invert": false, "items": rows(&kinds, &mut rng) } },
+        ], "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } },
+        ] } });
+        let settings = serde_json::from_value::<DevelopSettings>(doc)
+            .expect("a document")
+            .validated()
+            .expect("a valid graph")
+            .0;
+        let src = d.source().with_settings(settings);
+        for kib in [65_536u64, 4096, 1024, 512, 256, 128, 64] {
+            let device = renderer_with(Some(Arc::clone(&gpu)), 256, kib * 1024);
+            let _ = frame(&device, &src, &view(false, false, None));
+            for pct in [50.0, 75.0, 100.0, 147.0] {
+                let mut st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+                st.mode = ViewportMode::Percent { value: pct };
+                let got = frame(&device, &src, &st);
+                let on_cpu = got.report.device != ComputeDevice::Gpu;
+                // A binding that cannot hold even one row of the masks' wider picture (narrower than the frame grown by
+                // twice their reach, a column of rows deep) is a resource limit; below 1 MiB this scene is there. The
+                // CPU may make such a frame, but never quietly: it says why, in the report and in the note.
+                let reasoned = got.report.cpu_reason.is_some()
+                    && got.report.device_refused
+                    && got.report.notes.iter().any(|n| n.contains("graphics card"));
+                if on_cpu && (kib >= 1024 || !reasoned) {
+                    problems.push(format!(
+                        "{what}, binding {kib} KiB, zoom {pct} %: {:?}, reason {:?}, notes {:?}",
+                        got.report.device, got.report.cpu_reason, got.report.notes
+                    ));
+                }
+                if !on_cpu && device.views_on_cpu(src.id) {
+                    problems.push(format!(
+                        "{what}, binding {kib} KiB, zoom {pct} %: views_on_cpu"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
 }

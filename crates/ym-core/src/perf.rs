@@ -96,7 +96,7 @@ impl FrameProbe {
         let r = &frame.report;
         let t = &r.timings;
         let mut line = format!(
-            "frame {}x{} {} zoom={:.0}% scale={} total={total:.1} cache={} rasters={} mask_view={} | plans={:.1} sample={:.1} raw={:.1} pass={:.1} output={:.1} |",
+            "frame {}x{} {} zoom={:.0}% scale={} total={total:.1} cache={} rasters={} mask_view={} route={} | plans={:.1} sample={:.1} raw={:.1} pass={:.1} output={:.1} |",
             frame.width,
             frame.height,
             if r.device == crate::pipeline::ComputeDevice::Gpu {
@@ -109,6 +109,14 @@ impl FrameProbe {
             if r.runs.frame_hits > 0 { "hit" } else { "miss" },
             if self.rasters { "yes" } else { "no" },
             self.mask_view,
+            match (
+                &r.cpu_reason,
+                r.device == crate::pipeline::ComputeDevice::Gpu
+            ) {
+                (_, true) => "gpu".to_owned(),
+                (Some(why), false) => format!("cpu({why})"),
+                (None, false) => "cpu(no device, or a stage is off)".to_owned(),
+            },
             t.plans_ms,
             t.sample_ms,
             t.raw_ms,
