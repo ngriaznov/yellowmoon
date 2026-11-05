@@ -30,10 +30,10 @@ use ym_color::mask::PhotoFrame;
 use ym_color::mask_raster::Area;
 
 use super::color::{PreparedChain, Stop};
-use super::mask_raster::{PlaneKey, RasterJob, encode_raster_planes_over};
 use super::film::{
     FRect, FilmColourData, FilmDevice, FilmImage, FilmPlan, FilmScalars, encode_film_tile, halos,
 };
+use super::mask_raster::{PlaneKey, RasterJob, encode_raster_planes_over};
 use crate::cpu::Placement;
 use crate::cpu::tiling::Rect;
 use crate::device::{GpuContext, GpuError};
@@ -199,6 +199,7 @@ impl FilmStack {
     /// The raster rows before a node make their planes over the area the node reads (`read[i]`), from `wide`, which is
     /// grown by the masks' receptive field as well (`rasters.frame` is the photo's extent). A pixel's plane does not
     /// depend on the window it is made in, so these equal the CPU's planes over the widest window.
+    #[allow(clippy::too_many_arguments)] // the render's own pieces: areas, picture, photo frame, rasters
     pub fn encode(
         &self,
         ctx: &GpuContext,

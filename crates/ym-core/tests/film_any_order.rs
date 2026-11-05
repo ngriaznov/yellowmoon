@@ -148,8 +148,9 @@ fn colour_range() -> Value {
 /// Input, Main, the nodes in a line (ids 2, 3, ...), Output. `keys` are key links `(from, to)` between the nodes' ids.
 fn line(specs: &[Spec], keys: &[(u32, u32)]) -> DevelopSettings {
     let mut items = vec![json!({ "id": 1 })];
-    let mut links =
-        vec![json!({ "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } })];
+    let mut links = vec![
+        json!({ "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } }),
+    ];
     let mut prev = json!(1);
     for (i, s) in specs.iter().enumerate() {
         let id = 2 + i as u32;
@@ -174,13 +175,17 @@ fn line(specs: &[Spec], keys: &[(u32, u32)]) -> DevelopSettings {
     }
     links.push(json!({ "from": { "node": prev, "port": "picture" }, "to": { "node": "output", "port": "picture" } }));
     for (a, b) in keys {
-        links.push(json!({ "from": { "node": a, "port": "key" }, "to": { "node": b, "port": "key" } }));
+        links.push(
+            json!({ "from": { "node": a, "port": "key" }, "to": { "node": b, "port": "key" } }),
+        );
     }
-    serde_json::from_value::<DevelopSettings>(json!({ "nodes": { "items": items, "links": links } }))
-        .expect("a document")
-        .validated()
-        .expect("a valid graph")
-        .0
+    serde_json::from_value::<DevelopSettings>(
+        json!({ "nodes": { "items": items, "links": links } }),
+    )
+    .expect("a document")
+    .validated()
+    .expect("a valid graph")
+    .0
 }
 
 /// A case: its graph, the node the mask view looks at (when it has masks), and whether the export is checked too.
@@ -195,7 +200,8 @@ struct Case {
 
 fn cases() -> Vec<Case> {
     let mut out = Vec::new();
-    let kinds: [(&str, fn() -> Value, bool); 5] = [
+    type Kind = (&'static str, fn() -> Value, bool);
+    let kinds: [Kind; 5] = [
         ("brush", brush, true),
         ("background", background, true),
         ("linear", linear, false),
@@ -219,12 +225,7 @@ fn cases() -> Vec<Case> {
             2,
             export,
         );
-        add(
-            "on the Film node",
-            vec![film(vec![make()])],
-            2,
-            export,
-        );
+        add("on the Film node", vec![film(vec![make()])], 2, export);
         add(
             "on a corrector after the Film node",
             vec![film(vec![]), corrector(vec![make()])],
@@ -252,10 +253,7 @@ fn cases() -> Vec<Case> {
     out.push(Case {
         name: "brush and background before a Film node with a radial on it".into(),
         settings: line(
-            &[
-                corrector(vec![brush(), background()]),
-                film(vec![radial()]),
-            ],
+            &[corrector(vec![brush(), background()]), film(vec![radial()])],
             &[],
         ),
         masked: Some(2),
@@ -306,7 +304,11 @@ fn cases() -> Vec<Case> {
 
 // ---- frames ------------------------------------------------------------------------------------------------
 
-fn view(zoom_100: bool, before: bool, mask: Option<(u32, MaskStyle, Option<u32>)>) -> ViewportState {
+fn view(
+    zoom_100: bool,
+    before: bool,
+    mask: Option<(u32, MaskStyle, Option<u32>)>,
+) -> ViewportState {
     let mut st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
     if zoom_100 {
         st.mode = ViewportMode::Percent { value: 100.0 };
@@ -376,7 +378,11 @@ fn export(
         &ExportControl::none(),
     )
     .expect("export");
-    (report.device, report.notes.clone(), decode_png16(&report.path))
+    (
+        report.device,
+        report.notes.clone(),
+        decode_png16(&report.path),
+    )
 }
 
 /// The lines of the log that say the device refused or failed something.
@@ -416,9 +422,15 @@ fn no_graph_with_a_film_node_is_refused_by_the_device() {
         let mut states: Vec<(String, ViewportState)> = Vec::new();
         for zoom_100 in [false, true] {
             states.push((format!("100 % {zoom_100}"), view(zoom_100, false, None)));
-            states.push((format!("Before, 100 % {zoom_100}"), view(zoom_100, true, None)));
+            states.push((
+                format!("Before, 100 % {zoom_100}"),
+                view(zoom_100, true, None),
+            ));
             if let Some(node) = case.masked {
-                for (style, name) in [(MaskStyle::Overlay, "Overlay"), (MaskStyle::MaskOnly, "Mask only")] {
+                for (style, name) in [
+                    (MaskStyle::Overlay, "Overlay"),
+                    (MaskStyle::MaskOnly, "Mask only"),
+                ] {
                     states.push((
                         format!("{name}, 100 % {zoom_100}"),
                         view(zoom_100, false, Some((node, style, None))),
@@ -441,7 +453,12 @@ fn no_graph_with_a_film_node_is_refused_by_the_device() {
             if got.report.device_refused {
                 problems.push(format!("{at}: the device refused the frame"));
             }
-            for n in got.report.notes.iter().filter(|n| n.contains("graphics card")) {
+            for n in got
+                .report
+                .notes
+                .iter()
+                .filter(|n| n.contains("graphics card"))
+            {
                 problems.push(format!("{at}: note {n}"));
             }
             if case.compare {
@@ -450,7 +467,9 @@ fn no_graph_with_a_film_node_is_refused_by_the_device() {
                 let (max, over) = frame_diff(&got, &want);
                 worst_view = (worst_view.0.max(max), worst_view.1.max(over));
                 if max > 2 || over >= got.rgba.len() / 2000 {
-                    problems.push(format!("{at}: against the CPU {max} codes, {over} values over 1"));
+                    problems.push(format!(
+                        "{at}: against the CPU {max} codes, {over} values over 1"
+                    ));
                 }
             }
         }
@@ -458,20 +477,35 @@ fn no_graph_with_a_film_node_is_refused_by_the_device() {
         let cancel = CancelToken::new();
         let counters = gpu.counters();
         device.thumbnail_png(&src, &cancel).expect("thumbnail");
-        device.node_thumbnails(&src, &cancel).expect("node thumbnails");
+        device
+            .node_thumbnails(&src, &cancel)
+            .expect("node thumbnails");
         if let Some(film_node) = case.settings.nodes.films.keys().next().copied() {
-            ym_core::film_tiles::film_tile_png(&device, &src, film_node, "kodak_portra_400", &cancel)
-                .expect("stock tile");
+            ym_core::film_tiles::film_tile_png(
+                &device,
+                &src,
+                film_node,
+                "kodak_portra_400",
+                &cancel,
+            )
+            .expect("stock tile");
         }
         device.histogram(&src, &cancel).expect("histogram");
-        device.histogram_at(&src, None, &cancel).expect("histogram at");
+        device
+            .histogram_at(&src, None, &cancel)
+            .expect("histogram at");
         if gpu.counters().since(counters).dispatches == 0 {
             problems.push(format!("{}: the thumbnails ran no device work", case.name));
         }
         // The export, and its tiles.
         if case.export {
             let home = tempfile::tempdir().expect("dir");
-            let (dev_on, notes, dev) = export(&d, &case.settings, renderer(Some(Arc::clone(&gpu)), 256), home.path());
+            let (dev_on, notes, dev) = export(
+                &d,
+                &case.settings,
+                renderer(Some(Arc::clone(&gpu)), 256),
+                home.path(),
+            );
             if dev_on != ComputeDevice::Gpu {
                 problems.push(format!("{}: the export is {dev_on:?}", case.name));
             }
@@ -479,15 +513,31 @@ fn no_graph_with_a_film_node_is_refused_by_the_device() {
                 problems.push(format!("{}: export notes {notes:?}", case.name));
             }
             let (_, _, cpu_codes) = export(&d, &case.settings, renderer(None, 256), home.path());
-            let max = dev.iter().zip(&cpu_codes).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+            let max = dev
+                .iter()
+                .zip(&cpu_codes)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap_or(0);
             worst_export = worst_export.max(max);
             if max > TEN_BIT_CODE {
-                problems.push(format!("{}: the export differs from the CPU's by {max} of 65535", case.name));
+                problems.push(format!(
+                    "{}: the export differs from the CPU's by {max} of 65535",
+                    case.name
+                ));
             }
             for tile in [97usize, 1024] {
-                let (_, _, other) = export(&d, &case.settings, renderer(Some(Arc::clone(&gpu)), tile), home.path());
+                let (_, _, other) = export(
+                    &d,
+                    &case.settings,
+                    renderer(Some(Arc::clone(&gpu)), tile),
+                    home.path(),
+                );
                 if other != dev {
-                    problems.push(format!("{}: the export at tile {tile} is other bytes", case.name));
+                    problems.push(format!(
+                        "{}: the export at tile {tile} is other bytes",
+                        case.name
+                    ));
                 }
             }
         }

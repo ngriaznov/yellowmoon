@@ -294,14 +294,26 @@ fn a_viewer_frame_with_a_raster_mask_before_the_film_node_is_cheap_by_the_counte
     let base = d.source();
     for percent_100 in [false, true] {
         let st = view(300.0, 200.0, 1.0, percent_100);
-        let first = timed(&r, &gpu, &base.with_settings(graph_raster(0.0, 0.0, 0.0)), &st);
+        let first = timed(
+            &r,
+            &gpu,
+            &base.with_settings(graph_raster(0.0, 0.0, 0.0)),
+            &st,
+        );
         row("first raster frame", &first);
         let mut plain_ms = f64::MAX;
         for _ in 0..3 {
-            let s = timed(&r, &gpu, &base.with_settings(graph(true, 0.0, 0.0, 0.0)), &st);
+            let s = timed(
+                &r,
+                &gpu,
+                &base.with_settings(graph(true, 0.0, 0.0, 0.0)),
+                &st,
+            );
             plain_ms = plain_ms.min(s.ms);
         }
-        say(&format!("100 % {percent_100}: a Film frame without the raster mask {plain_ms:.1} ms"));
+        say(&format!(
+            "100 % {percent_100}: a Film frame without the raster mask {plain_ms:.1} ms"
+        ));
         for (what, settings) in [
             ("the same frame", graph_raster(0.0, 0.0, 0.0)),
             ("a Film exposure", graph_raster(0.0, 0.5, 0.0)),
