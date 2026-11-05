@@ -26,7 +26,7 @@ struct FU {
     // x: the operation, y: a count or radius, z: flags, w: a factor or the seed.
     op: vec4<u32>,
     // Per kernel parameters.
-    p: array<vec4<f32>, 12>,
+    p: array<vec4<f32>, 16>,
     // Per kernel matrices and ranges.
     m: array<vec4<f32>, 6>,
     // Per kernel integer words (the grain hash constants; the core table's sizes).
@@ -110,14 +110,17 @@ fn ci_compress(p: vec2<f32>, w: vec2<f32>, n: u32) -> vec2<f32> {
     return w + u * r2;
 }
 
-// Bilinear T1 at the chromaticity (x, y), held at the edge.
-fn ci_t1(x: f32, y: f32, nx: u32, ny: u32, step: f32) -> vec3<f32> {
-    let fxp = fx_grid(x / step, nx);
-    let fyp = fx_grid(y / step, ny);
-    let ix = min(u32(floor(fxp)), nx - 2u);
-    let iy = min(u32(floor(fyp)), ny - 2u);
-    let tx = fxp - f32(ix);
-    let ty = fyp - f32(iy);
+// Bilinear T1 at the table position (px, py) given as pairs hi + lo (cells), held at the edge.
+fn ci_t1_pos(pxh: f32, pxl: f32, pyh: f32, pyl: f32, nx: u32, ny: u32) -> vec3<f32> {
+    // A position held at the edge has no low part; NaN is 0.
+    let gx = fx_grid(pxh, nx);
+    let gy = fx_grid(pyh, ny);
+    let lx = select(0.0, pxl, gx == pxh);
+    let ly = select(0.0, pyl, gy == pyh);
+    let ix = min(u32(floor(gx)), nx - 2u);
+    let iy = min(u32(floor(gy)), ny - 2u);
+    let tx = px_op(px_op(gx - f32(ix)) + lx);
+    let ty = px_op(px_op(gy - f32(iy)) + ly);
     let o00 = 4u * (ix + nx * iy);
     let o10 = o00 + 4u;
     let o01 = o00 + 4u * nx;
@@ -126,13 +129,29 @@ fn ci_t1(x: f32, y: f32, nx: u32, ny: u32, step: f32) -> vec3<f32> {
     let b = vec3<f32>(t1[o10], t1[o10 + 1u], t1[o10 + 2u]);
     let c = vec3<f32>(t1[o01], t1[o01 + 1u], t1[o01 + 2u]);
     let d = vec3<f32>(t1[o11], t1[o11 + 1u], t1[o11 + 2u]);
-    let lo = a + (b - a) * tx;
-    let hi = c + (d - c) * tx;
-    return lo + (hi - lo) * ty;
+    let lo = vec3<f32>(px_op(a.x + px_op((b.x - a.x) * tx)), px_op(a.y + px_op((b.y - a.y) * tx)), px_op(a.z + px_op((b.z - a.z) * tx)));
+    let hi = vec3<f32>(px_op(c.x + px_op((d.x - c.x) * tx)), px_op(c.y + px_op((d.y - c.y) * tx)), px_op(c.z + px_op((d.z - c.z) * tx)));
+    return vec3<f32>(px_op(lo.x + px_op((hi.x - lo.x) * ty)), px_op(lo.y + px_op((hi.y - lo.y) * ty)), px_op(lo.z + px_op((hi.z - lo.z) * ty)));
+}
+
+// The table position of the coordinate x_hi + x_lo for 1 / step = k_hi + k_lo, as a pair.
+fn ci_pos(xh: f32, xl: f32, kh: f32, kl: f32) -> vec2<f32> {
+    let p = px_two_prod(xh, kh);
+    return vec2<f32>(p.x, px_op(px_op(p.y + px_op(xh * kl)) + px_op(xl * kh)));
+}
+
+// The quotient a / b as a pair (hi, lo): the correctly rounded quotient and the quotient of its exact remainder.
+fn ci_div_pair(a: f32, b: f32) -> vec2<f32> {
+    let q = px_div(a, b);
+    let p = px_two_prod(q, b);
+    let r = px_op(px_op(a - p.x) - p.y);
+    return vec2<f32>(q, px_op(r / b));
 }
 
 // LogC4 / AWG4 in, the raw exposure E (linear) out: stages 1 and 2, then the power of ten (the CPU's
-// `pow10(exposure_of(..))` is `max(scale * T1, 1e-30)` up to the rounding of a log10 and a pow10).
+// `pow10(exposure_of(..))` is `max(scale * T1, 1e-30)` up to the rounding of a log10 and a pow10). The decode, the
+// luminance, the chromaticity and the position in T1 are carried with their rounding errors (`precise.wgsl`), so that
+// the exposure is within a few 1e-8 of the CPU's before the f32 store.
 fn ci_main(gid: vec3<u32>) {
     let ix = i32(gid.x);
     let iy = i32(gid.y);
@@ -142,23 +161,43 @@ fn ci_main(gid: vec3<u32>) {
     let x = fu.win.x + ix;
     let y = fu.win.y + iy;
     let lc = vec3<f32>(src[fx_a(x, y, 0u)], src[fx_a(x, y, 1u)], src[fx_a(x, y, 2u)]);
-    let rgb = logc4_decode3(lc);
-    let xyz = mv3(fu.m[0].xyz, fu.m[1].xyz, fu.m[2].xyz, rgb);
-    let sum = xyz.x + xyz.y + xyz.z;
+    let rgb = px_logc4_decode3(lc);
+    let xyz = px_mv3(fu.m[0].xyz, fu.m[1].xyz, fu.m[2].xyz, rgb)
+        + vec3<f32>(dot(fu.m[3].xyz, rgb), dot(fu.m[4].xyz, rgb), dot(fu.m[5].xyz, rgb));
+    let sum = px_op(px_op(xyz.x + xyz.y) + xyz.z);
     let white = fu.p[0].xy;
     let n = fu.op.y;
     var lum = 0.0;
     if (!is_nan_f(xyz.y) && abs(xyz.y) < 1.0e30) {
         lum = max(xyz.y, 0.0);
     }
+    var pos = vec4<f32>(0.0);
     var q = white;
     if (!is_nan_f(sum) && sum > 0.0 && sum < 1.0e30) {
-        q = ci_compress(vec2<f32>(xyz.x / sum, xyz.y / sum), white, n);
+        let cx = ci_div_pair(xyz.x, sum);
+        let cy = ci_div_pair(xyz.y, sum);
+        q = ci_compress(vec2<f32>(cx.x, cy.x), white, n);
+        if (q.x == cx.x && q.y == cy.x) {
+            // Not compressed: the chromaticity keeps its low parts into the table position.
+            let px = ci_pos(cx.x, cx.y, fu.p[2].x, fu.p[2].y);
+            let py = ci_pos(cy.x, cy.y, fu.p[2].x, fu.p[2].y);
+            pos = vec4<f32>(px.x, px.y, py.x, py.y);
+        } else {
+            let px = ci_pos(q.x, 0.0, fu.p[2].x, fu.p[2].y);
+            let py = ci_pos(q.y, 0.0, fu.p[2].x, fu.p[2].y);
+            pos = vec4<f32>(px.x, px.y, py.x, py.y);
+        }
+    } else {
+        let px = ci_pos(q.x, 0.0, fu.p[2].x, fu.p[2].y);
+        let py = ci_pos(q.y, 0.0, fu.p[2].x, fu.p[2].y);
+        pos = vec4<f32>(px.x, px.y, py.x, py.y);
     }
-    let v = ci_t1(q.x, q.y, fu.op.z, fu.op.w, fu.p[1].x);
-    let scale = lum * fu.p[0].z;
+    let v = ci_t1_pos(pos.x, pos.y, pos.z, pos.w, fu.op.z, fu.op.w);
+    let scale = px_two_prod(lum, fu.p[0].z);
+    let scale_lo = px_op(scale.y + px_op(lum * fu.p[0].w));
     for (var c = 0u; c < 3u; c++) {
-        dst[fx_b(x, y, c)] = max(scale * v[c], 1.0e-30);
+        let e = px_op(px_op(scale.x * v[c]) + px_op(scale_lo * v[c]));
+        dst[fx_b(x, y, c)] = max(e, 1.0e-30);
     }
 }
 
@@ -388,8 +427,152 @@ fn dv_density(le: vec3<f32>) -> vec3<f32> {
     return d;
 }
 
-fn dv_log10(e: vec3<f32>) -> vec3<f32> {
-    return log(max(e, vec3<f32>(1.0e-30))) * FX_LOG10_E;
+// ---- the same develop, carried as pairs (F-08d, docs/24 section 3.9c) ----------------------------------------------------
+//
+// The CPU's pass is f64 inside and stores an f32 density. The log of the exposure, the position in the 4096-entry curve, the
+// interpolation, the inhibitor and the coupler iteration are pairs here (hi + lo, `precise.wgsl`), so the f32 that is stored
+// is the rounding of a value within a few 1e-9 of the CPU's, not a value an ulp or two away: the density is the exponent of
+// the print's light (the display is 10^-D), and 6e-8 of a density of 2 is 3e-7 of the light.
+
+struct DvPair {
+    hi: vec3<f32>,
+    lo: vec3<f32>,
+}
+
+const DV_LOG10_2_HI: f32 = 0.3010300099849701;
+const DV_LOG10_2_LO: f32 = -1.432098889475597e-8;
+
+// log10 of a positive f32 as a pair.
+fn dv_log10_one(x: f32) -> vec2<f32> {
+    let l = px_log2_parts(max(x, 1.0e-30));
+    let a = px_two_prod(l.x, DV_LOG10_2_HI);
+    let b = px_two_prod(l.y, DV_LOG10_2_HI);
+    let s = px_two_sum(a.x, b.x);
+    let lo = px_op(px_op(px_op(s.y + a.y) + b.y) + px_op(px_op(l.x * DV_LOG10_2_LO) + px_op(l.y * DV_LOG10_2_LO)));
+    return px_two_sum(s.x, lo);
+}
+
+fn dv_log10_pair(e: vec3<f32>) -> DvPair {
+    let x = dv_log10_one(e.x);
+    let y = dv_log10_one(e.y);
+    let z = dv_log10_one(e.z);
+    return DvPair(vec3<f32>(x.x, y.x, z.x), vec3<f32>(x.y, y.y, z.y));
+}
+
+// The film curve of channel `ch` at xh + xl as a pair; the axis ends are pairs (p[1] + p[3], the factor p[2] + p[4]).
+fn dv_curve_pair(ch: u32, xh: f32, xl: f32) -> vec2<f32> {
+    let n = FX_CURVE_ENTRIES;
+    let d = px_two_sum(xh, -fu.p[1][ch]);
+    let dl = px_op(px_op(d.y + xl) - fu.p[3][ch]);
+    let m = px_two_prod(d.x, fu.p[2][ch]);
+    var ph = m.x;
+    var pl = px_op(px_op(m.y + px_op(d.x * fu.p[4][ch])) + px_op(dl * fu.p[2][ch]));
+    if (is_nan_f(ph) || ph <= 0.0) {
+        ph = 0.0;
+        pl = 0.0;
+    } else if (ph >= f32(n - 1u)) {
+        ph = f32(n - 1u);
+        pl = 0.0;
+    }
+    var i = min(u32(floor(ph)), n - 2u);
+    var t = px_op(px_op(ph - f32(i)) + pl);
+    if (t < 0.0 && i > 0u) {
+        i = i - 1u;
+        t = px_op(t + 1.0);
+    }
+    let a = curves[ch * n + i];
+    let b = curves[ch * n + i + 1u];
+    let df = px_two_sum(b, -a);
+    let pr = px_two_prod(df.x, t);
+    let s = px_two_sum(a, pr.x);
+    return px_two_sum(s.x, px_op(s.y + px_op(pr.y + px_op(df.y * t))));
+}
+
+fn dv_c0_pair(x: DvPair) -> DvPair {
+    let r = dv_curve_pair(0u, x.hi.x, x.lo.x);
+    let g = dv_curve_pair(1u, x.hi.y, x.lo.y);
+    let b = dv_curve_pair(2u, x.hi.z, x.lo.z);
+    return DvPair(vec3<f32>(r.x, g.x, b.x), vec3<f32>(r.y, g.y, b.y));
+}
+
+// a * M d for a density pair, one rounding (the matrix rows are f32 rounded from f64; their error is 3e-8 of a number of
+// the size of the inhibitor, a few 1e-9 of a density).
+fn dv_inh_pair(d: DvPair) -> vec3<f32> {
+    let a = fu.p[0].x;
+    var q = vec3<f32>(0.0);
+    for (var i = 0u; i < 3u; i++) {
+        let r = dv_mrow(i);
+        q[i] = a * px_op(px_dot3(r, d.hi) + px_dot3(r, d.lo));
+    }
+    return q;
+}
+
+// x = le - q as a pair.
+fn dv_sub(le: DvPair, q: vec3<f32>) -> DvPair {
+    var hi = vec3<f32>(0.0);
+    var lo = vec3<f32>(0.0);
+    for (var c = 0u; c < 3u; c++) {
+        let s = px_two_sum(le.hi[c], -q[c]);
+        hi[c] = s.x;
+        lo[c] = px_op(s.y + le.lo[c]);
+    }
+    return DvPair(hi, lo);
+}
+
+// g_i = C0_i(log E_i - amount (M d)_i) - d_i, as f32 (it is the small difference of two pairs).
+fn dv_resid_pair(le: DvPair, d: DvPair) -> vec3<f32> {
+    let c = dv_c0_pair(dv_sub(le, dv_inh_pair(d)));
+    return vec3<f32>(
+        px_op(px_op(c.hi.x - d.hi.x) + px_op(c.lo.x - d.lo.x)),
+        px_op(px_op(c.hi.y - d.hi.y) + px_op(c.lo.y - d.lo.y)),
+        px_op(px_op(c.hi.z - d.hi.z) + px_op(c.lo.z - d.lo.z)),
+    );
+}
+
+fn dv_add(d: DvPair, step: vec3<f32>) -> DvPair {
+    var hi = vec3<f32>(0.0);
+    var lo = vec3<f32>(0.0);
+    for (var c = 0u; c < 3u; c++) {
+        let s = px_two_sum(d.hi[c], step[c]);
+        hi[c] = s.x;
+        lo[c] = px_op(s.y + d.lo[c]);
+    }
+    return DvPair(hi, lo);
+}
+
+// Stage 5 as `dv_density`, with the density and the residual carried as pairs; the Jacobian and the step are f32.
+fn dv_density_pair(le: DvPair) -> DvPair {
+    var d = dv_c0_pair(le);
+    let a = fu.p[0].x;
+    if (a == 0.0) {
+        return d;
+    }
+    var g = dv_resid_pair(le, d);
+    for (var it = 0u; it < FX_COUPLER_ITERATIONS; it++) {
+        let dq = dv_inh_pair(d);
+        let x = dv_sub(le, dq);
+        let s = vec3<f32>(dv_slope(0u, x.hi.x), dv_slope(1u, x.hi.y), dv_slope(2u, x.hi.z));
+        let j0 = -s.x * a * dv_mrow(0u) - vec3<f32>(1.0, 0.0, 0.0);
+        let j1 = -s.y * a * dv_mrow(1u) - vec3<f32>(0.0, 1.0, 0.0);
+        let j2 = -s.z * a * dv_mrow(2u) - vec3<f32>(0.0, 0.0, 1.0);
+        let st = dv_solve3(j0, j1, j2, -g);
+        let ng = dv_norm(g);
+        var found = st.w == 0.0 || ng < FX_COUPLER_TOL;
+        var t = 1.0;
+        for (var k = 0u; k < FX_COUPLER_TRIALS; k++) {
+            if (!found) {
+                let cand = dv_add(d, t * st.xyz);
+                let gc = dv_resid_pair(le, cand);
+                if (dv_norm(gc) < ng) {
+                    d = cand;
+                    g = gc;
+                    found = true;
+                }
+            }
+            t *= 0.5;
+        }
+    }
+    return d;
 }
 
 fn dv_main(gid: vec3<u32>) {
@@ -401,15 +584,17 @@ fn dv_main(gid: vec3<u32>) {
     let x = fu.win.x + ix;
     let y = fu.win.y + iy;
     let e = vec3<f32>(src[fx_a(x, y, 0u)], src[fx_a(x, y, 1u)], src[fx_a(x, y, 2u)]);
-    let le = dv_log10(e);
+    let le = dv_log10_pair(e);
     var out = vec3<f32>(0.0);
     if (fu.op.x == DV_DENSITY) {
-        out = dv_density(le);
+        let d = dv_density_pair(le);
+        out = d.hi + d.lo;
     } else if (fu.op.x == DV_INHIBITOR) {
-        out = dv_inh(dv_density(le));
+        out = dv_inh_pair(dv_density_pair(le));
     } else {
         let q = vec3<f32>(src2[fx_c(x, y, 0u)], src2[fx_c(x, y, 1u)], src2[fx_c(x, y, 2u)]);
-        out = vec3<f32>(dv_curve(0u, le.x - q.x), dv_curve(1u, le.y - q.y), dv_curve(2u, le.z - q.z));
+        let c = dv_c0_pair(dv_sub(le, q));
+        out = c.hi + c.lo;
     }
     for (var c = 0u; c < 3u; c++) {
         dst[fx_b(x, y, c)] = out[c];

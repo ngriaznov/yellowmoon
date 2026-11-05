@@ -773,6 +773,21 @@ fn constants() -> String {
     ] {
         let _ = writeln!(s, "const {n}: f32 = {};", f(v));
     }
+    // LogC4 for the colour pass's accurate encode and decode (`precise.wgsl`): the low parts of the f32 constants and the
+    // two derived ones, B / 14 and its inverse, as hi + lo pairs, so that the pass's log and exp carry no rounding of the
+    // constants (docs/24 section 3.9c).
+    {
+        let pair = |name: &str, v: f64, s: &mut String| {
+            let hi = v as f32;
+            let _ = writeln!(s, "const {name}: f32 = {};", f(v));
+            let _ = writeln!(s, "const {name}_LO: f32 = {};", f(v - f64::from(hi)));
+        };
+        pair("LC4P_A", LOGC4.a, &mut s);
+        pair("LC4P_C", LOGC4.c, &mut s);
+        pair("LC4P_BB", LOGC4.b / 14.0, &mut s);
+        pair("LC4P_IBB", 14.0 / LOGC4.b, &mut s);
+        pair("LC4P_64_OVER_A", 64.0 / LOGC4.a, &mut s);
+    }
     // The colour warp's pin count, the sizes of its rows in the colour kernel's uniform block
     // (`kernels::color`, `ChainU`) and the most flow steps a frame takes.
     for (n, v) in [

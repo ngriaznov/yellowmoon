@@ -348,6 +348,11 @@ pub struct FilmImage {
     pub img: GpuImage,
     /// The frame rectangle the image holds.
     pub rect: FRect,
+    /// The exact display colour of each pixel of a picture the colour-out pass made (three planes laid out as `img`): the
+    /// print's colour in the output's primaries, held to the cine rendering's range, which the picture's LogC4 values map
+    /// back to. The colour pass uses it for a pixel whose value reaches C12 unchanged (`docs/24` section 3.9c, F-08d).
+    /// `None` for every other image.
+    pub shadow: Option<GpuImage>,
 }
 
 impl FilmImage {
@@ -364,7 +369,34 @@ impl FilmImage {
         }
         let (w, h) = (rect.width() as usize, rect.height() as usize);
         let img = GpuImage::alloc(ctx, label, w, h, 3, Placement::whole(w, h))?;
-        Ok(Self { img, rect })
+        Ok(Self {
+            img,
+            rect,
+            shadow: None,
+        })
+    }
+
+    /// [`FilmImage::alloc`] with the shadow of the colour-out pass.
+    ///
+    /// # Errors
+    ///
+    /// As [`FilmImage::alloc`].
+    pub fn alloc_with_shadow(
+        ctx: &GpuContext,
+        label: &str,
+        rect: FRect,
+    ) -> Result<Self, GpuError> {
+        let mut image = Self::alloc(ctx, label, rect)?;
+        let (w, h) = (rect.width() as usize, rect.height() as usize);
+        image.shadow = Some(GpuImage::alloc(
+            ctx,
+            "film shadow",
+            w,
+            h,
+            3,
+            Placement::whole(w, h),
+        )?);
+        Ok(image)
     }
 
     /// Uploads dense planar samples (three planes of `rect`).
@@ -380,7 +412,11 @@ impl FilmImage {
     ) -> Result<Self, GpuError> {
         let (w, h) = (rect.width() as usize, rect.height() as usize);
         let img = GpuImage::upload(ctx, label, w, h, 3, data, Placement::whole(w, h))?;
-        Ok(Self { img, rect })
+        Ok(Self {
+            img,
+            rect,
+            shadow: None,
+        })
     }
 
     /// Reads the image back as dense planar samples (after the pass list that wrote it has finished).
@@ -563,7 +599,7 @@ impl Table3Data {
 // The uniform block
 // ---------------------------------------------------------------------------------------------------------
 
-/// The uniform block of every Film kernel (`FU` of `film.wgsl`), 432 bytes.
+/// The uniform block of every Film kernel (`FU` of `film.wgsl`), 496 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct FilmU {
@@ -573,7 +609,7 @@ struct FilmU {
     c: [i32; 4],
     win: [i32; 4],
     op: [u32; 4],
-    p: [[f32; 4]; 12],
+    p: [[f32; 4]; 16],
     m: [[f32; 4]; 6],
     h: [[u32; 4]; 3],
 }
@@ -649,13 +685,21 @@ pub fn encode_colour_in(
         dev.t1_dims[1] as u32,
     ];
     u.m[..3].copy_from_slice(&rows(&s.scene_to_xyz));
+    // The low parts of the matrix and of the scale: the exposure is the product of a matrix row and a scale, and the f32
+    // rounding of a constant is a systematic error of 3e-8 in every pixel (more where a row cancels).
+    let lo_rows = s.scene_to_xyz.map(|r| r.map(|v| v - f64::from(v as f32)));
+    u.m[3..6].copy_from_slice(&rows(&lo_rows));
+    let scale = 10.0_f64.powf(s.log10_gain) / 0.18;
     u.p[0] = [
         s.white_xy[0] as f32,
         s.white_xy[1] as f32,
-        (10.0_f64.powf(s.log10_gain) / 0.18) as f32,
-        0.0,
+        scale as f32,
+        (scale - f64::from(scale as f32)) as f32,
     ];
     u.p[1] = [dev.t1_step as f32, s.knee as f32, s.limit as f32, 0.0];
+    // 1 / step as a hi + lo pair: the position of a chromaticity in T1 is x * (1 / step), carried without a rounding of its own.
+    let k = 1.0 / dev.t1_step;
+    u.p[2] = [k as f32, (k - f64::from(k as f32)) as f32, 0.0, 0.0];
     let ub = passes.uniform("film colour in uniform", &u)?;
     passes.hold(dev.t1.clone());
     passes.hold(dev.locus.clone());
@@ -1132,6 +1176,11 @@ pub fn encode_develop(
     u.p[1] = v3(c0.lo, 0.0);
     let k = |c: usize| (CURVE_ENTRIES - 1) as f64 / (c0.hi[c] - c0.lo[c]);
     u.p[2] = v3([k(0), k(1), k(2)], 0.0);
+    // The axis start and the factor as hi + lo pairs (the position in the curve is carried without a rounding of its own).
+    for c in 0..3 {
+        u.p[3][c] = (c0.lo[c] - f64::from(c0.lo[c] as f32)) as f32;
+        u.p[4][c] = (k(c) - f64::from(k(c) as f32)) as f32;
+    }
     let ub = passes.uniform("film develop uniform", &u)?;
     passes.hold(buf.clone());
     passes.dispatch(
@@ -1333,18 +1382,33 @@ pub fn encode_colour_out(
     u.a = d.desc();
     u.op = [0, 0, u32::from(dev.is_slide()), dev.core.steps];
     u.m[..3].copy_from_slice(&rows(&s.output_to_xyz));
+    // The print exposure shift as a hi + lo pair in the third and fourth lanes.
+    let shift = s.print_log10_shift;
     u.p[0] = [
         dev.core.s_lo as f32,
         dev.core.s_span as f32,
-        s.print_log10_shift as f32,
-        0.0,
+        shift as f32,
+        (shift - f64::from(shift as f32)) as f32,
     ];
     let [ns, nt, nk] = dev.core.dims;
     u.h[0] = [ns as u32, nt as u32, nk as u32, 0];
+    // The tables' axes as pairs (lo, and 1 / (hi - lo)): the position of a density in a table is carried without the
+    // rounding of its own (`rt_*_pair`, docs/24 section 3.9c).
+    let axes = |t: &Table3Data, lo: usize, r_hi: usize, lo_lo: usize, r_lo: usize, u: &mut FilmU| {
+        for c in 0..3 {
+            let l = t.lo[c];
+            let r = 1.0 / (t.hi[c] - t.lo[c]);
+            u.p[lo_lo][c] = (l - f64::from(l as f32)) as f32;
+            u.p[r_hi][c] = r as f32;
+            u.p[r_lo][c] = (r - f64::from(r as f32)) as f32;
+        }
+        let _ = lo;
+    };
     let (t3a_buf, t3a_size) = match &dev.t3a {
         Some((t, b)) => {
             u.p[1] = v3(t.lo, t.power as f32);
             u.p[2] = v3(t.hi, 0.0);
+            axes(t, 1, 8, 7, 9, &mut u);
             (b.clone(), t.size as u32)
         }
         None => (dev.dummy.clone(), 2),
@@ -1352,21 +1416,53 @@ pub fn encode_colour_out(
     let (t3b, t3b_buf) = &dev.t3b;
     u.p[3] = v3(t3b.lo, t3b.power as f32);
     u.p[4] = v3(t3b.hi, 0.0);
+    axes(t3b, 3, 11, 10, 12, &mut u);
     u.h[1] = [t3a_size, t3b.size as u32, 0, 0];
     let curves = match &dev.paper {
         Some((c, b)) => {
             u.p[5] = v3(c.lo, 0.0);
             let k = |i: usize| (CURVE_ENTRIES - 1) as f64 / (c.hi[i] - c.lo[i]);
             u.p[6] = v3([k(0), k(1), k(2)], 0.0);
+            for i in 0..3 {
+                u.p[13][i] = (c.lo[i] - f64::from(c.lo[i] as f32)) as f32;
+                u.p[14][i] = (k(i) - f64::from(k(i) as f32)) as f32;
+            }
             b.clone()
         }
         None => dev.dummy.clone(),
     };
+    // The exact display colour goes to the shadow (a pass given no shadow writes one nobody reads).
+    let scratch = match &dst.shadow {
+        Some(_) => None,
+        None => {
+            let (w, h) = (dst.img.width, dst.img.height);
+            Some(GpuImage::alloc(
+                passes.context(),
+                "film shadow scratch",
+                w,
+                h,
+                3,
+                Placement::whole(w, h),
+            )?)
+        }
+    };
+    let shadow: &GpuImage = dst
+        .shadow
+        .as_ref()
+        .or(scratch.as_ref())
+        .ok_or_else(|| GpuError::InvalidInput("film colour out: no shadow".to_owned()))?;
+    u.c = [
+        dst.rect.x0,
+        dst.rect.y0,
+        shadow.stride as i32,
+        shadow.plane_len() as i32,
+    ];
     let ub = passes.uniform("film colour out uniform", &u)?;
     for b in [&curves, &t3a_buf, t3b_buf, &dev.nodes, &dev.reach] {
         passes.hold(b.clone());
     }
-    passes.dispatch(
+    let shadow_binding = shadow.buf.binding();
+    let dispatched = passes.dispatch(
         KernelId::FilmColourOut,
         "film colour out",
         &[
@@ -1378,9 +1474,14 @@ pub fn encode_colour_out(
             (5, t3b_buf.binding()),
             (6, dev.nodes.binding()),
             (7, dev.reach.binding()),
+            (8, shadow_binding),
         ],
         groups(win),
-    )
+    );
+    if let Some(img) = scratch {
+        let _ = passes.keep(img.buf);
+    }
+    dispatched
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1484,7 +1585,7 @@ pub fn encode_film_tile(
         None => d,
     };
     // P5.
-    let out = FilmImage::alloc(ctx, "film out", tile)?;
+    let out = FilmImage::alloc_with_shadow(ctx, "film out", tile)?;
     encode_colour_out(passes, dev, &dg, &out, tile)?;
     passes.keep(dg.img.buf);
     Ok(out)
@@ -1541,13 +1642,22 @@ pub(super) fn body(id: KernelId) -> String {
              @group(0) @binding(4) var<storage, read> t3a: array<f32>;\n\
              @group(0) @binding(5) var<storage, read> t3b: array<f32>;\n\
              @group(0) @binding(6) var<storage, read> nodes: array<f32>;\n\
-             @group(0) @binding(7) var<storage, read> reach: array<f32>;\n",
+             @group(0) @binding(7) var<storage, read> reach: array<f32>;\n\
+             @group(0) @binding(8) var<storage, read_write> shadow: array<f32>;\n",
             &[],
             "rt_main",
         ),
     };
     s.push_str("@group(0) @binding(0) var<uniform> fu: FU;\n");
     s.push_str(decls);
+    if matches!(
+        id,
+        KernelId::FilmColourIn | KernelId::FilmDevelop | KernelId::FilmColourOut
+    ) {
+        // Accurate log, exp and LogC4 (F-08d): the barrier word is the frame's last lane, 0 in these three passes.
+        s.push_str("fn px_zero() -> u32 {\n    return bitcast<u32>(fu.frame.w);\n}\n\n");
+        s.push_str(include_str!("../shaders/precise.wgsl"));
+    }
     for sec in sections {
         s.push_str(section(sec));
     }
@@ -1609,7 +1719,7 @@ mod tests {
             assert_eq!(member.offset as usize, offset, "offset of {name}");
         }
         assert_eq!(*span as usize, size_of::<FilmU>());
-        assert_eq!(size_of::<FilmU>(), 432);
+        assert_eq!(size_of::<FilmU>(), 496);
     }
 
     #[test]

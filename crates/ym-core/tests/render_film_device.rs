@@ -1088,3 +1088,125 @@ fn tail_picture_against_cpu() {
         }
     }
 }
+
+/// F-08d: the tail's picture before sharpening against the CPU's display-linear picture, per space, with and without a
+/// Film node. Needs the tail's temporary dump (`YM_TAIL_DUMP`), see `tail_picture_against_cpu`.
+#[test]
+#[ignore = "a diagnostic"]
+fn tail_picture_error() {
+    let Some(gpu) = gpu(true) else { return };
+    let d = photo();
+    let film = json!({ "grain": { "amount": 0 }, "halation": { "amount": 0 } });
+    for (space, tgt) in [
+        (ColorSpace::Srgb, OutputTarget::Srgb),
+        (ColorSpace::DisplayP3, OutputTarget::DisplayP3),
+        (ColorSpace::Rec2020, OutputTarget::Rec2020),
+    ] {
+        for (what, settings) in [
+            ("plain", d.source().settings.clone()),
+            ("film", one_film(film.clone())),
+        ] {
+            let dir = tempfile::tempdir().expect("dir");
+            // SAFETY: a single-threaded diagnostic.
+            unsafe { std::env::set_var("YM_TAIL_DUMP", dir.path()) };
+            let home = tempfile::tempdir().expect("dir");
+            let _ = export_in(
+                &d,
+                &settings,
+                renderer(Some(Arc::clone(&gpu)), 256),
+                home.path(),
+                space,
+            );
+            unsafe { std::env::remove_var("YM_TAIL_DUMP") };
+            let src = d.source().with_settings(settings.clone());
+            let cpu = renderer(None, 256)
+                .render_full(
+                    &src,
+                    &FullRequest {
+                        target: FullTarget::DisplayLinear(tgt),
+                    },
+                    &CancelToken::new(),
+                )
+                .expect("render");
+            let (w, h) = (cpu.width, cpu.height);
+            let (mut s, mut s2, mut n, mut mx) = (0f64, 0f64, 0usize, 0f64);
+            let mut all: Vec<f64> = Vec::new();
+            let watch: Option<(usize, usize)> = std::env::var("YM_PIX").ok().and_then(|v| {
+                let mut it = v.split(',').map(|t| t.parse::<usize>().ok());
+                Some((it.next()??, it.next()??))
+            });
+            let mut around: Vec<(usize, usize, usize, f64, f64)> = Vec::new();
+            for e in std::fs::read_dir(dir.path()).expect("dir") {
+                let b = std::fs::read(e.expect("e").path()).expect("read");
+                let u = |i: usize| u32::from_le_bytes(b[4 * i..4 * i + 4].try_into().unwrap()) as usize;
+                let (ww, wh, planes, _rx, ry, start) = (u(0), u(1), u(2), u(3), u(4), u(5));
+                assert_eq!(ww, w);
+                let f = |i: usize| f32::from_le_bytes(b[24 + 4 * i..28 + 4 * i].try_into().unwrap());
+                for y in 0..wh {
+                    let row = start + y - ry.min(0);
+                    let row = if start + y >= ry { start + y - ry } else { continue };
+                    let _ = row;
+                    let gy = start + y - ry;
+                    let _ = gy;
+                }
+                let _ = (planes, h);
+                // The window starts at picture row `start` (the dump names the window's first row); `ry` is the core's
+                // offset inside it, which is not needed here.
+                for y in 0..wh {
+                    let gy = start + y;
+                    if gy >= h { break; }
+                    for x in 0..w {
+                        for c in 0..3 {
+                            let dv = f64::from(f(c * ww * wh + y * ww + x));
+                            let cv = f64::from(cpu.rgb[3 * (gy * w + x) + c]);
+                            if let Some((px, py)) = watch
+                                && gx_in(x, gy, px, py, 4)
+                                && c == 1
+                            {
+                                around.push((x, gy, c, dv, cv));
+                            }
+                            if cv >= 1e-4 {
+                                let r = (dv - cv) / cv;
+                                s += r;
+                                s2 += r * r;
+                                n += 1;
+                                mx = mx.max(r.abs());
+                                all.push(r.abs());
+                            }
+                        }
+                    }
+                }
+            }
+            around.sort_by_key(|a| (a.1, a.0));
+            around.dedup_by_key(|a| (a.1, a.0));
+            for a in &around {
+                say(&format!(
+                    "  at ({}, {}) G: device {:.9e} cpu {:.9e} rel {:.2e}",
+                    a.0,
+                    a.1,
+                    a.3,
+                    a.4,
+                    (a.3 - a.4) / a.4
+                ));
+            }
+            let mean = s / n as f64;
+            all.sort_by(|a, b| a.total_cmp(b));
+            let q = |p: f64| all[((all.len() as f64 * p) as usize).min(all.len() - 1)];
+            let cut = all.len() * 999 / 1000;
+            let body = (all[..cut].iter().map(|r| r * r).sum::<f64>() / cut as f64).sqrt();
+            say(&format!(
+                "  percentiles |rel|: p50 {:.2e} p90 {:.2e} p99 {:.2e} p99.9 {:.2e}; rms without the top 0.1 % {body:.2e}",
+                q(0.5), q(0.9), q(0.99), q(0.999)
+            ));
+            say(&format!(
+                "TAILERR {space:?} {what}: n {n} rel std {:.3e} rms {:.3e} max {mx:.2e}",
+                (s2 / n as f64 - mean * mean).max(0.0).sqrt(),
+                (s2 / n as f64).sqrt()
+            ));
+        }
+    }
+}
+
+fn gx_in(x: usize, y: usize, px: usize, py: usize, r: usize) -> bool {
+    x.abs_diff(px) <= r && y.abs_diff(py) <= r
+}

@@ -684,8 +684,16 @@ fn band_job(ctx: &GpuContext, token: &CancelToken, d: &BandData2) -> Result<Vec<
         encode_c13(&mut passes, &win, rect, encoding, c13, &dst, 0, 0)?;
     }
     let read = passes.read(&dst, 0, bytes)?;
+    let dump = std::env::var("YM_TAIL_DUMP").ok().map(|dir| (dir, win.encode_read(&mut passes)));
     token.check()?;
     let mut done = passes.submit()?.finish()?;
+    if let Some((dir, Ok(rid))) = dump {
+        let v = win.take(&done, rid)?;
+        let mut b: Vec<u8> = Vec::new();
+        for x in [win.width as u32, win.height as u32, win.planes as u32, rect.x as u32, rect.y as u32, d.window.start as u32] { b.extend_from_slice(&x.to_le_bytes()); }
+        for x in v { b.extend_from_slice(&x.to_le_bytes()); }
+        let _ = std::fs::write(format!("{dir}/win_{}.bin", d.window.start), b);
+    }
     Ok(done.take(read))
 }
 

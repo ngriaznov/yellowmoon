@@ -272,6 +272,10 @@ pub(crate) const NODE_LUMA: u32 = 256;
 /// that hold the picture the Film passes made, and blended by the mask times Strength (`gain.x`). Set for every Film
 /// step; [`NODE_FILM_LIVE`] says whether it has a picture.
 pub(crate) const NODE_FILM: u32 = 512;
+/// The planes of the plan buffer a live Film node takes: its LogC4 picture (three) and the exact display colour of each
+/// of its pixels, the shadow (three, all 0 where there is none).
+const FILM_PLANES: u32 = 6;
+
 /// The Film node does something (`N_FILM_LIVE`: not bypassed, Strength above 0); `ctl.w` is the first plane of the plan
 /// buffer that holds its picture.
 pub(crate) const NODE_FILM_LIVE: u32 = 1024;
@@ -1067,10 +1071,11 @@ struct NodePlan {
     passes: Arc<Vec<PassSpan>>,
     steps: Arc<Vec<StepAt>>,
     result: u32,
-    /// The planes of `pbuf` a pixel needs: three for each live Film node (first), then the sum over the plan's buffers
+    /// The planes of `pbuf` a pixel needs: six for each live Film node (first), then the sum over the plan's buffers
     /// (three for a picture, one for a key).
     planes: u32,
-    /// The live Film nodes of the plan, in plan order: the picture of the `k`-th is at planes `3k..3k+3` of `pbuf`.
+    /// The live Film nodes of the plan, in plan order: the picture of the `k`-th is at planes `6k..6k+3` of `pbuf`, its
+    /// exact display colours (the shadow) at `6k+3..6k+6`.
     films: Arc<Vec<u32>>,
     curves: Arc<PooledBuffer>,
 }
@@ -1102,7 +1107,7 @@ impl NodePlan {
             .map(|s| s.node)
             .collect();
         let mut plane_of = Vec::with_capacity(plan.buffers.len());
-        let mut planes = 3 * films.len() as u32;
+        let mut planes = FILM_PLANES * films.len() as u32;
         for kind in &plan.buffers {
             plane_of.push(planes);
             planes += match kind {
@@ -1179,7 +1184,7 @@ impl NodePlan {
                 r.gain = [film.strength as f32, 0.0, 0.0, 0.0];
                 if let Some(k) = films.iter().position(|&n| n == step.node) {
                     bits |= NODE_FILM_LIVE;
-                    r.ctl[3] = 3 * k as u32;
+                    r.ctl[3] = FILM_PLANES * k as u32;
                 }
             }
             // The mask rows (`ym_color::mask`): the same rows, derived once, as the CPU reads. A node blends when
@@ -1321,6 +1326,8 @@ pub(super) fn body() -> String {
         .unwrap_or((color, ""));
     let (template, after) = rest.split_once("//@END_LUT_FUNCS\n").unwrap_or(("", ""));
     let mut s = String::with_capacity(color.len() * 2);
+    s.push_str(include_str!("../shaders/precise.wgsl"));
+    s.push_str("fn px_zero() -> u32 {\n    return CU.flags.x;\n}\n\n");
     s.push_str(include_str!("../shaders/cine.wgsl"));
     s.push('\n');
     s.push_str(include_str!("../shaders/c13.wgsl"));
@@ -1646,6 +1653,8 @@ impl PreparedChain {
             code = node_stop.code();
             u.stopn[0] = at.record;
         }
+        // The live Film nodes: the colour pass looks for their pictures' exact display colours (`stopn.y`).
+        u.stopn[1] = self.films.len() as u32;
         u.mode = [code, kind.code(), bits, u32::from(dither)];
         Ok((u, kind))
     }
@@ -1860,13 +1869,20 @@ impl PreparedChain {
             if x0 != 0 || y0 != 0 || x1 != width as i64 || y1 != rows as i64 {
                 whole = false;
             }
+            // A picture without a shadow leaves its shadow planes zero: they are cleared.
+            if image.shadow.is_none() {
+                whole = false;
+            }
             covers.push((x0, y0, x1, y1));
         }
         if !whole {
-            passes
-                .encoder()
-                .clear_buffer(scratch, 0, Some((3 * images.len() * n * 4) as u64));
+            passes.encoder().clear_buffer(
+                scratch,
+                0,
+                Some(u64::from(FILM_PLANES) * (images.len() * n * 4) as u64),
+            );
         }
+        let per = FILM_PLANES as usize;
         for (k, (item, (x0, y0, x1, y1))) in images.iter().zip(covers).enumerate() {
             let Some((image, dx, dy)) = item else {
                 continue;
@@ -1883,8 +1899,11 @@ impl PreparedChain {
             );
             // The copy kernel places the rectangle's (0, 0) at the destination's `at`, which a plain buffer of planes
             // does not have: the base sample carries the offset instead.
-            let base = 3 * k * n + y0 as usize * width + x0 as usize;
+            let base = per * k * n + y0 as usize * width + x0 as usize;
             encode_copy_into(passes, &image.img, rect, 3, scratch, (width, n, base))?;
+            if let Some(shadow) = &image.shadow {
+                encode_copy_into(passes, shadow, rect, 3, scratch, (width, n, base + 3 * n))?;
+            }
         }
         Ok(())
     }

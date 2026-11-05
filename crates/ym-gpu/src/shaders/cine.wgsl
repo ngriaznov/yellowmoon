@@ -27,13 +27,13 @@ fn cine_soft_clip(z: f32, w: f32) -> f32 {
 }
 
 fn cine_sigmoid(x: f32) -> f32 {
-    return 1.0 / (1.0 + exp(-x));
+    return px_div(1.0, px_op(1.0 + px_exp(clamp(-x, -80.0, 80.0))));
 }
 
 // r ((1 + d^2) / (r^2 + d^2))^(1/3): odd, smooth at 0, 1 at 1.
 fn cine_cbrt_d(r: f32) -> f32 {
-    let q = CINE_ONE_PLUS_DELTA2 / (r * r + CINE_DELTA2);
-    return r * exp(log(q) * (1.0 / 3.0));
+    let q = px_div(CINE_ONE_PLUS_DELTA2, px_op(px_op(r * r) + CINE_DELTA2));
+    return px_op(r * px_pow(q, 0.3333333432674407, -9.934107e-9));
 }
 
 // k1 cs + l1 sn + k2 cos 2t + l2 sin 2t + k3 cos 3t + l3 sin 3t of the unit direction (cs, sn); a = (k1, l1, k2),
@@ -49,7 +49,7 @@ fn cine_harm(cs: f32, sn: f32, a: vec3<f32>, b: vec3<f32>) -> f32 {
 fn cine_display_linear(awg4: vec3<f32>) -> vec3<f32> {
     // 0, 1. The limit and the matrix to XYZ.
     let x = clamp(awg4, vec3<f32>(-CINE_SCENE_LIMIT), vec3<f32>(CINE_SCENE_LIMIT));
-    let xyz = mv3(AWG4_TO_XYZ_0, AWG4_TO_XYZ_1, AWG4_TO_XYZ_2, x);
+    let xyz = px_mv3(AWG4_TO_XYZ_0, AWG4_TO_XYZ_1, AWG4_TO_XYZ_2, x);
     // 2. The luminance floor: a smooth maximum of Y and rho times the distance of the chromaticity from the
     // neutral axis. dX = X - XN Y and dZ = Z - ZN Y are linear in x, with the rows DX = row_X - XN row_Y and
     // DZ = row_Z - ZN row_Y (CINE_DX, CINE_DZ, formed in f64 on the host). AWG4's white maps to (XN, 1, ZN), so
@@ -72,7 +72,7 @@ fn cine_display_linear(awg4: vec3<f32>) -> vec3<f32> {
         smooth_max = yf + 0.5 * w * w / (root - dy);
     }
     let ys = max(smooth_max, CINE_Y_MIN);
-    let ly = log(ys);
+    let ly = px_log(ys);
     // 3. Opponent coordinates relative to the colour's own luminance, and the soft limit of the chroma.
     let ca0 = cine_cbrt_d(xyz.x / (CINE_XN * ys)) - 1.0;
     let cb0 = 1.0 - cine_cbrt_d(xyz.z / (CINE_ZN * ys));
@@ -87,32 +87,32 @@ fn cine_display_linear(awg4: vec3<f32>) -> vec3<f32> {
     let sn = cb / chi;
     // 4. The tone curve of the neutral axis: H = (1 + c Ys^-a)^-b, then the soft clip at the top.
     let u = (ly - CINE_LN_GREY) * CINE_INV_LN2;
-    let h = exp(-CINE_B * log(1.0 + CINE_C * exp(-CINE_A * ly)));
-    let ln_yt = log(cine_soft_clip(CINE_KAP * h, CINE_WC));
+    let h = px_exp(-CINE_B * px_log(px_op(1.0 + px_op(CINE_C * px_exp(-CINE_A * ly)))));
+    let ln_yt = px_log(cine_soft_clip(CINE_KAP * h, CINE_WC));
     // 5. Chroma, hue and lightness terms.
-    let g0 = CINE_G_PEAK / (1.0 + exp(CINE_GB * ly - CINE_GB_LYC));
+    let g0 = px_div(CINE_G_PEAK, px_op(1.0 + px_exp(CINE_GB * ly - CINE_GB_LYC)));
     let bh = cine_sigmoid((u - 1.5) * (1.0 / 1.5));
     let env = chi * chi / (chi * chi + CINE_ENV2);
     let gh = env * (cine_harm(cs, sn, CINE_GH_B0_A, CINE_GH_B0_B) + bh * cine_harm(cs, sn, CINE_GH_BH_A, CINE_GH_BH_B));
     let dt = env * (cine_harm(cs, sn, CINE_DT_B0_A, CINE_DT_B0_B) + bh * cine_harm(cs, sn, CINE_DT_BH_A, CINE_DT_BH_B));
     let rh = env * (cine_harm(cs, sn, CINE_RH_B0_A, CINE_RH_B0_B) + bh * cine_harm(cs, sn, CINE_RH_BH_A, CINE_RH_BH_B));
     // chi^rp / (chi^rp + e^(rp r_chi)) = 1 / (1 + e^(rp (r_chi - ln chi))).
-    let chenv = 1.0 / (1.0 + exp(CINE_RP * (CINE_R_CHI - log(chi))));
+    let chenv = px_div(1.0, px_op(1.0 + px_exp(CINE_RP * (CINE_R_CHI - px_log(chi)))));
     let lr = chenv * (CINE_R_DARK * cine_sigmoid(-(u - CINE_R_YD)) + CINE_R_HI) + rh;
     // 6. The display colour before the gamut stage.
-    let g = g0 * exp(gh);
+    let g = g0 * px_exp(gh);
     let cd = cos(dt);
     let sd = sin(dt);
     let ca2 = g * (ca * cd - cb * sd);
     let cb2 = g * (ca * sd + cb * cd);
-    let y2 = exp(ln_yt + lr);
+    let y2 = px_exp(ln_yt + lr);
     let t1 = 1.0 + ca2;
     let t2 = 1.0 - cb2;
     // 7. The gamut stage on the output's own primaries, on channels relative to the luminance.
     let yd = max(y2, CINE_Y2_MIN);
-    let rel = mv3(CU.cine_m0.xyz, CU.cine_m1.xyz, CU.cine_m2.xyz, vec3<f32>(CINE_XN * t1 * t1 * t1, 1.0, CINE_ZN * t2 * t2 * t2))
+    let rel = px_mv3(CU.cine_m0.xyz, CU.cine_m1.xyz, CU.cine_m2.xyz, vec3<f32>(CINE_XN * t1 * t1 * t1, 1.0, CINE_ZN * t2 * t2 * t2))
         * (y2 / yd);
-    let r = max(rel, vec3<f32>(CINE_KL)) + CINE_KL * (exp(min(rel - vec3<f32>(CINE_KL), vec3<f32>(0.0)) / CINE_KL) - vec3<f32>(1.0));
+    let r = max(rel, vec3<f32>(CINE_KL)) + CINE_KL * (vec3<f32>(px_exp(min(rel.x - CINE_KL, 0.0) / CINE_KL), px_exp(min(rel.y - CINE_KL, 0.0) / CINE_KL), px_exp(min(rel.z - CINE_KL, 0.0) / CINE_KL)) - vec3<f32>(1.0));
     let v = (1.0 + CINE_KH) * r * yd;
     return vec3<f32>(cine_soft_clip(v.x, CINE_KH), cine_soft_clip(v.y, CINE_KH), cine_soft_clip(v.z, CINE_KH));
 }

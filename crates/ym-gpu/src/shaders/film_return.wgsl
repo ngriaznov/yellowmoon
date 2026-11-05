@@ -554,6 +554,35 @@ fn pc_curve(ch: u32, x: f32) -> f32 {
     return a + (b - a) * t;
 }
 
+// The paper curve of channel `ch` at x_hi + x_lo, as a pair (the position and the interpolation carry their rounding).
+fn pc_curve_pair(ch: u32, xh: f32, xl: f32) -> vec2<f32> {
+    let n = FX_CURVE_ENTRIES;
+    let d = px_two_sum(xh, -fu.p[5][ch]);
+    let dl = px_op(px_op(d.y + xl) - fu.p[13][ch]);
+    let m = px_two_prod(d.x, fu.p[6][ch]);
+    var ph = m.x;
+    var pl = px_op(px_op(m.y + px_op(d.x * fu.p[14][ch])) + px_op(dl * fu.p[6][ch]));
+    if (is_nan_f(ph) || ph <= 0.0) {
+        ph = 0.0;
+        pl = 0.0;
+    } else if (ph >= f32(n - 1u)) {
+        ph = f32(n - 1u);
+        pl = 0.0;
+    }
+    var i = min(u32(floor(ph)), n - 2u);
+    var t = px_op(px_op(ph - f32(i)) + pl);
+    if (t < 0.0 && i > 0u) {
+        i = i - 1u;
+        t = px_op(t + 1.0);
+    }
+    let a = curves[ch * n + i];
+    let b = curves[ch * n + i + 1u];
+    let df = px_two_sum(b, -a);
+    let pr = px_two_prod(df.x, t);
+    let s = px_two_sum(a, pr.x);
+    return px_two_sum(s.x, px_op(s.y + px_op(pr.y + px_op(df.y * t))));
+}
+
 fn rt_main(gid: vec3<u32>) {
     let ix = i32(gid.x);
     let iy = i32(gid.y);
@@ -566,15 +595,31 @@ fn rt_main(gid: vec3<u32>) {
     let t3b_lo = fu.p[3].xyz;
     let t3b_hi = fu.p[4].xyz;
     var display = vec3<f32>(0.0);
-    if ((fu.op.z & 1u) != 0u) {
-        display = rt_t3b(fu.h[1].y, t3b_lo, t3b_hi, fu.p[3].w, d);
-    } else {
-        let lp = rt_t3a(fu.h[1].x, fu.p[1].xyz, fu.p[2].xyz, fu.p[1].w, d) + vec3<f32>(fu.p[0].z);
-        let dp = vec3<f32>(pc_curve(0u, lp.x), pc_curve(1u, lp.y), pc_curve(2u, lp.z));
-        display = rt_t3b(fu.h[1].y, t3b_lo, t3b_hi, fu.p[3].w, dp);
+    var dh = d;
+    var dl = vec3<f32>(0.0);
+    if ((fu.op.z & 1u) == 0u) {
+        // A negative: T3a, the print exposure shift and the paper's curves, each carried as a pair.
+        let ta = rt_t3a_pair(fu.h[1].x, fu.p[1].xyz, fu.p[7].xyz, fu.p[8].xyz, fu.p[9].xyz, fu.p[1].xyz, fu.p[2].xyz, fu.p[1].w, d, vec3<f32>(0.0));
+        var lh = vec3<f32>(0.0);
+        var ll = vec3<f32>(0.0);
+        for (var c = 0u; c < 3u; c++) {
+            let s = px_two_sum(ta.hi[c], fu.p[0].z);
+            lh[c] = s.x;
+            ll[c] = px_op(px_op(s.y + ta.lo[c]) + fu.p[0].w);
+        }
+        for (var c = 0u; c < 3u; c++) {
+            let v = pc_curve_pair(c, lh[c], ll[c]);
+            dh[c] = v.x;
+            dl[c] = v.y;
+        }
     }
+    let tb = rt_t3b_pair(fu.h[1].y, t3b_lo, fu.p[10].xyz, fu.p[11].xyz, fu.p[12].xyz, t3b_lo, t3b_hi, fu.p[3].w, dh, dl);
+    display = tb.hi + tb.lo;
     let out = rt_return(display);
     for (var c = 0u; c < 3u; c++) {
         dst[fx_b(x, y, c)] = out[c];
+        // The display colour the return was asked for, as the display step holds it: what the cine rendering gives back for
+        // a reachable colour (the colour pass uses it where this pixel's LogC4 reaches C12 unchanged).
+        shadow[fx_c(x, y, c)] = rt_hold(display[c]);
     }
 }
