@@ -1097,8 +1097,11 @@ fn tail_picture_against_cpu() {
 /// the CPU, so that the number is the colour pass's, the sampler's and the Film passes', not the raw chain's (its own
 /// differences at the chart's hard edges are in `docs/17`).
 ///
-/// The aim is 2.5e-7 (a quarter of the 1e-6 that failed the gate). It is met for Rec.2020, the owner's decision; sRGB
-/// and Display P3 are held to a regression bound of 4e-7 and reported against the aim.
+/// The aim is 2.5e-7 (a quarter of the 1e-6 that failed the gate). The colour pass meets it for plain exports in all
+/// three spaces and for Rec.2020 with a Film node, the owner's decision; Display P3 with a Film node (2.7e-7) and sRGB with
+/// a Film node (3.7e-7: the colours the print makes that sRGB cannot show are not reachable, and their pre-image is the f32
+/// Newton iteration's) are held to regression bounds of 3e-7 and 4e-7. The whole device chain adds the raw chain's own
+/// differences (about 2.8e-7), reported and not asserted.
 #[cfg(feature = "tail-probe")]
 #[test]
 fn the_colour_pass_of_the_tail_is_close_to_the_cpus_before_output_sharpening() {
@@ -1110,12 +1113,12 @@ fn the_colour_pass_of_the_tail_is_close_to_the_cpus_before_output_sharpening() {
         .difference(GpuStages::RAW_CHAIN)
         .difference(GpuStages::RAW_FRONT)
         .difference(GpuStages::LENS);
-    let device = || {
+    let device = |stages: GpuStages| {
         Renderer::new(
             Arc::new(NeutralOnly),
             RenderOptions {
                 gpu: Some(Arc::clone(&gpu)),
-                gpu_stages: colour_only,
+                gpu_stages: stages,
                 full_tile_px: 256,
                 data_root: Some(data_root()),
                 ..RenderOptions::default()
@@ -1126,21 +1129,13 @@ fn the_colour_pass_of_the_tail_is_close_to_the_cpus_before_output_sharpening() {
     let cpu = renderer(None, 256);
     for (space, target, bound) in [
         (ColorSpace::Srgb, OutputTarget::Srgb, 4e-7),
-        (ColorSpace::DisplayP3, OutputTarget::DisplayP3, 4e-7),
+        (ColorSpace::DisplayP3, OutputTarget::DisplayP3, 3e-7),
         (ColorSpace::Rec2020, OutputTarget::Rec2020, 2.5e-7),
     ] {
         for (what, settings) in [
             ("plain", d.source().settings.clone()),
             ("film", one_film(film.clone())),
         ] {
-            let bands = Arc::new(Mutex::new(Vec::new()));
-            let sink = Arc::clone(&bands);
-            ym_gpu::tail::set_picture_probe(Some(Arc::new(move |band| {
-                sink.lock().expect("probe").push(band);
-            })));
-            let home = tempfile::tempdir().expect("dir");
-            let _ = export_in(&d, &settings, device(), home.path(), space);
-            ym_gpu::tail::set_picture_probe(None);
             let src = d.source().with_settings(settings);
             let reference = cpu
                 .render_full(
@@ -1151,41 +1146,58 @@ fn the_colour_pass_of_the_tail_is_close_to_the_cpus_before_output_sharpening() {
                     &CancelToken::new(),
                 )
                 .expect("cpu render");
-            let (w, h) = (reference.width, reference.height);
-            let (mut sum, mut sum2, mut n, mut max) = (0.0f64, 0.0f64, 0usize, 0.0f64);
-            for band in bands.lock().expect("probe").iter() {
-                assert_eq!(band.width, w);
-                let plane = band.width * band.rows;
-                for y in 0..band.rows {
-                    let row = band.first_row + y;
-                    if row >= h {
-                        break;
-                    }
-                    for x in 0..w {
-                        for c in 0..3 {
-                            let want = f64::from(reference.rgb[3 * (row * w + x) + c]);
-                            if want >= 1e-4 {
-                                let got = f64::from(band.data[c * plane + y * band.width + x]);
-                                let r = (got - want) / want;
-                                sum += r;
-                                sum2 += r * r;
-                                n += 1;
-                                max = max.max(r.abs());
+            // The colour pass alone (the raw chain on the CPU, so the same camera RGB), then the whole device chain,
+            // whose raw chain adds its own differences (the chart's hard edges, `docs/17`): reported.
+            for (chain, stages) in [
+                ("colour pass", colour_only),
+                ("whole device chain", GpuStages::ALL),
+            ] {
+                let bands = Arc::new(Mutex::new(Vec::new()));
+                let sink = Arc::clone(&bands);
+                ym_gpu::tail::set_picture_probe(Some(Arc::new(move |band| {
+                    sink.lock().expect("probe").push(band);
+                })));
+                let home = tempfile::tempdir().expect("dir");
+                let _ = export_in(&d, &src.settings, device(stages), home.path(), space);
+                ym_gpu::tail::set_picture_probe(None);
+                let (w, h) = (reference.width, reference.height);
+                let (mut sum, mut sum2, mut n, mut max) = (0.0f64, 0.0f64, 0usize, 0.0f64);
+                for band in bands.lock().expect("probe").iter() {
+                    assert_eq!(band.width, w);
+                    let plane = band.width * band.rows;
+                    for y in 0..band.rows {
+                        let row = band.first_row + y;
+                        if row >= h {
+                            break;
+                        }
+                        for x in 0..w {
+                            for c in 0..3 {
+                                let want = f64::from(reference.rgb[3 * (row * w + x) + c]);
+                                if want >= 1e-4 {
+                                    let got = f64::from(band.data[c * plane + y * band.width + x]);
+                                    let r = (got - want) / want;
+                                    sum += r;
+                                    sum2 += r * r;
+                                    n += 1;
+                                    max = max.max(r.abs());
+                                }
                             }
                         }
                     }
                 }
+                assert!(n > 0, "the probe saw no band");
+                let mean = sum / n as f64;
+                let std = (sum2 / n as f64 - mean * mean).max(0.0).sqrt();
+                say(&format!(
+                    "tail picture {space:?} {what}, {chain}: relative standard deviation {std:.2e} (aim 2.5e-7), largest {max:.1e}"
+                ));
+                if chain == "colour pass" {
+                    assert!(
+                        std <= bound,
+                        "{space:?} {what}: {std:.3e} (bound {bound:e})"
+                    );
+                }
             }
-            assert!(n > 0, "the probe saw no band");
-            let mean = sum / n as f64;
-            let std = (sum2 / n as f64 - mean * mean).max(0.0).sqrt();
-            say(&format!(
-                "tail picture {space:?} {what}: relative standard deviation {std:.2e} (aim 2.5e-7), largest {max:.1e}"
-            ));
-            assert!(
-                std <= bound,
-                "{space:?} {what}: {std:.3e} (bound {bound:e})"
-            );
         }
     }
 }
@@ -1196,7 +1208,7 @@ fn the_colour_pass_of_the_tail_is_close_to_the_cpus_before_output_sharpening() {
 #[ignore = "a diagnostic: seeds of the scene"]
 fn rec2020_film_exports_over_several_scenes() {
     let Some(gpu) = gpu(true) else { return };
-    for seed in [5, 6, 7, 9, 10] {
+    for seed in [5, 6, 7, 8, 9, 10] {
         let scene = Scene::new(
             640,
             420,
