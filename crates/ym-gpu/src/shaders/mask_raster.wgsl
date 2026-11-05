@@ -11,6 +11,10 @@
 // radius, and a window's value is made from the pixels of the window only, so a tile is the whole frame bit for bit. The
 // mean is divided by the number of samples the window kept.
 //
+// A pass in tiles (G-11) writes each tile into the one set of planes at `outp.w`, an integer offset of the output index; no
+// floating-point expression is added or changed, so the fast-math note of K8 (docs/17) stands as it was: the ops keep their
+// operation order and none relies on NaN or infinity, quantise() tests NaN before it clamps.
+//
 // Bindings: 0 the uniform; 1 `work`, the f32 planes of the pass (read_write); 2 `s0`, a source plane as u16 codes two to a word;
 // 3 `samp`, the sampler's image (planes: colour, the letterbox mask at 3, the photo-frame position at 4 and 5); 4 `guide`,
 // the Input's luma as plane 0 of a colour-pass stage image; 5 `outp`, the u16 planes the colour pass reads, two to a word
@@ -40,7 +44,7 @@ struct RU {
     frame: vec4<i32>, // x0, y0, x1, y1: the frame in the units of plane A (UP: the coarse frame in the units of the coarse plane)
     win: vec4<i32>,   // x, y: the output extent's first pixel in plane A's pixels; z, w: the extent's size (FINAL, UP, QUANT)
     ins: vec4<i32>,   // x0, y0, x1, y1: the part of the extent that has planes, in plane A's pixels (the rest is 0)
-    outp: vec4<u32>,  // x: the stride of an output plane (elements), y: its length in words, z: the output plane index, w: -
+    outp: vec4<u32>,  // x: the stride of an output plane (elements), y: its length in words, z: the output plane index, w: the first pixel of the output window in the plane (even; a pass in tiles writes one tile of a plane)
     samp: vec4<u32>,  // x: the sampler image's stride, y: its plane length, z, w: the window's first pixel in it (RESAMPLE)
     s0: vec4<u32>,    // x: the source plane's width, y: its height, z: the taps of the box average, w: -
     f: vec4<f32>,     // x: eps (COEF); y: the shrink in source pixels per output pixel (RESAMPLE)
@@ -184,7 +188,7 @@ fn quantise(q: f32) -> u32 {
 
 // Writes the codes of the pixel pair (x, x + 1) of the output window (row y) into the output plane.
 fn put_pair(x: i32, y: i32, a: u32, b: u32) {
-    let idx = u32(y) * RU_.outp.x + u32(x);
+    let idx = u32(y) * RU_.outp.x + u32(x) + RU_.outp.w;
     outp[RU_.outp.z * RU_.outp.y + (idx >> 1u)] = a | (b << 16u);
 }
 

@@ -96,14 +96,14 @@ use ym_gpu::cpu::tint::overlay_interleaved;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError};
 use ym_gpu::kernels::copy::Piece;
-use ym_gpu::kernels::mask_raster::{PlaneKey, largest_tile_for};
+use ym_gpu::kernels::mask_raster::{PlaneKey, RasterTile, largest_tile_for, max_binding_bytes};
 use ym_gpu::pool::PooledBuffer;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::tail::{TailRoute, colour_device_tile_to_host, colour_tile_to_host};
 
 use self::device::{
-    Bounds, CameraSource, DeviceDisplay, DeviceInput, DisplayJob, GatherJob, GrownInput, PlainJob,
-    Rgba8, TailJob, TailWork, Upload, ViewRoute,
+    Bounds, CameraSource, DeviceDisplay, DeviceInput, DisplayJob, GatherJob, GrownInput, GrownSource,
+    PlainJob, PlaneTile, Rgba8, TailJob, TailWork, Upload, ViewRoute,
 };
 pub use self::export_tail::{BAND_DEPTH, GpuBands, TailRequest};
 use self::film_pass::{Cover, FilmRender, OwnedPlanes};
@@ -844,6 +844,11 @@ pub(crate) struct RasterRead {
     pub window: Area,
     /// The picture the colour pass makes. Its pixels outside `window` are paper and have no plane.
     pub extent: Area,
+    /// The view of the picture the colour pass makes, before it is grown: a tile of the planes samples its own grown window
+    /// from it.
+    pub read: ViewSpec,
+    /// Where the photo's extent starts in the view's pixels: the areas above are counted from it.
+    pub origin: (i64, i64),
 }
 
 /// The receptive field of the raster masks of `chains` on a render with this grid, in output pixels (0 when no
@@ -918,6 +923,8 @@ fn raster_read(
         grown: in_frame(grown),
         window: in_frame(window),
         extent: in_frame(picture),
+        read: read.clone(),
+        origin: (frame.x, frame.y),
     }))
 }
 
@@ -929,21 +936,157 @@ struct RasterCtx<'a> {
     route: Option<&'a ViewRoute>,
 }
 
-/// The wider picture a device job makes the raster planes of `read` from, as a device input.
+/// The wider picture a device job makes the raster planes of `read` from, as a device input, or the tiles of it when it does
+/// not fit one binding and no chain in `chains` has a Film node (the Film nodes read the wider picture whole). The planes
+/// are the same bytes either way: a plane does not depend on the window it is made in (`docs/17` D4 and D5).
 fn grown_input(
     job: &mut Job<'_>,
     route: &ViewRoute,
     read: Option<&RasterRead>,
+    chains: &[&ColorChain],
 ) -> Result<Option<GrownInput>, RenderError> {
     let Some(read) = read else { return Ok(None) };
-    let prepared = prepare_view(job, &read.spec)?;
-    let (input, _) = prepared.device_input(job, route, true)?;
     let key = plane_key(job, &read.spec)?;
+    let tileable = chains.iter().all(|c| !c.has_films());
+    // The wider picture in one piece, unless it cannot fit (its four planes are over the bindings before its camera
+    // window is looked at) and the planes can be made in tiles.
+    let frame_fits = 16 * read.spec.out_w.next_multiple_of(2) as u64 * read.spec.out_h as u64
+        <= route.band_bytes;
+    let mut whole = None;
+    if frame_fits || !tileable {
+        let prepared = prepare_view(job, &read.spec)?;
+        let (input, _) = prepared.device_input(job, route, true)?;
+        if input.fits(route) || !tileable {
+            return Ok(Some(GrownInput {
+                source: GrownSource::Whole(input),
+                read: read.clone(),
+                key,
+            }));
+        }
+        whole = Some(input);
+    }
+    if let Some(tiles) = plane_tiles(job, route, read, chains)? {
+        return Ok(Some(GrownInput {
+            source: GrownSource::Tiles(tiles),
+            read: read.clone(),
+            key,
+        }));
+    }
+    // Not even the smallest tile fits: the one piece goes on, to be refused for its size.
+    let input = match whole {
+        Some(input) => input,
+        None => {
+            let prepared = prepare_view(job, &read.spec)?;
+            prepared.device_input(job, route, true)?.0
+        }
+    };
     Ok(Some(GrownInput {
-        input,
+        source: GrownSource::Whole(input),
         read: read.clone(),
         key,
     }))
+}
+
+/// The raster planes of a view in tiles: the picture the colour pass makes is cut into tiles (the fewest, the largest sides
+/// halved in turn until it works) whose wider pictures, each the tile's window grown by the masks' receptive field and cut
+/// to the photo's extent as the scheduler infers it, fit the route's bindings. A tile's first column is an even distance
+/// from the picture's (two codes share a word). `None` when not even the smallest tile fits (a resource limit of the device:
+/// the CPU answers, with its reason).
+fn plane_tiles(
+    job: &mut Job<'_>,
+    route: &ViewRoute,
+    rr: &RasterRead,
+    chains: &[&ColorChain],
+) -> Result<Option<Vec<PlaneTile>>, RenderError> {
+    let prepared = prepare_view_with(job, &rr.spec, false)?;
+    let Some(grid) = prepared.photo_grid() else {
+        return Ok(None);
+    };
+    let u_px = 1.0 / grid.photo_frame().pixel;
+    let schedules: Vec<_> = chains.iter().map(|c| c.schedule(u_px, &|_| None)).collect();
+    let grown_of = |window: Area| {
+        schedules
+            .iter()
+            .map(|s| s.infer(window, &rr.frame).source)
+            .fold(Area::default(), ym_color::schedule::union_area)
+    };
+    let (mut tw, mut th) = (rr.extent.w.max(2) & !1, rr.extent.h.max(1));
+    loop {
+        // The layout: columns from the picture's first, rows likewise; the last column and row take what is left.
+        let mut layout: Vec<(Area, Area)> = Vec::new();
+        let mut fits = true;
+        'layout: for ty in (0..rr.extent.h).step_by(th) {
+            for tx in (0..rr.extent.w).step_by(tw) {
+                let extent = Area {
+                    x: rr.extent.x + tx as i64,
+                    y: rr.extent.y + ty as i64,
+                    w: tw.min(rr.extent.w - tx),
+                    h: th.min(rr.extent.h - ty),
+                };
+                let window = extent.intersect(&rr.window);
+                if window.is_empty() {
+                    layout.push((extent, Area::default()));
+                    continue;
+                }
+                let grown = grown_of(window);
+                if 16 * grown.w.next_multiple_of(2) as u64 * grown.h as u64 > route.band_bytes
+                    || max_binding_bytes(grown.w, grown.h) > ym_gpu::tiles::DESIGN_BINDING_BYTES
+                {
+                    fits = false;
+                    break 'layout;
+                }
+                layout.push((extent, grown));
+            }
+        }
+        if fits {
+            let mut tiles = Vec::with_capacity(layout.len());
+            for (extent, grown) in layout {
+                // A tile with no photo in it has no sampled picture and reads 0 (the planes are cleared first).
+                let input = if grown.is_empty() {
+                    None
+                } else {
+                    let spec = ViewSpec {
+                        out_w: grown.w,
+                        out_h: grown.h,
+                        view_to_final: Affine::scale_translate(
+                            1.0,
+                            1.0,
+                            (grown.x + rr.origin.0) as f64,
+                            (grown.y + rr.origin.1) as f64,
+                        )
+                        .then(&rr.read.view_to_final),
+                        ..rr.read.clone()
+                    };
+                    let tile_view = prepare_view(job, &spec)?;
+                    let (input, _) = tile_view.device_input(job, route, true)?;
+                    if !input.fits(route) {
+                        fits = false;
+                        break;
+                    }
+                    Some(input)
+                };
+                if let Some(input) = input {
+                    tiles.push(PlaneTile {
+                        tile: RasterTile { extent, grown },
+                        input,
+                    });
+                }
+            }
+            if fits {
+                return Ok(Some(tiles));
+            }
+        }
+        // Halve the longer side (the width stays even), until a tile of two by one cannot be cut further.
+        if tw >= th && tw > 2 {
+            tw = (tw / 2).max(2) & !1;
+        } else if th > 1 {
+            th = (th / 2).max(1);
+        } else if tw > 2 {
+            tw = (tw / 2).max(2) & !1;
+        } else {
+            return Ok(None);
+        }
+    }
 }
 
 /// What names the raster planes of a view's rows besides the rows themselves (`ym_gpu::kernels::mask_raster::PlaneKey`,
@@ -977,7 +1120,7 @@ fn refuse_size(
 ) -> Result<(), RenderError> {
     let (requested, limit) = input
         .overflow(route)
-        .or_else(|| grown.and_then(|g| g.input.overflow(route)))
+        .or_else(|| grown.and_then(|g| g.overflow(route)))
         .unwrap_or((0, route.band_bytes));
     job.view_gpu_failed(&GpuError::BufferTooLarge { requested, limit })
 }
@@ -985,7 +1128,7 @@ fn refuse_size(
 /// Whether the wider picture of the raster masks (when there is one) fits the route's bindings: the picture of
 /// six planes and the f32 scratch of the masks' pass over it.
 fn grown_fits(grown: Option<&GrownInput>, route: &ViewRoute) -> bool {
-    grown.is_none_or(|g| g.input.fits(route))
+    grown.is_none_or(|g| g.fits(route))
 }
 
 /// The Film nodes of `chain` as the device runs them over the wider picture `rr` describes, or `None` for a chain with no
@@ -1828,7 +1971,7 @@ fn plain_pass(
     let rr = raster_read(job, spec, &[&grade.chain], prepared.photo_grid().as_ref())?;
     if let Some(r) = route.filter(|r| r.stages.color) {
         let (input, _) = prepared.device_input(job, r, grade.chain.uses_photo_position())?;
-        let rasters = grown_input(job, r, rr.as_ref())?;
+        let rasters = grown_input(job, r, rr.as_ref(), &[&grade.chain])?;
         // A frame that does not fit one binding is made on the CPU, quietly (a view cut into bands
         // never gets here: `banded`).
         if input.fits(r) && grown_fits(rasters.as_ref(), r) {
@@ -1955,7 +2098,7 @@ fn build_display(
             || plan.mask.is_some_and(|g| g.chain.uses_photo_position());
         let (input, own) = prepared.device_input(job, r, positions)?;
         let bounds = plan.window.or(own);
-        let rasters = grown_input(job, r, rr.as_ref())?;
+        let rasters = grown_input(job, r, rr.as_ref(), &chains)?;
         if input.fits(r) && grown_fits(rasters.as_ref(), r) {
             let film = device_film(job, &grade.chain, rr.as_ref())?;
             let mask_film = match plan.mask {
@@ -2066,7 +2209,7 @@ fn build_display_in_bands(
         let prepared = prepare_view(job, &band)?;
         let (input, _) = prepared.device_input(job, route, grade.chain.uses_photo_position())?;
         let rr = raster_read(job, &band, &[&grade.chain], prepared.photo_grid().as_ref())?;
-        let rasters = grown_input(job, route, rr.as_ref())?;
+        let rasters = grown_input(job, route, rr.as_ref(), &[&grade.chain])?;
         if !(input.fits(route) && grown_fits(rasters.as_ref(), route)) {
             // The cut is made so that every band fits (`band_split`): a band that does not is the
             // frame's buffers not fitting, answered as such.
@@ -2685,7 +2828,9 @@ fn raster_grown(
     read: &ViewSpec,
     chains: &[&ColorChain],
 ) -> Result<Option<ViewSpec>, RenderError> {
-    if !chains.iter().any(|c| c.uses_rasters()) {
+    // Only a chain with a Film node needs the wider picture whole: the planes of the others are made in tiles when it does
+    // not fit (`grown_input`), so it does not decide the cut.
+    if !chains.iter().any(|c| c.uses_rasters() && c.has_films()) {
         return Ok(None);
     }
     let prepared = prepare_view_with(job, read, false)?;

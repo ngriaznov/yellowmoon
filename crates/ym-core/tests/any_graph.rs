@@ -261,7 +261,7 @@ fn view(
     before: bool,
     mask: Option<(u32, MaskStyle, Option<u32>)>,
 ) -> ViewportState {
-    let mut st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+    let mut st = ViewportState::new(ViewportRect::cell(1332.0, 888.0, 1.0));
     if zoom_100 {
         st.mode = ViewportMode::Percent { value: 100.0 };
     }
@@ -579,7 +579,7 @@ fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(gpu) = gpu() else { return };
     let white = light("sony-ilce-7rm4", 4800.0);
-    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+    let scene = Scene::new(4000, 2668, white, Layout::Patchwork, 0.5)
         .noise(2e-4, 2e-6)
         .seed(5);
     let d = Developed::new(&scene, MODEL);
@@ -610,11 +610,11 @@ fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size()
             .expect("a valid graph")
             .0;
         let src = d.source().with_settings(settings);
-        for kib in [65_536u64, 4096, 1024, 512, 256, 128, 64] {
+        for kib in [131_072u64, 65_536, 16_384, 4096, 1024] {
             let device = renderer_with(Some(Arc::clone(&gpu)), 256, kib * 1024);
             let _ = frame(&device, &src, &view(false, false, None));
             for pct in [50.0, 75.0, 100.0, 147.0] {
-                let mut st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+                let mut st = ViewportState::new(ViewportRect::cell(1332.0, 888.0, 1.0));
                 st.mode = ViewportMode::Percent { value: pct };
                 let got = frame(&device, &src, &st);
                 let on_cpu = got.report.device != ComputeDevice::Gpu;

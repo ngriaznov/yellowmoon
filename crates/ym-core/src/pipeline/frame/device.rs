@@ -72,7 +72,9 @@ use ym_gpu::kernels::copy::{Piece, encode_gather};
 use ym_gpu::kernels::encode::{C13, Encoding, encode_c13};
 use ym_gpu::kernels::film_stack::{FilmPictures, FilmRasters, FilmStack};
 use ym_gpu::kernels::magnify::{MagnifyTarget, encode_magnify};
-use ym_gpu::kernels::mask_raster::{PlaneKey, RasterJob, encode_raster_planes_kept};
+use ym_gpu::kernels::mask_raster::{
+    PlaneKey, RasterJob, RasterTile, encode_raster_planes_kept, encode_raster_planes_tiled,
+};
 use ym_gpu::kernels::output_sharpen::{FusedC13, PreparedSharpen};
 use ym_gpu::kernels::sampler::encode_sample_at;
 use ym_gpu::kernels::tint::encode_tint;
@@ -615,14 +617,53 @@ fn input_image(
 }
 
 /// The wider picture the raster masks of a view look at: the view's frame grown by the masks' receptive field and cut
-/// to the photo's extent (`super::RasterRead`), as a device input of its own.
+/// to the photo's extent (`super::RasterRead`), as a device input of its own, or as the tiles it is made in when it does
+/// not fit one binding.
 pub(super) struct GrownInput {
     /// The pixels of the wider picture.
-    pub input: DeviceInput,
+    pub source: GrownSource,
     /// Where it lies, and where the planes go.
     pub read: super::RasterRead,
     /// What the planes are kept under on the device (the rows add their own).
     pub key: PlaneKey,
+}
+
+/// What the raster planes of a view are made from.
+pub(super) enum GrownSource {
+    /// The wider picture in one piece (the Film nodes read it too).
+    Whole(DeviceInput),
+    /// A tile of the planes and the wider picture of its own, for a view whose wider picture passes the route's bindings
+    /// (`docs/23` section 5.12). Only a chain with no Film node is made in tiles.
+    Tiles(Vec<PlaneTile>),
+}
+
+/// One tile of a view's raster planes with its own sampled picture.
+pub(super) struct PlaneTile {
+    /// The tile's extent and the grown window it reads.
+    pub tile: RasterTile,
+    /// The pixels of the grown window.
+    pub input: DeviceInput,
+}
+
+impl GrownInput {
+    /// The wider picture in one piece, when it is made in one.
+    pub(super) fn whole(&self) -> Option<&DeviceInput> {
+        match &self.source {
+            GrownSource::Whole(input) => Some(input),
+            GrownSource::Tiles(_) => None,
+        }
+    }
+
+    /// Whether every buffer of the planes' pass fits the route's bindings: the wider picture (every tile's, when it is made
+    /// in tiles: a tile was chosen to fit).
+    pub(super) fn fits(&self, route: &ViewRoute) -> bool {
+        self.whole().is_none_or(|input| input.fits(route))
+    }
+
+    /// The first size that passes the route's bindings, as [`DeviceInput::overflow`].
+    pub(super) fn overflow(&self, route: &ViewRoute) -> Option<(u64, u64)> {
+        self.whole().and_then(|input| input.overflow(route))
+    }
 }
 
 /// The colour chain prepared on the device, with the render's photo frame when the input has the pixels' places in the
@@ -657,11 +698,17 @@ fn prepared_for(
         prepared = match (rasters, film) {
             (Some(grown), Some(stack)) => {
                 let r = &grown.read;
+                // The Film nodes read the wider picture whole: a chain with one is never made in tiles.
+                let Some(whole) = grown.whole() else {
+                    return Err(GpuError::InvalidInput(
+                        "a Film node reads the wider picture in one piece".to_owned(),
+                    ));
+                };
                 let wide = {
                     let _span = perf::span(Stage::WideImage);
-                    input_image(ctx, passes, &grown.input)?
+                    input_image(ctx, passes, whole)?
                 };
-                let photo = grown.input.photo_frame();
+                let photo = whole.photo_frame();
                 let pictures = {
                     let _span = perf::span(Stage::ColourRecord);
                     stack.encode(
@@ -696,23 +743,41 @@ fn prepared_for(
         let r = &grown.read;
         // The planes of a row that was made before (this frame's other chain, an earlier frame) are copied; the
         // wider picture and the guide are made only when some row has none.
-        let planes = encode_raster_planes_kept(
-            passes,
-            &prepared,
-            chain,
-            &RasterJob {
-                frame: r.frame,
-                grown: r.grown,
-                window: r.window,
-                extent: r.extent,
-                photo: frame,
-            },
-            &grown.key,
-            |passes| {
-                let _span = perf::span(Stage::WideImage);
-                input_image(ctx, passes, &grown.input)
-            },
-        )?;
+        let job = RasterJob {
+            frame: r.frame,
+            grown: r.grown,
+            window: r.window,
+            extent: r.extent,
+            photo: frame,
+        };
+        let planes = match &grown.source {
+            GrownSource::Whole(input) => encode_raster_planes_kept(
+                passes,
+                &prepared,
+                chain,
+                &job,
+                &grown.key,
+                |passes| {
+                    let _span = perf::span(Stage::WideImage);
+                    input_image(ctx, passes, input)
+                },
+            )?,
+            GrownSource::Tiles(tiles) => {
+                let regions: Vec<RasterTile> = tiles.iter().map(|t| t.tile).collect();
+                encode_raster_planes_tiled(
+                    passes,
+                    &prepared,
+                    chain,
+                    &job,
+                    &grown.key,
+                    &regions,
+                    |i, passes| {
+                        let _span = perf::span(Stage::WideImage);
+                        input_image(ctx, passes, &tiles[i].input)
+                    },
+                )?
+            }
+        };
         prepared = prepared.with_rasters(planes);
     }
     Ok(prepared)
