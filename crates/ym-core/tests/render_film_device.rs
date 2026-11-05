@@ -1182,7 +1182,10 @@ fn the_colour_pass_of_the_tail_is_close_to_the_cpus_before_output_sharpening() {
             say(&format!(
                 "tail picture {space:?} {what}: relative standard deviation {std:.2e} (aim 2.5e-7), largest {max:.1e}"
             ));
-            assert!(std <= bound, "{space:?} {what}: {std:.3e} (bound {bound:e})");
+            assert!(
+                std <= bound,
+                "{space:?} {what}: {std:.3e} (bound {bound:e})"
+            );
         }
     }
 }
@@ -1194,11 +1197,19 @@ fn the_colour_pass_of_the_tail_is_close_to_the_cpus_before_output_sharpening() {
 fn rec2020_film_exports_over_several_scenes() {
     let Some(gpu) = gpu(true) else { return };
     for seed in [5, 6, 7, 9, 10] {
-        let scene = Scene::new(640, 420, light("sony-ilce-7rm4", 4800.0), Layout::Patchwork, 0.5)
-            .noise(2e-4, 2e-6)
-            .seed(seed);
+        let scene = Scene::new(
+            640,
+            420,
+            light("sony-ilce-7rm4", 4800.0),
+            Layout::Patchwork,
+            0.5,
+        )
+        .noise(2e-4, 2e-6)
+        .seed(seed);
         let d = Developed::new(&scene, MODEL);
         let max = wide_gamut_diff(&gpu, &d, &one_film(busy()), ColorSpace::Rec2020, "film");
-        say(&format!("seed {seed}: largest {max} of 65535 (one 10-bit code is {TEN_BIT_CODE})"));
+        say(&format!(
+            "seed {seed}: largest {max} of 65535 (one 10-bit code is {TEN_BIT_CODE})"
+        ));
     }
 }

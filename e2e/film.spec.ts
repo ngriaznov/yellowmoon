@@ -86,6 +86,37 @@ test.describe("the Stock picker", () => {
     await expect(picker.getByRole("button", { name: "Kodak Portra 400, ISO 400" })).toHaveAttribute("aria-pressed", "true");
   });
 
+  for (const [width, height] of [[1180, 760], [1440, 900], [1800, 1100]] as const) {
+    test(`is whole, on top and readable over the photo at ${width}x${height}, with Fujifilm in it`, async ({ page }) => {
+      await page.setViewportSize({ width, height });
+      await filmView(page);
+      await page.getByRole("button", { name: /^Stock, / }).click();
+      const picker = page.getByRole("dialog", { name: "Film stocks" });
+      await expect(picker).toBeVisible();
+      await page.waitForTimeout(500);
+      for (const name of ["Fujifilm Provia 100F", "Fujifilm Velvia 100", "Fujifilm C200"]) await expect(picker.getByRole("button", { name: new RegExp(`^${name}`) })).toHaveCount(1);
+      const report = await picker.evaluate((el) => {
+        const box = el.getBoundingClientRect();
+        const tiles = [...el.querySelectorAll("button")].map((t) => {
+          const r = t.getBoundingClientRect();
+          const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return { name: t.getAttribute("aria-label"), inside: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, hidden: r.height > 0 && !t.contains(top), clipped: r.top < box.top - 1 || r.bottom > box.bottom + 1 };
+        });
+        const cell = document.querySelector(".ym-photo-cell, [data-native]")?.getBoundingClientRect();
+        const bg = getComputedStyle(el).backgroundColor;
+        const alpha = Number(/\/\s*([\d.]+)/.exec(bg)?.[1] ?? /,\s*([\d.]+)\)$/.exec(bg)?.[1] ?? 1);
+        const over = cell ? Math.max(0, Math.min(box.right, cell.right) - Math.max(box.left, cell.left)) * Math.max(0, Math.min(box.bottom, cell.bottom) - Math.max(box.top, cell.top)) / (box.width * box.height) : -1;
+        return { left: box.left, tiles, alpha, bg, over };
+      });
+      console.log(width, JSON.stringify({ left: report.left, bg: report.bg, over: report.over }));
+      expect(report.left).toBeGreaterThanOrEqual(0);
+      expect(report.tiles.filter((t) => !t.inside || t.hidden)).toEqual([]);
+      // In the app the page is transparent over the photo and the photo is a native layer: the backdrop blur has nothing to blur, so the
+      // glass must be opaque enough by itself to keep the white names readable on a bright photo.
+      expect(report.alpha).toBeGreaterThanOrEqual(0.88);
+    });
+  }
+
   test("chooses a stock with a click, and shows its kind and ISO under the field", async ({ page }) => {
     await filmView(page);
     await page.getByRole("button", { name: "Stock, Kodak Portra 400" }).click();

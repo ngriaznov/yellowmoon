@@ -381,11 +381,7 @@ impl FilmImage {
     /// # Errors
     ///
     /// As [`FilmImage::alloc`].
-    pub fn alloc_with_shadow(
-        ctx: &GpuContext,
-        label: &str,
-        rect: FRect,
-    ) -> Result<Self, GpuError> {
+    pub fn alloc_with_shadow(ctx: &GpuContext, label: &str, rect: FRect) -> Result<Self, GpuError> {
         let mut image = Self::alloc(ctx, label, rect)?;
         let (w, h) = (rect.width() as usize, rect.height() as usize);
         image.shadow = Some(GpuImage::alloc(
@@ -1394,16 +1390,17 @@ pub fn encode_colour_out(
     u.h[0] = [ns as u32, nt as u32, nk as u32, 0];
     // The tables' axes as pairs (lo, and 1 / (hi - lo)): the position of a density in a table is carried without the
     // rounding of its own (`rt_*_pair`, docs/24 section 3.9c).
-    let axes = |t: &Table3Data, lo: usize, r_hi: usize, lo_lo: usize, r_lo: usize, u: &mut FilmU| {
-        for c in 0..3 {
-            let l = t.lo[c];
-            let r = 1.0 / (t.hi[c] - t.lo[c]);
-            u.p[lo_lo][c] = (l - f64::from(l as f32)) as f32;
-            u.p[r_hi][c] = r as f32;
-            u.p[r_lo][c] = (r - f64::from(r as f32)) as f32;
-        }
-        let _ = lo;
-    };
+    let axes =
+        |t: &Table3Data, lo: usize, r_hi: usize, lo_lo: usize, r_lo: usize, u: &mut FilmU| {
+            for c in 0..3 {
+                let l = t.lo[c];
+                let r = 1.0 / (t.hi[c] - t.lo[c]);
+                u.p[lo_lo][c] = (l - f64::from(l as f32)) as f32;
+                u.p[r_hi][c] = r as f32;
+                u.p[r_lo][c] = (r - f64::from(r as f32)) as f32;
+            }
+            let _ = lo;
+        };
     let (t3a_buf, t3a_size) = match &dev.t3a {
         Some((t, b)) => {
             u.p[1] = v3(t.lo, t.power as f32);

@@ -1,7 +1,11 @@
 //! F-08d: how close the colour pass is to the CPU's, as a number a change can be measured by. The export tail's
 //! picture before output sharpening is the colour pass's C12 picture; output sharpening turns its error up at a
 //! near-black sample (`docs/24` section 3.9c), so the pass is held to a standard deviation of its relative error,
-//! per output, on a seeded camera image that spreads over 17 stops.
+//! per output, on a seeded camera image that spreads over 17 stops (a harder picture than a photo: a third of its
+//! samples are under 1e-2 of the display white, where the tone curve's exponent of about 7 multiplies an f32 error).
+//! Measured on Mesa lavapipe, the same in all three storage modes, before F-08d and after (relative standard deviation
+//! of C12, sRGB / Display P3 / Rec.2020): 1.03e-6 / 8.7e-7 / 7.1e-7 and 5.55e-7 / 5.11e-7 / 4.74e-7; the part of the
+//! samples at or over 0.1 (a photo's mid-tones and highlights) 3.7e-7 and 1.8e-7; C7 4.7e-8 and 3.5e-8.
 
 mod common;
 
@@ -69,7 +73,8 @@ fn the_colour_pass_is_within_a_few_1e7_of_the_cpu_in_relative_terms() {
                     }
                 }
             }
-            if std::env::var("YM_BINS").is_ok() {
+            let mut bright = f64::NAN;
+            {
                 for (lo, hi) in [(1e-4, 1e-3), (1e-3, 1e-2), (1e-2, 1e-1), (1e-1, 2.0)] {
                     let sel: Vec<f64> = (0..n)
                         .flat_map(|i| (0..3).map(move |ch| (i, ch)))
@@ -84,7 +89,13 @@ fn the_colour_pass_is_within_a_few_1e7_of_the_cpu_in_relative_terms() {
                         .collect();
                     if !sel.is_empty() {
                         let (s, m) = stats(&sel);
-                        eprintln!("  C12 in [{lo:e}, {hi:e}): {s:.2e} (max {m:.1e}), {} samples", sel.len());
+                        eprintln!(
+                            "  C12 in [{lo:e}, {hi:e}): {s:.2e} (max {m:.1e}), {} samples",
+                            sel.len()
+                        );
+                        if lo == 1e-1 {
+                            bright = s;
+                        }
                     }
                 }
             }
@@ -96,6 +107,25 @@ fn the_colour_pass_is_within_a_few_1e7_of_the_cpu_in_relative_terms() {
                 dev.mode,
                 r12.len()
             );
+            // The gates are the measured values with a margin of a fifth (a regression bound; the aim of the tail's picture
+            // is in `render_film_device.rs`).
+            let bound = match target {
+                OutputTarget::Srgb => 6.7e-7,
+                OutputTarget::DisplayP3 => 6.2e-7,
+                _ => 5.7e-7,
+            };
+            assert!(
+                s12 <= bound,
+                "{:?} {target:?}: C12 {s12:.3e} (bound {bound:e})",
+                dev.mode
+            );
+            assert!(
+                bright <= 2.3e-7,
+                "{:?} {target:?}: C12 over 0.1: {bright:.3e}",
+                dev.mode
+            );
+            assert!(s7 <= 6e-8, "{:?} {target:?}: C7 {s7:.3e}", dev.mode);
+            assert!(s8 <= 1.2e-7, "{:?} {target:?}: C8 {s8:.3e}", dev.mode);
         }
     }
 }
