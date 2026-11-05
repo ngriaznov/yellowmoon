@@ -62,7 +62,96 @@ fn cine_cbrt_d_m1(r: f32) -> f32 {
     return px_op(px_op(r - 1.0) + px_op(r * px_expm1(g)));
 }
 
+// ---- the plain f32 rendering of a view (the arithmetic before F-08d, `px_fast()`) ---------------------------------
+//
+// A view runs the rendering with the compiler's own f32 operations: the compensated arithmetic below is for the
+// export, which the owner accepted slower (docs/24 section 3.9c, "Speed"). These are the former functions, unchanged.
+
+fn cine_sigmoid_plain(x: f32) -> f32 {
+    return 1.0 / (1.0 + exp(-x));
+}
+
+// r ((1 + d^2) / (r^2 + d^2))^(1/3): odd, smooth at 0, 1 at 1.
+fn cine_cbrt_d_plain(r: f32) -> f32 {
+    let q = CINE_ONE_PLUS_DELTA2 / (r * r + CINE_DELTA2);
+    return r * exp(log(q) * (1.0 / 3.0));
+}
+
+fn cine_display_linear_plain(awg4: vec3<f32>) -> vec3<f32> {
+    // 0, 1. The limit and the matrix to XYZ.
+    let x = clamp(awg4, vec3<f32>(-CINE_SCENE_LIMIT), vec3<f32>(CINE_SCENE_LIMIT));
+    let xyz = mv3(AWG4_TO_XYZ_0, AWG4_TO_XYZ_1, AWG4_TO_XYZ_2, x);
+    // 2. The luminance floor: a smooth maximum of Y and rho times the distance of the chromaticity from the
+    // neutral axis. dX = X - XN Y and dZ = Z - ZN Y are linear in x, with the rows DX = row_X - XN row_Y and
+    // DZ = row_Z - ZN row_Y (CINE_DX, CINE_DZ, formed in f64 on the host). AWG4's white maps to (XN, 1, ZN), so
+    // each row sums to 0 (to 2e-16 in f64) and DX . x = DX . (x - x_g 1): only the differences to the green
+    // channel enter, and the green entry is not needed. Taken from X, Y and Z, the two terms of dX are numbers of
+    // size |x| whose difference is rounding noise of about 1e-7 |x| for a neutral (1e-2 at -1e5), different
+    // for every order of the sums and for every fusion into a multiply-add; yf and then Ys would be that noise.
+    // From the differences a neutral gives exactly 0 (x - x is 0, a product or sum of zeros is 0, whatever the
+    // compiler does with the products and sums), and any other colour gives dX with an error relative to its
+    // own differences.
+    let d = vec2<f32>(x.x - x.y, x.z - x.y);
+    let dx = dot(CINE_DX, d);
+    let dz = dot(CINE_DZ, d);
+    let yf = CINE_RHO * sqrt(dx * dx + dz * dz + CINE_EPS_FLOOR);
+    let w = CINE_WFRAC * yf;
+    let dy = xyz.y - yf;
+    let root = sqrt(dy * dy + w * w);
+    var smooth_max = 0.5 * (xyz.y + yf + root);
+    if (dy < 0.0) {
+        smooth_max = yf + 0.5 * w * w / (root - dy);
+    }
+    let ys = max(smooth_max, CINE_Y_MIN);
+    let ly = log(ys);
+    // 3. Opponent coordinates relative to the colour's own luminance, and the soft limit of the chroma.
+    let ca0 = cine_cbrt_d_plain(xyz.x / (CINE_XN * ys)) - 1.0;
+    let cb0 = 1.0 - cine_cbrt_d_plain(xyz.z / (CINE_ZN * ys));
+    let chi0 = sqrt(ca0 * ca0 + cb0 * cb0 + CINE_EPS_CHROMA);
+    let excess = max(chi0 - CINE_CHI_K, 0.0);
+    let limited = min(chi0, CINE_CHI_K)
+        + (CINE_CHI_M - CINE_CHI_K) * tanh(min(excess / (CINE_CHI_M - CINE_CHI_K), 20.0));
+    let ca = ca0 * (limited / chi0);
+    let cb = cb0 * (limited / chi0);
+    let chi = sqrt(ca * ca + cb * cb + CINE_EPS_CHROMA);
+    let cs = ca / chi;
+    let sn = cb / chi;
+    // 4. The tone curve of the neutral axis: H = (1 + c Ys^-a)^-b, then the soft clip at the top.
+    let u = (ly - CINE_LN_GREY) * CINE_INV_LN2;
+    let h = exp(-CINE_B * log(1.0 + CINE_C * exp(-CINE_A * ly)));
+    let ln_yt = log(cine_soft_clip(CINE_KAP * h, CINE_WC));
+    // 5. Chroma, hue and lightness terms.
+    let g0 = CINE_G_PEAK / (1.0 + exp(CINE_GB * ly - CINE_GB_LYC));
+    let bh = cine_sigmoid_plain((u - 1.5) * (1.0 / 1.5));
+    let env = chi * chi / (chi * chi + CINE_ENV2);
+    let gh = env * (cine_harm(cs, sn, CINE_GH_B0_A, CINE_GH_B0_B) + bh * cine_harm(cs, sn, CINE_GH_BH_A, CINE_GH_BH_B));
+    let dt = env * (cine_harm(cs, sn, CINE_DT_B0_A, CINE_DT_B0_B) + bh * cine_harm(cs, sn, CINE_DT_BH_A, CINE_DT_BH_B));
+    let rh = env * (cine_harm(cs, sn, CINE_RH_B0_A, CINE_RH_B0_B) + bh * cine_harm(cs, sn, CINE_RH_BH_A, CINE_RH_BH_B));
+    // chi^rp / (chi^rp + e^(rp r_chi)) = 1 / (1 + e^(rp (r_chi - ln chi))).
+    let chenv = 1.0 / (1.0 + exp(CINE_RP * (CINE_R_CHI - log(chi))));
+    let lr = chenv * (CINE_R_DARK * cine_sigmoid_plain(-(u - CINE_R_YD)) + CINE_R_HI) + rh;
+    // 6. The display colour before the gamut stage.
+    let g = g0 * exp(gh);
+    let cd = cos(dt);
+    let sd = sin(dt);
+    let ca2 = g * (ca * cd - cb * sd);
+    let cb2 = g * (ca * sd + cb * cd);
+    let y2 = exp(ln_yt + lr);
+    let t1 = 1.0 + ca2;
+    let t2 = 1.0 - cb2;
+    // 7. The gamut stage on the output's own primaries, on channels relative to the luminance.
+    let yd = max(y2, CINE_Y2_MIN);
+    let rel = mv3(CU.cine_m0.xyz, CU.cine_m1.xyz, CU.cine_m2.xyz, vec3<f32>(CINE_XN * t1 * t1 * t1, 1.0, CINE_ZN * t2 * t2 * t2))
+        * (y2 / yd);
+    let r = max(rel, vec3<f32>(CINE_KL)) + CINE_KL * (exp(min(rel - vec3<f32>(CINE_KL), vec3<f32>(0.0)) / CINE_KL) - vec3<f32>(1.0));
+    let v = (1.0 + CINE_KH) * r * yd;
+    return vec3<f32>(cine_soft_clip(v.x, CINE_KH), cine_soft_clip(v.y, CINE_KH), cine_soft_clip(v.z, CINE_KH));
+}
+
 fn cine_display_linear(awg4: vec3<f32>) -> vec3<f32> {
+    if (px_fast()) {
+        return cine_display_linear_plain(awg4);
+    }
     // 0, 1. The limit and the matrix to XYZ.
     let x = clamp(awg4, vec3<f32>(-CINE_SCENE_LIMIT), vec3<f32>(CINE_SCENE_LIMIT));
     let xyz = px_mv3(AWG4_TO_XYZ_0, AWG4_TO_XYZ_1, AWG4_TO_XYZ_2, x)

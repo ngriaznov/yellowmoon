@@ -179,6 +179,7 @@ impl FilmRender {
         if !chain.has_films() {
             return Ok(None);
         }
+        let _span = ym_gpu::perf::span(ym_gpu::perf::Stage::FilmBuild);
         let settings = &job.src.settings;
         let extent = FilmFrameExtent {
             width: frame.w,
@@ -235,6 +236,7 @@ impl FilmRender {
     /// The Film nodes as plain data for the device (`ym_gpu::kernels::film_stack`): the prefix chain, the passes over the
     /// photo's extent, the scalars and the tables of each.
     pub(crate) fn device_stack(&self) -> FilmStack {
+        let _span = ym_gpu::perf::span(ym_gpu::perf::Stage::FilmBuild);
         let extent = FilmFrameExtent {
             width: self.frame.w,
             height: self.frame.h,

@@ -61,11 +61,22 @@ pub enum Stage {
     Wait,
     /// The raster planes on the CPU reference path (source, resample, Grow, Feather, guide).
     CpuRaster,
+    /// The Film nodes' plain data on the host, per frame: the engine's film frames, the prefix chains, the passes' plan,
+    /// the scalars and the table keys (`FilmRender::build` and `device_stack`). Not part of any other stage.
+    FilmBuild,
+    /// A Film node's prefix chain on the device: preparing it and recording its pass (inside `colour_record`).
+    FilmPrefix,
+    /// A Film node's tables on the device: found in the device's cache, or converted and uploaded on a miss
+    /// (inside `colour_record`).
+    FilmTables,
+    /// Recording a Film node's own passes (colour in, halation, coupler diffusion, grain, return; inside
+    /// `colour_record`).
+    FilmPasses,
 }
 
 impl Stage {
     /// Every stage, in the order the log prints them.
-    pub const ALL: [Stage; 13] = [
+    pub const ALL: [Stage; 17] = [
         Stage::Prepare,
         Stage::DeviceInput,
         Stage::InputImage,
@@ -79,6 +90,10 @@ impl Stage {
         Stage::Submit,
         Stage::Wait,
         Stage::CpuRaster,
+        Stage::FilmBuild,
+        Stage::FilmPrefix,
+        Stage::FilmTables,
+        Stage::FilmPasses,
     ];
 
     /// The name in the log.
@@ -98,6 +113,10 @@ impl Stage {
             Stage::Submit => "submit",
             Stage::Wait => "wait",
             Stage::CpuRaster => "cpu_raster",
+            Stage::FilmBuild => "film_build",
+            Stage::FilmPrefix => "film_prefix",
+            Stage::FilmTables => "film_tables",
+            Stage::FilmPasses => "film_passes",
         }
     }
 }
@@ -111,6 +130,8 @@ pub struct Split {
     count: [u32; N],
     raster_rows: u32,
     raster_size: (u32, u32),
+    film_nodes: u32,
+    film_size: (u32, u32),
 }
 
 impl Split {
@@ -133,6 +154,13 @@ impl Split {
         (self.raster_rows, self.raster_size.0, self.raster_size.1)
     }
 
+    /// Film nodes whose pictures were made, and the size in pixels of the largest picture the first of them read (the view
+    /// grown by every Film halo): `(nodes, width, height)`.
+    #[must_use]
+    pub fn film(&self) -> (u32, u32, u32) {
+        (self.film_nodes, self.film_size.0, self.film_size.1)
+    }
+
     /// Adds `other`'s times and counts to this split.
     pub fn merge(&mut self, other: &Split) {
         for i in 0..N {
@@ -143,11 +171,15 @@ impl Split {
         if other.raster_rows > 0 {
             self.raster_size = other.raster_size;
         }
+        self.film_nodes += other.film_nodes;
+        if other.film_nodes > 0 {
+            self.film_size = other.film_size;
+        }
     }
 }
 
 thread_local! {
-    static SPLIT: RefCell<Split> = const { RefCell::new(Split { ms: [0.0; N], count: [0; N], raster_rows: 0, raster_size: (0, 0) }) };
+    static SPLIT: RefCell<Split> = const { RefCell::new(Split { ms: [0.0; N], count: [0; N], raster_rows: 0, raster_size: (0, 0), film_nodes: 0, film_size: (0, 0) }) };
 }
 
 /// Starts the calling thread's split again from zero.
@@ -182,6 +214,18 @@ pub fn note_raster(rows: usize, width: usize, height: usize) {
             let mut s = s.borrow_mut();
             s.raster_rows += rows as u32;
             s.raster_size = (width as u32, height as u32);
+        });
+    }
+}
+
+/// Notes that `nodes` Film nodes made their pictures, the first from a window of `width x height` pixels (the view grown by
+/// the Film halos).
+pub fn note_film(nodes: usize, width: usize, height: usize) {
+    if enabled() {
+        SPLIT.with(|s| {
+            let mut s = s.borrow_mut();
+            s.film_nodes += nodes as u32;
+            s.film_size = (width as u32, height as u32);
         });
     }
 }

@@ -1370,6 +1370,8 @@ pub(super) fn body() -> String {
     let mut s = String::with_capacity(color.len() * 2);
     s.push_str(include_str!("../shaders/precise.wgsl"));
     s.push_str("fn px_zero() -> u32 {\n    return CU.flags.x;\n}\n\n");
+    // A view runs the plain f32 arithmetic (`PreparedChain::fast`), an export the compensated one (`flags.w`).
+    s.push_str("fn px_fast() -> bool {\n    return CU.flags.w == 1u;\n}\n\n");
     s.push_str(include_str!("../shaders/cine.wgsl"));
     s.push('\n');
     s.push_str(include_str!("../shaders/c13.wgsl"));
@@ -1563,6 +1565,17 @@ impl PreparedChain {
     pub fn with_photo_frame(&self, frame: PhotoFrame) -> Self {
         let mut chain = self.clone();
         chain.photo = Some(frame);
+        chain
+    }
+
+    /// The same chain for a **view**: the colour pass runs the plain f32 arithmetic it had before F-08d (the same bits as
+    /// then), with no exact Film colours and no compensated products. The default is the compensated arithmetic, which an
+    /// export (the tail, the DNG's colour stage) and the precision tests use; which one runs is a word of the uniform block
+    /// (`flags.w`), so the two share the pipeline (`docs/24` section 3.9c "Speed", `docs/17` K8).
+    #[must_use]
+    pub fn fast(&self, fast: bool) -> Self {
+        let mut chain = self.clone();
+        chain.base.flags[3] = u32::from(fast);
         chain
     }
 
@@ -1835,6 +1848,9 @@ impl PreparedChain {
                 let pass = self.passes[p];
                 u.plan = [pass.first, pass.count, u32::from(p == last), self.result];
                 let ub = passes.uniform("chain uniform", &u)?;
+                if u.flags[3] != 1 {
+                    passes.context().counters_shared().count_precise();
+                }
                 passes.dispatch(
                     KernelId::Color,
                     if matches!(output, ColorOutput::Stage(Stop::Guide)) {

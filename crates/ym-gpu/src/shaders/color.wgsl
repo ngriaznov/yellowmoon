@@ -1071,8 +1071,13 @@ fn run_pixel(cam_in: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) -> vec3<f32
     if (stop == 9u && CU.lk.w == 2u) {
         return before_camera_default(cam);
     }
-    let c6 = px_mv3(CU.m0.xyz, CU.m1.xyz, CU.m2.xyz, cam)
-        + vec3<f32>(dot(CU.m_lo0.xyz, cam), dot(CU.m_lo1.xyz, cam), dot(CU.m_lo2.xyz, cam));
+    var c6 = vec3<f32>(0.0);
+    if (px_fast()) {
+        c6 = mv3(CU.m0.xyz, CU.m1.xyz, CU.m2.xyz, cam);
+    } else {
+        c6 = px_mv3(CU.m0.xyz, CU.m1.xyz, CU.m2.xyz, cam)
+            + vec3<f32>(dot(CU.m_lo0.xyz, cam), dot(CU.m_lo1.xyz, cam), dot(CU.m_lo2.xyz, cam));
+    }
     if (stop == 0u) {
         return c6;
     }
@@ -1086,7 +1091,12 @@ fn run_pixel(cam_in: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) -> vec3<f32
         let g = unit(logc4_encode(dot(Y_AWG4, c7)));
         return vec3<f32>(g, g, g);
     }
-    let c8 = px_logc4_encode3(c7);
+    var c8 = vec3<f32>(0.0);
+    if (px_fast()) {
+        c8 = logc4_encode3(c7);
+    } else {
+        c8 = px_logc4_encode3(c7);
+    }
     if (stop == 2u) {
         return c8;
     }
@@ -1111,15 +1121,20 @@ fn run_pixel(cam_in: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) -> vec3<f32
     // integer test; a value any node, look or curve has touched matches neither.
     var lin10 = vec3<f32>(0.0);
     var exact = vec3<f32>(0.0);
-    let c10_bits = bitcast<vec3<u32>>(c10);
-    if (all(c10_bits == bitcast<vec3<u32>>(c8))) {
-        lin10 = c7;
+    if (px_fast()) {
+        // A view: the plain decode, and no exact colour (the arithmetic before F-08d).
+        lin10 = logc4_decode3(c10);
     } else {
-        lin10 = px_logc4_decode3(c10);
-        let n = CU.dims.x * CU.dims.y;
-        for (var k = 0u; k < CU.stopn.y; k++) {
-            if (all(c10_bits == bitcast<vec3<u32>>(plane_pic(6u * k, n, pix)))) {
-                exact = plane_pic(6u * k + 3u, n, pix);
+        let c10_bits = bitcast<vec3<u32>>(c10);
+        if (all(c10_bits == bitcast<vec3<u32>>(c8))) {
+            lin10 = c7;
+        } else {
+            lin10 = px_logc4_decode3(c10);
+            let n = CU.dims.x * CU.dims.y;
+            for (var k = 0u; k < CU.stopn.y; k++) {
+                if (all(c10_bits == bitcast<vec3<u32>>(plane_pic(6u * k, n, pix)))) {
+                    exact = plane_pic(6u * k + 3u, n, pix);
+                }
             }
         }
     }

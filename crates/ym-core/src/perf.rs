@@ -11,9 +11,10 @@
 //!   plans=0.2 sample=0.0 raw=0.0 pass=94.1 output=0.0 |
 //!   prepare=0.4x2 device_input=0.1x2 input_image=0.3x1 wide_image=0.3x1 mask_source=0.0x1
 //!   source_upload=0.0x1 guide_record=0.2x1 raster_record=1.9x1 colour_record=0.6x1 tail_record=0.4x1
-//!   submit=0.8x1 wait=88.0x1 cpu_raster=0.0x0 raster_rows=1 raster_window=1730x1155 |
+//!   submit=0.8x1 wait=88.0x1 cpu_raster=0.0x0 film_build=0.0x0 film_prefix=0.0x0 film_tables=0.0x0 film_passes=0.0x0
+//!   raster_rows=1 raster_window=1730x1155 film_nodes=0 film_window=0x0 |
 //!   color_plans=0 grade_plans=1 color_passes=1 output_passes=1 | uploads=2/0.0MiB readbacks=0/0.0MiB
-//!   submissions=1 dispatches=211 plane_builds=1 plane_hits=0 pipelines=0/0.0ms
+//!   submissions=1 dispatches=211 plane_builds=1 plane_hits=0 pipelines=0/0.0ms precise=0
 //! gpu passes (ms x count): mask raster fold 41.2x62, color chain 20.3x2, ...
 //! ```
 //!
@@ -125,6 +126,8 @@ impl FrameProbe {
         }
         let (rows, rw, rh) = split.raster();
         let _ = write!(line, " raster_rows={rows} raster_window={rw}x{rh}");
+        let (nodes, fw, fh) = split.film();
+        let _ = write!(line, " film_nodes={nodes} film_window={fw}x{fh}");
         let _ = write!(
             line,
             " | color_plans={} grade_plans={} color_passes={} output_passes={} display_hits={}",
@@ -139,7 +142,7 @@ impl FrameProbe {
             let mib = |b: u64| b as f64 / 1_048_576.0;
             let _ = write!(
                 line,
-                " | uploads={}/{:.1}MiB readbacks={}/{:.1}MiB submissions={} dispatches={} plane_builds={} plane_hits={} pipelines={}/{:.1}ms",
+                " | uploads={}/{:.1}MiB readbacks={}/{:.1}MiB submissions={} dispatches={} plane_builds={} plane_hits={} pipelines={}/{:.1}ms precise={}",
                 d.uploads,
                 mib(d.uploaded_bytes),
                 d.readbacks,
@@ -149,7 +152,8 @@ impl FrameProbe {
                 d.plane_builds,
                 d.plane_hits,
                 d.pipelines,
-                d.pipeline_micros as f64 / 1000.0
+                d.pipeline_micros as f64 / 1000.0,
+                d.precise_dispatches
             );
             let passes = gpu.take_pass_times();
             tracing::info!(target: TARGET, "{line}");

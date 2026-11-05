@@ -595,6 +595,23 @@ fn rt_main(gid: vec3<u32>) {
     let t3b_lo = fu.p[3].xyz;
     let t3b_hi = fu.p[4].xyz;
     var display = vec3<f32>(0.0);
+    if (px_fast()) {
+        // A view: the plain f32 tables, the paper's curves and the return (the arithmetic before F-08d), and no shadow (the
+        // colour pass reads none).
+        var shown = vec3<f32>(0.0);
+        if ((fu.op.z & 1u) != 0u) {
+            shown = rt_t3b(fu.h[1].y, t3b_lo, t3b_hi, fu.p[3].w, d);
+        } else {
+            let lp = rt_t3a(fu.h[1].x, fu.p[1].xyz, fu.p[2].xyz, fu.p[1].w, d) + vec3<f32>(fu.p[0].z);
+            let dp = vec3<f32>(pc_curve(0u, lp.x), pc_curve(1u, lp.y), pc_curve(2u, lp.z));
+            shown = rt_t3b(fu.h[1].y, t3b_lo, t3b_hi, fu.p[3].w, dp);
+        }
+        let plain = rt_return(shown);
+        for (var c = 0u; c < 3u; c++) {
+            dst[fx_b(x, y, c)] = plain[c];
+        }
+        return;
+    }
     var dh = d;
     var dl = vec3<f32>(0.0);
     if ((fu.op.z & 1u) == 0u) {

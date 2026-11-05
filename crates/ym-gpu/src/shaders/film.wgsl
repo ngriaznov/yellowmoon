@@ -148,6 +148,53 @@ fn ci_div_pair(a: f32, b: f32) -> vec2<f32> {
     return vec2<f32>(q, px_op(r / b));
 }
 
+// ---- the plain f32 colour-in of a view (the arithmetic before F-08d, `px_fast()`) --------------------------------------
+//
+// A view runs the Film passes with the compiler's own f32 operations; the pair arithmetic is for the export, which the owner
+// accepted slower (docs/24 section 3.9c, "Speed"). These are the former functions, unchanged.
+
+// Bilinear T1 at the chromaticity (x, y), held at the edge.
+fn ci_t1_plain(x: f32, y: f32, nx: u32, ny: u32, step: f32) -> vec3<f32> {
+    let fxp = fx_grid(x / step, nx);
+    let fyp = fx_grid(y / step, ny);
+    let ix = min(u32(floor(fxp)), nx - 2u);
+    let iy = min(u32(floor(fyp)), ny - 2u);
+    let tx = fxp - f32(ix);
+    let ty = fyp - f32(iy);
+    let o00 = 4u * (ix + nx * iy);
+    let o10 = o00 + 4u;
+    let o01 = o00 + 4u * nx;
+    let o11 = o01 + 4u;
+    let a = vec3<f32>(t1[o00], t1[o00 + 1u], t1[o00 + 2u]);
+    let b = vec3<f32>(t1[o10], t1[o10 + 1u], t1[o10 + 2u]);
+    let c = vec3<f32>(t1[o01], t1[o01 + 1u], t1[o01 + 2u]);
+    let d = vec3<f32>(t1[o11], t1[o11 + 1u], t1[o11 + 2u]);
+    let lo = a + (b - a) * tx;
+    let hi = c + (d - c) * tx;
+    return lo + (hi - lo) * ty;
+}
+
+fn ci_plain(x: i32, y: i32, lc: vec3<f32>) {
+    let rgb = logc4_decode3(lc);
+    let xyz = mv3(fu.m[0].xyz, fu.m[1].xyz, fu.m[2].xyz, rgb);
+    let sum = xyz.x + xyz.y + xyz.z;
+    let white = fu.p[0].xy;
+    let n = fu.op.y;
+    var lum = 0.0;
+    if (!is_nan_f(xyz.y) && abs(xyz.y) < 1.0e30) {
+        lum = max(xyz.y, 0.0);
+    }
+    var q = white;
+    if (!is_nan_f(sum) && sum > 0.0 && sum < 1.0e30) {
+        q = ci_compress(vec2<f32>(xyz.x / sum, xyz.y / sum), white, n);
+    }
+    let v = ci_t1_plain(q.x, q.y, fu.op.z, fu.op.w, fu.p[1].x);
+    let scale = lum * fu.p[0].z;
+    for (var c = 0u; c < 3u; c++) {
+        dst[fx_b(x, y, c)] = max(scale * v[c], 1.0e-30);
+    }
+}
+
 // LogC4 / AWG4 in, the raw exposure E (linear) out: stages 1 and 2, then the power of ten (the CPU's
 // `pow10(exposure_of(..))` is `max(scale * T1, 1e-30)` up to the rounding of a log10 and a pow10). The decode, the
 // luminance, the chromaticity and the position in T1 are carried with their rounding errors (`precise.wgsl`), so that
@@ -161,6 +208,10 @@ fn ci_main(gid: vec3<u32>) {
     let x = fu.win.x + ix;
     let y = fu.win.y + iy;
     let lc = vec3<f32>(src[fx_a(x, y, 0u)], src[fx_a(x, y, 1u)], src[fx_a(x, y, 2u)]);
+    if (px_fast()) {
+        ci_plain(x, y, lc);
+        return;
+    }
     let rgb = px_logc4_decode3(lc);
     let xyz = px_mv3(fu.m[0].xyz, fu.m[1].xyz, fu.m[2].xyz, rgb)
         + vec3<f32>(dot(fu.m[3].xyz, rgb), dot(fu.m[4].xyz, rgb), dot(fu.m[5].xyz, rgb));
@@ -427,6 +478,10 @@ fn dv_density(le: vec3<f32>) -> vec3<f32> {
     return d;
 }
 
+fn dv_log10_plain(e: vec3<f32>) -> vec3<f32> {
+    return log(max(e, vec3<f32>(1.0e-30))) * FX_LOG10_E;
+}
+
 // ---- the same develop, carried as pairs (F-08d, docs/24 section 3.9c) ----------------------------------------------------
 //
 // The CPU's pass is f64 inside and stores an f32 density. The log of the exposure, the position in the 4096-entry curve, the
@@ -584,8 +639,24 @@ fn dv_main(gid: vec3<u32>) {
     let x = fu.win.x + ix;
     let y = fu.win.y + iy;
     let e = vec3<f32>(src[fx_a(x, y, 0u)], src[fx_a(x, y, 1u)], src[fx_a(x, y, 2u)]);
-    let le = dv_log10_pair(e);
     var out = vec3<f32>(0.0);
+    if (px_fast()) {
+        // A view: the plain f32 develop (the arithmetic before F-08d).
+        let le = dv_log10_plain(e);
+        if (fu.op.x == DV_DENSITY) {
+            out = dv_density(le);
+        } else if (fu.op.x == DV_INHIBITOR) {
+            out = dv_inh(dv_density(le));
+        } else {
+            let q = vec3<f32>(src2[fx_c(x, y, 0u)], src2[fx_c(x, y, 1u)], src2[fx_c(x, y, 2u)]);
+            out = vec3<f32>(dv_curve(0u, le.x - q.x), dv_curve(1u, le.y - q.y), dv_curve(2u, le.z - q.z));
+        }
+        for (var c = 0u; c < 3u; c++) {
+            dst[fx_b(x, y, c)] = out[c];
+        }
+        return;
+    }
+    let le = dv_log10_pair(e);
     if (fu.op.x == DV_DENSITY) {
         let d = dv_density_pair(le);
         out = d.hi + d.lo;

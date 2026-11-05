@@ -607,7 +607,9 @@ fn prepared_for(
 ) -> Result<PreparedChain, GpuError> {
     let mut prepared = {
         let _span = perf::span(Stage::ColourRecord);
-        PreparedChain::new(ctx, chain)?
+        // A view runs the plain f32 arithmetic; the export tail and the DNG's colour stage run the compensated one
+        // (`docs/24` section 3.9c "Speed").
+        PreparedChain::new(ctx, chain)?.fast(true)
     };
     // A chain compiled to a node's mask (the mask view) ends the nodes at that node and writes `m` as grey code
     // values, as the CPU chain does (`ColorChain::shows_mask`).

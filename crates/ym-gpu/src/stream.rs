@@ -75,6 +75,7 @@ pub struct Counters {
     plane_hits: AtomicU64,
     pipelines: AtomicU64,
     pipeline_micros: AtomicU64,
+    precise_dispatches: AtomicU64,
     /// A test's switch: no raster plane is kept or served on this device.
     planes_off: AtomicBool,
     /// GPU time per pass label, from the timestamp queries of the lists that were timed (empty unless the
@@ -156,6 +157,12 @@ impl Counters {
         self.pipeline_micros.fetch_add(micros, Ordering::Relaxed);
     }
 
+    /// One colour or Film dispatch that runs the compensated arithmetic of the export (`precise.wgsl`, F-08d) and not the
+    /// plain f32 arithmetic of a view.
+    pub(crate) fn count_precise(&self) {
+        self.precise_dispatches.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Whether the kept raster planes are switched off ([`Counters::set_planes_kept`]).
     pub(crate) fn planes_kept_off(&self) -> bool {
         self.planes_off.load(Ordering::Relaxed)
@@ -180,6 +187,7 @@ impl Counters {
             plane_hits: self.plane_hits.load(Ordering::Relaxed),
             pipelines: self.pipelines.load(Ordering::Relaxed),
             pipeline_micros: self.pipeline_micros.load(Ordering::Relaxed),
+            precise_dispatches: self.precise_dispatches.load(Ordering::Relaxed),
         }
     }
 }
@@ -208,6 +216,9 @@ pub struct CounterSnapshot {
     pub pipelines: u64,
     /// Microseconds those builds took.
     pub pipeline_micros: u64,
+    /// Colour-chain and Film dispatches that ran the compensated arithmetic of the export. A viewer frame has none: a view
+    /// runs the plain f32 arithmetic it had before F-08d (`docs/24` section 3.9c "Speed").
+    pub precise_dispatches: u64,
 }
 
 impl CounterSnapshot {
@@ -225,6 +236,9 @@ impl CounterSnapshot {
             plane_hits: self.plane_hits.saturating_sub(earlier.plane_hits),
             pipelines: self.pipelines.saturating_sub(earlier.pipelines),
             pipeline_micros: self.pipeline_micros.saturating_sub(earlier.pipeline_micros),
+            precise_dispatches: self
+                .precise_dispatches
+                .saturating_sub(earlier.precise_dispatches),
         }
     }
 }

@@ -969,7 +969,7 @@ fn device_film(
         return Ok(None);
     };
     Ok(FilmRender::build(job, chain, rr.frame, rr.spec.target)?
-        .map(|film| Arc::new(film.device_stack())))
+        .map(|film| Arc::new(film.device_stack().fast(true))))
 }
 
 /// The raster planes of a CPU colour pass, over the picture it makes: sampled over the area the masks look at

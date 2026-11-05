@@ -121,13 +121,32 @@ impl FilmNodeSpec {
 pub struct FilmStack {
     frame: Area,
     steps: Vec<FilmNodeSpec>,
+    fast: bool,
 }
 
 impl FilmStack {
     /// The Film nodes `steps` (in the plan's order) of a photo whose extent is `frame` (absolute pixels).
     #[must_use]
     pub fn new(frame: Area, steps: Vec<FilmNodeSpec>) -> Self {
-        Self { frame, steps }
+        Self {
+            frame,
+            steps,
+            fast: false,
+        }
+    }
+
+    /// The same nodes for a **view**: the prefix chains, the Film passes and the colour pass run the plain f32 arithmetic of
+    /// before F-08d (`PreparedChain::fast`, `FilmDevice::fast`). The default is the compensated arithmetic of the export.
+    #[must_use]
+    pub fn fast(mut self, fast: bool) -> Self {
+        self.fast = fast;
+        self
+    }
+
+    /// Whether the nodes run the plain f32 arithmetic of a view.
+    #[must_use]
+    pub fn is_fast(&self) -> bool {
+        self.fast
     }
 
     /// The nodes.
@@ -193,6 +212,7 @@ impl FilmStack {
                 read[0]
             )));
         }
+        crate::perf::note_film(n, read[0].w, read[0].h);
         let mut done: Vec<(u32, Arc<FilmImage>)> = Vec::with_capacity(n);
         for (i, step) in self.steps.iter().enumerate() {
             if step.prefix.uses_rasters() {
@@ -202,7 +222,8 @@ impl FilmStack {
                 ));
             }
             let a = read[i];
-            let mut prefix = PreparedChain::new(ctx, &step.prefix)?;
+            let prefix_span = crate::perf::span(crate::perf::Stage::FilmPrefix);
+            let mut prefix = PreparedChain::new(ctx, &step.prefix)?.fast(self.fast);
             if let (6, Some(frame)) = (wide.planes, photo) {
                 prefix = prefix.with_photo_frame(frame);
             }
@@ -231,13 +252,22 @@ impl FilmStack {
                 a.h,
             );
             prefix.encode_stage(passes, wide, window, Stop::C10, &input, (0, 0))?;
+            drop(prefix_span);
             let input = FilmImage {
                 img: input,
                 rect: frect(a),
                 shadow: None,
             };
-            let dev = device_tables(ctx, &step.tables)?.with_scalars(step.scalars.clone());
-            let out = encode_film_tile(ctx, passes, &dev, &step.plan, &input, frect(made[i]))?;
+            let dev = {
+                let _span = crate::perf::span(crate::perf::Stage::FilmTables);
+                device_tables(ctx, &step.tables)?
+                    .with_scalars(step.scalars.clone())
+                    .fast(self.fast)
+            };
+            let out = {
+                let _span = crate::perf::span(crate::perf::Stage::FilmPasses);
+                encode_film_tile(ctx, passes, &dev, &step.plan, &input, frect(made[i]))?
+            };
             let FilmImage { img, .. } = input;
             let _ = passes.keep(img.buf);
             done.push((step.node, Arc::new(out)));

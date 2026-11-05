@@ -476,6 +476,8 @@ pub struct FilmDevice {
     nodes: Arc<PooledBuffer>,
     reach: Arc<PooledBuffer>,
     dummy: Arc<PooledBuffer>,
+    /// A view: the passes run the plain f32 arithmetic of before F-08d ([`FilmDevice::fast`]).
+    fast: bool,
 }
 
 impl FilmDevice {
@@ -535,6 +537,7 @@ impl FilmDevice {
             nodes: storage(ctx, "core nodes", &data.core.nodes)?,
             reach: storage(ctx, "core reach", &data.core.ln_reach)?,
             dummy: storage(ctx, "film dummy", &[0.0; 4])?,
+            fast: false,
         })
     }
 
@@ -552,6 +555,24 @@ impl FilmDevice {
             scalars,
             ..self.clone()
         }
+    }
+
+    /// The same tables for a **view**: the colour-in, develop and colour-out passes run the plain f32 arithmetic they had
+    /// before F-08d (the same bits, `docs/24` section 3.9c "Speed"), and the colour-out pass makes no shadow. The default is
+    /// the compensated arithmetic of the export. Which one runs is a word of the uniform block (`h[2].w`), so the two share
+    /// the pipelines.
+    #[must_use]
+    pub fn fast(&self, fast: bool) -> Self {
+        Self {
+            fast,
+            ..self.clone()
+        }
+    }
+
+    /// Whether the passes run the plain f32 arithmetic of a view ([`FilmDevice::fast`]).
+    #[must_use]
+    pub fn is_fast(&self) -> bool {
+        self.fast
     }
 
     /// Whether this is a slide.
@@ -673,6 +694,10 @@ pub fn encode_colour_in(
     check_window("film colour in", win, &[src, dst])?;
     let s = &dev.scalars;
     let mut u = FilmU::new([frame.0 as i32, frame.1 as i32, 0, 0], dst, win);
+    u.h[2][3] = u32::from(dev.fast);
+    if !dev.fast {
+        passes.context().counters_shared().count_precise();
+    }
     u.a = src.desc();
     u.op = [
         0,
@@ -1152,6 +1177,10 @@ pub fn encode_develop(
     }
     let s = &dev.scalars;
     let mut u = FilmU::new([0; 4], dst, win);
+    u.h[2][3] = u32::from(dev.fast);
+    if !dev.fast {
+        passes.context().counters_shared().count_precise();
+    }
     u.a = e.desc();
     if let Some(q) = q {
         u.c = q.desc();
@@ -1375,6 +1404,10 @@ pub fn encode_colour_out(
     check_window("film colour out", win, &[d, dst])?;
     let s = &dev.scalars;
     let mut u = FilmU::new([0; 4], dst, win);
+    u.h[2][3] = u32::from(dev.fast);
+    if !dev.fast {
+        passes.context().counters_shared().count_precise();
+    }
     u.a = d.desc();
     u.op = [0, 0, u32::from(dev.is_slide()), dev.core.steps];
     u.m[..3].copy_from_slice(&rows(&s.output_to_xyz));
@@ -1430,7 +1463,12 @@ pub fn encode_colour_out(
     let scratch = match &dst.shadow {
         Some(_) => None,
         None => {
-            let (w, h) = (dst.img.width, dst.img.height);
+            // A view writes no shadow: the binding gets the smallest image.
+            let (w, h) = if dev.fast {
+                (1, 1)
+            } else {
+                (dst.img.width, dst.img.height)
+            };
             Some(GpuImage::alloc(
                 passes.context(),
                 "film shadow scratch",
@@ -1580,7 +1618,11 @@ pub fn encode_film_tile(
         None => d,
     };
     // P5.
-    let out = FilmImage::alloc_with_shadow(ctx, "film out", tile)?;
+    let out = if dev.fast {
+        FilmImage::alloc(ctx, "film out", tile)?
+    } else {
+        FilmImage::alloc_with_shadow(ctx, "film out", tile)?
+    };
     encode_colour_out(passes, dev, &dg, &out, tile)?;
     passes.keep(dg.img.buf);
     Ok(out)
@@ -1651,6 +1693,8 @@ pub(super) fn body(id: KernelId) -> String {
     ) {
         // Accurate log, exp and LogC4 (F-08d): the barrier word is the frame's last lane, 0 in these three passes.
         s.push_str("fn px_zero() -> u32 {\n    return bitcast<u32>(fu.frame.w);\n}\n\n");
+        // A view runs the plain f32 arithmetic (`FilmDevice::fast`), an export the compensated one (`h[2].w`).
+        s.push_str("fn px_fast() -> bool {\n    return fu.h[2].w == 1u;\n}\n\n");
         s.push_str(include_str!("../shaders/precise.wgsl"));
     }
     for sec in sections {
