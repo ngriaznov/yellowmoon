@@ -771,3 +771,56 @@ fn a_cancel_in_the_lens_kernels_with(gpu: &Arc<Gpu>, what: &str, photo: &ExportP
         );
     }
 }
+
+/// `Renderer::views_on_cpu` (what the viewport's "Rendering on the CPU" starts a round from): a view refused by one of
+/// our own input checks leaves the route open (`raw_on_cpu` stays false) but says the CPU until the device makes a frame,
+/// and a frame served from the cache changes nothing.
+#[test]
+fn views_on_cpu_follows_a_refused_check_until_the_next_device_frame() {
+    let Some(gpu) = start_device() else { return };
+    let d = Developed::new(&scene(3, 0.5), MODEL);
+    let src = d.source();
+    let r = renderer(Some(&gpu), false);
+    let st = ViewportState::new(ViewportRect::cell(320.0, 240.0, 1.0));
+    let frame = |no_cache: bool| {
+        r.viewport_frame(
+            &src,
+            &st,
+            &FrameOptions {
+                no_cache,
+                ..FrameOptions::default()
+            },
+            &CancelToken::new(),
+        )
+        .expect("frame")
+    };
+    // A device frame, kept in the cache.
+    let first = frame(false);
+    assert_eq!(first.report.device, ComputeDevice::Gpu);
+    assert!(!r.views_on_cpu(src.id));
+    // A view the device refuses by an input check: the CPU's frame, the route open, and the next round says the CPU.
+    gpu.set_fault(Some(GpuFault::FailInvalid(1)));
+    let refused = frame(true);
+    gpu.set_fault(None);
+    assert_eq!(refused.report.device, ComputeDevice::Cpu);
+    assert!(refused.report.device_refused);
+    assert!(!r.raw_on_cpu(src.id), "the route is still open");
+    assert!(
+        r.views_on_cpu(src.id),
+        "the next frame is expected on the CPU"
+    );
+    // A frame from the cache (the device frame of the first request) says nothing new.
+    let hit = frame(false);
+    assert!(hit.report.runs.frame_hits > 0, "served from the cache");
+    assert!(r.views_on_cpu(src.id), "a cache hit changes nothing");
+    assert!(!r.raw_on_cpu(src.id));
+    // The next frame the device makes ends it.
+    let next = frame(true);
+    assert_eq!(next.report.device, ComputeDevice::Gpu);
+    assert!(!next.report.device_refused);
+    assert!(!r.views_on_cpu(src.id));
+    assert!(!r.raw_on_cpu(src.id));
+    // And a cache hit after that changes nothing either.
+    assert!(frame(false).report.runs.frame_hits > 0);
+    assert!(!r.views_on_cpu(src.id));
+}
