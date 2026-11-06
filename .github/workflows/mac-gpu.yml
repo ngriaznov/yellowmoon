@@ -110,6 +110,10 @@ jobs:
             --ignored --test-threads=1 --nocapture 70_mp 50_mp fifty_megapixels gpu_spike_50mp 2>&1 | tee ym-gpu-large-${{ matrix.runner }}.log
           cargo test -p ym-core --release --features fault-injection --test gpu_export -- \
             --ignored --test-threads=1 --nocapture fifty_megapixels 2>&1 | tee ym-core-large-${{ matrix.runner }}.log
+          # The full scale-1 sweep of a 4000 px photo with raster masks and a Film node at every binding size and zoom
+          # (docs/23 §5.12): the case that lost the device on Metal before the work per submission was bounded.
+          cargo test -p ym-core --release --test any_graph -- \
+            --ignored --test-threads=1 --nocapture scale_one_4000_px 2>&1 | tee ym-core-scale-one-${{ matrix.runner }}.log
       # The encode split of docs/09 on this machine's CPU encoders (C13, resize, sharpening, DCT and Huffman, LZW, Deflate): print only.
       - name: Encode split (print only)
         if: ${{ !cancelled() }}
