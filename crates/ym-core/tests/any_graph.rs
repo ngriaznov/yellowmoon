@@ -558,6 +558,138 @@ fn no_generated_graph_is_refused_by_the_device() {
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
+/// The bindings of the size sweep, in KiB: from 1 MiB up (`docs/23` section 5.12, *Limits*). The reference is the frame at
+/// the default binding, which holds a whole view.
+const SWEEP_KIB: [u64; 2] = [1024, 4096];
+
+/// G-11, band selection on the scheduler: for every generated graph and every view, at bindings from 1 MiB up, the route is
+/// the device's with no size refusal. A frame that fits the device's memory is cut into bands or tiles by the areas the
+/// scheduler infers, until every binding fits; the CPU is only for a device error. The bands and tiles each view was cut
+/// into are printed (`StageRuns::color_passes`, one per band or tile), and the frames are within the view bound (2 codes, a few values over 1) of
+/// the same view at the default binding.
+#[test]
+fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(gpu) = gpu() else { return };
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let started = std::time::Instant::now();
+    let mut problems: Vec<String> = Vec::new();
+    let (mut frames, mut cut_frames, mut most_passes, mut floors) = (0usize, 0usize, 0u64, 0usize);
+    let mut worst = (0u8, 0usize);
+    // `YM_SWEEP_ONLY=<seed>:<index>` replays one graph.
+    let only = std::env::var("YM_SWEEP_ONLY").ok();
+    for g in &graphs() {
+        let name = format!("seed {} graph {}", g.seed, g.index);
+        if only
+            .as_deref()
+            .is_some_and(|o| o != format!("{}:{}", g.seed, g.index))
+        {
+            continue;
+        }
+        let src = d.source().with_settings(g.settings.clone());
+        // Fit, 100 % and 147 % (scale 1, the owner's frames), and the mask overlay at 100 %.
+        let mut states: Vec<(String, ViewportState)> = vec![
+            ("fit".to_owned(), view(false, false, None)),
+            ("100 %".to_owned(), view(true, false, None)),
+        ];
+        let mut st = view(false, false, None);
+        st.mode = ViewportMode::Percent { value: 147.0 };
+        states.push(("147 %".to_owned(), st));
+        if let Some((node, row)) = g.masked {
+            states.push((
+                format!("Show mask row {row}, 100 %"),
+                view(
+                    true,
+                    false,
+                    Some((node, MaskStyle::Overlay, Some(row as u32))),
+                ),
+            ));
+        }
+        let reference = renderer(Some(Arc::clone(&gpu)), 256);
+        let _ = frame(&reference, &src, &states[0].1);
+        let wants: Vec<RenderedFrame> = states
+            .iter()
+            .map(|(_, st)| frame(&reference, &src, st))
+            .collect();
+        for kib in SWEEP_KIB {
+            let device = renderer_with(Some(Arc::clone(&gpu)), 256, kib * 1024);
+            let _ = frame(&device, &src, &states[0].1);
+            let mut line = Vec::new();
+            for ((what, st), want) in states.iter().zip(&wants) {
+                let at = format!("{name}, binding {kib} KiB: {what}");
+                let got = frame(&device, &src, st);
+                frames += 1;
+                let passes = got.report.runs.color_passes;
+                cut_frames += usize::from(passes > 1);
+                most_passes = most_passes.max(passes);
+                line.push(format!("{what} {passes}"));
+                // The one resource limit: the pieces of a graph with several Film nodes are the piece grown by their summed
+                // reach on every side, so a piece cannot be smaller than that, and a binding under the smallest piece's
+                // pictures leaves no cut that fits. The CPU makes such a frame, with the bytes the smallest piece needs.
+                let film_nodes = g.nodes.iter().filter(|k| **k == NodeKind::Film).count();
+                let floor = got.report.device != ComputeDevice::Gpu
+                    && film_nodes >= 2
+                    && got.report.device_refused
+                    && got.report.cpu_reason.as_deref().is_some_and(|r| {
+                        r.contains("byte buffer is larger than the adapter's limit")
+                    })
+                    && got.report.notes.iter().any(|n| n.contains("graphics card"));
+                if floor {
+                    floors += 1;
+                    line.push(format!(
+                        "{what} CPU, the reach fills the binding: {:?}",
+                        got.report.cpu_reason
+                    ));
+                    continue;
+                }
+                if got.report.device != ComputeDevice::Gpu
+                    || got.report.device_refused
+                    || got.report.cpu_reason.is_some()
+                {
+                    problems.push(format!(
+                        "{at}: the frame is {:?}, refused {}, reason {:?}, notes {:?}",
+                        got.report.device,
+                        got.report.device_refused,
+                        got.report.cpu_reason,
+                        got.report.notes
+                    ));
+                    continue;
+                }
+                if device.views_on_cpu(src.id) {
+                    problems.push(format!("{at}: views_on_cpu"));
+                }
+                // (Subject and People masks are made by a background worker: such a graph's frames are not compared.)
+                if g.compare {
+                    let (max, over) = frame_diff(&got, want);
+                    worst = (worst.0.max(max), worst.1.max(over));
+                    if max > 2 || over >= got.rgba.len() / 2000 {
+                        problems.push(format!(
+                            "{at}: {max} codes from the default binding's frame, {over} values over 1"
+                        ));
+                    }
+                }
+            }
+            say(&format!(
+                "{name}, binding {kib} KiB: passes per view [{}]",
+                line.join(", ")
+            ));
+        }
+    }
+    say(&format!(
+        "binding sweep: {frames} frames at {SWEEP_KIB:?} KiB, {cut_frames} cut into bands or tiles (most passes in one frame: {most_passes}), {floors} on the CPU with the reach filling the binding; worst against the default binding {} codes, {} values over 1; {:?}",
+        worst.0,
+        worst.1,
+        started.elapsed()
+    ));
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
 fn decode_png16_bytes(bytes: &[u8]) -> Vec<u32> {
     let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     let mut reader = decoder.read_info().expect("png header");

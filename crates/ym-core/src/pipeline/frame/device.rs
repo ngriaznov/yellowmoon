@@ -86,6 +86,7 @@ use ym_gpu::stream::{PassList, ReadId, upload_bytes};
 use super::{FrameOutput, Job, ViewSpec};
 use crate::app::gpu::GpuStages;
 use crate::pipeline::graph::ViewGpu;
+use crate::pipeline::schedule::{camera_bytes, picture_bytes};
 
 /// How often a render that waits for its device job looks at its cancel token.
 const POLL: Duration = Duration::from_millis(5);
@@ -384,9 +385,8 @@ impl DeviceInput {
     /// The first size of this input that passes the route's bindings, as `(bytes needed, bytes allowed)`, or `None` when it
     /// fits. The same rule as [`DeviceInput::fits`], so a refusal can say what did not fit.
     pub(super) fn overflow(&self, route: &ViewRoute) -> Option<(u64, u64)> {
-        let even = |n: usize| n.next_multiple_of(2) as u64;
         let frame = |w: usize, h: usize| {
-            let need = 16 * even(w) * h as u64;
+            let need = picture_bytes(w, h);
             (need > route.band_bytes).then_some((need, route.band_bytes))
         };
         match self {
@@ -397,7 +397,7 @@ impl DeviceInput {
                 ..
             } => {
                 let (sw, sh) = source.size();
-                let need = 12 * even(sw) * sh as u64;
+                let need = camera_bytes(sw, sh);
                 if need > route.source_bytes {
                     Some((need, route.source_bytes))
                 } else {
@@ -415,23 +415,7 @@ impl DeviceInput {
     /// planes of f32, which the colour pass, the sharpening and C13 read and write) and the uploaded
     /// camera RGB within the route's band size.
     pub(super) fn fits(&self, route: &ViewRoute) -> bool {
-        let even = |n: usize| n.next_multiple_of(2) as u64;
-        let frame = |w: usize, h: usize| 16 * even(w) * h as u64 <= route.band_bytes;
-        match self {
-            Self::Camera {
-                source,
-                width,
-                height,
-                ..
-            } => {
-                let (sw, sh) = source.size();
-                12 * even(sw) * sh as u64 <= route.source_bytes && frame(*width, *height)
-            }
-            Self::Sampled(Upload::Rgb(s)) => frame(s.img.width, s.img.height),
-            Self::Sampled(
-                Upload::Masked { width, height, .. } | Upload::Positioned { width, height, .. },
-            ) => frame(*width, *height),
-        }
+        self.overflow(route).is_none()
     }
 }
 
@@ -1096,6 +1080,9 @@ pub(super) struct DisplayOut {
     pub resident: Option<DeviceDisplay>,
     /// The display-linear frame read back (dense planar, `planes` planes), when the job had no tail.
     pub planar: Option<(usize, Vec<f32>)>,
+    /// The mask view's `m` for every pixel (one `f32` a pixel, planar order), when the job had a mask chain and no tail:
+    /// the CPU's tail tints the overlay with it.
+    pub mask: Option<Vec<f32>>,
 }
 
 /// Runs a [`DisplayJob`].
@@ -1195,6 +1182,11 @@ pub(super) fn display_job(
     } else {
         None
     };
+    // Without a tail the CPU finishes the frame and needs the mask plane for its overlay.
+    let mask_read = match (&mask, job.tail.is_none()) {
+        (Some(image), true) => Some(image.encode_read(&mut passes)?),
+        _ => None,
+    };
     token.check()?;
     let pending = {
         let _span = perf::span(Stage::Submit);
@@ -1214,6 +1206,13 @@ pub(super) fn display_job(
     if let Some(read) = planar_read {
         let planes = display.planes;
         out.planar = Some((planes, display.take(&done, read)?));
+    }
+    if let (Some(read), Some(image)) = (mask_read, &mask) {
+        let n = image.width * image.height;
+        let mut planes = image.take(&done, read)?;
+        // The chain makes `[m, m, m]` for every pixel: the first plane is the mask.
+        planes.truncate(n);
+        out.mask = Some(planes);
     }
     if job.keep {
         out.resident = Some(DeviceDisplay {
@@ -1379,24 +1378,6 @@ pub(super) fn interleave_display(
     (rgb, outside.filter(|_| any))
 }
 
-/// Rows of the view per band so that the four-plane frame of a band, grown by `halo` rows above and
-/// below, fits `band_bytes` of one storage binding, and how many bands that makes for `view_h` rows;
-/// `None` when the whole frame fits (no cut). The rule depends on the sizes alone, never on the device.
-pub(super) fn band_rows(
-    view_w: usize,
-    view_h: usize,
-    halo: usize,
-    band_bytes: u64,
-    min_bands: usize,
-) -> Option<usize> {
-    let row_bytes = 16 * (view_w + 2 * halo).next_multiple_of(2) as u64;
-    let fit_rows = (band_bytes / row_bytes.max(1)) as usize;
-    let core_rows = fit_rows.saturating_sub(2 * halo).max(1);
-    let by_size = view_h.div_ceil(core_rows);
-    let bands = by_size.max(min_bands).min(view_h.max(1));
-    (bands > 1).then(|| view_h.div_ceil(bands))
-}
-
 /// The view `spec` cut into horizontal bands of `rows` view rows: each band is a view of its own
 /// (its own pixels and its own grown frame), and the dither of a band counts its texels from the
 /// band's first row in the whole view.
@@ -1453,23 +1434,6 @@ mod tests {
             ViewStages::of(GpuStages::RAW_CHAIN.union(GpuStages::EXPORT_TAIL)),
             none
         );
-    }
-
-    #[test]
-    fn a_frame_that_fits_one_binding_is_not_cut() {
-        // 128 MiB holds 8,388,608 pixels of four f32 planes.
-        assert_eq!(band_rows(2880, 1920, 17, 128 << 20, 1), None);
-        assert_eq!(band_rows(4000, 2000, 0, 128 << 20, 1), None);
-        // A 5K frame does not.
-        let rows = band_rows(5120, 2880, 17, 128 << 20, 1).expect("cut");
-        assert!(rows < 2880);
-        // Every band's grown frame fits.
-        let grown_bytes = 16 * (5120u64 + 34) * (rows as u64 + 34);
-        assert!(grown_bytes <= 128 << 20, "{grown_bytes}");
-        // The source can ask for more bands than the frame does.
-        assert_eq!(band_rows(100, 100, 0, 128 << 20, 4), Some(25));
-        // The cut never makes a band of no rows, however small the limit.
-        assert_eq!(band_rows(64, 5, 3, 1, 1), Some(1));
     }
 
     #[test]
