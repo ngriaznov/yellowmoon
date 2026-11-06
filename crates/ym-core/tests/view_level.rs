@@ -611,24 +611,29 @@ fn leaving_the_photo_cancels_the_fill_and_frees_the_levels() {
 fn leaving_the_photo_mid_fill_stops_the_fill() {
     let Some(gpu) = gpu() else { return };
     let d = small();
-    let r = renderer_cut(&gpu, true, None, Some(16 * 640 * 170));
+    // Pieces of about 50 rows: a level of about ten bands, so that no device finishes it between two looks of the poll.
+    let r = renderer_cut(&gpu, true, None, Some(16 * 640 * 50));
     let src = d.source().with_settings(plain_graph(0.1));
     let image = r.final_size(&src, &CancelToken::new()).expect("size");
     let st = at(100.0, (300.0, 100.0), image);
     let zoom = st.zoom(image);
     r.navigate(src.id);
     let _ = frame(&r, &src, &st, false);
-    // Wait for the first band, then leave.
+    // Wait for the first band (looking without a pause: a fast device makes a band in milliseconds), then leave.
     let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    loop {
-        if matches!(r.level_status(&src, zoom), LevelStatus::Filling { done, .. } if done >= 1) {
-            break;
+    let total = loop {
+        if let LevelStatus::Filling { done, total } = r.level_status(&src, zoom)
+            && done >= 1
+        {
+            break total;
         }
         assert!(std::time::Instant::now() < end, "the fill never started");
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+        std::thread::yield_now();
+    };
+    assert!(total >= 8, "the level is cut into many bands: {total}");
     r.navigate(ym_core::session::PhotoId(4242));
-    // A band that was running may finish; none starts after that, and the photo's levels are gone.
+    // The bands made when `navigate` returned. A band that was running then may finish, and none starts after it.
+    let at_leaving = r.counters(src.id).level_bands;
     std::thread::sleep(std::time::Duration::from_millis(1500));
     assert_eq!(r.levels_held(src.id), (0, 0));
     let bands = r.counters(src.id).level_bands;
@@ -638,7 +643,14 @@ fn leaving_the_photo_mid_fill_stops_the_fill() {
         bands,
         "no band was made after leaving"
     );
-    assert!(bands < 4, "the fill did not run to the end ({bands} bands)");
+    assert!(
+        bands <= at_leaving + 1,
+        "at most the running band finished after leaving: {at_leaving} bands at leaving, {bands} later"
+    );
+    assert!(
+        bands < total as u64,
+        "the fill stopped before the end ({bands} of {total} bands)"
+    );
     assert_eq!(
         r.scheduler().foreground_load(),
         0,
@@ -969,7 +981,7 @@ fn an_export_does_not_wait_for_a_fill_and_the_fill_resumes_after_it() {
     use ym_export::{BitDepth, ExportOptions, FormatKind, IfExists};
     let Some(gpu) = gpu() else { return };
     let d = small();
-    let r = renderer_cut(&gpu, true, None, Some(16 * 640 * 170));
+    let r = renderer_cut(&gpu, true, None, Some(16 * 640 * 50));
     let src = d.source().with_settings(plain_graph(0.1));
     let image = r.final_size(&src, &CancelToken::new()).expect("size");
     let mut st = at(100.0, (300.0, 100.0), image);
@@ -984,7 +996,7 @@ fn an_export_does_not_wait_for_a_fill_and_the_fill_resumes_after_it() {
     let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while done_of(&r).is_none_or(|n| n < 1) {
         assert!(std::time::Instant::now() < end, "the fill never started");
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::yield_now();
     }
     // The export, on a renderer of its own over the same device, while the fill runs.
     let home = tempfile::tempdir().expect("dir");
@@ -999,6 +1011,11 @@ fn an_export_does_not_wait_for_a_fill_and_the_fill_resumes_after_it() {
         ..ExportOptions::default()
     };
     let at_start = done_of(&r);
+    assert_ne!(
+        at_start,
+        Some(usize::MAX),
+        "the fill was still running when the export began"
+    );
     // The probe: every progress report of the export (they come from the whole of it, the stretches after the render
     // job has ended included) finds the scheduler saying an export is running, and waits a little, which on a fast
     // device is long enough for a fill band to fit if it were allowed to. This holds on any device, whatever a band costs.
