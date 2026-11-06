@@ -104,6 +104,8 @@ pub enum KernelId {
     Encode,
     /// The Catmull-Rom magnification of a view above 100 % with the paper, C13 fused.
     Magnify,
+    /// The draft of a zoom: a rectangle of a finished RGBA8 picture resampled, bilinear, into a cell-sized RGBA8 frame.
+    LevelDraft,
     /// The mask view's overlay: the accent tinted over a display-linear picture where a node's mask is 1,
     /// in place, between output sharpening and C13.
     Tint,
@@ -252,7 +254,7 @@ impl KernelId {
     /// no render uses. [`KernelSet::kernels`] and `warm_up` compile in this order, so that what the
     /// first frame of the first photo waits for is compiled before what only a zoomed view or an
     /// export needs.
-    pub const ALL: [KernelId; 99] = [
+    pub const ALL: [KernelId; 100] = [
         // The fit view of a mosaic photo.
         KernelId::Prep,
         KernelId::PrepMask,
@@ -301,6 +303,7 @@ impl KernelId {
         KernelId::OutputSharpenTransfer,
         KernelId::Encode,
         KernelId::Magnify,
+        KernelId::LevelDraft,
         KernelId::Tint,
         KernelId::MaskRaster,
         // The Film node's passes (docs/24 section 3.9).
@@ -400,6 +403,7 @@ impl KernelId {
             KernelId::Sampler => "sampler",
             KernelId::Encode => "encode",
             KernelId::Magnify => "magnify",
+            KernelId::LevelDraft => "level_draft",
             KernelId::Tint => "tint",
             KernelId::MaskRaster => "mask_raster",
             KernelId::Prep => "prep",
@@ -502,6 +506,7 @@ impl KernelId {
             | KernelId::Sampler
             | KernelId::Encode
             | KernelId::Magnify
+            | KernelId::LevelDraft
             | KernelId::Tint
             | KernelId::MaskRaster
             | KernelId::FilmColourIn
@@ -571,6 +576,7 @@ impl KernelId {
             KernelId::Sampler => super::sampler::body(),
             KernelId::Encode => super::encode::body(),
             KernelId::Magnify => super::magnify::body(),
+            KernelId::LevelDraft => super::level_draft::body(),
             KernelId::SigmaExpand | KernelId::Bilateral => super::bilateral::body(self),
             KernelId::BmDctPrep | KernelId::BmDct | KernelId::BmDctOutput => {
                 super::bm_dct::body(self)

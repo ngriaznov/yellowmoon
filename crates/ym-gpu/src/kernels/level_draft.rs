@@ -114,11 +114,18 @@ pub fn resample_rgba8(
             let (fu, fv) = (u.floor(), v.floor());
             let (a, b) = (u - fu, v - fv);
             let (x0, y0) = (fu as i64, fv as i64);
-            let (p00, p10, p01, p11) = (at(x0, y0), at(x0 + 1, y0), at(x0, y0 + 1), at(x0 + 1, y0 + 1));
+            let (p00, p10, p01, p11) = (
+                at(x0, y0),
+                at(x0 + 1, y0),
+                at(x0, y0 + 1),
+                at(x0 + 1, y0 + 1),
+            );
             for c in 0..4 {
                 let top = p00[c] * (1.0 - a) + p10[c] * a;
                 let bottom = p01[c] * (1.0 - a) + p11[c] * a;
-                let value = (top * (1.0 - b) + bottom * b + 0.5).floor().clamp(0.0, 255.0);
+                let value = (top * (1.0 - b) + bottom * b + 0.5)
+                    .floor()
+                    .clamp(0.0, 255.0);
                 out.push(value as u8);
             }
         }
@@ -171,7 +178,7 @@ mod tests {
         // Half a pixel to the right: the mean of two neighbours (rounded half up).
         let shifted = DraftMap { tx: 0.5, ..id };
         let out = resample_rgba8(&src, (4, 2), shifted, (3, 2));
-        let want = ((u32::from(src[0]) + u32::from(src[4]) + 1) / 2) as u8;
+        let want = (u32::from(src[0]) + u32::from(src[4])).div_ceil(2) as u8;
         assert_eq!(out[0], want);
     }
 }

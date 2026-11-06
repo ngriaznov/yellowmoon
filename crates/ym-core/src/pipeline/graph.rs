@@ -437,6 +437,9 @@ pub struct StageRuns {
     /// Bands of a whole-image level made (the background fill; each is a view of its own, so its
     /// stages are counted as well).
     pub level_bands: u64,
+    /// Viewport frames that were a draft: the picture of a whole-image level of a nearby zoom resampled to this view, shown
+    /// at once while the exact frame is rendered (`frame::level`).
+    pub level_drafts: u64,
     /// Times the lens's planes and lists were made (`docs/21` section 3): once per photo and
     /// [`RawParams`], lens, camera and focus point, never for a move of an amount.
     pub lens_planes: u64,
@@ -479,6 +482,7 @@ impl StageRuns {
         self.frame_hits += other.frame_hits;
         self.level_hits += other.level_hits;
         self.level_bands += other.level_bands;
+        self.level_drafts += other.level_drafts;
         self.lens_planes += other.lens_planes;
         self.blur_maps += other.blur_maps;
         self.lens_groups += other.lens_groups;

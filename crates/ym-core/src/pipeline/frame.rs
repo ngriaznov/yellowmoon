@@ -3538,6 +3538,16 @@ impl Renderer {
             Some(ask) => level::crop(&mut job, &spec, ask),
             None => Ok(None),
         };
+        // Else, for the first request of a round at a zoom that has no picture of its own yet, the picture of a nearby zoom's level
+        // resampled stands in at once, marked not sharp: the shell then asks for the exact frame (`frame.sharp`).
+        let (served, drafted) = match served {
+            Ok(None) => match level::draft(&mut job, &spec, image, mask_view.is_some()) {
+                Ok(Some(draft)) => (Ok(Some(draft)), true),
+                Ok(None) => (Ok(None), false),
+                Err(e) => (Err(e), false),
+            },
+            other => (other, false),
+        };
         let result = match served {
             Ok(Some((buffer, gpu))) => {
                 let report = job.finish(1, ComputeDevice::Gpu, spec.target);
@@ -3551,7 +3561,7 @@ impl Renderer {
                         height: spec.out_h,
                         gpu,
                     }),
-                    sharp: true,
+                    sharp: !drafted,
                     report,
                 })
             }

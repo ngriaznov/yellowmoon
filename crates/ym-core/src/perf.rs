@@ -108,6 +108,8 @@ impl FrameProbe {
             r.scale,
             if r.runs.level_hits > 0 {
                 "level"
+            } else if r.runs.level_drafts > 0 {
+                "draft"
             } else if r.runs.frame_hits > 0 {
                 "hit"
             } else {
@@ -144,13 +146,14 @@ impl FrameProbe {
         let _ = write!(line, " film_nodes={nodes} film_window={fw}x{fh}");
         let _ = write!(
             line,
-            " | color_plans={} grade_plans={} color_passes={} output_passes={} display_hits={} level_hits={}",
+            " | color_plans={} grade_plans={} color_passes={} output_passes={} display_hits={} level_hits={} level_drafts={}",
             r.runs.color_plans,
             r.runs.grade_plans,
             r.runs.color_passes,
             r.runs.output_passes,
             r.runs.display_hits,
-            r.runs.level_hits
+            r.runs.level_hits,
+            r.runs.level_drafts
         );
         if let Some(gpu) = &self.gpu {
             let d = gpu.counters().since(self.before);

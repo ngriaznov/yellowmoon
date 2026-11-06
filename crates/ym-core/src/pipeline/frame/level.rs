@@ -66,16 +66,17 @@ use ym_gpu::device::Gpu;
 use ym_gpu::pool::PooledBuffer;
 use ym_gpu::queue::{CancelToken, Priority};
 
-use super::device::{self, Bounds, CropJob, GatherJob, RowCopy, ViewRoute, ViewStages};
+use super::device::{self, Bounds, CropJob, DraftJob, GatherJob, RowCopy, ViewRoute, ViewStages};
 use super::{
     Flow, FrameOutput, OutputTarget, RenderError, Rgba8, Shape, StageWindow, ViewSpec, band_split,
     band_window, magnified_band_window, raster_grown, scale_for_zoom, view_sharpening, whole,
     whole_window,
 };
-use ym_gpu::cpu::tiling::Rect;
 use crate::pipeline::color::PhotoSource;
 use crate::pipeline::geometry::Affine;
 use crate::pipeline::graph::{ComputeDevice, Job, PhotoGraph, Renderer};
+use ym_gpu::cpu::tiling::Rect;
+use ym_gpu::kernels::level_draft::DraftMap;
 
 /// The largest zoom a level is kept for (150 %): above it a window reads a small part of the 100 %
 /// picture and renders in about the time a pan would take to copy.
@@ -158,6 +159,12 @@ impl LevelAsk {
         4 * self.geometry.size.0 as u64 * self.geometry.size.1 as u64
     }
 }
+
+/// A strip a window reads: its first row, its rows, its buffer.
+type StripRef = (usize, usize, Arc<PooledBuffer>);
+
+/// A frame made from a level: the buffer, and the device it is on.
+pub(crate) type Cropped = (Arc<PooledBuffer>, Weak<Gpu>);
 
 /// A band of whole rows of a level, on the device.
 struct Strip {
@@ -325,12 +332,13 @@ impl LevelStore {
         gpu: &Arc<Gpu>,
         y0: usize,
         y1: usize,
-    ) -> Option<(usize, Vec<(usize, usize, Arc<PooledBuffer>)>)> {
+    ) -> Option<(usize, Vec<StripRef>)> {
         self.tick += 1;
         let tick = self.tick;
-        let level = self.levels.iter_mut().find(|l| {
-            l.zoom_bits == zoom_bits && Weak::ptr_eq(&l.gpu, &Arc::downgrade(gpu))
-        })?;
+        let level = self
+            .levels
+            .iter_mut()
+            .find(|l| l.zoom_bits == zoom_bits && Weak::ptr_eq(&l.gpu, &Arc::downgrade(gpu)))?;
         let mut parts = Vec::new();
         let mut y = y0;
         while y < y1 {
@@ -399,7 +407,8 @@ impl LevelStore {
         self.want = None;
         // The same level being made already (its job is alive): nothing to start.
         if self.fill.as_ref().is_some_and(|f| {
-            f.zoom_bits == ask.zoom_bits() && !f.token.as_ref().is_some_and(CancelToken::is_cancelled)
+            f.zoom_bits == ask.zoom_bits()
+                && !f.token.as_ref().is_some_and(CancelToken::is_cancelled)
         }) {
             return None;
         }
@@ -424,7 +433,13 @@ impl LevelStore {
     }
 
     /// The cut of the fill `id`, once it is made; creates the level (evicting older ones to stay inside the cap).
-    fn set_plan(&mut self, ticket: &FillTicket, plan: FillPlan, gpu: &Arc<Gpu>, centre_row: usize) -> bool {
+    fn set_plan(
+        &mut self,
+        ticket: &FillTicket,
+        plan: FillPlan,
+        gpu: &Arc<Gpu>,
+        centre_row: usize,
+    ) -> bool {
         if !self.fill_is(ticket.id) {
             return false;
         }
@@ -477,7 +492,9 @@ impl LevelStore {
             if (row0..row0 + rows).contains(&centre_row) {
                 0
             } else {
-                centre_row.abs_diff(row0).min(centre_row.abs_diff(row0 + rows))
+                centre_row
+                    .abs_diff(row0)
+                    .min(centre_row.abs_diff(row0 + rows))
             }
         };
         todo.sort_by_key(distance);
@@ -595,8 +612,7 @@ pub(crate) fn ask(
     let sharpening = view_sharpening(job, spec)?;
     // A level is made by the device from the sampler to the RGBA8 frame, or not at all.
     let key = settings_key(job, &grade, sharpening.is_some())?;
-    job.g
-        .with_levels(|store| store.reconcile(&key));
+    job.g.with_levels(|store| store.reconcile(&key));
     let runs_on_device = stages.color && (sharpening.is_none() || stages.tail);
     let Some(geometry) = geometry.filter(|_| runs_on_device && spec.cache) else {
         return Ok(None);
@@ -613,29 +629,19 @@ pub(crate) fn ask(
 // Serving a pan
 // ---------------------------------------------------------------------------------------------
 
-/// The window of `ask` copied out of its level, when the level has every row of it: nothing is sampled, coloured or
-/// sharpened. The caller makes the frame (and its report) of it.
-pub(crate) fn crop(
-    job: &mut Job<'_>,
-    spec: &ViewSpec,
-    ask: &LevelAsk,
-) -> Result<Option<(Arc<PooledBuffer>, Weak<Gpu>)>, RenderError> {
-    let Some(view_gpu) = job.view_gpu()? else {
-        return Ok(None);
-    };
-    let (x0, y0) = ask.geometry.origin;
-    let (dw, dh) = ask.cell;
-    let bits = ask.zoom_bits();
-    let Some((width, parts)) = job
-        .g
-        .with_levels(|store| store.cover(bits, &view_gpu.gpu, y0, y0 + dh))
-    else {
-        return Ok(None);
-    };
+/// The copies that put the rectangle `size` pixels at `origin` of a level `width` pixels wide together, from the strips that cover
+/// its rows (`parts`: first row, rows, buffer), into a buffer of `size.0 * size.1` pixels.
+fn row_copies(
+    parts: &[StripRef],
+    width: usize,
+    origin: (usize, usize),
+    size: (usize, usize),
+) -> Vec<RowCopy> {
+    let ((x0, y0), (dw, dh)) = (origin, size);
     let mut copies: Vec<RowCopy> = Vec::new();
     let full_width = x0 == 0 && dw == width;
     let mut y = y0;
-    for (row0, rows, buffer) in &parts {
+    for (row0, rows, buffer) in parts {
         let end = (row0 + rows).min(y0 + dh);
         if full_width {
             copies.push(RowCopy {
@@ -656,6 +662,29 @@ pub(crate) fn crop(
         }
         y = end;
     }
+    copies
+}
+
+/// The window of `ask` copied out of its level, when the level has every row of it: nothing is sampled, coloured or
+/// sharpened. The caller makes the frame (and its report) of it.
+pub(crate) fn crop(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+    ask: &LevelAsk,
+) -> Result<Option<Cropped>, RenderError> {
+    let Some(view_gpu) = job.view_gpu()? else {
+        return Ok(None);
+    };
+    let (x0, y0) = ask.geometry.origin;
+    let (dw, dh) = ask.cell;
+    let bits = ask.zoom_bits();
+    let Some((width, parts)) = job
+        .g
+        .with_levels(|store| store.cover(bits, &view_gpu.gpu, y0, y0 + dh))
+    else {
+        return Ok(None);
+    };
+    let copies = row_copies(&parts, width, (x0, y0), (dw, dh));
     let route = ViewRoute::new(job, view_gpu, spec.gpu_priority);
     let data = CropJob {
         copies,
@@ -683,6 +712,143 @@ pub(crate) fn crop(
         return Ok(None);
     };
     job.runs.level_hits += 1;
+    Ok(Some((buffer, route.gpu_ref())))
+}
+
+// ---------------------------------------------------------------------------------------------
+// The draft of a zoom
+// ---------------------------------------------------------------------------------------------
+
+/// The most a draft gathers into one buffer: the part of the level the view covers.
+const DRAFT_REGION_BYTES: u64 = 128 << 20;
+
+/// How far apart, as a factor, the zoom of a level and the zoom it drafts may be.
+const DRAFT_MAX_RATIO: f64 = 8.0;
+
+impl LevelStore {
+    /// The complete level on `gpu` nearest in zoom to `zoom` (in the ratio of the zoom, a larger one before a smaller at a tie:
+    /// shrinking a picture is sharper than growing it), not the level of `zoom` itself: `(zoom bits, size)`.
+    fn nearest(&self, gpu: &Arc<Gpu>, zoom: f64) -> Option<(u64, (usize, usize))> {
+        self.levels
+            .iter()
+            .filter(|l| l.complete() && Weak::ptr_eq(&l.gpu, &Arc::downgrade(gpu)))
+            .filter(|l| l.zoom_bits != zoom.to_bits())
+            .map(|l| (f64::from_bits(l.zoom_bits), l))
+            .filter(|(z, _)| (1.0 / DRAFT_MAX_RATIO..=DRAFT_MAX_RATIO).contains(&(z / zoom)))
+            .min_by(|(a, _), (b, _)| {
+                let (da, db) = ((a / zoom).ln().abs(), (b / zoom).ln().abs());
+                da.total_cmp(&db).then(b.total_cmp(a))
+            })
+            .map(|(_, l)| (l.zoom_bits, l.size))
+    }
+}
+
+/// A draft of the view `spec`: the picture of a whole-image level of a nearby zoom (any complete one of the photo's settings),
+/// resampled to this view in one device job and shown at once; the caller marks it not sharp, so that the exact frame is
+/// asked for next. Only for the first request of a round (`coarse_only`: the shell asks again for the sharp frame when this
+/// one is not), for a view wholly inside the photo (a letterbox is painted by the exact frame), and only when the exact frame
+/// is not in the frame cache.
+pub(crate) fn draft(
+    job: &mut Job<'_>,
+    spec: &ViewSpec,
+    image: (usize, usize),
+    mask_view: bool,
+) -> Result<Option<Cropped>, RenderError> {
+    if !job.options().levels
+        || spec.output != FrameOutput::Device
+        || !spec.cache
+        || !spec.coarse_only
+        || spec.before
+        || mask_view
+    {
+        return Ok(None);
+    }
+    // A view that is a scale and a translation, wholly inside the photo.
+    let m = &spec.view_to_final.m;
+    let step = m[0][0];
+    if !(step.is_finite() && step > 0.0)
+        || (m[1][1] - step).abs() > 1e-12
+        || m[0][1] != 0.0
+        || m[1][0] != 0.0
+    {
+        return Ok(None);
+    }
+    let (ox, oy) = (m[0][2], m[1][2]);
+    let (ex, ey) = (ox + step * spec.out_w as f64, oy + step * spec.out_h as f64);
+    const EDGE: f64 = 1e-6;
+    if ox < -EDGE || oy < -EDGE || ex > image.0 as f64 + EDGE || ey > image.1 as f64 + EDGE {
+        return Ok(None);
+    }
+    let Some(view_gpu) = job.view_gpu()? else {
+        return Ok(None);
+    };
+    let grade = job.grade(spec.target, true)?;
+    let sharpening = view_sharpening(job, spec)?;
+    let key = settings_key(job, &grade, sharpening.is_some())?;
+    // The exact frame, if it has been made, is better and as cheap.
+    for coarse_only in [true, false] {
+        let seen = ViewSpec {
+            coarse_only,
+            ..spec.clone()
+        };
+        let key = super::frame_key(job, &seen, &grade, sharpening.as_ref())?;
+        if job.g.cached_frame(&key).is_some_and(|f| f.sharp) {
+            return Ok(None);
+        }
+    }
+    let zoom = 1.0 / step;
+    let gpu = Arc::clone(&view_gpu.gpu);
+    let Some((bits, size)) = job.g.with_levels(|s| {
+        (s.settings_key == key)
+            .then(|| s.nearest(&gpu, zoom))
+            .flatten()
+    }) else {
+        return Ok(None);
+    };
+    // The part of the level the view covers, and the map from the frame's pixels to it.
+    let z0 = f64::from_bits(bits);
+    let (tx, ty) = (ox * z0, oy * z0);
+    let scale = step * z0;
+    let span = |t: f64, n: usize, limit: usize| {
+        let lo = ((t.floor() as i64) - 1).clamp(0, limit as i64) as usize;
+        let hi = (((t + scale * n as f64).ceil() as i64) + 1).clamp(0, limit as i64) as usize;
+        (lo, hi)
+    };
+    let ((rx0, rx1), (ry0, ry1)) = (span(tx, spec.out_w, size.0), span(ty, spec.out_h, size.1));
+    if rx1 <= rx0 || ry1 <= ry0 {
+        return Ok(None);
+    }
+    let region = (rx1 - rx0, ry1 - ry0);
+    let route = ViewRoute::new(job, view_gpu, spec.gpu_priority);
+    if 4 * (region.0 * region.1) as u64 > route.frame_bytes.min(DRAFT_REGION_BYTES) {
+        return Ok(None);
+    }
+    let Some((width, parts)) = job.g.with_levels(|s| s.cover(bits, &gpu, ry0, ry1)) else {
+        return Ok(None);
+    };
+    let data = DraftJob {
+        copies: row_copies(&parts, width, (rx0, ry0), region),
+        region,
+        map: DraftMap {
+            sx: scale as f32,
+            tx: (tx - rx0 as f64) as f32,
+            sy: scale as f32,
+            ty: (ty - ry0 as f64) as f32,
+        },
+        size: (spec.out_w, spec.out_h),
+    };
+    let rgba = match route.run(data, device::draft_job) {
+        Ok(rgba) => rgba,
+        Err(ym_gpu::device::GpuError::Cancelled) => return Err(RenderError::Cancelled),
+        Err(e) => {
+            tracing::debug!(error = %e, "a zoom could not be drafted; the exact frame is rendered");
+            return Ok(None);
+        }
+    };
+    let Rgba8::Device(buffer) = rgba else {
+        return Ok(None);
+    };
+    job.runs.level_drafts += 1;
     Ok(Some((buffer, route.gpu_ref())))
 }
 
@@ -875,7 +1041,8 @@ fn fill_band(
     let (row0, rows) = plan.bands[index];
     let band = ViewSpec {
         out_h: rows,
-        view_to_final: Affine::scale_translate(1.0, 1.0, 0.0, row0 as f64).then(&spec.view_to_final),
+        view_to_final: Affine::scale_translate(1.0, 1.0, 0.0, row0 as f64)
+            .then(&spec.view_to_final),
         dither_origin: (spec.dither_origin.0, spec.dither_origin.1 + row0),
         ..spec.clone()
     };
@@ -906,7 +1073,14 @@ fn fill_band(
         job.finish(1, ComputeDevice::Gpu, spec.target);
         return Ok(Step::Warm);
     }
-    let done = match whole(&mut job, &band, &grade, sharpening.as_ref(), Some(&route), window)? {
+    let done = match whole(
+        &mut job,
+        &band,
+        &grade,
+        sharpening.as_ref(),
+        Some(&route),
+        window,
+    )? {
         Flow::Done(done) if done.device == ComputeDevice::Gpu || done.paper => done,
         // A band the CPU made: a level is never made of two devices.
         Flow::Done(_) | Flow::Cpu => return end(&job, ticket, true),

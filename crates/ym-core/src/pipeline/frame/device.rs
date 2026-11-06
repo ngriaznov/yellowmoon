@@ -1366,12 +1366,68 @@ pub(super) fn crop_job(
         )));
     }
     let mut passes = PassList::new(ctx, "level crop");
-    let dst = passes.keep(ctx.pool().acquire("level crop rgba8", job.bytes, IMAGE_USAGE)?);
+    let dst = passes.keep(
+        ctx.pool()
+            .acquire("level crop rgba8", job.bytes, IMAGE_USAGE)?,
+    );
     for c in &job.copies {
         passes
             .encoder()
             .copy_buffer_to_buffer(&c.src, c.src_at, &dst, c.dst_at, c.len);
     }
+    token.check()?;
+    finish_rgba(passes, dst, None)
+}
+
+/// The draft of a zoom (`frame::level`): a region of a level copied out of its strips and resampled into a cell-sized frame.
+pub(super) struct DraftJob {
+    /// The copies that put the region together, from the strips.
+    pub copies: Vec<RowCopy>,
+    /// The region's size in pixels.
+    pub region: (usize, usize),
+    /// Where the frame's pixels read in the region.
+    pub map: ym_gpu::kernels::level_draft::DraftMap,
+    /// The frame's size in pixels.
+    pub size: (usize, usize),
+}
+
+/// Runs a [`DraftJob`]: the region is gathered by buffer copies, then one kernel makes the frame.
+pub(super) fn draft_job(
+    ctx: &GpuContext,
+    token: &CancelToken,
+    job: &DraftJob,
+) -> Result<Rgba8, GpuError> {
+    token.check()?;
+    let region_bytes = 4 * (job.region.0 * job.region.1) as u64;
+    let covered: u64 = job.copies.iter().map(|c| c.len).sum();
+    if covered != region_bytes {
+        return Err(GpuError::InvalidInput(format!(
+            "the copies hold {covered} bytes, the region {region_bytes}"
+        )));
+    }
+    let mut passes = PassList::new(ctx, "level draft");
+    let region = passes.keep(
+        ctx.pool()
+            .acquire("draft region", region_bytes, IMAGE_USAGE)?,
+    );
+    for c in &job.copies {
+        passes
+            .encoder()
+            .copy_buffer_to_buffer(&c.src, c.src_at, &region, c.dst_at, c.len);
+    }
+    let dst = passes.keep(ctx.pool().acquire(
+        "draft rgba8",
+        4 * (job.size.0 * job.size.1) as u64,
+        IMAGE_USAGE,
+    )?);
+    ym_gpu::kernels::level_draft::encode_level_draft(
+        &mut passes,
+        &region,
+        job.region,
+        job.map,
+        &dst,
+        job.size,
+    )?;
     token.check()?;
     finish_rgba(passes, dst, None)
 }

@@ -117,12 +117,7 @@ fn at(percent: f64, cell: (f64, f64), image: (usize, usize)) -> ViewportState {
     st
 }
 
-fn frame(
-    r: &Renderer,
-    src: &PhotoSource,
-    st: &ViewportState,
-    no_cache: bool,
-) -> RenderedFrame {
+fn frame(r: &Renderer, src: &PhotoSource, st: &ViewportState, no_cache: bool) -> RenderedFrame {
     r.viewport_frame_to(
         src,
         st,
@@ -195,7 +190,10 @@ fn the_crop_of_a_level_is_the_window_render() {
             ));
             assert!(worst <= 1, "{percent} %: a crop differs by {worst} codes");
             if percent <= 100.0 {
-                assert_eq!(differing, 0, "{percent} %: a crop is the window bit for bit");
+                assert_eq!(
+                    differing, 0,
+                    "{percent} %: a crop is the window bit for bit"
+                );
             }
         }
     }
@@ -254,7 +252,10 @@ fn a_change_of_settings_frees_the_level() {
     let changes: Vec<(&str, PhotoSource)> = vec![
         ("Main exposure", base.with_settings(graph(0.2, 0.3, 0.1))),
         ("Film exposure", base.with_settings(graph(0.0, 0.5, 0.1))),
-        ("a node after Film", base.with_settings(graph(0.0, 0.3, 0.4))),
+        (
+            "a node after Film",
+            base.with_settings(graph(0.0, 0.3, 0.4)),
+        ),
         ("output sharpening", {
             let mut s = src.settings.clone();
             s.output_mut().output_sharpening = 40.0;
@@ -268,7 +269,10 @@ fn a_change_of_settings_frees_the_level() {
         assert_eq!(n, 1);
         assert!(held > 0);
         let f = frame(&r, &changed, &st, false);
-        assert_eq!(f.report.runs.level_hits, 0, "{what}: not served from the old level");
+        assert_eq!(
+            f.report.runs.level_hits, 0,
+            "{what}: not served from the old level"
+        );
         assert_eq!(
             r.levels_held(src.id),
             (0, 0),
@@ -277,7 +281,10 @@ fn a_change_of_settings_frees_the_level() {
         drop(f);
         // And the way back finds no level either.
         let back = frame(&r, &src, &st, false);
-        assert_eq!(back.report.runs.level_hits, 0, "{what}: back to the old settings");
+        assert_eq!(
+            back.report.runs.level_hits, 0,
+            "{what}: back to the old settings"
+        );
     }
 }
 
@@ -295,13 +302,20 @@ fn a_level_is_returned_to_the_pool_when_it_is_freed() {
         LevelStatus::Ready
     );
     let (_, held) = r.levels_held(src.id);
-    assert_eq!(held, 4 * image.0 * image.1, "the strips are the level, RGBA8");
+    assert_eq!(
+        held,
+        4 * image.0 * image.1,
+        "the strips are the level, RGBA8"
+    );
     let with = in_use(&gpu);
     assert!(with >= before + held as u64, "the strips count in the pool");
     // Leaving the photo frees its levels.
     r.graph(src.id).release_full_resolution();
     assert_eq!(r.levels_held(src.id), (0, 0));
-    assert!(in_use(&gpu) + held as u64 <= with + 1, "the strips went back");
+    assert!(
+        in_use(&gpu) + held as u64 <= with + 1,
+        "the strips went back"
+    );
 }
 
 #[test]
@@ -354,7 +368,10 @@ fn the_cap_bounds_the_levels() {
     let image = r.final_size(&src, &CancelToken::new()).expect("size");
     let st = at(100.0, (300.0, 200.0), image);
     let need = 4 * image.0 * image.1;
-    assert!(need as u64 > budget.gpu_bytes / 8, "the level is over the cap");
+    assert!(
+        need as u64 > budget.gpu_bytes / 8,
+        "the level is over the cap"
+    );
     assert_eq!(
         r.fill_level(&src, &st, &CancelToken::new()).expect("fill"),
         LevelStatus::None
@@ -373,26 +390,30 @@ fn a_letterbox_window_fit_and_off_have_no_level() {
     // Fit.
     let fit = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
     assert_eq!(
-        on.fill_level(&src, &fit, &CancelToken::new()).expect("fill"),
+        on.fill_level(&src, &fit, &CancelToken::new())
+            .expect("fill"),
         LevelStatus::None
     );
     // Above 150 %.
     let big = at(200.0, (300.0, 200.0), image);
     assert_eq!(
-        on.fill_level(&src, &big, &CancelToken::new()).expect("fill"),
+        on.fill_level(&src, &big, &CancelToken::new())
+            .expect("fill"),
         LevelStatus::None
     );
     // A cell wider than the photo at 100 %: a letterbox.
     let wide = at(100.0, (900.0, 200.0), image);
     assert_eq!(
-        on.fill_level(&src, &wide, &CancelToken::new()).expect("fill"),
+        on.fill_level(&src, &wide, &CancelToken::new())
+            .expect("fill"),
         LevelStatus::None
     );
     // Levels off: nothing is made, and a frame is the window path's.
     let off = renderer(&gpu, false, None);
     let st = at(100.0, (300.0, 200.0), image);
     assert_eq!(
-        off.fill_level(&src, &st, &CancelToken::new()).expect("fill"),
+        off.fill_level(&src, &st, &CancelToken::new())
+            .expect("fill"),
         LevelStatus::None
     );
     assert_eq!(frame(&off, &src, &st, false).report.runs.level_hits, 0);
@@ -434,14 +455,23 @@ fn a_level_of_many_bands_is_the_window_render_and_a_part_made_level_serves_its_r
     let mut bottom = at(100.0, cell, image);
     bottom.input(&ViewportInput::Pan { dx: 0.0, dy: -1e9 }, image);
     let partly = frame(&r, &src, &bottom, false);
-    assert_eq!(partly.report.runs.level_hits, 0, "rows that are not made are rendered");
+    assert_eq!(
+        partly.report.runs.level_hits, 0,
+        "rows that are not made are rendered"
+    );
     // The rest of the level, and then every window of it is the window render.
     assert_eq!(
         r.fill_level(&src, &top, &CancelToken::new()).expect("fill"),
         LevelStatus::Ready
     );
     let mut st = at(100.0, cell, image);
-    for (dx, dy) in [(0.0, 0.0), (-40.0, -45.0), (30.0, -90.0), (0.0, -1e9), (-1e9, 1e9)] {
+    for (dx, dy) in [
+        (0.0, 0.0),
+        (-40.0, -45.0),
+        (30.0, -90.0),
+        (0.0, -1e9),
+        (-1e9, 1e9),
+    ] {
         st.input(&ViewportInput::Pan { dx, dy }, image);
         let served = frame(&r, &src, &st, false);
         let window = frame(&r, &src, &st, true);
@@ -493,9 +523,16 @@ fn a_window_that_has_no_level_starts_the_fill_after_the_debounce() {
     assert_eq!(first.report.runs.level_hits, 0);
     // The level is wanted, and not made before the key has held still.
     assert_eq!(r.level_status(&src, zoom), LevelStatus::Waiting);
-    assert_eq!(r.levels_held(src.id).1, 0, "nothing is filled during the debounce");
+    assert_eq!(
+        r.levels_held(src.id).1,
+        0,
+        "nothing is filled during the debounce"
+    );
     let started = std::time::Instant::now();
-    assert!(wait_ready(&r, &src, zoom, 60), "the level was made in the background");
+    assert!(
+        wait_ready(&r, &src, zoom, 60),
+        "the level was made in the background"
+    );
     say(&format!(
         "the level was ready {:.0} ms after the first window",
         started.elapsed().as_secs_f64() * 1000.0
@@ -528,7 +565,11 @@ fn a_slider_drag_fills_nothing_and_the_settled_settings_fill_once() {
         let t = std::time::Instant::now();
         let f = frame(&r, &src, &st, false);
         assert_eq!(f.report.runs.level_hits, 0);
-        assert_eq!(r.levels_held(src.id).1, 0, "change {i}: a drag fills nothing");
+        assert_eq!(
+            r.levels_held(src.id).1,
+            0,
+            "change {i}: a drag fills nothing"
+        );
         let spent = t.elapsed();
         if spent < std::time::Duration::from_millis(16) {
             std::thread::sleep(std::time::Duration::from_millis(16) - spent);
@@ -558,7 +599,11 @@ fn leaving_the_photo_cancels_the_fill_and_frees_the_levels() {
     assert!(wait_ready(&r, &src, zoom, 60));
     assert!(r.levels_held(src.id).1 > 0);
     r.navigate(ym_core::session::PhotoId(4242));
-    assert_eq!(r.levels_held(src.id), (0, 0), "the levels of the photo left are freed");
+    assert_eq!(
+        r.levels_held(src.id),
+        (0, 0),
+        "the levels of the photo left are freed"
+    );
     assert_eq!(r.level_status(&src, zoom), LevelStatus::None);
 }
 
@@ -588,9 +633,17 @@ fn leaving_the_photo_mid_fill_stops_the_fill() {
     assert_eq!(r.levels_held(src.id), (0, 0));
     let bands = r.counters(src.id).level_bands;
     std::thread::sleep(std::time::Duration::from_millis(500));
-    assert_eq!(r.counters(src.id).level_bands, bands, "no band was made after leaving");
+    assert_eq!(
+        r.counters(src.id).level_bands,
+        bands,
+        "no band was made after leaving"
+    );
     assert!(bands < 4, "the fill did not run to the end ({bands} bands)");
-    assert_eq!(r.scheduler().foreground_load(), 0, "no fill job is left in the queue");
+    assert_eq!(
+        r.scheduler().foreground_load(),
+        0,
+        "no fill job is left in the queue"
+    );
 }
 
 /// The numbers of G-13 on a real file (`LEVEL_ARW` names it; the default is a lens-photos file). Not a check:
@@ -610,7 +663,13 @@ fn measure() {
     let d = Developed::open(dir);
     let r = renderer(&gpu, true, None);
     let film = std::env::var("LEVEL_FILM").map_or(true, |v| v != "0");
-    let settings = |ev: f64| if film { graph(0.0, ev, 0.1) } else { plain_graph(ev) };
+    let settings = |ev: f64| {
+        if film {
+            graph(0.0, ev, 0.1)
+        } else {
+            plain_graph(ev)
+        }
+    };
     let base = d.source();
     let src = base.with_settings(settings(0.0));
     let image = r.final_size(&src, &CancelToken::new()).expect("size");
@@ -651,12 +710,21 @@ fn measure() {
         let before = gpu.counters();
         let mut ms = Vec::new();
         for i in 0..40 {
-            let (dx, dy) = if i % 2 == 0 { (-23.0, 11.0) } else { (19.0, -7.0) };
+            let (dx, dy) = if i % 2 == 0 {
+                (-23.0, 11.0)
+            } else {
+                (19.0, -7.0)
+            };
             st.input(&ViewportInput::Pan { dx, dy }, image);
             let t = std::time::Instant::now();
             let p = frame(&r, &changed, &st, false);
             ms.push(t.elapsed().as_secs_f64() * 1000.0);
-            assert_eq!(p.report.runs.level_hits, 1, "{percent} %: pan {i} ({status:?}, {} levels)", r.levels_held(src.id).0);
+            assert_eq!(
+                p.report.runs.level_hits,
+                1,
+                "{percent} %: pan {i} ({status:?}, {} levels)",
+                r.levels_held(src.id).0
+            );
         }
         let dd = gpu.counters().since(before);
         ms.sort_by(f64::total_cmp);
@@ -707,7 +775,13 @@ fn measure_wait() {
     let d = Developed::open(dir);
     let r = renderer(&gpu, true, None);
     let film = std::env::var("LEVEL_FILM").map_or(true, |v| v != "0");
-    let settings = |ev: f64| if film { graph(0.0, ev, 0.1) } else { plain_graph(ev) };
+    let settings = |ev: f64| {
+        if film {
+            graph(0.0, ev, 0.1)
+        } else {
+            plain_graph(ev)
+        }
+    };
     let base = d.source();
     let src = base.with_settings(settings(0.0));
     let image = r.final_size(&src, &CancelToken::new()).expect("size");
@@ -739,10 +813,7 @@ fn measure_wait() {
         && started.elapsed() < std::time::Duration::from_secs(300)
     {
         std::thread::sleep(std::time::Duration::from_millis(150));
-        if matches!(
-            r.level_status(&changed, zoom),
-            LevelStatus::Filling { .. }
-        ) {
+        if matches!(r.level_status(&changed, zoom), LevelStatus::Filling { .. }) {
             i += 1;
             // Another setting, so the frame is a render and not the level's crop (the fill is cancelled by the change: the
             // frame is asked for on the same settings with no cache instead).
@@ -782,4 +853,109 @@ fn a_device_out_of_memory_frees_the_levels() {
     // And the next frame is the device's again, with no level until the fill makes one.
     let again = frame(&r, &src, &st, true);
     assert_eq!(again.report.device, ComputeDevice::Gpu);
+}
+
+fn coarse(r: &Renderer, src: &PhotoSource, st: &ViewportState) -> RenderedFrame {
+    r.viewport_frame_to(
+        src,
+        st,
+        &FrameOptions {
+            coarse_only: true,
+            ..FrameOptions::default()
+        },
+        FrameOutput::Device,
+        &CancelToken::new(),
+    )
+    .expect("frame")
+}
+
+#[test]
+fn a_zoom_shows_the_nearest_level_resampled_at_once_and_the_exact_frame_follows() {
+    let Some(gpu) = gpu() else { return };
+    let d = small();
+    let r = renderer(&gpu, true, None);
+    let src = d.source().with_settings(graph(0.0, 0.3, 0.1));
+    let image = r.final_size(&src, &CancelToken::new()).expect("size");
+    let cell = (300.0, 200.0);
+    let (a, b) = (at(100.0, cell, image), at(75.0, cell, image));
+    // No level yet: the first request is the window path's.
+    let none = coarse(&r, &src, &b);
+    assert_eq!(none.report.runs.level_drafts, 0);
+    assert_eq!(
+        r.fill_level(&src, &a, &CancelToken::new()).expect("fill"),
+        LevelStatus::Ready
+    );
+    // The exact frame for 75 % is in the cache: it is served from there, not drafted.
+    let _ = frame(&r, &src, &b, false);
+    let again = coarse(&r, &src, &b);
+    assert_eq!(
+        again.report.runs.level_drafts, 0,
+        "a view with an exact frame is not drafted"
+    );
+    // Another cell size makes it a frame nobody has: a draft from the level of 100 %.
+    let c = at(75.0, (280.0, 190.0), image);
+    let before = gpu.counters();
+    let draft = coarse(&r, &src, &c);
+    let spent = gpu.counters().since(before);
+    assert_eq!(draft.report.runs.level_drafts, 1);
+    assert!(
+        !draft.sharp,
+        "a draft is not the sharp frame: the shell asks for it next"
+    );
+    assert_eq!((draft.width, draft.height), (280, 190));
+    assert!(draft.on_device.is_some());
+    assert_eq!(draft.report.runs.color_passes, 0);
+    assert_eq!(draft.report.runs.raw_groups + draft.report.runs.tiles, 0);
+    assert_eq!(spent.dispatches, 1, "a draft is one kernel");
+    assert!(
+        spent.uploaded_bytes <= 64,
+        "a draft uploads its uniform block and nothing else"
+    );
+    assert_eq!(spent.readbacks, 0, "a draft reads nothing back");
+    // It looks like the exact frame (a resample of the picture at another zoom).
+    let exact = frame(&r, &src, &c, true);
+    let (x, y) = (bytes(&draft), bytes(&exact));
+    let mean = x
+        .iter()
+        .zip(&y)
+        .map(|(p, q)| u64::from(p.abs_diff(*q)))
+        .sum::<u64>() as f64
+        / x.len() as f64;
+    say(&format!(
+        "the draft differs from the exact frame by {mean:.2} codes on average"
+    ));
+    assert!(mean < 12.0, "a draft is close to the exact frame: {mean}");
+    // The exact request is the window path's.
+    let sharp = r
+        .viewport_frame_to(
+            &src,
+            &c,
+            &FrameOptions::default(),
+            FrameOutput::Device,
+            &CancelToken::new(),
+        )
+        .expect("frame");
+    assert!(sharp.sharp);
+    assert_eq!(sharp.report.runs.level_drafts, 0);
+    // A host request, the Before view and a changed setting are never drafted.
+    let host = r
+        .viewport_frame(
+            &src,
+            &at(75.0, (270.0, 180.0), image),
+            &FrameOptions {
+                coarse_only: true,
+                ..FrameOptions::default()
+            },
+            &CancelToken::new(),
+        )
+        .expect("frame");
+    assert_eq!(host.report.runs.level_drafts, 0);
+    let changed = d.source().with_settings(graph(0.4, 0.3, 0.1));
+    assert_eq!(
+        coarse(&r, &changed, &at(75.0, (260.0, 170.0), image))
+            .report
+            .runs
+            .level_drafts,
+        0
+    );
 }

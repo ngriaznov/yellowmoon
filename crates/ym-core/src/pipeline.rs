@@ -60,7 +60,9 @@ pub use color::{
     LookProblem, LookProvider, NeutralOnly, PhotoSource, ResolvedLook, has_object_row,
     unmakeable_mask, unmakeable_mask_with,
 };
-pub use frame::level::{FILL_BAND_PX, LEVEL_DEBOUNCE, LEVEL_MAX_ZOOM, LEVELS_PER_PHOTO, LevelStatus};
+pub use frame::level::{
+    FILL_BAND_PX, LEVEL_DEBOUNCE, LEVEL_MAX_ZOOM, LEVELS_PER_PHOTO, LevelStatus,
+};
 pub use frame::{
     ChromaSample, ChromaTap, DeviceFrame, FitFrame, FrameOptions, FrameOutput, FullImage,
     FullRequest, FullTarget, PixelSample, PixelWindow, RenderedFrame, ViewportFrame,

@@ -524,7 +524,10 @@ mod tests {
                 for (o, size, view) in [(ox, IMAGE.0, dw), (oy, IMAGE.1, dh)] {
                     if (size as f64 * z).round() > view as f64 {
                         let n = o * z;
-                        assert!((n - n.round()).abs() < 1e-6, "{value}%: origin {o} is not whole");
+                        assert!(
+                            (n - n.round()).abs() < 1e-6,
+                            "{value}%: origin {o} is not whole"
+                        );
                         // The window stays inside the level of this zoom.
                         let level = (size as f64 * z).round();
                         assert!(n.round() >= 0.0 && n.round() + view as f64 <= level);

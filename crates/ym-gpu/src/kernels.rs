@@ -64,6 +64,7 @@ pub mod lens_field;
 pub mod lens_flare;
 pub mod lens_light;
 pub mod lens_reshape;
+pub mod level_draft;
 pub mod log_guided;
 pub mod magnify;
 pub mod mask_raster;

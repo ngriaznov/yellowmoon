@@ -757,13 +757,20 @@ mod tests {
         let s = JobScheduler::new("test-fill-nav").expect("scheduler");
         assert_eq!(s.navigate(PhotoId(1)), 0);
         let (gate, gate_job) = block(&s);
-        let fill = s.submit(Priority::Fill, Some(PhotoId(1)), |token| token.is_cancelled());
-        let other = s.submit(Priority::Fill, Some(PhotoId(2)), |token| token.is_cancelled());
-        assert!(s.navigate(PhotoId(2)) >= 1, "the fill of photo 1 is cancelled");
+        let fill = s.submit(Priority::Fill, Some(PhotoId(1)), |token| {
+            token.is_cancelled()
+        });
+        let other = s.submit(Priority::Fill, Some(PhotoId(2)), |token| {
+            token.is_cancelled()
+        });
+        assert!(
+            s.navigate(PhotoId(2)) >= 1,
+            "the fill of photo 1 is cancelled"
+        );
         gate.send(()).expect("open the gate");
         gate_job.wait().expect("gate job");
         assert!(fill.wait().is_err(), "the cancelled fill never ran");
-        assert_eq!(other.wait().expect("the fill of the photo moved to"), false);
+        assert!(!other.wait().expect("the fill of the photo moved to"));
     }
 
     #[test]
