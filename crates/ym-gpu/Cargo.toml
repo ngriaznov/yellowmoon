@@ -24,6 +24,8 @@ pollster.workspace = true
 bytemuck.workspace = true
 half.workspace = true
 tracing.workspace = true
+# Only the stderr logger of `debug_log` (`YM_GPU_LOG`); wgpu and wgpu-hal already use it. MIT OR Apache-2.0.
+log = { version = "0.4", features = ["std"] }
 # Full-precision `erf` for the pixel-integrated Gaussian kernels of output sharpening
 # (`cpu::output_sharpen`, spec 04 section 2.3: "any libm erf, or the libm crate"). MIT, a port of
 # the FreeBSD msun routines; already in the shipped tree through naga (wgpu), so no new licence.

@@ -27,7 +27,7 @@ use ym_gpu::device::{Gpu, GpuConfig, GpuError, GpuInfo};
 use ym_gpu::kernels::KernelId;
 use ym_gpu::queue::{JobHandle, JobSpec, Priority};
 
-use crate::pipeline::RenderOptions;
+use crate::pipeline::{GpuReopener, RenderOptions};
 use crate::scheduler::{MemoryBudget, total_ram_bytes};
 
 /// The environment variable that sets the policy when no flag does.
@@ -480,6 +480,9 @@ pub struct GpuSlot<D: GpuDevice = Gpu> {
     adapter: Option<GpuInfo>,
     budget: MemoryBudget,
     shared_memory: bool,
+    /// What the device was opened with, for a reopen after a loss ([`GpuSlot::reopener`]).
+    pipeline_cache_dir: Option<PathBuf>,
+    timestamps: bool,
 }
 
 impl<D: GpuDevice> fmt::Debug for GpuSlot<D> {
@@ -503,6 +506,8 @@ impl<D: GpuDevice> GpuSlot<D> {
             adapter: None,
             budget,
             shared_memory: false,
+            pipeline_cache_dir: None,
+            timestamps: false,
         }
     }
 
@@ -603,6 +608,39 @@ impl GpuSlot<Gpu> {
         options.gpu = self.gpu.clone();
         options.gpu_stages = self.stages();
         options.gpu_strict = self.policy.is_strict();
+        options.gpu_reopener = self.reopener();
+    }
+
+    /// How to open the device again after it is lost: the real graphics stack ([`SystemProbe`], the one call that
+    /// creates a device) with the memory budget this slot ended with (already split on a unified-memory machine, so it
+    /// is not split again), the pipeline cache and the timestamps it had, refusing a software adapter where the
+    /// policy does (a machine whose hardware adapter went away must not come back as Mesa under `Auto`). The new
+    /// device compiles every kernel in the background, one `Export`-priority job each, as the application's first one
+    /// did. `None` when this slot uses no device.
+    #[must_use]
+    pub fn reopener(&self) -> Option<GpuReopener> {
+        if !self.is_using() {
+            return None;
+        }
+        let (policy, gpu_bytes) = (self.policy, self.budget.gpu_bytes);
+        let (cache, timestamps) = (self.pipeline_cache_dir.clone(), self.timestamps);
+        Some(GpuReopener(Arc::new(move || {
+            let device = SystemProbe
+                .open(GpuConfig {
+                    memory_budget_bytes: Some(gpu_bytes),
+                    pipeline_cache_dir: cache.clone(),
+                    timestamps,
+                    ..GpuConfig::default()
+                })
+                .map_err(|e| e.to_string())?;
+            if device.info().is_software && !policy.accepts_software() {
+                device.close();
+                return Err("only a software adapter is left".to_owned());
+            }
+            let device = Arc::new(device);
+            drop(warm_up_each(&device));
+            Ok(device)
+        })))
     }
 
     /// Starts the kernel compile on the device as an `Export`-priority job, cancellable between
@@ -828,6 +866,8 @@ impl<P: AdapterProbe> GpuOpener<P> {
             adapter: Some(info),
             budget,
             shared_memory,
+            pipeline_cache_dir: self.pipeline_cache_dir.clone(),
+            timestamps: self.timestamps,
         }
     }
 }

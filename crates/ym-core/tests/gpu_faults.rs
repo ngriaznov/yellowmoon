@@ -824,3 +824,101 @@ fn views_on_cpu_follows_a_refused_check_until_the_next_device_frame() {
     assert!(frame(false).report.runs.frame_hits > 0);
     assert!(!r.views_on_cpu(src.id));
 }
+
+/// A reopener that starts a poisoned device and counts them.
+fn counting_reopener(
+    opened: &Arc<std::sync::atomic::AtomicUsize>,
+) -> ym_core::pipeline::GpuReopener {
+    let opened = Arc::clone(opened);
+    ym_core::pipeline::GpuReopener(Arc::new(move || {
+        opened.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        start_device().ok_or_else(|| "no adapter".to_owned())
+    }))
+}
+
+fn viewport_frame(
+    r: &Renderer,
+    src: &ym_core::pipeline::PhotoSource,
+) -> ym_core::pipeline::RenderedFrame {
+    r.viewport_frame(
+        src,
+        &ViewportState::new(ViewportRect::cell(320.0, 240.0, 1.0)),
+        &FrameOptions {
+            no_cache: true,
+            ..FrameOptions::default()
+        },
+        &CancelToken::new(),
+    )
+    .expect("frame")
+}
+
+#[test]
+fn a_lost_device_is_reopened_for_the_next_frame_and_the_cpu_note_clears() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(gpu) = start_device() else { return };
+    let d = Developed::new(&scene(3, 0.5), MODEL);
+    let src = d.source();
+    let opened = Arc::new(AtomicUsize::new(0));
+    let r = renderer(Some(&gpu), false);
+    r.set_gpu_reopener(Some(counting_reopener(&opened)));
+    let first = viewport_frame(&r, &src);
+    assert_eq!(first.report.device, ComputeDevice::Gpu);
+    assert_eq!(r.gpu_generation(), 0);
+
+    // The device is lost during a frame: that frame is the CPU's, with the note.
+    gpu.set_fault(Some(GpuFault::Lost));
+    let lost = viewport_frame(&r, &src);
+    assert_eq!(lost.report.device, ComputeDevice::Cpu);
+    assert!(lost.report.device_refused && lost.report.cpu_reason.is_some());
+    assert!(gpu.is_lost());
+    assert_eq!(
+        opened.load(Ordering::SeqCst),
+        0,
+        "nothing reopens mid-frame"
+    );
+
+    // The next request reopens the device and renders on it, with no note.
+    let next = viewport_frame(&r, &src);
+    assert_eq!(opened.load(Ordering::SeqCst), 1);
+    assert_eq!(r.gpu_generation(), 1);
+    assert_eq!(next.report.device, ComputeDevice::Gpu);
+    assert!(!next.report.device_refused && next.report.cpu_reason.is_none());
+    assert!(!r.views_on_cpu(src.id) && !r.raw_on_cpu(src.id));
+    let now = r.options().gpu.clone().expect("a device");
+    assert!(!Arc::ptr_eq(&now, &gpu) && !now.is_lost());
+    // Same pixels as before the loss.
+    assert_eq!(
+        next.host_rgba().as_ref(),
+        first.host_rgba().as_ref(),
+        "the frame on the new device equals the frame on the old one"
+    );
+    // Later frames keep the new device; nothing is opened again.
+    assert_eq!(viewport_frame(&r, &src).report.device, ComputeDevice::Gpu);
+    assert_eq!(opened.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn the_third_loss_within_a_minute_leaves_the_photo_to_the_cpu() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(gpu) = start_device() else { return };
+    let d = Developed::new(&scene(3, 0.5), MODEL);
+    let src = d.source();
+    let opened = Arc::new(AtomicUsize::new(0));
+    let r = renderer(Some(&gpu), false);
+    r.set_gpu_reopener(Some(counting_reopener(&opened)));
+    for loss in 1..=3 {
+        let device = r.options().gpu.clone().expect("a device");
+        device.set_fault(Some(GpuFault::Lost));
+        assert_eq!(viewport_frame(&r, &src).report.device, ComputeDevice::Cpu);
+        let after = viewport_frame(&r, &src);
+        if loss < 3 {
+            assert_eq!(after.report.device, ComputeDevice::Gpu, "loss {loss}");
+            assert_eq!(opened.load(Ordering::SeqCst), loss);
+        } else {
+            assert_eq!(after.report.device, ComputeDevice::Cpu, "loss {loss}");
+            assert_eq!(opened.load(Ordering::SeqCst), 2, "no third reopen");
+            assert!(r.options().gpu.as_ref().is_some_and(|g| g.is_lost()));
+            assert!(r.raw_on_cpu(src.id), "the pill says the CPU");
+        }
+    }
+}

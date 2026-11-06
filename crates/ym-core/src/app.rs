@@ -385,6 +385,7 @@ impl Core {
         }
         self.renderer.set_gpu(slot.gpu().cloned(), slot.stages());
         self.renderer.set_gpu_strict(slot.policy().is_strict());
+        self.renderer.set_gpu_reopener(slot.reopener());
     }
 
     /// Registers the application's listener for `looks_changed`.

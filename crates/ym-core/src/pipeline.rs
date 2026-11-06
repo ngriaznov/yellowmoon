@@ -65,8 +65,8 @@ pub use frame::{
     FullRequest, FullTarget, PixelSample, PixelWindow, RenderedFrame, ViewportFrame,
 };
 pub use graph::{
-    ComputeDevice, PhotoGraph, RawPrefetch, RenderOptions, RenderReport, Renderer, StageCounters,
-    StageRuns, StageTimings,
+    ComputeDevice, GpuReopener, PhotoGraph, RawPrefetch, RenderOptions, RenderReport, Renderer,
+    StageCounters, StageRuns, StageTimings,
 };
 pub use object::{
     MaskFound, NOTHING_FOUND_SENTENCE, NothingFound, ObjectModel, ObjectPhase, ObjectPlanes,

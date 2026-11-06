@@ -30,11 +30,11 @@
 //! keys hold the numbers the group reads, so a burst median that moves only the exposure recomputes
 //! the colour group and leaves the raw group alone.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use ym_export::{ColorSpace, DetailStat};
@@ -115,6 +115,37 @@ pub enum RawPrefetch {
     Skipped,
 }
 
+/// Opens a new graphics device when the renderer's is lost: the same adapter policy, memory budget and pipeline cache the
+/// first one had (`GpuSlot::reopener`). It may block while the device is created; the error says why none opened.
+#[derive(Clone)]
+pub struct GpuReopener(pub Arc<dyn Fn() -> Result<Arc<Gpu>, String> + Send + Sync>);
+
+impl std::fmt::Debug for GpuReopener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GpuReopener")
+    }
+}
+
+/// Losses of the device within [`REOPEN_WINDOW`] after which the renderer stops reopening it and stays on the CPU.
+pub const REOPEN_MAX_LOSSES: usize = 3;
+/// The window in which [`REOPEN_MAX_LOSSES`] losses end the reopening; the CPU keeps the photo until it has passed.
+pub const REOPEN_WINDOW: Duration = Duration::from_secs(60);
+/// How long after a reopen that failed the next one is not tried.
+const REOPEN_RETRY_AFTER: Duration = Duration::from_secs(5);
+
+/// The renderer's account of lost devices (the back-off of [`Renderer::reopen_gpu_if_lost`]).
+#[derive(Default)]
+struct ReopenState {
+    /// When devices were lost, within the window.
+    losses: VecDeque<Instant>,
+    /// The lost device that was counted already (a lost device is counted once, however many requests meet it).
+    counted: Option<Weak<Gpu>>,
+    /// A reopen failed at this moment.
+    failed_at: Option<Instant>,
+    /// The back-off has been logged for the current run of losses.
+    gave_up_logged: bool,
+}
+
 /// What a [`Renderer`] needs to know about the machine and the preferences.
 #[derive(Clone)]
 pub struct RenderOptions {
@@ -169,6 +200,10 @@ pub struct RenderOptions {
     /// Whether a device error is a failure of the photo (`GpuPolicy::Require`, `--require-gpu`)
     /// instead of a fall-back to the CPU. Off by default.
     pub gpu_strict: bool,
+    /// How to open a new device after the current one is lost ([`GpuReopener`]); `None`: the renderer never reopens
+    /// (a test's device, a renderer with no policy behind it). [`crate::app::gpu::GpuSlot::apply_to`] and
+    /// [`crate::app::Core::attach_gpu`] set it.
+    pub gpu_reopener: Option<GpuReopener>,
     /// The largest storage binding, in bytes, that one device pass of a view may need: a four-plane
     /// f32 frame takes `16 * width * rows` of it. A view whose frame needs more (the Metal limit is
     /// 2 GiB, lavapipe's 128 MiB, and every kernel is designed for the lower, `docs/17-gpu.md`
@@ -279,6 +314,7 @@ impl Default for RenderOptions {
             gpu: None,
             gpu_stages: GpuStages::ALL,
             gpu_strict: false,
+            gpu_reopener: None,
             view_band_bytes: VIEW_BAND_BYTES,
             resident_caches: true,
             background: [255, 255, 255],
@@ -901,6 +937,12 @@ struct Inner {
     /// chain for the rest of the process (`docs/17-gpu.md` section 9, "Shader: that kernel family
     /// is off for the process").
     raw_gpu_disabled: AtomicBool,
+    /// The losses of devices so far ([`Renderer::reopen_gpu_if_lost`]); held while a device is reopened, so that
+    /// requests that meet the loss together open one device.
+    reopen: Mutex<ReopenState>,
+    /// How many devices the renderer has been given by a reopen; the native viewport compares it to know that the
+    /// device it draws with has been replaced ([`Renderer::gpu_generation`]).
+    gpu_generation: AtomicU64,
     /// The clock of the two-photo LRU of resident raw words ([`PhotoGraph::resident_tick`]).
     resident_clock: AtomicU64,
     /// The photo the person looked at before the current one: its raw words are the second to go.
@@ -1035,6 +1077,8 @@ impl Renderer {
                 scheduler,
                 ledger,
                 raw_gpu_disabled: AtomicBool::new(false),
+                reopen: Mutex::new(ReopenState::default()),
+                gpu_generation: AtomicU64::new(0),
                 resident_clock: AtomicU64::new(0),
                 previous: Mutex::new(None),
                 view_gpu_disabled: AtomicBool::new(false),
@@ -1100,6 +1144,100 @@ impl Renderer {
             o.gpu = gpu;
             o.gpu_stages = stages;
         });
+    }
+
+    /// How many times a lost device has been replaced ([`Renderer::reopen_gpu_if_lost`]). A consumer that holds the
+    /// device (the native viewport draws with it) reads the current one from [`Renderer::options`] when this changes.
+    #[must_use]
+    pub fn gpu_generation(&self) -> u64 {
+        self.inner.gpu_generation.load(Ordering::SeqCst)
+    }
+
+    /// Sets how a lost device is replaced (`None`: never). For the start of a run, like [`Renderer::set_gpu`].
+    pub fn set_gpu_reopener(&self, reopener: Option<GpuReopener>) {
+        self.update_options(|o| o.gpu_reopener = reopener);
+    }
+
+    /// Replaces the renderer's device when it is lost (or tainted: results of such a device are void) and a
+    /// [`GpuReopener`] is set; called when a request starts, so a request never begins on a device it can see is
+    /// gone. A new device is opened, and what belonged to the old one is dropped: the photo graphs with their caches of
+    /// device images, their resident raw words and their per-photo "the device failed" marks (the old device's
+    /// kernels, tables, raster planes and pool go with its last reference). The process-wide marks of a shader that
+    /// would not compile stay: a new device compiles the same source. Requests already running keep the options they
+    /// began with and finish on the old device or fall back, as before.
+    ///
+    /// Back-off: a device counts as lost once; after [`REOPEN_MAX_LOSSES`] losses within [`REOPEN_WINDOW`] the
+    /// renderer stays on the CPU (the pill and the notes say so as for any lost device) until the window has passed,
+    /// and a reopen that failed is not tried again for a few seconds. Logs once per reopen.
+    pub fn reopen_gpu_if_lost(&self) {
+        let opts = self.options();
+        let (Some(old), Some(reopen)) = (opts.gpu.clone(), opts.gpu_reopener.clone()) else {
+            return;
+        };
+        if !old.is_lost() {
+            return;
+        }
+        let mut st = lock(&self.inner.reopen);
+        // Another request may have replaced the device while this one waited for the lock.
+        if !self
+            .options()
+            .gpu
+            .as_ref()
+            .is_some_and(|g| Arc::ptr_eq(g, &old))
+        {
+            return;
+        }
+        let now = Instant::now();
+        if !st
+            .counted
+            .as_ref()
+            .is_some_and(|w| Weak::ptr_eq(w, &Arc::downgrade(&old)))
+        {
+            st.losses.push_back(now);
+            st.counted = Some(Arc::downgrade(&old));
+            tracing::warn!(
+                reason = old.lost_reason().unwrap_or_default(),
+                "the graphics device was lost"
+            );
+        }
+        while st
+            .losses
+            .front()
+            .is_some_and(|t| now.duration_since(*t) > REOPEN_WINDOW)
+        {
+            st.losses.pop_front();
+        }
+        if st.losses.len() >= REOPEN_MAX_LOSSES {
+            if !st.gave_up_logged {
+                st.gave_up_logged = true;
+                tracing::warn!(
+                    losses = st.losses.len(),
+                    "the graphics device was lost {REOPEN_MAX_LOSSES} times within a minute; the CPU renders until it has been quiet for a minute"
+                );
+            }
+            return;
+        }
+        if st
+            .failed_at
+            .is_some_and(|t| now.duration_since(t) < REOPEN_RETRY_AFTER)
+        {
+            return;
+        }
+        match (reopen.0)() {
+            Ok(new) => {
+                st.failed_at = None;
+                st.gave_up_logged = false;
+                self.update_options(|o| o.gpu = Some(new.clone()));
+                // Graphs hold images and kernels' tables on the old device and marks that the old device failed.
+                lock(&self.inner.graphs).clear();
+                self.inner.gpu_generation.fetch_add(1, Ordering::SeqCst);
+                tracing::info!(adapter = %new.info().name, "the graphics device was reopened");
+            }
+            Err(reason) => {
+                st.failed_at = Some(now);
+                tracing::warn!(%reason, "the graphics device could not be reopened; the CPU renders");
+            }
+        }
     }
 
     /// Makes a device error a failure of the photo (`GpuPolicy::Require`) or a fall-back to the CPU
@@ -1847,6 +1985,7 @@ impl<'a> Job<'a> {
     /// A request that is not refused for a photo of a closed session: an export, which goes on
     /// with its snapshot.
     pub fn for_export(r: &'a Renderer, src: &'a PhotoSource, cancel: &'a CancelToken) -> Self {
+        r.reopen_gpu_if_lost();
         let g = r.graph(src.id);
         g.adopt(src.fingerprint);
         g.pins.fetch_add(1, Ordering::SeqCst);

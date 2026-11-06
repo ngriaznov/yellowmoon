@@ -571,6 +571,7 @@ impl GpuContext {
     /// [`GpuError::NoAdapter`] when nothing opens, [`GpuError::RequestDevice`] when the adapter
     /// rejects the request or a forced [`StorageMode`] is not available.
     pub fn open(config: &GpuConfig) -> Result<GpuContext, GpuError> {
+        crate::debug_log::install_from_env();
         let descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         let descriptor = match config.backends {
             Some(b) => wgpu::InstanceDescriptor {

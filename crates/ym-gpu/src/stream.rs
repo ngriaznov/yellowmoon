@@ -300,8 +300,17 @@ fn wait_submission(
     timeout: Duration,
     submission: Option<wgpu::SubmissionIndex>,
 ) -> Result<(), GpuError> {
+    // Always the queue's latest submission, never `submission` itself (kept so that callers say what they wait for).
+    // wgpu-hal 30's Metal fence is only sound for the newest submission: `Queue::submit` first drops the pending
+    // command buffers whose `MTLCommandBuffer` status is already Completed, but the fence value is published later by
+    // that buffer's completed handler. A wait for an older index in that gap finds neither the value nor the
+    // pending buffer and returns `DeviceError::Lost` ("No active command buffers for fence value"), which wgpu turns
+    // into a permanent "Device is lost". A later submission (a split list's pieces, a staging flush, another list's
+    // `submit`) between our submit and our wait opens that gap; the newest one cannot be dropped, and the queue
+    // completes in order, so waiting for it waits at least for ours. Other backends are unaffected.
+    let _ = submission;
     match device.poll(wgpu::PollType::Wait {
-        submission_index: submission,
+        submission_index: None,
         timeout: Some(timeout),
     }) {
         Ok(_) => health.check(),

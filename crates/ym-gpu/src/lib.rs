@@ -12,6 +12,7 @@
 
 pub mod chain;
 pub mod cpu;
+pub mod debug_log;
 pub mod device;
 pub mod image;
 pub mod kernels;
