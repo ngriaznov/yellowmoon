@@ -177,6 +177,7 @@ fn stack_of(
                     keep: vec![Arc::clone(f.baked().t3b()) as Arc<dyn std::any::Any + Send + Sync>],
                     build: Arc::new(move || data.clone()),
                 },
+                reads: None,
             }
         })
         .collect();

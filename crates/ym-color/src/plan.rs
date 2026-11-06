@@ -282,6 +282,68 @@ impl Plan {
         self.passes.iter().flat_map(|p| p.steps.iter())
     }
 
+    /// For each step (in [`Plan::steps`] order), the earlier steps whose pictures it reads, taken from the plan's graph: the
+    /// step's picture input, and its key input (a key is a node's mask, which may read that node's own input), followed
+    /// back through registers and buffers to every step they came from. Transitive, so a step lists the far ancestors as
+    /// well, in step order. The scheduler uses it to give a Film node only the Film pictures it really reads (`docs/23`
+    /// section 5.12).
+    #[must_use]
+    pub fn picture_ancestors(&self) -> Vec<Vec<usize>> {
+        use std::collections::{BTreeMap, BTreeSet};
+        // P[i]: the steps whose picture output step i's picture depends on (itself included); K[i]: the same for its key.
+        let mut pic: Vec<BTreeSet<usize>> = Vec::new();
+        let mut key: Vec<BTreeSet<usize>> = Vec::new();
+        let mut pic_buffer: BTreeMap<u16, usize> = BTreeMap::new();
+        let mut key_buffer: BTreeMap<u16, usize> = BTreeMap::new();
+        let mut out = Vec::new();
+        for pass in &self.passes {
+            let mut register: BTreeMap<u8, usize> = BTreeMap::new();
+            let mut slot: BTreeMap<u8, usize> = BTreeMap::new();
+            for step in &pass.steps {
+                let i = pic.len();
+                let from_picture = match step.picture {
+                    PictureRef::Input => None,
+                    PictureRef::Register(r) => register.get(&r).copied(),
+                    PictureRef::Buffer(b) => pic_buffer.get(&b).copied(),
+                };
+                let from_key = match step.key {
+                    None => None,
+                    Some(KeyRef::Slot(s)) => slot.get(&s).copied(),
+                    Some(KeyRef::Buffer(b)) => key_buffer.get(&b).copied(),
+                };
+                let mut reads: BTreeSet<usize> = BTreeSet::new();
+                if let Some(p) = from_picture {
+                    reads.extend(&pic[p]);
+                }
+                if let Some(k) = from_key {
+                    reads.extend(&key[k]);
+                }
+                let mut made = reads.clone();
+                made.insert(i);
+                out.push(reads.iter().copied().collect());
+                key.push(reads);
+                pic.push(made);
+                if let Some(o) = step.picture_out {
+                    if let Some(r) = o.register {
+                        register.insert(r, i);
+                    }
+                    if let Some(b) = o.buffer {
+                        pic_buffer.insert(b, i);
+                    }
+                }
+                if let Some(o) = step.key_out {
+                    if let Some(s) = o.slot {
+                        slot.insert(s, i);
+                    }
+                    if let Some(b) = o.buffer {
+                        key_buffer.insert(b, i);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// The number of steps.
     #[must_use]
     pub fn step_count(&self) -> usize {

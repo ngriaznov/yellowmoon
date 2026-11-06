@@ -13,8 +13,9 @@
 //!   its reach, cut to `frame`.
 //! * The mask planes are one shared value (a plane is made once however many rows read it): their reach is the largest
 //!   reach declared, and they are made over the union of their consumers' reads.
-//! * Pictures (a Film node's) are made in plan order; a step that reads pictures reads every earlier one over its own
-//!   read area.
+//! * Pictures (a Film node's) are made in plan order; a step that reads pictures reads the earlier ones it **depends on**
+//!   over its own read area: the pictures of its ancestors in the plan's graph ([`Schedule::with_picture_deps`], from
+//!   `Plan::picture_ancestors`), or every earlier one when no dependencies are given (a line).
 
 use crate::mask_raster::Area;
 
@@ -123,6 +124,8 @@ pub struct Schedule {
     plane_reach: Option<usize>,
     plane_reads_source: bool,
     pictures: Vec<(usize, Reads)>,
+    /// For each picture step, the earlier picture steps it reads; `None`: every earlier one.
+    deps: Option<Vec<Vec<usize>>>,
     output: Reads,
 }
 
@@ -193,18 +196,53 @@ impl Schedule {
         s
     }
 
+    /// The pictures each picture step reads, by index among the picture steps in plan order: `deps[i]` lists the earlier
+    /// pictures picture `i` reads (its ancestors in the plan's graph). Without this a picture step reads every earlier one,
+    /// which is exact for a line of nodes and an over-read for parallel branches: the pixels do not change (a picture is
+    /// never read outside what its readers need) but the areas shrink.
+    #[must_use]
+    pub fn with_picture_deps(mut self, deps: Vec<Vec<usize>>) -> Self {
+        debug_assert_eq!(deps.len(), self.pictures.len());
+        self.deps = Some(deps);
+        self
+    }
+
+    /// The earlier pictures picture `i` reads.
+    fn reads_of(&self, i: usize) -> Vec<usize> {
+        match &self.deps {
+            Some(d) => d
+                .get(i)
+                .map(|v| v.iter().copied().filter(|&j| j < i).collect())
+                .unwrap_or_default(),
+            None => (0..i).collect(),
+        }
+    }
+
     /// Whether any step is spatial.
     #[must_use]
     pub fn is_spatial(&self) -> bool {
         self.plane_reach.is_some() || !self.pictures.is_empty()
     }
 
-    /// The reach of the whole schedule: how far the camera picture is read beyond the output. For a schedule whose steps
-    /// all read the camera picture it is the plane reach plus every picture step's reach (a step reads the one before it
-    /// over its own reach).
+    /// The reach of the whole schedule: how far the camera picture is read beyond the output. Along any path of pictures
+    /// each step reads the one before it over its own reach, so it is the plane reach plus the longest such path (for a line
+    /// of steps, their sum; for parallel branches, the longer branch).
     #[must_use]
     pub fn total_reach(&self) -> usize {
-        self.plane_reach.unwrap_or(0) + self.pictures.iter().map(|p| p.0).sum::<usize>()
+        let n = self.pictures.len();
+        // radius[i]: how far picture i's inputs are read beyond the output (its made radius plus its own reach).
+        let mut made = vec![0usize; n];
+        let mut deepest = 0;
+        for i in (0..n).rev() {
+            let read = made[i] + self.pictures[i].0;
+            deepest = deepest.max(read);
+            if self.pictures[i].1.pictures {
+                for j in self.reads_of(i) {
+                    made[j] = made[j].max(read);
+                }
+            }
+        }
+        self.plane_reach.unwrap_or(0) + deepest
     }
 
     /// The areas for an output area `need` (absolute pixels, not cut) of a photo extent `frame`.
@@ -235,8 +273,8 @@ impl Schedule {
             made[i] = demand.intersect(frame);
             read[i] = made[i].grown(reach, frame);
             if reads.pictures {
-                for d in &mut pic_demand[..i] {
-                    *d = union(*d, read[i]);
+                for j in self.reads_of(i) {
+                    pic_demand[j] = union(pic_demand[j], read[i]);
                 }
             }
             if reads.planes {
@@ -323,6 +361,40 @@ mod tests {
         assert_eq!(a.made[0], need.grown(5, &frame));
         assert_eq!(a.planes, need.grown(8, &frame));
         assert_eq!(s.total_reach(), 12);
+    }
+
+    #[test]
+    fn parallel_branches_read_only_their_own_ancestors() {
+        let frame = Area::whole(200, 200);
+        let need = Area {
+            x: 80,
+            y: 80,
+            w: 20,
+            h: 20,
+        };
+        // Picture 0 and picture 1 are on parallel branches (reach 10 and 30); picture 2 (reach 5) reads picture 1 only.
+        let steps = [pic(10), pic(30), pic(5)];
+        let line = Schedule::new(steps).infer(need, &frame);
+        let branches = Schedule::new(steps)
+            .with_picture_deps(vec![vec![], vec![], vec![1]])
+            .infer(need, &frame);
+        // As a line, picture 0 is made over what 1 and 2 read (35 around the need); as a branch, over the need alone.
+        assert_eq!(line.made[0], need.grown(35, &frame));
+        assert_eq!(branches.made[0], need);
+        assert_eq!(branches.read[0], need.grown(10, &frame));
+        assert_eq!(branches.made[1], need.grown(5, &frame));
+        assert_eq!(branches.read[1], need.grown(35, &frame));
+        assert_eq!(branches.made[2], need);
+        // The camera picture is read over the longest path, not the sum.
+        assert_eq!(branches.source, need.grown(35, &frame));
+        assert_eq!(line.source, need.grown(45, &frame));
+        assert_eq!(
+            Schedule::new(steps)
+                .with_picture_deps(vec![vec![], vec![], vec![1]])
+                .total_reach(),
+            35
+        );
+        assert_eq!(Schedule::new(steps).total_reach(), 45);
     }
 
     #[test]

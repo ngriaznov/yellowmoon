@@ -118,6 +118,9 @@ pub struct FilmNodeSpec {
     pub scalars: FilmScalars,
     /// The tables.
     pub tables: FilmTables,
+    /// The Film nodes whose pictures the node reads: its ancestors in the plan's graph (`ColorChain::film_reads`).
+    /// `None`: every earlier node of the stack (a line).
+    pub reads: Option<Vec<u32>>,
 }
 
 impl FilmNodeSpec {
@@ -198,7 +201,23 @@ impl FilmStack {
     /// The schedule of the Film nodes alone (no mask planes): their made and read areas.
     #[must_use]
     pub fn schedule(&self) -> Schedule {
-        Schedule::new(self.steps.iter().map(|s| StepKind::Film.declared(s.halo())))
+        let schedule = Schedule::new(self.steps.iter().map(|s| StepKind::Film.declared(s.halo())));
+        if self.steps.iter().all(|s| s.reads.is_none()) {
+            return schedule;
+        }
+        // Each node reads the pictures of its ancestors only (parallel branches do not read each other's).
+        let deps = self
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| match &s.reads {
+                Some(ids) => (0..i)
+                    .filter(|&j| ids.contains(&self.steps[j].node))
+                    .collect(),
+                None => (0..i).collect(),
+            })
+            .collect();
+        schedule.with_picture_deps(deps)
     }
 
     /// The area the first node reads for `need`: `need` grown by every halo, cut to the photo's extent.
@@ -239,13 +258,12 @@ impl FilmStack {
         if want.is_empty() {
             return Ok(Arc::new(FilmPictures::empty()));
         }
-        if !wide_area.contains(&read[0]) {
+        if !wide_area.contains(&want) {
             return Err(GpuError::InvalidInput(format!(
-                "film: the sampled picture {wide_area:?} does not cover the {:?} the first Film node reads",
-                read[0]
+                "film: the sampled picture {wide_area:?} does not cover the {want:?} the Film nodes read"
             )));
         }
-        crate::perf::note_film(n, read[0].w, read[0].h);
+        crate::perf::note_film(n, want.w, want.h);
         let mut done: Vec<(u32, Arc<FilmImage>)> = Vec::with_capacity(n);
         for (i, step) in self.steps.iter().enumerate() {
             let a = read[i];

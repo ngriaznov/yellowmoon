@@ -1298,3 +1298,107 @@ pub fn with_look(settings: &DevelopSettings, look: &LookId) -> DevelopSettings {
     s.output_mut().look_intensity = 100.0;
     s
 }
+
+#[cfg(test)]
+mod schedule_tests {
+    use super::*;
+    use serde_json::json;
+    use ym_color::mask_raster::Area;
+    use ym_color::schedule::{Declared, Schedule, StepKind};
+
+    /// Two Film nodes on parallel branches that join by a key link: Main -> Film 2 -> corrector 4, Input -> Film 3,
+    /// and Film 3's key into corrector 4.
+    fn two_branches() -> DevelopSettings {
+        let doc = json!({ "nodes": { "items": [
+            { "id": 1 },
+            { "id": 2, "kind": "film", "pos": [2, 0.0], "film": { "exposure_ev": 0.3 } },
+            { "id": 3, "kind": "film", "pos": [2, 1.0], "film": { "exposure_ev": -0.3 } },
+            { "id": 4, "kind": "corrector", "pos": [3, 0.0], "trim": { "exposure_ev": 0.4 } } ],
+          "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": 4, "port": "picture" } },
+            { "from": { "node": 3, "port": "key" }, "to": { "node": 4, "port": "key" } },
+            { "from": { "node": 4, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
+        serde_json::from_value::<DevelopSettings>(doc)
+            .expect("a document")
+            .validated()
+            .expect("a valid graph")
+            .0
+    }
+
+    fn chain_of(s: &DevelopSettings) -> ColorChain {
+        let (nodes, rasters, films) = node_set(s, Stop::Output, None, None).expect("nodes");
+        let mut params = ChainParams::new(ym_color::consts::linalg::IDENTITY, ToneParams::IDENTITY);
+        params.nodes = nodes;
+        params.rasters = rasters;
+        params.films = films;
+        ColorChain::new(&params).expect("a chain")
+    }
+
+    /// G-11 part 3, item 2: each Film node reads only the Film pictures that are its ancestors in the plan's graph.
+    #[test]
+    fn a_film_node_reads_only_the_pictures_of_its_ancestors() {
+        let chain = chain_of(&two_branches());
+        // Two parallel branches: neither reads the other's picture.
+        let reads = chain.film_reads();
+        assert_eq!(reads.get(&2), Some(&vec![]), "{reads:?}");
+        assert_eq!(reads.get(&3), Some(&vec![]), "{reads:?}");
+        // Areas for a 40 x 40 need in the middle of a 400 x 400 photo, with halos of 20 px and 60 px.
+        let frame = Area::whole(400, 400);
+        let need = Area {
+            x: 180,
+            y: 180,
+            w: 40,
+            h: 40,
+        };
+        let reach = |id: u32| Some(if id == 2 { 20 } else { 60 });
+        let branches = chain.schedule(1.0, &reach).infer(need, &frame);
+        let line = Schedule::new(
+            (0..2).map(|i| -> Declared { StepKind::Film.declared(if i == 0 { 20 } else { 60 }) }),
+        )
+        .infer(need, &frame);
+        println!(
+            "two branches, before (a line): made {:?}, read {:?}",
+            line.made, line.read
+        );
+        println!(
+            "two branches, after (ancestors): made {:?}, read {:?}",
+            branches.made, branches.read
+        );
+        // Before: node 2 was made over what node 3 reads (60 px around the need). After: over the need alone.
+        assert_eq!(line.made[0], need.grown(60, &frame));
+        assert_eq!(branches.made[0], need);
+        assert_eq!(branches.read[0], need.grown(20, &frame));
+        assert_eq!(branches.made[1], need);
+        assert_eq!(branches.read[1], need.grown(60, &frame));
+        // The camera picture is read over the longer branch (60), not the sum (80).
+        assert_eq!(branches.source, need.grown(60, &frame));
+        assert_eq!(line.source, need.grown(80, &frame));
+        assert_eq!(chain.schedule(1.0, &reach).total_reach(), 60);
+    }
+
+    /// A line of Film nodes keeps the sum of its halos: node 3 after node 2 reads node 2's picture.
+    #[test]
+    fn a_line_of_film_nodes_reads_every_earlier_picture() {
+        let doc = json!({ "nodes": { "items": [
+            { "id": 1 },
+            { "id": 2, "kind": "film", "pos": [2, 0.0], "film": { "exposure_ev": 0.3 } },
+            { "id": 3, "kind": "film", "pos": [3, 0.0], "film": { "exposure_ev": -0.3 } } ],
+          "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+            { "from": { "node": 3, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
+        let s = serde_json::from_value::<DevelopSettings>(doc)
+            .expect("a document")
+            .validated()
+            .expect("a valid graph")
+            .0;
+        let chain = chain_of(&s);
+        assert_eq!(chain.film_reads().get(&3), Some(&vec![2]));
+        assert_eq!(chain.film_reads().get(&2), Some(&vec![]));
+        assert_eq!(chain.schedule(1.0, &|_| Some(25)).total_reach(), 50);
+    }
+}

@@ -640,13 +640,21 @@ impl ColorChain {
         } else {
             self.params.rasters.halo(u_px)
         };
+        let ancestors = self.params.nodes.plan.picture_ancestors();
         let mut declared = Vec::new();
+        // The picture steps (Film nodes that do something) by plan step, and what each reads.
+        let mut picture_of: Vec<Option<usize>> = Vec::with_capacity(self.steps.len());
+        let mut pictures = 0;
         for (step, node) in &self.steps {
             let film = self
                 .films
                 .contains_key(&step.node)
                 .then(|| film_reach_px(step.node))
                 .flatten();
+            picture_of.push(film.map(|_| {
+                pictures += 1;
+                pictures - 1
+            }));
             declared.push(match film {
                 Some(reach) => StepKind::Film.declared(reach),
                 None => StepKind::Corrector.declared(0),
@@ -661,7 +669,40 @@ impl ColorChain {
                     .map(|o| o.kind.declared(raster_reach)),
             );
         }
-        crate::schedule::Schedule::new(declared)
+        // A Film node reads the pictures of the Film nodes among its ancestors in the plan's graph, not every earlier one.
+        let deps = picture_of
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.is_some())
+            .map(|(i, _)| {
+                ancestors[i]
+                    .iter()
+                    .filter_map(|&a| picture_of.get(a).copied().flatten())
+                    .collect()
+            })
+            .collect();
+        crate::schedule::Schedule::new(declared).with_picture_deps(deps)
+    }
+
+    /// For each Film node the plan runs, the ids of the Film nodes whose pictures it reads: its ancestors in the plan's
+    /// graph (`Plan::picture_ancestors`), in the plan's order. Nodes on parallel branches are not in each other's lists.
+    #[must_use]
+    pub fn film_reads(&self) -> std::collections::BTreeMap<u32, Vec<u32>> {
+        let ancestors = self.params.nodes.plan.picture_ancestors();
+        self.steps
+            .iter()
+            .enumerate()
+            .filter(|(_, (s, _))| self.films.contains_key(&s.node))
+            .map(|(i, (s, _))| {
+                let reads = ancestors[i]
+                    .iter()
+                    .filter_map(|&a| self.steps.get(a))
+                    .map(|(a, _)| a.node)
+                    .filter(|id| self.films.contains_key(id))
+                    .collect();
+                (s.node, reads)
+            })
+            .collect()
     }
 
     /// The ids of the Film nodes the plan runs, in the plan's order.

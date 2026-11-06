@@ -160,6 +160,10 @@ struct Graph {
     nodes: Vec<NodeKind>,
     masks: Vec<MaskKind>,
     masked: Option<(u32, usize)>,
+    /// Picture links that do not come from the node before: the branches of the graph.
+    branches: usize,
+    /// Pairs of live Film nodes neither of which is an ancestor of the other (parallel branches).
+    parallel_films: usize,
     /// Whether the CPU's frame is a reference (Subject and People masks are made by a background worker: no).
     compare: bool,
 }
@@ -192,8 +196,19 @@ fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKin
     let mut links = vec![
         json!({ "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } }),
     ];
-    let mut prev = json!(1);
     let mut used_masks = Vec::new();
+    // Where each node's picture comes from: the one before it (a line), or, one time in three, Main, the Input or any
+    // earlier node (a branch, which makes the nodes in between live only by a key link, if at all). `None` is the Input.
+    let mut source: Vec<Option<usize>> = Vec::new();
+    for i in 0..count {
+        source.push(match rng.below(3) {
+            0 if i > 0 => match rng.below(i as u64 + 1) as usize {
+                n if n == i => None,
+                n => Some(n),
+            },
+            _ => i.checked_sub(1),
+        });
+    }
     for (i, kind) in kinds.iter().enumerate() {
         let id = 2 + i as u32;
         let mut n = match kind {
@@ -218,17 +233,80 @@ fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKin
             _ => {}
         }
         items.push(n);
-        links.push(json!({ "from": { "node": prev, "port": "picture" }, "to": { "node": id, "port": "picture" } }));
-        prev = json!(id);
+        // Node `i` is item `i + 1` (Main is first); its picture comes from `source[i]`, a node's id being `2 + index`.
+        let from = match source[i] {
+            // (The first node after Main reads Main; a later node that reads "nothing" reads the Input.)
+            None if i == 0 => json!(1),
+            None => json!("input"),
+            Some(n) => json!(2 + n as u32),
+        };
+        links.push(json!({ "from": { "node": from, "port": "picture" }, "to": { "node": id, "port": "picture" } }));
     }
-    links.push(json!({ "from": { "node": prev, "port": "picture" }, "to": { "node": "output", "port": "picture" } }));
+    let last = json!(2 + (count - 1) as u32);
+    links.push(json!({ "from": { "node": last, "port": "picture" }, "to": { "node": "output", "port": "picture" } }));
     // Key links: a node's key output into a later node's key input, at most one into each.
+    let mut keyed = vec![false; count];
+    let mut key_from: Vec<Option<usize>> = vec![None; count];
     for j in 1..count {
         if rng.below(4) == 0 {
-            let from = 2 + rng.below(j as u64) as u32;
-            links.push(json!({ "from": { "node": from, "port": "key" }, "to": { "node": 2 + j as u32, "port": "key" } }));
+            let from = rng.below(j as u64) as usize;
+            key_from[j] = Some(from);
+            keyed[j] = true;
+            links.push(json!({ "from": { "node": 2 + from as u32, "port": "key" }, "to": { "node": 2 + j as u32, "port": "key" } }));
         }
     }
+    // A node nothing live reads (a branch's far side) joins the graph by a key link into a later live node that has none:
+    // the joins the graph allows.
+    loop {
+        let mut live = vec![false; count];
+        let mut stack = vec![count - 1];
+        while let Some(n) = stack.pop() {
+            if std::mem::replace(&mut live[n], true) {
+                continue;
+            }
+            stack.extend(source[n]);
+            stack.extend(key_from[n]);
+        }
+        let Some(dead) = (0..count).find(|&n| !live[n]) else {
+            break;
+        };
+        let Some(into) = (dead + 1..count).find(|&j| live[j] && !keyed[j]) else {
+            break;
+        };
+        // (A dead node whose own sources are dead stays dead until they are joined; the loop takes them one at a time.)
+        keyed[into] = true;
+        key_from[into] = Some(dead);
+        links.push(json!({ "from": { "node": 2 + dead as u32, "port": "key" }, "to": { "node": 2 + into as u32, "port": "key" } }));
+    }
+    let branches = (0..count)
+        .filter(|&i| source[i] != i.checked_sub(1))
+        .count();
+    // The ancestors of each node through its picture and key links, to count the Film nodes on parallel branches.
+    let ancestors = |n: usize| {
+        let mut seen = vec![false; count];
+        let mut stack: Vec<usize> = source[n].into_iter().chain(key_from[n]).collect();
+        while let Some(a) = stack.pop() {
+            if !std::mem::replace(&mut seen[a], true) {
+                stack.extend(source[a].into_iter().chain(key_from[a]));
+            }
+        }
+        seen
+    };
+    let mut live = vec![false; count];
+    let mut stack = vec![count - 1];
+    while let Some(n) = stack.pop() {
+        if !std::mem::replace(&mut live[n], true) {
+            stack.extend(source[n].into_iter().chain(key_from[n]));
+        }
+    }
+    let films: Vec<usize> = (0..count)
+        .filter(|&i| live[i] && kinds[i] == NodeKind::Film)
+        .collect();
+    let parallel_films = films
+        .iter()
+        .flat_map(|&a| films.iter().filter(move |&&b| a < b).map(move |&b| (a, b)))
+        .filter(|&(a, b)| !ancestors(b)[a])
+        .count();
     let doc = json!({ "nodes": { "items": items, "links": links } });
     let settings = serde_json::from_value::<DevelopSettings>(doc.clone())
         .expect("a document")
@@ -251,6 +329,8 @@ fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKin
         json: doc,
         nodes: kinds,
         masks: used_masks,
+        branches,
+        parallel_films,
         masked,
         compare,
     }
@@ -352,6 +432,52 @@ fn rotating_seed() -> Option<u64> {
 
 /// The graphs of a run: the fixed seeds, then the rotating one. The forced kinds cycle through the generated lists, so a
 /// run of enough graphs holds every kind whatever the seeds.
+/// Two Film nodes on parallel branches that join by a key link (G-11 part 3, item 2): Main -> Film 2 -> corrector 4, Input
+/// -> Film 3, and Film 3's key into corrector 4, with a Brush row on the Film node 2 and one on the corrector. Each Film node
+/// reads only its own ancestors' pictures, so neither is made over what the other reads.
+fn parallel_branches(seed: u64) -> Graph {
+    let mut rng = SplitMix64(seed);
+    let rows = |rng: &mut SplitMix64| json!({ "invert": false, "items": [row_json(MaskKind::Brush, rng)] });
+    let film = |id: u32, rng: &mut SplitMix64| {
+        json!({ "id": id, "kind": "film", "pos": [id, 0.0], "film": { "exposure_ev": 0.3 },
+            "grain": { "amount": 100, "seed": id }, "halation": { "amount": 200, "size": 120 },
+            "strength": 85, "masks": rows(rng) })
+    };
+    let mut film3 = film(3, &mut rng);
+    if let Some(o) = film3.as_object_mut() {
+        o.remove("masks");
+    }
+    let doc = json!({ "nodes": { "items": [
+        { "id": 1 },
+        film(2, &mut rng),
+        film3,
+        { "id": 4, "kind": "corrector", "pos": [4, 0.0], "trim": { "exposure_ev": 0.8 }, "masks": rows(&mut rng) } ],
+      "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": 4, "port": "picture" } },
+        { "from": { "node": 3, "port": "key" }, "to": { "node": 4, "port": "key" } },
+        { "from": { "node": 4, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
+    let settings = serde_json::from_value::<DevelopSettings>(doc.clone())
+        .expect("a document")
+        .validated()
+        .expect("a valid graph")
+        .0;
+    Graph {
+        seed,
+        index: 100,
+        settings,
+        json: doc,
+        nodes: vec![NodeKind::Film, NodeKind::Film, NodeKind::Corrector],
+        masks: vec![MaskKind::Brush, MaskKind::Brush],
+        branches: 2,
+        parallel_films: 1,
+        masked: Some((4, 0)),
+        compare: true,
+    }
+}
+
 fn graphs() -> Vec<Graph> {
     let nodes = generated_nodes();
     let masks = generated_masks();
@@ -362,10 +488,14 @@ fn graphs() -> Vec<Graph> {
     if let Some(seed) = rotating_seed() {
         plan.extend((0..ROTATING_GRAPHS).map(|i| (seed, i)));
     }
-    plan.into_iter()
+    let mut all: Vec<Graph> = plan
+        .into_iter()
         .enumerate()
         .map(|(n, (seed, i))| generate(seed, i, nodes[n % nodes.len()], masks[n % masks.len()]))
-        .collect()
+        .collect();
+    // Parallel Film branches are rare in the draw; one is always there.
+    all.push(parallel_branches(FIXED_SEEDS[0]));
+    all
 }
 
 #[test]
@@ -424,16 +554,21 @@ fn no_generated_graph_is_refused_by_the_device() {
     let mut problems: Vec<String> = Vec::new();
     let (mut worst_view, mut worst_export, mut exports) = ((0u8, 0usize), 0u32, 0usize);
     let (mut n_film, mut n_masked, mut n_keys) = (0usize, 0usize, 0usize);
+    let (mut n_branched, mut n_parallel) = (0usize, 0usize);
     for g in &all {
         let name = format!("seed {} graph {}", g.seed, g.index);
         say(&format!(
-            "{name}: nodes {:?}, masks {:?}, show mask {:?}, compare {}",
+            "{name}: nodes {:?}, masks {:?}, show mask {:?}, compare {}, branches {}, parallel Film pairs {}",
             g.nodes.iter().map(|k| k.name()).collect::<Vec<_>>(),
             g.masks.iter().map(|k| k.name()).collect::<Vec<_>>(),
             g.masked,
-            g.compare
+            g.compare,
+            g.branches,
+            g.parallel_films
         ));
         n_film += usize::from(g.nodes.contains(&NodeKind::Film));
+        n_branched += usize::from(g.branches > 0);
+        n_parallel += g.parallel_films;
         n_masked += usize::from(!g.masks.is_empty());
         n_keys += g.json["nodes"]["links"]
             .as_array()
@@ -549,7 +684,7 @@ fn no_generated_graph_is_refused_by_the_device() {
         }
     }
     say(&format!(
-        "{} graphs ({n_film} with a Film node, {n_masked} with masks, {n_keys} key links), {exports} with exports; worst view {} codes, {} values over 1; worst PNG {worst_export} of 65535; {:?}",
+        "{} graphs ({n_film} with a Film node, {n_masked} with masks, {n_keys} key links, {n_branched} with picture branches, {n_parallel} parallel Film pairs), {exports} with exports; worst view {} codes, {} values over 1; worst PNG {worst_export} of 65535; {:?}",
         all.len(),
         worst_view.0,
         worst_view.1,
@@ -629,12 +764,12 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
                 cut_frames += usize::from(passes > 1);
                 most_passes = most_passes.max(passes);
                 line.push(format!("{what} {passes}"));
-                // The one resource limit: the pieces of a graph with several Film nodes are the piece grown by their summed
+                // The one resource limit: the pieces of a graph with a Film node (and the raster rows before it) are the piece grown by their summed
                 // reach on every side, so a piece cannot be smaller than that, and a binding under the smallest piece's
                 // pictures leaves no cut that fits. The CPU makes such a frame, with the bytes the smallest piece needs.
                 let film_nodes = g.nodes.iter().filter(|k| **k == NodeKind::Film).count();
                 let floor = got.report.device != ComputeDevice::Gpu
-                    && film_nodes >= 2
+                    && film_nodes >= 1
                     && got.report.device_refused
                     && got.report.cpu_reason.as_deref().is_some_and(|r| {
                         r.contains("byte buffer is larger than the adapter's limit")
@@ -689,6 +824,65 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
     ));
     assert!(problems.is_empty(), "{problems:#?}");
 }
+
+/// FNV-1a over a frame's bytes.
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// G-11 part 3, item 2: giving each Film node only its ancestors' pictures changes the areas, never a pixel. The frames of
+/// the two-branch graph on the CPU reference (Fit and 100 %) have the hashes they had when a Film node read every earlier
+/// picture; the device's frames are within the view bound of them.
+#[test]
+fn parallel_film_branches_keep_their_pixels() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let g = parallel_branches(1);
+    let src = d.source().with_settings(g.settings.clone());
+    let cpu = renderer(None, 256);
+    let states = || {
+        let mut zoomed = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+        zoomed.mode = ViewportMode::Percent { value: 147.0 };
+        [
+            ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0)),
+            zoomed,
+        ]
+    };
+    let hashes: Vec<u64> = states()
+        .iter()
+        .map(|st| fnv(&frame(&cpu, &src, st).rgba))
+        .collect();
+    say(&format!("two-branch CPU frame hashes: {hashes:016x?}"));
+    assert_eq!(hashes, EXPECTED_BRANCH_HASHES);
+    if let Some(gpu) = gpu() {
+        let device = renderer(Some(gpu), 256);
+        for st in states() {
+            let _ = frame(&device, &src, &st);
+            let got = frame(&device, &src, &st);
+            say(&format!(
+                "two-branch device frame hash {:016x}",
+                fnv(&got.rgba)
+            ));
+            assert_eq!(got.report.device, ComputeDevice::Gpu);
+            let (max, over) = frame_diff(&got, &frame(&cpu, &src, &st));
+            assert!(
+                max <= 2 && over < got.rgba.len() / 2000,
+                "{max} codes, {over} over 1"
+            );
+        }
+    }
+}
+
+/// The CPU frames of `parallel_film_branches_keep_their_pixels`, found with every Film node reading every earlier picture.
+const EXPECTED_BRANCH_HASHES: [u64; 2] = [0x9c79_44fc_79cf_83bd, 0x2dca_8c3a_cd34_a2c5];
 
 fn decode_png16_bytes(bytes: &[u8]) -> Vec<u32> {
     let decoder = png::Decoder::new(std::io::Cursor::new(bytes));

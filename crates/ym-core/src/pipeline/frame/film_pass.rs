@@ -136,6 +136,8 @@ struct FilmStepRun {
     film: FilmFrame,
     halo: usize,
     prefix: Arc<ColorChain>,
+    /// The Film nodes whose pictures this one reads: its ancestors in the plan's graph.
+    reads: Vec<u32>,
 }
 
 /// The Film nodes of one chain, ready to make their pictures over areas of one photo extent.
@@ -188,6 +190,7 @@ impl FilmRender {
         };
         let mut engine = None;
         let mut steps = Vec::new();
+        let film_reads = chain.film_reads();
         for id in chain.film_nodes() {
             let Some(node) = settings.nodes.film(id) else {
                 continue;
@@ -216,6 +219,7 @@ impl FilmRender {
                 film,
                 halo,
                 prefix,
+                reads: film_reads.get(&id).cloned().unwrap_or_default(),
             });
         }
         if steps.is_empty() {
@@ -235,7 +239,19 @@ impl FilmRender {
 
     /// The scheduler's schedule of the Film nodes alone (`ym_color::schedule`): their made and read areas.
     pub(crate) fn schedule(&self) -> Schedule {
+        // Each node reads the pictures of its ancestors in the plan's graph, not every earlier node's.
+        let deps = self
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                (0..i)
+                    .filter(|&j| s.reads.contains(&self.steps[j].id))
+                    .collect()
+            })
+            .collect();
         Schedule::new(self.steps.iter().map(|s| StepKind::Film.declared(s.halo)))
+            .with_picture_deps(deps)
     }
 
     /// The pixels of the photo the Film nodes read beyond the pixels they make: the sum of their halos (a node
@@ -261,6 +277,7 @@ impl FilmRender {
                 plan: Arc::new(crate::film::device_plan(&s.film, extent)),
                 scalars: crate::film::device_scalars(s.film.baked()),
                 tables: crate::film::device_tables(s.film.baked()),
+                reads: Some(s.reads.clone()),
             })
             .collect();
         FilmStack::new(self.frame, steps)
@@ -289,7 +306,7 @@ impl FilmRender {
         if want.is_empty() {
             return Ok(FilmPlanes::default());
         }
-        if !cover.area.contains(&read[0]) {
+        if !cover.area.contains(&want) {
             return Err(RenderError::Color(
                 "The picture does not cover what the Film node reads.".to_owned(),
             ));
