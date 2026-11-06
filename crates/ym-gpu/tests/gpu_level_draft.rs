@@ -3,7 +3,8 @@
 //!
 //! | Case | Asserted | Measured (Mesa lavapipe) |
 //! |---|---|---|
-//! | six maps (identity, half and double size, a shift of a third of a pixel, a pan that reads past every edge) over random RGBA8 pictures of odd sizes | every code within **1** of the CPU's (the arithmetic is the CPU's `f32` bilinear mix; a fused multiply-add may move a rounding by one code), and at least 99.9 % exact | see the printed numbers |
+//! | six maps (identity, half and double size, a shift of a third of a pixel, a pan that reads past every edge, an odd scale) over random RGBA8 pictures of odd sizes | every byte **identical** to the CPU's (the arithmetic is integer: 1/16384 pixel positions, 8-bit weights, so fast math cannot change a result) | identical |
+//! | 20 seeded random maps (steps in [1/8, 8], offsets that read past the edges, odd sizes) | every byte identical | identical |
 //! | the identity map | the source, byte for byte | identical |
 //!
 //! On lavapipe in `gpu-lavapipe` (`YM_REQUIRE_GPU=1`) and on Metal in `mac-gpu.yml`; skipped, loudly, without an adapter.
@@ -55,8 +56,40 @@ fn on_device(
         .expect("GPU job")
 }
 
+/// Runs one case on a device and asserts that its bytes are the CPU reference's.
+fn check(
+    dev: &common::TestGpu,
+    what: &str,
+    seed: u64,
+    src_size: (usize, usize),
+    map: DraftMap,
+    dst_size: (usize, usize),
+) {
+    let src = picture(src_size.0, src_size.1, seed);
+    let want = resample_rgba8(&src, src_size, map, dst_size).expect("the map fits");
+    let got = on_device(dev, src.clone(), src_size, map, dst_size);
+    assert_eq!(got.len(), want.len(), "{what}");
+    let worst = got
+        .iter()
+        .zip(&want)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap_or(0);
+    let exact = got.iter().zip(&want).filter(|(a, b)| a == b).count() as f64 / got.len() as f64;
+    let line = format!(
+        "[gpu_level_draft] {what}: worst {worst} code, {:.4} % exact",
+        exact * 100.0
+    );
+    println!("{line}");
+    let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("{line}\n"));
+    assert_eq!(got, want, "{what}: the CPU's bytes");
+    if what == "identity" {
+        assert_eq!(got, src, "the identity map is the source");
+    }
+}
+
 #[test]
-fn the_draft_kernel_is_the_cpu_reference_within_one_code() {
+fn the_draft_kernel_is_the_cpu_reference_byte_for_byte() {
     for dev in gpus() {
         let cases: [Case; 6] = [
             (
@@ -127,29 +160,31 @@ fn the_draft_kernel_is_the_cpu_reference_within_one_code() {
             ),
         ];
         for (i, (what, src_size, map, dst_size)) in cases.into_iter().enumerate() {
-            let src = picture(src_size.0, src_size.1, 11 + i as u64);
-            let want = resample_rgba8(&src, src_size, map, dst_size);
-            let got = on_device(dev, src.clone(), src_size, map, dst_size);
-            assert_eq!(got.len(), want.len(), "{what}");
-            let worst = got
-                .iter()
-                .zip(&want)
-                .map(|(a, b)| a.abs_diff(*b))
-                .max()
-                .unwrap_or(0);
-            let exact =
-                got.iter().zip(&want).filter(|(a, b)| a == b).count() as f64 / got.len() as f64;
-            let line = format!(
-                "[gpu_level_draft] {what}: worst {worst} code, {:.4} % exact",
-                exact * 100.0
+            check(dev, what, 11 + i as u64, src_size, map, dst_size);
+        }
+        // Seeded random maps: steps in [1/8, 8] (log-uniform), offsets that read past the edges, odd sizes.
+        let mut rng = Rng(0xD5AF7);
+        for k in 0..20 {
+            let mut size = |hi: f64| 1 + (rng.unit() * hi) as usize;
+            let src_size = (size(150.0), size(120.0));
+            let dst_size = (size(90.0), size(70.0));
+            let step = |u: f64| (0.125f64 * 64f64.powf(u)) as f32;
+            let sx = step(rng.unit());
+            let sy = step(rng.unit());
+            let span = |s: f32, n: usize| f64::from(s) * n as f64;
+            let tx = ((rng.unit() * 1.6 - 0.3) * (src_size.0 as f64 + span(sx, dst_size.0))) as f32
+                - 4.0;
+            let ty = ((rng.unit() * 1.6 - 0.3) * (src_size.1 as f64 + span(sy, dst_size.1))) as f32
+                - 4.0;
+            let map = DraftMap { sx, tx, sy, ty };
+            check(
+                dev,
+                &format!("random {k}"),
+                100 + k,
+                src_size,
+                map,
+                dst_size,
             );
-            println!("{line}");
-            let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("{line}\n"));
-            assert!(worst <= 1, "{what}: {worst} codes");
-            assert!(exact >= 0.999, "{what}: {exact}");
-            if what == "identity" {
-                assert_eq!(got, src, "the identity map is the source");
-            }
         }
     }
 }
