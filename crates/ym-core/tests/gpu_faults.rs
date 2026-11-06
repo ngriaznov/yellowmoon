@@ -888,8 +888,8 @@ fn a_lost_device_is_reopened_for_the_next_frame_and_the_cpu_note_clears() {
     assert!(!Arc::ptr_eq(&now, &gpu) && !now.is_lost());
     // Same pixels as before the loss.
     assert_eq!(
-        next.host_rgba().as_ref(),
-        first.host_rgba().as_ref(),
+        next.host_rgba().expect("read").as_ref(),
+        first.host_rgba().expect("read").as_ref(),
         "the frame on the new device equals the frame on the old one"
     );
     // Later frames keep the new device; nothing is opened again.
