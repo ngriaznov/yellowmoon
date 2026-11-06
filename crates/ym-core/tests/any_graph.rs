@@ -826,8 +826,10 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
 }
 
 /// The CPU frames of `a_before_view_makes_no_planes_and_is_not_cut_by_their_reach` (Fit, and 147 %), found before the Before
-/// view stopped reading the spatial steps of its chain.
-const EXPECTED_BEFORE_HASHES: [u64; 2] = [0x8d45_9d4b_fe28_cfc1, 0xc076_afbb_63f9_4577];
+/// view stopped reading the spatial steps of its chain. The 147 % frame was found again when the viewport began to snap the
+/// origin of a pan to a whole device pixel (G-13, `ViewportState::view_to_final`): the same view, up to half a device pixel
+/// further on. Fit is unchanged.
+const EXPECTED_BEFORE_HASHES: [u64; 2] = [0x8d45_9d4b_fe28_cfc1, 0x94ff_67c7_c4e9_7b96];
 
 /// G-11 part 3, item 3: the Before view runs no node, so it has no spatial step: its chain reads nothing beyond the view. A
 /// graph with raster rows and Film nodes makes no raster planes for it and is not cut by their reach (one piece at the
@@ -941,7 +943,9 @@ fn parallel_film_branches_keep_their_pixels() {
 }
 
 /// The CPU frames of `parallel_film_branches_keep_their_pixels`, found with every Film node reading every earlier picture.
-const EXPECTED_BRANCH_HASHES: [u64; 2] = [0x9c79_44fc_79cf_83bd, 0x2dca_8c3a_cd34_a2c5];
+/// The zoomed frame was found again when the viewport began to snap the origin of a pan to a whole device pixel (G-13); the
+/// Fit frame is unchanged.
+const EXPECTED_BRANCH_HASHES: [u64; 2] = [0x9c79_44fc_79cf_83bd, 0x3e9e_d1c8_69ff_71fd];
 
 fn decode_png16_bytes(bytes: &[u8]) -> Vec<u32> {
     let decoder = png::Decoder::new(std::io::Cursor::new(bytes));

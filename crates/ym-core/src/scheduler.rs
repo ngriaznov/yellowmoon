@@ -1,8 +1,10 @@
 //! The job scheduler: priorities, cancellation tokens and memory budgets (`docs/01-architecture.md`
 //! section Scheduling and threads).
 //!
-//! * **Priorities.** Viewport frames run before visible-tile passes, those before thumbnails, those
-//!   before export ([`Priority`]). A job that is running is never pre-empted.
+//! * **Priorities.** Viewport frames run before visible-tile passes, those before the bands of a
+//!   whole-image level being filled ([`Priority::Fill`]), those before thumbnails, those before
+//!   export ([`Priority`]). A job that is running is never pre-empted, so the fill is cut into one
+//!   job per band: a viewport frame waits for one band at most.
 //! * **Two workers.** The first runs everything the person is waiting for (viewport, tile and
 //!   thumbnail jobs) one at a time in priority order. The second runs export jobs and **gives way**
 //!   to the first: an export job starts only when no foreground job is queued or running, and a
@@ -13,7 +15,7 @@
 //!   every frame for as long as it takes (36 s for 50 MP on four cores). While an export tile
 //!   runs, a foreground job shares the cores with it; that overlap is bounded by one tile.
 //! * **Cancellation.** Every job carries a token. Moving to another photo ([`JobScheduler::navigate`])
-//!   cancels the viewport and tile jobs of the photo being left, pending and running, and the jobs
+//!   cancels the viewport, tile and fill jobs of the photo being left, pending and running, and the jobs
 //!   queued with [`JobScheduler::submit_superseded`] (the Look tab's tiles and the histogram: panel
 //!   requests that nobody wants once the person has moved on) for that photo, letting go of what
 //!   they hold at once; the filmstrip's thumbnails and export jobs are never cancelled by
@@ -700,6 +702,7 @@ mod tests {
         for (name, p) in [
             ("export", Priority::Export),
             ("thumbnail", Priority::Thumbnail),
+            ("fill", Priority::Fill),
             ("tile", Priority::TileNeural),
             ("viewport", Priority::Viewport),
         ] {
@@ -713,10 +716,54 @@ mod tests {
         for h in handles {
             h.wait().expect("job");
         }
+        // The bands of a level being filled run after every job somebody waits for (a frame, the tiles of the view), and
+        // before the filmstrip's thumbnails; a viewport frame submitted while a band runs waits for that band only.
         assert_eq!(
             *order.lock().expect("order"),
-            vec!["viewport", "tile", "thumbnail", "export"]
+            vec!["viewport", "tile", "fill", "thumbnail", "export"]
         );
+    }
+
+    #[test]
+    fn a_fill_queued_behind_a_running_band_lets_a_later_frame_in_first() {
+        let s = JobScheduler::new("test-fill").expect("scheduler");
+        let (gate, gate_job) = block(&s);
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut handles = Vec::new();
+        // Three bands queue, one after the other (a fill submits its next band when one is done), and a frame arrives meanwhile.
+        for name in ["band 1", "band 2", "band 3"] {
+            let order = Arc::clone(&order);
+            handles.push(s.submit(Priority::Fill, Some(PhotoId(1)), move |_| {
+                order.lock().expect("order").push(name);
+            }));
+        }
+        let order2 = Arc::clone(&order);
+        handles.push(s.submit(Priority::Viewport, Some(PhotoId(1)), move |_| {
+            order2.lock().expect("order").push("frame");
+        }));
+        gate.send(()).expect("open the gate");
+        gate_job.wait().expect("gate job");
+        for h in handles {
+            h.wait().expect("job");
+        }
+        assert_eq!(
+            *order.lock().expect("order"),
+            vec!["frame", "band 1", "band 2", "band 3"]
+        );
+    }
+
+    #[test]
+    fn navigation_cancels_the_fill_of_the_photo_left() {
+        let s = JobScheduler::new("test-fill-nav").expect("scheduler");
+        assert_eq!(s.navigate(PhotoId(1)), 0);
+        let (gate, gate_job) = block(&s);
+        let fill = s.submit(Priority::Fill, Some(PhotoId(1)), |token| token.is_cancelled());
+        let other = s.submit(Priority::Fill, Some(PhotoId(2)), |token| token.is_cancelled());
+        assert!(s.navigate(PhotoId(2)) >= 1, "the fill of photo 1 is cancelled");
+        gate.send(()).expect("open the gate");
+        gate_job.wait().expect("gate job");
+        assert!(fill.wait().is_err(), "the cancelled fill never ran");
+        assert_eq!(other.wait().expect("the fill of the photo moved to"), false);
     }
 
     #[test]

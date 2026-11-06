@@ -106,7 +106,13 @@ impl FrameProbe {
             },
             self.zoom * 100.0,
             r.scale,
-            if r.runs.frame_hits > 0 { "hit" } else { "miss" },
+            if r.runs.level_hits > 0 {
+                "level"
+            } else if r.runs.frame_hits > 0 {
+                "hit"
+            } else {
+                "miss"
+            },
             if self.rasters { "yes" } else { "no" },
             self.mask_view,
             match (
@@ -138,12 +144,13 @@ impl FrameProbe {
         let _ = write!(line, " film_nodes={nodes} film_window={fw}x{fh}");
         let _ = write!(
             line,
-            " | color_plans={} grade_plans={} color_passes={} output_passes={} display_hits={}",
+            " | color_plans={} grade_plans={} color_passes={} output_passes={} display_hits={} level_hits={}",
             r.runs.color_plans,
             r.runs.grade_plans,
             r.runs.color_passes,
             r.runs.output_passes,
-            r.runs.display_hits
+            r.runs.display_hits,
+            r.runs.level_hits
         );
         if let Some(gpu) = &self.gpu {
             let d = gpu.counters().since(self.before);

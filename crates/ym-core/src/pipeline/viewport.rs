@@ -248,6 +248,12 @@ impl ViewportState {
     /// pixel, so the frame is a window on the image and not a resample of it half a pixel off (a
     /// pan, or a cell of odd size, would otherwise leave the origin between pixels and soften every
     /// edge, at the zoom people use to judge sharpness).
+    ///
+    /// At every other zoom the origin of an axis the image fills is snapped to a whole *device*
+    /// pixel (`round(o * z) / z`), so a frame is a whole-pixel window of the picture rendered at
+    /// that zoom: that is what lets a pan at one zoom be a crop of a level kept on the device
+    /// ([`super::frame::level`]). The shift is at most half a device pixel. An axis the image does
+    /// not fill is centred and left as it is.
     #[must_use]
     pub fn view_to_final(&self, image: (usize, usize)) -> Affine {
         let (dw, dh) = self.device_size();
@@ -256,6 +262,11 @@ impl ViewportState {
         let origin = |centre: f64, view: usize, size: usize| {
             let o = centre - view as f64 * 0.5 / z;
             if (z - 1.0).abs() > 1e-9 {
+                let level = (size as f64 * z).round();
+                if level > view as f64 {
+                    let n = (o * z).round().clamp(0.0, level - view as f64);
+                    return n / z;
+                }
                 return o;
             }
             let whole = o.round();
@@ -462,7 +473,10 @@ mod tests {
         assert!(!v.is_fit(IMAGE));
         assert!((v.zoom(IMAGE) - 0.8).abs() < 1e-9);
         let after = v.final_point_at(IMAGE, (450.0, 100.0)).expect("inside");
-        assert!((before.0 - after.0).abs() < 1e-6 && (before.1 - after.1).abs() < 1e-6);
+        // The origin is snapped to a whole device pixel (at most half a device pixel, 0.625 image
+        // pixels at 80 %).
+        let half_px = 0.5 / v.zoom(IMAGE) + 1e-6;
+        assert!((before.0 - after.0).abs() <= half_px && (before.1 - after.1).abs() <= half_px);
         // Zooming back out below the fit returns to Fit and the middle.
         v.input(
             &ViewportInput::Zoom {
@@ -494,6 +508,30 @@ mod tests {
         let (dw, dh) = v.device_size();
         let c = v.centre_px(IMAGE);
         assert_eq!(c, (dw as f64 / 2.0, dh as f64 / 2.0));
+    }
+
+    #[test]
+    fn the_origin_is_a_whole_device_pixel_at_every_zoom() {
+        let (dw, dh) = state().device_size();
+        for value in [30.0, 50.0, 75.0, 100.0, 130.0, 150.0] {
+            let mut v = state();
+            v.set_mode(ViewportMode::Percent { value }, IMAGE);
+            for (dx, dy) in [(0.0, 0.0), (7.3, 3.1), (-123.456, 55.5), (1e9, -1e9)] {
+                v.input(&ViewportInput::Pan { dx, dy }, IMAGE);
+                let z = v.zoom(IMAGE);
+                let m = v.view_to_final(IMAGE);
+                let (ox, oy) = m.apply(0.0, 0.0);
+                for (o, size, view) in [(ox, IMAGE.0, dw), (oy, IMAGE.1, dh)] {
+                    if (size as f64 * z).round() > view as f64 {
+                        let n = o * z;
+                        assert!((n - n.round()).abs() < 1e-6, "{value}%: origin {o} is not whole");
+                        // The window stays inside the level of this zoom.
+                        let level = (size as f64 * z).round();
+                        assert!(n.round() >= 0.0 && n.round() + view as f64 <= level);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -1331,6 +1331,51 @@ pub(super) fn gather_job(
     finish_rgba(passes, dst, None)
 }
 
+/// One run of whole pixels copied from a strip of a level into the cell's frame ([`CropJob`]).
+pub(super) struct RowCopy {
+    /// The strip.
+    pub src: Arc<PooledBuffer>,
+    /// Where the run starts in the strip, in bytes.
+    pub src_at: u64,
+    /// Where it goes in the frame, in bytes.
+    pub dst_at: u64,
+    /// Its length in bytes (a whole number of pixels).
+    pub len: u64,
+}
+
+/// The window of a level (`frame::level`) as a cell-sized RGBA8 frame: buffer-to-buffer copies out of the level's strips.
+pub(super) struct CropJob {
+    /// The copies, in any order; together they cover the frame.
+    pub copies: Vec<RowCopy>,
+    /// The size of the frame in bytes.
+    pub bytes: u64,
+}
+
+/// Runs a [`CropJob`]. The copies move the bytes and change none, so the frame is the level's pixels bit for bit.
+pub(super) fn crop_job(
+    ctx: &GpuContext,
+    token: &CancelToken,
+    job: &CropJob,
+) -> Result<Rgba8, GpuError> {
+    token.check()?;
+    let covered: u64 = job.copies.iter().map(|c| c.len).sum();
+    if covered != job.bytes {
+        return Err(GpuError::InvalidInput(format!(
+            "the copies hold {covered} bytes, the frame {}",
+            job.bytes
+        )));
+    }
+    let mut passes = PassList::new(ctx, "level crop");
+    let dst = passes.keep(ctx.pool().acquire("level crop rgba8", job.bytes, IMAGE_USAGE)?);
+    for c in &job.copies {
+        passes
+            .encoder()
+            .copy_buffer_to_buffer(&c.src, c.src_at, &dst, c.dst_at, c.len);
+    }
+    token.check()?;
+    finish_rgba(passes, dst, None)
+}
+
 /// Reads an RGBA8 frame the device kept back to the host (`DeviceFrame::read`).
 pub(crate) fn read_job(
     ctx: &GpuContext,

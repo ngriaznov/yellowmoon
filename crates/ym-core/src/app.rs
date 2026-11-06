@@ -164,6 +164,9 @@ impl CoreOptions {
     pub fn new(data_root: PathBuf, app_root: PathBuf) -> Self {
         let render = RenderOptions {
             neural: crate::pipeline::NeuralStatus::probe(Some(&data_root)),
+            // The app and the CLI keep whole-image levels for the viewer; a render that has no
+            // viewer (the CLI's export) never asks for one.
+            levels: true,
             ..RenderOptions::default()
         };
         Self {

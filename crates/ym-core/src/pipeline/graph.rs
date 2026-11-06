@@ -261,6 +261,12 @@ pub struct RenderOptions {
     /// images; the frames are the same either way, bit for bit (the sampler reads the
     /// same samples), and the tests compare the two. On by default.
     pub resident_caches: bool,
+    /// Whether the viewer keeps whole-image levels: after a settings change settles, the photo is
+    /// rendered once at the zoom on screen, in the background, and kept on the device, so that a pan
+    /// at that zoom copies a rectangle out of it and renders nothing ([`frame::level`](super::frame)).
+    /// Needs a device that runs the view stages. Off by default (a test that counts the stages of a
+    /// request must not see a fill run beside it); [`crate::app::CoreOptions`] turns it on.
+    pub levels: bool,
     /// The colour of the letterbox around the photo (the paper colour).
     pub background: [u8; 3],
     /// Longest edge of a thumbnail in pixels (`docs/01`: 240).
@@ -337,6 +343,7 @@ impl std::fmt::Debug for RenderOptions {
             .field("view_band_bytes", &self.view_band_bytes)
             .field("view_limits", &self.view_limits)
             .field("resident_caches", &self.resident_caches)
+            .field("levels", &self.levels)
             .finish_non_exhaustive()
     }
 }
@@ -361,6 +368,7 @@ impl Default for RenderOptions {
             view_band_bytes: u64::MAX,
             view_limits: None,
             resident_caches: true,
+            levels: false,
             background: [255, 255, 255],
             thumbnail_px: 240,
             demosaic: forced_demosaic().unwrap_or(DEFAULT_METHOD),
@@ -423,6 +431,12 @@ pub struct StageRuns {
     pub display_hits: u64,
     /// Finished frames served from the frame cache.
     pub frame_hits: u64,
+    /// Viewport frames served as a rectangle copied out of a whole-image level: nothing was
+    /// sampled, coloured or sharpened for them ([`frame::level`](super::frame)).
+    pub level_hits: u64,
+    /// Bands of a whole-image level made (the background fill; each is a view of its own, so its
+    /// stages are counted as well).
+    pub level_bands: u64,
     /// Times the lens's planes and lists were made (`docs/21` section 3): once per photo and
     /// [`RawParams`], lens, camera and focus point, never for a move of an amount.
     pub lens_planes: u64,
@@ -463,6 +477,8 @@ impl StageRuns {
         self.output_passes += other.output_passes;
         self.display_hits += other.display_hits;
         self.frame_hits += other.frame_hits;
+        self.level_hits += other.level_hits;
+        self.level_bands += other.level_bands;
         self.lens_planes += other.lens_planes;
         self.blur_maps += other.blur_maps;
         self.lens_groups += other.lens_groups;
@@ -601,6 +617,8 @@ struct GraphState {
     node_thumbnails: BTreeMap<u32, super::thumbs::NodeThumbnailEntry>,
     /// Display-linear frames of views, before output sharpening (`frame::DisplayFrame`).
     display: Option<ByteLru<String, Arc<super::frame::DisplayFrame>>>,
+    /// The whole-image levels of the viewer (`frame::level`).
+    levels: super::frame::level::LevelStore,
     stats: Option<RenderStats>,
     /// The photo's lens plan, with the text of the inputs it was made from (`lens::LensCtx`).
     lens_ctx: Option<(String, Arc<lens::LensCtx>)>,
@@ -770,6 +788,7 @@ impl PhotoGraph {
                 .map(|t| t.png.len() + t.key.len())
                 .sum::<usize>()
             + st.display.as_ref().map_or(0, ByteLru::used)
+            + st.levels.bytes()
             + st.lens_planes.as_ref().map_or(0, |e| e.planes.bytes())
             + st.blur.as_ref().map_or(0, |e| e.bytes())
             + self.object.bytes()
@@ -787,6 +806,8 @@ impl PhotoGraph {
     /// one being looked at.
     pub fn release_full_resolution(&self) {
         let mut st = lock(&self.state);
+        // The photo is no longer looked at: its levels (a photo's worth of device memory each) go.
+        st.levels.clear();
         st.full = [None, None];
         st.tiles = None;
         st.lens_tiles = None;
@@ -803,6 +824,14 @@ impl PhotoGraph {
                 ..GraphState::default()
             };
         }
+    }
+
+    /// Runs `f` on the photo's whole-image levels (`frame::level`), under the graph's lock: keep it short.
+    pub(crate) fn with_levels<R>(
+        &self,
+        f: impl FnOnce(&mut super::frame::level::LevelStore) -> R,
+    ) -> R {
+        f(&mut lock(&self.state).levels)
     }
 
     /// A finished frame with this key, if one is cached.
@@ -3240,6 +3269,13 @@ impl<'a> Job<'a> {
         }
         if matches!(error, GpuError::Shader(_)) {
             self.r.inner.view_gpu_disabled.store(true, Ordering::SeqCst);
+        }
+        // The levels of the photo are what is cheapest to make again: a device that has no room gives them up first.
+        if matches!(
+            error,
+            GpuError::OutOfBudget { .. } | GpuError::BufferTooLarge { .. }
+        ) {
+            self.g.with_levels(|s| s.clear());
         }
         if self.opts.gpu_strict {
             return Err(RenderError::Gpu(reason));

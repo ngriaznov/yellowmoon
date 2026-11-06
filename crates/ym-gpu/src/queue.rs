@@ -1,5 +1,5 @@
 //! The priority queue in front of the device thread (`docs/01-architecture.md` section Scheduling
-//! and threads): viewport frames > visible-tile neural passes > thumbnails > export, with
+//! and threads): viewport frames > visible-tile neural passes > level fill > thumbnails > export, with
 //! cancellation tokens.
 //!
 //! [`Scheduler`] owns one worker thread. The worker creates a context `C` (for the GPU: the wgpu
@@ -20,7 +20,7 @@
 //!   (the device buffers of a cancelled render) is let go of then, not when the job's own turn would
 //!   have come. Cancelling a running job only sets the flag; the closure decides when to stop.
 //!   [`Scheduler::cancel_navigation`] (moving to another photo) cancels the pending and running
-//!   *viewport* and *tile* jobs of that photo; thumbnail and export jobs are never cancelled by
+//!   *viewport*, *tile* and *fill* jobs of that photo; thumbnail and export jobs are never cancelled by
 //!   navigation. An export is cancelled only through its own token (the user's "cancel").
 //! * **Shutdown.** [`Scheduler::shutdown`] lets the running job finish, resolves every pending job
 //!   with [`JobError::Shutdown`], stops the thread and joins it. Submitting afterwards resolves
@@ -48,16 +48,22 @@ pub enum Priority {
     Export = 0,
     /// Thumbnails after open and on look changes. Not cancelled by navigation.
     Thumbnail = 1,
+    /// The bands of a whole-image level the viewer fills in the background
+    /// (`docs/11-ui.md`, "Pans"): below every job somebody waits for, cancelled by navigation.
+    Fill = 2,
     /// Neural demosaic passes for the visible tiles at 100 %.
-    TileNeural = 2,
+    TileNeural = 3,
     /// Viewport frames: the picture the user is looking at.
-    Viewport = 3,
+    Viewport = 4,
 }
 
 impl Priority {
     /// Whether moving to another photo cancels jobs of this priority.
     pub const fn cancelled_by_navigation(self) -> bool {
-        matches!(self, Priority::Viewport | Priority::TileNeural)
+        matches!(
+            self,
+            Priority::Viewport | Priority::TileNeural | Priority::Fill
+        )
     }
 }
 

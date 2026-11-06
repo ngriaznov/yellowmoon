@@ -76,6 +76,7 @@
 mod device;
 mod export_tail;
 mod film_pass;
+pub mod level;
 
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -3517,22 +3518,8 @@ impl Renderer {
         let mask_view = state.mask_view.filter(|_| !state.before);
         let mut job = Job::new(self, src, cancel)?.with_mask_view(mask_view);
         let image = job.final_size()?;
-        let (dw, dh) = state.device_size();
-        let zoom = state.zoom(image);
-        let spec = ViewSpec {
-            out_w: dw,
-            out_h: dh,
-            view_to_final: state.view_to_final(image),
-            k: scale_for_zoom(zoom),
-            target: OutputTarget::Viewport,
-            before: state.before,
-            coarse_only: options.coarse_only,
-            cache: !options.no_cache,
-            background: self.options().background,
-            gpu_priority: Priority::Viewport,
-            dither_origin: (0, 0),
-            output,
-        };
+        let (spec, zoom, geometry) = self.viewport_spec(&job, state, image, options, output);
+        let ask = level::ask(&mut job, &spec, geometry, mask_view.is_some())?;
         // The `ym::perf` line of the frame (`crate::perf`); `None`, and nothing measured, unless `YM_PERF` is on.
         let probe = crate::perf::FrameProbe::start(
             self.options().gpu.clone(),
@@ -3545,14 +3532,49 @@ impl Renderer {
             },
             zoom,
         );
-        let result = render_view(job, &spec);
+        // A level of this zoom that has the window's rows serves it as a rectangle copied out of the strips; else the window is
+        // rendered as ever (`frame::level`).
+        let served = match &ask {
+            Some(ask) => level::crop(&mut job, &spec, ask),
+            None => Ok(None),
+        };
+        let result = match served {
+            Ok(Some((buffer, gpu))) => {
+                let report = job.finish(1, ComputeDevice::Gpu, spec.target);
+                Ok(RenderedFrame {
+                    width: spec.out_w,
+                    height: spec.out_h,
+                    rgba: Vec::new(),
+                    on_device: Some(DeviceFrame {
+                        buffer,
+                        width: spec.out_w,
+                        height: spec.out_h,
+                        gpu,
+                    }),
+                    sharp: true,
+                    report,
+                })
+            }
+            Ok(None) => render_view(job, &spec),
+            Err(e) => Err(e),
+        };
         if let Some(probe) = probe {
             probe.finish(&result);
         }
         let mut frame = result?;
+        // A window rendered with no level to serve it: the level is wanted (made in the background once the settings and the
+        // zoom have held still).
+        if let Some(ask) = ask
+            && frame.report.runs.level_hits == 0
+            && frame.sharp
+            && frame.report.device == ComputeDevice::Gpu
+        {
+            self.want_level(src, ask);
+        }
         // What the next round of the viewport is told at its start (`Renderer::views_on_cpu`): a frame the device refused is
         // the CPU's, and so is the next until the device makes one. A frame from the cache says nothing new.
         if frame.report.runs.frame_hits == 0
+            && frame.report.runs.level_hits == 0
             && let Some(graph) = self.existing_graph(src.id)
         {
             graph.note_view_frame(
@@ -3570,6 +3592,102 @@ impl Renderer {
         // readout or an export of the same photo must not replace it.
         self.note_stats(src.id, frame.report.stats());
         Ok(frame)
+    }
+
+    /// The view of a viewport state: the spec of its frame, the zoom, and where the window lies in the level of that zoom
+    /// when the zoom has levels ([`level::geometry_of`]). With levels on, the dither of the frame is counted from the
+    /// window's place in the level, whether or not the level is made yet, so that the frame looks the same on either road.
+    fn viewport_spec(
+        &self,
+        job: &Job<'_>,
+        state: &ViewportState,
+        image: (usize, usize),
+        options: &FrameOptions,
+        output: FrameOutput,
+    ) -> (ViewSpec, f64, Option<level::LevelGeometry>) {
+        let (dw, dh) = state.device_size();
+        let zoom = state.zoom(image);
+        let view_to_final = state.view_to_final(image);
+        let geometry = job
+            .options()
+            .levels
+            .then(|| level::geometry_of(&view_to_final, zoom, image, (dw, dh), state.is_fit(image)))
+            .flatten();
+        let spec = ViewSpec {
+            out_w: dw,
+            out_h: dh,
+            view_to_final,
+            k: scale_for_zoom(zoom),
+            target: OutputTarget::Viewport,
+            before: state.before,
+            coarse_only: options.coarse_only,
+            cache: !options.no_cache,
+            background: self.options().background,
+            gpu_priority: Priority::Viewport,
+            dither_origin: geometry.map_or((0, 0), |g| g.origin),
+            output,
+        };
+        (spec, zoom, geometry)
+    }
+
+    /// Makes the whole-image level of the zoom `state` shows, now, on the calling thread (the background fill does the same
+    /// band by band after the settings have held still, [`level`]): tests, and a caller that wants a pan to be free at once.
+    /// Returns how the level stands: [`level::LevelStatus::Ready`] when it is made, [`level::LevelStatus::None`] when the
+    /// state has no level (Fit, above 150 %, a letterbox window, a renderer with `levels` off or no device) or the device
+    /// cannot make it.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job.
+    pub fn fill_level(
+        &self,
+        src: &PhotoSource,
+        state: &ViewportState,
+        cancel: &CancelToken,
+    ) -> Result<level::LevelStatus, RenderError> {
+        self.fill_level_bands(src, state, usize::MAX, cancel)
+    }
+
+    /// [`Renderer::fill_level`] for at most `bands` bands of the level: what a part-made level serves, and how a fill
+    /// is stopped part-way, for the tests.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job.
+    pub fn fill_level_bands(
+        &self,
+        src: &PhotoSource,
+        state: &ViewportState,
+        bands: usize,
+        cancel: &CancelToken,
+    ) -> Result<level::LevelStatus, RenderError> {
+        let mut job = Job::new(self, src, cancel)?;
+        let image = job.final_size()?;
+        let options = FrameOptions::default();
+        let (spec, zoom, geometry) =
+            self.viewport_spec(&job, state, image, &options, FrameOutput::Device);
+        let Some(ask) = level::ask(&mut job, &spec, geometry, state.mask_view.is_some())? else {
+            return Ok(level::LevelStatus::None);
+        };
+        drop(job);
+        self.fill_level_now(src, &ask, cancel, bands);
+        Ok(self.level_status(src, zoom))
+    }
+
+    /// How the level of `zoom` (device pixels per image pixel) of a photo stands.
+    #[must_use]
+    pub fn level_status(&self, src: &PhotoSource, zoom: f64) -> level::LevelStatus {
+        self.existing_graph(src.id)
+            .map_or(level::LevelStatus::None, |g| {
+                g.with_levels(|s| s.status(zoom))
+            })
+    }
+
+    /// The levels a photo holds: how many (a partly made one counts) and the device bytes of their strips.
+    #[must_use]
+    pub fn levels_held(&self, id: crate::session::PhotoId) -> (usize, usize) {
+        self.existing_graph(id)
+            .map_or((0, 0), |g| g.with_levels(|s| (s.len(), s.bytes())))
     }
 
     /// Computes the full-resolution tiles a viewport state shows, so that the next
