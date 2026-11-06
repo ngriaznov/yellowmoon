@@ -694,7 +694,7 @@ A glass menu that opens upward from the button over the photo:
 | Item | Line | State |
 |---|---|---|
 | **Corrector** | "Grades all or part of the photo." | enabled |
-| **Film** | "Models a colour negative, a print and a scan." | enabled when the interface (F-09) is built; the core has the node (F-07) |
+| **Film** | "Models a colour negative, a print and a scan." | enabled (built in F-07 and F-09, released in 0.2.1; `docs/24` §4) |
 | *(separator)* | | |
 | Parallel | "Grade branches side by side." | greyed, tag "Later" |
 | Layer | "Blend one branch over another." | greyed, tag "Later" |

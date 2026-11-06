@@ -7,6 +7,42 @@ All notable changes to Yellowmoon are recorded here. The format follows
 A version bump on `main` publishes a release (`docs/12-distribution.md`), so every "Release x.y.z" pull request
 moves the entries below from Unreleased into a dated section for that version.
 
+## [0.2.1] - 2026-11-06
+
+The Film node: a node that makes a photo look as if it had been shot on a colour film, printed on paper and scanned. Panning and zooming are much faster, and every layout of nodes now renders on the graphics card. The pipeline version is 0.10.0 (was 0.9.0), because an older build cannot open a graph with a Film node. A photo with no Film node comes out byte for byte as in 0.2.0.
+
+### Added
+
+- **The Film node.** **Add node** now offers **Film**: "Models a colour negative, a print and a scan." It takes the picture through a film stock, an enlarger, a paper and a scan, from the makers' published data, and hands LogC4 back, so the nodes after it, the masks and the DNG work as they do for a corrector. A new Film node is Portra 400 on its matching paper. Its panel has the tabs **Film**, **Print**, **Halation**, **Grain** and **Mask**:
+  - **Film** picks the stock from tiles that show your photo in each one (20 stocks in three groups: colour negative, cine negative and slide), with Exposure and Strength. The line under the field gives the kind and ISO.
+  - **Print** picks the paper (Matching paper, or one of six), with Print exposure and the enlarger's Lights, Yellow and Magenta, and Cyan under More. A slide is scanned as it is, so its Print tab says "Slide film is scanned as it is. There is no print."
+  - **Halation** and **Grain** each have an Amount and a Size, where 100 % is the stock's own. The grain is the same on every render of the same photo and settings.
+  - **Mask** is a corrector's: masks, links, Bypass, Reset, rename, copy and paste work the same way. Reset puts the stock back to Portra 400 and every number to its start, and keeps the grain's seed.
+  - The Output's Look tab says "The look acts after the Film node. Choose Neutral to see the print as scanned." while a Film node is on. The Film node runs on the graphics card, in the app and in `ym`, exports included.
+- **`ym film list`.** It lists the stocks and papers a Film node of a `--settings` file can name, with ids, kinds, ISO numbers and matching papers (`--json` too). A Film node goes in a settings file as `{ "kind": "film", "film": { "stock": "kodak_portra_400" } }`. `ym doctor` has a **Film** line with the number of profiles and the data version, and an export's XMP says which data made the picture (`ym:FilmData`). `docs/10-cli.md` has the form.
+- **Already-rendered pictures when you pan and zoom.** At a zoom up to 150 % the app renders the whole photo once, at that zoom, when your settings hold still, and keeps it on the graphics card. A pan then shows that picture at once. When you zoom, you see a draft of the nearest picture right away, and the exact one replaces it when it is ready. While you move a slider, the part you can see is drawn first and the rest follows. Exports and thumbnails go first, before this work.
+
+### Changed
+
+- **Every layout of nodes renders on the graphics card.** Masks before a Film node, a Film node after a mask, branches and links in any order no longer send the photo or the export to the processor. The processor is used only when the graphics card reports an error, or when a piece of the view cannot fit it.
+- **Zoomed views with a Film node and masks are far faster.** A view is now cut to what the graphics card can hold, not to a small fixed size, so a zoomed view that took seconds is drawn in one piece.
+- **Pans snap to whole screen pixels, and the 8-bit dither stays with the image.** While you pan, the photo moves by whole pixels, and the dither's pattern moves with the picture and not with the screen. A pan can differ by at most one code from before. Exports are not affected.
+- **The app reopens a lost graphics device.** If macOS takes the device away, the next request opens a new one and the picture returns to the graphics card. If the device is lost three times within a minute, the processor keeps the rest of the session.
+- **"Rendering on the CPU" shows for every frame the processor draws,** not only the first.
+
+### Fixed
+
+- **The stock picker could not be read over a bright photo.** It opens over the photo, where the glass had nothing to blur; it is now dense enough to read.
+- **The graphics device was lost on a Mac with very large views or many nodes.** Metal allows only so many unfinished command lists, and a view with a long list of passes went past it. Passes are now sent in groups, and a large view is cut into pieces small enough for Metal's watchdog.
+- **Masks before a Film node sent the view to the processor.** A Brush, Object, Subject or Background mask on a node before a Film node made every frame and export slow, with no note. They now stay on the graphics card.
+- **A zoomed view with raster masks fell back to the processor** when the graphics card could have drawn it in pieces. It now draws it in pieces.
+- **The Before view no longer makes masks or Film pictures it does not show.**
+
+### Credits
+
+- The Film node's film and paper profiles are by **Andrea Volpato**, from [spektrafilm](https://github.com/andreavolpato/spektrafilm), under CC BY-SA 4.0 ([creativecommons.org/licenses/by-sa/4.0](https://creativecommons.org/licenses/by-sa/4.0/)). Yellowmoon ships the 28 profiles unmodified as data files and uses none of spektrafilm's code: the engine, the spectral upsampling table and the grain are our own. The profiles were made by the author from the makers' published data sheets; the original data belong to their holders. The notice is item 11 of `NOTICE`, which ships in the app; item 12 covers the CIE colour tables the engine reads.
+- Modelled on published data. Not affiliated with Kodak or Fujifilm. Kodak, Portra, Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm and Velvia are trademarks of their owners; the names say only which published data a profile models.
+
 ## [0.2.0] - 2026-11-04
 
 Nodes and masks: a node view for grading part of a photo, with masks that are drawn, found from a range of colour or brightness, or found by a model. The pipeline version is 0.9.0 (was 0.8.2). Photos with a curve and a look other than Neutral come out a little differently; every other photo comes out as before. **`--json` is no longer part of `ym`, and settings files of Yellowmoon 0.1 are refused.**

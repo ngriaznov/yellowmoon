@@ -56,6 +56,7 @@ I don't intend to compete with existing raw processors or to replace any of them
 - A command-line tool, `ym`, with the same results as the app, for scripts and batch jobs.
 - Auto can ask a grader to fine-tune each photo: Apple's on-device model on macOS 27, or the Claude Code or Antigravity you have installed (below).
 - Nodes and masks, behind a button. The **Nodes** button turns a photo into a small graph (the Input, corrector nodes you add, the Output) so you can grade part of it: a corrector takes masks that are shapes (Linear, Radial), ranges of colour or brightness, painted strokes (Brush), the out-of-focus background, an object you click (found by SAM 2.1 small, bundled, run on your Mac's processor), or the main subject and people (Apple's Vision, on Macs that support it). Show mask (M) shows what a mask selects. The simple view stays the default, and nothing about nodes or masks is saved with a photo.
+- A Film node, from 0.2.1. **Add node › Film** makes a photo look as if it had been shot on a colour film, printed on paper and scanned. Pick one of 20 stocks (colour negative, cine negative and slide) and, if you want, a paper; set the exposure, the enlarger's filtering, halation and grain. It takes masks and links like any corrector, and `ym film list` lists the stocks for a `--settings` file. The profiles are modelled on the makers' published data: see the credits.
 
 ## How the colour works
 
@@ -147,5 +148,7 @@ A mask of the kinds `object`, `subject`, `people` and `background` is found from
 Apache-2.0. Model weights in `data/models/` carry the licence their model card states (a model trained on ShareAlike data is CC BY-SA 4.0, with its own `LICENSE` file). See `NOTICE` for third-party data and credits, including Meta's SAM 2.1 small weights for Object masks (Apache-2.0), ARRI's published ALEXA colour matrices (via the Academy's aces-dev, AMPAS licence) and Weta's Sony sensor measurements (rawtoaces-data, Apache-2.0).
 
 This product includes DNG technology under license by Adobe.
+
+Film profiles by [Andrea Volpato (spektrafilm)](https://github.com/andreavolpato/spektrafilm), [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). The Film node reads them as unmodified data files; Yellowmoon uses none of spektrafilm's code, and its engine is our own. The profiles were made from the makers' published data sheets. Modelled on published data. Not affiliated with Kodak or Fujifilm. Kodak, Portra, Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm and Velvia are trademarks of their owners.
 
 Yellowmoon is not affiliated with ARRI or Sony. ARRI and ALEXA are trademarks of ARRI AG; Sony is a trademark of Sony Group Corporation. ARRI's looks are never included with Yellowmoon: you download them from ARRI and the app imports them.

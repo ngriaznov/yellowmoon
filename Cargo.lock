@@ -2937,7 +2937,7 @@ dependencies = [
 
 [[package]]
 name = "dngfit"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -4039,7 +4039,7 @@ dependencies = [
 
 [[package]]
 name = "golden"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -6397,7 +6397,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "oracle"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -11134,7 +11134,7 @@ checksum = "7a5a4b21e1a62b67a2970e6831bc091d7b87e119e7f9791aef9702e3bef04448"
 
 [[package]]
 name = "yellowmoon-app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "muda",
  "objc2",
@@ -11172,7 +11172,7 @@ dependencies = [
 
 [[package]]
 name = "ym-agents"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "jpeg-encoder",
@@ -11193,14 +11193,14 @@ dependencies = [
 
 [[package]]
 name = "ym-apple"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ym-core",
 ]
 
 [[package]]
 name = "ym-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -11228,7 +11228,7 @@ dependencies = [
 
 [[package]]
 name = "ym-color"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "proptest",
  "serde",
@@ -11240,7 +11240,7 @@ dependencies = [
 
 [[package]]
 name = "ym-compose"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -11249,7 +11249,7 @@ dependencies = [
 
 [[package]]
 name = "ym-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "half",
  "jsonschema",
@@ -11278,7 +11278,7 @@ dependencies = [
 
 [[package]]
 name = "ym-export"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "flate2",
  "jpeg-encoder",
@@ -11298,7 +11298,7 @@ dependencies = [
 
 [[package]]
 name = "ym-film"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "png 0.18.1",
  "serde",
@@ -11311,7 +11311,7 @@ dependencies = [
 
 [[package]]
 name = "ym-gpu"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytemuck",
  "half",
@@ -11334,7 +11334,7 @@ dependencies = [
 
 [[package]]
 name = "ym-lens"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "approx",
  "hex",
@@ -11353,7 +11353,7 @@ dependencies = [
 
 [[package]]
 name = "ym-looks"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "fs4",
  "hex",
@@ -11371,7 +11371,7 @@ dependencies = [
 
 [[package]]
 name = "ym-ml"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "approx",
  "burn",
@@ -11393,7 +11393,7 @@ dependencies = [
 
 [[package]]
 name = "ym-noise"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "approx",
  "bytemuck",
@@ -11410,7 +11410,7 @@ dependencies = [
 
 [[package]]
 name = "ym-profiles"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "jsonschema",
  "semver",
@@ -11424,7 +11424,7 @@ dependencies = [
 
 [[package]]
 name = "ym-raw"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytemuck",
  "half",

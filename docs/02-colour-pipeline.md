@@ -804,6 +804,17 @@ Until the owner's decision of 2026-10-29 the wizard and Preferences could make a
 
 What went with it: `DisplayTransform::ArriDisplayLut` and its types in `ym-color` (`ArriDisplayLut`, `DisplayLutInput`, `DisplayLutOutput`, `DisplayLutPrimaries`, `DisplayLutTransfer`), the library's display LUT entries and the `display_luts` list of the manifest (`docs/08`), the `display_rendering` preference and `ym render --display` (`docs/01` Persistence, `docs/10`), and the Display rendering row of Preferences and the choice at the end of the wizard (`docs/11`). The shader's display-LUT branch and the `disp_*` fields of the uniform block went with the ACES 2 kernel (pipeline 0.8.0). What an older version left on disk (a `display_luts` list, the files in `looks/arri-display/`, a saved `display_rendering`) is ignored and not touched (`docs/01` Persistence).
 
+## The Film node's colour (variant A)
+
+A Film node (`docs/24-film.md`, which is the spec) sits between correctors in LogC4 / AWG4 and returns LogC4 / AWG4, so the nodes after it, the masks and the DNG work as for a corrector. It does this through the cine rendering (C12) and its inverse; the node adds no stage to the Input or the Output, and a graph with no Film node is unchanged by a bit.
+
+1. **In.** The picture as the node before it made it, balanced by the Input, is taken to be lit by the film's own reference light (daylight for a daylight film, tungsten for a tungsten one): a neutral in the picture is a neutral on the film. The enlarger's neutral filtering (`docs/24` §3.5) balances the print.
+2. **The chain.** Spectral upsampling of each colour, the negative's curves and couplers, halation and grain (the spatial passes), the enlarger and the paper, then the scan, all from the stock's and the paper's published data. The colour part is baked into tables (`docs/24` §3.8) and the rest is per pixel.
+3. **Out.** The scan is a display colour (sRGB, Display P3 or Rec.2020, as the Output says). The node returns it to LogC4 / AWG4 through the inverse of C12 (`inverse_continuous`, `inverse_coordinates` and the per-pixel return below), so the Output's cine rendering turns it back into the scan. Paper white is scaled to display 1.0 and a paper black is the paper's own; the print is placed so that adding the node does not change the picture's brightness (scene 0.18 comes out at display 0.1110 for every stock).
+4. **Mask blend.** At the end, as for a corrector: `out = in + m · (film(in) − in)` in LogC4, with `m` the mask times the node's Strength.
+
+The rendering is not onto: about 5 % of the 8-bit sRGB colours have no pre-image (C12, *Nearest reachable*), and a print colour that has none is brought back with its luminance and hue kept and its chroma lowered. On 20 public photos and eight stocks no print pixel is unreachable (`docs/24` §3.8a). The Output's Look tab carries a note while a Film node is live ("The look acts after the Film node. Choose Neutral to see the print as scanned."), because the look acts on the Film node's picture.
+
 ## C13 · Display encode
 
 sRGB transfer for sRGB and Display P3, BT.1886 inverse (gamma 2.4) for Rec.2020. 8-bit outputs are dithered with a fixed blue-noise texture (seeded, deterministic). The matching ICC profile is embedded on export (`docs/09-export.md`).
