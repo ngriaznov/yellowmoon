@@ -899,6 +899,11 @@ fn raster_read(
     chains: &[&ColorChain],
     grid: Option<&SamplerGrid>,
 ) -> Result<Option<RasterRead>, RenderError> {
+    // The Before view runs no node, so its chain has no spatial step: nothing is read beyond the view and no plane or
+    // Film picture is made (`docs/23` section 5.12).
+    if read.before {
+        return Ok(None);
+    }
     let films = chains.iter().any(|c| c.has_films());
     let Some(grid) = grid.filter(|_| films || chains.iter().any(|c| c.uses_rasters())) else {
         return Ok(None);
@@ -1207,9 +1212,8 @@ fn cpu_view_planes(
     chain: &ColorChain,
     ctx: RasterCtx<'_>,
 ) -> Result<Option<Planes>, RenderError> {
-    // The Before view runs no node, so it makes no Film picture.
     if chain.has_films()
-        && let Some(rr) = ctx.read.filter(|rr| !rr.spec.before)
+        && let Some(rr) = ctx.read
         && let Some(film) = FilmRender::build(job, chain, rr.frame, rr.spec.target)?
     {
         let prepared = prepare_view(job, &rr.spec)?;
@@ -1996,7 +2000,7 @@ fn plain_pass(
         // A frame that does not fit one binding is made on the CPU, quietly (a view cut into bands
         // never gets here: `banded`).
         if input.fits(r) && grown_fits(rasters.as_ref(), r) {
-            let film = device_film(job, &grade.chain, rr.as_ref().filter(|_| !spec.before))?;
+            let film = device_film(job, &grade.chain, rr.as_ref())?;
             let data = PlainJob {
                 input,
                 chain: Arc::clone(&grade.chain),
@@ -2959,7 +2963,7 @@ fn raster_grown(
 ) -> Result<Option<ViewSpec>, RenderError> {
     // Only a chain with a Film node needs the wider picture whole: the planes of the others are made in tiles when it does
     // not fit (`grown_input`), so it does not decide the cut.
-    if !chains.iter().any(|c| c.has_films()) {
+    if read.before || !chains.iter().any(|c| c.has_films()) {
         return Ok(None);
     }
     let prepared = prepare_view_with(job, read, false)?;

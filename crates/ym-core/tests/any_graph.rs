@@ -825,6 +825,65 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
+/// The CPU frames of `a_before_view_makes_no_planes_and_is_not_cut_by_their_reach` (Fit, and 147 %), found before the Before
+/// view stopped reading the spatial steps of its chain.
+const EXPECTED_BEFORE_HASHES: [u64; 2] = [0x8d45_9d4b_fe28_cfc1, 0xc076_afbb_63f9_4577];
+
+/// G-11 part 3, item 3: the Before view runs no node, so it has no spatial step: its chain reads nothing beyond the view. A
+/// graph with raster rows and Film nodes makes no raster planes for it and is not cut by their reach (one piece at the
+/// default binding), and its pixels are the pixels it had when it made them and ignored them.
+#[test]
+fn a_before_view_makes_no_planes_and_is_not_cut_by_their_reach() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let g = parallel_branches(1);
+    let src = d.source().with_settings(g.settings.clone());
+    let states = || {
+        let mut fit = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+        fit.before = true;
+        let mut zoomed = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+        zoomed.mode = ViewportMode::Percent { value: 147.0 };
+        zoomed.before = true;
+        [fit, zoomed]
+    };
+    let cpu = renderer(None, 256);
+    let hashes: Vec<u64> = states()
+        .iter()
+        .map(|st| fnv(&frame(&cpu, &src, st).rgba))
+        .collect();
+    say(&format!("Before CPU frame hashes: {hashes:016x?}"));
+    assert_eq!(hashes, EXPECTED_BEFORE_HASHES);
+    let Some(gpu) = gpu() else { return };
+    // The default binding.
+    for st in states() {
+        // A fresh renderer, and the first frame: the planes are counted when they are made, not when they are served.
+        let device = renderer(Some(Arc::clone(&gpu)), 256);
+        let before = gpu.counters();
+        let got = frame(&device, &src, &st);
+        let used = gpu.counters().since(before);
+        say(&format!(
+            "Before device frame hash {:016x}, plane builds {}, pieces {}",
+            fnv(&got.rgba),
+            used.plane_builds,
+            got.report.runs.color_passes
+        ));
+        assert_eq!(got.report.device, ComputeDevice::Gpu);
+        assert_eq!(used.plane_builds, 0, "a Before view makes no raster planes");
+        assert_eq!(got.report.runs.color_passes, 1, "one piece");
+        let (max, over) = frame_diff(&got, &frame(&cpu, &src, &st));
+        assert!(
+            max <= 2 && over < got.rgba.len() / 2000,
+            "{max} codes, {over} over 1"
+        );
+    }
+}
+
 /// FNV-1a over a frame's bytes.
 fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {

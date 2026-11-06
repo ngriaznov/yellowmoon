@@ -713,8 +713,8 @@ fn prepared_for(
                 prepared.with_film(pictures, (r.extent.x, r.extent.y))
             }
             (None, _) => prepared.with_film(Arc::new(FilmPictures::empty()), (0, 0)),
-            // The job has no Film passes while the plan runs a Film node: the Before view (it runs no node, so no pixel
-            // reads a Film picture). Zero pictures are never read.
+            // The job has no Film passes while the plan runs a Film node: no pixel reads a Film picture (the Before view
+            // has no raster read at all, so it takes the arm above). Zero pictures are never read.
             (Some(_), None) => prepared.with_film(Arc::new(FilmPictures::empty()), (0, 0)),
         };
     }
