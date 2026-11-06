@@ -67,7 +67,8 @@ jobs:
     # The run of 4c5939f took 50 minutes with a warm dependency cache (ym-gpu 16, ym-core 28); the steps added after it (the 50 and
     # 70 MP tests, the encode split, the synthetic set and the golden subset, one 50 MP photo twice, the bench) are another
     # 30 to 45 by estimate, and the first run of a new cache key is cold. The numbers of the first runs go to docs/13.
-    timeout-minutes: 150
+    # Run 42157540711 (macos-15) hit 150: ym-gpu 38 min, faults/ML 3, ym-core 98, parity_gpu 6; the 50 and 70 MP step was cancelled and the rest skipped.
+    timeout-minutes: 240
     env:
       WGPU_BACKEND: metal
       # A release build finds data/ only inside an app bundle (docs/01, "Finding data/"); point it at the repository's.
