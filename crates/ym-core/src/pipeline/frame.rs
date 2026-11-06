@@ -1179,6 +1179,9 @@ fn refuse_size(
     grown: Option<&GrownInput>,
     route: &ViewRoute,
 ) -> Result<(), RenderError> {
+    if std::env::var("YM_CUT_DEBUG").is_ok() {
+        eprintln!("REFUSE {}", std::backtrace::Backtrace::force_capture());
+    }
     let (requested, limit) = input
         .overflow(route)
         .or_else(|| grown.and_then(|g| g.overflow(route)))

@@ -199,6 +199,13 @@ pub(crate) fn search_cut<E>(
             }
             let mut candidates = Vec::new();
             if !tiles_only {
+                // The bands the caller's own start gives are the first candidate of the count they make (the rows its
+                // area allows: the cut the fewest-bands rule always made, so that its frames keep their bits).
+                if n == 2
+                    && let Some(rows) = rows_guess.filter(|&r| r >= 1 && r < height)
+                {
+                    candidates.push(Shape::Rows(rows));
+                }
                 candidates.push(Shape::Rows(height.div_ceil(n).max(1)));
             }
             if columns && (tiles_only || tile_percent != 0) {
