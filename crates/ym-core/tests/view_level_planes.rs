@@ -8,7 +8,7 @@
 mod common;
 
 use std::io::Write as _;
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use common::*;
@@ -19,12 +19,53 @@ use ym_core::pipeline::{
     ViewportRect, ViewportState,
 };
 use ym_core::settings::DevelopSettings;
-use ym_core::vision::{FakeVision, VisionMasks};
+use ym_core::vision::{
+    FakeVision, VisionError, VisionKind, VisionMask, VisionMasks, VisionPicture, VisionProvider,
+    VisionSupport,
+};
 use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
 use ym_gpu::queue::CancelToken;
 
 const MODEL: &str = "ILCE-7RM4";
 const PROFILE: &str = "sony-ilce-7rm4";
+
+/// A Vision provider whose masks are held back until `open`, as a request that takes a second or two.
+#[derive(Debug)]
+struct Gate {
+    inner: FakeVision,
+    open: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl Gate {
+    fn shut() -> Arc<Self> {
+        Arc::new(Self {
+            inner: FakeVision::new(),
+            open: Mutex::new(false),
+            cv: Condvar::new(),
+        })
+    }
+
+    fn open(&self) {
+        *self.open.lock().unwrap() = true;
+        self.cv.notify_all();
+    }
+}
+
+impl VisionProvider for Gate {
+    fn probe(&self) -> VisionSupport {
+        self.inner.probe()
+    }
+
+    fn mask(&self, kind: VisionKind, picture: &VisionPicture) -> Result<VisionMask, VisionError> {
+        let mut open = self.open.lock().unwrap();
+        while !*open {
+            open = self.cv.wait(open).unwrap();
+        }
+        drop(open);
+        self.inner.mask(kind, picture)
+    }
+}
 
 fn gpu() -> Option<Arc<Gpu>> {
     match Gpu::start(GpuConfig::default()) {
@@ -69,10 +110,11 @@ fn a_subject_mask_that_arrives_after_the_level_frees_it() {
     let dir = tempfile::tempdir().expect("temp dir");
     scene.write(dir.path(), "DSC00001.ARW", MODEL);
     let d = Developed::open(dir);
+    let gate = Gate::shut();
     let r = Renderer::new(
         Arc::new(NeutralOnly),
         RenderOptions {
-            vision: Some(VisionMasks::new(Arc::new(FakeVision::new()))),
+            vision: Some(VisionMasks::new(gate.clone())),
             data_root: Some(data_root()),
             gpu: Some(gpu),
             gpu_stages: GpuStages::ALL
@@ -108,6 +150,7 @@ fn a_subject_mask_that_arrives_after_the_level_frees_it() {
     assert_eq!(request(false).report.runs.level_hits, 1);
     let before = r.levels_held(src.id);
     // The plane arrives: the settings are the same, the key is not.
+    gate.open();
     r.vision_prepare(&src);
     let end = Instant::now() + Duration::from_secs(60);
     while r.vision_worker_alive(src.id) {

@@ -7,7 +7,7 @@
 //! colour chain, output sharpening, C13 with its dither, the Display P3 encode) and kept on the device
 //! as RGBA8 in strips of whole rows. It is the picture [`Renderer::viewport_frame_to`] would draw for
 //! a window of the photo, made for every window at once: a pan at that zoom copies the rectangle the
-//! cell shows out of the strips into a cell-sized device buffer (a [`DeviceFrame`], so the native
+//! cell shows out of the strips into a cell-sized device buffer (a [`DeviceFrame`](super::DeviceFrame), so the native
 //! viewport is unchanged) and renders nothing.
 //!
 //! Levels are at the *exact* zoom and not at the raw group's scale `k`: Film grain, halation, the
@@ -16,13 +16,13 @@
 //! is, window for window, the picture the window path makes, **bit for bit** on the same device when
 //! the window starts on a whole pixel of the level (the viewport snaps its origin to whole device
 //! pixels, [`ViewportState::view_to_final`](crate::pipeline::ViewportState::view_to_final)) and the
-//! window's dither is counted from its place in the level ([`ViewSpec::dither_origin`]): the dither
+//! window's dither is counted from its place in the level (`ViewSpec::dither_origin`): the dither
 //! sticks to the image, not to the screen, which differs from the screen-anchored dither by one code
 //! at most.
 //!
 //! # When there is one
 //!
-//! * [`RenderOptions::levels`] is on, the request is a device frame ([`FrameOutput::Device`]) of the
+//! * [`RenderOptions::levels`](crate::pipeline::RenderOptions::levels) is on, the request is a device frame ([`FrameOutput::Device`]) of the
 //!   photo as it is (not the Before view, not a mask view), the device runs the view stages, and the
 //!   photo does not fit the cell (`is_fit`) at a zoom up to [`LEVEL_MAX_ZOOM`] (150 %). Fit is served
 //!   by the frame cache already; above 150 % a window reads a small part of the 100 % picture.
@@ -44,7 +44,7 @@
 //! # The fill
 //!
 //! After a window is rendered with no level to serve it, [`Renderer::viewport_frame_to`] records
-//! what it wants ([`LevelAsk`]). A short-lived thread waits [`LEVEL_DEBOUNCE`] for the key (settings
+//! what it wants (`LevelAsk`). A short-lived thread waits [`LEVEL_DEBOUNCE`] for the key (settings
 //! and zoom) to stay the same, so that a slider drag, which changes it every few milliseconds, starts
 //! nothing; then the level is filled by **one scheduler job per band** at [`Priority::Fill`], below
 //! every viewport frame and tile job (a running job is never pre-empted, so a frame waits for one
@@ -1183,7 +1183,11 @@ impl Renderer {
         let handle = self
             .scheduler()
             .submit(Priority::Fill, Some(id), move |token| {
-                let step = fill_step(&r, &src, &ticket, token);
+                // A panic in a band ends the fill (the scheduler catches it; nobody else would end the fill).
+                let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    fill_step(&r, &src, &ticket, token)
+                }))
+                .unwrap_or(Step::Stop);
                 match step {
                     Step::More | Step::Warm => r.submit_fill(src, ticket),
                     Step::Done | Step::Stop => {
