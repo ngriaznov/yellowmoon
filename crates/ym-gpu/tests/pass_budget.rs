@@ -89,14 +89,28 @@ fn device(timestamps: bool) -> Option<Gpu> {
     )
 }
 
+/// The chain on the CPU, in plain Rust: the same words, the same copies in the same order, as bits.
+fn expected() -> (Vec<u32>, Vec<u32>) {
+    let mut a: Vec<u32> = (0..WORDS).map(|j| (j as f32).to_bits()).collect();
+    let mut b: Vec<u32> = (0..WORDS).map(|j| (1000.0 + j as f32).to_bits()).collect();
+    for i in 0..PASSES {
+        let cs = ((i * 5 + 1) % WORDS) as usize;
+        let cd = ((i * 11 + 3) % WORDS) as usize;
+        if i % 2 == 0 {
+            b[cd] = a[cs];
+        } else {
+            a[cd] = b[cs];
+        }
+    }
+    (a, b)
+}
+
+// Never make one submission of thousands of passes here: Metal refuses past 4096 outstanding command buffers per queue
+// (about two per pass), see `PASS_BUDGET`. The references below are the CPU, or a budget of 1024 (about 2048 buffers).
 #[test]
 fn a_list_of_three_thousand_passes_is_cut_by_the_pass_budget_and_gives_the_same_bytes() {
-    let Some(g) = device(false) else { return };
-    g.set_pass_budget(u32::MAX);
-    let whole = run_on(&g);
-    assert_eq!(whole.submissions, 1);
-    assert_eq!(whole.max_split_passes, PASSES);
-    assert_ne!(whole.a, whole.b);
+    let (want_a, want_b) = expected();
+    assert_ne!(want_a, want_b);
 
     for (budget, label) in [(0, "default"), (7, "7"), (1, "1")] {
         let g = device(false).expect("device");
@@ -107,8 +121,8 @@ fn a_list_of_three_thousand_passes_is_cut_by_the_pass_budget_and_gives_the_same_
             "pass budget {label}: {} submissions, at most {} passes in one",
             cut.submissions, cut.max_split_passes
         );
-        assert_eq!(cut.a, whole.a, "budget {label}: buffer a");
-        assert_eq!(cut.b, whole.b, "budget {label}: buffer b");
+        assert_eq!(cut.a, want_a, "budget {label}: buffer a");
+        assert_eq!(cut.b, want_b, "budget {label}: buffer b");
         assert!(
             cut.max_split_passes <= limit,
             "budget {label}: {}",
@@ -126,15 +140,20 @@ fn a_timed_list_is_cut_by_the_pass_budget_too_and_still_reports_its_passes() {
         eprintln!("no timestamp queries on this adapter: the timed split is not checked");
         return;
     }
-    g.set_pass_budget(u32::MAX);
+    // Not unbounded: 3000 passes in one submission would pass 4096 Metal command buffers. 1024 passes is about 2048.
+    g.set_pass_budget(1024);
     let whole = run_on(&g);
+    let (want_a, want_b) = expected();
+    assert_eq!(whole.a, want_a);
+    assert_eq!(whole.b, want_b);
+    assert!(whole.max_split_passes <= 1024);
     for budget in [0, 7] {
         let g = device(true).expect("device");
         g.set_pass_budget(budget);
         let cut = run_on(&g);
         let limit = if budget == 0 { PASS_BUDGET } else { budget };
-        assert_eq!(cut.a, whole.a);
-        assert_eq!(cut.b, whole.b);
+        assert_eq!(cut.a, want_a);
+        assert_eq!(cut.b, want_b);
         assert!(cut.max_split_passes <= limit);
         assert_eq!(cut.submissions, u64::from(PASSES.div_ceil(limit)));
         let t = cut.timings.expect("timings of a cut list");
