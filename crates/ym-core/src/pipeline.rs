@@ -66,8 +66,7 @@ pub use frame::{
 };
 pub use graph::{
     ComputeDevice, GpuReopener, PhotoGraph, RawPrefetch, RenderOptions, RenderReport, Renderer,
-    ViewLimits,
-    StageCounters, StageRuns, StageTimings,
+    StageCounters, StageRuns, StageTimings, ViewLimits,
 };
 pub use object::{
     MaskFound, NOTHING_FOUND_SENTENCE, NothingFound, ObjectModel, ObjectPhase, ObjectPlanes,

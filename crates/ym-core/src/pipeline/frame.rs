@@ -114,7 +114,7 @@ use super::graph::{
     TileImage,
 };
 use super::schedule::{
-    Shape, Tile, area_bytes, camera_bytes, picture_bytes, search_cut, tiles_of,
+    NO_TILES, Shape, Tile, area_bytes, camera_bytes, picture_bytes, search_cut, tiles_of,
 };
 use super::thumbs::{Tap, signal_source};
 use super::viewport::{MapFrom, MaskStyle, ViewportState};
@@ -862,37 +862,6 @@ pub(crate) struct RasterRead {
     pub origin: (i64, i64),
 }
 
-/// How far the picture `read` makes is read beyond itself by the spatial steps of `chains`, in output pixels: the raster
-/// masks' receptive field and the Film nodes' halos, as the scheduler sums them (`ym_color::schedule`); 0 for a chain with
-/// no spatial step.
-fn view_reach(
-    job: &mut Job<'_>,
-    read: &ViewSpec,
-    chains: &[&ColorChain],
-    grid: &SamplerGrid,
-) -> Result<usize, RenderError> {
-    let u_px = 1.0 / grid.photo_frame().pixel;
-    let mut film = None;
-    if chains.iter().any(|c| c.has_films()) {
-        let frame = view_frame(&read.view_to_final, job.final_size()?);
-        let extent = Area::whole(frame.w, frame.h);
-        for chain in chains {
-            if let Some(f) = FilmRender::build(job, chain, extent, read.target)? {
-                film = Some(f);
-                break;
-            }
-        }
-    }
-    Ok(chains
-        .iter()
-        .map(|c| {
-            c.schedule(u_px, &|id| film.as_ref().and_then(|f| f.reach_of(id)))
-                .total_reach()
-        })
-        .max()
-        .unwrap_or(0))
-}
-
 /// The raster read of the picture `read` makes for `chains`, or `None` when no chain has a raster row or none
 /// of the photo is in the picture.
 fn raster_read(
@@ -1101,7 +1070,7 @@ fn plane_tiles(
         rr.extent.h,
         rows_guess,
         true,
-        100,
+        0,
         &mut |_, tiles| {
             let Some(layout) = layout_of(tiles) else {
                 return Ok(None);
@@ -1123,7 +1092,7 @@ fn plane_tiles(
     )?;
     let Some(shape) = shape else { return Ok(None) };
     // The chosen shape's tiles, each with the sampled picture of its own.
-    let Some(layout) = shape_layout(&layout_of, shape, rr) else {
+    let Some(layout) = layout_of(&shape.tiles(rr.extent.w, rr.extent.h)) else {
         return Ok(None);
     };
     let mut made: Vec<PlaneTile> = Vec::new();
@@ -1139,15 +1108,6 @@ fn plane_tiles(
         });
     }
     Ok(Some(made))
-}
-
-/// The layout of the tiles `shape` cuts the extent of `rr` into.
-fn shape_layout(
-    layout_of: &dyn Fn(&[Tile]) -> Option<Vec<(Area, Area)>>,
-    shape: Shape,
-    rr: &RasterRead,
-) -> Option<Vec<(Area, Area)>> {
-    layout_of(&shape.tiles(rr.extent.w, rr.extent.h))
 }
 
 /// What names the raster planes of a view's rows besides the rows themselves (`ym_gpu::kernels::mask_raster::PlaneKey`,
@@ -1179,9 +1139,6 @@ fn refuse_size(
     grown: Option<&GrownInput>,
     route: &ViewRoute,
 ) -> Result<(), RenderError> {
-    if std::env::var("YM_CUT_DEBUG").is_ok() {
-        eprintln!("REFUSE {}", std::backtrace::Backtrace::force_capture());
-    }
     let (requested, limit) = input
         .overflow(route)
         .or_else(|| grown.and_then(|g| g.overflow(route)))
@@ -2958,15 +2915,32 @@ fn band_split(
         spec.out_h,
         rows_guess,
         true,
-        // A sharpened view in tiles is finished by the CPU stage over the whole display frame: bands (the device's fused
-        // tail) are cut unless none fits in 16 pieces.
-        if sharpening.is_some() { 0 } else { 100 },
+        // A view with a Film node is cut by cost, bands and tiles: thin bands each read nearly the whole wider picture, and
+        // tiles of a sharpened view cost the CPU stage over the display frame (about 150 ms at 2080 x 1387), far less than
+        // the work they save. A sharpened view without one is cut in bands (the device's fused tail, and the pixels of the
+        // view in one piece bit for bit) before the ladder tries tiles; an unsharpened one tries tiles when no band fits.
+        match (sharpening.is_some(), chains.iter().any(|c| c.has_films())) {
+            // Tiles of a sharpened view leave the stage to the CPU (the pixels of the view in one piece to a code, not bit
+            // for bit, where its bands are bit for bit: `device_bands_of_a_magnified_film_view_equal_the_view_in_one_piece`):
+            // a sharpened view is cut in bands when 16 fit, and with a Film node in tiles when they do not.
+            (true, true) => 0,
+            (true, false) => NO_TILES,
+            (false, true) => 100,
+            (false, false) => 0,
+        },
         &mut |shape, tiles| {
-            // Rows are all tested (the photo's edge cuts the sides of the pieces differently); of tiles the middle one is,
-            // the largest the photo's edge does not cut, and its cost stands for the others.
+            // The photo's edge cuts the pieces differently, so every piece of a cut into at most 16 is tested; of more
+            // tiles the four corners and the middle one are (the escaped buffer of G-12: the middle tile alone was not the
+            // largest at the photo's corner).
             let tested: Vec<(usize, usize, usize, usize)> = match shape {
-                Shape::Tiles(..) => tiles.get(tiles.len() / 2).copied().into_iter().collect(),
-                Shape::Whole | Shape::Rows(_) => tiles.to_vec(),
+                Shape::Tiles(..) if tiles.len() > 16 => {
+                    let cols = tiles.iter().take_while(|t| t.1 == tiles[0].1).count();
+                    let n = tiles.len();
+                    let mut picks = vec![0, cols - 1, n / 2, n - cols, n - 1];
+                    picks.dedup();
+                    picks.into_iter().map(|i| tiles[i]).collect()
+                }
+                _ => tiles.to_vec(),
             };
             let mut pixels = 0u64;
             for &(x, y, w, h) in &tested {
@@ -2978,20 +2952,20 @@ fn band_split(
                     }
                 }
             }
-            // A shape of tiles: the representative tile's cost for every tile.
+            // Of a sample of tiles, their mean cost stands for every tile.
             let scaled = pixels * tiles.len() as u64 / tested.len().max(1) as u64;
             Ok::<Option<u64>, RenderError>(Some(scaled))
         },
     )?;
-    if std::env::var("YM_CUT_DEBUG").is_ok() {
-        eprintln!(
-            "CUT {}x{} sharpening {} magnified {magnified} band {} -> {shape:?} last {last:?}",
-            spec.out_w,
-            spec.out_h,
-            sharpening.is_some(),
-            route.band_bytes
-        );
-    }
+    tracing::debug!(
+        view = %format!("{}x{}", spec.out_w, spec.out_h),
+        sharpened = sharpening.is_some(),
+        magnified,
+        band_bytes = route.band_bytes,
+        ?shape,
+        ?last,
+        "the cut of a view"
+    );
     if shape.is_none() {
         let (requested, limit) = last.unwrap_or((0, route.band_bytes));
         job.view_gpu_failed(&GpuError::BufferTooLarge { requested, limit })?;
@@ -3012,9 +2986,12 @@ fn tile_of(spec: &ViewSpec, x: usize, y: usize, w: usize, h: usize) -> ViewSpec 
     }
 }
 
-/// `read` grown by the reach of the spatial steps of `chains` on every side (an upper bound of the wider picture a Film node
-/// reads, which is cut to the photo's extent), or `None` when no chain has a Film node (the raster planes are made in tiles
-/// and need no whole wider picture) or none of the photo is in `read`.
+/// The wider picture a Film node reads for the picture `read`, as a view of its own, or `None` when no chain has a Film node
+/// (the raster planes are made in tiles and need no whole wider picture), none of the photo is in `read`, or nothing is read
+/// beyond it. **The same area the render reads** ([`raster_read`]: the scheduler's inference cut to the photo's extent), not an
+/// estimate of it: the cut's invariant is that every buffer of every piece fits, and a buffer is sized by this area (G-12:
+/// a symmetrical bound of the reach could be smaller than the area, for a view at the photo's edge or with several
+/// spatial steps, and a piece judged to fit then did not).
 fn raster_grown(
     job: &mut Job<'_>,
     read: &ViewSpec,
@@ -3029,14 +3006,11 @@ fn raster_grown(
     let Some(grid) = prepared.photo_grid() else {
         return Ok(None);
     };
-    let halo = view_reach(job, read, chains, &grid)?;
-    Ok((halo > 0).then(|| ViewSpec {
-        out_w: read.out_w + 2 * halo,
-        out_h: read.out_h + 2 * halo,
-        view_to_final: Affine::scale_translate(1.0, 1.0, -(halo as f64), -(halo as f64))
-            .then(&read.view_to_final),
-        ..read.clone()
-    }))
+    let Some(rr) = raster_read(job, read, chains, Some(&grid))? else {
+        return Ok(None);
+    };
+    let grown = (rr.spec.out_w, rr.spec.out_h) != (read.out_w, read.out_h);
+    Ok(grown.then_some(rr.spec))
 }
 
 fn display_key(

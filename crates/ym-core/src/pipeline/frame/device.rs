@@ -1535,9 +1535,18 @@ mod tests {
             binding_bytes: 128 * MIB,
             budget_bytes: 4096 * MIB,
         };
-        assert_eq!(view_bytes(lavapipe, u64::MAX, false, false), (128 * MIB, 128 * MIB));
-        assert_eq!(view_bytes(lavapipe, u64::MAX, true, false).0, 128 * MIB / 3 * 2);
-        assert_eq!(view_bytes(lavapipe, u64::MAX, false, true).0, 128 * MIB / 28 * 16);
+        assert_eq!(
+            view_bytes(lavapipe, u64::MAX, false, false),
+            (128 * MIB, 128 * MIB)
+        );
+        assert_eq!(
+            view_bytes(lavapipe, u64::MAX, true, false).0,
+            128 * MIB / 3 * 2
+        );
+        assert_eq!(
+            view_bytes(lavapipe, u64::MAX, false, true).0,
+            128 * MIB / 28 * 16
+        );
         // The Mac of the owner's log: a binding of 2 GiB or more, the 4 GiB budget: a share of the budget.
         let mac = ViewLimits {
             binding_bytes: 2048 * MIB,
@@ -1560,6 +1569,9 @@ mod tests {
             binding_bytes: 2048 * MIB,
             budget_bytes: 2048 * MIB,
         };
-        assert_eq!(view_bytes(small, u64::MAX, false, false).0, 2048 * MIB / ViewLimits::BUDGET_DIVISOR);
+        assert_eq!(
+            view_bytes(small, u64::MAX, false, false).0,
+            2048 * MIB / ViewLimits::BUDGET_DIVISOR
+        );
     }
 }

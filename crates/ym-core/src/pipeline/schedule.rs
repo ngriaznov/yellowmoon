@@ -91,6 +91,10 @@ pub(crate) const MAX_COSTED_PIECES: usize = 16;
 /// (512 x 512). The cost of a cut is the sum of its pieces' wider pictures in pixels plus this for each piece.
 pub(crate) const PIECE_COST_PX: u64 = 512 * 512;
 
+/// `tile_percent` of [`search_cut`]: no grid of tiles among the costed candidates (the ladder after them still cuts tiles when
+/// no band fits).
+pub(crate) const NO_TILES: u64 = u64::MAX;
+
 /// How a window is cut.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Shape {
@@ -163,9 +167,9 @@ impl Shape {
 ///    time; then, with one row not enough, tiles with the longer side halved in turn (the width stays even, so that a
 ///    tile starts on an even column: two codes share a word).
 ///
-/// `tile_percent` scales the cost of a grid of tiles (100: as it is; more where tiles leave work to the host). 0: tiles are
-/// tried only when no band fits in 16 pieces, as for a sharpened view, whose tiles are finished by the CPU stage over the
-/// whole display frame where the device's fused tail needs bands.
+/// `tile_percent` scales the cost of a grid of tiles (100: as it is). 0: tiles are tried only when no band fits in 16 pieces.
+/// [`NO_TILES`]: not at all before the ladder. A sharpened view is cut in bands when it can be: its tiles are finished by the
+/// CPU stage over the whole display frame, where the device's fused tail needs bands and gives the view in one piece bit for bit.
 ///
 /// `fits` is given the tiles of the candidate shape; it may test a representative tile (the one with the most photo around
 /// it) when the tiles are alike. `columns` allows the cut in columns.
@@ -208,7 +212,7 @@ pub(crate) fn search_cut<E>(
                 }
                 candidates.push(Shape::Rows(height.div_ceil(n).max(1)));
             }
-            if columns && (tiles_only || tile_percent != 0) {
+            if columns && (tiles_only || (tile_percent != 0 && tile_percent != NO_TILES)) {
                 for c in 2..=n.min(width / 2) {
                     if n % c == 0 {
                         let r = n / c;
@@ -227,7 +231,9 @@ pub(crate) fn search_cut<E>(
                 }
                 tried.push(shape);
                 if let Some(pixels) = fits(shape, &tiles)? {
-                    first_fit.get_or_insert(n);
+                    // The search ends one count after the fewest pieces that fit (a start the caller guessed can fit with
+                    // many more than the count it is tried under).
+                    first_fit = Some(first_fit.map_or(tiles.len(), |f| f.min(tiles.len())));
                     let mut cost = Shape::cost(pixels, tiles.len());
                     if matches!(shape, Shape::Tiles(..)) {
                         cost = cost.saturating_mul(tile_percent.max(100)) / 100;
@@ -376,8 +382,8 @@ mod tests {
 
     #[test]
     fn beyond_sixteen_pieces_the_cut_is_the_largest_piece_that_fits() {
-        // 5120 x 2880 with a reach of 17 at 2 MB a picture: more than 16 pieces, bands of the fewest that fit.
-        let limit = 2u64 << 20;
+        // 5120 x 2880 with a reach of 17 at 8 MB a picture: more than 16 pieces, bands of the fewest that fit.
+        let limit = 8u64 << 20;
         let Some(Shape::Rows(rows)) = cut(5120, 2880, 17, limit, true) else {
             panic!("bands");
         };
@@ -402,6 +408,28 @@ mod tests {
         assert_eq!(cut(1332, 888, 300, 1 << 20, true), None);
         // Never a band of no rows, however small the limit.
         assert_eq!(cut(64, 5, 0, 1, false), None);
+    }
+
+    /// A start the caller guessed that fits with many pieces does not end the search for the cheapest cut at its count.
+    #[test]
+    fn a_guess_with_many_pieces_does_not_hide_a_cheaper_cut() {
+        let (w, h, reach) = (2000usize, 1400usize, 500usize);
+        let limit = 60u64 << 20;
+        let shape = search_cut(w, h, Some(40), true, 100, &mut |_, tiles| {
+            let fits = tiles
+                .iter()
+                .all(|&(_, _, tw, th)| picture_bytes(tw + 2 * reach, th + 2 * reach) <= limit);
+            Ok::<_, ()>(fits.then(|| {
+                tiles
+                    .iter()
+                    .map(|&(_, _, tw, th)| ((tw + 2 * reach) * (th + 2 * reach)) as u64)
+                    .sum()
+            }))
+        })
+        .expect("no error")
+        .expect("a cut");
+        // Bands of 40 rows (35 of them) fit; a few tiles fit and cost far less.
+        assert!(shape.tiles(w, h).len() <= 8, "{shape:?}");
     }
 
     #[test]
