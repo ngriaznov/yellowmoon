@@ -1695,17 +1695,34 @@ async function pictureColours(page: Page): Promise<number[][]> {
   return page.evaluate(async () => {
     const out: number[][] = [];
     for (const id of [1, 2, 3, 4]) {
-      const img = document.querySelector<HTMLImageElement>(`[data-node-card="${id}"] img`)!;
-      await img.decode();
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const context = canvas.getContext("2d")!;
-      context.drawImage(img, 0, 0);
-      const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
-      const sum = [0, 0, 0];
-      for (let i = 0; i < data.length; i += 4) for (let c = 0; c < 3; c++) sum[c]! += data[i + c]!;
-      out.push(sum.map((v) => v / (data.length / 4)));
+      // A card's picture can be replaced while it is read: decode() then rejects, or the src changes under us.
+      // Such a read is not ready; try again until the picture holds still (bounded, no long sleep).
+      let colour: number[] | null = null;
+      for (let attempt = 0; attempt < 100 && !colour; attempt++) {
+        const img = document.querySelector<HTMLImageElement>(`[data-node-card="${id}"] img`);
+        const src = img?.src;
+        if (img && img.complete && img.naturalWidth > 0) {
+          try {
+            await img.decode();
+            const canvas = document.createElement("canvas");
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            const context = canvas.getContext("2d")!;
+            context.drawImage(img, 0, 0);
+            const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+            if (img.src === src && img.isConnected) {
+              const sum = [0, 0, 0];
+              for (let i = 0; i < data.length; i += 4) for (let c = 0; c < 3; c++) sum[c]! += data[i + c]!;
+              colour = sum.map((v) => v / (data.length / 4));
+            }
+          } catch {
+            // Mid-swap: fall through and retry.
+          }
+        }
+        if (!colour) await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      if (!colour) throw new Error(`card ${id}'s picture never settled`);
+      out.push(colour);
     }
     return out;
   });
