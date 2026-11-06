@@ -999,15 +999,41 @@ fn an_export_does_not_wait_for_a_fill_and_the_fill_resumes_after_it() {
         ..ExportOptions::default()
     };
     let at_start = done_of(&r);
+    // The probe: every progress report of the export (they come from the whole of it, the stretches after the render
+    // job has ended included) finds the scheduler saying an export is running, and waits a little, which on a fast
+    // device is long enough for a fill band to fit if it were allowed to. This holds on any device, whatever a band costs.
+    let reports = std::sync::atomic::AtomicUsize::new(0);
+    let idle_reports = std::sync::atomic::AtomicUsize::new(0);
+    let probe = |_: f32| {
+        reports.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if !r.scheduler().exports_active() {
+            idle_reports.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(60));
+    };
     let t = std::time::Instant::now();
     export_photo(
         &ctx,
         &photo,
         &ExportParams::new(opts),
-        &ExportControl::none(),
+        &ExportControl {
+            cancel: CancelToken::new(),
+            progress: Some(&probe),
+        },
     )
     .expect("export");
     let spent = t.elapsed();
+    say(&format!(
+        "the export made {} progress reports",
+        reports.load(std::sync::atomic::Ordering::SeqCst)
+    ));
+    assert!(reports.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+    assert_eq!(
+        idle_reports.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the scheduler says an export is running from its start to its end, not only while a job is queued"
+    );
+    assert!(!r.scheduler().exports_active(), "the guard was released");
     let at_end = done_of(&r);
     say(&format!(
         "export {:.0} ms; bands made {at_start:?} at its start, {at_end:?} at its end",

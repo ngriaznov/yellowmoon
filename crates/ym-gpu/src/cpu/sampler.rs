@@ -442,7 +442,16 @@ pub struct SamplerGrid {
     pub unrotated: bool,
     /// The lens's bend between the canvas position and the buffer (L4); `None` for the identity.
     pub warp: Option<SamplerWarp>,
+    /// The device's position tables put each source coordinate of an axis-aligned grid into one table entry, rounded to
+    /// a multiple of 2^-24 px ([`SNAPPED_POSITION_STEP`]), instead of splitting it between a column's and a row's
+    /// entry; see `ym_gpu::kernels::sampler`. A view that must give the same position to the same pixel whatever
+    /// window or band it is rendered as (the viewport and the levels) asks for it; exports and the CPU never do.
+    pub snapped_positions: bool,
 }
+
+/// The step the device's snapped position tables round a coordinate to: 2^-24 px, a number of bits an `f32`
+/// fraction holds exactly.
+pub const SNAPPED_POSITION_STEP: f64 = 1.0 / 16_777_216.0;
 
 impl SamplerGrid {
     /// A grid from its parts (the fields of `ym-core`'s `Grid`).
@@ -463,7 +472,15 @@ impl SamplerGrid {
             quarter_turns,
             unrotated,
             warp: None,
+            snapped_positions: false,
         }
+    }
+
+    /// The same grid with the device's position tables snapped ([`SamplerGrid::snapped_positions`]).
+    #[must_use]
+    pub fn with_snapped_positions(mut self, snapped: bool) -> Self {
+        self.snapped_positions = snapped;
+        self
     }
 
     /// The same grid through the lens's bend. The identity warp is no warp (`None`), so a grid

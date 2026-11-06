@@ -1084,6 +1084,11 @@ pub fn export_photo(
     params: &ExportParams,
     control: &ExportControl<'_>,
 ) -> Result<ExportReport, ExportError> {
+    // From here to the return (the file written, an error, a cancel, a panic) this export is running: the fill of a
+    // whole-image level starts no band, also while no export job is queued (reading, encoding, writing, the gaps
+    // between device jobs), where a fast device would fit its bands (`docs/17-gpu.md` section 19). Dropped on every
+    // way out, unwinding included.
+    let _running = ctx.renderer.scheduler().begin_export();
     // A bug below this function (a writer, a look provider) is this photo's error, not an
     // unwinding queue thread that leaves the panel waiting for a file that never comes. The
     // writers delete their temporary file when they unwind.

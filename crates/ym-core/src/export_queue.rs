@@ -695,6 +695,9 @@ fn worker_loop(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>
         if announce {
             sink.send(ExportEvent::Busy(true));
         }
+        // The job is an export from its first moment (decoding the raw, the gaps between photos) to its last: the
+        // fill of a level starts no band meanwhile. Dropped when the job ends, a panic included.
+        let running = ctx.renderer().scheduler().begin_export();
         // A panic in one job must not take the queue down with it.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_job(ctx, sink, shared, &job);
@@ -719,6 +722,7 @@ fn worker_loop(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>
                 }));
             }));
         }
+        drop(running);
         let idle = {
             let mut st = lock(&shared.state);
             st.running = None;

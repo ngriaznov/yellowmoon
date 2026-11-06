@@ -24,6 +24,19 @@
 //! every row and sub-sample ([`SamplerGrid::inside_rows`]), so the mask equals the CPU's bit for
 //! bit.
 //!
+//! # Snapped positions
+//!
+//! The split above gives the same pixel different `f32` fractions when it is reached through different columns and
+//! rows: a window of a level has its origin in the map's offset (row entries), the level's band has it in its columns
+//! (`n / z` against `(1 / z) * (n + x)`), and `f32(a) + f32(b)` is not `f32(a + b)`, so a crop of a level and the
+//! window render of the same pixels sampled up to 6e-8 px apart, which a code boundary somewhere in the picture
+//! turned into a one-code byte on Metal. A grid with [`SamplerGrid::snapped_positions`] (the viewport's views, never
+//! the exports) and no rotation puts each source coordinate whole into the one table it depends on, rounded to a
+//! multiple of 2^-24 px (exact in an `f32` fraction), and the other table gives 0 for it: the same position, from
+//! the same lattice value, whichever way the render reached it (it differs only when the two `f64` evaluations
+//! straddle a lattice midpoint, about 2e-6 of the positions, by one step). A position that is a whole number comes
+//! out whole, which the split did not guarantee.
+//!
 //! # The lens's bend
 //!
 //! A grid with a [`SamplerWarp`] (L4, `docs/21` section 4) is not
@@ -48,7 +61,9 @@ use bytemuck::{Pod, Zeroable};
 
 use super::shader::KernelId;
 use super::util::{STORAGE_IN, even};
-use crate::cpu::sampler::{Affine2, Kernel, Sampled, SamplerGrid, SamplerWarp};
+use crate::cpu::sampler::{
+    Affine2, Kernel, SNAPPED_POSITION_STEP, Sampled, SamplerGrid, SamplerWarp,
+};
 use crate::cpu::tiling::Rect;
 use crate::cpu::{Placement, RgbImage};
 use crate::device::{GpuContext, GpuError};
@@ -181,36 +196,81 @@ fn entry(x: f64, y: f64) -> PosEntry {
     }
 }
 
+/// Which table carries each source coordinate when a grid's positions are snapped
+/// ([`SamplerGrid::snapped_positions`]): `true` for the column table (the coordinate depends on the output's x
+/// alone), `false` for the row table (on y alone). `None` for a grid that is not axis-aligned (a straightened
+/// photo): its coordinates depend on both, and the tables keep the split of the module notes.
+fn snapped_carriers(grid: &SamplerGrid, m: &Affine2) -> Option<[bool; 2]> {
+    if !grid.snapped_positions {
+        return None;
+    }
+    let one = |row: &[f64; 3]| {
+        if row[1] == 0.0 {
+            Some(true)
+        } else if row[0] == 0.0 {
+            Some(false)
+        } else {
+            None
+        }
+    };
+    Some([one(&m[0])?, one(&m[1])?])
+}
+
+/// A source coordinate rounded to a multiple of [`SNAPPED_POSITION_STEP`] (2^-24 px, exact in an `f32` fraction): the
+/// same number for the same position whatever `f64` rounding the way to it took, to within one step with a
+/// probability of about 1e-13 / 6e-8 per position. A position that is a whole number comes out whole.
+fn snap_position(v: f64) -> f64 {
+    (v / SNAPPED_POSITION_STEP).round() * SNAPPED_POSITION_STEP
+}
+
 /// What each column of the window contributes to the source position, per sub-sample: entry
-/// `x * taps + i` for the output position `X = off_x + x + (i + 0.5) / taps`.
-fn column_entries(m: &Affine2, off_x: usize, w: usize, taps: usize) -> Vec<PosEntry> {
+/// `x * taps + i` for the output position `X = off_x + x + (i + 0.5) / taps`. With `snapped` (see
+/// [`snapped_carriers`]) a coordinate that depends on x alone is carried here whole: the map's offset, less the integer
+/// origin of the source, in one entry, snapped, and the row entries give 0 for it.
+fn column_entries(
+    m: &Affine2,
+    off_x: usize,
+    w: usize,
+    taps: usize,
+    origin: (usize, usize),
+    snapped: Option<[bool; 2]>,
+) -> Vec<PosEntry> {
     let mut v = Vec::with_capacity(w * taps);
     for x in 0..w {
         for i in 0..taps {
             let xs = (off_x + x) as f64 + (i as f64 + 0.5) / taps as f64;
-            v.push(entry(m[0][0] * xs, m[1][0] * xs));
+            let one = |c: usize, o: usize| match snapped {
+                Some(carried) if carried[c] => snap_position(m[c][0] * xs + m[c][2]) - o as f64,
+                Some(_) => 0.0,
+                None => m[c][0] * xs,
+            };
+            v.push(entry(one(0, origin.0), one(1, origin.1)));
         }
     }
     v
 }
 
 /// What each row contributes, with the offset of the map and less the integer origin of the source:
-/// entry `y * taps + j` for the output position `Y = off_y + y + (j + 0.5) / taps`.
+/// entry `y * taps + j` for the output position `Y = off_y + y + (j + 0.5) / taps`. With `snapped`, a coordinate that
+/// depends on y alone is carried here whole (snapped), and the column entries give 0 for it.
 fn row_entries(
     m: &Affine2,
     off_y: usize,
     h: usize,
     taps: usize,
     origin: (usize, usize),
+    snapped: Option<[bool; 2]>,
 ) -> Vec<PosEntry> {
     let mut v = Vec::with_capacity(h * taps);
     for y in 0..h {
         for j in 0..taps {
             let ys = (off_y + y) as f64 + (j as f64 + 0.5) / taps as f64;
-            v.push(entry(
-                m[0][1] * ys + m[0][2] - origin.0 as f64,
-                m[1][1] * ys + m[1][2] - origin.1 as f64,
-            ));
+            let one = |c: usize, o: usize| match snapped {
+                Some(carried) if !carried[c] => snap_position(m[c][1] * ys + m[c][2]) - o as f64,
+                Some(_) => 0.0,
+                None => m[c][1] * ys + m[c][2] - o as f64,
+            };
+            v.push(entry(one(0, origin.0), one(1, origin.1)));
         }
     }
     v
@@ -296,8 +356,9 @@ pub fn encode_sample_at(
     let taps = kernel.taps();
     let m = grid.affine_to_buffer();
     let inside = grid.inside_rows(off, w, h, taps);
-    let cols = column_entries(&m, off.0, w, taps);
-    let rows = row_entries(&m, off.1, h, taps, src_origin);
+    let snapped = snapped_carriers(grid, &m);
+    let cols = column_entries(&m, off.0, w, taps, src_origin, snapped);
+    let rows = row_entries(&m, off.1, h, taps, src_origin, snapped);
     let mut table = |label: &str, bytes: &[u8]| -> Result<_, GpuError> {
         let buf = ctx.pool().acquire(label, bytes.len() as u64, STORAGE_IN)?;
         upload_bytes(ctx, &buf, 0, bytes)?;
@@ -450,5 +511,109 @@ mod tests {
         assert_eq!(split(-3.0), (-3, 0.0));
         let e = entry(1.5, -2.25);
         assert_eq!((e.int, e.frac), ([1, -3], [0.5, 0.75]));
+    }
+
+    /// The position the shader forms from a column entry and a row entry: the integers added as integers, the fractions
+    /// as `f32`, carried into the integer (the shader floors the fraction where it needs the tap).
+    fn position(c: &PosEntry, r: &PosEntry, axis: usize) -> (i64, u32) {
+        let f = c.frac[axis] + r.frac[axis];
+        let fl = f.floor();
+        (
+            i64::from(c.int[axis]) + i64::from(r.int[axis]) + fl as i64,
+            (f - fl).to_bits(),
+        )
+    }
+
+    /// A pixel of a window of a level and the same pixel of a band of the whole level are given the same source position, bit
+    /// for bit, once the grid's positions are snapped: the window's map has the origin `(n, m)` in its offset
+    /// (`n / z`, as `ViewportState::view_to_final` writes it), the band's map has the band's first row (`row0 * (1 / z)`, as
+    /// the fill composes it), and the unsnapped tables split the same position differently between a column entry and a row
+    /// entry. The numbers are those of the 75 % case of `ym-core`'s `view_level` test, whose pan (53.5, -9.25) failed on
+    /// Metal by one code.
+    #[test]
+    fn a_window_and_a_band_of_a_level_get_the_same_positions_once_snapped() {
+        let buffer = (640.0, 420.0);
+        let grid = |s: f64, tx: f64, ty: f64, snapped: bool| {
+            SamplerGrid::new([[s, 0.0, tx], [0.0, s, ty]], buffer, buffer, 1, 0, true)
+                .with_snapped_positions(snapped)
+        };
+        let (w, h, taps) = (300usize, 200usize, 2usize);
+        let mut unsnapped_differ = 0usize;
+        for z in [0.6f64, 0.75, 0.9] {
+            let s = 1.0 / z;
+            for (n, m) in [(74usize, 46usize), (127, 36), (85, 94), (26, 14), (90, 57)] {
+                for row0 in [0usize, 100, 160] {
+                    for snapped in [false, true] {
+                        let window_grid = grid(s, n as f64 / z, m as f64 / z, snapped);
+                        let band_grid = grid(s, 0.0, s * row0 as f64, snapped);
+                        let (wm, bm) =
+                            (window_grid.affine_to_buffer(), band_grid.affine_to_buffer());
+                        let carriers = |g: &SamplerGrid, a: &Affine2| snapped_carriers(g, a);
+                        let origin = (0, 0);
+                        let wc =
+                            column_entries(&wm, 0, w, taps, origin, carriers(&window_grid, &wm));
+                        let wr = row_entries(&wm, 0, h, taps, origin, carriers(&window_grid, &wm));
+                        let bw = (640.0 * z).round() as usize;
+                        let bc =
+                            column_entries(&bm, 0, bw, taps, origin, carriers(&band_grid, &bm));
+                        let bh = 150usize;
+                        let br = row_entries(&bm, 0, bh, taps, origin, carriers(&band_grid, &bm));
+                        for y in 0..h {
+                            let yl = m + y;
+                            if yl < row0 || yl - row0 >= bh {
+                                continue;
+                            }
+                            for x in 0..w {
+                                if n + x >= bw {
+                                    continue;
+                                }
+                                for j in 0..taps {
+                                    for i in 0..taps {
+                                        let (wce, wre) = (&wc[x * taps + i], &wr[y * taps + j]);
+                                        let (bce, bre) =
+                                            (&bc[(n + x) * taps + i], &br[(yl - row0) * taps + j]);
+                                        for axis in 0..2 {
+                                            let same = position(wce, wre, axis)
+                                                == position(bce, bre, axis);
+                                            if snapped {
+                                                assert!(
+                                                    same,
+                                                    "z {z} origin ({n}, {m}) row0 {row0} pixel ({x}, {y}) axis {axis}: {wce:?} {wre:?} against {bce:?} {bre:?}"
+                                                );
+                                            } else if !same {
+                                                unsnapped_differ += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            unsnapped_differ > 0,
+            "the unsnapped tables are what the snapping fixes"
+        );
+    }
+
+    /// A snapped position is a whole number where the position is whole, however its `f64` evaluation rounded, and sits within
+    /// half a step of the exact one.
+    #[test]
+    fn a_snapped_position_is_whole_where_the_exact_one_is_and_close_elsewhere() {
+        for k in 0..2000i64 {
+            let exact = k as f64 * 4.0 / 3.0 + 0.25;
+            for noise in [-3e-13, 0.0, 2e-13] {
+                let q = snap_position(exact + noise);
+                assert!((q - exact).abs() <= 0.5 * SNAPPED_POSITION_STEP + 1e-12);
+                assert_eq!(snap_position(q), q, "idempotent");
+            }
+        }
+        for k in -50..50i64 {
+            for noise in [-3e-13, 0.0, 2e-13] {
+                assert_eq!(snap_position(k as f64 + noise), k as f64);
+            }
+        }
     }
 }

@@ -471,6 +471,9 @@ pub(crate) struct PreparedView {
     pub sharp: bool,
     width: usize,
     height: usize,
+    /// The device's position tables are snapped ([`SamplerGrid::snapped_positions`]): a view of the viewport (a window
+    /// or a band of a level) gives a pixel of the picture the same source position whichever window or band is rendered.
+    snap_positions: bool,
 }
 
 impl PreparedView {
@@ -612,7 +615,10 @@ impl PreparedView {
                     DeviceInput::Camera {
                         source,
                         origin,
-                        grid: Box::new(grid.sampler_grid()),
+                        grid: Box::new(
+                            grid.sampler_grid()
+                                .with_snapped_positions(self.snap_positions),
+                        ),
                         width: w,
                         height: h,
                         positions,
@@ -3162,6 +3168,7 @@ fn prepare_view_with(
                     sharp,
                     width: w,
                     height: h,
+                    snap_positions: spec.target == OutputTarget::Viewport,
                 });
             }
         } else {
@@ -3172,6 +3179,7 @@ fn prepare_view_with(
                 sharp,
                 width: w,
                 height: h,
+                snap_positions: false,
             });
         }
     }
@@ -3210,6 +3218,7 @@ fn prepare_view_with(
         sharp,
         width: w,
         height: h,
+        snap_positions: spec.target == OutputTarget::Viewport,
     })
 }
 

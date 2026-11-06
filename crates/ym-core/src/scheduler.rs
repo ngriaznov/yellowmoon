@@ -400,6 +400,22 @@ impl Drop for LoadGuard {
     }
 }
 
+/// Marks an export as running for as long as it is alive ([`JobScheduler::begin_export`]): the fill of a
+/// whole-image level starts no band while one exists. Counts the whole of an export, not only its queued
+/// device jobs: reading the raw, the CPU work, the encoding and the writing, and the gaps between its jobs,
+/// are all time the fill must not take. It lowers the count in `Drop`, so a return, an error, a cancel and a
+/// panic (unwinding runs destructors) all end it, and it cannot leak.
+#[must_use = "the export counts as running only while the guard is alive"]
+pub struct ExportGuard {
+    _count: LoadGuard,
+}
+
+impl std::fmt::Debug for ExportGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ExportGuard")
+    }
+}
+
 /// A queued job that moving to another photo supersedes (see [`JobScheduler::submit_superseded`]).
 struct Supersedable {
     /// The photo the job is for.
@@ -618,7 +634,18 @@ impl JobScheduler {
         wait_until_idle(&self.load, cancel)
     }
 
-    /// Whether an export job is queued or running: the fill of a level yields to it.
+    /// Marks the start of an export that lasts until the returned guard is dropped (the whole of
+    /// `export_photo`, and the export queue's job): [`JobScheduler::exports_active`] is true meanwhile,
+    /// also in the stretches where no export job is queued (reading, encoding, writing, the gaps between
+    /// device jobs). Guards nest: the count is the number alive.
+    pub fn begin_export(&self) -> ExportGuard {
+        ExportGuard {
+            _count: LoadGuard::new(&self.exports),
+        }
+    }
+
+    /// Whether an export is running: an export job is queued or running, or an [`ExportGuard`] is alive.
+    /// The fill of a level yields to it (it starts no band; a band already running ends).
     #[must_use]
     pub fn exports_active(&self) -> bool {
         self.exports.load(Ordering::SeqCst) > 0
@@ -767,6 +794,38 @@ mod tests {
             ran.load(Ordering::SeqCst) < 40,
             "the export did not wait for the fill to end"
         );
+    }
+
+    /// The guard counts an export through the stretches that are not queued jobs, nests, and cannot leak.
+    #[test]
+    fn an_export_guard_counts_until_dropped_nests_and_survives_a_panic() {
+        let s = Arc::new(JobScheduler::new("test-guard").expect("scheduler"));
+        assert!(!s.exports_active());
+        let outer = s.begin_export();
+        assert!(
+            s.exports_active(),
+            "no export job is queued, the guard counts"
+        );
+        let inner = s.begin_export();
+        drop(outer);
+        assert!(s.exports_active(), "guards nest: one is alive");
+        // A job queued and finished does not lower what a guard holds.
+        s.submit(Priority::Export, None, |_| ())
+            .wait()
+            .expect("export job");
+        assert!(s.exports_active());
+        drop(inner);
+        assert!(!s.exports_active());
+        // A panic unwinds through the guard's destructor.
+        let s2 = Arc::clone(&s);
+        let r = std::thread::spawn(move || {
+            let _guard = s2.begin_export();
+            assert!(s2.exports_active());
+            panic!("an export that panics");
+        })
+        .join();
+        assert!(r.is_err());
+        assert!(!s.exports_active(), "a panic does not leak the guard");
     }
 
     #[test]
