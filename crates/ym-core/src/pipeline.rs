@@ -66,6 +66,7 @@ pub use frame::{
 };
 pub use graph::{
     ComputeDevice, GpuReopener, PhotoGraph, RawPrefetch, RenderOptions, RenderReport, Renderer,
+    ViewLimits,
     StageCounters, StageRuns, StageTimings,
 };
 pub use object::{

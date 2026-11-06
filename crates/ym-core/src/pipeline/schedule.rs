@@ -82,6 +82,15 @@ pub(crate) fn area_bytes(area: &Area) -> u64 {
 /// answers, with its reason, rather than a frame of thousands of passes.
 pub(crate) const MAX_TILES: usize = 256;
 
+/// The most pieces [`search_cut`] chooses among by cost. A window that does not fit in this many is cut at the largest piece
+/// that fits ([`MAX_TILES`] at most): never a cut of dozens of thin pieces that each process nearly the whole wider picture.
+pub(crate) const MAX_COSTED_PIECES: usize = 16;
+
+/// What a piece costs besides its pixels, in pixels of its wider picture: the passes and the submission every piece has
+/// whatever its size (a few hundred dispatches, the sampler and the readback of a piece), as the pixels they would take
+/// (512 x 512). The cost of a cut is the sum of its pieces' wider pictures in pixels plus this for each piece.
+pub(crate) const PIECE_COST_PX: u64 = 512 * 512;
+
 /// How a window is cut.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Shape {
@@ -93,8 +102,10 @@ pub(crate) enum Shape {
     Tiles(usize, usize),
 }
 
-/// What [`search_cut`] asks of a caller: whether every binding of the tiles of a candidate shape fits.
-pub(crate) type FitsFn<'a, E> = dyn FnMut(Shape, &[Tile]) -> Result<bool, E> + 'a;
+/// What [`search_cut`] asks of a caller: for the tiles of a candidate shape, `Some(pixels)` when every binding of each fits,
+/// with the pixels the shape's pieces process together (each piece's wider picture; for a shape of tiles that are alike a
+/// representative tile's, times the tiles), or `None` when one does not fit.
+pub(crate) type FitsFn<'a, E> = dyn FnMut(Shape, &[Tile]) -> Result<Option<u64>, E> + 'a;
 
 /// A tile of a window: `(x, y, w, h)`.
 pub(crate) type Tile = (usize, usize, usize, usize);
@@ -126,17 +137,38 @@ impl Shape {
             Self::Tiles(tw, th) => tiles_of(width, height, tw, th),
         }
     }
+
+    /// The cost of the shape: `pixels` (what [`FitsFn`] said its pieces process) and a fixed cost for each of its
+    /// `pieces` ([`PIECE_COST_PX`]).
+    #[must_use]
+    pub(crate) fn cost(pixels: u64, pieces: usize) -> u64 {
+        pixels.saturating_add(PIECE_COST_PX.saturating_mul(pieces as u64))
+    }
 }
 
-/// The coarsest cut of a `width x height` window for which `fits` holds, or `None` when not even the smallest tile fits (a
+/// The cheapest cut of a `width x height` window for which `fits` holds, or `None` when not even the smallest tile fits (a
 /// resource limit of the device: the reach of the spatial steps alone fills a binding).
 ///
-/// One rule for every window (a view, the raster planes of a view, an export's tile): the window whole; then bands of rows,
-/// starting at `rows_guess` (the rows the widest picture of one band allows, from its area; a start only, `fits` decides)
-/// and one band more each time; then, with one row not enough, tiles with the longer side halved in turn (the width stays
-/// even, so that a tile starts on an even column: two codes share a word). `fits` is given the tiles of the candidate shape
-/// and says whether every binding of each fits; it may test a representative tile (the one with the most photo around it)
-/// when the tiles are alike. `columns` allows the cut in columns.
+/// One rule for every window (a view, the raster planes of a view, an export's tile):
+///
+/// 1. The window whole, when it fits.
+/// 2. Otherwise the **cheapest** of the cuts into at most [`MAX_COSTED_PIECES`] pieces, bands of rows and (with `columns`)
+///    grids of tiles: the cost is the pixels the pieces process together (each is its window grown by the reach of the
+///    spatial steps, so thin pieces each process nearly the whole wider picture) plus [`PIECE_COST_PX`] for each piece
+///    ([`Shape::cost`]). Candidates are tried by their number of pieces, and the search ends one count after the first that
+///    fits: more pieces only add overlap. Not the fewest pieces: a grid of tiles whose pieces are smaller can beat bands
+///    that are thin.
+/// 3. Otherwise (not even 16 pieces fit) one cut at the largest piece that fits: bands of rows, starting at `rows_guess`
+///    (the rows the widest picture of one band allows, from its area; a start only, `fits` decides) and one band more each
+///    time; then, with one row not enough, tiles with the longer side halved in turn (the width stays even, so that a
+///    tile starts on an even column: two codes share a word).
+///
+/// `tile_percent` scales the cost of a grid of tiles (100: as it is; more where tiles leave work to the host). 0: tiles are
+/// tried only when no band fits in 16 pieces, as for a sharpened view, whose tiles are finished by the CPU stage over the
+/// whole display frame where the device's fused tail needs bands.
+///
+/// `fits` is given the tiles of the candidate shape; it may test a representative tile (the one with the most photo around
+/// it) when the tiles are alike. `columns` allows the cut in columns.
 ///
 /// # Errors
 ///
@@ -146,8 +178,64 @@ pub(crate) fn search_cut<E>(
     height: usize,
     rows_guess: Option<usize>,
     columns: bool,
+    tile_percent: u64,
     fits: &mut FitsFn<'_, E>,
 ) -> Result<Option<Shape>, E> {
+    if fits(Shape::Whole, &Shape::Whole.tiles(width, height))?.is_some() {
+        return Ok(Some(Shape::Whole));
+    }
+    // Candidates by their number of pieces: bands and (unless `tile_percent` is 0) grids of tiles together, then, with
+    // `tile_percent` 0, the tiles alone when no band fits.
+    let mut best: Option<(u64, Shape)> = None;
+    let mut tried: Vec<Shape> = Vec::new();
+    for tiles_only in [false, true] {
+        if tiles_only && (best.is_some() || !columns || tile_percent != 0) {
+            break;
+        }
+        let mut first_fit: Option<usize> = None;
+        for n in 2..=MAX_COSTED_PIECES {
+            if first_fit.is_some_and(|f| n > f + 1) {
+                break;
+            }
+            let mut candidates = Vec::new();
+            if !tiles_only {
+                candidates.push(Shape::Rows(height.div_ceil(n).max(1)));
+            }
+            if columns && (tiles_only || tile_percent != 0) {
+                for c in 2..=n.min(width / 2) {
+                    if n % c == 0 {
+                        let r = n / c;
+                        candidates.push(Shape::Tiles(
+                            (width.div_ceil(c).max(2) + 1) & !1,
+                            height.div_ceil(r).max(1),
+                        ));
+                    }
+                }
+            }
+            for shape in candidates {
+                let tiles = shape.tiles(width, height);
+                // The same shape from two counts (a window of few rows), or more pieces than asked after the rounding.
+                if tried.contains(&shape) || tiles.len() > MAX_COSTED_PIECES {
+                    continue;
+                }
+                tried.push(shape);
+                if let Some(pixels) = fits(shape, &tiles)? {
+                    first_fit.get_or_insert(n);
+                    let mut cost = Shape::cost(pixels, tiles.len());
+                    if matches!(shape, Shape::Tiles(..)) {
+                        cost = cost.saturating_mul(tile_percent.max(100)) / 100;
+                    }
+                    if best.is_none_or(|(c, _)| cost < c) {
+                        best = Some((cost, shape));
+                    }
+                }
+            }
+        }
+    }
+    if let Some((_, shape)) = best {
+        return Ok(Some(shape));
+    }
+    // More than 16 pieces: one cut at the largest piece that fits.
     let mut rows = rows_guess.unwrap_or(height).clamp(1, height.max(1));
     loop {
         let shape = if rows >= height {
@@ -156,7 +244,7 @@ pub(crate) fn search_cut<E>(
             Shape::Rows(rows)
         };
         let tiles = shape.tiles(width, height);
-        if fits(shape, &tiles)? {
+        if fits(shape, &tiles)?.is_some() {
             return Ok(Some(shape));
         }
         if rows == 1 {
@@ -177,7 +265,7 @@ pub(crate) fn search_cut<E>(
         if tiles.len() > MAX_TILES {
             return Ok(None);
         }
-        if fits(shape, &tiles)? {
+        if fits(shape, &tiles)?.is_some() {
             return Ok(Some(shape));
         }
         if tw >= th && tw > 2 {
@@ -199,12 +287,16 @@ mod tests {
 
     /// The wider picture of a piece of a `w x h` window grown by `reach` on every side must fit `limit` bytes.
     fn cut(w: usize, h: usize, reach: usize, limit: u64, columns: bool) -> Option<Shape> {
-        search_cut(w, h, None, columns, &mut |_, tiles| {
-            Ok::<_, ()>(
+        search_cut(w, h, None, columns, 100, &mut |_, tiles| {
+            let fits = tiles
+                .iter()
+                .all(|&(_, _, tw, th)| picture_bytes(tw + 2 * reach, th + 2 * reach) <= limit);
+            Ok::<_, ()>(fits.then(|| {
                 tiles
                     .iter()
-                    .all(|&(_, _, tw, th)| picture_bytes(tw + 2 * reach, th + 2 * reach) <= limit),
-            )
+                    .map(|&(_, _, tw, th)| ((tw + 2 * reach) * (th + 2 * reach)) as u64)
+                    .sum()
+            }))
         })
         .expect("no error")
     }
@@ -216,17 +308,77 @@ mod tests {
         assert_eq!(cut(4000, 2000, 0, 128 << 20, true), Some(Shape::Whole));
     }
 
+    /// The pixels the pieces of `shape` process together: each piece grown by `reach` on every side.
+    fn pixels(w: usize, h: usize, reach: usize, shape: Shape) -> u64 {
+        shape
+            .tiles(w, h)
+            .iter()
+            .map(|&(_, _, tw, th)| ((tw + 2 * reach) * (th + 2 * reach)) as u64)
+            .sum()
+    }
+
+    fn fits(w: usize, h: usize, reach: usize, limit: u64, shape: Shape) -> bool {
+        shape
+            .tiles(w, h)
+            .iter()
+            .all(|&(_, _, tw, th)| picture_bytes(tw + 2 * reach, th + 2 * reach) <= limit)
+    }
+
     #[test]
-    fn a_window_that_does_not_is_cut_in_rows_whose_wider_pictures_fit() {
-        let Some(Shape::Rows(rows)) = cut(5120, 2880, 17, 128 << 20, true) else {
-            panic!("a 5K frame is cut in rows");
+    fn a_window_that_does_not_is_cut_in_pieces_whose_wider_pictures_fit_at_the_least_cost() {
+        let (w, h, reach, limit) = (5120, 2880, 17, 128u64 << 20);
+        let shape = cut(w, h, reach, limit, true).expect("a 5K frame is cut");
+        assert_ne!(shape, Shape::Whole);
+        let tiles = shape.tiles(w, h);
+        assert!(tiles.len() <= MAX_COSTED_PIECES);
+        assert!(fits(w, h, reach, limit, shape));
+        // No cut into at most 16 bands or tiles that fits costs less.
+        let cost = Shape::cost(pixels(w, h, reach, shape), tiles.len());
+        for n in 2..=MAX_COSTED_PIECES {
+            let rows = Shape::Rows(h.div_ceil(n));
+            if fits(w, h, reach, limit, rows) {
+                let c = Shape::cost(pixels(w, h, reach, rows), rows.tiles(w, h).len());
+                assert!(cost <= c, "{shape:?} costs {cost}, {rows:?} costs {c}");
+            }
+        }
+    }
+
+    /// The owner's case (G-12): a 2080 x 1387 viewport at 116 % reads the 100 % picture under it, 1793 x 1196 pixels, and the
+    /// Film node's reach (655 pixels) and the raster masks' (75) grow every piece: 3073 x 2488 pixels is 122 MB at 16 bytes
+    /// a pixel. At the lavapipe's 128 MiB (76.7 MB for the raster planes' 28 bytes) it was cut into 78 thin pieces that each
+    /// processed nearly the whole wider picture; now into a few, and not at all where the device holds it.
+    #[test]
+    fn the_owners_zoomed_view_is_one_piece_on_a_big_device_and_a_few_on_a_small_one() {
+        let (w, h, reach) = (1793, 1196, 730);
+        // A Mac: a binding of a gigabyte or more, 4 GiB of budget: 170 MB a picture.
+        assert_eq!(cut(w, h, reach, 178 << 20, true), Some(Shape::Whole));
+        // Lavapipe, with raster planes: 76.7 MB.
+        let limit = (128u64 << 20) / 28 * 16;
+        let shape = cut(w, h, reach, limit, true).expect("a cut");
+        let pieces = shape.tiles(w, h).len();
+        assert!((2..=MAX_COSTED_PIECES).contains(&pieces), "{shape:?}");
+        assert!(fits(w, h, reach, limit, shape));
+        // The pixels processed: a few times the whole picture's, not dozens.
+        let whole = ((w + 2 * reach) * (h + 2 * reach)) as u64;
+        assert!(
+            pixels(w, h, reach, shape) < 4 * whole,
+            "{shape:?}: {} against {whole}",
+            pixels(w, h, reach, shape)
+        );
+    }
+
+    #[test]
+    fn beyond_sixteen_pieces_the_cut_is_the_largest_piece_that_fits() {
+        // 5120 x 2880 with a reach of 17 at 2 MB a picture: more than 16 pieces, bands of the fewest that fit.
+        let limit = 2u64 << 20;
+        let Some(Shape::Rows(rows)) = cut(5120, 2880, 17, limit, true) else {
+            panic!("bands");
         };
-        assert!(rows < 2880);
-        assert!(picture_bytes(5120 + 34, rows + 34) <= 128 << 20);
-        // The fewest bands: one band fewer would not fit.
+        assert!(2880usize.div_ceil(rows) > MAX_COSTED_PIECES);
+        assert!(picture_bytes(5120 + 34, rows + 34) <= limit);
         let bands = 2880usize.div_ceil(rows);
         let fewer = 2880usize.div_ceil(bands - 1);
-        assert!(picture_bytes(5120 + 34, fewer + 34) > 128 << 20);
+        assert!(picture_bytes(5120 + 34, fewer + 34) > limit);
     }
 
     #[test]

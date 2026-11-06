@@ -47,7 +47,7 @@ use crate::image::GpuImage;
 use crate::perf::{self, Stage};
 use crate::pool::PooledBuffer;
 use crate::stream::{Counters, PassList};
-use crate::tiles::DESIGN_BINDING_BYTES;
+use crate::tiles::{DESIGN_BINDING_BYTES, device_binding_bytes};
 
 /// Planes of the pass's f32 scratch at full size for a row that refines its edges.
 const FULL_SLOTS: usize = 7;
@@ -860,9 +860,12 @@ fn encode_rows<'p, 's>(
                 job.frame, t.grown
             )));
         }
-        if !w.is_empty() && max_binding_bytes(t.grown.w, t.grown.h) > DESIGN_BINDING_BYTES {
+        // The device's binding, not the design's: a view is cut to what the device can bind (`device_binding_bytes`).
+        // Exports cut their tiles to the design binding (`fit_tile`), which this check never sees pass.
+        let binding = device_binding_bytes(&ctx.info().limits);
+        if !w.is_empty() && max_binding_bytes(t.grown.w, t.grown.h) > binding {
             return Err(GpuError::InvalidInput(format!(
-                "a raster pass over {} x {} pixels needs more than the design binding",
+                "a raster pass over {} x {} pixels needs more than the device's binding ({binding} bytes)",
                 t.grown.w, t.grown.h
             )));
         }

@@ -76,7 +76,7 @@
 //! sixteen keys alive at once) is one dispatch per pass. The values that cross from one pass to the next
 //! are f32 planes of a scratch buffer (binding 8, `pbuf`: a picture is three planes of the window, a key
 //! one), written by the pass that makes them and read by the later ones; the last pass writes the output.
-//! A window whose planes would pass the design binding ([`crate::tiles::DESIGN_BINDING_BYTES`]) is cut
+//! A window whose planes would pass the device's binding ([`crate::tiles::device_binding_bytes`]) is cut
 //! into bands of rows, which is exact because the chain is pointwise. A plan of one pass binds a stand-in.
 //!
 //! **Film nodes (F-08b, `docs/24` section 3.9c).** A Film node is a step whose picture the render made before the colour
@@ -141,7 +141,7 @@ use crate::image::{GpuImage, IMAGE_USAGE};
 use crate::pool::PooledBuffer;
 use crate::queue::CancelToken;
 use crate::stream::{Counters, PassList, Pending, ReadId, upload_bytes};
-use crate::tiles::{DESIGN_BINDING_BYTES, Tile, TilePlan};
+use crate::tiles::{Tile, TilePlan, device_binding_bytes};
 
 /// The stage whose value is written (the stop of the chain).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1079,7 +1079,7 @@ impl ChainTables {
             node_stop: None,
             photo: None,
             rasters: None,
-            buffer_limit: DESIGN_BINDING_BYTES,
+            buffer_limit: device_binding_bytes(&ctx.info().limits),
             output: params.output,
             look: look_kind,
             before: chain.before_point(),
@@ -1422,7 +1422,8 @@ pub struct PreparedChain {
     /// The raster planes of the window the chain colours ([`PreparedChain::with_rasters`]); a chain without them
     /// binds a stand-in and its raster rows select nothing.
     rasters: Option<RasterPlanes>,
-    /// The most bytes the pass buffers of one dispatch may have ([`DESIGN_BINDING_BYTES`]).
+    /// The most bytes the pass buffers of one dispatch may have (the device's binding,
+    /// [`device_binding_bytes`]).
     buffer_limit: u64,
     output: OutputTarget,
     look: LookKind,
@@ -1621,8 +1622,7 @@ impl PreparedChain {
     /// The same chain with another limit on the bytes of the pass buffers of one dispatch (a plan of
     /// several passes keeps the values that cross from one to the next in f32 planes of the window; a
     /// window that needs more is cut into bands of rows, which gives the same bits). The default is the
-    /// design binding ([`DESIGN_BINDING_BYTES`]); a smaller limit is for tests and for a device whose
-    /// bindings are smaller than the design's.
+    /// device's binding ([`device_binding_bytes`]); a smaller limit is for tests.
     #[must_use]
     pub fn with_pass_buffer_limit(&self, bytes: u64) -> Self {
         let mut chain = self.clone();

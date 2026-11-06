@@ -113,7 +113,9 @@ use super::graph::{
     Backing, ComputeDevice, Job, PartSource, Pixels, RenderReport, Renderer, ResidentPart,
     TileImage,
 };
-use super::schedule::{Shape, area_bytes, camera_bytes, picture_bytes, search_cut, tiles_of};
+use super::schedule::{
+    Shape, Tile, area_bytes, camera_bytes, picture_bytes, search_cut, tiles_of,
+};
 use super::thumbs::{Tap, signal_source};
 use super::viewport::{MapFrom, MaskStyle, ViewportState};
 use super::{FrameZoom, RenderError};
@@ -1056,63 +1058,96 @@ fn plane_tiles(
         let fit_rows = (route.band_bytes / picture_bytes(grown.w, 1).max(1)) as usize;
         fit_rows.saturating_sub(grown.h.saturating_sub(1)).max(1)
     });
-    let mut made: Vec<PlaneTile> = Vec::new();
+    // The tiles of a shape, each with the extent it writes and the wider picture it reads; `None` when a tile's does not fit.
+    // The areas first (they are arithmetic).
+    let layout_of = |tiles: &[Tile]| -> Option<Vec<(Area, Area)>> {
+        let mut layout: Vec<(Area, Area)> = Vec::new();
+        for &(tx, ty, tw, th) in tiles {
+            let extent = Area {
+                x: rr.extent.x + tx as i64,
+                y: rr.extent.y + ty as i64,
+                w: tw,
+                h: th,
+            };
+            let window = extent.intersect(&rr.window);
+            // A tile with no photo in it has no sampled picture and reads 0 (the planes are cleared first).
+            if window.is_empty() {
+                continue;
+            }
+            let grown = grown_of(window);
+            if area_bytes(&grown) > route.band_bytes
+                || max_binding_bytes(grown.w, grown.h) > route.limits.binding_bytes
+            {
+                return None;
+            }
+            layout.push((extent, grown));
+        }
+        Some(layout)
+    };
+    let tile_spec = |grown: &Area| ViewSpec {
+        out_w: grown.w,
+        out_h: grown.h,
+        view_to_final: Affine::scale_translate(
+            1.0,
+            1.0,
+            (grown.x + rr.origin.0) as f64,
+            (grown.y + rr.origin.1) as f64,
+        )
+        .then(&rr.read.view_to_final),
+        ..rr.read.clone()
+    };
     let shape = search_cut(
         rr.extent.w,
         rr.extent.h,
         rows_guess,
         true,
+        100,
         &mut |_, tiles| {
-            made.clear();
-            // The areas first (they are arithmetic), then the camera windows (they prepare a view each).
-            let mut layout: Vec<(Area, Area)> = Vec::new();
-            for &(tx, ty, tw, th) in tiles {
-                let extent = Area {
-                    x: rr.extent.x + tx as i64,
-                    y: rr.extent.y + ty as i64,
-                    w: tw,
-                    h: th,
-                };
-                let window = extent.intersect(&rr.window);
-                // A tile with no photo in it has no sampled picture and reads 0 (the planes are cleared first).
-                if window.is_empty() {
-                    continue;
-                }
-                let grown = grown_of(window);
-                if area_bytes(&grown) > route.band_bytes
-                    || max_binding_bytes(grown.w, grown.h) > ym_gpu::tiles::DESIGN_BINDING_BYTES
+            let Some(layout) = layout_of(tiles) else {
+                return Ok(None);
+            };
+            // The camera windows (they prepare a view each).
+            let mut pixels = 0u64;
+            for (_, grown) in &layout {
+                let tile_view = prepare_view(job, &tile_spec(grown))?;
+                if tile_view
+                    .source_window_bytes()
+                    .is_some_and(|b| b > route.source_bytes)
                 {
-                    return Ok(false);
+                    return Ok(None);
                 }
-                layout.push((extent, grown));
+                pixels += area_bytes(grown) / 16;
             }
-            for (extent, grown) in layout {
-                let spec = ViewSpec {
-                    out_w: grown.w,
-                    out_h: grown.h,
-                    view_to_final: Affine::scale_translate(
-                        1.0,
-                        1.0,
-                        (grown.x + rr.origin.0) as f64,
-                        (grown.y + rr.origin.1) as f64,
-                    )
-                    .then(&rr.read.view_to_final),
-                    ..rr.read.clone()
-                };
-                let tile_view = prepare_view(job, &spec)?;
-                let (input, _) = tile_view.device_input(job, route, true)?;
-                if !input.fits(route) {
-                    return Ok(false);
-                }
-                made.push(PlaneTile {
-                    tile: RasterTile { extent, grown },
-                    input,
-                });
-            }
-            Ok::<bool, RenderError>(true)
+            Ok::<Option<u64>, RenderError>(Some(pixels))
         },
     )?;
-    Ok(shape.map(|_| made))
+    let Some(shape) = shape else { return Ok(None) };
+    // The chosen shape's tiles, each with the sampled picture of its own.
+    let Some(layout) = shape_layout(&layout_of, shape, rr) else {
+        return Ok(None);
+    };
+    let mut made: Vec<PlaneTile> = Vec::new();
+    for (extent, grown) in layout {
+        let tile_view = prepare_view(job, &tile_spec(&grown))?;
+        let (input, _) = tile_view.device_input(job, route, true)?;
+        if !input.fits(route) {
+            return Ok(None);
+        }
+        made.push(PlaneTile {
+            tile: RasterTile { extent, grown },
+            input,
+        });
+    }
+    Ok(Some(made))
+}
+
+/// The layout of the tiles `shape` cuts the extent of `rr` into.
+fn shape_layout(
+    layout_of: &dyn Fn(&[Tile]) -> Option<Vec<(Area, Area)>>,
+    shape: Shape,
+    rr: &RasterRead,
+) -> Option<Vec<(Area, Area)>> {
+    layout_of(&shape.tiles(rr.extent.w, rr.extent.h))
 }
 
 /// What names the raster planes of a view's rows besides the rows themselves (`ym_gpu::kernels::mask_raster::PlaneKey`,
@@ -2835,20 +2870,21 @@ fn band_split(
             .and_then(|sh| sh.frame_geometry(&v.view_to_final, (v.out_w, v.out_h), image))?;
         Some(g)
     };
-    // The first binding of a piece that does not fit, as `(bytes needed, bytes allowed)`: the pictures its areas make (the
-    // colour pass's frame, the wider picture of the Film nodes), the 100 % picture and RGBA8 frame under a magnified piece,
-    // and the camera RGB each of them reads.
-    let overflow =
-        |job: &mut Job<'_>, piece: &ViewSpec| -> Result<Option<(u64, u64)>, RenderError> {
+    // What a piece costs, or the first binding of it that does not fit, as `Err((bytes needed, bytes allowed))`: the pictures its
+    // areas make (the colour pass's frame, the wider picture of the Film nodes), the 100 % picture and RGBA8 frame under a
+    // magnified piece, and the camera RGB each of them reads. The cost is the pixels the piece processes: its frame and its
+    // wider picture (`Shape::cost` adds the fixed cost of a piece).
+    let measure =
+        |job: &mut Job<'_>, piece: &ViewSpec| -> Result<Result<u64, (u64, u64)>, RenderError> {
             let frame = frame_of(piece);
             if magnified && let Some(g) = &frame {
                 let planes = picture_bytes(g.width, g.height);
                 let rgba8 = 4 * piece.out_w as u64 * piece.out_h as u64;
                 if planes > route.band_bytes {
-                    return Ok(Some((planes, route.band_bytes)));
+                    return Ok(Err((planes, route.band_bytes)));
                 }
                 if rgba8 > route.band_bytes {
-                    return Ok(Some((rgba8, route.band_bytes)));
+                    return Ok(Err((rgba8, route.band_bytes)));
                 }
             }
             let read = match frame {
@@ -2862,20 +2898,22 @@ fn band_split(
             };
             let own = picture_bytes(read.out_w, read.out_h);
             if own > route.band_bytes {
-                return Ok(Some((own, route.band_bytes)));
+                return Ok(Err((own, route.band_bytes)));
             }
+            let mut pixels = own / 16;
             // The wider picture of the Film nodes: the piece grown by the reach the scheduler infers. (The raster masks'
             // planes are made in tiles of their own when theirs does not fit: `grown_input`.)
             let wide = raster_grown(job, &read, chains)?;
             if let Some(w) = &wide {
                 let need = picture_bytes(w.out_w, w.out_h);
                 if need > route.band_bytes {
-                    return Ok(Some((need, route.band_bytes)));
+                    return Ok(Err((need, route.band_bytes)));
                 }
+                pixels += need / 16;
             }
             // The CPU samples: what goes up is the piece's frame, which the cut already holds.
             if !stages.sampler {
-                return Ok(None);
+                return Ok(Ok(pixels));
             }
             let mut reads = vec![read];
             reads.extend(wide);
@@ -2891,10 +2929,10 @@ fn band_split(
                     prepare_view(job, read)?.source_window_bytes()
                 };
                 if let Some(b) = bytes.filter(|b| *b > route.source_bytes) {
-                    return Ok(Some((b, route.source_bytes)));
+                    return Ok(Err((b, route.source_bytes)));
                 }
             }
-            Ok(None)
+            Ok(Ok(pixels))
         };
     // Where to start the rows: what the widest picture of one row of the view allows, from its areas. A start only.
     let rows_guess = if magnified {
@@ -2917,22 +2955,40 @@ fn band_split(
         spec.out_h,
         rows_guess,
         true,
+        // A sharpened view in tiles is finished by the CPU stage over the whole display frame: bands (the device's fused
+        // tail) are cut unless none fits in 16 pieces.
+        if sharpening.is_some() { 0 } else { 100 },
         &mut |shape, tiles| {
             // Rows are all tested (the photo's edge cuts the sides of the pieces differently); of tiles the middle one is,
-            // the largest the photo's edge does not cut.
+            // the largest the photo's edge does not cut, and its cost stands for the others.
             let tested: Vec<(usize, usize, usize, usize)> = match shape {
                 Shape::Tiles(..) => tiles.get(tiles.len() / 2).copied().into_iter().collect(),
                 Shape::Whole | Shape::Rows(_) => tiles.to_vec(),
             };
-            for (x, y, w, h) in tested {
-                if let Some(over) = overflow(job, &tile_of(spec, x, y, w, h))? {
-                    last = Some(over);
-                    return Ok(false);
+            let mut pixels = 0u64;
+            for &(x, y, w, h) in &tested {
+                match measure(job, &tile_of(spec, x, y, w, h))? {
+                    Ok(px) => pixels += px,
+                    Err(over) => {
+                        last = Some(over);
+                        return Ok(None);
+                    }
                 }
             }
-            Ok::<bool, RenderError>(true)
+            // A shape of tiles: the representative tile's cost for every tile.
+            let scaled = pixels * tiles.len() as u64 / tested.len().max(1) as u64;
+            Ok::<Option<u64>, RenderError>(Some(scaled))
         },
     )?;
+    if std::env::var("YM_CUT_DEBUG").is_ok() {
+        eprintln!(
+            "CUT {}x{} sharpening {} magnified {magnified} band {} -> {shape:?} last {last:?}",
+            spec.out_w,
+            spec.out_h,
+            sharpening.is_some(),
+            route.band_bytes
+        );
+    }
     if shape.is_none() {
         let (requested, limit) = last.unwrap_or((0, route.band_bytes));
         job.view_gpu_failed(&GpuError::BufferTooLarge { requested, limit })?;

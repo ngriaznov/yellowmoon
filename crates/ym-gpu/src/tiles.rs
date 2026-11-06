@@ -41,6 +41,25 @@ pub const TILE_SIZES: [usize; 2] = [1024, 2048];
 /// every machine; a device that offers more simply does not need the room.
 pub const DESIGN_BINDING_BYTES: u64 = 128 << 20;
 
+/// The largest buffer one storage binding of a device with `limits` can hold: the smaller of the two limits a binding is
+/// held to (`max_storage_buffer_binding_size`, and `max_buffer_size`, the largest buffer there is). **The limit a view is
+/// cut to** (`docs/17-gpu.md` section 8): a view's pieces are as large as this device can bind, not as the design binding
+/// ([`DESIGN_BINDING_BYTES`]) of the weakest device, so a Mac with a binding of gigabytes cuts a view only for its memory
+/// budget. Exports keep the design binding (their tiles are the same on every machine). On Mesa lavapipe it is
+/// [`DESIGN_BINDING_BYTES`]: 128 MiB.
+///
+/// **Kernel limits at a piece this large.** Every dispatch of a view is two-dimensional with 16-pixel groups
+/// ([`crate::stream::MAX_GROUPS_PER_DIMENSION`] groups a side: a piece up to 1,048,560 pixels wide or high; the pass
+/// list refuses a dispatch above it with an error, never a wrong picture), and no kernel indexes a binding in bytes
+/// from `u32` past its size: a binding is at most 2 GiB (the device opens with `max_storage_buffer_binding_size` capped at
+/// 2 GiB and `max_buffer_size` at 4 GiB), whose word and byte offsets fit `u32`.
+#[must_use]
+pub fn device_binding_bytes(limits: &crate::device::GpuLimits) -> u64 {
+    limits
+        .max_storage_buffer_binding_size
+        .min(limits.max_buffer_size)
+}
+
 /// Whether a buffer of `bytes` bytes fits one binding of [`DESIGN_BINDING_BYTES`].
 pub const fn fits_design_binding(bytes: u64) -> bool {
     bytes <= DESIGN_BINDING_BYTES

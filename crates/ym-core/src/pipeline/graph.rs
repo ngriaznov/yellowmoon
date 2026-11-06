@@ -99,9 +99,48 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// among the two is uploaded again when it is next rendered.
 pub const RESIDENT_PHOTOS: usize = 2;
 
-/// The default of [`RenderOptions::view_band_bytes`]: 128 MiB, the storage binding every device
-/// pass is designed for (`docs/17-gpu.md` section 4, K4).
+/// The storage binding every device pass is designed for: 128 MiB (`docs/17-gpu.md` section 4, K4), the one Mesa
+/// lavapipe has. A cap to give [`RenderOptions::view_band_bytes`] to cut as lavapipe does on any device; views are
+/// cut to the opened device's own limits otherwise ([`ViewLimits`]).
 pub const VIEW_BAND_BYTES: u64 = 128 << 20;
+
+/// What the device allows a view: the limits its pieces are cut to (`docs/23-nodes.md` section 5.12, *Limits*).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewLimits {
+    /// The largest storage binding: `min(max_storage_buffer_binding_size, max_buffer_size)`
+    /// ([`ym_gpu::tiles::device_binding_bytes`]).
+    pub binding_bytes: u64,
+    /// The GPU memory budget of the pool (`GpuInfo::memory_budget_bytes`).
+    pub budget_bytes: u64,
+}
+
+impl ViewLimits {
+    /// A piece's buffers together are at most this part of the memory budget, counted as the piece's wider picture
+    /// at 16 bytes a pixel (four f32 planes) times this many: a view with raster masks, Film nodes and the colour
+    /// pass holds about 225 bytes a pixel of its wider picture at the peak (the sampled picture of six planes, the
+    /// camera RGB, seven raster planes, the Film pictures and passes: measured by `tests/view_cut.rs` on a 24 MP
+    /// photo), which is 14 times 16; 24 leaves room for the photo's raw group and the planes the device keeps, so a
+    /// 4 GiB budget (the Mac's) allows a picture of 170 MB (about 11 million pixels) and a 2 GiB one 85 MB.
+    pub const BUDGET_DIVISOR: u64 = 24;
+
+    /// The limits of an opened device.
+    #[must_use]
+    pub fn of_device(info: &ym_gpu::device::GpuInfo) -> Self {
+        Self {
+            binding_bytes: ym_gpu::tiles::device_binding_bytes(&info.limits),
+            budget_bytes: info.memory_budget_bytes,
+        }
+    }
+
+    /// The largest picture of four f32 planes (16 bytes a pixel) one piece of a view may hold: the binding, a share of
+    /// the budget ([`Self::BUDGET_DIVISOR`]) and the cap `cap` ([`RenderOptions::view_band_bytes`]).
+    #[must_use]
+    pub fn picture_bytes(self, cap: u64) -> u64 {
+        self.binding_bytes
+            .min(self.budget_bytes / Self::BUDGET_DIVISOR)
+            .min(cap)
+    }
+}
 
 /// What [`Renderer::prefetch_raw`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,14 +243,17 @@ pub struct RenderOptions {
     /// (a test's device, a renderer with no policy behind it). [`crate::app::gpu::GpuSlot::apply_to`] and
     /// [`crate::app::Core::attach_gpu`] set it.
     pub gpu_reopener: Option<GpuReopener>,
-    /// The largest storage binding, in bytes, that one device pass of a view may need: a four-plane
-    /// f32 frame takes `16 * width * rows` of it. A view whose frame needs more (the Metal limit is
-    /// 2 GiB, lavapipe's 128 MiB, and every kernel is designed for the lower, `docs/17-gpu.md`
-    /// section 4) is cut into horizontal bands that are rendered one after the other and put
-    /// together, which gives the same pixels bit for bit (every device stage of a view is
-    /// tile-exact). A constant of the renderer and not the device's limit, so that the cut does not
-    /// depend on the machine. [`VIEW_BAND_BYTES`] by default.
+    /// A cap, in bytes, on the storage binding one device pass of a view may need: a four-plane f32 frame
+    /// takes `16 * width * rows` of it. A view whose frame needs more is cut into pieces that are rendered
+    /// one after the other and put together, which gives the same pixels bit for bit (every device stage of
+    /// a view is tile-exact). **The limit a view is cut to is the device's** (`min(max_storage_buffer_binding_size,
+    /// max_buffer_size)` of the opened device) and a share of its memory budget ([`ViewLimits`]); this field
+    /// only lowers it (tests, and a person who wants smaller pieces). [`u64::MAX`] by default: no cap.
+    /// [`VIEW_BAND_BYTES`] is the binding every kernel is designed for, the one Mesa lavapipe has.
     pub view_band_bytes: u64,
+    /// The device limits a view is cut to instead of the opened device's (tests that cut as a bigger device
+    /// would; `None`, the device's own, everywhere else). [`ViewLimits::of_device`].
+    pub view_limits: Option<ViewLimits>,
     /// Whether the caches of the raw group (the reduced groups and the tiles of the 100 % view) keep
     /// what the device made where it is, on the device, for the sampler to read (`docs/17-gpu.md`
     /// section 3, `Backing`): no readback after the raw chain and no upload before the sampler. Has an
@@ -293,6 +335,7 @@ impl std::fmt::Debug for RenderOptions {
             .field("gpu_stages", &self.gpu_stages)
             .field("gpu_strict", &self.gpu_strict)
             .field("view_band_bytes", &self.view_band_bytes)
+            .field("view_limits", &self.view_limits)
             .field("resident_caches", &self.resident_caches)
             .finish_non_exhaustive()
     }
@@ -315,7 +358,8 @@ impl Default for RenderOptions {
             gpu_stages: GpuStages::ALL,
             gpu_strict: false,
             gpu_reopener: None,
-            view_band_bytes: VIEW_BAND_BYTES,
+            view_band_bytes: u64::MAX,
+            view_limits: None,
             resident_caches: true,
             background: [255, 255, 255],
             thumbnail_px: 240,

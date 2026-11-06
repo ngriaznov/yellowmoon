@@ -73,7 +73,8 @@ use ym_gpu::kernels::encode::{C13, Encoding, encode_c13};
 use ym_gpu::kernels::film_stack::{FilmPictures, FilmRasters, FilmStack};
 use ym_gpu::kernels::magnify::{MagnifyTarget, encode_magnify};
 use ym_gpu::kernels::mask_raster::{
-    PlaneKey, RasterJob, RasterTile, encode_raster_planes_kept, encode_raster_planes_tiled,
+    PlaneKey, RasterJob, RasterTile, encode_raster_planes_kept, encode_raster_planes_over,
+    encode_raster_planes_tiled,
 };
 use ym_gpu::kernels::output_sharpen::{FusedC13, PreparedSharpen};
 use ym_gpu::kernels::sampler::encode_sample_at;
@@ -85,7 +86,7 @@ use ym_gpu::stream::{PassList, ReadId, upload_bytes};
 
 use super::{FrameOutput, Job, ViewSpec};
 use crate::app::gpu::GpuStages;
-use crate::pipeline::graph::ViewGpu;
+use crate::pipeline::graph::{ViewGpu, ViewLimits};
 use crate::pipeline::schedule::{camera_bytes, picture_bytes};
 
 /// How often a render that waits for its device job looks at its cancel token.
@@ -129,52 +130,71 @@ pub(super) struct ViewRoute {
     pub stages: ViewStages,
     spec: JobSpec,
     token: CancelToken,
-    /// The largest storage binding of one device pass over a frame
-    /// ([`RenderOptions::view_band_bytes`]).
-    ///
-    /// [`RenderOptions::view_band_bytes`]: crate::pipeline::RenderOptions::view_band_bytes
+    /// The largest picture (a piece's frame, its wider picture) of one device pass, at 16 bytes a pixel: the device's
+    /// binding and a share of its memory budget ([`view_bytes`], [`ViewLimits`]), less for a chain with raster masks or
+    /// the pixels' places. A pixel-exact cut: the pieces give the view in one piece bit for bit on any size.
     pub band_bytes: u64,
-    /// The largest uploaded camera RGB of one device pass: the same constant as the frame's (a
-    /// renderer constant, not the device's limit, so that the cut does not depend on the machine:
-    /// `docs/17-gpu.md` section 4).
+    /// The largest uploaded camera RGB of one device pass: the largest picture of the device, unreduced.
     pub source_bytes: u64,
+    /// The limits the sizes above were made from (the device's, or the options' `view_limits`).
+    pub limits: ViewLimits,
     /// The largest RGBA8 frame the device can hold in one buffer and bind whole: what a frame cut
     /// into bands may be to be gathered on the device ([`gather_job`]). The device's own limit: it
     /// decides only where the finished bytes are, never the pixels.
     pub frame_bytes: u64,
 }
 
+/// The sizes a view's pieces are cut to on a device with `limits`: `(band_bytes, source_bytes)` for a chain that keeps the
+/// pixels' places in the photo (`positions`: six planes where a frame has four) and/or raster planes (`rasters`: seven
+/// f32 planes of the wider picture), under the cap `cap` ([`RenderOptions::view_band_bytes`]).
+///
+/// [`RenderOptions::view_band_bytes`]: crate::pipeline::RenderOptions::view_band_bytes
+pub(super) fn view_bytes(
+    limits: ViewLimits,
+    cap: u64,
+    positions: bool,
+    rasters: bool,
+) -> (u64, u64) {
+    let unit = limits.picture_bytes(cap);
+    // The sampled picture of a chain whose mask shapes read the pixels' places in the photo has six planes (24 bytes a
+    // pixel) where the frames the cut is made for have four (16): such a chain gets two thirds of the size, so that every
+    // binding still fits (`docs/17-gpu.md` section 4).
+    let mut band_bytes = if positions { unit / 3 * 2 } else { unit };
+    // A chain with raster masks keeps seven f32 planes of the wider picture they look at for them (28 bytes a pixel where
+    // the frame is four planes, 16): a binding must hold them, so a view whose wider picture would pass the device's
+    // binding is cut (`band_split`, each piece grown by the masks' receptive field).
+    if rasters {
+        band_bytes = band_bytes.min(limits.binding_bytes / 28 * 16);
+    }
+    (band_bytes, unit)
+}
+
 impl ViewRoute {
     /// The route of `job` for `gpu`, at the queue priority `priority`.
     pub(super) fn new(job: &Job<'_>, gpu: ViewGpu, priority: Priority) -> Self {
-        // The sampled picture of a chain whose mask shapes read the pixels' places in the photo has six planes
-        // (24 bytes a pixel) where the frames the cut is made for have four (16): such a chain gets two thirds
-        // of the band size, so that every binding still fits (`docs/17-gpu.md` section 4).
-        let mut band_bytes = if super::super::color::uses_photo_position(&job.src.settings)
-            || job.mask_uses_photo_position()
-        {
-            job.options().view_band_bytes / 3 * 2
-        } else {
-            job.options().view_band_bytes
-        };
-        // A chain with raster masks keeps seven f32 planes of the wider picture they look at for them (28 bytes a
-        // pixel where the frame is four planes, 16): a view whose wider picture would pass the design binding is cut
-        // into bands (`band_split`, each band grown by the masks' receptive field), so that it does.
-        if super::super::color::uses_rasters(&job.src.settings) || job.mask_uses_rasters() {
-            band_bytes = band_bytes.min(ym_gpu::tiles::DESIGN_BINDING_BYTES / 28 * 16);
-        }
+        let info = gpu.gpu.info();
+        let limits = job
+            .options()
+            .view_limits
+            .unwrap_or_else(|| ViewLimits::of_device(info));
+        let (band_bytes, source_bytes) = view_bytes(
+            limits,
+            job.options().view_band_bytes,
+            super::super::color::uses_photo_position(&job.src.settings)
+                || job.mask_uses_photo_position(),
+            super::super::color::uses_rasters(&job.src.settings) || job.mask_uses_rasters(),
+        );
         Self {
             stages: ViewStages::of(gpu.stages),
             spec: JobSpec::new(priority).owned_by(u64::from(job.src.id.0)),
             token: job.cancel.clone(),
             band_bytes,
-            source_bytes: job.options().view_band_bytes,
-            frame_bytes: {
-                let limits = &gpu.gpu.info().limits;
-                limits
-                    .max_storage_buffer_binding_size
-                    .min(limits.max_buffer_size)
-            },
+            source_bytes,
+            frame_bytes: info
+                .limits
+                .max_storage_buffer_binding_size
+                .min(info.limits.max_buffer_size),
+            limits,
             gpu: gpu.gpu,
         }
     }
@@ -675,8 +695,11 @@ fn prepared_for(
         return Ok(prepared);
     };
     prepared = prepared.with_photo_frame(frame);
-    // The Film nodes of the plan: their pictures are made from the wider picture the raster masks look at (grown by the
-    // Film halos too, `raster_read`) before the colour pass, which blends them by the nodes' masks (`docs/24` section 3.9c).
+    // The wider picture of the view, once for the job: the Film nodes and the raster masks both read it (they look at the
+    // same grown window), so it is sampled and uploaded once and the raster planes are made over the Film nodes' copy.
+    let mut shared: Option<GpuImage> = None;
+    // The Film nodes of the plan: their pictures are made from the wider picture the raster masks look at (grown by the Film
+    // halos too, `raster_read`) before the colour pass, which blends them by the nodes' masks (`docs/24` section 3.9c).
     // With nothing of the photo in the view there is no wider picture and no pixel that reads a Film picture.
     if !prepared.live_films().is_empty() {
         prepared = match (rasters, film) {
@@ -709,7 +732,7 @@ fn prepared_for(
                     )?
                 };
                 // The wider picture lives until the work has finished.
-                let _ = passes.keep(wide.buf);
+                shared = Some(wide);
                 prepared.with_film(pictures, (r.extent.x, r.extent.y))
             }
             (None, _) => prepared.with_film(Arc::new(FilmPictures::empty()), (0, 0)),
@@ -734,14 +757,18 @@ fn prepared_for(
             extent: r.extent,
             photo: frame,
         };
-        let planes = match &grown.source {
-            GrownSource::Whole(input) => {
+        let planes = match (&grown.source, shared.as_ref()) {
+            // The Film nodes sampled this picture already: the planes are made over it.
+            (GrownSource::Whole(_), Some(wide)) => {
+                encode_raster_planes_over(passes, &prepared, chain, wide, &job, Some(&grown.key))?
+            }
+            (GrownSource::Whole(input), None) => {
                 encode_raster_planes_kept(passes, &prepared, chain, &job, &grown.key, |passes| {
                     let _span = perf::span(Stage::WideImage);
                     input_image(ctx, passes, input)
                 })?
             }
-            GrownSource::Tiles(tiles) => {
+            (GrownSource::Tiles(tiles), _) => {
                 let regions: Vec<RasterTile> = tiles.iter().map(|t| t.tile).collect();
                 encode_raster_planes_tiled(
                     passes,
@@ -758,6 +785,9 @@ fn prepared_for(
             }
         };
         prepared = prepared.with_rasters(planes);
+    }
+    if let Some(wide) = shared {
+        let _ = passes.keep(wide.buf);
     }
     Ok(prepared)
 }
@@ -1494,5 +1524,42 @@ mod tests {
         assert_eq!(interleave_display(2, 2, 4, &planar).1, None);
         // Three planes: no mask either.
         assert_eq!(interleave_display(2, 2, 3, &planar[..12]).1, None);
+    }
+
+    /// The sizes views are cut to (G-12): the device's binding and a share of its budget, not the design binding.
+    #[test]
+    fn views_are_cut_to_the_devices_limits() {
+        const MIB: u64 = 1 << 20;
+        // Lavapipe: a 128 MiB binding, a 4 GiB budget (170 MiB a picture): the binding.
+        let lavapipe = ViewLimits {
+            binding_bytes: 128 * MIB,
+            budget_bytes: 4096 * MIB,
+        };
+        assert_eq!(view_bytes(lavapipe, u64::MAX, false, false), (128 * MIB, 128 * MIB));
+        assert_eq!(view_bytes(lavapipe, u64::MAX, true, false).0, 128 * MIB / 3 * 2);
+        assert_eq!(view_bytes(lavapipe, u64::MAX, false, true).0, 128 * MIB / 28 * 16);
+        // The Mac of the owner's log: a binding of 2 GiB or more, the 4 GiB budget: a share of the budget.
+        let mac = ViewLimits {
+            binding_bytes: 2048 * MIB,
+            budget_bytes: 4096 * MIB,
+        };
+        let share = 4096 * MIB / ViewLimits::BUDGET_DIVISOR;
+        assert_eq!(view_bytes(mac, u64::MAX, false, false), (share, share));
+        // With raster masks and the pixels' places: the share, two thirds of it (the raster rule bounds the binding only).
+        assert_eq!(view_bytes(mac, u64::MAX, true, true).0, share / 3 * 2);
+        // The owner's view at 100 %: a Film reach of 640 and the masks' 75 around 2080 x 1387 is 9.9 million pixels, 158 MB
+        // at 16 bytes a pixel, and its 28-byte raster planes need a 277 MB binding: one piece.
+        let wide = 16 * (2080 + 2 * 715) * (1387 + 2 * 715);
+        assert!(wide <= view_bytes(mac, u64::MAX, true, true).0.max(share));
+        assert!(wide <= view_bytes(mac, u64::MAX, false, true).0);
+        // A cap lowers it, never raises it.
+        assert_eq!(view_bytes(mac, 10 * MIB, false, true), (10 * MIB, 10 * MIB));
+        assert_eq!(view_bytes(lavapipe, 1 << 40, false, false).0, 128 * MIB);
+        // A smaller budget (an 8 GB Mac: 2 GiB) shrinks the pieces.
+        let small = ViewLimits {
+            binding_bytes: 2048 * MIB,
+            budget_bytes: 2048 * MIB,
+        };
+        assert_eq!(view_bytes(small, u64::MAX, false, false).0, 2048 * MIB / ViewLimits::BUDGET_DIVISOR);
     }
 }
