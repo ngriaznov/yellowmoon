@@ -34,7 +34,7 @@
 //! poison mode of `crate::pool` makes visible).
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -74,6 +74,17 @@ pub const INVOCATIONS_PER_GROUP: u64 = 256;
 /// result is the same bytes. One dispatch is never cut: a pass over a plane of the design binding is 4.8 million pixels.
 pub const WORK_BUDGET: u64 = 32 << 20;
 
+/// The most compute passes one command buffer of a [`PassList`] holds before [`PassList::dispatch`] submits what is
+/// recorded and goes on in a new one, exactly as the [`WORK_BUDGET`] does. Metal refuses a queue more than 4096
+/// command buffers that are created and not yet submitted (wgpu-hal `MAX_COMMAND_BUFFERS`) and treats the refusal as a
+/// lost device; wgpu-core opens about two hal command buffers for every compute pass (one for the pass, one "Pre Pass"
+/// for its barriers) and one more for each run of copies between passes, and the count falls only when the encoder is
+/// submitted. A tiled job records thousands of small passes, and the count is per queue, so lists recording on two
+/// threads share it. 256 passes are under 800 hal buffers per list, which leaves room for several lists at once.
+/// Lavapipe has no such limit, so only the counters (`max_split_passes`) and the test `pass_budget` guard this.
+/// `docs/17-gpu.md` section 8.
+pub const PASS_BUDGET: u32 = 256;
+
 /// What the device has been asked to do, counted since it opened. Read with
 /// [`GpuContext::counters`] or [`crate::device::Gpu::counters`]; subtract two snapshots to measure a
 /// region ([`CounterSnapshot::since`]).
@@ -94,6 +105,10 @@ pub struct Counters {
     planes_off: AtomicBool,
     /// The most invocations one submission may hold before the list starts another ([`WORK_BUDGET`] unless a test sets it).
     work_budget: AtomicU64,
+    /// The most compute passes one submission may hold before the list starts another ([`PASS_BUDGET`] unless a test sets it).
+    pass_budget: AtomicU32,
+    /// The most compute passes any submission of a list held.
+    max_split_passes: AtomicU32,
     /// The most invocations a submission of more than one dispatch held (a submission of one dispatch cannot be cut).
     max_split_work: AtomicU64,
     /// GPU time per pass label, from the timestamp queries of the lists that were timed (empty unless the
@@ -194,8 +209,23 @@ impl Counters {
         self.work_budget.store(invocations, Ordering::Relaxed);
     }
 
+    /// The compute passes a submission may hold, see [`PASS_BUDGET`].
+    pub(crate) fn pass_budget(&self) -> u32 {
+        match self.pass_budget.load(Ordering::Relaxed) {
+            0 => PASS_BUDGET,
+            n => n,
+        }
+    }
+
+    /// Sets the pass budget of a submission (0: the default), for a test.
+    pub fn set_pass_budget(&self, passes: u32) {
+        self.pass_budget.store(passes, Ordering::Relaxed);
+    }
+
     /// A submission that held `work` invocations in `dispatches` dispatches.
     pub(crate) fn record_submission_work(&self, work: u64, dispatches: u32) {
+        self.max_split_passes
+            .fetch_max(dispatches, Ordering::Relaxed);
         if dispatches > 1 {
             self.max_split_work.fetch_max(work, Ordering::Relaxed);
         }
@@ -227,6 +257,7 @@ impl Counters {
             pipeline_micros: self.pipeline_micros.load(Ordering::Relaxed),
             precise_dispatches: self.precise_dispatches.load(Ordering::Relaxed),
             max_split_work: self.max_split_work.load(Ordering::Relaxed),
+            max_split_passes: self.max_split_passes.load(Ordering::Relaxed),
         }
     }
 }
@@ -262,6 +293,9 @@ pub struct CounterSnapshot {
     /// device opened: at most the work budget, which is what keeps one command buffer short (`docs/17-gpu.md` K5). Not a
     /// difference of two readings: it is a maximum.
     pub max_split_work: u64,
+    /// The most compute passes any single submission of a list held since the device opened: at most the pass budget
+    /// ([`PASS_BUDGET`]), which is what keeps Metal under its 4096 outstanding command buffers. A maximum, not a difference.
+    pub max_split_passes: u32,
 }
 
 impl CounterSnapshot {
@@ -283,6 +317,7 @@ impl CounterSnapshot {
                 .precise_dispatches
                 .saturating_sub(earlier.precise_dispatches),
             max_split_work: self.max_split_work,
+            max_split_passes: self.max_split_passes,
         }
     }
 }
@@ -774,13 +809,16 @@ impl<'a> PassList<'a> {
         if groups.0 == 0 || groups.1 == 0 || groups.2 == 0 {
             return Ok(());
         }
-        // A command buffer that would hold more than the work budget is submitted first (K5): the rest of the list goes into
-        // the next one. Timed lists keep one encoder (their query set is tied to it).
+        // A command buffer that would hold more than the work budget (K5) or the pass budget (Metal's 4096 outstanding command
+        // buffers) is submitted first: the rest of the list goes into the next one. Timed lists split too: the query set is a
+        // resource, and wgpu-core resolves slots written in an earlier submission (it keeps which slots are initialized and
+        // defers the resolve to submit), so the one resolve at `submit` reads them all.
         let work =
             u64::from(groups.0) * u64::from(groups.1) * u64::from(groups.2) * INVOCATIONS_PER_GROUP;
-        if self.timestamps.is_none()
-            && self.encoder_dispatches > 0
-            && self.work + work > self.ctx.counters_shared().work_budget()
+        let counters = self.ctx.counters_shared();
+        if self.encoder_dispatches > 0
+            && (self.work + work > counters.work_budget()
+                || self.encoder_dispatches >= counters.pass_budget())
         {
             self.flush()?;
         }
