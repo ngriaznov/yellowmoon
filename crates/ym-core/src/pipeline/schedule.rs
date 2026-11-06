@@ -93,7 +93,13 @@ pub(crate) enum Shape {
     Tiles(usize, usize),
 }
 
-/// The tiles of `w x h` pixels a `(width, height)` window is cut into, row by row: `(x, y, w, h)`.
+/// What [`search_cut`] asks of a caller: whether every binding of the tiles of a candidate shape fits.
+pub(crate) type FitsFn<'a, E> = dyn FnMut(Shape, &[Tile]) -> Result<bool, E> + 'a;
+
+/// A tile of a window: `(x, y, w, h)`.
+pub(crate) type Tile = (usize, usize, usize, usize);
+
+/// The tiles of `w x h` pixels a `(width, height)` window is cut into, row by row.
 #[must_use]
 pub(crate) fn tiles_of(
     width: usize,
@@ -140,7 +146,7 @@ pub(crate) fn search_cut<E>(
     height: usize,
     rows_guess: Option<usize>,
     columns: bool,
-    fits: &mut dyn FnMut(Shape, &[(usize, usize, usize, usize)]) -> Result<bool, E>,
+    fits: &mut FitsFn<'_, E>,
 ) -> Result<Option<Shape>, E> {
     let mut rows = rows_guess.unwrap_or(height).clamp(1, height.max(1));
     loop {
