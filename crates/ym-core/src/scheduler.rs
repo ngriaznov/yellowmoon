@@ -1,10 +1,11 @@
 //! The job scheduler: priorities, cancellation tokens and memory budgets (`docs/01-architecture.md`
 //! section Scheduling and threads).
 //!
-//! * **Priorities.** Viewport frames run before visible-tile passes, those before the bands of a
-//!   whole-image level being filled ([`Priority::Fill`]), those before thumbnails, those before
-//!   export ([`Priority`]). A job that is running is never pre-empted, so the fill is cut into one
-//!   job per band: a viewport frame waits for one band at most.
+//! * **Priorities.** Viewport frames run before visible-tile passes, those before thumbnails, those
+//!   before export ([`Priority`]); the bands of a whole-image level being filled ([`Priority::Fill`])
+//!   come last of all, are not foreground load (an export does not wait for them) and give way to an
+//!   export ([`JobScheduler::exports_active`]). A job that is running is never pre-empted, so the
+//!   fill is cut into one job per band: a frame, an export or a thumbnail waits for one band at most.
 //! * **Two workers.** The first runs everything the person is waiting for (viewport, tile and
 //!   thumbnail jobs) one at a time in priority order. The second runs export jobs and **gives way**
 //!   to the first: an export job starts only when no foreground job is queued or running, and a
@@ -441,6 +442,8 @@ pub struct JobScheduler {
     background: Scheduler<()>,
     /// Foreground jobs queued or running.
     load: Arc<AtomicUsize>,
+    /// Export jobs queued or running: the fill of a whole-image level gives way while there is one.
+    exports: Arc<AtomicUsize>,
     /// The photo being looked at, for [`JobScheduler::navigate`] (0: none).
     current: AtomicU64,
     /// Queued panel requests that navigation supersedes.
@@ -478,6 +481,7 @@ impl JobScheduler {
             foreground,
             background,
             load: Arc::new(AtomicUsize::new(0)),
+            exports: Arc::new(AtomicUsize::new(0)),
             current: AtomicU64::new(0),
             superseded: Mutex::new(Vec::new()),
         })
@@ -501,12 +505,19 @@ impl JobScheduler {
         }
         if priority == Priority::Export {
             let load = Arc::clone(&self.load);
+            let active = LoadGuard::new(&self.exports);
             self.background.submit(spec, move |(), token| {
+                let _active = active;
                 // A cancelled wait still runs the job: it sees its token set at its first check
                 // and returns its own cancellation result.
                 let _ = wait_until_idle(&load, token);
                 job(token)
             })
+        } else if priority == Priority::Fill {
+            // The bands of a level being filled are nobody's wait: they do not count as foreground load, or an export
+            // (which starts and goes on only while the foreground is idle) would wait for a fill whose next band is
+            // always queued before the last one ends.
+            self.foreground.submit(spec, move |(), token| job(token))
         } else {
             let guard = LoadGuard::new(&self.load);
             self.foreground.submit(spec, move |(), token| {
@@ -605,6 +616,12 @@ impl JobScheduler {
     /// [`Cancelled`] as soon as `cancel` fires.
     pub fn wait_for_foreground(&self, cancel: &CancelToken) -> Result<(), Cancelled> {
         wait_until_idle(&self.load, cancel)
+    }
+
+    /// Whether an export job is queued or running: the fill of a level yields to it.
+    #[must_use]
+    pub fn exports_active(&self) -> bool {
+        self.exports.load(Ordering::SeqCst) > 0
     }
 
     /// Foreground jobs queued or running now.
@@ -716,11 +733,39 @@ mod tests {
         for h in handles {
             h.wait().expect("job");
         }
-        // The bands of a level being filled run after every job somebody waits for (a frame, the tiles of the view), and
-        // before the filmstrip's thumbnails; a viewport frame submitted while a band runs waits for that band only.
-        assert_eq!(
-            *order.lock().expect("order"),
-            vec!["viewport", "tile", "fill", "thumbnail", "export"]
+        // The bands of a level being filled run after every job somebody asked for, thumbnails included. (The export is on
+        // its own worker and starts once the foreground it waits for has gone idle; the fill is not part of that.)
+        let order = order.lock().expect("order").clone();
+        let at = |n: &str| order.iter().position(|x| *x == n).expect(n);
+        assert_eq!(&order[..3], ["viewport", "tile", "thumbnail"]);
+        assert!(at("fill") > at("thumbnail") && at("export") > at("thumbnail"));
+    }
+
+    #[test]
+    fn an_export_does_not_wait_for_a_fill_that_keeps_queueing_bands() {
+        let s = Arc::new(JobScheduler::new("test-fill-export").expect("scheduler"));
+        // A fill whose every band queues the next one before it ends, as a level's does.
+        fn band(s: &Arc<JobScheduler>, left: usize, ran: &Arc<std::sync::atomic::AtomicUsize>) {
+            let (s2, ran2) = (Arc::clone(s), Arc::clone(ran));
+            let _ = s.submit(Priority::Fill, Some(PhotoId(1)), move |_| {
+                std::thread::sleep(Duration::from_millis(30));
+                ran2.fetch_add(1, Ordering::SeqCst);
+                if left > 1 {
+                    band(&s2, left - 1, &ran2);
+                }
+            });
+        }
+        let ran = Arc::new(AtomicUsize::new(0));
+        band(&s, 40, &ran);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(s.foreground_load(), 0, "a fill is not foreground load");
+        let export = s.submit(Priority::Export, None, |_| ());
+        assert!(s.exports_active());
+        export.wait().expect("the export ran");
+        assert!(!s.exports_active());
+        assert!(
+            ran.load(Ordering::SeqCst) < 40,
+            "the export did not wait for the fill to end"
         );
     }
 

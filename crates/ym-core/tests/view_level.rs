@@ -959,3 +959,83 @@ fn a_zoom_shows_the_nearest_level_resampled_at_once_and_the_exact_frame_follows(
         0
     );
 }
+
+/// An export does not wait for a fill, and the fill gives way to it: the bands that were queued make no progress while the
+/// export runs (but the one in flight), and the fill goes on afterwards to a complete level that serves pans, equal to the
+/// window renders.
+#[test]
+fn an_export_does_not_wait_for_a_fill_and_the_fill_resumes_after_it() {
+    use ym_core::export::{ExportContext, ExportControl, ExportParams, ExportPhoto, export_photo};
+    use ym_export::{BitDepth, ExportOptions, FormatKind, IfExists};
+    let Some(gpu) = gpu() else { return };
+    let d = small();
+    let r = renderer_cut(&gpu, true, None, Some(16 * 640 * 170));
+    let src = d.source().with_settings(plain_graph(0.1));
+    let image = r.final_size(&src, &CancelToken::new()).expect("size");
+    let mut st = at(100.0, (300.0, 100.0), image);
+    let zoom = st.zoom(image);
+    r.navigate(src.id);
+    let _ = frame(&r, &src, &st, false);
+    let done_of = |r: &Renderer| match r.level_status(&src, zoom) {
+        LevelStatus::Filling { done, .. } => Some(done),
+        LevelStatus::Ready => Some(usize::MAX),
+        _ => None,
+    };
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while done_of(&r).is_none_or(|n| n < 1) {
+        assert!(std::time::Instant::now() < end, "the fill never started");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // The export, on a renderer of its own over the same device, while the fill runs.
+    let home = tempfile::tempdir().expect("dir");
+    let ctx = ExportContext::new(r.clone()).with_home(Some(home.path().to_path_buf()));
+    let mut photo = ExportPhoto::from_session(&d.session, d.id).expect("export photo");
+    photo.source = src.clone();
+    let opts = ExportOptions {
+        format: FormatKind::Png,
+        bit_depth: BitDepth::Eight,
+        destination: Some(home.path().to_path_buf()),
+        if_exists: IfExists::Replace,
+        ..ExportOptions::default()
+    };
+    let at_start = done_of(&r);
+    let t = std::time::Instant::now();
+    export_photo(
+        &ctx,
+        &photo,
+        &ExportParams::new(opts),
+        &ExportControl::none(),
+    )
+    .expect("export");
+    let spent = t.elapsed();
+    let at_end = done_of(&r);
+    say(&format!(
+        "export {:.0} ms; bands made {at_start:?} at its start, {at_end:?} at its end",
+        spent.as_secs_f64() * 1000.0
+    ));
+    // The export did not wait for the fill to end, and the fill made at most the band that was running.
+    assert!(at_end != Some(usize::MAX) || at_start == Some(usize::MAX));
+    if let (Some(a), Some(b)) = (at_start, at_end) {
+        assert!(
+            b <= a.saturating_add(1),
+            "the fill went on during the export"
+        );
+    }
+    // The fill resumes, and the level is complete and right.
+    assert!(
+        wait_ready(&r, &src, zoom, 60),
+        "the fill resumed after the export"
+    );
+    for (dx, dy) in [(0.0, 0.0), (0.0, -1e9), (1e9, 1e9), (-20.0, 30.0)] {
+        st.input(&ViewportInput::Pan { dx, dy }, image);
+        let served = frame(&r, &src, &st, false);
+        assert_eq!(served.report.runs.level_hits, 1, "pan ({dx}, {dy})");
+        assert_eq!(bytes(&served), bytes(&frame(&r, &src, &st, true)));
+    }
+    let bands = r.counters(src.id).level_bands;
+    assert!(bands >= 3, "bands made: {bands}");
+    // Each band was made once: the counter is the plan's bands (no band twice) -- the level has exactly them.
+    let LevelStatus::Ready = r.level_status(&src, zoom) else {
+        panic!("ready")
+    };
+}

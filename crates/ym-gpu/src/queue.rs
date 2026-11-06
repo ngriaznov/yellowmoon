@@ -1,5 +1,5 @@
 //! The priority queue in front of the device thread (`docs/01-architecture.md` section Scheduling
-//! and threads): viewport frames > visible-tile neural passes > level fill > thumbnails > export, with
+//! and threads): viewport frames > visible-tile neural passes > thumbnails > export > level fill, with
 //! cancellation tokens.
 //!
 //! [`Scheduler`] owns one worker thread. The worker creates a context `C` (for the GPU: the wgpu
@@ -44,13 +44,13 @@ use std::time::Duration;
 /// Job priority; a higher value runs first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Priority {
+    /// The bands of a whole-image level the viewer fills in the background (`docs/17-gpu.md` section 19): below every
+    /// job a person asked for, exports included. Cancelled by navigation.
+    Fill = 0,
     /// Export: full-resolution frames for a file on disk. Never cancelled by navigation.
-    Export = 0,
+    Export = 1,
     /// Thumbnails after open and on look changes. Not cancelled by navigation.
-    Thumbnail = 1,
-    /// The bands of a whole-image level the viewer fills in the background
-    /// (`docs/11-ui.md`, "Pans"): below every job somebody waits for, cancelled by navigation.
-    Fill = 2,
+    Thumbnail = 2,
     /// Neural demosaic passes for the visible tiles at 100 %.
     TileNeural = 3,
     /// Viewport frames: the picture the user is looking at.

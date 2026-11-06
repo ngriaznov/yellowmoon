@@ -1183,6 +1183,12 @@ impl Renderer {
         let handle = self
             .scheduler()
             .submit(Priority::Fill, Some(id), move |token| {
+                // An export is running or queued: the fill gives way. This band does nothing, and the fill goes on from where it was
+                // when the export is over (the levels made so far stay).
+                if r.scheduler().exports_active() {
+                    r.resume_fill_after_exports(src, ticket);
+                    return;
+                }
                 // A panic in a band ends the fill (the scheduler catches it; nobody else would end the fill).
                 let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     fill_step(&r, &src, &ticket, token)
@@ -1203,6 +1209,35 @@ impl Renderer {
             });
         if let Some(g) = self.existing_graph(again.0.id) {
             g.with_levels(|s| s.set_token(again.1.id, handle.token().clone()));
+        }
+    }
+
+    /// The fill of `ticket` waits for the exports to end, then queues its next band. A short-lived thread polls (a band must not sit
+    /// in the foreground queue spinning); it ends at once if the fill was cancelled or replaced meanwhile.
+    fn resume_fill_after_exports(&self, src: PhotoSource, ticket: FillTicket) {
+        let r = self.clone();
+        let again = (src.clone(), ticket.clone());
+        let spawned = std::thread::Builder::new()
+            .name("ym-level-resume".to_owned())
+            .spawn(move || {
+                loop {
+                    let alive = r
+                        .existing_graph(src.id)
+                        .is_some_and(|g| g.with_levels(|s| s.fill_is(ticket.id)));
+                    if !alive {
+                        return;
+                    }
+                    if !r.scheduler().exports_active() {
+                        r.submit_fill(src, ticket);
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            });
+        if spawned.is_err()
+            && let Some(g) = self.existing_graph(again.0.id)
+        {
+            g.with_levels(|s| s.end_fill(again.1.id, None));
         }
     }
 
