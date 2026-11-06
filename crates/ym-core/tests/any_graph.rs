@@ -580,10 +580,8 @@ fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(gpu) = gpu() else { return };
-    let white = light("sony-ilce-7rm4", 4800.0);
-    let mut problems = Vec::new();
-    // (photo, the cell, the bindings in KiB, the smallest binding the device must make the frame at)
-    type Case = ((u32, u32), (f64, f64), &'static [u64], u64);
+    // The fast default: the 640 px photo at every size and zoom, and one case of the 4000 px photo (two raster rows, at the
+    // smallest binding that holds the frame, at 100 %), which is the owner's frame and the one the Metal watchdog lost.
     let cases: [Case; 2] = [
         (
             (640, 420),
@@ -591,9 +589,45 @@ fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size()
             &[65_536, 4096, 1024, 512, 256, 128, 64],
             1024,
         ),
-        ((4000, 2668), (1332.0, 888.0), &[65_536, 16_384, 4096], 4096),
+        ((4000, 2668), (1332.0, 888.0), &[4096], 4096),
     ];
-    for ((pw, ph), (cw, ch), sizes, device_from) in cases {
+    scale_one_cases(
+        &gpu,
+        &cases,
+        &[50.0, 75.0, 100.0, 147.0],
+        &|pw, what, zoom| pw < 1000 || (what == "brush and background" && zoom == 100.0),
+    );
+}
+
+/// The rest of the scale-1 binding test (`#[ignore]`d: on lavapipe the 4000 px photo takes minutes): the 1332 x 888 view of the
+/// 4000 px photo with every kind of row, at every binding from 4 MiB (16 MiB with a Film node) and every zoom. Run it with
+/// `cargo test -p ym-core --release --test any_graph -- --ignored scale_one_4000`. The Mac CI's ignored step
+/// (`.github/workflows/mac-gpu.yml`) names its tests by filter and does not name this one, so it runs by hand.
+#[test]
+#[ignore = "minutes on lavapipe; run by hand or on the Mac"]
+fn views_at_scale_one_with_raster_masks_stay_on_the_device_scale_one_4000_px() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(gpu) = gpu() else { return };
+    let cases: [Case; 1] = [((4000, 2668), (1332.0, 888.0), &[65_536, 16_384, 4096], 4096)];
+    scale_one_cases(&gpu, &cases, &[50.0, 75.0, 100.0, 147.0], &|_, _, _| true);
+}
+
+/// (photo, the cell, the bindings in KiB, the smallest binding the device must make the frame at)
+type Case = ((u32, u32), (f64, f64), &'static [u64], u64);
+
+/// The body of the scale-1 binding tests: every case, kind of row, binding and zoom for which `wanted(photo width, kind, zoom)`
+/// holds must be made by the device, or by the CPU with its reason below `device_from`.
+fn scale_one_cases(
+    gpu: &Arc<Gpu>,
+    cases: &[Case],
+    zooms: &[f64],
+    wanted: &dyn Fn(u32, &str, f64) -> bool,
+) {
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let mut problems = Vec::new();
+    for &((pw, ph), (cw, ch), sizes, device_from) in cases {
         let scene = Scene::new(pw, ph, white, Layout::Patchwork, 0.5)
             .noise(2e-4, 2e-6)
             .seed(5);
@@ -642,9 +676,12 @@ fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size()
                 if film && pw > 1000 && kib < 16_384 {
                     continue;
                 }
-                let device = renderer_with(Some(Arc::clone(&gpu)), 256, kib * 1024);
+                let device = renderer_with(Some(Arc::clone(gpu)), 256, kib * 1024);
                 let _ = frame(&device, &src, &view(false, false, None));
-                for pct in [50.0, 75.0, 100.0, 147.0] {
+                for &pct in zooms {
+                    if !wanted(pw, what, pct) {
+                        continue;
+                    }
                     let mut st = ViewportState::new(ViewportRect::cell(cw, ch, 1.0));
                     st.mode = ViewportMode::Percent { value: pct };
                     let got = frame(&device, &src, &st);
@@ -652,7 +689,7 @@ fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size()
                     // The same frame in the biggest binding: the tiles are the view in one piece (the stage of a tiled Film
                     // view runs on the CPU, so within the CPU's bound and not bit for bit).
                     if film && !on_cpu && kib < sizes[0] {
-                        let reference = renderer_with(Some(Arc::clone(&gpu)), 256, sizes[0] * 1024);
+                        let reference = renderer_with(Some(Arc::clone(gpu)), 256, sizes[0] * 1024);
                         let want = frame(&reference, &src, &st);
                         let (max, over) = frame_diff(&got, &want);
                         if max > 2 || over >= got.rgba.len() / 2000 {
@@ -793,19 +830,29 @@ fn device_bands_of_a_magnified_film_view_equal_the_view_in_one_piece() {
         "{:?}",
         bands.report.cpu_reason
     );
+    // A band is a view of its own and every device stage is tile-exact: the pixels are the view in one piece, bit for bit.
     let (max, over) = frame_diff(&bands, &whole);
-    let w = whole.width;
-    let bad: Vec<usize> = (0..whole.height)
-        .filter(|&y| {
-            (0..w * 4).any(|i| bands.rgba[y * w * 4 + i].abs_diff(whole.rgba[y * w * 4 + i]) > 2)
-        })
-        .collect();
-    eprintln!(
-        "[probe] {}x{} bad rows {:?}",
-        whole.width, whole.height, bad
-    );
     assert!(
-        max <= 2 && over < whole.rgba.len() / 2000,
+        bands.rgba == whole.rgba,
         "the bands differ from the view in one piece by {max} codes, {over} values over 1"
+    );
+    // The same graph exported (PNG 16): the tiles of 97, 256 and 1024 px are the same bytes.
+    let home = tempfile::tempdir().expect("dir");
+    let settings = src.settings.clone();
+    let mut exports = Vec::new();
+    for tile in [256, 97, 1024] {
+        let (device, notes, bytes) = export(
+            &d,
+            &settings,
+            renderer(Some(Arc::clone(&gpu)), tile),
+            home.path(),
+            FormatKind::Png,
+        );
+        assert_eq!(device, ComputeDevice::Gpu, "tile {tile}: {notes:?}");
+        exports.push(bytes);
+    }
+    assert!(
+        exports[0] == exports[1] && exports[0] == exports[2],
+        "the PNG 16 export is other bytes at another tile size"
     );
 }

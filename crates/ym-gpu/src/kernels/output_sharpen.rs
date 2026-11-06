@@ -718,6 +718,10 @@ impl PreparedSharpen {
         };
         let src_buf = &src.buf;
         let taps = &self.taps;
+        // The prepared stage may be dropped before the list is submitted (the tail records it in a block); its taps were
+        // written when it was made, so a buffer the pool hands to a later upload of the same list would be read by these
+        // passes with that upload's bytes. The list holds them until the work has finished (`stream.rs`, lifetimes).
+        passes.hold(Arc::clone(&self.taps));
         let dither_buf = &dither;
 
         let run = |passes: &mut PassList<'_>,
