@@ -42,7 +42,7 @@ use ym_gpu::cpu::RgbImage;
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
 use ym_gpu::cpu::tiling::Rect;
 use ym_gpu::device::{Gpu, GpuError};
-use ym_gpu::kernels::mask_raster::largest_tile_for;
+use ym_gpu::kernels::mask_raster::fit_tile;
 use ym_gpu::queue::{CancelToken, JobError, JobHandle, JobSpec, Priority};
 use ym_gpu::tail::{Band, BandData, BandFormat, ExportTail, TailRoute, TailSharpen, TailSpec};
 
@@ -532,7 +532,7 @@ impl Renderer {
             &grid.sampler_grid(),
             films.as_deref(),
         );
-        let tile = largest_tile_for(schedule.total_reach(), tile);
+        let tile = fit_tile(&schedule, (fw, fh), tile);
         let frame_area = ym_color::mask_raster::Area::whole(fw, fh);
         let sharpen = (request.output_sharpening_pct > 0.0).then(|| TailSharpen {
             params: OutputSharpen::screen().with_amount_pct(request.output_sharpening_pct),

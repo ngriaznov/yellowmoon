@@ -233,14 +233,26 @@ pub fn max_binding_bytes(grown_w: usize, grown_h: usize) -> u64 {
     (FULL_SLOTS as u64 * 4).max(24) * pixels
 }
 
-/// The largest tile side (pixels) whose grown window fits one design binding for a halo of `halo` pixels.
+/// The largest tile side (pixels), at most `wanted`, whose grown window fits one design binding: the window is the area
+/// the scheduler infers for the tile in the middle of the frame, the one with the most photo around it (`grown_tile`), so
+/// the reach of every spatial step and the photo's edge are the scheduler's, not a halo the caller adds. A frame smaller
+/// than the tile is one tile.
 #[must_use]
-pub fn largest_tile_for(halo: usize, wanted: usize) -> usize {
+pub fn fit_tile(
+    schedule: &ym_color::schedule::Schedule,
+    frame: (usize, usize),
+    wanted: usize,
+) -> usize {
     let mut tile = wanted;
-    while tile > 64 && max_binding_bytes(tile + 2 * halo, tile + 2 * halo) > DESIGN_BINDING_BYTES {
+    loop {
+        let (w, h) = (tile.min(frame.0), tile.min(frame.1));
+        let off = ((frame.0 - w) / 2, (frame.1 - h) / 2);
+        let grown = grown_tile(schedule, frame, off, w, h);
+        if tile <= 64 || max_binding_bytes(grown.w, grown.h) <= DESIGN_BINDING_BYTES {
+            return tile;
+        }
         tile = (tile * 3 / 4).max(64);
     }
-    tile
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1320,17 +1332,36 @@ mod tests {
     }
 
     #[test]
-    fn a_grown_window_that_fits_the_binding_is_found_for_every_halo() {
+    fn a_grown_window_that_fits_the_binding_is_found_for_every_reach() {
+        use ym_color::schedule::{Declared, Footprint, Produces, Reads, Schedule};
+        let plane = |reach_px| Declared {
+            footprint: Footprint::Spatial {
+                reach_px,
+                produces: Produces::Plane,
+            },
+            reads: Reads {
+                source: true,
+                ..Reads::default()
+            },
+        };
+        let frame = (8000, 6000);
         for halo in [0, 100, 300, 600, 900] {
-            let tile = largest_tile_for(halo, 1024);
+            let schedule = Schedule::new([plane(halo)]);
+            let tile = fit_tile(&schedule, frame, 1024);
             assert!(tile >= 64);
             if tile > 64 {
+                let grown = grown_tile(&schedule, frame, (3000, 2000), tile, tile);
                 assert!(
-                    max_binding_bytes(tile + 2 * halo, tile + 2 * halo) <= DESIGN_BINDING_BYTES,
+                    max_binding_bytes(grown.w, grown.h) <= DESIGN_BINDING_BYTES,
                     "halo {halo}: tile {tile}"
                 );
             }
         }
-        assert_eq!(largest_tile_for(0, 1024), 1024);
+        assert_eq!(fit_tile(&Schedule::new([]), frame, 1024), 1024);
+        // A frame smaller than the tile is one tile, whatever the reach.
+        assert_eq!(
+            fit_tile(&Schedule::new([plane(900)]), (500, 400), 1024),
+            1024
+        );
     }
 }

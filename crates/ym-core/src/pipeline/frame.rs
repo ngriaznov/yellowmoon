@@ -96,7 +96,7 @@ use ym_gpu::cpu::tint::overlay_interleaved;
 use ym_gpu::cpu::{Rect, RgbImage};
 use ym_gpu::device::{Gpu, GpuError};
 use ym_gpu::kernels::copy::Piece;
-use ym_gpu::kernels::mask_raster::{PlaneKey, RasterTile, largest_tile_for, max_binding_bytes};
+use ym_gpu::kernels::mask_raster::{PlaneKey, RasterTile, fit_tile, max_binding_bytes};
 use ym_gpu::pool::PooledBuffer;
 use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::tail::{TailRoute, colour_device_tile_to_host, colour_tile_to_host};
@@ -4079,7 +4079,7 @@ impl Renderer {
         };
         // Tiles equal the whole frame, so a tile may be any size: one whose grown window would pass the design
         // binding is made smaller (`docs/17-gpu.md` section 4). The Film nodes read their halos beyond the masks'.
-        let tile = largest_tile_for(schedule.total_reach(), tile);
+        let tile = fit_tile(&schedule, (fw, fh), tile);
         // A tile of a Film node is read that much wider on every side, so a small tile spends most of its work on
         // the halo: the CPU's tiles are larger (tiles equal the whole frame, so the size is free). The device's are
         // held to the design binding above, which a larger tile would pass.
