@@ -23,7 +23,10 @@
 //! middle of recording and is handed out again would therefore have its *later* contents (a second
 //! uniform block, a second stage's input) visible to the *earlier* pass. [`PassList::scratch`],
 //! [`PassList::uniform`] and [`PassList::keep`] hold their buffers until the submission has been
-//! waited for, so a buffer is never reused inside the list that is still recording with it.
+//! waited for, so a buffer is never reused inside the list that is still recording with it. That is the local rule; the
+//! structural one is the pool's quarantine (`crate::pool`, *Quarantine*): every list is registered with the pool while it
+//! records, and a buffer released meanwhile, by whatever code and whether or not it called `keep`, is neither reused,
+//! poisoned nor trimmed until the list has been submitted or dropped.
 //!
 //! # Determinism
 //!
@@ -587,6 +590,8 @@ struct TimestampState {
 /// Dropping a list without submitting it discards the recorded commands and returns its buffers to
 /// the pool.
 pub struct PassList<'a> {
+    /// Registers the list with the pool while it records, so what is released meanwhile is quarantined.
+    open: OpenList,
     ctx: &'a GpuContext,
     encoder: wgpu::CommandEncoder,
     keep: Vec<Arc<PooledBuffer>>,
@@ -598,6 +603,19 @@ pub struct PassList<'a> {
     /// Invocations and dispatches recorded in the encoder since the last submission of this list.
     work: u64,
     encoder_dispatches: u32,
+}
+
+/// The pool's record that a list is recording (`BufferPool::open_list`); ends the list when
+/// dropped, which is on submission or when the list is discarded.
+struct OpenList {
+    pool: crate::pool::BufferPool,
+    id: u64,
+}
+
+impl Drop for OpenList {
+    fn drop(&mut self) {
+        self.pool.close_list(self.id);
+    }
 }
 
 impl std::fmt::Debug for PassList<'_> {
@@ -624,14 +642,20 @@ impl<'a> PassList<'a> {
             }),
             labels: Vec::new(),
         });
+        let id = NEXT_LIST.fetch_add(1, Ordering::Relaxed);
+        ctx.pool().open_list(id);
         PassList {
+            open: OpenList {
+                pool: ctx.pool().clone(),
+                id,
+            },
             ctx,
             encoder,
             keep: Vec::new(),
             reads: Vec::new(),
             dispatches: 0,
             timestamps,
-            id: NEXT_LIST.fetch_add(1, Ordering::Relaxed),
+            id,
             after_submit: Vec::new(),
             work: 0,
             encoder_dispatches: 0,
@@ -873,6 +897,8 @@ impl<'a> PassList<'a> {
         ctx.counters_shared()
             .record_submission_work(self.work, self.encoder_dispatches);
         let submission = ctx.submit([self.encoder.finish()])?;
+        // The commands are on the queue: what the list had open to reuse is ordered after them.
+        drop(self.open);
         for f in std::mem::take(&mut self.after_submit) {
             f();
         }

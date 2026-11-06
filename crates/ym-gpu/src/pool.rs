@@ -32,6 +32,19 @@
 //! On a machine where the GPU shares memory with the CPU (Apple silicon) the budget is carved out of
 //! the RAM the CPU side also uses: [`MemoryBudget::for_unified_memory`] and [`unified_split`].
 //!
+//! # Quarantine
+//!
+//! A buffer that is dropped goes back to the pool at once, but a [`PassList`](crate::stream::PassList) that is still
+//! recording may have bound it in a pass it has not submitted. Two things then go wrong: the next `acquire` hands the
+//! buffer to someone who writes it (a queue write lands ahead of the list's commands, so the earlier pass reads the
+//! later data), and a `trim` destroys it (a destroyed buffer in a submitted command buffer is a validation error and
+//! the device is lost). Both happened, one local `hold` at a time. The rule is structural: every list registers when it
+//! starts (`BufferPool::open_list`) and ends when it is submitted or dropped (`BufferPool::close_list`); a buffer
+//! released while any list is open waits, with the set of lists that were open, in a quarantine that `acquire` and
+//! `trim` do not see, and is freed when the last of those lists has ended. A list that submits in pieces
+//! ([`PassList::dispatch`](crate::stream::PassList::dispatch) splits by the work budget) ends only at its last piece.
+//! Buffers released while no list is open cannot be referenced by an unsubmitted command buffer of this crate.
+//!
 //! # Poison
 //!
 //! [`BufferPool::acquire`] returns recycled buffers uncleared, and wgpu zero-fills a new one, so a
@@ -45,9 +58,10 @@
 //! caller's own uploads and commands. Poisoned buffers get `COPY_DST` added to their usage when the
 //! caller did not ask for it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 use std::ops::Deref;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use crate::device::{DeviceHealth, FaultState, GpuError};
@@ -134,6 +148,11 @@ pub struct PoolStats {
     pub buffers_created: u64,
     /// Acquisitions served from the free lists.
     pub reuses: u64,
+    /// Bytes released while a list was recording and not yet free to reuse (counted in `allocated_bytes`, not in
+    /// `in_use_bytes`; the pool does not trim them).
+    pub quarantined_bytes: u64,
+    /// The largest `quarantined_bytes` seen since creation.
+    pub peak_quarantined_bytes: u64,
 }
 
 /// Rounds a request up to its size class: at least 256 bytes, then the next multiple of a quarter
@@ -209,9 +228,23 @@ impl Ledger {
     }
 }
 
+/// A released buffer that an unsubmitted list may still reference (see the module's *Quarantine*).
+struct Quarantined {
+    /// The lists that were open when the buffer was released; it is free once all of them have submitted or ended.
+    blockers: Vec<u64>,
+    key: (u64, u32),
+    buffer: wgpu::Buffer,
+}
+
 struct PoolState {
     free: HashMap<(u64, u32), Vec<wgpu::Buffer>>,
     ledger: Ledger,
+    /// Lists that are recording and have not been submitted (`BufferPool::open_list`).
+    open: HashSet<u64>,
+    quarantine: Vec<Quarantined>,
+    /// Bytes of `quarantine` (class sizes).
+    quarantined_bytes: u64,
+    peak_quarantined_bytes: u64,
 }
 
 struct PoolShared {
@@ -220,6 +253,8 @@ struct PoolShared {
     max_storage_binding: u64,
     budget: u64,
     options: PoolOptions,
+    /// Test switch: when set, a released buffer is free at once (the behaviour before the quarantine existed).
+    quarantine_off: AtomicBool,
     state: Mutex<PoolState>,
 }
 
@@ -284,9 +319,14 @@ impl BufferPool {
                 max_storage_binding,
                 budget: budget_bytes,
                 options,
+                quarantine_off: AtomicBool::new(false),
                 state: Mutex::new(PoolState {
                     free: HashMap::new(),
                     ledger: Ledger::new(budget_bytes),
+                    open: HashSet::new(),
+                    quarantine: Vec::new(),
+                    quarantined_bytes: 0,
+                    peak_quarantined_bytes: 0,
                 }),
             }),
         }
@@ -325,7 +365,41 @@ impl BufferPool {
 
     /// A snapshot of the counters.
     pub fn stats(&self) -> PoolStats {
-        lock(&self.shared.state).ledger.stats()
+        let st = lock(&self.shared.state);
+        PoolStats {
+            quarantined_bytes: st.quarantined_bytes,
+            peak_quarantined_bytes: st.peak_quarantined_bytes,
+            ..st.ledger.stats()
+        }
+    }
+
+    /// Switches the quarantine off (`false`) or on (the default), for the test that shows what it prevents: with it off a
+    /// released buffer is reusable at once, as it was before the quarantine. Never off in the product.
+    pub fn set_quarantine(&self, on: bool) {
+        self.shared.quarantine_off.store(!on, Ordering::Relaxed);
+    }
+
+    /// A list `id` started recording: a buffer released from now until `BufferPool::close_list` stays out of the free
+    /// lists (and so out of reuse, poison fills and trims) until this list has been submitted or dropped.
+    pub(crate) fn open_list(&self, id: u64) {
+        lock(&self.shared.state).open.insert(id);
+    }
+
+    /// The list `id` has been submitted (its commands are on the queue, so a later write or reuse is ordered after them)
+    /// or dropped: the buffers it was holding back go to the free lists unless another open list still blocks them.
+    pub(crate) fn close_list(&self, id: u64) {
+        let mut st = lock(&self.shared.state);
+        st.open.remove(&id);
+        let held = std::mem::take(&mut st.quarantine);
+        for mut q in held {
+            q.blockers.retain(|b| *b != id);
+            if q.blockers.is_empty() {
+                st.quarantined_bytes = st.quarantined_bytes.saturating_sub(q.key.0);
+                st.free.entry(q.key).or_default().push(q.buffer);
+            } else {
+                st.quarantine.push(q);
+            }
+        }
     }
 
     /// Restarts the peak counters from the current levels (use before the region to measure).
@@ -561,10 +635,22 @@ impl Drop for PooledBuffer {
         if let Some(buffer) = self.buffer.take() {
             let mut st = lock(&self.pool.state);
             st.ledger.returned(self.class);
-            st.free
-                .entry((self.class, self.usage.bits()))
-                .or_default()
-                .push(buffer);
+            let key = (self.class, self.usage.bits());
+            if st.open.is_empty() || self.pool.quarantine_off.load(Ordering::Relaxed) {
+                st.free.entry(key).or_default().push(buffer);
+            } else {
+                // A list that is still recording may bind this buffer in a pass it has not submitted: it stays out of
+                // reach of `acquire` (a reuse would write it ahead of that pass) and of `trim` (a destroyed buffer in
+                // a submitted command buffer is a validation error) until every such list is done.
+                let blockers = st.open.iter().copied().collect();
+                st.quarantined_bytes += self.class;
+                st.peak_quarantined_bytes = st.peak_quarantined_bytes.max(st.quarantined_bytes);
+                st.quarantine.push(Quarantined {
+                    blockers,
+                    key,
+                    buffer,
+                });
+            }
         }
     }
 }
