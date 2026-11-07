@@ -42,6 +42,12 @@ None of the three repositories gives a licence for these files that this project
 
 They are used for smoke tests that skip without them, for the auto-exposure study (`tools/eval`) and for looking at real photographs. **No gate and no golden test depends on them**, and a result from them is reported as "local, not corpus data". If the origin of a file is confirmed to be CC0 (the immich repository has a public-domain statement whose origin could be checked), the maintainer can propose it for tier 1 under the usual rules of the manifest, which takes CC0 only.
 
+## Evaluation datasets (downloaded in CI, never committed)
+
+| Source | What | Terms |
+|---|---|---|
+| DIODE validation split (https://diode-dataset.org; `https://diode-dataset.s3.amazonaws.com/val.tar.gz`, 2.6 GB) | 771 indoor and outdoor pictures of 1024 x 768 with laser-scanned depth and a validity mask; used only to score the ordering of near and far of the depth model (D-06, `docs/algorithms/06-masks.md` section 8.8) | MIT. Evaluation only: `.github/workflows/depth-eval.yml` downloads it into the job's scratch folder through `training/depth/eval_diode.py`, checks its SHA-256 (`training/depth/diode.sha256`), and nothing derived from it (no picture, no map) is committed, bundled or published; the report holds numbers only. Credit: Vasiljevic et al., "DIODE: A Dense Indoor and Outdoor DEpth Dataset", 2019 |
+
 ## The owner's own photos (test data, CI and published images allowed)
 
 The owner's own Sony photos are kept in the repository: the raw files live on the `readme-photos` branch in Git LFS (never merged; about 45 MB each), with the owner's reference exports in `ref-export/`. They may be used as test and evaluation data, in CI, and in images the repository and its README publish. They are never bundled with the app, and no credit is given for them.
