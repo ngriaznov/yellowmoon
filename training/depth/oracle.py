@@ -5,8 +5,8 @@ Python is for test fixtures only (`AGENTS.md` rule 6): this script runs in CI (`
 and writes data that the Rust tests of `ym_ml::depth` read; neither the app nor `ym` nor any shipped crate runs it.
 
     python3 -m training.depth.oracle --upstream /path/to/Depth-Anything-V2 \\
-        --weights build/depth/depthnything_v2_vits.f16.safetensors \\
-        --checkpoint build/depth/cache/depthnything_v2_vits.pth --photos build/depth/photos --out build/depth/fixtures
+        --weights build/depth/depth_anything_v2_vits.f16.safetensors \\
+        --checkpoint build/depth/cache/depth_anything_v2_vits.pth --photos build/depth/photos --out build/depth/fixtures
 
 For each of the 20 public photos of `oracle_photos.json` (CC0 or public domain; URL, licence, author and SHA-256 are listed
 there, and the photos are not committed) it:
@@ -17,7 +17,7 @@ there, and the photos are not committed) it:
 3. makes the network input with the upstream code's own transform (`Resize(keep_aspect_ratio=True, ensure_multiple_of=14,
    resize_method='lower_bound', cv2.INTER_CUBIC)` on the float64 RGB picture divided by 255, `NormalizeImage`, `PrepareForNet`),
    which makes the short side 518 and the long side the nearest multiple of 14;
-4. runs the upstream model (`depthnything_v2` at the pinned commit, CPU, f32, one thread, `torch.use_deterministic_algorithms`,
+4. runs the upstream model (`depth_anything_v2` at the pinned commit, CPU, f32, one thread, `torch.use_deterministic_algorithms`,
    oneDNN off, no autocast, no xformers) **with the weights of the published safetensors file widened to f32**, so that the
    fixtures are what the shipped weights give in the upstream code and D-03's gate measures our runtime, not the f16 storage;
 5. does the same with the original f32 checkpoint and writes the difference (`report.json`), so that the cost of the f16
@@ -282,7 +282,7 @@ def upstream_tensor(picture, size: int = 518):
     import numpy as np
     from torchvision.transforms import Compose
 
-    from depthnything_v2.util.transform import NormalizeImage, PrepareForNet, Resize
+    from depth_anything_v2.util.transform import NormalizeImage, PrepareForNet, Resize
 
     transform = Compose(
         [
@@ -398,8 +398,8 @@ def build_models(checkpoint: Path, weights: Path):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--upstream", type=Path, default=os.environ.get("DEPTH_ANYTHING_V2_SRC"), help="a checkout of the upstream code at the pinned commit (default $DEPTH_ANYTHING_V2_SRC)")
-    parser.add_argument("--weights", type=Path, required=True, help="the exported depthnything_v2_vits.f16.safetensors")
-    parser.add_argument("--checkpoint", type=Path, required=True, help="the original depthnything_v2_vits.pth (f32 weights)")
+    parser.add_argument("--weights", type=Path, required=True, help="the exported depth_anything_v2_vits.f16.safetensors")
+    parser.add_argument("--checkpoint", type=Path, required=True, help="the original depth_anything_v2_vits.pth (f32 weights)")
     parser.add_argument("--photos", type=Path, default=Path("build/depth/photos"), help="where the photos are kept (downloaded when missing)")
     parser.add_argument("--out", type=Path, default=Path("build/depth/fixtures"), help="output directory")
     parser.add_argument("--only", default=None, help="comma-separated photo ids (a quick local run)")
