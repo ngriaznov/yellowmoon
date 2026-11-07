@@ -696,7 +696,7 @@ export const STATES: readonly PageState[] = [
       await p.getByRole("button", { name: "Object mask, 2 points" }).click();
       await p.getByRole("button", { name: "Add mask" }).click();
       await expect(p.getByRole("menu", { name: "Add mask" })).toBeVisible();
-      await expect(p.getByRole("menuitem")).toHaveCount(9);
+      await expect(p.getByRole("menuitem")).toHaveCount(10);
       await p.waitForTimeout(400);
     },
   ],

@@ -355,7 +355,7 @@ test.describe("Photos", () => {
     await page.getByRole("button", { name: "Object mask, 2 points" }).click();
     await page.getByRole("button", { name: "Add mask" }).click();
     await expect(page.getByRole("menu", { name: "Add mask" })).toBeVisible();
-    await expect(page.getByRole("menuitem")).toHaveCount(9);
+    await expect(page.getByRole("menuitem")).toHaveCount(10);
     await dialogsSettled(page);
     await compareScreen(page, "photos-nodes-add-mask-menu");
   });

@@ -728,7 +728,10 @@ test.describe("the node panel", () => {
     await page.getByRole("button", { name: "Add mask" }).click();
     let snapshot = await expectNamed(page, "the Add mask menu");
     expect(snapshot).toMatch(/- menu "Add mask":/);
-    expect(count(snapshot, "menuitem")).toBe(9);
+    expect(count(snapshot, "menuitem")).toBe(10);
+    // Depth is the last kind, after Background, and has a name like the others.
+    expect(snapshot).toMatch(/- menuitem "Depth[^"]*"/);
+    expect(snapshot.indexOf('- menuitem "Depth')).toBeGreaterThan(snapshot.indexOf('- menuitem "Background'));
     await page.keyboard.press("Escape");
     // A Linear's card and its handles.
     await page.getByRole("button", { name: /^Linear mask/ }).click();
