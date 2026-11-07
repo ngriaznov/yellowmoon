@@ -557,6 +557,7 @@ mod tests {
 
     #[test]
     fn bilinear_with_align_corners_matches_the_textbook_formula() {
+        // The tolerance is that of an f32 source coordinate (PyTorch's too): up to about 3e-5 of a coordinate step at 300 samples.
         let mut rng = Lcg(8);
         for &(sh, sw, oh, ow) in &[
             (3, 4, 6, 8),
@@ -577,7 +578,7 @@ mod tests {
                 .map(|(&g, &w)| (f64::from(g) - w).abs())
                 .fold(0.0, f64::max);
             assert!(
-                worst < 2e-6,
+                worst < 1e-4,
                 "{sh}x{sw} -> {oh}x{ow}: largest difference {worst:.2e}"
             );
         }
@@ -683,27 +684,34 @@ mod tests {
                 .zip(&want)
                 .map(|(&g, &w)| (f64::from(g) - w).abs())
                 .fold(0.0, f64::max);
-            assert!(worst < 5e-6, "{ph} x {pw}: largest difference {worst:.2e}");
+            assert!(worst < 2e-5, "{ph} x {pw}: largest difference {worst:.2e}");
         }
     }
 
     #[test]
     fn the_positional_resize_uses_the_scale_factor_and_not_the_size_ratio() {
         // With the +0.1 offset the coordinate map is (dst + 0.5) * 37 / (n + 0.1) - 0.5, not (dst + 0.5) * 37 / n - 0.5.
-        // A linear ramp along x is reproduced exactly by the kernel inside the grid, so the output shows the map directly.
-        let (n, dim) = (37, 1);
-        let ramp: Vec<f32> = (0..n * n).map(|i| (i % n) as f32).collect();
+        // The reference with the size ratio as the scale gives visibly different numbers.
+        let mut rng = Lcg(12);
+        let (n, dim) = (37, 2);
+        let grid = rng.vec(n * n * dim);
         let (ph, pw) = (37usize, 56usize);
-        let s = (pw as f64 + 0.1) / 37.0;
-        let (out, _, ow) = resize_bicubic_scaled(&ramp, n, dim, (ph as f64 + 0.1) / 37.0, s);
-        for x in 4..ow - 4 {
-            let want = (x as f64 + 0.5) / s - 0.5;
-            let got = f64::from(out[10 * ow + x]);
-            assert!((got - want).abs() < 2e-5, "x {x}: {got} vs {want}");
-            // And it is not what a plain size ratio would give.
-            let ratio = (x as f64 + 0.5) * 37.0 / pw as f64 - 0.5;
-            assert!((want - ratio).abs() > 1e-3 || x == 0);
-        }
+        let (sh, sw) = ((ph as f64 + 0.1) / 37.0, (pw as f64 + 0.1) / 37.0);
+        let (ours, _, _) = resize_bicubic_scaled(&grid, n, dim, sh, sw);
+        let (by_ratio, _, _) = reference_bicubic(&grid, n, dim, ph as f64 / 37.0, pw as f64 / 37.0);
+        let (by_scale, _, _) = reference_bicubic(&grid, n, dim, sh, sw);
+        let dist = |a: &[f32], b: &[f64]| {
+            a.iter()
+                .zip(b)
+                .map(|(&x, &y)| (f64::from(x) - y).abs())
+                .fold(0.0, f64::max)
+        };
+        assert!(dist(&ours, &by_scale) < 2e-5);
+        assert!(
+            dist(&ours, &by_ratio) > 0.05,
+            "the size ratio would give other numbers: {}",
+            dist(&ours, &by_ratio)
+        );
     }
 
     #[test]

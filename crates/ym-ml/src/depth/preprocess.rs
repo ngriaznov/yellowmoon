@@ -10,11 +10,14 @@
 
 use rayon::prelude::*;
 
-use super::{MAX_SIDE_PX, PATCH};
+use super::PATCH;
 use crate::model::{MlError, Result};
 
 /// `input_size=518` of `infer_image` (`dpt.py` line 187): the short side of the network input.
 pub const NETWORK_SHORT_SIDE_PX: usize = 518;
+/// The longest side [`capped_network_size`] allows: 74 patches. **Not in the upstream code**: it bounds the cost of a panorama
+/// (the attention grows with the square of the tokens).
+pub const LONG_SIDE_CAP_PX: usize = 74 * PATCH;
 /// `NormalizeImage(mean=[0.485, 0.456, 0.406], ...)` (`dpt.py` line 207).
 pub const IMAGE_MEAN: [f64; 3] = [0.485, 0.456, 0.406];
 /// `NormalizeImage(..., std=[0.229, 0.224, 0.225])` (`dpt.py` line 207).
@@ -58,6 +61,28 @@ pub fn network_size(width: usize, height: usize) -> (usize, usize) {
         constrain_to_multiple_of(scale_width * width as f64, target),
         constrain_to_multiple_of(scale_height * height as f64, target),
     )
+}
+
+/// [`network_size`] with the long side held to [`LONG_SIDE_CAP_PX`] (our addition, a separate step): when the upstream long
+/// side is above the cap it becomes the cap and the short side is the picture's short side scaled by the same factor
+/// (`cap / long`), divided by 14 and rounded half up to whole patches, at least one. Integer arithmetic:
+/// `n_short = max(1, floor((2 * cap * m + 14 * M) / (28 * M)))` with `M` the long and `m` the short side of the picture.
+/// Returns `(width, height)`.
+pub fn capped_network_size(width: usize, height: usize) -> (usize, usize) {
+    let (w, h) = network_size(width, height);
+    if w.max(h) <= LONG_SIDE_CAP_PX {
+        return (w, h);
+    }
+    let (long, short) = (width.max(height) as u128, width.min(height) as u128);
+    let cap = LONG_SIDE_CAP_PX as u128;
+    let n_short =
+        ((2 * cap * short + PATCH as u128 * long) / (2 * PATCH as u128 * long)).max(1) as usize;
+    let short_px = n_short * PATCH;
+    if width >= height {
+        (LONG_SIDE_CAP_PX, short_px)
+    } else {
+        (short_px, LONG_SIDE_CAP_PX)
+    }
 }
 
 /// OpenCV's cubic weights for the fraction `x` (`interpolateCubic`, `A = -0.75`), `f32`.
@@ -124,13 +149,13 @@ fn resize_normalise(rgb: &[f32], sw: usize, sh: usize, dw: usize, dh: usize) -> 
     out
 }
 
-/// Prepares a picture for the network: [`network_size`], the cubic resize and the normalisation. `rgb` holds `[y][x][rgb]` sRGB
+/// Prepares a picture for the network: [`capped_network_size`] (the upstream size, held to the cap), the cubic resize and the normalisation. `rgb` holds `[y][x][rgb]` sRGB
 /// values in 0..1 (the 8-bit values divided by 255).
 ///
 /// # Errors
 ///
-/// [`MlError::Shape`] when `rgb` is not `3 * width * height` values, the picture is empty, or the network size would be
-/// over [`MAX_SIDE_PX`] on a side (a panorama of more than about 4:1); [`MlError::Input`] for a value that is not finite.
+/// [`MlError::Shape`] when `rgb` is not `3 * width * height` values or the picture is empty; [`MlError::Input`] for a value
+/// that is not finite.
 pub fn prepare_input(rgb: &[f32], width: usize, height: usize) -> Result<Prepared> {
     if width == 0 || height == 0 || rgb.len() != width * height * 3 {
         return Err(MlError::Shape(format!(
@@ -144,12 +169,7 @@ pub fn prepare_input(rgb: &[f32], width: usize, height: usize) -> Result<Prepare
             "the picture holds a value that is not finite".into(),
         ));
     }
-    let (w, h) = network_size(width, height);
-    if w > MAX_SIDE_PX || h > MAX_SIDE_PX {
-        return Err(MlError::Shape(format!(
-            "a {width} x {height} picture would need a {w} x {h} network input (over {MAX_SIDE_PX} px on a side)"
-        )));
-    }
+    let (w, h) = capped_network_size(width, height);
     Ok(Prepared {
         width: w,
         height: h,
@@ -163,21 +183,34 @@ mod tests {
 
     #[test]
     fn the_network_size_follows_the_upstream_rule() {
-        // 3:2 landscape and portrait: short side 518, long side 777 rounded to 784 (56 * 14).
+        // Worked by hand from `Resize.get_size`: the larger scale factor 518 / short is used for both sides, a side is
+        // `round(x / 14) * 14` with halves to even (numpy), and the ceiling when that is under 518.
+        // 3:2, 6000 x 4000: 518 * 1.5 = 777 = 55.5 patches -> 56 (even) -> 784.
         assert_eq!(network_size(6000, 4000), (784, 518));
+        // 2:3: the same with the sides swapped.
         assert_eq!(network_size(4000, 6000), (518, 784));
-        assert_eq!(network_size(1000, 1000), (518, 518));
-        // 16:9: 518 * 16 / 9 = 920.9 -> 921 / 14 = 65.8 -> 66 * 14 = 924.
-        assert_eq!(network_size(1920, 1080), (924, 518));
-        // A photo smaller than the network size is scaled up to it.
-        assert_eq!(network_size(300, 200), (784, 518));
-        // 1:1.5 and 4:3 (518 * 4 / 3 = 690.7 -> 49.3 -> 49 * 14 = 686).
+        // 1024 x 683: 518 / 683 * 1024 = 776.62 = 55.47 patches -> 55 -> 770.
+        assert_eq!(network_size(1024, 683), (770, 518));
+        assert_eq!(network_size(683, 1024), (518, 770));
+        // 4:3, 4032 x 3024: 690.67 = 49.33 -> 49 -> 686. And the portrait, 3024 x 4032: 388.5 / ... the short side is the width.
         assert_eq!(network_size(4032, 3024), (686, 518));
-        // Halves go to the even multiple (numpy's rounding): x / 14 = 40.5 -> 40.
+        assert_eq!(network_size(3024, 4032), (518, 686));
+        // 16:9, 1920 x 1080: 920.89 = 65.78 -> 66 -> 924.
+        assert_eq!(network_size(1920, 1080), (924, 518));
+        // 1:1.
+        assert_eq!(network_size(1000, 1000), (518, 518));
+        assert_eq!(network_size(518, 518), (518, 518));
+        // A panorama 6:1: 3108 = 222 patches exactly (the upstream rule has no cap).
+        assert_eq!(network_size(6000, 1000), (3108, 518));
+        // A picture smaller than the network size is scaled up to it: 300 x 200 -> 777 -> 784.
+        assert_eq!(network_size(300, 200), (784, 518));
+        // Halves go to the even patch count (numpy's rounding): 567 / 14 = 40.5 -> 40, 581 / 14 = 41.5 -> 42. (567 x 518 and
+        // 581 x 518 are exactly those long sides.)
+        assert_eq!(network_size(567, 518), (560, 518));
+        assert_eq!(network_size(581, 518), (588, 518));
         assert_eq!(constrain_to_multiple_of(567.0, 518.0), 560);
         assert_eq!(constrain_to_multiple_of(581.0, 518.0), 588);
-        // The short side is 518 up to rounding error and rounds to 518; under the minimum the ceiling is taken (upstream's rule;
-        // it cannot happen for a side that is at least the short side).
+        // Under the minimum the ceiling is taken (upstream's rule; it cannot happen for a side at least the short side).
         assert_eq!(constrain_to_multiple_of(517.9999, 518.0), 518);
         assert_eq!(constrain_to_multiple_of(500.0, 518.0), 504);
         // Both sides are always multiples of 14 and at least 518.
@@ -192,6 +225,40 @@ mod tests {
             let (nw, nh) = network_size(w, h);
             assert!(
                 nw % 14 == 0 && nh % 14 == 0 && nw >= 518 && nh >= 518,
+                "{w}x{h} -> {nw}x{nh}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_cap_is_a_separate_step_that_leaves_ordinary_photos_alone() {
+        assert_eq!(LONG_SIDE_CAP_PX, 1036);
+        // Up to 2:1 (1036 / 518) nothing changes.
+        for (w, h) in [
+            (6000, 4000),
+            (1024, 683),
+            (1920, 1080),
+            (4032, 3024),
+            (1000, 1000),
+            (2000, 1000),
+            (1000, 2000),
+        ] {
+            assert_eq!(capped_network_size(w, h), network_size(w, h), "{w}x{h}");
+        }
+        // 2:1 exactly is 1036 x 518 and is under the cap; a little wider is capped.
+        assert_eq!(capped_network_size(2000, 1000), (1036, 518));
+        // 6:1 (6000 x 1000): long side 1036, short side 1000 * 1036 / 6000 = 172.67 px = 12.33 patches -> 12 -> 168.
+        assert_eq!(capped_network_size(6000, 1000), (1036, 168));
+        assert_eq!(capped_network_size(1000, 6000), (168, 1036));
+        // 3:1 (3000 x 1000): short side 345.3 px = 24.67 patches -> 25 -> 350.
+        assert_eq!(capped_network_size(3000, 1000), (1036, 350));
+        // An extreme strip keeps one patch at least.
+        assert_eq!(capped_network_size(100_000, 100), (1036, 14));
+        // Always whole patches, within the cap.
+        for (w, h) in [(2100, 1000), (5000, 700), (30_000, 2000), (700, 5000)] {
+            let (nw, nh) = capped_network_size(w, h);
+            assert!(
+                nw % 14 == 0 && nh % 14 == 0 && nw.max(nh) == 1036 && nw.min(nh) >= 14,
                 "{w}x{h} -> {nw}x{nh}"
             );
         }
@@ -245,22 +312,63 @@ mod tests {
     }
 
     #[test]
-    fn a_linear_ramp_stays_linear_when_resized() {
-        // Cubic convolution reproduces a linear function, away from the replicated border.
-        let (sw, sh, dw, dh) = (60usize, 40usize, 90usize, 70usize);
-        let rgb: Vec<f32> = (0..sw * sh)
-            .flat_map(|i| {
-                let v = (i % sw) as f32 / sw as f32 * 0.5 + 0.25;
-                [v, v, v]
-            })
-            .collect();
-        let out = resize_normalise(&rgb, sw, sh, dw, dh);
-        for x in 6..dw - 6 {
-            let src_x = (x as f64 + 0.5) * sw as f64 / dw as f64 - 0.5;
-            let v = src_x / sw as f64 * 0.5 + 0.25;
-            let want = ((v - IMAGE_MEAN[1]) / IMAGE_STD[1]) as f32;
-            let got = out[(20 * dw + x) * 3 + 1];
-            assert!((got - want).abs() < 1e-4, "x {x}: {got} vs {want}");
+    fn the_resize_matches_a_direct_cubic_evaluation() {
+        // A textbook evaluation in f64: source coordinate (dst + 0.5) * src / dst - 0.5, Keys' kernel with A = -0.75 on the
+        // 4 x 4 taps, the edge pixel repeated, then the normalisation.
+        let kernel = |x: f64| {
+            const A: f64 = -0.75;
+            let x = x.abs();
+            if x <= 1.0 {
+                ((A + 2.0) * x - (A + 3.0)) * x * x + 1.0
+            } else if x < 2.0 {
+                ((A * x - 5.0 * A) * x + 8.0 * A) * x - 4.0 * A
+            } else {
+                0.0
+            }
+        };
+        let mut s = 99u64;
+        for &(sw, sh, dw, dh) in &[
+            (60usize, 40usize, 90usize, 70usize),
+            (130, 97, 42, 28),
+            (21, 21, 56, 56),
+        ] {
+            let rgb: Vec<f32> = (0..sw * sh * 3)
+                .map(|_| {
+                    s = s
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    ((s >> 40) as f32) / (1u64 << 24) as f32
+                })
+                .collect();
+            let got = resize_normalise(&rgb, sw, sh, dw, dh);
+            let mut worst = 0.0f64;
+            for y in 0..dh {
+                let fy = (y as f64 + 0.5) * sh as f64 / dh as f64 - 0.5;
+                for x in 0..dw {
+                    let fx = (x as f64 + 0.5) * sw as f64 / dw as f64 - 0.5;
+                    for ch in 0..3 {
+                        let mut acc = 0.0;
+                        for j in -1..=2isize {
+                            for i in -1..=2isize {
+                                let (yy, xx) = (fy.floor() as isize + j, fx.floor() as isize + i);
+                                let (cy, cx) = (
+                                    yy.clamp(0, sh as isize - 1) as usize,
+                                    xx.clamp(0, sw as isize - 1) as usize,
+                                );
+                                acc += kernel(fy - yy as f64)
+                                    * kernel(fx - xx as f64)
+                                    * f64::from(rgb[(cy * sw + cx) * 3 + ch]);
+                            }
+                        }
+                        let want = (acc - IMAGE_MEAN[ch]) / IMAGE_STD[ch];
+                        worst = worst.max((f64::from(got[(y * dw + x) * 3 + ch]) - want).abs());
+                    }
+                }
+            }
+            assert!(
+                worst < 1e-4,
+                "{sw}x{sh} -> {dw}x{dh}: largest difference {worst:.2e}"
+            );
         }
     }
 
@@ -278,11 +386,10 @@ mod tests {
             prepare_input(&bad, 30, 20),
             Err(MlError::Input(_))
         ));
-        // A 10:1 strip would need a network input far over the limit.
+        // A 10:1 strip is held to the cap: 1000 x 100 -> 1036 x 14 * round(103.6 / 14 = 7.4) = 98.
         let strip = vec![0.0f32; 1000 * 100 * 3];
-        assert!(matches!(
-            prepare_input(&strip, 1000, 100),
-            Err(MlError::Shape(_))
-        ));
+        let p = prepare_input(&strip, 1000, 100).expect("a strip is capped");
+        assert_eq!((p.width, p.height), (1036, 98));
+        assert_eq!(capped_network_size(1000, 100), (1036, 98));
     }
 }

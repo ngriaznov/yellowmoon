@@ -44,6 +44,7 @@ BSD_NOTICE = (
     "Copyright (c) 2026 Tim Mikeladze\n"
     "The above copyright notice and this permission notice shall be included in all\n"
     "Copyright (c) Meta Platforms, Inc. and affiliates. https://github.com/facebookresearch/sam2\n"
+    "Depth Anything V2-Small by Lihe Yang et al. https://github.com/DepthAnything/Depth-Anything-V2\n"
     "spektrafilm by Andrea Volpato https://github.com/andreavolpato/spektrafilm data/film/spektrafilm/LICENSE\n"
     "International Commission on Illumination (CIE) data/film/cie/LICENSE and a table computed from it data/film/upsampling/LICENSE\n"
 )
@@ -249,6 +250,9 @@ class Config(unittest.TestCase):
 
 
 SAM2_WEIGHTS = "sam2.1_hiera_small.f16.safetensors"
+DEPTH_WEIGHTS = "depth_anything_v2_vits.f16.safetensors"
+#: A depth folder whose weights are fetched and match their pin (for the tests that are about SAM's weights).
+DEPTH_READY = {"depth_sums": f"{hashlib.sha256(b'depth').hexdigest()}  {DEPTH_WEIGHTS}\n", "depth_weights": b"depth"}
 
 
 class Bundle(unittest.TestCase):
@@ -264,6 +268,10 @@ class Bundle(unittest.TestCase):
         card: str | None = "Apache-2.0, https://github.com/facebookresearch/sam2\n",
         ignore: str | None = "*.safetensors\n",
         film: bool = True,
+        depth_sums: str | None = None,
+        depth_weights: bytes | None = None,
+        depth_card: str | None = "Apache-2.0, https://github.com/DepthAnything/Depth-Anything-V2\n",
+        depth_ignore: str | None = "*.safetensors\n",
     ) -> None:
         (root / "src-tauri").mkdir(parents=True, exist_ok=True)
         resources = (
@@ -292,6 +300,18 @@ class Bundle(unittest.TestCase):
             (folder / "SHA256SUMS").write_text(sums)
         if weights is not None:
             (folder / SAM2_WEIGHTS).write_bytes(weights)
+        depth = root / "data" / "models" / "depth"
+        depth.mkdir(parents=True, exist_ok=True)
+        if depth_card is not None:
+            (depth / "MODEL_CARD.md").write_text(depth_card)
+        if depth_ignore is not None:
+            (depth / ".gitignore").write_text(depth_ignore)
+        if depth_sums is None:
+            depth_sums = f"TBD-after-first-run  {DEPTH_WEIGHTS}\n"
+        if depth_sums:
+            (depth / "SHA256SUMS").write_text(depth_sums)
+        if depth_weights is not None:
+            (depth / DEPTH_WEIGHTS).write_bytes(depth_weights)
         if film:
             self.film_tree(root)
 
@@ -378,14 +398,14 @@ class Bundle(unittest.TestCase):
         pin = hashlib.sha256(data).hexdigest()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.tree(root, sums=f"{pin}  {SAM2_WEIGHTS}\n")
+            self.tree(root, sums=f"{pin}  {SAM2_WEIGHTS}\n", **DEPTH_READY)
             self.assertEqual(check_bundle.warnings(root), [])
             missing = check_bundle.problems(root, require_weights=True)
             self.assertTrue(any("is missing" in p and "tools/fetch/sam2.sh" in p for p in missing), missing)
-            self.tree(root, sums=f"{pin}  {SAM2_WEIGHTS}\n", weights=b"damaged")
+            self.tree(root, sums=f"{pin}  {SAM2_WEIGHTS}\n", weights=b"damaged", **DEPTH_READY)
             wrong = check_bundle.problems(root, require_weights=True)
             self.assertTrue(any("does not have the SHA-256" in p for p in wrong), wrong)
-            self.tree(root, sums=f"{pin}  {SAM2_WEIGHTS}\n", weights=data)
+            self.tree(root, sums=f"{pin}  {SAM2_WEIGHTS}\n", weights=data, **DEPTH_READY)
             self.assertEqual(check_bundle.problems(root, require_weights=True), [])
             self.assertEqual(check_bundle.problems(root), [])
 
@@ -393,12 +413,56 @@ class Bundle(unittest.TestCase):
         data = b"weights"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.tree(root, sums=f"{hashlib.sha256(data).hexdigest()}  {SAM2_WEIGHTS}\n", weights=data)
+            self.tree(root, sums=f"{hashlib.sha256(data).hexdigest()}  {SAM2_WEIGHTS}\n", weights=data, **DEPTH_READY)
             self.assertEqual(check_bundle.main([str(root)]), 0)
             self.assertEqual(check_bundle.main(["--require-weights", str(root)]), 0)
             (root / "data" / "models" / "sam2" / SAM2_WEIGHTS).unlink()
             self.assertEqual(check_bundle.main(["--require-weights", str(root)]), 1)
             self.assertEqual(check_bundle.main(["--nope", str(root)]), 2)
+
+    def test_the_depth_notice_item_and_model_folder_are_checked_like_sams(self):
+        for phrase in ("Depth Anything V2-Small", "Lihe Yang", "github.com/DepthAnything/Depth-Anything-V2"):
+            with tempfile.TemporaryDirectory() as tmp:
+                self.tree(Path(tmp), notice=BSD_NOTICE.replace(phrase, "x"))
+                problems = check_bundle.problems(Path(tmp))
+            self.assertTrue(any(phrase in p for p in problems), (phrase, problems))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tree(Path(tmp), depth_card=None, depth_ignore=None, depth_sums="")
+            problems = check_bundle.problems(Path(tmp))
+        for needle in ("data/models/depth/MODEL_CARD.md", "data/models/depth/.gitignore", "data/models/depth/SHA256SUMS has no line"):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tree(Path(tmp), depth_card="A model.\n", depth_ignore="*.part\n")
+            problems = check_bundle.problems(Path(tmp))
+        self.assertTrue(any("depth/MODEL_CARD.md" in p and "Apache-2.0" in p for p in problems), problems)
+        self.assertTrue(any("depth/MODEL_CARD.md" in p and "DepthAnything" in p for p in problems), problems)
+        self.assertTrue(any("depth/.gitignore" in p for p in problems), problems)
+
+    def test_the_depth_weights_are_required_unless_depth_pending(self):
+        sam = b"sam"
+        depth = b"depth"
+        sam_sums = f"{hashlib.sha256(sam).hexdigest()}  {SAM2_WEIGHTS}\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # SAM fetched, the depth pin still the placeholder: required -> an error, --depth-pending -> fine, no flag -> a warning only.
+            self.tree(root, sums=sam_sums, weights=sam)
+            self.assertTrue(any("depth" in p and "not a SHA-256" in p for p in check_bundle.problems(root, require_weights=True)))
+            self.assertEqual(check_bundle.problems(root, require_weights=True, depth_pending=True), [])
+            self.assertEqual(check_bundle.problems(root), [])
+            self.assertTrue(any("depth" in w and "TBD-after-first-run" in w for w in check_bundle.warnings(root)))
+            self.assertEqual(check_bundle.main(["--require-weights", "--depth-pending", str(root)]), 0)
+            self.assertEqual(check_bundle.main(["--require-weights", str(root)]), 1)
+            self.assertEqual(check_bundle.main(["--depth-pending", str(root)]), 2)
+            # A real pin: the file must be there and match.
+            pin = f"{hashlib.sha256(depth).hexdigest()}  {DEPTH_WEIGHTS}\n"
+            self.tree(root, sums=sam_sums, weights=sam, depth_sums=pin)
+            missing = check_bundle.problems(root, require_weights=True)
+            self.assertTrue(any("is missing" in p and "tools/fetch/depth.sh" in p for p in missing), missing)
+            self.tree(root, sums=sam_sums, weights=sam, depth_sums=pin, depth_weights=b"damaged")
+            self.assertTrue(any("does not have the SHA-256" in p and "depth" in p for p in check_bundle.problems(root, require_weights=True)))
+            self.tree(root, sums=sam_sums, weights=sam, depth_sums=pin, depth_weights=depth)
+            self.assertEqual(check_bundle.problems(root, require_weights=True), [])
+            self.assertEqual(check_bundle.main(["--require-weights", str(root)]), 0)
 
     def test_the_film_notice_items_must_be_in_the_notice(self):
         for phrase in ("Andrea Volpato", "github.com/andreavolpato/spektrafilm", "data/film/spektrafilm/LICENSE"):

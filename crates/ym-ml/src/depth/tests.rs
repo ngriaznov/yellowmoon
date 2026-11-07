@@ -77,12 +77,12 @@ fn the_tensor_list_is_the_upstream_state_dict_of_vits() {
     let specs = tensor_specs();
     let names: std::collections::HashSet<&str> = specs.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(names.len(), specs.len(), "names are unique");
-    // 12 blocks x 16 tensors, the stem (cls, pos, patch weight and bias) and the final norm.
+    // 12 blocks x 14 tensors, the stem (cls, pos, patch weight and bias) and the final norm.
     let encoder = specs
         .iter()
         .filter(|(n, _)| n.starts_with("pretrained."))
         .count();
-    assert_eq!(encoder, 12 * 16 + 4 + 2);
+    assert_eq!(encoder, 12 * 14 + 4 + 2);
     for name in [
         "pretrained.pos_embed",
         "pretrained.blocks.11.ls2.gamma",
@@ -268,9 +268,12 @@ fn inputs_are_checked() {
     ));
     assert!(matches!(m.infer(&[], 0, 0), Err(MlError::Shape(_))));
     assert!(
-        matches!(m.infer(&picture(14, 28, 1), 14, 28), Err(MlError::Shape(_))),
+        matches!(m.infer(&picture(7, 28, 1), 7, 28), Err(MlError::Shape(_))),
         "under the minimum"
     );
+    // One patch is the smallest grid (the stride-2 layer keeps it at one).
+    assert!(m.infer(&picture(14, 28, 1), 14, 28).is_ok());
+    assert!(m.infer(&picture(14, 14, 1), 14, 14).is_ok());
     let mut bad = ok.clone();
     bad[10] = f32::INFINITY;
     assert!(matches!(m.infer(&bad, 28, 28), Err(MlError::Input(_))));

@@ -57,16 +57,18 @@ use encoder::{BLOCKS, EMBED_DIM, Encoder, MLP_DIM, PATCH_PX, POS_GRID};
 pub use head::HeadTrace;
 use head::{FEATURES, Head, OUT_CHANNELS};
 pub use preprocess::{
-    IMAGE_MEAN, IMAGE_STD, NETWORK_SHORT_SIDE_PX, Prepared, network_size, prepare_input,
+    IMAGE_MEAN, IMAGE_STD, LONG_SIDE_CAP_PX, NETWORK_SHORT_SIDE_PX, Prepared, capped_network_size,
+    network_size, prepare_input,
 };
 
 /// The weights file in the model folder (`data/models/depth/`).
 pub const WEIGHTS_FILE: &str = "depth_anything_v2_vits.f16.safetensors";
 /// The side of a patch: the network input is a multiple of it on both sides.
 pub const PATCH: usize = PATCH_PX;
-/// The smallest side of a network input, in pixels (two patches: the head halves the grid).
-pub const MIN_SIDE_PX: usize = 2 * PATCH_PX;
-/// The largest side of a network input, in pixels (four times the short side of a photo: a 4:1 panorama fits).
+/// The smallest side of a network input, in pixels (one patch).
+pub const MIN_SIDE_PX: usize = PATCH_PX;
+/// The largest side [`DepthAnything::infer`] takes, in pixels (the cost grows with the square of the tokens). [`prepare_input`]
+/// stays under [`LONG_SIDE_CAP_PX`], which is far below it.
 pub const MAX_SIDE_PX: usize = 4 * NETWORK_SHORT_SIDE_PX + 2 * PATCH_PX;
 
 impl Tensors {

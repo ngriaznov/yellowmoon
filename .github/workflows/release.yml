@@ -134,11 +134,41 @@ jobs:
         if: steps.check_tag.outputs.exists == 'false'
         run: tools/fetch/sam2.sh
 
+      # The Depth Anything V2-Small weights (about 50 MB; the Depth mask, D-02) are a release asset of ours
+      # (models-depth-anything-v2-small-1, made by the `depth` job of models.yml), fetched into data/models/depth/ and checked
+      # against data/models/depth/SHA256SUMS (tools/fetch/depth.sh). Until that file holds a real SHA-256 (it holds the placeholder
+      # TBD-after-first-run before the first run of the job) there is nothing to fetch: the step says so, the build goes on
+      # without the weights (the app then reports Depth masks as unavailable, like a missing SAM file) and the later checks skip
+      # the depth weights. Once the pin is real the step fetches and every check requires the file.
+      - name: Cache the Depth Anything V2-Small weights
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: actions/cache@v4
+        with:
+          path: data/models/depth/depth_anything_v2_vits.f16.safetensors
+          key: depth-weights-${{ hashFiles('data/models/depth/SHA256SUMS') }}
+
+      - name: Fetch the Depth Anything V2-Small weights
+        if: steps.check_tag.outputs.exists == 'false'
+        id: depth
+        run: |
+          if grep -Eq '^[0-9a-f]{64}  depth_anything_v2_vits\.f16\.safetensors$' data/models/depth/SHA256SUMS; then
+            tools/fetch/depth.sh
+            echo "pinned=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Depth weights not bundled::data/models/depth/SHA256SUMS still holds the placeholder. Run the models workflow (a push to a branch models/depth-...) and commit its two SHA256SUMS lines; until then this build has no Depth masks."
+            echo "pinned=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Licence texts of the dependencies (THIRD-PARTY.md, bundled next to NOTICE)
         if: steps.check_tag.outputs.exists == 'false'
         run: |
           python3 tools/licences/generate.py
-          python3 tools/licences/check_bundle.py --require-weights
+          # --depth-pending only while the depth pin is the placeholder (the Fetch step above says so).
+          if [ "${{ steps.depth.outputs.pinned }}" = true ]; then
+            python3 tools/licences/check_bundle.py --require-weights
+          else
+            python3 tools/licences/check_bundle.py --require-weights --depth-pending
+          fi
 
       - name: Release notes (the version's section of CHANGELOG.md)
         if: steps.check_tag.outputs.exists == 'false'
@@ -217,6 +247,11 @@ jobs:
           # The SAM 2.1 small weights are in the bundle (docs/12), and are the file that SHA256SUMS pins.
           test -s "$APP/Contents/Resources/data/models/sam2/sam2.1_hiera_small.f16.safetensors"
           (cd "$APP/Contents/Resources/data/models/sam2" && shasum -a 256 -c SHA256SUMS)
+          # The Depth Anything V2-Small weights too, once their pin is real (see the Fetch step).
+          if [ "${{ steps.depth.outputs.pinned }}" = true ]; then
+            test -s "$APP/Contents/Resources/data/models/depth/depth_anything_v2_vits.f16.safetensors"
+            (cd "$APP/Contents/Resources/data/models/depth" && shasum -a 256 -c SHA256SUMS)
+          fi
           "$APP/Contents/MacOS/ym" --version | tee "$RUNNER_TEMP/ym-version.txt"
           grep -q "^ym ${VERSION} " "$RUNNER_TEMP/ym-version.txt"
           ls target/universal-apple-darwin/release/bundle/dmg/"Yellowmoon_${VERSION}_universal.dmg"

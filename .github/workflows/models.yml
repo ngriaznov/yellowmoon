@@ -173,3 +173,149 @@ jobs:
             dist/SHA256SUMS
           if-no-files-found: ignore
           retention-days: 30
+
+  depth:
+    # Branches models/depth-* only, and a manual run for `depth` or `both`.
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref_name, 'models/depth-')) || (github.event_name == 'workflow_dispatch' && inputs.job != 'sam2') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    concurrency:
+      group: models-depth
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: models-depth-anything-v2-small-1
+      WEIGHTS: depth_anything_v2_vits.f16.safetensors
+      FIXTURES: depth-oracle-fixtures-1.tar.zst
+      # github.com/DepthAnything/Depth-Anything-V2 (Apache-2.0), main on 2026-11-07; there are no tags. The same value is in
+      # training/depth/export.py and training/depth/requirements.txt.
+      DEPTH_COMMIT: a561b849ebae10a6f5ef49e26c83cbbcd36c71bf
+      TORCH: "2.5.1+cpu"
+      TORCHVISION: "0.20.1+cpu"
+      PYTHONUNBUFFERED: "1"
+    defaults:
+      run:
+        shell: bash   # with pipefail, so that a failing tar in "tar | zstd" fails the step
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            training/depth/requirements.txt
+            .github/workflows/models.yml
+
+      - name: Install the pinned packages (CPU torch, then the upstream code at its pinned commit)
+        run: |
+          python -m pip install --upgrade pip==24.3.1
+          python -m pip install -r training/depth/requirements.txt
+          # The CPU build of torch (a plain `pip install torch` pulls the CUDA build); the `+cpu` versions exist on this index only.
+          python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu "torch==${TORCH}" "torchvision==${TORCHVISION}"
+          # The upstream code is not a package: a checkout at the pinned commit outside the workspace, put on sys.path by the scripts.
+          git clone --quiet https://github.com/DepthAnything/Depth-Anything-V2.git "$RUNNER_TEMP/depth-anything-v2-src"
+          git -C "$RUNNER_TEMP/depth-anything-v2-src" checkout --quiet "${DEPTH_COMMIT}"
+          test "$(git -C "$RUNNER_TEMP/depth-anything-v2-src" rev-parse HEAD)" = "${DEPTH_COMMIT}"
+          echo "DEPTH_ANYTHING_V2_SRC=$RUNNER_TEMP/depth-anything-v2-src" >> "$GITHUB_ENV"
+          python -m pip freeze | tee "$RUNNER_TEMP/pip-freeze.txt"
+
+      - name: Checkpoint hash (the cache key)
+        id: pin
+        run: echo "sha=$(sed -n 's/^CKPT_SHA256 = "\(.*\)"$/\1/p' training/depth/export.py)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the checkpoint (99 MB) and the photos
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/depth/cache
+            build/depth/photos
+          key: depth-inputs-${{ steps.pin.outputs.sha }}-${{ hashFiles('training/depth/oracle_photos.json') }}
+          restore-keys: |
+            depth-inputs-${{ steps.pin.outputs.sha }}-
+
+      - name: Test the scripts (no torch needed)
+        run: python -m unittest training.depth.test_depth
+
+      - name: Convert the weights (export.py)
+        run: python -m training.depth.export --upstream "$DEPTH_ANYTHING_V2_SRC" --out build/depth
+
+      - name: Oracle fixtures (oracle.py), the upstream code on 20 public photos
+        run: |
+          python -m training.depth.oracle \
+            --upstream "$DEPTH_ANYTHING_V2_SRC" \
+            --weights "build/depth/${WEIGHTS}" \
+            --checkpoint build/depth/cache/depth_anything_v2_vits.pth \
+            --photos build/depth/photos \
+            --out build/depth/fixtures
+
+      - name: Pack the fixtures and write SHA256SUMS
+        run: |
+          command -v zstd >/dev/null || sudo apt-get install -y zstd
+          mkdir -p dist
+          # A fixed order, owner and time, so that the archive's bytes depend on the fixtures only.
+          tar --sort=name --mtime='UTC 2026-11-07' --owner=0 --group=0 --numeric-owner --format=gnu \
+            -C build/depth/fixtures -cf - . | zstd -19 -T0 -q -o "dist/${FIXTURES}"
+          cp "build/depth/${WEIGHTS}" "dist/${WEIGHTS}"
+          (cd dist && sha256sum "${WEIGHTS}" "${FIXTURES}" > SHA256SUMS && cat SHA256SUMS && ls -l)
+          {
+            echo "### Depth Anything V2-Small assets"
+            echo
+            echo "Copy these two lines (the weights into \`data/models/depth/SHA256SUMS\`, the fixtures into \`tools/fetch/depth.sha256\`):"
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+            echo
+            echo "Sign of the output, from the fixtures (top third and bottom third of the depth map; larger is nearer):"
+            echo
+            echo '```'
+            python - <<'PY'
+          import json
+          report = json.load(open("build/depth/fixtures/report.json"))
+          for name, p in sorted(report["photos"].items()):
+              print(f"{name:14} top {p['depth_top_third_mean']:8.3f}  bottom {p['depth_bottom_third_mean']:8.3f}  min {p['depth_min']:.3f}  max {p['depth_max']:.3f}")
+          PY
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the release (a prerelease, never latest, never overwritten)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            mkdir -p "$RUNNER_TEMP/existing"
+            gh release download "$RELEASE_TAG" --pattern SHA256SUMS --dir "$RUNNER_TEMP/existing" --clobber
+            if diff -u "$RUNNER_TEMP/existing/SHA256SUMS" dist/SHA256SUMS; then
+              echo "Release $RELEASE_TAG exists with the same hashes; nothing to upload." | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error title=Release exists::$RELEASE_TAG is already published with different hashes (above). Assets are never overwritten: if the new ones are meant, use a new tag."
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --prerelease --latest=false \
+              --title "Depth Anything V2-Small weights and oracle fixtures (1)" \
+              --notes "Model assets for the build and the tests, not an app release. \`${WEIGHTS}\` is the Depth Anything V2-Small checkpoint (Apache-2.0, https://github.com/DepthAnything/Depth-Anything-V2) converted to f16 safetensors; see \`data/models/depth/MODEL_CARD.md\`. \`${FIXTURES}\` holds the oracle fixtures for the runtime's tests. Made by the \`models\` workflow from commit ${GITHUB_SHA}. Fetched by \`tools/fetch/depth.sh\`; the app never downloads anything." \
+              "dist/${WEIGHTS}" "dist/${FIXTURES}" "dist/SHA256SUMS"
+          fi
+          # The in-app updater reads the latest release; this one must not be it.
+          gh release view "$RELEASE_TAG" --json isPrerelease,tagName --jq '"\(.tagName) prerelease=\(.isPrerelease)"'
+          test "$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" = true
+          latest="$(gh release list --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // ""')"
+          if [ "$latest" = "$RELEASE_TAG" ]; then
+            echo "::error title=Latest release::$RELEASE_TAG is the latest release; the updater would read it."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: depth-reports
+          path: |
+            build/depth/export_report.json
+            build/depth/fixtures/report.json
+            build/depth/fixtures/manifest.json
+            dist/SHA256SUMS
+          if-no-files-found: ignore
+          retention-days: 30
