@@ -1,0 +1,392 @@
+{
+  "schema_version": 1,
+  "description": "The 20 public photos of the Depth Anything V2-Small oracle (training/depth/oracle.py, D-02; the gate of D-03, docs/13, docs/algorithms/06 section 8.6). All are JPEG files on Wikimedia Commons whose page carries a CC0 tag (seven are photos of the SAM 2 oracle, training/sam2/oracle_photos.json, with the hashes pinned there), read from Commons' API on 2026-11-07; the licence is the uploader's declaration on the page `page`, so check it there before using a photo for anything else. The oracle downloads them, checks each against `sha256` and never commits them; `commons_sha1` is Commons' own hash of the same file. A `sha256` of TBD-after-first-run means the file itself could not be downloaded when the list was written (Wikimedia's upload server was not reachable from the author's environment): the oracle then checks Commons' SHA-1 instead, prints the SHA-256 it found, keeps it as `photo_sha256` in manifest.json of the fixtures, and the value is copied here after the first run. If a file on Commons is replaced its hash changes and the oracle refuses it: pick another photo, never loosen the check. `categories` says what each photo is there to test: portrait, hair, foliage, sky, glass, interior, shallow-focus, flat (a flat picture of a flat object), and a few more. They were chosen from the files' titles and descriptions; nobody has looked at every photo yet (the contact sheets of D-06 will). `intermediates` marks the three photos whose fixtures hold every stage of the network (a landscape, a portrait and a nearly square photo); the others hold the picture, the input tensor and the depth map.",
+  "picture_long_edge_px": 1024,
+  "photos": [
+    {
+      "id": "dog",
+      "title": "Dog in Chacachacare.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/2/2b/Dog_in_Chacachacare.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Dog_in_Chacachacare.jpg",
+      "license": "CC0-1.0",
+      "author": "Wilfredor",
+      "width": 3607,
+      "height": 2234,
+      "bytes": 4012645,
+      "commons_sha1": "aadb249b8d08f0318f1755141f14c888d9a444c7",
+      "sha256": "621b6208a0ae6c21890550957b933571fdb057458372c355c064d4485374ccec",
+      "categories": [
+        "animal",
+        "fur",
+        "outdoor"
+      ],
+      "intermediates": true,
+      "source": "training/sam2/oracle_photos.json"
+    },
+    {
+      "id": "cow",
+      "title": "Cow in Field image.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/3/38/Cow_in_Field_image.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Cow_in_Field_image.jpg",
+      "license": "CC0-1.0",
+      "author": "Kanimozhi Vennila",
+      "width": 3060,
+      "height": 4080,
+      "bytes": 2236563,
+      "commons_sha1": "f45ac607d70a56a0a6f8518678637714a754750e",
+      "sha256": "c43af9967360bc9f964e927c4f6ac53e15c98e3c626aa56fbde1d0adce497fab",
+      "categories": [
+        "animal",
+        "field",
+        "sky"
+      ],
+      "intermediates": true,
+      "source": "training/sam2/oracle_photos.json"
+    },
+    {
+      "id": "building",
+      "title": "Building in Paulista Avenue 09.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/3/30/Building_in_Paulista_Avenue_09.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Building_in_Paulista_Avenue_09.jpg",
+      "license": "CC0-1.0",
+      "author": "Wilfredor",
+      "width": 2958,
+      "height": 2482,
+      "bytes": 4830848,
+      "commons_sha1": "18d82f08837056e7b41898717fbc1006b137264f",
+      "sha256": "27fe7ea9ea19399e04c2c6c7cd52c4f2fbe29a48346931564b73079ece47a75b",
+      "categories": [
+        "glass",
+        "architecture",
+        "sky"
+      ],
+      "intermediates": true,
+      "source": "training/sam2/oracle_photos.json"
+    },
+    {
+      "id": "lotus",
+      "title": "Lotus flower (978659).jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/f/f5/Lotus_flower_%28978659%29.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Lotus_flower_(978659).jpg",
+      "license": "CC0-1.0",
+      "author": "Hong Zhang (jennyzhh2008)",
+      "width": 3267,
+      "height": 2178,
+      "bytes": 530534,
+      "commons_sha1": "8014224a82e3b8f776d6ab90da138bd76f8b554a",
+      "sha256": "9544c185fc50135b9036f9ed2ba0fe66d560d0829d1077338f287f5321aaeab8",
+      "categories": [
+        "shallow-focus",
+        "flower"
+      ],
+      "intermediates": false,
+      "source": "training/sam2/oracle_photos.json"
+    },
+    {
+      "id": "cat",
+      "title": "Domestic shorthair cat portrait in grass.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/3/3c/Domestic_shorthair_cat_portrait_in_grass.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Domestic_shorthair_cat_portrait_in_grass.jpg",
+      "license": "CC0-1.0",
+      "author": "Photo by Marko Milivojevic on Pixnio",
+      "width": 5184,
+      "height": 3456,
+      "bytes": 582212,
+      "commons_sha1": "bd378b89df747ca99b6287c024073caf43ca817a",
+      "sha256": "e6810b836cad4fc4bc2e9a875f7e7ebef932df12204cc655df2950e9dce46c14",
+      "categories": [
+        "shallow-focus",
+        "fur",
+        "grass"
+      ],
+      "intermediates": false,
+      "source": "training/sam2/oracle_photos.json"
+    },
+    {
+      "id": "bridge",
+      "title": "Construction of bridge.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/1/1b/Construction_of_bridge.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Construction_of_bridge.jpg",
+      "license": "CC0-1.0",
+      "author": "Saral Shots",
+      "width": 4160,
+      "height": 3120,
+      "bytes": 3401682,
+      "commons_sha1": "5d678ed35dd4ae40f7d5f3c840658406269a8614",
+      "sha256": "af97b5cf459d56d66e7d66ab36157b037e75bef39fa962a2d692a896f98837bb",
+      "categories": [
+        "structure",
+        "sky"
+      ],
+      "intermediates": false,
+      "source": "training/sam2/oracle_photos.json"
+    },
+    {
+      "id": "chair",
+      "title": "Pakri chair, Estonia, 1874.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/3/37/Pakri_chair%2C_Estonia%2C_1874.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Pakri_chair,_Estonia,_1874.jpg",
+      "license": "CC0-1.0",
+      "author": "Sillerkiil",
+      "width": 1863,
+      "height": 3528,
+      "bytes": 1858770,
+      "commons_sha1": "cbf73e9c0d571b38a6087eb96c42c39873c989c0",
+      "sha256": "e6e32cf984a43f59c01bd73975b2925b4826e5a13c16d9eeb5a26ccd46adabdb",
+      "categories": [
+        "interior",
+        "object"
+      ],
+      "intermediates": false,
+      "source": "training/sam2/oracle_photos.json"
+    },
+    {
+      "id": "portrait-black-hair",
+      "title": "Portrait with black hair, 3080644.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/9/9c/Portrait_with_black_hair%2C_3080644.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Portrait_with_black_hair,_3080644.jpg",
+      "license": "CC0-1.0",
+      "author": "himanshugunarathna",
+      "width": 5340,
+      "height": 3336,
+      "bytes": 2895347,
+      "commons_sha1": "cc5b1754342d074567d3740ed18fec42bb3ad09e",
+      "sha256": "TBD-after-first-run",
+      "categories": [
+        "portrait",
+        "hair"
+      ],
+      "intermediates": false,
+      "source": "Wikimedia Commons API, read 2026-11-07"
+    },
+    {
+      "id": "portrait-blonde",
+      "title": "Seated woman with blonde hair-3177506.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/0/0d/Seated_woman_with_blonde_hair-3177506.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Seated_woman_with_blonde_hair-3177506.jpg",
+      "license": "CC0-1.0",
+      "author": "ivanovgood",
+      "width": 3891,
+      "height": 3264,
+      "bytes": 8555499,
+      "commons_sha1": "caa0f0d657c1f6de75f39151c5e0173e4a3cfac3",
+      "sha256": "TBD-after-first-run",
+      "categories": [
+        "portrait",
+        "hair",
+        "indoor"
+      ],
+      "intermediates": false,
+      "source": "Wikimedia Commons API, read 2026-11-07"
+    },
+    {
+      "id": "bearded-man",
+      "title": "Bearded man with long hair-3052641.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/d/db/Bearded_man_with_long_hair-3052641.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Bearded_man_with_long_hair-3052641.jpg",
+      "license": "CC0-1.0",
+      "author": "subhamshome28",
+      "width": 4000,
+      "height": 5000,
+      "bytes": 9362155,
+      "commons_sha1": "9c067a41fefe7a055a41067ad9b6a000078b3f32",
+      "sha256": "TBD-after-first-run",
+      "categories": [
+        "portrait",
+        "hair",
+        "beard"
+      ],
+      "intermediates": false,
+      "source": "Wikimedia Commons API, read 2026-11-07"
+    },
+    {
+      "id": "beech-forest",
+      "title": "Beech forest, Ehrenbach, foliage against sun.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/e/e9/Beech_forest%2C_Ehrenbach%2C_foliage_against_sun.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Beech_forest,_Ehrenbach,_foliage_against_sun.jpg",
+      "license": "CC0-1.0",
+      "author": "Gerda Arendt",
+      "width": 3598,
+      "height": 2691,
+      "bytes": 4591997,
+      "commons_sha1": "4c9be8a928a74fe76f555d9b75d4fbf3403a56aa",
+      "sha256": "TBD-after-first-run",
+      "categories": [
+        "foliage",
+        "backlight"
+      ],
+      "intermediates": false,
+      "source": "Wikimedia Commons API, read 2026-11-07"
+    },
+    {
+      "id": "autumn-path",
+      "title": "Autumn Forest Pathway with Fallen Leaves.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/9/9f/Autumn_Forest_Pathway_with_Fallen_Leaves.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Autumn_Forest_Pathway_with_Fallen_Leaves.jpg",
+      "license": "CC0-1.0",
+      "author": "Tojiwiv87",
+      "width": 3503,
+      "height": 5255,
+      "bytes": 2133328,
+      "commons_sha1": "0117ec03269d2aa7260d1519f9abdd481433d004",
+      "sha256": "TBD-after-first-run",
+      "categories": [
+        "foliage",
+        "receding-path"
+      ],
+      "intermediates": false,
+      "source": "Wikimedia Commons API, read 2026-11-07"
+    },
+    {
+      "id": "sky-trees",
+      "title": "Sky with clouds and trees without leaves.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c9/Sky_with_clouds_and_trees_without_leaves.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Sky_with_clouds_and_trees_without_leaves.jpg",
+      "license": "CC0-1.0",
+      "author": "Geodeakgol",
+      "width": 2560,
+      "height": 1440,
+      "bytes": 808764,
+      "commons_sha1": "13bbad0d693c025c01f012db8e4a9e897a4fcbd3",
+      "sha256": "TBD-after-first-run",
+      "categories": [
+        "sky",
+        "branches"
+      ],
+      "intermediates": false,
+      "source": "Wikimedia Commons API, read 2026-11-07"
+    },
+    {
+      "id": "cirrus",
+      "title": "Quill-shaped cirrus cloud.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/f/fc/Quill-shaped_cirrus_cloud.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Quill-shaped_cirrus_cloud.jpg",
+      "license": "CC0-1.0",
+      "author": "W.carter",
+      "width": 4864,
+      "height": 3648,
+      "bytes": 5375650,
+      "commons_sha1": "05cd797b9e461f2e6ff76fa7bb7581ae7b3c19b8",
+      "sha256": "TBD-after-first-run",
+      "categories": [
+        "sky",
+        "landscape"
+      ],
+      "intermediates": false,
+      "source": "Wikimedia Commons API, read 2026-11-07"
+    },
+    {
+      "id": "stained-oriel",
+      "title": "Stained-glass oriel window, 8 Place Gustave Courbet, Ornans, 2026.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/7/7f/Stained-glass_oriel_window%2C_8_Place_Gustave_Courbet%2C_Ornans%2C_2026.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Stained-glass_oriel_window,_8_Place_Gustave_Courbet,_Ornans,_2026.jpg",
+      "license": "CC0-1.0",
+      "author": "DimiTalen",
+      "width": 4843,
+      "height": 3229,
+      "bytes": 7387306,
+      "commons_sha1": "a68f7abe8486210f1d61d8ac981ad26b896cefc3",
+      "sha256": "TBD-after-first-run",
+      "categories": [
+        "glass",
+        "architecture"
+      ],
+      "intermediates": false,
+      "source": "Wikimedia Commons API, read 2026-11-07"
+    },
+    {
+      "id": "window-reflection",
+      "title": "Reflection in a window with hand-blown glass 1.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/e/ef/Reflection_in_a_window_with_hand-blown_glass_1.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Reflection_in_a_window_with_hand-blown_glass_1.jpg",
+      "license": "CC0-1.0",
+      "author": "W.carter",
+      "width": 4925,
+      "height": 3283,
+      "bytes": 6984122,
+      "commons_sha1": "0dedfc8f7ed8a4beaf5b77e4547ac83286c375a0",
+      "sha256": "TBD-after-first-run",
+      "categories": [
+        "glass",
+        "reflection"
+      ],
+      "intermediates": false,
+      "source": "Wikimedia Commons API, read 2026-11-07"
+    },
+    {
+      "id": "living-room",
+      "title": "The living room that needs houseplants.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/e/ed/The_living_room_that_needs_houseplants.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:The_living_room_that_needs_houseplants.jpg",
+      "license": "CC0-1.0",
+      "author": "Lo",
+      "width": 3264,
+      "height": 2448,
+      "bytes": 4194091,
+      "commons_sha1": "ebd65b07147c793b5136e81710943c64d0b0ebbf",
+      "sha256": "TBD-after-first-run",
+      "categories": [
+        "interior",
+        "plants"
+      ],
+      "intermediates": false,
+      "source": "Wikimedia Commons API, read 2026-11-07"
+    },
+    {
+      "id": "kitchen",
+      "title": "Blue white kitchen interior (Unsplash).jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/2/26/Blue_white_kitchen_interior_%28Unsplash%29.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Blue_white_kitchen_interior_(Unsplash).jpg",
+      "license": "CC0-1.0",
+      "author": "NeONBRAND neonbrand",
+      "width": 4896,
+      "height": 3264,
+      "bytes": 6779867,
+      "commons_sha1": "f8a4cee912512a1c6d651da869a03508d88081f2",
+      "sha256": "TBD-after-first-run",
+      "categories": [
+        "interior"
+      ],
+      "intermediates": false,
+      "source": "Wikimedia Commons API, read 2026-11-07"
+    },
+    {
+      "id": "cherry-blossom",
+      "title": "Brightin Star 35mm f0.95 - Cherry Blossom.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c9/Brightin_Star_35mm_f0.95_-_Cherry_Blossom.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:Brightin_Star_35mm_f0.95_-_Cherry_Blossom.jpg",
+      "license": "CC0-1.0",
+      "author": "Grasyl",
+      "width": 6000,
+      "height": 4000,
+      "bytes": 3637248,
+      "commons_sha1": "8628712c4eb2105037f04e2d28f77a92636b0988",
+      "sha256": "TBD-after-first-run",
+      "categories": [
+        "shallow-focus",
+        "foliage"
+      ],
+      "intermediates": false,
+      "source": "Wikimedia Commons API, read 2026-11-07"
+    },
+    {
+      "id": "painting-flat",
+      "title": "A Portrait of a Man MET DP-13133-029.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/5/56/A_Portrait_of_a_Man_MET_DP-13133-029.jpg",
+      "page": "https://commons.wikimedia.org/wiki/File:A_Portrait_of_a_Man_MET_DP-13133-029.jpg",
+      "license": "CC0-1.0",
+      "author": "Yahya Ghaffari",
+      "width": 2999,
+      "height": 4000,
+      "bytes": 4141655,
+      "commons_sha1": "ac35ad3c2edd014ec90e8f81ff4f84d175ee545e",
+      "sha256": "TBD-after-first-run",
+      "categories": [
+        "flat",
+        "portrait"
+      ],
+      "intermediates": false,
+      "source": "Wikimedia Commons API, read 2026-11-07"
+    }
+  ]
+}

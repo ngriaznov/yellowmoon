@@ -73,7 +73,7 @@ class Writers(unittest.TestCase):
         self.assertEqual(np.frombuffer(data, dtype="<f2").tolist(), np.array([0.1, -3.0, 65504.0], dtype=np.float16).tolist())
 
     def test_npz_has_the_given_keys_shapes_and_dtypes_and_the_same_bytes_every_time(self):
-        arrays = {"picture": np.zeros((4, 6, 3), np.uint8), "depth": np.ones((2, 3), np.float32)}
+        arrays = {"picture": np.zeros((4, 6, 3), np.float32), "depth": np.ones((1, 2, 3), np.float32)}
         with tempfile.TemporaryDirectory() as tmp:
             one, two = Path(tmp) / "one.npz", Path(tmp) / "two.npz"
             oracle.write_npz(one, arrays)
@@ -86,24 +86,34 @@ class Writers(unittest.TestCase):
                 self.assertEqual(loaded[key].dtype, value.dtype)
 
     def test_the_fixture_index_lists_every_array_with_dtype_and_shape(self):
-        arrays = {"picture": np.zeros((4, 6, 3), np.uint8), "upstream_tensor": np.zeros((1, 3, 518, 784), np.float32)}
+        arrays = {"picture": np.zeros((4, 6, 3), np.float32), "input": np.zeros((1, 3, 518, 784), np.float32)}
         index = oracle.describe_arrays(arrays)
-        self.assertEqual(index, {"picture": {"dtype": "u8", "shape": [4, 6, 3]}, "upstream_tensor": {"dtype": "f32", "shape": [1, 3, 518, 784]}})
+        self.assertEqual(index, {"input": {"dtype": "f32", "shape": [1, 3, 518, 784]}, "picture": {"dtype": "f32", "shape": [4, 6, 3]}})
         self.assertEqual(list(index), sorted(index))
         json.dumps(index)
         with self.assertRaises(ValueError):
             oracle.describe_arrays({"x": np.zeros(2, np.float64)})
+        with self.assertRaises(ValueError):
+            oracle.describe_arrays({"x": np.zeros(2, np.uint8)})
 
-    def test_every_documented_array_name_is_one_the_probe_and_the_fixtures_write(self):
-        written = {"picture", "upstream_tensor", "depth", "ours_tensor", "ours_depth", "patch_embed", "pos_embed", "tokens_in", "head_conv1"}
-        written |= {f"block_{n:02d}" for n in oracle.BLOCK_OUTPUTS} | {f"enc_tap_{k}" for k in range(4)}
-        written |= {f"dpt_layer_{k}" for k in range(1, 5)} | {f"path_{k}" for k in range(1, 5)}
-        pattern = {"block_NN": [f"block_{n:02d}" for n in oracle.BLOCK_OUTPUTS], "enc_tap_K": [f"enc_tap_{k}" for k in range(4)],
-                   "dpt_layer_K": [f"dpt_layer_{k}" for k in range(1, 5)], "path_K": [f"path_{k}" for k in range(1, 5)]}
+    def test_the_documented_keys_are_the_ones_the_rust_test_reads(self):
+        """`crates/ym-ml/tests/depth.rs` reads exactly these keys; the documentation, the probe and the Rust test agree."""
+        wanted = {"picture", "input", "depth", "embedded", "output_conv1"}
+        wanted |= {f"block_{n:02d}" for n in range(12)} | {f"tap_{k}" for k in range(4)}
+        wanted |= {f"layer_{k}" for k in range(1, 5)} | {f"path_{k}" for k in range(1, 5)}
+        self.assertEqual(set(oracle.BASE_KEYS) | set(oracle.TRACE_KEYS), wanted)
+        self.assertEqual(len(oracle.BASE_KEYS) + len(oracle.TRACE_KEYS), len(wanted), "no key twice")
+        pattern = {"block_NN": [f"block_{n:02d}" for n in range(12)], "tap_K": [f"tap_{k}" for k in range(4)],
+                   "layer_K": [f"layer_{k}" for k in range(1, 5)], "path_K": [f"path_{k}" for k in range(1, 5)]}
         documented = set()
         for name in oracle.ARRAY_DOC:
             documented.update(pattern.get(name, [name]))
-        self.assertEqual(documented, written)
+        self.assertEqual(documented, wanted)
+        rust = (ROOT / "crates" / "ym-ml" / "tests" / "depth.rs")
+        if rust.exists():
+            text = rust.read_text(encoding="utf-8")
+            for key in ("picture", "input", "embedded", "output_conv1", "depth", "block_", "tap_", "layer_", "path_"):
+                self.assertIn(key, text)
 
     def test_rank_correlation_and_relative_rms(self):
         a = np.array([[1.0, 2.0], [3.0, 4.0]])

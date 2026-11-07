@@ -5,8 +5,8 @@ Python is for test fixtures only (`AGENTS.md` rule 6): this script runs in CI (`
 and writes data that the Rust tests of `ym_ml::depth` read; neither the app nor `ym` nor any shipped crate runs it.
 
     python3 -m training.depth.oracle --upstream /path/to/Depth-Anything-V2 \\
-        --weights build/depth/depth_anything_v2_vits.f16.safetensors \\
-        --checkpoint build/depth/cache/depth_anything_v2_vits.pth --photos build/depth/photos --out build/depth/fixtures
+        --weights build/depth/depthnything_v2_vits.f16.safetensors \\
+        --checkpoint build/depth/cache/depthnything_v2_vits.pth --photos build/depth/photos --out build/depth/fixtures
 
 For each of the 20 public photos of `oracle_photos.json` (CC0 or public domain; URL, licence, author and SHA-256 are listed
 there, and the photos are not committed) it:
@@ -14,50 +14,46 @@ there, and the photos are not committed) it:
 1. downloads the photo (or finds it in `--photos`) and checks its SHA-256;
 2. makes the 8-bit picture the runtime starts from: EXIF orientation applied, RGB, the long edge resized to 1024 px with
    Pillow's Lanczos filter (the same picture the SAM 2 fixtures use; the colour profile is ignored: the picture is taken as sRGB);
-3. makes the network input **two ways**:
-   * `upstream_tensor`: with the upstream code's own transform (`Resize(keep_aspect_ratio=True, ensure_multiple_of=14,
-     resize_method='lower_bound', cv2.INTER_CUBIC)` on the float64 RGB picture divided by 255, `NormalizeImage`, `PrepareForNet`),
-     which makes the short side 518 and the long side the nearest multiple of 14;
-   * `ours_tensor`: our own resize, the one the Rust runtime is meant to reproduce: the same size rule, PyTorch's bilinear
-     interpolation with antialiasing (`align_corners=False`, as SAM 2's input resize) of the picture divided by 255 in f32, then
-     `(x - mean) / std` in f32. This set exists so that the network can be tested from a tensor our resizer defines, and the
-     resizer itself against the upstream one, each with its own tolerance;
-4. runs the upstream model (`depth_anything_v2` at the pinned commit, CPU, f32, one thread, `torch.use_deterministic_algorithms`,
+3. makes the network input with the upstream code's own transform (`Resize(keep_aspect_ratio=True, ensure_multiple_of=14,
+   resize_method='lower_bound', cv2.INTER_CUBIC)` on the float64 RGB picture divided by 255, `NormalizeImage`, `PrepareForNet`),
+   which makes the short side 518 and the long side the nearest multiple of 14;
+4. runs the upstream model (`depthnything_v2` at the pinned commit, CPU, f32, one thread, `torch.use_deterministic_algorithms`,
    oneDNN off, no autocast, no xformers) **with the weights of the published safetensors file widened to f32**, so that the
    fixtures are what the shipped weights give in the upstream code and D-03's gate measures our runtime, not the f16 storage;
 5. does the same with the original f32 checkpoint and writes the difference (`report.json`), so that the cost of the f16
    storage is known and reported, never hidden.
 
-One `.npz` per photo (written uncompressed with fixed timestamps, so the bytes do not depend on the time), `<id>.npz`. N is
-the number of patches `Hn / 14 * Wn / 14`, (Hn, Wn) the network input size, both in `manifest.json` with every array's dtype
-and shape. All floats are f32 and all arrays are C-contiguous.
+The format is the one `crates/ym-ml/tests/depth.rs` reads. One `.npz` per photo, `<id>.npz`, uncompressed (`ZIP_STORED`) with
+fixed timestamps so that the bytes do not depend on the time; **every array is float32**, in PyTorch's layouts. The network
+input is `h x w` (`h = 14 ph`, `w = 14 pw`), `N = ph * pw` patches; the sizes of each file are in `manifest.json`.
 
-Every photo:
+Every photo has:
 
-    picture            u8   [H, W, 3]        the 8-bit picture (long edge 1024)
-    upstream_tensor    f32  [1, 3, Hn, Wn]   the upstream resize and normalisation of `picture`
-    depth              f32  [Hn, Wn]         the network's output on `upstream_tensor`: relative inverse depth, at the network's
-                                             resolution (the upstream `forward`, after its final ReLU, batch dimension removed)
-    ours_tensor        f32  [1, 3, Hn, Wn]   our resize and normalisation of `picture` (same Hn, Wn)
-    ours_depth         f32  [Hn, Wn]         the network's output on `ours_tensor`
+    picture       f32 [H0, W0, 3]    the 8-bit picture (long edge 1024) divided by 255, RGB: what the Rust resize takes
+    input         f32 [1, 3, h, w]   upstream's `image2tensor` of that picture (OpenCV resize, normalisation)
+    depth         f32 [1, h, w]      `model(input)`: the network's output, relative inverse depth (larger is nearer), after
+                                     its final ReLU, before `infer_image`'s resize back to the photo
 
-Photos with `"intermediates": true` in `oracle_photos.json` (one landscape, one portrait and one nearly square photo, so that
-the positional-embedding resize is checked for three grid shapes) also hold the intermediate outputs of the run on
-`upstream_tensor`:
+The photos marked `"intermediates": true` in `oracle_photos.json` (one landscape, one portrait and one nearly square photo, so that
+the positional-embedding resize is checked for three grid shapes) also have every stage of the run on `input`, taken with
+forward hooks on the unmodified upstream modules:
 
-    patch_embed        f32  [1, N, 384]      `patch_embed` (the 14 x 14 convolution), before the class token and positions
-    pos_embed          f32  [1, 1 + N, 384]  `interpolate_pos_encoding`: the position embeddings resized to this grid, class token first
-    tokens_in          f32  [1, 1 + N, 384]  the input of block 0: class token and patch tokens plus `pos_embed`
-    block_00, block_02, block_05, block_08, block_11
-                       f32  [1, 1 + N, 384]  the output of that block (before the final norm), class token first
-    enc_tap_0 .. 3     f32  [1, N, 384]      the four taps (blocks 2, 5, 8, 11) after `pretrained.norm`, class token dropped
-    dpt_layer_1 .. 4   f32  [1, C, h, w]     `depth_head.resize_layers[k]` output (after `projects[k]`): C = 48, 96, 192, 384 and
-                                             (h, w) = (Hn/14 * 4, Wn/14 * 4), (* 2), (* 1), (/ 2 rounded up)
-    path_4 .. 1        f32  [1, 64, h, w]    `scratch.refinenet4 .. 1` outputs; path_1 is the fused output before the head
-                                             (twice the size of dpt_layer_1)
-    head_conv1         f32  [1, 32, h, w]    `scratch.output_conv1` output, before the bilinear resize to (Hn, Wn)
+    embedded      f32 [1, 1 + N, 384]   `prepare_tokens_with_masks(input)`: class token and patch tokens plus the positions
+    block_00 .. block_11
+                  f32 [1, 1 + N, 384]   the stream after each block (before the final norm)
+    tap_0 .. tap_3
+                  f32 [1, N, 384]       `get_intermediate_layers(input, [2, 5, 8, 11])`: the four taps after `pretrained.norm`,
+                                        class token dropped
+    layer_1 .. layer_4
+                  f32 [1, C, ., .]      `depth_head.resize_layers[k]` output (after `projects[k]`): C = 48, 96, 192, 384
+    path_4 .. path_1
+                  f32 [1, 64, ., .]     `scratch.refinenet4 .. 1` outputs; path_1 is the fused output before the head
+    output_conv1  f32 [1, 32, 8 ph, 8 pw]   `scratch.output_conv1(path_1)`, before the bilinear resize to (h, w)
 
-`manifest.json` indexes the files; `report.json` has the numbers described in `ARRAY_DOC` below and in the run's printout.
+A full trace is about 150 MB per photo, so the other photos have the three arrays above only. `manifest.json` is
+`{"photos": {...}, "depth_only": {...}, ...}`: `photos` holds the photos with a full trace (the keys the Rust test iterates), `depth_only`
+the rest (picture, input and depth; for the cut gates and the f16 report); each entry has the sizes, the file, the licence and
+the arrays' dtypes and shapes. `report.json` has the f16-against-f32 numbers of every photo and the sign hints.
 """
 
 from __future__ import annotations
@@ -84,24 +80,26 @@ ZIP_TIME = (2026, 11, 7, 0, 0, 0)
 PLACEHOLDER = "TBD-after-first-run"
 PHOTO_COUNT = 20
 
-#: The blocks whose outputs are stored (0 is the first, 11 the last; 2, 5, 8 and 11 are the taps).
-BLOCK_OUTPUTS = (0, 2, 5, 8, 11)
-#: What each array is, for `manifest.json` and the Rust tests: name pattern -> meaning. The shapes are in the manifest per file.
+#: The blocks whose outputs are stored for a full trace: all twelve (the taps are 2, 5, 8 and 11).
+BLOCK_OUTPUTS = tuple(range(12))
+#: What each array is, for `manifest.json`. The shapes are in the manifest per file. (See the module docstring.)
 ARRAY_DOC = {
-    "picture": "u8 [H, W, 3] the 8-bit RGB picture, long edge 1024",
-    "upstream_tensor": "f32 [1, 3, Hn, Wn] upstream resize (cv2 cubic, aspect kept, short side 518, multiples of 14) and normalisation",
-    "depth": "f32 [Hn, Wn] network output on upstream_tensor (relative inverse depth, larger is nearer; after the final ReLU)",
-    "ours_tensor": "f32 [1, 3, Hn, Wn] our resize (torch bilinear, antialias, align_corners=False) and normalisation",
-    "ours_depth": "f32 [Hn, Wn] network output on ours_tensor",
-    "patch_embed": "f32 [1, N, 384] after the 14 x 14 convolution, before class token and positions",
-    "pos_embed": "f32 [1, 1 + N, 384] position embeddings resized to the grid (class token first)",
-    "tokens_in": "f32 [1, 1 + N, 384] input of block 0",
-    "block_NN": "f32 [1, 1 + N, 384] output of block NN (00, 02, 05, 08, 11), before the final norm",
-    "enc_tap_K": "f32 [1, N, 384] K = 0..3: blocks 2, 5, 8, 11 after pretrained.norm, class token dropped",
-    "dpt_layer_K": "f32 [1, C, h, w] K = 1..4: depth_head.resize_layers[K - 1] output, C = 48, 96, 192, 384",
-    "path_K": "f32 [1, 64, h, w] K = 4..1: scratch.refinenetK output (path_1 is the fused output before the head)",
-    "head_conv1": "f32 [1, 32, h, w] scratch.output_conv1 output, before the bilinear resize to (Hn, Wn)",
+    "picture": "f32 [H0, W0, 3] the 8-bit RGB picture divided by 255, long edge 1024",
+    "input": "f32 [1, 3, h, w] upstream resize (cv2 cubic, aspect kept, short side 518, multiples of 14) and normalisation",
+    "depth": "f32 [1, h, w] network output on input (relative inverse depth, larger is nearer; after the final ReLU)",
+    "embedded": "f32 [1, 1 + N, 384] prepare_tokens_with_masks(input): class token, patch tokens, positions",
+    "block_NN": "f32 [1, 1 + N, 384] stream after block NN (00 to 11), before the final norm",
+    "tap_K": "f32 [1, N, 384] K = 0..3: blocks 2, 5, 8, 11 after pretrained.norm, class token dropped",
+    "layer_K": "f32 [1, C, ., .] K = 1..4: depth_head.resize_layers[K - 1] output, C = 48, 96, 192, 384",
+    "path_K": "f32 [1, 64, ., .] K = 4..1: scratch.refinenetK output (path_1 is the fused output before the head)",
+    "output_conv1": "f32 [1, 32, 8 ph, 8 pw] scratch.output_conv1(path_1), before the bilinear resize to (h, w)",
 }
+#: The keys of a full trace besides the three every photo has.
+TRACE_KEYS = (
+    ["embedded"] + [f"block_{n:02d}" for n in BLOCK_OUTPUTS] + [f"tap_{k}" for k in range(4)]
+    + [f"layer_{k}" for k in range(1, 5)] + [f"path_{k}" for k in (4, 3, 2, 1)] + ["output_conv1"]
+)
+BASE_KEYS = ("picture", "input", "depth")
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -241,12 +239,12 @@ def describe_arrays(arrays: dict) -> dict:
     """The index entry of a fixture: every array's dtype (`u8`, `f32`) and shape, by name."""
     import numpy as np
 
-    names = {np.dtype(np.uint8): "u8", np.dtype(np.float32): "f32"}
+    names = {np.dtype(np.float32): "f32"}
     result = {}
     for name in sorted(arrays):
         array = np.asarray(arrays[name])
         if array.dtype not in names:
-            raise ValueError(f"{name} has dtype {array.dtype}; fixtures hold u8 and f32 only")
+            raise ValueError(f"{name} has dtype {array.dtype}; fixtures hold f32 only (crates/ym-ml/tests/depth.rs reads nothing else)")
         result[name] = {"dtype": names[array.dtype], "shape": list(array.shape)}
     return result
 
@@ -284,7 +282,7 @@ def upstream_tensor(picture, size: int = 518):
     import numpy as np
     from torchvision.transforms import Compose
 
-    from depth_anything_v2.util.transform import NormalizeImage, PrepareForNet, Resize
+    from depthnything_v2.util.transform import NormalizeImage, PrepareForNet, Resize
 
     transform = Compose(
         [
@@ -303,20 +301,6 @@ def upstream_tensor(picture, size: int = 518):
     )
     image = picture.astype(np.float64) / 255.0
     return transform({"image": image})["image"][None].astype(np.float32)
-
-
-def ours_tensor(picture, torch, shape_hw: tuple[int, int]):
-    """Our network input: torch's bilinear resize with antialiasing of the picture divided by 255 (f32), then (x - mean) / std (f32).
-
-    `shape_hw` is (Hn, Wn), the upstream size, so that both inputs have the same grid.
-    """
-    import numpy as np
-
-    tensor = torch.from_numpy(np.ascontiguousarray(picture)).permute(2, 0, 1)[None].float() / 255.0
-    resized = torch.nn.functional.interpolate(tensor, size=shape_hw, mode="bilinear", align_corners=False, antialias=True)
-    mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(1, 3, 1, 1)
-    std = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(1, 3, 1, 1)
-    return ((resized - mean) / std).contiguous()
 
 
 def relative_rms(a, b) -> float:
@@ -346,7 +330,7 @@ def rank_correlation(a, b) -> float:
 
 
 class Probe:
-    """Forward hooks on the upstream model that keep the intermediate outputs of one run (see the module docstring for the names)."""
+    """Forward hooks on the upstream model that keep the stages of one run (the keys of the module docstring)."""
 
     def __init__(self, model):
         self.model = model
@@ -355,16 +339,15 @@ class Probe:
         self._taps: list = []
         encoder = model.pretrained
         head = model.depth_head
-        encoder.patch_embed.register_forward_hook(self._keep("patch_embed"))
-        encoder.blocks[0].register_forward_pre_hook(lambda _module, inputs: self._store("tokens_in", inputs[0]))
+        encoder.blocks[0].register_forward_pre_hook(lambda _module, inputs: self._store("embedded", inputs[0]))  # prepare_tokens_with_masks(input)
         for index in BLOCK_OUTPUTS:
             encoder.blocks[index].register_forward_hook(self._keep(f"block_{index:02d}"))
         encoder.norm.register_forward_hook(self._tap)
         for k, layer in enumerate(head.resize_layers, start=1):
-            layer.register_forward_hook(self._keep(f"dpt_layer_{k}"))
+            layer.register_forward_hook(self._keep(f"layer_{k}"))
         for k in (4, 3, 2, 1):
             getattr(head.scratch, f"refinenet{k}").register_forward_hook(self._keep(f"path_{k}"))
-        head.scratch.output_conv1.register_forward_hook(self._keep("head_conv1"))
+        head.scratch.output_conv1.register_forward_hook(self._keep("output_conv1"))
 
     def _store(self, name, tensor):
         if self.enabled:
@@ -378,27 +361,25 @@ class Probe:
         if self.enabled:
             self._taps.append(output[:, 1:].detach().float().contiguous().numpy().copy())
 
-    def run(self, torch, tensor, intermediates: bool):
-        """(the depth map f32 [Hn, Wn], the intermediate arrays or {}) of the model on a tensor [1, 3, Hn, Wn]."""
-        self.enabled = intermediates
+    def run(self, torch, tensor, trace: bool):
+        """(the depth map f32 [1, h, w], the stages or {}) of the model on a tensor [1, 3, h, w]."""
+        self.enabled = trace
         self.arrays = {}
         self._taps = []
         with torch.no_grad():
             depth = self.model(tensor)
         self.enabled = False
         arrays = {}
-        if intermediates:
+        if trace:
             arrays = dict(self.arrays)
             if len(self._taps) != 4:
                 sys.exit(f"error: pretrained.norm ran {len(self._taps)} times, expected 4 (the four taps)")
             for index, tap in enumerate(self._taps):
-                arrays[f"enc_tap_{index}"] = tap
-            encoder = self.model.pretrained
-            height, width = int(tensor.shape[-2]), int(tensor.shape[-1])
-            patches = (height // 14) * (width // 14)
-            dummy = torch.zeros(1, 1 + patches, encoder.embed_dim)
-            arrays["pos_embed"] = encoder.interpolate_pos_encoding(dummy, height, width).detach().float().numpy().copy()
-        return depth[0].detach().float().contiguous().numpy().copy(), arrays
+                arrays[f"tap_{index}"] = tap
+            missing = [key for key in TRACE_KEYS if key not in arrays]
+            if missing:
+                sys.exit(f"error: the run did not produce {missing}")
+        return depth.detach().float().contiguous().numpy().copy(), arrays
 
 
 def build_models(checkpoint: Path, weights: Path):
@@ -417,8 +398,8 @@ def build_models(checkpoint: Path, weights: Path):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--upstream", type=Path, default=os.environ.get("DEPTH_ANYTHING_V2_SRC"), help="a checkout of the upstream code at the pinned commit (default $DEPTH_ANYTHING_V2_SRC)")
-    parser.add_argument("--weights", type=Path, required=True, help="the exported depth_anything_v2_vits.f16.safetensors")
-    parser.add_argument("--checkpoint", type=Path, required=True, help="the original depth_anything_v2_vits.pth (f32 weights)")
+    parser.add_argument("--weights", type=Path, required=True, help="the exported depthnything_v2_vits.f16.safetensors")
+    parser.add_argument("--checkpoint", type=Path, required=True, help="the original depthnything_v2_vits.pth (f32 weights)")
     parser.add_argument("--photos", type=Path, default=Path("build/depth/photos"), help="where the photos are kept (downloaded when missing)")
     parser.add_argument("--out", type=Path, default=Path("build/depth/fixtures"), help="output directory")
     parser.add_argument("--only", default=None, help="comma-separated photo ids (a quick local run)")
@@ -456,68 +437,70 @@ def main() -> None:
 
     files = {}
     report: dict = {"photos": {}, "worst": {}}
-    worst = {"f16_depth_relative_rms": 0.0, "f16_min_rank_correlation": 1.0, "ours_min_rank_correlation": 1.0, "ours_depth_relative_rms": 0.0, "ours_tensor_rms_difference": 0.0}
+    worst = {"f16_depth_relative_rms": 0.0, "f16_min_rank_correlation": 1.0}
+    traced: dict = {}
+    depth_only: dict = {}
     for photo in photos:
         path = fetch_photo(photo, args.photos)
         picture = load_picture(path)
         height, width = picture.shape[:2]
-        tensor_a = upstream_tensor(picture)
-        shape_hw = (int(tensor_a.shape[2]), int(tensor_a.shape[3]))
-        if (shape_hw[1], shape_hw[0]) != upstream_size(width, height):
-            sys.exit(f"error: the upstream transform made {shape_hw[::-1]} for a {width} x {height} picture; upstream_size() says {upstream_size(width, height)}")
-        tensor_b = ours_tensor(picture, torch, shape_hw)
-        deep = bool(photo.get("intermediates", False))
+        tensor = upstream_tensor(picture)
+        h, w = int(tensor.shape[2]), int(tensor.shape[3])
+        if (w, h) != upstream_size(width, height):
+            sys.exit(f"error: the upstream transform made {(w, h)} for a {width} x {height} picture; upstream_size() says {upstream_size(width, height)}")
+        full = bool(photo.get("intermediates", False))
 
-        depth_a, inner = probe.run(torch, torch.from_numpy(tensor_a), deep)
-        depth_b, _ = probe.run(torch, tensor_b, False)
+        depth, stages = probe.run(torch, torch.from_numpy(tensor), full)
         with torch.no_grad():
-            reference = original(torch.from_numpy(tensor_a))[0].float().numpy()
+            reference = original(torch.from_numpy(tensor)).float().numpy()
 
-        arrays = {
-            "picture": picture,
-            "upstream_tensor": tensor_a,
-            "depth": depth_a,
-            "ours_tensor": tensor_b.numpy().astype(np.float32),
-            "ours_depth": depth_b,
-        }
-        arrays.update(inner)
+        arrays = {"picture": (picture.astype(np.float32) / np.float32(255.0)), "input": tensor, "depth": depth}
+        arrays.update(stages)
+        flat, ref_flat = depth[0], reference[0]
         entry = {
             "picture_size": [height, width],
-            "network_input_size": list(shape_hw),
-            "patches": (shape_hw[0] // 14) * (shape_hw[1] // 14),
-            "intermediates": deep,
-            "depth_min": float(depth_a.min()),
-            "depth_max": float(depth_a.max()),
-            "depth_mean": float(depth_a.mean()),
-            "depth_top_third_mean": float(depth_a[: shape_hw[0] // 3].mean()),
-            "depth_bottom_third_mean": float(depth_a[-(shape_hw[0] // 3) :].mean()),
-            "f16_vs_f32_depth_relative_rms": relative_rms(depth_a, reference),
-            "f16_vs_f32_depth_max_abs": float(np.abs(depth_a - reference).max()),
-            "f16_vs_f32_rank_correlation": rank_correlation(depth_a, reference),
-            "ours_vs_upstream_tensor_rms_difference": float(np.sqrt(np.mean((arrays["ours_tensor"].astype(np.float64) - tensor_a.astype(np.float64)) ** 2))),
-            "ours_vs_upstream_depth_relative_rms": relative_rms(depth_b, depth_a),
-            "ours_vs_upstream_rank_correlation": rank_correlation(depth_b, depth_a),
+            "network_input_size": [h, w],
+            "patches": (h // 14) * (w // 14),
+            "full_trace": full,
+            "depth_min": float(flat.min()),
+            "depth_max": float(flat.max()),
+            "depth_mean": float(flat.mean()),
+            "depth_top_third_mean": float(flat[: h // 3].mean()),
+            "depth_bottom_third_mean": float(flat[-(h // 3) :].mean()),
+            "f16_vs_f32_depth_relative_rms": relative_rms(flat, ref_flat),
+            "f16_vs_f32_depth_max_abs": float(np.abs(flat - ref_flat).max()),
+            "f16_vs_f32_rank_correlation": rank_correlation(flat, ref_flat),
         }
         worst["f16_depth_relative_rms"] = max(worst["f16_depth_relative_rms"], entry["f16_vs_f32_depth_relative_rms"])
         worst["f16_min_rank_correlation"] = min(worst["f16_min_rank_correlation"], entry["f16_vs_f32_rank_correlation"])
-        worst["ours_min_rank_correlation"] = min(worst["ours_min_rank_correlation"], entry["ours_vs_upstream_rank_correlation"])
-        worst["ours_depth_relative_rms"] = max(worst["ours_depth_relative_rms"], entry["ours_vs_upstream_depth_relative_rms"])
-        worst["ours_tensor_rms_difference"] = max(worst["ours_tensor_rms_difference"], entry["ours_vs_upstream_tensor_rms_difference"])
         target = args.out / f"{photo['id']}.npz"
         write_npz(target, arrays)
-        files[target.name] = {"bytes": target.stat().st_size, "sha256": sha256_file(target), "arrays": describe_arrays(arrays)}
+        info = {"bytes": target.stat().st_size, "sha256": sha256_file(target), "arrays": describe_arrays(arrays)}
+        files[target.name] = info
+        record = {
+            "file": target.name,
+            "title": photo["title"],
+            "license": photo["license"],
+            "page": photo["page"],
+            "categories": photo["categories"],
+            "photo_sha256": sha256_file(args.photos / f"{photo['id']}.jpg"),
+            "picture_size": entry["picture_size"],
+            "network_input_size": entry["network_input_size"],
+            "patches": entry["patches"],
+            "full_trace": full,
+        }
+        (traced if full else depth_only)[photo["id"]] = record
         report["photos"][photo["id"]] = entry
         print(
-            f"{photo['id']:14} {width}x{height} -> {shape_hw[1]}x{shape_hw[0]}  depth {entry['depth_min']:.2f}..{entry['depth_max']:.2f}  "
-            f"f16 rms {entry['f16_vs_f32_depth_relative_rms']:.1e}  ours-vs-upstream rank {entry['ours_vs_upstream_rank_correlation']:.4f}"
+            f"{photo['id']:14} {width}x{height} -> {w}x{h}  depth {entry['depth_min']:.2f}..{entry['depth_max']:.2f}  "
+            f"top {entry['depth_top_third_mean']:.2f} bottom {entry['depth_bottom_third_mean']:.2f}  f16 rms {entry['f16_vs_f32_depth_relative_rms']:.1e}"
         )
     report["worst"] = worst
     report["note"] = (
         "f16_vs_f32: the upstream code with the published f16 weights widened to f32 (what the fixtures hold) against the original f32 checkpoint, "
-        "both on upstream_tensor; relative RMS of the depth map, and Spearman's rank correlation (ordinal ranks). "
-        "ours_vs_upstream: the network on ours_tensor against the network on upstream_tensor (the shipped weights both times); the tensor "
-        "difference is the RMS of the two normalised inputs. depth_top_third_mean and depth_bottom_third_mean are for finding out which way "
-        "the depth runs (larger is nearer): in an outdoor photo with sky at the top, the bottom third should be the larger."
+        "both on `input`; relative RMS of the depth map, and Spearman's rank correlation (ordinal ranks). "
+        "depth_top_third_mean and depth_bottom_third_mean are for finding out which way the depth runs (larger is nearer): in an outdoor "
+        "photo with sky at the top, the bottom third should be the larger."
     )
     (args.out / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     manifest = {
@@ -535,21 +518,17 @@ def main() -> None:
         "input_short_side_px": export.INPUT_SIZE,
         "patch_size_px": export.PATCH_SIZE,
         "array_doc": ARRAY_DOC,
-        "photos": {
-            photo["id"]: {"title": photo["title"], "license": photo["license"], "page": photo["page"], "sha256": sha256_file(args.photos / f"{photo['id']}.jpg")}
-            for photo in photos
-        },
+        "photos": traced,
+        "depth_only": depth_only,
         "files": files,
     }
     (args.out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     total = sum(info["bytes"] for info in files.values())
-    print(f"wrote {len(files)} fixtures, {total / 1e6:.0f} MB, to {args.out}")
+    print(f"wrote {len(files)} fixtures ({len(traced)} with a full trace), {total / 1e6:.0f} MB, to {args.out}")
     print(
         "f16 against f32 weights, worst over all photos: "
-        f"depth relative RMS {worst['f16_depth_relative_rms']:.2e}, rank correlation at least {worst['f16_min_rank_correlation']:.5f}; "
-        f"our resize against the upstream one: depth relative RMS {worst['ours_depth_relative_rms']:.2e}, rank correlation at least {worst['ours_min_rank_correlation']:.4f}"
+        f"depth relative RMS {worst['f16_depth_relative_rms']:.2e}, rank correlation at least {worst['f16_min_rank_correlation']:.5f}"
     )
-
 
 if __name__ == "__main__":
     main()
