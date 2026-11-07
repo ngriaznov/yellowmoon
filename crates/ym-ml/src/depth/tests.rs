@@ -120,42 +120,33 @@ fn the_cost_count_is_the_sum_of_every_weight_times_the_positions_it_is_applied_a
             if !name.ends_with(".weight") || shape.len() == 1 {
                 continue;
             }
-            let positions = if name.starts_with("pretrained.patch_embed") {
-                n
-            } else if name.starts_with("pretrained.blocks") {
-                n + 1
-            } else if name.contains("projects.")
-                || name.contains("resize_layers.0")
-                || name.contains("resize_layers.1")
-            {
-                n
-            } else if name.contains("resize_layers.3") || name.contains("layer4_rn") {
-                h2 * w2
-            } else if name.contains("layer3_rn") {
-                n
-            } else if name.contains("layer2_rn") {
-                4 * n
-            } else if name.contains("layer1_rn") {
-                16 * n
-            } else if name.contains("refinenet4.resConfUnit") {
-                h2 * w2
-            } else if name.contains("refinenet4.out_conv") {
-                n
-            } else if name.contains("refinenet3.resConfUnit") {
-                n
-            } else if name.contains("refinenet3.out_conv") {
-                4 * n
-            } else if name.contains("refinenet2.resConfUnit") {
-                4 * n
-            } else if name.contains("refinenet2.out_conv") {
-                16 * n
-            } else if name.contains("refinenet1.resConfUnit") {
-                16 * n
-            } else if name.contains("refinenet1.out_conv") || name.contains("output_conv1") {
-                64 * n
-            } else {
-                (width * height) as u64
-            };
+            // (name fragment, positions the weight runs at), first match wins; the rest are at the picture's size.
+            let table: [(&str, u64); 16] = [
+                ("pretrained.patch_embed", n),
+                ("pretrained.blocks", n + 1),
+                ("projects.", n),
+                ("resize_layers.0", n),
+                ("resize_layers.1", n),
+                ("resize_layers.3", h2 * w2),
+                ("layer4_rn", h2 * w2),
+                ("layer3_rn", n),
+                ("layer2_rn", 4 * n),
+                ("layer1_rn", 16 * n),
+                ("refinenet4.resConfUnit", h2 * w2),
+                ("refinenet4.out_conv", n),
+                ("refinenet3", n),
+                ("refinenet2", 4 * n),
+                ("refinenet1", 16 * n),
+                ("output_conv1", 64 * n),
+            ];
+            let mut positions = table
+                .iter()
+                .find(|(needle, _)| name.contains(needle))
+                .map_or((width * height) as u64, |&(_, p)| p);
+            // The out_conv of a fusion block runs after its 2x resize.
+            if name.contains("refinenet") && name.contains(".out_conv") && !name.contains("refinenet4") {
+                positions *= 4;
+            }
             // The transposed convolutions apply every weight once per input position (kernel = stride).
             total += numel * positions;
         }
