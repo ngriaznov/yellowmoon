@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "The 20 public photos of the Depth Anything V2-Small oracle (training/depth/oracle.py, D-02; the gate of D-03, docs/13, docs/algorithms/06 section 8.6). All are JPEG files on Wikimedia Commons whose page carries a CC0 tag (seven are photos of the SAM 2 oracle, training/sam2/oracle_photos.json, with the hashes pinned there), read from Commons' API on 2026-11-07; the licence is the uploader's declaration on the page `page`, so check it there before using a photo for anything else. The oracle downloads them, checks each against `sha256` and never commits them; `commons_sha1` is Commons' own hash of the same file. A `sha256` of TBD-after-first-run means the file itself could not be downloaded when the list was written (Wikimedia's upload server was not reachable from the author's environment): the oracle then checks Commons' SHA-1 instead, prints the SHA-256 it found, keeps it as `photo_sha256` in manifest.json of the fixtures, and the value is copied here after the first run. If a file on Commons is replaced its hash changes and the oracle refuses it: pick another photo, never loosen the check. `categories` says what each photo is there to test: portrait, hair, foliage, sky, glass, interior, shallow-focus, flat (a flat picture of a flat object), and a few more. They were chosen from the files' titles and descriptions; nobody has looked at every photo yet (the contact sheets of D-06 will). `intermediates` marks the three photos whose fixtures hold every stage of the network (a landscape, a portrait and a nearly square photo); the others hold the picture, the input tensor and the depth map.",
+  "description": "The 20 public photos of the Depth Anything V2-Small oracle (training/depth/oracle.py, D-02; the gate of D-03, docs/13, docs/algorithms/06 section 8.6). All are JPEG files on Wikimedia Commons whose page carries a CC0 tag (seven are photos of the SAM 2 oracle, training/sam2/oracle_photos.json, with the hashes pinned there), read from Commons' API on 2026-11-07; the licence is the uploader's declaration on the page `page`, so check it there before using a photo for anything else. The oracle downloads them, checks each against `sha256` and never commits them; `commons_sha1` is Commons' own hash of the same file. Thirteen of the hashes were first unavailable, because Wikimedia's upload server was not reachable from the author's environment. On the first run (models run 42368046400, 2026-11-07) the oracle checked Commons' SHA-1 for those files and printed the SHA-256 it found. That value was copied here, so every photo is now checked by SHA-256. If a file on Commons is replaced its hash changes and the oracle refuses it: pick another photo, never loosen the check. `categories` says what each photo is there to test: portrait, hair, foliage, sky, glass, interior, shallow-focus, flat (a flat picture of a flat object), and a few more. They were chosen from the files' titles and descriptions; nobody has looked at every photo yet (the contact sheets of D-06 will). `intermediates` marks the three photos whose fixtures hold every stage of the network (a landscape, a portrait and a nearly square photo); the others hold the picture, the input tensor and the depth map.",
   "picture_long_edge_px": 1024,
   "photos": [
     {
@@ -151,7 +151,7 @@
       "height": 3336,
       "bytes": 2895347,
       "commons_sha1": "cc5b1754342d074567d3740ed18fec42bb3ad09e",
-      "sha256": "TBD-after-first-run",
+      "sha256": "a820c5936f6f2e0ec9079cbab39a7058b8f00456b44d34d886aa5bde1c8db8a9",
       "categories": [
         "portrait",
         "hair"
@@ -170,7 +170,7 @@
       "height": 3264,
       "bytes": 8555499,
       "commons_sha1": "caa0f0d657c1f6de75f39151c5e0173e4a3cfac3",
-      "sha256": "TBD-after-first-run",
+      "sha256": "ef168e24f7f96c5f4ae296b7674a7137074023a804347513c37f7190b54daf8c",
       "categories": [
         "portrait",
         "hair",
@@ -190,7 +190,7 @@
       "height": 5000,
       "bytes": 9362155,
       "commons_sha1": "9c067a41fefe7a055a41067ad9b6a000078b3f32",
-      "sha256": "TBD-after-first-run",
+      "sha256": "aa0467d2605c92d3ddc5eed890be3dab5cf3f9cda21d98182c9b918e1d873af7",
       "categories": [
         "portrait",
         "hair",
@@ -210,7 +210,7 @@
       "height": 2691,
       "bytes": 4591997,
       "commons_sha1": "4c9be8a928a74fe76f555d9b75d4fbf3403a56aa",
-      "sha256": "TBD-after-first-run",
+      "sha256": "09167dbe9128a662068fff6f285eb5e7ac426ca692852260f19202936a997085",
       "categories": [
         "foliage",
         "backlight"
@@ -229,7 +229,7 @@
       "height": 5255,
       "bytes": 2133328,
       "commons_sha1": "0117ec03269d2aa7260d1519f9abdd481433d004",
-      "sha256": "TBD-after-first-run",
+      "sha256": "1edf48d80f20c198925735e0680a04c6e2cb5f501ce48647051a0b1fd8981d5d",
       "categories": [
         "foliage",
         "receding-path"
@@ -248,7 +248,7 @@
       "height": 1440,
       "bytes": 808764,
       "commons_sha1": "13bbad0d693c025c01f012db8e4a9e897a4fcbd3",
-      "sha256": "TBD-after-first-run",
+      "sha256": "07df19b3c35c21c187766993523963fb83dd608002196a5971affd8b15fd51a3",
       "categories": [
         "sky",
         "branches"
@@ -267,7 +267,7 @@
       "height": 3648,
       "bytes": 5375650,
       "commons_sha1": "05cd797b9e461f2e6ff76fa7bb7581ae7b3c19b8",
-      "sha256": "TBD-after-first-run",
+      "sha256": "ddff7a45be2e828b77da06ffe621fdd9c998a13334e86bf995327a286e997084",
       "categories": [
         "sky",
         "landscape"
@@ -286,7 +286,7 @@
       "height": 3229,
       "bytes": 7387306,
       "commons_sha1": "a68f7abe8486210f1d61d8ac981ad26b896cefc3",
-      "sha256": "TBD-after-first-run",
+      "sha256": "578711d791a0ba2370c5b2ba59fcd272e736a34fa9f73b4320975bbdf87db484",
       "categories": [
         "glass",
         "architecture"
@@ -305,7 +305,7 @@
       "height": 3283,
       "bytes": 6984122,
       "commons_sha1": "0dedfc8f7ed8a4beaf5b77e4547ac83286c375a0",
-      "sha256": "TBD-after-first-run",
+      "sha256": "62aedb415688ed0d7e49e6b4aea58655cbfb1034e0dc38f46cf937e66e02925e",
       "categories": [
         "glass",
         "reflection"
@@ -324,7 +324,7 @@
       "height": 2448,
       "bytes": 4194091,
       "commons_sha1": "ebd65b07147c793b5136e81710943c64d0b0ebbf",
-      "sha256": "TBD-after-first-run",
+      "sha256": "159a97446c8744093ead5306c69df7dae7e77f613782cb0365f7b420b8293eae",
       "categories": [
         "interior",
         "plants"
@@ -343,7 +343,7 @@
       "height": 3264,
       "bytes": 6779867,
       "commons_sha1": "f8a4cee912512a1c6d651da869a03508d88081f2",
-      "sha256": "TBD-after-first-run",
+      "sha256": "1030543c6e3b65863e9ee11c4a4f9da6dfa78bc93c7d20b93782fb16ffcd2fb0",
       "categories": [
         "interior"
       ],
@@ -361,7 +361,7 @@
       "height": 4000,
       "bytes": 3637248,
       "commons_sha1": "8628712c4eb2105037f04e2d28f77a92636b0988",
-      "sha256": "TBD-after-first-run",
+      "sha256": "86e89e32abfba76bd85f453bfcb942a084e6062c989476673fc3d0aaeaa98c7e",
       "categories": [
         "shallow-focus",
         "foliage"
@@ -380,7 +380,7 @@
       "height": 4000,
       "bytes": 4141655,
       "commons_sha1": "ac35ad3c2edd014ec90e8f81ff4f84d175ee545e",
-      "sha256": "TBD-after-first-run",
+      "sha256": "3f678ec668a656ba367bb3b2cb199a0f6ed7ef602d183f58f75d974e9e7a4f8b",
       "categories": [
         "flat",
         "portrait"
