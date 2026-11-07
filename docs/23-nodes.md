@@ -1,6 +1,6 @@
 # 23 · Nodes and masks
 
-Nodes give a photo a grade that acts on part of it. A **Nodes** button in the header opens the node view: the photo on top, a graph of nodes below it, today's panel on the right. The photo's light is read by a fixed **Input**, graded by **corrector nodes** (each with its own light, colour and curve controls and with **masks**: shapes, ranges, painted strokes and masks that find an object, the people or the background), and made into a picture by a fixed **Output** (the look and the display rendering). The simple view stays the default and works as it does today. **The settings themselves are the graph** (the owner, 2026-11-01): a photo's settings are nodes and links, the Input, Main and the Output are nodes like the others, and the simple view reads and writes the simple graph. This file covers what the person sees, the settings (a node-first document of nodes and links), where every control lives, how masks combine, the rendering and its plan, the node view, Pick white's move into the Colour tab, the IPC, the tests and the tasks.
+Nodes give a photo a grade that acts on part of it. A **Nodes** button in the header opens the node view: the photo on top, a graph of nodes below it, today's panel on the right. The photo's light is read by a fixed **Input**, graded by **corrector nodes** (each with its own light, colour and curve controls and with **masks**: shapes, ranges, painted strokes and masks that find an object, the people, the background or how far things are), and made into a picture by a fixed **Output** (the look and the display rendering). The simple view stays the default and works as it does today. **The settings themselves are the graph** (the owner, 2026-11-01): a photo's settings are nodes and links, the Input, Main and the Output are nodes like the others, and the simple view reads and writes the simple graph. This file covers what the person sees, the settings (a node-first document of nodes and links), where every control lives, how masks combine, the rendering and its plan, the node view, Pick white's move into the Colour tab, the IPC, the tests and the tasks.
 
 The maths is in `docs/algorithms/06-masks.md` (the node's order, the two trims, the mask combination, every shape, the raster pipeline, the SAM 2.1 runtime). The reasons and sources are in `research/nodes-masks-2026-11-01.md`. The owner's decisions of 2026-11-01 are in `docs/16` (*Nodes and masks*).
 
@@ -15,7 +15,7 @@ The maths is in `docs/algorithms/06-masks.md` (the node's order, the two trims, 
 - **A node view behind a Nodes button** (header, shortcut N). Today's interface is the default and is unchanged.
 - **Corrector nodes** in a graph between a fixed Input and a fixed Output, up to 64 nodes per photo, Main included.
 - **Masks in every corrector.** Shapes, ranges and AI masks add up; each row can be subtracted or inverted, and so can the node's whole mask.
-- **AI masks.** Object (SAM 2.1 small, from a click or a box), Subject and People (Apple Vision, macOS 14 or later, only where this Mac supports them), Background (our blur map).
+- **AI masks.** Object (SAM 2.1 small, from a click or a box), Subject and People (Apple Vision, macOS 14 or later, only where this Mac supports them), Background (our blur map), Depth (a band of near or far from Depth Anything V2-Small, section 4.8).
 - **A real graph in the data and the engine.** Nodes, typed ports and links are the format from version 1, and the core evaluates a compiled plan (section 5.2). The interface edits the graph by inserting, deleting, reordering and moving nodes, and by **drawing links by hand**: drag from an output port to an input port, as in Resolve and other node editors (the owner, 2026-11-01; section 7.2).
 - **Pick white moves** from the header into the Colour tab (section 8).
 
@@ -269,7 +269,7 @@ A stock or paper that is not in `data/film/` (or of the wrong kind) is refused w
 
 | Field | Type / range | Default |
 |---|---|---|
-| `kind` | `object`, `subject`, `people`, `background`, `linear`, `radial`, `brush`, `color_range`, `brightness_range` | none |
+| `kind` | `object`, `subject`, `people`, `background`, `depth`, `linear`, `radial`, `brush`, `color_range`, `brightness_range` | none |
 | `mode` | `"add"` or `"subtract"` | `"add"` |
 | `invert` | bool, this mask alone | false |
 | `enabled` | bool; off (the row's switch) counts as absent | true |
@@ -282,6 +282,7 @@ and, by kind (sizes are fractions of the photo's long edge; points are in the ph
 | `object` | `points` `[[x, y, positive]]` (at most 256; `[]`), `box` `[x0, y0, x1, y1]` or `null` (`null`), `feather` 0…1 (0), `grow` −1…1 (0), `refine` 0…1 (0.5) |
 | `subject`, `people` | `feather` (0), `grow` (0), `refine` (0.5) |
 | `background` | `level` 0…1 (0.5), `softness` 0…1 (0.5), `feather` (0), `grow` (0), `refine` (0.5) |
+| `depth` | `near` 0…1 (0), `far` 0…1 (0.5), `softness` 0…1 (0.5), `feather` (0), `grow` (0), `refine` (0.5); `near` above `far` is read as both at their mean (section 4.8) |
 | `linear` | `center` `[x, y]` ([0.5, 0.5]), `angle_deg` −180…180 (0), `feather` 0…1 (0.2) |
 | `radial` | `center` ([0.5, 0.5]), `radii` `[rx, ry]` 0.002…1 ([0.25, 0.18]), `angle_deg` (0), `feather` 0…1 (0.3) |
 | `brush` | `strokes` `[{ size 0.001…0.25 (0.03), hardness 0…1 (0.5), erase (false), points [[x, y]] }]` (at most 100,000 points in all; `[]`), `feather` (0), `grow` (0), `refine` (0) |
@@ -375,7 +376,7 @@ The webview builds patches with pure functions (`src/state/graphOps.ts`, section
 
 - Auto stays Auto in Main and in the Input (each photo keeps its own automatic exposure, white balance, sharpening and noise). A white balance that came from a picked white is copied as the manual Kelvin and tint it resolved to, as before (`docs/11`).
 - Linear, Radial, Brush, Colour range and Brightness range rows are copied as they are.
-- **Subject, People and Background rows are worked out again on the new photo**: the row is the same, its raster is made from the new photo's pixels.
+- **Subject, People, Background and Depth rows are worked out again on the new photo**: the row is the same, its raster is made from the new photo's pixels (a Depth row keeps its `near`, `far` and `softness`, which are shares of the photo, and the new photo's own depth map decides what they select).
 - **Object clicks are not copied**: the pasted Object row arrives **empty** (no `points`, no `box`), so it selects nothing, and its row reads "Click the object on this photo". The node then changes nothing until you click, instead of grading the whole photo.
 
 **A paste replaces the target's graph** in one undo step in that photo's history: the patch gives the source's nodes whole (the Input's and Output's fields except the three above, which the target keeps), `remove` lists the target's corrector nodes that the source does not have, and `links` are the source's. The result is validated like any patch. The copy is kept in the webview's memory for the running app, never on disk or the system clipboard, and it carries the whole graph. **Apply to** copies the Output's look and intensity only.
@@ -399,9 +400,16 @@ A settings document that has one anyway (copied from another Mac, or made on Lin
 - **In the app** the mask row says "Subject masks need a Mac that supports them" (or "People masks need a Mac that supports them") and selects nothing; its card is not shown (nothing in it would act); the photo renders, with that row selecting nothing, and an export of it is **refused** with the `mask` error and the sentence below (the node's), never written silently without the mask.
 - **In `ym`** the photo stops with a plain error that names the mask and why: `error.kind` `mask`, "Node 2 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask." (the node's number and "Subject" or "People" filled in; **the same sentence for every reason** the computer cannot make one). The other photos of the run go on, and the exit code is 1 (`docs/10`).
 
+### 3.10a Depth only where the weights are
+
+Depth needs its model's weights, `data/models/depth/` (section 4.8), and nothing else: it runs on the CPU on every system, so there is no probe of the computer. At run time the core asks the model's probe (`ym_ml::depth::DepthModel::probe`, as `ObjectModel::probe` asks for SAM's; it reads the weights file, checks it against `SHA256SUMS` and checks its header) **once per run** and caches the answer. Where the answer is no, **Depth is not in the Add mask menu**: hidden, not greyed out (`mask_kinds`, section 9). A settings document that has a Depth row anyway cannot be rendered faithfully:
+
+- **In the app** the row says "Depth masks need the depth model. Reinstall the app." and selects nothing; its card is not shown; the photo renders with that row selecting nothing, and an export of it is **refused** with the `mask` error and the sentence below, never written silently without the mask.
+- **In `ym`** the photo stops with `error.kind` `mask`: "This copy of Yellowmoon has no Depth model. Reinstall the app." The other photos of the run go on and the exit code is 1 (`docs/10`). A map that cannot be made for a photo (the network failed, a value that is not finite) is "The Depth mask can't be made: <the text>."
+
 ### 3.11 Nothing persists
 
-Nothing about nodes is saved per photo (hard rule 4 of `AGENTS.md`). The graph lives in the session's memory like every setting, and so do the SAM features, the Vision masks, the blur maps and the masks found: all kept in small in-memory caches, never on disk. The only thing that persists is what `docs/01` *Persistence* already lists; nothing new is added to it.
+Nothing about nodes is saved per photo (hard rule 4 of `AGENTS.md`). The graph lives in the session's memory like every setting, and so do the SAM features, the Vision masks, the blur maps, the depth maps and the masks found: all kept in small in-memory caches, never on disk. The only thing that persists is what `docs/01` *Persistence* already lists; nothing new is added to it.
 
 ### 3.12 Documents of Yellowmoon 0.1
 
@@ -422,6 +430,7 @@ Yellowmoon 0.1 kept no settings per photo (hard rule 4): they lived in the sessi
 | Find | Subject | Apple Vision foreground mask; macOS only, and only where this Mac supports it (sections 3.10 and 4.5) | Worked out again |
 | Find | People | Apple Vision person mask; the same conditions | Worked out again |
 | Find | Background | Our blur map (`bokeh_net`), with a level and a softness (section 4.6) | Worked out again |
+| Find | Depth | A depth map from Depth Anything V2-Small, cut to a band of near and far with a softness (section 4.8) | Worked out again |
 | Shapes | Linear | Start and end lines with a feather; analytic | Yes |
 | Shapes | Radial | An ellipse with a feather and an angle; analytic | Yes |
 | Shapes | Brush | Strokes with size, hardness and erase, drawn into a mask | Yes |
@@ -448,9 +457,9 @@ A row that selects nothing (an Object row with no point, a Subject row on a Mac 
 
 **Smooth edges.** Every edge, shape or range, is a smooth ramp at least one output pixel wide, even at Feather 0, so the GPU and the CPU agree within the gate and Metal's fast maths cannot flip a pixel (`docs/17` K8). Shapes use a transition of `max(feather, 1.5 output pixels)`, **centred on the edge** (a Radial's measured across its outline), so a hard edge previews as it exports (the lead, 2026-11-02, after N-10 measured the preview against the export; section 15); ranges use `RANGE_RAMP_MIN = 0.02` of a LogC4 code value (maths, section 4).
 
-**Raster masks** (Object, Subject, People, Background, Brush) go through the steps of `docs/algorithms/06` section 5:
+**Raster masks** (Object, Subject, People, Background, Depth, Brush) go through the steps of `docs/algorithms/06` section 5:
 
-1. The mask is made once in the photo frame at a working size (SAM 1024 px on the long edge; Vision's own output size, from a 1024 px picture; Background the blur map's 512 px; Brush 2048 px) and kept in memory.
+1. The mask is made once in the photo frame at a working size (SAM 1024 px on the long edge; Vision's own output size, from a 1024 px picture; Background the blur map's 512 px; Depth the depth map's cells, 518 px on the short edge; Brush 2048 px) and kept in memory.
 2. At render time it is resampled to the output grid with the view's geometry (crop, straightening, turn, the lens's bend).
 3. **Grow** and **Feather** are applied in photo-relative sizes.
 4. **Refine edges** runs an edge-aware guided filter, guided by the Input's picture at that size, so the edge follows the hair or the ridge rather than SAM's coarse outline.
@@ -479,7 +488,55 @@ From the blur map that lens character makes (`ym_ml::bokeh_net`, the classical d
 
 ### 4.7 What AI masks look at
 
-SAM, Vision and the blur map read the photo **as the Input renders it**: the Input's picture (C1 to C8), the Neutral look, the cine rendering and no output sharpening. No node grade, no look the person chose and no output sharpening reach them. **Grading a node never moves its own mask or another node's.**
+SAM, Vision, the depth network and the blur map read the photo **as the Input renders it**: the Input's picture (C1 to C8), the Neutral look, the cine rendering and no output sharpening. No node grade, no look the person chose and no output sharpening reach them. **Grading a node never moves its own mask or another node's.**
+
+### 4.8 Depth
+
+A Depth row selects a band of distance: the nearest part of the photo, the background behind the subject, the plane the camera focused on. It is made from a **relative depth map** of the photo that a small model, **Depth Anything V2-Small** (24.8 million parameters, about 50 MB at f16; the owner's decision of 2026-11-07, `docs/16`; `docs/07`, `docs/algorithms/06` section 8), makes once per photo in the background. The model is used for masks only: lens character keeps its blur map and adds no depth model (the owner, 2026-10-24). The maths is `docs/algorithms/06` section 5.8; this section is what the person and the settings see. The Add mask menu's line is "Near or far, from depth".
+
+**The fields** (section 3.3 has the table; sizes and numbers are shares of the photo, so a slider reads the same on every photo):
+
+| Field | Range, default | Meaning |
+|---|---|---|
+| `near` | 0…1, 0 | Where the band starts, in the photo's depth order: 0 is the nearest part of the photo, 1 the farthest. The card shows 0 to 100 |
+| `far` | 0…1, 0.5 | Where the band ends, in the same order. `near` 0 and `far` 0.35 is the nearest 35 % of the photo. `near` above `far` is read as both at their mean. The card keeps `near` at most `far` |
+| `softness` | 0…1, 0.5 | The width of the ramp at both ends of the band: `q = max(0.25·softness, 0.02)` of the photo (`DEPTH_RAMP_MIN`). 0 is a ramp of two per cent of the photo, not a step |
+| `feather`, `grow`, `refine` | as every raster row; 0, 0, 0.5 | After the band, as for Background. Refine edges is what takes the edge to the photo; the depth map has none of its own at hair, foliage and glass |
+| Invert, Opacity, Add or Subtract, the eye | the row's own (section 3.3) | Invert on a Depth row is "everything except the band", as for every mask |
+
+The numbers are working choices, to be settled on the evaluation sheets of D-06 (the rank normalisation, the names and the defaults).
+
+**Pick depth.** The card's tool. A click on the photo sets the band around the depth under the click, a fifth of the photo wide (`near` = the click's position − 0.1, `far` = +0.1, moved to stay inside 0 to 1 and rounded to two decimals; `docs/algorithms/06` section 5.8, step 4). The page sends the click to the core as `sample_depth(photo_id, x, y)` (section 9) and writes the two numbers as one row patch, **one undo step**; the tool stays on for the next click and Esc ends it, like the Colour range's Pick colour. The click waits for the depth map if it is still being made. It runs no network.
+
+**Focus plane.** A button. It sets the band around the plane the camera focused on, with the focus point the maker note holds (`SonyFocus`, `docs/algorithms/06` section 5.8, step 5): the median depth inside the camera's AF box (a small box when the camera gave no size). The page asks `focus_plane(photo_id)` and writes the same two numbers, one undo step. Where there is nothing to read the answer is `null` and the card says so, "This photo has no focus point." (older bodies, a panorama, a file that is not from a Sony camera), and the button stays off for that photo. When the point is exactly the frame's centre, which is also the value Sony writes when it does not know, the band is made and the card says "The camera may not have recorded where it focused. Check the result." Focus plane is not a field of the row: only `near` and `far` are stored, so a file holds the numbers and `ym` needs no flag.
+
+**Show depth.** A toggle on the card that shows the photo's depth map as grey, **white for near** (`docs/algorithms/06` section 5.8, step 6), whole and not cut, so the person sees what the band will choose from. It is a view, like the row's eye: it writes no patch, makes no undo step, is not copied, saved or exported, and it is exclusive with Show mask and the eyes (turning one on turns the others off). The core draws it as another `mask_view` (section 9).
+
+**The depth map and its worker.** One map per photo, in the photo's graph in memory, **never on disk**. It is made by one worker per photo, which is the Object encoder's twin:
+
+| State | When | What the person sees |
+|---|---|---|
+| Idle | the photo has no enabled Depth row, or the model is not there | nothing |
+| Waiting | a Depth row appeared (or the key changed) on the photo on show; the worker waits `PREPARE_DEBOUNCE` = 150 ms, so that a drag of the Input's exposure makes one map | the row selects what the previous map gave it, or nothing |
+| Running | the picture is made (the reference renderer, CPU, as Object's) and the network runs, on the worker's threads, cancellable between the transformer blocks and the head's stages | `viewport_busy.finding` is true; a Depth row with its eye on, or Show depth on, shows a spinner and "Finding…" |
+| Ready | the map is in the photo's slot under its key | the rows use it; "Finding…" goes |
+| Cancelled | a newer key arrived, or the photo was left | the worker starts again from Waiting with the new key |
+| Failed | the network failed or gave a value that is not finite | the row selects nothing and says "Can't be made"; the failure is kept, and nothing asks again until the key changes; an export fails with the `mask` error |
+
+The worker asks the model's probe first, before it waits or makes anything; where the answer is no it ends without a word, a row never says "Finding…", and nothing starts a worker again. **A viewer never waits for the map**: the row selects nothing until there is one (for a map of the same photo made from another key, if the photo has one, it keeps that meanwhile, as Object does), and the frame is drawn without it. **An export makes its own map** from the CPU reference picture, reusing the viewer's only for an equal key, so the bytes of an export never depend on what the viewer's device made. The renderer keeps maps for the photos it keeps (three), and each is about 3.2 MB (`d` and the ranks); the planes cut from them are 0.8 MB each, in the 16-plane cache Background's use.
+
+**The key and what invalidates the map.** The map's key names what the picture was made from, as `object_key` does (a fingerprint of the file, the raw group's parameters, and the Input's colour with the crop, orientation and lens character stripped), plus the model (the weights' SHA-256 and the format version) and the resize and rank rules' version. It changes when: the Input's exposure, Kelvin, tint, light preset or picked white, its range (C7), its sharpening or noise reduction (the raw group), the RAW decode options or the camera profile change; a different photo is shown; the weights file changes. **It does not change** for: a node's trim, grade, curve or masks (the Depth row's own fields included), the Output's look and output sharpening, the crop, the straightening, the quarter turn, the lens character's sliders, Feather, Grow, Refine edges, Opacity, Invert or Mode. So a drag of any of the latter re-runs steps 2 to 5 of `docs/algorithms/06` section 5.1 or nothing, never the network. Moving `near`, `far` or `softness` cuts a new plane from the cached ranks, still no network (section 5.6). The level cache's grade-plan key holds the map's key (`docs/17`), so a map that arrives after a level is a new key.
+
+**What it looks at.** Like SAM, Vision and the blur map: the photo as the Input renders it (section 4.7). Grading a node never moves a Depth mask.
+
+**How it combines.** A Depth row is a **region** (Find group), folded in list order with the others (`docs/algorithms/06` section 3). Two ways to give it the edge that depth alone lacks:
+
+- *Subject in front, background behind:* add Subject, then subtract a Depth row with Invert on (`acc·(1 − (1 − D))` is `acc·D`): the subject's matte keeps the hair edge, and the depth keeps the layer. Add the Depth row for the far plane and subtract Subject from it to grade the background.
+- *Deep focus and shallow focus:* Background (from blur) is strongest where the background is smoothly defocused (portraits at f/1.4 to f/2.8) and depth is weakest; in landscapes and architecture it is the other way. The two rows can be added together.
+
+**Known limits** (the model card has the list): hair and fine structure, glass, mirrors and water, sky and haze (the far end whatever is in it), a flat scene, a smoothly defocused background. Where the band is wrong the person adds a Subject or Object row, a Brush or Refine edges, as for any other mask.
+
+**Settings and the CLI.** A Depth row in a node's `masks.items` is `{ "kind": "depth", "near": 0, "far": 0.5, "softness": 0.5, "feather": 0, "grow": 0, "refine": 0.5 }` plus the common row fields (all optional, these are the defaults). `docs/10` has the CLI side.
 
 ## 5. Rendering
 
@@ -523,7 +580,7 @@ Resample, grow, feather and guided filter run **before the colour pass**, as ker
 `docs/01` *Render graph* has the groups and keys. In short:
 
 - A change to a corrector's fields, to the links, or to the nodes that exist (any patch of `nodes`, `remove` or `links`), rebuilds the **grade group** (the compiled plan and the per-node parameters; its key holds the graph, every node's values and the look); it never re-runs the raw group. Only the colour pass runs again.
-- A raster row's **photo-frame raster** has its own key (the row's source: the points and box for Object, the macOS build for Vision, the blur map's key for Background, the strokes for Brush) and is kept per photo. Feather, Grow and Refine edges re-run only steps 2 to 5; Opacity, Mode, Invert and Bypass re-run nothing but the colour pass.
+- A raster row's **photo-frame raster** has its own key (the row's source: the points and box for Object, the macOS build for Vision, the blur map's key for Background, the depth map's key and the band for Depth, the strokes for Brush) and is kept per photo. Feather, Grow and Refine edges re-run only steps 2 to 5; Opacity, Mode, Invert and Bypass re-run nothing but the colour pass.
 - Changing the look or a slider of another node never makes a raster again, in either sense of the word: the photo-frame raster is the same, and so are the **quantised planes** the colour pass reads (steps 2 to 5 at the view's size). A crop or a turn keeps the photo-frame raster and makes the planes again, because the pixels' places in the photo moved. The viewer keeps those planes on the device between frames, one per row, under a key that names what a plane is made of and nothing else (section 15, *Speed: the raster planes stay*).
 
 ### 5.7 Node thumbnails
@@ -557,7 +614,7 @@ The mask view is a view: it is not in an export, the Before view, a thumbnail or
 
 ### 5.10 Determinism and tiles
 
-The same input, settings and version give the same bytes (hard rule 8). Tiles equal the whole frame bit for bit, the raster masks' halos included; the plan, the registers and the raster passes depend on a pixel's own input and its receptive field and on nothing else (`docs/17` D4 to D8). The app and `ym` give byte-identical exports for the same graph, whatever the masks, Object included (SAM is deterministic) and Subject and People on the same Mac.
+The same input, settings and version give the same bytes (hard rule 8). Tiles equal the whole frame bit for bit, the raster masks' halos included; the plan, the registers and the raster passes depend on a pixel's own input and its receptive field and on nothing else (`docs/17` D4 to D8). The app and `ym` give byte-identical exports for the same graph, whatever the masks, Object (SAM is deterministic) and Depth (the CPU map; section 4.8) included, and Subject and People on the same Mac.
 
 ### 5.12 The scheduler (G-11)
 
@@ -602,7 +659,7 @@ Every node structure renders on the device when one is attached; no graph is ref
 
 **Known limit of this version.** A Film node is taken to read every Film node before it in the plan (the sum of halos), which is exact for a line and an upper bound for parallel branches; exact edges need the plan's picture registers. Over-reading changes no pixel, only work.
 
-**The random-graph test** (`crates/ym-core/tests/any_graph.rs`). A seeded generator builds graphs of one to five nodes with random order, key links, Bypass, Strength 0 and mask rows. Its node and mask kinds are drawn from `NodeKind::ALL` and `MaskKind::ALL`; the only exclusions are in `NOT_GENERATED_NODES` and `NOT_GENERATED_MASKS` at its top, each with its reason (the Input and Output are fixed; Object needs the SAM weights). The forced kinds cycle, and the run asserts that every generated kind appeared. Each graph is viewed at Fit and 100 % with Show mask on a row; it must be on the device, not refused, with `views_on_cpu` false, within the CPU bounds; a subset is exported (PNG 16, JPEG) within the export bounds and byte for byte across tile sizes. The seeds are a fixed set plus one rotating seed from `YM_GRAPH_SEED`, else `GITHUB_RUN_NUMBER`; every graph is printed with its seed, and a failing one with its settings JSON.
+**The random-graph test** (`crates/ym-core/tests/any_graph.rs`). A seeded generator builds graphs of one to five nodes with random order, key links, Bypass, Strength 0 and mask rows. Its node and mask kinds are drawn from `NodeKind::ALL` and `MaskKind::ALL`; the only exclusions are in `NOT_GENERATED_NODES` and `NOT_GENERATED_MASKS` at its top, each with its reason (the Input and Output are fixed; Object needs the SAM weights). Depth is not excluded: the test installs a small fake depth model (`DepthModel` can be a fake) so that the kind is drawn without the weights. The forced kinds cycle, and the run asserts that every generated kind appeared. Each graph is viewed at Fit and 100 % with Show mask on a row; it must be on the device, not refused, with `views_on_cpu` false, within the CPU bounds; a subset is exported (PNG 16, JPEG) within the export bounds and byte for byte across tile sizes. The seeds are a fixed set plus one rotating seed from `YM_GRAPH_SEED`, else `GITHUB_RUN_NUMBER`; every graph is printed with its seed, and a failing one with its settings JSON.
 
 ## 6. The simple view
 
@@ -648,7 +705,7 @@ The graph component is **`@xyflow/react`** (MIT, on our licence allow list), wit
 
 - the node's name above the card (cut at about ten letters, the whole name as its tooltip; double click to rename, tooltip "Double-click to rename");
 - a thumbnail band 81 px high (the picture after the node, section 5.7);
-- a footer row 30 px high with the number chip ("01") at the left and the mask glyphs at the right: a sparkle with the tooltip "AI mask" when the node has an enabled Object, Subject, People or Background row, and a half-filled disc with the tooltip "Mask" when it has any other enabled mask row;
+- a footer row 30 px high with the number chip ("01") at the left and the mask glyphs at the right: a sparkle with the tooltip "AI mask" when the node has an enabled Object, Subject, People, Background or Depth row, and a half-filled disc with the tooltip "Mask" when it has any other enabled mask row;
 - selected: a 2 px yellow ring; bypassed: the thumbnail at half strength and a slash glyph in the footer; **dead** (not on a path to the Output and not feeding a live key): the whole card at 45 % with the tooltip "Not connected to the output.".
 
 A card's **number** is its place in the flow: the order of section 5.2 over all nodes. **Main is always 01.** Numbers update on insert and delete. The names are not numbers: "Corrector" is the default name and several nodes may have it.
@@ -760,13 +817,14 @@ Three cards fit without scrolling at 1440 × 900 with **two mask rows** (the hea
 | | Subject | "The main thing in the photo" |
 | | People | "Each person. macOS 14 or later" |
 | | Background | "What is out of focus, from blur" |
+| | Depth | "Near or far, from depth" |
 | SHAPES | Linear | "A gradient across the photo" |
 | | Radial | "An oval, soft at the edge" |
 | | Brush | "Paint where the node acts" |
 | KEYS | Colour range | "Pick colours to select" |
 | | Brightness range | "Select light or dark tones" |
 
-Only the kinds that `mask_kinds` lists are shown. Subject and People are **hidden**, not greyed out, where this Mac does not support them (section 3.10). Adding a row selects it and starts its tool.
+Only the kinds that `mask_kinds` lists are shown. Subject and People are **hidden**, not greyed out, where this Mac does not support them (section 3.10), and Depth where the depth weights are missing (section 3.10a). The menu has ten items from milestone D; whether it still fits 520 px is checked with the mockup (D-05). Adding a row selects it and starts its tool.
 
 **A row.** An icon for the kind, the name in bold (Object, Radial, …) with its subtitle under it, a segmented **Add | Subtract**, an **Invert** icon toggle (this mask alone; accessible name "Invert this mask"; pressed in the mask accent), and an **eye** toggle that shows this row's mask on the photo (section 5.8: "Show this mask", and "Hide this mask" while it is on; pressed in the mask accent; one row at a time; view state, no patch). At the row's **left**, before the kind's icon, a small **on/off switch** (glasscn's `Switch`, `sm`, drawn compact in the row: **28 × 16 px** with a 24 px pointer area; "Turn this mask off" while the row is on and "Turn this mask on" while it is off, as the label and the tooltip): it writes the row's `enabled` (one patch, one undo step), and a row that is off is dimmed and counts as absent. The selected row has a 2 px ring in the mask accent. The subtitle **wraps** to a second or third line when it does not fit at the panel's 400 px ("Click the object on this photo", the Subject and People sentences) and is never cut with an ellipsis; the kind's name is never cut either. The row's accessible name is the kind, "mask" and the subtitle ("Object mask, 2 points", "Radial mask, Feather 45"). Removing a row: select it and press Delete or Backspace, or right-click for **Move up · Move down · Delete mask**.
 
@@ -775,12 +833,13 @@ Only the kinds that `mask_kinds` lists are shown. Subject and People are **hidde
 | Object | "2 points" ("1 point"; "Box"; "Box and 2 points"); with none: "Click the object on this photo" |
 | Subject, People | "Foreground", "People"; on a Mac that cannot: "Subject masks need a Mac that supports them" / "People masks need a Mac that supports them" (these win over everything else, and the row has no card); nothing found: "Nothing found" (`vision_state`; "Finding…" wins while the masks are made again) |
 | Background | "Level 50" |
+| Depth | "0 to 50" (`near` to `far`, times 100); "Finding…" while the map is made; "Can't be made" when it failed; where the weights are missing: "Depth masks need the depth model. Reinstall the app." (this wins over everything else, and the row has no card) |
 | Linear, Radial | "Feather 20", "Feather 45" (feather × 100) |
 | Brush | "3 strokes" ("1 stroke"); none: "Paint on the photo" |
 | Colour range | "Width 40" |
 | Brightness range | "35 to 100" |
 
-While a raster mask is being made the subtitle shows a spinner and "Finding…" (`viewport_busy.finding`, which is the photo's, not a row's: while the core finds the Subject and People masks or the photo's first blur map, the rows with the eye on of those three kinds say it); while the SAM encoder runs, "Getting ready…".
+While a raster mask is being made the subtitle shows a spinner and "Finding…" (`viewport_busy.finding`, which is the photo's, not a row's: while the core finds the Subject and People masks, the photo's first blur map or its depth map, the rows with the eye on of those four kinds say it, and a Depth row with Show depth on); while the SAM encoder runs, "Getting ready…".
 
 **The selected mask's card** (its title is the kind in capitals; its **Reset** puts the row back as a new row of the kind, same mode):
 
@@ -789,6 +848,7 @@ While a raster mask is being made the subtitle shows a spinner and "Finding…" 
 | OBJECT | A segmented tool, **Add point · Remove point · Box**, with the line "Click the photo to add to the object. ⌥-click to take a part away." (for Remove point: "Click the photo to take a part away from the object."; for Box: "Drag a box around the object."), then sliders **Refine edges** (50%), **Feather** (0), **Grow** (0, bipolar) and **Opacity** (100%) |
 | SUBJECT, PEOPLE | Refine edges, Feather, Grow, Opacity |
 | BACKGROUND | **Level** (50), **Softness** (50), Refine edges, Feather, Grow, Opacity |
+| DEPTH | **Pick depth** (a toggle with an eyedropper) and **Focus plane** (a button), **Near** (0), **Far** (50), **Softness** (50), **Show depth** (a toggle), Refine edges, Feather, Grow, Opacity (pending the mockup, D-05; `docs/11`) |
 | LINEAR | **Angle** (degrees), Feather, Opacity (the position, angle and feather also by the handles) |
 | RADIAL | **Width**, **Height**, **Angle**, Feather, Opacity (and the handles) |
 | BRUSH | **Paint · Erase**, **Size**, **Hardness**, then Refine edges (0), Feather, Grow, Opacity |
@@ -805,6 +865,7 @@ Sliders are the standard slider; Refine edges and Opacity show percent, the othe
 - *Linear:* a solid centre line, dashed start and end lines (the feather) and a rotate handle on the centre line (an orchid circle with a rotate icon).
 - *Radial:* the outline, the inner (feather) ring, a centre handle, handles for the two radii and a rotate handle.
 - *Brush:* a cursor circle at the brush size; a stroke is drawn on the photo while the pointer is down and sent when it is released (one undo step). **A stroke is stored simplified:** the page drops the points nearer than 1/8 of the brush size to the line between their neighbours, so a document stays small (the sanity bound of 100,000 is for files).
+- *Depth:* with Pick depth on, a click samples the depth map at the point (`sample_depth`) and sets `near` and `far`; Esc ends the pick. The cursor is the pick crosshair of Pick white and Pick colour. The card has nothing else on the photo (the map is the photo's own).
 - *Colour range:* with Pick colour on, a click samples the chroma of the node's input (`sample_chroma`) and sets the centre; Esc ends the pick.
 - The handles are those of the **selected row of the selected node**, in the node view, whatever tab the panel shows (mockup 09 draws a Linear's handles over the Colour tab); a row that is off (its switch) shows none (lead's decision 2026-11-02: the spec was silent).
 - Handles hide while Crop or a pick shows. **Esc** ends a pick or a mask tool first, as now.
@@ -859,13 +920,15 @@ Pick white **moves into the Colour tab**, as part of this feature (task N-06, be
 | `node_thumbnails(photo_id)` | Asks for the thumbnails of every node of the photo, dead ones included (section 5.7). Answers `null` at once; the pictures come as a `node_thumbnails_ready` event |
 | `viewport_map_points(points, from)` | Maps points between the photo frame and the cell, for handles and outlines. `from` is `"photo"` (points `[x, y]` in the photo frame, answered as CSS pixels from the cell's corner, which may lie outside the cell) or `"cell"` (CSS pixels, answered as photo-frame fractions, `null` for a point on the paper). The webview never converts itself: the straightening, the turn, the crop and the lens's bend are the core's |
 | `mask_find(photo_id, node, mask, prompt)` | Runs SAM for an Object row (`mask` is the row's index in the node's `masks.items`). `prompt` is `{ kind: "point", x, y, positive }` or `{ kind: "box", x0, y0, x1, y1 }` in the photo frame. Answers **found** with the row's new `points` and `box` (and the decoder's `took_ms`) or **nothing found**. **Only a found answer changes settings**: the page sends it as one row patch, one undo step. It waits for the encoder if it is still running. The core caches the mask it found, so the render that follows does not run the decoder again |
-| `mask_kinds()` | The kinds of mask this machine can make now (`MaskKind[]`), in the menu's order: Object when the SAM weights are there; Subject and People each where the Vision probe said yes; Background, the shapes and the ranges always. The Add mask menu lists exactly these |
-| `viewport_set_mode(mode, mask_view)` | Gains a second argument, `mask_view`: `{ node, style, row }` with `style` `"overlay"` or `"mask_only"` and `row` left out or `null` for the node's mask, or the place of one of its rows for that row's own mask (the row's eye, section 5.8); or `null` for no mask view |
+| `mask_kinds()` | The kinds of mask this machine can make now (`MaskKind[]`), in the menu's order: Object when the SAM weights are there; Subject and People each where the Vision probe said yes; Background; Depth when the depth weights are there and pass the probe; the shapes and the ranges always. The Add mask menu lists exactly these |
+| `sample_depth(photo_id, x, y)` | Pick depth: the band around the depth at the photo-frame point, `{ near, far }` rounded to two decimals, or `null` when no map can be made. It waits for the depth map if the worker is still running (the page shows the same "Finding…"); it makes no network run of its own and reads the cached map. The page writes the answer as one row patch (`masks.edit`), one undo step |
+| `focus_plane(photo_id)` | Focus plane: `{ near, far, exact_centre }` from the maker note's focus point and the median depth in its box, or `null` with a `reason` (`no_focus_point`, answered at once without waiting for the map; `map_failed`). The page writes an answer as one row patch, one undo step |
+| `viewport_set_mode(mode, mask_view)` | Gains a second argument, `mask_view`: `{ node, style, row }` with `style` `"overlay"` or `"mask_only"` and `row` left out or `null` for the node's mask, or the place of one of its rows for that row's own mask (the row's eye, section 5.8); or `null` for no mask view. For a Depth row, `{ node, style, row, depth: true }` shows the photo's depth map as grey (section 4.8, Show depth) |
 | `histogram(photo_id, at)`, `chroma_scatter(photo_id, at)`, `sample_chroma(x, y, at, tap)` | Gain `at`: a node's id, `"input"` or a number (left out: Main, 1). The Light and Curve tabs and the Colour warp and Colour range read the signal at the selected node (section 7.5). `sample_chroma` also takes `tap`, `"warp_input"` (left out) or `"node_input"`: the Colour warp's Pick colour reads the input of the node's warp (after its trim and grade, where its pins act), a Colour range's the picture the node reads (before them, where the range selects, section 4.2). Both are chroma in the axes `e1`, `e2` of C9 |
 
-**Events:** `vision_state { photo_id, nothing_found: MaskKind[] }` (N-19): the core's worker for the Subject and People masks of a photo has ended its work, and `nothing_found` lists the kinds whose newest mask for the photo found nothing (their rows say "Nothing found"). While the worker runs the viewport is `viewport_busy { busy: true, finding: true }` whatever the rounds say (the round that asked for the masks ends at once). `node_thumbnails_ready { photo_id, thumbnails: [{ node, url }] }` (only the thumbnails that changed; PNGs of about 160 px on the `ym-frame` scheme, the address of a picture, never its bytes). The error scope `mask` carries the plain sentences of this file ("This copy of Yellowmoon has no Object model. Reinstall the app.", the Subject sentence of section 3.10).
+**Events:** `depth_state { photo_id, failed: string | null }`: the depth worker of a photo has ended; `failed` carries the plain sentence of the failure ("The Depth mask can't be made: …") or `null` when the map is ready; while it runs the viewport is `viewport_busy { busy: true, finding: true }`. `vision_state { photo_id, nothing_found: MaskKind[] }` (N-19): the core's worker for the Subject and People masks of a photo has ended its work, and `nothing_found` lists the kinds whose newest mask for the photo found nothing (their rows say "Nothing found"). While the worker runs the viewport is `viewport_busy { busy: true, finding: true }` whatever the rounds say (the round that asked for the masks ends at once). `node_thumbnails_ready { photo_id, thumbnails: [{ node, url }] }` (only the thumbnails that changed; PNGs of about 160 px on the `ym-frame` scheme, the address of a picture, never its bytes). The error scope `mask` carries the plain sentences of this file ("This copy of Yellowmoon has no Object model. Reinstall the app.", the Subject sentence of section 3.10).
 
-**The browser mock** (`src/api.mock.ts`) draws flat scenes, so masks act on whole scene areas: enough for the interface tests, not for pictures. It validates the graph with the core's rules (`src/fixtures/graph.ts`, checked against the core's error texts by `src/repo.node.test.ts`), applies the copy rules (`copiedPatch`), makes thumbnails from the flat scenes after final patches, answers `mask_kinds` from `?mockMasks=` (default: every kind; `?mockMasks=noai` leaves out Object, Subject and People; `=nomac` leaves out Subject and People), makes Subject and People masks in the background (`viewport_busy.finding` for 500 ms, then `vision_state`) where it lists them: Subject is the scene's far hill, People a figure in some scenes (`SCENES_WITH_PEOPLE`) and "Nothing found" in the others, and `mask_find` finds the scene's mountain when the point is on it and answers nothing found anywhere else (`?mockMaskFind=none` always answers nothing found). The e2e suite uses it as it does now.
+**The browser mock** (`src/api.mock.ts`) draws flat scenes, so masks act on whole scene areas: enough for the interface tests, not for pictures. It validates the graph with the core's rules (`src/fixtures/graph.ts`, checked against the core's error texts by `src/repo.node.test.ts`), applies the copy rules (`copiedPatch`), makes thumbnails from the flat scenes after final patches, answers `mask_kinds` from `?mockMasks=` (default: every kind; `?mockMasks=noai` leaves out Object, Subject, People and Depth; `=nomac` leaves out Subject and People; `=nodepth` leaves out Depth), makes Subject and People masks in the background (`viewport_busy.finding` for 500 ms, then `vision_state`) where it lists them: Subject is the scene's far hill, People a figure in some scenes (`SCENES_WITH_PEOPLE`) and "Nothing found" in the others, makes a Depth map in the background (`viewport_busy.finding` for 500 ms, then `depth_state`) where it lists the kind, with fixed ranks per scene area (the far hill and sky far, the ground near; `sample_depth` reads them, `focus_plane` answers the near ground in some scenes and `null` in the others), and `mask_find` finds the scene's mountain when the point is on it and answers nothing found anywhere else (`?mockMaskFind=none` always answers nothing found). The e2e suite uses it as it does now.
 
 ## 10. Where things live
 
@@ -892,6 +955,7 @@ Every gate below must pass in CI before a phase is done. **A failed gate is repo
 | App against `ym` | byte-identical exports with a graph, masks of every kind including Object, a hand-written settings file with a key link, and a settings file | byte-identical | N-02, N-10, N-13, N-18 |
 | Thumbnails | each node's thumbnail equals a truncated render of the plan stopped there, then the Output | within one 8-bit code | N-05 |
 | SAM 2 | our runtime against fixtures from Meta's own code on **20 public photos**, 3 prompts each; **mask IoU at least 0.99**; the logits within a stated bound; the encoder's time measured | IoU ≥ 0.99; logits *starting* 0.05 max, 0.005 mean | N-17 |
+| Depth | our runtime against fixtures from the upstream code on **20 public photos**, five bands each; **IoU of the cut at least 0.99**; the map's bounds (`docs/algorithms/06` section 8.6); the rank, the band, Pick depth and Focus plane against independent f64 references; 1, 2 and 8 threads equal bits; a document without a Depth row renders the bytes it did before; the app and `ym` write the same bytes for a Depth row; the map's key follows the Input and not a node | IoU ≥ 0.99; bounds *proposed* | D-02, D-03, D-04 |
 | Masks | preview against export: the same mask at k = 4 and k = 1 within a stated bound; a photo cropped or turned keeps its mask on the subject | *starting* largest 0.1, mean 0.005 after reducing the export | N-10, N-13 |
 | Copy and paste | the copy holds **every node and every link** and leaves out the Input's `crop`, `orientation` and `white_pick` and the Object points (a picked white copies as the manual Kelvin and tint); a paste replaces the target's graph in one undo step and keeps the target's own three fields; Apply to copies the look and its intensity only; Subject, People and Background are worked out again | tested | N-02, N-12 |
 | Pick white | the header has no Pick white; the card row, the hint pill, W and "turns off when the Colour tab is left"; e2e and the screenshots retaken | e2e | N-06 |
@@ -899,7 +963,7 @@ Every gate below must pass in CI before a phase is done. **A failed gate is repo
 | The CLI documentation and the help | `docs/10`'s flag table, its node-first example file and its refusal sentence agree with `ym render --help` and with the code: every settings flag of `cli.rs` is in the table with the node and field it sets, the example file is parsed and validated by the core, the 0.1 sentence is the one the code prints, and the help's mapping line equals the table | the test fails on any difference | N-02 (and every later task that changes `ym`) |
 | Interface | unit tests for the store (graph operations: insert, delete with reconnection, reorder, key links on delete, **connect, replace an input's link, pick up and move a link's end, remove a link, the refusals (Main's input, the Output's link, circles, port types)**, undo of each, the copy rules); Playwright drags a link from an output to an input, onto an occupied input, and off an input onto the canvas; **Playwright** for the node view, the menus, the keys, Pick white and the mask rows; the **glass audit and a11y** gain the new states; new reference screenshots, which the owner looks at before they are committed | green | N-06 to N-12 |
 | Vision | on a Mac: Subject and People make a mask twice with equal bytes (`crates/ym-apple`'s Mac tests: the probe, a request on a test picture twice; the app's path against `ym` with this Mac's own Vision, `crates/ym-cli/tests/parity.rs`); **Linux and older-Mac builds show no Vision items** (`mask_kinds`, tested on Linux with the fake provider and `YELLOWMOON_TEST_VISION`); the Swift compiles and links with the macOS 15 SDK (CI's `rust` job) and the macOS 27 SDK (`apple-bridge.yml`), both architectures by their own gate | Mac CI | N-19 |
-| Licences | `cargo deny check`; the npm licence check with `@xyflow/react`; `check_bundle.py` knows the SAM weights and their notice | pass | N-08, N-16 |
+| Licences | `cargo deny check`; the npm licence check with `@xyflow/react`; `check_bundle.py` knows the SAM weights and their notice, and the depth weights and theirs | pass | N-08, N-16, D-02 |
 | Speed (on a Mac) | a slider move in the fit view with 8 nodes; a click on an Object mask once the encoder has run | ≤ 100 ms; ≤ 300 ms | N-20 |
 
 **Unit and integration tests by area** (the names are for the code): `crates/ym-core/tests/settings.rs` (the node-first document, every rule, Auto in a corrector, node patches, clamping, the schema, the refusal of the 0.1 form, copy rules, `reset`, resolved settings), `crates/ym-core/tests/session.rs` (paste and apply-to on graphs), `tests/render_nodes.rs` (the plan on the CPU, trims, bypass, masks, identity skipping, dead branches, key links), `tests/render_gpu.rs` and `crates/ym-gpu/tests/gpu_nodes.rs` (parity and the multi-pass plan), `crates/ym-color/tests/nodes.rs` and `trims.rs` (the maths of section 2 of `docs/algorithms/06`), `tests/mask_raster.rs`, `crates/ym-ml/tests/sam2.rs`, `crates/ym-cli/tests/parity.rs`, `render.rs`, `info.rs`, `apple_auto.rs`, `auto_providers.rs` and `lenses.rs` (the flags as node patches, graph files, the `mask` error, `ym doctor`; the tests that read `settings` and `auto` in the JSON are rewritten to the node-first paths), `crates/ym-cli/tests/docs.rs` (**`docs/10` and the help agree**, below), `src/state/settingsGraph.test.ts` and `src/state/history.test.ts` (selectors, node patches and the per-node undo), `src/state/graphOps.test.ts`, `src/state/nodes.test.ts`, `src/state/shortcuts.test.ts` (N, M, B, Delete in the node view, W), `src/screens/nodes/*.test.tsx`, `e2e/nodes.spec.ts`, `e2e/masks.spec.ts`, `e2e/pick-white.spec.ts`, `src/repo.node.test.ts` (the copy that this file and the component share).
@@ -911,7 +975,8 @@ Every gate below must pass in CI before a phase is done. **A failed gate is repo
 ## 12. Risks
 
 - **SAM 2 speed on the CPU** is the biggest unknown. N-17 measures it early. If it is too slow, the encoder moves to the GPU, still deterministic within a stated bound, before N-18.
-- **App size.** About 77 MB more (the image path of SAM 2.1 small at f16, plus the model card; N-16 measured).
+- **App size.** About 77 MB more (the image path of SAM 2.1 small at f16, plus the model card; N-16 measured), and from milestone D about 50 MB more for the depth model (24.8 million parameters at f16; `docs/12`).
+- **Depth quality.** A relative depth map from one 518 px pass is soft at edges and wrong at hair, glass, mirrors and flat scenes (section 4.8); the Depth row says which plane, and Refine edges and a Subject or Object row give the edge. The sign of the network's output and the rank normalisation are to be confirmed by the first oracle fixture and the evaluation sheets (D-02, D-06). The teacher chain of the weights (data with non-commercial and ShareAlike terms behind an Apache-2.0 student) is the owner's accepted decision of 2026-11-07 (`docs/14`).
 - **Apple Vision** may answer differently on another macOS version; within one Mac the app and `ym` agree, and the Linux goldens cannot cover it. The Intel slice of the universal binary may fail the probe (then the kinds are hidden there).
 - **The fused kernel** is already large. A plan of 16 nodes with masks may cost time on older Macs; N-04 and N-10 measure it.
 - **Bit-identity** of the default graph is guaranteed on the CPU reference. On the GPU it is within today's gates and identical on lavapipe where possible.
@@ -950,6 +1015,8 @@ Task format of `docs/15`. Each task updates the specs it touches and `docs/STATU
 **N-19 · Subject and People** (N-13): Vision through `ym-apple` behind the macOS gate, the cached run-time probe, the menu items hidden where unsupported, the row message and the `ym` error for a document that has one anyway, determinism checked on the Mac CI. **`ym`:** the `mask` error for Subject and People where the Mac cannot make them (the sentence of section 3.10), the Masks line, `docs/10` and the help. *Done when:* the Mac CI and the parity on a Mac pass, Linux and older-Mac builds show no Vision items, and `docs/10` and the help are updated in the same commit.
 **N-20 · Finish** (N-12 to N-19): speed checks on a Mac, docs, `docs/STATUS.md`, `CHANGELOG.md` (it says that `--json` is hidden from 0.2.0 and that settings files of 0.1 are refused), the README (its CLI section), `docs/10` read once more against `ym render --help` and every `ym` output, the screenshots; then the 0.2.0 release after N-H5. *Done when:* the gates are in `docs/STATUS.md`.
 **[HUMAN] N-H5 · Checkpoint 4:** the final test of the whole plan; the owner's OK releases 0.2.0.
+
+**Milestone D (the Depth mask, 2026-11-07)** adds the Depth kind with its own tasks, D-01 to D-06 (`docs/15`); they build sections 3.10a and 4.8 above.
 
 **Order.** B (N-02, N-02b, N-03 to N-05) before C (N-06 to N-09) before D (N-10 to N-12); E (N-13 to N-15) and F (N-16 to N-18) can run alongside each other once D is done; G (N-19) any time after E. **The refactor lands first:** N-02 and N-02b change no pixel and nothing visible before any node feature starts. N-16 depends only on this spec, and N-06 on N-02b. **Every task that changes what `ym` does or prints updates `docs/10` and the help in the same commit**; the docs test (`crates/ym-cli/tests/docs.rs`) fails when they differ.
 
@@ -1024,7 +1091,7 @@ pub struct NodeGrade { contrast, brightness, highlights, shadows, white, black, 
                        saturation, color_warp, curve }                       // today's names and types
 pub struct MaskSettings { invert: bool, items: Vec<MaskItem> }
 pub struct MaskItem { mode, invert, enabled, opacity, shape: MaskShape }     // one flat object on the wire
-pub enum MaskShape { Object(ObjectMask), Subject(FindMask), People(FindMask), Background(..), Linear(..),
+pub enum MaskShape { Object(ObjectMask), Subject(FindMask), People(FindMask), Background(..), Depth(..), Linear(..),
                      Radial(..), Brush(..), ColorRange(..), BrightnessRange(..) }
 pub enum NodeId { Input, Corrector(u32), Output }  // "input" | number | "output"; ordered Input < correctors < Output
 pub struct NodeLink { from: NodeRef, to: NodeRef }  pub struct NodeRef { node: NodeId, port: Port }

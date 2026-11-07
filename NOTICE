@@ -247,3 +247,17 @@ UNDISCLOSED.
     "Computed by Yellowmoon from CIE 1931 2 degree colour-matching functions
     (CIE, CC BY-SA 4.0)". Modified by: Yellowmoon (computed, not copied). It
     is Adapted Material and is shared under CC BY-SA 4.0 as well.
+
+13. Depth Anything V2-Small weights (data/models/depth/)
+    Depth masks are cut from a depth map that Depth Anything V2 (the "Small"
+    size, depth_anything_v2_vits) makes from the photo:
+    by Lihe Yang, Bingyi Kang, Zilong Huang, Zhen Zhao, Xiaogang Xu,
+    Jiashi Feng and Hengshuang Zhao.
+    Licensed under the Apache License, Version 2.0, the text of which is in
+    LICENSE (https://www.apache.org/licenses/LICENSE-2.0). Source:
+    https://github.com/DepthAnything/Depth-Anything-V2; paper: L. Yang et al.,
+    "Depth Anything V2", arXiv:2406.09414.
+    The weights in this product are the authors' Small checkpoint, converted to
+    f16 safetensors. They are not trained or fine-tuned further; the program
+    that runs them is ours (crates/ym-ml). The authors' training data are not
+    part of this product. The model card is data/models/depth/MODEL_CARD.md.
