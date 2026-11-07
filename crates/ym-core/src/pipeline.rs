@@ -46,6 +46,7 @@ use serde::{Deserialize, Serialize};
 use ym_export::ColorSpace;
 
 pub mod color;
+pub mod depth;
 pub mod frame;
 pub mod geometry;
 pub mod graph;
@@ -57,9 +58,10 @@ pub mod viewport;
 pub mod vision;
 
 pub use color::{
-    LookProblem, LookProvider, NeutralOnly, PhotoSource, ResolvedLook, has_object_row,
-    unmakeable_mask, unmakeable_mask_with,
+    LookProblem, LookProvider, NeutralOnly, PhotoSource, ResolvedLook, has_depth_row,
+    has_object_row, unmakeable_mask, unmakeable_mask_with, uses_depth,
 };
+pub use depth::{DEPTH_FORMAT_VERSION, DepthModel, DepthPhase, FakeDepth, FocusPlane, FocusReason};
 pub use frame::level::{
     FILL_BAND_PX, LEVEL_DEBOUNCE, LEVEL_MAX_ZOOM, LEVELS_PER_PHOTO, LevelStatus,
 };
@@ -67,6 +69,7 @@ pub use frame::{
     ChromaSample, ChromaTap, DeviceFrame, FitFrame, FrameOptions, FrameOutput, FullImage,
     FullRequest, FullTarget, PixelSample, PixelWindow, RenderedFrame, ViewportFrame,
 };
+pub use graph::DepthKey;
 pub use graph::{
     ComputeDevice, GpuReopener, PhotoGraph, RawPrefetch, RenderOptions, RenderReport, Renderer,
     StageCounters, StageRuns, StageTimings, ViewLimits,

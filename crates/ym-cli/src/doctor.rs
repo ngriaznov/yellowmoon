@@ -23,7 +23,7 @@ use ym_core::auto_provider::{
 use ym_core::data_dir::find_data_dir;
 use ym_core::looks::{LookGroupInfo, LookService};
 use ym_core::pipeline::NeuralStatus;
-use ym_core::pipeline::ObjectModel;
+use ym_core::pipeline::{DepthModel, ObjectModel};
 use ym_core::preferences::PreferencesStore;
 use ym_core::scheduler::MemoryBudget;
 use ym_core::settings::{
@@ -159,9 +159,12 @@ fn run_bench(path: &Path, args: &DoctorArgs, console: &mut Console) -> u8 {
 /// The Object model's weights as the list of weights names them (`data/models/`, `ym_ml::sam2::WEIGHTS_FILE`).
 const OBJECT_WEIGHTS_NAME: &str = "sam2/sam2.1_hiera_small.f16.safetensors";
 
-/// The weights under `dir` with their hashes. `known` is a file whose hash the report has already made (its path
-/// relative to `dir` and its SHA-256): it is not read a second time.
-fn hash_models(dir: &Path, skip: &[&str], known: Option<(&str, &str)>) -> Vec<ModelFile> {
+/// The Depth model's weights as the list of weights names them (`data/models/`, `ym_ml::depth::WEIGHTS_FILE`).
+const DEPTH_WEIGHTS_NAME: &str = "depth/depth_anything_v2_vits.f16.safetensors";
+
+/// The weights under `dir` with their hashes. `known` are files whose hashes the report has already made (their paths
+/// relative to `dir` and their SHA-256): they are not read a second time.
+fn hash_models(dir: &Path, skip: &[&str], known: &[(&str, &str)]) -> Vec<ModelFile> {
     let mut files = Vec::new();
     collect_models(dir, dir, skip, known, &mut files);
     files.sort_by(|a, b| a.name.cmp(&b.name));
@@ -172,7 +175,7 @@ fn collect_models(
     root: &Path,
     dir: &Path,
     skip: &[&str],
-    known: Option<(&str, &str)>,
+    known: &[(&str, &str)],
     out: &mut Vec<ModelFile>,
 ) {
     let Ok(read) = std::fs::read_dir(dir) else {
@@ -195,9 +198,9 @@ fn collect_models(
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            let sha256 = match known {
-                Some((name, sha256)) if name == relative => Some(sha256.to_owned()),
-                _ => ym_looks::manifest::hash_file(&path).ok(),
+            let sha256 = match known.iter().find(|(name, _)| *name == relative) {
+                Some((_, sha256)) => Some((*sha256).to_owned()),
+                None => ym_looks::manifest::hash_file(&path).ok(),
             };
             if let Some(sha256) = sha256 {
                 out.push(ModelFile {
@@ -218,6 +221,12 @@ fn object_model_sha256(data_folder: &Path) -> Option<String> {
     Some(sam.sha256().to_owned())
 }
 
+/// The SHA-256 of the Depth model's weights when they are in the data folder and load (the same check as the Object
+/// model's: a truncated or changed file gives `None`, `weights_missing`).
+fn depth_model_sha256(data_folder: &Path) -> Option<String> {
+    DepthModel::probe(data_folder)?.checked_sha256()
+}
+
 fn build() -> Result<Report, Failure> {
     let data_folder = find_data_dir().map_err(|e| Failure::usage(e.to_string()))?;
     let app_root = ym_looks::library::default_root().map_err(|e| Failure::usage(e.to_string()))?;
@@ -225,10 +234,15 @@ fn build() -> Result<Report, Failure> {
     // The illuminant models of `models/illum/` are the shipped estimator parameters; everything
     // else under `models/` (the demosaic network, `jdd/`) is a weight file.
     let object_sha256 = object_model_sha256(&data_folder);
-    let known = object_sha256
-        .as_deref()
-        .map(|sha256| (OBJECT_WEIGHTS_NAME, sha256));
-    let all = hash_models(&models, &["metrics"], known);
+    let depth_sha256 = depth_model_sha256(&data_folder);
+    let known: Vec<(&str, &str)> = [
+        (OBJECT_WEIGHTS_NAME, object_sha256.as_deref()),
+        (DEPTH_WEIGHTS_NAME, depth_sha256.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(name, sha256)| Some((name, sha256?)))
+    .collect();
+    let all = hash_models(&models, &["metrics"], &known);
     let (illuminant_models, weights): (Vec<_>, Vec<_>) =
         all.into_iter().partition(|m| m.name.starts_with("illum/"));
 
@@ -263,7 +277,8 @@ fn build() -> Result<Report, Failure> {
             // The probe, once: Vision answers for Subject and People, or the reason it cannot (not a Mac, macOS too old,
             // a Mac that cannot run the requests).
             VisionMasks::new(ym_apple::system_vision()).support(),
-        ),
+        )
+        .with_depth(depth_sha256.is_some()),
         illuminant_models,
         profiles,
         film: ym_core::film::data_status(&data_folder).map_err(|e| e.to_string()),
@@ -577,10 +592,11 @@ fn joined(names: &[&str]) -> String {
 }
 
 /// The `Masks` row: the kinds this machine can make in the order of the Add mask menu, and, for the others, the
-/// reason, kinds that share one named together: `Object, Subject, People, Background, Linear, Radial, Brush, Colour
-/// range, Brightness range` on a Mac that supports them all; on Linux `Object, Background, Linear, … · not available:
+/// reason, kinds that share one named together: `Object, Subject, People, Background, Depth, Linear, Radial, Brush, Colour
+/// range, Brightness range` on a Mac that supports them all (with both weights); on Linux `Object, Background, Linear, … · not available:
 /// Subject and People (this is not a Mac that supports them)`; without the SAM weights `Subject, People, Background, … ·
-/// not available: Object (the SAM weights are missing)`.
+/// not available: Object (the SAM weights are missing)`; the depth weights are another file with a reason of their own: `… ·
+/// not available: Depth (the depth weights are missing)`.
 fn masks_text(masks: MaskSupport) -> String {
     let kinds: Vec<&str> = mask_kinds_with(masks)
         .into_iter()
@@ -877,6 +893,42 @@ mod tests {
         assert!(INCLUDES.contains("does not include photos, file names, locations"));
     }
 
+    /// The Masks row with the depth weights there or not, and with the SAM weights missing too: two files, two reasons.
+    #[test]
+    fn the_masks_row_names_the_depth_weights_apart_from_the_sam_weights() {
+        use ym_core::vision::VisionSupport;
+        let supported = VisionSupport {
+            subject: ym_core::vision::VisionStatus::Supported,
+            people: ym_core::vision::VisionStatus::Supported,
+        };
+        let all = MaskSupport::new(true, supported).with_depth(true);
+        assert_eq!(
+            masks_text(all),
+            "Object, Subject, People, Background, Depth, Linear, Radial, Brush, Colour range, Brightness range"
+        );
+        let json = masks_value(all);
+        assert_eq!(json["kinds"][4], "depth");
+        assert_eq!(json["unavailable"], json!({}));
+        let no_depth = MaskSupport::new(true, supported);
+        assert_eq!(
+            masks_text(no_depth),
+            "Object, Subject, People, Background, Linear, Radial, Brush, Colour range, Brightness range · not available: Depth (the depth weights are missing)"
+        );
+        assert_eq!(
+            masks_value(no_depth)["unavailable"],
+            json!({ "depth": "weights_missing" })
+        );
+        let neither = MaskSupport::new(false, supported);
+        assert_eq!(
+            masks_text(neither),
+            "Subject, People, Background, Linear, Radial, Brush, Colour range, Brightness range · not available: Object (the SAM weights are missing), Depth (the depth weights are missing)"
+        );
+        assert_eq!(
+            masks_value(neither)["unavailable"],
+            json!({ "object": "weights_missing", "depth": "weights_missing" })
+        );
+    }
+
     #[test]
     fn a_hash_the_report_already_has_is_not_made_again() {
         let dir = tempfile::tempdir().expect("a folder");
@@ -886,7 +938,7 @@ mod tests {
             std::fs::write(path, bytes).expect("a file");
         }
         // A made-up hash for the known file shows that the file was not read: the other one is hashed.
-        let files = hash_models(dir.path(), &[], Some((OBJECT_WEIGHTS_NAME, "feedface")));
+        let files = hash_models(dir.path(), &[], &[(OBJECT_WEIGHTS_NAME, "feedface")]);
         let sha = |name: &str| {
             files
                 .iter()
@@ -897,7 +949,7 @@ mod tests {
         let crop = sha("crop/a.safetensors").expect("listed");
         assert_eq!(crop.len(), 64);
         assert_ne!(crop, "feedface");
-        let plain = hash_models(dir.path(), &[], None);
+        let plain = hash_models(dir.path(), &[], &[]);
         assert_eq!(plain.len(), 2);
         assert_eq!(
             plain[1].sha256.len(),

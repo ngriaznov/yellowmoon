@@ -35,13 +35,14 @@ use crate::thumbs::Thumbnails;
 use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
     AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
-    CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate,
-    ExportJob, ExportJobId, HistogramData, LensInfo, Look, LookId, LookInput, LooksImportProgress,
-    LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView, NodeId, Num,
-    ObjectState, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample,
-    Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
-    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
-    VisionState, WatchStatus, convert,
+    CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthBand, DepthState, ErrorScope,
+    ExportEstimate, ExportJob, ExportJobId, FocusPlaneResult, FocusReason, HistogramData, LensInfo,
+    Look, LookId, LookInput, LooksImportProgress, LooksImportResult, MapFrom, MaskFindPrompt,
+    MaskFindResult, MaskKind, MaskView, NodeId, Num, ObjectState, OpenSummary, Orientation,
+    PasteReport, PhotoId, PhotoProgress, PixelSample, Preferences, PreferencesPatch,
+    ResolvedSettings, SessionChange, SessionState, SettingsPatch, SourceRecognition,
+    ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, VisionState,
+    WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
 
@@ -82,6 +83,10 @@ pub struct AppConfig {
     /// (this Mac's Vision framework, or what `YELLOWMOON_TEST_VISION` says); `None` in the tests unless they give one,
     /// which is a computer that cannot make the masks.
     pub vision: Option<Arc<dyn ym_core::vision::VisionProvider>>,
+    /// The Depth model (`docs/23` section 4.8): `None` in the app, which finds it in the data folder
+    /// (`models/depth`, `ym_core::pipeline::DepthModel::probe`); the tests give a fake one so that Depth rows work without the
+    /// weights.
+    pub depth: Option<Arc<ym_core::pipeline::DepthModel>>,
 }
 
 /// What the app starts when it launches: **no probe**. The programs' advisors are built with
@@ -127,6 +132,7 @@ impl AppConfig {
             watch: WatchConfig::default(),
             advisors: system_advisors(),
             vision: Some(ym_apple::system_vision()),
+            depth: None,
         })
     }
 }
@@ -278,6 +284,7 @@ impl AppApi {
         options.thumbnails = config.thumbnails;
         options.advisors = config.advisors.clone();
         options.render.vision = config.vision.clone().map(ym_core::vision::VisionMasks::new);
+        options.render.depth_model = config.depth.clone();
         if let Some(threads) = config.decode_threads {
             options.decode_threads = threads;
         }
@@ -336,6 +343,25 @@ impl AppApi {
                             })),
                             Err(e) => tracing::error!(error = %e, "vision_state did not convert"),
                         }
+                        shared.estimates_changed(id);
+                    }
+                }));
+        }
+        {
+            // The worker that makes the depth map of the photo being looked at (`docs/23` section 4.8): while it runs the
+            // viewport is busy and finding (the Depth rows with the eye on say "Finding…", `viewport_busy.finding`); when it
+            // ends the photo is drawn again with the mask, and the page learns whether the map failed (`depth_state`).
+            let emitter = Arc::clone(&emitter);
+            let shared = Arc::clone(&shared);
+            core.renderer
+                .set_depth_listener(Arc::new(move |id, phase| match phase {
+                    ym_core::pipeline::DepthPhase::Started => shared.masks_finding(true),
+                    ym_core::pipeline::DepthPhase::Finished { failed } => {
+                        shared.masks_finding(false);
+                        emitter.emit(AppEvent::DepthState(DepthState {
+                            photo_id: PhotoId(id.0),
+                            failed,
+                        }));
                         shared.estimates_changed(id);
                     }
                 }));
@@ -1060,6 +1086,67 @@ impl AppApi {
                 took_ms: Num(took_ms),
             },
             ym_core::pipeline::MaskFound::NothingFound(_) => MaskFindResult::Nothing,
+        })
+    }
+
+    /// `sample_depth(photo_id, x, y)` (`docs/23` section 9, Pick depth): the band around the depth at the photo-frame point
+    /// (`x`, `y` are shares of the photo's width and height), `near` and `far` rounded to two decimals, or `None` when no depth
+    /// map can be made. Nothing is changed: the page writes the answer as one row patch. It waits for the depth worker when it
+    /// is still running (`Core::sample_depth`), so it runs off the command thread.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with the scope `mask` for a missing Depth model and a point that is not a number; with the scope of the
+    /// photo's errors for a photo that cannot be read.
+    pub fn sample_depth(
+        &self,
+        photo: PhotoId,
+        x: Num,
+        y: Num,
+    ) -> Result<Option<DepthBand>, AppError> {
+        let band = self
+            .core
+            .sample_depth(core_id(photo), x.0, y.0, &CancelToken::new())
+            .map_err(AppError::from)?;
+        Ok(band.map(|(near, far)| DepthBand {
+            near: Num(near),
+            far: Num(far),
+        }))
+    }
+
+    /// `focus_plane(photo_id)` (`docs/23` section 9, Focus plane): the band around the plane the camera focused on, from the
+    /// maker note's focus point and the median depth in its box; without a band, why (`no_focus_point` is answered at once,
+    /// without waiting for the depth map). Nothing is changed: the page writes a band as one row patch.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with the scope `mask` for a missing Depth model; with the scope of the photo's errors for a photo that
+    /// cannot be read.
+    pub fn focus_plane(&self, photo: PhotoId) -> Result<FocusPlaneResult, AppError> {
+        let answer = self
+            .core
+            .focus_plane(core_id(photo), &CancelToken::new())
+            .map_err(AppError::from)?;
+        Ok(match answer {
+            ym_core::pipeline::FocusPlane::Band {
+                near,
+                far,
+                exact_centre,
+            } => FocusPlaneResult {
+                near: Some(Num(near)),
+                far: Some(Num(far)),
+                exact_centre,
+                reason: None,
+            },
+            ym_core::pipeline::FocusPlane::None(why) => FocusPlaneResult {
+                near: None,
+                far: None,
+                exact_centre: false,
+                reason: Some(match why {
+                    ym_core::pipeline::FocusReason::NoFocusPoint => FocusReason::NoFocusPoint,
+                    ym_core::pipeline::FocusReason::MapFailed => FocusReason::MapFailed,
+                }),
+            },
         })
     }
 

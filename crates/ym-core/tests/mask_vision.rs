@@ -295,6 +295,7 @@ fn mask_kinds_follow_the_probe_in_the_order_of_the_menu() {
         Subject,
         People,
         Background,
+        Depth,
         Linear,
         Radial,
         Brush,
@@ -302,16 +303,18 @@ fn mask_kinds_follow_the_probe_in_the_order_of_the_menu() {
         BrightnessRange,
     ];
     // The pure lists, for each answer the probe can give.
-    let both = MaskSupport::new(true, VisionSupport::BOTH);
+    let both = MaskSupport::new(true, VisionSupport::BOTH).with_depth(true);
     assert_eq!(mask_kinds_with(both), everything);
     assert!(mask_unavailable_with(both).is_empty());
-    let no_model = MaskSupport::new(false, VisionSupport::BOTH);
+    let no_model = MaskSupport::new(false, VisionSupport::BOTH).with_depth(true);
     assert_eq!(mask_kinds_with(no_model)[0], Subject);
     assert_eq!(
         mask_unavailable_with(no_model),
         [(Object, MaskUnavailable::WeightsMissing)]
     );
-    let one = |subject, people| MaskSupport::new(true, VisionSupport { subject, people });
+    let one = |subject, people| {
+        MaskSupport::new(true, VisionSupport { subject, people }).with_depth(true)
+    };
     let no = VisionStatus::Unsupported(MaskUnavailable::NotSupported);
     assert_eq!(
         mask_kinds_with(one(VisionStatus::Supported, no)),
@@ -319,6 +322,7 @@ fn mask_kinds_follow_the_probe_in_the_order_of_the_menu() {
             Object,
             Subject,
             Background,
+            Depth,
             Linear,
             Radial,
             Brush,
@@ -332,6 +336,7 @@ fn mask_kinds_follow_the_probe_in_the_order_of_the_menu() {
             Object,
             People,
             Background,
+            Depth,
             Linear,
             Radial,
             Brush,
@@ -344,12 +349,13 @@ fn mask_kinds_follow_the_probe_in_the_order_of_the_menu() {
         MaskUnavailable::MacosTooOld,
         MaskUnavailable::NotSupported,
     ] {
-        let support = MaskSupport::new(true, VisionSupport::neither(why));
+        let support = MaskSupport::new(true, VisionSupport::neither(why)).with_depth(true);
         assert_eq!(
             mask_kinds_with(support),
             [
                 Object,
                 Background,
+                Depth,
                 Linear,
                 Radial,
                 Brush,

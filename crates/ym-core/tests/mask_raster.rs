@@ -132,9 +132,15 @@ fn brush_and_background_are_kinds_this_computer_can_make_and_the_others_of_the_r
         ]
     );
     let missing: Vec<MaskKind> = mask_unavailable().into_iter().map(|(k, _)| k).collect();
+    // (Depth needs the depth weights, D-04.)
     assert_eq!(
         missing,
-        [MaskKind::Object, MaskKind::Subject, MaskKind::People]
+        [
+            MaskKind::Object,
+            MaskKind::Subject,
+            MaskKind::People,
+            MaskKind::Depth
+        ]
     );
     // Every kind is in exactly one of the two lists.
     for k in MaskKind::ALL {
@@ -149,7 +155,8 @@ fn brush_and_background_are_kinds_this_computer_can_make_and_the_others_of_the_r
     // Object needs the SAM weights (N-18): a machine with no Object model says so.
     assert_eq!(wire[0], ("Object", "weights_missing"));
     assert_eq!(wire[1].1, if mac { "not_supported" } else { "not_a_mac" });
-    assert_eq!(wire.len(), 3, "Object, Subject and People: {wire:?}");
+    assert_eq!(wire[3], ("Depth", "weights_missing"));
+    assert_eq!(wire.len(), 4, "Object, Subject, People and Depth: {wire:?}");
 }
 
 #[test]

@@ -962,6 +962,159 @@ fn a_background_row_renders_from_a_settings_file() {
     assert_eq!(rows[0]["refine"], 0.5);
 }
 
+/// A copy of Yellowmoon with no Depth model (`data/models/depth` is not there): a Depth row stops that photo with `error.kind` `mask` and
+/// "This copy of Yellowmoon has no Depth model. Reinstall the app.", exit 1, nothing written; `ym doctor` says `weights_missing` and names
+/// the depth weights; and a photo with the eye of the row off, or no Depth row, goes on (`docs/10`, `docs/23` section 3.10a, D-04).
+#[cfg(unix)]
+#[test]
+fn a_depth_row_without_the_model_is_the_mask_error_and_the_other_photos_go_on() {
+    let sb = Sandbox::new();
+    sb.arw("a_depth.ARW");
+    sb.arw("b_off.ARW");
+    sb.arw("c_plain.ARW");
+    let doc = |rows: &str| serde_json::from_str::<Value>(&masked_file(rows)).expect("a document");
+    let file = sb.root().join("per-file.json");
+    let doc_text = serde_json::json!({
+        "a_depth.ARW": doc(r#"{ "kind": "depth", "near": 0, "far": 0.4 }"#),
+        "b_off.ARW": doc(r#"{ "kind": "depth", "enabled": false }"#),
+        "c_plain.ARW": doc(""),
+    });
+    std::fs::write(&file, doc_text.to_string()).expect("write");
+    let without = sb.data_without_the_depth_weights();
+    let out = sb
+        .ym_data(&without)
+        .args(["render", "--cpu", "--json", "--settings"])
+        .arg(&file)
+        .arg(sb.photos())
+        .assert()
+        .code(1);
+    let objects = json_lines(&out.get_output().stdout);
+    assert_eq!(objects.len(), 3);
+    let find = |name: &str| {
+        objects
+            .iter()
+            .find(|o| o["input"].as_str().is_some_and(|i| i.ends_with(name)))
+            .unwrap_or_else(|| panic!("no record for {name}"))
+    };
+    let o = find("a_depth.ARW");
+    assert_eq!(o["status"], "error");
+    assert_eq!(o["output"], Value::Null);
+    assert_eq!(o["error"]["kind"], "mask");
+    assert_eq!(
+        o["error"]["message"],
+        "This copy of Yellowmoon has no Depth model. Reinstall the app."
+    );
+    assert!(o["camera"].is_object() && o["settings"].is_object());
+    assert!(!sb.default_export().join("a_depth_signature.jpg").exists());
+    assert_eq!(find("b_off.ARW")["status"], "ok");
+    assert_eq!(find("c_plain.ARW")["status"], "ok");
+    // The doctor says so, and Depth is not on offer.
+    let out = sb
+        .ym_data(&without)
+        .args(["doctor", "--json"])
+        .assert()
+        .success();
+    let v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
+    assert_eq!(v["masks"]["unavailable"]["depth"], "weights_missing");
+    assert!(
+        !v["masks"]["kinds"]
+            .as_array()
+            .expect("kinds")
+            .iter()
+            .any(|k| k == "depth")
+    );
+    let text = sb.ym_data(&without).arg("doctor").assert().success();
+    let text = String::from_utf8_lossy(&text.get_output().stdout).into_owned();
+    assert!(
+        text.contains("Depth (the depth weights are missing)"),
+        "the Masks row names the reason:\n{text}"
+    );
+}
+
+/// A Depth row renders from `--settings` (`docs/10`, D-04) with the fake depth model (`YELLOWMOON_TEST_DEPTH=fake`): the map is made from
+/// the photo's own picture, the photo is written, and the row changes pixels. The same file twice gives the same bytes, a `near` above
+/// `far` is both at their mean, and the settings the record prints hold the row with its defaults and its numbers.
+#[test]
+fn a_depth_row_renders_from_a_settings_file_with_the_fake_model() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let row = r#"{ "kind": "depth", "mode": "add", "near": 0.1, "far": 0.7, "softness": 0.2, "feather": 0.1 }"#;
+    let with = sb.root().join("depth.json");
+    std::fs::write(&with, masked_file(row)).expect("write");
+    let swapped = sb.root().join("swapped.json");
+    std::fs::write(
+        &swapped,
+        masked_file(r#"{ "kind": "depth", "near": 0.9, "far": 0.1 }"#),
+    )
+    .expect("write");
+    let mean = sb.root().join("mean.json");
+    std::fs::write(
+        &mean,
+        masked_file(r#"{ "kind": "depth", "near": 0.5, "far": 0.5 }"#),
+    )
+    .expect("write");
+    let defaults = sb.root().join("defaults.json");
+    std::fs::write(&defaults, masked_file(r#"{ "kind": "depth" }"#)).expect("write");
+    let without = sb.root().join("none.json");
+    std::fs::write(&without, masked_file("")).expect("write");
+    let render = |settings: &std::path::Path, dir: &str| {
+        let out_dir = sb.root().join(dir);
+        let out = sb
+            .ym_fake_depth()
+            .args([
+                "render",
+                "--cpu",
+                "--json",
+                "--format",
+                "tiff",
+                "--settings",
+            ])
+            .arg(settings)
+            .arg("--out")
+            .arg(&out_dir)
+            .arg(&arw)
+            .assert()
+            .success();
+        let o = json_lines(&out.get_output().stdout).remove(0);
+        assert_eq!(o["status"], "ok", "{o}");
+        let path = o["output"].as_str().expect("output").to_owned();
+        (o, std::fs::read(path).expect("the file"))
+    };
+    let (o, a) = render(&with, "with");
+    let (_, again) = render(&with, "again");
+    let (_, b) = render(&without, "without");
+    assert_ne!(a, b, "the Depth row changed no pixel");
+    assert_eq!(a, again, "the same file twice is the same bytes");
+    let rows = &common::node(&o, 2)["masks"]["items"];
+    assert_eq!(rows[0]["kind"], "depth");
+    assert_eq!(rows[0]["near"], 0.1);
+    assert_eq!(rows[0]["far"], 0.7);
+    assert_eq!(rows[0]["softness"], 0.2);
+    assert_eq!(rows[0]["feather"], 0.1);
+    assert_eq!(rows[0]["refine"], 0.5);
+    // The defaults of `docs/10`.
+    let (d, _) = render(&defaults, "defaults");
+    let rows = &common::node(&d, 2)["masks"]["items"];
+    assert_eq!(
+        (
+            &rows[0]["near"],
+            &rows[0]["far"],
+            &rows[0]["softness"],
+            &rows[0]["grow"]
+        ),
+        (
+            &Value::from(0.0),
+            &Value::from(0.5),
+            &Value::from(0.5),
+            &Value::from(0.0)
+        )
+    );
+    // `near` above `far` is both at their mean: the file of 0.9 and 0.1 is the file of 0.5 and 0.5.
+    let (_, s) = render(&swapped, "swapped");
+    let (_, m) = render(&mean, "mean");
+    assert_eq!(s, m, "0.9 and 0.1 are both 0.5");
+}
+
 /// A Brush row renders from `--settings` (`docs/10`): the photo is written, and it is not the photo without the
 /// brush.
 #[test]

@@ -30,7 +30,7 @@ describe("mask_kinds (the Add mask menu's list)", () => {
   it("is every kind (Object, Subject and People first, N-18 and N-19), unless the page URL says otherwise", async () => {
     const a = createMockApi({ speed: Number.POSITIVE_INFINITY });
     api = a;
-    expect(await a.maskKinds()).toEqual(["object", "subject", "people", "background", "linear", "radial", "brush", "color_range", "brightness_range"]);
+    expect(await a.maskKinds()).toEqual(["object", "subject", "people", "background", "depth", "linear", "radial", "brush", "color_range", "brightness_range"]);
     expect(await a.maskKinds()).toEqual([...BUILT_MASK_KINDS]);
   });
 
@@ -39,8 +39,10 @@ describe("mask_kinds (the Add mask menu's list)", () => {
     expect(optionsFromLocation("?mockMasks=all").maskKinds).toEqual([...ALL_MASK_KINDS]);
     // No AI: Object, Subject and People are left out; Background needs no model download and no Mac, the blur map comes from the photo.
     expect(optionsFromLocation("?mockMasks=noai").maskKinds).toEqual(["background", "linear", "radial", "brush", "color_range", "brightness_range"]);
+    // No depth weights: only Depth is left out.
+    expect(optionsFromLocation("?mockMasks=nodepth").maskKinds).toEqual(["object", "subject", "people", "background", "linear", "radial", "brush", "color_range", "brightness_range"]);
     // No Mac: Subject and People are left out.
-    expect(optionsFromLocation("?mockMasks=nomac").maskKinds).toEqual(["object", "background", "linear", "radial", "brush", "color_range", "brightness_range"]);
+    expect(optionsFromLocation("?mockMasks=nomac").maskKinds).toEqual(["object", "background", "depth", "linear", "radial", "brush", "color_range", "brightness_range"]);
     expect(optionsFromLocation("?mockMasks=built").maskKinds).toEqual([...BUILT_MASK_KINDS]);
     expect(optionsFromLocation("?mockMasks=radial,linear").maskKinds).toEqual(["linear", "radial"]);
     expect(parseMockMasks("lasso")).toBeNull();
@@ -265,5 +267,71 @@ describe("Subject and People (docs/23 §4.5 and §7.6, N-19)", () => {
     const drawn = picture();
     expect(drawn).toContain('data-vision-row="subject"');
     expect(drawn).toContain('data-vision-row="people"');
+  });
+});
+
+describe("Depth (docs/23 §4.8 and §9, D-04)", () => {
+  const ROW: SettingsPatch = { nodes: { "1": { masks: { items: [newMask("depth")] } } } };
+  const tick = (ms = 20): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+  const events = (a: MockApi): { busy: Array<{ busy: boolean; cpu: boolean; finding: boolean }>; states: Array<{ photo_id: number; failed: string | null }> } => {
+    const seen = { busy: [] as Array<{ busy: boolean; cpu: boolean; finding: boolean }>, states: [] as Array<{ photo_id: number; failed: string | null }> };
+    a.on("viewport_busy", (e) => seen.busy.push(e));
+    a.on("depth_state", (e) => seen.states.push(e));
+    return seen;
+  };
+
+  it("has the defaults of the spec: 0 to 50, softness 50, Refine edges 50", () => {
+    expect(newMask("depth")).toEqual({ mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, kind: "depth", near: 0, far: 0.5, softness: 0.5 });
+  });
+
+  it("makes the map in the background when the row appears: finding while it works, then depth_state with no failure, and not again", async () => {
+    const a = await open();
+    const seen = events(a);
+    const id = (await a.sessionState()).photos[3]!.id;
+    await a.updateSettings(id, ROW);
+    await tick();
+    expect(seen.busy).toEqual([
+      { busy: true, cpu: false, finding: true },
+      { busy: false, cpu: false, finding: false },
+    ]);
+    expect(seen.states).toEqual([{ photo_id: id, failed: null }]);
+    // A slider is no new map.
+    await a.updateSettings(id, { nodes: { "1": { masks: { edit: { "0": { far: 0.35 } } } } } });
+    await tick();
+    expect(seen.states).toHaveLength(1);
+  });
+
+  it("makes nothing on a computer without the depth weights (mask_kinds leaves Depth out), and refuses the commands with the mask scope", async () => {
+    const a = createMockApi({ speed: Number.POSITIVE_INFINITY, maskKinds: parseMockMasks("nodepth") ?? [], initialSettings: { DSC04204: ROW } });
+    api = a;
+    const seen = events(a);
+    await a.openPaths(["/photos"]);
+    a.flush();
+    const id = (await a.sessionState()).photos[3]!.id;
+    await a.setCurrent(id);
+    await a.viewportSetRect({ x: 0, y: 0, width: 600, height: 400, scale: 1 });
+    await tick();
+    expect(seen.busy.filter((e) => e.finding)).toEqual([]);
+    expect(seen.states).toEqual([]);
+    await expect(a.sampleDepth(id, 0.5, 0.5)).rejects.toMatchObject({ scope: "mask", message: "This copy of Yellowmoon has no Depth model. Reinstall the app." });
+    await expect(a.focusPlane(id)).rejects.toMatchObject({ scope: "mask" });
+  });
+
+  it("answers Pick depth with the band around the area under the click (near ground near, far hill far, sky farthest), two decimals", async () => {
+    const a = await open();
+    const id = (await a.sessionState()).photos[3]!.id;
+    const ground = await a.sampleDepth(id, 0.5, 0.95);
+    const sky = await a.sampleDepth(id, 0.05, 0.05);
+    expect(ground).toEqual({ near: 0.05, far: 0.25 });
+    expect(sky).toEqual({ near: 0.8, far: 1 });
+    await expect(a.sampleDepth(id, Number.NaN, 0.5)).rejects.toMatchObject({ scope: "mask" });
+  });
+
+  it("answers Focus plane with the near ground where the scene has a focus point, and none with the reason where it has not", async () => {
+    const a = await open();
+    const photos = (await a.sessionState()).photos;
+    // DSC04204 has a figure on its near ground, DSC04201 none.
+    expect(await a.focusPlane(photos[3]!.id)).toEqual({ near: 0.05, far: 0.25, exact_centre: false, reason: null });
+    expect(await a.focusPlane(photos[0]!.id)).toEqual({ near: null, far: null, exact_centre: false, reason: "no_focus_point" });
   });
 });

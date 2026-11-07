@@ -37,7 +37,7 @@ use tauri::Runtime;
 use tauri_specta::Event;
 
 use crate::wire::{
-    AppError, AutoStatusChanged, DownloadFound, ErrorEvent, ExportBusy, ExportProgress,
+    AppError, AutoStatusChanged, DepthState, DownloadFound, ErrorEvent, ExportBusy, ExportProgress,
     LooksChanged, LooksImportProgress, NodeThumbnailsReady, ObjectState, PhotoId, PhotoProgress,
     RenderStats, SettingsChanged, ThumbnailReady, ViewportBusy, ViewportFrame, VisionState,
 };
@@ -81,6 +81,8 @@ pub enum AppEvent {
     ObjectState(ObjectState),
     /// `vision_state` (addition): the Subject and People worker ended its work for a photo, and which kinds found nothing.
     VisionState(VisionState),
+    /// `depth_state` (addition): the depth worker ended its work for a photo, and whether the map failed.
+    DepthState(DepthState),
 }
 
 impl AppEvent {
@@ -104,6 +106,7 @@ impl AppEvent {
             Self::ViewportFrame(_) => "viewport_frame",
             Self::ObjectState(_) => "object_state",
             Self::VisionState(_) => "vision_state",
+            Self::DepthState(_) => "depth_state",
         }
     }
 }
@@ -155,6 +158,7 @@ fn send<R: Runtime>(app: &tauri::AppHandle<R>, event: AppEvent) {
         AppEvent::ViewportFrame(e) => e.emit(app),
         AppEvent::ObjectState(e) => e.emit(app),
         AppEvent::VisionState(e) => e.emit(app),
+        AppEvent::DepthState(e) => e.emit(app),
     };
     if let Err(e) = sent {
         tracing::debug!(event = name, error = %e, "could not send an event");

@@ -430,7 +430,7 @@ type MaskBase = {
   opacity: number;
 };
 
-/** The fields Subject, People, Background, Object and Brush rows share. */
+/** The fields Subject, People, Background, Depth, Object and Brush rows share. */
 type MaskEdge = {
   /** 0…1. */
   feather: number;
@@ -446,6 +446,7 @@ export type MaskItem =
   | ({ kind: "subject" } & MaskBase & MaskEdge)
   | ({ kind: "people" } & MaskBase & MaskEdge)
   | ({ kind: "background" } & MaskBase & MaskEdge & { level: number; softness: number })
+  | ({ kind: "depth" } & MaskBase & MaskEdge & { near: number; far: number; softness: number })
   | ({ kind: "linear" } & MaskBase & { center: [x: number, y: number]; angle_deg: number; feather: number })
   | ({ kind: "radial" } & MaskBase & { center: [x: number, y: number]; radii: [rx: number, ry: number]; angle_deg: number; feather: number })
   | ({ kind: "brush" } & MaskBase & MaskEdge & { strokes: BrushStroke[] })
@@ -637,6 +638,9 @@ export interface MaskPatch {
   /** An Object row's box; `null` takes it away. */
   box?: [x0: number, y0: number, x1: number, y1: number] | null;
   level?: number;
+  /** A Depth row's `near` and `far`: places in the photo's depth order, 0 the nearest part of the photo and 1 the farthest. */
+  near?: number;
+  far?: number;
   softness?: number;
   center?: [x: number, y: number];
   angle_deg?: number;
@@ -1305,6 +1309,44 @@ export type MaskFindPrompt = { kind: "point"; x: number; y: number; positive: bo
 export type MaskFindResult = { kind: "found"; points: Array<[number, number, boolean]>; box: [number, number, number, number] | null; took_ms: number } | { kind: "nothing" };
 
 /**
+ * The answer of `sample_depth` (`docs/23` §9, Pick depth): the band around the depth under the click, in the photo's depth order (0 is the nearest part of the
+ * photo, 1 the farthest), rounded to two decimals. The page writes the two numbers as one `masks.edit` row patch (`near`, `far`): one undo step.
+ */
+export interface DepthBand {
+  near: number;
+  far: number;
+}
+
+/**
+ * Why `focus_plane` has no band (`docs/23` §9): `no_focus_point` (an older body, a panorama, a file that is not from a Sony camera; answered at once, without
+ * waiting for the depth map: the card says "This photo has no focus point." and the button stays off) or `map_failed` (the depth map could not be made).
+ */
+export type FocusReason = "no_focus_point" | "map_failed";
+
+/**
+ * The answer of `focus_plane` (`docs/23` §9, Focus plane): with a band `near` and `far` are set as `sample_depth`'s and `reason` is `null`; without one they are
+ * `null` and `reason` says why. The page writes a band as one `masks.edit` row patch: one undo step. `exact_centre` is true when the camera's point is exactly
+ * the frame's centre, which Sony also writes when it does not know where it focused: the card says "The camera may not have recorded where it focused. Check
+ * the result."
+ */
+export interface FocusPlaneResult {
+  near: number | null;
+  far: number | null;
+  exact_centre: boolean;
+  reason: FocusReason | null;
+}
+
+/**
+ * `depth_state` (addition): the core's depth worker for a photo has ended (`docs/23` §4.8). `failed` is the plain sentence of the failure ("The Depth mask can't
+ * be made: …") or `null` when the map is ready. The Depth rows with the eye on say "Finding…" while it runs (`viewport_busy.finding`); when it ends the photo is
+ * drawn again with the mask, and a row whose map failed says "Can't be made".
+ */
+export interface DepthState {
+  photo_id: PhotoId;
+  failed: string | null;
+}
+
+/**
  * `object_state` (addition): SAM's encoder is working for a photo (`preparing`), or has stopped. The Object rows of that photo say "Getting ready…" while
  * it is (`docs/23` §7.6); when it stops with the features made the photo is drawn again.
  */
@@ -1789,6 +1831,8 @@ export interface ApiEvents {
   object_state: ObjectState;
   /** The Subject and People worker ended its work for a photo, and which kinds found nothing (`docs/23` §7.6: those rows say "Nothing found"). */
   vision_state: VisionState;
+  /** The depth worker ended its work for a photo, and whether the map failed (`docs/23` §7.6: a failed row says "Can't be made"). */
+  depth_state: DepthState;
 }
 
 /** Names of the events the core emits. */

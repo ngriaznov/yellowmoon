@@ -40,7 +40,7 @@ export const UNSUPPORTED_ROW: Readonly<Record<"subject" | "people", string>> = {
  * the photo's, not a row's: while the core finds one kind the other rows of these kinds say it too.)
  */
 export const isFinding = (row: MaskItem, finding: boolean): boolean =>
-  finding && row.enabled && (row.kind === "background" || row.kind === "subject" || row.kind === "people");
+  finding && row.enabled && (row.kind === "background" || row.kind === "depth" || row.kind === "subject" || row.kind === "people");
 
 /** What the Mask tab knows about Subject and People on this computer and on the photo (`docs/23` §7.6). */
 export interface VisionRows {
@@ -101,6 +101,8 @@ export function newMask(kind: MaskKind, mode: MaskMode = "add"): MaskItem {
       return { ...base, ...edge, kind };
     case "background":
       return { ...base, ...edge, kind, level: 0.5, softness: 0.5 };
+    case "depth":
+      return { ...base, ...edge, kind, near: 0, far: 0.5, softness: 0.5 };
     case "linear":
       return { ...base, kind, center: [0.5, 0.5], angle_deg: 0, feather: 0.2 };
     case "radial":
@@ -169,6 +171,8 @@ export function maskSubtitle(row: MaskItem, vision?: VisionRows): string {
       return isUnsupported(row, vision) ? UNSUPPORTED_ROW.people : foundNothing(row, vision) ? NOTHING_FOUND : "People";
     case "background":
       return `Level ${Math.round(row.level * 100)}`;
+    case "depth":
+      return `${Math.round(row.near * 100)} to ${Math.round(row.far * 100)}`;
     case "linear":
     case "radial":
       return `Feather ${Math.round(row.feather * 100)}`;

@@ -40,6 +40,7 @@ use ym_color::display::{
 use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::LookTransform;
 use ym_color::mask::{MaskKind, MaskRow, NodeMasks};
+use ym_color::mask_depth::DepthSource;
 use ym_color::mask_raster::{
     BackgroundSource, BlurMap, BrushStrokes, MAX_RASTER_PLANES, RasterRow, RasterSet, RasterSource,
     Stroke, strokes_key,
@@ -527,13 +528,14 @@ fn trim_of(t: &NodeTrim) -> Trim {
 pub const NO_PLANE: usize = usize::MAX;
 
 /// Whether a row of this shape is made into a raster plane by this code: Brush (drawn from its strokes), Background (cut
-/// from the photo's blur map), Object (SAM's decoder on its points and box, N-18) and Subject and People (the union of
+/// from the photo's blur map), Depth (cut from the photo's depth map), Object (SAM's decoder on its points and box, N-18) and Subject and People (the union of
 /// Vision's instances on the Input's picture, N-19). Whether the machine *can* make it is [`unmakeable_mask_with`].
 fn makes_raster(shape: &MaskShape) -> bool {
     matches!(
         shape,
         MaskShape::Brush(_)
             | MaskShape::Background(_)
+            | MaskShape::Depth(_)
             | MaskShape::Object(_)
             | MaskShape::Subject(_)
             | MaskShape::People(_)
@@ -579,6 +581,17 @@ fn raster_row_of(
             grow: b.grow,
             feather: b.feather,
             refine: b.refine,
+        }),
+        MaskShape::Depth(d) => objects.and_then(|p| p.depth_map()).map(|map| RasterRow {
+            source: RasterSource::Depth(Arc::new(DepthSource {
+                map: Arc::clone(map),
+                near: d.near,
+                far: d.far,
+                softness: d.softness,
+            })),
+            grow: d.grow,
+            feather: d.feather,
+            refine: d.refine,
         }),
         MaskShape::Brush(b) => Some(RasterRow {
             source: RasterSource::Brush(Arc::new(BrushStrokes::new(
@@ -637,6 +650,7 @@ fn mask_rows(
                 | MaskShape::Subject(_)
                 | MaskShape::People(_)
                 | MaskShape::Background(_)
+                | MaskShape::Depth(_)
                 | MaskShape::Brush(_) => match raster_row_of(&row.shape, background, objects) {
                     Some(r) if rasters.rows.len() < MAX_RASTER_PLANES => {
                         rasters.rows.push(r);
@@ -701,6 +715,34 @@ pub fn uses_background(s: &DevelopSettings, stop: Stop) -> bool {
                 .iter()
                 .any(|r| r.enabled && matches!(r.shape, MaskShape::Background(_)))
         })
+    })
+}
+
+/// Whether the photo's plan that ends at `stop` has a Depth row with the eye on: the render then needs the photo's depth
+/// map ([`ObjectPlanes::depth_map`]), made once per photo by the background worker.
+#[must_use]
+pub fn uses_depth(s: &DevelopSettings, stop: Stop) -> bool {
+    let Ok(plan) = node_plan(&s.nodes, stop) else {
+        return false;
+    };
+    plan.node_ids().into_iter().any(|id| {
+        s.nodes.masks_of(id).is_some_and(|m| {
+            m.items
+                .iter()
+                .any(|r| r.enabled && matches!(r.shape, MaskShape::Depth(_)))
+        })
+    })
+}
+
+/// Whether the photo has a Depth row with the eye on anywhere in its graph, in a node the Output needs or not: the core
+/// starts the depth worker in the background for the photo being looked at (`docs/23` section 4.8), and the app says
+/// "Finding…" while it runs.
+#[must_use]
+pub fn has_depth_row(s: &DevelopSettings) -> bool {
+    s.nodes.all_masks().any(|(_, m)| {
+        m.items
+            .iter()
+            .any(|r| r.enabled && matches!(r.shape, MaskShape::Depth(_)))
     })
 }
 
@@ -1147,6 +1189,23 @@ fn nodes_key(
                         b.grow,
                         b.feather,
                         b.refine
+                    );
+                }
+                // The map is named by its own key (the picture, the weights and the rules); a row without a map (the worker
+                // has not made it, or it failed) selects nothing and says so.
+                MaskShape::Depth(d) => {
+                    let _ = write!(
+                        k,
+                        "depth:{}:{}:{}:{}:{}:{}:{};",
+                        objects
+                            .and_then(|p| p.depth_map())
+                            .map_or_else(|| "none".to_owned(), |m| format!("{:x}", m.key)),
+                        d.near,
+                        d.far,
+                        d.softness,
+                        d.grow,
+                        d.feather,
+                        d.refine
                     );
                 }
                 // The plane is named by its own key (the features, the points and the box); a row whose features are not

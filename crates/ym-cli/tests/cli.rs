@@ -202,6 +202,12 @@ fn doctor_json_has_the_same_parts() {
     assert_eq!(v["looks"]["imported"], 0);
 }
 
+/// Whether the depth weights are in the data folder and load (`data/models/depth`, `tools/fetch/depth.sh`): `ym doctor`
+/// reads and checks them against `SHA256SUMS`, and so does this.
+fn depth_weights() -> bool {
+    ym_core::pipeline::DepthModel::probe(&data_dir()).is_some_and(|m| m.checked_sha256().is_some())
+}
+
 /// The `Masks` row and the `masks` object of `ym doctor` (`docs/10` *doctor*): the kinds `mask_kinds()` gives the app,
 /// in the order of the Add mask menu, and the reason for each that this computer cannot make. The sandbox's `ym` says
 /// Vision is not supported (`YELLOWMOON_TEST_VISION=none`), so the line is the same on a Mac that supports it.
@@ -221,23 +227,44 @@ fn doctor_lists_the_masks_this_computer_can_make_and_why_not_the_others() {
     // reads them and checks them against `SHA256SUMS`, and so does this.
     let object =
         ym_core::pipeline::ObjectModel::probe(&data_dir()).is_some_and(|m| m.sam().is_ok());
+    // Depth is there where the depth weights are (`data/models/depth`, `tools/fetch/depth.sh`), checked the same way.
+    let depth = depth_weights();
     let rest = if cfg!(target_os = "macos") {
         "Subject and People (this computer can't make them)"
     } else {
         "Subject and People (this is not a Mac that supports them)"
     };
-    let (made, not_made) = if object {
-        (
-            "Object, Background, Linear, Radial, Brush, Colour range, Brightness range",
-            rest.to_owned(),
-        )
+    let mut made = vec![];
+    let mut not_made = vec![];
+    if object {
+        made.push("Object");
     } else {
-        (
-            "Background, Linear, Radial, Brush, Colour range, Brightness range",
-            format!("Object (the SAM weights are missing), {rest}"),
+        not_made.push("Object (the SAM weights are missing)");
+    }
+    made.push("Background");
+    if depth {
+        made.push("Depth");
+    }
+    made.extend([
+        "Linear",
+        "Radial",
+        "Brush",
+        "Colour range",
+        "Brightness range",
+    ]);
+    not_made.push(rest);
+    if !depth {
+        // Two weights files, two reasons: Object and Depth are not named together even when both are missing.
+        not_made.push("Depth (the depth weights are missing)");
+    }
+    assert_eq!(
+        line,
+        format!(
+            "{} · not available: {}",
+            made.join(", "),
+            not_made.join(", ")
         )
-    };
-    assert_eq!(line, format!("{made} · not available: {not_made}"));
+    );
     // The row follows the model weights and comes before the illuminant models.
     let at = |label: &str| text.find(label).unwrap_or_else(|| panic!("no {label}"));
     assert!(at("Model weights") < at("Masks") && at("Masks") < at("Illuminant models"));
@@ -248,8 +275,11 @@ fn doctor_lists_the_masks_this_computer_can_make_and_why_not_the_others() {
     if object {
         kinds.push("object");
     }
+    kinds.push("background");
+    if depth {
+        kinds.push("depth");
+    }
     kinds.extend([
-        "background",
         "linear",
         "radial",
         "brush",
@@ -265,6 +295,9 @@ fn doctor_lists_the_masks_this_computer_can_make_and_why_not_the_others() {
     let mut unavailable = serde_json::json!({ "subject": reason, "people": reason });
     if !object {
         unavailable["object"] = serde_json::json!("weights_missing");
+    }
+    if !depth {
+        unavailable["depth"] = serde_json::json!("weights_missing");
     }
     assert_eq!(v["masks"]["unavailable"], unavailable);
 }
@@ -285,11 +318,22 @@ fn doctor_lists_subject_and_people_where_this_computer_supports_them() {
         .trim_start_matches("Masks")
         .trim()
         .to_owned();
-    let all = "Subject, People, Background, Linear, Radial, Brush, Colour range, Brightness range";
-    let expected = if object {
-        format!("Object, {all}")
-    } else {
-        format!("{all} · not available: Object (the SAM weights are missing)")
+    let depth = depth_weights();
+    let all = format!(
+        "Subject, People, Background, {}Linear, Radial, Brush, Colour range, Brightness range",
+        if depth { "Depth, " } else { "" }
+    );
+    let mut gone = vec![];
+    if !object {
+        gone.push("Object (the SAM weights are missing)");
+    }
+    if !depth {
+        gone.push("Depth (the depth weights are missing)");
+    }
+    let expected = match (object, gone.is_empty()) {
+        (true, true) => format!("Object, {all}"),
+        (true, false) => format!("Object, {all} · not available: {}", gone.join(", ")),
+        (false, _) => format!("{all} · not available: {}", gone.join(", ")),
     };
     assert_eq!(line, expected);
 
@@ -303,10 +347,11 @@ fn doctor_lists_subject_and_people_where_this_computer_supports_them() {
     if object {
         kinds.push("object");
     }
+    kinds.extend(["subject", "people", "background"]);
+    if depth {
+        kinds.push("depth");
+    }
     kinds.extend([
-        "subject",
-        "people",
-        "background",
         "linear",
         "radial",
         "brush",
@@ -314,11 +359,13 @@ fn doctor_lists_subject_and_people_where_this_computer_supports_them() {
         "brightness_range",
     ]);
     assert_eq!(v["masks"]["kinds"], serde_json::json!(kinds));
-    let unavailable = if object {
-        serde_json::json!({})
-    } else {
-        serde_json::json!({ "object": "weights_missing" })
-    };
+    let mut unavailable = serde_json::json!({});
+    if !object {
+        unavailable["object"] = serde_json::json!("weights_missing");
+    }
+    if !depth {
+        unavailable["depth"] = serde_json::json!("weights_missing");
+    }
     assert_eq!(v["masks"]["unavailable"], unavailable);
 }
 

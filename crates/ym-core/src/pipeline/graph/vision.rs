@@ -253,10 +253,11 @@ impl Renderer {
             .map_or_else(VisionSupport::none_here, |v| v.support())
     }
 
-    /// What this computer can make now: the SAM weights, and what the Vision probe said.
+    /// What this computer can make now: the SAM weights, what the Vision probe said, and the depth weights.
     #[must_use]
     pub fn mask_support(&self) -> MaskSupport {
         MaskSupport::new(self.object_available(), self.vision_support())
+            .with_depth(self.depth_available())
     }
 
     /// Who hears when the background worker starts or ends its work for a photo ([`VisionPhase`]). Replaces the one set

@@ -104,6 +104,7 @@ expression: shape(&v)
       "string"
     ],
     "unavailable": {
+      "depth": "string",
       "object": "string",
       "people": "string",
       "subject": "string"

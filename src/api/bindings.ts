@@ -149,6 +149,23 @@ export const commands = {
 	 */
 	maskFind: (photoId: PhotoId, node: number, mask: number, prompt: MaskFindPrompt) => __TAURI_INVOKE<MaskFindResult>("mask_find", { photoId, node, mask, prompt }),
 	/**
+	 *  `sample_depth(photo_id, x, y)` (`docs/23` section 9, Pick depth): the band `{ near, far }` around the depth at the
+	 *  photo-frame point, two decimals, or null when no depth map can be made. It changes no settings: the page writes the answer
+	 *  as one row patch (one undo step). It waits for the depth map if the worker is still making it.
+	 */
+	sampleDepth: (photoId: PhotoId, x: number, y: number) => __TAURI_INVOKE<{
+	/**  Where the band starts, 0 to 1. */
+	near: number,
+	/**  Where the band ends, 0 to 1. */
+	far: number,
+} | null>("sample_depth", { photoId, x, y }),
+	/**
+	 *  `focus_plane(photo_id)` (`docs/23` section 9, Focus plane): the band around the plane the camera focused on, or why there
+	 *  is none (`no_focus_point` at once, `map_failed`). It changes no settings: the page writes a band as one row patch (one undo
+	 *  step).
+	 */
+	focusPlane: (photoId: PhotoId) => __TAURI_INVOKE<FocusPlaneResult>("focus_plane", { photoId }),
+	/**
 	 *  `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
 	 *  starting amounts. Empty when the lens data could not be loaded.
 	 */
@@ -259,6 +276,7 @@ export const commands = {
 /** Events */
 export const events = {
 	autoStatusChanged: makeEvent<AutoStatusChanged>("auto_status_changed"),
+	depthState: makeEvent<DepthState>("depth_state"),
 	downloadFound: makeEvent<DownloadFound>("download_found"),
 	error: makeEvent<ErrorEvent>("error"),
 	exportBusy: makeEvent<ExportBusy>("export_busy"),
@@ -930,6 +948,31 @@ export type DecodePatch = {
 };
 
 /**
+ *  The answer of `sample_depth` (`docs/23` section 9, Pick depth): the band around the depth under the click, in the photo's
+ *  depth order (0 is the nearest part of the photo, 1 the farthest), rounded to two decimals. The page writes the two numbers
+ *  as one row patch (`masks.edit` with `near` and `far`), one undo step.
+ */
+export type DepthBand = {
+	/**  Where the band starts, 0 to 1. */
+	near: number,
+	/**  Where the band ends, 0 to 1. */
+	far: number,
+};
+
+/**
+ *  `depth_state { photo_id, failed }` (addition): the core's depth worker for a photo has ended (`docs/23` section 4.8).
+ *  `failed` is the plain sentence of the failure ("The Depth mask can't be made: …") or null when the map is ready. While the
+ *  worker runs the viewport is `viewport_busy { busy: true, finding: true }` and the Depth rows with the eye on say "Finding…";
+ *  when it ends the photo is drawn again with the mask, and a Depth row whose map failed says "Can't be made".
+ */
+export type DepthState = {
+	/**  The photo. */
+	photo_id: PhotoId,
+	/**  The sentence of the failure, or null when the map is ready. */
+	failed: string | null,
+};
+
+/**
  *  The settings of a photo: the graph of its nodes (`docs/23` section 3). Every control in the UI and every
  *  CLI flag is a field of one node.
  */
@@ -1174,6 +1217,33 @@ export type FilmStockSettings = {
 	/**  Stops, -4 to 4; 0 is the Input's exposure. */
 	exposure_ev: number,
 };
+
+/**
+ *  The answer of `focus_plane` (`docs/23` section 9, Focus plane): with a band, `near` and `far` as `sample_depth`'s and
+ *  `reason` null; without one, `near` and `far` null and the `reason`. The page writes a band as one row patch, one undo
+ *  step; `exact_centre` is true when the camera's point is exactly the frame's centre, which Sony also writes when it does not
+ *  know where it focused (the card says so).
+ */
+export type FocusPlaneResult = {
+	/**  Where the band starts, 0 to 1, or null when there is no band. */
+	near: number | null,
+	/**  Where the band ends, 0 to 1, or null when there is no band. */
+	far: number | null,
+	/**  The focus point is exactly the frame's centre. */
+	exact_centre: boolean,
+	/**  Why there is no band, or null when there is one. */
+	reason: FocusReason | null,
+};
+
+/**  Why `focus_plane` has no band (`docs/23` section 9). */
+export type FocusReason = 
+/**
+ *  The photo has no focus point (an older body, a panorama, a file that is not from a Sony camera). Answered at once,
+ *  without waiting for the depth map: the card says "This photo has no focus point." and the button stays off.
+ */
+"no_focus_point" | 
+/**  The depth map could not be made. */
+"map_failed";
 
 /**
  *  A corrector's grade to change: the old patch's fields, under the same names. Serialising leaves
@@ -1731,6 +1801,28 @@ feather: number;
 grow: number; 
 /**  Refine edges, 0 to 1. */
 refine: number } | 
+/**  A band of the depth map (`docs/23` section 4.8). */
+{ kind: "depth"; 
+/**  Add or subtract. */
+mode: MaskMode; 
+/**  This mask alone is inverted. */
+invert: boolean; 
+/**  Off (the eye) counts as absent. */
+enabled: boolean; 
+/**  0 to 1. */
+opacity: number; 
+/**  Where the band starts in the photo's depth order, 0 (the nearest part of the photo) to 1. */
+near: number; 
+/**  Where the band ends, 0 to 1. A `near` above `far` is read as both at their mean. */
+far: number; 
+/**  The width of the ramp at both ends of the band, 0 to 1. */
+softness: number; 
+/**  Feather, 0 to 1. */
+feather: number; 
+/**  Grow, -1 to 1. */
+grow: number; 
+/**  Refine edges, 0 to 1. */
+refine: number } | 
 /**  A line, an angle and a feather. */
 { kind: "linear"; 
 /**  Add or subtract. */
@@ -1829,6 +1921,8 @@ export type MaskKind =
 "people" | 
 /**  The blur map's out-of-focus area. */
 "background" | 
+/**  A band of near or far from the depth map. */
+"depth" | 
 /**  A gradient across the photo. */
 "linear" | 
 /**  An oval with a soft edge. */
@@ -1878,7 +1972,11 @@ export type MaskPatch = {
 	box?: [number, number, number, number] | null,
 	/**  A Background row's level. */
 	level?: number | null,
-	/**  The softness of a Background, Colour range or Brightness range row. */
+	/**  A Depth row's `near`. */
+	near?: number | null,
+	/**  A Depth row's `far`. */
+	far?: number | null,
+	/**  The softness of a Background, Depth, Colour range or Brightness range row. */
 	softness?: number | null,
 	/**  A Linear, Radial or Colour range row's centre. */
 	center?: [number, number] | null,

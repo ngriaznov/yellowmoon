@@ -33,6 +33,7 @@ pub fn op_kind(kind: MaskKind) -> OpKind {
         | MaskKind::Subject
         | MaskKind::People
         | MaskKind::Background
+        | MaskKind::Depth
         | MaskKind::Brush => OpKind::Raster,
         MaskKind::Linear => OpKind::Linear,
         MaskKind::Radial => OpKind::Radial,
@@ -467,6 +468,7 @@ mod tests {
                         | MaskKind::Subject
                         | MaskKind::People
                         | MaskKind::Background
+                        | MaskKind::Depth
                         | MaskKind::Brush
                 ),
                 "{k:?}"

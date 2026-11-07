@@ -36,7 +36,7 @@
 //!
 //! The store is keyed by the *settings key*: the raw group's parameters, the grade plan's key (which
 //! holds the node graph, the masks, the Film nodes, the look, the display transform and the **keys of
-//! the Background, Object, Subject and People planes**, so a plane that arrives after the settings
+//! the Background, Depth, Object, Subject and People planes**, so a plane that arrives after the settings
 //! is a new key), the geometry, the lens key and the Output Sharpening amount. A request whose
 //! settings key differs from the store's frees every level and cancels the fill in flight; within a
 //! settings key a level is named by its zoom (`f64::to_bits`).

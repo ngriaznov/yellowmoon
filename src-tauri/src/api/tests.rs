@@ -1424,12 +1424,20 @@ fn the_kinds_of_mask_this_machine_makes_are_the_cores_and_cross_by_the_same_word
         &ym_core::data_dir::find_data_dir().expect("the data folder"),
     )
     .is_some();
+    // Depth (D-04) follows its own weights (`data/models/depth`, `tools/fetch/depth.sh`), right after Background.
+    let depth = ym_core::pipeline::DepthModel::probe(
+        &ym_core::data_dir::find_data_dir().expect("the data folder"),
+    )
+    .is_some();
     let mut want = Vec::new();
     if object {
         want.push(MaskKind::Object);
     }
+    want.push(MaskKind::Background);
+    if depth {
+        want.push(MaskKind::Depth);
+    }
     want.extend([
-        MaskKind::Background,
         MaskKind::Linear,
         MaskKind::Radial,
         MaskKind::Brush,
@@ -1442,6 +1450,7 @@ fn the_kinds_of_mask_this_machine_makes_are_the_cores_and_cross_by_the_same_word
         .map(|k| match k {
             MaskKind::Object => "object",
             MaskKind::Background => "background",
+            MaskKind::Depth => "depth",
             MaskKind::Linear => "linear",
             MaskKind::Radial => "radial",
             MaskKind::Brush => "brush",
@@ -5086,7 +5095,7 @@ fn subject_and_people_are_offered_where_the_probe_says_yes_and_by_their_words() 
             .mask_kinds()
             .expect("kinds")
             .into_iter()
-            .filter(|k| *k != MaskKind::Object)
+            .filter(|k| !matches!(k, MaskKind::Object | MaskKind::Depth))
             .collect()
     };
     let h = Harness::with_vision(Arc::new(FakeVision::new()));
@@ -5211,5 +5220,178 @@ fn a_subject_row_on_a_computer_that_cannot_make_it_selects_nothing_and_starts_no
         Some(
             "Node 1 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask."
         )
+    );
+}
+
+// ---- Depth masks (docs/23 sections 4.8 and 9, task D-04) -------------------------------------------------------------------------------------
+
+/// A patch that gives node 1 one Depth row, in the full form of the wire (`MaskItem`: every field of the kind is required there).
+fn depth_row_patch(near: f64, far: f64) -> SettingsPatch {
+    serde_json::from_value(json!({ "nodes": { "1": { "masks": { "items": [
+        { "kind": "depth", "mode": "add", "invert": false, "enabled": true, "opacity": 1,
+          "near": near, "far": far, "softness": 0.5, "feather": 0, "grow": 0, "refine": 0.5 },
+    ] } } } }))
+    .expect("a patch")
+}
+
+/// The whole path through the shell with a fake model: a Depth row on the photo being looked at starts the core's worker; the viewport is
+/// busy and finding while it works (`viewport_busy.finding`), and when it ends `depth_state` says the map is ready (`failed` null).
+/// Pick depth answers a band in the shapes of the wire, Focus plane answers at once that this file has no focus point, and nothing changes in
+/// the settings.
+#[test]
+fn a_depth_row_is_found_in_the_background_depth_state_comes_as_an_event_and_pick_depth_answers() {
+    use crate::events::AppEvent;
+    use crate::wire::{ErrorScope, FocusReason, MaskKind};
+    let h = Harness::with_depth(ym_core::pipeline::DepthModel::fake_default());
+    // The kind is offered, right after Background.
+    let kinds = h.api.mask_kinds().expect("kinds");
+    let at = kinds
+        .iter()
+        .position(|k| *k == MaskKind::Background)
+        .expect("Background");
+    assert_eq!(kinds[at + 1], MaskKind::Depth);
+    h.open(1);
+    let id = h.develop().photos[0].id;
+    h.rect(300.0, 200.0);
+    h.api.set_current(id).expect("current");
+    h.frame_of_size(300, 200);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    h.api
+        .update_settings(id, &depth_row_patch(0.0, 0.5))
+        .expect("a Depth row");
+    let states = || -> Vec<(PhotoId, Option<String>)> {
+        h.events
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                AppEvent::DepthState(s) => Some((s.photo_id, s.failed)),
+                _ => None,
+            })
+            .collect()
+    };
+    wait_until("the depth worker to end", || !states().is_empty());
+    assert_eq!(states(), [(id, None)]);
+    let busy = crate::testing::busy_events(&h.events);
+    assert!(
+        busy.iter().any(|b| b.busy && b.finding),
+        "no busy-and-finding event in {busy:?}"
+    );
+    wait_until("the viewport to be idle", || {
+        crate::testing::busy_events(&h.events)
+            .last()
+            .is_some_and(|b| !b.busy && !b.finding)
+    });
+    // Pick depth: the band around the depth under the click, two decimals, near and far in 0 to 1. The fake's map is nearer toward the
+    // bottom of the photo, so a click at the bottom picks a nearer band than one at the top.
+    let low = h
+        .api
+        .sample_depth(id, Num(0.5), Num(0.95))
+        .expect("an answer")
+        .expect("a band");
+    let high = h
+        .api
+        .sample_depth(id, Num(0.5), Num(0.05))
+        .expect("an answer")
+        .expect("a band");
+    assert!(low.near.0 < high.near.0, "{low:?} {high:?}");
+    for band in [low, high] {
+        assert!(band.near.0 >= 0.0 && band.far.0 <= 1.0);
+        assert!(((band.far.0 - band.near.0) - 0.2).abs() < 0.011, "{band:?}");
+        assert_eq!(band.near.0, (band.near.0 * 100.0).round() / 100.0);
+    }
+    // The click ran no network of its own beyond the worker's: one map for the photo.
+    assert_eq!(
+        h.api
+            .core()
+            .renderer
+            .depth_networks(ym_core::session::PhotoId(id.0)),
+        1
+    );
+    // A click that is not a number is refused with the mask scope.
+    let err = h
+        .api
+        .sample_depth(id, Num(f64::NAN), Num(0.5))
+        .expect_err("not a place");
+    assert_eq!(err.scope, ErrorScope::Mask);
+    // The synthetic file has no focus point: answered at once, with the reason, and no band.
+    let focus = h.api.focus_plane(id).expect("an answer");
+    assert_eq!(
+        (focus.near, focus.far, focus.exact_centre, focus.reason),
+        (None, None, false, Some(FocusReason::NoFocusPoint))
+    );
+    // Nothing was written to the settings by either command: the row is as the patch made it.
+    let core = h.api.core();
+    let settings = core
+        .session
+        .settings(ym_core::session::PhotoId(id.0))
+        .expect("settings")
+        .settings;
+    let rows = &settings.nodes.corrector(1).expect("node 1").masks.items;
+    assert!(
+        matches!(&rows[0].shape, ym_core::settings::MaskShape::Depth(d) if d.near == 0.0 && d.far == 0.5),
+        "{rows:?}"
+    );
+}
+
+/// A copy of Yellowmoon without the depth weights (the harness's data folder has none) offers no Depth kind, keeps a Depth row, starts no
+/// worker (`viewport_busy` never says finding), answers the commands with the `mask` scope and the sentence of `docs/23` section 3.10a, and
+/// refuses to export the photo.
+#[test]
+fn a_depth_row_without_the_model_selects_nothing_starts_no_worker_and_refuses_the_commands() {
+    use crate::wire::{ErrorScope, MaskKind};
+    if ym_core::pipeline::DepthModel::probe(
+        &ym_core::data_dir::find_data_dir().expect("the data folder"),
+    )
+    .is_some()
+    {
+        eprintln!("\n* DEPTH WITHOUT THE MODEL SKIPPED: this data folder has the depth weights\n");
+        return;
+    }
+    let h = Harness::new();
+    assert!(
+        !h.api
+            .mask_kinds()
+            .expect("kinds")
+            .contains(&MaskKind::Depth)
+    );
+    h.open(1);
+    let id = h.develop().photos[0].id;
+    h.rect(300.0, 200.0);
+    h.api.set_current(id).expect("current");
+    h.frame_of_size(300, 200);
+    h.api
+        .update_settings(id, &depth_row_patch(0.0, 0.5))
+        .expect("a Depth row is kept");
+    assert!(h.api.viewport().wait_idle(WAIT));
+    assert!(
+        crate::testing::busy_events(&h.events)
+            .iter()
+            .all(|b| !b.finding)
+    );
+    assert!(
+        h.events
+            .events()
+            .iter()
+            .all(|e| !matches!(e, crate::events::AppEvent::DepthState(_)))
+    );
+    let err = h
+        .api
+        .sample_depth(id, Num(0.5), Num(0.5))
+        .expect_err("no model");
+    assert_eq!(err.scope, ErrorScope::Mask);
+    assert_eq!(
+        err.message,
+        "This copy of Yellowmoon has no Depth model. Reinstall the app."
+    );
+    let err = h.api.focus_plane(id).expect_err("no model");
+    assert_eq!(err.scope, ErrorScope::Mask);
+    let core = h.api.core();
+    let core_id = ym_core::session::PhotoId(id.0);
+    let sentence = core
+        .renderer
+        .unmakeable_mask(&core.session.settings(core_id).expect("settings").settings);
+    assert_eq!(
+        sentence.as_deref(),
+        Some("This copy of Yellowmoon has no Depth model. Reinstall the app.")
     );
 }

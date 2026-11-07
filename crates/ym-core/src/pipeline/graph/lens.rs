@@ -205,11 +205,34 @@ fn report_of(plan: &LensPlan, planes: &LensPlanes) -> ReshapeReport {
 /// taken as it stands in the corrected image (no inverse of R9's map is needed), then shifted by
 /// the crop. The detector only needs the area, not the pixel. `sensor` is the size of the frame the
 /// point is in, `crop` R9's crop of it (`None`: the whole frame).
+#[cfg(test)]
 fn focus_fraction(
     focus: Option<SonyFocus>,
     sensor: (usize, usize),
     crop: Option<Rect>,
 ) -> Option<(f64, f64)> {
+    focus_frame(focus, sensor, crop).map(|f| f.point)
+}
+
+/// The camera's focus point and AF box in the auto-cropped frame, as fractions of it, in the buffer's orientation
+/// ([`focus_frame`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct FocusFrame {
+    /// The point: fractions of the frame's width and height, held to the frame.
+    pub point: (f64, f64),
+    /// The AF box the maker note marked valid: its width and height as fractions of the frame, `None` when the camera gave
+    /// none.
+    pub box_size: Option<(f64, f64)>,
+}
+
+/// [`focus_fraction`] with the AF box (the Depth mask's Focus plane, `docs/algorithms/06` section 5.8): the point and the
+/// box of the maker note in the frame the lens works on. The box is `box_size / frame` of the camera's frame, which on the
+/// sensor is that share of the sensor's size, and a share of the auto-cropped frame once R9's crop is taken.
+pub(super) fn focus_frame(
+    focus: Option<SonyFocus>,
+    sensor: (usize, usize),
+    crop: Option<Rect>,
+) -> Option<FocusFrame> {
     let focus = focus?;
     let (frame_w, frame_h) = (f64::from(focus.frame[0]), f64::from(focus.frame[1]));
     if frame_w <= 0.0 || frame_h <= 0.0 {
@@ -224,7 +247,16 @@ fn focus_fraction(
     if w <= 0.0 || h <= 0.0 {
         return None;
     }
-    Some(((x / w).clamp(0.0, 1.0), (y / h).clamp(0.0, 1.0)))
+    let box_size = focus.box_size.map(|[bw, bh]| {
+        (
+            f64::from(bw) / frame_w * sensor.0 as f64 / w,
+            f64::from(bh) / frame_h * sensor.1 as f64 / h,
+        )
+    });
+    Some(FocusFrame {
+        point: ((x / w).clamp(0.0, 1.0), (y / h).clamp(0.0, 1.0)),
+        box_size,
+    })
 }
 
 impl Renderer {
@@ -355,8 +387,17 @@ impl Job<'_> {
     ///
     /// The errors of [`Job::plan`].
     pub(super) fn focus_point(&mut self) -> Result<Option<(f64, f64)>, RenderError> {
+        Ok(self.focus_frame_of()?.map(|f| f.point))
+    }
+
+    /// [`Job::focus_point`] with the AF box ([`focus_frame`]).
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Job::plan`].
+    pub(super) fn focus_frame_of(&mut self) -> Result<Option<FocusFrame>, RenderError> {
         let raw_plan = self.plan()?;
-        Ok(focus_fraction(
+        Ok(focus_frame(
             self.src.raw.meta.focus,
             (raw_plan.width, raw_plan.height),
             raw_plan
@@ -1485,6 +1526,51 @@ mod tests {
         // A point outside the crop is held at its edge: the fractions stay inside the frame.
         let f = focus_fraction(focus([100, 100], [1, 99]), (1000, 800), Some(crop)).unwrap();
         assert_eq!(f, (0.0, 1.0));
+    }
+
+    #[test]
+    fn the_af_box_is_a_share_of_the_camera_frame_and_then_of_the_cropped_frame() {
+        let with_box = |frame, point, size| {
+            Some(SonyFocus {
+                frame,
+                point,
+                box_size: Some(size),
+            })
+        };
+        // No crop: the box is its share of the camera frame, whatever the sensor's size.
+        let f = focus_frame(
+            with_box([6000, 4000], [3000, 2000], [300, 200]),
+            (6048, 4024),
+            None,
+        )
+        .unwrap();
+        assert_eq!(f.point, (0.5, 0.5));
+        let (bw, bh) = f.box_size.expect("a box");
+        assert!(
+            (bw - 0.05).abs() < 1e-12 && (bh - 0.05).abs() < 1e-12,
+            "{bw} {bh}"
+        );
+        // R9's crop of 4000 x 3000 of a 6000 x 4000 sensor frame: the same box is a bigger share of what is left.
+        let crop = Rect::new(1000, 500, 4000, 3000);
+        let f = focus_frame(
+            with_box([6000, 4000], [3000, 2000], [300, 200]),
+            (6000, 4000),
+            Some(crop),
+        )
+        .unwrap();
+        assert_eq!(f.point, (0.5, 0.5));
+        let (bw, bh) = f.box_size.expect("a box");
+        assert!(
+            (bw - 0.075).abs() < 1e-12 && (bh - 200.0 / 3000.0).abs() < 1e-12,
+            "{bw} {bh}"
+        );
+        // The camera gave no box: none here (the Focus plane uses a default square).
+        assert_eq!(
+            focus_frame(focus([100, 100], [50, 50]), (100, 100), None)
+                .unwrap()
+                .box_size,
+            None
+        );
     }
 
     #[test]

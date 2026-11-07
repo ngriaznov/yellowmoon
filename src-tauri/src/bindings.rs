@@ -86,6 +86,7 @@ mod tests {
             "viewport_busy",
             "object_state",
             "vision_state",
+            "depth_state",
         ] {
             assert!(
                 bindings.contains(&format!("\"{event}\"")),

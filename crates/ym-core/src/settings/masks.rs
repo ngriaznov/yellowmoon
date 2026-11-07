@@ -1,4 +1,4 @@
-//! The masks of a corrector node (`docs/23-nodes.md` section 3.3): rows of nine kinds that add up
+//! The masks of a corrector node (`docs/23-nodes.md` section 3.3): rows of ten kinds that add up
 //! into the node's mask, their ranges, their checking and the row patches (`masks.edit`,
 //! `strokes_append`, `strokes_keep`).
 //!
@@ -44,11 +44,12 @@ pub enum MaskMode {
 }
 
 /// The kinds of mask row, as their JSON names.
-pub const MASK_KINDS: [&str; 9] = [
+pub const MASK_KINDS: [&str; 10] = [
     "object",
     "subject",
     "people",
     "background",
+    "depth",
     "linear",
     "radial",
     "brush",
@@ -69,6 +70,8 @@ pub enum MaskKind {
     People,
     /// The blur map's out-of-focus area.
     Background,
+    /// A band of near or far from the depth map.
+    Depth,
     /// A gradient across the photo.
     Linear,
     /// An oval with a soft edge.
@@ -83,11 +86,12 @@ pub enum MaskKind {
 
 impl MaskKind {
     /// Every kind in the order of the Add mask menu (Find, Shapes, Keys).
-    pub const ALL: [MaskKind; 9] = [
+    pub const ALL: [MaskKind; 10] = [
         MaskKind::Object,
         MaskKind::Subject,
         MaskKind::People,
         MaskKind::Background,
+        MaskKind::Depth,
         MaskKind::Linear,
         MaskKind::Radial,
         MaskKind::Brush,
@@ -103,6 +107,7 @@ impl MaskKind {
             MaskKind::Subject => "subject",
             MaskKind::People => "people",
             MaskKind::Background => "background",
+            MaskKind::Depth => "depth",
             MaskKind::Linear => "linear",
             MaskKind::Radial => "radial",
             MaskKind::Brush => "brush",
@@ -119,6 +124,7 @@ impl MaskKind {
             MaskShape::Subject(_) => MaskKind::Subject,
             MaskShape::People(_) => MaskKind::People,
             MaskShape::Background(_) => MaskKind::Background,
+            MaskShape::Depth(_) => MaskKind::Depth,
             MaskShape::Linear(_) => MaskKind::Linear,
             MaskShape::Radial(_) => MaskKind::Radial,
             MaskShape::Brush(_) => MaskKind::Brush,
@@ -129,21 +135,27 @@ impl MaskKind {
 }
 
 /// What a machine can make now (`docs/23` section 9, `mask_kinds`): whether the SAM weights are there and load
-/// (Object), and what the Vision probe said (Subject and People, `docs/23` section 3.10). The lists, the reasons and the
-/// sentences below are all functions of it.
+/// (Object), what the Vision probe said (Subject and People, `docs/23` section 3.10) and whether the depth weights are
+/// there and load (Depth, section 3.10a). The lists, the reasons and the sentences below are all functions of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaskSupport {
     /// The SAM weights are there and have not been found damaged (`ObjectModel::available`).
     pub object: bool,
     /// What each Vision request said when it was tried (`VisionMasks::support`).
     pub vision: VisionSupport,
+    /// The depth weights are there and have not been found damaged (`DepthModel::available`).
+    pub depth: bool,
 }
 
 impl MaskSupport {
-    /// A machine with these parts.
+    /// A machine with these parts, and no depth model ([`MaskSupport::with_depth`] adds it).
     #[must_use]
     pub const fn new(object: bool, vision: VisionSupport) -> Self {
-        Self { object, vision }
+        Self {
+            object,
+            vision,
+            depth: false,
+        }
     }
 
     /// A machine that has nothing beyond Yellowmoon's own code: no Object model, and no Vision code (`not_a_mac` off
@@ -157,6 +169,13 @@ impl MaskSupport {
     #[must_use]
     pub const fn with_object(mut self, object: bool) -> Self {
         self.object = object;
+        self
+    }
+
+    /// This machine with the depth weights said to be there or not.
+    #[must_use]
+    pub const fn with_depth(mut self, depth: bool) -> Self {
+        self.depth = depth;
         self
     }
 
@@ -174,6 +193,7 @@ impl MaskSupport {
             MaskKind::Object => self.object,
             MaskKind::Subject => self.vision.subject.is_supported(),
             MaskKind::People => self.vision.people.is_supported(),
+            MaskKind::Depth => self.depth,
             _ => true,
         }
     }
@@ -182,7 +202,7 @@ impl MaskSupport {
 /// The kinds of mask a machine can make with nothing but Yellowmoon's code, in the order of the Add mask menu: what
 /// [`mask_kinds_with`] gives for [`MaskSupport::bare`]. The shapes, Brush and the ranges that are built always are
 /// here, and so is Background (N-15: the blur map is made on the CPU from the photo itself, with the learned model or
-/// without it). **Object is not**: it needs the SAM weights (N-18). **Subject and People are not**: they need the
+/// without it). **Depth is not**: it needs the depth weights (D-04). **Object is not**: it needs the SAM weights (N-18). **Subject and People are not**: they need the
 /// Vision probe (N-19). What this machine can make is [`mask_kinds_with`] of its [`MaskSupport`]
 /// (`Core::mask_kinds`, `Renderer::mask_kinds`).
 #[must_use]
@@ -192,8 +212,8 @@ pub fn mask_kinds() -> Vec<MaskKind> {
 
 /// The kinds of mask this machine can make now (`docs/23` section 9, `mask_kinds`), in the order of the Add mask
 /// menu: what the menu lists, and what a photo may use without being refused. Object is the first where the SAM
-/// weights are there, then Subject and People where the Vision probe said yes, then Background and the shapes and
-/// ranges.
+/// weights are there, then Subject and People where the Vision probe said yes, then Background, Depth where the
+/// depth weights are there, and the shapes and ranges.
 #[must_use]
 pub fn mask_kinds_with(support: MaskSupport) -> Vec<MaskKind> {
     MaskKind::ALL
@@ -209,6 +229,10 @@ pub fn mask_kinds_with(support: MaskSupport) -> Vec<MaskKind> {
 pub enum MaskUnavailable {
     /// The SAM weights are missing or damaged (Object).
     WeightsMissing,
+    /// The depth weights are missing or damaged (Depth). Its wire name is `weights_missing`, like the SAM weights'; it is a
+    /// reason of its own so that `ym doctor` names the two files apart ("Object (the SAM weights are missing), Depth (the
+    /// depth weights are missing)").
+    DepthWeightsMissing,
     /// This is not a Mac (Subject and People).
     NotAMac,
     /// This Mac's macOS is older than the Vision requests need (Subject and People).
@@ -223,7 +247,7 @@ impl MaskUnavailable {
     #[must_use]
     pub fn wire(self) -> &'static str {
         match self {
-            Self::WeightsMissing => "weights_missing",
+            Self::WeightsMissing | Self::DepthWeightsMissing => "weights_missing",
             Self::NotAMac => "not_a_mac",
             Self::MacosTooOld => "macos_too_old",
             Self::NotSupported => "not_supported",
@@ -236,6 +260,7 @@ impl MaskUnavailable {
     pub fn doctor_text(self, plural: bool) -> &'static str {
         match (self, plural) {
             (Self::WeightsMissing, _) => "the SAM weights are missing",
+            (Self::DepthWeightsMissing, _) => "the depth weights are missing",
             (Self::NotAMac, true) => "this is not a Mac that supports them",
             (Self::NotAMac, false) => "this is not a Mac that supports it",
             (Self::MacosTooOld, true) => "this Mac's macOS is too old for them",
@@ -255,6 +280,7 @@ impl MaskKind {
             MaskKind::Subject => "Subject",
             MaskKind::People => "People",
             MaskKind::Background => "Background",
+            MaskKind::Depth => "Depth",
             MaskKind::Linear => "Linear",
             MaskKind::Radial => "Radial",
             MaskKind::Brush => "Brush",
@@ -293,6 +319,7 @@ pub fn mask_unavailable_with(support: MaskSupport) -> Vec<(MaskKind, MaskUnavail
                     .people
                     .reason()
                     .unwrap_or(MaskUnavailable::NotSupported),
+                MaskKind::Depth => MaskUnavailable::DepthWeightsMissing,
                 _ => MaskUnavailable::NotSupported,
             };
             (k, why)
@@ -304,6 +331,16 @@ pub fn mask_unavailable_with(support: MaskSupport) -> Vec<(MaskKind, MaskUnavail
 /// error): what went wrong and what to do.
 pub const NO_OBJECT_MODEL_SENTENCE: &str =
     "This copy of Yellowmoon has no Object model. Reinstall the app.";
+
+/// The sentence for a Depth row on a copy of Yellowmoon that has no depth model (`docs/23` section 3.10a, the `mask`
+/// error): what went wrong and what to do.
+pub const NO_DEPTH_MODEL_SENTENCE: &str =
+    "This copy of Yellowmoon has no Depth model. Reinstall the app.";
+
+/// The sentence a Depth row shows in the Mask tab on a copy of Yellowmoon that has no depth model (`docs/23` section
+/// 3.10a and 8): "Depth masks need the depth model. Reinstall the app."
+pub const DEPTH_ROW_NO_MODEL_SENTENCE: &str =
+    "Depth masks need the depth model. Reinstall the app.";
 
 /// The sentence a Subject or People row shows in the Mask tab on a computer that cannot make it (`docs/23` section
 /// 3.10 and 7.6): "Subject masks need a Mac that supports them". `None` for the other kinds.
@@ -341,6 +378,7 @@ pub fn unmakeable_mask_sentence_with(
         .find(|(k, _)| *k == kind)?;
     let (article, name) = match kind {
         MaskKind::Object => return Some(NO_OBJECT_MODEL_SENTENCE.to_owned()),
+        MaskKind::Depth => return Some(NO_DEPTH_MODEL_SENTENCE.to_owned()),
         MaskKind::Subject => ("a", "Subject"),
         MaskKind::People => ("a", "People"),
         MaskKind::Background => ("a", "Background"),
@@ -357,7 +395,7 @@ pub fn unmakeable_mask_sentence_with(
         MaskUnavailable::NotAMac | MaskUnavailable::MacosTooOld => format!(
             "Node {node} has {article} {name} mask, and this computer cannot make one. Use a Mac that supports {name} masks, or remove the mask."
         ),
-        MaskUnavailable::WeightsMissing => format!(
+        MaskUnavailable::WeightsMissing | MaskUnavailable::DepthWeightsMissing => format!(
             "Node {node} has {article} {name} mask, and the model weights are missing. Reinstall Yellowmoon, or remove the mask."
         ),
         MaskUnavailable::NotSupported => format!(
@@ -438,6 +476,40 @@ impl Default for BackgroundMask {
     fn default() -> Self {
         Self {
             level: 0.5,
+            softness: 0.5,
+            feather: 0.0,
+            grow: 0.0,
+            refine: 0.5,
+        }
+    }
+}
+
+/// A Depth mask: a band of the photo's depth order (`docs/23` section 4.8, `docs/algorithms/06` section 5.8).
+///
+/// `near` and `far` are places in the photo's depth order, not distances: 0 is the nearest part of the photo and 1 the
+/// farthest, so `near` 0 and `far` 0.35 is the nearest 35 % of the photo.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct DepthMask {
+    /// Where the band starts, 0 (the nearest part of the photo) to 1.
+    pub near: f64,
+    /// Where the band ends, 0 to 1. A `near` above `far` is read as both at their mean.
+    pub far: f64,
+    /// The width of the ramp at both ends of the band, 0 to 1.
+    pub softness: f64,
+    /// Feather, 0 to 1.
+    pub feather: f64,
+    /// Grow, -1 to 1.
+    pub grow: f64,
+    /// Refine edges, 0 to 1.
+    pub refine: f64,
+}
+
+impl Default for DepthMask {
+    fn default() -> Self {
+        Self {
+            near: 0.0,
+            far: 0.5,
             softness: 0.5,
             feather: 0.0,
             grow: 0.0,
@@ -607,6 +679,8 @@ pub enum MaskShape {
     People(FindMask),
     /// The blur map.
     Background(BackgroundMask),
+    /// A band of the depth map.
+    Depth(DepthMask),
     /// A line and a feather.
     Linear(LinearMask),
     /// An ellipse.
@@ -628,6 +702,7 @@ impl MaskShape {
             Self::Subject(_) => "subject",
             Self::People(_) => "people",
             Self::Background(_) => "background",
+            Self::Depth(_) => "depth",
             Self::Linear(_) => "linear",
             Self::Radial(_) => "radial",
             Self::Brush(_) => "brush",
@@ -644,6 +719,7 @@ impl MaskShape {
             Self::Subject(_) => "a Subject",
             Self::People(_) => "a People",
             Self::Background(_) => "a Background",
+            Self::Depth(_) => "a Depth",
             Self::Linear(_) => "a Linear",
             Self::Radial(_) => "a Radial",
             Self::Brush(_) => "a Brush",
@@ -660,6 +736,7 @@ impl MaskShape {
             "subject" => Self::Subject(FindMask::default()),
             "people" => Self::People(FindMask::default()),
             "background" => Self::Background(BackgroundMask::default()),
+            "depth" => Self::Depth(DepthMask::default()),
             "linear" => Self::Linear(LinearMask::default()),
             "radial" => Self::Radial(RadialMask::default()),
             "brush" => Self::Brush(BrushMask::default()),
@@ -677,6 +754,7 @@ impl MaskShape {
             Self::Object(_) => &["points", "box", "feather", "grow", "refine"],
             Self::Subject(_) | Self::People(_) => &["feather", "grow", "refine"],
             Self::Background(_) => &["level", "softness", "feather", "grow", "refine"],
+            Self::Depth(_) => &["near", "far", "softness", "feather", "grow", "refine"],
             Self::Linear(_) => &["center", "angle_deg", "feather"],
             Self::Radial(_) => &["center", "radii", "angle_deg", "feather"],
             Self::Brush(_) => &["strokes", "feather", "grow", "refine"],
@@ -695,6 +773,7 @@ impl MaskShape {
             "subject" => Self::Subject(serde_json::from_value(value).map_err(parse)?),
             "people" => Self::People(serde_json::from_value(value).map_err(parse)?),
             "background" => Self::Background(serde_json::from_value(value).map_err(parse)?),
+            "depth" => Self::Depth(serde_json::from_value(value).map_err(parse)?),
             "linear" => Self::Linear(serde_json::from_value(value).map_err(parse)?),
             "radial" => Self::Radial(serde_json::from_value(value).map_err(parse)?),
             "brush" => Self::Brush(serde_json::from_value(value).map_err(parse)?),
@@ -756,7 +835,7 @@ impl MaskItem {
     ///
     /// # Errors
     ///
-    /// [`SettingsError::Parse`] for a kind that is not one of the nine, a missing `kind`, a field
+    /// [`SettingsError::Parse`] for a kind that is not one of the ten, a missing `kind`, a field
     /// the kind does not have, or a value of the wrong type.
     pub fn from_map(mut map: Map<String, Value>) -> Result<Self, SettingsError> {
         let parse = |e: serde_json::Error| SettingsError::Parse(e.to_string());
@@ -764,7 +843,7 @@ impl MaskItem {
             Some(Value::String(k)) => k,
             _ => {
                 return Err(SettingsError::Parse(
-                    "a mask needs a `kind` (object, subject, people, background, linear, radial, brush, color_range or brightness_range)"
+                    "a mask needs a `kind` (object, subject, people, background, depth, linear, radial, brush, color_range or brightness_range)"
                         .to_owned(),
                 ));
             }
@@ -936,6 +1015,19 @@ impl MaskSettings {
                     changed.number(&p, "grow", &mut b.grow, GROW_RANGE)?;
                     changed.number(&p, "refine", &mut b.refine, UNIT_RANGE)?;
                 }
+                MaskShape::Depth(d) => {
+                    changed.number(&p, "near", &mut d.near, UNIT_RANGE)?;
+                    changed.number(&p, "far", &mut d.far, UNIT_RANGE)?;
+                    if d.near > d.far {
+                        // Read as both at their mean (`docs/23` section 4.8), as the Brightness range's low and high.
+                        let mean = (d.near + d.far) / 2.0;
+                        (d.near, d.far) = (mean, mean);
+                    }
+                    changed.number(&p, "softness", &mut d.softness, UNIT_RANGE)?;
+                    changed.number(&p, "feather", &mut d.feather, UNIT_RANGE)?;
+                    changed.number(&p, "grow", &mut d.grow, GROW_RANGE)?;
+                    changed.number(&p, "refine", &mut d.refine, UNIT_RANGE)?;
+                }
                 MaskShape::Linear(l) => {
                     changed.point(&p, "center", &mut l.center, UNIT_RANGE)?;
                     changed.number(&p, "angle_deg", &mut l.angle_deg, MASK_ANGLE_RANGE_DEG)?;
@@ -1051,7 +1143,13 @@ pub struct MaskRowPatch {
     /// A Background row's level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<f64>,
-    /// The softness of a Background, Colour range or Brightness range row.
+    /// A Depth row's `near`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub near: Option<f64>,
+    /// A Depth row's `far`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub far: Option<f64>,
+    /// The softness of a Background, Depth, Colour range or Brightness range row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub softness: Option<f64>,
     /// A Linear, Radial or Colour range row's centre.
@@ -1093,7 +1191,8 @@ impl MaskRowPatch {
         has!(
             kind => "kind", mode => "mode", invert => "invert", enabled => "enabled",
             opacity => "opacity", feather => "feather", grow => "grow", refine => "refine",
-            points => "points", box_ => "box", level => "level", softness => "softness",
+            points => "points", box_ => "box", level => "level", near => "near", far => "far",
+            softness => "softness",
             center => "center", angle_deg => "angle_deg", radii => "radii", strokes => "strokes",
             strokes_append => "strokes_append", strokes_keep => "strokes_keep", width => "width",
             low => "low", high => "high",
@@ -1172,6 +1271,14 @@ impl MaskRowPatch {
                 set!(b, feather);
                 set!(b, grow);
                 set!(b, refine);
+            }
+            MaskShape::Depth(d) => {
+                set!(d, near);
+                set!(d, far);
+                set!(d, softness);
+                set!(d, feather);
+                set!(d, grow);
+                set!(d, refine);
             }
             MaskShape::Linear(l) => {
                 set!(l, center);

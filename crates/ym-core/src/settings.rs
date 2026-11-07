@@ -90,10 +90,11 @@ pub use graph::{
     NodeRef, NodeTrim, OUTPUT_POS, OutputNode, POS_RANGE, Port, TRIM_EXPOSURE_RANGE_EV, TRIM_RANGE,
 };
 pub use masks::{
-    BackgroundMask, BrightnessRangeMask, BrushMask, BrushStroke, ColorRangeMask, FindMask,
-    LinearMask, MASK_KINDS, MAX_BRUSH_POINTS, MAX_MASKS_PER_NODE, MAX_OBJECT_POINTS, MaskItem,
-    MaskKind, MaskMode, MaskRowPatch, MaskSettings, MaskShape, MaskSupport, MaskUnavailable,
-    MasksPatch, NO_OBJECT_MODEL_SENTENCE, ObjectMask, RadialMask, mask_kinds, mask_kinds_with,
+    BackgroundMask, BrightnessRangeMask, BrushMask, BrushStroke, ColorRangeMask,
+    DEPTH_ROW_NO_MODEL_SENTENCE, DepthMask, FindMask, LinearMask, MASK_KINDS, MAX_BRUSH_POINTS,
+    MAX_MASKS_PER_NODE, MAX_OBJECT_POINTS, MaskItem, MaskKind, MaskMode, MaskRowPatch,
+    MaskSettings, MaskShape, MaskSupport, MaskUnavailable, MasksPatch, NO_DEPTH_MODEL_SENTENCE,
+    NO_OBJECT_MODEL_SENTENCE, ObjectMask, RadialMask, mask_kinds, mask_kinds_with,
     mask_unavailable, mask_unavailable_with, unmakeable_mask_sentence,
     unmakeable_mask_sentence_with, unsupported_row_sentence,
 };

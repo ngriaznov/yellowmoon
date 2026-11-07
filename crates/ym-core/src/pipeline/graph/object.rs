@@ -688,12 +688,16 @@ impl Job<'_> {
     ) -> Result<Option<Arc<ObjectPlanes>>, RenderError> {
         let objects = self.object_planes_for(settings, stop)?;
         let vision = self.vision_planes_for(settings, stop)?;
-        if vision.is_empty() {
+        let depth = self.depth_for(settings, stop)?;
+        if vision.is_empty() && depth.is_none() {
             return Ok(objects);
         }
         let mut merged = objects.map(|o| (*o).clone()).unwrap_or_default();
         for (kind, plane) in vision {
             merged.insert_vision(kind, plane);
+        }
+        if let Some(map) = depth {
+            merged.insert_depth(map);
         }
         Ok(Some(Arc::new(merged)))
     }

@@ -32,9 +32,11 @@ import type {
   CliLinkStatus,
   CropAspect,
   CropSuggestion,
+  DepthBand,
   ExportEstimate,
   ExportJob,
   ExportJobId,
+  FocusPlaneResult,
   HistogramData,
   LensInfo,
   FilmCatalogue,
@@ -204,6 +206,19 @@ export interface Api {
    * an Object row and a row with 256 points reject with the scope `mask`.
    */
   maskFind(photoId: PhotoId, node: number, mask: number, prompt: MaskFindPrompt): Promise<MaskFindResult>;
+  /**
+   * `sample_depth` (`docs/23` §9, Pick depth): the band around the depth under a click at `(x, y)` of the photo frame (shares of its width and height), as
+   * `{ near, far }` rounded to two decimals, or `null` when no depth map can be made. It changes no settings: the page writes the answer as one `masks.edit` row
+   * patch (`near`, `far`): one undo step. It waits for the depth map if the worker is still making it (the page shows the same "Finding…"). A model that is
+   * missing rejects with the scope `mask`.
+   */
+  sampleDepth(photoId: PhotoId, x: number, y: number): Promise<DepthBand | null>;
+  /**
+   * `focus_plane` (`docs/23` §9, Focus plane): the band around the plane the camera focused on, from the maker note's focus point and the median depth in its
+   * box; without a band, `near` and `far` are `null` and `reason` says why (`no_focus_point` is answered at once). It changes no settings: the page writes a band
+   * as one `masks.edit` row patch. A model that is missing rejects with the scope `mask`.
+   */
+  focusPlane(photoId: PhotoId): Promise<FocusPlaneResult>;
 
   // --- Lens ----------------------------------------------------------------
 
@@ -405,6 +420,8 @@ export const tauriApi: Api = {
   viewportMapPoints: (points, from) => commands.viewportMapPoints(points, from),
   maskKinds: () => commands.maskKinds(),
   maskFind: (photoId, node, mask, prompt) => commands.maskFind(photoId, node, mask, prompt),
+  sampleDepth: (photoId, x, y) => commands.sampleDepth(photoId, x, y),
+  focusPlane: (photoId) => commands.focusPlane(photoId),
 
   lensList: () => commands.lensList(),
   looksList: () => commands.looksList(),

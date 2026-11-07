@@ -29,6 +29,7 @@ pub mod logc;
 pub mod look;
 pub mod lut;
 pub mod mask;
+pub mod mask_depth;
 pub mod mask_raster;
 pub mod plan;
 pub mod schedule;

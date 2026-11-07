@@ -818,6 +818,8 @@ impl Renderer {
             self.object_leave(old);
             // So does the worker of the Subject and People masks.
             self.vision_leave(old);
+            // And the depth worker.
+            self.depth_leave(old);
         }
         self.scheduler().navigate(photo)
     }

@@ -63,6 +63,9 @@ export type FromCore = AllTrue<{
   viewportBusy: Assignable<B.ViewportBusy, T.ViewportBusy>;
   objectState: Assignable<B.ObjectState, T.ObjectState>;
   visionState: Assignable<B.VisionState, T.VisionState>;
+  depthState: Assignable<B.DepthState, T.DepthState>;
+  depthBand: Assignable<B.DepthBand, T.DepthBand>;
+  focusPlaneResult: Assignable<B.FocusPlaneResult, T.FocusPlaneResult>;
   maskFindResult: Assignable<B.MaskFindResult, T.MaskFindResult>;
   appError: Assignable<B.AppError, T.AppError>;
   menuAction: Assignable<B.MenuAction, T.MenuAction>;
@@ -101,6 +104,7 @@ export type Both = AllTrue<{
   viewportMode: Same<T.ViewportMode, B.ViewportMode>;
   maskStyle: Same<T.MaskStyle, B.MaskStyle>;
   maskKind: Same<T.MaskKind, B.MaskKind>;
+  focusReason: Same<T.FocusReason, B.FocusReason>;
   maskFindPrompt: Same<T.MaskFindPrompt, B.MaskFindPrompt>;
   mapFrom: Same<T.MapFrom, B.MapFrom>;
   chromaTap: Same<T.ChromaTap, B.ChromaTap>;

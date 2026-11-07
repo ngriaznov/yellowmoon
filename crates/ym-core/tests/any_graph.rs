@@ -31,6 +31,7 @@ use ym_core::pipeline::{
     ComputeDevice, FrameOptions, MaskStyle, MaskView, NeutralOnly, PhotoSource, RenderOptions,
     RenderedFrame, Renderer, ViewportMode, ViewportRect, ViewportState,
 };
+use ym_core::pipeline::{DepthModel, has_depth_row};
 use ym_core::settings::{DevelopSettings, MaskKind, NodeKind};
 use ym_core::vision::{FakeVision, VisionMasks};
 use ym_export::{BitDepth, ColorSpace, ExportOptions, FormatKind, IfExists};
@@ -101,6 +102,8 @@ fn renderer_with(gpu: Option<Arc<Gpu>>, tile: usize, view_band_bytes: u64) -> Re
             gpu_stages: stages,
             full_tile_px: tile,
             vision: Some(VisionMasks::new(Arc::new(FakeVision::new()))),
+            // Depth is drawn like the other kinds: a fake model makes its map without the weights (D-04).
+            depth_model: Some(DepthModel::fake_default()),
             data_root: Some(data_root()),
             view_band_bytes,
             ..RenderOptions::default()
@@ -125,6 +128,25 @@ fn generated_masks() -> Vec<MaskKind> {
         .collect()
 }
 
+/// Asks for every view of the states once (a Show mask view of a node the Output does not need asks for its own map), then
+/// waits for the depth worker of the photo to end: the frames that follow have the photo's depth map on every renderer.
+fn settle_depth(r: &Renderer, src: &PhotoSource, states: &[(String, ViewportState)]) {
+    if !has_depth_row(&src.settings) {
+        return;
+    }
+    for (_, st) in states {
+        let _ = frame(r, src, st);
+    }
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while r.depth_worker_alive(src.id) {
+        assert!(
+            std::time::Instant::now() < end,
+            "the depth worker did not end"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 fn row_json(kind: MaskKind, rng: &mut SplitMix64) -> Value {
     let f =
         |rng: &mut SplitMix64, lo: f64, hi: f64| lo + (hi - lo) * (rng.below(1000) as f64 / 999.0);
@@ -133,6 +155,8 @@ fn row_json(kind: MaskKind, rng: &mut SplitMix64) -> Value {
             "points": [[f(rng, 0.2, 0.5), f(rng, 0.3, 0.6)], [f(rng, 0.5, 0.8), f(rng, 0.4, 0.7)]] }],
             "feather": f(rng, 0.0, 0.6), "refine": f(rng, 0.0, 1.0) }),
         MaskKind::Background => json!({ "feather": f(rng, 0.0, 0.6), "refine": f(rng, 0.0, 1.0) }),
+        MaskKind::Depth => json!({ "near": f(rng, 0.0, 0.3), "far": f(rng, 0.5, 1.0),
+            "softness": f(rng, 0.0, 1.0), "feather": f(rng, 0.0, 0.6), "refine": f(rng, 0.0, 1.0) }),
         MaskKind::Subject | MaskKind::People => {
             json!({ "grow": f(rng, -0.3, 0.3), "refine": f(rng, 0.0, 1.0) })
         }
@@ -591,8 +615,13 @@ fn no_generated_graph_is_refused_by_the_device() {
                 ));
             }
         }
-        // The first frame of a Background row makes its blur map; the frames compared are the ones after it.
+        // The first frame of a Background row makes its blur map; the frames compared are the ones after it. A Depth row's map
+        // is made by the background worker: every view is asked for once and the worker is waited for, on each renderer.
         let _ = frame(&device, &src, &states[0].1);
+        settle_depth(&device, &src, &states);
+        if g.compare && has_depth_row(&src.settings) {
+            settle_depth(&cpu, &src, &states);
+        }
         for (what, st) in &states {
             let at = format!("{name}: {what}");
             let got = frame(&device, &src, st);

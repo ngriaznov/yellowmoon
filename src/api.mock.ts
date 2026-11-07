@@ -62,11 +62,13 @@ import type {
   ColorBalancePoint,
   CropAspect,
   CropSuggestion,
+  DepthBand,
   DevelopSettings,
   DownloadFound,
   ExportEstimate,
   ExportJob,
   ExportJobId,
+  FocusPlaneResult,
   ExportOptions,
   GradeValues,
   HistogramData,
@@ -133,7 +135,7 @@ import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
 import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cropMath";
 import { copiedPatch, pastedOnto, refusalOfPatch, validateGraph } from "./fixtures/graph";
-import { hasBackgroundRow, hasObjectRow, maskViewSvg, masksOfView, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
+import { hasBackgroundRow, hasObjectRow, maskViewSvg, masksOfView, SCENES_WITH_PEOPLE, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
 import { diffSettings } from "./state/history";
 import { cardStates, linkInto } from "./state/graphOps";
 import {
@@ -186,6 +188,8 @@ export const ENCODER_MS = 900;
 export const FIND_MS = 120;
 /** How long the mock's Vision takes to make a photo's Subject and People masks, in the background (divided by `speed`): long enough for "Finding…" to show. */
 export const VISION_MS = 500;
+/** How long the mock takes to make a photo's depth map in the background (divided by `speed`): long enough for "Finding…" to show. */
+export const DEPTH_MS = 500;
 /** What the decoder's time reads in the mock's "Object found" pill: 0.4 s. */
 export const FOUND_MS = 412;
 
@@ -957,12 +961,35 @@ function withoutRetired(stored: Preferences): Preferences {
   return rest;
 }
 
+/** Whether the photo's graph has a Depth row with the eye on: the mock then "makes" the photo's depth map in the background. */
+const hasDepthRow = (settings: DevelopSettings): boolean =>
+  settings.nodes.items.some((node) => (node.kind === "corrector" || node.kind === "film") && node.masks.items.some((row) => row.kind === "depth" && row.enabled));
+
+/** The depth positions the mock's depth map gives the flat scenes' areas (`docs/algorithms/06` §5.8: 0 is the nearest part of the photo): the near ground, the far hill and the sky. */
+const DEPTH_RANKS = { near: 0.15, far: 0.7, sky: 0.95 } as const;
+
+/** The depth position of the point `(x, y)` of a flat scene: the near ground is near, the far hill far and the sky and the sun farthest. */
+function depthRankIn(scene: Scene, x: number, y: number): number {
+  const layer = layerAt(scene, x, y);
+  return layer === "near" ? DEPTH_RANKS.near : layer === "far" ? DEPTH_RANKS.far : DEPTH_RANKS.sky;
+}
+
+/** Pick depth's band around a depth position (`docs/algorithms/06` §5.8, step 4): 0.2 wide, moved to lie inside 0 to 1, two decimals. */
+function pickDepthBand(z: number): DepthBand {
+  let near = z - 0.1;
+  let far = z + 0.1;
+  if (near < 0) [near, far] = [0, far - near];
+  if (far > 1) [near, far] = [near - (far - 1), 1];
+  const two = (v: number): number => Math.round(clamp(v, 0, 1) * 100) / 100;
+  return { near: two(near), far: two(far) };
+}
+
 /** Every kind of mask, in the order of the Add mask menu. */
-export const ALL_MASK_KINDS: readonly MaskKind[] = ["object", "subject", "people", "background", "linear", "radial", "brush", "color_range", "brightness_range"];
+export const ALL_MASK_KINDS: readonly MaskKind[] = ["object", "subject", "people", "background", "depth", "linear", "radial", "brush", "color_range", "brightness_range"];
 /** The kinds the core can make: Object (where the SAM weights are), Subject and People (where this Mac supports them), Background, the shapes, Brush and the ranges: every kind. */
 export const BUILT_MASK_KINDS: readonly MaskKind[] = ALL_MASK_KINDS;
 
-/** The kinds a `?mockMasks=` value names: `all`, `noai`, `nomac`, `built`, or a comma list of kinds; null for anything else. */
+/** The kinds a `?mockMasks=` value names: `all`, `noai`, `nomac`, `nodepth`, `built`, or a comma list of kinds; null for anything else. */
 export function parseMockMasks(value: string | null): readonly MaskKind[] | null {
   if (value === null) return null;
   const without = (...left: MaskKind[]): MaskKind[] => ALL_MASK_KINDS.filter((k) => !left.includes(k));
@@ -971,9 +998,12 @@ export function parseMockMasks(value: string | null): readonly MaskKind[] | null
       return ALL_MASK_KINDS;
     case "noai":
       // Background needs no download and no Mac: the blur map comes from the photo (`docs/23` §4.6).
-      return without("object", "subject", "people");
+      return without("object", "subject", "people", "depth");
     case "nomac":
       return without("subject", "people");
+    case "nodepth":
+      // The depth weights are missing (`docs/23` §3.10a): Depth is not offered.
+      return without("depth");
     case "built":
       return BUILT_MASK_KINDS;
     default: {
@@ -1568,6 +1598,11 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   /** The Subject and People masks the mock's Vision has made for each photo (`vision_state` says so once for each kind and photo), and the photos it is making them for. */
   const visionReady = new Map<PhotoId, Set<string>>();
   const visionTimers = new Map<PhotoId, ReturnType<typeof setTimeout>>();
+  /** The photos whose depth map the mock has "made" (`depth_state` says so once for each photo), and the photos it is making it for. */
+  const depthReady = new Set<PhotoId>();
+  const depthTimers = new Map<PhotoId, ReturnType<typeof setTimeout>>();
+  /** What waits for a photo's depth map (`sample_depth`). */
+  const depthWaiting = new Map<PhotoId, Array<() => void>>();
   /** The photos whose Object features the mock has "made" (`object_state` says "preparing" for a moment, once for each photo). */
   const objectReady = new Set<PhotoId>();
   /** The encoder of the photos that are getting ready: when it ends, and what waits for it (`mask_find`). */
@@ -1755,6 +1790,34 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     );
   }
 
+  /**
+   * The core makes the depth map of the photo being looked at in the background as soon as a Depth row exists (`docs/23` §4.8): the viewport is busy and
+   * `finding` for `DEPTH_MS / speed` (a viewer never waits: the row selects nothing meanwhile), then `depth_state` says the map is ready (`failed: null`) and
+   * the photo is drawn again. Once for each photo; nothing where `mask_kinds` leaves Depth out (the weights are missing).
+   */
+  function prepareDepth(rec: PhotoRecord): void {
+    const id = rec.summary.id;
+    if (!options.maskKinds.includes("depth") || !hasDepthRow(rec.settings) || depthReady.has(id) || depthTimers.has(id)) return;
+    emitSoon("viewport_busy", { busy: true, cpu: options.cpu, finding: true });
+    depthTimers.set(
+      id,
+      setTimeout(() => {
+        depthTimers.delete(id);
+        depthReady.add(id);
+        for (const wake of depthWaiting.get(id)?.splice(0) ?? []) wake();
+        emit("viewport_busy", { busy: false, cpu: options.cpu, finding: false });
+        emit("depth_state", { photo_id: id, failed: null });
+        sendFrame();
+      }, DEPTH_MS / options.speed),
+    );
+  }
+
+  /** Resolves when the photo's depth map is made (at once when it is not being made). */
+  function depthDone(id: PhotoId): Promise<void> {
+    if (!depthTimers.has(id)) return Promise.resolve();
+    return new Promise((resolve) => depthWaiting.set(id, [...(depthWaiting.get(id) ?? []), resolve]));
+  }
+
   /** Resolves when the photo's encoder is done (at once when it is not running). */
   function encoderDone(id: PhotoId): Promise<void> {
     const entry = objectEncoders.get(id);
@@ -1772,6 +1835,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     if (!rec || rec.phase < 3 || rec.skipReason) return;
     prepareObject(rec);
     prepareVision(rec);
+    prepareDepth(rec);
     const id = rec.summary.id;
     const finding = !blurMaps.has(id) && hasBackgroundRow(rec.settings);
     if (finding) blurMaps.add(id);
@@ -1786,7 +1850,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     cpuFrameTimer = setTimeout(() => {
       cpuFrameTimer = null;
       // The core's Subject and People worker goes on after the round that asked for the masks: the viewport stays finding until it ends.
-      const masks = visionTimers.size > 0;
+      const masks = visionTimers.size > 0 || depthTimers.size > 0;
       emit("viewport_busy", { busy: masks, cpu, finding: masks });
     }, ms / options.speed);
   }
@@ -2593,6 +2657,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     visionReady.clear();
     for (const timer of visionTimers.values()) clearTimeout(timer);
     visionTimers.clear();
+    depthReady.clear();
+    for (const timer of depthTimers.values()) clearTimeout(timer);
+    depthTimers.clear();
+    depthWaiting.clear();
     objectReady.clear();
     for (const entry of objectEncoders.values()) clearTimeout(entry.timer);
     objectEncoders.clear();
@@ -2976,6 +3044,26 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         const box: [number, number, number, number] = [round(Math.min(prompt.x0, prompt.x1)), round(Math.min(prompt.y0, prompt.y1)), round(Math.max(prompt.x0, prompt.x1)), round(Math.max(prompt.y0, prompt.y1))];
         if (!onHill((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)) return { kind: "nothing" };
         return { kind: "found", points: row.points.map((p) => [...p]), box, took_ms: FOUND_MS };
+      }),
+
+    sampleDepth: (photoId, x, y) =>
+      runAsync("sampleDepth", async (): Promise<DepthBand | null> => {
+        if (!options.maskKinds.includes("depth")) fail("mask", "This copy of Yellowmoon has no Depth model. Reinstall the app.");
+        if (!Number.isFinite(x) || !Number.isFinite(y)) fail("mask", "That click is not on the photo. Click the photo again.");
+        const rec = photo(photoId);
+        // The click waits for the depth map if it is still being made, then reads the ranks of the scene's areas.
+        await depthDone(photoId);
+        depthReady.add(photoId);
+        return pickDepthBand(depthRankIn(rec.scene, clamp(x, 0, 1), clamp(y, 0, 1)));
+      }),
+    focusPlane: (photoId) =>
+      run("focusPlane", (): FocusPlaneResult => {
+        if (!options.maskKinds.includes("depth")) fail("mask", "This copy of Yellowmoon has no Depth model. Reinstall the app.");
+        const rec = photo(photoId);
+        // Some scenes have a focus point on the near ground (the scenes with a person), the others none (an older body).
+        if (!SCENES_WITH_PEOPLE.has(rec.scene.name)) return { near: null, far: null, exact_centre: false, reason: "no_focus_point" };
+        const band = pickDepthBand(DEPTH_RANKS.near);
+        return { near: band.near, far: band.far, exact_centre: false, reason: null };
       }),
 
     lensList: () => run("lensList", () => (options.lensesMissing ? [] : MOCK_LENSES.map((lens) => ({ ...lens })))),

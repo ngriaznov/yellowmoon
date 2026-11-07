@@ -83,6 +83,15 @@ impl Vision {
     }
 }
 
+/// Where the Depth mask's map comes from on both sides (D-04).
+#[derive(Clone, Copy, PartialEq)]
+enum Depth {
+    /// No depth model on either side beyond what the data folder holds (the other legs).
+    Data,
+    /// The deterministic fake: `DepthModel::fake_default()` for the app, `YELLOWMOON_TEST_DEPTH=fake` for the binary.
+    Fake,
+}
+
 /// The app's side: a core over its own app folder with one photo open.
 struct App {
     core: Core,
@@ -145,18 +154,6 @@ impl App {
         Self::open_full_in(&data_dir(), files, method, slot, auto)
     }
 
-    /// The app of a leg with Subject and People made by `vision` (the GPU leg's device, when it has one, attached).
-    fn open_with_vision(files: &[&Path], slot: Option<GpuSlot>, vision: Vision) -> Self {
-        Self::open_complete(
-            &data_dir(),
-            files,
-            DEFAULT_METHOD,
-            slot,
-            Auto::None,
-            Some(vision),
-        )
-    }
-
     fn open_full_in(
         data: &Path,
         files: &[&Path],
@@ -164,7 +161,7 @@ impl App {
         slot: Option<GpuSlot>,
         auto: Auto,
     ) -> Self {
-        Self::open_complete(data, files, method, slot, auto, None)
+        Self::open_complete(data, files, method, slot, auto, None, Depth::Data)
     }
 
     fn open_complete(
@@ -174,6 +171,7 @@ impl App {
         slot: Option<GpuSlot>,
         auto: Auto,
         vision: Option<Vision>,
+        depth: Depth,
     ) -> Self {
         let home = tempfile::tempdir().expect("tempdir");
         let mut options = CoreOptions::new(data.to_path_buf(), home.path().to_path_buf());
@@ -181,6 +179,8 @@ impl App {
         options.thumbnails = false;
         options.render.demosaic = method;
         options.render.vision = vision.map(|v| ym_core::vision::VisionMasks::new(v.provider()));
+        options.render.depth_model =
+            (depth == Depth::Fake).then(ym_core::pipeline::DepthModel::fake_default);
         match auto {
             Auto::None => {}
             Auto::AppleFake => {
@@ -956,12 +956,25 @@ fn graph_leg_with(
     device: bool,
     check: impl FnOnce(&App),
 ) {
-    graph_leg_full(what, doc, correctors, device, None, true, check);
+    graph_leg_full(
+        what,
+        doc,
+        correctors,
+        device,
+        None,
+        true,
+        Depth::Data,
+        check,
+    );
 }
 
 /// [`graph_leg_with`] with Subject and People made by `vision` on both sides (`None`: neither side can make them), and
 /// `acts` saying whether the masks must change a pixel: a leg that asks this computer's own Vision about a synthetic gradient
 /// may be told "nothing found", which is the same file as no row.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one leg: the graph, its size, the device, the masks' sources and what to check"
+)]
 fn graph_leg_full(
     what: &str,
     doc: serde_json::Value,
@@ -969,11 +982,12 @@ fn graph_leg_full(
     device: bool,
     vision: Option<Vision>,
     acts: bool,
+    depth: Depth,
     check: impl FnOnce(&App),
 ) {
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");
-    let app = if device {
+    let slot = if device {
         let slot = open_gpu(GpuPolicy::On, MemoryBudget::detect());
         if slot.gpu().is_none() {
             assert!(
@@ -984,16 +998,19 @@ fn graph_leg_full(
             eprintln!("\n* GPU LEG SKIPPED in parity: no adapter\n");
             return;
         }
-        match vision {
-            Some(v) => App::open_with_vision(&[&arw], Some(slot), v),
-            None => App::open_on(&[&arw], DEFAULT_METHOD, Some(slot)),
-        }
+        Some(slot)
     } else {
-        match vision {
-            Some(v) => App::open_with_vision(&[&arw], None, v),
-            None => App::open(&[&arw]),
-        }
+        None
     };
+    let app = App::open_complete(
+        &data_dir(),
+        &[&arw],
+        DEFAULT_METHOD,
+        slot,
+        Auto::None,
+        vision,
+        depth,
+    );
     let (settings, clamped) =
         DevelopSettings::from_value(doc.clone(), &app.core.looks.effective_default())
             .expect("settings");
@@ -1010,6 +1027,9 @@ fn graph_leg_full(
     }
     if let Some(v) = vision {
         env_pairs.push(v.env());
+    }
+    if depth == Depth::Fake {
+        env_pairs.push(common::FAKE_DEPTH);
     }
     let env: &[(&str, &str)] = &env_pairs;
     let default_graph = app.export(
@@ -1355,6 +1375,7 @@ fn subject_and_people_masks_are_the_same_files_through_the_app_path_and_the_bina
         false,
         Some(Vision::Fake),
         true,
+        Depth::Data,
         |_| {},
     );
 }
@@ -1369,6 +1390,105 @@ fn subject_and_people_masks_are_the_same_files_through_the_app_path_and_the_bina
         true,
         Some(Vision::Fake),
         true,
+        Depth::Data,
+        |_| {},
+    );
+}
+
+/// Whether this machine has the depth weights (`data/models/depth`, `tools/fetch/depth.sh`): the legs that run the real network need
+/// them and say so and pass without them, unless `YM_REQUIRE_DEPTH` makes that a failure (CI's other jobs fetch none).
+fn depth_weights() -> bool {
+    let there = ym_core::pipeline::DepthModel::probe(&data_dir())
+        .is_some_and(|m| m.checked_sha256().is_some());
+    if !there {
+        assert!(
+            std::env::var_os("YM_REQUIRE_DEPTH").is_none(),
+            "YM_REQUIRE_DEPTH is set and data/models/depth is missing"
+        );
+        eprintln!("\n* DEPTH LEG SKIPPED in parity: no depth weights (tools/fetch/depth.sh)\n");
+    }
+    there
+}
+
+/// Two Depth rows, the second taken away from the first with Grow and Feather, and a Depth row with Invert on another node: the rows
+/// of the Depth legs.
+fn depth_doc() -> serde_json::Value {
+    let picture = |from: serde_json::Value, to: serde_json::Value| {
+        serde_json::json!({
+            "from": { "node": from, "port": "picture" },
+            "to": { "node": to, "port": "picture" }
+        })
+    };
+    serde_json::json!({ "nodes": {
+        "items": [
+            { "id": 2, "kind": "corrector", "pos": [1, 0], "trim": { "exposure_ev": 1.0 },
+              "masks": { "invert": false, "items": [
+                  { "kind": "depth", "mode": "add", "near": 0, "far": 0.6, "softness": 0.3,
+                    "feather": 0.2, "refine": 0.5 },
+                  { "kind": "depth", "mode": "subtract", "near": 0.2, "far": 0.3, "softness": 0.1, "grow": 0.1 }
+              ] } },
+            { "id": 3, "kind": "corrector", "pos": [2, 0], "trim": { "exposure_ev": -0.8 },
+              "masks": { "invert": false, "items": [
+                  { "kind": "depth", "mode": "add", "invert": true, "near": 0.4, "far": 1, "opacity": 0.8 }
+              ] } }
+        ],
+        "links": [
+            picture("input".into(), 1.into()),
+            picture(1.into(), 2.into()),
+            picture(2.into(), 3.into()),
+            picture(3.into(), "output".into())
+        ]
+    } })
+}
+
+/// Depth masks (D-04) with the deterministic fake model on both sides (`DepthModel::fake_default` for the app, `YELLOWMOON_TEST_DEPTH=fake`
+/// for the binary): the same files in JPEG, 16-bit TIFF and DNG, the rows change pixels, and the app, which makes its own map at export
+/// time as `ym` does (from the CPU reference picture, whatever the viewer's device made), agrees with it. The CPU leg; runs on every
+/// platform.
+#[test]
+fn depth_masks_are_the_same_files_through_the_app_path_and_the_binary() {
+    graph_leg_full(
+        "depth",
+        depth_doc(),
+        3,
+        false,
+        None,
+        true,
+        Depth::Fake,
+        |_| {},
+    );
+}
+
+/// The device leg of the Depth masks: the colour pass and the raster pass run on the device, the map is the CPU's.
+#[test]
+fn depth_masks_are_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
+    graph_leg_full(
+        "depth",
+        depth_doc(),
+        3,
+        true,
+        None,
+        true,
+        Depth::Fake,
+        |_| {},
+    );
+}
+
+/// The real network on both sides, where the weights are (`data/models/depth`): the app and `ym` run Depth Anything V2-Small on the same
+/// picture and write the same files. Says so plainly and passes without the weights (`YM_REQUIRE_DEPTH=1` makes that a failure).
+#[test]
+fn depth_masks_are_the_same_files_through_the_app_path_and_the_binary_with_the_real_weights() {
+    if !depth_weights() {
+        return;
+    }
+    graph_leg_full(
+        "depth, the real network",
+        depth_doc(),
+        3,
+        false,
+        None,
+        true,
+        Depth::Data,
         |_| {},
     );
 }
@@ -1399,6 +1519,7 @@ fn subject_and_people_masks_are_the_same_files_through_the_app_path_and_the_bina
         false,
         Some(Vision::System),
         false,
+        Depth::Data,
         |_| {},
     );
 }

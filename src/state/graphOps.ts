@@ -647,6 +647,7 @@ export const MASK_KIND_NAME: Readonly<Record<string, string>> = {
   subject: "Subject",
   people: "People",
   background: "Background",
+  depth: "Depth",
   linear: "Linear",
   radial: "Radial",
   brush: "Brush",

@@ -73,11 +73,13 @@ use ym_color::display::OutputTarget;
 use ym_color::plan::Stop as PlanStop;
 
 mod background;
+mod depth;
 mod lens;
 mod lens_device;
 mod object;
 mod vision;
 
+pub use depth::DepthKey;
 pub(crate) use object::plane_text;
 
 /// The note of a render whose demosaic method is not the adaptive ratio (the test-only switch of
@@ -214,6 +216,11 @@ pub struct RenderOptions {
     /// (`None`: the weights are missing, or the renderer was made without a core) an Object row selects nothing in a view
     /// and fails an export with the `mask` error.
     pub object_model: Option<Arc<crate::pipeline::object::ObjectModel>>,
+    /// Depth Anything V2-Small (`data/models/depth`, `docs/23` section 4.8), found by [`crate::app::Core::open`] (it reads
+    /// nothing until a Depth mask needs it), or a fake in the tests ([`crate::pipeline::DepthModel::fake`]). With it Depth is
+    /// a kind this machine can make and a Depth row gets its mask; without it (`None`: the weights are missing, or the
+    /// renderer was made without a core) a Depth row selects nothing in a view and fails an export with the `mask` error.
+    pub depth_model: Option<Arc<crate::pipeline::depth::DepthModel>>,
     /// The computer's Vision framework for the Subject and People masks (`docs/23` section 4.5) and what its probe said
     /// (`ym-apple`'s `system_vision()`, handed over by the app and `ym`). With it Subject and People are kinds this
     /// computer can make where the probe says yes; without it (`None`: a caller that has none, as the tests, the golden
@@ -359,6 +366,7 @@ impl Default for RenderOptions {
             lens: None,
             bokeh_model: None,
             object_model: None,
+            depth_model: None,
             vision: None,
             data_root: None,
             gpu: None,
@@ -699,6 +707,8 @@ pub struct PhotoGraph {
     object: object::ObjectSlot,
     /// The photo's Subject and People masks and the worker's state (`vision::VisionSlot`).
     vision: vision::VisionSlot,
+    /// The photo's depth map and the worker's state (`depth::DepthSlot`).
+    depth: depth::DepthSlot,
     /// Exports that are rendering the photo: while there is one, the raw words stay on the device
     /// whatever else the renderer uploads (an export asks for them at every tile).
     pins: AtomicU32,
@@ -742,6 +752,7 @@ impl PhotoGraph {
             blur_gate: Mutex::new(()),
             object: object::ObjectSlot::default(),
             vision: vision::VisionSlot::default(),
+            depth: depth::DepthSlot::default(),
             pins: AtomicU32::new(0),
         }
     }
@@ -797,6 +808,7 @@ impl PhotoGraph {
             + st.blur.as_ref().map_or(0, |e| e.bytes())
             + self.object.bytes()
             + self.vision.bytes()
+            + self.depth.bytes()
             + st.lens_groups.as_ref().map_or(0, ByteLru::used)
             + st.lens_tiles.as_ref().map_or(0, ByteLru::used)
             + st.lens_field_groups.as_ref().map_or(0, ByteLru::used)
@@ -1058,6 +1070,8 @@ struct Inner {
     /// Who hears when the Subject and People worker starts or ends its work for a photo
     /// (`Renderer::set_vision_listener`).
     vision_listener: Mutex<Option<vision::VisionListener>>,
+    /// Who hears when the depth worker starts or ends its work for a photo (`Renderer::set_depth_listener`).
+    depth_listener: Mutex<Option<depth::DepthListener>>,
 }
 
 /// Who hears when the Object encoder starts or stops working for a photo ([`Renderer::set_object_listener`]).
@@ -1168,6 +1182,7 @@ impl Renderer {
                 object_picture: Mutex::new(None),
                 object_pictures_made: AtomicU64::new(0),
                 vision_listener: Mutex::new(None),
+                depth_listener: Mutex::new(None),
             }),
         })
     }
@@ -1404,7 +1419,8 @@ impl Renderer {
 
     /// Whether the core is making a raster mask of these settings for the first time (`docs/23` section 7.6): the
     /// photo's first blur map for a Background row with the eye on (made by the round that starts now), or the Subject
-    /// and People masks that the background worker is making for a row with the eye on (`viewport_busy.finding`).
+    /// and People masks or the depth map that the background workers are making for a row with the eye on
+    /// (`viewport_busy.finding`).
     /// The app says "Finding…" under the rows meanwhile. Asking makes no graph and changes nothing.
     #[must_use]
     pub fn finding_masks(&self, id: PhotoId, settings: &crate::settings::DevelopSettings) -> bool {
@@ -1414,6 +1430,7 @@ impl Renderer {
                 .is_none_or(|g| lock(&g.state).blur.is_none()))
             || (!crate::pipeline::color::vision_kinds(settings).is_empty()
                 && self.vision_working(id))
+            || (crate::pipeline::color::has_depth_row(settings) && self.depth_working(id))
     }
 
     /// The graph of a photo, made on first use. The least recently used graphs beyond
@@ -2017,6 +2034,8 @@ pub(crate) struct Job<'a> {
     object: object::JobObjects,
     /// What this request found out about the photo's Subject and People rows (`vision::JobVision`).
     vision: vision::JobVision,
+    /// What this request found out about the photo's Depth rows (`depth::JobDepth`).
+    depth: depth::JobDepth,
 }
 
 impl Drop for Job<'_> {
@@ -2097,6 +2116,7 @@ impl<'a> Job<'a> {
             mask: None,
             object: object::JobObjects::default(),
             vision: vision::JobVision::default(),
+            depth: depth::JobDepth::default(),
         }
     }
 

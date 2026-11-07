@@ -995,6 +995,29 @@ pub enum MaskItem {
         /// Refine edges, 0 to 1.
         refine: Num,
     },
+    /// A band of the depth map (`docs/23` section 4.8).
+    Depth {
+        /// Add or subtract.
+        mode: MaskMode,
+        /// This mask alone is inverted.
+        invert: bool,
+        /// Off (the eye) counts as absent.
+        enabled: bool,
+        /// 0 to 1.
+        opacity: Num,
+        /// Where the band starts in the photo's depth order, 0 (the nearest part of the photo) to 1.
+        near: Num,
+        /// Where the band ends, 0 to 1. A `near` above `far` is read as both at their mean.
+        far: Num,
+        /// The width of the ramp at both ends of the band, 0 to 1.
+        softness: Num,
+        /// Feather, 0 to 1.
+        feather: Num,
+        /// Grow, -1 to 1.
+        grow: Num,
+        /// Refine edges, 0 to 1.
+        refine: Num,
+    },
     /// A line, an angle and a feather.
     Linear {
         /// Add or subtract.
@@ -1683,7 +1706,13 @@ pub struct MaskPatch {
     /// A Background row's level.
     #[serde(default)]
     pub level: Option<Num>,
-    /// The softness of a Background, Colour range or Brightness range row.
+    /// A Depth row's `near`.
+    #[serde(default)]
+    pub near: Option<Num>,
+    /// A Depth row's `far`.
+    #[serde(default)]
+    pub far: Option<Num>,
+    /// The softness of a Background, Depth, Colour range or Brightness range row.
     #[serde(default)]
     pub softness: Option<Num>,
     /// A Linear, Radial or Colour range row's centre.
@@ -1727,8 +1756,9 @@ impl Serialize for MaskPatch {
         put!(
             kind => "kind", mode => "mode", invert => "invert", enabled => "enabled",
             opacity => "opacity", feather => "feather", grow => "grow", refine => "refine",
-            points => "points", box_ => "box", level => "level", softness => "softness",
-            center => "center", angle_deg => "angle_deg", radii => "radii", strokes => "strokes",
+            points => "points", box_ => "box", level => "level", near => "near", far => "far",
+            softness => "softness", center => "center", angle_deg => "angle_deg", radii => "radii",
+            strokes => "strokes",
             strokes_append => "strokes_append", strokes_keep => "strokes_keep", width => "width",
             low => "low", high => "high",
         );
@@ -2975,6 +3005,8 @@ pub enum MaskKind {
     People,
     /// The blur map's out-of-focus area.
     Background,
+    /// A band of near or far from the depth map.
+    Depth,
     /// A gradient across the photo.
     Linear,
     /// An oval with a soft edge.
@@ -2985,6 +3017,44 @@ pub enum MaskKind {
     ColorRange,
     /// A low, a high and a softness on the tones.
     BrightnessRange,
+}
+
+/// The answer of `sample_depth` (`docs/23` section 9, Pick depth): the band around the depth under the click, in the photo's
+/// depth order (0 is the nearest part of the photo, 1 the farthest), rounded to two decimals. The page writes the two numbers
+/// as one row patch (`masks.edit` with `near` and `far`), one undo step.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct DepthBand {
+    /// Where the band starts, 0 to 1.
+    pub near: Num,
+    /// Where the band ends, 0 to 1.
+    pub far: Num,
+}
+
+/// Why `focus_plane` has no band (`docs/23` section 9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusReason {
+    /// The photo has no focus point (an older body, a panorama, a file that is not from a Sony camera). Answered at once,
+    /// without waiting for the depth map: the card says "This photo has no focus point." and the button stays off.
+    NoFocusPoint,
+    /// The depth map could not be made.
+    MapFailed,
+}
+
+/// The answer of `focus_plane` (`docs/23` section 9, Focus plane): with a band, `near` and `far` as `sample_depth`'s and
+/// `reason` null; without one, `near` and `far` null and the `reason`. The page writes a band as one row patch, one undo
+/// step; `exact_centre` is true when the camera's point is exactly the frame's centre, which Sony also writes when it does not
+/// know where it focused (the card says so).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct FocusPlaneResult {
+    /// Where the band starts, 0 to 1, or null when there is no band.
+    pub near: Option<Num>,
+    /// Where the band ends, 0 to 1, or null when there is no band.
+    pub far: Option<Num>,
+    /// The focus point is exactly the frame's centre.
+    pub exact_centre: bool,
+    /// Why there is no band, or null when there is one.
+    pub reason: Option<FocusReason>,
 }
 
 /// What the person did on the photo to find an object: `mask_find`'s `prompt` (`docs/23` section 9), in the photo frame.
@@ -3042,6 +3112,19 @@ pub struct ObjectState {
     pub photo_id: PhotoId,
     /// The encoder is working for it, or will be in a moment.
     pub preparing: bool,
+}
+
+/// `depth_state { photo_id, failed }` (addition): the core's depth worker for a photo has ended (`docs/23` section 4.8).
+/// `failed` is the plain sentence of the failure ("The Depth mask can't be made: …") or null when the map is ready. While the
+/// worker runs the viewport is `viewport_busy { busy: true, finding: true }` and the Depth rows with the eye on say "Finding…";
+/// when it ends the photo is drawn again with the mask, and a Depth row whose map failed says "Can't be made".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "depth_state")]
+pub struct DepthState {
+    /// The photo.
+    pub photo_id: PhotoId,
+    /// The sentence of the failure, or null when the map is ready.
+    pub failed: Option<String>,
 }
 
 /// `vision_state { photo_id, nothing_found }` (addition): the core's worker for the Subject and People masks of a photo has ended

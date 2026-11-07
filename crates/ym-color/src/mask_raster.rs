@@ -37,6 +37,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread;
 
 use crate::mask::{PhotoFrame, RasterPlanes};
+use crate::mask_depth::{DepthSource, depth_plane_among};
 
 /// Grow at 100 % moves an edge by this fraction of the long edge (`docs/algorithms/06` section 5.1).
 pub const GROW_MAX: f64 = 0.01;
@@ -184,6 +185,9 @@ pub enum RasterSource {
     /// A Background row: the photo's blur map with the row's Level and Softness (`docs/algorithms/06` section
     /// 5.4), made when the plane is wanted and kept in a small cache under its own key.
     Background(Arc<BackgroundSource>),
+    /// A Depth row: the photo's depth map cut to the row's band (`docs/algorithms/06` section 5.8), made when the
+    /// plane is wanted and kept in the cache Background's planes use.
+    Depth(Arc<DepthSource>),
 }
 
 impl PartialEq for RasterSource {
@@ -200,6 +204,7 @@ impl RasterSource {
             Self::Plane(p) => p.key,
             Self::Brush(b) => b.key,
             Self::Background(b) => b.key(),
+            Self::Depth(d) => d.key(),
         }
     }
 
@@ -218,6 +223,7 @@ impl RasterSource {
             Self::Plane(p) => Arc::clone(p),
             Self::Brush(b) => brush_plane_among(b, aspect, live),
             Self::Background(b) => background_plane_among(b, live),
+            Self::Depth(d) => depth_plane_among(d, live),
         }
     }
 }
@@ -1353,6 +1359,25 @@ pub fn background_plane(src: &BackgroundSource) -> Arc<SourcePlane> {
 #[must_use]
 pub fn background_plane_among(src: &BackgroundSource, live: usize) -> Arc<SourcePlane> {
     let key = src.key();
+    cached_plane(key, live, || SourcePlane {
+        key,
+        width: src.map.width.max(1),
+        height: src.map.height.max(1),
+        data: if src.map.p.len() == src.map.width * src.map.height && !src.map.p.is_empty() {
+            background_s0(&src.map.p, src.level, src.softness)
+        } else {
+            vec![0; src.map.width.max(1) * src.map.height.max(1)]
+        },
+    })
+}
+
+/// The plane under `key` from the small in-memory cache that Background's and Depth's planes share (never on disk),
+/// else made by `make` and kept; the cache holds at least `max(16, live)` planes, the newest used last.
+pub(crate) fn cached_plane(
+    key: u64,
+    live: usize,
+    make: impl FnOnce() -> SourcePlane,
+) -> Arc<SourcePlane> {
     {
         let mut cache = background_cache()
             .lock()
@@ -1365,16 +1390,7 @@ pub fn background_plane_among(src: &BackgroundSource, live: usize) -> Arc<Source
             return out;
         }
     }
-    let plane = Arc::new(SourcePlane {
-        key,
-        width: src.map.width.max(1),
-        height: src.map.height.max(1),
-        data: if src.map.p.len() == src.map.width * src.map.height && !src.map.p.is_empty() {
-            background_s0(&src.map.p, src.level, src.softness)
-        } else {
-            vec![0; src.map.width.max(1) * src.map.height.max(1)]
-        },
-    });
+    let plane = Arc::new(make());
     let mut cache = background_cache()
         .lock()
         .unwrap_or_else(PoisonError::into_inner);

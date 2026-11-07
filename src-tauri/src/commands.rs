@@ -17,13 +17,13 @@ use crate::api::AppApi;
 use crate::system;
 use crate::wire::{
     self, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
-    CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, ErrorScope, ExportEstimate,
-    ExportJob, ExportJobId, FilmCatalogue, HistogramData, LensInfo, Look, LookId, LookInput,
-    LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView, MenuState,
-    NodeId, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample, Preferences,
-    PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
-    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
-    WatchStatus,
+    CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthBand, ErrorScope,
+    ExportEstimate, ExportJob, ExportJobId, FilmCatalogue, FocusPlaneResult, HistogramData,
+    LensInfo, Look, LookId, LookInput, LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult,
+    MaskKind, MaskView, MenuState, NodeId, Num, OpenKind, Orientation, PasteReport, PhotoId,
+    PixelSample, Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState,
+    SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode,
+    ViewportRect, WatchStatus,
 };
 
 /// The managed state: the command handlers, or why the application could not start.
@@ -439,6 +439,32 @@ pub async fn mask_find(
     .await
 }
 
+/// `sample_depth(photo_id, x, y)` (`docs/23` section 9, Pick depth): the band `{ near, far }` around the depth at the
+/// photo-frame point, two decimals, or null when no depth map can be made. It changes no settings: the page writes the answer
+/// as one row patch (one undo step). It waits for the depth map if the worker is still making it.
+#[tauri::command]
+#[specta::specta]
+pub async fn sample_depth(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+    x: Num,
+    y: Num,
+) -> Result<Option<DepthBand>, AppError> {
+    run(&state, move |api| api.sample_depth(photo_id, x, y)).await
+}
+
+/// `focus_plane(photo_id)` (`docs/23` section 9, Focus plane): the band around the plane the camera focused on, or why there
+/// is none (`no_focus_point` at once, `map_failed`). It changes no settings: the page writes a band as one row patch (one undo
+/// step).
+#[tauri::command]
+#[specta::specta]
+pub async fn focus_plane(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+) -> Result<FocusPlaneResult, AppError> {
+    run(&state, move |api| api.focus_plane(photo_id)).await
+}
+
 // --- Lens -------------------------------------------------------------------------------------
 
 /// `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
@@ -814,6 +840,8 @@ pub fn builder() -> Builder<tauri::Wry> {
             viewport_map_points,
             mask_kinds,
             mask_find,
+            sample_depth,
+            focus_plane,
             lens_list,
             looks_list,
             look_thumbnail,
@@ -864,6 +892,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             wire::ViewportFrame,
             wire::ObjectState,
             wire::VisionState,
+            wire::DepthState,
         ])
         .typ::<ErrorScope>()
 }
@@ -901,6 +930,8 @@ mod tests {
                 viewport_map_points,
                 mask_kinds,
                 mask_find,
+                sample_depth,
+                focus_plane,
                 export_busy,
                 node_thumbnails,
                 looks_recognise,
@@ -996,14 +1027,21 @@ mod tests {
         )
         .is_some();
         // Subject and People follow the Vision probe; the harness's app has no provider, which is a computer that cannot make them.
-        let kinds: Vec<&str> =
-            ym_core::settings::mask_kinds_with(ym_core::settings::MaskSupport::new(
+        // Depth follows its own weights (`data/models/depth`).
+        let depth = ym_core::pipeline::DepthModel::probe(
+            &ym_core::data_dir::find_data_dir().expect("the data folder"),
+        )
+        .is_some();
+        let kinds: Vec<&str> = ym_core::settings::mask_kinds_with(
+            ym_core::settings::MaskSupport::new(
                 object,
                 ym_core::vision::VisionSupport::none_here(),
-            ))
-            .into_iter()
-            .map(|k| k.name())
-            .collect();
+            )
+            .with_depth(depth),
+        )
+        .into_iter()
+        .map(|k| k.name())
+        .collect();
         assert!(!kinds.is_empty());
         assert_eq!(call(&window, "mask_kinds", json!({})), Ok(json!(kinds)));
         assert_eq!(

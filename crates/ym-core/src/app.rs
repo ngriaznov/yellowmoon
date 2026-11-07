@@ -288,6 +288,16 @@ impl Core {
         if render.object_model.is_none() {
             render.object_model = crate::pipeline::ObjectModel::probe(&options.data_root);
         }
+        // Depth Anything V2-Small for the Depth mask: found here too (its weights load when a mask first needs them).
+        // The test hook `YELLOWMOON_TEST_DEPTH=fake` puts a fake model in its place, for `ym` and the app alike.
+        if render.depth_model.is_none() {
+            render.depth_model =
+                if std::env::var(crate::pipeline::DepthModel::TEST_ENV).as_deref() == Ok("fake") {
+                    Some(crate::pipeline::DepthModel::fake_default())
+                } else {
+                    crate::pipeline::DepthModel::probe(&options.data_root)
+                };
+        }
         // The lens reads the cameras' spectral curves from the same folder.
         if render.data_root.is_none() {
             render.data_root = Some(options.data_root.clone());
@@ -624,8 +634,8 @@ impl Core {
     }
 
     /// `update_settings`: applies a patch to a photo's settings ([`Session::update_settings`]) and, when the photo is the
-    /// one being looked at and has an Object, Subject or People row, asks for what those rows read in the background
-    /// ([`Core::prepare_masks`], `docs/23` sections 4.4 and 4.5: "as soon as the row exists on the photo").
+    /// one being looked at and has an Object, Subject, People or Depth row, asks for what those rows read in the background
+    /// ([`Core::prepare_masks`], `docs/23` sections 4.4, 4.5 and 4.8: "as soon as the row exists on the photo").
     ///
     /// # Errors
     ///
@@ -641,11 +651,31 @@ impl Core {
     }
 
     /// Asks for what the photo's raster rows read, in the background, when it is the photo being looked at: SAM's features
-    /// for an Object row ([`Core::prepare_object`]) and Vision's masks for a Subject or People row
-    /// ([`Core::prepare_vision`]). Returns at once.
+    /// for an Object row ([`Core::prepare_object`]), Vision's masks for a Subject or People row
+    /// ([`Core::prepare_vision`]) and the depth map for a Depth row ([`Core::prepare_depth`]). Returns at once.
     pub fn prepare_masks(&self, id: PhotoId) {
         self.prepare_object(id);
         self.prepare_vision(id);
+        self.prepare_depth(id);
+    }
+
+    /// Asks for the depth map of the photo in the background when it is the photo being looked at and has a Depth row with
+    /// the eye on ([`Renderer::depth_prepare`]; `docs/23` section 4.8). Returns at once; the picture and the network run
+    /// on the worker, which waits 150 ms so that a drag of the Input's exposure makes one map. Nothing happens for a photo
+    /// that is not current, one without a Depth row, and a copy of Yellowmoon with no Depth model.
+    pub fn prepare_depth(&self, id: PhotoId) {
+        if self.session.current() != Some(id) || !self.renderer.depth_available() {
+            return;
+        }
+        let Ok(view) = self.session.view(id) else {
+            return;
+        };
+        if !crate::pipeline::has_depth_row(&view.settings) {
+            return;
+        }
+        if let Ok(src) = crate::pipeline::PhotoSource::from_session(&self.session, id) {
+            self.renderer.depth_prepare(&src);
+        }
     }
 
     /// Asks for the Subject and People masks of the photo in the background when it is the photo being looked at and has a
@@ -686,7 +716,8 @@ impl Core {
     }
 
     /// `mask_kinds`: the kinds of mask this machine can make now (`docs/23` section 9): Object when the SAM weights are
-    /// there, Subject and People where the Vision probe said yes (the first call runs the probe).
+    /// there, Subject and People where the Vision probe said yes (the first call runs the probe), Depth when the depth
+    /// weights are there.
     #[must_use]
     pub fn mask_kinds(&self) -> Vec<crate::settings::MaskKind> {
         self.renderer.mask_kinds()
@@ -717,6 +748,41 @@ impl Core {
     ) -> Result<crate::pipeline::MaskFound, CoreError> {
         let src = crate::pipeline::PhotoSource::from_session(&self.session, id)?;
         Ok(self.renderer.mask_find(&src, node, mask, prompt, cancel)?)
+    }
+
+    /// `sample_depth(photo_id, x, y)` (`docs/23` section 9, Pick depth): the band `(near, far)` around the depth at the point
+    /// `(x, y)` of the photo frame, or `None` when no depth map can be made. It changes no settings. See
+    /// [`Renderer::sample_depth`].
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Session`] for a photo that is unknown or not developed yet; [`CoreError::Render`] with the `mask` scope
+    /// for a model that is missing or a point that is not a number.
+    pub fn sample_depth(
+        &self,
+        id: PhotoId,
+        x: f64,
+        y: f64,
+        cancel: &ym_gpu::queue::CancelToken,
+    ) -> Result<Option<(f64, f64)>, CoreError> {
+        let src = crate::pipeline::PhotoSource::from_session(&self.session, id)?;
+        Ok(self.renderer.sample_depth(&src, x, y, cancel)?)
+    }
+
+    /// `focus_plane(photo_id)` (`docs/23` section 9, Focus plane): the band around the plane the camera focused on, or why
+    /// there is none. It changes no settings. See [`Renderer::focus_plane`].
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Session`] for a photo that is unknown or not developed yet; [`CoreError::Render`] with the `mask` scope
+    /// for a model that is missing.
+    pub fn focus_plane(
+        &self,
+        id: PhotoId,
+        cancel: &ym_gpu::queue::CancelToken,
+    ) -> Result<crate::pipeline::FocusPlane, CoreError> {
+        let src = crate::pipeline::PhotoSource::from_session(&self.session, id)?;
+        Ok(self.renderer.focus_plane(&src, cancel)?)
     }
 
     /// `apply_look`: copies a look and its intensity to This photo, the Picked photos or All.

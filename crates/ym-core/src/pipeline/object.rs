@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
+use ym_color::mask_depth::DepthMap;
 use ym_color::mask_raster::SourcePlane;
 use ym_ml::sam2::{self, Sam2};
 
@@ -217,18 +218,31 @@ pub enum MaskFound {
 }
 
 /// The planes a render uses for the rows that read the Input's picture: for the Object rows of a plan, by the row's
-/// prompt ([`prompt_key`]), the `S0` of every enabled row that has a point or a box and whose features exist; and for the
-/// Subject and People rows, by the request, the union of Vision's instances (N-19). A row without a plane selects nothing.
+/// prompt ([`prompt_key`]), the `S0` of every enabled row that has a point or a box and whose features exist; for the
+/// Subject and People rows, by the request, the union of Vision's instances (N-19); and for the Depth rows the photo's
+/// depth map, which each row cuts its band from. A row without a plane selects nothing.
 #[derive(Debug, Clone, Default)]
 pub struct ObjectPlanes {
     planes: HashMap<u64, Arc<SourcePlane>>,
     vision: [Option<Arc<SourcePlane>>; 2],
+    depth: Option<Arc<DepthMap>>,
 }
 
 impl ObjectPlanes {
     /// Adds the plane of the rows that have this prompt.
     pub(crate) fn insert(&mut self, prompt: u64, plane: Arc<SourcePlane>) {
         self.planes.insert(prompt, plane);
+    }
+
+    /// Adds the photo's depth map, which the Depth rows cut their band from.
+    pub(crate) fn insert_depth(&mut self, map: Arc<DepthMap>) {
+        self.depth = Some(map);
+    }
+
+    /// The photo's depth map for the Depth rows: `None` when this computer has no depth model or the map is not made yet.
+    #[must_use]
+    pub fn depth_map(&self) -> Option<&Arc<DepthMap>> {
+        self.depth.as_ref()
     }
 
     /// Adds the plane of the rows of a Vision request.
@@ -246,7 +260,7 @@ impl ObjectPlanes {
     /// Whether no row has a plane.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.planes.is_empty() && self.vision.iter().all(Option::is_none)
+        self.planes.is_empty() && self.vision.iter().all(Option::is_none) && self.depth.is_none()
     }
 
     /// The plane of an Object row, by what the row asks (its points and box). `None` for a row with none or whose

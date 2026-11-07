@@ -99,6 +99,18 @@ impl Harness {
         )
     }
 
+    /// An app whose Depth masks come from `model` (`docs/23` section 4.8: a `DepthModel::fake`); the other harnesses use the
+    /// data folder's weights, which the repository does not hold.
+    pub(crate) fn with_depth(model: Arc<ym_core::pipeline::DepthModel>) -> Self {
+        Self::build_with(
+            WatchConfig::default(),
+            ProviderAdvisors::default(),
+            None,
+            None,
+            Some(model),
+        )
+    }
+
     fn with_files(
         watch: WatchConfig,
         advisors: ProviderAdvisors,
@@ -112,6 +124,16 @@ impl Harness {
         advisors: ProviderAdvisors,
         preferences: Option<&str>,
         vision: Option<Arc<dyn ym_core::vision::VisionProvider>>,
+    ) -> Self {
+        Self::build_with(watch, advisors, preferences, vision, None)
+    }
+
+    fn build_with(
+        watch: WatchConfig,
+        advisors: ProviderAdvisors,
+        preferences: Option<&str>,
+        vision: Option<Arc<dyn ym_core::vision::VisionProvider>>,
+        depth: Option<Arc<ym_core::pipeline::DepthModel>>,
     ) -> Self {
         let photos = tempfile::tempdir().expect("photos");
         let app_root = tempfile::tempdir().expect("app root");
@@ -138,6 +160,7 @@ impl Harness {
             watch,
             advisors,
             vision,
+            depth,
         };
         // Only the folders of the test: `CliLink::new` also names the real `/usr/local/bin` and
         // `/opt/homebrew/bin` of a Mac, where a test would look at (and replace) the link of the

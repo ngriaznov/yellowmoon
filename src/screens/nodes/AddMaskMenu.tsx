@@ -1,6 +1,7 @@
 import {
   ChevronDownIcon,
   CircleDotIcon,
+  LayersIcon,
   PaintbrushIcon,
   PanelTopIcon,
   PaletteIcon,
@@ -29,6 +30,7 @@ export const MASK_KIND_ICON: Readonly<Record<MaskKind, ReactNode>> = {
   subject: <SparklesIcon aria-hidden="true" />,
   people: <UserIcon aria-hidden="true" />,
   background: <ApertureIcon aria-hidden="true" />,
+  depth: <LayersIcon aria-hidden="true" />,
   linear: <PanelTopIcon aria-hidden="true" />,
   radial: <CircleDotIcon aria-hidden="true" />,
   brush: <PaintbrushIcon aria-hidden="true" />,

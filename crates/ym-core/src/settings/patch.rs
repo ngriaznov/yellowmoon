@@ -1689,7 +1689,8 @@ impl SettingsPatch {
     ///   white balance both Auto) becomes a manual white balance at the Kelvin and tint the pick
     ///   resolved to: the point is not meaningful on another photo, the light it found is.
     /// * Object masks arrive empty (their clicks are not copied); the other rows are copied as they
-    ///   are, and Subject, People and Background are worked out again on the new photo.
+    ///   are, and Subject, People, Background and Depth are worked out again on the new photo (a Depth row keeps its `near`, `far`
+    ///   and `softness`, which are shares of the photo, and the new photo's own depth map decides what they select).
     ///
     /// Every part of every manual value is in the patch, so it applies to a photo that has no
     /// automatic estimates yet.
