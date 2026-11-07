@@ -782,6 +782,9 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
         }
         let reference = renderer(Some(Arc::clone(&gpu)), 256);
         let _ = frame(&reference, &src, &states[0].1);
+        // A viewer never waits for a Depth row's map (the row selects nothing until the worker has made it, as in the app), so
+        // every renderer compared is let finish its map first: else a frame drawn before the map and one drawn after differ.
+        settle_depth(&reference, &src, &states);
         let wants: Vec<RenderedFrame> = states
             .iter()
             .map(|(_, st)| frame(&reference, &src, st))
@@ -789,6 +792,7 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
         for kib in SWEEP_KIB {
             let device = renderer_with(Some(Arc::clone(&gpu)), 256, kib * 1024);
             let _ = frame(&device, &src, &states[0].1);
+            settle_depth(&device, &src, &states);
             let mut line = Vec::new();
             for ((what, st), want) in states.iter().zip(&wants) {
                 let at = format!("{name}, binding {kib} KiB: {what}");
@@ -857,6 +861,93 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
         started.elapsed()
     ));
     assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// The ordering behind the binding sweep's Depth failures on a fast device (CI run 42374515284, Metal). A viewer never waits for
+/// a Depth row's map: the row selects nothing until the worker has made it. A frame drawn before the map and one drawn after
+/// it differ over most of the frame, so a comparison of renderers is only meaningful once each has its map. The model here is
+/// held shut until the "before" frames are drawn, which is the order a device that renders a whole sweep inside the debounce
+/// produces; [`settle_depth`] is what the sweeps do to get the "after" order on every renderer.
+#[test]
+fn a_depth_frame_drawn_before_the_map_differs_from_the_frame_after_it() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let Some(g) = graphs().into_iter().find(|g| {
+        g.masks.contains(&MaskKind::Depth)
+            && g.masked
+                .is_some_and(|(_, row)| g.masks[row] == MaskKind::Depth)
+    }) else {
+        panic!("the generator made no graph with a Show mask on a Depth row");
+    };
+    let open = Arc::new(AtomicBool::new(false));
+    let gate = Arc::clone(&open);
+    let model = DepthModel::fake(
+        "gated",
+        Arc::new(move |w, h, rgb, cancelled| {
+            while !gate.load(Ordering::SeqCst) {
+                if cancelled() {
+                    return Err("cancelled".to_owned());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let (nw, nh) = ym_ml::depth::capped_network_size(w, h);
+            let (cw, ch) = (nw / ym_ml::depth::PATCH, nh / ym_ml::depth::PATCH);
+            let mut v = Vec::with_capacity(cw * ch);
+            for cy in 0..ch {
+                for cx in 0..cw {
+                    let x = (((cx as f64 + 0.5) / cw as f64) * w as f64) as usize;
+                    let y = (((cy as f64 + 0.5) / ch as f64) * h as f64) as usize;
+                    let p = &rgb[3 * (y.min(h - 1) * w + x.min(w - 1))..][..3];
+                    v.push(f32::from(p[1]) / 255.0);
+                }
+            }
+            Ok((cw, ch, v))
+        }),
+    );
+    let r = Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            gpu: None,
+            gpu_stages: GpuStages::NONE,
+            full_tile_px: 256,
+            vision: Some(VisionMasks::new(Arc::new(FakeVision::new()))),
+            depth_model: Some(model),
+            data_root: Some(data_root()),
+            ..RenderOptions::default()
+        },
+    )
+    .expect("render thread");
+    let src = d.source().with_settings(g.settings.clone());
+    let (node, row) = g.masked.expect("a Show mask");
+    let st = view(
+        true,
+        false,
+        Some((node, MaskStyle::Overlay, Some(row as u32))),
+    );
+    let states = vec![("Show mask".to_owned(), st.clone())];
+    let before = frame(&r, &src, &st);
+    assert!(
+        r.depth_worker_alive(src.id),
+        "the worker was asked for the map"
+    );
+    open.store(true, Ordering::SeqCst);
+    settle_depth(&r, &src, &states);
+    let after = frame(&r, &src, &st);
+    let (max, over) = frame_diff(&before, &after);
+    assert!(
+        over >= after.rgba.len() / 2000,
+        "a frame before the map and one after it must differ over the frame ({max} codes, {over} values over 1)"
+    );
+    // After the map, the frame is stable.
+    let again = frame(&r, &src, &st);
+    assert_eq!(frame_diff(&after, &again), (0, 0));
 }
 
 /// The CPU frames of `a_before_view_makes_no_planes_and_is_not_cut_by_their_reach` (Fit, and 147 %), found before the Before
