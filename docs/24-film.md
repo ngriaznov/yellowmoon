@@ -696,7 +696,7 @@ Short, plain sentences, British spelling (`AGENTS.md`). Drafts:
 
 - Menu: "Film" / "Models a colour negative, a print and a scan."
 - Film tab: "Modelled on published data. Film profiles by Andrea Volpato (spektrafilm), CC BY-SA 4.0. Not affiliated with Kodak or Fujifilm." (a link on "Andrea Volpato (spektrafilm)" opens the project page in the system browser, like ARRI's page).
-- About: the same line with a second link on "CC BY-SA 4.0", and "Kodak, Portra, Vision3, Fujifilm and Velvia are trademarks of their owners."
+- About: the same line with a second link on "CC BY-SA 4.0", and "Kodak, Portra, Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm, Velvia and the other film and paper names shown are trademarks of their owners."
 - Print tab: "Matching paper" (the matching paper's name under it); the brightness control reads "As the app" and "As printed".
 - Slide: "Slide film is scanned as it is. There is no print."
 - Lights: "0 is neutral for this film and paper."
@@ -822,7 +822,7 @@ The profiles name the stocks as the manufacturers do ("Kodak Portra 400", "Fujif
 
 | Option | What the person sees | Cost |
 |---|---|---|
-| **1. Factual names with a line** (recommended) | the stock list shows the names as data ("Kodak Portra 400"), and the Film tab and About say "Modelled on published data. Not affiliated with Kodak or Fujifilm. Kodak, Portra, Vision3, Fujifilm and Velvia are trademarks of their owners." | the same footing as our ARRI lines (`docs/14` rule 6); the names are still the labels of choices in our interface, so a legal check is wise (M4-H3) |
+| **1. Factual names with a line** (recommended) | the stock list shows the names as data ("Kodak Portra 400"), and the Film tab and About say "Modelled on published data. Not affiliated with Kodak or Fujifilm. Kodak, Portra, Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm, Velvia and the other film and paper names shown are trademarks of their owners." | the same footing as our ARRI lines (`docs/14` rule 6); the names are still the labels of choices in our interface, so a legal check is wise (M4-H3) |
 | **2. Neutral names** | "Daylight negative 400, warm", "Slide, vivid" with the stock named only in a tooltip's data line | no trademark use as a label; the person must learn what the names mean; a rename table makes it a one-file change |
 | **3. Mixed** | neutral names, and "Modelled on Kodak Portra 400" as a second line | in between |
 

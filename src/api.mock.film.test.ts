@@ -35,7 +35,7 @@ describe("the mock's Film node", () => {
     expect(c.stocks.find((s) => s.id === "kodak_vision3_500t")?.matching_paper).toBe("kodak_portra_endura");
     expect(c.credit).toBe(FILM_CREDIT);
     expect(c.disclaimer).toBe("Modelled on published data. Not affiliated with Kodak or Fujifilm.");
-    expect(c.trademarks).toBe("Kodak, Portra, Vision3, Fujifilm and Velvia are trademarks of their owners.");
+    expect(c.trademarks).toBe("Kodak, Portra, Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm, Velvia and the other film and paper names shown are trademarks of their owners.");
     expect(c.papers.map((p) => p.id)).not.toContain("kodak_2383");
     expect(MOCK_FILM_STOCKS).toHaveLength(20);
     expect(MOCK_FILM_PAPERS).toHaveLength(6);

@@ -3391,7 +3391,7 @@ pub struct FilmCatalogue {
     pub credit: String,
     /// "Modelled on published data. Not affiliated with Kodak or Fujifilm."
     pub disclaimer: String,
-    /// "Kodak, Portra, Vision3, Fujifilm and Velvia are trademarks of their owners."
+    /// "Kodak, Portra, Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm, Velvia and the other film and paper names shown are trademarks of their owners."
     pub trademarks: String,
 }
 

@@ -223,9 +223,9 @@ UNDISCLOSED.
     sold, and none of our models is trained on them or on their output.
     Film profiles by Andrea Volpato (spektrafilm), CC BY-SA 4.0. Yellowmoon is
     not affiliated with Andrea Volpato, Kodak or Fujifilm. Kodak, Portra,
-    Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm and Velvia are trademarks
-    of their owners; the names are used only to say which published data a
-    profile models.
+    Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm, Velvia and the other
+    film and paper names shown are trademarks of their owners; the names are
+    used only to say which published data a profile models.
 
 12. CIE colour tables (data/film/cie/) and a table computed from it
     The CIE 1931 colour-matching functions (2 degree observer), CIE standard

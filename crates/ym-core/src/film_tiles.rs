@@ -24,7 +24,7 @@ pub const FILM_DISCLAIMER: &str =
 
 /// The trademark line of About (`docs/24` section 4.6).
 pub const FILM_TRADEMARKS: &str =
-    "Kodak, Portra, Vision3, Fujifilm and Velvia are trademarks of their owners.";
+    "Kodak, Portra, Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm, Velvia and the other film and paper names shown are trademarks of their owners.";
 
 /// One camera film of the picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
