@@ -180,3 +180,41 @@ describe("the store's mask row eye (docs/23 §5.8, §7.6)", () => {
     expect(views(sent).at(-1)).toBeNull();
   });
 });
+
+describe("Show depth (docs/23 §4.8)", () => {
+  it("sends the Depth row's own view with the depth flag, in Mask only, and is one view at a time with Show mask and the eyes", async () => {
+    const { store, sent } = await opened();
+    store.setMaskNode(1);
+    store.setShowDepth(0);
+    expect(store.getState().showDepth).toBe(0);
+    store.setMaskEye(2);
+    expect(store.getState().showDepth).toBeNull();
+    store.setShowDepth(1);
+    expect(store.getState().maskEye).toBeNull();
+    store.setMaskView({ on: true });
+    expect(store.getState().showDepth).toBeNull();
+    store.setShowDepth(0);
+    expect(store.getState().maskView.on).toBe(false);
+    store.setMaskEye(null);
+    expect(store.getState().showDepth).toBeNull();
+    expect(views(sent)).toEqual([
+      { node: 1, style: "mask_only", row: 0, depth: true },
+      { node: 1, style: "overlay", row: 2 },
+      { node: 1, style: "mask_only", row: 1, depth: true },
+      { node: 1, style: "overlay" },
+      { node: 1, style: "mask_only", row: 0, depth: true },
+      null,
+    ]);
+  });
+
+  it("ends with the node, and is ignored where there is no corrector to show", async () => {
+    const { store, sent } = await opened();
+    store.setShowDepth(0);
+    expect(store.getState().showDepth).toBeNull();
+    store.setMaskNode(1);
+    store.setShowDepth(0);
+    store.setMaskNode(3);
+    expect(store.getState().showDepth).toBeNull();
+    expect(views(sent)).toEqual([{ node: 1, style: "mask_only", row: 0, depth: true }, null]);
+  });
+});

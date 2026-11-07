@@ -278,7 +278,7 @@ test.describe("adding a mask", () => {
     await warmth(page);
     await page.getByRole("button", { name: "Add mask" }).click();
     const menu = page.getByRole("menu", { name: "Add mask" });
-    await expect(menu.getByRole("menuitem")).toHaveText([/^Object/, /^Subject/, /^People/, /^Background/, /^Linear/, /^Radial/, /^Brush/, /^Colour range/, /^Brightness range/]);
+    await expect(menu.getByRole("menuitem")).toHaveText([/^Object/, /^Subject/, /^People/, /^Background/, /^Depth/, /^Linear/, /^Radial/, /^Brush/, /^Colour range/, /^Brightness range/]);
     await expect(menu.getByText("A gradient across the photo")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(menu).toHaveCount(0);
@@ -288,27 +288,27 @@ test.describe("adding a mask", () => {
     await warmth(page, { mockMasks: "all" });
     await page.getByRole("button", { name: "Add mask" }).click();
     const menu = page.getByRole("menu", { name: "Add mask" });
-    await expect(menu.getByRole("menuitem")).toHaveCount(9);
+    await expect(menu.getByRole("menuitem")).toHaveCount(10);
     for (const title of ["Find", "Shapes", "Keys"]) await expect(menu.getByText(title, { exact: true })).toBeVisible();
     await page.keyboard.press("Escape");
     await page.reload();
     await warmth(page, { mockMasks: "nomac" });
     await page.getByRole("button", { name: "Add mask" }).click();
     const noMac = page.getByRole("menu", { name: "Add mask" });
-    await expect(noMac.getByRole("menuitem")).toHaveCount(7);
+    await expect(noMac.getByRole("menuitem")).toHaveCount(8);
     await expect(noMac.getByRole("menuitem", { name: /^(Subject|People)/ })).toHaveCount(0);
     await expect(noMac.getByRole("menuitem", { name: /^Object/ })).toBeVisible();
   });
 
-  test("opens to the left of the panel, over the photo, and is at most 520 px tall", async ({ page }) => {
+  test("opens to the left of the panel, over the photo, and grows to hold its ten items (at most 600 px tall)", async ({ page }) => {
     await warmth(page, { mockMasks: "all" });
     await page.getByRole("button", { name: "Add mask" }).click();
     const menu = (await page.getByRole("menu", { name: "Add mask" }).boundingBox())!;
     // A menu hides the page behind it from the accessibility tree, so the panel is found by its class.
     const panel = (await page.locator("aside.ym-tools").boundingBox())!;
     expect(menu.x + menu.width).toBeLessThanOrEqual(panel.x + 1);
-    expect(menu.height).toBeLessThanOrEqual(520);
-    expect(menu.height).toBeGreaterThan(400);
+    expect(menu.height).toBeLessThanOrEqual(600);
+    expect(menu.height).toBeGreaterThan(520);
   });
 });
 

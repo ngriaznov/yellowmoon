@@ -465,6 +465,14 @@ pub async fn focus_plane(
     run(&state, move |api| api.focus_plane(photo_id)).await
 }
 
+/// `retry_depth(photo_id)` (`docs/23` section 4.8, "Try again"): starts the depth map of a photo again after it failed. It
+/// returns at once; `depth_state` says how the worker ended. It changes no settings.
+#[tauri::command]
+#[specta::specta]
+pub async fn retry_depth(state: State<'_, AppState>, photo_id: PhotoId) -> Result<(), AppError> {
+    run(&state, move |api| api.retry_depth(photo_id)).await
+}
+
 // --- Lens -------------------------------------------------------------------------------------
 
 /// `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
@@ -842,6 +850,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             mask_find,
             sample_depth,
             focus_plane,
+            retry_depth,
             lens_list,
             looks_list,
             look_thumbnail,
@@ -932,6 +941,7 @@ mod tests {
                 mask_find,
                 sample_depth,
                 focus_plane,
+                retry_depth,
                 export_busy,
                 node_thumbnails,
                 looks_recognise,

@@ -27,6 +27,7 @@ use ym_core::settings::{
     MaskSupport, MaskUnavailable, NO_DEPTH_MODEL_SENTENCE, Orientation, mask_kinds_with,
     mask_unavailable_with,
 };
+use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
 use ym_gpu::queue::CancelToken;
 
 const MODEL: &str = "ILCE-7RM4";
@@ -265,6 +266,7 @@ fn mask_view(node: u32) -> ViewportState {
         node,
         style: MaskStyle::MaskOnly,
         row: None,
+        depth: false,
     });
     st
 }
@@ -1342,4 +1344,220 @@ fn the_mask_view_of_a_depth_row_shows_its_band_and_invert_is_everything_but_the_
     s.nodes.corrector_mut(2).unwrap().masks.items[0].enabled = false;
     let off = frame(&r, &src.with_settings(s), &mask_view(2));
     assert!(coverage(&off) > 0.99);
+}
+
+// ---- Show depth ----------------------------------------------------------------------------------------------------
+
+/// The mask view of row `row` of node 2, with Show depth on or off.
+fn show_view(row: Option<u32>, style: MaskStyle, depth: bool) -> ViewportState {
+    let mut st = ViewportState::new(ViewportRect::cell(CELL, CELL, 1.0));
+    st.mask_view = Some(MaskView {
+        node: 2,
+        style,
+        row,
+        depth,
+    });
+    st
+}
+
+/// A Depth row whose band is a sliver, inverted, faint and with every raster step on: the band view of it is nearly black.
+fn fussy_row() -> Value {
+    depth_row(json!({
+        "near": 0.4, "far": 0.45, "softness": 0.0, "invert": true, "opacity": 0.3,
+        "grow": 0.5, "feather": 0.3, "refine": 0.9
+    }))
+}
+
+#[test]
+fn show_depth_is_the_whole_map_as_grey_white_near_and_the_row_s_band_steps_invert_and_opacity_do_not_touch_it()
+ {
+    // The ramp model: near on the left, far on the right.
+    let r = renderer(ramp_model());
+    let d = photo(1, None);
+    let src = with_rows(&d.source(), vec![fussy_row()]);
+    // A viewer never waits: until the map is made the view selects nothing (black), and the page draws again when it is.
+    let early = frame(&r, &src, &show_view(Some(0), MaskStyle::MaskOnly, true));
+    assert_eq!(coverage(&early), 0.0);
+    settled(&r, &src);
+    let shown = frame(&r, &src, &show_view(Some(0), MaskStyle::MaskOnly, true));
+    let (left, middle, right) = (
+        coverage_in(&shown, (0.1, 0.25), (0.3, 0.7)),
+        coverage_in(&shown, (0.45, 0.55), (0.3, 0.7)),
+        coverage_in(&shown, (0.75, 0.9), (0.3, 0.7)),
+    );
+    assert!(
+        left > 0.8 && left > middle + 0.3 && middle > right + 0.3 && right < 0.2,
+        "{left} {middle} {right}"
+    );
+    // It is the whole map and not the band: the same bytes for another band, another Invert, another Opacity and no steps.
+    let plain = with_rows(&d.source(), vec![depth_row(json!({}))]);
+    let same = frame(&r, &plain, &show_view(Some(0), MaskStyle::MaskOnly, true));
+    assert!(shown.rgba == same.rgba, "shown and same differ");
+    // The band view of the same row is something else.
+    let band = frame(&r, &src, &show_view(Some(0), MaskStyle::MaskOnly, false));
+    assert!(band.rgba != shown.rgba, "band and shown are the same");
+    // Show depth is grey whatever the style says (it is not a tint over the photo).
+    let overlay = frame(&r, &src, &show_view(Some(0), MaskStyle::Overlay, true));
+    assert!(overlay.rgba == shown.rgba, "overlay and shown differ");
+    // The row's eye off makes no difference to a view that is about that row.
+    let mut off = src.settings.clone();
+    off.nodes.corrector_mut(2).unwrap().masks.items[0].enabled = false;
+    let off = frame(
+        &r,
+        &src.with_settings(off),
+        &show_view(Some(0), MaskStyle::MaskOnly, true),
+    );
+    assert!(off.rgba == shown.rgba, "off and shown differ");
+    // The photo is not drawn under it: no pixel of the grey picture is the paper's colour but the paper itself.
+    assert!(coverage(&shown) > 0.2 && coverage(&shown) < 0.8);
+}
+
+#[test]
+fn show_depth_means_nothing_for_a_row_that_is_not_a_depth_row_and_for_the_node_s_own_mask() {
+    let r = renderer(ramp_model());
+    let d = photo(1, None);
+    let linear = json!({ "kind": "linear", "mode": "add", "center": [0.5, 0.5], "angle_deg": 0.0, "feather": 0.2 });
+    let src = with_rows(
+        &d.source(),
+        vec![
+            linear.clone(),
+            depth_row(json!({ "near": 0.0, "far": 0.5, "softness": 0.0 })),
+        ],
+    );
+    let _ = frame(&r, &src, &picture_view());
+    settled(&r, &src);
+    // The Linear row (row 0) with the flag on is the Linear row's own view.
+    let with_flag = frame(&r, &src, &show_view(Some(0), MaskStyle::MaskOnly, true));
+    let without = frame(&r, &src, &show_view(Some(0), MaskStyle::MaskOnly, false));
+    assert!(
+        with_flag.rgba == without.rgba,
+        "with_flag and without differ"
+    );
+    // No row: the node's own mask, whatever the flag says.
+    let with_flag = frame(&r, &src, &show_view(None, MaskStyle::MaskOnly, true));
+    let without = frame(&r, &src, &show_view(None, MaskStyle::MaskOnly, false));
+    assert!(
+        with_flag.rgba == without.rgba,
+        "with_flag and without differ"
+    );
+    // The Depth row (row 1) shows the map: it differs from its band.
+    let shown = frame(&r, &src, &show_view(Some(1), MaskStyle::MaskOnly, true));
+    let band = frame(&r, &src, &show_view(Some(1), MaskStyle::MaskOnly, false));
+    assert!(shown.rgba != band.rgba, "shown and band are the same");
+    // A row the node does not have is the node's own view.
+    let past = frame(&r, &src, &show_view(Some(9), MaskStyle::MaskOnly, true));
+    let node = frame(&r, &src, &show_view(None, MaskStyle::MaskOnly, false));
+    assert!(past.rgba == node.rgba, "past and node differ");
+}
+
+#[test]
+fn show_depth_takes_the_depth_rows_of_the_nodes_upstream_at_their_bands() {
+    // Node 2 has the Depth row that is shown; node 3, after it, has a Depth row of its own that must not become a grey picture.
+    let r = renderer(ramp_model());
+    let d = photo(1, None);
+    let doc = json!({ "nodes": { "items": [
+        { "id": 1 },
+        { "id": 2, "kind": "corrector", "pos": [1.0, 0.0], "masks": { "invert": false, "items": [ depth_row(json!({})) ] } },
+        { "id": 3, "kind": "corrector", "pos": [2.0, 0.0], "masks": { "invert": false, "items": [ depth_row(json!({ "near": 0.0, "far": 0.1, "softness": 0.0 })) ] } },
+    ], "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+        { "from": { "node": 3, "port": "picture" }, "to": { "node": "output", "port": "picture" } },
+    ] } });
+    let settings = serde_json::from_value::<DevelopSettings>(doc)
+        .expect("a document")
+        .validated()
+        .expect("a valid graph")
+        .0;
+    let src = d.source().with_settings(settings);
+    let _ = frame(&r, &src, &picture_view());
+    settled(&r, &src);
+    // Showing node 3's row: node 2's row stays its band (everything), node 3's is the map.
+    let mut st = ViewportState::new(ViewportRect::cell(CELL, CELL, 1.0));
+    st.mask_view = Some(MaskView {
+        node: 3,
+        style: MaskStyle::MaskOnly,
+        row: Some(0),
+        depth: true,
+    });
+    let shown = frame(&r, &src, &st);
+    let (left, right) = (
+        coverage_in(&shown, (0.1, 0.25), (0.3, 0.7)),
+        coverage_in(&shown, (0.75, 0.9), (0.3, 0.7)),
+    );
+    assert!(left > 0.8 && right < 0.2, "{left} {right}");
+}
+
+/// Mean absolute difference of two frames' colour channels, in code values.
+fn mean_difference(a: &RenderedFrame, b: &RenderedFrame) -> f64 {
+    assert_eq!((a.width, a.height), (b.width, b.height));
+    let total: u64 = a
+        .rgba
+        .iter()
+        .zip(&b.rgba)
+        .map(|(x, y)| u64::from(x.abs_diff(*y)))
+        .sum();
+    total as f64 / a.rgba.len() as f64
+}
+
+#[test]
+fn show_depth_is_made_on_the_device_as_on_the_cpu() {
+    let gpu = match Gpu::start(GpuConfig {
+        poison: true,
+        ..GpuConfig::default()
+    }) {
+        Ok(g) => Arc::new(g),
+        Err(e) => {
+            assert!(
+                !gpu_required_by_env(),
+                "YM_REQUIRE_GPU is set but no GPU adapter could be opened: {e}"
+            );
+            eprintln!("\n* GPU TESTS SKIPPED in mask_depth (Show depth): {e}\n");
+            return;
+        }
+    };
+    let device = Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            gpu: Some(gpu),
+            gpu_stages: ym_core::app::gpu::GpuStages::ALL,
+            ..options(Some(ramp_model()), RenderOptions::default().full_tile_px)
+        },
+    )
+    .expect("render thread");
+    let cpu = renderer(ramp_model());
+    let d = photo(1, None);
+    let src = with_rows(&d.source(), vec![fussy_row()]);
+    for r in [&device, &cpu] {
+        let _ = frame(r, &src, &picture_view());
+        settled(r, &src);
+    }
+    for style in [MaskStyle::MaskOnly, MaskStyle::Overlay] {
+        let st = show_view(Some(0), style, true);
+        let (a, b) = (frame(&device, &src, &st), frame(&cpu, &src, &st));
+        assert_eq!(
+            a.report.device,
+            ym_core::pipeline::ComputeDevice::Gpu,
+            "the Show depth frame is the device's ({style:?})"
+        );
+        assert!(
+            !a.report.notes.iter().any(|n| n.contains("graphics card")),
+            "{:?}",
+            a.report.notes
+        );
+        let difference = mean_difference(&a, &b);
+        assert!(
+            difference < 1.0,
+            "device and CPU differ by {difference} codes ({style:?})"
+        );
+        // And it is the grey ramp on the device too.
+        let (left, right) = (
+            coverage_in(&a, (0.1, 0.25), (0.3, 0.7)),
+            coverage_in(&a, (0.75, 0.9), (0.3, 0.7)),
+        );
+        assert!(left > 0.8 && right < 0.2, "{left} {right}");
+    }
+    // The device is still the route afterwards.
+    assert!(!device.raw_on_cpu(src.id));
 }

@@ -32,6 +32,7 @@ import type {
   ColorBalance,
   ColorBalancePoint,
   CropAspect,
+  DepthBand,
   CropSuggestion,
   Curves,
   DevelopSettings,
@@ -39,6 +40,7 @@ import type {
   ExportOptions,
   ExportProgress,
   FilmCatalogue,
+  FocusPlaneResult,
   GradePatch,
   GradeValues,
   HistogramData,
@@ -51,6 +53,7 @@ import type {
   MainEstimates,
   MapFrom,
   MaskFindPrompt,
+  MaskItem,
   MaskKind,
   MasksPatch,
   MaskStyle,
@@ -62,6 +65,7 @@ import type {
   NodeItem,
   NodeThumbnailsReady,
   ObjectState,
+  DepthState,
   VisionState,
   OpenSummary,
   Orientation,
@@ -168,7 +172,7 @@ export const ALREADY_OPEN_NOTICE = "These photos are already open.";
 
 /** Whether two mask views are the same one (a node and a style, or none). */
 function sameMaskView(a: MaskView | null, b: MaskView | null): boolean {
-  return a === b || (a !== null && b !== null && a.node === b.node && a.style === b.style && (a.row ?? null) === (b.row ?? null));
+  return a === b || (a !== null && b !== null && a.node === b.node && a.style === b.style && (a.row ?? null) === (b.row ?? null) && (a.depth ?? false) === (b.depth ?? false));
 }
 
 /** What Photos says after files were added to the session: "Added 3 photos. 2 were already open." */
@@ -256,6 +260,11 @@ export interface AppState {
    * saved, not undone, not copied. At most one; it and Show mask are never on together; the style is the View card's.
    */
   maskEye: number | null;
+  /**
+   * The Depth row whose **Show depth** is on (`docs/23` §4.8, `docs/11`): the index of a row of the node on show, or null. View state like the eye: not saved, not
+   * undone, not copied, and exclusive with Show mask and the eyes (turning one on turns the others off). The core draws the photo's depth map as grey for it.
+   */
+  showDepth: number | null;
   /** The mask view the core was last told to draw: what {@link AppState.maskView} comes to for the node on show (the browser build's fixture draws it). */
   maskShown: MaskView | null;
   /** "Apply to" on the Look card. */
@@ -317,6 +326,18 @@ export interface AppState {
    * sends the list each time its worker ends; a photo it has not sent one for has none.
    */
   visionNothing: Readonly<Record<number, readonly MaskKind[]>>;
+  /**
+   * The photos whose depth map failed, with the sentence (`depth_state`, `docs/23` §4.8): their Depth rows say "Can't be made" and the card says why, with Try
+   * again. A photo whose map was made (or is being made again) has none.
+   */
+  depthFailed: Readonly<Record<number, string>>;
+  /** The photos whose file has no focus point (`focus_plane`'s `no_focus_point`): Focus plane is off for them, with the reason. */
+  noFocusPoint: Readonly<Record<number, true>>;
+  /**
+   * What Focus plane last set on a photo, when the camera's point is exactly the frame's centre (which Sony also writes when it does not know): the card says "The
+   * camera may not have recorded where it focused. Check the result." while the row still has this band.
+   */
+  focusCentre: Readonly<Record<number, { near: number; far: number }>>;
   /** The pill at the top of the photo, "Object found · 0.4 s", for three seconds after a find. */
   objectPill: { seq: number; text: string } | null;
   /** Undo and redo are available for the current photo. */
@@ -394,6 +415,7 @@ export function initialState(): AppState {
     zoom: { kind: "fit" },
     maskView: { on: false, style: "overlay" },
     maskEye: null,
+    showDepth: null,
     maskShown: null,
     applyScope: "this",
     collapsedLookLibraries: [],
@@ -413,6 +435,9 @@ export function initialState(): AppState {
     objectPreparing: [],
     objectFinding: null,
     visionNothing: {},
+    depthFailed: {},
+    noFocusPoint: {},
+    focusCentre: {},
     objectPill: null,
     canUndo: false,
     canRedo: false,
@@ -859,6 +884,7 @@ export class AppStore {
       api.on("viewport_busy", (e) => this.onViewportBusy(e)),
       api.on("object_state", (e) => this.onObjectState(e)),
       api.on("vision_state", (e) => this.onVisionState(e)),
+      api.on("depth_state", (e) => this.onDepthState(e)),
       onGestureEnd(() => this.afterGesture()),
     ];
     void this.load();
@@ -1141,6 +1167,21 @@ export class AppStore {
     this.wantNodeThumbnails(e.photo_id);
   }
 
+  /**
+   * `depth_state`: the depth worker ended its work for a photo. `failed` is the sentence of the failure, or null when the map is ready. The core draws the photo
+   * again, and the nodes' thumbnails follow.
+   */
+  private onDepthState(e: DepthState): void {
+    const was = this.state.depthFailed[e.photo_id] ?? null;
+    if (was !== e.failed) {
+      const next = { ...this.state.depthFailed };
+      if (e.failed === null) delete next[e.photo_id];
+      else next[e.photo_id] = e.failed;
+      this.set({ depthFailed: next });
+    }
+    this.wantNodeThumbnails(e.photo_id);
+  }
+
   private onFrame(frame: ViewportFrame): void {
     // Frames can arrive out of order (the shell numbers a frame before it encodes it, and the news that the picture is gone is sent from
     // another thread): an older one never replaces a newer one, and never brings back a picture that was taken away.
@@ -1356,6 +1397,7 @@ export class AppStore {
       warpPin: null,
       maskRow: null,
       maskEye: null,
+      showDepth: null,
       brushTool: false,
       objectTool: false,
       objectPill: null,
@@ -1595,6 +1637,7 @@ export class AppStore {
       warpPin: null,
       maskRow: null,
       maskEye: null,
+      showDepth: null,
       brushTool: false,
       objectTool: false,
       objectPill: null,
@@ -2004,7 +2047,7 @@ export class AppStore {
   async setBefore(before: boolean): Promise<void> {
     if (before === this.state.before) return;
     // The Before view has no mask (`docs/23` §5.8): a row's eye ends there.
-    this.set(before && this.state.maskEye !== null ? { before, maskEye: null } : { before });
+    this.set(before && (this.state.maskEye !== null || this.state.showDepth !== null) ? { before, maskEye: null, showDepth: null } : { before });
     if (before) this.syncMaskView();
     try {
       await this.api.setBefore(before);
@@ -2033,9 +2076,9 @@ export class AppStore {
       return;
     }
     if (change.style !== undefined && change.on === undefined) next.on = true;
-    if (next.on === this.state.maskView.on && next.style === this.state.maskView.style && eye === null) return;
+    if (next.on === this.state.maskView.on && next.style === this.state.maskView.style && eye === null && (!next.on || this.state.showDepth === null)) return;
     // Show mask on ends the eye: one mask at a time.
-    this.set(next.on && eye !== null ? { maskView: next, maskEye: null } : { maskView: next });
+    this.set(next.on && (eye !== null || this.state.showDepth !== null) ? { maskView: next, maskEye: null, showDepth: null } : { maskView: next });
     this.syncMaskView();
   }
 
@@ -2052,8 +2095,21 @@ export class AppStore {
    */
   setMaskEye(row: number | null): void {
     if (row !== null && this.maskNode === null) return;
-    if (row === this.state.maskEye) return;
-    this.set(row === null ? { maskEye: null } : { maskEye: row, maskView: { ...this.state.maskView, on: false } });
+    // Whatever ends the eye ends Show depth with it (they are one view at a time), and an eye on ends Show depth.
+    if (row === this.state.maskEye && (row !== null || this.state.showDepth === null)) return;
+    this.set(row === null ? { maskEye: null, showDepth: null } : { maskEye: row, showDepth: null, maskView: { ...this.state.maskView, on: false } });
+    this.syncMaskView();
+  }
+
+  /**
+   * Show depth (`docs/23` §4.8): shows the photo's depth map as grey, white for near, for the Depth row `row` of the node on show, or ends it (`null`). View
+   * state like the eye, no patch and no undo step, and exclusive with it and with Show mask. It ends where the eye does (another node, the photo, Before, a
+   * pick, Esc) and when the Depth card goes away. Ignored while there is no corrector on show.
+   */
+  setShowDepth(row: number | null): void {
+    if (row !== null && this.maskNode === null) return;
+    if (row === this.state.showDepth) return;
+    this.set(row === null ? { showDepth: null } : { showDepth: row, maskEye: null, maskView: { ...this.state.maskView, on: false } });
     this.syncMaskView();
   }
 
@@ -2064,7 +2120,7 @@ export class AppStore {
    */
   setMaskNode(node: number | null): void {
     // A row's eye is for one node: another node, or none, ends it.
-    if (node !== this.maskNode && this.state.maskEye !== null) this.set({ maskEye: null });
+    if (node !== this.maskNode && (this.state.maskEye !== null || this.state.showDepth !== null)) this.set({ maskEye: null, showDepth: null });
     this.maskNode = node;
     this.syncMaskView();
   }
@@ -2080,7 +2136,8 @@ export class AppStore {
     const node = this.maskNode;
     let wanted: MaskView | null = null;
     if (node !== null && photo !== null) {
-      if (eye !== null) wanted = { node, style, row: eye };
+      if (this.state.showDepth !== null) wanted = { node, style: "mask_only", row: this.state.showDepth, depth: true };
+      else if (eye !== null) wanted = { node, style, row: eye };
       else if (on) wanted = { node, style };
     }
     if (!sameMaskView(this.state.maskShown, wanted)) this.set({ maskShown: wanted });
@@ -2320,6 +2377,97 @@ export class AppStore {
   /** Chooses what a plain click does on the Object card: Add point, Remove point or Box. Nothing is sent. */
   setObjectMode(mode: ObjectMode): void {
     if (mode !== this.state.objectMode) this.set({ objectMode: mode });
+  }
+
+  /**
+   * Pick depth (`docs/23` §4.8, §7.6): a click at `(x, y)` of the cell (CSS pixels from its corner) sets `near` and `far` of the Depth row `row` of `node` around the
+   * depth under it. The click is mapped to the photo frame (`viewport_map_points`; a click on the paper around the photo does nothing), the core answers the band
+   * (`sample_depth`, waiting for the depth map if it is still being made) and the two numbers are written as **one** `masks.edit` row patch: one undo step. A
+   * refusal goes to the error bar; no map to read (it failed) changes nothing. Nothing is written for a row that is not a Depth row any more.
+   */
+  async pickDepth(x: number, y: number, node: number, row: number): Promise<void> {
+    const id = this.currentId();
+    if (id === null) return;
+    if (this.viewportQueue.busy) await this.viewportQueue.flush();
+    await this.whenIdle(id);
+    const mapped = await this.mapPoints([[x, y]], "cell");
+    const at = mapped?.[0];
+    if (!at) return;
+    let band: DepthBand | null;
+    try {
+      band = await this.api.sampleDepth(id, at[0], at[1]);
+    } catch (error) {
+      this.fail(error);
+      return;
+    }
+    if (!band || this.currentId() !== id || this.depthRowAt(id, node, row) === undefined) return;
+    await this.update(patchOf(node, { masks: { edit: { [String(row)]: { near: band.near, far: band.far } } } }), true, id);
+  }
+
+  /** The Depth row `row` of `node` of a photo, as the page has it. */
+  private depthRowAt(id: PhotoId, node: number, row: number): Extract<MaskItem, { kind: "depth" }> | undefined {
+    const rs = this.state.settings[id];
+    const item = rs ? nodeOf(rs.settings, node) : undefined;
+    const target = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[row] : undefined;
+    return target?.kind === "depth" ? target : undefined;
+  }
+
+  /**
+   * Focus plane (`docs/23` §4.8, §7.6): sets `near` and `far` of the Depth row `row` of `node` around the plane the camera focused on (`focus_plane`), as one
+   * row patch and one undo step. A photo with no focus point is remembered (`noFocusPoint`: the button goes off, the card says why) and nothing is written. When
+   * the camera's point is exactly the frame's centre the band is made and the card says to check it (`focusCentre`). A depth map that could not be made changes
+   * nothing: its failure is the row's own (`depth_state`).
+   */
+  async focusPlane(node: number, row: number): Promise<void> {
+    const id = this.currentId();
+    if (id === null) return;
+    let answer: FocusPlaneResult;
+    try {
+      answer = await this.api.focusPlane(id);
+    } catch (error) {
+      this.fail(error);
+      return;
+    }
+    if (answer.reason === "no_focus_point") {
+      this.set({ noFocusPoint: { ...this.state.noFocusPoint, [id]: true } });
+      return;
+    }
+    if (answer.near === null || answer.far === null || this.currentId() !== id || this.depthRowAt(id, node, row) === undefined) return;
+    const { near, far } = answer;
+    await this.update(patchOf(node, { masks: { edit: { [String(row)]: { near, far } } } }), true, id);
+    const next = { ...this.state.focusCentre };
+    if (answer.exact_centre) next[id] = { near, far };
+    else delete next[id];
+    this.set({ focusCentre: next });
+  }
+
+  /** Asks once whether the photo has a focus point, so that the card can say so before Focus plane is pressed (the core answers at once for a file with none). */
+  ensureFocusPoint(photo: PhotoId): void {
+    if (this.state.noFocusPoint[photo] || this.focusAsked.has(photo)) return;
+    this.focusAsked.add(photo);
+    void this.api.focusPlane(photo).then(
+      (answer) => {
+        if (answer.reason === "no_focus_point") this.set({ noFocusPoint: { ...this.state.noFocusPoint, [photo]: true } });
+      },
+      () => this.focusAsked.delete(photo),
+    );
+  }
+  private readonly focusAsked = new Set<PhotoId>();
+
+  /**
+   * "Try again" (`docs/23` §4.8): starts a photo's depth map again after it failed. The failure is forgotten at once (the row says "Finding…" while the core works
+   * and the card is the normal one); if it fails again `depth_state` brings the sentence back.
+   */
+  async retryDepth(photo: PhotoId): Promise<void> {
+    if (this.state.depthFailed[photo] === undefined) return;
+    const next = { ...this.state.depthFailed };
+    delete next[photo];
+    this.set({ depthFailed: next });
+    try {
+      await this.api.retryDepth(photo);
+    } catch (error) {
+      this.fail(error);
+    }
   }
 
   /** One find at a time: a click while another is being answered waits, and reads the row as that one left it. */

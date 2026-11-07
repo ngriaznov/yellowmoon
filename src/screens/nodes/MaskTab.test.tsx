@@ -352,6 +352,7 @@ describe("the Add mask menu", () => {
       "SubjectThe main thing in the photo",
       "PeopleEach person. macOS 14 or later",
       "BackgroundWhat is out of focus, from blur",
+      "DepthNear or far, from depth",
       "LinearA gradient across the photo",
       "RadialAn oval, soft at the edge",
       "BrushPaint where the node acts",
@@ -367,13 +368,14 @@ describe("the Add mask menu", () => {
   });
 
   it("lists every kind where the machine can make them, and hides what it cannot", async () => {
-    await setup(FOUR, { maskKinds: ["object", "subject", "people", "background", "linear", "radial", "brush", "color_range", "brightness_range"] });
+    await setup(FOUR, { maskKinds: ["object", "subject", "people", "background", "depth", "linear", "radial", "brush", "color_range", "brightness_range"] });
     const all = await openAddMenu();
     expect(within(all).getAllByRole("menuitem").map((m) => within(m).getAllByText(/./)[0]?.textContent)).toEqual([
       "Object",
       "Subject",
       "People",
       "Background",
+      "Depth",
       "Linear",
       "Radial",
       "Brush",

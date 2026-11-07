@@ -370,7 +370,12 @@ fn view(
         st.mode = ViewportMode::Percent { value: 100.0 };
     }
     st.before = before;
-    st.mask_view = mask.map(|(node, style, row)| MaskView { node, style, row });
+    st.mask_view = mask.map(|(node, style, row)| MaskView {
+        node,
+        style,
+        row,
+        depth: false,
+    });
     st
 }
 

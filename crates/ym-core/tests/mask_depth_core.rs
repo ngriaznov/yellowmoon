@@ -175,3 +175,116 @@ fn the_core_asks_for_the_map_when_the_row_appears_and_a_paste_works_it_out_again
         "{ca} {cb}: the paste used the new photo's pixels"
     );
 }
+
+/// "Try again" (`docs/23` section 4.8): a map that failed is asked for again by `retry_depth` and by nothing else, with no change to the
+/// photo's settings; the page hears the worker start and end again. A photo whose map is made, one that is not the photo being looked
+/// at and one with no failure are left alone.
+#[test]
+fn retry_depth_starts_a_failed_map_again_and_nothing_else_does() {
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    use ym_core::pipeline::DepthPhase;
+
+    let broken = Arc::new(AtomicBool::new(true));
+    let runs = Arc::new(AtomicUsize::new(0));
+    let model = {
+        let (broken, runs) = (Arc::clone(&broken), Arc::clone(&runs));
+        DepthModel::fake(
+            "retry",
+            Arc::new(move |w, h, _, _| {
+                runs.fetch_add(1, Ordering::SeqCst);
+                if broken.load(Ordering::SeqCst) {
+                    return Err("the model stopped before it finished".to_owned());
+                }
+                let (nw, nh) = ym_ml::depth::capped_network_size(w, h);
+                let (cw, ch) = (nw / ym_ml::depth::PATCH, nh / ym_ml::depth::PATCH);
+                let d = (0..cw * ch).map(|i| (i % cw) as f32).collect();
+                Ok((cw, ch, d))
+            }),
+        )
+    };
+    let app = tempfile::tempdir().expect("app root");
+    let mut o = CoreOptions::new(data_root(), app.path().to_path_buf());
+    o.decode_threads = 2;
+    o.thumbnails = false;
+    o.render.depth_model = Some(model);
+    let core = Core::open(o).expect("core");
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&heard);
+    core.renderer
+        .set_depth_listener(Arc::new(move |_, phase| sink.lock().unwrap().push(phase)));
+
+    let (one, other) = (photo_at(0.3), photo_at(0.7));
+    let mut ids = Vec::new();
+    for d in [&one, &other] {
+        let opened = core
+            .session
+            .open(&[d.dir.path().to_path_buf()], OpenOptions::default());
+        assert!(core.session.wait_idle(Duration::from_secs(120)));
+        ids.push(opened.added[0]);
+    }
+    let (a, b) = (ids[0], ids[1]);
+    core.session.set_current(a).expect("current");
+    core.renderer.navigate(a);
+    // Nothing to retry before a failure: no worker starts.
+    core.retry_depth(a).expect("retry with no row");
+    assert!(!core.renderer.depth_worker_alive(a));
+    assert_eq!(runs.load(Ordering::SeqCst), 0);
+
+    let patch: SettingsPatch = serde_json::from_value(
+        json!({ "nodes": { "1": { "masks": { "items": [ { "kind": "depth" } ] } } } }),
+    )
+    .expect("a patch");
+    core.update_settings(a, &patch).expect("the row is added");
+    let sentence = "The Depth mask can't be made: the model stopped before it finished.";
+    wait_until("the failure", 60, || {
+        heard.lock().unwrap().len() == 2 && !core.renderer.depth_worker_alive(a)
+    });
+    assert_eq!(
+        heard.lock().unwrap()[1],
+        DepthPhase::Finished {
+            failed: Some(sentence.to_owned())
+        }
+    );
+    // Preparing again (any edit of the row) asks for nothing: the failure is kept for the key.
+    core.prepare_masks(a);
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "not asked again by itself");
+
+    // A photo that is not the one being looked at is left alone.
+    core.retry_depth(b).expect("retry on another photo");
+    assert!(!core.renderer.depth_worker_alive(b));
+
+    // Retry while the model still fails: the worker runs again and tells the same failure again.
+    core.retry_depth(a).expect("retry");
+    wait_until("the second failure", 60, || {
+        heard.lock().unwrap().len() == 4 && !core.renderer.depth_worker_alive(a)
+    });
+    assert_eq!(runs.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        heard.lock().unwrap()[3],
+        DepthPhase::Finished {
+            failed: Some(sentence.to_owned())
+        }
+    );
+
+    // The model works now: Try again makes the map and the failure is gone.
+    broken.store(false, Ordering::SeqCst);
+    core.retry_depth(a).expect("retry");
+    wait_until("the map", 60, || {
+        heard.lock().unwrap().len() == 6 && !core.renderer.depth_worker_alive(a)
+    });
+    assert_eq!(
+        heard.lock().unwrap()[5],
+        DepthPhase::Finished { failed: None }
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 3);
+    let src = PhotoSource::from_session(&core.session, a).expect("source");
+    assert!(core.renderer.depth_ready(&src));
+    assert_eq!(core.renderer.depth_failure(&src), None);
+    // A map that is made is not made again by a retry.
+    core.retry_depth(a).expect("retry when ready");
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(runs.load(Ordering::SeqCst), 3);
+    assert_eq!(heard.lock().unwrap().len(), 6);
+}

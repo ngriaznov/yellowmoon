@@ -1275,6 +1275,11 @@ export interface MaskView {
    * as it enters the node's fold, with its own Invert and Opacity (`docs/23` §5.8). Left out, or `null`, for the corrector's mask.
    */
   row?: number | null;
+  /**
+   * Show depth (`docs/23` §4.8): with `row` naming a Depth row, the frame shows the photo's depth map as grey, white for near, whole and not cut to the
+   * row's band, whatever `style` says. A row that is not a Depth row shows its own mask. Left out is `false`.
+   */
+  depth?: boolean;
 }
 
 /**

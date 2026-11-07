@@ -678,6 +678,21 @@ impl Core {
         }
     }
 
+    /// `retry_depth(photo_id)` (`docs/23` section 4.8, "Try again"): starts the depth map of a photo again after it failed.
+    /// Returns at once; the worker's end is told to the listener ([`crate::pipeline::DepthPhase`]). Nothing happens for a photo
+    /// whose map did not fail, one that is not the photo being looked at, and a copy of Yellowmoon with no Depth model.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Session`] for a photo that is unknown or not developed yet.
+    pub fn retry_depth(&self, id: PhotoId) -> Result<(), CoreError> {
+        let src = crate::pipeline::PhotoSource::from_session(&self.session, id)?;
+        if self.session.current() == Some(id) {
+            self.renderer.depth_retry(&src);
+        }
+        Ok(())
+    }
+
     /// Asks for the Subject and People masks of the photo in the background when it is the photo being looked at and has a
     /// Subject or People row with the eye on ([`Renderer::vision_prepare`]; `docs/23` section 4.5). Returns at once; the
     /// probe, the picture and Vision run on the worker. Nothing happens for a photo that is not current, one without such

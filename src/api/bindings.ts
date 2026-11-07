@@ -102,6 +102,11 @@ export const commands = {
 	 *  that are off included); `None` shows the corrector's mask (`docs/23` section 5.8).
 	 */
 	row?: number | null,
+	/**
+	 *  Show depth (`docs/23` section 4.8): with `row` naming a Depth row, the frame shows the photo's depth map as grey, white
+	 *  for near, whole and not cut to the row's band, whatever `style` says. A row that is not a Depth row shows its own mask.
+	 */
+	depth?: boolean,
 } | null) => __TAURI_INVOKE<null>("viewport_set_mode", { mode, maskView }),
 	/**  `set_before(before)`: the photo before the look and the display transform. */
 	setBefore: (before: boolean) => __TAURI_INVOKE<null>("set_before", { before }),
@@ -165,6 +170,11 @@ export const commands = {
 	 *  step).
 	 */
 	focusPlane: (photoId: PhotoId) => __TAURI_INVOKE<FocusPlaneResult>("focus_plane", { photoId }),
+	/**
+	 *  `retry_depth(photo_id)` (`docs/23` section 4.8, "Try again"): starts the depth map of a photo again after it failed. It
+	 *  returns at once; `depth_state` says how the worker ended. It changes no settings.
+	 */
+	retryDepth: (photoId: PhotoId) => __TAURI_INVOKE<null>("retry_depth", { photoId }),
 	/**
 	 *  `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
 	 *  starting amounts. Empty when the lens data could not be loaded.
@@ -2027,6 +2037,11 @@ export type MaskView = {
 	 *  that are off included); `None` shows the corrector's mask (`docs/23` section 5.8).
 	 */
 	row?: number | null,
+	/**
+	 *  Show depth (`docs/23` section 4.8): with `row` naming a Depth row, the frame shows the photo's depth map as grey, white
+	 *  for near, whole and not cut to the row's band, whatever `style` says. A row that is not a Depth row shows its own mask.
+	 */
+	depth?: boolean,
 };
 
 /**

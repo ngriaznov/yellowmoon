@@ -334,4 +334,48 @@ describe("Depth (docs/23 §4.8 and §9, D-04)", () => {
     expect(await a.focusPlane(photos[3]!.id)).toEqual({ near: 0.05, far: 0.25, exact_centre: false, reason: null });
     expect(await a.focusPlane(photos[0]!.id)).toEqual({ near: null, far: null, exact_centre: false, reason: "no_focus_point" });
   });
+
+  it("?mockDepth=fail fails the map once for each photo with the core's sentence; retry_depth makes it, and fail-always fails every time", async () => {
+    const a = createMockApi({ speed: Number.POSITIVE_INFINITY, depth: "fail", initialSettings: { DSC04204: ROW } });
+    api = a;
+    const seen = events(a);
+    await a.openPaths(["/photos"]);
+    a.flush();
+    const id = (await a.sessionState()).photos[3]!.id;
+    await a.setCurrent(id);
+    await a.viewportSetRect({ x: 0, y: 0, width: 600, height: 400, scale: 1 });
+    await tick();
+    expect(seen.states).toEqual([{ photo_id: id, failed: "The Depth mask can't be made: the model stopped before it finished." }]);
+    // No band to read from a map that failed, and Focus plane says so.
+    expect(await a.sampleDepth(id, 0.5, 0.95)).toBeNull();
+    expect(await a.focusPlane(id)).toMatchObject({ near: null, far: null, reason: "map_failed" });
+    // Try again: the worker runs again and the map is made.
+    await a.retryDepth(id);
+    await tick();
+    expect(seen.states.at(-1)).toEqual({ photo_id: id, failed: null });
+    expect(await a.sampleDepth(id, 0.5, 0.95)).toEqual({ near: 0.05, far: 0.25 });
+    // A retry on a map that is made starts nothing.
+    const count = seen.states.length;
+    await a.retryDepth(id);
+    await tick();
+    expect(seen.states).toHaveLength(count);
+    const always = createMockApi({ speed: Number.POSITIVE_INFINITY, depth: "fail-always", initialSettings: { DSC04204: ROW } });
+    const again = events(always);
+    await always.openPaths(["/photos"]);
+    always.flush();
+    const other = (await always.sessionState()).photos[3]!.id;
+    await always.setCurrent(other);
+    await always.viewportSetRect({ x: 0, y: 0, width: 600, height: 400, scale: 1 });
+    await tick();
+    await always.retryDepth(other);
+    await tick();
+    expect(again.states.map((e) => e.failed === null)).toEqual([false, false]);
+    always.reset();
+  });
+
+  it("?mockDepth= is read from the page URL", () => {
+    expect(optionsFromLocation("?mockDepth=fail").depth).toBe("fail");
+    expect(optionsFromLocation("?mockDepth=fail-always").depth).toBe("fail-always");
+    expect(optionsFromLocation("?mockDepth=nonsense").depth).toBeUndefined();
+  });
 });

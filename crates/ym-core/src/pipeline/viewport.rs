@@ -117,6 +117,12 @@ pub struct MaskView {
     /// row the node does not have shows the node's mask.
     #[serde(default)]
     pub row: Option<u32>,
+    /// Show depth (`docs/23` section 4.8): with `row` naming a Depth row of the node, the frame shows the photo's depth map
+    /// as grey, white for near, whole and not cut to the row's band (`ym_color::mask_depth::DepthMap::show_plane`), whatever
+    /// `style` says. It is a Mask only view of that row's map, so it goes the way of every other mask view, on the device
+    /// and on the CPU. A `row` that is not a Depth row shows the row's own mask as usual.
+    #[serde(default)]
+    pub depth: bool,
 }
 
 /// Pointer input over the photo (`viewport_input`). Coordinates are CSS pixels in the cell.

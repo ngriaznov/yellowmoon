@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MaskItem } from "../api/types";
-import { FINDING, foundNothing, isFinding, isUnsupported, maskRowKinds, maskRowLabel, maskRowName, maskSubtitle, NOTHING_FOUND, UNSUPPORTED_ROW, widthSlider } from "./maskRows";
+import { CANT_BE_MADE, DEPTH_ROW_NO_MODEL, FINDING, foundNothing, isFinding, isUnsupported, maskRowKinds, maskRowLabel, maskRowName, maskSubtitle, NOTHING_FOUND, UNSUPPORTED_ROW, widthSlider } from "./maskRows";
 import type { VisionRows } from "./maskRows";
 
 const base = { mode: "add", invert: false, enabled: true, opacity: 1 } as const;
@@ -128,5 +128,33 @@ describe("the kinds an eye's index is checked against (docs/23 §7.6)", () => {
     expect(maskRowKinds(settings as never, 2)).toBe("linear,brush");
     expect(maskRowKinds(settings as never, null)).toBe("");
     expect(maskRowKinds(settings as never, 9)).toBe("");
+  });
+});
+
+describe("a Depth row's words (docs/23 §7.6)", () => {
+  const depth: MaskItem = { ...base, feather: 0, grow: 0, refine: 0.5, kind: "depth", near: 0.24, far: 0.44, softness: 0.5 } as MaskItem;
+  const none: VisionRows = { unsupported: [], nothing: [] };
+
+  it("is its band, near to far times 100", () => {
+    expect(maskSubtitle(depth)).toBe("24 to 44");
+    expect(maskRowLabel(depth)).toBe("Depth mask, 24 to 44");
+  });
+
+  it("says Finding… while the map is made, Can't be made when it failed, and the sentence of the missing model before both", () => {
+    expect(maskRowLabel(depth, true)).toBe("Depth mask, Finding…");
+    expect(isFinding(depth, true)).toBe(true);
+    expect(isFinding({ ...depth, enabled: false }, true)).toBe(false);
+    const failed: VisionRows = { ...none, depthFailed: true };
+    expect(maskSubtitle(depth, failed)).toBe(CANT_BE_MADE);
+    expect(CANT_BE_MADE).toBe("Can't be made");
+    // A failed map is not "finding" for the row, whatever else the core is making.
+    expect(isFinding(depth, true, failed)).toBe(false);
+    expect(maskRowLabel(depth, true, undefined, failed)).toBe("Depth mask, Can't be made");
+    const missing: VisionRows = { ...none, depthMissing: true, depthFailed: true };
+    expect(isUnsupported(depth, missing)).toBe(true);
+    expect(DEPTH_ROW_NO_MODEL).toBe("Depth masks need the depth model. Reinstall the app.");
+    expect(maskRowLabel(depth, true, undefined, missing)).toBe(`Depth mask, ${DEPTH_ROW_NO_MODEL}`);
+    expect(isUnsupported(depth, none)).toBe(false);
+    expect(isUnsupported(depth, undefined)).toBe(false);
   });
 });

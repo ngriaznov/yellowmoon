@@ -72,6 +72,8 @@ use crate::session::PhotoId;
 use ym_color::display::OutputTarget;
 use ym_color::plan::Stop as PlanStop;
 
+use crate::settings::MaskShape;
+
 mod background;
 mod depth;
 mod lens;
@@ -2153,10 +2155,11 @@ impl<'a> Job<'a> {
     pub fn mask_key(&self) -> Option<String> {
         let (v, g) = self.mask.as_ref()?;
         Some(format!(
-            "mask:{}:{:?}:{:?}:{}",
+            "mask:{}:{:?}:{:?}:{}:{}",
             v.node,
             v.style,
             v.row,
+            v.depth,
             g.as_ref()
                 .map(|g| format!("{:?}", g.key))
                 .unwrap_or_default()
@@ -2201,6 +2204,51 @@ impl<'a> Job<'a> {
         let only = view
             .row
             .and_then(|r| only_row(&self.src.settings, view.node, r as usize));
+        // Show depth (`MaskView::depth`) is the Mask only view of a Depth row whose steps are left out: the settings carry the row
+        // alone, plain (the plane of the whole map has no Grow, Feather, Refine edges, Invert or Opacity), and the style is Mask
+        // only. On any other row or kind the flag means nothing.
+        let depth_row = view.depth
+            && view.row.is_some_and(|r| {
+                matches!(
+                    self.src
+                        .settings
+                        .nodes
+                        .masks_of(view.node)
+                        .and_then(|m| m.items.get(r as usize))
+                        .map(|row| &row.shape),
+                    Some(MaskShape::Depth(_))
+                )
+            });
+        let (view, only) = if depth_row {
+            let plain = only.map(|mut settings| {
+                if let Some(row) = settings
+                    .nodes
+                    .masks_of_mut(view.node)
+                    .and_then(|m| m.items.first_mut())
+                {
+                    row.invert = false;
+                    row.opacity = 1.0;
+                }
+                settings
+            });
+            (
+                MaskView {
+                    style: MaskStyle::MaskOnly,
+                    ..view
+                },
+                plain,
+            )
+        } else {
+            (
+                MaskView {
+                    depth: false,
+                    ..view
+                },
+                only,
+            )
+        };
+        // The plans below are made for this view (Show depth asks the planes for the map as grey, for this node only).
+        self.mask = Some((view, None));
         let (view, plan) = match only {
             Some(settings) => {
                 let src = PhotoSource {
@@ -2213,7 +2261,11 @@ impl<'a> Job<'a> {
                 )
             }
             None => {
-                let view = MaskView { row: None, ..view };
+                let view = MaskView {
+                    row: None,
+                    depth: false,
+                    ..view
+                };
                 (
                     view,
                     self.grade_to(target, true, PlanStop::Mask(view.node))?,

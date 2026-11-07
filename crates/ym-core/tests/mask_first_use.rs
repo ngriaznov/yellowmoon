@@ -146,6 +146,7 @@ fn view(zoom_100: bool, mask: Option<(MaskStyle, Option<u32>)>) -> ViewportState
         node: 2,
         style,
         row,
+        depth: false,
     });
     st
 }

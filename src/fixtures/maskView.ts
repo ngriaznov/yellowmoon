@@ -273,6 +273,41 @@ function visionShape(row: Extract<MaskItem, { kind: "subject" | "people" }>, ind
   return `<defs>${blurs.join("")}${mask}</defs><rect data-vision-row="${row.kind}" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="${ink}" fill-opacity="${opacity}" mask="url(#${id})"/>`;
 }
 
+/**
+ * The depth positions the mock's depth map gives the flat scene's three areas (`docs/algorithms/06` §5.8: 0 is the nearest part of the photo): the near ground, the far
+ * hill and the sky. The core's map is the photo's own; this is enough for the interface tests and the reference screenshots.
+ */
+export const MOCK_DEPTH = { near: 0.15, far: 0.7, sky: 0.95 } as const;
+
+/**
+ * Show depth on the flat scene (`docs/23` §4.8): the depth map as grey, **white for near**, whole and not cut to a band: the sky over the frame, the far hill (the half
+ * ellipse of `scenes.ts`) and the near band, each at the grey of its depth position, a little soft as a map of coarse cells is. Before the map is made
+ * (`ready` false) the view selects nothing and is black, as the core's is.
+ */
+export function depthViewSvg(box: MaskRect, photo?: MaskPhoto, ready = true): string {
+  const frame = photo ? { x: 0, y: 0, width: photo.width, height: photo.height } : box;
+  const long = Math.max(frame.width, frame.height);
+  const grey = (z: number): string => {
+    const v = Math.round(255 * (1 - z));
+    return `rgb(${v},${v},${v})`;
+  };
+  const at = (x: number, y: number): [string, string] => [round(frame.x + x * frame.width), round(frame.y + y * frame.height)];
+  const [x0, y0] = at(0, 0);
+  const [nx, ny] = at(0, 0.74);
+  const [cx, cy] = at(HILL.cx, HILL.cy);
+  const rect = (x: string, y: string, h: number, fill: string): string => `<rect x="${x}" y="${y}" width="${round(frame.width)}" height="${round(h)}" fill="${fill}"/>`;
+  const map = ready
+    ? rect(x0, y0, frame.height, grey(MOCK_DEPTH.sky)) +
+      `<ellipse cx="${cx}" cy="${cy}" rx="${round(HILL.rx * frame.width)}" ry="${round(HILL.ry * frame.height)}" fill="${grey(MOCK_DEPTH.far)}"/>` +
+      rect(nx, ny, 0.26 * frame.height, grey(MOCK_DEPTH.near))
+    : "";
+  const sigma = 0.006 * long;
+  const filter = `<filter id="mvdepthblur" filterUnits="userSpaceOnUse" x="${round(frame.x)}" y="${round(frame.y)}" width="${round(frame.width)}" height="${round(frame.height)}"><feGaussianBlur stdDeviation="${round(sigma)}"/></filter>`;
+  const content = `<rect x="${round(frame.x)}" y="${round(frame.y)}" width="${round(frame.width)}" height="${round(frame.height)}" fill="#000"/><g filter="url(#mvdepthblur)">${map}</g>`;
+  const placed = photo ? `<g transform="matrix(${photo.matrix.map(round).join(" ")})">${content}</g>` : content;
+  return `<g data-mask-view="depth"><defs>${filter}</defs>${placed}</g>`;
+}
+
 /** One row's gradient shape painted with `ink` (a luminance, "#fff" or "#000") at `m` and nothing outside; empty for a kind that selects nothing. */
 function rowShape(row: MaskItem, index: number, ink: string, box: MaskRect, found: VisionFound): string {
   const long = Math.max(box.width, box.height);
@@ -343,9 +378,18 @@ export function masksOfView(masks: MaskSettings, row: number | null | undefined)
 
 /**
  * The SVG that draws a mask view over the picture at `box` (in the frame's pixels): `Overlay` tints the accent where the mask is 1,
- * `Mask only` paints the mask as grey over black. An empty string for no view.
+ * `Mask only` paints the mask as grey over black. With `depth.on` and a Depth row it is the depth map as grey, white for near (`depthViewSvg`). An empty string for no view.
  */
-export function maskViewSvg(style: MaskStyle, masks: MaskSettings, box: MaskRect, photo?: MaskPhoto, found: VisionFound = { subject: true, people: false }): string {
+export function maskViewSvg(
+  style: MaskStyle,
+  masks: MaskSettings,
+  box: MaskRect,
+  photo?: MaskPhoto,
+  found: VisionFound = { subject: true, people: false },
+  depth?: { on: boolean; ready: boolean },
+): string {
+  // Show depth (`MaskView.depth`): for a Depth row the picture is the depth map as grey, whatever the style; for any other row the flag means nothing.
+  if (depth?.on && masks.items.length === 1 && masks.items[0]?.kind === "depth") return depthViewSvg(box, photo, depth.ready);
   // The shapes are in the photo frame: drawn on a rectangle of the photo's own size and carried to the picture by its map (the turn and the crop).
   const content = photo
     ? `<g transform="matrix(${photo.matrix.map(round).join(" ")})">${maskContent(masks, { x: 0, y: 0, width: photo.width, height: photo.height }, found)}</g>`

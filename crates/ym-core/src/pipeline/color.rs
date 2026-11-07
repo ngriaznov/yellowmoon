@@ -553,6 +553,7 @@ fn raster_row_of(
     shape: &MaskShape,
     background: Option<&Arc<BlurMap>>,
     objects: Option<&Arc<ObjectPlanes>>,
+    node: u32,
 ) -> Option<RasterRow> {
     match shape {
         MaskShape::Object(o) => objects.and_then(|p| p.plane_for(o)).map(|plane| RasterRow {
@@ -582,6 +583,15 @@ fn raster_row_of(
             feather: b.feather,
             refine: b.refine,
         }),
+        // Show depth: the whole map as grey, with none of the row's steps (the view shows what the band is cut from).
+        MaskShape::Depth(_) if objects.is_some_and(|p| p.depth_show_for(node).is_some()) => objects
+            .and_then(|p| p.depth_show_for(node))
+            .map(|plane| RasterRow {
+                source: RasterSource::Plane(Arc::clone(plane)),
+                grow: 0.0,
+                feather: 0.0,
+                refine: 0.0,
+            }),
         MaskShape::Depth(d) => objects.and_then(|p| p.depth_map()).map(|map| RasterRow {
             source: RasterSource::Depth(Arc::new(DepthSource {
                 map: Arc::clone(map),
@@ -618,6 +628,7 @@ fn mask_rows(
     rasters: &mut RasterSet,
     background: Option<&Arc<BlurMap>>,
     objects: Option<&Arc<ObjectPlanes>>,
+    node: u32,
 ) -> NodeMasks {
     let rows = m
         .items
@@ -651,7 +662,8 @@ fn mask_rows(
                 | MaskShape::People(_)
                 | MaskShape::Background(_)
                 | MaskShape::Depth(_)
-                | MaskShape::Brush(_) => match raster_row_of(&row.shape, background, objects) {
+                | MaskShape::Brush(_) => match raster_row_of(&row.shape, background, objects, node)
+                {
                     Some(r) if rasters.rows.len() < MAX_RASTER_PLANES => {
                         rasters.rows.push(r);
                         MaskKind::Raster {
@@ -699,7 +711,7 @@ pub fn only_row(s: &DevelopSettings, node: u32, row: usize) -> Option<DevelopSet
 /// it needs the photo's blur map), and the chain's builder numbers them across the nodes of a plan.
 #[must_use]
 pub fn node_masks(m: &MaskSettings) -> NodeMasks {
-    mask_rows(m, &mut RasterSet::default(), None, None)
+    mask_rows(m, &mut RasterSet::default(), None, None, 0)
 }
 
 /// Whether the photo's plan that ends at `stop` has a Background row with the eye on: the render then needs the
@@ -993,7 +1005,7 @@ fn node_set(
     let mut masks = std::collections::BTreeMap::new();
     for id in plan.node_ids() {
         if let Some(m) = s.nodes.masks_of(id) {
-            masks.insert(id, mask_rows(m, &mut rasters, background, objects));
+            masks.insert(id, mask_rows(m, &mut rasters, background, objects, id));
         }
     }
     let mut others = std::collections::BTreeMap::new();
@@ -1196,7 +1208,12 @@ fn nodes_key(
                 MaskShape::Depth(d) => {
                     let _ = write!(
                         k,
-                        "depth:{}:{}:{}:{}:{}:{}:{};",
+                        "depth{}:{}:{}:{}:{}:{}:{}:{};",
+                        if objects.is_some_and(|p| p.depth_show_for(id).is_some()) {
+                            "-show"
+                        } else {
+                            ""
+                        },
                         objects
                             .and_then(|p| p.depth_map())
                             .map_or_else(|| "none".to_owned(), |m| format!("{:x}", m.key)),

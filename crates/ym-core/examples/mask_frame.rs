@@ -115,6 +115,7 @@ impl Run<'_> {
             node: 2,
             style,
             row: None,
+            depth: false,
         });
         st
     }

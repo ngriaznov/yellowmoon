@@ -2,14 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { fitInCell } from "./crop/cropMath";
 
-/** What a click on the photo picks: a white for the white balance, a colour for the colour warp, or the colour of a Colour range mask. */
-export type PickMode = "white" | "color" | "range";
+/** What a click on the photo picks: a white for the white balance, a colour for the colour warp, the colour of a Colour range mask, or the depth for a Depth mask. */
+export type PickMode = "white" | "color" | "range" | "depth";
 
 /** The layer's accessible name in each mode: what to click, and how to do it from the keyboard. */
 const LAYER_LABELS: Readonly<Record<PickMode, string>> = {
   white: "Pick white. Click something neutral, or move the crosshair with the arrow keys and press Return.",
   color: "Pick colour. Click a colour in the photo, or move the crosshair with the arrow keys and press Return.",
   range: "Pick colour for the Colour range mask. Click a colour in the photo, or move the crosshair with the arrow keys and press Return.",
+  depth: "Pick depth. Click the part of the photo to select, or move the crosshair with the arrow keys and press Return.",
 };
 
 export interface PickLayerProps {

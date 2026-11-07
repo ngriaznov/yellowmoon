@@ -50,6 +50,9 @@ pub(crate) const PREPARE_DEBOUNCE: Duration = Duration::from_millis(150);
 /// How many planes a photo keeps (1.4 MB each at 1024 x 683).
 const PLANES_KEPT: usize = 8;
 
+/// Mixed into the key of the Show depth plane, so that it never shares a key with a band cut from the same map.
+const SHOW_DEPTH_KEY: u64 = 0x5348_4f57_4445_5054;
+
 /// How often a request that waits for the encoder looks at its own cancel flag.
 const WAIT_STEP: Duration = Duration::from_millis(40);
 
@@ -697,6 +700,13 @@ impl Job<'_> {
             merged.insert_vision(kind, plane);
         }
         if let Some(map) = depth {
+            // A Show depth view of a Depth row: the whole map as grey, in the place of the row's band.
+            if let Some((view, _)) = self.mask.as_ref().filter(|(v, _)| v.depth) {
+                merged.insert_depth_show(
+                    view.node,
+                    Arc::new(map.show_plane(map.key ^ SHOW_DEPTH_KEY)),
+                );
+            }
             merged.insert_depth(map);
         }
         Ok(Some(Arc::new(merged)))

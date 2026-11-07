@@ -1577,17 +1577,20 @@ span.ym-filmstrip__thumb {
   gap: 10px;
   margin: 0 0 8px;
 }
+.ym-mask-pick__right {
+  margin-left: auto;
+}
 .ym-card__header > .ym-mask-pick {
   margin: 0;
 }
 
-/* The Add mask menu opens to the left of the panel, over the photo and the graph: up to 520 px tall. */
+/* The Add mask menu opens to the left of the panel, over the photo and the graph: up to 580 px tall (ten items with Depth are 573 px; a shorter window scrolls it). */
 .ym-add-mask-menu {
   min-width: 19rem;
-  max-height: min(520px, var(--radix-dropdown-menu-content-available-height, 520px));
+  max-height: min(580px, var(--radix-dropdown-menu-content-available-height, 580px));
   overflow-y: auto;
 }
-/* Nine items and three group titles fit in the 520 px without scrolling, and the lines under the names stay readable over a bright photo (the menu is
+/* Ten items and three group titles fit in the 580 px without scrolling, and the lines under the names stay readable over a bright photo (the menu is
    over the photo, not over the dark panel as the other menus are). */
 .ym-add-mask-menu {
   --glass-liquid-opacity: 82%;

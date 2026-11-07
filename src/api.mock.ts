@@ -135,7 +135,7 @@ import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
 import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cropMath";
 import { copiedPatch, pastedOnto, refusalOfPatch, validateGraph } from "./fixtures/graph";
-import { hasBackgroundRow, hasObjectRow, maskViewSvg, masksOfView, SCENES_WITH_PEOPLE, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
+import { hasBackgroundRow, hasObjectRow, maskViewSvg, masksOfView, MOCK_DEPTH, SCENES_WITH_PEOPLE, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
 import { diffSettings } from "./state/history";
 import { cardStates, linkInto } from "./state/graphOps";
 import {
@@ -190,6 +190,10 @@ export const FIND_MS = 120;
 export const VISION_MS = 500;
 /** How long the mock takes to make a photo's depth map in the background (divided by `speed`): long enough for "Finding…" to show. */
 export const DEPTH_MS = 500;
+/** The flat scene whose focus point the mock puts at the exact centre of the frame. */
+export const FOCUS_AT_CENTRE_SCENE = "DSC04212";
+/** The sentence the mock's depth worker fails with (`?mockDepth=fail`): the core's "The Depth mask can't be made: <the model's text>." */
+export const DEPTH_FAILED = "The Depth mask can't be made: the model stopped before it finished.";
 /** What the decoder's time reads in the mock's "Object found" pill: 0.4 s. */
 export const FOUND_MS = 412;
 
@@ -505,6 +509,11 @@ export interface MockOptions {
    * box is on it and answers nothing found anywhere else; `none` always answers nothing found.
    */
   maskFind?: "scene" | "none";
+  /**
+   * What the mock's depth worker does (`?mockDepth=`, `docs/23` §4.8): `ok` (the default) makes the map; `fail` fails the first time for each photo, with the
+   * sentence "The Depth mask can't be made: the model stopped before it finished.", and makes it when `retry_depth` asks again; `fail-always` fails every time.
+   */
+  depth?: "ok" | "fail" | "fail-always";
 }
 
 /** What the viewport commands have recorded, for tests. */
@@ -966,7 +975,7 @@ const hasDepthRow = (settings: DevelopSettings): boolean =>
   settings.nodes.items.some((node) => (node.kind === "corrector" || node.kind === "film") && node.masks.items.some((row) => row.kind === "depth" && row.enabled));
 
 /** The depth positions the mock's depth map gives the flat scenes' areas (`docs/algorithms/06` §5.8: 0 is the nearest part of the photo): the near ground, the far hill and the sky. */
-const DEPTH_RANKS = { near: 0.15, far: 0.7, sky: 0.95 } as const;
+const DEPTH_RANKS = MOCK_DEPTH;
 
 /** The depth position of the point `(x, y)` of a flat scene: the near ground is near, the far hill far and the sky and the sun farthest. */
 function depthRankIn(scene: Scene, x: number, y: number): number {
@@ -1043,6 +1052,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   cpu: false,
   maskKinds: BUILT_MASK_KINDS,
   maskFind: "scene",
+  depth: "ok",
 };
 
 /** Fills in defaults, ignoring `undefined` values and a speed that isn't a positive number. */
@@ -1143,6 +1153,8 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (masks) out.maskKinds = masks;
   const maskFind = params.get("mockMaskFind");
   if (maskFind === "none" || maskFind === "scene") out.maskFind = maskFind;
+  const depth = params.get("mockDepth");
+  if (depth === "ok" || depth === "fail" || depth === "fail-always") out.depth = depth;
   return out;
 }
 
@@ -1603,6 +1615,11 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   const depthTimers = new Map<PhotoId, ReturnType<typeof setTimeout>>();
   /** What waits for a photo's depth map (`sample_depth`). */
   const depthWaiting = new Map<PhotoId, Array<() => void>>();
+  /** The sentence of the failure of each photo whose depth map failed (`?mockDepth=fail`), until `retry_depth` asks again. */
+  const depthFailures = new Map<PhotoId, string>();
+  /** The photos whose depth map has failed once already (`?mockDepth=fail` fails each photo once). */
+  const depthFailedOnce = new Set<PhotoId>();
+  const depthFailure = (id: PhotoId): string | null => depthFailures.get(id) ?? null;
   /** The photos whose Object features the mock has "made" (`object_state` says "preparing" for a moment, once for each photo). */
   const objectReady = new Set<PhotoId>();
   /** The encoder of the photos that are getting ready: when it ends, and what waits for it (`mask_find`). */
@@ -1725,7 +1742,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       subject: scene.subject && options.maskKinds.includes("subject") && (ready?.has("subject") ?? false),
       people: scene.people && options.maskKinds.includes("people") && (ready?.has("people") ?? false),
     };
-    return maskViewSvg(view.style, masksOfView(node.masks, view.row), { x: fit.x * width, y: fit.y * height, width: fit.width * width, height: fit.height * height }, frame, found);
+    const depth = { on: view.depth === true, ready: depthReady.has(rec.summary.id) && depthFailure(rec.summary.id) === null };
+    return maskViewSvg(view.style, masksOfView(node.masks, view.row), { x: fit.x * width, y: fit.y * height, width: fit.width * width, height: fit.height * height }, frame, found, depth);
   }
 
   /** The picture of the cell the fallback viewport would send: the developed scene letterboxed on paper, as many pixels as the cell has. */
@@ -1797,16 +1815,20 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
    */
   function prepareDepth(rec: PhotoRecord): void {
     const id = rec.summary.id;
-    if (!options.maskKinds.includes("depth") || !hasDepthRow(rec.settings) || depthReady.has(id) || depthTimers.has(id)) return;
+    if (!options.maskKinds.includes("depth") || !hasDepthRow(rec.settings) || depthReady.has(id) || depthTimers.has(id) || depthFailures.has(id)) return;
     emitSoon("viewport_busy", { busy: true, cpu: options.cpu, finding: true });
     depthTimers.set(
       id,
       setTimeout(() => {
         depthTimers.delete(id);
-        depthReady.add(id);
+        const fails = options.depth === "fail-always" || (options.depth === "fail" && !depthFailedOnce.has(id));
+        if (fails) {
+          depthFailedOnce.add(id);
+          depthFailures.set(id, DEPTH_FAILED);
+        } else depthReady.add(id);
         for (const wake of depthWaiting.get(id)?.splice(0) ?? []) wake();
         emit("viewport_busy", { busy: false, cpu: options.cpu, finding: false });
-        emit("depth_state", { photo_id: id, failed: null });
+        emit("depth_state", { photo_id: id, failed: fails ? DEPTH_FAILED : null });
         sendFrame();
       }, DEPTH_MS / options.speed),
     );
@@ -2658,6 +2680,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     for (const timer of visionTimers.values()) clearTimeout(timer);
     visionTimers.clear();
     depthReady.clear();
+    depthFailures.clear();
+    depthFailedOnce.clear();
     for (const timer of depthTimers.values()) clearTimeout(timer);
     depthTimers.clear();
     depthWaiting.clear();
@@ -3053,6 +3077,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         const rec = photo(photoId);
         // The click waits for the depth map if it is still being made, then reads the ranks of the scene's areas.
         await depthDone(photoId);
+        if (depthFailures.has(photoId)) return null;
         depthReady.add(photoId);
         return pickDepthBand(depthRankIn(rec.scene, clamp(x, 0, 1), clamp(y, 0, 1)));
       }),
@@ -3062,8 +3087,18 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         const rec = photo(photoId);
         // Some scenes have a focus point on the near ground (the scenes with a person), the others none (an older body).
         if (!SCENES_WITH_PEOPLE.has(rec.scene.name)) return { near: null, far: null, exact_centre: false, reason: "no_focus_point" };
+        if (depthFailures.has(photoId)) return { near: null, far: null, exact_centre: false, reason: "map_failed" };
         const band = pickDepthBand(DEPTH_RANKS.near);
-        return { near: band.near, far: band.far, exact_centre: false, reason: null };
+        // One scene's focus point is exactly the frame's centre, the value Sony writes when it does not know (the card says to check the result).
+        return { near: band.near, far: band.far, exact_centre: rec.scene.name === FOCUS_AT_CENTRE_SCENE, reason: null };
+      }),
+
+    retryDepth: (photoId) =>
+      run("retryDepth", (): void => {
+        const rec = photo(photoId);
+        // Only a map that failed starts again; the worker runs as it did (the viewport is busy and finding, then `depth_state` says how it ended).
+        if (!depthFailures.delete(photoId)) return;
+        prepareDepth(rec);
       }),
 
     lensList: () => run("lensList", () => (options.lensesMissing ? [] : MOCK_LENSES.map((lens) => ({ ...lens })))),

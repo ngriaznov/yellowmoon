@@ -1,7 +1,7 @@
 /** The mask view on the mock's flat scene (`maskView.ts`): the shapes the page tests and the reference screenshots rely on. */
 import { describe, expect, it } from "vitest";
 import type { MaskItem, MaskSettings } from "../api/types";
-import { backgroundValue, BLUR_RAMP_MIN, hasBackgroundRow, MASK_ACCENT, maskViewSvg, masksOfView, MOCK_BLUR, OVERLAY_WEIGHT } from "./maskView";
+import { backgroundValue, BLUR_RAMP_MIN, depthViewSvg, MOCK_DEPTH, hasBackgroundRow, MASK_ACCENT, maskViewSvg, masksOfView, MOCK_BLUR, OVERLAY_WEIGHT } from "./maskView";
 import type { DevelopSettings } from "../api/types";
 
 const BOX = { x: 100, y: 50, width: 600, height: 400 };
@@ -230,5 +230,28 @@ describe("masksOfView (a row's own mask, docs/23 §5.8)", () => {
     expect(svg).toContain("translate(580 250)");
     expect(svg).not.toContain("translate(220 250)");
     expect(svg).toMatch(/<mask [^>]*><rect [^>]*fill="#000"\/>/);
+  });
+});
+
+describe("Show depth (docs/23 §4.8)", () => {
+  const depthRow = { mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, kind: "depth", near: 0.4, far: 0.45, softness: 0 } as MaskItem;
+  const only = masksOfView({ invert: false, items: [depthRow] }, 0);
+
+  it("draws the whole map as grey, white for near (the near ground lighter than the far hill, the hill lighter than the sky), and not the row's band", () => {
+    const svg = maskViewSvg("overlay", only, BOX, undefined, undefined, { on: true, ready: true });
+    expect(svg).toContain('data-mask-view="depth"');
+    // No tint and no row ink: the picture is grey.
+    expect(svg).not.toContain("#ff6fd2");
+    const grey = (z: number): number => Math.round(255 * (1 - z));
+    expect(svg).toContain(`rgb(${grey(MOCK_DEPTH.near)},${grey(MOCK_DEPTH.near)},${grey(MOCK_DEPTH.near)})`);
+    expect(grey(MOCK_DEPTH.near)).toBeGreaterThan(grey(MOCK_DEPTH.far));
+    expect(grey(MOCK_DEPTH.far)).toBeGreaterThan(grey(MOCK_DEPTH.sky));
+  });
+
+  it("is black until the map is made, and means nothing for a row that is not a Depth row or when it is off", () => {
+    expect(depthViewSvg(BOX, undefined, false)).not.toContain("<ellipse");
+    const linear = { mode: "add", invert: false, enabled: true, opacity: 1, kind: "linear", center: [0.5, 0.5], angle_deg: 0, feather: 0.2 } as MaskItem;
+    expect(maskViewSvg("mask_only", masksOfView({ invert: false, items: [linear] }, 0), BOX, undefined, undefined, { on: true, ready: true })).toContain('data-mask-view="mask_only"');
+    expect(maskViewSvg("mask_only", only, BOX, undefined, undefined, { on: false, ready: true })).toContain('data-mask-view="mask_only"');
   });
 });

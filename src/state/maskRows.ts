@@ -39,20 +39,30 @@ export const UNSUPPORTED_ROW: Readonly<Record<"subject" | "people", string>> = {
  * first blur map or its Subject and People masks (`viewport_busy.finding`). The row's subtitle is then {@link FINDING}, with a spinner. (The flag is
  * the photo's, not a row's: while the core finds one kind the other rows of these kinds say it too.)
  */
-export const isFinding = (row: MaskItem, finding: boolean): boolean =>
-  finding && row.enabled && (row.kind === "background" || row.kind === "depth" || row.kind === "subject" || row.kind === "people");
+export const isFinding = (row: MaskItem, finding: boolean, vision?: VisionRows): boolean =>
+  finding && row.enabled && !(row.kind === "depth" && (vision?.depthFailed ?? false)) && (row.kind === "background" || row.kind === "depth" || row.kind === "subject" || row.kind === "people");
 
-/** What the Mask tab knows about Subject and People on this computer and on the photo (`docs/23` §7.6). */
+/** What the subtitle of a Depth row says when the depth map could not be made (`docs/23` §7.6). */
+export const CANT_BE_MADE = "Can't be made";
+
+/** What the subtitle of a Depth row says where the depth weights are missing (`docs/23` §3.10a), the core's sentence. */
+export const DEPTH_ROW_NO_MODEL = "Depth masks need the depth model. Reinstall the app.";
+
+/** What the Mask tab knows about Subject and People on this computer and on the photo, and about Depth (`docs/23` §7.6). */
 export interface VisionRows {
+  /** The depth weights are missing on this computer (`mask_kinds` leaves Depth out): a Depth row says so, selects nothing and has no card. */
+  depthMissing?: boolean;
+  /** The photo's depth map failed (`depth_state`): its Depth rows say "Can't be made". */
+  depthFailed?: boolean;
   /** The kinds this computer cannot make (the ones `mask_kinds` leaves out): their rows say so. Empty while the kinds are not known. */
   unsupported: readonly MaskKind[];
   /** The kinds whose newest mask for the photo found nothing (`vision_state`): their rows say "Nothing found". */
   nothing: readonly MaskKind[];
 }
 
-/** Whether a Subject or People row is of a kind this computer cannot make: it stays in the list and selects nothing. */
+/** Whether a row is of a kind this computer cannot make (Subject and People on a Mac without Vision, Depth without its weights): it stays in the list and selects nothing. */
 export const isUnsupported = (row: MaskItem, vision: VisionRows | undefined): boolean =>
-  (row.kind === "subject" || row.kind === "people") && (vision?.unsupported.includes(row.kind) ?? false);
+  row.kind === "depth" ? (vision?.depthMissing ?? false) : (row.kind === "subject" || row.kind === "people") && (vision?.unsupported.includes(row.kind) ?? false);
 
 /** Whether a Subject or People row found nothing in the photo (the subtitle says so unless a new mask is being found). */
 export const foundNothing = (row: MaskItem, vision: VisionRows | undefined): boolean =>
@@ -172,7 +182,8 @@ export function maskSubtitle(row: MaskItem, vision?: VisionRows): string {
     case "background":
       return `Level ${Math.round(row.level * 100)}`;
     case "depth":
-      return `${Math.round(row.near * 100)} to ${Math.round(row.far * 100)}`;
+      if (isUnsupported(row, vision)) return DEPTH_ROW_NO_MODEL;
+      return vision?.depthFailed ? CANT_BE_MADE : `${Math.round(row.near * 100)} to ${Math.round(row.far * 100)}`;
     case "linear":
     case "radial":
       return `Feather ${Math.round(row.feather * 100)}`;
@@ -192,5 +203,5 @@ export function maskSubtitle(row: MaskItem, vision?: VisionRows): string {
  */
 export const maskRowLabel = (row: MaskItem, finding = false, object?: ObjectBusy, vision?: VisionRows): string =>
   `${maskRowName(row)} mask, ${
-    isUnsupported(row, vision) ? maskSubtitle(row, vision) : isFinding(row, finding) ? FINDING : (objectBusyText(row, object) ?? maskSubtitle(row, vision))
+    isUnsupported(row, vision) ? maskSubtitle(row, vision) : isFinding(row, finding, vision) ? FINDING : (objectBusyText(row, object) ?? maskSubtitle(row, vision))
   }`;

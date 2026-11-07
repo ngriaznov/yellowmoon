@@ -342,8 +342,10 @@ export function Photos() {
   const rowIndex = maskRow !== null && maskRow < maskRows.length ? maskRow : null;
   const selectedMask = rowIndex === null ? undefined : maskRows[rowIndex];
   const rangeShown = panel === "tools" && view === "nodes" && nodeTab === "mask" && hasMasks && !cropping && selectedMask?.kind === "color_range" && selectedMask.enabled;
+  // Pick depth (`docs/23` §7.6) is the same for the selected Depth row.
+  const depthShown = panel === "tools" && view === "nodes" && nodeTab === "mask" && hasMasks && !cropping && selectedMask?.kind === "depth" && selectedMask.enabled;
   const picking: PickMode | null =
-    asked !== null && asked.node === onNode && (asked.mode === "range" ? rangeShown : colourShown) ? asked.mode : null;
+    asked !== null && asked.node === onNode && (asked.mode === "range" ? rangeShown : asked.mode === "depth" ? depthShown : colourShown) ? asked.mode : null;
   /** Starts a pick on the selected node, or ends it (null). */
   const setPicking = useCallback((mode: PickMode | null, node?: NodeId): void => {
     setAsked(mode === null ? null : { mode, node: node ?? onNodeNow.current });
@@ -554,6 +556,10 @@ export function Photos() {
   const setPickingRange = useCallback((on: boolean): void => {
     setAsked((was) => (on ? { mode: "range", node: onNodeNow.current } : was?.mode === "range" ? null : was));
   }, [onNodeNow]);
+  // Pick depth of a Depth row, from its card's toggle (or when the row is added). Exclusive with the picks above; stays on for several clicks.
+  const setPickingDepth = useCallback((on: boolean): void => {
+    setAsked((was) => (on ? { mode: "depth", node: onNodeNow.current } : was?.mode === "depth" ? null : was));
+  }, [onNodeNow]);
   // A click with Pick colour on reads the chroma at the input of the selected node's warp and puts the pin in that node (`docs/23` §7.5).
   const pickedNode = view === "nodes" && typeof onNode === "number" ? onNode : MAIN_ID;
   const onPicked = useCallback(
@@ -565,6 +571,11 @@ export function Photos() {
       if (picking === "range") {
         // The chroma at the node, set as the centre of the selected Colour range row (`docs/23` §7.6).
         if (rowIndex !== null && typeof onNode === "number") void store.pickRange(point.x, point.y, onNode, rowIndex);
+        return;
+      }
+      if (picking === "depth") {
+        // The band around the depth under the click, set on the selected Depth row (`docs/23` §4.8).
+        if (rowIndex !== null && typeof onNode === "number") void store.pickDepth(point.x, point.y, onNode, rowIndex);
         return;
       }
       setPicking(null);
@@ -603,7 +614,8 @@ export function Photos() {
     [nodesOn, cropping, panel, onKind, onNode, rowIndex, selectedMask],
   );
   // The look chip says "MASK · LINEAR" while the selected node has a selected mask row (`docs/23` §7.1).
-  const maskChip = nodesOn && !cropping && panel !== "export" && selectedMask ? `MASK · ${(MASK_KIND_NAME[selectedMask.kind] ?? selectedMask.kind).toUpperCase()}` : undefined;
+  const showingDepth = useAppState((s) => s.showDepth !== null);
+  const maskChip = nodesOn && !cropping && panel !== "export" && showingDepth && selectedMask?.kind === "depth" ? "DEPTH" : nodesOn && !cropping && panel !== "export" && selectedMask ? `MASK · ${(MASK_KIND_NAME[selectedMask.kind] ?? selectedMask.kind).toUpperCase()}` : undefined;
   const onRect = useCallback((rect: { x: number; y: number; width: number; height: number; scale: number }): void => {
     setCell((was) => (was && was.width === rect.width && was.height === rect.height && was.scale === rect.scale ? was : { width: rect.width, height: rect.height, scale: rect.scale }));
     // The aurora behind the glass panes must leave the photo's rectangle clear: with the native viewport the photo is a layer behind
@@ -732,7 +744,7 @@ export function Photos() {
           if (picking) setPicking(null);
           else if (brush && !before) store.setBrushTool(false);
           else if (object && objectAsked && !before) store.setObjectTool(false);
-          else if (store.getState().maskEye !== null) store.setMaskEye(null);
+          else if (store.getState().maskEye !== null || store.getState().showDepth !== null) store.setMaskEye(null);
           else if (crop.session) crop.session.cancel();
           else if (panel === "export") store.closeExport();
           else if (view === "nodes" && graph.escape()) return true;
@@ -761,7 +773,7 @@ export function Photos() {
     {
       // The number keys pick looks on the Look tab, which in the node view is the Output's.
       tab: panel === "tools" ? (view === "nodes" ? nodeTab : tab) : undefined,
-      mode: cropping ? "crop" : picking === "white" ? "pick-white" : picking === "color" || picking === "range" ? "pick-color" : null,
+      mode: cropping ? "crop" : picking === "white" ? "pick-white" : picking === "color" || picking === "range" || picking === "depth" ? "pick-color" : null,
       nodeView: view === "nodes",
     },
     overlay === null,
@@ -793,6 +805,8 @@ export function Photos() {
         onPickColor={setPickingColor}
         pickingRange={picking === "range"}
         onPickRange={setPickingRange}
+        pickingDepth={picking === "depth"}
+        onPickDepth={setPickingDepth}
         foot={copyPaste}
         hidden={fullScreen.on}
       />

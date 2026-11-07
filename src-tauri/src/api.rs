@@ -1150,6 +1150,21 @@ impl AppApi {
         })
     }
 
+    /// `retry_depth(photo_id)` (`docs/23` section 4.8, "Try again"): starts the depth map of a photo again after it failed.
+    /// It returns at once: the worker runs in the background, the viewport is busy and finding meanwhile, and `depth_state`
+    /// says how it ended (`failed` null when the map is made, the sentence when it failed again). Nothing is changed in the
+    /// photo's settings. Nothing happens for a photo whose map did not fail, one that is not the photo being looked at and a
+    /// copy of Yellowmoon with no Depth model.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with the scope of the photo's errors for a photo that is unknown or not developed yet.
+    pub fn retry_depth(&self, photo: PhotoId) -> Result<(), AppError> {
+        self.core
+            .retry_depth(core_id(photo))
+            .map_err(AppError::from)
+    }
+
     // --- Lens ---------------------------------------------------------------------------------
 
     /// `lens_list`: the lenses of the Lens card's menu in menu order (`docs/21` sections 1 and 10);

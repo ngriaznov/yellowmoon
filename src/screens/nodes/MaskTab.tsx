@@ -15,6 +15,9 @@ import { InvertGlyph, MaskRows } from "./MaskRows";
 /** The kinds Apple's Vision makes (`docs/23` §3.10): the Add mask menu lists them only where the core says this computer can make them. */
 const VISION_KINDS: readonly MaskKind[] = ["subject", "people"];
 
+/** The Depth card's Pick depth where the screen has none. */
+const NO_PICK = (): void => {};
+
 /** What the Masks card says under its rows (`docs/23` §7.6), word for word. */
 export const MASKS_ADD_UP = "Masks add up. Subtract cuts a mask out. Colour and brightness ranges keep only their part of the rest.";
 
@@ -64,6 +67,9 @@ export interface MaskTabProps {
   /** Pick colour of a Colour range is on, and turns it on or off (`Photos` keeps it with the other picks: one at a time, off when the tab, the node, Crop or the photo changes). */
   pickingRange: boolean;
   onPickRange: (on: boolean) => void;
+  /** Pick depth of a Depth row is on, and turns it on or off (`Photos` keeps it with the other picks). Left out, there is no such pick (a test's screen). */
+  pickingDepth?: boolean;
+  onPickDepth?: (on: boolean) => void;
 }
 
 /**
@@ -74,7 +80,7 @@ export interface MaskTabProps {
  * is `masks.items`, a row's mode, Invert and eye and every slider is a `masks.edit` row patch, the node's Invert is `masks.invert`; each
  * is one undo step (a slider's drag is one).
  */
-export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabProps) {
+export function MaskTab({ store, rs, node, pickingRange, onPickRange, pickingDepth = false, onPickDepth }: MaskTabProps) {
   const item = nodeOf(rs.settings, node);
   const corrector = item?.kind === "corrector" || item?.kind === "film" ? item : null;
   const rows = corrector?.masks.items ?? [];
@@ -90,12 +96,16 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
   // Subject and People (`docs/23` §3.10, §7.6): a row of a kind this computer cannot make (the kinds `mask_kinds` leaves out) says so and selects nothing;
   // one whose mask found nothing says "Nothing found". The kinds are not known at first: no row says it cannot until they are.
   const nothing = useAppState((s) => s.visionNothing[rs.photo_id]);
+  // Depth (`docs/23` §3.10a, §4.8): a row where the weights are missing says so and has no card; one whose map failed says "Can't be made".
+  const depthFailed = useAppState((s) => s.depthFailed[rs.photo_id] ?? null);
   const vision = useMemo<VisionRows>(
     () => ({
       unsupported: kinds === null ? [] : VISION_KINDS.filter((k) => !kinds.includes(k)),
       nothing: nothing ?? [],
+      depthMissing: kinds !== null && !kinds.includes("depth"),
+      depthFailed: depthFailed !== null,
     }),
-    [kinds, nothing],
+    [kinds, nothing, depthFailed],
   );
   const selected = stored !== null && stored < rows.length ? stored : null;
   const row = selected === null ? undefined : rows[selected];
@@ -112,6 +122,8 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
     // A Colour range's tool is Pick colour: the next click on the photo is its colour. A Brush's is the brush: the next drag on the photo paints. An
     // Object's is the click: the next click on the photo finds the object.
     onPickRange(kind === "color_range");
+    // A Depth row's is Pick depth: the next click on the photo picks the depth (`docs/23` §4.8).
+    onPickDepth?.(kind === "depth");
     store.setBrushTool(kind === "brush");
     store.setObjectTool(kind === "object");
   };
@@ -126,6 +138,7 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
     send(withoutMask(rows, index));
     store.selectMaskRow(selectionAfterRemove(index, rows.length));
     onPickRange(false);
+    onPickDepth?.(false);
   };
   const move = (index: number, by: -1 | 1): void => {
     const patch = movedMask(rows, index, by);
@@ -141,6 +154,7 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
     send({ items: [], invert: false });
     store.selectMaskRow(null);
     onPickRange(false);
+    onPickDepth?.(false);
   };
 
   /**
@@ -186,6 +200,9 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange }: MaskTabP
           row={row}
           pickingRange={pickingRange && row.kind === "color_range"}
           onPickRange={onPickRange}
+          pickingDepth={pickingDepth && row.kind === "depth"}
+          onPickDepth={onPickDepth ?? NO_PICK}
+          failure={row.kind === "depth" ? depthFailed : null}
         />
       ) : null}
       <ViewCard />

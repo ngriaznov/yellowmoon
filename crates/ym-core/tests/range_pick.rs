@@ -154,6 +154,7 @@ fn mask_only() -> ViewportState {
         node: NODE,
         style: MaskStyle::MaskOnly,
         row: None,
+        depth: false,
     });
     st
 }

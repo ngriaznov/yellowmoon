@@ -6,11 +6,12 @@ import { patchOf } from "../../state/settingsGraph";
 import type { AppStore } from "../../state/store";
 import { angleSlider, radiusField, radiusSlider, unitField, unitSlider, widthField, widthSlider } from "../tools/maskScales";
 import { BrushCard } from "./BrushCard";
+import { DepthCard } from "./DepthCard";
 import { ObjectCard } from "./ObjectCard";
 import { FeatherSlider, OpacitySlider, RasterSliders } from "./MaskSliders";
 
 /** The kinds that have a card in the Mask tab: Object, Subject, People, Background, the shapes, Brush and the ranges. */
-export const CARD_KINDS: ReadonlySet<MaskItem["kind"]> = new Set(["object", "subject", "people", "background", "linear", "radial", "brush", "color_range", "brightness_range"]);
+export const CARD_KINDS: ReadonlySet<MaskItem["kind"]> = new Set(["object", "subject", "people", "background", "depth", "linear", "radial", "brush", "color_range", "brightness_range"]);
 
 /** The title of a kind's card: the kind in capitals (the card's own style does the capitals; this is the word). */
 const TITLE: Readonly<Partial<Record<MaskItem["kind"], string>>> = {
@@ -18,6 +19,7 @@ const TITLE: Readonly<Partial<Record<MaskItem["kind"], string>>> = {
   subject: "Subject",
   people: "People",
   background: "Background",
+  depth: "Depth",
   linear: "Linear",
   radial: "Radial",
   brush: "Brush",
@@ -36,6 +38,11 @@ export interface MaskCardProps {
   /** Pick colour of a Colour range is on (`Photos` keeps it) and turns it on or off. */
   pickingRange: boolean;
   onPickRange: (on: boolean) => void;
+  /** Pick depth of a Depth row is on (`Photos` keeps it) and turns it on or off. */
+  pickingDepth: boolean;
+  onPickDepth: (on: boolean) => void;
+  /** The sentence of the failure when the photo's depth map failed, for a Depth row's card; else null. */
+  failure: string | null;
 }
 
 /**
@@ -44,7 +51,7 @@ export interface MaskCardProps {
  * `docs/algorithms/06` §4.5 (`maskScales.ts`). Every slider writes one field of the row, as a `masks.edit` row patch (`docs/23` §3.7): a drag is
  * a patch per frame that folds into one, and one undo step.
  */
-export function MaskCard({ store, rs, node, index, row, pickingRange, onPickRange }: MaskCardProps) {
+export function MaskCard({ store, rs, node, index, row, pickingRange, onPickRange, pickingDepth, onPickDepth, failure }: MaskCardProps) {
   const send = (edit: MaskPatch, final: boolean): void => void store.update(patchOf(node, { masks: { edit: { [String(index)]: edit } } }), final, rs.photo_id);
   const fresh = newMask(row.kind, row.mode);
   const reset = (): void => void store.update(patchOf(node, { masks: { edit: { [String(index)]: resetRowPatch(row) } } }), true, rs.photo_id);
@@ -93,6 +100,8 @@ export function MaskCard({ store, rs, node, index, row, pickingRange, onPickRang
         </Card>
       );
     }
+    case "depth":
+      return <DepthCard store={store} rs={rs} node={node} index={index} row={row} picking={pickingDepth} onPick={onPickDepth} failure={failure} />;
     case "linear": {
       const was = fresh as typeof row;
       return (

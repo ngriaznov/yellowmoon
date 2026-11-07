@@ -1,7 +1,7 @@
 import {
   ChevronDownIcon,
   CircleDotIcon,
-  LayersIcon,
+  ChartNoAxesColumnIcon,
   PaintbrushIcon,
   PanelTopIcon,
   PaletteIcon,
@@ -30,7 +30,7 @@ export const MASK_KIND_ICON: Readonly<Record<MaskKind, ReactNode>> = {
   subject: <SparklesIcon aria-hidden="true" />,
   people: <UserIcon aria-hidden="true" />,
   background: <ApertureIcon aria-hidden="true" />,
-  depth: <LayersIcon aria-hidden="true" />,
+  depth: <ChartNoAxesColumnIcon aria-hidden="true" />,
   linear: <PanelTopIcon aria-hidden="true" />,
   radial: <CircleDotIcon aria-hidden="true" />,
   brush: <PaintbrushIcon aria-hidden="true" />,
@@ -57,6 +57,7 @@ export const ADD_MASK_GROUPS: ReadonlyArray<{ title: string; kinds: readonly Men
       { kind: "subject", name: "Subject", line: "The main thing in the photo" },
       { kind: "people", name: "People", line: "Each person. macOS 14 or later" },
       { kind: "background", name: "Background", line: "What is out of focus, from blur" },
+      { kind: "depth", name: "Depth", line: "Near or far, from depth" },
     ],
   },
   {

@@ -1331,6 +1331,7 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
                 node: 1,
                 style: MaskStyle::Overlay,
                 row: None,
+                depth: false,
             }),
         )
         .expect("mask view");
@@ -1342,7 +1343,8 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
         Some(CoreView {
             node: 1,
             style: CoreStyle::Overlay,
-            row: None
+            row: None,
+            depth: false
         })
     );
     assert_eq!(on.mode, zoomed.mode);
@@ -1357,6 +1359,8 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
                 node: 2,
                 style: MaskStyle::MaskOnly,
                 row: Some(3),
+                // Show depth travels with the view (`docs/23` section 9).
+                depth: true,
             }),
         )
         .expect("mask view");
@@ -1367,7 +1371,8 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
         Some(CoreView {
             node: 2,
             style: CoreStyle::MaskOnly,
-            row: Some(3)
+            row: Some(3),
+            depth: true
         })
     );
 
@@ -1398,6 +1403,7 @@ fn a_mask_view_belongs_to_its_photo() {
                 node: 1,
                 style: MaskStyle::MaskOnly,
                 row: None,
+                depth: false,
             }),
         )
         .expect("mask view");
@@ -5322,6 +5328,76 @@ fn a_depth_row_is_found_in_the_background_depth_state_comes_as_an_event_and_pick
     // Nothing was written to the settings by either command: the row is as the patch made it.
     let core = h.api.core();
     let settings = core
+        .session
+        .settings(ym_core::session::PhotoId(id.0))
+        .expect("settings")
+        .settings;
+    let rows = &settings.nodes.corrector(1).expect("node 1").masks.items;
+    assert!(
+        matches!(&rows[0].shape, ym_core::settings::MaskShape::Depth(d) if d.near == 0.0 && d.far == 0.5),
+        "{rows:?}"
+    );
+}
+
+/// "Try again" through the shell: a map that failed is told by `depth_state` with the sentence; `retry_depth` starts it again, returns at
+/// once, changes no settings, and `depth_state` then says the map is ready. A retry on a photo whose map is made does nothing.
+#[test]
+fn retry_depth_starts_a_failed_map_again_and_depth_state_follows() {
+    use crate::events::AppEvent;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let broken = Arc::new(AtomicBool::new(true));
+    let model = {
+        let broken = Arc::clone(&broken);
+        ym_core::pipeline::DepthModel::fake(
+            "retry",
+            Arc::new(move |_, _, _, _| {
+                if broken.load(Ordering::SeqCst) {
+                    return Err("the model stopped before it finished".to_owned());
+                }
+                // Any grid will do: a ramp of 8 x 6 cells, near on the left.
+                Ok((8, 6, (0..48).map(|i| 1.0 - (i % 8) as f32 / 8.0).collect()))
+            }),
+        )
+    };
+    let h = Harness::with_depth(model);
+    h.open(1);
+    let id = h.develop().photos[0].id;
+    h.rect(300.0, 200.0);
+    h.api.set_current(id).expect("current");
+    h.frame_of_size(300, 200);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    h.api
+        .update_settings(id, &depth_row_patch(0.0, 0.5))
+        .expect("a Depth row");
+    let states = || -> Vec<Option<String>> {
+        h.events
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                AppEvent::DepthState(s) => Some(s.failed),
+                _ => None,
+            })
+            .collect()
+    };
+    let sentence = "The Depth mask can't be made: the model stopped before it finished.";
+    wait_until("the failure", || !states().is_empty());
+    assert_eq!(states(), [Some(sentence.to_owned())]);
+    // Retry while it still fails: the same sentence again.
+    h.api.retry_depth(id).expect("retry");
+    wait_until("the second failure", || states().len() == 2);
+    assert_eq!(states()[1].as_deref(), Some(sentence));
+    // The model works now.
+    broken.store(false, Ordering::SeqCst);
+    h.api.retry_depth(id).expect("retry");
+    wait_until("the map", || states().len() == 3);
+    assert_eq!(states()[2], None);
+    // A map that is made is left alone, and nothing was written to the settings.
+    h.api.retry_depth(id).expect("retry when ready");
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(states().len(), 3);
+    let settings = h
+        .api
+        .core()
         .session
         .settings(ym_core::session::PhotoId(id.0))
         .expect("settings")

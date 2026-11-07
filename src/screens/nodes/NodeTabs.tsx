@@ -198,10 +198,12 @@ export interface NodeTabProps extends TabProps {
   /** Pick colour of a Colour range (Mask tab): on, and turns it on or off. */
   pickingRange: boolean;
   onPickRange: (on: boolean) => void;
+  pickingDepth?: boolean;
+  onPickDepth?: (on: boolean) => void;
 }
 
 /** The cards of one tab of one node: the Input's (`node` `"input"`), the Output's (`"output"`) or a corrector's. */
-export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite, pickingColor, onPickColor, pickingRange, onPickRange }: NodeTabProps) {
+export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite, pickingColor, onPickColor, pickingRange, onPickRange, pickingDepth, onPickDepth }: NodeTabProps) {
   if (node === "input") {
     switch (tab) {
       case "lens":
@@ -229,7 +231,7 @@ export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite
       case "grain":
         return <GrainTab store={store} rs={rs} node={item.id as number} item={item} />;
       case "mask":
-        return <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} />;
+        return <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} pickingDepth={pickingDepth} onPickDepth={onPickDepth} />;
       default:
         return <FilmCard store={store} photo={photo} rs={rs} node={item.id as number} item={item} />;
     }
@@ -240,7 +242,7 @@ export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite
     case "curve":
       return <CorrectorCurveTab store={store} photo={photo} rs={rs} node={node} />;
     case "mask":
-      return <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} />;
+      return <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} pickingDepth={pickingDepth} onPickDepth={onPickDepth} />;
     default:
       return <CorrectorLightTab store={store} photo={photo} rs={rs} node={node} />;
   }

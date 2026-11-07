@@ -219,6 +219,11 @@ export interface Api {
    * as one `masks.edit` row patch. A model that is missing rejects with the scope `mask`.
    */
   focusPlane(photoId: PhotoId): Promise<FocusPlaneResult>;
+  /**
+   * `retry_depth` (`docs/23` §9, "Try again"): starts the depth map of a photo again after it failed. Returns at once: the viewport is busy and finding while
+   * the worker runs, and `depth_state` says how it ended. It changes no settings. Nothing happens for a photo whose map did not fail.
+   */
+  retryDepth(photoId: PhotoId): Promise<void>;
 
   // --- Lens ----------------------------------------------------------------
 
@@ -422,6 +427,7 @@ export const tauriApi: Api = {
   maskFind: (photoId, node, mask, prompt) => commands.maskFind(photoId, node, mask, prompt),
   sampleDepth: (photoId, x, y) => commands.sampleDepth(photoId, x, y),
   focusPlane: (photoId) => commands.focusPlane(photoId),
+  retryDepth: (photoId) => unit(commands.retryDepth(photoId)),
 
   lensList: () => commands.lensList(),
   looksList: () => commands.looksList(),

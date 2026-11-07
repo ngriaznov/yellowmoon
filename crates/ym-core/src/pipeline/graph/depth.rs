@@ -511,6 +511,29 @@ impl Renderer {
         }
     }
 
+    /// Asks again for the photo's depth map after it failed ("Try again", `docs/23` section 4.8): forgets the failure kept for
+    /// the picture of these settings and asks the background worker for the map as [`Renderer::depth_prepare`] does. Returns
+    /// at once; the listener hears the worker start and end. Nothing happens when the photo has no failure for this picture
+    /// (a map that is ready or being made is left alone), or when the model is missing. A map that fails again is a new
+    /// failure: the same sentence is told once more when the worker ends.
+    pub fn depth_retry(&self, src: &PhotoSource) {
+        let Some(model) = self.depth_model() else {
+            return;
+        };
+        let Ok(key) = self.depth_key(src) else {
+            return;
+        };
+        let graph = self.graph(src.id);
+        {
+            let mut st = lock(&graph.depth.state);
+            if st.failed.as_ref().is_none_or(|(k, _)| *k != key.text) {
+                return;
+            }
+            st.failed = None;
+        }
+        self.depth_prepare_keyed(&graph, &model, src, key);
+    }
+
     /// The photo is no longer the one being looked at: the worker stops working for it if it started on its own.
     pub(crate) fn depth_leave(&self, id: PhotoId) {
         if let Some(g) = self.existing_graph(id) {

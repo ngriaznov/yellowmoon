@@ -51,7 +51,15 @@ export function previewUrl(
   };
   const over: PreviewOptions["over"] =
     mask && (node?.kind === "corrector" || node?.kind === "film")
-      ? (box) => maskViewSvg(mask.style, masksOfView(node.masks, mask.row), box, { width: SVG_WIDTH, height: SVG_HEIGHT, matrix: turnMatrix(turn, SVG_WIDTH, SVG_HEIGHT) }, found)
+      ? (box) =>
+          maskViewSvg(
+            mask.style,
+            masksOfView(node.masks, mask.row),
+            box,
+            { width: SVG_WIDTH, height: SVG_HEIGHT, matrix: turnMatrix(turn, SVG_WIDTH, SVG_HEIGHT) },
+            found,
+            { on: mask.depth === true, ready: (vision.kinds?.includes("depth") ?? true) && !vision.finding },
+          )
       : undefined;
   const geometry: PreviewOptions = rs
     ? { orientation: rs.values.input.orientation, angle_deg: rs.values.input.crop?.angle_deg ?? 0, crop: rs.values.input.crop?.rect ?? null, over }

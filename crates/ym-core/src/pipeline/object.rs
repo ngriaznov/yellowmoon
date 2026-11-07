@@ -226,6 +226,10 @@ pub struct ObjectPlanes {
     planes: HashMap<u64, Arc<SourcePlane>>,
     vision: [Option<Arc<SourcePlane>>; 2],
     depth: Option<Arc<DepthMap>>,
+    /// The Show depth plane (`docs/23` section 4.8): the photo's depth map as grey, white for near, and the node whose Depth
+    /// row it stands for. The Depth row of that node gives the plane whole instead of its band (the request is a Show depth
+    /// view of one row); the Depth rows of the nodes upstream of it keep their bands.
+    depth_show: Option<(u32, Arc<SourcePlane>)>,
 }
 
 impl ObjectPlanes {
@@ -237,6 +241,20 @@ impl ObjectPlanes {
     /// Adds the photo's depth map, which the Depth rows cut their band from.
     pub(crate) fn insert_depth(&mut self, map: Arc<DepthMap>) {
         self.depth = Some(map);
+    }
+
+    /// Adds the Show depth plane, which the Depth rows of a Show depth view give in place of their band.
+    pub(crate) fn insert_depth_show(&mut self, node: u32, plane: Arc<SourcePlane>) {
+        self.depth_show = Some((node, plane));
+    }
+
+    /// The Show depth plane for the Depth rows of `node`, when the request is a Show depth view of that node and the map is made.
+    #[must_use]
+    pub fn depth_show_for(&self, node: u32) -> Option<&Arc<SourcePlane>> {
+        self.depth_show
+            .as_ref()
+            .filter(|(n, _)| *n == node)
+            .map(|(_, plane)| plane)
     }
 
     /// The photo's depth map for the Depth rows: `None` when this computer has no depth model or the map is not made yet.
@@ -260,7 +278,10 @@ impl ObjectPlanes {
     /// Whether no row has a plane.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.planes.is_empty() && self.vision.iter().all(Option::is_none) && self.depth.is_none()
+        self.planes.is_empty()
+            && self.vision.iter().all(Option::is_none)
+            && self.depth.is_none()
+            && self.depth_show.is_none()
     }
 
     /// The plane of an Object row, by what the row asks (its points and box). `None` for a row with none or whose

@@ -65,7 +65,7 @@ export function MaskRows({ rows, selected, eye = null, onEye, onSelect, onEdit, 
       {rows.map((row, i) => {
         const name = maskRowName(row);
         // A row this computer cannot make says so, whatever else the core is doing; one being made says "Finding…"; one that found nothing says that.
-        const busyText = isUnsupported(row, vision) ? null : isFinding(row, finding) ? FINDING : objectBusyText(row, object);
+        const busyText = isUnsupported(row, vision) ? null : isFinding(row, finding, vision) ? FINDING : objectBusyText(row, object);
         return (
           <ContextMenu key={i}>
             <ContextMenuTrigger asChild>
