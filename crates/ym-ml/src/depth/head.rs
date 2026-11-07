@@ -267,7 +267,7 @@ impl Head {
             .output_conv1
             .forward(&path_1, h, w, 1, false, Act::None, None);
         drop(path_1);
-        if let Some(t) = trace.as_deref_mut() {
+        if let Some(t) = trace {
             t.output_conv1 = conv1.clone();
         }
         Ok(self.output_stage(&conv1, h, w, ph * 14, pw * 14))

@@ -144,7 +144,10 @@ fn the_cost_count_is_the_sum_of_every_weight_times_the_positions_it_is_applied_a
                 .find(|(needle, _)| name.contains(needle))
                 .map_or((width * height) as u64, |&(_, p)| p);
             // The out_conv of a fusion block runs after its 2x resize.
-            if name.contains("refinenet") && name.contains(".out_conv") && !name.contains("refinenet4") {
+            if name.contains("refinenet")
+                && name.contains(".out_conv")
+                && !name.contains("refinenet4")
+            {
                 positions *= 4;
             }
             // The transposed convolutions apply every weight once per input position (kernel = stride).

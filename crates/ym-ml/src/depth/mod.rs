@@ -428,7 +428,8 @@ impl DepthAnything {
         cancel: &dyn Fn() -> bool,
         mut trace: Option<&mut Trace>,
     ) -> Result<DepthMap> {
-        let allowed = |n: usize| n % PATCH == 0 && (MIN_SIDE_PX..=MAX_SIDE_PX).contains(&n);
+        let allowed =
+            |n: usize| n.is_multiple_of(PATCH) && (MIN_SIDE_PX..=MAX_SIDE_PX).contains(&n);
         if !allowed(width) || !allowed(height) {
             return Err(MlError::Shape(format!(
                 "a depth input of {width} x {height} px: both sides must be multiples of {PATCH} from {MIN_SIDE_PX} to {MAX_SIDE_PX}"
@@ -457,13 +458,9 @@ impl DepthAnything {
         if let Some(t) = trace.as_deref_mut() {
             t.taps = taps.to_vec();
         }
-        let data = self.head.forward(
-            &taps,
-            ph,
-            pw,
-            cancel,
-            trace.as_deref_mut().map(|t| &mut t.head),
-        )?;
+        let data = self
+            .head
+            .forward(&taps, ph, pw, cancel, trace.map(|t| &mut t.head))?;
         if data.iter().any(|v| !v.is_finite()) {
             return Err(MlError::Input(
                 "the depth network produced a value that is not finite".into(),

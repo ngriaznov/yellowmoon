@@ -467,6 +467,7 @@ mod tests {
 
     /// The definition of a transposed convolution with kernel = stride: `out[y * k + dy][x * k + dx][o] = bias[o] + sum_i
     /// in[y][x][i] * w[i][o][dy][dx]`.
+    #[allow(clippy::too_many_arguments)]
     fn naive_tconv(
         x: &[f32],
         h: usize,

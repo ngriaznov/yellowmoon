@@ -472,7 +472,7 @@ fn the_comparison_helpers_measure_what_they_say() {
     let hwc = nchw_to_hwc(&npy);
     assert_eq!(hwc[0], 0.0);
     assert_eq!(hwc[1], 6.0, "channel 1 of pixel (0, 0)");
-    assert_eq!(hwc[2 * (1 * 3 + 2) + 1], 11.0);
+    assert_eq!(hwc[(3 + 2) * 2 + 1], 11.0);
 }
 
 #[test]
