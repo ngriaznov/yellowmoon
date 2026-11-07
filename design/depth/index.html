@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yellowmoon Depth mask, mockups</title>
+<style>
+@font-face { font-family: Figtree; font-weight: 300 900; src: url("html/assets/fonts/figtree-latin-wght-normal.woff2") format("woff2"); }
+:root { color-scheme: dark; --bg:#0f0f10; --line:rgba(255,255,255,.14); --ink:#f2f2f2; --yellow:#ffc20e; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 Figtree, system-ui, sans-serif; }
+header.top { position:sticky; top:0; z-index:5; background:rgba(15,15,16,.92); border-bottom:1px solid var(--line); padding:12px 16px; display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; }
+header.top h1 { font-size:15px; margin:0 12px 0 0; font-weight:800; }
+.chip { display:inline-grid; place-items:center; min-width:34px; height:28px; padding:0 8px; border-radius:9px; border:1px solid var(--line); color:var(--ink); text-decoration:none; font-weight:800; font-size:13px; }
+.chip:hover { border-color:var(--yellow); }
+main { max-width:1480px; margin:0 auto; padding:24px 16px 80px; }
+.intro { max-width:960px; color:#d4d4d8; margin-bottom:40px; }
+section { margin:0 0 72px; scroll-margin-top:64px; }
+.head { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+.head h2 { margin:0; font-size:22px; font-weight:800; }
+.num { display:inline-grid; place-items:center; min-width:38px; height:28px; border-radius:9px; background:rgba(255,255,255,.12); font-weight:800; font-size:14px; }
+.shot { display:block; border-radius:14px; overflow:hidden; border:1px solid var(--line); }
+.shot img { display:block; width:100%; height:auto; }
+.cap { max-width:960px; padding-top:14px; color:#d4d4d8; }
+</style></head><body>
+<header class="top"><h1>Depth mask</h1>
+<a class="chip" href="#s01">01</a>
+<a class="chip" href="#s02">02</a>
+<a class="chip" href="#s03">03</a>
+<a class="chip" href="#s04">04</a>
+<a class="chip" href="#s04b">04b</a>
+<a class="chip" href="#s05">05</a>
+<a class="chip" href="#s05b">05b</a>
+<a class="chip" href="#s06">06</a>
+<a class="chip" href="#s07">07</a>
+<a class="chip" href="#s07b">07b</a>
+<a class="chip" href="#s08">08</a>
+</header><main>
+<p class="intro">Mockups of the Depth mask interface (D-05, for the owner's approval D-H1). Each picture is a page in <code>html/pages/</code> built from the app's own DOM and CSS at 1440 &times; 900, shot at 2&times;. The photo is the owner's. The depth picture and the tinted masks are made-up stand-ins drawn from the photo's layout, not the model's output. See <code>mockup-notes.md</code> for the copy and the questions.</p>
+<section id="s01"><div class="head"><span class="num">01</span><h2>The Add mask menu</h2></div><a class="shot" href="01-add-mask-menu.jpg"><img src="01-add-mask-menu.jpg" alt="The Add mask menu" loading="lazy"></a><p class="cap">Depth sits under Background in the Find group, with the line "Near or far, from depth". The menu is now 573 px tall (527 px without Depth): see question 3.</p></section>
+<section id="s02"><div class="head"><span class="num">02</span><h2>A new Depth row while the map is made</h2></div><a class="shot" href="02-finding.jpg"><img src="02-finding.jpg" alt="A new Depth row while the map is made" loading="lazy"></a><p class="cap">The row says "Finding…" with a spinner, the pill over the photo says "Getting ready…", Pick depth is on, and the photo shows no mask yet.</p></section>
+<section id="s03"><div class="head"><span class="num">03</span><h2>The Depth card, ready</h2></div><a class="shot" href="03-depth-card.jpg"><img src="03-depth-card.jpg" alt="The Depth card, ready" loading="lazy"></a><p class="cap">Pick depth, Focus plane (tooltip "Select what the camera focused on"), Near 0, Far 50, Softness 50, Show depth, then the four shared sliders.</p></section>
+<section id="s04"><div class="head"><span class="num">04</span><h2>Pick depth on</h2></div><a class="shot" href="04-pick-depth.jpg"><img src="04-pick-depth.jpg" alt="Pick depth on" loading="lazy"></a><p class="cap">Crosshair over the photo, the pill reads "Click the part of the photo to select. Esc stops."; the tool is yellow like Pick white.</p></section>
+<section id="s04b"><div class="head"><span class="num">04b</span><h2>After a click on the field</h2></div><a class="shot" href="04b-pick-depth-click.jpg"><img src="04b-pick-depth-click.jpg" alt="After a click on the field" loading="lazy"></a><p class="cap">Near 24 and Far 44, the band around the clicked depth, a fifth of the photo wide. The tool stays on.</p></section>
+<section id="s05"><div class="head"><span class="num">05</span><h2>Focus plane, no focus point</h2></div><a class="shot" href="05-no-focus-point.jpg"><img src="05-no-focus-point.jpg" alt="Focus plane, no focus point" loading="lazy"></a><p class="cap">The button is off and the card says "This photo has no focus point."</p></section>
+<section id="s05b"><div class="head"><span class="num">05b</span><h2>Focus plane, point at the centre</h2></div><a class="shot" href="05b-focus-centre.jpg"><img src="05b-focus-centre.jpg" alt="Focus plane, point at the centre" loading="lazy"></a><p class="cap">The band is made and the card says "The camera may not have recorded where it focused. Check the result."</p></section>
+<section id="s06"><div class="head"><span class="num">06</span><h2>Show depth</h2></div><a class="shot" href="06-show-depth.jpg"><img src="06-show-depth.jpg" alt="Show depth" loading="lazy"></a><p class="cap">The photo is replaced by its depth, white near. The look chip says "DEPTH", the eye and the toolbar Show mask are off, and the tooltip reads "Show how near or far each part is. White is near."</p></section>
+<section id="s07"><div class="head"><span class="num">07</span><h2>No depth model</h2></div><a class="shot" href="07-no-model.jpg"><img src="07-no-model.jpg" alt="No depth model" loading="lazy"></a><p class="cap">Depth is not in the Add mask menu. A Depth row that came with a file says "Depth masks need the depth model. Reinstall the app." and has no card.</p></section>
+<section id="s07b"><div class="head"><span class="num">07b</span><h2>The map failed</h2></div><a class="shot" href="07b-cant-be-made.jpg"><img src="07b-cant-be-made.jpg" alt="The map failed" loading="lazy"></a><p class="cap">The row says "Can't be made"; the card says "The Depth mask can't be made: the model stopped before it finished. Try again, or remove the mask." The model's text here is an invented example.</p></section>
+<section id="s08"><div class="head"><span class="num">08</span><h2>Depth with a Subject row</h2></div><a class="shot" href="08-depth-and-subject.jpg"><img src="08-depth-and-subject.jpg" alt="Depth with a Subject row" loading="lazy"></a><p class="cap">Depth 55 to 100 (the far plane) added, Subject subtracted: the sky and haze with the mountain's clean edge. A one-line tip is proposed under the card.</p></section>
+</main></body></html>
