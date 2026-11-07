@@ -2,7 +2,7 @@
   "_header": {
     "licence": "Apache-2.0",
     "note": "This file is Yellowmoon's own work, Apache-2.0. Stock names, kinds, makers and ISO numbers are facts about the products; the display names are copied from the \"info.name\" field of each profile in data/film/spektrafilm/profiles/ (spektrafilm by Andrea Volpato, CC BY-SA 4.0, see data/film/spektrafilm/LICENSE). Nothing else of the profiles is copied here.",
-    "disclaimer": "Modelled on published data. Not affiliated with Kodak or Fujifilm. Kodak, Portra, Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm and Velvia are trademarks of their owners.",
+    "disclaimer": "Modelled on published data. Not affiliated with Kodak or Fujifilm. Kodak, Portra, Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm, Velvia and the other film and paper names shown are trademarks of their owners.",
     "decision": "Real names with the disclaimer, owner, 2026-11-04 (docs/24 section 1.3 and 6.5). The trademark check (F-H4) comes before a release.",
     "fields": {
       "id": "the profile id and file name (profiles/<id>.json); code uses ids only",

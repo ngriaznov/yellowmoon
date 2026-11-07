@@ -7,6 +7,12 @@ All notable changes to Yellowmoon are recorded here. The format follows
 A version bump on `main` publishes a release (`docs/12-distribution.md`), so every "Release x.y.z" pull request
 moves the entries below from Unreleased into a dated section for that version.
 
+## [Unreleased]
+
+### Changed
+
+- **About's trademark line** now names every film and paper maker and mark the stock picker shows.
+
 ## [0.2.1] - 2026-11-06
 
 The Film node: a node that makes a photo look as if it had been shot on a colour film, printed on paper and scanned. Panning and zooming are much faster, and every layout of nodes now renders on the graphics card. The pipeline version is 0.10.0 (was 0.9.0), because an older build cannot open a graph with a Film node. A photo with no Film node comes out byte for byte as in 0.2.0.

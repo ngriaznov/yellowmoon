@@ -203,7 +203,7 @@ test.describe("the credit line", () => {
     const film = about.getByRole("region", { name: "Film" });
     await expect(film).toContainText("Modelled on published data. Film profiles by Andrea Volpato (spektrafilm), CC BY-SA 4.0. Not affiliated with Kodak or Fujifilm.");
     await expect(film.getByRole("button", { name: "CC BY-SA 4.0" })).toBeVisible();
-    await expect(film).toContainText("Kodak, Portra, Vision3, Fujifilm and Velvia are trademarks of their owners.");
+    await expect(film).toContainText("Kodak, Portra, Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm, Velvia and the other film and paper names shown are trademarks of their owners.");
   });
 });
 

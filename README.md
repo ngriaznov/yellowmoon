@@ -149,6 +149,6 @@ Apache-2.0. Model weights in `data/models/` carry the licence their model card s
 
 This product includes DNG technology under license by Adobe.
 
-Film profiles by [Andrea Volpato (spektrafilm)](https://github.com/andreavolpato/spektrafilm), [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). The Film node reads them as unmodified data files; Yellowmoon uses none of spektrafilm's code, and its engine is our own. The profiles were made from the makers' published data sheets. Modelled on published data. Not affiliated with Kodak or Fujifilm. Kodak, Portra, Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm and Velvia are trademarks of their owners.
+Film profiles by [Andrea Volpato (spektrafilm)](https://github.com/andreavolpato/spektrafilm), [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). The Film node reads them as unmodified data files; Yellowmoon uses none of spektrafilm's code, and its engine is our own. The profiles were made from the makers' published data sheets. Modelled on published data. Not affiliated with Kodak or Fujifilm. Kodak, Portra, Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm, Velvia and the other film and paper names shown are trademarks of their owners.
 
 Yellowmoon is not affiliated with ARRI or Sony. ARRI and ALEXA are trademarks of ARRI AG; Sony is a trademark of Sony Group Corporation. ARRI's looks are never included with Yellowmoon: you download them from ARRI and the app imports them.

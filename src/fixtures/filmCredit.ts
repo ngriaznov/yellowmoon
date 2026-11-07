@@ -17,4 +17,4 @@ export const FILM_CREDIT = `Modelled on published data. Film profiles by ${FILM_
 /** The short line that goes with every stock name. */
 export const FILM_DISCLAIMER = "Modelled on published data. Not affiliated with Kodak or Fujifilm.";
 /** The trademark line of About. */
-export const FILM_TRADEMARKS = "Kodak, Portra, Vision3, Fujifilm and Velvia are trademarks of their owners.";
+export const FILM_TRADEMARKS = "Kodak, Portra, Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm, Velvia and the other film and paper names shown are trademarks of their owners.";

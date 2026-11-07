@@ -221,7 +221,7 @@ describe("About", () => {
     const dialog = await openAbout();
     const film = within(dialog).getByRole("region", { name: "Film" });
     await waitFor(() => expect(film).toHaveTextContent(FILM_CREDIT));
-    expect(within(film).getByText("Kodak, Portra, Vision3, Fujifilm and Velvia are trademarks of their owners.")).toBeInTheDocument();
+    expect(within(film).getByText("Kodak, Portra, Ektar, Vision3, Ektachrome, Kodachrome, Fujifilm, Velvia and the other film and paper names shown are trademarks of their owners.")).toBeInTheDocument();
     await h!.user.click(within(film).getByRole("button", { name: FILM_CREDIT_NAME }));
     await h!.user.click(within(film).getByRole("button", { name: "CC BY-SA 4.0" }));
     expect(h!.api.system.opened).toEqual([FILM_CREDIT_URL, "https://creativecommons.org/licenses/by-sa/4.0/"]);
