@@ -3,11 +3,13 @@
 //! the Focus plane's median and the Show depth plane.
 //!
 //! A [`DepthMap`] is what the network (`ym_ml::depth`) makes once per photo, `d` (larger is nearer), with the
-//! **mid-ranks** `k` of its cells made when the map is. Everything after that works on `k`, in integers or in f64,
-//! so the cut of a plane is the same on every machine and never runs the network:
+//! **mid-ranks** `k` of its cells made when the map is, except that the tie group of the smallest value is the far
+//! end (`k = 0`, the sky). Everything after that works on `k`, in integers or in f64, so the cut of a plane is the
+//! same on every machine and never runs the network:
 //!
 //! * the rank `r = k / (2 (n - 1))` and the depth position `z = 1 - r` ([`DepthMap::z`], [`DepthMap::r`]);
-//! * the band `S0(z) = S((z - (nu - q)) / q) (1 - S((z - phi) / q))` ([`depth_cut`], [`depth_s0`]);
+//! * the band `S0(z) = S((z - nu) / q + 1/2) (1 - S((z - phi) / q + 1/2))`, each ramp centred on its bound, with no
+//!   ramp at 0 or 1 and a ramp no wider than the band ([`depth_cut`], [`depth_s0`]);
 //! * the plane a Depth row makes ([`DepthSource`], [`depth_plane`]), kept in the cache Background's planes use;
 //! * Pick depth ([`pick_band`], [`DepthMap::r_at`]) and the Focus plane ([`DepthMap::focus_z`]).
 //!
@@ -29,8 +31,9 @@ pub const DEPTH_PICK_WIDTH: f64 = 0.2;
 pub const FOCUS_BOX_DEFAULT: f64 = 0.04;
 /// The least side of the Focus plane's box, in cells of the map.
 pub const FOCUS_BOX_MIN_CELLS: usize = 3;
-/// The version of the rank and band rules. It is part of the map's key (`docs/23` section 4.8).
-pub const DEPTH_RULES_VERSION: u32 = 1;
+/// The version of the rank and band rules. It is part of the map's key (`docs/23` section 4.8) and of every plane's.
+/// 2: the smallest tie group is the far end, and the band's ramps are centred on its bounds (D-H2, 2026-11-07).
+pub const DEPTH_RULES_VERSION: u32 = 2;
 
 /// Why a set of values is not a depth map.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -62,7 +65,7 @@ pub struct DepthMap {
     pub height: usize,
     /// The network's values, row-major, finite.
     pub d: Vec<f32>,
-    /// The mid-rank of every cell, `2 less + eq - 1`, 0 to `2 (n - 1)`.
+    /// The mid-rank of every cell, `2 less + eq - 1`, 0 to `2 (n - 1)`; 0 for the group of the smallest value.
     pub k: Vec<u32>,
 }
 
@@ -77,8 +80,11 @@ impl std::fmt::Debug for DepthMap {
 }
 
 /// The mid-ranks of `d`: for a cell `i`, `less` is the number of cells below it and `eq` the number equal to it (itself
-/// included), and `k = 2 less + eq - 1`. Equality is equality of the values with `-0.0` read as `+0.0`; the counts come
-/// from one sort, so cells with equal values have equal `k` whatever order they are listed in. `d` must be finite.
+/// included), and `k = 2 less + eq - 1`, except that the tie group of the smallest value (`less = 0`) is the far end,
+/// `k = 0` (the sky: large flat areas come out of the network as exactly the smallest value). A single smallest cell
+/// has `k = 0` either way, and a map of one value is all far end. Equality is equality of the values with `-0.0` read
+/// as `+0.0`; the counts come from one sort, so cells with equal values have equal `k` whatever order they are listed
+/// in. `d` must be finite.
 #[must_use]
 pub fn depth_ranks(d: &[f32]) -> Vec<u32> {
     // -0.0 is +0.0 (`x + 0.0` turns -0.0 into +0.0 and changes nothing else).
@@ -89,6 +95,9 @@ pub fn depth_ranks(d: &[f32]) -> Vec<u32> {
             let v = v + 0.0;
             let less = sorted.partition_point(|s| s.total_cmp(&v).is_lt());
             let up_to = sorted.partition_point(|s| s.total_cmp(&v).is_le());
+            if less == 0 {
+                return 0;
+            }
             // The counts are below 2^31 for any map the network makes (770 x 518 cells is 4e5).
             (2 * less + (up_to - less) - 1) as u32
         })
@@ -141,22 +150,22 @@ impl DepthMap {
     }
 
     /// The rank `r = k / (2 (n - 1))` of cell `i`, 1 for the nearest: one division of two integers, correctly rounded;
-    /// 0.5 for a map of one cell.
+    /// 0 (the far end) for a map of one cell.
     #[must_use]
     pub fn r(&self, i: usize) -> f64 {
         match self.k_max() {
-            0 => 0.5,
+            0 => 0.0,
             m => f64::from(self.k[i]) / m as f64,
         }
     }
 
     /// The depth position `z = 1 - r` of cell `i` (0 is the nearest part of the photo), the share of the photo that is
     /// nearer with ties counted as half: `(2 greater + eq - 1) / (2 (n - 1))`, made from integers so that `r + z` is 1
-    /// to the last bit.
+    /// to the last bit. The group of the smallest value is exactly 1, and so is a map of one cell.
     #[must_use]
     pub fn z(&self, i: usize) -> f64 {
         match self.k_max() {
-            0 => 0.5,
+            0 => 1.0,
             m => (m - u64::from(self.k[i])) as f64 / m as f64,
         }
     }
@@ -224,7 +233,7 @@ impl DepthMap {
             (f64::from(ks[n / 2 - 1]) + f64::from(ks[n / 2])) / 2.0
         };
         match self.k_max() {
-            0 => 0.5,
+            0 => 1.0,
             m => (m as f64 - km) / m as f64,
         }
     }
@@ -270,11 +279,32 @@ pub fn depth_ramp(softness: f64) -> f64 {
     (DEPTH_SOFTNESS_SPAN * unit_or(softness, 0.5)).max(DEPTH_RAMP_MIN)
 }
 
-/// The band at depth position `z`: `S((z - (nu - q)) / q) (1 - S((z - phi) / q))`, the trapezoid of the Brightness
-/// range on `z`. `nu`, `phi` and `q` are as [`depth_band`] and [`depth_ramp`] give them.
+/// The ramp's width where the band is `nu..phi`: `q` cut to the band's width, and not under [`DEPTH_RAMP_MIN`]
+/// (`q_eff = max(min(q, phi - nu), DEPTH_RAMP_MIN)`). A band of no width gets the least ramp, so the cut is defined
+/// there (a faint bump that peaks at 1/4).
+#[must_use]
+pub fn depth_ramp_eff(nu: f64, phi: f64, q: f64) -> f64 {
+    q.min(phi - nu).max(DEPTH_RAMP_MIN)
+}
+
+/// The band at depth position `z`: `S((z - nu) / q + 1/2) (1 - S((z - phi) / q + 1/2))` with `q` as
+/// [`depth_ramp_eff`] gives it. Each ramp is centred on its bound, so the cut is 1/2 at `z = nu` and at `z = phi`. A bound
+/// at the end of the range has no ramp: `nu = 0` selects everything nearer than `phi`, `z = 0` included, and `phi = 1`
+/// everything from `nu` out, `z = 1` included. `nu`, `phi` and `q` are as [`depth_band`] and [`depth_ramp`] give them.
 #[must_use]
 pub fn depth_cut(z: f64, nu: f64, phi: f64, q: f64) -> f64 {
-    smooth_step((z - (nu - q)) / q) * (1.0 - smooth_step((z - phi) / q))
+    let q = depth_ramp_eff(nu, phi, q);
+    let rise = if nu <= 0.0 {
+        1.0
+    } else {
+        smooth_step((z - nu) / q + 0.5)
+    };
+    let fall = if phi >= 1.0 {
+        1.0
+    } else {
+        1.0 - smooth_step((z - phi) / q + 0.5)
+    };
+    rise * fall
 }
 
 /// `S0` of a Depth row from the map's ranks: the band cut per cell in f64 and rounded once to a u16 code.
@@ -310,6 +340,7 @@ impl DepthSource {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         for bits in [
             0x0000_00de_97d0_0001,
+            u64::from(DEPTH_RULES_VERSION),
             self.map.key,
             nu.to_bits(),
             phi.to_bits(),
