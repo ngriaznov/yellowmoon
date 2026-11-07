@@ -34,6 +34,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use ym_color::mask_depth::{DepthMap, depth_band, depth_cut, depth_ramp, depth_ranks};
 use ym_ml::depth::{DepthAnything, WEIGHTS_FILE, prepare_input, synthetic_weights};
 
 // -------------------------------------------------------------------------------------------------
@@ -275,6 +276,10 @@ struct Photo {
     depth: Diff,
     depth_max_rel: f64,
     whole: Diff,
+    /// The map of the whole path (`w x h`, row-major) and upstream's, for the cut's gate.
+    grid: (usize, usize),
+    ours: Vec<f32>,
+    theirs: Vec<f32>,
 }
 
 fn measure(model: &DepthAnything, id: &str) -> Photo {
@@ -358,6 +363,9 @@ fn measure(model: &DepthAnything, id: &str) -> Photo {
         depth,
         depth_max_rel: depth.max_abs / f64::from(top),
         whole: diff(&whole_map.data, want),
+        grid: (w, h),
+        ours: whole_map.data,
+        theirs: want.clone(),
     }
 }
 
@@ -471,6 +479,91 @@ fn the_whole_path_matches_upstreams_map() {
     }
 }
 
+/// The bands of the cut's gate, `(near, far)` at softness 0.5 (`docs/algorithms/06` section 8.6).
+const CUT_BANDS: [(f64, f64); 5] = [(0.0, 0.2), (0.0, 0.5), (0.3, 0.6), (0.5, 1.0), (0.8, 1.0)];
+/// The least IoU of the cut `S0 > 0.5` of our map and of upstream's (Gate D).
+const CUT_MIN_IOU: f64 = 0.99;
+
+/// The cells of `S0 > 0.5` for a band, from the ranks of `map` (the rank and the band of section 5.8, in f64).
+fn cut_cells(map: &DepthMap, near: f64, far: f64) -> Vec<bool> {
+    let (nu, phi, sigma) = depth_band(near, far, 0.5);
+    let q = depth_ramp(sigma);
+    (0..map.len())
+        .map(|i| depth_cut(map.z(i), nu, phi, q) > 0.5)
+        .collect()
+}
+
+/// The IoU of two cuts; 1 when both are empty.
+fn iou(a: &[bool], b: &[bool]) -> f64 {
+    let inter = a.iter().zip(b).filter(|(x, y)| **x && **y).count();
+    let union = a.iter().zip(b).filter(|(x, y)| **x || **y).count();
+    if union == 0 {
+        1.0
+    } else {
+        inter as f64 / union as f64
+    }
+}
+
+/// The share of the cells that sit in the largest group of equal values (a tie group such as sky at exactly 0).
+fn largest_tie_share(d: &[f32]) -> (f32, f64) {
+    let mut v: Vec<f32> = d.iter().map(|x| x + 0.0).collect();
+    v.sort_unstable_by(f32::total_cmp);
+    let (mut best, mut best_n, mut run, mut cur) = (0.0f32, 0usize, 0usize, f32::NAN);
+    for &x in &v {
+        if x.total_cmp(&cur).is_eq() {
+            run += 1;
+        } else {
+            cur = x;
+            run = 1;
+        }
+        if run > best_n {
+            (best, best_n) = (x, run);
+        }
+    }
+    (best, best_n as f64 / v.len().max(1) as f64)
+}
+
+/// Gate D: the rank and the band applied to our `d` and to upstream's give the same cut (IoU of `S0 > 0.5` at least 0.99) on
+/// every photo and band. Prints every IoU and the worst per band; a failure names the photo, the band and the ties.
+#[test]
+fn the_cut_of_our_map_matches_the_cut_of_upstreams() {
+    let Some(all) = results() else { return };
+    let mut worst: [(f64, String); 5] = std::array::from_fn(|_| (1.0, String::new()));
+    let mut failures = Vec::new();
+    for p in all {
+        let (w, h) = p.grid;
+        let ours = DepthMap::new(1, w, h, p.ours.clone()).expect("our map is finite");
+        let theirs = DepthMap::new(2, w, h, p.theirs.clone()).expect("upstream's map is finite");
+        let (tie_v, tie_share) = largest_tie_share(&p.theirs);
+        let mut line = format!("{:<14}", p.id);
+        for (b, &(near, far)) in CUT_BANDS.iter().enumerate() {
+            let v = iou(&cut_cells(&ours, near, far), &cut_cells(&theirs, near, far));
+            line += &format!("  ({near}, {far}) {v:.5}");
+            if v < worst[b].0 {
+                worst[b] = (v, p.id.clone());
+            }
+            if v < CUT_MIN_IOU {
+                failures.push(format!(
+                    "{}: the cut ({near}, {far}) has IoU {v:.5} (upstream's largest tie group: {:.1} % of the cells at {tie_v:e})",
+                    p.id,
+                    tie_share * 100.0
+                ));
+            }
+        }
+        println!(
+            "{line}  | upstream tie group {:.2} % at {tie_v:e}",
+            tie_share * 100.0
+        );
+    }
+    for (b, &(near, far)) in CUT_BANDS.iter().enumerate() {
+        println!(
+            "worst IoU of ({near}, {far}): {:.5} ({})",
+            worst[b].0, worst[b].1
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 /// The real weights give the same bits on any number of threads (the synthetic-weights twin is in `src/depth/tests.rs`).
 #[test]
 fn the_real_weights_give_the_same_bits_on_1_2_4_and_8_threads() {
@@ -487,7 +580,7 @@ fn the_real_weights_give_the_same_bits_on_1_2_4_and_8_threads() {
     }
     let fx = read_npz(&fixtures_dir().join("dog.npz"));
     let picture = &fx["picture"];
-    let run = |threads: usize| -> Vec<u32> {
+    let run = |threads: usize| -> (Vec<u32>, Vec<u32>) {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
@@ -498,19 +591,27 @@ fn the_real_weights_give_the_same_bits_on_1_2_4_and_8_threads() {
                 let map = model
                     .infer(&prepared.data, prepared.width, prepared.height)
                     .expect("runs");
-                map.data.iter().map(|v| v.to_bits()).collect()
+                (
+                    map.data.iter().map(|v| v.to_bits()).collect(),
+                    depth_ranks(&map.data),
+                )
             })
     };
     let reference = run(1);
     for threads in [2, 4, 8] {
+        let (d, k) = run(threads);
         assert!(
-            reference == run(threads),
+            reference.0 == d,
             "dog: the map differs on {threads} threads"
+        );
+        assert!(
+            reference.1 == k,
+            "dog: the ranks differ on {threads} threads"
         );
     }
     println!(
-        "dog: whole path bit-identical on 1, 2, 4 and 8 threads ({} values)",
-        reference.len()
+        "dog: whole path (d and the ranks k) bit-identical on 1, 2, 4 and 8 threads ({} values)",
+        reference.0.len()
     );
 }
 

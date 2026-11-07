@@ -81,4 +81,20 @@ The authors': the model gives a **relative** depth, with no metric scale and no 
 - **Macro and ultra-wide pictures** have not been tested by anyone we found; D-06 tests them on public photos.
 - The picture is **518 px on the short side**, about 60 times fewer pixels than a 24 MP photo (770 × 518 against 6000 × 4000): the map is coarse (a cell is about 8 px on a 6000 px export), and Refine edges does the rest.
 
-The contact sheets of D-06 (hair, foliage, sky, glass, macro, shallow-focus backgrounds, flat copy work) are summarised here when they exist.
+### What the D-06 contact sheets show
+
+Made on 31 photos (the 20 public oracle photos and 11 raw Sony files), with the band at five settings, with and without Refine edges, with Pick depth, and with a rank and a percentile scaling side by side. The map takes about 2.6 s for a 1024 px picture on 3 threads of a Linux Xeon (1.9 to 3.9 s; a 4 s figure for a raw file includes making the picture). In short:
+
+- **It works well** on a subject against a different background: a face, a cat, a flower or a dandelion at a shallow depth of field, a dog in a scene, a street, a room, a chair. Pick depth on the subject (a band 0.2 wide) takes the subject and not much else.
+- **Hair and fur.** The head and the hair mass are one shape. Single strands that leave the shape are lost, and a map cell is about 8 px on a 6000 px export, so the edge of the hair is soft. Refine edges brings back long loose strands and whiskers; it does not make a clean cut-out.
+- **Foliage and branches.** Trunks and large branches separate. Thin twigs against the sky, and leaves in a dense tree, blur into one region. Refine edges recovers some of the branches.
+- **Sky.** Sky (and any large flat area) often comes out as exactly 0, the same value in every cell: 57 % of the cells of one photo, 60 % of another, 75 % of a sea view. Those cells share one rank, which falls in the middle of their range and not at the far end. A big sky is therefore not "far" on the sliders: a far band such as 0.8 to 1 selects none of it, and a band in the middle selects all of it. Do not use Depth to select a large sky. Use a Brightness or Colour range.
+- **Glass, windows and reflections.** A window or a glass wall is read as one tilted surface. The band cuts across the panes in a smooth swath that follows nothing in the glass. The reflection is not separated from the glass.
+- **Flat subjects and copy work.** A painted scene is read as depth: in a flat photographed painting the sitter came out near and the mount far. A flat wall or a facade has small depth differences, and the rank spreads them over the whole range, so a band cuts smooth patches that mean nothing. Do not use Depth on copy work or a flat facade.
+- **Small subjects.** The default band, the nearest half of the photo, takes a small subject and much of what is around it. Pick depth on the subject is the way in.
+- **Near things are near.** The ground in front of the camera, a ceiling and foreground blur read as the nearest part of the photo, and a Pick depth that lands on them selects them.
+- **Not tested.** There was no public photo of a mirror, of water or of a macro subject. The model's weak places named above for those cases are the authors' and the research's, not ours.
+- **Focus plane.** On the raw files with a focus point and box the plane was found on the focused subject (flowers, a dog's eye, a dandelion, a tower). When the camera wrote the frame's exact centre as the point, the point is a guess and the plane may be the wrong one. A point that falls on the sky (a landscape focused at infinity) gives the sky's rank and not a distance.
+- **Width from `FocusPosition2`.** Not used. It gives widths from 0.00 to 0.27 of the photo, mostly under 0.1, which the softness of the band hides, and one file gave a distance of 0.03 m for a tower. The fixed width of 0.2 is kept.
+
+When not to use the Depth mask: a large sky or other flat area, a flat scene, copy work, glass and mirrors, or any job that needs a clean edge on hair or foliage without a Subject or Object row.
