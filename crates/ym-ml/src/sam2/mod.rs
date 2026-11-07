@@ -59,7 +59,7 @@ pub use crate::model::{MlError, Result};
 use crate::model::{sha256_hex, verify_sha256};
 
 mod decoder;
-mod kernels;
+pub(crate) mod kernels;
 mod preprocess;
 mod trunk;
 
@@ -113,6 +113,18 @@ pub(crate) struct Weights {
 }
 
 impl Weights {
+    /// Wraps already-read tensors (the depth network reads its own weights file with the same helpers).
+    pub(crate) fn from_tensors(tensors: HashMap<String, (Vec<usize>, Vec<f32>)>) -> Self {
+        Self { tensors, taken: 0 }
+    }
+
+    /// The names of the tensors not taken yet, sorted.
+    pub(crate) fn remaining(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.tensors.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        names
+    }
+
     pub(crate) fn take(&mut self, name: &str, shape: &[usize]) -> Result<Vec<f32>> {
         let (found, data) = self
             .tensors

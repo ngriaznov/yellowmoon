@@ -1,0 +1,4 @@
+# The Depth Anything V2-Small weights (about 50 MB) are too big for git. tools/fetch/depth.sh downloads them from the release
+# `models-depth-anything-v2-small-1` and checks them against SHA256SUMS; the build bundles them (docs/12). Never commit them.
+*.safetensors
+*.part

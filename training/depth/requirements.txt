@@ -1,0 +1,17 @@
+# Pinned Python dependencies of training/depth/export.py and oracle.py (CI only: .github/workflows/models.yml, job `depth`).
+# Python 3.11, CPU only. Everything here is for converting weights and writing test fixtures; nothing is a
+# dependency of the app, `ym` or any shipped crate (AGENTS.md rule 6).
+#
+# torch and torchvision come from the CPU index, in the workflow after this file (a plain `pip install torch` pulls the CUDA build):
+#   pip install --extra-index-url https://download.pytorch.org/whl/cpu torch==2.5.1+cpu torchvision==0.20.1+cpu
+# Depth Anything V2 is not a package: its code is used from a checkout at the pinned commit (Apache-2.0), outside the workspace,
+# with --upstream (or DEPTH_ANYTHING_V2_SRC):
+#   git clone https://github.com/DepthAnything/Depth-Anything-V2.git && git -C Depth-Anything-V2 checkout a561b849ebae10a6f5ef49e26c83cbbcd36c71bf
+# Its own requirements.txt (gradio, gradio_imageslider, matplotlib, opencv-python, torch, torchvision) is for its demo apps;
+# the model code needs torch, torchvision and OpenCV (dpt.py and util/transform.py import cv2), which is the headless build here.
+# xformers is deliberately NOT installed: without it the DINOv2 attention is the plain q @ k^T / softmax / @ v of
+# dinov2_layers/attention.py, the operation order the Rust runtime follows.
+safetensors==0.5.3
+numpy==1.26.4
+pillow==11.0.0
+opencv-python-headless==4.10.0.84

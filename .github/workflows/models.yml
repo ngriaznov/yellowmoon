@@ -1,20 +1,28 @@
-# Model weights that are too big for git (N-16, docs/07, docs/12): converts Meta's SAM 2.1 small checkpoint to a f16
-# safetensors file, writes the oracle fixtures for the runtime's gate (N-17), and publishes both as assets of the GitHub
-# release `models-sam2.1-small-1`.
+# Model weights that are too big for git (N-16, D-02, docs/07, docs/12). Two independent jobs, each converts one checkpoint to
+# a f16 safetensors file, writes the oracle fixtures for the runtime's gate, and publishes both as assets of its own GitHub release:
+#   sam2   Meta's SAM 2.1 small checkpoint (N-16, N-17)      release `models-sam2.1-small-1`
+#   depth  Depth Anything V2-Small (D-02, D-03)               release `models-depth-anything-v2-small-1`
 #
-# How to run it: push a branch named models/<anything>, for example
-#     git push origin nodes:models/sam2.1-small-1
-# or start it by hand (Actions > models > Run workflow, on a branch). The run's summary prints the two lines of the
-# SHA256SUMS asset. Copy them into data/models/sam2/SHA256SUMS (the weights) and tools/fetch/sam2.sha256 (the fixtures);
-# from then on tools/fetch/sam2.sh downloads and checks the weights for the builds (release.yml, build.yml).
+# How to run one (the job that runs follows the branch name, so the two never start each other):
+#   * push a branch named models/depth-<anything> to run ONLY the depth job, for example
+#         git push origin depth-mask:models/depth-anything-v2-small-1
+#   * push any other branch named models/<anything> to run ONLY the sam2 job (as before), for example
+#         git push origin nodes:models/sam2.1-small-1
+#   * or start it by hand (Actions > models > Run workflow, on a branch) and pick the job: `sam2` (the default), `depth` or `both`.
+# The run's summary prints the two lines of the job's SHA256SUMS asset. Copy them into data/models/<name>/SHA256SUMS (the
+# weights) and tools/fetch/<name>.sha256 (the fixtures), <name> being sam2 or depth; from then on tools/fetch/<name>.sh
+# downloads and checks the weights for the builds (release.yml, build.yml).
 #
-# The release is a PRERELEASE and is created with --latest=false. The in-app updater reads
-# releases/latest/download/latest.json (docs/12), so this release must never become "latest"; a release that is a
-# prerelease cannot be, and the flag says it twice. It is never overwritten: when the release exists, the run compares
+# Each release is a PRERELEASE and is created with --latest=false. The in-app updater reads
+# releases/latest/download/latest.json (docs/12), so these releases must never become "latest"; a release that is a
+# prerelease cannot be, and the flag says it twice. Each is never overwritten: when the release exists, the run compares
 # its SHA256SUMS asset with the hashes it just made and passes when they are equal (nothing is uploaded) or fails when
 # they differ. The weights are byte-identical on every run; the fixtures are floats that another CPU model can round
 # differently, so a second run on another machine can fail on the fixtures' hash. A new set of assets gets a new tag
-# (RELEASE_TAG, the asset names and tools/fetch/sam2.sh change together).
+# (RELEASE_TAG, the asset names and tools/fetch/<name>.sh change together).
+#
+# One workflow with two jobs, not two files: the triggers, the release rules and the checks are the same, and a change to one
+# of them is made once. Each job has its own env block and its own concurrency group, so they share nothing but the file.
 #
 # Python runs here for converting and for test data only (AGENTS.md rule 6); the app and `ym` never run it.
 name: models
@@ -23,29 +31,35 @@ on:
   push:
     branches: ["models/**"]
   workflow_dispatch:
+    inputs:
+      job:
+        description: "Which job to run: sam2, depth or both"
+        type: choice
+        options: [sam2, depth, both]
+        default: sam2
 
 permissions:
   contents: write
 
-concurrency:
-  group: models-sam2
-  cancel-in-progress: false
-
-env:
-  RELEASE_TAG: models-sam2.1-small-1
-  WEIGHTS: sam2.1_hiera_small.f16.safetensors
-  FIXTURES: sam2-oracle-fixtures-1.tar.zst
-  # github.com/facebookresearch/sam2 (Apache-2.0), main on 2026-11-02; there are no tags. The same value is in
-  # training/sam2/export.py and training/sam2/requirements.txt.
-  SAM2_COMMIT: 2b90b9f5ceec907a1c18123530e92e794ad901a4
-  TORCH: "2.5.1+cpu"
-  TORCHVISION: "0.20.1+cpu"
-  PYTHONUNBUFFERED: "1"
-
 jobs:
   sam2:
+    # Every models/** branch except models/depth-*, and a manual run for `sam2` or `both`.
+    if: ${{ (github.event_name == 'push' && !startsWith(github.ref_name, 'models/depth-')) || (github.event_name == 'workflow_dispatch' && inputs.job != 'depth') }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
+    concurrency:
+      group: models-sam2
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: models-sam2.1-small-1
+      WEIGHTS: sam2.1_hiera_small.f16.safetensors
+      FIXTURES: sam2-oracle-fixtures-1.tar.zst
+      # github.com/facebookresearch/sam2 (Apache-2.0), main on 2026-11-02; there are no tags. The same value is in
+      # training/sam2/export.py and training/sam2/requirements.txt.
+      SAM2_COMMIT: 2b90b9f5ceec907a1c18123530e92e794ad901a4
+      TORCH: "2.5.1+cpu"
+      TORCHVISION: "0.20.1+cpu"
+      PYTHONUNBUFFERED: "1"
     defaults:
       run:
         shell: bash   # with pipefail, so that a failing tar in "tar | zstd" fails the step
