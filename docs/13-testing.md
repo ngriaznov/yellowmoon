@@ -270,6 +270,7 @@ The README's pictures are screenshots of the real app on real photos, made by `t
 | Nodes: determinism and tiles | repeat renders, tiles against the whole frame (raster-mask halos included) | bit for bit | N |
 | Nodes: app and CLI | same graph and masks through both, Object included | byte-identical | N (N-18) |
 | SAM 2.1 small | our runtime against Meta's code (`training/sam2/oracle.py`) on 20 public photos, 3 prompts each | mask IoU ≥ 0.99; logits within a stated bound; the encoder's time measured | N (N-17) |
+| Depth Anything V2-Small | our runtime against the upstream PyTorch code (`training/depth/oracle.py`) on 20 public photos (3 with full stage traces) | each stage and the map within a measured bound (`docs/algorithms/06` §8.6); equal bits on 1, 2, 4 and 8 threads with the real weights; the `depth` CI job (Linux) | D (D-03) |
 | Masks | preview against export (k = 4 and k = 1); a cropped or turned photo keeps its mask on the subject | within a stated bound | N (N-10, N-13) |
 | Nodes: speed (on a Mac) | a slider move in the fit view with 8 nodes; an Object click once the encoder has run | ≤ 100 ms; ≤ 300 ms | N (N-20) |
 | Performance | `docs/05` targets on M1 and M3 machines | report; regressions > 20% fail | every gate |

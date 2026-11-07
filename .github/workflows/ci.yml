@@ -10,7 +10,7 @@
 # YM_REQUIRE_GPU (gpu-lavapipe, ml-backends), YM_REQUIRE_EXTERNAL_TOOLS (dng), YM_REQUIRE_ORACLE (oracle, dng),
 # YM_REQUIRE_FIXTURES (spectral-fixtures), YM_REQUIRE_SYNTHETIC (synthetic-set), YM_REQUIRE_ORT (ml-backends),
 # YM_REQUIRE_PARITY_BIN and YM_REQUIRE_FORCE_DEMOSAIC (parity), YM_REQUIRE_SAM2 (sam2, gpu-lavapipe, parity: SAM 2.1's weights are
-# fetched there and every Object test runs in one of them), and YM_REQUIRE_VISION (the macOS `rust` job's two Vision steps: the runner is
+# fetched there and every Object test runs in one of them), YM_REQUIRE_DEPTH (depth: Depth Anything's weights and oracle fixtures), and YM_REQUIRE_VISION (the macOS `rust` job's two Vision steps: the runner is
 # a Mac that runs Vision's requests, so "not supported" there is a failure). The rest of the macOS `rust` job sets none of them.
 name: CI
 
@@ -840,6 +840,34 @@ jobs:
         run: cargo test -p ym-core --release --test mask_object -- --nocapture
       - name: Object masks in ym and in the app's path (ym-cli, the CPU), and the doctor with the weights
         run: cargo test -p ym-cli --release --test parity --test render --test cli -- object doctor
+  # Depth Anything V2-Small against the upstream PyTorch code (docs/algorithms/06 section 8.6, D-03): 20 public photos, the
+  # resize, the map from upstream's tensor, the whole path, and the stage by stage trace of three of them, plus the real weights'
+  # bit-identity on 1, 2, 4 and 8 threads. Linux, not macOS: the runtime is CPU code in a fixed order without fused multiply-add,
+  # so it gives the same bits on any machine, and the cheaper runner is enough (the 20 photos take a few minutes in release).
+  # The weights and fixtures are fetched by tools/fetch/depth.sh and cached on the hashes they are checked against.
+  depth:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      YM_REQUIRE_DEPTH: "1"
+      # Release test builds have no debug fallback to the workspace data/ folder (ym-core data_dir.rs).
+      YELLOWMOON_DATA: ${{ github.workspace }}/data
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            data/models/depth/depth_anything_v2_vits.f16.safetensors
+            testdata/depth
+          key: depth-oracle-${{ hashFiles('data/models/depth/SHA256SUMS', 'tools/fetch/depth.sha256') }}
+      - name: zstd for the fixtures' archive
+        run: command -v zstd >/dev/null || sudo apt-get install -y zstd
+      - run: tools/fetch/depth.sh --fixtures
+      - run: cargo test -p ym-ml --release --test depth -- --nocapture --test-threads=1
   # Fuzzing (docs/13): every cargo-fuzz target runs for 10 minutes each night (property: no panic, no unbounded allocation, a
   # typed error for any input). One job per target, so a crash names its target and the others still run. The targets are
   # crates/ym-raw/fuzz (the ARW container and the decoders, docs/04) and crates/ym-color/fuzz (the `.cube` parser and the look

@@ -4,12 +4,16 @@
 //! f16 weights widened to f32) for the public photos of the oracle set, and fetched by `tools/fetch/depth.sh --fixtures` into
 //! `testdata/depth/oracle-1/` (git-ignored). The weights are `data/models/depth/` (`tools/fetch/depth.sh`). Without them the
 //! gates print a plain "SKIPPED" line and pass; `YM_REQUIRE_DEPTH=1` makes a missing file a failure (CI sets it).
-//! `YM_DEPTH_PHOTOS=a,b` runs only those photos.
+//! `YM_DEPTH_PHOTOS=a,b` runs only those photos (of the 3 full-trace photos and the 17 depth-only ones together).
 //!
 //! # The fixture format this test reads (a proposal for `oracle.py`; change it here and there together)
 //!
-//! `manifest.json`: `{"photos": {"<id>": {...}}}`. `<id>.npz` (uncompressed, `ZIP_STORED`) holds float32 arrays in PyTorch's
-//! layouts, `N = ph * pw` patches of a `h x w` network input (`h = 14 ph`, `w = 14 pw`):
+//! `manifest.json`: `{"photos": {"<id>": {...}}, "depth_only": {"<id>": {...}}}`, 20 photos in all. `photos` are the 3 full-trace
+//! photos (`building`, `cow`, `dog`; `"full_trace": true`) whose `<id>.npz` (uncompressed, `ZIP_STORED`) holds every key below;
+//! `depth_only` are the other 17, whose npz holds only `picture`, `input` and `depth`. The resize, the depth map from upstream's
+//! tensor and the whole path are gated on all 20; the stage by stage gate on the 3 full-trace photos. Arrays are float32 in
+//! PyTorch's layouts, `N = ph * pw` patches of a `h x w` network input (`h = 14 ph`, `w = 14 pw`); `embedded` to `output_conv1`
+//! exist only in the full-trace files:
 //!
 //! | key | shape | what |
 //! |---|---|---|
@@ -36,27 +40,33 @@ use ym_ml::depth::{DepthAnything, WEIGHTS_FILE, prepare_input, synthetic_weights
 // The gates
 // -------------------------------------------------------------------------------------------------
 //
-// PROPOSED bounds, mirroring the SAM 2 gates (`tests/sam2.rs`: 4 to 14 times the worst measured, 20 to 2000 times tighter than the
-// starting number). Nothing has been measured yet: the first run against the fixtures sets them (and any gate that fails then
-// is reported, not loosened). The relative RMS is the RMS of the difference over the RMS of upstream's tensor.
+// Bounds set from the first runs against the fixtures, as the SAM 2 gates were (`tests/sam2.rs`: 4 to 14 times the worst
+// measured value, never looser than the number proposed before measuring). A gate that fails is reported, not loosened. The
+// relative RMS is the RMS of the difference over the RMS of upstream's tensor.
 
-/// Our picture-to-tensor against upstream's (OpenCV) tensor, in normalised values.
-const RESIZE_MAX_ABS: f64 = 5e-3;
-const RESIZE_MEAN_ABS: f64 = 5e-4;
-/// Patch embedding, class token and positional embedding.
-const EMBEDDED_REL_RMS: f64 = 1e-5;
-/// The stream after any block.
+// "Worst measured" below is over the 20 oracle photos (the stage by stage ones over the 3 full-trace photos), 2026-11-07, on the
+// Linux reference machine; each bound is 4 to 14 times it.
+
+/// Our picture-to-tensor against upstream's (OpenCV) tensor, in normalised values. Worst measured: 2.4e-7 largest (bearded-man),
+/// 7.3e-8 mean (sky-trees).
+const RESIZE_MAX_ABS: f64 = 2e-6;
+const RESIZE_MEAN_ABS: f64 = 5e-7;
+/// Patch embedding, class token and positional embedding. Worst measured: 7.0e-7 (dog).
+const EMBEDDED_REL_RMS: f64 = 5e-6;
+/// The stream after any block. Worst measured: 5.9e-6 (dog).
 const BLOCK_REL_RMS: f64 = 5e-5;
-/// The four tapped layers.
-const TAP_REL_RMS: f64 = 1e-4;
-/// The head's projected and resized layers, the fusion paths and `output_conv1`.
-const LAYER_REL_RMS: f64 = 1e-4;
-const PATH_REL_RMS: f64 = 2e-4;
-/// The depth map from upstream's tensor: relative RMS, and the largest difference over the map's largest value.
-const DEPTH_REL_RMS: f64 = 5e-4;
-const DEPTH_MAX_REL: f64 = 5e-3;
-/// The whole path (our resize into our network) against upstream's map.
-const WHOLE_REL_RMS: f64 = 5e-3;
+/// The four tapped layers. Worst measured: 4.1e-6 (cow).
+const TAP_REL_RMS: f64 = 2e-5;
+/// The head's projected and resized layers. Worst measured: 5.1e-6 (building).
+const LAYER_REL_RMS: f64 = 5e-5;
+/// The fusion paths and `output_conv1`. Worst measured: 1.9e-6 (building, `path_*`; 1.8e-6 `output_conv1`).
+const PATH_REL_RMS: f64 = 1e-5;
+/// The depth map from upstream's tensor: relative RMS (worst measured 2.6e-6, sky-trees), and the largest difference over the
+/// map's largest value (worst measured 2.4e-5, chair).
+const DEPTH_REL_RMS: f64 = 2e-5;
+const DEPTH_MAX_REL: f64 = 2e-4;
+/// The whole path (our resize into our network) against upstream's map, relative RMS. Worst measured: 2.8e-6 (sky-trees).
+const WHOLE_REL_RMS: f64 = 2e-5;
 
 // -------------------------------------------------------------------------------------------------
 // Fixture files
@@ -206,11 +216,16 @@ fn photo_ids() -> Option<Vec<String>> {
         &std::fs::read(fixtures_dir().join("manifest.json")).expect("manifest"),
     )
     .expect("json");
-    let mut ids: Vec<String> = manifest["photos"]
-        .as_object()
-        .expect("photos")
-        .keys()
-        .cloned()
+    // `photos` (the full traces) and `depth_only` together: 20 photos.
+    let mut ids: Vec<String> = ["photos", "depth_only"]
+        .iter()
+        .flat_map(|k| {
+            manifest[*k]
+                .as_object()
+                .unwrap_or_else(|| panic!("manifest has no `{k}`"))
+                .keys()
+                .cloned()
+        })
         .collect();
     ids.sort();
     if let Ok(only) = std::env::var("YM_DEPTH_PHOTOS") {
@@ -254,7 +269,10 @@ fn diff(ours: &[f32], reference: &[f32]) -> Diff {
 struct Photo {
     id: String,
     resize: Diff,
+    /// The stage by stage differences; empty for a depth-only photo.
     stages: Vec<(String, Diff, f64)>,
+    /// The depth map from upstream's tensor against upstream's map.
+    depth: Diff,
     depth_max_rel: f64,
     whole: Diff,
 }
@@ -280,51 +298,55 @@ fn measure(model: &DepthAnything, id: &str) -> Photo {
     );
     let resize = diff(&prepared.data, &input_hwc);
 
-    // 2. The network from upstream's tensor, stage by stage.
-    let (map, trace) = model.infer_traced(&input_hwc, w, h).expect("runs");
+    // 2. The network from upstream's tensor, stage by stage (the full-trace photos) or only its output (the others).
     let mut stages: Vec<(String, Diff, f64)> = Vec::new();
-    stages.push((
-        "embedded".into(),
-        diff(&trace.encoder.embedded, &get("embedded").data),
-        EMBEDDED_REL_RMS,
-    ));
-    for (i, b) in trace.encoder.blocks.iter().enumerate() {
+    let map = if fx.contains_key("embedded") {
+        let (map, trace) = model.infer_traced(&input_hwc, w, h).expect("runs");
         stages.push((
-            format!("block {i}"),
-            diff(b, &get(&format!("block_{i:02}")).data),
-            BLOCK_REL_RMS,
+            "embedded".into(),
+            diff(&trace.encoder.embedded, &get("embedded").data),
+            EMBEDDED_REL_RMS,
         ));
-    }
-    for (i, t) in trace.taps.iter().enumerate() {
+        for (i, b) in trace.encoder.blocks.iter().enumerate() {
+            stages.push((
+                format!("block {i}"),
+                diff(b, &get(&format!("block_{i:02}")).data),
+                BLOCK_REL_RMS,
+            ));
+        }
+        for (i, t) in trace.taps.iter().enumerate() {
+            stages.push((
+                format!("tap {i}"),
+                diff(t, &get(&format!("tap_{i}")).data),
+                TAP_REL_RMS,
+            ));
+        }
+        for (i, l) in trace.head.layers.iter().enumerate() {
+            stages.push((
+                format!("layer {}", i + 1),
+                diff(l, &nchw_to_hwc(get(&format!("layer_{}", i + 1)))),
+                LAYER_REL_RMS,
+            ));
+        }
+        for (i, p) in trace.head.paths.iter().enumerate() {
+            let name = format!("path_{}", 4 - i);
+            stages.push((
+                name.clone(),
+                diff(p, &nchw_to_hwc(get(&name))),
+                PATH_REL_RMS,
+            ));
+        }
         stages.push((
-            format!("tap {i}"),
-            diff(t, &get(&format!("tap_{i}")).data),
-            TAP_REL_RMS,
-        ));
-    }
-    for (i, l) in trace.head.layers.iter().enumerate() {
-        stages.push((
-            format!("layer {}", i + 1),
-            diff(l, &nchw_to_hwc(get(&format!("layer_{}", i + 1)))),
-            LAYER_REL_RMS,
-        ));
-    }
-    for (i, p) in trace.head.paths.iter().enumerate() {
-        let name = format!("path_{}", 4 - i);
-        stages.push((
-            name.clone(),
-            diff(p, &nchw_to_hwc(get(&name))),
+            "output_conv1".into(),
+            diff(&trace.head.output_conv1, &nchw_to_hwc(get("output_conv1"))),
             PATH_REL_RMS,
         ));
-    }
-    stages.push((
-        "output_conv1".into(),
-        diff(&trace.head.output_conv1, &nchw_to_hwc(get("output_conv1"))),
-        PATH_REL_RMS,
-    ));
+        map
+    } else {
+        model.infer(&input_hwc, w, h).expect("runs")
+    };
     let want = &get("depth").data;
     let depth = diff(&map.data, want);
-    stages.push(("depth".into(), depth, DEPTH_REL_RMS));
     let top = want.iter().cloned().fold(0.0f32, f32::max).max(1e-12);
 
     // 3. The whole path: our resize into our network.
@@ -333,6 +355,7 @@ fn measure(model: &DepthAnything, id: &str) -> Photo {
         id: id.to_owned(),
         resize,
         stages,
+        depth,
         depth_max_rel: depth.max_abs / f64::from(top),
         whole: diff(&whole_map.data, want),
     }
@@ -384,7 +407,23 @@ fn the_resize_matches_upstreams_tensor() {
 fn every_stage_of_the_network_matches_upstream_from_the_same_tensor() {
     let Some(all) = results() else { return };
     let mut failures = Vec::new();
+    let traced = all.iter().filter(|p| !p.stages.is_empty()).count();
+    assert!(
+        traced > 0 || std::env::var_os("YM_DEPTH_PHOTOS").is_some(),
+        "no full-trace photo in the run"
+    );
+    println!("stage by stage on {traced} full-trace photos");
     for p in all {
+        println!(
+            "{}: depth: relative RMS {:.3e} (bound {DEPTH_REL_RMS:.0e}), largest {:.3e}",
+            p.id, p.depth.rel_rms, p.depth.max_abs
+        );
+        if p.depth.rel_rms > DEPTH_REL_RMS {
+            failures.push(format!(
+                "{} depth: relative RMS {:.3e} over {DEPTH_REL_RMS:.0e}",
+                p.id, p.depth.rel_rms
+            ));
+        }
         for (name, d, bound) in &p.stages {
             println!(
                 "{}: {name}: relative RMS {:.3e} (bound {bound:.0e}), largest {:.3e}",
@@ -430,6 +469,49 @@ fn the_whole_path_matches_upstreams_map() {
             p.whole.rel_rms
         );
     }
+}
+
+/// The real weights give the same bits on any number of threads (the synthetic-weights twin is in `src/depth/tests.rs`).
+#[test]
+fn the_real_weights_give_the_same_bits_on_1_2_4_and_8_threads() {
+    if cfg!(debug_assertions) && !require() && std::env::var_os("YM_DEPTH_FULL").is_none() {
+        println!("SKIPPED: needs an optimised build (cargo test -p ym-ml --release --test depth)");
+        return;
+    }
+    let Some(model) = model() else { return };
+    if !fixtures_dir().join("dog.npz").exists() {
+        let msg = "SKIPPED: no `dog` fixture (run tools/fetch/depth.sh --fixtures)";
+        assert!(!require(), "{msg}");
+        println!("{msg}");
+        return;
+    }
+    let fx = read_npz(&fixtures_dir().join("dog.npz"));
+    let picture = &fx["picture"];
+    let run = |threads: usize| -> Vec<u32> {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("pool")
+            .install(|| {
+                let prepared = prepare_input(&picture.data, picture.shape[1], picture.shape[0])
+                    .expect("prepares");
+                let map = model
+                    .infer(&prepared.data, prepared.width, prepared.height)
+                    .expect("runs");
+                map.data.iter().map(|v| v.to_bits()).collect()
+            })
+    };
+    let reference = run(1);
+    for threads in [2, 4, 8] {
+        assert!(
+            reference == run(threads),
+            "dog: the map differs on {threads} threads"
+        );
+    }
+    println!(
+        "dog: whole path bit-identical on 1, 2, 4 and 8 threads ({} values)",
+        reference.len()
+    );
 }
 
 // -------------------------------------------------------------------------------------------------
