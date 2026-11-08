@@ -306,6 +306,12 @@ Nothing. The owner cleared this list on 2026-11-07 ("remove waiting in STATUS"),
 
 Done in a3586d8 (`DEPTH_RULES_VERSION` 2; golden 61 of 61 unchanged; cut IoU still at least 0.99997): band 0.8–1 now selects the sky (bridge 58 %, cirrus 60 %, a sea view 75 %; all were 0 %) and band 0.3–0.6 selects 30 % instead of 43 %. New sheets in the scratchpad's `depth/sheets-2/`. Mac-only checks left for the owner: Depth with a Subject row, and the map's time on the owner's Mac (M0-H4).
 
+**The owner on the pre-release build (8d7f677), 2026-11-08:** "Depth is correct, but mask is strange, it has to be treating depthmap with transparency, what is closer (whiter) - more mask, and black is no mask and everything in between, like Resolve depthmap mask works." Answers:
+- **"Gradient only":** no Near, Far or Softness sliders.
+- **Pick depth and Focus plane "Set the Far limit":** the mask is `clamp(1 − z/f, 0, 1)`, with f = 1 by default, which is the Show depth picture itself. A pick or the focus point sets f to the clicked depth + 0.1.
+
+This is being built on `depth-mask` (rules version 3). It replaces the band and the centred ramps of D-H2. The sky-far tie rule stays.
+
 The question as asked: The research is `research/depth-mask-2026-11-07.md`. A Depth row would select by distance: a depth map made once per photo by a small network in `ym-ml`, cut by Near, Far and Softness, with Pick depth and a Focus plane pick from the Sony focus box, refined and geometry-aligned by the Background mask's existing pipeline; exports from the CPU map, so the app and `ym` agree. **Decisions before any work:** (1) add a depth model, for masks only (the 2026-10-24 ruling was about bokeh reshaping); (2) bundle about 50 MB at f16 like SAM 2.1, or a first-run download; (3) accept Apache-2.0 weights whose teacher trained on Hypersim (CC BY-SA 3.0) and Virtual KITTI 2 (non-commercial), stated in the model card as SAM's card states SA-1B; (4) the model: Depth Anything V2-Small (recommended), DA3-SMALL or MoGe-2 ViT-S. The report also lists the band controls, the Focus plane rule, the determinism scope and the evaluation data (decisions 5 to 8).
 
 ## Known issues
