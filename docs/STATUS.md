@@ -310,7 +310,11 @@ Done in a3586d8 (`DEPTH_RULES_VERSION` 2; golden 61 of 61 unchanged; cut IoU sti
 - **"Gradient only":** no Near, Far or Softness sliders.
 - **Pick depth and Focus plane "Set the Far limit":** the mask is `clamp(1 − z/f, 0, 1)`, with f = 1 by default, which is the Show depth picture itself. A pick or the focus point sets f to the clicked depth + 0.1.
 
-This is being built on `depth-mask` (rules version 3). It replaces the band and the centred ramps of D-H2. The sky-far tie rule stays.
+Done in dcdd9b5 (`DEPTH_RULES_VERSION` 3), now on `main`. It replaces the band and the centred ramps of D-H2; the sky-far tie rule stays.
+- **Checks:** the cut against upstream on 20 photos at f = 0.2, 0.5, 0.8 and 1 has IoU at least 0.99996 and mean |ΔS0| at most 1.8e-6 (bound 1e-5). Golden 61 of 61 unchanged.
+- **CI:** CI run 42480542004 and Mac GPU run 42480544525 (macos-15, every step, the `any_graph` sweep on Metal included) are green. Only the macos-14 job was cancelled at start, as usual.
+- **Pre-release for the owner:** Build run 42480539510, `Yellowmoon-dcdd9b5-universal`. Sheets are in the scratchpad's `depth/sheets-3/`.
+- **Mac-only checks left for the owner:** Depth with a Subject row, and the map's time on the owner's Mac (M0-H4).
 
 The question as asked: The research is `research/depth-mask-2026-11-07.md`. A Depth row would select by distance: a depth map made once per photo by a small network in `ym-ml`, cut by Near, Far and Softness, with Pick depth and a Focus plane pick from the Sony focus box, refined and geometry-aligned by the Background mask's existing pipeline; exports from the CPU map, so the app and `ym` agree. **Decisions before any work:** (1) add a depth model, for masks only (the 2026-10-24 ruling was about bokeh reshaping); (2) bundle about 50 MB at f16 like SAM 2.1, or a first-run download; (3) accept Apache-2.0 weights whose teacher trained on Hypersim (CC BY-SA 3.0) and Virtual KITTI 2 (non-commercial), stated in the model card as SAM's card states SA-1B; (4) the model: Depth Anything V2-Small (recommended), DA3-SMALL or MoGe-2 ViT-S. The report also lists the band controls, the Focus plane rule, the determinism scope and the evaluation data (decisions 5 to 8).
 
