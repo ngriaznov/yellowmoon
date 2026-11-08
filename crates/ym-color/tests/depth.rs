@@ -1,13 +1,14 @@
-//! The Depth mask's maths (`docs/algorithms/06` section 5.8, D-04): the rank against an independent f64 count, the band
-//! against the formula, `near`/`far` order and the minimum ramp, the plane and its cache, Pick depth, the Focus plane's
-//! median and the Show depth plane.
+//! The Depth mask's maths (`docs/algorithms/06` section 5.8, D-04 and the gradient of 2026-11-08): the rank against an
+//! independent f64 count, the gradient against the formula, the far limit's bounds, the plane and its cache, Pick depth,
+//! the Focus plane's median and the Show depth plane.
 
 use std::sync::Arc;
 
 use ym_color::mask_depth::{
-    DEPTH_PICK_WIDTH, DEPTH_RAMP_MIN, DepthMap, DepthMapError, DepthSource, depth_band, depth_cut,
-    depth_plane, depth_ramp, depth_ranks, depth_s0, pick_band, pick_depth,
+    DEPTH_FAR_MIN, DEPTH_PICK_MARGIN, DEPTH_RULES_VERSION, DepthMap, DepthMapError, DepthSource,
+    depth_far, depth_gradient, depth_plane, depth_ranks, depth_s0, pick_depth, pick_far,
 };
+
 use ym_color::mask_raster::RasterSource;
 
 /// A small deterministic generator (xorshift64*), so the tests need no crate.
@@ -23,12 +24,6 @@ impl Rng {
     fn unit(&mut self) -> f32 {
         (self.next() >> 40) as f32 / (1u64 << 24) as f32
     }
-}
-
-/// The smoothstep written out here, so the test does not lean on the code it checks.
-fn smooth(t: f64) -> f64 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 /// The mid-rank by counting, from the definition: `2 less + eq - 1`, and 0 for the smallest value's group.
@@ -91,7 +86,7 @@ fn the_rank_matches_the_count_on_maps_with_many_ties() {
 #[test]
 fn a_map_of_one_value_or_one_cell_is_all_far_end() {
     // D-H2: the tie group of the smallest value is the far end, and a map of one value is that group whole: nothing
-    // in it is nearer than anything else, so none of it is picked by a near band.
+    // in it is nearer than anything else, so it has no mask at any limit.
     let flat = map_of(1, 4, 3, vec![0.7; 12]);
     for i in 0..12 {
         assert_eq!(flat.k[i], 0);
@@ -174,226 +169,108 @@ fn a_map_that_is_not_a_map_is_refused() {
     }
 }
 
-/// The band of section 5.8 step 2 in f64, from the raw settings, as a code.
-fn reference_band(z: f64, near: f64, far: f64, softness: f64) -> u16 {
-    let (mut nu, mut phi) = (near.clamp(0.0, 1.0), far.clamp(0.0, 1.0));
-    if nu > phi {
-        let mean = (nu + phi) / 2.0;
-        nu = mean;
-        phi = mean;
-    }
-    let q = (0.25 * softness.clamp(0.0, 1.0)).max(0.02);
-    // D-H2: the ramps are centred on the bounds, no wider than the band (and not under 0.02), and a bound at 0 or 1
-    // has no ramp.
-    let q = q.min(phi - nu).max(0.02);
-    let rise = if nu <= 0.0 {
+/// The gradient of section 5.8 step 2 in f64 from the raw setting, as a code: written out here, not read from the code
+/// it checks.
+fn reference_gradient(z: f64, far: f64) -> u16 {
+    let f = if far.is_nan() {
         1.0
     } else {
-        smooth((z - nu) / q + 0.5)
+        far.clamp(0.02, 1.0)
     };
-    let fall = if phi >= 1.0 {
-        1.0
-    } else {
-        1.0 - smooth((z - phi) / q + 0.5)
-    };
-    let s = rise * fall;
-    (s * 65535.0 + 0.5).floor() as u16
+    let s0 = (1.0 - z / f).clamp(0.0, 1.0);
+    (s0 * 65535.0).round() as u16
 }
 
 #[test]
-fn the_band_matches_the_formula_over_z_near_far_and_softness() {
-    // A ramp map: 1001 distinct values, so z walks 0..=1 in steps of 0.001.
-    let m = map_of(10, 1001, 1, (0..1001).map(|i| (1000 - i) as f32).collect());
-    for near in [0.0, 0.1, 0.3, 0.5, 0.8, 1.0] {
-        for far in [0.0, 0.2, 0.5, 0.9, 1.0] {
-            for softness in [0.0, 0.04, 0.5, 1.0] {
-                let got = depth_s0(&m, near, far, softness);
-                for (i, code) in got.iter().enumerate() {
-                    let want = reference_band(m.z(i), near, far, softness);
-                    assert_eq!(
-                        *code, want,
-                        "near {near} far {far} softness {softness} cell {i}"
-                    );
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn near_and_far_are_in_depth_order_and_invert_is_the_complement() {
-    // z = 0 is the nearest cell. The default band (0, 0.5) holds the nearest half.
-    let m = map_of(11, 100, 1, (0..100).map(|i| (100 - i) as f32).collect());
-    let band = depth_s0(&m, 0.0, 0.5, 0.0);
-    // Cell 0 has the largest d, so it is the nearest: z = 0, in the band.
-    assert_eq!(band[0], 65535);
-    // Cell 99 is the farthest: out.
-    assert_eq!(band[99], 0);
-    // The nearest cells are in and the farthest are out, monotonically along the ramp.
-    assert!(band.windows(2).all(|p| p[0] >= p[1]));
-    // The far half is the other band; Invert (1 - S0) is that band's complement of the near one.
-    let far_half = depth_s0(&m, 0.5, 1.0, 0.0);
-    assert_eq!(far_half[99], 65535);
-    assert_eq!(far_half[0], 0);
-    for i in 0..100 {
-        // Away from the ramp the two halves and the inverse agree.
-        let z = m.z(i);
-        if (z - 0.5).abs() > 0.05 {
-            assert_eq!(65535 - band[i], far_half[i], "cell {i}");
-        }
-    }
-}
-
-#[test]
-fn near_above_far_is_both_at_their_mean_and_nan_reads_as_the_default() {
-    assert_eq!(depth_band(0.8, 0.2, 0.5), (0.5, 0.5, 0.5));
-    assert_eq!(depth_band(1.5, -2.0, 7.0), (0.5, 0.5, 1.0));
-    assert_eq!(depth_band(f64::NAN, f64::NAN, f64::NAN), (0.0, 0.5, 0.5));
-    let m = map_of(12, 50, 1, (0..50).map(|i| i as f32).collect());
-    assert_eq!(depth_s0(&m, 0.8, 0.2, 0.3), depth_s0(&m, 0.5, 0.5, 0.3));
-    assert_eq!(
-        depth_s0(&m, f64::NAN, f64::NAN, f64::NAN),
-        depth_s0(&m, 0.0, 0.5, 0.5)
-    );
-}
-
-#[test]
-fn the_ramp_has_a_minimum_and_the_full_band_is_one_everywhere() {
-    assert_eq!(depth_ramp(0.0), DEPTH_RAMP_MIN);
-    assert_eq!(depth_ramp(0.04), DEPTH_RAMP_MIN);
-    assert_eq!(depth_ramp(0.2), 0.05);
-    assert_eq!(depth_ramp(1.0), 0.25);
-    // A one-cell difference of rank is not a step even at softness 0: the smoothstep's slope is at most 1.5 / q = 75, and
-    // a cell is 0.001 of z here, so a neighbour differs by at most 0.075 (a step would be 1).
-    let m = map_of(13, 1001, 1, (0..1001).map(|i| (1000 - i) as f32).collect());
-    let band = depth_s0(&m, 0.3, 0.6, 0.0);
-    let biggest = band
-        .windows(2)
-        .map(|p| p[0].abs_diff(p[1]))
-        .max()
-        .expect("pairs");
-    assert!(f64::from(biggest) / 65535.0 <= 0.0751, "step {biggest}");
-    // near 0, far 1: S0 = 1 everywhere, at any softness.
-    for softness in [0.0, 0.5, 1.0] {
-        assert!(depth_s0(&m, 0.0, 1.0, softness).iter().all(|&c| c == 65535));
-    }
-    // The ramps are centred on the bounds (D-H2): it rises over [nu - q/2, nu + q/2] and falls over
-    // [phi - q/2, phi + q/2], one half exactly at each bound.
-    let q = 0.1;
-    assert_eq!(depth_cut(0.7, 0.2, 0.7, q), 0.5);
-    assert_eq!(depth_cut(0.2, 0.2, 0.7, q), 0.5);
-    assert_eq!(depth_cut(0.76, 0.2, 0.7, q), 0.0);
-    assert_eq!(depth_cut(0.64, 0.2, 0.7, q), 1.0);
-    assert_eq!(depth_cut(0.14, 0.2, 0.7, q), 0.0);
-    assert_eq!(depth_cut(0.26, 0.2, 0.7, q), 1.0);
-    assert_eq!(depth_cut(0.4, 0.2, 0.7, q), 1.0);
-}
-
-#[test]
-fn the_cut_is_one_half_at_both_bounds_for_every_softness() {
-    for (nu, phi) in [
-        (0.1, 0.9),
-        (0.3, 0.6),
-        (0.25, 0.5),
-        (0.4, 0.45),
-        (0.0, 0.5),
-        (0.5, 1.0),
-    ] {
-        for softness in [0.0, 0.2, 0.5, 1.0] {
-            let q = depth_ramp(softness);
-            if nu > 0.0 {
-                assert_eq!(
-                    depth_cut(nu, nu, phi, q),
-                    0.5,
-                    "nu {nu} phi {phi} softness {softness}"
-                );
-            }
-            if phi < 1.0 {
-                assert_eq!(
-                    depth_cut(phi, nu, phi, q),
-                    0.5,
-                    "nu {nu} phi {phi} softness {softness}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn a_band_selects_its_width_not_its_width_plus_a_ramp() {
-    // A uniform rank: 1001 distinct cells, z walks 0..=1 in steps of 0.001. At the default softness (q = 0.125) the band
-    // 0.3 to 0.6 selected 43 % before D-H2; now the share is the band's 30 %, within one ramp step (the ramps are
-    // symmetric, so the sum of S0 over the cells is the width to the rounding).
-    let m = map_of(14, 1001, 1, (0..1001).map(|i| (1000 - i) as f32).collect());
-    for (near, far) in [(0.3, 0.6), (0.0, 0.5), (0.5, 1.0), (0.1, 0.9), (0.4, 0.45)] {
-        for softness in [0.0, 0.5, 1.0] {
-            let band = depth_s0(&m, near, far, softness);
-            let share = band.iter().map(|&c| f64::from(c) / 65535.0).sum::<f64>() / 1001.0;
-            assert!(
-                (share - (far - near)).abs() <= 0.011,
-                "band {near}..{far} softness {softness}: {share}"
-            );
-            // The cells above one half are the band, to one cell at each bound.
-            let half = band.iter().filter(|&&c| c > 32767).count() as f64 / 1001.0;
-            assert!(
-                (half - (far - near)).abs() <= 0.003,
-                "band {near}..{far} softness {softness}: {half}"
+fn the_gradient_is_one_at_the_nearest_zero_at_the_limit_and_linear_between() {
+    for far in [0.02, 0.1, 0.35, 0.5, 0.8, 1.0] {
+        assert_eq!(depth_gradient(0.0, far), 1.0, "far {far}");
+        // 0 at the limit and beyond.
+        assert_eq!(depth_gradient(far, far), 0.0, "far {far}");
+        if far < 1.0 {
+            assert_eq!(
+                depth_gradient(far + 0.05_f64.min(1.0 - far), far),
+                0.0,
+                "far {far}"
             );
         }
+        assert_eq!(depth_gradient(1.0, far), 0.0, "far {far}");
+        // Linear in between: the quarter points of [0, far].
+        for q in [0.25, 0.5, 0.75] {
+            let got = depth_gradient(q * far, far);
+            assert!((got - (1.0 - q)).abs() < 1e-12, "far {far} q {q}: {got}");
+        }
+    }
+    // Monotone and bounded over a fine grid.
+    let mut last = 1.0;
+    for i in 0..=1000 {
+        let s = depth_gradient(f64::from(i) / 1000.0, 0.37);
+        assert!((0.0..=1.0).contains(&s) && s <= last);
+        last = s;
     }
 }
 
 #[test]
-fn a_band_narrower_than_the_ramp_stays_that_narrow() {
-    // q = 0.25 at softness 1 would be wider than a band of 0.1: the ramp is cut to 0.1, the band at 0.5 is still [nu, phi].
-    assert!((depth_ramp_eff_of(0.4, 0.5, 0.25) - 0.1).abs() < 1e-15);
-    assert_eq!(depth_ramp_eff_of(0.4, 0.5, 0.05), 0.05);
-    let m = map_of(15, 1001, 1, (0..1001).map(|i| (1000 - i) as f32).collect());
-    let band = depth_s0(&m, 0.4, 0.5, 1.0);
-    let first = band.iter().position(|&c| c > 32767).expect("a cell");
-    let last = band.iter().rposition(|&c| c > 32767).expect("a cell");
-    assert!(
-        (400..=401).contains(&first) && (499..=500).contains(&last),
-        "{first}..{last}"
-    );
-    // It does not leak beyond the band by more than half the ramp.
-    assert_eq!(band[349], 0);
-    assert_eq!(band[551], 0);
-    // A band of no width is defined, with the least ramp: a bump of at most 1/4 at the bound, zero a ramp away.
-    assert_eq!(depth_ramp_eff_of(0.5, 0.5, 0.25), DEPTH_RAMP_MIN);
-    assert_eq!(depth_cut(0.5, 0.5, 0.5, 0.25), 0.25);
-    assert_eq!(depth_cut(0.4, 0.5, 0.5, 0.25), 0.0);
-    assert_eq!(depth_cut(0.6, 0.5, 0.5, 0.25), 0.0);
-    // A band narrower than the minimum ramp uses the minimum.
-    assert_eq!(depth_ramp_eff_of(0.5, 0.51, 0.25), DEPTH_RAMP_MIN);
-}
-
-fn depth_ramp_eff_of(nu: f64, phi: f64, q: f64) -> f64 {
-    ym_color::mask_depth::depth_ramp_eff(nu, phi, q)
-}
-
-#[test]
-fn the_ends_of_the_range_have_no_ramp() {
-    let m = map_of(16, 1001, 1, (0..1001).map(|i| (1000 - i) as f32).collect());
-    for softness in [0.0, 0.5, 1.0] {
-        // nu = 0: the nearest cell (z = 0) is fully in, and everything up to phi - q/2.
-        let band = depth_s0(&m, 0.0, 0.5, softness);
-        assert_eq!(band[0], 65535, "softness {softness}");
-        assert_eq!(band[1], 65535);
-        // phi = 1: the sky (z = 1) is fully in, and everything from nu + q/2.
-        let band = depth_s0(&m, 0.5, 1.0, softness);
-        assert_eq!(band[1000], 65535, "softness {softness}");
-        assert_eq!(band[999], 65535);
-        // Both: everything.
-        assert!(depth_s0(&m, 0.0, 1.0, softness).iter().all(|&c| c == 65535));
+fn a_far_limit_of_one_is_the_show_depth_picture_exactly() {
+    let mut rng = Rng(7);
+    let d: Vec<f32> = (0..3000)
+        .map(|_| if rng.unit() < 0.3 { 0.0 } else { rng.unit() })
+        .collect();
+    let m = map_of(50, 60, 50, d);
+    for i in 0..m.len() {
+        // 1 - z, in f64, is the formula; r is z's complement from the same integers.
+        assert_eq!(depth_gradient(m.z(i), 1.0), 1.0 - m.z(i));
+        assert!((depth_gradient(m.z(i), 1.0) - m.r(i)).abs() < 1e-15);
     }
-    assert_eq!(depth_cut(0.0, 0.0, 0.3, 0.25), 1.0);
-    assert_eq!(depth_cut(1.0, 0.7, 1.0, 0.25), 1.0);
+    // The codes are the Show depth plane's, cell for cell.
+    assert_eq!(depth_s0(&m, 1.0), m.show_plane(1).data);
 }
 
 #[test]
-fn a_sky_of_ties_at_the_far_end_is_selected_by_the_far_band() {
-    // 57 % zeros (the sky) and the rest a ramp: before D-H2 the sky sat at z = 0.715 and the band 0.8 to 1 held none of it.
+fn the_plane_matches_the_formula_over_z_and_far() {
+    let n = 400;
+    let m = map_of(51, n, 1, (0..n).map(|i| i as f32 + 1.0).collect());
+    for far in [0.02, 0.2, 0.5, 0.8, 1.0, 1.7, -0.3, f64::NAN] {
+        let plane = depth_s0(&m, far);
+        for (i, &code) in plane.iter().enumerate() {
+            assert_eq!(code, reference_gradient(m.z(i), far), "far {far} cell {i}");
+        }
+    }
+}
+
+#[test]
+fn the_far_limit_is_held_to_its_least_and_nan_reads_as_the_whole_depth() {
+    assert_eq!(depth_far(1.0), 1.0);
+    assert_eq!(depth_far(0.35), 0.35);
+    assert_eq!(depth_far(5.0), 1.0);
+    assert_eq!(depth_far(0.0), DEPTH_FAR_MIN);
+    assert_eq!(depth_far(-1.0), DEPTH_FAR_MIN);
+    assert_eq!(depth_far(f64::NAN), 1.0);
+    assert!((DEPTH_FAR_MIN - 0.02).abs() < 1e-15);
+    // The division is safe at the least limit: every cell is a finite code, and only the nearest 2 % have any mask.
+    let m = map_of(52, 1000, 1, (0..1000).map(|i| (1000 - i) as f32).collect());
+    let plane = depth_s0(&m, 0.0);
+    assert!(plane.iter().filter(|&&c| c > 0).count() <= 21);
+    assert_eq!(plane[0], 65535);
+    assert_eq!(depth_s0(&m, 0.0), depth_s0(&m, DEPTH_FAR_MIN));
+}
+
+#[test]
+fn the_nearest_cell_is_full_and_the_far_end_is_none_at_any_limit() {
+    // One nearest cell, the rest a ramp, a tie group of the smallest value (the sky) at the far end.
+    let d = vec![9.0, 5.0, 4.0, 3.0, 0.0, 0.0];
+    let m = map_of(53, 6, 1, d);
+    for far in [0.1, 0.5, 1.0] {
+        let plane = depth_s0(&m, far);
+        assert_eq!(plane[0], 65535, "far {far}");
+        assert_eq!(plane[4], 0, "far {far}");
+        assert_eq!(plane[5], 0, "far {far}");
+    }
+}
+
+#[test]
+fn a_sky_of_ties_at_the_far_end_gets_no_mask_and_a_pick_on_it_takes_the_whole_depth() {
+    // 57 % zeros (the sky) and the rest a ramp (the D-H2 tie rule: the sky is z = 1 whole).
     let n = 1000;
     let sky = 570;
     let d: Vec<f32> = (0..n)
@@ -402,14 +279,14 @@ fn a_sky_of_ties_at_the_far_end_is_selected_by_the_far_band() {
     let m = map_of(17, n, 1, d);
     assert!((0..sky).all(|i| m.z(i) == 1.0));
     assert!((sky..n).all(|i| m.z(i) < 0.5));
-    let band = depth_s0(&m, 0.8, 1.0, 0.5);
-    assert!((0..sky).all(|i| band[i] == 65535));
-    assert!((sky..n).all(|i| band[i] == 0));
-    // A pick on the sky gives a band that reaches 1 and takes the whole of it.
-    let (near, far) = pick_depth(&m, 0.2, 0.5);
-    assert_eq!((near, far), (0.8, 1.0));
-    let picked = depth_s0(&m, near, far, 0.5);
-    assert!((0..sky).all(|i| picked[i] == 65535));
+    // Whatever the limit, the sky has none of the mask, and the nearest cell has all of it.
+    for far in [0.3, 0.7, 1.0] {
+        let plane = depth_s0(&m, far);
+        assert!((0..sky).all(|i| plane[i] == 0), "far {far}");
+        assert_eq!(plane[n - 1], 65535);
+    }
+    // A pick on the sky gives the whole depth.
+    assert_eq!(pick_depth(&m, 0.2, 0.5), 1.0);
 }
 
 #[test]
@@ -421,55 +298,49 @@ fn the_ranks_and_the_plane_are_the_same_every_time() {
     let a = map_of(18, 50, 40, d.clone());
     let b = map_of(18, 50, 40, d);
     assert_eq!(a.k, b.k);
-    assert_eq!(depth_s0(&a, 0.2, 0.7, 0.4), depth_s0(&b, 0.2, 0.7, 0.4));
+    assert_eq!(depth_s0(&a, 0.6), depth_s0(&b, 0.6));
+    assert_eq!(depth_s0(&a, 0.6), depth_s0(&a, 0.6));
 }
 
 #[test]
-fn the_plane_is_the_maps_cells_cut_once_and_the_cache_keeps_the_band_and_nothing_else() {
+fn the_plane_is_the_maps_cells_cut_once_and_the_cache_keeps_the_limit_and_nothing_else() {
     let m = map_of(
         9_100,
         8,
         8,
         (0..64).map(|i| ((i * 37) % 64) as f32).collect(),
     );
-    let source = |near: f64, far: f64, softness: f64| DepthSource {
+    let source = |far: f64| DepthSource {
         map: Arc::clone(&m),
-        near,
         far,
-        softness,
     };
-    let base = depth_plane(&source(0.0, 0.5, 0.5));
+    let base = depth_plane(&source(0.5));
     assert_eq!((base.width, base.height), (8, 8));
-    assert_eq!(base.data, depth_s0(&m, 0.0, 0.5, 0.5));
-    assert_eq!(base.key, source(0.0, 0.5, 0.5).key());
-    // The same band is the same plane, Arc for Arc (Feather, Grow and Refine edges are not in the key).
-    assert!(Arc::ptr_eq(&base, &depth_plane(&source(0.0, 0.5, 0.5))));
-    // Each of near, far and softness is a new plane with a new key.
-    for other in [
-        source(0.1, 0.5, 0.5),
-        source(0.0, 0.6, 0.5),
-        source(0.0, 0.5, 0.6),
-    ] {
-        let p = depth_plane(&other);
-        assert!(!Arc::ptr_eq(&base, &p));
-        assert_ne!(p.key, base.key);
-    }
-    // The key is of the band after the clamping and the swap: near above far is its mean.
-    assert_eq!(source(0.8, 0.2, 0.5).key(), source(0.5, 0.5, 0.5).key());
-    assert_eq!(source(-1.0, 0.5, 0.5).key(), source(0.0, 0.5, 0.5).key());
-    // A new map (another photo, other parameters) is a miss with the same numbers, and the same codes.
+    assert_eq!(base.data, depth_s0(&m, 0.5));
+    assert_eq!(base.key, source(0.5).key());
+    // The same limit is the same plane, Arc for Arc (Feather, Grow and Refine edges are not in the key).
+    assert!(Arc::ptr_eq(&base, &depth_plane(&source(0.5))));
+    // Another limit is a new plane with a new key.
+    let p = depth_plane(&source(0.6));
+    assert!(!Arc::ptr_eq(&base, &p));
+    assert_ne!(p.key, base.key);
+    // The key is of the limit after the clamping: above 1 is 1, under the least is the least, NaN is 1.
+    assert_eq!(source(1.4).key(), source(1.0).key());
+    assert_eq!(source(f64::NAN).key(), source(1.0).key());
+    assert_eq!(source(-1.0).key(), source(DEPTH_FAR_MIN).key());
+    // The rules' version is in the key: it differs from the version-2 key of the same numbers by construction.
+    assert_eq!(DEPTH_RULES_VERSION, 3);
+    // A new map (another photo) is a miss with the same limit, and the same codes.
     let again = map_of(9_101, 8, 8, m.d.clone());
     let p = depth_plane(&DepthSource {
         map: again,
-        near: 0.0,
         far: 0.5,
-        softness: 0.5,
     });
     assert!(!Arc::ptr_eq(&base, &p));
     assert_ne!(p.key, base.key);
     assert_eq!(p.data, base.data);
     // The raster source of a row gives the same plane at any aspect.
-    let row = RasterSource::Depth(Arc::new(source(0.0, 0.5, 0.5)));
+    let row = RasterSource::Depth(Arc::new(source(0.5)));
     assert!(Arc::ptr_eq(&row.plane([1.0, 0.6]), &base));
     assert_eq!(row.key(), base.key);
 }
@@ -478,55 +349,59 @@ fn the_plane_is_the_maps_cells_cut_once_and_the_cache_keeps_the_band_and_nothing
 fn a_depth_plane_does_not_share_a_key_with_the_same_numbers_in_another_domain() {
     // The tag in the key keeps a Depth plane from being read for a map whose key happens to be equal elsewhere.
     let m = map_of(1, 2, 2, vec![0.0, 1.0, 2.0, 3.0]);
-    let s = DepthSource {
-        map: m,
-        near: 0.0,
-        far: 0.5,
-        softness: 0.5,
-    };
+    let s = DepthSource { map: m, far: 0.5 };
     assert_ne!(s.key(), 1);
 }
 
 #[test]
-fn pick_depth_on_a_ramp_map_gives_the_known_band() {
+fn pick_depth_on_a_ramp_map_gives_the_known_limit() {
     // 100 columns, d falls to the right: the left is near. Cell i has r = (99 - i) / 99.
     let m = map_of(20, 100, 1, (0..100).map(|i| (100 - i) as f32).collect());
-    // The middle of the photo: z = 0.5 gives 0.4 to 0.6.
-    let (near, far) = pick_depth(&m, 0.5, 0.5);
-    assert_eq!((near, far), (0.4, 0.6));
-    // The left end: z = 0, the pair is moved to start at 0.
-    assert_eq!(pick_depth(&m, 0.0, 0.5), (0.0, 0.2));
-    assert_eq!(pick_depth(&m, 0.001, 0.5), (0.0, 0.2));
-    // The right end: z = 1, the pair is moved to end at 1.
-    assert_eq!(pick_depth(&m, 1.0, 0.5), (0.8, 1.0));
+    // The middle of the photo: z = 0.5 gives a limit of 0.6.
+    assert!((pick_depth(&m, 0.5, 0.5) - 0.6).abs() < 1e-12);
+    // The left end: z = 0, the limit is the margin alone.
+    assert!((pick_depth(&m, 0.0, 0.5) - DEPTH_PICK_MARGIN).abs() < 1e-12);
+    // The right end: z = 1, the limit is held to 1.
+    assert_eq!(pick_depth(&m, 1.0, 0.5), 1.0);
     // A quarter across: x = 0.25 is at u = 24.5, between cells 24 and 25, r = (99 - 24.5) / 99.
     let z: f64 = 1.0 - (99.0 - 24.5) / 99.0;
-    let (n, f) = pick_depth(&m, 0.25, 0.5);
-    assert_eq!(n, ((z - 0.1) * 100.0).round() / 100.0);
-    assert_eq!(f, ((z + 0.1) * 100.0).round() / 100.0);
-    // A map with all values equal is all far end (D-H2): the pick is 0.8 to 1.
+    assert!((pick_depth(&m, 0.25, 0.5) - (z + 0.1)).abs() < 1e-12);
+    // A map with all values equal is all far end (D-H2): the pick is the whole depth.
     let flat = map_of(21, 5, 5, vec![2.0; 25]);
-    assert_eq!(pick_depth(&flat, 0.3, 0.7), (0.8, 1.0));
+    assert_eq!(pick_depth(&flat, 0.3, 0.7), 1.0);
 }
 
 #[test]
-fn pick_band_moves_the_pair_as_a_whole_and_rounds_to_two_decimals() {
-    assert!((DEPTH_PICK_WIDTH - 0.2).abs() < 1e-15);
-    assert_eq!(pick_band(0.5), (0.4, 0.6));
-    assert_eq!(pick_band(0.05), (0.0, 0.2));
-    assert_eq!(pick_band(0.0), (0.0, 0.2));
-    assert_eq!(pick_band(0.95), (0.8, 1.0));
-    assert_eq!(pick_band(1.0), (0.8, 1.0));
-    // Rounding: z - 0.1 = 0.2345 rounds to 0.23, z + 0.1 = 0.4345 to 0.43.
-    let (n, f) = pick_band(0.3345);
-    assert_eq!((n, f), (0.23, 0.43));
-    // NaN reads as the middle.
-    assert_eq!(pick_band(f64::NAN), (0.4, 0.6));
-    // The pair is always inside [0, 1] and 0.2 wide (to the rounding).
+fn pick_far_is_the_depth_plus_the_margin_held_to_one() {
+    assert!((DEPTH_PICK_MARGIN - 0.1).abs() < 1e-15);
+    assert_eq!(pick_far(0.5), 0.5 + 0.1);
+    assert_eq!(pick_far(0.0), 0.1);
+    assert_eq!(pick_far(0.9), 0.9 + 0.1);
+    assert_eq!(pick_far(0.95), 1.0);
+    assert_eq!(pick_far(1.0), 1.0);
+    // NaN reads as the middle of the photo.
+    assert_eq!(pick_far(f64::NAN), 0.6);
+    // Not rounded: the sum is kept whole, and always inside the limit's range.
+    assert_eq!(pick_far(0.3345), 0.3345 + 0.1);
     for i in 0..=1000 {
-        let (n, f) = pick_band(f64::from(i) / 1000.0);
-        assert!((0.0..=1.0).contains(&n) && (0.0..=1.0).contains(&f));
-        assert!((f - n - 0.2).abs() <= 0.0101, "z {i}");
+        let z = f64::from(i) / 1000.0;
+        assert_eq!(pick_far(z), (z + 0.1).min(1.0), "z {z}");
+        // The subject stays in the mask: its own cell keeps a share of the mask (at 0.1 of the limit at the least).
+        assert!(depth_gradient(z, pick_far(z)) > 0.0 || z >= 1.0);
+    }
+}
+
+#[test]
+fn invert_is_the_rows_complement_and_the_plane_is_not_inverted() {
+    // Invert belongs to the row (section 3, step 1) and acts after the plane: 1 - S0, here from the plane's codes.
+    let m = map_of(54, 5, 1, vec![5.0, 4.0, 3.0, 2.0, 1.0]);
+    let plane = depth_s0(&m, 0.5);
+    let inverted: Vec<u16> = plane.iter().map(|&c| 65535 - c).collect();
+    assert_eq!(plane[0], 65535);
+    assert_eq!(inverted[0], 0);
+    assert_eq!(inverted[4], 65535);
+    for (c, i) in plane.iter().zip(&inverted) {
+        assert_eq!(u32::from(*c) + u32::from(*i), 65535);
     }
 }
 

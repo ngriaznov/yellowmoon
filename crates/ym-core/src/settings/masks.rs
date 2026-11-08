@@ -21,6 +21,8 @@ pub const MAX_OBJECT_POINTS: usize = 256;
 pub const UNIT_RANGE: (f64, f64) = (0.0, 1.0);
 /// Range of Grow.
 pub const GROW_RANGE: (f64, f64) = (-1.0, 1.0);
+/// Range of a Depth mask's far limit: the least is the one the mask divides by (`ym_color::mask_depth::DEPTH_FAR_MIN`).
+pub const DEPTH_FAR_RANGE: (f64, f64) = (ym_color::mask_depth::DEPTH_FAR_MIN, 1.0);
 /// Range of a Radial mask's radii (fractions of the photo's long edge).
 pub const RADII_RANGE: (f64, f64) = (0.002, 1.0);
 /// Range of a Linear or Radial mask's angle (degrees).
@@ -70,7 +72,7 @@ pub enum MaskKind {
     People,
     /// The blur map's out-of-focus area.
     Background,
-    /// A band of near or far from the depth map.
+    /// A gradient over the depth map: full at the nearest part, none at a far limit.
     Depth,
     /// A gradient across the photo.
     Linear,
@@ -484,19 +486,16 @@ impl Default for BackgroundMask {
     }
 }
 
-/// A Depth mask: a band of the photo's depth order (`docs/23` section 4.8, `docs/algorithms/06` section 5.8).
+/// A Depth mask: a gradient over the photo's depth order, full at the nearest part and none at the far limit
+/// (`docs/23` section 4.8, `docs/algorithms/06` section 5.8).
 ///
-/// `near` and `far` are places in the photo's depth order, not distances: 0 is the nearest part of the photo and 1 the
-/// farthest, so `near` 0 and `far` 0.35 is the nearest 35 % of the photo.
+/// `far` is a place in the photo's depth order, not a distance: 0 is the nearest part of the photo and 1 the farthest,
+/// so a `far` of 0.35 fades the mask out at 35 % of the photo's depth order. The default, 1, is the whole depth.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DepthMask {
-    /// Where the band starts, 0 (the nearest part of the photo) to 1.
-    pub near: f64,
-    /// Where the band ends, 0 to 1. A `near` above `far` is read as both at their mean.
+    /// Where the mask fades out, 0.02 to 1: full at the nearest part of the photo, none at this depth and beyond.
     pub far: f64,
-    /// The width of the ramp at both ends of the band, 0 to 1.
-    pub softness: f64,
     /// Feather, 0 to 1.
     pub feather: f64,
     /// Grow, -1 to 1.
@@ -508,9 +507,7 @@ pub struct DepthMask {
 impl Default for DepthMask {
     fn default() -> Self {
         Self {
-            near: 0.0,
-            far: 0.5,
-            softness: 0.5,
+            far: 1.0,
             feather: 0.0,
             grow: 0.0,
             refine: 0.5,
@@ -754,7 +751,7 @@ impl MaskShape {
             Self::Object(_) => &["points", "box", "feather", "grow", "refine"],
             Self::Subject(_) | Self::People(_) => &["feather", "grow", "refine"],
             Self::Background(_) => &["level", "softness", "feather", "grow", "refine"],
-            Self::Depth(_) => &["near", "far", "softness", "feather", "grow", "refine"],
+            Self::Depth(_) => &["far", "feather", "grow", "refine"],
             Self::Linear(_) => &["center", "angle_deg", "feather"],
             Self::Radial(_) => &["center", "radii", "angle_deg", "feather"],
             Self::Brush(_) => &["strokes", "feather", "grow", "refine"],
@@ -1016,14 +1013,7 @@ impl MaskSettings {
                     changed.number(&p, "refine", &mut b.refine, UNIT_RANGE)?;
                 }
                 MaskShape::Depth(d) => {
-                    changed.number(&p, "near", &mut d.near, UNIT_RANGE)?;
-                    changed.number(&p, "far", &mut d.far, UNIT_RANGE)?;
-                    if d.near > d.far {
-                        // Read as both at their mean (`docs/23` section 4.8), as the Brightness range's low and high.
-                        let mean = (d.near + d.far) / 2.0;
-                        (d.near, d.far) = (mean, mean);
-                    }
-                    changed.number(&p, "softness", &mut d.softness, UNIT_RANGE)?;
+                    changed.number(&p, "far", &mut d.far, DEPTH_FAR_RANGE)?;
                     changed.number(&p, "feather", &mut d.feather, UNIT_RANGE)?;
                     changed.number(&p, "grow", &mut d.grow, GROW_RANGE)?;
                     changed.number(&p, "refine", &mut d.refine, UNIT_RANGE)?;
@@ -1143,13 +1133,10 @@ pub struct MaskRowPatch {
     /// A Background row's level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<f64>,
-    /// A Depth row's `near`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub near: Option<f64>,
     /// A Depth row's `far`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub far: Option<f64>,
-    /// The softness of a Background, Depth, Colour range or Brightness range row.
+    /// The softness of a Background, Colour range or Brightness range row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub softness: Option<f64>,
     /// A Linear, Radial or Colour range row's centre.
@@ -1191,7 +1178,7 @@ impl MaskRowPatch {
         has!(
             kind => "kind", mode => "mode", invert => "invert", enabled => "enabled",
             opacity => "opacity", feather => "feather", grow => "grow", refine => "refine",
-            points => "points", box_ => "box", level => "level", near => "near", far => "far",
+            points => "points", box_ => "box", level => "level", far => "far",
             softness => "softness",
             center => "center", angle_deg => "angle_deg", radii => "radii", strokes => "strokes",
             strokes_append => "strokes_append", strokes_keep => "strokes_keep", width => "width",
@@ -1273,9 +1260,7 @@ impl MaskRowPatch {
                 set!(b, refine);
             }
             MaskShape::Depth(d) => {
-                set!(d, near);
                 set!(d, far);
-                set!(d, softness);
                 set!(d, feather);
                 set!(d, grow);
                 set!(d, refine);

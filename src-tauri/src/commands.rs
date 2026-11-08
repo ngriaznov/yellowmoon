@@ -17,13 +17,13 @@ use crate::api::AppApi;
 use crate::system;
 use crate::wire::{
     self, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
-    CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthBand, ErrorScope,
-    ExportEstimate, ExportJob, ExportJobId, FilmCatalogue, FocusPlaneResult, HistogramData,
-    LensInfo, Look, LookId, LookInput, LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult,
-    MaskKind, MaskView, MenuState, NodeId, Num, OpenKind, Orientation, PasteReport, PhotoId,
-    PixelSample, Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState,
-    SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode,
-    ViewportRect, WatchStatus,
+    CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthFar, ErrorScope, ExportEstimate,
+    ExportJob, ExportJobId, FilmCatalogue, FocusPlaneResult, HistogramData, LensInfo, Look, LookId,
+    LookInput, LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView,
+    MenuState, NodeId, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample, Preferences,
+    PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
+    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
+    WatchStatus,
 };
 
 /// The managed state: the command handlers, or why the application could not start.
@@ -439,8 +439,8 @@ pub async fn mask_find(
     .await
 }
 
-/// `sample_depth(photo_id, x, y)` (`docs/23` section 9, Pick depth): the band `{ near, far }` around the depth at the
-/// photo-frame point, two decimals, or null when no depth map can be made. It changes no settings: the page writes the answer
+/// `sample_depth(photo_id, x, y)` (`docs/23` section 9, Pick depth): the far limit `{ far }` for the depth at the
+/// photo-frame point, or null when no depth map can be made. It changes no settings: the page writes the answer
 /// as one row patch (one undo step). It waits for the depth map if the worker is still making it.
 #[tauri::command]
 #[specta::specta]
@@ -449,13 +449,13 @@ pub async fn sample_depth(
     photo_id: PhotoId,
     x: Num,
     y: Num,
-) -> Result<Option<DepthBand>, AppError> {
+) -> Result<Option<DepthFar>, AppError> {
     run(&state, move |api| api.sample_depth(photo_id, x, y)).await
 }
 
-/// `focus_plane(photo_id)` (`docs/23` section 9, Focus plane): the band around the plane the camera focused on, or why there
-/// is none (`no_focus_point` at once, `map_failed`). It changes no settings: the page writes a band as one row patch (one undo
-/// step).
+/// `focus_plane(photo_id)` (`docs/23` section 9, Focus plane): the far limit for the plane the camera focused on, or why
+/// there is none (`no_focus_point` at once, `map_failed`). It changes no settings: the page writes the limit as one row patch
+/// (one undo step).
 #[tauri::command]
 #[specta::specta]
 pub async fn focus_plane(

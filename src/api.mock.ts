@@ -62,7 +62,7 @@ import type {
   ColorBalancePoint,
   CropAspect,
   CropSuggestion,
-  DepthBand,
+  DepthFar,
   DevelopSettings,
   DownloadFound,
   ExportEstimate,
@@ -135,7 +135,7 @@ import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
 import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cropMath";
 import { copiedPatch, pastedOnto, refusalOfPatch, validateGraph } from "./fixtures/graph";
-import { hasBackgroundRow, hasObjectRow, maskViewSvg, masksOfView, MOCK_DEPTH, SCENES_WITH_PEOPLE, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
+import { hasBackgroundRow, hasObjectRow, maskViewSvg, masksOfView, MOCK_DEPTH, pickDepthFar, SCENES_WITH_PEOPLE, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
 import { diffSettings } from "./state/history";
 import { cardStates, linkInto } from "./state/graphOps";
 import {
@@ -983,14 +983,9 @@ function depthRankIn(scene: Scene, x: number, y: number): number {
   return layer === "near" ? DEPTH_RANKS.near : layer === "far" ? DEPTH_RANKS.far : DEPTH_RANKS.sky;
 }
 
-/** Pick depth's band around a depth position (`docs/algorithms/06` §5.8, step 4): 0.2 wide, moved to lie inside 0 to 1, two decimals. */
-function pickDepthBand(z: number): DepthBand {
-  let near = z - 0.1;
-  let far = z + 0.1;
-  if (near < 0) [near, far] = [0, far - near];
-  if (far > 1) [near, far] = [near - (far - 1), 1];
-  const two = (v: number): number => Math.round(clamp(v, 0, 1) * 100) / 100;
-  return { near: two(near), far: two(far) };
+/** Pick depth's far limit for a depth position (`docs/algorithms/06` §5.8, step 4): the depth plus 0.1, at most 1, not rounded. */
+function pickDepthLimit(z: number): DepthFar {
+  return { far: pickDepthFar(z) };
 }
 
 /** Every kind of mask, in the order of the Add mask menu. */
@@ -3071,7 +3066,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       }),
 
     sampleDepth: (photoId, x, y) =>
-      runAsync("sampleDepth", async (): Promise<DepthBand | null> => {
+      runAsync("sampleDepth", async (): Promise<DepthFar | null> => {
         if (!options.maskKinds.includes("depth")) fail("mask", "This copy of Yellowmoon has no Depth model. Reinstall the app.");
         if (!Number.isFinite(x) || !Number.isFinite(y)) fail("mask", "That click is not on the photo. Click the photo again.");
         const rec = photo(photoId);
@@ -3079,18 +3074,18 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         await depthDone(photoId);
         if (depthFailures.has(photoId)) return null;
         depthReady.add(photoId);
-        return pickDepthBand(depthRankIn(rec.scene, clamp(x, 0, 1), clamp(y, 0, 1)));
+        return pickDepthLimit(depthRankIn(rec.scene, clamp(x, 0, 1), clamp(y, 0, 1)));
       }),
     focusPlane: (photoId) =>
       run("focusPlane", (): FocusPlaneResult => {
         if (!options.maskKinds.includes("depth")) fail("mask", "This copy of Yellowmoon has no Depth model. Reinstall the app.");
         const rec = photo(photoId);
         // Some scenes have a focus point on the near ground (the scenes with a person), the others none (an older body).
-        if (!SCENES_WITH_PEOPLE.has(rec.scene.name)) return { near: null, far: null, exact_centre: false, reason: "no_focus_point" };
-        if (depthFailures.has(photoId)) return { near: null, far: null, exact_centre: false, reason: "map_failed" };
-        const band = pickDepthBand(DEPTH_RANKS.near);
+        if (!SCENES_WITH_PEOPLE.has(rec.scene.name)) return { far: null, exact_centre: false, reason: "no_focus_point" };
+        if (depthFailures.has(photoId)) return { far: null, exact_centre: false, reason: "map_failed" };
+        const picked = pickDepthLimit(DEPTH_RANKS.near);
         // One scene's focus point is exactly the frame's centre, the value Sony writes when it does not know (the card says to check the result).
-        return { near: band.near, far: band.far, exact_centre: rec.scene.name === FOCUS_AT_CENTRE_SCENE, reason: null };
+        return { far: picked.far, exact_centre: rec.scene.name === FOCUS_AT_CENTRE_SCENE, reason: null };
       }),
 
     retryDepth: (photoId) =>

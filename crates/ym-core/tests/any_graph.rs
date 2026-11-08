@@ -155,8 +155,8 @@ fn row_json(kind: MaskKind, rng: &mut SplitMix64) -> Value {
             "points": [[f(rng, 0.2, 0.5), f(rng, 0.3, 0.6)], [f(rng, 0.5, 0.8), f(rng, 0.4, 0.7)]] }],
             "feather": f(rng, 0.0, 0.6), "refine": f(rng, 0.0, 1.0) }),
         MaskKind::Background => json!({ "feather": f(rng, 0.0, 0.6), "refine": f(rng, 0.0, 1.0) }),
-        MaskKind::Depth => json!({ "near": f(rng, 0.0, 0.3), "far": f(rng, 0.5, 1.0),
-            "softness": f(rng, 0.0, 1.0), "feather": f(rng, 0.0, 0.6), "refine": f(rng, 0.0, 1.0) }),
+        MaskKind::Depth => json!({ "far": f(rng, 0.2, 1.0),
+            "feather": f(rng, 0.0, 0.6), "refine": f(rng, 0.0, 1.0) }),
         MaskKind::Subject | MaskKind::People => {
             json!({ "grow": f(rng, -0.3, 0.3), "refine": f(rng, 0.0, 1.0) })
         }

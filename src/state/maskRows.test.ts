@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MaskItem } from "../api/types";
-import { CANT_BE_MADE, DEPTH_ROW_NO_MODEL, FINDING, foundNothing, isFinding, isUnsupported, maskRowKinds, maskRowLabel, maskRowName, maskSubtitle, NOTHING_FOUND, UNSUPPORTED_ROW, widthSlider } from "./maskRows";
+import { CANT_BE_MADE, DEPTH_ROW_NO_MODEL, FINDING, foundNothing, isFinding, isUnsupported, maskRowKinds, maskRowLabel, maskRowName, maskSubtitle, newMask, NOTHING_FOUND, UNSUPPORTED_ROW, widthSlider } from "./maskRows";
 import type { VisionRows } from "./maskRows";
 
 const base = { mode: "add", invert: false, enabled: true, opacity: 1 } as const;
@@ -132,12 +132,17 @@ describe("the kinds an eye's index is checked against (docs/23 §7.6)", () => {
 });
 
 describe("a Depth row's words (docs/23 §7.6)", () => {
-  const depth: MaskItem = { ...base, feather: 0, grow: 0, refine: 0.5, kind: "depth", near: 0.24, far: 0.44, softness: 0.5 } as MaskItem;
+  const depth: MaskItem = { ...base, feather: 0, grow: 0, refine: 0.5, kind: "depth", far: 0.44 } as MaskItem;
   const none: VisionRows = { unsupported: [], nothing: [] };
 
-  it("is its band, near to far times 100", () => {
-    expect(maskSubtitle(depth)).toBe("24 to 44");
-    expect(maskRowLabel(depth)).toBe("Depth mask, 24 to 44");
+  it("is where the mask fades out, \"To 44 %\", and \"Whole depth\" at the default", () => {
+    expect(maskSubtitle(depth)).toBe("To 44 %");
+    expect(maskRowLabel(depth)).toBe("Depth mask, To 44 %");
+    expect(maskSubtitle({ ...depth, far: 1 } as MaskItem)).toBe("Whole depth");
+    expect(maskSubtitle(newMask("depth"))).toBe("Whole depth");
+    // A limit that rounds to 100 % is the whole depth too, and the least limit is 2 %.
+    expect(maskSubtitle({ ...depth, far: 0.996 } as MaskItem)).toBe("Whole depth");
+    expect(maskSubtitle({ ...depth, far: 0.02 } as MaskItem)).toBe("To 2 %");
   });
 
   it("says Finding… while the map is made, Can't be made when it failed, and the sentence of the missing model before both", () => {

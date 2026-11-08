@@ -1,5 +1,5 @@
 //! Depth masks through the render graph (`docs/23-nodes.md` sections 3.10a, 4.8 and 9, `docs/algorithms/06-masks.md`
-//! sections 5.8 and 8, task D-04): a Depth row's raster `S0` is its band cut from the photo's depth map, which a background
+//! sections 5.8 and 8, task D-04): a Depth row's raster `S0` is its gradient cut from the photo's depth map, which a background
 //! worker makes once per photo from the Input's picture (debounced, cancellable, never on disk); Pick depth and Focus plane
 //! read the cached map; the plane goes through the geometry and the raster steps as Background's does; an export makes its
 //! own map on the CPU.
@@ -392,21 +392,18 @@ fn a_depth_row_round_trips_with_its_defaults_and_is_checked() {
     let MaskShape::Depth(d) = &item.shape else {
         panic!("not a Depth row")
     };
-    assert_eq!(
-        (d.near, d.far, d.softness, d.feather, d.grow, d.refine),
-        (0.0, 0.5, 0.5, 0.0, 0.0, 0.5)
-    );
+    assert_eq!((d.far, d.feather, d.grow, d.refine), (1.0, 0.0, 0.0, 0.5));
     let written = serde_json::to_value(&item).expect("json");
     assert_eq!(
         written,
-        json!({ "kind": "depth", "near": 0.0, "far": 0.5, "softness": 0.5, "feather": 0.0, "grow": 0.0,
+        json!({ "kind": "depth", "far": 1.0, "feather": 0.0, "grow": 0.0,
                 "refine": 0.5, "mode": "add", "invert": false, "enabled": true, "opacity": 1.0 })
     );
     let again: MaskItem = serde_json::from_value(written).expect("round trip");
     assert_eq!(again, item);
     // The document form of `docs/10`.
-    let full: MaskItem = serde_json::from_value(json!({ "kind": "depth", "near": 0.1, "far": 0.35,
-        "softness": 0.2, "feather": 0.3, "grow": -0.2, "refine": 0.9, "invert": true, "mode": "subtract" }))
+    let full: MaskItem = serde_json::from_value(json!({ "kind": "depth", "far": 0.35,
+        "feather": 0.3, "grow": -0.2, "refine": 0.9, "invert": true, "mode": "subtract" }))
     .expect("a row");
     assert_eq!(
         serde_json::from_value::<MaskItem>(serde_json::to_value(&full).unwrap()).unwrap(),
@@ -417,6 +414,9 @@ fn a_depth_row_round_trips_with_its_defaults_and_is_checked() {
         json!({ "kind": "depth", "level": 0.5 }),
         json!({ "kind": "depth", "points": [] }),
         json!({ "kind": "depth", "nera": 0.5 }),
+        // The band is gone: a document that still has `near` or `softness` on a Depth row is refused like any unknown field.
+        json!({ "kind": "depth", "near": 0.1 }),
+        json!({ "kind": "depth", "softness": 0.5 }),
     ] {
         assert!(serde_json::from_value::<MaskItem>(bad).is_err());
     }
@@ -431,12 +431,12 @@ fn a_depth_row_round_trips_with_its_defaults_and_is_checked() {
         MaskShape::default_of("depth"),
         Some(MaskShape::Depth(Default::default()))
     );
-    // The numbers are clamped to their ranges, and a `near` above `far` is both at their mean.
+    // The numbers are clamped to their ranges: the far limit to 0.02 to 1.
     let (s, changed) = serde_json::from_value::<DevelopSettings>(json!({ "nodes": { "items": [
         { "id": 1 },
         { "id": 2, "kind": "corrector", "pos": [1.0, 0.0], "masks": { "invert": false, "items": [
-            { "kind": "depth", "near": -0.5, "far": 1.5, "softness": 2.0, "feather": 3.0, "grow": -4.0, "refine": 9.0 },
-            { "kind": "depth", "near": 0.8, "far": 0.2 },
+            { "kind": "depth", "far": 1.5, "feather": 3.0, "grow": -4.0, "refine": 9.0 },
+            { "kind": "depth", "far": 0.0 },
         ] } },
     ], "links": [
         { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
@@ -451,54 +451,68 @@ fn a_depth_row_round_trips_with_its_defaults_and_is_checked() {
     let (MaskShape::Depth(a), MaskShape::Depth(b)) = (&rows[0].shape, &rows[1].shape) else {
         panic!("rows")
     };
-    assert_eq!(
-        (a.near, a.far, a.softness, a.feather, a.grow, a.refine),
-        (0.0, 1.0, 1.0, 1.0, -1.0, 1.0)
-    );
-    assert_eq!((b.near, b.far), (0.5, 0.5));
+    assert_eq!((a.far, a.feather, a.grow, a.refine), (1.0, 1.0, -1.0, 1.0));
+    assert_eq!(b.far, 0.02);
 }
 
 #[test]
-fn a_row_patch_sets_near_far_and_softness_and_refuses_the_other_kinds_fields() {
+fn a_row_patch_sets_far_and_refuses_the_other_kinds_fields_and_the_old_band() {
     let row = MaskItem::new(MaskShape::Depth(Default::default()));
     let doc = graph(vec![serde_json::to_value(&row).unwrap()]);
     // The patch `masks.edit` of the app: a row by its index.
     let mut s = doc.clone();
     let patch: ym_core::settings::SettingsPatch = serde_json::from_value(json!({ "nodes": { "2": {
-        "masks": { "edit": { "0": { "near": 0.1, "far": 0.4, "softness": 0.2, "feather": 0.1, "invert": true } } } } } }))
+        "masks": { "edit": { "0": { "far": 0.4, "feather": 0.1, "invert": true } } } } } }))
     .expect("a settings patch");
     s.apply_patch(&patch, None).expect("applies");
     let row = &s.nodes.corrector(2).unwrap().masks.items[0];
     let MaskShape::Depth(d) = &row.shape else {
         panic!("a Depth row")
     };
-    assert_eq!((d.near, d.far, d.softness, d.feather), (0.1, 0.4, 0.2, 0.1));
+    assert_eq!((d.far, d.feather), (0.4, 0.1));
     assert!(row.invert);
-    // A `near` above the `far` is read as both at their mean.
-    let both: ym_core::settings::SettingsPatch = serde_json::from_value(json!({ "nodes": { "2": {
-        "masks": { "edit": { "0": { "near": 0.9 } } } } } }))
+    // A far limit under the least is held to it (no band, so no swap).
+    let low: ym_core::settings::SettingsPatch = serde_json::from_value(json!({ "nodes": { "2": {
+        "masks": { "edit": { "0": { "far": 0.001 } } } } } }))
     .expect("a settings patch");
-    s.apply_patch(&both, None).expect("applies");
+    s.apply_patch(&low, None).expect("applies");
     let MaskShape::Depth(d) = &s.nodes.corrector(2).unwrap().masks.items[0].shape else {
         panic!("a Depth row")
     };
-    assert_eq!((d.near, d.far), (0.65, 0.65));
+    assert_eq!(d.far, 0.02);
+    // `near` is not a field of any row any more (the patch is refused as it is read); `softness` is still the field of other
+    // kinds, and a Depth row refuses it with the plain sentence.
+    assert!(
+        serde_json::from_value::<ym_core::settings::SettingsPatch>(json!({ "nodes": { "2": {
+            "masks": { "edit": { "0": { "near": 0.3 } } } } } }))
+        .is_err()
+    );
+    let soft: ym_core::settings::SettingsPatch = serde_json::from_value(json!({ "nodes": { "2": {
+        "masks": { "edit": { "0": { "softness": 0.3 } } } } } }))
+    .expect("a settings patch");
+    let err = doc.clone().apply_patch(&soft, None).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "A Depth mask has no field called “softness”."
+    );
     // Another kind's field is refused with the plain sentence.
     let bad: ym_core::settings::SettingsPatch = serde_json::from_value(json!({ "nodes": { "2": {
         "masks": { "edit": { "0": { "level": 0.3 } } } } } }))
     .expect("a settings patch");
     let err = doc.clone().apply_patch(&bad, None).unwrap_err();
     assert_eq!(err.to_string(), "A Depth mask has no field called “level”.");
-    // And a Background row has no `near`.
+    // And a Background row has no `far`.
     let mut bg = graph(vec![json!({ "kind": "background" })]);
     let bad: ym_core::settings::SettingsPatch = serde_json::from_value(json!({ "nodes": { "2": {
-        "masks": { "edit": { "0": { "near": 0.3 } } } } } }))
+        "masks": { "edit": { "0": { "far": 0.3 } } } } } }))
     .expect("a settings patch");
     assert!(bg.apply_patch(&bad, None).is_err());
     // The row patch type reads the same fields.
     let row_patch: MaskRowPatch =
-        serde_json::from_value(json!({ "near": 0.1, "far": 0.4 })).expect("a row patch");
-    assert_eq!((row_patch.near, row_patch.far), (Some(0.1), Some(0.4)));
+        serde_json::from_value(json!({ "far": 0.4 })).expect("a row patch");
+    assert_eq!(row_patch.far, Some(0.4));
+    // The old band's fields are not in it.
+    assert!(serde_json::from_value::<MaskRowPatch>(json!({ "near": 0.1 })).is_err());
 }
 
 // ---- the key follows the Input, not a node ------------------------------------------------------------------------
@@ -562,9 +576,7 @@ fn the_maps_key_follows_the_inputs_picture_and_the_model_and_not_a_nodes_grade()
     );
     same(
         &edit_depth(&src, |d| {
-            d.near = 0.3;
             d.far = 0.9;
-            d.softness = 0.1;
             d.feather = 0.4;
             d.grow = 0.2;
             d.refine = 0.1;
@@ -602,10 +614,7 @@ fn a_viewer_never_waits_the_row_selects_nothing_until_the_map_is_made() {
     let heard = listen(&r);
     let d = photo(1, None);
     let plain = frame(&r, &d.source(), &mask_view(1));
-    let src = with_rows(
-        &d.source(),
-        vec![depth_row(json!({ "near": 0.0, "far": 0.5 }))],
-    );
+    let src = with_rows(&d.source(), vec![depth_row(json!({ "far": 1.0 }))]);
     let t = Instant::now();
     let first = frame(&r, &src, &picture_view());
     assert!(
@@ -636,7 +645,7 @@ fn a_viewer_never_waits_the_row_selects_nothing_until_the_map_is_made() {
         *heard.lock().unwrap(),
         [DepthPhase::Started, DepthPhase::Finished { failed: None }]
     );
-    // With the map there, the row selects something: the nearest half of the photo.
+    // With the map there, the row selects something: the gradient over the whole depth, a mean of about one half.
     let made = frame(&r, &src, &mask_view(2));
     let c = coverage(&made);
     assert!(c > 0.3 && c < 0.7, "about half the photo: {c}");
@@ -831,14 +840,14 @@ fn one_map_serves_two_depth_rows_and_a_second_node_and_the_picture_is_made_once(
     let spy = Arc::new(Spy::default());
     let r = renderer(spy_model(&spy, 0.0));
     let d = photo(1, None);
-    // Node 2 has two Depth rows; node 3 has one of its own, with another band.
+    // Node 2 has two Depth rows; node 3 has one of its own, with another far limit.
     let doc = json!({ "nodes": { "items": [
         { "id": 1 },
         { "id": 2, "kind": "corrector", "pos": [1.0, 0.0], "trim": { "exposure_ev": 1.0 },
           "masks": { "invert": false, "items": [
-            depth_row(json!({ "near": 0.0, "far": 0.3 })), depth_row(json!({ "near": 0.6, "far": 1.0 })) ] } },
+            depth_row(json!({ "far": 0.3 })), depth_row(json!({ "far": 0.6 })) ] } },
         { "id": 3, "kind": "corrector", "pos": [2.0, 0.0], "trim": { "exposure_ev": -1.0 },
-          "masks": { "invert": false, "items": [ depth_row(json!({ "near": 0.2, "far": 0.7 })) ] } },
+          "masks": { "invert": false, "items": [ depth_row(json!({ "far": 0.9 })) ] } },
     ], "links": [
         { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
         { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
@@ -861,7 +870,7 @@ fn one_map_serves_two_depth_rows_and_a_second_node_and_the_picture_is_made_once(
         b2 > 0.2 && b3 > 0.2,
         "both nodes have their masks: {b2} {b3}"
     );
-    assert!((b2 - b3).abs() > 1e-3, "with their own bands: {b2} {b3}");
+    assert!((b2 - b3).abs() > 1e-3, "with their own limits: {b2} {b3}");
     assert_eq!(
         spy.runs.load(Ordering::SeqCst),
         1,
@@ -883,21 +892,17 @@ fn the_sliders_cut_a_new_plane_from_the_cached_ranks_and_never_run_the_network()
     let spy = Arc::new(Spy::default());
     let r = renderer(spy_model(&spy, 0.0));
     let d = photo(1, None);
-    let src = with_rows(
-        &d.source(),
-        vec![depth_row(json!({ "near": 0.0, "far": 0.4 }))],
-    );
+    let src = with_rows(&d.source(), vec![depth_row(json!({ "far": 0.4 }))]);
     let _ = frame(&r, &src, &picture_view());
     settled(&r, &src);
     let base = coverage(&frame(&r, &src, &mask_view(2)));
     let mut seen = vec![base];
-    for tweak in 0..6 {
+    for tweak in 0..5 {
         let s = edit_depth(&src, |d| match tweak {
-            0 => d.near = 0.2,
+            0 => d.far = 0.2,
             1 => d.far = 0.9,
-            2 => d.softness = 0.9,
-            3 => d.feather = 0.5,
-            4 => d.grow = 0.5,
+            2 => d.feather = 0.5,
+            3 => d.grow = 0.5,
             _ => d.refine = 1.0,
         });
         r.depth_prepare(&s);
@@ -913,7 +918,7 @@ fn the_sliders_cut_a_new_plane_from_the_cached_ranks_and_never_run_the_network()
         "one network run for all the sliders"
     );
     assert_eq!(r.depth_networks(src.id), 1);
-    // The sliders did act: a wider band covers more.
+    // The far limit did act: a farther limit covers more.
     assert!(
         seen[2] > seen[0],
         "far 0.9 covers more than far 0.4: {seen:?}"
@@ -976,9 +981,7 @@ fn an_export_makes_its_own_map_and_equals_the_export_of_a_second_renderer_and_of
     let d = photo(1, None);
     let src = with_rows(
         &d.source(),
-        vec![depth_row(
-            json!({ "near": 0.0, "far": 0.5, "feather": 0.2 }),
-        )],
+        vec![depth_row(json!({ "far": 0.5, "feather": 0.2 }))],
     );
     let export = |r: &Renderer| {
         r.render_full(&src, &export_request(), &CancelToken::new())
@@ -1030,32 +1033,27 @@ fn an_export_makes_its_own_map_and_equals_the_export_of_a_second_renderer_and_of
 fn the_plane_follows_the_photos_geometry_as_backgrounds_does() {
     let r = renderer(ramp_model());
     let d = photo(1, None);
-    // The ramp: nearest at the left of the photo, farthest at the right. The band 0 to 0.5 with little softness covers the
-    // left half.
-    let base = with_rows(
-        &d.source(),
-        vec![depth_row(
-            json!({ "near": 0.0, "far": 0.5, "softness": 0.0 }),
-        )],
-    );
+    // The ramp: nearest at the left of the photo, farthest at the right. The gradient to 0.5 is full at the left edge and
+    // none from the middle on: a strip at the left edge is nearly full, the right half has none.
+    let base = with_rows(&d.source(), vec![depth_row(json!({ "far": 0.5 }))]);
     let _ = frame(&r, &base, &picture_view());
     settled(&r, &base);
     let plain = frame(&r, &base, &mask_view(2));
     let (left, right) = (
-        coverage_in(&plain, (0.0, 0.45), (0.3, 0.7)),
+        coverage_in(&plain, (0.02, 0.15), (0.3, 0.7)),
         coverage_in(&plain, (0.55, 1.0), (0.3, 0.7)),
     );
-    assert!(left > 0.9 && right < 0.1, "left {left} right {right}");
+    assert!(left > 0.7 && right < 0.02, "left {left} right {right}");
     // A quarter turn clockwise: the left of the photo is the top of the cell.
     let mut turned = base.settings.clone();
     turned.input_mut().orientation = Orientation::Deg90;
     let turned = base.with_settings(turned);
     let t = frame(&r, &turned, &mask_view(2));
     let (top, bottom) = (
-        coverage_in(&t, (0.3, 0.7), (0.0, 0.45)),
+        coverage_in(&t, (0.3, 0.7), (0.02, 0.15)),
         coverage_in(&t, (0.3, 0.7), (0.55, 1.0)),
     );
-    assert!(top > 0.9 && bottom < 0.1, "top {top} bottom {bottom}");
+    assert!(top > 0.7 && bottom < 0.02, "top {top} bottom {bottom}");
     assert_eq!(r.depth_networks(base.id), 1, "the turn made no map");
     // Half a turn: the left of the photo is the right of the cell.
     let mut flipped = base.settings.clone();
@@ -1063,9 +1061,9 @@ fn the_plane_follows_the_photos_geometry_as_backgrounds_does() {
     let f = frame(&r, &base.with_settings(flipped), &mask_view(2));
     let (l, rr) = (
         coverage_in(&f, (0.0, 0.45), (0.3, 0.7)),
-        coverage_in(&f, (0.55, 1.0), (0.3, 0.7)),
+        coverage_in(&f, (0.85, 0.98), (0.3, 0.7)),
     );
-    assert!(l < 0.1 && rr > 0.9, "left {l} right {rr}");
+    assert!(l < 0.02 && rr > 0.7, "left {l} right {rr}");
     // A crop to the left half of the photo shows the near part only; to the right half, the far part.
     let crop = |x: f64| ym_core::settings::Crop {
         rect: ym_core::settings::NormRect {
@@ -1084,8 +1082,8 @@ fn the_plane_follows_the_photos_geometry_as_backgrounds_does() {
         let c = frame(&r, &base.with_settings(s), &mask_view(2));
         // The cropped photo is a portrait in the middle of the square cell: look at the middle.
         let m = coverage_in(&c, (0.3, 0.7), (0.3, 0.7));
-        assert_eq!(m > 0.9, covered, "crop at {x}: {m}");
-        assert_eq!(m < 0.1, !covered, "crop at {x}: {m}");
+        assert_eq!(m > 0.4, covered, "crop at {x}: {m}");
+        assert_eq!(m < 0.02, !covered, "crop at {x}: {m}");
     }
     // A straightened photo has the plane rotate with the picture: the empty corners are not selected.
     let mut s = base.settings.clone();
@@ -1105,7 +1103,7 @@ fn the_plane_follows_the_photos_geometry_as_backgrounds_does() {
         coverage_in(&straight, (0.1, 0.4), (0.4, 0.6)),
         coverage_in(&straight, (0.6, 0.9), (0.4, 0.6)),
     );
-    assert!(l > 0.8 && rr < 0.2, "left {l} right {rr}");
+    assert!(l > 0.3 && rr < 0.05, "left {l} right {rr}");
     assert_eq!(r.depth_networks(base.id), 1);
 }
 
@@ -1123,31 +1121,27 @@ fn pick_depth_waits_for_the_worker_reads_the_cached_map_and_runs_no_network_of_i
     let on_patch = r
         .sample_depth(&src, 0.3, 0.7, &CancelToken::new())
         .expect("an answer")
-        .expect("a band");
+        .expect("a far limit");
     let on_ground = r
         .sample_depth(&src, 0.8, 0.2, &CancelToken::new())
         .expect("an answer")
-        .expect("a band");
-    // The bright patch is the nearest: the band starts at 0. The dark ground is behind it.
-    assert_eq!(on_patch, (0.0, 0.2));
-    assert!(on_ground.0 > 0.4, "{on_ground:?}");
+        .expect("a far limit");
+    // The bright patch is the nearest, about 2 % of the photo: its depth position is under 0.1, so the limit is the margin
+    // above it. The dark ground is the far end (z = 1): the limit is the whole depth.
+    assert!((0.1..0.2).contains(&on_patch), "{on_patch}");
+    assert_eq!(on_ground, 1.0);
     assert_eq!(spy.runs.load(Ordering::SeqCst), 1, "one run, the worker's");
     assert_eq!(r.depth_networks(src.id), 1);
-    // The answer is the map's: the band of `pick_depth` at that place.
+    // The answer is the map's: the limit of `pick_depth` at that place.
     let map = r.depth_map(&src, &CancelToken::new()).expect("the map");
     assert_eq!(ym_color::mask_depth::pick_depth(&map, 0.8, 0.2), on_ground);
-    // Two decimals, a fifth wide, inside 0 to 1.
+    // Never under the margin (the least depth position is 0) and never over 1.
     for (x, y) in [(0.0, 0.0), (1.0, 1.0), (0.5, 0.5), (0.31, 0.69)] {
-        let (n, f) = r
+        let f = r
             .sample_depth(&src, x, y, &CancelToken::new())
             .unwrap()
             .unwrap();
-        assert!((0.0..=1.0).contains(&n) && (0.0..=1.0).contains(&f));
-        assert!(
-            (n * 100.0 - (n * 100.0).round()).abs() < 1e-9
-                && (f * 100.0 - (f * 100.0).round()).abs() < 1e-9
-        );
-        assert!((f - n - 0.2).abs() < 0.0101);
+        assert!((0.1..=1.0).contains(&f), "{f}");
     }
     // A click that is not a number is refused.
     assert!(
@@ -1157,10 +1151,10 @@ fn pick_depth_waits_for_the_worker_reads_the_cached_map_and_runs_no_network_of_i
     // A click when nothing has asked for the map makes it (as `mask_find` makes the features).
     let spy2 = binary_spy();
     let r2 = renderer(spy_model(&spy2, 0.0));
-    let band = r2
+    let far = r2
         .sample_depth(&src, 0.3, 0.7, &CancelToken::new())
         .unwrap();
-    assert_eq!(band, Some((0.0, 0.2)));
+    assert_eq!(far, Some(on_patch));
     assert_eq!(spy2.runs.load(Ordering::SeqCst), 1);
 }
 
@@ -1192,15 +1186,10 @@ fn focus_plane_takes_the_median_depth_in_the_af_box_in_all_eight_orientations() 
     for orientation in 1..=8u16 {
         let d = photo(orientation, Some((at(0.3, 0.7), Some([300, 300, 257]))));
         match focus_of(&r, &d) {
-            FocusPlane::Band {
-                near,
-                far,
-                exact_centre,
-            } => {
-                assert_eq!(
-                    (near, far),
-                    (0.0, 0.2),
-                    "orientation {orientation}: the box lands on the square"
+            FocusPlane::Far { far, exact_centre } => {
+                assert!(
+                    (0.1..0.2).contains(&far),
+                    "orientation {orientation}: the box lands on the square: {far}"
                 );
                 assert!(!exact_centre);
             }
@@ -1209,8 +1198,8 @@ fn focus_plane_takes_the_median_depth_in_the_af_box_in_all_eight_orientations() 
         // A point on the dark ground is far: the median says so.
         let ground = photo(orientation, Some((at(0.8, 0.2), Some([300, 300, 257]))));
         match focus_of(&r, &ground) {
-            FocusPlane::Band { near, .. } => {
-                assert!(near > 0.4, "orientation {orientation}: {near}")
+            FocusPlane::Far { far, .. } => {
+                assert_eq!(far, 1.0, "orientation {orientation}: the ground is far")
             }
             other => panic!("orientation {orientation}: {other:?}"),
         }
@@ -1224,19 +1213,18 @@ fn focus_plane_without_a_box_uses_a_small_square_and_with_a_box_the_cameras() {
     let r = renderer(spy_model(&binary_spy(), 0.0));
     // No FocusFrameSize: a square of 4 % of the long edge at the point.
     let small = photo(1, Some((at(0.3, 0.7), None)));
-    assert_eq!(
-        focus_of(&r, &small),
-        FocusPlane::Band {
-            near: 0.0,
-            far: 0.2,
-            exact_centre: false
+    match focus_of(&r, &small) {
+        FocusPlane::Far { far, exact_centre } => {
+            assert!((0.1..0.2).contains(&far), "{far}");
+            assert!(!exact_centre);
         }
-    );
+        other => panic!("{other:?}"),
+    }
     // A box that is much bigger than the square takes the side that holds most of it: a box of 3000 x 2000 camera units
     // (half the photo) centred on the square holds mostly ground.
     let big = photo(1, Some((at(0.3, 0.7), Some([3000, 2000, 257]))));
     match focus_of(&r, &big) {
-        FocusPlane::Band { near, .. } => assert!(near > 0.3, "the median is the ground's: {near}"),
+        FocusPlane::Far { far, .. } => assert_eq!(far, 1.0, "the median is the ground's: {far}"),
         other => panic!("{other:?}"),
     }
     // FocusLocation2 wins over FocusLocation on newer bodies (the file reader's rule): the same answer through either tag.
@@ -1248,7 +1236,7 @@ fn focus_plane_without_a_box_uses_a_small_square_and_with_a_box_the_cameras() {
         .write_to(&dir.path().join("DSC00001.ARW"), &scene.mosaic())
         .expect("write");
     let two = Developed::open(dir);
-    assert!(matches!(focus_of(&r, &two), FocusPlane::Band { .. }));
+    assert!(matches!(focus_of(&r, &two), FocusPlane::Far { .. }));
 }
 
 #[test]
@@ -1281,16 +1269,12 @@ fn focus_plane_has_no_answer_without_a_point_and_says_so_without_waiting_for_the
 #[test]
 fn focus_plane_at_the_exact_centre_says_so_and_at_the_edge_of_the_grid_still_answers() {
     let r = renderer(spy_model(&binary_spy(), 0.0));
-    // Sony writes the centre when it does not know: the band is made all the same, and the answer says so.
+    // Sony writes the centre when it does not know: the limit is made all the same, and the answer says so.
     let centre = photo(1, Some(([6000, 4000, 3000, 2000], Some([300, 300, 257]))));
     match focus_of(&r, &centre) {
-        FocusPlane::Band {
-            near,
-            far,
-            exact_centre,
-        } => {
+        FocusPlane::Far { far, exact_centre } => {
             assert!(exact_centre);
-            assert!((far - near - 0.2).abs() < 0.0101);
+            assert!((0.1..=1.0).contains(&far), "{far}");
         }
         other => panic!("{other:?}"),
     }
@@ -1298,7 +1282,7 @@ fn focus_plane_at_the_exact_centre_says_so_and_at_the_edge_of_the_grid_still_ans
     let off = photo(1, Some(([6000, 4000, 3001, 2000], None)));
     assert!(matches!(
         focus_of(&r, &off),
-        FocusPlane::Band {
+        FocusPlane::Far {
             exact_centre: false,
             ..
         }
@@ -1311,8 +1295,8 @@ fn focus_plane_at_the_exact_centre_says_so_and_at_the_edge_of_the_grid_still_ans
     ] {
         let corner = photo(1, Some((point, Some([2000, 2000, 257]))));
         match focus_of(&r, &corner) {
-            FocusPlane::Band { near, far, .. } => {
-                assert!((0.0..=1.0).contains(&near) && (0.0..=1.0).contains(&far))
+            FocusPlane::Far { far, .. } => {
+                assert!((0.1..=1.0).contains(&far), "{point:?}: {far}")
             }
             other => panic!("{point:?}: {other:?}"),
         }
@@ -1322,15 +1306,10 @@ fn focus_plane_at_the_exact_centre_says_so_and_at_the_edge_of_the_grid_still_ans
 // ---- the mask views -----------------------------------------------------------------------------------------------
 
 #[test]
-fn the_mask_view_of_a_depth_row_shows_its_band_and_invert_is_everything_but_the_band() {
+fn the_mask_view_of_a_depth_row_shows_its_gradient_and_invert_is_its_complement() {
     let r = renderer(ramp_model());
     let d = photo(1, None);
-    let src = with_rows(
-        &d.source(),
-        vec![depth_row(
-            json!({ "near": 0.0, "far": 0.5, "softness": 0.0 }),
-        )],
-    );
+    let src = with_rows(&d.source(), vec![depth_row(json!({ "far": 0.5 }))]);
     let _ = frame(&r, &src, &picture_view());
     settled(&r, &src);
     let band = frame(&r, &src, &mask_view(2));
@@ -1360,10 +1339,11 @@ fn show_view(row: Option<u32>, style: MaskStyle, depth: bool) -> ViewportState {
     st
 }
 
-/// A Depth row whose band is a sliver, inverted, faint and with every raster step on: the band view of it is nearly black.
+/// A Depth row whose gradient ends near the front, inverted, faint and with every raster step on: the mask view of it is
+/// nothing like the depth picture.
 fn fussy_row() -> Value {
     depth_row(json!({
-        "near": 0.4, "far": 0.45, "softness": 0.0, "invert": true, "opacity": 0.3,
+        "far": 0.1, "invert": true, "opacity": 0.3,
         "grow": 0.5, "feather": 0.3, "refine": 0.9
     }))
 }
@@ -1389,7 +1369,7 @@ fn show_depth_is_the_whole_map_as_grey_white_near_and_the_row_s_band_steps_inver
         left > 0.8 && left > middle + 0.3 && middle > right + 0.3 && right < 0.2,
         "{left} {middle} {right}"
     );
-    // It is the whole map and not the band: the same bytes for another band, another Invert, another Opacity and no steps.
+    // It is the whole map and not the gradient: the same bytes for another limit, another Invert, another Opacity and no steps.
     let plain = with_rows(&d.source(), vec![depth_row(json!({}))]);
     let same = frame(&r, &plain, &show_view(Some(0), MaskStyle::MaskOnly, true));
     assert!(shown.rgba == same.rgba, "shown and same differ");
@@ -1419,10 +1399,7 @@ fn show_depth_means_nothing_for_a_row_that_is_not_a_depth_row_and_for_the_node_s
     let linear = json!({ "kind": "linear", "mode": "add", "center": [0.5, 0.5], "angle_deg": 0.0, "feather": 0.2 });
     let src = with_rows(
         &d.source(),
-        vec![
-            linear.clone(),
-            depth_row(json!({ "near": 0.0, "far": 0.5, "softness": 0.0 })),
-        ],
+        vec![linear.clone(), depth_row(json!({ "far": 0.5 }))],
     );
     let _ = frame(&r, &src, &picture_view());
     settled(&r, &src);
@@ -1451,14 +1428,14 @@ fn show_depth_means_nothing_for_a_row_that_is_not_a_depth_row_and_for_the_node_s
 }
 
 #[test]
-fn show_depth_takes_the_depth_rows_of_the_nodes_upstream_at_their_bands() {
+fn show_depth_takes_the_depth_rows_of_the_nodes_upstream_at_their_limits() {
     // Node 2 has the Depth row that is shown; node 3, after it, has a Depth row of its own that must not become a grey picture.
     let r = renderer(ramp_model());
     let d = photo(1, None);
     let doc = json!({ "nodes": { "items": [
         { "id": 1 },
         { "id": 2, "kind": "corrector", "pos": [1.0, 0.0], "masks": { "invert": false, "items": [ depth_row(json!({})) ] } },
-        { "id": 3, "kind": "corrector", "pos": [2.0, 0.0], "masks": { "invert": false, "items": [ depth_row(json!({ "near": 0.0, "far": 0.1, "softness": 0.0 })) ] } },
+        { "id": 3, "kind": "corrector", "pos": [2.0, 0.0], "masks": { "invert": false, "items": [ depth_row(json!({ "far": 0.1 })) ] } },
     ], "links": [
         { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
         { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
@@ -1473,7 +1450,7 @@ fn show_depth_takes_the_depth_rows_of_the_nodes_upstream_at_their_bands() {
     let src = d.source().with_settings(settings);
     let _ = frame(&r, &src, &picture_view());
     settled(&r, &src);
-    // Showing node 3's row: node 2's row stays its band (everything), node 3's is the map.
+    // Showing node 3's row: node 2's row stays its gradient, node 3's is the map.
     let mut st = ViewportState::new(ViewportRect::cell(CELL, CELL, 1.0));
     st.mask_view = Some(MaskView {
         node: 3,

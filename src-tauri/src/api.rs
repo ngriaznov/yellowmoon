@@ -35,7 +35,7 @@ use crate::thumbs::Thumbnails;
 use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
     AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
-    CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthBand, DepthState, ErrorScope,
+    CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthFar, DepthState, ErrorScope,
     ExportEstimate, ExportJob, ExportJobId, FocusPlaneResult, FocusReason, HistogramData, LensInfo,
     Look, LookId, LookInput, LooksImportProgress, LooksImportResult, MapFrom, MaskFindPrompt,
     MaskFindResult, MaskKind, MaskView, NodeId, Num, ObjectState, OpenSummary, Orientation,
@@ -1089,8 +1089,8 @@ impl AppApi {
         })
     }
 
-    /// `sample_depth(photo_id, x, y)` (`docs/23` section 9, Pick depth): the band around the depth at the photo-frame point
-    /// (`x`, `y` are shares of the photo's width and height), `near` and `far` rounded to two decimals, or `None` when no depth
+    /// `sample_depth(photo_id, x, y)` (`docs/23` section 9, Pick depth): the far limit for the depth at the photo-frame point
+    /// (`x`, `y` are shares of the photo's width and height), the depth plus 0.1 and at most 1, or `None` when no depth
     /// map can be made. Nothing is changed: the page writes the answer as one row patch. It waits for the depth worker when it
     /// is still running (`Core::sample_depth`), so it runs off the command thread.
     ///
@@ -1103,20 +1103,17 @@ impl AppApi {
         photo: PhotoId,
         x: Num,
         y: Num,
-    ) -> Result<Option<DepthBand>, AppError> {
-        let band = self
+    ) -> Result<Option<DepthFar>, AppError> {
+        let far = self
             .core
             .sample_depth(core_id(photo), x.0, y.0, &CancelToken::new())
             .map_err(AppError::from)?;
-        Ok(band.map(|(near, far)| DepthBand {
-            near: Num(near),
-            far: Num(far),
-        }))
+        Ok(far.map(|far| DepthFar { far: Num(far) }))
     }
 
-    /// `focus_plane(photo_id)` (`docs/23` section 9, Focus plane): the band around the plane the camera focused on, from the
-    /// maker note's focus point and the median depth in its box; without a band, why (`no_focus_point` is answered at once,
-    /// without waiting for the depth map). Nothing is changed: the page writes a band as one row patch.
+    /// `focus_plane(photo_id)` (`docs/23` section 9, Focus plane): the far limit for the plane the camera focused on, from
+    /// the maker note's focus point and the median depth in its box; without a limit, why (`no_focus_point` is answered at once,
+    /// without waiting for the depth map). Nothing is changed: the page writes the limit as one row patch.
     ///
     /// # Errors
     ///
@@ -1128,18 +1125,12 @@ impl AppApi {
             .focus_plane(core_id(photo), &CancelToken::new())
             .map_err(AppError::from)?;
         Ok(match answer {
-            ym_core::pipeline::FocusPlane::Band {
-                near,
-                far,
-                exact_centre,
-            } => FocusPlaneResult {
-                near: Some(Num(near)),
+            ym_core::pipeline::FocusPlane::Far { far, exact_centre } => FocusPlaneResult {
                 far: Some(Num(far)),
                 exact_centre,
                 reason: None,
             },
             ym_core::pipeline::FocusPlane::None(why) => FocusPlaneResult {
-                near: None,
                 far: None,
                 exact_centre: false,
                 reason: Some(match why {

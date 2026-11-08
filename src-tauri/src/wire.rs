@@ -995,7 +995,7 @@ pub enum MaskItem {
         /// Refine edges, 0 to 1.
         refine: Num,
     },
-    /// A band of the depth map (`docs/23` section 4.8).
+    /// A gradient over the depth map, full at the nearest part and none at a far limit (`docs/23` section 4.8).
     Depth {
         /// Add or subtract.
         mode: MaskMode,
@@ -1005,12 +1005,9 @@ pub enum MaskItem {
         enabled: bool,
         /// 0 to 1.
         opacity: Num,
-        /// Where the band starts in the photo's depth order, 0 (the nearest part of the photo) to 1.
-        near: Num,
-        /// Where the band ends, 0 to 1. A `near` above `far` is read as both at their mean.
+        /// Where the mask fades out in the photo's depth order, 0.02 to 1: full at the nearest part of the photo, none at
+        /// this depth and beyond. 1 is the whole depth.
         far: Num,
-        /// The width of the ramp at both ends of the band, 0 to 1.
-        softness: Num,
         /// Feather, 0 to 1.
         feather: Num,
         /// Grow, -1 to 1.
@@ -1706,13 +1703,10 @@ pub struct MaskPatch {
     /// A Background row's level.
     #[serde(default)]
     pub level: Option<Num>,
-    /// A Depth row's `near`.
-    #[serde(default)]
-    pub near: Option<Num>,
     /// A Depth row's `far`.
     #[serde(default)]
     pub far: Option<Num>,
-    /// The softness of a Background, Depth, Colour range or Brightness range row.
+    /// The softness of a Background, Colour range or Brightness range row.
     #[serde(default)]
     pub softness: Option<Num>,
     /// A Linear, Radial or Colour range row's centre.
@@ -1756,7 +1750,7 @@ impl Serialize for MaskPatch {
         put!(
             kind => "kind", mode => "mode", invert => "invert", enabled => "enabled",
             opacity => "opacity", feather => "feather", grow => "grow", refine => "refine",
-            points => "points", box_ => "box", level => "level", near => "near", far => "far",
+            points => "points", box_ => "box", level => "level", far => "far",
             softness => "softness", center => "center", angle_deg => "angle_deg", radii => "radii",
             strokes => "strokes",
             strokes_append => "strokes_append", strokes_keep => "strokes_keep", width => "width",
@@ -3009,7 +3003,7 @@ pub enum MaskKind {
     People,
     /// The blur map's out-of-focus area.
     Background,
-    /// A band of near or far from the depth map.
+    /// A gradient over the depth map: full at the nearest part, none at a far limit.
     Depth,
     /// A gradient across the photo.
     Linear,
@@ -3023,18 +3017,16 @@ pub enum MaskKind {
     BrightnessRange,
 }
 
-/// The answer of `sample_depth` (`docs/23` section 9, Pick depth): the band around the depth under the click, in the photo's
-/// depth order (0 is the nearest part of the photo, 1 the farthest), rounded to two decimals. The page writes the two numbers
-/// as one row patch (`masks.edit` with `near` and `far`), one undo step.
+/// The answer of `sample_depth` (`docs/23` section 9, Pick depth): the far limit for the depth under the click, in the photo's
+/// depth order (0 is the nearest part of the photo, 1 the farthest): the depth plus 0.1, at most 1. The page writes it as one
+/// row patch (`masks.edit` with `far`), one undo step.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
-pub struct DepthBand {
-    /// Where the band starts, 0 to 1.
-    pub near: Num,
-    /// Where the band ends, 0 to 1.
+pub struct DepthFar {
+    /// Where the mask fades out, 0.02 to 1.
     pub far: Num,
 }
 
-/// Why `focus_plane` has no band (`docs/23` section 9).
+/// Why `focus_plane` has no far limit (`docs/23` section 9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum FocusReason {
@@ -3045,19 +3037,17 @@ pub enum FocusReason {
     MapFailed,
 }
 
-/// The answer of `focus_plane` (`docs/23` section 9, Focus plane): with a band, `near` and `far` as `sample_depth`'s and
-/// `reason` null; without one, `near` and `far` null and the `reason`. The page writes a band as one row patch, one undo
-/// step; `exact_centre` is true when the camera's point is exactly the frame's centre, which Sony also writes when it does not
-/// know where it focused (the card says so).
+/// The answer of `focus_plane` (`docs/23` section 9, Focus plane): with a limit, `far` as `sample_depth`'s and `reason` null;
+/// without one, `far` null and the `reason`. The page writes the limit as one row patch, one undo step; `exact_centre` is true
+/// when the camera's point is exactly the frame's centre, which Sony also writes when it does not know where it focused (the
+/// card says so).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
 pub struct FocusPlaneResult {
-    /// Where the band starts, 0 to 1, or null when there is no band.
-    pub near: Option<Num>,
-    /// Where the band ends, 0 to 1, or null when there is no band.
+    /// Where the mask fades out, 0.02 to 1, or null when there is no limit.
     pub far: Option<Num>,
     /// The focus point is exactly the frame's centre.
     pub exact_centre: bool,
-    /// Why there is no band, or null when there is one.
+    /// Why there is no limit, or null when there is one.
     pub reason: Option<FocusReason>,
 }
 

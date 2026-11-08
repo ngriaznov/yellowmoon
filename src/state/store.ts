@@ -32,7 +32,7 @@ import type {
   ColorBalance,
   ColorBalancePoint,
   CropAspect,
-  DepthBand,
+  DepthFar,
   CropSuggestion,
   Curves,
   DevelopSettings,
@@ -335,9 +335,9 @@ export interface AppState {
   noFocusPoint: Readonly<Record<number, true>>;
   /**
    * What Focus plane last set on a photo, when the camera's point is exactly the frame's centre (which Sony also writes when it does not know): the card says "The
-   * camera may not have recorded where it focused. Check the result." while the row still has this band.
+   * camera may not have recorded where it focused. Check the result." while the row still has this far limit.
    */
-  focusCentre: Readonly<Record<number, { near: number; far: number }>>;
+  focusCentre: Readonly<Record<number, number>>;
   /** The pill at the top of the photo, "Object found · 0.4 s", for three seconds after a find. */
   objectPill: { seq: number; text: string } | null;
   /** Undo and redo are available for the current photo. */
@@ -2380,9 +2380,9 @@ export class AppStore {
   }
 
   /**
-   * Pick depth (`docs/23` §4.8, §7.6): a click at `(x, y)` of the cell (CSS pixels from its corner) sets `near` and `far` of the Depth row `row` of `node` around the
-   * depth under it. The click is mapped to the photo frame (`viewport_map_points`; a click on the paper around the photo does nothing), the core answers the band
-   * (`sample_depth`, waiting for the depth map if it is still being made) and the two numbers are written as **one** `masks.edit` row patch: one undo step. A
+   * Pick depth (`docs/23` §4.8, §7.6): a click at `(x, y)` of the cell (CSS pixels from its corner) sets `far` of the Depth row `row` of `node` a little behind the
+   * depth under it. The click is mapped to the photo frame (`viewport_map_points`; a click on the paper around the photo does nothing), the core answers the limit
+   * (`sample_depth`, waiting for the depth map if it is still being made) and the number is written as a `masks.edit` row patch: one undo step. A
    * refusal goes to the error bar; no map to read (it failed) changes nothing. Nothing is written for a row that is not a Depth row any more.
    */
   async pickDepth(x: number, y: number, node: number, row: number): Promise<void> {
@@ -2393,15 +2393,15 @@ export class AppStore {
     const mapped = await this.mapPoints([[x, y]], "cell");
     const at = mapped?.[0];
     if (!at) return;
-    let band: DepthBand | null;
+    let picked: DepthFar | null;
     try {
-      band = await this.api.sampleDepth(id, at[0], at[1]);
+      picked = await this.api.sampleDepth(id, at[0], at[1]);
     } catch (error) {
       this.fail(error);
       return;
     }
-    if (!band || this.currentId() !== id || this.depthRowAt(id, node, row) === undefined) return;
-    await this.update(patchOf(node, { masks: { edit: { [String(row)]: { near: band.near, far: band.far } } } }), true, id);
+    if (!picked || this.currentId() !== id || this.depthRowAt(id, node, row) === undefined) return;
+    await this.update(patchOf(node, { masks: { edit: { [String(row)]: { far: picked.far } } } }), true, id);
   }
 
   /** The Depth row `row` of `node` of a photo, as the page has it. */
@@ -2413,9 +2413,9 @@ export class AppStore {
   }
 
   /**
-   * Focus plane (`docs/23` §4.8, §7.6): sets `near` and `far` of the Depth row `row` of `node` around the plane the camera focused on (`focus_plane`), as one
+   * Focus plane (`docs/23` §4.8, §7.6): sets `far` of the Depth row `row` of `node` a little behind the plane the camera focused on (`focus_plane`), as one
    * row patch and one undo step. A photo with no focus point is remembered (`noFocusPoint`: the button goes off, the card says why) and nothing is written. When
-   * the camera's point is exactly the frame's centre the band is made and the card says to check it (`focusCentre`). A depth map that could not be made changes
+   * the camera's point is exactly the frame's centre the limit is made and the card says to check it (`focusCentre`). A depth map that could not be made changes
    * nothing: its failure is the row's own (`depth_state`).
    */
   async focusPlane(node: number, row: number): Promise<void> {
@@ -2432,11 +2432,11 @@ export class AppStore {
       this.set({ noFocusPoint: { ...this.state.noFocusPoint, [id]: true } });
       return;
     }
-    if (answer.near === null || answer.far === null || this.currentId() !== id || this.depthRowAt(id, node, row) === undefined) return;
-    const { near, far } = answer;
-    await this.update(patchOf(node, { masks: { edit: { [String(row)]: { near, far } } } }), true, id);
+    if (answer.far === null || this.currentId() !== id || this.depthRowAt(id, node, row) === undefined) return;
+    const { far } = answer;
+    await this.update(patchOf(node, { masks: { edit: { [String(row)]: { far } } } }), true, id);
     const next = { ...this.state.focusCentre };
-    if (answer.exact_centre) next[id] = { near, far };
+    if (answer.exact_centre) next[id] = far;
     else delete next[id];
     this.set({ focusCentre: next });
   }

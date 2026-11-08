@@ -42,6 +42,15 @@ export const UNSUPPORTED_ROW: Readonly<Record<"subject" | "people", string>> = {
 export const isFinding = (row: MaskItem, finding: boolean, vision?: VisionRows): boolean =>
   finding && row.enabled && !(row.kind === "depth" && (vision?.depthFailed ?? false)) && (row.kind === "background" || row.kind === "depth" || row.kind === "subject" || row.kind === "people");
 
+/** The far limit as a whole number of per cent of the photo's depth order. */
+export const depthPercent = (far: number): number => Math.round(far * 100);
+
+/** Whether a Depth row's far limit is the whole depth (the default, and what a limit that rounds to 100 % reads as). */
+export const isWholeDepth = (far: number): boolean => depthPercent(far) >= 100;
+
+/** What the subtitle of a Depth row says (`docs/23` §7.6): "Whole depth" at the default, else where the mask ends, "To 35 %". */
+export const depthSubtitle = (far: number): string => (isWholeDepth(far) ? "Whole depth" : `To ${depthPercent(far)} %`);
+
 /** What the subtitle of a Depth row says when the depth map could not be made (`docs/23` §7.6). */
 export const CANT_BE_MADE = "Can't be made";
 
@@ -112,7 +121,7 @@ export function newMask(kind: MaskKind, mode: MaskMode = "add"): MaskItem {
     case "background":
       return { ...base, ...edge, kind, level: 0.5, softness: 0.5 };
     case "depth":
-      return { ...base, ...edge, kind, near: 0, far: 0.5, softness: 0.5 };
+      return { ...base, ...edge, kind, far: 1 };
     case "linear":
       return { ...base, kind, center: [0.5, 0.5], angle_deg: 0, feather: 0.2 };
     case "radial":
@@ -183,7 +192,7 @@ export function maskSubtitle(row: MaskItem, vision?: VisionRows): string {
       return `Level ${Math.round(row.level * 100)}`;
     case "depth":
       if (isUnsupported(row, vision)) return DEPTH_ROW_NO_MODEL;
-      return vision?.depthFailed ? CANT_BE_MADE : `${Math.round(row.near * 100)} to ${Math.round(row.far * 100)}`;
+      return vision?.depthFailed ? CANT_BE_MADE : depthSubtitle(row.far);
     case "linear":
     case "radial":
       return `Feather ${Math.round(row.feather * 100)}`;

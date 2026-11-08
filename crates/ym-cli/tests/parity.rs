@@ -1423,13 +1423,13 @@ fn depth_doc() -> serde_json::Value {
         "items": [
             { "id": 2, "kind": "corrector", "pos": [1, 0], "trim": { "exposure_ev": 1.0 },
               "masks": { "invert": false, "items": [
-                  { "kind": "depth", "mode": "add", "near": 0, "far": 0.6, "softness": 0.3,
+                  { "kind": "depth", "mode": "add", "far": 0.6,
                     "feather": 0.2, "refine": 0.5 },
-                  { "kind": "depth", "mode": "subtract", "near": 0.2, "far": 0.3, "softness": 0.1, "grow": 0.1 }
+                  { "kind": "depth", "mode": "subtract", "far": 0.3, "grow": 0.1 }
               ] } },
             { "id": 3, "kind": "corrector", "pos": [2, 0], "trim": { "exposure_ev": -0.8 },
               "masks": { "invert": false, "items": [
-                  { "kind": "depth", "mode": "add", "invert": true, "near": 0.4, "far": 1, "opacity": 0.8 }
+                  { "kind": "depth", "mode": "add", "invert": true, "far": 0.8, "opacity": 0.8 }
               ] } }
         ],
         "links": [

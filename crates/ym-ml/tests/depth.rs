@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use ym_color::mask_depth::{DepthMap, depth_band, depth_cut, depth_ramp, depth_ranks};
+use ym_color::mask_depth::{DepthMap, depth_gradient, depth_ranks};
 use ym_ml::depth::{DepthAnything, WEIGHTS_FILE, prepare_input, synthetic_weights};
 
 // -------------------------------------------------------------------------------------------------
@@ -479,18 +479,29 @@ fn the_whole_path_matches_upstreams_map() {
     }
 }
 
-/// The bands of the cut's gate, `(near, far)` at softness 0.5 (`docs/algorithms/06` section 8.6).
-const CUT_BANDS: [(f64, f64); 5] = [(0.0, 0.2), (0.0, 0.5), (0.3, 0.6), (0.5, 1.0), (0.8, 1.0)];
+/// The far limits of the cut's gate (`docs/algorithms/06` section 8.6): the whole depth and three nearer limits.
+const CUT_LIMITS: [f64; 4] = [0.2, 0.5, 0.8, 1.0];
 /// The least IoU of the cut `S0 > 0.5` of our map and of upstream's (Gate D).
 const CUT_MIN_IOU: f64 = 0.99;
+/// The largest mean `|S0 ours - S0 theirs|` over the cells of a photo at any limit (Gate D): 5.6 times the worst measured value,
+/// 1.775e-6 (cirrus, f = 1; `docs/algorithms/06` section 8.6).
+const CUT_MAX_MEAN_DELTA: f64 = 1e-5;
 
-/// The cells of `S0 > 0.5` for a band, from the ranks of `map` (the rank and the band of section 5.8, in f64).
-fn cut_cells(map: &DepthMap, near: f64, far: f64) -> Vec<bool> {
-    let (nu, phi, sigma) = depth_band(near, far, 0.5);
-    let q = depth_ramp(sigma);
+/// `S0` of every cell for a far limit, from the ranks of `map` (the rank and the gradient of section 5.8, in f64).
+fn s0_cells(map: &DepthMap, far: f64) -> Vec<f64> {
     (0..map.len())
-        .map(|i| depth_cut(map.z(i), nu, phi, q) > 0.5)
+        .map(|i| depth_gradient(map.z(i), far))
         .collect()
+}
+
+/// The cells of `S0 > 0.5`.
+fn cut_of(s0: &[f64]) -> Vec<bool> {
+    s0.iter().map(|&v| v > 0.5).collect()
+}
+
+/// The mean of `|a - b|` over the cells.
+fn mean_abs_delta(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f64>() / a.len().max(1) as f64
 }
 
 /// The IoU of two cuts; 1 when both are empty.
@@ -523,12 +534,14 @@ fn largest_tie_share(d: &[f32]) -> (f32, f64) {
     (best, best_n as f64 / v.len().max(1) as f64)
 }
 
-/// Gate D: the rank and the band applied to our `d` and to upstream's give the same cut (IoU of `S0 > 0.5` at least 0.99) on
-/// every photo and band. Prints every IoU and the worst per band; a failure names the photo, the band and the ties.
+/// Gate D: the rank and the gradient of section 5.8 applied to our `d` and to upstream's give the same mask `S0`: the IoU of
+/// `S0 > 0.5` at least 0.99 and the mean `|delta S0|` within its bound, on every photo and far limit. Prints every value and
+/// the worst per limit; a failure names the photo, the limit and the ties.
 #[test]
 fn the_cut_of_our_map_matches_the_cut_of_upstreams() {
     let Some(all) = results() else { return };
-    let mut worst: [(f64, String); 5] = std::array::from_fn(|_| (1.0, String::new()));
+    let mut worst_iou: [(f64, String); 4] = std::array::from_fn(|_| (1.0, String::new()));
+    let mut worst_delta: [(f64, String); 4] = std::array::from_fn(|_| (0.0, String::new()));
     let mut failures = Vec::new();
     for p in all {
         let (w, h) = p.grid;
@@ -536,17 +549,28 @@ fn the_cut_of_our_map_matches_the_cut_of_upstreams() {
         let theirs = DepthMap::new(2, w, h, p.theirs.clone()).expect("upstream's map is finite");
         let (tie_v, tie_share) = largest_tie_share(&p.theirs);
         let mut line = format!("{:<14}", p.id);
-        for (b, &(near, far)) in CUT_BANDS.iter().enumerate() {
-            let v = iou(&cut_cells(&ours, near, far), &cut_cells(&theirs, near, far));
-            line += &format!("  ({near}, {far}) {v:.5}");
-            if v < worst[b].0 {
-                worst[b] = (v, p.id.clone());
+        for (b, &far) in CUT_LIMITS.iter().enumerate() {
+            let (a, t) = (s0_cells(&ours, far), s0_cells(&theirs, far));
+            let v = iou(&cut_of(&a), &cut_of(&t));
+            let delta = mean_abs_delta(&a, &t);
+            line += &format!("  f={far} IoU {v:.5} d {delta:.2e}");
+            if v < worst_iou[b].0 {
+                worst_iou[b] = (v, p.id.clone());
+            }
+            if delta > worst_delta[b].0 {
+                worst_delta[b] = (delta, p.id.clone());
             }
             if v < CUT_MIN_IOU {
                 failures.push(format!(
-                    "{}: the cut ({near}, {far}) has IoU {v:.5} (upstream's largest tie group: {:.1} % of the cells at {tie_v:e})",
+                    "{}: the mask at f = {far} has IoU {v:.5} (upstream's largest tie group: {:.1} % of the cells at {tie_v:e})",
                     p.id,
                     tie_share * 100.0
+                ));
+            }
+            if delta > CUT_MAX_MEAN_DELTA {
+                failures.push(format!(
+                    "{}: the mask at f = {far} has mean |dS0| {delta:.3e} (bound {CUT_MAX_MEAN_DELTA:e})",
+                    p.id
                 ));
             }
         }
@@ -555,10 +579,10 @@ fn the_cut_of_our_map_matches_the_cut_of_upstreams() {
             tie_share * 100.0
         );
     }
-    for (b, &(near, far)) in CUT_BANDS.iter().enumerate() {
+    for (b, &far) in CUT_LIMITS.iter().enumerate() {
         println!(
-            "worst IoU of ({near}, {far}): {:.5} ({})",
-            worst[b].0, worst[b].1
+            "worst at f = {far}: IoU {:.5} ({}), mean |dS0| {:.3e} ({})",
+            worst_iou[b].0, worst_iou[b].1, worst_delta[b].0, worst_delta[b].1
         );
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

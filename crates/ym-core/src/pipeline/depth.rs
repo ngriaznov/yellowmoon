@@ -43,7 +43,7 @@ pub type FakeDepth = dyn Fn(usize, usize, &[u8], &dyn Fn() -> bool) -> Result<(u
     + Send
     + Sync;
 
-/// Why Focus plane has no band (`focus_plane`'s `reason`, `docs/23` section 9).
+/// Why Focus plane has no far limit (`focus_plane`'s `reason`, `docs/23` section 9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusReason {
     /// The file has no focus point: an older body, a panorama (the maker note's point is `0 0`), or a file that is not from a
@@ -67,17 +67,16 @@ impl FocusReason {
 /// The answer of `focus_plane` (`docs/23` section 9).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FocusPlane {
-    /// The band around the plane the camera focused on, two decimals, as Pick depth's.
-    Band {
-        /// Where the band starts, 0 to 1.
-        near: f64,
-        /// Where the band ends, 0 to 1.
+    /// The far limit for the plane the camera focused on, as Pick depth's: the depth position of the plane plus a margin,
+    /// at most 1.
+    Far {
+        /// Where the mask fades out, 0.02 to 1.
         far: f64,
         /// The point is exactly the frame's centre, which is also the value Sony writes when it does not know where it
         /// focused: the card says "The camera may not have recorded where it focused. Check the result."
         exact_centre: bool,
     },
-    /// No band, and why.
+    /// No far limit, and why.
     None(FocusReason),
 }
 

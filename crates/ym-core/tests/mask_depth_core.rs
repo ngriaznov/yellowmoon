@@ -110,7 +110,7 @@ fn the_core_asks_for_the_map_when_the_row_appears_and_a_paste_works_it_out_again
 
     // The patch that makes the row asks for the map in the background.
     let patch: SettingsPatch = serde_json::from_value(
-        json!({ "nodes": { "1": { "masks": { "items": [ { "kind": "depth", "near": 0.0, "far": 0.1 } ] } } } }),
+        json!({ "nodes": { "1": { "masks": { "items": [ { "kind": "depth", "far": 0.1 } ] } } } }),
     )
     .expect("a patch");
     core.update_settings(a, &patch).expect("the row is added");
@@ -129,7 +129,7 @@ fn the_core_asks_for_the_map_when_the_row_appears_and_a_paste_works_it_out_again
         .expect("a map");
     // A slider is no new map.
     let slider: SettingsPatch = serde_json::from_value(
-        json!({ "nodes": { "1": { "masks": { "edit": { "0": { "far": 0.3, "softness": 0.2 } } } } } }),
+        json!({ "nodes": { "1": { "masks": { "edit": { "0": { "far": 0.3, "feather": 0.2 } } } } } }),
     )
     .expect("a patch");
     core.update_settings(a, &slider).expect("a slider");

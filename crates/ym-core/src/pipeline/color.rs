@@ -595,9 +595,7 @@ fn raster_row_of(
         MaskShape::Depth(d) => objects.and_then(|p| p.depth_map()).map(|map| RasterRow {
             source: RasterSource::Depth(Arc::new(DepthSource {
                 map: Arc::clone(map),
-                near: d.near,
                 far: d.far,
-                softness: d.softness,
             })),
             grow: d.grow,
             feather: d.feather,
@@ -1208,7 +1206,7 @@ fn nodes_key(
                 MaskShape::Depth(d) => {
                     let _ = write!(
                         k,
-                        "depth{}:{}:{}:{}:{}:{}:{}:{};",
+                        "depth{}:{}:{}:{}:{}:{};",
                         if objects.is_some_and(|p| p.depth_show_for(id).is_some()) {
                             "-show"
                         } else {
@@ -1217,9 +1215,7 @@ fn nodes_key(
                         objects
                             .and_then(|p| p.depth_map())
                             .map_or_else(|| "none".to_owned(), |m| format!("{:x}", m.key)),
-                        d.near,
                         d.far,
-                        d.softness,
                         d.grow,
                         d.feather,
                         d.refine

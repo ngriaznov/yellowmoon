@@ -975,7 +975,7 @@ fn a_depth_row_without_the_model_is_the_mask_error_and_the_other_photos_go_on() 
     let doc = |rows: &str| serde_json::from_str::<Value>(&masked_file(rows)).expect("a document");
     let file = sb.root().join("per-file.json");
     let doc_text = serde_json::json!({
-        "a_depth.ARW": doc(r#"{ "kind": "depth", "near": 0, "far": 0.4 }"#),
+        "a_depth.ARW": doc(r#"{ "kind": "depth", "far": 0.4 }"#),
         "b_off.ARW": doc(r#"{ "kind": "depth", "enabled": false }"#),
         "c_plain.ARW": doc(""),
     });
@@ -1032,25 +1032,28 @@ fn a_depth_row_without_the_model_is_the_mask_error_and_the_other_photos_go_on() 
 }
 
 /// A Depth row renders from `--settings` (`docs/10`, D-04) with the fake depth model (`YELLOWMOON_TEST_DEPTH=fake`): the map is made from
-/// the photo's own picture, the photo is written, and the row changes pixels. The same file twice gives the same bytes, a `near` above
-/// `far` is both at their mean, and the settings the record prints hold the row with its defaults and its numbers.
+/// the photo's own picture, the photo is written, and the row changes pixels. The same file twice gives the same bytes, a `far` outside
+/// 0.02 to 1 is held to it, the old `near` and `softness` are refused like any unknown field, and the settings the record prints
+/// hold the row with its defaults and its numbers.
 #[test]
 fn a_depth_row_renders_from_a_settings_file_with_the_fake_model() {
     let sb = Sandbox::new();
     let arw = sb.arw("a.ARW");
-    let row = r#"{ "kind": "depth", "mode": "add", "near": 0.1, "far": 0.7, "softness": 0.2, "feather": 0.1 }"#;
+    let row = r#"{ "kind": "depth", "mode": "add", "far": 0.7, "feather": 0.1 }"#;
     let with = sb.root().join("depth.json");
     std::fs::write(&with, masked_file(row)).expect("write");
-    let swapped = sb.root().join("swapped.json");
+    let beyond = sb.root().join("beyond.json");
+    std::fs::write(&beyond, masked_file(r#"{ "kind": "depth", "far": 5 }"#)).expect("write");
+    let whole = sb.root().join("whole.json");
+    std::fs::write(&whole, masked_file(r#"{ "kind": "depth", "far": 1 }"#)).expect("write");
+    let under = sb.root().join("under.json");
+    std::fs::write(&under, masked_file(r#"{ "kind": "depth", "far": 0 }"#)).expect("write");
+    let least = sb.root().join("least.json");
+    std::fs::write(&least, masked_file(r#"{ "kind": "depth", "far": 0.02 }"#)).expect("write");
+    let old = sb.root().join("old.json");
     std::fs::write(
-        &swapped,
-        masked_file(r#"{ "kind": "depth", "near": 0.9, "far": 0.1 }"#),
-    )
-    .expect("write");
-    let mean = sb.root().join("mean.json");
-    std::fs::write(
-        &mean,
-        masked_file(r#"{ "kind": "depth", "near": 0.5, "far": 0.5 }"#),
+        &old,
+        masked_file(r#"{ "kind": "depth", "near": 0.1, "far": 0.7, "softness": 0.2 }"#),
     )
     .expect("write");
     let defaults = sb.root().join("defaults.json");
@@ -1087,32 +1090,32 @@ fn a_depth_row_renders_from_a_settings_file_with_the_fake_model() {
     assert_eq!(a, again, "the same file twice is the same bytes");
     let rows = &common::node(&o, 2)["masks"]["items"];
     assert_eq!(rows[0]["kind"], "depth");
-    assert_eq!(rows[0]["near"], 0.1);
     assert_eq!(rows[0]["far"], 0.7);
-    assert_eq!(rows[0]["softness"], 0.2);
+    assert!(rows[0].get("near").is_none() && rows[0].get("softness").is_none());
     assert_eq!(rows[0]["feather"], 0.1);
     assert_eq!(rows[0]["refine"], 0.5);
     // The defaults of `docs/10`.
     let (d, _) = render(&defaults, "defaults");
     let rows = &common::node(&d, 2)["masks"]["items"];
     assert_eq!(
-        (
-            &rows[0]["near"],
-            &rows[0]["far"],
-            &rows[0]["softness"],
-            &rows[0]["grow"]
-        ),
-        (
-            &Value::from(0.0),
-            &Value::from(0.5),
-            &Value::from(0.5),
-            &Value::from(0.0)
-        )
+        (&rows[0]["far"], &rows[0]["grow"]),
+        (&Value::from(1.0), &Value::from(0.0))
     );
-    // `near` above `far` is both at their mean: the file of 0.9 and 0.1 is the file of 0.5 and 0.5.
-    let (_, s) = render(&swapped, "swapped");
-    let (_, m) = render(&mean, "mean");
-    assert_eq!(s, m, "0.9 and 0.1 are both 0.5");
+    // A `far` outside 0.02 to 1 is held to it: 5 is the whole depth, 0 is the least limit.
+    let (_, b5) = render(&beyond, "beyond");
+    let (_, b1) = render(&whole, "whole");
+    assert_eq!(b5, b1, "5 is 1");
+    let (_, b0) = render(&under, "under");
+    let (_, b02) = render(&least, "least");
+    assert_eq!(b0, b02, "0 is 0.02");
+    // The band is gone: `near` and `softness` are unknown fields, refused with their name.
+    sb.ym_fake_depth()
+        .args(["render", "--cpu", "--settings"])
+        .arg(&old)
+        .arg(&arw)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("near"));
 }
 
 /// A Brush row renders from `--settings` (`docs/10`): the photo is written, and it is not the photo without the

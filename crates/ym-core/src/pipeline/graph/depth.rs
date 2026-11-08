@@ -1,7 +1,7 @@
 //! The Depth mask in the render graph (`docs/23-nodes.md` sections 3.10a and 4.8, `docs/algorithms/06-masks.md`
 //! sections 5.8 and 8).
 //!
-//! A Depth row's raster `S0` is its band cut from the photo's **depth map** (`ym_color::mask_depth`): the relative inverse
+//! A Depth row's raster `S0` is its gradient cut from the photo's **depth map** (`ym_color::mask_depth`): the relative inverse
 //! depth `ym_ml::depth` makes of the Input's picture ([`object_source`](crate::pipeline::object::object_source): the
 //! photo frame, the Input's colour, the Neutral look, 8 bits, sRGB, 1024 px on the long edge, no output sharpening),
 //! rendered by the renderer of its own that has no graphics device, so the picture, the map and the mask are the CPU
@@ -11,7 +11,7 @@
 //! * **The map** (about 3.2 MB) lives in the photo's graph ([`DepthSlot`]), in memory, and never touches the disk. Its key
 //!   names what the picture was made from ([`Renderer::depth_key`]): the raw group's numbers and the Input's colour (never a
 //!   node's grade, the look, the crop, the turn or the lens character), the weights and the rank rules' version. A
-//!   change of `near`, `far` or `softness` cuts a new plane from the cached ranks and never runs the network.
+//!   change of `far` cuts a new plane from the cached ranks and never runs the network.
 //! * **The worker** ([`Renderer::depth_prepare`]) makes the map in the background as soon as the core sees a Depth row on
 //!   the photo the person is looking at: one worker per photo that waits [`PREPARE_DEBOUNCE`] (a drag of the Input's
 //!   exposure asks for a new map on every tick), runs the picture and the network, and tells the listener
@@ -30,7 +30,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use ym_color::mask_depth::{
-    DEPTH_RULES_VERSION, DepthMap, FOCUS_BOX_DEFAULT, pick_band, pick_depth,
+    DEPTH_RULES_VERSION, DepthMap, FOCUS_BOX_DEFAULT, pick_depth, pick_far,
 };
 use ym_color::plan::Stop as PlanStop;
 use ym_gpu::queue::CancelToken;
@@ -587,8 +587,8 @@ impl Renderer {
         }
     }
 
-    /// `sample_depth` (`docs/23` section 9, Pick depth): the band around the depth at the point `(x, y)` of the photo frame
-    /// (shares of its width and height), `(near, far)` rounded to two decimals (`docs/algorithms/06` section 5.8, step 4), or
+    /// `sample_depth` (`docs/23` section 9, Pick depth): the far limit for the depth at the point `(x, y)` of the photo frame
+    /// (shares of its width and height), the depth position plus 0.1 and at most 1 (`docs/algorithms/06` section 5.8, step 4), or
     /// `None` when no map can be made. It waits for the worker when it runs and reads the cached map; it changes nothing:
     /// the caller applies the answer as one row patch.
     ///
@@ -602,7 +602,7 @@ impl Renderer {
         x: f64,
         y: f64,
         cancel: &CancelToken,
-    ) -> Result<Option<(f64, f64)>, RenderError> {
+    ) -> Result<Option<f64>, RenderError> {
         if !x.is_finite() || !y.is_finite() {
             return Err(RenderError::Mask(BAD_POINT.to_owned()));
         }
@@ -611,7 +611,7 @@ impl Renderer {
             .map(|entry| pick_depth(&entry.map, x, y)))
     }
 
-    /// `focus_plane` (`docs/23` section 9, Focus plane): the band around the plane the camera focused on, from the maker
+    /// `focus_plane` (`docs/23` section 9, Focus plane): the far limit for the plane the camera focused on, from the maker
     /// note's focus point and the median depth in its box (`docs/algorithms/06` section 5.8, step 5). A photo with no focus
     /// point is answered at once, without waiting for the map. It changes nothing: the caller applies the answer as one row
     /// patch.
@@ -652,20 +652,16 @@ impl Renderer {
         let Some(entry) = self.depth_entry_waiting(src, cancel)? else {
             return Ok(FocusPlane::None(FocusReason::MapFailed));
         };
-        let (near, far) = focus_band(&entry.map, &frame, src.exif_orientation());
-        Ok(FocusPlane::Band {
-            near,
-            far,
-            exact_centre,
-        })
+        let far = focus_far(&entry.map, &frame, src.exif_orientation());
+        Ok(FocusPlane::Far { far, exact_centre })
     }
 }
 
-/// The band `(near, far)` around the plane the camera focused on: the median depth of the map inside the AF box
+/// The far limit for the plane the camera focused on: the median depth of the map inside the AF box
 /// (`docs/algorithms/06` section 5.8, step 5). `frame` is the maker note's point and box in the auto-cropped frame in the
 /// sensor's orientation; both are carried to the photo as the camera oriented it (`exif_orientation`, 1 to 8), because the
 /// map is in that frame. Without a box the box is a square of [`FOCUS_BOX_DEFAULT`] of the photo's long edge.
-pub(crate) fn focus_band(map: &DepthMap, frame: &FocusFrame, exif_orientation: u16) -> (f64, f64) {
+pub(crate) fn focus_far(map: &DepthMap, frame: &FocusFrame, exif_orientation: u16) -> f64 {
     let [cx, cy] = sensor_to_oriented(exif_orientation, [frame.point.0, frame.point.1]);
     let (cells_w, cells_h) = (map.width as f64, map.height as f64);
     let (bw, bh) = match frame.box_size {
@@ -677,7 +673,7 @@ pub(crate) fn focus_band(map: &DepthMap, frame: &FocusFrame, exif_orientation: u
             (side / cells_w, side / cells_h)
         }
     };
-    pick_band(map.focus_z(cx, cy, bw, bh))
+    pick_far(map.focus_z(cx, cy, bw, bh))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -780,10 +776,11 @@ mod tests {
                 point: (0.3, 0.7),
                 box_size: Some((0.15, 0.15)),
             };
-            assert_eq!(
-                focus_band(&map, &on, orientation),
-                (0.0, 0.2),
-                "orientation {orientation}"
+            // The block is 25 of 200 cells, all equal: z = 24 / 398, the limit that plus the margin.
+            let far = focus_far(&map, &on, orientation);
+            assert!(
+                (far - (24.0 / 398.0 + 0.1)).abs() < 1e-12,
+                "orientation {orientation}: {far}"
             );
             // The same point read as if the photo had not been turned lands elsewhere (but for the orientation 1, and the
             // turns that leave this point where it is): the far cells.
@@ -791,8 +788,12 @@ mod tests {
                 point: (0.8, 0.2),
                 box_size: Some((0.15, 0.15)),
             };
-            let band = focus_band(&map, &off, orientation);
-            assert!(band.0 >= 0.4, "orientation {orientation}: {band:?}");
+            // The far cells are the smallest tie group, the far end (z = 1): the limit is the whole depth.
+            assert_eq!(
+                focus_far(&map, &off, orientation),
+                1.0,
+                "orientation {orientation}"
+            );
         }
     }
 
@@ -805,14 +806,13 @@ mod tests {
             point: (0.525, 0.55),
             box_size: None,
         };
-        let band = focus_band(&map, &frame, 1);
-        assert!(band.0 >= 0.4, "{band:?}");
+        assert_eq!(focus_far(&map, &frame, 1), 1.0);
         // A point that is not inside the frame's cells still answers.
         let edge = FocusFrame {
             point: (1.0, 1.0),
             box_size: None,
         };
-        let band = focus_band(&map, &edge, 1);
-        assert!((0.0..=1.0).contains(&band.0) && (0.0..=1.0).contains(&band.1));
+        let far = focus_far(&map, &edge, 1);
+        assert!((0.02..=1.0).contains(&far), "{far}");
     }
 }

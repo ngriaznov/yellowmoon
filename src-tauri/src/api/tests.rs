@@ -5232,17 +5232,17 @@ fn a_subject_row_on_a_computer_that_cannot_make_it_selects_nothing_and_starts_no
 // ---- Depth masks (docs/23 sections 4.8 and 9, task D-04) -------------------------------------------------------------------------------------
 
 /// A patch that gives node 1 one Depth row, in the full form of the wire (`MaskItem`: every field of the kind is required there).
-fn depth_row_patch(near: f64, far: f64) -> SettingsPatch {
+fn depth_row_patch(far: f64) -> SettingsPatch {
     serde_json::from_value(json!({ "nodes": { "1": { "masks": { "items": [
         { "kind": "depth", "mode": "add", "invert": false, "enabled": true, "opacity": 1,
-          "near": near, "far": far, "softness": 0.5, "feather": 0, "grow": 0, "refine": 0.5 },
+          "far": far, "feather": 0, "grow": 0, "refine": 0.5 },
     ] } } } }))
     .expect("a patch")
 }
 
 /// The whole path through the shell with a fake model: a Depth row on the photo being looked at starts the core's worker; the viewport is
 /// busy and finding while it works (`viewport_busy.finding`), and when it ends `depth_state` says the map is ready (`failed` null).
-/// Pick depth answers a band in the shapes of the wire, Focus plane answers at once that this file has no focus point, and nothing changes in
+/// Pick depth answers a far limit in the shapes of the wire, Focus plane answers at once that this file has no focus point, and nothing changes in
 /// the settings.
 #[test]
 fn a_depth_row_is_found_in_the_background_depth_state_comes_as_an_event_and_pick_depth_answers() {
@@ -5263,7 +5263,7 @@ fn a_depth_row_is_found_in_the_background_depth_state_comes_as_an_event_and_pick
     h.frame_of_size(300, 200);
     assert!(h.api.viewport().wait_idle(WAIT));
     h.api
-        .update_settings(id, &depth_row_patch(0.0, 0.5))
+        .update_settings(id, &depth_row_patch(0.5))
         .expect("a Depth row");
     let states = || -> Vec<(PhotoId, Option<String>)> {
         h.events
@@ -5287,23 +5287,21 @@ fn a_depth_row_is_found_in_the_background_depth_state_comes_as_an_event_and_pick
             .last()
             .is_some_and(|b| !b.busy && !b.finding)
     });
-    // Pick depth: the band around the depth under the click, two decimals, near and far in 0 to 1. The fake's map is nearer toward the
-    // bottom of the photo, so a click at the bottom picks a nearer band than one at the top.
+    // Pick depth: the far limit for the depth under the click, the depth plus 0.1 and at most 1. The fake's map is nearer toward the
+    // bottom of the photo, so a click at the bottom picks a nearer limit than one at the top.
     let low = h
         .api
         .sample_depth(id, Num(0.5), Num(0.95))
         .expect("an answer")
-        .expect("a band");
+        .expect("a limit");
     let high = h
         .api
         .sample_depth(id, Num(0.5), Num(0.05))
         .expect("an answer")
-        .expect("a band");
-    assert!(low.near.0 < high.near.0, "{low:?} {high:?}");
-    for band in [low, high] {
-        assert!(band.near.0 >= 0.0 && band.far.0 <= 1.0);
-        assert!(((band.far.0 - band.near.0) - 0.2).abs() < 0.011, "{band:?}");
-        assert_eq!(band.near.0, (band.near.0 * 100.0).round() / 100.0);
+        .expect("a limit");
+    assert!(low.far.0 < high.far.0, "{low:?} {high:?}");
+    for pick in [low, high] {
+        assert!((0.1..=1.0).contains(&pick.far.0), "{pick:?}");
     }
     // The click ran no network of its own beyond the worker's: one map for the photo.
     assert_eq!(
@@ -5319,11 +5317,11 @@ fn a_depth_row_is_found_in_the_background_depth_state_comes_as_an_event_and_pick
         .sample_depth(id, Num(f64::NAN), Num(0.5))
         .expect_err("not a place");
     assert_eq!(err.scope, ErrorScope::Mask);
-    // The synthetic file has no focus point: answered at once, with the reason, and no band.
+    // The synthetic file has no focus point: answered at once, with the reason, and no limit.
     let focus = h.api.focus_plane(id).expect("an answer");
     assert_eq!(
-        (focus.near, focus.far, focus.exact_centre, focus.reason),
-        (None, None, false, Some(FocusReason::NoFocusPoint))
+        (focus.far, focus.exact_centre, focus.reason),
+        (None, false, Some(FocusReason::NoFocusPoint))
     );
     // Nothing was written to the settings by either command: the row is as the patch made it.
     let core = h.api.core();
@@ -5334,7 +5332,7 @@ fn a_depth_row_is_found_in_the_background_depth_state_comes_as_an_event_and_pick
         .settings;
     let rows = &settings.nodes.corrector(1).expect("node 1").masks.items;
     assert!(
-        matches!(&rows[0].shape, ym_core::settings::MaskShape::Depth(d) if d.near == 0.0 && d.far == 0.5),
+        matches!(&rows[0].shape, ym_core::settings::MaskShape::Depth(d) if d.far == 0.5),
         "{rows:?}"
     );
 }
@@ -5367,7 +5365,7 @@ fn retry_depth_starts_a_failed_map_again_and_depth_state_follows() {
     h.frame_of_size(300, 200);
     assert!(h.api.viewport().wait_idle(WAIT));
     h.api
-        .update_settings(id, &depth_row_patch(0.0, 0.5))
+        .update_settings(id, &depth_row_patch(0.5))
         .expect("a Depth row");
     let states = || -> Vec<Option<String>> {
         h.events
@@ -5404,7 +5402,7 @@ fn retry_depth_starts_a_failed_map_again_and_depth_state_follows() {
         .settings;
     let rows = &settings.nodes.corrector(1).expect("node 1").masks.items;
     assert!(
-        matches!(&rows[0].shape, ym_core::settings::MaskShape::Depth(d) if d.near == 0.0 && d.far == 0.5),
+        matches!(&rows[0].shape, ym_core::settings::MaskShape::Depth(d) if d.far == 0.5),
         "{rows:?}"
     );
 }
@@ -5436,7 +5434,7 @@ fn a_depth_row_without_the_model_selects_nothing_starts_no_worker_and_refuses_th
     h.api.set_current(id).expect("current");
     h.frame_of_size(300, 200);
     h.api
-        .update_settings(id, &depth_row_patch(0.0, 0.5))
+        .update_settings(id, &depth_row_patch(0.5))
         .expect("a Depth row is kept");
     assert!(h.api.viewport().wait_idle(WAIT));
     assert!(

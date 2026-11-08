@@ -6,7 +6,7 @@
 
 ## Purpose
 
-For a Depth mask the model gives, for the photo, a **relative depth map**: one value per pixel of a picture of 518 px on the short side, larger for nearer (to be confirmed by the first oracle fixture, D-02). The map is made once per photo, in the background, on the Input's picture that the Object mask reads, and held in memory. A Depth row then cuts a band of it by near, far and softness, with no more network runs (`docs/algorithms/06` section 5.8). The model says **which plane**; the edge comes from the photo (Refine edges) and from the Subject, People and Object masks. It is used for **masks only**: it does not drive any retouching, and lens character does not use it (the owner, 2026-10-24).
+For a Depth mask the model gives, for the photo, a **relative depth map**: one value per pixel of a picture of 518 px on the short side, larger for nearer (to be confirmed by the first oracle fixture, D-02). The map is made once per photo, in the background, on the Input's picture that the Object mask reads, and held in memory. A Depth row then makes a gradient of it, full at the nearest part and none at a far limit (the mask treats the depth map as transparency, near more, as Resolve's depth map mask does; the owner, 2026-11-08), with no more network runs (`docs/algorithms/06` section 5.8). The model says **which plane**; the edge comes from the photo (Refine edges) and from the Subject, People and Object masks. It is used for **masks only**: it does not drive any retouching, and lens character does not use it (the owner, 2026-10-24).
 
 ## Source and licence
 
@@ -56,14 +56,14 @@ Python is used to convert and to make fixtures only; nothing in the app or in `y
 
 ## Fixtures and checks (proposed gates, TBD until measured)
 
-`training/depth/oracle.py` runs the authors' code (CPU, f32, one thread) on 20 public photos (CC0 or public domain; `training/depth/oracle_photos.json` lists each with its page, licence, author and SHA-256; the photos are not committed) with the published weights widened to f32, and writes the picture, the resized tensor, the four encoder maps and the depth map. They are the release asset `depth-oracle-fixtures-1.tar.zst` (fetched into `testdata/depth/oracle-1/` by `tools/fetch/depth.sh --fixtures`) and feed the gate of D-03 (`docs/algorithms/06` section 8.6): the resize within 1e-3 largest and 1e-4 mean; the encoder's maps within 2e-3 of their RMS; the depth map within 2e-3 of its RMS and 2e-2 of its largest value; **the cut at five bands per photo with a mask IoU of at least 0.99**; a second run bit-identical; the same bits on 1, 2 and 8 threads. The cost of f16 storage against the original f32 checkpoint is measured in the same run and reported, never hidden.
+`training/depth/oracle.py` runs the authors' code (CPU, f32, one thread) on 20 public photos (CC0 or public domain; `training/depth/oracle_photos.json` lists each with its page, licence, author and SHA-256; the photos are not committed) with the published weights widened to f32, and writes the picture, the resized tensor, the four encoder maps and the depth map. They are the release asset `depth-oracle-fixtures-1.tar.zst` (fetched into `testdata/depth/oracle-1/` by `tools/fetch/depth.sh --fixtures`) and feed the gate of D-03 (`docs/algorithms/06` section 8.6): the resize within 1e-3 largest and 1e-4 mean; the encoder's maps within 2e-3 of their RMS; the depth map within 2e-3 of its RMS and 2e-2 of its largest value; **the mask at four far limits per photo with an IoU of `S₀ > 0.5` of at least 0.99 and a bound on the mean `|ΔS₀|`**; a second run bit-identical; the same bits on 1, 2 and 8 threads. The cost of f16 storage against the original f32 checkpoint is measured in the same run and reported, never hidden.
 
 | Gate | Bound | Measured |
 |---|---|---|
 | Resize against the oracle's tensor | 1e-3 largest, 1e-4 mean (proposed) | TBD |
 | Encoder maps from the oracle's tensor | 2e-3 of the RMS (proposed) | TBD |
 | Depth map from identical tensors | 2e-3 of the RMS, 2e-2 of the largest (proposed) | TBD |
-| Cut IoU, 20 photos × 5 bands | at least 0.99 (proposed) | TBD |
+| Mask `S₀`, 20 photos × 4 far limits: IoU of `S₀ > 0.5` and mean `|ΔS₀|` | IoU at least 0.99; mean `|ΔS₀|` at most 1e-5 | IoU at least 0.99996; mean `|ΔS₀|` at most 1.775e-6 |
 | 1, 2 and 8 threads, a second run | equal bits | TBD |
 | Cost of f16 against the f32 checkpoint | reported | TBD |
 | Time for the map at 518 × 770, 4 cores Linux | measured (our estimate before measuring: 2 to 2.5 s) | TBD |
@@ -75,13 +75,15 @@ The authors': the model gives a **relative** depth, with no metric scale and no 
 
 - **Hair, fur, foliage and fine structure**: no depth model resolves them (the best boundary recall on a hair set in Depth Pro's paper is 0.173 for Depth Pro and 0.107 for Depth Anything V2). Use Refine edges and a Subject or Object row for the edge.
 - **Glass, mirrors, water and windows** take the depth of what they show, or of their surface, unpredictably; translucent surfaces and scattering are ill-posed for any depth model.
-- **Sky and haze** collapse to the far end whatever is in them, so a far band takes the sky with the distant hills. A sky that the network gives as exactly its smallest value is the far end whole: the mask puts it at the far end of the sliders (the owner's decision at D-H2, 2026-11-07).
+- **Sky and haze** collapse to the far end whatever is in them, so the sky is the farthest part, with the distant hills just in front of it. A sky that the network gives as exactly its smallest value is the far end whole, `z = 1` (the owner's decision at D-H2, 2026-11-07), and the gradient gives it no mask at any far limit.
 - **A flat scene** (copy work, a wall) has almost no depth to order, and the rank spreads its small differences over the whole range.
 - **A smoothly defocused background** (portraits at f/1.4 to f/2.8): a defocused picture lacks the edges the model relies on; the Background mask, from blur, is strongest there and Depth weakest.
 - **Macro and ultra-wide pictures** have not been tested by anyone we found; D-06 tests them on public photos.
 - The picture is **518 px on the short side**, about 60 times fewer pixels than a 24 MP photo (770 × 518 against 6000 × 4000): the map is coarse (a cell is about 8 px on a 6000 px export), and Refine edges does the rest.
 
 ### What the D-06 contact sheets show
+
+*These sheets were made in 2026-11-07 for the band design (`near`, `far` and `softness`). The owner replaced the band with a gradient on 2026-11-08: the mask is `1 − z / far`, full at the nearest part and none at the far limit, and Pick depth and Focus plane set the limit a tenth behind the depth they find. What the sheets say about the map (where it works, where it fails, the sky, hair, glass) holds; the lines that describe a band are kept as the record of the evaluation and read, for the gradient, as follows: a band "0.3 to 0.6" is no longer a thing, "the default band, 0 to 0.5" is the gradient at the whole depth, `far` 1, which is the Show depth picture itself, and "a Pick depth that takes the subject" is a limit just behind the subject.*
 
 Made on 31 photos (the 20 public oracle photos and 11 raw Sony files), with the band at five settings, with and without Refine edges, with Pick depth, and with a rank and a percentile scaling side by side. The map takes about 2.6 s for a 1024 px picture on 3 threads of a Linux Xeon (1.9 to 3.9 s; a 4 s figure for a raw file includes making the picture). In short:
 

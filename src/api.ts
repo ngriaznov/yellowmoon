@@ -32,7 +32,7 @@ import type {
   CliLinkStatus,
   CropAspect,
   CropSuggestion,
-  DepthBand,
+  DepthFar,
   ExportEstimate,
   ExportJob,
   ExportJobId,
@@ -207,15 +207,15 @@ export interface Api {
    */
   maskFind(photoId: PhotoId, node: number, mask: number, prompt: MaskFindPrompt): Promise<MaskFindResult>;
   /**
-   * `sample_depth` (`docs/23` §9, Pick depth): the band around the depth under a click at `(x, y)` of the photo frame (shares of its width and height), as
-   * `{ near, far }` rounded to two decimals, or `null` when no depth map can be made. It changes no settings: the page writes the answer as one `masks.edit` row
-   * patch (`near`, `far`): one undo step. It waits for the depth map if the worker is still making it (the page shows the same "Finding…"). A model that is
+   * `sample_depth` (`docs/23` §9, Pick depth): the far limit for the depth under a click at `(x, y)` of the photo frame (shares of its width and height), as
+   * `{ far }` (the depth plus 0.1, at most 1), or `null` when no depth map can be made. It changes no settings: the page writes the answer as one `masks.edit` row
+   * patch (`far`): one undo step. It waits for the depth map if the worker is still making it (the page shows the same "Finding…"). A model that is
    * missing rejects with the scope `mask`.
    */
-  sampleDepth(photoId: PhotoId, x: number, y: number): Promise<DepthBand | null>;
+  sampleDepth(photoId: PhotoId, x: number, y: number): Promise<DepthFar | null>;
   /**
-   * `focus_plane` (`docs/23` §9, Focus plane): the band around the plane the camera focused on, from the maker note's focus point and the median depth in its
-   * box; without a band, `near` and `far` are `null` and `reason` says why (`no_focus_point` is answered at once). It changes no settings: the page writes a band
+   * `focus_plane` (`docs/23` §9, Focus plane): the far limit for the plane the camera focused on, from the maker note's focus point and the median depth in
+   * its box; without a limit, `far` is `null` and `reason` says why (`no_focus_point` is answered at once). It changes no settings: the page writes the limit
    * as one `masks.edit` row patch. A model that is missing rejects with the scope `mask`.
    */
   focusPlane(photoId: PhotoId): Promise<FocusPlaneResult>;

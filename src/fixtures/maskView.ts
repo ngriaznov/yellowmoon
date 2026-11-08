@@ -6,7 +6,8 @@
  * size, softened by its hardness and the row's Feather; an erase stroke is black over the paint before it, and a row's Invert swaps the two),
  * a Background is the flat scene's blur map cut by the row's Level and Softness (the sky is out of focus, the far hill is sharp, the near ground is
  * half way), an Object is the far hill (the scene's "mountain") with a round hole at every negative point and cut to the row's box, a Subject is the far hill
- * (Vision's "main thing") and a People is a figure standing on the near ground in the scenes that have one (the others find nothing), and every other kind selects nothing. That is enough
+ * (Vision's "main thing"), a People is a figure standing on the near ground in the scenes that have one (the others find nothing), a Depth is the gradient of
+ * its far limit over the scene's three depth positions (white at the near ground, none from the limit on), and every other kind selects nothing. That is enough
  * for the interface tests and the reference screenshots, not for pictures. Rows add (a row painted over the others in white) or
  * subtract (in black), the row's Invert and the node's Invert swap the two, and a node with no row shows 1: the whole photo.
  */
@@ -279,6 +280,60 @@ function visionShape(row: Extract<MaskItem, { kind: "subject" | "people" }>, ind
  */
 export const MOCK_DEPTH = { near: 0.15, far: 0.7, sky: 0.95 } as const;
 
+/** The least far limit of a Depth row (`ym_color::mask_depth::DEPTH_FAR_MIN`). */
+export const DEPTH_FAR_MIN = 0.02;
+/** How far behind the picked depth the fade ends (`DEPTH_PICK_MARGIN` of the core): Pick depth and Focus plane set `far` to the depth plus this, at most 1. */
+export const DEPTH_PICK_MARGIN = 0.1;
+
+/** The far limit Pick depth and Focus plane set for a depth position `z` (`docs/algorithms/06` §5.8, step 4): `min(1, z + 0.1)`, not rounded. */
+export const pickDepthFar = (z: number): number => Math.min(1, z + DEPTH_PICK_MARGIN);
+
+/** The Depth row's mask at depth position `z` for the far limit `far` (§5.8, step 2): `clamp(1 − z / far, 0, 1)`, 1 at the nearest and none from `far` on. */
+export function depthValue(z: number, far: number): number {
+  const f = Number.isNaN(far) ? 1 : Math.min(1, Math.max(DEPTH_FAR_MIN, far));
+  return Math.min(1, Math.max(0, 1 - z / f));
+}
+
+/**
+ * A Depth row on the flat scene: the three areas (the sky over the frame, the far hill and the near band) painted with the row's gradient at their depth
+ * positions (`MOCK_DEPTH`) as grey into a plane of their own, which paints the row's ink where it is lit, at the row's opacity, like a Background's. The map is a
+ * little soft (a blur of 0.6 % of the long edge) and the row's Feather a blur of `feather · 0.02` of it. Grow and Refine edges are not drawn. A row's Invert draws
+ * the plane the other way round. Until the map is made (`ready` false) the row selects nothing.
+ */
+function depthShape(row: Extract<MaskItem, { kind: "depth" }>, index: number, ink: string, box: MaskRect, ready: boolean): string {
+  if (!ready) return "";
+  const long = Math.max(box.width, box.height);
+  const opacity = Math.max(0, Math.min(1, row.opacity));
+  const id = `mvd${index}`;
+  const region = `filterUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}"`;
+  const grey = (z: number): string => {
+    const v = Math.round(255 * depthValue(z, row.far));
+    return `rgb(${v},${v},${v})`;
+  };
+  const at = (x: number, y: number): [string, string] => [round(box.x + x * box.width), round(box.y + y * box.height)];
+  const [x0, y0] = at(0, 0);
+  const [nx, ny] = at(0, 0.74);
+  const [cx, cy] = at(HILL.cx, HILL.cy);
+  const rect = (x: string, y: string, h: number, fill: string): string => `<rect x="${x}" y="${y}" width="${round(box.width)}" height="${round(h)}" fill="${fill}"/>`;
+  const map =
+    rect(x0, y0, box.height, grey(MOCK_DEPTH.sky)) +
+    `<ellipse cx="${cx}" cy="${cy}" rx="${round(HILL.rx * box.width)}" ry="${round(HILL.ry * box.height)}" fill="${grey(MOCK_DEPTH.far)}"/>` +
+    rect(nx, ny, 0.26 * box.height, grey(MOCK_DEPTH.near));
+  const blurs: string[] = [];
+  const sigma = 0.006 * long + row.feather * 0.02 * long;
+  let plane = map;
+  if (sigma >= 0.2) {
+    blurs.push(`<filter id="${id}f" ${region}><feGaussianBlur stdDeviation="${round(sigma)}"/></filter>`);
+    plane = `<g filter="url(#${id}f)">${map}</g>`;
+  }
+  if (row.invert) {
+    blurs.push(`<filter id="${id}i" ${region}><feColorMatrix type="matrix" values="-1 0 0 0 1  0 -1 0 0 1  0 0 -1 0 1  0 0 0 1 0"/></filter>`);
+    plane = `<g filter="url(#${id}i)">${plane}</g>`;
+  }
+  const mask = `<mask id="${id}" maskUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}">${plane}</mask>`;
+  return `<defs>${blurs.join("")}${mask}</defs><rect data-depth-row="" data-far="${round(row.far)}" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="${ink}" fill-opacity="${opacity}" mask="url(#${id})"/>`;
+}
+
 /**
  * Show depth on the flat scene (`docs/23` §4.8): the depth map as grey, **white for near**, whole and not cut to a band: the sky over the frame, the far hill (the half
  * ellipse of `scenes.ts`) and the near band, each at the grey of its depth position, a little soft as a map of coarse cells is. Before the map is made
@@ -309,12 +364,13 @@ export function depthViewSvg(box: MaskRect, photo?: MaskPhoto, ready = true): st
 }
 
 /** One row's gradient shape painted with `ink` (a luminance, "#fff" or "#000") at `m` and nothing outside; empty for a kind that selects nothing. */
-function rowShape(row: MaskItem, index: number, ink: string, box: MaskRect, found: VisionFound): string {
+function rowShape(row: MaskItem, index: number, ink: string, box: MaskRect, found: VisionFound, depthReady: boolean): string {
   const long = Math.max(box.width, box.height);
   const id = `mv${index}`;
   const opacity = Math.max(0, Math.min(1, row.opacity));
   if (row.kind === "brush") return brushShape(row, index, ink, box);
   if (row.kind === "background") return backgroundShape(row, index, ink, box);
+  if (row.kind === "depth") return depthShape(row, index, ink, box, depthReady);
   if (row.kind === "object") return objectShape(row, index, ink, box);
   if (row.kind === "subject" || row.kind === "people") return visionShape(row, index, ink, box, found);
   if (row.kind === "radial") {
@@ -351,7 +407,7 @@ function rowShape(row: MaskItem, index: number, ink: string, box: MaskRect, foun
  * The luminance mask of a node's rows over `box`: white where `m` is 1, black where it is 0. Rows that are off count as absent; a node
  * with no row at all is 1 everywhere, and its Invert makes it 0.
  */
-function maskContent(masks: MaskSettings, box: MaskRect, found: VisionFound): string {
+function maskContent(masks: MaskSettings, box: MaskRect, found: VisionFound, depthReady: boolean): string {
   const rows = masks.items.filter((row) => row.enabled);
   const flip = masks.invert;
   const paper = (ink: string): string => `<rect x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="${ink}"/>`;
@@ -360,7 +416,7 @@ function maskContent(masks: MaskSettings, box: MaskRect, found: VisionFound): st
   const first = rows[0];
   const base = first?.mode === "subtract" ? "#fff" : "#000";
   const shapes = rows
-    .map((row, i) => rowShape(row, i, row.mode === "subtract" ? "#000" : "#fff", box, found))
+    .map((row, i) => rowShape(row, i, row.mode === "subtract" ? "#000" : "#fff", box, found, depthReady))
     .join("");
   const content = paper(base) + shapes;
   // The node's Invert is the same picture with the two inks exchanged.
@@ -390,10 +446,12 @@ export function maskViewSvg(
 ): string {
   // Show depth (`MaskView.depth`): for a Depth row the picture is the depth map as grey, whatever the style; for any other row the flag means nothing.
   if (depth?.on && masks.items.length === 1 && masks.items[0]?.kind === "depth") return depthViewSvg(box, photo, depth.ready);
+  // A Depth row selects nothing until the photo's depth map is made (a viewer never waits); without the flag the map is taken as made.
+  const depthReady = depth?.ready ?? true;
   // The shapes are in the photo frame: drawn on a rectangle of the photo's own size and carried to the picture by its map (the turn and the crop).
   const content = photo
-    ? `<g transform="matrix(${photo.matrix.map(round).join(" ")})">${maskContent(masks, { x: 0, y: 0, width: photo.width, height: photo.height }, found)}</g>`
-    : maskContent(masks, box, found);
+    ? `<g transform="matrix(${photo.matrix.map(round).join(" ")})">${maskContent(masks, { x: 0, y: 0, width: photo.width, height: photo.height }, found, depthReady)}</g>`
+    : maskContent(masks, box, found, depthReady);
   const mask = `<mask id="mvmask" maskUnits="userSpaceOnUse" x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}">${content}</mask>`;
   const invert = `<filter id="mvinvert"><feColorMatrix type="matrix" values="-1 0 0 0 1  0 -1 0 0 1  0 0 -1 0 1  0 0 0 1 0"/></filter>`;
   const rect = (fill: string, extra: string): string =>

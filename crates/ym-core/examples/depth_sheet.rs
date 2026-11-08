@@ -1,7 +1,7 @@
-//! Depth mask contact sheets (D-06): one JPEG per photo that shows what the Depth row does on it, made with the app's own
-//! code (the depth network and map, the rank and band of `ym_color::mask_depth`, the raster pass of `ym_color::mask_raster`
-//! with Refine edges, Pick depth and, for a raw file, the renderer's `depth_map`, `sample_depth` and `focus_plane`).
-//! A developer tool for local review (real photos are never committed); it is not shipped.
+//! Depth mask contact sheets (D-06, redrawn for the gradient of 2026-11-08): one JPEG per photo that shows what the Depth row
+//! does on it, made with the app's own code (the depth network and map, the rank and gradient of `ym_color::mask_depth`,
+//! the raster pass of `ym_color::mask_raster` with Refine edges, Pick depth and, for a raw file, the renderer's `depth_map`,
+//! `sample_depth` and `focus_plane`). A developer tool for local review (real photos are never committed); it is not shipped.
 //!
 //! ```text
 //! YELLOWMOON_DATA=$PWD/data cargo run --release -p ym-core --example depth_sheet -- [options]
@@ -9,27 +9,24 @@
 //!   --out DIR        output folder (default ./depth-sheets); sheets go to DIR/sheets, numbers to DIR/stats.json
 //!   --oracle DIR     the oracle fixtures (default testdata/depth/oracle-1); every photo of its manifest is a sheet
 //!   --no-oracle      skip the oracle photos
-//!   --arw FILE       a Sony raw file (repeatable): its sheet has the Focus plane rows
-//!   --exif FILE      `exiftool -j -n -FocusPosition2 -FocalLength -FocalLengthIn35mmFormat -FNumber -ScaleFactor35efl
-//!                    <files>` output, for the width from FocusPosition2
+//!   --arw FILE       a Sony raw file (repeatable): its sheet has the Focus plane tiles
 //!   --only a,b       only these photos (oracle ids or raw file stems)
 //!   --long-edge N    long edge of a tile (default 400)
 //! ```
 //!
 //! One sheet per photo, four tiles to a row:
 //!
-//! 1. the photo, Show depth (the rank `r`, white is near), the same on a 2nd to 98th percentile linear scaling of `d`
-//!    (the alternative, written here only), the default band (near 0, far 0.5, softness 0.5, Refine edges 0.5);
-//! 2. the band at (0, 0.2), (0.3, 0.6), (0.5, 1) and (0.8, 1);
-//! 3. the default band as a mask with Refine edges 0 and 0.5, Pick depth at a point (the middle of the largest near
-//!    region) and the default band on the percentile scaling;
-//! 4. for a raw file with a focus point: the AF box on the photo, the Focus plane band, the band with a width taken from
-//!    `FocusPosition2`, and the Focus plane as a mask.
+//! 1. the photo, Show depth (the rank `r`, white is near), and the mask alone at the far limit f = 1 (the default, the whole
+//!    depth: the Show depth picture itself) and at f = 0.7;
+//! 2. the mask alone at f = 0.5 and f = 0.3 (Refine edges 0.5), and both laid over the photo;
+//! 3. the f = 0.5 mask alone with Refine edges 0 and with 0.5, then Pick depth at a point (the middle of the largest near
+//!    region): the mask at the limit the pick sets (the depth there plus 0.1) over the photo, and alone;
+//! 4. for a raw file with a focus point: the AF box on the photo, the mask at the Focus plane's limit over the photo (what
+//!    the renderer answers is written in the note) and alone.
 //!
 //! The network runs as the app runs it (`DepthModel::map_of`: the picture to `prepare_input`, `DepthAnything::infer` on the
 //! cores but one). A raw file goes through the renderer itself.
 
-use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -39,10 +36,9 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use ym_color::mask::PhotoFrame;
 use ym_color::mask_depth::{
-    DEPTH_PICK_WIDTH, DEPTH_RAMP_MIN, DepthMap, DepthSource, depth_cut, depth_ramp, pick_band,
-    pick_depth,
+    DEPTH_FAR_MIN, DEPTH_PICK_MARGIN, DepthMap, DepthSource, pick_depth, pick_far,
 };
-use ym_color::mask_raster::{Area, PlaneJob, RasterRow, RasterSource, SourcePlane, quantise};
+use ym_color::mask_raster::{Area, PlaneJob, RasterRow, RasterSource};
 use ym_core::app::{Core, CoreOptions};
 use ym_core::pipeline::{
     FocusPlane, FrameOptions, PhotoSource, RenderedFrame, ViewportRect, ViewportState,
@@ -65,7 +61,6 @@ struct Args {
     out: PathBuf,
     oracle: Option<PathBuf>,
     arws: Vec<PathBuf>,
-    exif: Option<PathBuf>,
     only: Option<Vec<String>>,
     long_edge: usize,
 }
@@ -75,7 +70,6 @@ fn parse_args() -> Fallible<Args> {
         out: PathBuf::from("depth-sheets"),
         oracle: Some(PathBuf::from("testdata/depth/oracle-1")),
         arws: Vec::new(),
-        exif: None,
         only: None,
         long_edge: 400,
     };
@@ -87,7 +81,6 @@ fn parse_args() -> Fallible<Args> {
             "--oracle" => a.oracle = Some(PathBuf::from(value("--oracle")?)),
             "--no-oracle" => a.oracle = None,
             "--arw" => a.arws.push(PathBuf::from(value("--arw")?)),
-            "--exif" => a.exif = Some(PathBuf::from(value("--exif")?)),
             "--only" => {
                 a.only = Some(value("--only")?.split(',').map(str::to_owned).collect());
             }
@@ -511,47 +504,11 @@ fn plane(photo: &Photo, source: RasterSource, refine: f64) -> Vec<f32> {
         .collect()
 }
 
-fn depth_source(photo: &Photo, near: f64, far: f64, softness: f64) -> RasterSource {
+fn depth_source(photo: &Photo, far: f64) -> RasterSource {
     RasterSource::Depth(Arc::new(DepthSource {
         map: Arc::clone(&photo.map),
-        near,
         far,
-        softness,
     }))
-}
-
-fn plane_source(key: u64, photo: &Photo, values: &[f64]) -> RasterSource {
-    RasterSource::Plane(Arc::new(SourcePlane {
-        key,
-        width: photo.map.width,
-        height: photo.map.height,
-        data: values.iter().map(|&v| quantise(v)).collect(),
-    }))
-}
-
-/// `r'` of the percentile scaling: `d` linear from its 2nd to its 98th percentile, held to [0, 1], 1 for the nearest.
-fn percentile_r(d: &[f32]) -> Vec<f64> {
-    let mut s = d.to_vec();
-    s.sort_unstable_by(f32::total_cmp);
-    let at = |p: f64| f64::from(s[((s.len() - 1) as f64 * p).round() as usize]);
-    let (lo, hi) = (at(0.02), at(0.98));
-    d.iter()
-        .map(|&v| {
-            if hi > lo {
-                ((f64::from(v) - lo) / (hi - lo)).clamp(0.0, 1.0)
-            } else {
-                0.5
-            }
-        })
-        .collect()
-}
-
-/// S0 of the band on the percentile scaling, per cell, as f64 (`z' = 1 - r'`), with the same ramp rule.
-fn percentile_s0(r: &[f64], near: f64, far: f64, softness: f64) -> Vec<f64> {
-    let q = depth_ramp(softness);
-    r.iter()
-        .map(|&r| depth_cut(1.0 - r, near, far, q))
-        .collect()
 }
 
 /// The middle of the largest connected region of the nearest 30 % of the photo (4-connected cells with `z < 0.3`), as shares
@@ -620,24 +577,6 @@ fn share_selected(mask: &[f32]) -> f64 {
     mask.iter().filter(|&&m| m > 0.5).count() as f64 / mask.len().max(1) as f64
 }
 
-fn iou_of(a: &[f32], b: &[f32]) -> f64 {
-    let inter = a
-        .iter()
-        .zip(b)
-        .filter(|(x, y)| **x > 0.5 && **y > 0.5)
-        .count();
-    let union = a
-        .iter()
-        .zip(b)
-        .filter(|(x, y)| **x > 0.5 || **y > 0.5)
-        .count();
-    if union == 0 {
-        1.0
-    } else {
-        inter as f64 / union as f64
-    }
-}
-
 // -------------------------------------------------------------------------------------------------
 // The Focus plane
 // -------------------------------------------------------------------------------------------------
@@ -700,101 +639,6 @@ fn focus_info(photo: &Photo) -> Option<FocusInfo> {
             && 2 * u32::from(focus.point[1]) == u32::from(focus.frame[1]),
         z_f,
     })
-}
-
-/// ExifTool's numbers for a raw file, from `--exif`.
-#[derive(Clone, Copy, Debug)]
-struct Exif {
-    focus_position2: f64,
-    focal_mm: f64,
-    focal35_mm: f64,
-    f_number: f64,
-    crop: f64,
-}
-
-fn read_exif(path: &Path) -> Fallible<HashMap<String, Exif>> {
-    let v: Value = serde_json::from_slice(&fs::read(path)?)?;
-    let mut out = HashMap::new();
-    for o in v.as_array().ok_or("an array")? {
-        let get = |k: &str| o.get(k).and_then(Value::as_f64);
-        let Some(src) = o.get("SourceFile").and_then(Value::as_str) else {
-            continue;
-        };
-        let stem = Path::new(src)
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        if let (Some(fp2), Some(f), Some(f35), Some(n), Some(crop)) = (
-            get("FocusPosition2"),
-            get("FocalLength"),
-            get("FocalLengthIn35mmFormat"),
-            get("FNumber"),
-            get("ScaleFactor35efl"),
-        ) {
-            out.insert(
-                stem,
-                Exif {
-                    focus_position2: fp2,
-                    focal_mm: f,
-                    focal35_mm: f35,
-                    f_number: n,
-                    crop,
-                },
-            );
-        }
-    }
-    Ok(out)
-}
-
-/// The band a width taken from `FocusPosition2` would make, or `None` for a byte of 0 or 255.
-/// ExifTool's `FocusDistance2 = (2^(fp2/16 - 5) + 1) * focal_35mm / 1000` m, the depth of field from the thin-lens
-/// hyperfocal formula with the circle of confusion 0.030 mm / crop, and disparity taken as proportional to 1 / distance, so
-/// the band is the cells whose `d` lies between `d_f * D / far` and `d_f * D / near`, put back on the rank scale.
-fn fp2_band(map: &DepthMap, z_f: f64, e: &Exif) -> Option<(f64, f64, Value)> {
-    if e.focus_position2 < 1.0 || e.focus_position2 >= 255.0 {
-        return None;
-    }
-    // In mm: ExifTool's metres are this over 1000.
-    let dist = ((e.focus_position2 / 16.0 - 5.0).exp2() + 1.0) * e.focal35_mm;
-    let (f, coc) = (e.focal_mm, 0.030 / e.crop);
-    let hyper = f * f / (e.f_number * coc) + f;
-    let near = dist * (hyper - f) / (hyper + dist - 2.0 * f);
-    let far = if dist < hyper {
-        dist * (hyper - f) / (hyper - dist)
-    } else {
-        f64::INFINITY
-    };
-    let mut sorted: Vec<f32> = map.d.clone();
-    sorted.sort_unstable_by(f32::total_cmp);
-    let n = sorted.len();
-    // The `d` of the median cell of the box: the value at the rank of z_f.
-    let at = (((1.0 - z_f) * (n - 1) as f64).round() as usize).min(n - 1);
-    let d_f = f64::from(sorted[at]);
-    // `z(v)`: the share of the photo whose `d` is above v (nearer), ties as half.
-    let z_of = |v: f64| {
-        let v = v as f32;
-        let greater = n - sorted.partition_point(|s| *s <= v);
-        let equal = sorted.partition_point(|s| *s <= v) - sorted.partition_point(|s| *s < v);
-        (greater as f64 + equal as f64 / 2.0) / n as f64
-    };
-    let hi = d_f * dist / near;
-    let lo = if far.is_finite() {
-        d_f * dist / far
-    } else {
-        0.0
-    };
-    let (nu, phi) = (z_of(hi), z_of(lo));
-    let round2 = |v: f64| (v * 100.0).round() / 100.0;
-    let (nu, phi) = (round2(nu.clamp(0.0, 1.0)), round2(phi.clamp(0.0, 1.0)));
-    Some((
-        nu,
-        phi,
-        json!({
-            "focus_distance2_m": dist / 1000.0, "dof_near_m": near / 1000.0,
-            "dof_far_m": if far.is_finite() { json!(far / 1000.0) } else { json!("inf") },
-            "d_focus": d_f,
-        }),
-    ))
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -968,13 +812,7 @@ struct Sheet {
     stats: Value,
 }
 
-fn make_sheet(
-    photo: &Photo,
-    exif: Option<&Exif>,
-    args: &Args,
-    core: Option<&Core>,
-    dir: &Path,
-) -> Fallible<Sheet> {
+fn make_sheet(photo: &Photo, args: &Args, core: Option<&Core>, dir: &Path) -> Fallible<Sheet> {
     let long = photo.w.max(photo.h) as f64;
     let (tw, th) = (
         ((photo.w as f64 * args.long_edge as f64 / long).round() as usize).max(1),
@@ -985,27 +823,14 @@ fn make_sheet(
     let map = &photo.map;
     let n = map.len();
 
-    // The depth views: Show depth is `r` through the resample only.
+    // Show depth is `r` through the resample only (white is near).
     let show = map.show_plane(map.key ^ 0x5348_4f57);
     let r_view = plane(photo, RasterSource::Plane(Arc::new(show)), 0.0);
-    let pct_r = percentile_r(&map.d);
-    let pct_key = map.key ^ 0x5043_5431;
-    let pct_view = plane(photo, plane_source(pct_key, photo, &pct_r), 0.0);
-
-    let default = (0.0, 0.5, 0.5);
-    let band = |nu: f64, phi: f64, refine: f64| {
-        plane(photo, depth_source(photo, nu, phi, default.2), refine)
-    };
-    let band_default = band(0.0, 0.5, 0.5);
-    let pct_default_s0 = percentile_s0(&pct_r, 0.0, 0.5, 0.5);
-    let pct_default = plane(
-        photo,
-        plane_source(pct_key ^ 1, photo, &pct_default_s0),
-        0.5,
-    );
+    // The mask of a far limit, through the raster pass with Refine edges.
+    let mask = |far: f64, refine: f64| plane(photo, depth_source(photo, far), refine);
 
     let mut tiles: Vec<Tile> = Vec::new();
-    let mut stats_bands = Vec::new();
+    let mut stats_limits = Vec::new();
     tiles.push(Tile {
         label: "PHOTO".into(),
         note: format!(
@@ -1019,55 +844,65 @@ fn make_sheet(
         note: "SHOW DEPTH: R, WHITE IS NEAR".into(),
         rgb: grey_tile(&small(&r_view, 1)),
     });
-    tiles.push(Tile {
-        label: "DEPTH (PERCENTILE)".into(),
-        note: "D LINEAR FROM 2ND TO 98TH PERCENTILE".into(),
-        rgb: grey_tile(&small(&pct_view, 1)),
-    });
-    tiles.push(Tile {
-        label: "BAND 0 - 0.5 (DEFAULT)".into(),
-        note: "NEAR 0 FAR 0.5 SOFT 0.5 REFINE 0.5".into(),
-        rgb: overlay_tile(&base, &small(&band_default, 1)),
-    });
-    for (nu, phi) in [(0.0, 0.2), (0.3, 0.6), (0.5, 1.0), (0.8, 1.0)] {
-        let m = band(nu, phi, 0.5);
-        stats_bands.push(json!({"near": nu, "far": phi, "selected": share_selected(&m)}));
+    // The mask at f = 1 (the default), 0.7, 0.5 and 0.3, as the gradient alone (white is the mask).
+    let mut by_limit: Vec<(f64, Vec<f32>)> = Vec::new();
+    for far in [1.0, 0.7, 0.5, 0.3] {
+        let m = mask(far, 0.5);
+        stats_limits.push(json!({
+            "far": far, "selected": share_selected(&m),
+            "mean": m.iter().map(|&v| f64::from(v)).sum::<f64>() / m.len().max(1) as f64,
+        }));
         tiles.push(Tile {
-            label: format!("BAND {nu} - {phi}"),
-            note: format!("SELECTS {:.0} % OF THE PHOTO", share_selected(&m) * 100.0),
-            rgb: overlay_tile(&base, &small(&m, 1)),
+            label: format!("MASK F = {far}"),
+            note: if far >= 1.0 {
+                "THE DEFAULT: WHOLE DEPTH, 1 - Z".into()
+            } else {
+                format!("FADES OUT AT {:.0} % OF THE DEPTH", far * 100.0)
+            },
+            rgb: grey_tile(&small(&m, 1)),
+        });
+        by_limit.push((far, m));
+    }
+    // The same masks over the photo, for f = 0.5 and 0.3 (where the mask lies on the picture).
+    for (far, m) in by_limit.iter().filter(|(f, _)| *f == 0.5 || *f == 0.3) {
+        tiles.push(Tile {
+            label: format!("OVER THE PHOTO, F = {far}"),
+            note: format!("SELECTS {:.0} % (OVER 0.5)", share_selected(m) * 100.0),
+            rgb: overlay_tile(&base, &small(m, 1)),
         });
     }
-    // Refine edges 0 and 0.5 as masks, Pick depth, the percentile default.
-    let refine0 = band(0.0, 0.5, 0.0);
+    // Refine edges 0 and 0.5 as masks.
+    let refine0 = mask(0.5, 0.0);
+    let refine5 = by_limit
+        .iter()
+        .find(|(f, _)| *f == 0.5)
+        .map(|(_, m)| m.clone())
+        .unwrap_or_default();
     tiles.push(Tile {
-        label: "DEFAULT, REFINE 0".into(),
+        label: "F = 0.5, REFINE 0".into(),
         note: "MASK ONLY".into(),
         rgb: grey_tile(&small(&refine0, 1)),
     });
     tiles.push(Tile {
-        label: "DEFAULT, REFINE 0.5".into(),
+        label: "F = 0.5, REFINE 0.5".into(),
         note: "MASK ONLY".into(),
-        rgb: grey_tile(&small(&band_default, 1)),
+        rgb: grey_tile(&small(&refine5, 1)),
     });
+    // Pick depth at the middle of the largest near region.
     let (px, py) = largest_near_region(map);
-    let (pn, pf) = pick_depth(map, px, py);
-    let pick = band(pn, pf, 0.5);
+    let pf = pick_depth(map, px, py);
+    let pick = mask(pf, 0.5);
     let mut pick_tile = overlay_tile(&base, &small(&pick, 1));
     draw_cross(&mut pick_tile, tw, th, px, py);
     tiles.push(Tile {
-        label: format!("PICK {pn:.2} - {pf:.2}"),
-        note: format!("POINT {px:.2},{py:.2} WIDTH {DEPTH_PICK_WIDTH}"),
+        label: format!("PICK F = {pf:.2}"),
+        note: format!("POINT {px:.2},{py:.2} MARGIN {DEPTH_PICK_MARGIN}"),
         rgb: pick_tile,
     });
     tiles.push(Tile {
-        label: "DEFAULT ON PERCENTILE".into(),
-        note: format!(
-            "SELECTS {:.0} % (RANK {:.0} %)",
-            share_selected(&pct_default) * 100.0,
-            share_selected(&band_default) * 100.0
-        ),
-        rgb: overlay_tile(&base, &small(&pct_default, 1)),
+        label: format!("PICK F = {pf:.2}, MASK"),
+        note: "REFINE 0.5".into(),
+        rgb: grey_tile(&small(&pick, 1)),
     });
 
     // The Focus plane.
@@ -1096,66 +931,32 @@ fn make_sheet(
             ),
             rgb: box_tile,
         });
-        let (fn_, ff_) = pick_band(fi.z_f);
+        let ff = pick_far(fi.z_f);
         // What the renderer answers.
         let app = core.and_then(|c| c.renderer.focus_plane(&raw.src, &raw.core_cancel).ok());
-        let app_band = match app {
-            Some(FocusPlane::Band {
-                near,
-                far,
-                exact_centre,
-            }) => Some((near, far, exact_centre)),
+        let app_far = match app {
+            Some(FocusPlane::Far { far, .. }) => Some(far),
             _ => None,
         };
-        let fb = band(fn_, ff_, 0.5);
+        let fb = mask(ff, 0.5);
         tiles.push(Tile {
-            label: format!("FOCUS PLANE {fn_:.2} - {ff_:.2}"),
+            label: format!("FOCUS PLANE F = {ff:.2}"),
             note: format!(
                 "Z IN BOX {:.2}; APP SAYS {}",
                 fi.z_f,
-                app_band.map_or("NONE".to_owned(), |(a, b, _)| format!("{a:.2} - {b:.2}"))
+                app_far.map_or("NONE".to_owned(), |a| format!("{a:.2}"))
             ),
             rgb: overlay_tile(&base, &small(&fb, 1)),
         });
-        let mut fp2_stats = Value::Null;
-        if let Some(e) = exif {
-            match fp2_band(map, fi.z_f, e) {
-                Some((nu, phi, info)) => {
-                    let m = band(nu, phi, 0.5);
-                    tiles.push(Tile {
-                        label: format!("FP2 WIDTH {nu:.2} - {phi:.2}"),
-                        note: format!(
-                            "FP2 {} DIST {:.1} M, WIDTH {:.2}",
-                            e.focus_position2,
-                            info["focus_distance2_m"].as_f64().unwrap_or(0.0),
-                            phi - nu
-                        ),
-                        rgb: overlay_tile(&base, &small(&m, 1)),
-                    });
-                    fp2_stats =
-                        json!({"near": nu, "far": phi, "info": info, "fp2": e.focus_position2});
-                }
-                None => {
-                    tiles.push(Tile {
-                        label: "FP2 WIDTH: NONE".into(),
-                        note: format!("FP2 BYTE {} (0 OR 255): FIXED WIDTH", e.focus_position2),
-                        rgb: photo_tile(&base),
-                    });
-                    fp2_stats = json!({"fp2": e.focus_position2, "none": true});
-                }
-            }
-        }
         tiles.push(Tile {
             label: "FOCUS PLANE, MASK".into(),
             note: "REFINE 0.5".into(),
             rgb: grey_tile(&small(&fb, 1)),
         });
-        let agrees =
-            app_band.is_some_and(|(a, b, _)| (a - fn_).abs() < 1e-9 && (b - ff_).abs() < 1e-9);
+        let agrees = app_far.is_some_and(|a| (a - ff).abs() < 1e-9);
         focus_stats = json!({
             "center": fi.center, "box": fi.box_size, "has_box": fi.has_box, "exact_centre": fi.exact_centre,
-            "z_in_box": fi.z_f, "band": [fn_, ff_], "app_band": app_band.map(|(a, b, _)| [a, b]),
-            "example_matches_app": agrees, "fp2": fp2_stats,
+            "z_in_box": fi.z_f, "far": ff, "app_far": app_far, "example_matches_app": agrees,
         });
     }
 
@@ -1183,13 +984,11 @@ fn make_sheet(
         "map_ms": photo.map_ms, "rank_ms": photo.rank_ms, "threads": photo.threads,
         "d": {"min": q(0.0), "p2": q(0.02), "p50": q(0.5), "p98": q(0.98), "max": q(1.0),
               "zero_share": zeros as f64 / n as f64, "largest_tie_share": best_tie as f64 / n as f64},
-        "default_selected": {"rank": share_selected(&band_default), "percentile": share_selected(&pct_default),
-                             "iou_rank_vs_percentile": iou_of(&band_default, &pct_default)},
-        "refine_changes": {"mean_abs": band_default.iter().zip(&refine0).map(|(a, b)| f64::from((a - b).abs())).sum::<f64>() / band_default.len() as f64},
-        "bands": stats_bands,
-        "pick": {"point": [px, py], "band": [pn, pf]},
+        "refine_changes": {"mean_abs": refine5.iter().zip(&refine0).map(|(a, b)| f64::from((a - b).abs())).sum::<f64>() / refine5.len().max(1) as f64},
+        "limits": stats_limits,
+        "pick": {"point": [px, py], "far": pf},
         "focus": focus_stats,
-        "ramp_min": DEPTH_RAMP_MIN,
+        "far_min": DEPTH_FAR_MIN,
     });
     Ok(Sheet { stats })
 }
@@ -1204,10 +1003,6 @@ fn main() -> Fallible<()> {
         args.only
             .as_ref()
             .is_none_or(|o| o.iter().any(|x| x == name))
-    };
-    let exif = match &args.exif {
-        Some(p) => read_exif(p)?,
-        None => HashMap::new(),
     };
     let mut all: Vec<Value> = Vec::new();
     let mut key = 1u64;
@@ -1236,7 +1031,7 @@ fn main() -> Fallible<()> {
         for (id, cats) in ids.into_iter().filter(|(id, _)| wanted(id)) {
             let photo = oracle_photo(dir, &id, cats, &net, key)?;
             key += 1;
-            let sheet = make_sheet(&photo, None, &args, None, &sheets)?;
+            let sheet = make_sheet(&photo, &args, None, &sheets)?;
             println!(
                 "{id}: map {:.0} ms on {} threads, ranks {:.0} ms",
                 photo.map_ms, photo.threads, photo.rank_ms
@@ -1262,7 +1057,7 @@ fn main() -> Fallible<()> {
             match raw_photo(&core, file, 1024, key) {
                 Ok(photo) => {
                     key += 1;
-                    let sheet = make_sheet(&photo, exif.get(&stem), &args, Some(&core), &sheets)?;
+                    let sheet = make_sheet(&photo, &args, Some(&core), &sheets)?;
                     println!("{stem}: map {:.0} ms (picture and network)", photo.map_ms);
                     all.push(sheet.stats);
                 }

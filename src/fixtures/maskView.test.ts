@@ -1,7 +1,7 @@
 /** The mask view on the mock's flat scene (`maskView.ts`): the shapes the page tests and the reference screenshots rely on. */
 import { describe, expect, it } from "vitest";
 import type { MaskItem, MaskSettings } from "../api/types";
-import { backgroundValue, BLUR_RAMP_MIN, depthViewSvg, MOCK_DEPTH, hasBackgroundRow, MASK_ACCENT, maskViewSvg, masksOfView, MOCK_BLUR, OVERLAY_WEIGHT } from "./maskView";
+import { backgroundValue, BLUR_RAMP_MIN, DEPTH_PICK_MARGIN, depthValue, depthViewSvg, MOCK_DEPTH, pickDepthFar, hasBackgroundRow, MASK_ACCENT, maskViewSvg, masksOfView, MOCK_BLUR, OVERLAY_WEIGHT } from "./maskView";
 import type { DevelopSettings } from "../api/types";
 
 const BOX = { x: 100, y: 50, width: 600, height: 400 };
@@ -234,10 +234,10 @@ describe("masksOfView (a row's own mask, docs/23 §5.8)", () => {
 });
 
 describe("Show depth (docs/23 §4.8)", () => {
-  const depthRow = { mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, kind: "depth", near: 0.4, far: 0.45, softness: 0 } as MaskItem;
+  const depthRow = { mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, kind: "depth", far: 0.45 } as MaskItem;
   const only = masksOfView({ invert: false, items: [depthRow] }, 0);
 
-  it("draws the whole map as grey, white for near (the near ground lighter than the far hill, the hill lighter than the sky), and not the row's band", () => {
+  it("draws the whole map as grey, white for near (the near ground lighter than the far hill, the hill lighter than the sky), and not the row's gradient", () => {
     const svg = maskViewSvg("overlay", only, BOX, undefined, undefined, { on: true, ready: true });
     expect(svg).toContain('data-mask-view="depth"');
     // No tint and no row ink: the picture is grey.
@@ -253,5 +253,52 @@ describe("Show depth (docs/23 §4.8)", () => {
     const linear = { mode: "add", invert: false, enabled: true, opacity: 1, kind: "linear", center: [0.5, 0.5], angle_deg: 0, feather: 0.2 } as MaskItem;
     expect(maskViewSvg("mask_only", masksOfView({ invert: false, items: [linear] }, 0), BOX, undefined, undefined, { on: true, ready: true })).toContain('data-mask-view="mask_only"');
     expect(maskViewSvg("mask_only", only, BOX, undefined, undefined, { on: false, ready: true })).toContain('data-mask-view="mask_only"');
+  });
+});
+
+describe("a Depth row's gradient (docs/algorithms/06 §5.8)", () => {
+  const row = (extra: Record<string, unknown> = {}): MaskItem => ({ mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, kind: "depth", far: 1, ...extra }) as MaskItem;
+  const out = (r: MaskItem, ready = true): string => maskViewSvg("mask_only", masksOfView({ invert: false, items: [r] }, undefined), BOX, undefined, undefined, { on: false, ready });
+  /** The grey codes the three areas are painted with, in the order sky, hill, near ground. */
+  const greys = (svg: string): number[] => [...svg.matchAll(/fill="rgb\((\d+),\d+,\d+\)"/g)].map((m) => Number(m[1]));
+
+  it("is 1 at the nearest, 0 at the far limit and beyond, linear between, and 1 - z at the whole depth", () => {
+    expect(depthValue(0, 0.5)).toBe(1);
+    expect(depthValue(0.5, 0.5)).toBe(0);
+    expect(depthValue(0.9, 0.5)).toBe(0);
+    expect(depthValue(0.25, 0.5)).toBeCloseTo(0.5, 12);
+    expect(depthValue(0.3, 1)).toBeCloseTo(0.7, 12);
+    // The least limit is held, and NaN reads as the whole depth.
+    expect(depthValue(0.01, 0)).toBeCloseTo(0.5, 12);
+    expect(depthValue(0.3, Number.NaN)).toBeCloseTo(0.7, 12);
+  });
+
+  it("paints the near ground white and fades with depth: at the whole depth the greys are 1 - z of the sky, the hill and the ground", () => {
+    const [sky = -1, hill = -1, near = -1] = greys(out(row()));
+    expect(near).toBe(Math.round(255 * (1 - MOCK_DEPTH.near)));
+    expect(hill).toBe(Math.round(255 * (1 - MOCK_DEPTH.far)));
+    expect(sky).toBe(Math.round(255 * (1 - MOCK_DEPTH.sky)));
+    expect(near).toBeGreaterThan(0);
+    expect(near).toBeGreaterThan(hill);
+    expect(hill).toBeGreaterThan(sky);
+  });
+
+  it("a nearer far limit takes the hill and the sky out and keeps part of the ground; Invert, Opacity and a row not ready", () => {
+    const [sky = -1, hill = -1, near = -1] = greys(out(row({ far: 0.25 })));
+    expect([sky, hill]).toEqual([0, 0]);
+    expect(near).toBe(Math.round(255 * (1 - MOCK_DEPTH.near / 0.25)));
+    expect(out(row({ opacity: 0.4 }))).toContain('fill-opacity="0.4"');
+    expect(out(row({ invert: true }))).toContain("feColorMatrix");
+    expect(out(row({ far: 0.25 }))).toContain('data-far="0.25"');
+    // Until the map is made the row selects nothing.
+    expect(out(row(), false)).not.toContain("data-depth-row");
+    expect(out(row(), true)).toContain("data-depth-row");
+  });
+
+  it("Pick depth's limit is the depth plus the margin, at most 1", () => {
+    expect(DEPTH_PICK_MARGIN).toBe(0.1);
+    expect(pickDepthFar(MOCK_DEPTH.near)).toBeCloseTo(0.25, 12);
+    expect(pickDepthFar(MOCK_DEPTH.sky)).toBe(1);
+    expect(pickDepthFar(0)).toBe(0.1);
   });
 });

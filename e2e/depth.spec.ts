@@ -12,7 +12,7 @@ const MOCKUP = { mockCurrent: 3, mockPicked: "2,3,4" } as const;
 const SHOTS = process.env.YM_DEPTH_SHOTS;
 
 type Row = Record<string, unknown> & { kind: string };
-const depthRow = (extra: Record<string, unknown> = {}) => ({ kind: "depth", mode: "add", invert: false, enabled: true, opacity: 1, near: 0, far: 0.5, softness: 0.5, feather: 0, grow: 0, refine: 0.5, ...extra });
+const depthRow = (extra: Record<string, unknown> = {}) => ({ kind: "depth", mode: "add", invert: false, enabled: true, opacity: 1, far: 1, feather: 0, grow: 0, refine: 0.5, ...extra });
 
 const card = (page: Page, id: number | string) => page.locator(`[data-node-card="${id}"]`);
 const rowList = (page: Page) => page.getByRole("list", { name: "Masks of this node" });
@@ -86,40 +86,37 @@ test.describe("adding a Depth row", () => {
     await expect(depthCard(page).getByRole("button", { name: "Pick depth" })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByText("Getting ready…")).toBeVisible();
     await shot(page, "02-finding");
-    // The map is made: the row has its band, and the pill says what to do.
-    await expect(rowButton(page, "Depth mask, 0 to 50")).toBeVisible();
+    // The map is made: the row has its words, and the pill says what to do.
+    await expect(rowButton(page, "Depth mask, Whole depth")).toBeVisible();
     await expect(page.getByText("Click the part of the photo to select. Esc stops.")).toBeVisible();
-    expect(await rowsOf(page, 4)).toMatchObject([{ kind: "depth", near: 0, far: 0.5, softness: 0.5, feather: 0, grow: 0, refine: 0.5 }]);
+    expect(await rowsOf(page, 4)).toMatchObject([{ kind: "depth", far: 1, feather: 0, grow: 0, refine: 0.5 }]);
   });
 
-  test("the card has the controls of the mockup in its order, and Near and Far stop at each other", async ({ page }) => {
-    await haze(page, [depthRow()]);
+  test("the card has Pick depth, Focus plane, Show depth, the line that says where the mask ends and the raster sliders, and no slider for the far limit", async ({ page }) => {
+    await haze(page, [depthRow({ far: 0.35 })]);
     await rowButton(page, /^Depth mask/).click();
     const c = depthCard(page);
     await expect(c.getByRole("button", { name: "Pick depth" })).toHaveAttribute("aria-pressed", "false");
     await expect(c.getByRole("button", { name: "Focus plane" })).toBeVisible();
-    await expect(c.getByRole("slider")).toHaveCount(7);
-    await expect(c.getByRole("textbox", { name: "Near value" })).toHaveValue("0");
-    await expect(c.getByRole("textbox", { name: "Far value" })).toHaveValue("50");
-    await expect(c.getByRole("textbox", { name: "Softness value" })).toHaveValue("50");
+    await expect(c.getByRole("slider")).toHaveCount(4);
+    for (const gone of ["Near", "Far", "Softness"]) await expect(c.getByRole("textbox", { name: `${gone} value` })).toHaveCount(0);
     await expect(c.getByRole("textbox", { name: "Refine edges value" })).toHaveValue("50%");
+    await expect(c.getByText("Fades out at 35 % of the depth")).toBeVisible();
+    await expect(rowButton(page, "Depth mask, To 35 %")).toBeVisible();
     await shot(page, "03-depth-card");
-    const far = c.getByRole("textbox", { name: "Far value" });
-    await far.fill("30");
-    await far.press("Enter");
-    const near = c.getByRole("textbox", { name: "Near value" });
-    await near.fill("60");
-    await near.press("Enter");
-    await expect.poll(async () => (await rowsOf(page, 4))[0]).toMatchObject({ near: 0.3, far: 0.3 });
-    await expect(rowButton(page, "Depth mask, 30 to 30")).toBeVisible();
+    // Reset puts the limit back to the whole depth, and the line and the row say so.
+    await c.getByRole("button", { name: "Reset" }).click();
+    await expect.poll(async () => (await rowsOf(page, 4))[0]).toMatchObject({ far: 1 });
+    await expect(c.getByText("Fades out at the farthest point")).toBeVisible();
+    await expect(rowButton(page, "Depth mask, Whole depth")).toBeVisible();
   });
 });
 
 test.describe("Pick depth", () => {
-  test("on for a new row: the first click on the photo sets Near and Far around the depth there, as one patch; the tool stays on; Esc stops it", async ({ page }) => {
+  test("on for a new row: the first click on the photo sets the far limit a little behind the depth there, as one patch; the tool stays on; Esc stops it", async ({ page }) => {
     await haze(page);
     await addDepth(page);
-    await expect(rowButton(page, "Depth mask, 0 to 50")).toBeVisible();
+    await expect(rowButton(page, "Depth mask, Whole depth")).toBeVisible();
     await expect(page.getByRole("application", { name: /^Pick depth/ })).toBeVisible();
     await expect(page.getByText("Click the part of the photo to select. Esc stops.")).toBeVisible();
     await shot(page, "04-pick-depth");
@@ -127,13 +124,14 @@ test.describe("Pick depth", () => {
     const cell = await cellBox(page);
     // The near ground, the bottom of the photo.
     await page.mouse.click(cell.x + cell.width * 0.5, cell.y + cell.height * 0.9);
-    await expect.poll(async () => (await rowsOf(page, 4))[0]).toMatchObject({ near: 0.05, far: 0.25 });
+    await expect.poll(async () => ((await rowsOf(page, 4))[0]?.far as number | undefined) ?? 1).toBeCloseTo(0.25, 6);
     expect(await calls()).toHaveLength(1);
-    await expect(rowButton(page, "Depth mask, 5 to 25")).toBeVisible();
+    await expect(rowButton(page, "Depth mask, To 25 %")).toBeVisible();
     await shot(page, "04b-pick-depth-click");
-    // The tool stays on: the sky, at the top, is a band at the far end.
+    // The tool stays on: the sky, at the top, is the far end, so the limit is the whole depth.
     await page.mouse.click(cell.x + cell.width * 0.2, cell.y + cell.height * 0.05);
-    await expect.poll(async () => (await rowsOf(page, 4))[0]).toMatchObject({ near: 0.8, far: 1 });
+    await expect.poll(async () => (await rowsOf(page, 4))[0]).toMatchObject({ far: 1 });
+    await expect(rowButton(page, "Depth mask, Whole depth")).toBeVisible();
     await expect(page.getByRole("application", { name: /^Pick depth/ })).toBeVisible();
     // Esc ends it; the toggle is off and a click on the photo picks nothing.
     await page.keyboard.press("Escape");
@@ -148,12 +146,12 @@ test.describe("Pick depth", () => {
 });
 
 test.describe("Focus plane", () => {
-  test("sets Near and Far around the plane the camera focused on, as one patch", async ({ page }) => {
-    await haze(page, [depthRow({ near: 0.6, far: 0.9 })]);
+  test("sets the far limit a little behind the plane the camera focused on, as one patch", async ({ page }) => {
+    await haze(page, [depthRow({ far: 0.9 })]);
     await rowButton(page, /^Depth mask/).click();
     const calls = await recordCalls(page, "updateSettings");
     await depthCard(page).getByRole("button", { name: "Focus plane" }).click();
-    await expect.poll(async () => (await rowsOf(page, 4))[0]).toMatchObject({ near: 0.05, far: 0.25 });
+    await expect.poll(async () => ((await rowsOf(page, 4))[0]?.far as number | undefined) ?? 1).toBeCloseTo(0.25, 6);
     expect(await calls()).toHaveLength(1);
     await expect(depthCard(page).getByText("The camera may not have recorded where it focused.")).toHaveCount(0);
   });
@@ -163,7 +161,8 @@ test.describe("Focus plane", () => {
     await rowButton(page, /^Depth mask/).click();
     const button = depthCard(page).getByRole("button", { name: "Focus plane" });
     await expect(button).toHaveAttribute("aria-disabled", "true");
-    await expect(depthCard(page).locator("p.ym-row-note")).toHaveText("This photo has no focus point.");
+    // The card also has the line that says where the mask ends; the reason is the other note.
+    await expect(depthCard(page).locator("p.ym-row-note:not(.ym-depth-fade)")).toHaveText("This photo has no focus point.");
     await shot(page, "05-no-focus-point");
     const calls = await recordCalls(page, "updateSettings");
     await button.click({ force: true });
@@ -174,9 +173,9 @@ test.describe("Focus plane", () => {
     await haze(page, [depthRow()], { mockCurrent: 11 });
     await rowButton(page, /^Depth mask/).click();
     await depthCard(page).getByRole("button", { name: "Focus plane" }).click();
-    await expect(depthCard(page).locator("p.ym-row-note")).toHaveText("The camera may not have recorded where it focused. Check the result.");
+    await expect(depthCard(page).locator("p.ym-row-note:not(.ym-depth-fade)")).toHaveText("The camera may not have recorded where it focused. Check the result.");
     await shot(page, "05b-focus-centre");
-    await expect.poll(async () => (await rowsOf(page, 4))[0]).toMatchObject({ near: 0.05, far: 0.25 });
+    await expect.poll(async () => ((await rowsOf(page, 4))[0]?.far as number | undefined) ?? 1).toBeCloseTo(0.25, 6);
   });
 });
 
@@ -236,10 +235,10 @@ test.describe("a map that cannot be made", () => {
     const retry = await recordCalls(page, "retryDepth");
     await c.getByRole("button", { name: "Try again" }).click();
     await expect.poll(async () => (await retry()).length).toBe(1);
-    await expect(rowButton(page, "Depth mask, 0 to 50")).toBeVisible();
-    await expect(depthCard(page).getByRole("slider")).toHaveCount(7);
+    await expect(rowButton(page, "Depth mask, Whole depth")).toBeVisible();
+    await expect(depthCard(page).getByRole("slider")).toHaveCount(4);
     // The row was not changed by any of it.
-    expect(await rowsOf(page, 4)).toMatchObject([{ kind: "depth", near: 0, far: 0.5 }]);
+    expect(await rowsOf(page, 4)).toMatchObject([{ kind: "depth", far: 1 }]);
   });
 
   test("a model that fails again brings the sentence back", async ({ page }) => {

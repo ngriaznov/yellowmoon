@@ -765,7 +765,7 @@ impl Core {
         Ok(self.renderer.mask_find(&src, node, mask, prompt, cancel)?)
     }
 
-    /// `sample_depth(photo_id, x, y)` (`docs/23` section 9, Pick depth): the band `(near, far)` around the depth at the point
+    /// `sample_depth(photo_id, x, y)` (`docs/23` section 9, Pick depth): the far limit for the depth at the point
     /// `(x, y)` of the photo frame, or `None` when no depth map can be made. It changes no settings. See
     /// [`Renderer::sample_depth`].
     ///
@@ -779,12 +779,12 @@ impl Core {
         x: f64,
         y: f64,
         cancel: &ym_gpu::queue::CancelToken,
-    ) -> Result<Option<(f64, f64)>, CoreError> {
+    ) -> Result<Option<f64>, CoreError> {
         let src = crate::pipeline::PhotoSource::from_session(&self.session, id)?;
         Ok(self.renderer.sample_depth(&src, x, y, cancel)?)
     }
 
-    /// `focus_plane(photo_id)` (`docs/23` section 9, Focus plane): the band around the plane the camera focused on, or why
+    /// `focus_plane(photo_id)` (`docs/23` section 9, Focus plane): the far limit for the plane the camera focused on, or why
     /// there is none. It changes no settings. See [`Renderer::focus_plane`].
     ///
     /// # Errors

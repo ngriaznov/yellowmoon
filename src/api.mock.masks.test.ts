@@ -280,8 +280,8 @@ describe("Depth (docs/23 §4.8 and §9, D-04)", () => {
     return seen;
   };
 
-  it("has the defaults of the spec: 0 to 50, softness 50, Refine edges 50", () => {
-    expect(newMask("depth")).toEqual({ mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, kind: "depth", near: 0, far: 0.5, softness: 0.5 });
+  it("has the defaults of the spec: the whole depth (far 1), Refine edges 50, and no near or softness", () => {
+    expect(newMask("depth")).toEqual({ mode: "add", invert: false, enabled: true, opacity: 1, feather: 0, grow: 0, refine: 0.5, kind: "depth", far: 1 });
   });
 
   it("makes the map in the background when the row appears: finding while it works, then depth_state with no failure, and not again", async () => {
@@ -317,13 +317,14 @@ describe("Depth (docs/23 §4.8 and §9, D-04)", () => {
     await expect(a.focusPlane(id)).rejects.toMatchObject({ scope: "mask" });
   });
 
-  it("answers Pick depth with the band around the area under the click (near ground near, far hill far, sky farthest), two decimals", async () => {
+  it("answers Pick depth with the far limit a little behind the area under the click (near ground near, far hill far, sky farthest): the depth plus 0.1, at most 1", async () => {
     const a = await open();
     const id = (await a.sessionState()).photos[3]!.id;
     const ground = await a.sampleDepth(id, 0.5, 0.95);
     const sky = await a.sampleDepth(id, 0.05, 0.05);
-    expect(ground).toEqual({ near: 0.05, far: 0.25 });
-    expect(sky).toEqual({ near: 0.8, far: 1 });
+    expect(Object.keys(ground ?? {})).toEqual(["far"]);
+    expect(ground?.far).toBeCloseTo(0.25, 12);
+    expect(sky).toEqual({ far: 1 });
     await expect(a.sampleDepth(id, Number.NaN, 0.5)).rejects.toMatchObject({ scope: "mask" });
   });
 
@@ -331,8 +332,10 @@ describe("Depth (docs/23 §4.8 and §9, D-04)", () => {
     const a = await open();
     const photos = (await a.sessionState()).photos;
     // DSC04204 has a figure on its near ground, DSC04201 none.
-    expect(await a.focusPlane(photos[3]!.id)).toEqual({ near: 0.05, far: 0.25, exact_centre: false, reason: null });
-    expect(await a.focusPlane(photos[0]!.id)).toEqual({ near: null, far: null, exact_centre: false, reason: "no_focus_point" });
+    const focus = await a.focusPlane(photos[3]!.id);
+    expect(focus.far).toBeCloseTo(0.25, 12);
+    expect(focus).toMatchObject({ exact_centre: false, reason: null });
+    expect(await a.focusPlane(photos[0]!.id)).toEqual({ far: null, exact_centre: false, reason: "no_focus_point" });
   });
 
   it("?mockDepth=fail fails the map once for each photo with the core's sentence; retry_depth makes it, and fail-always fails every time", async () => {
@@ -348,12 +351,12 @@ describe("Depth (docs/23 §4.8 and §9, D-04)", () => {
     expect(seen.states).toEqual([{ photo_id: id, failed: "The Depth mask can't be made: the model stopped before it finished." }]);
     // No band to read from a map that failed, and Focus plane says so.
     expect(await a.sampleDepth(id, 0.5, 0.95)).toBeNull();
-    expect(await a.focusPlane(id)).toMatchObject({ near: null, far: null, reason: "map_failed" });
+    expect(await a.focusPlane(id)).toMatchObject({ far: null, reason: "map_failed" });
     // Try again: the worker runs again and the map is made.
     await a.retryDepth(id);
     await tick();
     expect(seen.states.at(-1)).toEqual({ photo_id: id, failed: null });
-    expect(await a.sampleDepth(id, 0.5, 0.95)).toEqual({ near: 0.05, far: 0.25 });
+    expect((await a.sampleDepth(id, 0.5, 0.95))?.far).toBeCloseTo(0.25, 12);
     // A retry on a map that is made starts nothing.
     const count = seen.states.length;
     await a.retryDepth(id);

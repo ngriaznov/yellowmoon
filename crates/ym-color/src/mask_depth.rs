@@ -1,5 +1,5 @@
 //! The Depth mask's maths on the CPU reference (`docs/23-nodes.md` section 4.8, `docs/algorithms/06-masks.md`
-//! section 5.8): the rank normalisation of a relative depth map, the band that cuts a plane from it, Pick depth,
+//! section 5.8): the rank normalisation of a relative depth map, the gradient that makes a plane from it, Pick depth,
 //! the Focus plane's median and the Show depth plane.
 //!
 //! A [`DepthMap`] is what the network (`ym_ml::depth`) makes once per photo, `d` (larger is nearer), with the
@@ -8,32 +8,32 @@
 //! same on every machine and never runs the network:
 //!
 //! * the rank `r = k / (2 (n - 1))` and the depth position `z = 1 - r` ([`DepthMap::z`], [`DepthMap::r`]);
-//! * the band `S0(z) = S((z - nu) / q + 1/2) (1 - S((z - phi) / q + 1/2))`, each ramp centred on its bound, with no
-//!   ramp at 0 or 1 and a ramp no wider than the band ([`depth_cut`], [`depth_s0`]);
+//! * the gradient `S0(z) = clamp(1 - z / f, 0, 1)` of a far limit `f`: 1 at the nearest cell, 0 at depth `f` and beyond,
+//!   and with `f = 1` the Show depth picture itself ([`depth_gradient`], [`depth_s0`]);
 //! * the plane a Depth row makes ([`DepthSource`], [`depth_plane`]), kept in the cache Background's planes use;
-//! * Pick depth ([`pick_band`], [`DepthMap::r_at`]) and the Focus plane ([`DepthMap::focus_z`]).
+//! * Pick depth ([`pick_far`], [`DepthMap::r_at`]) and the Focus plane ([`DepthMap::focus_z`]).
 //!
 //! The cut is f64 on the CPU only and the plane is rounded once to a u16 code ([`quantise`]), so the device reads
 //! the same bytes (`docs/algorithms/06` section 5.1, step 6).
 
 use std::sync::Arc;
 
-use crate::mask::smooth_step;
 use crate::mask_raster::{SourcePlane, cached_plane, quantise};
 
-/// The least width of the band's ramp, as a share of the photo's cells (`docs/algorithms/06` section 5.8).
-pub const DEPTH_RAMP_MIN: f64 = 0.02;
-/// `softness` 1 is a ramp this wide, as a share of the photo: `q = max(0.25 softness, DEPTH_RAMP_MIN)`.
-pub const DEPTH_SOFTNESS_SPAN: f64 = 0.25;
-/// The width of the band Pick depth and Focus plane make, as a share of the photo.
-pub const DEPTH_PICK_WIDTH: f64 = 0.2;
+/// The least far limit, as a share of the photo's cells, so that the division of the gradient is safe: a limit under it
+/// reads as it (`docs/algorithms/06` section 5.8).
+pub const DEPTH_FAR_MIN: f64 = 0.02;
+/// How far behind the clicked depth the fade ends: Pick depth and Focus plane set the far limit to `z + DEPTH_PICK_MARGIN`
+/// (at most 1), so the fade ends a little behind the subject and the subject stays in the mask.
+pub const DEPTH_PICK_MARGIN: f64 = 0.1;
 /// The side of the Focus plane's box, as a share of the photo's long edge, when the camera gave no size.
 pub const FOCUS_BOX_DEFAULT: f64 = 0.04;
 /// The least side of the Focus plane's box, in cells of the map.
 pub const FOCUS_BOX_MIN_CELLS: usize = 3;
-/// The version of the rank and band rules. It is part of the map's key (`docs/23` section 4.8) and of every plane's.
+/// The version of the rank and mask rules. It is part of the map's key (`docs/23` section 4.8) and of every plane's.
 /// 2: the smallest tie group is the far end, and the band's ramps are centred on its bounds (D-H2, 2026-11-07).
-pub const DEPTH_RULES_VERSION: u32 = 2;
+/// 3: the mask is a gradient from the nearest cell to a far limit; the band is gone (the owner, 2026-11-08).
+pub const DEPTH_RULES_VERSION: u32 = 3;
 
 /// Why a set of values is not a depth map.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -260,91 +260,53 @@ fn unit_or(x: f64, default: f64) -> f64 {
     }
 }
 
-/// The band as the cut reads it: `near` and `far` held to [0, 1] and, when `near` is above `far`, both set to their
-/// mean (as the Brightness range reads `low > high`); `softness` held to [0, 1]. A NaN reads as the field's default
-/// (0, 0.5 and 0.5). Returns `(nu, phi, sigma)`.
+/// The far limit as the gradient reads it: held to [`DEPTH_FAR_MIN`]..1; a NaN reads as the default, 1.
 #[must_use]
-pub fn depth_band(near: f64, far: f64, softness: f64) -> (f64, f64, f64) {
-    let (mut nu, mut phi) = (unit_or(near, 0.0), unit_or(far, 0.5));
-    if nu > phi {
-        let mean = (nu + phi) / 2.0;
-        (nu, phi) = (mean, mean);
+pub fn depth_far(far: f64) -> f64 {
+    if far.is_nan() {
+        1.0
+    } else {
+        far.clamp(DEPTH_FAR_MIN, 1.0)
     }
-    (nu, phi, unit_or(softness, 0.5))
 }
 
-/// The ramp's width `q = max(0.25 sigma, DEPTH_RAMP_MIN)`, as a share of the photo.
+/// The mask at depth position `z` for the far limit `far` (already held by [`depth_far`]): `clamp(1 - z / far, 0, 1)`,
+/// linear, 1 at the nearest cell (`z = 0`) and 0 at `z = far` and beyond. With `far = 1` it is `1 - z`, the Show depth
+/// picture.
 #[must_use]
-pub fn depth_ramp(softness: f64) -> f64 {
-    (DEPTH_SOFTNESS_SPAN * unit_or(softness, 0.5)).max(DEPTH_RAMP_MIN)
+pub fn depth_gradient(z: f64, far: f64) -> f64 {
+    (1.0 - z / far).clamp(0.0, 1.0)
 }
 
-/// The ramp's width where the band is `nu..phi`: `q` cut to the band's width, and not under [`DEPTH_RAMP_MIN`]
-/// (`q_eff = max(min(q, phi - nu), DEPTH_RAMP_MIN)`). A band of no width gets the least ramp, so the cut is defined
-/// there (a faint bump that peaks at 1/4).
+/// `S0` of a Depth row from the map's ranks: the gradient per cell in f64 and rounded once to a u16 code.
 #[must_use]
-pub fn depth_ramp_eff(nu: f64, phi: f64, q: f64) -> f64 {
-    q.min(phi - nu).max(DEPTH_RAMP_MIN)
-}
-
-/// The band at depth position `z`: `S((z - nu) / q + 1/2) (1 - S((z - phi) / q + 1/2))` with `q` as
-/// [`depth_ramp_eff`] gives it. Each ramp is centred on its bound, so the cut is 1/2 at `z = nu` and at `z = phi`. A bound
-/// at the end of the range has no ramp: `nu = 0` selects everything nearer than `phi`, `z = 0` included, and `phi = 1`
-/// everything from `nu` out, `z = 1` included. `nu`, `phi` and `q` are as [`depth_band`] and [`depth_ramp`] give them.
-#[must_use]
-pub fn depth_cut(z: f64, nu: f64, phi: f64, q: f64) -> f64 {
-    let q = depth_ramp_eff(nu, phi, q);
-    let rise = if nu <= 0.0 {
-        1.0
-    } else {
-        smooth_step((z - nu) / q + 0.5)
-    };
-    let fall = if phi >= 1.0 {
-        1.0
-    } else {
-        1.0 - smooth_step((z - phi) / q + 0.5)
-    };
-    rise * fall
-}
-
-/// `S0` of a Depth row from the map's ranks: the band cut per cell in f64 and rounded once to a u16 code.
-#[must_use]
-pub fn depth_s0(map: &DepthMap, near: f64, far: f64, softness: f64) -> Vec<u16> {
-    let (nu, phi, sigma) = depth_band(near, far, softness);
-    let q = depth_ramp(sigma);
+pub fn depth_s0(map: &DepthMap, far: f64) -> Vec<u16> {
+    let far = depth_far(far);
     (0..map.len())
-        .map(|i| quantise(depth_cut(map.z(i), nu, phi, q)))
+        .map(|i| quantise(depth_gradient(map.z(i), far)))
         .collect()
 }
 
-/// What makes a Depth row's `S0`: the photo's depth map and the row's `near`, `far` and `softness`.
+/// What makes a Depth row's `S0`: the photo's depth map and the row's far limit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DepthSource {
     /// The photo's depth map.
     pub map: Arc<DepthMap>,
-    /// Where the band starts, 0 to 1.
-    pub near: f64,
-    /// Where the band ends, 0 to 1.
+    /// Where the mask fades out, a share of the photo's depth order, 0.02 to 1 (1 is the whole depth).
     pub far: f64,
-    /// The width of the ramp, 0 to 1.
-    pub softness: f64,
 }
 
 impl DepthSource {
-    /// What identifies the plane: the map and the three numbers after the clamping and the swap (FNV-1a over their
-    /// bits, with a tag of its own so that no Background plane shares a key), never Feather, Grow or Refine edges,
-    /// which act after the plane.
+    /// What identifies the plane: the map and the far limit after the clamping (FNV-1a over their bits, with a tag of its
+    /// own so that no Background plane shares a key), never Feather, Grow or Refine edges, which act after the plane.
     #[must_use]
     pub fn key(&self) -> u64 {
-        let (nu, phi, sigma) = depth_band(self.near, self.far, self.softness);
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         for bits in [
             0x0000_00de_97d0_0001,
             u64::from(DEPTH_RULES_VERSION),
             self.map.key,
-            nu.to_bits(),
-            phi.to_bits(),
-            sigma.to_bits(),
+            depth_far(self.far).to_bits(),
         ] {
             for byte in bits.to_le_bytes() {
                 h ^= u64::from(byte);
@@ -356,9 +318,8 @@ impl DepthSource {
 }
 
 /// The plane of a Depth row, from the small in-memory cache (never on disk) that Background's planes use when the same
-/// map was cut with the same band lately, else made now ([`depth_s0`]): moving `near`, `far` or `softness` cuts a new
-/// plane from the cached ranks and never runs the network, and Feather, Grow and Refine edges, which are not in the
-/// key, never cut one.
+/// map was cut with the same limit lately, else made now ([`depth_s0`]): moving `far` cuts a new plane from the cached
+/// ranks and never runs the network, and Feather, Grow and Refine edges, which are not in the key, never cut one.
 #[must_use]
 pub fn depth_plane(src: &DepthSource) -> Arc<SourcePlane> {
     depth_plane_among(src, 0)
@@ -372,37 +333,21 @@ pub fn depth_plane_among(src: &DepthSource, live: usize) -> Arc<SourcePlane> {
         key,
         width: src.map.width,
         height: src.map.height,
-        data: depth_s0(&src.map, src.near, src.far, src.softness),
+        data: depth_s0(&src.map, src.far),
     })
 }
 
-/// A number rounded to two decimals, halves away from zero: the scale of the card's sliders.
-fn round2(v: f64) -> f64 {
-    (v * 100.0).round() / 100.0
+/// The far limit Pick depth and Focus plane set for the depth position `z_p`: `min(1, z_p + DEPTH_PICK_MARGIN)`, so the
+/// mask is full at the nearest and fades to none a little behind the picked depth (`docs/algorithms/06` section 5.8,
+/// step 4). Not rounded; the least limit [`DEPTH_FAR_MIN`] applies, and a NaN reads as the middle of the photo.
+#[must_use]
+pub fn pick_far(z_p: f64) -> f64 {
+    depth_far((unit_or(z_p, 0.5) + DEPTH_PICK_MARGIN).min(1.0))
 }
 
-/// The band of width [`DEPTH_PICK_WIDTH`] centred on the depth position `z_p`: `nu = z_p - 0.1`, `phi = z_p + 0.1`,
-/// the pair moved as a whole to lie inside [0, 1], then both rounded to two decimals. Returns `(near, far)`
-/// (`docs/algorithms/06` section 5.8, step 4).
+/// Pick depth: the far limit for the depth under the point `(x, y)` of the photo frame (`docs/algorithms/06`
+/// section 5.8, step 4).
 #[must_use]
-pub fn pick_band(z_p: f64) -> (f64, f64) {
-    let z = unit_or(z_p, 0.5);
-    let half = DEPTH_PICK_WIDTH / 2.0;
-    let (mut nu, mut phi) = (z - half, z + half);
-    if nu < 0.0 {
-        phi -= nu;
-        nu = 0.0;
-    }
-    if phi > 1.0 {
-        nu -= phi - 1.0;
-        phi = 1.0;
-    }
-    (round2(nu.max(0.0)), round2(phi.min(1.0)))
-}
-
-/// Pick depth: the band around the depth under the point `(x, y)` of the photo frame (`docs/algorithms/06`
-/// section 5.8, step 4). Returns `(near, far)`.
-#[must_use]
-pub fn pick_depth(map: &DepthMap, x: f64, y: f64) -> (f64, f64) {
-    pick_band(1.0 - map.r_at(x, y))
+pub fn pick_depth(map: &DepthMap, x: f64, y: f64) -> f64 {
+    pick_far(1.0 - map.r_at(x, y))
 }
