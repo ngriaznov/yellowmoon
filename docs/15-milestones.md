@@ -317,7 +317,7 @@ Tasks (details, dependencies and *Done when* in `docs/24` §10): **F-01** mockup
 
 ---
 
-## D · Depth mask (planned, branch `depth-mask`)
+## D · Depth mask (done, on `main`; the owner's approval 2026-11-09)
 
 Goal: a **Depth** mask in the Find group, cut from a relative depth map that **Depth Anything V2-Small** makes from the photo (24.8 M parameters, Apache-2.0, about 50 MB at f16, bundled like SAM 2.1's 77 MB), as a gradient to a far limit (first built as Near, Far and Softness bounds; the owner replaced them on 2026-11-08, `docs/23` §4.8), **Pick depth** and **Focus plane** (from the Sony focus box), a greyscale **Show depth** view, and `ym` support. The model is for masks only: lens character keeps its blur map. The spec is `docs/23-nodes.md` §4.8, the maths `docs/algorithms/06-masks.md` §5.8 and §8, the model `docs/07-ml-models.md`, the licence row `docs/14-licensing.md`; the facts and sources are in `research/depth-mask-2026-11-07.md`. **The owner's decisions of 2026-11-07** (`docs/STATUS.md` question 41): a depth model for masks only; bundled, never downloaded by the app; the teacher chain accepted (Apache-2.0 weights whose unreleased teacher trained on Hypersim, CC BY-SA 3.0, and Virtual KITTI 2, non-commercial), stated in the model card as SAM's card states SA-1B; the model is Depth Anything V2-Small; the working choices (band bounds with rank normalisation, Focus plane from the focus box, exports from the CPU map, evaluation on DIODE plus public photos) are settled on the evaluation sheets. V1's data rule holds: no measurements of our own, and no photos are shot for it.
 
