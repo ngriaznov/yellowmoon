@@ -114,11 +114,19 @@ jobs:
       # The generator reads Cargo.lock and the npm package folders (hence after `npm ci`), fails when a package has no text, and
       # check_bundle.py fails when src-tauri/tauri.conf.json would not put the file (and NOTICE with the BSD conditions) into the
       # bundle. The CI job `licences` runs the same two commands on every change. tools/licences/README.md.
+      # The prebuilt cargo-about is a GitHub release download. Anonymous release downloads can time out (they did on 2026-11-09,
+      # during GitHub's incident), so a failure here is not fatal: the next step builds the same version from crates.io.
       - name: cargo-about
+        id: about
+        continue-on-error: true
         if: steps.check_tag.outputs.exists == 'false'
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-about@0.9.2
+
+      - name: cargo-about from crates.io (when the prebuilt download fails)
+        if: steps.check_tag.outputs.exists == 'false' && steps.about.outcome == 'failure'
+        run: cargo install cargo-about --version 0.9.2 --locked
 
       # The SAM 2.1 small weights (about 77 MB) are a release asset of ours (models-sam2.1-small-1, made by models.yml), too big
       # for git. They are fetched into data/models/sam2/, which tauri.conf.json bundles, and checked against the SHA-256 in
@@ -129,6 +137,26 @@ jobs:
         with:
           path: data/models/sam2/sam2.1_hiera_small.f16.safetensors
           key: sam2-weights-${{ hashFiles('data/models/sam2/SHA256SUMS') }}
+
+      # Anonymous downloads of release assets can time out (they did on 2026-11-09, during GitHub's incident). This step downloads
+      # the file with the GitHub CLI and the workflow's token instead, which goes through the API. It does nothing when the
+      # cache already put the file there, and it never fails the step: tools/fetch fetches next, checks the SHA-256 against
+      # the pin and, if the file is missing or differs, downloads it the plain way.
+      - name: Download the SAM 2.1 small weights with the GitHub CLI
+        if: steps.check_tag.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          f=data/models/sam2/sam2.1_hiera_small.f16.safetensors
+          if [ -s "$f" ]; then
+            echo "$f is already on disk."
+            exit 0
+          fi
+          mkdir -p data/models/sam2
+          if ! command -v gh >/dev/null 2>&1 || ! gh release download models-sam2.1-small-1 --repo "$GITHUB_REPOSITORY" --pattern sam2.1_hiera_small.f16.safetensors --dir data/models/sam2 --clobber; then
+            rm -f "$f"
+            echo "::warning title=GitHub CLI download failed::sam2.1_hiera_small.f16.safetensors was not downloaded with the GitHub CLI; the fetch script will try the plain download."
+          fi
 
       - name: Fetch the SAM 2.1 small weights
         if: steps.check_tag.outputs.exists == 'false'
@@ -146,6 +174,30 @@ jobs:
         with:
           path: data/models/depth/depth_anything_v2_vits.f16.safetensors
           key: depth-weights-${{ hashFiles('data/models/depth/SHA256SUMS') }}
+
+      # Anonymous downloads of release assets can time out (they did on 2026-11-09, during GitHub's incident). This step downloads
+      # the file with the GitHub CLI and the workflow's token instead, which goes through the API. It does nothing when the
+      # cache already put the file there, and it never fails the step: tools/fetch fetches next, checks the SHA-256 against
+      # the pin and, if the file is missing or differs, downloads it the plain way.
+      - name: Download the Depth Anything V2-Small weights with the GitHub CLI
+        if: steps.check_tag.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! grep -Eq '^[0-9a-f]{64}  depth_anything_v2_vits\.f16\.safetensors$' data/models/depth/SHA256SUMS; then
+            echo "No SHA-256 pin yet: nothing to download."
+            exit 0
+          fi
+          f=data/models/depth/depth_anything_v2_vits.f16.safetensors
+          if [ -s "$f" ]; then
+            echo "$f is already on disk."
+            exit 0
+          fi
+          mkdir -p data/models/depth
+          if ! command -v gh >/dev/null 2>&1 || ! gh release download models-depth-anything-v2-small-1 --repo "$GITHUB_REPOSITORY" --pattern depth_anything_v2_vits.f16.safetensors --dir data/models/depth --clobber; then
+            rm -f "$f"
+            echo "::warning title=GitHub CLI download failed::depth_anything_v2_vits.f16.safetensors was not downloaded with the GitHub CLI; the fetch script will try the plain download."
+          fi
 
       - name: Fetch the Depth Anything V2-Small weights
         if: steps.check_tag.outputs.exists == 'false'
