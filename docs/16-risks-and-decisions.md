@@ -131,7 +131,7 @@ The plan was approved on 2026-11-01 and is milestone N (`docs/15`), specified in
 | `ym` with a mask this machine cannot make | Stops on that photo with a plain error |
 | Limits | Up to **64 nodes** per photo, Main included; otherwise only a sanity bound on what a settings file may hold (64 masks a node, 100,000 brush points a mask) |
 | Release | The whole plan is built, then released once as **0.2.0**; the checkpoints are test builds |
-| Dropped | DCTL (for now), the list view |
+| Dropped | DCTL (for now; researched and parked by the owner on 2026-11-09, `research/dctl-node-2026-11-09.md`), the list view |
 
 ### Colour and rendering
 

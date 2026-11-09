@@ -9,6 +9,21 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-09
+
+The Depth mask: a mask that selects by distance from the camera, from a depth map a small model makes from the photo on your Mac. The app is about 50 MB larger, because the model is bundled. The pipeline version stays 0.10.0, and a photo with no Depth row comes out byte for byte as in 0.2.1.
+
+### Added
+
+- **The Depth mask.** **Add mask** now offers **Depth**, after Background. It is a gradient straight from the depth map: the nearest part of the photo is fully selected, the farthest not at all, and everything in between is graded. The sky counts as the farthest. The map is made once per photo, in the background, by Depth Anything V2-Small (bundled, run on your Mac's processor); until it is ready the row selects nothing, and the photo never waits for it. The Depth card has:
+  - **Pick depth**, on for a new row: click the photo and the mask fades out just past the depth you clicked. Everything nearer stays fully selected.
+  - **Focus plane**: the same at the camera's focus point, on files that record one.
+  - **Show depth**: the depth map in grey, white for near.
+  - A line that says where the mask fades out ("Fades out at 35 % of the depth") and **Reset**, which puts it back at the farthest point. The row reads "Whole depth" or "To 35 %".
+  - **Try again**, when a map could not be made.
+  - Refine edges, Feather, Grow and Opacity, as on the other masks found from the photo.
+- **Depth in `ym`.** A Depth row goes in a settings file as `{ "kind": "depth", "far": 0.35 }` (`far` from 0.02 to 1, where 1 is the whole depth). `ym` makes the map when it exports, so the same file gives the same mask in the app and in `ym`. `ym doctor`'s **Masks** line lists Depth when the model is there. Settings with a Depth row need 0.2.2 or later. `docs/10-cli.md` has the form.
+
 ### Changed
 
 - **About's trademark line** now names every film and paper maker and mark the stock picker shows.
