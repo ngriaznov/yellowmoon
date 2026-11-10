@@ -14,6 +14,7 @@ use super::graph::{
     node_fields,
 };
 use super::masks::MasksPatch;
+use super::mixers::{BlendMode, MixerNode};
 use super::{
     AutoOr, AutoSeeds, ColorBalancePatch, ColorWarp, ContrastSetting, Crop, CurvesPatch,
     DecodePatch, DevelopSettings, ExposureSetting, FieldRef, LensPatch, NoiseReductionManualPatch,
@@ -372,6 +373,14 @@ pub struct NodePatch {
     /// New Strength, percent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strength: Option<f64>,
+
+    // A Layer (`docs/25` section 2.1); `name` and `bypass` above are the four mixer kinds' too.
+    /// New blend mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<BlendMode>,
+    /// New opacity, 0 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f64>,
 }
 
 /// A node-level patch of a photo's settings (`update_settings(photo_id, patch)`), `docs/23`
@@ -442,7 +451,7 @@ impl NodePatch {
             look_intensity => "look_intensity", output_sharpening => "output_sharpening",
             name => "name", bypass => "bypass", trim => "trim", grade => "grade", masks => "masks",
             film => "film", print => "print", halation => "halation", grain => "grain",
-            strength => "strength",
+            strength => "strength", mode => "mode", opacity => "opacity",
         );
         v
     }
@@ -475,6 +484,8 @@ impl NodePatch {
             SettingsField::Halation => self.halation.is_some(),
             SettingsField::Grain => self.grain.is_some(),
             SettingsField::Strength => self.strength.is_some(),
+            SettingsField::Mode => self.mode.is_some(),
+            SettingsField::Opacity => self.opacity.is_some(),
             grade_field => self
                 .grade
                 .as_ref()
@@ -560,6 +571,8 @@ impl NodePatch {
             halation,
             grain,
             strength,
+            mode,
+            opacity,
         );
         if let Some(g) = other.grade {
             match &mut self.grade {
@@ -749,6 +762,39 @@ impl NodePatch {
             _ => return None,
         }
         Some(p)
+    }
+
+    /// The patch that carries one field of a node of `docs/25`.
+    fn of_mixer_field(n: &MixerNode, field: SettingsField) -> Option<Self> {
+        let mut p = Self::default();
+        match (n, field) {
+            (_, SettingsField::Name) => p.name = Some(n.name().to_owned()),
+            (_, SettingsField::Pos) => p.pos = Some(n.pos()),
+            (MixerNode::Parallel(m), SettingsField::Bypass) => p.bypass = Some(m.bypass),
+            (MixerNode::Layer(m), SettingsField::Bypass) => p.bypass = Some(m.bypass),
+            (MixerNode::Layer(m), SettingsField::Mode) => p.mode = Some(m.mode),
+            (MixerNode::Layer(m), SettingsField::Opacity) => p.opacity = Some(m.opacity),
+            _ => return None,
+        }
+        Some(p)
+    }
+
+    /// A patch that holds every field of a node of `docs/25`, with its `kind`, so that it adds the node when the photo
+    /// does not have it.
+    #[must_use]
+    pub fn whole_mixer(n: &MixerNode) -> Self {
+        let mut p = Self {
+            kind: Some(n.kind()),
+            ..Self::default()
+        };
+        for f in SettingsField::ALL {
+            if f.belongs_to(n.kind())
+                && let Some(one) = Self::of_mixer_field(n, f)
+            {
+                p.absorb(one);
+            }
+        }
+        p
     }
 
     /// A patch that holds every field of a Film node, with its `kind`, so that it adds the node when the photo
@@ -1060,6 +1106,31 @@ impl NodePatch {
         Ok(())
     }
 
+    fn apply_mixer(&self, next: &mut MixerNode) {
+        if let Some(v) = &self.name {
+            next.name_mut().clone_from(v);
+        }
+        match next {
+            MixerNode::Parallel(m) => {
+                if let Some(v) = self.bypass {
+                    m.bypass = v;
+                }
+            }
+            MixerNode::Layer(m) => {
+                if let Some(v) = self.bypass {
+                    m.bypass = v;
+                }
+                if let Some(v) = self.mode {
+                    m.mode = v;
+                }
+                if let Some(v) = self.opacity {
+                    m.opacity = v;
+                }
+            }
+            MixerNode::Splitter(_) | MixerNode::Combiner(_) => {}
+        }
+    }
+
     /// Checks that every field the patch carries belongs to `kind`.
     fn check_kind(&self, kind: NodeKind) -> Result<(), GraphError> {
         let own = node_fields(kind);
@@ -1145,6 +1216,24 @@ impl DevelopSettings {
                     SettingsField::LookIntensity => a.look_intensity == b.look_intensity,
                     SettingsField::OutputSharpening => a.output_sharpening == b.output_sharpening,
                     SettingsField::Pos => a.pos == b.pos,
+                    _ => true,
+                }
+            }
+            NodeId::Corrector(n) if a.mixers.contains_key(&n) || b.mixers.contains_key(&n) => {
+                let (Some(a), Some(b)) = (a.mixer(n), b.mixer(n)) else {
+                    return true;
+                };
+                match field {
+                    SettingsField::Name => a.name() == b.name(),
+                    SettingsField::Pos => a.pos() == b.pos(),
+                    SettingsField::Bypass => a.bypass() == b.bypass(),
+                    SettingsField::Mode | SettingsField::Opacity => match (a, b) {
+                        (MixerNode::Layer(a), MixerNode::Layer(b)) => match field {
+                            SettingsField::Mode => a.mode == b.mode,
+                            _ => a.opacity.to_bits() == b.opacity.to_bits(),
+                        },
+                        _ => true,
+                    },
                     _ => true,
                 }
             }
@@ -1265,7 +1354,9 @@ impl DevelopSettings {
                     return Err(GraphError::CannotRemove.into());
                 }
                 NodeId::Corrector(n) => {
-                    if next.nodes.extra.remove(n).is_none() && next.nodes.films.remove(n).is_none()
+                    if next.nodes.extra.remove(n).is_none()
+                        && next.nodes.films.remove(n).is_none()
+                        && next.nodes.mixers.remove(n).is_none()
                     {
                         return Err(GraphError::PatchUnknownNode(id.to_string()).into());
                     }
@@ -1281,7 +1372,7 @@ impl DevelopSettings {
             let exists = next.nodes.has(*id);
             // The kind the node is, or the kind a new numbered node is given.
             let actual = next.nodes.kind_of(*id).unwrap_or_else(|| match np.kind {
-                Some(NodeKind::Film) if matches!(id, NodeId::Corrector(_)) => NodeKind::Film,
+                Some(k) if k.is_numbered_extra() && matches!(id, NodeId::Corrector(_)) => k,
                 _ => id.kind(),
             });
             if let Some(k) = np.kind
@@ -1303,7 +1394,10 @@ impl DevelopSettings {
                     return Err(GraphError::PatchUnknownNode(id.to_string()).into());
                 }
                 let pos = [next.nodes.node_count() as f64, 0.0];
-                if actual == NodeKind::Film {
+                if let Some(mut m) = MixerNode::new_of(actual) {
+                    *m.pos_mut() = pos;
+                    next.nodes.mixers.insert(n, m);
+                } else if actual == NodeKind::Film {
                     next.nodes.films.insert(
                         n,
                         FilmNode {
@@ -1347,6 +1441,11 @@ impl DevelopSettings {
                         np.apply_film(f, n)?;
                         if let Some(p) = np.pos {
                             f.pos = p;
+                        }
+                    } else if let Some(m) = next.nodes.mixer_mut(n) {
+                        np.apply_mixer(m);
+                        if let Some(p) = np.pos {
+                            *m.pos_mut() = p;
                         }
                     }
                 }
@@ -1570,6 +1669,10 @@ impl SettingsPatch {
             let one = match node {
                 NodeId::Input => NodePatch::of_input_field(&from.nodes.input, *field),
                 NodeId::Output => NodePatch::of_output_field(&from.nodes.output, *field),
+                NodeId::Corrector(n) if from.nodes.mixers.contains_key(&n) => from
+                    .nodes
+                    .mixer(n)
+                    .and_then(|m| NodePatch::of_mixer_field(m, *field)),
                 NodeId::Corrector(n) if from.nodes.films.contains_key(&n) => from
                     .nodes
                     .film(n)
@@ -1605,6 +1708,8 @@ impl SettingsPatch {
                     patch.nodes.insert(id, NodePatch::whole_corrector(c));
                 } else if let Some(f) = to.nodes.film(n) {
                     patch.nodes.insert(id, NodePatch::whole_film(f));
+                } else if let Some(m) = to.nodes.mixer(n) {
+                    patch.nodes.insert(id, NodePatch::whole_mixer(m));
                 }
             }
         }
@@ -1627,7 +1732,11 @@ impl SettingsPatch {
     /// the Input and Main, a manual 0 in another corrector, `default_look` on the Output).
     #[must_use]
     pub fn reset(node: NodeId, field: SettingsField, default_look: &LookId) -> Self {
-        Self::of_field(&defaults_for(node, default_look, false), node, field)
+        Self::of_field(
+            &defaults_for(node, default_look, NodeKind::Corrector),
+            node,
+            field,
+        )
     }
 
     /// [`SettingsPatch::reset`] for a node of `settings`, which may be a Film node (it is told from a corrector
@@ -1639,8 +1748,8 @@ impl SettingsPatch {
         field: SettingsField,
         default_look: &LookId,
     ) -> Self {
-        let film = settings.nodes.kind_of(node) == Some(NodeKind::Film);
-        Self::of_field(&defaults_for(node, default_look, film), node, field)
+        let kind = settings.nodes.kind_of(node).unwrap_or(NodeKind::Corrector);
+        Self::of_field(&defaults_for(node, default_look, kind), node, field)
     }
 
     /// The Reset patch of a node as its head's Reset has it: a corrector's trim and grade (not its
@@ -1673,7 +1782,7 @@ impl SettingsPatch {
             })
             .collect();
         Self::of_fields(
-            &defaults_for(node, default_look, kind == NodeKind::Film),
+            &defaults_for(node, default_look, kind),
             node,
             &fields,
         )
@@ -1729,6 +1838,11 @@ impl SettingsPatch {
                 .nodes
                 .insert(NodeId::Corrector(*id), NodePatch::whole_film(&f));
         }
+        for (id, m) in &g.mixers {
+            patch
+                .nodes
+                .insert(NodeId::Corrector(*id), NodePatch::whole_mixer(m));
+        }
         patch
             .nodes
             .insert(NodeId::Output, NodePatch::whole_output(&g.output));
@@ -1761,17 +1875,25 @@ impl SettingsPatch {
     }
 }
 
-/// The settings a node's defaults are taken from: the default graph, with the node added as a new
-/// corrector when it is one (a manual 0 everywhere) and `default_look` on the Output.
-fn defaults_for(node: NodeId, default_look: &LookId, film: bool) -> DevelopSettings {
+/// The settings a node's defaults are taken from: the default graph, with the node added as a new node of its `kind`
+/// (a corrector with a manual 0 everywhere, a Film node, a node of `docs/25`) and `default_look` on the Output.
+fn defaults_for(node: NodeId, default_look: &LookId, kind: NodeKind) -> DevelopSettings {
     let mut d = DevelopSettings::with_look(default_look.clone());
     if let NodeId::Corrector(n) = node
         && n != MAIN_ID
     {
-        if film {
-            d.nodes.films.insert(n, FilmNode::default());
-        } else {
-            d.nodes.extra.insert(n, CorrectorNode::default());
+        match kind {
+            NodeKind::Film => {
+                d.nodes.films.insert(n, FilmNode::default());
+            }
+            NodeKind::Parallel | NodeKind::Layer | NodeKind::Splitter | NodeKind::Combiner => {
+                if let Some(m) = MixerNode::new_of(kind) {
+                    d.nodes.mixers.insert(n, m);
+                }
+            }
+            NodeKind::Corrector | NodeKind::Input | NodeKind::Output => {
+                d.nodes.extra.insert(n, CorrectorNode::default());
+            }
         }
     }
     d

@@ -23,6 +23,7 @@ use super::film::{
     PRINT_EXPOSURE_RANGE_EV, SIZE_RANGE, STRENGTH_RANGE,
 };
 use super::masks::MaskSettings;
+use super::mixers::{MIXER_INPUTS, MixerNode, OPACITY_RANGE};
 use super::{
     AutoOr, BalanceSetting, ColorBalance, ColorBalancePoint, ColorWarp, ContrastSetting, Crop,
     Curves, DecodeOptions, ExposureSetting, FieldRef, LensSettings, NoiseReductionSetting,
@@ -118,6 +119,21 @@ pub enum GraphError {
     /// More correctors than the limit.
     #[error("A photo can have up to 64 nodes.")]
     TooManyNodes,
+    /// A mixer's input is numbered past the last (`picture.9` and above).
+    #[error("A mixer can have up to 8 inputs.")]
+    TooManyMixerInputs,
+    /// A mixer's linked inputs leave a gap.
+    #[error(
+        "{node} has a link on input {linked} and none on input {missing}. A mixer's inputs are numbered from 1 with no gap."
+    )]
+    MixerInputGap {
+        /// "Node 7".
+        node: String,
+        /// The first linked input after the gap.
+        linked: u8,
+        /// The first input with no link.
+        missing: u8,
+    },
     /// More masks in a node than the limit.
     #[error("A node can have up to 64 masks.")]
     TooManyMasks,
@@ -273,19 +289,32 @@ pub enum NodeKind {
     Corrector,
     /// A Film node (`docs/24`).
     Film,
+    /// A Parallel mixer (`docs/25`).
+    Parallel,
+    /// A Layer mixer (`docs/25`).
+    Layer,
+    /// A Splitter (`docs/25`).
+    Splitter,
+    /// A Combiner (`docs/25`).
+    Combiner,
 }
 
 impl NodeKind {
     /// Every kind. The scheduler's footprint list (`pipeline::schedule::step_kind`) is an exhaustive `match` over the same
     /// kinds, and the random-graph test draws from this list (`docs/23` section 5.12).
-    pub const ALL: [NodeKind; 4] = [
+    pub const ALL: [NodeKind; 8] = [
         NodeKind::Input,
         NodeKind::Output,
         NodeKind::Corrector,
         NodeKind::Film,
+        NodeKind::Parallel,
+        NodeKind::Layer,
+        NodeKind::Splitter,
+        NodeKind::Combiner,
     ];
 
-    /// "an input", "an output", "a corrector".
+    /// "an input", "an output", "a corrector", "a film node", "a parallel mixer", "a layer mixer", "a splitter",
+    /// "a combiner".
     #[must_use]
     pub fn with_article(self) -> &'static str {
         match self {
@@ -293,6 +322,10 @@ impl NodeKind {
             Self::Output => "an output",
             Self::Corrector => "a corrector",
             Self::Film => "a film node",
+            Self::Parallel => "a parallel mixer",
+            Self::Layer => "a layer mixer",
+            Self::Splitter => "a splitter",
+            Self::Combiner => "a combiner",
         }
     }
 
@@ -304,6 +337,10 @@ impl NodeKind {
             Self::Output => "An output",
             Self::Corrector => "A corrector",
             Self::Film => "A film node",
+            Self::Parallel => "A parallel mixer",
+            Self::Layer => "A layer mixer",
+            Self::Splitter => "A splitter",
+            Self::Combiner => "A combiner",
         }
     }
 
@@ -315,7 +352,33 @@ impl NodeKind {
             Self::Output => "output",
             Self::Corrector => "corrector",
             Self::Film => "film",
+            Self::Parallel => "parallel",
+            Self::Layer => "layer",
+            Self::Splitter => "splitter",
+            Self::Combiner => "combiner",
         }
+    }
+
+    /// Whether a node of this kind is one of `docs/25`'s four (Parallel, Layer, Splitter, Combiner).
+    #[must_use]
+    pub fn is_mixer_family(self) -> bool {
+        match self {
+            Self::Parallel | Self::Layer | Self::Splitter | Self::Combiner => true,
+            Self::Input | Self::Output | Self::Corrector | Self::Film => false,
+        }
+    }
+
+    /// Whether this is a numbered kind other than a corrector (a Film node or one of `docs/25`'s four): the kinds a
+    /// patch names to add such a node.
+    #[must_use]
+    pub fn is_numbered_extra(self) -> bool {
+        self == Self::Film || self.is_mixer_family()
+    }
+
+    /// Whether a node of this kind is a mixer proper (Parallel or Layer): numbered picture inputs, one output.
+    #[must_use]
+    pub fn is_mixer(self) -> bool {
+        matches!(self, Self::Parallel | Self::Layer)
     }
 
     /// The kind with this JSON name.
@@ -329,54 +392,129 @@ impl NodeKind {
             "output" => Ok(Self::Output),
             "corrector" => Ok(Self::Corrector),
             "film" => Ok(Self::Film),
+            "parallel" => Ok(Self::Parallel),
+            "layer" => Ok(Self::Layer),
+            "splitter" => Ok(Self::Splitter),
+            "combiner" => Ok(Self::Combiner),
             other => Err(GraphError::UnknownKind(other.to_owned())),
         }
     }
 }
 
-/// A port of a node: a picture or a key (a mask).
+/// A port of a node: a picture or a key (a mask). The variants are in the written order of ports: `picture`, `key`,
+/// `picture.1` to `picture.8` by number, then `red`, `green`, `blue` (`docs/25` section 2.2).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Port {
     /// The LogC4 picture.
     Picture,
     /// A mask.
     Key,
+    /// A mixer's numbered picture input, `picture.1` to `picture.8`.
+    PictureN(u8),
+    /// A Splitter's red output or a Combiner's red input: a picture.
+    Red,
+    /// A Splitter's green output or a Combiner's green input: a picture.
+    Green,
+    /// A Splitter's blue output or a Combiner's blue input: a picture.
+    Blue,
     /// A port name no node has (the validator refuses it).
     Other(String),
+}
+
+/// What a port carries (`docs/23` section 3.5): a link joins two ports of one type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortType {
+    /// A picture.
+    Picture,
+    /// A key (a mask).
+    Key,
 }
 
 impl Port {
     /// The port's JSON name.
     #[must_use]
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> String {
         match self {
-            Self::Picture => "picture",
-            Self::Key => "key",
-            Self::Other(s) => s,
+            Self::Picture => "picture".to_owned(),
+            Self::Key => "key".to_owned(),
+            Self::PictureN(k) => format!("picture.{k}"),
+            Self::Red => "red".to_owned(),
+            Self::Green => "green".to_owned(),
+            Self::Blue => "blue".to_owned(),
+            Self::Other(s) => s.clone(),
+        }
+    }
+
+    /// The port with this JSON name (`picture.1` to `picture.8` are numbered inputs; anything else that is not a
+    /// port name is [`Port::Other`]).
+    #[must_use]
+    pub fn parse(name: &str) -> Self {
+        match name {
+            "picture" => Self::Picture,
+            "key" => Self::Key,
+            "red" => Self::Red,
+            "green" => Self::Green,
+            "blue" => Self::Blue,
+            other => match other.strip_prefix("picture.") {
+                Some(digits)
+                    if !digits.starts_with('0')
+                        && digits.len() == 1
+                        && digits.bytes().all(|b| b.is_ascii_digit()) =>
+                {
+                    match digits.parse::<u8>() {
+                        Ok(k) if (1..=MIXER_INPUTS).contains(&k) => Self::PictureN(k),
+                        _ => Self::Other(other.to_owned()),
+                    }
+                }
+                _ => Self::Other(other.to_owned()),
+            },
+        }
+    }
+
+    /// What the port carries, or `None` for a name no node has.
+    #[must_use]
+    pub fn port_type(&self) -> Option<PortType> {
+        match self {
+            Self::Picture | Self::PictureN(_) | Self::Red | Self::Green | Self::Blue => {
+                Some(PortType::Picture)
+            }
+            Self::Key => Some(PortType::Key),
+            Self::Other(_) => None,
+        }
+    }
+
+    /// Whether the name is `picture.k` with k from 9 up: a ninth input or past it, which a mixer refuses with its own
+    /// sentence.
+    #[must_use]
+    pub fn is_past_last_input(&self) -> bool {
+        match self {
+            Self::Other(s) => s.strip_prefix("picture.").is_some_and(|d| {
+                !d.is_empty()
+                    && !d.starts_with('0')
+                    && d.bytes().all(|b| b.is_ascii_digit())
+                    && d.parse::<u64>().map_or(true, |k| k > u64::from(MIXER_INPUTS))
+            }),
+            _ => false,
         }
     }
 }
 
 impl fmt::Display for Port {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
+        f.write_str(&self.name())
     }
 }
 
 impl Serialize for Port {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.name())
+        serializer.serialize_str(&self.name())
     }
 }
 
 impl<'de> Deserialize<'de> for Port {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        Ok(match s.as_str() {
-            "picture" => Self::Picture,
-            "key" => Self::Key,
-            _ => Self::Other(s),
-        })
+        Ok(Self::parse(&s))
     }
 }
 
@@ -437,6 +575,46 @@ impl NodeLink {
             from: NodeRef::key(from),
             to: NodeRef::key(to),
         }
+    }
+}
+
+/// The mixer inputs in order: `picture.1` to `picture.8`.
+fn mixer_inputs() -> &'static [Port] {
+    const INPUTS: [Port; MIXER_INPUTS as usize] = [
+        Port::PictureN(1),
+        Port::PictureN(2),
+        Port::PictureN(3),
+        Port::PictureN(4),
+        Port::PictureN(5),
+        Port::PictureN(6),
+        Port::PictureN(7),
+        Port::PictureN(8),
+    ];
+    &INPUTS
+}
+
+/// The output ports a node of this kind has (`docs/23` section 3.5, `docs/25` section 2.2), in written order.
+#[must_use]
+pub fn ports_out(kind: NodeKind) -> &'static [Port] {
+    match kind {
+        NodeKind::Input | NodeKind::Parallel | NodeKind::Layer | NodeKind::Combiner => {
+            &[Port::Picture]
+        }
+        NodeKind::Corrector | NodeKind::Film => &[Port::Picture, Port::Key],
+        NodeKind::Splitter => &[Port::Red, Port::Green, Port::Blue],
+        NodeKind::Output => &[],
+    }
+}
+
+/// The input ports a node of this kind has, in written order. A mixer's are `picture.1` to `picture.8`.
+#[must_use]
+pub fn ports_in(kind: NodeKind) -> &'static [Port] {
+    match kind {
+        NodeKind::Input => &[],
+        NodeKind::Corrector | NodeKind::Film => &[Port::Picture, Port::Key],
+        NodeKind::Output | NodeKind::Splitter => &[Port::Picture],
+        NodeKind::Parallel | NodeKind::Layer => mixer_inputs(),
+        NodeKind::Combiner => &[Port::Red, Port::Green, Port::Blue],
     }
 }
 
@@ -711,6 +889,9 @@ pub struct NodeGraph {
     pub extra: BTreeMap<u32, CorrectorNode>,
     /// The Film nodes by id. They share the number space of the correctors (an id is one or the other).
     pub films: BTreeMap<u32, FilmNode>,
+    /// The nodes of `docs/25` (Parallel, Layer, Splitter, Combiner) by id. They share the number space of the
+    /// correctors and the Film nodes, and count toward the 64.
+    pub mixers: BTreeMap<u32, MixerNode>,
     /// The Output.
     pub output: OutputNode,
     /// The links.
@@ -727,6 +908,7 @@ impl NodeGraph {
             main: CorrectorNode::main(),
             extra: BTreeMap::new(),
             films: BTreeMap::new(),
+            mixers: BTreeMap::new(),
             output: OutputNode::with_look(look),
             links: Self::default_links(),
         }
@@ -782,7 +964,19 @@ impl NodeGraph {
         self.films.get_mut(&id)
     }
 
-    /// The mask rows of a numbered node, whatever its kind (a corrector's or a Film node's).
+    /// The node of `docs/25` with this id.
+    #[must_use]
+    pub fn mixer(&self, id: u32) -> Option<&MixerNode> {
+        self.mixers.get(&id)
+    }
+
+    /// The node of `docs/25` with this id, to change.
+    pub fn mixer_mut(&mut self, id: u32) -> Option<&mut MixerNode> {
+        self.mixers.get_mut(&id)
+    }
+
+    /// The mask rows of a numbered node, whatever its kind (a corrector's or a Film node's). The nodes of `docs/25`
+    /// have none.
     #[must_use]
     pub fn masks_of(&self, id: u32) -> Option<&MaskSettings> {
         self.corrector(id)
@@ -808,10 +1002,10 @@ impl NodeGraph {
             .chain(self.films.iter().map(|(id, f)| (*id, &f.masks)))
     }
 
-    /// The number of numbered nodes: the correctors (Main included) and the Film nodes.
+    /// The number of numbered nodes: the correctors (Main included), the Film nodes and the nodes of `docs/25`.
     #[must_use]
     pub fn node_count(&self) -> usize {
-        self.corrector_count() + self.films.len()
+        self.corrector_count() + self.films.len() + self.mixers.len()
     }
 
     /// The numbered nodes with their kinds, by id.
@@ -821,6 +1015,7 @@ impl NodeGraph {
             .correctors()
             .map(|(id, _)| (id, NodeKind::Corrector))
             .chain(self.films.keys().map(|id| (*id, NodeKind::Film)))
+            .chain(self.mixers.iter().map(|(id, m)| (*id, m.kind())))
             .collect();
         v.sort_by_key(|(id, _)| *id);
         v
@@ -833,6 +1028,9 @@ impl NodeGraph {
             NodeId::Input => Some(NodeKind::Input),
             NodeId::Output => Some(NodeKind::Output),
             NodeId::Corrector(n) if self.films.contains_key(&n) => Some(NodeKind::Film),
+            NodeId::Corrector(n) if self.mixers.contains_key(&n) => {
+                self.mixers.get(&n).map(MixerNode::kind)
+            }
             NodeId::Corrector(n) => self.corrector(n).map(|_| NodeKind::Corrector),
         }
     }
@@ -881,8 +1079,23 @@ impl NodeGraph {
             NodeId::Corrector(n) => self
                 .corrector(n)
                 .map(|c| c.pos)
-                .or_else(|| self.film(n).map(|f| f.pos)),
+                .or_else(|| self.film(n).map(|f| f.pos))
+                .or_else(|| self.mixer(n).map(MixerNode::pos)),
         }
+    }
+
+    /// The position of a numbered node, to change.
+    pub fn pos_mut(&mut self, id: u32) -> Option<&mut NodePos> {
+        if id == MAIN_ID {
+            return Some(&mut self.main.pos);
+        }
+        if self.extra.contains_key(&id) {
+            return self.extra.get_mut(&id).map(|c| &mut c.pos);
+        }
+        if self.films.contains_key(&id) {
+            return self.films.get_mut(&id).map(|f| &mut f.pos);
+        }
+        self.mixers.get_mut(&id).map(MixerNode::pos_mut)
     }
 
     /// Puts the nodes whose place was not given (`unplaced`) in a row by their number, at y = 0:
@@ -896,10 +1109,8 @@ impl NodeGraph {
             if !unplaced.contains(&NodeId::Corrector(id)) {
                 continue;
             }
-            if let Some(c) = self.corrector_mut(id) {
-                c.pos = [k as f64, 0.0];
-            } else if let Some(f) = self.film_mut(id) {
-                f.pos = [k as f64, 0.0];
+            if let Some(p) = self.pos_mut(id) {
+                *p = [k as f64, 0.0];
             }
         }
         if unplaced.contains(&NodeId::Output) {
@@ -926,16 +1137,6 @@ impl NodeGraph {
         if self.node_count() > MAX_CORRECTORS {
             return Err(GraphError::TooManyNodes);
         }
-        let ports_out = |n: NodeId| match n {
-            NodeId::Input => &[Port::Picture][..],
-            NodeId::Corrector(_) => &[Port::Picture, Port::Key][..],
-            NodeId::Output => &[][..],
-        };
-        let ports_in = |n: NodeId| match n {
-            NodeId::Input => &[][..],
-            NodeId::Corrector(_) => &[Port::Picture, Port::Key][..],
-            NodeId::Output => &[Port::Picture][..],
-        };
         for link in &self.links {
             for end in [&link.from, &link.to] {
                 if !self.has(end.node) {
@@ -945,19 +1146,24 @@ impl NodeGraph {
             if matches!(link.from.node, NodeId::Output) || matches!(link.to.node, NodeId::Input) {
                 return Err(GraphError::LinkDirection);
             }
-            if !ports_out(link.from.node).contains(&link.from.port) {
+            let from_kind = self.kind_of(link.from.node).unwrap_or(NodeKind::Corrector);
+            let to_kind = self.kind_of(link.to.node).unwrap_or(NodeKind::Corrector);
+            if !ports_out(from_kind).contains(&link.from.port) {
                 return Err(GraphError::UnknownPort {
                     node: link.from.node.sentence(),
                     port: link.from.port.to_string(),
                 });
             }
-            if !ports_in(link.to.node).contains(&link.to.port) {
+            if to_kind.is_mixer() && link.to.port.is_past_last_input() {
+                return Err(GraphError::TooManyMixerInputs);
+            }
+            if !ports_in(to_kind).contains(&link.to.port) {
                 return Err(GraphError::UnknownPort {
                     node: link.to.node.sentence(),
                     port: link.to.port.to_string(),
                 });
             }
-            if link.from.port != link.to.port {
+            if link.from.port.port_type() != link.to.port.port_type() {
                 return Err(GraphError::LinkPortTypes);
             }
         }
@@ -969,6 +1175,24 @@ impl NodeGraph {
                 return Err(GraphError::TwoLinks {
                     node: link.to.node.sentence(),
                     port: link.to.port.to_string(),
+                });
+            }
+        }
+        for (id, kind) in self.numbered() {
+            if !kind.is_mixer() {
+                continue;
+            }
+            let linked: BTreeSet<u8> = (1..=MIXER_INPUTS)
+                .filter(|k| into.contains_key(&(NodeId::Corrector(id), &Port::PictureN(*k))))
+                .collect();
+            let Some(missing) = (1..=MIXER_INPUTS).find(|k| !linked.contains(k)) else {
+                continue;
+            };
+            if let Some(after) = linked.iter().find(|k| **k > missing) {
+                return Err(GraphError::MixerInputGap {
+                    node: NodeId::Corrector(id).sentence(),
+                    linked: *after,
+                    missing,
                 });
             }
         }
@@ -1040,17 +1264,30 @@ impl Serialize for NodeGraph {
         let mut items = Vec::with_capacity(self.node_count() + 2);
         items.push(item(NodeId::Input, NodeKind::Input, &self.input)?);
         for (id, kind) in self.numbered() {
+            let node = NodeId::Corrector(id);
             match kind {
                 NodeKind::Film => {
                     if let Some(f) = self.film(id) {
-                        items.push(item(NodeId::Corrector(id), NodeKind::Film, f)?);
+                        items.push(item(node, kind, f)?);
                     }
                 }
-                _ => {
+                NodeKind::Corrector => {
                     if let Some(c) = self.corrector(id) {
-                        items.push(item(NodeId::Corrector(id), NodeKind::Corrector, c)?);
+                        items.push(item(node, kind, c)?);
                     }
                 }
+                NodeKind::Parallel | NodeKind::Layer | NodeKind::Splitter | NodeKind::Combiner => {
+                    if let Some(m) = self.mixer(id) {
+                        match m {
+                            MixerNode::Parallel(n) => items.push(item(node, kind, n)?),
+                            MixerNode::Layer(n) => items.push(item(node, kind, n)?),
+                            MixerNode::Splitter(n) => items.push(item(node, kind, n)?),
+                            MixerNode::Combiner(n) => items.push(item(node, kind, n)?),
+                        }
+                    }
+                }
+                // `numbered` lists only numbered nodes.
+                NodeKind::Input | NodeKind::Output => {}
             }
         }
         items.push(item(NodeId::Output, NodeKind::Output, &self.output)?);
@@ -1089,6 +1326,9 @@ pub(crate) fn node_fields(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::Film => &[
             "name", "bypass", "film", "print", "halation", "grain", "strength", "masks",
         ],
+        NodeKind::Parallel => &["name", "bypass"],
+        NodeKind::Layer => &["name", "bypass", "mode", "opacity"],
+        NodeKind::Splitter | NodeKind::Combiner => &["name"],
     }
 }
 
@@ -1161,7 +1401,16 @@ impl NodeGraph {
                 (NodeId::Input, None | Some(NodeKind::Input)) => NodeKind::Input,
                 (NodeId::Output, None | Some(NodeKind::Output)) => NodeKind::Output,
                 (NodeId::Corrector(_), Some(NodeKind::Corrector)) => NodeKind::Corrector,
-                (NodeId::Corrector(n), Some(NodeKind::Film)) if n != MAIN_ID => NodeKind::Film,
+                (
+                    NodeId::Corrector(n),
+                    Some(
+                        k @ (NodeKind::Film
+                        | NodeKind::Parallel
+                        | NodeKind::Layer
+                        | NodeKind::Splitter
+                        | NodeKind::Combiner),
+                    ),
+                ) if n != MAIN_ID => k,
                 (NodeId::Corrector(n), None) if n == MAIN_ID => NodeKind::Corrector,
                 (NodeId::Corrector(_), None) => {
                     return Err(GraphError::NeedsKind(id.to_string()).into());
@@ -1194,6 +1443,12 @@ impl NodeGraph {
                         out.look = default_look.clone();
                     }
                     graph.output = out;
+                }
+                NodeId::Corrector(n) if kind.is_mixer_family() => {
+                    let node = MixerNode::from_value(kind, Value::Object(map))
+                        .map_err(parse_error)?
+                        .ok_or_else(|| GraphError::UnknownKind(kind.name().to_owned()))?;
+                    graph.mixers.insert(n, node);
                 }
                 NodeId::Corrector(n) if kind == NodeKind::Film => {
                     let named = map.contains_key("name");
@@ -1231,7 +1486,8 @@ impl NodeGraph {
         if let Some(v) = links {
             graph.links = serde_json::from_value(v).map_err(parse_error)?;
         }
-        if (!graph.extra.is_empty() || !graph.films.is_empty()) && !placed.contains(&NodeId::Output)
+        if (!graph.extra.is_empty() || !graph.films.is_empty() || !graph.mixers.is_empty())
+            && !placed.contains(&NodeId::Output)
         {
             // Correctors were added: the Output goes to the end of the row.
             unplaced.insert(NodeId::Output);
@@ -1244,14 +1500,9 @@ impl NodeGraph {
 /// Whether `key` is a field of some node kind (so that a known field on the wrong kind is told
 /// from a typo, which serde reports with its own words).
 fn is_field_of_some_kind(key: &str) -> bool {
-    [
-        NodeKind::Input,
-        NodeKind::Output,
-        NodeKind::Corrector,
-        NodeKind::Film,
-    ]
-    .iter()
-    .any(|k| node_fields(*k).contains(&key))
+    NodeKind::ALL
+        .iter()
+        .any(|k| node_fields(*k).contains(&key))
 }
 
 /// Reads the fields of one node (everything but `id` and `kind`) over its defaults.
@@ -1627,6 +1878,26 @@ impl FilmNode {
     }
 }
 
+impl MixerNode {
+    fn sanitise(&mut self, s: &mut Sanitiser, id: u32, prefix: &str) -> Result<(), SettingsError> {
+        let node = NodeId::Corrector(id);
+        let trimmed: String = self.name().trim().chars().take(MAX_NAME_CHARS).collect();
+        let trimmed = trimmed.trim().to_owned();
+        *self.name_mut() = if trimmed.is_empty() {
+            self.default_name().to_owned()
+        } else {
+            trimmed
+        };
+        clamp_pos(s, node, prefix, self.pos_mut())?;
+        if let MixerNode::Layer(layer) = self {
+            let (v, c) = clamp_to(&format!("{prefix}.opacity"), layer.opacity, OPACITY_RANGE)?;
+            layer.opacity = v;
+            s.note(node, SettingsField::Opacity, c);
+        }
+        Ok(())
+    }
+}
+
 impl NodeGraph {
     /// Clamps and normalises every node in place, checks the limits and the rules of the links and
     /// puts the links in written order. `clamped` collects what was changed.
@@ -1639,11 +1910,16 @@ impl NodeGraph {
         if self.node_count() > MAX_CORRECTORS {
             return Err(GraphError::TooManyNodes.into());
         }
-        // An id is a corrector's or a Film node's, never both.
+        // An id is a corrector's, a Film node's or a node of `docs/25`, never two of them.
         if let Some(id) = self
             .films
             .keys()
-            .find(|id| **id == MAIN_ID || self.extra.contains_key(id))
+            .chain(self.mixers.keys())
+            .find(|id| {
+                **id == MAIN_ID
+                    || self.extra.contains_key(id)
+                    || (self.films.contains_key(id) && self.mixers.contains_key(id))
+            })
         {
             return Err(GraphError::DuplicateId(id.to_string()).into());
         }
@@ -1655,6 +1931,8 @@ impl NodeGraph {
                 c.sanitise(s, id, &prefix)?;
             } else if let Some(f) = self.film_mut(id) {
                 f.sanitise(s, id, &prefix)?;
+            } else if let Some(m) = self.mixer_mut(id) {
+                m.sanitise(s, id, &prefix)?;
             }
         }
         let index = self.item_index(NodeId::Output);

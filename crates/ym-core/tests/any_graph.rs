@@ -48,6 +48,22 @@ const TEN_BIT_CODE: u32 = 64;
 const NOT_GENERATED_NODES: &[(NodeKind, &str)] = &[
     (NodeKind::Input, "fixed: every graph has exactly one"),
     (NodeKind::Output, "fixed: every graph has exactly one"),
+    (
+        NodeKind::Parallel,
+        "docs/25: the plan compiler refuses it until X-04 (the generator learns it there)",
+    ),
+    (
+        NodeKind::Layer,
+        "docs/25: the plan compiler refuses it until X-04 (the generator learns it there)",
+    ),
+    (
+        NodeKind::Splitter,
+        "docs/25: the plan compiler refuses it until X-04 (the generator learns it there)",
+    ),
+    (
+        NodeKind::Combiner,
+        "docs/25: the plan compiler refuses it until X-04 (the generator learns it there)",
+    ),
 ];
 
 /// THE ONE PLACE where mask kinds are left out of the generator, each with its reason.
@@ -242,7 +258,13 @@ fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKin
             NodeKind::Corrector => {
                 json!({ "id": id, "kind": "corrector", "pos": [id, 0.0], "trim": { "exposure_ev": 0.8 } })
             }
-            NodeKind::Input | NodeKind::Output => {
+            // Excluded by `NOT_GENERATED_NODES` until X-04 renders the four kinds of `docs/25`.
+            NodeKind::Input
+            | NodeKind::Output
+            | NodeKind::Parallel
+            | NodeKind::Layer
+            | NodeKind::Splitter
+            | NodeKind::Combiner => {
                 unreachable!("not generated: {NOT_GENERATED_NODES:?}")
             }
         };

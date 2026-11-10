@@ -823,16 +823,59 @@ pub enum NodeKind {
     Corrector,
     /// A Film node (`docs/24`).
     Film,
+    /// A Parallel mixer (`docs/25`).
+    Parallel,
+    /// A Layer mixer (`docs/25`).
+    Layer,
+    /// A Splitter (`docs/25`).
+    Splitter,
+    /// A Combiner (`docs/25`).
+    Combiner,
 }
 
-/// A port of a node: a picture or a key (a mask).
+/// A port of a node: a picture or a key (a mask). A mixer's inputs are `picture.1` to `picture.8`; a Splitter's
+/// outputs and a Combiner's inputs are `red`, `green` and `blue`, all pictures (`docs/25` section 2.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "snake_case")]
 pub enum Port {
     /// The LogC4 picture.
+    #[serde(rename = "picture")]
     Picture,
     /// A mask.
+    #[serde(rename = "key")]
     Key,
+    /// A mixer's first picture input.
+    #[serde(rename = "picture.1")]
+    Picture1,
+    /// A mixer's second picture input.
+    #[serde(rename = "picture.2")]
+    Picture2,
+    /// A mixer's third picture input.
+    #[serde(rename = "picture.3")]
+    Picture3,
+    /// A mixer's fourth picture input.
+    #[serde(rename = "picture.4")]
+    Picture4,
+    /// A mixer's fifth picture input.
+    #[serde(rename = "picture.5")]
+    Picture5,
+    /// A mixer's sixth picture input.
+    #[serde(rename = "picture.6")]
+    Picture6,
+    /// A mixer's seventh picture input.
+    #[serde(rename = "picture.7")]
+    Picture7,
+    /// A mixer's eighth picture input.
+    #[serde(rename = "picture.8")]
+    Picture8,
+    /// A Splitter's red output or a Combiner's red input.
+    #[serde(rename = "red")]
+    Red,
+    /// A Splitter's green output or a Combiner's green input.
+    #[serde(rename = "green")]
+    Green,
+    /// A Splitter's blue output or a Combiner's blue input.
+    #[serde(rename = "blue")]
+    Blue,
 }
 
 /// One end of a link: a node and one of its ports.
@@ -1257,6 +1300,78 @@ pub struct FilmNode {
     pub masks: MaskSettings,
 }
 
+/// How a Layer blends an input over the ones below it (`docs/25` section 3.3), in linear light.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum BlendMode {
+    /// The layer itself.
+    Normal,
+    /// Below plus the layer.
+    Add,
+    /// Below minus the layer.
+    Subtract,
+    /// Below times the layer.
+    Multiply,
+    /// The lighter of the two.
+    Lighten,
+    /// The darker of the two.
+    Darken,
+    /// The absolute difference.
+    Difference,
+}
+
+/// A Parallel mixer: adds the change each of its inputs makes to the picture they started from (`docs/25`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ParallelNode {
+    /// 2 to 2147483647 (every numbered node shares the numbers).
+    pub id: NodeId,
+    /// The card's name, 1 to 32 characters.
+    pub name: String,
+    /// A bypassed Parallel outputs its base.
+    pub bypass: bool,
+    /// The card's place on the canvas, in grid units.
+    pub pos: [Num; 2],
+}
+
+/// A Layer mixer: stacks its inputs and blends each over the ones below it (`docs/25`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct LayerNode {
+    /// 2 to 2147483647 (every numbered node shares the numbers).
+    pub id: NodeId,
+    /// The card's name, 1 to 32 characters.
+    pub name: String,
+    /// A bypassed Layer outputs its input 1.
+    pub bypass: bool,
+    /// The card's place on the canvas, in grid units.
+    pub pos: [Num; 2],
+    /// How the layers blend.
+    pub mode: BlendMode,
+    /// 0 to 1.
+    pub opacity: Num,
+}
+
+/// A Splitter: sends the red, green and blue of a picture to three outputs (`docs/25`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct SplitterNode {
+    /// 2 to 2147483647 (every numbered node shares the numbers).
+    pub id: NodeId,
+    /// The card's name, 1 to 32 characters.
+    pub name: String,
+    /// The card's place on the canvas, in grid units.
+    pub pos: [Num; 2],
+}
+
+/// A Combiner: joins three pictures into one, a channel from each (`docs/25`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct CombinerNode {
+    /// 2 to 2147483647 (every numbered node shares the numbers).
+    pub id: NodeId,
+    /// The card's name, 1 to 32 characters.
+    pub name: String,
+    /// The card's place on the canvas, in grid units.
+    pub pos: [Num; 2],
+}
+
 /// A node of the graph, told by its `kind`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1269,6 +1384,14 @@ pub enum NodeItem {
     Corrector(CorrectorNode),
     /// A Film node.
     Film(FilmNode),
+    /// A Parallel mixer.
+    Parallel(ParallelNode),
+    /// A Layer mixer.
+    Layer(LayerNode),
+    /// A Splitter.
+    Splitter(SplitterNode),
+    /// A Combiner.
+    Combiner(CombinerNode),
 }
 
 /// The graph of a photo: its nodes and the links between them (`docs/23` section 3.1).
@@ -1881,6 +2004,12 @@ pub struct NodePatch {
     /// New Strength of a Film node, percent.
     #[serde(default)]
     pub strength: Option<Num>,
+    /// A Layer's new blend mode.
+    #[serde(default)]
+    pub mode: Option<BlendMode>,
+    /// A Layer's new opacity, 0 to 1.
+    #[serde(default)]
+    pub opacity: Option<Num>,
 }
 
 impl Serialize for NodePatch {
@@ -1920,6 +2049,8 @@ impl Serialize for NodePatch {
             halation,
             grain,
             strength,
+            mode,
+            opacity,
         );
         map.end()
     }

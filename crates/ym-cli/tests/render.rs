@@ -1199,8 +1199,8 @@ fn a_settings_file_that_does_not_parse_is_a_usage_error_and_nothing_is_rendered(
             "The output needs one picture link.",
         ),
         (
-            r#"{ "nodes": { "items": [ { "id": 2, "kind": "parallel" } ] } }"#,
-            "This settings file has a node of a kind (“parallel”)",
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "outside" } ] } }"#,
+            "This settings file has a node of a kind (“outside”)",
         ),
         // A typo whose value is an object must not pass for a photo's file name.
         (

@@ -77,6 +77,7 @@ use crate::session::PhotoId;
 mod film;
 mod graph;
 mod masks;
+mod mixers;
 mod patch;
 
 pub use film::{
@@ -87,7 +88,13 @@ pub use film::{
 pub use graph::{
     CorrectorNode, DEFAULT_NAME, GraphError, INPUT_POS, InputNode, MAIN_ID, MAIN_NAME,
     MAX_CORRECTORS, MAX_NAME_CHARS, NodeGrade, NodeGraph, NodeId, NodeKind, NodeLink, NodePos,
-    NodeRef, NodeTrim, OUTPUT_POS, OutputNode, POS_RANGE, Port, TRIM_EXPOSURE_RANGE_EV, TRIM_RANGE,
+    NodeRef, NodeTrim, OUTPUT_POS, OutputNode, POS_RANGE, Port, PortType, TRIM_EXPOSURE_RANGE_EV,
+    TRIM_RANGE, ports_in, ports_out,
+};
+pub use mixers::{
+    BlendMode, CombinerNode, DEFAULT_COMBINER_NAME, DEFAULT_LAYER_NAME, DEFAULT_PARALLEL_NAME,
+    DEFAULT_SPLITTER_NAME, LayerNode, MIXER_INPUTS, MixerNode, OPACITY_RANGE, ParallelNode,
+    SplitterNode,
 };
 pub use masks::{
     BackgroundMask, BrightnessRangeMask, BrushMask, BrushStroke, ColorRangeMask,
@@ -360,12 +367,16 @@ pub enum SettingsField {
     Grain,
     /// A Film node's `strength`.
     Strength,
+    /// A Layer's blend `mode`.
+    Mode,
+    /// A Layer's `opacity`.
+    Opacity,
 }
 
 impl SettingsField {
     /// Every field, in the order of the settings table (the Output's and the Input's, then the grade's,
     /// then the corrector's own).
-    pub const ALL: [SettingsField; 34] = [
+    pub const ALL: [SettingsField; 36] = [
         SettingsField::Look,
         SettingsField::LookIntensity,
         SettingsField::Exposure,
@@ -400,6 +411,8 @@ impl SettingsField {
         SettingsField::Halation,
         SettingsField::Grain,
         SettingsField::Strength,
+        SettingsField::Mode,
+        SettingsField::Opacity,
     ];
 
     /// The JSON name of the field.
@@ -440,6 +453,8 @@ impl SettingsField {
             Self::Halation => "halation",
             Self::Grain => "grain",
             Self::Strength => "strength",
+            Self::Mode => "mode",
+            Self::Opacity => "opacity",
         }
     }
 
@@ -514,6 +529,12 @@ impl SettingsField {
                     | Self::Grain
                     | Self::Strength
             ),
+            NodeKind::Parallel => matches!(self, Self::Name | Self::Bypass | Self::Pos),
+            NodeKind::Layer => matches!(
+                self,
+                Self::Name | Self::Bypass | Self::Pos | Self::Mode | Self::Opacity
+            ),
+            NodeKind::Splitter | NodeKind::Combiner => matches!(self, Self::Name | Self::Pos),
         }
     }
 
@@ -542,6 +563,8 @@ impl SettingsField {
             | Self::Halation
             | Self::Grain
             | Self::Strength
+            | Self::Mode
+            | Self::Opacity
             | Self::Contrast
             | Self::Brightness
             | Self::Highlights

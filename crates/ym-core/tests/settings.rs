@@ -3391,8 +3391,8 @@ fn every_rule_of_the_graph_has_its_plain_text() {
         ),
         (
             "a node of a kind this version does not have",
-            json!({ "nodes": { "items": [ { "id": 2, "kind": "parallel" } ] } }),
-            "This settings file has a node of a kind (“parallel”) that this version of Yellowmoon does not have. Update Yellowmoon.",
+            json!({ "nodes": { "items": [ { "id": 2, "kind": "outside" } ] } }),
+            "This settings file has a node of a kind (“outside”) that this version of Yellowmoon does not have. Update Yellowmoon.",
         ),
     ];
     for (label, doc, text) in cases {

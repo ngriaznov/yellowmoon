@@ -62,7 +62,7 @@ use crate::auto::{AutoEstimates, as_shot_gains, as_shot_rggb};
 use crate::session::{PhotoId, PhotoView, PickedWhite, ThumbnailInput};
 use crate::settings::{
     AutoOr, ColorWarp, CurvePoint, Curves, DevelopSettings, LensSettings, MaskMode, MaskSettings,
-    MaskShape, MaskSupport, NodeGrade, NodeGraph, NodeId, NodeTrim, ObjectMask, Port,
+    MaskShape, MaskSupport, NodeGrade, NodeGraph, NodeId, NodeKind, NodeTrim, ObjectMask, Port,
 };
 use crate::vision::VisionKind;
 
@@ -948,20 +948,30 @@ pub fn plan_graph(g: &NodeGraph) -> PlanGraph {
             .map(|l| l.from.node)
     };
     let nodes = g
-        .correctors()
-        .map(|(id, c)| (id, c.pos))
-        .chain(g.films.iter().map(|(id, f)| (*id, f.pos)))
-        .map(|(id, pos)| PlanNode {
-            id,
-            pos,
-            picture: source_of(NodeId::Corrector(id), Port::Picture).map(|n| match n {
-                NodeId::Corrector(m) => PictureSource::Node(m),
-                NodeId::Input | NodeId::Output => PictureSource::Input,
-            }),
-            key: match source_of(NodeId::Corrector(id), Port::Key) {
-                Some(NodeId::Corrector(m)) => Some(m),
-                _ => None,
-            },
+        .numbered()
+        .into_iter()
+        .filter_map(|(id, kind)| {
+            let pos = match kind {
+                NodeKind::Corrector | NodeKind::Film => g.pos(NodeId::Corrector(id))?,
+                // X-04 gives these their steps. `node_plan` refuses a graph that has one before it gets here, so
+                // they are left out and never rendered as if they were not there.
+                NodeKind::Parallel | NodeKind::Layer | NodeKind::Splitter | NodeKind::Combiner => {
+                    return None;
+                }
+                NodeKind::Input | NodeKind::Output => return None,
+            };
+            Some(PlanNode {
+                id,
+                pos,
+                picture: source_of(NodeId::Corrector(id), Port::Picture).map(|n| match n {
+                    NodeId::Corrector(m) => PictureSource::Node(m),
+                    NodeId::Input | NodeId::Output => PictureSource::Input,
+                }),
+                key: match source_of(NodeId::Corrector(id), Port::Key) {
+                    Some(NodeId::Corrector(m)) => Some(m),
+                    _ => None,
+                },
+            })
         })
         .collect();
     let output = match source_of(NodeId::Output, Port::Picture) {
@@ -971,6 +981,10 @@ pub fn plan_graph(g: &NodeGraph) -> PlanGraph {
     PlanGraph { nodes, output }
 }
 
+/// The sentence a render gives for a graph with a Parallel, Layer, Splitter or Combiner, until the plan compiler
+/// runs them (`docs/25` task X-04).
+pub const MIXERS_NOT_RENDERED: &str = "This photo has a mixer, a splitter or a combiner node, which this version of Yellowmoon can't render yet. Remove the node to render the photo.";
+
 /// The plan of a photo's graph, ending at `stop`.
 ///
 /// # Errors
@@ -978,6 +992,9 @@ pub fn plan_graph(g: &NodeGraph) -> PlanGraph {
 /// [`RenderError::Color`] when the graph cannot be compiled (a validated graph can, unless `stop`
 /// names a node it does not have).
 pub fn node_plan(g: &NodeGraph, stop: Stop) -> Result<Plan, RenderError> {
+    if !g.mixers.is_empty() {
+        return Err(RenderError::Color(MIXERS_NOT_RENDERED.to_owned()));
+    }
     plan::compile(&plan_graph(g), stop).map_err(|e| RenderError::Color(e.to_string()))
 }
 
@@ -1012,39 +1029,50 @@ fn node_set(
         if id == plan::MAIN_NODE {
             continue;
         }
-        if let Some(f) = s.nodes.film(id) {
-            // A Film node: the identity for the corrector machinery, with its masks; the chain reads its picture
-            // from the render's planes.
-            others.insert(
-                id,
-                NodeParams {
-                    masks: masks.remove(&id).unwrap_or_default(),
-                    ..NodeParams::default()
-                },
-            );
-            films.insert(
-                id,
-                FilmStep {
-                    strength: f.strength / 100.0,
-                    bypass: f.bypass,
-                },
-            );
-            continue;
+        match s.nodes.kind_of(NodeId::Corrector(id)) {
+            Some(NodeKind::Film) => {
+                let Some(f) = s.nodes.film(id) else {
+                    continue;
+                };
+                // A Film node: the identity for the corrector machinery, with its masks; the chain reads its
+                // picture from the render's planes.
+                others.insert(
+                    id,
+                    NodeParams {
+                        masks: masks.remove(&id).unwrap_or_default(),
+                        ..NodeParams::default()
+                    },
+                );
+                films.insert(
+                    id,
+                    FilmStep {
+                        strength: f.strength / 100.0,
+                        bypass: f.bypass,
+                    },
+                );
+            }
+            Some(NodeKind::Corrector) => {
+                let Some(c) = s.nodes.corrector(id) else {
+                    continue;
+                };
+                others.insert(
+                    id,
+                    NodeParams {
+                        bypass: c.bypass,
+                        trim: trim_of(&c.trim),
+                        grade: grade_params_of(&c.grade, None),
+                        warp: ColorWarp::to_color(&c.grade.color_warp),
+                        curves: curves_of(&c.grade.curve)?,
+                        masks: masks.remove(&id).unwrap_or_default(),
+                    },
+                );
+            }
+            // X-04 renders these. `node_plan` has refused such a graph already.
+            Some(
+                NodeKind::Parallel | NodeKind::Layer | NodeKind::Splitter | NodeKind::Combiner,
+            ) => return Err(RenderError::Color(MIXERS_NOT_RENDERED.to_owned())),
+            Some(NodeKind::Input | NodeKind::Output) | None => {}
         }
-        let Some(c) = s.nodes.corrector(id) else {
-            continue;
-        };
-        others.insert(
-            id,
-            NodeParams {
-                bypass: c.bypass,
-                trim: trim_of(&c.trim),
-                grade: grade_params_of(&c.grade, None),
-                warp: ColorWarp::to_color(&c.grade.color_warp),
-                curves: curves_of(&c.grade.curve)?,
-                masks: masks.remove(&id).unwrap_or_default(),
-            },
-        );
     }
     // Main's rows: numbered with the rest when Main is in the plan, else (a plan that does not run it) its
     // own masks are not evaluated and need no planes.

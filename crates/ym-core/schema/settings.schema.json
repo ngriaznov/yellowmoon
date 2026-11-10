@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ngriaznov/yellowmoon/crates/ym-core/schema/settings.schema.json",
   "title": "Yellowmoon DevelopSettings",
-  "description": "The settings of one photo (docs/23 section 3, docs/01 section DevelopSettings): the node-first JSON of the ym:Settings XMP property, of `ym render --settings`, of the golden-image manifest and of the IPC types in src/api/types.ts. A photo's settings are the graph of its nodes; `{}` is the default graph. Every property is optional when reading (a missing one takes its default, shown here); unknown properties are refused, and so is a flat document in the form of Yellowmoon 0.1. Values outside their ranges are clamped by the core, not refused; the ranges here are the ones the core clamps to. Not expressible in JSON Schema and checked by the core: the rules of the graph (exactly one Input, Output and Main; ports and types of links; one link per input; Main takes its picture from the Input; no circle; at most 64 correctors, 64 masks a node, 100,000 brush points, 256 Object points), colour-balance points lie in the unit disc (a longer vector is scaled back to its circle), colour-warp points lie in the disc of radius 0.5 (likewise), a locked warp pin's target is its source, curve points are sorted by x with no two at the same x (a curve is sorted when read), a crop rectangle lies in the unit square (it is moved or shrunk to fit), and Auto reads as a manual 0 in every corrector but Main.",
+  "description": "The settings of one photo (docs/23 section 3, docs/01 section DevelopSettings): the node-first JSON of the ym:Settings XMP property, of `ym render --settings`, of the golden-image manifest and of the IPC types in src/api/types.ts. A photo's settings are the graph of its nodes; `{}` is the default graph. Every property is optional when reading (a missing one takes its default, shown here); unknown properties are refused, and so is a flat document in the form of Yellowmoon 0.1. Values outside their ranges are clamped by the core, not refused; the ranges here are the ones the core clamps to. Not expressible in JSON Schema and checked by the core: the rules of the graph (exactly one Input, Output and Main; ports and types of links (a mixer's inputs are picture.1 to picture.8, numbered from 1 with no gap; red, green and blue are pictures); one link per input; Main takes its picture from the Input; no circle; at most 64 numbered nodes (correctors, Film nodes, mixers, Splitters and Combiners), 64 masks a node, 100,000 brush points, 256 Object points), colour-balance points lie in the unit disc (a longer vector is scaled back to its circle), colour-warp points lie in the disc of radius 0.5 (likewise), a locked warp pin's target is its source, curve points are sorted by x with no two at the same x (a curve is sorted when read), a crop rectangle lies in the unit square (it is moved or shrunk to fit), and Auto reads as a manual 0 in every corrector but Main.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -17,7 +17,7 @@
       "additionalProperties": false,
       "properties": {
         "items": {
-          "description": "The nodes, in no particular order when read (written Input, numbered nodes by id, Output). The Input and the Output are items like the others and cannot be added to or taken out; at most 64 correctors and Film nodes together, Main included.",
+          "description": "The nodes, in no particular order when read (written Input, numbered nodes by id, Output). The Input and the Output are items like the others and cannot be added to or taken out; at most 64 numbered nodes together (correctors, Film nodes, mixers, Splitters and Combiners), Main included.",
           "type": "array",
           "maxItems": 66,
           "items": {
@@ -33,14 +33,26 @@
               },
               {
                 "$ref": "#/$defs/film_node"
+              },
+              {
+                "$ref": "#/$defs/parallel_node"
+              },
+              {
+                "$ref": "#/$defs/layer_node"
+              },
+              {
+                "$ref": "#/$defs/splitter_node"
+              },
+              {
+                "$ref": "#/$defs/combiner_node"
               }
             ]
           }
         },
         "links": {
-          "description": "The links. Left out, the default links (Input → Main → Output); given, they replace the default links whole. At most 129.",
+          "description": "The links. Left out, the default links (Input → Main → Output); given, they replace the default links whole. An input has one link, so at most 64 × 8 + 1 = 513.",
           "type": "array",
-          "maxItems": 129,
+          "maxItems": 513,
           "items": {
             "$ref": "#/$defs/link"
           }
@@ -1341,9 +1353,21 @@
           ]
         },
         "port": {
-          "enum": [
-            "picture",
-            "key"
+          "description": "A port name. A corrector or Film node has `picture` and `key`; a Parallel or Layer has the inputs `picture.1` to `picture.8` (numbered from 1 with no gap) and the output `picture`; a Splitter has the input `picture` and the outputs `red`, `green` and `blue`; a Combiner has the inputs `red`, `green` and `blue` and the output `picture`. Which node has which port is checked by the core (docs/25 section 2.2).",
+          "oneOf": [
+            {
+              "enum": [
+                "picture",
+                "key",
+                "red",
+                "green",
+                "blue"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^picture\\.[1-8]$"
+            }
           ]
         }
       }
@@ -1744,6 +1768,146 @@
           1
         ]
       ]
+    },
+    "parallel_node": {
+      "description": "A Parallel mixer (docs/25 section 3.2): adds the change each of its inputs makes to the picture they started from, on LogC4 code values. It has the inputs picture.1 to picture.N (N at most 8) and the output picture, no masks and no controls. A bypassed Parallel outputs its base.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "description": "A numbered node's id: an integer 2 to 2147483647. Ids are unique within the photo, correctors, Film nodes and these nodes together.",
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 2147483647
+        },
+        "kind": {
+          "const": "parallel"
+        },
+        "pos": {
+          "$ref": "#/$defs/pos"
+        },
+        "name": {
+          "description": "1 to 32 characters after trimming; a longer name is cut and an empty one reads as the default (\"Parallel\").",
+          "type": "string",
+          "default": "Parallel"
+        },
+        "bypass": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "layer_node": {
+      "description": "A Layer mixer (docs/25 section 3.3): stacks its inputs, input 1 at the bottom, and blends each over the ones below it in linear light, through the mask of the node that feeds it times `opacity`. It has the inputs picture.1 to picture.N (N at most 8) and the output picture, and no masks. A bypassed Layer outputs input 1.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "description": "A numbered node's id: an integer 2 to 2147483647. Ids are unique within the photo, correctors, Film nodes and these nodes together.",
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 2147483647
+        },
+        "kind": {
+          "const": "layer"
+        },
+        "pos": {
+          "$ref": "#/$defs/pos"
+        },
+        "name": {
+          "description": "1 to 32 characters after trimming; a longer name is cut and an empty one reads as the default (\"Layer\").",
+          "type": "string",
+          "default": "Layer"
+        },
+        "bypass": {
+          "type": "boolean",
+          "default": false
+        },
+        "mode": {
+          "description": "How a layer blends over the ones below it.",
+          "enum": [
+            "normal",
+            "add",
+            "subtract",
+            "multiply",
+            "lighten",
+            "darken",
+            "difference"
+          ],
+          "default": "normal"
+        },
+        "opacity": {
+          "description": "0 to 1; a value outside is clamped.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 1
+        }
+      }
+    },
+    "splitter_node": {
+      "description": "A Splitter (docs/25 section 3.4): sends the red, green and blue of its `picture` input to the outputs `red`, `green` and `blue`, each a grey picture of one channel. No masks, no Bypass.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "description": "A numbered node's id: an integer 2 to 2147483647. Ids are unique within the photo, correctors, Film nodes and these nodes together.",
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 2147483647
+        },
+        "kind": {
+          "const": "splitter"
+        },
+        "pos": {
+          "$ref": "#/$defs/pos"
+        },
+        "name": {
+          "description": "1 to 32 characters after trimming; a longer name is cut and an empty one reads as the default (\"Splitter\").",
+          "type": "string",
+          "default": "Splitter"
+        }
+      }
+    },
+    "combiner_node": {
+      "description": "A Combiner (docs/25 section 3.4): joins the pictures on its inputs `red`, `green` and `blue` into one picture, a channel from each. No masks, no Bypass.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "description": "A numbered node's id: an integer 2 to 2147483647. Ids are unique within the photo, correctors, Film nodes and these nodes together.",
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 2147483647
+        },
+        "kind": {
+          "const": "combiner"
+        },
+        "pos": {
+          "$ref": "#/$defs/pos"
+        },
+        "name": {
+          "description": "1 to 32 characters after trimming; a longer name is cut and an empty one reads as the default (\"Combiner\").",
+          "type": "string",
+          "default": "Combiner"
+        }
+      }
     }
   }
 }
