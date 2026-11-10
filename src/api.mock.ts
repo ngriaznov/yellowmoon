@@ -126,9 +126,10 @@ import { expandNameTemplate, FILE_EXTENSION, sanitizeStem, slugify } from "./exp
 import { version as APP_VERSION } from "../package.json";
 import { fixtureUrl } from "./fixtures";
 import { clampPins } from "./components/warpMath";
-import { adjustScene, developScene, nodeScene, previewSvg, signalScene } from "./fixtures/grade";
+import { adjustForNode, adjustScene, developScene, nodeScene, previewSvg, signalScene } from "./fixtures/grade";
 import type { Adjustment, NodeLook } from "./fixtures/grade";
 import { filmScene, mockFilmCatalogue, MOCK_FILM_STOCKS, sceneThroughFilms } from "./fixtures/film";
+import { hasMixers, outputFeeder, sceneAt } from "./fixtures/mixers";
 import { hexChroma, sceneScatter } from "./fixtures/warp";
 import { sceneHistogram } from "./fixtures/histogram";
 import { scenePng, hexToRgb } from "./fixtures/png";
@@ -146,6 +147,7 @@ import {
   INPUT_ID,
   inputOf,
   inputPatch,
+  isGlyphItem,
   MAIN_ID,
   MIXER_NAMES,
   mainGradePatch,
@@ -2190,6 +2192,13 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
 
   /** The photo's scene through every live Film node (the mock draws their stocks flat). */
   function throughFilms(rec: PhotoRecord, settings: DevelopSettings = rec.settings): Scene {
+    // A graph with a mixer the Output needs is drawn by walking it (`fixtures/mixers.ts`): Main's own grade is the frame's adjustment, the other
+    // correctors and the Film nodes grade the scene where they are.
+    if (hasMixers(settings)) {
+      return sceneAt(settings, rec.scene, outputFeeder(settings), (item, scene) =>
+        item.kind === "film" ? adjustForNode(scene, filmLook(item)) : item.id === MAIN_ID ? scene : adjustForNode(scene, item),
+      );
+    }
     return sceneThroughFilms(rec.scene, settings);
   }
 
@@ -2251,11 +2260,25 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const told = nodeThumbs.get(id) ?? new Map<number, { key: string; url: string }>();
     const changed: NodeThumbnail[] = [];
     const nodes = cardStates(settings);
+    const mixed = settings.nodes.items.some(isGlyphItem);
     for (const node of nodes.keys()) {
+      // A Parallel, a Layer, a Splitter and a Combiner have no thumbnail (`docs/25` §5.7); the nodes after them draw through them.
+      if (isGlyphItem(nodeOf(settings, node))) continue;
       const chain = pictureChain(settings, node);
-      const key = JSON.stringify([input, look, chain.map((n) => [n.bypass, n.trim, n.grade, n.key])]);
+      const key = mixed
+        ? JSON.stringify([input, look, node, settings.nodes.items.map((item) => ({ ...item, pos: null })), settings.nodes.links])
+        : JSON.stringify([input, look, chain.map((n) => [n.bypass, n.trim, n.grade, n.key])]);
       if (told.get(node)?.key === key) continue;
-      const url = bytesToUrl(Array.from(scenePng(nodeScene(rec.scene, input, chain, look), ...NODE_THUMB_SIZE)));
+      const scene = mixed
+        ? developScene(
+            sceneAt(settings, adjustScene(rec.scene, { ...input, warp: undefined }), { node, port: "picture" }, (item, s) =>
+              item.kind === "film" ? adjustForNode(s, filmLook(item)) : adjustForNode(s, item),
+            ),
+            look,
+            null,
+          )
+        : nodeScene(rec.scene, input, chain, look);
+      const url = bytesToUrl(Array.from(scenePng(scene, ...NODE_THUMB_SIZE)));
       told.set(node, { key, url });
       changed.push({ node, url });
     }

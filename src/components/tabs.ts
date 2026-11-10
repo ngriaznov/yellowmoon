@@ -9,7 +9,10 @@
 import type { NodeKind } from "../api/types";
 
 /** Tab ids. American spelling in identifiers; the label reads "Colour". `mask` is the corrector's Mask tab of the node view (`docs/23` §7.6). */
-export type TabId = "look" | "lens" | "light" | "color" | "detail" | "curve" | "raw" | "mask" | "film" | "print" | "halation" | "grain";
+export type TabId = "look" | "lens" | "light" | "color" | "detail" | "curve" | "raw" | "mask" | "film" | "print" | "halation" | "grain" | "inputs" | "blend" | "channels";
+
+/** The tabs that only the node view has: the Mask tab, a Film node's four and the one tab of each of the nodes of `docs/25`. */
+export type NodeOnlyTabId = "mask" | "film" | "print" | "halation" | "grain" | "inputs" | "blend" | "channels";
 
 /** One tab: its id, the caps label and the blurb under the title (`design/mockups/photos.html`). */
 export interface TabInfo {
@@ -48,29 +51,22 @@ export const FILM_TABS: Readonly<Record<"film" | "print" | "halation" | "grain",
   grain: { id: "grain", label: "Grain", blurb: "The film's grain." },
 };
 
+/** The one tab of a Parallel (Inputs), a Layer (Blend), a Splitter and a Combiner (Channels; `docs/25` §5.5): they take the Look tab's yellow. */
+export const MIXER_TABS: Readonly<Record<"inputs" | "blend" | "channels", TabInfo>> = {
+  inputs: { id: "inputs", label: "Inputs", blurb: "Adds the change each input makes to the picture they start from." },
+  blend: { id: "blend", label: "Blend", blurb: "How the inputs are laid over each other." },
+  channels: { id: "channels", label: "Channels", blurb: "The red, green and blue of the picture." },
+};
+
 /** Tab ids of the simple view in bar order. */
 export const TAB_IDS: readonly TabId[] = TABS.map((tab) => tab.id);
 
-/** The four kinds of node a panel can be on (`NodeItem.kind` for the Input, the Output, correctors and Film nodes). */
-export type PanelKind = "input" | "corrector" | "film" | "output";
+/** The kinds of node a panel can be on: one for each `NodeItem.kind`. */
+export type PanelKind = NodeKind;
 
-/**
- * The panel a node of any kind opens. The nodes of `docs/25` (Parallel, Layer, Splitter, Combiner) have no panel until X-06 and the
- * Add node menu does not make them yet, so they read as a corrector's panel here, as a Film node did before its own tabs.
- */
+/** The panel a node of any kind opens: its own (`NODE_TABS`). */
 export function panelKindOf(kind: NodeKind): PanelKind {
-  switch (kind) {
-    case "input":
-    case "output":
-    case "film":
-    case "corrector":
-      return kind;
-    case "parallel":
-    case "layer":
-    case "splitter":
-    case "combiner":
-      return "corrector";
-  }
+  return kind;
 }
 
 /**
@@ -82,17 +78,30 @@ export const NODE_TABS: Readonly<Record<PanelKind, readonly TabId[]>> = {
   corrector: ["light", "color", "curve", "mask"],
   film: ["film", "print", "halation", "grain", "mask"],
   output: ["look", "detail"],
+  parallel: ["inputs"],
+  layer: ["blend"],
+  splitter: ["channels"],
+  combiner: ["channels"],
 };
 
 /** The tab each kind of node opens on the first time (and when a remembered tab is not its own). */
-export const FIRST_NODE_TAB: Readonly<Record<PanelKind, TabId>> = { input: "raw", corrector: "light", film: "film", output: "look" };
+export const FIRST_NODE_TAB: Readonly<Record<PanelKind, TabId>> = {
+  input: "raw",
+  corrector: "light",
+  film: "film",
+  output: "look",
+  parallel: "inputs",
+  layer: "blend",
+  splitter: "channels",
+  combiner: "channels",
+};
 
 /**
  * The node and the tab the node view opens on when it is entered from a tab of the simple view (`docs/23` §7.5 *Tab memory*, decision 21):
  * Look → Output › Look, Lens → Input › Lens, Light → Main › Light, Colour → Main › Colour, Detail → Input › Detail, Curve → Main › Curve,
  * RAW → Input › RAW.
  */
-export const NODE_FOR_SIMPLE_TAB: Readonly<Record<Exclude<TabId, "mask" | "film" | "print" | "halation" | "grain">, { kind: PanelKind; tab: TabId }>> = {
+export const NODE_FOR_SIMPLE_TAB: Readonly<Record<Exclude<TabId, NodeOnlyTabId>, { kind: PanelKind; tab: TabId }>> = {
   look: { kind: "output", tab: "look" },
   lens: { kind: "input", tab: "lens" },
   light: { kind: "corrector", tab: "light" },
@@ -102,14 +111,21 @@ export const NODE_FOR_SIMPLE_TAB: Readonly<Record<Exclude<TabId, "mask" | "film"
   raw: { kind: "input", tab: "raw" },
 };
 
-/** The simple view's tab that stands for `tab`: itself when it is one of the seven, Light for the node view's own (Mask and a Film node's). */
-export function simpleTabOf(tab: TabId): Exclude<TabId, "mask" | "film" | "print" | "halation" | "grain"> {
-  return tab === "mask" || tab === "film" || tab === "print" || tab === "halation" || tab === "grain" ? "light" : tab;
+/** The simple view's tab that stands for `tab`: itself when it is one of the seven, Light for the node view's own (Mask, a Film node's and the mixers'). */
+export function simpleTabOf(tab: TabId): Exclude<TabId, NodeOnlyTabId> {
+  return tab === "mask" || tab === "film" || tab === "print" || tab === "halation" || tab === "grain" || tab === "inputs" || tab === "blend" || tab === "channels" ? "light" : tab;
 }
 
 /** The tab info for an id. */
 export function tabInfo(id: TabId): TabInfo {
-  const info = id === "mask" ? MASK_TAB : id === "film" || id === "print" || id === "halation" || id === "grain" ? FILM_TABS[id] : TABS.find((tab) => tab.id === id);
+  const info =
+    id === "mask"
+      ? MASK_TAB
+      : id === "film" || id === "print" || id === "halation" || id === "grain"
+        ? FILM_TABS[id]
+        : id === "inputs" || id === "blend" || id === "channels"
+          ? MIXER_TABS[id]
+          : TABS.find((tab) => tab.id === id);
   // TABS and the Mask tab hold every TabId, so this cannot be undefined.
   return info as TabInfo;
 }

@@ -117,6 +117,10 @@ export function numberedOf(settings: DevelopSettings): NodeItem[] {
   return settings.nodes.items.filter((item) => item.kind !== "input" && item.kind !== "output");
 }
 
+/** True for a Parallel, a Layer, a Splitter or a Combiner: the nodes with a glyph card, no number, no masks and no key ports. */
+export const isGlyphItem = (item: NodeItem | undefined): item is MixerItem =>
+  item?.kind === "parallel" || item?.kind === "layer" || item?.kind === "splitter" || item?.kind === "combiner";
+
 /** The Film nodes of the graph. */
 export function filmsOf(settings: DevelopSettings): FilmItem[] {
   return settings.nodes.items.filter((item): item is FilmItem => item.kind === "film");
@@ -164,7 +168,9 @@ export function hiddenFromSimpleView(settings: DevelopSettings): HiddenFromSimpl
   const correctors = correctorsOf(settings);
   const main = correctors.find((item) => item.id === MAIN_ID);
   let hidden: HiddenFromSimpleView | null = null;
-  if (correctors.length > 1) hidden = { kind: "nodes", count: correctors.length };
+  // Every node but the Input and the Output counts, Film nodes and the nodes of `docs/25` included (`docs/25` §5.7).
+  const nodes = numberedOf(settings).length;
+  if (nodes > 1) hidden = { kind: "nodes", count: nodes };
   else if (main && (main.bypass || main.masks.items.length > 0 || main.trim.exposure_ev !== 0 || main.trim.temperature !== 0 || main.trim.tint !== 0)) {
     hidden = { kind: "main" };
   }
@@ -215,7 +221,9 @@ export type InputPatch = Pick<
 export type OutputPatch = Pick<NodePatch, "pos" | "look" | "look_intensity" | "output_sharpening">;
 /** What a patch of a corrector (Main included) may carry. */
 export type CorrectorPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "trim" | "grade" | "masks">;
-/** What a patch of a Film node may carry. */
+/** The fields of a Parallel, a Layer, a Splitter or a Combiner a patch may set (`docs/25` §2.1). */
+export type MixerPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "mode" | "opacity">;
+/** The fields of a Film node a patch may set. */
 export type FilmPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "film" | "print" | "halation" | "grain" | "strength" | "masks">;
 
 /**
@@ -225,7 +233,7 @@ export type FilmPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "film" | "pr
  */
 export function patchOf(node: typeof INPUT_ID, partial: InputPatch): SettingsPatch;
 export function patchOf(node: typeof OUTPUT_ID, partial: OutputPatch): SettingsPatch;
-export function patchOf(node: number, partial: CorrectorPatch | FilmPatch): SettingsPatch;
+export function patchOf(node: number, partial: CorrectorPatch | FilmPatch | MixerPatch): SettingsPatch;
 export function patchOf(node: NodeId, partial: NodePatch): SettingsPatch {
   return { nodes: { [String(node)]: partial } };
 }

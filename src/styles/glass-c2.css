@@ -63,7 +63,7 @@ html.dark {
 /* The Mask tab of a corrector (docs/23 §7.6) has the mask accent, as the other tabs have theirs: --mask in tokens.css. */
 [data-tab="mask"] { --primary: var(--mask); --primary-foreground: var(--mask-ink); --ring: var(--mask); }
 /* The tabs of a Film node (docs/24 section 4.1) take the Look tab's yellow (screens 02 to 08 of design/film). */
-[data-tab="film"], [data-tab="print"], [data-tab="halation"], [data-tab="grain"] { --primary: var(--tab-look); --primary-foreground: var(--tab-look-ink); --ring: var(--tab-look); }
+[data-tab="film"], [data-tab="print"], [data-tab="halation"], [data-tab="grain"], [data-tab="inputs"], [data-tab="blend"], [data-tab="channels"] { --primary: var(--tab-look); --primary-foreground: var(--tab-look-ink); --ring: var(--tab-look); }
 
 body {
   font-family: var(--font);
@@ -1287,13 +1287,6 @@ span.ym-filmstrip__thumb {
   font-size: var(--fs-small);
   line-height: 1.3;
 }
-.ym-menu-later {
-  margin-left: auto;
-  flex-shrink: 0;
-  color: var(--glass-label-tertiary);
-  font-size: 11px;
-  font-weight: var(--fw-bold);
-}
 
 /* The notice of a photo that has more than the simple view shows (docs/23 §6): a pinned strip under the tab row, a glass pill (the chips'
    tint and rim) with the nodes glyph, two lines of text and the link Open nodes at the end of the second. */
@@ -2241,4 +2234,217 @@ html[data-glass="off"] *::before,
 html[data-glass="off"] *::after {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
+}
+
+/* ======================================================================================================================================
+   The four kinds of docs/25 (X-06): glyph cards, their ports, and the rows of their panels (design/mixers/).
+   ====================================================================================================================================== */
+/* A glyph card: 56 px wide, a rounded box with the kind's glyph; no thumbnail, no number, no footer. Its pos is its middle line. */
+.ym-gnode--glyph {
+  height: auto;
+}
+.ym-gnode__glyphbox {
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  background: oklch(0.225 0 0);
+}
+.ym-gnode--glyph .ym-gnode__box {
+  width: 100%;
+}
+.ym-glyph {
+  color: var(--glass-label-secondary);
+}
+.ym-gnode--glyph[data-selected] .ym-glyph {
+  color: var(--glass-label);
+}
+.ym-gnode--glyph[data-bypass] .ym-glyph {
+  opacity: 0.5;
+}
+.ym-gnode--glyph[data-dead] .ym-glyph {
+  opacity: 1;
+}
+.ym-gnode--glyph .ym-gnode__ring {
+  border-radius: 20px;
+}
+/* The name is wider than the card: it is cut at ten letters, and "Combiner" and "Splitter" are about 56 px. */
+.ym-gnode--glyph .ym-gnode__name {
+  right: -24px;
+  left: -24px;
+}
+.ym-gnode--glyph .ym-gnode__rename {
+  right: -34px;
+  left: -34px;
+}
+/* The Splitter's glyph sits toward its one input, the Combiner's toward its one output, so the channel letters have the other side. */
+.ym-gnode--glyph[data-glyph="splitter"] .ym-glyph {
+  transform: translateX(-9px);
+}
+.ym-gnode--glyph[data-glyph="combiner"] .ym-glyph {
+  transform: translateX(9px);
+}
+.ym-gnode__letter {
+  position: absolute;
+  width: 10px;
+  height: 14px;
+  color: var(--ch);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+.ym-gnode__letter[data-side="right"] {
+  right: 7px;
+}
+.ym-gnode__letter[data-side="left"] {
+  left: 7px;
+}
+
+/* The "+" port: an empty triangle with a plus, a little larger than an arrowhead; yellow and larger while a link is over it. */
+.ym-port--plus {
+  color: oklch(0.82 0 0);
+  opacity: 0.85;
+}
+.ym-port--plus[data-state="lit"] {
+  opacity: 1;
+}
+.ym-port--plus[data-hover] .ym-port__glyph {
+  transform: scale(1.25);
+  transform-origin: 100% 50%;
+}
+.ym-port--plus[data-hover] {
+  color: var(--tab-look);
+}
+.ym-port--plus .ym-port__hit {
+  inset: -6px -8px;
+}
+/* The channel ports of a Splitter and a Combiner: tinted, with a letter in the card. */
+.ym-port.react-flow__handle.ym-port--ch {
+  color: var(--ch);
+}
+
+/* The rows of a mixer's Inputs card. */
+.ym-input-rows,
+.ym-channel-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 4px;
+  padding: 0;
+  list-style: none;
+}
+.ym-input-row,
+.ym-channel-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 54px;
+  box-sizing: border-box;
+  padding: 6px 12px 6px 8px;
+  border: 1px solid var(--rim);
+  border-radius: 14px;
+  background: color-mix(in oklch, var(--ink) 6%, transparent);
+}
+.ym-input-row:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+.ym-input-row[data-dragging] {
+  z-index: 2;
+  background: color-mix(in oklch, var(--ink) 14%, transparent);
+  box-shadow: 0 8px 18px rgb(0 0 0 / 0.38);
+  pointer-events: none;
+}
+.ym-input-row[data-over] {
+  box-shadow: 0 0 0 2px var(--tab-look);
+}
+.ym-input-row__grip {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  color: var(--glass-label-tertiary);
+  cursor: grab;
+  touch-action: none;
+}
+.ym-input-row__grip svg {
+  width: 16px;
+  height: 16px;
+}
+.ym-input-row__thumb {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 62px;
+  height: 40px;
+  overflow: hidden;
+  border-radius: 7px;
+  background: var(--code-bg);
+  color: var(--glass-label-secondary);
+}
+.ym-input-row__thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ym-input-row__thumb svg {
+  width: 18px;
+  height: 18px;
+}
+.ym-input-row__num {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--ink) 16%, transparent);
+  box-shadow: inset 0 0 0 1px var(--rim);
+  font-size: 10.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.ym-input-row__name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: var(--fw-heavy);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ym-input-row__sub {
+  flex-shrink: 0;
+  color: var(--glass-label-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.ym-mixer-line {
+  margin: 4px 0 8px;
+}
+.ym-channel-row__chip {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: color-mix(in oklch, var(--ch) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--ch) 45%, transparent);
+  color: var(--ch);
+  font-size: 11px;
+  font-weight: 800;
+}
+.ym-channel-row__name {
+  flex: 1;
+  font-size: 15px;
+  font-weight: var(--fw-heavy);
+}
+.ym-channel-row__where {
+  color: var(--glass-label-secondary);
+  font-size: 12.5px;
+  font-weight: 600;
 }

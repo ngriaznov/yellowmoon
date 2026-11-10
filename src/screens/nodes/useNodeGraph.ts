@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DevelopSettings, NodeId, NodeLink, NodePos, NodeRef, PhotoId } from "../../api/types";
+import type { DevelopSettings, NodeId, NodeLink, NodePos, NodeRef, PhotoId, Port } from "../../api/types";
 import {
   connect,
   disconnect,
   hasPatch,
   insertAfter,
+  insertMixer,
+  insertTrio,
   moveCard,
   moveEarlier,
+  moveInput,
   moveLater,
   reconnect,
   remove,
+  removeInput,
   rename,
   reorderInto,
   resetNode,
@@ -34,6 +38,12 @@ export interface NodeGraphActions {
   addCorrector: () => void;
   /** Add node › Film: after the selected node (`docs/24`). */
   addFilm: () => void;
+  /** Add node › Parallel: a Parallel and a corrector beside the selected node, on its input 2 (`docs/25` §5.4). */
+  addParallel: () => void;
+  /** Add node › Layer: a Layer and a corrector beside the selected node, on top. */
+  addLayer: () => void;
+  /** Add node › Splitter and combiner: a Splitter, Red, Green and Blue correctors and a Combiner after the selected node. */
+  addTrio: () => void;
   /** The key Delete and the toolbar's Delete: the selected link, else the selected node. */
   deleteSelection: () => void;
   deleteNode: (id?: NodeId) => void;
@@ -46,6 +56,10 @@ export interface NodeGraphActions {
   reorderInto: (id: NodeId, link: NodeLink) => void;
   moveEarlier: () => void;
   moveLater: () => void;
+  /** The Inputs card: input `from` of a Layer goes to the place of input `to`; the ports are renumbered (`docs/25` §5.5). */
+  moveInput: (node: NodeId, from: number, to: number) => void;
+  /** The Inputs card's Remove input: the link into this input goes and the later inputs move down one. */
+  removeInput: (node: NodeId, port: Port) => void;
   connect: (from: NodeRef, to: NodeRef) => void;
   reconnect: (link: NodeLink, to: NodeRef) => void;
   disconnect: (link: NodeLink) => void;
@@ -140,6 +154,9 @@ export function useNodeGraph({ store, settings, photoId, selected, select }: Use
     selectLink: setSelectedLink,
     addCorrector: () => act((s, here) => insertAfter(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),
     addFilm: () => act((s, here) => insertAfter(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0, kind: "film", name: "Film" })),
+    addParallel: () => act((s, here) => insertMixer(s, here, "parallel", { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),
+    addLayer: () => act((s, here) => insertMixer(s, here, "layer", { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),
+    addTrio: () => act((s, here) => insertTrio(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),
     deleteSelection: () => {
       const { selectedLink: link } = latest.current;
       if (link) {
@@ -155,7 +172,7 @@ export function useNodeGraph({ store, settings, photoId, selected, select }: Use
     startRename: (id, where = "card") => {
       const target = id ?? latest.current.selected;
       const node = latest.current.settings ? nodeOf(latest.current.settings, target) : undefined;
-      if (node?.kind === "corrector" || node?.kind === "film") {
+      if (node && node.kind !== "input" && node.kind !== "output") {
         select(target);
         setRenamingIn(where);
         setRenaming(target);
@@ -169,6 +186,8 @@ export function useNodeGraph({ store, settings, photoId, selected, select }: Use
     reorderInto: (id, link) => act((s) => reorderInto(s, id, link)),
     moveEarlier: () => act((s, here) => moveEarlier(s, here)),
     moveLater: () => act((s, here) => moveLater(s, here)),
+    moveInput: (node, from, to) => act((s) => moveInput(s, node, from, to)),
+    removeInput: (node, port) => act((s) => removeInput(s, node, port)),
     connect: (from, to) => act((s) => connect(s, from, to)),
     reconnect: (link, to) => act((s) => reconnect(s, link, to)),
     disconnect: (link) => {

@@ -279,7 +279,7 @@ describe("layout A", () => {
 });
 
 describe("the Add node menu", () => {
-  it("opens upward from the button: Corrector, Film, then Parallel, Layer and Splitter and combiner, greyed with 'Later'", async () => {
+  it("opens upward from the button: Corrector, Film, then Parallel, Layer and Splitter and combiner, all on, each with its line", async () => {
     await setup();
     await openNodeView();
     await h!.user.click(within(graph()).getByRole("button", { name: "Add node" }));
@@ -290,14 +290,14 @@ describe("the Add node menu", () => {
     expect(within(items[0]!).getByText("Grades all or part of the photo.")).toBeInTheDocument();
     expect(within(items[1]!).getByText("Models a colour negative, a print and a scan.")).toBeInTheDocument();
     expect(items[1]).not.toHaveAttribute("aria-disabled");
-    for (const item of items.slice(2)) {
-      expect(item).toHaveAttribute("aria-disabled", "true");
-      expect(item).toHaveAccessibleDescription("Not in the first version");
-      expect(within(item).getByText("Later")).toBeInTheDocument();
+    // The three items of `docs/25` are on, with their lines, and no "Later" tag.
+    expect(within(items[2]!).getByText("Grade branches side by side.")).toBeInTheDocument();
+    expect(within(items[3]!).getByText("Blend one branch over another.")).toBeInTheDocument();
+    expect(within(items[4]!).getByText("Split a picture, then join it again.")).toBeInTheDocument();
+    for (const item of items) {
+      expect(item).not.toHaveAttribute("aria-disabled");
+      expect(within(item).queryByText("Later")).toBeNull();
     }
-    // Corrector adds a node after the selected one: it is on, and has no tag.
-    expect(items[0]).not.toHaveAttribute("aria-disabled");
-    expect(within(items[0]!).queryByText("Later")).toBeNull();
     await h!.user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
   });

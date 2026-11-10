@@ -672,7 +672,7 @@ Every node structure renders on the device when one is attached; no graph is ref
 The simple view is today's Photos screen with these changes and no others. **It reads the simple graph:** every tab is a view of the Input, Main or the Output of the photo's graph through the store's selectors (section 2), and nothing visible changes from them.
 
 - **Header.** Before · Crop · **Nodes** · Add photos · Fit. **Pick white has left the header** (section 8). Nodes is a toggle like Crop; its tooltip reads "Nodes (N)"; it is pressed in the node view.
-- **A photo that has anything the simple view cannot show:** the panel shows, under the tab row, a notice in a glass pill with the nodes glyph: "This photo has 4 nodes. These controls change the input, the output and node 1, Main." and a link, **Open nodes**, at the end of the text (it takes two lines, so the pill does not grow to three). The number is the number of corrector nodes in the graph. When the photo has one node, Main, and Main has a trim, masks or a bypass, the notice reads "Node 1, Main, has a trim, masks or a bypass that these controls don't show. Open nodes". It is shown on every tab. **Open nodes** switches to the node view with Main selected.
+- **A photo that has anything the simple view cannot show:** the panel shows, under the tab row, a notice in a glass pill with the nodes glyph: "This photo has 4 nodes. These controls change the input, the output and node 1, Main." and a link, **Open nodes**, at the end of the text (it takes two lines, so the pill does not grow to three). The number is the number of nodes in the graph but the Input and the Output (correctors, Film nodes and, from X-06, the nodes of `docs/25`). When the photo has one node, Main, and Main has a trim, masks or a bypass, the notice reads "Node 1, Main, has a trim, masks or a bypass that these controls don't show. Open nodes". It is shown on every tab. **Open nodes** switches to the node view with Main selected.
 - **The filmstrip thumbnail** of such a photo carries a small glass glyph (the nodes icon, bottom left of the thumbnail, a tooltip with "4 nodes" or "Node 1 has masks or a trim").
 - **Main.** The controls of the simple view write Main's grade, so a bypassed Main ignores them; the notice says so ("a bypass").
 - The photo shows the result of every node.
@@ -763,7 +763,7 @@ A glass menu that opens upward from the button over the photo:
 | **Layer** | "Blend one branch over another." | enabled from X-06 |
 | **Splitter and combiner** | "Split a picture, then join it again." | enabled from X-06; adds a Splitter, three correctors and a Combiner (`docs/25` §5.4) |
 
-Until X-06 lands, the last three items are greyed, tagged "Later" and `aria-disabled`, with the tooltip "Not in the first version". From X-06 the tag and the tooltip go, and every item is off at 64 nodes with "A photo can have up to 64 nodes." (Splitter and combiner from 60 nodes, since it adds five).
+**As built (X-06).** The last three items are live: the tag "Later" and the tooltip "Not in the first version" are gone. Every item is off at 64 nodes with "A photo can have up to 64 nodes."; Parallel and Layer (two nodes each: the mixer and a corrector) are off from 63 nodes and Splitter and combiner (five) from 60, with "This adds two nodes, and a photo can have up to 64." and "This adds five nodes, and a photo can have up to 64." as the tooltip (`blockedText` in `AddNodeMenu.tsx`; the count is `numberedOf`, every node but the Input and the Output).
 
 ### 7.5 The panel: head and tabs
 
@@ -783,7 +783,7 @@ The tabs follow the head (46 px), each underlined in its tab colour (`docs/11`);
 | Corrector | **Light · Colour · Curve · Mask** |
 | Output | **Look · Detail** |
 
-A Parallel, a Layer, a Splitter and a Combiner have one tab each, and their heads and panels are in `docs/25-mixers.md` §5.5.
+A Parallel (**Inputs**), a Layer (**Blend**), a Splitter and a Combiner (**Channels**) have one tab each, in the Look tab's yellow, and their heads and panels are in `docs/25-mixers.md` §5.5 (built in X-06: `MixerTabs.tsx`; `docs/11` *The nodes of docs/25*).
 
 What each tab holds. Where a tab matches today's, its cards are today's.
 
@@ -899,7 +899,7 @@ Sliders are the standard slider; Refine edges and Opacity show percent, the othe
 
 - The graph is **one Tab stop**; the arrows move between nodes; Return or Space selects (selection follows focus).
 - **Every card has a name:** "Node 2, Mountain, masked by Object and Radial" (the number as a plain number, the name, the kinds of its masks; "Node 1, Main" with none), with ", bypassed", ", not connected" and "selected" (`aria-pressed`) where they apply. The Input and the Output are "Input" and "Output". The ports and links are drawn for the pointer and are not Tab stops; every link can be made, moved and removed from the keyboard through the card's More menu (Link picture to, Link key to, Remove link), and a card's name says what feeds it (", picture from node 1, key from node 5").
-- The divider, the zoom buttons, the toolbar toggles (`aria-pressed`) and the menu items have names; the Later items are `aria-disabled` until X-06 makes them live (`docs/25-mixers.md` §5.1, §5.6 for the names of the new cards).
+- The divider, the zoom buttons, the toolbar toggles (`aria-pressed`) and the menu items have names; the three mixer items are live from X-06 (`aria-disabled` only at the node limit, `docs/25-mixers.md` §5.1; §5.6 for the names of the new cards).
 - The mask handles are focusable and nudged by the arrows (section 7.6); the sliders of section 7.6 give every number a keyboard control.
 - The existing a11y and glass audits gain the new page states (section 11): the glass audit's `STATES` grow from 41 to 50 and `HAS_COUNTERPART` and `NO_COUNTERPART` are updated; `a11y.spec.ts` walks the node view (graph, menus, each node kind's tabs, the Mask tab) and fails on any control without a name.
 

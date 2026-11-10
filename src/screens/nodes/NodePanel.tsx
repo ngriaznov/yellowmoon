@@ -107,6 +107,7 @@ export function NodePanel({ store, photo, rs, node, tab, onTab, graph, pickingWh
           onPickRange={onPickRange}
           pickingDepth={pickingDepth}
           onPickDepth={onPickDepth}
+          graph={graph}
         />
       </div>
       <div className="ym-tools__foot" role="group" aria-label="Copy and paste settings">

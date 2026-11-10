@@ -1,6 +1,6 @@
 import { ViewportPortal, useReactFlow } from "@xyflow/react";
 import { useEffect, useRef, useState } from "react";
-import type { NodeRef } from "../../api/types";
+import type { NodeRef, Port } from "../../api/types";
 import { bezierOf, portPoint } from "./graphLayout";
 import type { GraphLayout, XY } from "./graphLayout";
 import { portKey } from "./graphUi";
@@ -13,14 +13,16 @@ export const DROP_REACH_PX = 14;
 
 /** The input port under or near a point (the nearest within `reach` pixels of its target), or null. */
 export function inputPortAt(root: ParentNode, x: number, y: number, reach = DROP_REACH_PX): NodeRef | null {
-  let best: { ref: NodeRef; d: number } | null = null;
+  let best: { ref: NodeRef; d: number; c: number } | null = null;
   for (const el of root.querySelectorAll<HTMLElement>('[data-port-side="in"]')) {
     const r = el.getBoundingClientRect();
     if (r.width === 0 && r.height === 0) continue;
     const d = Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
-    if (d > reach || (best && d >= best.d)) continue;
+    // Targets of ports 24 px apart overlap a little: the nearer centre wins.
+    const c = Math.hypot((r.left + r.right) / 2 - x, (r.top + r.bottom) / 2 - y);
+    if (d > reach || (best && (d > best.d || (d === best.d && c >= best.c)))) continue;
     const raw = el.dataset.portNode ?? "";
-    best = { ref: { node: raw === "input" || raw === "output" ? raw : Number(raw), port: el.dataset.portName === "key" ? "key" : "picture" }, d };
+    best = { ref: { node: raw === "input" || raw === "output" ? raw : Number(raw), port: (el.dataset.portName ?? "picture") as Port }, d, c };
   }
   return best?.ref ?? null;
 }

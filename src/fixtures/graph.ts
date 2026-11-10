@@ -8,7 +8,7 @@
  */
 import type { DevelopSettings, NodeId, NodeItem, NodeKind, NodeLink, NodePatch, Port, ResolvedSettings, SettingsPatch } from "../api/types";
 import { MOCK_FILM_PAPERS, MOCK_FILM_STOCKS } from "./film";
-import { cardsOf, clone, INPUT_ID, MAIN_ID, nodeAsPatch, nodeIdOfKey, nodeOf, numberedOf, OUTPUT_ID } from "../state/settingsGraph";
+import { clone, INPUT_ID, MAIN_ID, nodeAsPatch, nodeIdOfKey, nodeOf, numberedOf, OUTPUT_ID } from "../state/settingsGraph";
 
 /** Most numbered nodes a photo can have, Main included: correctors, Film nodes, mixers, Splitters and Combiners (`docs/23` section 3.5, `docs/25` section 2.3). */
 export const MAX_NODES = 64;
@@ -303,7 +303,7 @@ export function pastedOnto(target: DevelopSettings, patch: SettingsPatch): Setti
   const out: SettingsPatch = { ...patch, nodes };
   if (patch.links !== undefined) {
     const given = new Set(Object.keys(nodes).map(nodeIdOfKey));
-    const extra = cardsOf(target)
+    const extra = numberedOf(target)
       .map((item) => item.id)
       .filter((id) => id !== MAIN_ID && !given.has(id));
     out.remove = [...new Set([...(patch.remove ?? []), ...extra])];

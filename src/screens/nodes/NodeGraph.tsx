@@ -6,8 +6,9 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import type { DevelopSettings, NodeId, NodeLink, NodePos, NodeRef } from "../../api/types";
 import { cardStates, GRAPH_OP_TEXT, inputStates, sameLink, sameRef } from "../../state/graphOps";
 import type { InputState } from "../../state/graphOps";
-import { cardsOf, INPUT_ID, MAIN_ID, OUTPUT_ID } from "../../state/settingsGraph";
-import { CARD_H, CARD_W, isMarker, layoutGraph, linkUnder, neighbourIn, portPoint, posOf } from "./graphLayout";
+import { INPUT_ID, MAIN_ID, nodeOf, numberedOf, OUTPUT_ID } from "../../state/settingsGraph";
+import { isGlyphKind } from "../../state/ports";
+import { CARD_H, glyphPosOf, isMarker, layoutGraph, linkUnder, neighbourIn, portPoint, posOf } from "./graphLayout";
 import type { Direction, GraphLayout, XY } from "./graphLayout";
 import { GraphUiContext, portKey } from "./graphUi";
 import type { GraphUi, LinkDraft } from "./graphUi";
@@ -15,11 +16,12 @@ import { GestureLayer } from "./LinkGesture";
 import type { GestureEnd } from "./LinkGesture";
 import { LinkEdge, LinkMarkers } from "./LinkEdge";
 import type { LinkEdgeData } from "./LinkEdge";
+import { GlyphCard } from "./GlyphCard";
 import { NodeCard } from "./NodeCard";
 import { NodeMarker } from "./NodeMarker";
 import { MAX_ZOOM, MIN_ZOOM, ZoomControl } from "./ZoomControl";
 
-const nodeTypes = { card: NodeCard, marker: NodeMarker };
+const nodeTypes = { card: NodeCard, glyph: GlyphCard, marker: NodeMarker };
 const edgeTypes = { link: LinkEdge };
 const NO_LIT: ReadonlyMap<string, InputState> = new Map();
 
@@ -115,7 +117,7 @@ function Canvas(props: NodeGraphProps) {
     () =>
       [...layout.boxes].map(([id, box]) => ({
         id: flowId(id),
-        type: isMarker(id) ? "marker" : "card",
+        type: isMarker(id) ? "marker" : isGlyphKind(nodeOf(settings, id)?.kind ?? "corrector") ? "glyph" : "card",
         position: { x: box.x, y: box.y },
         data: { id },
         width: box.w,
@@ -131,7 +133,7 @@ function Canvas(props: NodeGraphProps) {
         connectable: false,
         deletable: false,
       })),
-    [layout],
+    [layout, settings],
   );
   const edges = useMemo<Edge[]>(
     () =>
@@ -246,7 +248,7 @@ function Canvas(props: NodeGraphProps) {
   }, []);
   const overLink = useCallback(
     (id: NodeId, position: XY): NodeLink | null =>
-      linkUnder(layout, settings.nodes.links, id, { x: position.x + CARD_W / 2, y: position.y + CARD_H / 2 }) ?? null,
+      linkUnder(layout, settings.nodes.links, id, { x: position.x + (layout.boxes.get(id)?.w ?? 0) / 2, y: position.y + (layout.boxes.get(id)?.h ?? 0) / 2 }) ?? null,
     [layout, settings],
   );
   const onNodeDrag = useCallback(
@@ -264,12 +266,16 @@ function Canvas(props: NodeGraphProps) {
       setDropLink(null);
       setMoved(new Map());
       if (target) onReorder(id, target);
-      else onMove(id, posOf(node.position));
+      else {
+        // A glyph card's `pos` is its middle line, a corrector's its top (`glyphOrigin`).
+        const box = layout.boxes.get(id);
+        onMove(id, isGlyphKind(nodeOf(settings, id)?.kind ?? "corrector") && box ? glyphPosOf(node.position, box.h) : posOf(node.position));
+      }
     },
-    [overLink, onMove, onReorder],
+    [overLink, onMove, onReorder, layout, settings],
   );
 
-  const only = cardsOf(settings).length === 1;
+  const only = numberedOf(settings).length === 1;
   const main = layout.boxes.get(MAIN_ID);
   const output = layout.boxes.get(OUTPUT_ID);
   return (

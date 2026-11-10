@@ -1,5 +1,5 @@
 import { EllipsisIcon } from "lucide-react";
-import { useRef } from "react";
+import { Fragment, useRef } from "react";
 import type { ReactNode } from "react";
 import type { DevelopSettings, NodeId, NodeLink, NodeRef } from "../../api/types";
 import {
@@ -13,8 +13,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/glass/dropdown-menu";
 import { Button } from "../../components";
-import { cardStates, GRAPH_OP_TEXT, linksOf, linkTargets, listName, reorderAvailability } from "../../state/graphOps";
-import { MAIN_ID, nodeOf } from "../../state/settingsGraph";
+import { cardStates, endName, GRAPH_OP_TEXT, linksOf, linkTargets, reorderAvailability } from "../../state/graphOps";
+import { CHANNEL_PORTS } from "../../state/ports";
+import { isGlyphItem, MAIN_ID, nodeOf } from "../../state/settingsGraph";
 
 export interface NodeMoreMenuProps {
   settings: DevelopSettings;
@@ -46,16 +47,20 @@ export interface NodeMoreMenuProps {
 export function NodeMoreMenu({ settings, node, onRename, onMoveEarlier, onMoveLater, onLink, onRemoveLink, onDelete, side = "top", buttonClassName }: NodeMoreMenuProps) {
   const item = nodeOf(settings, node);
   const states = cardStates(settings);
-  const corrector = item?.kind === "corrector" || item?.kind === "film";
+  const glyph = isGlyphItem(item);
+  // A corrector, a Film node or one of the four kinds of `docs/25`: they are renamed and deleted; only correctors have Move and a key.
+  const corrector = item?.kind === "corrector" || item?.kind === "film" || glyph;
   const reorder = reorderAvailability(settings, node);
-  const pictureTo = linkTargets(settings, { node, port: "picture" });
-  const keyTo = corrector ? linkTargets(settings, { node, port: "key" }) : [];
+  // A Splitter has three picture outputs and links each by its name; every other node has one.
+  const outputs = item?.kind === "splitter" ? CHANNEL_PORTS : (["picture"] as const);
+  const pictureTo = (port: NodeRef["port"]): NodeRef[] => linkTargets(settings, { node, port });
+  const keyTo = item?.kind === "corrector" || item?.kind === "film" ? linkTargets(settings, { node, port: "key" }) : [];
   const links = linksOf(settings, node);
-  const name = (id: NodeId): string => listName(settings, id, states);
+  const name = (ref: NodeRef, side: "in" | "out"): string => endName(settings, ref, side, states);
   const describe = (link: NodeLink): string =>
     link.to.node === node
-      ? `${link.to.port === "key" ? "Key" : "Picture"} from ${name(link.from.node)}`
-      : `${link.from.port === "key" ? "Key" : "Picture"} to ${name(link.to.node)}`;
+      ? `${link.to.port === "key" ? "Key" : "Picture"} from ${name(link.from, "out")}`
+      : `${link.from.port === "key" ? "Key" : "Picture"} to ${name(link.to, "in")}`;
 
   // Rename puts a text box on the card. It opens once the menu has closed and is gone (the menu keeps the focus until then, and takes it
   // back to its button when it closes: not this time, the text box has it).
@@ -94,7 +99,7 @@ export function NodeMoreMenu({ settings, node, onRename, onMoveEarlier, onMoveLa
             Rename
           </DropdownMenuItem>
         ) : null}
-        {corrector && node !== MAIN_ID ? (
+        {corrector && !glyph && node !== MAIN_ID ? (
           <>
             <DropdownMenuItem disabled={reorder.earlier !== null} onSelect={onMoveEarlier}>
               Move earlier
@@ -105,20 +110,24 @@ export function NodeMoreMenu({ settings, node, onRename, onMoveEarlier, onMoveLa
           </>
         ) : null}
         {corrector ? <DropdownMenuSeparator /> : null}
-        {submenu(
-          "Link picture to",
-          pictureTo.map((to) => (
-            <DropdownMenuItem key={`${to.node}:${to.port}`} onSelect={() => onLink({ node, port: "picture" }, to)}>
-              {name(to.node)}
-            </DropdownMenuItem>
-          )),
-        )}
-        {corrector
+        {outputs.map((port) => (
+          <Fragment key={port}>
+            {submenu(
+              port === "picture" ? "Link picture to" : `Link ${port} to`,
+              pictureTo(port).map((to) => (
+                <DropdownMenuItem key={`${to.node}:${to.port}`} onSelect={() => onLink({ node, port }, to)}>
+                  {name(to, "in")}
+                </DropdownMenuItem>
+              )),
+            )}
+          </Fragment>
+        ))}
+        {item?.kind === "corrector" || item?.kind === "film"
           ? submenu(
               "Link key to",
               keyTo.map((to) => (
                 <DropdownMenuItem key={`${to.node}:${to.port}`} onSelect={() => onLink({ node, port: "key" }, to)}>
-                  {name(to.node)}
+                  {name(to, "in")}
                 </DropdownMenuItem>
               )),
             )

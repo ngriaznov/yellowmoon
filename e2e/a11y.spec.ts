@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { configureMock, openApp, openPhotos, setValue } from "./helpers/app";
-import { FOUR_NODES, GRADED_NODES } from "./helpers/states";
+import { FOUR_NODES, GRADED_NODES, LAYER_GRAPH, mixerView, TRIO_GRAPH } from "./helpers/states";
 
 // Accessibility basics (docs/11, a preview of M4-04) in a real browser: every control has a role and a name, every screen has one
 // main landmark, the keyboard alone gets through the main flow, and every stop of the Tab order shows the 3 px focus ring.
@@ -101,9 +101,37 @@ test.describe("the node view", () => {
     await expect(page.getByRole("menu", { name: "Add node" })).toBeVisible();
     snapshot = await expectNamed(page, "the Add node menu");
     for (const name of ["Corrector", "Parallel", "Layer", "Splitter and combiner"]) expect(snapshot, name).toContain(`- menuitem "${name}`);
+    // The items of `docs/25` are on (`aria-disabled` only at the node limit).
     for (const name of ["Parallel", "Layer", "Splitter and combiner"]) {
-      await expect(page.getByRole("menuitem", { name: new RegExp(`^${name}`) })).toHaveAttribute("aria-disabled", "true");
+      await expect(page.getByRole("menuitem", { name: new RegExp(`^${name}`) })).not.toHaveAttribute("aria-disabled", "true");
     }
+  });
+
+  test("the nodes of docs/25: every card is named with its inputs, the panels' rows and menus are named, the off buttons say why", async ({ page }) => {
+    await mixerView(page, LAYER_GRAPH, 5);
+    let snapshot = await expectNamed(page, "a Layer");
+    expect(snapshot).toContain('- button "Layer, mixer with 3 inputs, from node 2, node 3 and node 4" [pressed]');
+    // The "+" ports and the links are for the pointer: no Tab stop and nothing for a screen reader to list.
+    expect(snapshot).not.toMatch(/plus/i);
+    // The Layer's rows are named and focusable, with the order in their name; Mode and Opacity are named; Show mask is off and says why.
+    expect(snapshot).toContain('"Input 3, 04 Sky, on top"');
+    expect(snapshot).toContain('"Input 1, 02 Warmth, below"');
+    expect(snapshot).toContain('- combobox "Blend mode"');
+    expect(snapshot).toContain('- textbox "Opacity value"');
+    expect(await page.getByRole("button", { name: "Show mask" }).getAttribute("aria-disabled")).toBe("true");
+    // A row's menu is named.
+    await page.locator('[data-input-row="2"]').click({ button: "right" });
+    snapshot = await expectNamed(page, "a Layer row's menu");
+    for (const name of ["Move up", "Move down", "Remove input"]) expect(snapshot, name).toContain(`- menuitem "${name}"`);
+    await page.keyboard.press("Escape");
+    // The Splitter and the Combiner: names with their channels, and the off buttons with their reasons.
+    await mixerView(page, TRIO_GRAPH, 2);
+    snapshot = await expectNamed(page, "a Splitter");
+    expect(snapshot).toContain('- button "Splitter, picture from node 1" [pressed]');
+    expect(snapshot).toContain('- button "Combiner, red from node 2, green from node 3, blue from node 4"');
+    await expect(page.getByRole("button", { name: "Bypass", exact: true })).toHaveAccessibleDescription("A splitter or a combiner can't be bypassed.");
+    await expect(page.getByRole("button", { name: "Reset this node" })).toHaveAccessibleDescription("This node has nothing to reset.");
+    await expect(page.getByRole("button", { name: "Show mask" })).toHaveAccessibleDescription("This node has no mask.");
   });
 
   test("the graph with nodes: every card is named with its number, name, masks and what feeds it; the More menu and its lists are named; a link's menu too", async ({ page }) => {

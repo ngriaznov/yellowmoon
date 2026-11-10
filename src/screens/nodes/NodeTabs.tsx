@@ -26,6 +26,8 @@ import type { TabProps } from "../tools/shared";
 import { OUTPUT_FILM_NOTE } from "./filmData";
 import { FilmCard, GrainTab, HalationTab, PrintTab } from "./FilmTabs";
 import { MaskTab } from "./MaskTab";
+import { ChannelsTab, LayerBlendTab, ParallelInputsTab } from "./MixerTabs";
+import type { NodeGraphActions } from "./useNodeGraph";
 
 // ---- The Input ------------------------------------------------------------------------------------------------------------------------
 
@@ -200,10 +202,12 @@ export interface NodeTabProps extends TabProps {
   onPickRange: (on: boolean) => void;
   pickingDepth?: boolean;
   onPickDepth?: (on: boolean) => void;
+  /** What a row of a mixer's Inputs card does (`docs/25` §5.5). */
+  graph?: NodeGraphActions;
 }
 
 /** The cards of one tab of one node: the Input's (`node` `"input"`), the Output's (`"output"`) or a corrector's. */
-export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite, pickingColor, onPickColor, pickingRange, onPickRange, pickingDepth, onPickDepth }: NodeTabProps) {
+export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite, pickingColor, onPickColor, pickingRange, onPickRange, pickingDepth, onPickDepth, graph }: NodeTabProps) {
   if (node === "input") {
     switch (tab) {
       case "lens":
@@ -222,6 +226,11 @@ export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite
     return tab === "detail" ? <OutputDetailTab store={store} photo={photo} rs={rs} /> : <OutputLookTab store={store} photo={photo} rs={rs} />;
   }
   const item = nodeOf(rs.settings, node);
+  if (typeof node === "number" && graph && (item?.kind === "parallel" || item?.kind === "layer" || item?.kind === "splitter" || item?.kind === "combiner")) {
+    if (item.kind === "parallel") return <ParallelInputsTab store={store} photo={photo} rs={rs} node={node} graph={graph} />;
+    if (item.kind === "layer") return <LayerBlendTab store={store} photo={photo} rs={rs} node={node} graph={graph} />;
+    return <ChannelsTab rs={rs} node={node} />;
+  }
   if (item?.kind === "film") {
     switch (tab) {
       case "print":

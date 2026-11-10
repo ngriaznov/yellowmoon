@@ -4,11 +4,12 @@ import type { KeyboardEvent, ReactNode } from "react";
 import { Input } from "@/components/glass/input";
 import type { DevelopSettings, NodeId } from "../../api/types";
 import { Button, panelKindOf } from "../../components";
-import { cardStates, chipText, headLine } from "../../state/graphOps";
-import { nodeOf } from "../../state/settingsGraph";
+import { cardStates, chipText, GRAPH_OP_TEXT, headLine } from "../../state/graphOps";
+import { isGlyphItem, nodeOf } from "../../state/settingsGraph";
+import { KindGlyph } from "./GlyphCard";
 
 /** The tooltip and accessible name of the head's Reset, by kind of node (`docs/23` §7.5). */
-const RESET_TEXT = { input: "Reset input", output: "Reset output", corrector: "Reset this node", film: "Reset this node" } as const;
+const RESET_TEXT = { input: "Reset input", output: "Reset output", corrector: "Reset this node", film: "Reset this node", parallel: "Reset this node", layer: "Reset this node", splitter: "Reset this node", combiner: "Reset this node" } as const;
 
 export interface NodeHeadProps {
   settings: DevelopSettings;
@@ -46,7 +47,12 @@ export function NodeHead({ settings, node, renaming, onStartRename, onRename, on
   }, [renaming]);
   if (!item) return null;
   const states = cardStates(settings);
-  const corrector = item.kind === "corrector" || item.kind === "film";
+  const glyph = isGlyphItem(item);
+  // Every node but the Input and the Output has a name, a number or a glyph in the chip, and is renamed and bypassed (a Splitter and a Combiner cannot be).
+  const corrector = item.kind === "corrector" || item.kind === "film" || glyph;
+  const noBypass = item.kind === "splitter" || item.kind === "combiner";
+  // A Parallel, a Splitter and a Combiner have nothing to reset (`docs/25` §5.5).
+  const nothingToReset = item.kind === "parallel" || item.kind === "splitter" || item.kind === "combiner";
   const title = item.kind === "input" ? "Input" : item.kind === "output" ? "Output" : item.name;
   const finish = (value: string | null, restoreFocus: boolean): void => {
     if (finished.current) return;
@@ -68,8 +74,8 @@ export function NodeHead({ settings, node, renaming, onStartRename, onRename, on
   };
   return (
     <div className="ym-nodehead" role="group" aria-label="Node" data-kind={item.kind}>
-      <span className="ym-nodehead__chip" data-lock={!corrector || undefined}>
-        {corrector ? chipText(states.get(item.id as number)?.number ?? 0) : <LockIcon aria-hidden="true" />}
+      <span className="ym-nodehead__chip" data-lock={!corrector || undefined} data-glyph={glyph || undefined}>
+        {glyph ? <KindGlyph kind={item.kind} /> : corrector ? chipText(states.get(item.id as number)?.number ?? 0) : <LockIcon aria-hidden="true" />}
       </span>
       <div className="ym-nodehead__text">
         {renaming && corrector ? (
@@ -101,15 +107,22 @@ export function NodeHead({ settings, node, renaming, onStartRename, onRename, on
         {corrector ? (
           <Button
             variant="header"
-            pressed={item.bypass}
+            pressed={"bypass" in item && item.bypass}
+            disabled={noBypass}
             className="ym-nodehead__btn"
             aria-label="Bypass this node"
-            title="Bypass this node (B)"
+            title={noBypass ? GRAPH_OP_TEXT.glyphNoBypass : "Bypass this node (B)"}
             icon={<BanIcon aria-hidden="true" />}
             onClick={onBypass}
           />
         ) : null}
-        <Button variant="header" className="ym-nodehead__btn" aria-label={RESET_TEXT[panelKindOf(item.kind)]} title={RESET_TEXT[panelKindOf(item.kind)]} icon={<RotateCcwIcon aria-hidden="true" />} onClick={onReset} />
+        <Button
+          variant="header"
+          className="ym-nodehead__btn"
+          disabled={nothingToReset}
+          aria-label={RESET_TEXT[panelKindOf(item.kind)]}
+          title={nothingToReset ? GRAPH_OP_TEXT.nothingToReset : RESET_TEXT[panelKindOf(item.kind)]}
+          icon={<RotateCcwIcon aria-hidden="true" />} onClick={onReset} />
         {more}
       </div>
     </div>

@@ -155,7 +155,10 @@ describe("the tabs of the node view (docs/23 §7.5)", () => {
     expect(NODE_TABS.input).toEqual(["raw", "lens", "light", "color", "detail"]);
     expect(NODE_TABS.corrector).toEqual(["light", "color", "curve", "mask"]);
     expect(NODE_TABS.output).toEqual(["look", "detail"]);
-    expect(Object.values(FIRST_NODE_TAB)).toEqual(["raw", "light", "film", "look"]);
+    expect(Object.values(FIRST_NODE_TAB)).toEqual(["raw", "light", "film", "look", "inputs", "blend", "channels", "channels"]);
+    // The nodes of `docs/25` have one tab each (§5.5): Inputs, Blend and Channels twice.
+    expect([NODE_TABS.parallel, NODE_TABS.layer, NODE_TABS.splitter, NODE_TABS.combiner]).toEqual([["inputs"], ["blend"], ["channels"], ["channels"]]);
+    expect(tabInfo("blend").label).toBe("Blend");
     expect(NODE_TABS.film).toEqual(["film", "print", "halation", "grain", "mask"]);
     expect(tabInfo("mask")).toBe(MASK_TAB);
     // The simple view's seven stay seven: Mask is the node view's.

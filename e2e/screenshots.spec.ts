@@ -4,7 +4,7 @@ import type { MockOptions } from "../src/api.mock";
 import type { GradePatch } from "../src/api/types";
 import { configureMock, lookTilesLoaded, openApp, openPhotos, showUpdateReady } from "./helpers/app";
 import { compareScreen } from "./helpers/compare";
-import { FOUR_NODES, GRADED_NODES, ROWS_07B, WARP_PINS } from "./helpers/states";
+import { FOUR_NODES, GRADED_NODES, LAYER_GRAPH, mixerView, PARALLEL_GRAPH, ROWS_07B, TRIO_GRAPH, WARP_PINS } from "./helpers/states";
 
 /** A manual contrast or saturation (`docs/19` section 5: Auto or a value). */
 const manual = (value: number) => ({ kind: "manual", value }) as const;
@@ -384,6 +384,63 @@ test.describe("Photos", () => {
     await expect(page.getByRole("button", { name: "Pick white" })).toBeVisible();
     await cardPicturesMade(page, 4);
     await compareScreen(page, "photos-nodes-input-colour");
+  });
+
+  // The nodes of docs/25 (X-06; design/mixers/). The mixers' pictures are the mock's approximation (`src/fixtures/mixers.ts`).
+  test("The mixers: the Add node menu with its three items live (photos-mixers-add-node.png)", async ({ page }) => {
+    await mixerView(page, PARALLEL_GRAPH, 4);
+    await cardPicturesMade(page, 3);
+    await page.getByRole("button", { name: "Add node" }).click();
+    await expect(page.getByRole("menuitem", { name: /^Splitter and combiner/ })).toBeVisible();
+    await page.getByRole("menuitem", { name: /^Parallel/ }).hover();
+    await dialogsSettled(page);
+    await compareScreen(page, "photos-mixers-add-node");
+  });
+
+  test("The mixers: a Parallel of two branches, its Inputs tab (photos-mixers-parallel.png)", async ({ page }) => {
+    await mixerView(page, PARALLEL_GRAPH, 4);
+    await cardPicturesMade(page, 3);
+    await compareScreen(page, "photos-mixers-parallel");
+  });
+
+  test("The mixers: a Layer, its Blend tab (photos-mixers-layer.png)", async ({ page }) => {
+    await mixerView(page, LAYER_GRAPH, 5);
+    await cardPicturesMade(page, 4);
+    await compareScreen(page, "photos-mixers-layer");
+  });
+
+  test("The mixers: the Layer's Mode menu (photos-mixers-layer-mode.png)", async ({ page }) => {
+    await mixerView(page, LAYER_GRAPH, 5);
+    await cardPicturesMade(page, 4);
+    await page.getByRole("combobox", { name: "Blend mode" }).click();
+    await expect(page.getByRole("option")).toHaveCount(7);
+    await dialogsSettled(page);
+    await compareScreen(page, "photos-mixers-layer-mode");
+  });
+
+  test("The mixers: the Splitter and the Combiner, the Splitter's Channels tab (photos-mixers-splitter.png)", async ({ page }) => {
+    await mixerView(page, TRIO_GRAPH, 2);
+    await cardPicturesMade(page, 4);
+    await compareScreen(page, "photos-mixers-splitter");
+  });
+
+  test("The mixers: the Combiner's Channels tab (photos-mixers-combiner.png)", async ({ page }) => {
+    await mixerView(page, TRIO_GRAPH, 6);
+    await cardPicturesMade(page, 4);
+    await compareScreen(page, "photos-mixers-combiner");
+  });
+
+  test("The mixers: a link dragged onto a mixer's '+' (photos-mixers-link-to-plus.png)", async ({ page }) => {
+    await mixerView(page, PARALLEL_GRAPH, 4);
+    await cardPicturesMade(page, 3);
+    const from = (await page.locator('.ym-port__hit[data-port-node="3"][data-port-name="picture"][data-port-side="out"]').boundingBox())!;
+    const plus = (await page.locator('.ym-port__hit[data-port-node="4"][data-port-name="picture.3"][data-port-side="in"]').boundingBox())!;
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(plus.x + plus.width / 2, plus.y + plus.height / 2, { steps: 12 });
+    await expect(page.locator('.ym-port[data-plus="true"][data-hover]')).toHaveCount(1);
+    await page.waitForTimeout(200);
+    await compareScreen(page, "photos-mixers-link-to-plus");
   });
 
   test("The node view: the Output selected, its Look tab with the Look card (photos-nodes-output-look.png)", async ({ page }) => {

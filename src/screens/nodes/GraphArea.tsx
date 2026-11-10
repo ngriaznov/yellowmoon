@@ -1,8 +1,8 @@
 import { Maximize2Icon } from "lucide-react";
 import type { DevelopSettings, NodeId } from "../../api/types";
 import { Button } from "../../components";
-import { GRAPH_OP_TEXT, MAX_CORRECTORS } from "../../state/graphOps";
-import { cardsOf, INPUT_ID, MAIN_ID, nodeOf, OUTPUT_ID } from "../../state/settingsGraph";
+import { GRAPH_OP_TEXT } from "../../state/graphOps";
+import { INPUT_ID, isGlyphItem, MAIN_ID, nodeOf, numberedOf, OUTPUT_ID } from "../../state/settingsGraph";
 import { AddNodeMenu } from "./AddNodeMenu";
 import { NodeGraph } from "./NodeGraph";
 import { PhotoSwitcher } from "./PhotoSwitcher";
@@ -49,21 +49,31 @@ function deleteReason(id: NodeId, link: boolean): string | null {
  */
 export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, expanded, onToggleExpanded, dimmed, maskOn = false, onToggleMask, hidden = false, ...switcher }: GraphAreaProps) {
   const node = settings ? nodeOf(settings, selected) : undefined;
-  const count = settings ? cardsOf(settings).length : 0;
+  const count = settings ? numberedOf(settings).length : 0;
   const isCard = node?.kind === "corrector" || node?.kind === "film";
-  const bypassOff = !isCard;
+  // A Splitter and a Combiner have no Bypass and no mask; a Parallel and a Layer have Bypass and no mask (`docs/25` §5.5).
+  const noBypassKind = node?.kind === "splitter" || node?.kind === "combiner";
+  const bypassOff = !isCard && !(isGlyphItem(node) && !noBypassKind);
   const deleteOff = deleteReason(selected, graph.selectedLink !== null);
   // The Input and the Output have no mask: the view's on or off is kept and applies again on a corrector.
   const maskOff = !isCard;
+  const maskOffReason = isGlyphItem(node) ? GRAPH_OP_TEXT.glyphNoMask : GRAPH_OP_TEXT.noMask;
   return (
     <section aria-label="Node editor" className="ym-graph" data-dimmed={dimmed || undefined} inert={dimmed || hidden || undefined} hidden={hidden || undefined}>
       <div role="group" aria-label="Graph tools" className="ym-graph__bar">
-        <AddNodeMenu onAddCorrector={settings ? graph.addCorrector : undefined} onAddFilm={settings ? graph.addFilm : undefined} blocked={count >= MAX_CORRECTORS ? GRAPH_OP_TEXT.tooMany : null} />
+        <AddNodeMenu
+          onAddCorrector={settings ? graph.addCorrector : undefined}
+          onAddFilm={settings ? graph.addFilm : undefined}
+          onAddParallel={settings ? graph.addParallel : undefined}
+          onAddLayer={settings ? graph.addLayer : undefined}
+          onAddTrio={settings ? graph.addTrio : undefined}
+          count={count}
+        />
         <Button
           variant="header"
-          pressed={(node?.kind === "corrector" || node?.kind === "film") && node.bypass}
+          pressed={node !== undefined && "bypass" in node && node.bypass}
           disabled={bypassOff}
-          title={bypassOff ? GRAPH_OP_TEXT.noBypass : "Bypass this node (B)"}
+          title={bypassOff ? (noBypassKind ? GRAPH_OP_TEXT.glyphNoBypass : GRAPH_OP_TEXT.noBypass) : "Bypass this node (B)"}
           onClick={graph.toggleBypass}
         >
           Bypass
@@ -77,7 +87,7 @@ export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, ex
           variant="header"
           pressed={maskOn && !maskOff}
           disabled={maskOff}
-          title={maskOff ? GRAPH_OP_TEXT.noMask : "Show mask (M)"}
+          title={maskOff ? maskOffReason : "Show mask (M)"}
           onClick={onToggleMask}
         >
           Show mask

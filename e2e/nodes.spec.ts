@@ -385,7 +385,7 @@ test.describe("the toolbar and the photo switcher", () => {
     await expect(page.locator(".ym-graph__canvas")).toHaveAttribute("data-selected-node", "1");
   });
 
-  test("the Add node menu opens upward over the photo, with Corrector and Film, then the three that come later", async ({ page }) => {
+  test("the Add node menu opens upward over the photo, with Corrector and Film, then the three mixer items, all on", async ({ page }) => {
     await photos(page);
     await nodesButton(page).click();
     const button = page.getByRole("button", { name: "Add node" });
@@ -402,10 +402,15 @@ test.describe("the toolbar and the photo switcher", () => {
     await expect(menu.getByRole("menuitem").nth(1)).toContainText("Film");
     await expect(menu.getByRole("menuitem").nth(1)).toContainText("Models a colour negative, a print and a scan.");
     await expect(menu.getByRole("menuitem").nth(1)).not.toHaveAttribute("aria-disabled", "true");
-    for (const name of ["Parallel", "Layer", "Splitter and combiner"]) {
+    for (const [name, line] of [
+      ["Parallel", "Grade branches side by side."],
+      ["Layer", "Blend one branch over another."],
+      ["Splitter and combiner", "Split a picture, then join it again."],
+    ]) {
       const item = menu.getByRole("menuitem", { name: new RegExp(`^${name}`) });
-      await expect(item).toHaveAttribute("aria-disabled", "true");
-      await expect(item).toContainText("Later");
+      await expect(item).not.toHaveAttribute("aria-disabled", "true");
+      await expect(item).toContainText(line as string);
+      await expect(item).not.toContainText("Later");
     }
     await page.keyboard.press("Escape");
     await expect(menu).toHaveCount(0);

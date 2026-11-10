@@ -269,6 +269,63 @@ async function colourWarp(page: Page): Promise<void> {
 /** A state: its name and what leaves a page in it. */
 export type PageState = readonly [name: string, open: (page: Page) => Promise<void>];
 
+// ---------------------------------------------------------------------------------------------------------------------------------
+// The nodes of docs/25 (X-06, design/mixers/): the mixers' graphs on the mock API, in the node view with one node selected.
+// ---------------------------------------------------------------------------------------------------------------------------------
+
+type MixerLink = [string | number, string | number, string?, string?];
+const mixerLinks = (list: MixerLink[]) => list.map(([from, to, toPort = "picture", fromPort = "picture"]) => ({ from: { node: from, port: fromPort }, to: { node: to, port: toPort } }));
+
+/** Main feeds Skin (2) and Sky (3), the two inputs of a Parallel (4) that feeds the Output (`design/mixers/02-parallel.jpg`). */
+export const PARALLEL_GRAPH = {
+  nodes: {
+    "2": { kind: "corrector", name: "Skin", pos: [1, -0.5], trim: { exposure_ev: 0.3 }, masks: { invert: false, items: [{ kind: "radial", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.5, 0.5], radii: [0.3, 0.2], angle_deg: 0, feather: 0.45 }] } },
+    "3": { kind: "corrector", name: "Sky", pos: [1, 0.5], trim: { temperature: -20 }, masks: { invert: false, items: [{ kind: "linear", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.5, 0.3], angle_deg: 0, feather: 0.25 }] } },
+    "4": { kind: "parallel", pos: [2, 0] },
+  },
+  links: mixerLinks([["input", 1], [1, 2], [1, 3], [2, 4, "picture.1"], [3, 4, "picture.2"], [4, "output"]]),
+};
+
+/** Main feeds Warmth (2), Glow (3) and Sky (4): the three inputs of a Layer (5) (`design/mixers/03-layer-blend.jpg`). */
+export const LAYER_GRAPH = {
+  nodes: {
+    "2": { kind: "corrector", name: "Warmth", pos: [1, -1], trim: { temperature: 25 } },
+    "3": { kind: "corrector", name: "Glow", pos: [1, 0], trim: { exposure_ev: 0.5 }, masks: { invert: false, items: [{ kind: "radial", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.7, 0.3], radii: [0.3, 0.2], angle_deg: 0, feather: 0.6 }] } },
+    "4": { kind: "corrector", name: "Sky", pos: [1, 1], trim: { temperature: -20 }, masks: { invert: false, items: [{ kind: "linear", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.5, 0.3], angle_deg: 0, feather: 0.25 }] } },
+    "5": { kind: "layer", pos: [2, 0] },
+  },
+  links: mixerLinks([["input", 1], [1, 2], [1, 3], [1, 4], [2, 5, "picture.1"], [3, 5, "picture.2"], [4, 5, "picture.3"], [5, "output"]]),
+};
+
+/** What the Splitter-and-combiner item makes of Main alone, with Red lifted and Blue lowered (`design/mixers/05-splitter-and-combiner.jpg`). */
+export const TRIO_GRAPH = {
+  nodes: {
+    "2": { kind: "splitter", pos: [1, 0] },
+    "3": { kind: "corrector", name: "Red", pos: [2, -1], trim: { exposure_ev: 0.2 } },
+    "4": { kind: "corrector", name: "Green", pos: [2, 0] },
+    "5": { kind: "corrector", name: "Blue", pos: [2, 1], trim: { exposure_ev: -0.2 } },
+    "6": { kind: "combiner", pos: [3, 0] },
+  },
+  links: mixerLinks([
+    ["input", 1], [1, 2], [2, 3, "picture", "red"], [2, 4, "picture", "green"], [2, 5, "picture", "blue"],
+    [3, 6, "red"], [4, 6, "green"], [5, 6, "blue"], [6, "output"],
+  ]),
+};
+
+/** The node view of the mockup's photo with this graph (Main has the mockup's grade), the node `select` clicked, once the pictures are made. */
+export async function mixerView(page: Page, graph: { nodes: Record<string, unknown>; links: unknown[] }, select: number | string, tab?: string): Promise<void> {
+  await openApp(page, MOCKUP);
+  await configureMock(page, { initialSettings: { DSC04204: { nodes: { "1": { grade: MOCKUP_GRADE }, ...graph.nodes }, links: graph.links } } as never });
+  await openPhotos(page);
+  await showUpdateReady(page);
+  await page.getByRole("button", { name: "Nodes", exact: true }).click();
+  await expect(page.locator(`[data-node-card="${select}"]`)).toBeVisible();
+  await page.locator(`[data-node-card="${select}"]`).click();
+  await expect(page.locator(`[data-node-card="${select}"]`)).toHaveAttribute("aria-pressed", "true");
+  if (tab) await page.getByRole("tab", { name: tab, exact: true }).click();
+  await page.waitForTimeout(500);
+}
+
 export const STATES: readonly PageState[] = [
   ["01-start-empty", (p) => start(p)],
   [
@@ -902,6 +959,82 @@ export const STATES: readonly PageState[] = [
       await expect(dialog).toBeVisible();
       await expect(dialog.getByRole("region", { name: "Film" })).toContainText("CC BY-SA 4.0");
       await p.waitForTimeout(400);
+    },
+  ],
+  // The nodes of docs/25 (X-06; design/mixers 01 to 07 and the sheet of card states). The Add node menu with its three items live (77); a Parallel of two
+  // branches with its Inputs tab (78); a Layer with its Blend tab (79) and its Mode menu open (80); the Splitter-and-combiner trio with the Splitter's Channels tab (81)
+  // and the Combiner's (82); a link dragged onto a mixer's "+" (83); and a graph with a bypassed Parallel selected and a dead Layer (84).
+  [
+    "77-mixers-add-node-menu",
+    async (p) => {
+      await mixerView(p, PARALLEL_GRAPH, 4);
+      await p.getByRole("button", { name: "Add node" }).click();
+      await expect(p.getByRole("menuitem", { name: /^Splitter and combiner/ })).toBeVisible();
+      await p.getByRole("menuitem", { name: /^Parallel/ }).hover();
+      await p.waitForTimeout(300);
+    },
+  ],
+  [
+    "78-mixers-parallel-inputs",
+    async (p) => {
+      await mixerView(p, PARALLEL_GRAPH, 4);
+      await expect(p.getByRole("tab", { name: "Inputs" })).toHaveAttribute("aria-selected", "true");
+    },
+  ],
+  [
+    "79-mixers-layer-blend",
+    async (p) => {
+      await mixerView(p, LAYER_GRAPH, 5);
+      await expect(p.getByRole("tab", { name: "Blend" })).toHaveAttribute("aria-selected", "true");
+    },
+  ],
+  [
+    "80-mixers-layer-mode-menu",
+    async (p) => {
+      await mixerView(p, LAYER_GRAPH, 5);
+      await p.getByRole("combobox", { name: "Blend mode" }).click();
+      await expect(p.getByRole("option")).toHaveCount(7);
+      await p.waitForTimeout(300);
+    },
+  ],
+  [
+    "81-mixers-splitter-channels",
+    async (p) => {
+      await mixerView(p, TRIO_GRAPH, 2);
+      await expect(p.getByRole("tab", { name: "Channels" })).toHaveAttribute("aria-selected", "true");
+    },
+  ],
+  [
+    "82-mixers-combiner-channels",
+    async (p) => {
+      await mixerView(p, TRIO_GRAPH, 6);
+      await expect(p.getByText(/^Makes one picture/)).toBeVisible();
+    },
+  ],
+  [
+    "83-mixers-link-to-plus",
+    async (p) => {
+      await mixerView(p, PARALLEL_GRAPH, 4);
+      const from = (await p.locator('.ym-port__hit[data-port-node="3"][data-port-name="picture"][data-port-side="out"]').boundingBox())!;
+      const plus = (await p.locator('.ym-port__hit[data-port-node="4"][data-port-name="picture.3"][data-port-side="in"]').boundingBox())!;
+      await p.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+      await p.mouse.down();
+      await p.mouse.move(plus.x + plus.width / 2, plus.y + plus.height / 2, { steps: 12 });
+      await expect(p.locator('.ym-port[data-plus="true"][data-hover]')).toHaveCount(1);
+      await p.waitForTimeout(200);
+    },
+  ],
+  [
+    "84-mixers-card-states",
+    async (p) => {
+      // A bypassed Parallel selected, a dead Layer (the Output does not need it) and a Combiner with an input left unlinked.
+      const graph = {
+        nodes: { ...PARALLEL_GRAPH.nodes, "4": { kind: "parallel", pos: [2, 0], bypass: true }, "5": { kind: "layer", pos: [2, 1.6] } },
+        links: [...PARALLEL_GRAPH.links, ...mixerLinks([[1, 5, "picture.1"], [3, 5, "picture.2"]])],
+      };
+      await mixerView(p, graph, 4);
+      await expect(p.locator(".ym-gnode[data-bypass]")).toHaveCount(1);
+      await expect(p.locator(".ym-gnode[data-dead]")).toHaveCount(1);
     },
   ],
   // The simple view of a photo that has four nodes (docs/23 section 6, N-07; screen 04 of design/nodes): the notice under the tab row, with

@@ -9,8 +9,9 @@
  *
  * Pure functions, tested without a screen (`graphLayout.test.ts`).
  */
-import type { DevelopSettings, NodeId, NodeLink, NodePos, NodeRef } from "../../api/types";
-import { cardsOf, INPUT_ID, MAIN_ID, OUTPUT_ID } from "../../state/settingsGraph";
+import type { DevelopSettings, NodeId, NodeLink, NodePos, NodeRef, Port } from "../../api/types";
+import { CHANNEL_PORTS, inputNumber, isMixerKind, mixerPort, MIXER_INPUTS, portRank, portType } from "../../state/ports";
+import { INPUT_ID, MAIN_ID, nodeOf, numberedOf, OUTPUT_ID } from "../../state/settingsGraph";
 
 /** One grid unit, in pixels (`docs/23` §3.2). */
 export const UNIT_W = 214;
@@ -45,6 +46,68 @@ export interface XY {
 export interface Box extends XY {
   w: number;
   h: number;
+  /** Where the node's picture line is, from its top: a corrector's picture ports (56), a glyph card's middle. */
+  line?: number;
+  /** The ports of a glyph card, as the distance from its top to each port's centre, by `in:picture.1`, `out:red`. */
+  ports?: Readonly<Record<string, number>>;
+}
+
+/** A glyph card (a Parallel, a Layer, a Splitter, a Combiner; `docs/25` §5.2): 56 px wide, 64 high with two ports and 24 more for each further one. */
+export const GLYPH_W = 56;
+export const GLYPH_BASE_H = 64;
+export const GLYPH_PORT_STEP = 24;
+
+/** One port of a glyph card: its place from the card's top (the centre of its glyph), and whether it is the "+" that adds an input. */
+export interface PortSpot {
+  /** The port it stands for; for the "+" the next number, `picture.N+1`. */
+  port: Port;
+  y: number;
+  plus?: boolean;
+}
+
+/** The size of a glyph card and the places of its ports. */
+export interface GlyphGeometry {
+  w: number;
+  h: number;
+  inputs: PortSpot[];
+  outputs: PortSpot[];
+}
+
+/** The ports of a glyph card stacked 24 px apart and centred on `h / 2`. */
+function stacked(ports: readonly { port: Port; plus?: boolean }[], h: number): PortSpot[] {
+  return ports.map((p, i) => ({ ...p, y: h / 2 + (i - (ports.length - 1) / 2) * GLYPH_PORT_STEP }));
+}
+
+/**
+ * The size and ports of the card of a Parallel, a Layer, a Splitter or a Combiner, or null for any other node. A mixer shows its linked
+ * inputs in port order and, while it has fewer than 8, the "+" under them (an input with no link at all shows the "+" alone); a Splitter's
+ * outputs and a Combiner's inputs are red, green and blue from the top. The picture output is at the middle.
+ */
+export function glyphGeometry(settings: DevelopSettings, id: NodeId): GlyphGeometry | null {
+  const node = nodeOf(settings, id);
+  if (!node) return null;
+  let inputs: { port: Port; plus?: boolean }[];
+  let outputs: { port: Port }[];
+  if (isMixerKind(node.kind)) {
+    const linked = settings.nodes.links
+      .filter((l) => l.to.node === id && inputNumber(l.to.port) !== null)
+      .map((l) => l.to.port)
+      .sort((a, b) => portRank(a) - portRank(b));
+    inputs = linked.map((port) => ({ port }));
+    if (linked.length < MIXER_INPUTS) inputs.push({ port: mixerPort(linked.length + 1), plus: true });
+    outputs = [{ port: "picture" }];
+  } else if (node.kind === "splitter") {
+    inputs = [{ port: "picture" }];
+    outputs = CHANNEL_PORTS.map((port) => ({ port }));
+  } else if (node.kind === "combiner") {
+    inputs = CHANNEL_PORTS.map((port) => ({ port }));
+    outputs = [{ port: "picture" }];
+  } else {
+    return null;
+  }
+  const count = Math.max(inputs.length, outputs.length);
+  const h = GLYPH_BASE_H + GLYPH_PORT_STEP * Math.max(0, count - 2);
+  return { w: GLYPH_W, h, inputs: stacked(inputs, h), outputs: stacked(outputs, h) };
 }
 
 /** The place of every node. */
@@ -55,8 +118,17 @@ export interface GraphLayout {
 /** The top left of a card at this `pos`. */
 export const originOf = (pos: NodePos): XY => ({ x: pos[0] * UNIT_W, y: pos[1] * UNIT_H });
 
-/** The `pos` of a card whose top left is here: the grid units, as a drop turns them back. */
+/** The `pos` of a corrector or Film card whose top left is here: the grid units, as a drop turns them back. */
 export const posOf = (at: XY): NodePos => [at.x / UNIT_W, at.y / UNIT_H];
+
+/**
+ * The top left of a glyph card of height `h` at this `pos`: its `pos` is the card's middle line, the line of a corrector's picture ports
+ * (`design/mixers/mockup-notes.md`, question 3), so a Parallel between two correctors sits on their line.
+ */
+export const glyphOrigin = (pos: NodePos, h: number): XY => ({ x: pos[0] * UNIT_W, y: pos[1] * UNIT_H + PICTURE_PORT_Y - h / 2 });
+
+/** The `pos` of a glyph card of height `h` whose top left is here. */
+export const glyphPosOf = (at: XY, h: number): NodePos => [at.x / UNIT_W, (at.y + h / 2 - PICTURE_PORT_Y) / UNIT_H];
 
 /**
  * The boxes of every node: the cards where their `pos` puts them (or where `moved` says they are now, while one is dragged), the Input
@@ -65,7 +137,16 @@ export const posOf = (at: XY): NodePos => [at.x / UNIT_W, at.y / UNIT_H];
  */
 export function layoutGraph(settings: DevelopSettings, moved: ReadonlyMap<NodeId, XY> = new Map()): GraphLayout {
   const boxes = new Map<NodeId, Box>();
-  for (const node of cardsOf(settings)) {
+  for (const node of numberedOf(settings)) {
+    const glyph = glyphGeometry(settings, node.id);
+    if (glyph) {
+      const at = moved.get(node.id) ?? glyphOrigin(node.pos, glyph.h);
+      const ports: Record<string, number> = {};
+      for (const spot of glyph.inputs) if (!spot.plus) ports[`in:${spot.port}`] = spot.y;
+      for (const spot of glyph.outputs) ports[`out:${spot.port}`] = spot.y;
+      boxes.set(node.id, { x: at.x, y: at.y, w: glyph.w, h: glyph.h, line: glyph.h / 2, ports });
+      continue;
+    }
     const at = moved.get(node.id) ?? originOf(node.pos);
     boxes.set(node.id, { x: at.x, y: at.y, w: CARD_W, h: CARD_H });
   }
@@ -77,7 +158,7 @@ export function layoutGraph(settings: DevelopSettings, moved: ReadonlyMap<NodeId
   const feeding = (typeof feeder === "number" ? boxes.get(feeder) : undefined) ?? main;
   const around = (centre: number, row: Box | undefined): Box => ({
     x: centre - MARKER / 2,
-    y: (row?.y ?? 0) + PICTURE_PORT_Y - MARKER / 2,
+    y: (row?.y ?? 0) + (row?.line ?? PICTURE_PORT_Y) - MARKER / 2,
     w: MARKER,
     h: MARKER,
   });
@@ -98,7 +179,8 @@ export function portPoint(layout: GraphLayout, end: NodeRef, side: "out" | "in")
       ? { x: box.x + box.w + MARKER_SQUARE_OUT, y: box.y + box.h / 2 }
       : { x: box.x - MARKER_ARROW_OUT, y: box.y + box.h / 2 };
   }
-  const y = box.y + (end.port === "key" ? KEY_PORT_Y : PICTURE_PORT_Y);
+  const own = box.ports?.[`${side === "out" ? "out" : "in"}:${end.port}`];
+  const y = box.y + (own ?? (end.port === "key" ? KEY_PORT_Y : box.line ?? PICTURE_PORT_Y));
   // An output port is an 8 px square whose right edge is 4 px past the card's; an input port is a triangle that starts 9 px left of it.
   return side === "out" ? { x: box.x + box.w + 4, y } : { x: box.x - PORT_OUT, y };
 }
@@ -148,7 +230,7 @@ export const DROP_REACH = 22;
 export function linkUnder(layout: GraphLayout, links: readonly NodeLink[], dragged: NodeId, centre: XY): NodeLink | undefined {
   let best: { link: NodeLink; d: number } | undefined;
   for (const link of links) {
-    if (link.from.port !== "picture" || link.from.node === dragged || link.to.node === dragged) continue;
+    if (portType(link.from.port) !== "picture" || link.from.node === dragged || link.to.node === dragged) continue;
     if (link.to.node === MAIN_ID) continue;
     const d = distanceToLink(layout, link, centre);
     if (d <= DROP_REACH && (!best || d < best.d)) best = { link, d };
