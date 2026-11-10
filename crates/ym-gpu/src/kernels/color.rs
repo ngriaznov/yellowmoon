@@ -1133,7 +1133,8 @@ impl NodePlan {
         // The record has no row for a join yet (`docs/25` task X-05): the CPU makes the frame, with this reason.
         if plan.has_joins() {
             return Err(GpuError::InvalidInput(
-                "the colour kernel cannot run a mixer, a splitter or a combiner node yet".to_owned(),
+                "the colour kernel cannot run a mixer, a splitter or a combiner node yet"
+                    .to_owned(),
             ));
         }
         if plan.step_count() > MAX_STEPS {

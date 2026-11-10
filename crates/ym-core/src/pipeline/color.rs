@@ -1099,6 +1099,14 @@ fn blend_mode_of(mode: BlendMode) -> ym_color::display::BlendMode {
     }
 }
 
+/// What [`node_set`] gives: the nodes, the raster rows of their masks, the Film steps and the mixers' parameters.
+type NodeParts = (
+    NodeSet,
+    RasterSet,
+    std::collections::BTreeMap<u32, FilmStep>,
+    std::collections::BTreeMap<u32, JoinParams>,
+);
+
 /// The nodes of a photo for the chain: the plan to `stop` (the Output, or a node's mask for the mask view),
 /// Main's trim and bypass, and every other corrector the plan runs, with its own grade (no Auto), warp, curves
 /// and trim; and the raster rows of their masks, numbered across the nodes in the plan's order (a node's rows
@@ -1108,15 +1116,7 @@ fn node_set(
     stop: Stop,
     background: Option<&Arc<BlurMap>>,
     objects: Option<&Arc<ObjectPlanes>>,
-) -> Result<
-    (
-        NodeSet,
-        RasterSet,
-        std::collections::BTreeMap<u32, FilmStep>,
-        std::collections::BTreeMap<u32, JoinParams>,
-    ),
-    RenderError,
-> {
+) -> Result<NodeParts, RenderError> {
     let plan = node_plan(&s.nodes, stop)?;
     let mut rasters = RasterSet::default();
     let mut masks = std::collections::BTreeMap::new();
