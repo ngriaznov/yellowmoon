@@ -1239,10 +1239,17 @@ fn layer_with_masked_inputs() -> serde_json::Value {
 }
 
 /// The PNG 16 export of a graph through the app and through the binary: the same file (`graph_leg` covers JPEG, TIFF 16 and DNG).
-fn png16_leg(what: &str, doc: &serde_json::Value) {
+fn png16_leg(what: &str, doc: &serde_json::Value, device: bool) {
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");
-    let app = App::open(&[&arw]);
+    let app = if device {
+        let Some(app) = App::open_on_device(&[&arw]) else {
+            return;
+        };
+        app
+    } else {
+        App::open(&[&arw])
+    };
     let (settings, clamped) =
         DevelopSettings::from_value(doc.clone(), &app.core.looks.effective_default())
             .expect("settings");
@@ -1259,7 +1266,12 @@ fn png16_leg(what: &str, doc: &serde_json::Value) {
         ..ExportOptions::default()
     };
     let from_app = app.export(options, &sb.root().join("app-png"));
-    let from_cli = cli_export(
+    let env: &[(&str, &str)] = if device {
+        &[("YELLOWMOON_GPU", "on")]
+    } else {
+        &[]
+    };
+    let from_cli = cli_export_env(
         &sb,
         &[&arw],
         &[
@@ -1271,22 +1283,33 @@ fn png16_leg(what: &str, doc: &serde_json::Value) {
             file.to_str().expect("utf-8"),
         ],
         &sb.root().join("cli-png"),
+        env,
     );
     assert_same_files(&from_app, &from_cli, &format!("{what}, png16"));
 }
 
-/// Mixers, Splitters and Combiners (`docs/25` task X-04): the two example files of section 2.4 and a Layer with masked
-/// inputs are the same files through the app path and the binary, in JPEG, TIFF 16, PNG 16 and DNG. The CPU makes them on both
-/// sides: the device refuses a plan with these kinds until X-05, and says so.
+/// Mixers, Splitters and Combiners (`docs/25` tasks X-04 and X-05): the two example files of section 2.4 and a Layer with
+/// masked inputs are the same files through the app path and the binary, in JPEG, TIFF 16, PNG 16 and DNG.
 #[test]
 fn mixers_are_the_same_files_through_the_app_path_and_the_binary() {
+    mixers_leg(false);
+}
+
+/// The device leg (X-05): the app's core has the device and the binary `YELLOWMOON_GPU=on`; the colour pass runs the mixers on
+/// it on both sides, and the files are the same byte for byte.
+#[test]
+fn mixers_are_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
+    mixers_leg(true);
+}
+
+fn mixers_leg(device: bool) {
     for (what, doc, correctors) in [
         ("a parallel", parallel_example(), 3),
         ("a splitter and a combiner", splitter_example(), 4),
         ("a layer with masked inputs", layer_with_masked_inputs(), 3),
     ] {
-        graph_leg(what, doc.clone(), correctors, false);
-        png16_leg(what, &doc);
+        graph_leg(what, doc.clone(), correctors, device);
+        png16_leg(what, &doc, device);
     }
 }
 

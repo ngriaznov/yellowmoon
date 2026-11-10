@@ -917,6 +917,152 @@ fn plane_pic(plane: u32, n: u32, pix: u32) -> vec3<f32> {
     return vec3<f32>(pbuf[plane * n + pix], pbuf[(plane + 1u) * n + pix], pbuf[(plane + 2u) * n + pix]);
 }
 
+// ---- the mixers (docs/25 section 4.3) ------------------------------------------------------------------------------------
+
+// A picture input of a join: a reference (REF_*) to the Input's picture (`c8`), a register of this pass or the planes of `pbuf`.
+fn rd_pic(r: u32, c8: vec3<f32>, regs: ptr<function, array<vec3<f32>, PLAN_REGISTERS>>, n: u32, pix: u32) -> vec3<f32> {
+    let kind = r >> REF_SHIFT;
+    let at = r & REF_INDEX;
+    if (kind == REF_REGISTER) {
+        return (*regs)[at];
+    }
+    if (kind == REF_PICTURE) {
+        return plane_pic(at, n, pix);
+    }
+    return c8;
+}
+
+// A key (a Layer's alpha): a key slot of this pass or a plane of `pbuf`.
+fn rd_key(r: u32, slots: ptr<function, array<f32, PLAN_KEYS>>, n: u32, pix: u32) -> f32 {
+    if ((r >> REF_SHIFT) == REF_SLOT) {
+        return (*slots)[r & REF_INDEX];
+    }
+    return pbuf[(r & REF_INDEX) * n + pix];
+}
+
+// The record's references: picture input i (0 to 7) and alpha i, a vec4 lane picked by an integer.
+fn join_in(ni: u32, i: u32) -> u32 {
+    return nu(ni, R_JOIN + J_IN + (i >> 2u))[i & 3u];
+}
+
+fn join_al(ni: u32, i: u32) -> u32 {
+    return nu(ni, R_JOIN + J_AL + (i >> 2u))[i & 3u];
+}
+
+// A Layer input in linear AWG4: the Input's picture is C7 itself (no decode of an encode, as the CPU's `Source::linear`), any
+// other picture is decoded with LogC4. A view (`px_fast()`, an integer word) uses the plain decode the trims use; an export the
+// compensated one of precise.wgsl, because a Layer subtracts what it decodes (Subtract and Difference of two bright layers
+// cancel to a small value whose code is steep; the device's exp2 is 45 ulp on Mesa) and Multiply doubles the relative error
+// (docs/25 section 4.3). Both are continuous across their toe (K8).
+fn join_lin(r: u32, c7: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
+    if ((r >> REF_SHIFT) == REF_INPUT) {
+        return c7;
+    }
+    if (px_fast()) {
+        return logc4_decode3(v);
+    }
+    return px_logc4_decode3(v);
+}
+
+fn join_enc(lin: vec3<f32>) -> vec3<f32> {
+    if (px_fast()) {
+        return logc4_encode3(lin);
+    }
+    return px_logc4_encode3(lin);
+}
+
+// The seven modes of a Layer on a linear triple (ym_color::display::mix::BlendMode::channel): `a` the stack below, `b` the
+// layer. `mode` is an integer the host wrote; no clamp.
+fn blend_mode(mode: u32, a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
+    if (mode == BM_ADD) {
+        return a + b;
+    }
+    if (mode == BM_SUBTRACT) {
+        return a - b;
+    }
+    if (mode == BM_MULTIPLY) {
+        return a * b;
+    }
+    if (mode == BM_LIGHTEN) {
+        return max(a, b);
+    }
+    if (mode == BM_DARKEN) {
+        return min(a, b);
+    }
+    if (mode == BM_DIFFERENCE) {
+        return abs(a - b);
+    }
+    return b;
+}
+
+// A Parallel (ym_color::display::mix::parallel): base + the sum of (input - base) in port order on LogC4 codes, skipping the
+// inputs the plan says are the base (an integer bit set, never a float compare). Each difference and each sum is behind the
+// OR barrier (K8): a fast-math compiler cannot re-associate `base + (v - base)` into `v`, so identical branches give the base's
+// bits. A bypassed Parallel (N_SKIP) is its base.
+fn join_parallel(ni: u32, c8: vec3<f32>, regs: ptr<function, array<vec3<f32>, PLAN_REGISTERS>>, n: u32, pix: u32) -> vec3<f32> {
+    let head = nu(ni, R_JOIN + J_HEAD);
+    let spec = nu(ni, R_JOIN + J_BASE);
+    let base = rd_pic(spec.x, c8, regs, n, pix);
+    if ((nu(ni, R_CTL).x & N_SKIP) != 0u) {
+        return base;
+    }
+    var acc = base;
+    for (var i = 0u; i < head.w; i++) {
+        if (((spec.y >> i) & 1u) != 0u) {
+            continue;
+        }
+        let v = rd_pic(join_in(ni, i), c8, regs, n, pix);
+        let d = vec3<f32>(px_op(v.x - base.x), px_op(v.y - base.y), px_op(v.z - base.z));
+        acc = vec3<f32>(px_op(acc.x + d.x), px_op(acc.y + d.y), px_op(acc.z + d.z));
+    }
+    return acc;
+}
+
+// A Layer (ym_color::display::mix::layer): input 0 is the opaque bottom; for each input above it an alpha (its key times the
+// opacity, or the opacity alone), alpha exactly 0 skips the layer, alpha exactly 1 takes the blend, anything else is
+// below + alpha (blend - below), in linear AWG4. With no layer shown the bottom input is returned as it is (no decode and no
+// encode). Both float tests choose between results that agree within rounding (K8, docs/17 section 13): the blend is
+// continuous in alpha at 1 and the sum is continuous at 0. A bypassed Layer (N_SKIP) is its bottom input.
+fn join_layer(ni: u32, c7: vec3<f32>, c8: vec3<f32>, regs: ptr<function, array<vec3<f32>, PLAN_REGISTERS>>, slots: ptr<function, array<f32, PLAN_KEYS>>, n: u32, pix: u32) -> vec3<f32> {
+    let head = nu(ni, R_JOIN + J_HEAD);
+    let spec = nu(ni, R_JOIN + J_BASE);
+    let r0 = join_in(ni, 0u);
+    let v0 = rd_pic(r0, c8, regs, n, pix);
+    if ((nu(ni, R_CTL).x & N_SKIP) != 0u) {
+        return v0;
+    }
+    let opacity = bitcast<f32>(spec.z);
+    var acc = vec3<f32>(0.0);
+    var shown = false;
+    for (var i = 1u; i < head.w; i++) {
+        let ar = join_al(ni, i);
+        var alpha = opacity;
+        if (ar != NODE_NONE) {
+            alpha = rd_key(ar, slots, n, pix) * opacity;
+        }
+        if (alpha == 0.0) {
+            continue;
+        }
+        var below = acc;
+        if (!shown) {
+            below = join_lin(r0, c7, v0);
+        }
+        let ri = join_in(ni, i);
+        let top = join_lin(ri, c7, rd_pic(ri, c8, regs, n, pix));
+        let blended = blend_mode(spec.w, below, top);
+        if (alpha == 1.0) {
+            acc = blended;
+        } else {
+            acc = below + alpha * (blended - below);
+        }
+        shown = true;
+    }
+    if (!shown) {
+        return v0;
+    }
+    return join_enc(acc);
+}
+
 // The steps of this pass in registers and key slots, then the plan's result (the value the Output reads). `c7` and `c8` are
 // the Input's picture, `pix` the pixel's place in the window (the planes of `pbuf` are window-sized), `pos` its place in the
 // photo frame (for the mask shapes).
@@ -940,6 +1086,66 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) 
         let ni = first + k;
         let wire = nu(ni, R_WIRE);
         let outs = nu(ni, R_OUTS);
+        if ((nu(ni, R_CTL).x & N_JOIN) != 0u) {
+            // A mixer, a Splitter or a Combiner (docs/25 section 3): every input is read before anything is written, so a
+            // step may write into a register its inputs leave. They have no mask and no key output.
+            let jk = nu(ni, R_JOIN + J_HEAD).z;
+            var jv = c8;
+            if (jk == JK_SPLITTER) {
+                let src = rd_pic(join_in(ni, 0u), c8, &regs, n, pix);
+                let sp0 = nu(ni, R_JOIN + J_SPLIT);
+                let sp1 = nu(ni, R_JOIN + J_SPLIT + 1u);
+                jv = vec3<f32>(src.x);
+                if (sp0.x != NODE_NONE) {
+                    regs[sp0.x] = vec3<f32>(src.x);
+                }
+                if (sp0.y != NODE_NONE) {
+                    pbuf[sp0.y * n + pix] = src.x;
+                    pbuf[(sp0.y + 1u) * n + pix] = src.x;
+                    pbuf[(sp0.y + 2u) * n + pix] = src.x;
+                }
+                if (sp0.z != NODE_NONE) {
+                    regs[sp0.z] = vec3<f32>(src.y);
+                }
+                if (sp0.w != NODE_NONE) {
+                    pbuf[sp0.w * n + pix] = src.y;
+                    pbuf[(sp0.w + 1u) * n + pix] = src.y;
+                    pbuf[(sp0.w + 2u) * n + pix] = src.y;
+                }
+                if (sp1.x != NODE_NONE) {
+                    regs[sp1.x] = vec3<f32>(src.z);
+                }
+                if (sp1.y != NODE_NONE) {
+                    pbuf[sp1.y * n + pix] = src.z;
+                    pbuf[(sp1.y + 1u) * n + pix] = src.z;
+                    pbuf[(sp1.y + 2u) * n + pix] = src.z;
+                }
+            } else {
+                if (jk == JK_PARALLEL) {
+                    jv = join_parallel(ni, c8, &regs, n, pix);
+                } else if (jk == JK_LAYER) {
+                    jv = join_layer(ni, c7, c8, &regs, &slots, n, pix);
+                } else {
+                    let ca = rd_pic(join_in(ni, 0u), c8, &regs, n, pix);
+                    let cb = rd_pic(join_in(ni, 1u), c8, &regs, n, pix);
+                    let cc = rd_pic(join_in(ni, 2u), c8, &regs, n, pix);
+                    jv = vec3<f32>(ca.x, cb.y, cc.z);
+                }
+                if (outs.x != NODE_NONE) {
+                    regs[outs.x] = jv;
+                }
+                if (outs.y != NODE_NONE) {
+                    pbuf[outs.y * n + pix] = jv.x;
+                    pbuf[(outs.y + 1u) * n + pix] = jv.y;
+                    pbuf[(outs.y + 2u) * n + pix] = jv.z;
+                }
+            }
+            if (ni == CU.stopn.x) {
+                // Stop 11 ends at a mixer's picture (a Splitter's is its red); a mixer has no mask to show.
+                return NodesOut(jv, CU.mode.x == 12u);
+            }
+            continue;
+        }
         var v_in = c8;
         var from_input = true;
         let kind = wire.x >> REF_SHIFT;
@@ -987,6 +1193,8 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) 
             m = node_mask(ni, v_in, c7, from_input, pos, rpix, key_in, has_key);
         }
         var out_v = nv;
+        // The graded value (docs/25 section 3.3): the picture before the mask blend, which a Layer above its first input reads.
+        var graded = nv;
         if (film) {
             // A Film node (docs/24 section 3.9c): the picture the Film passes made, in the first planes of `pbuf`, blended by the
             // node's mask times its Strength (`R_GAIN.x`), as the CPU's `run_film`: m is also the key output, bypass or not.
@@ -997,6 +1205,7 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) 
             m = m * nf(ni, R_GAIN).x;
             if ((ctl & N_FILM_LIVE) != 0u && m != 0.0) {
                 let made = plane_pic(nu(ni, R_CTL).w, n, pix);
+                graded = made;
                 if (m == 1.0) {
                     out_v = made;
                 } else {
@@ -1017,6 +1226,15 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) 
             pbuf[outs.y * n + pix] = out_v.x;
             pbuf[(outs.y + 1u) * n + pix] = out_v.y;
             pbuf[(outs.y + 2u) * n + pix] = out_v.z;
+        }
+        let gr = nu(ni, R_JOIN + J_HEAD);
+        if (gr.x != NODE_NONE) {
+            regs[gr.x] = graded;
+        }
+        if (gr.y != NODE_NONE) {
+            pbuf[gr.y * n + pix] = graded.x;
+            pbuf[(gr.y + 1u) * n + pix] = graded.y;
+            pbuf[(gr.y + 2u) * n + pix] = graded.z;
         }
         if (outs.z != NODE_NONE) {
             slots[outs.z] = m;

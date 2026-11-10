@@ -7,6 +7,7 @@ use ym_color::consts::{
     D65_XY, LOGC3_EI800, LOGC4, LOGC4_GRAY, LOGC4_STOP, REC709_LUMA_WEIGHTS, linalg::Mat3,
     xy_to_xyz,
 };
+use ym_color::display::BlendMode;
 use ym_color::display::cine;
 use ym_color::gamut::{awg4_luminance_row, matrices};
 use ym_color::grade::{
@@ -21,10 +22,11 @@ use ym_color::warp::{
 };
 
 use super::color::{
-    MASK_INVERT, MASK_ROW_VEC4, MASK_SUBTRACT, NODE_BLEND, NODE_CURVES, NODE_FILM, NODE_FILM_LIVE,
-    NODE_GRADE, NODE_INVERT, NODE_LUMA, NODE_MAIN, NODE_NONE, NODE_SKIP, NODE_TRIM, NODE_WARP,
-    R_WARP_LK, REC_ROWS, REF_INDEX, REF_KEY, REF_PICTURE, REF_REGISTER, REF_SHIFT, REF_SLOT,
-    WARP_LOCK_ROWS, WARP_MOVE_ROWS, record_rows,
+    J_AL, J_BASE, J_HEAD, J_IN, J_SPLIT, JOIN_COMBINER, JOIN_LAYER, JOIN_PARALLEL, JOIN_ROWS,
+    JOIN_SPLITTER, MASK_INVERT, MASK_ROW_VEC4, MASK_SUBTRACT, NODE_BLEND, NODE_CURVES, NODE_FILM,
+    NODE_FILM_LIVE, NODE_GRADE, NODE_INVERT, NODE_JOIN, NODE_LUMA, NODE_MAIN, NODE_NONE, NODE_SKIP,
+    NODE_TRIM, NODE_WARP, R_WARP_LK, REC_ROWS, REF_INDEX, REF_INPUT, REF_KEY, REF_PICTURE,
+    REF_REGISTER, REF_SHIFT, REF_SLOT, WARP_LOCK_ROWS, WARP_MOVE_ROWS, blend_code, record_rows,
 };
 use crate::device::StorageMode;
 use ym_color::mask::OpKind;
@@ -824,7 +826,26 @@ fn constants() -> String {
         ("N_LUMA", NODE_LUMA),
         ("N_FILM", NODE_FILM),
         ("N_FILM_LIVE", NODE_FILM_LIVE),
+        ("N_JOIN", NODE_JOIN),
+        ("JK_PARALLEL", JOIN_PARALLEL),
+        ("JK_LAYER", JOIN_LAYER),
+        ("JK_SPLITTER", JOIN_SPLITTER),
+        ("JK_COMBINER", JOIN_COMBINER),
+        ("J_HEAD", J_HEAD),
+        ("J_IN", J_IN),
+        ("J_AL", J_AL),
+        ("J_BASE", J_BASE),
+        ("J_SPLIT", J_SPLIT),
+        ("JOIN_ROWS", JOIN_ROWS as u32),
+        ("BM_NORMAL", blend_code(BlendMode::Normal)),
+        ("BM_ADD", blend_code(BlendMode::Add)),
+        ("BM_SUBTRACT", blend_code(BlendMode::Subtract)),
+        ("BM_MULTIPLY", blend_code(BlendMode::Multiply)),
+        ("BM_LIGHTEN", blend_code(BlendMode::Lighten)),
+        ("BM_DARKEN", blend_code(BlendMode::Darken)),
+        ("BM_DIFFERENCE", blend_code(BlendMode::Difference)),
         ("REF_SHIFT", REF_SHIFT),
+        ("REF_INPUT", REF_INPUT),
         ("REF_INDEX", REF_INDEX),
         ("REF_REGISTER", REF_REGISTER),
         ("REF_PICTURE", REF_PICTURE),

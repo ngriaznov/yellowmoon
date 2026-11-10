@@ -55,7 +55,7 @@
 //! # The plan loop and the node records
 //!
 //! The nodes of `ColorChain`'s plan (`docs/23-nodes.md` section 5.4) run in the kernel: each step is a
-//! **record** of the storage buffer at binding 6 (`NodeRecU`, 1200 bytes), in plan order. A record holds
+//! **record** of the storage buffer at binding 6 (`NodeRecU`, 1328 bytes), in plan order. A record holds
 //! the step's flags (bypassed or at its identity, and which of the trims, C9, C9b and C11 run), where the
 //! step reads its picture and key and writes its own (a register, a key slot or a plane of the pass
 //! buffers), the trims' gain, the grade's parameters, the colour warp's pins (what
@@ -113,7 +113,7 @@ use ym_color::consts::Vec3;
 use ym_color::consts::linalg::{self, Mat3};
 use ym_color::curve::{CurveSet, TABLE_SIZE};
 use ym_color::display::cine::CineRendering;
-use ym_color::display::{BeforePoint, ChainParams, ColorChain, OutputTarget};
+use ym_color::display::{BeforePoint, BlendMode, ChainParams, ColorChain, OutputTarget};
 use ym_color::encode::{OutputSpace, dither_threshold};
 use ym_color::gamut::matrices;
 use ym_color::grade::{
@@ -123,7 +123,9 @@ use ym_color::grade::{
 use ym_color::look::{LookInput, intensity_fraction};
 use ym_color::lut::Lut;
 use ym_color::mask::{MaskOp, OpKind, PhotoFrame};
-use ym_color::plan::{BufferKind, KeyRef, MAIN_NODE, PictureRef, PlanResult};
+use ym_color::plan::{
+    BufferKind, JoinKind, KeyRef, MAIN_NODE, PLAN_INPUTS, PictureRef, PlanResult,
+};
 use ym_color::tone::ToneParams;
 use ym_color::warp::{WARP_MAX_PINS, Warp};
 
@@ -290,7 +292,7 @@ pub(crate) const REC_ROWS: u32 = (size_of::<NodeRecU>() / 16) as u32;
 pub(crate) const MASK_ROW_VEC4: u32 = (size_of::<MaskOpU>() / 16) as u32;
 
 /// The row (`vec4`) of each field of a node record: `R_*` in `color.wgsl`, written from [`NodeRecU`].
-pub(crate) fn record_rows() -> [(&'static str, u32); 12] {
+pub(crate) fn record_rows() -> [(&'static str, u32); 13] {
     let row = |bytes: usize| (bytes / 16) as u32;
     [
         ("R_CTL", row(offset_of!(NodeRecU, ctl))),
@@ -305,11 +307,47 @@ pub(crate) fn record_rows() -> [(&'static str, u32); 12] {
         ("R_BAL_CTR", row(offset_of!(NodeRecU, bal_ctr))),
         ("R_WARP_N", row(offset_of!(NodeRecU, warp_n))),
         ("R_WARP_MV", row(offset_of!(NodeRecU, warp_mv))),
+        ("R_JOIN", row(offset_of!(NodeRecU, join))),
     ]
 }
 
 /// The row of the locked pins of a record (`R_WARP_LK`).
 pub(crate) const R_WARP_LK: u32 = (offset_of!(NodeRecU, warp_lk) / 16) as u32;
+/// Rows (`vec4<u32>`) of the mixers' region of a record (`JOIN_ROWS`).
+pub(crate) const JOIN_ROWS: usize = 8;
+/// The step is a mixer, a Splitter or a Combiner (`N_JOIN`): the kernel runs [`J_HEAD`]`.z`'s kind on the registers instead of a
+/// corrector. [`NODE_SKIP`] then means bypassed.
+pub(crate) const NODE_JOIN: u32 = 2048;
+/// Row (from `R_JOIN`) `J_HEAD`: x: the register a corrector or Film node writes its graded value to, y: the plane of `pbuf`
+/// (each [`NODE_NONE`]: not written; the graded value is the picture before the node's mask blend, which a Layer reads);
+/// z: a join's kind (`JK_*`), w: its number of inputs.
+pub(crate) const J_HEAD: u32 = 0;
+/// Rows `J_IN` and `J_IN + 1`: the references to the eight picture inputs in port order ([`NODE_NONE`] past the count).
+pub(crate) const J_IN: u32 = 1;
+/// Rows `J_AL` and `J_AL + 1`: a Layer's alpha of each input, a key reference or [`NODE_NONE`] (the opacity alone).
+pub(crate) const J_AL: u32 = 3;
+/// Row `J_BASE`: x: a Parallel's base (a picture reference; the Input's is 0), y: the bit set of the inputs that are the base,
+/// z: a Layer's opacity as `f32` bits, w: its mode (`BM_*`).
+pub(crate) const J_BASE: u32 = 5;
+/// Rows `J_SPLIT` and `J_SPLIT + 1`: a Splitter's outputs, `(register, plane)` for red and green in the first, for blue in the
+/// second ([`NODE_NONE`]: not written).
+pub(crate) const J_SPLIT: u32 = 6;
+/// A Parallel (`JK_PARALLEL`).
+pub(crate) const JOIN_PARALLEL: u32 = 1;
+/// A Layer (`JK_LAYER`).
+pub(crate) const JOIN_LAYER: u32 = 2;
+/// A Splitter (`JK_SPLITTER`).
+pub(crate) const JOIN_SPLITTER: u32 = 3;
+/// A Combiner (`JK_COMBINER`).
+pub(crate) const JOIN_COMBINER: u32 = 4;
+
+/// A Layer's mode as the kernel's `BM_*` code: its place in [`BlendMode::ALL`].
+pub(crate) fn blend_code(mode: BlendMode) -> u32 {
+    BlendMode::ALL
+        .iter()
+        .position(|&m| m == mode)
+        .map_or(0, |i| i as u32)
+}
 /// "Not written" in a record's outputs and "no key" in its inputs (`NODE_NONE`).
 pub(crate) const NODE_NONE: u32 = u32::MAX;
 /// A reference to a value is `kind << REF_SHIFT | index` (`REF_*` in `color.wgsl`).
@@ -389,7 +427,7 @@ struct ChainU {
 }
 
 /// One step of the plan with its node, as the storage buffer at binding 6 holds it (`NodeRec` in
-/// `color.wgsl`, 1200 bytes; a test pins the offsets). The module notes describe the fields.
+/// `color.wgsl`, 1328 bytes; a test pins the offsets). The module notes describe the fields.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct NodeRecU {
@@ -415,6 +453,10 @@ struct NodeRecU {
     warp_n: [u32; 4],
     warp_mv: [[f32; 4]; WARP_MOVE_ROWS],
     warp_lk: [[f32; 4]; WARP_LOCK_ROWS],
+    /// The mixers' rows (`docs/25` section 4.3, the `J_*` rows below): for a mixer, a Splitter or a Combiner
+    /// their wiring; for a corrector or Film node only row `J_HEAD` (where it writes its graded value). All
+    /// `u32`; the opacity is `f32` bits.
+    join: [[u32; 4]; JOIN_ROWS],
 }
 
 impl Default for NodeRecU {
@@ -1130,13 +1172,6 @@ impl NodePlan {
     ) -> Result<Self, GpuError> {
         let params = chain.params();
         let plan = &params.nodes.plan;
-        // The record has no row for a join yet (`docs/25` task X-05): the CPU makes the frame, with this reason.
-        if plan.has_joins() {
-            return Err(GpuError::InvalidInput(
-                "the colour kernel cannot run a mixer, a splitter or a combiner node yet"
-                    .to_owned(),
-            ));
-        }
         if plan.step_count() > MAX_STEPS {
             return Err(GpuError::InvalidInput(format!(
                 "the plan has {} steps, the colour kernel runs {MAX_STEPS} at most",
@@ -1174,28 +1209,89 @@ impl NodePlan {
             KeyRef::Buffer(b) => (REF_KEY << REF_SHIFT) | plane_of[usize::from(b)],
         };
         // The parameters of every step's node.
+        // (a mixer, a Splitter or a Combiner has none: its record is its wiring, `join_record`).
         let mut nodes = Vec::with_capacity(plan.step_count());
         for step in plan.steps() {
+            if step.join.is_some() {
+                nodes.push((*step, None));
+                continue;
+            }
             let n = params.node_params(step.node).ok_or_else(|| {
                 GpuError::InvalidInput(format!(
                     "the plan runs node {}, which the chain has no parameters for",
                     step.node
                 ))
             })?;
-            nodes.push((*step, n));
+            nodes.push((*step, Some(n)));
         }
         // The curve tables: four for each node that runs a curve, in plan order.
         let sets: Vec<CurveSet> = nodes
             .iter()
-            .filter(|(_, n)| !n.bypass && !n.curves.is_identity())
-            .map(|(_, n)| n.curves.clone())
+            .filter_map(|(_, n)| n.as_ref())
+            .filter(|n| !n.bypass && !n.curves.is_identity())
+            .map(|n| n.curves.clone())
             .collect();
         let (curves, curve_bits) = tables.curves(ctx, &sets)?;
         let mut next_set = 0usize;
         let mut records = Vec::with_capacity(nodes.len());
         let mut mask_rows: Vec<MaskOpU> = Vec::new();
+        let none_out = |o: Option<ym_color::plan::PictureOut>| {
+            (
+                o.and_then(|o| o.register).map_or(NODE_NONE, u32::from),
+                o.and_then(|o| o.buffer)
+                    .map_or(NODE_NONE, |b| plane_of[usize::from(b)]),
+            )
+        };
         for (step, n) in &nodes {
             let mut r = NodeRecU::default();
+            if let (Some(j), None) = (&step.join, n) {
+                let p = params.joins.get(&step.node).copied().unwrap_or_default();
+                r.ctl[0] = NODE_JOIN | if p.bypass { NODE_SKIP } else { 0 };
+                r.wire = [picture_ref(step.picture), NODE_NONE, 0, 0];
+                let (reg, plane) = none_out(step.picture_out);
+                r.outs = [reg, plane, NODE_NONE, NODE_NONE];
+                let kind = match j.kind {
+                    JoinKind::Parallel => JOIN_PARALLEL,
+                    JoinKind::Layer => JOIN_LAYER,
+                    JoinKind::Splitter => JOIN_SPLITTER,
+                    JoinKind::Combiner => JOIN_COMBINER,
+                };
+                r.join[J_HEAD as usize] = [NODE_NONE, NODE_NONE, kind, u32::from(j.count)];
+                let mut inputs = [NODE_NONE; PLAN_INPUTS];
+                let mut alphas = [NODE_NONE; PLAN_INPUTS];
+                for (slot, &i) in inputs.iter_mut().zip(j.inputs()) {
+                    *slot = picture_ref(i);
+                }
+                for (slot, a) in alphas.iter_mut().zip(&j.alphas) {
+                    *slot = a.map_or(NODE_NONE, key_ref);
+                }
+                for q in 0..2 {
+                    for c in 0..4 {
+                        r.join[(J_IN as usize) + q][c] = inputs[4 * q + c];
+                        r.join[(J_AL as usize) + q][c] = alphas[4 * q + c];
+                    }
+                }
+                // A Parallel without a base reads the Input's picture (the CPU's `join.base.map_or(c8)`).
+                r.join[J_BASE as usize] = [
+                    j.base.map_or(REF_INPUT << REF_SHIFT, picture_ref),
+                    u32::from(j.is_base),
+                    (p.opacity as f32).to_bits(),
+                    blend_code(p.mode),
+                ];
+                let [red, green, blue] = j.channels.map(none_out);
+                r.join[J_SPLIT as usize] = [red.0, red.1, green.0, green.1];
+                r.join[J_SPLIT as usize + 1] = [blue.0, blue.1, NODE_NONE, NODE_NONE];
+                records.push(r);
+                continue;
+            }
+            let Some(n) = n else {
+                return Err(GpuError::InvalidInput(format!(
+                    "node {} has neither parameters nor a join",
+                    step.node
+                )));
+            };
+            let (g_reg, g_plane) = none_out(step.graded_out);
+            r.join[J_HEAD as usize] = [g_reg, g_plane, 0, 0];
             let mut bits = 0u32;
             if step.node == MAIN_NODE {
                 bits |= NODE_MAIN;
@@ -2470,7 +2566,7 @@ mod tests {
     }
 
     #[test]
-    fn the_per_frame_block_is_704_bytes_and_a_node_record_1200() {
+    fn the_per_frame_block_is_704_bytes_and_a_node_record_1328() {
         // The per-frame `ChainU` (`docs/17-gpu.md` section 11) was meant to be about 1 KB: the one uniform
         // block (K3 allows one) holds the frame's parameters. It was 992 bytes with the ACES 2 scalars; the
         // Before view's camera default added 64, and the colour warp (C9b) 1040 plus the grade's six rows
@@ -2487,20 +2583,31 @@ mod tests {
         // downlevel limits.
         assert_eq!(size_of::<ChainU>(), 704);
         assert_eq!(size_of::<ChainU>() % 16, 0);
-        assert_eq!(size_of::<NodeRecU>(), 1200);
+        // X-05 appended the mixers' eight rows (128 bytes) to the 1200 bytes of the corrector's record.
+        assert_eq!(size_of::<NodeRecU>(), 1328);
         assert_eq!(size_of::<NodeRecU>() % 16, 0);
         assert_eq!(
-            size_of::<NodeRecU>() - offset_of!(NodeRecU, warp_n),
+            size_of::<NodeRecU>() - offset_of!(NodeRecU, join),
+            16 * JOIN_ROWS
+        );
+        assert_eq!(
+            offset_of!(NodeRecU, join) - offset_of!(NodeRecU, warp_n),
             16 + 16 * (WARP_MOVE_ROWS + WARP_LOCK_ROWS)
         );
+        assert_eq!(JOIN_ROWS, 8);
+        // Every row the mixers name is inside the region: the Splitter's last row is the last.
+        assert_eq!(J_SPLIT as usize + 2, JOIN_ROWS);
+        assert_eq!(J_IN + 2, J_AL);
+        assert_eq!(J_AL + 2, J_BASE);
+        assert_eq!(J_BASE + 1, J_SPLIT);
         assert_eq!(WARP_MOVE_ROWS, 48);
         assert_eq!(WARP_LOCK_ROWS, 16);
-        // A plan of the most steps (a graph has 64 correctors) is 75 KiB of records.
-        assert_eq!(MAX_STEPS * size_of::<NodeRecU>(), 76_800);
+        // A plan of the most steps (a graph has 64 nodes) is 83 KiB of records.
+        assert_eq!(MAX_STEPS * size_of::<NodeRecU>(), 84_992);
         // A mask row is four rows of 16 bytes, and 64 rows a node (the settings' limit) at 64 nodes are 256 KiB.
         assert_eq!(size_of::<MaskOpU>(), 64);
         assert_eq!(MASK_ROW_VEC4, 4);
-        assert_eq!(REC_ROWS, 75);
+        assert_eq!(REC_ROWS, 83);
         assert_eq!(MAX_STEPS * 64 * size_of::<MaskOpU>(), 262_144);
     }
 
@@ -2841,10 +2948,37 @@ mod tests {
                 constant("R_WARP_MV") + constant("WARP_MOVE_ROWS"),
                 constant("R_WARP_LK")
             );
+            // The corrector's rows end with the last locked pin; the mixers' region follows and ends the record.
             assert_eq!(
                 constant("R_WARP_LK") + constant("WARP_LOCK_ROWS"),
+                constant("R_JOIN")
+            );
+            assert_eq!(
+                constant("R_JOIN") + constant("JOIN_ROWS"),
                 constant("REC_ROWS")
             );
+            assert_eq!(constant("J_HEAD"), J_HEAD);
+            assert_eq!(constant("J_IN"), J_IN);
+            assert_eq!(constant("J_AL"), J_AL);
+            assert_eq!(constant("J_BASE"), J_BASE);
+            assert_eq!(constant("J_SPLIT"), J_SPLIT);
+            // The kinds and modes are what the host writes.
+            assert_eq!(constant("JK_PARALLEL"), JOIN_PARALLEL);
+            assert_eq!(constant("JK_LAYER"), JOIN_LAYER);
+            assert_eq!(constant("JK_SPLITTER"), JOIN_SPLITTER);
+            assert_eq!(constant("JK_COMBINER"), JOIN_COMBINER);
+            assert_eq!(constant("N_JOIN"), NODE_JOIN);
+            for (name, mode) in [
+                ("BM_NORMAL", BlendMode::Normal),
+                ("BM_ADD", BlendMode::Add),
+                ("BM_SUBTRACT", BlendMode::Subtract),
+                ("BM_MULTIPLY", BlendMode::Multiply),
+                ("BM_LIGHTEN", BlendMode::Lighten),
+                ("BM_DARKEN", BlendMode::Darken),
+                ("BM_DIFFERENCE", BlendMode::Difference),
+            ] {
+                assert_eq!(constant(name), blend_code(mode), "{name}");
+            }
             // The mask row: the head (kind, flags, plane, opacity), then the numbers.
             assert_eq!(offset_of!(MaskOpU, head), 0);
             assert_eq!(offset_of!(MaskOpU, p0), 16);
