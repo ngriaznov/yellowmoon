@@ -148,6 +148,7 @@ The owner asked for the three greyed items of the Add node menu ("Let's implemen
 | Ports | **"Tinted ports + R/G/B letters"** on the Splitter and the Combiner |
 | Links | **"No lines, names only"**: the panels name where each input comes from and draw no lines |
 | `PIPELINE_VERSION` | 0.11.0, a minor step as for the Film node: an older build refuses a graph with a kind it does not know; no existing graph changes by a bit |
+| Test build (X-H2) and version | **"Good, merge to main and release 0.2.3"** |
 | Not in the first version | Other blend modes (Screen, Overlay and the like assume a display picture), a mode or a weight per input, masks and key ports on the four kinds, a Key Mixer, Outside, Morph, other channel splits |
 
 ### Colour and rendering
