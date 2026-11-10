@@ -1,0 +1,480 @@
+/* Extracted from src/styles/glass-c2.css (the app's own rules for the graph cards, ports, links, Add node menu and the node head) so that
+   these mockups draw what the app draws. Mockup-only additions follow below. */
+.ym-gnode {
+  position: relative;
+  width: 150px;
+  height: 112px;
+  color: var(--glass-label);
+}
+.ym-gnode[data-dead] .ym-gnode__box,
+.ym-gnode[data-dead] .ym-gnode__name {
+  opacity: 0.45;
+}
+.ym-gnode[data-dead] .ym-port {
+  opacity: 0.45;
+}
+.ym-gnode__name {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  overflow: hidden;
+  color: var(--glass-label-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 15px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ym-gnode[data-selected] .ym-gnode__name {
+  color: var(--glass-label);
+}
+.ym-gnode[data-bypass] .ym-gnode__name {
+  color: var(--glass-label-tertiary);
+}
+.ym-gnode__rename {
+  position: absolute;
+  right: -10px;
+  bottom: 100%;
+  left: -10px;
+  width: auto;
+  height: 24px;
+  margin-bottom: 2px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.ym-gnode__box {
+  position: relative;
+  box-sizing: border-box;
+  width: 150px;
+  height: 112px;
+  overflow: hidden;
+  border: 1px solid var(--rim);
+  border-radius: 14px;
+  background: oklch(0.2 0 0);
+  box-shadow:
+    0 8px 18px rgb(0 0 0 / 0.38),
+    inset 0 0 0 0.5px rgb(255 255 255 / 0.04);
+  /* A button is an arrow, as everywhere in the app (docs/11 desktop feel): the hand is for links. */
+  cursor: default;
+}
+.ym-gnode__box:focus-visible {
+  outline: var(--glass-ring-width, 3px) solid var(--focus);
+  outline-offset: 7px;
+}
+.ym-gnode__thumb {
+  position: relative;
+  height: 81px;
+  overflow: hidden;
+  background: var(--code-bg);
+}
+.ym-gnode__thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+.ym-gnode[data-bypass] .ym-gnode__thumb img {
+  opacity: 0.5;
+  filter: grayscale(0.6);
+}
+.ym-gnode__slash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(to top right, transparent calc(50% - 0.75px), rgb(255 255 255 / 0.55) calc(50% - 0.75px), rgb(255 255 255 / 0.55) calc(50% + 0.75px), transparent calc(50% + 0.75px));
+}
+.ym-gnode__foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 7px;
+  border-top: 1px solid var(--rim);
+}
+.ym-gnode__num {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--ink) 16%, transparent);
+  box-shadow: inset 0 0 0 1px var(--rim);
+  color: var(--glass-label);
+  font-size: 10.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+.ym-gnode__tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  color: var(--glass-label-secondary);
+}
+.ym-gnode__tools svg {
+  display: block;
+}
+.ym-gnode__mask {
+  color: var(--mask);
+}
+.ym-gnode__ring {
+  position: absolute;
+  inset: -4px;
+  display: none;
+  border: 2px solid var(--tab-look);
+  border-radius: 17px;
+  pointer-events: none;
+}
+.ym-gnode[data-selected] .ym-gnode__ring {
+  display: block;
+}
+/* A link is selected: the card the panel is on keeps a quiet ring, so that the link is the one thing that is selected. */
+.ym-gnode[data-quiet] .ym-gnode__ring,
+.ym-marker[data-quiet] .ym-marker__dot::after {
+  border-color: var(--rim);
+}
+
+/* The Input and the Output: a 32 px disc with a lock, the name under it. */
+.ym-marker {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  color: var(--glass-label-secondary);
+}
+.ym-marker__dot {
+  position: relative;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
+  border: 1.5px solid color-mix(in oklch, var(--ink) 55%, transparent);
+  border-radius: 50%;
+  background: oklch(0.22 0 0);
+  box-shadow: 0 5px 12px rgb(0 0 0 / 0.35);
+  color: var(--glass-label-secondary);
+  cursor: default;
+}
+.ym-marker__dot svg {
+  width: 13px;
+  height: 13px;
+}
+.ym-marker__dot:focus-visible {
+  outline: var(--glass-ring-width, 3px) solid var(--focus);
+  outline-offset: 8px;
+}
+.ym-marker[data-selected] .ym-marker__dot::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border: 2px solid var(--tab-look);
+  border-radius: 50%;
+}
+.ym-marker__word {
+  position: absolute;
+  top: 39px;
+  left: 50%;
+  color: var(--glass-label-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  transform: translateX(-50%);
+}
+.ym-marker[data-selected] .ym-marker__word {
+  color: var(--glass-label);
+}
+
+/* A port: a triangle (an input) or a square (an output), light grey for a picture and the mask accent for a key. xyflow places the box; the
+   press lands on the larger target around it. While a link is dragged the inputs that take it light up and the others dim. */
+.ym-port.react-flow__handle {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  color: oklch(0.82 0 0);
+  pointer-events: none;
+}
+.ym-port[data-port="key"] {
+  color: var(--mask);
+}
+.ym-port[data-port="key"]:not([data-linked]) {
+  opacity: 0.55;
+}
+.ym-port__glyph {
+  display: block;
+  pointer-events: none;
+}
+.ym-port__square {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: currentColor;
+}
+.ym-port__hit {
+  position: absolute;
+  inset: -9px -8px;
+  pointer-events: auto;
+  cursor: crosshair;
+}
+.ym-port[data-side="in"]:not([data-linked]) .ym-port__hit {
+  cursor: default;
+}
+.ym-port[data-side="in"][data-linked] .ym-port__hit {
+  cursor: grab;
+}
+.ym-port[data-state="lit"] {
+  filter: drop-shadow(0 0 4px currentColor);
+  opacity: 1;
+}
+.ym-port[data-state="lit"] .ym-port__glyph {
+  transform: scale(1.35);
+}
+.ym-port[data-state="dim"] {
+  opacity: 0.25;
+}
+.ym-port[data-hover] .ym-port__glyph {
+  transform: scale(1.7);
+}
+.ym-flow[data-linking] .ym-port[data-side="in"] .ym-port__hit {
+  cursor: copy;
+}
+
+/* A link. */
+.ym-link .react-flow__edge-path {
+  stroke: var(--ym-link);
+  stroke-width: 1.6px;
+  stroke-linecap: round;
+}
+.ym-link[data-kind="key"] .react-flow__edge-path {
+  stroke: var(--mask);
+  stroke-dasharray: 5 4;
+}
+.ym-link[data-selected] .react-flow__edge-path,
+.ym-link[data-drop] .react-flow__edge-path {
+  stroke: var(--tab-look);
+  stroke-width: 3px;
+}
+.ym-link:hover .react-flow__edge-path {
+  stroke-width: 2.4px;
+}
+.react-flow__edge:has(.ym-link[data-selected]) {
+  outline: none;
+}
+/* The link being drawn or carried follows the pointer from the output it left. */
+.ym-draft {
+  position: absolute;
+  overflow: visible;
+  pointer-events: none;
+}
+.ym-draft path {
+  fill: none;
+  stroke: color-mix(in oklch, var(--ink) 75%, transparent);
+  stroke-width: 1.8px;
+  stroke-linecap: round;
+}
+.ym-draft[data-kind="key"] path {
+  stroke: var(--mask);
+  stroke-dasharray: 5 4;
+}
+.ym-graph-hint {
+  position: absolute;
+  color: var(--glass-label-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+/* The Add node menu opens over the photo: a wide glass list, each item a name with a quiet line under it and, for what comes later, a tag. */
+.ym-add-node-menu {
+  min-width: 22rem;
+}
+.ym-menu-line {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ym-menu-line__name {
+  font-size: var(--fs-body);
+  line-height: 1.25;
+}
+.ym-menu-line__text {
+  color: var(--glass-label-tertiary);
+  font-size: var(--fs-small);
+  line-height: 1.3;
+}
+.ym-menu-later {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--glass-label-tertiary);
+  font-size: 11px;
+  font-weight: var(--fw-bold);
+}
+.ym-nodehead {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 7px;
+  height: 52px;
+  box-sizing: border-box;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid var(--rim);
+}
+.ym-nodehead__chip {
+  display: inline-grid;
+  flex-shrink: 0;
+  place-items: center;
+  min-width: 28px;
+  height: 22px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 7px;
+  background: color-mix(in oklch, var(--ink) 16%, transparent);
+  box-shadow: inset 0 0 0 1px var(--rim);
+  color: var(--glass-label);
+  font-size: 11px;
+  font-weight: var(--fw-heavy);
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.ym-nodehead__chip svg {
+  width: 13px;
+  height: 13px;
+  color: var(--glass-label-secondary);
+}
+.ym-nodehead__text {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.ym-nodehead__name {
+  flex-shrink: 0;
+  max-width: 58%;
+  margin: 0;
+  overflow: hidden;
+  font-size: 20px;
+  font-weight: var(--fw-heavy);
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ym-nodehead__name:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.ym-nodehead__line {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--glass-label-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ym-nodehead__rename {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: var(--fw-heavy);
+}
+.ym-nodehead__actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 3px;
+}
+.ym-nodehead button.ym-nodehead__btn {
+  width: 28px;
+  min-width: 0;
+  height: 28px;
+  padding: 0;
+  border-radius: 999px;
+}
+.ym-nodehead .ym-nodehead__btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* ======================================================================================================================================
+   Mockup-only additions (X-02): what the new cards need that the app's rules above do not draw yet.
+   ====================================================================================================================================== */
+:root { --mask: #ff6fd2; --mask-ink: #000000; }
+body:has(.mx-sheet) { overflow: visible; }
+
+/* the app's ports are xyflow handles (position: absolute from xyflow's own sheet, which these pages do not load) */
+.ym-port.react-flow__handle { position: absolute; }
+.ym-flow .react-flow__handle { position: absolute; }
+.mx-link path { fill: none; stroke: var(--ym-link, color-mix(in oklch, var(--ink) 42%, transparent)); stroke-width: 1.6px; stroke-linecap: round; }
+.mx-link[data-selected] path { stroke: var(--tab-look); stroke-width: 3px; }
+.mx-links { --ym-link: color-mix(in oklch, var(--ink) 42%, transparent); }
+
+/* glyph cards: 56 px wide, a rounded box with the kind's glyph; no thumbnail, no number, no footer */
+.mx-glyphbox { display: grid; place-items: center; border-radius: 16px; background: oklch(0.225 0 0); }
+.mx-glyph { color: var(--glass-label-secondary); }
+.ym-gnode[data-selected] .mx-glyph { color: var(--glass-label); }
+.ym-gnode[data-bypass] .mx-glyph { opacity: 0.5; }
+.ym-gnode[data-dead] .mx-glyph { opacity: 1; }
+/* the name is wider than the card (it is cut at ten letters, "Combiner" and "Splitter" are about 56 px) */
+.mx-glyphcard .ym-gnode__name { left: -24px; right: -24px; }
+
+/* the "+" port: an empty triangle with a plus, a little larger than an arrowhead */
+.ym-port--plus { color: oklch(0.82 0 0); opacity: 0.85; }
+.ym-port--plus[data-state="lit"] { opacity: 1; }
+.ym-port--plus[data-hover] .ym-port__glyph { transform: scale(1.25); transform-origin: 100% 50%; }
+.ym-port--plus[data-hover] { color: var(--tab-look); }
+
+/* channel ports: a tint and a letter inside the card */
+.ym-port.react-flow__handle.ym-port--ch { color: var(--ch); }
+.mx-chl { position: absolute; width: 10px; height: 14px; text-align: center; color: var(--ch); font-size: 10px; font-weight: 800; line-height: 14px; }
+.mx-chip { display: inline-grid; place-items: center; flex-shrink: 0; width: 22px; height: 22px; border-radius: 7px; color: var(--ch); font-size: 11px; font-weight: 800;
+  background: color-mix(in oklch, var(--ch) 16%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--ch) 45%, transparent); }
+
+/* the dragged link and what it lights */
+.ym-draft path { stroke-dasharray: none; }
+.mx-flow.ym-flow { position: absolute; inset: 0; }
+
+/* the states sheet */
+.mx-sheet { box-sizing: border-box; min-width: 1440px; padding: 28px 32px 40px; color: var(--glass-label); font-family: var(--font-sans, inherit); background: oklch(0.15 0 0); }
+.mx-sheet__title { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.01em; }
+.mx-sheet__sub { margin: 6px 0 22px; color: var(--glass-label-secondary); font-size: 13px; }
+.mx-sheet section { margin: 0 0 22px; }
+.mx-sheet h2 { margin: 0 0 10px; color: var(--glass-label-secondary); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.mx-row { display: flex; flex-wrap: wrap; gap: 14px; }
+.mx-cell { margin: 0; }
+.mx-cell__stage { position: relative; overflow: hidden; border: 1px solid var(--rim); border-radius: 18px; background-color: oklch(0.125 0 0);
+  background-image: radial-gradient(circle, color-mix(in oklch, var(--ink) 16%, transparent) 1px, transparent 1.3px); background-size: 18px 18px; background-position: 9px 9px;
+  box-shadow: inset 0 2px 8px rgb(0 0 0 / 0.35); }
+.mx-cell figcaption { padding: 8px 4px 0; text-align: center; font-size: 12px; font-weight: 700; color: var(--glass-label); }
+.mx-cell figcaption small { display: block; margin-top: 2px; font-size: 11px; font-weight: 500; color: var(--glass-label-tertiary); line-height: 1.3; }
+.mx-tips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; }
+.mx-tiprow { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px 14px; border-radius: 14px; background: color-mix(in oklch, var(--ink) 6%, transparent); box-shadow: inset 0 0 0 1px var(--rim); }
+.mx-tiprow > span { color: var(--glass-label-secondary); font-size: 12px; font-weight: 600; }
+.mx-tip { display: inline-flex; width: fit-content; max-width: 20rem; padding: 6px 12px; border-radius: 1rem; font-size: 12px; font-weight: 500; color: var(--popover-foreground, var(--glass-label)); }
+
+/* the arrowheads of the links (src/styles/glass-c2.css, just above the card rules) */
+.ym-arrow { fill: color-mix(in oklch, var(--ink) 58%, transparent); }
+.ym-arrow--selected { fill: var(--tab-look); }
+
+/* the Splitter's glyph sits toward its one input, the Combiner's toward its one output, so the channel letters have the other side */
+.mx-glyphbox[data-kind="splitter"] .mx-glyph { transform: translateX(-9px); }
+.mx-glyphbox[data-kind="combiner"] .mx-glyph { transform: translateX(9px); }
