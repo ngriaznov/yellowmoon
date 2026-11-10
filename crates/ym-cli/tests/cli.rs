@@ -183,6 +183,16 @@ fn doctor_json_has_the_same_parts() {
         serde_json::json!({ "file": "bokeh/bokehnet.safetensors", "sha256": sha256_of("bokeh") }),
         serde_json::json!({ "file": "crop/cropnet.safetensors", "sha256": sha256_of("crop") }),
     ];
+    // Depth's file is optional the same way; `ym doctor` lists it between crop and SAM 2.
+    if data_dir()
+        .join("models/depth/depth_anything_v2_vits.f16.safetensors")
+        .is_file()
+    {
+        weights.push(serde_json::json!({
+            "file": "depth/depth_anything_v2_vits.f16.safetensors",
+            "sha256": sha256_of("depth"),
+        }));
+    }
     if data_dir()
         .join("models/sam2/sam2.1_hiera_small.f16.safetensors")
         .is_file()
@@ -440,10 +450,13 @@ fn doctor_json_shape_snapshot_on_a_machine_with_no_adapter() {
         .success();
     let mut v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
     // Where the SAM weights are, Object is in `kinds` and not in `unavailable`; the shape is the one of a machine without them.
+    // The same holds for the depth weights and the `depth` entry.
     if let Some(unavailable) = v["masks"]["unavailable"].as_object_mut() {
-        unavailable
-            .entry("object")
-            .or_insert_with(|| serde_json::json!("weights_missing"));
+        for kind in ["object", "depth"] {
+            unavailable
+                .entry(kind)
+                .or_insert_with(|| serde_json::json!("weights_missing"));
+        }
     }
     insta::assert_json_snapshot!("doctor_json_shape_no_adapter", shape(&v));
 }
