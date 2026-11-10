@@ -63,7 +63,7 @@ use super::viewport::ViewportState;
 use crate::apple_auto::{AdvisorPicture, PICTURE_LONG_EDGE_PX};
 use crate::session::{PhotoId, PictureInput, PictureRenderer, ThumbnailInput, ThumbnailRenderer};
 use crate::settings::{
-    ColorWarp, Curves, DevelopSettings, MaskSettings, NodeGrade, NodeId, NodeLink, NodeRef,
+    ColorWarp, Curves, DevelopSettings, MaskSettings, NodeGrade, NodeId, NodeKind, NodeLink, NodeRef,
     NodeTrim,
 };
 use ym_color::look::LookTransform;
@@ -203,9 +203,17 @@ pub(crate) struct NodeThumbnailEntry {
 /// own settings (the look, the cine rendering, the sharpening) stay.
 #[must_use]
 pub fn settings_ending_at(settings: &DevelopSettings, node: u32) -> DevelopSettings {
+    ending_at_output(settings, NodeRef::picture(NodeId::Corrector(node)))
+}
+
+/// [`settings_ending_at`] for any output port: the Output reads `from`.
+fn ending_at_output(settings: &DevelopSettings, from: NodeRef) -> DevelopSettings {
     let mut s = settings.clone();
     let into_output = NodeRef::picture(NodeId::Output);
-    let link = NodeLink::picture(NodeId::Corrector(node), NodeId::Output);
+    let link = NodeLink {
+        from,
+        to: into_output.clone(),
+    };
     if !s.nodes.links.contains(&link) {
         s.nodes.links.retain(|l| l.to != into_output);
         s.nodes.links.push(link);
@@ -271,6 +279,10 @@ impl Read {
 ///   `in + m (node(in) - in)` as the last value, and the panels read the node's own signal, which
 ///   its mask does not change. The node's input is read with every step at its identity, which the
 ///   chain skips whole, so its masks take no part there.
+/// * A Parallel, a Layer or a Combiner (`docs/25` section 5.7) reads the picture after it: the same
+///   rewrite with nothing taken out of the node (a mixer has no trim, grade, curve, warp or masks,
+///   so every tap reads the same picture). A Splitter has no picture of its own (its outputs are
+///   single channels); it reads its input picture, the picture on the link into it.
 /// * [`Tap::NodeInput`] reads the picture a node takes in: the Input's output (C8) for Main and the
 ///   Input, and for another corrector the rewrite with the node itself at its identity.
 ///
@@ -295,6 +307,32 @@ pub(crate) fn signal_source(
             "The output has no picture to read here.".to_owned(),
         )),
         Some(NodeId::Corrector(1)) => Ok((Cow::Borrowed(src), main)),
+        Some(id @ NodeId::Corrector(k))
+            if matches!(
+                src.settings.nodes.kind_of(id),
+                Some(
+                    NodeKind::Parallel | NodeKind::Layer | NodeKind::Combiner | NodeKind::Splitter
+                )
+            ) =>
+        {
+            let from = if src.settings.nodes.kind_of(id) == Some(NodeKind::Splitter) {
+                let into = NodeRef::picture(id);
+                let Some(link) = src.settings.nodes.links.iter().find(|l| l.to == into) else {
+                    return Err(RenderError::Color(format!(
+                        "Node {k} has no picture to read here."
+                    )));
+                };
+                if link.from.node == NodeId::Input {
+                    return Ok((Cow::Borrowed(src), Read::InputOutput));
+                }
+                link.from.clone()
+            } else {
+                NodeRef::picture(id)
+            };
+            let mut settings = ending_at_output(&src.settings, from);
+            settings.output_mut().look = LookId::neutral();
+            Ok((Cow::Owned(src.with_settings(settings)), Read::Last))
+        }
         Some(NodeId::Corrector(k)) => {
             if src.settings.nodes.corrector(k).is_none() {
                 return Err(RenderError::Color(format!("This photo has no node {k}.")));
