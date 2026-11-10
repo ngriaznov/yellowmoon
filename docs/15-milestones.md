@@ -334,7 +334,7 @@ Goal: a **Depth** mask in the Find group, cut from a relative depth map that **D
 
 ---
 
-## X · Mixers (in progress, branch `mixers`)
+## X · Mixers (built on branch `mixers`; waiting on X-H2 and the Mac speed check)
 
 The node kinds the Add node menu shows as "Later": **Parallel** (adds each branch's change to the picture the branches start from), **Layer** (stacks its inputs and blends each over the ones below, in linear light, through the mask of the node that feeds it) and **Splitter and combiner** (one channel per branch, then one picture again). The spec is `docs/25-mixers.md`; the facts are in `research/research_notes/Node mixers/resolve_mixers.md`. **The owner's decisions of 2026-11-10** (`docs/STATUS.md` question 43): "All three now"; Parallel is "Input + each branch's change" on LogC4 code values; the Layer's modes are the "Scene-safe short list" (Normal, Add, Subtract, Multiply, Lighten, Darken, Difference) in linear light; a layer's alpha is the "Feeding node's mask, as Resolve". The other choices are working choices that wait on X-H1 (`docs/25` §9). `PIPELINE_VERSION` takes a minor step to 0.11.0; graphs without the new kinds change by no bit. It needs the graph, plan and panel of N (N-02 to N-12).
 
