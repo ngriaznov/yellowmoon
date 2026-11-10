@@ -8,10 +8,12 @@
  */
 import type { DevelopSettings, NodeId, NodeItem, NodeKind, NodeLink, NodePatch, Port, ResolvedSettings, SettingsPatch } from "../api/types";
 import { MOCK_FILM_PAPERS, MOCK_FILM_STOCKS } from "./film";
-import { cardsOf, clone, INPUT_ID, MAIN_ID, nodeAsPatch, nodeIdOfKey, nodeOf, OUTPUT_ID } from "../state/settingsGraph";
+import { cardsOf, clone, INPUT_ID, MAIN_ID, nodeAsPatch, nodeIdOfKey, nodeOf, numberedOf, OUTPUT_ID } from "../state/settingsGraph";
 
-/** Most corrector nodes a photo can have, Main included (`docs/23` section 3.5). */
+/** Most numbered nodes a photo can have, Main included: correctors, Film nodes, mixers, Splitters and Combiners (`docs/23` section 3.5, `docs/25` section 2.3). */
 export const MAX_NODES = 64;
+/** Most picture inputs a mixer can have (`docs/25` section 2.1). */
+export const MIXER_INPUTS = 8;
 /** Most mask rows in a node. */
 export const MAX_MASKS = 64;
 /** Most points in a Brush mask, all strokes together. */
@@ -28,6 +30,9 @@ export const GRAPH_TEXT = {
   mainInput: "Node 1, Main, must take its picture from the input.",
   cycle: "The nodes of this photo are linked in a circle. Remove a link.",
   tooManyNodes: "A photo can have up to 64 nodes.",
+  tooManyMixerInputs: "A mixer can have up to 8 inputs.",
+  mixerGap: (node: NodeId, linked: number, missing: number) =>
+    `${sentence(node)} has a link on input ${linked} and none on input ${missing}. A mixer's inputs are numbered from 1 with no gap.`,
   tooManyMasks: "A node can have up to 64 masks.",
   tooManyBrushPoints: "A brush mask can have up to 100,000 points.",
   tooManyObjectPoints: "An Object mask can have up to 256 points.",
@@ -46,9 +51,25 @@ function sentence(id: NodeId): string {
   return id === INPUT_ID ? "The input" : id === OUTPUT_ID ? "The output" : `Node ${id}`;
 }
 
-/** "an input", "an output", "a corrector". */
+/** "an input", "an output", "a corrector", "a film node", "a parallel mixer", "a layer mixer", "a splitter", "a combiner". */
 function article(kind: NodeKind): string {
-  return kind === "corrector" ? "a corrector" : kind === "film" ? "a film node" : `an ${kind}`;
+  switch (kind) {
+    case "corrector":
+      return "a corrector";
+    case "film":
+      return "a film node";
+    case "parallel":
+      return "a parallel mixer";
+    case "layer":
+      return "a layer mixer";
+    case "splitter":
+      return "a splitter";
+    case "combiner":
+      return "a combiner";
+    case "input":
+    case "output":
+      return `an ${kind}`;
+  }
 }
 
 const capital = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
@@ -73,7 +94,14 @@ const FIELDS: Readonly<Record<NodeKind, ReadonlySet<string>>> = {
   output: new Set(["kind", "pos", "look", "look_intensity", "output_sharpening"]),
   corrector: new Set(["kind", "pos", "name", "bypass", "trim", "grade", "masks"]),
   film: new Set(["kind", "pos", "name", "bypass", "film", "print", "halation", "grain", "strength", "masks"]),
+  parallel: new Set(["kind", "pos", "name", "bypass"]),
+  layer: new Set(["kind", "pos", "name", "bypass", "mode", "opacity"]),
+  splitter: new Set(["kind", "pos", "name"]),
+  combiner: new Set(["kind", "pos", "name"]),
 };
+
+/** The kinds a patch may give a new numbered node (`docs/23` section 3.7, `docs/25` section 2.5). */
+const NUMBERED_KINDS: ReadonlySet<NodeKind> = new Set(["corrector", "film", "parallel", "layer", "splitter", "combiner"]);
 
 /** The kind a node with this id has to be. */
 const kindOfId = (id: NodeId): NodeKind => (id === INPUT_ID ? "input" : id === OUTPUT_ID ? "output" : "corrector");
@@ -92,8 +120,8 @@ export function refusalOfPatch(settings: DevelopSettings, patch: SettingsPatch):
     const have = nodeOf(settings, id);
     if (!have) {
       if (node.kind === undefined) return GRAPH_TEXT.patchUnknownNode(id);
-      // A numbered node may be a corrector or a Film node.
-      if (node.kind !== kindOfId(id) && !(node.kind === "film" && kindOfId(id) === "corrector")) return GRAPH_TEXT.missingFixed;
+      // A numbered node may be a corrector, a Film node or a node of `docs/25`.
+      if (node.kind !== kindOfId(id) && !(NUMBERED_KINDS.has(node.kind) && kindOfId(id) === "corrector")) return GRAPH_TEXT.missingFixed;
     } else if (node.kind !== undefined && node.kind !== have.kind) {
       return GRAPH_TEXT.patchWrongKind(id, have.kind, node.kind);
     }
@@ -105,12 +133,34 @@ export function refusalOfPatch(settings: DevelopSettings, patch: SettingsPatch):
   return null;
 }
 
-/** The ports a node has: `[inputs, outputs]` (`docs/23` section 3.4). */
-function portsOf(kind: NodeKind): [Port[], Port[]] {
-  if (kind === "input") return [[], ["picture"]];
-  if (kind === "output") return [["picture"], []];
-  return [["picture", "key"], ["picture", "key"]];
+/** A mixer's inputs, `picture.1` to `picture.8`. */
+const MIXER_PORTS: readonly Port[] = ["picture.1", "picture.2", "picture.3", "picture.4", "picture.5", "picture.6", "picture.7", "picture.8"];
+
+/** The ports a node has: `[inputs, outputs]` (`docs/23` section 3.4, `docs/25` section 2.2). */
+export function portsOf(kind: NodeKind): [readonly Port[], readonly Port[]] {
+  switch (kind) {
+    case "input":
+      return [[], ["picture"]];
+    case "output":
+      return [["picture"], []];
+    case "corrector":
+    case "film":
+      return [["picture", "key"], ["picture", "key"]];
+    case "parallel":
+    case "layer":
+      return [MIXER_PORTS, ["picture"]];
+    case "splitter":
+      return [["picture"], ["red", "green", "blue"]];
+    case "combiner":
+      return [["red", "green", "blue"], ["picture"]];
+  }
 }
+
+/** What a port carries: every port but `key` carries a picture (`docs/25` section 2.2). */
+const isKey = (port: Port): boolean => port === "key";
+
+/** Whether a port name is `picture.k` with k from 9 up: a ninth input or past it, which a mixer refuses with its own sentence. */
+const pastLastInput = (port: string): boolean => /^picture\.[1-9][0-9]*$/.test(port) && Number(port.slice(8)) > MIXER_INPUTS;
 
 /** True when the links, picture and key together, make a circle (Kahn's algorithm). */
 function hasCycle(ids: readonly NodeId[], links: readonly NodeLink[]): boolean {
@@ -165,7 +215,7 @@ export function validateGraph(settings: DevelopSettings): string | null {
   }
   const main = nodeOf(settings, MAIN_ID);
   if (!ids.has(INPUT_ID) || !ids.has(OUTPUT_ID) || main?.kind !== "corrector") return GRAPH_TEXT.missingFixed;
-  if (cardsOf(settings).length > MAX_NODES) return GRAPH_TEXT.tooManyNodes;
+  if (numberedOf(settings).length > MAX_NODES) return GRAPH_TEXT.tooManyNodes;
   for (const item of items) {
     const problem = filmProblem(item) ?? maskProblem(item);
     if (problem) return problem;
@@ -179,13 +229,21 @@ export function validateGraph(settings: DevelopSettings): string | null {
     if (!start || !end) return GRAPH_TEXT.missingFixed;
     if (start.kind === "output" || end.kind === "input") return GRAPH_TEXT.linkDirection;
     if (!portsOf(start.kind)[1].includes(from.port)) return GRAPH_TEXT.unknownPort(from.node, from.port);
+    if ((end.kind === "parallel" || end.kind === "layer") && pastLastInput(to.port)) return GRAPH_TEXT.tooManyMixerInputs;
     if (!portsOf(end.kind)[0].includes(to.port)) return GRAPH_TEXT.unknownPort(to.node, to.port);
-    if (from.port !== to.port) return GRAPH_TEXT.linkPortTypes;
+    if (isKey(from.port) !== isKey(to.port)) return GRAPH_TEXT.linkPortTypes;
     const slot = `${to.node}:${to.port}`;
     taken.set(slot, (taken.get(slot) ?? 0) + 1);
   }
   for (const link of links) {
     if ((taken.get(`${link.to.node}:${link.to.port}`) ?? 0) > 1) return GRAPH_TEXT.twoLinks(link.to.node, link.to.port);
+  }
+  for (const item of items) {
+    if (item.kind !== "parallel" && item.kind !== "layer") continue;
+    const linked = (k: number): boolean => taken.has(`${item.id}:picture.${k}`);
+    const missing = [...Array(MIXER_INPUTS).keys()].map((i) => i + 1).find((k) => !linked(k));
+    const after = missing === undefined ? undefined : [...Array(MIXER_INPUTS).keys()].map((i) => i + 1).find((k) => k > missing && linked(k));
+    if (missing !== undefined && after !== undefined) return GRAPH_TEXT.mixerGap(item.id, after, missing);
   }
   if (!taken.has(`${OUTPUT_ID}:picture`)) return GRAPH_TEXT.outputLink;
   const feeds = links.find((link) => link.to.node === MAIN_ID && link.to.port === "picture");

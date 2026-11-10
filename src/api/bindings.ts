@@ -678,6 +678,23 @@ export type BalanceSetting =
 /**  `[a, b]` within the unit disc. */
 point: [number, number] };
 
+/**  How a Layer blends an input over the ones below it (`docs/25` section 3.3), in linear light. */
+export type BlendMode = 
+/**  The layer itself. */
+"normal" | 
+/**  Below plus the layer. */
+"add" | 
+/**  Below minus the layer. */
+"subtract" | 
+/**  Below times the layer. */
+"multiply" | 
+/**  The lighter of the two. */
+"lighten" | 
+/**  The darker of the two. */
+"darken" | 
+/**  The absolute difference. */
+"difference";
+
 /**  One stroke of a Brush mask. */
 export type BrushStroke = {
 	/**  The brush's size, 0.001 to 0.25 of the long edge. */
@@ -835,6 +852,16 @@ export type ColorWarpPin = {
 	 *  neutral); shown as -100 to +100 %.
 	 */
 	saturation: number,
+};
+
+/**  A Combiner: joins three pictures into one, a channel from each (`docs/25`). */
+export type CombinerNode = {
+	/**  2 to 2147483647 (every numbered node shares the numbers). */
+	id: "input" | "output" | number,
+	/**  The card's name, 1 to 32 characters. */
+	name: string,
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
 };
 
 /**  A corrector node, Main (id 1) included. */
@@ -1424,6 +1451,22 @@ export type LastUsedFolders = {
 	export: string | null,
 	/**  Where looks were last imported from. */
 	looks_import: string | null,
+};
+
+/**  A Layer mixer: stacks its inputs and blends each over the ones below it (`docs/25`). */
+export type LayerNode = {
+	/**  2 to 2147483647 (every numbered node shares the numbers). */
+	id: "input" | "output" | number,
+	/**  The card's name, 1 to 32 characters. */
+	name: string,
+	/**  A bypassed Layer outputs its input 1. */
+	bypass: boolean,
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
+	/**  How the layers blend. */
+	mode: BlendMode,
+	/**  0 to 1. */
+	opacity: number,
 };
 
 /**  One lens of the Lens card's menu (`LensInfo` in `types.ts`, `lens_list`). */
@@ -2186,7 +2229,23 @@ export type NodeItem =
 /**  A Film node. */
 {
 	kind: "film",
-} & FilmNode;
+} & FilmNode | 
+/**  A Parallel mixer. */
+{
+	kind: "parallel",
+} & ParallelNode | 
+/**  A Layer mixer. */
+{
+	kind: "layer",
+} & LayerNode | 
+/**  A Splitter. */
+{
+	kind: "splitter",
+} & SplitterNode | 
+/**  A Combiner. */
+{
+	kind: "combiner",
+} & CombinerNode;
 
 /**  What a node is. */
 export type NodeKind = 
@@ -2197,7 +2256,15 @@ export type NodeKind =
 /**  A corrector. */
 "corrector" | 
 /**  A Film node (`docs/24`). */
-"film";
+"film" | 
+/**  A Parallel mixer (`docs/25`). */
+"parallel" | 
+/**  A Layer mixer (`docs/25`). */
+"layer" | 
+/**  A Splitter (`docs/25`). */
+"splitter" | 
+/**  A Combiner (`docs/25`). */
+"combiner";
 
 /**  A link from an output port to an input port (`docs/23` section 3.4). */
 export type NodeLink = {
@@ -2272,6 +2339,10 @@ export type NodePatch = {
 	grain?: GrainPatch | null,
 	/**  New Strength of a Film node, percent. */
 	strength?: number | null,
+	/**  A Layer's new blend mode. */
+	mode?: BlendMode | null,
+	/**  A Layer's new opacity, 0 to 1. */
+	opacity?: number | null,
 };
 
 /**  One end of a link: a node and one of its ports. */
@@ -2440,6 +2511,18 @@ export type PackageId =
 /**  Look Library, LogC3 to Rec.709. */
 "look_library_logc3_to_rec709";
 
+/**  A Parallel mixer: adds the change each of its inputs makes to the picture they started from (`docs/25`). */
+export type ParallelNode = {
+	/**  2 to 2147483647 (every numbered node shares the numbers). */
+	id: "input" | "output" | number,
+	/**  The card's name, 1 to 32 characters. */
+	name: string,
+	/**  A bypassed Parallel outputs its base. */
+	bypass: boolean,
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
+};
+
 /**  The answer of `paste_settings`. */
 export type PasteReport = {
 	/**  The photos that took the settings, in the order they were asked for. */
@@ -2579,12 +2662,37 @@ export type PixelSample = {
 	b: number,
 };
 
-/**  A port of a node: a picture or a key (a mask). */
+/**
+ *  A port of a node: a picture or a key (a mask). A mixer's inputs are `picture.1` to `picture.8`; a Splitter's
+ *  outputs and a Combiner's inputs are `red`, `green` and `blue`, all pictures (`docs/25` section 2.2).
+ */
 export type Port = 
 /**  The LogC4 picture. */
 "picture" | 
 /**  A mask. */
-"key";
+"key" | 
+/**  A mixer's first picture input. */
+"picture.1" | 
+/**  A mixer's second picture input. */
+"picture.2" | 
+/**  A mixer's third picture input. */
+"picture.3" | 
+/**  A mixer's fourth picture input. */
+"picture.4" | 
+/**  A mixer's fifth picture input. */
+"picture.5" | 
+/**  A mixer's sixth picture input. */
+"picture.6" | 
+/**  A mixer's seventh picture input. */
+"picture.7" | 
+/**  A mixer's eighth picture input. */
+"picture.8" | 
+/**  A Splitter's red output or a Combiner's red input. */
+"red" | 
+/**  A Splitter's green output or a Combiner's green input. */
+"green" | 
+/**  A Splitter's blue output or a Combiner's blue input. */
+"blue";
 
 /**  Everything that persists besides imported looks. */
 export type Preferences = {
@@ -3036,6 +3144,16 @@ export type SourceRecognition = {
 	size_bytes: number | null,
 	/**  What it is. */
 	recognition: Recognition,
+};
+
+/**  A Splitter: sends the red, green and blue of a picture to three outputs (`docs/25`). */
+export type SplitterNode = {
+	/**  2 to 2147483647 (every numbered node shares the numbers). */
+	id: "input" | "output" | number,
+	/**  The card's name, 1 to 32 characters. */
+	name: string,
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
 };
 
 /**  The straightener's answer (`docs/20-auto-crop.md` §3). */

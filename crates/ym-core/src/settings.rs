@@ -91,11 +91,6 @@ pub use graph::{
     NodeRef, NodeTrim, OUTPUT_POS, OutputNode, POS_RANGE, Port, PortType, TRIM_EXPOSURE_RANGE_EV,
     TRIM_RANGE, ports_in, ports_out,
 };
-pub use mixers::{
-    BlendMode, CombinerNode, DEFAULT_COMBINER_NAME, DEFAULT_LAYER_NAME, DEFAULT_PARALLEL_NAME,
-    DEFAULT_SPLITTER_NAME, LayerNode, MIXER_INPUTS, MixerNode, OPACITY_RANGE, ParallelNode,
-    SplitterNode,
-};
 pub use masks::{
     BackgroundMask, BrightnessRangeMask, BrushMask, BrushStroke, ColorRangeMask,
     DEPTH_ROW_NO_MODEL_SENTENCE, DepthMask, FindMask, LinearMask, MASK_KINDS, MAX_BRUSH_POINTS,
@@ -104,6 +99,11 @@ pub use masks::{
     NO_OBJECT_MODEL_SENTENCE, ObjectMask, RadialMask, mask_kinds, mask_kinds_with,
     mask_unavailable, mask_unavailable_with, unmakeable_mask_sentence,
     unmakeable_mask_sentence_with, unsupported_row_sentence,
+};
+pub use mixers::{
+    BlendMode, CombinerNode, DEFAULT_COMBINER_NAME, DEFAULT_LAYER_NAME, DEFAULT_PARALLEL_NAME,
+    DEFAULT_SPLITTER_NAME, LayerNode, MIXER_INPUTS, MixerNode, OPACITY_RANGE, ParallelNode,
+    SplitterNode,
 };
 pub use patch::{
     COPY_LEAVES_OUT, FilmStockPatch, GradePatch, GrainPatch, HalationPatch, LightsPatch, NodePatch,
@@ -2242,7 +2242,7 @@ mod tests {
         assert_eq!(F::Contrast.group(), Some(StageGroup::Grade));
         assert_eq!(F::Look.group(), Some(StageGroup::Grade));
         // A corrector's trim, bypass and masks are the nodes' group; its name and place re-run nothing.
-        for f in [F::Trim, F::Bypass, F::Masks] {
+        for f in [F::Trim, F::Bypass, F::Masks, F::Mode, F::Opacity] {
             assert_eq!(f.group(), Some(StageGroup::Grade), "{f:?}");
         }
         assert_eq!(F::Name.group(), None);
@@ -2258,6 +2258,6 @@ mod tests {
                 format!("\"{}\"", f.name())
             );
         }
-        assert_eq!(SettingsField::ALL.len(), 34);
+        assert_eq!(SettingsField::ALL.len(), 36);
     }
 }

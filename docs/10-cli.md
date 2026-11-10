@@ -167,7 +167,7 @@ A path the user named that cannot be a photo (it does not exist, or is not an AR
 
 ### The node-first form
 
-A settings file is `{ "nodes": { "items": [ … ], "links": [ … ] } }`. The items are the nodes: **`"input"`** (the raw, light and framing fields: `exposure`, `light_source`, `white_balance`, `white_pick`, `rolloff`, `decode`, `noise_reduction`, `sharpen`, `lens`, `crop`, `orientation`), **`"output"`** (`look`, `look_intensity`, `output_sharpening`) and the numbered nodes: the correctors, **1** (Main) and any others (`name`, `bypass`, `pos`, `trim`, `grade`, `masks`; the grade has the fields `contrast`, `brightness`, `highlights`, `shadows`, `white`, `black`, `color_balance`, `saturation`, `color_warp`, `curve`), and **Film nodes** (`"kind": "film"`: `name`, `bypass`, `pos`, `film`, `print`, `halation`, `grain`, `strength`, `masks`; `docs/24-film.md` §4.5). From milestone X (`docs/25-mixers.md` §2, being built on branch `mixers`) the numbered nodes also include the **mixers** (`"kind": "parallel"`: `name`, `bypass`, `pos`; `"kind": "layer"`: those and `mode`, `opacity`), each with inputs `picture.1` to `picture.N`, and the **Splitter** and **Combiner** (`"splitter"`, `"combiner"`: `name`, `pos`), whose channel ports are `red`, `green` and `blue`; `docs/25` §2.4 has an example file of each, which this section takes over with X-03. Every field has the name and the type it always had in `ym:Settings`; it has moved into its node. The fixed three need not be listed, a listed node may be partial, and `links` left out are the default links (Input → Main → Output). The full rules, the ranges and the Auto rule (**only node 1 can be Auto**; in another corrector Auto reads as a manual 0) are `docs/23` §3.
+A settings file is `{ "nodes": { "items": [ … ], "links": [ … ] } }`. The items are the nodes: **`"input"`** (the raw, light and framing fields: `exposure`, `light_source`, `white_balance`, `white_pick`, `rolloff`, `decode`, `noise_reduction`, `sharpen`, `lens`, `crop`, `orientation`), **`"output"`** (`look`, `look_intensity`, `output_sharpening`) and the numbered nodes: the correctors, **1** (Main) and any others (`name`, `bypass`, `pos`, `trim`, `grade`, `masks`; the grade has the fields `contrast`, `brightness`, `highlights`, `shadows`, `white`, `black`, `color_balance`, `saturation`, `color_warp`, `curve`), and **Film nodes** (`"kind": "film"`: `name`, `bypass`, `pos`, `film`, `print`, `halation`, `grain`, `strength`, `masks`; `docs/24-film.md` §4.5). From milestone X (`docs/25-mixers.md` §2) the numbered nodes also include the **mixers** (`"kind": "parallel"`: `name`, `bypass`, `pos`; `"kind": "layer"`: those and `mode`, `opacity`), each with the inputs `picture.1` to `picture.N` (N at most 8, numbered from 1 with no gap) and one `picture` output, and the **Splitter** and **Combiner** (`"splitter"`, `"combiner"`: `name`, `pos`), whose channel ports are `red`, `green` and `blue`; two example files are below (*Mixers, splitters and combiners*). A file with one of these nodes is read and checked like any other, but this version of Yellowmoon cannot render it yet: the photo stops with a plain error and nothing is written (the plan and the kernels come with task X-04 of `docs/25`). Every field has the name and the type it always had in `ym:Settings`; it has moved into its node. The fixed three need not be listed, a listed node may be partial, and `links` left out are the default links (Input → Main → Output). The full rules, the ranges and the Auto rule (**only node 1 can be Auto**; in another corrector Auto reads as a manual 0) are `docs/23` §3.
 
 A complete small file: the Input's exposure at +0.3 EV, Main's contrast at 20, a second corrector, Sky, with a Linear mask and a cooler trim, and the Output's Neutral look at 80 %:
 
@@ -224,7 +224,7 @@ The strokes are drawn in the order they are listed into a plane of 2048 pixels o
 
 `crates/ym-cli/tests/docs.rs` compares this sentence with the code's and with `docs/23` §3.12.
 
-**Graph rules.** A file that breaks one (a cycle, a link between ports of different types, two links on one input, no link or two to the output, Main not linked to the input, an unknown node kind, a node or link that does not exist, a field the node's kind does not have, more than 64 correctors) is refused for that file (exit 2, before any photo is opened) with the plain sentence of `docs/23` §3.5, after the words "The settings file can't be used:" (for example "The settings file can't be used: Node 1, Main, must take its picture from the input."; a field or a mask kind the core does not know reads "The settings file can't be used: The settings can't be read: unknown field `bogus`, …"), and **a file with a node kind this version does not know is refused with "This settings file has a node of a kind (“outside”) that this version of Yellowmoon does not have. Update Yellowmoon."** (A mixer's own rules, numbered inputs with no gap and at most 8, are `docs/25-mixers.md` §2.3.) **Sanity bounds** on what a file may hold, so that a broken or hostile file cannot hang `ym` or use all its memory: 64 correctors, 64 masks in a node, 100,000 brush points in a mask, 256 points in an Object mask; a number outside a range is limited and a warning names the field, as for any field. A hand-written graph may hold key links and branches; `ym` renders them as the app does.
+**Graph rules.** A file that breaks one (a cycle, a link between ports of different types, two links on one input, no link or two to the output, Main not linked to the input, an unknown node kind, a node or link that does not exist, a field the node's kind does not have, more than 64 nodes) is refused for that file (exit 2, before any photo is opened) with the plain sentence of `docs/23` §3.5, after the words "The settings file can't be used:" (for example "The settings file can't be used: Node 1, Main, must take its picture from the input."; a field or a mask kind the core does not know reads "The settings file can't be used: The settings can't be read: unknown field `bogus`, …"), and **a file with a node kind this version does not know is refused with "This settings file has a node of a kind (“outside”) that this version of Yellowmoon does not have. Update Yellowmoon."** (A mixer's own rules, numbered inputs with no gap and at most 8, are `docs/25-mixers.md` §2.3.) **Sanity bounds** on what a file may hold, so that a broken or hostile file cannot hang `ym` or use all its memory: 64 nodes, 64 masks in a node, 100,000 brush points in a mask, 256 points in an Object mask; a number outside a range is limited and a warning names the field, as for any field. A hand-written graph may hold key links and branches; `ym` renders them as the app does.
 
 **Masks that are found from clicks (from 0.2.0).** An Object row selects the object under the person's clicks, found by SAM 2.1 small (`docs/23` §4.4, `docs/algorithms/06` §6). Every field but `kind` is optional (`points` are `[x, y, positive]` in the photo frame, at most 256, `box` is `[x0, y0, x1, y1]` or `null`, and `feather`, `grow` and `refine` act after the model as for a Brush row):
 
@@ -250,13 +250,64 @@ A click on the object is positive, a click on a part to take away is negative, a
 
 Only a row that is in the picture counts: a row with the eye off (`"enabled": false`) and a row of a node the Output does not need are not. The photo is never written without its mask, and a mask is never taken as one that selects nothing. The exit code is **1** (some files failed; *Exit codes*), as for every kind of failure after a photo is opened. In the JSON the record has `"status": "error"`, `"output": null` and `"error": { "kind": "mask", "message": "…" }`; it still carries `camera`, `look`, `auto` and `settings`. More than 48 drawn or found masks in the nodes the Output needs is the same error ("This photo has more than 48 masks that are drawn or found. Remove some of them."). `ym doctor` prints a **Masks** line with the kinds this machine can make and why it cannot make the others (*`doctor`*).
 
+**Mixers, splitters and combiners (milestone X, `docs/25-mixers.md`).** A Parallel adds the change each of its inputs makes to the picture they started from; a Layer stacks its inputs and blends each over the ones below it (`mode`: `normal`, `add`, `subtract`, `multiply`, `lighten`, `darken` or `difference`; `opacity` 0 to 1); a Splitter sends the red, green and blue of a picture to three outputs, and a Combiner joins three pictures into one. They are numbered nodes like correctors (they count toward the 64), with no masks, no key ports and no Auto. A mixer's inputs are `picture.1` to `picture.8` (there is no bare `picture` input), a Splitter has the outputs `red`, `green` and `blue`, a Combiner the inputs `red`, `green` and `blue`, and all of these ports carry pictures. A Parallel of two correctors, Skin and Sky, each with its own mask, both fed by Main:
+
+```json
+{ "nodes": {
+  "items": [
+    { "id": 2, "kind": "corrector", "name": "Skin", "pos": [1, -0.5],
+      "grade": { "saturation": { "kind": "manual", "value": 15 } },
+      "masks": { "invert": false, "items": [
+        { "kind": "color_range", "center": [0.06, 0.04], "width": 0.05, "softness": 0.5 } ] } },
+    { "id": 3, "kind": "corrector", "name": "Sky", "pos": [1, 0.5],
+      "trim": { "temperature": -18 },
+      "masks": { "invert": false, "items": [
+        { "kind": "linear", "center": [0.5, 0.2], "angle_deg": 4, "feather": 0.25 } ] } },
+    { "id": 4, "kind": "parallel", "pos": [2, 0] }
+  ],
+  "links": [
+    { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+    { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+    { "from": { "node": 1, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+    { "from": { "node": 2, "port": "picture" }, "to": { "node": 4, "port": "picture.1" } },
+    { "from": { "node": 3, "port": "picture" }, "to": { "node": 4, "port": "picture.2" } },
+    { "from": { "node": 4, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+  ] } }
+```
+
+A Splitter and a Combiner around three correctors (the red channel lifted by 0.2 EV and the blue lowered by 0.2 EV):
+
+```json
+{ "nodes": {
+  "items": [
+    { "id": 2, "kind": "splitter", "pos": [1, 0] },
+    { "id": 3, "kind": "corrector", "name": "Red", "pos": [2, -1], "trim": { "exposure_ev": 0.2 } },
+    { "id": 4, "kind": "corrector", "name": "Green", "pos": [2, 0] },
+    { "id": 5, "kind": "corrector", "name": "Blue", "pos": [2, 1], "trim": { "exposure_ev": -0.2 } },
+    { "id": 6, "kind": "combiner", "pos": [3, 0] }
+  ],
+  "links": [
+    { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+    { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+    { "from": { "node": 2, "port": "red" },     "to": { "node": 3, "port": "picture" } },
+    { "from": { "node": 2, "port": "green" },   "to": { "node": 4, "port": "picture" } },
+    { "from": { "node": 2, "port": "blue" },    "to": { "node": 5, "port": "picture" } },
+    { "from": { "node": 3, "port": "picture" }, "to": { "node": 6, "port": "red" } },
+    { "from": { "node": 4, "port": "picture" }, "to": { "node": 6, "port": "green" } },
+    { "from": { "node": 5, "port": "picture" }, "to": { "node": 6, "port": "blue" } },
+    { "from": { "node": 6, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+  ] } }
+```
+
+A Layer as the core writes it: `{ "id": 7, "kind": "layer", "name": "Layer", "bypass": false, "pos": [4, 0], "mode": "normal", "opacity": 1 }`. A mixer whose linked inputs leave a gap, a ninth input and a bare `picture` input are refused with the sentences of `docs/25` §2.3 ("A mixer can have up to 8 inputs."; "Node 7 has a link on input 3 and none on input 2. A mixer's inputs are numbered from 1 with no gap."; "Node 7 has no port called “picture”."). Until task X-04 a photo whose graph has one of these nodes ends with "This photo has a mixer, a splitter or a combiner node, which this version of Yellowmoon can't render yet. Remove the node to render the photo." (a render error: exit 1, nothing written).
+
 Nothing is saved per photo: the settings live with the photo for this run, and each run starts from the automatic development and the default look.
 
 ### The help text
 
 `ym render --help` changes in three places (the snapshot `crates/ym-cli/tests/snapshots/cli__help_render.snap`; the flags' own lines are as they were, and the other snapshots change only as the paragraph after this list says):
 
-- **The closing paragraph** (`after_help`, after the examples) says what the flags set and where the new form is. It reads: "Settings are a graph of nodes. The options set fields of three of them: the Input (--exposure, --exposure-offset, --wb, --light, --lens, --flares, --edges, --anamorphic, --nr, --sharpen, --rolloff, --no-neural, --no-highlight-recovery, --no-lens, --no-ca, --auto-crop), node 1, Main (--contrast, --brightness, --highlights, --shadows, --white, --black, --saturation) and the Output (--look, --intensity, --output-sharpening). Everything else goes in a JSON file given with --settings: other nodes (correctors, and Film nodes whose stocks `ym film list` shows), masks and links, colour balance, curves, crop, orientation, white pick. The file is a graph, for example {"nodes":{"items":[{"id":1,"grade":{"contrast":{"kind":"manual","value":20}}}]}}; the `ym:Settings` of an export's XMP holds a photo's settings in that form. A file in the form of Yellowmoon 0.1 is refused. Options given alongside --settings override it. A file with several photos' settings is an object keyed by file name." (It replaces the old "Per-photo settings beyond these options go in a JSON file given with --settings (the `ym:Settings` schema of an exported file)…".)
+- **The closing paragraph** (`after_help`, after the examples) says what the flags set and where the new form is. It reads: "Settings are a graph of nodes. The options set fields of three of them: the Input (--exposure, --exposure-offset, --wb, --light, --lens, --flares, --edges, --anamorphic, --nr, --sharpen, --rolloff, --no-neural, --no-highlight-recovery, --no-lens, --no-ca, --auto-crop), node 1, Main (--contrast, --brightness, --highlights, --shadows, --white, --black, --saturation) and the Output (--look, --intensity, --output-sharpening). Everything else goes in a JSON file given with --settings: other nodes (correctors, mixers, splitters and combiners, and Film nodes whose stocks `ym film list` shows), masks and links, colour balance, curves, crop, orientation, white pick. The file is a graph, for example {"nodes":{"items":[{"id":1,"grade":{"contrast":{"kind":"manual","value":20}}}]}}; the `ym:Settings` of an export's XMP holds a photo's settings in that form. A file in the form of Yellowmoon 0.1 is refused. Options given alongside --settings override it. A file with several photos' settings is an object keyed by file name." (It replaces the old "Per-photo settings beyond these options go in a JSON file given with --settings (the `ym:Settings` schema of an exported file)…".)
 - **The `--settings` option** reads: "A JSON file of settings, or `-` for stdin: a graph of nodes (the `ym:Settings` of an export's XMP is one). It covers what these options can't: other nodes and their masks, links, colour balance (`{ "kind": "auto" }` puts a shadows or highlights wheel of Main back to Auto), curves, crop, orientation, white pick."
 - **`--json`** is not in the help any more: it is a hidden flag (`hide = true`) of `render` and `info` that Yellowmoon's own tools and tests use (`docs/13-testing.md`, *`ym`'s hidden `--json`*). Where a user finds a photo's settings: the `ym:Settings` of an export's XMP, which `--settings` reads back.
 

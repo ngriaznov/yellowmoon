@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use ym_core::session::PhotoId;
 use ym_core::settings::{
     BlendMode, DevelopSettings, FieldRef, MixerNode, NodeId, NodeKind, NodePatch, Port,
-    ResolvedSettings, SettingsError, SettingsField, SettingsPatch, ports_in, ports_out,
+    ResolvedSettings, SettingsError, SettingsField, SettingsPatch, StageGroup, ports_in, ports_out,
 };
 use ym_looks::library::LookId;
 
@@ -22,6 +22,13 @@ fn id(n: u32) -> NodeId {
 
 fn link(from: Value, fp: &str, to: Value, tp: &str) -> Value {
     json!({ "from": { "node": from, "port": fp }, "to": { "node": to, "port": tp } })
+}
+
+fn default_links() -> Vec<Value> {
+    vec![
+        link(json!("input"), "picture", json!(1), "picture"),
+        link(json!(1), "picture", json!("output"), "picture"),
+    ]
 }
 
 fn doc(items: Vec<Value>, links: Vec<Value>) -> Value {
@@ -148,7 +155,12 @@ fn layer_of(s: &DevelopSettings, n: u32) -> &ym_core::settings::LayerNode {
 #[test]
 fn the_four_kinds_have_names_and_sentences() {
     let kinds = [
-        (NodeKind::Parallel, "parallel", "a parallel mixer", "A parallel mixer"),
+        (
+            NodeKind::Parallel,
+            "parallel",
+            "a parallel mixer",
+            "A parallel mixer",
+        ),
         (NodeKind::Layer, "layer", "a layer mixer", "A layer mixer"),
         (NodeKind::Splitter, "splitter", "a splitter", "A splitter"),
         (NodeKind::Combiner, "combiner", "a combiner", "A combiner"),
@@ -185,7 +197,15 @@ fn ports_have_names_types_and_the_written_order() {
         assert_eq!(json, json!(name));
         assert_eq!(serde_json::from_value::<Port>(json).unwrap(), port);
     }
-    for odd in ["picture.0", "picture.01", "picture.9", "picture.10", "picture.", "Picture", "alpha"] {
+    for odd in [
+        "picture.0",
+        "picture.01",
+        "picture.9",
+        "picture.10",
+        "picture.",
+        "Picture",
+        "alpha",
+    ] {
         assert_eq!(Port::parse(odd), Port::Other(odd.to_owned()), "{odd}");
     }
     // The type of each.
@@ -202,7 +222,7 @@ fn ports_have_names_types_and_the_written_order() {
     assert_eq!(Port::Key.port_type(), Some(PortType::Key));
     assert_eq!(Port::Other("x".into()).port_type(), None);
     // The written order: picture, key, picture.1 to picture.8, red, green, blue.
-    let mut ports = vec![
+    let mut ports = [
         Port::Blue,
         Port::PictureN(2),
         Port::Red,
@@ -217,7 +237,14 @@ fn ports_have_names_types_and_the_written_order() {
     assert_eq!(
         names,
         [
-            "picture", "key", "picture.1", "picture.2", "picture.8", "red", "green", "blue"
+            "picture",
+            "key",
+            "picture.1",
+            "picture.2",
+            "picture.8",
+            "red",
+            "green",
+            "blue"
         ]
     );
     // The ports of every kind.
@@ -291,7 +318,10 @@ fn a_new_node_of_each_kind_has_its_defaults_and_is_written_with_its_fields_only(
     let names: Vec<&str> = (2..=5).map(|n| s.nodes.mixer(n).unwrap().name()).collect();
     assert_eq!(names, ["Parallel", "Layer", "Splitter", "Combiner"]);
     let l = layer_of(&s, 3);
-    assert_eq!((l.mode, l.opacity, l.bypass), (BlendMode::Normal, 1.0, false));
+    assert_eq!(
+        (l.mode, l.opacity, l.bypass),
+        (BlendMode::Normal, 1.0, false)
+    );
     assert_eq!(s.nodes.kind_of(id(2)), Some(NodeKind::Parallel));
     assert_eq!(s.nodes.kind_of(id(3)), Some(NodeKind::Layer));
     assert_eq!(s.nodes.kind_of(id(4)), Some(NodeKind::Splitter));
@@ -313,7 +343,7 @@ fn a_new_node_of_each_kind_has_its_defaults_and_is_written_with_its_fields_only(
     // A Layer as docs/25 section 2.4 writes it.
     assert_eq!(
         item(&s, 3),
-        json!({ "id": 3, "kind": "layer", "name": "Layer", "bypass": false, "pos": [1.0, 0.0],
+        json!({ "id": 3, "kind": "layer", "name": "Layer", "bypass": false, "pos": [2.0, 0.0],
             "mode": "normal", "opacity": 1.0 })
     );
     // The nodes with no place are placed in a row by number, as any node is.
@@ -338,9 +368,12 @@ fn name_is_trimmed_cut_and_defaults_for_every_kind() {
                     link(json!(1), "picture", json!("output"), "picture"),
                 ]
             };
-            read(doc(vec![json!({ "id": 2, "kind": kind, "name": name })], links))
-                .unwrap()
-                .0
+            read(doc(
+                vec![json!({ "id": 2, "kind": kind, "name": name })],
+                links,
+            ))
+            .unwrap()
+            .0
         };
         assert_eq!(node("   ").nodes.mixer(2).unwrap().name(), default);
         assert_eq!(node("  Mix  ").nodes.mixer(2).unwrap().name(), "Mix");
@@ -380,12 +413,18 @@ fn opacity_is_clamped_and_reported_and_a_bad_value_is_refused() {
             None,
         )
         .unwrap_err();
-    assert!(matches!(e, SettingsError::NotFinite(ref p) if p.ends_with(".opacity")), "{e}");
+    assert!(
+        matches!(e, SettingsError::NotFinite(ref p) if p.ends_with(".opacity")),
+        "{e}"
+    );
     assert_eq!(s, before);
     // A mode that is not in the list is a parse error.
     let e = with_layer(json!({ "mode": "screen" })).unwrap_err();
     assert!(matches!(e, SettingsError::Parse(_)), "{e}");
-    assert!(e.to_string().starts_with("The settings can't be read:"), "{e}");
+    assert!(
+        e.to_string().starts_with("The settings can't be read:"),
+        "{e}"
+    );
     for mode in BlendMode::ALL {
         let s = with_layer(json!({ "mode": mode.name() })).unwrap().0;
         assert_eq!(layer_of(&s, 2).mode, mode);
@@ -636,7 +675,10 @@ fn a_link_joins_two_ports_of_one_type() {
     assert_eq!(
         text_of(read(doc(
             items,
-            links(vec![link(json!(5), "picture", json!(3), "red"), link(json!(2), "red", json!(5), "key")])
+            links(vec![
+                link(json!(5), "picture", json!(3), "red"),
+                link(json!(2), "red", json!(5), "key")
+            ])
         ))),
         sentence
     );
@@ -674,16 +716,23 @@ fn an_input_has_one_link_and_no_circle() {
 
 #[test]
 fn the_new_kinds_count_toward_the_64_nodes() {
-    let kinds = ["corrector", "film", "parallel", "layer", "splitter", "combiner"];
+    let kinds = [
+        "corrector",
+        "film",
+        "parallel",
+        "layer",
+        "splitter",
+        "combiner",
+    ];
     // Main and 63 others: allowed. The others are in no link (dead nodes are fine).
     let items = |n: u32| -> Vec<Value> {
         (0..n)
             .map(|i| json!({ "id": 2 + i, "kind": kinds[i as usize % kinds.len()] }))
             .collect()
     };
-    assert!(read(doc(items(63), vec![])).is_ok());
+    read(doc(items(63), default_links())).unwrap();
     assert_eq!(
-        text_of(read(doc(items(64), vec![]))),
+        text_of(read(doc(items(64), default_links()))),
         "A photo can have up to 64 nodes."
     );
     // Only the new kinds also count.
@@ -692,9 +741,9 @@ fn the_new_kinds_count_toward_the_64_nodes() {
             .map(|i| json!({ "id": 2 + i, "kind": "splitter" }))
             .collect()
     };
-    assert!(read(doc(only(63), vec![])).is_ok());
+    assert!(read(doc(only(63), default_links())).is_ok());
     assert_eq!(
-        text_of(read(doc(only(64), vec![]))),
+        text_of(read(doc(only(64), default_links()))),
         "A photo can have up to 64 nodes."
     );
 }
@@ -826,7 +875,10 @@ fn the_schema_validates_what_the_core_writes_and_refuses_what_it_refuses() {
     // The opacity range is the one the core clamps to.
     let p = &schema["$defs"]["layer_node"]["properties"]["opacity"];
     assert_eq!(
-        (p["minimum"].as_f64().unwrap(), p["maximum"].as_f64().unwrap()),
+        (
+            p["minimum"].as_f64().unwrap(),
+            p["maximum"].as_f64().unwrap()
+        ),
         ym_core::settings::OPACITY_RANGE
     );
 }
@@ -852,7 +904,10 @@ fn a_patch_adds_each_kind_changes_a_layer_and_removes_a_node() {
     let report = s.apply_patch(&add, None).unwrap();
     assert_eq!(report.added, vec![id(2), id(3), id(4), id(5)]);
     let l = layer_of(&s, 2);
-    assert_eq!((l.mode, l.opacity, l.name.as_str()), (BlendMode::Add, 0.5, "Glow"));
+    assert_eq!(
+        (l.mode, l.opacity, l.name.as_str()),
+        (BlendMode::Add, 0.5, "Glow")
+    );
     assert_eq!(s.nodes.mixer(3).unwrap().kind(), NodeKind::Parallel);
     assert_eq!(s.nodes.kind_of(id(4)), Some(NodeKind::Splitter));
     assert_eq!(s.nodes.node_count(), 5);
@@ -877,7 +932,7 @@ fn a_patch_adds_each_kind_changes_a_layer_and_removes_a_node() {
         field: SettingsField::Masks
     }));
     // The nodes' group: a change runs the colour pass again and nothing else.
-    assert_eq!(report.first_group(), Some(ym_core::settings::StageGroup::Grade));
+    assert_eq!(report.first_group(), Some(StageGroup::Grade));
     // `mode` and `opacity` patches, their report and the clamp.
     let report = s
         .apply_patch(
@@ -894,12 +949,21 @@ fn a_patch_adds_each_kind_changes_a_layer_and_removes_a_node() {
             FieldRef::new(id(2), SettingsField::Opacity)
         ]
     );
-    assert_eq!(report.clamped, vec![FieldRef::new(id(2), SettingsField::Opacity)]);
-    assert_eq!(report.first_group(), Some(ym_core::settings::StageGroup::Grade));
+    assert_eq!(
+        report.clamped,
+        vec![FieldRef::new(id(2), SettingsField::Opacity)]
+    );
+    assert_eq!(report.first_group(), Some(StageGroup::Grade));
     let report = s
-        .apply_patch(&patch_of(json!({ "nodes": { "2": { "opacity": 0.5 } } })), None)
+        .apply_patch(
+            &patch_of(json!({ "nodes": { "2": { "opacity": 0.5 } } })),
+            None,
+        )
         .unwrap();
-    assert_eq!(report.changed, vec![FieldRef::new(id(2), SettingsField::Opacity)]);
+    assert_eq!(
+        report.changed,
+        vec![FieldRef::new(id(2), SettingsField::Opacity)]
+    );
     // A name and a place re-run nothing.
     let report = s
         .apply_patch(
@@ -911,16 +975,25 @@ fn a_patch_adds_each_kind_changes_a_layer_and_removes_a_node() {
     assert_eq!(s.nodes.mixer(3).unwrap().name(), "Sum");
     assert_eq!(s.nodes.pos(id(3)), Some([5.0, 1.0]));
     // Bypass: a Parallel and a Layer have it, a Splitter has not.
-    s.apply_patch(&patch_of(json!({ "nodes": { "3": { "bypass": true } } })), None)
-        .unwrap();
+    s.apply_patch(
+        &patch_of(json!({ "nodes": { "3": { "bypass": true } } })),
+        None,
+    )
+    .unwrap();
     assert!(s.nodes.mixer(3).unwrap().bypass());
     let before = s.clone();
     assert_eq!(
-        text_of(s.apply_patch(&patch_of(json!({ "nodes": { "4": { "bypass": true } } })), None)),
+        text_of(s.apply_patch(
+            &patch_of(json!({ "nodes": { "4": { "bypass": true } } })),
+            None
+        )),
         "A splitter has no field called “bypass”."
     );
     assert_eq!(
-        text_of(s.apply_patch(&patch_of(json!({ "nodes": { "3": { "mode": "add" } } })), None)),
+        text_of(s.apply_patch(
+            &patch_of(json!({ "nodes": { "3": { "mode": "add" } } })),
+            None
+        )),
         "A parallel mixer has no field called “mode”."
     );
     assert_eq!(
@@ -958,15 +1031,24 @@ fn a_patch_with_the_wrong_kind_or_a_gap_is_refused_whole() {
     let mut s = all_four();
     let before = s.clone();
     assert_eq!(
-        text_of(s.apply_patch(&patch_of(json!({ "nodes": { "4": { "kind": "corrector" } } })), None)),
+        text_of(s.apply_patch(
+            &patch_of(json!({ "nodes": { "4": { "kind": "corrector" } } })),
+            None
+        )),
         "Node 4 is a layer mixer, not a corrector."
     );
     assert_eq!(
-        text_of(s.apply_patch(&patch_of(json!({ "nodes": { "2": { "kind": "layer" } } })), None)),
+        text_of(s.apply_patch(
+            &patch_of(json!({ "nodes": { "2": { "kind": "layer" } } })),
+            None
+        )),
         "Node 2 is a splitter, not a layer mixer."
     );
     assert_eq!(
-        text_of(s.apply_patch(&patch_of(json!({ "nodes": { "1": { "kind": "combiner" } } })), None)),
+        text_of(s.apply_patch(
+            &patch_of(json!({ "nodes": { "1": { "kind": "combiner" } } })),
+            None
+        )),
         "Node 1 is a corrector, not a combiner."
     );
     // A ninth input and a gap, in a `links` patch.
@@ -1014,7 +1096,10 @@ fn undo_is_the_patch_between_two_settings_and_reset_puts_a_layer_back() {
     // A node that was added or removed is carried whole, with its kind, and the links.
     let empty = DevelopSettings::default();
     let add = SettingsPatch::between(&empty, &b);
-    assert_eq!(add.nodes.get(&id(4)).and_then(|n| n.kind), Some(NodeKind::Layer));
+    assert_eq!(
+        add.nodes.get(&id(4)).and_then(|n| n.kind),
+        Some(NodeKind::Layer)
+    );
     let mut c = empty.clone();
     c.apply_patch(&add, None).unwrap();
     assert_eq!(c.nodes.mixers, b.nodes.mixers);
@@ -1108,7 +1193,11 @@ fn copy_carries_the_nodes_and_paste_replaces_the_targets_graph() {
         (4, NodeKind::Layer),
         (5, NodeKind::Parallel),
     ] {
-        assert_eq!(copy.nodes.get(&id(n)).and_then(|p| p.kind), Some(kind), "{n}");
+        assert_eq!(
+            copy.nodes.get(&id(n)).and_then(|p| p.kind),
+            Some(kind),
+            "{n}"
+        );
     }
     let layer = copy.nodes.get(&id(4)).unwrap();
     assert_eq!(layer.mode, Some(BlendMode::Multiply));

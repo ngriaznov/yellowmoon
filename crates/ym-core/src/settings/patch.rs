@@ -1781,11 +1781,7 @@ impl SettingsPatch {
                     )
             })
             .collect();
-        Self::of_fields(
-            &defaults_for(node, default_look, kind),
-            node,
-            &fields,
-        )
+        Self::of_fields(&defaults_for(node, default_look, kind), node, &fields)
     }
 
     /// What Copy settings takes from a photo, to paste onto others (`docs/23` section 3.8): the

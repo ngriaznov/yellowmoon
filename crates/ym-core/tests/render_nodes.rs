@@ -611,6 +611,76 @@ fn three_nodes_are_deterministic_whatever_the_threads_and_the_tiles() {
     assert_ne!(display(&plain, &d.source()).rgb, one.0);
 }
 
+#[test]
+fn a_graph_with_a_mixer_is_refused_with_a_plain_error_and_never_rendered_without_it() {
+    // docs/25 task X-03: until the plan compiler runs the four kinds (X-04), a graph that has one fails to render.
+    let d = photo(Layout::Patchwork, 0.5);
+    let r = renderer();
+    let sentence = ym_core::pipeline::color::MIXERS_NOT_RENDERED;
+    for (kind, links) in [
+        (
+            "layer",
+            vec![
+                picture(json!("input"), json!(1)),
+                json!({ "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture.1" } }),
+                picture(json!(2), json!("output")),
+            ],
+        ),
+        (
+            "parallel",
+            vec![
+                picture(json!("input"), json!(1)),
+                json!({ "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture.1" } }),
+                picture(json!(2), json!("output")),
+            ],
+        ),
+        (
+            "splitter",
+            vec![
+                picture(json!("input"), json!(1)),
+                picture(json!(1), json!(2)),
+                json!({ "from": { "node": 2, "port": "green" }, "to": { "node": "output", "port": "picture" } }),
+            ],
+        ),
+        (
+            "combiner",
+            vec![
+                picture(json!("input"), json!(1)),
+                json!({ "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "green" } }),
+                picture(json!(2), json!("output")),
+            ],
+        ),
+    ] {
+        let s = graph(
+            vec![json!({ "id": 2, "kind": kind, "pos": [1.0, 0.0] })],
+            links,
+        );
+        assert_eq!(s.nodes.mixers.len(), 1, "{kind}");
+        let e = node_plan(&s.nodes, ym_color::plan::Stop::Output).unwrap_err();
+        assert_eq!(e.to_string(), sentence, "{kind}");
+        let src = with(&d.source(), s);
+        let full = r.render_full(
+            &src,
+            &FullRequest {
+                target: FullTarget::DisplayLinear(OutputTarget::Srgb),
+            },
+            &CancelToken::new(),
+        );
+        assert_eq!(
+            full.err().map(|e| e.to_string()).as_deref(),
+            Some(sentence),
+            "{kind}"
+        );
+        let st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
+        let shown = r.viewport_frame(&src, &st, &FrameOptions::default(), &CancelToken::new());
+        assert_eq!(
+            shown.err().map(|e| e.to_string()).as_deref(),
+            Some(sentence),
+            "{kind}"
+        );
+    }
+}
+
 // ---- the grade cache ---------------------------------------------------------------------------
 
 #[test]

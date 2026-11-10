@@ -243,6 +243,12 @@ fn the_cli_documentation_and_the_help_agree() {
         doc.contains(&paragraph),
         "docs/10 quotes the help's closing paragraph"
     );
+    assert!(
+        paragraph.contains(
+            "other nodes (correctors, mixers, splitters and combiners, and Film nodes whose stocks `ym film list` shows)"
+        ),
+        "the paragraph names the mixers, splitters and combiners (docs/25 section 6)"
+    );
     let list = |opener: &str| -> BTreeSet<String> {
         let at = paragraph
             .find(opener)
@@ -323,8 +329,8 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     let blocks = json_blocks(&doc[start..end]);
     assert_eq!(
         blocks.len(),
-        4,
-        "the complete small file, the per-file example, the Brush row and the Object row"
+        6,
+        "the complete small file, the per-file example, the Brush row, the Object row, and the Parallel and the Splitter-and-Combiner examples of docs/25"
     );
 
     // The complete small file: read over the default graph, checked, and written back unchanged.
@@ -431,11 +437,63 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
         )),
         "docs/10 quotes the sentence"
     );
+    // The Parallel example of `docs/25` section 2.4: a Parallel of two masked correctors, fed by Main.
+    let value: Value = serde_json::from_str(&blocks[4]).expect("the Parallel example is JSON");
+    let (settings, clamped) =
+        DevelopSettings::from_value(value, &LookId::neutral()).expect("the Parallel example reads");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    assert_eq!(
+        settings
+            .nodes
+            .kind_of(ym_core::settings::NodeId::Corrector(4)),
+        Some(ym_core::settings::NodeKind::Parallel)
+    );
+    assert_eq!(settings.nodes.node_count(), 4);
+    assert_eq!(settings.nodes.links.len(), 6);
+    assert!(settings.nodes.links.iter().any(|l| {
+        l.to.node == ym_core::settings::NodeId::Corrector(4)
+            && l.to.port == ym_core::settings::Port::PictureN(2)
+    }));
+    let written = serde_json::to_value(&settings).expect("writes");
+    let (again, _) = DevelopSettings::from_value(written, &LookId::neutral()).expect("reads again");
+    assert_eq!(again, settings, "written back unchanged");
+    // The Splitter-and-Combiner example: a Splitter, three correctors and a Combiner.
+    let value: Value = serde_json::from_str(&blocks[5]).expect("the trio example is JSON");
+    let (settings, clamped) =
+        DevelopSettings::from_value(value, &LookId::neutral()).expect("the trio example reads");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    assert_eq!(
+        settings
+            .nodes
+            .kind_of(ym_core::settings::NodeId::Corrector(2)),
+        Some(ym_core::settings::NodeKind::Splitter)
+    );
+    assert_eq!(
+        settings
+            .nodes
+            .kind_of(ym_core::settings::NodeId::Corrector(6)),
+        Some(ym_core::settings::NodeKind::Combiner)
+    );
+    assert_eq!(settings.nodes.links.len(), 9);
+    let written = serde_json::to_value(&settings).expect("writes");
+    let (again, _) = DevelopSettings::from_value(written, &LookId::neutral()).expect("reads again");
+    assert_eq!(again, settings, "written back unchanged");
+    // The unknown-kind sentence is quoted with “outside”, and “parallel” is a kind.
+    let doc_text = read("docs/10-cli.md");
+    assert!(doc_text.contains(
+        "This settings file has a node of a kind (“outside”) that this version of Yellowmoon does not have. Update Yellowmoon."
+    ));
+    assert!(!doc_text.contains("a kind (“parallel”)"));
     // And `ym` takes both files as `--settings` does: they are read, and checked, before any photo is
     // opened; the photo named here is not there, so the run ends for want of a photo (exit 5), never as a
     // settings error (exit 2).
     let sb = Sandbox::new();
-    for (label, text) in [("small", &blocks[0]), ("per-file", &blocks[1])] {
+    for (label, text) in [
+        ("small", &blocks[0]),
+        ("per-file", &blocks[1]),
+        ("parallel", &blocks[4]),
+        ("trio", &blocks[5]),
+    ] {
         let file = sb.root().join(format!("{label}.json"));
         std::fs::write(&file, text).expect("write");
         sb.ym()

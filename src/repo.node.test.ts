@@ -176,6 +176,7 @@ describe("the mock's rules for the graph (docs/23 section 9)", () => {
       GRAPH_TEXT.tooManyBrushPoints,
       GRAPH_TEXT.tooManyObjectPoints,
       GRAPH_TEXT.cannotRemove,
+      GRAPH_TEXT.tooManyMixerInputs,
     ]) {
       expect(rust, text).toContain(sentence(text));
     }
@@ -191,11 +192,29 @@ describe("the mock's rules for the graph (docs/23 section 9)", () => {
     expect(GRAPH_TEXT.patchWrongKind(7, "corrector", "input")).toBe("Node 7 is a corrector, not an input.");
     expect(rust).toContain(sentence("{kind} has no field called “{field}”."));
     expect(GRAPH_TEXT.unknownField("corrector", "exposure")).toBe("A corrector has no field called “exposure”.");
+    // The mixers' rules (`docs/25` section 2.3): the gap sentence is written over three lines in the source, so its text is looked up whole.
+    expect(rust).toContain('"{node} has a link on input {linked} and none on input {missing}. A mixer\'s inputs are numbered from 1 with no gap."');
+    expect(GRAPH_TEXT.mixerGap(7, 3, 2)).toBe("Node 7 has a link on input 3 and none on input 2. A mixer's inputs are numbered from 1 with no gap.");
+    // The kinds in sentences (`NodeKind::with_article`).
+    expect(GRAPH_TEXT.unknownField("parallel", "masks")).toBe("A parallel mixer has no field called “masks”.");
+    expect(GRAPH_TEXT.unknownField("splitter", "bypass")).toBe("A splitter has no field called “bypass”.");
+    expect(GRAPH_TEXT.patchWrongKind(7, "layer", "corrector")).toBe("Node 7 is a layer mixer, not a corrector.");
+    expect(GRAPH_TEXT.patchWrongKind(7, "combiner", "film")).toBe("Node 7 is a combiner, not a film node.");
+    for (const text of ['"a parallel mixer"', '"a layer mixer"', '"a splitter"', '"a combiner"', '"A parallel mixer"', '"A layer mixer"', '"A splitter"', '"A combiner"']) {
+      expect(rust, text).toContain(`=> ${text}`);
+    }
   });
 
   it("are the sentences of docs/23 section 3.5", () => {
     const doc = read("docs/23-nodes.md");
     for (const text of [GRAPH_TEXT.missingFixed, GRAPH_TEXT.linkDirection, GRAPH_TEXT.linkPortTypes, GRAPH_TEXT.outputLink, GRAPH_TEXT.mainInput, GRAPH_TEXT.cycle, GRAPH_TEXT.tooManyNodes]) {
+      expect(doc, text).toContain(`"${text}"`);
+    }
+  });
+
+  it("are the sentences of docs/25 section 2.3", () => {
+    const doc = read("docs/25-mixers.md");
+    for (const text of [GRAPH_TEXT.tooManyMixerInputs, GRAPH_TEXT.mixerGap(7, 3, 2), GRAPH_TEXT.unknownPort(7, "picture"), GRAPH_TEXT.tooManyNodes]) {
       expect(doc, text).toContain(`"${text}"`);
     }
   });

@@ -355,10 +355,34 @@ export type Orientation = 0 | 90 | 180 | 270;
 export type NodeId = "input" | "output" | number;
 
 /** What a node is. */
-export type NodeKind = "input" | "output" | "corrector" | "film";
+export type NodeKind =
+  | "input"
+  | "output"
+  | "corrector"
+  | "film"
+  | "parallel"
+  | "layer"
+  | "splitter"
+  | "combiner";
 
-/** A port of a node: a picture (the LogC4 picture) or a key (a mask). */
-export type Port = "picture" | "key";
+/**
+ * A port of a node: a picture (the LogC4 picture) or a key (a mask). A mixer's inputs are `picture.1` to `picture.8`; a Splitter's
+ * outputs and a Combiner's inputs are `red`, `green` and `blue`. All of these but `key` carry pictures (`docs/25` section 2.2).
+ */
+export type Port =
+  | "picture"
+  | "key"
+  | "picture.1"
+  | "picture.2"
+  | "picture.3"
+  | "picture.4"
+  | "picture.5"
+  | "picture.6"
+  | "picture.7"
+  | "picture.8"
+  | "red"
+  | "green"
+  | "blue";
 
 /** A card's place on the canvas, in grid units (`docs/23` section 3.2). */
 export type NodePos = [x: number, y: number];
@@ -576,12 +600,63 @@ export interface FilmNode {
   masks: MaskSettings;
 }
 
+/** How a Layer blends an input over the ones below it (`docs/25` section 3.3), computed in linear light. */
+export type BlendMode =
+  | "normal"
+  | "add"
+  | "subtract"
+  | "multiply"
+  | "lighten"
+  | "darken"
+  | "difference";
+
+/** A Parallel mixer: adds the change each of its inputs makes to the picture they started from (`docs/25`). */
+export interface ParallelNode {
+  /** 2 to 2³¹ − 1; every numbered node shares the numbers. */
+  id: NodeId;
+  /** The card's name, 1 to 32 characters. */
+  name: string;
+  /** A bypassed Parallel outputs its base. */
+  bypass: boolean;
+  pos: NodePos;
+}
+
+/** A Layer mixer: stacks its inputs and blends each over the ones below it (`docs/25`). */
+export interface LayerNode {
+  id: NodeId;
+  name: string;
+  /** A bypassed Layer outputs its input 1. */
+  bypass: boolean;
+  pos: NodePos;
+  mode: BlendMode;
+  /** 0 to 1. */
+  opacity: number;
+}
+
+/** A Splitter: sends the red, green and blue of a picture to three outputs (`docs/25`). */
+export interface SplitterNode {
+  id: NodeId;
+  name: string;
+  pos: NodePos;
+}
+
+/** A Combiner: joins three pictures into one, a channel from each (`docs/25`). */
+export interface CombinerNode {
+  id: NodeId;
+  name: string;
+  pos: NodePos;
+}
+
 /** A node of the graph, told by its `kind`. */
 export type NodeItem =
   | ({ kind: "input" } & InputNode)
   | ({ kind: "output" } & OutputNode)
   | ({ kind: "corrector" } & CorrectorNode)
-  | ({ kind: "film" } & FilmNode);
+  | ({ kind: "film" } & FilmNode)
+  | ({ kind: "parallel" } & ParallelNode)
+  | ({ kind: "layer" } & LayerNode)
+  | ({ kind: "splitter" } & SplitterNode)
+  | ({ kind: "combiner" } & CombinerNode);
 
 /** The graph of a photo: its nodes, the Input first, the correctors by id, the Output last, and the links between them. */
 export interface NodesSettings {
@@ -698,6 +773,10 @@ export interface NodePatch {
   grain?: Partial<GrainSettings>;
   /** A Film node's Strength, percent. */
   strength?: number;
+  /** A Layer's blend mode. */
+  mode?: BlendMode;
+  /** A Layer's opacity, 0 to 1. */
+  opacity?: number;
 }
 
 /**

@@ -3,7 +3,7 @@ import type { CSSProperties } from "react";
 import { Aurora } from "@/components/glass/aurora";
 import { ChevronDownIcon, CropIcon, SquareSplitHorizontalIcon } from "lucide-react";
 import type { ColorSpace, NodeId, PhotoSummary, RenderStats, ResolvedSettings, ViewportMode } from "../api/types";
-import { Button, FIRST_NODE_TAB, Filmstrip, filmstripCaption, NODE_FOR_SIMPLE_TAB, NODE_TABS, NodesGlyph, simpleTabOf, TAB_IDS, TabBar, tabPanelProps, TitleBlock, useLatest, useStableCallback, useTabShortcuts, useWindowDrop } from "../components";
+import { Button, FIRST_NODE_TAB, Filmstrip, filmstripCaption, NODE_FOR_SIMPLE_TAB, NODE_TABS, NodesGlyph, panelKindOf, simpleTabOf, TAB_IDS, TabBar, tabPanelProps, TitleBlock, useLatest, useStableCallback, useTabShortcuts, useWindowDrop } from "../components";
 import { exportModel } from "../export/model";
 import { cellLabel, summarise } from "../export/run";
 import type { FilmstripPhoto, PanelKind, TabId } from "../components";
@@ -323,7 +323,7 @@ export function Photos() {
   const selectedItem = graphSettings ? nodeOf(graphSettings, selectedNode) : undefined;
   const onNode = selectedItem ? selectedNode : MAIN_ID;
   // A Film node has the corrector's panel until its own tabs are built (F-09, `docs/24` §4.1).
-  const onKind: PanelKind = selectedItem?.kind ?? "corrector";
+  const onKind: PanelKind = selectedItem ? panelKindOf(selectedItem.kind) : "corrector";
   // A corrector and a Film node both have masks (`docs/24` section 4.3).
   const hasMasks = onKind === "corrector" || onKind === "film";
   const nodeTab = nodeTabs[onKind];

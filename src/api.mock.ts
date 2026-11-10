@@ -147,6 +147,7 @@ import {
   inputOf,
   inputPatch,
   MAIN_ID,
+  MIXER_NAMES,
   mainGradePatch,
   mainOf,
   neutralGrade,
@@ -156,7 +157,7 @@ import {
   outputPatch,
   withoutLook,
 } from "./state/settingsGraph";
-import type { CorrectorItem, FilmItem, InputItem } from "./state/settingsGraph";
+import type { CorrectorItem, FilmItem, InputItem, MixerItem } from "./state/settingsGraph";
 import { bytesToUrl } from "./state/photo";
 
 // ---------------------------------------------------------------------------
@@ -779,13 +780,21 @@ function clampFilm(s: FilmItem): FilmItem {
   };
 }
 
+/** A node of `docs/25` in its ranges: the name trimmed and cut (an empty one reads as the kind's name), a Layer's opacity 0 to 1. */
+function clampMixer(s: MixerItem): MixerItem {
+  const name = s.name.trim().slice(0, 32);
+  const named = { ...s, name: name === "" ? MIXER_NAMES[s.kind] : name };
+  return named.kind === "layer" ? { ...named, opacity: clamp(named.opacity, 0, 1) } : named;
+}
+
 /** Clamps every value to the ranges of `docs/01` §DevelopSettings, node by node, as the core does. */
 export function clampSettings(s: DevelopSettings): DevelopSettings {
   const items = s.nodes.items.map((item): NodeItem => {
     if (item.kind === "input") return clampInput(item);
     if (item.kind === "output") return { ...item, look_intensity: clamp(item.look_intensity, 0, 100), output_sharpening: clamp(item.output_sharpening, 0, 200) };
     if (item.kind === "film") return clampFilm(item);
-    return clampCorrector(item);
+    if (item.kind === "corrector") return clampCorrector(item);
+    return clampMixer(item);
   });
   return { nodes: { items, links: s.nodes.links } };
 }

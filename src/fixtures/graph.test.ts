@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { MOCK_ESTIMATES, resolveSettings } from "../api.mock";
 import type { DevelopSettings, MaskItem, NodeLink, SettingsPatch } from "../api/types";
-import { applyPatch, defaultLinks, defaultSettings, inputOf, inputPatch, newCorrector, nodeOf, outputPatch } from "../state/settingsGraph";
-import { copiedPatch, COPY_LEAVES_OUT, GRAPH_TEXT, MAX_NODES, pastedOnto, refusalOfPatch, validateGraph } from "./graph";
+import { applyPatch, defaultLinks, defaultSettings, inputOf, inputPatch, newCorrector, newMixer, nodeOf, outputPatch } from "../state/settingsGraph";
+import { copiedPatch, COPY_LEAVES_OUT, GRAPH_TEXT, MAX_NODES, pastedOnto, portsOf, refusalOfPatch, validateGraph } from "./graph";
 
 const picture = (from: number | "input", to: number | "output"): NodeLink => ({ from: { node: from, port: "picture" }, to: { node: to, port: "picture" } });
 const key = (from: number, to: number): NodeLink => ({ from: { node: from, port: "key" }, to: { node: to, port: "key" } });
@@ -196,5 +196,112 @@ describe("Copy and Paste: the core's rules (docs/23 section 3.8)", () => {
     expect(result.nodes.items.map((n) => n.id)).toEqual(["input", 1, "output"]);
     expect(inputOf(result).exposure).toEqual({ kind: "auto" });
     expect(nodeOf(result, 2)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The mixers, the Splitter and the Combiner (docs/25 section 2)
+// ---------------------------------------------------------------------------
+
+const link = (from: number | "input", fromPort: string, to: number | "output", toPort: string): NodeLink => ({ from: { node: from, port: fromPort }, to: { node: to, port: toPort } }) as NodeLink;
+
+/** Main -> a Layer (node 2, input 1) -> the Output, with the Layer's other links given. */
+function withLayer(more: NodeLink[] = [], kind: "layer" | "parallel" = "layer"): DevelopSettings {
+  const base = defaultSettings();
+  return {
+    nodes: {
+      items: [...base.nodes.items.slice(0, 2), newMixer(kind, 2, [1, 0]), ...base.nodes.items.slice(2)],
+      links: [picture("input", 1), link(1, "picture", 2, "picture.1"), picture(2, "output"), ...more],
+    },
+  };
+}
+
+describe("the nodes of docs/25: ports and rules, with the core's words (docs/25 section 2.3)", () => {
+  it("has the ports of each kind", () => {
+    expect(portsOf("parallel")).toEqual([["picture.1", "picture.2", "picture.3", "picture.4", "picture.5", "picture.6", "picture.7", "picture.8"], ["picture"]]);
+    expect(portsOf("layer")[1]).toEqual(["picture"]);
+    expect(portsOf("splitter")).toEqual([["picture"], ["red", "green", "blue"]]);
+    expect(portsOf("combiner")).toEqual([["red", "green", "blue"], ["picture"]]);
+    expect(portsOf("corrector")).toEqual([["picture", "key"], ["picture", "key"]]);
+  });
+
+  it("accepts a Layer, a Parallel and the Splitter and Combiner of docs/25, with a channel swap", () => {
+    expect(validateGraph(withLayer())).toBeNull();
+    expect(validateGraph(withLayer([link(1, "picture", 2, "picture.2")], "parallel"))).toBeNull();
+    const base = defaultSettings();
+    const trio: DevelopSettings = {
+      nodes: {
+        items: [...base.nodes.items.slice(0, 2), newMixer("splitter", 2, [1, 0]), newMixer("combiner", 3, [2, 0]), ...base.nodes.items.slice(2)],
+        links: [picture("input", 1), picture(1, 2), link(2, "red", 3, "green"), link(2, "green", 3, "blue"), link(2, "blue", 3, "red"), picture(3, "output")],
+      },
+    };
+    expect(validateGraph(trio)).toBeNull();
+  });
+
+  it("refuses a ninth input", () => {
+    expect(validateGraph(withLayer([link(1, "picture", 2, "picture.9")]))).toBe("A mixer can have up to 8 inputs.");
+    expect(validateGraph(withLayer([link(1, "picture", 2, "picture.10")]))).toBe("A mixer can have up to 8 inputs.");
+    expect(validateGraph(withLayer([link(1, "picture", "output", "picture.9")]))).toBe("The output has no port called “picture.9”.");
+  });
+
+  it("refuses a gap in a mixer's inputs", () => {
+    const text = "Node 2 has a link on input 3 and none on input 2. A mixer's inputs are numbered from 1 with no gap.";
+    expect(validateGraph(withLayer([link(1, "picture", 2, "picture.3")]))).toBe(text);
+    expect(validateGraph(withLayer([link(1, "picture", 2, "picture.3")], "parallel"))).toBe(text);
+    const first = withLayer();
+    const noFirst = withLinks(first, [picture("input", 1), link(1, "picture", 2, "picture.2"), picture(2, "output")]);
+    expect(validateGraph(noFirst)).toBe("Node 2 has a link on input 2 and none on input 1. A mixer's inputs are numbered from 1 with no gap.");
+  });
+
+  it("refuses a port the kind does not have, with the existing text", () => {
+    for (const port of ["picture", "picture.0", "picture.01", "key", "red"]) {
+      expect(validateGraph(withLayer([link(1, "picture", 2, port)])), port).toBe(`Node 2 has no port called “${port}”.`);
+    }
+    expect(validateGraph(withLayer([link(1, "key", 2, "key")]))).toBe("Node 2 has no port called “key”.");
+    expect(validateGraph(withLayer([link(2, "key", 1, "key")]))).toBe("Node 2 has no port called “key”.");
+    expect(validateGraph(withLayer([link(2, "red", 1, "picture")]))).toBe("Node 2 has no port called “red”.");
+  });
+
+  it("joins pictures to pictures and refuses a key into a mixer", () => {
+    const keyInto = { from: { node: 1, port: "key" }, to: { node: 2, port: "picture.2" } } as NodeLink;
+    expect(validateGraph(withLayer([keyInto]))).toBe(GRAPH_TEXT.linkPortTypes);
+  });
+
+  it("refuses two links on one mixer input, and counts the new kinds toward the 64 nodes", () => {
+    expect(validateGraph(withLayer([link("input", "picture", 2, "picture.1")]))).toBe("An input can have one link. Node 2 has two on its picture.1 input.");
+    const base = defaultSettings();
+    const many = (n: number): DevelopSettings => ({
+      nodes: {
+        items: [...base.nodes.items.slice(0, 2), ...Array.from({ length: n }, (_, i) => newMixer("splitter", 2 + i, [1, 0])), ...base.nodes.items.slice(2)],
+        links: defaultLinks(),
+      },
+    });
+    expect(validateGraph(many(MAX_NODES - 1))).toBeNull();
+    expect(validateGraph(many(MAX_NODES))).toBe("A photo can have up to 64 nodes.");
+  });
+
+  it("refuses a field of another kind in a patch, with the kind's name", () => {
+    const s = withLayer();
+    expect(refusalOfPatch(s, { nodes: { "2": { mode: "add", opacity: 0.5, bypass: true, name: "Glow" } } })).toBeNull();
+    expect(refusalOfPatch(s, { nodes: { "2": { masks: { invert: true } } } })).toBe("A layer mixer has no field called “masks”.");
+    expect(refusalOfPatch(s, { nodes: { "2": { kind: "corrector" } } })).toBe("Node 2 is a layer mixer, not a corrector.");
+    expect(refusalOfPatch(s, { nodes: { "5": { kind: "combiner" } } })).toBeNull();
+    expect(refusalOfPatch(s, { nodes: { "5": { kind: "splitter", bypass: true } } })).toBe("A splitter has no field called “bypass”.");
+  });
+
+  it("adds each kind with its defaults, changes mode and opacity, and copies the nodes whole", () => {
+    let s = defaultSettings();
+    s = applyPatch(s, {
+      nodes: { "2": { kind: "layer", mode: "multiply", opacity: 0.4 }, "3": { kind: "parallel" }, "4": { kind: "splitter" }, "5": { kind: "combiner" } },
+    });
+    expect(nodeOf(s, 2)).toMatchObject({ kind: "layer", name: "Layer", bypass: false, mode: "multiply", opacity: 0.4 });
+    expect(nodeOf(s, 3)).toMatchObject({ kind: "parallel", name: "Parallel", bypass: false });
+    expect(nodeOf(s, 4)).toMatchObject({ kind: "splitter", name: "Splitter" });
+    expect(nodeOf(s, 5)).toMatchObject({ kind: "combiner", name: "Combiner" });
+    s = applyPatch(s, { nodes: { "2": { mode: "darken" } } });
+    expect(nodeOf(s, 2)).toMatchObject({ mode: "darken", opacity: 0.4 });
+    const copy = copiedPatch(resolveSettings(1, s, MOCK_ESTIMATES));
+    expect(copy.nodes?.["2"]).toMatchObject({ kind: "layer", mode: "darken", opacity: 0.4 });
+    expect(copy.nodes?.["4"]).toEqual({ kind: "splitter", name: "Splitter", pos: [3, 0] });
   });
 });

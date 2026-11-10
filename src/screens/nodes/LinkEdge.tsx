@@ -40,7 +40,8 @@ export function LinkEdge({ sourceX, sourceY, targetX, targetY, data, selected }:
   const ui = useGraphUi();
   const link = (data as LinkEdgeData).link;
   const [path] = getBezierPath({ sourceX, sourceY, sourcePosition: Position.Right, targetX, targetY, targetPosition: Position.Left });
-  const kind = link.from.port;
+  // Every port but `key` carries a picture (`docs/25` section 2.2): a numbered input or a channel draws as a picture link.
+  const kind = link.from.port === "key" ? "key" : "picture";
   const drop = ui.dropLink !== null && sameLink(ui.dropLink, link);
   const arrow = selected || drop ? ARROW.selected : ARROW[kind];
   return (

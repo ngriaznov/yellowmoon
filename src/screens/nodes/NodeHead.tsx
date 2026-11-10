@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { Input } from "@/components/glass/input";
 import type { DevelopSettings, NodeId } from "../../api/types";
-import { Button } from "../../components";
+import { Button, panelKindOf } from "../../components";
 import { cardStates, chipText, headLine } from "../../state/graphOps";
 import { nodeOf } from "../../state/settingsGraph";
 
@@ -109,7 +109,7 @@ export function NodeHead({ settings, node, renaming, onStartRename, onRename, on
             onClick={onBypass}
           />
         ) : null}
-        <Button variant="header" className="ym-nodehead__btn" aria-label={RESET_TEXT[item.kind]} title={RESET_TEXT[item.kind]} icon={<RotateCcwIcon aria-hidden="true" />} onClick={onReset} />
+        <Button variant="header" className="ym-nodehead__btn" aria-label={RESET_TEXT[panelKindOf(item.kind)]} title={RESET_TEXT[panelKindOf(item.kind)]} icon={<RotateCcwIcon aria-hidden="true" />} onClick={onReset} />
         {more}
       </div>
     </div>

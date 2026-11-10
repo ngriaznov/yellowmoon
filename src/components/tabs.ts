@@ -6,6 +6,8 @@
  * `data-tab="light"` picks the Light colour up without a prop.
  */
 
+import type { NodeKind } from "../api/types";
+
 /** Tab ids. American spelling in identifiers; the label reads "Colour". `mask` is the corrector's Mask tab of the node view (`docs/23` §7.6). */
 export type TabId = "look" | "lens" | "light" | "color" | "detail" | "curve" | "raw" | "mask" | "film" | "print" | "halation" | "grain";
 
@@ -49,8 +51,27 @@ export const FILM_TABS: Readonly<Record<"film" | "print" | "halation" | "grain",
 /** Tab ids of the simple view in bar order. */
 export const TAB_IDS: readonly TabId[] = TABS.map((tab) => tab.id);
 
-/** The three kinds of node a panel can be on (`NodeItem.kind`). */
+/** The four kinds of node a panel can be on (`NodeItem.kind` for the Input, the Output, correctors and Film nodes). */
 export type PanelKind = "input" | "corrector" | "film" | "output";
+
+/**
+ * The panel a node of any kind opens. The nodes of `docs/25` (Parallel, Layer, Splitter, Combiner) have no panel until X-06 and the
+ * Add node menu does not make them yet, so they read as a corrector's panel here, as a Film node did before its own tabs.
+ */
+export function panelKindOf(kind: NodeKind): PanelKind {
+  switch (kind) {
+    case "input":
+    case "output":
+    case "film":
+    case "corrector":
+      return kind;
+    case "parallel":
+    case "layer":
+    case "splitter":
+    case "combiner":
+      return "corrector";
+  }
+}
 
 /**
  * The tabs of each kind of node in the node view, in bar order (`docs/23` §7.5): the Input RAW · Lens · Light · Colour · Detail, a corrector

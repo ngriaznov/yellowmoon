@@ -681,6 +681,8 @@ export function headLine(settings: DevelopSettings, id: NodeId, states: Readonly
   if (!node) return "";
   if (node.kind === "input") return "Turns the camera's data into the scene.";
   if (node.kind === "output") return "Cine rendering, look and export";
+  // The nodes of `docs/25` have no head line until X-06.
+  if (!isCard(node)) return "";
   const label = node.kind === "film" ? "Film" : "Corrector";
   if (node.bypass) return `${label} · bypassed`;
   if (states.get(node.id as number)?.live === false) return `${label} · not connected`;
@@ -701,6 +703,8 @@ export function cardName(settings: DevelopSettings, id: NodeId, states: Readonly
   if (!node) return "";
   if (node.kind === "input") return "Input";
   if (node.kind === "output") return "Output";
+  // The nodes of `docs/25` have no card name until X-06.
+  if (!isCard(node)) return node.name;
   const number = states.get(node.id as number)?.number ?? 0;
   const masks = maskKindNames(node);
   const parts = [`Node ${number}`, node.name];

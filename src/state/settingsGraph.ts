@@ -47,6 +47,8 @@ export type CorrectorItem = Extract<NodeItem, { kind: "corrector" }>;
 export type FilmItem = Extract<NodeItem, { kind: "film" }>;
 /** A node that has a card in the node view and a number: a corrector (Main included) or a Film node. */
 export type CardItem = CorrectorItem | FilmItem;
+/** A node of `docs/25` as an item of the graph: a Parallel, a Layer, a Splitter or a Combiner. It has a glyph card and no number. */
+export type MixerItem = Extract<NodeItem, { kind: "parallel" | "layer" | "splitter" | "combiner" }>;
 
 // ---------------------------------------------------------------------------
 // Selectors
@@ -108,6 +110,11 @@ export function correctorsOf(settings: DevelopSettings): CorrectorItem[] {
 /** Every node that has a card, in the order the document lists them: the correctors and the Film nodes, by id. */
 export function cardsOf(settings: DevelopSettings): CardItem[] {
   return settings.nodes.items.filter((item): item is CardItem => item.kind === "corrector" || item.kind === "film");
+}
+
+/** Every numbered node, the ones that count toward the 64: the cards and the nodes of `docs/25` (everything but the Input and the Output). */
+export function numberedOf(settings: DevelopSettings): NodeItem[] {
+  return settings.nodes.items.filter((item) => item.kind !== "input" && item.kind !== "output");
 }
 
 /** The Film nodes of the graph. */
@@ -386,6 +393,22 @@ export function newFilm(id: number, pos: NodePos, name = FILM_NAME): FilmItem {
   };
 }
 
+/** The name a new node of each of `docs/25`'s kinds has. */
+export const MIXER_NAMES = { parallel: "Parallel", layer: "Layer", splitter: "Splitter", combiner: "Combiner" } as const;
+
+/** A new node of `docs/25`: a Parallel, a Layer (Normal at 100 %), a Splitter or a Combiner. */
+export function newMixer(kind: keyof typeof MIXER_NAMES, id: number, pos: NodePos, name: string = MIXER_NAMES[kind]): MixerItem {
+  switch (kind) {
+    case "parallel":
+      return { kind, id, name, bypass: false, pos };
+    case "layer":
+      return { kind, id, name, bypass: false, pos, mode: "normal", opacity: 1 };
+    case "splitter":
+    case "combiner":
+      return { kind, id, name, pos };
+  }
+}
+
 /** The default links: Input → Main → Output. */
 export function defaultLinks(): NodeLink[] {
   return [
@@ -555,6 +578,9 @@ function addedNode(id: NodeId, patch: NodePatch, correctors: number): NodeItem {
   if (patch.kind === "input") return applyNode(defaultInput(pos), patch);
   if (patch.kind === "output") return applyNode(defaultOutput(NEUTRAL_LOOK, pos), patch);
   if (patch.kind === "film") return applyNode(newFilm(typeof id === "number" ? id : MAIN_ID, pos), patch);
+  if (patch.kind === "parallel" || patch.kind === "layer" || patch.kind === "splitter" || patch.kind === "combiner") {
+    return applyNode(newMixer(patch.kind, typeof id === "number" ? id : MAIN_ID, pos), patch);
+  }
   return applyNode(newCorrector(typeof id === "number" ? id : MAIN_ID, pos), patch);
 }
 
@@ -572,7 +598,7 @@ export function applyPatch(settings: DevelopSettings, patch: SettingsPatch): Dev
       const current = items[at] as NodeItem;
       items = items.map((item, i) => (i === at ? applyNode(current, nodePatch) : item));
     } else if (nodePatch.kind !== undefined) {
-      items = [...items, addedNode(id, nodePatch, items.filter((item) => item.kind === "corrector" || item.kind === "film").length)];
+      items = [...items, addedNode(id, nodePatch, items.filter((item) => item.kind !== "input" && item.kind !== "output").length)];
     }
   }
   let links = settings.nodes.links;

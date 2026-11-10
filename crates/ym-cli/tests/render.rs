@@ -1202,6 +1202,33 @@ fn a_settings_file_that_does_not_parse_is_a_usage_error_and_nothing_is_rendered(
             r#"{ "nodes": { "items": [ { "id": 2, "kind": "outside" } ] } }"#,
             "This settings file has a node of a kind (“outside”)",
         ),
+        // The rules of a mixer (docs/25 section 2.3), each with its sentence after the usual words.
+        (
+            r#"{ "nodes": { "items": [ { "id": 7, "kind": "layer" } ], "links": [
+                { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+                { "from": { "node": 1, "port": "picture" }, "to": { "node": 7, "port": "picture.1" } },
+                { "from": { "node": 1, "port": "picture" }, "to": { "node": 7, "port": "picture.3" } },
+                { "from": { "node": 7, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } }"#,
+            "The settings file can't be used: Node 7 has a link on input 3 and none on input 2. A mixer's inputs are numbered from 1 with no gap.",
+        ),
+        (
+            r#"{ "nodes": { "items": [ { "id": 7, "kind": "parallel" } ], "links": [
+                { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+                { "from": { "node": 1, "port": "picture" }, "to": { "node": 7, "port": "picture.9" } },
+                { "from": { "node": 7, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } }"#,
+            "The settings file can't be used: A mixer can have up to 8 inputs.",
+        ),
+        (
+            r#"{ "nodes": { "items": [ { "id": 7, "kind": "layer" } ], "links": [
+                { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+                { "from": { "node": 1, "port": "picture" }, "to": { "node": 7, "port": "picture" } },
+                { "from": { "node": 7, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } }"#,
+            "The settings file can't be used: Node 7 has no port called “picture”.",
+        ),
+        (
+            r#"{ "nodes": { "items": [ { "id": 7, "kind": "splitter", "masks": {} } ] } }"#,
+            "A splitter has no field called “masks”.",
+        ),
         // A typo whose value is an object must not pass for a photo's file name.
         (
             r#"{ "color_ballance": { "shadows": [0.1, 0.0] } }"#,
@@ -1228,6 +1255,50 @@ fn a_settings_file_that_does_not_parse_is_a_usage_error_and_nothing_is_rendered(
         .assert()
         .code(2)
         .stderr(predicate::str::contains("Couldn't read the settings file"));
+}
+
+/// A settings file with a Layer is read and checked, and until X-04 the photo stops with a plain render error (exit 1);
+/// nothing is written and the record says what went wrong.
+#[test]
+fn a_settings_file_with_a_mixer_is_read_and_the_photo_stops_with_a_plain_error() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let file = sb.root().join("layer.json");
+    std::fs::write(
+        &file,
+        r#"{ "nodes": {
+            "items": [ { "id": 2, "kind": "layer", "mode": "add", "opacity": 0.5 } ],
+            "links": [
+                { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+                { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture.1" } },
+                { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } }"#,
+    )
+    .expect("write");
+    let out = sb
+        .ym()
+        .args(["render", "--json", "--settings"])
+        .arg(&file)
+        .arg(&arw)
+        .assert()
+        .code(1);
+    let objects = json_lines(&out.get_output().stdout);
+    assert_eq!(objects.len(), 1);
+    let o = &objects[0];
+    assert_eq!(o["status"], "error");
+    assert_eq!(o["output"], Value::Null);
+    assert_eq!(
+        o["error"]["message"],
+        "This photo has a mixer, a splitter or a combiner node, which this version of Yellowmoon can't render yet. Remove the node to render the photo."
+    );
+    // The record still carries the settings as the file held them, with the new kind.
+    let items = o["settings"]["nodes"]["items"].as_array().expect("items");
+    assert!(
+        items
+            .iter()
+            .any(|i| i["kind"] == "layer" && i["mode"] == "add")
+    );
+    let written = std::fs::read_dir(sb.default_export()).map_or(0, Iterator::count);
+    assert_eq!(written, 0, "nothing was written");
 }
 
 #[test]

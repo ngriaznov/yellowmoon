@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { NodeId, PhotoSummary, ResolvedSettings } from "../../api/types";
-import { NODE_TABS, TabBar, tabPanelProps } from "../../components";
+import { NODE_TABS, panelKindOf, TabBar, tabPanelProps } from "../../components";
 import type { TabId } from "../../components";
 import { isReady } from "../../state/photo";
 import { nodeOf } from "../../state/settingsGraph";
@@ -90,7 +90,7 @@ export function NodePanel({ store, photo, rs, node, tab, onTab, graph, pickingWh
         onReset={graph.resetNode}
         more={more}
       />
-      <TabBar value={tab} onChange={onTab} tabs={NODE_TABS[item.kind]} />
+      <TabBar value={tab} onChange={onTab} tabs={NODE_TABS[panelKindOf(item.kind)]} />
       <div className="ym-tools__scroll" {...tabPanelProps(tab)}>
         <NodeTab
           key={String(node)}

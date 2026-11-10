@@ -492,7 +492,9 @@ impl Port {
                 !d.is_empty()
                     && !d.starts_with('0')
                     && d.bytes().all(|b| b.is_ascii_digit())
-                    && d.parse::<u64>().map_or(true, |k| k > u64::from(MIXER_INPUTS))
+                    && d.parse::<u64>()
+                        .ok()
+                        .is_none_or(|k| k > u64::from(MIXER_INPUTS))
             }),
             _ => false,
         }
@@ -1500,9 +1502,7 @@ impl NodeGraph {
 /// Whether `key` is a field of some node kind (so that a known field on the wrong kind is told
 /// from a typo, which serde reports with its own words).
 fn is_field_of_some_kind(key: &str) -> bool {
-    NodeKind::ALL
-        .iter()
-        .any(|k| node_fields(*k).contains(&key))
+    NodeKind::ALL.iter().any(|k| node_fields(*k).contains(&key))
 }
 
 /// Reads the fields of one node (everything but `id` and `kind`) over its defaults.
@@ -1911,16 +1911,11 @@ impl NodeGraph {
             return Err(GraphError::TooManyNodes.into());
         }
         // An id is a corrector's, a Film node's or a node of `docs/25`, never two of them.
-        if let Some(id) = self
-            .films
-            .keys()
-            .chain(self.mixers.keys())
-            .find(|id| {
-                **id == MAIN_ID
-                    || self.extra.contains_key(id)
-                    || (self.films.contains_key(id) && self.mixers.contains_key(id))
-            })
-        {
+        if let Some(id) = self.films.keys().chain(self.mixers.keys()).find(|id| {
+            **id == MAIN_ID
+                || self.extra.contains_key(id)
+                || (self.films.contains_key(id) && self.mixers.contains_key(id))
+        }) {
             return Err(GraphError::DuplicateId(id.to_string()).into());
         }
         self.input.sanitise(s, &format!("nodes.items[{}]", 0))?;
