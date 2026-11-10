@@ -19,7 +19,7 @@ The maths is in `docs/algorithms/06-masks.md` (the node's order, the two trims, 
 - **A real graph in the data and the engine.** Nodes, typed ports and links are the format from version 1, and the core evaluates a compiled plan (section 5.2). The interface edits the graph by inserting, deleting, reordering and moving nodes, and by **drawing links by hand**: drag from an output port to an input port, as in Resolve and other node editors (the owner, 2026-11-01; section 7.2).
 - **Pick white moves** from the header into the Colour tab (section 8).
 
-**Not in this version.** Parallel, Layer, and Splitter and combiner nodes (the Add node menu shows them as "Later"; the format, the validator and the plan are built so they can be added as new node kinds without changing the format); DCTL and OpenFX; presets and nodes shared across photos; the list view (dropped by the owner); a "pick neutral" in a corrector.
+**Not in this version.** Parallel, Layer, and Splitter and combiner nodes (the Add node menu shows them as "Later"; the format, the validator and the plan are built so they can be added as new node kinds without changing the format). **They are now specified in `docs/25-mixers.md`** (milestone X, the owner's request of 2026-11-10): four new kinds, `parallel`, `layer`, `splitter` and `combiner`, with their ports, maths, plan and interface; the menu items become live with X-06. Also not in this version: DCTL and OpenFX; presets and nodes shared across photos; the list view (dropped by the owner); a "pick neutral" in a corrector.
 
 ### 1.2 The three zones
 
@@ -202,7 +202,7 @@ A graph with a **key link**, a node that only makes a mask for another (a dead p
 
 ### 3.2 The nodes
 
-Every item has `id`, `kind` and `pos`. **`id`** is `"input"`, `"output"` or an integer 1 to 2³¹ − 1 (Main is 1); it is stable within the photo and is used by links, selection, thumbnails and undo. A number on a card is not the id: it is the node's place in the flow (section 7.2). New ids are one more than the largest the page has used in the session, so an id is not reused after a delete. **`kind`** is `input`, `output`, `corrector` or `film` (the id `"input"` is always kind `input`, and so on; correctors and Film nodes share the numbers); any other kind is refused (section 3.5), and Parallel, Layer and Splitter and combiner will be new values. **`pos`** is `[x, y]`, finite numbers in −1000 to 1000, in grid units: the card's place on the canvas (one unit is 214 px across and 150 px down at 100 % zoom). A document may leave it out: the core then places the nodes in a row by their number, the Input first and the Output last, at y = 0 (the default graph is −1, 0 and 1). It is always written, it travels with copy and paste and with undo like the rest, and it lives in memory only.
+Every item has `id`, `kind` and `pos`. **`id`** is `"input"`, `"output"` or an integer 1 to 2³¹ − 1 (Main is 1); it is stable within the photo and is used by links, selection, thumbnails and undo. A number on a card is not the id: it is the node's place in the flow (section 7.2). New ids are one more than the largest the page has used in the session, so an id is not reused after a delete. **`kind`** is `input`, `output`, `corrector` or `film`, and with milestone X `parallel`, `layer`, `splitter` or `combiner` (`docs/25-mixers.md` §2.1) (the id `"input"` is always kind `input`, and so on; every numbered kind shares the numbers); any other kind is refused (section 3.5). **`pos`** is `[x, y]`, finite numbers in −1000 to 1000, in grid units: the card's place on the canvas (one unit is 214 px across and 150 px down at 100 % zoom). A document may leave it out: the core then places the nodes in a row by their number, the Input first and the Output last, at y = 0 (the default graph is −1, 0 and 1). It is always written, it travels with copy and paste and with undo like the rest, and it lives in memory only.
 
 A node has only the fields of its kind below; another field is an unknown field and is refused.
 
@@ -304,6 +304,8 @@ A `picture` carries the LogC4 picture as the node before made it. A `key` carrie
 
 A corrector's picture output may have several links (a card feeding its next node and a branch); an input has at most one.
 
+The mixers (Parallel and Layer), the Splitter and the Combiner have numbered or channel ports and no key ports: a mixer's inputs are `picture.1` to `picture.N` (at most 8), a Splitter's outputs and a Combiner's inputs are `red`, `green` and `blue`, and all of them carry a picture (`docs/25-mixers.md` §2.2). A link still joins two ports of the same type.
+
 ### 3.5 Validation, clamping and limits
 
 A document or a patch that breaks the **graph rules** is refused with a plain error, nothing is applied (patches are atomic), and the photo keeps its settings. The core checks them on every read and every patch (`DevelopSettings::validated`, after the patch is applied); the page's own edits cannot break them.
@@ -321,14 +323,16 @@ A document or a patch that breaks the **graph rules** is refused with a plain er
 | Main takes its picture from the Input | "Node 1, Main, must take its picture from the input." |
 | no cycles, counting picture and key links together | "The nodes of this photo are linked in a circle. Remove a link." |
 | ids are unique | "Two nodes have the id 3." |
-| node kinds are known | "This settings file has a node of a kind (“parallel”) that this version of Yellowmoon does not have. Update Yellowmoon." |
-| at most 64 numbered nodes (correctors and Film nodes), Main included (the Input and the Output do not count) | "A photo can have up to 64 nodes." |
+| node kinds are known | "This settings file has a node of a kind (“outside”) that this version of Yellowmoon does not have. Update Yellowmoon." |
+| at most 64 numbered nodes (correctors, Film nodes, and the mixers, Splitters and Combiners of `docs/25`), Main included (the Input and the Output do not count) | "A photo can have up to 64 nodes." |
 | at most 64 masks in a node | "A node can have up to 64 masks." |
 | at most 100,000 brush points in a mask, 256 points in an Object mask | "A brush mask can have up to 100,000 points." / "An Object mask can have up to 256 points." |
 | a patch does not remove the Input, the Output or Main | "The input, the output and node 1, Main, can't be removed." |
 | a patch names a node it neither has nor adds (no `kind`), or gives a `kind` other than the node's | "The patch names node 7, which this photo does not have." / "Node 7 is a corrector, not an input." |
 
-Nodes that are not on a path to the Output are **allowed and kept**; they do nothing, and their cards are dimmed, as in Resolve (a node whose key output feeds a live node is live). Links are bounded by the ports: an input has at most one link, so a graph has at most 2 × 64 + 1 = 129 of them. The 64-node limit is the working limit; the other numbers are **sanity bounds** on what a settings file may hold (a broken or hostile file given to `ym --settings`, or a patch, cannot hang the app or use all its memory), a person never reaches them, and a document over one is refused like the rest. The colour warp keeps its own limit of 16 pins per node.
+The rules of the mixers' numbered inputs (no gap, at most 8) and their texts are in `docs/25-mixers.md` §2.3.
+
+Nodes that are not on a path to the Output are **allowed and kept**; they do nothing, and their cards are dimmed, as in Resolve (a node whose key output feeds a live node is live). Links are bounded by the ports: an input has at most one link, and a mixer has at most 8 picture inputs (`docs/25-mixers.md` §2.3), so a graph has fewer than 64 × 8 + 1 = 513 of them (2 × 64 + 1 = 129 before the mixers). The 64-node limit is the working limit; the other numbers are **sanity bounds** on what a settings file may hold (a broken or hostile file given to `ym --settings`, or a patch, cannot hang the app or use all its memory), a person never reaches them, and a document over one is refused like the rest. The colour warp keeps its own limit of 16 pins per node.
 
 **Clamping, as for every field.** Numbers outside their range are clamped and reported in `PatchReport::clamped` (as `<node>.<field>`, for example `1.grade.contrast`); a number that is not finite is `SettingsError::NotFinite("nodes.items[2].trim.tint")` and nothing is applied; an unknown field is `SettingsError::Parse`. Points of a mask are clamped to the photo frame (0 to 1), a colour-balance vector longer than 1 is scaled back, and a curve is checked as `curve` always was (2 to 16 points, sorted by x; two points at one x are refused). Names are trimmed and cut. Auto in a corrector other than Main reads as a manual 0 (section 3.2) and is not clamping.
 
@@ -352,7 +356,7 @@ each part optional:
 
 - **`nodes`** maps node ids (as strings: `"input"`, `"output"`, `"1"`, `"2"`) to a `NodePatch`: **a partial of that node's fields, nested as today's patches are** (`decode`, `rolloff`, `lens`, `trim`, `grade`, `color_balance` and `curve` may carry only the parts to change; a manual `white_balance`, `sharpen` or `noise_reduction` may leave out a part, which keeps its current resolved value). So `{ "nodes": { "input": { "exposure": { "kind": "manual", "ev": 0.3 } } } }` moves one slider, and `{ "nodes": { "1": { "grade": { "contrast": { "kind": "manual", "value": 12 } } } } }` another, on Main. A node whose id the graph does not have is **added** when the patch gives its `kind` (and any of its fields; the rest are defaults); a node that exists is changed.
 - **`remove`** lists the nodes to delete (corrector nodes other than Main). The links that touch a removed node go with it.
-- **`links`**, when present, **replaces the links whole** (at most 129 small objects). Adding, deleting, reordering and linking nodes are patches that carry `nodes`, `remove` and `links` together.
+- **`links`**, when present, **replaces the links whole** (fewer than 513 small objects, section 3.5). Adding, deleting, reordering and linking nodes are patches that carry `nodes`, `remove` and `links` together.
 - **A patch is atomic**: it is applied to a copy of the settings, the result is validated (section 3.5), and nothing changes if anything is refused. `apply_patch` reports the fields that changed, as `FieldRef { node, field }`, and the first render-stage group they affect (`SettingsField::group()`): the Input's `decode`, `noise_reduction` and `sharpen` re-run the raw group, `lens` the lens group, `exposure`, `light_source`, `white_balance`, `white_pick` and `rolloff` the colour group, `crop` and `orientation` only the geometry; a corrector's `trim`, `grade`, `bypass` and `masks`, and the links, the nodes' group; the Output's `look` and `look_intensity` the look group and `output_sharpening` the last stage; **`name` and `pos` re-run nothing**.
 - **A slider drag sends one node's partial, never the graph.** The whole-graph patch is for copy and paste and for undo of a change that touched many nodes.
 
@@ -551,10 +555,10 @@ Per node: trims, C9, C9b, C11, mask blend (section 1.3). After the nodes, in the
 The core **compiles the graph into a plan** (`ym_color::plan`; `docs/algorithms/06` section 1.3). The CPU reference evaluates that order; the kernels read the same plan.
 
 - **Live and dead.** A node is live when the Output needs its picture (it is on a chain of picture links from the Input to the Output), or when a live node's key input needs its mask. Dead nodes are not in the plan (they do nothing, and their cards are dimmed).
-- **Order.** A topological order over the picture and key links, with ties broken by Main first, then the card's `pos` (x then y), then the id. A card's number is its place in the same order over *all* nodes, dead ones included.
-- **Registers.** Each step reads a picture register and writes one, and reads and writes key slots. All of it is per pixel.
-- **One pass.** A run of per-pixel nodes on one picture path **fuses into the one colour pass** with the node loop, as planned; keys fed through key links are kept per pixel in that pass. This version has no joins, so **every v1 graph compiles into one pass** unless it needs more than 8 pictures or 16 keys alive at once (only a hand-written graph with many branches can).
-- **Several passes.** Joins (the mixers of a later version: Parallel, Layer, Splitter and combiner) will split the plan into several passes with f32 buffers between them. **The compiler is written for that from the start**: it knows passes, the values that cross from one to the next and the buffers that carry them, and v1 only ever asks it for one, except for the over-wide case above, which has its own test.
+- **Order.** A topological order over the picture and key links, with ties broken by Main first, then the card's `pos` (x then y), then the id. A card's number is its place in the same order over *all* correctors and Film nodes, dead ones included; the mixers, Splitters and Combiners of `docs/25` take their place in the order and get no number (`docs/25-mixers.md` §4.1).
+- **Registers.** Each step reads a picture register and writes one, and reads and writes key slots. All of it is per pixel. A mixer or a Combiner reads several picture registers, and a Splitter writes three (`docs/25` §4.1).
+- **One pass.** A run of per-pixel nodes **fuses into the one colour pass** with the node loop, as planned; keys fed through key links are kept per pixel in that pass. **A join does not split the plan**: a mixer is a per-pixel step that reads several registers, so it fuses into the pass like any node (`docs/25` §4.1). A graph compiles into one pass unless it needs more than 8 pictures or 16 keys alive at once (a hand-written graph with many branches, or a Parallel of eight branches and its base, which needs nine).
+- **Several passes.** When registers or key slots run out, the compiler splits the plan into several passes with f32 buffers between them, and a step reads what an earlier pass made from its buffer. **The compiler is written for that from the start**: it knows passes, the values that cross from one to the next and the buffers that carry them. The over-wide cases above have their own tests.
 - **Stops.** A thumbnail is the plan compiled to end at a node's picture and then run through the Output; the mask view is the plan compiled to end at a node's `m`.
 
 ### 5.3 CPU reference
@@ -755,11 +759,11 @@ A glass menu that opens upward from the button over the photo:
 | **Corrector** | "Grades all or part of the photo." | enabled |
 | **Film** | "Models a colour negative, a print and a scan." | enabled (built in F-07 and F-09, released in 0.2.1; `docs/24` §4) |
 | *(separator)* | | |
-| Parallel | "Grade branches side by side." | greyed, tag "Later" |
-| Layer | "Blend one branch over another." | greyed, tag "Later" |
-| Splitter and combiner | "Split a picture, then join it again." | greyed, tag "Later" |
+| **Parallel** | "Grade branches side by side." | enabled from X-06 (`docs/25-mixers.md` §5.1) |
+| **Layer** | "Blend one branch over another." | enabled from X-06 |
+| **Splitter and combiner** | "Split a picture, then join it again." | enabled from X-06; adds a Splitter, three correctors and a Combiner (`docs/25` §5.4) |
 
-The greyed items are `aria-disabled`, with the tooltip "Not in the first version".
+Until X-06 lands, the last three items are greyed, tagged "Later" and `aria-disabled`, with the tooltip "Not in the first version". From X-06 the tag and the tooltip go, and every item is off at 64 nodes with "A photo can have up to 64 nodes." (Splitter and combiner from 60 nodes, since it adds five).
 
 ### 7.5 The panel: head and tabs
 
@@ -778,6 +782,8 @@ The tabs follow the head (46 px), each underlined in its tab colour (`docs/11`);
 | Input | **RAW · Lens · Light · Colour · Detail** |
 | Corrector | **Light · Colour · Curve · Mask** |
 | Output | **Look · Detail** |
+
+A Parallel, a Layer, a Splitter and a Combiner have one tab each, and their heads and panels are in `docs/25-mixers.md` §5.5.
 
 What each tab holds. Where a tab matches today's, its cards are today's.
 
@@ -893,7 +899,7 @@ Sliders are the standard slider; Refine edges and Opacity show percent, the othe
 
 - The graph is **one Tab stop**; the arrows move between nodes; Return or Space selects (selection follows focus).
 - **Every card has a name:** "Node 2, Mountain, masked by Object and Radial" (the number as a plain number, the name, the kinds of its masks; "Node 1, Main" with none), with ", bypassed", ", not connected" and "selected" (`aria-pressed`) where they apply. The Input and the Output are "Input" and "Output". The ports and links are drawn for the pointer and are not Tab stops; every link can be made, moved and removed from the keyboard through the card's More menu (Link picture to, Link key to, Remove link), and a card's name says what feeds it (", picture from node 1, key from node 5").
-- The divider, the zoom buttons, the toolbar toggles (`aria-pressed`) and the menu items have names; the Later items are `aria-disabled`.
+- The divider, the zoom buttons, the toolbar toggles (`aria-pressed`) and the menu items have names; the Later items are `aria-disabled` until X-06 makes them live (`docs/25-mixers.md` §5.1, §5.6 for the names of the new cards).
 - The mask handles are focusable and nudged by the arrows (section 7.6); the sliders of section 7.6 give every number a keyboard control.
 - The existing a11y and glass audits gain the new page states (section 11): the glass audit's `STATES` grow from 41 to 50 and `HAS_COUNTERPART` and `NO_COUNTERPART` are updated; `a11y.spec.ts` walks the node view (graph, menus, each node kind's tabs, the Mask tab) and fails on any control without a name.
 
