@@ -129,7 +129,7 @@ import { clampPins } from "./components/warpMath";
 import { adjustForNode, adjustScene, developScene, nodeScene, previewSvg, signalScene } from "./fixtures/grade";
 import type { Adjustment, NodeLook } from "./fixtures/grade";
 import { filmScene, mockFilmCatalogue, MOCK_FILM_STOCKS, sceneThroughFilms } from "./fixtures/film";
-import { hasMixers, outputFeeder, sceneAt } from "./fixtures/mixers";
+import { hasMixers, outputFeeder, sceneAfter, sceneAt } from "./fixtures/mixers";
 import { hexChroma, sceneScatter } from "./fixtures/warp";
 import { sceneHistogram } from "./fixtures/histogram";
 import { scenePng, hexToRgb } from "./fixtures/png";
@@ -2241,8 +2241,21 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   function signalNode(rec: PhotoRecord, at: NodeId | undefined): number | null {
     if (at === undefined || at === "input" || at === MAIN_ID) return null;
     if (at === "output") fail("render", "The output has no picture to read here.");
-    if (nodeOf(rec.settings, at)?.kind !== "corrector") fail("render", `This photo has no node ${at}.`);
+    const kind = nodeOf(rec.settings, at)?.kind;
+    if (kind !== "corrector" && kind !== "parallel" && kind !== "layer" && kind !== "splitter" && kind !== "combiner") fail("render", `This photo has no node ${at}.`);
     return at;
+  }
+
+  /**
+   * The scene a panel reads at a numbered node `node` (never Main): at a corrector as `signalScene` says; at a mixer, a Splitter or a
+   * Combiner the picture after the node, whatever the tap (for a Splitter its input picture, `docs/25` §5.7).
+   */
+  function signalSceneAt(rec: PhotoRecord, node: number, stage: "curve" | "warp" | "input"): Scene {
+    const adjustment = adjustmentOf(rec, false);
+    if (nodeOf(rec.settings, node)?.kind === "corrector") return signalScene(rec.scene, adjustment, pictureChain(rec.settings, node), stage);
+    const input = adjustScene(rec.scene, { ...adjustment, warp: undefined });
+    const scene = sceneAfter(rec.settings, input, node, (item, scene) => (item.kind === "film" ? adjustForNode(scene, filmLook(item)) : adjustForNode(scene, item)));
+    return scene ?? fail("render", `Node ${node} has no picture to read here.`);
   }
 
   /**
@@ -2958,7 +2971,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       run("histogram", (): HistogramData => {
         const rec = photo(photoId);
         const node = signalNode(rec, at);
-        if (node !== null) return sceneHistogram(signalScene(rec.scene, adjustmentOf(rec, false), pictureChain(rec.settings, node), "curve"));
+        if (node !== null) return sceneHistogram(signalSceneAt(rec, node, "curve"));
         const { values } = resolveSettings(photoId, rec.settings, estimates());
         // Exposure moves the plot along the tonal scale. Before does not: the core's histogram is always that of the
         // finished picture (docs/02). At the Input it is the Input's picture, which Main's grade does not touch.
@@ -2972,7 +2985,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         const node = signalNode(rec, at);
         // The photo's colours at the warp's input, seeded by the photo so the dots are the same on every run. At another corrector they
         // are the colours after the nodes before it and its own trims and grade (`docs/01`).
-        const scene = node === null ? warpInput(rec) : signalScene(rec.scene, adjustmentOf(rec, false), pictureChain(rec.settings, node), "warp");
+        const scene = node === null ? warpInput(rec) : signalSceneAt(rec, node, "warp");
         return { points: sceneScatter(scene, 7919 * photoId + 17) };
       }),
 
@@ -3053,7 +3066,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         // The warp's input is after the node's trim and grade; the node's input (`tap` "node_input", a Colour range's Pick colour) is the
         // picture it reads, which Main and the Input take from the photo as adjusted at the Input.
         const stage = tap === "node_input" ? "input" : "warp";
-        const scene = node === null ? warpInput(rec) : signalScene(rec.scene, adjustmentOf(rec, false), pictureChain(rec.settings, node), stage);
+        const scene = node === null ? warpInput(rec) : signalSceneAt(rec, node, stage);
         const [a, b] = hexChroma(scene[layerAt(scene, clamp(point[0], 0, 1), clamp(point[1], 0, 1))]);
         return { a, b };
       }),

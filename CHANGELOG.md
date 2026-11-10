@@ -9,6 +9,17 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+The mixers: nodes that join the pictures a graph has split. **Add node** offers **Parallel**, **Layer** and **Splitter and combiner**, in place of the three items that said "Later". The pipeline version is 0.11.0 (was 0.10.0), because an older build cannot open a graph with a mixer. A photo with no mixer comes out byte for byte as before.
+
+### Added
+
+- **Parallel.** "Grade branches side by side." It adds the change each of its inputs makes to the picture they started from, so a Skin corrector and a Sky corrector, each with its own mask, both apply to Main's picture. Where two changes overlap, they add. The node has no controls of its own, and its **Inputs** tab says where each input comes from and which picture they start from.
+- **Layer.** "Blend one branch over another." Input 1 is at the bottom and a higher number sits on top. Each input shows where the mask of the node that feeds it is on, times the Layer's **Opacity**. **Mode** is Normal, Add, Subtract, Multiply, Lighten, Darken or Difference, worked out in linear light. The **Blend** tab has Mode and Opacity and the list of inputs; drag a row to change which input sits on top.
+- **Splitter and combiner.** "Split a picture, then join it again." The Splitter sends the red, green and blue of a picture to three outputs, each a grey picture of one channel, and the Combiner joins three pictures into one, a channel from each. One Add node item makes the pair with a corrector on each channel (Red, Green and Blue) between them. The ports are tinted, with R, G and B beside them.
+- **Add node beside the selected node.** Parallel and Layer add a corrector beside the selected node, as Resolve does: the selected node and the new corrector both feed the mixer, which feeds what the selected node fed. A mixer takes up to eight inputs; drop a link on the "+" port under the last one to add the next.
+- **Mixers in the panels.** The histogram, the scatter and Pick colour at a mixer, a Splitter or a Combiner read the picture after the node. A Splitter has no picture of its own, so they read the picture that goes into it.
+- **Mixers in `ym`.** A settings file takes `parallel`, `layer` (with `mode` and `opacity`), `splitter` and `combiner` nodes, with numbered ports `picture.1` to `picture.8` on a mixer and `red`, `green` and `blue` on a Splitter and a Combiner. The app and `ym` give the same bytes. Settings with a mixer need this version or later. `docs/10-cli.md` has two examples and `docs/25-mixers.md` the rules.
+
 ## [0.2.2] - 2026-11-09
 
 The Depth mask: a mask that selects by distance from the camera, from a depth map a small model makes from the photo on your Mac. The app is about 50 MB larger, because the model is bundled. The pipeline version stays 0.10.0, and a photo with no Depth row comes out byte for byte as in 0.2.1.

@@ -987,6 +987,53 @@ fn three_node_patch() -> SettingsPatch {
     .expect("patch")
 }
 
+#[test]
+fn the_panel_signals_read_the_picture_after_a_mixer_and_into_a_splitter() {
+    use ym_core::settings::NodeId as Core;
+    let h = Harness::new();
+    h.open(3);
+    h.develop();
+    let id = h.first();
+    h.rect(300.0, 300.0);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    // Input -> 1 -> 2 (an exposure trim) -> Layer 3 -> Output, and a Splitter 4 after node 2 that nothing reads.
+    let link = |from: serde_json::Value, from_port: &str, to: serde_json::Value, to_port: &str| json!({ "from": { "node": from, "port": from_port }, "to": { "node": to, "port": to_port } });
+    let patch: SettingsPatch = serde_json::from_value(json!({
+        "nodes": {
+            "2": { "kind": "corrector", "pos": [1.0, 0.0], "trim": { "exposure_ev": 0.5 } },
+            "3": { "kind": "layer", "pos": [2.0, 0.0] },
+            "4": { "kind": "splitter", "pos": [2.0, 1.0] },
+        },
+        "links": [
+            link(json!("input"), "picture", json!(1), "picture"),
+            link(json!(1), "picture", json!(2), "picture"),
+            link(json!(2), "picture", json!(3), "picture.1"),
+            link(json!(3), "picture", json!("output"), "picture"),
+            link(json!(2), "picture", json!(4), "picture"),
+        ],
+    }))
+    .expect("patch");
+    h.api.update_settings(id, &patch).expect("update");
+    let at = |n: u32| wire_node(Core::Corrector(n));
+    let two = h.api.histogram(id, at(2)).expect("histogram");
+    // A Layer of one input is that input's picture; a Splitter reads the picture on the link into it.
+    assert_eq!(h.api.histogram(id, at(3)).expect("histogram"), two);
+    assert_eq!(h.api.histogram(id, at(4)).expect("histogram"), two);
+    assert_ne!(two, h.api.histogram(id, None).expect("histogram"));
+    assert_eq!(
+        h.api.chroma_scatter(id, at(3)).expect("scatter"),
+        h.api.chroma_scatter(id, at(2)).expect("scatter")
+    );
+    assert_eq!(
+        h.api
+            .sample_chroma(150.0, 150.0, at(3), None)
+            .expect("chroma"),
+        h.api
+            .sample_chroma(150.0, 150.0, at(2), None)
+            .expect("chroma")
+    );
+}
+
 /// The `node_thumbnails_ready` events so far.
 fn node_thumbnail_events(h: &Harness) -> Vec<NodeThumbnailsReady> {
     h.events

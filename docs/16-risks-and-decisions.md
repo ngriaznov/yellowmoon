@@ -133,6 +133,23 @@ The plan was approved on 2026-11-01 and is milestone N (`docs/15`), specified in
 | Release | The whole plan is built, then released once as **0.2.0**; the checkpoints are test builds |
 | Dropped | DCTL (for now; researched and parked by the owner on 2026-11-09, `research/dctl-node-2026-11-09.md`), the list view |
 
+### Mixers (owner, 2026-11-10)
+
+The owner asked for the three greyed items of the Add node menu ("Let's implement greyed-out node types in nodes view"). Milestone X (`docs/15`), specified in `docs/25-mixers.md`. The decisions:
+
+| Topic | Decision |
+|---|---|
+| Scope | **"All three now"**: Parallel, Layer, and Splitter and combiner, in one milestone |
+| Parallel | **"Input + each branch's change"**: `out = base + Σ (branch − base)` on LogC4 code values, per channel; the base is the last picture every branch shares; no controls |
+| Layer modes | **"Scene-safe short list"**: Normal, Add, Subtract, Multiply, Lighten, Darken and Difference, computed in linear light; one mode per Layer |
+| Layer alpha | **"Feeding node's mask, as Resolve"**: an input shows where the mask of the node that feeds it is on, times the Layer's Opacity |
+| Mockups (X-H1) | **"Approve as drawn"** |
+| Add node › Parallel or Layer | **"Add a corrector too, as Resolve"**: the selected node and a new corrector beside it feed the mixer |
+| Ports | **"Tinted ports + R/G/B letters"** on the Splitter and the Combiner |
+| Links | **"No lines, names only"**: the panels name where each input comes from and draw no lines |
+| `PIPELINE_VERSION` | 0.11.0, a minor step as for the Film node: an older build refuses a graph with a kind it does not know; no existing graph changes by a bit |
+| Not in the first version | Other blend modes (Screen, Overlay and the like assume a display picture), a mode or a weight per input, masks and key ports on the four kinds, a Key Mixer, Outside, Morph, other channel splits |
+
 ### Colour and rendering
 
 - **The default look is Signature.** A LogC4 luma curve pivoting at mid grey (the departure from the identity scaled by 1.6, slope at mid grey about 1.40, with a soft toe and shoulder) followed by CDL saturation 1.45; mid grey is unchanged. Parametric looks are baked into 65-point cubes because the steeper curve needs a finer cube. Neutral stays as the identity. The default look comes from the preferences (`DEFAULT_LOOK` is `builtin:signature`); `DevelopSettings::default()` stays Neutral. It is a built-in look made for the app, not derived from any ARRI or commercial LUT. `docs/08`.

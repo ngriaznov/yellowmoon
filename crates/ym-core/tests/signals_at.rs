@@ -688,3 +688,236 @@ fn the_node_input_does_not_depend_on_the_nodes_masks_or_bypass() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Mixers, Splitters and Combiners (`docs/25` section 5.7): the picture after the node; for a
+// Splitter its input picture.
+// ---------------------------------------------------------------------------------------------
+
+fn link(from: Value, from_port: &str, to: Value, to_port: &str) -> Value {
+    json!({ "from": { "node": from, "port": from_port }, "to": { "node": to, "port": to_port } })
+}
+
+/// Node 2's fields without the colour warp and the curve, so that Main's reading of a graph with
+/// these fields (C9b) is exactly the picture node 2 puts out.
+fn straight() -> (Value, Value) {
+    let (trim, mut grade) = busy();
+    grade["color_warp"] = json!({ "pins": [] });
+    grade["curve"] = json!({});
+    (trim, grade)
+}
+
+fn node_2(trim: &Value, grade: &Value) -> Value {
+    json!({ "id": 2, "kind": "corrector", "pos": [1.0, 0.0], "trim": trim, "grade": grade })
+}
+
+#[test]
+fn a_layer_reads_the_picture_after_it_and_a_parallel_and_a_combiner_too() {
+    let d = photo();
+    let src = d.source();
+    let r = renderer();
+    let (trim, grade) = straight();
+    let reference = histogram(&r, &at(&src, main_with(&trim, &grade)), None);
+    let dots = scatter(&r, &at(&src, main_with(&trim, &grade)), None);
+    assert!(!dots.points.is_empty());
+    // A Layer of one input is that input's picture, bit for bit.
+    let layer = settings(
+        vec![
+            flat_main(),
+            node_2(&trim, &grade),
+            json!({ "id": 3, "kind": "layer", "pos": [2.0, 0.0] }),
+        ],
+        vec![
+            picture(json!("input"), json!(1)),
+            picture(json!(1), json!(2)),
+            link(json!(2), "picture", json!(3), "picture.1"),
+            picture(json!(3), json!("output")),
+        ],
+    );
+    let layer_src = at(&src, layer);
+    let at_layer = Some(NodeId::Corrector(3));
+    assert_eq!(histogram(&r, &layer_src, at_layer), reference);
+    assert_eq!(scatter(&r, &layer_src, at_layer), dots);
+    // The same on a dead Layer: it does not have to feed the Output.
+    let dead = settings(
+        vec![
+            flat_main(),
+            node_2(&trim, &grade),
+            json!({ "id": 3, "kind": "layer", "pos": [2.0, 1.0] }),
+        ],
+        vec![
+            picture(json!("input"), json!(1)),
+            picture(json!(1), json!("output")),
+            picture(json!(1), json!(2)),
+            link(json!(2), "picture", json!(3), "picture.1"),
+        ],
+    );
+    assert_eq!(histogram(&r, &at(&src, dead), at_layer), reference);
+    // A Parallel of that corrector and Main's own picture (the base): the change is node 2's.
+    let parallel = settings(
+        vec![
+            flat_main(),
+            node_2(&trim, &grade),
+            json!({ "id": 3, "kind": "parallel", "pos": [2.0, 0.0] }),
+        ],
+        vec![
+            picture(json!("input"), json!(1)),
+            picture(json!(1), json!(2)),
+            link(json!(2), "picture", json!(3), "picture.1"),
+            link(json!(1), "picture", json!(3), "picture.2"),
+            picture(json!(3), json!("output")),
+        ],
+    );
+    let parallel_src = at(&src, parallel);
+    let got = histogram(&r, &parallel_src, at_layer);
+    assert_ne!(got, histogram(&r, &parallel_src, None), "not Main's");
+    // The pixel readout reads the same picture.
+    for point in POINTS {
+        let want = tapped(
+            &r,
+            &src,
+            main_with(&trim, &grade),
+            None,
+            ChromaTap::WarpInput,
+            point,
+        );
+        let got = tapped(
+            &r,
+            &src,
+            layer_src.settings.clone(),
+            at_layer,
+            ChromaTap::WarpInput,
+            point,
+        );
+        near(got, want, &format!("{point:?}: the Layer's picture"));
+        let node_tap = tapped(
+            &r,
+            &src,
+            layer_src.settings.clone(),
+            at_layer,
+            ChromaTap::NodeInput,
+            point,
+        );
+        near(
+            node_tap,
+            want,
+            &format!("{point:?}: the same at the node tap"),
+        );
+    }
+}
+
+#[test]
+fn a_splitter_reads_its_input_and_a_combiner_of_three_identities_reads_the_photo() {
+    let d = photo();
+    let src = d.source();
+    let r = renderer();
+    let (trim, grade) = straight();
+    let reference = histogram(&r, &at(&src, main_with(&trim, &grade)), None);
+    // Main flat, node 2 graded, a Splitter after node 2: the Splitter reads node 2's picture.
+    let after_2 = settings(
+        vec![
+            flat_main(),
+            node_2(&trim, &grade),
+            json!({ "id": 3, "kind": "splitter", "pos": [2.0, 0.0] }),
+        ],
+        vec![
+            picture(json!("input"), json!(1)),
+            picture(json!(1), json!(2)),
+            picture(json!(2), json!(3)),
+            picture(json!(2), json!("output")),
+        ],
+    );
+    assert_eq!(
+        histogram(&r, &at(&src, after_2), Some(NodeId::Corrector(3))),
+        reference
+    );
+    // A Splitter straight after the Input reads the Input's output.
+    let from_input = settings(
+        vec![
+            flat_main(),
+            json!({ "id": 2, "kind": "splitter", "pos": [1.0, 1.0] }),
+        ],
+        vec![
+            picture(json!("input"), json!(1)),
+            picture(json!(1), json!("output")),
+            picture(json!("input"), json!(2)),
+        ],
+    );
+    let from_input = at(&src, from_input);
+    assert_eq!(
+        histogram(&r, &from_input, Some(NodeId::Corrector(2))),
+        histogram(&r, &from_input, Some(NodeId::Input))
+    );
+    // The trio of the Add node item with nothing changed in it gives the photo back.
+    let trio = settings(
+        vec![
+            flat_main(),
+            json!({ "id": 2, "kind": "splitter", "pos": [1.0, 0.0] }),
+            json!({ "id": 3, "kind": "corrector", "pos": [2.0, -1.0] }),
+            json!({ "id": 4, "kind": "corrector", "pos": [2.0, 0.0] }),
+            json!({ "id": 5, "kind": "corrector", "pos": [2.0, 1.0] }),
+            json!({ "id": 6, "kind": "combiner", "pos": [3.0, 0.0] }),
+        ],
+        vec![
+            picture(json!("input"), json!(1)),
+            picture(json!(1), json!(2)),
+            link(json!(2), "red", json!(3), "picture"),
+            link(json!(2), "green", json!(4), "picture"),
+            link(json!(2), "blue", json!(5), "picture"),
+            link(json!(3), "picture", json!(6), "red"),
+            link(json!(4), "picture", json!(6), "green"),
+            link(json!(5), "picture", json!(6), "blue"),
+            picture(json!(6), json!("output")),
+        ],
+    );
+    let flat = settings(
+        vec![flat_main()],
+        vec![
+            picture(json!("input"), json!(1)),
+            picture(json!(1), json!("output")),
+        ],
+    );
+    let want = histogram(&r, &at(&src, flat.clone()), None);
+    let trio_src = at(&src, trio);
+    assert_eq!(
+        histogram(&r, &trio_src, Some(NodeId::Corrector(6))),
+        want,
+        "the Combiner's picture"
+    );
+    assert_eq!(
+        histogram(&r, &trio_src, Some(NodeId::Corrector(2))),
+        want,
+        "the Splitter's input is Main's picture"
+    );
+    assert_eq!(
+        scatter(&r, &trio_src, Some(NodeId::Corrector(6))),
+        scatter(&r, &at(&src, flat), None)
+    );
+}
+
+#[test]
+fn a_splitter_with_nothing_linked_in_is_refused_in_words() {
+    let d = photo();
+    let r = renderer();
+    let s = settings(
+        vec![
+            flat_main(),
+            json!({ "id": 2, "kind": "splitter", "pos": [1.0, 1.0] }),
+        ],
+        vec![
+            picture(json!("input"), json!(1)),
+            picture(json!(1), json!("output")),
+        ],
+    );
+    let err = r
+        .histogram_at(
+            &at(&d.source(), s),
+            Some(NodeId::Corrector(2)),
+            &CancelToken::new(),
+        )
+        .expect_err("nothing to read");
+    assert!(
+        matches!(&err, RenderError::Color(m) if m == "Node 2 has no picture to read here."),
+        "{err}"
+    );
+}

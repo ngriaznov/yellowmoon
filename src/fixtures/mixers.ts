@@ -139,3 +139,17 @@ export function sceneAt(settings: DevelopSettings, input: Scene, at: NodeRef, ap
   };
   return value(at);
 }
+
+/**
+ * The scene a panel signal reads at a mixer, a Splitter or a Combiner (`docs/25` §5.7): the picture after the node; for a Splitter, the
+ * picture on the link into it. Null for a Splitter with nothing linked in. `apply` is what a corrector or a Film node does to a scene.
+ */
+export function sceneAfter(settings: DevelopSettings, input: Scene, id: number, apply: (node: CardItem, scene: Scene) => Scene): Scene | null {
+  let at: NodeRef = { node: id, port: "picture" };
+  if (nodeOf(settings, id)?.kind === "splitter") {
+    const into = settings.nodes.links.find((l) => l.to.node === id && l.to.port === "picture");
+    if (!into) return null;
+    at = into.from;
+  }
+  return sceneAt(settings, input, at, apply);
+}

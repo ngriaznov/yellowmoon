@@ -63,8 +63,8 @@ use super::viewport::ViewportState;
 use crate::apple_auto::{AdvisorPicture, PICTURE_LONG_EDGE_PX};
 use crate::session::{PhotoId, PictureInput, PictureRenderer, ThumbnailInput, ThumbnailRenderer};
 use crate::settings::{
-    ColorWarp, Curves, DevelopSettings, MaskSettings, NodeGrade, NodeId, NodeKind, NodeLink, NodeRef,
-    NodeTrim,
+    ColorWarp, Curves, DevelopSettings, MaskSettings, NodeGrade, NodeId, NodeKind, NodeLink,
+    NodeRef, NodeTrim,
 };
 use ym_color::look::LookTransform;
 use ym_color::plan::Stop;
