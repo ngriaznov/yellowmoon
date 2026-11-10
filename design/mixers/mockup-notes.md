@@ -34,6 +34,8 @@ Everything else on `states.jpg` (captions such as "2 inputs and the +") belongs 
 
 ## Questions for the owner at X-H1
 
+**Answered, 2026-11-10:** "Approve as drawn"; item 1 **"Add a corrector too, as Resolve"** (`docs/25` §5.4); item 2 **option C** (tinted ports and R/G/B letters); item 9 **no lines** in the mode menu. The rest stay as drawn.
+
 1. **Item 36 (spec §9): should Add node › Parallel also add a corrector beside the selected node, as Resolve's Add Parallel does?** Drawn with the mixer alone (the lead's brief). Resolve's reading adds a second corrector already linked to input 2, so there is something to grade at once; it is one more node and one more thing to delete. Needs an answer before X-06.
 2. **Channel ports: A, B or C?** (above). I propose C.
 3. **What does a glyph card's `pos` mean?** A corrector's top left is its `pos`. A glyph card's height varies from 64 to 208 px, so a top-left `pos` puts its ports on a different line from the corrector it follows. I used the **middle line** (`pos.y` is the row of the picture line for every kind). That makes the trio of §5.4 (rows y − 1, y, y + 1) line up. Say if you prefer top-left.
