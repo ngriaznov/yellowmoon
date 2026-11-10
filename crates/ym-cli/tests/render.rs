@@ -1257,10 +1257,10 @@ fn a_settings_file_that_does_not_parse_is_a_usage_error_and_nothing_is_rendered(
         .stderr(predicate::str::contains("Couldn't read the settings file"));
 }
 
-/// A settings file with a Layer is read and checked, and until X-04 the photo stops with a plain render error (exit 1);
-/// nothing is written and the record says what went wrong.
+/// A settings file with a Layer is read, checked and rendered (`docs/25` task X-04): the photo is written, and the record carries the
+/// settings as the file held them, with the new kind.
 #[test]
-fn a_settings_file_with_a_mixer_is_read_and_the_photo_stops_with_a_plain_error() {
+fn a_settings_file_with_a_mixer_is_read_and_the_photo_renders() {
     let sb = Sandbox::new();
     let arw = sb.arw("a.ARW");
     let file = sb.root().join("layer.json");
@@ -1280,25 +1280,19 @@ fn a_settings_file_with_a_mixer_is_read_and_the_photo_stops_with_a_plain_error()
         .arg(&file)
         .arg(&arw)
         .assert()
-        .code(1);
+        .success();
     let objects = json_lines(&out.get_output().stdout);
     assert_eq!(objects.len(), 1);
     let o = &objects[0];
-    assert_eq!(o["status"], "error");
-    assert_eq!(o["output"], Value::Null);
-    assert_eq!(
-        o["error"]["message"],
-        "This photo has a mixer, a splitter or a combiner node, which this version of Yellowmoon can't render yet. Remove the node to render the photo."
-    );
-    // The record still carries the settings as the file held them, with the new kind.
+    assert_eq!(o["status"], "ok");
+    let path = o["output"].as_str().expect("output");
+    assert!(std::path::Path::new(path).exists(), "the photo was written");
     let items = o["settings"]["nodes"]["items"].as_array().expect("items");
     assert!(
         items
             .iter()
             .any(|i| i["kind"] == "layer" && i["mode"] == "add")
     );
-    let written = std::fs::read_dir(sb.default_export()).map_or(0, Iterator::count);
-    assert_eq!(written, 0, "nothing was written");
 }
 
 #[test]

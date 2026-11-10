@@ -22,11 +22,10 @@ pub fn step_kind(kind: NodeKind) -> Option<StepKind> {
         NodeKind::Input | NodeKind::Output => None,
         NodeKind::Corrector => Some(StepKind::Corrector),
         NodeKind::Film => Some(StepKind::Film),
-        // X-03 stand-in: the four kinds of `docs/25` are per-pixel steps that read pictures, as a corrector is. The
-        // plan compiler refuses them until X-04 (`pipeline::color::node_plan`), which gives them their own step kinds.
-        NodeKind::Parallel | NodeKind::Layer | NodeKind::Splitter | NodeKind::Combiner => {
-            Some(StepKind::Corrector)
-        }
+        NodeKind::Parallel => Some(StepKind::Parallel),
+        NodeKind::Layer => Some(StepKind::Layer),
+        NodeKind::Splitter => Some(StepKind::Splitter),
+        NodeKind::Combiner => Some(StepKind::Combiner),
     }
 }
 

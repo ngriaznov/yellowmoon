@@ -34,8 +34,8 @@ use ym_color::chain::FusedChain;
 use ym_color::consts::Vec3;
 use ym_color::curve::{Curve, CurveSet};
 use ym_color::display::{
-    BeforePoint, ChainParams, ColorChain, FilmStep, LookSetting, MainNode, NodeParams, NodeSet,
-    OutputTarget, Trim,
+    BeforePoint, ChainParams, ColorChain, FilmStep, JoinParams, LookSetting, MainNode, NodeParams,
+    NodeSet, OutputTarget, Trim,
 };
 use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::LookTransform;
@@ -45,7 +45,9 @@ use ym_color::mask_raster::{
     BackgroundSource, BlurMap, BrushStrokes, MAX_RASTER_PLANES, RasterRow, RasterSet, RasterSource,
     Stroke, strokes_key,
 };
-use ym_color::plan::{self, PictureSource, Plan, PlanGraph, PlanNode, Stop};
+use ym_color::plan::{
+    self, JoinInput, JoinKind, PictureSource, Plan, PlanGraph, PlanJoin, PlanNode, Stop,
+};
 
 use ym_color::tone::ToneParams;
 use ym_color::warp::{Warp, WarpParams};
@@ -61,8 +63,9 @@ use super::raw::{CaptureMethod, DEFAULT_CAPTURE_METHOD};
 use crate::auto::{AutoEstimates, as_shot_gains, as_shot_rggb};
 use crate::session::{PhotoId, PhotoView, PickedWhite, ThumbnailInput};
 use crate::settings::{
-    AutoOr, ColorWarp, CurvePoint, Curves, DevelopSettings, LensSettings, MaskMode, MaskSettings,
-    MaskShape, MaskSupport, NodeGrade, NodeGraph, NodeId, NodeKind, NodeTrim, ObjectMask, Port,
+    AutoOr, BlendMode, ColorWarp, CurvePoint, Curves, DevelopSettings, LensSettings, MIXER_INPUTS,
+    MaskMode, MaskSettings, MaskShape, MaskSupport, MixerNode, NodeGrade, NodeGraph, NodeId,
+    NodeKind, NodeTrim, ObjectMask, Port,
 };
 use crate::vision::VisionKind;
 
@@ -936,66 +939,164 @@ pub fn has_film(s: &DevelopSettings) -> bool {
         .any(|id| s.nodes.film(id).is_some_and(|f| !f.is_inert()))
 }
 
-/// The graph as the plan compiler reads it: every corrector with its place, its picture source
-/// (the link into its picture input) and its key source, and the picture the Output reads. An input
-/// with no link is `None` (the compiler reads the Input's picture there).
+/// The picture a link into `to`'s `port` carries: `None` when the port has no link (the node then reads the Input's
+/// picture), else where it comes from. A link from a Splitter's `red`, `green` or `blue` is that channel.
+fn picture_into(g: &NodeGraph, to: NodeId, port: Port) -> Option<PictureSource> {
+    g.links
+        .iter()
+        .find(|l| l.to.node == to && l.to.port == port)
+        .map(|l| match l.from.node {
+            NodeId::Corrector(m) => match l.from.port {
+                Port::Red => PictureSource::Split(m, 0),
+                Port::Green => PictureSource::Split(m, 1),
+                Port::Blue => PictureSource::Split(m, 2),
+                _ => PictureSource::Node(m),
+            },
+            NodeId::Input | NodeId::Output => PictureSource::Input,
+        })
+}
+
+/// The graph as the plan compiler reads it: every corrector and Film node with its place, its picture source
+/// (the link into its picture input) and its key source, and the picture the Output reads. An input with no link
+/// is `None` (the compiler reads the Input's picture there). The mixers, Splitters and Combiners are
+/// [`plan_joins`].
 #[must_use]
 pub fn plan_graph(g: &NodeGraph) -> PlanGraph {
-    let source_of = |to: NodeId, port: Port| -> Option<NodeId> {
-        g.links
-            .iter()
-            .find(|l| l.to.node == to && l.to.port == port)
-            .map(|l| l.from.node)
-    };
     let nodes = g
         .numbered()
         .into_iter()
         .filter_map(|(id, kind)| {
-            let pos = match kind {
-                NodeKind::Corrector | NodeKind::Film => g.pos(NodeId::Corrector(id))?,
-                // X-04 gives these their steps. `node_plan` refuses a graph that has one before it gets here, so
-                // they are left out and never rendered as if they were not there.
-                NodeKind::Parallel | NodeKind::Layer | NodeKind::Splitter | NodeKind::Combiner => {
-                    return None;
-                }
-                NodeKind::Input | NodeKind::Output => return None,
-            };
+            match kind {
+                NodeKind::Corrector | NodeKind::Film => {}
+                NodeKind::Parallel
+                | NodeKind::Layer
+                | NodeKind::Splitter
+                | NodeKind::Combiner
+                | NodeKind::Input
+                | NodeKind::Output => return None,
+            }
+            let pos = g.pos(NodeId::Corrector(id))?;
             Some(PlanNode {
                 id,
                 pos,
-                picture: source_of(NodeId::Corrector(id), Port::Picture).map(|n| match n {
-                    NodeId::Corrector(m) => PictureSource::Node(m),
-                    NodeId::Input | NodeId::Output => PictureSource::Input,
-                }),
-                key: match source_of(NodeId::Corrector(id), Port::Key) {
-                    Some(NodeId::Corrector(m)) => Some(m),
-                    _ => None,
-                },
+                picture: picture_into(g, NodeId::Corrector(id), Port::Picture),
+                key: g
+                    .links
+                    .iter()
+                    .find(|l| l.to.node == NodeId::Corrector(id) && l.to.port == Port::Key)
+                    .and_then(|l| match l.from.node {
+                        NodeId::Corrector(m) => Some(m),
+                        _ => None,
+                    }),
             })
         })
         .collect();
-    let output = match source_of(NodeId::Output, Port::Picture) {
-        Some(NodeId::Corrector(m)) => PictureSource::Node(m),
-        _ => PictureSource::Input,
-    };
+    let output = picture_into(g, NodeId::Output, Port::Picture).unwrap_or(PictureSource::Input);
     PlanGraph { nodes, output }
 }
 
-/// The sentence a render gives for a graph with a Parallel, Layer, Splitter or Combiner, until the plan compiler
-/// runs them (`docs/25` task X-04).
-pub const MIXERS_NOT_RENDERED: &str = "This photo has a mixer, a splitter or a combiner node, which this version of Yellowmoon can't render yet. Remove the node to render the photo.";
+/// The mixers, Splitters and Combiners of the graph as the plan compiler reads them (`docs/25` section 4.1): their
+/// picture inputs in port order, and for a Layer's input above the first whether it is linked from the picture output
+/// of a corrector or Film node that is not bypassed (the Layer then reads that node's picture before its own mask
+/// blend, with its `m` as the alpha: `docs/25` section 3.3).
+#[must_use]
+pub fn plan_joins(g: &NodeGraph) -> Vec<PlanJoin> {
+    // The picture output of a node that has a mask `m` to give: a corrector or Film node that is not bypassed.
+    let masked = |src: PictureSource| match src {
+        PictureSource::Node(n) => match g.kind_of(NodeId::Corrector(n)) {
+            Some(NodeKind::Corrector) => g.corrector(n).is_some_and(|c| !c.bypass),
+            Some(NodeKind::Film) => g.film(n).is_some_and(|f| !f.bypass),
+            _ => false,
+        },
+        PictureSource::Input | PictureSource::Split(..) => false,
+    };
+    g.numbered()
+        .into_iter()
+        .filter_map(|(id, kind)| {
+            let node = NodeId::Corrector(id);
+            let (kind, ports): (JoinKind, Vec<Port>) = match kind {
+                NodeKind::Parallel => (JoinKind::Parallel, mixer_ports(g, id)),
+                NodeKind::Layer => (JoinKind::Layer, mixer_ports(g, id)),
+                NodeKind::Splitter => (JoinKind::Splitter, vec![Port::Picture]),
+                NodeKind::Combiner => {
+                    (JoinKind::Combiner, vec![Port::Red, Port::Green, Port::Blue])
+                }
+                NodeKind::Corrector | NodeKind::Film | NodeKind::Input | NodeKind::Output => {
+                    return None;
+                }
+            };
+            let inputs = ports
+                .into_iter()
+                .enumerate()
+                .map(|(i, port)| {
+                    let source = picture_into(g, node, port);
+                    JoinInput {
+                        source,
+                        graded: kind == JoinKind::Layer && i > 0 && source.is_some_and(masked),
+                    }
+                })
+                .collect();
+            Some(PlanJoin {
+                id,
+                pos: g.pos(node)?,
+                kind,
+                inputs,
+            })
+        })
+        .collect()
+}
+
+/// A mixer's linked inputs: `picture.1` to `picture.N`, with no gap (the validator refuses one).
+fn mixer_ports(g: &NodeGraph, id: u32) -> Vec<Port> {
+    (1..=MIXER_INPUTS)
+        .map(Port::PictureN)
+        .take_while(|p| {
+            g.links
+                .iter()
+                .any(|l| l.to.node == NodeId::Corrector(id) && l.to.port == *p)
+        })
+        .collect()
+}
 
 /// The plan of a photo's graph, ending at `stop`.
 ///
 /// # Errors
 ///
 /// [`RenderError::Color`] when the graph cannot be compiled (a validated graph can, unless `stop`
-/// names a node it does not have).
+/// names a node it does not have, or a mask stop names a mixer, a Splitter or a Combiner, which have no mask).
 pub fn node_plan(g: &NodeGraph, stop: Stop) -> Result<Plan, RenderError> {
-    if !g.mixers.is_empty() {
-        return Err(RenderError::Color(MIXERS_NOT_RENDERED.to_owned()));
+    plan::compile_with(&plan_graph(g), &plan_joins(g), stop)
+        .map_err(|e| RenderError::Color(e.to_string()))
+}
+
+/// The mixers of a photo for the chain: each Parallel's bypass and each Layer's bypass, mode and opacity, for the
+/// mixers the plan runs.
+fn join_params(g: &NodeGraph, plan: &Plan) -> std::collections::BTreeMap<u32, JoinParams> {
+    plan.node_ids()
+        .into_iter()
+        .filter_map(|id| match g.mixer(id)? {
+            MixerNode::Parallel(p) => Some((id, JoinParams::parallel(p.bypass))),
+            MixerNode::Layer(l) => Some((
+                id,
+                JoinParams::layer(l.bypass, blend_mode_of(l.mode), l.opacity),
+            )),
+            MixerNode::Splitter(_) | MixerNode::Combiner(_) => None,
+        })
+        .collect()
+}
+
+/// A Layer's mode as the chain has it.
+fn blend_mode_of(mode: BlendMode) -> ym_color::display::BlendMode {
+    use ym_color::display::BlendMode as B;
+    match mode {
+        BlendMode::Normal => B::Normal,
+        BlendMode::Add => B::Add,
+        BlendMode::Subtract => B::Subtract,
+        BlendMode::Multiply => B::Multiply,
+        BlendMode::Lighten => B::Lighten,
+        BlendMode::Darken => B::Darken,
+        BlendMode::Difference => B::Difference,
     }
-    plan::compile(&plan_graph(g), stop).map_err(|e| RenderError::Color(e.to_string()))
 }
 
 /// The nodes of a photo for the chain: the plan to `stop` (the Output, or a node's mask for the mask view),
@@ -1012,6 +1113,7 @@ fn node_set(
         NodeSet,
         RasterSet,
         std::collections::BTreeMap<u32, FilmStep>,
+        std::collections::BTreeMap<u32, JoinParams>,
     ),
     RenderError,
 > {
@@ -1067,11 +1169,17 @@ fn node_set(
                     },
                 );
             }
-            // X-04 renders these. `node_plan` has refused such a graph already.
+            // The four kinds of `docs/25` have no node parameters: the chain joins their registers
+            // (`join_params` gives it the mode and the opacity).
             Some(
-                NodeKind::Parallel | NodeKind::Layer | NodeKind::Splitter | NodeKind::Combiner,
-            ) => return Err(RenderError::Color(MIXERS_NOT_RENDERED.to_owned())),
-            Some(NodeKind::Input | NodeKind::Output) | None => {}
+                NodeKind::Parallel
+                | NodeKind::Layer
+                | NodeKind::Splitter
+                | NodeKind::Combiner
+                | NodeKind::Input
+                | NodeKind::Output,
+            )
+            | None => {}
         }
     }
     // Main's rows: numbered with the rest when Main is in the plan, else (a plan that does not run it) its
@@ -1079,6 +1187,7 @@ fn node_set(
     let main_masks = masks
         .remove(&plan::MAIN_NODE)
         .unwrap_or_else(|| node_masks(&s.main().masks));
+    let joins = join_params(&s.nodes, &plan);
     Ok((
         NodeSet {
             plan,
@@ -1091,6 +1200,7 @@ fn node_set(
         },
         rasters,
         films,
+        joins,
     ))
 }
 
@@ -1186,6 +1296,29 @@ fn nodes_key(
                 f.strength.to_bits(),
                 node_masks(&f.masks),
             );
+        } else if let Some(m) = s.nodes.mixer(id) {
+            // A mixer, a Splitter or a Combiner: its kind, bypass and, for a Layer, mode and opacity. Its links are in
+            // the plan above.
+            match m {
+                MixerNode::Parallel(p) => {
+                    let _ = write!(k, "parallel{id}:{};", p.bypass);
+                }
+                MixerNode::Layer(l) => {
+                    let _ = write!(
+                        k,
+                        "layer{id}:{}:{}:{};",
+                        l.bypass,
+                        l.mode.name(),
+                        l.opacity.to_bits()
+                    );
+                }
+                MixerNode::Splitter(_) => {
+                    let _ = write!(k, "splitter{id};");
+                }
+                MixerNode::Combiner(_) => {
+                    let _ = write!(k, "combiner{id};");
+                }
+            }
         } else if let Some(c) = s.nodes.corrector(id) {
             let _ = write!(
                 k,
@@ -1371,10 +1504,11 @@ pub fn grade_plan_to(
     params.grade = grade_params(s, &src.estimates);
     params.warp = warp_params(s);
     params.curves = curve_set(s)?;
-    let (nodes, rasters, films) = node_set(s, stop, req.background, req.objects)?;
+    let (nodes, rasters, films, joins) = node_set(s, stop, req.background, req.objects)?;
     params.nodes = nodes;
     params.rasters = rasters;
     params.films = films;
+    params.joins = joins;
     params.output = req.target;
     params.dither = req.dither;
     params.before = BeforePoint::CameraDefault;
@@ -1429,11 +1563,12 @@ mod schedule_tests {
     }
 
     fn chain_of(s: &DevelopSettings) -> ColorChain {
-        let (nodes, rasters, films) = node_set(s, Stop::Output, None, None).expect("nodes");
+        let (nodes, rasters, films, joins) = node_set(s, Stop::Output, None, None).expect("nodes");
         let mut params = ChainParams::new(ym_color::consts::linalg::IDENTITY, ToneParams::IDENTITY);
         params.nodes = nodes;
         params.rasters = rasters;
         params.films = films;
+        params.joins = joins;
         ColorChain::new(&params).expect("a chain")
     }
 

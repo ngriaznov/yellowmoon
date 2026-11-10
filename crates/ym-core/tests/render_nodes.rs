@@ -153,7 +153,7 @@ fn the_default_graph_is_main_in_one_pass_and_a_chain_is_its_nodes_in_order() {
     assert_eq!(plan.passes.len(), 1);
     assert_eq!(
         plan.cards.iter().map(|c| c.number).collect::<Vec<_>>(),
-        vec![1, 2, 3, 4]
+        vec![Some(1), Some(2), Some(3), Some(4)]
     );
 }
 
@@ -198,7 +198,7 @@ fn a_dead_node_is_numbered_and_left_out_of_the_plan() {
     assert_eq!(plan.node_ids(), vec![1, 2]);
     let dead = plan.card(5).unwrap();
     assert!(!dead.live);
-    assert_eq!(dead.number, 3);
+    assert_eq!(dead.number, Some(3));
 }
 
 // ---- pixels --------------------------------------------------------------------------------------
@@ -611,74 +611,176 @@ fn three_nodes_are_deterministic_whatever_the_threads_and_the_tiles() {
     assert_ne!(display(&plain, &d.source()).rgb, one.0);
 }
 
+// ---- the mixers (docs/25 task X-04) ---------------------------------------------------------------
+
+/// A link between two named ports.
+fn wire(from: Value, from_port: &str, to: Value, to_port: &str) -> Value {
+    json!({ "from": { "node": from, "port": from_port }, "to": { "node": to, "port": to_port } })
+}
+
+fn item(id: u32, kind: &str, x: f64, body: Value) -> Value {
+    let mut node = json!({ "id": id, "kind": kind, "pos": [x, 0.0] });
+    if let (Some(n), Some(b)) = (node.as_object_mut(), body.as_object()) {
+        n.extend(b.clone());
+    }
+    node
+}
+
+/// Main feeds the correctors `branches` (id, body), which feed the mixer `mixer` (id 9) in order; the Output reads it.
+fn mixed(kind: &str, body: Value, branches: &[(u32, Value)]) -> DevelopSettings {
+    let mut nodes: Vec<Value> = branches
+        .iter()
+        .map(|(id, b)| corrector(*id, 1.0, b.clone()))
+        .collect();
+    nodes.push(item(9, kind, 2.0, body));
+    let mut links = vec![picture(json!("input"), json!(1))];
+    for (k, (id, _)) in branches.iter().enumerate() {
+        links.push(picture(json!(1), json!(id)));
+        links.push(wire(
+            json!(id),
+            "picture",
+            json!(9),
+            &format!("picture.{}", k + 1),
+        ));
+    }
+    links.push(picture(json!(9), json!("output")));
+    graph(nodes, links)
+}
+
+fn bits(img: &FullImage) -> Vec<u32> {
+    img.rgb.iter().map(|v| v.to_bits()).collect()
+}
+
 #[test]
-fn a_graph_with_a_mixer_is_refused_with_a_plain_error_and_never_rendered_without_it() {
-    // docs/25 task X-03: until the plan compiler runs the four kinds (X-04), a graph that has one fails to render.
+fn the_four_kinds_render_and_the_identities_hold_on_the_core() {
     let d = photo(Layout::Patchwork, 0.5);
     let r = renderer();
-    let sentence = ym_core::pipeline::color::MIXERS_NOT_RENDERED;
-    for (kind, links) in [
-        (
+    let src = d.source();
+    let line = |s: DevelopSettings| bits(&display(&r, &with(&src, s)));
+    let plain_a = line(graph(
+        vec![corrector(2, 1.0, trim(0.8))],
+        self::line(&[1, 2]),
+    ));
+    let plain_main = line(graph(vec![], self::line(&[1])));
+    // A Parallel with one input is that input; a Layer at Opacity 0, with one input or bypassed is input 1.
+    assert_eq!(
+        line(mixed("parallel", json!({}), &[(2, trim(0.8))])),
+        plain_a
+    );
+    let two = [(2, trim(0.8)), (3, trim(-0.6))];
+    assert_eq!(
+        line(mixed("layer", json!({ "opacity": 0, "mode": "add" }), &two)),
+        plain_a
+    );
+    assert_eq!(
+        line(mixed(
             "layer",
-            vec![
-                picture(json!("input"), json!(1)),
-                json!({ "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture.1" } }),
-                picture(json!(2), json!("output")),
-            ],
-        ),
-        (
+            json!({ "bypass": true, "mode": "add" }),
+            &two
+        )),
+        plain_a
+    );
+    assert_eq!(
+        line(mixed(
+            "layer",
+            json!({ "mode": "multiply" }),
+            &[(2, trim(0.8))]
+        )),
+        plain_a
+    );
+    assert_eq!(
+        line(mixed("parallel", json!({ "bypass": true }), &two)),
+        plain_main
+    );
+    // They do something otherwise.
+    let parallel = line(mixed("parallel", json!({}), &two));
+    let layer = line(mixed("layer", json!({ "mode": "add" }), &two));
+    assert_ne!(parallel, plain_a);
+    assert_ne!(parallel, plain_main);
+    assert_ne!(layer, plain_a);
+    assert_ne!(layer, parallel);
+    // Branches at their identity are the base.
+    assert_eq!(
+        line(mixed(
             "parallel",
-            vec![
-                picture(json!("input"), json!(1)),
-                json!({ "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture.1" } }),
-                picture(json!(2), json!("output")),
-            ],
-        ),
-        (
-            "splitter",
-            vec![
-                picture(json!("input"), json!(1)),
-                picture(json!(1), json!(2)),
-                json!({ "from": { "node": 2, "port": "green" }, "to": { "node": "output", "port": "picture" } }),
-            ],
-        ),
-        (
-            "combiner",
-            vec![
-                picture(json!("input"), json!(1)),
-                json!({ "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "green" } }),
-                picture(json!(2), json!("output")),
-            ],
-        ),
-    ] {
-        let s = graph(
-            vec![json!({ "id": 2, "kind": kind, "pos": [1.0, 0.0] })],
-            links,
-        );
-        assert_eq!(s.nodes.mixers.len(), 1, "{kind}");
-        let e = node_plan(&s.nodes, ym_color::plan::Stop::Output).unwrap_err();
-        assert_eq!(e.to_string(), sentence, "{kind}");
-        let src = with(&d.source(), s);
-        let full = r.render_full(
-            &src,
-            &FullRequest {
-                target: FullTarget::DisplayLinear(OutputTarget::Srgb),
-            },
-            &CancelToken::new(),
-        );
-        assert_eq!(
-            full.err().map(|e| e.to_string()).as_deref(),
-            Some(sentence),
-            "{kind}"
-        );
-        let st = ViewportState::new(ViewportRect::cell(300.0, 200.0, 1.0));
-        let shown = r.viewport_frame(&src, &st, &FrameOptions::default(), &CancelToken::new());
-        assert_eq!(
-            shown.err().map(|e| e.to_string()).as_deref(),
-            Some(sentence),
-            "{kind}"
-        );
+            json!({}),
+            &[(2, json!({})), (3, json!({}))]
+        )),
+        plain_main
+    );
+    // A Splitter, three identity correctors and a Combiner are the input.
+    let mut nodes = vec![
+        item(2, "splitter", 1.0, json!({})),
+        item(6, "combiner", 3.0, json!({})),
+    ];
+    let mut links = vec![
+        picture(json!("input"), json!(1)),
+        picture(json!(1), json!(2)),
+    ];
+    for (k, (id, port)) in [(3, "red"), (4, "green"), (5, "blue")]
+        .into_iter()
+        .enumerate()
+    {
+        nodes.push(corrector(id, 2.0, json!({})));
+        links.push(wire(json!(2), port, json!(id), "picture"));
+        links.push(wire(json!(id), "picture", json!(6), port));
+        let _ = k;
     }
+    links.push(picture(json!(6), json!("output")));
+    let trio = graph(nodes, links);
+    assert_eq!(line(trio.clone()), plain_main);
+    // The same graph in a viewport frame, and the frame is the CPU's here.
+    assert_eq!(
+        frame(&r, &with(&src, trio)),
+        frame(&r, &with(&src, graph(vec![], self::line(&[1]))))
+    );
+}
+
+#[test]
+fn a_graph_with_joins_is_the_same_pixels_on_every_render() {
+    let d = photo(Layout::Patchwork, 0.5);
+    let r = renderer();
+    let s = with(
+        &d.source(),
+        mixed(
+            "layer",
+            json!({ "mode": "difference", "opacity": 0.7 }),
+            &[(2, trim(0.8)), (3, trim(-0.6)), (4, warm())],
+        ),
+    );
+    let first = bits(&display(&r, &s));
+    assert_eq!(first, bits(&display(&r, &s)));
+    assert_eq!(frame(&r, &s), frame(&r, &s));
+}
+
+#[test]
+fn the_grade_key_sees_a_layers_mode_opacity_and_bypass_and_a_parallels_bypass() {
+    let d = photo(Layout::Uniform, 0.12);
+    let src = d.source();
+    let r = renderer();
+    let color = color_plan(&src).unwrap();
+    let req = GradeRequest {
+        target: OutputTarget::Srgb,
+        dither: false,
+        looks: r.looks().as_ref(),
+        background: None,
+        objects: None,
+    };
+    let key_of = |s: DevelopSettings| grade_key(&with(&src, s), &color, &req);
+    let two = [(2, trim(0.8)), (3, trim(-0.6))];
+    let base = key_of(mixed("layer", json!({}), &two));
+    assert_eq!(base, key_of(mixed("layer", json!({}), &two)));
+    for body in [
+        json!({ "mode": "add" }),
+        json!({ "opacity": 0.5 }),
+        json!({ "bypass": true }),
+    ] {
+        assert_ne!(base, key_of(mixed("layer", body.clone(), &two)), "{body}");
+    }
+    assert_ne!(
+        key_of(mixed("parallel", json!({}), &two)),
+        key_of(mixed("parallel", json!({ "bypass": true }), &two))
+    );
 }
 
 // ---- the grade cache ---------------------------------------------------------------------------

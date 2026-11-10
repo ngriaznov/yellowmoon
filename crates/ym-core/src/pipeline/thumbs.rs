@@ -432,6 +432,8 @@ impl Renderer {
         let ids: Vec<u32> = node_plan(&src.settings.nodes, Stop::Output)?
             .cards
             .iter()
+            // A mixer, a Splitter and a Combiner have no number and no thumbnail (`docs/25` section 5.2).
+            .filter(|card| card.number.is_some())
             .map(|card| card.id)
             .collect();
         // The view, and the part of every key that does not depend on the node: the raw group,

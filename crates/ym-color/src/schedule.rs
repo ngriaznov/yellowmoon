@@ -70,12 +70,27 @@ pub enum StepKind {
     Corrector,
     /// A Film node that does something: spatial.
     Film,
+    /// A Parallel mixer: per pixel, reads the pictures of its inputs and its base.
+    Parallel,
+    /// A Layer mixer: per pixel, reads the pictures of its inputs and the keys of the nodes that feed them.
+    Layer,
+    /// A Splitter: per pixel, sends the channels of a picture to three outputs.
+    Splitter,
+    /// A Combiner: per pixel, takes a channel from each of three pictures.
+    Combiner,
 }
 
 impl StepKind {
     /// Every step kind. A `match`-checked list: [`StepKind::declared`] does not compile when a kind is missing, and the
     /// unit test below checks this list against it.
-    pub const ALL: [StepKind; 2] = [StepKind::Corrector, StepKind::Film];
+    pub const ALL: [StepKind; 6] = [
+        StepKind::Corrector,
+        StepKind::Film,
+        StepKind::Parallel,
+        StepKind::Layer,
+        StepKind::Splitter,
+        StepKind::Combiner,
+    ];
 
     /// The kind's footprint. **Exhaustive on purpose** (no wildcard arm): a new step kind does not compile until it says
     /// whether it is per pixel or spatial, how far it reads (`reach_px`, from its own data) and what it reads.
@@ -87,6 +102,16 @@ impl StepKind {
                 reads: Reads {
                     pictures: true,
                     planes: true,
+                    ..Reads::default()
+                },
+            },
+            // The four joins move and mix values of one pixel; they have no mask rows of their own (the nodes that feed
+            // them carry the masks), so they read no planes. They read the pictures of their inputs, which may be
+            // Film pictures.
+            Self::Parallel | Self::Layer | Self::Splitter | Self::Combiner => Declared {
+                footprint: Footprint::PerPixel,
+                reads: Reads {
+                    pictures: true,
                     ..Reads::default()
                 },
             },

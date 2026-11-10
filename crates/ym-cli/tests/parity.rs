@@ -1165,6 +1165,131 @@ fn masked_nodes_are_the_same_files_through_the_app_path_and_the_binary() {
     graph_leg("masked nodes", masked_nodes(), 6, false);
 }
 
+/// The first example of `docs/25` section 2.4: Main feeds Skin (more saturation in a Colour range) and Sky (a cooler trim under a
+/// Linear mask), and both feed a Parallel that feeds the Output. The base is Main's picture.
+fn parallel_example() -> serde_json::Value {
+    serde_json::json!({ "nodes": {
+      "items": [
+        { "id": 2, "kind": "corrector", "name": "Skin", "pos": [1, -0.5],
+          "grade": { "saturation": { "kind": "manual", "value": 15 } },
+          "masks": { "invert": false, "items": [
+            { "kind": "color_range", "center": [0.06, 0.04], "width": 0.05, "softness": 0.5 } ] } },
+        { "id": 3, "kind": "corrector", "name": "Sky", "pos": [1, 0.5],
+          "trim": { "temperature": -18 },
+          "masks": { "invert": false, "items": [
+            { "kind": "linear", "center": [0.5, 0.2], "angle_deg": 4, "feather": 0.25 } ] } },
+        { "id": 4, "kind": "parallel", "pos": [2, 0] }
+      ],
+      "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": 4, "port": "picture.1" } },
+        { "from": { "node": 3, "port": "picture" }, "to": { "node": 4, "port": "picture.2" } },
+        { "from": { "node": 4, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+      ] } })
+}
+
+/// The second example of `docs/25` section 2.4: a Splitter, three correctors (Red lifted by 0.2 EV, Green untouched, Blue
+/// lowered by 0.2 EV) and a Combiner.
+fn splitter_example() -> serde_json::Value {
+    serde_json::json!({ "nodes": {
+      "items": [
+        { "id": 2, "kind": "splitter", "pos": [1, 0] },
+        { "id": 3, "kind": "corrector", "name": "Red", "pos": [2, -1], "trim": { "exposure_ev": 0.2 } },
+        { "id": 4, "kind": "corrector", "name": "Green", "pos": [2, 0] },
+        { "id": 5, "kind": "corrector", "name": "Blue", "pos": [2, 1], "trim": { "exposure_ev": -0.2 } },
+        { "id": 6, "kind": "combiner", "pos": [3, 0] }
+      ],
+      "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "red" },     "to": { "node": 3, "port": "picture" } },
+        { "from": { "node": 2, "port": "green" },   "to": { "node": 4, "port": "picture" } },
+        { "from": { "node": 2, "port": "blue" },    "to": { "node": 5, "port": "picture" } },
+        { "from": { "node": 3, "port": "picture" }, "to": { "node": 6, "port": "red" } },
+        { "from": { "node": 4, "port": "picture" }, "to": { "node": 6, "port": "green" } },
+        { "from": { "node": 5, "port": "picture" }, "to": { "node": 6, "port": "blue" } },
+        { "from": { "node": 6, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+      ] } })
+}
+
+/// A Layer (Add at 80 %) of Warmth, a whole-photo corrector, under Glow, a corrector with a feathered Linear and a Radial mask
+/// (screen 12 of `design/nodes/`): the Layer shows Glow's picture through Glow's mask, once.
+fn layer_with_masked_inputs() -> serde_json::Value {
+    serde_json::json!({ "nodes": {
+      "items": [
+        { "id": 2, "kind": "corrector", "name": "Warmth", "pos": [1, -0.5],
+          "trim": { "temperature": 25, "exposure_ev": -0.1 } },
+        { "id": 3, "kind": "corrector", "name": "Glow", "pos": [1, 0.5], "trim": { "exposure_ev": 0.9 },
+          "masks": { "invert": false, "items": [
+            { "kind": "linear", "mode": "add", "center": [0.5, 0.5], "angle_deg": 15, "feather": 0.5 },
+            { "kind": "radial", "mode": "subtract", "center": [0.7, 0.5], "radii": [0.1, 0.1],
+              "angle_deg": 0, "feather": 0.4 } ] } },
+        { "id": 4, "kind": "layer", "name": "Layer", "pos": [2, 0], "mode": "add", "opacity": 0.8 }
+      ],
+      "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": 4, "port": "picture.1" } },
+        { "from": { "node": 3, "port": "picture" }, "to": { "node": 4, "port": "picture.2" } },
+        { "from": { "node": 4, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+      ] } })
+}
+
+/// The PNG 16 export of a graph through the app and through the binary: the same file (`graph_leg` covers JPEG, TIFF 16 and DNG).
+fn png16_leg(what: &str, doc: &serde_json::Value) {
+    let sb = Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
+    let app = App::open(&[&arw]);
+    let (settings, clamped) =
+        DevelopSettings::from_value(doc.clone(), &app.core.looks.effective_default())
+            .expect("settings");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    app.core
+        .session
+        .replace_settings(app.photo, settings)
+        .expect("replace");
+    let file = sb.root().join("graph.json");
+    std::fs::write(&file, doc.to_string()).expect("write");
+    let options = ExportOptions {
+        format: FormatKind::Png,
+        bit_depth: BitDepth::Sixteen,
+        ..ExportOptions::default()
+    };
+    let from_app = app.export(options, &sb.root().join("app-png"));
+    let from_cli = cli_export(
+        &sb,
+        &[&arw],
+        &[
+            "--format",
+            "png",
+            "--bits",
+            "16",
+            "--settings",
+            file.to_str().expect("utf-8"),
+        ],
+        &sb.root().join("cli-png"),
+    );
+    assert_same_files(&from_app, &from_cli, &format!("{what}, png16"));
+}
+
+/// Mixers, Splitters and Combiners (`docs/25` task X-04): the two example files of section 2.4 and a Layer with masked
+/// inputs are the same files through the app path and the binary, in JPEG, TIFF 16, PNG 16 and DNG. The CPU makes them on both
+/// sides: the device refuses a plan with these kinds until X-05, and says so.
+#[test]
+fn mixers_are_the_same_files_through_the_app_path_and_the_binary() {
+    for (what, doc, correctors) in [
+        ("a parallel", parallel_example(), 3),
+        ("a splitter and a combiner", splitter_example(), 4),
+        ("a layer with masked inputs", layer_with_masked_inputs(), 3),
+    ] {
+        graph_leg(what, doc.clone(), correctors, false);
+        png16_leg(what, &doc);
+    }
+}
+
 /// A Film node (`docs/24` section 4.5) with a mask, halation and grain on, after Main (`docs/24` section 8, *App
 /// against `ym`*).
 fn film_node() -> serde_json::Value {

@@ -58,6 +58,7 @@ mod chain;
 pub mod cine;
 mod dng_inverse;
 mod frame;
+pub mod mix;
 pub mod node;
 mod transform;
 pub mod trim;
@@ -65,6 +66,7 @@ pub mod trim;
 pub use chain::{BeforePoint, ChainParams, ColorChain, LookSetting, StageTrace, View};
 pub use dng_inverse::DNG_SCENE_LIMIT;
 pub use frame::{Frame, Layout};
+pub use mix::{BlendMode, JoinParams};
 pub use node::{FilmStep, MainNode, NodeParams, NodeSet};
 pub use trim::Trim;
 

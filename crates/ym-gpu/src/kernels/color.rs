@@ -1130,6 +1130,12 @@ impl NodePlan {
     ) -> Result<Self, GpuError> {
         let params = chain.params();
         let plan = &params.nodes.plan;
+        // The record has no row for a join yet (`docs/25` task X-05): the CPU makes the frame, with this reason.
+        if plan.has_joins() {
+            return Err(GpuError::InvalidInput(
+                "the colour kernel cannot run a mixer, a splitter or a combiner node yet".to_owned(),
+            ));
+        }
         if plan.step_count() > MAX_STEPS {
             return Err(GpuError::InvalidInput(format!(
                 "the plan has {} steps, the colour kernel runs {MAX_STEPS} at most",

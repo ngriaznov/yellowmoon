@@ -43,8 +43,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::dng_inverse::DngDisplayInverse;
+use super::mix::{self, JoinParams, Source};
 use super::node::{FilmStep, MainStages, NodeParams, NodeSet, PreparedNode};
 use super::transform::PreparedDisplay;
+use super::trim::Trim;
 use super::{DisplayError, OutputTarget};
 use crate::camera_default::CameraDefault;
 use crate::consts::Vec3;
@@ -57,7 +59,10 @@ use crate::logc::LogC4;
 use crate::look::{LookTransform, blend_display_linear, intensity_fraction};
 use crate::mask::{PixelAt, PreparedMasks};
 use crate::mask_raster::RasterSet;
-use crate::plan::{KeyRef, PLAN_KEYS, PLAN_REGISTERS, PictureRef, PlanResult, Step};
+use crate::plan::{
+    JoinKind, JoinStep, KeyRef, PLAN_INPUTS, PLAN_KEYS, PLAN_REGISTERS, PictureOut, PictureRef,
+    PlanResult, Step,
+};
 use crate::tone::{PreparedTone, ToneParams};
 use crate::warp::WarpParams;
 
@@ -162,6 +167,10 @@ pub struct ChainParams {
     /// the render's planes ([`RasterPlanes::film`](crate::mask::RasterPlanes::film)). Empty for a photo without a
     /// Film node, which then runs exactly as it did.
     pub films: BTreeMap<u32, FilmStep>,
+    /// The mixers of the plan (`docs/25`), by id: a Parallel's bypass, a Layer's bypass, mode and opacity. A Splitter or
+    /// Combiner needs no entry, and a mixer with none is a Parallel or Layer at its defaults (not bypassed, Normal,
+    /// opacity 0 - set it). Empty for a photo without a mixer, which then runs exactly as it did.
+    pub joins: BTreeMap<u32, JoinParams>,
 }
 
 impl ChainParams {
@@ -204,6 +213,7 @@ impl ChainParams {
             camera_default: CameraDefault::neutral(),
             rasters: RasterSet::default(),
             films: BTreeMap::new(),
+            joins: BTreeMap::new(),
         }
     }
 }
@@ -282,6 +292,8 @@ pub struct ColorChain {
     steps: Vec<(Step, PreparedNode)>,
     /// The Film nodes the plan runs.
     films: BTreeMap<u32, FilmStep>,
+    /// The mixers the plan runs.
+    joins: BTreeMap<u32, JoinParams>,
     /// How many buffers a pixel's plan uses (zero for a plan of one pass).
     buffers: usize,
     look: LookStage,
@@ -294,6 +306,14 @@ pub struct ColorChain {
     /// Set when C12 is not our cine rendering, so the DNG holds the scene values the cine rendering turns
     /// into this chain's picture (see [`ColorChain::dng_inverts_display`]).
     dng_inverse: Option<DngDisplayInverse>,
+}
+
+/// What a join step gives back.
+enum JoinOut {
+    /// The picture output.
+    Picture(Vec3),
+    /// A Splitter's red, green and blue outputs.
+    Channels([Vec3; 3]),
 }
 
 impl fmt::Debug for ColorChain {
@@ -352,6 +372,19 @@ impl ColorChain {
         let steps = plan
             .steps()
             .map(|step| {
+                // A mixer, a Splitter or a Combiner has no node parameters: it runs as an identity corrector would
+                // (nothing to grade, no mask rows) and the chain does its join.
+                if step.join.is_some() {
+                    let node = PreparedNode::new(
+                        true,
+                        &Trim::default(),
+                        &GradeParams::default(),
+                        &WarpParams::default(),
+                        &CurveSet::default(),
+                        &crate::mask::NodeMasks::default(),
+                    );
+                    return Ok((*step, node));
+                }
                 let n = params
                     .node_params(step.node)
                     .ok_or(DisplayError::MissingNode(step.node))?;
@@ -370,6 +403,12 @@ impl ColorChain {
                 .iter()
                 .filter(|(id, _)| plan.steps().any(|s| s.node == **id))
                 .map(|(id, f)| (*id, *f))
+                .collect(),
+            joins: params
+                .joins
+                .iter()
+                .filter(|(id, _)| plan.steps().any(|s| s.node == **id))
+                .map(|(id, j)| (*id, *j))
                 .collect(),
             buffers: plan.buffers.len(),
             look,
@@ -488,7 +527,9 @@ impl ColorChain {
     /// Each step is the node's four steps (`PreparedNode::apply`) and then the mask blend
     /// `out = in + m (node(in) - in)` (`docs/algorithms/06` section 1.1): `m` is 1 for a node with no
     /// mask rows, no Invert and no key, which then keeps its own bits; the blend branches on `m` being
-    /// exactly 1 or exactly 0. A node's key output is its `m` whether or not the node is bypassed.
+    /// exactly 1 or exactly 0. A node's key output is its `m` whether or not the node is bypassed. A node
+    /// that feeds a Layer above its first input also writes its graded value, the picture before the blend.
+    /// A mixer, a Splitter or a Combiner is a join of the values its registers hold ([`ColorChain::run_join`]).
     fn run_nodes(
         &self,
         c8: LogC4,
@@ -499,7 +540,32 @@ impl ColorChain {
         let mut registers = [[0.0f64; 3]; PLAN_REGISTERS];
         let mut slots = [0.0f64; PLAN_KEYS];
         let mut buffers = vec![[0.0f64; 3]; self.buffers];
+        let put = |o: Option<PictureOut>,
+                   v: [f64; 3],
+                   registers: &mut [[f64; 3]; PLAN_REGISTERS],
+                   buffers: &mut [[f64; 3]]| {
+            if let Some(o) = o {
+                if let Some(r) = o.register {
+                    registers[usize::from(r)] = v;
+                }
+                if let Some(b) = o.buffer {
+                    buffers[usize::from(b)] = v;
+                }
+            }
+        };
         for (step, node) in &self.steps {
+            if let Some(join) = &step.join {
+                let outs = self.run_join(step.node, join, (c8, c7), (&registers, &slots, &buffers));
+                match outs {
+                    JoinOut::Picture(v) => put(step.picture_out, v, &mut registers, &mut buffers),
+                    JoinOut::Channels(c) => {
+                        for (o, v) in join.channels.iter().zip(c) {
+                            put(*o, v, &mut registers, &mut buffers);
+                        }
+                    }
+                }
+                continue;
+            }
             let (v_in, linear) = match step.picture {
                 PictureRef::Input => (c8, Some(c7)),
                 PictureRef::Register(r) => (LogC4(registers[usize::from(r)]), None),
@@ -514,55 +580,33 @@ impl ColorChain {
             } else {
                 None
             };
-            if let Some(film) = self.films.get(&step.node) {
+            let (out, m, graded) = if let Some(film) = self.films.get(&step.node) {
                 let need_mask = node.masks().blends(key.is_some()) || step.key_out.is_some();
-                let (out, m) =
-                    Self::run_film(*film, node, v_in, linear, (key, need_mask), at, step.node);
-                if let Some(o) = step.picture_out {
-                    if let Some(r) = o.register {
-                        registers[usize::from(r)] = out;
-                    }
-                    if let Some(b) = o.buffer {
-                        buffers[usize::from(b)] = out;
-                    }
-                }
-                if let Some(o) = step.key_out {
-                    if let Some(s) = o.slot {
-                        slots[usize::from(s)] = m;
-                    }
-                    if let Some(b) = o.buffer {
-                        buffers[usize::from(b)] = [m; 3];
-                    }
-                }
-                continue;
-            }
-            let made = node.apply(v_in, linear, stages).0;
-            // The mask: needed for the blend, and for the key output (also of a node that is skipped).
-            let blends = node.masks().blends(key.is_some());
-            let m = if (blends && !node.skips()) || step.key_out.is_some() {
-                node.mask(key, v_in, linear, at)
+                Self::run_film(*film, node, v_in, linear, (key, need_mask), at, step.node)
             } else {
-                1.0
+                let made = node.apply(v_in, linear, stages).0;
+                // The mask: needed for the blend, and for the key output (also of a node that is skipped).
+                let blends = node.masks().blends(key.is_some());
+                let m = if (blends && !node.skips()) || step.key_out.is_some() {
+                    node.mask(key, v_in, linear, at)
+                } else {
+                    1.0
+                };
+                let out = if !blends || node.skips() || m == 1.0 {
+                    made
+                } else if m == 0.0 {
+                    v_in.0
+                } else {
+                    [
+                        v_in.0[0] + m * (made[0] - v_in.0[0]),
+                        v_in.0[1] + m * (made[1] - v_in.0[1]),
+                        v_in.0[2] + m * (made[2] - v_in.0[2]),
+                    ]
+                };
+                (out, m, made)
             };
-            let out = if !blends || node.skips() || m == 1.0 {
-                made
-            } else if m == 0.0 {
-                v_in.0
-            } else {
-                [
-                    v_in.0[0] + m * (made[0] - v_in.0[0]),
-                    v_in.0[1] + m * (made[1] - v_in.0[1]),
-                    v_in.0[2] + m * (made[2] - v_in.0[2]),
-                ]
-            };
-            if let Some(o) = step.picture_out {
-                if let Some(r) = o.register {
-                    registers[usize::from(r)] = out;
-                }
-                if let Some(b) = o.buffer {
-                    buffers[usize::from(b)] = out;
-                }
-            }
+            put(step.picture_out, out, &mut registers, &mut buffers);
+            put(step.graded_out, graded, &mut registers, &mut buffers);
             if let Some(o) = step.key_out {
                 if let Some(s) = o.slot {
                     slots[usize::from(s)] = m;
@@ -581,9 +625,84 @@ impl ColorChain {
         }
     }
 
+    /// A mixer, a Splitter or a Combiner on one pixel (`docs/25` section 3): reads every input before anything is
+    /// written, so a step may write into a register its inputs leave.
+    fn run_join(
+        &self,
+        id: u32,
+        join: &JoinStep,
+        (c8, c7): (LogC4, Vec3),
+        (registers, slots, buffers): (&[[f64; 3]; PLAN_REGISTERS], &[f64; PLAN_KEYS], &[[f64; 3]]),
+    ) -> JoinOut {
+        let read = |r: PictureRef| match r {
+            PictureRef::Input => Source {
+                logc4: c8.0,
+                linear: Some(c7),
+            },
+            PictureRef::Register(r) => Source {
+                logc4: registers[usize::from(r)],
+                linear: None,
+            },
+            PictureRef::Buffer(b) => Source {
+                logc4: buffers[usize::from(b)],
+                linear: None,
+            },
+        };
+        let blank = Source {
+            logc4: [0.0; 3],
+            linear: None,
+        };
+        let mut all = [blank; PLAN_INPUTS];
+        for (slot, &r) in all.iter_mut().zip(join.inputs()) {
+            *slot = read(r);
+        }
+        let inputs = &all[..usize::from(join.count)];
+        let params = self.joins.get(&id).copied().unwrap_or_default();
+        match join.kind {
+            JoinKind::Parallel => {
+                let base = join.base.map_or(c8.0, |b| read(b).logc4);
+                if params.bypass {
+                    return JoinOut::Picture(base);
+                }
+                let mut logs = [[0.0; 3]; PLAN_INPUTS];
+                for (slot, s) in logs.iter_mut().zip(inputs) {
+                    *slot = s.logc4;
+                }
+                JoinOut::Picture(mix::parallel(base, &logs[..inputs.len()], |i| {
+                    join.input_is_base(i)
+                }))
+            }
+            JoinKind::Layer => {
+                if params.bypass {
+                    return JoinOut::Picture(inputs[0].logc4);
+                }
+                let mut alphas = [None; PLAN_INPUTS];
+                for (slot, a) in alphas.iter_mut().zip(&join.alphas) {
+                    *slot = a.map(|k| match k {
+                        KeyRef::Slot(s) => slots[usize::from(s)],
+                        KeyRef::Buffer(b) => buffers[usize::from(b)][0],
+                    });
+                }
+                JoinOut::Picture(mix::layer(
+                    params.mode,
+                    params.opacity,
+                    inputs,
+                    &alphas[..inputs.len()],
+                ))
+            }
+            JoinKind::Splitter => JoinOut::Channels(mix::split(inputs[0].logc4)),
+            JoinKind::Combiner => JoinOut::Picture(mix::combine(
+                inputs[0].logc4,
+                inputs[1].logc4,
+                inputs[2].logc4,
+            )),
+        }
+    }
+
     /// A Film node on one pixel (`docs/24` section 2.6): `out = in + m (film - in)` in LogC4, with `film` the
     /// picture the render made for the node at this pixel and `m` the node's mask times its Strength. Returns the
-    /// picture and `m` (the key output; it does not depend on Bypass). Without a picture for the pixel, or
+    /// picture, `m` (the key output; it does not depend on Bypass) and the graded value (the film picture before the
+    /// blend, the input when there is none). Without a picture for the pixel, or
     /// bypassed, the node passes its input through.
     fn run_film(
         film: FilmStep,
@@ -593,7 +712,7 @@ impl ColorChain {
         (key, need_mask): (Option<f64>, bool),
         at: PixelAt<'_>,
         id: u32,
-    ) -> ([f64; 3], f64) {
+    ) -> ([f64; 3], f64, [f64; 3]) {
         let mask = if need_mask {
             node.mask(key, v_in, linear, at)
         } else {
@@ -601,17 +720,17 @@ impl ColorChain {
         };
         let m = mask * film.strength;
         if film.bypass || m == 0.0 {
-            return (v_in.0, m);
+            return (v_in.0, m, v_in.0);
         }
         let made = at
             .and_then(|spot| spot.raster)
             .and_then(|r| r.planes.film(id, r.x, r.y));
         let Some(made) = made else {
-            return (v_in.0, m);
+            return (v_in.0, m, v_in.0);
         };
         let made = made.map(f64::from);
         if m == 1.0 {
-            return (made, m);
+            return (made, m, made);
         }
         (
             [
@@ -620,6 +739,7 @@ impl ColorChain {
                 v_in.0[2] + m * (made[2] - v_in.0[2]),
             ],
             m,
+            made,
         )
     }
 
@@ -655,9 +775,16 @@ impl ColorChain {
                 pictures += 1;
                 pictures - 1
             }));
-            declared.push(match film {
-                Some(reach) => StepKind::Film.declared(reach),
-                None => StepKind::Corrector.declared(0),
+            declared.push(match (&step.join, film) {
+                (Some(j), _) => match j.kind {
+                    JoinKind::Parallel => StepKind::Parallel,
+                    JoinKind::Layer => StepKind::Layer,
+                    JoinKind::Splitter => StepKind::Splitter,
+                    JoinKind::Combiner => StepKind::Combiner,
+                }
+                .declared(0),
+                (None, Some(reach)) => StepKind::Film.declared(reach),
+                (None, None) => StepKind::Corrector.declared(0),
             });
             if self.params.rasters.is_empty() {
                 continue;
