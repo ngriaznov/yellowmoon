@@ -4643,6 +4643,36 @@ fn assert_same<C: serde::Serialize, W: serde::Serialize>(what: &str, core: &C, w
     );
 }
 
+/// Like `assert_same` for an export estimate, which is computed by two separate calls. Two fields
+/// read the live disk at call time and can differ between the calls: `free_bytes` and `low_space`
+/// (derived from it). Those are left out of the comparison; `free_bytes` is checked on its own to
+/// be present on both sides and within 1 GiB, which still catches a unit change.
+fn assert_same_estimate<C: serde::Serialize, W: serde::Serialize>(core: &C, wire: &W) {
+    const LIVE: [&str; 2] = ["free_bytes", "low_space"];
+    let mut c = serde_json::to_value(core).expect("core json");
+    let mut w = serde_json::to_value(wire).expect("wire json");
+    let mut free = Vec::new();
+    for (side, value) in [("core", &mut c), ("wire", &mut w)] {
+        let object = value.as_object_mut().expect("estimate is an object");
+        for key in LIVE {
+            let removed = object.remove(key);
+            if key == "free_bytes" {
+                let bytes = removed
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or_else(|| panic!("{side} estimate has no free_bytes"));
+                free.push(bytes);
+            }
+        }
+    }
+    assert!(
+        (free[0] - free[1]).abs() < 1024.0 * 1024.0 * 1024.0,
+        "export_estimate free_bytes differ by more than 1 GiB: core {} wire {}",
+        free[0],
+        free[1]
+    );
+    assert_same("export_estimate", &c, &w);
+}
+
 #[test]
 fn every_look_library_and_format_of_the_core_crosses_the_bridge_by_the_same_word() {
     use ym_looks::library::{LookFormat as CoreFormat, LookLibrary as CoreLibrary};
@@ -4755,8 +4785,7 @@ fn core_types_convert_without_loss() {
     let job = jpeg_job(out.path());
     let core_job: ym_core::export_queue::ExportJob = convert(&job).expect("job");
     assert_same("export_job", &core_job, &job);
-    assert_same(
-        "export_estimate",
+    assert_same_estimate(
         &core.export_estimate(&core_job),
         &h.api.export_estimate(&job).expect("estimate"),
     );
