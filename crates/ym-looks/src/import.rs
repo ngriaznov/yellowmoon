@@ -194,12 +194,29 @@ pub enum ImportError {
     /// The manifest could not be read or written.
     #[error(transparent)]
     Manifest(#[from] ManifestError),
-    /// A file operation failed.
-    #[error("Could not read or write {}: {source}", .path.display())]
+    /// A file or folder of the source could not be read. What the system said is in the
+    /// [`source`](std::error::Error::source), for the log, not in the sentence.
+    #[error(
+        "Yellowmoon couldn't read {}. Check that it is still there and that you can open it, then import again.",
+        .path.display()
+    )]
     Io {
         /// The file or folder.
         path: PathBuf,
         /// What the system said.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The looks library could not be written. The rollback has already put everything back, so
+    /// the sentence can say that nothing was changed.
+    #[error(
+        "Yellowmoon couldn't save the looks to {}. Check that you can save there and that the disk has free space, then import again. Nothing was changed.",
+        .folder.display()
+    )]
+    Save {
+        /// The looks folder of the library.
+        folder: PathBuf,
+        /// What the system said (for the log, not the sentence).
         #[source]
         source: std::io::Error,
     },
@@ -630,12 +647,12 @@ pub fn import(
     let _lock = LibraryLock::acquire(&looks_dir, options.lock_timeout)?;
     let mut manifest = match Manifest::load(&looks_dir) {
         Ok(m) => m,
-        Err(ManifestError::Damaged { path: damaged, .. }) => {
+        Err(ManifestError::Damaged { .. }) => {
             let moved =
                 library
                     .damaged_manifest_quarantined()
-                    .map_err(|source| ImportError::Io {
-                        path: damaged.clone(),
+                    .map_err(|source| ImportError::Save {
+                        folder: looks_dir.clone(),
                         source,
                     })?;
             report.notes.push(format!(
@@ -745,13 +762,13 @@ pub fn import(
                 if repair && staged_dests.insert(dest.clone()) {
                     let existed_before = dest.exists();
                     if let Some(parent) = dest.parent() {
-                        std::fs::create_dir_all(parent).map_err(|source| ImportError::Io {
-                            path: parent.to_path_buf(),
+                        std::fs::create_dir_all(parent).map_err(|source| ImportError::Save {
+                            folder: looks_dir.clone(),
                             source,
                         })?;
                     }
-                    let temp = stage_write(&dest, &bytes).map_err(|source| ImportError::Io {
-                        path: dest.clone(),
+                    let temp = stage_write(&dest, &bytes).map_err(|source| ImportError::Save {
+                        folder: looks_dir.clone(),
                         source,
                     })?;
                     staged.push(Staged {
@@ -805,14 +822,14 @@ pub fn import(
             };
             if write && staged_dests.insert(dest.clone()) {
                 if let Some(parent) = dest.parent() {
-                    std::fs::create_dir_all(parent).map_err(|source| ImportError::Io {
-                        path: parent.to_path_buf(),
+                    std::fs::create_dir_all(parent).map_err(|source| ImportError::Save {
+                        folder: looks_dir.clone(),
                         source,
                     })?;
                 }
                 let existed_before = dest.exists();
-                let temp = stage_write(&dest, &bytes).map_err(|source| ImportError::Io {
-                    path: dest.clone(),
+                let temp = stage_write(&dest, &bytes).map_err(|source| ImportError::Save {
+                    folder: looks_dir.clone(),
                     source,
                 })?;
                 staged.push(Staged {
@@ -874,8 +891,8 @@ pub fn import(
                 }
             }
             discard(&staged);
-            return Err(ImportError::Io {
-                path: s.dest.clone(),
+            return Err(ImportError::Save {
+                folder: looks_dir.clone(),
                 source,
             });
         }
@@ -896,7 +913,13 @@ pub fn import(
                 let _ = std::fs::remove_file(&done.dest);
             }
         }
-        return Err(e.into());
+        return Err(match e {
+            ManifestError::Io { source, .. } => ImportError::Save {
+                folder: looks_dir.clone(),
+                source,
+            },
+            other => other.into(),
+        });
     }
     // The look files that a `.cube` has replaced, and the own LUTs that ARRI's package has
     // claimed (their ARRI copy is written), are not in the list any more.

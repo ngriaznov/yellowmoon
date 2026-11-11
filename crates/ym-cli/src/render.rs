@@ -928,8 +928,8 @@ fn handle_file(
                 input,
                 plan.known.as_ref(),
                 failure.kind,
-                &failure.message,
-                None,
+                &failure.cli_message,
+                failure.detail.as_deref(),
             );
         }
     }

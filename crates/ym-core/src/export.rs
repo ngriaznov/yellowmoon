@@ -70,9 +70,9 @@ use ym_export::naming::{self, NameFields, Placement};
 use ym_export::request::{BandRequest, PictureStages, write_export_bands, write_export_with};
 use ym_export::xmp::{XmpInfo, YmInfo};
 use ym_export::{
-    ColorSpace, DetailStat, DngInputs, ExportDestination, ExportFormat, ExportHooks, ExportOptions,
-    ExportRequest, FormatKind, IfExists, ImageRef, Metadata, PixelEncoding,
-    estimate_bytes_with_detail, write_export,
+    ColorSpace, DestinationProblem, DetailStat, DngInputs, ExportDestination, ExportFormat,
+    ExportHooks, ExportOptions, ExportRequest, FormatKind, IfExists, ImageRef, Metadata,
+    PixelEncoding, estimate_bytes_with_detail, write_export,
 };
 use ym_gpu::queue::{CancelToken, JobError};
 use ym_looks::library::LookId;
@@ -185,11 +185,38 @@ impl ExportError {
             Self::Render(RenderError::Gpu(_)) => "gpu",
             Self::Render(RenderError::Mask(_)) => "mask",
             Self::Render(_) => "render",
-            Self::Write(_) => "write",
+            Self::Write(e) => match e.destination_problem() {
+                Some(DestinationProblem::DiskFull) => "disk_full",
+                Some(_) => "destination",
+                None => "write",
+            },
             Self::Session(SessionError::Skipped(_)) => "unsupported",
             Self::Session(_) => "session",
             Self::Settings(_) | Self::Options(_) => "usage",
             Self::Decode(_) => "decode",
+        }
+    }
+
+    /// The sentence for `ym` (stderr and `--json` `error.message`). It is the app's sentence, except
+    /// for a failure of the destination, which names the folder by its full path and says which
+    /// option to use (`docs/26-hardening.md` section 2).
+    #[must_use]
+    pub fn cli_message(&self) -> String {
+        if let Self::Write(e) = self
+            && let (Some(problem), Some(folder)) = (e.destination_problem(), e.folder())
+        {
+            return problem.cli_message(folder);
+        }
+        self.to_string()
+    }
+
+    /// The operating system's own text of a write failure, for the log and `error.detail` of
+    /// `--json`. Never part of a sentence.
+    #[must_use]
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            Self::Write(e) => e.detail(),
+            _ => None,
         }
     }
 

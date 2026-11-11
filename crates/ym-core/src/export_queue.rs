@@ -153,10 +153,16 @@ pub struct FileDone {
 /// Why a photo of a job could not be exported.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileFailure {
-    /// A short kind (`look`, `render`, `write`, `decode`, `unsupported`; see `ExportError::kind`).
+    /// A short kind (`look`, `render`, `write`, `disk_full`, `destination`, `decode`, `unsupported`;
+    /// see `ExportError::kind`).
     pub kind: &'static str,
-    /// What went wrong, in plain words.
+    /// What went wrong, in plain words, for the app.
     pub message: String,
+    /// The same for `ym`: a failure of the destination names the folder by its full path and the
+    /// option to change (`ExportError::cli_message`).
+    pub cli_message: String,
+    /// The operating system's text of a write failure, for the log and `--json` (`error.detail`).
+    pub detail: Option<String>,
     /// The CLI exit code this failure stands for (3 for a look that is gone).
     pub exit_code: i32,
 }
@@ -992,7 +998,7 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
                 // The log can end up in a bug report (`docs/01`): the kind of failure and the job at
                 // warn level, the file name and the message (which names the folder) at debug.
                 tracing::warn!(job = job.id, kind = e.kind(), "export failed");
-                tracing::debug!(job = job.id, file = %predicted, error = %message, "export failure details");
+                tracing::debug!(job = job.id, file = %predicted, error = %message, detail = ?e.detail(), "export failure details");
                 sink.send(ExportEvent::File(FileDone {
                     job_id: job.id,
                     photo: snapshot.view.id,
@@ -1002,6 +1008,8 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
                     outcome: Err(FileFailure {
                         kind: e.kind(),
                         message: message.clone(),
+                        cli_message: e.cli_message(),
+                        detail: e.detail(),
                         exit_code: e.exit_code(),
                     }),
                 }));

@@ -94,15 +94,11 @@ fn failure_text(req: &ExportRequest<'_>, limit: usize) -> Option<String> {
     }
 }
 
+const DISK_FULL: &str = "The disk is full, so the export stopped. Free some space, then export the photos that are left.";
+
 fn assert_advises_freeing_space(text: &str, what: &str) {
-    assert!(
-        text.contains("free space"),
-        "{what}: the message gives no next step: {text}"
-    );
-    assert!(
-        text.contains("No space left on device"),
-        "{what}: the message hides the cause: {text}"
-    );
+    assert_eq!(text, DISK_FULL, "{what}");
+    assert!(!text.contains("os error"), "{what}: {text}");
 }
 
 #[test]
@@ -205,7 +201,6 @@ fn a_dng_failure_says_dng_and_names_the_next_step() {
             !text.contains("TIFF"),
             "a DNG failure must not talk about a TIFF: {text}"
         );
-        assert!(text.contains("DNG"), "{text}");
     }
 }
 
@@ -217,4 +212,51 @@ fn other_encoder_failures_keep_their_own_wording() {
     let text = e.to_string();
     assert!(text.starts_with("Encoding the PNG failed"), "{text}");
     assert!(!text.contains("free space"), "{text}");
+}
+
+/// An encoder that fails for a reason other than the destination says which format it was writing,
+/// without the operating system's text.
+#[test]
+fn a_write_failure_that_is_not_the_destination_names_the_format() {
+    for (format, name) in [("PNG", "PNG"), ("DNG", "DNG")] {
+        let e = ExportError::write(format, io::Error::from(io::ErrorKind::InvalidData));
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "Couldn't write the {name}. Check that the folder is still there and that you can save to it."
+            )
+        );
+    }
+}
+
+/// Every format reports a disk that fills up as `DiskFull`, with the operating system's text kept
+/// apart in `detail`.
+#[test]
+fn a_full_disk_is_classified_in_every_format() {
+    let meta = common::metadata();
+    let image = common::display_scene(96, 64);
+    for format in [
+        ExportFormat::Png {
+            bits: BitDepth::Eight,
+        },
+        ExportFormat::Tiff {
+            bits: BitDepth::Sixteen,
+            compression: TiffCompression::None,
+        },
+        ExportFormat::Jpeg {
+            quality: JpegQuality::default(),
+        },
+    ] {
+        let req = linear_request(&image, 96, 64, format, &meta);
+        let mut sink = FullDisk::new(0);
+        let err = encode_to_writer(&req, &mut sink, &ExportHooks::none()).unwrap_err();
+        assert_eq!(
+            err.destination_problem(),
+            Some(DestinationProblem::DiskFull)
+        );
+        assert!(
+            err.detail().is_some_and(|d| d.contains("No space left")),
+            "{err:?}"
+        );
+    }
 }

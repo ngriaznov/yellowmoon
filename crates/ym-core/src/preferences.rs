@@ -248,6 +248,12 @@ pub fn own_instructions(text: &str) -> String {
     }
 }
 
+/// The folder a preferences file is in, for the sentence (the file's own name means nothing to the
+/// person).
+fn folder_of(path: &std::path::Path) -> String {
+    path.parent().unwrap_or(path).display().to_string()
+}
+
 /// Why preferences could not be changed or saved. The text is plain words with a next step.
 #[derive(Debug, thiserror::Error)]
 pub enum PreferencesError {
@@ -256,8 +262,8 @@ pub enum PreferencesError {
     NoHome(#[from] LibraryError),
     /// The file could not be written.
     #[error(
-        "Couldn't save your preferences to {}: {source}. Check that the folder is writable and has free space.",
-        path.display()
+        "Yellowmoon couldn't save your preferences. Check that the disk has free space and that you can save to {}.",
+        folder_of(path)
     )]
     Write {
         /// The file.
@@ -1348,10 +1354,10 @@ mod tests {
             })
             .expect_err("cannot write");
         assert!(matches!(err, PreferencesError::Write { .. }), "{err}");
-        assert!(
-            err.to_string()
-                .contains("Check that the folder is writable")
-        );
+        assert!(err.to_string().starts_with(
+            "Yellowmoon couldn't save your preferences. Check that the disk has free space"
+        ));
+        assert!(!err.to_string().contains("os error"), "{err}");
         assert!(!store.get().remove_location_from_exports);
     }
 }

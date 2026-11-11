@@ -1549,3 +1549,70 @@ fn a_zip_with_two_entries_of_one_path_imports_both_files_from_their_own_entries(
     wanted.sort();
     assert_eq!(stored, wanted);
 }
+
+#[test]
+fn a_library_that_cannot_be_written_says_what_to_do_and_changes_nothing() {
+    let kind = Kind::ALL.into_iter().find(|k| !k.is_display()).unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let zip = write_package_zip(work.path(), kind, 1);
+    let db = small_db(1);
+    let recognition = inspect(&zip, &db, None, &mut no_progress()).unwrap();
+
+    // A first import learns where the file goes.
+    let mut probe = open_library(&work.path().join("probe"));
+    let report = import(
+        &mut probe,
+        &db,
+        &zip,
+        &recognition,
+        &options(),
+        &mut no_progress(),
+    )
+    .unwrap();
+    let file = report.added[0].file.clone();
+
+    // A folder where that file should go: it can be staged, but not moved into place.
+    let mut library = open_library(&work.path().join("app"));
+    let looks_dir = library.looks_dir();
+    fs::create_dir_all(looks_dir.join(&file)).unwrap();
+    let before = tree(&looks_dir);
+    let err = import(
+        &mut library,
+        &db,
+        &zip,
+        &recognition,
+        &options(),
+        &mut no_progress(),
+    )
+    .unwrap_err();
+    assert!(matches!(err, ImportError::Save { .. }), "{err}");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Yellowmoon couldn't save the looks to {}. Check that you can save there and that the disk has free space, then import again. Nothing was changed.",
+            looks_dir.display()
+        )
+    );
+    assert!(!err.to_string().contains("os error"), "{err}");
+    // (The lock file is the one thing a failed import leaves.)
+    let mut after = tree(&looks_dir);
+    after.retain(|p| p != ".lock");
+    assert_eq!(after, before, "nothing was changed");
+    assert!(
+        leftovers(&looks_dir).is_empty(),
+        "{:?}",
+        leftovers(&looks_dir)
+    );
+}
+
+#[test]
+fn an_unreadable_source_says_what_to_do() {
+    let err = ImportError::Io {
+        path: "/Volumes/Looks/pack".into(),
+        source: std::io::Error::from_raw_os_error(13),
+    };
+    assert_eq!(
+        err.to_string(),
+        "Yellowmoon couldn't read /Volumes/Looks/pack. Check that it is still there and that you can open it, then import again."
+    );
+}
