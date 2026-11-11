@@ -615,6 +615,20 @@ describe("export", () => {
     await api.openPaths(ARW);
   });
 
+  it("says low_space exactly when the free space is under 1.35 times the estimate (mockFreeBytes)", async () => {
+    // Three photos at JPEG 92: 74.7 MB; 1.35 times is 100.845 MB.
+    const bytes = Math.round(24.9 * 3 * 1e6);
+    const at = async (free: number) => {
+      api.reset({ picked: [2, 3, 4], current: 3, freeBytes: free });
+      await api.openPaths(ARW);
+      return api.exportEstimate(job("picked"));
+    };
+    const tight = await at(100_000_000);
+    expect(tight).toMatchObject({ bytes, free_bytes: 100_000_000, folder: "Lisbon export", low_space: true });
+    expect((await at(100_900_000)).low_space).toBe(false);
+    expect((await at(500_000_000_000)).low_space).toBe(false);
+  });
+
   it("estimates size and time with the arithmetic of the export mockup", async () => {
     // JPEG at 92: 6 + 42 × 0.45 = 24.9 MB a photo, three picked photos.
     const jpeg = await api.exportEstimate(job("picked"));
@@ -1300,6 +1314,7 @@ describe("optionsFromLocation", () => {
       holdAt: 5.4,
     });
     expect(optionsFromLocation("?mockPhotos=500")).toEqual({ photoCount: 500 });
+    expect(optionsFromLocation("?mockFreeBytes=200000000")).toEqual({ freeBytes: 200_000_000 });
     expect(optionsFromLocation("?mockUnreadable=Desktop")).toEqual({ unreadable: "Desktop" });
     expect(optionsFromLocation("?mockLibraries=all")).toEqual({ allLibraries: true });
     expect(optionsFromLocation("?mockLibraries=none")).toEqual({});
