@@ -344,9 +344,9 @@ Tasks (details, dependencies and *Done when* in `docs/25` §10): **X-01** spec (
 
 ---
 
-## S · Face skin retouching (round 1 on branch `skin-retouch`, from 2026-11-11)
+## S · Face Refinement, face skin retouching (branch `skin-retouch`, from 2026-11-11)
 
-Blemish removal, dark circles and even skin with a Texture control, on masks per face, from the owner's brief of 2026-11-11. The spec is `docs/27-skin-retouch.md`. Round 1, the library `ym-retouch` on the CPU with mock models: **S-01** spec · **S-02** crate, types, traits, mocks, masks · **S-03** blemish removal · **S-04** dark circles and even skin · **S-05** pipeline, tests, benchmark. Round 2 (models, the node, interface, GPU) waits on `docs/STATUS.md` question 45.
+The Face Refinement node: blemish removal, dark circles, even skin with a Texture control, skin grading (contrast, shadow desaturation, shine removal) and teeth whitening, per face, from the owner's brief of 2026-11-11. The spec is `docs/27-skin-retouch.md`. Round 1, the library `ym-retouch` on the CPU with mock models: **S-01** spec · **S-02** crate, types, traits, mocks, masks · **S-03** blemish removal · **S-04** dark circles and even skin · **S-05** pipeline, tests, benchmark. Round 2 (models, the node, interface, GPU) waits on `docs/STATUS.md` question 45.
 
 ---
 
