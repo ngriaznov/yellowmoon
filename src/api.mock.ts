@@ -159,7 +159,7 @@ import {
   outputPatch,
   withoutLook,
 } from "./state/settingsGraph";
-import type { CorrectorItem, FilmItem, InputItem, MixerItem } from "./state/settingsGraph";
+import type { CorrectorItem, FaceRefinementItem, FilmItem, InputItem, MixerItem } from "./state/settingsGraph";
 import { bytesToUrl } from "./state/photo";
 
 // ---------------------------------------------------------------------------
@@ -782,6 +782,28 @@ function clampFilm(s: FilmItem): FilmItem {
   };
 }
 
+/** A Face Refinement node in its ranges (`docs/27`): the name trimmed and cut, every amount clamped, at most 32 faces. */
+function clampFaceRefinement(s: FaceRefinementItem): FaceRefinementItem {
+  const name = s.name.trim().slice(0, 32);
+  const face = (f: FaceRefinementItem["all"]): FaceRefinementItem["all"] => ({
+    blemish: clamp(f.blemish, 0, 100),
+    dark_circles: clamp(f.dark_circles, 0, 100),
+    even_skin: clamp(f.even_skin, 0, 100),
+    texture: clamp(f.texture, -100, 100),
+    skin_contrast: clamp(f.skin_contrast, -100, 100),
+    shadow_desaturation: clamp(f.shadow_desaturation, 0, 100),
+    shine_removal: clamp(f.shine_removal, 0, 100),
+    teeth_whitening: clamp(f.teeth_whitening, 0, 100),
+  });
+  return {
+    ...s,
+    name: name === "" ? "Face Refinement" : name,
+    all: face(s.all),
+    faces: s.faces.map(face),
+    protect: { ...s.protect, feather: clamp(s.protect.feather, 0, 1), grow: clamp(s.protect.grow, -1, 1), refine: clamp(s.protect.refine, 0, 1) },
+  };
+}
+
 /** A node of `docs/25` in its ranges: the name trimmed and cut (an empty one reads as the kind's name), a Layer's opacity 0 to 1. */
 function clampMixer(s: MixerItem): MixerItem {
   const name = s.name.trim().slice(0, 32);
@@ -795,6 +817,7 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
     if (item.kind === "input") return clampInput(item);
     if (item.kind === "output") return { ...item, look_intensity: clamp(item.look_intensity, 0, 100), output_sharpening: clamp(item.output_sharpening, 0, 200) };
     if (item.kind === "film") return clampFilm(item);
+    if (item.kind === "face_refinement") return clampFaceRefinement(item);
     if (item.kind === "corrector") return clampCorrector(item);
     return clampMixer(item);
   });

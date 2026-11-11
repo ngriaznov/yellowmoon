@@ -11355,6 +11355,7 @@ dependencies = [
  "ym-noise",
  "ym-profiles",
  "ym-raw",
+ "ym-retouch",
  "zune-jpeg",
 ]
 

@@ -1295,6 +1295,73 @@ fn a_settings_file_with_a_mixer_is_read_and_the_photo_renders() {
     );
 }
 
+/// A settings file with a Face Refinement node is read, checked and rendered (`docs/27` task S-11a): the node is accepted with its
+/// per-face amounts and protection, the photo is written, and the record carries the node as the core writes it (the defaults filled
+/// in). Until S-11b the node passes its picture through (`ym-core`'s `render_nodes` tests prove the picture is the one without it).
+#[test]
+fn a_settings_file_with_a_face_refinement_node_is_read_and_the_photo_renders() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let file = sb.root().join("face.json");
+    std::fs::write(
+        &file,
+        r#"{ "nodes": {
+            "items": [ { "id": 2, "kind": "face_refinement", "same_for_all": false,
+                "faces": [ { "blemish": 45 }, { "teeth_whitening": 40 } ],
+                "protect": { "strokes": [ { "size": 0.02, "points": [[0.4, 0.3], [0.41, 0.31]] } ] } } ],
+            "links": [
+                { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+                { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+                { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } }"#,
+    )
+    .expect("write");
+    let out = sb
+        .ym()
+        .args(["render", "--json", "--settings"])
+        .arg(&file)
+        .arg(&arw)
+        .assert()
+        .success();
+    let objects = json_lines(&out.get_output().stdout);
+    assert_eq!(objects.len(), 1);
+    let o = &objects[0];
+    assert_eq!(o["status"], "ok");
+    let path = o["output"].as_str().expect("output");
+    assert!(std::path::Path::new(path).exists(), "the photo was written");
+    let items = o["settings"]["nodes"]["items"].as_array().expect("items");
+    let node = items
+        .iter()
+        .find(|i| i["kind"] == "face_refinement")
+        .expect("the Face Refinement node is in the record");
+    assert_eq!(node["name"], "Face Refinement");
+    assert_eq!(node["same_for_all"], false);
+    assert_eq!(node["all"]["blemish"], 30.0);
+    assert_eq!(node["faces"][0]["blemish"], 45.0);
+    assert_eq!(node["faces"][0]["even_skin"], 25.0);
+    assert_eq!(node["faces"][1]["teeth_whitening"], 40.0);
+    assert_eq!(node["protect"]["strokes"][0]["size"], 0.02);
+    // A field of another kind and a misspelt amount are refused before any photo is opened.
+    for (content, needle) in [
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "face_refinement", "grade": {} } ] } }"#,
+            "A face refinement node has no field called “grade”.",
+        ),
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "face_refinement", "all": { "blur": 3 } } ] } }"#,
+            "blur",
+        ),
+    ] {
+        std::fs::write(&file, content).expect("write");
+        sb.ym()
+            .args(["render", "--settings"])
+            .arg(&file)
+            .arg(&arw)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(needle));
+    }
+}
+
 #[test]
 fn exit_code_2_for_usage_errors() {
     let sb = Sandbox::new();

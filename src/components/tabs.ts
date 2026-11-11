@@ -77,6 +77,8 @@ export const NODE_TABS: Readonly<Record<PanelKind, readonly TabId[]>> = {
   input: ["raw", "lens", "light", "color", "detail"],
   corrector: ["light", "color", "curve", "mask"],
   film: ["film", "print", "halation", "grain", "mask"],
+  // The Face tab comes with the node's panel (`docs/27` S-11c); until then the node has its Mask tab only.
+  face_refinement: ["mask"],
   output: ["look", "detail"],
   parallel: ["inputs"],
   layer: ["blend"],
@@ -94,6 +96,8 @@ export const FIRST_NODE_TAB: Readonly<Record<PanelKind, TabId>> = {
   layer: "blend",
   splitter: "channels",
   combiner: "channels",
+  // Until the node's own Face tab (`docs/27` S-11c) the Mask tab is its first.
+  face_refinement: "mask",
 };
 
 /**

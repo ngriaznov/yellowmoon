@@ -74,22 +74,26 @@ use ym_profiles::profile::Profile;
 use crate::auto::{AutoEstimates, AutoSummary, MainAuto};
 use crate::session::PhotoId;
 
+mod face;
 mod film;
 mod graph;
 mod masks;
 mod mixers;
 mod patch;
 
+pub use face::{
+    FACE_AMOUNT_RANGE, FACE_BIPOLAR_RANGE, FaceRefinementNode, FaceSettings, MAX_FACES,
+};
 pub use film::{
     DEFAULT_STOCK, FILM_EXPOSURE_RANGE_EV, FilmNode, FilmStockSettings, GRAIN_AMOUNT_RANGE,
     GrainSettings, HALATION_AMOUNT_RANGE, HalationSettings, LIGHTS_RANGE, PRINT_EXPOSURE_RANGE_EV,
     PrintLights, PrintSettings, SIZE_RANGE, STRENGTH_RANGE,
 };
 pub use graph::{
-    CorrectorNode, DEFAULT_NAME, GraphError, INPUT_POS, InputNode, MAIN_ID, MAIN_NAME,
-    MAX_CORRECTORS, MAX_NAME_CHARS, NodeGrade, NodeGraph, NodeId, NodeKind, NodeLink, NodePos,
-    NodeRef, NodeTrim, OUTPUT_POS, OutputNode, POS_RANGE, Port, PortType, TRIM_EXPOSURE_RANGE_EV,
-    TRIM_RANGE, ports_in, ports_out,
+    CorrectorNode, DEFAULT_FACE_REFINEMENT_NAME, DEFAULT_NAME, GraphError, INPUT_POS, InputNode,
+    MAIN_ID, MAIN_NAME, MAX_CORRECTORS, MAX_NAME_CHARS, NodeGrade, NodeGraph, NodeId, NodeKind,
+    NodeLink, NodePos, NodeRef, NodeTrim, OUTPUT_POS, OutputNode, POS_RANGE, Port, PortType,
+    TRIM_EXPOSURE_RANGE_EV, TRIM_RANGE, ports_in, ports_out,
 };
 pub use masks::{
     BackgroundMask, BrightnessRangeMask, BrushMask, BrushStroke, ColorRangeMask,
@@ -106,8 +110,8 @@ pub use mixers::{
     SplitterNode,
 };
 pub use patch::{
-    COPY_LEAVES_OUT, FilmStockPatch, GradePatch, GrainPatch, HalationPatch, LightsPatch, NodePatch,
-    PatchReport, PrintPatch, SettingsPatch, TrimPatch,
+    COPY_LEAVES_OUT, FaceSettingsPatch, FilmStockPatch, GradePatch, GrainPatch, HalationPatch,
+    LightsPatch, NodePatch, PatchReport, PrintPatch, ProtectPatch, SettingsPatch, TrimPatch,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -367,6 +371,15 @@ pub enum SettingsField {
     Grain,
     /// A Film node's `strength`.
     Strength,
+    /// A Face Refinement node's `same_for_all`.
+    SameForAll,
+    /// A Face Refinement node's `all` (the settings every face takes while `same_for_all` is on).
+    #[serde(rename = "all")]
+    AllFaces,
+    /// A Face Refinement node's `faces` (the settings per face).
+    Faces,
+    /// A Face Refinement node's `protect` (the protection plane).
+    Protect,
     /// A Layer's blend `mode`.
     Mode,
     /// A Layer's `opacity`.
@@ -376,7 +389,7 @@ pub enum SettingsField {
 impl SettingsField {
     /// Every field, in the order of the settings table (the Output's and the Input's, then the grade's,
     /// then the corrector's own).
-    pub const ALL: [SettingsField; 36] = [
+    pub const ALL: [SettingsField; 40] = [
         SettingsField::Look,
         SettingsField::LookIntensity,
         SettingsField::Exposure,
@@ -411,6 +424,10 @@ impl SettingsField {
         SettingsField::Halation,
         SettingsField::Grain,
         SettingsField::Strength,
+        SettingsField::SameForAll,
+        SettingsField::AllFaces,
+        SettingsField::Faces,
+        SettingsField::Protect,
         SettingsField::Mode,
         SettingsField::Opacity,
     ];
@@ -453,6 +470,10 @@ impl SettingsField {
             Self::Halation => "halation",
             Self::Grain => "grain",
             Self::Strength => "strength",
+            Self::SameForAll => "same_for_all",
+            Self::AllFaces => "all",
+            Self::Faces => "faces",
+            Self::Protect => "protect",
             Self::Mode => "mode",
             Self::Opacity => "opacity",
         }
@@ -529,6 +550,17 @@ impl SettingsField {
                     | Self::Grain
                     | Self::Strength
             ),
+            NodeKind::FaceRefinement => matches!(
+                self,
+                Self::Name
+                    | Self::Bypass
+                    | Self::Pos
+                    | Self::Masks
+                    | Self::SameForAll
+                    | Self::AllFaces
+                    | Self::Faces
+                    | Self::Protect
+            ),
             NodeKind::Parallel => matches!(self, Self::Name | Self::Bypass | Self::Pos),
             NodeKind::Layer => matches!(
                 self,
@@ -563,6 +595,10 @@ impl SettingsField {
             | Self::Halation
             | Self::Grain
             | Self::Strength
+            | Self::SameForAll
+            | Self::AllFaces
+            | Self::Faces
+            | Self::Protect
             | Self::Mode
             | Self::Opacity
             | Self::Contrast
@@ -2242,7 +2278,17 @@ mod tests {
         assert_eq!(F::Contrast.group(), Some(StageGroup::Grade));
         assert_eq!(F::Look.group(), Some(StageGroup::Grade));
         // A corrector's trim, bypass and masks are the nodes' group; its name and place re-run nothing.
-        for f in [F::Trim, F::Bypass, F::Masks, F::Mode, F::Opacity] {
+        for f in [
+            F::Trim,
+            F::Bypass,
+            F::Masks,
+            F::Mode,
+            F::Opacity,
+            F::SameForAll,
+            F::AllFaces,
+            F::Faces,
+            F::Protect,
+        ] {
             assert_eq!(f.group(), Some(StageGroup::Grade), "{f:?}");
         }
         assert_eq!(F::Name.group(), None);
@@ -2258,6 +2304,6 @@ mod tests {
                 format!("\"{}\"", f.name())
             );
         }
-        assert_eq!(SettingsField::ALL.len(), 36);
+        assert_eq!(SettingsField::ALL.len(), 40);
     }
 }

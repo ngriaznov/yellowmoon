@@ -18,6 +18,7 @@ use serde_json::{Map, Value};
 use ym_color::wb::LightSource;
 use ym_looks::library::LookId;
 
+use super::face::{FaceRefinementNode, MAX_FACES};
 use super::film::{
     FILM_EXPOSURE_RANGE_EV, FilmNode, GRAIN_AMOUNT_RANGE, HALATION_AMOUNT_RANGE, LIGHTS_RANGE,
     PRINT_EXPOSURE_RANGE_EV, SIZE_RANGE, STRENGTH_RANGE,
@@ -51,6 +52,8 @@ pub const MAIN_NAME: &str = "Main";
 pub const DEFAULT_NAME: &str = "Corrector";
 /// The name a new Film node has.
 pub const DEFAULT_FILM_NAME: &str = "Film";
+/// The name a new Face Refinement node has.
+pub const DEFAULT_FACE_REFINEMENT_NAME: &str = "Face Refinement";
 
 // ---------------------------------------------------------------------------------------------
 // Rules
@@ -137,6 +140,9 @@ pub enum GraphError {
     /// More masks in a node than the limit.
     #[error("A node can have up to 64 masks.")]
     TooManyMasks,
+    /// More per-face settings in a Face Refinement node than the limit.
+    #[error("A Face Refinement node can hold settings for up to 32 faces.")]
+    TooManyFaces,
     /// More brush points than the limit.
     #[error("A brush mask can have up to 100,000 points.")]
     TooManyBrushPoints,
@@ -182,7 +188,8 @@ impl NodeId {
     pub const MAIN: NodeId = NodeId::Corrector(MAIN_ID);
 
     /// The kind a node with this id is **when the graph is not at hand**: a numbered node reads as a corrector.
-    /// A Film node has a number too, and [`NodeGraph::kind_of`] tells the two apart.
+    /// A Film node, a Face Refinement node and the nodes of `docs/25` have a number too, and [`NodeGraph::kind_of`]
+    /// tells them apart.
     #[must_use]
     pub fn kind(self) -> NodeKind {
         match self {
@@ -289,6 +296,8 @@ pub enum NodeKind {
     Corrector,
     /// A Film node (`docs/24`).
     Film,
+    /// A Face Refinement node (`docs/27`).
+    FaceRefinement,
     /// A Parallel mixer (`docs/25`).
     Parallel,
     /// A Layer mixer (`docs/25`).
@@ -302,11 +311,12 @@ pub enum NodeKind {
 impl NodeKind {
     /// Every kind. The scheduler's footprint list (`pipeline::schedule::step_kind`) is an exhaustive `match` over the same
     /// kinds, and the random-graph test draws from this list (`docs/23` section 5.12).
-    pub const ALL: [NodeKind; 8] = [
+    pub const ALL: [NodeKind; 9] = [
         NodeKind::Input,
         NodeKind::Output,
         NodeKind::Corrector,
         NodeKind::Film,
+        NodeKind::FaceRefinement,
         NodeKind::Parallel,
         NodeKind::Layer,
         NodeKind::Splitter,
@@ -322,6 +332,7 @@ impl NodeKind {
             Self::Output => "an output",
             Self::Corrector => "a corrector",
             Self::Film => "a film node",
+            Self::FaceRefinement => "a face refinement node",
             Self::Parallel => "a parallel mixer",
             Self::Layer => "a layer mixer",
             Self::Splitter => "a splitter",
@@ -337,6 +348,7 @@ impl NodeKind {
             Self::Output => "An output",
             Self::Corrector => "A corrector",
             Self::Film => "A film node",
+            Self::FaceRefinement => "A face refinement node",
             Self::Parallel => "A parallel mixer",
             Self::Layer => "A layer mixer",
             Self::Splitter => "A splitter",
@@ -352,6 +364,7 @@ impl NodeKind {
             Self::Output => "output",
             Self::Corrector => "corrector",
             Self::Film => "film",
+            Self::FaceRefinement => "face_refinement",
             Self::Parallel => "parallel",
             Self::Layer => "layer",
             Self::Splitter => "splitter",
@@ -364,15 +377,17 @@ impl NodeKind {
     pub fn is_mixer_family(self) -> bool {
         match self {
             Self::Parallel | Self::Layer | Self::Splitter | Self::Combiner => true,
-            Self::Input | Self::Output | Self::Corrector | Self::Film => false,
+            Self::Input | Self::Output | Self::Corrector | Self::Film | Self::FaceRefinement => {
+                false
+            }
         }
     }
 
-    /// Whether this is a numbered kind other than a corrector (a Film node or one of `docs/25`'s four): the kinds a
-    /// patch names to add such a node.
+    /// Whether this is a numbered kind other than a corrector (a Film node, a Face Refinement node or one of
+    /// `docs/25`'s four): the kinds a patch names to add such a node.
     #[must_use]
     pub fn is_numbered_extra(self) -> bool {
-        self == Self::Film || self.is_mixer_family()
+        matches!(self, Self::Film | Self::FaceRefinement) || self.is_mixer_family()
     }
 
     /// Whether a node of this kind is a mixer proper (Parallel or Layer): numbered picture inputs, one output.
@@ -392,6 +407,7 @@ impl NodeKind {
             "output" => Ok(Self::Output),
             "corrector" => Ok(Self::Corrector),
             "film" => Ok(Self::Film),
+            "face_refinement" => Ok(Self::FaceRefinement),
             "parallel" => Ok(Self::Parallel),
             "layer" => Ok(Self::Layer),
             "splitter" => Ok(Self::Splitter),
@@ -602,7 +618,9 @@ pub fn ports_out(kind: NodeKind) -> &'static [Port] {
         NodeKind::Input | NodeKind::Parallel | NodeKind::Layer | NodeKind::Combiner => {
             &[Port::Picture]
         }
-        NodeKind::Corrector | NodeKind::Film => &[Port::Picture, Port::Key],
+        NodeKind::Corrector | NodeKind::Film | NodeKind::FaceRefinement => {
+            &[Port::Picture, Port::Key]
+        }
         NodeKind::Splitter => &[Port::Red, Port::Green, Port::Blue],
         NodeKind::Output => &[],
     }
@@ -613,7 +631,9 @@ pub fn ports_out(kind: NodeKind) -> &'static [Port] {
 pub fn ports_in(kind: NodeKind) -> &'static [Port] {
     match kind {
         NodeKind::Input => &[],
-        NodeKind::Corrector | NodeKind::Film => &[Port::Picture, Port::Key],
+        NodeKind::Corrector | NodeKind::Film | NodeKind::FaceRefinement => {
+            &[Port::Picture, Port::Key]
+        }
         NodeKind::Output | NodeKind::Splitter => &[Port::Picture],
         NodeKind::Parallel | NodeKind::Layer => mixer_inputs(),
         NodeKind::Combiner => &[Port::Red, Port::Green, Port::Blue],
@@ -891,6 +911,8 @@ pub struct NodeGraph {
     pub extra: BTreeMap<u32, CorrectorNode>,
     /// The Film nodes by id. They share the number space of the correctors (an id is one or the other).
     pub films: BTreeMap<u32, FilmNode>,
+    /// The Face Refinement nodes by id (`docs/27`). They share the number space of the correctors and the Film nodes.
+    pub faces: BTreeMap<u32, FaceRefinementNode>,
     /// The nodes of `docs/25` (Parallel, Layer, Splitter, Combiner) by id. They share the number space of the
     /// correctors and the Film nodes, and count toward the 64.
     pub mixers: BTreeMap<u32, MixerNode>,
@@ -910,6 +932,7 @@ impl NodeGraph {
             main: CorrectorNode::main(),
             extra: BTreeMap::new(),
             films: BTreeMap::new(),
+            faces: BTreeMap::new(),
             mixers: BTreeMap::new(),
             output: OutputNode::with_look(look),
             links: Self::default_links(),
@@ -966,6 +989,17 @@ impl NodeGraph {
         self.films.get_mut(&id)
     }
 
+    /// The Face Refinement node with this id.
+    #[must_use]
+    pub fn face_refinement(&self, id: u32) -> Option<&FaceRefinementNode> {
+        self.faces.get(&id)
+    }
+
+    /// The Face Refinement node with this id, to change.
+    pub fn face_refinement_mut(&mut self, id: u32) -> Option<&mut FaceRefinementNode> {
+        self.faces.get_mut(&id)
+    }
+
     /// The node of `docs/25` with this id.
     #[must_use]
     pub fn mixer(&self, id: u32) -> Option<&MixerNode> {
@@ -977,13 +1011,14 @@ impl NodeGraph {
         self.mixers.get_mut(&id)
     }
 
-    /// The mask rows of a numbered node, whatever its kind (a corrector's or a Film node's). The nodes of `docs/25`
-    /// have none.
+    /// The mask rows of a numbered node, whatever its kind (a corrector's, a Film node's or a Face Refinement node's).
+    /// The nodes of `docs/25` have none.
     #[must_use]
     pub fn masks_of(&self, id: u32) -> Option<&MaskSettings> {
         self.corrector(id)
             .map(|c| &c.masks)
             .or_else(|| self.films.get(&id).map(|f| &f.masks))
+            .or_else(|| self.faces.get(&id).map(|f| &f.masks))
     }
 
     /// The mask rows of a numbered node, to change.
@@ -994,7 +1029,10 @@ impl NodeGraph {
         if self.extra.contains_key(&id) {
             return self.extra.get_mut(&id).map(|c| &mut c.masks);
         }
-        self.films.get_mut(&id).map(|f| &mut f.masks)
+        if self.films.contains_key(&id) {
+            return self.films.get_mut(&id).map(|f| &mut f.masks);
+        }
+        self.faces.get_mut(&id).map(|f| &mut f.masks)
     }
 
     /// The masks of every numbered node, by id.
@@ -1002,12 +1040,14 @@ impl NodeGraph {
         self.correctors()
             .map(|(id, c)| (id, &c.masks))
             .chain(self.films.iter().map(|(id, f)| (*id, &f.masks)))
+            .chain(self.faces.iter().map(|(id, f)| (*id, &f.masks)))
     }
 
-    /// The number of numbered nodes: the correctors (Main included), the Film nodes and the nodes of `docs/25`.
+    /// The number of numbered nodes: the correctors (Main included), the Film nodes, the Face Refinement nodes and the
+    /// nodes of `docs/25`.
     #[must_use]
     pub fn node_count(&self) -> usize {
-        self.corrector_count() + self.films.len() + self.mixers.len()
+        self.corrector_count() + self.films.len() + self.faces.len() + self.mixers.len()
     }
 
     /// The numbered nodes with their kinds, by id.
@@ -1017,6 +1057,7 @@ impl NodeGraph {
             .correctors()
             .map(|(id, _)| (id, NodeKind::Corrector))
             .chain(self.films.keys().map(|id| (*id, NodeKind::Film)))
+            .chain(self.faces.keys().map(|id| (*id, NodeKind::FaceRefinement)))
             .chain(self.mixers.iter().map(|(id, m)| (*id, m.kind())))
             .collect();
         v.sort_by_key(|(id, _)| *id);
@@ -1030,6 +1071,7 @@ impl NodeGraph {
             NodeId::Input => Some(NodeKind::Input),
             NodeId::Output => Some(NodeKind::Output),
             NodeId::Corrector(n) if self.films.contains_key(&n) => Some(NodeKind::Film),
+            NodeId::Corrector(n) if self.faces.contains_key(&n) => Some(NodeKind::FaceRefinement),
             NodeId::Corrector(n) if self.mixers.contains_key(&n) => {
                 self.mixers.get(&n).map(MixerNode::kind)
             }
@@ -1082,6 +1124,7 @@ impl NodeGraph {
                 .corrector(n)
                 .map(|c| c.pos)
                 .or_else(|| self.film(n).map(|f| f.pos))
+                .or_else(|| self.face_refinement(n).map(|f| f.pos))
                 .or_else(|| self.mixer(n).map(MixerNode::pos)),
         }
     }
@@ -1096,6 +1139,9 @@ impl NodeGraph {
         }
         if self.films.contains_key(&id) {
             return self.films.get_mut(&id).map(|f| &mut f.pos);
+        }
+        if self.faces.contains_key(&id) {
+            return self.faces.get_mut(&id).map(|f| &mut f.pos);
         }
         self.mixers.get_mut(&id).map(MixerNode::pos_mut)
     }
@@ -1273,6 +1319,11 @@ impl Serialize for NodeGraph {
                         items.push(item(node, kind, f)?);
                     }
                 }
+                NodeKind::FaceRefinement => {
+                    if let Some(f) = self.face_refinement(id) {
+                        items.push(item(node, kind, f)?);
+                    }
+                }
                 NodeKind::Corrector => {
                     if let Some(c) = self.corrector(id) {
                         items.push(item(node, kind, c)?);
@@ -1327,6 +1378,15 @@ pub(crate) fn node_fields(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::Corrector => &["name", "bypass", "trim", "grade", "masks"],
         NodeKind::Film => &[
             "name", "bypass", "film", "print", "halation", "grain", "strength", "masks",
+        ],
+        NodeKind::FaceRefinement => &[
+            "name",
+            "bypass",
+            "same_for_all",
+            "all",
+            "faces",
+            "protect",
+            "masks",
         ],
         NodeKind::Parallel => &["name", "bypass"],
         NodeKind::Layer => &["name", "bypass", "mode", "opacity"],
@@ -1407,6 +1467,7 @@ impl NodeGraph {
                     NodeId::Corrector(n),
                     Some(
                         k @ (NodeKind::Film
+                        | NodeKind::FaceRefinement
                         | NodeKind::Parallel
                         | NodeKind::Layer
                         | NodeKind::Splitter
@@ -1452,6 +1513,14 @@ impl NodeGraph {
                         .ok_or_else(|| GraphError::UnknownKind(kind.name().to_owned()))?;
                     graph.mixers.insert(n, node);
                 }
+                NodeId::Corrector(n) if kind == NodeKind::FaceRefinement => {
+                    let named = map.contains_key("name");
+                    let mut node: FaceRefinementNode = read_node(map)?;
+                    if !named {
+                        node.name = DEFAULT_FACE_REFINEMENT_NAME.to_owned();
+                    }
+                    graph.faces.insert(n, node);
+                }
                 NodeId::Corrector(n) if kind == NodeKind::Film => {
                     let named = map.contains_key("name");
                     let mut node: FilmNode = read_node(map)?;
@@ -1488,7 +1557,10 @@ impl NodeGraph {
         if let Some(v) = links {
             graph.links = serde_json::from_value(v).map_err(parse_error)?;
         }
-        if (!graph.extra.is_empty() || !graph.films.is_empty() || !graph.mixers.is_empty())
+        if (!graph.extra.is_empty()
+            || !graph.films.is_empty()
+            || !graph.faces.is_empty()
+            || !graph.mixers.is_empty())
             && !placed.contains(&NodeId::Output)
         {
             // Correctors were added: the Output goes to the end of the row.
@@ -1878,6 +1950,35 @@ impl FilmNode {
     }
 }
 
+impl FaceRefinementNode {
+    fn sanitise(&mut self, s: &mut Sanitiser, id: u32, prefix: &str) -> Result<(), SettingsError> {
+        let node = NodeId::Corrector(id);
+        let trimmed: String = self.name.trim().chars().take(MAX_NAME_CHARS).collect();
+        let trimmed = trimmed.trim().to_owned();
+        self.name = if trimmed.is_empty() {
+            DEFAULT_FACE_REFINEMENT_NAME.to_owned()
+        } else {
+            trimmed
+        };
+        clamp_pos(s, node, prefix, &mut self.pos)?;
+        if self.faces.len() > MAX_FACES {
+            return Err(GraphError::TooManyFaces.into());
+        }
+        let changed = self.all.clamp(&format!("{prefix}.all"))?;
+        s.note(node, SettingsField::AllFaces, changed);
+        let mut changed = false;
+        for (i, f) in self.faces.iter_mut().enumerate() {
+            changed |= f.clamp(&format!("{prefix}.faces[{i}]"))?;
+        }
+        s.note(node, SettingsField::Faces, changed);
+        let changed = self.protect.sanitise(&format!("{prefix}.protect"))?;
+        s.note(node, SettingsField::Protect, changed);
+        let changed = self.masks.sanitise(&format!("{prefix}.masks"))?;
+        s.note(node, SettingsField::Masks, changed);
+        Ok(())
+    }
+}
+
 impl MixerNode {
     fn sanitise(&mut self, s: &mut Sanitiser, id: u32, prefix: &str) -> Result<(), SettingsError> {
         let node = NodeId::Corrector(id);
@@ -1910,12 +2011,20 @@ impl NodeGraph {
         if self.node_count() > MAX_CORRECTORS {
             return Err(GraphError::TooManyNodes.into());
         }
-        // An id is a corrector's, a Film node's or a node of `docs/25`, never two of them.
-        if let Some(id) = self.films.keys().chain(self.mixers.keys()).find(|id| {
-            **id == MAIN_ID
-                || self.extra.contains_key(id)
-                || (self.films.contains_key(id) && self.mixers.contains_key(id))
-        }) {
+        // An id is a corrector's, a Film node's, a Face Refinement node's or a node of `docs/25`, never two of them.
+        let owners = |id: &u32| {
+            usize::from(self.extra.contains_key(id))
+                + usize::from(self.films.contains_key(id))
+                + usize::from(self.faces.contains_key(id))
+                + usize::from(self.mixers.contains_key(id))
+        };
+        if let Some(id) = self
+            .films
+            .keys()
+            .chain(self.faces.keys())
+            .chain(self.mixers.keys())
+            .find(|id| **id == MAIN_ID || owners(id) > 1)
+        {
             return Err(GraphError::DuplicateId(id.to_string()).into());
         }
         self.input.sanitise(s, &format!("nodes.items[{}]", 0))?;
@@ -1925,6 +2034,8 @@ impl NodeGraph {
             if let Some(c) = self.corrector_mut(id) {
                 c.sanitise(s, id, &prefix)?;
             } else if let Some(f) = self.film_mut(id) {
+                f.sanitise(s, id, &prefix)?;
+            } else if let Some(f) = self.face_refinement_mut(id) {
                 f.sanitise(s, id, &prefix)?;
             } else if let Some(m) = self.mixer_mut(id) {
                 m.sanitise(s, id, &prefix)?;

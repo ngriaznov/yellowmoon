@@ -695,6 +695,18 @@ export type BlendMode =
 /**  The absolute difference. */
 "difference";
 
+/**  A plane of brush strokes, in the format of a Brush mask row: a Face Refinement node's protection. */
+export type BrushMask = {
+	/**  The strokes in the order they were drawn, at most 100,000 points in all. */
+	strokes: BrushStroke[],
+	/**  Feather, 0 to 1. */
+	feather: number,
+	/**  Grow, -1 to 1. */
+	grow: number,
+	/**  Refine edges, 0 to 1. */
+	refine: number,
+};
+
 /**  One stroke of a Brush mask. */
 export type BrushStroke = {
 	/**  The brush's size, 0.001 to 0.25 of the long edge. */
@@ -1170,6 +1182,71 @@ export type ExposureSetting =
 { kind: "manual"; 
 /**  Absolute exposure in stops, -4 to +4. */
 ev: number };
+
+/**  A Face Refinement node: retouches the faces it finds (`docs/27`). */
+export type FaceRefinementNode = {
+	/**  2 to 2147483647 (every numbered node shares the numbers). */
+	id: "input" | "output" | number,
+	/**  The card's name, 1 to 32 characters. */
+	name: string,
+	/**  A bypassed node passes its picture through. */
+	bypass: boolean,
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
+	/**  "Same for all faces": `all` serves every face and `faces` is kept but not used. */
+	same_for_all: boolean,
+	/**  The amounts every face takes while `same_for_all` is on, and when `faces` is empty. */
+	all: FaceSettings,
+	/**
+	 *  The amounts per face; index = face number - 1 (faces are numbered from 1, left to right), at most 32. A
+	 *  face past the end takes face 1's.
+	 */
+	faces: FaceSettings[],
+	/**  The protection plane: painted areas are left alone by every tool. */
+	protect: BrushMask,
+	/**  The masks. */
+	masks: MaskSettings,
+};
+
+/**  The amounts of the Face Refinement tools for one face (`docs/27` section 3). */
+export type FaceSettings = {
+	/**  Blemish, 0 to 100 (default 30). */
+	blemish: number,
+	/**  Dark circles, 0 to 100 (default 30). */
+	dark_circles: number,
+	/**  Even skin, 0 to 100 (default 25). */
+	even_skin: number,
+	/**  Texture, -100 to 100 (default 0). */
+	texture: number,
+	/**  Skin grading › Contrast, -100 to 100 (default 0). */
+	skin_contrast: number,
+	/**  Skin grading › Shadow desaturation, 0 to 100 (default 0). */
+	shadow_desaturation: number,
+	/**  Skin grading › Shine removal, 0 to 100 (default 0). */
+	shine_removal: number,
+	/**  Teeth › Whitening, 0 to 100 (default 0). */
+	teeth_whitening: number,
+};
+
+/**  A Face Refinement node's `all` to change. Serialising leaves absent fields out (see [`NodePatch`]). */
+export type FaceSettingsPatch = {
+	/**  New Blemish, 0 to 100. */
+	blemish?: number | null,
+	/**  New Dark circles, 0 to 100. */
+	dark_circles?: number | null,
+	/**  New Even skin, 0 to 100. */
+	even_skin?: number | null,
+	/**  New Texture, -100 to 100. */
+	texture?: number | null,
+	/**  New Skin contrast, -100 to 100. */
+	skin_contrast?: number | null,
+	/**  New Shadow desaturation, 0 to 100. */
+	shadow_desaturation?: number | null,
+	/**  New Shine removal, 0 to 100. */
+	shine_removal?: number | null,
+	/**  New Teeth whitening, 0 to 100. */
+	teeth_whitening?: number | null,
+};
 
 /**  `film_catalogue`: what the Film node's pickers list, and the lines About and the Film tab carry. */
 export type FilmCatalogue = {
@@ -2230,6 +2307,10 @@ export type NodeItem =
 {
 	kind: "film",
 } & FilmNode | 
+/**  A Face Refinement node. */
+{
+	kind: "face_refinement",
+} & FaceRefinementNode | 
 /**  A Parallel mixer. */
 {
 	kind: "parallel",
@@ -2257,6 +2338,8 @@ export type NodeKind =
 "corrector" | 
 /**  A Film node (`docs/24`). */
 "film" | 
+/**  A Face Refinement node (`docs/27`). */
+"face_refinement" | 
 /**  A Parallel mixer (`docs/25`). */
 "parallel" | 
 /**  A Layer mixer (`docs/25`). */
@@ -2339,6 +2422,14 @@ export type NodePatch = {
 	grain?: GrainPatch | null,
 	/**  New Strength of a Film node, percent. */
 	strength?: number | null,
+	/**  A Face Refinement node's "Same for all faces" on or off. */
+	same_for_all?: boolean | null,
+	/**  A Face Refinement node's amounts for every face (while "Same for all faces" is on) to change. */
+	all?: FaceSettingsPatch | null,
+	/**  A Face Refinement node's amounts per face, replaced whole (index = face number - 1). */
+	faces?: FaceSettings[] | null,
+	/**  A Face Refinement node's protection plane to change. */
+	protect?: ProtectPatch | null,
 	/**  A Layer's new blend mode. */
 	mode?: BlendMode | null,
 	/**  A Layer's new opacity, 0 to 1. */
@@ -2778,6 +2869,25 @@ export type PrintSettings = {
 	exposure_ev: number,
 	/**  The enlarger's filtration. */
 	lights: PrintLights,
+};
+
+/**
+ *  A Face Refinement node's `protect` to change: the strokes of a Brush row under the same names, and the three edge
+ *  amounts. Serialising leaves absent fields out (see [`NodePatch`]).
+ */
+export type ProtectPatch = {
+	/**  The strokes, replaced whole. */
+	strokes?: BrushStroke[] | null,
+	/**  Strokes added after the existing ones. */
+	strokes_append?: BrushStroke[] | null,
+	/**  Keep only the first n strokes (the inverse of an append). */
+	strokes_keep?: number | null,
+	/**  Feather, 0 to 1. */
+	feather?: number | null,
+	/**  Grow, -1 to 1. */
+	grow?: number | null,
+	/**  Refine edges, 0 to 1. */
+	refine?: number | null,
 };
 
 /**  Where one provider stands (`docs/22` section 3.1; the core's `ProviderState`). */

@@ -9,7 +9,7 @@ import { isGlyphItem, nodeOf } from "../../state/settingsGraph";
 import { KindGlyph } from "./GlyphCard";
 
 /** The tooltip and accessible name of the head's Reset, by kind of node (`docs/23` §7.5). */
-const RESET_TEXT = { input: "Reset input", output: "Reset output", corrector: "Reset this node", film: "Reset this node", parallel: "Reset this node", layer: "Reset this node", splitter: "Reset this node", combiner: "Reset this node" } as const;
+const RESET_TEXT = { input: "Reset input", output: "Reset output", corrector: "Reset this node", film: "Reset this node", face_refinement: "Reset this node", parallel: "Reset this node", layer: "Reset this node", splitter: "Reset this node", combiner: "Reset this node" } as const;
 
 export interface NodeHeadProps {
   settings: DevelopSettings;

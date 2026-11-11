@@ -360,6 +360,7 @@ export type NodeKind =
   | "output"
   | "corrector"
   | "film"
+  | "face_refinement"
   | "parallel"
   | "layer"
   | "splitter"
@@ -600,6 +601,64 @@ export interface FilmNode {
   masks: MaskSettings;
 }
 
+/**
+ * The amounts of the Face Refinement tools for one face (`docs/27` section 3). Defaults: Blemish 30, Dark circles 30, Even skin 25 and
+ * everything else 0; Reset returns to them.
+ */
+export interface FaceSettings {
+  /** Blemish, 0 to 100. */
+  blemish: number;
+  /** Dark circles, 0 to 100. */
+  dark_circles: number;
+  /** Even skin, 0 to 100. */
+  even_skin: number;
+  /** Texture, -100 to 100. */
+  texture: number;
+  /** Skin grading › Contrast, -100 to 100. */
+  skin_contrast: number;
+  /** Skin grading › Shadow desaturation, 0 to 100. */
+  shadow_desaturation: number;
+  /** Skin grading › Shine removal, 0 to 100. */
+  shine_removal: number;
+  /** Teeth › Whitening, 0 to 100. */
+  teeth_whitening: number;
+}
+
+/** A plane of brush strokes in the format of a Brush mask row: a Face Refinement node's protection. */
+export interface BrushMask {
+  /** The strokes in the order they were drawn, at most 100,000 points in all. */
+  strokes: BrushStroke[];
+  /** 0…1. */
+  feather: number;
+  /** −1…1. */
+  grow: number;
+  /** Refine edges, 0…1. */
+  refine: number;
+}
+
+/**
+ * A Face Refinement node: retouches the faces it finds, in the node graph only (`docs/27`). Faces are found automatically and numbered
+ * from 1, left to right; nothing about them is saved.
+ */
+export interface FaceRefinementNode {
+  /** 2 to 2³¹ − 1; every numbered node shares the numbers. */
+  id: NodeId;
+  /** The card's name, 1 to 32 characters ("Face Refinement"). */
+  name: string;
+  /** A bypassed node passes its picture through. */
+  bypass: boolean;
+  pos: NodePos;
+  /** "Same for all faces": `all` serves every face and `faces` is kept but not used. */
+  same_for_all: boolean;
+  /** The amounts every face takes while `same_for_all` is on, and when `faces` is empty. */
+  all: FaceSettings;
+  /** The amounts per face; index = face number − 1, at most 32. A face past the end takes face 1's. */
+  faces: FaceSettings[];
+  /** The protection plane: painted areas are left alone by every tool. One plane for the node. */
+  protect: BrushMask;
+  masks: MaskSettings;
+}
+
 /** How a Layer blends an input over the ones below it (`docs/25` section 3.3), computed in linear light. */
 export type BlendMode =
   | "normal"
@@ -653,6 +712,7 @@ export type NodeItem =
   | ({ kind: "output" } & OutputNode)
   | ({ kind: "corrector" } & CorrectorNode)
   | ({ kind: "film" } & FilmNode)
+  | ({ kind: "face_refinement" } & FaceRefinementNode)
   | ({ kind: "parallel" } & ParallelNode)
   | ({ kind: "layer" } & LayerNode)
   | ({ kind: "splitter" } & SplitterNode)
@@ -773,6 +833,21 @@ export interface NodePatch {
   grain?: Partial<GrainSettings>;
   /** A Film node's Strength, percent. */
   strength?: number;
+  /** A Face Refinement node's "Same for all faces". */
+  same_for_all?: boolean;
+  /** A Face Refinement node's amounts for every face; each one whole, or only the amounts to change. */
+  all?: Partial<FaceSettings>;
+  /** A Face Refinement node's amounts per face, replaced whole (index = face number − 1). */
+  faces?: FaceSettings[];
+  /** A Face Refinement node's protection plane: the strokes of a Brush row (`strokes`, `strokes_append`, `strokes_keep`) and the edge amounts. */
+  protect?: {
+    strokes?: BrushStroke[];
+    strokes_append?: BrushStroke[];
+    strokes_keep?: number;
+    feather?: number;
+    grow?: number;
+    refine?: number;
+  };
   /** A Layer's blend mode. */
   mode?: BlendMode;
   /** A Layer's opacity, 0 to 1. */

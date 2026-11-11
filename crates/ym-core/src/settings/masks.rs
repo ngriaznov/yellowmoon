@@ -953,6 +953,41 @@ impl Changed {
     }
 }
 
+impl BrushMask {
+    /// Clamps the numbers of the strokes and the three edge amounts, counts the points and returns whether anything
+    /// was changed. `prefix` names the brush for an error ("nodes.items[2].protect"). A Face Refinement node's
+    /// protection plane is checked with it too.
+    ///
+    /// # Errors
+    ///
+    /// [`SettingsError::NotFinite`] for a number that is not a number,
+    /// [`SettingsError::Graph`] for more points than [`MAX_BRUSH_POINTS`].
+    pub(crate) fn sanitise(&mut self, prefix: &str) -> Result<bool, SettingsError> {
+        let mut changed = Changed::default();
+        self.sanitise_into(prefix, &mut changed)?;
+        Ok(changed.0)
+    }
+
+    fn sanitise_into(&mut self, p: &str, changed: &mut Changed) -> Result<(), SettingsError> {
+        use super::graph::GraphError;
+        if self.point_count() > MAX_BRUSH_POINTS {
+            return Err(GraphError::TooManyBrushPoints.into());
+        }
+        for (j, s) in self.strokes.iter_mut().enumerate() {
+            let sp = format!("{p}.strokes[{j}]");
+            changed.number(&sp, "size", &mut s.size, STROKE_SIZE_RANGE)?;
+            changed.number(&sp, "hardness", &mut s.hardness, UNIT_RANGE)?;
+            for (k, pt) in s.points.iter_mut().enumerate() {
+                changed.point(&sp, &format!("points[{k}]"), pt, UNIT_RANGE)?;
+            }
+        }
+        changed.number(p, "feather", &mut self.feather, UNIT_RANGE)?;
+        changed.number(p, "grow", &mut self.grow, GROW_RANGE)?;
+        changed.number(p, "refine", &mut self.refine, UNIT_RANGE)?;
+        Ok(())
+    }
+}
+
 impl MaskSettings {
     /// Clamps every number of every row to its range (`docs/23` section 3.5), counts the limits
     /// and returns whether anything was changed. `prefix` names the masks for an error
@@ -1029,22 +1064,7 @@ impl MaskSettings {
                     changed.number(&p, "angle_deg", &mut r.angle_deg, MASK_ANGLE_RANGE_DEG)?;
                     changed.number(&p, "feather", &mut r.feather, UNIT_RANGE)?;
                 }
-                MaskShape::Brush(b) => {
-                    if b.point_count() > MAX_BRUSH_POINTS {
-                        return Err(GraphError::TooManyBrushPoints.into());
-                    }
-                    for (j, s) in b.strokes.iter_mut().enumerate() {
-                        let sp = format!("{p}.strokes[{j}]");
-                        changed.number(&sp, "size", &mut s.size, STROKE_SIZE_RANGE)?;
-                        changed.number(&sp, "hardness", &mut s.hardness, UNIT_RANGE)?;
-                        for (k, pt) in s.points.iter_mut().enumerate() {
-                            changed.point(&sp, &format!("points[{k}]"), pt, UNIT_RANGE)?;
-                        }
-                    }
-                    changed.number(&p, "feather", &mut b.feather, UNIT_RANGE)?;
-                    changed.number(&p, "grow", &mut b.grow, GROW_RANGE)?;
-                    changed.number(&p, "refine", &mut b.refine, UNIT_RANGE)?;
-                }
+                MaskShape::Brush(b) => b.sanitise_into(&p, &mut changed)?,
                 MaskShape::ColorRange(c) => {
                     for (k, v) in c.center.iter().enumerate() {
                         if !v.is_finite() {

@@ -955,7 +955,7 @@ If none exists, fail with "Yellowmoon's data folder is missing. Reinstall the ap
 
 ## Versions written into outputs
 
-- `pipeline_version`: semver of the processing chain (`PIPELINE_VERSION` in `ym-core`'s `version.rs`), bumped when output pixels change for the same settings. It also takes a minor step when a new kind of node lands, because an older build refuses a graph with a kind it does not know (`docs/23` §3.5): **0.10.0** with the Film node (the owner, 2026-11-04: "Minor step to 0.10.0"; no existing graph changes by a bit, only the written version string); **0.11.0** with the mixers (`docs/25`; no existing graph changes by a bit, only the written version string).
+- `pipeline_version`: semver of the processing chain (`PIPELINE_VERSION` in `ym-core`'s `version.rs`), bumped when output pixels change for the same settings. It also takes a minor step when a new kind of node lands, because an older build refuses a graph with a kind it does not know (`docs/23` §3.5): **0.10.0** with the Film node (the owner, 2026-11-04: "Minor step to 0.10.0"; no existing graph changes by a bit, only the written version string); **0.11.0** with the mixers (`docs/25`; no existing graph changes by a bit, only the written version string); **0.12.0** with the Face Refinement node (`docs/27` S-11a; the kind `face_refinement` is new and, until S-11b, passes its picture through; no existing graph changes by a bit, only the written version string).
 - Camera profile id and version, model ids and versions, look id and SHA-256, DRT id.
 
 These go into XMP (`docs/09-export.md`) so any exported file can be traced.

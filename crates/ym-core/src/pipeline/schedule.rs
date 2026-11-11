@@ -22,6 +22,8 @@ pub fn step_kind(kind: NodeKind) -> Option<StepKind> {
         NodeKind::Input | NodeKind::Output => None,
         NodeKind::Corrector => Some(StepKind::Corrector),
         NodeKind::Film => Some(StepKind::Film),
+        // Until S-11b the node passes its picture through, so it runs as a corrector with nothing to do.
+        NodeKind::FaceRefinement => Some(StepKind::Corrector),
         NodeKind::Parallel => Some(StepKind::Parallel),
         NodeKind::Layer => Some(StepKind::Layer),
         NodeKind::Splitter => Some(StepKind::Splitter),
