@@ -46,10 +46,16 @@ libc = "0.2"
 # `examples/bokeh_maps.rs` writes false-colour PNGs of the bokeh maps.
 png.workspace = true
 tempfile.workspace = true
+# `tests/blazeface.rs` and `examples/faces_time.rs` read the public test photos (JPEG). Already used by ym-core and ym-color.
+zune-jpeg = "0.5"
 
 [[example]]
 name = "bench"
 path = "examples/bench.rs"
+
+[[example]]
+name = "faces_time"
+path = "examples/faces_time.rs"
 
 [[example]]
 name = "bokeh_maps"

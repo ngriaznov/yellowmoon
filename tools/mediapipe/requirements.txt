@@ -1,0 +1,8 @@
+# Pinned Python dependencies of tools/mediapipe/convert.py (CI and development only: .github/workflows/models.yml, job
+# `mediapipe`). Python 3.11 or newer. Nothing here is a dependency of the app, `ym` or any shipped crate (AGENTS.md rule 6):
+# Python converts weights and writes test fixtures, every model runs in Rust.
+#
+# tflite        the FlatBuffers schema bindings of TensorFlow Lite (Apache-2.0); reads the .tflite files, no TensorFlow needed
+# numpy         arrays
+tflite==2.18.0
+numpy==2.2.6

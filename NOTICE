@@ -261,3 +261,21 @@ UNDISCLOSED.
     f16 safetensors. They are not trained or fine-tuned further; the program
     that runs them is ours (crates/ym-ml). The authors' training data are not
     part of this product. The model card is data/models/depth/MODEL_CARD.md.
+
+14. MediaPipe face networks (data/models/mediapipe/)
+    Face retouching finds and measures faces with three networks that Google
+    publishes in MediaPipe: BlazeFace (full range), Face Mesh V2 and Selfie
+    Multiclass (256 x 256):
+    Copyright 2021 The MediaPipe Authors (Google LLC).
+    Licensed under the Apache License, Version 2.0, the text of which is in
+    LICENSE (https://www.apache.org/licenses/LICENSE-2.0). Source:
+    https://github.com/google-ai-edge/mediapipe; the model files are those of
+    https://storage.googleapis.com/mediapipe-models/, and their model cards
+    (https://storage.googleapis.com/mediapipe-assets/) state the licence.
+    The weights in this product are the files Google publishes, converted from
+    TFLite to safetensors (f16 for the first two, f32 for the third) with the
+    network graph in the file header; their values are not changed and they are
+    not trained or fine-tuned further. The program that runs them is ours
+    (crates/ym-ml, module mediapipe). Google's training data (images captured
+    by consenting people on smartphones, which Google does not publish) are not
+    part of this product. The model card is data/models/mediapipe/MODEL_CARD.md.

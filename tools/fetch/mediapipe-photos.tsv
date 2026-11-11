@@ -1,0 +1,5 @@
+# Test photos of tests/blazeface.rs: id <TAB> SHA-256 <TAB> URL <TAB> licence and what is in the photo. Fetched by
+# tools/fetch/mediapipe.sh --photos into testdata/mediapipe/photos/<id>.jpg; never committed. A file with another hash is refused.
+mp-portrait	a6f11efaa834706db23f275b6115058fa87fc7f14362681e6abe14e82749de3e	https://storage.googleapis.com/mediapipe-assets/portrait.jpg	MediaPipe test data (google-ai-edge/mediapipe, Apache-2.0 repository): one face of 228 px in 820 x 1024
+mp-two-people	064bbf589dc1a2e05dff7e3fdddd00bbe5c5feadf4fd350f0e515f5a6bbfbbc4	https://storage.googleapis.com/mediapipe-assets/man-woman-okay.jpg	MediaPipe test data (google-ai-edge/mediapipe, Apache-2.0 repository): two faces of 70 and 87 px in 640 x 426
+mp-woman-hands	70cbeb38e198c9862202e0979c21a99b40ca980d3e7b250176c85b1636a40f12	https://storage.googleapis.com/mediapipe-assets/woman_hands.jpg	MediaPipe test data (google-ai-edge/mediapipe, Apache-2.0 repository): one face of 172 px in 640 x 960

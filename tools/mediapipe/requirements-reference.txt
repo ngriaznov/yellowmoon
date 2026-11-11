@@ -1,0 +1,13 @@
+# Pinned Python dependencies of tools/mediapipe/reference.py, which writes the parity fixtures of the BlazeFace port
+# (crates/ym-ml/tests/fixtures/blazeface.json). Development only, run by hand when the port or the photos change; the
+# fixtures are committed, so CI does not need these packages (AGENTS.md rule 6).
+#
+# ai-edge-litert  Google's TFLite interpreter (Apache-2.0): the raw network outputs the Rust port is compared with
+# mediapipe        Google's own face detector task (Apache-2.0): the end-to-end boxes, keypoints and scores
+# pillow           reads the test photos
+# opencv-python-headless  warpAffine, the resampling MediaPipe's ImageToTensor uses
+-r requirements.txt
+ai-edge-litert==2.3.0
+mediapipe==1.2.2
+pillow==13.0.0
+opencv-python-headless==4.10.0.84
