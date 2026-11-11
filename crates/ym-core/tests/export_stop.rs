@@ -6,13 +6,15 @@ mod common;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(any(feature = "fault-injection", target_os = "linux"))]
+use std::time::Instant;
 
 use common::*;
 use ym_core::export::ExportContext;
-use ym_core::export_queue::{
-    ExportEvent, ExportJob, ExportProgress, ExportQueue, ExportSink, FileDone, JobState,
-};
+use ym_core::export_queue::{ExportEvent, ExportJob, ExportQueue, ExportSink};
+#[cfg(any(feature = "fault-injection", target_os = "linux"))]
+use ym_core::export_queue::{ExportProgress, FileDone, JobState};
 use ym_core::pipeline::Renderer;
 use ym_core::session::{ApplyScope, OpenOptions, PhotoId, Session};
 use ym_export::ExportOptions;
@@ -69,6 +71,7 @@ fn job(out: &Path) -> ExportJob {
     }
 }
 
+#[cfg(any(feature = "fault-injection", target_os = "linux"))]
 fn until_idle(rx: &Receiver<ExportEvent>) -> Vec<ExportEvent> {
     let mut events = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(120);
@@ -83,6 +86,7 @@ fn until_idle(rx: &Receiver<ExportEvent>) -> Vec<ExportEvent> {
     }
 }
 
+#[cfg(any(feature = "fault-injection", target_os = "linux"))]
 fn progress(events: &[ExportEvent]) -> Vec<&ExportProgress> {
     events
         .iter()
@@ -93,6 +97,7 @@ fn progress(events: &[ExportEvent]) -> Vec<&ExportProgress> {
         .collect()
 }
 
+#[cfg(any(feature = "fault-injection", target_os = "linux"))]
 fn files(events: &[ExportEvent]) -> Vec<&FileDone> {
     events
         .iter()
@@ -108,6 +113,7 @@ fn files(events: &[ExportEvent]) -> Vec<&FileDone> {
 static FAULT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// How many photos of `ids` the renderer made a full-resolution chain for.
+#[cfg(any(feature = "fault-injection", target_os = "linux"))]
 fn rendered(ctx: &ExportContext, ids: &[PhotoId]) -> Vec<bool> {
     ids.iter()
         .map(|id| ctx.renderer().counters(*id).full_chains > 0)
