@@ -11,6 +11,7 @@
 
 mod error;
 mod feather;
+mod lowfreq;
 mod mask;
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
@@ -19,6 +20,10 @@ mod types;
 
 pub use error::{Result, RetouchError};
 pub use feather::feather;
+pub use lowfreq::{
+    LowFreqParams, blend_pixel, blend_weight, dark_circle_k_sp, dark_circles_target,
+    even_skin_target, mask_to_working, masked_blur_combine, retouch_low_frequency,
+};
 pub use mask::{
     FaceMasks, SkinParts, blemish_mask, dark_circle_mask, even_skin_mask, face_masks, max,
     max_masks, mul, mul_inv, mul_inv_masks, mul_masks, punch_hole, skin_parts,
