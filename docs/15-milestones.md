@@ -1,6 +1,6 @@
 # 15 · Milestones and tasks
 
-Five milestones run in sequence; each ends at a gate that can be measured. Milestone N (nodes and masks, released as 0.2.0) was added on 2026-11-01 and sits between M3 and M4; its full spec is `docs/23-nodes.md`. Milestone F (the Film node, `docs/24-film.md`) is planned and not scheduled; it would follow N. Milestone D (the Depth mask, `docs/23` §4.8, `docs/algorithms/06` §5.8 and §8) was added on 2026-11-07 on the owner's decision (`docs/STATUS.md` question 41) and sits after F on its own branch, `depth-mask`; it needs the masks of N and no part of F. Milestone X (the mixers: Parallel, Layer, and Splitter and combiner, `docs/25-mixers.md`) was added on 2026-11-10 on the owner's request (`docs/STATUS.md` question 43), on its own branch, `mixers`, and released as 0.2.3; it needs the graph, plan and panel of N and no part of F or D. Work in task order within a milestone unless dependencies allow parallel work. The UI design is in `design/`; M0 and M1 don't wait for UI work.
+Five milestones run in sequence; each ends at a gate that can be measured. Milestone N (nodes and masks, released as 0.2.0) was added on 2026-11-01 and sits between M3 and M4; its full spec is `docs/23-nodes.md`. Milestone F (the Film node, `docs/24-film.md`) was scheduled on 2026-11-04 and released as 0.2.1; it follows N. Milestone D (the Depth mask, `docs/23` §4.8, `docs/algorithms/06` §5.8 and §8) was added on 2026-11-07 on the owner's decision (`docs/STATUS.md` question 41) and sits after F on its own branch, `depth-mask`; it needs the masks of N and no part of F. Milestone X (the mixers: Parallel, Layer, and Splitter and combiner, `docs/25-mixers.md`) was added on 2026-11-10 on the owner's request (`docs/STATUS.md` question 43), on its own branch, `mixers`, and released as 0.2.3; it needs the graph, plan and panel of N and no part of F or D. Work in task order within a milestone unless dependencies allow parallel work. The UI design is in `design/`; M0 and M1 don't wait for UI work.
 
 Task format: **ID · title** (depends on) — what to build. *Done when:* acceptance criteria. [HUMAN] tasks are the owner's (`AGENTS.md` rule 9): prepare around them and list them in `docs/STATUS.md`.
 
@@ -307,7 +307,7 @@ Goal: a node view behind a Nodes button, with a real graph of corrector nodes be
 
 ---
 
-## F · Film node (planned, not scheduled)
+## F · Film node (released as 0.2.1)
 
 A **Film node** that simulates a colour negative, a print and a scan with our own engine (`ym-film`, Apache-2.0) and Andrea Volpato's spektrafilm profiles (CC BY-SA 4.0), shipped as separate credited data. **Scheduled 2026-11-04 (F-H0), on branch `film`;** the owner's decisions of that day are in `docs/24` §1.3 (no letter to the author, variant A, real stock names with the disclaimer, the CIE tables shipped as credited data). F-01, the mockup round, is first. The spec is `docs/24-film.md`; the facts are in `research/film-spektrafilm-2026-11-01.md`. It needs the graph, plan and multi-pass loop of N (N-02 to N-04), the panel and masks (N-08 to N-12) and the tile-halo machinery (N-13).
 
@@ -317,7 +317,7 @@ Tasks (details, dependencies and *Done when* in `docs/24` §10): **F-01** mockup
 
 ---
 
-## D · Depth mask (done, on `main`; the owner's approval 2026-11-09)
+## D · Depth mask (released as 0.2.2; the owner's approval 2026-11-09)
 
 Goal: a **Depth** mask in the Find group, cut from a relative depth map that **Depth Anything V2-Small** makes from the photo (24.8 M parameters, Apache-2.0, about 50 MB at f16, bundled like SAM 2.1's 77 MB), as a gradient to a far limit (first built as Near, Far and Softness bounds; the owner replaced them on 2026-11-08, `docs/23` §4.8), **Pick depth** and **Focus plane** (from the Sony focus box), a greyscale **Show depth** view, and `ym` support. The model is for masks only: lens character keeps its blur map. The spec is `docs/23-nodes.md` §4.8, the maths `docs/algorithms/06-masks.md` §5.8 and §8, the model `docs/07-ml-models.md`, the licence row `docs/14-licensing.md`; the facts and sources are in `research/depth-mask-2026-11-07.md`. **The owner's decisions of 2026-11-07** (`docs/STATUS.md` question 41): a depth model for masks only; bundled, never downloaded by the app; the teacher chain accepted (Apache-2.0 weights whose unreleased teacher trained on Hypersim, CC BY-SA 3.0, and Virtual KITTI 2, non-commercial), stated in the model card as SAM's card states SA-1B; the model is Depth Anything V2-Small; the working choices (band bounds with rank normalisation, Focus plane from the focus box, exports from the CPU map, evaluation on DIODE plus public photos) are settled on the evaluation sheets. V1's data rule holds: no measurements of our own, and no photos are shot for it.
 
