@@ -157,7 +157,7 @@ An option that does not apply to the format (`--quality` with PNG, `--long-edge`
 
 Folders are walked by the rules of `Session::open`: `*.ARW` in any case, names starting with a dot ignored (macOS leaves `._DSC0001.ARW` on exFAT cards), other files ignored, one level unless `--recursive`. Photos are developed and exported in the order a session lists them (by absolute path, ignoring case), each file once.
 
-A path the user named that cannot be a photo (it does not exist, or is not an ARW file) is reported as an error (`kind` `not_found` or `not_arw`) and counts as a failure, but when no ARW file is left to render at all the exit code is 5. For a file that exists but cannot be read, `message` is one of the catalogue sentences of `docs/04` (Errors) and `error.detail` carries the technical cause (the damage or the I/O error); with `-v` the detail is also printed on stderr after the message.
+A path the user named that cannot be a photo (it does not exist, or is not an ARW file) is reported as an error (`kind` `not_found` or `not_arw`) and counts as a failure, but when no ARW file is left to render at all the exit code is 5. A folder that exists but cannot be read (no permission, a drive that went away; a subfolder under `--recursive` too) is an error of `kind` `unreadable` ("Yellowmoon can't read the folder {name}. Check that it is still there and that you may open it, then try again."; on macOS with the privacy block, the sentence that names System Settings), one per folder, and it is not "no input": with nothing left to render the exit code is **1**, and the "No ARW files were found" line is not printed. `ym info` takes files only, so it has no folder to read. For a file that exists but cannot be read, `message` is one of the catalogue sentences of `docs/04` (Errors) and `error.detail` carries the technical cause (the damage or the I/O error); with `-v` the detail is also printed on stderr after the message.
 
 ## Settings
 
@@ -362,7 +362,7 @@ A device that does open leaves the graphics driver to write its own shader cache
 | 2 | usage error (also a settings file that cannot be used, the form of Yellowmoon 0.1 among them, and a data folder or home folder that can't be found: set `YELLOWMOON_DATA` or `YELLOWMOON_HOME`) |
 | 3 | a requested look is missing |
 | 4 | `--require-gpu` (or `YELLOWMOON_GPU=require`) and no usable GPU |
-| 5 | no input files found |
+| 5 | no input files found (a folder that could not be read is exit 1, kind `unreadable`, not this) |
 | 130 | interrupted with Ctrl-C |
 
 ## Output streams and behaviour

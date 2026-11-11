@@ -41,6 +41,7 @@ import {
   parseMockConsent,
   parseMockProviders,
 } from "./api/providersMock";
+import { UNREADABLE_PREFIX } from "./api/openMessages";
 import type { MockActivity, MockProviders } from "./api/providersMock";
 import type {
   ApiEventName,
@@ -433,6 +434,11 @@ export interface MockOptions {
   current?: number;
   /** The name of the folder the photos are in (the header, the export panel and the default destination use it). Default "Lisbon". */
   folderName?: string;
+  /**
+   * The name of a folder that cannot be read (`?mockUnreadable=Name`, `docs/26` H-02): opening a folder with nothing else answers
+   * "Yellowmoon can't read the folder Name. …" (`UNREADABLE_PREFIX`), as the core does, and no session starts. Default: none.
+   */
+  unreadable?: string;
   /** How many photos the session has. The twelve fixtures repeat, with the names DSC04213 and on, so a long folder can be shown and timed. Default 12. */
   photoCount?: number;
   /** Whether the imported looks of the mockups are in the library. Default true. */
@@ -1034,6 +1040,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   picked: [],
   current: 0,
   photoCount: SCENES.length,
+  unreadable: "",
   folderName: DEFAULT_FOLDER_NAME,
   looksImported: true,
   allLibraries: false,
@@ -1076,7 +1083,7 @@ function withDefaults(...layers: MockOptions[]): Required<MockOptions> {
 /**
  * Reads the mock's options from the page URL so Playwright (and a person with a browser) can
  * set the scene without code: `?mockSpeed=20` (or `Infinity`), `mockSkipped=DSC04207,DSC04209`
- * (a reason after a colon), `mockPicked=2,3,4`, `mockCurrent=3`, `mockPhotos=500` (a folder of 500 photos, the twelve repeating), `mockFolder=Name` (the folder's name), `mockLooks=0` (no imported
+ * (a reason after a colon), `mockPicked=2,3,4`, `mockCurrent=3`, `mockPhotos=500` (a folder of 500 photos, the twelve repeating), `mockFolder=Name` (the folder's name), `mockUnreadable=Name` (a folder that cannot be read: opening a folder says so), `mockLooks=0` (no imported
  * looks), `mockLibraries=all` (looks in every section of the Look tab), `mockLenses=0` (no lens data: the Lens card's list is empty), `mockMissing=film-warm,film-cool`, `mockHold=5.4`, `mockDownloads=ARRI_LookLibrary_LogC4.zip` (zips that
  * land in Downloads while the wizard watches), `mockDownloadsDenied=1`, `mockExisting=DSC04204_neutral.jpg`,
  * `mockExportFails=DSC04204:reason`, `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
@@ -1114,6 +1121,8 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (current !== null && Number.isInteger(Number(current))) out.current = Number(current);
   const folder = params.get("mockFolder");
   if (folder !== null && folder.trim() !== "") out.folderName = folder;
+  const unreadable = params.get("mockUnreadable");
+  if (unreadable !== null && unreadable.trim() !== "") out.unreadable = unreadable;
   const count = params.get("mockPhotos");
   if (count !== null && Number.isInteger(Number(count)) && Number(count) >= 1) out.photoCount = Number(count);
   if (params.get("mockLooks") === "0") out.looksImported = false;
@@ -2461,6 +2470,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   }
 
   function openPathsNow(paths: string[]): SessionState {
+    // The core's sentence for a folder it could not list, when no file came with it (`docs/26` H-02).
+    if (options.unreadable && !paths.some(isArwPath) && paths.some(isFolderPath)) {
+      fail("open", `${UNREADABLE_PREFIX}${options.unreadable}. Check that it is still there and that you may open it, then try again.`);
+    }
     const hasPhotos = paths.some((p) => isArwPath(p) || isFolderPath(p));
     // Non-ARW files are ignored. Any ARW file or folder opens the whole fixture folder when nothing is open; in an open session
     // the files are added (or already there).

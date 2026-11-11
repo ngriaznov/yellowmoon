@@ -278,6 +278,31 @@ fn a_drop_without_arw_files_says_so_and_a_missing_file_is_named() {
     assert!(h.api.session_state().expect("state").photos.is_empty());
 }
 
+/// A folder that cannot be read is named, not called empty (`docs/26` H-02). Skipped as root, which
+/// can read a folder with mode 000.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_folder_is_named_and_is_not_no_arw() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = Harness::new();
+    let locked = h.photos.path().join("Locked");
+    std::fs::create_dir_all(&locked).expect("folder");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    let readable = std::fs::read_dir(&locked).is_ok();
+    let result = h.api.open_paths(&[locked.to_string_lossy().into_owned()]);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    if readable {
+        eprintln!("skipped: this user can read a folder with mode 000 (root)");
+        return;
+    }
+    let err = result.expect_err("unreadable");
+    assert_eq!(err.scope, ErrorScope::Open);
+    assert_eq!(
+        err.message,
+        "Yellowmoon can't read the folder Locked. Check that it is still there and that you may open it, then try again."
+    );
+}
+
 #[test]
 fn navigation_picking_and_closing() {
     let h = Harness::new();

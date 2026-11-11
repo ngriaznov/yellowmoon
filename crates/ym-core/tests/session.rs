@@ -264,7 +264,10 @@ fn a_drop_without_arw_files_says_so() {
     let (session, _rx) = session_with_events();
     let outcome = session.open(&[dir.path().to_path_buf()], OpenOptions::default());
     assert!(outcome.no_arw());
-    assert_eq!(outcome.message(), Some("No ARW files in what you dropped."));
+    assert_eq!(
+        outcome.message().as_deref(),
+        Some("No ARW files in what you dropped.")
+    );
     assert_eq!(outcome.ignored, 2);
     assert!(session.state().photos.is_empty());
     assert_eq!(session.state().current_index, None);
@@ -276,6 +279,34 @@ fn a_drop_without_arw_files_says_so() {
     assert!(outcome.no_arw());
     assert_eq!(outcome.ignored, 1);
     assert_eq!(outcome.missing, vec![dir.path().join("nope.ARW")]);
+}
+
+/// A folder with mode 000 is not an empty folder (`docs/26` H-02). Skipped when the test runs as root,
+/// which may read it anyway; the seam test in `session.rs` covers the logic then.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_folder_says_so_and_is_not_no_arw() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let locked = dir.path().join("Locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = std::fs::read_dir(&locked).is_ok();
+    let (session, _rx) = session_with_events();
+    let outcome = session.open(std::slice::from_ref(&locked), OpenOptions::default());
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if readable {
+        eprintln!("skipped: this user can read a folder with mode 000 (root)");
+        return;
+    }
+    assert_eq!(outcome.unreadable, [locked]);
+    assert!(outcome.no_arw());
+    assert_eq!(
+        outcome.message().as_deref(),
+        Some(
+            "Yellowmoon can't read the folder Locked. Check that it is still there and that you may open it, then try again."
+        )
+    );
 }
 
 #[test]

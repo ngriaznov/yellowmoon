@@ -139,7 +139,7 @@ The structs are the shape, not the code (`session.rs`, `auto.rs`, `camera.rs`). 
 - A photo's path is made absolute against the working directory without resolving symbolic links, so `ym render .` and `ym render DSC0001.ARW` work like their absolute forms. The folder name, and the `<folder name> export` name of a `.` or `..` folder, come from the folder it resolves to.
 - Photos are sorted by path, case-insensitively. The first photo of an empty session is current.
 - Photo ids count up for the life of the `Session`, also across `close()`. A command that names a closed session's photo gets `UnknownPhoto` and can never reach a photo of the next session.
-- `OpenOutcome::no_arw()` / `message()` is the Start screen's "No ARW files in what you dropped." It applies when nothing ARW was found at all, not when everything was already open.
+- `OpenOutcome::no_arw()` / `message()` is the Start screen's "No ARW files in what you dropped." It applies when nothing ARW was found at all, not when everything was already open. When a folder could not be read (`OpenOutcome.unreadable`, `docs/26` H-02) `message()` is "Yellowmoon can't read the folder {name}. …" instead (`unreadable_message`); "No ARW files" is only for what was read and held none.
 - A probe that fails makes a photo that is Skipped with the `RawError` text of `docs/04-raw-decoding.md`; the UI shows CAN'T OPEN.
 - `SessionState::folder_name` is the one folder given (or the one folder all photos share, else `None`). `default_export_folder` is `<parent>/<folder name> export`; the export queue still checks that it is writable and falls back to `~/Pictures/Yellowmoon export`.
 

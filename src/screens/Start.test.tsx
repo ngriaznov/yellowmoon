@@ -150,6 +150,24 @@ describe("Start, nothing open", () => {
   });
 });
 
+describe("Start, a folder that cannot be read", () => {
+  it("names the folder in the drop zone, not \"No ARW files\", and starts no session (docs/26 H-02)", async () => {
+    h = renderApp({ unreadable: "Desktop" });
+    await h.user.click(await screen.findByRole("button", { name: "Open folder…" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Yellowmoon can't read the folder Desktop. Check that it is still there and that you may open it, then try again.",
+    );
+    expect(screen.queryByText("No ARW files in what you dropped.")).toBeNull();
+    expect(screen.getByRole("group", { name: "Drop files or a folder" })).toBeInTheDocument();
+  });
+
+  it("still opens files that are chosen one by one", async () => {
+    h = renderApp({ unreadable: "Desktop" });
+    await h.user.click(await screen.findByRole("button", { name: "Open files…" }));
+    await screen.findByRole("heading", { level: 2, name: /Developing 12 photos|12 photos ready/ });
+  });
+});
+
 describe("Start, developing", () => {
   it("shows Developing N photos with a progress bar and a tagged list", async () => {
     h = renderApp({ holdAt: 5.4 });

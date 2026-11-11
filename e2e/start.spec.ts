@@ -176,6 +176,17 @@ test.describe("dropping files on the window", () => {
   });
 });
 
+test.describe("a folder that cannot be read", () => {
+  test("Open folder names it in the drop zone and starts nothing", async ({ page }) => {
+    await openApp(page, { mockUnreadable: "Desktop" });
+    await page.getByRole("button", { name: "Open folder…" }).click();
+    await expect(page.getByRole("alert")).toHaveText(
+      "Yellowmoon can't read the folder Desktop. Check that it is still there and that you may open it, then try again.",
+    );
+    await expect(page.getByRole("group", { name: "Drop files or a folder" })).toBeVisible();
+  });
+});
+
 test.describe("errors", () => {
   test("an error from the core shows in a bar that can be dismissed", async ({ page }) => {
     await openApp(page);
