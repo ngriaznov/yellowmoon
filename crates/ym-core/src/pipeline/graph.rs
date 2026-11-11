@@ -76,12 +76,15 @@ use crate::settings::MaskShape;
 
 mod background;
 mod depth;
+mod faces;
 mod lens;
 mod lens_device;
 mod object;
 mod vision;
 
 pub use depth::DepthKey;
+pub use faces::FacesKey;
+pub(crate) use faces::{FaceEntry, face_source};
 pub(crate) use object::plane_text;
 
 /// The note of a render whose demosaic method is not the adaptive ratio (the test-only switch of
@@ -223,6 +226,12 @@ pub struct RenderOptions {
     /// a kind this machine can make and a Depth row gets its mask; without it (`None`: the weights are missing, or the
     /// renderer was made without a core) a Depth row selects nothing in a view and fails an export with the `mask` error.
     pub depth_model: Option<Arc<crate::pipeline::depth::DepthModel>>,
+    /// MediaPipe's face finder, face mesh and segmenter (`data/models/mediapipe`, `docs/27` decision 12), found by
+    /// [`crate::app::Core::open`] (it reads nothing until a Face Refinement node needs it), or a fake in the tests
+    /// ([`crate::pipeline::FaceModel::fake`]). With it a Face Refinement node retouches the faces of the photo; without it
+    /// (`None`: the weights are missing, or the renderer was made without a core) the node passes its picture through in a
+    /// view and an export fails with the `mask` error.
+    pub face_model: Option<Arc<crate::pipeline::faces::FaceModel>>,
     /// The computer's Vision framework for the Subject and People masks (`docs/23` section 4.5) and what its probe said
     /// (`ym-apple`'s `system_vision()`, handed over by the app and `ym`). With it Subject and People are kinds this
     /// computer can make where the probe says yes; without it (`None`: a caller that has none, as the tests, the golden
@@ -369,6 +378,7 @@ impl Default for RenderOptions {
             bokeh_model: None,
             object_model: None,
             depth_model: None,
+            face_model: None,
             vision: None,
             data_root: None,
             gpu: None,
@@ -711,6 +721,8 @@ pub struct PhotoGraph {
     vision: vision::VisionSlot,
     /// The photo's depth map and the worker's state (`depth::DepthSlot`).
     depth: depth::DepthSlot,
+    /// The photo's faces with their masks and blemish maps, and the worker's state (`faces::FaceSlot`).
+    faces: faces::FaceSlot,
     /// Exports that are rendering the photo: while there is one, the raw words stay on the device
     /// whatever else the renderer uploads (an export asks for them at every tile).
     pins: AtomicU32,
@@ -755,6 +767,7 @@ impl PhotoGraph {
             object: object::ObjectSlot::default(),
             vision: vision::VisionSlot::default(),
             depth: depth::DepthSlot::default(),
+            faces: faces::FaceSlot::default(),
             pins: AtomicU32::new(0),
         }
     }
@@ -811,6 +824,7 @@ impl PhotoGraph {
             + self.object.bytes()
             + self.vision.bytes()
             + self.depth.bytes()
+            + self.faces.bytes()
             + st.lens_groups.as_ref().map_or(0, ByteLru::used)
             + st.lens_tiles.as_ref().map_or(0, ByteLru::used)
             + st.lens_field_groups.as_ref().map_or(0, ByteLru::used)
@@ -1074,6 +1088,8 @@ struct Inner {
     vision_listener: Mutex<Option<vision::VisionListener>>,
     /// Who hears when the depth worker starts or ends its work for a photo (`Renderer::set_depth_listener`).
     depth_listener: Mutex<Option<depth::DepthListener>>,
+    /// Who hears when the face worker starts or ends its work for a photo (`Renderer::set_faces_listener`).
+    faces_listener: Mutex<Option<faces::FacesListener>>,
 }
 
 /// Who hears when the Object encoder starts or stops working for a photo ([`Renderer::set_object_listener`]).
@@ -1185,6 +1201,7 @@ impl Renderer {
                 object_pictures_made: AtomicU64::new(0),
                 vision_listener: Mutex::new(None),
                 depth_listener: Mutex::new(None),
+                faces_listener: Mutex::new(None),
             }),
         })
     }
@@ -1433,6 +1450,7 @@ impl Renderer {
             || (!crate::pipeline::color::vision_kinds(settings).is_empty()
                 && self.vision_working(id))
             || (crate::pipeline::color::has_depth_row(settings) && self.depth_working(id))
+            || (crate::pipeline::color::has_face_node(settings) && self.faces_working(id))
     }
 
     /// The graph of a photo, made on first use. The least recently used graphs beyond
@@ -2038,6 +2056,8 @@ pub(crate) struct Job<'a> {
     vision: vision::JobVision,
     /// What this request found out about the photo's Depth rows (`depth::JobDepth`).
     depth: depth::JobDepth,
+    /// What this request found out about the photo's Face Refinement nodes (`faces::JobFaces`).
+    faces: faces::JobFaces,
 }
 
 impl Drop for Job<'_> {
@@ -2119,6 +2139,7 @@ impl<'a> Job<'a> {
             object: object::JobObjects::default(),
             vision: vision::JobVision::default(),
             depth: depth::JobDepth::default(),
+            faces: faces::JobFaces::default(),
         }
     }
 
@@ -3286,6 +3307,14 @@ impl<'a> Job<'a> {
             .filter(|s| self.opts.gpu_stages.contains(*s))
             .fold(GpuStages::NONE, GpuStages::union);
         if stages.is_empty() {
+            return Ok(None);
+        }
+        // A Face Refinement node runs on the CPU until its device kernels exist (`docs/27` S-13): the whole frame is the
+        // CPU's, and the viewport says "Rendering on the CPU" from `device_refused` as for any frame the device did not make.
+        if self.faces_force_cpu(&self.src.settings, PlanStop::Output) {
+            self.device_refused = true;
+            self.cpu_reason
+                .get_or_insert_with(|| "Face Refinement runs on the CPU".to_owned());
             return Ok(None);
         }
         if self.g.view_gpu_failed.load(Ordering::SeqCst)

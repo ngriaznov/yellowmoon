@@ -47,6 +47,7 @@ use ym_export::ColorSpace;
 
 pub mod color;
 pub mod depth;
+pub mod faces;
 pub mod frame;
 pub mod geometry;
 pub mod graph;
@@ -62,6 +63,10 @@ pub use color::{
     has_object_row, unmakeable_mask, unmakeable_mask_with, uses_depth,
 };
 pub use depth::{DEPTH_FORMAT_VERSION, DepthModel, DepthPhase, FakeDepth, FocusPlane, FocusReason};
+pub use faces::{
+    FACE_ANALYSIS_LONG_EDGE_PX, FACES_FORMAT_VERSION, FACES_RULES_VERSION, FaceBox, FaceModel,
+    FacePhase, FaceState, FakeFace, FakeFaces, MIN_FACE_FULL_PX, NO_FACE_MODEL_SENTENCE,
+};
 pub use frame::level::{
     FILL_BAND_PX, LEVEL_DEBOUNCE, LEVEL_MAX_ZOOM, LEVELS_PER_PHOTO, LevelStatus,
 };

@@ -624,6 +624,15 @@ fn raster_row_of(
     }
 }
 
+/// The raster row of a Face Refinement node's protection plane (a Brush row's strokes with its Grow, Feather and Refine), or
+/// `None` when nothing is painted.
+pub(crate) fn protect_row(node: &crate::settings::FaceRefinementNode) -> Option<RasterRow> {
+    if node.protect.strokes.is_empty() {
+        return None;
+    }
+    raster_row_of(&MaskShape::Brush(node.protect.clone()), None, None, 0)
+}
+
 fn mask_rows(
     m: &MaskSettings,
     rasters: &mut RasterSet,
@@ -745,6 +754,31 @@ pub fn uses_depth(s: &DevelopSettings, stop: Stop) -> bool {
                 .any(|r| r.enabled && matches!(r.shape, MaskShape::Depth(_)))
         })
     })
+}
+
+/// The Face Refinement nodes of the plan that ends at `stop` that do something (not bypassed, and some tool of some face above
+/// 0, [`FaceRefinementNode::is_inert`](crate::settings::FaceRefinementNode::is_inert)), in the plan's order. The render then
+/// needs the photo's faces ([`ObjectPlanes::faces`]) and runs on the CPU.
+#[must_use]
+pub fn live_face_nodes(s: &DevelopSettings, stop: Stop) -> Vec<u32> {
+    let Ok(plan) = node_plan(&s.nodes, stop) else {
+        return Vec::new();
+    };
+    plan.node_ids()
+        .into_iter()
+        .filter(|&id| s.nodes.face_refinement(id).is_some_and(|f| !f.is_inert()))
+        .collect()
+}
+
+/// Whether the photo has a Face Refinement node anywhere in its graph, live or not, in a node the Output needs or not: the
+/// core starts the face worker in the background for the photo being looked at (`docs/27` decision 9), and the node's panel
+/// says "Finding faces…" while it runs.
+#[must_use]
+pub fn has_face_node(s: &DevelopSettings) -> bool {
+    s.nodes
+        .numbered()
+        .into_iter()
+        .any(|(_, kind)| kind == crate::settings::NodeKind::FaceRefinement)
 }
 
 /// Whether the photo has a Depth row with the eye on anywhere in its graph, in a node the Output needs or not: the core
@@ -967,8 +1001,8 @@ pub fn plan_graph(g: &NodeGraph) -> PlanGraph {
         .into_iter()
         .filter_map(|(id, kind)| {
             match kind {
-                // A Face Refinement node is a step of the plan that passes its picture through until S-11b
-                // (`node_set`), with its place, its picture source and its key like a corrector's.
+                // A Face Refinement node is a step of the plan like a Film node's (`node_set`), with its place, its picture
+                // source and its key like a corrector's.
                 NodeKind::Corrector | NodeKind::Film | NodeKind::FaceRefinement => {}
                 NodeKind::Parallel
                 | NodeKind::Layer
@@ -1008,6 +1042,9 @@ pub fn plan_joins(g: &NodeGraph) -> Vec<PlanJoin> {
         PictureSource::Node(n) => match g.kind_of(NodeId::Corrector(n)) {
             Some(NodeKind::Corrector) => g.corrector(n).is_some_and(|c| !c.bypass),
             Some(NodeKind::Film) => g.film(n).is_some_and(|f| !f.bypass),
+            // A Face Refinement node's picture is the retouched one where it has faces and its input elsewhere (`run_film`'s
+            // rule), and its `m` is its mask: a Layer reads what it would read from a corrector at its identity.
+            Some(NodeKind::FaceRefinement) => g.face_refinement(n).is_some_and(|f| !f.bypass),
             _ => false,
         },
         PictureSource::Input | PictureSource::Split(..) => false,
@@ -1160,20 +1197,42 @@ fn node_set(
                 );
             }
             Some(NodeKind::FaceRefinement) => {
-                if s.nodes.face_refinement(id).is_none() {
+                let Some(f) = s.nodes.face_refinement(id) else {
                     continue;
+                };
+                // A node with faces to retouch is a Film-like step: the render makes its picture before the colour pass
+                // (`film_pass`, on the CPU) and the chain blends it by the node's mask. Otherwise (bypassed, every amount 0,
+                // no faces found yet or none, no model) the node passes its picture through: the corrector machinery runs it
+                // bypassed, so its picture is its input's, and its key output is still the mask of its Mask tab.
+                let live = !f.is_inert()
+                    && objects
+                        .and_then(|o| o.faces())
+                        .is_some_and(|e| !e.faces.is_empty());
+                if live {
+                    others.insert(
+                        id,
+                        NodeParams {
+                            masks: masks.remove(&id).unwrap_or_default(),
+                            ..NodeParams::default()
+                        },
+                    );
+                    films.insert(
+                        id,
+                        FilmStep {
+                            strength: 1.0,
+                            bypass: false,
+                        },
+                    );
+                } else {
+                    others.insert(
+                        id,
+                        NodeParams {
+                            bypass: true,
+                            masks: masks.remove(&id).unwrap_or_default(),
+                            ..NodeParams::default()
+                        },
+                    );
                 }
-                // Until S-11b (`docs/27` section 10) the node passes its picture through unchanged: the
-                // corrector machinery runs it bypassed, so its picture is its input's, and its key output is
-                // still the mask of its Mask tab (as a bypassed corrector's).
-                others.insert(
-                    id,
-                    NodeParams {
-                        bypass: true,
-                        masks: masks.remove(&id).unwrap_or_default(),
-                        ..NodeParams::default()
-                    },
-                );
             }
             Some(NodeKind::Corrector) => {
                 let Some(c) = s.nodes.corrector(id) else {
@@ -1319,9 +1378,31 @@ fn nodes_key(
                 node_masks(&f.masks),
             );
         } else if let Some(f) = s.nodes.face_refinement(id) {
-            // A Face Refinement node passes its picture through until S-11b (`docs/27`): what makes its key output
-            // is its Bypass and its masks. S-11b adds its amounts and its protection plane here.
-            let _ = write!(k, "face{id}:{}:{:?};", f.bypass, node_masks(&f.masks));
+            // A Face Refinement node by everything that makes its picture (not its name or place): Bypass, the amounts (the
+            // one set for every face, whether it is used, and the sets of the faces), the protection plane (a hash of the
+            // strokes, never the strokes, and its Feather, Grow and Refine), the masks, and the faces it retouches (the
+            // analysis' own key: a new picture or a new frame is a new key; none while the photo has none yet).
+            let protect = strokes_key(
+                f.protect
+                    .strokes
+                    .iter()
+                    .map(|s| (s.size, s.hardness, s.erase, s.points.as_slice())),
+            );
+            let _ = write!(
+                k,
+                "face{id}:{}:{}:{:?}:{:?}:protect{protect:x}:{}:{}:{}:{:?}:faces{};",
+                f.bypass,
+                f.same_for_all,
+                f.all,
+                f.faces,
+                f.protect.grow,
+                f.protect.feather,
+                f.protect.refine,
+                node_masks(&f.masks),
+                objects
+                    .and_then(|o| o.faces())
+                    .map_or_else(|| "none".to_owned(), |e| format!("{:x}", e.hash)),
+            );
         } else if let Some(m) = s.nodes.mixer(id) {
             // A mixer, a Splitter or a Combiner: its kind, bypass and, for a Layer, mode and opacity. Its links are in
             // the plan above.

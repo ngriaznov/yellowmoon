@@ -75,6 +75,7 @@
 
 mod device;
 mod export_tail;
+mod face_pass;
 mod film_pass;
 pub mod level;
 
@@ -912,8 +913,10 @@ fn raster_read(
     let grown = chains
         .iter()
         .map(|c| {
+            // The area the picture is asked for, grown to hold the face regions it meets (`FilmRender::widen`).
+            let asked = film.as_ref().map_or(picture, |f| f.widen(picture));
             c.schedule(u_px, &|id| film.as_ref().and_then(|f| f.reach_of(id)))
-                .infer(picture, &frame)
+                .infer(asked, &frame)
                 .source
         })
         .fold(Area::default(), ym_color::schedule::union_area);
@@ -4246,7 +4249,9 @@ impl Renderer {
         // The colour stage of a DNG's renders runs on the device when the export tail is on; the
         // frame stays on the host. A device error there, or in the raw chain, makes the whole render
         // again on the CPU: one file is wholly device or wholly CPU, never a mix of tiles.
-        let mut device_colour = if request.target.is_dng() {
+        let mut device_colour = if request.target.is_dng()
+            && !job.faces_force_cpu(&job.src.settings, ym_color::plan::Stop::Output)
+        {
             export_tail::dng_colour_gpu(&mut job)?
         } else {
             None
@@ -4288,7 +4293,11 @@ impl Renderer {
                         w: tw,
                         h: th,
                     };
-                    let grown = schedule.infer(tile_area, &frame_area).source;
+                    // The tile, grown to hold the face regions it meets (`FilmRender::widen`).
+                    let asked = film_render
+                        .as_ref()
+                        .map_or(tile_area, |f| f.widen(tile_area));
+                    let grown = schedule.infer(asked, &frame_area).source;
                     let (gx, gy) = (grown.x as usize, grown.y as usize);
                     if grid.source_bounds(ox, oy, tw, th, 3).is_some()
                         && let Some((x0, y0, x1, y1)) =

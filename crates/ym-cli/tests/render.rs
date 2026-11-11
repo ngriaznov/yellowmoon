@@ -1316,7 +1316,7 @@ fn a_settings_file_with_a_face_refinement_node_is_read_and_the_photo_renders() {
     )
     .expect("write");
     let out = sb
-        .ym()
+        .ym_fake_faces()
         .args(["render", "--json", "--settings"])
         .arg(&file)
         .arg(&arw)
@@ -1360,6 +1360,60 @@ fn a_settings_file_with_a_face_refinement_node_is_read_and_the_photo_renders() {
             .code(2)
             .stderr(predicate::str::contains(needle));
     }
+}
+
+/// A copy of Yellowmoon with no face models (`data/models/mediapipe` is not there): a Face Refinement node that does something stops that
+/// photo with `error.kind` `mask` and the node's sentence, exit 1, nothing written, as a Depth row without its model does; a
+/// bypassed node, one with every amount at 0 and a photo without the node go on (`docs/27` S-11b).
+#[cfg(unix)]
+#[test]
+fn a_face_refinement_node_without_the_models_is_the_mask_error_and_the_other_photos_go_on() {
+    let sb = Sandbox::new();
+    sb.arw("a_live.ARW");
+    sb.arw("b_bypassed.ARW");
+    sb.arw("c_plain.ARW");
+    let node = |body: &str| {
+        serde_json::from_str::<Value>(&format!(
+            r#"{{ "nodes": {{ "items": [ {{ "id": 2, "kind": "face_refinement" {body} }} ], "links": [
+                {{ "from": {{ "node": "input", "port": "picture" }}, "to": {{ "node": 1, "port": "picture" }} }},
+                {{ "from": {{ "node": 1, "port": "picture" }}, "to": {{ "node": 2, "port": "picture" }} }},
+                {{ "from": {{ "node": 2, "port": "picture" }}, "to": {{ "node": "output", "port": "picture" }} }} ] }} }}"#
+        ))
+        .expect("a document")
+    };
+    let file = sb.root().join("per-file.json");
+    let doc_text = serde_json::json!({
+        "a_live.ARW": node(""),
+        "b_bypassed.ARW": node(r#", "bypass": true"#),
+        "c_plain.ARW": serde_json::json!({}),
+    });
+    std::fs::write(&file, doc_text.to_string()).expect("write");
+    let without = sb.data_without_the_face_weights();
+    let out = sb
+        .ym_data(&without)
+        .args(["render", "--cpu", "--json", "--settings"])
+        .arg(&file)
+        .arg(sb.photos())
+        .assert()
+        .code(1);
+    let objects = json_lines(&out.get_output().stdout);
+    assert_eq!(objects.len(), 3);
+    let find = |name: &str| {
+        objects
+            .iter()
+            .find(|o| o["input"].as_str().is_some_and(|i| i.ends_with(name)))
+            .unwrap_or_else(|| panic!("no record for {name}"))
+    };
+    let o = find("a_live.ARW");
+    assert_eq!(o["status"], "error");
+    assert_eq!(o["output"], Value::Null);
+    assert_eq!(o["error"]["kind"], "mask");
+    assert_eq!(
+        o["error"]["message"],
+        "Node 2 is a Face Refinement node, and the face models are missing. Reinstall Yellowmoon, or remove the node."
+    );
+    assert_eq!(find("b_bypassed.ARW")["status"], "ok");
+    assert_eq!(find("c_plain.ARW")["status"], "ok");
 }
 
 #[test]

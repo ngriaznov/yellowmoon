@@ -230,12 +230,25 @@ pub struct ObjectPlanes {
     /// row it stands for. The Depth row of that node gives the plane whole instead of its band (the request is a Show depth
     /// view of one row); the Depth rows of the nodes upstream of it keep their bands.
     depth_show: Option<(u32, Arc<SourcePlane>)>,
+    /// The photo's faces for the Face Refinement nodes of the plan (`docs/27` decision 13): `None` for a plan with no live
+    /// node, a computer with no face model, and a viewer whose photo has none yet (the node then passes its picture through).
+    faces: Option<Arc<super::graph::FaceEntry>>,
 }
 
 impl ObjectPlanes {
     /// Adds the plane of the rows that have this prompt.
     pub(crate) fn insert(&mut self, prompt: u64, plane: Arc<SourcePlane>) {
         self.planes.insert(prompt, plane);
+    }
+
+    /// Adds the photo's faces, which the Face Refinement nodes retouch.
+    pub(crate) fn insert_faces(&mut self, faces: Arc<super::graph::FaceEntry>) {
+        self.faces = Some(faces);
+    }
+
+    /// The photo's faces for the Face Refinement nodes.
+    pub(crate) fn faces(&self) -> Option<&Arc<super::graph::FaceEntry>> {
+        self.faces.as_ref()
     }
 
     /// Adds the photo's depth map, which the Depth rows cut their band from.
@@ -282,6 +295,7 @@ impl ObjectPlanes {
             && self.vision.iter().all(Option::is_none)
             && self.depth.is_none()
             && self.depth_show.is_none()
+            && self.faces.is_none()
     }
 
     /// The plane of an Object row, by what the row asks (its points and box). `None` for a row with none or whose

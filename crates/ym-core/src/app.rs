@@ -298,6 +298,16 @@ impl Core {
                     crate::pipeline::DepthModel::probe(&options.data_root)
                 };
         }
+        // MediaPipe's face models for the Face Refinement node: found here too (their weights load when a node first needs
+        // them). The test hook `YELLOWMOON_TEST_FACES=fake` puts a fake finder in their place, for `ym` and the app alike.
+        if render.face_model.is_none() {
+            render.face_model =
+                if std::env::var(crate::pipeline::FaceModel::TEST_ENV).as_deref() == Ok("fake") {
+                    Some(crate::pipeline::FaceModel::fake_default())
+                } else {
+                    crate::pipeline::FaceModel::probe(&options.data_root)
+                };
+        }
         // The lens reads the cameras' spectral curves from the same folder.
         if render.data_root.is_none() {
             render.data_root = Some(options.data_root.clone());
@@ -657,6 +667,38 @@ impl Core {
         self.prepare_object(id);
         self.prepare_vision(id);
         self.prepare_depth(id);
+        self.prepare_faces(id);
+    }
+
+    /// Asks for the faces of the photo in the background when it is the photo being looked at and has a Face Refinement node
+    /// ([`Renderer::faces_prepare`]; `docs/27` decision 9). Returns at once; the picture, the finder and the masks run on the
+    /// worker, which waits 150 ms so that a drag of the Input's exposure makes one analysis. Nothing happens for a photo that is
+    /// not current, one without such a node, and a copy of Yellowmoon with no face models.
+    pub fn prepare_faces(&self, id: PhotoId) {
+        if self.session.current() != Some(id) || !self.renderer.faces_available() {
+            return;
+        }
+        let Ok(view) = self.session.view(id) else {
+            return;
+        };
+        if !crate::pipeline::color::has_face_node(&view.settings) {
+            return;
+        }
+        if let Ok(src) = crate::pipeline::PhotoSource::from_session(&self.session, id) {
+            self.renderer.faces_prepare(&src);
+        }
+    }
+
+    /// `face_state(photo_id)` (`docs/27` S-11b): where the faces of the photo are, for the panel of a Face Refinement node: finding,
+    /// ready with the faces' numbers and boxes (none is a valid answer), failed with the sentence, or the models missing.
+    /// Asking changes nothing and starts nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Session`] for a photo that is unknown or not developed yet.
+    pub fn face_state(&self, id: PhotoId) -> Result<crate::pipeline::FaceState, CoreError> {
+        let src = crate::pipeline::PhotoSource::from_session(&self.session, id)?;
+        Ok(self.renderer.face_state(&src))
     }
 
     /// Asks for the depth map of the photo in the background when it is the photo being looked at and has a Depth row with

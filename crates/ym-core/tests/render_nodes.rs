@@ -357,11 +357,12 @@ fn face_refinement(id: u32, x: f64, body: Value) -> Value {
     node
 }
 
-/// Until S-11b (`docs/27` section 10, S-11a) a Face Refinement node passes its picture through unchanged: every output
-/// (the display render, the viewport frame, the linear DNG picture) is the graph's without it, whatever its settings,
-/// protection and mask rows say, and on the CPU and through the plan whether it sits first, in the middle or last.
+/// A Face Refinement node passes its picture through unchanged on a renderer that has no face models (`docs/27` section 10, S-11b:
+/// the "models missing" phase): every output (the display render, the viewport frame, the linear DNG picture) is the graph's
+/// without it, whatever its settings, protection and mask rows say, and on the CPU and through the plan whether it sits first, in
+/// the middle or last. (The render with models is in `face_render.rs`.)
 #[test]
-fn a_face_refinement_node_passes_its_picture_through_until_s11b() {
+fn without_face_models_a_face_refinement_node_passes_its_picture_through() {
     let d = photo(Layout::Patchwork, 0.5);
     let src = d.source();
     let r = renderer();

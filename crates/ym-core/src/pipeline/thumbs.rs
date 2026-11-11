@@ -52,12 +52,13 @@ use super::RenderError;
 use super::color::{
     LookProblem, LookProvider, PhotoSource, ResolvedLook, node_plan, raw_fingerprint, with_look,
 };
+use super::faces::FACE_ANALYSIS_LONG_EDGE_PX;
 use super::frame::{
     FrameOptions, FrameOutput, FullImage, FullRequest, RenderedFrame, Sampled, ViewSpec,
     render_view, sample_view_routed,
 };
 use super::geometry::Affine;
-use super::graph::{Job, RenderOptions, Renderer};
+use super::graph::{Job, RenderOptions, Renderer, face_source};
 use super::object::{OBJECT_PICTURE_PX, object_source};
 use super::viewport::ViewportState;
 use crate::apple_auto::{AdvisorPicture, PICTURE_LONG_EDGE_PX};
@@ -611,6 +612,17 @@ impl Renderer {
         long_edge: usize,
         cancel: &CancelToken,
     ) -> Result<AdvisorPicture, RenderError> {
+        self.whole_picture_sized(src, long_edge, cancel)
+            .map(|(picture, _)| picture)
+    }
+
+    /// [`Renderer::whole_picture`] with the size of the photo's final frame at full resolution.
+    fn whole_picture_sized(
+        &self,
+        src: &PhotoSource,
+        long_edge: usize,
+        cancel: &CancelToken,
+    ) -> Result<(AdvisorPicture, (usize, usize)), RenderError> {
         let mut job = Job::new(self, src, cancel)?.with_gpu_priority(Priority::Thumbnail);
         let image = job.final_size()?;
         let (width, height) = thumbnail_size(image, long_edge);
@@ -641,7 +653,28 @@ impl Renderer {
             .for_each(|(d, s)| {
                 d.copy_from_slice(&s[..3]);
             });
-        Ok(AdvisorPicture { width, height, rgb })
+        Ok((AdvisorPicture { width, height, rgb }, image))
+    }
+
+    /// The picture the faces are looked for in ([`face_source`]): the Input's picture in the final frame, whole, at
+    /// [`FACE_ANALYSIS_LONG_EDGE_PX`] on the long edge at most, Neutral look, no output sharpening, sRGB, 8 bits, with the
+    /// size of the final frame at full resolution. Made on the CPU reference path by the renderer of its own that has no
+    /// device, so that the faces and the masks are the same bytes on every machine. Its caches are dropped when the picture is
+    /// done. Always made again.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job.
+    pub(crate) fn face_picture_made(
+        &self,
+        src: &PhotoSource,
+        cancel: &CancelToken,
+    ) -> Result<(AdvisorPicture, (usize, usize)), RenderError> {
+        let reference = self.object_reference()?;
+        let picture =
+            reference.whole_picture_sized(&face_source(src), FACE_ANALYSIS_LONG_EDGE_PX, cancel);
+        reference.forget(src.id);
+        picture
     }
 
     /// The photo as it is developed now, through one look at 100 % (the Look tab's tiles). It does
@@ -860,6 +893,8 @@ impl Renderer {
             self.vision_leave(old);
             // And the depth worker.
             self.depth_leave(old);
+            // And the face worker.
+            self.faces_leave(old);
         }
         self.scheduler().navigate(photo)
     }

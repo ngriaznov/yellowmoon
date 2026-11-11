@@ -90,6 +90,9 @@ enum Depth {
     Data,
     /// The deterministic fake: `DepthModel::fake_default()` for the app, `YELLOWMOON_TEST_DEPTH=fake` for the binary.
     Fake,
+    /// The deterministic fake face finder (S-11b): `FaceModel::fake_default()` for the app, `YELLOWMOON_TEST_FACES=fake` for the
+    /// binary.
+    FakeFaces,
 }
 
 /// The app's side: a core over its own app folder with one photo open.
@@ -181,6 +184,8 @@ impl App {
         options.render.vision = vision.map(|v| ym_core::vision::VisionMasks::new(v.provider()));
         options.render.depth_model =
             (depth == Depth::Fake).then(ym_core::pipeline::DepthModel::fake_default);
+        options.render.face_model =
+            (depth == Depth::FakeFaces).then(ym_core::pipeline::FaceModel::fake_default);
         match auto {
             Auto::None => {}
             Auto::AppleFake => {
@@ -1031,6 +1036,9 @@ fn graph_leg_full(
     if depth == Depth::Fake {
         env_pairs.push(common::FAKE_DEPTH);
     }
+    if depth == Depth::FakeFaces {
+        env_pairs.push(common::FAKE_FACES);
+    }
     let env: &[(&str, &str)] = &env_pairs;
     let default_graph = app.export(
         ExportOptions {
@@ -1618,6 +1626,38 @@ fn depth_masks_are_the_same_files_through_the_app_path_and_the_binary_on_the_dev
         None,
         true,
         Depth::Fake,
+        |_| {},
+    );
+}
+
+/// A Face Refinement node after Main with strong amounts, per-face settings and a stroke of protection.
+fn face_doc() -> serde_json::Value {
+    serde_json::json!({ "nodes": { "items": [
+        { "id": 2, "kind": "face_refinement", "pos": [1, 0], "same_for_all": false,
+          "faces": [ { "blemish": 60, "dark_circles": 90, "even_skin": 90, "skin_contrast": 40 },
+                     { "dark_circles": 70, "even_skin": 60, "shadow_desaturation": 50, "teeth_whitening": 50 } ],
+          "protect": { "strokes": [ { "size": 0.03, "points": [[0.55, 0.4], [0.6, 0.45]] } ], "feather": 0.2 } }
+    ], "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+    ] } })
+}
+
+/// The Face Refinement node (S-11b) with the deterministic fake finder on both sides (`FaceModel::fake_default` for the app,
+/// `YELLOWMOON_TEST_FACES=fake` for the binary): the same files in JPEG, 16-bit TIFF and DNG, the node changes pixels, and the app,
+/// which finds the faces itself at export time as `ym` does and keeps nothing, agrees with it. Runs on every platform (the node is
+/// the CPU's whatever the policy).
+#[test]
+fn a_face_refinement_node_is_the_same_files_through_the_app_path_and_the_binary() {
+    graph_leg_full(
+        "face refinement",
+        face_doc(),
+        1,
+        false,
+        None,
+        true,
+        Depth::FakeFaces,
         |_| {},
     );
 }
