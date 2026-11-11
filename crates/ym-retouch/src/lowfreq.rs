@@ -433,6 +433,7 @@ pub(crate) fn retouch_with(
         render_scale,
         &masks,
         None,
+        None,
         half_override,
     )
 }
@@ -466,7 +467,176 @@ pub fn retouch_tones(
         masks,
         protect,
         None,
+        None,
     )
+}
+
+/// Where an image that is a part of the working image sits: the working pixel of its top-left corner and the size of the
+/// whole working image. Pixel `(x, y)` of the part is working pixel `(x + origin_px.0, y + origin_px.1)`.
+///
+/// A part gives the pixels of the whole image bit for bit when it holds everything a face reads and writes
+/// ([`tones_region`]) and its origin is even (the half-resolution path works on 2 x 2 blocks of the whole image's grid).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placement {
+    /// The working pixel of the part's top-left corner.
+    pub origin_px: (i32, i32),
+    /// The size of the whole working image, in pixels.
+    pub working_px: (u32, u32),
+}
+
+/// [`retouch_tones`] on a part of the working image (see [`Placement`]); `protect` is the same part of the protection mask.
+///
+/// # Errors
+///
+/// As [`retouch_tones`].
+#[allow(clippy::too_many_arguments)]
+pub fn retouch_tones_at(
+    image: &mut LinearAwg4Image,
+    place: Placement,
+    full_size_px: (u32, u32),
+    face: &Face,
+    settings: &SkinSettings,
+    render_scale: f32,
+    masks: &ToolMasks<'_>,
+    protect: Option<&Mask>,
+) -> Result<bool> {
+    tones_with(
+        image,
+        full_size_px,
+        face,
+        settings,
+        render_scale,
+        masks,
+        protect,
+        Some(place),
+        None,
+    )
+}
+
+/// A full-resolution mask as the working-resolution mask of a part: resampled by `render_scale` to the whole working image,
+/// then moved to the part's coordinates and clipped to the part.
+fn mask_in_part(
+    mask: &BoundedMask,
+    render_scale: f32,
+    place: Placement,
+    part: (u32, u32),
+) -> Result<Option<BoundedMask>> {
+    let Some(w) = mask_to_working(mask, render_scale, place.working_px)? else {
+        return Ok(None);
+    };
+    if place.origin_px == (0, 0) && part == place.working_px {
+        return Ok(Some(w));
+    }
+    let (ox, oy) = (i64::from(place.origin_px.0), i64::from(place.origin_px.1));
+    let x0 = (i64::from(w.region.x_px) - ox).max(0);
+    let y0 = (i64::from(w.region.y_px) - oy).max(0);
+    let x1 = (w.region.right_px() - ox).min(i64::from(part.0));
+    let y1 = (w.region.bottom_px() - oy).min(i64::from(part.1));
+    if x0 >= x1 || y0 >= y1 {
+        return Ok(None);
+    }
+    let (nw, nh) = ((x1 - x0) as usize, (y1 - y0) as usize);
+    let mw = w.mask.width_px as usize;
+    let mut data = Vec::with_capacity(nw * nh);
+    for y in y0..y1 {
+        let sy = (y + oy - i64::from(w.region.y_px)) as usize;
+        let sx = (x0 + ox - i64::from(w.region.x_px)) as usize;
+        data.extend_from_slice(&w.mask.data[sy * mw + sx..sy * mw + sx + nw]);
+    }
+    Ok(Some(BoundedMask::new(
+        Rect::new(x0 as i32, y0 as i32, nw as u32, nh as u32),
+        Mask::new(nw as u32, nh as u32, data)?,
+    )?))
+}
+
+/// The padded region the low-frequency pass of one face works in, clipped to a `size` image: the bounding box of the active
+/// masks grown by `(r_tex + reach) * ds + ds` pixels, its origin even on the half path. `None` without a mask.
+fn padded_region(
+    masks: &[(&Option<BoundedMask>, usize)],
+    p: &LowFreqParams,
+    size: (u32, u32),
+) -> Option<Rect> {
+    let (mut x0, mut y0, mut x1, mut y1) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+    let mut reach = 0usize;
+    for (m, r) in masks {
+        if let Some(m) = m {
+            x0 = x0.min(i64::from(m.region.x_px));
+            y0 = y0.min(i64::from(m.region.y_px));
+            x1 = x1.max(m.region.right_px());
+            y1 = y1.max(m.region.bottom_px());
+            reach = reach.max(*r);
+        }
+    }
+    if x0 == i64::MAX {
+        return None;
+    }
+    let pad = ((p.r_tex + reach) * p.ds + p.ds) as i64;
+    let even = |v: i64| if p.half { v & !1 } else { v };
+    let x0 = even((x0 - pad).max(0));
+    let y0 = even((y0 - pad).max(0));
+    let x1 = (x1 + pad).min(i64::from(size.0));
+    let y1 = (y1 + pad).min(i64::from(size.1));
+    Some(Rect::new(
+        x0 as i32,
+        y0 as i32,
+        (x1 - x0).max(0) as u32,
+        (y1 - y0).max(0) as u32,
+    ))
+}
+
+/// The rectangle of the working image (`working_px` pixels) that the tools of one face read and write: the padded region of
+/// the low-frequency pass joined with the teeth mask's. `None` when no tool is active (an amount of 0, or a mask that is
+/// missing or empty). A part of the working image that holds this rectangle, with an even origin, is retouched like the whole
+/// image ([`retouch_tones_at`]).
+///
+/// # Errors
+///
+/// [`RetouchError::RenderScale`] for a scale outside the limits.
+pub fn tones_region(
+    working_px: (u32, u32),
+    full_size_px: (u32, u32),
+    face: &Face,
+    settings: &SkinSettings,
+    render_scale: f32,
+    masks: &ToolMasks<'_>,
+) -> Result<Option<Rect>> {
+    let d = face_size_px(full_size_px, render_scale, face)?;
+    let place = Placement {
+        origin_px: (0, 0),
+        working_px,
+    };
+    let working = |active: bool, mask: Option<&BoundedMask>| -> Result<Option<BoundedMask>> {
+        match mask {
+            Some(m) if active && !m.mask.is_all_zero() => {
+                mask_in_part(m, render_scale, place, working_px)
+            }
+            _ => Ok(None),
+        }
+    };
+    let dc_mask = working(settings.dc() > 0.0, masks.dark_circles)?;
+    let se_mask = working(settings.se() > 0.0, masks.even_skin)?;
+    let g_mask = working(settings.grading_active(), masks.grading)?;
+    let teeth_mask = working(settings.tw() > 0.0, masks.teeth)?;
+    let p = LowFreqParams::new(d, settings.t(), settings.dc(), settings.se());
+    let mut out = padded_region(
+        &[(&dc_mask, p.r_dc), (&se_mask, p.r_se), (&g_mask, p.r_g)],
+        &p,
+        working_px,
+    );
+    if let Some(t) = &teeth_mask {
+        out = Some(join_rects(out, t.region));
+    }
+    Ok(out)
+}
+
+/// The smallest rectangle that holds `a` (when there is one) and `b`.
+pub(crate) fn join_rects(a: Option<Rect>, b: Rect) -> Rect {
+    let Some(a) = a else { return b };
+    let x0 = i64::from(a.x_px).min(i64::from(b.x_px));
+    let y0 = i64::from(a.y_px).min(i64::from(b.y_px));
+    let x1 = a.right_px().max(b.right_px());
+    let y1 = a.bottom_px().max(b.bottom_px());
+    Rect::new(x0 as i32, y0 as i32, (x1 - x0) as u32, (y1 - y0) as u32)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -478,6 +648,7 @@ pub(crate) fn tones_with(
     render_scale: f32,
     masks: &ToolMasks<'_>,
     protect: Option<&Mask>,
+    place: Option<Placement>,
     half_override: Option<bool>,
 ) -> Result<bool> {
     image.validate()?;
@@ -492,9 +663,15 @@ pub(crate) fn tones_with(
     }
     let d = face_size_px(full_size_px, render_scale, face)?;
     let size = (image.width_px, image.height_px);
+    let place = place.unwrap_or(Placement {
+        origin_px: (0, 0),
+        working_px: size,
+    });
     let working = |active: bool, mask: Option<&BoundedMask>| -> Result<Option<BoundedMask>> {
         match mask {
-            Some(m) if active && !m.mask.is_all_zero() => mask_to_working(m, render_scale, size),
+            Some(m) if active && !m.mask.is_all_zero() => {
+                mask_in_part(m, render_scale, place, size)
+            }
             _ => Ok(None),
         }
     };
@@ -575,24 +752,15 @@ fn low_frequency_pass(
 
     // The padded, clipped working region; its origin is even on the half path so that its 2 x 2
     // blocks sit on the same grid as the whole image's.
-    let (mut x0, mut y0, mut x1, mut y1) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
-    let mut reach = 0usize;
-    for (m, r) in [(dc_mask, p.r_dc), (se_mask, p.r_se), (g_mask, p.r_g)] {
-        if let Some(m) = m {
-            x0 = x0.min(i64::from(m.region.x_px));
-            y0 = y0.min(i64::from(m.region.y_px));
-            x1 = x1.max(m.region.right_px());
-            y1 = y1.max(m.region.bottom_px());
-            reach = reach.max(r);
-        }
-    }
-    let pad = ((p.r_tex + reach) * ds + ds) as i64;
-    let even = |v: i64| if p.half { v & !1 } else { v };
-    let x0 = even((x0 - pad).max(0));
-    let y0 = even((y0 - pad).max(0));
-    let x1 = (x1 + pad).min(i64::from(size.0));
-    let y1 = (y1 + pad).min(i64::from(size.1));
-    let region = Rect::new(x0 as i32, y0 as i32, (x1 - x0) as u32, (y1 - y0) as u32);
+    let Some(region) = padded_region(
+        &[(dc_mask, p.r_dc), (se_mask, p.r_se), (g_mask, p.r_g)],
+        &p,
+        size,
+    ) else {
+        return;
+    };
+    let (x0, y0) = (i64::from(region.x_px), i64::from(region.y_px));
+    let y1 = region.bottom_px();
     let (rw, rh) = (region.width_px as usize, region.height_px as usize);
     let iw = image.width_px as usize;
 
@@ -1492,6 +1660,7 @@ mod tests {
                 &s,
                 1.0,
                 &masks,
+                None,
                 None,
                 Some(half),
             )

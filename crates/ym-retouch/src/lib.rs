@@ -31,17 +31,17 @@ mod types;
 
 pub use blemish::{
     BlemishMap, BlemishMapCache, BlemishMapKey, CHROMA_GUARD_MIN_SIDE_PX, GAIN_MAX, GAIN_MIN,
-    TARGET_FACE_PX, apply_blemish, apply_gain, blemish_gain, blemish_map, chroma_confidence,
-    chroma_pull, encode_channel, gain_strength, threshold_strength,
+    TARGET_FACE_PX, apply_blemish, apply_blemish_at, apply_gain, blemish_gain, blemish_map,
+    chroma_confidence, chroma_pull, encode_channel, gain_strength, threshold_strength,
 };
 pub use classical::{ClassicalBeautyMarks, ClassicalProposer};
 pub use error::{Result, RetouchError};
 pub use feather::feather;
 pub use lowfreq::{
-    LowFreqParams, ToolMasks, blend_pixel, blend_weight, contrast_target, dark_circle_k_sp,
-    dark_circles_target, even_skin_target, mask_to_working, masked_blur_combine,
-    retouch_low_frequency, retouch_tones, shadow_desaturation_pixel, shine_removal_texture,
-    teeth_pixel,
+    LowFreqParams, Placement, ToolMasks, blend_pixel, blend_weight, contrast_target,
+    dark_circle_k_sp, dark_circles_target, even_skin_target, mask_to_working, masked_blur_combine,
+    retouch_low_frequency, retouch_tones, retouch_tones_at, shadow_desaturation_pixel,
+    shine_removal_texture, teeth_pixel, tones_region,
 };
 pub use mask::{
     FaceMasks, blemish_mask, dark_circle_mask, even_skin_mask, face_masks, grading_mask, max,
@@ -51,8 +51,10 @@ pub use mask::{
 pub use models::{
     BeautyMarkDetector, BlemishProposer, FaceMesh, FaceParser, FacePart, MeshTable, Models,
 };
-pub use pipeline::{RetouchCache, prepare_skin, retouch_skin};
+pub use pipeline::{
+    RetouchCache, prepare_skin, retouch_regions, retouch_skin, retouch_skin_region,
+};
 pub use types::{
-    BoundedMask, Face, LinearAwg4Image, Mask, Rect, SkinSettings, check_render_scale,
-    face_extent_px, face_size_px,
+    BoundedMask, Face, LinearAwg4Image, MAX_RENDER_SCALE, Mask, Rect, SkinSettings,
+    check_render_scale, face_extent_px, face_size_px,
 };

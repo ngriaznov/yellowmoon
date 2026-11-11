@@ -63,6 +63,11 @@ pub trait BlemishProposer: Send + Sync {
     fn border_px(&self) -> u32;
     /// Planar RRR..GGG..BBB in, planar out, both in the encoding of `docs/27` 6.1 step 2.
     fn run(&self, input: &[f32]) -> Result<Vec<f32>>;
+    /// A proposer made for a face of `face_px` pixels in the blemish map (`min(face, 450)`), for a proposer whose constants
+    /// scale with the face (the classical one). `None` (the default) means this one serves every face.
+    fn for_face(&self, _face_px: f64) -> Option<Box<dyn BlemishProposer>> {
+        None
+    }
 }
 
 /// The models one retouch run uses.

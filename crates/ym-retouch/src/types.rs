@@ -352,9 +352,14 @@ impl SkinSettings {
     }
 }
 
-/// Checks `render_scale` (0.0001 <= s <= 1, finite) and returns it as `f64`.
+/// The largest `render_scale`: a working image up to this many times the size the masks were built at. Masks and blemish
+/// maps are built at the analysis size (`docs/27` decision 13), which can be smaller than an export; they are resampled
+/// (bilinear) to the working image.
+pub const MAX_RENDER_SCALE: f32 = 16.0;
+
+/// Checks `render_scale` (0.0001 <= s <= [`MAX_RENDER_SCALE`], finite) and returns it as `f64`.
 pub fn check_render_scale(render_scale: f32) -> Result<f64> {
-    if render_scale.is_finite() && (0.0001..=1.0).contains(&render_scale) {
+    if render_scale.is_finite() && (0.0001..=MAX_RENDER_SCALE).contains(&render_scale) {
         Ok(f64::from(render_scale))
     } else {
         Err(RetouchError::RenderScale(render_scale))
@@ -447,7 +452,7 @@ mod tests {
             scale: 0.5,
         };
         assert!(face_size_px((100, 50), 0.0, &face).is_err());
-        assert!(face_size_px((100, 50), 1.5, &face).is_err());
+        assert!(face_size_px((100, 50), 17.0, &face).is_err());
         assert!(face_size_px((100, 50), f32::NAN, &face).is_err());
         assert!(face_size_px((100, 50), 0.0001, &face).is_ok());
         assert_eq!(

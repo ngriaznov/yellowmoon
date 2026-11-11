@@ -7,9 +7,12 @@
 //! (`docs/27` section 9, decision 9). An export passes the full-resolution image to
 //! [`retouch_skin`] directly and the cache fills itself.
 
-use crate::blemish::{BlemishMap, BlemishMapCache, BlemishMapKey, apply_blemish, blemish_map};
+use crate::blemish::{BlemishMap, BlemishMapCache, BlemishMapKey, blemish_map};
 use crate::error::{Result, RetouchError};
-use crate::lowfreq::{ToolMasks, retouch_tones};
+use std::sync::Arc;
+
+use crate::blemish::apply_blemish_at;
+use crate::lowfreq::{Placement, ToolMasks, join_rects, retouch_tones_at, tones_region};
 use crate::mask::{FaceMasks, face_masks};
 use crate::models::Models;
 use crate::types::{
@@ -75,6 +78,12 @@ impl RetouchCache {
     /// The cached masks of face `index`, if any.
     pub fn masks(&self, index: usize) -> Option<&FaceMasks> {
         self.prepared.as_ref().and_then(|p| p.masks.get(index))
+    }
+
+    /// The cached map of face `index` under the current faces, if there is one.
+    fn map_of(&self, index: usize) -> Option<Arc<BlemishMap>> {
+        let faces: Vec<Face> = self.prepared.as_ref()?.faces.clone();
+        self.maps.get(&self.map_key(&faces), index)
     }
 
     fn masks_match(&self, full_size_px: (u32, u32), faces: &[Face]) -> bool {
@@ -222,13 +231,15 @@ fn build_map(
     let mask = crop_mask(bm, rect)?;
     let full = (full_image.width_px, full_image.height_px);
     let face_px = face_size_px(full, 1.0, face)?;
+    // A proposer whose constants follow the face size is made for this face.
+    let own = models.proposer.for_face(face_px);
     blemish_map(
         &crop,
         &mask,
         rect,
         [1.0; 3],
         face_px,
-        models.proposer.as_ref(),
+        own.as_deref().unwrap_or(models.proposer.as_ref()),
     )
 }
 
@@ -335,7 +346,14 @@ pub fn retouch_skin(
             continue;
         }
         if let Some(map) = cache.maps.get(&key, i) {
-            apply_blemish(&mut output, &map, settings.a(), render_scale, protect)?;
+            apply_blemish_at(
+                &mut output,
+                (0, 0),
+                &map,
+                settings.a(),
+                render_scale,
+                protect,
+            )?;
         }
     }
     if wants_low {
@@ -349,8 +367,12 @@ pub fn retouch_skin(
                 grading: masks.grading.as_ref(),
                 teeth: masks.teeth.as_ref(),
             };
-            retouch_tones(
+            retouch_tones_at(
                 &mut output,
+                Placement {
+                    origin_px: (0, 0),
+                    working_px: (image.width_px, image.height_px),
+                },
                 full_size_px,
                 face,
                 settings,
@@ -363,8 +385,299 @@ pub fn retouch_skin(
     Ok(output)
 }
 
+/// The rectangle of the working image (`working_px`) that one face's tools read and write, from the cached masks and map: the
+/// blemish map's footprint (when Blemish is above 0) joined with the region of [`tones_region`]. `None` when no tool of the
+/// face does anything.
+fn face_region(
+    index: usize,
+    face: &Face,
+    settings: &SkinSettings,
+    working_px: (u32, u32),
+    full_size_px: (u32, u32),
+    render_scale: f32,
+    cache: &RetouchCache,
+) -> Result<Option<Rect>> {
+    let Some(masks) = cache.masks(index) else {
+        return Err(RetouchError::NotPrepared);
+    };
+    let scale = f64::from(render_scale);
+    let mut out: Option<Rect> = None;
+    if settings.blemish > 0.0
+        && let Some(map) = cache.map_of(index)
+    {
+        // The map's rectangle in working pixels, with the pixel the bilinear taps and the conservative column range of
+        // `apply_blemish_at` can reach.
+        let r = map.rect;
+        let x0 = ((f64::from(r.x_px) - 1.0) * scale).floor() as i64 - 1;
+        let y0 = ((f64::from(r.y_px) - 1.0) * scale).floor() as i64 - 1;
+        let x1 = ((r.right_px() as f64 + 1.0) * scale).ceil() as i64 + 1;
+        let y1 = ((r.bottom_px() as f64 + 1.0) * scale).ceil() as i64 + 1;
+        let (x0, y0) = (
+            x0.clamp(0, i64::from(working_px.0)),
+            y0.clamp(0, i64::from(working_px.1)),
+        );
+        let (x1, y1) = (
+            x1.clamp(0, i64::from(working_px.0)),
+            y1.clamp(0, i64::from(working_px.1)),
+        );
+        if x0 < x1 && y0 < y1 {
+            out = Some(Rect::new(
+                x0 as i32,
+                y0 as i32,
+                (x1 - x0) as u32,
+                (y1 - y0) as u32,
+            ));
+        }
+    }
+    let tools = ToolMasks {
+        dark_circles: masks.dark_circles.as_ref(),
+        even_skin: masks.even_skin.as_ref(),
+        grading: masks.grading.as_ref(),
+        teeth: masks.teeth.as_ref(),
+    };
+    if let Some(t) = tones_region(
+        working_px,
+        full_size_px,
+        face,
+        settings,
+        render_scale,
+        &tools,
+    )? {
+        out = Some(join_rects(out, t));
+    }
+    Ok(out)
+}
+
+fn intersects(a: &Rect, b: &Rect) -> bool {
+    i64::from(a.x_px) < b.right_px()
+        && i64::from(b.x_px) < a.right_px()
+        && i64::from(a.y_px) < b.bottom_px()
+        && i64::from(b.y_px) < a.bottom_px()
+}
+
+fn contains(outer: &Rect, inner: &Rect) -> bool {
+    i64::from(outer.x_px) <= i64::from(inner.x_px)
+        && i64::from(outer.y_px) <= i64::from(inner.y_px)
+        && outer.right_px() >= inner.right_px()
+        && outer.bottom_px() >= inner.bottom_px()
+}
+
+/// The parts of the working image that [`retouch_skin_region`] needs to retouch `faces` (`docs/27` decision 13): for each
+/// face the rectangle its tools read and write, rectangles that overlap merged into one, every origin even, and cut to the
+/// working image. The parts are disjoint, in reading order. Faces whose tools do nothing give no part. The masks and maps
+/// must be in the cache ([`prepare_skin`]).
+///
+/// # Errors
+///
+/// [`RetouchError::NotPrepared`] without the cached masks, and the errors of the scale.
+pub fn retouch_regions(
+    working_px: (u32, u32),
+    full_size_px: (u32, u32),
+    faces: &[(Face, SkinSettings)],
+    render_scale: f32,
+    cache: &RetouchCache,
+) -> Result<Vec<Rect>> {
+    check_render_scale(render_scale)?;
+    let face_list = faces_of(faces);
+    if !cache.masks_match(full_size_px, &face_list) {
+        return Err(RetouchError::NotPrepared);
+    }
+    let mut rects = Vec::new();
+    for (i, (face, settings)) in faces.iter().enumerate() {
+        let settings = settings.clamped();
+        if let Some(r) = face_region(
+            i,
+            face,
+            &settings,
+            working_px,
+            full_size_px,
+            render_scale,
+            cache,
+        )? {
+            rects.push(r);
+        }
+    }
+    // Even origins (the half-resolution path of the low-frequency layers works on 2 x 2 blocks of the whole image's grid),
+    // then overlapping rectangles merged until none overlap.
+    let align = |r: Rect| {
+        let x0 = i64::from(r.x_px) & !1;
+        let y0 = i64::from(r.y_px) & !1;
+        Rect::new(
+            x0 as i32,
+            y0 as i32,
+            (r.right_px() - x0) as u32,
+            (r.bottom_px() - y0) as u32,
+        )
+    };
+    let mut rects: Vec<Rect> = rects.into_iter().map(align).collect();
+    loop {
+        let mut merged = false;
+        'search: for i in 0..rects.len() {
+            for j in (i + 1)..rects.len() {
+                if intersects(&rects[i], &rects[j]) {
+                    let joined = join_rects(Some(rects[i]), rects[j]);
+                    rects[i] = joined;
+                    rects.remove(j);
+                    merged = true;
+                    break 'search;
+                }
+            }
+        }
+        if !merged {
+            break;
+        }
+    }
+    rects.sort_by_key(|r| (r.y_px, r.x_px));
+    Ok(rects)
+}
+
+/// [`retouch_skin`] on a part of the working image (`docs/27` decision 13): `part` is the rectangle of the working image
+/// whose top-left pixel is `place.origin_px` (`place.working_px` is the size of the whole), and `protect` is the same
+/// rectangle of the protection mask. Returns the retouched part. The pixels are those of the same rectangle of
+/// [`retouch_skin`] on the whole image, bit for bit, when `part` holds every rectangle of the faces it meets (one of
+/// [`retouch_regions`]).
+///
+/// Masks and maps come from the cache only ([`prepare_skin`]); nothing is built here and no model runs. A face whose
+/// rectangle does not meet the part is left out; one that meets it without being inside it is an error.
+///
+/// # Errors
+///
+/// [`RetouchError::NotPrepared`] without the cached masks or maps; [`RetouchError::Part`] for an odd origin, a part outside
+/// the working image, or a face that is cut by the part; and the errors of [`retouch_skin`].
+pub fn retouch_skin_region(
+    part: &LinearAwg4Image,
+    place: Placement,
+    full_size_px: (u32, u32),
+    faces: &[(Face, SkinSettings)],
+    render_scale: f32,
+    cache: &RetouchCache,
+    protect: Option<&Mask>,
+) -> Result<LinearAwg4Image> {
+    part.validate()?;
+    let scale = check_render_scale(render_scale)?;
+    let working = place.working_px;
+    check_working_size_px(working, full_size_px, render_scale, scale)?;
+    if place.origin_px.0 < 0
+        || place.origin_px.1 < 0
+        || place.origin_px.0 & 1 != 0
+        || place.origin_px.1 & 1 != 0
+    {
+        return Err(RetouchError::Part {
+            why: "its origin must be even and inside the picture",
+        });
+    }
+    let bounds = Rect::new(
+        place.origin_px.0,
+        place.origin_px.1,
+        part.width_px,
+        part.height_px,
+    );
+    if bounds.right_px() > i64::from(working.0) || bounds.bottom_px() > i64::from(working.1) {
+        return Err(RetouchError::Part {
+            why: "it reaches past the picture",
+        });
+    }
+    if let Some(p) = protect {
+        p.validate()?;
+        if p.size_px() != (part.width_px, part.height_px) {
+            return Err(RetouchError::MaskSizeMismatch {
+                left: (part.width_px, part.height_px),
+                right: p.size_px(),
+            });
+        }
+    }
+    let faces: Vec<(Face, SkinSettings)> = faces.iter().map(|(f, s)| (*f, s.clamped())).collect();
+    let mut output = part.clone();
+    let face_list = faces_of(&faces);
+    if !cache.masks_match(full_size_px, &face_list) {
+        return Err(RetouchError::NotPrepared);
+    }
+    // The faces of this part, by their regions.
+    let mut mine = Vec::new();
+    for (i, (face, settings)) in faces.iter().enumerate() {
+        let Some(region) = face_region(
+            i,
+            face,
+            settings,
+            working,
+            full_size_px,
+            render_scale,
+            cache,
+        )?
+        else {
+            continue;
+        };
+        if !intersects(&bounds, &region) {
+            continue;
+        }
+        if !contains(&bounds, &region) {
+            return Err(RetouchError::Part {
+                why: "a face reaches past it",
+            });
+        }
+        mine.push(i);
+    }
+    let key = cache.map_key(&face_list);
+    for &i in &mine {
+        let settings = &faces[i].1;
+        if settings.blemish > 0.0 {
+            let Some(map) = cache.maps.get(&key, i) else {
+                if cache.masks(i).is_some_and(|m| m.blemish.is_some()) {
+                    return Err(RetouchError::NotPrepared);
+                }
+                continue;
+            };
+            apply_blemish_at(
+                &mut output,
+                place.origin_px,
+                &map,
+                settings.a(),
+                render_scale,
+                protect,
+            )?;
+        }
+    }
+    for &i in &mine {
+        let (face, settings) = &faces[i];
+        let Some(masks) = cache.masks(i) else {
+            continue;
+        };
+        let tools = ToolMasks {
+            dark_circles: masks.dark_circles.as_ref(),
+            even_skin: masks.even_skin.as_ref(),
+            grading: masks.grading.as_ref(),
+            teeth: masks.teeth.as_ref(),
+        };
+        retouch_tones_at(
+            &mut output,
+            place,
+            full_size_px,
+            face,
+            settings,
+            render_scale,
+            &tools,
+            protect,
+        )?;
+    }
+    Ok(output)
+}
+
 fn check_working_size(
     image: &LinearAwg4Image,
+    full_size_px: (u32, u32),
+    render_scale: f32,
+    scale: f64,
+) -> Result<()> {
+    check_working_size_px(
+        (image.width_px, image.height_px),
+        full_size_px,
+        render_scale,
+        scale,
+    )
+}
+
+fn check_working_size_px(
+    working_px: (u32, u32),
     full_size_px: (u32, u32),
     render_scale: f32,
     scale: f64,
@@ -373,11 +686,11 @@ fn check_working_size(
     let (ew, eh) = (expected(full_size_px.0), expected(full_size_px.1));
     if full_size_px.0 == 0
         || full_size_px.1 == 0
-        || (f64::from(image.width_px) - ew).abs() > 2.0
-        || (f64::from(image.height_px) - eh).abs() > 2.0
+        || (f64::from(working_px.0) - ew).abs() > 2.0
+        || (f64::from(working_px.1) - eh).abs() > 2.0
     {
         return Err(RetouchError::WorkingSize {
-            image: (image.width_px, image.height_px),
+            image: working_px,
             full: full_size_px,
             scale: render_scale,
             expected: (ew as u32, eh as u32),
@@ -847,6 +1160,223 @@ mod tests {
         assert!(matches!(err, Err(RetouchError::MaskSizeMismatch { .. })));
     }
 
+    fn upscale2(img: &LinearAwg4Image) -> LinearAwg4Image {
+        let (w, h) = (img.width_px as usize * 2, img.height_px as usize * 2);
+        let mut data = Vec::with_capacity(w * h);
+        for y in 0..h {
+            for x in 0..w {
+                data.push(img.data[(y / 2) * img.width_px as usize + x / 2]);
+            }
+        }
+        LinearAwg4Image::new(w as u32, h as u32, data).unwrap()
+    }
+
+    /// Stitches the parts [`retouch_skin_region`] gives over a copy of the working image.
+    fn by_parts(
+        working: &LinearAwg4Image,
+        full: (u32, u32),
+        faces: &[(Face, SkinSettings)],
+        scale: f32,
+        cache: &RetouchCache,
+        protect: Option<&Mask>,
+    ) -> (LinearAwg4Image, Vec<Rect>) {
+        let size = (working.width_px, working.height_px);
+        let parts = retouch_regions(size, full, faces, scale, cache).unwrap();
+        let mut out = working.clone();
+        for r in &parts {
+            assert!(r.x_px % 2 == 0 && r.y_px % 2 == 0, "even origin {r:?}");
+            let crop = crop_image(working, *r).unwrap();
+            let prot = protect.map(|p| crop_mask_plain(p, *r));
+            let done = retouch_skin_region(
+                &crop,
+                Placement {
+                    origin_px: (r.x_px, r.y_px),
+                    working_px: size,
+                },
+                full,
+                faces,
+                scale,
+                cache,
+                prot.as_ref(),
+            )
+            .unwrap();
+            for y in 0..r.height_px as usize {
+                let dst = (r.y_px as usize + y) * size.0 as usize + r.x_px as usize;
+                let src = y * r.width_px as usize;
+                out.data[dst..dst + r.width_px as usize]
+                    .copy_from_slice(&done.data[src..src + r.width_px as usize]);
+            }
+        }
+        (out, parts)
+    }
+
+    fn crop_mask_plain(m: &Mask, r: Rect) -> Mask {
+        let (w, h) = (r.width_px as usize, r.height_px as usize);
+        let mut data = Vec::with_capacity(w * h);
+        for y in 0..h {
+            let s = (r.y_px as usize + y) * m.width_px as usize + r.x_px as usize;
+            data.extend_from_slice(&m.data[s..s + w]);
+        }
+        Mask::new(w as u32, h as u32, data).unwrap()
+    }
+
+    /// The tools on parts around the faces equal the tools on the whole picture, bit for bit, at the scales an export and a
+    /// preview use, with several faces (two far apart, two that overlap), every tool on and a protection plane.
+    #[test]
+    fn parts_around_the_faces_equal_the_whole_picture_bit_for_bit() {
+        let faces_at = [
+            // Two faces far apart, and a pair whose regions overlap.
+            Face {
+                rect: Rect::new(60, 40, 220, 260),
+                scale: 0.26,
+            },
+            Face {
+                rect: Rect::new(700, 60, 200, 240),
+                scale: 0.24,
+            },
+            Face {
+                rect: Rect::new(380, 220, 180, 210),
+                scale: 0.21,
+            },
+            Face {
+                rect: Rect::new(470, 240, 170, 200),
+                scale: 0.2,
+            },
+        ];
+        let (w, h) = (1000u32, 520u32);
+        let mut full = synthetic(w, h, &faces_at[0]);
+        for f in &faces_at[1..] {
+            let extra = synthetic(w, h, f);
+            for (a, b) in full.data.iter_mut().zip(&extra.data) {
+                *a = [
+                    (a[0] + b[0]) * 0.5,
+                    (a[1] + b[1]) * 0.5,
+                    (a[2] + b[2]) * 0.5,
+                ];
+            }
+        }
+        let models = test_models(MockProposer::scale(192, 0.9));
+        let mix = [
+            settings_all(),
+            settings(70.0, 0.0, 0.0),
+            settings_all(),
+            settings(0.0, 80.0, 40.0),
+        ];
+        let faces: Vec<(Face, SkinSettings)> = faces_at.iter().copied().zip(mix).collect();
+        let mut cache = RetouchCache::new(3, 3);
+        prepare_skin(&full, &faces, &models, &mut cache).unwrap();
+        for (scale, working) in [
+            (1.0f32, full.clone()),
+            (0.5, downscale2(&full)),
+            (2.0, upscale2(&full)),
+        ] {
+            let size = (working.width_px, working.height_px);
+            let protect = Mask::new(
+                size.0,
+                size.1,
+                (0..size.0 * size.1)
+                    .map(|i| {
+                        if (i % size.0 / 40 + i / size.0 / 40) % 3 == 0 {
+                            255
+                        } else if i % 7 == 0 {
+                            128
+                        } else {
+                            0
+                        }
+                    })
+                    .collect(),
+            )
+            .unwrap();
+            for protect in [None, Some(&protect)] {
+                let whole = retouch_skin(
+                    &working,
+                    (w, h),
+                    &faces,
+                    scale,
+                    &models,
+                    &mut cache,
+                    protect,
+                )
+                .unwrap();
+                assert_ne!(
+                    bits(&whole),
+                    bits(&working),
+                    "the tools changed the picture at {scale}"
+                );
+                let (stitched, parts) = by_parts(&working, (w, h), &faces, scale, &cache, protect);
+                assert!(!parts.is_empty());
+                assert_eq!(
+                    bits(&stitched),
+                    bits(&whole),
+                    "scale {scale}: parts equal the whole picture"
+                );
+                if scale == 1.0 {
+                    // The two far faces are two parts and the overlapping pair is one; a part is smaller than the picture.
+                    assert!(parts.len() >= 2 && parts.len() <= 3, "{parts:?}");
+                    let area: u64 = parts
+                        .iter()
+                        .map(|r| u64::from(r.width_px) * u64::from(r.height_px))
+                        .sum();
+                    assert!(
+                        area < u64::from(w * h) * 3 / 4,
+                        "parts cover {area} of {}",
+                        w * h
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_part_that_cuts_a_face_or_starts_odd_is_refused() {
+        let face = Face {
+            rect: Rect::new(100, 60, 200, 240),
+            scale: 0.4,
+        };
+        let full = synthetic(600, 400, &face);
+        let models = test_models(MockProposer::scale(192, 0.9));
+        let faces = [(face, settings_all())];
+        let mut cache = RetouchCache::new(4, 4);
+        prepare_skin(&full, &faces, &models, &mut cache).unwrap();
+        let place = |x, y| Placement {
+            origin_px: (x, y),
+            working_px: (600, 400),
+        };
+        let crop = crop_image(&full, Rect::new(150, 100, 100, 100)).unwrap();
+        let cut = retouch_skin_region(
+            &crop,
+            place(150, 100),
+            (600, 400),
+            &faces,
+            1.0,
+            &cache,
+            None,
+        );
+        assert!(matches!(cut, Err(RetouchError::Part { .. })), "{cut:?}");
+        let crop = crop_image(&full, Rect::new(151, 100, 100, 100)).unwrap();
+        let odd = retouch_skin_region(
+            &crop,
+            place(151, 100),
+            (600, 400),
+            &faces,
+            1.0,
+            &cache,
+            None,
+        );
+        assert!(matches!(odd, Err(RetouchError::Part { .. })), "{odd:?}");
+        // A part with no face in it is returned as it is.
+        let far = crop_image(&full, Rect::new(500, 300, 100, 100)).unwrap();
+        let same =
+            retouch_skin_region(&far, place(500, 300), (600, 400), &faces, 1.0, &cache, None)
+                .unwrap();
+        assert_eq!(bits(&same), bits(&far));
+        // Nothing prepared: refused.
+        let empty = RetouchCache::new(5, 5);
+        let none =
+            retouch_skin_region(&far, place(500, 300), (600, 400), &faces, 1.0, &empty, None);
+        assert_eq!(none.unwrap_err(), RetouchError::NotPrepared);
+    }
+
     #[test]
     fn bad_inputs_are_errors() {
         let face = Face {
@@ -857,7 +1387,7 @@ mod tests {
         let models = test_models(MockProposer::identity(64));
         let mut cache = RetouchCache::default();
         let faces = [(face, settings(50.0, 50.0, 50.0))];
-        for scale in [0.0, 1.5, f32::NAN] {
+        for scale in [0.0, 17.0, f32::NAN] {
             let r = retouch_skin(&img, (600, 450), &faces, scale, &models, &mut cache, None);
             assert!(matches!(r, Err(RetouchError::RenderScale(_))));
         }

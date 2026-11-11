@@ -31,8 +31,8 @@ pub enum RetouchError {
         /// Second mask (width, height).
         right: (u32, u32),
     },
-    /// `render_scale` is not in `0.0001..=1`.
-    #[error("the render scale {0} is outside 0.0001 to 1")]
+    /// `render_scale` is not in `0.0001..=16`.
+    #[error("the render scale {0} is outside 0.0001 to 16")]
     RenderScale(f32),
     /// A mask is too large to feather within the memory limit.
     #[error("a mask of {width} x {height} pixels is too large to feather")]
@@ -65,6 +65,12 @@ pub enum RetouchError {
     /// A model failed.
     #[error("a model failed: {0}")]
     Model(String),
+    /// A part of the working image cannot be retouched alone (`retouch_skin_region`): `why` says what is wrong with it.
+    #[error("this part of the picture can't be retouched alone: {why}")]
+    Part {
+        /// What is wrong.
+        why: &'static str,
+    },
 }
 
 /// The result type of the crate.

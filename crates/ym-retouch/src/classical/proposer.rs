@@ -250,6 +250,13 @@ impl ClassicalProposer {
 }
 
 impl BlemishProposer for ClassicalProposer {
+    fn for_face(&self, face_px: f64) -> Option<Box<dyn BlemishProposer>> {
+        Some(Box::new(Self::with_tile_px(
+            face_px.min(crate::blemish::TARGET_FACE_PX),
+            self.tile_px,
+        )))
+    }
+
     fn output_size_px(&self) -> u32 {
         self.tile_px
     }

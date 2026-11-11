@@ -23,8 +23,10 @@ ym-export.workspace = true
 ym-compose.workspace = true
 # The Film node's engine (`docs/24`): the baked chain and the spatial passes.
 ym-film.workspace = true
-# The Face Refinement node's engine (`docs/27`): its settings convert to `ym_retouch::SkinSettings`.
-ym-retouch.workspace = true
+# The Face Refinement node's engine (`docs/27`): its settings convert to `ym_retouch::SkinSettings`; `mediapipe` is the real
+# face parser and mesh (S-11b, decision 12), `mock` the deterministic stand-ins `FaceModel::fake` uses in the tests of the core,
+# `ym` and the app (as `DepthModel::fake` does).
+ym-retouch = { workspace = true, features = ["mediapipe", "mock"] }
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true

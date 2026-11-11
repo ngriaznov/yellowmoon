@@ -576,6 +576,21 @@ pub fn apply_blemish(
     render_scale: f32,
     protect: Option<&Mask>,
 ) -> Result<()> {
+    apply_blemish_at(image, (0, 0), map, a, render_scale, protect)
+}
+
+/// [`apply_blemish`] on a part of the working image: `image` is the rectangle of the working image whose top-left pixel is
+/// `origin_px` (working pixels), and `protect` is the same rectangle of the protection mask. Pixel `(x, y)` of `image` is
+/// pixel `(x + origin_px.0, y + origin_px.1)` of the working image, so the result equals the same pixels of
+/// [`apply_blemish`] on the whole image, bit for bit.
+pub fn apply_blemish_at(
+    image: &mut LinearAwg4Image,
+    origin_px: (i32, i32),
+    map: &BlemishMap,
+    a: f64,
+    render_scale: f32,
+    protect: Option<&Mask>,
+) -> Result<()> {
     let scale = check_render_scale(render_scale)?;
     image.validate()?;
     map.validate()?;
@@ -597,19 +612,21 @@ pub fn apply_blemish(
     let sx = f64::from(map.width_px) / f64::from(map.rect.width_px);
     let sy = f64::from(map.height_px) / f64::from(map.rect.height_px);
     let (rx, ry) = (f64::from(map.rect.x_px), f64::from(map.rect.y_px));
-    // A conservative column range, refined per pixel by the exact test.
-    let col_lo = (((rx - 1.0) * scale).floor().max(0.0)) as usize;
-    let col_hi = ((((map.rect.right_px() as f64) + 1.0) * scale)
+    // A conservative column range (in working pixels), refined per pixel by the exact test.
+    let (ox, oy) = (i64::from(origin_px.0), i64::from(origin_px.1));
+    let col_lo = ((((rx - 1.0) * scale).floor().max(0.0)) as i64 - ox).clamp(0, w as i64) as usize;
+    let col_hi = (((((map.rect.right_px() as f64) + 1.0) * scale)
         .ceil()
-        .max(0.0) as usize)
-        .min(w);
+        .max(0.0) as i64)
+        - ox)
+        .clamp(0, w as i64) as usize;
 
     image
         .data
         .par_chunks_mut(w)
         .enumerate()
         .for_each(|(py, row)| {
-            let v = sy * (py as f64 / scale - ry + 0.5) - 0.5;
+            let v = sy * ((py as i64 + oy) as f64 / scale - ry + 0.5) - 0.5;
             if !(v >= 0.0 && v < mh as f64) {
                 return;
             }
@@ -618,7 +635,7 @@ pub fn apply_blemish(
             let fy = v - y0 as f64;
             #[allow(clippy::needless_range_loop)] // px is also the protect-mask column
             for px in col_lo..col_hi {
-                let u = sx * (px as f64 / scale - rx + 0.5) - 0.5;
+                let u = sx * ((px as i64 + ox) as f64 / scale - rx + 0.5) - 0.5;
                 if !(u >= 0.0 && u < mw as f64) {
                     continue;
                 }
