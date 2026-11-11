@@ -125,7 +125,17 @@ A full-size export holds one more copy of the picture while it runs (12 bytes a 
 - The temporary file is `.yellowmoon-<pid>-<n>.tmp` in the destination folder, fsynced before the rename; an error, a cancel or a panic deletes it. A target that resolves to the photo's original file is refused.
 - Cancel is polled between bands of about one million pixels, so "after the current tile" is a fraction of a second of work.
 
-**Write errors.** An I/O error of the JPEG, PNG or TIFF encoder (a full disk, a folder that went away) maps to `ExportError::Write { format, source }` ("Couldn't write the PNG: No space left on device (os error 28). Check that the folder exists, is writable and has free space."), the same advice as `ExportError::Io`; `write_dng` labels the TIFF encoder's errors as DNG. Non-I/O encoder failures say "Encoding the X failed". The temporary file is removed and a failed Replace keeps the old file. Test: `tests/disk_full.rs` (a sink that fails with ENOSPC after N bytes, for every format).
+**Write errors.** An I/O error of the JPEG, PNG or TIFF encoder (a full disk, a folder that went away) maps to `ExportError::Write { format, folder, source }`; `ExportError::Io { path, source }` is the same for the folder, the temporary file and the rename, and its `path` is **always the destination folder** (a `flush` or `fsync` failure names the folder, never the hidden temporary file). `write_dng` labels the TIFF encoder's errors as DNG. `ExportError::destination_problem()` looks at the `io::Error` (`ErrorKind::StorageFull`, `QuotaExceeded`, `ReadOnlyFilesystem`, `NotFound`, `PermissionDenied`, and the codes 28, 69 on macOS, 30, 2, 6, 19, 13 and 1) and gives `DiskFull`, `ReadOnly`, `Gone` or `Permission`; the PNG encoder hands an I/O error on as text, so the code in "(os error N)" counts too. The sentences (`DestinationProblem::app_message` and `cli_message`; no sentence contains "os error", which is in `ExportError::detail()` for the log and `--json`):
+
+| Cause | App | `ym` |
+|---|---|---|
+| Disk full | The disk is full, so the export stopped. Free some space, then export the photos that are left. | Stopped: the disk holding {path} is full. Free some space, then run the command again with --skip-existing. |
+| Read-only | {Folder} is read-only. Choose another folder. | {path} is read-only. Choose another folder with --out. |
+| Folder gone | Yellowmoon can't reach {folder}. If it is on a drive, check that the drive is connected, then export again. | {path} is not there any more. Check the path or the drive, then run the command again. |
+| No permission | Yellowmoon isn't allowed to save to {folder}. Choose another folder, or allow access in System Settings, under Privacy & Security. | Yellowmoon isn't allowed to write to {path}. Choose another folder with --out. |
+| Anything else | Couldn't write the {PNG}. Check that the folder is still there and that you can save to it. (`Io`: "Couldn't write to {path}. …".) | the same |
+
+{Folder} is the last component of the folder. Non-I/O encoder failures say "Encoding the X failed". The temporary file is removed and a failed Replace keeps the old file. `ym-core`'s `ExportError::kind()` is `disk_full`, `destination` (read-only, gone, permission) or `write`. Tests: `tests/disk_full.rs` (a sink that fails with ENOSPC after N bytes, for every format, asserting the sentence), the unit tests of `error.rs`, `ym-core/tests/write_errors.rs`, `ym-cli/tests/write_errors.rs`.
 
 ## Size estimate
 

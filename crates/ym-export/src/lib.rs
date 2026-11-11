@@ -34,7 +34,7 @@ pub mod resize;
 pub mod tiff_writer;
 pub mod xmp;
 
-pub use error::ExportError;
+pub use error::{DestinationProblem, ExportError};
 pub use estimate::{DetailStat, estimate_bytes, estimate_bytes_with_detail};
 pub use options::{
     BitDepth, ColorSpace, ExportFormat, ExportOptions, FormatKind, IfExists, JpegQuality, Size,

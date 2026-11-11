@@ -199,7 +199,7 @@ pub fn ensure_writable_dir(dir: &Path) -> Result<(), ExportError> {
         .open(&probe)
         .map_err(|e| ExportError::io(dir, e))?;
     drop(file);
-    fs::remove_file(&probe).map_err(|e| ExportError::io(&probe, e))
+    fs::remove_file(&probe).map_err(|e| ExportError::io(dir, e))
 }
 
 /// Chooses and prepares the destination folder.
@@ -368,12 +368,11 @@ impl PendingFile {
             .ok_or_else(|| ExportError::invalid("the file was already committed"))?;
         let file = writer
             .into_inner()
-            .map_err(|e| ExportError::io(&self.temp, e.into_error()))?;
-        file.sync_all()
-            .map_err(|e| ExportError::io(&self.temp, e))?;
+            .map_err(|e| ExportError::io(&self.dir, e.into_error()))?;
+        file.sync_all().map_err(|e| ExportError::io(&self.dir, e))?;
         let size = file
             .metadata()
-            .map_err(|e| ExportError::io(&self.temp, e))?
+            .map_err(|e| ExportError::io(&self.dir, e))?
             .len();
         drop(file);
 
@@ -387,7 +386,7 @@ impl PendingFile {
                 if existed {
                     check_not_original(&first, source)?;
                 }
-                fs::rename(&self.temp, &first).map_err(|e| ExportError::io(&first, e))?;
+                fs::rename(&self.temp, &first).map_err(|e| ExportError::io(&self.dir, e))?;
                 if existed {
                     Placement::Replaced(first)
                 } else {
@@ -404,7 +403,7 @@ impl PendingFile {
                     Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                         return Ok((Placement::Skipped(first), 0));
                     }
-                    Err(e) => return Err(ExportError::io(&first, e)),
+                    Err(e) => return Err(ExportError::io(&self.dir, e)),
                 }
             }
             IfExists::KeepBoth => {
@@ -416,7 +415,7 @@ impl PendingFile {
                         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 10_000 => {
                             n += 1
                         }
-                        Err(e) => return Err(ExportError::io(&target, e)),
+                        Err(e) => return Err(ExportError::io(&self.dir, e)),
                     }
                 }
             }
@@ -480,11 +479,11 @@ where
     F: FnOnce(&mut BufWriter<File>) -> Result<(), ExportError>,
 {
     let mut pending = PendingFile::create(dir)?;
-    body(pending.writer())?;
+    body(pending.writer()).map_err(|e| e.with_folder(dir))?;
     pending
         .writer()
         .flush()
-        .map_err(|e| ExportError::io(pending.temp_path(), e))?;
+        .map_err(|e| ExportError::io(dir, e))?;
     pending.commit(stem, ext, if_exists, source)
 }
 
