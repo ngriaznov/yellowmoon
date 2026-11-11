@@ -193,6 +193,28 @@ fn doctor_json_has_the_same_parts() {
             "sha256": sha256_of("depth"),
         }));
     }
+    // The three MediaPipe files (Face Refinement) are listed the same way, in path order between depth and SAM 2, each with
+    // its own line of `mediapipe/SHA256SUMS`; a checkout has them only after `tools/fetch/mediapipe.sh`.
+    for name in [
+        "blaze_face_full_range.f16.safetensors",
+        "face_mesh_v2.f16.safetensors",
+        "selfie_multiclass_256.f32.safetensors",
+    ] {
+        if data_dir().join("models/mediapipe").join(name).is_file() {
+            let sums = std::fs::read_to_string(data_dir().join("models/mediapipe/SHA256SUMS"))
+                .expect("mediapipe sums");
+            let sha256 = sums
+                .lines()
+                .filter_map(|l| l.split_once("  "))
+                .find(|(_, n)| n.trim() == name)
+                .map(|(h, _)| h.trim().to_owned())
+                .expect("a line for the file");
+            weights.push(serde_json::json!({
+                "file": format!("mediapipe/{name}"),
+                "sha256": sha256,
+            }));
+        }
+    }
     if data_dir()
         .join("models/sam2/sam2.1_hiera_small.f16.safetensors")
         .is_file()
