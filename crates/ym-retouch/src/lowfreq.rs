@@ -15,7 +15,7 @@
 
 use rayon::prelude::*;
 
-use crate::error::Result;
+use crate::error::{Result, RetouchError};
 use crate::mask::{percentile, smoothstep};
 use crate::types::{
     BoundedMask, Face, LinearAwg4Image, Mask, Rect, SkinSettings, check_render_scale, face_size_px,
@@ -432,6 +432,7 @@ pub(crate) fn retouch_with(
         settings,
         render_scale,
         &masks,
+        None,
         half_override,
     )
 }
@@ -442,6 +443,11 @@ pub(crate) fn retouch_with(
 /// entry; each reads the previous result as `src`. A tool is active when its amount is not 0
 /// (contrast) or above 0 and its mask exists and is not all zeros; with no active tool the image is
 /// untouched and the result is `Ok(false)`. A tool never changes a pixel whose own mask is 0.
+///
+/// `protect` is the protection mask in working pixels (the image's size; the owner's Protect row,
+/// 2026-11-11): every tool's weight (`k * w` of 7.5, `m` of 7.7 and 7.8) is multiplied by
+/// `1 - protect / 255` at each pixel, and a pixel with `protect == 255` is not touched at all.
+#[allow(clippy::too_many_arguments)]
 pub fn retouch_tones(
     image: &mut LinearAwg4Image,
     full_size_px: (u32, u32),
@@ -449,6 +455,7 @@ pub fn retouch_tones(
     settings: &SkinSettings,
     render_scale: f32,
     masks: &ToolMasks<'_>,
+    protect: Option<&Mask>,
 ) -> Result<bool> {
     tones_with(
         image,
@@ -457,10 +464,12 @@ pub fn retouch_tones(
         settings,
         render_scale,
         masks,
+        protect,
         None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn tones_with(
     image: &mut LinearAwg4Image,
     full_size_px: (u32, u32),
@@ -468,9 +477,19 @@ pub(crate) fn tones_with(
     settings: &SkinSettings,
     render_scale: f32,
     masks: &ToolMasks<'_>,
+    protect: Option<&Mask>,
     half_override: Option<bool>,
 ) -> Result<bool> {
     image.validate()?;
+    if let Some(p) = protect {
+        p.validate()?;
+        if p.size_px() != (image.width_px, image.height_px) {
+            return Err(RetouchError::MaskSizeMismatch {
+                left: (image.width_px, image.height_px),
+                right: p.size_px(),
+            });
+        }
+    }
     let d = face_size_px(full_size_px, render_scale, face)?;
     let size = (image.width_px, image.height_px);
     let working = |active: bool, mask: Option<&BoundedMask>| -> Result<Option<BoundedMask>> {
@@ -490,18 +509,26 @@ pub(crate) fn tones_with(
             d,
             settings,
             [&dc_mask, &se_mask, &g_mask],
+            protect,
             half_override,
         );
     }
     if let Some(bm) = &teeth_mask {
-        whiten_teeth(image, bm, settings.tw());
+        whiten_teeth(image, bm, settings.tw(), protect);
     }
     Ok(low || teeth_mask.is_some())
 }
 
+/// `1 - protect / 255` at a working pixel (1 without a protection mask).
+fn protect_keep(protect: Option<&Mask>, x: usize, y: usize) -> f64 {
+    protect.map_or(1.0, |p| {
+        1.0 - f64::from(p.data[y * p.width_px as usize + x]) / 255.0
+    })
+}
+
 /// Teeth whitening (7.8) in the working-resolution teeth mask: `L_max` is the 99th percentile of
 /// `L` over the pixels where the mask is not 0, taken from the image as it is.
-fn whiten_teeth(image: &mut LinearAwg4Image, bm: &BoundedMask, tw: f64) {
+fn whiten_teeth(image: &mut LinearAwg4Image, bm: &BoundedMask, tw: f64, protect: Option<&Mask>) {
     let iw = image.width_px as usize;
     let (x0, y0) = (bm.region.x_px as usize, bm.region.y_px as usize);
     let (rw, rh) = (bm.region.width_px as usize, bm.region.height_px as usize);
@@ -521,12 +548,13 @@ fn whiten_teeth(image: &mut LinearAwg4Image, bm: &BoundedMask, tw: f64) {
         .for_each(|(y, row)| {
             for x in 0..rw {
                 let byte = bm.mask.data[y * rw + x];
-                if byte == 0 {
+                let keep = protect_keep(protect, x0 + x, y0 + y);
+                if byte == 0 || keep == 0.0 {
                     continue;
                 }
                 let px = &mut row[x0 + x];
                 let src = [f64::from(px[0]), f64::from(px[1]), f64::from(px[2])];
-                let out = teeth_pixel(src, tw, f64::from(byte) / 255.0, l_max);
+                let out = teeth_pixel(src, tw, keep * f64::from(byte) / 255.0, l_max);
                 *px = [out[0] as f32, out[1] as f32, out[2] as f32];
             }
         });
@@ -537,6 +565,7 @@ fn low_frequency_pass(
     d: f64,
     settings: &SkinSettings,
     [dc_mask, se_mask, g_mask]: [&Option<BoundedMask>; 3],
+    protect: Option<&Mask>,
     half_override: Option<bool>,
 ) {
     let (gc, gd, gs) = (settings.gc(), settings.gd(), settings.gs());
@@ -643,6 +672,10 @@ fn low_frequency_pass(
         for rx in 0..rw {
             let li = (ry / ds) * lw + rx / ds;
             let ri = ry * rw + rx;
+            let keep = protect_keep(protect, x0 as usize + rx, y0 as usize + ry);
+            if keep == 0.0 {
+                continue;
+            }
             let px = &mut row[x0 as usize + rx];
             let mut cur = [f64::from(px[0]), f64::from(px[1]), f64::from(px[2])];
             let mut touched = false;
@@ -652,20 +685,20 @@ fn low_frequency_pass(
                 let t = [t_planes[0][li], t_planes[1][li], t_planes[2][li]];
                 let cc = [c[0][li], c[1][li], c[2][li]];
                 let new = dark_circles_target(cur, t, cc);
-                cur = blend_pixel(cur, new, p.k_dc, p.sp_dc);
+                cur = blend_pixel(cur, new, keep * p.k_dc, p.sp_dc);
                 touched = true;
             }
             if let Some((tm, c)) = &se
                 && tm.bytes[ri] != 0
             {
                 let new = even_skin_target(cur, y_plane[li], c[li]);
-                cur = blend_pixel(cur, new, p.k_se, p.sp_se);
+                cur = blend_pixel(cur, new, keep * p.k_se, p.sp_se);
                 touched = true;
             }
             if let Some((tm, c_g, shine)) = &grade
                 && tm.bytes[ri] != 0
             {
-                let m = f64::from(tm.bytes[ri]) / 255.0;
+                let m = keep * f64::from(tm.bytes[ri]) / 255.0;
                 let (y, cg) = (y_plane[li], c_g[li]);
                 if gc != 0.0 {
                     cur = contrast_target(cur, y, cg, gc, m);
@@ -1104,6 +1137,7 @@ mod tests {
             s,
             1.0,
             &masks,
+            None,
         )
         .unwrap();
         assert!(done);
@@ -1271,7 +1305,7 @@ mod tests {
             ..Default::default()
         };
         let mut out = image.clone();
-        assert!(retouch_tones(&mut out, full, &face, &s, 1.0, &tools).unwrap());
+        assert!(retouch_tones(&mut out, full, &face, &s, 1.0, &tools, None).unwrap());
         let (cx, cy, ax, ay) = crate::mock::mouth_ellipse(&face.rect);
         let w = full.0 as usize;
         let idx = |x: f64, y: f64| y as usize * w + x as usize;
@@ -1326,21 +1360,9 @@ mod tests {
             teeth_whitening: 50.0,
             ..s
         };
-        retouch_tones(&mut half, full, &face, &s50, 1.0, &tools).unwrap();
+        retouch_tones(&mut half, full, &face, &s50, 1.0, &tools, None).unwrap();
         let i = idx(cx, cy);
         assert!(chroma(half.data[i]) > chroma(out.data[i]));
-        // At a smaller render scale the teeth still whiten.
-        assert!(
-            retouch_tones(
-                &mut image.clone(),
-                full,
-                &face,
-                &s,
-                1.0,
-                &ToolMasks::default()
-            )
-            .is_ok()
-        );
     }
 
     #[test]
@@ -1353,8 +1375,16 @@ mod tests {
             teeth: masks.teeth.as_ref(),
         };
         let mut out = image.clone();
-        let done =
-            retouch_tones(&mut out, full, &face, &SkinSettings::default(), 1.0, &tools).unwrap();
+        let done = retouch_tones(
+            &mut out,
+            full,
+            &face,
+            &SkinSettings::default(),
+            1.0,
+            &tools,
+            None,
+        )
+        .unwrap();
         assert!(!done);
         assert_eq!(out, image);
         // Amounts above 0 but no masks: nothing either.
@@ -1367,7 +1397,16 @@ mod tests {
             teeth_whitening: 80.0,
             ..Default::default()
         };
-        let done = retouch_tones(&mut out, full, &face, &all, 1.0, &ToolMasks::default()).unwrap();
+        let done = retouch_tones(
+            &mut out,
+            full,
+            &face,
+            &all,
+            1.0,
+            &ToolMasks::default(),
+            None,
+        )
+        .unwrap();
         assert!(!done);
         assert_eq!(out, image);
     }
@@ -1397,7 +1436,7 @@ mod tests {
                 .unwrap();
             pool.install(|| {
                 let mut out = image.clone();
-                assert!(retouch_tones(&mut out, full, &face, &all, 1.0, &tools).unwrap());
+                assert!(retouch_tones(&mut out, full, &face, &all, 1.0, &tools, None).unwrap());
                 out
             })
         };
@@ -1446,7 +1485,17 @@ mod tests {
                 grading: Some(&m),
                 ..ToolMasks::default()
             };
-            tones_with(&mut out, (w, h), &face(0.8), &s, 1.0, &masks, Some(half)).unwrap();
+            tones_with(
+                &mut out,
+                (w, h),
+                &face(0.8),
+                &s,
+                1.0,
+                &masks,
+                None,
+                Some(half),
+            )
+            .unwrap();
             out
         };
         let (a, b) = (run(true), run(false));

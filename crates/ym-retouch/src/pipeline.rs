@@ -276,7 +276,9 @@ fn ensure_maps(
 /// - `render_scale`: working size over full size, 0.0001 to 1.
 /// - `models`, `cache`: the models and the cache of this image ([`RetouchCache`]).
 /// - `protect`: an optional protection mask in working pixels (the size of `image`); 255 leaves a
-///   pixel out of blemish removal.
+///   pixel out of every tool, and a value between scales every tool's weight by `1 - protect / 255`
+///   (the owner, 2026-11-11: Protect covers blemish removal, dark circles, even skin, grading and
+///   teeth whitening).
 ///
 /// Order: output is a copy of the input; blemish removal for every face; then, for every face,
 /// dark circles, even skin, skin grading and teeth whitening (`docs/27` 7.9). With every amount 0 the output equals the input bit for bit.
@@ -354,6 +356,7 @@ pub fn retouch_skin(
                 settings,
                 render_scale,
                 &tools,
+                protect,
             )?;
         }
     }
@@ -731,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn protection_mask_stops_blemish_removal() {
+    fn protection_mask_stops_every_tool() {
         let face = Face {
             rect: Rect::new(175, 30, 250, 300),
             scale: 0.5,
@@ -754,6 +757,83 @@ mod tests {
         assert_eq!(bits(&out), bits(&img));
         let out = retouch_skin(&img, (600, 450), &faces, 1.0, &models, &mut cache, None).unwrap();
         assert_ne!(bits(&out), bits(&img));
+        // Every tool at 100: a fully protected image is unchanged to the bit.
+        let every = SkinSettings {
+            blemish: 100.0,
+            dark_circles: 100.0,
+            even_skin: 100.0,
+            skin_contrast: 100.0,
+            shadow_desaturation: 100.0,
+            shine_removal: 100.0,
+            teeth_whitening: 100.0,
+            ..SkinSettings::default()
+        };
+        let faces = [(face, every)];
+        let out = retouch_skin(
+            &img,
+            (600, 450),
+            &faces,
+            1.0,
+            &models,
+            &mut cache,
+            Some(&all),
+        )
+        .unwrap();
+        assert_eq!(bits(&out), bits(&img));
+        let free = retouch_skin(&img, (600, 450), &faces, 1.0, &models, &mut cache, None).unwrap();
+        assert_ne!(bits(&free), bits(&img));
+        // Only the left of x = 400 protected: it is unchanged, the rest is retouched.
+        let mut half = Mask::zeros(600, 450).unwrap();
+        for y in 0..450 {
+            for x in 0..400 {
+                half.data[y * 600 + x] = 255;
+            }
+        }
+        let part = retouch_skin(
+            &img,
+            (600, 450),
+            &faces,
+            1.0,
+            &models,
+            &mut cache,
+            Some(&half),
+        )
+        .unwrap();
+        let (mut left_changed, mut right_changed) = (0, 0);
+        for y in 0..450usize {
+            for x in 0..600usize {
+                let i = y * 600 + x;
+                if part.data[i] != img.data[i] {
+                    if x < 400 {
+                        left_changed += 1;
+                    } else {
+                        right_changed += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(left_changed, 0, "protected pixels are bit-identical");
+        assert!(right_changed > 100, "the unprotected part is retouched");
+        // A soft protection moves the pixels less.
+        let soft = Mask::new(600, 450, vec![128; 600 * 450]).unwrap();
+        let mid = retouch_skin(
+            &img,
+            (600, 450),
+            &faces,
+            1.0,
+            &models,
+            &mut cache,
+            Some(&soft),
+        )
+        .unwrap();
+        let dist = |a: &LinearAwg4Image| -> f64 {
+            a.data
+                .iter()
+                .zip(&img.data)
+                .map(|(p, q)| (0..3).map(|c| f64::from((p[c] - q[c]).abs())).sum::<f64>())
+                .sum()
+        };
+        assert!(dist(&mid) < 0.75 * dist(&free) && dist(&mid) > 0.0);
         let bad = Mask::zeros(10, 10).unwrap();
         let err = retouch_skin(
             &img,
