@@ -5545,8 +5545,7 @@ fn a_depth_row_without_the_model_selects_nothing_starts_no_worker_and_refuses_th
 // --- The damaged-file matrix --------------------------------------------------------------------
 
 /// Whether `reason` is a sentence a damaged file may show: the catalogue of `ym_raw::error`, the
-/// fixed sentence of a file that is not ARW, the two forms of "not supported", and the analysis
-/// sentence of the session (`ym_core::auto::AutoError`).
+/// fixed sentence of a file that is not ARW, and the two forms of "not supported".
 fn is_damage_sentence(reason: &str) -> bool {
     use ym_raw::error::{MESSAGE_CUT_SHORT, MESSAGE_DAMAGED, MESSAGE_EMPTY};
     [
@@ -5558,7 +5557,6 @@ fn is_damage_sentence(reason: &str) -> bool {
     .contains(&reason)
         || reason.contains("aren't supported yet")
         || reason.starts_with("Yellowmoon can't open ")
-        || reason.starts_with("This photo can't be analysed (")
 }
 
 /// Every file of `dir` by name with its bytes.

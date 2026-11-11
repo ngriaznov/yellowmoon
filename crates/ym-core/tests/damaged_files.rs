@@ -57,18 +57,6 @@ fn is_catalogue_sentence(reason: &str) -> bool {
     catalogue().contains(reason)
         || reason.contains("aren't supported yet")
         || reason.starts_with("Yellowmoon can't open ")
-        || is_analysis_sentence(reason)
-}
-
-/// "This photo can't be analysed (the image is too small). Copy it from the card again, or skip
-/// it." The estimate stage of the session (`ym_core::auto::AutoError`) refuses a file that decoded
-/// to an image it cannot analyse, such as a damaged size tag that reads as a few pixels. It is not
-/// in `ym_raw::error`'s catalogue and its parenthesis carries a technical detail; reported in
-/// `docs/26` H-03 as built.
-fn is_analysis_sentence(reason: &str) -> bool {
-    reason.starts_with("This photo can't be analysed (")
-        && (reason.ends_with("). Copy it from the card again, or skip it.")
-            || reason.ends_with("). Skip it and open the others."))
 }
 
 /// Records every panic of the process (the decode pool catches them, so a test would not see them).
@@ -254,15 +242,12 @@ fn the_audit_sweep_of_1576_files_opens_in_one_folder_without_a_panic_or_a_foreig
     let outcome = session.open(&[dir.path().to_path_buf()], OpenOptions::default());
     assert_eq!(outcome.added.len(), 1586, "{outcome:?}");
     settle(&session);
-    let (mut ready, mut skipped, mut analysis) = (0, 0, BTreeSet::<String>::new());
+    let (mut ready, mut skipped) = (0, 0);
     for (name, status) in statuses(&session) {
         match status {
             PhotoStatus::Ready => ready += 1,
             PhotoStatus::Skipped { reason } => {
                 assert!(!name.starts_with("good_"), "{name} is skipped: {reason:?}");
-                if is_analysis_sentence(&reason) {
-                    analysis.insert(reason.clone());
-                }
                 assert!(
                     is_catalogue_sentence(&reason),
                     "{name}: {reason:?} is not in the catalogue"
@@ -272,7 +257,7 @@ fn the_audit_sweep_of_1576_files_opens_in_one_folder_without_a_panic_or_a_foreig
             other => panic!("{name}: {other:?} after settle"),
         }
     }
-    eprintln!("sweep: {ready} ready, {skipped} skipped, analysis sentences {analysis:#?}");
+    eprintln!("sweep: {ready} ready, {skipped} skipped");
     assert!(ready >= 10 && skipped > 0);
     assert!(panics().lock().expect("panics").is_empty());
     assert!(!captured_log().contains("a decode job panicked"));

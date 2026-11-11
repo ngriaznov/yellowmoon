@@ -23,9 +23,6 @@ fn is_catalogue_sentence(message: &str) -> bool {
     [MESSAGE_EMPTY, MESSAGE_CUT_SHORT, MESSAGE_DAMAGED, NOT_ARW].contains(&message)
         || message.contains("aren't supported yet")
         || message.starts_with("Yellowmoon can't open ")
-        || (message.starts_with("This photo can't be analysed (")
-            && (message.ends_with("). Copy it from the card again, or skip it.")
-                || message.ends_with("). Skip it and open the others.")))
 }
 
 /// The name of the file a `--json` record is about.
@@ -96,11 +93,10 @@ fn the_damaged_folder_exports_the_good_files_and_names_each_bad_one() {
             );
         }
     }
-    // `docs/26` P1-6 expects `not_arw`, `corrupt` and `io`. A file whose probe passes and whose
-    // decode fails has `decode` (`skip_kind` in `render.rs`; see the ignored test below).
+    // `docs/26` P1-6: `not_arw`, `corrupt` and `io`, the kind of the decode error.
     for kind in &kinds {
         assert!(
-            ["not_arw", "corrupt", "io", "decode"].contains(&kind.as_str()),
+            ["not_arw", "corrupt", "io"].contains(&kind.as_str()),
             "error.kind {kind:?} is not a kind of a failed file"
         );
     }
@@ -193,13 +189,9 @@ fn the_damaged_folder_in_text_mode_has_one_catalogue_line_per_bad_file() {
     }
 }
 
-/// `docs/26` P1-6 says `error.kind` is one of `not_arw`, `corrupt` and `io`. A file the probe reads
-/// but the decoder refuses (a cut-short file: the directories are there, the raw data is not) is
-/// reported with the kind `decode`, which `docs/10` and `docs/04` do not list: `skip_kind` in
-/// `crates/ym-cli/src/render.rs` probes again, finds nothing wrong, and falls back to `decode`,
-/// with no `error.detail`.
+/// Every failed file's `error.kind` is `not_arw`, `corrupt` or `io` (the kind of the decode error,
+/// with its `detail` for a file that is damaged), never `decode`.
 #[test]
-#[ignore = "H-03 finding: ym render --json gives error.kind \"decode\" (undocumented, no detail) for a file whose probe passes and whose decode fails"]
 fn every_error_kind_is_not_arw_corrupt_or_io() {
     let sb = Sandbox::new();
     write_matrix(&sb.photos()).expect("write the matrix");
