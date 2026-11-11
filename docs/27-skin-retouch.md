@@ -20,7 +20,7 @@ Three tools share one set of masks per face:
 |---|---|---|
 | Face finder | face rectangles and sizes | Apple Vision face rectangles (macOS, through `ym-apple`, as Subject and People do), or MediaPipe face detection (Apache-2.0 weights) run in Rust |
 | `FaceMesh` | a dense mesh and two per-vertex tables (under-eye, inverted skin uniformity) | MediaPipe Face Landmarker, 468 vertices (Apache-2.0 weights), run in Rust like SAM 2.1 and Depth Anything (`docs/07`); the two tables are ours to author |
-| `FaceParser` | skin without ears, eyes, neck skin | From the mesh (the face oval minus eyes, brows and lips) and, for the neck, the People mask below the jaw. The common face-parsing models are trained on CelebAMask-HQ (non-commercial), which `docs/14` rules out for shipped weights |
+| `FaceParser` | skin without ears, eyes, the mouth's interior | From the mesh (the face oval minus eyes, brows and lips; the inner lip line for the mouth) and the face-skin class of Selfie Multiclass. No neck: the owner dropped the neck switches on 2026-11-11. The common face-parsing models are trained on CelebAMask-HQ (non-commercial), which `docs/14` rules out for shipped weights |
 | `BeautyMarkDetector` | boxes to leave alone | None licence-clean known; the tools work without it, and a Brush row painted as protection covers it |
 | `BlemishProposer` | a cleaned face | **No licence-clean training data is known** (FFHQ is CC BY-NC-SA). A classical proposer (gated detect-and-fill: only detected spots are filled, everything else is returned unchanged; S-07) implements the same trait and keeps every later stage; a trained network may replace it later (S-14, the owner's yes of 2026-11-11) |
 
@@ -66,8 +66,10 @@ pub struct SkinSettings {
     pub dark_circles: f32, // 0..=100
     pub even_skin: f32,    // 0..=100
     pub texture: f32,      // -100..=100
-    pub include_neck_blemish: bool,
-    pub include_neck_even_skin: bool,
+    pub skin_contrast: f32,       // -100..=100, 0 = unchanged
+    pub shadow_desaturation: f32, // 0..=100
+    pub shine_removal: f32,       // 0..=100
+    pub teeth_whitening: f32,     // 0..=100
 }
 ```
 
@@ -78,7 +80,13 @@ a  = blemish / 100
 dc = dark_circles / 100
 se = even_skin / 100
 t  = (texture + 100) / 200          // 0..=1
+gc = skin_contrast / 100            // -1..=1
+gd = shadow_desaturation / 100
+gs = shine_removal / 100
+tw = teeth_whitening / 100
 ```
+
+The neck switches of the brief are gone (the owner, 2026-11-11: "Don't do include neck"); the skin is the face's skin only. The four grading and teeth settings are the owner's additions of the same day, after DaVinci Resolve's Face Refinement (section 7.7 and 7.8).
 
 **`render_scale`** (0.0001 ≤ s ≤ 1, else an error) is the working image size over the full-resolution size, so a preview and an export with the same settings look the same.
 
@@ -97,7 +105,7 @@ pub trait FaceParser {
     /// Soft mask of one face part, full image coordinates; None when the part is not found.
     fn part_mask(&self, image: &LinearAwg4Image, face: &Face, part: FacePart) -> Result<Option<BoundedMask>>;
 }
-pub enum FacePart { SkinWithoutEars, Eyes, NeckSkin }
+pub enum FacePart { SkinWithoutEars, Eyes, MouthInterior }
 
 pub trait FaceMesh {
     /// Rasterises the face mesh into an 8-bit mask with a per-vertex brightness table.
@@ -121,7 +129,7 @@ pub trait BlemishProposer {
 }
 ```
 
-A failing beauty-mark detector or neck parser is logged (`tracing::warn!`) and the tools go on without it.
+A failing beauty-mark detector is logged (`tracing::warn!`) and the tools go on without it; a missing mouth interior only turns teeth whitening off.
 
 **A trained proposer**, for whoever trains one (round 2 or later): fully convolutional, residual, no padding. Twelve plain 3×3 convolutions (3→64, ten 64→64, 64→3); between each consecutive pair, one depthwise 3×3 convolution with dilation 2 (ten in all); per block: plain convolution, LeakyReLU with its own learned slope (after each of the first 11), depthwise convolution. The last convolution predicts a residual; the output is the input centre-cropped by 32 px per side minus the residual, so `border_px() == 32`. Tile input side 256 to 1024 px.
 
@@ -154,12 +162,11 @@ Feather radii below are fractions of `F = trunc(face.scale * max(full_width_px, 
 
 ```
 skin = part_mask(SkinWithoutEars)
-with the neck: skin = max(skin, part_mask(NeckSkin))   // over the union of both regions
 ```
 
 ### 5.3 Blemish mask
 
-`skin` (with the neck per `include_neck_blemish`), with a soft elliptical hole for each beauty-mark box:
+`skin`, with a soft elliptical hole for each beauty-mark box:
 
 - Inner ellipse inscribed in the box: 0 inside.
 - Outer ellipse: same centre, axes times √2, clipped to the mask.
@@ -179,12 +186,29 @@ if the eyes mask exists:
 
 ```
 u    = mesh.render(InvertedSkinUniformity)
-core = mul_inv(skin, u)                       // skin with the neck per include_neck_even_skin
+core = mul_inv(skin, u)
 core = mul_inv(core, exclude)                 // only when an exclusion mask is given (default none)
 core = feather(core, -0.011 * F)
 edge = feather(skin, -0.065 * F)
 m    = mul(core, edge)
 ```
+
+### 5.6 Grading and teeth masks
+
+The skin grading of 7.7 uses the even-skin edge mask: `grade = feather(skin, -0.065 * F)` (the `edge` of 5.5), so it fades out before the hairline, the brows and the jaw.
+
+The teeth mask starts from the mouth's interior and keeps what looks like teeth:
+
+```
+mouth = feather(part_mask(MouthInterior), -0.004 * F)
+per pixel, in linear light with Y = (r + g + b) / 3 and sat = 1 - min(r, g, b) / max(r, g, b):
+  bright = smoothstep(0.6, 1.0, Y / Ymouth)        // Ymouth = the mouth region's 80th percentile of Y
+  pale   = 1 - smoothstep(0.35, 0.6, sat)           // gums, tongue and lips are saturated
+  notred = 1 - smoothstep(0.08, 0.2, (r - g) / max(Y, 1e-4))
+teeth = mul(mouth, round(255 * bright * pale * notred)), then feather(teeth, +0.002 * F)
+```
+
+All thresholds here are starting values for S-12.
 
 After building any mask, its region is cropped to the bounding box of its non-zero pixels.
 
@@ -245,7 +269,7 @@ rgb = rgb * lerp(1, g, s)        // per channel
 
 The amount is a threshold on strength: low values fix only strong blemishes, high values apply every correction. The protection mask (working coordinates) is what the person paints as "leave alone".
 
-## 7. Dark circles and even skin
+## 7. Dark circles, even skin, skin grading and teeth
 
 One operator, per face, after blemish removal, on the working image. A tool is active when its amount is above 0 and its mask exists and is not all zeros; with neither active, the face is skipped.
 
@@ -312,6 +336,52 @@ When `half`, `src` is the full-resolution pixel at `(x, y)` and `T`, `C_dc`, `C_
 
 Per face: `T` once, from the image as it is on entry; dark circles in place; then even skin in place, with the dark-circle result as `src` and the same `T`.
 
+### 7.7 Skin grading (the owner, 2026-11-11, after Resolve)
+
+Three controls on the face's skin, working like even skin on the low-frequency layer `T` of 7.2, so pores and fine detail are kept. Mask `m = grade / 255` (5.6). `Y = (T.r + T.g + T.b) / 3` and the regional average `C_g = masked_blur(Y, grade, r_g)` with `r_g = max(1, trunc(0.15 * D / ds))`, wide enough to be the face's own level. In order, each reading the previous one's result as `src` and the same `T`:
+
+**Contrast** (`gc`, -1..=1): the skin's low-frequency light spread around its own level, in log space:
+
+```
+Y'  = C_g * (Y / C_g)^(1 + 0.5 * gc)
+new = src * (Y' / max(Y, 0.001))
+out = lerp(src, new, m)                    // both directions: contrast may lift or lower
+```
+
+**Shadow desaturation** (`gd`, 0..=1): less colour in the skin's shadows, where cameras and mixed light leave muddy or green casts:
+
+```
+w   = clamp((C_g - Y) / (0.5 * C_g), 0, 1)          // 0 at the skin's level, 1 at half of it
+L   = (src.r + src.g + src.b) / 3
+out = L + (1 - 0.6 * gd * w * m) * (src - L)        // luminance kept
+```
+
+**Shine removal** (`gs`, 0..=1): specular sheen on the forehead, nose and cheeks pulled back toward the skin around it:
+
+```
+sat  = 1 - min(T) / max(T)
+e    = ln(Y / C_g) - 0.1                              // more than about 10 % above the skin's level
+w    = smoothstep(0, 0.4, e) * (1 - smoothstep(0.15, 0.35, sat)) * m
+C    = masked_blur(T, grade, r_se)                    // the local skin colour (RGB)
+T'   = lerp(T, C * (C_g * e^0.1) / max(mean(C), 0.001), gs * w)
+out  = src - T + T'                                   // texture (src - T) kept
+```
+
+### 7.8 Teeth whitening (the owner, 2026-11-11)
+
+In the teeth mask of 5.6, `m = teeth / 255`: less yellow, a little more light, never past the brightest tooth:
+
+```
+L    = (src.r + src.g + src.b) / 3
+c    = L + (1 - 0.7 * tw * m) * (src - L)             // chroma toward neutral (yellow first, as it is the main cast)
+cap  = Lmax / max(L, 1e-4)                            // Lmax = the mask's 99th percentile of L
+out  = c * min(1 + 0.15 * tw * m, max(cap, 1))
+```
+
+### 7.9 Order
+
+Per face: blemish removal (6), then dark circles and even skin (7.1 to 7.6), then skin grading (7.7: contrast, shadow desaturation, shine removal), then teeth whitening (7.8). A tool whose amount is 0 or whose mask is empty does nothing; with every amount 0 the image is unchanged bit for bit.
+
 ## 8. Pipeline, entry point and tests
 
 ```
@@ -346,6 +416,8 @@ Tests (all required):
 - **Scale:** `render_scale` 1.0 and 0.5, the first downscaled, differ by a mean absolute difference under 1 %.
 - **Feather:** a positive radius never lowers a pixel; a negative one never raises one.
 - **Determinism:** the same inputs give the same bytes with 1, 3 and 4 threads.
+- **Skin grading:** contrast at +100 widens and at -100 narrows the spread of low-frequency skin luminance around `C_g`, with high-frequency texture energy kept within 5 %; shadow desaturation lowers chroma only below the skin's level and keeps luminance; shine removal lowers a synthetic specular patch toward the skin around it and leaves skin at its level unchanged.
+- **Teeth:** whitening lowers the chroma of yellow teeth on a synthetic mouth, keeps the lips and gums (outside the gated mask) unchanged, and never raises a tooth above the brightest one.
 - **Properties** (`proptest`) of the pure kernels: finite outputs for finite inputs, monotonic in the amount.
 - A `criterion` benchmark: 24 MP, one face.
 
@@ -384,12 +456,13 @@ Each task by a Sonnet agent on `skin-retouch` (or a branch off it); the lead rev
   *As built (S-07):* module `classical` in `ym-retouch` (`ClassicalProposer::new(face_px)` and `ClassicalBeautyMarks`, both re-exported; every constant is a named, documented starting value in `classical::constants` for S-12). The proposer is built per face with the face size in map pixels (`min(face, 450)`), because the trait passes none; its tile is 320 px and its border is derived from the face size (56 px at 450). It works in the received encoding on natural logs: Gaussian smoothing (0.35 % of the face), a per-channel black top-hat with a square window of 3.5 % of the face, a red-excess top-hat of `ln R - ln G` (opening), a score (deepest channel over 0.05, or red excess over 0.06), hysteresis at 0.55 of the seed, 8-connected components dropped under 3 px, over 5 % of the face or beyond aspect 3.5, a disc growth of 0.4 %; inside the mask the base (Gaussian of the pixels outside the mask, sigma 0.3 % of the face) is filled harmonically (120 over-relaxation sweeps from the rim) and the detail is kept, clamped to 0.03. Output outside the mask is the input, copied bit for bit. The detector crops the face rectangle (at most 320 px), takes log luminance, finds local maxima in space and scale of six differences of Gaussians (sigma 0.4 % to 2.6 % of the face), measures each of the 64 strongest against the median of its surroundings (extent = region darker than half its depth), and accepts compact, round, dark (0.4 to 1.4 in `ln` luminance), brown (red drop over 0.04 and at least 0.35 of the green drop) blobs of 1.2 % to 4.5 % of the face; strongest first, overlapping boxes dropped, at most 10, padded by 30 %. Decisions: lighter brown marks (contrast under 0.4) are not moles and go to blemish removal; the detector sees no skin mask, so it can box pupils and nostrils, which only punches holes where the mask is already 0 (they are refused above 1.4); square, not disc, windows for the top-hat (van Herk, linear time); detail is clamped so a spot's crisp rim does not return as a ring. Tests (synthetic skin in linear light, seeded: tone, gradient, 1.5 % texture, 40 pores; papules `[0.97, 0.72, 0.80]`, brown spots `[0.82, 0.68, 0.60]`, moles `[0.50, 0.38, 0.30]`): 20 new tests (85 in the crate, about 6 s). Measured on this container (4 cores, Linux, optimised test profile): worst residual contrast inside a removed spot 0.28 of the original (papules and dark spots from 3 to 14 px: 0.0 to 0.17; the smallest brown spot, 5 px across, 0.28; limit asserted 0.3); on 8 clean patches and everywhere farther than `2R + 8` px from a lesion the output equals the input exactly; texture inside a spot keeps 76 % of the high-pass amplitude; 1 and 4 threads give the same bytes; a 128 px tile equals one big tile to 6e-8; through `prepare_skin` and `retouch_skin` at Blemish 60 the papule contrast falls from -0.28 to +0.006 and the brown spot from -0.32 to -0.04, clean skin is bit-identical, and at Blemish 100 a mole beside a papule keeps its contrast (-0.62 to -0.62) while the papule goes (-0.28 to -0.003); detector on 8 patches with 24 moles (radius 3.5 to 8), 32 papules and 32 brown spots: recall 1.000 (24/24), precision 1.000 (no papule or brown spot boxed); a 16-mole patch returns 10 boxes; a mole of core radius 6 gets a 17 x 16 px box. Time per 450 px face (one 450 x 450 map, four 320 px tiles): proposer about 0.27 s, detector about 0.06 s. Limits for S-12: the synthetic skin has no hair, lips, brows or shadows, so thresholds are untested against real portraits; flat large red areas (wider than the window) are not blemishes by design.
 - **S-08 · MediaPipe weights and the face finder.** BlazeFace full range, Face Mesh V2 (from `face_landmarker.task`) and Selfie Multiclass, Apache-2.0 per their model cards; a CI-only script converts the TFLite files to safetensors (Python for exporting weights only, rule 6); fetch scripts with SHA-256, a release asset and the bundle as for SAM 2.1 (the owner: "bundle"), model cards and NOTICE lines; BlazeFace ported to Rust in `ym-ml` with tiling for group photos, our own NMS and face cap; parity against the reference outputs. *Done when:* faces found on public test portraits match the reference within the stated tolerance, and the weights are bundled by the release workflow.
 - **S-09 · Face mesh in Rust**, after S-08: Face Mesh V2 ported, two passes per face, the canonical topology (Apache-2.0) for region polygons, the mesh rasterised into a `BoundedMask`; the two tables (`UnderEye`, `InvertedSkinUniformity`) authored as our own UV textures. *Done when:* parity with the reference landmarks; the masks look right on a contact sheet of public portraits.
-- **S-10 · Selfie Multiclass in Rust and the real `FaceParser`**, after S-08: skin from the face-skin class inside the mesh oval plus a forehead band, eyes and other cut-outs from the mesh polygons, the neck from the body-skin component joined to the jaw, a per-face colour model at the edges and the existing guided filter (`docs/algorithms/06`). *Done when:* parity of the segmenter; masks on the contact sheet.
-- **S-11 · The Skin node.** A node kind of its own, **`skin`**, in the node graph only: it is not offered in the simple main view (the owner, 2026-11-11). Settings per face (Blemish, Dark circles, Even skin, Texture, the two neck switches), faces found automatically and listed in its panel, the protection mask from a Brush row; LogC4 decoded to linear AWG4 for `ym-retouch` and encoded back; the plan step, the caches, `ym` settings and the interface. Mockups first (S-H1). *Done when:* app and `ym` give the same bytes; the node's tests pass; the node renders on the CPU with the "Rendering on the CPU" pill until S-13.
+- **S-10 · Selfie Multiclass in Rust and the real `FaceParser`**, after S-08: skin from the face-skin class inside the mesh oval plus a forehead band, eyes and other cut-outs from the mesh polygons, the mouth interior from the inner lip line, a per-face colour model at the edges and the existing guided filter (`docs/algorithms/06`). *Done when:* parity of the segmenter; masks on the contact sheet.
+- **S-11 · The Skin node.** A node kind of its own, **`skin`**, in the node graph only: it is not offered in the simple main view (the owner, 2026-11-11). Settings per face (Blemish, Dark circles, Even skin, Texture; Skin contrast, Shadow desaturation, Shine removal; Teeth whitening), faces found automatically and listed in its panel, the protection mask from a Brush row; LogC4 decoded to linear AWG4 for `ym-retouch` and encoded back; the plan step, the caches, `ym` settings and the interface. Mockups first (S-H1). *Done when:* app and `ym` give the same bytes; the node's tests pass; the node renders on the CPU with the "Rendering on the CPU" pill until S-13.
 - **S-12 · Tuning the constants.** The owner, 2026-11-11: "you can change constants for optimal result, try it." The brief's constants are starting values: tune them (blemish scale, gain clamp, threshold curve, low-frequency radii, blend exponents, detector thresholds) against the synthetic protocol of the research (lesions with known ground truth in ten skin tones, texture energy, colour shift, mole survival) and contact sheets of public portraits; each change recorded here with before and after numbers. *Done when:* the synthetic gates pass and the owner has seen the sheets.
 - **S-13 · GPU kernels** for the apply of section 6.2 and the operator of section 7, with CPU parity tests, so the node runs on the device.
 - **S-14 · A trained proposer (optional, Modal).** The network of section 4 trained on synthetic chromophore lesions over Open Images faces (CC BY 2.0), per the research plan: $15 planned, $20 hard cap, a ledger that refuses a run past the cap. Shipped only if it beats the classical proposer in the owner's blind A/B, and only if its speed on a Mac is acceptable (a 48-channel variant is allowed).
-- **[HUMAN] S-H1** mockups of the Skin node; **S-H2** blind A/B and the test build.
+- **S-15 · No neck; skin grading and teeth whitening** in `ym-retouch` (the owner, 2026-11-11): remove the neck switches and the `NeckSkin` part everywhere (types, masks, mocks, pipeline, cache keys, tests); add `MouthInterior`, the grading and teeth masks of 5.6, the operators of 7.7 and 7.8 in the order of 7.9, and their tests (section 8); mocks draw a synthetic mouth with yellow teeth and red lips. *Done when:* the tests pass and the identity test still holds with every amount 0.
+- **[HUMAN] S-H1** mockups of the Skin node (revised: no Include neck; a Skin grading card with Contrast, Shadow desaturation and Shine removal; a Teeth card with Whitening); **S-H2** blind A/B and the test build.
 
 ## 11. The owner's answers (2026-11-11, `docs/STATUS.md` question 45)
 
@@ -399,3 +472,4 @@ Each task by a Sonnet agent on `skin-retouch` (or a branch off it); the lead rev
 4. **Modal.** "yes": a trained proposer may be trained, $15 planned, $20 hard cap (S-14).
 5. **Research-only sets.** "yes": FFHQR, Fitzpatrick17k and HAM10000 for local measurement only, never shipped or committed.
 6. **Weights.** "bundle": bundled with the app like SAM 2.1 (a release asset fetched by the release workflow), not committed.
+7. **On the mockups (2026-11-11):** "Don't do include neck. But let's add some things from Resolve: teeth whitening, skin grading (contrast, shadow desaturation, shine removal)." Sections 3, 5.6, 7.7 to 7.9 and task S-15.
