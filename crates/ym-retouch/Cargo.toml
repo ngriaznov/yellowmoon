@@ -12,17 +12,35 @@ publish = false
 [features]
 # Deterministic mock models for tests of this crate and of crates that use it.
 mock = []
+# The real `FaceParser` and `FaceMesh`: MediaPipe's Face Mesh V2 and Selfie Multiclass run by `ym-ml` (docs/27 S-09, S-10).
+# Off by default: a build without it does not compile `ym-ml`.
+mediapipe = ["dep:ym-ml"]
 
 [dependencies]
 rayon.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# Only with the feature `mediapipe`. ym-ml does not depend on ym-retouch, so there is no cycle.
+ym-ml = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
 criterion.workspace = true
+# tests/mediapipe.rs: the matrix of the display conversion against ym-color's, and the public test photos (JPEG).
+ym-color.workspace = true
+zune-jpeg = "0.5"
+# examples/face_masks_dump.rs writes the masks as PNG for tools/mediapipe/contact_sheet.py.
+png.workspace = true
 
 [[bench]]
 name = "retouch"
 harness = false
 required-features = ["mock"]
+
+[[test]]
+name = "mediapipe"
+required-features = ["mediapipe"]
+
+[[example]]
+name = "face_masks_dump"
+required-features = ["mediapipe"]

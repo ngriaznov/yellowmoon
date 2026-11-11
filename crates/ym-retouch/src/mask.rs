@@ -319,7 +319,7 @@ pub fn face_masks(
 
     let under_eye = models
         .mesh
-        .render(face, MeshTable::UnderEye, full_size_px)?
+        .render(image, face, MeshTable::UnderEye, full_size_px)?
         .to_full(full_size_px)?;
     let eyes = match models.parser.part_mask(image, face, FacePart::Eyes)? {
         Some(eyes) => Some(eyes.to_full(full_size_px)?),
@@ -329,7 +329,7 @@ pub fn face_masks(
 
     let uniformity = models
         .mesh
-        .render(face, MeshTable::InvertedSkinUniformity, full_size_px)?
+        .render(image, face, MeshTable::InvertedSkinUniformity, full_size_px)?
         .to_full(full_size_px)?;
     let grading = grading_mask(&skin, extent_px)?;
     let even = even_skin_with_edge(&skin, &uniformity, exclude, extent_px, &grading)?;

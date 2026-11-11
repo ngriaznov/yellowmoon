@@ -8,7 +8,8 @@
 //!
 //! Implemented: `CONV_2D`, `DEPTHWISE_CONV_2D`, `ADD`, `RELU`, `PRELU`, `LOGISTIC`, `MAX_POOL_2D`, `PAD`,
 //! `RESIZE_BILINEAR`, `RESHAPE` and `CONCATENATION`: those of BlazeFace and Face Mesh V2. Selfie Multiclass also uses
-//! `MUL`, `SUM`, `SOFTMAX`, `TRANSPOSE`, `TRANSPOSE_CONV` and `RESIZE_NEAREST_NEIGHBOR` (S-10).
+//! `MUL`, `SUM`, `SOFTMAX`, `TRANSPOSE`, `TRANSPOSE_CONV` and `RESIZE_NEAREST_NEIGHBOR` (S-10). `ADD` and `MUL` take
+//! numpy-style broadcasting and a constant as either operand.
 //!
 //! # Determinism
 //!
@@ -188,8 +189,13 @@ enum Kind {
         c: usize,
         act: Act,
     },
-    Add {
+    /// `ADD` or `MUL` of two tensors, one of which may be a constant held here; shapes broadcast numpy-style.
+    Binary {
+        mul: bool,
         act: Act,
+        constant: Option<Tensor>,
+        /// The constant is the first operand.
+        constant_first: bool,
     },
     Relu,
     Prelu {
@@ -213,6 +219,32 @@ enum Kind {
     },
     Concat {
         axis: usize,
+    },
+    Softmax {
+        beta: f32,
+    },
+    Transpose {
+        perm: Vec<usize>,
+    },
+    Sum {
+        axes: Vec<usize>,
+        keep_dims: bool,
+    },
+    ResizeNearest {
+        h: usize,
+        w: usize,
+        align_corners: bool,
+        half_pixel: bool,
+    },
+    TransposeConv {
+        /// `[cout][kh][kw][cin]` as TFLite stores it.
+        w: Vec<f32>,
+        bias: Vec<f32>,
+        win: Window,
+        cout: usize,
+        cin: usize,
+        /// The output `[1, h, w, cout]`.
+        out_shape: [usize; 4],
     },
 }
 
@@ -480,12 +512,139 @@ impl Graph {
                     vec![act_in(0)?],
                 )
             }
-            "ADD" => (
-                Kind::Add {
-                    act: fused(op.opt_i("FusedActivationFunction", 0), "ADD")?,
+            "ADD" | "MUL" => {
+                let a0 = op.ins.first().copied().unwrap_or(-1);
+                let a1 = op.ins.get(1).copied().unwrap_or(-1);
+                let is_const = |i: i64| usize::try_from(i).is_ok_and(|i| consts.contains_key(&i));
+                let act = fused(op.opt_i("FusedActivationFunction", 0), &op.op)?;
+                let mul = op.op == "MUL";
+                match (is_const(a0), is_const(a1)) {
+                    (false, false) => (
+                        Kind::Binary {
+                            mul,
+                            act,
+                            constant: None,
+                            constant_first: false,
+                        },
+                        vec![act_in(0)?, act_in(1)?],
+                    ),
+                    (false, true) => (
+                        Kind::Binary {
+                            mul,
+                            act,
+                            constant: Some(konst(1)?.clone()),
+                            constant_first: false,
+                        },
+                        vec![act_in(0)?],
+                    ),
+                    (true, false) => (
+                        Kind::Binary {
+                            mul,
+                            act,
+                            constant: Some(konst(0)?.clone()),
+                            constant_first: true,
+                        },
+                        vec![act_in(1)?],
+                    ),
+                    (true, true) => {
+                        return Err(MlError::Unsupported(format!("{} of two constants", op.op)));
+                    }
+                }
+            }
+            "SOFTMAX" => (
+                Kind::Softmax {
+                    beta: op
+                        .opt
+                        .get("Beta")
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or(1.0) as f32,
                 },
-                vec![act_in(0)?, act_in(1)?],
+                vec![act_in(0)?],
             ),
+            "TRANSPOSE" => {
+                let p = int_const(1)?;
+                let perm = p
+                    .data
+                    .iter()
+                    .map(|&v| {
+                        usize::try_from(v)
+                            .map_err(|_| MlError::Weights("negative TRANSPOSE axis".into()))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let mut sorted = perm.clone();
+                sorted.sort_unstable();
+                if sorted.iter().enumerate().any(|(i, &v)| i != v) {
+                    return Err(MlError::Weights("TRANSPOSE permutation".into()));
+                }
+                (Kind::Transpose { perm }, vec![act_in(0)?])
+            }
+            "SUM" => {
+                let a = int_const(1)?;
+                let axes = a
+                    .data
+                    .iter()
+                    .map(|&v| {
+                        usize::try_from(v)
+                            .map_err(|_| MlError::Unsupported("SUM on a negative axis".into()))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                (
+                    Kind::Sum {
+                        axes,
+                        keep_dims: op.opt_b("KeepDims"),
+                    },
+                    vec![act_in(0)?],
+                )
+            }
+            "RESIZE_NEAREST_NEIGHBOR" => {
+                let size = int_const(1)?;
+                if size.data.len() != 2 {
+                    return Err(MlError::Weights("RESIZE_NEAREST_NEIGHBOR size".into()));
+                }
+                (
+                    Kind::ResizeNearest {
+                        h: dim(size.data[0], "resize height")?,
+                        w: dim(size.data[1], "resize width")?,
+                        align_corners: op.opt_b("AlignCorners"),
+                        half_pixel: op.opt_b("HalfPixelCenters"),
+                    },
+                    vec![act_in(0)?],
+                )
+            }
+            "TRANSPOSE_CONV" => {
+                if op.opt_i("FusedActivationFunction", 0) != 0 {
+                    return Err(MlError::Unsupported(
+                        "TRANSPOSE_CONV with an activation".into(),
+                    ));
+                }
+                let shape = int_const(0)?;
+                let [1, oh, ow, cout_o] = shape.data[..] else {
+                    return Err(MlError::Weights("TRANSPOSE_CONV output shape".into()));
+                };
+                let w = konst(1)?;
+                let [cout, kh, kw, cin] = w.shape[..] else {
+                    return Err(MlError::Weights("TRANSPOSE_CONV weight is not 4-D".into()));
+                };
+                let bias = if op.ins.get(3).is_some_and(|&i| i >= 0) {
+                    konst(3)?.data.clone()
+                } else {
+                    vec![0.0; cout]
+                };
+                if bias.len() != cout || usize::try_from(cout_o).ok() != Some(cout) {
+                    return Err(MlError::Weights("TRANSPOSE_CONV channels".into()));
+                }
+                (
+                    Kind::TransposeConv {
+                        w: w.data.clone(),
+                        bias,
+                        win: window(kh, kw)?,
+                        cout,
+                        cin,
+                        out_shape: [1, dim(oh, "output height")?, dim(ow, "output width")?, cout],
+                    },
+                    vec![act_in(2)?],
+                )
+            }
             "RELU" => (Kind::Relu, vec![act_in(0)?]),
             "LOGISTIC" => (Kind::Logistic, vec![act_in(0)?]),
             "PRELU" => {
@@ -645,28 +804,39 @@ impl Graph {
                 c,
                 act,
             } => depthwise(x, w, bias, *win, *c, *act),
-            Kind::Add { act } => {
-                let y = get(values, node.ins[1])?;
-                if x.shape != y.shape {
-                    return Err(MlError::Shape(format!(
-                        "ADD of shapes {:?} and {:?}",
-                        x.shape, y.shape
-                    )));
+            Kind::Binary {
+                mul,
+                act,
+                constant,
+                constant_first,
+            } => {
+                let other = match constant {
+                    Some(c) => c,
+                    None => get(values, node.ins[1])?,
+                };
+                if *constant_first {
+                    binary(other, x, *mul, *act)
+                } else {
+                    binary(x, other, *mul, *act)
                 }
-                let data = x
-                    .data
-                    .iter()
-                    .zip(&y.data)
-                    .map(|(&a, &b)| match act {
-                        Act::Relu => relu(a + b),
-                        _ => a + b,
-                    })
-                    .collect();
-                Ok(Tensor {
-                    shape: x.shape.clone(),
-                    data,
-                })
             }
+            Kind::Softmax { beta } => Ok(softmax(x, *beta)),
+            Kind::Transpose { perm } => transpose(x, perm),
+            Kind::Sum { axes, keep_dims } => sum(x, axes, *keep_dims),
+            Kind::ResizeNearest {
+                h,
+                w,
+                align_corners,
+                half_pixel,
+            } => resize_nearest(x, *h, *w, *align_corners, *half_pixel),
+            Kind::TransposeConv {
+                w,
+                bias,
+                win,
+                cout,
+                cin,
+                out_shape,
+            } => transpose_conv(x, w, bias, *win, *cout, *cin, *out_shape),
             Kind::Relu => Ok(Tensor {
                 shape: x.shape.clone(),
                 data: x.data.iter().map(|&v| relu(v)).collect(),
@@ -927,6 +1097,289 @@ fn resize_bilinear(x: &Tensor, oh: usize, ow: usize, align: bool, half: bool) ->
         });
     Ok(Tensor {
         shape: vec![1, oh, ow, c],
+        data: out,
+    })
+}
+
+/// The strides of `shape` for reading it as if it had `shape_out` (right-aligned, size-1 dimensions repeat).
+fn broadcast_strides(shape: &[usize], out: &[usize]) -> Result<Vec<usize>> {
+    if shape.len() > out.len() {
+        return Err(MlError::Shape(format!(
+            "cannot broadcast {shape:?} to {out:?}"
+        )));
+    }
+    let lead = out.len() - shape.len();
+    let mut strides = vec![0usize; out.len()];
+    let mut acc = 1usize;
+    for d in (0..shape.len()).rev() {
+        if shape[d] == out[lead + d] {
+            strides[lead + d] = acc;
+        } else if shape[d] != 1 {
+            return Err(MlError::Shape(format!(
+                "cannot broadcast {shape:?} to {out:?}"
+            )));
+        }
+        acc *= shape[d];
+    }
+    Ok(strides)
+}
+
+/// `a + b` or `a * b` with numpy broadcasting, then the fused activation. Per element one operation: no order to fix.
+fn binary(a: &Tensor, b: &Tensor, mul: bool, act: Act) -> Result<Tensor> {
+    let rank = a.shape.len().max(b.shape.len());
+    let pad = |s: &[usize]| {
+        let mut v = vec![1usize; rank - s.len()];
+        v.extend_from_slice(s);
+        v
+    };
+    let (sa, sb) = (pad(&a.shape), pad(&b.shape));
+    let mut shape = Vec::with_capacity(rank);
+    for (&x, &y) in sa.iter().zip(&sb) {
+        shape.push(if x == y || y == 1 {
+            x
+        } else if x == 1 {
+            y
+        } else {
+            return Err(MlError::Shape(format!(
+                "{} of shapes {:?} and {:?}",
+                if mul { "MUL" } else { "ADD" },
+                a.shape,
+                b.shape
+            )));
+        });
+    }
+    let op = |x: f32, y: f32| {
+        let v = if mul { x * y } else { x + y };
+        if matches!(act, Act::Relu) { relu(v) } else { v }
+    };
+    if a.shape == b.shape {
+        let data = a
+            .data
+            .iter()
+            .zip(&b.data)
+            .map(|(&x, &y)| op(x, y))
+            .collect();
+        return Ok(Tensor { shape, data });
+    }
+    let (ta, tb) = (
+        broadcast_strides(&a.shape, &shape)?,
+        broadcast_strides(&b.shape, &shape)?,
+    );
+    let n: usize = shape.iter().product();
+    let mut data = Vec::with_capacity(n);
+    let mut idx = vec![0usize; rank];
+    let (mut ia, mut ib) = (0usize, 0usize);
+    for _ in 0..n {
+        data.push(op(a.data[ia], b.data[ib]));
+        // Advance the multi-index like an odometer, keeping both offsets in step.
+        for d in (0..rank).rev() {
+            idx[d] += 1;
+            ia += ta[d];
+            ib += tb[d];
+            if idx[d] < shape[d] {
+                break;
+            }
+            ia -= ta[d] * shape[d];
+            ib -= tb[d] * shape[d];
+            idx[d] = 0;
+        }
+    }
+    Ok(Tensor { shape, data })
+}
+
+/// `exp((x - max) * beta) / sum` along the last axis, the sum in ascending order.
+fn softmax(x: &Tensor, beta: f32) -> Tensor {
+    let c = *x.shape.last().unwrap_or(&1);
+    let mut data = x.data.clone();
+    data.par_chunks_mut(c.max(1)).for_each(|row| {
+        let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let mut sum = 0.0f32;
+        for v in row.iter_mut() {
+            *v = libm::expf((*v - max) * beta);
+            sum += *v;
+        }
+        for v in row.iter_mut() {
+            *v /= sum;
+        }
+    });
+    Tensor {
+        shape: x.shape.clone(),
+        data,
+    }
+}
+
+fn transpose(x: &Tensor, perm: &[usize]) -> Result<Tensor> {
+    let rank = x.shape.len();
+    if perm.len() != rank {
+        return Err(MlError::Shape(format!(
+            "TRANSPOSE of {perm:?} on a {rank}-D tensor"
+        )));
+    }
+    let mut in_strides = vec![1usize; rank];
+    for d in (0..rank.saturating_sub(1)).rev() {
+        in_strides[d] = in_strides[d + 1] * x.shape[d + 1];
+    }
+    let shape: Vec<usize> = perm.iter().map(|&p| x.shape[p]).collect();
+    let strides: Vec<usize> = perm.iter().map(|&p| in_strides[p]).collect();
+    let n = x.data.len();
+    let mut data = Vec::with_capacity(n);
+    let mut idx = vec![0usize; rank];
+    let mut at = 0usize;
+    for _ in 0..n {
+        data.push(x.data[at]);
+        for d in (0..rank).rev() {
+            idx[d] += 1;
+            at += strides[d];
+            if idx[d] < shape[d] {
+                break;
+            }
+            at -= strides[d] * shape[d];
+            idx[d] = 0;
+        }
+    }
+    Ok(Tensor { shape, data })
+}
+
+/// The sum over `axes`, each output value a chain of additions in ascending index order.
+fn sum(x: &Tensor, axes: &[usize], keep_dims: bool) -> Result<Tensor> {
+    let rank = x.shape.len();
+    if axes.iter().any(|&a| a >= rank) {
+        return Err(MlError::Shape(format!(
+            "SUM over {axes:?} of a {rank}-D tensor"
+        )));
+    }
+    let reduced = |d: usize| axes.contains(&d);
+    let kept: Vec<usize> = (0..rank).filter(|&d| !reduced(d)).collect();
+    let out_dims: Vec<usize> = kept.iter().map(|&d| x.shape[d]).collect();
+    let n_out: usize = out_dims.iter().product();
+    let mut data = vec![0.0f32; n_out];
+    let mut out_strides = vec![0usize; rank];
+    let mut acc = 1usize;
+    for &d in kept.iter().rev() {
+        out_strides[d] = acc;
+        acc *= x.shape[d];
+    }
+    // Walking the input in memory order visits the terms of every output in ascending order of the reduced indices.
+    let mut idx = vec![0usize; rank];
+    let mut o = 0usize;
+    for &v in &x.data {
+        data[o] += v;
+        for d in (0..rank).rev() {
+            idx[d] += 1;
+            o += out_strides[d];
+            if idx[d] < x.shape[d] {
+                break;
+            }
+            o -= out_strides[d] * x.shape[d];
+            idx[d] = 0;
+        }
+    }
+    let shape = if keep_dims {
+        (0..rank)
+            .map(|d| if reduced(d) { 1 } else { x.shape[d] })
+            .collect()
+    } else {
+        out_dims
+    };
+    Ok(Tensor { shape, data })
+}
+
+fn resize_nearest(x: &Tensor, oh: usize, ow: usize, align: bool, half: bool) -> Result<Tensor> {
+    let (h, w, c) = nhwc(x)?;
+    let pick = |dst: usize, in_len: usize, out_len: usize| -> usize {
+        let scale = if align && out_len > 1 {
+            (in_len - 1) as f32 / (out_len - 1) as f32
+        } else {
+            in_len as f32 / out_len as f32
+        };
+        let s = if half {
+            (dst as f32 + 0.5) * scale
+        } else {
+            dst as f32 * scale
+        };
+        let i = if align { s.round() } else { s.floor() };
+        (i.max(0.0) as usize).min(in_len - 1)
+    };
+    let mut out = vec![0.0f32; oh * ow * c];
+    out.par_chunks_mut(ow * c)
+        .enumerate()
+        .for_each(|(oy, row)| {
+            let iy = pick(oy, h, oh);
+            for (ox, px) in row.chunks_exact_mut(c).enumerate() {
+                let ix = pick(ox, w, ow);
+                px.copy_from_slice(&x.data[(iy * w + ix) * c..][..c]);
+            }
+        });
+    Ok(Tensor {
+        shape: vec![1, oh, ow, c],
+        data: out,
+    })
+}
+
+/// TFLite's `TRANSPOSE_CONV` as a gather: every output pixel adds, in (row, column, input channel) order, the taps of the
+/// input pixels whose kernel covers it, after the bias. `w` is `[cout][kh][kw][cin]`.
+fn transpose_conv(
+    x: &Tensor,
+    w: &[f32],
+    bias: &[f32],
+    win: Window,
+    cout: usize,
+    cin: usize,
+    out_shape: [usize; 4],
+) -> Result<Tensor> {
+    let (h, wd, c) = nhwc(x)?;
+    if c != cin {
+        return Err(MlError::Shape(format!(
+            "TRANSPOSE_CONV takes {cin} channels, found {c}"
+        )));
+    }
+    let [_, oh, ow, _] = out_shape;
+    // The padding TFLite derives for the forward convolution from the output size to the input size.
+    let (top, left) = match win.padding {
+        Padding::Same => (
+            ((h - 1) * win.sh + win.kh).saturating_sub(oh) / 2,
+            ((wd - 1) * win.sw + win.kw).saturating_sub(ow) / 2,
+        ),
+        Padding::Valid => (0, 0),
+    };
+    let mut out = vec![0.0f32; oh * ow * cout];
+    out.par_chunks_mut(ow * cout)
+        .enumerate()
+        .for_each(|(oy, row)| {
+            for (ox, acc) in row.chunks_exact_mut(cout).enumerate() {
+                acc.copy_from_slice(bias);
+                for ky in 0..win.kh {
+                    // Input row iy with iy * sh + ky - top == oy.
+                    let Some(ry) = (oy + top).checked_sub(ky) else {
+                        continue;
+                    };
+                    if ry % win.sh != 0 || ry / win.sh >= h {
+                        continue;
+                    }
+                    let iy = ry / win.sh;
+                    for kx in 0..win.kw {
+                        let Some(rx) = (ox + left).checked_sub(kx) else {
+                            continue;
+                        };
+                        if rx % win.sw != 0 || rx / win.sw >= wd {
+                            continue;
+                        }
+                        let ix = rx / win.sw;
+                        let src = &x.data[(iy * wd + ix) * cin..][..cin];
+                        for (co, a) in acc.iter_mut().enumerate() {
+                            let taps = &w[((co * win.kh + ky) * win.kw + kx) * cin..][..cin];
+                            let mut s = 0.0f32;
+                            for (&v, &t) in src.iter().zip(taps) {
+                                s += v * t;
+                            }
+                            *a += s;
+                        }
+                    }
+                }
+            }
+        });
+    Ok(Tensor {
+        shape: vec![1, oh, ow, cout],
         data: out,
     })
 }
@@ -1248,6 +1701,201 @@ mod tests {
     }
 
     #[test]
+    fn add_and_mul_broadcast_and_take_a_constant_on_either_side() {
+        // A constant per channel as the second operand, then as the first.
+        let c = vec![2.0, -1.0, 0.5];
+        for (first, mul) in [(false, true), (true, true), (false, false), (true, false)] {
+            let ins: &[i64] = if first { &[] } else { &[2] };
+            let mut graph = single(
+                if mul { "MUL" } else { "ADD" },
+                ins,
+                r#"{"FusedActivationFunction":0}"#,
+                &[1, 2, 2, 3],
+                &[1, 2, 2, 3],
+                "{}",
+            );
+            if first {
+                graph = graph.replace(r#""in":[0]"#, r#""in":[2,0]"#);
+            }
+            let f = file(&[(2, vec![3], c.clone())], &graph);
+            let x = ramp(&[1, 2, 2, 3]);
+            let out = &run(&f, x.clone()).expect("run")[0];
+            for (i, (&o, &v)) in out.data.iter().zip(&x.data).enumerate() {
+                let want = if mul { v * c[i % 3] } else { v + c[i % 3] };
+                assert_eq!(o, want, "first {first} mul {mul} at {i}");
+            }
+        }
+        // Two activations of different shapes: [2,1,3] * [1,4,1] -> [2,4,3]; and a mismatch is an error.
+        let a = ramp(&[2, 1, 3]);
+        let b = ramp(&[1, 4, 1]);
+        let out = binary(&a, &b, true, Act::None).expect("broadcast");
+        assert_eq!(out.shape, vec![2, 4, 3]);
+        for i in 0..2 {
+            for j in 0..4 {
+                for k in 0..3 {
+                    assert_eq!(out.data[(i * 4 + j) * 3 + k], a.data[i * 3 + k] * b.data[j]);
+                }
+            }
+        }
+        assert!(binary(&ramp(&[2, 3]), &ramp(&[2, 4]), false, Act::None).is_err());
+        // The fused ReLU applies after the operation.
+        let r = binary(&ramp(&[3]), &ramp(&[3]), false, Act::Relu).expect("add");
+        assert!(r.data.iter().all(|&v| v >= 0.0));
+    }
+
+    #[test]
+    fn softmax_transpose_and_sum() {
+        let x = Tensor::new(vec![1, 2, 3], vec![1.0, 2.0, 3.0, 0.0, 0.0, 0.0]).expect("tensor");
+        let s = softmax(&x, 1.0);
+        let e: Vec<f32> = [1.0f32, 2.0, 3.0].iter().map(|v| v.exp()).collect();
+        let z: f32 = e.iter().sum();
+        for k in 0..3 {
+            assert!((s.data[k] - e[k] / z).abs() < 1e-6);
+            assert!((s.data[3 + k] - 1.0 / 3.0).abs() < 1e-6);
+        }
+        // Transpose [2,3,4] with perm [2,0,1]: out[k][i][j] = in[i][j][k].
+        let t = ramp(&[2, 3, 4]);
+        let out = transpose(&t, &[2, 0, 1]).expect("transpose");
+        assert_eq!(out.shape, vec![4, 2, 3]);
+        for i in 0..2 {
+            for j in 0..3 {
+                for k in 0..4 {
+                    assert_eq!(out.data[(k * 2 + i) * 3 + j], t.data[(i * 3 + j) * 4 + k]);
+                }
+            }
+        }
+        assert!(transpose(&t, &[0, 1]).is_err());
+        // Sum over axis 2 of [2,3,4], with and without KeepDims.
+        let kept = sum(&t, &[2], true).expect("sum");
+        assert_eq!(kept.shape, vec![2, 3, 1]);
+        let dropped = sum(&t, &[2], false).expect("sum");
+        assert_eq!(dropped.shape, vec![2, 3]);
+        for i in 0..6 {
+            let want: f32 = (0..4).fold(0.0, |a, k| a + t.data[i * 4 + k]);
+            assert_eq!(kept.data[i], want);
+            assert_eq!(dropped.data[i], want);
+        }
+        let both = sum(&t, &[0, 2], false).expect("sum");
+        assert_eq!(both.shape, vec![3]);
+        let want: f32 = (0..2)
+            .flat_map(|i| (0..4).map(move |k| (i, k)))
+            .fold(0.0, |a, (i, k)| a + t.data[(i * 3 + 1) * 4 + k]);
+        assert!((both.data[1] - want).abs() < 1e-4);
+        assert!(sum(&t, &[3], false).is_err());
+    }
+
+    #[test]
+    fn nearest_resize_uses_tflites_half_pixel_rule() {
+        // 2 x 2 -> 4 x 4: output i takes input floor((i + 0.5) / 2).
+        let x = Tensor::new(vec![1, 2, 2, 1], vec![1.0, 2.0, 3.0, 4.0]).expect("tensor");
+        let out = resize_nearest(&x, 4, 4, false, true).expect("resize");
+        assert_eq!(
+            out.data,
+            vec![
+                1., 1., 2., 2., 1., 1., 2., 2., 3., 3., 4., 4., 3., 3., 4., 4.
+            ]
+        );
+        // 4 -> 2 with half-pixel centres picks input 1 and 3 (floor((i + 0.5) * 2)).
+        let big = Tensor::new(vec![1, 1, 4, 1], vec![10., 11., 12., 13.]).expect("tensor");
+        assert_eq!(
+            resize_nearest(&big, 1, 2, false, true)
+                .expect("resize")
+                .data,
+            vec![11., 13.]
+        );
+        // Without half-pixel centres: floor(i * 2) = 0 and 2.
+        assert_eq!(
+            resize_nearest(&big, 1, 2, false, false)
+                .expect("resize")
+                .data,
+            vec![10., 12.]
+        );
+    }
+
+    /// A transposed convolution as TFLite's reference scatters it, for comparison.
+    fn scatter_reference(
+        x: &Tensor,
+        w: &[f32],
+        bias: &[f32],
+        (kh, kw, sh, sw): (usize, usize, usize, usize),
+        (cout, cin): (usize, usize),
+        (oh, ow): (usize, usize),
+        (top, left): (usize, usize),
+    ) -> Vec<f32> {
+        let (h, wd) = (x.shape[1], x.shape[2]);
+        let mut out = vec![0.0f32; oh * ow * cout];
+        for iy in 0..h {
+            for ix in 0..wd {
+                for ky in 0..kh {
+                    for kx in 0..kw {
+                        let (oy, ox) = (
+                            (iy * sh + ky) as i64 - top as i64,
+                            (ix * sw + kx) as i64 - left as i64,
+                        );
+                        if oy < 0 || ox < 0 || oy >= oh as i64 || ox >= ow as i64 {
+                            continue;
+                        }
+                        for co in 0..cout {
+                            for ci in 0..cin {
+                                out[(oy as usize * ow + ox as usize) * cout + co] += x.data
+                                    [(iy * wd + ix) * cin + ci]
+                                    * w[((co * kh + ky) * kw + kx) * cin + ci];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for px in out.chunks_exact_mut(cout) {
+            for (v, b) in px.iter_mut().zip(bias) {
+                *v += b;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn transpose_convolution_matches_the_scatter_form() {
+        for (k, stride, in_px, out_px) in
+            [(2usize, 2usize, 3usize, 6usize), (3, 2, 4, 8), (4, 2, 3, 6)]
+        {
+            let (cin, cout) = (3usize, 2usize);
+            let w: Vec<f32> = (0..cout * k * k * cin)
+                .map(|i| ((i * 7 % 11) as f32 - 5.0) * 0.1)
+                .collect();
+            let bias = vec![0.25, -0.5];
+            let graph = format!(
+                r#"{{"version":1,"inputs":[{}],"outputs":[{}],"ints":{{"2":{{"shape":[4],"data":[1,{out_px},{out_px},{cout}]}}}},"ops":[{{"op":"TRANSPOSE_CONV","in":[2,3,0,4],"out":[1],"opt":{{"Padding":0,"StrideH":{stride},"StrideW":{stride},"FusedActivationFunction":0}}}}]}}"#,
+                io(0, &[1, in_px, in_px, cin]),
+                io(1, &[1, out_px, out_px, cout])
+            );
+            let f = file(
+                &[
+                    (3, vec![cout, k, k, cin], w.clone()),
+                    (4, vec![cout], bias.clone()),
+                ],
+                &graph,
+            );
+            let x = ramp(&[1, in_px, in_px, cin]);
+            let out = &run(&f, x.clone()).expect("run")[0];
+            assert_eq!(out.shape, vec![1, out_px, out_px, cout]);
+            let pad = ((in_px - 1) * stride + k).saturating_sub(out_px) / 2;
+            let want = scatter_reference(
+                &x,
+                &w,
+                &bias,
+                (k, k, stride, stride),
+                (cout, cin),
+                (out_px, out_px),
+                (pad, pad),
+            );
+            for (i, (a, b)) in out.data.iter().zip(&want).enumerate() {
+                assert!((a - b).abs() < 1e-4, "k {k} at {i}: {a} against {b}");
+            }
+        }
+    }
+
+    #[test]
     fn add_and_concatenation_of_two_paths() {
         // 0 -> RELU -> 2; 0 + 2 -> 3 (ADD); concat(2, 3) on the channel axis -> 1.
         let graph = format!(
@@ -1266,17 +1914,10 @@ mod tests {
 
     #[test]
     fn a_graph_with_an_operator_we_do_not_have_is_refused_when_loaded() {
-        let g = single(
-            "TRANSPOSE_CONV",
-            &[],
-            "{}",
-            &[1, 2, 2, 1],
-            &[1, 2, 2, 1],
-            "{}",
-        );
+        let g = single("GATHER", &[], "{}", &[1, 2, 2, 1], &[1, 2, 2, 1], "{}");
         let err = Graph::from_bytes(&file(&[], &g)).expect_err("unsupported");
         assert!(
-            matches!(err, MlError::Unsupported(ref m) if m.contains("TRANSPOSE_CONV")),
+            matches!(err, MlError::Unsupported(ref m) if m.contains("GATHER")),
             "{err}"
         );
     }

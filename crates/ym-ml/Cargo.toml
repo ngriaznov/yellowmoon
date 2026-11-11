@@ -60,3 +60,7 @@ path = "examples/faces_time.rs"
 [[example]]
 name = "bokeh_maps"
 path = "examples/bokeh_maps.rs"
+
+[[example]]
+name = "mesh_time"
+path = "examples/mesh_time.rs"

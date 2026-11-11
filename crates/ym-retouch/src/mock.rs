@@ -188,7 +188,13 @@ impl FaceParser for NoParts {
 pub struct MockMesh;
 
 impl FaceMesh for MockMesh {
-    fn render(&self, face: &Face, table: MeshTable, _size_px: (u32, u32)) -> Result<BoundedMask> {
+    fn render(
+        &self,
+        _image: &LinearAwg4Image,
+        face: &Face,
+        table: MeshTable,
+        _size_px: (u32, u32),
+    ) -> Result<BoundedMask> {
         let r = face.rect;
         let (x, y, w, h) = (
             f64::from(r.x_px),
@@ -380,7 +386,7 @@ mod tests {
         );
         assert!(
             MockMesh
-                .render(&face, MeshTable::UnderEye, (100, 100))
+                .render(&img, &face, MeshTable::UnderEye, (100, 100))
                 .unwrap()
                 .mask
                 .data

@@ -3,14 +3,18 @@
 //!
 //! The networks were converted from TFLite to safetensors by `tools/mediapipe/convert.py` (never run by the app) and run
 //! here by [`graph`], a runner for the operators they use. The model folder is `data/models/mediapipe/`, fetched by
-//! `tools/fetch/mediapipe.sh`. S-08 is the face finder, [`blazeface`]; the mesh and the segmenter come with S-09 and S-10.
+//! `tools/fetch/mediapipe.sh`. S-08 is the face finder, [`blazeface`]; S-09 the 478-point mesh, [`facemesh`], with the
+//! rotated crop of [`roi`]; S-10 the six-class segmenter, [`selfie`].
 
 use std::path::Path;
 
 use crate::model::{MlError, Result, verify_sha256};
 
 pub mod blazeface;
+pub mod facemesh;
 pub mod graph;
+pub mod roi;
+pub mod selfie;
 
 /// The line for `file` in `dir/SHA256SUMS`.
 pub(crate) fn expected_sha256(dir: &Path, file: &str) -> Result<String> {

@@ -15,7 +15,7 @@ pub enum FacePart {
     MouthInterior,
 }
 
-/// A per-vertex brightness table of the face mesh.
+/// A table of the face mesh: a smooth texture over the mesh's texture coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MeshTable {
     /// Bright under the eyes.
@@ -35,11 +35,18 @@ pub trait FaceParser: Send + Sync {
     ) -> Result<Option<BoundedMask>>;
 }
 
-/// A dense face mesh with per-vertex tables.
+/// A dense face mesh with two tables.
 pub trait FaceMesh: Send + Sync {
-    /// Rasterises the face mesh into an 8-bit mask with a per-vertex brightness table.
-    /// `size_px` is the full-resolution image size (width, height).
-    fn render(&self, face: &Face, table: MeshTable, size_px: (u32, u32)) -> Result<BoundedMask>;
+    /// Rasterises the face mesh into an 8-bit mask of one of its tables, in full image coordinates.
+    /// `image` is the full-resolution image the mesh is fitted to (an implementation that runs a network needs the picture;
+    /// the analytic mock ignores it), `size_px` its size (width, height).
+    fn render(
+        &self,
+        image: &LinearAwg4Image,
+        face: &Face,
+        table: MeshTable,
+        size_px: (u32, u32),
+    ) -> Result<BoundedMask>;
 }
 
 /// Finds moles and beauty marks.

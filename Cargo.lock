@@ -11526,10 +11526,14 @@ name = "ym-retouch"
 version = "0.2.3"
 dependencies = [
  "criterion",
+ "png 0.18.1",
  "proptest",
  "rayon",
  "thiserror 2.0.21",
  "tracing",
+ "ym-color",
+ "ym-ml",
+ "zune-jpeg",
 ]
 
 [[package]]

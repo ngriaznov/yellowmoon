@@ -13,9 +13,16 @@
 mod blemish;
 pub mod classical;
 mod error;
+mod face_parts;
+mod face_raster;
+mod face_tables;
+mod face_topology;
 mod feather;
+mod guided;
 mod lowfreq;
 mod mask;
+#[cfg(feature = "mediapipe")]
+pub mod mediapipe;
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
 mod models;
