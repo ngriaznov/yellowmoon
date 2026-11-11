@@ -11,8 +11,8 @@ pub enum FacePart {
     SkinWithoutEars,
     /// Both eyes.
     Eyes,
-    /// Neck skin.
-    NeckSkin,
+    /// The inside of the mouth (teeth, gums, tongue), inside the inner lip line.
+    MouthInterior,
 }
 
 /// A per-vertex brightness table of the face mesh.
@@ -60,11 +60,9 @@ pub trait BlemishProposer: Send + Sync {
 
 /// The models one retouch run uses.
 pub struct Models {
-    /// Skin, eyes and, when `neck` is `None`, nothing else.
+    /// Skin without ears, eyes and the mouth interior. A missing mouth interior only turns
+    /// teeth whitening off.
     pub parser: Box<dyn FaceParser>,
-    /// A separate parser for the neck (for example the People mask below the jaw). Without it
-    /// there is no neck; a neck parser that fails is logged and the tools go on without it.
-    pub neck: Option<Box<dyn FaceParser>>,
     /// The face mesh with its two tables.
     pub mesh: Box<dyn FaceMesh>,
     /// Beauty marks; without it nothing is left alone. A failing detector is logged and ignored.

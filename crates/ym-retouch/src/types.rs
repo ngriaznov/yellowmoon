@@ -272,10 +272,14 @@ pub struct SkinSettings {
     pub even_skin: f32,
     /// Texture, -100..=100.
     pub texture: f32,
-    /// Blemish removal also covers the neck.
-    pub include_neck_blemish: bool,
-    /// Even skin also covers the neck.
-    pub include_neck_even_skin: bool,
+    /// Skin contrast, -100..=100; 0 leaves the skin's light unchanged.
+    pub skin_contrast: f32,
+    /// Shadow desaturation, 0..=100.
+    pub shadow_desaturation: f32,
+    /// Shine removal, 0..=100.
+    pub shine_removal: f32,
+    /// Teeth whitening, 0..=100.
+    pub teeth_whitening: f32,
 }
 
 /// Clamps to a range; NaN becomes `neutral` (clamped too).
@@ -295,7 +299,10 @@ impl SkinSettings {
             dark_circles: clamp_f32(self.dark_circles, 0.0, 100.0, 0.0),
             even_skin: clamp_f32(self.even_skin, 0.0, 100.0, 0.0),
             texture: clamp_f32(self.texture, -100.0, 100.0, 0.0),
-            ..*self
+            skin_contrast: clamp_f32(self.skin_contrast, -100.0, 100.0, 0.0),
+            shadow_desaturation: clamp_f32(self.shadow_desaturation, 0.0, 100.0, 0.0),
+            shine_removal: clamp_f32(self.shine_removal, 0.0, 100.0, 0.0),
+            teeth_whitening: clamp_f32(self.teeth_whitening, 0.0, 100.0, 0.0),
         }
     }
 
@@ -317,6 +324,31 @@ impl SkinSettings {
     /// `t = (texture + 100) / 200`, in 0..=1.
     pub fn t(&self) -> f64 {
         (f64::from(self.clamped().texture) + 100.0) / 200.0
+    }
+
+    /// `gc = skin_contrast / 100`, in -1..=1.
+    pub fn gc(&self) -> f64 {
+        f64::from(self.clamped().skin_contrast) / 100.0
+    }
+
+    /// `gd = shadow_desaturation / 100`, in 0..=1.
+    pub fn gd(&self) -> f64 {
+        f64::from(self.clamped().shadow_desaturation) / 100.0
+    }
+
+    /// `gs = shine_removal / 100`, in 0..=1.
+    pub fn gs(&self) -> f64 {
+        f64::from(self.clamped().shine_removal) / 100.0
+    }
+
+    /// `tw = teeth_whitening / 100`, in 0..=1.
+    pub fn tw(&self) -> f64 {
+        f64::from(self.clamped().teeth_whitening) / 100.0
+    }
+
+    /// True when any of the three skin-grading amounts (7.7) is not 0.
+    pub fn grading_active(&self) -> bool {
+        self.gc() != 0.0 || self.gd() > 0.0 || self.gs() > 0.0
     }
 }
 
@@ -396,6 +428,16 @@ mod tests {
         };
         assert_eq!((s.a(), s.se(), s.t()), (0.25, 0.5, 1.0));
         assert_eq!(SkinSettings::default().t(), 0.5);
+        let g = SkinSettings {
+            skin_contrast: -250.0,
+            shadow_desaturation: 40.0,
+            shine_removal: f32::NAN,
+            teeth_whitening: 101.0,
+            ..Default::default()
+        };
+        assert_eq!((g.gc(), g.gd(), g.gs(), g.tw()), (-1.0, 0.4, 0.0, 1.0));
+        assert!(g.grading_active());
+        assert!(!SkinSettings::default().grading_active());
     }
 
     #[test]

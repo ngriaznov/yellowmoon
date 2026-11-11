@@ -236,7 +236,6 @@ fn tiling_does_not_change_the_result() {
 fn models(boxes: Vec<Rect>, classical: bool) -> Models {
     Models {
         parser: Box::new(MockParser),
-        neck: None,
         mesh: Box::new(MockMesh),
         beauty_marks: Some(if classical {
             Box::new(ClassicalBeautyMarks)

@@ -1,4 +1,5 @@
-//! Face skin retouching (`docs/27-skin-retouch.md`): blemish removal, dark circles and even skin.
+//! Face skin retouching (`docs/27-skin-retouch.md`): blemish removal, dark circles, even skin, skin
+//! grading and teeth whitening.
 //!
 //! This crate holds the types and rules of sections 2 to 5 of the spec: the image, mask and
 //! settings types, the model traits and their deterministic mocks, and the mask arithmetic, the
@@ -30,12 +31,15 @@ pub use classical::{ClassicalBeautyMarks, ClassicalProposer};
 pub use error::{Result, RetouchError};
 pub use feather::feather;
 pub use lowfreq::{
-    LowFreqParams, blend_pixel, blend_weight, dark_circle_k_sp, dark_circles_target,
-    even_skin_target, mask_to_working, masked_blur_combine, retouch_low_frequency,
+    LowFreqParams, ToolMasks, blend_pixel, blend_weight, contrast_target, dark_circle_k_sp,
+    dark_circles_target, even_skin_target, mask_to_working, masked_blur_combine,
+    retouch_low_frequency, retouch_tones, shadow_desaturation_pixel, shine_removal_texture,
+    teeth_pixel,
 };
 pub use mask::{
-    FaceMasks, SkinParts, blemish_mask, dark_circle_mask, even_skin_mask, face_masks, max,
-    max_masks, mul, mul_inv, mul_inv_masks, mul_masks, punch_hole, skin_parts,
+    FaceMasks, blemish_mask, dark_circle_mask, even_skin_mask, face_masks, grading_mask, max,
+    max_masks, mul, mul_inv, mul_inv_masks, mul_masks, punch_hole, skin_mask, smoothstep,
+    teeth_gate, teeth_mask,
 };
 pub use models::{
     BeautyMarkDetector, BlemishProposer, FaceMesh, FaceParser, FacePart, MeshTable, Models,

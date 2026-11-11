@@ -1,8 +1,9 @@
 //! Deterministic mock models for tests (`docs/27` section 4). Enabled by the `mock` feature.
 //!
 //! Everything is analytic and uses no randomness. Geometry is relative to the face rectangle:
-//! the skin is the ellipse inscribed in it, the eyes are two small ellipses, the neck is a
-//! rectangle below it.
+//! the skin is the ellipse inscribed in it, the eyes are two small ellipses, and the mouth interior
+//! is a small ellipse in its lower part ([`mouth_ellipse`]); [`paint_mouth`] draws red lips around
+//! yellowish teeth and a dark gap for tests.
 
 use crate::error::{Result, RetouchError};
 use crate::models::{
@@ -19,6 +20,62 @@ pub fn eye_centers(rect: &Rect) -> [(f64, f64); 2] {
         f64::from(rect.height_px),
     );
     [(x + 0.32 * w, y + 0.40 * h), (x + 0.68 * w, y + 0.40 * h)]
+}
+
+/// The mouth interior of the mock face: centre and semi-axes `(cx, cy, ax, ay)` in image pixels,
+/// inside the face ellipse and under the nose.
+pub fn mouth_ellipse(rect: &Rect) -> (f64, f64, f64, f64) {
+    let (x, y, w, h) = (
+        f64::from(rect.x_px),
+        f64::from(rect.y_px),
+        f64::from(rect.width_px),
+        f64::from(rect.height_px),
+    );
+    (x + 0.5 * w, y + 0.74 * h, 0.16 * w, 0.05 * h)
+}
+
+/// The colours [`paint_mouth`] uses, in linear light at luminance 1; the teeth are yellowish.
+pub mod mouth_colors {
+    /// Teeth (yellowish, low saturation).
+    pub const TEETH: [f32; 3] = [0.82, 0.74, 0.52];
+    /// Lips (saturated red).
+    pub const LIPS: [f32; 3] = [0.60, 0.22, 0.22];
+    /// The dark gap and the gums at the sides of the mouth (dark, saturated red).
+    pub const GAP: [f32; 3] = [0.26, 0.07, 0.08];
+}
+
+/// Draws a synthetic mouth on `image` inside the mock face `rect`: red lips in a ring around the
+/// mouth interior ([`mouth_ellipse`]), a band of yellowish teeth across its middle (darker toward the corners), and a dark
+/// gap (gums and shadow) in the rest of it. `luma` scales every colour (the teeth are about
+/// `0.74 * luma` in `Y`). Pixels outside the lips are left alone.
+pub fn paint_mouth(image: &mut LinearAwg4Image, rect: &Rect, luma: f32) {
+    let (cx, cy, ax, ay) = mouth_ellipse(rect);
+    let w = image.width_px as usize;
+    let x0 = ((cx - 1.5 * ax).floor() as i64).max(0) as usize;
+    let x1 = (((cx + 1.5 * ax).ceil() as i64).max(0) as usize).min(w);
+    let y0 = ((cy - 1.8 * ay).floor() as i64).max(0) as usize;
+    let y1 = (((cy + 1.8 * ay).ceil() as i64).max(0) as usize).min(image.height_px as usize);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let (nx, ny) = ((x as f64 + 0.5 - cx) / ax, (y as f64 + 0.5 - cy) / ay);
+            let d = (nx * nx + ny * ny).sqrt();
+            let mut shade = 1.0;
+            let colour = if d < 1.0 {
+                if ny.abs() < 0.5 && nx.abs() < 0.8 {
+                    // The teeth get darker toward the corners of the mouth.
+                    shade = 1.0 - 0.25 * nx.abs() as f32;
+                    mouth_colors::TEETH
+                } else {
+                    mouth_colors::GAP
+                }
+            } else if d < 1.45 {
+                mouth_colors::LIPS
+            } else {
+                continue;
+            };
+            image.data[y * w + x] = colour.map(|c| c * luma * shade);
+        }
+    }
 }
 
 /// An ellipse (centre, semi-axes) on `region`: `value(d)` for the normalised distance `d < 1`
@@ -61,8 +118,8 @@ fn ellipses(
     }
 }
 
-/// A parser giving an elliptical skin mask inside the face rectangle, two small elliptical eyes,
-/// and the neck as a rectangle below the face.
+/// A parser giving an elliptical skin mask inside the face rectangle, two small elliptical eyes
+/// and an elliptical mouth interior.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MockParser;
 
@@ -95,21 +152,15 @@ impl FaceParser for MockParser {
                 );
                 ellipses(region, &[(lx, ly, ax, ay), (rx, ry, ax, ay)], |_| 255)
             }
-            FacePart::NeckSkin => {
+            FacePart::MouthInterior => {
+                let (cx, cy, ax, ay) = mouth_ellipse(&r);
                 let region = Rect::new(
-                    r.x_px + (0.25 * w) as i32,
-                    r.y_px + r.height_px as i32,
-                    (0.5 * w) as u32,
-                    (0.4 * h) as u32,
+                    (cx - ax).floor() as i32 - 1,
+                    (cy - ay).floor() as i32 - 1,
+                    (2.0 * ax).ceil() as u32 + 3,
+                    (2.0 * ay).ceil() as u32 + 3,
                 );
-                BoundedMask {
-                    region,
-                    mask: Mask {
-                        width_px: region.width_px,
-                        height_px: region.height_px,
-                        data: vec![255; (region.width_px * region.height_px) as usize],
-                    },
-                }
+                ellipses(region, &[(cx, cy, ax, ay)], |_| 255)
             }
         }))
     }
@@ -275,12 +326,11 @@ impl BlemishProposer for MockProposer {
     }
 }
 
-/// The mock models with the given beauty-mark boxes: the mock parser for skin, eyes and neck, the
+/// The mock models with the given beauty-mark boxes: the mock parser for skin, eyes and mouth, the
 /// mock mesh, a mock detector and the identity proposer with 64 px tiles.
 pub fn models(beauty_marks: Vec<Rect>) -> Models {
     Models {
         parser: Box::new(MockParser),
-        neck: Some(Box::new(MockParser)),
         mesh: Box::new(MockMesh),
         beauty_marks: Some(Box::new(MockBeautyMarks {
             boxes: beauty_marks,

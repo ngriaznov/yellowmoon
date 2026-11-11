@@ -1,18 +1,22 @@
-//! Dark circles and even skin (`docs/27` section 7).
+//! Dark circles, even skin, skin grading and teeth whitening (`docs/27` section 7).
 //!
 //! One low-frequency operator, per face, on the working image: `T` is a blur of the image at the
 //! texture radius, `src - T` is the texture that is kept, and a mask-normalised blur of `T` gives
 //! the regional average that dark circles (colour) and even skin (luminance) move the skin toward.
-//! The asymmetric blend of 7.5 lets the skin brighten and almost never darken.
+//! The asymmetric blend of 7.5 lets the skin brighten and almost never darken. Skin grading (7.7:
+//! contrast, shadow desaturation, shine removal) reads the same `T` and a wider regional average of
+//! it; teeth whitening (7.8) works per pixel in its own mask.
 //!
 //! The pure per-pixel kernels are free functions ([`blend_weight`], [`blend_pixel`],
-//! [`masked_blur_combine`], [`dark_circles_target`], [`even_skin_target`], [`LowFreqParams`]) so a
+//! [`masked_blur_combine`], [`dark_circles_target`], [`even_skin_target`], [`contrast_target`],
+//! [`shadow_desaturation_pixel`], [`shine_removal_texture`], [`teeth_pixel`], [`LowFreqParams`]) so a
 //! GPU kernel can follow with the same maths. The image passes run over rows with `rayon` and
 //! write disjoint rows, so results never depend on the thread count.
 
 use rayon::prelude::*;
 
 use crate::error::Result;
+use crate::mask::{percentile, smoothstep};
 use crate::types::{
     BoundedMask, Face, LinearAwg4Image, Mask, Rect, SkinSettings, check_render_scale, face_size_px,
 };
@@ -42,6 +46,8 @@ pub struct LowFreqParams {
     pub k_se: f64,
     /// Even-skin brightening roll-off, always 1.
     pub sp_se: f64,
+    /// Skin-grading regional radius `max(1, trunc(0.15 * D / ds))` (7.7).
+    pub r_g: usize,
 }
 
 /// `max(1, trunc(x / ds))` as a radius.
@@ -87,8 +93,14 @@ impl LowFreqParams {
             sp_dc,
             k_se: se.clamp(0.0, 1.0),
             sp_se: 1.0,
+            r_g: radius(0.15 * d, ds),
         }
     }
+}
+
+/// True for a number above 0 (false for NaN).
+fn positive(x: f64) -> bool {
+    x > 0.0
 }
 
 fn sum3(p: [f64; 3]) -> f64 {
@@ -136,6 +148,75 @@ pub fn dark_circles_target(src: [f64; 3], t: [f64; 3], c_dc: [f64; 3]) -> [f64; 
 pub fn even_skin_target(src: [f64; 3], y: f64, c_se: f64) -> [f64; 3] {
     let g = c_se / y.max(0.001);
     [src[0] * g, src[1] * g, src[2] * g]
+}
+
+/// 7.7 contrast: `Y' = C_g * (Y / C_g)^(1 + 0.5 * gc)`, `new = src * (Y' / max(Y, 0.001))`, then
+/// `lerp(src, new, m)`. `y` is the luminance of `T`, `c_g` the regional average, `gc` in -1..=1, `m`
+/// the mask in 0..=1. A pixel or level that is not positive is left alone.
+pub fn contrast_target(src: [f64; 3], y: f64, c_g: f64, gc: f64, m: f64) -> [f64; 3] {
+    if !(positive(y) && positive(c_g)) {
+        return src;
+    }
+    let y_new = c_g * (y / c_g).powf(1.0 + 0.5 * gc);
+    let gain = y_new / y.max(0.001);
+    [0, 1, 2].map(|c| src[c] + m * (src[c] * gain - src[c]))
+}
+
+/// 7.7 shadow desaturation: `w = clamp((C_g - Y) / (0.5 * C_g), 0, 1)`, `L = mean(src)`,
+/// `out = L + (1 - 0.6 * gd * w * m) * (src - L)`. The mean of the channels is kept.
+pub fn shadow_desaturation_pixel(src: [f64; 3], y: f64, c_g: f64, gd: f64, m: f64) -> [f64; 3] {
+    let w = if c_g > 0.0 {
+        ((c_g - y) / (0.5 * c_g)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let l = (src[0] + src[1] + src[2]) / 3.0;
+    let f = 1.0 - 0.6 * gd * w * m;
+    [0, 1, 2].map(|c| l + f * (src[c] - l))
+}
+
+/// 7.7 shine removal for one pixel of `T`: the weight `w` of the sheen, and the new low-frequency
+/// colour. With `sat = 1 - min(T) / max(T)`, `e = ln(Y / C_g) - 0.1`,
+/// `w = smoothstep(0, 0.4, e) * (1 - smoothstep(0.15, 0.35, sat)) * m` and
+/// `T' = lerp(T, C * (C_g * e^0.1) / max(mean(C), 0.001), gs * w)`, the caller adds the texture
+/// back: `out = src - T + T'`. Returns `T` itself when `w` is 0.
+pub fn shine_removal_texture(
+    t: [f64; 3],
+    y: f64,
+    c_g: f64,
+    c: [f64; 3],
+    gs: f64,
+    m: f64,
+) -> [f64; 3] {
+    if !(positive(y) && positive(c_g)) || gs <= 0.0 {
+        return t;
+    }
+    let e = (y / c_g).ln() - 0.1;
+    let tmax = t[0].max(t[1]).max(t[2]);
+    let sat = if tmax > 0.0 {
+        1.0 - t[0].min(t[1]).min(t[2]) / tmax
+    } else {
+        1.0
+    };
+    let w = smoothstep(0.0, 0.4, e) * (1.0 - smoothstep(0.15, 0.35, sat)) * m;
+    if !positive(w) {
+        return t;
+    }
+    let level = c_g * e.powf(0.1) / ((c[0] + c[1] + c[2]) / 3.0).max(0.001);
+    let f = (gs * w).min(1.0);
+    [0, 1, 2].map(|k| t[k] + f * (c[k] * level - t[k]))
+}
+
+/// 7.8 teeth whitening for one pixel: chroma toward neutral and a little more light, never past the
+/// brightest tooth. `c = L + (1 - 0.7 * tw * m) * (src - L)`, `cap = l_max / max(L, 1e-4)`,
+/// `out = c * min(1 + 0.15 * tw * m, max(cap, 1))`; `L = mean(src)`, `l_max` the mask's 99th
+/// percentile of `L`.
+pub fn teeth_pixel(src: [f64; 3], tw: f64, m: f64, l_max: f64) -> [f64; 3] {
+    let l = (src[0] + src[1] + src[2]) / 3.0;
+    let f = 1.0 - 0.7 * tw * m;
+    let cap = l_max / l.max(1e-4);
+    let gain = (1.0 + 0.15 * tw * m).min(cap.max(1.0));
+    [0, 1, 2].map(|c| (l + f * (src[c] - l)) * gain)
 }
 
 /// Resamples a full-resolution mask to the working image (`docs/27` decision 1): bilinear,
@@ -286,12 +367,27 @@ fn paint(bm: &BoundedMask, region: Rect) -> Vec<u8> {
     out
 }
 
+/// The masks the tools of one face work in, all cropped to their bounding boxes, in full-resolution
+/// pixels (`docs/27` section 5). A tool whose mask is `None` does nothing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ToolMasks<'a> {
+    /// Dark circles (5.4).
+    pub dark_circles: Option<&'a BoundedMask>,
+    /// Even skin (5.5).
+    pub even_skin: Option<&'a BoundedMask>,
+    /// Skin grading (5.6).
+    pub grading: Option<&'a BoundedMask>,
+    /// Teeth whitening (5.6).
+    pub teeth: Option<&'a BoundedMask>,
+}
+
 /// Dark circles then even skin on the working image, in place (`docs/27` section 7).
 ///
 /// `full_size_px` is the full-resolution size the masks were built at; the masks are resampled by
 /// `render_scale` to the working image ([`mask_to_working`]). A tool is active when its amount is
 /// above 0 and its mask exists and is not all zeros. Returns `Ok(false)` and leaves the image
 /// untouched when neither tool is active. Pixels where a tool's mask is 0 are not touched by it.
+/// See [`retouch_tones`] for the whole of section 7.
 pub fn retouch_low_frequency(
     image: &mut LinearAwg4Image,
     full_size_px: (u32, u32),
@@ -324,22 +420,127 @@ pub(crate) fn retouch_with(
     even_skin_mask: Option<&BoundedMask>,
     half_override: Option<bool>,
 ) -> Result<bool> {
+    let masks = ToolMasks {
+        dark_circles: dark_circle_mask,
+        even_skin: even_skin_mask,
+        ..ToolMasks::default()
+    };
+    tones_with(
+        image,
+        full_size_px,
+        face,
+        settings,
+        render_scale,
+        &masks,
+        half_override,
+    )
+}
+
+/// All of `docs/27` section 7 for one face on the working image, in place, in the order of 7.9:
+/// dark circles, even skin, skin grading (contrast, shadow desaturation, shine removal), teeth
+/// whitening. The first five share one low-frequency layer `T` taken from the image as it is on
+/// entry; each reads the previous result as `src`. A tool is active when its amount is not 0
+/// (contrast) or above 0 and its mask exists and is not all zeros; with no active tool the image is
+/// untouched and the result is `Ok(false)`. A tool never changes a pixel whose own mask is 0.
+pub fn retouch_tones(
+    image: &mut LinearAwg4Image,
+    full_size_px: (u32, u32),
+    face: &Face,
+    settings: &SkinSettings,
+    render_scale: f32,
+    masks: &ToolMasks<'_>,
+) -> Result<bool> {
+    tones_with(
+        image,
+        full_size_px,
+        face,
+        settings,
+        render_scale,
+        masks,
+        None,
+    )
+}
+
+pub(crate) fn tones_with(
+    image: &mut LinearAwg4Image,
+    full_size_px: (u32, u32),
+    face: &Face,
+    settings: &SkinSettings,
+    render_scale: f32,
+    masks: &ToolMasks<'_>,
+    half_override: Option<bool>,
+) -> Result<bool> {
     image.validate()?;
     let d = face_size_px(full_size_px, render_scale, face)?;
     let size = (image.width_px, image.height_px);
-    let working = |amount: f64, mask: Option<&BoundedMask>| -> Result<Option<BoundedMask>> {
+    let working = |active: bool, mask: Option<&BoundedMask>| -> Result<Option<BoundedMask>> {
         match mask {
-            Some(m) if amount > 0.0 && !m.mask.is_all_zero() => {
-                mask_to_working(m, render_scale, size)
-            }
+            Some(m) if active && !m.mask.is_all_zero() => mask_to_working(m, render_scale, size),
             _ => Ok(None),
         }
     };
-    let dc_mask = working(settings.dc(), dark_circle_mask)?;
-    let se_mask = working(settings.se(), even_skin_mask)?;
-    if dc_mask.is_none() && se_mask.is_none() {
-        return Ok(false);
+    let dc_mask = working(settings.dc() > 0.0, masks.dark_circles)?;
+    let se_mask = working(settings.se() > 0.0, masks.even_skin)?;
+    let g_mask = working(settings.grading_active(), masks.grading)?;
+    let teeth_mask = working(settings.tw() > 0.0, masks.teeth)?;
+    let low = dc_mask.is_some() || se_mask.is_some() || g_mask.is_some();
+    if low {
+        low_frequency_pass(
+            image,
+            d,
+            settings,
+            [&dc_mask, &se_mask, &g_mask],
+            half_override,
+        );
     }
+    if let Some(bm) = &teeth_mask {
+        whiten_teeth(image, bm, settings.tw());
+    }
+    Ok(low || teeth_mask.is_some())
+}
+
+/// Teeth whitening (7.8) in the working-resolution teeth mask: `L_max` is the 99th percentile of
+/// `L` over the pixels where the mask is not 0, taken from the image as it is.
+fn whiten_teeth(image: &mut LinearAwg4Image, bm: &BoundedMask, tw: f64) {
+    let iw = image.width_px as usize;
+    let (x0, y0) = (bm.region.x_px as usize, bm.region.y_px as usize);
+    let (rw, rh) = (bm.region.width_px as usize, bm.region.height_px as usize);
+    let mean = |p: &[f32; 3]| (f64::from(p[0]) + f64::from(p[1]) + f64::from(p[2])) / 3.0;
+    let mut ls = Vec::new();
+    for y in 0..rh {
+        for x in 0..rw {
+            if bm.mask.data[y * rw + x] != 0 {
+                ls.push(mean(&image.data[(y0 + y) * iw + x0 + x]));
+            }
+        }
+    }
+    let l_max = percentile(&mut ls, 0.99);
+    image.data[y0 * iw..(y0 + rh) * iw]
+        .par_chunks_mut(iw)
+        .enumerate()
+        .for_each(|(y, row)| {
+            for x in 0..rw {
+                let byte = bm.mask.data[y * rw + x];
+                if byte == 0 {
+                    continue;
+                }
+                let px = &mut row[x0 + x];
+                let src = [f64::from(px[0]), f64::from(px[1]), f64::from(px[2])];
+                let out = teeth_pixel(src, tw, f64::from(byte) / 255.0, l_max);
+                *px = [out[0] as f32, out[1] as f32, out[2] as f32];
+            }
+        });
+}
+
+fn low_frequency_pass(
+    image: &mut LinearAwg4Image,
+    d: f64,
+    settings: &SkinSettings,
+    [dc_mask, se_mask, g_mask]: [&Option<BoundedMask>; 3],
+    half_override: Option<bool>,
+) {
+    let (gc, gd, gs) = (settings.gc(), settings.gd(), settings.gs());
+    let size = (image.width_px, image.height_px);
     let p = LowFreqParams::with_half(d, settings.t(), settings.dc(), settings.se(), half_override);
     let ds = p.ds;
 
@@ -347,7 +548,7 @@ pub(crate) fn retouch_with(
     // blocks sit on the same grid as the whole image's.
     let (mut x0, mut y0, mut x1, mut y1) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
     let mut reach = 0usize;
-    for (m, r) in [(&dc_mask, p.r_dc), (&se_mask, p.r_se)] {
+    for (m, r) in [(dc_mask, p.r_dc), (se_mask, p.r_se), (g_mask, p.r_g)] {
         if let Some(m) = m {
             x0 = x0.min(i64::from(m.region.x_px));
             y0 = y0.min(i64::from(m.region.y_px));
@@ -415,6 +616,20 @@ pub(crate) fn retouch_with(
     let y_plane: Vec<f64> = (0..lw * lh)
         .map(|i| (t_planes[0][i] + t_planes[1][i] + t_planes[2][i]) / 3.0)
         .collect();
+    // C_g (one channel, radius r_g) and, for shine removal, the local skin colour C (RGB, r_se).
+    let grade = g_mask.as_ref().map(|bm| {
+        let tm = tool_mask(bm);
+        let den = blur_plane(&tm.m, lw, lh, p.r_g);
+        let c_g = masked_blur_plane(&y_plane, &tm.m, &den, lw, lh, p.r_g);
+        let shine: Option<Vec<Vec<f64>>> = (gs > 0.0).then(|| {
+            let den = blur_plane(&tm.m, lw, lh, p.r_se);
+            t_planes
+                .iter()
+                .map(|t| masked_blur_plane(t, &tm.m, &den, lw, lh, p.r_se))
+                .collect()
+        });
+        (tm, c_g, shine)
+    });
     let se = se_mask.as_ref().map(|bm| {
         let tm = tool_mask(bm);
         let den = blur_plane(&tm.m, lw, lh, p.r_se);
@@ -447,12 +662,32 @@ pub(crate) fn retouch_with(
                 cur = blend_pixel(cur, new, p.k_se, p.sp_se);
                 touched = true;
             }
+            if let Some((tm, c_g, shine)) = &grade
+                && tm.bytes[ri] != 0
+            {
+                let m = f64::from(tm.bytes[ri]) / 255.0;
+                let (y, cg) = (y_plane[li], c_g[li]);
+                if gc != 0.0 {
+                    cur = contrast_target(cur, y, cg, gc, m);
+                }
+                if gd > 0.0 {
+                    cur = shadow_desaturation_pixel(cur, y, cg, gd, m);
+                }
+                if let Some(c) = shine {
+                    let t = [t_planes[0][li], t_planes[1][li], t_planes[2][li]];
+                    let cc = [c[0][li], c[1][li], c[2][li]];
+                    let t_new = shine_removal_texture(t, y, cg, cc, gs, m);
+                    for k in 0..3 {
+                        cur[k] += t_new[k] - t[k];
+                    }
+                }
+                touched = true;
+            }
             if touched {
                 *px = [cur[0] as f32, cur[1] as f32, cur[2] as f32];
             }
         }
     });
-    Ok(true)
 }
 
 #[cfg(test)]
@@ -829,6 +1064,503 @@ mod tests {
         .unwrap();
         // The crop makes the region of `fm` smaller too (cropped to non-zero), so both agree.
         assert_eq!(a, b);
+    }
+
+    // ---- skin grading and teeth (7.7, 7.8) ----
+
+    fn lum(p: [f32; 3]) -> f64 {
+        (f64::from(p[0]) + f64::from(p[1]) + f64::from(p[2])) / 3.0
+    }
+
+    fn chroma(p: [f32; 3]) -> f64 {
+        let l = lum(p);
+        (0..3).map(|c| (f64::from(p[c]) - l).abs()).sum::<f64>()
+    }
+
+    fn grading(gc: f32, gd: f32, gs: f32) -> SkinSettings {
+        SkinSettings {
+            skin_contrast: gc,
+            shadow_desaturation: gd,
+            shine_removal: gs,
+            ..Default::default()
+        }
+    }
+
+    fn run_grading(
+        img: &LinearAwg4Image,
+        s: &SkinSettings,
+        mask: &BoundedMask,
+        scale: f32,
+    ) -> LinearAwg4Image {
+        let mut out = img.clone();
+        let masks = ToolMasks {
+            grading: Some(mask),
+            ..ToolMasks::default()
+        };
+        let done = retouch_tones(
+            &mut out,
+            (img.width_px, img.height_px),
+            &face(scale),
+            s,
+            1.0,
+            &masks,
+        )
+        .unwrap();
+        assert!(done);
+        out
+    }
+
+    /// Standard deviation of the blurred luminance (the low-frequency light) in the interior.
+    fn low_spread(img: &LinearAwg4Image) -> f64 {
+        let (w, h) = (img.width_px as usize, img.height_px as usize);
+        let l: Vec<f64> = img.data.iter().map(|p| lum(*p)).collect();
+        let b = blur_plane(&l, w, h, 8);
+        let mut v = Vec::new();
+        for y in 100..200 {
+            for x in 100..200 {
+                v.push(b[y * w + x].ln());
+            }
+        }
+        let mean = v.iter().sum::<f64>() / v.len() as f64;
+        (v.iter().map(|a| (a - mean).powi(2)).sum::<f64>() / v.len() as f64).sqrt()
+    }
+
+    fn fine_amplitude(img: &LinearAwg4Image) -> f64 {
+        let w = img.width_px as usize;
+        let (mut acc, mut n) = (0.0f64, 0.0f64);
+        for y in 100..200usize {
+            for x in 100..199usize {
+                let d = f64::from(img.data[y * w + x][0]) - f64::from(img.data[y * w + x + 1][0]);
+                acc += d * d;
+                n += 1.0;
+            }
+        }
+        (acc / n).sqrt()
+    }
+
+    #[test]
+    fn contrast_widens_and_narrows_the_low_frequency_spread() {
+        let (w, h) = (300u32, 300u32);
+        let tau = std::f32::consts::TAU;
+        let img = skin_image(w, h, |x, y| {
+            let slow = 1.0 + 0.06 * (tau * x as f32 / 90.0).sin() * (tau * y as f32 / 110.0).cos();
+            let fine = 0.012 * ((tau * x as f32 / 3.0).sin() + (tau * y as f32 / 4.0).cos());
+            0.4 * slow + fine
+        });
+        let m = bm(40, 40, 220, 220, 255);
+        let (base_spread, base_fine) = (low_spread(&img), fine_amplitude(&img));
+        let up = run_grading(&img, &grading(100.0, 0.0, 0.0), &m, 0.8);
+        let down = run_grading(&img, &grading(-100.0, 0.0, 0.0), &m, 0.8);
+        let (su, sd) = (
+            low_spread(&up) / base_spread,
+            low_spread(&down) / base_spread,
+        );
+        assert!(su > 1.2, "+100 widens the spread: x{su}");
+        assert!(sd < 0.8, "-100 narrows the spread: x{sd}");
+        for (name, out) in [("+100", &up), ("-100", &down)] {
+            let r = fine_amplitude(out) / base_fine;
+            assert!((r - 1.0).abs() < 0.05, "{name}: texture energy x{r}");
+        }
+        // Half amounts sit between, outside the mask nothing moves.
+        let half = run_grading(&img, &grading(50.0, 0.0, 0.0), &m, 0.8);
+        let sh = low_spread(&half) / base_spread;
+        assert!(1.0 < sh && sh < su, "{sh}");
+        assert_eq!(up.data[10], img.data[10]);
+    }
+
+    #[test]
+    fn shadow_desaturation_acts_only_below_the_skin_level() {
+        // A dark half on the left, a bright half on the right, with a colour cast.
+        let (w, h) = (300u32, 300u32);
+        let img = skin_image(w, h, |x, _| if x < 150 { 0.2 } else { 0.4 });
+        let m = bm(40, 40, 220, 220, 255);
+        let out = run_grading(&img, &grading(0.0, 100.0, 0.0), &m, 0.8);
+        let at = |im: &LinearAwg4Image, x: usize, y: usize| im.data[y * w as usize + x];
+        // Next to the step on the dark side: less chroma, the same light.
+        for x in 140..146 {
+            let (a, b) = (at(&img, x, 150), at(&out, x, 150));
+            assert!(
+                chroma(b) < 0.8 * chroma(a),
+                "x {x}: {} -> {}",
+                chroma(a),
+                chroma(b)
+            );
+            assert!((lum(a) - lum(b)).abs() < 1e-6, "luminance kept at x {x}");
+        }
+        // At or above the skin's level: unchanged. Far on the dark side C_g equals Y: unchanged.
+        for x in (60..100).chain(165..255) {
+            let (a, b) = (at(&img, x, 150), at(&out, x, 150));
+            for c in 0..3 {
+                assert!((a[c] - b[c]).abs() < 1e-6, "x {x}");
+            }
+        }
+        // Less amount, less change.
+        let mild = run_grading(&img, &grading(0.0, 30.0, 0.0), &m, 0.8);
+        assert!(chroma(at(&mild, 143, 150)) > chroma(at(&out, 143, 150)));
+    }
+
+    #[test]
+    fn shine_removal_pulls_a_highlight_toward_the_skin() {
+        let (w, h) = (300u32, 300u32);
+        let skin = [0.4f32, 0.31, 0.25];
+        let patch = |x: u32, y: u32| {
+            let d2 = (x as f32 - 150.0).powi(2) + (y as f32 - 150.0).powi(2);
+            0.4 * (-d2 / (2.0 * 7.0 * 7.0)).exp()
+        };
+        let mut data = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let s = patch(x, y);
+                data.push([skin[0] + s, skin[1] + s, skin[2] + s]);
+            }
+        }
+        let img = LinearAwg4Image::new(w, h, data).unwrap();
+        let m = bm(40, 40, 220, 220, 255);
+        let full = run_grading(&img, &grading(0.0, 0.0, 100.0), &m, 0.8);
+        let half = run_grading(&img, &grading(0.0, 0.0, 50.0), &m, 0.8);
+        let centre = |im: &LinearAwg4Image| lum(im.data[150 * w as usize + 150]);
+        let (before, after, mid) = (centre(&img), centre(&full), centre(&half));
+        let level = lum(skin);
+        assert!(before - level > 0.3, "a real highlight: {before}");
+        assert!(
+            after - level < 0.5 * (before - level),
+            "{before} -> {after}, skin {level}"
+        );
+        assert!(after < mid && mid < before, "{after} {mid} {before}");
+        assert!(after.is_finite() && after > 0.0);
+        // Skin at its own level, far from the patch, is unchanged.
+        for (x, y) in [(60, 60), (240, 70), (70, 230), (230, 230), (150, 80)] {
+            let (a, b) = (img.data[y * w as usize + x], full.data[y * w as usize + x]);
+            for c in 0..3 {
+                assert!((a[c] - b[c]).abs() < 1e-6, "({x}, {y})");
+            }
+        }
+        // Flat skin has no highlight at all.
+        let flat = LinearAwg4Image::filled(w, h, skin).unwrap();
+        let out = run_grading(&flat, &grading(0.0, 0.0, 100.0), &m, 0.8);
+        for (p, q) in flat.data.iter().zip(&out.data) {
+            for c in 0..3 {
+                assert!((p[c] - q[c]).abs() < 1e-6);
+            }
+        }
+    }
+
+    fn mouth_picture() -> (LinearAwg4Image, Face, crate::FaceMasks, (u32, u32)) {
+        let full = (400u32, 320u32);
+        let face = Face {
+            rect: Rect::new(100, 40, 200, 250),
+            scale: 0.5,
+        };
+        let mut image = LinearAwg4Image::filled(full.0, full.1, [0.45, 0.35, 0.28]).unwrap();
+        crate::mock::paint_mouth(&mut image, &face.rect, 1.0);
+        let models = crate::mock::models(vec![]);
+        let masks = crate::face_masks(&models, &image, &face, full, None).unwrap();
+        (image, face, masks, full)
+    }
+
+    #[test]
+    fn teeth_whitening_whitens_teeth_and_nothing_else() {
+        let (image, face, masks, full) = mouth_picture();
+        let teeth = masks.teeth.as_ref().unwrap();
+        let tools = ToolMasks {
+            teeth: Some(teeth),
+            ..ToolMasks::default()
+        };
+        let s = SkinSettings {
+            teeth_whitening: 100.0,
+            ..Default::default()
+        };
+        let mut out = image.clone();
+        assert!(retouch_tones(&mut out, full, &face, &s, 1.0, &tools).unwrap());
+        let (cx, cy, ax, ay) = crate::mock::mouth_ellipse(&face.rect);
+        let w = full.0 as usize;
+        let idx = |x: f64, y: f64| y as usize * w + x as usize;
+        // Yellow teeth lose chroma; the relative cast (chroma over light) drops a lot.
+        for dx in [-0.5, 0.0, 0.5] {
+            let i = idx(cx + dx * ax, cy);
+            let (a, b) = (image.data[i], out.data[i]);
+            assert!(
+                chroma(b) / lum(b) < 0.6 * chroma(a) / lum(a),
+                "{a:?} -> {b:?}"
+            );
+            assert!(lum(b) >= lum(a) - 1e-6);
+        }
+        // Lips, gums (the dark gap) and skin are outside the mask: unchanged to the bit.
+        for (x, y) in [
+            (cx + 1.25 * ax, cy),
+            (cx - 1.25 * ax, cy),
+            (cx, cy + 0.8 * ay),
+            (cx, cy - 0.8 * ay),
+            (cx + 0.95 * ax, cy),
+            (cx, cy + 1.3 * ay),
+            (10.0, 10.0),
+        ] {
+            assert_eq!(image.data[idx(x, y)], out.data[idx(x, y)], "({x}, {y})");
+        }
+        // Where the teeth mask is 0 nothing moves at all.
+        let tf = teeth.to_full(full).unwrap();
+        for (i, (a, b)) in image.data.iter().zip(&out.data).enumerate() {
+            if tf.data[i] == 0 {
+                assert_eq!(a, b, "pixel {i}");
+            }
+        }
+        // No tooth ends brighter than the brightest tooth was.
+        let brightest = image
+            .data
+            .iter()
+            .zip(&tf.data)
+            .filter(|(_, m)| **m > 0)
+            .map(|(p, _)| lum(*p))
+            .fold(0.0f64, f64::max);
+        let after = out
+            .data
+            .iter()
+            .zip(&tf.data)
+            .filter(|(_, m)| **m > 0)
+            .map(|(p, _)| lum(*p))
+            .fold(0.0f64, f64::max);
+        assert!(after <= brightest + 1e-6, "{after} against {brightest}");
+        // Half the amount whitens less.
+        let mut half = image.clone();
+        let s50 = SkinSettings {
+            teeth_whitening: 50.0,
+            ..s
+        };
+        retouch_tones(&mut half, full, &face, &s50, 1.0, &tools).unwrap();
+        let i = idx(cx, cy);
+        assert!(chroma(half.data[i]) > chroma(out.data[i]));
+        // At a smaller render scale the teeth still whiten.
+        assert!(
+            retouch_tones(
+                &mut image.clone(),
+                full,
+                &face,
+                &s,
+                1.0,
+                &ToolMasks::default()
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn identity_without_amounts_and_masks() {
+        let (image, face, masks, full) = mouth_picture();
+        let tools = ToolMasks {
+            dark_circles: masks.dark_circles.as_ref(),
+            even_skin: masks.even_skin.as_ref(),
+            grading: masks.grading.as_ref(),
+            teeth: masks.teeth.as_ref(),
+        };
+        let mut out = image.clone();
+        let done =
+            retouch_tones(&mut out, full, &face, &SkinSettings::default(), 1.0, &tools).unwrap();
+        assert!(!done);
+        assert_eq!(out, image);
+        // Amounts above 0 but no masks: nothing either.
+        let all = SkinSettings {
+            dark_circles: 80.0,
+            even_skin: 80.0,
+            skin_contrast: 80.0,
+            shadow_desaturation: 80.0,
+            shine_removal: 80.0,
+            teeth_whitening: 80.0,
+            ..Default::default()
+        };
+        let done = retouch_tones(&mut out, full, &face, &all, 1.0, &ToolMasks::default()).unwrap();
+        assert!(!done);
+        assert_eq!(out, image);
+    }
+
+    #[test]
+    fn grading_locality_and_threads() {
+        let (image, face, masks, full) = mouth_picture();
+        let tools = ToolMasks {
+            dark_circles: masks.dark_circles.as_ref(),
+            even_skin: masks.even_skin.as_ref(),
+            grading: masks.grading.as_ref(),
+            teeth: masks.teeth.as_ref(),
+        };
+        let all = SkinSettings {
+            dark_circles: 70.0,
+            even_skin: 70.0,
+            skin_contrast: 70.0,
+            shadow_desaturation: 70.0,
+            shine_removal: 70.0,
+            teeth_whitening: 70.0,
+            ..Default::default()
+        };
+        let run = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                let mut out = image.clone();
+                assert!(retouch_tones(&mut out, full, &face, &all, 1.0, &tools).unwrap());
+                out
+            })
+        };
+        let one = run(1);
+        assert_ne!(one, image);
+        assert_eq!(one, run(4));
+        // Outside every mask: bit-identical.
+        let mut union = Mask::zeros(full.0, full.1).unwrap();
+        for bm in [
+            &masks.dark_circles,
+            &masks.even_skin,
+            &masks.grading,
+            &masks.teeth,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let f = bm.to_full(full).unwrap();
+            for (u, v) in union.data.iter_mut().zip(&f.data) {
+                *u = (*u).max(*v);
+            }
+        }
+        let mut changed = 0;
+        for (i, (a, b)) in image.data.iter().zip(&one.data).enumerate() {
+            if union.data[i] == 0 {
+                assert_eq!(a, b, "pixel {i}");
+            } else if a != b {
+                changed += 1;
+            }
+        }
+        assert!(changed > 1000, "{changed}");
+    }
+
+    #[test]
+    fn grading_half_path_agrees_with_full_path() {
+        let (w, h) = (240u32, 240u32);
+        let img = skin_image(w, h, |x, y| {
+            let (dx, dy) = (x as f32 - 120.0, y as f32 - 120.0);
+            0.35 + 0.1 * (-(dx * dx + dy * dy) / 3000.0).exp() + 0.0005 * x as f32 / 10.0
+        });
+        let m = bm(50, 50, 140, 140, 255);
+        let s = grading(60.0, 60.0, 60.0);
+        let run = |half| {
+            let mut out = img.clone();
+            let masks = ToolMasks {
+                grading: Some(&m),
+                ..ToolMasks::default()
+            };
+            tones_with(&mut out, (w, h), &face(0.8), &s, 1.0, &masks, Some(half)).unwrap();
+            out
+        };
+        let (a, b) = (run(true), run(false));
+        let mut acc = 0.0f64;
+        for (p, q) in a.data.iter().zip(&b.data) {
+            acc += (0..3).map(|c| f64::from((p[c] - q[c]).abs())).sum::<f64>() / 3.0;
+        }
+        assert!(acc / (a.data.len() as f64) < 3e-3);
+        assert_ne!(a, img);
+    }
+
+    proptest! {
+        #[test]
+        fn grading_kernels_are_finite(
+            s in prop::array::uniform3(-2.0f64..20.0),
+            t in prop::array::uniform3(-1.0f64..10.0),
+            c in prop::array::uniform3(-1.0f64..10.0),
+            y in -1.0f64..10.0,
+            cg in -1.0f64..10.0,
+            gc in -1.0f64..=1.0,
+            g in 0.0f64..=1.0,
+            m in 0.0f64..=1.0,
+            lmax in 0.0f64..10.0,
+        ) {
+            prop_assert!(contrast_target(s, y, cg, gc, m).iter().all(|v| v.is_finite()));
+            prop_assert!(shadow_desaturation_pixel(s, y, cg, g, m).iter().all(|v| v.is_finite()));
+            prop_assert!(shine_removal_texture(t, y, cg, c, g, m).iter().all(|v| v.is_finite()));
+            prop_assert!(teeth_pixel(s, g, m, lmax).iter().all(|v| v.is_finite()));
+        }
+
+        #[test]
+        fn contrast_is_monotonic_in_the_amount(
+            s in prop::array::uniform3(0.01f64..5.0),
+            y in 0.01f64..5.0,
+            cg in 0.01f64..5.0,
+            a in -1.0f64..=1.0,
+            b in -1.0f64..=1.0,
+        ) {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            let gain = |gc: f64| contrast_target(s, y, cg, gc, 1.0)[0] / s[0];
+            // Above the skin's level more contrast lifts, below it lowers.
+            if y >= cg {
+                prop_assert!(gain(lo) <= gain(hi) + 1e-9);
+            } else {
+                prop_assert!(gain(lo) >= gain(hi) - 1e-9);
+            }
+            // The skin's own level is a fixed point.
+            let at_level = contrast_target(s, cg, cg, hi, 1.0);
+            prop_assert!(at_level.iter().zip(&s).all(|(o, i)| (o - i).abs() <= 1e-9 * i.abs().max(1.0) || cg < 0.001));
+        }
+
+        #[test]
+        fn shadow_desaturation_keeps_light_and_is_monotonic(
+            s in prop::array::uniform3(0.0f64..5.0),
+            y in 0.0f64..5.0,
+            cg in 0.01f64..5.0,
+            a in 0.0f64..=1.0,
+            b in 0.0f64..=1.0,
+            m in 0.0f64..=1.0,
+        ) {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            let c = |p: [f64; 3]| { let l = (p[0] + p[1] + p[2]) / 3.0; (0..3).map(|k| (p[k] - l).abs()).sum::<f64>() };
+            let (p, q) = (shadow_desaturation_pixel(s, y, cg, lo, m), shadow_desaturation_pixel(s, y, cg, hi, m));
+            prop_assert!(c(q) <= c(p) + 1e-9);
+            prop_assert!(c(p) <= c(s) + 1e-9);
+            prop_assert!(((q[0] + q[1] + q[2]) - (s[0] + s[1] + s[2])).abs() < 1e-9);
+            if y >= cg {
+                prop_assert!(q.iter().zip(&s).all(|(o, i)| (o - i).abs() < 1e-9));
+            }
+        }
+
+        #[test]
+        fn shine_removal_moves_more_with_the_amount(
+            t in prop::array::uniform3(0.01f64..5.0),
+            c in prop::array::uniform3(0.01f64..5.0),
+            cg in 0.05f64..3.0,
+            a in 0.0f64..=1.0,
+            b in 0.0f64..=1.0,
+            m in 0.0f64..=1.0,
+        ) {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            let y = (t[0] + t[1] + t[2]) / 3.0;
+            let dist = |g: f64| { let o = shine_removal_texture(t, y, cg, c, g, m); (0..3).map(|k| (o[k] - t[k]).abs()).sum::<f64>() };
+            prop_assert!(dist(lo) <= dist(hi) + 1e-9);
+            // Not above the skin's level by 10 %: nothing happens.
+            if y <= cg * 1.1 {
+                prop_assert!(dist(hi) == 0.0);
+            }
+        }
+
+        #[test]
+        fn teeth_pixel_is_monotonic_and_capped(
+            s in prop::array::uniform3(0.0f64..5.0),
+            lmax in 0.0f64..5.0,
+            a in 0.0f64..=1.0,
+            b in 0.0f64..=1.0,
+            m in 0.0f64..=1.0,
+        ) {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            let l = |p: [f64; 3]| (p[0] + p[1] + p[2]) / 3.0;
+            let c = |p: [f64; 3]| { let m = l(p); (0..3).map(|k| (p[k] - m).abs()).sum::<f64>() };
+            let (p, q) = (teeth_pixel(s, lo, m, lmax), teeth_pixel(s, hi, m, lmax));
+            // More whitening: less chroma relative to light, no darker.
+            prop_assert!(l(q) >= l(p) - 1e-9);
+            prop_assert!(l(p) >= l(s) - 1e-9);
+            if l(q) > 1e-9 {
+                prop_assert!(c(q) / l(q) <= c(p) / l(p).max(1e-9) + 1e-9);
+            }
+            // Never above the brightest tooth (or the pixel itself when it is already above).
+            prop_assert!(l(q) <= l(s).max(lmax) + 1e-9);
+            // Zero amount is the identity.
+            let id = teeth_pixel(s, 0.0, m, lmax);
+            prop_assert!(id.iter().zip(&s).all(|(o, i)| (o - i).abs() < 1e-12));
+        }
     }
 
     proptest! {

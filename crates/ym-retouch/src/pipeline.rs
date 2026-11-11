@@ -9,35 +9,17 @@
 
 use crate::blemish::{BlemishMap, BlemishMapCache, BlemishMapKey, apply_blemish, blemish_map};
 use crate::error::{Result, RetouchError};
-use crate::lowfreq::retouch_low_frequency;
+use crate::lowfreq::{ToolMasks, retouch_tones};
 use crate::mask::{FaceMasks, face_masks};
 use crate::models::Models;
 use crate::types::{
     BoundedMask, Face, LinearAwg4Image, Mask, Rect, SkinSettings, check_render_scale, face_size_px,
 };
 
-/// What the masks of one face depend on besides the image: the face and the two neck switches.
-#[derive(Debug, Clone, PartialEq)]
-struct FaceEntry {
-    face: Face,
-    include_neck_blemish: bool,
-    include_neck_even_skin: bool,
-}
-
-impl FaceEntry {
-    fn of(face: &Face, settings: &SkinSettings) -> Self {
-        Self {
-            face: *face,
-            include_neck_blemish: settings.include_neck_blemish,
-            include_neck_even_skin: settings.include_neck_even_skin,
-        }
-    }
-}
-
 #[derive(Debug)]
 struct PreparedMasks {
     full_size_px: (u32, u32),
-    entries: Vec<FaceEntry>,
+    faces: Vec<Face>,
     masks: Vec<FaceMasks>,
 }
 
@@ -45,8 +27,8 @@ struct PreparedMasks {
 ///
 /// Both depend on the image and on everything upstream of it, not on the amounts. The caller names
 /// the image with two opaque keys ([`RetouchCache::set_keys`]); a different key drops everything.
-/// Masks are rebuilt when the faces, the full size or a neck switch change; a blemish map is rebuilt
-/// when the faces or the blemish neck switch change.
+/// Masks and blemish maps are rebuilt when the faces or the full size change, and never for a
+/// change of amounts.
 #[derive(Debug, Default)]
 pub struct RetouchCache {
     image_key: u64,
@@ -95,25 +77,19 @@ impl RetouchCache {
         self.prepared.as_ref().and_then(|p| p.masks.get(index))
     }
 
-    fn masks_match(&self, full_size_px: (u32, u32), entries: &[FaceEntry]) -> bool {
+    fn masks_match(&self, full_size_px: (u32, u32), faces: &[Face]) -> bool {
         self.prepared
             .as_ref()
-            .is_some_and(|p| p.full_size_px == full_size_px && p.entries == entries)
+            .is_some_and(|p| p.full_size_px == full_size_px && p.faces == faces)
     }
 
-    /// The map key: the image, the faces and the one switch the blemish mask depends on, folded
-    /// into the upstream key.
-    fn map_key(&self, entries: &[FaceEntry]) -> BlemishMapKey {
-        let mut upstream = self.upstream_key ^ 0xcbf2_9ce4_8422_2325;
-        for e in entries {
-            upstream =
-                (upstream ^ u64::from(e.include_neck_blemish)).wrapping_mul(0x0100_0000_01b3);
-        }
+    /// The map key: the image, the faces and everything upstream.
+    fn map_key(&self, faces: &[Face]) -> BlemishMapKey {
         BlemishMapKey {
             image_key: self.image_key,
-            face_count: entries.len(),
-            face_rects: entries.iter().map(|e| e.face.rect).collect(),
-            upstream_key: upstream,
+            face_count: faces.len(),
+            face_rects: faces.iter().map(|f| f.rect).collect(),
+            upstream_key: self.upstream_key,
         }
     }
 }
@@ -131,14 +107,13 @@ pub fn prepare_skin(
 ) -> Result<()> {
     full_image.validate()?;
     let full_size = (full_image.width_px, full_image.height_px);
-    let entries = entries_of(faces);
-    ensure_masks(Some(full_image), full_size, faces, &entries, models, cache)?;
+    let face_list = faces_of(faces);
+    ensure_masks(Some(full_image), full_size, &face_list, models, cache)?;
     let wanted: Vec<bool> = vec![true; faces.len()];
     ensure_maps(
         Some(full_image),
         full_size,
-        faces,
-        &entries,
+        &face_list,
         &wanted,
         models,
         cache,
@@ -146,19 +121,18 @@ pub fn prepare_skin(
     Ok(())
 }
 
-fn entries_of(faces: &[(Face, SkinSettings)]) -> Vec<FaceEntry> {
-    faces.iter().map(|(f, s)| FaceEntry::of(f, s)).collect()
+fn faces_of(faces: &[(Face, SkinSettings)]) -> Vec<Face> {
+    faces.iter().map(|(f, _)| *f).collect()
 }
 
 fn ensure_masks(
     full_image: Option<&LinearAwg4Image>,
     full_size: (u32, u32),
-    faces: &[(Face, SkinSettings)],
-    entries: &[FaceEntry],
+    faces: &[Face],
     models: &Models,
     cache: &mut RetouchCache,
 ) -> Result<()> {
-    if cache.masks_match(full_size, entries) {
+    if cache.masks_match(full_size, faces) {
         return Ok(());
     }
     let Some(image) = full_image else {
@@ -166,18 +140,18 @@ fn ensure_masks(
     };
     let masks = faces
         .iter()
-        .map(|(face, settings)| face_masks(models, image, face, settings, full_size, None))
+        .map(|face| face_masks(models, image, face, full_size, None))
         .collect::<Result<Vec<_>>>()?;
     cache.prepared = Some(PreparedMasks {
         full_size_px: full_size,
-        entries: entries.to_vec(),
+        faces: faces.to_vec(),
         masks,
     });
     Ok(())
 }
 
 /// The rectangle a face's blemish map covers: the face rectangle joined with the blemish mask's
-/// region (the neck lies below the face), clipped to the image. `None` when there is nothing.
+/// region (a parser's mask may reach beyond the rectangle), clipped to the image. `None` when there is nothing.
 fn map_rect(face: &Face, masks: &FaceMasks, full_size: (u32, u32)) -> Option<Rect> {
     let bm = masks.blemish.as_ref()?;
     let r = face.rect;
@@ -263,14 +237,13 @@ fn build_map(
 fn ensure_maps(
     full_image: Option<&LinearAwg4Image>,
     full_size: (u32, u32),
-    faces: &[(Face, SkinSettings)],
-    entries: &[FaceEntry],
+    faces: &[Face],
     wanted: &[bool],
     models: &Models,
     cache: &mut RetouchCache,
 ) -> Result<()> {
-    let key = cache.map_key(entries);
-    for (i, (face, _)) in faces.iter().enumerate() {
+    let key = cache.map_key(faces);
+    for (i, face) in faces.iter().enumerate() {
         if !wanted[i] {
             continue;
         }
@@ -305,8 +278,8 @@ fn ensure_maps(
 /// - `protect`: an optional protection mask in working pixels (the size of `image`); 255 leaves a
 ///   pixel out of blemish removal.
 ///
-/// Order: output is a copy of the input; blemish removal for every face; then dark circles and
-/// even skin for every face. With every amount 0 the output equals the input bit for bit.
+/// Order: output is a copy of the input; blemish removal for every face; then, for every face,
+/// dark circles, even skin, skin grading and teeth whitening (`docs/27` 7.9). With every amount 0 the output equals the input bit for bit.
 ///
 /// The masks and maps are taken from the cache. When something is missing and `image` is the
 /// full-resolution image, they are built from it and cached; when `image` is a preview, the call
@@ -335,27 +308,26 @@ pub fn retouch_skin(
     let faces: Vec<(Face, SkinSettings)> = faces.iter().map(|(f, s)| (*f, s.clamped())).collect();
     let mut output = image.clone();
     let wants_blemish: Vec<bool> = faces.iter().map(|(_, s)| s.blemish > 0.0).collect();
-    let wants_low = faces
-        .iter()
-        .any(|(_, s)| s.dark_circles > 0.0 || s.even_skin > 0.0);
+    let wants_low = faces.iter().any(|(_, s)| {
+        s.dark_circles > 0.0 || s.even_skin > 0.0 || s.grading_active() || s.teeth_whitening > 0.0
+    });
     if !wants_blemish.iter().any(|&b| b) && !wants_low {
         return Ok(output);
     }
 
     let full_image = ((image.width_px, image.height_px) == full_size_px).then_some(image);
-    let entries = entries_of(&faces);
-    ensure_masks(full_image, full_size_px, &faces, &entries, models, cache)?;
+    let face_list = faces_of(&faces);
+    ensure_masks(full_image, full_size_px, &face_list, models, cache)?;
     ensure_maps(
         full_image,
         full_size_px,
-        &faces,
-        &entries,
+        &face_list,
         &wants_blemish,
         models,
         cache,
     )?;
 
-    let key = cache.map_key(&entries);
+    let key = cache.map_key(&face_list);
     for (i, (_, settings)) in faces.iter().enumerate() {
         if !wants_blemish[i] {
             continue;
@@ -369,14 +341,19 @@ pub fn retouch_skin(
             let Some(masks) = cache.masks(i) else {
                 continue;
             };
-            retouch_low_frequency(
+            let tools = ToolMasks {
+                dark_circles: masks.dark_circles.as_ref(),
+                even_skin: masks.even_skin.as_ref(),
+                grading: masks.grading.as_ref(),
+                teeth: masks.teeth.as_ref(),
+            };
+            retouch_tones(
                 &mut output,
                 full_size_px,
                 face,
                 settings,
                 render_scale,
-                masks.dark_circles.as_ref(),
-                masks.even_skin.as_ref(),
+                &tools,
             )?;
         }
     }
@@ -455,8 +432,18 @@ mod tests {
             dark_circles: dark,
             even_skin: even,
             texture: 0.0,
-            include_neck_blemish: true,
-            include_neck_even_skin: true,
+            ..SkinSettings::default()
+        }
+    }
+
+    /// Every tool at once: the three of 7.1 to 7.6 at 60 plus grading and teeth.
+    fn settings_all() -> SkinSettings {
+        SkinSettings {
+            skin_contrast: 50.0,
+            shadow_desaturation: 60.0,
+            shine_removal: 60.0,
+            teeth_whitening: 70.0,
+            ..settings(60.0, 60.0, 60.0)
         }
     }
 
@@ -525,9 +512,15 @@ mod tests {
     fn working_union_mask(cache: &RetouchCache, w: u32, h: u32) -> Mask {
         let mut union = Mask::zeros(w, h).unwrap();
         let m = cache.masks(0).unwrap();
-        for bm in [&m.blemish, &m.dark_circles, &m.even_skin]
-            .into_iter()
-            .flatten()
+        for bm in [
+            &m.blemish,
+            &m.dark_circles,
+            &m.even_skin,
+            &m.grading,
+            &m.teeth,
+        ]
+        .into_iter()
+        .flatten()
         {
             let full = bm.to_full((w, h)).unwrap();
             for (u, v) in union.data.iter_mut().zip(&full.data) {
@@ -541,7 +534,7 @@ mod tests {
     fn mask_locality_through_the_whole_pipeline() {
         let face = big_face();
         let img = synthetic(1200, 900, &face);
-        let faces = [(face, settings(60.0, 60.0, 60.0))];
+        let faces = [(face, settings_all())];
 
         // Identity proposer: the blemish gain is 1 everywhere; outside every mask, no pixel moves.
         let models = test_models(MockProposer::identity(192));
@@ -660,7 +653,7 @@ mod tests {
         };
         let img = synthetic(600, 450, &face);
         let models = test_models(MockProposer::scale(192, 0.9));
-        let faces = [(face, settings(60.0, 60.0, 60.0))];
+        let faces = [(face, settings_all())];
         let run = |threads: usize| {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
@@ -697,17 +690,38 @@ mod tests {
         // The same call again is identical.
         let a2 = retouch_skin(&img, (600, 450), &faces, 1.0, &models, &mut cache, None).unwrap();
         assert_eq!(bits(&a), bits(&a2));
-        // The even-skin neck switch rebuilds masks but keeps the map; the blemish one drops it.
-        let mut s = settings(60.0, 0.0, 0.0);
-        s.include_neck_even_skin = false;
+        // Amounts (any of them) reuse masks and map.
+        prepare_skin(&img, &faces, &models, &mut cache).unwrap();
+        let masks_before = cache.masks(0).unwrap().clone();
+        retouch_skin(
+            &img,
+            (600, 450),
+            &[(face, settings_all())],
+            1.0,
+            &models,
+            &mut cache,
+            None,
+        )
+        .unwrap();
+        assert_eq!(cache.map_count(), 1);
+        assert_eq!(cache.masks(0), Some(&masks_before));
+        assert!(masks_before.grading.is_some());
+        // The synthetic skin has no teeth: the gate of 5.6 finds none.
+        assert!(masks_before.teeth.is_none());
+        // Another face rectangle rebuilds the masks and adds a map.
+        let moved = Face {
+            rect: Rect::new(180, 30, 250, 300),
+            ..face
+        };
         let mut other = RetouchCache::new(1, 1);
         prepare_skin(&img, &faces, &models, &mut other).unwrap();
-        let masks_before = other.masks(0).unwrap().clone();
-        prepare_skin(&img, &[(face, s)], &models, &mut other).unwrap();
-        assert_eq!(other.map_count(), 1);
-        assert_ne!(other.masks(0).unwrap().even_skin, masks_before.even_skin);
-        s.include_neck_blemish = false;
-        prepare_skin(&img, &[(face, s)], &models, &mut other).unwrap();
+        prepare_skin(
+            &img,
+            &[(moved, settings(60.0, 0.0, 0.0))],
+            &models,
+            &mut other,
+        )
+        .unwrap();
         assert_eq!(other.map_count(), 1);
         assert_ne!(other.masks(0).unwrap().blemish, masks_before.blemish);
         // New keys drop everything.
@@ -781,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn failing_detector_and_missing_neck_are_survivable() {
+    fn failing_detector_and_missing_mouth_are_survivable() {
         let face = Face {
             rect: Rect::new(175, 30, 250, 300),
             scale: 0.5,
@@ -789,13 +803,49 @@ mod tests {
         let img = synthetic(600, 450, &face);
         let models = Models {
             beauty_marks: Some(Box::new(mock::FailingBeautyMarks)),
-            neck: Some(Box::new(mock::NoParts)),
             ..test_models(MockProposer::scale(192, 0.9))
         };
         let faces = [(face, settings(60.0, 60.0, 60.0))];
         let mut cache = RetouchCache::default();
         let out = retouch_skin(&img, (600, 450), &faces, 1.0, &models, &mut cache, None).unwrap();
         assert_ne!(bits(&out), bits(&img));
+
+        // A parser that finds no mouth: whitening does nothing, the rest goes on.
+        struct NoMouth;
+        impl crate::FaceParser for NoMouth {
+            fn part_mask(
+                &self,
+                image: &LinearAwg4Image,
+                face: &Face,
+                part: crate::FacePart,
+            ) -> Result<Option<BoundedMask>> {
+                if part == crate::FacePart::MouthInterior {
+                    return Err(RetouchError::Model("no mouth".into()));
+                }
+                mock::MockParser.part_mask(image, face, part)
+            }
+        }
+        let models = Models {
+            parser: Box::new(NoMouth),
+            ..test_models(MockProposer::identity(192))
+        };
+        let only_teeth = SkinSettings {
+            teeth_whitening: 100.0,
+            ..SkinSettings::default()
+        };
+        let mut cache = RetouchCache::default();
+        let out = retouch_skin(
+            &img,
+            (600, 450),
+            &[(face, only_teeth)],
+            1.0,
+            &models,
+            &mut cache,
+            None,
+        )
+        .unwrap();
+        assert_eq!(bits(&out), bits(&img));
+        assert!(cache.masks(0).unwrap().teeth.is_none());
     }
 
     #[test]
@@ -823,20 +873,26 @@ mod tests {
             dark in -20.0f32..140.0,
             even in -20.0f32..140.0,
             texture in -150.0f32..150.0,
-            neck in any::<bool>(),
+            contrast in -150.0f32..150.0,
+            shadow in -20.0f32..140.0,
+            shine in -20.0f32..140.0,
+            teeth in -20.0f32..140.0,
         ) {
             let face = Face { rect: Rect::new(50, 20, 100, 120), scale: 0.6 };
             let img = synthetic(200, 160, &face);
             let models = test_models(MockProposer::scale(64, 0.9));
             let s = SkinSettings {
                 blemish, dark_circles: dark, even_skin: even, texture,
-                include_neck_blemish: neck, include_neck_even_skin: neck,
+                skin_contrast: contrast, shadow_desaturation: shadow,
+                shine_removal: shine, teeth_whitening: teeth,
             };
             let mut cache = RetouchCache::default();
             let out = retouch_skin(&img, (200, 160), &[(face, s)], 1.0, &models, &mut cache, None).unwrap();
             prop_assert_eq!((out.width_px, out.height_px), (200, 160));
             prop_assert!(out.data.iter().flatten().all(|v| v.is_finite()));
-            if blemish <= 0.0 && dark <= 0.0 && even <= 0.0 {
+            if blemish <= 0.0 && dark <= 0.0 && even <= 0.0 && contrast == 0.0
+                && shadow <= 0.0 && shine <= 0.0 && teeth <= 0.0
+            {
                 prop_assert_eq!(bits(&out), bits(&img));
             }
         }

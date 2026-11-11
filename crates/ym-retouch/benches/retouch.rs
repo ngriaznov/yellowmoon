@@ -72,8 +72,10 @@ fn bench(c: &mut Criterion) {
         dark_circles: 60.0,
         even_skin: 60.0,
         texture: 0.0,
-        include_neck_blemish: true,
-        include_neck_even_skin: true,
+        skin_contrast: 40.0,
+        shadow_desaturation: 40.0,
+        shine_removal: 40.0,
+        teeth_whitening: 60.0,
     };
     let faces = [(face, settings)];
     let full = picture(FULL.0, FULL.1);
@@ -83,7 +85,7 @@ fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("retouch_24mp_one_face");
     group.sample_size(10);
     group.bench_function("masks", |b| {
-        b.iter(|| face_masks(&models, &full, &face, &settings, FULL, None).unwrap());
+        b.iter(|| face_masks(&models, &full, &face, FULL, None).unwrap());
     });
     group.bench_function("prepare_masks_and_map", |b| {
         b.iter(|| {

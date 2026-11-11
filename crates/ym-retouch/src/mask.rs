@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use crate::error::{Result, RetouchError};
 use crate::feather::feather;
 use crate::models::{FacePart, MeshTable, Models};
-use crate::types::{BoundedMask, Face, LinearAwg4Image, Mask, Rect, SkinSettings, face_extent_px};
+use crate::types::{BoundedMask, Face, LinearAwg4Image, Mask, Rect, face_extent_px};
 
 /// `(a * b) / 255` with integer division.
 pub fn mul(a: u8, b: u8) -> u8 {
@@ -64,53 +64,21 @@ pub fn max_masks(a: &Mask, b: &Mask) -> Result<Mask> {
     zip_masks(a, b, max)
 }
 
-/// The skin of one face: the skin without ears and, when a neck parser found one, the neck.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkinParts {
-    /// `SkinWithoutEars`, full size.
-    pub skin: Mask,
-    /// `NeckSkin`, full size, when found.
-    pub neck: Option<Mask>,
-}
-
-impl SkinParts {
-    /// The skin mask of section 5.2: `max(skin, neck)` over the union of both regions when
-    /// `include_neck` and a neck exists, else the skin alone.
-    pub fn skin_mask(&self, include_neck: bool) -> Result<Mask> {
-        match (&self.neck, include_neck) {
-            (Some(neck), true) => max_masks(&self.skin, neck),
-            _ => Ok(self.skin.clone()),
-        }
-    }
-}
-
-/// Runs the parsers for the skin (`docs/27` 5.2). `None` when the parser finds no skin. A neck
-/// parser that fails is logged and ignored.
-pub fn skin_parts(
+/// Runs the parser for the skin (`docs/27` 5.2): the face's skin without ears, at full size.
+/// `None` when the parser finds no skin.
+pub fn skin_mask(
     models: &Models,
     image: &LinearAwg4Image,
     face: &Face,
     full_size_px: (u32, u32),
-) -> Result<Option<SkinParts>> {
+) -> Result<Option<Mask>> {
     let Some(skin) = models
         .parser
         .part_mask(image, face, FacePart::SkinWithoutEars)?
     else {
         return Ok(None);
     };
-    let skin = skin.to_full(full_size_px)?;
-    let neck = match &models.neck {
-        None => None,
-        Some(parser) => match parser.part_mask(image, face, FacePart::NeckSkin) {
-            Ok(Some(neck)) => Some(neck.to_full(full_size_px)?),
-            Ok(None) => None,
-            Err(error) => {
-                tracing::warn!(%error, "the neck parser failed; going on without the neck");
-                None
-            }
-        },
-    };
-    Ok(Some(SkinParts { skin, neck }))
+    Ok(Some(skin.to_full(full_size_px)?))
 }
 
 /// Makes a soft elliptical hole in `mask` for one beauty-mark `rect` (`docs/27` 5.3).
@@ -150,7 +118,7 @@ pub fn punch_hole(mask: &mut Mask, rect: &Rect) {
     }
 }
 
-/// The blemish mask (`docs/27` 5.3): `skin` (with the neck as the caller chose) with a soft hole
+/// The blemish mask (`docs/27` 5.3): `skin` with a soft hole
 /// for each beauty-mark box. No other blur or erosion.
 pub fn blemish_mask(skin: &Mask, beauty_marks: &[Rect]) -> Result<Mask> {
     skin.validate()?;
@@ -177,26 +145,139 @@ pub fn dark_circle_mask(
     }
 }
 
-/// The even-skin mask (`docs/27` 5.5). `skin` carries the neck as the caller chose;
-/// `uniformity` is the mesh's `InvertedSkinUniformity` mask; `exclude` is an optional exclusion
-/// mask (default none). All masks are full size; `extent_px` is `F`.
+/// The grading mask (`docs/27` 5.6), which is also the `edge` of 5.5: `feather(skin, -0.065 * F)`,
+/// so skin grading fades out before the hairline, the brows and the jaw. `extent_px` is `F`.
+pub fn grading_mask(skin: &Mask, extent_px: f64) -> Result<Mask> {
+    feather(skin, -0.065 * extent_px)
+}
+
+/// The even-skin mask (`docs/27` 5.5). `uniformity` is the mesh's `InvertedSkinUniformity` mask;
+/// `exclude` is an optional exclusion mask (default none). All masks are full size; `extent_px`
+/// is `F`.
 pub fn even_skin_mask(
     skin: &Mask,
     uniformity: &Mask,
     exclude: Option<&Mask>,
     extent_px: f64,
 ) -> Result<Mask> {
+    let edge = grading_mask(skin, extent_px)?;
+    even_skin_with_edge(skin, uniformity, exclude, extent_px, &edge)
+}
+
+/// 5.5 with the `edge` of 5.6 already built.
+fn even_skin_with_edge(
+    skin: &Mask,
+    uniformity: &Mask,
+    exclude: Option<&Mask>,
+    extent_px: f64,
+    edge: &Mask,
+) -> Result<Mask> {
     let mut core = mul_inv_masks(skin, uniformity)?;
     if let Some(exclude) = exclude {
         core = mul_inv_masks(&core, exclude)?;
     }
     let core = feather(&core, -0.011 * extent_px)?;
-    let edge = feather(skin, -0.065 * extent_px)?;
-    mul_masks(&core, &edge)
+    mul_masks(&core, edge)
 }
 
-/// The three masks of one face, each cropped to its bounding box; `None` when the mask is all
-/// zeros or the parser found no skin.
+/// `smoothstep(e0, e1, x)`: 0 below `e0`, 1 above `e1`, the cubic `3t^2 - 2t^3` between.
+pub fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The nearest-rank percentile `p` (0..=1) of `values`, sorted in place with a total order so the
+/// result never depends on the input order. 0 for an empty slice.
+pub(crate) fn percentile(values: &mut [f64], p: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.sort_unstable_by(f64::total_cmp);
+    let rank = (p.clamp(0.0, 1.0) * values.len() as f64).ceil() as usize;
+    values[rank.clamp(1, values.len()) - 1]
+}
+
+/// The gate of 5.6 for one pixel: `round(255 * bright * pale * notred)`, with `Y = (r + g + b) / 3`,
+/// `sat = 1 - min / max`, `y_mouth` the mouth region's 80th percentile of `Y`.
+pub fn teeth_gate(pixel: [f32; 3], y_mouth: f64) -> u8 {
+    let (r, g, b) = (
+        f64::from(pixel[0]).max(0.0),
+        f64::from(pixel[1]).max(0.0),
+        f64::from(pixel[2]).max(0.0),
+    );
+    let y = (r + g + b) / 3.0;
+    if y_mouth.is_nan() || y_mouth <= 0.0 || !y.is_finite() {
+        return 0;
+    }
+    let max = r.max(g).max(b);
+    let sat = if max > 0.0 {
+        1.0 - r.min(g).min(b) / max
+    } else {
+        0.0
+    };
+    let bright = smoothstep(0.6, 1.0, y / y_mouth);
+    let pale = 1.0 - smoothstep(0.35, 0.6, sat);
+    let notred = 1.0 - smoothstep(0.08, 0.2, (r - g) / y.max(1e-4));
+    (255.0 * bright * pale * notred).round().clamp(0.0, 255.0) as u8
+}
+
+/// The teeth mask (`docs/27` 5.6) from the full-size mouth-interior mask and the full-resolution
+/// image: `mouth = feather(mouth, -0.004 F)`; `Ymouth` is the 80th percentile of `Y` over the
+/// pixels where `mouth` is not 0; `teeth = mul(mouth, gate)`, then `feather(teeth, +0.002 F)`.
+pub fn teeth_mask(mouth: &Mask, image: &LinearAwg4Image, extent_px: f64) -> Result<Mask> {
+    mouth.validate()?;
+    image.validate()?;
+    let size = (image.width_px, image.height_px);
+    if mouth.size_px() != size {
+        return Err(RetouchError::MaskSizeMismatch {
+            left: mouth.size_px(),
+            right: size,
+        });
+    }
+    let mouth = feather(mouth, -0.004 * extent_px)?;
+    let Some(bounds) = BoundedMask::from_full(&mouth) else {
+        return Ok(mouth);
+    };
+    let w = image.width_px as usize;
+    let (x0, y0) = (bounds.region.x_px as usize, bounds.region.y_px as usize);
+    let (rw, rh) = (
+        bounds.region.width_px as usize,
+        bounds.region.height_px as usize,
+    );
+    let mut ys = Vec::new();
+    for y in y0..y0 + rh {
+        for x in x0..x0 + rw {
+            if mouth.data[y * w + x] != 0 {
+                let p = image.data[y * w + x];
+                ys.push(
+                    (f64::from(p[0]).max(0.0)
+                        + f64::from(p[1]).max(0.0)
+                        + f64::from(p[2]).max(0.0))
+                        / 3.0,
+                );
+            }
+        }
+    }
+    let y_mouth = percentile(&mut ys, 0.8);
+    let mut gate = Mask::zeros(image.width_px, image.height_px)?;
+    gate.data
+        .par_chunks_mut(w)
+        .enumerate()
+        .skip(y0)
+        .take(rh)
+        .for_each(|(y, row)| {
+            for (x, out) in row.iter_mut().enumerate().skip(x0).take(rw) {
+                if mouth.data[y * w + x] != 0 {
+                    *out = teeth_gate(image.data[y * w + x], y_mouth);
+                }
+            }
+        });
+    let teeth = mul_masks(&mouth, &gate)?;
+    feather(&teeth, 0.002 * extent_px)
+}
+
+/// The masks of one face, each cropped to its bounding box; `None` when the mask is all zeros, the
+/// parser found no skin, or (for the teeth) found no mouth.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FaceMasks {
     /// Where blemish removal works.
@@ -205,19 +286,24 @@ pub struct FaceMasks {
     pub dark_circles: Option<BoundedMask>,
     /// Where even skin works.
     pub even_skin: Option<BoundedMask>,
+    /// Where skin grading works (5.6).
+    pub grading: Option<BoundedMask>,
+    /// Where teeth whitening works (5.6).
+    pub teeth: Option<BoundedMask>,
 }
 
-/// Builds the masks of one face with the models. A failing beauty-mark detector is logged and
-/// ignored. `exclude` is the optional exclusion mask of 5.5 (full size).
+/// Builds the masks of one face with the models from the full-resolution `image`. A failing
+/// beauty-mark detector is logged and ignored, and so is a parser that fails on the mouth
+/// interior (teeth whitening is then off). `exclude` is the optional exclusion mask of 5.5 (full
+/// size).
 pub fn face_masks(
     models: &Models,
     image: &LinearAwg4Image,
     face: &Face,
-    settings: &SkinSettings,
     full_size_px: (u32, u32),
     exclude: Option<&Mask>,
 ) -> Result<FaceMasks> {
-    let Some(parts) = skin_parts(models, image, face, full_size_px)? else {
+    let Some(skin) = skin_mask(models, image, face, full_size_px)? else {
         return Ok(FaceMasks::default());
     };
     let extent_px = face_extent_px(full_size_px, face);
@@ -229,7 +315,7 @@ pub fn face_masks(
             Vec::new()
         }),
     };
-    let blemish = blemish_mask(&parts.skin_mask(settings.include_neck_blemish)?, &marks)?;
+    let blemish = blemish_mask(&skin, &marks)?;
 
     let under_eye = models
         .mesh
@@ -239,23 +325,33 @@ pub fn face_masks(
         Some(eyes) => Some(eyes.to_full(full_size_px)?),
         None => None,
     };
-    let dark = dark_circle_mask(&under_eye, &parts.skin, eyes.as_ref(), extent_px)?;
+    let dark = dark_circle_mask(&under_eye, &skin, eyes.as_ref(), extent_px)?;
 
     let uniformity = models
         .mesh
         .render(face, MeshTable::InvertedSkinUniformity, full_size_px)?
         .to_full(full_size_px)?;
-    let even = even_skin_mask(
-        &parts.skin_mask(settings.include_neck_even_skin)?,
-        &uniformity,
-        exclude,
-        extent_px,
-    )?;
+    let grading = grading_mask(&skin, extent_px)?;
+    let even = even_skin_with_edge(&skin, &uniformity, exclude, extent_px, &grading)?;
+
+    let teeth = match models
+        .parser
+        .part_mask(image, face, FacePart::MouthInterior)
+    {
+        Ok(Some(mouth)) => Some(teeth_mask(&mouth.to_full(full_size_px)?, image, extent_px)?),
+        Ok(None) => None,
+        Err(error) => {
+            tracing::warn!(%error, "the mouth interior failed; teeth whitening is off");
+            None
+        }
+    };
 
     Ok(FaceMasks {
         blemish: BoundedMask::from_full(&blemish),
         dark_circles: BoundedMask::from_full(&dark),
         even_skin: BoundedMask::from_full(&even),
+        grading: BoundedMask::from_full(&grading),
+        teeth: teeth.as_ref().and_then(BoundedMask::from_full),
     })
 }
 
@@ -346,31 +442,9 @@ mod tests {
     }
 
     #[test]
-    fn skin_union_with_neck() {
-        let (image, face, models) = scene();
-        let parts = skin_parts(&models, &image, &face, FULL).unwrap().unwrap();
-        assert!(parts.neck.is_some());
-        let without = parts.skin_mask(false).unwrap();
-        let with = parts.skin_mask(true).unwrap();
-        assert_eq!(without, parts.skin);
-        assert!(with.data.iter().zip(&without.data).all(|(a, b)| a >= b));
-        assert!(with.data.iter().zip(&without.data).any(|(a, b)| a > b));
-        // Pixel just below the face rect: neck only.
-        assert_eq!(without.get(90, 135), 0);
-        assert_eq!(with.get(90, 135), 255);
-    }
-
-    #[test]
     fn builders_with_mocks() {
         let (image, face, models) = scene();
-        let settings = SkinSettings {
-            blemish: 50.0,
-            dark_circles: 50.0,
-            even_skin: 50.0,
-            include_neck_blemish: true,
-            ..Default::default()
-        };
-        let masks = face_masks(&models, &image, &face, &settings, FULL, None).unwrap();
+        let masks = face_masks(&models, &image, &face, FULL, None).unwrap();
         let blemish = masks.blemish.unwrap();
         let dark = masks.dark_circles.unwrap();
         let even = masks.even_skin.unwrap();
@@ -380,7 +454,8 @@ mod tests {
         }
         let full = blemish.to_full(FULL).unwrap();
         assert_eq!(full.get(89, 74), 0, "the beauty mark is a hole");
-        assert_eq!(full.get(90, 132), 255, "the neck is included");
+        assert_eq!(full.get(90, 132), 0, "nothing below the face: no neck");
+        assert_eq!(full.get(90, 80), 255);
         // Dark circles sit below the eyes, never on them.
         let eyes = models
             .parser
@@ -409,26 +484,38 @@ mod tests {
         let even_full = even.to_full(FULL).unwrap();
         assert!(even_full.data.iter().zip(&skin.data).all(|(e, s)| e <= s));
         assert!(even_full.data.iter().any(|&e| e > 0 && e < 255));
-        // The neck flag for even skin is separate.
-        let with_neck = SkinSettings {
-            include_neck_even_skin: true,
-            ..settings
-        };
-        let masks2 = face_masks(&models, &image, &face, &with_neck, FULL, None).unwrap();
-        assert!(masks2.even_skin.unwrap().region.height_px >= even.region.height_px);
-        assert_eq!(masks2.dark_circles, Some(dark));
+        // The grading mask is the even-skin edge: inside the skin, fading out before the border.
+        let grading = masks.grading.unwrap();
+        let grading_full = grading.to_full(FULL).unwrap();
+        assert!(
+            grading_full
+                .data
+                .iter()
+                .zip(&skin.data)
+                .all(|(g, s)| g <= s)
+        );
+        assert!(grading_full.data.iter().any(|&g| g > 0 && g < 255));
+        assert_eq!(grading_full.get(90, 80), 255);
+        assert!(
+            even_full
+                .data
+                .iter()
+                .zip(&grading_full.data)
+                .all(|(e, g)| e <= g)
+        );
+        let teeth = masks.teeth.unwrap();
+        assert!(!teeth.mask.is_all_zero());
     }
 
     #[test]
     fn exclusion_removes_even_skin() {
         let (image, face, models) = scene();
-        let settings = SkinSettings::default();
-        let base = face_masks(&models, &image, &face, &settings, FULL, None)
+        let base = face_masks(&models, &image, &face, FULL, None)
             .unwrap()
             .even_skin
             .unwrap();
         let all = Mask::new(FULL.0, FULL.1, vec![255; (FULL.0 * FULL.1) as usize]).unwrap();
-        let none = face_masks(&models, &image, &face, &settings, FULL, Some(&all)).unwrap();
+        let none = face_masks(&models, &image, &face, FULL, Some(&all)).unwrap();
         assert!(none.even_skin.is_none());
         assert!(base.region.width_px > 0);
     }
@@ -436,21 +523,12 @@ mod tests {
     #[test]
     fn missing_parts_and_failures() {
         let (image, face, mut models) = scene();
-        models.neck = None;
         models.beauty_marks = Some(Box::new(mock::FailingBeautyMarks));
-        let settings = SkinSettings {
-            include_neck_blemish: true,
-            ..Default::default()
-        };
-        let masks = face_masks(&models, &image, &face, &settings, FULL, None).unwrap();
-        assert_eq!(
-            masks.blemish.unwrap().to_full(FULL).unwrap().get(90, 132),
-            0,
-            "no neck parser, no neck"
-        );
+        let masks = face_masks(&models, &image, &face, FULL, None).unwrap();
+        assert!(masks.blemish.is_some());
         models.parser = Box::new(mock::NoParts);
         assert_eq!(
-            face_masks(&models, &image, &face, &settings, FULL, None).unwrap(),
+            face_masks(&models, &image, &face, FULL, None).unwrap(),
             FaceMasks::default()
         );
     }
@@ -458,17 +536,112 @@ mod tests {
     #[test]
     fn builders_do_not_depend_on_threads() {
         let (image, face, models) = scene();
-        let settings = SkinSettings {
-            include_neck_even_skin: true,
-            ..Default::default()
-        };
         let run = |threads| {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .unwrap();
-            pool.install(|| face_masks(&models, &image, &face, &settings, FULL, None).unwrap())
+            pool.install(|| face_masks(&models, &image, &face, FULL, None).unwrap())
         };
         assert_eq!(run(1), run(4));
+    }
+
+    /// A 400 x 320 picture with a mock mouth in the mock face.
+    fn mouth_scene() -> (LinearAwg4Image, Face, Models, (u32, u32)) {
+        let full = (400u32, 320u32);
+        let face = Face {
+            rect: Rect::new(100, 40, 200, 250),
+            scale: 0.5,
+        };
+        let mut image = LinearAwg4Image::filled(full.0, full.1, [0.45, 0.35, 0.28]).unwrap();
+        mock::paint_mouth(&mut image, &face.rect, 1.0);
+        (image, face, mock::models(vec![]), full)
+    }
+
+    #[test]
+    fn smoothstep_and_percentile() {
+        assert_eq!(smoothstep(0.0, 1.0, -1.0), 0.0);
+        assert_eq!(smoothstep(0.0, 1.0, 2.0), 1.0);
+        assert_eq!(smoothstep(0.0, 1.0, 0.5), 0.5);
+        let mut v = vec![5.0, 1.0, 4.0, 2.0, 3.0];
+        assert_eq!(percentile(&mut v, 0.8), 4.0);
+        assert_eq!(percentile(&mut v, 0.0), 1.0);
+        assert_eq!(percentile(&mut v, 1.0), 5.0);
+        assert_eq!(percentile(&mut [], 0.5), 0.0);
+        let mut one: Vec<f64> = (1..=100).map(f64::from).collect();
+        assert_eq!(percentile(&mut one, 0.99), 99.0);
+    }
+
+    #[test]
+    fn gate_keeps_teeth_and_drops_lips_and_gums() {
+        let y_mouth = f64::from(mock::mouth_colors::TEETH.iter().sum::<f32>()) / 3.0;
+        let gate = |c: [f32; 3]| teeth_gate(c, y_mouth);
+        assert!(gate(mock::mouth_colors::TEETH) > 150);
+        assert_eq!(gate(mock::mouth_colors::LIPS), 0);
+        assert_eq!(gate(mock::mouth_colors::GAP), 0);
+        assert_eq!(gate([0.0; 3]), 0);
+        assert_eq!(gate([0.7; 3]), 255, "white teeth pass fully");
+        assert_eq!(teeth_gate([0.7; 3], 0.0), 0);
+        assert_eq!(teeth_gate([f32::NAN; 3], 0.5), 0);
+    }
+
+    #[test]
+    fn teeth_mask_covers_the_teeth_only() {
+        let (image, face, models, full) = mouth_scene();
+        let masks = face_masks(&models, &image, &face, full, None).unwrap();
+        let teeth = masks.teeth.unwrap();
+        let tf = teeth.to_full(full).unwrap();
+        let (cx, cy, ax, ay) = mock::mouth_ellipse(&face.rect);
+        // Teeth band: inside the mask; lips ring, the dark gap and the skin: outside.
+        assert!(tf.get(cx as i64, cy as i64) > 150);
+        assert_eq!(tf.get((cx + 1.2 * ax) as i64, cy as i64), 0, "lips");
+        assert_eq!(
+            tf.get(cx as i64, (cy + 0.8 * ay) as i64),
+            0,
+            "the gap below the teeth"
+        );
+        assert_eq!(
+            tf.get((cx + 0.95 * ax) as i64, cy as i64),
+            0,
+            "gum at the corner"
+        );
+        assert_eq!(tf.get(10, 10), 0);
+        // The mask lies inside the mouth interior grown by the final feather.
+        let mouth = models
+            .parser
+            .part_mask(&image, &face, FacePart::MouthInterior)
+            .unwrap()
+            .unwrap()
+            .to_full(full)
+            .unwrap();
+        for (i, &t) in tf.data.iter().enumerate() {
+            if t > 0 {
+                let (x, y) = ((i as u32 % full.0) as i64, (i as u32 / full.0) as i64);
+                let near = (-2..=2).any(|dy| (-2..=2).any(|dx| mouth.get(x + dx, y + dy) > 0));
+                assert!(near, "teeth mask pixel ({x}, {y}) is outside the mouth");
+            }
+        }
+        // Size mismatch is an error; an empty mouth gives an empty mask.
+        let small = Mask::zeros(10, 10).unwrap();
+        assert!(teeth_mask(&small, &image, 10.0).is_err());
+        let none = Mask::zeros(full.0, full.1).unwrap();
+        assert!(teeth_mask(&none, &image, 10.0).unwrap().is_all_zero());
+    }
+
+    #[test]
+    fn teeth_mask_percentile_adapts_to_the_picture() {
+        // The same mouth in a picture twice as bright (gain) gives the same mask.
+        let (image, face, models, full) = mouth_scene();
+        let base = face_masks(&models, &image, &face, full, None)
+            .unwrap()
+            .teeth;
+        let mut bright = image.clone();
+        for p in &mut bright.data {
+            *p = p.map(|c| c * 2.0);
+        }
+        let again = face_masks(&models, &bright, &face, full, None)
+            .unwrap()
+            .teeth;
+        assert_eq!(base, again);
     }
 }
