@@ -1876,3 +1876,48 @@ pub fn predicted_name_in(dir: &Path, file_name: &str, if_exists: IfExists) -> St
     }
     file_name.to_owned()
 }
+
+#[cfg(test)]
+mod space_tests {
+    use super::*;
+
+    #[test]
+    fn the_warning_is_exactly_free_space_under_135_percent_of_the_estimate() {
+        // 100 MB estimated: the line is 135 MB.
+        assert!(is_low_on_space(100_000_000, 134_999_999));
+        assert!(!is_low_on_space(100_000_000, 135_000_000));
+        assert!(!is_low_on_space(100_000_000, 135_000_001));
+        assert!(is_low_on_space(100_000_000, 0));
+        // Nothing to write is never a warning.
+        assert!(!is_low_on_space(0, 0));
+        assert!(!is_low_on_space(0, 1));
+        // A big job on a big disk.
+        assert!(is_low_on_space(2_000_000_000_000, 2_699_999_999_999));
+        assert!(!is_low_on_space(2_000_000_000_000, 2_700_000_000_000));
+    }
+
+    #[test]
+    fn the_sentence_is_the_catalogues() {
+        assert_eq!(
+            low_space_message(300_000_000, 350_000_000, "/Users/me/Lisbon export"),
+            "This export needs about 300 MB and 350 MB is free in /Users/me/Lisbon export. It may stop part way."
+        );
+        assert_eq!(size_text(2_400_000_000), "2.4 GB");
+        assert_eq!(size_text(1), "1 MB");
+        assert_eq!(size_text(999_499_999), "999 MB");
+        assert_eq!(
+            folder_label(Path::new("/a/Lisbon export/")),
+            "Lisbon export"
+        );
+    }
+
+    #[test]
+    fn free_space_is_read_for_a_folder_that_is_not_made_yet() {
+        let dir = tempfile::tempdir().expect("dir");
+        let here = free_bytes_in(dir.path()).expect("the volume can be read");
+        assert!(here > 0);
+        // The nearest existing parent answers for a folder that is not there.
+        assert!(free_bytes_in(&dir.path().join("a").join("b")).is_some());
+        assert!(!dir.path().join("a").exists(), "nothing was made");
+    }
+}

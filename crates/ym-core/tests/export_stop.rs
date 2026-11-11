@@ -275,3 +275,121 @@ fn a_destination_that_is_gone_is_found_before_any_photo_is_decoded() {
     assert_eq!(rendered(&ctx, &f.ids), [false; 4], "no photo was rendered");
     assert!(progress(&events).last().is_some_and(|e| e.stopped));
 }
+
+/// The snapshot of the first photo, for the calls that work on one photo.
+fn first_snapshot(f: &Folder) -> ym_core::export::PhotoSnapshot {
+    ym_core::export::PhotoSnapshot::take(&f.session, f.ids[0]).expect("snapshot")
+}
+
+fn set_age(path: &Path, hours: u64) {
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("open");
+    file.set_modified(std::time::SystemTime::now() - Duration::from_secs(hours * 3600))
+        .expect("set mtime");
+}
+
+/// The start of a job removes the writer's temporary files in the destination that are older than 24 hours,
+/// and nothing else (`docs/26-hardening.md` P2-4).
+#[test]
+fn the_start_of_a_job_removes_stale_temporary_files_in_the_destination() {
+    let f = folder(1);
+    let home = tempfile::tempdir().expect("h");
+    let out = tempfile::tempdir().expect("o");
+    let (ctx, _queue, _rx) = queue(home.path());
+    let write = |name: &str, hours: u64| {
+        let p = out.path().join(name);
+        std::fs::write(&p, b"half a file").expect("write");
+        set_age(&p, hours);
+    };
+    write(".yellowmoon-4242-0.tmp", 25);
+    write(".yellowmoon-4242-1.tmp", 23);
+    write(".yellowmoon-4242-2.tmp.old", 200);
+    write("holiday.jpg", 200);
+    let options = job(out.path()).options;
+    ym_core::export::check_destination(&ctx, &first_snapshot(&f), &options, 1).expect("ready");
+    assert_eq!(
+        names_in(out.path()),
+        [
+            ".yellowmoon-4242-1.tmp",
+            ".yellowmoon-4242-2.tmp.old",
+            "holiday.jpg"
+        ]
+    );
+}
+
+/// Only the first photo of a job makes the folder; after that a folder that has gone is "Folder gone" and is
+/// not made again.
+#[test]
+fn a_folder_deleted_after_the_first_photo_is_not_made_again() {
+    let f = folder(2);
+    let home = tempfile::tempdir().expect("h");
+    let parent = tempfile::tempdir().expect("o");
+    let out = parent.path().join("out");
+    let (ctx, _queue, _rx) = queue(home.path());
+    let options = job(&out).options;
+    let snap = first_snapshot(&f);
+
+    // The first photo makes it.
+    ym_core::export::check_destination(&ctx, &snap, &options, 1).expect("made");
+    assert!(out.is_dir());
+    // The person deletes it; the second photo finds it gone and does not make it.
+    std::fs::remove_dir_all(&out).expect("deleted");
+    let err = ym_core::export::check_destination(&ctx, &snap, &options, 2).expect_err("gone");
+    assert_eq!(
+        err.destination_problem(),
+        Some(ym_export::DestinationProblem::Gone)
+    );
+    assert!(!out.exists(), "not made again");
+}
+
+/// The same through the queue: the folder is removed while a job is running and the job stops with the
+/// "Folder gone" sentence.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_job_whose_folder_is_deleted_while_it_runs_stops_with_folder_gone() {
+    // A fault armed by another test of this file must not reach this job's writes.
+    #[cfg(feature = "fault-injection")]
+    let _one_at_a_time = FAULT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let f = folder(6);
+    let home = tempfile::tempdir().expect("h");
+    let parent = tempfile::tempdir().expect("o");
+    let out = parent.path().join("out");
+    let (_ctx, queue, rx) = queue(home.path());
+    let id = queue.start(&f.session, &job(&out), false).expect("queued");
+    let mut events = Vec::new();
+    let mut removed = false;
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let e = rx.recv_timeout(left).expect("the queue went idle in time");
+        // The first photo is done: the folder goes. (A write can race with the removal; try again.)
+        if !removed && matches!(e, ExportEvent::File(_)) {
+            for _ in 0..50 {
+                if std::fs::remove_dir_all(&out).is_ok() {
+                    removed = true;
+                    break;
+                }
+            }
+        }
+        let idle = e == ExportEvent::Busy(false);
+        events.push(e);
+        if idle {
+            break;
+        }
+    }
+    assert!(removed);
+    let s = queue.summary(id).expect("summary");
+    assert!(s.saved >= 1 && s.saved < 6, "saved {}", s.saved);
+    assert!(
+        s.stopped
+            .as_deref()
+            .is_some_and(|m| m.starts_with("Yellowmoon can't reach out")),
+        "{:?}",
+        s.stopped
+    );
+    assert!(!out.exists(), "the folder was not made again");
+}
