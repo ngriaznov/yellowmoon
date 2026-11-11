@@ -12,12 +12,8 @@ use ym_raw::error::{
     MESSAGE_CUT_SHORT, MESSAGE_DAMAGED, MESSAGE_DENIED, MESSAGE_EMPTY, MESSAGE_MACOS_BLOCKED,
     MESSAGE_NOT_FOUND, MESSAGE_UNREADABLE, RawError,
 };
-use ym_raw::layout::ChromaSubsampling;
 use ym_raw::metadata::probe_bytes;
-use ym_raw::testgen::{
-    Arw1, ArwBuilder, CrawEncoder, LosslessL, LosslessMs, Packed12, SplitMix64, gradient_mosaic,
-    gradient_rgb, tiny_jpeg,
-};
+use ym_raw::testgen::damage::{foreign, sweep, sweep_damages, valid_files};
 
 /// Every sentence a damaged or unreadable file may show, besides the fixed ones of the other
 /// variants (`NotArw`, `Arq`, `Unsupported`).
@@ -75,201 +71,14 @@ fn check(what: &str, error: &RawError) -> String {
     text
 }
 
-/// The small valid files, one per decodable variant (the seeds of `decode_hostile.rs`).
-fn seeds() -> Vec<(&'static str, Vec<u8>)> {
-    let m = gradient_mosaic(96, 64, 512, 16000, 1);
-    let m12 = gradient_mosaic(96, 64, 128, 4000, 2);
-    let encoder = CrawEncoder::new();
-    let mc = gradient_mosaic(96, 64, 512, encoder.max_value(), 3);
-    let ms = |sub, tile: u32| {
-        let rgb = gradient_rgb(70, 50, 1100, 9000, 4);
-        ArwBuilder::new("ILCE-7RM5", 70, 50)
-            .lossless_ms(LosslessMs::new(sub, rgb, 70, 50, [2.0, 1.0, 1.6]).tile(tile, tile))
-            .build(&[])
-    };
-    vec![
-        ("unc14", ArwBuilder::new("ILCE-7RM4", 96, 64).build(&m)),
-        (
-            "unc12",
-            ArwBuilder::new("ILCE-7M2", 96, 64)
-                .uncompressed(12)
-                .build(&m12),
-        ),
-        (
-            "packed12",
-            ArwBuilder::new("DSLR-A900", 96, 64)
-                .payload(Packed12)
-                .build(&m12),
-        ),
-        (
-            "arw1",
-            ArwBuilder::new("DSLR-A300", 96, 64)
-                .payload(Arw1)
-                .black([0; 4])
-                .white([3840; 3])
-                .build(&m12),
-        ),
-        (
-            "craw",
-            ArwBuilder::new("ILCE-7M3", 96, 64).craw(encoder).build(&mc),
-        ),
-        (
-            "lossless_l",
-            ArwBuilder::new("ILCE-1", 96, 64)
-                .payload(LosslessL::new().tile(32, 32))
-                .build(&m),
-        ),
-        (
-            "lossless_l_restarts",
-            ArwBuilder::new("ILCE-1", 96, 64)
-                .payload(LosslessL::new().tile(64, 64).restart_rows(2).predictor(4))
-                .build(&m),
-        ),
-        ("ms420", ms(ChromaSubsampling::Yuv420, 32)),
-        ("ms422", ms(ChromaSubsampling::Yuv422, 32)),
-        ("ms444", ms(ChromaSubsampling::Yuv444, 64)),
-    ]
-}
-
-/// `(entry offset, field type)` of every directory entry with `tag` in a little-endian TIFF,
-/// following next-IFD links, SubIFDs and the EXIF pointer.
-fn entries(file: &[u8], tag: u16) -> Vec<(usize, u16)> {
-    fn u16at(f: &[u8], at: usize) -> Option<u16> {
-        Some(u16::from_le_bytes(f.get(at..at + 2)?.try_into().ok()?))
-    }
-    fn u32at(f: &[u8], at: usize) -> Option<u32> {
-        Some(u32::from_le_bytes(f.get(at..at + 4)?.try_into().ok()?))
-    }
-    let mut found = Vec::new();
-    let mut seen = Vec::new();
-    let mut pending = vec![u32at(file, 4).unwrap_or(0) as usize];
-    while let Some(at) = pending.pop() {
-        if at < 8 || seen.contains(&at) {
-            continue;
-        }
-        seen.push(at);
-        let Some(count) = u16at(file, at) else {
-            continue;
-        };
-        for i in 0..usize::from(count) {
-            let e = at + 2 + 12 * i;
-            let (Some(t), Some(ty), Some(n)) =
-                (u16at(file, e), u16at(file, e + 2), u32at(file, e + 4))
-            else {
-                break;
-            };
-            if t == tag {
-                found.push((e, ty));
-            }
-            if (t == 0x014A || t == 0x8769) && n == 1 {
-                pending.push(u32at(file, e + 8).unwrap_or(0) as usize);
-            }
-        }
-        pending.push(u32at(file, at + 2 + 12 * usize::from(count)).unwrap_or(0) as usize);
-    }
-    found
-}
-
-/// Writes `value` into the first value slot of every entry with `tag` (SHORT or LONG).
-fn patch(file: &mut [u8], tag: u16, value: u32) {
-    for (e, ty) in entries(file, tag) {
-        match ty {
-            3 => file[e + 8..e + 10].copy_from_slice(&(value as u16).to_le_bytes()),
-            4 => file[e + 8..e + 12].copy_from_slice(&value.to_le_bytes()),
-            _ => {}
-        }
-    }
-}
-
-/// The damaged files built from one valid file: `(what, bytes)`.
-fn damaged(valid: &[u8], rng: &mut SplitMix64) -> Vec<(String, Vec<u8>)> {
-    let len = valid.len();
-    let mut out: Vec<(String, Vec<u8>)> = Vec::new();
-    // Truncations at many fractions, and a few bytes short of the end.
-    for k in 0..=24 {
-        out.push((format!("cut {k}/24"), valid[..len * k / 24].to_vec()));
-    }
-    for k in [1, 7, 100, 500] {
-        out.push((
-            format!("{k} bytes short"),
-            valid[..len.saturating_sub(k)].to_vec(),
-        ));
-    }
-    // Header overwrites.
-    for n in [1usize, 2, 4, 8, 16] {
-        let mut f = valid.to_vec();
-        for b in &mut f[..n] {
-            *b = rng.next_u64() as u8;
-        }
-        out.push((format!("header garbage {n}"), f));
-        let mut f = valid.to_vec();
-        f[..n].fill(0);
-        out.push((format!("header zeros {n}"), f));
-    }
-    // Garbage and zeros in the body.
-    for k in 1..=6usize {
-        let at = len * k / 7;
-        let n = (len / 50).max(8).min(len - at);
-        let mut f = valid.to_vec();
-        for b in &mut f[at..at + n] {
-            *b = rng.next_u64() as u8;
-        }
-        out.push((format!("garbage at {k}/7"), f));
-        let mut f = valid.to_vec();
-        f[at..at + n].fill(0);
-        out.push((format!("zeros at {k}/7"), f));
-    }
-    // Bit flips.
-    for round in 0..8 {
-        let mut f = valid.to_vec();
-        for _ in 0..=rng.below(4) {
-            let limit = if round % 2 == 0 { len.min(2048) } else { len };
-            let at = rng.below(limit as u64) as usize;
-            f[at] ^= 1 << rng.below(8);
-        }
-        out.push((format!("bit flips {round}"), f));
-    }
-    // Tags that size buffers, set to extremes.
-    for tag in [
-        0x0100u16, 0x0101, 0x0102, 0x0103, 0x0115, 0x0116, 0x0117, 0x0111, 0x0142, 0x0143, 0x0144,
-        0x0145, 0x0212, 0x7010,
-    ] {
-        for value in [0u32, 1, 3, 255, 65535, 0x7FFF_FFFF, u32::MAX] {
-            let mut f = valid.to_vec();
-            patch(&mut f, tag, value);
-            out.push((format!("tag {tag:#06x} = {value}"), f));
-        }
-    }
-    out
-}
-
-/// Files that are not ARW at all, and the empty file.
-fn foreign() -> Vec<(String, Vec<u8>)> {
-    let jpeg = tiny_jpeg(32, 24, 7);
-    vec![
-        ("empty".to_owned(), Vec::new()),
-        ("one byte".to_owned(), vec![b'I']),
-        ("seven bytes".to_owned(), b"II*\0\x08\0\0".to_vec()),
-        (
-            "text".to_owned(),
-            b"This is not a photo. It is a note about a photo.\n".repeat(40),
-        ),
-        ("jpeg".to_owned(), jpeg),
-        ("zeros".to_owned(), vec![0; 4096]),
-    ]
-}
-
 #[test]
 fn every_message_of_a_damaged_file_is_in_the_catalogue() {
-    let mut rng = SplitMix64(0x00C0_FFEE);
-    let mut files = foreign();
-    for (name, valid) in seeds() {
+    for (name, valid) in valid_files() {
         decode_bytes(&valid, &DecodeOptions::default()).unwrap_or_else(|e| panic!("{name}: {e}"));
-        for (what, bytes) in damaged(&valid, &mut rng) {
-            files.push((format!("{name} / {what}"), bytes));
-        }
     }
-    assert!(files.len() >= 192, "{} files in the sweep", files.len());
+    // The sweep is shared with the damaged-folder tests (`ym_raw::testgen::damage`).
+    let files = sweep();
+    assert!(files.len() >= 1576, "{} files in the sweep", files.len());
 
     let mut seen = BTreeSet::new();
     let mut ok = 0;
@@ -298,11 +107,10 @@ fn every_message_of_a_damaged_file_is_in_the_catalogue() {
 #[test]
 fn the_same_sweep_from_disk_gives_the_same_sentences() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut rng = SplitMix64(0xFEED);
     let mut files = foreign();
-    let (name, valid) = seeds().swap_remove(0);
-    for (what, bytes) in damaged(&valid, &mut rng).into_iter().step_by(5) {
-        files.push((format!("{name} / {what}"), bytes));
+    let (name, valid) = valid_files().swap_remove(0);
+    for damage in sweep_damages(valid.len()).into_iter().step_by(5) {
+        files.push((format!("{name} / {}", damage.label()), damage.apply(&valid)));
     }
     for (i, (what, bytes)) in files.iter().enumerate() {
         let path = dir.path().join(format!("f{i}.ARW"));

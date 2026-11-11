@@ -48,6 +48,7 @@ use crate::makernote::{encipher_byte, sony_word_for_iso};
 use crate::sr2;
 
 pub mod craw_enc;
+pub mod damage;
 pub mod ljpeg_enc;
 pub mod lossless;
 

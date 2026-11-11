@@ -5541,3 +5541,151 @@ fn a_depth_row_without_the_model_selects_nothing_starts_no_worker_and_refuses_th
         Some("This copy of Yellowmoon has no Depth model. Reinstall the app.")
     );
 }
+
+// --- The damaged-file matrix --------------------------------------------------------------------
+
+/// Whether `reason` is a sentence a damaged file may show: the catalogue of `ym_raw::error`, the
+/// fixed sentence of a file that is not ARW, and the two forms of "not supported".
+fn is_damage_sentence(reason: &str) -> bool {
+    use ym_raw::error::{MESSAGE_CUT_SHORT, MESSAGE_DAMAGED, MESSAGE_EMPTY};
+    [
+        MESSAGE_EMPTY,
+        MESSAGE_CUT_SHORT,
+        MESSAGE_DAMAGED,
+        "This isn't an ARW file. Yellowmoon opens Sony ARW files only.",
+    ]
+    .contains(&reason)
+        || reason.contains("aren't supported yet")
+        || reason.starts_with("Yellowmoon can't open ")
+}
+
+/// Every file of `dir` by name with its bytes.
+fn files_with_bytes(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    std::fs::read_dir(dir)
+        .expect("read the folder")
+        .map(|entry| {
+            let entry = entry.expect("entry");
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                std::fs::read(entry.path()).expect("read"),
+            )
+        })
+        .collect()
+}
+
+/// The folder of `crates/ym-core/tests/damaged_files.rs` (ten valid files and 190 damaged ones,
+/// `ym_raw::testgen::damage::write_matrix`) through `open_paths` and `export_start` (`docs/26` P1-6,
+/// H-03). Every damaged file is `Skipped` with a catalogue sentence or `Ready`; the export has every
+/// `Ready` photo, none failing (a skipped photo is not in a job); the good files are byte for byte what
+/// the same files give in an app of their own.
+#[test]
+fn a_damaged_folder_opens_and_the_export_writes_every_photo_that_opened() {
+    use ym_raw::testgen::damage::{valid_files, write_matrix};
+    let h = Harness::new();
+    let files = write_matrix(h.photos.path()).expect("write the matrix");
+    assert_eq!(files.len(), 200);
+    let opened = h
+        .api
+        .open_paths(&[h.photos.path().to_string_lossy().into_owned()])
+        .expect("open the folder");
+    assert_eq!(opened.photos.len(), files.len());
+    wait_until("every photo to be developed or refused", || {
+        h.api.session_state().is_ok_and(|s| {
+            s.photos
+                .iter()
+                .all(|p| matches!(p.status, PhotoStatus::Ready | PhotoStatus::Skipped { .. }))
+        })
+    });
+    let state = h.api.session_state().expect("state");
+    let (mut ready, mut skipped) = (0usize, 0usize);
+    for file in &files {
+        let photo = state
+            .photos
+            .iter()
+            .find(|p| p.file_name == file.file)
+            .expect("the photo is in the session");
+        match (&file.damage, &photo.status) {
+            (None, PhotoStatus::Ready) => ready += 1,
+            (None, other) => panic!("the good file {} is {other:?}", file.file),
+            (Some(_), PhotoStatus::Ready) => {
+                assert!(
+                    file.damage.as_ref().is_some_and(|d| !d.always_refused()),
+                    "{} is Ready",
+                    file.file
+                );
+                ready += 1;
+            }
+            (Some(_), PhotoStatus::Skipped { reason }) => {
+                assert!(
+                    is_damage_sentence(reason),
+                    "{}: {reason:?} is not in the catalogue",
+                    file.file
+                );
+                skipped += 1;
+            }
+            (Some(_), other) => panic!("{}: {other:?}", file.file),
+        }
+    }
+    assert!(
+        ready >= 10 && skipped > 0,
+        "{ready} ready, {skipped} skipped"
+    );
+
+    let out = tempfile::tempdir().expect("out");
+    let id = h.api.export_start(&jpeg_job(out.path())).expect("start");
+    wait_until("the export to finish", || {
+        h.events.events().iter().any(
+            |e| matches!(e, AppEvent::ExportProgress(p) if p.job_id == id && p.done == p.total),
+        )
+    });
+    wait_until("the queue to go idle", || !h.api.export_busy());
+    let summary = h
+        .api
+        .core()
+        .export_summary(u64::from(id.0))
+        .expect("the job has a summary");
+    // The photos that were refused when the folder opened are not in the job; the ones that opened
+    // are all written.
+    assert_eq!(summary.total, ready);
+    assert_eq!((summary.saved, summary.failed), (ready, 0), "{summary:?}");
+    assert!(summary.errors.is_empty());
+    let together = files_with_bytes(out.path());
+    assert_eq!(together.len(), ready);
+
+    // The same ten good files in an app of their own give the same bytes.
+    let alone = Harness::new();
+    for (variant, bytes) in valid_files() {
+        std::fs::write(
+            alone.photos.path().join(format!("good_{variant}.ARW")),
+            bytes,
+        )
+        .expect("write");
+    }
+    alone
+        .api
+        .open_paths(&[alone.photos.path().to_string_lossy().into_owned()])
+        .expect("open the good files");
+    alone.develop();
+    let alone_out = tempfile::tempdir().expect("out");
+    let alone_id = alone
+        .api
+        .export_start(&jpeg_job(alone_out.path()))
+        .expect("start");
+    wait_until("the export of the good files to finish", || {
+        alone.events.events().iter().any(|e| {
+            matches!(e, AppEvent::ExportProgress(p) if p.job_id == alone_id && p.done == p.total)
+        })
+    });
+    wait_until("the queue of the good files to go idle", || {
+        !alone.api.export_busy()
+    });
+    let alone_files = files_with_bytes(alone_out.path());
+    assert_eq!(alone_files.len(), 10);
+    for (name, bytes) in &alone_files {
+        assert_eq!(
+            together.get(name).map(Vec::as_slice),
+            Some(bytes.as_slice()),
+            "{name} changed next to damaged files"
+        );
+    }
+}

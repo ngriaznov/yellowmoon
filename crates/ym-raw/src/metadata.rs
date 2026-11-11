@@ -40,7 +40,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::RawError;
 use crate::exif::{self, CaptureTime, GpsInfo, IsoSource};
 use crate::layout::{
-    CfaPattern, ChromaSubsampling, DecodeKind, Layout, MAX_DIMENSION, MAX_PIXELS, Rect,
+    CfaPattern, ChromaSubsampling, DecodeKind, Layout, MAX_DIMENSION, MAX_PIXELS, MIN_DIMENSION,
+    Rect,
 };
 use crate::makernote;
 use crate::quirks;
@@ -438,6 +439,12 @@ pub fn probe_source(source: &dyn ByteSource) -> Result<RawMetadata, RawError> {
         return Err(RawError::Arq);
     }
 
+    if best.width < MIN_DIMENSION || best.height < MIN_DIMENSION {
+        return Err(RawError::corrupt(format!(
+            "the image is {} x {}, too small for a camera file",
+            best.width, best.height
+        )));
+    }
     if best.width > MAX_DIMENSION
         || best.height > MAX_DIMENSION
         || u64::from(best.width) * u64::from(best.height) > MAX_PIXELS

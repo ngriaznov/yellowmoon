@@ -32,7 +32,6 @@ use ym_core::settings::{Crop, CropAspect, LensKind, SettingsPatch};
 use ym_export::{ExportOptions, FormatKind, IfExists, JpegQuality, Size};
 use ym_looks::library::LookId;
 use ym_looks::library::ResolveError;
-use ym_raw::layout::DecodeKind;
 
 use crate::cli::{RenderArgs, auto_choice};
 use crate::console::{Console, bar, duration_text, photos, shorten};
@@ -292,17 +291,17 @@ fn read_settings_text(path: &Path) -> Result<String, Failure> {
     }
 }
 
-fn decode_kind_unsupported(kind: DecodeKind) -> bool {
-    matches!(kind, DecodeKind::Arw6 | DecodeKind::Unknown { .. })
-}
-
-/// Why a photo the session skipped could not be developed: the JSON `kind` and, when the probe
-/// fails again, the technical detail of the failure.
+/// Why a photo the session skipped could not be developed: the JSON `kind` and, when the file
+/// itself is the cause, the technical detail of the failure.
+///
+/// The session keeps only the sentence, so the file is decoded again (it is a failure, so this runs
+/// once per bad file) and the error of that decode gives the kind (`corrupt`, `io`, `not_arw`,
+/// `arq`, `unsupported`) and its detail. A file that decodes again was refused by a later stage of
+/// the session (the automatic estimates), which is not a file problem of the raw kinds: `analysis`.
 fn skip_kind(path: &Path) -> (&'static str, Option<String>) {
-    match ym_raw::metadata::probe(path) {
+    match ym_raw::decode::decode(path) {
         Err(error) => (error.kind(), error.detail()),
-        Ok(meta) if decode_kind_unsupported(meta.decode) => ("unsupported", None),
-        Ok(_) => ("decode", None),
+        Ok(_) => ("analysis", None),
     }
 }
 
