@@ -755,7 +755,14 @@ fn load_raw(session: &Session, snapshot: &PhotoSnapshot) -> Result<(Arc<RawImage
         Ok(raw) => raw,
         Err(SessionError::UnknownPhoto(_)) => {
             // The session was closed or the photo removed meanwhile: the job goes on from the file.
-            Arc::new(ym_raw::decode::decode(&snapshot.view.path).map_err(|e| e.to_string())?)
+            Arc::new(ym_raw::decode::decode(&snapshot.view.path).map_err(|e| {
+                tracing::warn!(
+                    kind = e.kind(),
+                    detail = e.detail().as_deref().unwrap_or(""),
+                    "the file could not be decoded for export"
+                );
+                e.to_string()
+            })?)
         }
         Err(e) => return Err(e.to_string()),
     };

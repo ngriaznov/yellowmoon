@@ -205,10 +205,9 @@ fn a_mixed_folder_opens_with_per_file_errors_that_block_nothing() {
         reason("h_corrupt.ARW"),
         "This isn't an ARW file. Yellowmoon opens Sony ARW files only."
     );
-    assert!(
-        reason("i_truncated.ARW").starts_with("This file is damaged or incomplete"),
-        "{}",
-        reason("i_truncated.ARW")
+    assert_eq!(
+        reason("i_truncated.ARW"),
+        "This file is incomplete: it ends before its picture does. Copy it from the card again, or skip it."
     );
     // A skipped photo has no estimates and says why.
     let id = by_name["h_corrupt.ARW"].id;

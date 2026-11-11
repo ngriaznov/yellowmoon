@@ -315,9 +315,7 @@ pub fn decode(src: &dyn ByteSource, meta: &RawMetadata) -> Result<CrawImage, Raw
             .checked_add(need as u64)
             .is_none_or(|end| end > src.len())
         {
-            return Err(RawError::corrupt(
-                "the raw data runs past the end of the file (the file is cut short)",
-            ));
+            return Err(RawError::corrupt(crate::error::CUT_SHORT));
         }
         src.read_at(offset, &mut bytes[row * width..(row + rows) * width])?;
         row += rows;

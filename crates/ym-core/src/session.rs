@@ -3740,47 +3740,55 @@ impl Inner {
                     crop_analysis: None,
                 }
             }
-            Err(error) => Photo {
-                id,
-                path,
-                canon,
-                incarnation: 0,
-                summary: PhotoSummary {
+            Err(error) => {
+                tracing::warn!(
+                    photo = id.0,
+                    kind = error.kind(),
+                    detail = error.detail().as_deref().unwrap_or(""),
+                    "the file could not be read"
+                );
+                Photo {
                     id,
-                    file_name,
-                    camera: CameraInfo::unknown(),
-                    iso: 0,
-                    shutter_s: 0.0,
-                    aperture_f: 0.0,
-                    captured_at: String::new(),
-                    width_px: 0,
-                    height_px: 0,
-                    status: PhotoStatus::Skipped {
-                        reason: error.to_string(),
+                    path,
+                    canon,
+                    incarnation: 0,
+                    summary: PhotoSummary {
+                        id,
+                        file_name,
+                        camera: CameraInfo::unknown(),
+                        iso: 0,
+                        shutter_s: 0.0,
+                        aperture_f: 0.0,
+                        captured_at: String::new(),
+                        width_px: 0,
+                        height_px: 0,
+                        status: PhotoStatus::Skipped {
+                            reason: error.to_string(),
+                        },
+                        picked: false,
+                        reduced: false,
+                        apple_pending: false,
                     },
-                    picked: false,
-                    reduced: false,
-                    apple_pending: false,
-                },
-                meta: None,
-                camera: None,
-                profile: None,
-                pool_key: None,
-                burst: None,
-                own: None,
-                effective: None,
-                noise_version: 0,
-                own_gen: 0,
-                settings,
-                pick: None,
-                version: 0,
-                apple_results: [None, None, None],
-                apple_picture: PictureSlot::Empty,
-                apple_pending_sent: false,
-                served: None,
-                repaint: false,
-                crop_analysis: None,
-            },
+                    meta: None,
+                    camera: None,
+                    profile: None,
+                    pool_key: None,
+                    burst: None,
+                    own: None,
+                    effective: None,
+                    noise_version: 0,
+                    own_gen: 0,
+                    settings,
+                    pick: None,
+                    version: 0,
+                    apple_results: [None, None, None],
+                    apple_picture: PictureSlot::Empty,
+                    apple_pending_sent: false,
+                    served: None,
+                    repaint: false,
+                    crop_analysis: None,
+                }
+            }
         }
     }
 
@@ -3928,7 +3936,15 @@ impl Inner {
         let started = Instant::now();
         let raw = match ym_raw::decode::decode(&path) {
             Ok(raw) => Arc::new(raw),
-            Err(e) => return fail(PhotoStage::Decode, e.to_string()),
+            Err(e) => {
+                tracing::warn!(
+                    photo = id.0,
+                    kind = e.kind(),
+                    detail = e.detail().as_deref().unwrap_or(""),
+                    "the file could not be decoded"
+                );
+                return fail(PhotoStage::Decode, e.to_string());
+            }
         };
         tracing::debug!(
             photo = id.0,

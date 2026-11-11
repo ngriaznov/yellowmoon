@@ -323,7 +323,7 @@ fn a_folder_is_reported_as_an_error_not_read() {
         .arg(dir.path())
         .assert()
         .code(1)
-        .stderr(predicate::str::contains("folder"));
+        .stderr(predicate::str::contains("This isn't an ARW file."));
 }
 
 #[test]

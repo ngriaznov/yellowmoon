@@ -877,9 +877,7 @@ fn read_storage(tiff: &Tiff, ifd: &Ifd, raw: &RawIfd) -> Result<RawStorage, RawE
             .checked_add(*count)
             .ok_or_else(|| RawError::corrupt("a raw data offset overflows"))?;
         if end > file_len {
-            return Err(RawError::corrupt(
-                "the raw data runs past the end of the file (the file is cut short)",
-            ));
+            return Err(RawError::corrupt(crate::error::CUT_SHORT));
         }
     }
     Ok(storage)
