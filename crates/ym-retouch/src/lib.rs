@@ -17,6 +17,7 @@ mod mask;
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
 mod models;
+mod pipeline;
 mod types;
 
 pub use blemish::{
@@ -37,6 +38,7 @@ pub use mask::{
 pub use models::{
     BeautyMarkDetector, BlemishProposer, FaceMesh, FaceParser, FacePart, MeshTable, Models,
 };
+pub use pipeline::{RetouchCache, prepare_skin, retouch_skin};
 pub use types::{
     BoundedMask, Face, LinearAwg4Image, Mask, Rect, SkinSettings, check_render_scale,
     face_extent_px, face_size_px,

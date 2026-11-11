@@ -98,6 +98,8 @@ jsonschema = { version = "0.58", default-features = false }
 # Tests.
 approx = "0.5"
 proptest = "1"
+# Benchmarks (MIT OR Apache-2.0). No default features: no plotting, no rayon pulled twice.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 assert_cmd = "2"
 predicates = "3"
 insta = { version = "1", features = ["json"] }
