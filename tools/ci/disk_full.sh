@@ -24,11 +24,8 @@ done
 work="$(mktemp -d)"
 sudo=""
 [ "$(id -u)" -eq 0 ] || sudo="sudo"
-cleanup() {
-  $sudo umount "$work/full" 2>/dev/null || true
-  rm -rf "$work"
-}
-trap cleanup EXIT
+# Single quotes on purpose: $sudo and $work are expanded when the trap runs, not now.
+trap '$sudo umount "$work/full" 2>/dev/null || true; rm -rf "$work"' EXIT
 
 export YELLOWMOON_DATA="$repo_root/data"
 export YELLOWMOON_HOME="$work/home"
@@ -60,12 +57,13 @@ printf 'five photos on the full disk: %.1f s (exit %s)\n' "$five" "$code"
 cat "$work/err.txt"
 
 fail=0
-check() { if ! eval "$2"; then echo "FAILED: $1" >&2; fail=1; fi; }
-check "exit code is 1" '[ "$code" -eq 1 ]'
-check "one 'disk is full' line on stderr" '[ "$(grep -c "is full" "$work/err.txt")" -eq 1 ]'
-check "the sentence names the folder and the option" 'grep -q "Stopped: the disk holding $work/full is full. Free some space, then run the command again with --skip-existing." "$work/err.txt"'
-check "the stop line says 0 of 5" 'grep -qx "Stopped after 0 of 5. 5 not exported." "$work/err.txt"'
-check "stdout is empty" '[ ! -s "$work/out.txt" ]'
-check "the folder is empty (no file, no temporary file)" '[ -z "$(ls -A "$work/full")" ]'
-check "the run took under two photos' time" '[ "$(echo "$five < 2 * $one" | bc -l)" -eq 1 ]'
+failed() { echo "FAILED: $1" >&2; fail=1; }
+[ "$code" -eq 1 ] || failed "exit code is 1"
+[ "$(grep -c "is full" "$work/err.txt")" -eq 1 ] || failed "one 'disk is full' line on stderr"
+grep -q "Stopped: the disk holding $work/full is full. Free some space, then run the command again with --skip-existing." "$work/err.txt" ||
+  failed "the sentence names the folder and the option"
+grep -qx "Stopped after 0 of 5. 5 not exported." "$work/err.txt" || failed "the stop line says 0 of 5"
+[ ! -s "$work/out.txt" ] || failed "stdout is empty"
+[ -z "$(ls -A "$work/full")" ] || failed "the folder is empty (no file, no temporary file)"
+[ "$(echo "$five < 2 * $one" | bc -l)" -eq 1 ] || failed "the run took under two photos' time"
 exit "$fail"
