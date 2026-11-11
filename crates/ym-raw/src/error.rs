@@ -40,7 +40,8 @@ pub enum RawError {
 
 /// The `detail` of a [`RawError::Corrupt`] for a file of length 0.
 pub const EMPTY: &str = "the file is empty";
-/// The `detail` of a [`RawError::Corrupt`] for a file that ends before its data does.
+/// The `detail` of a [`RawError::Corrupt`] for a file that is shorter than its directories say:
+/// a read past the end, raw data, a tile, a value or a directory beyond the end of the file.
 pub const CUT_SHORT: &str = "the raw data runs past the end of the file (the file is cut short)";
 
 /// Sentence for an empty file.

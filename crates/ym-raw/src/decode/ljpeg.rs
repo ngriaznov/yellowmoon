@@ -892,7 +892,7 @@ pub fn read_tile(
         .checked_add(count)
         .ok_or_else(|| RawError::corrupt("a tile offset overflows"))?;
     if end > src.len() {
-        return Err(RawError::corrupt("a tile lies beyond the end of the file"));
+        return Err(RawError::corrupt(crate::error::CUT_SHORT));
     }
     let mut buf = vec![0u8; count as usize];
     src.read_at(offset, &mut buf)?;

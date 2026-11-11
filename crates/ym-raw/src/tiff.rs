@@ -481,9 +481,7 @@ impl<'a> Tiff<'a> {
         }
         let first = u64::from(order.u32(&header, 4).ok_or(RawError::NotArw)?);
         if first < 8 || first + 2 > src.len() {
-            return Err(RawError::corrupt(
-                "the first directory lies outside the file",
-            ));
+            return Err(RawError::corrupt(crate::error::CUT_SHORT));
         }
         Ok((Self::headerless(src, order, 0), first))
     }
@@ -509,7 +507,7 @@ impl<'a> Tiff<'a> {
             .checked_add(len)
             .ok_or_else(|| RawError::corrupt("an offset overflows"))?;
         if end > self.src.len() {
-            return Err(RawError::corrupt("a value lies beyond the end of the file"));
+            return Err(RawError::corrupt(crate::error::CUT_SHORT));
         }
         let remaining = self.budget.get();
         if len > remaining {
@@ -533,7 +531,7 @@ impl<'a> Tiff<'a> {
         let mut count_bytes = [0u8; 2];
         self.src
             .read_at(offset, &mut count_bytes)
-            .map_err(|_| RawError::corrupt("a directory lies outside the file"))?;
+            .map_err(|_| RawError::corrupt(crate::error::CUT_SHORT))?;
         let count = usize::from(
             self.order
                 .u16(&count_bytes, 0)

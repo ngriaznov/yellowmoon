@@ -158,12 +158,12 @@ Every failure returns a typed error with a plain message:
 - `Corrupt { detail }`: truncated or malformed. Fail that file and keep the session going; never show partially decoded pixels.
 - `Io`: the file could not be opened or read.
 
-**The sentences (a closed list).** The person sees one of these and nothing else about a file; the technical `detail` (and the raw I/O error) never reaches the interface. `Corrupt`'s `Display` is chosen from its `detail`: the constants `error::EMPTY` (a file of length 0, checked in `Tiff::open`) and `error::CUT_SHORT` (every `UnexpectedEof`, and raw data that runs past the end of the file) select the first two, any other detail selects the third. `Io`'s is chosen from `io::ErrorKind` (and, on macOS, `raw_os_error`). `kind()` stays `corrupt`, `io`, `not_arw`, `arq`, `unsupported`.
+**The sentences (a closed list).** The person sees one of these and nothing else about a file; the technical `detail` (and the raw I/O error) never reaches the interface. `Corrupt`'s `Display` is chosen from its `detail`: the constants `error::EMPTY` (a file of length 0, checked in `Tiff::open`) and `error::CUT_SHORT` (every `UnexpectedEof`, and raw data, a tile, a value or a directory that lies beyond the end of the file) select the first two, any other detail selects the third. `Io`'s is chosen from `io::ErrorKind` (and, on macOS, `raw_os_error`). `kind()` stays `corrupt`, `io`, `not_arw`, `arq`, `unsupported`.
 
 | Case | Message |
 |---|---|
 | empty file (length 0) | "This file is empty. Copy it from the card again, or skip it." |
-| cut short (`UnexpectedEof`, raw data beyond the end of the file) | "This file is incomplete: it ends before its picture does. Copy it from the card again, or skip it." |
+| cut short (`UnexpectedEof`; raw data, a tile, a value or a directory beyond the end of the file) | "This file is incomplete: it ends before its picture does. Copy it from the card again, or skip it." |
 | any other `Corrupt` | "This file is damaged. Copy it from the card again, or skip it." |
 | `Io` `NotFound` | "Yellowmoon can't find this file any more. It may have been moved, renamed or its drive disconnected." |
 | `Io` `PermissionDenied` (EACCES) | "Yellowmoon isn't allowed to open this file. Check its permissions." |
