@@ -90,8 +90,8 @@ use ym_raw::decode::RawImage;
 
 use crate::export::{
     ExportContext, ExportControl, ExportError, ExportParams, ExportReport, PhotoSnapshot,
-    WrittenFiles, check_destination, estimate, export_photo, planned_destination,
-    predicted_name_in,
+    WrittenFiles, check_destination, estimate, export_photo, folder_label, free_bytes_in,
+    is_low_on_space, planned_destination, predicted_name_in,
 };
 use crate::session::{ApplyScope, PhotoId, PhotoStatus, Session, SessionError};
 use crate::settings::DevelopSettings;
@@ -126,6 +126,15 @@ pub struct ExportEstimate {
     /// the scene values that the cine rendering turns into that picture (`docs/09`, "What a DNG carries"), which
     /// Adobe's renderer shows approximately.
     pub dng_approximate: bool,
+    /// Bytes available on the volume of the destination folder, read now (`docs/26-hardening.md`
+    /// P2-3). `None` when it cannot be read or the job has no photo yet.
+    pub free_bytes: Option<u64>,
+    /// The destination folder the free space was read for, by its last component (the panel names
+    /// the folder in the warning). `None` with `free_bytes`.
+    pub folder: Option<String>,
+    /// `free_bytes < 1.35 * bytes` ([`crate::export::is_low_on_space`]): the panel warns. Never a
+    /// reason to refuse the export.
+    pub low_space: bool,
 }
 
 /// The `export_progress` event (`ExportProgress` in `src/api/types.ts`; see the module
@@ -483,7 +492,19 @@ impl ExportQueue {
         let (command_look, command_intensity) = crate::cli_preview::command_look(&settings);
         let command_output_sharpening = crate::cli_preview::command_output_sharpening(&settings);
         let looks = self.ctx.renderer().looks();
+        // The folder of the first photo (a default destination differs per source folder; the first
+        // is the one the panel and `ym` name).
+        let folder = views
+            .first()
+            .and_then(|v| planned_destination(&self.ctx, &v.path, &job.options));
+        let free_bytes = folder.as_deref().and_then(free_bytes_in);
         ExportEstimate {
+            free_bytes,
+            folder: folder
+                .as_deref()
+                .filter(|_| free_bytes.is_some())
+                .map(folder_label),
+            low_space: free_bytes.is_some_and(|f| is_low_on_space(est.bytes, f)),
             bytes: est.bytes,
             seconds: est.seconds,
             adjusted_photos: crate::cli_preview::adjusted_photos_with(

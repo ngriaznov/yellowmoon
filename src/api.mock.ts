@@ -473,6 +473,11 @@ export interface MockOptions {
    * photos after it are not tried (`docs/26` P2-2).
    */
   exportFailures?: Record<string, string>;
+  /**
+   * Bytes free in the destination folder (`?mockFreeBytes=200000000`). `export_estimate` says `low_space` when it is under 1.35 times the
+   * estimate (`docs/26` P2-3). Default 500 GB.
+   */
+  freeBytes?: number;
   /** An export stops at this progress, in photos (1.45 is one done and the second at 45 %) until `flush()`, so a screenshot can show the running state. Default: never. */
   exportHoldAt?: number;
   /** A look import stops after this many files and waits for `flush()`, so a screenshot can show it half way (the mockup's 40 of 87). Default: never. */
@@ -1057,6 +1062,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   downloadsDenied: false,
   existingExports: [],
   exportFailures: {},
+  freeBytes: 500_000_000_000,
   exportHoldAt: Number.POSITIVE_INFINITY,
   importHoldAt: Number.POSITIVE_INFINITY,
   persistPreferences: false,
@@ -1090,7 +1096,7 @@ function withDefaults(...layers: MockOptions[]): Required<MockOptions> {
  * (a reason after a colon), `mockPicked=2,3,4`, `mockCurrent=3`, `mockPhotos=500` (a folder of 500 photos, the twelve repeating), `mockFolder=Name` (the folder's name), `mockUnreadable=Name` (a folder that cannot be read: opening a folder says so), `mockLooks=0` (no imported
  * looks), `mockLibraries=all` (looks in every section of the Look tab), `mockLenses=0` (no lens data: the Lens card's list is empty), `mockMissing=film-warm,film-cool`, `mockHold=5.4`, `mockDownloads=ARRI_LookLibrary_LogC4.zip` (zips that
  * land in Downloads while the wizard watches), `mockDownloadsDenied=1`, `mockExisting=DSC04204_neutral.jpg`,
- * `mockExportFails=DSC04204:reason` (`DSC04204:disk_full` stops the export there, as a full disk does), `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
+ * `mockExportFails=DSC04204:reason` (`DSC04204:disk_full` stops the export there, as a full disk does), `mockFreeBytes=200000000` (the free space of the destination folder; under 1.35 times the estimate the panel warns), `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
  * (preferences survive a reload), `mockViewport=native` or `fallback` (the mock behaves like that viewport backend of the app),
  * `mockAppleAuto=unavailable|pending|answered|failed` (Apple Auto as on a Mac where it is not available, or where every photo is waiting
  * for its answer, has it, or failed; `MockAppleAuto`), `mockProviders=apple,claude,agy:signed_out` (the providers of the computer and their
@@ -1150,6 +1156,8 @@ export function optionsFromLocation(search: string | undefined = typeof location
       }),
     );
   }
+  const freeBytes = params.get("mockFreeBytes");
+  if (freeBytes !== null && Number(freeBytes) >= 0) out.freeBytes = Number(freeBytes);
   const exportHold = params.get("mockExportHold");
   if (exportHold !== null && Number(exportHold) >= 0) out.exportHoldAt = Number(exportHold);
   const importHold = params.get("mockImportHold");
@@ -3311,8 +3319,12 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     exportEstimate: (job) =>
       run("exportEstimate", (): ExportEstimate => {
         const count = targets(job.scope).length;
+        const bytes = Math.round(megabytesPerPhoto(job.options) * count * 1_000_000);
         return {
-          bytes: Math.round(megabytesPerPhoto(job.options) * count * 1_000_000),
+          bytes,
+          free_bytes: options.freeBytes,
+          folder: (job.options.destination ?? `${folderPath()} export`).split("/").filter(Boolean).pop() ?? null,
+          low_space: options.freeBytes < 1.35 * bytes,
           seconds: Math.round(count * ((EXPORT_TICK_MS / EXPORT_STEP) / 1000) * 10) / 10,
           adjusted_photos: adjustedPhotos(job),
           dng_approximate: dngApproximate(job),

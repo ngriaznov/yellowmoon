@@ -469,6 +469,20 @@ pub fn render_stopped(kind: &str, exported: usize, not_tried: usize) -> Object {
     obj
 }
 
+/// The `low_space` event of `render --json`, written to stdout before the first photo when the free space
+/// of the destination is under 1.35 times the size estimate (`docs/10`, `docs/26` P2-3). `message` is the
+/// sentence `ym` also prints on stderr.
+#[must_use]
+pub fn render_low_space(needed_bytes: u64, free_bytes: u64, folder: &str, message: &str) -> Object {
+    let mut obj = Object::new();
+    obj.insert("event", "low_space");
+    obj.insert("estimate_bytes", needed_bytes);
+    obj.insert("free_bytes", free_bytes);
+    obj.insert("folder", folder);
+    obj.insert("message", message);
+    obj
+}
+
 /// The success object of `render --json`. `timings_ms` is (decode, develop, encode).
 #[must_use]
 pub fn render_ok(

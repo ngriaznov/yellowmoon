@@ -919,3 +919,12 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   color: var(--primary);
   box-shadow: inset 0 0 0 1.5px var(--primary);
 }
+
+/* The warning under the Export button (`docs/26-hardening.md` P2-3): the footer wraps, the sentence takes the full row under the button. */
+.ym-export__footer--warned {
+  flex-wrap: wrap;
+}
+.ym-export__space {
+  flex: 1 0 100%;
+  margin: 0;
+}

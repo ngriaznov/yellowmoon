@@ -257,6 +257,28 @@ test.describe("running", () => {
     await expect(page.getByRole("button", { name: /^Export stopped/ })).toBeVisible();
   });
 
+  test("warns under the button when the free space is under 1.35 times the estimate, and does not block the export", async ({ page }) => {
+    // Three photos at JPEG 92 are about 75 MB; 1.35 times is 101 MB.
+    await exportPanel(page, { ...MOCKUP, mockFreeBytes: 100_000_000 });
+    const sentence = "This export needs about 75 MB and 100 MB is free in Lisbon export. It may stop part way.";
+    await expect(page.getByText(sentence)).toBeVisible();
+    // The sentence is under the button, in the footer.
+    const geometry = await page.evaluate(() => {
+      const top = (selector: string) => (document.querySelector(selector) as HTMLElement).getBoundingClientRect().bottom;
+      return { button: top(".ym-tools__footer button"), note: (document.querySelector(".ym-export__space") as HTMLElement).getBoundingClientRect().top };
+    });
+    expect(geometry.note).toBeGreaterThanOrEqual(geometry.button);
+    // A warning only: the export starts.
+    await page.getByRole("button", { name: /^Export 3 photos/ }).click();
+    await expect(page.getByRole("heading", { level: 2, name: /^Exporting|Exported/ })).toBeVisible();
+    await expect(page.getByText(sentence)).toHaveCount(0);
+  });
+
+  test("says nothing about space when there is room", async ({ page }) => {
+    await exportPanel(page, { ...MOCKUP, mockFreeBytes: 200_000_000 });
+    await expect(page.getByText(/It may stop part way/)).toHaveCount(0);
+  });
+
   test("a full disk on the first photo says Not exported, in the title and in the header", async ({ page }) => {
     await exportPanel(page, { ...MOCKUP, mockExportFails: "DSC04203:disk_full" });
     await page.getByRole("button", { name: /^Export 3 photos/ }).click();

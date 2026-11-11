@@ -834,6 +834,9 @@ fn the_export_preferences_and_looks_types_have_the_fields_of_the_typescript_inte
             seconds: 1.0,
             adjusted_photos: 0,
             dng_approximate: false,
+            free_bytes: Some(1),
+            folder: Some(String::new()),
+            low_space: false,
         })
         .expect("json"),
     );

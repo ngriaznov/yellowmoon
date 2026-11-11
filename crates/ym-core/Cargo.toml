@@ -20,6 +20,9 @@ ym-ml.workspace = true
 ym-lens.workspace = true
 ym-looks.workspace = true
 ym-export.workspace = true
+# Free space of the destination folder for the warning before an export (`docs/26-hardening.md` P2-3). MIT OR Apache-2.0
+# (docs/14); already in the build through `ym-looks`.
+fs4.workspace = true
 ym-compose.workspace = true
 # The Film node's engine (`docs/24`): the baked chain and the spatial passes.
 ym-film.workspace = true

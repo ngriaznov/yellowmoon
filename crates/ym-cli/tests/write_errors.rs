@@ -11,7 +11,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use common::{Sandbox, json_lines, lines, names_in, text};
+use common::{Sandbox, json_records, lines, names_in, text};
 use serde_json::Value;
 use ym_export::DestinationProblem;
 
@@ -28,7 +28,7 @@ fn render_to(sb: &Sandbox, out: &Path, extra: &[&str]) -> Value {
         .assert()
         .code(1);
     let output = run.get_output();
-    let records = json_lines(&output.stdout);
+    let records = json_records(&output.stdout);
     // A failure of the destination stops the export, and `--json` then adds the `stopped` event
     // after the photo's own record (`docs/10`).
     assert!((1..=2).contains(&records.len()), "{records:?}");

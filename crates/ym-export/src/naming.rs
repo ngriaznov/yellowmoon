@@ -20,6 +20,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use crate::error::ExportError;
 use crate::options::{DEFAULT_NAME_TEMPLATE, IfExists};
@@ -189,9 +190,83 @@ fn temp_name() -> String {
     )
 }
 
+/// How old a temporary file must be before [`remove_stale_temps`] removes it. A job that
+/// crashed leaves its `.yellowmoon-<pid>-<n>.tmp` behind (`Drop` never ran); a day is far longer
+/// than any export, so a file of a run in progress is never taken.
+pub const STALE_TEMP_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Whether `name` is exactly `.yellowmoon-<digits>-<digits>.tmp`, the name [`PendingFile`] gives
+/// its temporary file (`docs/26-hardening.md` P2-4). Nothing else is ever taken for one.
+#[must_use]
+pub fn is_temp_name(name: &str) -> bool {
+    let Some(rest) = name
+        .strip_prefix(".yellowmoon-")
+        .and_then(|r| r.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+    rest.split_once('-')
+        .is_some_and(|(pid, n)| digits(pid) && digits(n))
+}
+
+/// Removes the temporary files of the export writer in `dir` (not in its subfolders) whose last
+/// change is more than `max_age` before `now`, and returns how many it removed. Only regular files
+/// with the exact name of [`is_temp_name`] are looked at; a failure to read the folder or to remove
+/// one file is ignored (the next job tries again).
+pub fn remove_stale_temps(dir: &Path, now: SystemTime, max_age: Duration) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_str().is_some_and(is_temp_name) {
+            continue;
+        }
+        // `symlink_metadata`: a link with such a name is not ours and is left alone.
+        let Ok(meta) = fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .is_some_and(|age| age > max_age);
+        if old && fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Creates `dir` if needed and checks that a file can be created in it.
 pub fn ensure_writable_dir(dir: &Path) -> Result<(), ExportError> {
-    fs::create_dir_all(dir).map_err(|e| ExportError::io(dir, e))?;
+    prepare_dir(dir, true)
+}
+
+/// Checks that `dir` is still there and that a file can be created in it, without making it: the
+/// folder of a job after its first photo (a folder the person deleted meanwhile is "Folder gone",
+/// not made again; `docs/26-hardening.md` P2-4).
+pub fn ensure_dir_exists(dir: &Path) -> Result<(), ExportError> {
+    prepare_dir(dir, false)
+}
+
+fn prepare_dir(dir: &Path, create: bool) -> Result<(), ExportError> {
+    if create {
+        fs::create_dir_all(dir).map_err(|e| ExportError::io(dir, e))?;
+    } else {
+        let meta = fs::metadata(dir).map_err(|e| ExportError::io(dir, e))?;
+        if !meta.is_dir() {
+            return Err(ExportError::io(
+                dir,
+                std::io::Error::new(std::io::ErrorKind::NotADirectory, "not a folder"),
+            ));
+        }
+    }
     let probe = dir.join(temp_name());
     let file = OpenOptions::new()
         .write(true)
@@ -213,8 +288,20 @@ pub fn resolve_destination_dir(
     source_file: Option<&Path>,
     home: Option<&Path>,
 ) -> Result<PathBuf, ExportError> {
+    resolve_destination_dir_with(requested, source_file, home, true)
+}
+
+/// [`resolve_destination_dir`], where `create_requested` says whether a missing folder that the user
+/// named is made (the first photo of a job) or is an error (the later photos). A default folder is
+/// made either way: it can differ from photo to photo (each source folder has its own).
+pub fn resolve_destination_dir_with(
+    requested: Option<&Path>,
+    source_file: Option<&Path>,
+    home: Option<&Path>,
+    create_requested: bool,
+) -> Result<PathBuf, ExportError> {
     if let Some(dir) = requested {
-        ensure_writable_dir(dir)?;
+        prepare_dir(dir, create_requested)?;
         return Ok(dir.to_path_buf());
     }
     let mut last_error = None;
@@ -498,6 +585,108 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sets the last change of a file `hours` hours before `now`.
+    fn age(path: &Path, now: SystemTime, hours: u64) {
+        let file = OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(now - Duration::from_secs(hours * 3600))
+            .unwrap();
+    }
+
+    #[test]
+    fn only_the_writers_own_temporary_names_match() {
+        assert!(is_temp_name(".yellowmoon-1234-0.tmp"));
+        assert!(is_temp_name(".yellowmoon-1-22.tmp"));
+        for other in [
+            ".yellowmoon-.tmp",
+            ".yellowmoon-12.tmp",
+            ".yellowmoon-12-.tmp",
+            ".yellowmoon--3.tmp",
+            ".yellowmoon-1a-2.tmp",
+            ".yellowmoon-1-2.tmp.bak",
+            "yellowmoon-1-2.tmp",
+            ".yellowmoon-1-2-3.tmp",
+            ".yellowmoon-1-2.TMP",
+            "DSC04204_neutral.jpg",
+        ] {
+            assert!(!is_temp_name(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn temporary_files_older_than_a_day_are_removed_and_younger_ones_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let touch = |name: &str, hours: u64| {
+            let p = dir.path().join(name);
+            fs::write(&p, b"x").unwrap();
+            age(&p, now, hours);
+        };
+        touch(".yellowmoon-10-1.tmp", 25);
+        touch(".yellowmoon-10-2.tmp", 23);
+        touch(".yellowmoon-10-3.tmp", 0);
+        // Not our name, however old: left alone. So is a folder with our name.
+        touch(".yellowmoon-10-4.tmp.bak", 100);
+        touch("photo.jpg", 100);
+        touch(".yellowmoon-x-1.tmp", 100);
+        fs::create_dir(dir.path().join(".yellowmoon-10-5.tmp")).unwrap();
+        // A subfolder's file is not looked at.
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        touch("sub/.yellowmoon-10-6.tmp", 100);
+
+        assert_eq!(remove_stale_temps(dir.path(), now, STALE_TEMP_AGE), 1);
+        let mut left: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                ".yellowmoon-10-2.tmp",
+                ".yellowmoon-10-3.tmp",
+                ".yellowmoon-10-4.tmp.bak",
+                ".yellowmoon-10-5.tmp",
+                ".yellowmoon-x-1.tmp",
+                "photo.jpg",
+                "sub"
+            ]
+        );
+        assert!(dir.path().join("sub/.yellowmoon-10-6.tmp").exists());
+        // A folder that is not there is nothing to do.
+        assert_eq!(
+            remove_stale_temps(&dir.path().join("nope"), now, STALE_TEMP_AGE),
+            0
+        );
+    }
+
+    #[test]
+    fn a_folder_that_is_gone_is_made_for_the_first_photo_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        // ensure_dir_exists never makes it.
+        assert!(ensure_dir_exists(&out).is_err());
+        assert!(!out.exists());
+        let gone = resolve_destination_dir_with(Some(&out), None, None, false).unwrap_err();
+        assert_eq!(
+            gone.destination_problem(),
+            Some(crate::error::DestinationProblem::Gone)
+        );
+        assert!(!out.exists(), "a later photo does not make the folder");
+        // The first photo makes it, and then a later one finds it.
+        assert_eq!(
+            resolve_destination_dir_with(Some(&out), None, None, true).unwrap(),
+            out
+        );
+        assert_eq!(
+            resolve_destination_dir_with(Some(&out), None, None, false).unwrap(),
+            out
+        );
+        // A file in its place is not a folder.
+        let file = dir.path().join("file");
+        fs::write(&file, b"x").unwrap();
+        assert!(ensure_dir_exists(&file).is_err());
+    }
 
     fn fields() -> NameFields {
         NameFields {

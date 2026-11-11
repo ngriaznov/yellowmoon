@@ -24,6 +24,7 @@ use ym_core::app::Core;
 use ym_core::app::gpu::{
     CpuReason, GPU_ENV, GpuOutcome, GpuPolicy, GpuSlot, PolicyChoice, PolicySource, open_gpu,
 };
+use ym_core::export::{free_bytes_in, is_low_on_space, low_space_message, planned_destination};
 use ym_core::export_queue::{ExportEvent, ExportJob, FileDone, QueueError};
 use ym_core::looks::{LookService, LooksError};
 use ym_core::pipeline::ComputeDevice;
@@ -39,7 +40,8 @@ use crate::develop::{LensChoice, LoadedSettings, Overrides, SettingsFile};
 use crate::exit::{self, Failure};
 use crate::inputs::{self, Expanded, Problem};
 use crate::report::{
-    AppleAutoField, Object, develop_fields, render_error, render_ok, render_stopped,
+    AppleAutoField, Object, develop_fields, render_error, render_low_space, render_ok,
+    render_stopped,
 };
 use crate::runtime::{
     BackgroundGpu, CoreSettings, Runtime, gpu_line, interrupted, read_instructions,
@@ -210,6 +212,43 @@ enum Outcome {
     Written,
     Skipped,
     Failed { kind: String },
+}
+
+/// Says "This export needs about {size} and {free} is free in {folder}. It may stop part way." on stderr
+/// (and as a `low_space` event with `--json`) when the free space of the destination is under 1.35 times
+/// the size estimate (`ym_core::export::is_low_on_space`). The run goes on either way. The folder is the
+/// first photo's destination, by its full path; nothing is said when the space cannot be read.
+fn warn_if_low_on_space(
+    core: &Core,
+    job: &ExportJob,
+    json: bool,
+    console: &mut Console,
+    stdout: &mut Stdout,
+) {
+    let Some(first) = core
+        .session
+        .scope_ids(job.scope)
+        .into_iter()
+        .find_map(|id| core.session.view(id).ok())
+    else {
+        return;
+    };
+    let Some(folder) = planned_destination(core.exports.context(), &first.path, &job.options)
+    else {
+        return;
+    };
+    let Some(free) = free_bytes_in(&folder) else {
+        return;
+    };
+    let needed = core.exports.estimate(&core.session, job).bytes;
+    if !is_low_on_space(needed, free) {
+        return;
+    }
+    let message = low_space_message(needed, free, &path_text(&folder));
+    console.warn(&message);
+    if json {
+        stdout.line(&render_low_space(needed, free, &path_text(&folder), &message).to_line());
+    }
 }
 
 /// A stdout that notices when its reader is gone and then stays quiet.
@@ -615,6 +654,8 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
     if let Some(notice) = rt.auto_notice_before_export() {
         console.warn(&notice);
     }
+    // The free space is read now, as the job starts (`docs/26-hardening.md` P2-3): a warning, never a stop.
+    warn_if_low_on_space(core, &job, args.json, console, &mut stdout);
     let started = Instant::now();
     if let Err(error) = core.exports.start(&core.session, &job, remove_location) {
         return Err(match error {
