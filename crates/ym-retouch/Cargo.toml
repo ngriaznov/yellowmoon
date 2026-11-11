@@ -1,0 +1,22 @@
+[package]
+name = "ym-retouch"
+description = "Face skin retouching: types, model traits, mocks and masks (docs/27-skin-retouch.md)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false
+
+[features]
+# Deterministic mock models for tests of this crate and of crates that use it.
+mock = []
+
+[dependencies]
+rayon.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

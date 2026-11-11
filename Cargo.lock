@@ -11439,6 +11439,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ym-retouch"
+version = "0.2.3"
+dependencies = [
+ "proptest",
+ "rayon",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "yoke"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
