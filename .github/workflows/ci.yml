@@ -633,6 +633,31 @@ jobs:
           YM_REQUIRE_SYNTHETIC: "1"
         run: cargo test -p ym-core --test export_real the_generated_synthetic_set_is_found -- --nocapture
 
+  # A full disk stops an export at the first photo that hits it (docs/26-hardening.md P2-2, H-06): `ym render` of five synthetic photos
+  # (the ym-raw `gen_arw` example, no download) to PNG on a 3 MiB tmpfs. tools/ci/disk_full.sh asserts exit 1, one error line and the
+  # "Stopped after 0 of 5" line, an empty folder (no temporary file) and a wall time under two photos' render (no stop: five). The Rust
+  # side of the same stop, with a write fault and no mount, runs here too (`ym-core/tests/export_stop.rs`, feature fault-injection);
+  # `ym-cli/tests/export_stop.rs` mounts its own tmpfs and skips itself where `mount` is refused, as it is for the runner's user.
+  disk-full:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45   # a cold cache builds ym (debug)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: ym and the synthetic ARW writer
+        run: |
+          cargo build -p ym-cli
+          cargo build -p ym-raw --features testgen --example gen_arw
+      - name: Five photos to a 3 MiB tmpfs
+        run: tools/ci/disk_full.sh
+      - name: The same stop with a write fault (ym-core, no mount) and in the ym tests
+        run: |
+          cargo test -p ym-core --features fault-injection --test export_stop
+          cargo test -p ym-cli --test export_stop --test write_errors
+
   # tools/eval: the unit tests of the auto-exposure study and of its M1-08 gate logic (G3, `--gate`). Pure numpy/Pillow/tifffile;
   # the one test that runs `ym` skips itself when there is no binary or no synthetic set. The gate itself runs in the golden job.
   eval-tools:

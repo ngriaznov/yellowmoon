@@ -23,6 +23,7 @@ pub mod dng;
 pub mod error;
 pub mod estimate;
 pub mod exif;
+pub mod fault;
 pub mod icc;
 pub mod jpeg;
 pub mod naming;

@@ -1129,7 +1129,7 @@ export type ExportOptions = {
 	if_exists: IfExists,
 };
 
-/**  `export_progress { job_id, file, done, total, file_percent, error, skipped }`. */
+/**  `export_progress { job_id, file, done, total, file_percent, error, skipped, stopped }`. */
 export type ExportProgress = {
 	/**  The job. */
 	job_id: ExportJobId,
@@ -1145,6 +1145,8 @@ export type ExportProgress = {
 	error: string | null,
 	/**  `file` already existed and "If it exists" is Skip. */
 	skipped: boolean,
+	/**  `file` failed because of the destination and the job stopped there. */
+	stopped: boolean,
 };
 
 /**  Export size: the full frame, or the long edge in pixels. */

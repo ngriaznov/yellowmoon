@@ -347,6 +347,12 @@ impl PendingFile {
             .expect("the writer exists until commit")
     }
 
+    /// The bytes written to the temporary file so far (after a flush).
+    #[must_use]
+    pub fn size(&self) -> u64 {
+        std::fs::metadata(&self.temp).map_or(0, |m| m.len())
+    }
+
     /// The temporary path (for error messages).
     #[must_use]
     pub fn temp_path(&self) -> &Path {
@@ -484,6 +490,8 @@ where
         .writer()
         .flush()
         .map_err(|e| ExportError::io(dir, e))?;
+    // The fault hook of the tests (nothing in a normal build): the file is complete, the disk "fills" now.
+    crate::fault::check_write(pending.size()).map_err(|e| ExportError::io(dir, e))?;
     pending.commit(stem, ext, if_exists, source)
 }
 

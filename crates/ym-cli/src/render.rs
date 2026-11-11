@@ -38,7 +38,9 @@ use crate::console::{Console, bar, duration_text, photos, shorten};
 use crate::develop::{LensChoice, LoadedSettings, Overrides, SettingsFile};
 use crate::exit::{self, Failure};
 use crate::inputs::{self, Expanded, Problem};
-use crate::report::{AppleAutoField, Object, develop_fields, render_error, render_ok};
+use crate::report::{
+    AppleAutoField, Object, develop_fields, render_error, render_ok, render_stopped,
+};
 use crate::runtime::{
     BackgroundGpu, CoreSettings, Runtime, gpu_line, interrupted, read_instructions,
 };
@@ -674,8 +676,9 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
     }
     console.finish_progress();
 
-    // A photo with no result: the job stopped (Ctrl-C) or something went wrong below us.
-    if !cancelled {
+    // A photo with no result: the job stopped (Ctrl-C) or something went wrong below us. (A job that
+    // stopped at a failure of the destination left the photos after it untried, which is no surprise.)
+    if !cancelled && summary.stopped.is_none() {
         for plan in plans
             .iter_mut()
             .filter(|p| p.photo.is_some() && p.result.is_none())
@@ -805,6 +808,15 @@ struct Summary {
     skipped: usize,
     folders: Vec<PathBuf>,
     elapsed: f64,
+    /// The export stopped at a failure of the destination (`docs/26` P2-2).
+    stopped: Option<Stopped>,
+}
+
+/// Where the export stopped.
+#[derive(Debug, Clone, Copy)]
+struct Stopped {
+    /// Photos in the job.
+    total: usize,
 }
 
 /// Prints one failure: a JSON object with `--json` (with `error.detail` when there is one), else a
@@ -931,6 +943,20 @@ fn handle_file(
                 &failure.cli_message,
                 failure.detail.as_deref(),
             );
+            if failure.stopped {
+                // The queue stopped here: nothing after this photo was decoded or rendered.
+                summary.stopped = Some(Stopped { total: done.total });
+                if json {
+                    stdout.line(
+                        &render_stopped(
+                            failure.kind,
+                            summary.written + summary.skipped,
+                            done.not_tried,
+                        )
+                        .to_line(),
+                    );
+                }
+            }
         }
     }
 }
@@ -945,7 +971,16 @@ fn summarise(
     interrupted: bool,
 ) {
     let mut parts: Vec<String> = Vec::new();
-    if interrupted {
+    if let Some(stopped) = summary.stopped {
+        // The error line above says why; this says how far it got. Photos written before the stop
+        // stay, so they are counted in `k`.
+        let done = summary.written + summary.skipped;
+        parts.push(format!(
+            "Stopped after {done} of {}. {} not exported.",
+            stopped.total,
+            stopped.total.saturating_sub(done)
+        ));
+    } else if interrupted {
         parts.push(format!(
             "Interrupted: {} of {} exported. Nothing half-written is left behind.",
             summary.written + summary.skipped,
@@ -963,7 +998,7 @@ fn summarise(
             duration_text(summary.elapsed)
         ));
     }
-    if summary.skipped > 0 {
+    if summary.skipped > 0 && summary.stopped.is_none() {
         parts.push(if summary.skipped == 1 {
             "1 photo already existed and was skipped.".to_owned()
         } else {
@@ -973,7 +1008,7 @@ fn summarise(
             )
         });
     }
-    if !counts.failed.is_empty() {
+    if !counts.failed.is_empty() && summary.stopped.is_none() {
         parts.push(format!("{} failed.", photos(counts.failed.len())));
     }
     if parts.is_empty() {

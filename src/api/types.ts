@@ -1665,6 +1665,11 @@ export interface ExportProgress {
   error: string | null;
   /** `file` already existed and "If it exists" is Skip: it counts in `done` but was not written (addition). */
   skipped: boolean;
+  /**
+   * `file` failed because of the destination (the disk is full, the folder is read-only or gone) and the job stopped
+   * there: this is the job's last event and the files after `done` were not tried (`docs/26` P2-2).
+   */
+  stopped: boolean;
 }
 
 // ---------------------------------------------------------------------------

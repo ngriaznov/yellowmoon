@@ -50,7 +50,7 @@ force-demosaic = []
 # runs out of budget, a shader that does not compile, a lost device, a cancel, a failing tile), so that
 # `tests/render_gpu.rs` can show that a device error ends in the CPU render and never in a wrong
 # picture. Off by default and never enabled by a shipped build.
-fault-injection = ["ym-gpu/fault-injection"]
+fault-injection = ["ym-gpu/fault-injection", "ym-export/fault-injection"]
 # TEST-ONLY. Turns on `ym-gpu`'s picture probe (`tail::set_picture_probe`) for
 # `tests/render_film_device.rs::the_colour_pass_of_the_tail_is_close_to_the_cpus_before_output_sharpening`. Off by
 # default and never enabled by a shipped build.

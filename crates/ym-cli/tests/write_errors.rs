@@ -29,7 +29,13 @@ fn render_to(sb: &Sandbox, out: &Path, extra: &[&str]) -> Value {
         .code(1);
     let output = run.get_output();
     let records = json_lines(&output.stdout);
-    assert_eq!(records.len(), 1, "{records:?}");
+    // A failure of the destination stops the export, and `--json` then adds the `stopped` event
+    // after the photo's own record (`docs/10`).
+    assert!((1..=2).contains(&records.len()), "{records:?}");
+    if let Some(event) = records.get(1) {
+        assert_eq!(event["event"], "stopped", "{records:?}");
+        assert_eq!(event["kind"], records[0]["error"]["kind"], "{records:?}");
+    }
     records[0].clone()
 }
 

@@ -236,6 +236,39 @@ test.describe("running", () => {
     await expect(page.getByText("1 photo saved to Lisbon export. 1 photo could not be saved. 1 photo skipped because the file already exists.")).toBeVisible();
   });
 
+  test("a full disk stops the export: one banner, the rest Not exported, Stopped as the title and in the header", async ({ page }) => {
+    const sentence = "The disk is full, so the export stopped. Free some space, then export the photos that are left.";
+    await exportPanel(page, { ...MOCKUP, mockExportFails: "DSC04204:disk_full" });
+    await page.getByRole("button", { name: /^Export 3 photos/ }).click();
+    await expect(page.getByRole("heading", { level: 2, name: "Stopped" })).toBeVisible();
+    // One banner above the list, with the core's sentence; the blurb says what was saved.
+    const banner = page.getByRole("alert").filter({ hasText: sentence });
+    await expect(banner).toHaveCount(1);
+    await expect(page.getByText(`1 photo saved to Lisbon export. The export stopped: ${sentence}`)).toBeVisible();
+    // The failing file is Failed, the file after it is Not exported with its own note.
+    const rows = page.getByRole("list", { name: "Export queue" }).getByRole("listitem");
+    await expect(rows).toHaveCount(3);
+    await expect(rows.nth(0)).toContainText("Done");
+    await expect(rows.nth(1)).toContainText("Failed");
+    await expect(rows.nth(2)).toContainText("Not exported");
+    await expect(rows.nth(2)).toContainText("Not exported, the export stopped.");
+    // Back to the photos, the header cell says it too.
+    await page.getByRole("button", { name: "← Back to photos" }).click();
+    await expect(page.getByRole("button", { name: /^Export stopped/ })).toBeVisible();
+  });
+
+  test("a full disk on the first photo says Not exported, in the title and in the header", async ({ page }) => {
+    await exportPanel(page, { ...MOCKUP, mockExportFails: "DSC04203:disk_full" });
+    await page.getByRole("button", { name: /^Export 3 photos/ }).click();
+    await expect(page.getByRole("heading", { level: 2, name: "Not exported" })).toBeVisible();
+    const rows = page.getByRole("list", { name: "Export queue" }).getByRole("listitem");
+    await expect(rows.nth(0)).toContainText("Failed");
+    await expect(rows.nth(1)).toContainText("Not exported, the export stopped.");
+    await expect(rows.nth(2)).toContainText("Not exported, the export stopped.");
+    await page.getByRole("button", { name: "← Back to photos" }).click();
+    await expect(page.getByRole("button", { name: /^Not exported/ })).toBeVisible();
+  });
+
   test("exports keep running while the person browses, and an update waits for the end", async ({ page }) => {
     await exportPanel(page, { ...MOCKUP, mockExportHold: 1.45 });
     await page.getByRole("button", { name: /^Export 3 photos/ }).click();
