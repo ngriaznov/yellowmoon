@@ -11,7 +11,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use common::{Sandbox, json_lines, lines, names_in, text};
+use common::{Sandbox, json_records, lines, names_in, text};
 
 /// A small `tmpfs` mounted for one test, unmounted when dropped.
 struct Mount(PathBuf);
@@ -124,7 +124,7 @@ fn json_says_stopped_after_the_record_of_the_photo_it_hit() {
     };
     let out = render(&sb, &photos, &at, true);
     assert_eq!(out.status.code(), Some(1));
-    let records = json_lines(&out.stdout);
+    let records = json_records(&out.stdout);
     assert_eq!(records.len(), 3, "{records:?}");
     assert_eq!(records[0]["status"], "ok");
     assert_eq!(records[1]["status"], "error");
@@ -165,7 +165,7 @@ fn a_folder_that_is_gone_stops_the_run_too() {
     }
     let out = render(&sb, &photos, gone, true);
     assert_eq!(out.status.code(), Some(1));
-    let records = json_lines(&out.stdout);
+    let records = json_records(&out.stdout);
     assert_eq!(records.len(), 2, "{records:?}");
     assert_eq!(records[0]["error"]["kind"], "destination");
     assert_eq!(

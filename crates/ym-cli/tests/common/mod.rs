@@ -373,6 +373,15 @@ pub fn json_lines(bytes: &[u8]) -> Vec<Value> {
         .collect()
 }
 
+/// [`json_lines`] without the `low_space` event that a run to a small, read-only or vanished destination
+/// writes first (`docs/10`, H-07): the photos' records and the `stopped` event.
+pub fn json_records(bytes: &[u8]) -> Vec<Value> {
+    json_lines(bytes)
+        .into_iter()
+        .filter(|r| r["event"] != "low_space")
+        .collect()
+}
+
 /// The node `id` (`"input"`, `"output"` or a number) among the items of the `settings` of a
 /// `--json` record; `null` when the record has no such node.
 pub fn node(record: &Value, id: impl Into<Value>) -> &Value {
