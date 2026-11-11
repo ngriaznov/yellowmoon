@@ -38,8 +38,9 @@ use tauri_specta::Event;
 
 use crate::wire::{
     AppError, AutoStatusChanged, DepthState, DownloadFound, ErrorEvent, ExportBusy, ExportProgress,
-    LooksChanged, LooksImportProgress, NodeThumbnailsReady, ObjectState, PhotoId, PhotoProgress,
-    RenderStats, SettingsChanged, ThumbnailReady, ViewportBusy, ViewportFrame, VisionState,
+    FaceState, LooksChanged, LooksImportProgress, NodeThumbnailsReady, ObjectState, PhotoId,
+    PhotoProgress, RenderStats, SettingsChanged, ThumbnailReady, ViewportBusy, ViewportFrame,
+    VisionState,
 };
 
 /// The least time between two `render_stats` events, between two `viewport_busy` events, and between
@@ -83,6 +84,8 @@ pub enum AppEvent {
     VisionState(VisionState),
     /// `depth_state` (addition): the depth worker ended its work for a photo, and whether the map failed.
     DepthState(DepthState),
+    /// `face_state` (addition): the face worker started or ended its work for a photo, and where the faces are.
+    FaceState(FaceState),
 }
 
 impl AppEvent {
@@ -107,6 +110,7 @@ impl AppEvent {
             Self::ObjectState(_) => "object_state",
             Self::VisionState(_) => "vision_state",
             Self::DepthState(_) => "depth_state",
+            Self::FaceState(_) => "face_state",
         }
     }
 }
@@ -159,6 +163,7 @@ fn send<R: Runtime>(app: &tauri::AppHandle<R>, event: AppEvent) {
         AppEvent::ObjectState(e) => e.emit(app),
         AppEvent::VisionState(e) => e.emit(app),
         AppEvent::DepthState(e) => e.emit(app),
+        AppEvent::FaceState(e) => e.emit(app),
     };
     if let Err(e) = sent {
         tracing::debug!(event = name, error = %e, "could not send an event");

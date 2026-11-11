@@ -93,6 +93,7 @@ const calls: Row[] = [
   ["maskFind", () => tauriApi.maskFind(1, 2, 0, { kind: "point", x: 0.4, y: 0.5, positive: true }), "mask_find", { photoId: 1, node: 2, mask: 0, prompt: { kind: "point", x: 0.4, y: 0.5, positive: true } }],
   ["sampleDepth", () => tauriApi.sampleDepth(1, 0.4, 0.5), "sample_depth", { photoId: 1, x: 0.4, y: 0.5 }],
   ["focusPlane", () => tauriApi.focusPlane(1), "focus_plane", { photoId: 1 }],
+  ["faceState", () => tauriApi.faceState(1), "face_state", { photoId: 1 }],
   ["retryDepth", () => tauriApi.retryDepth(1), "retry_depth", { photoId: 1 }, true],
   ["lensList", () => tauriApi.lensList(), "lens_list", undefined],
   ["looksList", () => tauriApi.looksList(), "looks_list", undefined],

@@ -3405,6 +3405,56 @@ pub struct DepthState {
     pub failed: Option<String>,
 }
 
+/// One face of a photo as the Face Refinement node's panel lists it (`docs/27` section 10, S-11b): its number (1 for the leftmost,
+/// up to 32) and its box in the oriented photo frame, the picture as it is shown (crop and turn applied), as shares of the frame's
+/// width and height.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct FaceBox {
+    /// The face's number, from 1, left to right.
+    pub number: u32,
+    /// Left edge, 0 to 1.
+    pub x: Num,
+    /// Top edge, 0 to 1.
+    pub y: Num,
+    /// Width, 0 to 1.
+    pub width: Num,
+    /// Height, 0 to 1.
+    pub height: Num,
+}
+
+/// Where the faces of a photo are (`docs/27` decision 9): `finding` (the node says "Finding faces…" and the photo is shown without
+/// its effect), `ready` (the faces are known; there may be none), `failed` (the sentence says why; nothing asks again until the
+/// picture changes) and `models_missing` (this copy of Yellowmoon has no face models: the node passes its picture through).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum FacePhase {
+    /// The faces are being found.
+    Finding,
+    /// The faces are known.
+    Ready,
+    /// Finding them failed.
+    Failed,
+    /// This copy has no face models.
+    ModelsMissing,
+}
+
+/// `face_state { photo_id, phase, faces, message }` (addition): where the faces of a photo are (`docs/27` section 10, S-11b). Sent
+/// when the core's face worker starts on a photo (`finding`) and when it ends (`ready`, with the numbered faces, or `failed`), and
+/// returned by the command of the same name. While the worker runs the viewport is `viewport_busy { busy: true, finding: true }`;
+/// when it ends the photo is drawn again with the retouch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "face_state")]
+pub struct FaceState {
+    /// The photo.
+    pub photo_id: PhotoId,
+    /// Where the analysis is.
+    pub phase: FacePhase,
+    /// The faces, numbered from left to right; empty unless `phase` is `ready`.
+    pub faces: Vec<FaceBox>,
+    /// The plain sentence of the failure (`failed`) or of the missing models (`models_missing`); null otherwise.
+    pub message: Option<String>,
+}
+
 /// `vision_state { photo_id, nothing_found }` (addition): the core's worker for the Subject and People masks of a photo has ended
 /// its work, and `nothing_found` lists the kinds whose newest mask for the photo found nothing (`docs/23` section 7.6: their rows
 /// say "Nothing found"). Sent each time the worker ends, with the list as it is then; the rows say "Finding…" while it works

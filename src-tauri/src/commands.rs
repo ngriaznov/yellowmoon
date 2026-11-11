@@ -18,10 +18,10 @@ use crate::system;
 use crate::wire::{
     self, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
     CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthFar, ErrorScope, ExportEstimate,
-    ExportJob, ExportJobId, FilmCatalogue, FocusPlaneResult, HistogramData, LensInfo, Look, LookId,
-    LookInput, LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView,
-    MenuState, NodeId, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample, Preferences,
-    PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
+    ExportJob, ExportJobId, FaceState, FilmCatalogue, FocusPlaneResult, HistogramData, LensInfo,
+    Look, LookId, LookInput, LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind,
+    MaskView, MenuState, NodeId, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample,
+    Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
     SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
     WatchStatus,
 };
@@ -473,6 +473,18 @@ pub async fn retry_depth(state: State<'_, AppState>, photo_id: PhotoId) -> Resul
     run(&state, move |api| api.retry_depth(photo_id)).await
 }
 
+/// `face_state(photo_id)` (`docs/27` section 10, S-11b): where the faces of the photo are, for the panel of a Face Refinement node:
+/// `finding`, `ready` with the numbered faces and their boxes (none is a valid answer), `failed` with the sentence, or
+/// `models_missing`. It changes nothing and starts nothing; `face_state` events say when it changes.
+#[tauri::command]
+#[specta::specta]
+pub async fn face_state(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+) -> Result<FaceState, AppError> {
+    run(&state, move |api| api.face_state(photo_id)).await
+}
+
 // --- Lens -------------------------------------------------------------------------------------
 
 /// `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
@@ -851,6 +863,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             sample_depth,
             focus_plane,
             retry_depth,
+            face_state,
             lens_list,
             looks_list,
             look_thumbnail,
@@ -902,6 +915,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             wire::ObjectState,
             wire::VisionState,
             wire::DepthState,
+            wire::FaceState,
         ])
         .typ::<ErrorScope>()
 }
@@ -942,6 +956,7 @@ mod tests {
                 sample_depth,
                 focus_plane,
                 retry_depth,
+                face_state,
                 export_busy,
                 node_thumbnails,
                 looks_recognise,

@@ -36,6 +36,7 @@ import type {
   ExportEstimate,
   ExportJob,
   ExportJobId,
+  FaceState,
   FocusPlaneResult,
   HistogramData,
   LensInfo,
@@ -224,6 +225,12 @@ export interface Api {
    * the worker runs, and `depth_state` says how it ended. It changes no settings. Nothing happens for a photo whose map did not fail.
    */
   retryDepth(photoId: PhotoId): Promise<void>;
+  /**
+   * `face_state` (`docs/27` §10, S-11b): where the faces of a photo are, for the panel of a Face Refinement node: `finding`, `ready` with the numbered faces and
+   * their boxes in the oriented photo frame (none is a valid answer), `failed` with the sentence, or `models_missing`. It changes nothing and starts nothing
+   * (the core finds the faces in the background when a photo with the node is the one looked at); `face_state` events say when it changes.
+   */
+  faceState(photoId: PhotoId): Promise<FaceState>;
 
   // --- Lens ----------------------------------------------------------------
 
@@ -428,6 +435,7 @@ export const tauriApi: Api = {
   sampleDepth: (photoId, x, y) => commands.sampleDepth(photoId, x, y),
   focusPlane: (photoId) => commands.focusPlane(photoId),
   retryDepth: (photoId) => unit(commands.retryDepth(photoId)),
+  faceState: (photoId) => commands.faceState(photoId),
 
   lensList: () => commands.lensList(),
   looksList: () => commands.looksList(),

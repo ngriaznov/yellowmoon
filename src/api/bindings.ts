@@ -174,6 +174,12 @@ export const commands = {
 	 */
 	retryDepth: (photoId: PhotoId) => __TAURI_INVOKE<null>("retry_depth", { photoId }),
 	/**
+	 *  `face_state(photo_id)` (`docs/27` section 10, S-11b): where the faces of the photo are, for the panel of a Face Refinement node:
+	 *  `finding`, `ready` with the numbered faces and their boxes (none is a valid answer), `failed` with the sentence, or
+	 *  `models_missing`. It changes nothing and starts nothing; `face_state` events say when it changes.
+	 */
+	faceState: (photoId: PhotoId) => __TAURI_INVOKE<FaceState>("face_state", { photoId }),
+	/**
 	 *  `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
 	 *  starting amounts. Empty when the lens data could not be loaded.
 	 */
@@ -289,6 +295,7 @@ export const events = {
 	error: makeEvent<ErrorEvent>("error"),
 	exportBusy: makeEvent<ExportBusy>("export_busy"),
 	exportProgress: makeEvent<ExportProgress>("export_progress"),
+	faceState: makeEvent<FaceState>("face_state"),
 	looksChanged: makeEvent<LooksChanged>("looks_changed"),
 	looksImportProgress: makeEvent<LooksImportProgress>("looks_import_progress"),
 	menuAction: makeEvent<MenuActionEvent>("menu_action"),
@@ -1183,6 +1190,39 @@ export type ExposureSetting =
 /**  Absolute exposure in stops, -4 to +4. */
 ev: number };
 
+/**
+ *  One face of a photo as the Face Refinement node's panel lists it (`docs/27` section 10, S-11b): its number (1 for the leftmost,
+ *  up to 32) and its box in the oriented photo frame, the picture as it is shown (crop and turn applied), as shares of the frame's
+ *  width and height.
+ */
+export type FaceBox = {
+	/**  The face's number, from 1, left to right. */
+	number: number,
+	/**  Left edge, 0 to 1. */
+	x: number,
+	/**  Top edge, 0 to 1. */
+	y: number,
+	/**  Width, 0 to 1. */
+	width: number,
+	/**  Height, 0 to 1. */
+	height: number,
+};
+
+/**
+ *  Where the faces of a photo are (`docs/27` decision 9): `finding` (the node says "Finding faces…" and the photo is shown without
+ *  its effect), `ready` (the faces are known; there may be none), `failed` (the sentence says why; nothing asks again until the
+ *  picture changes) and `models_missing` (this copy of Yellowmoon has no face models: the node passes its picture through).
+ */
+export type FacePhase = 
+/**  The faces are being found. */
+"finding" | 
+/**  The faces are known. */
+"ready" | 
+/**  Finding them failed. */
+"failed" | 
+/**  This copy has no face models. */
+"models_missing";
+
 /**  A Face Refinement node: retouches the faces it finds (`docs/27`). */
 export type FaceRefinementNode = {
 	/**  2 to 2147483647 (every numbered node shares the numbers). */
@@ -1246,6 +1286,23 @@ export type FaceSettingsPatch = {
 	shine_removal?: number | null,
 	/**  New Teeth whitening, 0 to 100. */
 	teeth_whitening?: number | null,
+};
+
+/**
+ *  `face_state { photo_id, phase, faces, message }` (addition): where the faces of a photo are (`docs/27` section 10, S-11b). Sent
+ *  when the core's face worker starts on a photo (`finding`) and when it ends (`ready`, with the numbered faces, or `failed`), and
+ *  returned by the command of the same name. While the worker runs the viewport is `viewport_busy { busy: true, finding: true }`;
+ *  when it ends the photo is drawn again with the retouch.
+ */
+export type FaceState = {
+	/**  The photo. */
+	photo_id: PhotoId,
+	/**  Where the analysis is. */
+	phase: FacePhase,
+	/**  The faces, numbered from left to right; empty unless `phase` is `ready`. */
+	faces: FaceBox[],
+	/**  The plain sentence of the failure (`failed`) or of the missing models (`models_missing`); null otherwise. */
+	message: string | null,
 };
 
 /**  `film_catalogue`: what the Film node's pickers list, and the lines About and the Film tab carry. */

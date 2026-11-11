@@ -1494,6 +1494,37 @@ export interface FocusPlaneResult {
 }
 
 /**
+ * One face of a photo as the Face Refinement node's panel lists it (`docs/27` §10, S-11b): its number (1 for the leftmost, up to 32) and its box in the
+ * oriented photo frame, the picture as it is shown (crop and turn applied), as shares of the frame's width and height.
+ */
+export interface FaceBox {
+  number: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Where the faces of a photo are (`docs/27` decision 9): `finding` (the node says "Finding faces…" and the photo is shown without its effect), `ready` (the
+ * faces are known; there may be none), `failed` (`message` says why; nothing asks again until the picture changes) and `models_missing` (this copy has no face
+ * models: the node passes its picture through).
+ */
+export type FacePhase = "finding" | "ready" | "failed" | "models_missing";
+
+/**
+ * `face_state` (addition; also the answer of the `face_state` command): where the faces of a photo are. Sent when the core's face worker starts on a photo
+ * (`finding`) and when it ends (`ready` with the numbered faces, or `failed`). While it runs the viewport is `viewport_busy { busy: true, finding: true }`; when
+ * it ends the photo is drawn again with the retouch. `message` is the plain sentence of the failure or of the missing models, else `null`.
+ */
+export interface FaceState {
+  photo_id: PhotoId;
+  phase: FacePhase;
+  faces: FaceBox[];
+  message: string | null;
+}
+
+/**
  * `depth_state` (addition): the core's depth worker for a photo has ended (`docs/23` §4.8). `failed` is the plain sentence of the failure ("The Depth mask can't
  * be made: …") or `null` when the map is ready. The Depth rows with the eye on say "Finding…" while it runs (`viewport_busy.finding`); when it ends the photo is
  * drawn again with the mask, and a row whose map failed says "Can't be made".
@@ -1990,6 +2021,8 @@ export interface ApiEvents {
   vision_state: VisionState;
   /** The depth worker ended its work for a photo, and whether the map failed (`docs/23` §7.6: a failed row says "Can't be made"). */
   depth_state: DepthState;
+  /** The face worker started or ended its work for a photo, and where the faces are (`docs/27` S-11b: the Face Refinement node says "Finding faces…"). */
+  face_state: FaceState;
 }
 
 /** Names of the events the core emits. */

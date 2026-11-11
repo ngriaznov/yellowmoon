@@ -68,6 +68,8 @@ import type {
   ExportEstimate,
   ExportJob,
   ExportJobId,
+  FaceBox,
+  FaceState,
   FocusPlaneResult,
   ExportOptions,
   GradeValues,
@@ -197,6 +199,17 @@ export const DEPTH_MS = 500;
 export const FOCUS_AT_CENTRE_SCENE = "DSC04212";
 /** The sentence the mock's depth worker fails with (`?mockDepth=fail`): the core's "The Depth mask can't be made: <the model's text>." */
 export const DEPTH_FAILED = "The Depth mask can't be made: the model stopped before it finished.";
+/** How long the mock takes to find the faces of a photo in the background (divided by `speed`): long enough for "Finding faces…" to show. */
+export const FACES_MS = 400;
+/** The sentence the mock's face worker fails with (`?mockFaces=fail`): the core's "Faces can't be found: <the model's text>." */
+export const FACES_FAILED = "Faces can't be found: the model stopped before it finished.";
+/** The sentence of `models_missing` (`?mockFaces=missing`): the core's `NO_FACE_MODEL_SENTENCE`. */
+export const FACES_MODELS_MISSING = "Face Refinement needs the face models, and this copy of Yellowmoon has none. Reinstall the app.";
+/** The faces the mock finds in every photo (`?mockFaces=ok`): two, numbered from left to right, as shares of the photo's frame. */
+export const MOCK_FACES: readonly FaceBox[] = [
+  { number: 1, x: 0.16, y: 0.22, width: 0.2, height: 0.32 },
+  { number: 2, x: 0.58, y: 0.3, width: 0.16, height: 0.26 },
+];
 /** What the decoder's time reads in the mock's "Object found" pill: 0.4 s. */
 export const FOUND_MS = 412;
 
@@ -517,6 +530,11 @@ export interface MockOptions {
    * sentence "The Depth mask can't be made: the model stopped before it finished.", and makes it when `retry_depth` asks again; `fail-always` fails every time.
    */
   depth?: "ok" | "fail" | "fail-always";
+  /**
+   * What the mock's face worker finds (`?mockFaces=`, `docs/27` S-11b): `ok` (the default) finds two faces ({@link MOCK_FACES}); `none` finds none (`ready`
+   * with no face); `fail` fails the first time for each photo with {@link FACES_FAILED}; `missing` is a copy with no face models (`models_missing`, nothing runs).
+   */
+  faces?: "ok" | "none" | "fail" | "missing";
 }
 
 /** What the viewport commands have recorded, for tests. */
@@ -1008,6 +1026,9 @@ function withoutRetired(stored: Preferences): Preferences {
 const hasDepthRow = (settings: DevelopSettings): boolean =>
   settings.nodes.items.some((node) => (node.kind === "corrector" || node.kind === "film") && node.masks.items.some((row) => row.kind === "depth" && row.enabled));
 
+/** Whether the photo's graph has a Face Refinement node: the mock then "finds" the photo's faces in the background. */
+const hasFaceNode = (settings: DevelopSettings): boolean => settings.nodes.items.some((node) => node.kind === "face_refinement");
+
 /** The depth positions the mock's depth map gives the flat scenes' areas (`docs/algorithms/06` §5.8: 0 is the nearest part of the photo): the near ground, the far hill and the sky. */
 const DEPTH_RANKS = MOCK_DEPTH;
 
@@ -1082,6 +1103,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   maskKinds: BUILT_MASK_KINDS,
   maskFind: "scene",
   depth: "ok",
+  faces: "ok",
 };
 
 /** Fills in defaults, ignoring `undefined` values and a speed that isn't a positive number. */
@@ -1184,6 +1206,8 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (maskFind === "none" || maskFind === "scene") out.maskFind = maskFind;
   const depth = params.get("mockDepth");
   if (depth === "ok" || depth === "fail" || depth === "fail-always") out.depth = depth;
+  const faces = params.get("mockFaces");
+  if (faces === "ok" || faces === "none" || faces === "fail" || faces === "missing") out.faces = faces;
   return out;
 }
 
@@ -1649,6 +1673,15 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   /** The photos whose depth map has failed once already (`?mockDepth=fail` fails each photo once). */
   const depthFailedOnce = new Set<PhotoId>();
   const depthFailure = (id: PhotoId): string | null => depthFailures.get(id) ?? null;
+  /** What the mock's face worker has said for each photo (`face_state`), and the photos it is finding faces for. */
+  const faceStates = new Map<PhotoId, FaceState>();
+  const faceTimers = new Map<PhotoId, ReturnType<typeof setTimeout>>();
+  /** The photos whose faces have failed once already (`?mockFaces=fail` fails each photo once). */
+  const facesFailedOnce = new Set<PhotoId>();
+  const faceStateOf = (id: PhotoId): FaceState => {
+    if (options.faces === "missing") return { photo_id: id, phase: "models_missing", faces: [], message: FACES_MODELS_MISSING };
+    return faceStates.get(id) ?? { photo_id: id, phase: "finding", faces: [], message: null };
+  };
   /** The photos whose Object features the mock has "made" (`object_state` says "preparing" for a moment, once for each photo). */
   const objectReady = new Set<PhotoId>();
   /** The encoder of the photos that are getting ready: when it ends, and what waits for it (`mask_find`). */
@@ -1863,6 +1896,37 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     );
   }
 
+  /**
+   * The core finds the faces of the photo being looked at in the background as soon as a Face Refinement node exists (`docs/27` decision 9): the viewport is
+   * busy and `finding` for `FACES_MS / speed` (a viewer never waits: the node passes its picture through meanwhile) with `face_state` `finding`, then
+   * `face_state` says `ready` with the numbered faces (or `failed`) and the photo is drawn again. Once for each photo; nothing for `?mockFaces=missing`.
+   */
+  function prepareFaces(rec: PhotoRecord): void {
+    const id = rec.summary.id;
+    if (options.faces === "missing" || !hasFaceNode(rec.settings) || faceStates.has(id) || faceTimers.has(id)) return;
+    emitSoon("viewport_busy", { busy: true, cpu: options.cpu, finding: true });
+    emit("face_state", { photo_id: id, phase: "finding", faces: [], message: null });
+    faceTimers.set(
+      id,
+      setTimeout(() => {
+        faceTimers.delete(id);
+        const fails = options.faces === "fail" && !facesFailedOnce.has(id);
+        let state: FaceState;
+        if (fails) {
+          facesFailedOnce.add(id);
+          state = { photo_id: id, phase: "failed", faces: [], message: FACES_FAILED };
+        } else {
+          state = { photo_id: id, phase: "ready", faces: options.faces === "none" ? [] : MOCK_FACES.map((f) => ({ ...f })), message: null };
+        }
+        // A failure is kept too: nothing asks again until the picture changes.
+        faceStates.set(id, state);
+        emit("viewport_busy", { busy: false, cpu: options.cpu, finding: false });
+        emit("face_state", state);
+        sendFrame();
+      }, FACES_MS / options.speed),
+    );
+  }
+
   /** Resolves when the photo's depth map is made (at once when it is not being made). */
   function depthDone(id: PhotoId): Promise<void> {
     if (!depthTimers.has(id)) return Promise.resolve();
@@ -1887,6 +1951,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     prepareObject(rec);
     prepareVision(rec);
     prepareDepth(rec);
+    prepareFaces(rec);
     const id = rec.summary.id;
     const finding = !blurMaps.has(id) && hasBackgroundRow(rec.settings);
     if (finding) blurMaps.add(id);
@@ -3162,6 +3227,12 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         // Only a map that failed starts again; the worker runs as it did (the viewport is busy and finding, then `depth_state` says how it ended).
         if (!depthFailures.delete(photoId)) return;
         prepareDepth(rec);
+      }),
+
+    faceState: (photoId) =>
+      run("faceState", (): FaceState => {
+        photo(photoId);
+        return faceStateOf(photoId);
       }),
 
     lensList: () => run("lensList", () => (options.lensesMissing ? [] : MOCK_LENSES.map((lens) => ({ ...lens })))),
