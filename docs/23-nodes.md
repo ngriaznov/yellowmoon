@@ -298,11 +298,14 @@ The numbers are what the sliders show divided or scaled as `docs/algorithms/06` 
 | Input (`"input"`) | none | `picture` |
 | a corrector (`"corrector"`) | `picture`, `key` | `picture`, `key` |
 | a Film node (`"film"`) | `picture`, `key` | `picture`, `key` |
+| a Face Refinement node (`"face_refinement"`, `docs/27`) | `picture`, `key` | `picture`, `key` |
 | Output (`"output"`) | `picture` | none |
 
 A `picture` carries the LogC4 picture as the node before made it. A `key` carries a mask. **A node's key output carries its final mask `m`** (after its Invert; it does not depend on its Bypass). **A node's key input feeds its mask as one more region term**: an implicit first row, added like a mask, with the linked node's `m` as its value (`docs/algorithms/06` section 3). A link names its two ends: `{ "from": { "node": <id | "input">, "port": … }, "to": { "node": <id | "output">, "port": … } }`.
 
 A corrector's picture output may have several links (a card feeding its next node and a branch); an input has at most one.
+
+**Face Refinement (`docs/27-skin-retouch.md`, S-11a; node view only).** A ninth kind, `face_refinement`, is a numbered node like a Film node: the ports of a corrector, a Mask tab (`masks`), Bypass, `name` (default "Face Refinement"), `pos`, and its own fields `same_for_all`, `all`, `faces` and `protect`. It counts toward the 64 nodes and shares the id space; the graph rules, patches, Reset, Copy and Paste treat it as they treat a Film node (`SettingsField::{SameForAll, AllFaces, Faces, Protect}` are its fields). It is not offered in the simple main view. Until S-11b its step passes the picture through (`docs/27` S-11, *As built (S-11a)*).
 
 The mixers (Parallel and Layer), the Splitter and the Combiner have numbered or channel ports and no key ports: a mixer's inputs are `picture.1` to `picture.N` (at most 8), a Splitter's outputs and a Combiner's inputs are `red`, `green` and `blue`, and all of them carry a picture (`docs/25-mixers.md` §2.2). A link still joins two ports of the same type.
 

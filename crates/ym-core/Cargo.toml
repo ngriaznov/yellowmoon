@@ -23,6 +23,8 @@ ym-export.workspace = true
 ym-compose.workspace = true
 # The Film node's engine (`docs/24`): the baked chain and the spatial passes.
 ym-film.workspace = true
+# The Face Refinement node's engine (`docs/27`): its settings convert to `ym_retouch::SkinSettings`.
+ym-retouch.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true

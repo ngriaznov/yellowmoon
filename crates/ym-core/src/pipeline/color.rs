@@ -967,7 +967,9 @@ pub fn plan_graph(g: &NodeGraph) -> PlanGraph {
         .into_iter()
         .filter_map(|(id, kind)| {
             match kind {
-                NodeKind::Corrector | NodeKind::Film => {}
+                // A Face Refinement node is a step of the plan that passes its picture through until S-11b
+                // (`node_set`), with its place, its picture source and its key like a corrector's.
+                NodeKind::Corrector | NodeKind::Film | NodeKind::FaceRefinement => {}
                 NodeKind::Parallel
                 | NodeKind::Layer
                 | NodeKind::Splitter
@@ -1021,7 +1023,11 @@ pub fn plan_joins(g: &NodeGraph) -> Vec<PlanJoin> {
                 NodeKind::Combiner => {
                     (JoinKind::Combiner, vec![Port::Red, Port::Green, Port::Blue])
                 }
-                NodeKind::Corrector | NodeKind::Film | NodeKind::Input | NodeKind::Output => {
+                NodeKind::Corrector
+                | NodeKind::Film
+                | NodeKind::FaceRefinement
+                | NodeKind::Input
+                | NodeKind::Output => {
                     return None;
                 }
             };
@@ -1150,6 +1156,22 @@ fn node_set(
                     FilmStep {
                         strength: f.strength / 100.0,
                         bypass: f.bypass,
+                    },
+                );
+            }
+            Some(NodeKind::FaceRefinement) => {
+                if s.nodes.face_refinement(id).is_none() {
+                    continue;
+                }
+                // Until S-11b (`docs/27` section 10) the node passes its picture through unchanged: the
+                // corrector machinery runs it bypassed, so its picture is its input's, and its key output is
+                // still the mask of its Mask tab (as a bypassed corrector's).
+                others.insert(
+                    id,
+                    NodeParams {
+                        bypass: true,
+                        masks: masks.remove(&id).unwrap_or_default(),
+                        ..NodeParams::default()
                     },
                 );
             }
@@ -1296,6 +1318,10 @@ fn nodes_key(
                 f.strength.to_bits(),
                 node_masks(&f.masks),
             );
+        } else if let Some(f) = s.nodes.face_refinement(id) {
+            // A Face Refinement node passes its picture through until S-11b (`docs/27`): what makes its key output
+            // is its Bypass and its masks. S-11b adds its amounts and its protection plane here.
+            let _ = write!(k, "face{id}:{}:{:?};", f.bypass, node_masks(&f.masks));
         } else if let Some(m) = s.nodes.mixer(id) {
             // A mixer, a Splitter or a Combiner: its kind, bypass and, for a Layer, mode and opacity. Its links are in
             // the plan above.

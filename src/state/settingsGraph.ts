@@ -12,6 +12,7 @@ import type {
   BrushStroke,
   Curves,
   DevelopSettings,
+  FaceSettings,
   GradePatch,
   LookId,
   MaskItem,
@@ -45,6 +46,8 @@ export type OutputItem = Extract<NodeItem, { kind: "output" }>;
 export type CorrectorItem = Extract<NodeItem, { kind: "corrector" }>;
 /** A Film node as an item of the graph (`docs/24`). */
 export type FilmItem = Extract<NodeItem, { kind: "film" }>;
+/** A Face Refinement node as an item of the graph (`docs/27`). The node view lists it from S-11c. */
+export type FaceRefinementItem = Extract<NodeItem, { kind: "face_refinement" }>;
 /** A node that has a card in the node view and a number: a corrector (Main included) or a Film node. */
 export type CardItem = CorrectorItem | FilmItem;
 /** A node of `docs/25` as an item of the graph: a Parallel, a Layer, a Splitter or a Combiner. It has a glyph card and no number. */
@@ -223,6 +226,8 @@ export type OutputPatch = Pick<NodePatch, "pos" | "look" | "look_intensity" | "o
 export type CorrectorPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "trim" | "grade" | "masks">;
 /** The fields of a Parallel, a Layer, a Splitter or a Combiner a patch may set (`docs/25` §2.1). */
 export type MixerPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "mode" | "opacity">;
+/** The fields of a Face Refinement node a patch may set (`docs/27`). */
+export type FaceRefinementPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "same_for_all" | "all" | "faces" | "protect" | "masks">;
 /** The fields of a Film node a patch may set. */
 export type FilmPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "film" | "print" | "halation" | "grain" | "strength" | "masks">;
 
@@ -233,7 +238,7 @@ export type FilmPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "film" | "pr
  */
 export function patchOf(node: typeof INPUT_ID, partial: InputPatch): SettingsPatch;
 export function patchOf(node: typeof OUTPUT_ID, partial: OutputPatch): SettingsPatch;
-export function patchOf(node: number, partial: CorrectorPatch | FilmPatch | MixerPatch): SettingsPatch;
+export function patchOf(node: number, partial: CorrectorPatch | FilmPatch | FaceRefinementPatch | MixerPatch): SettingsPatch;
 export function patchOf(node: NodeId, partial: NodePatch): SettingsPatch {
   return { nodes: { [String(node)]: partial } };
 }
@@ -401,6 +406,49 @@ export function newFilm(id: number, pos: NodePos, name = FILM_NAME): FilmItem {
   };
 }
 
+/** The name a new Face Refinement node has. */
+export const FACE_REFINEMENT_NAME = "Face Refinement";
+
+/** The amounts a new Face Refinement node starts with, and Reset returns to (`docs/27` section 11 item 9). */
+export function defaultFaceSettings(): FaceSettings {
+  return {
+    blemish: 30,
+    dark_circles: 30,
+    even_skin: 25,
+    texture: 0,
+    skin_contrast: 0,
+    shadow_desaturation: 0,
+    shine_removal: 0,
+    teeth_whitening: 0,
+  };
+}
+
+/** A new Face Refinement node (`docs/27`): "Same for all faces" on, the default amounts, no per-face settings, nothing protected, no masks. */
+export function newFaceRefinement(id: number, pos: NodePos, name = FACE_REFINEMENT_NAME): FaceRefinementItem {
+  return {
+    kind: "face_refinement",
+    id,
+    name,
+    bypass: false,
+    pos,
+    same_for_all: true,
+    all: defaultFaceSettings(),
+    faces: [],
+    protect: { strokes: [], feather: 0, grow: 0, refine: 0 },
+    masks: { invert: false, items: [] },
+  };
+}
+
+/**
+ * The settings of face `faceNumber` (1 for the leftmost; 0 reads as 1), as the core's `FaceRefinementNode::settings_for_face`: `all` while
+ * "Same for all faces" is on; else the entry `faceNumber − 1` of `faces`, face 1's entry for a face past the end, and `all` when the list
+ * is empty.
+ */
+export function faceSettingsFor(node: FaceRefinementItem, faceNumber: number): FaceSettings {
+  if (node.same_for_all) return node.all;
+  return node.faces[Math.max(faceNumber, 1) - 1] ?? node.faces[0] ?? node.all;
+}
+
 /** The name a new node of each of `docs/25`'s kinds has. */
 export const MIXER_NAMES = { parallel: "Parallel", layer: "Layer", splitter: "Splitter", combiner: "Combiner" } as const;
 
@@ -556,7 +604,7 @@ function applyGrade(grade: NodeGrade, patch: GradePatch): NodeGrade {
 
 /** A node with a node patch applied: whole fields replace, `rolloff`, `decode`, `lens`, `trim`, `grade` and `masks` merge their parts. */
 function applyNode(item: NodeItem, patch: NodePatch): NodeItem {
-  const { kind: _kind, rolloff, decode, lens, trim, grade, masks, film, print, halation, grain, ...fields } = patch;
+  const { kind: _kind, rolloff, decode, lens, trim, grade, masks, film, print, halation, grain, all, protect, ...fields } = patch;
   const next: Record<string, unknown> = { ...item };
   for (const [key, value] of Object.entries(fields)) if (value !== undefined) next[key] = value;
   if (item.kind === "input") {
@@ -577,6 +625,18 @@ function applyNode(item: NodeItem, patch: NodePatch): NodeItem {
     if (grain) next.grain = { ...item.grain, ...grain };
     if (masks) next.masks = applyMasks(item.masks, masks);
   }
+  if (item.kind === "face_refinement") {
+    // `all` merges field by field; `protect` is a Brush row's strokes (replaced, kept to the first n, appended: in that order) and edge amounts.
+    if (all) next.all = { ...item.all, ...all };
+    if (protect) {
+      const { strokes, strokes_append, strokes_keep, ...edges } = protect;
+      let kept = strokes ?? item.protect.strokes;
+      if (strokes_keep !== undefined) kept = kept.slice(0, strokes_keep);
+      if (strokes_append) kept = [...kept, ...strokes_append];
+      next.protect = { ...item.protect, ...edges, strokes: kept };
+    }
+    if (masks) next.masks = applyMasks(item.masks, masks);
+  }
   return next as unknown as NodeItem;
 }
 
@@ -586,6 +646,7 @@ function addedNode(id: NodeId, patch: NodePatch, correctors: number): NodeItem {
   if (patch.kind === "input") return applyNode(defaultInput(pos), patch);
   if (patch.kind === "output") return applyNode(defaultOutput(NEUTRAL_LOOK, pos), patch);
   if (patch.kind === "film") return applyNode(newFilm(typeof id === "number" ? id : MAIN_ID, pos), patch);
+  if (patch.kind === "face_refinement") return applyNode(newFaceRefinement(typeof id === "number" ? id : MAIN_ID, pos), patch);
   if (patch.kind === "parallel" || patch.kind === "layer" || patch.kind === "splitter" || patch.kind === "combiner") {
     return applyNode(newMixer(patch.kind, typeof id === "number" ? id : MAIN_ID, pos), patch);
   }

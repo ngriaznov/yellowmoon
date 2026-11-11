@@ -349,6 +349,102 @@ fn a_bypassed_node_a_default_node_and_a_dead_branch_change_no_bit() {
     }
 }
 
+fn face_refinement(id: u32, x: f64, body: Value) -> Value {
+    let mut node = json!({ "id": id, "kind": "face_refinement", "pos": [x, 0.0] });
+    if let (Some(n), Some(b)) = (node.as_object_mut(), body.as_object()) {
+        n.extend(b.clone());
+    }
+    node
+}
+
+/// Until S-11b (`docs/27` section 10, S-11a) a Face Refinement node passes its picture through unchanged: every output
+/// (the display render, the viewport frame, the linear DNG picture) is the graph's without it, whatever its settings,
+/// protection and mask rows say, and on the CPU and through the plan whether it sits first, in the middle or last.
+#[test]
+fn a_face_refinement_node_passes_its_picture_through_until_s11b() {
+    let d = photo(Layout::Patchwork, 0.5);
+    let src = d.source();
+    let r = renderer();
+    let clean = with(
+        &src,
+        graph(vec![corrector(2, 1.0, trim(0.5))], line(&[1, 2])),
+    );
+    let reference = display(&r, &clean);
+    let reference_frame = frame(&r, &clean);
+    let reference_dng = full(&r, &clean, FullTarget::DngLinearAwg4);
+    let strong = json!({
+        "all": { "blemish": 100, "dark_circles": 100, "even_skin": 100, "texture": -100,
+                 "skin_contrast": 100, "shadow_desaturation": 100, "shine_removal": 100, "teeth_whitening": 100 },
+        "protect": { "strokes": [ { "size": 0.05, "hardness": 0.5, "erase": false, "points": [[0.3, 0.3], [0.6, 0.5]] } ] },
+        "masks": { "invert": false, "items": [ { "kind": "radial", "mode": "add", "center": [0.5, 0.5], "radii": [0.2, 0.2], "feather": 0.3 } ] },
+    });
+    for (name, s) in [
+        (
+            "before",
+            graph(
+                vec![
+                    face_refinement(3, 1.0, strong.clone()),
+                    corrector(2, 2.0, trim(0.5)),
+                ],
+                line(&[1, 3, 2]),
+            ),
+        ),
+        (
+            "after",
+            graph(
+                vec![
+                    corrector(2, 1.0, trim(0.5)),
+                    face_refinement(3, 2.0, strong.clone()),
+                ],
+                line(&[1, 2, 3]),
+            ),
+        ),
+        (
+            "defaults",
+            graph(
+                vec![
+                    corrector(2, 1.0, trim(0.5)),
+                    face_refinement(3, 2.0, json!({})),
+                ],
+                line(&[1, 2, 3]),
+            ),
+        ),
+        (
+            "bypassed",
+            graph(
+                vec![
+                    corrector(2, 1.0, trim(0.5)),
+                    face_refinement(3, 2.0, json!({ "bypass": true })),
+                ],
+                line(&[1, 2, 3]),
+            ),
+        ),
+        (
+            "per face",
+            graph(
+                vec![
+                    corrector(2, 1.0, trim(0.5)),
+                    face_refinement(
+                        3,
+                        2.0,
+                        json!({ "same_for_all": false, "faces": [ { "blemish": 80 }, { "blemish": 10 } ] }),
+                    ),
+                ],
+                line(&[1, 2, 3]),
+            ),
+        ),
+    ] {
+        let s = with(&src, s);
+        assert_eq!(display(&r, &s).rgb, reference.rgb, "{name}");
+        assert_eq!(frame(&r, &s), reference_frame, "{name}");
+        assert_eq!(
+            full(&r, &s, FullTarget::DngLinearAwg4).rgb,
+            reference_dng.rgb,
+            "{name}"
+        );
+    }
+}
+
 /// The mean of a block of the picture: `(x0, y0, w, h)` as fractions of the picture.
 fn block(img: &FullImage, x0: f64, y0: f64, w: f64, h: f64) -> [f64; 3] {
     let (iw, ih) = (img.width as f64, img.height as f64);
@@ -781,6 +877,40 @@ fn the_grade_key_sees_a_layers_mode_opacity_and_bypass_and_a_parallels_bypass() 
         key_of(mixed("parallel", json!({}), &two)),
         key_of(mixed("parallel", json!({ "bypass": true }), &two))
     );
+}
+
+/// The grade key sees a Face Refinement node's Bypass and masks (its key output is its mask), and, while the node passes its
+/// picture through, nothing else: its amounts and its protection leave the key alone (S-11b adds them).
+#[test]
+fn the_grade_key_sees_a_face_refinement_nodes_bypass_and_masks() {
+    let d = photo(Layout::Uniform, 0.12);
+    let src = d.source();
+    let r = renderer();
+    let color = color_plan(&src).unwrap();
+    let req = GradeRequest {
+        target: OutputTarget::Srgb,
+        dither: false,
+        looks: r.looks().as_ref(),
+        background: None,
+        objects: None,
+    };
+    let key_of = |s: DevelopSettings| grade_key(&with(&src, s), &color, &req);
+    let face = |body: Value| {
+        key_of(graph(
+            vec![face_refinement(2, 1.0, body), corrector(3, 2.0, trim(0.5))],
+            line(&[1, 2, 3]),
+        ))
+    };
+    let base = face(json!({}));
+    assert_eq!(base, face(json!({})));
+    assert_ne!(base, face(json!({ "bypass": true })));
+    assert_ne!(
+        base,
+        face(
+            json!({ "masks": { "invert": false, "items": [ { "kind": "radial", "center": [0.5, 0.5] } ] } })
+        )
+    );
+    assert_eq!(base, face(json!({ "all": { "blemish": 90 } })));
 }
 
 // ---- the grade cache ---------------------------------------------------------------------------

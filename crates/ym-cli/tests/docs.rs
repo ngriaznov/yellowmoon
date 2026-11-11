@@ -245,7 +245,7 @@ fn the_cli_documentation_and_the_help_agree() {
     );
     assert!(
         paragraph.contains(
-            "other nodes (correctors, mixers, splitters and combiners, and Film nodes whose stocks `ym film list` shows)"
+            "other nodes (correctors, mixers, splitters and combiners, Face Refinement nodes, and Film nodes whose stocks `ym film list` shows)"
         ),
         "the paragraph names the mixers, splitters and combiners (docs/25 section 6)"
     );
@@ -329,8 +329,8 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     let blocks = json_blocks(&doc[start..end]);
     assert_eq!(
         blocks.len(),
-        6,
-        "the complete small file, the per-file example, the Brush row, the Object row, and the Parallel and the Splitter-and-Combiner examples of docs/25"
+        7,
+        "the complete small file, the per-file example, the Brush row, the Object row, the Parallel and the Splitter-and-Combiner examples of docs/25, and the Face Refinement example of docs/27"
     );
 
     // The complete small file: read over the default graph, checked, and written back unchanged.
@@ -478,6 +478,28 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     let written = serde_json::to_value(&settings).expect("writes");
     let (again, _) = DevelopSettings::from_value(written, &LookId::neutral()).expect("reads again");
     assert_eq!(again, settings, "written back unchanged");
+    // The Face Refinement example (`docs/27`, S-11a): per-face amounts, the face-number rule and a protected stroke.
+    let value: Value =
+        serde_json::from_str(&blocks[6]).expect("the Face Refinement example is JSON");
+    let (settings, clamped) = DevelopSettings::from_value(value, &LookId::neutral())
+        .expect("the Face Refinement example reads");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    assert_eq!(
+        settings
+            .nodes
+            .kind_of(ym_core::settings::NodeId::Corrector(2)),
+        Some(ym_core::settings::NodeKind::FaceRefinement)
+    );
+    let face = settings.nodes.face_refinement(2).expect("node 2");
+    assert!(!face.same_for_all && face.faces.len() == 2 && face.protect.strokes.len() == 1);
+    assert_eq!(face.settings_for_face(1).blemish, 45.0);
+    assert_eq!(face.settings_for_face(2).teeth_whitening, 40.0);
+    // A face past the list takes face 1's.
+    assert_eq!(face.settings_for_face(7), face.settings_for_face(1));
+    assert_eq!(face.settings_for_face(2).even_skin, 25.0);
+    let written = serde_json::to_value(&settings).expect("writes");
+    let (again, _) = DevelopSettings::from_value(written, &LookId::neutral()).expect("reads again");
+    assert_eq!(again, settings, "written back unchanged");
     // The unknown-kind sentence is quoted with “outside”, and “parallel” is a kind.
     let doc_text = read("docs/10-cli.md");
     assert!(doc_text.contains(
@@ -493,6 +515,7 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
         ("per-file", &blocks[1]),
         ("parallel", &blocks[4]),
         ("trio", &blocks[5]),
+        ("face", &blocks[6]),
     ] {
         let file = sb.root().join(format!("{label}.json"));
         std::fs::write(&file, text).expect("write");
