@@ -452,10 +452,14 @@ impl<'a> Tiff<'a> {
 
     /// Reads the 8-byte TIFF header and returns the reader and the offset of IFD0.
     ///
-    /// Fails with [`RawError::NotArw`] when the bytes are not a classic TIFF (wrong magic,
+    /// Fails with [`RawError::Corrupt`] (detail `EMPTY`) for a file of length 0, with
+    /// [`RawError::NotArw`] when the bytes are not a classic TIFF (wrong magic,
     /// BigTIFF, too short) and with [`RawError::Corrupt`] when IFD0 lies outside the file.
     pub fn open(src: &'a dyn ByteSource) -> Result<(Self, u64), RawError> {
         let mut header = [0u8; 8];
+        if src.is_empty() {
+            return Err(RawError::corrupt(crate::error::EMPTY));
+        }
         if src.len() < 8 {
             return Err(RawError::NotArw);
         }
@@ -874,9 +878,17 @@ mod tests {
     }
 
     #[test]
+    fn open_reports_a_zero_length_source_as_empty() {
+        let source = MemSource(b"");
+        match Tiff::open(&source) {
+            Err(RawError::Corrupt { detail }) => assert_eq!(detail, crate::error::EMPTY),
+            other => panic!("{:?}", other.map(|_| ())),
+        }
+    }
+
+    #[test]
     fn open_rejects_non_tiff_and_bigtiff_as_not_arw() {
         for bytes in [
-            &b""[..],
             &b"II*"[..],
             &b"\xff\xd8\xff\xe0\0\x10JFIF\0"[..],
             &b"II+\0\x08\0\0\0\0\0\0\0\0\0\0\0"[..],

@@ -82,9 +82,7 @@ pub fn decode(
             .checked_add(need)
             .ok_or_else(|| RawError::corrupt("a strip offset overflows"))?;
         if end > src.len() {
-            return Err(RawError::corrupt(
-                "the raw data runs past the end of the file (the file is cut short)",
-            ));
+            return Err(RawError::corrupt(crate::error::CUT_SHORT));
         }
         let dest = &mut plane.data[row * width..(row + rows) * width];
         match packing {

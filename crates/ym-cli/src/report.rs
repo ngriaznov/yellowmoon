@@ -132,6 +132,17 @@ pub fn error_value(kind: &str, message: &str) -> Value {
     json!({ "kind": kind, "message": message })
 }
 
+/// Like [`error_value`], with the technical `detail` (the cause of a file's damage or the I/O
+/// error) when there is one. The `message` is the sentence for the person; `detail` is for bug
+/// reports.
+#[must_use]
+pub fn error_value_with_detail(kind: &str, message: &str, detail: Option<&str>) -> Value {
+    match detail {
+        Some(detail) => json!({ "kind": kind, "message": message, "detail": detail }),
+        None => error_value(kind, message),
+    }
+}
+
 /// When `apple_auto` and `auto_advisor` go into a photo's object: `info` always has them, `render`
 /// only for a photo a provider acted on (`docs/19` section 8, `docs/22` section 14.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,7 +436,13 @@ pub fn develop_fields(
 /// The failure object of `render --json`: `status: "error"`, no output, and whatever is known of
 /// the photo.
 #[must_use]
-pub fn render_error(input: &str, known: Option<&Object>, kind: &str, message: &str) -> Object {
+pub fn render_error(
+    input: &str,
+    known: Option<&Object>,
+    kind: &str,
+    message: &str,
+    detail: Option<&str>,
+) -> Object {
     let mut obj = Object::new();
     obj.insert("input", input);
     obj.insert("output", Value::Null);
@@ -434,7 +451,7 @@ pub fn render_error(input: &str, known: Option<&Object>, kind: &str, message: &s
         obj.extend(known.clone());
     }
     obj.insert("pipeline_version", PIPELINE_VERSION);
-    obj.insert("error", error_value(kind, message));
+    obj.insert("error", error_value_with_detail(kind, message, detail));
     obj
 }
 
@@ -1002,7 +1019,7 @@ mod tests {
 
     #[test]
     fn a_failure_has_no_output_and_names_the_error() {
-        let v = render_error("/a/b.ARW", None, "look", "File missing or changed.");
+        let v = render_error("/a/b.ARW", None, "look", "File missing or changed.", None);
         assert_eq!(v.get("status"), Some(&json!("error")));
         assert_eq!(v.get("output"), Some(&Value::Null));
         assert_eq!(

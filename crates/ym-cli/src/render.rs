@@ -296,12 +296,13 @@ fn decode_kind_unsupported(kind: DecodeKind) -> bool {
     matches!(kind, DecodeKind::Arw6 | DecodeKind::Unknown { .. })
 }
 
-/// Why a photo the session skipped could not be developed, as a JSON `kind`.
-fn skip_kind(path: &Path) -> &'static str {
+/// Why a photo the session skipped could not be developed: the JSON `kind` and, when the probe
+/// fails again, the technical detail of the failure.
+fn skip_kind(path: &Path) -> (&'static str, Option<String>) {
     match ym_raw::metadata::probe(path) {
-        Err(error) => error.kind(),
-        Ok(meta) if decode_kind_unsupported(meta.decode) => "unsupported",
-        Ok(_) => "decode",
+        Err(error) => (error.kind(), error.detail()),
+        Ok(meta) if decode_kind_unsupported(meta.decode) => ("unsupported", None),
+        Ok(_) => ("decode", None),
     }
 }
 
@@ -428,7 +429,16 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         message,
     } in &problems
     {
-        report_failure(console, &mut stdout, args.json, path, None, kind, message);
+        report_failure(
+            console,
+            &mut stdout,
+            args.json,
+            path,
+            None,
+            kind,
+            message,
+            None,
+        );
         counts.failed.push((*kind).to_owned());
     }
     if files.is_empty() {
@@ -505,15 +515,25 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
                 None,
                 "open",
                 "This file couldn't be opened. Check that it exists and try again.",
+                None,
             );
             continue;
         };
         if let Some(PhotoStatus::Skipped { reason }) = core.session.status(id) {
-            let kind = skip_kind(&plan.input);
+            let (kind, detail) = skip_kind(&plan.input);
             plan.result = Some(Outcome::Failed { kind: kind.into() });
             plan.photo = None;
             counts.failed.push(kind.into());
-            report_failure(console, &mut stdout, args.json, input, None, kind, &reason);
+            report_failure(
+                console,
+                &mut stdout,
+                args.json,
+                input,
+                None,
+                kind,
+                &reason,
+                detail.as_deref(),
+            );
             continue;
         }
         match apply_settings(
@@ -545,6 +565,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
                     None,
                     "settings",
                     &message,
+                    None,
                 );
             }
         }
@@ -665,6 +686,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
                 plan.known.as_ref(),
                 "render",
                 message,
+                None,
             );
             plan.result = Some(Outcome::Failed {
                 kind: "render".into(),
@@ -781,7 +803,12 @@ struct Summary {
     elapsed: f64,
 }
 
-/// Prints one failure: a JSON object with `--json`, else a line on stderr.
+/// Prints one failure: a JSON object with `--json` (with `error.detail` when there is one), else a
+/// line on stderr, and the detail on a second line with `--verbose`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one failure's fields, passed once per file"
+)]
 fn report_failure(
     console: &mut Console,
     stdout: &mut Stdout,
@@ -790,11 +817,15 @@ fn report_failure(
     known: Option<&Object>,
     kind: &str,
     message: &str,
+    detail: Option<&str>,
 ) {
     if json {
-        stdout.line(&render_error(&lossy(input), known, kind, message).to_line());
+        stdout.line(&render_error(&lossy(input), known, kind, message, detail).to_line());
     } else {
         console.error(&format!("{}: {message}", path_text(input)));
+    }
+    if let Some(detail) = detail {
+        console.detail(&format!("{}: {detail}", path_text(input)));
     }
 }
 
@@ -894,6 +925,7 @@ fn handle_file(
                 plan.known.as_ref(),
                 failure.kind,
                 &failure.message,
+                None,
             );
         }
     }

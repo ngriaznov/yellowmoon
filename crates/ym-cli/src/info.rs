@@ -36,7 +36,8 @@ use crate::cli::{InfoArgs, auto_choice};
 use crate::console::Console;
 use crate::exit::{self, Failure};
 use crate::report::{
-    AppleAutoField, Object, auto_text, camera_json, develop_fields, error_value, match_word,
+    AppleAutoField, Object, auto_text, camera_json, develop_fields, error_value,
+    error_value_with_detail, match_word,
 };
 use crate::runtime::{CoreSettings, Runtime, interrupted, read_instructions};
 use crate::text::{lossy, path_text};
@@ -171,6 +172,9 @@ fn run_to(args: &InfoArgs, console: &mut Console, out: &mut dyn Write) -> Result
                 } else {
                     out.flush()?;
                     console.error(&format!("{}: {error}", path_text(&entry.path)));
+                    if let Some(detail) = error.detail() {
+                        console.detail(&format!("{}: {detail}", path_text(&entry.path)));
+                    }
                 }
             }
             Ok(meta) => {
@@ -302,7 +306,10 @@ pub fn json_error(path: &Path, error: &RawError) -> Object {
     let mut obj = Object::new();
     obj.insert("input", absolute(path));
     obj.insert("status", "error");
-    obj.insert("error", error_value(error.kind(), &error.to_string()));
+    obj.insert(
+        "error",
+        error_value_with_detail(error.kind(), &error.to_string(), error.detail().as_deref()),
+    );
     obj.insert("pipeline_version", PIPELINE_VERSION);
     obj
 }
