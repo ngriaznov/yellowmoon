@@ -34,7 +34,7 @@ pub const FACES_RULES_VERSION: u32 = 1;
 /// size at most, never enlarged. A face of [`MIN_FACE_FULL_PX`] in a 24 MP photo (6000 px) is 102 px in it, about three times
 /// what the finder needs; the masks and the blemish maps of the faces are built at this size and resampled to the render
 /// (`docs/27` decision 13). Starting value for S-12.
-pub const FACE_ANALYSIS_LONG_EDGE_PX: usize = 3072;
+pub const FACE_ANALYSIS_LONG_EDGE_PX: usize = 1400;
 /// The smallest face that is retouched, in pixels of its longer side in the full-resolution photo (`docs/27` section 11 item 9).
 /// Starting value for S-12.
 pub const MIN_FACE_FULL_PX: u32 = 200;
@@ -159,6 +159,17 @@ impl FaceState {
     }
 }
 
+/// What the face worker tells its listener ([`Renderer::set_faces_listener`](super::Renderer::set_faces_listener)): it started
+/// on a photo, and, once it has ended, where the photo's faces are. Each `Started` is followed by one `Finished`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FaceEvent {
+    /// The worker has work for the photo: the picture and the networks are on their way. The node says "Finding faces…"
+    /// (`viewport_busy.finding`).
+    Started,
+    /// The worker ended its work for the photo. A frame that showed the node's input for want of faces should be drawn again.
+    Finished(FaceState),
+}
+
 /// A face box a fake finder gives: shares of the picture's width and height.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FakeFace {
@@ -259,6 +270,13 @@ impl FaceModel {
     /// use, and a file that fails takes the model away ([`FaceModel::available`]).
     #[must_use]
     pub fn probe(data_root: &Path) -> Option<Arc<Self>> {
+        Self::probe_with(data_root, MIN_FACE_FULL_PX)
+    }
+
+    /// [`FaceModel::probe`] with another smallest face (in pixels of the full-resolution photo), for tests and for tuning
+    /// (`docs/27` S-12). The floor is part of the analysis' key.
+    #[must_use]
+    pub fn probe_with(data_root: &Path, min_face_px: u32) -> Option<Arc<Self>> {
         let dir = data_root.join("models").join("mediapipe");
         if !WEIGHT_FILES.iter().all(|f| dir.join(f).is_file()) {
             return None;
@@ -269,8 +287,12 @@ impl FaceModel {
                 dir,
                 state: Mutex::new(NetState::Untried),
             },
-            weights_id,
-            min_face_px: MIN_FACE_FULL_PX,
+            weights_id: if min_face_px == MIN_FACE_FULL_PX {
+                weights_id
+            } else {
+                format!("{weights_id}:{min_face_px}")
+            },
+            min_face_px,
             pool: OnceLock::new(),
         }))
     }

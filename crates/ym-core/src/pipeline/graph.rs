@@ -83,8 +83,8 @@ mod object;
 mod vision;
 
 pub use depth::DepthKey;
-pub use faces::FacesKey;
 pub(crate) use faces::{FaceEntry, face_source};
+pub use faces::{FaceTimings, FacesKey};
 pub(crate) use object::plane_text;
 
 /// The note of a render whose demosaic method is not the adaptive ratio (the test-only switch of

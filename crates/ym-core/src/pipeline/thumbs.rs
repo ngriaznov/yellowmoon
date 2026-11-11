@@ -143,6 +143,18 @@ pub fn encode_png_rgb8(width: usize, height: usize, rgb: &[u8]) -> Result<Vec<u8
     Ok(out)
 }
 
+/// The pictures the faces are found and masked on ([`Renderer::face_pictures_made`]).
+pub(crate) struct FacePictures {
+    pub width: usize,
+    pub height: usize,
+    /// sRGB, 8 bits, interleaved: what the finder looks at.
+    pub srgb8: Vec<u8>,
+    /// LogC4 / AWG4, `f32`, interleaved: what the masks and the blemish maps are made on.
+    pub logc4: Vec<f32>,
+    /// The final frame at full resolution.
+    pub full: (usize, usize),
+}
+
 /// The size of a thumbnail of an image: the long edge at most `max_px`, never upscaled.
 #[must_use]
 pub fn thumbnail_size(image: (usize, usize), max_px: usize) -> (usize, usize) {
@@ -612,17 +624,6 @@ impl Renderer {
         long_edge: usize,
         cancel: &CancelToken,
     ) -> Result<AdvisorPicture, RenderError> {
-        self.whole_picture_sized(src, long_edge, cancel)
-            .map(|(picture, _)| picture)
-    }
-
-    /// [`Renderer::whole_picture`] with the size of the photo's final frame at full resolution.
-    fn whole_picture_sized(
-        &self,
-        src: &PhotoSource,
-        long_edge: usize,
-        cancel: &CancelToken,
-    ) -> Result<(AdvisorPicture, (usize, usize)), RenderError> {
         let mut job = Job::new(self, src, cancel)?.with_gpu_priority(Priority::Thumbnail);
         let image = job.final_size()?;
         let (width, height) = thumbnail_size(image, long_edge);
@@ -653,28 +654,84 @@ impl Renderer {
             .for_each(|(d, s)| {
                 d.copy_from_slice(&s[..3]);
             });
-        Ok((AdvisorPicture { width, height, rgb }, image))
+        Ok(AdvisorPicture { width, height, rgb })
     }
 
-    /// The picture the faces are looked for in ([`face_source`]): the Input's picture in the final frame, whole, at
-    /// [`FACE_ANALYSIS_LONG_EDGE_PX`] on the long edge at most, Neutral look, no output sharpening, sRGB, 8 bits, with the
-    /// size of the final frame at full resolution. Made on the CPU reference path by the renderer of its own that has no
-    /// device, so that the faces and the masks are the same bytes on every machine. Its caches are dropped when the picture is
-    /// done. Always made again.
+    /// The pictures the faces are looked for in and masked on ([`face_source`]): the Input's picture in the final frame, whole,
+    /// at [`FACE_ANALYSIS_LONG_EDGE_PX`] on the long edge at most, from one sampling of the photo, as two renderings of one
+    /// chain: sRGB, 8 bits (Neutral look, no output sharpening: the picture the finder looks at), and the LogC4 / AWG4 value the
+    /// chain has before the look, in `f32` (the scene-linear picture the masks and the blemish maps are made on, in the
+    /// encoding the Face Refinement node's own input has). With the size of the final frame at full resolution. Made on the CPU
+    /// reference path by the renderer of its own that has no device, so that the faces and the masks are the same bytes on
+    /// every machine. Its caches are dropped when the pictures are done. Always made again.
     ///
     /// # Errors
     ///
     /// [`RenderError`] for unusable data or a cancelled job.
-    pub(crate) fn face_picture_made(
+    pub(crate) fn face_pictures_made(
         &self,
         src: &PhotoSource,
         cancel: &CancelToken,
-    ) -> Result<(AdvisorPicture, (usize, usize)), RenderError> {
+    ) -> Result<FacePictures, RenderError> {
         let reference = self.object_reference()?;
-        let picture =
-            reference.whole_picture_sized(&face_source(src), FACE_ANALYSIS_LONG_EDGE_PX, cancel);
+        let pictures = reference.face_pictures_on(&face_source(src), cancel);
         reference.forget(src.id);
-        picture
+        pictures
+    }
+
+    fn face_pictures_on(
+        &self,
+        src: &PhotoSource,
+        cancel: &CancelToken,
+    ) -> Result<FacePictures, RenderError> {
+        use ym_color::display::{Frame as ColorFrame, Layout, View};
+        let color = |e: ym_color::display::DisplayError| RenderError::Color(e.to_string());
+        let mut job = Job::new(self, src, cancel)?.with_gpu_priority(Priority::Thumbnail);
+        let image = job.final_size()?;
+        let (width, height) = thumbnail_size(image, FACE_ANALYSIS_LONG_EDGE_PX);
+        let spec = ViewSpec {
+            out_w: width,
+            out_h: height,
+            view_to_final: Affine::scale_translate(
+                image.0 as f64 / width as f64,
+                image.1 as f64 / height as f64,
+                0.0,
+                0.0,
+            ),
+            k: thumbnail_scale(image, FACE_ANALYSIS_LONG_EDGE_PX),
+            target: OutputTarget::Srgb,
+            before: false,
+            coarse_only: false,
+            cache: false,
+            background: self.options().background,
+            gpu_priority: Priority::Thumbnail,
+            dither_origin: (0, 0),
+            output: FrameOutput::Host,
+        };
+        let grade = job.grade(OutputTarget::Srgb, false)?;
+        let view = sample_view_routed(&mut job, &spec)?;
+        let threads = job.options().threads;
+        let frame = ColorFrame::planar(width, height, &view.sampled.img.data).map_err(color)?;
+        let mut srgb8 = vec![0u8; 3 * width * height];
+        grade
+            .chain
+            .render_u8(View::Final, &frame, (0, 0), &mut srgb8, threads)
+            .map_err(color)?;
+        // The chain without its look: the value the Face Refinement node's input has (`film_pass`'s prefix chain).
+        let mut params = grade.chain.params().clone();
+        params.look = None;
+        let prefix = ColorChain::new(&params).map_err(color)?;
+        let mut logc4 = vec![0.0f32; 3 * width * height];
+        prefix
+            .render_logc4_f32(&frame, Layout::Interleaved, &mut logc4, threads)
+            .map_err(color)?;
+        Ok(FacePictures {
+            width,
+            height,
+            srgb8,
+            logc4,
+            full: image,
+        })
     }
 
     /// The photo as it is developed now, through one look at 100 % (the Look tab's tiles). It does

@@ -1297,7 +1297,8 @@ fn a_settings_file_with_a_mixer_is_read_and_the_photo_renders() {
 
 /// A settings file with a Face Refinement node is read, checked and rendered (`docs/27` task S-11a): the node is accepted with its
 /// per-face amounts and protection, the photo is written, and the record carries the node as the core writes it (the defaults filled
-/// in). Until S-11b the node passes its picture through (`ym-core`'s `render_nodes` tests prove the picture is the one without it).
+/// in). The faces are found by the fake finder (`YELLOWMOON_TEST_FACES=fake`), so the test needs no weights; the picture the node makes is checked in
+/// `ym-core`'s `face_render` tests and in `parity.rs`.
 #[test]
 fn a_settings_file_with_a_face_refinement_node_is_read_and_the_photo_renders() {
     let sb = Sandbox::new();

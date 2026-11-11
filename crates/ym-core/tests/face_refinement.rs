@@ -1,7 +1,7 @@
 //! The Face Refinement node's settings (`docs/27-skin-retouch.md` sections 3 and 10, task S-11a, and `docs/23` section 3):
 //! the format and its defaults, the unknown-field rule, the ranges, the face-number rule, the ports, patches, Reset, undo,
 //! Copy and Paste, the written form, the JSON schema, the conversion to `ym_retouch::SkinSettings` and the text of the
-//! kind. The render (a pass-through until S-11b) is tested in `render_nodes.rs`.
+//! kind. The render is tested in `face_render.rs` (with the models) and in `render_nodes.rs` (without them).
 #![allow(clippy::field_reassign_with_default)]
 
 mod common;

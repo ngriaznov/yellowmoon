@@ -27,6 +27,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use ym_color::display::{ColorChain, Frame as ColorFrame, Layout, OutputTarget};
 use ym_color::mask::RasterPlanes;
@@ -475,6 +476,7 @@ impl FilmRender {
                 );
                 continue;
             }
+            let prefix_started = Instant::now();
             let (w, h) = (a.w, a.h);
             let (ox, oy) = ((a.x - cover.area.x) as usize, (a.y - cover.area.y) as usize);
             let sub = cover.sampled.img.extract(Rect::new(ox, oy, w, h));
@@ -502,6 +504,12 @@ impl FilmRender {
                 .render_logc4_f32(&frame, Layout::Interleaved, &mut logc4, self.threads)
                 .map_err(|e| film_error(&e))?;
             job.check()?;
+            tracing::debug!(
+                w,
+                h,
+                prefix_ms = prefix_started.elapsed().as_secs_f64() * 1000.0,
+                "the prefix chain over a face region"
+            );
             let guide = |rgb: [f64; 3]| step.prefix.guide_pixel(rgb);
             let protect = cover.grid.and_then(|grid| {
                 face.protect_mask(

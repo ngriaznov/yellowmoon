@@ -311,6 +311,75 @@ fn pipeline_fades_lesions_and_leaves_clean_skin() {
     }
 }
 
+/// `docs/27` decision 13: the models run on the analysis picture (neutral) and the blemish gain map is applied to the node's input,
+/// which has another grade. A gain is a ratio, so an exposure change leaves it exact; a tone curve changes the ratio a little. The
+/// map of the neutral picture applied to a picture with +2 EV is the neutral result times 4 (to rounding), and applied to a picture
+/// through a strong power curve (0.7) it over-corrects to a contrast of the other sign and about half the size.
+#[test]
+fn a_map_of_one_grade_applies_to_another() {
+    let lesion = Lesion::new(Kind::Papule, 170.0, 190.0, 6.0);
+    let clean = skin_image(N, N, 21, &[]);
+    let img = skin_image(N, N, 21, &[lesion]);
+    let m = models(Vec::new(), false);
+    let faces = [(
+        face(),
+        SkinSettings {
+            blemish: 60.0,
+            ..Default::default()
+        },
+    )];
+    let mut cache = RetouchCache::new(1, 1);
+    prepare_skin(&img, &faces, &m, &mut cache).unwrap();
+    let apply = |image: &LinearAwg4Image, cache: &mut RetouchCache| {
+        retouch_skin(image, (N as u32, N as u32), &faces, 1.0, &m, cache, None).unwrap()
+    };
+    let graded = |f: &dyn Fn(f32) -> f32| {
+        LinearAwg4Image::new(
+            N as u32,
+            N as u32,
+            img.data.iter().map(|p| p.map(f)).collect(),
+        )
+        .unwrap()
+    };
+    let neutral = apply(&img, &mut cache);
+    // Exposure: +2 EV is a multiplication by 4, and the gain does not care.
+    let bright = apply(&graded(&|v| v * 4.0), &mut cache);
+    let worst = bright
+        .data
+        .iter()
+        .zip(&neutral.data)
+        .flat_map(|(b, n)| (0..3).map(move |c| (b[c] - 4.0 * n[c]).abs() / (4.0 * n[c]).max(1e-6)))
+        .fold(0.0f32, f32::max);
+    println!(
+        "map of the neutral picture on a picture at +2 EV: worst relative difference {worst:e}"
+    );
+    assert!(worst < 1e-5, "{worst}");
+    // A power curve (the display's own tone is about this far from linear light), against the map of its own picture.
+    let curve = graded(&|v| v.powf(0.7));
+    let rel = |im: &LinearAwg4Image, reference: &LinearAwg4Image| {
+        lin_disc(im, 1, &lesion, 0.7) / lin_disc(reference, 1, &lesion, 0.7) - 1.0
+    };
+    let curve_clean = LinearAwg4Image::new(
+        N as u32,
+        N as u32,
+        clean.data.iter().map(|p| p.map(|v| v.powf(0.7))).collect(),
+    )
+    .unwrap();
+    let before = rel(&curve, &curve_clean);
+    let neutral_map = apply(&curve, &mut cache);
+    let mut own_cache = RetouchCache::new(2, 2);
+    prepare_skin(&curve, &faces, &m, &mut own_cache).unwrap();
+    let own_map = apply(&curve, &mut own_cache);
+    let (a, b) = (rel(&neutral_map, &curve_clean), rel(&own_map, &curve_clean));
+    println!(
+        "papule contrast on a power-curve picture: {before:.3}; after the neutral map {a:.3}, after its own map {b:.3}"
+    );
+    // A tone curve this strong (the gain is applied in the curve's own space, where the spot's ratio is the curve's power of
+    // the neutral one) makes the correction too big, not too small: it is within the original contrast. The curves of
+    // a corrector upstream are gentler (`docs/27` decision 13).
+    assert!(a.abs() < 0.6 * before.abs(), "{before} -> {a}");
+}
+
 #[test]
 fn pipeline_keeps_a_mole_and_removes_a_papule_at_blemish_100() {
     let mole = Lesion::new(Kind::Mole, 215.0, 225.0, 6.5);

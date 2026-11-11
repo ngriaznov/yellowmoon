@@ -684,10 +684,12 @@ fn check_working_size_px(
 ) -> Result<()> {
     let expected = |side: u32| (f64::from(side) * scale).round().max(1.0);
     let (ew, eh) = (expected(full_size_px.0), expected(full_size_px.1));
+    // Two pixels, and a pixel of the masks' frame at a scale above 1 (the sides of a frame are rounded in whole pixels of its own).
+    let tolerance = 2.0f64.max(scale.ceil());
     if full_size_px.0 == 0
         || full_size_px.1 == 0
-        || (f64::from(working_px.0) - ew).abs() > 2.0
-        || (f64::from(working_px.1) - eh).abs() > 2.0
+        || (f64::from(working_px.0) - ew).abs() > tolerance
+        || (f64::from(working_px.1) - eh).abs() > tolerance
     {
         return Err(RetouchError::WorkingSize {
             image: working_px,

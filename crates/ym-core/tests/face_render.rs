@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use ym_color::display::OutputTarget;
 use ym_core::pipeline::color::{GradeRequest, color_plan, grade_key};
 use ym_core::pipeline::{
-    FaceModel, FacePhase, FaceState, FakeFace, FrameOptions, FullImage, FullRequest, FullTarget,
+    FaceEvent, FaceModel, FacePhase, FakeFace, FrameOptions, FullImage, FullRequest, FullTarget,
     NeutralOnly, PhotoSource, RenderOptions, Renderer, ViewportRect, ViewportState,
 };
 use ym_core::settings::DevelopSettings;
@@ -374,6 +374,54 @@ fn the_nodes_masks_act_as_a_correctors() {
     }
 }
 
+/// What a Layer fed by the node's picture gets (`docs/27` decision 13): what it gets from a corrector, the node's picture before its
+/// own mask blend with its `m` as the alpha. A Layer at Normal and 100 % over the node's input, with the node's picture above it, is the
+/// node alone, with or without a mask on the node.
+#[test]
+fn a_layer_fed_by_the_nodes_picture_gets_what_it_gets_from_a_corrector() {
+    let d = photo();
+    let src = d.source();
+    let r = renderer_with(Some(two_faces()), 0);
+    let link = |from: Value, port: &str, to: u32, to_port: &str| json!({ "from": { "node": from, "port": port }, "to": { "node": to, "port": to_port } });
+    let layered = |node: Value| {
+        doc_of(
+            vec![
+                node,
+                json!({ "id": 3, "kind": "layer", "pos": [3.0, 0.0], "mode": "normal", "opacity": 1.0 }),
+            ],
+            vec![
+                link(json!("input"), "picture", 1, "picture"),
+                link(json!(1), "picture", 2, "picture"),
+                link(json!(1), "picture", 3, "picture.1"),
+                link(json!(2), "picture", 3, "picture.2"),
+                json!({ "from": { "node": 3, "port": "picture" }, "to": { "node": "output", "port": "picture" } }),
+            ],
+        )
+    };
+    let mut half = strong();
+    half["masks"] = json!({ "invert": false, "items": [
+        { "kind": "linear", "mode": "add", "center": [0.5, 0.5], "angle_deg": 90.0, "feather": 0.0 } ] });
+    for (name, body) in [("no mask", strong()), ("a mask on the node", half)] {
+        let alone = export(&r, &src, with_node(body.clone()));
+        let through = export(&r, &src, layered(face_node(2, body)));
+        let worst = alone
+            .rgb
+            .iter()
+            .zip(&through.rgb)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            worst < 1e-4,
+            "{name}: the Layer gives the node's picture (worst {worst})"
+        );
+        let reference = export(&r, &src, plain());
+        assert!(
+            !differing(&reference, &through).is_empty(),
+            "{name}: the faces are in it"
+        );
+    }
+}
+
 // ---- the worker --------------------------------------------------------------------------------------------------------
 
 fn frame(r: &Renderer, src: &PhotoSource) -> Vec<u8> {
@@ -383,7 +431,7 @@ fn frame(r: &Renderer, src: &PhotoSource) -> Vec<u8> {
         .rgba
 }
 
-fn listen(r: &Renderer) -> Arc<Mutex<Vec<(u32, FaceState)>>> {
+fn listen(r: &Renderer) -> Arc<Mutex<Vec<(u32, FaceEvent)>>> {
     let heard = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&heard);
     r.set_faces_listener(Arc::new(move |id, state| {
@@ -411,8 +459,10 @@ fn a_viewer_never_waits_and_the_worker_finds_the_faces_once() {
     {
         let heard = heard.lock().unwrap();
         assert_eq!(heard.len(), 2, "{heard:?}");
-        assert_eq!(heard[0].1.phase, FacePhase::Finding);
-        let ready = &heard[1].1;
+        assert_eq!(heard[0].1, FaceEvent::Started);
+        let FaceEvent::Finished(ready) = &heard[1].1 else {
+            panic!("{heard:?}");
+        };
         assert_eq!(ready.phase, FacePhase::Ready);
         let numbers: Vec<u32> = ready.faces.iter().map(|f| f.number).collect();
         assert_eq!(numbers, [1, 2], "numbered from left to right");
@@ -624,10 +674,10 @@ fn without_face_models_a_view_passes_the_picture_through_and_an_export_refuses()
 }
 
 #[test]
-fn a_frame_with_a_live_node_is_made_on_the_cpu_and_says_so() {
+fn a_frame_shows_the_retouch_once_the_faces_are_ready() {
     let d = photo();
     let src = d.source();
-    // Without a device the CPU makes every frame; with one, the node forces it. Either way the node's picture is the CPU's.
+    // (That a device renderer makes this frame on the CPU, refused with its reason, is `any_graph.rs`'s, where a device opens.)
     let r = renderer_with(Some(two_faces()), 0);
     r.navigate(src.id);
     let node = src.with_settings(with_node(strong()));

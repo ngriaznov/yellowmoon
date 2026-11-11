@@ -130,23 +130,20 @@ impl FaceWork {
     }
 
     /// The area a render needs to make `need` of this node's picture: `need` grown to hold every region it meets (with the
-    /// reach of the protection plane around it), and so on until no more region is met.
+    /// reach of the protection plane around it). The regions are the ones `need` meets, not the ones the grown area meets: a
+    /// region the grown area happens to reach is made when a render asks for its own pixels.
     pub(crate) fn widen(&self, need: Area) -> Area {
         if need.is_empty() {
             return need;
         }
-        let mut out = need;
-        loop {
-            let before = out;
-            for r in &self.regions {
-                if !out.intersect(r).is_empty() {
-                    out = union(out, r.grown(self.protect_halo, &self.frame));
-                }
-            }
-            if out == before {
-                return out;
-            }
-        }
+        // A region an earlier tile of the same export made is kept: a later tile does not read it again.
+        self.regions
+            .iter()
+            .enumerate()
+            .filter(|(i, r)| !need.intersect(r).is_empty() && self.kept(*i).is_none())
+            .fold(need, |out, (_, r)| {
+                union(out, r.grown(self.protect_halo, &self.frame))
+            })
     }
 
     /// The regions that meet `made`, by index.
@@ -243,6 +240,7 @@ impl FaceWork {
         logc4: &[f32],
         protect: Option<&Mask>,
     ) -> Result<Arc<FacePart>, RenderError> {
+        let started = std::time::Instant::now();
         let area = self.regions[ri];
         let (w, h) = (area.w, area.h);
         // LogC4 to linear AWG4, per pixel in f64 (the order and rounding are the same on every thread count).
@@ -261,6 +259,7 @@ impl FaceWork {
             ),
             working_px: (self.frame.w as u32, self.frame.h as u32),
         };
+        let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
         let out = ym_retouch::retouch_skin_region(
             &part,
             place,
@@ -271,6 +270,7 @@ impl FaceWork {
             protect,
         )
         .map_err(|e| render_error(&e))?;
+        let retouch_ms = started.elapsed().as_secs_f64() * 1000.0 - decode_ms;
         let mut data = vec![0.0f32; 3 * w * h];
         data.par_chunks_exact_mut(3)
             .zip(out.data.par_iter().zip(part.data.par_iter()))
@@ -286,6 +286,14 @@ impl FaceWork {
                     d[2] = e[2] as f32;
                 }
             });
+        tracing::debug!(
+            w,
+            h,
+            decode_ms,
+            retouch_ms,
+            encode_ms = started.elapsed().as_secs_f64() * 1000.0 - decode_ms - retouch_ms,
+            "a face region retouched"
+        );
         let made = Arc::new(FacePart { area, data });
         self.done
             .lock()

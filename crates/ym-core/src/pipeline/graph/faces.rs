@@ -37,8 +37,8 @@ use super::{Job, PhotoGraph, Renderer, lock};
 use crate::pipeline::RenderError;
 use crate::pipeline::color::{PhotoSource, color_key, live_face_nodes};
 use crate::pipeline::faces::{
-    FACE_ANALYSIS_LONG_EDGE_PX, FACES_FORMAT_VERSION, FACES_RULES_VERSION, FaceBox, FaceModel,
-    FaceState, select_faces,
+    FACE_ANALYSIS_LONG_EDGE_PX, FACES_FORMAT_VERSION, FACES_RULES_VERSION, FaceBox, FaceEvent,
+    FaceModel, FaceState, select_faces,
 };
 use crate::session::PhotoId;
 use crate::settings::DevelopSettings;
@@ -51,7 +51,7 @@ pub(crate) const PREPARE_DEBOUNCE: Duration = super::object::PREPARE_DEBOUNCE;
 const WAIT_STEP: Duration = Duration::from_millis(40);
 
 /// Who hears when the face worker starts or ends its work for a photo ([`Renderer::set_faces_listener`]).
-pub(crate) type FacesListener = Arc<dyn Fn(PhotoId, FaceState) + Send + Sync>;
+pub(crate) type FacesListener = Arc<dyn Fn(PhotoId, FaceEvent) + Send + Sync>;
 
 /// The photo as the faces are looked for in it: the Input's picture in the photo's **final frame**. The settings keep the
 /// Input's raw, light, noise, crop, turn and lens fields and drop everything that is a later step or a view of the result: no
@@ -91,6 +91,21 @@ pub(crate) struct FoundFace {
     pub face: Face,
 }
 
+/// Where the time of one analysis went, in milliseconds (the log and the measurements of `docs/27` decision 13).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FaceTimings {
+    /// The analysis picture, rendered on the CPU reference path.
+    pub picture_ms: f64,
+    /// The finder.
+    pub find_ms: f64,
+    /// The masks and blemish maps of every face (`prepare_skin`).
+    pub prepare_ms: f64,
+    /// All of it.
+    pub total_ms: f64,
+    /// The faces kept.
+    pub faces: usize,
+}
+
 /// The photo's faces with the masks and blemish maps made for them.
 #[derive(Debug)]
 pub(crate) struct FaceEntry {
@@ -104,8 +119,8 @@ pub(crate) struct FaceEntry {
     pub(crate) faces: Vec<FoundFace>,
     /// The masks and blemish maps, prepared; read only from here on.
     pub(crate) retouch: RetouchCache,
-    /// Milliseconds the picture, the finder and the preparation took (for the log and the tests).
-    pub(crate) ms: f64,
+    /// Where the time of the analysis went.
+    pub(crate) timings: FaceTimings,
 }
 
 impl FaceEntry {
@@ -237,36 +252,19 @@ impl JobFaces {
     }
 }
 
-/// The 8-bit sRGB picture as linear AWG4 (the inverse of the display conversion the networks are given).
-fn linear_awg4(width: usize, height: usize, rgb: &[u8]) -> Result<LinearAwg4Image, RenderError> {
+/// The LogC4 / AWG4 picture (interleaved `f32`) as linear AWG4: what `ym-retouch` takes (the node's own input is decoded the same
+/// way, `face_pass`).
+fn linear_awg4(width: usize, height: usize, logc4: &[f32]) -> Result<LinearAwg4Image, RenderError> {
     use rayon::prelude::*;
-    let m = ym_color::gamut::matrices();
-    let to_awg4: [[f64; 3]; 3] = {
-        let a = &m.xyz_to_awg4;
-        let b = &m.rec709_to_xyz;
-        let mut out = [[0.0; 3]; 3];
-        for (i, row) in out.iter_mut().enumerate() {
-            for (j, v) in row.iter_mut().enumerate() {
-                *v = (0..3).map(|k| a[i][k] * b[k][j]).sum();
-            }
-        }
-        out
-    };
-    // One table for the 256 codes: the same on every machine, no `powf` per pixel.
-    let lut: Vec<f64> = (0..256)
-        .map(|v| ym_color::encode::srgb_decode(f64::from(v as u8) / 255.0))
-        .collect();
-    let data: Vec<[f32; 3]> = rgb
+    let data: Vec<[f32; 3]> = logc4
         .par_chunks_exact(3)
         .map(|p| {
-            let l = [
-                lut[usize::from(p[0])],
-                lut[usize::from(p[1])],
-                lut[usize::from(p[2])],
-            ];
-            [0, 1, 2].map(|r| {
-                (to_awg4[r][0] * l[0] + to_awg4[r][1] * l[1] + to_awg4[r][2] * l[2]) as f32
-            })
+            let l = ym_color::logc::logc4_decode_rgb([
+                f64::from(p[0]),
+                f64::from(p[1]),
+                f64::from(p[2]),
+            ]);
+            [l[0] as f32, l[1] as f32, l[2] as f32]
         })
         .collect();
     LinearAwg4Image::new(width as u32, height as u32, data)
@@ -295,10 +293,10 @@ impl Renderer {
         *lock(&self.inner.faces_listener) = Some(f);
     }
 
-    fn faces_notify(&self, id: PhotoId, state: FaceState) {
+    fn faces_notify(&self, id: PhotoId, event: FaceEvent) {
         let listener = lock(&self.inner.faces_listener).clone();
         if let Some(f) = listener {
-            f(id, state);
+            f(id, event);
         }
     }
 
@@ -314,6 +312,14 @@ impl Renderer {
     pub fn faces_worker_alive(&self, id: PhotoId) -> bool {
         self.existing_graph(id)
             .is_some_and(|g| lock(&g.faces.state).worker)
+    }
+
+    /// Where the time of the photo's latest analysis went, when it has one.
+    #[must_use]
+    pub fn faces_timings(&self, id: PhotoId) -> Option<FaceTimings> {
+        self.existing_graph(id)
+            .and_then(|g| g.faces.latest())
+            .map(|e| e.timings)
     }
 
     /// How many times the analysis finished for the photo since its graph was made.
@@ -412,17 +418,18 @@ impl Renderer {
     ) -> Result<FaceEntry, RenderError> {
         let stopped = || cancel.is_cancelled() || also();
         let started = Instant::now();
-        let (picture, full) = self.face_picture_made(src, cancel)?;
+        let pictures = self.face_pictures_made(src, cancel)?;
         let picture_ms = started.elapsed().as_secs_f64() * 1000.0;
         if stopped() {
             return Err(RenderError::Cancelled);
         }
-        let analysis_px = (picture.width as u32, picture.height as u32);
+        let full = pictures.full;
+        let analysis_px = (pictures.width as u32, pictures.height as u32);
         let full_px = (full.0 as u32, full.1 as u32);
         let found = model.find(
-            &picture.rgb,
-            picture.width,
-            picture.height,
+            &pictures.srgb8,
+            pictures.width,
+            pictures.height,
             full.0.max(full.1),
         )?;
         let find_ms = started.elapsed().as_secs_f64() * 1000.0 - picture_ms;
@@ -436,8 +443,9 @@ impl Renderer {
             .map(|&(number, face)| FoundFace { number, face })
             .collect();
         let mut retouch = RetouchCache::new(hash, 0);
+        let prepare_started = Instant::now();
         if !faces.is_empty() {
-            let image = linear_awg4(picture.width, picture.height, &picture.rgb)?;
+            let image = linear_awg4(pictures.width, pictures.height, &pictures.logc4)?;
             let models = model.models()?;
             let with_settings: Vec<(Face, SkinSettings)> = faces
                 .iter()
@@ -453,10 +461,12 @@ impl Renderer {
             return Err(RenderError::Cancelled);
         }
         let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let prepare_ms = prepare_started.elapsed().as_secs_f64() * 1000.0;
         tracing::debug!(
             ms,
             picture_ms,
             find_ms,
+            prepare_ms,
             faces = faces.len(),
             "the faces (the picture, the finder and the masks)"
         );
@@ -464,9 +474,15 @@ impl Renderer {
             key: key.clone(),
             hash,
             analysis_px,
+            timings: FaceTimings {
+                picture_ms,
+                find_ms,
+                prepare_ms,
+                total_ms: ms,
+                faces: faces.len(),
+            },
             faces,
             retouch,
-            ms,
         })
     }
 
@@ -608,6 +624,7 @@ impl Renderer {
         let id = graph.id();
         let mut announced = false;
         let mut outcome: Option<Result<Arc<FaceEntry>, String>> = None;
+        let mut last: Option<PhotoSource> = None;
         loop {
             let wanted = {
                 let mut st = lock(&graph.faces.state);
@@ -633,8 +650,9 @@ impl Renderer {
             lock(&graph.faces.state).finding = true;
             if !announced {
                 announced = true;
-                self.faces_notify(id, FaceState::finding());
+                self.faces_notify(id, FaceEvent::Started);
             }
+            last = Some(wanted.src.clone());
             match self.ensure_faces_entry(
                 graph,
                 model,
@@ -644,7 +662,11 @@ impl Renderer {
                 &CancelToken::new(),
             ) {
                 Ok(e) => {
-                    tracing::debug!(ms = e.ms, faces = e.faces.len(), "the faces are ready");
+                    tracing::debug!(
+                        ms = e.timings.total_ms,
+                        faces = e.faces.len(),
+                        "the faces are ready"
+                    );
                     outcome = Some(Ok(e));
                 }
                 Err(RenderError::Cancelled) => {}
@@ -655,13 +677,15 @@ impl Renderer {
             }
         }
         if announced {
-            let state = match outcome {
-                Some(Ok(e)) => FaceState::ready(e.boxes()),
-                Some(Err(why)) => FaceState::failed(why),
-                // Every run was stopped: the person went to another photo or the picture changed again.
-                None => return,
+            let state = match (outcome, last) {
+                (Some(Ok(e)), _) => FaceState::ready(e.boxes()),
+                (Some(Err(why)), _) => FaceState::failed(why),
+                // Every run was stopped (the person went to another photo, or the picture changed again): the state the
+                // photo has now, so that a `Started` always has its `Finished`.
+                (None, Some(src)) => self.face_state(&src),
+                (None, None) => FaceState::finding(),
             };
-            self.faces_notify(id, state);
+            self.faces_notify(id, FaceEvent::Finished(state));
         }
     }
 

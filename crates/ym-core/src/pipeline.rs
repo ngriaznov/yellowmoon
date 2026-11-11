@@ -64,8 +64,8 @@ pub use color::{
 };
 pub use depth::{DEPTH_FORMAT_VERSION, DepthModel, DepthPhase, FakeDepth, FocusPlane, FocusReason};
 pub use faces::{
-    FACE_ANALYSIS_LONG_EDGE_PX, FACES_FORMAT_VERSION, FACES_RULES_VERSION, FaceBox, FaceModel,
-    FacePhase, FaceState, FakeFace, FakeFaces, MIN_FACE_FULL_PX, NO_FACE_MODEL_SENTENCE,
+    FACE_ANALYSIS_LONG_EDGE_PX, FACES_FORMAT_VERSION, FACES_RULES_VERSION, FaceBox, FaceEvent,
+    FaceModel, FacePhase, FaceState, FakeFace, FakeFaces, MIN_FACE_FULL_PX, NO_FACE_MODEL_SENTENCE,
 };
 pub use frame::level::{
     FILL_BAND_PX, LEVEL_DEBOUNCE, LEVEL_MAX_ZOOM, LEVELS_PER_PHOTO, LevelStatus,
@@ -74,11 +74,11 @@ pub use frame::{
     ChromaSample, ChromaTap, DeviceFrame, FitFrame, FrameOptions, FrameOutput, FullImage,
     FullRequest, FullTarget, PixelSample, PixelWindow, RenderedFrame, ViewportFrame,
 };
-pub use graph::DepthKey;
 pub use graph::{
     ComputeDevice, GpuReopener, PhotoGraph, RawPrefetch, RenderOptions, RenderReport, Renderer,
     StageCounters, StageRuns, StageTimings, ViewLimits,
 };
+pub use graph::{DepthKey, FaceTimings, FacesKey};
 pub use object::{
     MaskFound, NOTHING_FOUND_SENTENCE, NothingFound, ObjectModel, ObjectPhase, ObjectPlanes,
     ObjectPrompt,
