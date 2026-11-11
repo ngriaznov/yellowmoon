@@ -1749,8 +1749,8 @@ mod tests {
         let s = softmax(&x, 1.0);
         let e: Vec<f32> = [1.0f32, 2.0, 3.0].iter().map(|v| v.exp()).collect();
         let z: f32 = e.iter().sum();
-        for k in 0..3 {
-            assert!((s.data[k] - e[k] / z).abs() < 1e-6);
+        for (k, ek) in e.iter().enumerate() {
+            assert!((s.data[k] - ek / z).abs() < 1e-6);
             assert!((s.data[3 + k] - 1.0 / 3.0).abs() < 1e-6);
         }
         // Transpose [2,3,4] with perm [2,0,1]: out[k][i][j] = in[i][j][k].

@@ -316,8 +316,8 @@ impl SkinColour {
         for i in 0..3 {
             for j in 0..=i {
                 let mut s = cov[i][j];
-                for k in 0..j {
-                    s -= l[i][k] * l[j][k];
+                for (a, b) in l[i].iter().zip(&l[j]).take(j) {
+                    s -= a * b;
                 }
                 if i == j {
                     if s <= 0.0 {
@@ -555,7 +555,7 @@ pub fn mesh_table_mask(
     table: MeshTable,
     size_px: (u32, u32),
 ) -> Result<BoundedMask> {
-    let pts: Vec<[f64; 2]> = geometry.points().iter().copied().collect();
+    let pts: Vec<[f64; 2]> = geometry.points().to_vec();
     match render_mesh(&pts, texture(table), size_px)? {
         Some(mask) => Ok(mask),
         None => BoundedMask::new(Rect::new(0, 0, 1, 1), Mask::zeros(1, 1)?),

@@ -58,9 +58,9 @@ fn invert(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
         a[r1][c1] * a[r2][c2] - a[r1][c2] * a[r2][c1]
     };
     let mut out = [[0.0f32; 3]; 3];
-    for r in 0..3 {
-        for k in 0..3 {
-            out[r][k] = (c(k, r) / det) as f32;
+    for (r, row) in out.iter_mut().enumerate() {
+        for (k, v) in row.iter_mut().enumerate() {
+            *v = (c(k, r) / det) as f32;
         }
     }
     out

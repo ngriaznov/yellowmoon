@@ -317,9 +317,15 @@ mod tests {
         let a = crop_tensor(&src, &roi, 8, Resample::MediaPipe, (0.0, 1.0)).expect("crop");
         roi.rotation_rad = std::f64::consts::PI;
         let b = crop_tensor(&src, &roi, 8, Resample::MediaPipe, (0.0, 1.0)).expect("crop");
-        // Crop pixel i reads x = 4 i (unrotated) or 32 - 4 i (turned): the red channel of the first row.
-        assert!(a[0] < 0.01 && a[3] > a[0]);
-        assert!(b[0] > 0.9 && b[3] < b[0]);
+        // The middle row (j = 4 reads y = 16 either way): crop pixel i reads x = 4 i (unrotated) or 32 - 4 i (turned; pixel 0
+        // is at the picture's edge, black). Red is x / 31.
+        let red = |t: &[f32], i: usize| t[(4 * 8 + i) * 3];
+        assert!(red(&a, 0) < 0.01 && red(&a, 1) > red(&a, 0) && red(&a, 2) > red(&a, 1));
+        assert!(
+            red(&b, 1) > 0.85 && red(&b, 2) < red(&b, 1) && red(&b, 3) < red(&b, 2),
+            "{:?}",
+            &b[96..120]
+        );
     }
 
     #[test]

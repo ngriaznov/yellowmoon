@@ -13,12 +13,12 @@
 mod blemish;
 pub mod classical;
 mod error;
-mod face_parts;
-mod face_raster;
-mod face_tables;
-mod face_topology;
+pub mod face_parts;
+pub mod face_raster;
+pub mod face_tables;
+pub mod face_topology;
 mod feather;
-mod guided;
+pub mod guided;
 mod lowfreq;
 mod mask;
 #[cfg(feature = "mediapipe")]

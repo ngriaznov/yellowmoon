@@ -261,7 +261,6 @@ mod tests {
     fn the_textures_are_smooth_deterministic_and_shared() {
         let a = texture(MeshTable::UnderEye);
         assert!(std::ptr::eq(a, texture(MeshTable::UnderEye)));
-        assert_eq!(a.size(), TEXTURE_PX);
         // Smooth: neighbouring texels differ little (the steepest ramp, over 0.05 of an eye width, is a few texels).
         let mut worst = 0.0f32;
         for j in 0..TEXTURE_PX - 1 {

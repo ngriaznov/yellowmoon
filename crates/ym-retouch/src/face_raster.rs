@@ -144,20 +144,6 @@ pub fn offset_polygon(poly: &[[f64; 2]], d: f64) -> Vec<[f64; 2]> {
         .collect()
 }
 
-/// The centre of the bounding box of `poly`.
-pub fn polygon_center(poly: &[[f64; 2]]) -> [f64; 2] {
-    let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
-    for p in poly {
-        b = [
-            b[0].min(p[0]),
-            b[1].min(p[1]),
-            b[2].max(p[0]),
-            b[3].max(p[1]),
-        ];
-    }
-    [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0]
-}
-
 /// The smallest pixel rectangle that holds all `points`, grown by `margin_px` and clipped to an image of `size_px`; `None`
 /// when nothing of it is inside the image.
 pub fn region_of(points: &[[f64; 2]], margin_px: f64, size_px: (u32, u32)) -> Option<Rect> {
@@ -214,11 +200,6 @@ impl Texture {
             }
         }
         Self { size, data }
-    }
-
-    /// The side in texels.
-    pub fn size(&self) -> usize {
-        self.size
     }
 
     /// The value at `(u, v)`, held to the edge outside `0..1`.
