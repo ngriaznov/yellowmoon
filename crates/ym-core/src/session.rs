@@ -903,6 +903,12 @@ pub struct OpenOutcome {
     pub ignored: usize,
     /// Paths that do not exist.
     pub missing: Vec<PathBuf>,
+    /// Folders that exist but could not be read (no permission, a drive that went away), in the
+    /// order they were met. A folder that was read and held no ARW file is not here.
+    pub unreadable: Vec<PathBuf>,
+    /// True when the first of [`unreadable`](Self::unreadable) was refused with `EPERM` ("Operation
+    /// not permitted": on macOS the privacy block of Desktop, Documents and removable volumes).
+    pub unreadable_privacy_block: bool,
 }
 
 impl OpenOutcome {
@@ -913,11 +919,60 @@ impl OpenOutcome {
         self.added.is_empty() && self.already_open == 0
     }
 
-    /// The message for the Start screen, when there is one.
+    /// The message for the Start screen, when there is one: [`unreadable_message`] when a folder
+    /// could not be read, else [`NO_ARW_MESSAGE`] for what was read and held no ARW file.
     #[must_use]
-    pub fn message(&self) -> Option<&'static str> {
-        self.no_arw().then_some(NO_ARW_MESSAGE)
+    pub fn message(&self) -> Option<String> {
+        if !self.no_arw() {
+            return None;
+        }
+        unreadable_message(
+            &self.unreadable,
+            self.unreadable_privacy_block && cfg!(target_os = "macos"),
+        )
+        .or_else(|| Some(NO_ARW_MESSAGE.to_owned()))
     }
+}
+
+/// The folder's name as the messages say it: its last component, else the whole path.
+fn folder_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The sentence for folders that could not be read (`docs/26` P1-1), or `None` when there are
+/// none. It names the first folder and counts the others ("…and 2 more folders."). `privacy` is
+/// the macOS privacy block on the first folder: the sentence then says where to allow access.
+#[must_use]
+pub fn unreadable_message(folders: &[PathBuf], privacy: bool) -> Option<String> {
+    let (first, rest) = folders.split_first()?;
+    let name = folder_name(first);
+    let mut text = if privacy {
+        format!(
+            "Yellowmoon can't read the folder {name}. Allow access in System Settings, under Privacy & Security › Files and Folders (or Full Disk Access), then try again."
+        )
+    } else {
+        format!(
+            "Yellowmoon can't read the folder {name}. Check that it is still there and that you may open it, then try again."
+        )
+    };
+    match rest.len() {
+        0 => {}
+        1 => text.push_str(" …and 1 more folder."),
+        n => text.push_str(&format!(" …and {n} more folders.")),
+    }
+    Some(text)
+}
+
+/// True for the error of a folder macOS will not let the app read: `PermissionDenied` with
+/// `EPERM` (1), where an ordinary missing permission is `EACCES` (13).
+#[must_use]
+pub fn is_privacy_block(error: &std::io::Error) -> bool {
+    cfg!(unix)
+        && error.kind() == std::io::ErrorKind::PermissionDenied
+        && error.raw_os_error() == Some(1)
 }
 
 #[derive(Debug, Default)]
@@ -925,6 +980,8 @@ struct Collected {
     files: Vec<PathBuf>,
     ignored: usize,
     missing: Vec<PathBuf>,
+    unreadable: Vec<PathBuf>,
+    unreadable_privacy_block: bool,
     /// The only folder that was given, if exactly one folder and nothing else was.
     single_folder: Option<PathBuf>,
 }
@@ -940,11 +997,28 @@ fn is_hidden(path: &Path) -> bool {
         .is_some_and(|n| n.starts_with('.'))
 }
 
-fn walk(dir: &Path, recursive: bool, out: &mut Collected) {
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return;
+/// The entries of a folder, unsorted; the error when it cannot be listed.
+fn list_dir(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    Ok(std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect())
+}
+
+/// How a folder is listed: [`list_dir`], or a stand-in that fails (the tests of the unreadable
+/// folder, which cannot rely on `chmod` when they run as root).
+type Lister<'a> = &'a dyn Fn(&Path) -> std::io::Result<Vec<PathBuf>>;
+
+fn walk(dir: &Path, recursive: bool, out: &mut Collected, list: Lister<'_>) {
+    let mut entries = match list(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            if out.unreadable.is_empty() {
+                out.unreadable_privacy_block = is_privacy_block(&error);
+            }
+            out.unreadable.push(dir.to_path_buf());
+            return;
+        }
     };
-    let mut entries: Vec<PathBuf> = read.filter_map(|e| e.ok().map(|e| e.path())).collect();
     entries.sort();
     for path in entries {
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
@@ -956,7 +1030,7 @@ fn walk(dir: &Path, recursive: bool, out: &mut Collected) {
             out.ignored += 1;
         } else if is_dir {
             if recursive {
-                walk(&path, recursive, out);
+                walk(&path, recursive, out, list);
             }
         } else if is_file && is_arw(&path) {
             out.files.push(path);
@@ -967,10 +1041,14 @@ fn walk(dir: &Path, recursive: bool, out: &mut Collected) {
 }
 
 fn collect(paths: &[PathBuf], recursive: bool) -> Collected {
+    collect_with(paths, recursive, &list_dir)
+}
+
+fn collect_with(paths: &[PathBuf], recursive: bool, list: Lister<'_>) -> Collected {
     let mut out = Collected::default();
     for path in paths {
         if path.is_dir() {
-            walk(path, recursive, &mut out);
+            walk(path, recursive, &mut out, list);
         } else if path.is_file() {
             if is_arw(path) {
                 out.files.push(path.clone());
@@ -2217,6 +2295,8 @@ impl Session {
         let mut outcome = OpenOutcome {
             ignored: collected.ignored,
             missing: collected.missing,
+            unreadable: collected.unreadable,
+            unreadable_privacy_block: collected.unreadable_privacy_block,
             ..OpenOutcome::default()
         };
         // New files only, sorted, each file once.
@@ -4792,6 +4872,96 @@ impl From<String> for AnswerError {
 mod tests {
     use super::*;
     use std::sync::Barrier;
+
+    fn refused(code: i32) -> std::io::Error {
+        std::io::Error::from_raw_os_error(code)
+    }
+
+    /// A lister that fails for the folders named `bad` with `error` and lists the real ones.
+    fn failing<'a>(
+        bad: &'a [PathBuf],
+        error: impl Fn() -> std::io::Error + 'a,
+    ) -> impl Fn(&Path) -> std::io::Result<Vec<PathBuf>> + 'a {
+        move |dir| {
+            if bad.iter().any(|b| b == dir) {
+                Err(error())
+            } else {
+                list_dir(dir)
+            }
+        }
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_listed_is_unreadable_and_not_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("Locked");
+        let open = dir.path().join("Open");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::create_dir_all(&open).unwrap();
+        std::fs::write(open.join("a.ARW"), b"x").unwrap();
+        let bad = [locked.clone()];
+        let list = failing(&bad, || refused(13));
+        let got = collect_with(&[locked.clone(), open.clone()], false, &list);
+        assert_eq!(got.unreadable, std::slice::from_ref(&locked));
+        assert!(
+            !got.unreadable_privacy_block,
+            "EACCES is not the privacy block"
+        );
+        assert_eq!(got.files, [open.join("a.ARW")]);
+        // Nothing read: the message is the folder's.
+        let got = collect_with(std::slice::from_ref(&locked), false, &list);
+        let outcome = OpenOutcome {
+            unreadable: got.unreadable,
+            ..OpenOutcome::default()
+        };
+        assert_eq!(
+            outcome.message().as_deref(),
+            Some(
+                "Yellowmoon can't read the folder Locked. Check that it is still there and that you may open it, then try again."
+            )
+        );
+        // A folder that was read and held no ARW file keeps the old sentence.
+        let empty = OpenOutcome::default();
+        assert_eq!(empty.message().as_deref(), Some(NO_ARW_MESSAGE));
+    }
+
+    #[test]
+    fn a_subfolder_that_cannot_be_listed_is_named_when_walking_deep() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let bad = [sub.clone()];
+        let list = failing(&bad, || refused(1));
+        let deep = collect_with(&[dir.path().to_path_buf()], true, &list);
+        assert_eq!(deep.unreadable, [sub]);
+        assert!(deep.unreadable_privacy_block == cfg!(unix));
+        let flat = collect_with(&[dir.path().to_path_buf()], false, &list);
+        assert!(
+            flat.unreadable.is_empty(),
+            "one level: the subfolder is not entered"
+        );
+    }
+
+    #[test]
+    fn the_message_names_the_first_folder_and_counts_the_rest() {
+        let f = |n: &[&str]| n.iter().map(PathBuf::from).collect::<Vec<_>>();
+        assert_eq!(unreadable_message(&[], false), None);
+        let one = unreadable_message(&f(&["/a/Card"]), false).unwrap();
+        assert!(
+            one.starts_with("Yellowmoon can't read the folder Card. "),
+            "{one}"
+        );
+        assert!(!one.contains("more folder"));
+        let two = unreadable_message(&f(&["/a/Card", "/b/X"]), false).unwrap();
+        assert!(two.ends_with(" …and 1 more folder."), "{two}");
+        let three = unreadable_message(&f(&["/a/Card", "/b/X", "/c/Y"]), false).unwrap();
+        assert!(three.ends_with(" …and 2 more folders."), "{three}");
+        let privacy = unreadable_message(&f(&["/a/Desktop"]), true).unwrap();
+        assert_eq!(
+            privacy,
+            "Yellowmoon can't read the folder Desktop. Allow access in System Settings, under Privacy & Security › Files and Folders (or Full Disk Access), then try again."
+        );
+    }
 
     /// Runs `work` for `key` the way `Inner::raw_image` does: lead it, or wait for the leader's
     /// result and lead again if the leader failed.

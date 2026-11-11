@@ -442,6 +442,11 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         counts.failed.push((*kind).to_owned());
     }
     if files.is_empty() {
+        // A folder that could not be read was reported above, and it is the reason nothing is left:
+        // a failure (1), not "no input" (5).
+        if problems.iter().any(|p| p.kind == "unreadable") {
+            return Ok(exit::SOME_FAILED);
+        }
         console.error(if ignored > 0 || !problems.is_empty() {
             "No ARW files were found. Give ARW files, or folders that hold them."
         } else {

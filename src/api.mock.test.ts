@@ -1300,6 +1300,7 @@ describe("optionsFromLocation", () => {
       holdAt: 5.4,
     });
     expect(optionsFromLocation("?mockPhotos=500")).toEqual({ photoCount: 500 });
+    expect(optionsFromLocation("?mockUnreadable=Desktop")).toEqual({ unreadable: "Desktop" });
     expect(optionsFromLocation("?mockLibraries=all")).toEqual({ allLibraries: true });
     expect(optionsFromLocation("?mockLibraries=none")).toEqual({});
     expect(optionsFromLocation("?mockViewport=fallback")).toEqual({ viewport: "fallback" });

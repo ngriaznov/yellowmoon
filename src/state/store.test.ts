@@ -198,6 +198,20 @@ describe("opening photos", () => {
       expect(store.getState().opening).toBe(false);
     });
 
+    it("shows the core's \"can't read the folder\" answer as the drop notice, not as an error and not as \"No ARW files\"", async () => {
+      inApp();
+      const { api, store } = await connected();
+      const message = "Yellowmoon can't read the folder Desktop. Check that it is still there and that you may open it, then try again.";
+      api.failNext("openPaths", { scope: "open", message });
+      await store.openPaths(["/Users/me/Desktop"]);
+      expect(store.getState().dropNotice).toBe(message);
+      expect(store.getState().error).toBeNull();
+      api.failNext("openDialog", { scope: "open", message });
+      await store.openDialog("folder");
+      expect(store.getState().dropNotice).toBe(message);
+      expect(store.getState().error).toBeNull();
+    });
+
     it("still shows any other open error in the error bar", async () => {
       inApp();
       const { api, store } = await connected();

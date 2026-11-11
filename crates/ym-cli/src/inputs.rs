@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 
+use ym_core::session::{is_privacy_block, unreadable_message};
 use ym_raw::error::RawError;
 
 /// An input the user named that cannot be developed.
@@ -18,7 +19,7 @@ use ym_raw::error::RawError;
 pub struct Problem {
     /// The path as it was given.
     pub path: PathBuf,
-    /// A short machine-readable kind (`not_found`, `not_arw`).
+    /// A short machine-readable kind (`not_found`, `not_arw`, `unreadable`).
     pub kind: &'static str,
     /// What is wrong and what to do next.
     pub message: String,
@@ -82,11 +83,38 @@ fn is_hidden(path: &Path) -> bool {
         .is_some_and(|n| n.starts_with('.'))
 }
 
-fn walk(dir: &Path, recursive: bool, files: &mut Vec<PathBuf>, ignored: &mut usize) {
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return;
+/// The entries of a folder, unsorted; the error when it cannot be listed.
+fn list_dir(dir: &Path) -> io::Result<Vec<PathBuf>> {
+    Ok(std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect())
+}
+
+/// How a folder is listed: [`list_dir`], or a stand-in that fails (the tests, which cannot rely
+/// on `chmod` when they run as root).
+type Lister<'a> = &'a dyn Fn(&Path) -> io::Result<Vec<PathBuf>>;
+
+/// What [`walk`] collects.
+struct Walk<'a> {
+    files: &'a mut Vec<PathBuf>,
+    ignored: &'a mut usize,
+    problems: &'a mut Vec<Problem>,
+    list: Lister<'a>,
+}
+
+fn walk(dir: &Path, recursive: bool, out: &mut Walk<'_>) {
+    let mut entries = match (out.list)(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            let privacy = is_privacy_block(&error) && cfg!(target_os = "macos");
+            out.problems.push(Problem {
+                path: dir.to_path_buf(),
+                kind: "unreadable",
+                message: unreadable_message(&[dir.to_path_buf()], privacy).unwrap_or_default(),
+            });
+            return;
+        }
     };
-    let mut entries: Vec<PathBuf> = read.filter_map(|e| e.ok().map(|e| e.path())).collect();
     entries.sort();
     for path in entries {
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
@@ -94,15 +122,15 @@ fn walk(dir: &Path, recursive: bool, files: &mut Vec<PathBuf>, ignored: &mut usi
         };
         let is_file = meta.is_file() || (meta.file_type().is_symlink() && path.is_file());
         if is_hidden(&path) {
-            *ignored += 1;
+            *out.ignored += 1;
         } else if meta.is_dir() {
             if recursive {
-                walk(&path, recursive, files, ignored);
+                walk(&path, recursive, out);
             }
         } else if is_file && is_arw(&path) {
-            files.push(path);
+            out.files.push(path);
         } else {
-            *ignored += 1;
+            *out.ignored += 1;
         }
     }
 }
@@ -123,11 +151,24 @@ fn not_arw_message(path: &Path) -> String {
 /// Walks the inputs. Relative paths are taken against the working directory and returned absolute
 /// (symbolic links are not resolved: a photo keeps the name it was given).
 pub fn expand(inputs: &[PathBuf], recursive: bool) -> Expanded {
+    expand_with(inputs, recursive, &list_dir)
+}
+
+fn expand_with(inputs: &[PathBuf], recursive: bool, list: Lister<'_>) -> Expanded {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut out = Expanded::default();
     for input in inputs {
         if input.is_dir() {
-            walk(input, recursive, &mut files, &mut out.ignored);
+            walk(
+                input,
+                recursive,
+                &mut Walk {
+                    files: &mut files,
+                    ignored: &mut out.ignored,
+                    problems: &mut out.problems,
+                    list,
+                },
+            );
         } else if input.is_file() {
             if is_arw(input) {
                 files.push(input.clone());
@@ -219,6 +260,31 @@ mod tests {
         assert!(flat.problems.is_empty());
         let deep = expand(&[dir.path().to_path_buf()], true);
         assert_eq!(names(&deep), ["A.arw", "b.ARW", "e.ARW"]);
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_listed_is_a_problem_named_unreadable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let locked = dir.path().join("Locked");
+        std::fs::create_dir_all(&locked).expect("folder");
+        let a = touch(dir.path(), "a.ARW");
+        let bad = locked.clone();
+        let list = move |d: &Path| {
+            if d == bad {
+                Err(io::Error::from_raw_os_error(13))
+            } else {
+                list_dir(d)
+            }
+        };
+        let out = expand_with(&[locked.clone(), dir.path().to_path_buf()], false, &list);
+        assert_eq!(out.files, [a]);
+        assert_eq!(out.problems.len(), 1);
+        assert_eq!(out.problems[0].path, locked);
+        assert_eq!(out.problems[0].kind, "unreadable");
+        assert_eq!(
+            out.problems[0].message,
+            "Yellowmoon can't read the folder Locked. Check that it is still there and that you may open it, then try again."
+        );
     }
 
     #[test]

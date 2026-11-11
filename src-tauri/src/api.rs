@@ -443,13 +443,19 @@ impl AppApi {
     ///
     /// # Errors
     ///
-    /// [`AppError`] with "No ARW files in what you dropped." when nothing is an ARW file, or when
-    /// what was given is not there.
+    /// [`AppError`] with "No ARW files in what you dropped." when nothing is an ARW file, with
+    /// "Yellowmoon can't read the folder {name}. …" when a folder could not be read (`docs/26`
+    /// H-02), or when what was given is not there.
     pub fn open_paths(&self, paths: &[String]) -> Result<SessionState, AppError> {
         let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
         let outcome = self.core.session.open(&paths, OpenOptions::default());
-        // Something that is not there is not "no ARW files": say so first.
-        if outcome.added.is_empty() && outcome.already_open == 0 && !outcome.missing.is_empty() {
+        // Something that is not there is not "no ARW files": say so first. A folder that could not be
+        // read is not "no ARW files" either: `message` names it.
+        if outcome.added.is_empty()
+            && outcome.already_open == 0
+            && outcome.unreadable.is_empty()
+            && !outcome.missing.is_empty()
+        {
             return Err(AppError::new(
                 ErrorScope::Open,
                 "That file isn't there any more. Check that its drive is connected, then open it again.",

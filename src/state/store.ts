@@ -19,6 +19,7 @@
  */
 import type { Api, Unsubscribe } from "../api";
 import { toAppError } from "../api";
+import { isUnreadableMessage } from "../api/openMessages";
 import type {
   ApplyScope,
   AutoProvider,
@@ -1243,7 +1244,7 @@ export class AppStore {
       if (addingToPhotos && session.opened) this.showNotice(openedNotice(session.opened));
     } catch (error) {
       const failure = toAppError(error);
-      if (failure.scope === "open" && failure.message === NO_ARW_NOTICE) this.sayNoArw(addingToPhotos);
+      if (failure.scope === "open" && (failure.message === NO_ARW_NOTICE || isUnreadableMessage(failure.message))) this.sayDropProblem(failure.message, addingToPhotos);
       else this.fail(failure);
     } finally {
       this.set({ opening: false });
@@ -1261,7 +1262,9 @@ export class AppStore {
         if (addingToPhotos && session.opened) this.showNotice(openedNotice(session.opened));
       }
     } catch (error) {
-      this.fail(error);
+      const failure = toAppError(error);
+      if (failure.scope === "open" && isUnreadableMessage(failure.message)) this.sayDropProblem(failure.message, addingToPhotos);
+      else this.fail(failure);
     } finally {
       this.set({ opening: false });
     }
@@ -1292,8 +1295,13 @@ export class AppStore {
 
   /** "No ARW files in what you dropped.": in the drop zone on Start, in the notice bar where there is no drop zone. */
   private sayNoArw(onPhotos: boolean): void {
-    if (onPhotos) this.set({ dropNotice: null, notice: NO_ARW_NOTICE, noticeAction: null });
-    else this.set({ dropNotice: NO_ARW_NOTICE });
+    this.sayDropProblem(NO_ARW_NOTICE, onPhotos);
+  }
+
+  /** What was wrong with a drop or a dialog's choice ("No ARW files…", "Yellowmoon can't read the folder …"), where the person is looking. */
+  private sayDropProblem(message: string, onPhotos: boolean): void {
+    if (onPhotos) this.set({ dropNotice: null, notice: message, noticeAction: null });
+    else this.set({ dropNotice: message });
   }
 
   /** Goes to the Photos screen, on the first photo that is ready when the current one isn't. */
