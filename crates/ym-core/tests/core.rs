@@ -847,6 +847,7 @@ fn the_export_preferences_and_looks_types_have_the_fields_of_the_typescript_inte
             file_percent: None,
             error: None,
             skipped: false,
+            stopped: false,
         })
         .expect("json"),
     );

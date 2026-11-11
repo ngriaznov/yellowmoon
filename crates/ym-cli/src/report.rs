@@ -455,6 +455,20 @@ pub fn render_error(
     obj
 }
 
+/// The `stopped` event of `render --json`: a failure of the destination (the disk is full, the folder
+/// is read-only or gone) ended the export, after the error object of the photo it hit. `exported` is
+/// the number of photos written or skipped before it, `not_tried` the photos after it, which were
+/// neither decoded nor rendered (`docs/10`, `docs/26` P2-2).
+#[must_use]
+pub fn render_stopped(kind: &str, exported: usize, not_tried: usize) -> Object {
+    let mut obj = Object::new();
+    obj.insert("event", "stopped");
+    obj.insert("kind", kind);
+    obj.insert("exported", exported as u64);
+    obj.insert("not_tried", not_tried as u64);
+    obj
+}
+
 /// The success object of `render --json`. `timings_ms` is (decode, develop, encode).
 #[must_use]
 pub fn render_ok(

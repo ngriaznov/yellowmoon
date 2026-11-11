@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
+import { Item, ItemContent } from "@/components/glass/item";
 import { Button, ExportQueueList, ProgressBar, TitleBlock } from "../../components";
 import { estimateTitle, formatEstimate, photoCount } from "../../export/format";
 import { exportModel } from "../../export/model";
@@ -97,6 +98,11 @@ export function ExportPanel({ store }: ExportPanelProps) {
         ) : (
           <div className="ym-export__queue">
             <ProgressBar value={summarise(run).percent} label="Exporting" />
+            {run.stopped !== undefined ? (
+              <Item variant="muted" size="sm" role="alert" className="ym-export__banner">
+                <ItemContent>{run.stopped}</ItemContent>
+              </Item>
+            ) : null}
             <div className="ym-export__list">
               <ExportQueueList items={queueItems(run)} />
             </div>

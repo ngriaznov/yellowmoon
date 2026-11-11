@@ -489,6 +489,9 @@ fn one_photo_that_fails_does_not_stop_the_job() {
     let s = queue.summary(id).expect("summary");
     assert_eq!((s.saved, s.failed, s.skipped, s.done), (2, 1, 0, 3));
     assert_eq!(s.state, JobState::Finished);
+    // A failure about one photo does not stop the job.
+    assert_eq!((s.stopped, s.not_tried), (None, 0));
+    assert!(progress(&events).iter().all(|e| !e.stopped));
     assert_eq!(s.errors.len(), 1);
     assert_eq!(s.errors[0].file, "DSC00002_gone.jpg");
 }

@@ -429,6 +429,24 @@ describe("running", () => {
     expect(within(panel).getByText("1 photo saved to Lisbon export. 1 photo could not be saved. 1 photo skipped because the file already exists.")).toBeInTheDocument();
   });
 
+  it("stops at a full disk: one banner, the rest Not exported, Stopped as the title", async () => {
+    h = renderApp({ ...MOCKUP, exportFailures: { DSC04204: "disk_full" } });
+    await openPhotos(h);
+    await h.user.keyboard("{Meta>}e{/Meta}");
+    const panel = screen.getByRole("complementary", { name: "Export" });
+    await waitFor(() => expect(within(panel).getByRole("button", { name: /^Export/ })).toHaveTextContent("≈"));
+    await h.user.click(exportButton());
+    await within(panel).findByRole("heading", { level: 2, name: "Exporting" });
+    act(() => h!.api.flush());
+    await within(panel).findByRole("heading", { level: 2, name: "Stopped" });
+    const sentence = "The disk is full, so the export stopped. Free some space, then export the photos that are left.";
+    expect(within(panel).getByRole("alert")).toHaveTextContent(sentence);
+    expect(within(panel).getByText(`1 photo saved to Lisbon export. The export stopped: ${sentence}`)).toBeInTheDocument();
+    expect(within(panel).getByText("Not exported, the export stopped.")).toBeInTheDocument();
+    expect(within(panel).getByText("Failed")).toBeInTheDocument();
+    expect(within(panel).getByText("Not exported")).toBeInTheDocument();
+  });
+
   it("Cancel stops it and goes back to the options, saying what was saved", async () => {
     const panel = await start();
     await h!.user.click(within(panel).getByRole("button", { name: "Cancel" }));

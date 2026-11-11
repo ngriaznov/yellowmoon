@@ -31,6 +31,12 @@ jpeg-encoder.workspace = true
 # (flate2), Zlib (zlib-rs); both are already in the build.
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 
+[features]
+# TEST-ONLY. A write fault (`YM_WRITE_FAULT=enospc@<bytes>[,after=<files>]` or `fault::arm`) that makes a file
+# fail with "no space left" as if the disk filled, so the queue's stop on a destination failure can be tested on any
+# machine (`docs/26-hardening.md` P2-2). Compiled out of every normal build.
+fault-injection = []
+
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true

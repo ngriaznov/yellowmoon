@@ -6,7 +6,7 @@ import type { TagVariant } from "./Tag";
 import { useWindowedRange } from "./windowed";
 
 /** Where one file of an export is. */
-export type QueueState = "waiting" | "running" | "done" | "failed" | "skipped";
+export type QueueState = "waiting" | "running" | "done" | "failed" | "skipped" | "not_tried";
 
 /** One file in the export queue. */
 export interface ExportQueueItem {
@@ -26,6 +26,7 @@ const DEFAULT_NOTES: Readonly<Record<QueueState, string>> = {
   done: "Saved",
   failed: "Could not be saved",
   skipped: "Skipped, the file already exists",
+  not_tried: "Not exported, the export stopped.",
 };
 
 const TAGS: Readonly<Record<QueueState, TagVariant>> = {
@@ -34,6 +35,7 @@ const TAGS: Readonly<Record<QueueState, TagVariant>> = {
   done: "done",
   failed: "failed",
   skipped: "skipped",
+  not_tried: "skipped",
 };
 
 export interface ExportQueueListProps {
@@ -55,7 +57,9 @@ const QueueRow = memo(
             </span>
             <span className="ym-queue__note">{item.note ?? DEFAULT_NOTES[item.state]}</span>
           </span>
-          <Tag variant={TAGS[item.state]}>{item.state === "running" ? `${Math.round(item.percent ?? 0)}%` : undefined}</Tag>
+          <Tag variant={TAGS[item.state]}>
+            {item.state === "running" ? `${Math.round(item.percent ?? 0)}%` : item.state === "not_tried" ? "Not exported" : undefined}
+          </Tag>
         </li>
       </Item>
     );
@@ -68,7 +72,7 @@ const QueueRow = memo(
 /**
  * The per-file list of the Export panel while it runs: a glasscn `Item` row per file with its name, a
  * note and a tag (WAITING, 45% in yellow, DONE in ink, SKIPPED in orange for a file that already
- * existed, or FAILED with the reason as the note). A long queue (2000 photos) draws only the rows in view and a margin
+ * existed, NOT EXPORTED in orange for a file the job never got to because it stopped, or FAILED with the reason as the note). A long queue (2000 photos) draws only the rows in view and a margin
  * (`useWindowedRange`); a row is drawn again only when its own file, state, percentage or note changes.
  */
 export function ExportQueueList({ items, label = "Export queue", className }: ExportQueueListProps) {

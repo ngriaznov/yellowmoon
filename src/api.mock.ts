@@ -467,7 +467,11 @@ export interface MockOptions {
   downloadsDenied?: boolean;
   /** Output files that already exist in the destination, by name ("DSC04204_neutral.jpg"): Skip skips them, Keep both numbers them. */
   existingExports?: string[];
-  /** Photos whose export fails, by name ("DSC04204"), with the reason. */
+  /**
+   * Photos whose export fails, by name ("DSC04204"), with the reason. A reason that is a kind of failure of the destination
+   * (`disk_full`, `read_only`, `gone`, `permission`) is the core's sentence for it and **stops** the export at that photo: the
+   * photos after it are not tried (`docs/26` P2-2).
+   */
   exportFailures?: Record<string, string>;
   /** An export stops at this progress, in photos (1.45 is one done and the second at 45 %) until `flush()`, so a screenshot can show the running state. Default: never. */
   exportHoldAt?: number;
@@ -1086,7 +1090,7 @@ function withDefaults(...layers: MockOptions[]): Required<MockOptions> {
  * (a reason after a colon), `mockPicked=2,3,4`, `mockCurrent=3`, `mockPhotos=500` (a folder of 500 photos, the twelve repeating), `mockFolder=Name` (the folder's name), `mockUnreadable=Name` (a folder that cannot be read: opening a folder says so), `mockLooks=0` (no imported
  * looks), `mockLibraries=all` (looks in every section of the Look tab), `mockLenses=0` (no lens data: the Lens card's list is empty), `mockMissing=film-warm,film-cool`, `mockHold=5.4`, `mockDownloads=ARRI_LookLibrary_LogC4.zip` (zips that
  * land in Downloads while the wizard watches), `mockDownloadsDenied=1`, `mockExisting=DSC04204_neutral.jpg`,
- * `mockExportFails=DSC04204:reason`, `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
+ * `mockExportFails=DSC04204:reason` (`DSC04204:disk_full` stops the export there, as a full disk does), `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
  * (preferences survive a reload), `mockViewport=native` or `fallback` (the mock behaves like that viewport backend of the app),
  * `mockAppleAuto=unavailable|pending|answered|failed` (Apple Auto as on a Mac where it is not available, or where every photo is waiting
  * for its answer, has it, or failed; `MockAppleAuto`), `mockProviders=apple,claude,agy:signed_out` (the providers of the computer and their
@@ -1519,6 +1523,8 @@ interface ExportRun {
   errors: Array<string | null>;
   /** Per file: it already exists and is skipped. */
   skips: boolean[];
+  /** The file at which the export stops (a failure of the destination), or null. */
+  stopAt: number | null;
   timer: ReturnType<typeof setInterval> | null;
 }
 
@@ -2557,7 +2563,23 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     }
   }
 
-  function exportFiles(job: ExportJob): { files: string[]; skips: boolean[]; errors: Array<string | null> } {
+  /** The core's sentence for a failure of the destination (`DestinationProblem::app_message`, `docs/26` P2-1). */
+  function destinationSentence(kind: string, folder: string): string | null {
+    switch (kind) {
+      case "disk_full":
+        return "The disk is full, so the export stopped. Free some space, then export the photos that are left.";
+      case "read_only":
+        return `${folder} is read-only. Choose another folder.`;
+      case "gone":
+        return `Yellowmoon can't reach ${folder}. If it is on a drive, check that the drive is connected, then export again.`;
+      case "permission":
+        return `Yellowmoon isn't allowed to save to ${folder}. Choose another folder, or allow access in System Settings, under Privacy & Security.`;
+      default:
+        return null;
+    }
+  }
+
+  function exportFiles(job: ExportJob): { files: string[]; skips: boolean[]; errors: Array<string | null>; stopAt: number | null } {
     const recs = targets(job.scope);
     const ext = FILE_EXTENSION[job.options.format];
     const existing = new Set(options.existingExports);
@@ -2565,6 +2587,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const files: string[] = [];
     const skips: boolean[] = [];
     const errors: Array<string | null> = [];
+    let stopAt: number | null = null;
+    const folder = (job.options.destination ?? `${folderPath()} export`).split("/").filter(Boolean).pop() ?? "The folder";
     recs.forEach((rec, i) => {
       let name = `${sanitizeStem(
         expandNameTemplate(job.options.name_template, {
@@ -2583,9 +2607,12 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       taken.add(name);
       files.push(name);
       skips.push(skip);
-      errors.push(options.exportFailures[rec.scene.name] ?? null);
+      const failure = options.exportFailures[rec.scene.name] ?? null;
+      const sentence = failure === null ? null : destinationSentence(failure, folder);
+      if (sentence !== null && stopAt === null) stopAt = i;
+      errors.push(sentence ?? failure);
     });
-    return { files, skips, errors };
+    return { files, skips, errors, stopAt };
   }
 
   /** A DNG of the job is close to, not the same as, the picture: a photo has a look with its own display rendering (at an intensity above 0). */
@@ -2610,8 +2637,17 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       const i = run.reported++;
       const error = run.errors[i] ?? null;
       const skipped = !error && run.skips[i] === true;
+      if (error && run.stopAt === i) {
+        // A failure of the destination ends the job: this is its last event, and the files after it are not tried.
+        emit("export_progress", { job_id: run.id, file: run.files[i] ?? "", done: i + 1, total, file_percent: null, error, skipped: false, stopped: true });
+        run.progress = total;
+        run.reported = total;
+        stopExport(run);
+        announceBusy();
+        return;
+      }
       if (error || skipped) {
-        emit("export_progress", { job_id: run.id, file: run.files[i] ?? "", done: i + 1, total, file_percent: 100, error, skipped });
+        emit("export_progress", { job_id: run.id, file: run.files[i] ?? "", done: i + 1, total, file_percent: 100, error, skipped, stopped: false });
       }
     }
     emit("export_progress", {
@@ -2622,6 +2658,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       file_percent: finished ? 100 : Math.round((run.progress - index) * 100),
       error: null,
       skipped: false,
+      stopped: false,
     });
     announceBusy();
   }
@@ -3294,6 +3331,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
           reported: 0,
           errors: planned.errors,
           skips: planned.skips,
+          stopAt: planned.stopAt,
           timer: null,
         };
         exportRuns.set(exportRun.id, exportRun);

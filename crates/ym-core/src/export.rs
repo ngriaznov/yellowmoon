@@ -197,6 +197,17 @@ impl ExportError {
         }
     }
 
+    /// The destination problem behind a failed write, when there is one: the whole job cannot go on
+    /// (the disk is full, the folder is read-only, gone or not allowed), as opposed to a failure of
+    /// one photo (`docs/26-hardening.md` P2-2). The queue stops on it.
+    #[must_use]
+    pub fn destination_problem(&self) -> Option<DestinationProblem> {
+        match self {
+            Self::Write(e) => e.destination_problem(),
+            _ => None,
+        }
+    }
+
     /// The sentence for `ym` (stderr and `--json` `error.message`). It is the app's sentence, except
     /// for a failure of the destination, which names the folder by its full path and says which
     /// option to use (`docs/26-hardening.md` section 2).
@@ -1733,6 +1744,26 @@ pub fn estimate<'a>(
         );
     }
     Estimate { bytes, seconds }
+}
+
+/// Resolves the destination of a photo the way [`export_photo`] will (the folder is made and probed with a
+/// temporary file), without decoding or rendering anything. The queue calls it **before** the photo is
+/// decoded, so a folder that has gone or became read-only ends the job before any work is spent on it
+/// (`docs/26-hardening.md` P2-2). Any error is returned as `export_photo` would return it; the caller stops
+/// the job only for one with a [`ExportError::destination_problem`].
+///
+/// # Errors
+/// [`ExportError::Write`] when the folder cannot be made or written.
+pub fn check_destination(
+    ctx: &ExportContext,
+    snapshot: &PhotoSnapshot,
+    options: &ExportOptions,
+    seq: u32,
+) -> Result<(), ExportError> {
+    let v = &snapshot.view;
+    let fields = name_fields_of(&v.path, &v.meta, &v.camera, &v.settings.output().look, seq);
+    ExportDestination::resolve(options, &fields, Some(&v.path), ctx.home.as_deref())?;
+    Ok(())
 }
 
 /// The destination folder an export of `photo` would use, worked out without touching the disk:

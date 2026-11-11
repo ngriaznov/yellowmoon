@@ -3804,7 +3804,7 @@ pub struct LensStats {
     pub reason: Option<LensReshapeReason>,
 }
 
-/// `export_progress { job_id, file, done, total, file_percent, error, skipped }`.
+/// `export_progress { job_id, file, done, total, file_percent, error, skipped, stopped }`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type, Event)]
 #[tauri_specta(event_name = "export_progress")]
 pub struct ExportProgress {
@@ -3822,6 +3822,8 @@ pub struct ExportProgress {
     pub error: Option<String>,
     /// `file` already existed and "If it exists" is Skip.
     pub skipped: bool,
+    /// `file` failed because of the destination and the job stopped there.
+    pub stopped: bool,
 }
 
 /// `looks_changed`: the look list, the default look or a look's file changed. No data.

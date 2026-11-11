@@ -12,6 +12,7 @@ const event = (patch: Partial<ExportProgress>): ExportProgress => ({
   file_percent: 0,
   error: null,
   skipped: false,
+  stopped: false,
   ...patch,
 });
 const fresh = (): ExportRun => startRun(1, NAMES, "~/Pictures/Lisbon export");
@@ -150,6 +151,57 @@ describe("the sequence the core's queue sends (docs/01 §Export, preferences and
     let run = startRun(7, NAMES, "~/x");
     for (const e of [event({ job_id: 7, done: 0, file_percent: 0 }), event({ job_id: 7, done: 0, file_percent: 30 })]) run = applyProgress(run, e);
     expect(run.rows[0]).toMatchObject({ state: "running", percent: 30 });
+  });
+});
+
+describe("a stopped export (docs/26 P2-2)", () => {
+  const DISK_FULL = "The disk is full, so the export stopped. Free some space, then export the photos that are left.";
+  const stopAt = (done: number, file: string): ExportRun =>
+    applyProgress(
+      applyProgress(fresh(), event({ done: 1, file: NAMES[1], file_percent: 40 })),
+      event({ done, file, file_percent: null, error: DISK_FULL, stopped: true }),
+    );
+
+  it("marks the failing file failed and the files after it Not exported, and finishes", () => {
+    const run = stopAt(2, NAMES[1]!);
+    expect(run.phase).toBe("finished");
+    expect(run.stopped).toBe(DISK_FULL);
+    expect(run.rows.map((r) => r.state)).toEqual(["done", "failed", "not_tried"]);
+    expect(run.rows[2]).toMatchObject({ percent: 0, note: "Not exported, the export stopped." });
+    expect(summarise(run)).toMatchObject({ saved: 1, failed: 1, notTried: 1 });
+    // Later events change nothing.
+    expect(applyProgress(run, event({ done: 3, file_percent: 100 }))).toBe(run);
+  });
+
+  it("says Stopped when some files were saved, with the folder and the sentence", () => {
+    const run = stopAt(2, NAMES[1]!);
+    expect(runTitle(run)).toBe("Stopped");
+    expect(runBlurb(run)).toBe(`1 photo saved to Lisbon export. The export stopped: ${DISK_FULL}`);
+    expect(cellLabel(run)).toBe("Export stopped");
+  });
+
+  it("says Not exported when nothing was saved", () => {
+    const run = applyProgress(fresh(), event({ done: 1, file: NAMES[0], file_percent: null, error: DISK_FULL, stopped: true }));
+    expect(run.rows.map((r) => r.state)).toEqual(["failed", "not_tried", "not_tried"]);
+    expect(runTitle(run)).toBe("Not exported");
+    expect(runBlurb(run)).toBe(`Nothing was saved. The export stopped: ${DISK_FULL}`);
+    expect(cellLabel(run)).toBe("Not exported");
+  });
+
+  it("draws the rows after the failing one with their own note", () => {
+    const items = queueItems(stopAt(2, NAMES[1]!));
+    expect(items.map((i) => [i.state, i.note])).toEqual([
+      ["done", undefined],
+      ["failed", DISK_FULL],
+      ["not_tried", "Not exported, the export stopped."],
+    ]);
+  });
+
+  it("is not a stop when the failing file is about one photo", () => {
+    const run = applyProgress(fresh(), event({ done: 1, file: NAMES[0], error: "File missing or changed. Import again." }));
+    expect(run.phase).toBe("running");
+    expect(run.stopped).toBeUndefined();
+    expect(cellLabel(applyProgress(applyProgress(run, event({ done: 2, error: "x" })), event({ done: 3, file_percent: 100 })))).toBe("Exported");
   });
 });
 
