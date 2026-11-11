@@ -75,8 +75,15 @@
 .sk-cell figcaption small { display: block; font-weight: 400; color: var(--glass-label-secondary); margin-top: 2px; }
 .sk-panel .ym-nodehead { padding-top: 8px; }
 
-.ym-gnode__mask[data-glyph="skin"] { color: var(--glass-label-secondary); }
+.ym-gnode__mask[data-glyph="face_refinement"] { color: var(--glass-label-secondary); }
 .sk-switchrow { margin-top: 2px; min-height: 32px; }
 .sk-foot { margin-top: 8px; }
 .sk-row [data-slider] { min-height: 34px; }
 .sk-faces { padding-bottom: 0; }
+
+/* label column wide enough for "Shadow desaturation" */
+.sk-row [data-slider] { grid-template-columns: 132px minmax(0, 1fr) 72px 40px; }
+.sk-row.sk-sub [data-slider] { grid-template-columns: 118px minmax(0, 1fr) 72px 40px; }
+/* "Face Refinement" is longer than the old names: keep the whole name in the panel head and let the line after it truncate */
+.ym-nodehead__name { max-width: none; flex-shrink: 0; }
+.ym-nodehead__line { min-width: 0; }

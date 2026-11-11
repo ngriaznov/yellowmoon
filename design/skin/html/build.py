@@ -3,7 +3,7 @@
 
 Same method as design/mixers/html/build.py: the app's DOM and CSS captured in design/nodes/html/pages/ (header, photo cell, toolbar, panel head,
 tabs, cards, sliders, segmented controls), the graph and the panel rebuilt from the app's own classes. This file imports the mixers builder for
-the shared pieces (it only reads files at import) and adds the Skin node. The pictures are drawings made by faces.py (no photograph).
+the shared pieces (it only reads files at import) and adds the Face Refinement node (kind `face_refinement`). The pictures are drawings made by faces.py (no photograph).
 Run: python3 build.py   (needs bs4).
 """
 import copy
@@ -26,7 +26,7 @@ svg = M.svg
 
 FACE_ICON = '<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><path d="M9 9h.01"/><path d="M15 9h.01"/>'
 EYE = '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>'
-M.ICON["skin"] = FACE_ICON
+M.ICON["face_refinement"] = FACE_ICON
 
 # ------------------------------------------------------------------------------------------------------------------------------ templates
 S07 = open(os.path.join(M.NODES, "07.html"), encoding="utf-8").read()
@@ -110,13 +110,13 @@ def segmented(labels, active, width, label):
     return str(s)
 
 
-def eye_toggle(on, label="Show masks"):
+def eye_toggle(on, label="Show skin areas"):
     e = BeautifulSoup(str(EYE_BTN), "html.parser")
     b = e.find("button")
     b["aria-label"] = label
     b["aria-pressed"] = "true" if on else "false"
     b["data-state"] = "on" if on else "off"
-    e.select_one(".sr-only").string = "Show where the tools work on this face" if not on else "Hide the masks"
+    e.select_one(".sr-only").string = "Show where the tools work on this face" if not on else "Hide the skin areas"
     if on:
         b["class"] = b.get("class", []) + ["sk-eye-on"]
     return str(e)
@@ -174,7 +174,7 @@ def faces_card(scene, n, selected, same, found_state="ok", small=(), many=False,
         body = (
             '<div class="sk-empty"><span class="sk-empty__ico">' + svg(FACE_ICON + '<path d="m4 4 16 16" opacity=".0"/>', 22) + '</span>'
             '<p class="sk-empty__title">No faces found in this photo.</p>'
-            '<p class="ym-row-note" style="margin:6px 0 0">Skin works on faces that are at least 200 px across and turned towards the camera. Try another photo, or delete this node. It changes nothing until it finds a face.</p></div>'
+            '<p class="ym-row-note" style="margin:6px 0 0">Face Refinement works on faces that are at least 200 px across and turned towards the camera. Try another photo, or delete this node. It changes nothing until it finds a face.</p></div>'
         )
         return f'<section class="ym-card" data-last="true">{head}{body}</section>'
     if found_state == "finding":
@@ -193,15 +193,22 @@ def faces_card(scene, n, selected, same, found_state="ok", small=(), many=False,
     return f'<section class="ym-card" data-last="true">{head}{grid}{extra}</section>'
 
 
-def face_card(scene, n, selected, same, values, neck=(False, False), masks_on=False, small=False, disabled=False, copy_btn=True):
-    """The controls of the selected face (or of all faces)."""
+def _head(title, tag=None, eye=None, reset=None):
+    t = f'<span class="sk-count">{tag}</span>' if tag else ""
+    return f'<div class="ym-card__header"><h3 class="ym-card__title">{title}</h3>{t}{eye or ""}{reset}</div>'
+
+
+def face_card(scene, n, selected, same, values, masks_on=False, small=False, disabled=False, copy_btn=True):
+    """The controls of the selected face (or of all faces), as three cards: the face's own tools, Skin grading and Teeth.
+    values = (blemish, dark circles, even skin, texture, contrast, shadow desaturation, shine removal, whitening)."""
     title = "All faces" if same else f"Face {selected + 1}"
     if n == 1:
         title = "Face"
-    bl, dc, es, tx = values
+    tag = None if n == 1 else title
+    bl, dc, es, tx, ct, sd, sr, tw = tuple(values) + (0,) * (8 - len(values))
     dis = disabled or small
-    reset = link_button("Reset", disabled=dis)
-    head = f'<div class="ym-card__header"><h3 class="ym-card__title">{title}</h3>{eye_toggle(masks_on) if not dis else ""}{reset}</div>'
+    reset = lambda: link_button("Reset", disabled=dis)
+    dattr = " data-disabled" if dis else ""
     note = ""
     if small:
         note = (
@@ -210,22 +217,28 @@ def face_card(scene, n, selected, same, values, neck=(False, False), masks_on=Fa
         )
     rows = (
         slider_row("Blemish", bl, 0, 100, 30, disabled=dis)
-        + switch(neck[0], "Include neck", disabled=dis).replace("sk-switchrow", "sk-switchrow sk-sub")
         + slider_row("Dark circles", dc, 0, 100, 30, disabled=dis)
         + slider_row("Even skin", es, 0, 100, 25, disabled=dis)
         + slider_row("Texture", tx, -100, 100, 0, sub=True, disabled=dis, bipolar=True)
-        + switch(neck[1], "Include neck", disabled=dis).replace("sk-switchrow", "sk-switchrow sk-sub")
     )
     legend = ""
     if masks_on:
         legend = (
-            '<div class="sk-legend" aria-label="Mask colours"><span><i style="background:#ff6fd2"></i>Skin</span><span><i style="background:#58d4ff"></i>Under the eyes</span>'
-            '<span><i style="background:none;box-shadow:inset 0 0 0 2px #9be56a"></i>Even skin</span></div>'
+            '<div class="sk-legend" aria-label="Skin area colours"><span><i style="background:#ff6fd2"></i>Skin</span><span><i style="background:#58d4ff"></i>Under the eyes</span>'
+            '<span><i style="background:none;box-shadow:inset 0 0 0 2px #9be56a"></i>Even skin and grading</span><span><i style="background:#b794ff"></i>Teeth</span></div>'
         )
+    c1 = f'<section class="ym-card" data-last="false">{_head(title, None, eye_toggle(masks_on) if not dis else "", reset())}{note}<div class="sk-rows"{dattr}>{rows}</div>{legend}</section>'
+    g_rows = (
+        slider_row("Contrast", ct, -100, 100, 0, disabled=dis, bipolar=True)
+        + slider_row("Shadow desaturation", sd, 0, 100, 0, disabled=dis)
+        + slider_row("Shine removal", sr, 0, 100, 0, disabled=dis)
+    )
+    c2 = f'<section class="ym-card" data-last="false">{_head("Skin grading", tag, None, reset())}<div class="sk-rows"{dattr}>{g_rows}</div></section>'
     foot = ""
     if n > 1 and not same and not dis and copy_btn:
-        foot = f'<div class="sk-foot">{sec_button("Copy to other faces")}</div>'
-    return f'<section class="ym-card" data-last="{"false" if True else "true"}">{head}{note}<div class="sk-rows"{" data-disabled" if dis else ""}>{rows}</div>{legend}{foot}</section>'
+        foot = f'<div class="sk-foot">{sec_button("Copy to other faces")}<span class="sk-foot__note">Copies all of {title}&#8217;s settings.</span></div>'
+    c3 = f'<section class="ym-card" data-last="false">{_head("Teeth", tag, None, reset())}<div class="sk-rows"{dattr}>{slider_row("Whitening", tw, 0, 100, 0, disabled=dis)}</div>{foot}</section>'
+    return c1 + c2 + c3
 
 
 def protect_card(active=False, strokes=0, disabled=False):
@@ -243,30 +256,30 @@ def protect_card(active=False, strokes=0, disabled=False):
     )
 
 
-def cards(scene, n, selected, same, values, neck=(False, False), masks_on=False, found="ok", small=(), protect=0, protect_active=False):
+def cards(scene, n, selected, same, values, masks_on=False, found="ok", small=(), protect=0, protect_active=False):
     fc = faces_card(scene, n, selected, same, found, small=small)
     if found != "ok":
         return fc
     isl = selected in small and not same
-    return fc + face_card(scene, n, selected, same, values, neck, masks_on, small=isl) + protect_card(protect_active, protect, disabled=isl)
+    return fc + face_card(scene, n, selected, same, values, masks_on, small=isl) + protect_card(protect_active, protect, disabled=isl)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ panel
 def tabs2(active=0):
-    t = M.TABLIST.replace('data-tab="raw"', 'data-tab="look"').replace(">Blend</button>", ">Skin</button>").replace("ym-tab-raw-blend", "ym-tab-look-skin").replace("ym-tabpanel-raw", "ym-tabpanel-look")
+    t = M.TABLIST.replace('data-tab="raw"', 'data-tab="look"').replace(">Blend</button>", ">Face</button>").replace("ym-tab-raw-blend", "ym-tab-look-face").replace("ym-tabpanel-raw", "ym-tabpanel-look")
     return t
 
 
 def aside2(headhtml, cardshtml, inert=False):
     return (
         f'<aside aria-label="Tools" class="ym-tools" data-tab="look">{headhtml}{tabs2()}'
-        f'<div aria-labelledby="ym-tab-look-skin" class="ym-tools__scroll" data-tab="look" id="ym-tabpanel-look" role="tabpanel">{cardshtml}</div>{M.FOOT}</aside>'
+        f'<div aria-labelledby="ym-tab-look-face" class="ym-tools__scroll" data-tab="look" id="ym-tabpanel-look" role="tabpanel">{cardshtml}</div>{M.FOOT}</aside>'
         '<div aria-live="polite" class="sr-only"></div></div></div>'
     )
 
 
 def head(line, bypass_on=False):
-    h = M.head("skin", "Skin", line, pressed_on=bypass_on)
+    h = M.head("face_refinement", "Face Refinement", line, pressed_on=bypass_on)
     return re.sub(r'<span class="ym-nodehead__chip">.*?</span>', '<span class="ym-nodehead__chip" style="font-size:12px;font-weight:800">02</span>', h, count=1, flags=re.S)
 
 
@@ -285,11 +298,11 @@ def write(name, html):
     print("wrote", name, len(html))
 
 
-def skin_card(g, key, x, y, num, thumb, selected=False, bypass=False, dead=False, name="Skin"):
-    """A Skin node card: the corrector's card with the face glyph in the footer where a mask glyph would be."""
+def skin_card(g, key, x, y, num, thumb, selected=False, bypass=False, dead=False, name="Face Refinement"):
+    """A Face Refinement node card: the corrector's card with the face glyph in the footer where a mask glyph would be."""
     g.corrector(key, name, x, y, num, thumb, masks=("mask",), selected=selected, bypass=bypass, dead=dead)
     h = g.html[-1]
-    h = h.replace(f'data-glyph="mask">{M.HALF}', f'data-glyph="skin">{svg(FACE_ICON, 14)}')
+    h = h.replace(f'data-glyph="mask">{M.HALF}', f'data-glyph="face_refinement">{svg(FACE_ICON, 14)}')
     g.html[-1] = h
 
 
@@ -314,14 +327,14 @@ def graph(scene, selected=True, bypass=False, dead=False, n_nodes=2):
     xs = [120, 334]
     g.marker("input", "Input", xs[0] - 86, mid)
     g.corrector("main", "Main", xs[0], mid - 56, "01", thumb(scene))
-    skin_card(g, "skin", xs[1], mid - 56, "02", thumb(scene), selected=selected, bypass=bypass, dead=dead)
+    skin_card(g, "face_refinement", xs[1], mid - 56, "02", thumb(scene), selected=selected, bypass=bypass, dead=dead)
     g.marker("output", "Output", xs[1] + 150 + 86, mid)
-    for a, b in (("input", "main"), ("main", "skin"), ("skin", "output")):
+    for a, b in (("input", "main"), ("main", "face_refinement"), ("face_refinement", "output")):
         g.link(a, b)
     return g
 
 
-def node_page(name, title, scene, headline, cardshtml, sel_face=1, show_faces=True, overlay_extra="", bar_mask_on=False, fit=28, bypass_on=False, tag=None):
+def node_page(name, title, scene, headline, cardshtml, sel_face=1, show_faces=True, overlay_extra="", bar_mask_on=False, fit=28, bypass_on=False, tag=None, scroll_end=False):
     n = len(F.SCENES[scene][0])
     over = (F.outline(scene, None, sel_face) if show_faces else "") + overlay_extra
     pre = photo_prefix(scene, False, fit, overlay=over)
@@ -330,15 +343,17 @@ def node_page(name, title, scene, headline, cardshtml, sel_face=1, show_faces=Tr
     g = graph(scene, bypass=bypass_on)
     ed = M.editor(g.render(h=327), M.BAR06, False, mask_off=False)
     inner = pre + ed + aside2(head(headline, bypass_on), cardshtml)
+    if scroll_end:  # the panel scrolled to its end (the cards no longer fit in one screen)
+        inner += '<script>const go=()=>{const s=document.querySelector(".ym-tools__scroll");if(s)s.scrollTop=s.scrollHeight;};addEventListener("load",()=>{go();setTimeout(go,100);});</script>'
     write(name, page(title, inner))
 
 
 # ---- 01 the Add node menu -----------------------------------------------------------------------------------------------------
-def add_menu(highlight="Skin"):
+def add_menu(highlight="Face Refinement"):
     items = [
         ("Corrector", "corrector", "Grades all or part of the photo."),
         ("Film", "film", "Models a colour negative, a print and a scan."),
-        ("Skin", "skin", "Retouches the skin of each face."),
+        ("Face Refinement", "face_refinement", "Refines each face: skin, under-eyes and teeth."),
         None,
         ("Parallel", "parallel", "Grade branches side by side."),
         ("Layer", "layer", "Blend one branch over another."),
@@ -376,12 +391,12 @@ def page01():
     pre = photo_prefix(scene, False, 28, name="Portraits")
     aside06 = M.BODY06[M.BODY06.find("<aside"): M.BODY06.find("</aside>") + 8].replace('src="../assets/', 'src="' + A).replace("Mountain", "Warmth").replace("Corrector · 2 masks", "Corrector · whole photo")
     tail = '<div aria-live="polite" class="sr-only"></div></div></div>'
-    inner = pre + M.editor(g.render(h=327), M.BAR06, False, add_open=True, mask_off=False) + aside06 + tail + add_menu("Skin")
-    inner += '<div class="sk-callout" style="left:640px;top:610px;max-width:360px"><b>Node view only.</b> Skin is not in the simple view (the owner, 2026-11-11).</div>'
+    inner = pre + M.editor(g.render(h=327), M.BAR06, False, add_open=True, mask_off=False) + aside06 + tail + add_menu("Face Refinement")
+    inner += '<div class="sk-callout" style="left:640px;top:610px;max-width:360px"><b>Node view only.</b> Face Refinement is not in the simple view (the owner, 2026-11-11).</div>'
     write("01.html", page("Add node menu", inner))
 
 
-# ---- 02 the simple view of a photo that has a Skin node ------------------------------------------------------------------------
+# ---- 02 the simple view of a photo that has a Face Refinement node ------------------------------------------------------------------------
 def page02():
     s = open(os.path.join(M.NODES, "04.html"), encoding="utf-8").read()
     s = s.replace('src="../assets/', 'src="' + A)
@@ -395,37 +410,37 @@ def page02():
     s = s.replace("</head>", '<link href="../../../mixers/html/mixers.css" rel="stylesheet"/><link href="../skin.css" rel="stylesheet"/></head>', 1)
     s = s.replace("<title>Yellowmoon</title>", "<title>Yellowmoon · Simple view</title>")
     # a design note over the photo (not part of the product)
-    s = s.replace("</body>", '<div class="sk-callout" style="left:24px;top:132px;max-width:380px"><b>Simple view.</b> It has no Skin controls. The photo still shows the retouching; to change it, open the nodes.</div></body>', 1)
+    s = s.replace("</body>", '<div class="sk-callout" style="left:24px;top:132px;max-width:380px"><b>Simple view.</b> It has no Face Refinement controls. The photo still shows the retouching; to change it, open the nodes.</div></body>', 1)
     # keep the link tags of nv.css only once if the page had them
     write("02.html", s)
 
 
-# ---- 03 / 04 / 05 the Skin node ------------------------------------------------------------------------------------------------
+# ---- 03 / 04 / 05 the Face Refinement node ------------------------------------------------------------------------------------------------
 def page03():
     # four faces and a small one; Face 2 selected, per face; Blemish changed on this face
     n = len(F.FAMILY)
     ch = cards("family", n, 1, False, (45, 30, 25, 0), small=SMALL, protect=0)
-    node_page("03.html", "Skin node, four faces", "family", "Skin · 5 faces", ch, sel_face=1)
+    node_page("03.html", "Face Refinement node, four faces", "family", "5 faces", ch, sel_face=1)
 
 
 def page04():
     # one face, the masks shown
-    ch = cards("portrait", 1, 0, False, (30, 30, 25, 0), neck=(False, False), masks_on=True)
+    ch = cards("portrait", 1, 0, False, (30, 30, 25, 0), masks_on=True)
     over = F.mask_overlay("portrait", 0)
-    node_page("04.html", "Skin node, one face, masks shown", "portrait", "Skin · 1 face", ch, sel_face=0, overlay_extra=over, show_faces=False)
+    node_page("04.html", "Face Refinement node, one face, skin areas shown", "portrait", "1 face", ch, sel_face=0, overlay_extra=over, show_faces=False)
 
 
 def page05():
     # the protect brush active
     ch = cards("portrait", 1, 0, False, (30, 30, 25, 0), protect=2, protect_active=True)
     over = F.protect_overlay("portrait", 0)
-    node_page("05.html", "Skin node, protect brush", "portrait", "Skin · 1 face", ch, sel_face=0, overlay_extra=over, show_faces=False)
+    node_page("05.html", "Face Refinement node, protect brush", "portrait", "1 face", ch, sel_face=0, overlay_extra=over, show_faces=False, scroll_end=True)
 
 
 def page06():
     # many faces with Same for all faces on
     ch = cards("group12", 12, 0, True, (30, 30, 25, 0))
-    node_page("06.html", "Skin node, twelve faces", "group12", "Skin · 12 faces", ch, sel_face="all")
+    node_page("06.html", "Face Refinement node, twelve faces", "group12", "12 faces", ch, sel_face="all")
 
 
 # ---- states ------------------------------------------------------------------------------------------------------------------
@@ -453,45 +468,51 @@ def states_page():
     ]
     many = faces_card("group12", 24, 0, False)
     panels = [
-        ("1 face", "Skin · 1 face", cards("portrait", 1, 0, False, (30, 30, 25, 0)), "no list of faces, no Same for all faces"),
-        ("4 faces, per face (Face 2 selected)", "Skin · 4 faces", cards("family", 4, 1, False, (45, 30, 25, 0)), "Blemish was changed on this face: its field is yellow and has a Reset"),
-        ("4 faces, Same for all faces on", "Skin · 4 faces", cards("family", 4, 0, True, (30, 30, 25, 0)), "no face is highlighted: the controls act on every face"),
-        ("12 faces", "Skin · 12 faces", cards("group12", 12, 3, False, (30, 30, 25, 0)), "the list shows about two and a half rows and scrolls"),
-        ("No faces found", "Skin · no faces found", cards("family", 0, 0, False, (30, 30, 25, 0), found="none"), "no controls: nothing to set"),
-        ("Finding faces", "Skin · finding faces", cards("family", 0, 0, False, (30, 30, 25, 0), found="finding"), "controls wait; the photo is unchanged"),
-        ("A face too small", "Skin · 5 faces", cards("family", 5, 4, False, (30, 30, 25, 0), small=SMALL), "face 5 is dimmed in the list; its controls are off"),
-        ("Masks shown, neck on", "Skin · 1 face", cards("portrait", 1, 0, False, (60, 30, 40, 0), neck=(True, True), masks_on=True), "the legend names the three tints"),
+        ("1 face", "1 face", cards("portrait", 1, 0, False, (30, 30, 25, 0)), "no list of faces, no Same for all faces"),
+        ("4 faces, per face (Face 2 selected)", "4 faces", cards("family", 4, 1, False, (45, 30, 25, 0)), "Blemish was changed on this face: its field is yellow and has a Reset"),
+        ("4 faces, Same for all faces on", "4 faces", cards("family", 4, 0, True, (30, 30, 25, 0)), "no face is highlighted: the controls act on every face"),
+        ("12 faces", "12 faces", cards("group12", 12, 3, False, (30, 30, 25, 0)), "the list shows about two and a half rows and scrolls"),
+        ("No faces found", "No faces found", cards("family", 0, 0, False, (30, 30, 25, 0), found="none"), "no controls: nothing to set"),
+        ("Finding faces", "Finding faces", cards("family", 0, 0, False, (30, 30, 25, 0), found="finding"), "controls wait; the photo is unchanged"),
+        ("A face too small", "5 faces", cards("family", 5, 4, False, (30, 30, 25, 0), small=SMALL), "face 5 is dimmed in the list; its controls are off"),
+        ("Skin areas shown, grading and teeth changed", "1 face", cards("portrait", 1, 0, False, (60, 30, 40, 0, 20, 40, 50, 60), masks_on=True), "the legend names the four tints"),
     ]
     pcells = []
     for cap, line, ch, note in panels:
         pcells.append(sheet_card(cap, panel_fragment(line, ch, False), note))
     pcells.append(sheet_card("24 faces, the list on its own", f'<div class="ym-tools__scroll" style="overflow:visible;height:auto">{many}</div>', "up to 32 faces; the list scrolls"))
     tips = [
-        ("Add node › Skin", "Retouches the skin of each face."),
-        ("Add node › Skin, at 64 nodes", "A photo can have up to 64 nodes."),
+        ("Add node › Face Refinement", "Refines each face: skin, under-eyes and teeth."),
+        ("Add node › Face Refinement, at 64 nodes", "A photo can have up to 64 nodes."),
         ("A face in the list", "Face 2. Click to retouch it on its own."),
         ("A face in the list that is too small", "Face 5 is too small to retouch."),
-        ("Show masks (the eye)", "Show where the tools work on this face"),
-        ("Show masks, while on", "Hide the masks"),
-        ("Include neck (Blemish, Even skin)", "Also retouch the neck. Turn it off for a scarf, a collar or a beard."),
+        ("Show skin areas (the eye)", "Show where the tools work on this face"),
+        ("Show skin areas, while on", "Hide the skin areas"),
+        ("Contrast", "Adds or removes contrast in the skin. Fine detail stays."),
+        ("Shadow desaturation", "Lowers the colour in the skin's shadows."),
+        ("Shine removal", "Reduces shine on the forehead, nose and cheeks."),
+        ("Whitening", "Makes teeth less yellow and a little brighter."),
+        ("Skin grading › Reset", "Sets Contrast, Shadow desaturation and Shine removal back to 0."),
+        ("Teeth › Reset", "Sets Whitening back to 0."),
+        ("Whitening, no teeth showing", "No teeth to whiten on this face. Whitening needs teeth that show."),
         ("Same for all faces", "One set of controls for every face. Turn it off to set each face on its own."),
-        ("Copy to other faces", "Gives every other face these settings."),
+        ("Copy to other faces", "Gives every other face these settings: Face, Skin grading and Teeth."),
         ("Protect › Brush", "Paint over moles, freckles and scars you want to keep."),
         ("Reset (the head)", "Reset this node. Masks and protection stay."),
-        ("Show mask on a Skin node (the toolbar)", "Shows where the node acts, as on a corrector."),
-        ("Skin in the simple view", "This photo has 2 nodes. These controls change the input, the output and node 1, Main."),
+        ("Show mask on a Face Refinement node (the toolbar)", "Shows where the node acts, as on a corrector."),
+        ("Face Refinement in the simple view", "This photo has 2 nodes. These controls change the input, the output and node 1, Main."),
     ]
     tip_html = "".join(f'<div class="mx-tiprow"><span>{a}</span>{M.tip(b)}</div>' for a, b in tips)
     inner = (
         '<body><div class="mx-sheet sk-sheet">'
-        '<h1 class="mx-sheet__title">Skin node · states</h1>'
+        '<h1 class="mx-sheet__title">Face Refinement node · states</h1>'
         '<p class="mx-sheet__sub">The panel is 400 px wide, as in the app. Faces are drawings made for this folder, not photographs.</p>'
         f'<section><h2>Node card</h2><div class="mx-row">{"".join(cells)}</div></section>'
         f'<section><h2>Panel</h2><div class="mx-row sk-grid">{"".join(pcells)}</div></section>'
         f'<section><h2>Copy for tooltips and notes (drafts)</h2><div class="mx-tips">{tip_html}</div></section>'
         "</div>"
     )
-    write("states.html", page("Skin states", inner))
+    write("states.html", page("Face Refinement states", inner))
 
 
 if __name__ == "__main__":

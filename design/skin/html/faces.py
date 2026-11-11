@@ -2,7 +2,7 @@
 """Draws the placeholder pictures of design/skin/ (task S-11, design step): neutral illustrated portraits, made here, no photograph.
 
 The repository holds no licence-clean portrait photograph, so the mockups use drawings: a soft studio backdrop and stylised heads with a few
-blemishes, one mole and faint under-eye shadows, so that the overlays have something to point at. Nothing here is a person's likeness.
+blemishes, one mole, faint under-eye shadows, and on some faces a smile with teeth, a little shine and a green-warm shadow side, so that the overlays have something to point at. Nothing here is a person's likeness.
 Everything is in scene units (1500 x 1000); `face()` draws one head at (cx, cy) with head height h. Run via build.py (it calls `write_assets`).
 """
 import math
@@ -22,17 +22,25 @@ TONES = {  # skin base, light, shade
 HEAD = "M0,-0.5 C0.30,-0.5 0.38,-0.26 0.372,0 C0.362,0.27 0.2,0.5 0,0.5 C-0.2,0.5 -0.362,0.27 -0.372,0 C-0.38,-0.26 -0.30,-0.5 0,-0.5 Z"
 
 
+# the open mouth of a smile: lips, the dark inside and the teeth (TEETH is also the Teeth tint of the skin-area overlay)
+LIPS = "M-0.115,0.252 Q0,0.292 0.115,0.252 Q0,0.365 -0.115,0.252 Z"
+INSIDE = "M-0.098,0.258 Q0,0.29 0.098,0.258 Q0,0.338 -0.098,0.258 Z"
+TEETH = "M-0.092,0.262 Q0,0.292 0.092,0.262 Q0,0.318 -0.092,0.262 Z"
+
+
 def _defs(uid, tone, hair):
     base, light, shade = TONES[tone]
     return (
+        f'<clipPath id="hc{uid}"><path d="{HEAD}"/></clipPath>'
         f'<radialGradient id="sk{uid}" cx="0.42" cy="0.38" r="0.75"><stop offset="0" stop-color="{light}"/><stop offset="0.6" stop-color="{base}"/><stop offset="1" stop-color="{shade}"/></radialGradient>'
         f'<linearGradient id="nk{uid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{shade}"/><stop offset="1" stop-color="{base}"/></linearGradient>'
         f'<filter id="bl{uid}" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="0.012"/></filter>'
         f'<filter id="bm{uid}" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="0.03"/></filter>'
+        f'<filter id="bc{uid}" x="-80%" y="-40%" width="260%" height="180%"><feGaussianBlur stdDeviation="0.06"/></filter>'
     )
 
 
-def face(uid, cx, cy, h, tone="t1", hair="#3a2a20", style="short", cloth="#4a5a6a", tilt=0, marks=True, shirt_y=0.62):
+def face(uid, cx, cy, h, tone="t1", hair="#3a2a20", style="short", cloth="#4a5a6a", tilt=0, marks=True, shirt_y=0.62, smile=False, shine=False, cast=None):
     """One head, neck and shoulders. Returns (defs, group)."""
     base, light, shade = TONES[tone]
     hairp = {
@@ -61,6 +69,18 @@ def face(uid, cx, cy, h, tone="t1", hair="#3a2a20", style="short", cloth="#4a5a6
             f'<circle cx="0.05" cy="-0.27" r="0.008" fill="#b5483f" opacity=".5"/><circle cx="-0.06" cy="0.40" r="0.01" fill="#b5483f" opacity=".5"/></g>'
             f'<circle cx="0.22" cy="0.16" r="0.0105" fill="#4a2a1c" opacity=".85"/>'
         )
+    extra = ""
+    if shine:  # a little sheen on the forehead, the nose and one cheek
+        extra += (f'<g filter="url(#bm{uid})" fill="#fff6e6"><ellipse cx="-0.03" cy="-0.27" rx="0.1" ry="0.034" opacity=".5"/>'
+                  f'<ellipse cx="0.042" cy="0.1" rx="0.022" ry="0.05" opacity=".5"/><ellipse cx="-0.2" cy="0.07" rx="0.05" ry="0.03" opacity=".3"/></g>')
+    if cast:  # a slightly warm, green shadow on one side of the face
+        sx = 1 if cast == "right" else -1
+        extra += (f'<g clip-path="url(#hc{uid})"><ellipse cx="{sx * 0.3}" cy="0.08" rx="0.17" ry="0.4" fill="#7f8f2e" opacity=".3" filter="url(#bc{uid})"/></g>')
+    if smile:
+        mouth = (f'<path d="{LIPS}" fill="#b3524f" stroke="#a24544" stroke-width="0.006" stroke-linejoin="round"/><path d="{INSIDE}" fill="#4a1a1c"/>'
+                 f'<path d="{TEETH}" fill="#ead893"/><path d="M0,0.275 L0,0.305" stroke="#c9b570" stroke-width="0.004"/>')
+    else:
+        mouth = '<path d="M-0.075,0.27 Q0,0.31 0.075,0.27 Q0,0.285 -0.075,0.27 Z" fill="#b3524f" stroke="#a24544" stroke-width="0.008" stroke-linejoin="round"/>'
     g = (
         f'<g transform="translate({cx},{cy}) rotate({tilt}) scale({h})">'
         f'{back}'
@@ -70,8 +90,7 @@ def face(uid, cx, cy, h, tone="t1", hair="#3a2a20", style="short", cloth="#4a5a6
         f'<path d="{HEAD}" fill="url(#sk{uid})"/>'
         f'<ellipse cx="-0.2" cy="0.14" rx="0.08" ry="0.05" fill="#d86a5a" opacity=".16" filter="url(#bm{uid})"/><ellipse cx="0.2" cy="0.14" rx="0.08" ry="0.05" fill="#d86a5a" opacity=".16" filter="url(#bm{uid})"/>'
         f'<path d="M0.02,-0.04 C0.035,0.05 0.04,0.1 0.055,0.14 C0.03,0.165 -0.03,0.165 -0.055,0.14" fill="none" stroke="{shade}" stroke-width="0.012" stroke-linecap="round" opacity=".6"/>'
-        f'{eyes}{spots}'
-        f'<path d="M-0.075,0.27 Q0,0.31 0.075,0.27 Q0,0.285 -0.075,0.27 Z" fill="#b3524f" stroke="#a24544" stroke-width="0.008" stroke-linejoin="round"/>'
+        f'{extra}{eyes}{spots}{mouth}'
         f'{hairp}</g>'
     )
     return _defs(uid, tone, hair), g
@@ -97,6 +116,12 @@ FAMILY = [  # 4 faces and a small one in the back, numbered left to right
     (1240, 450, 340, "t1", "#8a6a3a", "bun", "#35524a", 3),
     (1428, 250, 84, "t3", "#241a14", "short", "#5a5a66", 0),
 ]
+# per scene: face index -> extras the new controls point at (an open smile with teeth, a little shine, a green-warm shadow side)
+EXTRA = {
+    "family": {0: dict(smile=True), 1: dict(smile=True, shine=True), 2: dict(shine=True), 3: dict(cast="right", shine=True)},
+    "portrait": {0: dict(smile=True, shine=True, cast="right")},
+    "group12": {0: dict(smile=True), 3: dict(shine=True), 5: dict(smile=True, cast="left"), 8: dict(smile=True, shine=True)},
+}
 PORTRAIT = [(750, 470, 640, "t3", "#2a1d17", "long", "#44525e", 0)]
 GROUP12 = [
     (190 + 370 * (i % 4) + (20 if (i // 4) % 2 else 0), 190 + 310 * (i // 4), 220, ["t1", "t2", "t3", "t4", "t5", "t6"][(i * 5) % 6],
@@ -114,7 +139,7 @@ def scene_svg(name):
     order = sorted(range(len(faces)), key=lambda i: faces[i][2])
     for i in order:
         cx, cy, h, tone, hair, style, cloth, tilt = faces[i]
-        d, g = face(f"{name}{i}", cx, cy, h, tone, hair, style, cloth, tilt, marks=(h > 150))
+        d, g = face(f"{name}{i}", cx, cy, h, tone, hair, style, cloth, tilt, marks=(h > 150), **EXTRA.get(name, {}).get(i, {}))
         defs.append(d)
         body.append(g)
     return (
@@ -152,18 +177,20 @@ def outline(name, faces, selected, numbers=True, dim_others=True):
 SKIN = "M-0.34,-0.12 C-0.30,-0.28 -0.12,-0.33 0,-0.30 C0.12,-0.33 0.30,-0.28 0.34,-0.12 C0.37,0.1 0.2,0.5 0,0.5 C-0.2,0.5 -0.37,0.1 -0.34,-0.12 Z"
 
 
-def mask_overlay(name, i, neck=False):
+def mask_overlay(name, i):
     """What the tools act on, for face i: skin (pink fill), under the eyes (cyan fill), the even-skin core (green outline). Scene units."""
     cx, cy, h = geom(name, i)
     eyes = "".join(f'<ellipse cx="{s * 0.15}" cy="-0.06" rx="0.07" ry="0.03"/>' for s in (-1, 1))
     under = "".join(f'<ellipse cx="{s * 0.15}" cy="0.003" rx="0.1" ry="0.034"/>' for s in (-1, 1))
-    neckp = '<path d="M-0.15,0.36 L-0.15,0.8 L0.15,0.8 L0.15,0.36 Z" fill="#ff6fd2" opacity=".24"/>' if neck else ""
+    smile = EXTRA.get(name, {}).get(i, {}).get("smile", False)
+    mouth_hole = f'<path d="{LIPS}"/>' if smile else ""
+    teeth = f'<path d="{TEETH}" fill="#b794ff" opacity=".85"/>' if smile else ""
     return (
         f'<svg class="sk-over" viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMid meet"><defs><filter id="mb"><feGaussianBlur stdDeviation="0.005"/></filter>'
-        f'<mask id="skm"><rect x="-1" y="-1" width="2" height="2" fill="#fff"/><g fill="#000">{eyes}</g></mask></defs>'
-        f'<g transform="translate({cx},{cy}) scale({h})">{neckp}'
+        f'<mask id="skm"><rect x="-1" y="-1" width="2" height="2" fill="#fff"/><g fill="#000">{eyes}{mouth_hole}</g></mask></defs>'
+        f'<g transform="translate({cx},{cy}) scale({h})">'
         f'<g filter="url(#mb)"><path d="{SKIN}" fill="#ff6fd2" opacity=".32" mask="url(#skm)"/>'
-        f'<g fill="#58d4ff" opacity=".62">{under}</g></g>'
+        f'<g fill="#58d4ff" opacity=".62">{under}</g>{teeth}</g>'
         f'<g transform="translate(0,0.07) scale(0.74)"><path d="{SKIN}" fill="none" stroke="#9be56a" stroke-width="0.011" stroke-dasharray="0.03 0.018" stroke-linecap="round" transform="scale(1)"/></g>'
         f'</g></svg>'
     )
