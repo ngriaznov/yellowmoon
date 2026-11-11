@@ -880,8 +880,8 @@ fn the_grade_key_sees_a_layers_mode_opacity_and_bypass_and_a_parallels_bypass() 
     );
 }
 
-/// The grade key sees a Face Refinement node's Bypass and masks (its key output is its mask), and, while the node passes its
-/// picture through, nothing else: its amounts and its protection leave the key alone (S-11b adds them).
+/// The grade key sees a Face Refinement node's Bypass, masks, amounts and protection (S-11b; `face_render.rs` has the full list of
+/// fields, with the faces' own key).
 #[test]
 fn the_grade_key_sees_a_face_refinement_nodes_bypass_and_masks() {
     let d = photo(Layout::Uniform, 0.12);
@@ -911,7 +911,11 @@ fn the_grade_key_sees_a_face_refinement_nodes_bypass_and_masks() {
             json!({ "masks": { "invert": false, "items": [ { "kind": "radial", "center": [0.5, 0.5] } ] } })
         )
     );
-    assert_eq!(base, face(json!({ "all": { "blemish": 90 } })));
+    assert_ne!(base, face(json!({ "all": { "blemish": 90 } })));
+    assert_ne!(
+        base,
+        face(json!({ "protect": { "strokes": [ { "size": 0.05, "points": [[0.3, 0.3]] } ] } }))
+    );
 }
 
 // ---- the grade cache ---------------------------------------------------------------------------
