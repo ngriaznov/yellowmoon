@@ -91,12 +91,13 @@ export const FIRST_NODE_TAB: Readonly<Record<PanelKind, TabId>> = {
   input: "raw",
   corrector: "light",
   film: "film",
-  face_refinement: "mask",
   output: "look",
   parallel: "inputs",
   layer: "blend",
   splitter: "channels",
   combiner: "channels",
+  // Until the node's own Face tab (`docs/27` S-11c) the Mask tab is its first.
+  face_refinement: "mask",
 };
 
 /**
