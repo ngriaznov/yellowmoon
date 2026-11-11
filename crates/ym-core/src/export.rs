@@ -61,12 +61,12 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use ym_color::display::OutputTarget;
 use ym_export::dng::{CropRect, DngReport, FittedProfile, compose_orientation};
 use ym_export::exif::{CaptureTime, ExifInfo, Gps};
-use ym_export::naming::{self, NameFields, Placement};
+use ym_export::naming::{self, NameFields, Placement, STALE_TEMP_AGE, remove_stale_temps};
 use ym_export::request::{BandRequest, PictureStages, write_export_bands, write_export_with};
 use ym_export::xmp::{XmpInfo, YmInfo};
 use ym_export::{
@@ -1212,8 +1212,15 @@ fn export_photo_unguarded(
 
     // 2. The file name and the folder; a skipped file costs nothing.
     let fields = name_fields(photo, params.seq);
-    let mut dest =
-        ExportDestination::resolve(options, &fields, Some(&photo.path), ctx.home.as_deref())?;
+    // Only the job's first photo may make the folder the options name; a later photo finds it gone
+    // ("Folder gone", `docs/26-hardening.md` P2-4).
+    let mut dest = ExportDestination::resolve_with(
+        options,
+        &fields,
+        Some(&photo.path),
+        ctx.home.as_deref(),
+        params.seq <= 1,
+    )?;
     // A name this job has already written is numbered whatever "If the file exists" says: Replace
     // would overwrite the job's own earlier photo and Skip would take it for a file from before.
     let mut notes: Vec<String> = Vec::new();
@@ -1762,8 +1769,74 @@ pub fn check_destination(
 ) -> Result<(), ExportError> {
     let v = &snapshot.view;
     let fields = name_fields_of(&v.path, &v.meta, &v.camera, &v.settings.output().look, seq);
-    ExportDestination::resolve(options, &fields, Some(&v.path), ctx.home.as_deref())?;
+    let dest = ExportDestination::resolve_with(
+        options,
+        &fields,
+        Some(&v.path),
+        ctx.home.as_deref(),
+        seq <= 1,
+    )?;
+    if seq <= 1 {
+        // The start of a job: a crash of an earlier run left its temporary files here.
+        remove_stale_temps(&dest.dir, SystemTime::now(), STALE_TEMP_AGE);
+    }
     Ok(())
+}
+
+/// The warning threshold of `docs/26-hardening.md` P2-3: the free space is compared with the size
+/// estimate times this factor, the estimate's documented 90th-percentile error (`docs/09`, "Size
+/// estimate": 90 % of the real renders within 35 %).
+pub const LOW_SPACE_FACTOR: f64 = 1.35;
+
+/// Whether an export that the estimate puts at `estimate_bytes` should be warned about on a disk with
+/// `free_bytes` available: exactly when `free_bytes < LOW_SPACE_FACTOR * estimate_bytes`. A warning
+/// only; the export is never refused (the stop on a full disk is the exact one).
+#[must_use]
+pub fn is_low_on_space(estimate_bytes: u64, free_bytes: u64) -> bool {
+    (free_bytes as f64) < LOW_SPACE_FACTOR * estimate_bytes as f64
+}
+
+/// A size as the panel writes it: decimal megabytes, or gigabytes from 1000 MB ("120 MB", "1.2 GB").
+#[must_use]
+pub fn size_text(bytes: u64) -> String {
+    let mb = bytes as f64 / 1e6;
+    if mb >= 1000.0 {
+        format!("{:.1} GB", mb / 1000.0)
+    } else {
+        format!("{} MB", mb.round().max(1.0) as u64)
+    }
+}
+
+/// The sentence under the Export button, and on stderr in `ym`, when [`is_low_on_space`]. `folder` is
+/// how the destination is named: its last component in the app, its full path in `ym`.
+#[must_use]
+pub fn low_space_message(estimate_bytes: u64, free_bytes: u64, folder: &str) -> String {
+    format!(
+        "This export needs about {} and {} is free in {folder}. It may stop part way.",
+        size_text(estimate_bytes),
+        size_text(free_bytes)
+    )
+}
+
+/// The last component of a folder, the way the app names it in a sentence (the whole path when it has
+/// none, as for `/`).
+#[must_use]
+pub fn folder_label(dir: &Path) -> String {
+    dir.file_name().map_or_else(
+        || dir.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
+}
+
+/// The bytes available to this user on the volume that holds `dir`, or of its nearest existing
+/// parent when the folder is not made yet. `None` when no volume can be read (the warning is then
+/// left out, never invented).
+#[must_use]
+pub fn free_bytes_in(dir: &Path) -> Option<u64> {
+    dir.ancestors()
+        .filter(|a| !a.as_os_str().is_empty())
+        .find(|a| a.exists())
+        .and_then(|a| fs4::available_space(a).ok())
 }
 
 /// The destination folder an export of `photo` would use, worked out without touching the disk:

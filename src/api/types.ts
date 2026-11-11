@@ -1646,6 +1646,19 @@ export interface ExportEstimate {
    * to the DNG note (addition, `docs/09` §What a DNG carries).
    */
   dng_approximate: boolean;
+  /**
+   * Bytes available on the volume of the destination folder, read when the estimate is asked for
+   * (`docs/26-hardening.md` P2-3); null when it cannot be read.
+   */
+  free_bytes: number | null;
+  /** The destination folder `free_bytes` was read for, by its last component; null with it. */
+  folder: string | null;
+  /**
+   * `free_bytes` is under 1.35 times `bytes` (the estimate's documented 90th-percentile error): the panel says
+   * "This export needs about {size} and {free} is free in {folder}. It may stop part way." under the button.
+   * A warning only; the export is never refused.
+   */
+  low_space: boolean;
 }
 
 /** `export_progress` event payload. */

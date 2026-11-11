@@ -1083,6 +1083,12 @@ export type ExportEstimate = {
 	 *  its own display rendering.
 	 */
 	dng_approximate: boolean,
+	/**  Bytes available on the volume of the destination folder, or null when it cannot be read. */
+	free_bytes: number | null,
+	/**  The destination folder the free space was read for, by its last component. */
+	folder: string | null,
+	/**  The free space is under 1.35 times the estimate: the panel warns. Never blocks the export. */
+	low_space: boolean,
 };
 
 /**  The four export formats. */

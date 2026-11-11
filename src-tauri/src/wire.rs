@@ -3463,6 +3463,12 @@ pub struct ExportEstimate {
     /// A DNG of the job is close to, not the same as, the picture in the app: a photo uses a look with
     /// its own display rendering.
     pub dng_approximate: bool,
+    /// Bytes available on the volume of the destination folder, or null when it cannot be read.
+    pub free_bytes: Option<Num>,
+    /// The destination folder the free space was read for, by its last component.
+    pub folder: Option<String>,
+    /// The free space is under 1.35 times the estimate: the panel warns. Never blocks the export.
+    pub low_space: bool,
 }
 
 // ---------------------------------------------------------------------------------------------

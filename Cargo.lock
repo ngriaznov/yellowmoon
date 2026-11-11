@@ -11251,6 +11251,7 @@ dependencies = [
 name = "ym-core"
 version = "0.2.3"
 dependencies = [
+ "fs4",
  "half",
  "jsonschema",
  "png 0.18.1",

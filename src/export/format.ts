@@ -6,8 +6,22 @@ import type { ExportEstimate } from "../api/types";
  * Never less than 1 MB.
  */
 export function formatEstimate(bytes: number): string {
+  return `≈ ${formatSize(bytes)}`;
+}
+
+/** "120 MB", or "1.2 GB" from 1000 MB (decimal, never less than 1 MB): the size in a sentence. Same as the core's `size_text`. */
+export function formatSize(bytes: number): string {
   const mb = bytes / 1_000_000;
-  return `≈ ${mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${Math.max(1, Math.round(mb))} MB`}`;
+  return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${Math.max(1, Math.round(mb))} MB`;
+}
+
+/**
+ * The warning under the Export button when the free space is under 1.35 times the estimate (`docs/26-hardening.md` P2-3), or
+ * null. The core decides (`low_space`); the sentence is the same as `ym`'s.
+ */
+export function lowSpaceWarning(estimate: ExportEstimate | null): string | null {
+  if (!estimate || !estimate.low_space || estimate.free_bytes === null || estimate.folder === null) return null;
+  return `This export needs about ${formatSize(estimate.bytes)} and ${formatSize(estimate.free_bytes)} is free in ${estimate.folder}. It may stop part way.`;
 }
 
 /** "about 40 s", "about 3 min": the time estimate, for a tooltip. */

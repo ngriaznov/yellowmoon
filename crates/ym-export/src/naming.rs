@@ -20,6 +20,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use crate::error::ExportError;
 use crate::options::{DEFAULT_NAME_TEMPLATE, IfExists};
@@ -189,9 +190,83 @@ fn temp_name() -> String {
     )
 }
 
+/// How old a temporary file must be before [`remove_stale_temps`] removes it. A job that
+/// crashed leaves its `.yellowmoon-<pid>-<n>.tmp` behind (`Drop` never ran); a day is far longer
+/// than any export, so a file of a run in progress is never taken.
+pub const STALE_TEMP_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Whether `name` is exactly `.yellowmoon-<digits>-<digits>.tmp`, the name [`PendingFile`] gives
+/// its temporary file (`docs/26-hardening.md` P2-4). Nothing else is ever taken for one.
+#[must_use]
+pub fn is_temp_name(name: &str) -> bool {
+    let Some(rest) = name
+        .strip_prefix(".yellowmoon-")
+        .and_then(|r| r.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+    rest.split_once('-')
+        .is_some_and(|(pid, n)| digits(pid) && digits(n))
+}
+
+/// Removes the temporary files of the export writer in `dir` (not in its subfolders) whose last
+/// change is more than `max_age` before `now`, and returns how many it removed. Only regular files
+/// with the exact name of [`is_temp_name`] are looked at; a failure to read the folder or to remove
+/// one file is ignored (the next job tries again).
+pub fn remove_stale_temps(dir: &Path, now: SystemTime, max_age: Duration) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_str().is_some_and(is_temp_name) {
+            continue;
+        }
+        // `symlink_metadata`: a link with such a name is not ours and is left alone.
+        let Ok(meta) = fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .is_some_and(|age| age > max_age);
+        if old && fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Creates `dir` if needed and checks that a file can be created in it.
 pub fn ensure_writable_dir(dir: &Path) -> Result<(), ExportError> {
-    fs::create_dir_all(dir).map_err(|e| ExportError::io(dir, e))?;
+    prepare_dir(dir, true)
+}
+
+/// Checks that `dir` is still there and that a file can be created in it, without making it: the
+/// folder of a job after its first photo (a folder the person deleted meanwhile is "Folder gone",
+/// not made again; `docs/26-hardening.md` P2-4).
+pub fn ensure_dir_exists(dir: &Path) -> Result<(), ExportError> {
+    prepare_dir(dir, false)
+}
+
+fn prepare_dir(dir: &Path, create: bool) -> Result<(), ExportError> {
+    if create {
+        fs::create_dir_all(dir).map_err(|e| ExportError::io(dir, e))?;
+    } else {
+        let meta = fs::metadata(dir).map_err(|e| ExportError::io(dir, e))?;
+        if !meta.is_dir() {
+            return Err(ExportError::io(
+                dir,
+                std::io::Error::new(std::io::ErrorKind::NotADirectory, "not a folder"),
+            ));
+        }
+    }
     let probe = dir.join(temp_name());
     let file = OpenOptions::new()
         .write(true)
@@ -213,8 +288,20 @@ pub fn resolve_destination_dir(
     source_file: Option<&Path>,
     home: Option<&Path>,
 ) -> Result<PathBuf, ExportError> {
+    resolve_destination_dir_with(requested, source_file, home, true)
+}
+
+/// [`resolve_destination_dir`], where `create_requested` says whether a missing folder that the user
+/// named is made (the first photo of a job) or is an error (the later photos). A default folder is
+/// made either way: it can differ from photo to photo (each source folder has its own).
+pub fn resolve_destination_dir_with(
+    requested: Option<&Path>,
+    source_file: Option<&Path>,
+    home: Option<&Path>,
+    create_requested: bool,
+) -> Result<PathBuf, ExportError> {
     if let Some(dir) = requested {
-        ensure_writable_dir(dir)?;
+        prepare_dir(dir, create_requested)?;
         return Ok(dir.to_path_buf());
     }
     let mut last_error = None;
