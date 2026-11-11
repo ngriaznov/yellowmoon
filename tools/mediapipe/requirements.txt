@@ -1,0 +1,14 @@
+# Pinned Python dependencies of tools/mediapipe/convert.py and reference.py (CI and development only:
+# .github/workflows/models.yml, job `mediapipe`). Python 3.11 or newer. Nothing here is a dependency of the app, `ym` or any shipped
+# crate (AGENTS.md rule 6): Python converts weights and writes test fixtures, every model runs in Rust.
+#
+# tflite             the FlatBuffers schema bindings of TensorFlow Lite (Apache-2.0); reads the .tflite files, no TensorFlow needed
+# numpy              arrays
+# safetensors        the output format
+# ai-edge-litert     Google's TFLite interpreter (Apache-2.0), reference.py only: the raw tensors the Rust port is compared with
+# pillow             reads the test photos, reference.py only
+tflite==2.18.0
+numpy==2.2.6
+safetensors==0.5.3
+ai-edge-litert==2.3.0
+pillow==11.2.1
