@@ -10,6 +10,7 @@
 #![warn(missing_docs)]
 
 mod blemish;
+pub mod classical;
 mod error;
 mod feather;
 mod lowfreq;
@@ -25,6 +26,7 @@ pub use blemish::{
     TARGET_FACE_PX, apply_blemish, apply_gain, blemish_gain, blemish_map, chroma_confidence,
     chroma_pull, encode_channel, gain_strength, threshold_strength,
 };
+pub use classical::{ClassicalBeautyMarks, ClassicalProposer};
 pub use error::{Result, RetouchError};
 pub use feather::feather;
 pub use lowfreq::{

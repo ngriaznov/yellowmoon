@@ -213,7 +213,7 @@ impl Planar {
 /// Area-average downscale of `N`-channel `f32` data from `(w, h)` to `(nw, nh)` (both not larger
 /// than the source). Each destination pixel averages the source area it covers, partial pixels
 /// weighted by their coverage, in a fixed order.
-fn area_downscale<const N: usize>(
+pub(crate) fn area_downscale<const N: usize>(
     src: &[[f32; N]],
     (w, h): (usize, usize),
     (nw, nh): (usize, usize),
