@@ -2,7 +2,7 @@
 //!
 //! `YM_WRITE_FAULT=enospc@<bytes>[,after=<files>]` makes a file of `<bytes>` or more fail with "no space left on
 //! device" (errno 28) after it is encoded and before it is moved to its name, as a full disk would; the first
-//! `<files>` such files are let through. `enospc@0` fails every file. A test in the same process calls [`arm`]
+//! `<files>` such files are let through. `enospc@0` fails every file. A test in the same process calls `arm`
 //! instead (it overrides the variable). The temporary file is removed as for any failed write. Same pattern as
 //! `YM_GPU_FAULT` in `ym-gpu`.
 
