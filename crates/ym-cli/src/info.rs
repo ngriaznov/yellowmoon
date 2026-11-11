@@ -36,8 +36,8 @@ use crate::cli::{InfoArgs, auto_choice};
 use crate::console::Console;
 use crate::exit::{self, Failure};
 use crate::report::{
-    AppleAutoField, Object, auto_text, camera_json, develop_fields, error_value,
-    error_value_with_detail, match_word,
+    AppleAutoField, Object, auto_text, camera_json, develop_fields, error_value_with_detail,
+    match_word,
 };
 use crate::runtime::{CoreSettings, Runtime, interrupted, read_instructions};
 use crate::text::{lossy, path_text};
@@ -293,10 +293,8 @@ fn is_arw_name(path: &Path) -> bool {
 /// Probes one input. A folder is an error, not a read attempt.
 fn probe_file(path: &Path) -> Result<RawMetadata, RawError> {
     if path.is_dir() {
-        return Err(RawError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "this is a folder, not a file",
-        )));
+        // A folder is not a photo; the catalogue has no sentence for it, so it is "not an ARW file".
+        return Err(RawError::NotArw);
     }
     probe(path)
 }
