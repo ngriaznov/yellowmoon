@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { Aurora } from "@/components/glass/aurora";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/glass/item";
 import { Button, DevelopList, DropZone, LinkButton, ProgressBar, useWindowDrop } from "../components";
@@ -51,16 +51,23 @@ export function Start() {
   };
   const progress = total === 0 ? 0 : Math.round((photos.reduce((sum, p) => sum + fraction(p), 0) / total) * 100);
 
+  // A photo that did not change (the same object) gives the list the same item as before, so only the rows that changed are drawn again.
+  const made = useRef({ grader, items: new WeakMap<(typeof photos)[number], DevelopItem>() });
+  if (made.current.grader !== grader) made.current = { grader, items: new WeakMap() };
   const items: DevelopItem[] = useMemo(
     () =>
       photos.map((p) => {
+        const known = made.current.items.get(p);
+        if (known) return known;
         const waitsForApple = p.status.kind === "ready" && p.apple_pending;
-        return {
+        const item: DevelopItem = {
           id: p.id,
           name: photoName(p.file_name),
           state: waitsForApple ? "developing" : p.status.kind,
           note: p.status.kind === "skipped" ? p.status.reason : waitsForApple ? gradedByNote(grader) : undefined,
         };
+        made.current.items.set(p, item);
+        return item;
       }),
     [photos, grader],
   );

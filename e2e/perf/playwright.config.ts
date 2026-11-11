@@ -6,7 +6,7 @@ import { defineConfig } from "@playwright/test";
 //
 //   npx playwright test -c e2e/perf/playwright.config.ts          (or e2e/perf/run.sh)
 //
-// Environment: YM_PERF_OUT (report folder, default test-results/perf), YM_PERF_PORT (default 4173), YM_PERF_SPEED (the mock's
+// Environment: YM_PERF_PHOTOS (folder sizes, default 500; a list such as 100,500,2000), YM_PERF_RATIO (default 1.25), YM_PERF_OUT (report folder, default test-results/perf), YM_PERF_PORT (default 4173), YM_PERF_SPEED (the mock's
 // speed, default 10), YM_PERF_KEYS (key presses, default 80), YM_PERF_P95_MS (the bound on the 95th percentile, default 150).
 const port = Number(process.env.YM_PERF_PORT ?? 4173);
 const outDir = "node_modules/.cache/ym-perf-dist";

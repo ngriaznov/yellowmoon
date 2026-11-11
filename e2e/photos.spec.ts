@@ -585,7 +585,14 @@ test("a folder of 500 photos: the first one opens while the rest develop, and th
   await openApp(page, { mockPhotos: 500, mockHold: 40 });
   await page.getByRole("button", { name: "Open files…" }).click();
   await expect(page.getByRole("heading", { level: 2, name: "Developing 500 photos" })).toBeVisible();
-  await expect(page.getByRole("list", { name: "Photos being developed" }).getByText("Ready", { exact: true })).toHaveCount(40);
+  // The list draws the rows in view and a margin (docs/26 H-09), not all 500; some of them already say Ready.
+  const list = page.getByRole("list", { name: "Photos being developed" });
+  await expect(list.getByText("Ready", { exact: true }).first()).toBeVisible();
+  // Development has reached its hold: 40 photos are ready (asked of the mock; the list draws only some of the rows).
+  await expect
+    .poll(() => page.evaluate(async () => (await window.__yellowmoon!.mockApi.sessionState()).photos.filter((p) => p.status.kind === "ready").length))
+    .toBe(40);
+  expect(await list.getByRole("listitem").count()).toBeLessThan(100);
   await page.getByRole("button", { name: /Open photos/ }).click();
   await expect(page.getByRole("region", { name: "Automatic" })).toBeVisible();
   await expect(page.getByText("2026-10-04 · 500 photos")).toBeVisible();
@@ -593,6 +600,10 @@ test("a folder of 500 photos: the first one opens while the rest develop, and th
   await page.keyboard.press("ArrowRight");
   await expect(page.locator(".ym-filmstrip__caption")).toHaveText("2 of 500 · 0 picked");
   await page.keyboard.press("End");
+  // The strip draws the thumbnails in view, so the last one is there once the strip has been scrolled to its end (the scroll bar is true).
+  const strip = page.locator(".ym-filmstrip__scroll");
+  await strip.evaluate((el) => void (el.scrollLeft = el.scrollWidth));
+  expect(await strip.evaluate((el) => el.scrollWidth)).toBeGreaterThan(500 * 100);
   // A photo that is still developing says so and has nothing to adjust.
   await page.getByRole("button", { name: "Show DSC04700, developing" }).click();
   await expect(page.locator(".ym-filmstrip__caption")).toHaveText("500 of 500 · 0 picked");
@@ -612,4 +623,37 @@ test("settings made before the session opens come through the mock (initialSetti
   await expect(valueBox(page, "Shadows")).toHaveValue("+12");
   await page.keyboard.press("Meta+4");
   await expect(valueBox(page, "Saturation")).toHaveValue("+6");
+});
+
+// A folder of 2000 photos (docs/26 H-09): the lists draw the rows in view and a margin, so the page stays small. The audit counted 8,088
+// nodes on the Start list, 2,267 on the Photos screen and 16,063 with the export queue running.
+async function nodeCount(page: Page): Promise<number> {
+  const n = await page.evaluate(() => document.querySelectorAll("*").length);
+  console.log(`DOM nodes: ${n}`);
+  return n;
+}
+
+test("a folder of 2000 photos keeps the page under 1,500 elements on Start, Photos and while the export runs", async ({ page }) => {
+  await openApp(page, { mockPhotos: 2000, mockSpeed: "Infinity", mockExportHold: 1500.5 });
+  await page.getByRole("button", { name: "Open files…" }).click();
+  await expect(page.getByRole("heading", { level: 2, name: /^(2000 photos ready|Grading 2000 photos with .*)$/ })).toBeVisible({ timeout: 90_000 });
+  expect(await nodeCount(page)).toBeLessThan(1500);
+  await page.getByRole("button", { name: /Open photos/ }).click();
+  await expect(page.getByRole("region", { name: "Automatic" })).toBeVisible();
+  await expect(page.locator(".ym-filmstrip__caption")).toHaveText("1 of 2000 · 0 picked");
+  expect(await nodeCount(page)).toBeLessThan(1500);
+  // The last photo is reached by scrolling the strip to its end, and drawn; the strip does not draw the others.
+  await page.locator(".ym-filmstrip__scroll").evaluate((el) => void (el.scrollLeft = el.scrollWidth));
+  await page.getByRole("button", { name: "Show DSC06200" }).click();
+  await expect(page.locator(".ym-filmstrip__caption")).toHaveText("2000 of 2000 · 0 picked");
+  await expect(page.locator(".ym-filmstrip__thumb[aria-current=true]")).toBeVisible();
+  expect(await page.locator(".ym-filmstrip__thumb").count()).toBeLessThan(100);
+  await page.keyboard.press("Meta+a");
+  await expect(page.locator(".ym-filmstrip__caption")).toHaveText("2000 of 2000 · 2000 picked");
+  await page.keyboard.press("Meta+e");
+  await page.getByRole("button", { name: /^Export 2000 photos/ }).click();
+  await expect(page.getByRole("list", { name: "Export queue" })).toBeVisible();
+  await expect.poll(() => page.getByRole("list", { name: "Export queue" }).getByText("Done", { exact: true }).count(), { timeout: 60_000 }).toBeGreaterThan(0);
+  expect(await nodeCount(page)).toBeLessThan(1500);
+  await page.evaluate(() => window.__yellowmoon!.mockApi.flush());
 });

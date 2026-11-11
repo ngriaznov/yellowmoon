@@ -52,33 +52,31 @@ export function applyProgress(run: ExportRun, e: ExportProgress): ExportRun {
   // or may have failed to develop, in between). The core wins.
   const total = e.total > 0 ? e.total : run.rows.length;
   const done = Math.max(0, Math.min(total, e.done));
-  const rows = run.rows.slice(0, total).map((row) => ({ ...row }));
+  // Copy on write: one copy of the array of rows, and a new object only for a row that changes (a 2000-photo run folds 40,000 events,
+  // and most of them change one row), so a row that did not change is the same object as before and its element is not drawn again.
+  const rows = run.rows.slice(0, total);
   while (rows.length < total) rows.push({ name: `File ${rows.length + 1}`, state: "waiting", percent: 0 });
   const settled = (state: RowState): boolean => state === "failed" || state === "skipped";
+  const change = (i: number, patch: Partial<RunRow>): void => {
+    const row = rows[i]!;
+    const keys = Object.keys(patch) as (keyof RunRow)[];
+    if (keys.every((k) => row[k] === patch[k])) return;
+    rows[i] = { ...row, ...patch };
+  };
 
   // Files before `done` are finished; a file that failed or was skipped keeps saying so.
   for (let i = 0; i < done; i++) {
     const row = rows[i]!;
-    if (!settled(row.state)) {
-      row.state = "done";
-      row.percent = 100;
-    }
+    if (!settled(row.state)) change(i, { state: "done", percent: 100 });
   }
   if ((e.error || e.skipped) && done > 0) {
     const row = rows[done - 1]!;
-    row.name = e.file || row.name;
-    row.percent = 100;
-    if (e.error) {
-      row.state = "failed";
-      row.note = e.error;
-    } else {
-      row.state = "skipped";
-    }
+    const name = e.file || row.name;
+    if (e.error) change(done - 1, { name, percent: 100, state: "failed", note: e.error });
+    else change(done - 1, { name, percent: 100, state: "skipped" });
   } else if (done < total) {
     const row = rows[done]!;
-    if (e.file) row.name = e.file;
-    row.state = "running";
-    row.percent = Math.max(0, Math.min(100, Math.round(e.file_percent ?? 0)));
+    change(done, { name: e.file || row.name, state: "running", percent: Math.max(0, Math.min(100, Math.round(e.file_percent ?? 0))) });
   }
   return { ...run, rows, phase: done >= total ? "finished" : "running" };
 }
@@ -143,15 +141,18 @@ export function runNote(run: ExportRun): string {
     : "Originals are never changed. You can keep working while this runs; an update waits until the export is finished.";
 }
 
-/** The rows as `ExportQueueList` draws them. */
+/** The queue item made for a row, so that a row that did not change gives the list the same item again (the list's rows compare by it). */
+const itemOfRow = new WeakMap<RunRow, ExportQueueItem>();
+
+/** The rows as `ExportQueueList` draws them. A row that has not changed (same object, same place) yields the same item as last time. */
 export function queueItems(run: ExportRun): ExportQueueItem[] {
-  return run.rows.map((row, id) => ({
-    id,
-    file: row.name,
-    state: row.state,
-    percent: row.percent,
-    note: row.state === "failed" ? row.note : undefined,
-  }));
+  return run.rows.map((row, id) => {
+    const known = itemOfRow.get(row);
+    if (known && known.id === id) return known;
+    const item: ExportQueueItem = { id, file: row.name, state: row.state, percent: row.percent, note: row.state === "failed" ? row.note : undefined };
+    itemOfRow.set(row, item);
+    return item;
+  });
 }
 
 /** The text in the Export cell of the header while a run exists: "Exporting 1 of 3", or "Exported" when it has finished. */

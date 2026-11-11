@@ -163,3 +163,33 @@ describe("the cell in the header", () => {
     expect(runNote(fresh())).toBe("Originals are never changed. You can keep working while this runs; an update waits until the export is finished.");
   });
 });
+
+describe("applyProgress keeps the rows that did not change (docs/26 H-09)", () => {
+  const long = (): ExportRun =>
+    startRun(
+      1,
+      Array.from({ length: 2000 }, (_, i) => `f${i}.jpg`),
+      "~/x",
+    );
+
+  it("changes one row object per event and leaves the others the very same objects", () => {
+    const first = applyProgress(long(), event({ total: 2000, done: 5, file: "f5.jpg", file_percent: 10 }));
+    const next = applyProgress(first, event({ total: 2000, done: 5, file: "f5.jpg", file_percent: 40 }));
+    const changed = next.rows.filter((row, i) => row !== first.rows[i]);
+    expect(changed).toHaveLength(1);
+    expect(next.rows[5]).toMatchObject({ state: "running", percent: 40 });
+    // The row that finished stays the same object when the next file begins, apart from the rows that finish with it.
+    const after = applyProgress(next, event({ total: 2000, done: 6, file: "f6.jpg", file_percent: 0 }));
+    expect(after.rows.filter((row, i) => row !== next.rows[i]).map((r) => r.name)).toEqual(["f5.jpg", "f6.jpg"]);
+    expect(after.rows[0]).toBe(first.rows[0]);
+  });
+
+  it("gives the list the same item again for a row that has not changed, and a new one for a row that has", () => {
+    const first = applyProgress(long(), event({ total: 2000, done: 1, file: "f1.jpg", file_percent: 10 }));
+    const a = queueItems(first);
+    const next = applyProgress(first, event({ total: 2000, done: 1, file: "f1.jpg", file_percent: 20 }));
+    const b = queueItems(next);
+    expect(b.filter((item, i) => item !== a[i])).toHaveLength(1);
+    expect(b[1]).toMatchObject({ state: "running", percent: 20 });
+  });
+});

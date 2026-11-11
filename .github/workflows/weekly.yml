@@ -15,7 +15,7 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
-  # M3-03 (docs/11 "Large folders", docs/13): the 500-photo latency, weekly because a wall-clock bound does not belong in a push on
+  # M3-03 (docs/11 "Large folders", docs/13) and H-09 (docs/26): the 500-photo latency, and the web view's at 100, 500 and 2000, weekly because a wall-clock bound does not belong in a push on
   # a runner shared with other jobs. Two halves, each a report with one generous bound; the numbers are in the job summary and in
   # the artifacts, and the trend is what to read.
   #  - The shell's half: the ignored Rust test `five_hundred_files_leave_the_commands_responsive` opens 500 synthetic photos and times
@@ -23,9 +23,10 @@ jobs:
   #    jobs and the margin is thin (the slowest command took 92.6 ms in one run and 61 ms in another, against 100), so the step sets
   #    YM_PERF_SHELL_MAX_MS=250 below. It opens no window and starts no Tauri runtime, so there is no X server (xvfb) here, as in
   #    the `parity` job; the Tauri libraries are only there to link the app crate.
-  #  - The web view's half: e2e/perf drives the production build on the mock with 500 photos developing and presses keys meanwhile
-  #    (asserts p95 < 150 ms; docs/11 has the figures of the run it replaced). The Mac, Metal and the real window stay M3-H4.
-  latency-500:
+  #  - The web view's half: e2e/perf drives the production build on the mock with 100, 500 and 2000 photos developing and presses keys
+  #    meanwhile (asserts p95 < 150 ms at each size, and p95 at 2000 <= 1.25 x p95 at 500 of the same run: the cost of a key must not
+  #    grow with the folder; docs/11 has the figures). The Mac, Metal and the real window stay M3-H4.
+  latency:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -55,20 +56,22 @@ jobs:
           cargo test -p yellowmoon-app --bin yellowmoon-app five_hundred -- --ignored --nocapture 2>&1 | tee latency-core.txt || code=$?
           { echo '### Shell side, 500 photos developing (the ignored test of src-tauri)'; echo '```text'; grep -E 'open_paths:|developed after|photo_progress events|bound on the slowest|test result:' latency-core.txt || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$code"
-      - name: Web view side, 500 photos on the mock (production build)
+      - name: Web view side, 100, 500 and 2000 photos on the mock (production build)
         if: ${{ !cancelled() }}
         shell: bash
+        env:
+          YM_PERF_PHOTOS: "100,500,2000"
         run: |
           code=0
-          e2e/perf/run.sh || code=$?
-          if [ -f test-results/perf/latency.md ]; then cat test-results/perf/latency.md >> "$GITHUB_STEP_SUMMARY"; fi
+          e2e/perf/run.sh --trace off || code=$?
+          for f in test-results/perf/latency-*.md; do [ -f "$f" ] && cat "$f" >> "$GITHUB_STEP_SUMMARY"; done
           exit "$code"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: latency-500
+          name: latency
           path: |
             latency-core.txt
-            test-results/perf/latency.json
-            test-results/perf/latency.md
+            test-results/perf/latency-*.json
+            test-results/perf/latency-*.md
           if-no-files-found: ignore

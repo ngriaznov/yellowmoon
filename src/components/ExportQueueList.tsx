@@ -1,7 +1,9 @@
+import { memo, useRef } from "react";
 import { Item } from "@/components/glass/item";
 import { cx } from "./cx";
 import { Tag } from "./Tag";
 import type { TagVariant } from "./Tag";
+import { useWindowedRange } from "./windowed";
 
 /** Where one file of an export is. */
 export type QueueState = "waiting" | "running" | "done" | "failed" | "skipped";
@@ -41,26 +43,46 @@ export interface ExportQueueListProps {
   className?: string;
 }
 
+/** One file of the queue, drawn again only when something it shows has changed. */
+const QueueRow = memo(
+  function QueueRow({ item }: { item: ExportQueueItem }) {
+    return (
+      <Item asChild size="sm">
+        <li className="ym-queue__row">
+          <span className="ym-queue__text">
+            <span className="ym-queue__file" title={item.file}>
+              {item.file}
+            </span>
+            <span className="ym-queue__note">{item.note ?? DEFAULT_NOTES[item.state]}</span>
+          </span>
+          <Tag variant={TAGS[item.state]}>{item.state === "running" ? `${Math.round(item.percent ?? 0)}%` : undefined}</Tag>
+        </li>
+      </Item>
+    );
+  },
+  (a, b) =>
+    a.item === b.item ||
+    (a.item.id === b.item.id && a.item.file === b.item.file && a.item.state === b.item.state && a.item.percent === b.item.percent && a.item.note === b.item.note),
+);
+
 /**
  * The per-file list of the Export panel while it runs: a glasscn `Item` row per file with its name, a
  * note and a tag (WAITING, 45% in yellow, DONE in ink, SKIPPED in orange for a file that already
- * existed, or FAILED with the reason as the note).
+ * existed, or FAILED with the reason as the note). A long queue (2000 photos) draws only the rows in view and a margin
+ * (`useWindowedRange`); a row is drawn again only when its own file, state, percentage or note changes.
  */
 export function ExportQueueList({ items, label = "Export queue", className }: ExportQueueListProps) {
+  const list = useRef<HTMLUListElement>(null);
+  const win = useWindowedRange({ count: items.length, axis: "y", list, itemSelector: ".ym-queue__row", estimate: 53 });
   return (
-    <ul aria-label={label} className={cx("ym-queue", className)}>
-      {items.map((item) => (
-        <Item key={item.id} asChild size="sm">
-          <li className="ym-queue__row">
-            <span className="ym-queue__text">
-              <span className="ym-queue__file" title={item.file}>
-                {item.file}
-              </span>
-              <span className="ym-queue__note">{item.note ?? DEFAULT_NOTES[item.state]}</span>
-            </span>
-            <Tag variant={TAGS[item.state]}>{item.state === "running" ? `${Math.round(item.percent ?? 0)}%` : undefined}</Tag>
-          </li>
-        </Item>
+    <ul
+      ref={list}
+      aria-label={label}
+      className={cx("ym-queue", className)}
+      style={win.windowed ? { paddingTop: win.before, paddingBottom: win.after } : undefined}
+    >
+      {items.slice(win.start, win.end).map((item) => (
+        <QueueRow key={item.id} item={item} />
       ))}
     </ul>
   );
@@ -92,25 +114,42 @@ export interface DevelopListProps {
   className?: string;
 }
 
+/** One photo of the Start list, drawn again only when something it shows has changed. */
+const DevelopRow = memo(
+  function DevelopRow({ item }: { item: DevelopItem }) {
+    return (
+      <Item asChild size="sm">
+        <li className="ym-queue__row">
+          <span className="ym-queue__file" title={item.name}>
+            {item.name}
+          </span>
+          <span className="ym-queue__note">{item.note ?? DEVELOP_NOTES[item.state]}</span>
+          <Tag variant={item.state} />
+        </li>
+      </Item>
+    );
+  },
+  (a, b) => a.item === b.item || (a.item.id === b.item.id && a.item.name === b.item.name && a.item.state === b.item.state && a.item.note === b.item.note),
+);
+
 /**
  * The Start screen's list of photos being developed: a glasscn `Item` row per file with its name, what
  * is happening and a tag (WAITING, DEVELOPING in yellow, READY in ink, SKIPPED in orange with
- * the reason). It scrolls when it is taller than its box.
+ * the reason). It scrolls when it is taller than its box, and a long list (2000 photos) draws only the rows in view and a margin.
  */
 export function DevelopList({ items, label = "Photos being developed", className }: DevelopListProps) {
+  const list = useRef<HTMLUListElement>(null);
+  const win = useWindowedRange({ count: items.length, axis: "y", list, itemSelector: ".ym-queue__row", estimate: 41 });
   return (
     <div className={cx("ym-develop-list", className)}>
-      <ul aria-label={label} className="ym-queue">
-        {items.map((item) => (
-          <Item key={item.id} asChild size="sm">
-            <li className="ym-queue__row">
-              <span className="ym-queue__file" title={item.name}>
-                {item.name}
-              </span>
-              <span className="ym-queue__note">{item.note ?? DEVELOP_NOTES[item.state]}</span>
-              <Tag variant={item.state} />
-            </li>
-          </Item>
+      <ul
+        ref={list}
+        aria-label={label}
+        className="ym-queue"
+        style={win.windowed ? { paddingTop: win.before, paddingBottom: win.after } : undefined}
+      >
+        {items.slice(win.start, win.end).map((item) => (
+          <DevelopRow key={item.id} item={item} />
         ))}
       </ul>
     </div>

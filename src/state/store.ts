@@ -1005,11 +1005,15 @@ export class AppStore {
   /** The state with one photo's status changed; remembered when the photo isn't in the session yet. */
   private withStatus(s: AppState, id: PhotoId, status: PhotoStatus): AppState {
     const session = s.session;
-    if (!session || !session.photos.some((p) => p.id === id)) {
+    const index = session ? session.photos.findIndex((p) => p.id === id) : -1;
+    if (!session || index < 0) {
       this.pendingStatus.set(id, status);
       return s;
     }
-    const photos = session.photos.map((p) => (p.id === id ? { ...p, status } : p));
+    // Copy on write: one copy of the array and a new object for the one photo that changed; the other 1,999 keep their identity, so the
+    // lists that draw them compare equal and do not draw them again.
+    const photos = session.photos.slice();
+    photos[index] = { ...photos[index]!, status };
     if (status.kind === "ready" && photos[session.current_index ?? -1]?.id === id) {
       queueMicrotask(() => void this.ensureSettings(id));
     }
@@ -1019,9 +1023,11 @@ export class AppStore {
   /** The state with one photo's `apple_pending` changed. A photo not in the session yet is left alone: its summary will say. */
   private withApplePending(s: AppState, id: PhotoId, pending: boolean): AppState {
     const session = s.session;
-    const photo = session?.photos.find((p) => p.id === id);
+    const index = session ? session.photos.findIndex((p) => p.id === id) : -1;
+    const photo = session?.photos[index];
     if (!session || !photo || photo.apple_pending === pending) return s;
-    const photos = session.photos.map((p) => (p.id === id ? { ...p, apple_pending: pending } : p));
+    const photos = session.photos.slice();
+    photos[index] = { ...photo, apple_pending: pending };
     return { ...s, session: { ...session, photos } };
   }
 
