@@ -11472,6 +11472,7 @@ dependencies = [
  "thiserror 2.0.21",
  "ym-color",
  "ym-gpu",
+ "zune-jpeg",
 ]
 
 [[package]]

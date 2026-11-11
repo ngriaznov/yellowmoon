@@ -1,0 +1,4 @@
+# The MediaPipe face networks (about 20 MB in all) are not committed: tools/fetch/mediapipe.sh downloads them from the release
+# `models-mediapipe-faces-1` and checks them against SHA256SUMS; the build bundles them (docs/12). Never commit them.
+*.safetensors
+*.part

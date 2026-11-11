@@ -136,6 +136,56 @@ jobs:
             echo "pinned=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The MediaPipe face networks (BlazeFace full range, Face Mesh V2, Selfie Multiclass; about 20 MB, Apache-2.0; face skin
+      # retouching, docs/27 S-08) are release assets of ours (models-mediapipe-faces-1, made by the `mediapipe` job of models.yml
+      # from the TFLite files Google publishes), fetched into data/models/mediapipe/ and checked against
+      # data/models/mediapipe/SHA256SUMS (tools/fetch/mediapipe.sh). The pins are committed, because the conversion is
+      # deterministic and the job refuses to publish bytes that differ from them. Until the release exists there is nothing to
+      # fetch: the step says so, the build goes on without the networks (the Skin node reports them as unavailable) and the
+      # later checks skip them. Once the release exists the step fetches and every check requires the files.
+      - name: Cache the MediaPipe face networks
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/models/mediapipe/blaze_face_full_range.f16.safetensors
+            data/models/mediapipe/face_mesh_v2.f16.safetensors
+            data/models/mediapipe/selfie_multiclass_256.f32.safetensors
+          key: mediapipe-weights-${{ hashFiles('data/models/mediapipe/SHA256SUMS') }}
+
+      # Same reason as the SAM and depth downloads above: the GitHub CLI goes through the API. It does nothing when the release
+      # does not exist yet or the cache put the files there, and it never fails the step: tools/fetch/mediapipe.sh checks the
+      # SHA-256 of every file next and downloads what is missing the plain way.
+      - name: Download the MediaPipe face networks with the GitHub CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view models-mediapipe-faces-1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "The release models-mediapipe-faces-1 does not exist yet: nothing to download."
+            exit 0
+          fi
+          mkdir -p data/models/mediapipe
+          for f in blaze_face_full_range.f16.safetensors face_mesh_v2.f16.safetensors selfie_multiclass_256.f32.safetensors; do
+            if [ -s "data/models/mediapipe/$f" ]; then
+              echo "$f is already on disk."
+            elif ! gh release download models-mediapipe-faces-1 --repo "$GITHUB_REPOSITORY" --pattern "$f" --dir data/models/mediapipe --clobber; then
+              rm -f "data/models/mediapipe/$f"
+              echo "::warning title=GitHub CLI download failed::$f was not downloaded with the GitHub CLI; the fetch script will try the plain download."
+            fi
+          done
+
+      - name: Fetch the MediaPipe face networks
+        id: mediapipe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view models-mediapipe-faces-1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            tools/fetch/mediapipe.sh
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=MediaPipe networks not bundled::The release models-mediapipe-faces-1 does not exist yet. Run the models workflow's mediapipe job (a push to a branch models/mediapipe-..., or Actions > models > Run workflow with the job mediapipe); until then this build has no face finder for the Skin node."
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # The bundle carries the licence texts of every dependency next to NOTICE (as release.yml does).
       # The prebuilt cargo-about is a GitHub release download. Anonymous release downloads can time out (they did on 2026-11-09,
       # during GitHub's incident), so a failure here is not fatal: the next step builds the same version from crates.io.
@@ -153,12 +203,12 @@ jobs:
       - name: Licence texts of the dependencies (THIRD-PARTY.md, bundled next to NOTICE)
         run: |
           python3 tools/licences/generate.py
-          # --depth-pending only while the depth pin is the placeholder (the Fetch step above says so).
-          if [ "${{ steps.depth.outputs.pinned }}" = true ]; then
-            python3 tools/licences/check_bundle.py --require-weights
-          else
-            python3 tools/licences/check_bundle.py --require-weights --depth-pending
-          fi
+          # --depth-pending only while the depth pin is the placeholder, --require-mediapipe only once the MediaPipe release
+          # exists (the Fetch steps above say so).
+          args=--require-weights
+          [ "${{ steps.depth.outputs.pinned }}" = true ] || args="$args --depth-pending"
+          [ "${{ steps.mediapipe.outputs.published }}" = true ] && args="$args --require-mediapipe"
+          python3 tools/licences/check_bundle.py $args
 
       - name: Build the command-line tool (the app's sidecar `ym`)
         run: |
@@ -196,6 +246,13 @@ jobs:
           if [ "${{ steps.depth.outputs.pinned }}" = true ]; then
             test -s "$APP/Contents/Resources/data/models/depth/depth_anything_v2_vits.f16.safetensors"
             (cd "$APP/Contents/Resources/data/models/depth" && shasum -a 256 -c SHA256SUMS)
+          fi
+          # The MediaPipe face networks too, once their release exists (see the Fetch step).
+          if [ "${{ steps.mediapipe.outputs.published }}" = true ]; then
+            for f in blaze_face_full_range.f16.safetensors face_mesh_v2.f16.safetensors selfie_multiclass_256.f32.safetensors; do
+              test -s "$APP/Contents/Resources/data/models/mediapipe/$f"
+            done
+            (cd "$APP/Contents/Resources/data/models/mediapipe" && shasum -a 256 -c SHA256SUMS)
           fi
           "$APP/Contents/MacOS/ym" --version
           "$APP/Contents/MacOS/ym" doctor || echo "::warning title=ym doctor::exited with $? (informational)"

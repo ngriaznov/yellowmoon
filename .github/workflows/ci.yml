@@ -10,7 +10,7 @@
 # YM_REQUIRE_GPU (gpu-lavapipe, ml-backends), YM_REQUIRE_EXTERNAL_TOOLS (dng), YM_REQUIRE_ORACLE (oracle, dng),
 # YM_REQUIRE_FIXTURES (spectral-fixtures), YM_REQUIRE_SYNTHETIC (synthetic-set), YM_REQUIRE_ORT (ml-backends),
 # YM_REQUIRE_PARITY_BIN and YM_REQUIRE_FORCE_DEMOSAIC (parity), YM_REQUIRE_SAM2 (sam2, gpu-lavapipe, parity: SAM 2.1's weights are
-# fetched there and every Object test runs in one of them), YM_REQUIRE_DEPTH (depth: Depth Anything's weights and oracle fixtures), and YM_REQUIRE_VISION (the macOS `rust` job's two Vision steps: the runner is
+# fetched there and every Object test runs in one of them), YM_REQUIRE_DEPTH (depth: Depth Anything's weights and oracle fixtures), YM_REQUIRE_MEDIAPIPE (mediapipe: BlazeFace's weights and photos, once the release exists), and YM_REQUIRE_VISION (the macOS `rust` job's two Vision steps: the runner is
 # a Mac that runs Vision's requests, so "not supported" there is a failure). The rest of the macOS `rust` job sets none of them.
 name: CI
 
@@ -868,6 +868,46 @@ jobs:
         run: command -v zstd >/dev/null || sudo apt-get install -y zstd
       - run: tools/fetch/depth.sh --fixtures
       - run: cargo test -p ym-ml --release --test depth -- --nocapture --test-threads=1
+  # The BlazeFace port against Google's TFLite file (docs/27 S-08): the raw network on a synthetic input, 4 public photos against
+  # MediaPipe's own face detector task and the TFLite interpreter, the finder's defaults, the same bits on 1 and 4 threads. The
+  # fixtures are committed (crates/ym-ml/tests/fixtures/blazeface.json); the weights are the release `models-mediapipe-faces-1`
+  # (tools/fetch/mediapipe.sh) and the photos are CC0 files on Wikimedia Commons (tools/fetch/mediapipe.sh --photos), pinned by
+  # SHA-256. Until the release has been published (models workflow, job mediapipe) there are no weights: the step says so and the
+  # tests skip instead of failing; once it exists YM_REQUIRE_MEDIAPIPE turns a missing file into a failure.
+  mediapipe:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Is the MediaPipe release published?
+        id: release
+        run: |
+          if gh release view models-mediapipe-faces-1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=MediaPipe weights not published::The release models-mediapipe-faces-1 does not exist yet (models workflow, job mediapipe); the BlazeFace tests that need the weights are skipped."
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/cache@v4
+        if: steps.release.outputs.published == 'true'
+        with:
+          path: |
+            data/models/mediapipe/blaze_face_full_range.f16.safetensors
+            testdata/mediapipe
+          key: mediapipe-tests-${{ hashFiles('data/models/mediapipe/SHA256SUMS', 'tools/fetch/mediapipe.sh') }}
+      - name: Weights and photos
+        if: steps.release.outputs.published == 'true'
+        run: tools/fetch/mediapipe.sh --only blazeface --photos
+      - name: BlazeFace against Google's reference
+        run: cargo test -p ym-ml --release --test blazeface -- --nocapture
+        env:
+          YM_REQUIRE_MEDIAPIPE: ${{ steps.release.outputs.published == 'true' && '1' || '0' }}
   # Fuzzing (docs/13): every cargo-fuzz target runs for 10 minutes each night (property: no panic, no unbounded allocation, a
   # typed error for any input). One job per target, so a crash names its target and the others still run. The targets are
   # crates/ym-raw/fuzz (the ARW container and the decoders, docs/04) and crates/ym-color/fuzz (the `.cube` parser and the look

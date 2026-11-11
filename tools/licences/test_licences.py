@@ -45,6 +45,7 @@ BSD_NOTICE = (
     "The above copyright notice and this permission notice shall be included in all\n"
     "Copyright (c) Meta Platforms, Inc. and affiliates. https://github.com/facebookresearch/sam2\n"
     "Depth Anything V2-Small by Lihe Yang et al. https://github.com/DepthAnything/Depth-Anything-V2\n"
+    "Copyright 2021 The MediaPipe Authors https://github.com/google-ai-edge/mediapipe\n"
     "spektrafilm by Andrea Volpato https://github.com/andreavolpato/spektrafilm data/film/spektrafilm/LICENSE\n"
     "International Commission on Illumination (CIE) data/film/cie/LICENSE and a table computed from it data/film/upsampling/LICENSE\n"
 )
@@ -251,6 +252,7 @@ class Config(unittest.TestCase):
 
 SAM2_WEIGHTS = "sam2.1_hiera_small.f16.safetensors"
 DEPTH_WEIGHTS = "depth_anything_v2_vits.f16.safetensors"
+MEDIAPIPE_FILES = ("blaze_face_full_range.f16.safetensors", "face_mesh_v2.f16.safetensors", "selfie_multiclass_256.f32.safetensors")
 #: A depth folder whose weights are fetched and match their pin (for the tests that are about SAM's weights).
 DEPTH_READY = {"depth_sums": f"{hashlib.sha256(b'depth').hexdigest()}  {DEPTH_WEIGHTS}\n", "depth_weights": b"depth"}
 
@@ -272,6 +274,10 @@ class Bundle(unittest.TestCase):
         depth_weights: bytes | None = None,
         depth_card: str | None = "Apache-2.0, https://github.com/DepthAnything/Depth-Anything-V2\n",
         depth_ignore: str | None = "*.safetensors\n",
+        mediapipe_card: str | None = "Apache-2.0, https://storage.googleapis.com/mediapipe-models/\n",
+        mediapipe_ignore: str | None = "*.safetensors\n",
+        mediapipe_sums: str | None = None,
+        mediapipe_files: dict[str, bytes] | None = None,
     ) -> None:
         (root / "src-tauri").mkdir(parents=True, exist_ok=True)
         resources = (
@@ -312,6 +318,18 @@ class Bundle(unittest.TestCase):
             (depth / "SHA256SUMS").write_text(depth_sums)
         if depth_weights is not None:
             (depth / DEPTH_WEIGHTS).write_bytes(depth_weights)
+        mediapipe = root / "data" / "models" / "mediapipe"
+        mediapipe.mkdir(parents=True, exist_ok=True)
+        if mediapipe_card is not None:
+            (mediapipe / "MODEL_CARD.md").write_text(mediapipe_card)
+        if mediapipe_ignore is not None:
+            (mediapipe / ".gitignore").write_text(mediapipe_ignore)
+        if mediapipe_sums is None:
+            mediapipe_sums = "".join(f"{hashlib.sha256(name.encode()).hexdigest()}  {name}\n" for name in MEDIAPIPE_FILES)
+        if mediapipe_sums:
+            (mediapipe / "SHA256SUMS").write_text(mediapipe_sums)
+        for name, data in (mediapipe_files or {}).items():
+            (mediapipe / name).write_bytes(data)
         if film:
             self.film_tree(root)
 
@@ -463,6 +481,44 @@ class Bundle(unittest.TestCase):
             self.tree(root, sums=sam_sums, weights=sam, depth_sums=pin, depth_weights=depth)
             self.assertEqual(check_bundle.problems(root, require_weights=True), [])
             self.assertEqual(check_bundle.main(["--require-weights", str(root)]), 0)
+
+    def test_the_mediapipe_notice_item_and_model_folder_are_checked(self):
+        for phrase in ("MediaPipe Authors", "github.com/google-ai-edge/mediapipe"):
+            with tempfile.TemporaryDirectory() as tmp:
+                self.tree(Path(tmp), notice=BSD_NOTICE.replace(phrase, "x"))
+                problems = check_bundle.problems(Path(tmp))
+            self.assertTrue(any(phrase in p for p in problems), (phrase, problems))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tree(Path(tmp), mediapipe_card=None, mediapipe_ignore=None, mediapipe_sums="")
+            problems = check_bundle.problems(Path(tmp))
+        for needle in ("data/models/mediapipe/MODEL_CARD.md", "data/models/mediapipe/.gitignore"):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+        for name in MEDIAPIPE_FILES:
+            self.assertTrue(any(f"data/models/mediapipe/SHA256SUMS has no line for {name}" in p for p in problems), (name, problems))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tree(Path(tmp), mediapipe_card="A model.\n", mediapipe_ignore="*.part\n")
+            problems = check_bundle.problems(Path(tmp))
+        self.assertTrue(any("mediapipe/MODEL_CARD.md" in p and "Apache-2.0" in p for p in problems), problems)
+        self.assertTrue(any("mediapipe/MODEL_CARD.md" in p and "mediapipe-models" in p for p in problems), problems)
+        self.assertTrue(any("mediapipe/.gitignore" in p for p in problems), problems)
+
+    def test_the_mediapipe_files_are_required_only_with_the_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # The pins are real from the start; without the flag a missing file is no problem, with it each is an error.
+            self.tree(root)
+            self.assertEqual(check_bundle.problems(root), [])
+            missing = check_bundle.problems(root, require_mediapipe=True)
+            self.assertEqual(sum("is missing" in p and "tools/fetch/mediapipe.sh" in p for p in missing), 3, missing)
+            self.assertEqual(check_bundle.main(["--require-mediapipe", str(root)]), 1)
+            files = {name: name.encode() for name in MEDIAPIPE_FILES}
+            self.tree(root, mediapipe_files={**files, MEDIAPIPE_FILES[1]: b"damaged"})
+            wrong = check_bundle.problems(root, require_mediapipe=True)
+            self.assertEqual(len(wrong), 1, wrong)
+            self.assertIn("face_mesh_v2", wrong[0])
+            self.tree(root, mediapipe_files=files)
+            self.assertEqual(check_bundle.problems(root, require_mediapipe=True), [])
+            self.assertEqual(check_bundle.main(["--require-mediapipe", str(root)]), 0)
 
     def test_the_film_notice_items_must_be_in_the_notice(self):
         for phrase in ("Andrea Volpato", "github.com/andreavolpato/spektrafilm", "data/film/spektrafilm/LICENSE"):
