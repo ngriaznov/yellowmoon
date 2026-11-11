@@ -472,5 +472,5 @@ Each task by a Sonnet agent on `skin-retouch` (or a branch off it); the lead rev
 4. **Modal.** "yes": a trained proposer may be trained, $15 planned, $20 hard cap (S-14).
 5. **Research-only sets.** "yes": FFHQR, Fitzpatrick17k and HAM10000 for local measurement only, never shipped or committed.
 6. **Weights.** "bundle": bundled with the app like SAM 2.1 (a release asset fetched by the release workflow), not committed.
-8. **The node's name (2026-11-11):** "Node name should be Face Refinement, since it is about faces and not generally skin." The node is **Face Refinement**, kind `face_refinement`; its first panel tab is **Face**. The library stays `ym-retouch`.
 7. **On the mockups (2026-11-11):** "Don't do include neck. But let's add some things from Resolve: teeth whitening, skin grading (contrast, shadow desaturation, shine removal)." Sections 3, 5.6, 7.7 to 7.9 and task S-15.
+8. **The node's name (2026-11-11):** "Node name should be Face Refinement, since it is about faces and not generally skin." The node is **Face Refinement**, kind `face_refinement`; its first panel tab is **Face**. The library stays `ym-retouch`.
