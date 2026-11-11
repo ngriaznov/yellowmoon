@@ -1,0 +1,10 @@
+{
+  "schema": "yellowmoon.parametric-look/1",
+  "name": "Signature",
+  "input": "logc4",
+  "luma_curve": [
+    { "x": 0.025637, "y": 0.215238 },
+    { "x": 0.2783, "y": 1.0 }
+  ],
+  "cdl": { "slope": [1, 1, 1], "offset": [0, 0, 0], "power": [1555555555555555555555555555555555555555555555555555555555555, 1, 1], "saturation": 1.2 }
+}

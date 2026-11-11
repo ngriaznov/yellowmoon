@@ -150,14 +150,14 @@ pub enum LookError {
     /// The cube could not be built.
     #[error("LUT: {0}")]
     Lut(#[from] LutError),
-    /// The CDL sends a LogC4 input inside the unit cube beyond [`CDL_OUTPUT_LIMIT`].
+    /// The CDL sends a LogC4 input inside the unit cube (after the luma curve) beyond [`CDL_OUTPUT_LIMIT`].
     #[error(
-        "CDL: the {channel} channel reaches {value:e} at white; a look's CDL must stay below {CDL_OUTPUT_LIMIT}"
+        "CDL: the {channel} channel reaches {value:e} at its largest input; a look's CDL must stay below {CDL_OUTPUT_LIMIT}"
     )]
     CdlOutOfRange {
         /// `red`, `green` or `blue`.
         channel: &'static str,
-        /// What the slope, offset and power make of an input of 1.0 (may be infinite).
+        /// What the slope, offset and power make of the largest input the CDL can see (may be infinite).
         value: f64,
     },
 }
@@ -631,10 +631,14 @@ impl ParametricLook {
             Some(c) => Cdl::new(c.slope, c.offset, c.power, c.saturation)?,
             None => Cdl::identity(),
         };
-        // Slope >= 0 and power > 0 make each channel's slope-offset-power rise with its input, so an input
-        // of 1.0 gives its largest value on the unit cube.
+        // Slope >= 0 and power > 0 make each channel's slope-offset-power rise with its input, so the
+        // largest input the CDL can see on the unit cube gives its largest value. That input is 1.0, plus
+        // what the luma curve (applied before the CDL) can add to a channel.
+        let reach = luma_curve.as_ref().map_or(1.0, |c| 1.0 + max_luma_shift(c));
         for (k, channel) in ["red", "green", "blue"].into_iter().enumerate() {
-            let value = (cdl.slope[k] + cdl.offset[k]).max(0.0).powf(cdl.power[k]);
+            let value = (cdl.slope[k] * reach + cdl.offset[k])
+                .max(0.0)
+                .powf(cdl.power[k]);
             if value.is_nan() || value >= CDL_OUTPUT_LIMIT {
                 return Err(LookError::CdlOutOfRange { channel, value });
             }
@@ -806,6 +810,27 @@ impl ParametricLook {
     }
 }
 
+/// An upper bound, at least 0, of the shift `T(L) - L` that [`ParametricLook::apply_luma_curve`] adds to
+/// every channel, over every input of the unit cube (and beyond it).
+///
+/// `L` is the luma of the input. Curve points lie in the unit square and `x` increases. Per range of `L`:
+/// below the first point `T` is flat at `y_0` (`Curve::eval` holds the end value), so the shift is
+/// `y_0 - L <= y_0` for `L >= 0`, and exactly `eval(0) = y_0` for `L < 0` (the code adds `eval(0)`);
+/// inside segment `i` the spline is monotone on the segment and never leaves the range of its end values
+/// (Fritsch-Carlson), so `T(L) <= max(y_i, y_(i+1))` and `L >= x_i` give a shift of at most
+/// `max(y_i, y_(i+1)) - x_i`; above the last point `T = y_n`, so the shift `y_n - L` is at most
+/// `y_n - x_n` (this includes `L > 1`, where it is `y_n - 1 <= 0`). Taking the largest of these, floored
+/// at 0, bounds the shift everywhere; a tiny slack covers rounding in the Hermite evaluation.
+fn max_luma_shift(curve: &Curve) -> f64 {
+    let pts = curve.points();
+    let (first, last) = (pts[0], pts[pts.len() - 1]);
+    let mut bound = first.y.max(last.y - last.x).max(0.0);
+    for w in pts.windows(2) {
+        bound = bound.max(w[0].y.max(w[1].y) - w[0].x);
+    }
+    bound + 1e-9
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -840,6 +865,81 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// The input the nightly fuzzer found on 2026-11-11 (`fuzz/corpus/look_json/luma-curve-reach.json`): the
+    /// luma curve lifts red to about 1.6 before the CDL, where a red power of 1.6e60 gives infinity.
+    const LUMA_CURVE_REACH: &str = include_str!("../fuzz/corpus/look_json/luma-curve-reach.json");
+
+    #[test]
+    fn a_cdl_that_overflows_after_the_luma_curve_is_refused() {
+        match ParametricLook::from_json(LUMA_CURVE_REACH) {
+            Err(LookError::CdlOutOfRange { channel, value }) => {
+                assert_eq!(channel, "red");
+                assert!(!value.is_finite() || value >= CDL_OUTPUT_LIMIT);
+            }
+            other => panic!("expected CdlOutOfRange, got {other:?}"),
+        }
+        let near = LUMA_CURVE_REACH.replace(&format!("1{}", "5".repeat(60)), "2");
+        assert_ne!(near, LUMA_CURVE_REACH);
+        let look = ParametricLook::from_json(&near).expect("a moderate power is a look");
+        let mut inputs: Vec<Vec3> = (0..8)
+            .map(|c| std::array::from_fn(|k| f64::from((c >> k) & 1)))
+            .collect();
+        inputs.extend([[0.9, 0.1, 0.4], [0.2, 0.7, 0.05], [0.5, 0.5, 0.5]]);
+        for rgb in inputs {
+            assert!(look.evaluate(rgb).iter().all(|v| !v.is_nan()), "{rgb:?}");
+        }
+    }
+
+    #[test]
+    fn the_luma_shift_bound_bounds_every_channel_on_the_unit_cube() {
+        let signature: ParametricLookSpec =
+            serde_json::from_str(include_str!("../../../data/looks/builtin/signature.json"))
+                .unwrap();
+        let crash: ParametricLookSpec = serde_json::from_str(LUMA_CURVE_REACH).unwrap();
+        let curves: Vec<Vec<(f64, f64)>> = vec![
+            crash.luma_curve.iter().map(|p| (p.x, p.y)).collect(),
+            signature.luma_curve.iter().map(|p| (p.x, p.y)).collect(),
+            vec![(0.0, 1.0), (0.5, 0.5), (1.0, 0.0)],
+            vec![(0.0, 0.0), (0.3, 0.3), (0.7, 0.7001), (1.0, 1.0)],
+            vec![(0.1, 0.9), (0.2, 0.3), (0.6, 1.0), (0.9, 0.0)],
+        ];
+        for pts in curves {
+            let curve = Curve::new(&pts).unwrap();
+            let reach = 1.0 + max_luma_shift(&curve);
+            let look = ParametricLook {
+                name: String::new(),
+                luma_curve: Some(curve),
+                cdl: Cdl::identity(),
+                hue_vs_sat: Profile::from_points(&[], true, 1.0),
+                hue_vs_hue: Profile::from_points(&[], true, 0.0),
+                luma_vs_sat: Profile::from_points(&[], false, 1.0),
+            };
+            let n = 17;
+            for i in 0..n * n * n {
+                let f = |j: usize| j as f64 / (n - 1) as f64;
+                let v = [f(i % n), f(i / n % n), f(i / (n * n))];
+                let out = look.apply_luma_curve(v);
+                assert!(
+                    out.iter().all(|&c| c <= reach),
+                    "{pts:?} {v:?} {out:?} {reach}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_built_in_looks_and_the_corpus_are_accepted() {
+        for text in [
+            include_str!("../../../data/looks/builtin/neutral.json"),
+            include_str!("../../../data/looks/builtin/signature.json"),
+            include_str!("../fuzz/corpus/look_json/neutral.json"),
+            include_str!("../fuzz/corpus/look_json/signature.json"),
+            include_str!("../fuzz/corpus/look_json/example.json"),
+        ] {
+            ParametricLook::from_json(text).expect("accepted");
+        }
     }
 
     #[test]

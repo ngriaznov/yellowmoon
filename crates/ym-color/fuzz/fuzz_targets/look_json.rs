@@ -1,7 +1,9 @@
 //! Fuzz target for the parametric look JSON loader and the curve spline behind it. Properties:
 //! parsing never panics; an accepted look evaluates without a NaN on the unit cube (a CDL whose
 //! output reaches `CDL_OUTPUT_LIMIT` at white is refused by the parser: `corpus/look_json/cdl-overflow.json`,
-//! found by the nightly run of 2026-10-17) and bakes (or reports a typed error) without panicking.
+//! found by the nightly run of 2026-10-17; so is one that reaches it at the largest input the luma curve
+//! lets it see, above 1.0: `corpus/look_json/luma-curve-reach.json`, found by the nightly run of
+//! 2026-11-11) and bakes (or reports a typed error) without panicking.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
