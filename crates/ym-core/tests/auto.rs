@@ -471,7 +471,11 @@ fn photos_that_cannot_be_analysed_say_so_in_plain_words() {
         },
     )
     .expect_err("no level range");
-    assert!(err.to_string().contains("can't be analysed"), "{err}");
+    assert_eq!(
+        err.to_string(),
+        "Yellowmoon can't develop this photo. Copy it from the card again, or skip it."
+    );
+    assert!(err.detail().contains("white level"), "{}", err.detail());
 }
 
 #[test]

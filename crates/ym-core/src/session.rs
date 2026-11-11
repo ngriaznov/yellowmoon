@@ -4050,7 +4050,10 @@ impl Inner {
             camera.matched.white_scale,
         ) {
             Ok(e) => Arc::new(e),
-            Err(e) => return fail(PhotoStage::Estimate, e.to_string()),
+            Err(e) => {
+                tracing::warn!(photo = id.0, detail = %e.detail(), "the photo could not be analysed");
+                return fail(PhotoStage::Estimate, e.to_string());
+            }
         };
         tracing::debug!(
             photo = id.0,
