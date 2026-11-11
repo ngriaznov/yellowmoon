@@ -156,7 +156,12 @@ impl Window {
                         self.kh, self.kw
                     )));
                 }
-                ((h - self.kh) / self.sh + 1, (w - self.kw) / self.sw + 1, 0, 0)
+                (
+                    (h - self.kh) / self.sh + 1,
+                    (w - self.kw) / self.sw + 1,
+                    0,
+                    0,
+                )
             }
         };
         Ok(Geometry {
@@ -232,7 +237,7 @@ pub struct Graph {
 }
 
 /// Looks at the activation or constant a node reads.
-fn get<'a>(values: &'a [Option<Tensor>], index: usize) -> Result<&'a Tensor> {
+fn get(values: &[Option<Tensor>], index: usize) -> Result<&Tensor> {
     values
         .get(index)
         .and_then(Option::as_ref)
@@ -288,7 +293,10 @@ impl Graph {
         )
         .map_err(|e| MlError::Weights(format!("graph: {e}")))?;
         if doc.version != 1 {
-            return Err(MlError::Unsupported(format!("graph version {}", doc.version)));
+            return Err(MlError::Unsupported(format!(
+                "graph version {}",
+                doc.version
+            )));
         }
         let mut consts: HashMap<usize, Tensor> = HashMap::new();
         let mut parameters = 0;
@@ -381,7 +389,10 @@ impl Graph {
                 .and_then(|&i| usize::try_from(i).ok())
                 .ok_or_else(|| MlError::Weights(format!("{} lacks input {pos}", op.op)))?;
             ints.get(&idx).copied().ok_or_else(|| {
-                MlError::Weights(format!("{}: tensor {idx} is not an integer constant", op.op))
+                MlError::Weights(format!(
+                    "{}: tensor {idx} is not an integer constant",
+                    op.op
+                ))
             })
         };
         let act_in = |pos: usize| -> Result<usize> {
@@ -395,7 +406,10 @@ impl Graph {
             .first()
             .ok_or_else(|| MlError::Weights(format!("{} has no output", op.op)))?;
         if op.out.len() != 1 {
-            return Err(MlError::Unsupported(format!("{} with several outputs", op.op)));
+            return Err(MlError::Unsupported(format!(
+                "{} with several outputs",
+                op.op
+            )));
         }
         let window = |kh, kw| -> Result<Window> {
             Ok(Window {
@@ -495,7 +509,9 @@ impl Graph {
             "PAD" => {
                 let p = int_const(1)?;
                 if p.shape != [4, 2] {
-                    return Err(MlError::Unsupported("PAD of other than 4 dimensions".into()));
+                    return Err(MlError::Unsupported(
+                        "PAD of other than 4 dimensions".into(),
+                    ));
                 }
                 let mut pads = [(0usize, 0usize); 4];
                 for (d, pad) in pads.iter_mut().enumerate() {
@@ -536,13 +552,13 @@ impl Graph {
             }
             "CONCATENATION" => {
                 if op.opt_i("FusedActivationFunction", 0) != 0 {
-                    return Err(MlError::Unsupported("CONCATENATION with an activation".into()));
+                    return Err(MlError::Unsupported(
+                        "CONCATENATION with an activation".into(),
+                    ));
                 }
                 let axis = usize::try_from(op.opt_i("Axis", 0))
                     .map_err(|_| MlError::Unsupported("CONCATENATION on a negative axis".into()))?;
-                let ins = (0..op.ins.len())
-                    .map(act_in)
-                    .collect::<Result<Vec<_>>>()?;
+                let ins = (0..op.ins.len()).map(act_in).collect::<Result<Vec<_>>>()?;
                 (Kind::Concat { axis }, ins)
             }
             other => {
@@ -868,7 +884,13 @@ fn pad(x: &Tensor, pads: &[(usize, usize); 4]) -> Result<Tensor> {
 }
 
 /// TFLite's source coordinate for one axis: the two taps and the weight of the second.
-fn resize_axis(dst: usize, in_len: usize, out_len: usize, align: bool, half: bool) -> (usize, usize, f32) {
+fn resize_axis(
+    dst: usize,
+    in_len: usize,
+    out_len: usize,
+    align: bool,
+    half: bool,
+) -> (usize, usize, f32) {
     let scale = if align && out_len > 1 {
         (in_len - 1) as f32 / (out_len - 1) as f32
     } else {
@@ -916,14 +938,18 @@ fn reshape(x: &Tensor, shape: &[i64]) -> Result<Tensor> {
     for &d in shape {
         if d >= 0 {
             dims.push(d as usize);
-        } else if known > 0 && total % known as usize == 0 {
+        } else if known > 0 && total.is_multiple_of(known as usize) {
             dims.push(total / known as usize);
         } else {
-            return Err(MlError::Shape(format!("cannot reshape {total} values to {shape:?}")));
+            return Err(MlError::Shape(format!(
+                "cannot reshape {total} values to {shape:?}"
+            )));
         }
     }
     if dims.iter().product::<usize>() != total {
-        return Err(MlError::Shape(format!("cannot reshape {total} values to {shape:?}")));
+        return Err(MlError::Shape(format!(
+            "cannot reshape {total} values to {shape:?}"
+        )));
     }
     Ok(Tensor {
         shape: dims,
@@ -961,4 +987,328 @@ fn concat(parts: &[&Tensor], axis: usize) -> Result<Tensor> {
         }
     }
     Ok(Tensor { shape, data })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use safetensors::{Dtype, tensor::TensorView};
+
+    use super::*;
+
+    /// A converted file by hand: float constants `(index, shape, values)` and the graph JSON.
+    fn file(consts: &[(usize, Vec<usize>, Vec<f32>)], graph: &str) -> Vec<u8> {
+        let bytes: Vec<(String, Vec<usize>, Vec<u8>)> = consts
+            .iter()
+            .map(|(i, shape, v)| {
+                (
+                    format!("t{i}"),
+                    shape.clone(),
+                    v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+                )
+            })
+            .collect();
+        let views: HashMap<String, TensorView<'_>> = bytes
+            .iter()
+            .map(|(n, s, b)| {
+                (
+                    n.clone(),
+                    TensorView::new(Dtype::F32, s.clone(), b).expect("view"),
+                )
+            })
+            .collect();
+        let meta = HashMap::from([
+            ("format".to_owned(), "yellowmoon-tflite-graph-1".to_owned()),
+            ("graph".to_owned(), graph.to_owned()),
+        ]);
+        safetensors::serialize(&views, Some(meta)).expect("serialize")
+    }
+
+    fn io(index: usize, shape: &[usize]) -> String {
+        format!(r#"{{"index":{index},"name":"t{index}","shape":{shape:?}}}"#)
+    }
+
+    /// One-operator graph `input 0 -> op -> output 1` with the extra inputs given.
+    fn single(
+        op: &str,
+        extra_in: &[i64],
+        opt: &str,
+        in_shape: &[usize],
+        out_shape: &[usize],
+        ints: &str,
+    ) -> String {
+        let mut ins = vec![0i64];
+        ins.extend_from_slice(extra_in);
+        format!(
+            r#"{{"version":1,"inputs":[{}],"outputs":[{}],"ints":{ints},"ops":[{{"op":"{op}","in":{ins:?},"out":[1],"opt":{opt}}}]}}"#,
+            io(0, in_shape),
+            io(1, out_shape)
+        )
+    }
+
+    fn run(file_bytes: &[u8], input: Tensor) -> Result<Vec<Tensor>> {
+        Graph::from_bytes(file_bytes)?.run(&[input])
+    }
+
+    fn ramp(shape: &[usize]) -> Tensor {
+        let n: usize = shape.iter().product();
+        Tensor::new(
+            shape.to_vec(),
+            (0..n)
+                .map(|i| (i % 7) as f32 - 2.5 + i as f32 * 0.01)
+                .collect(),
+        )
+        .expect("tensor")
+    }
+
+    #[test]
+    fn a_1x1_convolution_is_a_matrix_product_with_bias_and_a_fused_relu() {
+        // 2 -> 3 channels on a 1 x 2 x 2 map.
+        let w = vec![1.0, 2.0, -1.0, 0.5, 0.25, -3.0];
+        let b = vec![0.5, -0.5, 0.0];
+        let graph = single(
+            "CONV_2D",
+            &[2, 3],
+            r#"{"Padding":1,"StrideH":1,"StrideW":1,"FusedActivationFunction":1}"#,
+            &[1, 2, 2, 2],
+            &[1, 2, 2, 3],
+            "{}",
+        );
+        let f = file(
+            &[(2, vec![3, 1, 1, 2], w.clone()), (3, vec![3], b.clone())],
+            &graph,
+        );
+        let x = ramp(&[1, 2, 2, 2]);
+        let out = &run(&f, x.clone()).expect("run")[0];
+        assert_eq!(out.shape, vec![1, 2, 2, 3]);
+        for p in 0..4 {
+            for o in 0..3 {
+                let want =
+                    (b[o] + x.data[2 * p] * w[2 * o] + x.data[2 * p + 1] * w[2 * o + 1]).max(0.0);
+                assert!((out.data[3 * p + o] - want).abs() < 1e-6, "p{p} o{o}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_3x3_stride_2_same_convolution_pads_after_on_even_sizes() {
+        // 1 channel, 4 x 4 in, 2 x 2 out. TFLite SAME with stride 2: total padding 1, none before, one after.
+        let w: Vec<f32> = (1..=9).map(|v| v as f32).collect();
+        let graph = single(
+            "CONV_2D",
+            &[2, -1],
+            r#"{"Padding":0,"StrideH":2,"StrideW":2}"#,
+            &[1, 4, 4, 1],
+            &[1, 2, 2, 1],
+            "{}",
+        );
+        let f = file(&[(2, vec![1, 3, 3, 1], w.clone())], &graph);
+        let x = ramp(&[1, 4, 4, 1]);
+        let out = &run(&f, x.clone()).expect("run")[0];
+        for oy in 0..2usize {
+            for ox in 0..2usize {
+                let mut acc = 0.0f32;
+                for ky in 0..3usize {
+                    for kx in 0..3usize {
+                        let (iy, ix) = (oy * 2 + ky, ox * 2 + kx);
+                        if iy < 4 && ix < 4 {
+                            acc += x.data[iy * 4 + ix] * w[ky * 3 + kx];
+                        }
+                    }
+                }
+                assert!(
+                    (out.data[oy * 2 + ox] - acc).abs() < 1e-4,
+                    "({oy},{ox}) {} against {acc}",
+                    out.data[oy * 2 + ox]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_depthwise_convolution_filters_each_channel_alone() {
+        let w: Vec<f32> = (0..18).map(|v| (v as f32 - 8.0) * 0.1).collect(); // [1][3][3][2]
+        let graph = single(
+            "DEPTHWISE_CONV_2D",
+            &[2, 3],
+            r#"{"Padding":0,"StrideH":1,"StrideW":1,"DepthMultiplier":1}"#,
+            &[1, 3, 3, 2],
+            &[1, 3, 3, 2],
+            "{}",
+        );
+        let f = file(
+            &[
+                (2, vec![1, 3, 3, 2], w.clone()),
+                (3, vec![2], vec![1.0, -1.0]),
+            ],
+            &graph,
+        );
+        let x = ramp(&[1, 3, 3, 2]);
+        let out = &run(&f, x.clone()).expect("run")[0];
+        // The centre pixel sees the whole map.
+        for c in 0..2 {
+            let mut acc = if c == 0 { 1.0 } else { -1.0 };
+            for ky in 0..3 {
+                for kx in 0..3 {
+                    acc += x.data[(ky * 3 + kx) * 2 + c] * w[(ky * 3 + kx) * 2 + c];
+                }
+            }
+            assert!((out.data[(3 + 1) * 2 + c] - acc).abs() < 1e-5);
+        }
+        // The corner sees four taps.
+        let mut acc = 1.0;
+        for ky in 1..3 {
+            for kx in 1..3 {
+                acc += x.data[((ky - 1) * 3 + kx - 1) * 2] * w[(ky * 3 + kx) * 2];
+            }
+        }
+        assert!((out.data[0] - acc).abs() < 1e-5);
+    }
+
+    #[test]
+    fn max_pool_pad_resize_reshape_and_activations() {
+        // 2 x 2 max pool, stride 2.
+        let g = single(
+            "MAX_POOL_2D",
+            &[],
+            r#"{"Padding":1,"StrideH":2,"StrideW":2,"FilterHeight":2,"FilterWidth":2}"#,
+            &[1, 4, 4, 1],
+            &[1, 2, 2, 1],
+            "{}",
+        );
+        let x = ramp(&[1, 4, 4, 1]);
+        let out = &run(&file(&[], &g), x.clone()).expect("run")[0];
+        let want = |oy: usize, ox: usize| {
+            [(0, 0), (0, 1), (1, 0), (1, 1)]
+                .iter()
+                .map(|(dy, dx)| x.data[(oy * 2 + dy) * 4 + ox * 2 + dx])
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
+        assert_eq!(
+            out.data,
+            vec![want(0, 0), want(0, 1), want(1, 0), want(1, 1)]
+        );
+
+        // Channel padding 1 + 2 around a 2-channel map.
+        let g = single(
+            "PAD",
+            &[2],
+            "{}",
+            &[1, 1, 2, 2],
+            &[1, 1, 2, 5],
+            r#"{"2":{"shape":[4,2],"data":[0,0,0,0,0,0,1,2]}}"#,
+        );
+        let x = Tensor::new(vec![1, 1, 2, 2], vec![1.0, 2.0, 3.0, 4.0]).expect("tensor");
+        let out = &run(&file(&[], &g), x).expect("run")[0];
+        assert_eq!(
+            out.data,
+            vec![0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 3.0, 4.0, 0.0, 0.0]
+        );
+
+        // Bilinear 2 x 2 -> 4 x 4 with half-pixel centres: the first output row is 0, 0.25, 0.75, 1 of the first input row.
+        let g = single(
+            "RESIZE_BILINEAR",
+            &[2],
+            r#"{"AlignCorners":false,"HalfPixelCenters":true}"#,
+            &[1, 2, 2, 1],
+            &[1, 4, 4, 1],
+            r#"{"2":{"shape":[2],"data":[4,4]}}"#,
+        );
+        let x = Tensor::new(vec![1, 2, 2, 1], vec![0.0, 1.0, 0.0, 1.0]).expect("tensor");
+        let out = &run(&file(&[], &g), x).expect("run")[0];
+        assert_eq!(out.data[..4], [0.0, 0.25, 0.75, 1.0]);
+
+        // Reshape with -1, from the option.
+        let g = single(
+            "RESHAPE",
+            &[],
+            r#"{"NewShape":[1,-1,2]}"#,
+            &[1, 2, 3, 2],
+            &[1, 6, 2],
+            "{}",
+        );
+        let out = &run(&file(&[], &g), ramp(&[1, 2, 3, 2])).expect("run")[0];
+        assert_eq!(out.shape, vec![1, 6, 2]);
+
+        // PReLU with a slope per channel, LOGISTIC, RELU.
+        let g = single("PRELU", &[2], "{}", &[1, 1, 2, 2], &[1, 1, 2, 2], "{}");
+        let x = Tensor::new(vec![1, 1, 2, 2], vec![-1.0, -2.0, 3.0, -4.0]).expect("tensor");
+        let out =
+            &run(&file(&[(2, vec![1, 1, 2], vec![0.5, 0.25])], &g), x.clone()).expect("run")[0];
+        assert_eq!(out.data, vec![-0.5, -0.5, 3.0, -1.0]);
+        let g = single("LOGISTIC", &[], "{}", &[1, 1, 2, 2], &[1, 1, 2, 2], "{}");
+        let out = &run(&file(&[], &g), x.clone()).expect("run")[0];
+        assert!((out.data[2] - 1.0 / (1.0 + (-3.0f32).exp())).abs() < 1e-6);
+        let g = single("RELU", &[], "{}", &[1, 1, 2, 2], &[1, 1, 2, 2], "{}");
+        assert_eq!(
+            run(&file(&[], &g), x).expect("run")[0].data,
+            vec![0.0, 0.0, 3.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn add_and_concatenation_of_two_paths() {
+        // 0 -> RELU -> 2; 0 + 2 -> 3 (ADD); concat(2, 3) on the channel axis -> 1.
+        let graph = format!(
+            r#"{{"version":1,"inputs":[{}],"outputs":[{}],"ops":[
+                {{"op":"RELU","in":[0],"out":[2],"opt":{{}}}},
+                {{"op":"ADD","in":[0,2],"out":[3],"opt":{{"FusedActivationFunction":0}}}},
+                {{"op":"CONCATENATION","in":[2,3],"out":[1],"opt":{{"Axis":3,"FusedActivationFunction":0}}}}]}}"#,
+            io(0, &[1, 1, 2, 1]),
+            io(1, &[1, 1, 2, 2])
+        );
+        let x = Tensor::new(vec![1, 1, 2, 1], vec![-2.0, 3.0]).expect("tensor");
+        let out = &run(&file(&[], &graph), x).expect("run")[0];
+        // relu = [0, 3]; add = [-2, 6]; interleaved by pixel: [0, -2, 3, 6].
+        assert_eq!(out.data, vec![0.0, -2.0, 3.0, 6.0]);
+    }
+
+    #[test]
+    fn a_graph_with_an_operator_we_do_not_have_is_refused_when_loaded() {
+        let g = single(
+            "TRANSPOSE_CONV",
+            &[],
+            "{}",
+            &[1, 2, 2, 1],
+            &[1, 2, 2, 1],
+            "{}",
+        );
+        let err = Graph::from_bytes(&file(&[], &g)).expect_err("unsupported");
+        assert!(
+            matches!(err, MlError::Unsupported(ref m) if m.contains("TRANSPOSE_CONV")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn bad_files_and_bad_inputs_are_errors() {
+        assert!(Graph::from_bytes(b"nope").is_err());
+        // A safetensors file that is not one of ours.
+        let views: HashMap<String, TensorView<'_>> = HashMap::new();
+        let plain = safetensors::serialize(&views, None).expect("serialize");
+        assert!(matches!(
+            Graph::from_bytes(&plain),
+            Err(MlError::Weights(_))
+        ));
+        // An operator that reads a tensor nothing computes.
+        let g = format!(
+            r#"{{"version":1,"inputs":[{}],"outputs":[{}],"ops":[{{"op":"RELU","in":[5],"out":[1],"opt":{{}}}}]}}"#,
+            io(0, &[1, 1, 1, 1]),
+            io(1, &[1, 1, 1, 1])
+        );
+        assert!(Graph::from_bytes(&file(&[], &g)).is_err());
+        // A wrong input shape and a value that is not finite.
+        let g = single("RELU", &[], "{}", &[1, 1, 2, 1], &[1, 1, 2, 1], "{}");
+        let f = file(&[], &g);
+        let graph = Graph::from_bytes(&f).expect("graph");
+        assert!(matches!(
+            graph.run(&[ramp(&[1, 1, 3, 1])]),
+            Err(MlError::Shape(_))
+        ));
+        let nan = Tensor::new(vec![1, 1, 2, 1], vec![f32::NAN, 0.0]).expect("tensor");
+        assert!(matches!(graph.run(&[nan]), Err(MlError::Input(_))));
+        assert!(graph.run(&[]).is_err());
+        assert!(Tensor::new(vec![2, 2], vec![0.0; 3]).is_err());
+    }
 }

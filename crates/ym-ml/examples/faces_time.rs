@@ -21,7 +21,14 @@ fn decode(path: &str) -> (usize, usize, Vec<u8>) {
 }
 
 /// Nearest-neighbour paste of `src` scaled to `size` pixels wide at (`x`, `y`).
-fn paste(canvas: &mut [u8], cw: usize, src: &(usize, usize, Vec<u8>), x: usize, y: usize, size: usize) {
+fn paste(
+    canvas: &mut [u8],
+    cw: usize,
+    src: &(usize, usize, Vec<u8>),
+    x: usize,
+    y: usize,
+    size: usize,
+) {
     let (w, h, data) = src;
     let nh = size * h / w;
     for dy in 0..nh {
@@ -83,7 +90,14 @@ fn main() {
             canvas[(y * cw + x) * 3..][..3].copy_from_slice(&[v, v - 10, v - 20]);
         }
     }
-    let placements = [(300, 300, 700), (2500, 400, 420), (4300, 2200, 300), (1200, 2600, 220), (3300, 3000, 160), (5200, 300, 130)];
+    let placements = [
+        (300, 300, 700),
+        (2500, 400, 420),
+        (4300, 2200, 300),
+        (1200, 2600, 220),
+        (3300, 3000, 160),
+        (5200, 300, 130),
+    ];
     for (i, &(x, y, size)) in placements.iter().enumerate() {
         paste(&mut canvas, cw, &photos[i % photos.len()], x, y, size);
     }

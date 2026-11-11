@@ -19,7 +19,8 @@
 //! * **Tiling** ([`FaceFinder`]): the network sees faces between about 7 % and 50 % of its frame, so a large photo is run
 //!   whole and on overlapping windows at several sizes (each four times the previous one, windows stepping by two thirds of
 //!   their size so a face of a third of the window fits whole in one), the detections are merged with the same NMS, small
-//!   ones are dropped, and at most [`FinderParams::max_faces`] are kept.
+//!   ones are dropped (and, in each window, those under 6 % of it, whose boxes are too coarse), and at most
+//!   [`FinderParams::max_faces`] are kept.
 //!
 //! # Determinism
 //!
@@ -45,7 +46,7 @@ pub const ANCHOR_COUNT: usize = GRID * GRID;
 pub const REGRESSORS: usize = 16;
 /// The number of keypoints of a face.
 pub const KEYPOINTS: usize = 6;
-/// The names of the keypoints, in the order of [`Detection::keypoints`].
+/// The names of the keypoints, in the order of [`Detection::keypoints_px`].
 pub const KEYPOINT_NAMES: [&str; KEYPOINTS] = [
     "right eye",
     "left eye",
@@ -59,6 +60,10 @@ const GRID: usize = 48;
 /// The smallest face the network finds reliably, as a fraction of its frame (measured in S-08: 10 px of 192 start to be found,
 /// 12 px are found with a score above 0.85).
 const MIN_FRAME_FRACTION: f64 = 0.07;
+/// A detection smaller than this fraction of its window's longer side is dropped: at under about 11 pixels of the network's 192
+/// its box is a guess (measured in S-08: a 219 px face in a 6000 px window came out 281 px), and the windows of a smaller size
+/// see the face better.
+const RELIABLE_FRAME_FRACTION: f64 = 0.06;
 /// The step of the windows, as a fraction of their size.
 const WINDOW_STEP: f64 = 2.0 / 3.0;
 /// Each window size is this many times the previous one (a face range of about 4.7 per size).
@@ -244,7 +249,7 @@ impl Letterbox {
     }
 
     /// A position of the network input (pixels) in the picture.
-    fn to_picture(&self, nx: f64, ny: f64) -> (f64, f64) {
+    fn picture_at(&self, nx: f64, ny: f64) -> (f64, f64) {
         (
             self.window.x_px + (nx - self.offset_x) / self.scale,
             self.window.y_px + (ny - self.offset_y) / self.scale,
@@ -273,11 +278,21 @@ pub fn prepare_tensor(src: &dyn PixelSource, lb: &Letterbox, resample: Resample)
 
 /// OpenCV's `warpAffine` with linear interpolation and a constant black border, for the map `src = (dst - offset) / scale`;
 /// with `k` > 1 each of the four taps is the mean of the `k` x `k` pixels around it (the ones inside the picture).
-fn sample_bilinear(src: &dyn PixelSource, lb: &Letterbox, k: usize, dx: usize, dy: usize) -> [f32; 3] {
-    let (sx, sy) = lb.to_picture(dx as f64, dy as f64);
+fn sample_bilinear(
+    src: &dyn PixelSource,
+    lb: &Letterbox,
+    k: usize,
+    dx: usize,
+    dy: usize,
+) -> [f32; 3] {
+    let (sx, sy) = lb.picture_at(dx as f64, dy as f64);
     let w = lb.window;
     // Black more than one picture pixel outside the window: the letterbox bars of a window that is not the whole picture.
-    if sx <= w.x_px - 1.0 || sx >= w.x_px + w.width_px || sy <= w.y_px - 1.0 || sy >= w.y_px + w.height_px {
+    if sx <= w.x_px - 1.0
+        || sx >= w.x_px + w.width_px
+        || sy <= w.y_px - 1.0
+        || sy >= w.y_px + w.height_px
+    {
         return [0.0; 3];
     }
     let (fx, fy) = (sx.floor(), sy.floor());
@@ -310,7 +325,12 @@ fn sample_bilinear(src: &dyn PixelSource, lb: &Letterbox, k: usize, dx: usize, d
         let n = ((xb - xa) * (yb - ya)) as f32;
         [acc[0] / n, acc[1] / n, acc[2] / n]
     };
-    let (a, b, c, d) = (tap(x0, y0), tap(x0 + 1, y0), tap(x0, y0 + 1), tap(x0 + 1, y0 + 1));
+    let (a, b, c, d) = (
+        tap(x0, y0),
+        tap(x0 + 1, y0),
+        tap(x0, y0 + 1),
+        tap(x0 + 1, y0 + 1),
+    );
     let mut out = [0.0f32; 3];
     for i in 0..3 {
         let top = a[i] * (1.0 - tx) + b[i] * tx;
@@ -472,7 +492,8 @@ impl BlazeFace {
             verify("BlazeFace full-range weights", bytes, want)?;
         }
         let graph = Graph::from_bytes(bytes)?;
-        let input_ok = graph.inputs().len() == 1 && graph.inputs()[0].shape == [1, INPUT_PX, INPUT_PX, 3];
+        let input_ok =
+            graph.inputs().len() == 1 && graph.inputs()[0].shape == [1, INPUT_PX, INPUT_PX, 3];
         let regressor_output = graph
             .outputs()
             .iter()
@@ -481,7 +502,8 @@ impl BlazeFace {
             .outputs()
             .iter()
             .position(|o| o.shape == [1, ANCHOR_COUNT, 1]);
-        let (true, Some(regressor_output), Some(_)) = (input_ok, regressor_output, logit_output) else {
+        let (true, Some(regressor_output), Some(_)) = (input_ok, regressor_output, logit_output)
+        else {
             return Err(MlError::Weights(
                 "the graph is not BlazeFace full range (input 1x192x192x3, outputs 1x2304x16 and 1x2304x1)".into(),
             ));
@@ -522,37 +544,7 @@ impl BlazeFace {
 
     /// Decodes a raw answer into detections in picture pixels, above `score_threshold`, before any suppression.
     pub fn decode(&self, raw: &RawOutput, lb: &Letterbox, score_threshold: f32) -> Vec<Detection> {
-        let side = INPUT_PX as f32;
-        let to_x = |n: f32| lb.to_picture(f64::from(n * side), 0.0).0 as f32;
-        let to_y = |n: f32| lb.to_picture(0.0, f64::from(n * side)).1 as f32;
-        let mut out = Vec::new();
-        for (i, anchor) in self.anchors.iter().enumerate() {
-            let score = score_of(raw.logits[i]);
-            if score < score_threshold {
-                continue;
-            }
-            let r = &raw.regressors[i * REGRESSORS..][..REGRESSORS];
-            let (xc, yc) = (r[0] / side + anchor[0], r[1] / side + anchor[1]);
-            let (w, h) = (r[2] / side, r[3] / side);
-            let mut keypoints_px = [[0.0f32; 2]; KEYPOINTS];
-            for (k, kp) in keypoints_px.iter_mut().enumerate() {
-                *kp = [
-                    to_x(r[4 + 2 * k] / side + anchor[0]),
-                    to_y(r[5 + 2 * k] / side + anchor[1]),
-                ];
-            }
-            out.push(Detection {
-                box_px: [
-                    to_x(xc - w / 2.0),
-                    to_y(yc - h / 2.0),
-                    to_x(xc + w / 2.0),
-                    to_y(yc + h / 2.0),
-                ],
-                keypoints_px,
-                score,
-            });
-        }
-        out
+        decode(&self.anchors, raw, lb, score_threshold)
     }
 
     /// One pass: the network on one window of the picture, decoded and suppressed (detections in picture pixels).
@@ -570,8 +562,53 @@ impl BlazeFace {
     ) -> Result<Vec<Detection>> {
         let lb = Letterbox::new(window)?;
         let raw = self.forward(&prepare_tensor(src, &lb, resample))?;
-        Ok(weighted_nms(self.decode(&raw, &lb, score_threshold), nms_iou))
+        Ok(weighted_nms(
+            self.decode(&raw, &lb, score_threshold),
+            nms_iou,
+        ))
     }
+}
+
+/// Decodes a raw answer into detections in picture pixels, above `score_threshold`, before any suppression: for each anchor
+/// whose score passes, the box `(x, y, width, height)` and the six keypoints are the regressors over 192 (the network input)
+/// plus the anchor centre, mapped back through the letterbox.
+pub fn decode(
+    anchors: &[[f32; 2]],
+    raw: &RawOutput,
+    lb: &Letterbox,
+    score_threshold: f32,
+) -> Vec<Detection> {
+    let side = INPUT_PX as f32;
+    let to_x = |n: f32| lb.picture_at(f64::from(n * side), 0.0).0 as f32;
+    let to_y = |n: f32| lb.picture_at(0.0, f64::from(n * side)).1 as f32;
+    let mut out = Vec::new();
+    for (i, anchor) in anchors.iter().enumerate() {
+        let score = score_of(raw.logits[i]);
+        if score < score_threshold {
+            continue;
+        }
+        let r = &raw.regressors[i * REGRESSORS..][..REGRESSORS];
+        let (xc, yc) = (r[0] / side + anchor[0], r[1] / side + anchor[1]);
+        let (w, h) = (r[2] / side, r[3] / side);
+        let mut keypoints_px = [[0.0f32; 2]; KEYPOINTS];
+        for (k, kp) in keypoints_px.iter_mut().enumerate() {
+            *kp = [
+                to_x(r[4 + 2 * k] / side + anchor[0]),
+                to_y(r[5 + 2 * k] / side + anchor[1]),
+            ];
+        }
+        out.push(Detection {
+            box_px: [
+                to_x(xc - w / 2.0),
+                to_y(yc - h / 2.0),
+                to_x(xc + w / 2.0),
+                to_y(yc + h / 2.0),
+            ],
+            keypoints_px,
+            score,
+        });
+    }
+    out
 }
 
 /// The settings of the face finder.
@@ -709,6 +746,9 @@ impl FaceFinder {
                     params.score_threshold,
                     params.nms_iou,
                 )?;
+                let reliable =
+                    (RELIABLE_FRAME_FRACTION * window.width_px.max(window.height_px)) as f32;
+                found.retain(|d| d.size_px() >= reliable);
                 // A face cut by an inner border of the window is found whole in a neighbouring window.
                 let margin = (BORDER_MARGIN * window.width_px.max(window.height_px)) as f32;
                 let inner_left = window.x_px > 0.0;
@@ -759,4 +799,228 @@ fn to_face(d: &Detection, width: usize, height: usize) -> Option<DetectedFace> {
         keypoints_px: d.keypoints_px,
         score: d.score,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn det(x0: f32, y0: f32, size: f32, score: f32) -> Detection {
+        Detection {
+            box_px: [x0, y0, x0 + size, y0 + size],
+            keypoints_px: [[x0 + size / 2.0, y0 + size / 2.0]; KEYPOINTS],
+            score,
+        }
+    }
+
+    #[test]
+    fn anchors_are_cell_centres() {
+        let a = anchors();
+        assert_eq!(a.len(), ANCHOR_COUNT);
+        assert!((a[0][0] - 0.5 / 48.0).abs() < 1e-7 && (a[0][1] - 0.5 / 48.0).abs() < 1e-7);
+        assert!((a[47][0] - 47.5 / 48.0).abs() < 1e-6 && (a[47][1] - 0.5 / 48.0).abs() < 1e-7);
+        assert!((a[48][0] - 0.5 / 48.0).abs() < 1e-7 && (a[48][1] - 1.5 / 48.0).abs() < 1e-6);
+        assert!((a[2303][0] - 47.5 / 48.0).abs() < 1e-6 && (a[2303][1] - 47.5 / 48.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn scores_are_clipped_sigmoids() {
+        assert!((score_of(0.0) - 0.5).abs() < 1e-7);
+        assert!(score_of(1e9) <= 1.0 && score_of(1e9) > 0.999_999);
+        assert!(score_of(-1e9) >= 0.0 && score_of(-1e9) < 1e-6);
+        assert!(score_of(2.0) > score_of(1.0));
+    }
+
+    #[test]
+    fn letterbox_centres_and_keeps_the_aspect() {
+        let lb = Letterbox::new(Window::whole(400, 200)).expect("window");
+        assert!((lb.scale() - 0.48).abs() < 1e-12);
+        // The content is 192 x 96, centred: bars of 48 above and below.
+        let (x, y) = lb.picture_at(0.0, 48.0);
+        assert!(x.abs() < 1e-9 && y.abs() < 1e-9);
+        let (x, y) = lb.picture_at(192.0, 144.0);
+        assert!((x - 400.0).abs() < 1e-9 && (y - 200.0).abs() < 1e-9);
+        assert!(
+            Letterbox::new(Window {
+                x_px: 0.0,
+                y_px: 0.0,
+                width_px: 0.0,
+                height_px: 5.0
+            })
+            .is_err()
+        );
+        assert!(
+            Letterbox::new(Window {
+                x_px: f64::NAN,
+                y_px: 0.0,
+                width_px: 5.0,
+                height_px: 5.0
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn nms_merges_a_group_by_score_and_keeps_the_best_score() {
+        let out = weighted_nms(
+            vec![
+                det(0.0, 0.0, 100.0, 0.6),
+                det(10.0, 0.0, 100.0, 0.9),
+                det(500.0, 0.0, 100.0, 0.7),
+            ],
+            0.3,
+        );
+        assert_eq!(out.len(), 2);
+        assert!((out[0].score - 0.9).abs() < 1e-7);
+        assert!((out[0].box_px[0] - (0.6 * 0.0 + 0.9 * 10.0) / 1.5).abs() < 1e-4);
+        assert!((out[1].score - 0.7).abs() < 1e-7);
+        // The result does not depend on the order of the input.
+        let again = weighted_nms(
+            vec![
+                det(500.0, 0.0, 100.0, 0.7),
+                det(10.0, 0.0, 100.0, 0.9),
+                det(0.0, 0.0, 100.0, 0.6),
+            ],
+            0.3,
+        );
+        assert_eq!(out, again);
+        assert!(weighted_nms(Vec::new(), 0.3).is_empty());
+    }
+
+    #[test]
+    fn iou_of_boxes() {
+        assert!((det(0.0, 0.0, 10.0, 1.0).iou(&det(0.0, 0.0, 10.0, 1.0)) - 1.0).abs() < 1e-7);
+        assert!(
+            det(0.0, 0.0, 10.0, 1.0)
+                .iou(&det(20.0, 0.0, 10.0, 1.0))
+                .abs()
+                < 1e-7
+        );
+        assert!(
+            (det(0.0, 0.0, 10.0, 1.0).iou(&det(5.0, 0.0, 10.0, 1.0)) - 50.0 / 150.0).abs() < 1e-6
+        );
+    }
+
+    #[test]
+    fn windows_cover_the_picture_and_end_with_the_whole() {
+        let windows = plan_windows(6000, 4000, 90.0);
+        assert_eq!(windows.last().copied(), Some(Window::whole(6000, 4000)));
+        // 90 px / 0.07 = 1286 px windows, stepping by two thirds: 7 x 5 of them, then the whole picture.
+        assert_eq!(windows.len(), 7 * 5 + 1);
+        for w in &windows {
+            assert!(
+                w.x_px >= 0.0
+                    && w.y_px >= 0.0
+                    && w.x_px + w.width_px <= 6000.0
+                    && w.y_px + w.height_px <= 4000.0
+            );
+        }
+        // Every point lies in a window with a margin of a third of the window, away from its border, so a face of a third of the
+        // window fits whole in one.
+        let tiles = &windows[..windows.len() - 1];
+        for &(x, y) in &[
+            (10.0, 10.0),
+            (3000.0, 2000.0),
+            (5990.0, 3990.0),
+            (1500.0, 3999.0),
+        ] {
+            assert!(
+                tiles.iter().any(|w| x >= w.x_px
+                    && x <= w.x_px + w.width_px
+                    && y >= w.y_px
+                    && y <= w.y_px + w.height_px),
+                "({x}, {y}) is in no window"
+            );
+        }
+        // A picture not much larger than the smallest window is run whole, once.
+        assert_eq!(plan_windows(800, 600, 60.0), vec![Window::whole(800, 600)]);
+        // The plan is a pure function of its inputs.
+        assert_eq!(plan_windows(6000, 4000, 90.0), windows);
+    }
+
+    #[test]
+    fn faces_are_clipped_to_the_picture_and_scaled_by_the_longer_side() {
+        let f = to_face(&det(-20.0, 10.0, 100.0, 0.9), 400, 300).expect("face");
+        assert_eq!(
+            f.rect,
+            FaceRect {
+                x_px: 0,
+                y_px: 10,
+                width_px: 80,
+                height_px: 100
+            }
+        );
+        assert!((f.scale - 0.25).abs() < 1e-7);
+        assert!(to_face(&det(-200.0, 10.0, 100.0, 0.9), 400, 300).is_none());
+        let g = to_face(&det(10.2, 20.7, 50.0, 0.9), 400, 300).expect("face");
+        assert_eq!(
+            (g.rect.x_px, g.rect.y_px, g.rect.width_px, g.rect.height_px),
+            (10, 20, 51, 51)
+        );
+    }
+
+    #[test]
+    fn decode_places_boxes_and_keypoints_from_the_regressors() {
+        // A 384 x 384 picture: 2 picture pixels per network pixel. Anchor 24 * 48 + 24 is the cell right of and below the centre.
+        let lb = Letterbox::new(Window::whole(384, 384)).expect("window");
+        let a = anchors();
+        let i = 24 * 48 + 24;
+        let mut raw = RawOutput {
+            regressors: vec![0.0; ANCHOR_COUNT * REGRESSORS],
+            logits: vec![-20.0; ANCHOR_COUNT],
+        };
+        raw.logits[i] = 3.0;
+        // A centre 19.2 network pixels right of and 9.6 below the anchor, a box of 38.4 by 76.8, keypoint k at (4k, -2k) from it.
+        let r = &mut raw.regressors[i * REGRESSORS..][..REGRESSORS];
+        r[..4].copy_from_slice(&[19.2, 9.6, 38.4, 76.8]);
+        for k in 0..KEYPOINTS {
+            r[4 + 2 * k] = 4.0 * k as f32;
+            r[5 + 2 * k] = -2.0 * k as f32;
+        }
+        let found = decode(&a, &raw, &lb, 0.5);
+        assert_eq!(found.len(), 1);
+        let d = found[0];
+        let (cx, cy) = (a[i][0] * 384.0 + 19.2 * 2.0, a[i][1] * 384.0 + 9.6 * 2.0);
+        let want = [cx - 38.4, cy - 76.8, cx + 38.4, cy + 76.8];
+        for (got, want) in d.box_px.iter().zip(want) {
+            assert!((got - want).abs() < 1e-3, "{:?} against {want:?}", d.box_px);
+        }
+        for (k, kp) in d.keypoints_px.iter().enumerate() {
+            assert!((kp[0] - (a[i][0] * 384.0 + 8.0 * k as f32)).abs() < 1e-3);
+            assert!((kp[1] - (a[i][1] * 384.0 - 4.0 * k as f32)).abs() < 1e-3);
+        }
+        assert!((d.score - score_of(3.0)).abs() < 1e-7);
+        // A higher threshold drops it.
+        assert!(decode(&a, &raw, &lb, 0.99).is_empty());
+    }
+
+    #[test]
+    fn a_flat_picture_gives_a_flat_tensor_with_bars() {
+        let (w, h) = (400usize, 200usize);
+        let data = vec![128u8; w * h * 3];
+        let img = Rgb8::new(w, h, &data).expect("picture");
+        let lb = Letterbox::new(Window::whole(w, h)).expect("window");
+        let grey = 128.0 / 255.0 * 2.0 - 1.0;
+        for resample in [Resample::MediaPipe, Resample::Box] {
+            let t = prepare_tensor(&img, &lb, resample);
+            let at = |x: usize, y: usize| t[(y * 192 + x) * 3];
+            assert!((at(96, 96) - grey).abs() < 1e-6, "{resample:?}: centre");
+            assert!((at(96, 5) + 1.0).abs() < 1e-6, "{resample:?}: bar");
+            assert!((at(96, 186) + 1.0).abs() < 1e-6, "{resample:?}: bar");
+        }
+    }
+
+    #[test]
+    fn pictures_must_match_their_size() {
+        assert!(Rgb8::new(2, 2, &[0; 11]).is_err());
+        assert!(Rgb8::new(0, 2, &[]).is_err());
+        assert!(RgbF32::new(2, 2, &[0.0; 12]).is_ok());
+        assert!(RgbF32::new(2, 2, &[0.0; 11]).is_err());
+    }
+
+    #[test]
+    fn a_missing_or_wrong_file_is_an_error_not_a_panic() {
+        assert!(BlazeFace::from_bytes(b"not safetensors", None).is_err());
+        assert!(BlazeFace::from_file(Path::new("/nonexistent/blaze.safetensors")).is_err());
+    }
 }
