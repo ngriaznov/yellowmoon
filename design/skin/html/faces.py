@@ -135,7 +135,7 @@ def outline(name, faces, selected, numbers=True, dim_others=True):
     for i in range(len(SCENES[name][0])):
         cx, cy, h = geom(name, i)
         rx, ry = 0.47 * h, 0.62 * h
-        sel = i == selected
+        sel = (i == selected) or selected == "all"
         if sel:
             out.append(f'<ellipse cx="{cx}" cy="{cy - 0.02 * h}" rx="{rx}" ry="{ry}" fill="none" stroke="#ffc20e" stroke-width="{max(5, 0.012 * h)}" opacity=".95"/>'
                        f'<ellipse cx="{cx}" cy="{cy - 0.02 * h}" rx="{rx}" ry="{ry}" fill="none" stroke="#ffc20e" stroke-width="{max(14, 0.04 * h)}" opacity=".28" filter="url(#glow)"/>')
@@ -149,22 +149,22 @@ def outline(name, faces, selected, numbers=True, dim_others=True):
     return f'<svg class="sk-over" viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMid meet"><defs><filter id="glow"><feGaussianBlur stdDeviation="9"/></filter></defs>{"".join(out)}</svg>'
 
 
+SKIN = "M-0.34,-0.12 C-0.30,-0.28 -0.12,-0.33 0,-0.30 C0.12,-0.33 0.30,-0.28 0.34,-0.12 C0.37,0.1 0.2,0.5 0,0.5 C-0.2,0.5 -0.37,0.1 -0.34,-0.12 Z"
+
+
 def mask_overlay(name, i, neck=False):
-    """What the tools act on, for face i: skin (pink), under the eyes (cyan), the even-skin core (green). Scene units."""
+    """What the tools act on, for face i: skin (pink fill), under the eyes (cyan fill), the even-skin core (green outline). Scene units."""
     cx, cy, h = geom(name, i)
-    skin = f'<path d="{HEAD}" fill-rule="evenodd"/>'
-    eyes = "".join(f'<ellipse cx="{s * 0.15}" cy="-0.06" rx="0.07" ry="0.034"/>' for s in (-1, 1))
-    under = "".join(f'<ellipse cx="{s * 0.15}" cy="-0.005" rx="0.095" ry="0.036"/>' for s in (-1, 1))
-    neckp = '<path d="M-0.15,0.32 L-0.15,0.8 L0.15,0.8 L0.15,0.32 Z" fill="#ff6fd2" opacity=".2"/>' if neck else ""
+    eyes = "".join(f'<ellipse cx="{s * 0.15}" cy="-0.06" rx="0.07" ry="0.03"/>' for s in (-1, 1))
+    under = "".join(f'<ellipse cx="{s * 0.15}" cy="0.003" rx="0.1" ry="0.034"/>' for s in (-1, 1))
+    neckp = '<path d="M-0.15,0.36 L-0.15,0.8 L0.15,0.8 L0.15,0.36 Z" fill="#ff6fd2" opacity=".24"/>' if neck else ""
     return (
-        f'<svg class="sk-over" viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMid meet"><defs><filter id="mb"><feGaussianBlur stdDeviation="0.006"/></filter>'
-        f'<clipPath id="skinclip"><path d="{HEAD}"/></clipPath></defs>'
-        f'<g transform="translate({cx},{cy}) scale({h})" filter="url(#mb)">{neckp}'
-        f'<path d="{HEAD}" fill="#ff6fd2" opacity=".34"/>'
-        f'<g fill="#0b0b0c" opacity=".55">{eyes}</g>'
-        f'<g fill="#58d4ff" opacity=".6">{under}</g>'
-        f'<g transform="scale(0.8)" clip-path="none"><path d="{HEAD}" fill="#9be56a" opacity=".28"/></g>'
-        f'<g fill="#0b0b0c" opacity=".35"><ellipse cx="0.02" cy="0.09" rx="0.05" ry="0.1"/></g>'
+        f'<svg class="sk-over" viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMid meet"><defs><filter id="mb"><feGaussianBlur stdDeviation="0.005"/></filter>'
+        f'<mask id="skm"><rect x="-1" y="-1" width="2" height="2" fill="#fff"/><g fill="#000">{eyes}</g></mask></defs>'
+        f'<g transform="translate({cx},{cy}) scale({h})">{neckp}'
+        f'<g filter="url(#mb)"><path d="{SKIN}" fill="#ff6fd2" opacity=".32" mask="url(#skm)"/>'
+        f'<g fill="#58d4ff" opacity=".62">{under}</g></g>'
+        f'<g transform="translate(0,0.07) scale(0.74)"><path d="{SKIN}" fill="none" stroke="#9be56a" stroke-width="0.011" stroke-dasharray="0.03 0.018" stroke-linecap="round" transform="scale(1)"/></g>'
         f'</g></svg>'
     )
 
