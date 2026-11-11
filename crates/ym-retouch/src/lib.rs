@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod blemish;
 mod error;
 mod feather;
 mod lowfreq;
@@ -18,6 +19,11 @@ pub mod mock;
 mod models;
 mod types;
 
+pub use blemish::{
+    BlemishMap, BlemishMapCache, BlemishMapKey, CHROMA_GUARD_MIN_SIDE_PX, GAIN_MAX, GAIN_MIN,
+    TARGET_FACE_PX, apply_blemish, apply_gain, blemish_gain, blemish_map, chroma_confidence,
+    chroma_pull, encode_channel, gain_strength, threshold_strength,
+};
 pub use error::{Result, RetouchError};
 pub use feather::feather;
 pub use lowfreq::{
