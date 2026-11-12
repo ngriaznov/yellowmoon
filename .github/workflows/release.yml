@@ -295,7 +295,10 @@ jobs:
         run: |
           APP="target/universal-apple-darwin/release/bundle/macos/Yellowmoon.app"
           codesign --verify --deep --strict --verbose=2 "$APP"
-          lipo -info "$APP/Contents/MacOS/Yellowmoon"
+          # Both architectures in the app and in ym (exactly x86_64 and arm64), then the x86_64 slice of ym is started
+          # (--version and doctor, under Rosetta on this Apple-silicon runner): the step fails if either is missing or
+          # the slice does not start (docs/26 H-16). The doctor output goes to the step summary and to an artifact.
+          tools/ci/check-universal.sh "$APP" universal "$RUNNER_TEMP/universal-check"
           # The SAM 2.1 small weights are in the bundle (docs/12), and are the file that SHA256SUMS pins.
           test -s "$APP/Contents/Resources/data/models/sam2/sam2.1_hiera_small.f16.safetensors"
           (cd "$APP/Contents/Resources/data/models/sam2" && shasum -a 256 -c SHA256SUMS)
@@ -310,6 +313,15 @@ jobs:
           # The updater's files: the tarball and its signature, both non-empty.
           test -s target/universal-apple-darwin/release/bundle/macos/Yellowmoon.app.tar.gz
           test -s target/universal-apple-darwin/release/bundle/macos/Yellowmoon.app.tar.gz.sig
+
+      - name: Keep the x86_64 slice's ym doctor output
+        if: ${{ always() && steps.check_tag.outputs.exists == 'false' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: x86_64-slice-doctor
+          path: ${{ runner.temp }}/universal-check/
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Write updater manifest
         if: steps.check_tag.outputs.exists == 'false'

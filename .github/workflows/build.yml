@@ -188,7 +188,9 @@ jobs:
           APP="target/$TRIPLE/release/bundle/macos/Yellowmoon.app"
           ls -la "target/$TRIPLE/release/bundle/dmg/"
           codesign --verify --deep --strict --verbose=2 "$APP"
-          lipo -info "$APP/Contents/MacOS/Yellowmoon"
+          # universal: both architectures, then the x86_64 slice of ym is started under Rosetta; aarch64: exactly arm64
+          # (docs/26 H-16).
+          tools/ci/check-universal.sh "$APP" "$TARGET" "$RUNNER_TEMP/universal-check"
           # The SAM 2.1 small weights are in the bundle (docs/12), and are the file that SHA256SUMS pins.
           test -s "$APP/Contents/Resources/data/models/sam2/sam2.1_hiera_small.f16.safetensors"
           (cd "$APP/Contents/Resources/data/models/sam2" && shasum -a 256 -c SHA256SUMS)
@@ -205,6 +207,15 @@ jobs:
             echo "Commit \`$SHORT_SHA\`, $TARGET. Download the artefact below, unzip it and open the disk image."
             echo "The app has no Apple Developer ID: allow it once as the README says (\"Allow Yellowmoon to open\")."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the x86_64 slice's ym doctor output
+        if: ${{ always() && env.TARGET == 'universal' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: x86_64-slice-doctor-${{ env.SHORT_SHA }}
+          path: ${{ runner.temp }}/universal-check/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - uses: actions/upload-artifact@v4
         with:
