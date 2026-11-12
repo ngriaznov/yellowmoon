@@ -107,6 +107,8 @@ export const commands = {
 	 *  for near, whole and not cut to the row's band, whatever `style` says. A row that is not a Depth row shows its own mask.
 	 */
 	depth?: boolean,
+	/**  Show skin areas (`docs/27` S-11c): with `node` naming a Face Refinement node, the frame shows face `face`'s skin areas tinted over the photo, whatever `style` says. */
+	face?: number | null,
 } | null) => __TAURI_INVOKE<null>("viewport_set_mode", { mode, maskView }),
 	/**  `set_before(before)`: the photo before the look and the display transform. */
 	setBefore: (before: boolean) => __TAURI_INVOKE<null>("set_before", { before }),
