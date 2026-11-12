@@ -39,11 +39,11 @@ pub use classical::{ClassicalBeautyMarks, ClassicalProposer};
 pub use error::{Result, RetouchError};
 pub use feather::feather;
 pub use lowfreq::{
-    BRIGHTEN_EXPONENT, DARKEN_EXPONENT, DC_RADIUS_FRAC, GRADE_RADIUS_FRAC, LowFreqParams,
-    Placement, SE_RADIUS_FRAC, TEX_FRAC_MAX, TEX_FRAC_MIN, TEX_FRAC_SLOPE, ToolMasks, blend_pixel,
-    blend_weight, contrast_target, dark_circle_k_sp, dark_circles_target, even_skin_target,
-    mask_to_working, masked_blur_combine, retouch_low_frequency, retouch_tones, retouch_tones_at,
-    shadow_desaturation_pixel, shine_removal_texture, teeth_pixel, tones_region,
+    BRIGHTEN_EXPONENT, DARKEN_EXPONENT, DC_RADIUS_FRAC, GRADE_RADIUS_FRAC, LowFreqParams, LowPlan,
+    Placement, SE_RADIUS_FRAC, TEX_FRAC_MAX, TEX_FRAC_MIN, TEX_FRAC_SLOPE, TeethPlan, TonesPlan,
+    ToolMasks, blend_pixel, blend_weight, contrast_target, dark_circle_k_sp, dark_circles_target,
+    even_skin_target, mask_to_working, masked_blur_combine, retouch_low_frequency, retouch_tones,
+    retouch_tones_at, shadow_desaturation_pixel, shine_removal_texture, teeth_pixel, tones_region,
 };
 pub use mask::{
     FaceMasks, SkinAreaValues, blemish_mask, dark_circle_mask, even_skin_mask, face_masks,
@@ -54,10 +54,13 @@ pub use models::{
     BeautyMarkDetector, BlemishProposer, FaceMesh, FaceParser, FacePart, MeshTable, Models,
 };
 pub use pipeline::{
-    RetouchCache, prepare_skin, retouch_regions, retouch_skin, retouch_skin_region,
-    retouch_skin_region_toned,
+    BlemishPlan, DeviceFace, DevicePlan, RetouchCache, plan_skin_region, prepare_skin,
+    retouch_regions, retouch_skin, retouch_skin_region, retouch_skin_region_toned,
 };
-pub use tone::{SLOPE_TOLERANCE, TONE_FLOOR, ToneRelation};
+pub use tone::{
+    BINS as TONE_BINS, MIN_PAIRS as TONE_MIN_PAIRS, SLOPE_TOLERANCE, TONE_FLOOR, ToneCurveData,
+    ToneRelation, quantiles as tone_quantiles,
+};
 pub use types::{
     BoundedMask, Face, LinearAwg4Image, MAX_RENDER_SCALE, Mask, Rect, SkinSettings,
     check_render_scale, face_extent_px, face_size_px,

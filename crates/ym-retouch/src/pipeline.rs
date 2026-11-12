@@ -12,7 +12,9 @@ use crate::error::{Result, RetouchError};
 use std::sync::Arc;
 
 use crate::blemish::{apply_blemish_at, apply_blemish_toned};
-use crate::lowfreq::{Placement, ToolMasks, join_rects, retouch_tones_at, tones_region};
+use crate::lowfreq::{
+    Placement, TonesPlan, ToolMasks, join_rects, retouch_tones_at, tones_plan, tones_region,
+};
 use crate::mask::{FaceMasks, face_masks};
 use crate::models::Models;
 use crate::tone::ToneRelation;
@@ -692,6 +694,157 @@ pub fn retouch_skin_region_toned(
         )?;
     }
     Ok(output)
+}
+
+/// One face's blemish step on a part, for the device (`docs/27` S-13).
+#[derive(Debug, Clone)]
+pub struct BlemishPlan {
+    /// The cached map (shared with the cache).
+    pub map: Arc<BlemishMap>,
+    /// The Blemish amount `a`, 0..=1 (above 0).
+    pub a: f64,
+}
+
+/// One face of a [`DevicePlan`]: what the CPU's [`retouch_skin_region_toned`] does for it on the part.
+#[derive(Debug, Clone)]
+pub struct DeviceFace {
+    /// Its index among the faces of the call.
+    pub index: usize,
+    /// The face size `D` in working pixels.
+    pub size_px: f64,
+    /// Blemish removal, when the face has a map and an amount.
+    pub blemish: Option<BlemishPlan>,
+    /// Dark circles, even skin, grading and teeth.
+    pub tones: Option<TonesPlan>,
+}
+
+/// Everything the device needs to retouch a part of the working image as [`retouch_skin_region_toned`] does: the faces
+/// that meet the part, in order, with their maps, masks (resampled to the working image and cut to the part), padded
+/// regions and amounts. The device runs the same maths on these; nothing in the plan is a different rule.
+#[derive(Debug, Clone)]
+pub struct DevicePlan {
+    /// The working pixel of the part's top-left corner.
+    pub origin_px: (i32, i32),
+    /// The size of the part.
+    pub size_px: (u32, u32),
+    /// The working image over the size the maps and masks were built at.
+    pub render_scale: f64,
+    /// The faces that meet the part, in face order. Blemish removal of all of them runs first, then the tools of each.
+    pub faces: Vec<DeviceFace>,
+}
+
+/// [`retouch_skin_region_toned`] without the pixels: the plan the device follows for a part of `part_px` pixels at `place`.
+/// The same checks and the same choice of faces; the work (the masks' resample, the regions, the radii) is the CPU's own.
+///
+/// # Errors
+///
+/// As [`retouch_skin_region_toned`].
+pub fn plan_skin_region(
+    part_px: (u32, u32),
+    place: Placement,
+    full_size_px: (u32, u32),
+    faces: &[(Face, SkinSettings)],
+    render_scale: f32,
+    cache: &RetouchCache,
+) -> Result<DevicePlan> {
+    if part_px.0 == 0 || part_px.1 == 0 {
+        return Err(RetouchError::Part {
+            why: "it has no pixels",
+        });
+    }
+    let scale = check_render_scale(render_scale)?;
+    let working = place.working_px;
+    check_working_size_px(working, full_size_px, render_scale, scale)?;
+    if place.origin_px.0 < 0
+        || place.origin_px.1 < 0
+        || place.origin_px.0 & 1 != 0
+        || place.origin_px.1 & 1 != 0
+    {
+        return Err(RetouchError::Part {
+            why: "its origin must be even and inside the picture",
+        });
+    }
+    let bounds = Rect::new(place.origin_px.0, place.origin_px.1, part_px.0, part_px.1);
+    if bounds.right_px() > i64::from(working.0) || bounds.bottom_px() > i64::from(working.1) {
+        return Err(RetouchError::Part {
+            why: "it reaches past the picture",
+        });
+    }
+    let faces: Vec<(Face, SkinSettings)> = faces.iter().map(|(f, s)| (*f, s.clamped())).collect();
+    let face_list = faces_of(&faces);
+    if !cache.masks_match(full_size_px, &face_list) {
+        return Err(RetouchError::NotPrepared);
+    }
+    let key = cache.map_key(&face_list);
+    let mut out = Vec::new();
+    for (i, (face, settings)) in faces.iter().enumerate() {
+        let Some(region) = face_region(
+            i,
+            face,
+            settings,
+            working,
+            full_size_px,
+            render_scale,
+            cache,
+        )?
+        else {
+            continue;
+        };
+        if !intersects(&bounds, &region) {
+            continue;
+        }
+        if !contains(&bounds, &region) {
+            return Err(RetouchError::Part {
+                why: "a face reaches past it",
+            });
+        }
+        let blemish = if settings.blemish > 0.0 {
+            match cache.maps.get(&key, i) {
+                Some(map) => Some(BlemishPlan {
+                    map,
+                    a: settings.a(),
+                }),
+                None if cache.masks(i).is_some_and(|m| m.blemish.is_some()) => {
+                    return Err(RetouchError::NotPrepared);
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        let tones = match cache.masks(i) {
+            Some(masks) => {
+                let tools = ToolMasks {
+                    dark_circles: masks.dark_circles.as_ref(),
+                    even_skin: masks.even_skin.as_ref(),
+                    grading: masks.grading.as_ref(),
+                    teeth: masks.teeth.as_ref(),
+                };
+                tones_plan(
+                    part_px,
+                    place,
+                    full_size_px,
+                    face,
+                    settings,
+                    render_scale,
+                    &tools,
+                )?
+            }
+            None => None,
+        };
+        out.push(DeviceFace {
+            index: i,
+            size_px: crate::types::face_size_px(full_size_px, render_scale, face)?,
+            blemish,
+            tones,
+        });
+    }
+    Ok(DevicePlan {
+        origin_px: place.origin_px,
+        size_px: part_px,
+        render_scale: scale,
+        faces: out,
+    })
 }
 
 fn check_working_size(

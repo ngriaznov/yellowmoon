@@ -660,6 +660,104 @@ pub(crate) fn join_rects(a: Option<Rect>, b: Rect) -> Rect {
     Rect::new(x0 as i32, y0 as i32, (x1 - x0) as u32, (y1 - y0) as u32)
 }
 
+/// What the device needs for one face's low-frequency tools on a part (`docs/27` S-13): the padded region of
+/// [`LowFreqParams`], the amounts, and the tools' masks at the working resolution over that region, all as the CPU pass
+/// reads them. The device runs the maths of [`tones_with`] on these; nothing here is a different rule.
+#[derive(Debug, Clone)]
+pub struct LowPlan {
+    /// The padded region of the pass, in pixels of the part (the origin is even on the half path).
+    pub rect: Rect,
+    /// The derived radii and strengths (7.1).
+    pub params: LowFreqParams,
+    /// Skin contrast `gc`, -1..=1 (0: off).
+    pub gc: f64,
+    /// Shadow desaturation `gd`, 0..=1.
+    pub gd: f64,
+    /// Shine removal `gs`, 0..=1.
+    pub gs: f64,
+    /// The dark-circle mask over `rect` (one byte a pixel, rows of `rect.width_px`), when the tool is active.
+    pub dc: Option<Vec<u8>>,
+    /// The even-skin mask over `rect`, when active.
+    pub se: Option<Vec<u8>>,
+    /// The skin-grading mask over `rect`, when any grading amount is active.
+    pub grade: Option<Vec<u8>>,
+}
+
+/// What the device needs for teeth whitening (7.8) on a part.
+#[derive(Debug, Clone)]
+pub struct TeethPlan {
+    /// The teeth mask's rectangle in the part (cropped to its non-zero pixels).
+    pub rect: Rect,
+    /// The mask over `rect`.
+    pub bytes: Vec<u8>,
+    /// Teeth whitening `tw`, 0..=1.
+    pub tw: f64,
+}
+
+/// The tools of one face on a part, as the device runs them.
+#[derive(Debug, Clone)]
+pub struct TonesPlan {
+    /// Dark circles, even skin and grading.
+    pub low: Option<LowPlan>,
+    /// Teeth whitening.
+    pub teeth: Option<TeethPlan>,
+}
+
+/// [`tones_with`] without the pixels: the masks resampled to the working image and cut to the part, the padded region and
+/// the parameters, for the device. `None` when no tool of the face is active on this part.
+///
+/// # Errors
+///
+/// [`RetouchError::RenderScale`] for a scale outside the limits.
+pub(crate) fn tones_plan(
+    size: (u32, u32),
+    place: Placement,
+    full_size_px: (u32, u32),
+    face: &Face,
+    settings: &SkinSettings,
+    render_scale: f32,
+    masks: &ToolMasks<'_>,
+) -> Result<Option<TonesPlan>> {
+    let d = face_size_px(full_size_px, render_scale, face)?;
+    let working = |active: bool, mask: Option<&BoundedMask>| -> Result<Option<BoundedMask>> {
+        match mask {
+            Some(m) if active && !m.mask.is_all_zero() => {
+                mask_in_part(m, render_scale, place, size)
+            }
+            _ => Ok(None),
+        }
+    };
+    let dc_mask = working(settings.dc() > 0.0, masks.dark_circles)?;
+    let se_mask = working(settings.se() > 0.0, masks.even_skin)?;
+    let g_mask = working(settings.grading_active(), masks.grading)?;
+    let teeth_mask = working(settings.tw() > 0.0, masks.teeth)?;
+    let p = LowFreqParams::new(d, settings.t(), settings.dc(), settings.se());
+    let low = padded_region(
+        &[(&dc_mask, p.r_dc), (&se_mask, p.r_se), (&g_mask, p.r_g)],
+        &p,
+        size,
+    )
+    .map(|rect| LowPlan {
+        rect,
+        params: p,
+        gc: settings.gc(),
+        gd: settings.gd(),
+        gs: settings.gs(),
+        dc: dc_mask.as_ref().map(|bm| paint(bm, rect)),
+        se: se_mask.as_ref().map(|bm| paint(bm, rect)),
+        grade: g_mask.as_ref().map(|bm| paint(bm, rect)),
+    });
+    let teeth = teeth_mask.map(|bm| TeethPlan {
+        rect: bm.region,
+        bytes: bm.mask.data,
+        tw: settings.tw(),
+    });
+    if low.is_none() && teeth.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(TonesPlan { low, teeth }))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tones_with(
     image: &mut LinearAwg4Image,

@@ -17,10 +17,10 @@
 pub const TONE_FLOOR: f64 = 1e-4;
 
 /// Equal-count bins per channel.
-const BINS: usize = 32;
+pub const BINS: usize = 32;
 
 /// Fewest pairs per channel for an estimate; fewer count as "no relation known" (the plain gain).
-const MIN_PAIRS: usize = 256;
+pub const MIN_PAIRS: usize = 256;
 
 /// A relation whose slope `d ln X / d ln A` is within this of 1 is an exposure change (or none) and the gain is applied as a
 /// plain multiplication, as before: the error of that is the slope's distance from 1 times the gain's `ln` (under 0.4 for
@@ -29,6 +29,29 @@ pub const SLOPE_TOLERANCE: f64 = 0.04;
 
 /// Slopes at the ends are kept between these, so that the inverse stays finite and the curve monotone.
 const END_SLOPE: (f64, f64) = (0.05, 4.0);
+
+/// The `ln` of the value at each of the [`BINS`] equal-count quantiles of the usable values (finite, above [`TONE_FLOOR`]) of
+/// each channel of `set`, sorted with a total order: the element at `((2 k + 1) n) / (2 BINS)`. `None` when a channel has fewer
+/// than [`MIN_PAIRS`] usable values.
+pub fn quantiles(set: &[[f32; 3]]) -> Option<[[f64; BINS]; 3]> {
+    let mut out = [[0.0; BINS]; 3];
+    for (c, row) in out.iter_mut().enumerate() {
+        let mut v: Vec<f64> = set
+            .iter()
+            .map(|p| p[c])
+            .filter(|&x| x.is_finite() && f64::from(x) > TONE_FLOOR)
+            .map(|x| f64::from(x).ln())
+            .collect();
+        if v.len() < MIN_PAIRS {
+            return None;
+        }
+        v.sort_by(f64::total_cmp);
+        for (k, q) in row.iter_mut().enumerate() {
+            *q = v[(((2 * k + 1) * v.len()) / (2 * BINS)).min(v.len() - 1)];
+        }
+    }
+    Some(out)
+}
 
 /// One channel: knots `(ln A, ln X)`, `ln A` strictly increasing, `ln X` non-decreasing, and the slopes the curve goes on with
 /// beyond its first and last knot (the pixels of a lesion lie outside the bins' medians, and the curve there is the end
@@ -88,6 +111,20 @@ impl Curve {
     }
 }
 
+/// One channel of a [`ToneRelation`] as plain numbers, for the device (`docs/27` S-13): the knots `(ln A, ln X)` of the
+/// piecewise-linear curve and the slopes it goes on with beyond the first and last.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToneCurveData {
+    /// `ln A` of each knot, strictly increasing.
+    pub ln_analysis: Vec<f64>,
+    /// `ln X` of each knot, non-decreasing.
+    pub ln_input: Vec<f64>,
+    /// The slope below the first knot.
+    pub slope_lo: f64,
+    /// The slope above the last knot.
+    pub slope_hi: f64,
+}
+
 /// The estimated tone relation of one region, or none (the plain gain).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ToneRelation {
@@ -98,6 +135,17 @@ impl ToneRelation {
     /// No relation: [`ToneRelation::gain`] is the plain multiplication.
     pub fn none() -> Self {
         Self::default()
+    }
+
+    /// The three channels' curves, or `None` when the gain is the plain multiplication.
+    pub fn curve_data(&self) -> Option<[ToneCurveData; 3]> {
+        let c = self.curves.as_ref()?;
+        Some([0, 1, 2].map(|k| ToneCurveData {
+            ln_analysis: c[k].la.clone(),
+            ln_input: c[k].lx.clone(),
+            slope_lo: c[k].slope_lo,
+            slope_hi: c[k].slope_hi,
+        }))
     }
 
     /// True when the gain is applied as a plain multiplication (no relation, or an exposure change).
@@ -115,28 +163,21 @@ impl ToneRelation {
     /// A channel with fewer than 256 usable values in either set (a value is usable above [`TONE_FLOOR`]), or a relation whose
     /// slope is within [`SLOPE_TOLERANCE`] of 1 on all three channels (an exposure change), gives [`ToneRelation::none`].
     pub fn estimate(analysis: &[[f32; 3]], input: &[[f32; 3]]) -> Self {
+        match (quantiles(analysis), quantiles(input)) {
+            (Some(a), Some(x)) => Self::from_quantiles(&a, &x),
+            _ => Self::none(),
+        }
+    }
+
+    /// The relation from the 32 quantiles of `ln A` and of `ln X` of each channel ([`quantiles`]): the second half of
+    /// [`ToneRelation::estimate`], which the device repeats on its own quantiles of the node's input.
+    pub fn from_quantiles(analysis: &[[f64; BINS]; 3], input: &[[f64; BINS]; 3]) -> Self {
         let mut curves: Vec<Curve> = Vec::with_capacity(3);
         let mut plain = true;
         for c in 0..3 {
-            let logs = |set: &[[f32; 3]]| -> Vec<f64> {
-                let mut v: Vec<f64> = set
-                    .iter()
-                    .map(|p| p[c])
-                    .filter(|&x| x.is_finite() && f64::from(x) > TONE_FLOOR)
-                    .map(|x| f64::from(x).ln())
-                    .collect();
-                v.sort_by(f64::total_cmp);
-                v
-            };
-            let (la_all, lx_all) = (logs(analysis), logs(input));
-            if la_all.len() < MIN_PAIRS || lx_all.len() < MIN_PAIRS {
-                return Self::none();
-            }
-            let at =
-                |v: &[f64], k: usize| v[(((2 * k + 1) * v.len()) / (2 * BINS)).min(v.len() - 1)];
             let (mut la, mut lx): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
             for k in 0..BINS {
-                let (a, x) = (at(&la_all, k), at(&lx_all, k));
+                let (a, x) = (analysis[c][k], input[c][k]);
                 if la.last().is_some_and(|&l| a <= l + 1e-9) {
                     continue;
                 }
