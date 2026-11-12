@@ -5,7 +5,7 @@
 //! 4 critical ([`PressureLevel`]). A [`PressureSource`] reads it; the real one ([`system_pressure_source`]) exists only on macOS
 //! and everywhere else always says normal. Tests give a source that says what they want.
 //!
-//! **What goes at each level** ([`Core::trim_caches`], the one place that frees anything for pressure):
+//! **What goes at each level** ([`Core::trim_caches`](crate::app::Core::trim_caches), the one place that frees anything for pressure):
 //!
 //! | level | frees |
 //! |---|---|
@@ -14,23 +14,23 @@
 //! | critical | the same, then the device's resident raw words of the other photos and the pool's free buffers |
 //!
 //! Warning drops caches through the two ways the core already has and adds no third: the ledger's reclaimers
-//! ([`MemoryLedger::reclaim`], H-13: the session's mosaics and the renderer's raw groups and sigma planes, other photos' only)
+//! ([`MemoryLedger::reclaim`](crate::scheduler::MemoryLedger::reclaim), H-13: the session's mosaics and the renderer's raw groups and sigma planes, other photos' only)
 //! and [`Renderer::release_off_screen_frames`] (the frames the ledger does not count). The models unload through
-//! [`Unloadable`](crate::pipeline::Unloadable) (`pipeline/resident.rs`), and one that is running an inference unloads when the
+//! [`Unloadable`] (`pipeline/resident.rs`), and one that is running an inference unloads when the
 //! inference ends. **The photo on screen keeps every cache it has.**
 //!
-//! **What else critical does** ([`Core::apply_pressure`], called by the poll with each reading): the optional background work
+//! **What else critical does** ([`Core::apply_pressure`](crate::app::Core::apply_pressure), called by the poll with each reading): the optional background work
 //! stops, and starts again when the level falls below critical. That is the decode pool's prefetches and thumbnail refreshes
-//! and the shell's thumbnail refresher, through one [`BackgroundGate`](crate::scheduler::BackgroundGate). A photo's development,
+//! and the shell's thumbnail refresher, through one [`BackgroundGate`]. A photo's development,
 //! the viewport and exports go on.
 //!
-//! **The notice.** On the way into critical the core says once, through [`Core::on_memory_notice`], that background work is
+//! **The notice.** On the way into critical the core says once, through [`Core::on_memory_notice`](crate::app::Core::on_memory_notice), that background work is
 //! paused ([`MEMORY_NOTICE_SENTENCE`]); it says the notice is gone when the level is normal again. Warning shows nothing, and
 //! a level that goes from critical to warning and back leaves the notice as it is: **once per stay above normal**.
 //!
-//! **The poll.** [`Core::start_memory_watch`] runs one thread that reads the level every [`POLL_INTERVAL`], acts on it, and
+//! **The poll.** [`Core::start_memory_watch`](crate::app::Core::start_memory_watch) runs one thread that reads the level every [`POLL_INTERVAL`], acts on it, and
 //! sweeps the models for the idle unload. The app starts it; `ym` does not (see `docs/26` As built, H-14). The thread ends with
-//! [`Core::shutdown`] or when the core is dropped.
+//! [`Core::shutdown`](crate::app::Core::shutdown) or when the core is dropped.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -127,7 +127,7 @@ fn system_level() -> PressureLevel {
     PressureLevel::Normal
 }
 
-/// What [`Core::trim_caches`] let go of.
+/// What [`Core::trim_caches`](crate::app::Core::trim_caches) let go of.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrimReport {
     /// What each registered model did: its name and the outcome ([`Unload::InUse`]: it unloads when its inference ends).
@@ -138,7 +138,7 @@ pub struct TrimReport {
     pub gpu_bytes: u64,
 }
 
-/// What [`Core::apply_pressure`] did with one reading.
+/// What [`Core::apply_pressure`](crate::app::Core::apply_pressure) did with one reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PressureStep {
     /// The level read.
