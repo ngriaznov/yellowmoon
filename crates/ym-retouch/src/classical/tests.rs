@@ -382,7 +382,9 @@ fn a_map_of_one_grade_applies_to_another() {
 
 /// The upstream curves of the S-12 measurement: power curves and an S-curve (a smoothstep in the log2 of the value around
 /// mid grey, 8 stops wide: a slope of 1.5 at mid grey).
-fn upstream_curves() -> Vec<(&'static str, Box<dyn Fn(f32) -> f32>)> {
+type Curve = Box<dyn Fn(f32) -> f32>;
+
+fn upstream_curves() -> Vec<(&'static str, Curve)> {
     let power = |p: f32| -> Box<dyn Fn(f32) -> f32> { Box::new(move |v| v.powf(p)) };
     let s_curve: Box<dyn Fn(f32) -> f32> = Box::new(|v| {
         let u = (((f64::from(v) / 0.18).log2() + 4.0).clamp(0.0, 8.0)) / 8.0;

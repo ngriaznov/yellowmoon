@@ -284,6 +284,6 @@ mod tests {
         let rel = estimate(|a| a.powf(0.7));
         assert_eq!(rel.gain([0.0, 1e-5, 0.3], [2.0, 2.0, -1.0])[0], 0.0);
         assert!((rel.gain([0.0, 1e-5, 0.3], [2.0, 2.0, -1.0])[1] - 2e-5).abs() < 1e-9);
-        assert_eq!(rel.gain([0.5; 3], [f64::NAN; 3])[0].is_nan(), true);
+        assert!(rel.gain([0.5; 3], [f64::NAN; 3])[0].is_nan());
     }
 }

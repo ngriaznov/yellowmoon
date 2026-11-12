@@ -252,8 +252,7 @@ impl FaceWork {
         }
         let analysis = &self.entry.linear.data;
         let grid = |w: usize, h: usize| {
-            let step = (((w * h) as f64 / TONE_SAMPLES as f64).sqrt().ceil() as usize).max(1);
-            step
+            (((w * h) as f64 / TONE_SAMPLES as f64).sqrt().ceil() as usize).max(1)
         };
         let step = grid(x1 - x0, y1 - y0);
         let a: Vec<[f32; 3]> = (y0..y1)

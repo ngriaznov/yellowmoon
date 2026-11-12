@@ -197,8 +197,6 @@ pub enum Scene {
 
 /// A patch: the clean skin, the same skin with the items, and the items.
 pub struct Patch {
-    /// Tone index.
-    pub tone: usize,
     /// Which scene.
     pub scene: Scene,
     /// Skin without items.
@@ -420,7 +418,6 @@ pub fn patch(t: usize, scene: Scene) -> Patch {
         }
     }
     Patch {
-        tone: t,
         scene,
         clean: to_img(&clean_px),
         img: to_img(&px),
@@ -565,8 +562,8 @@ fn luma(p: [f32; 3]) -> f64 {
 fn mean_of(img: &LinearAwg4Image, idx: &[usize]) -> [f64; 3] {
     let mut s = [0.0; 3];
     for &i in idx {
-        for c in 0..3 {
-            s[c] += f64::from(img.data[i][c]);
+        for (acc, v) in s.iter_mut().zip(img.data[i]) {
+            *acc += f64::from(v);
         }
     }
     s.map(|v| v / idx.len().max(1) as f64)
@@ -1471,14 +1468,14 @@ mod tests {
         let only: Vec<&str> = only.split(',').filter(|x| !x.is_empty()).collect();
         for r in run_protocol_on(&tones, &only) {
             println!(
-                "tone {} {:7} lesion {} mole {} freckle {} hair {} tex {} halo {:.4} leak {:.4} | clean dL {:+.3} da {:+.3} db {:+.3} dE {:.3}/{:.3} tex {:.3}/{:.3}/{:.3}",
+                "tone {} {:7} lesion {} mole {} freckle {} hair {} tex {:.2} halo {:.4} leak {:.4} | clean dL {:+.3} da {:+.3} db {:+.3} dE {:.3}/{:.3} tex {:.3}/{:.3}/{:.3}",
                 r.tone,
                 r.setting,
                 fmt(&r.lesion_residuals),
                 fmt(&r.mole_residuals),
                 fmt(&r.freckle_residuals),
                 fmt(&r.hair_residuals),
-                format!("{:.2}", r.lesion_texture),
+                r.lesion_texture,
                 r.halo_max,
                 r.leak_max,
                 r.clean[2].dl,
