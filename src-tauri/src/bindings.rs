@@ -78,6 +78,7 @@ mod tests {
             "update_state",
             "error",
             "looks_import_progress",
+            "open_progress",
             "download_found",
             "menu_action",
             "viewport_frame",

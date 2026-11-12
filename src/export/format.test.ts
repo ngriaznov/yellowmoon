@@ -5,6 +5,7 @@ import {
   formatDuration,
   formatEstimate,
   LONG_EDGE_MIN,
+  lowSpaceWarning,
   longEdgeRange,
   photoCount,
   snapLongEdge,
@@ -36,8 +37,33 @@ describe("formatDuration", () => {
   });
 
   it("joins with the size for a tooltip", () => {
-    expect(estimateTitle({ bytes: 75_000_000, seconds: 3.8, adjusted_photos: 0, dng_approximate: false })).toBe("≈ 75 MB, about 4 s");
-    expect(estimateTitle({ bytes: 75_000_000, seconds: 0, adjusted_photos: 0, dng_approximate: false })).toBe("≈ 75 MB");
+    expect(estimateTitle({ bytes: 75_000_000, seconds: 3.8, adjusted_photos: 0, dng_approximate: false, free_bytes: null, folder: null, low_space: false })).toBe("≈ 75 MB, about 4 s");
+    expect(estimateTitle({ bytes: 75_000_000, seconds: 0, adjusted_photos: 0, dng_approximate: false, free_bytes: null, folder: null, low_space: false })).toBe("≈ 75 MB");
+  });
+});
+
+describe("lowSpaceWarning", () => {
+  const est = (bytes: number, free: number | null, low: boolean) => ({
+    bytes,
+    seconds: 1,
+    adjusted_photos: 0,
+    dng_approximate: false,
+    free_bytes: free,
+    folder: free === null ? null : "Lisbon export",
+    low_space: low,
+  });
+  it("says the sentence of the catalogue when the core says the space is low", () => {
+    expect(lowSpaceWarning(est(300_000_000, 350_000_000, true))).toBe(
+      "This export needs about 300 MB and 350 MB is free in Lisbon export. It may stop part way.",
+    );
+    expect(lowSpaceWarning(est(2_400_000_000, 1_000_000_000, true))).toBe(
+      "This export needs about 2.4 GB and 1.0 GB is free in Lisbon export. It may stop part way.",
+    );
+  });
+  it("says nothing when there is room, when the space is unknown or before the answer", () => {
+    expect(lowSpaceWarning(est(300_000_000, 5_000_000_000, false))).toBeNull();
+    expect(lowSpaceWarning(est(300_000_000, null, false))).toBeNull();
+    expect(lowSpaceWarning(null)).toBeNull();
   });
 });
 

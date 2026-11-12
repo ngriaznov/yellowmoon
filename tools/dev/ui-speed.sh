@@ -32,7 +32,7 @@ while [ $# -gt 0 ]; do
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$photos" ] && [ -d "$photos" ] || { echo "give --photos a folder of ARW files" >&2; exit 2; }
+{ [ -n "$photos" ] && [ -d "$photos" ]; } || { echo "give --photos a folder of ARW files" >&2; exit 2; }
 [ "$(uname -s)" = Darwin ] || echo "note: this is not a Mac; the native viewport and its present stamps need one." >&2
 
 cd "$(dirname "$0")/../.."

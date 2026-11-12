@@ -39,7 +39,7 @@ Conventions of the decoded image:
 - **Raw sub-IFD tags** (found in Sony ARW images): 0x7000 `SonyRawFileType` (0 uncompressed 14-bit, 1 uncompressed 12-bit, 2 cRAW, 3 lossless, 4 lossless 2, 6 Compressed RAW 2), 0x7010 tone curve (four 16-bit knots, returned as stored), 0x7032 / 0x7035 / 0x7037 lens tables (signed 16-bit, 17 / 33 / 17 values, returned as stored), 0x7038 `SonyRawImageSize` (width and height of the valid image: becomes `active_area`), 0x74C7 / 0x74C8 crop origin and size (becomes `crop`; the DNG default crop tags are used when these are absent), 0x7310 / 0x7313 repeated levels. Rectangles that do not fit the readout are ignored.
 - **Which file is an ARW.** A TIFF (`II*\0` or `MM\0*`) with a raw directory (CFA photometric with one sample, or YCbCr with three samples and at least 12 bits at compression 7) *and* Sony evidence (`SONY` make, a Sony maker-note header, or Sony 0x70xx tags in the raw IFD). Hasselblad rebadges pass through the maker-note header. `DNGVersion` present, maker-note `FileFormat` = SR2, the models DSC-F828, DSC-V3 and DSC-R1 (SRF and SR2), non-TIFF input and non-Sony raw files are `NotArw`. Four samples per pixel or photometric 32892 is `Arq`. A Sony file whose `SubIFDs` pointer leads nowhere is `Corrupt`; the A100 (raw data behind the `SubIFDs` pointer) is `Unsupported`.
 - **Preview.** `RawMetadata::preview` is the embedded JPEG to show first. The candidates are the maker-note preview, the `JPEGInterchangeFormat` thumbnails and the single-strip 8-bit JPEG images of every directory that start `FF D8 FF` and lie inside the file. A real ARW holds several (an ILCE-7M4 file: a 160 x 120 thumbnail in IFD1, the 1616 x 1080 preview in IFD0, and a 7008 x 4672 full-size JPEG of 1.7 MB in a third directory; older bodies have the first two). The choice is the smallest candidate whose long edge, read from its frame header, is at least 1024 px (the 1616 x 1080 preview: the start screen needs a few-megapixel decode, not 33 MP), else the largest candidate. JPEGs coded with a lossless process (start-of-frame SOF3) are never chosen: no viewer can show them.
-- **Limits.** Image area at most 120 MP and 65 535 px per side; at most 2048 entries per directory, 64 directories, nesting depth 4, 8 MiB per value, 64 MiB of reads per probe; raw data must lie inside the file and be at least as large as an uncompressed layout needs. All of these are `Corrupt`, never a panic or an unbounded allocation.
+- **Limits.** Image area at most 120 MP and 65 535 px per side, and at least 6 px per side (`layout::MIN_DIMENSION`; a smaller picture is a damaged size tag, not a camera file, and is `Corrupt`, so the person reads "This file is damaged"); at most 2048 entries per directory, 64 directories, nesting depth 4, 8 MiB per value, 64 MiB of reads per probe; raw data must lie inside the file and be at least as large as an uncompressed layout needs. All of these are `Corrupt`, never a panic or an unbounded allocation.
 
 ### SR2 private data (black, white, white balance)
 
@@ -156,6 +156,21 @@ Every failure returns a typed error with a plain message:
 - `Unsupported { camera, variant }`: a known variant the decoder does not handle (ARW 6.0 until gated).
 - `NotArw`: SRF, SR2, ARQ, or not a TIFF ("This isn't an ARW file. Yellowmoon opens Sony ARW files only."). ARQ gets its own message: "Pixel-shift ARQ files aren't supported. Open the individual ARW frames instead."
 - `Corrupt { detail }`: truncated or malformed. Fail that file and keep the session going; never show partially decoded pixels.
+- `Io`: the file could not be opened or read.
+
+**The sentences (a closed list).** The person sees one of these and nothing else about a file; the technical `detail` (and the raw I/O error) never reaches the interface. `Corrupt`'s `Display` is chosen from its `detail`: the constants `error::EMPTY` (a file of length 0, checked in `Tiff::open`) and `error::CUT_SHORT` (every `UnexpectedEof`, and raw data, a tile, a value or a directory that lies beyond the end of the file) select the first two, any other detail selects the third. `Io`'s is chosen from `io::ErrorKind` (and, on macOS, `raw_os_error`). `kind()` stays `corrupt`, `io`, `not_arw`, `arq`, `unsupported`.
+
+| Case | Message |
+|---|---|
+| empty file (length 0) | "This file is empty. Copy it from the card again, or skip it." |
+| cut short (`UnexpectedEof`; raw data, a tile, a value or a directory beyond the end of the file) | "This file is incomplete: it ends before its picture does. Copy it from the card again, or skip it." |
+| any other `Corrupt` | "This file is damaged. Copy it from the card again, or skip it." |
+| `Io` `NotFound` | "Yellowmoon can't find this file any more. It may have been moved, renamed or its drive disconnected." |
+| `Io` `PermissionDenied` (EACCES) | "Yellowmoon isn't allowed to open this file. Check its permissions." |
+| `Io` `PermissionDenied` (EPERM) on macOS | "macOS didn't let Yellowmoon open this file. Allow access in System Settings, under Privacy & Security." |
+| other `Io` | "Yellowmoon couldn't read this file. Check that the drive is connected, then try again." |
+
+No sentence contains "os error", "((", "Huffman", "entropy" or "restart". `RawError::detail()` returns the `detail` or the I/O error text: it goes to the log (`tracing`, level warn), to `ym render --json` and `ym info --json` as `error.detail`, and to stderr with `-v`. `crates/ym-raw/tests/messages.rs` sweeps damaged files of every variant and asserts that every message is in this list.
 
 ## Performance targets
 

@@ -30,7 +30,20 @@ pub(crate) fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
 
 /// A synthetic A7R IV file: a smooth gradient with noise, the as-shot white balance of daylight.
 pub(crate) fn write_arw(dir: &Path, name: &str, seed: u64) -> PathBuf {
+    write_arw_at(dir, name, seed, 0)
+}
+
+/// [`write_arw`] with a capture time `second` seconds after 17:42:10 (0 is that time itself), for
+/// folders where every photo has its own.
+pub(crate) fn write_arw_at(dir: &Path, name: &str, seed: u64, second: u64) -> PathBuf {
     let (w, h) = (192_u32, 128_u32);
+    let total = 17 * 3600 + 42 * 60 + 10 + second;
+    let time = format!(
+        "2026:10:04 {:02}:{:02}:{:02}",
+        (total / 3600) % 24,
+        (total / 60) % 60,
+        total % 60
+    );
     let mosaic = gradient_mosaic(w, h, 512, 12_000, seed);
     let path = dir.join(name);
     ArwBuilder::new("ILCE-7RM4", w, h)
@@ -40,7 +53,7 @@ pub(crate) fn write_arw(dir: &Path, name: &str, seed: u64) -> PathBuf {
         .iso(400)
         .exposure_time(1, 125)
         .f_number(28, 10)
-        .capture_time("2026:10:04 17:42:10", "00", None)
+        .capture_time(&time, "00", None)
         .write_to(&path, &mosaic)
         .expect("write the ARW");
     path
@@ -108,6 +121,19 @@ impl Harness {
             None,
             None,
             Some(model),
+            FrameStore::new(),
+        )
+    }
+
+    /// An app whose shell keeps at most `bytes` of filmstrip thumbnails (`docs/26` H-11).
+    pub(crate) fn with_thumbnail_budget(bytes: usize) -> Self {
+        Self::build_with(
+            WatchConfig::default(),
+            ProviderAdvisors::default(),
+            None,
+            None,
+            None,
+            FrameStore::with_thumbnail_budget(bytes),
         )
     }
 
@@ -125,7 +151,14 @@ impl Harness {
         preferences: Option<&str>,
         vision: Option<Arc<dyn ym_core::vision::VisionProvider>>,
     ) -> Self {
-        Self::build_with(watch, advisors, preferences, vision, None)
+        Self::build_with(
+            watch,
+            advisors,
+            preferences,
+            vision,
+            None,
+            FrameStore::new(),
+        )
     }
 
     fn build_with(
@@ -134,6 +167,7 @@ impl Harness {
         preferences: Option<&str>,
         vision: Option<Arc<dyn ym_core::vision::VisionProvider>>,
         depth: Option<Arc<ym_core::pipeline::DepthModel>>,
+        frames: FrameStore,
     ) -> Self {
         let photos = tempfile::tempdir().expect("photos");
         let app_root = tempfile::tempdir().expect("app root");
@@ -143,7 +177,7 @@ impl Harness {
         }
         let home = tempfile::tempdir().expect("home");
         let events = Arc::new(Recorder::new());
-        let frames = Arc::new(FrameStore::new());
+        let frames = Arc::new(frames);
         let emitter: Arc<dyn Emitter> = events.clone();
         let sink: Arc<dyn crate::viewport::FrameSink> =
             Arc::new(FallbackSink::new(Arc::clone(&frames), Arc::clone(&emitter)));

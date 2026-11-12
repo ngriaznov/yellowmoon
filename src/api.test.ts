@@ -37,6 +37,7 @@ type Row = [name: string, call: () => Promise<unknown>, command: string, args: R
 const calls: Row[] = [
   ["openPaths", () => tauriApi.openPaths(["/a.ARW"]), "open_paths", { paths: ["/a.ARW"] }],
   ["openDialog", () => tauriApi.openDialog("folder"), "open_dialog", { kind: "folder" }],
+  ["cancelOpen", () => tauriApi.cancelOpen(), "cancel_open", undefined, true],
   ["sessionState", () => tauriApi.sessionState(), "session_state", undefined],
   ["closeSession", () => tauriApi.closeSession(), "close_session", undefined, true],
   ["setCurrent", () => tauriApi.setCurrent(3), "set_current", { photoId: 3 }, true],
@@ -119,6 +120,7 @@ const calls: Row[] = [
   ["exportBusy", () => tauriApi.exportBusy(), "export_busy", undefined],
   ["restartApp", () => tauriApi.restartApp(), "restart_app", undefined, true],
   ["thumbnails", () => tauriApi.thumbnails(), "thumbnails", undefined],
+  ["thumbnailsInView", () => tauriApi.thumbnailsInView([4, 5]), "thumbnails_in_view", { photoIds: [4, 5] }],
   ["nodeThumbnails", () => tauriApi.nodeThumbnails(4), "node_thumbnails", { photoId: 4 }, true],
   ["preferencesGet", () => tauriApi.preferencesGet(), "preferences_get", undefined],
   ["preferencesSet", () => tauriApi.preferencesSet({ remove_location_from_exports: true }), "preferences_set", { patch: { remove_location_from_exports: true } }],
@@ -180,6 +182,7 @@ describe("tauriApi commands", () => {
 describe("tauriApi.on", () => {
   const EVENTS = [
     "photo_progress",
+    "open_progress",
     "thumbnail_ready",
     "render_stats",
     "export_progress",

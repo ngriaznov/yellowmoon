@@ -47,7 +47,6 @@ fn non_tiff_files_are_not_arw() {
     let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
     png.extend_from_slice(&[0u8; 64]);
     for (name, bytes) in [
-        ("empty", Vec::new()),
         ("one byte", vec![b'I']),
         ("text", b"hello, this is not a raw file at all".to_vec()),
         ("jpeg", jpeg),
@@ -60,6 +59,14 @@ fn non_tiff_files_are_not_arw() {
             Err(RawError::NotArw) => {}
             other => panic!("{name}: expected NotArw, got {other:?}"),
         }
+    }
+}
+
+#[test]
+fn an_empty_file_is_corrupt_with_the_empty_detail() {
+    match probe_bytes(&[]) {
+        Err(RawError::Corrupt { detail }) => assert_eq!(detail, ym_raw::error::EMPTY),
+        other => panic!("expected Corrupt, got {other:?}"),
     }
 }
 
@@ -278,8 +285,7 @@ fn truncated_files_on_disk_report_corrupt_with_a_useful_message() {
     match probe(&path) {
         Err(error @ RawError::Corrupt { .. }) => {
             let text = error.to_string();
-            assert!(text.contains("cut short"), "{text}");
-            assert!(text.contains("Copy it from the card again"), "{text}");
+            assert_eq!(text, ym_raw::error::MESSAGE_CUT_SHORT);
         }
         other => panic!("expected Corrupt, got {other:?}"),
     }

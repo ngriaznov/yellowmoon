@@ -186,9 +186,7 @@ pub fn decode(src: &dyn ByteSource, meta: &RawMetadata) -> Result<Plane<u16>, Ra
     // White noise needs about two bytes per sample; four is far beyond any real file and keeps a
     // hostile byte count from allocating more than the file holds.
     if count > (width * height * 4) as u64 || offset.saturating_add(count) > src.len() {
-        return Err(RawError::corrupt(
-            "the raw data runs past the end of the file (the file is cut short)",
-        ));
+        return Err(RawError::corrupt(crate::error::CUT_SHORT));
     }
     let mut data = vec![0u8; count as usize];
     src.read_at(offset, &mut data)?;

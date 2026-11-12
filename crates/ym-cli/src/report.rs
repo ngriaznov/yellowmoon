@@ -132,6 +132,17 @@ pub fn error_value(kind: &str, message: &str) -> Value {
     json!({ "kind": kind, "message": message })
 }
 
+/// Like [`error_value`], with the technical `detail` (the cause of a file's damage or the I/O
+/// error) when there is one. The `message` is the sentence for the person; `detail` is for bug
+/// reports.
+#[must_use]
+pub fn error_value_with_detail(kind: &str, message: &str, detail: Option<&str>) -> Value {
+    match detail {
+        Some(detail) => json!({ "kind": kind, "message": message, "detail": detail }),
+        None => error_value(kind, message),
+    }
+}
+
 /// When `apple_auto` and `auto_advisor` go into a photo's object: `info` always has them, `render`
 /// only for a photo a provider acted on (`docs/19` section 8, `docs/22` section 14.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,7 +436,13 @@ pub fn develop_fields(
 /// The failure object of `render --json`: `status: "error"`, no output, and whatever is known of
 /// the photo.
 #[must_use]
-pub fn render_error(input: &str, known: Option<&Object>, kind: &str, message: &str) -> Object {
+pub fn render_error(
+    input: &str,
+    known: Option<&Object>,
+    kind: &str,
+    message: &str,
+    detail: Option<&str>,
+) -> Object {
     let mut obj = Object::new();
     obj.insert("input", input);
     obj.insert("output", Value::Null);
@@ -434,7 +451,35 @@ pub fn render_error(input: &str, known: Option<&Object>, kind: &str, message: &s
         obj.extend(known.clone());
     }
     obj.insert("pipeline_version", PIPELINE_VERSION);
-    obj.insert("error", error_value(kind, message));
+    obj.insert("error", error_value_with_detail(kind, message, detail));
+    obj
+}
+
+/// The `stopped` event of `render --json`: a failure of the destination (the disk is full, the folder
+/// is read-only or gone) ended the export, after the error object of the photo it hit. `exported` is
+/// the number of photos written or skipped before it, `not_tried` the photos after it, which were
+/// neither decoded nor rendered (`docs/10`, `docs/26` P2-2).
+#[must_use]
+pub fn render_stopped(kind: &str, exported: usize, not_tried: usize) -> Object {
+    let mut obj = Object::new();
+    obj.insert("event", "stopped");
+    obj.insert("kind", kind);
+    obj.insert("exported", exported as u64);
+    obj.insert("not_tried", not_tried as u64);
+    obj
+}
+
+/// The `low_space` event of `render --json`, written to stdout before the first photo when the free space
+/// of the destination is under 1.35 times the size estimate (`docs/10`, `docs/26` P2-3). `message` is the
+/// sentence `ym` also prints on stderr.
+#[must_use]
+pub fn render_low_space(needed_bytes: u64, free_bytes: u64, folder: &str, message: &str) -> Object {
+    let mut obj = Object::new();
+    obj.insert("event", "low_space");
+    obj.insert("estimate_bytes", needed_bytes);
+    obj.insert("free_bytes", free_bytes);
+    obj.insert("folder", folder);
+    obj.insert("message", message);
     obj
 }
 
@@ -1002,7 +1047,7 @@ mod tests {
 
     #[test]
     fn a_failure_has_no_output_and_names_the_error() {
-        let v = render_error("/a/b.ARW", None, "look", "File missing or changed.");
+        let v = render_error("/a/b.ARW", None, "look", "File missing or changed.", None);
         assert_eq!(v.get("status"), Some(&json!("error")));
         assert_eq!(v.get("output"), Some(&Value::Null));
         assert_eq!(

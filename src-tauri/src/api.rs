@@ -39,10 +39,10 @@ use crate::wire::{
     ExportEstimate, ExportJob, ExportJobId, FaceBox, FacePhase, FaceState, FocusPlaneResult,
     FocusReason, HistogramData, LensInfo, Look, LookId, LookInput, LooksImportProgress,
     LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView, NodeId, Num,
-    ObjectState, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample,
-    Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
-    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
-    VisionState, WatchStatus, convert,
+    ObjectState, OpenProgress, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress,
+    PixelSample, Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState,
+    SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode,
+    ViewportRect, VisionState, WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
 
@@ -490,13 +490,31 @@ impl AppApi {
     ///
     /// # Errors
     ///
-    /// [`AppError`] with "No ARW files in what you dropped." when nothing is an ARW file, or when
-    /// what was given is not there.
+    /// [`AppError`] with "No ARW files in what you dropped." when nothing is an ARW file, with
+    /// "Yellowmoon can't read the folder {name}. …" when a folder could not be read (`docs/26`
+    /// H-02), or when what was given is not there.
     pub fn open_paths(&self, paths: &[String]) -> Result<SessionState, AppError> {
         let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
-        let outcome = self.core.session.open(&paths, OpenOptions::default());
-        // Something that is not there is not "no ARW files": say so first.
-        if outcome.added.is_empty() && outcome.already_open == 0 && !outcome.missing.is_empty() {
+        // Progress goes out as `open_progress` (at most one event per 50 files), so a long read of a
+        // folder of thousands shows "Reading {done} of {total} files…" and can be cancelled.
+        let emitter = &self.emitter;
+        let outcome = self.core.session.open_with_progress(
+            &paths,
+            OpenOptions::default(),
+            &|p: ym_core::session::OpenProgress| {
+                emitter.emit(AppEvent::OpenProgress(OpenProgress {
+                    done: u32::try_from(p.done).unwrap_or(u32::MAX),
+                    total: u32::try_from(p.total).unwrap_or(u32::MAX),
+                }));
+            },
+        );
+        // Something that is not there is not "no ARW files": say so first. A folder that could not be
+        // read is not "no ARW files" either: `message` names it.
+        if outcome.added.is_empty()
+            && outcome.already_open == 0
+            && outcome.unreadable.is_empty()
+            && !outcome.missing.is_empty()
+        {
             return Err(AppError::new(
                 ErrorScope::Open,
                 "That file isn't there any more. Check that its drive is connected, then open it again.",
@@ -511,8 +529,15 @@ impl AppApi {
         state.opened = Some(OpenSummary {
             added: u32::try_from(outcome.added.len()).unwrap_or(u32::MAX),
             already_open: u32::try_from(outcome.already_open).unwrap_or(u32::MAX),
+            cancelled: outcome.cancelled,
         });
         Ok(state)
+    }
+
+    /// `cancel_open`: stops the `open_paths` or `open_dialog` call that is reading files. The files
+    /// read so far stay in the session; the others are dropped (`docs/26` P3-3).
+    pub fn cancel_open(&self) {
+        self.core.session.cancel_open();
     }
 
     /// Remembers the folder the first path came from (`last_used_folders.open`). A failure to save
@@ -562,6 +587,26 @@ impl AppApi {
         self.frames
             .thumbnail_urls()
             .into_iter()
+            .map(|(id, url)| ThumbnailReady {
+                id: PhotoId(id),
+                url,
+            })
+            .collect()
+    }
+
+    /// `thumbnails_in_view(ids)` (`docs/26` H-11): the page shows these photos (the filmstrip draws
+    /// only the ones in view). Answers with the address of the thumbnail the shell holds for each, and
+    /// counts them as used. A photo whose thumbnail the shell let go of to keep its budget
+    /// ([`crate::viewport::THUMBNAIL_BUDGET_BYTES`]) gets a new one at the thumbnails' priority, announced
+    /// with `thumbnail_ready` like any other.
+    #[must_use]
+    pub fn thumbnails_in_view(&self, ids: &[PhotoId]) -> Vec<ThumbnailReady> {
+        let ids: Vec<u32> = ids.iter().map(|id| id.0).collect();
+        let (held, lost) = self.frames.thumbnails_in_view(&ids);
+        if !lost.is_empty() {
+            self.thumbs.refresh(lost.into_iter().map(CorePhotoId));
+        }
+        held.into_iter()
             .map(|(id, url)| ThumbnailReady {
                 id: PhotoId(id),
                 url,
@@ -675,6 +720,7 @@ impl AppApi {
             // Subject or People row gets its masks made in the background (section 4.5).
             self.core.prepare_masks(id);
         }
+        self.frames.set_current_photo(current.map(|id| id.0));
         self.viewport.set_photo(current);
     }
 

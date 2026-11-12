@@ -1865,6 +1865,17 @@ span.ym-filmstrip__thumb {
 .ym-export__footer-pair [data-slot="button"] {
   width: 100%;
 }
+/* The export stopped at a failure of the destination: one banner above the list, in the red of the wizard's error callout. */
+.ym-export__banner {
+  margin-top: 16px;
+  border: 0;
+  border-radius: calc(var(--glass-radius-surface) * 0.6);
+  background: color-mix(in oklch, var(--destructive) 20%, transparent);
+  color: var(--glass-label);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  line-height: 1.5;
+}
 
 /* ---- Dialogs: Preferences rows, About -------------------------------------------------------------------------------------------- */
 .ym-pref {

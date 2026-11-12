@@ -28,7 +28,8 @@
 //! * a photo that failed or was skipped is reported once, as it finishes, with the new count:
 //!   `{ file, done: i + 1, total, error }` or `{ …, skipped: true }`;
 //! * the last event of a job has `done == total` (for a photo that was written it is
-//!   `{ file, done: total, file_percent: 100 }`).
+//!   `{ file, done: total, file_percent: 100 }`), except for a job that **stopped** (below): its
+//!   last event is the failing photo's, `{ file, done: i + 1, total, error, stopped: true }`.
 //!
 //! [`ExportEvent::File`] carries what `export_photo` reported for a photo (its [`ExportReport`], or
 //! why it failed and with which CLI exit code, and the milliseconds its decode took) just before the
@@ -37,6 +38,19 @@
 //!
 //! A cancelled job sends nothing more: the panel that asked for the cancel closes the run itself.
 //! [`ExportEvent::Busy`] says when the queue becomes busy or idle, for the updater (below).
+//!
+//! # A stopped job
+//!
+//! A failure about one photo (a decode error, a look that changed, a mask this computer cannot make)
+//! never stops a job. A failure of the **destination** does: the disk is full, the folder is read-only,
+//! it has gone, or the app may not save there ([`ExportError::destination_problem`]). The photos after
+//! it would fail the same way, each after a decode and a render, so the job stops at the first one:
+//! that photo is `failed` (with `stopped: true` on its progress event), the rest are not tried
+//! ([`JobSummary::not_tried`], [`FileDone::not_tried`]), the summary's [`JobSummary::stopped`] holds the
+//! sentence and its state is `Finished`. The destination of a photo is also checked **before** the photo
+//! is decoded ([`check_destination`]), so a folder that is already gone or read-only costs no decode and
+//! no render at all. The decode of the next photo overlaps the render of this one, so when a write fails
+//! that one decode has already started; it is waited for and dropped, and nothing is rendered for it.
 //!
 //! # Names
 //!
@@ -76,7 +90,8 @@ use ym_raw::decode::RawImage;
 
 use crate::export::{
     ExportContext, ExportControl, ExportError, ExportParams, ExportReport, PhotoSnapshot,
-    WrittenFiles, estimate, export_photo, planned_destination, predicted_name_in,
+    WrittenFiles, check_destination, estimate, export_photo, folder_label, free_bytes_in,
+    is_low_on_space, planned_destination, predicted_name_in,
 };
 use crate::session::{ApplyScope, PhotoId, PhotoStatus, Session, SessionError};
 use crate::settings::DevelopSettings;
@@ -111,6 +126,15 @@ pub struct ExportEstimate {
     /// the scene values that the cine rendering turns into that picture (`docs/09`, "What a DNG carries"), which
     /// Adobe's renderer shows approximately.
     pub dng_approximate: bool,
+    /// Bytes available on the volume of the destination folder, read now (`docs/26-hardening.md`
+    /// P2-3). `None` when it cannot be read or the job has no photo yet.
+    pub free_bytes: Option<u64>,
+    /// The destination folder the free space was read for, by its last component (the panel names
+    /// the folder in the warning). `None` with `free_bytes`.
+    pub folder: Option<String>,
+    /// `free_bytes < 1.35 * bytes` ([`crate::export::is_low_on_space`]): the panel warns. Never a
+    /// reason to refuse the export.
+    pub low_space: bool,
 }
 
 /// The `export_progress` event (`ExportProgress` in `src/api/types.ts`; see the module
@@ -131,6 +155,9 @@ pub struct ExportProgress {
     pub error: Option<String>,
     /// `file` already existed and "If it exists" is Skip.
     pub skipped: bool,
+    /// `file` failed because of the destination (the disk is full, the folder is read-only or gone),
+    /// and the job stopped there: this is its last event and the photos after `done` were not tried.
+    pub stopped: bool,
 }
 
 /// A photo of a job that has been dealt with, for the CLI's one JSON object per file.
@@ -148,17 +175,29 @@ pub struct FileDone {
     pub decode_ms: f64,
     /// What `export_photo` reported, or why it failed.
     pub outcome: Result<ExportReport, FileFailure>,
+    /// Photos of the job that were not tried because the job stopped at this one (0 unless
+    /// `outcome` is a [`FileFailure`] with `stopped`).
+    pub not_tried: usize,
 }
 
 /// Why a photo of a job could not be exported.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileFailure {
-    /// A short kind (`look`, `render`, `write`, `decode`, `unsupported`; see `ExportError::kind`).
+    /// A short kind (`look`, `render`, `write`, `disk_full`, `destination`, `decode`, `unsupported`;
+    /// see `ExportError::kind`).
     pub kind: &'static str,
-    /// What went wrong, in plain words.
+    /// What went wrong, in plain words, for the app.
     pub message: String,
+    /// The same for `ym`: a failure of the destination names the folder by its full path and the
+    /// option to change (`ExportError::cli_message`).
+    pub cli_message: String,
+    /// The operating system's text of a write failure, for the log and `--json` (`error.detail`).
+    pub detail: Option<String>,
     /// The CLI exit code this failure stands for (3 for a look that is gone).
     pub exit_code: i32,
+    /// The failure is about the destination and stopped the job (`kind` is `disk_full` or
+    /// `destination`).
+    pub stopped: bool,
 }
 
 /// What the queue tells the application.
@@ -296,6 +335,11 @@ pub struct JobSummary {
     pub folders: Vec<PathBuf>,
     /// The photos that failed, with the reasons.
     pub errors: Vec<FileError>,
+    /// The job stopped at a failure of the destination: the sentence for the app. The photo it
+    /// stopped at is counted in `failed`, the photos after it in `not_tried`.
+    pub stopped: Option<String>,
+    /// Photos after the one the job stopped at, which were neither decoded nor rendered.
+    pub not_tried: usize,
 }
 
 impl JobSummary {
@@ -448,7 +492,19 @@ impl ExportQueue {
         let (command_look, command_intensity) = crate::cli_preview::command_look(&settings);
         let command_output_sharpening = crate::cli_preview::command_output_sharpening(&settings);
         let looks = self.ctx.renderer().looks();
+        // The folder of the first photo (a default destination differs per source folder; the first
+        // is the one the panel and `ym` name).
+        let folder = views
+            .first()
+            .and_then(|v| planned_destination(&self.ctx, &v.path, &job.options));
+        let free_bytes = folder.as_deref().and_then(free_bytes_in);
         ExportEstimate {
+            free_bytes,
+            folder: folder
+                .as_deref()
+                .filter(|_| free_bytes.is_some())
+                .map(folder_label),
+            low_space: free_bytes.is_some_and(|f| is_low_on_space(est.bytes, f)),
             bytes: est.bytes,
             seconds: est.seconds,
             adjusted_photos: crate::cli_preview::adjusted_photos_with(
@@ -559,6 +615,8 @@ impl ExportQueue {
             files: Vec::new(),
             folders: Vec::new(),
             errors: Vec::new(),
+            stopped: None,
+            not_tried: 0,
         });
         while st.summaries.len() > KEPT_SUMMARIES {
             st.summaries.pop_front();
@@ -719,6 +777,7 @@ fn worker_loop(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>
                             .to_owned(),
                     ),
                     skipped: false,
+                    stopped: false,
                 }));
             }));
         }
@@ -755,7 +814,14 @@ fn load_raw(session: &Session, snapshot: &PhotoSnapshot) -> Result<(Arc<RawImage
         Ok(raw) => raw,
         Err(SessionError::UnknownPhoto(_)) => {
             // The session was closed or the photo removed meanwhile: the job goes on from the file.
-            Arc::new(ym_raw::decode::decode(&snapshot.view.path).map_err(|e| e.to_string())?)
+            Arc::new(ym_raw::decode::decode(&snapshot.view.path).map_err(|e| {
+                tracing::warn!(
+                    kind = e.kind(),
+                    detail = e.detail().as_deref().unwrap_or(""),
+                    "the file could not be decoded for export"
+                );
+                e.to_string()
+            })?)
         }
         Err(e) => return Err(e.to_string()),
     };
@@ -817,6 +883,25 @@ fn update_summary(shared: &Shared, id: ExportJobId, f: impl FnOnce(&mut JobSumma
     }
 }
 
+/// What a decode thread hands back: the image and the milliseconds it took, or why it failed.
+type Loaded = Result<(Arc<RawImage>, f64), String>;
+
+/// A photo's turn, prepared one photo ahead of its render.
+enum Prepared {
+    /// Its destination is usable; its raw is being decoded on this thread.
+    Load(std::io::Result<JoinHandle<Loaded>>),
+    /// Its destination cannot be used (the disk is full, the folder is gone, read-only or not
+    /// allowed): nothing was decoded, and the job stops at this photo.
+    Blocked(ExportError),
+}
+
+/// Waits for the decode thread of a turn that will not be used, so nothing outlives the job.
+fn drop_prepared(prepared: Option<Prepared>) {
+    if let Some(Prepared::Load(Ok(h))) = prepared {
+        let _ = h.join();
+    }
+}
+
 fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, job: &Job) {
     let total = job.items.len();
     // The files this job has written: a later photo with the same name is numbered, whatever
@@ -829,26 +914,40 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
             .name("ym-export-decode".to_owned())
             .spawn(move || load_raw(&session, &snapshot))
     };
-    let mut next_load = (total > 0).then(|| spawn_load(0));
+    // A photo's destination is resolved (the folder made and probed) before the photo is decoded: a
+    // destination that is already unusable costs no decode and no render (`docs/26` P2-2).
+    let prepare = |i: usize| {
+        let item = &job.items[i];
+        match check_destination(ctx, &item.snapshot, &job.options, i as u32 + 1) {
+            Err(e) if e.destination_problem().is_some() => Prepared::Blocked(e),
+            // Any other failure is that photo's own and is reported by its export.
+            _ => Prepared::Load(spawn_load(i)),
+        }
+    };
+    let mut next_load = (total > 0).then(|| prepare(0));
     for (i, item) in job.items.iter().enumerate() {
         let loaded = next_load.take();
         if job.cancel.is_cancelled() {
             // Wait for the decode thread so nothing outlives the job.
-            if let Some(Ok(h)) = loaded {
-                let _ = h.join();
-            }
+            drop_prepared(loaded);
             return;
         }
-        // The next photo decodes while this one renders.
-        if i + 1 < total {
-            next_load = Some(spawn_load(i + 1));
+        // The next photo decodes while this one renders, unless its destination is unusable.
+        if i + 1 < total && !matches!(loaded, Some(Prepared::Blocked(_))) {
+            next_load = Some(prepare(i + 1));
         }
-        let raw = match loaded {
-            Some(Ok(handle)) => handle
-                .join()
-                .unwrap_or_else(|_| Err("The photo could not be read.".to_owned())),
-            Some(Err(e)) => Err(format!("The photo could not be read: {e}.")),
-            None => Err("The photo could not be read.".to_owned()),
+        let (raw, blocked) = match loaded {
+            Some(Prepared::Blocked(e)) => (Err(String::new()), Some(e)),
+            Some(Prepared::Load(Ok(handle))) => (
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err("The photo could not be read.".to_owned())),
+                None,
+            ),
+            Some(Prepared::Load(Err(e))) => {
+                (Err(format!("The photo could not be read: {e}.")), None)
+            }
+            None => (Err("The photo could not be read.".to_owned()), None),
         };
         let decode_ms = raw.as_ref().map_or(0.0, |(_, ms)| *ms);
 
@@ -870,7 +969,8 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
                      file: &str,
                      percent: Option<f64>,
                      error: Option<String>,
-                     skipped: bool| {
+                     skipped: bool,
+                     stopped: bool| {
             sink.send(ExportEvent::Progress(ExportProgress {
                 job_id: job.id,
                 file: file.to_owned(),
@@ -879,20 +979,19 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
                 file_percent: percent,
                 error,
                 skipped,
+                stopped,
             }));
         };
-        event(i, &predicted, Some(0.0), None, false);
+        event(i, &predicted, Some(0.0), None, false, false);
 
         // A job queued while the photos this one depends on were still developing waits here for
         // their estimates, then reads the shared ones (burst median, pooled noise) again.
-        let refreshed = if item.settled {
+        let refreshed = if item.settled || blocked.is_some() {
             None
         } else {
             match wait_for_final_estimates(&job.session, &job.cancel, &item.snapshot) {
                 Settled::Cancelled => {
-                    if let Some(Ok(h)) = next_load.take() {
-                        let _ = h.join();
-                    }
+                    drop_prepared(next_load.take());
                     return;
                 }
                 Settled::Fresh(snapshot) => Some(*snapshot),
@@ -901,7 +1000,11 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
         };
         let snapshot = refreshed.as_ref().unwrap_or(&item.snapshot);
 
-        let result = raw.map_err(ExportError::Decode).and_then(|(raw, _)| {
+        let result = match blocked {
+            Some(e) => Err(e),
+            None => raw.map_err(ExportError::Decode),
+        }
+        .and_then(|(raw, _)| {
             let photo = snapshot.clone().with_raw(raw);
             let last = Mutex::new(0u32);
             let report = |f: f32| {
@@ -915,7 +1018,7 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
                     *l = pct;
                     // Sent while the lock is held: two writer threads reporting at once cannot
                     // swap two percentages on the way to the panel.
-                    event(i, &predicted, Some(f64::from(pct)), None, false);
+                    event(i, &predicted, Some(f64::from(pct)), None, false, false);
                 }
             };
             export_photo(
@@ -961,11 +1064,12 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
                     total,
                     decode_ms,
                     outcome: Ok(report.clone()),
+                    not_tried: 0,
                 }));
                 if report.skipped {
-                    event(i + 1, &name, Some(100.0), None, true);
+                    event(i + 1, &name, Some(100.0), None, true, false);
                 } else if i + 1 == total {
-                    event(total, &name, Some(100.0), None, false);
+                    event(total, &name, Some(100.0), None, false, false);
                 }
             }
             Err(ExportError::Cancelled) => {
@@ -974,6 +1078,10 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
             }
             Err(e) => {
                 let message = e.to_string();
+                // A failure of the destination ends the job: the photos after this one would fail the
+                // same way, each after its decode and its render.
+                let stopped = e.destination_problem().is_some();
+                let not_tried = if stopped { total - (i + 1) } else { 0 };
                 update_summary(shared, job.id, |s| {
                     s.done += 1;
                     s.failed += 1;
@@ -981,11 +1089,21 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
                         file: predicted.clone(),
                         message: message.clone(),
                     });
+                    if stopped {
+                        s.stopped = Some(message.clone());
+                        s.not_tried = not_tried;
+                    }
                 });
                 // The log can end up in a bug report (`docs/01`): the kind of failure and the job at
                 // warn level, the file name and the message (which names the folder) at debug.
-                tracing::warn!(job = job.id, kind = e.kind(), "export failed");
-                tracing::debug!(job = job.id, file = %predicted, error = %message, "export failure details");
+                tracing::warn!(
+                    job = job.id,
+                    kind = e.kind(),
+                    stopped,
+                    not_tried,
+                    "export failed"
+                );
+                tracing::debug!(job = job.id, file = %predicted, error = %message, detail = ?e.detail(), "export failure details");
                 sink.send(ExportEvent::File(FileDone {
                     job_id: job.id,
                     photo: snapshot.view.id,
@@ -995,10 +1113,20 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
                     outcome: Err(FileFailure {
                         kind: e.kind(),
                         message: message.clone(),
+                        cli_message: e.cli_message(),
+                        detail: e.detail(),
                         exit_code: e.exit_code(),
+                        stopped,
                     }),
+                    not_tried,
                 }));
-                event(i + 1, &predicted, None, Some(message), false);
+                event(i + 1, &predicted, None, Some(message), false, stopped);
+                if stopped {
+                    // The decode of the next photo started while this one rendered: wait for it and
+                    // drop it. Nothing is decoded or rendered after it.
+                    drop_prepared(next_load.take());
+                    return;
+                }
             }
         }
     }

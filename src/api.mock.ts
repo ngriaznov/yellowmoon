@@ -41,6 +41,7 @@ import {
   parseMockConsent,
   parseMockProviders,
 } from "./api/providersMock";
+import { UNREADABLE_PREFIX } from "./api/openMessages";
 import type { MockActivity, MockProviders } from "./api/providersMock";
 import type {
   ApiEventName,
@@ -117,6 +118,7 @@ import type {
   SettingsPatch,
   SourceKind,
   SourceRecognition,
+  ThumbnailReady,
   ViewportBackendKind,
   ViewportInfo,
   ViewportInput,
@@ -476,6 +478,23 @@ export interface MockOptions {
   current?: number;
   /** The name of the folder the photos are in (the header, the export panel and the default destination use it). Default "Lisbon". */
   folderName?: string;
+  /**
+   * The name of a folder that cannot be read (`?mockUnreadable=Name`, `docs/26` H-02): opening a folder with nothing else answers
+   * "Yellowmoon can't read the folder Name. …" (`UNREADABLE_PREFIX`), as the core does, and no session starts. Default: none.
+   */
+  unreadable?: string;
+  /**
+   * `?mockSlowOpen=2000` (`docs/26` H-10): opening takes a while, as reading 2000 files does. `open_progress` reports 50 files at a
+   * time (about 100 ms apart at speed 1) until `cancelOpen` or the end, so Start and Photos can show "Reading {done} of {total} files…"
+   * and Cancel. Default 0: no delay.
+   */
+  slowOpen?: number;
+  /**
+   * `?mockThumbnailBudget=40` (`docs/26` H-11): the mock keeps at most this many photos' thumbnails, as the shell keeps a byte budget.
+   * The photo whose thumbnail was made last stays; the photos used least recently lose theirs (a thumbnail made, or asked for by
+   * `thumbnailsInView`, is a use) and get a new one when `thumbnailsInView` names them. Default 0: no budget.
+   */
+  thumbnailBudget?: number;
   /** How many photos the session has. The twelve fixtures repeat, with the names DSC04213 and on, so a long folder can be shown and timed. Default 12. */
   photoCount?: number;
   /** Whether the imported looks of the mockups are in the library. Default true. */
@@ -504,8 +523,17 @@ export interface MockOptions {
   downloadsDenied?: boolean;
   /** Output files that already exist in the destination, by name ("DSC04204_neutral.jpg"): Skip skips them, Keep both numbers them. */
   existingExports?: string[];
-  /** Photos whose export fails, by name ("DSC04204"), with the reason. */
+  /**
+   * Photos whose export fails, by name ("DSC04204"), with the reason. A reason that is a kind of failure of the destination
+   * (`disk_full`, `read_only`, `gone`, `permission`) is the core's sentence for it and **stops** the export at that photo: the
+   * photos after it are not tried (`docs/26` P2-2).
+   */
   exportFailures?: Record<string, string>;
+  /**
+   * Bytes free in the destination folder (`?mockFreeBytes=200000000`). `export_estimate` says `low_space` when it is under 1.35 times the
+   * estimate (`docs/26` P2-3). Default 500 GB.
+   */
+  freeBytes?: number;
   /** An export stops at this progress, in photos (1.45 is one done and the second at 45 %) until `flush()`, so a screenshot can show the running state. Default: never. */
   exportHoldAt?: number;
   /** A look import stops after this many files and waits for `flush()`, so a screenshot can show it half way (the mockup's 40 of 87). Default: never. */
@@ -1109,6 +1137,9 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   picked: [],
   current: 0,
   photoCount: SCENES.length,
+  unreadable: "",
+  slowOpen: 0,
+  thumbnailBudget: 0,
   folderName: DEFAULT_FOLDER_NAME,
   looksImported: true,
   allLibraries: false,
@@ -1121,6 +1152,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   downloadsDenied: false,
   existingExports: [],
   exportFailures: {},
+  freeBytes: 500_000_000_000,
   exportHoldAt: Number.POSITIVE_INFINITY,
   importHoldAt: Number.POSITIVE_INFINITY,
   persistPreferences: false,
@@ -1152,10 +1184,10 @@ function withDefaults(...layers: MockOptions[]): Required<MockOptions> {
 /**
  * Reads the mock's options from the page URL so Playwright (and a person with a browser) can
  * set the scene without code: `?mockSpeed=20` (or `Infinity`), `mockSkipped=DSC04207,DSC04209`
- * (a reason after a colon), `mockPicked=2,3,4`, `mockCurrent=3`, `mockPhotos=500` (a folder of 500 photos, the twelve repeating), `mockFolder=Name` (the folder's name), `mockLooks=0` (no imported
+ * (a reason after a colon), `mockPicked=2,3,4`, `mockCurrent=3`, `mockPhotos=500` (a folder of 500 photos, the twelve repeating), `mockFolder=Name` (the folder's name), `mockUnreadable=Name` (a folder that cannot be read: opening a folder says so), `mockLooks=0` (no imported
  * looks), `mockLibraries=all` (looks in every section of the Look tab), `mockLenses=0` (no lens data: the Lens card's list is empty), `mockMissing=film-warm,film-cool`, `mockHold=5.4`, `mockDownloads=ARRI_LookLibrary_LogC4.zip` (zips that
  * land in Downloads while the wizard watches), `mockDownloadsDenied=1`, `mockExisting=DSC04204_neutral.jpg`,
- * `mockExportFails=DSC04204:reason`, `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
+ * `mockExportFails=DSC04204:reason` (`DSC04204:disk_full` stops the export there, as a full disk does), `mockFreeBytes=200000000` (the free space of the destination folder; under 1.35 times the estimate the panel warns), `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
  * (preferences survive a reload), `mockViewport=native` or `fallback` (the mock behaves like that viewport backend of the app),
  * `mockAppleAuto=unavailable|pending|answered|failed` (Apple Auto as on a Mac where it is not available, or where every photo is waiting
  * for its answer, has it, or failed; `MockAppleAuto`), `mockProviders=apple,claude,agy:signed_out` (the providers of the computer and their
@@ -1190,6 +1222,12 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (current !== null && Number.isInteger(Number(current))) out.current = Number(current);
   const folder = params.get("mockFolder");
   if (folder !== null && folder.trim() !== "") out.folderName = folder;
+  const unreadable = params.get("mockUnreadable");
+  if (unreadable !== null && unreadable.trim() !== "") out.unreadable = unreadable;
+  const slowOpen = params.get("mockSlowOpen");
+  if (slowOpen !== null && Number.isInteger(Number(slowOpen)) && Number(slowOpen) >= 1) out.slowOpen = Number(slowOpen);
+  const thumbnailBudget = params.get("mockThumbnailBudget");
+  if (thumbnailBudget !== null && Number.isInteger(Number(thumbnailBudget)) && Number(thumbnailBudget) >= 1) out.thumbnailBudget = Number(thumbnailBudget);
   const count = params.get("mockPhotos");
   if (count !== null && Number.isInteger(Number(count)) && Number(count) >= 1) out.photoCount = Number(count);
   if (params.get("mockLooks") === "0") out.looksImported = false;
@@ -1213,6 +1251,8 @@ export function optionsFromLocation(search: string | undefined = typeof location
       }),
     );
   }
+  const freeBytes = params.get("mockFreeBytes");
+  if (freeBytes !== null && Number(freeBytes) >= 0) out.freeBytes = Number(freeBytes);
   const exportHold = params.get("mockExportHold");
   if (exportHold !== null && Number(exportHold) >= 0) out.exportHoldAt = Number(exportHold);
   const importHold = params.get("mockImportHold");
@@ -1588,6 +1628,8 @@ interface ExportRun {
   errors: Array<string | null>;
   /** Per file: it already exists and is skipped. */
   skips: boolean[];
+  /** The file at which the export stops (a failure of the destination), or null. */
+  stopAt: number | null;
   timer: ReturnType<typeof setInterval> | null;
 }
 
@@ -1659,6 +1701,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   const thumbTimers = new Map<PhotoId, ReturnType<typeof setTimeout>>();
   /** The address of each photo's newest thumbnail (the shell keeps these for `thumbnails()`). */
   const thumbnailUrls = new Map<PhotoId, string>();
+  /** The photos whose thumbnail the budget let go of (`?mockThumbnailBudget`) and that have not got a new one. */
+  const lostThumbnails = new Set<PhotoId>();
   /**
    * The node thumbnails the mock has told the page about, per photo and node: the address, and the key of everything the picture was
    * made from (the Input's adjustments, the path of nodes to it and the look), so that a node whose key did not change is not sent
@@ -2339,8 +2383,34 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   function emitThumbnail(rec: PhotoRecord): void {
     const id = rec.summary.id;
     const url = bytesToUrl(Array.from(scenePng(developed(rec))));
+    thumbnailUrls.delete(id);
     thumbnailUrls.set(id, url);
+    lostThumbnails.delete(id);
+    // `?mockThumbnailBudget`: the photos used least recently (the map is in order of use) lose theirs, this one never.
+    while (options.thumbnailBudget > 0 && thumbnailUrls.size > options.thumbnailBudget) {
+      const oldest = thumbnailUrls.keys().next().value;
+      if (oldest === undefined || oldest === id) break;
+      thumbnailUrls.delete(oldest);
+      lostThumbnails.add(oldest);
+    }
     emit("thumbnail_ready", { id, url });
+  }
+
+  /** `thumbnailsInView`: the addresses held for the photos in view, which count as used; the ones the budget let go are made again. */
+  function thumbnailsInView(ids: PhotoId[]): ThumbnailReady[] {
+    const held: ThumbnailReady[] = [];
+    for (const id of ids) {
+      const url = thumbnailUrls.get(id);
+      if (url !== undefined) {
+        thumbnailUrls.delete(id);
+        thumbnailUrls.set(id, url);
+        held.push({ id, url });
+      } else if (lostThumbnails.has(id)) {
+        const rec = photos.find((r) => r.summary.id === id);
+        if (rec) scheduleThumbnail(rec);
+      }
+    }
+    return held;
   }
 
   /** The correctors and Film nodes on the picture path from the Input to a node, in order (a node with no picture link reads the Input). */
@@ -2525,6 +2595,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       if (timer !== undefined) clearTimeout(timer);
       thumbTimers.delete(id);
       thumbnailUrls.delete(id);
+      lostThumbnails.delete(id);
     }
     forgetNodeThumbnails(left);
     current = Math.max(0, photos.findIndex((rec) => rec.summary.id === successor));
@@ -2587,7 +2658,50 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     return last.length > 0 && !last.includes(".");
   }
 
+  /** What reading the files of an open came to: how many were read, and whether `cancelOpen` stopped it. */
+  interface OpenReading {
+    done: number;
+    cancelled: boolean;
+  }
+
+  /** The open that is reading files now (`?mockSlowOpen`): `stop` ends it at once. */
+  let openRun: { timer: ReturnType<typeof setInterval>; stop: (cancelled: boolean) => void } | null = null;
+
+  /** `?mockSlowOpen`: reads the files 50 at a time and reports `open_progress`, until the end or `cancelOpen`. Instant without the option. */
+  function readSlowly(paths: string[]): Promise<OpenReading> {
+    const total = options.slowOpen;
+    const reads = total > 0 && !options.unreadable && paths.some((p) => isArwPath(p) || isFolderPath(p));
+    if (!reads) return Promise.resolve({ done: 0, cancelled: false });
+    return new Promise((resolve) => {
+      let done = 0;
+      emit("open_progress", { done, total });
+      const stop = (cancelled: boolean): void => {
+        clearInterval(timer);
+        openRun = null;
+        resolve({ done, cancelled });
+      };
+      const timer = setInterval(() => {
+        done = Math.min(total, done + 50);
+        emit("open_progress", { done, total });
+        if (done >= total) stop(false);
+      }, 100 / options.speed);
+      openRun = { timer, stop };
+    });
+  }
+
+  /** The answer of an open once its files are read: all of them, or the ones read before `cancelOpen` (none when it came first). */
+  function openAfterReading(paths: string[], read: OpenReading): SessionState {
+    if (!read.cancelled) return openPathsNow(paths);
+    if (read.done === 0) return { ...snapshot(), opened: { added: 0, already_open: 0, cancelled: true } };
+    const state = openPathsNow(paths);
+    return { ...state, opened: { added: 0, already_open: 0, ...state.opened, cancelled: true } };
+  }
+
   function openPathsNow(paths: string[]): SessionState {
+    // The core's sentence for a folder it could not list, when no file came with it (`docs/26` H-02).
+    if (options.unreadable && !paths.some(isArwPath) && paths.some(isFolderPath)) {
+      fail("open", `${UNREADABLE_PREFIX}${options.unreadable}. Check that it is still there and that you may open it, then try again.`);
+    }
     const hasPhotos = paths.some((p) => isArwPath(p) || isFolderPath(p));
     // Non-ARW files are ignored. Any ARW file or folder opens the whole fixture folder when nothing is open; in an open session
     // the files are added (or already there).
@@ -2671,7 +2785,23 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     }
   }
 
-  function exportFiles(job: ExportJob): { files: string[]; skips: boolean[]; errors: Array<string | null> } {
+  /** The core's sentence for a failure of the destination (`DestinationProblem::app_message`, `docs/26` P2-1). */
+  function destinationSentence(kind: string, folder: string): string | null {
+    switch (kind) {
+      case "disk_full":
+        return "The disk is full, so the export stopped. Free some space, then export the photos that are left.";
+      case "read_only":
+        return `${folder} is read-only. Choose another folder.`;
+      case "gone":
+        return `Yellowmoon can't reach ${folder}. If it is on a drive, check that the drive is connected, then export again.`;
+      case "permission":
+        return `Yellowmoon isn't allowed to save to ${folder}. Choose another folder, or allow access in System Settings, under Privacy & Security.`;
+      default:
+        return null;
+    }
+  }
+
+  function exportFiles(job: ExportJob): { files: string[]; skips: boolean[]; errors: Array<string | null>; stopAt: number | null } {
     const recs = targets(job.scope);
     const ext = FILE_EXTENSION[job.options.format];
     const existing = new Set(options.existingExports);
@@ -2679,6 +2809,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const files: string[] = [];
     const skips: boolean[] = [];
     const errors: Array<string | null> = [];
+    let stopAt: number | null = null;
+    const folder = (job.options.destination ?? `${folderPath()} export`).split("/").filter(Boolean).pop() ?? "The folder";
     recs.forEach((rec, i) => {
       let name = `${sanitizeStem(
         expandNameTemplate(job.options.name_template, {
@@ -2697,9 +2829,12 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       taken.add(name);
       files.push(name);
       skips.push(skip);
-      errors.push(options.exportFailures[rec.scene.name] ?? null);
+      const failure = options.exportFailures[rec.scene.name] ?? null;
+      const sentence = failure === null ? null : destinationSentence(failure, folder);
+      if (sentence !== null && stopAt === null) stopAt = i;
+      errors.push(sentence ?? failure);
     });
-    return { files, skips, errors };
+    return { files, skips, errors, stopAt };
   }
 
   /** A DNG of the job is close to, not the same as, the picture: a photo has a look with its own display rendering (at an intensity above 0). */
@@ -2724,8 +2859,17 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       const i = run.reported++;
       const error = run.errors[i] ?? null;
       const skipped = !error && run.skips[i] === true;
+      if (error && run.stopAt === i) {
+        // A failure of the destination ends the job: this is its last event, and the files after it are not tried.
+        emit("export_progress", { job_id: run.id, file: run.files[i] ?? "", done: i + 1, total, file_percent: null, error, skipped: false, stopped: true });
+        run.progress = total;
+        run.reported = total;
+        stopExport(run);
+        announceBusy();
+        return;
+      }
       if (error || skipped) {
-        emit("export_progress", { job_id: run.id, file: run.files[i] ?? "", done: i + 1, total, file_percent: 100, error, skipped });
+        emit("export_progress", { job_id: run.id, file: run.files[i] ?? "", done: i + 1, total, file_percent: 100, error, skipped, stopped: false });
       }
     }
     emit("export_progress", {
@@ -2736,6 +2880,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       file_percent: finished ? 100 : Math.round((run.progress - index) * 100),
       error: null,
       skipped: false,
+      stopped: false,
     });
     announceBusy();
   }
@@ -2863,6 +3008,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       run.resolve();
     }
     importRuns.clear();
+    openRun?.stop(true);
     for (const timer of downloadTimers) clearTimeout(timer);
     downloadTimers = [];
     watching = false;
@@ -2952,16 +3098,23 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       return rec ? fixtureUrl(rec.scene.name) : undefined;
     },
 
-    openPaths: (paths) => run("openPaths", () => openPathsNow(paths)),
-    openDialog: (kind: OpenKind) =>
-      run("openDialog", () => {
-        if (cancelDialog) {
-          cancelDialog = false;
-          return null;
-        }
-        const queued = choices.open.shift();
-        if (queued) return openPathsNow(queued);
-        return openPathsNow(kind === "folder" ? [folderPath()] : SCENES.map((s) => `${folderPath()}/${s.name}.ARW`));
+    openPaths: async (paths) => {
+      const read = await readSlowly(paths);
+      return run("openPaths", () => openAfterReading(paths, read));
+    },
+    openDialog: async (kind: OpenKind) => {
+      if (cancelDialog) {
+        cancelDialog = false;
+        return run("openDialog", () => null);
+      }
+      const queued = choices.open.shift();
+      const paths = queued ?? (kind === "folder" ? [folderPath()] : SCENES.map((s) => `${folderPath()}/${s.name}.ARW`));
+      const read = await readSlowly(paths);
+      return run("openDialog", () => openAfterReading(paths, read));
+    },
+    cancelOpen: () =>
+      run("cancelOpen", () => {
+        openRun?.stop(true);
       }),
     sessionState: () => run("sessionState", snapshot),
     closeSession: () =>
@@ -2971,6 +3124,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         for (const timer of thumbTimers.values()) clearTimeout(timer);
         thumbTimers.clear();
         thumbnailUrls.clear();
+        lostThumbnails.clear();
         forgetNodeThumbnails([...nodeThumbs.keys(), ...nodeThumbTimers.keys()]);
         photos = [];
         current = 0;
@@ -3410,8 +3564,12 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     exportEstimate: (job) =>
       run("exportEstimate", (): ExportEstimate => {
         const count = targets(job.scope).length;
+        const bytes = Math.round(megabytesPerPhoto(job.options) * count * 1_000_000);
         return {
-          bytes: Math.round(megabytesPerPhoto(job.options) * count * 1_000_000),
+          bytes,
+          free_bytes: options.freeBytes,
+          folder: (job.options.destination ?? `${folderPath()} export`).split("/").filter(Boolean).pop() ?? null,
+          low_space: options.freeBytes < 1.35 * bytes,
           seconds: Math.round(count * ((EXPORT_TICK_MS / EXPORT_STEP) / 1000) * 10) / 10,
           adjusted_photos: adjustedPhotos(job),
           dng_approximate: dngApproximate(job),
@@ -3430,6 +3588,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
           reported: 0,
           errors: planned.errors,
           skips: planned.skips,
+          stopAt: planned.stopAt,
           timer: null,
         };
         exportRuns.set(exportRun.id, exportRun);
@@ -3462,6 +3621,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         system.restarts += 1;
       }),
     thumbnails: () => run("thumbnails", () => [...thumbnailUrls].map(([id, url]) => ({ id, url }))),
+    thumbnailsInView: (ids) => run("thumbnailsInView", () => thumbnailsInView(ids)),
 
     preferencesGet: () => run("preferencesGet", () => preferences),
     preferencesSet: (patch: PreferencesPatch) =>

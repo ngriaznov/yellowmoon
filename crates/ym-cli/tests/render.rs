@@ -1729,6 +1729,42 @@ fn exit_code_5_when_there_is_nothing_to_render() {
     assert_eq!(o["error"]["kind"], "not_found");
 }
 
+/// A folder with mode 000 is not "no files to render" (exit 5): it is a failure (exit 1) that names the
+/// folder, and `--json` carries the problem with kind `unreadable` (`docs/26` H-02). Skipped as root, which
+/// can read the folder anyway (the logic is covered by unit tests with an injected read error).
+#[cfg(unix)]
+#[test]
+fn an_unreadable_folder_is_exit_1_and_named_not_exit_5() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new();
+    let locked = sb.root().join("Locked");
+    std::fs::create_dir_all(&locked).expect("folder");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    if std::fs::read_dir(&locked).is_ok() {
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        eprintln!("skipped: this user can read a folder with mode 000 (root)");
+        return;
+    }
+    sb.ym()
+        .arg("render")
+        .arg(&locked)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "Yellowmoon can't read the folder Locked.",
+        ));
+    let out = sb
+        .ym()
+        .args(["render", "--json"])
+        .arg(&locked)
+        .assert()
+        .code(1);
+    let o = &json_lines(&out.get_output().stdout)[0];
+    assert_eq!(o["status"], "error");
+    assert_eq!(o["error"]["kind"], "unreadable");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
 #[test]
 fn a_named_file_that_is_not_an_arw_is_a_failure_next_to_the_photos_that_worked() {
     let sb = Sandbox::new();

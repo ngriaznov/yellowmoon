@@ -404,6 +404,20 @@ describe("export outcomes", () => {
     expect(events.at(-1)).toMatchObject({ done: 3, total: 3, file_percent: 100, error: null });
   });
 
+  it("stops at a failure of the destination: the last event is the failing photo's, and the rest are not tried", async () => {
+    const events = await runJob(job("picked"), { exportFailures: { DSC04204: "disk_full" } });
+    const stopped = events.filter((e) => e.stopped);
+    expect(stopped).toHaveLength(1);
+    expect(stopped[0]).toMatchObject({
+      file: "DSC04204_neutral.jpg",
+      done: 2,
+      total: 3,
+      error: "The disk is full, so the export stopped. Free some space, then export the photos that are left.",
+    });
+    expect(events.at(-1)).toBe(stopped[0]);
+    expect(await api.exportBusy()).toBe(false);
+  });
+
   it("leaves a file that can't be developed out of All", async () => {
     api.reset({ skipped: { DSC04207: "Can't read this." } });
     await api.openPaths(ARW);

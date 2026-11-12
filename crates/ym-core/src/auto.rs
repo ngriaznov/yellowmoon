@@ -93,21 +93,36 @@ pub const FALLBACK_DEFAULT_K: f64 = 5500.0;
 /// Base ISO assumed for Auto sharpening when the gain table does not name one.
 pub const DEFAULT_BASE_ISO: u32 = 100;
 
-/// Why the automatic estimates could not be made. A photo with this error is skipped.
+/// Why the automatic estimates could not be made. A photo with this error is skipped. The sentence
+/// the person reads is plain; the specific reason is [`AutoError::detail`], for the log.
 #[derive(Debug, thiserror::Error)]
 pub enum AutoError {
     /// The decoded image cannot be analysed (too small, or levels that make no sense).
-    #[error("This photo can't be analysed ({0}). Copy it from the card again, or skip it.")]
+    #[error("Yellowmoon can't develop this photo. Copy it from the card again, or skip it.")]
     BadImage(String),
     /// Auto exposure failed.
-    #[error("This photo can't be analysed ({0}). Skip it and open the others.")]
+    #[error("Yellowmoon can't develop this photo. Skip it and open the others.")]
     Exposure(#[from] ExposureError),
     /// The colour chain could not be built.
-    #[error("This photo can't be analysed ({0}). Skip it and open the others.")]
+    #[error("Yellowmoon can't develop this photo. Skip it and open the others.")]
     Chain(#[from] ChainError),
     /// A white was unusable.
-    #[error("This photo can't be analysed ({0}). Skip it and open the others.")]
+    #[error("Yellowmoon can't develop this photo. Skip it and open the others.")]
     White(#[from] WbError),
+}
+
+impl AutoError {
+    /// The technical reason (the picture is too small, a level has no range, no noise prior), which
+    /// goes to the log and never to the person.
+    #[must_use]
+    pub fn detail(&self) -> String {
+        match self {
+            Self::BadImage(detail) => detail.clone(),
+            Self::Exposure(e) => e.to_string(),
+            Self::Chain(e) => e.to_string(),
+            Self::White(e) => e.to_string(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

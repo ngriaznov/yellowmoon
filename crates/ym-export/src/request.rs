@@ -224,8 +224,26 @@ impl ExportDestination {
         source_path: Option<&Path>,
         home: Option<&Path>,
     ) -> Result<Self, ExportError> {
-        let dir =
-            naming::resolve_destination_dir(options.destination.as_deref(), source_path, home)?;
+        Self::resolve_with(options, fields, source_path, home, true)
+    }
+
+    /// [`ExportDestination::resolve`], where `create` says whether a folder the options name may be
+    /// made when it is missing: true for the first photo of a job, false for the later ones, so
+    /// that a folder deleted during the run is "Folder gone" and not quietly made again
+    /// (`docs/26-hardening.md` P2-4).
+    pub fn resolve_with(
+        options: &ExportOptions,
+        fields: &NameFields,
+        source_path: Option<&Path>,
+        home: Option<&Path>,
+        create: bool,
+    ) -> Result<Self, ExportError> {
+        let dir = naming::resolve_destination_dir_with(
+            options.destination.as_deref(),
+            source_path,
+            home,
+            create,
+        )?;
         Ok(Self {
             dir,
             file_stem: naming::file_stem(&options.name_template, fields),

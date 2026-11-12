@@ -29,6 +29,8 @@ export const commands = {
 	 */
 	opened?: OpenSummary | null,
 } | null>("open_dialog", { kind }),
+	/**  `cancel_open()`: stops the `open_paths` or `open_dialog` call that is reading files; the files read so far stay. */
+	cancelOpen: () => __TAURI_INVOKE<null>("cancel_open"),
 	/**  `session_state()`. */
 	sessionState: () => __TAURI_INVOKE<SessionState>("session_state"),
 	/**  `close_session()`: forgets the session; running exports keep going. */
@@ -259,6 +261,12 @@ export const commands = {
 	 *  webview that reloaded can show the filmstrip again.
 	 */
 	thumbnails: () => __TAURI_INVOKE<ThumbnailReady[]>("thumbnails"),
+	/**
+	 *  `thumbnails_in_view(photo_ids)` (`docs/26` H-11): the filmstrip shows these photos. Answers with the
+	 *  address of the thumbnail the shell holds for each of them; the ones it let go of to keep its byte
+	 *  budget are made again and arrive as `thumbnail_ready`.
+	 */
+	thumbnailsInView: (photoIds: PhotoId[]) => __TAURI_INVOKE<ThumbnailReady[]>("thumbnails_in_view", { photoIds }),
 	/**  `choose_folder(start)`: the system's folder chooser. `null` when cancelled. */
 	chooseFolder: (start: string | null) => __TAURI_INVOKE<string | null>("choose_folder", { start }),
 	/**
@@ -311,6 +319,7 @@ export const events = {
 	menuAction: makeEvent<MenuActionEvent>("menu_action"),
 	nodeThumbnailsReady: makeEvent<NodeThumbnailsReady>("node_thumbnails_ready"),
 	objectState: makeEvent<ObjectState>("object_state"),
+	openProgress: makeEvent<OpenProgress>("open_progress"),
 	photoProgress: makeEvent<PhotoProgress>("photo_progress"),
 	renderStats: makeEvent<RenderStats>("render_stats"),
 	settingsChanged: makeEvent<SettingsChanged>("settings_changed"),
@@ -1112,6 +1121,12 @@ export type ExportEstimate = {
 	 *  its own display rendering.
 	 */
 	dng_approximate: boolean,
+	/**  Bytes available on the volume of the destination folder, or null when it cannot be read. */
+	free_bytes: number | null,
+	/**  The destination folder the free space was read for, by its last component. */
+	folder: string | null,
+	/**  The free space is under 1.35 times the estimate: the panel warns. Never blocks the export. */
+	low_space: boolean,
 };
 
 /**  The four export formats. */
@@ -1158,7 +1173,7 @@ export type ExportOptions = {
 	if_exists: IfExists,
 };
 
-/**  `export_progress { job_id, file, done, total, file_percent, error, skipped }`. */
+/**  `export_progress { job_id, file, done, total, file_percent, error, skipped, stopped }`. */
 export type ExportProgress = {
 	/**  The job. */
 	job_id: ExportJobId,
@@ -1174,6 +1189,8 @@ export type ExportProgress = {
 	error: string | null,
 	/**  `file` already existed and "If it exists" is Skip. */
 	skipped: boolean,
+	/**  `file` failed because of the destination and the job stopped there. */
+	stopped: boolean,
 };
 
 /**  Export size: the full frame, or the long edge in pixels. */
@@ -2633,12 +2650,25 @@ export type OpenKind =
 /**  A folder. */
 "folder";
 
+/**
+ *  `open_progress { done, total }`: how many of the files of an `open_paths` or `open_dialog` call have
+ *  been read (probed). Sent at the start (`done` is 0), after every 50 files and at the end.
+ */
+export type OpenProgress = {
+	/**  Files read so far. */
+	done: number,
+	/**  Files to read. */
+	total: number,
+};
+
 /**  What one `open_paths` or `open_dialog` call did to the session. */
 export type OpenSummary = {
 	/**  ARW files added to the filmstrip. */
 	added: number,
 	/**  ARW files that were already in the session and were not added again. */
 	already_open: number,
+	/**  True when `cancel_open` stopped the call: `added` files were read before that and kept. */
+	cancelled: boolean,
 };
 
 /**  The Output: the look and the output sharpening. */

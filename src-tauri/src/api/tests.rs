@@ -253,6 +253,69 @@ fn thumbnails_cross_the_bridge_as_addresses_and_can_be_asked_for_again() {
     assert_eq!(h.frames.respond(path_of_url(&after[0].url)).0, 404);
 }
 
+/// `docs/26` H-11: a photo whose thumbnail the shell let go of to keep its byte budget gets a new one
+/// when the page says it shows the photo.
+#[test]
+fn a_thumbnail_the_budget_let_go_of_comes_back_when_the_photo_is_in_view() {
+    // One byte of budget: only the photo just given a thumbnail and the photo on screen survive.
+    let h = Harness::with_thumbnail_budget(1);
+    h.open(5);
+    let state = h.develop();
+    let ids: Vec<_> = state.photos.iter().map(|p| p.id).collect();
+    wait_until("five thumbnails", || {
+        h.events
+            .events()
+            .iter()
+            .filter(|e| matches!(e, AppEvent::ThumbnailReady(_)))
+            .count()
+            >= 5
+    });
+    assert!(h.api.thumbnails().wait_idle(WAIT));
+    let ready_count = |id: PhotoId| {
+        h.events
+            .events()
+            .iter()
+            .filter(|e| matches!(e, AppEvent::ThumbnailReady(t) if t.id == id))
+            .count()
+    };
+    // The store counts what it holds, and what it holds is what it counts.
+    assert_eq!(
+        h.frames.thumbnail_bytes_counted(),
+        h.frames.thumbnail_bytes()
+    );
+    let held = h.api.thumbnails_now();
+    assert!(
+        held.len() < ids.len(),
+        "the budget let some thumbnails go: {} held of {}",
+        held.len(),
+        ids.len()
+    );
+    let lost: Vec<u32> = h.frames.evicted_thumbnails();
+    assert_eq!(lost.len() + held.len(), ids.len());
+    let target = PhotoId(lost[0]);
+    assert!(!held.iter().any(|t| t.id == target));
+
+    // The page shows the photo: nothing to hand out for it yet, and the core makes it again.
+    let before = ready_count(target);
+    let answer = h.api.thumbnails_in_view(&[target]);
+    assert!(answer.is_empty(), "{answer:?}");
+    wait_until("the thumbnail to come back", || {
+        ready_count(target) > before
+    });
+    assert!(h.api.thumbnails().wait_idle(WAIT));
+    let back = h.api.thumbnails_now();
+    let url = &back.iter().find(|t| t.id == target).expect("back").url;
+    assert!(png_size(&served(&h, url)).0 > 0);
+    assert!(!h.frames.evicted_thumbnails().contains(&target.0));
+    // And now the page is told its address.
+    assert_eq!(h.api.thumbnails_in_view(&[target]).len(), 1);
+    // The store stayed within what it can: nothing but the protected photos is over the budget.
+    assert_eq!(
+        h.frames.thumbnail_bytes_counted(),
+        h.frames.thumbnail_bytes()
+    );
+}
+
 #[test]
 fn a_drop_without_arw_files_says_so_and_a_missing_file_is_named() {
     let h = Harness::new();
@@ -276,6 +339,31 @@ fn a_drop_without_arw_files_says_so_and_a_missing_file_is_named() {
     assert!(err.message.contains("isn't there"), "{err}");
     // An empty session is still a session.
     assert!(h.api.session_state().expect("state").photos.is_empty());
+}
+
+/// A folder that cannot be read is named, not called empty (`docs/26` H-02). Skipped as root, which
+/// can read a folder with mode 000.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_folder_is_named_and_is_not_no_arw() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = Harness::new();
+    let locked = h.photos.path().join("Locked");
+    std::fs::create_dir_all(&locked).expect("folder");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    let readable = std::fs::read_dir(&locked).is_ok();
+    let result = h.api.open_paths(&[locked.to_string_lossy().into_owned()]);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    if readable {
+        eprintln!("skipped: this user can read a folder with mode 000 (root)");
+        return;
+    }
+    let err = result.expect_err("unreadable");
+    assert_eq!(err.scope, ErrorScope::Open);
+    assert_eq!(
+        err.message,
+        "Yellowmoon can't read the folder Locked. Check that it is still there and that you may open it, then try again."
+    );
 }
 
 #[test]
@@ -541,7 +629,8 @@ fn removing_the_last_photos_empties_the_session_and_undo_fills_it_again() {
         reopened.opened,
         Some(OpenSummary {
             added: 2,
-            already_open: 0
+            already_open: 0,
+            cancelled: false,
         })
     );
     h.api.close_session();
@@ -837,6 +926,35 @@ fn apply_look_reaches_this_picked_and_all_photos() {
 }
 
 #[test]
+fn opening_files_reports_how_far_the_reading_has_got() {
+    let h = Harness::new();
+    h.open(3);
+    let seen: Vec<(u32, u32)> = h
+        .events
+        .events()
+        .iter()
+        .filter_map(|e| match e {
+            AppEvent::OpenProgress(p) => Some((p.done, p.total)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(seen.first(), Some(&(0, 3)));
+    assert_eq!(seen.last(), Some(&(3, 3)));
+    // No open is running: Cancel stops nothing, and the next open is not cancelled.
+    h.api.cancel_open();
+    let folder = h.photos.path().to_string_lossy().into_owned();
+    let again = h.api.open_paths(&[folder]).expect("open again");
+    assert_eq!(
+        again.opened,
+        Some(OpenSummary {
+            added: 0,
+            already_open: 3,
+            cancelled: false,
+        })
+    );
+}
+
+#[test]
 fn opening_more_files_adds_to_the_session_and_says_what_was_new() {
     let h = Harness::new();
     let first = h.open(2);
@@ -844,7 +962,8 @@ fn opening_more_files_adds_to_the_session_and_says_what_was_new() {
         first.opened,
         Some(OpenSummary {
             added: 2,
-            already_open: 0
+            already_open: 0,
+            cancelled: false,
         })
     );
     let ids: Vec<_> = first.photos.iter().map(|p| p.id).collect();
@@ -859,7 +978,8 @@ fn opening_more_files_adds_to_the_session_and_says_what_was_new() {
         again.opened,
         Some(OpenSummary {
             added: 0,
-            already_open: 2
+            already_open: 2,
+            cancelled: false,
         })
     );
     assert_eq!(again.photos.len(), 2);
@@ -872,7 +992,8 @@ fn opening_more_files_adds_to_the_session_and_says_what_was_new() {
         more.opened,
         Some(OpenSummary {
             added: 1,
-            already_open: 2
+            already_open: 2,
+            cancelled: false,
         })
     );
     assert_eq!(
@@ -4243,28 +4364,75 @@ fn a_latency_bound_that_is_not_a_number_of_milliseconds_stops_the_test() {
     }
 }
 
-/// M3-03: "opening 500 files keeps the UI responsive". The shell's share of that: the commands the
-/// webview sends while 500 photos develop answer quickly (the pool is busy with decoding, the
-/// commands are not), and the events stay a bounded stream. Prints the numbers (`--nocapture`).
-///
-/// The slowest command must take less than 100 ms. `YM_PERF_SHELL_MAX_MS=<milliseconds>` moves
-/// that bound for a runner that is shared (the weekly job sets 250); without it the bound is the
-/// 100 ms of the task. Run it with `npm run perf:latency:shell` (or `npm run perf:latency` for
-/// this half and the web view's half).
+/// Peak resident memory of this process so far, in MiB (`getrusage`; 0 where it is not read).
+#[cfg(unix)]
+fn peak_rss_mib() -> u64 {
+    // SAFETY: `getrusage` fills the struct it is given; a zeroed one is a valid value to pass.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: the pointer is to a live `rusage`.
+    let status = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+    assert_eq!(status, 0, "getrusage failed");
+    let max = u64::try_from(usage.ru_maxrss).unwrap_or(0);
+    // Bytes on macOS, kilobytes on Linux.
+    if cfg!(target_os = "macos") {
+        max / (1024 * 1024)
+    } else {
+        max / 1024
+    }
+}
+
+#[cfg(not(unix))]
+fn peak_rss_mib() -> u64 {
+    0
+}
+
+/// The number of photos of the 2000-file test: `YM_PERF_PHOTOS` when it is one positive whole
+/// number (the web view's job sets a list such as `100,500,2000`, which is not for this test), else 2000.
+fn two_thousand_count(setting: Option<&str>) -> usize {
+    setting
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(2000)
+}
+
 #[test]
-#[ignore = "writes 500 synthetic photos and develops them (about half a minute)"]
-fn five_hundred_files_leave_the_commands_responsive() {
-    let h = Harness::new();
-    for i in 1..=500_u64 {
-        crate::testing::write_arw(h.photos.path(), &format!("DSC{i:05}.ARW"), i % 7 + 1);
+fn the_count_of_the_big_folder_test_comes_from_ym_perf_photos() {
+    assert_eq!(two_thousand_count(None), 2000);
+    assert_eq!(two_thousand_count(Some("")), 2000);
+    assert_eq!(two_thousand_count(Some("100,500,2000")), 2000);
+    assert_eq!(two_thousand_count(Some(" 750 ")), 750);
+    assert_eq!(two_thousand_count(Some("0")), 2000);
+}
+
+/// The thumbnail budget of the 2000-file test: a quarter of what 2000 thumbnails of the synthetic
+/// photos take, so that the budget is passed and photos lose theirs. (The application's own
+/// budget is [`crate::viewport::THUMBNAIL_BUDGET_BYTES`].)
+const TWO_THOUSAND_THUMBNAIL_BUDGET: usize = 8 << 20;
+
+/// Opens `count` synthetic photos and watches the commands a person sends while they develop. Prints
+/// the open time, the time until every photo is Ready, the slowest command, the events, the
+/// shell's thumbnail bytes and the peak resident memory so far, and asserts the slowest command is
+/// under the bound (`YM_PERF_SHELL_MAX_MS`, 100 ms without it).
+///
+/// `burst`: all photos share one capture time (the 500-file test always did); otherwise each has its own.
+fn photos_leave_the_commands_responsive(count: usize, burst: bool, thumbnail_budget: usize) {
+    let h = Harness::with_thumbnail_budget(thumbnail_budget);
+    for i in 1..=count as u64 {
+        crate::testing::write_arw_at(
+            h.photos.path(),
+            &format!("DSC{i:05}.ARW"),
+            i % 7 + 1,
+            // Every photo has its own capture time, or all share one (one burst).
+            if burst { 0 } else { i },
+        );
     }
     let t = std::time::Instant::now();
     let opened = h
         .api
         .open_paths(&[h.photos.path().to_string_lossy().into_owned()])
-        .expect("open 500 files");
+        .unwrap_or_else(|e| panic!("open {count} files: {e:?}"));
     let open_time = t.elapsed();
-    assert_eq!(opened.photos.len(), 500);
+    assert_eq!(opened.photos.len(), count);
     eprintln!("open_paths: {open_time:?}");
 
     let ids: Vec<PhotoId> = opened.photos.iter().map(|p| p.id).collect();
@@ -4312,7 +4480,55 @@ fn five_hundred_files_leave_the_commands_responsive() {
         .iter()
         .filter(|e| matches!(e, AppEvent::ThumbnailReady(_)))
         .count();
+    let reading: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AppEvent::OpenProgress(p) => Some((p.done, p.total)),
+            _ => None,
+        })
+        .collect();
     eprintln!("{progress} photo_progress events, {thumbs} thumbnails");
+    eprintln!(
+        "{} open_progress events (the last: {:?})",
+        reading.len(),
+        reading.iter().max()
+    );
+    eprintln!(
+        "thumbnails held by the shell: {} bytes of a budget of {thumbnail_budget} ({} photos let go); peak RSS so far: {} MiB",
+        h.frames.thumbnail_bytes(),
+        h.frames.evicted_thumbnails().len(),
+        peak_rss_mib()
+    );
+    // `docs/26` H-11: the shell's thumbnail store stays under its budget, whatever the count, and
+    // what it counts is what it holds.
+    assert!(
+        h.frames.thumbnail_bytes() <= thumbnail_budget,
+        "the thumbnail store holds {} bytes, over its budget of {thumbnail_budget}",
+        h.frames.thumbnail_bytes()
+    );
+    assert_eq!(
+        h.frames.thumbnail_bytes_counted(),
+        h.frames.thumbnail_bytes()
+    );
+    // A photo whose thumbnail was let go gets a new one when its row scrolls into view: a window
+    // of 30 of them is asked for, as the filmstrip does, and comes back, within the budget.
+    let lost = h.frames.evicted_thumbnails();
+    let window: Vec<PhotoId> = lost.iter().take(30).map(|id| PhotoId(*id)).collect();
+    if !window.is_empty() {
+        assert!(h.api.thumbnails_in_view(&window).is_empty());
+        let t = std::time::Instant::now();
+        wait_until("the thumbnails in view to come back", || {
+            let held = h.api.thumbnails_now();
+            window.iter().all(|w| held.iter().any(|t| t.id == *w))
+        });
+        eprintln!(
+            "{} thumbnails in view came back after {:?}",
+            window.len(),
+            t.elapsed()
+        );
+        assert!(h.api.thumbnails().wait_idle(Duration::from_secs(60)));
+        assert!(h.frames.thumbnail_bytes() <= thumbnail_budget);
+    }
     let bound = latency_bound(std::env::var(LATENCY_BOUND_VAR).ok().as_deref());
     eprintln!("bound on the slowest command: {bound:?}");
     assert!(
@@ -4320,6 +4536,38 @@ fn five_hundred_files_leave_the_commands_responsive() {
         "a command took {slowest:?} while photos were developing (the bound is {bound:?}; \
          {LATENCY_BOUND_VAR} moves it)"
     );
+    assert_eq!(
+        reading.iter().max().copied(),
+        Some((count as u32, count as u32)),
+        "open_progress reached the end"
+    );
+}
+
+/// M3-03: "opening 500 files keeps the UI responsive". The shell's share of that: the commands the
+/// webview sends while 500 photos develop answer quickly (the pool is busy with decoding, the
+/// commands are not), and the events stay a bounded stream. Prints the numbers (`--nocapture`).
+///
+/// The slowest command must take less than 100 ms. `YM_PERF_SHELL_MAX_MS=<milliseconds>` moves
+/// that bound for a runner that is shared (the weekly job sets 250); without it the bound is the
+/// 100 ms of the task. Run it with `npm run perf:latency:shell` (or `npm run perf:latency` for
+/// this half and the web view's half).
+#[test]
+#[ignore = "writes 500 synthetic photos and develops them (about half a minute)"]
+fn five_hundred_files_leave_the_commands_responsive() {
+    photos_leave_the_commands_responsive(500, true, crate::viewport::THUMBNAIL_BUDGET_BYTES);
+}
+
+/// `docs/26` H-10: the same at 2000 files (`YM_PERF_PHOTOS` changes the count), once with 2000
+/// different capture times and once as one burst. Prints the open time, the time until every photo
+/// is Ready, the slowest command, the shell's thumbnail bytes and the peak resident memory.
+#[test]
+#[ignore = "writes 2000 synthetic photos twice and develops them (about a minute)"]
+fn two_thousand_files_leave_the_commands_responsive() {
+    let count = two_thousand_count(std::env::var("YM_PERF_PHOTOS").ok().as_deref());
+    eprintln!("--- {count} files, different capture times");
+    photos_leave_the_commands_responsive(count, false, TWO_THOUSAND_THUMBNAIL_BUDGET);
+    eprintln!("--- {count} files, one capture time (one burst)");
+    photos_leave_the_commands_responsive(count, true, TWO_THOUSAND_THUMBNAIL_BUDGET);
 }
 
 /// The `ExportBusy` events seen so far, in order.
@@ -4623,6 +4871,36 @@ fn assert_same<C: serde::Serialize, W: serde::Serialize>(what: &str, core: &C, w
     );
 }
 
+/// Like `assert_same` for an export estimate, which is computed by two separate calls. Two fields
+/// read the live disk at call time and can differ between the calls: `free_bytes` and `low_space`
+/// (derived from it). Those are left out of the comparison; `free_bytes` is checked on its own to
+/// be present on both sides and within 1 GiB, which still catches a unit change.
+fn assert_same_estimate<C: serde::Serialize, W: serde::Serialize>(core: &C, wire: &W) {
+    const LIVE: [&str; 2] = ["free_bytes", "low_space"];
+    let mut c = serde_json::to_value(core).expect("core json");
+    let mut w = serde_json::to_value(wire).expect("wire json");
+    let mut free = Vec::new();
+    for (side, value) in [("core", &mut c), ("wire", &mut w)] {
+        let object = value.as_object_mut().expect("estimate is an object");
+        for key in LIVE {
+            let removed = object.remove(key);
+            if key == "free_bytes" {
+                let bytes = removed
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or_else(|| panic!("{side} estimate has no free_bytes"));
+                free.push(bytes);
+            }
+        }
+    }
+    assert!(
+        (free[0] - free[1]).abs() < 1024.0 * 1024.0 * 1024.0,
+        "export_estimate free_bytes differ by more than 1 GiB: core {} wire {}",
+        free[0],
+        free[1]
+    );
+    assert_same("export_estimate", &c, &w);
+}
+
 #[test]
 fn every_look_library_and_format_of_the_core_crosses_the_bridge_by_the_same_word() {
     use ym_looks::library::{LookFormat as CoreFormat, LookLibrary as CoreLibrary};
@@ -4735,8 +5013,7 @@ fn core_types_convert_without_loss() {
     let job = jpeg_job(out.path());
     let core_job: ym_core::export_queue::ExportJob = convert(&job).expect("job");
     assert_same("export_job", &core_job, &job);
-    assert_same(
-        "export_estimate",
+    assert_same_estimate(
         &core.export_estimate(&core_job),
         &h.api.export_estimate(&job).expect("estimate"),
     );
@@ -5520,4 +5797,152 @@ fn a_depth_row_without_the_model_selects_nothing_starts_no_worker_and_refuses_th
         sentence.as_deref(),
         Some("This copy of Yellowmoon has no Depth model. Reinstall the app.")
     );
+}
+
+// --- The damaged-file matrix --------------------------------------------------------------------
+
+/// Whether `reason` is a sentence a damaged file may show: the catalogue of `ym_raw::error`, the
+/// fixed sentence of a file that is not ARW, and the two forms of "not supported".
+fn is_damage_sentence(reason: &str) -> bool {
+    use ym_raw::error::{MESSAGE_CUT_SHORT, MESSAGE_DAMAGED, MESSAGE_EMPTY};
+    [
+        MESSAGE_EMPTY,
+        MESSAGE_CUT_SHORT,
+        MESSAGE_DAMAGED,
+        "This isn't an ARW file. Yellowmoon opens Sony ARW files only.",
+    ]
+    .contains(&reason)
+        || reason.contains("aren't supported yet")
+        || reason.starts_with("Yellowmoon can't open ")
+}
+
+/// Every file of `dir` by name with its bytes.
+fn files_with_bytes(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    std::fs::read_dir(dir)
+        .expect("read the folder")
+        .map(|entry| {
+            let entry = entry.expect("entry");
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                std::fs::read(entry.path()).expect("read"),
+            )
+        })
+        .collect()
+}
+
+/// The folder of `crates/ym-core/tests/damaged_files.rs` (ten valid files and 190 damaged ones,
+/// `ym_raw::testgen::damage::write_matrix`) through `open_paths` and `export_start` (`docs/26` P1-6,
+/// H-03). Every damaged file is `Skipped` with a catalogue sentence or `Ready`; the export has every
+/// `Ready` photo, none failing (a skipped photo is not in a job); the good files are byte for byte what
+/// the same files give in an app of their own.
+#[test]
+fn a_damaged_folder_opens_and_the_export_writes_every_photo_that_opened() {
+    use ym_raw::testgen::damage::{valid_files, write_matrix};
+    let h = Harness::new();
+    let files = write_matrix(h.photos.path()).expect("write the matrix");
+    assert_eq!(files.len(), 200);
+    let opened = h
+        .api
+        .open_paths(&[h.photos.path().to_string_lossy().into_owned()])
+        .expect("open the folder");
+    assert_eq!(opened.photos.len(), files.len());
+    wait_until("every photo to be developed or refused", || {
+        h.api.session_state().is_ok_and(|s| {
+            s.photos
+                .iter()
+                .all(|p| matches!(p.status, PhotoStatus::Ready | PhotoStatus::Skipped { .. }))
+        })
+    });
+    let state = h.api.session_state().expect("state");
+    let (mut ready, mut skipped) = (0usize, 0usize);
+    for file in &files {
+        let photo = state
+            .photos
+            .iter()
+            .find(|p| p.file_name == file.file)
+            .expect("the photo is in the session");
+        match (&file.damage, &photo.status) {
+            (None, PhotoStatus::Ready) => ready += 1,
+            (None, other) => panic!("the good file {} is {other:?}", file.file),
+            (Some(_), PhotoStatus::Ready) => {
+                assert!(
+                    file.damage.as_ref().is_some_and(|d| !d.always_refused()),
+                    "{} is Ready",
+                    file.file
+                );
+                ready += 1;
+            }
+            (Some(_), PhotoStatus::Skipped { reason }) => {
+                assert!(
+                    is_damage_sentence(reason),
+                    "{}: {reason:?} is not in the catalogue",
+                    file.file
+                );
+                skipped += 1;
+            }
+            (Some(_), other) => panic!("{}: {other:?}", file.file),
+        }
+    }
+    assert!(
+        ready >= 10 && skipped > 0,
+        "{ready} ready, {skipped} skipped"
+    );
+
+    let out = tempfile::tempdir().expect("out");
+    let id = h.api.export_start(&jpeg_job(out.path())).expect("start");
+    wait_until("the export to finish", || {
+        h.events.events().iter().any(
+            |e| matches!(e, AppEvent::ExportProgress(p) if p.job_id == id && p.done == p.total),
+        )
+    });
+    wait_until("the queue to go idle", || !h.api.export_busy());
+    let summary = h
+        .api
+        .core()
+        .export_summary(u64::from(id.0))
+        .expect("the job has a summary");
+    // The photos that were refused when the folder opened are not in the job; the ones that opened
+    // are all written.
+    assert_eq!(summary.total, ready);
+    assert_eq!((summary.saved, summary.failed), (ready, 0), "{summary:?}");
+    assert!(summary.errors.is_empty());
+    let together = files_with_bytes(out.path());
+    assert_eq!(together.len(), ready);
+
+    // The same ten good files in an app of their own give the same bytes.
+    let alone = Harness::new();
+    for (variant, bytes) in valid_files() {
+        std::fs::write(
+            alone.photos.path().join(format!("good_{variant}.ARW")),
+            bytes,
+        )
+        .expect("write");
+    }
+    alone
+        .api
+        .open_paths(&[alone.photos.path().to_string_lossy().into_owned()])
+        .expect("open the good files");
+    alone.develop();
+    let alone_out = tempfile::tempdir().expect("out");
+    let alone_id = alone
+        .api
+        .export_start(&jpeg_job(alone_out.path()))
+        .expect("start");
+    wait_until("the export of the good files to finish", || {
+        alone.events.events().iter().any(|e| {
+            matches!(e, AppEvent::ExportProgress(p) if p.job_id == alone_id && p.done == p.total)
+        })
+    });
+    wait_until("the queue of the good files to go idle", || {
+        !alone.api.export_busy()
+    });
+    let alone_files = files_with_bytes(alone_out.path());
+    assert_eq!(alone_files.len(), 10);
+    for (name, bytes) in &alone_files {
+        assert_eq!(
+            together.get(name).map(Vec::as_slice),
+            Some(bytes.as_slice()),
+            "{name} changed next to damaged files"
+        );
+    }
 }

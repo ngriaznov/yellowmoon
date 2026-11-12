@@ -151,6 +151,19 @@ export interface OpenSummary {
   added: number;
   /** ARW files that were already in the session and were not added again. */
   already_open: number;
+  /** True when `cancel_open` stopped the call: `added` files were read before that and kept (`docs/26` H-10). The core always says; absent means false. */
+  cancelled?: boolean;
+}
+
+/**
+ * `open_progress { done, total }` (`docs/26` H-10): how many of the files of an `open_paths` or `open_dialog` call have been read.
+ * Sent at the start (`done` is 0), after every 50 files and at the end. Start and Photos say "Reading {done} of {total} files…".
+ */
+export interface OpenProgress {
+  /** Files read so far. */
+  done: number;
+  /** Files to read. */
+  total: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1757,6 +1770,19 @@ export interface ExportEstimate {
    * to the DNG note (addition, `docs/09` §What a DNG carries).
    */
   dng_approximate: boolean;
+  /**
+   * Bytes available on the volume of the destination folder, read when the estimate is asked for
+   * (`docs/26-hardening.md` P2-3); null when it cannot be read.
+   */
+  free_bytes: number | null;
+  /** The destination folder `free_bytes` was read for, by its last component; null with it. */
+  folder: string | null;
+  /**
+   * `free_bytes` is under 1.35 times `bytes` (the estimate's documented 90th-percentile error): the panel says
+   * "This export needs about {size} and {free} is free in {folder}. It may stop part way." under the button.
+   * A warning only; the export is never refused.
+   */
+  low_space: boolean;
 }
 
 /** `export_progress` event payload. */
@@ -1776,6 +1802,11 @@ export interface ExportProgress {
   error: string | null;
   /** `file` already existed and "If it exists" is Skip: it counts in `done` but was not written (addition). */
   skipped: boolean;
+  /**
+   * `file` failed because of the destination (the disk is full, the folder is read-only or gone) and the job stopped
+   * there: this is the job's last event and the files after `done` were not tried (`docs/26` P2-2).
+   */
+  stopped: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -1996,6 +2027,8 @@ export interface MenuActionEvent {
 /** Event name → payload type, for the typed `on()`. `looks_changed` carries no data. */
 export interface ApiEvents {
   photo_progress: PhotoProgress;
+  /** Files of an open read so far (`open_paths`, `open_dialog`). */
+  open_progress: OpenProgress;
   thumbnail_ready: ThumbnailReady;
   /** The thumbnails of a photo's nodes that changed (answers `node_thumbnails`; `docs/23` §5.7). */
   node_thumbnails_ready: NodeThumbnailsReady;

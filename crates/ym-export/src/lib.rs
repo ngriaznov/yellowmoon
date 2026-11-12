@@ -23,6 +23,7 @@ pub mod dng;
 pub mod error;
 pub mod estimate;
 pub mod exif;
+pub mod fault;
 pub mod icc;
 pub mod jpeg;
 pub mod naming;
@@ -34,7 +35,7 @@ pub mod resize;
 pub mod tiff_writer;
 pub mod xmp;
 
-pub use error::ExportError;
+pub use error::{DestinationProblem, ExportError};
 pub use estimate::{DetailStat, estimate_bytes, estimate_bytes_with_detail};
 pub use options::{
     BitDepth, ColorSpace, ExportFormat, ExportOptions, FormatKind, IfExists, JpegQuality, Size,

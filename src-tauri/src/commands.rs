@@ -123,6 +123,17 @@ pub async fn open_dialog(
     .await
 }
 
+/// `cancel_open()`: stops the `open_paths` or `open_dialog` call that is reading files; the files read so far stay.
+#[tauri::command]
+#[specta::specta]
+pub async fn cancel_open(state: State<'_, AppState>) -> Result<(), AppError> {
+    run(&state, |api| {
+        api.cancel_open();
+        Ok(())
+    })
+    .await
+}
+
 /// `session_state()`.
 #[tauri::command]
 #[specta::specta]
@@ -686,6 +697,18 @@ pub async fn thumbnails(state: State<'_, AppState>) -> Result<Vec<ThumbnailReady
     run(&state, |api| Ok(api.thumbnails_now())).await
 }
 
+/// `thumbnails_in_view(photo_ids)` (`docs/26` H-11): the filmstrip shows these photos. Answers with the
+/// address of the thumbnail the shell holds for each of them; the ones it let go of to keep its byte
+/// budget are made again and arrive as `thumbnail_ready`.
+#[tauri::command]
+#[specta::specta]
+pub async fn thumbnails_in_view(
+    state: State<'_, AppState>,
+    photo_ids: Vec<PhotoId>,
+) -> Result<Vec<ThumbnailReady>, AppError> {
+    run(&state, move |api| Ok(api.thumbnails_in_view(&photo_ids))).await
+}
+
 // --- The system -------------------------------------------------------------------------------
 
 /// `choose_folder(start)`: the system's folder chooser. `null` when cancelled.
@@ -848,6 +871,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         .commands(collect_commands![
             open_paths,
             open_dialog,
+            cancel_open,
             session_state,
             close_session,
             set_current,
@@ -898,6 +922,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             export_busy,
             restart_app,
             thumbnails,
+            thumbnails_in_view,
             choose_folder,
             choose_look_files,
             open_url,
@@ -922,6 +947,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             wire::UpdateState,
             wire::ErrorEvent,
             wire::LooksImportProgress,
+            wire::OpenProgress,
             wire::DownloadFound,
             wire::MenuActionEvent,
             wire::SettingsChanged,

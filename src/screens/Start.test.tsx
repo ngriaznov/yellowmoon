@@ -150,6 +150,24 @@ describe("Start, nothing open", () => {
   });
 });
 
+describe("Start, a folder that cannot be read", () => {
+  it("names the folder in the drop zone, not \"No ARW files\", and starts no session (docs/26 H-02)", async () => {
+    h = renderApp({ unreadable: "Desktop" });
+    await h.user.click(await screen.findByRole("button", { name: "Open folder…" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Yellowmoon can't read the folder Desktop. Check that it is still there and that you may open it, then try again.",
+    );
+    expect(screen.queryByText("No ARW files in what you dropped.")).toBeNull();
+    expect(screen.getByRole("group", { name: "Drop files or a folder" })).toBeInTheDocument();
+  });
+
+  it("still opens files that are chosen one by one", async () => {
+    h = renderApp({ unreadable: "Desktop" });
+    await h.user.click(await screen.findByRole("button", { name: "Open files…" }));
+    await screen.findByRole("heading", { level: 2, name: /Developing 12 photos|12 photos ready/ });
+  });
+});
+
 describe("Start, developing", () => {
   it("shows Developing N photos with a progress bar and a tagged list", async () => {
     h = renderApp({ holdAt: 5.4 });
@@ -303,5 +321,25 @@ describe("Start, developing", () => {
     expect(bar).toHaveTextContent("That folder can't be read. Choose another.");
     await h.user.click(within(bar).getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("Start, reading many files (docs/26 H-10)", () => {
+  it("says how far the reading has got, with Cancel in place of the Open buttons, and Cancel keeps the files read", async () => {
+    h = renderApp({ slowOpen: 2000, speed: 1 });
+    await h.user.click(await screen.findByRole("button", { name: "Open folder…" }));
+    expect(await screen.findByText(/^Reading \d+ of 2000 files…$/, undefined, { timeout: 5000 })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open files…" })).toBeNull();
+    await h.user.click(screen.getByRole("button", { name: "Cancel" }));
+    const stopped = await screen.findByText(/^Stopped\. (\d+) files were opened\.$/);
+    expect(stopped).toBeInTheDocument();
+    expect(screen.queryByText(/Reading \d+ of/)).toBeNull();
+  });
+
+  it("says nothing of reading when the files open at once", async () => {
+    h = renderApp();
+    await h.user.click(await screen.findByRole("button", { name: "Open files…" }));
+    await screen.findByRole("heading", { level: 2, name: /Developing 12 photos|12 photos ready/ });
+    expect(screen.queryByText(/Reading \d+ of/)).toBeNull();
   });
 });

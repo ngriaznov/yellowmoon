@@ -15,6 +15,11 @@ pub const MAX_PIXELS: u64 = 120_000_000;
 /// The largest width or height the container parser accepts.
 pub const MAX_DIMENSION: u32 = 65_535;
 
+/// The smallest width or height the container parser accepts. No camera file is below this (the
+/// smallest Sony sensor is thousands of pixels wide); a picture smaller than this is a file whose size
+/// tag is damaged, and is `Corrupt` (`docs/04` Limits).
+pub const MIN_DIMENSION: u32 = 6;
+
 /// A row-major buffer of samples with no padding between rows.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plane<T> {

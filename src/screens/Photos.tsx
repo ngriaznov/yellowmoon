@@ -23,6 +23,7 @@ import { useCropSession } from "./crop/useCropSession";
 import { ExportPanel } from "./export/ExportPanel";
 import { ExportCell, Header } from "./Header";
 import { Menu } from "./Menu";
+import { OpenReading } from "./OpenReading";
 import { Divider } from "./nodes/Divider";
 import { GraphArea } from "./nodes/GraphArea";
 import type { GraphAreaProps } from "./nodes/GraphArea";
@@ -131,6 +132,8 @@ const ZoomMenu = memo(function ZoomMenu({ store, photo, orientation, crop, cell 
  */
 const AddPhotosButton = memo(function AddPhotosButton({ store }: { store: AppStore }) {
   const opening = useAppState((s) => s.opening);
+  const reading = useAppState((s) => s.openProgress !== null);
+  if (reading) return <OpenReading variant="header" />;
   return (
     <Button variant="header" disabled={opening} onClick={() => void store.openDialog("files")} title="Add photos (⌘O)">
       Add photos
@@ -437,6 +440,8 @@ export function Photos() {
 
   /** Leaving a photo ends a crop in progress without keeping it. */
   const cropSession = useLatest(crop.session);
+  // The filmstrip's windowed range: the shell makes again a thumbnail it let go of while the photo was out of sight (`docs/26` H-11).
+  const onStripInView = useCallback((ids: number[]) => store.thumbnailsInView(ids), [store]);
   const select = useCallback(
     (id: number | string) => {
       cropSession.current?.cancel();
@@ -1006,6 +1011,7 @@ export function Photos() {
         onTogglePick={togglePickOf}
         onRemove={exporting ? undefined : removePhoto}
         onRemovePicked={exporting ? undefined : removePicked}
+        onInView={onStripInView}
         hidden={fullScreen.on || nodesOn}
       />
 

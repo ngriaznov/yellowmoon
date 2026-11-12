@@ -12,6 +12,7 @@ const event = (patch: Partial<ExportProgress>): ExportProgress => ({
   file_percent: 0,
   error: null,
   skipped: false,
+  stopped: false,
   ...patch,
 });
 const fresh = (): ExportRun => startRun(1, NAMES, "~/Pictures/Lisbon export");
@@ -153,6 +154,57 @@ describe("the sequence the core's queue sends (docs/01 §Export, preferences and
   });
 });
 
+describe("a stopped export (docs/26 P2-2)", () => {
+  const DISK_FULL = "The disk is full, so the export stopped. Free some space, then export the photos that are left.";
+  const stopAt = (done: number, file: string): ExportRun =>
+    applyProgress(
+      applyProgress(fresh(), event({ done: 1, file: NAMES[1], file_percent: 40 })),
+      event({ done, file, file_percent: null, error: DISK_FULL, stopped: true }),
+    );
+
+  it("marks the failing file failed and the files after it Not exported, and finishes", () => {
+    const run = stopAt(2, NAMES[1]!);
+    expect(run.phase).toBe("finished");
+    expect(run.stopped).toBe(DISK_FULL);
+    expect(run.rows.map((r) => r.state)).toEqual(["done", "failed", "not_tried"]);
+    expect(run.rows[2]).toMatchObject({ percent: 0, note: "Not exported, the export stopped." });
+    expect(summarise(run)).toMatchObject({ saved: 1, failed: 1, notTried: 1 });
+    // Later events change nothing.
+    expect(applyProgress(run, event({ done: 3, file_percent: 100 }))).toBe(run);
+  });
+
+  it("says Stopped when some files were saved, with the folder and the sentence", () => {
+    const run = stopAt(2, NAMES[1]!);
+    expect(runTitle(run)).toBe("Stopped");
+    expect(runBlurb(run)).toBe(`1 photo saved to Lisbon export. The export stopped: ${DISK_FULL}`);
+    expect(cellLabel(run)).toBe("Export stopped");
+  });
+
+  it("says Not exported when nothing was saved", () => {
+    const run = applyProgress(fresh(), event({ done: 1, file: NAMES[0], file_percent: null, error: DISK_FULL, stopped: true }));
+    expect(run.rows.map((r) => r.state)).toEqual(["failed", "not_tried", "not_tried"]);
+    expect(runTitle(run)).toBe("Not exported");
+    expect(runBlurb(run)).toBe(`Nothing was saved. The export stopped: ${DISK_FULL}`);
+    expect(cellLabel(run)).toBe("Not exported");
+  });
+
+  it("draws the rows after the failing one with their own note", () => {
+    const items = queueItems(stopAt(2, NAMES[1]!));
+    expect(items.map((i) => [i.state, i.note])).toEqual([
+      ["done", undefined],
+      ["failed", DISK_FULL],
+      ["not_tried", "Not exported, the export stopped."],
+    ]);
+  });
+
+  it("is not a stop when the failing file is about one photo", () => {
+    const run = applyProgress(fresh(), event({ done: 1, file: NAMES[0], error: "File missing or changed. Import again." }));
+    expect(run.phase).toBe("running");
+    expect(run.stopped).toBeUndefined();
+    expect(cellLabel(applyProgress(applyProgress(run, event({ done: 2, error: "x" })), event({ done: 3, file_percent: 100 })))).toBe("Exported");
+  });
+});
+
 describe("the cell in the header", () => {
   it("counts files while running", () => {
     const run = applyProgress(fresh(), event({ done: 1, file: "DSC04204_neutral.jpg", file_percent: 10 }));
@@ -161,5 +213,35 @@ describe("the cell in the header", () => {
 
   it("keeps the running note while running", () => {
     expect(runNote(fresh())).toBe("Originals are never changed. You can keep working while this runs; an update waits until the export is finished.");
+  });
+});
+
+describe("applyProgress keeps the rows that did not change (docs/26 H-09)", () => {
+  const long = (): ExportRun =>
+    startRun(
+      1,
+      Array.from({ length: 2000 }, (_, i) => `f${i}.jpg`),
+      "~/x",
+    );
+
+  it("changes one row object per event and leaves the others the very same objects", () => {
+    const first = applyProgress(long(), event({ total: 2000, done: 5, file: "f5.jpg", file_percent: 10 }));
+    const next = applyProgress(first, event({ total: 2000, done: 5, file: "f5.jpg", file_percent: 40 }));
+    const changed = next.rows.filter((row, i) => row !== first.rows[i]);
+    expect(changed).toHaveLength(1);
+    expect(next.rows[5]).toMatchObject({ state: "running", percent: 40 });
+    // The row that finished stays the same object when the next file begins, apart from the rows that finish with it.
+    const after = applyProgress(next, event({ total: 2000, done: 6, file: "f6.jpg", file_percent: 0 }));
+    expect(after.rows.filter((row, i) => row !== next.rows[i]).map((r) => r.name)).toEqual(["f5.jpg", "f6.jpg"]);
+    expect(after.rows[0]).toBe(first.rows[0]);
+  });
+
+  it("gives the list the same item again for a row that has not changed, and a new one for a row that has", () => {
+    const first = applyProgress(long(), event({ total: 2000, done: 1, file: "f1.jpg", file_percent: 10 }));
+    const a = queueItems(first);
+    const next = applyProgress(first, event({ total: 2000, done: 1, file: "f1.jpg", file_percent: 20 }));
+    const b = queueItems(next);
+    expect(b.filter((item, i) => item !== a[i])).toHaveLength(1);
+    expect(b[1]).toMatchObject({ state: "running", percent: 20 });
   });
 });

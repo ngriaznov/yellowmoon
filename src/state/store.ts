@@ -19,6 +19,7 @@
  */
 import type { Api, Unsubscribe } from "../api";
 import { toAppError } from "../api";
+import { isUnreadableMessage } from "../api/openMessages";
 import type {
   ApplyScope,
   AutoProvider,
@@ -68,6 +69,7 @@ import type {
   DepthState,
   FaceState,
   VisionState,
+  OpenProgress,
   OpenSummary,
   Orientation,
   PasteReport,
@@ -175,6 +177,15 @@ export const ALREADY_OPEN_NOTICE = "These photos are already open.";
 /** Whether two mask views are the same one (a node and a style, or none). */
 function sameMaskView(a: MaskView | null, b: MaskView | null): boolean {
   return a === b || (a !== null && b !== null && a.node === b.node && a.style === b.style && (a.row ?? null) === (b.row ?? null) && (a.depth ?? false) === (b.depth ?? false) && (a.face ?? null) === (b.face ?? null));
+}
+
+/** How long an open reads before Start and Photos say how far it has got (`openProgress`). */
+export const OPEN_PROGRESS_DELAY_MS = 300;
+
+/** What Start and Photos say after Cancel stopped an open: how many of the files were read and kept (`docs/26` H-10). */
+export function stoppedNotice(opened: number): string {
+  if (opened === 0) return "Stopped. No files were opened.";
+  return `Stopped. ${opened} ${opened === 1 ? "file was" : "files were"} opened.`;
 }
 
 /** What Photos says after files were added to the session: "Added 3 photos. 2 were already open." */
@@ -288,6 +299,11 @@ export interface AppState {
   error: AppError | null;
   /** Open files or Open folder is waiting for the core or the dialog. */
   opening: boolean;
+  /**
+   * How far the core has read the files of the open that is under way, once it has taken `OPEN_PROGRESS_DELAY_MS` (a small open
+   * finishes before anyone could read the line); null otherwise. Start and Photos say "Reading {done} of {total} files…" with Cancel.
+   */
+  openProgress: OpenProgress | null;
   /** The current photo's histogram, when asked for. */
   histogram: HistogramData | null;
   /** The display values at the middle of the photo cell, while the Light tab watches them (`watchHistogram`). */
@@ -438,6 +454,7 @@ export function initialState(): AppState {
     dropNotice: null,
     error: null,
     opening: false,
+    openProgress: null,
     histogram: null,
     middleReadout: null,
     chromaScatter: null,
@@ -650,6 +667,9 @@ interface Sender {
 
 /** A frame of the fallback viewport smaller than this, in device pixels on either side, is not a picture of the cell. */
 const MIN_FRAME_PX = 16;
+
+/** Milliseconds the filmstrip waits after its range changed before it tells the shell which photos it shows (`thumbnailsInView`). */
+export const THUMBNAILS_IN_VIEW_DELAY_MS = 120;
 
 /** Milliseconds a replaced look thumbnail's URL is kept, so a tile never shows a broken picture. */
 const URL_GRACE_MS = 3000;
@@ -878,6 +898,7 @@ export class AppStore {
     const api = this.api;
     this.stops = [
       api.on("photo_progress", (e) => this.onProgress(e)),
+      api.on("open_progress", (e) => this.onOpenProgress(e)),
       api.on("thumbnail_ready", (e) => this.onThumbnail(e)),
       api.on("node_thumbnails_ready", (e) => this.onNodeThumbnails(e)),
       api.on("render_stats", (stats) => {
@@ -1024,11 +1045,15 @@ export class AppStore {
   /** The state with one photo's status changed; remembered when the photo isn't in the session yet. */
   private withStatus(s: AppState, id: PhotoId, status: PhotoStatus): AppState {
     const session = s.session;
-    if (!session || !session.photos.some((p) => p.id === id)) {
+    const index = session ? session.photos.findIndex((p) => p.id === id) : -1;
+    if (!session || index < 0) {
       this.pendingStatus.set(id, status);
       return s;
     }
-    const photos = session.photos.map((p) => (p.id === id ? { ...p, status } : p));
+    // Copy on write: one copy of the array and a new object for the one photo that changed; the other 1,999 keep their identity, so the
+    // lists that draw them compare equal and do not draw them again.
+    const photos = session.photos.slice();
+    photos[index] = { ...photos[index]!, status };
     if (status.kind === "ready" && photos[session.current_index ?? -1]?.id === id) {
       queueMicrotask(() => void this.ensureSettings(id));
     }
@@ -1038,9 +1063,11 @@ export class AppStore {
   /** The state with one photo's `apple_pending` changed. A photo not in the session yet is left alone: its summary will say. */
   private withApplePending(s: AppState, id: PhotoId, pending: boolean): AppState {
     const session = s.session;
-    const photo = session?.photos.find((p) => p.id === id);
+    const index = session ? session.photos.findIndex((p) => p.id === id) : -1;
+    const photo = session?.photos[index];
     if (!session || !photo || photo.apple_pending === pending) return s;
-    const photos = session.photos.map((p) => (p.id === id ? { ...p, apple_pending: pending } : p));
+    const photos = session.photos.slice();
+    photos[index] = { ...photo, apple_pending: pending };
     return { ...s, session: { ...session, photos } };
   }
 
@@ -1156,6 +1183,52 @@ export class AppStore {
       });
     } catch {
       // The filmstrip waits for the next thumbnail the core announces.
+    }
+  }
+
+  /** The photos the filmstrip draws, waiting to be sent: one ask goes out per pause in the scrolling. */
+  private inView: PhotoId[] | null = null;
+  private inViewTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * The filmstrip draws these photos (`docs/26` H-11). The shell keeps the thumbnails under a byte budget and lets go of the ones used
+   * least recently, so a photo that was scrolled out of sight may have none when it comes back. The ask goes out once the scrolling
+   * pauses; the shell counts the photos as used and makes the missing thumbnails again (`thumbnail_ready` brings them).
+   */
+  thumbnailsInView(ids: readonly PhotoId[]): void {
+    this.inView = ids.slice();
+    if (this.inViewTimer !== null) return;
+    this.inViewTimer = setTimeout(() => {
+      this.inViewTimer = null;
+      const wanted = this.inView;
+      this.inView = null;
+      if (wanted && wanted.length > 0) void this.askThumbnailsInView(wanted);
+    }, THUMBNAILS_IN_VIEW_DELAY_MS);
+  }
+
+  private async askThumbnailsInView(ids: PhotoId[]): Promise<void> {
+    const sent = this.state.thumbnails;
+    try {
+      const held = new Map((await this.api.thumbnailsInView(ids)).map((t) => [t.id, t.url]));
+      this.later((s) => {
+        let next: Record<PhotoId, string> | null = null;
+        for (const id of ids) {
+          const was = sent[id];
+          const now = s.thumbnails[id];
+          // An address an event brought while the ask was out is newer than the answer, and stays.
+          if (now !== was) continue;
+          const url = held.get(id);
+          if (url === now) continue;
+          next ??= { ...s.thumbnails };
+          // The shell let go of this photo's thumbnail: the old address would answer 404, so the strip shows no picture until the new
+          // one is announced.
+          if (url === undefined) delete next[id];
+          else next[id] = url;
+        }
+        return next === null ? s : { ...s, thumbnails: next };
+      });
+    } catch {
+      // The strip keeps what it has; the next pause in the scrolling asks again.
     }
   }
 
@@ -1279,13 +1352,13 @@ export class AppStore {
     try {
       const session = await this.api.openPaths(toOpen);
       this.adoptOpened(session);
-      if (addingToPhotos && session.opened) this.showNotice(openedNotice(session.opened));
+      this.sayOpened(session, addingToPhotos);
     } catch (error) {
       const failure = toAppError(error);
-      if (failure.scope === "open" && failure.message === NO_ARW_NOTICE) this.sayNoArw(addingToPhotos);
+      if (failure.scope === "open" && (failure.message === NO_ARW_NOTICE || isUnreadableMessage(failure.message))) this.sayDropProblem(failure.message, addingToPhotos);
       else this.fail(failure);
     } finally {
-      this.set({ opening: false });
+      this.endOpening();
     }
   }
 
@@ -1297,13 +1370,54 @@ export class AppStore {
       const session = await this.api.openDialog(kind);
       if (session) {
         this.adoptOpened(session);
-        if (addingToPhotos && session.opened) this.showNotice(openedNotice(session.opened));
+        this.sayOpened(session, addingToPhotos);
       }
     } catch (error) {
-      this.fail(error);
+      const failure = toAppError(error);
+      if (failure.scope === "open" && isUnreadableMessage(failure.message)) this.sayDropProblem(failure.message, addingToPhotos);
+      else this.fail(failure);
     } finally {
-      this.set({ opening: false });
+      this.endOpening();
     }
+  }
+
+  /** The core has read `e.done` of `e.total` files of the open under way. Shown once the open has taken a moment. */
+  private onOpenProgress(e: OpenProgress): void {
+    if (!this.state.opening) return;
+    this.openProgressLatest = e;
+    if (this.state.openProgress !== null) {
+      this.set({ openProgress: e });
+      return;
+    }
+    this.openProgressTimer ??= setTimeout(() => {
+      this.openProgressTimer = null;
+      if (this.state.opening && this.openProgressLatest !== null) this.set({ openProgress: this.openProgressLatest });
+    }, OPEN_PROGRESS_DELAY_MS);
+  }
+
+  /** An open ended, however it ended: the line "Reading … files…" goes. */
+  private endOpening(): void {
+    if (this.openProgressTimer !== null) clearTimeout(this.openProgressTimer);
+    this.openProgressTimer = null;
+    this.openProgressLatest = null;
+    this.set({ opening: false, openProgress: null });
+  }
+
+  /** Stops the open that is reading files (the Cancel button). The files read so far stay; the open then ends with `opened.cancelled`. */
+  async cancelOpen(): Promise<void> {
+    try {
+      await this.api.cancelOpen();
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /** Says what an open did, where the person is looking: "Stopped. 40 files were opened." after Cancel, "Added 3 photos." on Photos. */
+  private sayOpened(session: SessionState, onPhotos: boolean): void {
+    const opened = session.opened;
+    if (!opened) return;
+    if (opened.cancelled) this.sayDropProblem(stoppedNotice(opened.added), onPhotos);
+    else if (onPhotos) this.showNotice(openedNotice(opened));
   }
 
   /**
@@ -1331,8 +1445,13 @@ export class AppStore {
 
   /** "No ARW files in what you dropped.": in the drop zone on Start, in the notice bar where there is no drop zone. */
   private sayNoArw(onPhotos: boolean): void {
-    if (onPhotos) this.set({ dropNotice: null, notice: NO_ARW_NOTICE, noticeAction: null });
-    else this.set({ dropNotice: NO_ARW_NOTICE });
+    this.sayDropProblem(NO_ARW_NOTICE, onPhotos);
+  }
+
+  /** What was wrong with a drop or a dialog's choice ("No ARW files…", "Yellowmoon can't read the folder …"), where the person is looking. */
+  private sayDropProblem(message: string, onPhotos: boolean): void {
+    if (onPhotos) this.set({ dropNotice: null, notice: message, noticeAction: null });
+    else this.set({ dropNotice: message });
   }
 
   /** Goes to the Photos screen, on the first photo that is ready when the current one isn't. */
@@ -2534,6 +2653,9 @@ export class AppStore {
   private finds: Promise<unknown> = Promise.resolve();
   private pillSeq = 0;
   private pillTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The newest `open_progress`, and the timer that shows it once the open has taken a moment (`onOpenProgress`). */
+  private openProgressLatest: OpenProgress | null = null;
+  private openProgressTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Finds an object (`mask_find`, `docs/23` §4.4 and §9): asks the core for the Object row `row` of `node` with the person's click or box added. A **found**

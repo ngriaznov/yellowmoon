@@ -329,7 +329,7 @@ impl Library {
     ///
     /// Opening never fails because of a bad manifest: a damaged or too-new `manifest.json` leaves
     /// the built-in looks working and is reported by [`Library::problems`]. Nothing is created on
-    /// disk.
+    /// disk; temporary files of a crashed import older than 24 hours are removed.
     ///
     /// # Errors
     ///
@@ -347,6 +347,13 @@ impl Library {
             looks: Vec::new(),
             cache: Mutex::new(Cache::default()),
         };
+        // A crashed import leaves hidden temporary files in the looks folder; the old ones go
+        // (`docs/26-hardening.md` P2-4). A folder that is not there is not made.
+        crate::manifest::remove_stale_temps(
+            &library.paths.looks_dir(),
+            std::time::SystemTime::now(),
+            crate::manifest::STALE_TEMP_AGE,
+        );
         library.reload();
         Ok(library)
     }

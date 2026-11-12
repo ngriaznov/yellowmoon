@@ -379,6 +379,70 @@ pub fn stage_write(dest: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
     }
 }
 
+/// How old a temporary file of the library must be before [`remove_stale_temps`] removes it: a crashed
+/// import leaves its `.<name>.tmp-<pid>-<n>` behind, and a day is far longer than any import.
+pub const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Whether `name` is `.<name>.tmp-<digits>-<digits>`, the name [`stage_write`] gives a temporary file.
+#[must_use]
+pub fn is_temp_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix('.') else {
+        return false;
+    };
+    let Some((stem, tail)) = rest.rsplit_once(".tmp-") else {
+        return false;
+    };
+    let digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+    !stem.is_empty()
+        && tail
+            .split_once('-')
+            .is_some_and(|(pid, n)| digits(pid) && digits(n))
+}
+
+/// Removes the temporary files of [`stage_write`] in the `looks` folder and in its subfolders (the
+/// groups) whose last change is more than `max_age` before `now`, and returns how many it removed. Only
+/// regular files with the exact name of [`is_temp_name`] are looked at; a folder that cannot be read or a
+/// file that cannot be removed is left (the next load tries again). Nothing is created.
+pub fn remove_stale_temps(
+    looks_dir: &Path,
+    now: std::time::SystemTime,
+    max_age: std::time::Duration,
+) -> usize {
+    fn walk(
+        dir: &Path,
+        now: std::time::SystemTime,
+        max_age: std::time::Duration,
+        depth: u8,
+    ) -> usize {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return 0;
+        };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let Ok(meta) = fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
+            if meta.is_dir() {
+                if depth < 3 {
+                    removed += walk(&entry.path(), now, max_age, depth + 1);
+                }
+            } else if meta.is_file()
+                && entry.file_name().to_str().is_some_and(is_temp_name)
+                && meta
+                    .modified()
+                    .ok()
+                    .and_then(|m| now.duration_since(m).ok())
+                    .is_some_and(|age| age > max_age)
+                && fs::remove_file(entry.path()).is_ok()
+            {
+                removed += 1;
+            }
+        }
+        removed
+    }
+    walk(looks_dir, now, max_age, 0)
+}
+
 /// Renames a file made by [`stage_write`] over `dest` (atomic on one volume).
 ///
 /// # Errors

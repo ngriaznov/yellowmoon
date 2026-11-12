@@ -343,6 +343,8 @@ pub struct OpenSummary {
     pub added: u32,
     /// ARW files that were already in the session and were not added again.
     pub already_open: u32,
+    /// True when `cancel_open` stopped the call: `added` files were read before that and kept.
+    pub cancelled: bool,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -3154,6 +3156,17 @@ pub struct LooksImportProgress {
     pub file: Option<String>,
 }
 
+/// `open_progress { done, total }`: how many of the files of an `open_paths` or `open_dialog` call have
+/// been read (probed). Sent at the start (`done` is 0), after every 50 files and at the end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "open_progress")]
+pub struct OpenProgress {
+    /// Files read so far.
+    pub done: u32,
+    /// Files to read.
+    pub total: u32,
+}
+
 /// `looks_watch_downloads(enabled)`: whether the watcher is running, and why not when it was asked to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct WatchStatus {
@@ -3669,6 +3682,12 @@ pub struct ExportEstimate {
     /// A DNG of the job is close to, not the same as, the picture in the app: a photo uses a look with
     /// its own display rendering.
     pub dng_approximate: bool,
+    /// Bytes available on the volume of the destination folder, or null when it cannot be read.
+    pub free_bytes: Option<Num>,
+    /// The destination folder the free space was read for, by its last component.
+    pub folder: Option<String>,
+    /// The free space is under 1.35 times the estimate: the panel warns. Never blocks the export.
+    pub low_space: bool,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -4010,7 +4029,7 @@ pub struct LensStats {
     pub reason: Option<LensReshapeReason>,
 }
 
-/// `export_progress { job_id, file, done, total, file_percent, error, skipped }`.
+/// `export_progress { job_id, file, done, total, file_percent, error, skipped, stopped }`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type, Event)]
 #[tauri_specta(event_name = "export_progress")]
 pub struct ExportProgress {
@@ -4028,6 +4047,8 @@ pub struct ExportProgress {
     pub error: Option<String>,
     /// `file` already existed and "If it exists" is Skip.
     pub skipped: bool,
+    /// `file` failed because of the destination and the job stopped there.
+    pub stopped: bool,
 }
 
 /// `looks_changed`: the look list, the default look or a look's file changed. No data.

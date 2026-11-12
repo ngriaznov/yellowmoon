@@ -72,6 +72,7 @@ export type FromCore = AllTrue<{
   appError: Assignable<B.AppError, T.AppError>;
   menuAction: Assignable<B.MenuAction, T.MenuAction>;
   openSummary: Assignable<B.OpenSummary, T.OpenSummary>;
+  openProgress: Assignable<B.OpenProgress, T.OpenProgress>;
   nodeThumbnailsReady: Assignable<B.NodeThumbnailsReady, T.NodeThumbnailsReady>;
 }>;
 

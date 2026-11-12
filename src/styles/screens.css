@@ -199,6 +199,9 @@
 .ym-develop__list { margin-top: 20px; }
 .ym-develop__foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: auto; padding-top: 20px; }
 .ym-develop__foot > span { max-width: 360px; font-size: var(--fs-label); }
+/* "Reading {done} of {total} files…" and Cancel, in place of the buttons that open files (docs/26 H-10). */
+.ym-open-reading { display: inline-flex; align-items: center; gap: 12px; font-size: var(--fs-label); }
+.ym-open-reading[data-variant="header"] { gap: 8px; white-space: nowrap; }
 .ym-steps {
   grid-column: 1 / -1;
   grid-row: 3;

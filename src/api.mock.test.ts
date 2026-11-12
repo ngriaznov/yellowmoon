@@ -615,6 +615,20 @@ describe("export", () => {
     await api.openPaths(ARW);
   });
 
+  it("says low_space exactly when the free space is under 1.35 times the estimate (mockFreeBytes)", async () => {
+    // Three photos at JPEG 92: 74.7 MB; 1.35 times is 100.845 MB.
+    const bytes = Math.round(24.9 * 3 * 1e6);
+    const at = async (free: number) => {
+      api.reset({ picked: [2, 3, 4], current: 3, freeBytes: free });
+      await api.openPaths(ARW);
+      return api.exportEstimate(job("picked"));
+    };
+    const tight = await at(100_000_000);
+    expect(tight).toMatchObject({ bytes, free_bytes: 100_000_000, folder: "Lisbon export", low_space: true });
+    expect((await at(100_900_000)).low_space).toBe(false);
+    expect((await at(500_000_000_000)).low_space).toBe(false);
+  });
+
   it("estimates size and time with the arithmetic of the export mockup", async () => {
     // JPEG at 92: 6 + 42 × 0.45 = 24.9 MB a photo, three picked photos.
     const jpeg = await api.exportEstimate(job("picked"));
@@ -1300,6 +1314,8 @@ describe("optionsFromLocation", () => {
       holdAt: 5.4,
     });
     expect(optionsFromLocation("?mockPhotos=500")).toEqual({ photoCount: 500 });
+    expect(optionsFromLocation("?mockFreeBytes=200000000")).toEqual({ freeBytes: 200_000_000 });
+    expect(optionsFromLocation("?mockUnreadable=Desktop")).toEqual({ unreadable: "Desktop" });
     expect(optionsFromLocation("?mockLibraries=all")).toEqual({ allLibraries: true });
     expect(optionsFromLocation("?mockLibraries=none")).toEqual({});
     expect(optionsFromLocation("?mockViewport=fallback")).toEqual({ viewport: "fallback" });
@@ -1717,5 +1733,40 @@ describe("Auto providers: the preference and the consent (docs/22 section 10.2)"
     expect((await api.appInfo()).os).toBe("macos");
     api.reset({ os: "windows" });
     expect((await api.appInfo()).os).toBe("windows");
+  });
+});
+
+describe("?mockSlowOpen (docs/26 H-10)", () => {
+  it("is read from the URL", () => {
+    expect(optionsFromLocation("?mockSlowOpen=2000")).toEqual({ slowOpen: 2000 });
+    expect(optionsFromLocation("?mockSlowOpen=0")).toEqual({});
+  });
+
+  it("reports the files read, 50 at a time, and opens everything at the end", async () => {
+    const api = createMockApi({ speed: 1, slowOpen: 120 });
+    const seen: Array<[number, number]> = [];
+    api.on("open_progress", (e) => seen.push([e.done, e.total]));
+    const opening = api.openPaths(["~/Pictures/Lisbon"]);
+    await vi.advanceTimersByTimeAsync(1000);
+    const state = await opening;
+    expect(seen).toEqual([[0, 120], [50, 120], [100, 120], [120, 120]]);
+    expect(state.photos).toHaveLength(12);
+    expect(state.opened?.cancelled).toBeUndefined();
+  });
+
+  it("stops at cancelOpen with what was read, and with nothing when it comes first", async () => {
+    const api = createMockApi({ speed: 1, slowOpen: 2000 });
+    const first = api.openPaths(["~/Pictures/Lisbon"]);
+    await vi.advanceTimersByTimeAsync(0);
+    await api.cancelOpen();
+    const none = await first;
+    expect(none.photos).toHaveLength(0);
+    expect(none.opened).toEqual({ added: 0, already_open: 0, cancelled: true });
+    const second = api.openPaths(["~/Pictures/Lisbon"]);
+    await vi.advanceTimersByTimeAsync(250);
+    await api.cancelOpen();
+    const some = await second;
+    expect(some.opened?.cancelled).toBe(true);
+    expect(some.photos.length).toBeGreaterThan(0);
   });
 });

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
+import { Item, ItemContent } from "@/components/glass/item";
 import { Button, ExportQueueList, ProgressBar, TitleBlock } from "../../components";
-import { estimateTitle, formatEstimate, photoCount } from "../../export/format";
+import { estimateTitle, formatEstimate, lowSpaceWarning, photoCount } from "../../export/format";
 import { exportModel } from "../../export/model";
 import { queueItems, runBlurb, runNote, runTitle, summarise } from "../../export/run";
 import { useAppState } from "../../state/context";
@@ -33,6 +34,7 @@ export function ExportPanel({ store }: ExportPanelProps) {
   const key = model.photos.map((p) => p.id).join(",");
   const preview = useExportPreview(store, job, key, run === null && model.count > 0);
   const { estimate } = preview;
+  const spaceWarning = lowSpaceWarning(estimate);
 
   const blocker =
     model.count === 0
@@ -97,6 +99,11 @@ export function ExportPanel({ store }: ExportPanelProps) {
         ) : (
           <div className="ym-export__queue">
             <ProgressBar value={summarise(run).percent} label="Exporting" />
+            {run.stopped !== undefined ? (
+              <Item variant="muted" size="sm" role="alert" className="ym-export__banner">
+                <ItemContent>{run.stopped}</ItemContent>
+              </Item>
+            ) : null}
             <div className="ym-export__list">
               <ExportQueueList items={queueItems(run)} />
             </div>
@@ -104,18 +111,25 @@ export function ExportPanel({ store }: ExportPanelProps) {
           </div>
         )}
       </div>
-      <div className="ym-tools__footer">
+      <div className={spaceWarning !== null && run === null ? "ym-tools__footer ym-export__footer--warned" : "ym-tools__footer"}>
         {run === null ? (
-          <Button
-            block
-            size="lg"
-            disabled={blocker !== null}
-            title={blocker ?? (estimate ? estimateTitle(estimate) : undefined)}
-            aside={`${estimate ? formatEstimate(estimate.bytes) : "…"} · ⌘↩`}
-            onClick={() => void start()}
-          >
-            {model.count > 0 ? `Export ${photoCount(model.count)}` : "Export"}
-          </Button>
+          <>
+            <Button
+              block
+              size="lg"
+              disabled={blocker !== null}
+              title={blocker ?? (estimate ? estimateTitle(estimate) : undefined)}
+              aside={`${estimate ? formatEstimate(estimate.bytes) : "…"} · ⌘↩`}
+              onClick={() => void start()}
+            >
+              {model.count > 0 ? `Export ${photoCount(model.count)}` : "Export"}
+            </Button>
+            {spaceWarning !== null ? (
+              <p role="status" className="ym-row-note ym-export__space">
+                {spaceWarning}
+              </p>
+            ) : null}
+          </>
         ) : run.phase === "running" ? (
           <Button variant="secondary" size="lg" block data-autofocus="" onClick={() => void store.cancelExport()}>
             Cancel

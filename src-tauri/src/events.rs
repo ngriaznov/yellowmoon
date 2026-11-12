@@ -38,9 +38,9 @@ use tauri_specta::Event;
 
 use crate::wire::{
     AppError, AutoStatusChanged, DepthState, DownloadFound, ErrorEvent, ExportBusy, ExportProgress,
-    FaceState, LooksChanged, LooksImportProgress, NodeThumbnailsReady, ObjectState, PhotoId,
-    PhotoProgress, RenderStats, SettingsChanged, ThumbnailReady, ViewportBusy, ViewportFrame,
-    VisionState,
+    FaceState, LooksChanged, LooksImportProgress, NodeThumbnailsReady, ObjectState, OpenProgress,
+    PhotoId, PhotoProgress, RenderStats, SettingsChanged, ThumbnailReady, ViewportBusy,
+    ViewportFrame, VisionState,
 };
 
 /// The least time between two `render_stats` events, between two `viewport_busy` events, and between
@@ -68,6 +68,8 @@ pub enum AppEvent {
     Error(AppError),
     /// `looks_import_progress`.
     LooksImportProgress(LooksImportProgress),
+    /// `open_progress`: files read so far by an open (at most one event per 50 files, so it is not coalesced).
+    OpenProgress(OpenProgress),
     /// `download_found`.
     DownloadFound(DownloadFound),
     /// `settings_changed` (addition): after a Pick white click, and for each photo a paste changed.
@@ -102,6 +104,7 @@ impl AppEvent {
             Self::AutoStatusChanged => "auto_status_changed",
             Self::Error(_) => "error",
             Self::LooksImportProgress(_) => "looks_import_progress",
+            Self::OpenProgress(_) => "open_progress",
             Self::DownloadFound(_) => "download_found",
             Self::SettingsChanged(_) => "settings_changed",
             Self::ExportBusy(_) => "export_busy",
@@ -155,6 +158,7 @@ fn send<R: Runtime>(app: &tauri::AppHandle<R>, event: AppEvent) {
         AppEvent::AutoStatusChanged => AutoStatusChanged.emit(app),
         AppEvent::Error(e) => ErrorEvent::from(e).emit(app),
         AppEvent::LooksImportProgress(e) => e.emit(app),
+        AppEvent::OpenProgress(e) => e.emit(app),
         AppEvent::DownloadFound(e) => e.emit(app),
         AppEvent::SettingsChanged(photo_id) => SettingsChanged { photo_id }.emit(app),
         AppEvent::ExportBusy(busy) => ExportBusy { busy }.emit(app),

@@ -125,6 +125,7 @@ use crate::auto_provider::{
 };
 use crate::camera::{CameraCard, CameraInfo, PhotoCamera};
 use crate::data_dir::{DataDirError, find_data_dir};
+use crate::media::{Guarded, Media, NO_ANSWER_MESSAGE};
 use crate::settings::{
     CropAspect, DevelopSettings, Orientation, ResolvedSettings, SettingsError, SettingsPatch,
 };
@@ -717,6 +718,9 @@ pub struct SessionEnv {
     /// not be: without it the lens's bokeh reshaping reads the blur from the classical detector (the render is
     /// still made; only the map is less sure).
     pub bokeh_model: Result<Arc<BokehNet>, String>,
+    /// How files that may not answer are touched: the probe, the whole-file read and the canonical
+    /// path, with their time limits (`docs/26` H-15). The standard value uses the real calls.
+    pub media: Media,
 }
 
 /// Auto crop's model from `<data_root>/models/crop`, checked against its `SHA256SUMS`; a missing or
@@ -801,6 +805,7 @@ impl SessionEnv {
             crop_model: load_crop_model(data_root),
             lens_library: load_lens_library(data_root),
             bokeh_model: load_bokeh_model(data_root),
+            media: Media::new(),
         })
     }
 
@@ -847,6 +852,13 @@ impl SessionEnv {
     #[must_use]
     pub fn with_pictures(mut self, pictures: Arc<dyn PictureRenderer>) -> Self {
         self.pictures = Some(pictures);
+        self
+    }
+
+    /// Sets how files that may not answer are touched (a test seam, `docs/26` H-15).
+    #[must_use]
+    pub fn with_media(mut self, media: Media) -> Self {
+        self.media = media;
         self
     }
 
@@ -903,6 +915,37 @@ pub struct OpenOutcome {
     pub ignored: usize,
     /// Paths that do not exist.
     pub missing: Vec<PathBuf>,
+    /// Folders that exist but could not be read (no permission, a drive that went away), in the
+    /// order they were met. A folder that was read and held no ARW file is not here.
+    pub unreadable: Vec<PathBuf>,
+    /// True when the first of [`unreadable`](Self::unreadable) was refused with `EPERM` ("Operation
+    /// not permitted": on macOS the privacy block of Desktop, Documents and removable volumes).
+    pub unreadable_privacy_block: bool,
+    /// True when [`Session::cancel_open`] stopped the call: the files read before that are in
+    /// [`added`](Self::added), the others were dropped.
+    pub cancelled: bool,
+}
+
+/// How far reading the files of an open has got (`docs/26` P3-3): `done` of `total` files probed.
+/// Sent at the start (`done` is 0), after every [`OPEN_PROGRESS_STEP`] files and at the end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenProgress {
+    /// Files probed so far.
+    pub done: usize,
+    /// Files to probe.
+    pub total: usize,
+}
+
+/// Files between two [`OpenProgress`] reports.
+pub const OPEN_PROGRESS_STEP: usize = 50;
+
+/// Why a file has no metadata.
+#[derive(Debug)]
+enum ProbeFailure {
+    /// The file is not a readable ARW.
+    Raw(RawError),
+    /// The file did not answer in time (`docs/26` H-15).
+    NoAnswer,
 }
 
 impl OpenOutcome {
@@ -913,11 +956,60 @@ impl OpenOutcome {
         self.added.is_empty() && self.already_open == 0
     }
 
-    /// The message for the Start screen, when there is one.
+    /// The message for the Start screen, when there is one: [`unreadable_message`] when a folder
+    /// could not be read, else [`NO_ARW_MESSAGE`] for what was read and held no ARW file.
     #[must_use]
-    pub fn message(&self) -> Option<&'static str> {
-        self.no_arw().then_some(NO_ARW_MESSAGE)
+    pub fn message(&self) -> Option<String> {
+        if !self.no_arw() || self.cancelled {
+            return None;
+        }
+        unreadable_message(
+            &self.unreadable,
+            self.unreadable_privacy_block && cfg!(target_os = "macos"),
+        )
+        .or_else(|| Some(NO_ARW_MESSAGE.to_owned()))
     }
+}
+
+/// The folder's name as the messages say it: its last component, else the whole path.
+fn folder_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The sentence for folders that could not be read (`docs/26` P1-1), or `None` when there are
+/// none. It names the first folder and counts the others ("…and 2 more folders."). `privacy` is
+/// the macOS privacy block on the first folder: the sentence then says where to allow access.
+#[must_use]
+pub fn unreadable_message(folders: &[PathBuf], privacy: bool) -> Option<String> {
+    let (first, rest) = folders.split_first()?;
+    let name = folder_name(first);
+    let mut text = if privacy {
+        format!(
+            "Yellowmoon can't read the folder {name}. Allow access in System Settings, under Privacy & Security › Files and Folders (or Full Disk Access), then try again."
+        )
+    } else {
+        format!(
+            "Yellowmoon can't read the folder {name}. Check that it is still there and that you may open it, then try again."
+        )
+    };
+    match rest.len() {
+        0 => {}
+        1 => text.push_str(" …and 1 more folder."),
+        n => text.push_str(&format!(" …and {n} more folders.")),
+    }
+    Some(text)
+}
+
+/// True for the error of a folder macOS will not let the app read: `PermissionDenied` with
+/// `EPERM` (1), where an ordinary missing permission is `EACCES` (13).
+#[must_use]
+pub fn is_privacy_block(error: &std::io::Error) -> bool {
+    cfg!(unix)
+        && error.kind() == std::io::ErrorKind::PermissionDenied
+        && error.raw_os_error() == Some(1)
 }
 
 #[derive(Debug, Default)]
@@ -925,6 +1017,8 @@ struct Collected {
     files: Vec<PathBuf>,
     ignored: usize,
     missing: Vec<PathBuf>,
+    unreadable: Vec<PathBuf>,
+    unreadable_privacy_block: bool,
     /// The only folder that was given, if exactly one folder and nothing else was.
     single_folder: Option<PathBuf>,
 }
@@ -940,11 +1034,28 @@ fn is_hidden(path: &Path) -> bool {
         .is_some_and(|n| n.starts_with('.'))
 }
 
-fn walk(dir: &Path, recursive: bool, out: &mut Collected) {
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return;
+/// The entries of a folder, unsorted; the error when it cannot be listed.
+fn list_dir(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    Ok(std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect())
+}
+
+/// How a folder is listed: [`list_dir`], or a stand-in that fails (the tests of the unreadable
+/// folder, which cannot rely on `chmod` when they run as root).
+type Lister<'a> = &'a dyn Fn(&Path) -> std::io::Result<Vec<PathBuf>>;
+
+fn walk(dir: &Path, recursive: bool, out: &mut Collected, list: Lister<'_>) {
+    let mut entries = match list(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            if out.unreadable.is_empty() {
+                out.unreadable_privacy_block = is_privacy_block(&error);
+            }
+            out.unreadable.push(dir.to_path_buf());
+            return;
+        }
     };
-    let mut entries: Vec<PathBuf> = read.filter_map(|e| e.ok().map(|e| e.path())).collect();
     entries.sort();
     for path in entries {
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
@@ -956,7 +1067,7 @@ fn walk(dir: &Path, recursive: bool, out: &mut Collected) {
             out.ignored += 1;
         } else if is_dir {
             if recursive {
-                walk(&path, recursive, out);
+                walk(&path, recursive, out, list);
             }
         } else if is_file && is_arw(&path) {
             out.files.push(path);
@@ -967,10 +1078,14 @@ fn walk(dir: &Path, recursive: bool, out: &mut Collected) {
 }
 
 fn collect(paths: &[PathBuf], recursive: bool) -> Collected {
+    collect_with(paths, recursive, &list_dir)
+}
+
+fn collect_with(paths: &[PathBuf], recursive: bool, list: Lister<'_>) -> Collected {
     let mut out = Collected::default();
     for path in paths {
         if path.is_dir() {
-            walk(path, recursive, &mut out);
+            walk(path, recursive, &mut out, list);
         } else if path.is_file() {
             if is_arw(path) {
                 out.files.push(path.clone());
@@ -2008,6 +2123,8 @@ struct Inner {
     /// Held while an event is checked and sent, and by `close` while it bumps the epoch.
     emit_lock: Mutex<()>,
     epoch: AtomicU64,
+    /// Bumped by [`Session::cancel_open`]: an open that began before the bump stops reading files.
+    open_cancels: AtomicU64,
     shutdown: AtomicBool,
     current_hint: AtomicU32,
     queue: Mutex<Queue>,
@@ -2131,6 +2248,7 @@ impl Session {
             state: Mutex::new(state),
             emit_lock: Mutex::new(()),
             epoch: AtomicU64::new(1),
+            open_cancels: AtomicU64::new(0),
             shutdown: AtomicBool::new(false),
             current_hint: AtomicU32::new(NO_PHOTO),
             queue: Mutex::new(Queue::default()),
@@ -2208,24 +2326,48 @@ impl Session {
     /// then develop while the caller carries on. The new photos are in the filmstrip in the order
     /// of their paths (case-insensitive); the first photo of an empty session becomes current.
     pub fn open(&self, paths: &[PathBuf], options: OpenOptions) -> OpenOutcome {
+        self.open_with_progress(paths, options, &|_| {})
+    }
+
+    /// [`Session::open`] that reports how far it has got (`docs/26` P3-3): `progress` is called
+    /// from the threads that probe, at the start, after every [`OPEN_PROGRESS_STEP`] files and at
+    /// the end. [`Session::cancel_open`] stops the call: the files read by then are added, the
+    /// others dropped, and the outcome says `cancelled`.
+    pub fn open_with_progress(
+        &self,
+        paths: &[PathBuf],
+        options: OpenOptions,
+        progress: &(dyn Fn(OpenProgress) + Sync),
+    ) -> OpenOutcome {
         // Apple Auto may have become available, or stopped being, since the last look (`docs/19`
         // section 1: read again when a session opens).
         self.refresh_apple_auto();
         let inner = &self.inner;
         let epoch = inner.epoch.load(Ordering::SeqCst);
+        let cancels = inner.open_cancels.load(Ordering::SeqCst);
+        let cancelled = || inner.open_cancels.load(Ordering::SeqCst) != cancels;
+        let media = &inner.env.media;
         let collected = collect(paths, options.recursive);
         let mut outcome = OpenOutcome {
             ignored: collected.ignored,
             missing: collected.missing,
+            unreadable: collected.unreadable,
+            unreadable_privacy_block: collected.unreadable_privacy_block,
             ..OpenOutcome::default()
         };
+        // Canonical paths first, outside the session lock: on a slow volume each takes a while, and
+        // every other command waits for the lock (`docs/26` G3-3).
+        let canons: Vec<PathBuf> = collected
+            .files
+            .par_iter()
+            .map(|path| media.canonical(path))
+            .collect();
         // New files only, sorted, each file once.
         let mut files: Vec<(PathBuf, PathBuf)> = {
             let st = lock(&inner.state);
             let mut seen: HashSet<PathBuf> = HashSet::new();
             let mut fresh = Vec::new();
-            for path in collected.files {
-                let canon = canonical(&path);
+            for (path, canon) in collected.files.into_iter().zip(canons) {
                 // A file listed twice in one call (a folder and a file inside it) is one file:
                 // the repeat is neither added nor counted as already open.
                 if !seen.insert(canon.clone()) {
@@ -2240,11 +2382,36 @@ impl Session {
             fresh
         };
         files.sort_by_key(|(p, _)| p.to_string_lossy().to_lowercase());
-        // Probe in parallel; the result order is the file order.
-        let probed: Vec<Result<RawMetadata, RawError>> = files
+        // Probe in parallel, each probe on a thread of its own with a time limit; the result order
+        // is the file order. `None`: the open was cancelled before this file answered.
+        let total = files.len();
+        let done = std::sync::atomic::AtomicUsize::new(0);
+        progress(OpenProgress { done: 0, total });
+        let probed: Vec<Option<Result<RawMetadata, ProbeFailure>>> = files
             .par_iter()
-            .map(|(path, _)| ym_raw::metadata::probe(path))
+            .map(|(path, _)| {
+                let answer = if cancelled() {
+                    None
+                } else {
+                    match media.probe(path, &cancelled) {
+                        Guarded::Done(result) => Some(result.map_err(ProbeFailure::Raw)),
+                        Guarded::NoAnswer => Some(Err(ProbeFailure::NoAnswer)),
+                        Guarded::Cancelled => None,
+                    }
+                };
+                let n = done.fetch_add(1, Ordering::SeqCst) + 1;
+                if n.is_multiple_of(OPEN_PROGRESS_STEP) || n == total {
+                    progress(OpenProgress { done: n, total });
+                }
+                answer
+            })
             .collect();
+        outcome.cancelled = probed.iter().any(Option::is_none);
+        let (files, probed): (Vec<_>, Vec<_>) = files
+            .into_iter()
+            .zip(probed)
+            .filter_map(|(file, probe)| Some((file, probe?)))
+            .unzip();
 
         let mut events = Vec::new();
         let mut develop = Vec::new();
@@ -3163,6 +3330,13 @@ impl Session {
         (next > 1).then(|| PhotoId(next - 1))
     }
 
+    /// Stops the [`Session::open`] calls that are running (`docs/26` P3-3): files not read yet are
+    /// dropped, a probe that is waiting for a file stops waiting, and the files read so far stay.
+    /// Photos already open, and their development, are untouched (that is [`Session::close`]).
+    pub fn cancel_open(&self) {
+        self.inner.open_cancels.fetch_add(1, Ordering::SeqCst);
+    }
+
     /// Closes the session (`close_session`): cancels every background job, forgets every photo,
     /// settings and cache. Jobs that are running stop at their next stage; their results are
     /// discarded and no event is sent for them after this returns. The session can be opened
@@ -3676,7 +3850,7 @@ impl Inner {
         path: PathBuf,
         canon: PathBuf,
         default_look: &LookId,
-        probe: Result<RawMetadata, RawError>,
+        probe: Result<RawMetadata, ProbeFailure>,
     ) -> Photo {
         let file_name = path
             .file_name()
@@ -3740,47 +3914,62 @@ impl Inner {
                     crop_analysis: None,
                 }
             }
-            Err(error) => Photo {
-                id,
-                path,
-                canon,
-                incarnation: 0,
-                summary: PhotoSummary {
+            Err(error) => {
+                let reason = match &error {
+                    ProbeFailure::Raw(error) => {
+                        tracing::warn!(
+                            photo = id.0,
+                            kind = error.kind(),
+                            detail = error.detail().as_deref().unwrap_or(""),
+                            "the file could not be read"
+                        );
+                        error.to_string()
+                    }
+                    ProbeFailure::NoAnswer => {
+                        tracing::warn!(photo = id.0, "the file did not answer in time");
+                        NO_ANSWER_MESSAGE.to_owned()
+                    }
+                };
+                Photo {
                     id,
-                    file_name,
-                    camera: CameraInfo::unknown(),
-                    iso: 0,
-                    shutter_s: 0.0,
-                    aperture_f: 0.0,
-                    captured_at: String::new(),
-                    width_px: 0,
-                    height_px: 0,
-                    status: PhotoStatus::Skipped {
-                        reason: error.to_string(),
+                    path,
+                    canon,
+                    incarnation: 0,
+                    summary: PhotoSummary {
+                        id,
+                        file_name,
+                        camera: CameraInfo::unknown(),
+                        iso: 0,
+                        shutter_s: 0.0,
+                        aperture_f: 0.0,
+                        captured_at: String::new(),
+                        width_px: 0,
+                        height_px: 0,
+                        status: PhotoStatus::Skipped { reason },
+                        picked: false,
+                        reduced: false,
+                        apple_pending: false,
                     },
-                    picked: false,
-                    reduced: false,
-                    apple_pending: false,
-                },
-                meta: None,
-                camera: None,
-                profile: None,
-                pool_key: None,
-                burst: None,
-                own: None,
-                effective: None,
-                noise_version: 0,
-                own_gen: 0,
-                settings,
-                pick: None,
-                version: 0,
-                apple_results: [None, None, None],
-                apple_picture: PictureSlot::Empty,
-                apple_pending_sent: false,
-                served: None,
-                repaint: false,
-                crop_analysis: None,
-            },
+                    meta: None,
+                    camera: None,
+                    profile: None,
+                    pool_key: None,
+                    burst: None,
+                    own: None,
+                    effective: None,
+                    noise_version: 0,
+                    own_gen: 0,
+                    settings,
+                    pick: None,
+                    version: 0,
+                    apple_results: [None, None, None],
+                    apple_picture: PictureSlot::Empty,
+                    apple_pending_sent: false,
+                    served: None,
+                    repaint: false,
+                    crop_analysis: None,
+                }
+            }
         }
     }
 
@@ -3926,9 +4115,24 @@ impl Inner {
             return;
         }
         let started = Instant::now();
-        let raw = match ym_raw::decode::decode(&path) {
-            Ok(raw) => Arc::new(raw),
-            Err(e) => return fail(PhotoStage::Decode, e.to_string()),
+        // The read has a time limit: a file on media that went away fails the photo and frees the
+        // pool thread instead of keeping it for ever (`docs/26` H-15).
+        let raw = match self.env.media.decode(&path, &|| !self.live(epoch)) {
+            Guarded::Done(Ok(raw)) => Arc::new(raw),
+            Guarded::Done(Err(e)) => {
+                tracing::warn!(
+                    photo = id.0,
+                    kind = e.kind(),
+                    detail = e.detail().as_deref().unwrap_or(""),
+                    "the file could not be decoded"
+                );
+                return fail(PhotoStage::Decode, e.to_string());
+            }
+            Guarded::NoAnswer => {
+                tracing::warn!(photo = id.0, "the file did not answer in time");
+                return fail(PhotoStage::Decode, NO_ANSWER_MESSAGE.to_owned());
+            }
+            Guarded::Cancelled => return,
         };
         tracing::debug!(
             photo = id.0,
@@ -3954,7 +4158,10 @@ impl Inner {
             camera.matched.white_scale,
         ) {
             Ok(e) => Arc::new(e),
-            Err(e) => return fail(PhotoStage::Estimate, e.to_string()),
+            Err(e) => {
+                tracing::warn!(photo = id.0, detail = %e.detail(), "the photo could not be analysed");
+                return fail(PhotoStage::Estimate, e.to_string());
+            }
         };
         tracing::debug!(
             photo = id.0,
@@ -4128,7 +4335,14 @@ impl Inner {
                 return Ok(raw);
             }
             self.raw_decodes.fetch_add(1, Ordering::SeqCst);
-            let decoded = Arc::new(ym_raw::decode::decode(&path)?);
+            let decoded = match self.env.media.decode(&path, &|| !self.live(epoch)) {
+                Guarded::Done(result) => Arc::new(result?),
+                Guarded::NoAnswer => {
+                    return Err(SessionError::Skipped(NO_ANSWER_MESSAGE.to_owned()));
+                }
+                // The session closed while the file was read: nobody wants the image.
+                Guarded::Cancelled => return Err(SessionError::UnknownPhoto(id)),
+            };
             let raw = {
                 let mut st = lock(&self.state);
                 // The development job may have cached it while we read the file: one image.
@@ -4776,6 +4990,96 @@ impl From<String> for AnswerError {
 mod tests {
     use super::*;
     use std::sync::Barrier;
+
+    fn refused(code: i32) -> std::io::Error {
+        std::io::Error::from_raw_os_error(code)
+    }
+
+    /// A lister that fails for the folders named `bad` with `error` and lists the real ones.
+    fn failing<'a>(
+        bad: &'a [PathBuf],
+        error: impl Fn() -> std::io::Error + 'a,
+    ) -> impl Fn(&Path) -> std::io::Result<Vec<PathBuf>> + 'a {
+        move |dir| {
+            if bad.iter().any(|b| b == dir) {
+                Err(error())
+            } else {
+                list_dir(dir)
+            }
+        }
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_listed_is_unreadable_and_not_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("Locked");
+        let open = dir.path().join("Open");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::create_dir_all(&open).unwrap();
+        std::fs::write(open.join("a.ARW"), b"x").unwrap();
+        let bad = [locked.clone()];
+        let list = failing(&bad, || refused(13));
+        let got = collect_with(&[locked.clone(), open.clone()], false, &list);
+        assert_eq!(got.unreadable, std::slice::from_ref(&locked));
+        assert!(
+            !got.unreadable_privacy_block,
+            "EACCES is not the privacy block"
+        );
+        assert_eq!(got.files, [open.join("a.ARW")]);
+        // Nothing read: the message is the folder's.
+        let got = collect_with(std::slice::from_ref(&locked), false, &list);
+        let outcome = OpenOutcome {
+            unreadable: got.unreadable,
+            ..OpenOutcome::default()
+        };
+        assert_eq!(
+            outcome.message().as_deref(),
+            Some(
+                "Yellowmoon can't read the folder Locked. Check that it is still there and that you may open it, then try again."
+            )
+        );
+        // A folder that was read and held no ARW file keeps the old sentence.
+        let empty = OpenOutcome::default();
+        assert_eq!(empty.message().as_deref(), Some(NO_ARW_MESSAGE));
+    }
+
+    #[test]
+    fn a_subfolder_that_cannot_be_listed_is_named_when_walking_deep() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let bad = [sub.clone()];
+        let list = failing(&bad, || refused(1));
+        let deep = collect_with(&[dir.path().to_path_buf()], true, &list);
+        assert_eq!(deep.unreadable, [sub]);
+        assert!(deep.unreadable_privacy_block == cfg!(unix));
+        let flat = collect_with(&[dir.path().to_path_buf()], false, &list);
+        assert!(
+            flat.unreadable.is_empty(),
+            "one level: the subfolder is not entered"
+        );
+    }
+
+    #[test]
+    fn the_message_names_the_first_folder_and_counts_the_rest() {
+        let f = |n: &[&str]| n.iter().map(PathBuf::from).collect::<Vec<_>>();
+        assert_eq!(unreadable_message(&[], false), None);
+        let one = unreadable_message(&f(&["/a/Card"]), false).unwrap();
+        assert!(
+            one.starts_with("Yellowmoon can't read the folder Card. "),
+            "{one}"
+        );
+        assert!(!one.contains("more folder"));
+        let two = unreadable_message(&f(&["/a/Card", "/b/X"]), false).unwrap();
+        assert!(two.ends_with(" …and 1 more folder."), "{two}");
+        let three = unreadable_message(&f(&["/a/Card", "/b/X", "/c/Y"]), false).unwrap();
+        assert!(three.ends_with(" …and 2 more folders."), "{three}");
+        let privacy = unreadable_message(&f(&["/a/Desktop"]), true).unwrap();
+        assert_eq!(
+            privacy,
+            "Yellowmoon can't read the folder Desktop. Allow access in System Settings, under Privacy & Security › Files and Folders (or Full Disk Access), then try again."
+        );
+    }
 
     /// Runs `work` for `key` the way `Inner::raw_image` does: lead it, or wait for the leader's
     /// result and lead again if the leader failed.

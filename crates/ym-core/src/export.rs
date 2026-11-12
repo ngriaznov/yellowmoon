@@ -61,18 +61,18 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use ym_color::display::OutputTarget;
 use ym_export::dng::{CropRect, DngReport, FittedProfile, compose_orientation};
 use ym_export::exif::{CaptureTime, ExifInfo, Gps};
-use ym_export::naming::{self, NameFields, Placement};
+use ym_export::naming::{self, NameFields, Placement, STALE_TEMP_AGE, remove_stale_temps};
 use ym_export::request::{BandRequest, PictureStages, write_export_bands, write_export_with};
 use ym_export::xmp::{XmpInfo, YmInfo};
 use ym_export::{
-    ColorSpace, DetailStat, DngInputs, ExportDestination, ExportFormat, ExportHooks, ExportOptions,
-    ExportRequest, FormatKind, IfExists, ImageRef, Metadata, PixelEncoding,
-    estimate_bytes_with_detail, write_export,
+    ColorSpace, DestinationProblem, DetailStat, DngInputs, ExportDestination, ExportFormat,
+    ExportHooks, ExportOptions, ExportRequest, FormatKind, IfExists, ImageRef, Metadata,
+    PixelEncoding, estimate_bytes_with_detail, write_export,
 };
 use ym_gpu::queue::{CancelToken, JobError};
 use ym_looks::library::LookId;
@@ -185,11 +185,49 @@ impl ExportError {
             Self::Render(RenderError::Gpu(_)) => "gpu",
             Self::Render(RenderError::Mask(_)) => "mask",
             Self::Render(_) => "render",
-            Self::Write(_) => "write",
+            Self::Write(e) => match e.destination_problem() {
+                Some(DestinationProblem::DiskFull) => "disk_full",
+                Some(_) => "destination",
+                None => "write",
+            },
             Self::Session(SessionError::Skipped(_)) => "unsupported",
             Self::Session(_) => "session",
             Self::Settings(_) | Self::Options(_) => "usage",
             Self::Decode(_) => "decode",
+        }
+    }
+
+    /// The destination problem behind a failed write, when there is one: the whole job cannot go on
+    /// (the disk is full, the folder is read-only, gone or not allowed), as opposed to a failure of
+    /// one photo (`docs/26-hardening.md` P2-2). The queue stops on it.
+    #[must_use]
+    pub fn destination_problem(&self) -> Option<DestinationProblem> {
+        match self {
+            Self::Write(e) => e.destination_problem(),
+            _ => None,
+        }
+    }
+
+    /// The sentence for `ym` (stderr and `--json` `error.message`). It is the app's sentence, except
+    /// for a failure of the destination, which names the folder by its full path and says which
+    /// option to use (`docs/26-hardening.md` section 2).
+    #[must_use]
+    pub fn cli_message(&self) -> String {
+        if let Self::Write(e) = self
+            && let (Some(problem), Some(folder)) = (e.destination_problem(), e.folder())
+        {
+            return problem.cli_message(folder);
+        }
+        self.to_string()
+    }
+
+    /// The operating system's own text of a write failure, for the log and `error.detail` of
+    /// `--json`. Never part of a sentence.
+    #[must_use]
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            Self::Write(e) => e.detail(),
+            _ => None,
         }
     }
 
@@ -1174,8 +1212,15 @@ fn export_photo_unguarded(
 
     // 2. The file name and the folder; a skipped file costs nothing.
     let fields = name_fields(photo, params.seq);
-    let mut dest =
-        ExportDestination::resolve(options, &fields, Some(&photo.path), ctx.home.as_deref())?;
+    // Only the job's first photo may make the folder the options name; a later photo finds it gone
+    // ("Folder gone", `docs/26-hardening.md` P2-4).
+    let mut dest = ExportDestination::resolve_with(
+        options,
+        &fields,
+        Some(&photo.path),
+        ctx.home.as_deref(),
+        params.seq <= 1,
+    )?;
     // A name this job has already written is numbered whatever "If the file exists" says: Replace
     // would overwrite the job's own earlier photo and Skip would take it for a file from before.
     let mut notes: Vec<String> = Vec::new();
@@ -1708,6 +1753,92 @@ pub fn estimate<'a>(
     Estimate { bytes, seconds }
 }
 
+/// Resolves the destination of a photo the way [`export_photo`] will (the folder is made and probed with a
+/// temporary file), without decoding or rendering anything. The queue calls it **before** the photo is
+/// decoded, so a folder that has gone or became read-only ends the job before any work is spent on it
+/// (`docs/26-hardening.md` P2-2). Any error is returned as `export_photo` would return it; the caller stops
+/// the job only for one with a [`ExportError::destination_problem`].
+///
+/// # Errors
+/// [`ExportError::Write`] when the folder cannot be made or written.
+pub fn check_destination(
+    ctx: &ExportContext,
+    snapshot: &PhotoSnapshot,
+    options: &ExportOptions,
+    seq: u32,
+) -> Result<(), ExportError> {
+    let v = &snapshot.view;
+    let fields = name_fields_of(&v.path, &v.meta, &v.camera, &v.settings.output().look, seq);
+    let dest = ExportDestination::resolve_with(
+        options,
+        &fields,
+        Some(&v.path),
+        ctx.home.as_deref(),
+        seq <= 1,
+    )?;
+    if seq <= 1 {
+        // The start of a job: a crash of an earlier run left its temporary files here.
+        remove_stale_temps(&dest.dir, SystemTime::now(), STALE_TEMP_AGE);
+    }
+    Ok(())
+}
+
+/// The warning threshold of `docs/26-hardening.md` P2-3: the free space is compared with the size
+/// estimate times this factor, the estimate's documented 90th-percentile error (`docs/09`, "Size
+/// estimate": 90 % of the real renders within 35 %).
+pub const LOW_SPACE_FACTOR: f64 = 1.35;
+
+/// Whether an export that the estimate puts at `estimate_bytes` should be warned about on a disk with
+/// `free_bytes` available: exactly when `free_bytes < LOW_SPACE_FACTOR * estimate_bytes`. A warning
+/// only; the export is never refused (the stop on a full disk is the exact one).
+#[must_use]
+pub fn is_low_on_space(estimate_bytes: u64, free_bytes: u64) -> bool {
+    (free_bytes as f64) < LOW_SPACE_FACTOR * estimate_bytes as f64
+}
+
+/// A size as the panel writes it: decimal megabytes, or gigabytes from 1000 MB ("120 MB", "1.2 GB").
+#[must_use]
+pub fn size_text(bytes: u64) -> String {
+    let mb = bytes as f64 / 1e6;
+    if mb >= 1000.0 {
+        format!("{:.1} GB", mb / 1000.0)
+    } else {
+        format!("{} MB", mb.round().max(1.0) as u64)
+    }
+}
+
+/// The sentence under the Export button, and on stderr in `ym`, when [`is_low_on_space`]. `folder` is
+/// how the destination is named: its last component in the app, its full path in `ym`.
+#[must_use]
+pub fn low_space_message(estimate_bytes: u64, free_bytes: u64, folder: &str) -> String {
+    format!(
+        "This export needs about {} and {} is free in {folder}. It may stop part way.",
+        size_text(estimate_bytes),
+        size_text(free_bytes)
+    )
+}
+
+/// The last component of a folder, the way the app names it in a sentence (the whole path when it has
+/// none, as for `/`).
+#[must_use]
+pub fn folder_label(dir: &Path) -> String {
+    dir.file_name().map_or_else(
+        || dir.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
+}
+
+/// The bytes available to this user on the volume that holds `dir`, or of its nearest existing
+/// parent when the folder is not made yet. `None` when no volume can be read (the warning is then
+/// left out, never invented).
+#[must_use]
+pub fn free_bytes_in(dir: &Path) -> Option<u64> {
+    dir.ancestors()
+        .filter(|a| !a.as_os_str().is_empty())
+        .find(|a| a.exists())
+        .and_then(|a| fs4::available_space(a).ok())
+}
+
 /// The destination folder an export of `photo` would use, worked out without touching the disk:
 /// the folder the options name, else `<source folder> export`, else `~/Pictures/Yellowmoon export`.
 #[must_use]
@@ -1744,4 +1875,49 @@ pub fn predicted_name_in(dir: &Path, file_name: &str, if_exists: IfExists) -> St
         }
     }
     file_name.to_owned()
+}
+
+#[cfg(test)]
+mod space_tests {
+    use super::*;
+
+    #[test]
+    fn the_warning_is_exactly_free_space_under_135_percent_of_the_estimate() {
+        // 100 MB estimated: the line is 135 MB.
+        assert!(is_low_on_space(100_000_000, 134_999_999));
+        assert!(!is_low_on_space(100_000_000, 135_000_000));
+        assert!(!is_low_on_space(100_000_000, 135_000_001));
+        assert!(is_low_on_space(100_000_000, 0));
+        // Nothing to write is never a warning.
+        assert!(!is_low_on_space(0, 0));
+        assert!(!is_low_on_space(0, 1));
+        // A big job on a big disk.
+        assert!(is_low_on_space(2_000_000_000_000, 2_699_999_999_999));
+        assert!(!is_low_on_space(2_000_000_000_000, 2_700_000_000_000));
+    }
+
+    #[test]
+    fn the_sentence_is_the_catalogues() {
+        assert_eq!(
+            low_space_message(300_000_000, 350_000_000, "/Users/me/Lisbon export"),
+            "This export needs about 300 MB and 350 MB is free in /Users/me/Lisbon export. It may stop part way."
+        );
+        assert_eq!(size_text(2_400_000_000), "2.4 GB");
+        assert_eq!(size_text(1), "1 MB");
+        assert_eq!(size_text(999_499_999), "999 MB");
+        assert_eq!(
+            folder_label(Path::new("/a/Lisbon export/")),
+            "Lisbon export"
+        );
+    }
+
+    #[test]
+    fn free_space_is_read_for_a_folder_that_is_not_made_yet() {
+        let dir = tempfile::tempdir().expect("dir");
+        let here = free_bytes_in(dir.path()).expect("the volume can be read");
+        assert!(here > 0);
+        // The nearest existing parent answers for a folder that is not there.
+        assert!(free_bytes_in(&dir.path().join("a").join("b")).is_some());
+        assert!(!dir.path().join("a").exists(), "nothing was made");
+    }
 }

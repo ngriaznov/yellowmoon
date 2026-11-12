@@ -122,7 +122,7 @@ describe("running an export", () => {
     api.exportStart = async (job) => {
       const id = await real(job);
       // The core's first event beats the answer.
-      api.emitEvent("export_progress", { job_id: id, file: names[0]!, done: 1, total: 3, file_percent: 10, error: null, skipped: false });
+      api.emitEvent("export_progress", { job_id: id, file: names[0]!, done: 1, total: 3, file_percent: 10, error: null, skipped: false, stopped: false });
       events.push({ job_id: id } as ExportProgress);
       return id;
     };
@@ -145,7 +145,7 @@ describe("running an export", () => {
       seen = store.getState().exportRun;
     });
     for (let percent = 1; percent <= 40; percent++) {
-      api.emitEvent("export_progress", { job_id: jobId, file: names[0]!, done: 0, total: 3, file_percent: percent, error: null, skipped: false });
+      api.emitEvent("export_progress", { job_id: jobId, file: names[0]!, done: 0, total: 3, file_percent: percent, error: null, skipped: false, stopped: false });
     }
     expect(changes, "nothing is drawn per event").toBe(0);
     await vi.waitFor(() => expect(changes).toBe(1));
@@ -157,7 +157,7 @@ describe("running an export", () => {
     const { api, store } = await opened({ exportHoldAt: 0 });
     await store.startExport(names, "~/x");
     const jobId = store.getState().exportRun?.jobId ?? -1;
-    api.emitEvent("export_progress", { job_id: jobId, file: names[0]!, done: 0, total: 3, file_percent: 5, error: null, skipped: false });
+    api.emitEvent("export_progress", { job_id: jobId, file: names[0]!, done: 0, total: 3, file_percent: 5, error: null, skipped: false, stopped: false });
     await store.cancelExport();
     await Promise.resolve();
     await Promise.resolve();

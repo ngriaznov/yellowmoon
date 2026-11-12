@@ -85,6 +85,11 @@ export interface Api {
   openPaths(paths: string[]): Promise<SessionState>;
   /** `open_dialog`: ask the user for files or a folder, then open them. Resolves `null` when the dialog is cancelled. */
   openDialog(kind: OpenKind): Promise<SessionState | null>;
+  /**
+   * `cancel_open` (`docs/26` H-10): stop the `openPaths` or `openDialog` call that is reading files. It resolves with the files read so
+   * far, which stay (`opened.cancelled` is true); the others are dropped. Photos already open are untouched.
+   */
+  cancelOpen(): Promise<void>;
   /** `session_state`: photos, current index, picked set and per-photo summaries. */
   sessionState(): Promise<SessionState>;
   /**
@@ -328,6 +333,12 @@ export interface Api {
    * (`thumbnail_ready`), so a webview that reloaded asks for them again. Only addresses cross the bridge.
    */
   thumbnails(): Promise<ThumbnailReady[]>;
+  /**
+   * `thumbnails_in_view` (`docs/26` H-11): the filmstrip draws these photos. The shell answers with the address of the thumbnail it holds
+   * for each (a photo it has none for is left out) and counts them as used. A photo whose thumbnail the shell let go of to keep its byte
+   * budget gets a new one, announced with `thumbnail_ready` like any other; the page keeps no address for it until then.
+   */
+  thumbnailsInView(ids: PhotoId[]): Promise<ThumbnailReady[]>;
 
   // --- The system: dialogs, Finder, the browser ------------------------------
 
@@ -410,6 +421,7 @@ const unit = (call: Promise<null>): Promise<void> => call.then(() => undefined);
 export const tauriApi: Api = {
   openPaths: (paths) => commands.openPaths(paths),
   openDialog: (kind) => commands.openDialog(kind),
+  cancelOpen: () => unit(commands.cancelOpen()),
   sessionState: () => commands.sessionState(),
   closeSession: () => unit(commands.closeSession()),
   setCurrent: (photoId) => unit(commands.setCurrent(photoId)),
@@ -464,6 +476,7 @@ export const tauriApi: Api = {
   exportBusy: () => commands.exportBusy(),
   restartApp: () => unit(commands.restartApp()),
   thumbnails: () => commands.thumbnails(),
+  thumbnailsInView: (ids) => commands.thumbnailsInView(ids),
 
   chooseFolder: (start) => commands.chooseFolder(start),
   chooseLookFiles: () => commands.chooseLookFiles(),

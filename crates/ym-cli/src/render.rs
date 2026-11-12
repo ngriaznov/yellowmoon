@@ -24,6 +24,7 @@ use ym_core::app::Core;
 use ym_core::app::gpu::{
     CpuReason, GPU_ENV, GpuOutcome, GpuPolicy, GpuSlot, PolicyChoice, PolicySource, open_gpu,
 };
+use ym_core::export::{free_bytes_in, is_low_on_space, low_space_message, planned_destination};
 use ym_core::export_queue::{ExportEvent, ExportJob, FileDone, QueueError};
 use ym_core::looks::{LookService, LooksError};
 use ym_core::pipeline::ComputeDevice;
@@ -32,14 +33,16 @@ use ym_core::settings::{Crop, CropAspect, LensKind, SettingsPatch};
 use ym_export::{ExportOptions, FormatKind, IfExists, JpegQuality, Size};
 use ym_looks::library::LookId;
 use ym_looks::library::ResolveError;
-use ym_raw::layout::DecodeKind;
 
 use crate::cli::{RenderArgs, auto_choice};
 use crate::console::{Console, bar, duration_text, photos, shorten};
 use crate::develop::{LensChoice, LoadedSettings, Overrides, SettingsFile};
 use crate::exit::{self, Failure};
 use crate::inputs::{self, Expanded, Problem};
-use crate::report::{AppleAutoField, Object, develop_fields, render_error, render_ok};
+use crate::report::{
+    AppleAutoField, Object, develop_fields, render_error, render_low_space, render_ok,
+    render_stopped,
+};
 use crate::runtime::{
     BackgroundGpu, CoreSettings, Runtime, gpu_line, interrupted, read_instructions,
 };
@@ -122,6 +125,9 @@ pub const DISPLAY_REMOVED: &str = "--display was removed. Yellowmoon always uses
 
 /// The export options of a run: the table of `docs/09` as defaults, the user's format preference,
 /// then the options of the command line.
+/// How long reading the files may take before `ym` says how far it has got.
+const READING_LINE_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
+
 fn export_options(
     args: &RenderArgs,
     preferred_format: FormatKind,
@@ -211,6 +217,43 @@ enum Outcome {
     Failed { kind: String },
 }
 
+/// Says "This export needs about {size} and {free} is free in {folder}. It may stop part way." on stderr
+/// (and as a `low_space` event with `--json`) when the free space of the destination is under 1.35 times
+/// the size estimate (`ym_core::export::is_low_on_space`). The run goes on either way. The folder is the
+/// first photo's destination, by its full path; nothing is said when the space cannot be read.
+fn warn_if_low_on_space(
+    core: &Core,
+    job: &ExportJob,
+    json: bool,
+    console: &mut Console,
+    stdout: &mut Stdout,
+) {
+    let Some(first) = core
+        .session
+        .scope_ids(job.scope)
+        .into_iter()
+        .find_map(|id| core.session.view(id).ok())
+    else {
+        return;
+    };
+    let Some(folder) = planned_destination(core.exports.context(), &first.path, &job.options)
+    else {
+        return;
+    };
+    let Some(free) = free_bytes_in(&folder) else {
+        return;
+    };
+    let needed = core.exports.estimate(&core.session, job).bytes;
+    if !is_low_on_space(needed, free) {
+        return;
+    }
+    let message = low_space_message(needed, free, &path_text(&folder));
+    console.warn(&message);
+    if json {
+        stdout.line(&render_low_space(needed, free, &path_text(&folder), &message).to_line());
+    }
+}
+
 /// A stdout that notices when its reader is gone and then stays quiet.
 struct Stdout {
     open: bool,
@@ -292,16 +335,22 @@ fn read_settings_text(path: &Path) -> Result<String, Failure> {
     }
 }
 
-fn decode_kind_unsupported(kind: DecodeKind) -> bool {
-    matches!(kind, DecodeKind::Arw6 | DecodeKind::Unknown { .. })
-}
-
-/// Why a photo the session skipped could not be developed, as a JSON `kind`.
-fn skip_kind(path: &Path) -> &'static str {
-    match ym_raw::metadata::probe(path) {
-        Err(error) => error.kind(),
-        Ok(meta) if decode_kind_unsupported(meta.decode) => "unsupported",
-        Ok(_) => "decode",
+/// Why a photo the session skipped could not be developed: the JSON `kind` and, when the file
+/// itself is the cause, the technical detail of the failure.
+///
+/// The session keeps only the sentence, so the file is decoded again (it is a failure, so this runs
+/// once per bad file) and the error of that decode gives the kind (`corrupt`, `io`, `not_arw`,
+/// `arq`, `unsupported`) and its detail. A file that decodes again was refused by a later stage of
+/// the session (the automatic estimates), which is not a file problem of the raw kinds: `analysis`.
+fn skip_kind(path: &Path, reason: &str) -> (&'static str, Option<String>) {
+    // A file that did not answer in time is not read again: that would wait for it a second time
+    // (`docs/26` H-15). It is an `io` failure whose detail says so.
+    if reason == ym_core::media::NO_ANSWER_MESSAGE {
+        return ("io", Some("the file did not answer in time".to_owned()));
+    }
+    match ym_raw::decode::decode(path) {
+        Err(error) => (error.kind(), error.detail()),
+        Ok(_) => ("analysis", None),
     }
 }
 
@@ -428,10 +477,24 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         message,
     } in &problems
     {
-        report_failure(console, &mut stdout, args.json, path, None, kind, message);
+        report_failure(
+            console,
+            &mut stdout,
+            args.json,
+            path,
+            None,
+            kind,
+            message,
+            None,
+        );
         counts.failed.push((*kind).to_owned());
     }
     if files.is_empty() {
+        // A folder that could not be read was reported above, and it is the reason nothing is left:
+        // a failure (1), not "no input" (5).
+        if problems.iter().any(|p| p.kind == "unreadable") {
+            return Ok(exit::SOME_FAILED);
+        }
         console.error(if ignored > 0 || !problems.is_empty() {
             "No ARW files were found. Give ARW files, or folders that hold them."
         } else {
@@ -454,7 +517,14 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         .then(|| BackgroundGpu::start(choice.policy, budget));
 
     let mut plans: Vec<Plan> = Vec::with_capacity(files.len());
-    for file in &files {
+    let reading_started = std::time::Instant::now();
+    for (n, file) in files.iter().enumerate() {
+        // A slow volume: after the first second say how far the reading has got (`docs/26` P3-3).
+        // Each file has its own time limit, so one that does not answer ends the line with the
+        // photo's own sentence.
+        if reading_started.elapsed() > READING_LINE_AFTER {
+            console.progress(format!("Reading {n} of {} files…", files.len()));
+        }
         let outcome = core
             .session
             .open(std::slice::from_ref(file), OpenOptions::default());
@@ -464,6 +534,9 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
             known: None,
             result: None,
         });
+    }
+    if reading_started.elapsed() > READING_LINE_AFTER {
+        console.finish_progress();
     }
     let total = plans.len();
     let asking = format!("Asking {}", rt.asking().name());
@@ -505,15 +578,25 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
                 None,
                 "open",
                 "This file couldn't be opened. Check that it exists and try again.",
+                None,
             );
             continue;
         };
         if let Some(PhotoStatus::Skipped { reason }) = core.session.status(id) {
-            let kind = skip_kind(&plan.input);
+            let (kind, detail) = skip_kind(&plan.input, &reason);
             plan.result = Some(Outcome::Failed { kind: kind.into() });
             plan.photo = None;
             counts.failed.push(kind.into());
-            report_failure(console, &mut stdout, args.json, input, None, kind, &reason);
+            report_failure(
+                console,
+                &mut stdout,
+                args.json,
+                input,
+                None,
+                kind,
+                &reason,
+                detail.as_deref(),
+            );
             continue;
         }
         match apply_settings(
@@ -545,6 +628,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
                     None,
                     "settings",
                     &message,
+                    None,
                 );
             }
         }
@@ -588,6 +672,8 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
     if let Some(notice) = rt.auto_notice_before_export() {
         console.warn(&notice);
     }
+    // The free space is read now, as the job starts (`docs/26-hardening.md` P2-3): a warning, never a stop.
+    warn_if_low_on_space(core, &job, args.json, console, &mut stdout);
     let started = Instant::now();
     if let Err(error) = core.exports.start(&core.session, &job, remove_location) {
         return Err(match error {
@@ -649,8 +735,9 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
     }
     console.finish_progress();
 
-    // A photo with no result: the job stopped (Ctrl-C) or something went wrong below us.
-    if !cancelled {
+    // A photo with no result: the job stopped (Ctrl-C) or something went wrong below us. (A job that
+    // stopped at a failure of the destination left the photos after it untried, which is no surprise.)
+    if !cancelled && summary.stopped.is_none() {
         for plan in plans
             .iter_mut()
             .filter(|p| p.photo.is_some() && p.result.is_none())
@@ -665,6 +752,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
                 plan.known.as_ref(),
                 "render",
                 message,
+                None,
             );
             plan.result = Some(Outcome::Failed {
                 kind: "render".into(),
@@ -779,9 +867,23 @@ struct Summary {
     skipped: usize,
     folders: Vec<PathBuf>,
     elapsed: f64,
+    /// The export stopped at a failure of the destination (`docs/26` P2-2).
+    stopped: Option<Stopped>,
 }
 
-/// Prints one failure: a JSON object with `--json`, else a line on stderr.
+/// Where the export stopped.
+#[derive(Debug, Clone, Copy)]
+struct Stopped {
+    /// Photos in the job.
+    total: usize,
+}
+
+/// Prints one failure: a JSON object with `--json` (with `error.detail` when there is one), else a
+/// line on stderr, and the detail on a second line with `--verbose`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one failure's fields, passed once per file"
+)]
 fn report_failure(
     console: &mut Console,
     stdout: &mut Stdout,
@@ -790,11 +892,15 @@ fn report_failure(
     known: Option<&Object>,
     kind: &str,
     message: &str,
+    detail: Option<&str>,
 ) {
     if json {
-        stdout.line(&render_error(&lossy(input), known, kind, message).to_line());
+        stdout.line(&render_error(&lossy(input), known, kind, message, detail).to_line());
     } else {
         console.error(&format!("{}: {message}", path_text(input)));
+    }
+    if let Some(detail) = detail {
+        console.detail(&format!("{}: {detail}", path_text(input)));
     }
 }
 
@@ -893,8 +999,23 @@ fn handle_file(
                 input,
                 plan.known.as_ref(),
                 failure.kind,
-                &failure.message,
+                &failure.cli_message,
+                failure.detail.as_deref(),
             );
+            if failure.stopped {
+                // The queue stopped here: nothing after this photo was decoded or rendered.
+                summary.stopped = Some(Stopped { total: done.total });
+                if json {
+                    stdout.line(
+                        &render_stopped(
+                            failure.kind,
+                            summary.written + summary.skipped,
+                            done.not_tried,
+                        )
+                        .to_line(),
+                    );
+                }
+            }
         }
     }
 }
@@ -909,7 +1030,16 @@ fn summarise(
     interrupted: bool,
 ) {
     let mut parts: Vec<String> = Vec::new();
-    if interrupted {
+    if let Some(stopped) = summary.stopped {
+        // The error line above says why; this says how far it got. Photos written before the stop
+        // stay, so they are counted in `k`.
+        let done = summary.written + summary.skipped;
+        parts.push(format!(
+            "Stopped after {done} of {}. {} not exported.",
+            stopped.total,
+            stopped.total.saturating_sub(done)
+        ));
+    } else if interrupted {
         parts.push(format!(
             "Interrupted: {} of {} exported. Nothing half-written is left behind.",
             summary.written + summary.skipped,
@@ -927,7 +1057,7 @@ fn summarise(
             duration_text(summary.elapsed)
         ));
     }
-    if summary.skipped > 0 {
+    if summary.skipped > 0 && summary.stopped.is_none() {
         parts.push(if summary.skipped == 1 {
             "1 photo already existed and was skipped.".to_owned()
         } else {
@@ -937,7 +1067,7 @@ fn summarise(
             )
         });
     }
-    if !counts.failed.is_empty() {
+    if !counts.failed.is_empty() && summary.stopped.is_none() {
         parts.push(format!("{} failed.", photos(counts.failed.len())));
     }
     if parts.is_empty() {

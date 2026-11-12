@@ -65,6 +65,8 @@ muda = "0.20"
 # Builds the zips of the wizard tests and reads the TypeScript contract in the bindings test.
 zip.workspace = true
 regex = "1"
+# Peak resident memory (`getrusage`) in the ignored 2000-file test (`docs/26` H-10). MIT OR Apache-2.0 (docs/14); already in the build through `ym-ml`.
+libc = "0.2"
 # Synthetic ARW files for the command tests.
 ym-raw = { workspace = true, features = ["testgen"] }
 # The test doubles of Claude Code and `agy` and the paths to them, for the test that quitting stops a running request
