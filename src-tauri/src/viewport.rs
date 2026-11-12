@@ -59,7 +59,7 @@
 //! the masks are there.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::thread::JoinHandle;
@@ -205,7 +205,7 @@ pub struct Served {
 type Png = Arc<Vec<u8>>;
 
 /// The thumbnails the store holds.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Thumbnails {
     /// Counts up with every thumbnail put, so that a new picture is a new address.
     version: u32,
@@ -214,6 +214,82 @@ struct Thumbnails {
     /// The thumbnails of the photos the last removal took out of the filmstrip, kept for the Undo of that removal
     /// ([`FrameStore::set_aside_photos`]) and nowhere else: they are not served.
     set_aside: BTreeMap<u32, Vec<(u32, Png)>>,
+    /// The bytes of the PNGs in `by_photo` (not `set_aside`: those are one removal's worth, and leave
+    /// the count while they wait).
+    bytes: usize,
+    /// The most bytes kept (see [`THUMBNAIL_BUDGET_BYTES`]).
+    budget: usize,
+    /// Counts up whenever a photo's thumbnail is put, served or asked for by the page.
+    clock: u64,
+    /// When each photo's thumbnail was last put, served or asked for, by `clock`.
+    last_used: BTreeMap<u32, u64>,
+    /// The photos that lost their thumbnail to the budget and have not been given a new one: what
+    /// [`FrameStore::thumbnails_in_view`] re-renders when the page shows them.
+    evicted: BTreeSet<u32>,
+    /// The photo on screen: its thumbnail is never let go.
+    current: Option<u32>,
+}
+
+impl Default for Thumbnails {
+    fn default() -> Self {
+        Self::with_budget(THUMBNAIL_BUDGET_BYTES)
+    }
+}
+
+impl Thumbnails {
+    fn with_budget(budget: usize) -> Self {
+        Self {
+            version: 0,
+            by_photo: BTreeMap::new(),
+            set_aside: BTreeMap::new(),
+            bytes: 0,
+            budget,
+            clock: 0,
+            last_used: BTreeMap::new(),
+            evicted: BTreeSet::new(),
+            current: None,
+        }
+    }
+
+    fn touch(&mut self, photo: u32) {
+        self.clock += 1;
+        self.last_used.insert(photo, self.clock);
+    }
+
+    /// Forgets the thumbnails of the photos used least recently until the budget holds. The photo
+    /// that was just given one (`newest`) and the photo on screen stay, even if they alone pass the
+    /// budget. The photos that lose theirs are remembered in `evicted`.
+    fn enforce_budget(&mut self, newest: Option<u32>) {
+        while self.bytes > self.budget {
+            let Some(victim) = self
+                .last_used
+                .iter()
+                .filter(|(photo, _)| Some(**photo) != newest && Some(**photo) != self.current)
+                .min_by_key(|(_, used)| **used)
+                .map(|(photo, _)| *photo)
+            else {
+                break;
+            };
+            self.take_photo(victim);
+            self.evicted.insert(victim);
+        }
+    }
+
+    /// Takes a photo's thumbnails out of the count and the use list, and returns them.
+    fn take_photo(&mut self, photo: u32) -> Option<Vec<(u32, Png)>> {
+        self.last_used.remove(&photo);
+        let versions = self.by_photo.remove(&photo)?;
+        self.bytes -= versions.iter().map(|(_, png)| png.len()).sum::<usize>();
+        Some(versions)
+    }
+
+    fn clear(&mut self) {
+        self.by_photo.clear();
+        self.set_aside.clear();
+        self.last_used.clear();
+        self.evicted.clear();
+        self.bytes = 0;
+    }
 }
 
 /// The look tiles the store holds: a photo through one look, at most 240 px.
@@ -387,6 +463,15 @@ pub const NODE_THUMBNAIL_BUDGET_BYTES: usize = 64 << 20;
 /// given; the webview asks for new ones when the photo's settings change.
 pub const LOOK_TILE_BUDGET_BYTES: usize = 256 << 20;
 
+/// How many bytes of filmstrip thumbnails the store keeps: 128 MiB. A thumbnail PNG of a real
+/// photograph is about 63 KB on average and 79 KB at the largest of the owner's photographs
+/// (`ym-core/tests/thumbnail_sizes.rs`; `docs/01` §Thumbnails and tiles by address), so the budget
+/// holds about 2,100 photographs at one version each: a folder of 2,000 fits whole, and one of
+/// 5,000 keeps the 2,000 or so used most recently. Past it the photos used least recently lose
+/// theirs (the one on screen and the one just made never); the page asks for the ones it shows
+/// ([`FrameStore::thumbnails_in_view`]) and the core makes them again.
+pub const THUMBNAIL_BUDGET_BYTES: usize = 128 << 20;
+
 /// How many frames the store keeps: the webview may still be loading the previous one.
 const FRAMES_KEPT: usize = 3;
 
@@ -409,6 +494,17 @@ impl FrameStore {
     pub fn with_look_tile_budget(bytes: usize) -> Self {
         Self {
             look_tiles: Mutex::new(LookTiles::with_budget(bytes)),
+            ..Self::default()
+        }
+    }
+
+    /// An empty store that keeps at most `bytes` of filmstrip thumbnails (the tests' way to reach
+    /// the limit with a few bytes; the application uses [`THUMBNAIL_BUDGET_BYTES`]).
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_thumbnail_budget(bytes: usize) -> Self {
+        Self {
+            thumbnails: Mutex::new(Thumbnails::with_budget(bytes)),
             ..Self::default()
         }
     }
@@ -534,17 +630,52 @@ impl FrameStore {
 
     /// Keeps the thumbnail of a photo (a PNG of at most 240 px) and returns the address it is
     /// served at. Every call gives a new address, so a refreshed thumbnail never meets a cached
-    /// older picture.
+    /// older picture. Only the newest few versions of a photo are kept, and the photos used least
+    /// recently lose theirs when the thumbnails together pass [`THUMBNAIL_BUDGET_BYTES`] (never this
+    /// photo, never the one on screen). A photo that had lost its thumbnail has one again.
     pub fn put_thumbnail(&self, photo: u32, png: Vec<u8>) -> String {
         let mut thumbs = lock(&self.thumbnails);
         thumbs.version = thumbs.version.wrapping_add(1);
         let version = thumbs.version;
+        let added = png.len();
+        let mut dropped = 0;
         let versions = thumbs.by_photo.entry(photo).or_default();
         versions.push((version, Arc::new(png)));
         while versions.len() > THUMBNAIL_VERSIONS_KEPT {
-            versions.remove(0);
+            dropped += versions.remove(0).1.len();
         }
+        thumbs.bytes = thumbs.bytes + added - dropped;
+        thumbs.evicted.remove(&photo);
+        thumbs.touch(photo);
+        thumbs.enforce_budget(Some(photo));
         self.thumbnail_url(photo, version)
+    }
+
+    /// The photo on screen, whose thumbnail is never let go (`None`: no photo is).
+    pub fn set_current_photo(&self, photo: Option<u32>) {
+        lock(&self.thumbnails).current = photo;
+    }
+
+    /// The page shows these photos (the windowed filmstrip's range). Returns the address of the
+    /// thumbnail of each that the store holds, in the order asked, and counts them as used. The
+    /// second list holds the ones the budget let go: the caller makes their thumbnails again.
+    pub fn thumbnails_in_view(&self, photos: &[u32]) -> (Vec<(u32, String)>, Vec<u32>) {
+        let mut thumbs = lock(&self.thumbnails);
+        let mut held = Vec::new();
+        let mut lost = Vec::new();
+        for &photo in photos {
+            let newest = thumbs
+                .by_photo
+                .get(&photo)
+                .and_then(|versions| versions.last().map(|(version, _)| *version));
+            if let Some(version) = newest {
+                thumbs.touch(photo);
+                held.push((photo, self.thumbnail_url(photo, version)));
+            } else if thumbs.evicted.contains(&photo) {
+                lost.push(photo);
+            }
+        }
+        (held, lost)
     }
 
     /// The address of the newest thumbnail of every photo that has one, in photo order.
@@ -561,8 +692,8 @@ impl FrameStore {
             .collect()
     }
 
-    /// The bytes of the thumbnails the store holds now (every version of every photo), for the
-    /// 2000-file test.
+    /// The bytes of the thumbnails the store holds now (every version of every photo), counted
+    /// afresh from the pictures, for the 2000-file test.
     #[cfg(test)]
     #[must_use]
     pub fn thumbnail_bytes(&self) -> usize {
@@ -571,6 +702,27 @@ impl FrameStore {
             .values()
             .flat_map(|versions| versions.iter().map(|(_, png)| png.len()))
             .sum()
+    }
+
+    /// The bytes the store counts for its thumbnails: what the budget is compared with.
+    #[cfg(test)]
+    #[must_use]
+    pub fn thumbnail_bytes_counted(&self) -> usize {
+        lock(&self.thumbnails).bytes
+    }
+
+    /// The most bytes of thumbnails the store keeps.
+    #[cfg(test)]
+    #[must_use]
+    pub fn thumbnail_budget(&self) -> usize {
+        lock(&self.thumbnails).budget
+    }
+
+    /// The photos that lost their thumbnail to the budget and have none yet.
+    #[cfg(test)]
+    #[must_use]
+    pub fn evicted_thumbnails(&self) -> Vec<u32> {
+        lock(&self.thumbnails).evicted.iter().copied().collect()
     }
 
     /// Keeps the tile of a photo through one look (a PNG of at most 240 px) and returns the
@@ -600,8 +752,8 @@ impl FrameStore {
     pub fn clear_thumbnails(&self) {
         {
             let mut thumbs = lock(&self.thumbnails);
-            thumbs.by_photo.clear();
-            thumbs.set_aside.clear();
+            thumbs.clear();
+            thumbs.current = None;
         }
         lock(&self.look_tiles).clear();
         lock(&self.node_thumbnails).clear();
@@ -617,7 +769,8 @@ impl FrameStore {
         let mut tiles = lock(&self.look_tiles);
         let mut nodes = lock(&self.node_thumbnails);
         for photo in photos {
-            if let Some(versions) = thumbs.by_photo.remove(photo) {
+            thumbs.evicted.remove(photo);
+            if let Some(versions) = thumbs.take_photo(*photo) {
                 thumbs.set_aside.insert(*photo, versions);
             }
             tiles.forget_photo(*photo);
@@ -635,9 +788,13 @@ impl FrameStore {
                 if let Some((version, _)) = versions.last() {
                     back.push((*photo, self.thumbnail_url(*photo, *version)));
                 }
+                thumbs.bytes += versions.iter().map(|(_, png)| png.len()).sum::<usize>();
                 thumbs.by_photo.insert(*photo, versions);
+                thumbs.touch(*photo);
             }
         }
+        thumbs.enforce_budget(None);
+        back.retain(|(photo, _)| thumbs.by_photo.contains_key(photo));
         back.sort_by_key(|(photo, _)| *photo);
         back
     }
@@ -671,14 +828,17 @@ impl FrameStore {
         Some(png)
     }
 
-    /// The thumbnail at `photo` and `version`, if it is still kept.
+    /// The thumbnail at `photo` and `version`, if it is still kept. Serving one counts as using its photo.
     fn thumbnail(&self, photo: u32, version: u32) -> Option<Arc<Vec<u8>>> {
-        lock(&self.thumbnails)
+        let mut thumbs = lock(&self.thumbnails);
+        let png = thumbs
             .by_photo
             .get(&photo)?
             .iter()
             .find(|(v, _)| *v == version)
-            .map(|(_, png)| Arc::clone(png))
+            .map(|(_, png)| Arc::clone(png))?;
+        thumbs.touch(photo);
+        Some(png)
     }
 
     /// What the scheme answers for the path of a request,
@@ -2024,6 +2184,95 @@ mod tests {
         for u in urls.iter().chain([&five]) {
             assert_eq!(status(u), 404, "everything older went: {u}");
         }
+    }
+
+    #[test]
+    fn filmstrip_thumbnails_are_bounded_by_bytes_and_the_photos_least_recently_used_go_first() {
+        // Put, serve, evict: three photos of 100 bytes fit in 350; the fourth sends the photo used
+        // least recently away, whole.
+        let store = FrameStore::with_thumbnail_budget(350);
+        let path = |url: &str| path_of_url(url).to_owned();
+        let status = |url: &str| store.respond(&path(url)).0;
+        let urls: Vec<String> = (1..=3)
+            .map(|photo| store.put_thumbnail(photo, vec![photo as u8; 100]))
+            .collect();
+        assert_eq!(store.thumbnail_bytes_counted(), 300);
+        // Photo 1 is loaded again, so photo 2 is the one used least recently.
+        assert_eq!(status(&urls[0]), 200);
+        let four = store.put_thumbnail(4, vec![4; 100]);
+        assert_eq!(status(&urls[1]), 404, "photo 2 went");
+        for kept in [&urls[0], &urls[2], &four] {
+            assert_eq!(status(kept), 200);
+        }
+        assert_eq!(store.thumbnail_bytes_counted(), 300);
+        assert_eq!(store.thumbnail_bytes(), 300);
+        assert_eq!(store.evicted_thumbnails(), vec![2]);
+        assert!(
+            !store.thumbnail_urls().iter().any(|(p, _)| *p == 2),
+            "a photo that lost its thumbnail has no address to hand out"
+        );
+    }
+
+    #[test]
+    fn the_photo_just_given_a_thumbnail_and_the_photo_on_screen_are_never_let_go() {
+        let store = FrameStore::with_thumbnail_budget(250);
+        let path = |url: &str| path_of_url(url).to_owned();
+        let status = |url: &str| store.respond(&path(url)).0;
+        let one = store.put_thumbnail(1, vec![1; 100]);
+        store.set_current_photo(Some(1));
+        let two = store.put_thumbnail(2, vec![2; 100]);
+        // 300 bytes: photo 1 is the least recently used but it is on screen and photo 3 is the
+        // newest, which leaves photo 2.
+        let three = store.put_thumbnail(3, vec![3; 100]);
+        assert_eq!(status(&two), 404);
+        assert_eq!((status(&one), status(&three)), (200, 200));
+        // Alone over the budget, a photo is kept all the same.
+        let big = store.put_thumbnail(9, vec![9; 1000]);
+        assert_eq!(status(&big), 200);
+        assert_eq!(status(&one), 200, "the one on screen");
+        assert_eq!(status(&three), 404);
+    }
+
+    #[test]
+    fn only_the_newest_versions_of_a_thumbnail_count_against_the_budget() {
+        let store = FrameStore::with_thumbnail_budget(1000);
+        for _ in 0..5 {
+            store.put_thumbnail(1, vec![1; 100]);
+        }
+        assert_eq!(store.thumbnail_bytes_counted(), 200);
+        assert_eq!(store.thumbnail_bytes(), 200);
+    }
+
+    #[test]
+    fn a_photo_in_view_that_lost_its_thumbnail_is_reported_and_one_put_again_ends_that() {
+        let store = FrameStore::with_thumbnail_budget(250);
+        for photo in 1..=3 {
+            store.put_thumbnail(photo, vec![photo as u8; 100]);
+        }
+        // Photo 1 went. Asking for 1 (lost), 2 (held), 3 (held) and 7 (never had one).
+        let (held, lost) = store.thumbnails_in_view(&[1, 2, 3, 7]);
+        assert_eq!(held.iter().map(|(p, _)| *p).collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(lost, vec![1]);
+        // The photo made again is held, and no longer lost; photo 2 or 3 (not the ones in view
+        // just now, which counted as used) pays for it.
+        store.put_thumbnail(1, vec![1; 100]);
+        let (held, lost) = store.thumbnails_in_view(&[1]);
+        assert_eq!((held.len(), lost.len()), (1, 0));
+        assert_eq!(store.thumbnail_bytes_counted(), 200);
+    }
+
+    #[test]
+    fn a_removed_photo_leaves_the_count_and_comes_back_with_undo() {
+        let store = FrameStore::with_thumbnail_budget(1000);
+        store.put_thumbnail(1, vec![1; 100]);
+        store.put_thumbnail(2, vec![2; 100]);
+        store.set_aside_photos(&[1]);
+        assert_eq!(store.thumbnail_bytes_counted(), 100);
+        assert_eq!(store.bring_back_photos(&[1]).len(), 1);
+        assert_eq!(store.thumbnail_bytes_counted(), 200);
+        store.clear_thumbnails();
+        assert_eq!(store.thumbnail_bytes_counted(), 0);
+        assert!(store.evicted_thumbnails().is_empty());
     }
 
     #[test]

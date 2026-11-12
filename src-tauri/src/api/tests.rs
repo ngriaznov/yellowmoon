@@ -253,6 +253,61 @@ fn thumbnails_cross_the_bridge_as_addresses_and_can_be_asked_for_again() {
     assert_eq!(h.frames.respond(path_of_url(&after[0].url)).0, 404);
 }
 
+/// `docs/26` H-11: a photo whose thumbnail the shell let go of to keep its byte budget gets a new one
+/// when the page says it shows the photo.
+#[test]
+fn a_thumbnail_the_budget_let_go_of_comes_back_when_the_photo_is_in_view() {
+    // One byte of budget: only the photo just given a thumbnail and the photo on screen survive.
+    let h = Harness::with_thumbnail_budget(1);
+    h.open(5);
+    let state = h.develop();
+    let ids: Vec<_> = state.photos.iter().map(|p| p.id).collect();
+    wait_until("five thumbnails", || {
+        h.events
+            .events()
+            .iter()
+            .filter(|e| matches!(e, AppEvent::ThumbnailReady(_)))
+            .count()
+            >= 5
+    });
+    assert!(h.api.thumbnails().wait_idle(WAIT));
+    let ready_count = |id: PhotoId| {
+        h.events
+            .events()
+            .iter()
+            .filter(|e| matches!(e, AppEvent::ThumbnailReady(t) if t.id == id))
+            .count()
+    };
+    // The store counts what it holds, and what it holds is what it counts.
+    assert_eq!(h.frames.thumbnail_bytes_counted(), h.frames.thumbnail_bytes());
+    let held = h.api.thumbnails_now();
+    assert!(
+        held.len() < ids.len(),
+        "the budget let some thumbnails go: {} held of {}",
+        held.len(),
+        ids.len()
+    );
+    let lost: Vec<u32> = h.frames.evicted_thumbnails();
+    assert_eq!(lost.len() + held.len(), ids.len());
+    let target = PhotoId(lost[0]);
+    assert!(!held.iter().any(|t| t.id == target));
+
+    // The page shows the photo: nothing to hand out for it yet, and the core makes it again.
+    let before = ready_count(target);
+    let answer = h.api.thumbnails_in_view(&[target]);
+    assert!(answer.is_empty(), "{answer:?}");
+    wait_until("the thumbnail to come back", || ready_count(target) > before);
+    assert!(h.api.thumbnails().wait_idle(WAIT));
+    let back = h.api.thumbnails_now();
+    let url = &back.iter().find(|t| t.id == target).expect("back").url;
+    assert!(png_size(&served(&h, url)).0 > 0);
+    assert!(!h.frames.evicted_thumbnails().contains(&target.0));
+    // And now the page is told its address.
+    assert_eq!(h.api.thumbnails_in_view(&[target]).len(), 1);
+    // The store stayed within what it can: nothing but the protected photos is over the budget.
+    assert_eq!(h.frames.thumbnail_bytes_counted(), h.frames.thumbnail_bytes());
+}
+
 #[test]
 fn a_drop_without_arw_files_says_so_and_a_missing_file_is_named() {
     let h = Harness::new();
