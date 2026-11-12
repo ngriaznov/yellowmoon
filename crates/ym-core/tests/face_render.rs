@@ -1527,8 +1527,9 @@ mod fallback {
         let st = device_view(false);
         let device = frame_when_ready(&r, &src, &st);
         assert_eq!(device.report.device, ComputeDevice::Gpu);
+        // The faces are ready; the fault fires once, on the next frame's first view job.
         gpu.set_fault(Some(GpuFault::FailInvalid(1)));
-        let refused = frame_when_ready(&r, &src, &st);
+        let refused = frame_of(&r, &src, &st);
         gpu.set_fault(None);
         assert_eq!(refused.report.device, ComputeDevice::Cpu);
         assert!(refused.report.device_refused);
@@ -1544,7 +1545,7 @@ mod fallback {
         assert!(!r.raw_on_cpu(src.id), "the route is still open");
         let (max, _) = frame_diff(&refused, &device);
         assert!(max <= 3, "{max} codes");
-        let next = frame_when_ready(&r, &src, &st);
+        let next = frame_of(&r, &src, &st);
         assert_eq!(next.report.device, ComputeDevice::Gpu);
         assert!(!next.report.device_refused);
     }

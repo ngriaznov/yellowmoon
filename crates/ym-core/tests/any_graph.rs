@@ -245,8 +245,8 @@ struct Graph {
     parallel_films: usize,
     /// Whether the CPU's frame is a reference (Subject and People masks are made by a background worker: no).
     compare: bool,
-    /// Whether a live Face Refinement node is in the graph (not bypassed, read by the Output): it has no device kernel until
-    /// S-13 (`docs/27`), so the frame is made on the CPU, refused with its reason, whatever the device is, and the viewport says so.
+    /// Whether a live Face Refinement node is in the graph (not bypassed, read by the Output): its face step runs on the device
+    /// since S-13 (`docs/27`), so the frame is the device's, not refused, and agrees with the CPU's within the view bound.
     face_live: bool,
 }
 
@@ -1285,11 +1285,8 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
         {
             continue;
         }
-        if g.face_live {
-            // The CPU makes the frame whatever the binding (`no_generated_graph_is_refused_by_the_device`).
-            continue;
-        }
         let src = d.source().with_settings(g.settings.clone());
+        // A live Face Refinement node is here too since S-13: its face step is the device's, and the faces are found first.
         // Fit, 100 % and 147 % (scale 1, the owner's frames), and the mask overlay at 100 %.
         let mut states: Vec<(String, ViewportState)> = vec![
             ("fit".to_owned(), view(false, false, None)),
@@ -1313,6 +1310,9 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
         // A viewer never waits for a Depth row's map (the row selects nothing until the worker has made it, as in the app), so
         // every renderer compared is let finish its map first: else a frame drawn before the map and one drawn after differ.
         settle_depth(&reference, &src, &states);
+        if g.face_live {
+            settle_faces(&reference, &src, &states);
+        }
         let wants: Vec<RenderedFrame> = states
             .iter()
             .map(|(_, st)| frame(&reference, &src, st))
@@ -1321,6 +1321,9 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
             let device = renderer_with(Some(Arc::clone(&gpu)), 256, kib * 1024);
             let _ = frame(&device, &src, &states[0].1);
             settle_depth(&device, &src, &states);
+            if g.face_live {
+                settle_faces(&device, &src, &states);
+            }
             let mut line = Vec::new();
             for ((what, st), want) in states.iter().zip(&wants) {
                 let at = format!("{name}, binding {kib} KiB: {what}");

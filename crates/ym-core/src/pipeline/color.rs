@@ -758,7 +758,7 @@ pub fn uses_depth(s: &DevelopSettings, stop: Stop) -> bool {
 
 /// The Face Refinement nodes of the plan that ends at `stop` that do something (not bypassed, and some tool of some face above
 /// 0, [`FaceRefinementNode::is_inert`](crate::settings::FaceRefinementNode::is_inert)), in the plan's order. The render then
-/// needs the photo's faces and runs on the CPU.
+/// needs the photo's faces.
 #[must_use]
 pub fn live_face_nodes(s: &DevelopSettings, stop: Stop) -> Vec<u32> {
     let Ok(plan) = node_plan(&s.nodes, stop) else {
