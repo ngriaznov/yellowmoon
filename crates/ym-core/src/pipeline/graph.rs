@@ -67,7 +67,7 @@ use super::raw::{
 use super::viewport::{MaskStyle, MaskView};
 use super::{FrameZoom, NeuralStatus, RenderError, RenderPath, RenderStats};
 use crate::app::gpu::GpuStages;
-use crate::scheduler::{ByteLru, JobScheduler, MemoryBudget, MemoryLedger};
+use crate::scheduler::{ByteLru, JobScheduler, MemoryBudget, MemoryLedger, Reservation};
 use crate::session::PhotoId;
 use ym_color::display::OutputTarget;
 use ym_color::plan::Stop as PlanStop;
@@ -613,7 +613,8 @@ struct GraphState {
     /// The raw plan, with R3 (index 0, the final picture's) and without it (index 1, the Before view's:
     /// [`RawPlan::without_vignetting`]), each with the lens switches it was made for.
     plan: [Option<PlanSlot>; 2],
-    sigma: Option<(Vec<u64>, Arc<SigmaPlane>)>,
+    /// The noise sigma plane, with its bytes in the ledger while it is cached.
+    sigma: Option<(Vec<u64>, Arc<SigmaPlane>, Option<Reservation>)>,
     groups: Option<ByteLru<(RawParamsKey, usize), Backing>>,
     /// The prepared full-resolution chain, with R3 (index 0) and without it (index 1, the Before view's):
     /// one of each, so that flipping to Before and back prepares neither again, and a settings edit
@@ -679,6 +680,9 @@ pub struct PhotoGraph {
     state: Mutex<GraphState>,
     counters: StageCounters,
     budget: MemoryBudget,
+    /// The renderer's memory ledger: the raw groups this photo keeps on the host are reserved in it
+    /// while they are cached (`docs/26` H-13).
+    ledger: Arc<MemoryLedger>,
     /// A device error ended the GPU route of this photo's raw chain: from then on it renders on the
     /// CPU (`docs/17-gpu.md` section 9). The caches may hold tiles of both devices, which differ within
     /// the tolerances of the kernels; an export restarts the photo wholly on the CPU.
@@ -736,7 +740,7 @@ impl PhotoGraph {
         }
     }
 
-    fn new(id: PhotoId, budget: MemoryBudget) -> Self {
+    fn new(id: PhotoId, budget: MemoryBudget, ledger: Arc<MemoryLedger>) -> Self {
         static NEXT_UID: AtomicU64 = AtomicU64::new(1);
         Self {
             id,
@@ -744,6 +748,7 @@ impl PhotoGraph {
             state: Mutex::new(GraphState::default()),
             counters: StageCounters::default(),
             budget,
+            ledger,
             raw_gpu_failed: AtomicBool::new(false),
             view_gpu_failed: AtomicBool::new(false),
             view_input_warned: AtomicBool::new(false),
@@ -791,7 +796,7 @@ impl PhotoGraph {
     #[must_use]
     pub fn bytes(&self) -> usize {
         let st = lock(&self.state);
-        st.sigma.as_ref().map_or(0, |(_, s)| s.bytes())
+        st.sigma.as_ref().map_or(0, |(_, s, _)| s.bytes())
             + st.groups.as_ref().map_or(0, ByteLru::used)
             + st.full
                 .iter()
@@ -1447,7 +1452,11 @@ impl Renderer {
             let e = graphs.remove(i);
             graphs.push(e);
         } else {
-            let g = Arc::new(PhotoGraph::new(id, self.options().budget));
+            let g = Arc::new(PhotoGraph::new(
+                id,
+                self.options().budget,
+                Arc::clone(&self.inner.ledger),
+            ));
             graphs.push((id, g));
         }
         let max = self.options().budget.max_photos.max(1);
@@ -2522,7 +2531,7 @@ impl<'a> Job<'a> {
     pub fn sigma(&mut self) -> Result<Arc<SigmaPlane>, RenderError> {
         let params = self.params()?;
         let key = params.sigma_key();
-        if let Some((k, s)) = &lock(&self.g.state).sigma
+        if let Some((k, s, _)) = &lock(&self.g.state).sigma
             && *k == key
         {
             return Ok(Arc::clone(s));
@@ -2533,7 +2542,8 @@ impl<'a> Job<'a> {
         let sigma = Arc::new(sigma_plane(&frame, &plan, &params, self.cancel)?);
         self.runs.sigma_planes += 1;
         self.timings.sigma_ms += t.elapsed().as_secs_f64() * 1000.0;
-        lock(&self.g.state).sigma = Some((key, Arc::clone(&sigma)));
+        let held = self.g.ledger.try_reserve(sigma.bytes() as u64).ok();
+        lock(&self.g.state).sigma = Some((key, Arc::clone(&sigma), held));
         Ok(sigma)
     }
 
@@ -2563,7 +2573,9 @@ impl<'a> Job<'a> {
         {
             let budget = self.g.group_budget(self.keeps_on_device());
             let mut st = lock(&self.g.state);
-            let groups = st.groups.get_or_insert_with(|| ByteLru::new(budget));
+            let groups = st
+                .groups
+                .get_or_insert_with(|| ByteLru::with_ledger(budget, Arc::clone(&self.g.ledger)));
             if let Some(entry) = groups.get(&key) {
                 return Ok(entry.clone());
             }
@@ -2587,10 +2599,15 @@ impl<'a> Job<'a> {
         };
         self.runs.raw_groups += 1;
         let (bytes, budget) = (made.bytes(), self.g.group_budget(self.keeps_on_device()));
+        // Only the host's part is counted in the ledger: an image on the device is the pool's.
+        let host_bytes = match &made {
+            Backing::Cpu(_) => bytes,
+            Backing::Gpu(_) => 0,
+        };
         lock(&self.g.state)
             .groups
-            .get_or_insert_with(|| ByteLru::new(budget))
-            .insert(key, made.clone(), bytes);
+            .get_or_insert_with(|| ByteLru::with_ledger(budget, Arc::clone(&self.g.ledger)))
+            .insert_counted(key, made.clone(), bytes, host_bytes);
         Ok(made)
     }
 

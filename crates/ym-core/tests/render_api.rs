@@ -537,6 +537,20 @@ fn a_full_render_that_does_not_fit_the_budget_is_refused_and_one_that_does_relea
         .render_full(&src, &req, &CancelToken::new())
         .expect("full render");
     assert_eq!((full.width, full.height), (600, 400));
+    // The picture stays counted while it is held (`FullImage::held`), with the sigma plane the graph caches;
+    // the working set is gone.
+    let picture = (600 * 400 * 12) as u64;
+    let with_picture = r.ledger().used();
+    assert!(with_picture >= picture, "{with_picture}");
+    drop(full.clone());
+    assert_eq!(r.ledger().used(), with_picture, "a clone shares it");
+    drop(full);
+    assert_eq!(
+        r.ledger().used(),
+        with_picture - picture,
+        "only the picture was released"
+    );
+    r.forget_all();
     assert_eq!(r.ledger().used(), 0, "the reservation is released");
     assert!(
         r.ledger().peak() > (600 * 400 * 12) as u64,
@@ -557,6 +571,42 @@ fn a_full_render_that_does_not_fit_the_budget_is_refused_and_one_that_does_relea
     assert!(
         a > 0.0 && (a - b).abs() < 0.02 * b.max(1e-3) && (c - b).abs() < 0.02 * b.max(1e-3),
         "{a} {b} {c}"
+    );
+}
+
+/// `docs/26` H-13: the raw group a viewport frame caches on the host is reserved in the ledger for as long
+/// as the cache holds it, and a render that finds the ledger full is refused with the group counted.
+#[test]
+fn the_raw_group_a_frame_caches_is_counted_in_the_ledger_until_it_is_forgotten() {
+    let d = Developed::new(&patchwork(), MODEL);
+    let src = d.source();
+    let r = Renderer::neutral_only().expect("render thread");
+    assert_eq!(r.ledger().used(), 0);
+    r.viewport_frame(
+        &src,
+        &state(300.0, 200.0),
+        &FrameOptions::default(),
+        &CancelToken::new(),
+    )
+    .expect("frame");
+    let held = r.ledger().used();
+    // One group at 1/2 of 600 x 400 is 300 x 200 x 3 planes x 4 B at least.
+    assert!(held >= 300 * 200 * 12, "the group is counted: {held}");
+    assert!(r.ledger().peak() >= held);
+    // The same frame again reuses the group and reserves nothing more.
+    r.viewport_frame(
+        &src,
+        &state(300.0, 200.0),
+        &FrameOptions::default(),
+        &CancelToken::new(),
+    )
+    .expect("frame");
+    assert_eq!(r.ledger().used(), held);
+    r.forget_all();
+    assert_eq!(
+        r.ledger().used(),
+        0,
+        "forgetting the photo gives the bytes back"
     );
 }
 
