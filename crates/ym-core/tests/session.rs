@@ -16,9 +16,11 @@ use ym_color::exposure::CAMERA_GAIN_EV;
 use ym_color::wb::LightSource;
 use ym_core::auto::NoiseSource;
 use ym_core::media::{CHANGED_MESSAGE, Media};
+use ym_core::scheduler::MemoryLedger;
 use ym_core::session::{
     ApplyScope, EventSink, OpenOptions, PhotoId, PhotoProgress, PhotoStage, PhotoStatus, Session,
     SessionError, SessionEvent, ThumbnailInput, ThumbnailRenderer, default_decode_threads,
+    default_decode_threads_for,
 };
 use ym_core::settings::{
     AutoOr, ColorBalancePatch, Crop, CropAspect, CurvesPatch, DecodePatch, ExposureSetting,
@@ -697,6 +699,175 @@ fn a_thumbnail_that_fails_skips_that_photo_only() {
     assert_eq!(session.status(PhotoId(2)), Some(PhotoStatus::Ready));
 }
 
+/// The bytes of one mosaic of the scene of [`scene`] (`2 B` a photosite).
+const MOSAIC: u64 = 2 * 384 * 288;
+
+/// A thumbnail hook that counts how many of its calls overlap. A develop job is inside it with its
+/// mosaic reserved, so the count is the number of develop jobs running together.
+struct Overlap {
+    now: AtomicUsize,
+    most: AtomicUsize,
+}
+
+impl ThumbnailRenderer for Overlap {
+    fn render(&self, input: &ThumbnailInput<'_>) -> Result<Vec<u8>, String> {
+        let now = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most.fetch_max(now, Ordering::SeqCst);
+        // Only to give a second job the time to overlap if the ledger let it.
+        std::thread::sleep(Duration::from_millis(30));
+        self.now.fetch_sub(1, Ordering::SeqCst);
+        Ok(vec![0x89, b'P', b'N', b'G', input.id.0 as u8])
+    }
+}
+
+/// `docs/26` H-13: under a budget of one and a half mosaics two develop jobs never run together,
+/// however many threads the pool has, and the photos all develop (a job that cannot reserve
+/// waits; it does not fail).
+#[test]
+fn two_develop_jobs_never_run_together_under_a_budget_of_one_and_a_half_mosaics() {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..6 {
+        write_plain(dir.path(), &format!("p{i}.ARW"), 0.25 + 0.01 * f64::from(i));
+    }
+    let ledger = MemoryLedger::new(MOSAIC * 3 / 2);
+    let hook = Arc::new(Overlap {
+        now: AtomicUsize::new(0),
+        most: AtomicUsize::new(0),
+    });
+    let session = Session::new(
+        base_env()
+            .with_decode_threads(3)
+            .with_ledger(Arc::clone(&ledger))
+            .with_thumbnails(hook.clone()),
+    );
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    settle(&session);
+    for id in session.photo_ids() {
+        assert_eq!(session.status(id), Some(PhotoStatus::Ready), "photo {id}");
+    }
+    assert_eq!(
+        session.peak_mosaic_holders(),
+        1,
+        "decodes that held a mosaic together"
+    );
+    assert_eq!(
+        hook.most.load(Ordering::SeqCst),
+        1,
+        "develop jobs inside the hook together"
+    );
+    // The ledger was never over its budget, and what the cache holds is counted.
+    assert!(ledger.peak() <= MOSAIC * 3 / 2, "peak {}", ledger.peak());
+    assert!(ledger.used() <= MOSAIC);
+    assert_eq!(ledger.used(), MOSAIC * session.cached_ids().len() as u64);
+    session.close();
+    assert_eq!(ledger.used(), 0);
+}
+
+/// A budget smaller than one mosaic does not stop a photo from developing: a job with nothing to
+/// wait for takes its bytes over the budget (and the ledger says so).
+#[test]
+fn a_budget_smaller_than_a_mosaic_still_develops_the_photos_one_at_a_time() {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..3 {
+        write_plain(dir.path(), &format!("p{i}.ARW"), 0.25);
+    }
+    let ledger = MemoryLedger::new(MOSAIC / 2);
+    let session = Session::new(
+        base_env()
+            .with_decode_threads(2)
+            .with_ledger(Arc::clone(&ledger)),
+    );
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    settle(&session);
+    for id in session.photo_ids() {
+        assert_eq!(session.status(id), Some(PhotoStatus::Ready), "photo {id}");
+    }
+    assert_eq!(session.peak_mosaic_holders(), 1);
+    session.close();
+    assert_eq!(ledger.used(), 0);
+}
+
+/// `docs/26` H-13: the ledger counts the mosaics the session holds and gives every byte back, on
+/// every path.
+#[test]
+fn the_ledger_counts_the_mosaics_and_is_back_to_its_start_when_the_session_closes() {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..6 {
+        write_plain(dir.path(), &format!("p{i}.ARW"), 0.25 + 0.01 * f64::from(i));
+    }
+    let ledger = MemoryLedger::new(1 << 30);
+    let start = ledger.used();
+    assert_eq!(start, 0);
+    let session = Session::new(base_env().with_ledger(Arc::clone(&ledger)));
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    settle(&session);
+    let ids = session.photo_ids();
+    // Success: the first photo is current, so it and its neighbour are cached and counted.
+    assert_eq!(session.cached_ids().len(), 2);
+    assert_eq!(ledger.used(), 2 * MOSAIC);
+    assert!(ledger.peak() >= 2 * MOSAIC);
+    // Eviction: moving on keeps three at most; the ones that left give their bytes back.
+    session.set_current(ids[4]).unwrap();
+    settle(&session);
+    assert_eq!(session.cached_ids().len(), 3);
+    assert_eq!(ledger.used(), 3 * MOSAIC);
+    // A read outside the window is counted while it runs and not kept: nothing is left behind.
+    session.raw_image(ids[0]).unwrap();
+    assert_eq!(ledger.used(), 3 * MOSAIC);
+    // Removal drops the cached mosaic with the photo.
+    session.remove(&[ids[4]]);
+    settle(&session);
+    assert!(ledger.used() <= 3 * MOSAIC);
+    assert_eq!(ledger.used(), MOSAIC * session.cached_ids().len() as u64);
+    // Error: a file that went away fails its read and leaves nothing reserved.
+    let before = ledger.used();
+    std::fs::remove_file(dir.path().join("p1.ARW")).unwrap();
+    assert!(session.raw_image(ids[1]).is_err());
+    assert_eq!(ledger.used(), before);
+    // Close.
+    session.close();
+    assert_eq!(ledger.used(), start);
+    assert!(ledger.peak() >= 3 * MOSAIC);
+}
+
+/// `docs/26` H-13: a reservation that would be refused asks the session to let go of its cached mosaics first,
+/// those of other photos before the photo it is for.
+#[test]
+fn cached_mosaics_are_given_up_before_a_reservation_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..4 {
+        write_plain(dir.path(), &format!("p{i}.ARW"), 0.25 + 0.01 * f64::from(i));
+    }
+    let ledger = MemoryLedger::new(MOSAIC * 7 / 2);
+    let session = Session::new(base_env().with_ledger(Arc::clone(&ledger)));
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    settle(&session);
+    let ids = session.photo_ids();
+    session.set_current(ids[1]).unwrap();
+    settle(&session);
+    assert_eq!(session.cached_ids().len(), 3);
+    assert!(
+        ledger.try_reserve(MOSAIC).is_err(),
+        "full: three mosaics of 3.5"
+    );
+    // Needs 1.5 mosaics: the others' mosaics go, the photo's own stays.
+    let held = ledger
+        .reserve_reclaiming(MOSAIC * 3 / 2, Some(ids[1]))
+        .expect("fits after the others went");
+    assert_eq!(session.cached_ids(), vec![ids[1]]);
+    drop(held);
+    // Needs more than the photo's own leaves room for: everything goes.
+    let held = ledger
+        .reserve_reclaiming(MOSAIC * 3, Some(ids[1]))
+        .expect("fits after all went");
+    assert!(session.cached_ids().is_empty());
+    // What is not a cache is not touched: nothing more can be had.
+    assert!(ledger.reserve_reclaiming(MOSAIC, None).is_err());
+    drop(held);
+    session.close();
+    assert_eq!(ledger.used(), 0);
+}
+
 #[test]
 fn only_the_current_photo_and_its_neighbours_keep_their_mosaics() {
     let dir = tempfile::tempdir().unwrap();
@@ -915,10 +1086,52 @@ fn dropping_a_busy_session_stops_its_threads() {
 
 #[test]
 fn the_decode_pool_has_min_of_cores_minus_two_and_six_threads() {
+    // The cores alone (RAM not known): `min(cores - 2, 6)`, at least one.
+    for (cores, want) in [(1, 1), (2, 1), (3, 1), (4, 2), (8, 6), (10, 6), (64, 6)] {
+        assert_eq!(
+            default_decode_threads_for(cores, None),
+            want,
+            "{cores} cores"
+        );
+    }
     let cpus = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
-    let want = cpus.saturating_sub(2).clamp(1, 6);
+    let want = default_decode_threads_for(cpus, ym_core::scheduler::total_ram_bytes());
     assert_eq!(default_decode_threads(), want);
     assert!((1..=6).contains(&default_decode_threads()));
+}
+
+/// `docs/26` H-13: the develop pool is `min(cores - 2, 6, max(1, RAM / 2 / job))`: 8 GB gives three
+/// threads and 16 GB six, on a machine with cores to spare.
+#[test]
+fn the_decode_pool_follows_the_ram() {
+    const GIB: u64 = 1 << 30;
+    // (cores, RAM in GiB, threads)
+    let table = [
+        (8, 2, 1),
+        (8, 4, 1),
+        (8, 6, 2),
+        (8, 8, 3),
+        (10, 8, 3),
+        (8, 12, 4),
+        (8, 16, 6),
+        (8, 32, 6),
+        (8, 64, 6),
+        // The cores still cap it.
+        (4, 16, 2),
+        (4, 8, 2),
+        (3, 8, 1),
+        (2, 64, 1),
+    ];
+    for (cores, ram, want) in table {
+        assert_eq!(
+            default_decode_threads_for(cores, Some(ram * GIB)),
+            want,
+            "{cores} cores, {ram} GiB"
+        );
+    }
+    // Never zero, however little RAM there is.
+    assert_eq!(default_decode_threads_for(8, Some(1 << 20)), 1);
+    assert_eq!(default_decode_threads_for(8, Some(0)), 1);
 }
 
 #[test]

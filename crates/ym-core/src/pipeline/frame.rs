@@ -415,6 +415,9 @@ pub struct FullImage {
     /// a fallen-back one runs on the CPU too, and one that fell back after the first went on the
     /// device is made again on the CPU.
     pub fell_back_to_cpu: bool,
+    /// The picture's bytes in the memory ledger, for as long as the image (or a clone) lives: the
+    /// render's working set is released when it returns, the picture is not (`docs/26` H-13).
+    pub held: crate::scheduler::Held,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -4221,9 +4224,9 @@ impl Renderer {
             (plan.width * plan.height * 4) as u64
         };
         let output = (fw * fh * 12) as u64;
-        let _reservation = self
+        let mut reservation = self
             .ledger()
-            .try_reserve(output + working + frame_extra + sigma_map)
+            .reserve_reclaiming(output + working + frame_extra + sigma_map, Some(src.id))
             .map_err(|_| RenderError::Memory)?;
         // The DNG's pixels and preview are made for sRGB, the display its fitted profile emulates: a
         // chain whose display rendering is not ours (a look with its own) inverts it from sRGB for the
@@ -4490,6 +4493,8 @@ impl Renderer {
         };
         let fell_back_to_cpu = job.gpu_restarted();
         let report = job.finish(1, device, target_out);
+        // The working set goes with the render; the picture stays counted while the caller holds it.
+        let held = crate::scheduler::Held::new(reservation.split_off(output));
         Ok(Attempt::Done(Box::new(FullImage {
             width: fw,
             height: fh,
@@ -4498,6 +4503,7 @@ impl Renderer {
             window,
             report,
             fell_back_to_cpu,
+            held,
         })))
     }
 }

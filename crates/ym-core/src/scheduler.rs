@@ -160,9 +160,50 @@ impl MemoryBudget {
     }
 }
 
-/// Installed RAM in bytes, where the operating system says (Linux `/proc/meminfo`, macOS `sysctl`).
+/// The environment variable that overrides the installed RAM, in GiB: a development switch for
+/// running the pipeline "as an 8 GB machine" (`docs/17` section on environment variables). Like
+/// `YELLOWMOON_GPU` it is not part of the user guide.
+pub const RAM_ENV: &str = "YELLOWMOON_RAM_GB";
+
+/// The most the override may name, in GiB.
+pub const RAM_OVERRIDE_MAX_GIB: f64 = 1024.0;
+
+/// Reads the value of [`RAM_ENV`]: a number of GiB, fractions allowed (`0.5`, `7.5`), more than 0 and
+/// at most [`RAM_OVERRIDE_MAX_GIB`]; surrounding spaces are ignored. Anything else (zero, a negative
+/// number, text, `nan`, `inf`, empty) is `None`. The result is in bytes, rounded down.
+#[must_use]
+pub fn parse_ram_override(value: &str) -> Option<u64> {
+    let gib: f64 = value.trim().parse().ok()?;
+    if !gib.is_finite() || gib <= 0.0 || gib > RAM_OVERRIDE_MAX_GIB {
+        return None;
+    }
+    // Exact: at most 2^40 GiB-fractions fit an f64 without rounding errors that matter here.
+    Some((gib * f64::from(1u32 << 30)) as u64).filter(|bytes| *bytes > 0)
+}
+
+/// The RAM the override says, when [`RAM_ENV`] is set to a value [`parse_ram_override`] accepts.
+/// A value that does not parse is ignored (the installed RAM is used), with a warning in the log.
+#[must_use]
+pub fn ram_override() -> Option<u64> {
+    let value = std::env::var(RAM_ENV).ok()?;
+    let parsed = parse_ram_override(&value);
+    if parsed.is_none() {
+        tracing::warn!(value = %value, "{RAM_ENV} is not a number of GiB from above 0 to 1024; ignored");
+    }
+    parsed
+}
+
+/// Installed RAM in bytes, where the operating system says (Linux `/proc/meminfo`, macOS `sysctl`),
+/// or what [`RAM_ENV`] says when it is set: the budget rule, the unified-memory rule, the GPU opener
+/// and the develop pool all read it here.
 #[must_use]
 pub fn total_ram_bytes() -> Option<u64> {
+    ram_override().or_else(installed_ram_bytes)
+}
+
+/// The RAM the operating system reports, whatever [`RAM_ENV`] says.
+#[must_use]
+pub fn installed_ram_bytes() -> Option<u64> {
     if let Ok(text) = std::fs::read_to_string("/proc/meminfo") {
         let line = text.lines().find(|l| l.starts_with("MemTotal:"))?;
         let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
@@ -187,12 +228,36 @@ pub struct OverBudget {
     pub budget: u64,
 }
 
-/// Counts the bytes that full-resolution jobs hold while they run.
-#[derive(Debug)]
+/// What a reclaimer is asked to let go of (see [`MemoryLedger::reserve_reclaiming`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reclaim {
+    /// `false`: only caches of photos other than `keep`. `true`: every cache that can go.
+    pub all: bool,
+    /// The photo the reservation is for, whose caches the first pass leaves alone.
+    pub keep: Option<PhotoId>,
+}
+
+/// A holder of counted caches: frees what it can and says whether it is still there (`false`: the
+/// ledger forgets it). It is called with no lock of the ledger held, and must not wait for a
+/// reservation.
+pub type Reclaimer = Arc<dyn Fn(Reclaim) -> bool + Send + Sync>;
+
+/// Counts the bytes that full-resolution jobs and the caches hold.
 pub struct MemoryLedger {
     budget: AtomicU64,
     used: AtomicU64,
     peak: AtomicU64,
+    reclaimers: Mutex<Vec<Reclaimer>>,
+}
+
+impl std::fmt::Debug for MemoryLedger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryLedger")
+            .field("budget", &self.budget())
+            .field("used", &self.used())
+            .field("peak", &self.peak())
+            .finish_non_exhaustive()
+    }
 }
 
 impl MemoryLedger {
@@ -203,7 +268,63 @@ impl MemoryLedger {
             budget: AtomicU64::new(budget),
             used: AtomicU64::new(0),
             peak: AtomicU64::new(0),
+            reclaimers: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Registers a holder of caches that [`MemoryLedger::reserve_reclaiming`] may ask to let go.
+    pub fn add_reclaimer(&self, reclaimer: Reclaimer) {
+        self.reclaimers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(reclaimer);
+    }
+
+    /// Asks every reclaimer to free what it holds, and forgets those that are gone.
+    pub fn reclaim(&self, what: Reclaim) {
+        // Called outside the lock: a reclaimer takes locks of its own.
+        let all: Vec<Reclaimer> = self
+            .reclaimers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let gone: Vec<&Reclaimer> = all.iter().filter(|r| !r(what)).collect();
+        if !gone.is_empty() {
+            self.reclaimers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .retain(|r| !gone.iter().any(|g| Arc::ptr_eq(g, r)));
+        }
+    }
+
+    /// [`MemoryLedger::try_reserve`] that frees caches before it refuses: when `bytes` do not fit,
+    /// the reclaimers are asked to let go of the caches of photos other than `keep`, then of every
+    /// cache, with the reservation tried again after each. A cache is only a cache (what goes is
+    /// made again when it is needed), so it must never be the reason for a refusal; what stays
+    /// counted after that is held by running work.
+    ///
+    /// No lock is held while the reclaimers run, and a reclaimer never waits for the ledger, so
+    /// this cannot deadlock. A reservation that is refused after all caches went is refused for
+    /// real.
+    ///
+    /// # Errors
+    ///
+    /// [`OverBudget`] as for [`MemoryLedger::try_reserve`].
+    pub fn reserve_reclaiming(
+        self: &Arc<Self>,
+        bytes: u64,
+        keep: Option<PhotoId>,
+    ) -> Result<Reservation, OverBudget> {
+        if let Ok(r) = self.try_reserve(bytes) {
+            return Ok(r);
+        }
+        for all in [false, true] {
+            self.reclaim(Reclaim { all, keep });
+            if let Ok(r) = self.try_reserve(bytes) {
+                return Ok(r);
+            }
+        }
+        self.try_reserve(bytes)
     }
 
     /// Reserves `bytes` until the returned guard is dropped.
@@ -236,6 +357,21 @@ impl MemoryLedger {
                 }
                 Err(actual) => cur = actual,
             }
+        }
+    }
+
+    /// Reserves `bytes` whether or not they fit: the ledger may then be over its budget until the
+    /// guard is dropped. For work that has to run and has nothing to wait for (a develop job alone
+    /// on a budget smaller than its mosaic): the count stays true and the next request is refused.
+    pub fn reserve_forced(self: &Arc<Self>, bytes: u64) -> Reservation {
+        let next = self
+            .used
+            .fetch_add(bytes, Ordering::SeqCst)
+            .saturating_add(bytes);
+        self.peak.fetch_max(next, Ordering::SeqCst);
+        Reservation {
+            ledger: Arc::clone(self),
+            bytes,
         }
     }
 
@@ -272,6 +408,19 @@ pub struct Reservation {
 }
 
 impl Reservation {
+    /// Moves `bytes` (at most all of them) into a reservation of their own: the ledger's count does
+    /// not change. For a part that outlives the rest (the rendered picture, which the encoder
+    /// holds after the render's working set is gone).
+    #[must_use]
+    pub fn split_off(&mut self, bytes: u64) -> Reservation {
+        let bytes = bytes.min(self.bytes);
+        self.bytes -= bytes;
+        Reservation {
+            ledger: Arc::clone(&self.ledger),
+            bytes,
+        }
+    }
+
     /// The reserved size.
     #[must_use]
     pub fn bytes(&self) -> u64 {
@@ -285,13 +434,40 @@ impl Drop for Reservation {
     }
 }
 
+/// Bytes in a [`MemoryLedger`] that travel with a value (a rendered picture): shared by its clones,
+/// released with the last of them. It is always equal to another, so it does not change what a
+/// comparison of the values says.
+#[derive(Debug, Clone, Default)]
+pub struct Held(#[allow(dead_code, reason = "held for its drop")] Option<Arc<Reservation>>);
+
+impl Held {
+    /// Holds `reservation`.
+    #[must_use]
+    pub fn new(reservation: Reservation) -> Self {
+        Self(Some(Arc::new(reservation)))
+    }
+}
+
+impl PartialEq for Held {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 /// A least-recently-used map bounded by the bytes its values hold. Small (a handful of entries):
 /// a vector, newest last.
+///
+/// A map made with [`ByteLru::with_ledger`] also reserves the bytes of each entry in a
+/// [`MemoryLedger`] for as long as the entry lives, so the ledger counts what the cache holds
+/// (`docs/26` H-13). A reservation that does not fit is left out (the entry is kept, uncounted):
+/// the ledger is full then, and a full-resolution render is refused whether or not it counts the
+/// entry.
 #[derive(Debug)]
 pub struct ByteLru<K, V> {
-    entries: Vec<(K, V, usize)>,
+    entries: Vec<(K, V, usize, Option<Reservation>)>,
     budget: usize,
     used: usize,
+    ledger: Option<Arc<MemoryLedger>>,
 }
 
 impl<K: PartialEq, V> ByteLru<K, V> {
@@ -303,31 +479,55 @@ impl<K: PartialEq, V> ByteLru<K, V> {
             entries: Vec::new(),
             budget,
             used: 0,
+            ledger: None,
+        }
+    }
+
+    /// [`ByteLru::new`] whose entries are reserved in `ledger` while they are held.
+    #[must_use]
+    pub fn with_ledger(budget: usize, ledger: Arc<MemoryLedger>) -> Self {
+        Self {
+            ledger: Some(ledger),
+            ..Self::new(budget)
         }
     }
 
     /// The value for `key`, marking it most recently used.
     pub fn get(&mut self, key: &K) -> Option<&V> {
-        let i = self.entries.iter().position(|(k, _, _)| k == key)?;
+        let i = self.entries.iter().position(|(k, ..)| k == key)?;
         let e = self.entries.remove(i);
         self.entries.push(e);
-        self.entries.last().map(|(_, v, _)| v)
+        self.entries.last().map(|(_, v, ..)| v)
     }
 
     /// Whether `key` is present (does not touch the order).
     #[must_use]
     pub fn contains(&self, key: &K) -> bool {
-        self.entries.iter().any(|(k, _, _)| k == key)
+        self.entries.iter().any(|(k, ..)| k == key)
     }
 
     /// Inserts `value` that holds `bytes` bytes, replacing an equal key, then evicts the least
     /// recently used entries until the budget holds.
     pub fn insert(&mut self, key: K, value: V, bytes: usize) {
-        if let Some(i) = self.entries.iter().position(|(k, _, _)| *k == key) {
+        self.insert_counted(key, value, bytes, bytes);
+    }
+
+    /// [`ByteLru::insert`] for a value that takes `bytes` in the map's budget but only `host_bytes`
+    /// of the host's memory (an image on the device), which is what the ledger is given.
+    pub fn insert_counted(&mut self, key: K, value: V, bytes: usize, host_bytes: usize) {
+        if let Some(i) = self.entries.iter().position(|(k, ..)| *k == key) {
             self.used -= self.entries.remove(i).2;
         }
-        self.entries.push((key, value, bytes));
+        let held = match &self.ledger {
+            Some(ledger) if host_bytes > 0 => ledger.try_reserve(host_bytes as u64).ok(),
+            _ => None,
+        };
+        self.entries.push((key, value, bytes, held));
         self.used += bytes;
+        self.evict_to_budget();
+    }
+
+    fn evict_to_budget(&mut self) {
         while self.used > self.budget && self.entries.len() > 1 {
             self.used -= self.entries.remove(0).2;
         }
@@ -336,7 +536,7 @@ impl<K: PartialEq, V> ByteLru<K, V> {
     /// Removes every entry for which `drop_it` is true.
     pub fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) {
         let mut used = 0;
-        self.entries.retain(|(k, v, b)| {
+        self.entries.retain(|(k, v, b, _)| {
             let keep_it = keep(k, v);
             if keep_it {
                 used += b;
@@ -373,9 +573,7 @@ impl<K: PartialEq, V> ByteLru<K, V> {
     /// Changes the budget and evicts to fit.
     pub fn set_budget(&mut self, budget: usize) {
         self.budget = budget;
-        while self.used > self.budget && self.entries.len() > 1 {
-            self.used -= self.entries.remove(0).2;
-        }
+        self.evict_to_budget();
     }
 }
 
@@ -1339,6 +1537,84 @@ mod tests {
         );
         let huge = MemoryBudget::for_ram(Some(1024 * GIB)).for_unified_memory(Some(1024 * GIB));
         assert_eq!(huge.gpu_bytes, UNIFIED_GPU_MAX_BYTES, "1 TB: the ceiling");
+    }
+
+    #[test]
+    fn a_map_with_a_ledger_reserves_what_it_holds_and_gives_it_back_on_every_path() {
+        let ledger = MemoryLedger::new(1000);
+        let mut m: ByteLru<u32, &str> = ByteLru::with_ledger(250, Arc::clone(&ledger));
+        m.insert(1, "a", 100);
+        m.insert(2, "b", 100);
+        assert_eq!(ledger.used(), 200);
+        // Eviction by the map's own budget.
+        m.insert(3, "c", 100);
+        assert_eq!(m.len(), 2);
+        assert_eq!(ledger.used(), 200);
+        // Replacing a key swaps the reservation.
+        m.insert(3, "c2", 50);
+        assert_eq!(ledger.used(), 150);
+        // An entry on the device costs the map its bytes and the host nothing.
+        m.insert_counted(4, "d", 40, 0);
+        assert_eq!(ledger.used(), 150);
+        // A smaller budget, retain, clear and drop.
+        m.insert(5, "e", 30);
+        assert_eq!(ledger.used(), 50 + 100 + 30);
+        m.set_budget(60);
+        // The oldest go until the map's 60 bytes hold: only the newest entry is left.
+        assert_eq!(m.len(), 1);
+        assert_eq!(ledger.used(), 30);
+        m.retain(|k, _| *k != 5);
+        assert_eq!(ledger.used(), 0);
+        m.clear();
+        assert_eq!(ledger.used(), 0);
+        m.insert(9, "z", 100);
+        drop(m);
+        assert_eq!(ledger.used(), 0);
+        // A reservation that does not fit leaves the entry uncounted: the ledger is full already.
+        let mut n: ByteLru<u32, &str> = ByteLru::with_ledger(10_000, Arc::clone(&ledger));
+        let all = ledger.try_reserve(950).expect("fits");
+        n.insert(1, "big", 100);
+        assert_eq!((n.len(), ledger.used()), (1, 950));
+        drop(all);
+    }
+
+    #[test]
+    fn a_forced_reservation_goes_over_the_budget_and_counts() {
+        let ledger = MemoryLedger::new(100);
+        let forced = ledger.reserve_forced(150);
+        assert_eq!((ledger.used(), ledger.peak()), (150, 150));
+        assert!(ledger.try_reserve(1).is_err());
+        drop(forced);
+        assert_eq!(ledger.used(), 0);
+        assert!(ledger.try_reserve(100).is_ok());
+    }
+
+    #[test]
+    fn the_ram_override_takes_gib_and_refuses_the_rest() {
+        const GIB: u64 = 1 << 30;
+        assert_eq!(parse_ram_override("8"), Some(8 * GIB));
+        assert_eq!(parse_ram_override(" 16 "), Some(16 * GIB));
+        assert_eq!(parse_ram_override("1024"), Some(1024 * GIB));
+        // Fractions are allowed: a tight machine is worth trying.
+        assert_eq!(parse_ram_override("7.5"), Some(15 * GIB / 2));
+        assert_eq!(parse_ram_override("0.5"), Some(GIB / 2));
+        for bad in [
+            "", " ", "0", "0.0", "-8", "1024.5", "1025", "8GB", "eight", "nan", "inf", "1e400",
+        ] {
+            assert_eq!(parse_ram_override(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn eight_gib_of_override_gives_the_budgets_of_the_rule() {
+        const GIB: u64 = 1 << 30;
+        let ram = parse_ram_override("8");
+        // CPU only: half of the RAM, under the 6 GiB default.
+        assert_eq!(MemoryBudget::for_ram(ram).cpu_bytes, 4 * GIB);
+        // With a GPU that shares the memory: 2 GiB and 2.8 GiB (`docs/17`).
+        let unified = MemoryBudget::for_ram(ram).for_unified_memory(ram);
+        assert_eq!(unified.gpu_bytes, 2 * GIB);
+        assert_eq!(unified.cpu_bytes, 8 * GIB * 3 / 5 - 2 * GIB);
     }
 
     #[test]

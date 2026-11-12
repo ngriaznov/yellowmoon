@@ -307,7 +307,9 @@ impl Core {
         let mut env = env
             .with_events(options.session_events)
             .with_default_look(looks.effective_default())
-            .with_decode_threads(options.decode_threads);
+            .with_decode_threads(options.decode_threads)
+            // The mosaics the session holds are counted in the renderer's ledger (`docs/26` H-13).
+            .with_ledger(Arc::clone(renderer.ledger()));
         if options.thumbnails {
             env = env.with_thumbnails(renderer.thumbnail_renderer());
         }

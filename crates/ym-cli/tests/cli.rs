@@ -152,6 +152,52 @@ fn doctor_says_what_it_includes_and_lists_the_parts() {
     assert!(!sb.home().join("preferences.json").exists());
 }
 
+/// `YELLOWMOON_RAM_GB` (a development switch, `docs/17`): `ym doctor` says the RAM it set, and the budget of
+/// the rule follows it (CPU only: half of 8 GiB). The rule with a GPU that shares the memory (2.0 and 2.8 GiB) is
+/// checked by the unit test of `ym_core::scheduler` and the fake probe of the application's `gpu.rs`.
+#[test]
+fn doctor_shows_the_ram_override_and_the_budget_of_the_rule() {
+    let sb = Sandbox::new();
+    let out = sb
+        .ym()
+        .env("YELLOWMOON_RAM_GB", "8")
+        .env("YELLOWMOON_GPU", "off")
+        .arg("doctor")
+        .assert()
+        .success();
+    let text = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+    assert!(
+        text.contains("RAM") && text.contains("8 GiB (set by YELLOWMOON_RAM_GB)"),
+        "no RAM row in:\n{text}"
+    );
+    assert!(text.contains("CPU 4.0 GiB"), "budget line in:\n{text}");
+    let out = sb
+        .ym()
+        .env("YELLOWMOON_RAM_GB", "8")
+        .env("YELLOWMOON_GPU", "off")
+        .args(["doctor", "--json"])
+        .assert()
+        .success();
+    let v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
+    assert_eq!(v["memory_budget"]["ram_override_bytes"], 8_u64 << 30);
+    assert_eq!(v["memory_budget"]["cpu_bytes"], 4_u64 << 30);
+
+    // Not set, or not a number: no row, the installed RAM is used.
+    for value in [None, Some("0"), Some("eight")] {
+        let mut cmd = sb.ym();
+        cmd.env_remove("YELLOWMOON_RAM_GB").arg("doctor");
+        if let Some(value) = value {
+            cmd.env("YELLOWMOON_RAM_GB", value);
+        }
+        let out = cmd.assert().success();
+        let text = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+        assert!(
+            !text.contains("set by YELLOWMOON_RAM_GB"),
+            "{value:?}:\n{text}"
+        );
+    }
+}
+
 #[test]
 fn doctor_json_has_the_same_parts() {
     let sb = Sandbox::new();

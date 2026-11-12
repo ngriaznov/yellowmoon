@@ -86,9 +86,11 @@ fn a_viewport_frame_does_not_wait_for_an_export_in_progress() {
     r.viewport_frame(&src, &st, &FrameOptions::default(), &CancelToken::new())
         .expect("warm");
     let export = r.spawn_full(src.clone(), srgb_export());
-    // The export is in progress once it holds its memory reservation.
+    // The export is in progress once it holds its memory reservation (the warm frame left caches in the
+    // ledger already: what the export adds is above them).
+    let cached = r.ledger().used();
     let started = Instant::now();
-    while r.ledger().used() == 0 {
+    while r.ledger().used() <= cached {
         assert!(started.elapsed() < Duration::from_secs(60), "never started");
         assert!(export.try_wait().is_none(), "finished before it was seen");
         std::thread::sleep(Duration::from_millis(1));
@@ -104,7 +106,7 @@ fn a_viewport_frame_does_not_wait_for_an_export_in_progress() {
     let f = frame.wait().expect("job").expect("frame");
     assert_eq!((f.width, f.height), (300, 200));
     assert!(
-        export.try_wait().is_none() && r.ledger().used() > 0,
+        export.try_wait().is_none() && r.ledger().used() > cached,
         "the frame was served while the export was still running"
     );
     // Giving way changes nothing about the pixels of the export.
@@ -116,6 +118,9 @@ fn a_viewport_frame_does_not_wait_for_an_export_in_progress() {
         full.rgb == direct.rgb,
         "an export that yields is the same picture"
     );
+    // What is left is the pictures held and the caches; a leak would stay after they go.
+    drop((full, direct));
+    r.release_caches();
     assert_eq!(r.ledger().used(), 0);
 }
 

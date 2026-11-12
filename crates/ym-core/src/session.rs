@@ -86,7 +86,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -126,6 +126,7 @@ use crate::auto_provider::{
 use crate::camera::{CameraCard, CameraInfo, PhotoCamera};
 use crate::data_dir::{DataDirError, find_data_dir};
 use crate::media::{CHANGED_MESSAGE, FileStamp, Guarded, Media, NO_ANSWER_MESSAGE, ReadFailure};
+use crate::scheduler::{MemoryLedger, Reservation, total_ram_bytes};
 use crate::settings::{
     CropAspect, DevelopSettings, Orientation, ResolvedSettings, SettingsError, SettingsPatch,
 };
@@ -136,6 +137,11 @@ pub const MOSAIC_CACHE_LEN: usize = 3;
 
 /// The message of the Start screen when a drop holds no ARW file (`docs/11` section Start).
 pub const NO_ARW_MESSAGE: &str = "No ARW files in what you dropped.";
+
+/// The bytes of a decoded mosaic of `width` x `height` photosites: two bytes each (`docs/26` H-13).
+fn mosaic_bytes(width: u32, height: u32) -> u64 {
+    2 * u64::from(width) * u64::from(height)
+}
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -721,6 +727,10 @@ pub struct SessionEnv {
     /// How files that may not answer are touched: the probe, the whole-file read and the canonical
     /// path, with their time limits (`docs/26` H-15). The standard value uses the real calls.
     pub media: Media,
+    /// The memory ledger of the render engine, when there is one: every decoded mosaic (a develop
+    /// job's, the cache's, a render's) is reserved in it while it is held, and a job that cannot
+    /// reserve waits (`docs/26` H-13). `None` counts nothing and waits for nothing.
+    pub ledger: Option<Arc<MemoryLedger>>,
 }
 
 /// Auto crop's model from `<data_root>/models/crop`, checked against its `SHA256SUMS`; a missing or
@@ -752,11 +762,45 @@ fn load_lens_library(data_root: &Path) -> Result<Arc<LensLibrary>, String> {
     })
 }
 
-/// The decode pool size: `min(available_parallelism - 2, 6)`, at least one.
+/// The most develop jobs at once, whatever the machine.
+pub const MAX_DECODE_THREADS: usize = 6;
+
+/// What one develop job of a 61 MP photo is counted at when the pool is sized: its mosaic
+/// (`2 B x w x h`, 120 MB) and the scratch the job works in (the estimates, the thumbnail render and
+/// the Apple Auto picture), 1.25 GiB in all. It is a budget share, not a measured peak: it is set
+/// so that the pool the rule gives is three threads on an 8 GB machine and six on a 16 GB one
+/// (`docs/26` H-13, `docs/17`); the ledger counts the mosaic itself, exactly.
+pub const DEVELOP_JOB_BYTES: u64 = 5 << 28;
+
+/// The share of the RAM the develop pool may plan for: half, before the 6 GiB cap of
+/// [`crate::scheduler::MemoryBudget`] (the cap is for the caches, not the pool).
+pub const DEVELOP_POOL_RAM_SHARE: (u64, u64) = (1, 2);
+
+/// The decode pool size for a machine with `cores` cores and `ram_bytes` of RAM (`None`: not
+/// known): `min(cores - 2, 6, max(1, ram / 2 / DEVELOP_JOB_BYTES))`, at least one. A table:
+///
+/// | RAM | 4 GiB | 8 GiB | 16 GiB | 32 GiB |
+/// |---|---|---|---|---|
+/// | threads (8 cores or more) | 1 | 3 | 6 | 6 |
+#[must_use]
+pub fn default_decode_threads_for(cores: usize, ram_bytes: Option<u64>) -> usize {
+    let by_cores = cores.saturating_sub(2).clamp(1, MAX_DECODE_THREADS);
+    let Some(ram) = ram_bytes else {
+        return by_cores;
+    };
+    let (num, den) = DEVELOP_POOL_RAM_SHARE;
+    let by_ram =
+        u128::from(ram) * u128::from(num) / u128::from(den) / u128::from(DEVELOP_JOB_BYTES);
+    let by_ram = usize::try_from(by_ram).unwrap_or(usize::MAX).max(1);
+    by_cores.min(by_ram)
+}
+
+/// The decode pool size here: [`default_decode_threads_for`] with this machine's cores and RAM
+/// (`YELLOWMOON_RAM_GB` replaces the RAM).
 #[must_use]
 pub fn default_decode_threads() -> usize {
     let cpus = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
-    cpus.saturating_sub(2).clamp(1, 6)
+    default_decode_threads_for(cpus, total_ram_bytes())
 }
 
 /// The Signature look Apple Auto's pictures are rendered with: `<data_root>/looks/builtin/signature.json`,
@@ -806,6 +850,7 @@ impl SessionEnv {
             lens_library: load_lens_library(data_root),
             bokeh_model: load_bokeh_model(data_root),
             media: Media::new(),
+            ledger: None,
         })
     }
 
@@ -817,6 +862,13 @@ impl SessionEnv {
     /// [`SessionError::Data`] when the folder is missing or unreadable.
     pub fn from_data_dir() -> Result<Self, SessionError> {
         Self::load(&find_data_dir()?)
+    }
+
+    /// Counts the mosaics the session holds in `ledger` (the render engine's).
+    #[must_use]
+    pub fn with_ledger(mut self, ledger: Arc<MemoryLedger>) -> Self {
+        self.ledger = Some(ledger);
+        self
     }
 
     /// Sets where events go.
@@ -1366,7 +1418,9 @@ struct GroupPool {
 
 #[derive(Default)]
 struct MosaicCache {
-    entries: Vec<(PhotoId, Arc<RawImage>)>,
+    /// The photo, its mosaic and the bytes the ledger holds for it (shared with the job that
+    /// decoded it until that job ends). Dropping an entry gives the bytes back.
+    entries: Vec<(PhotoId, Arc<RawImage>, Option<Arc<Reservation>>)>,
     max_len: usize,
 }
 
@@ -1498,17 +1552,39 @@ impl State {
         self.cache
             .entries
             .iter()
-            .find(|(i, _)| *i == id)
-            .map(|(_, r)| r.clone())
+            .find(|(i, ..)| *i == id)
+            .map(|(_, r, _)| r.clone())
     }
 
     /// Keeps `raw` when its photo is in the window; evicts what fell out of it.
-    fn cache_offer(&mut self, id: PhotoId, raw: Arc<RawImage>) {
+    fn cache_offer(&mut self, id: PhotoId, raw: Arc<RawImage>, held: Option<Arc<Reservation>>) {
         self.cache_trim();
         if self.in_window(id) && self.cache_get(id).is_none() {
-            self.cache.entries.push((id, raw));
+            self.cache.entries.push((id, raw, held));
             self.cache.max_len = self.cache.max_len.max(self.cache.entries.len());
         }
+    }
+
+    /// Lets go of one cached mosaic to make room for a decode that cannot reserve: the oldest
+    /// that is not the current photo's, else the current photo's. Returns whether one went. The
+    /// mosaic comes back from the file when it is needed again.
+    fn cache_evict_one(&mut self) -> bool {
+        let current = self.current.map(|i| self.photos[i].id);
+        let victim = self
+            .cache
+            .entries
+            .iter()
+            .position(|(id, ..)| Some(*id) != current)
+            .or_else(|| (!self.cache.entries.is_empty()).then_some(0));
+        victim.map(|i| self.cache.entries.remove(i)).is_some()
+    }
+
+    /// Lets go of the cached mosaics a reclaim asks for: all but the photo `what.keep`'s, or all of them.
+    /// A mosaic that a render holds goes on living in it; only the cache's claim on it ends.
+    fn cache_reclaim(&mut self, what: crate::scheduler::Reclaim) {
+        self.cache
+            .entries
+            .retain(|(id, ..)| !what.all && Some(*id) == what.keep);
     }
 
     fn cache_trim(&mut self) {
@@ -1517,7 +1593,7 @@ impl State {
             .into_iter()
             .map(|i| self.photos[i].id)
             .collect();
-        self.cache.entries.retain(|(id, _)| window.contains(id));
+        self.cache.entries.retain(|(id, ..)| window.contains(id));
     }
 
     /// Recomputes the burst median exposure of every photo with estimates, Apple Auto's steps (each
@@ -1934,7 +2010,7 @@ impl State {
         self.photos = kept;
         self.reindex();
         self.current = successor.and_then(|id| self.index.get(&id).copied());
-        self.cache.entries.retain(|(id, _)| !doomed.contains(id));
+        self.cache.entries.retain(|(id, ..)| !doomed.contains(id));
         self.cache_trim();
         self.apple.urgent.retain(|id| !doomed.contains(id));
         // The burst median, Apple Auto's steps of a burst and the pooled noise are functions of the set of photos: made
@@ -2162,6 +2238,47 @@ struct Inner {
     apple_wake: Condvar,
     /// Calls of the advisors' `ask`, retries included (for tests and diagnostics).
     apple_asks: AtomicU64,
+    /// How many decodes hold a mosaic of their own now (a develop job's, or a
+    /// [`Session::raw_image`] read): what a decode that cannot reserve waits for. The lock is held
+    /// only for a reservation attempt or a count, never while anything else is locked or waited
+    /// for.
+    mosaic_wait: Mutex<usize>,
+    /// Signals that a holder ended, so a waiting decode looks again.
+    mosaic_freed: Condvar,
+    /// The most holders at once (for tests).
+    mosaic_holders_peak: AtomicUsize,
+}
+
+/// How long a decode waits for other decodes to give their mosaics back before it takes its own
+/// bytes anyway. The rule of [`Inner::reserve_mosaic`] never reaches it (it waits only for holders
+/// that are running and that wait for nothing); it is the net under a mistake.
+const MOSAIC_WAIT_LIMIT: Duration = Duration::from_secs(60);
+/// How often a waiting decode looks again without being told.
+const MOSAIC_WAIT_SLICE: Duration = Duration::from_millis(25);
+
+/// A decode's claim on memory for one mosaic: the bytes in the ledger, and its place among the
+/// running holders. Dropping it ends the claim on every path (success, error, cancel, panic); a
+/// mosaic that goes on into the cache keeps the bytes through its own clone of the reservation.
+struct MosaicHold<'a> {
+    inner: &'a Inner,
+    reservation: Option<Arc<Reservation>>,
+}
+
+impl MosaicHold<'_> {
+    /// The reservation to hand to the cache with the mosaic.
+    fn reservation(&self) -> Option<Arc<Reservation>> {
+        self.reservation.clone()
+    }
+}
+
+impl Drop for MosaicHold<'_> {
+    fn drop(&mut self) {
+        let mut running = lock(&self.inner.mosaic_wait);
+        *running -= 1;
+        drop(running);
+        self.reservation = None;
+        self.inner.mosaic_freed.notify_all();
+    }
 }
 
 /// One Auto worker thread. `asking` is true while it is inside a request: an advisor's call can
@@ -2280,7 +2397,22 @@ impl Session {
             decoding: SingleFlight::new(),
             apple_wake: Condvar::new(),
             apple_asks: AtomicU64::new(0),
+            mosaic_wait: Mutex::new(0),
+            mosaic_freed: Condvar::new(),
+            mosaic_holders_peak: AtomicUsize::new(0),
         });
+        // A render that would be refused for want of ledger room asks the session to let go of its cached
+        // mosaics first (`MemoryLedger::reserve_reclaiming`): they are only a cache.
+        if let Some(ledger) = &inner.env.ledger {
+            let weak = Arc::downgrade(&inner);
+            ledger.add_reclaimer(Arc::new(move |what| match weak.upgrade() {
+                Some(inner) => {
+                    lock(&inner.state).cache_reclaim(what);
+                    true
+                }
+                None => false,
+            }));
+        }
         let workers: Vec<JoinHandle<()>> = (0..threads)
             .filter_map(|n| {
                 let inner = Arc::clone(&inner);
@@ -3256,8 +3388,15 @@ impl Session {
             .cache
             .entries
             .iter()
-            .map(|(id, _)| *id)
+            .map(|(id, ..)| *id)
             .collect()
+    }
+
+    /// The most decodes that held a mosaic of their own at once: develop jobs and
+    /// [`Session::raw_image`] reads (for tests; `docs/26` H-13).
+    #[must_use]
+    pub fn peak_mosaic_holders(&self) -> usize {
+        self.inner.mosaic_holders_peak.load(Ordering::SeqCst)
     }
 
     /// The most mosaics the cache ever held at once (for tests).
@@ -4129,6 +4268,59 @@ impl Inner {
         q.jobs.remove(pos)
     }
 
+    /// Reserves `bytes` for the mosaic a decode is about to read, waiting when the ledger is full.
+    /// `None` when the session closed while it waited.
+    ///
+    /// **It cannot deadlock.** The ledger is full of three kinds of holders. (1) The cache: not
+    /// waited for. The decode evicts cached mosaics itself, one at a time, until its bytes fit,
+    /// and the cache is only a cache (a mosaic that went comes back from the file). (2) Running
+    /// decodes: waited for, and only for those. They hold their bytes while they read, estimate
+    /// and render a thumbnail, reserve nothing more and wait for nothing, so each one ends and
+    /// signals. (3) Anything else (a render's output, a cached group): not waited for. When no
+    /// decode is running and the cache is empty and the bytes still do not fit, the decode takes
+    /// them over the budget ([`MemoryLedger::reserve_forced`]): a photo is always developed, the
+    /// next request is refused instead. [`MOSAIC_WAIT_LIMIT`] is the net under all of it.
+    fn reserve_mosaic(&self, epoch: u64, bytes: u64) -> Option<MosaicHold<'_>> {
+        let start = |reservation: Option<Reservation>, running: &mut usize| {
+            *running += 1;
+            self.mosaic_holders_peak
+                .fetch_max(*running, Ordering::SeqCst);
+            MosaicHold {
+                inner: self,
+                reservation: reservation.map(Arc::new),
+            }
+        };
+        let Some(ledger) = &self.env.ledger else {
+            return Some(start(None, &mut lock(&self.mosaic_wait)));
+        };
+        let waiting_since = Instant::now();
+        loop {
+            {
+                let mut running = lock(&self.mosaic_wait);
+                if let Ok(r) = ledger.try_reserve(bytes) {
+                    return Some(start(Some(r), &mut running));
+                }
+            }
+            if lock(&self.state).cache_evict_one() {
+                continue;
+            }
+            let mut running = lock(&self.mosaic_wait);
+            if let Ok(r) = ledger.try_reserve(bytes) {
+                return Some(start(Some(r), &mut running));
+            }
+            if *running == 0 || waiting_since.elapsed() >= MOSAIC_WAIT_LIMIT {
+                return Some(start(Some(ledger.reserve_forced(bytes)), &mut running));
+            }
+            if !self.live(epoch) {
+                return None;
+            }
+            let _ = self
+                .mosaic_freed
+                .wait_timeout(running, MOSAIC_WAIT_SLICE)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
     /// Decodes a photo so that its mosaic is cached, if it still belongs in the cache. The job
     /// was queued when the photo was in the window of the current photo; stepping through photos
     /// faster than they decode leaves jobs for photos the person has already passed, and
@@ -4158,10 +4350,11 @@ impl Inner {
                         p.camera.clone()?,
                         p.profile.clone()?,
                         p.settings.clone(),
+                        mosaic_bytes(p.summary.width_px, p.summary.height_px),
                     ))
                 })
         };
-        let Some((path, stamp, camera, profile, settings)) = snapshot else {
+        let Some((path, stamp, camera, profile, settings, mosaic)) = snapshot else {
             return;
         };
         let fail = |stage: PhotoStage, reason: String| {
@@ -4172,6 +4365,11 @@ impl Inner {
         if !self.progress(job, PhotoStage::Decode, false, None) {
             return;
         }
+        // The mosaic is counted before it is read; a job that does not fit waits for the others
+        // (`reserve_mosaic`). The hold ends with the job, whichever way it ends.
+        let Some(hold) = self.reserve_mosaic(epoch, mosaic) else {
+            return;
+        };
         let started = Instant::now();
         // The read has a time limit: a file on media that went away fails the photo and frees the
         // pool thread instead of keeping it for ever (`docs/26` H-15).
@@ -4253,7 +4451,7 @@ impl Inner {
                 st.rebuild_pool(&key, &self.env.priors);
             }
             let changed = st.refresh_effective(&self.env.priors);
-            st.cache_offer(id, raw.clone());
+            st.cache_offer(id, raw.clone(), hold.reservation());
             let served = st.photos[i].effective.clone();
             let claim = picture.then(|| PictureClaim {
                 inner: self,
@@ -4388,6 +4586,12 @@ impl Inner {
                 lead.finish(Some(raw.clone()));
                 return Ok(raw);
             }
+            let bytes = lock(&self.state)
+                .photo(id)
+                .map_or(0, |p| mosaic_bytes(p.summary.width_px, p.summary.height_px));
+            let Some(hold) = self.reserve_mosaic(epoch, bytes) else {
+                return Err(SessionError::UnknownPhoto(id));
+            };
             self.raw_decodes.fetch_add(1, Ordering::SeqCst);
             let decoded = match self.env.media.decode(&path, stamp, &|| !self.live(epoch)) {
                 Guarded::Done(Ok(raw)) => Arc::new(raw),
@@ -4415,7 +4619,7 @@ impl Inner {
                 // The development job may have cached it while we read the file: one image.
                 let raw = st.cache_get(id).unwrap_or(decoded);
                 if self.epoch.load(Ordering::SeqCst) == epoch {
-                    st.cache_offer(id, raw.clone());
+                    st.cache_offer(id, raw.clone(), hold.reservation());
                 }
                 raw
             };

@@ -658,6 +658,37 @@ jobs:
           cargo test -p ym-core --features fault-injection --test export_stop
           cargo test -p ym-cli --test export_stop --test write_errors
 
+  # H-12 (docs/26 P4-2, docs/13): the peak memory of a 50 MP and a 61 MP export as an 8 GB machine. YELLOWMOON_RAM_GB=8 makes the
+  # budget rule, the develop pool and the unified-memory rule plan for 8 GB (docs/17); `tools/ci/memory_gate.py` renders a synthetic
+  # file of each size to JPEG, TIFF 16-bit and DNG with `ym render -v`, reads the process's peak RSS (wait4) and the ledger's peak
+  # ("Ledger peak:" line), writes the six rows to the job summary, and fails when
+  #   * a peak RSS is over its bound (BOUNDS_MIB in the script, one table; set from the first run of this job, see the comment there), or
+  #   * the ledger's peak is not within a factor of two of the RSS (H-13): a buffer nobody counted, or a count with nothing behind it.
+  # Release build, CPU path (no adapter on the runner); the machine is shared, so the bounds carry the noise of the runner.
+  memory-8gb:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90   # a cold cache builds ym in release; the six renders take about 12 minutes on 4 cores
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: ym and the synthetic ARW writer (release)
+        run: |
+          cargo build --release -p ym-cli
+          cargo build --release -p ym-raw --features testgen --example gen_arw
+      - name: Peak memory of six exports as an 8 GB machine
+        env:
+          YELLOWMOON_RAM_GB: "8"
+        run: |
+          python3 tools/ci/memory_gate.py \
+            --ym target/release/ym \
+            --gen target/release/examples/gen_arw \
+            --work "$RUNNER_TEMP/memory-8gb" \
+            --ram-gb 8 \
+            --summary "$GITHUB_STEP_SUMMARY"
+
   # tools/eval: the unit tests of the auto-exposure study and of its M1-08 gate logic (G3, `--gate`). Pure numpy/Pillow/tifffile;
   # the one test that runs `ym` skips itself when there is no binary or no synthetic set. The gate itself runs in the golden job.
   eval-tools:

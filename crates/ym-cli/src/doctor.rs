@@ -65,6 +65,8 @@ struct GpuPlan {
     budget: MemoryBudget,
     /// The adapter shares the machine's RAM.
     shared_memory: bool,
+    /// The RAM `YELLOWMOON_RAM_GB` says, when it is set to a number the budget rule accepts.
+    ram_override: Option<u64>,
 }
 
 /// The Auto providers as the report says them: the status the app's Preferences would show, and what each
@@ -329,6 +331,7 @@ fn gpu_report() -> (Result<GpuInfo, String>, GpuPlan) {
         stages: slot.stages(),
         budget: slot.budget(),
         shared_memory: slot.shares_memory(),
+        ram_override: ym_core::scheduler::ram_override(),
         choice,
     };
     (gpu, plan)
@@ -671,6 +674,7 @@ fn to_json(r: &Report) -> Value {
             "cpu_bytes": r.plan.budget.cpu_bytes,
             "gpu_bytes": r.plan.budget.gpu_bytes,
             "shared_memory": r.plan.shared_memory,
+            "ram_override_bytes": r.plan.ram_override,
         },
         "render_path": {
             "demosaic": if r.neural.available { "neural" } else { "classical" },
@@ -779,6 +783,16 @@ fn to_text(r: &Report) -> String {
             GpuStages::ALL
         ),
     );
+    if let Some(ram) = r.plan.ram_override {
+        row(
+            "RAM",
+            format!(
+                "{} GiB (set by {})",
+                ram as f64 / f64::from(1u32 << 30),
+                ym_core::scheduler::RAM_ENV
+            ),
+        );
+    }
     row(
         "Memory budget",
         format!(

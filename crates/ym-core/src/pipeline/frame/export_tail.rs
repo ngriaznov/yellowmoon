@@ -521,7 +521,7 @@ impl Renderer {
         };
         let _reservation = self
             .ledger()
-            .try_reserve(working + frame_extra + sigma_map)
+            .reserve_reclaiming(working + frame_extra + sigma_map, Some(src.id))
             .map_err(|_| RenderError::Memory)?;
         let grid = baked.grid((plan.out_w, plan.out_h), (fw, fh));
         // The raster masks of the nodes are made over each tile grown by their receptive field, and the Film nodes read
