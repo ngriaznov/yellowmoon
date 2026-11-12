@@ -691,3 +691,192 @@ fn a_frame_shows_the_retouch_once_the_faces_are_ready() {
         .expect("frame");
     assert_ne!(made.rgba, frame(&r, &src.with_settings(plain())));
 }
+
+// ---- a Face Refinement node among Film nodes and other nodes (S-11b2) ---------------------------------------------------------
+
+/// A Film node with a halation wide enough to cross a face region from outside it.
+fn film_node(id: u32) -> Value {
+    json!({ "id": id, "kind": "film", "pos": [f64::from(id), 0.0],
+            "film": { "exposure_ev": 0.3 },
+            "halation": { "amount": 200, "size": 200 },
+            "strength": 90 })
+}
+
+fn link(from: Value, port: &str, to: u32, to_port: &str) -> Value {
+    json!({ "from": { "node": from, "port": port }, "to": { "node": to, "port": to_port } })
+}
+
+/// A weaker Face Refinement body than [`strong`], so that two nodes in a line do different things.
+fn light() -> Value {
+    json!({ "all": { "blemish": 0, "dark_circles": 60, "even_skin": 0, "texture": 0,
+                     "skin_contrast": 0, "shadow_desaturation": 0, "shine_removal": 50, "teeth_whitening": 0 } })
+}
+
+/// Every graph order the pass has to get right: the Face Refinement node before and after a Film node, two Face Refinement
+/// nodes (with a Film node between and after), and the node on a branch of a Parallel and under a Layer.
+fn orders() -> Vec<(&'static str, DevelopSettings)> {
+    let end = || json!({ "from": { "node": 9, "port": "picture" }, "to": { "node": "output", "port": "picture" } });
+    let to_output = |from: u32| json!({ "from": { "node": from, "port": "picture" }, "to": { "node": "output", "port": "picture" } });
+    let _ = end;
+    let parallel = doc_of(
+        vec![
+            face_node(2, strong()),
+            film_node(3),
+            json!({ "id": 4, "kind": "parallel", "pos": [4.0, 0.0] }),
+        ],
+        vec![
+            link(json!("input"), "picture", 1, "picture"),
+            link(json!(1), "picture", 2, "picture"),
+            link(json!(1), "picture", 3, "picture"),
+            link(json!(2), "picture", 4, "picture.1"),
+            link(json!(3), "picture", 4, "picture.2"),
+            to_output(4),
+        ],
+    );
+    let layer = doc_of(
+        vec![
+            face_node(2, strong()),
+            film_node(3),
+            json!({ "id": 4, "kind": "layer", "pos": [4.0, 0.0], "mode": "normal", "opacity": 0.8 }),
+        ],
+        vec![
+            link(json!("input"), "picture", 1, "picture"),
+            link(json!(1), "picture", 2, "picture"),
+            link(json!(1), "picture", 3, "picture"),
+            link(json!(3), "picture", 4, "picture.1"),
+            link(json!(2), "picture", 4, "picture.2"),
+            to_output(4),
+        ],
+    );
+    vec![
+        (
+            "Face then Film",
+            doc_of(
+                vec![face_node(2, strong()), film_node(3)],
+                line(&[1, 2, 3]),
+            ),
+        ),
+        (
+            "Film then Face",
+            doc_of(
+                vec![film_node(2), face_node(3, strong())],
+                line(&[1, 2, 3]),
+            ),
+        ),
+        (
+            "Film, Face, Film",
+            doc_of(
+                vec![film_node(2), face_node(3, strong()), film_node(4)],
+                line(&[1, 2, 3, 4]),
+            ),
+        ),
+        (
+            "two Face nodes",
+            doc_of(
+                vec![face_node(2, strong()), face_node(3, light())],
+                line(&[1, 2, 3]),
+            ),
+        ),
+        (
+            "Face, Film, Face",
+            doc_of(
+                vec![face_node(2, strong()), film_node(3), face_node(4, light())],
+                line(&[1, 2, 3, 4]),
+            ),
+        ),
+        ("Face and Film in a Parallel", parallel),
+        ("Face and Film under a Layer", layer),
+    ]
+}
+
+fn tiled(tile: usize) -> Renderer {
+    Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            face_model: Some(two_faces()),
+            data_root: Some(data_root()),
+            full_tile_px: tile,
+            ..RenderOptions::default()
+        },
+    )
+    .expect("render thread")
+}
+
+/// A tiled export gives the same pixels as the export in one piece, for every graph order, and both faces are retouched whole.
+#[test]
+fn a_tiled_export_equals_the_whole_frame_in_every_graph_order() {
+    let d = photo();
+    let src = d.source();
+    let whole = tiled(4096);
+    for (name, graph) in orders() {
+        let reference = export(&whole, &src, graph.clone());
+        // The faces are in it: the graph is not the same without the Face Refinement nodes (its Film nodes only).
+        assert_ne!(
+            reference.rgb,
+            export(&whole, &src, plain()).rgb,
+            "{name}: the graph does something"
+        );
+        for tile in [97usize, 256, 400] {
+            let img = export(&tiled(tile), &src, graph.clone());
+            let diff = differing(&reference, &img);
+            assert!(
+                diff.is_empty(),
+                "{name}: tiles of {tile} px differ from the whole frame at {} pixels, the first at {:?}",
+                diff.len(),
+                diff.first()
+            );
+        }
+    }
+}
+
+/// A viewport frame equals the same pixels of a frame of the whole photo at 100 %, for every graph order.
+#[test]
+fn a_viewport_frame_equals_the_whole_frame_in_every_graph_order() {
+    let d = photo();
+    let src = d.source();
+    let r = renderer_with(Some(two_faces()), 0);
+    r.navigate(src.id);
+    let opts = FrameOptions {
+        no_cache: true,
+        ..FrameOptions::default()
+    };
+    let view = |s: &PhotoSource, w: f64, h: f64, x0: f64, y0: f64| {
+        let mut st = ViewportState::new(ViewportRect::cell(w, h, 1.0));
+        st.mode = ym_core::pipeline::ViewportMode::Percent { value: 100.0 };
+        st.centre = [(x0 + w / 2.0) / 1200.0, (y0 + h / 2.0) / 800.0];
+        r.viewport_frame(s, &st, &opts, &CancelToken::new())
+            .expect("frame")
+    };
+    for (name, graph) in orders() {
+        let node = src.with_settings(graph);
+        let _ = view(&node, 200.0, 200.0, 0.0, 0.0);
+        wait_until("the faces", 60, || {
+            !r.faces_worker_alive(src.id) && r.faces_ready(&node)
+        });
+        let whole = view(&node, 1200.0, 800.0, 0.0, 0.0);
+        assert_eq!((whole.width, whole.height), (1200, 800));
+        // Cells whose edges cut the faces' regions and the halation's reach.
+        let mut checked = 0;
+        for (x0, y0, w, h) in [
+            (0.0, 0.0, 300.0, 300.0),
+            (150.0, 100.0, 300.0, 300.0),
+            (233.0, 151.0, 301.0, 257.0),
+            (40.0, 330.0, 400.0, 220.0),
+            (500.0, 200.0, 333.0, 301.0),
+            (600.0, 120.0, 250.0, 400.0),
+            (800.0, 500.0, 400.0, 300.0),
+        ] {
+            let part = view(&node, w, h, x0, y0);
+            assert_eq!((part.width, part.height), (w as usize, h as usize));
+            for y in 0..part.height {
+                for x in 0..part.width {
+                    let a = &part.rgba[(y * part.width + x) * 4..][..4];
+                    let b = &whole.rgba[((y + y0 as usize) * 1200 + x + x0 as usize) * 4..][..4];
+                    assert_eq!(a, b, "{name}: cell at ({x0}, {y0}), pixel ({x}, {y})");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0);
+    }
+}

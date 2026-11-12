@@ -8,8 +8,9 @@
 //!
 //! 1. the regions come from the cached analysis ([`FaceEntry`]) and the frame's size, at the render's scale
 //!    (`working / analysis`);
-//! 2. a render that needs a pixel of a region needs the whole region ([`FaceWork::widen`] grows the area the render asks for
-//!    to the regions it meets, and to the reach of the protection plane's edges);
+//! 2. a render that needs a pixel of a region needs the whole region (`FilmRender::widen` grows the area the render asks for
+//!    to the regions that the node's picture is demanded over meets, to a fixed point, and to the reach of the protection
+//!    plane's edges; a Film node after this one demands the picture over a wider area, `docs/27` S-11b2);
 //! 3. per region, the prefix chain's LogC4 over it is decoded to linear AWG4, `retouch_skin_region` applies the cached masks and
 //!    blemish maps to it (no network runs, whatever the grade upstream), the result is encoded back, and the pixels it left as
 //!    they were are marked so that the chain passes them through exactly (a bit-identical pass-through outside the face's
@@ -129,21 +130,18 @@ impl FaceWork {
         })
     }
 
-    /// The area a render needs to make `need` of this node's picture: `need` grown to hold every region it meets (with the
-    /// reach of the protection plane around it). The regions are the ones `need` meets, not the ones the grown area meets: a
-    /// region the grown area happens to reach is made when a render asks for its own pixels.
-    pub(crate) fn widen(&self, need: Area) -> Area {
-        if need.is_empty() {
-            return need;
-        }
+    /// The regions a render must make whole to give the pixels of `made` (the area this node's picture is demanded over): the
+    /// ones that meet it and that an earlier tile of the same export did not make already.
+    pub(crate) fn needed_in(&self, made: &Area) -> Vec<usize> {
         // A region an earlier tile of the same export made is kept: a later tile does not read it again.
-        self.regions
-            .iter()
-            .enumerate()
-            .filter(|(i, r)| !need.intersect(r).is_empty() && self.kept(*i).is_none())
-            .fold(need, |out, (_, r)| {
-                union(out, r.grown(self.protect_halo, &self.frame))
-            })
+        (0..self.regions.len())
+            .filter(|&i| !self.regions[i].intersect(made).is_empty() && self.kept(i).is_none())
+            .collect()
+    }
+
+    /// Region `ri` grown by the reach of the protection plane around it: what the render must hold to make it.
+    pub(crate) fn region_with_protect(&self, ri: usize) -> Area {
+        self.regions[ri].grown(self.protect_halo, &self.frame)
     }
 
     /// The regions that meet `made`, by index.
@@ -302,7 +300,7 @@ impl FaceWork {
     }
 }
 
-fn union(a: Area, b: Area) -> Area {
+pub(crate) fn union(a: Area, b: Area) -> Area {
     if a.is_empty() {
         return b;
     }
