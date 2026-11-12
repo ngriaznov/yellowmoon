@@ -91,8 +91,8 @@ fn photos() -> Vec<Photo> {
     out
 }
 
-/// A raw file of the photo, opened.
-fn developed(p: &Photo) -> Developed {
+/// The scene and the mosaic of a photo: its linear values on the camera's white.
+fn mosaic_of(p: &Photo) -> (Scene, Vec<u16>) {
     let white = light(PROFILE, 5500.0);
     let (w, h) = (p.w as u32 & !1, p.h as u32 & !1);
     let scene = Scene::new(w, h, white, Layout::Uniform, 0.5).noise(0.0, 0.0);
@@ -115,12 +115,60 @@ fn developed(p: &Photo) -> Developed {
             mosaic.push((scene.black + v * range).round() as u16);
         }
     }
+    (scene, mosaic)
+}
+
+/// A raw file of the photo, opened.
+fn developed(p: &Photo) -> Developed {
+    let (scene, mosaic) = mosaic_of(p);
     let dir = tempfile::tempdir().expect("temp dir");
     scene
         .builder(MODEL)
         .write_to(&dir.path().join("DSC00001.ARW"), &mosaic)
         .expect("write the synthetic ARW");
     Developed::open(dir)
+}
+
+/// Developer tool (S-12 contact sheets, not a check): `YM_PORTRAITS_IN=<dir of .jpg> YM_PORTRAITS_OUT=<dir>` writes
+/// `<name>.ARW` for every JPEG, made as above, so `ym render` can show what the product does on them.
+#[test]
+#[ignore = "a developer tool: needs YM_PORTRAITS_IN and YM_PORTRAITS_OUT"]
+fn write_the_portraits_as_raw_files() {
+    let (Some(i), Some(o)) = (
+        std::env::var_os("YM_PORTRAITS_IN"),
+        std::env::var_os("YM_PORTRAITS_OUT"),
+    ) else {
+        return;
+    };
+    std::fs::create_dir_all(&o).expect("out dir");
+    let mut names: Vec<_> = std::fs::read_dir(&i)
+        .expect("in dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "jpg"))
+        .collect();
+    names.sort();
+    for path in names {
+        let mut d =
+            zune_jpeg::JpegDecoder::new(std::io::Cursor::new(std::fs::read(&path).expect("read")));
+        let rgb = d.decode().expect("decode");
+        let info = d.info().expect("header");
+        let p = Photo {
+            id: String::new(),
+            w: usize::from(info.width),
+            h: usize::from(info.height),
+            rgb,
+            faces: 1,
+        };
+        let (scene, mosaic) = mosaic_of(&p);
+        let out = Path::new(&o).join(format!(
+            "{}.ARW",
+            path.file_stem().expect("stem").to_string_lossy()
+        ));
+        scene
+            .builder(MODEL)
+            .write_to(&out, &mosaic)
+            .expect("write the ARW");
+    }
 }
 
 fn renderer(model: Arc<FaceModel>) -> Renderer {

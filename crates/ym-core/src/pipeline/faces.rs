@@ -13,7 +13,7 @@
 //!
 //! # Starting values
 //!
-//! [`FACE_ANALYSIS_LONG_EDGE_PX`], [`MIN_FACE_FULL_PX`] and the finder's score threshold are starting values for S-12.
+//! [`FACE_ANALYSIS_LONG_EDGE_PX`] and [`MIN_FACE_FULL_PX`] were starting values for S-12 and are kept; the finder's score threshold moved from 0.5 to 0.6.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -33,18 +33,20 @@ pub const FACES_RULES_VERSION: u32 = 1;
 /// The long edge, in pixels, of the picture the analysis looks at: the photo's final frame (crop, turn and lens kept) at this
 /// size at most, never enlarged. A face of [`MIN_FACE_FULL_PX`] in a 24 MP photo (6000 px) is 102 px in it, about three times
 /// what the finder needs; the masks and the blemish maps of the faces are built at this size and resampled to the render
-/// (`docs/27` decision 13). Starting value for S-12.
+/// (`docs/27` decision 13). Kept by S-12.
 pub const FACE_ANALYSIS_LONG_EDGE_PX: usize = 1400;
 /// The smallest face that is retouched, in pixels of its longer side in the full-resolution photo (`docs/27` section 11 item 9).
-/// Starting value for S-12.
+/// Kept at 200 by S-12 (the finder's false detections were all under 120 px; a face under 200 px is a few pixels per pore).
 pub const MIN_FACE_FULL_PX: u32 = 200;
 /// The most faces a photo keeps (the best by score, then numbered from left to right).
 pub const MAX_FACES_KEPT: usize = crate::settings::MAX_FACES;
 /// The finder is asked for faces down to this share of [`MIN_FACE_FULL_PX`], so that a face of exactly the minimum is found
 /// whatever its box says to within a few pixels. The size rule is applied after, on the box.
 const FINDER_SLACK: f64 = 0.8;
-/// The finder's score threshold. Starting value for S-12.
-pub const FINDER_SCORE_THRESHOLD: f32 = 0.5;
+/// The finder's score threshold (S-12: 0.5 before). The faces of the public portraits score 0.78 to 0.96; the most a photo
+/// without a face scored was 0.50 (a penguin) and 0.48; 0.6 sits between them and is the threshold of MediaPipe's own
+/// full-range graph.
+pub const FINDER_SCORE_THRESHOLD: f32 = 0.6;
 /// The most the finder looks for in one picture: a margin over the cap, so that faces dropped for their size do not use up
 /// the cap.
 const FINDER_MAX_FACES: usize = 64;

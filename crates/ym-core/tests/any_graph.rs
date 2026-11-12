@@ -873,6 +873,47 @@ fn parallel_branches(seed: u64) -> Graph {
     }
 }
 
+/// S-12: a live Face Refinement node with no mask row (the drawn graphs often put a Background, depth or radial row on it, which can
+/// leave the faces alone), at strong amounts, with a corrector before it and a Film node after it: the node changes the faces of the
+/// fake finder, so the comparison with the CPU is made on a frame the node really retouched.
+fn face_line(seed: u64) -> Graph {
+    let doc = json!({ "nodes": { "items": [
+        { "id": 1 },
+        { "id": 2, "kind": "corrector", "pos": [2, 0.0], "trim": { "exposure_ev": 0.3 } },
+        { "id": 3, "kind": "face_refinement", "pos": [3, 0.0], "same_for_all": true,
+          "all": { "blemish": 80, "dark_circles": 80, "even_skin": 80, "skin_contrast": 30 } },
+        { "id": 4, "kind": "film", "pos": [4, 0.0], "film": { "exposure_ev": 0.3 },
+          "grain": { "amount": 100, "seed": 4 }, "halation": { "amount": 200, "size": 120 }, "strength": 85 } ],
+      "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+        { "from": { "node": 3, "port": "picture" }, "to": { "node": 4, "port": "picture" } },
+        { "from": { "node": 4, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
+    let settings = serde_json::from_value::<DevelopSettings>(doc.clone())
+        .expect("a document")
+        .validated()
+        .expect("a valid graph")
+        .0;
+    Graph {
+        seed,
+        index: 101,
+        settings,
+        json: doc,
+        nodes: vec![
+            NodeKind::Corrector,
+            NodeKind::FaceRefinement,
+            NodeKind::Film,
+        ],
+        masks: Vec::new(),
+        branches: 0,
+        parallel_films: 0,
+        masked: None,
+        compare: true,
+        face_live: true,
+    }
+}
+
 fn graphs() -> Vec<Graph> {
     let nodes = generated_nodes();
     let masks = generated_masks();
@@ -890,6 +931,8 @@ fn graphs() -> Vec<Graph> {
         .collect();
     // Parallel Film branches are rare in the draw; one is always there.
     all.push(parallel_branches(FIXED_SEEDS[0]));
+    // A live Face Refinement graph the node really changes (S-12).
+    all.push(face_line(FIXED_SEEDS[0]));
     // The four kinds of docs/25 (X-05): every device assertion holds for them too.
     all.extend(joined_graphs());
     all
@@ -965,6 +1008,8 @@ fn no_generated_graph_is_refused_by_the_device() {
     let (mut worst_view, mut worst_export, mut exports) = ((0u8, 0usize), 0u32, 0usize);
     let (mut n_film, mut n_masked, mut n_keys) = (0usize, 0usize, 0usize);
     let (mut n_branched, mut n_parallel) = (0usize, 0usize);
+    // S-12: the live Face Refinement graphs that were compared with the CPU, and those whose faces the node really changed.
+    let (mut n_face_compared, mut n_face_changed) = (0usize, 0usize);
     for g in &all {
         let name = format!("seed {} graph {}", g.seed, g.index);
         say(&format!(
@@ -1017,6 +1062,23 @@ fn no_generated_graph_is_refused_by_the_device() {
                 .final_size(&src, &CancelToken::new())
                 .expect("the final size");
             let face_boxes = cpu.face_state(&src).faces;
+            // The same graph with its Face Refinement nodes bypassed: what the node changes is the difference.
+            let without_nodes = {
+                let mut doc = g.json.clone();
+                for item in doc["nodes"]["items"].as_array_mut().expect("items") {
+                    if item["kind"] == "face_refinement" {
+                        item["bypass"] = json!(true);
+                    }
+                }
+                serde_json::from_value::<DevelopSettings>(doc)
+                    .expect("a document")
+                    .validated()
+                    .expect("a valid graph")
+                    .0
+            };
+            let src_without = d.source().with_settings(without_nodes);
+            let mut changed_in_boxes = false;
+            n_face_compared += usize::from(g.compare);
             for (what, st) in &states {
                 let at = format!("{name}: {what}");
                 let got = frame(&device, &src, st);
@@ -1049,6 +1111,15 @@ fn no_generated_graph_is_refused_by_the_device() {
                     // inside the face regions on their own: the node must not make the device's small input difference larger.
                     let report = face_frame_diff(&got, &want, st, &face_image, &face_boxes);
                     say(&format!("{at}: against the CPU: {}", report.text()));
+                    let plain = frame(&cpu, &src_without, st);
+                    let moved = face_frame_diff(&want, &plain, st, &face_image, &face_boxes);
+                    say(&format!(
+                        "{at}: the node changes the CPU frame by up to {} codes inside the {} face box(es), {} values over 1 there",
+                        moved.max_in_boxes,
+                        face_boxes.len(),
+                        moved.over_in
+                    ));
+                    changed_in_boxes |= moved.max_in_boxes > 0;
                     if report.max > 2
                         || report.over >= got.rgba.len() / 2000
                         || report.max_in_boxes > 2
@@ -1057,6 +1128,7 @@ fn no_generated_graph_is_refused_by_the_device() {
                     }
                 }
             }
+            n_face_changed += usize::from(changed_in_boxes);
             continue;
         }
         for (what, st) in &states {
@@ -1162,6 +1234,19 @@ fn no_generated_graph_is_refused_by_the_device() {
         worst_view.1,
         started.elapsed()
     ));
+    say(&format!(
+        "{n_face_compared} live Face Refinement graphs compared with the CPU, {n_face_changed} of them with faces the node really changed"
+    ));
+    // S-12: a live Face Refinement graph that was generated but never compared, or whose node changed nothing, would pass every
+    // check above without testing the node. The fixed seeds hold some of each (the forced kinds cycle through the node list).
+    assert!(
+        n_face_compared > 0,
+        "the fixed seeds hold no live Face Refinement graph that is compared with the CPU"
+    );
+    assert!(
+        n_face_changed > 0,
+        "no live Face Refinement graph had its faces changed by the node: the generated graphs do not test it"
+    );
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
