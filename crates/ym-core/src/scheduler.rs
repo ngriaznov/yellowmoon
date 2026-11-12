@@ -228,12 +228,36 @@ pub struct OverBudget {
     pub budget: u64,
 }
 
-/// Counts the bytes that full-resolution jobs hold while they run.
-#[derive(Debug)]
+/// What a reclaimer is asked to let go of (see [`MemoryLedger::reserve_reclaiming`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reclaim {
+    /// `false`: only caches of photos other than `keep`. `true`: every cache that can go.
+    pub all: bool,
+    /// The photo the reservation is for, whose caches the first pass leaves alone.
+    pub keep: Option<PhotoId>,
+}
+
+/// A holder of counted caches: frees what it can and says whether it is still there (`false`: the
+/// ledger forgets it). It is called with no lock of the ledger held, and must not wait for a
+/// reservation.
+pub type Reclaimer = Arc<dyn Fn(Reclaim) -> bool + Send + Sync>;
+
+/// Counts the bytes that full-resolution jobs and the caches hold.
 pub struct MemoryLedger {
     budget: AtomicU64,
     used: AtomicU64,
     peak: AtomicU64,
+    reclaimers: Mutex<Vec<Reclaimer>>,
+}
+
+impl std::fmt::Debug for MemoryLedger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryLedger")
+            .field("budget", &self.budget())
+            .field("used", &self.used())
+            .field("peak", &self.peak())
+            .finish_non_exhaustive()
+    }
 }
 
 impl MemoryLedger {
@@ -244,7 +268,63 @@ impl MemoryLedger {
             budget: AtomicU64::new(budget),
             used: AtomicU64::new(0),
             peak: AtomicU64::new(0),
+            reclaimers: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Registers a holder of caches that [`MemoryLedger::reserve_reclaiming`] may ask to let go.
+    pub fn add_reclaimer(&self, reclaimer: Reclaimer) {
+        self.reclaimers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(reclaimer);
+    }
+
+    /// Asks every reclaimer to free what it holds, and forgets those that are gone.
+    pub fn reclaim(&self, what: Reclaim) {
+        // Called outside the lock: a reclaimer takes locks of its own.
+        let all: Vec<Reclaimer> = self
+            .reclaimers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let gone: Vec<&Reclaimer> = all.iter().filter(|r| !r(what)).collect();
+        if !gone.is_empty() {
+            self.reclaimers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .retain(|r| !gone.iter().any(|g| Arc::ptr_eq(g, r)));
+        }
+    }
+
+    /// [`MemoryLedger::try_reserve`] that frees caches before it refuses: when `bytes` do not fit,
+    /// the reclaimers are asked to let go of the caches of photos other than `keep`, then of every
+    /// cache, with the reservation tried again after each. A cache is only a cache (what goes is
+    /// made again when it is needed), so it must never be the reason for a refusal; what stays
+    /// counted after that is held by running work.
+    ///
+    /// No lock is held while the reclaimers run, and a reclaimer never waits for the ledger, so
+    /// this cannot deadlock. A reservation that is refused after all caches went is refused for
+    /// real.
+    ///
+    /// # Errors
+    ///
+    /// [`OverBudget`] as for [`MemoryLedger::try_reserve`].
+    pub fn reserve_reclaiming(
+        self: &Arc<Self>,
+        bytes: u64,
+        keep: Option<PhotoId>,
+    ) -> Result<Reservation, OverBudget> {
+        if let Ok(r) = self.try_reserve(bytes) {
+            return Ok(r);
+        }
+        for all in [false, true] {
+            self.reclaim(Reclaim { all, keep });
+            if let Ok(r) = self.try_reserve(bytes) {
+                return Ok(r);
+            }
+        }
+        self.try_reserve(bytes)
     }
 
     /// Reserves `bytes` until the returned guard is dropped.

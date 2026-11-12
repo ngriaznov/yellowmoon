@@ -830,6 +830,44 @@ fn the_ledger_counts_the_mosaics_and_is_back_to_its_start_when_the_session_close
     assert!(ledger.peak() >= 3 * MOSAIC);
 }
 
+/// `docs/26` H-13: a reservation that would be refused asks the session to let go of its cached mosaics first,
+/// those of other photos before the photo it is for.
+#[test]
+fn cached_mosaics_are_given_up_before_a_reservation_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..4 {
+        write_plain(dir.path(), &format!("p{i}.ARW"), 0.25 + 0.01 * f64::from(i));
+    }
+    let ledger = MemoryLedger::new(MOSAIC * 7 / 2);
+    let session = Session::new(base_env().with_ledger(Arc::clone(&ledger)));
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    settle(&session);
+    let ids = session.photo_ids();
+    session.set_current(ids[1]).unwrap();
+    settle(&session);
+    assert_eq!(session.cached_ids().len(), 3);
+    assert!(
+        ledger.try_reserve(MOSAIC).is_err(),
+        "full: three mosaics of 3.5"
+    );
+    // Needs 1.5 mosaics: the others' mosaics go, the photo's own stays.
+    let held = ledger
+        .reserve_reclaiming(MOSAIC * 3 / 2, Some(ids[1]))
+        .expect("fits after the others went");
+    assert_eq!(session.cached_ids(), vec![ids[1]]);
+    drop(held);
+    // Needs more than the photo's own leaves room for: everything goes.
+    let held = ledger
+        .reserve_reclaiming(MOSAIC * 3, Some(ids[1]))
+        .expect("fits after all went");
+    assert!(session.cached_ids().is_empty());
+    // What is not a cache is not touched: nothing more can be had.
+    assert!(ledger.reserve_reclaiming(MOSAIC, None).is_err());
+    drop(held);
+    session.close();
+    assert_eq!(ledger.used(), 0);
+}
+
 #[test]
 fn only_the_current_photo_and_its_neighbours_keep_their_mosaics() {
     let dir = tempfile::tempdir().unwrap();

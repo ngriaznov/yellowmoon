@@ -4226,7 +4226,7 @@ impl Renderer {
         let output = (fw * fh * 12) as u64;
         let mut reservation = self
             .ledger()
-            .try_reserve(output + working + frame_extra + sigma_map)
+            .reserve_reclaiming(output + working + frame_extra + sigma_map, Some(src.id))
             .map_err(|_| RenderError::Memory)?;
         // The DNG's pixels and preview are made for sRGB, the display its fitted profile emulates: a
         // chain whose display rendering is not ours (a look with its own) inverts it from sRGB for the
