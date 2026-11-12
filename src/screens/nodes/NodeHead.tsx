@@ -5,7 +5,7 @@ import { Input } from "@/components/glass/input";
 import type { DevelopSettings, NodeId } from "../../api/types";
 import { Button, panelKindOf } from "../../components";
 import { cardStates, chipText, GRAPH_OP_TEXT, headLine } from "../../state/graphOps";
-import { isGlyphItem, nodeOf } from "../../state/settingsGraph";
+import { isCardItem, isGlyphItem, nodeOf } from "../../state/settingsGraph";
 import { KindGlyph } from "./GlyphCard";
 
 /** The tooltip and accessible name of the head's Reset, by kind of node (`docs/23` §7.5). */
@@ -23,6 +23,8 @@ export interface NodeHeadProps {
   onBypass: () => void;
   /** Reset this node: one undo step, its masks, name and links kept. */
   onReset: () => void;
+  /** What the quiet line says in place of the usual one (a Face Refinement node says how many faces it found). */
+  line?: string;
   /** The More menu of this node, to sit after the icons (`NodeMoreMenu`); the Output has none. */
   more?: ReactNode;
 }
@@ -34,7 +36,7 @@ export interface NodeHeadProps {
  * look and export"), and at the right round icon buttons: **Bypass** (a corrector; a toggle, "Bypass this node (B)"), **Reset** ("Reset this
  * node", "Reset input", "Reset output") and **More**. The 40 px title block of the simple view is not here.
  */
-export function NodeHead({ settings, node, renaming, onStartRename, onRename, onBypass, onReset, more }: NodeHeadProps) {
+export function NodeHead({ settings, node, renaming, onStartRename, onRename, onBypass, onReset, line, more }: NodeHeadProps) {
   const item = nodeOf(settings, node);
   const field = useRef<HTMLInputElement>(null);
   const finished = useRef(false);
@@ -49,7 +51,7 @@ export function NodeHead({ settings, node, renaming, onStartRename, onRename, on
   const states = cardStates(settings);
   const glyph = isGlyphItem(item);
   // Every node but the Input and the Output has a name, a number or a glyph in the chip, and is renamed and bypassed (a Splitter and a Combiner cannot be).
-  const corrector = item.kind === "corrector" || item.kind === "film" || glyph;
+  const corrector = isCardItem(item) || glyph;
   const noBypass = item.kind === "splitter" || item.kind === "combiner";
   // A Parallel, a Splitter and a Combiner have nothing to reset (`docs/25` §5.5).
   const nothingToReset = item.kind === "parallel" || item.kind === "splitter" || item.kind === "combiner";
@@ -101,7 +103,7 @@ export function NodeHead({ settings, node, renaming, onStartRename, onRename, on
             {title}
           </h2>
         )}
-        <p className="ym-nodehead__line">{headLine(settings, node, states)}</p>
+        <p className="ym-nodehead__line">{line ?? headLine(settings, node, states)}</p>
       </div>
       <div className="ym-nodehead__actions" role="group" aria-label="Node actions">
         {corrector ? (

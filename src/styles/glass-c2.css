@@ -63,7 +63,7 @@ html.dark {
 /* The Mask tab of a corrector (docs/23 §7.6) has the mask accent, as the other tabs have theirs: --mask in tokens.css. */
 [data-tab="mask"] { --primary: var(--mask); --primary-foreground: var(--mask-ink); --ring: var(--mask); }
 /* The tabs of a Film node (docs/24 section 4.1) take the Look tab's yellow (screens 02 to 08 of design/film). */
-[data-tab="film"], [data-tab="print"], [data-tab="halation"], [data-tab="grain"], [data-tab="inputs"], [data-tab="blend"], [data-tab="channels"] { --primary: var(--tab-look); --primary-foreground: var(--tab-look-ink); --ring: var(--tab-look); }
+[data-tab="film"], [data-tab="face"], [data-tab="print"], [data-tab="halation"], [data-tab="grain"], [data-tab="inputs"], [data-tab="blend"], [data-tab="channels"] { --primary: var(--tab-look); --primary-foreground: var(--tab-look-ink); --ring: var(--tab-look); }
 
 body {
   font-family: var(--font);
@@ -2447,4 +2447,262 @@ html[data-glass="off"] *::after {
   color: var(--glass-label-secondary);
   font-size: 12.5px;
   font-weight: 600;
+}
+
+/* ---- The Face Refinement node's Face tab (docs/27 S-11c, design/skin/html/skin.css) -------------------------------------------------------- */
+.ym-face-tab {
+  display: block;
+}
+.ym-face-count,
+.ym-face-tag {
+  color: var(--glass-label-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* The Faces list: five round items to a row; with more than two rows it shows about two and a half and scrolls, the last row fading out. */
+.ym-faces {
+  display: grid;
+  grid-template-columns: repeat(5, 52px);
+  gap: 12px 14px;
+  justify-content: start;
+  padding: 6px;
+}
+.ym-faces {
+  overflow-y: auto;
+}
+.ym-faces[data-scroll] {
+  max-height: 142px;
+  padding-right: 10px;
+  -webkit-mask-image: linear-gradient(#000 calc(100% - 22px), transparent);
+  mask-image: linear-gradient(#000 calc(100% - 22px), transparent);
+}
+.ym-faces[data-scroll]::-webkit-scrollbar {
+  width: 6px;
+}
+.ym-faces[data-scroll]::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: color-mix(in oklch, var(--ink) 30%, transparent);
+}
+.ym-face {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: inherit;
+}
+.ym-face:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+.ym-face__pic {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: color-mix(in oklch, var(--ink) 14%, transparent);
+  box-shadow: inset 0 0 0 1px var(--rim);
+}
+.ym-face__pic img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ym-face__disc {
+  color: var(--glass-label);
+  font-size: 16px;
+  font-weight: var(--fw-heavy);
+  font-variant-numeric: tabular-nums;
+}
+.ym-face[data-selected] {
+  outline: 2px solid var(--tab-look);
+  outline-offset: 2px;
+}
+/* Same for all faces: no face is the one, every face has the same quiet ring. */
+.ym-face[data-ringed] {
+  outline: 2px solid color-mix(in oklch, var(--tab-look) 60%, transparent);
+  outline-offset: 2px;
+}
+.ym-face__num {
+  position: absolute;
+  right: -5px;
+  bottom: -4px;
+  display: grid;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  place-items: center;
+  border-radius: 7px;
+  background: rgb(30 30 32 / 0.95);
+  box-shadow: inset 0 0 0 1px var(--rim);
+  color: var(--glass-label);
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.ym-face[data-selected] .ym-face__num {
+  background: var(--tab-look);
+  box-shadow: none;
+  color: var(--tab-look-ink);
+}
+.ym-face-same {
+  margin-top: 8px;
+}
+.ym-face-eye {
+  flex-shrink: 0;
+}
+.ym-face-row {
+  display: block;
+}
+.ym-face-tip {
+  display: inline-flex;
+}
+/* The label column is wide enough for "Shadow desaturation" (about 132 px); Texture is indented under Even skin. */
+.ym-face-tab [data-slider] {
+  grid-template-columns: 132px minmax(0, 1fr) 72px 40px;
+}
+.ym-face-tab [data-slider].ym-face-sub {
+  grid-template-columns: 118px minmax(0, 1fr) 72px 40px;
+  padding-left: 14px;
+}
+.ym-face-tab [data-slider].ym-face-sub > span:first-child {
+  color: var(--glass-label-secondary);
+  font-weight: 500;
+}
+.ym-face-copy {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+.ym-face-copy__note,
+.ym-face-line {
+  color: var(--glass-label-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.ym-face-line {
+  margin: 0 0 10px;
+}
+.ym-face-finding {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 4px 0 12px;
+}
+.ym-face-finding svg {
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  color: var(--tab-look);
+}
+.ym-face-finding__title,
+.ym-face-empty__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+.ym-face-finding__line {
+  margin: 2px 0 0;
+  color: var(--glass-label-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+/* An indeterminate bar: Radix has no value, so the fill is a short segment that slides along the track. */
+.ym-face-bar {
+  height: 4px;
+}
+.ym-face-bar [data-slot="progress-indicator"] {
+  width: 38% !important;
+  background: var(--tab-look);
+  animation: ym-face-bar 1.4s ease-in-out infinite alternate;
+}
+@keyframes ym-face-bar {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(160%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ym-face-bar [data-slot="progress-indicator"] {
+    margin-left: 22%;
+    animation: none;
+  }
+}
+.ym-face-empty {
+  padding: 6px 0 2px;
+}
+.ym-face-empty__icon {
+  display: inline-grid;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 10px;
+  place-items: center;
+  border-radius: 12px;
+  background: color-mix(in oklch, var(--ink) 8%, transparent);
+  color: var(--glass-label-secondary);
+}
+.ym-face-message {
+  margin: 0;
+}
+
+/* The faces on the photo (FaceLayer): the layer takes no press; only the ovals do. */
+.ym-face-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ym-face-layer__svg {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ym-face-oval__ring {
+  fill: none;
+  stroke: rgb(255 255 255 / 0.85);
+  stroke-width: 1.5px;
+  stroke-dasharray: 5 4;
+  filter: drop-shadow(0 0 1.5px rgb(0 0 0 / 0.6));
+}
+.ym-face-oval[data-selected] .ym-face-oval__ring {
+  stroke: var(--tab-look);
+  stroke-width: 3px;
+  stroke-dasharray: none;
+  filter: drop-shadow(0 0 6px color-mix(in oklch, var(--tab-look) 70%, transparent));
+}
+.ym-face-oval__hit {
+  fill: transparent;
+  pointer-events: all;
+}
+.ym-face-oval__badge {
+  fill: rgb(30 30 32 / 0.92);
+  stroke: rgb(255 255 255 / 0.35);
+  stroke-width: 1px;
+}
+.ym-face-oval[data-selected] .ym-face-oval__badge {
+  fill: var(--tab-look);
+  stroke: none;
+}
+.ym-face-oval__num {
+  fill: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  text-anchor: middle;
+}
+.ym-face-oval[data-selected] .ym-face-oval__num {
+  fill: var(--tab-look-ink);
+}
+
+/* The head's name is shown whole: "Face Refinement" is longer than the old names, so the line after it is what is cut (design/skin/mockup-notes, found while drawing 5). */
+.ym-nodehead__name {
+  max-width: 100%;
 }

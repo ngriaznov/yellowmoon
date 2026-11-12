@@ -24,6 +24,7 @@ import { RawTab } from "../tools/RawTab";
 import { AUTO } from "../tools/shared";
 import type { TabProps } from "../tools/shared";
 import { OUTPUT_FILM_NOTE } from "./filmData";
+import { FaceTab } from "./FaceTab";
 import { FilmCard, GrainTab, HalationTab, PrintTab } from "./FilmTabs";
 import { MaskTab } from "./MaskTab";
 import { ChannelsTab, LayerBlendTab, ParallelInputsTab } from "./MixerTabs";
@@ -244,6 +245,13 @@ export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite
       default:
         return <FilmCard store={store} photo={photo} rs={rs} node={item.id as number} item={item} />;
     }
+  }
+  if (item?.kind === "face_refinement") {
+    return tab === "mask" ? (
+      <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} pickingDepth={pickingDepth} onPickDepth={onPickDepth} />
+    ) : (
+      <FaceTab store={store} photo={photo} rs={rs} node={item.id as number} item={item} />
+    );
   }
   switch (tab) {
     case "color":
