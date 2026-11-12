@@ -439,6 +439,12 @@ export interface MockOptions {
    * "Yellowmoon can't read the folder Name. …" (`UNREADABLE_PREFIX`), as the core does, and no session starts. Default: none.
    */
   unreadable?: string;
+  /**
+   * `?mockSlowOpen=2000` (`docs/26` H-10): opening takes a while, as reading 2000 files does. `open_progress` reports 50 files at a
+   * time (about 100 ms apart at speed 1) until `cancelOpen` or the end, so Start and Photos can show "Reading {done} of {total} files…"
+   * and Cancel. Default 0: no delay.
+   */
+  slowOpen?: number;
   /** How many photos the session has. The twelve fixtures repeat, with the names DSC04213 and on, so a long folder can be shown and timed. Default 12. */
   photoCount?: number;
   /** Whether the imported looks of the mockups are in the library. Default true. */
@@ -1050,6 +1056,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   current: 0,
   photoCount: SCENES.length,
   unreadable: "",
+  slowOpen: 0,
   folderName: DEFAULT_FOLDER_NAME,
   looksImported: true,
   allLibraries: false,
@@ -1133,6 +1140,8 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (folder !== null && folder.trim() !== "") out.folderName = folder;
   const unreadable = params.get("mockUnreadable");
   if (unreadable !== null && unreadable.trim() !== "") out.unreadable = unreadable;
+  const slowOpen = params.get("mockSlowOpen");
+  if (slowOpen !== null && Number.isInteger(Number(slowOpen)) && Number(slowOpen) >= 1) out.slowOpen = Number(slowOpen);
   const count = params.get("mockPhotos");
   if (count !== null && Number.isInteger(Number(count)) && Number(count) >= 1) out.photoCount = Number(count);
   if (params.get("mockLooks") === "0") out.looksImported = false;
@@ -2483,6 +2492,45 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     return last.length > 0 && !last.includes(".");
   }
 
+  /** What reading the files of an open came to: how many were read, and whether `cancelOpen` stopped it. */
+  interface OpenReading {
+    done: number;
+    cancelled: boolean;
+  }
+
+  /** The open that is reading files now (`?mockSlowOpen`): `stop` ends it at once. */
+  let openRun: { timer: ReturnType<typeof setInterval>; stop: (cancelled: boolean) => void } | null = null;
+
+  /** `?mockSlowOpen`: reads the files 50 at a time and reports `open_progress`, until the end or `cancelOpen`. Instant without the option. */
+  function readSlowly(paths: string[]): Promise<OpenReading> {
+    const total = options.slowOpen;
+    const reads = total > 0 && !options.unreadable && paths.some((p) => isArwPath(p) || isFolderPath(p));
+    if (!reads) return Promise.resolve({ done: 0, cancelled: false });
+    return new Promise((resolve) => {
+      let done = 0;
+      emit("open_progress", { done, total });
+      const stop = (cancelled: boolean): void => {
+        clearInterval(timer);
+        openRun = null;
+        resolve({ done, cancelled });
+      };
+      const timer = setInterval(() => {
+        done = Math.min(total, done + 50);
+        emit("open_progress", { done, total });
+        if (done >= total) stop(false);
+      }, 100 / options.speed);
+      openRun = { timer, stop };
+    });
+  }
+
+  /** The answer of an open once its files are read: all of them, or the ones read before `cancelOpen` (none when it came first). */
+  function openAfterReading(paths: string[], read: OpenReading): SessionState {
+    if (!read.cancelled) return openPathsNow(paths);
+    if (read.done === 0) return { ...snapshot(), opened: { added: 0, already_open: 0, cancelled: true } };
+    const state = openPathsNow(paths);
+    return { ...state, opened: { added: 0, already_open: 0, ...state.opened, cancelled: true } };
+  }
+
   function openPathsNow(paths: string[]): SessionState {
     // The core's sentence for a folder it could not list, when no file came with it (`docs/26` H-02).
     if (options.unreadable && !paths.some(isArwPath) && paths.some(isFolderPath)) {
@@ -2794,6 +2842,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       run.resolve();
     }
     importRuns.clear();
+    openRun?.stop(true);
     for (const timer of downloadTimers) clearTimeout(timer);
     downloadTimers = [];
     watching = false;
@@ -2883,16 +2932,23 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       return rec ? fixtureUrl(rec.scene.name) : undefined;
     },
 
-    openPaths: (paths) => run("openPaths", () => openPathsNow(paths)),
-    openDialog: (kind: OpenKind) =>
-      run("openDialog", () => {
-        if (cancelDialog) {
-          cancelDialog = false;
-          return null;
-        }
-        const queued = choices.open.shift();
-        if (queued) return openPathsNow(queued);
-        return openPathsNow(kind === "folder" ? [folderPath()] : SCENES.map((s) => `${folderPath()}/${s.name}.ARW`));
+    openPaths: async (paths) => {
+      const read = await readSlowly(paths);
+      return run("openPaths", () => openAfterReading(paths, read));
+    },
+    openDialog: async (kind: OpenKind) => {
+      if (cancelDialog) {
+        cancelDialog = false;
+        return run("openDialog", () => null);
+      }
+      const queued = choices.open.shift();
+      const paths = queued ?? (kind === "folder" ? [folderPath()] : SCENES.map((s) => `${folderPath()}/${s.name}.ARW`));
+      const read = await readSlowly(paths);
+      return run("openDialog", () => openAfterReading(paths, read));
+    },
+    cancelOpen: () =>
+      run("cancelOpen", () => {
+        openRun?.stop(true);
       }),
     sessionState: () => run("sessionState", snapshot),
     closeSession: () =>

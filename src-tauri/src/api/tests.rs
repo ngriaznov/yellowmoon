@@ -566,7 +566,8 @@ fn removing_the_last_photos_empties_the_session_and_undo_fills_it_again() {
         reopened.opened,
         Some(OpenSummary {
             added: 2,
-            already_open: 0
+            already_open: 0,
+            cancelled: false,
         })
     );
     h.api.close_session();
@@ -862,6 +863,35 @@ fn apply_look_reaches_this_picked_and_all_photos() {
 }
 
 #[test]
+fn opening_files_reports_how_far_the_reading_has_got() {
+    let h = Harness::new();
+    h.open(3);
+    let seen: Vec<(u32, u32)> = h
+        .events
+        .events()
+        .iter()
+        .filter_map(|e| match e {
+            AppEvent::OpenProgress(p) => Some((p.done, p.total)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(seen.first(), Some(&(0, 3)));
+    assert_eq!(seen.last(), Some(&(3, 3)));
+    // No open is running: Cancel stops nothing, and the next open is not cancelled.
+    h.api.cancel_open();
+    let folder = h.photos.path().to_string_lossy().into_owned();
+    let again = h.api.open_paths(&[folder]).expect("open again");
+    assert_eq!(
+        again.opened,
+        Some(OpenSummary {
+            added: 0,
+            already_open: 3,
+            cancelled: false,
+        })
+    );
+}
+
+#[test]
 fn opening_more_files_adds_to_the_session_and_says_what_was_new() {
     let h = Harness::new();
     let first = h.open(2);
@@ -869,7 +899,8 @@ fn opening_more_files_adds_to_the_session_and_says_what_was_new() {
         first.opened,
         Some(OpenSummary {
             added: 2,
-            already_open: 0
+            already_open: 0,
+            cancelled: false,
         })
     );
     let ids: Vec<_> = first.photos.iter().map(|p| p.id).collect();
@@ -884,7 +915,8 @@ fn opening_more_files_adds_to_the_session_and_says_what_was_new() {
         again.opened,
         Some(OpenSummary {
             added: 0,
-            already_open: 2
+            already_open: 2,
+            cancelled: false,
         })
     );
     assert_eq!(again.photos.len(), 2);
@@ -897,7 +929,8 @@ fn opening_more_files_adds_to_the_session_and_says_what_was_new() {
         more.opened,
         Some(OpenSummary {
             added: 1,
-            already_open: 2
+            already_open: 2,
+            cancelled: false,
         })
     );
     assert_eq!(
@@ -4263,28 +4296,70 @@ fn a_latency_bound_that_is_not_a_number_of_milliseconds_stops_the_test() {
     }
 }
 
-/// M3-03: "opening 500 files keeps the UI responsive". The shell's share of that: the commands the
-/// webview sends while 500 photos develop answer quickly (the pool is busy with decoding, the
-/// commands are not), and the events stay a bounded stream. Prints the numbers (`--nocapture`).
-///
-/// The slowest command must take less than 100 ms. `YM_PERF_SHELL_MAX_MS=<milliseconds>` moves
-/// that bound for a runner that is shared (the weekly job sets 250); without it the bound is the
-/// 100 ms of the task. Run it with `npm run perf:latency:shell` (or `npm run perf:latency` for
-/// this half and the web view's half).
+/// Peak resident memory of this process so far, in MiB (`getrusage`; 0 where it is not read).
+#[cfg(unix)]
+fn peak_rss_mib() -> u64 {
+    // SAFETY: `getrusage` fills the struct it is given; a zeroed one is a valid value to pass.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: the pointer is to a live `rusage`.
+    let status = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+    assert_eq!(status, 0, "getrusage failed");
+    let max = u64::try_from(usage.ru_maxrss).unwrap_or(0);
+    // Bytes on macOS, kilobytes on Linux.
+    if cfg!(target_os = "macos") {
+        max / (1024 * 1024)
+    } else {
+        max / 1024
+    }
+}
+
+#[cfg(not(unix))]
+fn peak_rss_mib() -> u64 {
+    0
+}
+
+/// The number of photos of the 2000-file test: `YM_PERF_PHOTOS` when it is one positive whole
+/// number (the web view's job sets a list such as `100,500,2000`, which is not for this test), else 2000.
+fn two_thousand_count(setting: Option<&str>) -> usize {
+    setting
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(2000)
+}
+
 #[test]
-#[ignore = "writes 500 synthetic photos and develops them (about half a minute)"]
-fn five_hundred_files_leave_the_commands_responsive() {
+fn the_count_of_the_big_folder_test_comes_from_ym_perf_photos() {
+    assert_eq!(two_thousand_count(None), 2000);
+    assert_eq!(two_thousand_count(Some("")), 2000);
+    assert_eq!(two_thousand_count(Some("100,500,2000")), 2000);
+    assert_eq!(two_thousand_count(Some(" 750 ")), 750);
+    assert_eq!(two_thousand_count(Some("0")), 2000);
+}
+
+/// Opens `count` synthetic photos and watches the commands a person sends while they develop. Prints
+/// the open time, the time until every photo is Ready, the slowest command, the events, the
+/// shell's thumbnail bytes and the peak resident memory so far, and asserts the slowest command is
+/// under the bound (`YM_PERF_SHELL_MAX_MS`, 100 ms without it).
+///
+/// `burst`: all photos share one capture time (the 500-file test always did); otherwise each has its own.
+fn photos_leave_the_commands_responsive(count: usize, burst: bool) {
     let h = Harness::new();
-    for i in 1..=500_u64 {
-        crate::testing::write_arw(h.photos.path(), &format!("DSC{i:05}.ARW"), i % 7 + 1);
+    for i in 1..=count as u64 {
+        crate::testing::write_arw_at(
+            h.photos.path(),
+            &format!("DSC{i:05}.ARW"),
+            i % 7 + 1,
+            // Every photo has its own capture time, or all share one (one burst).
+            if burst { 0 } else { i },
+        );
     }
     let t = std::time::Instant::now();
     let opened = h
         .api
         .open_paths(&[h.photos.path().to_string_lossy().into_owned()])
-        .expect("open 500 files");
+        .unwrap_or_else(|e| panic!("open {count} files: {e:?}"));
     let open_time = t.elapsed();
-    assert_eq!(opened.photos.len(), 500);
+    assert_eq!(opened.photos.len(), count);
     eprintln!("open_paths: {open_time:?}");
 
     let ids: Vec<PhotoId> = opened.photos.iter().map(|p| p.id).collect();
@@ -4332,7 +4407,24 @@ fn five_hundred_files_leave_the_commands_responsive() {
         .iter()
         .filter(|e| matches!(e, AppEvent::ThumbnailReady(_)))
         .count();
+    let reading: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AppEvent::OpenProgress(p) => Some((p.done, p.total)),
+            _ => None,
+        })
+        .collect();
     eprintln!("{progress} photo_progress events, {thumbs} thumbnails");
+    eprintln!(
+        "{} open_progress events (the last: {:?})",
+        reading.len(),
+        reading.iter().max()
+    );
+    eprintln!(
+        "thumbnails held by the shell: {} bytes; peak RSS so far: {} MiB",
+        h.frames.thumbnail_bytes(),
+        peak_rss_mib()
+    );
     let bound = latency_bound(std::env::var(LATENCY_BOUND_VAR).ok().as_deref());
     eprintln!("bound on the slowest command: {bound:?}");
     assert!(
@@ -4340,6 +4432,38 @@ fn five_hundred_files_leave_the_commands_responsive() {
         "a command took {slowest:?} while photos were developing (the bound is {bound:?}; \
          {LATENCY_BOUND_VAR} moves it)"
     );
+    assert_eq!(
+        reading.iter().max().copied(),
+        Some((count as u32, count as u32)),
+        "open_progress reached the end"
+    );
+}
+
+/// M3-03: "opening 500 files keeps the UI responsive". The shell's share of that: the commands the
+/// webview sends while 500 photos develop answer quickly (the pool is busy with decoding, the
+/// commands are not), and the events stay a bounded stream. Prints the numbers (`--nocapture`).
+///
+/// The slowest command must take less than 100 ms. `YM_PERF_SHELL_MAX_MS=<milliseconds>` moves
+/// that bound for a runner that is shared (the weekly job sets 250); without it the bound is the
+/// 100 ms of the task. Run it with `npm run perf:latency:shell` (or `npm run perf:latency` for
+/// this half and the web view's half).
+#[test]
+#[ignore = "writes 500 synthetic photos and develops them (about half a minute)"]
+fn five_hundred_files_leave_the_commands_responsive() {
+    photos_leave_the_commands_responsive(500, true);
+}
+
+/// `docs/26` H-10: the same at 2000 files (`YM_PERF_PHOTOS` changes the count), once with 2000
+/// different capture times and once as one burst. Prints the open time, the time until every photo
+/// is Ready, the slowest command, the shell's thumbnail bytes and the peak resident memory.
+#[test]
+#[ignore = "writes 2000 synthetic photos twice and develops them (about a minute)"]
+fn two_thousand_files_leave_the_commands_responsive() {
+    let count = two_thousand_count(std::env::var("YM_PERF_PHOTOS").ok().as_deref());
+    eprintln!("--- {count} files, different capture times");
+    photos_leave_the_commands_responsive(count, false);
+    eprintln!("--- {count} files, one capture time (one burst)");
+    photos_leave_the_commands_responsive(count, true);
 }
 
 /// The `ExportBusy` events seen so far, in order.

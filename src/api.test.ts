@@ -37,6 +37,7 @@ type Row = [name: string, call: () => Promise<unknown>, command: string, args: R
 const calls: Row[] = [
   ["openPaths", () => tauriApi.openPaths(["/a.ARW"]), "open_paths", { paths: ["/a.ARW"] }],
   ["openDialog", () => tauriApi.openDialog("folder"), "open_dialog", { kind: "folder" }],
+  ["cancelOpen", () => tauriApi.cancelOpen(), "cancel_open", undefined, true],
   ["sessionState", () => tauriApi.sessionState(), "session_state", undefined],
   ["closeSession", () => tauriApi.closeSession(), "close_session", undefined, true],
   ["setCurrent", () => tauriApi.setCurrent(3), "set_current", { photoId: 3 }, true],
@@ -178,6 +179,7 @@ describe("tauriApi commands", () => {
 describe("tauriApi.on", () => {
   const EVENTS = [
     "photo_progress",
+    "open_progress",
     "thumbnail_ready",
     "render_stats",
     "export_progress",

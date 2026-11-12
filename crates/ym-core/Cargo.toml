@@ -75,3 +75,6 @@ jsonschema = { version = "0.58", default-features = false }
 # Decodes the embedded JPEG previews of real files for the auto-exposure comparison in
 # tests/real_files.rs (MIT OR Apache-2.0 OR Zlib; the same version as ym-color's dev-dependency).
 zune-jpeg = "0.5"
+# Peak resident memory (`getrusage`) in the ignored 2000-file test (`tests/folders_2000.rs`, `docs/26` H-10).
+# MIT OR Apache-2.0 (docs/14); already in the build through `ym-ml`.
+libc = "0.2"

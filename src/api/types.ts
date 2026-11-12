@@ -151,6 +151,19 @@ export interface OpenSummary {
   added: number;
   /** ARW files that were already in the session and were not added again. */
   already_open: number;
+  /** True when `cancel_open` stopped the call: `added` files were read before that and kept (`docs/26` H-10). The core always says; absent means false. */
+  cancelled?: boolean;
+}
+
+/**
+ * `open_progress { done, total }` (`docs/26` H-10): how many of the files of an `open_paths` or `open_dialog` call have been read.
+ * Sent at the start (`done` is 0), after every 50 files and at the end. Start and Photos say "Reading {done} of {total} files…".
+ */
+export interface OpenProgress {
+  /** Files read so far. */
+  done: number;
+  /** Files to read. */
+  total: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1903,6 +1916,8 @@ export interface MenuActionEvent {
 /** Event name → payload type, for the typed `on()`. `looks_changed` carries no data. */
 export interface ApiEvents {
   photo_progress: PhotoProgress;
+  /** Files of an open read so far (`open_paths`, `open_dialog`). */
+  open_progress: OpenProgress;
   thumbnail_ready: ThumbnailReady;
   /** The thumbnails of a photo's nodes that changed (answers `node_thumbnails`; `docs/23` §5.7). */
   node_thumbnails_ready: NodeThumbnailsReady;

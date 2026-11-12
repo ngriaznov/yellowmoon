@@ -1735,3 +1735,38 @@ describe("Auto providers: the preference and the consent (docs/22 section 10.2)"
     expect((await api.appInfo()).os).toBe("windows");
   });
 });
+
+describe("?mockSlowOpen (docs/26 H-10)", () => {
+  it("is read from the URL", () => {
+    expect(optionsFromLocation("?mockSlowOpen=2000")).toEqual({ slowOpen: 2000 });
+    expect(optionsFromLocation("?mockSlowOpen=0")).toEqual({});
+  });
+
+  it("reports the files read, 50 at a time, and opens everything at the end", async () => {
+    const api = createMockApi({ speed: 1, slowOpen: 120 });
+    const seen: Array<[number, number]> = [];
+    api.on("open_progress", (e) => seen.push([e.done, e.total]));
+    const opening = api.openPaths(["~/Pictures/Lisbon"]);
+    await vi.advanceTimersByTimeAsync(1000);
+    const state = await opening;
+    expect(seen).toEqual([[0, 120], [50, 120], [100, 120], [120, 120]]);
+    expect(state.photos).toHaveLength(12);
+    expect(state.opened?.cancelled).toBeUndefined();
+  });
+
+  it("stops at cancelOpen with what was read, and with nothing when it comes first", async () => {
+    const api = createMockApi({ speed: 1, slowOpen: 2000 });
+    const first = api.openPaths(["~/Pictures/Lisbon"]);
+    await vi.advanceTimersByTimeAsync(0);
+    await api.cancelOpen();
+    const none = await first;
+    expect(none.photos).toHaveLength(0);
+    expect(none.opened).toEqual({ added: 0, already_open: 0, cancelled: true });
+    const second = api.openPaths(["~/Pictures/Lisbon"]);
+    await vi.advanceTimersByTimeAsync(250);
+    await api.cancelOpen();
+    const some = await second;
+    expect(some.opened?.cancelled).toBe(true);
+    expect(some.photos.length).toBeGreaterThan(0);
+  });
+});

@@ -23,6 +23,7 @@ import { useCropSession } from "./crop/useCropSession";
 import { ExportPanel } from "./export/ExportPanel";
 import { ExportCell, Header } from "./Header";
 import { Menu } from "./Menu";
+import { OpenReading } from "./OpenReading";
 import { Divider } from "./nodes/Divider";
 import { GraphArea } from "./nodes/GraphArea";
 import type { GraphAreaProps } from "./nodes/GraphArea";
@@ -131,6 +132,8 @@ const ZoomMenu = memo(function ZoomMenu({ store, photo, orientation, crop, cell 
  */
 const AddPhotosButton = memo(function AddPhotosButton({ store }: { store: AppStore }) {
   const opening = useAppState((s) => s.opening);
+  const reading = useAppState((s) => s.openProgress !== null);
+  if (reading) return <OpenReading variant="header" />;
   return (
     <Button variant="header" disabled={opening} onClick={() => void store.openDialog("files")} title="Add photos (⌘O)">
       Add photos

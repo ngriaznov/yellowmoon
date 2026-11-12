@@ -23,6 +23,10 @@ jobs:
   #    jobs and the margin is thin (the slowest command took 92.6 ms in one run and 61 ms in another, against 100), so the step sets
   #    YM_PERF_SHELL_MAX_MS=250 below. It opens no window and starts no Tauri runtime, so there is no X server (xvfb) here, as in
   #    the `parity` job; the Tauri libraries are only there to link the app crate.
+  #  - The 2000-file halves (H-10, docs/26 P3-3): `two_thousand_files_leave_the_commands_responsive` in the shell and
+  #    `folders_2000` in ym-core write 2000 synthetic files (twice: 2000 capture times and one burst) and print the open time, the
+  #    time until every photo is Ready, the slowest command and the peak memory. Same bound on the slowest command; the memory bound
+  #    is in the core test.
   #  - The web view's half: e2e/perf drives the production build on the mock with 100, 500 and 2000 photos developing and presses keys
   #    meanwhile (asserts p95 < 150 ms at each size, and p95 at 2000 <= 1.25 x p95 at 500 of the same run: the cost of a key must not
   #    grow with the folder; docs/11 has the figures). The Mac, Metal and the real window stay M3-H4.
@@ -56,6 +60,26 @@ jobs:
           cargo test -p yellowmoon-app --bin yellowmoon-app five_hundred -- --ignored --nocapture 2>&1 | tee latency-core.txt || code=$?
           { echo '### Shell side, 500 photos developing (the ignored test of src-tauri)'; echo '```text'; grep -E 'open_paths:|developed after|photo_progress events|bound on the slowest|test result:' latency-core.txt || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$code"
+      - name: Shell side, 2000 photos (the ignored test, 2000 capture times and one burst)
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          YM_PERF_SHELL_MAX_MS: "250"
+        run: |
+          code=0
+          cargo test -p yellowmoon-app --bin yellowmoon-app two_thousand -- --ignored --nocapture 2>&1 | tee latency-core-2000.txt || code=$?
+          { echo '### Shell side, 2000 photos developing (the ignored test of src-tauri)'; echo '```text'; grep -E '^---|open_paths:|developed after|open_progress events|thumbnails held|bound on the slowest|test result:' latency-core-2000.txt || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+      - name: Core side, 2000 files (the ignored test of ym-core)
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          YM_PERF_SHELL_MAX_MS: "250"
+        run: |
+          code=0
+          cargo test -p ym-core --release --test folders_2000 -- --ignored --nocapture 2>&1 | tee latency-open-2000.txt || code=$?
+          { echo '### Core side, 2000 files (ym-core/tests/folders_2000.rs)'; echo '```text'; grep -E 'open .*all Ready|test result:' latency-open-2000.txt || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
       - name: Web view side, 100, 500 and 2000 photos on the mock (production build)
         if: ${{ !cancelled() }}
         shell: bash
@@ -72,6 +96,8 @@ jobs:
           name: latency
           path: |
             latency-core.txt
+            latency-core-2000.txt
+            latency-open-2000.txt
             test-results/perf/latency-*.json
             test-results/perf/latency-*.md
           if-no-files-found: ignore

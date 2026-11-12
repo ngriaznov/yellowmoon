@@ -343,6 +343,8 @@ pub struct OpenSummary {
     pub added: u32,
     /// ARW files that were already in the session and were not added again.
     pub already_open: u32,
+    /// True when `cancel_open` stopped the call: `added` files were read before that and kept.
+    pub cancelled: bool,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2999,6 +3001,17 @@ pub struct LooksImportProgress {
     pub total: u32,
     /// The file just copied, when known.
     pub file: Option<String>,
+}
+
+/// `open_progress { done, total }`: how many of the files of an `open_paths` or `open_dialog` call have
+/// been read (probed). Sent at the start (`done` is 0), after every 50 files and at the end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "open_progress")]
+pub struct OpenProgress {
+    /// Files read so far.
+    pub done: u32,
+    /// Files to read.
+    pub total: u32,
 }
 
 /// `looks_watch_downloads(enabled)`: whether the watcher is running, and why not when it was asked to.

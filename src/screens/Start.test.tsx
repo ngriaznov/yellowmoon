@@ -323,3 +323,23 @@ describe("Start, developing", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
+
+describe("Start, reading many files (docs/26 H-10)", () => {
+  it("says how far the reading has got, with Cancel in place of the Open buttons, and Cancel keeps the files read", async () => {
+    h = renderApp({ slowOpen: 2000, speed: 1 });
+    await h.user.click(await screen.findByRole("button", { name: "Open folder…" }));
+    expect(await screen.findByText(/^Reading \d+ of 2000 files…$/, undefined, { timeout: 5000 })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open files…" })).toBeNull();
+    await h.user.click(screen.getByRole("button", { name: "Cancel" }));
+    const stopped = await screen.findByText(/^Stopped\. (\d+) files were opened\.$/);
+    expect(stopped).toBeInTheDocument();
+    expect(screen.queryByText(/Reading \d+ of/)).toBeNull();
+  });
+
+  it("says nothing of reading when the files open at once", async () => {
+    h = renderApp();
+    await h.user.click(await screen.findByRole("button", { name: "Open files…" }));
+    await screen.findByRole("heading", { level: 2, name: /Developing 12 photos|12 photos ready/ });
+    expect(screen.queryByText(/Reading \d+ of/)).toBeNull();
+  });
+});

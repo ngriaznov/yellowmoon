@@ -798,7 +798,8 @@ Tauri commands carry requests and Tauri events carry progress. The TypeScript ty
 
 | Command | Purpose |
 |---|---|
-| `open_paths(paths)` / `open_dialog(kind: files or folder)` | Start a session or add photos. The answer's `opened: { added, already_open }` says what this call did |
+| `open_paths(paths)` / `open_dialog(kind: files or folder)` | Start a session or add photos. The answer's `opened: { added, already_open, cancelled }` says what this call did |
+| `cancel_open()` | Stop the `open_paths` / `open_dialog` call that is reading files (`docs/26` H-10). The files read so far stay (`opened.cancelled`), the others are dropped. Photos already open are untouched |
 | `session_state()` | Photos, current index, picked set, per-photo summary |
 | `close_session()` | Forget the session (⌘W, "Start over"). Cancels development that is still running; running exports keep going |
 | `set_current(photo_id)`, `set_picked(photo_id, bool)` | Navigation and picking |
@@ -859,6 +860,7 @@ Tauri commands carry requests and Tauri events carry progress. The TypeScript ty
 | `export_busy` | `{ busy }`: an export is queued or running, or the queue has just gone quiet. "Update ready" waits while it is true |
 | `looks_changed` | No data: the look library changed |
 | `auto_status_changed` | No data: a provider's availability changed (a program found, signed in or out, a check ended); read `auto_status_cached()` again (`docs/22` section 12.6) |
+| `open_progress` | `{ done, total }`: files of an open read so far; sent at the start, after every 50 files and at the end, not throttled (`docs/26` H-10). Start and Photos say "Reading {done} of {total} files…" once an open has taken 300 ms |
 | `looks_import_progress` | Files of one source copied so far during `looks_import` (the wizard's Import step) |
 | `download_found` | The Downloads watcher found a package zip (`looks_watch_downloads`) |
 | `menu_action` | `{ action }`: a native menu item that needs the webview was chosen. Items the shell handles itself (Show Looks Folder, the Help links) are not sent |

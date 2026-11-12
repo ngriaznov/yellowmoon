@@ -9,6 +9,7 @@ import { lookLabeller } from "../state/looks";
 import { developFraction, folderSubline, isReady, photoName } from "../state/photo";
 import { ExportCell, Header } from "./Header";
 import { Menu } from "./Menu";
+import { OpenReading } from "./OpenReading";
 
 const STEPS = [
   { n: "1", title: "Open", text: "Drop ARW files or a whole folder." },
@@ -32,6 +33,7 @@ export function Start() {
   const grader = useAppState((s) => s.preferences?.auto_provider ?? "apple");
   const notice = useAppState((s) => s.dropNotice);
   const opening = useAppState((s) => s.opening);
+  const reading = useAppState((s) => s.openProgress !== null);
   const { dragging } = useWindowDrop({ onDrop: (paths) => void store.openPaths(paths) });
 
   const busy = session !== null && session.photos.length > 0;
@@ -154,12 +156,18 @@ export function Start() {
       <main aria-label="Drop files" className="ym-drop">
         {!busy ? (
           <DropZone title="Drop files or a folder" hint="ARW only, as many as you like" notice={notice ?? undefined} active={dragging}>
-            <Button disabled={opening} onClick={() => void store.openDialog("files")}>
-              Open files…
-            </Button>
-            <Button variant="secondary" disabled={opening} onClick={() => void store.openDialog("folder")}>
-              Open folder…
-            </Button>
+            {reading ? (
+              <OpenReading />
+            ) : (
+              <>
+                <Button disabled={opening} onClick={() => void store.openDialog("files")}>
+                  Open files…
+                </Button>
+                <Button variant="secondary" disabled={opening} onClick={() => void store.openDialog("folder")}>
+                  Open folder…
+                </Button>
+              </>
+            )}
           </DropZone>
         ) : (
           <div className="ym-develop" data-active={dragging || undefined}>
@@ -177,7 +185,7 @@ export function Start() {
               </Item>
             ) : null}
             <div className="ym-develop__foot">
-              <span role="status">{hint}</span>
+              {reading ? <OpenReading /> : <span role="status">{hint}</span>}
               <Button
                 disabled={ready === 0}
                 title={ready === 0 ? "Available when the first photo is ready" : undefined}

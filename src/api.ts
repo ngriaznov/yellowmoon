@@ -84,6 +84,11 @@ export interface Api {
   openPaths(paths: string[]): Promise<SessionState>;
   /** `open_dialog`: ask the user for files or a folder, then open them. Resolves `null` when the dialog is cancelled. */
   openDialog(kind: OpenKind): Promise<SessionState | null>;
+  /**
+   * `cancel_open` (`docs/26` H-10): stop the `openPaths` or `openDialog` call that is reading files. It resolves with the files read so
+   * far, which stay (`opened.cancelled` is true); the others are dropped. Photos already open are untouched.
+   */
+  cancelOpen(): Promise<void>;
   /** `session_state`: photos, current index, picked set and per-photo summaries. */
   sessionState(): Promise<SessionState>;
   /**
@@ -396,6 +401,7 @@ const unit = (call: Promise<null>): Promise<void> => call.then(() => undefined);
 export const tauriApi: Api = {
   openPaths: (paths) => commands.openPaths(paths),
   openDialog: (kind) => commands.openDialog(kind),
+  cancelOpen: () => unit(commands.cancelOpen()),
   sessionState: () => commands.sessionState(),
   closeSession: () => unit(commands.closeSession()),
   setCurrent: (photoId) => unit(commands.setCurrent(photoId)),

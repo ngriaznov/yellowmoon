@@ -68,6 +68,7 @@ import type {
   ObjectState,
   DepthState,
   VisionState,
+  OpenProgress,
   OpenSummary,
   Orientation,
   PasteReport,
@@ -176,6 +177,15 @@ function sameMaskView(a: MaskView | null, b: MaskView | null): boolean {
   return a === b || (a !== null && b !== null && a.node === b.node && a.style === b.style && (a.row ?? null) === (b.row ?? null) && (a.depth ?? false) === (b.depth ?? false));
 }
 
+/** How long an open reads before Start and Photos say how far it has got (`openProgress`). */
+export const OPEN_PROGRESS_DELAY_MS = 300;
+
+/** What Start and Photos say after Cancel stopped an open: how many of the files were read and kept (`docs/26` H-10). */
+export function stoppedNotice(opened: number): string {
+  if (opened === 0) return "Stopped. No files were opened.";
+  return `Stopped. ${opened} ${opened === 1 ? "file was" : "files were"} opened.`;
+}
+
 /** What Photos says after files were added to the session: "Added 3 photos. 2 were already open." */
 export function openedNotice(opened: OpenSummary): string {
   if (opened.added === 0 && opened.already_open === 0) return NO_ARW_NOTICE;
@@ -281,6 +291,11 @@ export interface AppState {
   error: AppError | null;
   /** Open files or Open folder is waiting for the core or the dialog. */
   opening: boolean;
+  /**
+   * How far the core has read the files of the open that is under way, once it has taken `OPEN_PROGRESS_DELAY_MS` (a small open
+   * finishes before anyone could read the line); null otherwise. Start and Photos say "Reading {done} of {total} files…" with Cancel.
+   */
+  openProgress: OpenProgress | null;
   /** The current photo's histogram, when asked for. */
   histogram: HistogramData | null;
   /** The display values at the middle of the photo cell, while the Light tab watches them (`watchHistogram`). */
@@ -423,6 +438,7 @@ export function initialState(): AppState {
     dropNotice: null,
     error: null,
     opening: false,
+    openProgress: null,
     histogram: null,
     middleReadout: null,
     chromaScatter: null,
@@ -861,6 +877,7 @@ export class AppStore {
     const api = this.api;
     this.stops = [
       api.on("photo_progress", (e) => this.onProgress(e)),
+      api.on("open_progress", (e) => this.onOpenProgress(e)),
       api.on("thumbnail_ready", (e) => this.onThumbnail(e)),
       api.on("node_thumbnails_ready", (e) => this.onNodeThumbnails(e)),
       api.on("render_stats", (stats) => {
@@ -1241,13 +1258,13 @@ export class AppStore {
     try {
       const session = await this.api.openPaths(toOpen);
       this.adoptOpened(session);
-      if (addingToPhotos && session.opened) this.showNotice(openedNotice(session.opened));
+      this.sayOpened(session, addingToPhotos);
     } catch (error) {
       const failure = toAppError(error);
       if (failure.scope === "open" && (failure.message === NO_ARW_NOTICE || isUnreadableMessage(failure.message))) this.sayDropProblem(failure.message, addingToPhotos);
       else this.fail(failure);
     } finally {
-      this.set({ opening: false });
+      this.endOpening();
     }
   }
 
@@ -1259,15 +1276,54 @@ export class AppStore {
       const session = await this.api.openDialog(kind);
       if (session) {
         this.adoptOpened(session);
-        if (addingToPhotos && session.opened) this.showNotice(openedNotice(session.opened));
+        this.sayOpened(session, addingToPhotos);
       }
     } catch (error) {
       const failure = toAppError(error);
       if (failure.scope === "open" && isUnreadableMessage(failure.message)) this.sayDropProblem(failure.message, addingToPhotos);
       else this.fail(failure);
     } finally {
-      this.set({ opening: false });
+      this.endOpening();
     }
+  }
+
+  /** The core has read `e.done` of `e.total` files of the open under way. Shown once the open has taken a moment. */
+  private onOpenProgress(e: OpenProgress): void {
+    if (!this.state.opening) return;
+    this.openProgressLatest = e;
+    if (this.state.openProgress !== null) {
+      this.set({ openProgress: e });
+      return;
+    }
+    this.openProgressTimer ??= setTimeout(() => {
+      this.openProgressTimer = null;
+      if (this.state.opening && this.openProgressLatest !== null) this.set({ openProgress: this.openProgressLatest });
+    }, OPEN_PROGRESS_DELAY_MS);
+  }
+
+  /** An open ended, however it ended: the line "Reading … files…" goes. */
+  private endOpening(): void {
+    if (this.openProgressTimer !== null) clearTimeout(this.openProgressTimer);
+    this.openProgressTimer = null;
+    this.openProgressLatest = null;
+    this.set({ opening: false, openProgress: null });
+  }
+
+  /** Stops the open that is reading files (the Cancel button). The files read so far stay; the open then ends with `opened.cancelled`. */
+  async cancelOpen(): Promise<void> {
+    try {
+      await this.api.cancelOpen();
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /** Says what an open did, where the person is looking: "Stopped. 40 files were opened." after Cancel, "Added 3 photos." on Photos. */
+  private sayOpened(session: SessionState, onPhotos: boolean): void {
+    const opened = session.opened;
+    if (!opened) return;
+    if (opened.cancelled) this.sayDropProblem(stoppedNotice(opened.added), onPhotos);
+    else if (onPhotos) this.showNotice(openedNotice(opened));
   }
 
   /**
@@ -2488,6 +2544,9 @@ export class AppStore {
   private finds: Promise<unknown> = Promise.resolve();
   private pillSeq = 0;
   private pillTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The newest `open_progress`, and the timer that shows it once the open has taken a moment (`onOpenProgress`). */
+  private openProgressLatest: OpenProgress | null = null;
+  private openProgressTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Finds an object (`mask_find`, `docs/23` §4.4 and §9): asks the core for the Object row `row` of `node` with the person's click or box added. A **found**

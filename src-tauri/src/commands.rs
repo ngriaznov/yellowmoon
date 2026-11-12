@@ -123,6 +123,17 @@ pub async fn open_dialog(
     .await
 }
 
+/// `cancel_open()`: stops the `open_paths` or `open_dialog` call that is reading files; the files read so far stay.
+#[tauri::command]
+#[specta::specta]
+pub async fn cancel_open(state: State<'_, AppState>) -> Result<(), AppError> {
+    run(&state, |api| {
+        api.cancel_open();
+        Ok(())
+    })
+    .await
+}
+
 /// `session_state()`.
 #[tauri::command]
 #[specta::specta]
@@ -821,6 +832,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         .commands(collect_commands![
             open_paths,
             open_dialog,
+            cancel_open,
             session_state,
             close_session,
             set_current,
@@ -893,6 +905,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             wire::UpdateState,
             wire::ErrorEvent,
             wire::LooksImportProgress,
+            wire::OpenProgress,
             wire::DownloadFound,
             wire::MenuActionEvent,
             wire::SettingsChanged,

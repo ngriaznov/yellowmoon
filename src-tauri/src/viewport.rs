@@ -561,6 +561,18 @@ impl FrameStore {
             .collect()
     }
 
+    /// The bytes of the thumbnails the store holds now (every version of every photo), for the
+    /// 2000-file test.
+    #[cfg(test)]
+    #[must_use]
+    pub fn thumbnail_bytes(&self) -> usize {
+        lock(&self.thumbnails)
+            .by_photo
+            .values()
+            .flat_map(|versions| versions.iter().map(|(_, png)| png.len()))
+            .sum()
+    }
+
     /// Keeps the tile of a photo through one look (a PNG of at most 240 px) and returns the
     /// address it is served at. Every call gives a new address, so a tile drawn again after the
     /// photo's settings changed never meets a cached older picture. Only the newest few tiles of

@@ -29,6 +29,8 @@ export const commands = {
 	 */
 	opened?: OpenSummary | null,
 } | null>("open_dialog", { kind }),
+	/**  `cancel_open()`: stops the `open_paths` or `open_dialog` call that is reading files; the files read so far stay. */
+	cancelOpen: () => __TAURI_INVOKE<null>("cancel_open"),
 	/**  `session_state()`. */
 	sessionState: () => __TAURI_INVOKE<SessionState>("session_state"),
 	/**  `close_session()`: forgets the session; running exports keep going. */
@@ -294,6 +296,7 @@ export const events = {
 	menuAction: makeEvent<MenuActionEvent>("menu_action"),
 	nodeThumbnailsReady: makeEvent<NodeThumbnailsReady>("node_thumbnails_ready"),
 	objectState: makeEvent<ObjectState>("object_state"),
+	openProgress: makeEvent<OpenProgress>("open_progress"),
 	photoProgress: makeEvent<PhotoProgress>("photo_progress"),
 	renderStats: makeEvent<RenderStats>("render_stats"),
 	settingsChanged: makeEvent<SettingsChanged>("settings_changed"),
@@ -2481,12 +2484,25 @@ export type OpenKind =
 /**  A folder. */
 "folder";
 
+/**
+ *  `open_progress { done, total }`: how many of the files of an `open_paths` or `open_dialog` call have
+ *  been read (probed). Sent at the start (`done` is 0), after every 50 files and at the end.
+ */
+export type OpenProgress = {
+	/**  Files read so far. */
+	done: number,
+	/**  Files to read. */
+	total: number,
+};
+
 /**  What one `open_paths` or `open_dialog` call did to the session. */
 export type OpenSummary = {
 	/**  ARW files added to the filmstrip. */
 	added: number,
 	/**  ARW files that were already in the session and were not added again. */
 	already_open: number,
+	/**  True when `cancel_open` stopped the call: `added` files were read before that and kept. */
+	cancelled: boolean,
 };
 
 /**  The Output: the look and the output sharpening. */
