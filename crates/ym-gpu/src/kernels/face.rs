@@ -218,6 +218,7 @@ enum Op {
     TApply = 9,
     Encode = 10,
     Tone = 11,
+    Copy = 12,
 }
 
 fn groups2(w: usize, h: usize) -> (u32, u32, u32) {
@@ -415,6 +416,7 @@ impl Rec<'_, '_> {
                 Op::TSelect | Op::TApply => "face teeth",
                 Op::Encode => "face encode",
                 Op::Tone => "face tone",
+                Op::Copy => "face place",
             },
             &[
                 (0, ub.binding()),
@@ -519,15 +521,138 @@ impl Rec<'_, '_> {
     }
 }
 
-/// Records the retouch of one region: `src` is the node's input (LogC4 / AWG4, planar, at least three planes) and `src_at` the
-/// pixel of it where the region starts; the picture is written to `out` (three planes, zeroed by the caller) with the region's
-/// first pixel at `out_at` (the part outside `out` is dropped). A pixel no tool changed is left zero.
+/// The picture one region made: three planes of the region's size, zeros where no tool changed the pixel.
+#[derive(Debug)]
+pub struct RegionPicture {
+    buf: Arc<PooledBuffer>,
+    width: usize,
+    height: usize,
+    stride: usize,
+    plane_len: usize,
+}
+
+/// The pictures an export has made of a node's regions, so that a tile that meets a region another tile met already copies the
+/// picture and does not make it again (the node is a region whole in whichever tile meets it, and the bytes are the same: nothing
+/// in a region's maths depends on the tile). One for each region of one render's node; a picture is kept once the list that fills
+/// it has been submitted, so a later list is ordered after it on the queue.
+#[derive(Debug, Default)]
+pub struct KeptRegion {
+    picture: std::sync::Mutex<Option<Arc<RegionPicture>>>,
+}
+
+impl KeptRegion {
+    /// An empty slot.
+    #[must_use]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// The picture a list that was submitted made, if any.
+    #[must_use]
+    pub fn get(&self) -> Option<Arc<RegionPicture>> {
+        self.picture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn keep(&self, picture: Arc<RegionPicture>) {
+        *self
+            .picture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(picture);
+    }
+}
+
+/// Makes the picture of one region and, when `kept` is given, keeps it there once the list has been submitted.
 ///
 /// # Errors
 ///
-/// [`GpuError::InvalidInput`] for a region `src` does not cover, an `out` with fewer than three planes, or a protection plane
-/// that does not cover the region; [`GpuError::BufferTooLarge`] when the layer scratch passes the device's binding; the pool's
-/// and the passes' errors.
+/// As [`retouch_region`].
+pub fn make_region(
+    ctx: &GpuContext,
+    passes: &mut PassList<'_>,
+    region: &FaceRegion<'_>,
+    src: &GpuImage,
+    src_at: (usize, usize),
+    kept: Option<&Arc<KeptRegion>>,
+) -> Result<Arc<RegionPicture>, GpuError> {
+    let picture = Arc::new(retouch_region(ctx, passes, region, src, src_at)?);
+    if let Some(kept) = kept {
+        let (kept, picture) = (Arc::clone(kept), Arc::clone(&picture));
+        passes.on_submit(move || kept.keep(picture));
+    }
+    Ok(picture)
+}
+
+/// Copies a region's picture into the node's picture `out` with the region's first pixel at `out_at` (the part outside `out` is
+/// dropped; a pixel of zeros is not written, `out` has zeros there).
+///
+/// # Errors
+///
+/// [`GpuError::InvalidInput`] for an `out` with fewer than three planes; the pool's and the passes' errors.
+pub fn place_region(
+    ctx: &GpuContext,
+    passes: &mut PassList<'_>,
+    picture: &Arc<RegionPicture>,
+    out: &GpuImage,
+    out_at: (i64, i64),
+) -> Result<(), GpuError> {
+    if out.planes < 3 {
+        return Err(GpuError::InvalidInput(
+            "face: the output has fewer than three planes".to_owned(),
+        ));
+    }
+    let stand_in =
+        |passes: &mut PassList<'_>, label: &str| -> Result<Arc<PooledBuffer>, GpuError> {
+            let buffer = ctx.pool().acquire(label, 4, STORAGE_SCRATCH)?;
+            Ok(passes.keep(buffer))
+        };
+    let u = FaceU {
+        op: [Op::Copy as u32, 0, 0, 0],
+        pic: [0, 0, picture.width as u32, picture.height as u32],
+        src: [picture.stride as u32, picture.plane_len as u32, 0, 0],
+        outi: [
+            out.stride as i32,
+            out.plane_len() as i32,
+            out_at.0 as i32,
+            out_at.1 as i32,
+        ],
+        outs: [out.width as i32, out.height as i32, 0, 0],
+        ..FaceU::default()
+    };
+    let (pic, lay, bytes, fd, words) = (
+        stand_in(passes, "face stand-in")?,
+        stand_in(passes, "face stand-in")?,
+        stand_in(passes, "face stand-in")?,
+        stand_in(passes, "face stand-in")?,
+        stand_in(passes, "face stand-in")?,
+    );
+    passes.hold(Arc::clone(&picture.buf));
+    let ub = passes.uniform("face uniform", &u)?;
+    passes.dispatch(
+        KernelId::Face,
+        "face place",
+        &[
+            (0, ub.binding()),
+            (1, pic.binding()),
+            (2, lay.binding()),
+            (3, picture.buf.binding()),
+            (4, out.buf.binding()),
+            (5, bytes.binding()),
+            (6, fd.binding()),
+            (7, words.binding()),
+        ],
+        groups2(picture.width, picture.height),
+    )
+}
+
+/// Records the retouch of one region into `out` (the region's picture is made and placed): [`retouch_region`] and
+/// [`place_region`].
+///
+/// # Errors
+///
+/// As [`retouch_region`] and [`place_region`].
 pub fn encode_face_region(
     ctx: &GpuContext,
     passes: &mut PassList<'_>,
@@ -537,6 +662,25 @@ pub fn encode_face_region(
     out: &GpuImage,
     out_at: (i64, i64),
 ) -> Result<(), GpuError> {
+    let picture = Arc::new(retouch_region(ctx, passes, region, src, src_at)?);
+    place_region(ctx, passes, &picture, out, out_at)
+}
+
+/// Records the retouch of one region: `src` is the node's input (LogC4 / AWG4, planar, at least three planes) and `src_at` the
+/// pixel of it where the region starts. The result is the region's picture: LogC4 where a tool changed the pixel, zeros elsewhere
+/// ("no picture here"). Nothing is read back.
+///
+/// # Errors
+///
+/// [`GpuError::InvalidInput`] for a region `src` does not cover or a protection plane that does not cover the region;
+/// [`GpuError::BufferTooLarge`] when the layer scratch passes the device's binding; the pool's and the passes' errors.
+pub fn retouch_region(
+    ctx: &GpuContext,
+    passes: &mut PassList<'_>,
+    region: &FaceRegion<'_>,
+    src: &GpuImage,
+    src_at: (usize, usize),
+) -> Result<RegionPicture, GpuError> {
     let (w, h) = (
         region.plan.size_px.0 as usize,
         region.plan.size_px.1 as usize,
@@ -549,11 +693,6 @@ pub fn encode_face_region(
             "face: the {w} x {h} region at {src_at:?} is not inside the {} x {} input",
             src.width, src.height
         )));
-    }
-    if out.planes < 3 {
-        return Err(GpuError::InvalidInput(
-            "face: the output has fewer than three planes".to_owned(),
-        ));
     }
     if let Protect::Bytes(b) = region.protect
         && b.len() != w * h
@@ -588,6 +727,9 @@ pub fn encode_face_region(
         });
     }
     let pic = GpuImage::alloc(ctx, "face working", w, h, 4, Placement::whole(w, h))?;
+    // The region's picture: zeros, then the pixels a tool changed.
+    let out = GpuImage::alloc(ctx, "face region picture", w, h, 3, Placement::whole(w, h))?;
+    passes.encoder().clear_buffer(&out.buf, 0, None);
     let lay = Arc::new(
         ctx.pool()
             .acquire("face layers", lay_bytes, STORAGE_SCRATCH)?,
@@ -641,13 +783,8 @@ pub fn encode_face_region(
             src_at.0 as u32,
             src_at.1 as u32,
         ],
-        outi: [
-            out.stride as i32,
-            out.plane_len() as i32,
-            out_at.0 as i32,
-            out_at.1 as i32,
-        ],
-        outs: [out.width as i32, out.height as i32, 0, 0],
+        outi: [out.stride as i32, out.plane_len() as i32, 0, 0],
+        outs: [w as i32, h as i32, 0, 0],
         ..FaceU::default()
     };
     match region.protect {
@@ -666,7 +803,7 @@ pub fn encode_face_region(
         base,
         pic: &pic,
         src,
-        out,
+        out: &out,
         lay,
         bytes,
         fd,
@@ -721,7 +858,14 @@ pub fn encode_face_region(
     }
     rec.run(Op::Encode, rec.base(), groups2(w, h))?;
     let _ = passes.keep(pic.buf);
-    Ok(())
+    let (stride, plane_len) = (out.stride, out.plane_len());
+    Ok(RegionPicture {
+        buf: passes.keep(out.buf),
+        width: w,
+        height: h,
+        stride,
+        plane_len,
+    })
 }
 
 /// Dark circles, even skin and grading of one face (7.1 to 7.7) over its padded region.

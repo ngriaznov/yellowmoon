@@ -25,7 +25,9 @@ use rayon::prelude::*;
 use ym_color::logc::{logc4_decode_rgb, logc4_encode_rgb};
 use ym_color::mask_raster::{Area, PlaneJob, RasterRow, RasterSteps};
 use ym_gpu::cpu::sampler::{GridPositions, SamplerGrid};
-use ym_gpu::kernels::face::{BlemishStep, FacePlan, FaceStep, LowStep, TeethStep, ToneSource};
+use ym_gpu::kernels::face::{
+    BlemishStep, FacePlan, FaceStep, KeptRegion, LowStep, TeethStep, ToneSource,
+};
 use ym_gpu::kernels::film_stack::{FaceNode, FaceRegionSpec};
 use ym_retouch::{
     BlemishMap, DevicePlan, Face, LinearAwg4Image, Mask, Placement, SkinSettings, plan_skin_region,
@@ -300,7 +302,9 @@ impl FaceWork {
                 .iter()
                 .find(|(k, _)| *k == key)
                 .map(|(_, spec)| spec.clone());
-            if let Some(spec) = kept {
+            if let Some(mut spec) = kept {
+                // The plan is the analysis' to keep; the picture a region makes is this render's.
+                spec.kept = KeptRegion::new();
                 regions.push(spec);
                 continue;
             }
@@ -328,6 +332,7 @@ impl FaceWork {
                 area,
                 plan: Arc::new(face_plan(plan)),
                 tone: Arc::new(tone),
+                kept: KeptRegion::new(),
             };
             let mut kept = self
                 .entry

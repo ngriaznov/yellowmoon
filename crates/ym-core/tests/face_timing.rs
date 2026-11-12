@@ -286,7 +286,9 @@ fn the_node_costs_on_the_device() {
             .expect("faces");
         println!("== {id} ({w} x {h}), {faces} face(s), on the device ==");
         for (what, zoom) in [("fit", false), ("100 %", true)] {
-            // The first frame of a view builds the face tables (the plan of each region) and compiles the kernels; the rest are warm.
+            // The view itself is warmed first (the raw group of a 100 % view, the colour kernel), without the node; the first frame
+            // with the node then builds the plan of each region and compiles the face kernel, and the rest are warm.
+            let _ = frame(&r, &base, zoom);
             let first = frame(&r, &at(live(0), 0.0), zoom);
             let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
             let base_moves: Vec<f64> = (1..=3)

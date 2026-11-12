@@ -29,6 +29,8 @@
 //    9 TAPPLY     teeth whitening (7.8) per pixel.
 //   10 ENCODE     fc_out = logc4_encode(fc_pic) where the flag says a tool changed the pixel; a picture of zeros elsewhere.
 //   11 TONE       the tone relation (tone.rs) of the region's pixels against the analysis picture's quantiles (a workgroup a channel).
+//   12 COPY       a region's picture (fc_src, three planes of the region's size) into the node's picture (fc_out) at the region's place; a
+//                 pixel of zeros is not written (the node's picture is zeros there already).
 
 struct FU {
     op: vec4<u32>,    // x: the op; y: (LOWFINAL) the length of a layer plane
@@ -630,6 +632,28 @@ fn fc_tapply(gid: vec3<u32>) {
     }
 }
 
+// ---- 12 COPY --------------------------------------------------------------------------------------------
+
+fn fc_copy(gid: vec3<u32>) {
+    if (gid.x >= FU_.pic.z || gid.y >= FU_.pic.w) {
+        return;
+    }
+    let ox = FU_.outi.z + i32(gid.x);
+    let oy = FU_.outi.w + i32(gid.y);
+    if (ox < 0 || oy < 0 || ox >= FU_.outs.x || oy >= FU_.outs.y) {
+        return;
+    }
+    let s = gid.y * FU_.src.x + gid.x;
+    let v = vec3<f32>(fc_src[s], fc_src[FU_.src.y + s], fc_src[2u * FU_.src.y + s]);
+    if (v.x == 0.0 && v.y == 0.0 && v.z == 0.0) {
+        return;
+    }
+    let o = u32(oy) * u32(FU_.outi.x) + u32(ox);
+    fc_out[o] = v.x;
+    fc_out[u32(FU_.outi.y) + o] = v.y;
+    fc_out[2u * u32(FU_.outi.y) + o] = v.z;
+}
+
 // ---- 11 TONE --------------------------------------------------------------------------------------------
 
 // One workgroup for each channel (workgroup_id.x). a: the sample grid's columns, rows and step; b.x: the first block of fc_fd.
@@ -800,6 +824,7 @@ fn face_main(gid: vec3<u32>, local: u32, group: vec3<u32>) {
         case 9u: { fc_tapply(gid); }
         case 10u: { fc_encode(gid); }
         case 11u: { fc_tone(group.x, local); }
+        case 12u: { fc_copy(gid); }
         default: {}
     }
 }

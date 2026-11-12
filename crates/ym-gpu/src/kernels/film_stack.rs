@@ -33,7 +33,9 @@ use ym_color::mask_raster::{Area, RasterRow, RasterSet};
 use ym_color::schedule::{Schedule, StepKind, union_area};
 
 use super::color::{PreparedChain, Stop};
-use super::face::{FacePlan, FaceRegion, Protect, ToneSource, encode_face_region};
+use super::face::{
+    FacePlan, FaceRegion, KeptRegion, Protect, ToneSource, make_region, place_region,
+};
 use super::film::{
     FRect, FilmColourData, FilmDevice, FilmImage, FilmPlan, FilmScalars, encode_film_tile, halos,
 };
@@ -136,6 +138,9 @@ pub struct FaceRegionSpec {
     pub plan: Arc<FacePlan>,
     /// How the blemish gain meets the picture's tone there.
     pub tone: Arc<ToneSource>,
+    /// The picture the region made in this render, once a tile has made it: a later tile of the same render copies it. A fresh
+    /// slot for each render ([`KeptRegion::new`]); a slot is never shared by two renders, whose inputs may differ.
+    pub kept: Arc<KeptRegion>,
 }
 
 /// A Face Refinement node over a photo's extent: its regions, and the raster row of its protection plane.
@@ -151,9 +156,18 @@ pub struct FaceNode {
 
 impl FaceNode {
     /// The regions of the node that meet `made` (the area its picture is demanded over).
-    fn needed_in(&self, made: &Area) -> impl Iterator<Item = usize> + '_ {
+    fn meeting(&self, made: &Area) -> impl Iterator<Item = usize> + '_ {
         let made = *made;
         (0..self.regions.len()).filter(move |&i| !self.regions[i].area.intersect(&made).is_empty())
+    }
+
+    /// The regions that meet `made` and that no earlier tile of this render made: the ones a render must hold whole. A region a
+    /// tile made is kept (`FaceRegionSpec::kept`) and copied by the tiles after it, which read nothing of it, so they are not
+    /// grown to hold it (the CPU keeps a region the same way). The tiles of an export run one after the other, each submitted
+    /// before the next is planned, so what is kept when a tile is planned is the same wherever it is asked.
+    fn needed_in(&self, made: &Area) -> impl Iterator<Item = usize> + '_ {
+        self.meeting(made)
+            .filter(|&i| self.regions[i].kept.get().is_none())
     }
 }
 
@@ -540,35 +554,47 @@ fn encode_face_node(
     };
     let out = FilmImage::alloc(ctx, "face picture", frect(made))?;
     passes.encoder().clear_buffer(&out.img.buf, 0, None);
-    for ri in face.needed_in(&made) {
+    for ri in face.meeting(&made) {
         let region = &face.regions[ri];
         let r = region.area;
-        if !read.contains(&r) {
-            tracing::debug!(
-                ?r,
-                ?read,
-                "a face region outside what the node read is not made"
-            );
-            continue;
-        }
-        let protect = match protect {
-            Some(planes) => Protect::Raster {
-                planes,
-                plane: 0,
-                origin: ((r.x - read.x) as i32, (r.y - read.y) as i32),
-            },
-            None => Protect::None,
+        // A region another tile of this render made is copied; else it is made here and kept for the tiles after.
+        let picture = match region.kept.get() {
+            Some(picture) => picture,
+            None => {
+                if !read.contains(&r) {
+                    tracing::debug!(
+                        ?r,
+                        ?read,
+                        "a face region outside what the node read is not made"
+                    );
+                    continue;
+                }
+                let protect = match protect {
+                    Some(planes) => Protect::Raster {
+                        planes,
+                        plane: 0,
+                        origin: ((r.x - read.x) as i32, (r.y - read.y) as i32),
+                    },
+                    None => Protect::None,
+                };
+                make_region(
+                    ctx,
+                    passes,
+                    &FaceRegion {
+                        plan: &region.plan,
+                        tone: &region.tone,
+                        protect,
+                    },
+                    &input.img,
+                    ((r.x - read.x) as usize, (r.y - read.y) as usize),
+                    Some(&region.kept),
+                )?
+            }
         };
-        encode_face_region(
+        place_region(
             ctx,
             passes,
-            &FaceRegion {
-                plan: &region.plan,
-                tone: &region.tone,
-                protect,
-            },
-            &input.img,
-            ((r.x - read.x) as usize, (r.y - read.y) as usize),
+            &picture,
             &out.img,
             (r.x - made.x, r.y - made.y),
         )?;
