@@ -166,6 +166,28 @@ pub struct FaceTimings {
     pub faces: usize,
 }
 
+/// How many regions' device plans an analysis keeps ([`FaceEntry::device_plans`]).
+pub(crate) const PLANS_KEPT: usize = 16;
+
+/// What a region's device plan is made for: the frame's size, the region and the faces with their settings (the analysis' own
+/// masks and maps are the entry's).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PlanKey {
+    frame: (usize, usize),
+    area: ym_color::mask_raster::Area,
+    faces: Vec<(Face, SkinSettings)>,
+}
+
+impl PlanKey {
+    pub(crate) fn new(
+        frame: (usize, usize),
+        area: ym_color::mask_raster::Area,
+        faces: Vec<(Face, SkinSettings)>,
+    ) -> Self {
+        Self { frame, area, faces }
+    }
+}
+
 /// The photo's faces with the masks and blemish maps made for them.
 #[derive(Debug)]
 pub(crate) struct FaceEntry {
@@ -187,6 +209,10 @@ pub(crate) struct FaceEntry {
     pub(crate) retouch: RetouchCache,
     /// Where the time of the analysis went.
     pub(crate) timings: FaceTimings,
+    /// The device's plans of the regions made for this analysis (`frame/face_pass.rs`, `FaceWork::device_node`): the CPU's plan of
+    /// a region and the analysis' quantiles are the same for every frame of the same size and settings, so a slider of another node,
+    /// a pan or a tile of an export finds them here. The latest few, least recently used out.
+    pub(crate) device_plans: Mutex<Vec<(PlanKey, ym_gpu::kernels::film_stack::FaceRegionSpec)>>,
 }
 
 impl FaceEntry {
@@ -633,6 +659,7 @@ impl Renderer {
             srgb8: Arc::new(pictures.srgb8),
             linear: Arc::new(image),
             retouch,
+            device_plans: Mutex::default(),
         })
     }
 

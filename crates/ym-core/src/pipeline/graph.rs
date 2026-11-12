@@ -85,7 +85,7 @@ mod vision;
 pub use depth::DepthKey;
 #[cfg(test)]
 pub(crate) use faces::FoundFace;
-pub(crate) use faces::{FaceEntry, face_source};
+pub(crate) use faces::{FaceEntry, PLANS_KEPT, PlanKey, face_source};
 pub use faces::{FaceTimings, FacesKey};
 pub(crate) use object::plane_text;
 

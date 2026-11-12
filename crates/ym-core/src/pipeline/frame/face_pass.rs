@@ -33,7 +33,7 @@ use ym_retouch::{
 };
 
 use super::RenderError;
-use crate::pipeline::graph::FaceEntry;
+use crate::pipeline::graph::{FaceEntry, PLANS_KEPT, PlanKey};
 use crate::settings::FaceRefinementNode;
 
 /// Values of each picture the tone relation is estimated from, at most.
@@ -291,6 +291,19 @@ impl FaceWork {
     pub(crate) fn device_node(&self) -> Result<FaceNode, RenderError> {
         let mut regions = Vec::with_capacity(self.regions.len());
         for (ri, &area) in self.regions.iter().enumerate() {
+            let key = PlanKey::new((self.frame.w, self.frame.h), area, self.faces.clone());
+            let kept = self
+                .entry
+                .device_plans
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, spec)| spec.clone());
+            if let Some(spec) = kept {
+                regions.push(spec);
+                continue;
+            }
             let place = Placement {
                 origin_px: (
                     (area.x - self.frame.x) as i32,
@@ -311,11 +324,22 @@ impl FaceWork {
                 .analysis_samples(ri)
                 .and_then(|a| tone_quantiles(&a))
                 .map_or(ToneSource::Plain, |q| ToneSource::Estimate(Box::new(q)));
-            regions.push(FaceRegionSpec {
+            let spec = FaceRegionSpec {
                 area,
                 plan: Arc::new(face_plan(plan)),
                 tone: Arc::new(tone),
-            });
+            };
+            let mut kept = self
+                .entry
+                .device_plans
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            kept.retain(|(k, _)| *k != key);
+            kept.push((key, spec.clone()));
+            if kept.len() > PLANS_KEPT {
+                kept.remove(0);
+            }
+            regions.push(spec);
         }
         Ok(FaceNode {
             regions,

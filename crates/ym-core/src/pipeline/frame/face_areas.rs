@@ -153,6 +153,7 @@ mod tests {
             srgb8: Arc::new(Vec::new()),
             linear: Arc::new(image),
             retouch: cache,
+            device_plans: Default::default(),
         }
     }
 
