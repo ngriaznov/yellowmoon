@@ -125,7 +125,7 @@ use crate::auto_provider::{
 };
 use crate::camera::{CameraCard, CameraInfo, PhotoCamera};
 use crate::data_dir::{DataDirError, find_data_dir};
-use crate::media::{Guarded, Media, NO_ANSWER_MESSAGE};
+use crate::media::{CHANGED_MESSAGE, FileStamp, Guarded, Media, NO_ANSWER_MESSAGE, ReadFailure};
 use crate::settings::{
     CropAspect, DevelopSettings, Orientation, ResolvedSettings, SettingsError, SettingsPatch,
 };
@@ -939,6 +939,24 @@ pub struct OpenProgress {
 /// Files between two [`OpenProgress`] reports.
 pub const OPEN_PROGRESS_STEP: usize = 50;
 
+/// Writes the log line of a read that failed (`detail` is for the log, never for the person).
+fn log_read_failure(id: PhotoId, failure: &ReadFailure) {
+    match failure {
+        ReadFailure::Raw(e) => tracing::warn!(
+            photo = id.0,
+            kind = e.kind(),
+            detail = e.detail().as_deref().unwrap_or(""),
+            "the file could not be decoded"
+        ),
+        ReadFailure::Changed => {
+            tracing::warn!(photo = id.0, "the file changed after it was opened");
+        }
+    }
+}
+
+/// What a probe gave: the metadata with the file's stamp, or why there is none.
+type Probed = Result<(RawMetadata, Option<FileStamp>), ProbeFailure>;
+
 /// Why a file has no metadata.
 #[derive(Debug)]
 enum ProbeFailure {
@@ -1200,6 +1218,9 @@ struct Photo {
     path: PathBuf,
     /// The canonical form of `path`, the key of the set of files already open (`State::known`).
     canon: PathBuf,
+    /// The file's length and modification time at the probe; every later read of the file compares
+    /// them first (`docs/26` P1-4). `None` when the photo was not probed or `stat` failed then.
+    stamp: Option<FileStamp>,
     /// Counts the times the photo was taken out of the session ([`Session::remove`]). A job carries the number the photo
     /// had when it was queued, so the job of a photo that was removed and put back stops: the photo has a new job.
     incarnation: u32,
@@ -2387,7 +2408,7 @@ impl Session {
         let total = files.len();
         let done = std::sync::atomic::AtomicUsize::new(0);
         progress(OpenProgress { done: 0, total });
-        let probed: Vec<Option<Result<RawMetadata, ProbeFailure>>> = files
+        let probed: Vec<Option<Probed>> = files
             .par_iter()
             .map(|(path, _)| {
                 let answer = if cancelled() {
@@ -3844,20 +3865,54 @@ impl Inner {
         true
     }
 
+    /// Skips a photo that was Ready (or developing) because its file went away or changed: the
+    /// status becomes `Skipped` and a `photo_progress` error event is sent, as for a photo whose
+    /// develop job failed. Nothing happens when the session was closed or the photo was removed
+    /// (or removed and put back) since `incarnation` was read.
+    fn skip_photo(&self, epoch: u64, id: PhotoId, incarnation: u32, reason: &str) {
+        let _guard = lock(&self.emit_lock);
+        if !self.live(epoch) {
+            return;
+        }
+        {
+            let mut st = lock(&self.state);
+            let Some(&i) = st.index.get(&id) else {
+                return;
+            };
+            let p = &mut st.photos[i];
+            if p.incarnation != incarnation
+                || matches!(p.summary.status, PhotoStatus::Skipped { .. })
+            {
+                return;
+            }
+            p.summary.status = PhotoStatus::Skipped {
+                reason: reason.to_owned(),
+            };
+        }
+        self.env
+            .events
+            .send(SessionEvent::PhotoProgress(PhotoProgress {
+                id,
+                stage: PhotoStage::Decode,
+                done: true,
+                error: Some(reason.to_owned()),
+            }));
+    }
+
     fn new_photo(
         &self,
         id: PhotoId,
         path: PathBuf,
         canon: PathBuf,
         default_look: &LookId,
-        probe: Result<RawMetadata, ProbeFailure>,
+        probe: Probed,
     ) -> Photo {
         let file_name = path
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         let settings = DevelopSettings::with_look(default_look.clone());
         match probe {
-            Ok(meta) => {
+            Ok((meta, stamp)) => {
                 let camera = PhotoCamera::new(
                     &self.env.profiles,
                     &meta,
@@ -3890,6 +3945,7 @@ impl Inner {
                     id,
                     path,
                     canon,
+                    stamp,
                     incarnation: 0,
                     summary,
                     burst: Some(burst_frame(&meta)),
@@ -3934,6 +3990,7 @@ impl Inner {
                     id,
                     path,
                     canon,
+                    stamp: None,
                     incarnation: 0,
                     summary: PhotoSummary {
                         id,
@@ -4097,13 +4154,14 @@ impl Inner {
                 .and_then(|p| {
                     Some((
                         p.path.clone(),
+                        p.stamp,
                         p.camera.clone()?,
                         p.profile.clone()?,
                         p.settings.clone(),
                     ))
                 })
         };
-        let Some((path, camera, profile, settings)) = snapshot else {
+        let Some((path, stamp, camera, profile, settings)) = snapshot else {
             return;
         };
         let fail = |stage: PhotoStage, reason: String| {
@@ -4117,16 +4175,11 @@ impl Inner {
         let started = Instant::now();
         // The read has a time limit: a file on media that went away fails the photo and frees the
         // pool thread instead of keeping it for ever (`docs/26` H-15).
-        let raw = match self.env.media.decode(&path, &|| !self.live(epoch)) {
+        let raw = match self.env.media.decode(&path, stamp, &|| !self.live(epoch)) {
             Guarded::Done(Ok(raw)) => Arc::new(raw),
             Guarded::Done(Err(e)) => {
-                tracing::warn!(
-                    photo = id.0,
-                    kind = e.kind(),
-                    detail = e.detail().as_deref().unwrap_or(""),
-                    "the file could not be decoded"
-                );
-                return fail(PhotoStage::Decode, e.to_string());
+                log_read_failure(id, &e);
+                return fail(PhotoStage::Decode, e.message());
             }
             Guarded::NoAnswer => {
                 tracing::warn!(photo = id.0, "the file did not answer in time");
@@ -4307,16 +4360,17 @@ impl Inner {
         // the image.
         let epoch = self.epoch.load(Ordering::SeqCst);
         loop {
-            let path = {
+            let (path, stamp, incarnation) = {
                 let st = lock(&self.state);
                 let p = st.photo(id).ok_or(SessionError::UnknownPhoto(id))?;
                 if let PhotoStatus::Skipped { reason } = &p.summary.status {
                     return Err(SessionError::Skipped(reason.clone()));
                 }
+                // A mosaic in the cache is served with no `stat` (`docs/26` P1-4).
                 if let Some(raw) = st.cache_get(id) {
                     return Ok(raw);
                 }
-                p.path.clone()
+                (p.path.clone(), p.stamp, p.incarnation)
             };
             // One decode per photo at a time: the viewport, the histogram, a tile for each look and
             // the prefetch all ask at once, and each holds a whole mosaic (122 MB at 61 MP) while
@@ -4335,8 +4389,21 @@ impl Inner {
                 return Ok(raw);
             }
             self.raw_decodes.fetch_add(1, Ordering::SeqCst);
-            let decoded = match self.env.media.decode(&path, &|| !self.live(epoch)) {
-                Guarded::Done(result) => Arc::new(result?),
+            let decoded = match self.env.media.decode(&path, stamp, &|| !self.live(epoch)) {
+                Guarded::Done(Ok(raw)) => Arc::new(raw),
+                // The file is gone or is not the one that was opened: the photo is skipped, with
+                // an event, so the filmstrip and the cell say so and nothing asks for it again.
+                Guarded::Done(Err(failure)) if failure.is_gone_or_changed() => {
+                    log_read_failure(id, &failure);
+                    let reason = failure.message();
+                    self.skip_photo(epoch, id, incarnation, &reason);
+                    return Err(SessionError::Skipped(reason));
+                }
+                Guarded::Done(Err(ReadFailure::Raw(error))) => return Err(error.into()),
+                // (`is_gone_or_changed` is true for every `Changed`; the arm is for the compiler.)
+                Guarded::Done(Err(ReadFailure::Changed)) => {
+                    return Err(SessionError::Skipped(CHANGED_MESSAGE.to_owned()));
+                }
                 Guarded::NoAnswer => {
                     return Err(SessionError::Skipped(NO_ANSWER_MESSAGE.to_owned()));
                 }

@@ -348,6 +348,14 @@ fn skip_kind(path: &Path, reason: &str) -> (&'static str, Option<String>) {
     if reason == ym_core::media::NO_ANSWER_MESSAGE {
         return ("io", Some("the file did not answer in time".to_owned()));
     }
+    // A file that changed after it was opened (`docs/26` H-04) decodes again as a different file:
+    // that is an `io` failure too, and it is not read a second time.
+    if reason == ym_core::media::CHANGED_MESSAGE {
+        return (
+            "io",
+            Some("the file changed after it was opened".to_owned()),
+        );
+    }
     match ym_raw::decode::decode(path) {
         Err(error) => (error.kind(), error.detail()),
         Ok(_) => ("analysis", None),

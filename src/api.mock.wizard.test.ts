@@ -1,7 +1,7 @@
 // The mock's side of the ARRI wizard, the export extras and Preferences: synthetic packages, recognition, the simulated
 // import, the Downloads watcher, the system commands, the estimate's extra fields and the preferences store.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createMockApi, DISPLAY_ONLY_REASON, FAILURE_ZIPS, LOOK_FILE_ZIPS, PACKAGE_FACTS, PACKAGE_ZIPS } from "./api.mock";
+import { createMockApi, DISPLAY_ONLY_REASON, FILE_GONE_MESSAGE, FAILURE_ZIPS, LOOK_FILE_ZIPS, PACKAGE_FACTS, PACKAGE_ZIPS } from "./api.mock";
 import type { MockApi } from "./api.mock";
 import type { AppError, DownloadFound, ExportJob, ExportOptions, ExportProgress, LooksImportProgress } from "./api/types";
 import { mainGradePatch, outputPatch } from "./state/settingsGraph";
@@ -402,6 +402,39 @@ describe("export outcomes", () => {
     expect(failed).toHaveLength(1);
     expect(failed[0]).toMatchObject({ file: "DSC04204_neutral.jpg", done: 2, total: 3, error: "The disk is full. Free some space, then export again." });
     expect(events.at(-1)).toMatchObject({ done: 3, total: 3, file_percent: 100, error: null });
+  });
+
+  it("fails a photo whose file went away with the not-found sentence, and carries on (mockVanish)", async () => {
+    // The photos are Ready first: the file goes away after that.
+    api.reset({ picked: [2, 3, 4], current: 0, vanish: ["DSC04204"] });
+    await api.openPaths(ARW);
+    await vi.advanceTimersByTimeAsync(6000);
+    const events: ExportProgress[] = [];
+    api.on("export_progress", (e) => events.push(e));
+    await api.exportStart(job("picked"));
+    await vi.advanceTimersByTimeAsync(6000);
+    const failed = events.filter((e) => e.error);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({ file: "DSC04204_neutral.jpg", done: 2, total: 3, error: FILE_GONE_MESSAGE, stopped: false });
+    expect(events.at(-1)).toMatchObject({ done: 3, total: 3, file_percent: 100, error: null });
+    expect((await api.sessionState()).photos.find((p) => p.file_name === "DSC04204.ARW")?.status).toEqual({ kind: "skipped", reason: FILE_GONE_MESSAGE });
+  });
+
+  it("skips a Ready photo that vanishes when it is shown, with a photo_progress error event (mockVanish)", async () => {
+    api.reset({ vanish: ["DSC04207"], current: 0 });
+    await api.openPaths(ARW);
+    await vi.advanceTimersByTimeAsync(6000);
+    const progress: Array<{ id: number; error: string | null }> = [];
+    api.on("photo_progress", (e) => progress.push({ id: e.id, error: e.error }));
+    const photos = (await api.sessionState()).photos;
+    const vanishing = photos.find((p) => p.file_name === "DSC04207.ARW")!;
+    expect(vanishing.status).toEqual({ kind: "ready" });
+    await api.setCurrent(vanishing.id);
+    expect(progress).toEqual([{ id: vanishing.id, error: FILE_GONE_MESSAGE }]);
+    expect((await api.sessionState()).photos.find((p) => p.id === vanishing.id)?.status).toEqual({ kind: "skipped", reason: FILE_GONE_MESSAGE });
+    // Shown again: nothing new is said.
+    await api.setCurrent(vanishing.id);
+    expect(progress).toHaveLength(1);
   });
 
   it("stops at a failure of the destination: the last event is the failing photo's, and the rest are not tried", async () => {
