@@ -361,15 +361,21 @@ fn fc_box(gid: vec3<u32>) {
 
 // ---- 4 MUL, 5 MCOMB, 6 YPLANE ---------------------------------------------------------------------------
 
+// The element of a one-dimensional op: rows of 4096 threads (the dispatch is `FLAT_X` groups wide).
+fn fc_lin(gid: vec3<u32>) -> u32 {
+    return gid.y * 4096u + gid.x;
+}
+
 // a: x's offset, m's offset, the destination offset, the length of a plane; b.x: the number of planes.
 fn fc_mul(gid: vec3<u32>) {
     let n = u32(FU_.a.w);
-    if (gid.x >= n) {
+    let id = fc_lin(gid);
+    if (id >= n) {
         return;
     }
-    let m = fc_lay[u32(FU_.a.y) + gid.x];
+    let m = fc_lay[u32(FU_.a.y) + id];
     for (var p = 0; p < FU_.b.x; p = p + 1) {
-        let k = u32(p) * n + gid.x;
+        let k = u32(p) * n + id;
         fc_lay[u32(FU_.a.z) + k] = fc_lay[u32(FU_.a.x) + k] * m;
     }
 }
@@ -377,13 +383,14 @@ fn fc_mul(gid: vec3<u32>) {
 // a: m's offset, num's, den's, x's; b: the destination offset, the length of a plane, the number of planes.
 fn fc_mcomb(gid: vec3<u32>) {
     let n = u32(FU_.b.y);
-    if (gid.x >= n) {
+    let id = fc_lin(gid);
+    if (id >= n) {
         return;
     }
-    let m = fc_lay[u32(FU_.a.x) + gid.x];
-    let den = max(fc_lay[u32(FU_.a.z) + gid.x], 1.0 / 255.0);
+    let m = fc_lay[u32(FU_.a.x) + id];
+    let den = max(fc_lay[u32(FU_.a.z) + id], 1.0 / 255.0);
     for (var p = 0; p < FU_.b.z; p = p + 1) {
-        let k = u32(p) * n + gid.x;
+        let k = u32(p) * n + id;
         fc_lay[u32(FU_.b.x) + k] = m * fc_lay[u32(FU_.a.y) + k] / den + (1.0 - m) * fc_lay[u32(FU_.a.w) + k];
     }
 }
@@ -391,11 +398,12 @@ fn fc_mcomb(gid: vec3<u32>) {
 // a: the three planes' offset, the destination offset, the length of a plane.
 fn fc_yplane(gid: vec3<u32>) {
     let n = u32(FU_.a.z);
-    if (gid.x >= n) {
+    let id = fc_lin(gid);
+    if (id >= n) {
         return;
     }
     let t = u32(FU_.a.x);
-    fc_lay[u32(FU_.a.y) + gid.x] = (fc_lay[t + gid.x] + fc_lay[t + n + gid.x] + fc_lay[t + 2u * n + gid.x]) / 3.0;
+    fc_lay[u32(FU_.a.y) + id] = (fc_lay[t + id] + fc_lay[t + n + id] + fc_lay[t + 2u * n + id]) / 3.0;
 }
 
 // ---- 7 LOWFINAL -----------------------------------------------------------------------------------------
@@ -635,8 +643,8 @@ var<workgroup> fc_q: array<f32, 32>;
 fn fc_sample(ch: u32, idx: u32) -> f32 {
     let cols = u32(FU_.a.x);
     let step = u32(FU_.a.z);
-    let x = (idx % cols) * stride_e;
-    let y = (idx / cols) * stride_e;
+    let x = (idx % cols) * step;
+    let y = (idx / cols) * step;
     return fc_pic[fc_at(ch, x, y)];
 }
 

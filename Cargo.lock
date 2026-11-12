@@ -11413,6 +11413,7 @@ dependencies = [
  "ym-film",
  "ym-lens",
  "ym-noise",
+ "ym-retouch",
 ]
 
 [[package]]

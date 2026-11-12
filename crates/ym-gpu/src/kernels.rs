@@ -54,6 +54,7 @@ pub mod copy;
 pub mod detail;
 pub mod diffraction;
 pub mod encode;
+pub mod face;
 pub mod false_color;
 pub mod film;
 pub mod film_stack;
