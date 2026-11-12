@@ -319,6 +319,12 @@ export interface Api {
    * (`thumbnail_ready`), so a webview that reloaded asks for them again. Only addresses cross the bridge.
    */
   thumbnails(): Promise<ThumbnailReady[]>;
+  /**
+   * `thumbnails_in_view` (`docs/26` H-11): the filmstrip draws these photos. The shell answers with the address of the thumbnail it holds
+   * for each (a photo it has none for is left out) and counts them as used. A photo whose thumbnail the shell let go of to keep its byte
+   * budget gets a new one, announced with `thumbnail_ready` like any other; the page keeps no address for it until then.
+   */
+  thumbnailsInView(ids: PhotoId[]): Promise<ThumbnailReady[]>;
 
   // --- The system: dialogs, Finder, the browser ------------------------------
 
@@ -454,6 +460,7 @@ export const tauriApi: Api = {
   exportBusy: () => commands.exportBusy(),
   restartApp: () => unit(commands.restartApp()),
   thumbnails: () => commands.thumbnails(),
+  thumbnailsInView: (ids) => commands.thumbnailsInView(ids),
 
   chooseFolder: (start) => commands.chooseFolder(start),
   chooseLookFiles: () => commands.chooseLookFiles(),

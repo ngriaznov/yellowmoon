@@ -60,6 +60,11 @@ export interface FilmstripProps {
   tab?: TabId;
   /** Accessible name of the strip. Defaults to "Photos" (browse) or "Photos to export". */
   label?: string;
+  /**
+   * The photos the strip draws changed (a windowed strip only: from 100 photos on), as ids in order. The shell keeps the thumbnails
+   * under a byte budget; this is how it learns which photos are on screen (`docs/26` H-11). Not called for a strip drawn whole.
+   */
+  onInView?: (ids: number[]) => void;
   /** Hidden (the Photos screen's full screen, F). The strip still follows the photo on screen and shows it when it is back. */
   hidden?: boolean;
   className?: string;
@@ -252,6 +257,7 @@ export function Filmstrip({
   tab,
   label,
   hidden = false,
+  onInView,
   className,
 }: FilmstripProps) {
   const captionId = useId();
@@ -263,6 +269,14 @@ export function Filmstrip({
   const win = useWindowedRange({ count: photos.length, axis: "x", list: scroller, scroller, itemSelector: ".ym-filmstrip__thumb", estimate: 120 });
   // The strip's one tab stop is the photo on screen; when that one is far off and not drawn, the first drawn thumbnail takes it.
   const tabbableIndex = currentIndex >= win.start && currentIndex < win.end ? currentIndex : win.start;
+  // The shell learns which photos are drawn, so that it can make again a thumbnail it let go of while the photo was out of sight.
+  const drawnIds = win.windowed && !hidden ? photos.slice(win.start, win.end).flatMap((p) => (typeof p.id === "number" ? [p.id] : [])) : null;
+  const drawnKey = drawnIds === null ? null : drawnIds.join(",");
+  const latestDrawn = useRef(drawnIds);
+  latestDrawn.current = drawnIds;
+  useEffect(() => {
+    if (drawnKey !== null && onInView && latestDrawn.current) onInView(latestDrawn.current);
+  }, [drawnKey, onInView]);
   const pickedCount = photos.filter((p) => p.picked).length;
 
   // One context menu for the whole strip (a menu per thumbnail would be hundreds of Radix roots to redraw whenever a thumbnail

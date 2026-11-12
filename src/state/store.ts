@@ -650,6 +650,9 @@ interface Sender {
 /** A frame of the fallback viewport smaller than this, in device pixels on either side, is not a picture of the cell. */
 const MIN_FRAME_PX = 16;
 
+/** Milliseconds the filmstrip waits after its range changed before it tells the shell which photos it shows (`thumbnailsInView`). */
+export const THUMBNAILS_IN_VIEW_DELAY_MS = 120;
+
 /** Milliseconds a replaced look thumbnail's URL is kept, so a tile never shows a broken picture. */
 const URL_GRACE_MS = 3000;
 
@@ -1161,6 +1164,52 @@ export class AppStore {
       });
     } catch {
       // The filmstrip waits for the next thumbnail the core announces.
+    }
+  }
+
+  /** The photos the filmstrip draws, waiting to be sent: one ask goes out per pause in the scrolling. */
+  private inView: PhotoId[] | null = null;
+  private inViewTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * The filmstrip draws these photos (`docs/26` H-11). The shell keeps the thumbnails under a byte budget and lets go of the ones used
+   * least recently, so a photo that was scrolled out of sight may have none when it comes back. The ask goes out once the scrolling
+   * pauses; the shell counts the photos as used and makes the missing thumbnails again (`thumbnail_ready` brings them).
+   */
+  thumbnailsInView(ids: readonly PhotoId[]): void {
+    this.inView = ids.slice();
+    if (this.inViewTimer !== null) return;
+    this.inViewTimer = setTimeout(() => {
+      this.inViewTimer = null;
+      const wanted = this.inView;
+      this.inView = null;
+      if (wanted && wanted.length > 0) void this.askThumbnailsInView(wanted);
+    }, THUMBNAILS_IN_VIEW_DELAY_MS);
+  }
+
+  private async askThumbnailsInView(ids: PhotoId[]): Promise<void> {
+    const sent = this.state.thumbnails;
+    try {
+      const held = new Map((await this.api.thumbnailsInView(ids)).map((t) => [t.id, t.url]));
+      this.later((s) => {
+        let next: Record<PhotoId, string> | null = null;
+        for (const id of ids) {
+          const was = sent[id];
+          const now = s.thumbnails[id];
+          // An address an event brought while the ask was out is newer than the answer, and stays.
+          if (now !== was) continue;
+          const url = held.get(id);
+          if (url === now) continue;
+          next ??= { ...s.thumbnails };
+          // The shell let go of this photo's thumbnail: the old address would answer 404, so the strip shows no picture until the new
+          // one is announced.
+          if (url === undefined) delete next[id];
+          else next[id] = url;
+        }
+        return next === null ? s : { ...s, thumbnails: next };
+      });
+    } catch {
+      // The strip keeps what it has; the next pause in the scrolling asks again.
     }
   }
 

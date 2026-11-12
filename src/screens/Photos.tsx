@@ -440,6 +440,8 @@ export function Photos() {
 
   /** Leaving a photo ends a crop in progress without keeping it. */
   const cropSession = useLatest(crop.session);
+  // The filmstrip's windowed range: the shell makes again a thumbnail it let go of while the photo was out of sight (`docs/26` H-11).
+  const onStripInView = useCallback((ids: number[]) => store.thumbnailsInView(ids), [store]);
   const select = useCallback(
     (id: number | string) => {
       cropSession.current?.cancel();
@@ -996,6 +998,7 @@ export function Photos() {
         onTogglePick={togglePickOf}
         onRemove={exporting ? undefined : removePhoto}
         onRemovePicked={exporting ? undefined : removePicked}
+        onInView={onStripInView}
         hidden={fullScreen.on || nodesOn}
       />
 

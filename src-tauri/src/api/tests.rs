@@ -4391,14 +4391,19 @@ fn the_count_of_the_big_folder_test_comes_from_ym_perf_photos() {
     assert_eq!(two_thousand_count(Some("0")), 2000);
 }
 
+/// The thumbnail budget of the 2000-file test: a quarter of what 2000 thumbnails of the synthetic
+/// photos take, so that the budget is passed and photos lose theirs. (The application's own
+/// budget is [`crate::viewport::THUMBNAIL_BUDGET_BYTES`].)
+const TWO_THOUSAND_THUMBNAIL_BUDGET: usize = 8 << 20;
+
 /// Opens `count` synthetic photos and watches the commands a person sends while they develop. Prints
 /// the open time, the time until every photo is Ready, the slowest command, the events, the
 /// shell's thumbnail bytes and the peak resident memory so far, and asserts the slowest command is
 /// under the bound (`YM_PERF_SHELL_MAX_MS`, 100 ms without it).
 ///
 /// `burst`: all photos share one capture time (the 500-file test always did); otherwise each has its own.
-fn photos_leave_the_commands_responsive(count: usize, burst: bool) {
-    let h = Harness::new();
+fn photos_leave_the_commands_responsive(count: usize, burst: bool, thumbnail_budget: usize) {
+    let h = Harness::with_thumbnail_budget(thumbnail_budget);
     for i in 1..=count as u64 {
         crate::testing::write_arw_at(
             h.photos.path(),
@@ -4476,10 +4481,38 @@ fn photos_leave_the_commands_responsive(count: usize, burst: bool) {
         reading.iter().max()
     );
     eprintln!(
-        "thumbnails held by the shell: {} bytes; peak RSS so far: {} MiB",
+        "thumbnails held by the shell: {} bytes of a budget of {thumbnail_budget} ({} photos let go); peak RSS so far: {} MiB",
         h.frames.thumbnail_bytes(),
+        h.frames.evicted_thumbnails().len(),
         peak_rss_mib()
     );
+    // `docs/26` H-11: the shell's thumbnail store stays under its budget, whatever the count, and
+    // what it counts is what it holds.
+    assert!(
+        h.frames.thumbnail_bytes() <= thumbnail_budget,
+        "the thumbnail store holds {} bytes, over its budget of {thumbnail_budget}",
+        h.frames.thumbnail_bytes()
+    );
+    assert_eq!(h.frames.thumbnail_bytes_counted(), h.frames.thumbnail_bytes());
+    // A photo whose thumbnail was let go gets a new one when its row scrolls into view: a window
+    // of 30 of them is asked for, as the filmstrip does, and comes back, within the budget.
+    let lost = h.frames.evicted_thumbnails();
+    let window: Vec<PhotoId> = lost.iter().take(30).map(|id| PhotoId(*id)).collect();
+    if !window.is_empty() {
+        assert!(h.api.thumbnails_in_view(&window).is_empty());
+        let t = std::time::Instant::now();
+        wait_until("the thumbnails in view to come back", || {
+            let held = h.api.thumbnails_now();
+            window.iter().all(|w| held.iter().any(|t| t.id == *w))
+        });
+        eprintln!(
+            "{} thumbnails in view came back after {:?}",
+            window.len(),
+            t.elapsed()
+        );
+        assert!(h.api.thumbnails().wait_idle(Duration::from_secs(60)));
+        assert!(h.frames.thumbnail_bytes() <= thumbnail_budget);
+    }
     let bound = latency_bound(std::env::var(LATENCY_BOUND_VAR).ok().as_deref());
     eprintln!("bound on the slowest command: {bound:?}");
     assert!(
@@ -4505,7 +4538,7 @@ fn photos_leave_the_commands_responsive(count: usize, burst: bool) {
 #[test]
 #[ignore = "writes 500 synthetic photos and develops them (about half a minute)"]
 fn five_hundred_files_leave_the_commands_responsive() {
-    photos_leave_the_commands_responsive(500, true);
+    photos_leave_the_commands_responsive(500, true, crate::viewport::THUMBNAIL_BUDGET_BYTES);
 }
 
 /// `docs/26` H-10: the same at 2000 files (`YM_PERF_PHOTOS` changes the count), once with 2000
@@ -4516,9 +4549,9 @@ fn five_hundred_files_leave_the_commands_responsive() {
 fn two_thousand_files_leave_the_commands_responsive() {
     let count = two_thousand_count(std::env::var("YM_PERF_PHOTOS").ok().as_deref());
     eprintln!("--- {count} files, different capture times");
-    photos_leave_the_commands_responsive(count, false);
+    photos_leave_the_commands_responsive(count, false, TWO_THOUSAND_THUMBNAIL_BUDGET);
     eprintln!("--- {count} files, one capture time (one burst)");
-    photos_leave_the_commands_responsive(count, true);
+    photos_leave_the_commands_responsive(count, true, TWO_THOUSAND_THUMBNAIL_BUDGET);
 }
 
 /// The `ExportBusy` events seen so far, in order.
