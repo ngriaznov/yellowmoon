@@ -116,6 +116,7 @@ import type {
   SettingsPatch,
   SourceKind,
   SourceRecognition,
+  ThumbnailReady,
   ViewportBackendKind,
   ViewportInfo,
   ViewportInput,
@@ -445,6 +446,12 @@ export interface MockOptions {
    * and Cancel. Default 0: no delay.
    */
   slowOpen?: number;
+  /**
+   * `?mockThumbnailBudget=40` (`docs/26` H-11): the mock keeps at most this many photos' thumbnails, as the shell keeps a byte budget.
+   * The photo whose thumbnail was made last stays; the photos used least recently lose theirs (a thumbnail made, or asked for by
+   * `thumbnailsInView`, is a use) and get a new one when `thumbnailsInView` names them. Default 0: no budget.
+   */
+  thumbnailBudget?: number;
   /** How many photos the session has. The twelve fixtures repeat, with the names DSC04213 and on, so a long folder can be shown and timed. Default 12. */
   photoCount?: number;
   /** Whether the imported looks of the mockups are in the library. Default true. */
@@ -1057,6 +1064,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   photoCount: SCENES.length,
   unreadable: "",
   slowOpen: 0,
+  thumbnailBudget: 0,
   folderName: DEFAULT_FOLDER_NAME,
   looksImported: true,
   allLibraries: false,
@@ -1142,6 +1150,8 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (unreadable !== null && unreadable.trim() !== "") out.unreadable = unreadable;
   const slowOpen = params.get("mockSlowOpen");
   if (slowOpen !== null && Number.isInteger(Number(slowOpen)) && Number(slowOpen) >= 1) out.slowOpen = Number(slowOpen);
+  const thumbnailBudget = params.get("mockThumbnailBudget");
+  if (thumbnailBudget !== null && Number.isInteger(Number(thumbnailBudget)) && Number(thumbnailBudget) >= 1) out.thumbnailBudget = Number(thumbnailBudget);
   const count = params.get("mockPhotos");
   if (count !== null && Number.isInteger(Number(count)) && Number(count) >= 1) out.photoCount = Number(count);
   if (params.get("mockLooks") === "0") out.looksImported = false;
@@ -1613,6 +1623,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   const thumbTimers = new Map<PhotoId, ReturnType<typeof setTimeout>>();
   /** The address of each photo's newest thumbnail (the shell keeps these for `thumbnails()`). */
   const thumbnailUrls = new Map<PhotoId, string>();
+  /** The photos whose thumbnail the budget let go of (`?mockThumbnailBudget`) and that have not got a new one. */
+  const lostThumbnails = new Set<PhotoId>();
   /**
    * The node thumbnails the mock has told the page about, per photo and node: the address, and the key of everything the picture was
    * made from (the Input's adjustments, the path of nodes to it and the look), so that a node whose key did not change is not sent
@@ -2246,8 +2258,34 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   function emitThumbnail(rec: PhotoRecord): void {
     const id = rec.summary.id;
     const url = bytesToUrl(Array.from(scenePng(developed(rec))));
+    thumbnailUrls.delete(id);
     thumbnailUrls.set(id, url);
+    lostThumbnails.delete(id);
+    // `?mockThumbnailBudget`: the photos used least recently (the map is in order of use) lose theirs, this one never.
+    while (options.thumbnailBudget > 0 && thumbnailUrls.size > options.thumbnailBudget) {
+      const oldest = thumbnailUrls.keys().next().value;
+      if (oldest === undefined || oldest === id) break;
+      thumbnailUrls.delete(oldest);
+      lostThumbnails.add(oldest);
+    }
     emit("thumbnail_ready", { id, url });
+  }
+
+  /** `thumbnailsInView`: the addresses held for the photos in view, which count as used; the ones the budget let go are made again. */
+  function thumbnailsInView(ids: PhotoId[]): ThumbnailReady[] {
+    const held: ThumbnailReady[] = [];
+    for (const id of ids) {
+      const url = thumbnailUrls.get(id);
+      if (url !== undefined) {
+        thumbnailUrls.delete(id);
+        thumbnailUrls.set(id, url);
+        held.push({ id, url });
+      } else if (lostThumbnails.has(id)) {
+        const rec = photos.find((r) => r.summary.id === id);
+        if (rec) scheduleThumbnail(rec);
+      }
+    }
+    return held;
   }
 
   /** The correctors and Film nodes on the picture path from the Input to a node, in order (a node with no picture link reads the Input). */
@@ -2430,6 +2468,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       if (timer !== undefined) clearTimeout(timer);
       thumbTimers.delete(id);
       thumbnailUrls.delete(id);
+      lostThumbnails.delete(id);
     }
     forgetNodeThumbnails(left);
     current = Math.max(0, photos.findIndex((rec) => rec.summary.id === successor));
@@ -2958,6 +2997,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         for (const timer of thumbTimers.values()) clearTimeout(timer);
         thumbTimers.clear();
         thumbnailUrls.clear();
+        lostThumbnails.clear();
         forgetNodeThumbnails([...nodeThumbs.keys(), ...nodeThumbTimers.keys()]);
         photos = [];
         current = 0;
@@ -3432,6 +3472,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         system.restarts += 1;
       }),
     thumbnails: () => run("thumbnails", () => [...thumbnailUrls].map(([id, url]) => ({ id, url }))),
+    thumbnailsInView: (ids) => run("thumbnailsInView", () => thumbnailsInView(ids)),
 
     preferencesGet: () => run("preferencesGet", () => preferences),
     preferencesSet: (patch: PreferencesPatch) =>

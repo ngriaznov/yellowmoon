@@ -71,6 +71,20 @@ describe("Filmstrip with 2000 photos", () => {
     expect(screen.getByText("1 of 2000 · 0 picked")).toBeInTheDocument();
   });
 
+  it("tells the shell which photos it draws (docs/26 H-11), and only a windowed strip does", () => {
+    layOut();
+    const onInView = vi.fn();
+    const { unmount } = render(<Filmstrip photos={photos()} currentId={1} onInView={onInView} />);
+    const ids = onInView.mock.calls.at(-1)![0] as number[];
+    expect(ids[0]).toBe(1);
+    expect(ids.length).toBeGreaterThan(5);
+    expect(ids.length).toBeLessThan(100);
+    unmount();
+    const few = vi.fn();
+    render(<Filmstrip photos={photos(20)} currentId={1} onInView={few} />);
+    expect(few).not.toHaveBeenCalled();
+  });
+
   it("makes the scroll bar true: the space of the thumbnails that are not drawn is kept", () => {
     layOut();
     const { container } = render(<Harness />);
