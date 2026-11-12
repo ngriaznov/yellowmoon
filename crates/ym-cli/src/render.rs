@@ -125,6 +125,9 @@ pub const DISPLAY_REMOVED: &str = "--display was removed. Yellowmoon always uses
 
 /// The export options of a run: the table of `docs/09` as defaults, the user's format preference,
 /// then the options of the command line.
+/// How long reading the files may take before `ym` says how far it has got.
+const READING_LINE_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
+
 fn export_options(
     args: &RenderArgs,
     preferred_format: FormatKind,
@@ -339,7 +342,12 @@ fn read_settings_text(path: &Path) -> Result<String, Failure> {
 /// once per bad file) and the error of that decode gives the kind (`corrupt`, `io`, `not_arw`,
 /// `arq`, `unsupported`) and its detail. A file that decodes again was refused by a later stage of
 /// the session (the automatic estimates), which is not a file problem of the raw kinds: `analysis`.
-fn skip_kind(path: &Path) -> (&'static str, Option<String>) {
+fn skip_kind(path: &Path, reason: &str) -> (&'static str, Option<String>) {
+    // A file that did not answer in time is not read again: that would wait for it a second time
+    // (`docs/26` H-15). It is an `io` failure whose detail says so.
+    if reason == ym_core::media::NO_ANSWER_MESSAGE {
+        return ("io", Some("the file did not answer in time".to_owned()));
+    }
     match ym_raw::decode::decode(path) {
         Err(error) => (error.kind(), error.detail()),
         Ok(_) => ("analysis", None),
@@ -509,7 +517,14 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         .then(|| BackgroundGpu::start(choice.policy, budget));
 
     let mut plans: Vec<Plan> = Vec::with_capacity(files.len());
-    for file in &files {
+    let reading_started = std::time::Instant::now();
+    for (n, file) in files.iter().enumerate() {
+        // A slow volume: after the first second say how far the reading has got (`docs/26` P3-3).
+        // Each file has its own time limit, so one that does not answer ends the line with the
+        // photo's own sentence.
+        if reading_started.elapsed() > READING_LINE_AFTER {
+            console.progress(format!("Reading {n} of {} files…", files.len()));
+        }
         let outcome = core
             .session
             .open(std::slice::from_ref(file), OpenOptions::default());
@@ -519,6 +534,9 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
             known: None,
             result: None,
         });
+    }
+    if reading_started.elapsed() > READING_LINE_AFTER {
+        console.finish_progress();
     }
     let total = plans.len();
     let asking = format!("Asking {}", rt.asking().name());
@@ -565,7 +583,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
             continue;
         };
         if let Some(PhotoStatus::Skipped { reason }) = core.session.status(id) {
-            let (kind, detail) = skip_kind(&plan.input);
+            let (kind, detail) = skip_kind(&plan.input, &reason);
             plan.result = Some(Outcome::Failed { kind: kind.into() });
             plan.photo = None;
             counts.failed.push(kind.into());

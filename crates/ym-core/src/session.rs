@@ -125,6 +125,7 @@ use crate::auto_provider::{
 };
 use crate::camera::{CameraCard, CameraInfo, PhotoCamera};
 use crate::data_dir::{DataDirError, find_data_dir};
+use crate::media::{Guarded, Media, NO_ANSWER_MESSAGE};
 use crate::settings::{
     CropAspect, DevelopSettings, Orientation, ResolvedSettings, SettingsError, SettingsPatch,
 };
@@ -717,6 +718,9 @@ pub struct SessionEnv {
     /// not be: without it the lens's bokeh reshaping reads the blur from the classical detector (the render is
     /// still made; only the map is less sure).
     pub bokeh_model: Result<Arc<BokehNet>, String>,
+    /// How files that may not answer are touched: the probe, the whole-file read and the canonical
+    /// path, with their time limits (`docs/26` H-15). The standard value uses the real calls.
+    pub media: Media,
 }
 
 /// Auto crop's model from `<data_root>/models/crop`, checked against its `SHA256SUMS`; a missing or
@@ -801,6 +805,7 @@ impl SessionEnv {
             crop_model: load_crop_model(data_root),
             lens_library: load_lens_library(data_root),
             bokeh_model: load_bokeh_model(data_root),
+            media: Media::new(),
         })
     }
 
@@ -847,6 +852,13 @@ impl SessionEnv {
     #[must_use]
     pub fn with_pictures(mut self, pictures: Arc<dyn PictureRenderer>) -> Self {
         self.pictures = Some(pictures);
+        self
+    }
+
+    /// Sets how files that may not answer are touched (a test seam, `docs/26` H-15).
+    #[must_use]
+    pub fn with_media(mut self, media: Media) -> Self {
+        self.media = media;
         self
     }
 
@@ -909,6 +921,31 @@ pub struct OpenOutcome {
     /// True when the first of [`unreadable`](Self::unreadable) was refused with `EPERM` ("Operation
     /// not permitted": on macOS the privacy block of Desktop, Documents and removable volumes).
     pub unreadable_privacy_block: bool,
+    /// True when [`Session::cancel_open`] stopped the call: the files read before that are in
+    /// [`added`](Self::added), the others were dropped.
+    pub cancelled: bool,
+}
+
+/// How far reading the files of an open has got (`docs/26` P3-3): `done` of `total` files probed.
+/// Sent at the start (`done` is 0), after every [`OPEN_PROGRESS_STEP`] files and at the end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenProgress {
+    /// Files probed so far.
+    pub done: usize,
+    /// Files to probe.
+    pub total: usize,
+}
+
+/// Files between two [`OpenProgress`] reports.
+pub const OPEN_PROGRESS_STEP: usize = 50;
+
+/// Why a file has no metadata.
+#[derive(Debug)]
+enum ProbeFailure {
+    /// The file is not a readable ARW.
+    Raw(RawError),
+    /// The file did not answer in time (`docs/26` H-15).
+    NoAnswer,
 }
 
 impl OpenOutcome {
@@ -923,7 +960,7 @@ impl OpenOutcome {
     /// could not be read, else [`NO_ARW_MESSAGE`] for what was read and held no ARW file.
     #[must_use]
     pub fn message(&self) -> Option<String> {
-        if !self.no_arw() {
+        if !self.no_arw() || self.cancelled {
             return None;
         }
         unreadable_message(
@@ -2086,6 +2123,8 @@ struct Inner {
     /// Held while an event is checked and sent, and by `close` while it bumps the epoch.
     emit_lock: Mutex<()>,
     epoch: AtomicU64,
+    /// Bumped by [`Session::cancel_open`]: an open that began before the bump stops reading files.
+    open_cancels: AtomicU64,
     shutdown: AtomicBool,
     current_hint: AtomicU32,
     queue: Mutex<Queue>,
@@ -2209,6 +2248,7 @@ impl Session {
             state: Mutex::new(state),
             emit_lock: Mutex::new(()),
             epoch: AtomicU64::new(1),
+            open_cancels: AtomicU64::new(0),
             shutdown: AtomicBool::new(false),
             current_hint: AtomicU32::new(NO_PHOTO),
             queue: Mutex::new(Queue::default()),
@@ -2286,11 +2326,27 @@ impl Session {
     /// then develop while the caller carries on. The new photos are in the filmstrip in the order
     /// of their paths (case-insensitive); the first photo of an empty session becomes current.
     pub fn open(&self, paths: &[PathBuf], options: OpenOptions) -> OpenOutcome {
+        self.open_with_progress(paths, options, &|_| {})
+    }
+
+    /// [`Session::open`] that reports how far it has got (`docs/26` P3-3): `progress` is called
+    /// from the threads that probe, at the start, after every [`OPEN_PROGRESS_STEP`] files and at
+    /// the end. [`Session::cancel_open`] stops the call: the files read by then are added, the
+    /// others dropped, and the outcome says `cancelled`.
+    pub fn open_with_progress(
+        &self,
+        paths: &[PathBuf],
+        options: OpenOptions,
+        progress: &(dyn Fn(OpenProgress) + Sync),
+    ) -> OpenOutcome {
         // Apple Auto may have become available, or stopped being, since the last look (`docs/19`
         // section 1: read again when a session opens).
         self.refresh_apple_auto();
         let inner = &self.inner;
         let epoch = inner.epoch.load(Ordering::SeqCst);
+        let cancels = inner.open_cancels.load(Ordering::SeqCst);
+        let cancelled = || inner.open_cancels.load(Ordering::SeqCst) != cancels;
+        let media = &inner.env.media;
         let collected = collect(paths, options.recursive);
         let mut outcome = OpenOutcome {
             ignored: collected.ignored,
@@ -2299,13 +2355,19 @@ impl Session {
             unreadable_privacy_block: collected.unreadable_privacy_block,
             ..OpenOutcome::default()
         };
+        // Canonical paths first, outside the session lock: on a slow volume each takes a while, and
+        // every other command waits for the lock (`docs/26` G3-3).
+        let canons: Vec<PathBuf> = collected
+            .files
+            .par_iter()
+            .map(|path| media.canonical(path))
+            .collect();
         // New files only, sorted, each file once.
         let mut files: Vec<(PathBuf, PathBuf)> = {
             let st = lock(&inner.state);
             let mut seen: HashSet<PathBuf> = HashSet::new();
             let mut fresh = Vec::new();
-            for path in collected.files {
-                let canon = canonical(&path);
+            for (path, canon) in collected.files.into_iter().zip(canons) {
                 // A file listed twice in one call (a folder and a file inside it) is one file:
                 // the repeat is neither added nor counted as already open.
                 if !seen.insert(canon.clone()) {
@@ -2320,11 +2382,36 @@ impl Session {
             fresh
         };
         files.sort_by_key(|(p, _)| p.to_string_lossy().to_lowercase());
-        // Probe in parallel; the result order is the file order.
-        let probed: Vec<Result<RawMetadata, RawError>> = files
+        // Probe in parallel, each probe on a thread of its own with a time limit; the result order
+        // is the file order. `None`: the open was cancelled before this file answered.
+        let total = files.len();
+        let done = std::sync::atomic::AtomicUsize::new(0);
+        progress(OpenProgress { done: 0, total });
+        let probed: Vec<Option<Result<RawMetadata, ProbeFailure>>> = files
             .par_iter()
-            .map(|(path, _)| ym_raw::metadata::probe(path))
+            .map(|(path, _)| {
+                let answer = if cancelled() {
+                    None
+                } else {
+                    match media.probe(path, &cancelled) {
+                        Guarded::Done(result) => Some(result.map_err(ProbeFailure::Raw)),
+                        Guarded::NoAnswer => Some(Err(ProbeFailure::NoAnswer)),
+                        Guarded::Cancelled => None,
+                    }
+                };
+                let n = done.fetch_add(1, Ordering::SeqCst) + 1;
+                if n.is_multiple_of(OPEN_PROGRESS_STEP) || n == total {
+                    progress(OpenProgress { done: n, total });
+                }
+                answer
+            })
             .collect();
+        outcome.cancelled = probed.iter().any(Option::is_none);
+        let (files, probed): (Vec<_>, Vec<_>) = files
+            .into_iter()
+            .zip(probed)
+            .filter_map(|(file, probe)| Some((file, probe?)))
+            .unzip();
 
         let mut events = Vec::new();
         let mut develop = Vec::new();
@@ -3243,6 +3330,13 @@ impl Session {
         (next > 1).then(|| PhotoId(next - 1))
     }
 
+    /// Stops the [`Session::open`] calls that are running (`docs/26` P3-3): files not read yet are
+    /// dropped, a probe that is waiting for a file stops waiting, and the files read so far stay.
+    /// Photos already open, and their development, are untouched (that is [`Session::close`]).
+    pub fn cancel_open(&self) {
+        self.inner.open_cancels.fetch_add(1, Ordering::SeqCst);
+    }
+
     /// Closes the session (`close_session`): cancels every background job, forgets every photo,
     /// settings and cache. Jobs that are running stop at their next stage; their results are
     /// discarded and no event is sent for them after this returns. The session can be opened
@@ -3756,7 +3850,7 @@ impl Inner {
         path: PathBuf,
         canon: PathBuf,
         default_look: &LookId,
-        probe: Result<RawMetadata, RawError>,
+        probe: Result<RawMetadata, ProbeFailure>,
     ) -> Photo {
         let file_name = path
             .file_name()
@@ -3821,12 +3915,21 @@ impl Inner {
                 }
             }
             Err(error) => {
-                tracing::warn!(
-                    photo = id.0,
-                    kind = error.kind(),
-                    detail = error.detail().as_deref().unwrap_or(""),
-                    "the file could not be read"
-                );
+                let reason = match &error {
+                    ProbeFailure::Raw(error) => {
+                        tracing::warn!(
+                            photo = id.0,
+                            kind = error.kind(),
+                            detail = error.detail().as_deref().unwrap_or(""),
+                            "the file could not be read"
+                        );
+                        error.to_string()
+                    }
+                    ProbeFailure::NoAnswer => {
+                        tracing::warn!(photo = id.0, "the file did not answer in time");
+                        NO_ANSWER_MESSAGE.to_owned()
+                    }
+                };
                 Photo {
                     id,
                     path,
@@ -3842,9 +3945,7 @@ impl Inner {
                         captured_at: String::new(),
                         width_px: 0,
                         height_px: 0,
-                        status: PhotoStatus::Skipped {
-                            reason: error.to_string(),
-                        },
+                        status: PhotoStatus::Skipped { reason },
                         picked: false,
                         reduced: false,
                         apple_pending: false,
@@ -4014,9 +4115,11 @@ impl Inner {
             return;
         }
         let started = Instant::now();
-        let raw = match ym_raw::decode::decode(&path) {
-            Ok(raw) => Arc::new(raw),
-            Err(e) => {
+        // The read has a time limit: a file on media that went away fails the photo and frees the
+        // pool thread instead of keeping it for ever (`docs/26` H-15).
+        let raw = match self.env.media.decode(&path, &|| !self.live(epoch)) {
+            Guarded::Done(Ok(raw)) => Arc::new(raw),
+            Guarded::Done(Err(e)) => {
                 tracing::warn!(
                     photo = id.0,
                     kind = e.kind(),
@@ -4025,6 +4128,11 @@ impl Inner {
                 );
                 return fail(PhotoStage::Decode, e.to_string());
             }
+            Guarded::NoAnswer => {
+                tracing::warn!(photo = id.0, "the file did not answer in time");
+                return fail(PhotoStage::Decode, NO_ANSWER_MESSAGE.to_owned());
+            }
+            Guarded::Cancelled => return,
         };
         tracing::debug!(
             photo = id.0,
@@ -4227,7 +4335,14 @@ impl Inner {
                 return Ok(raw);
             }
             self.raw_decodes.fetch_add(1, Ordering::SeqCst);
-            let decoded = Arc::new(ym_raw::decode::decode(&path)?);
+            let decoded = match self.env.media.decode(&path, &|| !self.live(epoch)) {
+                Guarded::Done(result) => Arc::new(result?),
+                Guarded::NoAnswer => {
+                    return Err(SessionError::Skipped(NO_ANSWER_MESSAGE.to_owned()));
+                }
+                // The session closed while the file was read: nobody wants the image.
+                Guarded::Cancelled => return Err(SessionError::UnknownPhoto(id)),
+            };
             let raw = {
                 let mut st = lock(&self.state);
                 // The development job may have cached it while we read the file: one image.
