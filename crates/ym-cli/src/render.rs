@@ -769,6 +769,13 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
     }
     summary.elapsed = started.elapsed().as_secs_f64();
     summarise(console, args.json, &counts, &summary, total, cancelled);
+    // The same number as `ym doctor --bench` calls `host_ledger_peak_bytes`; the memory gate of CI
+    // (`docs/26` H-12) compares it with the process's peak resident memory.
+    let ledger_peak = core.renderer.ledger().peak();
+    console.detail(&format!(
+        "Ledger peak: {ledger_peak} bytes ({:.0} MiB).",
+        ledger_peak as f64 / 1_048_576.0
+    ));
     if !args.json || console.is_verbose() {
         for note in &notes {
             console.info(&format!("Note: {note}"));
