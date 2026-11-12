@@ -21,10 +21,30 @@ use crate::types::{
     BoundedMask, Face, LinearAwg4Image, Mask, Rect, SkinSettings, check_render_scale, face_size_px,
 };
 
+/// Texture radius as a fraction of the face at Texture -100: the radius is
+/// `min(TEX_FRAC_MIN + TEX_FRAC_SLOPE * t, TEX_FRAC_MAX) * D` with `t` in 0..=1 (`docs/27` 7.1; S-12
+/// tuned it, the brief's value was 0.004).
+pub const TEX_FRAC_MIN: f64 = 0.005;
+/// Growth of the texture radius over the Texture range, as a fraction of the face (brief: 0.02).
+pub const TEX_FRAC_SLOPE: f64 = 0.025;
+/// Largest texture radius as a fraction of the face (brief: 0.024).
+pub const TEX_FRAC_MAX: f64 = 0.030;
+/// Radius of the dark-circle average as a fraction of `D` (`r_dc`; brief: 0.077).
+pub const DC_RADIUS_FRAC: f64 = 0.077;
+/// Radius of the even-skin average as a fraction of `D` (`r_se`; brief: 0.044).
+pub const SE_RADIUS_FRAC: f64 = 0.055;
+/// Radius of the skin-grading average as a fraction of `D` (`r_g`; brief: 0.15).
+pub const GRADE_RADIUS_FRAC: f64 = 0.15;
+/// Exponent of the weight when a pixel would get darker, `(Sum(new) / Sum(src))^n` (brief: 16).
+pub const DARKEN_EXPONENT: i32 = 16;
+/// Exponent of the roll-off when a pixel would get brighter, `(Sum(src) / Sum(new))^n` (brief: 2).
+pub const BRIGHTEN_EXPONENT: i32 = 3;
+
 /// The derived parameters of `docs/27` section 7.1.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LowFreqParams {
-    /// `min(0.004 + 0.02 * t, 0.024)`: the texture radius as a fraction of the face size.
+    /// `min(TEX_FRAC_MIN + TEX_FRAC_SLOPE * t, TEX_FRAC_MAX)`: the texture radius as a fraction of the
+    /// face size.
     pub tex_frac: f64,
     /// `D * tex_frac`, in working pixels.
     pub r_tex_full: f64,
@@ -76,7 +96,7 @@ impl LowFreqParams {
     /// As [`LowFreqParams::new`], optionally forcing the half-resolution path on or off (tests).
     pub(crate) fn with_half(d: f64, t: f64, dc: f64, se: f64, half: Option<bool>) -> Self {
         let t = t.clamp(0.0, 1.0);
-        let tex_frac = (0.004 + 0.02 * t).min(0.024);
+        let tex_frac = (TEX_FRAC_MIN + TEX_FRAC_SLOPE * t).min(TEX_FRAC_MAX);
         let r_tex_full = d * tex_frac;
         let half = half.unwrap_or(r_tex_full >= 8.0);
         let ds = if half { 2 } else { 1 };
@@ -87,13 +107,13 @@ impl LowFreqParams {
             half,
             ds,
             r_tex: radius(r_tex_full, ds),
-            r_dc: radius(0.077 * d, ds),
-            r_se: radius(0.044 * d, ds),
+            r_dc: radius(DC_RADIUS_FRAC * d, ds),
+            r_se: radius(SE_RADIUS_FRAC * d, ds),
             k_dc,
             sp_dc,
             k_se: se.clamp(0.0, 1.0),
             sp_se: 1.0,
-            r_g: radius(0.15 * d, ds),
+            r_g: radius(GRADE_RADIUS_FRAC * d, ds),
         }
     }
 }
@@ -108,14 +128,15 @@ fn sum3(p: [f64; 3]) -> f64 {
 }
 
 /// The weight `w` of 7.5: `(Sum(new) / Sum(src))^16` when the pixel gets darker, else
-/// `(1 - sp) + sp * (Sum(src) / Sum(new))^2`, with `Sum(p) = max(r + g + b, 0.001)`.
+/// `(1 - sp) + sp * (Sum(src) / Sum(new))^2` (the exponents are [`DARKEN_EXPONENT`] and
+/// [`BRIGHTEN_EXPONENT`]), with `Sum(p) = max(r + g + b, 0.001)`.
 pub fn blend_weight(src: [f64; 3], new: [f64; 3], sp: f64) -> f64 {
     let (s, n) = (sum3(src), sum3(new));
     if n < s {
-        (n / s).powi(16)
+        (n / s).powi(DARKEN_EXPONENT)
     } else {
         let q = s / n;
-        (1.0 - sp) + sp * q * q
+        (1.0 - sp) + sp * q.powi(BRIGHTEN_EXPONENT)
     }
 }
 
@@ -914,18 +935,23 @@ mod tests {
     #[test]
     fn params_match_the_spec() {
         let p = LowFreqParams::new(1000.0, 0.5, 0.5, 0.25);
-        assert!((p.tex_frac - 0.014).abs() < 1e-12);
+        assert!((p.tex_frac - (TEX_FRAC_MIN + 0.5 * TEX_FRAC_SLOPE)).abs() < 1e-12);
         assert!(p.half && p.ds == 2);
-        assert_eq!((p.r_tex, p.r_dc, p.r_se), (7, 38, 22));
+        // D = 1000, half resolution: r_tex = trunc(17.5 / 2), r_dc = trunc(0.077 * 1000 / 2),
+        // r_se = trunc(0.055 * 1000 / 2) (S-12: the brief had 0.014, 7 and 0.044, 22).
+        assert_eq!((p.r_tex, p.r_dc, p.r_se), (8, 38, 27));
         assert!((p.k_dc - 0.875).abs() < 1e-12);
         assert!((p.sp_dc - (1.0 - 0.75 * 0.0625)).abs() < 1e-12);
         assert_eq!((p.k_se, p.sp_se), (0.25, 1.0));
         let q = LowFreqParams::new(100.0, 1.0, 0.0, 0.0);
-        assert_eq!(q.tex_frac, 0.024);
-        assert!(!q.half && q.r_tex == 2 && q.r_dc == 7);
+        assert_eq!(q.tex_frac, TEX_FRAC_MAX);
+        assert!(!q.half && q.r_tex == 3 && q.r_dc == 7);
         assert_eq!(LowFreqParams::new(1.0, 0.0, 0.0, 0.0).r_tex, 1);
-        // t = 1 gives exactly the 0.024 cap; the cap never exceeds it.
-        assert_eq!(LowFreqParams::new(10.0, 5.0, 0.0, 0.0).tex_frac, 0.024);
+        // t = 1 gives exactly the cap; the cap never exceeds it.
+        assert_eq!(
+            LowFreqParams::new(10.0, 5.0, 0.0, 0.0).tex_frac,
+            TEX_FRAC_MAX
+        );
     }
 
     #[test]
@@ -990,7 +1016,7 @@ mod tests {
         let bright = src.map(|v| v * 1.2);
         for sp in [1.0, 0.5, 0.25] {
             let out = blend_pixel(src, bright, 0.8, sp);
-            let w = (1.0 - sp) + sp * (1.0 / 1.2f64).powi(2);
+            let w = (1.0 - sp) + sp * (1.0 / 1.2f64).powi(BRIGHTEN_EXPONENT);
             for c in 0..3 {
                 let want = src[c] + 0.8 * w * (bright[c] - src[c]);
                 assert!((out[c] - want).abs() < 1e-12);

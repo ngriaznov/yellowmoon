@@ -4,7 +4,8 @@
 //! test (redness above the local skin), both on slightly smoothed log values. A hysteresis
 //! threshold and a connected-component test (size, aspect) give the detection mask, grown a little.
 //! Inside the mask the low-frequency base of each channel is replaced by a harmonic (membrane)
-//! fill from the rim and the fine detail is kept (clamped). **Everywhere outside the mask the
+//! fill from the rim and the fine detail is taken from the clean skin next to the spot (a displaced
+//! copy of the detail field, clamped; S-12, since the spot's own detail has its rim in it). **Everywhere outside the mask the
 //! output is exactly the input**, so clean skin gets no veil at any Blemish amount.
 //!
 //! The proposer works in the encoding it receives (`docs/27` 6.1 step 2: square root of the linear
@@ -42,15 +43,15 @@ pub const SEP_SIGMA_FRAC: f64 = 0.003;
 pub const SEP_SIGMA_MIN_PX: f64 = 1.0;
 /// Top-hat depth (natural log of the encoded value, any channel) that seeds a dark spot.
 /// 0.05 is about 10 % in linear light.
-pub const DARK_HI: f64 = 0.05;
+pub const DARK_HI: f64 = 0.055;
 /// Red excess (`ln R - ln G` above the local skin) that seeds a red spot.
-pub const RED_HI: f64 = 0.06;
+pub const RED_HI: f64 = 0.065;
 /// A pixel joins a seeded spot when its score is at least this fraction of the seed threshold.
 pub const LO_RATIO: f64 = 0.55;
 /// Radius by which the detection mask is grown, as a fraction of `D` (at least 1 px).
 pub const DILATE_FRAC: f64 = 0.004;
-/// The kept detail inside a spot is clamped to this many natural-log units, so the spot's own
-/// crisp rim does not come back as a ring.
+/// The detail given to a spot is clamped to this many natural-log units (a pore at the edge of the
+/// source should not come back as a dot).
 pub const DETAIL_CLAMP: f64 = 0.03;
 /// Over-relaxation factor of the harmonic fill.
 pub const SOR_OMEGA: f64 = 1.6;
@@ -79,6 +80,9 @@ pub struct ClassicalProposer {
     dilate_r: usize,
     min_side: f64,
     max_side: f64,
+    /// Radius around a spot inside which the detail field still feels the spot (3 sigma of the
+    /// separation filter, plus one).
+    near_r: usize,
     border_px: u32,
 }
 
@@ -105,11 +109,16 @@ impl ClassicalProposer {
         let max_side = (MAX_SIDE_FRAC * d).max(MIN_SPOT_SIDE_PX + 1.0);
         // Support of the detection (blur + opening or closing) + the largest spot (its component
         // is decided as a whole) + the fill's base blur + the growth + a margin.
+        let near_r = (3.0 * sep_sigma).ceil() as usize + 1;
+        // The detail of a spot is copied from the skin one spot-width away (`detail_sources`), and
+        // that skin must be at least `near_r` from every spot.
+        let reach = max_side.ceil() as usize + 2 * dilate_r + 2 * near_r + 1;
         let border = 2 * closing_r
             + (3.0 * pre_sigma).ceil() as usize
             + (3.0 * sep_sigma).ceil() as usize
             + max_side.ceil() as usize
             + dilate_r
+            + reach
             + 4;
         Self {
             face_px: d,
@@ -120,6 +129,7 @@ impl ClassicalProposer {
             dilate_r,
             min_side: MIN_SPOT_SIDE_PX.max(SPOT_MIN_FRAC * d),
             max_side,
+            near_r,
             border_px: border as u32,
         }
     }
@@ -183,7 +193,13 @@ impl ClassicalProposer {
     /// Fills the masked pixels of one channel: harmonic fill of the base from the rim, plus the
     /// clamped detail. `inside` marks the detection mask. Returns the new log values (only the
     /// masked entries are meaningful).
-    fn fill_channel(&self, log: &Grey, inside: &[bool], outside_weight: &Grey) -> Vec<f64> {
+    fn fill_channel(
+        &self,
+        log: &Grey,
+        inside: &[bool],
+        outside_weight: &Grey,
+        sources: &[Option<usize>],
+    ) -> Vec<f64> {
         let (w, h) = (log.w, log.h);
         let masked: Vec<f64> = log
             .data
@@ -242,10 +258,67 @@ impl ClassicalProposer {
         }
         list.iter()
             .map(|&p| {
-                let detail = (log.data[p] - plain.data[p]).clamp(-DETAIL_CLAMP, DETAIL_CLAMP);
+                let detail = sources[p].map_or(0.0, |q| {
+                    (log.data[q] - plain.data[q]).clamp(-DETAIL_CLAMP, DETAIL_CLAMP)
+                });
                 base[p] + detail
             })
             .collect()
+    }
+
+    /// For each masked pixel, the clean pixel whose detail (`log - plain`) it takes; `None` for the
+    /// pixels with no clean source in reach (they get no detail).
+    ///
+    /// A spot's own detail has the spot's rim in it (the pixels next to a dark spot are lighter than
+    /// their blur, and the other way round inside), which comes back as a bright and a dark ring
+    /// after the fill. The skin next to the spot has texture only, so each connected spot takes its
+    /// detail from the same shape displaced by one bounding box (plus [`Self::near_r`]) to the
+    /// right, left, below, above, then the diagonals: the first displacement whose source is
+    /// everywhere inside the picture and at least `near_r` from every spot, else the one with the
+    /// most such pixels. Deterministic: fixed order, no randomness.
+    fn detail_sources(&self, inside: &[bool], w: usize, h: usize) -> Vec<Option<usize>> {
+        let near = dilate_disc(inside, w, h, self.near_r);
+        let mut sources = vec![None; w * h];
+        for comp in components(inside, w, h) {
+            let sx = (comp.width() + self.near_r + 1) as isize;
+            let sy = (comp.height() + self.near_r + 1) as isize;
+            let candidates = [
+                (sx, 0),
+                (-sx, 0),
+                (0, sy),
+                (0, -sy),
+                (sx, sy),
+                (-sx, sy),
+                (sx, -sy),
+                (-sx, -sy),
+            ];
+            let source = |p: usize, (dx, dy): (isize, isize)| -> Option<usize> {
+                let (x, y) = ((p % w) as isize + dx, (p / w) as isize + dy);
+                if x < 0 || y < 0 || x >= w as isize || y >= h as isize {
+                    return None;
+                }
+                let q = y as usize * w + x as usize;
+                (!near[q]).then_some(q)
+            };
+            let mut best = (0usize, candidates[0]);
+            for &c in &candidates {
+                let valid = comp
+                    .pixels
+                    .iter()
+                    .filter(|&&p| source(p, c).is_some())
+                    .count();
+                if valid > best.0 {
+                    best = (valid, c);
+                }
+                if valid == comp.pixels.len() {
+                    break;
+                }
+            }
+            for &p in &comp.pixels {
+                sources[p] = source(p, best.1);
+            }
+        }
+        sources
     }
 }
 
@@ -306,9 +379,10 @@ impl BlemishProposer for ClassicalProposer {
             inside.iter().map(|&m| if m { 0.0 } else { 1.0 }).collect(),
         )
         .gaussian(self.sep_sigma);
+        let sources = self.detail_sources(&inside, side, side);
         let filled: Vec<Vec<f64>> = (0..3)
             .into_par_iter()
-            .map(|c| self.fill_channel(&logs[c], &inside, &ones))
+            .map(|c| self.fill_channel(&logs[c], &inside, &ones, &sources))
             .collect();
         for (c, fill) in filled.iter().enumerate() {
             // Position of each masked pixel in `fill`, in raster order.

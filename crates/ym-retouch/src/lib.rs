@@ -38,10 +38,11 @@ pub use classical::{ClassicalBeautyMarks, ClassicalProposer};
 pub use error::{Result, RetouchError};
 pub use feather::feather;
 pub use lowfreq::{
-    LowFreqParams, Placement, ToolMasks, blend_pixel, blend_weight, contrast_target,
-    dark_circle_k_sp, dark_circles_target, even_skin_target, mask_to_working, masked_blur_combine,
-    retouch_low_frequency, retouch_tones, retouch_tones_at, shadow_desaturation_pixel,
-    shine_removal_texture, teeth_pixel, tones_region,
+    BRIGHTEN_EXPONENT, DARKEN_EXPONENT, DC_RADIUS_FRAC, GRADE_RADIUS_FRAC, LowFreqParams,
+    Placement, SE_RADIUS_FRAC, TEX_FRAC_MAX, TEX_FRAC_MIN, TEX_FRAC_SLOPE, ToolMasks, blend_pixel,
+    blend_weight, contrast_target, dark_circle_k_sp, dark_circles_target, even_skin_target,
+    mask_to_working, masked_blur_combine, retouch_low_frequency, retouch_tones, retouch_tones_at,
+    shadow_desaturation_pixel, shine_removal_texture, teeth_pixel, tones_region,
 };
 pub use mask::{
     FaceMasks, SkinAreaValues, blemish_mask, dark_circle_mask, even_skin_mask, face_masks,
