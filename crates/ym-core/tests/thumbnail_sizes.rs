@@ -8,8 +8,11 @@
 //!   they are there. CI has them; a machine without them skips that part and says so.
 //!
 //! ```text
-//! cargo test -p ym-core --release --test thumbnail_sizes -- --nocapture
+//! YELLOWMOON_DATA=data cargo test -p ym-core --release --test thumbnail_sizes -- --nocapture
 //! ```
+//!
+//! (`YELLOWMOON_DATA` because a release build does not find the data folder by itself; a debug
+//! build is too slow for the 100-megapixel files.)
 //!
 //! Asserts only what must hold on any machine: every thumbnail is a PNG, at most 240 px on the long
 //! edge, and under [`CEILING_BYTES`], the largest a 240 x 160 RGB PNG can reasonably be. The shell's

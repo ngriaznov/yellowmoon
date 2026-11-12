@@ -279,7 +279,10 @@ fn a_thumbnail_the_budget_let_go_of_comes_back_when_the_photo_is_in_view() {
             .count()
     };
     // The store counts what it holds, and what it holds is what it counts.
-    assert_eq!(h.frames.thumbnail_bytes_counted(), h.frames.thumbnail_bytes());
+    assert_eq!(
+        h.frames.thumbnail_bytes_counted(),
+        h.frames.thumbnail_bytes()
+    );
     let held = h.api.thumbnails_now();
     assert!(
         held.len() < ids.len(),
@@ -296,7 +299,9 @@ fn a_thumbnail_the_budget_let_go_of_comes_back_when_the_photo_is_in_view() {
     let before = ready_count(target);
     let answer = h.api.thumbnails_in_view(&[target]);
     assert!(answer.is_empty(), "{answer:?}");
-    wait_until("the thumbnail to come back", || ready_count(target) > before);
+    wait_until("the thumbnail to come back", || {
+        ready_count(target) > before
+    });
     assert!(h.api.thumbnails().wait_idle(WAIT));
     let back = h.api.thumbnails_now();
     let url = &back.iter().find(|t| t.id == target).expect("back").url;
@@ -305,7 +310,10 @@ fn a_thumbnail_the_budget_let_go_of_comes_back_when_the_photo_is_in_view() {
     // And now the page is told its address.
     assert_eq!(h.api.thumbnails_in_view(&[target]).len(), 1);
     // The store stayed within what it can: nothing but the protected photos is over the budget.
-    assert_eq!(h.frames.thumbnail_bytes_counted(), h.frames.thumbnail_bytes());
+    assert_eq!(
+        h.frames.thumbnail_bytes_counted(),
+        h.frames.thumbnail_bytes()
+    );
 }
 
 #[test]
@@ -4493,7 +4501,10 @@ fn photos_leave_the_commands_responsive(count: usize, burst: bool, thumbnail_bud
         "the thumbnail store holds {} bytes, over its budget of {thumbnail_budget}",
         h.frames.thumbnail_bytes()
     );
-    assert_eq!(h.frames.thumbnail_bytes_counted(), h.frames.thumbnail_bytes());
+    assert_eq!(
+        h.frames.thumbnail_bytes_counted(),
+        h.frames.thumbnail_bytes()
+    );
     // A photo whose thumbnail was let go gets a new one when its row scrolls into view: a window
     // of 30 of them is asked for, as the filmstrip does, and comes back, within the budget.
     let lost = h.frames.evicted_thumbnails();

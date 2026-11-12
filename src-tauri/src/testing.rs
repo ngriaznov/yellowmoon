@@ -151,7 +151,14 @@ impl Harness {
         preferences: Option<&str>,
         vision: Option<Arc<dyn ym_core::vision::VisionProvider>>,
     ) -> Self {
-        Self::build_with(watch, advisors, preferences, vision, None, FrameStore::new())
+        Self::build_with(
+            watch,
+            advisors,
+            preferences,
+            vision,
+            None,
+            FrameStore::new(),
+        )
     }
 
     fn build_with(

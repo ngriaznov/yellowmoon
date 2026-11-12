@@ -711,13 +711,6 @@ impl FrameStore {
         lock(&self.thumbnails).bytes
     }
 
-    /// The most bytes of thumbnails the store keeps.
-    #[cfg(test)]
-    #[must_use]
-    pub fn thumbnail_budget(&self) -> usize {
-        lock(&self.thumbnails).budget
-    }
-
     /// The photos that lost their thumbnail to the budget and have none yet.
     #[cfg(test)]
     #[must_use]
