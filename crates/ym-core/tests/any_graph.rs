@@ -933,7 +933,19 @@ fn no_generated_graph_is_refused_by_the_device() {
                 }
                 if g.compare {
                     let want = frame(&cpu, &src, st);
-                    if got.rgba != want.rgba {
+                    if what.ends_with("100 % true") {
+                        // At 100 % the raw group's region is made by the device's raw chain on this renderer (the raw front is not
+                        // the Face Refinement node's colour stage and stays on the device), which agrees with the CPU's within
+                        // the view bound of every other graph, not bit for bit; the colour stage and the faces are the CPU's on
+                        // both, so a face region cut or placed differently would show far above it. At Fit the group is the
+                        // CPU's on both and the bytes are equal.
+                        let (max, over) = frame_diff(&got, &want);
+                        if max > 2 || over >= got.rgba.len() / 2000 {
+                            problems.push(format!(
+                                "{at}: against the CPU {max} codes, {over} values over 1"
+                            ));
+                        }
+                    } else if got.rgba != want.rgba {
                         problems.push(format!("{at}: not the CPU's bytes"));
                     }
                 }

@@ -48,7 +48,7 @@ pub const FACE_CROP_PX: usize = 104;
 /// The picture's side over the larger side of the face's box.
 pub const FACE_CROP_SCALE: f64 = 1.4;
 
-/// The square of [`FACE_CROP_SCALE`] times the larger side of `rect` (`x, y, width, height`, pixels of the picture), centred on
+/// The square of `FACE_CROP_SCALE` times the larger side of `rect` (`x, y, width, height`, pixels of the picture), centred on
 /// it and moved to lie inside the picture (smaller than that only when the picture is), as `(x0, y0, side)`.
 fn crop_square(size: (usize, usize), rect: (i32, i32, u32, u32)) -> (f64, f64, f64) {
     let (w, h) = (size.0 as f64, size.1 as f64);
@@ -64,7 +64,7 @@ fn crop_square(size: (usize, usize), rect: (i32, i32, u32, u32)) -> (f64, f64, f
     (x0, y0, side)
 }
 
-/// Cuts the face's square out of an sRGB 8-bit picture and makes it [`FACE_CROP_PX`] square: each pixel is the mean of a grid
+/// Cuts the face's square out of an sRGB 8-bit picture and makes it `FACE_CROP_PX` square: each pixel is the mean of a grid
 /// of bilinear samples as fine as the reduction needs, so a big face is not read one pixel in ten.
 fn face_crop_rgb(picture: &[u8], size: (usize, usize), rect: (i32, i32, u32, u32)) -> Vec<u8> {
     let (x0, y0, side) = crop_square(size, rect);
@@ -452,9 +452,9 @@ impl Renderer {
         FaceState::finding()
     }
 
-    /// The picture of face `number` (1-based) for the Faces card: a square around the face's box, [`FACE_CROP_SCALE`] times its
+    /// The picture of face `number` (1-based) for the Faces card: a square around the face's box, `FACE_CROP_SCALE` times its
     /// larger side, moved to stay inside the frame, cut from the analysis picture (the Input's colour without any retouch) and
-    /// made [`FACE_CROP_PX`] square, as a PNG.
+    /// made `FACE_CROP_PX` square, as a PNG.
     ///
     /// # Errors
     ///
