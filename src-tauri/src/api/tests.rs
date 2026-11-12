@@ -253,6 +253,69 @@ fn thumbnails_cross_the_bridge_as_addresses_and_can_be_asked_for_again() {
     assert_eq!(h.frames.respond(path_of_url(&after[0].url)).0, 404);
 }
 
+/// `docs/26` H-11: a photo whose thumbnail the shell let go of to keep its byte budget gets a new one
+/// when the page says it shows the photo.
+#[test]
+fn a_thumbnail_the_budget_let_go_of_comes_back_when_the_photo_is_in_view() {
+    // One byte of budget: only the photo just given a thumbnail and the photo on screen survive.
+    let h = Harness::with_thumbnail_budget(1);
+    h.open(5);
+    let state = h.develop();
+    let ids: Vec<_> = state.photos.iter().map(|p| p.id).collect();
+    wait_until("five thumbnails", || {
+        h.events
+            .events()
+            .iter()
+            .filter(|e| matches!(e, AppEvent::ThumbnailReady(_)))
+            .count()
+            >= 5
+    });
+    assert!(h.api.thumbnails().wait_idle(WAIT));
+    let ready_count = |id: PhotoId| {
+        h.events
+            .events()
+            .iter()
+            .filter(|e| matches!(e, AppEvent::ThumbnailReady(t) if t.id == id))
+            .count()
+    };
+    // The store counts what it holds, and what it holds is what it counts.
+    assert_eq!(
+        h.frames.thumbnail_bytes_counted(),
+        h.frames.thumbnail_bytes()
+    );
+    let held = h.api.thumbnails_now();
+    assert!(
+        held.len() < ids.len(),
+        "the budget let some thumbnails go: {} held of {}",
+        held.len(),
+        ids.len()
+    );
+    let lost: Vec<u32> = h.frames.evicted_thumbnails();
+    assert_eq!(lost.len() + held.len(), ids.len());
+    let target = PhotoId(lost[0]);
+    assert!(!held.iter().any(|t| t.id == target));
+
+    // The page shows the photo: nothing to hand out for it yet, and the core makes it again.
+    let before = ready_count(target);
+    let answer = h.api.thumbnails_in_view(&[target]);
+    assert!(answer.is_empty(), "{answer:?}");
+    wait_until("the thumbnail to come back", || {
+        ready_count(target) > before
+    });
+    assert!(h.api.thumbnails().wait_idle(WAIT));
+    let back = h.api.thumbnails_now();
+    let url = &back.iter().find(|t| t.id == target).expect("back").url;
+    assert!(png_size(&served(&h, url)).0 > 0);
+    assert!(!h.frames.evicted_thumbnails().contains(&target.0));
+    // And now the page is told its address.
+    assert_eq!(h.api.thumbnails_in_view(&[target]).len(), 1);
+    // The store stayed within what it can: nothing but the protected photos is over the budget.
+    assert_eq!(
+        h.frames.thumbnail_bytes_counted(),
+        h.frames.thumbnail_bytes()
+    );
+}
+
 #[test]
 fn a_drop_without_arw_files_says_so_and_a_missing_file_is_named() {
     let h = Harness::new();
@@ -4336,14 +4399,19 @@ fn the_count_of_the_big_folder_test_comes_from_ym_perf_photos() {
     assert_eq!(two_thousand_count(Some("0")), 2000);
 }
 
+/// The thumbnail budget of the 2000-file test: a quarter of what 2000 thumbnails of the synthetic
+/// photos take, so that the budget is passed and photos lose theirs. (The application's own
+/// budget is [`crate::viewport::THUMBNAIL_BUDGET_BYTES`].)
+const TWO_THOUSAND_THUMBNAIL_BUDGET: usize = 8 << 20;
+
 /// Opens `count` synthetic photos and watches the commands a person sends while they develop. Prints
 /// the open time, the time until every photo is Ready, the slowest command, the events, the
 /// shell's thumbnail bytes and the peak resident memory so far, and asserts the slowest command is
 /// under the bound (`YM_PERF_SHELL_MAX_MS`, 100 ms without it).
 ///
 /// `burst`: all photos share one capture time (the 500-file test always did); otherwise each has its own.
-fn photos_leave_the_commands_responsive(count: usize, burst: bool) {
-    let h = Harness::new();
+fn photos_leave_the_commands_responsive(count: usize, burst: bool, thumbnail_budget: usize) {
+    let h = Harness::with_thumbnail_budget(thumbnail_budget);
     for i in 1..=count as u64 {
         crate::testing::write_arw_at(
             h.photos.path(),
@@ -4421,10 +4489,41 @@ fn photos_leave_the_commands_responsive(count: usize, burst: bool) {
         reading.iter().max()
     );
     eprintln!(
-        "thumbnails held by the shell: {} bytes; peak RSS so far: {} MiB",
+        "thumbnails held by the shell: {} bytes of a budget of {thumbnail_budget} ({} photos let go); peak RSS so far: {} MiB",
         h.frames.thumbnail_bytes(),
+        h.frames.evicted_thumbnails().len(),
         peak_rss_mib()
     );
+    // `docs/26` H-11: the shell's thumbnail store stays under its budget, whatever the count, and
+    // what it counts is what it holds.
+    assert!(
+        h.frames.thumbnail_bytes() <= thumbnail_budget,
+        "the thumbnail store holds {} bytes, over its budget of {thumbnail_budget}",
+        h.frames.thumbnail_bytes()
+    );
+    assert_eq!(
+        h.frames.thumbnail_bytes_counted(),
+        h.frames.thumbnail_bytes()
+    );
+    // A photo whose thumbnail was let go gets a new one when its row scrolls into view: a window
+    // of 30 of them is asked for, as the filmstrip does, and comes back, within the budget.
+    let lost = h.frames.evicted_thumbnails();
+    let window: Vec<PhotoId> = lost.iter().take(30).map(|id| PhotoId(*id)).collect();
+    if !window.is_empty() {
+        assert!(h.api.thumbnails_in_view(&window).is_empty());
+        let t = std::time::Instant::now();
+        wait_until("the thumbnails in view to come back", || {
+            let held = h.api.thumbnails_now();
+            window.iter().all(|w| held.iter().any(|t| t.id == *w))
+        });
+        eprintln!(
+            "{} thumbnails in view came back after {:?}",
+            window.len(),
+            t.elapsed()
+        );
+        assert!(h.api.thumbnails().wait_idle(Duration::from_secs(60)));
+        assert!(h.frames.thumbnail_bytes() <= thumbnail_budget);
+    }
     let bound = latency_bound(std::env::var(LATENCY_BOUND_VAR).ok().as_deref());
     eprintln!("bound on the slowest command: {bound:?}");
     assert!(
@@ -4450,7 +4549,7 @@ fn photos_leave_the_commands_responsive(count: usize, burst: bool) {
 #[test]
 #[ignore = "writes 500 synthetic photos and develops them (about half a minute)"]
 fn five_hundred_files_leave_the_commands_responsive() {
-    photos_leave_the_commands_responsive(500, true);
+    photos_leave_the_commands_responsive(500, true, crate::viewport::THUMBNAIL_BUDGET_BYTES);
 }
 
 /// `docs/26` H-10: the same at 2000 files (`YM_PERF_PHOTOS` changes the count), once with 2000
@@ -4461,9 +4560,9 @@ fn five_hundred_files_leave_the_commands_responsive() {
 fn two_thousand_files_leave_the_commands_responsive() {
     let count = two_thousand_count(std::env::var("YM_PERF_PHOTOS").ok().as_deref());
     eprintln!("--- {count} files, different capture times");
-    photos_leave_the_commands_responsive(count, false);
+    photos_leave_the_commands_responsive(count, false, TWO_THOUSAND_THUMBNAIL_BUDGET);
     eprintln!("--- {count} files, one capture time (one burst)");
-    photos_leave_the_commands_responsive(count, true);
+    photos_leave_the_commands_responsive(count, true, TWO_THOUSAND_THUMBNAIL_BUDGET);
 }
 
 /// The `ExportBusy` events seen so far, in order.

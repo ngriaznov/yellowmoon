@@ -121,6 +121,19 @@ impl Harness {
             None,
             None,
             Some(model),
+            FrameStore::new(),
+        )
+    }
+
+    /// An app whose shell keeps at most `bytes` of filmstrip thumbnails (`docs/26` H-11).
+    pub(crate) fn with_thumbnail_budget(bytes: usize) -> Self {
+        Self::build_with(
+            WatchConfig::default(),
+            ProviderAdvisors::default(),
+            None,
+            None,
+            None,
+            FrameStore::with_thumbnail_budget(bytes),
         )
     }
 
@@ -138,7 +151,14 @@ impl Harness {
         preferences: Option<&str>,
         vision: Option<Arc<dyn ym_core::vision::VisionProvider>>,
     ) -> Self {
-        Self::build_with(watch, advisors, preferences, vision, None)
+        Self::build_with(
+            watch,
+            advisors,
+            preferences,
+            vision,
+            None,
+            FrameStore::new(),
+        )
     }
 
     fn build_with(
@@ -147,6 +167,7 @@ impl Harness {
         preferences: Option<&str>,
         vision: Option<Arc<dyn ym_core::vision::VisionProvider>>,
         depth: Option<Arc<ym_core::pipeline::DepthModel>>,
+        frames: FrameStore,
     ) -> Self {
         let photos = tempfile::tempdir().expect("photos");
         let app_root = tempfile::tempdir().expect("app root");
@@ -156,7 +177,7 @@ impl Harness {
         }
         let home = tempfile::tempdir().expect("home");
         let events = Arc::new(Recorder::new());
-        let frames = Arc::new(FrameStore::new());
+        let frames = Arc::new(frames);
         let emitter: Arc<dyn Emitter> = events.clone();
         let sink: Arc<dyn crate::viewport::FrameSink> =
             Arc::new(FallbackSink::new(Arc::clone(&frames), Arc::clone(&emitter)));
