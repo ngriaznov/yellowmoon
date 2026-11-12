@@ -761,6 +761,7 @@ A glass menu that opens upward from the button over the photo:
 |---|---|---|
 | **Corrector** | "Grades all or part of the photo." | enabled |
 | **Film** | "Models a colour negative, a print and a scan." | enabled (built in F-07 and F-09, released in 0.2.1; `docs/24` §4) |
+| **Face Refinement** | "Refines each face: skin, under-eyes and teeth." | enabled (S-11c; `docs/27`); adds one node after the selected one, like Film |
 | *(separator)* | | |
 | **Parallel** | "Grade branches side by side." | enabled from X-06 (`docs/25-mixers.md` §5.1) |
 | **Layer** | "Blend one branch over another." | enabled from X-06 |
@@ -775,6 +776,7 @@ The panel edits the selected node. A compact head (52 px) has no 40 px title: a 
 | Node | Head line | Icon buttons (tooltip) |
 |---|---|---|
 | Corrector | "Corrector · whole photo" (no masks), "Corrector · 1 mask" and "Corrector · 2 masks" (the row text says which), "Corrector · Linear" (one mask: its kind), "Corrector · bypassed", "Corrector · not connected" | Bypass ("Bypass this node (B)"), Reset ("Reset this node"), More ("More") |
+| Face Refinement | the faces the core found, not the mask text: "5 faces", "1 face", "No faces found", "Finding faces" (and "Can't find faces" and "Face models missing" for a failure and a copy with no models) | Bypass, Reset ("Reset this node"), More, as a corrector's. The name is shown whole ("Face Refinement"): the line after it is what is cut |
 | Input | "Turns the camera's data into the scene." | Reset ("Reset input") |
 | Output | "Cine rendering, look and export" | Reset ("Reset output") |
 
@@ -784,6 +786,7 @@ The tabs follow the head (46 px), each underlined in its tab colour (`docs/11`);
 |---|---|
 | Input | **RAW · Lens · Light · Colour · Detail** |
 | Corrector | **Light · Colour · Curve · Mask** |
+| Face Refinement | **Face · Mask** (Face in the Look tab's yellow, as a Film node's first tab; the Mask tab is a corrector's) |
 | Output | **Look · Detail** |
 
 A Parallel (**Inputs**), a Layer (**Blend**), a Splitter and a Combiner (**Channels**) have one tab each, in the Look tab's yellow, and their heads and panels are in `docs/25-mixers.md` §5.5 (built in X-06: `MixerTabs.tsx`; `docs/11` *The nodes of docs/25*).
@@ -801,6 +804,7 @@ What each tab holds. Where a tab matches today's, its cards are today's.
 | Corrector › Colour | **Temperature and tint** (Reset; Temperature, Tint, the "Temperature and tint trim"; no Pick white in this version) · **Colour balance** (Reset; three wheels, Saturation) · **Colour warp** (Pick colour acts on this node) |
 | Corrector › Curve | **Curve** (Luma · Red · Green · Blue; the plot with the node's histogram) |
 | Corrector › Mask | the Masks card, the selected mask's card, the View card (section 7.6) |
+| Face Refinement › Face | **Faces** (round items, "N found", Same for all faces) · **Face N** / **All faces** / **Face** (the eye "Show skin areas", Reset; Blemish, Dark circles, Even skin, Texture) · **Skin grading** (Contrast, Shadow desaturation, Shine removal; tagged "Face N" or "All faces") · **Teeth** (Whitening; Copy to other faces) · **Protect** (Paint · Erase, Size, Clear). While the faces are not known the tab shows "Finding faces…"; with none, "No faces found in this photo."; after a failure the core's sentence. Section 15, S-11c |
 | Output › Look | **Look**: Intensity, Apply to (This photo · Picked · N · All · N), search, the libraries (today's Look card, one look per photo) |
 | Output › Detail | **Sharpening** with the **Output** row only; its head reads "Output · cine rendering, look and export" |
 
@@ -1495,3 +1499,7 @@ The `gpu_residency` fault test that is one code off on lavapipe is not a regress
 **Found on the owner's Mac (YM_PERF log, 2026-11-03): masked views fell to the CPU for good.** `ColorChain::uses_rasters` was true for a chain whose nodes have a raster row that has no plane (an Object row with no point, a Background row before its blur map exists) although the chain's `RasterSet` was empty; the view job then asked the device for planes and got `invalid kernel input: the chain has no raster row`, which ended the device route of the photo's views (`view_gpu_failed`, sticky). `uses_rasters` now also needs a non-empty set, which every gate (views, tiles, halo, export tail) reads. The viewport's "Rendering on the CPU" was asked from `Renderer::raw_on_cpu`, which looked at the raw route only; it now also says CPU once a device error ended the photo's view route or a shader ended it for the process. Tests: `mask_raster.rs a_raster_row_with_no_plane_keeps_the_view_on_the_device` (failed before the fix: the frame was the CPU's), `graph.rs a_device_error_on_a_view_is_said_to_be_the_cpu`.
 
 **Masked views, every state, and the rule for our own checks (2026-11-03).** `ym-core/tests/mask_device_route.rs` renders masked viewer frames on the device for every mask kind (Linear, Radial, Colour range, Brightness range, Brush, Background, Object, Subject, People, the last two with a fake provider answering, held shut and unsupported), every raster kind with no plane yet, a row with its switch off, a node with Bypass on, a dead node, a node whose input link is cut, a key link from a masked node, Show mask (Overlay and Mask only, with the eye on a row with no plane), Fit and 100 % with a pan between two frames, a retina-size cell, and two chains where one has planes and one has none. Each frame must be the device's, carry no "graphics card" note, and leave `raw_on_cpu` false. Besides the `uses_rasters` case above (which fails the sweep when put back) no state failed. One rule was changed so that no future state costs the photo its device route: `invalid kernel input` (`GpuError::InvalidInput`, our own validation, raised before any device work) now makes only that frame the CPU's, with the note and one log warning per photo, and leaves `view_gpu_failed` alone; true device faults stay sticky (`docs/17-gpu.md` section 9). The test fault `invalid@N` (`fault-injection`) proves it: one CPU frame, then the device's. The viewport says "Rendering on the CPU" from the first CPU frame of a round that ended the route (`src-tauri/src/viewport.rs`, `docs/11-ui.md`).
+
+### S-11c · The Face Refinement node's interface (2026-11-12)
+
+**What it adds to the node view** (`docs/27` S-11c has the full note): Add node › Face Refinement (after Film, before the rule, `ScanFace` icon); the card (numbered, `picture` and `key` ports, a face glyph in the footer, the label "Face Refi…" by the 10-letter rule); the head's line from `face_state`; the **Face** tab and its five cards (`FaceTab.tsx`); the faces drawn on the photo while that tab shows (`FaceLayer.tsx`); and **Protect**, which paints with the Brush row's layer (`BrushLayer` with `protect`, one `protect.strokes_append` patch per stroke, ⌥ erases). `CardItem` includes the node, so every place that treated "a corrector or a Film node" (masks, Show mask, Bypass, More, the Mask tab) treats it too (`isCardItem`). The photo's face state is the store's (`faces`, `refreshFaces`, `selectFace`; the `face_state` event); the face the tab is on is window state, not saved and not undone. The simple view lists nothing of the node.
