@@ -610,6 +610,75 @@ fn the_raw_group_a_frame_caches_is_counted_in_the_ledger_until_it_is_forgotten()
     );
 }
 
+/// `docs/26` H-13: what the caches hold is counted, but a cache must never be the reason an export is refused. With
+/// the ledger full of cached groups and sigma planes (the budget is exactly what the export needs) the export frees
+/// them, other photos' first, and its bytes are those of the export made with an empty ledger.
+#[test]
+fn an_export_that_fits_an_empty_ledger_is_not_refused_for_what_the_caches_hold() {
+    let a = Developed::new(&patchwork(), MODEL);
+    let b = Developed::new(&patchwork(), MODEL);
+    let (src_a, src_b) = (a.source(), b.source());
+    // `b` has the id of `a` (each session numbers from 1): give the second one another.
+    let src_b = PhotoSource {
+        id: ym_core::session::PhotoId(src_a.id.0 + 1),
+        ..src_b
+    };
+    let req = FullRequest {
+        target: FullTarget::DisplayLinear(OutputTarget::Srgb),
+    };
+    let empty = Renderer::neutral_only().expect("render thread");
+    let reference = empty
+        .render_full(&src_a, &req, &CancelToken::new())
+        .expect("export with an empty ledger");
+    let need = empty.ledger().peak();
+    drop(reference.clone());
+
+    let r = Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            budget: MemoryBudget::default().with_cpu_bytes(need),
+            ..RenderOptions::default()
+        },
+    )
+    .expect("render thread");
+    for src in [&src_b, &src_a] {
+        r.viewport_frame(
+            src,
+            &state(300.0, 200.0),
+            &FrameOptions::default(),
+            &CancelToken::new(),
+        )
+        .expect("frame");
+    }
+    let cached = r.ledger().used();
+    assert!(cached > 0, "the frames left caches in the ledger");
+    assert!(cached + need > need, "the budget has no room for both");
+    let full = r
+        .render_full(&src_a, &req, &CancelToken::new())
+        .expect("the caches do not cause a refusal");
+    assert!(
+        full.rgb == reference.rgb,
+        "the same bytes as with an empty ledger"
+    );
+    assert!(
+        r.ledger().peak() <= need,
+        "within the budget the whole time"
+    );
+    drop(full);
+    r.release_caches();
+    assert_eq!(r.ledger().used(), 0);
+
+    // With nothing to free the refusal is real: a held picture is not a cache.
+    let held = r
+        .render_full(&src_a, &req, &CancelToken::new())
+        .expect("fits again");
+    match r.render_full(&src_a, &req, &CancelToken::new()) {
+        Err(RenderError::Memory) => {}
+        other => panic!("{:?}", other.map(|i| i.width)),
+    }
+    drop(held);
+}
+
 #[test]
 fn full_renders_apply_crop_straighten_and_turns() {
     let d = Developed::new(&patchwork(), MODEL);

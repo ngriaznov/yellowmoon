@@ -1579,6 +1579,14 @@ impl State {
         victim.map(|i| self.cache.entries.remove(i)).is_some()
     }
 
+    /// Lets go of the cached mosaics a reclaim asks for: all but the photo `what.keep`'s, or all of them.
+    /// A mosaic that a render holds goes on living in it; only the cache's claim on it ends.
+    fn cache_reclaim(&mut self, what: crate::scheduler::Reclaim) {
+        self.cache
+            .entries
+            .retain(|(id, ..)| !what.all && Some(*id) == what.keep);
+    }
+
     fn cache_trim(&mut self) {
         let window: HashSet<PhotoId> = self
             .window()
@@ -2393,6 +2401,18 @@ impl Session {
             mosaic_freed: Condvar::new(),
             mosaic_holders_peak: AtomicUsize::new(0),
         });
+        // A render that would be refused for want of ledger room asks the session to let go of its cached
+        // mosaics first (`MemoryLedger::reserve_reclaiming`): they are only a cache.
+        if let Some(ledger) = &inner.env.ledger {
+            let weak = Arc::downgrade(&inner);
+            ledger.add_reclaimer(Arc::new(move |what| match weak.upgrade() {
+                Some(inner) => {
+                    lock(&inner.state).cache_reclaim(what);
+                    true
+                }
+                None => false,
+            }));
+        }
         let workers: Vec<JoinHandle<()>> = (0..threads)
             .filter_map(|n| {
                 let inner = Arc::clone(&inner);

@@ -764,6 +764,14 @@ impl PhotoGraph {
         }
     }
 
+    /// Lets go of the caches that are counted in the ledger: the raw groups and the sigma plane. They
+    /// are made again when a request needs them; a request that holds one keeps its own reference.
+    fn release_counted(&self) {
+        let mut st = lock(&self.state);
+        st.groups = None;
+        st.sigma = None;
+    }
+
     /// The number the photo's kept raster planes are named by.
     pub(crate) fn uid(&self) -> u64 {
         self.uid
@@ -1163,7 +1171,7 @@ impl Renderer {
             RenderError::Thread(e.to_string())
         })?;
         let ledger = MemoryLedger::new(options.budget.cpu_bytes);
-        Ok(Self {
+        let renderer = Self {
             inner: Arc::new(Inner {
                 current: Mutex::new(None),
                 looks,
@@ -1191,7 +1199,43 @@ impl Renderer {
                 vision_listener: Mutex::new(None),
                 depth_listener: Mutex::new(None),
             }),
-        })
+        };
+        // The graphs' counted caches are given up when a reservation would otherwise be refused.
+        let weak = Arc::downgrade(&renderer.inner);
+        renderer
+            .inner
+            .ledger
+            .add_reclaimer(Arc::new(move |what| match weak.upgrade() {
+                Some(inner) => {
+                    Self::reclaim_caches(&inner, what);
+                    true
+                }
+                None => false,
+            }));
+        Ok(renderer)
+    }
+
+    /// Lets go of the caches the ledger counts (raw groups and sigma planes), of the photos other
+    /// than `keep` first when `all` is false: what [`MemoryLedger::reserve_reclaiming`] asks for.
+    fn reclaim_caches(inner: &Inner, what: crate::scheduler::Reclaim) {
+        let graphs: Vec<(PhotoId, Arc<PhotoGraph>)> = lock(&inner.graphs).clone();
+        for (id, g) in graphs {
+            if what.all || Some(id) != what.keep {
+                g.release_counted();
+            }
+        }
+    }
+
+    /// Lets go of every cache the ledger counts, in every photo's graph (a test's way to check that
+    /// what is left in the ledger is only what the caches held, and a trim for the shell).
+    pub fn release_caches(&self) {
+        Self::reclaim_caches(
+            &self.inner,
+            crate::scheduler::Reclaim {
+                all: true,
+                keep: None,
+            },
+        );
     }
 
     /// A renderer with only the Neutral look and default options (tests and tools).

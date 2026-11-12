@@ -1519,6 +1519,7 @@ fn export_photo_unguarded(
             let request = ExportRequest::new(pixels, options, &metadata)
                 .remove_location(params.remove_location);
             encode_started = Instant::now();
+            let _encoder = jpeg_encoder_hold(ctx, options.format_spec(), rendered);
             outcome = write_export_with(
                 &request,
                 &dest,
@@ -1595,6 +1596,24 @@ struct DeviceExport {
     rendered: (u32, u32),
 }
 
+/// What the JPEG writer holds while it encodes, counted in the ledger: the 8-bit picture (3 bytes a
+/// pixel) and the encoder's quantised blocks (2 bytes a sample for the optimised tables: 3 bytes a
+/// pixel at 4:2:0, 6 at 4:4:4). The scans and the file are small beside them. `None` for the other
+/// formats. Forced, as the render's own reservation is: the count stays true and the next request
+/// is the one refused.
+fn jpeg_encoder_hold(
+    ctx: &ExportContext,
+    format: ExportFormat,
+    (width, height): (u32, u32),
+) -> Option<crate::scheduler::Reservation> {
+    let ExportFormat::Jpeg { quality } = format else {
+        return None;
+    };
+    let per_pixel = if quality.is_full_chroma() { 9 } else { 6 };
+    let bytes = u64::from(width) * u64::from(height) * per_pixel;
+    Some(ctx.renderer.ledger().reserve_forced(bytes))
+}
+
 /// The depth of a raster export's samples.
 fn bit_depth_of(format: ExportFormat) -> ym_export::BitDepth {
     match format {
@@ -1649,6 +1668,7 @@ fn export_on_device(
         metadata,
         remove_location: params.remove_location,
     };
+    let _encoder = jpeg_encoder_hold(ctx, options.format_spec(), rendered);
     let written = write_export_bands(&band_request, &mut bands, dest, hooks);
     let failure = bands.take_failure();
     let finished = bands.finish();
