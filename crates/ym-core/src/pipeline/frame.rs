@@ -75,6 +75,7 @@
 
 mod device;
 mod export_tail;
+mod face_areas;
 mod face_pass;
 mod film_pass;
 pub mod level;
@@ -910,11 +911,28 @@ fn raster_read(
         return Ok(None);
     }
     let u_px = 1.0 / grid.photo_frame().pixel;
+    // The area the picture is asked for, grown to hold, whole, the face regions the pixels of the view demand
+    // (`FilmRender::widen`). The regions are in the photo's extent (its first pixel is (0, 0)) and `picture`, `window` and
+    // `frame` are in the view's pixels, so the window is carried to the extent and the wider area back.
+    let asked = film.as_ref().map_or(picture, |f| {
+        let in_extent = Area {
+            x: window.x - frame.x,
+            y: window.y - frame.y,
+            ..window
+        };
+        let wide = f.widen(in_extent);
+        ym_color::schedule::union_area(
+            picture,
+            Area {
+                x: wide.x + frame.x,
+                y: wide.y + frame.y,
+                ..wide
+            },
+        )
+    });
     let grown = chains
         .iter()
         .map(|c| {
-            // The area the picture is asked for, grown to hold the face regions it meets (`FilmRender::widen`).
-            let asked = film.as_ref().map_or(picture, |f| f.widen(picture));
             c.schedule(u_px, &|id| film.as_ref().and_then(|f| f.reach_of(id)))
                 .infer(asked, &frame)
                 .source
@@ -3359,6 +3377,21 @@ pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedF
             ));
         }
     };
+    // Show skin areas: one face's areas tinted on the finished pixels (`face_areas`).
+    let mut rgba = rgba;
+    if let Some((number, entry)) = job.face_view().cloned()
+        && on_device.is_none()
+    {
+        let final_px = job.final_size()?;
+        face_areas::tint_skin_areas(
+            &mut rgba,
+            (spec.out_w, spec.out_h),
+            &spec.view_to_final,
+            final_px,
+            &entry,
+            number,
+        );
+    }
     let graph = Arc::clone(&job.g);
     let report = job.finish(done.scale, done.device, spec.target);
     let frame = RenderedFrame {

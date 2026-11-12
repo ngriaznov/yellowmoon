@@ -91,3 +91,17 @@ describe("face_state (docs/27 S-11b)", () => {
     expect(optionsFromLocation("?mockFaces=bogus").faces).toBeUndefined();
   });
 });
+
+describe("face_crop (docs/27 S-11c)", () => {
+  it("answers with a picture for each face found, and says so in a plain sentence before and past the end", async () => {
+    const { a, id } = await open();
+    await expect(a.faceCrop(id, 1)).rejects.toMatchObject({ scope: "render", message: "The faces are not found yet. Try again in a moment." });
+    await a.updateSettings(id, NODE);
+    await tick();
+    const one = await a.faceCrop(id, 1);
+    const two = await a.faceCrop(id, 2);
+    expect(one).toMatch(/^data:image\/svg\+xml/);
+    expect(one).not.toBe(two);
+    await expect(a.faceCrop(id, 3)).rejects.toMatchObject({ scope: "render", message: "This photo has no face 3. It has 2." });
+  });
+});

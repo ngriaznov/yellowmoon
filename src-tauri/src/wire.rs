@@ -3272,6 +3272,9 @@ pub struct MaskView {
     /// for near, whole and not cut to the row's band, whatever `style` says. A row that is not a Depth row shows its own mask.
     #[serde(default)]
     pub depth: bool,
+    /// Show skin areas (`docs/27` S-11c): with `node` naming a Face Refinement node, the frame shows face `face`'s skin areas tinted over the photo, whatever `style` says.
+    #[serde(default)]
+    pub face: Option<u32>,
 }
 
 /// A kind of mask row (`docs/23` section 3.3), as the row's `kind` is written: what `mask_kinds` lists and the Add

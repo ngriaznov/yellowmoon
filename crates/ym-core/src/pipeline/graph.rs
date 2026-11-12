@@ -83,6 +83,8 @@ mod object;
 mod vision;
 
 pub use depth::DepthKey;
+#[cfg(test)]
+pub(crate) use faces::FoundFace;
 pub(crate) use faces::{FaceEntry, face_source};
 pub use faces::{FaceTimings, FacesKey};
 pub(crate) use object::plane_text;
@@ -1055,6 +1057,8 @@ struct Inner {
     /// A shader of the view stages failed to compile on this machine: the device does not run them
     /// for the rest of the process.
     view_gpu_disabled: AtomicBool,
+    /// Face regions a render left unretouched although pixels it was asked for are in them (`Renderer::face_regions_cut`).
+    face_regions_cut: std::sync::atomic::AtomicU64,
     /// A shader of the lens kernels failed to compile on this machine: the device does not run the lens
     /// for the rest of the process.
     lens_gpu_disabled: AtomicBool,
@@ -1191,6 +1195,7 @@ impl Renderer {
                 resident_clock: AtomicU64::new(0),
                 previous: Mutex::new(None),
                 view_gpu_disabled: AtomicBool::new(false),
+                face_regions_cut: std::sync::atomic::AtomicU64::new(0),
                 lens_gpu_disabled: AtomicBool::new(false),
                 prefetch_gate: Mutex::new(()),
                 tail_gpu_disabled: AtomicBool::new(false),
@@ -2050,6 +2055,9 @@ pub(crate) struct Job<'a> {
     /// The mask view of a viewport frame ([`Job::with_mask_view`]) and the grade plan that ends at the node's
     /// mask, once the frame has asked for it ([`Job::mask_grade`]).
     mask: Option<(MaskView, Option<Arc<GradePlan>>)>,
+    /// Show skin areas (`docs/27` S-11c): the face (1-based) and the analysis it is drawn from, once
+    /// [`Job::prepare_mask_view`] has found them. The frame is the photo as it is, with the areas tinted on it.
+    face_view: Option<(u32, Arc<faces::FaceEntry>)>,
     /// What this request found out about the photo's Object rows (`object::JobObjects`).
     object: object::JobObjects,
     /// What this request found out about the photo's Subject and People rows (`vision::JobVision`).
@@ -2136,6 +2144,7 @@ impl<'a> Job<'a> {
             blur_job: None,
             lens_job_device: None,
             mask: None,
+            face_view: None,
             object: object::JobObjects::default(),
             vision: vision::JobVision::default(),
             depth: depth::JobDepth::default(),
@@ -2174,6 +2183,9 @@ impl<'a> Job<'a> {
     /// What the mask view adds to the key of a finished frame: the node, the style and the key of the plan that
     /// ends at the node's mask.
     pub fn mask_key(&self) -> Option<String> {
+        if let Some((face, entry)) = &self.face_view {
+            return Some(format!("skin_areas:{face}:{:016x}", entry.hash));
+        }
         let (v, g) = self.mask.as_ref()?;
         Some(format!(
             "mask:{}:{:?}:{:?}:{}:{}",
@@ -2214,6 +2226,15 @@ impl<'a> Job<'a> {
         let Some((view, _)) = self.mask else {
             return Ok(());
         };
+        // Show skin areas: the photo as it is, with a face's areas tinted on it (`Job::face_view`). No plan, no mask chain: the
+        // frame is the normal one, and `render_view` tints the finished pixels from the analysis' cached masks.
+        if let Some(face) = view.face
+            && self.src.settings.nodes.face_refinement(view.node).is_some()
+        {
+            self.mask = None;
+            self.face_view = self.faces_for_view().map(|e| (face, e));
+            return Ok(());
+        }
         // The page names the node it has selected; one the photo no longer has (it was deleted a moment ago, an
         // undo took it away) leaves the frame as the photo, not an error.
         if self.src.settings.nodes.corrector(view.node).is_none() {
@@ -3315,6 +3336,10 @@ impl<'a> Job<'a> {
             self.device_refused = true;
             self.cpu_reason
                 .get_or_insert_with(|| "Face Refinement runs on the CPU".to_owned());
+            return Ok(None);
+        }
+        // Show skin areas is tinted on the CPU's pixels.
+        if self.face_view.is_some() {
             return Ok(None);
         }
         if self.g.view_gpu_failed.load(Ordering::SeqCst)

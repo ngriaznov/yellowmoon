@@ -43,6 +43,66 @@ use crate::pipeline::faces::{
 use crate::session::PhotoId;
 use crate::settings::DevelopSettings;
 
+/// The side of a face's picture in the Faces card, in pixels.
+pub const FACE_CROP_PX: usize = 104;
+/// The picture's side over the larger side of the face's box.
+pub const FACE_CROP_SCALE: f64 = 1.4;
+
+/// The square of `FACE_CROP_SCALE` times the larger side of `rect` (`x, y, width, height`, pixels of the picture), centred on
+/// it and moved to lie inside the picture (smaller than that only when the picture is), as `(x0, y0, side)`.
+fn crop_square(size: (usize, usize), rect: (i32, i32, u32, u32)) -> (f64, f64, f64) {
+    let (w, h) = (size.0 as f64, size.1 as f64);
+    let side = (FACE_CROP_SCALE * f64::from(rect.2.max(rect.3)))
+        .min(w.min(h))
+        .max(1.0);
+    let (cx, cy) = (
+        f64::from(rect.0) + f64::from(rect.2) / 2.0,
+        f64::from(rect.1) + f64::from(rect.3) / 2.0,
+    );
+    let x0 = (cx - side / 2.0).clamp(0.0, w - side);
+    let y0 = (cy - side / 2.0).clamp(0.0, h - side);
+    (x0, y0, side)
+}
+
+/// Cuts the face's square out of an sRGB 8-bit picture and makes it `FACE_CROP_PX` square: each pixel is the mean of a grid
+/// of bilinear samples as fine as the reduction needs, so a big face is not read one pixel in ten.
+fn face_crop_rgb(picture: &[u8], size: (usize, usize), rect: (i32, i32, u32, u32)) -> Vec<u8> {
+    let (x0, y0, side) = crop_square(size, rect);
+    let step = side / FACE_CROP_PX as f64;
+    let taps = (step.ceil() as usize).clamp(1, 8);
+    let at = |x: f64, y: f64, c: usize| -> f64 {
+        // Pixel centres at integers + 0.5.
+        let (fx, fy) = (
+            (x - 0.5).clamp(0.0, (size.0 - 1) as f64),
+            (y - 0.5).clamp(0.0, (size.1 - 1) as f64),
+        );
+        let (ix, iy) = (fx.floor() as usize, fy.floor() as usize);
+        let (tx, ty) = (fx - ix as f64, fy - iy as f64);
+        let (jx, jy) = ((ix + 1).min(size.0 - 1), (iy + 1).min(size.1 - 1));
+        let p = |x: usize, y: usize| f64::from(picture[(y * size.0 + x) * 3 + c]);
+        (p(ix, iy) * (1.0 - tx) + p(jx, iy) * tx) * (1.0 - ty)
+            + (p(ix, jy) * (1.0 - tx) + p(jx, jy) * tx) * ty
+    };
+    let mut out = vec![0u8; 3 * FACE_CROP_PX * FACE_CROP_PX];
+    for oy in 0..FACE_CROP_PX {
+        for ox in 0..FACE_CROP_PX {
+            for c in 0..3 {
+                let mut sum = 0.0;
+                for ty in 0..taps {
+                    for tx in 0..taps {
+                        let x = x0 + (ox as f64 + (tx as f64 + 0.5) / taps as f64) * step;
+                        let y = y0 + (oy as f64 + (ty as f64 + 0.5) / taps as f64) * step;
+                        sum += at(x, y, c);
+                    }
+                }
+                out[(oy * FACE_CROP_PX + ox) * 3 + c] =
+                    (sum / (taps * taps) as f64).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
+}
+
 /// How long the background worker waits before it starts, so that a drag of the Input's exposure (which asks for a new
 /// analysis on every tick) makes one analysis, not a hundred (the same wait as the depth map's).
 pub(crate) const PREPARE_DEBOUNCE: Duration = super::object::PREPARE_DEBOUNCE;
@@ -117,6 +177,9 @@ pub(crate) struct FaceEntry {
     pub(crate) analysis_px: (u32, u32),
     /// The numbered faces, left to right.
     pub(crate) faces: Vec<FoundFace>,
+    /// The analysis picture as the finder saw it: sRGB, 8 bits, interleaved, `analysis_px` big. It shows the Input's colour
+    /// without any node's grade (the faces' pictures in the panel, [`Renderer::face_crop_png`]).
+    pub(crate) srgb8: Arc<Vec<u8>>,
     /// The masks and blemish maps, prepared; read only from here on.
     pub(crate) retouch: RetouchCache,
     /// Where the time of the analysis went.
@@ -322,6 +385,22 @@ impl Renderer {
             .map(|e| e.timings)
     }
 
+    /// How many times a render left a face region unretouched although pixels it was asked for lie in it, since this renderer
+    /// was made. It must stay 0: a half-retouched face is a visible defect (`docs/27` S-11b2).
+    #[must_use]
+    pub fn face_regions_cut(&self) -> u64 {
+        self.inner
+            .face_regions_cut
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A render left a region unretouched that the pixels it was asked for meet (logged, and counted for the tests).
+    pub(crate) fn note_face_region_cut(&self) {
+        self.inner
+            .face_regions_cut
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// How many times the analysis finished for the photo since its graph was made.
     #[must_use]
     pub fn faces_analyses(&self, id: PhotoId) -> u64 {
@@ -371,6 +450,72 @@ impl Renderer {
             return FaceState::failed(why.clone());
         }
         FaceState::finding()
+    }
+
+    /// The picture of face `number` (1-based) for the Faces card: a square around the face's box, `FACE_CROP_SCALE` times its
+    /// larger side, moved to stay inside the frame, cut from the analysis picture (the Input's colour without any retouch) and
+    /// made `FACE_CROP_PX` square, as a PNG.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Mask`] with a plain sentence before the faces are known and for a number the photo does not have.
+    pub fn face_crop_png(&self, src: &PhotoSource, number: u32) -> Result<Vec<u8>, RenderError> {
+        let not_yet =
+            || RenderError::Mask("The faces are not found yet. Try again in a moment.".to_owned());
+        if self.face_model().is_none() {
+            return Err(RenderError::Mask(
+                crate::pipeline::faces::NO_FACE_MODEL_SENTENCE.to_owned(),
+            ));
+        }
+        let key = self.faces_key(src)?;
+        let entry = self
+            .existing_graph(src.id)
+            .and_then(|g| {
+                lock(&g.faces.state)
+                    .ready
+                    .clone()
+                    .filter(|e| e.key.text == key.text)
+            })
+            .ok_or_else(not_yet)?;
+        let face = entry
+            .faces
+            .iter()
+            .find(|f| f.number == number)
+            .ok_or_else(|| {
+                RenderError::Mask(format!(
+                    "This photo has no face {number}. It has {}.",
+                    entry.faces.len()
+                ))
+            })?;
+        let rgb = face_crop_rgb(
+            &entry.srgb8,
+            (entry.analysis_px.0 as usize, entry.analysis_px.1 as usize),
+            (
+                face.face.rect.x_px,
+                face.face.rect.y_px,
+                face.face.rect.width_px,
+                face.face.rect.height_px,
+            ),
+        );
+        crate::pipeline::thumbs::encode_png_rgb8(FACE_CROP_PX, FACE_CROP_PX, &rgb)
+    }
+
+    /// Queues [`Renderer::face_crop_png`] at the thumbnails' priority: it is a request of a panel for the photo on screen, and
+    /// moving to another photo cancels it (as for a look tile, [`Renderer::spawn_look_thumbnail`]).
+    #[must_use]
+    pub fn spawn_face_crop(
+        &self,
+        src: PhotoSource,
+        number: u32,
+    ) -> ym_gpu::queue::JobHandle<Result<Vec<u8>, RenderError>> {
+        let r = self.clone();
+        let id = src.id;
+        self.scheduler().submit_superseded(
+            ym_gpu::queue::Priority::Thumbnail,
+            id,
+            move |_token| r.face_crop_png(&src, number),
+            || Err(RenderError::Cancelled),
+        )
     }
 
     /// What the photo's analysis is made from: the Input's picture in the final frame (the photo, the raw group's numbers,
@@ -482,6 +627,7 @@ impl Renderer {
                 faces: faces.len(),
             },
             faces,
+            srgb8: Arc::new(pictures.srgb8),
             retouch,
         })
     }
@@ -732,6 +878,32 @@ impl Job<'_> {
         self.faces.entry().cloned()
     }
 
+    /// The analysis the Show skin areas view draws from (`docs/27` S-11c): the photo's latest one while the photo's frame is the
+    /// same, whether or not a node is live. A view never waits and never starts the worker (the node's own panel did when the
+    /// node was added); `None` before the faces are known or without models.
+    pub(crate) fn faces_for_view(&mut self) -> Option<Arc<FaceEntry>> {
+        self.opts.face_model.as_ref().filter(|m| m.available())?;
+        let key = match &self.faces.key {
+            Some(k) => k.clone(),
+            None => {
+                let k = self.r.faces_key(self.src).ok()?;
+                self.faces.key = Some(k.clone());
+                k
+            }
+        };
+        self.g.faces.latest().filter(|e| e.key.frame == key.frame)
+    }
+
+    /// A render left a face region unretouched that its pixels meet ([`Renderer::face_regions_cut`]).
+    pub(crate) fn note_face_region_cut(&self) {
+        self.r.note_face_region_cut();
+    }
+
+    /// The photo's face view of this request ([`Job::prepare_mask_view`] found it): the face number and its analysis.
+    pub(crate) fn face_view(&self) -> Option<&(u32, Arc<FaceEntry>)> {
+        self.face_view.as_ref()
+    }
+
     /// Whether the plan that ends at `stop` has a Face Refinement node that does something and this machine has a model:
     /// the frame is then made on the CPU (`docs/27` section 10, S-11b: no device kernels until S-13).
     pub(crate) fn faces_force_cpu(&self, settings: &DevelopSettings, stop: PlanStop) -> bool {
@@ -799,5 +971,55 @@ impl Job<'_> {
         self.faces.asked = true;
         self.faces.entry = stale.clone();
         Ok(stale)
+    }
+}
+
+#[cfg(test)]
+mod crop_tests {
+    use super::*;
+
+    #[test]
+    fn the_square_is_one_point_four_times_the_larger_side_and_stays_in_the_picture() {
+        // A box of 100 x 160 in a 1000 x 800 picture: side 224, centred.
+        let (x0, y0, side) = crop_square((1000, 800), (400, 300, 100, 160));
+        assert!((side - 224.0).abs() < 1e-9);
+        assert!((x0 - (450.0 - 112.0)).abs() < 1e-9 && (y0 - (380.0 - 112.0)).abs() < 1e-9);
+        // Against the top-left corner it moves, it does not shrink.
+        let (x0, y0, side) = crop_square((1000, 800), (0, 0, 100, 160));
+        assert_eq!((x0, y0), (0.0, 0.0));
+        assert!((side - 224.0).abs() < 1e-9);
+        // Against the bottom-right one.
+        let (x0, y0, side) = crop_square((1000, 800), (900, 700, 100, 100));
+        assert!((x0 + side - 1000.0).abs() < 1e-9 && (y0 + side - 800.0).abs() < 1e-9);
+        // A face as big as the picture: the square is the picture's short side.
+        let (_, _, side) = crop_square((1000, 800), (0, 0, 1000, 800));
+        assert!((side - 800.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_crop_is_104_px_square_and_holds_the_faces_pixels() {
+        // A picture whose red channel is x / 4: a crop around a box reads the columns the square covers.
+        let (w, h) = (500usize, 400usize);
+        let mut picture = vec![0u8; w * h * 3];
+        for y in 0..h {
+            for x in 0..w {
+                picture[(y * w + x) * 3] = (x / 2).min(255) as u8;
+                picture[(y * w + x) * 3 + 1] = (y / 2).min(255) as u8;
+            }
+        }
+        let rgb = face_crop_rgb(&picture, (w, h), (200, 100, 100, 100));
+        assert_eq!(rgb.len(), FACE_CROP_PX * FACE_CROP_PX * 3);
+        // The square: side 140, from x 180 and y 80. Its first pixel is near (180, 80), its last near (320, 220).
+        let first = (f64::from(rgb[0]), f64::from(rgb[1]));
+        assert!(
+            (first.0 - 180.0 / 2.0).abs() < 1.5 && (first.1 - 80.0 / 2.0).abs() < 1.5,
+            "{first:?}"
+        );
+        let last = &rgb[(FACE_CROP_PX * FACE_CROP_PX - 1) * 3..];
+        assert!(
+            (f64::from(last[0]) - 320.0 / 2.0).abs() < 1.5
+                && (f64::from(last[1]) - 220.0 / 2.0).abs() < 1.5,
+            "{last:?}"
+        );
     }
 }

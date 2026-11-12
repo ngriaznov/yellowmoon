@@ -202,6 +202,7 @@ fn mask_view(node: u32) -> ViewportState {
         style: MaskStyle::MaskOnly,
         row: None,
         depth: false,
+        face: None,
     });
     st
 }

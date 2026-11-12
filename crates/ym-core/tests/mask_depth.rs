@@ -267,6 +267,7 @@ fn mask_view(node: u32) -> ViewportState {
         style: MaskStyle::MaskOnly,
         row: None,
         depth: false,
+        face: None,
     });
     st
 }
@@ -1335,6 +1336,7 @@ fn show_view(row: Option<u32>, style: MaskStyle, depth: bool) -> ViewportState {
         style,
         row,
         depth,
+        face: None,
     });
     st
 }
@@ -1457,6 +1459,7 @@ fn show_depth_takes_the_depth_rows_of_the_nodes_upstream_at_their_limits() {
         style: MaskStyle::MaskOnly,
         row: Some(0),
         depth: true,
+        face: None,
     });
     let shown = frame(&r, &src, &st);
     let (left, right) = (

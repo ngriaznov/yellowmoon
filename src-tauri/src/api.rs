@@ -1219,6 +1219,33 @@ impl AppApi {
         Ok(face_state_of(photo, &state))
     }
 
+    /// `face_crop`: the picture of face `number` (1-based) for the Faces card. The PNG stays here and is served on the `ym-frame`
+    /// scheme like a look tile (the same store, its budget and its photo-by-photo forgetting); the answer is its address. It runs
+    /// at the thumbnails' priority and moving to another photo cancels it.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `render` and a plain sentence before the faces are known and for a number the photo does not have.
+    pub fn face_crop(&self, photo: PhotoId, number: u32) -> Result<String, AppError> {
+        let src =
+            PhotoSource::from_session(&self.core.session, core_id(photo)).map_err(session_error)?;
+        let png = self
+            .core
+            .renderer
+            .spawn_face_crop(src, number)
+            .wait()
+            .map_err(job_error)?
+            .map_err(AppError::from)?;
+        self.core
+            .session
+            .view(core_id(photo))
+            .map_err(session_error)?;
+        // A look tile's store keeps it: the key names the face, so a picture of the same face replaces the older.
+        Ok(self
+            .frames
+            .put_look_tile(photo.0, &format!("face:{number}"), png))
+    }
+
     // --- Lens ---------------------------------------------------------------------------------
 
     /// `lens_list`: the lenses of the Lens card's menu in menu order (`docs/21` sections 1 and 10);

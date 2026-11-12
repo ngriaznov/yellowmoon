@@ -196,6 +196,7 @@ fn show_mask_and_node_thumbnails_work_for_a_film_node() {
         style: MaskStyle::MaskOnly,
         row: None,
         depth: false,
+        face: None,
     });
     let frame = r
         .viewport_frame(&src, &st, &FrameOptions::default(), &CancelToken::new())
