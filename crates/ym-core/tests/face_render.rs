@@ -1455,7 +1455,6 @@ fn the_devices_viewport_cells_equal_its_whole_frame_in_every_graph_order() {
 fn painted_protection_holds_on_the_device() {
     let Some(gpu) = gpu(true) else { return };
     let d = photo();
-    let home = tempfile::tempdir().expect("dir");
     let device = |s: &DevelopSettings| {
         let out = tempfile::tempdir().expect("dir");
         let done = export_png(
@@ -1470,7 +1469,6 @@ fn painted_protection_holds_on_the_device() {
         drop(out);
         codes
     };
-    let _ = &home;
     let reference = device(&plain());
     let (cx, cy) = (FACE_A[0] + FACE_A[2] / 2.0, FACE_A[1] + FACE_A[3] / 2.0);
     let mut body = strong();
@@ -1577,7 +1575,6 @@ mod fallback {
         );
         assert!(refused.report.device_refused);
 
-        let home = tempfile::tempdir().expect("dir");
         let cpu_dir = tempfile::tempdir().expect("dir");
         let settings = with_node(everything());
         let cpu =
@@ -1610,7 +1607,6 @@ mod fallback {
                 "{fault:?}: the fallback is not the CPU export"
             );
         }
-        let _ = home;
     }
 }
 
