@@ -59,6 +59,11 @@ fault-injection = ["ym-gpu/fault-injection", "ym-export/fault-injection"]
 # default and never enabled by a shipped build.
 tail-probe = ["ym-gpu/tail-probe"]
 
+# The macOS memory-pressure level, `sysctl kern.memorystatus_vm_pressure_level` (`docs/26` H-14). MIT OR Apache-2.0 (docs/14); already
+# in the build through `ym-ml`. Only on macOS: elsewhere the level is always normal.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile.workspace = true
 # Captures what the code logs, to check that no file path reaches the log at info level and above

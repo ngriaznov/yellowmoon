@@ -832,6 +832,16 @@ impl PhotoGraph {
             + st.lens_flare_tiles.as_ref().map_or(0, ByteLru::used)
     }
 
+    /// Lets go of every finished frame the graph keeps, and the full-resolution intermediates
+    /// ([`PhotoGraph::release_full_resolution`]): what a memory warning takes from a photo that is not on screen. The plans,
+    /// the node thumbnails, the lens planes and the masks' maps stay.
+    fn release_finished_frames(&self) {
+        self.release_full_resolution();
+        let mut st = lock(&self.state);
+        st.frames = None;
+        st.display = None;
+    }
+
     /// Drops the full-resolution intermediates (tiles and the prepared chain, and the lens tiles),
     /// keeping the small reduced images and the lens's planes: called when the photo is no longer the
     /// one being looked at.
@@ -1236,6 +1246,51 @@ impl Renderer {
                 keep: None,
             },
         );
+    }
+
+    /// Lets go of the finished-frame caches of every photo but `keep` (the photo on screen), the ones a memory warning drops
+    /// (`docs/26` P4-5): the rendered frames and the display-linear frames, the prepared full-resolution chain with its tiles,
+    /// the whole-image levels and the lens tiles. What the person is looking at keeps all of its caches. The raw groups and
+    /// the sigma plane, which the ledger counts, are the reclaimers' ([`MemoryLedger::reclaim`](crate::scheduler::MemoryLedger::reclaim)),
+    /// so no cache has two ways of being freed. Returns how many photos were trimmed.
+    pub fn release_off_screen_frames(&self, keep: Option<PhotoId>) -> usize {
+        let graphs: Vec<Arc<PhotoGraph>> = lock(&self.inner.graphs)
+            .iter()
+            .filter(|(id, _)| Some(*id) != keep)
+            .map(|(_, g)| Arc::clone(g))
+            .collect();
+        for g in &graphs {
+            g.release_finished_frames();
+        }
+        graphs.len()
+    }
+
+    /// What a critical memory level adds on the device: the raw words and the kept raster planes of every photo but `keep`,
+    /// then the pool's free buffers. A request that is using a photo's words keeps its own reference. Returns the bytes the
+    /// pool gave back (0 without a device).
+    pub fn trim_gpu(&self, keep: Option<PhotoId>) -> u64 {
+        let graphs: Vec<Arc<PhotoGraph>> = lock(&self.inner.graphs)
+            .iter()
+            .filter(|(id, _)| Some(*id) != keep)
+            .map(|(_, g)| Arc::clone(g))
+            .collect();
+        for g in graphs.iter().filter(|g| g.pins.load(Ordering::SeqCst) == 0) {
+            g.drop_resident();
+            ym_gpu::kernels::mask_raster::forget_planes_of(g.uid());
+        }
+        // The pool lives on the device's thread: the trim is a job of its own, at the lowest priority of the viewer's work, and
+        // is waited for for a moment at most (a device busy with an export must not hold the caller).
+        let Some(gpu) = self.options().gpu.clone() else {
+            return 0;
+        };
+        let job = gpu.scheduler().submit(
+            ym_gpu::queue::JobSpec::new(Priority::Thumbnail),
+            |ctx, _| ctx.pool().trim(),
+        );
+        match job.wait_timeout(Duration::from_secs(2)) {
+            Some(Ok(bytes)) => bytes,
+            _ => 0,
+        }
     }
 
     /// A renderer with only the Neutral look and default options (tests and tools).

@@ -614,6 +614,102 @@ impl std::fmt::Debug for ExportGuard {
     }
 }
 
+/// The switch that pauses optional background work while memory is critical (`docs/26` P4-5, H-14): the session's decode
+/// pool does not start a prefetch or a thumbnail refresh while it is paused, and the shell's thumbnail refresher waits in
+/// [`BackgroundGate::wait_resumed`]. Work the person is waiting for (the current photo's development, a viewport frame, an
+/// export) never looks at it.
+///
+/// Whoever acts when the gate opens registers with [`BackgroundGate::on_resume`], so a pause never needs a timer to end.
+#[derive(Default)]
+pub struct BackgroundGate {
+    paused: Mutex<bool>,
+    changed: std::sync::Condvar,
+    listeners: Mutex<Vec<Arc<dyn Fn() -> bool + Send + Sync>>>,
+    pauses: AtomicU64,
+    resumes: AtomicU64,
+}
+
+impl std::fmt::Debug for BackgroundGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackgroundGate")
+            .field("paused", &self.is_paused())
+            .finish_non_exhaustive()
+    }
+}
+
+impl BackgroundGate {
+    /// A gate that is open.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether optional background work is paused now.
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        *locked(&self.paused)
+    }
+
+    /// Pauses or resumes. Returns whether the state changed. A resume wakes the waiters and runs the listeners (outside the
+    /// gate's lock; a listener that returns false is forgotten).
+    pub fn set_paused(&self, paused: bool) -> bool {
+        {
+            let mut now = locked(&self.paused);
+            if *now == paused {
+                return false;
+            }
+            *now = paused;
+        }
+        if paused {
+            self.pauses.fetch_add(1, Ordering::SeqCst);
+            return true;
+        }
+        self.resumes.fetch_add(1, Ordering::SeqCst);
+        self.changed.notify_all();
+        let all: Vec<_> = locked(&self.listeners).clone();
+        let alive: Vec<bool> = all.iter().map(|l| l()).collect();
+        if alive.contains(&false) {
+            let mut listeners = locked(&self.listeners);
+            let mut keep = alive.iter();
+            listeners.retain(|_| keep.next().copied().unwrap_or(true));
+        }
+        true
+    }
+
+    /// Registers something to do when the gate opens. It returns whether it is still wanted.
+    pub fn on_resume(&self, listener: Arc<dyn Fn() -> bool + Send + Sync>) {
+        locked(&self.listeners).push(listener);
+    }
+
+    /// Blocks while the gate is paused; returns true when it is open, false when `stop` says so (asked every `slice`).
+    pub fn wait_resumed(&self, stop: &dyn Fn() -> bool, slice: Duration) -> bool {
+        let mut paused = locked(&self.paused);
+        while *paused {
+            if stop() {
+                return false;
+            }
+            paused = self
+                .changed
+                .wait_timeout(paused, slice)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        true
+    }
+
+    /// How many times the gate has been closed (a test's counter).
+    #[must_use]
+    pub fn pauses(&self) -> u64 {
+        self.pauses.load(Ordering::SeqCst)
+    }
+
+    /// How many times the gate has been opened again (a test's counter).
+    #[must_use]
+    pub fn resumes(&self) -> u64 {
+        self.resumes.load(Ordering::SeqCst)
+    }
+}
+
 /// A queued job that moving to another photo supersedes (see [`JobScheduler::submit_superseded`]).
 struct Supersedable {
     /// The photo the job is for.
@@ -1628,5 +1724,61 @@ mod tests {
         drop(first);
         assert_eq!(ledger.used(), 0, "what was reserved is released as before");
         ledger.try_reserve(50).expect("fits the new budget");
+    }
+    #[test]
+    fn the_gate_pauses_and_resumes_once_per_change_and_tells_its_listeners_on_resume() {
+        let gate = Arc::new(BackgroundGate::new());
+        let woken = Arc::new(AtomicUsize::new(0));
+        let alive = Arc::new(AtomicBool::new(true));
+        {
+            let (woken, alive) = (Arc::clone(&woken), Arc::clone(&alive));
+            gate.on_resume(Arc::new(move || {
+                woken.fetch_add(1, Ordering::SeqCst);
+                alive.load(Ordering::SeqCst)
+            }));
+        }
+        assert!(!gate.is_paused());
+        assert!(!gate.set_paused(false), "already open: no change");
+        assert!(gate.set_paused(true));
+        assert!(!gate.set_paused(true), "already paused: no change");
+        assert_eq!(woken.load(Ordering::SeqCst), 0, "a pause wakes nobody");
+        assert!(gate.set_paused(false));
+        assert_eq!(woken.load(Ordering::SeqCst), 1);
+        assert_eq!((gate.pauses(), gate.resumes()), (1, 1));
+        // A listener that says it is gone is forgotten.
+        alive.store(false, Ordering::SeqCst);
+        gate.set_paused(true);
+        gate.set_paused(false);
+        assert_eq!(woken.load(Ordering::SeqCst), 2);
+        gate.set_paused(true);
+        gate.set_paused(false);
+        assert_eq!(woken.load(Ordering::SeqCst), 2, "it was dropped");
+    }
+
+    #[test]
+    fn a_waiter_goes_on_when_the_gate_opens_and_gives_up_when_told_to_stop() {
+        let gate = Arc::new(BackgroundGate::new());
+        // Open: no wait at all.
+        assert!(gate.wait_resumed(&|| false, Duration::from_millis(5)));
+        gate.set_paused(true);
+        let waiter = {
+            let gate = Arc::clone(&gate);
+            std::thread::spawn(move || gate.wait_resumed(&|| false, Duration::from_secs(60)))
+        };
+        // `set_paused(false)` wakes it at once, so the long slice is never waited out.
+        gate.set_paused(false);
+        assert!(waiter.join().expect("the waiter"));
+        // A waiter told to stop returns false while the gate is still paused.
+        gate.set_paused(true);
+        let stop = Arc::new(AtomicBool::new(false));
+        let waiter = {
+            let (gate, stop) = (Arc::clone(&gate), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                gate.wait_resumed(&|| stop.load(Ordering::SeqCst), Duration::from_millis(5))
+            })
+        };
+        stop.store(true, Ordering::SeqCst);
+        assert!(!waiter.join().expect("the waiter"));
+        assert!(gate.is_paused());
     }
 }

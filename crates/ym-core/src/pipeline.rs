@@ -52,6 +52,7 @@ pub mod geometry;
 pub mod graph;
 pub mod object;
 pub mod raw;
+pub mod resident;
 pub mod schedule;
 pub mod thumbs;
 pub mod viewport;
@@ -78,6 +79,7 @@ pub use object::{
     MaskFound, NOTHING_FOUND_SENTENCE, NothingFound, ObjectModel, ObjectPhase, ObjectPlanes,
     ObjectPrompt,
 };
+pub use resident::{Clock, MODEL_IDLE, ModelSlot, Unload, Unloadable, monotonic_clock};
 pub use thumbs::{
     AdvisorPictures, ChromaScatter, HistogramData, NODE_THUMBNAIL_PX, NodeThumbnail,
     PhotoThumbnails, settings_ending_at,

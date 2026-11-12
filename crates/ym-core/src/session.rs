@@ -731,6 +731,9 @@ pub struct SessionEnv {
     /// job's, the cache's, a render's) is reserved in it while it is held, and a job that cannot
     /// reserve waits (`docs/26` H-13). `None` counts nothing and waits for nothing.
     pub ledger: Option<Arc<MemoryLedger>>,
+    /// The switch that pauses the decode pool's optional jobs (prefetches and thumbnail refreshes) while memory is critical
+    /// (`docs/26` H-14). `None`: never paused.
+    pub background_gate: Option<Arc<crate::scheduler::BackgroundGate>>,
 }
 
 /// Auto crop's model from `<data_root>/models/crop`, checked against its `SHA256SUMS`; a missing or
@@ -851,6 +854,7 @@ impl SessionEnv {
             bokeh_model: load_bokeh_model(data_root),
             media: Media::new(),
             ledger: None,
+            background_gate: None,
         })
     }
 
@@ -868,6 +872,13 @@ impl SessionEnv {
     #[must_use]
     pub fn with_ledger(mut self, ledger: Arc<MemoryLedger>) -> Self {
         self.ledger = Some(ledger);
+        self
+    }
+
+    /// Lets `gate` pause the prefetches and thumbnail refreshes of the decode pool (`docs/26` H-14).
+    #[must_use]
+    pub fn with_background_gate(mut self, gate: Arc<crate::scheduler::BackgroundGate>) -> Self {
+        self.background_gate = Some(gate);
         self
     }
 
@@ -2408,6 +2419,19 @@ impl Session {
             ledger.add_reclaimer(Arc::new(move |what| match weak.upgrade() {
                 Some(inner) => {
                     lock(&inner.state).cache_reclaim(what);
+                    true
+                }
+                None => false,
+            }));
+        }
+        // When the gate opens again the paused jobs are waiting in the queue: wake the workers. The queue's lock is taken
+        // first so a worker that has just found nothing to take and is about to wait does not miss the wake-up.
+        if let Some(gate) = &inner.env.background_gate {
+            let weak = Arc::downgrade(&inner);
+            gate.on_resume(Arc::new(move || match weak.upgrade() {
+                Some(inner) => {
+                    drop(lock(&inner.queue));
+                    inner.work.notify_all();
                     true
                 }
                 None => false,
@@ -4255,16 +4279,23 @@ impl Inner {
     }
 
     /// The next job: the current photo's development first, then the oldest development, then a
-    /// prefetch (the current photo's first).
+    /// prefetch (the current photo's first). While the background gate is paused (memory is critical, `docs/26` H-14)
+    /// a prefetch and a thumbnail refresh are left in the queue; developments are not optional work and go on.
     fn take_job(&self, q: &mut Queue) -> Option<Job> {
         let current = self.current_hint.load(Ordering::SeqCst);
+        let paused = self
+            .env
+            .background_gate
+            .as_ref()
+            .is_some_and(|g| g.is_paused());
+        let runs = |j: &Job| !paused || j.kind == JobKind::Develop;
         let pos = q
             .jobs
             .iter()
             .position(|j| j.photo.0 == current && j.kind == JobKind::Develop)
             .or_else(|| q.jobs.iter().position(|j| j.kind == JobKind::Develop))
-            .or_else(|| q.jobs.iter().position(|j| j.photo.0 == current))
-            .or_else(|| (!q.jobs.is_empty()).then_some(0))?;
+            .or_else(|| q.jobs.iter().position(|j| j.photo.0 == current && runs(j)))
+            .or_else(|| q.jobs.iter().position(runs))?;
         q.jobs.remove(pos)
     }
 
@@ -5278,6 +5309,54 @@ mod tests {
                 list_dir(dir)
             }
         }
+    }
+
+    #[test]
+    fn a_paused_gate_leaves_prefetches_and_thumbnail_refreshes_in_the_queue_and_developments_go_on()
+    {
+        // Decided by the queue alone (no thread, no clock): `take_job` is what a worker asks.
+        let gate = Arc::new(crate::scheduler::BackgroundGate::new());
+        let env = SessionEnv::load(&find_data_dir().expect("data"))
+            .expect("env")
+            .with_decode_threads(1)
+            .with_background_gate(Arc::clone(&gate));
+        let session = Session::new(env);
+        let job = |n: u32, kind: JobKind| Job {
+            epoch: 1,
+            photo: PhotoId(n),
+            kind,
+            incarnation: 0,
+        };
+        let queue = || Queue {
+            jobs: VecDeque::from([
+                job(1, JobKind::Prefetch),
+                job(2, JobKind::Thumbnail),
+                job(3, JobKind::Develop),
+                job(4, JobKind::Prefetch),
+            ]),
+            running: 0,
+            shutdown: false,
+        };
+        let taken = |q: &mut Queue| session.inner.take_job(q).map(|j| (j.photo.0, j.kind));
+
+        // Open: every job runs, developments first.
+        let mut q = queue();
+        assert_eq!(taken(&mut q), Some((3, JobKind::Develop)));
+        assert_eq!(taken(&mut q), Some((1, JobKind::Prefetch)));
+
+        // Paused: only the development is taken; the others stay queued, in order.
+        assert!(gate.set_paused(true));
+        let mut q = queue();
+        assert_eq!(taken(&mut q), Some((3, JobKind::Develop)));
+        assert_eq!(taken(&mut q), None, "nothing else runs while it is paused");
+        assert_eq!(q.jobs.len(), 3, "and nothing was dropped");
+
+        // Open again: the queued jobs run, the first queued first.
+        assert!(gate.set_paused(false));
+        assert_eq!(taken(&mut q), Some((1, JobKind::Prefetch)));
+        assert_eq!(taken(&mut q), Some((2, JobKind::Thumbnail)));
+        assert_eq!(taken(&mut q), Some((4, JobKind::Prefetch)));
+        assert_eq!(taken(&mut q), None);
     }
 
     #[test]

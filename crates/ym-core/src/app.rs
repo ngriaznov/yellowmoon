@@ -48,7 +48,7 @@ use crate::export_queue::{
     ExportEstimate, ExportJob, ExportJobId, ExportQueue, ExportSink, JobSummary, QueueError,
 };
 use crate::looks::{ImportRequest, LookEntry, LookService, LooksError, LooksImportResult};
-use crate::pipeline::{AdvisorPictures, RenderError, RenderOptions, Renderer};
+use crate::pipeline::{AdvisorPictures, RenderError, RenderOptions, Renderer, Unloadable};
 use crate::preferences::{
     LastUsedFolders, Preferences, PreferencesError, PreferencesPatch, PreferencesStore,
     own_instructions,
@@ -206,6 +206,10 @@ pub struct Core {
     advisors: ProviderAdvisors,
     /// Who is told when an advisor's availability changed ([`Core::on_auto_changed`]).
     auto_hub: Arc<AutoHub>,
+    /// What memory pressure acts on, shared with the poll thread (`crate::memory`).
+    memory: Arc<crate::memory::Guard>,
+    /// The poll thread, while it runs ([`Core::start_memory_watch`]). Ended first when the core is dropped.
+    watch: Mutex<Option<crate::memory::Watch>>,
 }
 
 /// What an advisor's change notification does: the session reads the availability again, then the
@@ -304,7 +308,10 @@ impl Core {
         }
         let renderer = Renderer::new(looks.provider(), render)?;
 
+        // Optional background work (prefetches, thumbnail refreshes) stops while memory is critical (`docs/26` H-14).
+        let gate = Arc::new(crate::scheduler::BackgroundGate::new());
         let mut env = env
+            .with_background_gate(Arc::clone(&gate))
             .with_events(options.session_events)
             .with_default_look(looks.effective_default())
             .with_decode_threads(options.decode_threads)
@@ -358,6 +365,20 @@ impl Core {
         );
         let exports = ExportQueue::new(ctx, options.export_events);
 
+        // What a memory warning acts on, and the models it unloads: the two the renderer holds.
+        let memory = Arc::new(crate::memory::Guard::new(
+            renderer.clone(),
+            Arc::clone(&session),
+            gate,
+        ));
+        let models = renderer.options();
+        if let Some(model) = &models.object_model {
+            memory.register(Arc::clone(model) as Arc<dyn Unloadable>);
+        }
+        if let Some(model) = &models.depth_model {
+            memory.register(Arc::clone(model) as Arc<dyn Unloadable>);
+        }
+
         // The first listener on `looks_changed` keeps the session and the renderer in step; the
         // application's own listener (to tell the webview) is added after it.
         {
@@ -379,6 +400,8 @@ impl Core {
             instructions_override,
             advisors,
             auto_hub,
+            memory,
+            watch: Mutex::new(None),
         })
     }
 
@@ -454,6 +477,7 @@ impl Core {
     /// megabytes would stay in the person's export folder for good. A cancel is noticed between
     /// render tiles and writer bands, a fraction of a second away.
     pub fn shutdown(&self) {
+        self.stop_memory_watch();
         self.exports.cancel_all();
         self.cancel_auto();
         self.close_session();
@@ -464,6 +488,94 @@ impl Core {
                 SHUTDOWN_EXPORT_WAIT.as_secs()
             );
         }
+    }
+
+    // --- Memory pressure (`docs/26` H-14) ---------------------------------------------------
+
+    /// Lets go of what `level` lists (`crate::memory`): at warning the cached mosaics of the photos next to the one on screen,
+    /// the finished-frame caches of every photo that is not on screen, and the models; at critical also the device's resident
+    /// raw words of the other photos and the pool's free buffers. The photo on screen ([`Session::current`]) keeps every cache.
+    /// Normal frees nothing. A model that is running an inference unloads when it ends. Does not touch the background work: that
+    /// is [`Core::apply_pressure`].
+    pub fn trim_caches(&self, level: crate::memory::PressureLevel) -> crate::memory::TrimReport {
+        self.memory.trim(level)
+    }
+
+    /// Acts on one reading of the memory level, as the poll does: trims when the level rose, pauses the background work
+    /// (prefetches and thumbnail refreshes) at critical and resumes it below, and tells the listeners of
+    /// [`Core::on_memory_notice`] when the notice appears or goes.
+    pub fn apply_pressure(
+        &self,
+        level: crate::memory::PressureLevel,
+    ) -> crate::memory::PressureStep {
+        self.memory.apply(level)
+    }
+
+    /// Registers the application's listener for the memory notice: it is given the sentence to show
+    /// ([`crate::memory::MEMORY_NOTICE_SENTENCE`]) once on the way into critical, and `None` when the level is normal again.
+    /// It runs on the poll thread (or on the caller of [`Core::apply_pressure`]) and must not block.
+    pub fn on_memory_notice(&self, f: impl Fn(Option<&str>) + Send + Sync + 'static) {
+        self.memory.on_notice(Arc::new(f));
+    }
+
+    /// Puts a model under the idle unload and the memory warning, as the Object and Depth models are
+    /// (`pipeline::Unloadable`): a model that loads on first use joins with this one call.
+    pub fn register_unloadable(&self, model: Arc<dyn Unloadable>) {
+        self.memory.register(model);
+    }
+
+    /// Unloads the models that have been idle for their idle time (five minutes) and those whose unload waited for an inference.
+    /// The poll thread does this every tick; returns how many were unloaded.
+    pub fn sweep_idle_models(&self) -> usize {
+        self.memory.sweep()
+    }
+
+    /// The switch that pauses optional background work while memory is critical: the shell's thumbnail refresher waits on it.
+    #[must_use]
+    pub fn background_gate(&self) -> &Arc<crate::scheduler::BackgroundGate> {
+        &self.memory.gate
+    }
+
+    /// Starts the thread that reads `source` at once and then every `interval`, applies each reading ([`Core::apply_pressure`])
+    /// and sweeps the idle models. The application starts it with [`crate::memory::system_pressure_source`] and
+    /// [`crate::memory::POLL_INTERVAL`]; `ym` does not (a run of the CLI is short, has no window to tell, and its exports are
+    /// held to the ledger's budget). A thread that is running is stopped first.
+    ///
+    /// # Errors
+    ///
+    /// The operating system's error when the thread cannot start.
+    pub fn start_memory_watch(
+        &self,
+        source: crate::memory::PressureSource,
+        interval: Duration,
+    ) -> std::io::Result<()> {
+        let mut watch = self.watch.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(mut old) = watch.take() {
+            old.stop();
+        }
+        *watch = Some(crate::memory::Watch::start(
+            Arc::clone(&self.memory),
+            source,
+            interval,
+        )?);
+        Ok(())
+    }
+
+    /// Stops the poll thread and waits for it ([`Core::shutdown`] does this; so does dropping the core). Does nothing when it is
+    /// not running.
+    pub fn stop_memory_watch(&self) {
+        let old = self
+            .watch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        drop(old);
+    }
+
+    /// How many readings of the level have been applied since the core was made (a test waits on it).
+    #[must_use]
+    pub fn memory_polls(&self) -> u64 {
+        self.memory.polls()
     }
 
     // --- Preferences ----------------------------------------------------------------------
