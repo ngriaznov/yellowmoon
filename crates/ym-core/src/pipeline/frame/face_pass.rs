@@ -31,6 +31,9 @@ use super::RenderError;
 use crate::pipeline::graph::FaceEntry;
 use crate::settings::FaceRefinementNode;
 
+/// Values of each picture the tone relation is estimated from, at most.
+const TONE_SAMPLES: usize = 65_536;
+
 /// The picture of one region: LogC4 / AWG4, interleaved f32, with `NaN` for a pixel the retouch left as it was (the chain
 /// then passes its input through for it, exactly).
 #[derive(Debug)]
@@ -226,6 +229,46 @@ impl FaceWork {
         Mask::new(window.w as u32, window.h as u32, data).ok()
     }
 
+    /// The tone curve between the analysis picture and the node's input over region `ri` (`docs/27` S-12): the blemish gains
+    /// were made on the analysis picture, which has no grade, and are applied to `part`, which has everything upstream.
+    /// Found by matching the distributions of the two over the same part of the photo (at most [`TONE_SAMPLES`] values of
+    /// each, on a fixed grid), so no pixel needs to line up with another. A relation that is only an exposure change, or
+    /// nothing, is `plain` and the gain is the plain multiplication, as it was before.
+    fn tone_relation(&self, ri: usize, part: &LinearAwg4Image) -> ym_retouch::ToneRelation {
+        let area = self.regions[ri];
+        let (aw, ah) = (
+            self.entry.analysis_px.0 as usize,
+            self.entry.analysis_px.1 as usize,
+        );
+        let scale = f64::from(self.scale).max(1e-6);
+        // The region in the analysis picture's pixels.
+        let (rx, ry) = (area.x - self.frame.x, area.y - self.frame.y);
+        let x0 = ((rx as f64 / scale).floor().max(0.0) as usize).min(aw);
+        let y0 = ((ry as f64 / scale).floor().max(0.0) as usize).min(ah);
+        let x1 = ((((rx + area.w as i64) as f64 / scale).ceil().max(0.0)) as usize).min(aw);
+        let y1 = ((((ry + area.h as i64) as f64 / scale).ceil().max(0.0)) as usize).min(ah);
+        if x0 >= x1 || y0 >= y1 {
+            return ym_retouch::ToneRelation::none();
+        }
+        let analysis = &self.entry.linear.data;
+        let grid = |w: usize, h: usize| {
+            let step = (((w * h) as f64 / TONE_SAMPLES as f64).sqrt().ceil() as usize).max(1);
+            step
+        };
+        let step = grid(x1 - x0, y1 - y0);
+        let a: Vec<[f32; 3]> = (y0..y1)
+            .step_by(step)
+            .flat_map(|y| (x0..x1).step_by(step).map(move |x| analysis[y * aw + x]))
+            .collect();
+        let step = grid(part.width_px as usize, part.height_px as usize);
+        let w = part.width_px as usize;
+        let x: Vec<[f32; 3]> = (0..part.height_px as usize)
+            .step_by(step)
+            .flat_map(|y| (0..w).step_by(step).map(move |x| part.data[y * w + x]))
+            .collect();
+        ym_retouch::ToneRelation::estimate(&a, &x)
+    }
+
     /// Makes region `ri`'s picture from the prefix chain's LogC4 over it (`logc4`, interleaved `w * h * 3`), with the
     /// protection plane over it, and keeps it.
     ///
@@ -258,7 +301,8 @@ impl FaceWork {
             working_px: (self.frame.w as u32, self.frame.h as u32),
         };
         let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let out = ym_retouch::retouch_skin_region(
+        let tone = self.tone_relation(ri, &part);
+        let out = ym_retouch::retouch_skin_region_toned(
             &part,
             place,
             self.entry.analysis_px,
@@ -266,6 +310,7 @@ impl FaceWork {
             self.scale,
             &self.entry.retouch,
             protect,
+            Some(&tone),
         )
         .map_err(|e| render_error(&e))?;
         let retouch_ms = started.elapsed().as_secs_f64() * 1000.0 - decode_ms;

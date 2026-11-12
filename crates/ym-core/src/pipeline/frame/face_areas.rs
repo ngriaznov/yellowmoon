@@ -151,6 +151,7 @@ mod tests {
             faces: vec![FoundFace { number: 1, face }],
             timings: Default::default(),
             srgb8: Arc::new(Vec::new()),
+            linear: Arc::new(image),
             retouch: cache,
         }
     }

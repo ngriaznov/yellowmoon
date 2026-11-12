@@ -17,6 +17,7 @@ use rayon::prelude::*;
 
 use crate::error::{Result, RetouchError};
 use crate::models::BlemishProposer;
+use crate::tone::ToneRelation;
 use crate::types::{LinearAwg4Image, Mask, Rect, check_render_scale};
 
 /// The face size, in pixels, the proposer works at (`docs/27` 6.1 step 1): larger crops are
@@ -591,6 +592,22 @@ pub fn apply_blemish_at(
     render_scale: f32,
     protect: Option<&Mask>,
 ) -> Result<()> {
+    apply_blemish_toned(image, origin_px, map, a, render_scale, protect, None)
+}
+
+/// [`apply_blemish_at`] on an image that has another tone than the picture the map was made on: `tone` is the relation between
+/// the two ([`ToneRelation`]), and the gain is applied in the domain where the curve cancels. With `None`, or a relation that
+/// is only an exposure change, it is [`apply_blemish_at`], bit for bit.
+pub fn apply_blemish_toned(
+    image: &mut LinearAwg4Image,
+    origin_px: (i32, i32),
+    map: &BlemishMap,
+    a: f64,
+    render_scale: f32,
+    protect: Option<&Mask>,
+    tone: Option<&ToneRelation>,
+) -> Result<()> {
+    let tone = tone.filter(|t| !t.is_plain());
     let scale = check_render_scale(render_scale)?;
     image.validate()?;
     map.validate()?;
@@ -658,7 +675,11 @@ pub fn apply_blemish_at(
                 }
                 let protect_byte = protect.map_or(0, |p| p.data[py * w + px]);
                 let s = threshold_strength(sample[3], a, protect_byte);
-                row[px] = apply_gain(row[px], [sample[0], sample[1], sample[2]], s);
+                let gain = [sample[0], sample[1], sample[2]];
+                row[px] = match tone {
+                    None => apply_gain(row[px], gain, s),
+                    Some(t) => t.gain(row[px], gain.map(|g| 1.0 + (g - 1.0) * s)),
+                };
             }
         });
     Ok(())

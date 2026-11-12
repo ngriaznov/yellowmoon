@@ -11,10 +11,11 @@ use crate::blemish::{BlemishMap, BlemishMapCache, BlemishMapKey, blemish_map};
 use crate::error::{Result, RetouchError};
 use std::sync::Arc;
 
-use crate::blemish::apply_blemish_at;
+use crate::blemish::{apply_blemish_at, apply_blemish_toned};
 use crate::lowfreq::{Placement, ToolMasks, join_rects, retouch_tones_at, tones_region};
 use crate::mask::{FaceMasks, face_masks};
 use crate::models::Models;
+use crate::tone::ToneRelation;
 use crate::types::{
     BoundedMask, Face, LinearAwg4Image, Mask, Rect, SkinSettings, check_render_scale, face_size_px,
 };
@@ -553,6 +554,36 @@ pub fn retouch_skin_region(
     cache: &RetouchCache,
     protect: Option<&Mask>,
 ) -> Result<LinearAwg4Image> {
+    retouch_skin_region_toned(
+        part,
+        place,
+        full_size_px,
+        faces,
+        render_scale,
+        cache,
+        protect,
+        None,
+    )
+}
+
+/// [`retouch_skin_region`] for a picture that has another tone than the one the blemish maps were made on: `tone` is the
+/// relation between the two, and only the blemish gain uses it ([`apply_blemish_toned`]). The same relation for every part of a
+/// picture keeps the parts equal to the whole, bit for bit.
+///
+/// # Errors
+///
+/// As [`retouch_skin_region`].
+#[allow(clippy::too_many_arguments)]
+pub fn retouch_skin_region_toned(
+    part: &LinearAwg4Image,
+    place: Placement,
+    full_size_px: (u32, u32),
+    faces: &[(Face, SkinSettings)],
+    render_scale: f32,
+    cache: &RetouchCache,
+    protect: Option<&Mask>,
+    tone: Option<&ToneRelation>,
+) -> Result<LinearAwg4Image> {
     part.validate()?;
     let scale = check_render_scale(render_scale)?;
     let working = place.working_px;
@@ -627,13 +658,14 @@ pub fn retouch_skin_region(
                 }
                 continue;
             };
-            apply_blemish_at(
+            apply_blemish_toned(
                 &mut output,
                 place.origin_px,
                 &map,
                 settings.a(),
                 render_scale,
                 protect,
+                tone,
             )?;
         }
     }

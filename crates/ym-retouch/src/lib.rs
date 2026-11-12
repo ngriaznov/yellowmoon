@@ -27,12 +27,13 @@ pub mod mediapipe;
 pub mod mock;
 mod models;
 mod pipeline;
+mod tone;
 mod types;
 
 pub use blemish::{
     BlemishMap, BlemishMapCache, BlemishMapKey, CHROMA_GUARD_MIN_SIDE_PX, GAIN_MAX, GAIN_MIN,
-    TARGET_FACE_PX, apply_blemish, apply_blemish_at, apply_gain, blemish_gain, blemish_map,
-    chroma_confidence, chroma_pull, encode_channel, gain_strength, threshold_strength,
+    TARGET_FACE_PX, apply_blemish, apply_blemish_at, apply_blemish_toned, apply_gain, blemish_gain,
+    blemish_map, chroma_confidence, chroma_pull, encode_channel, gain_strength, threshold_strength,
 };
 pub use classical::{ClassicalBeautyMarks, ClassicalProposer};
 pub use error::{Result, RetouchError};
@@ -54,7 +55,9 @@ pub use models::{
 };
 pub use pipeline::{
     RetouchCache, prepare_skin, retouch_regions, retouch_skin, retouch_skin_region,
+    retouch_skin_region_toned,
 };
+pub use tone::{SLOPE_TOLERANCE, TONE_FLOOR, ToneRelation};
 pub use types::{
     BoundedMask, Face, LinearAwg4Image, MAX_RENDER_SCALE, Mask, Rect, SkinSettings,
     check_render_scale, face_extent_px, face_size_px,

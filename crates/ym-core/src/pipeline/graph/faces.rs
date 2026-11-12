@@ -180,6 +180,9 @@ pub(crate) struct FaceEntry {
     /// The analysis picture as the finder saw it: sRGB, 8 bits, interleaved, `analysis_px` big. It shows the Input's colour
     /// without any node's grade (the faces' pictures in the panel, [`Renderer::face_crop_png`]).
     pub(crate) srgb8: Arc<Vec<u8>>,
+    /// The same picture as the masks and maps were made on: linear AWG4, `analysis_px` big. The face step compares its values with
+    /// the node's input to find the tone curve upstream (`ym_retouch::ToneRelation`, `docs/27` S-12).
+    pub(crate) linear: Arc<LinearAwg4Image>,
     /// The masks and blemish maps, prepared; read only from here on.
     pub(crate) retouch: RetouchCache,
     /// Where the time of the analysis went.
@@ -589,8 +592,8 @@ impl Renderer {
             .collect();
         let mut retouch = RetouchCache::new(hash, 0);
         let prepare_started = Instant::now();
+        let image = linear_awg4(pictures.width, pictures.height, &pictures.logc4)?;
         if !faces.is_empty() {
-            let image = linear_awg4(pictures.width, pictures.height, &pictures.logc4)?;
             let models = model.models()?;
             let with_settings: Vec<(Face, SkinSettings)> = faces
                 .iter()
@@ -628,6 +631,7 @@ impl Renderer {
             },
             faces,
             srgb8: Arc::new(pictures.srgb8),
+            linear: Arc::new(image),
             retouch,
         })
     }

@@ -380,6 +380,119 @@ fn a_map_of_one_grade_applies_to_another() {
     assert!(a.abs() < 0.6 * before.abs(), "{before} -> {a}");
 }
 
+/// The upstream curves of the S-12 measurement: power curves and an S-curve (a smoothstep in the log2 of the value around
+/// mid grey, 8 stops wide: a slope of 1.5 at mid grey).
+fn upstream_curves() -> Vec<(&'static str, Box<dyn Fn(f32) -> f32>)> {
+    let power = |p: f32| -> Box<dyn Fn(f32) -> f32> { Box::new(move |v| v.powf(p)) };
+    let s_curve: Box<dyn Fn(f32) -> f32> = Box::new(|v| {
+        let u = (((f64::from(v) / 0.18).log2() + 4.0).clamp(0.0, 8.0)) / 8.0;
+        (0.18 * 2f64.powf(8.0 * (3.0 * u * u - 2.0 * u * u * u) - 4.0)) as f32
+    });
+    vec![
+        ("power 0.5", power(0.5)),
+        ("power 0.7", power(0.7)),
+        ("power 1.4", power(1.4)),
+        ("power 2.0", power(2.0)),
+        ("S-curve", s_curve),
+    ]
+}
+
+/// `docs/27` decision 13 and S-12: the blemish gain map is made on the analysis picture and applied to a picture that has a
+/// curve upstream. Applying the gain through the relation between the two pictures (`ToneRelation`) puts the papule back to
+/// what the picture's own map gives, for power curves and an S-curve, and an exposure change is untouched (bit for bit).
+#[test]
+fn a_tone_relation_corrects_the_gain_under_an_upstream_curve() {
+    let lesions = [
+        Lesion::new(Kind::Papule, 170.0, 190.0, 6.0),
+        Lesion::new(Kind::Brown, 280.0, 250.0, 4.0),
+    ];
+    let clean = skin_image(N, N, 21, &[]);
+    let img = skin_image(N, N, 21, &lesions);
+    let m = models(Vec::new(), false);
+    let faces = [(
+        face(),
+        SkinSettings {
+            blemish: 100.0,
+            ..Default::default()
+        },
+    )];
+    let mut cache = RetouchCache::new(1, 1);
+    prepare_skin(&img, &faces, &m, &mut cache).unwrap();
+    let grade = |im: &LinearAwg4Image, f: &dyn Fn(f32) -> f32| {
+        LinearAwg4Image::new(
+            N as u32,
+            N as u32,
+            im.data.iter().map(|p| p.map(f)).collect(),
+        )
+        .unwrap()
+    };
+    let place = crate::Placement {
+        origin_px: (0, 0),
+        working_px: (N as u32, N as u32),
+    };
+    let contrast = |im: &LinearAwg4Image, reference: &LinearAwg4Image| -> Vec<f64> {
+        lesions
+            .iter()
+            .map(|l| lin_disc(im, 1, l, 0.7) / lin_disc(reference, 1, l, 0.7) - 1.0)
+            .collect()
+    };
+    // Exposure: the relation is plain and the result is the plain gain, bit for bit.
+    let bright = grade(&img, &|v| v * 4.0);
+    let rel = crate::ToneRelation::estimate(&img.data, &bright.data);
+    assert!(rel.is_plain());
+    let region = |image: &LinearAwg4Image, tone: Option<&crate::ToneRelation>| {
+        crate::retouch_skin_region_toned(
+            image,
+            place,
+            (N as u32, N as u32),
+            &faces,
+            1.0,
+            &cache,
+            None,
+            tone,
+        )
+        .unwrap()
+    };
+    assert_eq!(region(&bright, Some(&rel)).data, region(&bright, None).data);
+    let mut table = String::new();
+    for (name, f) in upstream_curves() {
+        let graded = grade(&img, f.as_ref());
+        let graded_clean = grade(&clean, f.as_ref());
+        let before = contrast(&graded, &graded_clean);
+        let plain = contrast(&region(&graded, None), &graded_clean);
+        let rel = crate::ToneRelation::estimate(&img.data, &graded.data);
+        let toned = contrast(&region(&graded, Some(&rel)), &graded_clean);
+        let mut own_cache = RetouchCache::new(2, 2);
+        prepare_skin(&graded, &faces, &m, &mut own_cache).unwrap();
+        let own_image = retouch_skin(
+            &graded,
+            (N as u32, N as u32),
+            &faces,
+            1.0,
+            &m,
+            &mut own_cache,
+            None,
+        )
+        .unwrap();
+        let own = contrast(&own_image, &graded_clean);
+        table += &format!(
+            "{name:10} papule: in {:+.3}, plain map {:+.3}, with the relation {:+.3}, own map {:+.3}; brown: in {:+.3}, plain {:+.3}, relation {:+.3}, own {:+.3}\n",
+            before[0], plain[0], toned[0], own[0], before[1], plain[1], toned[1], own[1]
+        );
+        println!("{table}");
+        for k in 0..2 {
+            assert!(
+                toned[k].abs() <= 0.5 * plain[k].abs().max(0.02) + 0.02,
+                "{name} lesion {k}: plain {} relation {}",
+                plain[k],
+                toned[k]
+            );
+            assert!(toned[k].abs() < 0.3 * before[k].abs(), "{name} lesion {k}");
+        }
+    }
+    println!("{table}");
+}
+
 #[test]
 fn pipeline_keeps_a_mole_and_removes_a_papule_at_blemish_100() {
     let mole = Lesion::new(Kind::Mole, 215.0, 225.0, 6.5);
