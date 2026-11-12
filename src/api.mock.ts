@@ -2284,7 +2284,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     // correctors and the Film nodes grade the scene where they are.
     if (hasMixers(settings)) {
       return sceneAt(settings, rec.scene, outputFeeder(settings), (item, scene) =>
-        item.kind === "film" ? adjustForNode(scene, filmLook(item)) : item.id === MAIN_ID ? scene : adjustForNode(scene, item),
+        item.kind === "film" ? adjustForNode(scene, filmLook(item)) : item.kind === "face_refinement" || item.id === MAIN_ID ? scene : adjustForNode(scene, item),
       );
     }
     return sceneThroughFilms(rec.scene, settings);
@@ -2342,7 +2342,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const adjustment = adjustmentOf(rec, false);
     if (nodeOf(rec.settings, node)?.kind === "corrector") return signalScene(rec.scene, adjustment, pictureChain(rec.settings, node), stage);
     const input = adjustScene(rec.scene, { ...adjustment, warp: undefined });
-    const scene = sceneAfter(rec.settings, input, node, (item, scene) => (item.kind === "film" ? adjustForNode(scene, filmLook(item)) : adjustForNode(scene, item)));
+    const scene = sceneAfter(rec.settings, input, node, (item, scene) =>
+      item.kind === "film" ? adjustForNode(scene, filmLook(item)) : item.kind === "face_refinement" ? scene : adjustForNode(scene, item),
+    );
     return scene ?? fail("render", `Node ${node} has no picture to read here.`);
   }
 
@@ -2373,7 +2375,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       const scene = mixed
         ? developScene(
             sceneAt(settings, adjustScene(rec.scene, { ...input, warp: undefined }), { node, port: "picture" }, (item, s) =>
-              item.kind === "film" ? adjustForNode(s, filmLook(item)) : adjustForNode(s, item),
+              item.kind === "film" ? adjustForNode(s, filmLook(item)) : item.kind === "face_refinement" ? s : adjustForNode(s, item),
             ),
             look,
             null,

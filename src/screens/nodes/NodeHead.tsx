@@ -5,7 +5,7 @@ import { Input } from "@/components/glass/input";
 import type { DevelopSettings, NodeId } from "../../api/types";
 import { Button, panelKindOf } from "../../components";
 import { cardStates, chipText, GRAPH_OP_TEXT, headLine } from "../../state/graphOps";
-import { isGlyphItem, nodeOf } from "../../state/settingsGraph";
+import { isCardItem, isGlyphItem, nodeOf } from "../../state/settingsGraph";
 import { KindGlyph } from "./GlyphCard";
 
 /** The tooltip and accessible name of the head's Reset, by kind of node (`docs/23` §7.5). */
@@ -49,7 +49,7 @@ export function NodeHead({ settings, node, renaming, onStartRename, onRename, on
   const states = cardStates(settings);
   const glyph = isGlyphItem(item);
   // Every node but the Input and the Output has a name, a number or a glyph in the chip, and is renamed and bypassed (a Splitter and a Combiner cannot be).
-  const corrector = item.kind === "corrector" || item.kind === "film" || glyph;
+  const corrector = isCardItem(item) || glyph;
   const noBypass = item.kind === "splitter" || item.kind === "combiner";
   // A Parallel, a Splitter and a Combiner have nothing to reset (`docs/25` §5.5).
   const nothingToReset = item.kind === "parallel" || item.kind === "splitter" || item.kind === "combiner";

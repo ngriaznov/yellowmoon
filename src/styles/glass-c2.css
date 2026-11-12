@@ -63,7 +63,7 @@ html.dark {
 /* The Mask tab of a corrector (docs/23 §7.6) has the mask accent, as the other tabs have theirs: --mask in tokens.css. */
 [data-tab="mask"] { --primary: var(--mask); --primary-foreground: var(--mask-ink); --ring: var(--mask); }
 /* The tabs of a Film node (docs/24 section 4.1) take the Look tab's yellow (screens 02 to 08 of design/film). */
-[data-tab="film"], [data-tab="print"], [data-tab="halation"], [data-tab="grain"], [data-tab="inputs"], [data-tab="blend"], [data-tab="channels"] { --primary: var(--tab-look); --primary-foreground: var(--tab-look-ink); --ring: var(--tab-look); }
+[data-tab="film"], [data-tab="face"], [data-tab="print"], [data-tab="halation"], [data-tab="grain"], [data-tab="inputs"], [data-tab="blend"], [data-tab="channels"] { --primary: var(--tab-look); --primary-foreground: var(--tab-look-ink); --ring: var(--tab-look); }
 
 body {
   font-family: var(--font);

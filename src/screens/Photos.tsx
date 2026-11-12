@@ -13,7 +13,7 @@ import { maskRowKinds } from "../state/maskRows";
 import { lookLabeller, looksInDisplayOrder } from "../state/looks";
 import { folderSubline, isReady, photoName } from "../state/photo";
 import { MASK_KIND_NAME } from "../state/graphOps";
-import { hiddenByPhoto, hiddenFromSimpleView, INPUT_ID, MAIN_ID, nodeOf, OUTPUT_ID } from "../state/settingsGraph";
+import { hiddenByPhoto, hiddenFromSimpleView, INPUT_ID, isCardItem, MAIN_ID, nodeOf, OUTPUT_ID } from "../state/settingsGraph";
 import type { AppStore } from "../state/store";
 import type { Shortcut } from "../state/shortcuts";
 import { useShortcuts } from "../state/useShortcuts";
@@ -325,7 +325,7 @@ export function Photos() {
   // A Film node has the corrector's panel until its own tabs are built (F-09, `docs/24` §4.1).
   const onKind: PanelKind = selectedItem ? panelKindOf(selectedItem.kind) : "corrector";
   // A corrector and a Film node both have masks (`docs/24` section 4.3).
-  const hasMasks = onKind === "corrector" || onKind === "film";
+  const hasMasks = onKind === "corrector" || onKind === "film" || onKind === "face_refinement";
   const nodeTab = nodeTabs[onKind];
   const nodeTabList = NODE_TABS[onKind];
   const onNodeNow = useLatest(onNode);
@@ -338,7 +338,7 @@ export function Photos() {
   // The Mask tab's pick (Pick colour of a Colour range, `docs/23` §7.6) belongs to the Mask tab of the node view and to the Colour range row
   // that is selected: it ends with the tab, the node or the photo, as the others do, and with the row.
   const maskRow = useAppState((s) => s.maskRow);
-  const maskRows = selectedItem?.kind === "corrector" || selectedItem?.kind === "film" ? selectedItem.masks.items : [];
+  const maskRows = isCardItem(selectedItem) ? selectedItem.masks.items : [];
   const rowIndex = maskRow !== null && maskRow < maskRows.length ? maskRow : null;
   const selectedMask = rowIndex === null ? undefined : maskRows[rowIndex];
   const rangeShown = panel === "tools" && view === "nodes" && nodeTab === "mask" && hasMasks && !cropping && selectedMask?.kind === "color_range" && selectedMask.enabled;
