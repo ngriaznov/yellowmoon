@@ -1,0 +1,145 @@
+# Intel smoke: `ym` built and run natively on an Intel Mac (docs/26 H-16, finding P5-1; docs/13).
+# The universal app has an x86_64 slice that no other job starts natively: release.yml and build.yml start it under
+# Rosetta on an Apple-silicon runner (tools/ci/check-universal.sh), which is a start test (Rosetta may not translate AVX2,
+# so it can run the scalar kernels). This job runs on a real Intel CPU: it builds ym, prints its version and `ym doctor`,
+# and renders a few synthetic files against the Linux references within the golden rule (an identical hash, or ΔE00
+# within 0.5). It does not measure speed. Real Intel Macs with a GPU and macOS 14 stay with the owner (MC-6, MC-8).
+#
+# THE RUNNER LABEL. `macos-15-intel` is GitHub's hosted x86_64 macOS runner. If a run says that no runner matches the
+# label (it was retired, or is not available to this repository), P5-1 says to keep step 2 only: the Rosetta start test
+# in release.yml and build.yml stays, and this workflow is deleted or left with its triggers off. Do not point it at
+# an Apple-silicon label: it would test nothing new.
+#
+# TRIGGERS. A weekly run (keeps the golden reference cache warm for the Intel job and shows a runner image that moved),
+# a dispatch, and pushes of the code that has Intel-specific paths (ym-ml's AVX2 kernels, the Swift bridge, the lens and
+# GPU crates), of release.yml and of this file. There is deliberately no branch filter: a push of a branch that edits this
+# file runs it, which is the only way to try a new workflow before it is on the default branch.
+name: Intel smoke
+
+on:
+  schedule:
+    - cron: "41 4 * * 1"   # Mondays, 04:41 UTC
+  workflow_dispatch:
+  push:
+    paths:
+      - "crates/ym-ml/**"
+      - "crates/ym-lens/**"
+      - "crates/ym-apple/**"
+      - "crates/ym-gpu/**"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/intel.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: intel-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+defaults:
+  run:
+    shell: bash   # bash -eo pipefail: a failing command before `tee` fails the step
+
+jobs:
+  intel-smoke:
+    name: ym on a native Intel Mac
+    # Checkpoint commits snapshot work in progress and are not expected to build; skip them.
+    if: ${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'Checkpoint') }}
+    runs-on: macos-15-intel
+    # A cold run builds ym-cli in release (a few dozen minutes on 4 Intel cores) and generates the synthetic set; set from
+    # the first runs (docs/26 H-16 As built).
+    timeout-minutes: 120
+    env:
+      # A release build finds data/ only inside an app bundle (docs/01, "Finding data/"); point it at the repository's.
+      YELLOWMOON_DATA: ${{ github.workspace }}/data
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: intel-x86_64
+          cache-on-failure: true
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - name: This machine
+        run: |
+          uname -m
+          sysctl -n machdep.cpu.brand_string
+          sysctl -n machdep.cpu.leaf7_features || true
+          sw_vers
+          rustc -vV
+          [ "$(uname -m)" = x86_64 ] || { echo "::error title=Not an Intel runner::uname -m is $(uname -m); this job tests the x86_64 CPU path"; exit 1; }
+      # ym-apple compiles its Vision bridge for x86_64 with the Xcode of the image (macOS 14 SDK or later); the Apple Auto
+      # bridge is Apple-silicon only, so here it is the stub that reports `intel_mac`. This step builds both natively.
+      - name: Build ym (native x86_64, the binary under test; no testgen feature)
+        run: cargo build -p ym-cli --release
+      - name: ym --version
+        run: target/release/ym --version
+      - name: ym doctor (the Intel line and the masks)
+        run: |
+          mkdir -p intel-smoke
+          target/release/ym doctor 2>&1 | tee intel-smoke/doctor.txt
+          # The row labels are padded with spaces (crates/ym-cli/src/doctor.rs): `Apple Intelligence  not available (<reason>)`,
+          # the reason of UnavailableReason::IntelMac (crates/ym-core/src/apple_auto.rs).
+          grep -Eq '^Apple Intelligence +not available \(this Mac has an Intel processor\)' intel-smoke/doctor.txt \
+            || { echo "::error title=ym doctor::the Apple Intelligence row does not say \"not available (this Mac has an Intel processor)\""; exit 1; }
+          # Linear and Radial masks need no weights and no Mac framework, so the Masks row lists them on every machine.
+          grep -Eq '^Masks +.*Linear' intel-smoke/doctor.txt \
+            || { echo "::error title=ym doctor::the Masks row is missing or does not list the masks"; exit 1; }
+          grep -E '^(System|GPU|GPU policy|Render path|Masks) ' intel-smoke/doctor.txt || true
+          {
+            echo '### ym doctor on a native Intel Mac'
+            echo
+            echo '```text'
+            sysctl -n machdep.cpu.brand_string
+            cat intel-smoke/doctor.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Synthetic ARW set (the generator and its requirements)
+        run: |
+          python3 -m pip install -r training/requirements.txt -r training/synth/requirements.txt
+          python3 -c "import colour, numpy, scipy, PIL; print('python packages ok: colour', colour.__version__, 'numpy', numpy.__version__)"
+          tools/fetch/spectral.sh
+          tools/fetch/synthetic.sh --release
+      - name: Build golden (a separate invocation, it switches on ym-raw's testgen feature)
+        run: cargo build -p golden --release
+      # The Linux pictures, from the cache the `golden` job of ci.yml fills (same key). Restore only: this job writes no
+      # references. A Mac's libm can move a hash by a code (docs/13, "Platform"), so the check below usually falls back to the
+      # reference picture and measures it; without the cache it reports NO REFERENCE and fails. Run ci.yml's golden job on the
+      # same branch (or main) first if the next step says so.
+      - name: Reference pictures (the cache of ci.yml's golden job)
+        id: refs
+        uses: actions/cache/restore@v4
+        with:
+          path: testdata/golden/refs
+          key: golden-refs-${{ hashFiles('tools/golden/expected.json') }}
+      - name: Golden check on the Intel CPU against the Linux references
+        run: |
+          [ "${{ steps.refs.outputs.cache-hit }}" = true ] || echo "::warning title=No reference pictures::the cache golden-refs-<hash of expected.json> was not found; a hash that differs from the Linux one will report NO REFERENCE"
+          # --filter keeps the entries whose id contains EVERY text (tools/golden/src/manifest.rs), so the two bodies are two
+          # runs. ILCE-7M4 (named in P5-1) has no entry in the default synthetic set; the set has ILCE-1 (7 files: four raw
+          # compressions, 12 and 14 bit, three light sources) and ILCE-7RM4 (the reference body; its D6500 files are used).
+          # `ym` here is the native binary; golden renders with --cpu, as on Linux.
+          target/release/golden check --ym target/release/ym --filter ILCE-1 --report intel-smoke/golden-ilce-1.json 2>&1 | tee intel-smoke/golden-ilce-1.txt
+          target/release/golden check --ym target/release/ym --filter ILCE-7RM4 --filter D6500 --report intel-smoke/golden-ilce-7rm4.json 2>&1 | tee intel-smoke/golden-ilce-7rm4.txt
+          {
+            echo '### golden check on a native Intel CPU (Linux references)'
+            echo
+            echo '```text'
+            cat intel-smoke/golden-ilce-1.txt intel-smoke/golden-ilce-7rm4.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: intel-smoke
+          path: intel-smoke/
+          if-no-files-found: warn
+          retention-days: 30
