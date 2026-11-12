@@ -44,17 +44,15 @@ FORMATS = [
 
 # The bound on the peak RSS of each run, in MiB: (size, format) -> bound.
 #
-# PROVISIONAL. These are not from a CI run. They are the peaks measured on the machine of task H-12/H-13 (Linux x86_64,
-# 4 vCPU, no GPU; the "dev" profile of this workspace, which is optimised) plus a margin of 25 %, rounded up (the measured peak is in the comment of each line). The lead
-# dispatches the first run of this job on CI; the final bounds are that run's peaks plus the machine's noise (about 10 %),
-# set here in one edit. Until then a failure of this job above the bound is a hint, not a verdict.
+# FINAL, from CI run 43244397676 (job 131273066799, commit 9731571, release build, YELLOWMOON_RAM_GB=8, CPU path): each
+# bound is that run's peak RSS x 1.10, rounded up to the next 10 MiB (the measured peak is in the comment of each line).
 BOUNDS_MIB = {
-    ("50MP", "JPEG"): 2620,  # measured 2092
-    ("50MP", "TIFF16"): 2200,  # measured 1754
-    ("50MP", "DNG"): 2720,  # measured 2169
-    ("61MP", "JPEG"): 3150,  # measured 2520
-    ("61MP", "TIFF16"): 2520,  # measured 2014
-    ("61MP", "DNG"): 3120,  # measured 2490
+    ("50MP", "JPEG"): 2310,  # CI 2093
+    ("50MP", "TIFF16"): 1950,  # CI 1764
+    ("50MP", "DNG"): 2380,  # CI 2157
+    ("61MP", "JPEG"): 2770,  # CI 2516
+    ("61MP", "TIFF16"): 2210,  # CI 2008
+    ("61MP", "DNG"): 2740,  # CI 2483
 }
 
 # Within a factor of two (docs/26 H-13).
