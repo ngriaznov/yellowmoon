@@ -1054,8 +1054,9 @@ fn no_generated_graph_is_refused_by_the_device() {
             settle_depth(&cpu, &src, &states);
         }
         if g.face_live {
-            // A live Face Refinement node: the view stages are the CPU's, refused with its reason, the viewport says so, and the
-            // pixels agree with the CPU renderer's within the view bound (the raw group is the device's; the faces are the CPU reference's on both).
+            // A live Face Refinement node (`docs/27` S-13): the frame is the device's like any other (the node's picture is made by
+            // the face kernels, `kernels::face`), not refused and not on the CPU, and the pixels agree with the CPU renderer's within
+            // the view bound (the faces, masks and maps are the CPU reference's on both: the analysis is made without a device).
             settle_faces(&device, &src, &states);
             settle_faces(&cpu, &src, &states);
             let face_image = cpu
@@ -1082,33 +1083,26 @@ fn no_generated_graph_is_refused_by_the_device() {
             for (what, st) in &states {
                 let at = format!("{name}: {what}");
                 let got = frame(&device, &src, st);
-                if got.report.device == ComputeDevice::Gpu
-                    || !got.report.device_refused
-                    || got.report.cpu_reason.as_deref() != Some("Face Refinement runs on the CPU")
+                if got.report.device != ComputeDevice::Gpu
+                    || got.report.device_refused
+                    || got.report.cpu_reason.is_some()
                 {
                     problems.push(format!(
                         "{at}: a Face Refinement frame is {:?}, refused {}, reason {:?}",
                         got.report.device, got.report.device_refused, got.report.cpu_reason
                     ));
                 }
-                if !device.views_on_cpu(src.id) {
+                if device.views_on_cpu(src.id) {
                     problems.push(format!(
-                        "{at}: views_on_cpu is false for a Face Refinement frame"
+                        "{at}: views_on_cpu is true for a Face Refinement frame"
                     ));
                 }
                 if g.compare {
                     let want = frame(&cpu, &src, st);
                     // Every pair is measured and written to the log, passing or not, so that a run on a device gives the numbers.
                     //
-                    // Why a bound and not the CPU's bytes, at Fit as well as at 100 %: "Face Refinement runs on the CPU" refuses
-                    // the *view stages* only (`Job::view_gpu`). The raw group is made before them, by `group_on_device`
-                    // (a reduced group, Fit and any zoom under 100 %) or `raw_route` (100 %), and both use the device's raw
-                    // front (`GpuStages::RAW_FRONT`/`RAW_CHAIN`, on in `GpuStages::ALL`) whatever the plan holds. That front agrees
-                    // with the CPU's within the view bound, as in every other graph of this test, which compares at Fit too.
-                    // What is the CPU's on both renderers is everything the node reads of the faces: the analysis is made by the
-                    // CPU reference renderer (`object_reference`, no device), so the boxes, masks and maps are equal; and the
-                    // colour stage, the node and the dither. So the bound is the view bound, no wider, and the same bound is held
-                    // inside the face regions on their own: the node must not make the device's small input difference larger.
+                    // The bound is the view bound, no wider, and the same bound is held inside the face regions on their own: the node
+                    // must not make the device's small input difference larger.
                     let report = face_frame_diff(&got, &want, st, &face_image, &face_boxes);
                     say(&format!("{at}: against the CPU: {}", report.text()));
                     let plain = frame(&cpu, &src_without, st);
@@ -1120,6 +1114,13 @@ fn no_generated_graph_is_refused_by_the_device() {
                         moved.over_in
                     ));
                     changed_in_boxes |= moved.max_in_boxes > 0;
+                    // And the device's own frame is not the device's frame without the node.
+                    let device_plain = frame(&device, &src_without, st);
+                    let device_moved =
+                        face_frame_diff(&got, &device_plain, st, &face_image, &face_boxes);
+                    if g.compare && moved.max_in_boxes > 0 && device_moved.max_in_boxes == 0 {
+                        problems.push(format!("{at}: the node changes nothing on the device"));
+                    }
                     if report.max > 2
                         || report.over >= got.rgba.len() / 2000
                         || report.max_in_boxes > 2

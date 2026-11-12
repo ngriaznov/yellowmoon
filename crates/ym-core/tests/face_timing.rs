@@ -12,11 +12,15 @@ use std::time::Instant;
 use common::*;
 use serde_json::{Value, json};
 use ym_color::display::OutputTarget;
+use ym_core::app::gpu::GpuStages;
+use ym_core::export::{ExportContext, ExportControl, ExportParams, ExportPhoto, export_photo};
 use ym_core::pipeline::{
     FaceModel, FrameOptions, FullRequest, FullTarget, NeutralOnly, PhotoSource, RenderOptions,
     Renderer, ViewportMode, ViewportRect, ViewportState,
 };
 use ym_core::settings::DevelopSettings;
+use ym_export::{BitDepth, ColorSpace, ExportOptions, FormatKind, IfExists};
+use ym_gpu::device::{Gpu, GpuConfig};
 use ym_gpu::queue::CancelToken;
 
 const MODEL: &str = "ILCE-7RM4";
@@ -231,5 +235,103 @@ fn the_node_costs() {
                 ms(t)
             );
         }
+    }
+}
+
+/// The same measurements with the face step on the device (S-13): the frames of a viewport and the export tail, set against the
+/// CPU numbers of `the_node_costs`. Run it with the same command (`--ignored --nocapture the_node_costs_on_the_device`); on a
+/// machine with no graphics card Mesa's lavapipe (`WGPU_BACKEND=vulkan`) is a software device, which says nothing about a GPU.
+#[test]
+#[ignore = "a measurement"]
+fn the_node_costs_on_the_device() {
+    let threads = std::thread::available_parallelism().map_or(1, usize::from);
+    let gpu = Arc::new(Gpu::start(GpuConfig::default()).expect("a device"));
+    println!("{threads} threads; device: {}", gpu.info());
+    let model = FaceModel::probe(&data_root()).expect("the face models");
+    for (id, w, h, faces) in [
+        ("mp-portrait", 6000, 4000, 1),
+        ("mp-two-people", 6000, 4000, 2),
+    ] {
+        let Some(d) = big(id, w, h) else { continue };
+        let src = d.source();
+        let make = |gpu: Option<Arc<Gpu>>| {
+            Renderer::new(
+                Arc::new(NeutralOnly),
+                RenderOptions {
+                    face_model: Some(Arc::clone(&model)),
+                    data_root: Some(data_root()),
+                    gpu_stages: if gpu.is_some() {
+                        GpuStages::ALL
+                    } else {
+                        GpuStages::NONE
+                    },
+                    gpu,
+                    ..RenderOptions::default()
+                },
+            )
+            .expect("render thread")
+        };
+        let r = make(Some(Arc::clone(&gpu)));
+        r.navigate(src.id);
+        let at = |face: Value, ev: f64| src.with_settings(graph(face, ev));
+        let inert = json!({ "all": { "blemish": 0, "dark_circles": 0, "even_skin": 0 } });
+        let live = |i: i32| {
+            json!({ "all": { "blemish": 30, "dark_circles": 30, "even_skin": f64::from(20 + i * 10),
+                                              "skin_contrast": 20, "teeth_whitening": 30 } })
+        };
+        let base = at(inert.clone(), 0.0);
+        let _ = frame(&r, &base, false);
+        let _ = r
+            .faces_found(&at(json!({}), 0.0), &CancelToken::new())
+            .expect("faces");
+        println!("== {id} ({w} x {h}), {faces} face(s), on the device ==");
+        for (what, zoom) in [("fit", false), ("100 %", true)] {
+            // The first frame of a view builds the face tables (the plan of each region) and compiles the kernels; the rest are warm.
+            let first = frame(&r, &at(live(0), 0.0), zoom);
+            let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+            let base_moves: Vec<f64> = (1..=3)
+                .map(|i| frame(&r, &at(inert.clone(), 0.1 * f64::from(i) + 0.05), zoom))
+                .collect();
+            let node_moves: Vec<f64> = (1..=3)
+                .map(|i| frame(&r, &at(live(i), 0.0), zoom))
+                .collect();
+            let upstream: Vec<f64> = (1..=3)
+                .map(|i| frame(&r, &at(live(1), 0.1 * f64::from(i)), zoom))
+                .collect();
+            println!(
+                "{what}: first frame with the node {first:.0} ms; the same upstream moves with the node at 0: {:.0} ms; after a slider of the node {:.0} ms; after a corrector upstream {:.0} ms",
+                mean(&base_moves),
+                mean(&node_moves),
+                mean(&upstream)
+            );
+        }
+        // The export tail of the 24 MP photo (PNG, 16 bit), with the node and without, on the device.
+        let out = tempfile::tempdir().expect("dir");
+        let export = |r: Renderer, s: PhotoSource| {
+            let ctx = ExportContext::new(r).with_home(Some(out.path().to_path_buf()));
+            let mut photo = ExportPhoto::from_session(&d.session, d.id).expect("export photo");
+            photo.source = s;
+            let t = Instant::now();
+            let done = export_photo(
+                &ctx,
+                &photo,
+                &ExportParams::new(ExportOptions {
+                    format: FormatKind::Png,
+                    bit_depth: BitDepth::Sixteen,
+                    color_space: ColorSpace::Srgb,
+                    destination: Some(out.path().to_path_buf()),
+                    if_exists: IfExists::Replace,
+                    ..ExportOptions::default()
+                }),
+                &ExportControl::none(),
+            )
+            .expect("export");
+            (ms(t), done.device)
+        };
+        let (plain, dev_a) = export(make(Some(Arc::clone(&gpu))), base.clone());
+        let (with, dev_b) = export(make(Some(Arc::clone(&gpu))), at(live(2), 0.0));
+        println!(
+            "export of 24 MP on the device ({dev_a:?}, {dev_b:?}): without the node {plain:.0} ms, with it {with:.0} ms (its own analysis included)"
+        );
     }
 }

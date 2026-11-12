@@ -1647,7 +1647,7 @@ fn face_doc() -> serde_json::Value {
 /// The Face Refinement node (S-11b) with the deterministic fake finder on both sides (`FaceModel::fake_default` for the app,
 /// `YELLOWMOON_TEST_FACES=fake` for the binary): the same files in JPEG, 16-bit TIFF and DNG, the node changes pixels, and the app,
 /// which finds the faces itself at export time as `ym` does and keeps nothing, agrees with it. Runs on every platform (the node is
-/// the CPU's whatever the policy).
+/// the CPU's here: no device is asked for).
 #[test]
 fn a_face_refinement_node_is_the_same_files_through_the_app_path_and_the_binary() {
     graph_leg_full(
@@ -1655,6 +1655,22 @@ fn a_face_refinement_node_is_the_same_files_through_the_app_path_and_the_binary(
         face_doc(),
         1,
         false,
+        None,
+        true,
+        Depth::FakeFaces,
+        |_| {},
+    );
+}
+
+/// The device leg of the Face Refinement node (S-13): both sides have a device and the face kernels run on it, so the files are the
+/// same byte for byte in JPEG, 16-bit TIFF and DNG (the DNG's colour stage is the device's too).
+#[test]
+fn a_face_refinement_node_is_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
+    graph_leg_full(
+        "face refinement",
+        face_doc(),
+        1,
+        true,
         None,
         true,
         Depth::FakeFaces,

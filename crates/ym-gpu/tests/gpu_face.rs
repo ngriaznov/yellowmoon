@@ -186,6 +186,31 @@ fn scene(mix: &[SkinSettings]) -> Scene {
     }
 }
 
+/// One big face (D = 600 px at scale 1): the layers are at half resolution with radii up to 45 px, the rows are several boxes
+/// of the sliding sum long, and the region is not a multiple of anything.
+fn big_scene(mix: SkinSettings) -> Scene {
+    let face = Face {
+        rect: Rect::new(350, 60, 500, 600),
+        scale: 600.0 / 1200.0,
+    };
+    let (w, h) = (1203u32, 901u32);
+    let mut full = synthetic(w, h, &face);
+    mock::paint_mouth(&mut full, &face.rect, 0.9);
+    let models = Models {
+        proposer: Box::new(MockProposer::scale(192, 0.9)),
+        ..mock::models(vec![Rect::new(560, 300, 24, 24)])
+    };
+    let faces = vec![(face, mix)];
+    let mut cache = RetouchCache::new(12, 12);
+    prepare_skin(&full, &faces, &models, &mut cache).unwrap();
+    Scene {
+        full,
+        size: (w, h),
+        faces,
+        cache,
+    }
+}
+
 struct MapOf(Arc<BlemishMap>);
 
 impl AsRef<[[f32; 4]]> for MapOf {
@@ -631,5 +656,17 @@ fn the_tone_relation_matches_the_cpu_made_and_estimated() {
             assert!(e_curves <= GATE_TONE, "curves {e_curves:e}");
             assert!(e_est <= GATE_TONE, "estimate {e_est:e}");
         }
+    }
+}
+
+/// A face of 600 px at scale 1 and 300 px at scale 0.5: the larger radii and the longer rows of the sliding box filter, with every
+/// tool on and a protection plane.
+#[test]
+fn a_big_face_matches_the_cpu() {
+    let s = big_scene(all());
+    let half = downscale2(&s.full);
+    for protect in [false, true] {
+        compare("big face", &s, &s.full, 1.0, GATE_TOOLS, protect);
+        compare("big face", &s, &half, 0.5, GATE_TOOLS, protect);
     }
 }

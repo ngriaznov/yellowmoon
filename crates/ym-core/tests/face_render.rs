@@ -846,9 +846,15 @@ fn a_tiled_export_equals_the_whole_frame_in_every_graph_order() {
 /// order, and no region of a face is left unretouched.
 #[test]
 fn a_viewport_frame_equals_the_whole_frame_in_every_graph_order() {
+    let r = renderer_with(Some(two_faces()), 0);
+    cells_equal_the_whole_frame(&r, "CPU", false);
+}
+
+/// The cells of a viewport at 100 % against the frame of the whole photo, in every graph order. With `device`, the frames are the
+/// device's (and say so), the kernels of the face step make whole regions whatever the cell, and the bound is the same.
+fn cells_equal_the_whole_frame(r: &Renderer, route: &str, device: bool) {
     let d = photo_sized(600, 400);
     let src = d.source();
-    let r = renderer_with(Some(two_faces()), 0);
     r.navigate(src.id);
     let opts = FrameOptions {
         no_cache: true,
@@ -858,8 +864,19 @@ fn a_viewport_frame_equals_the_whole_frame_in_every_graph_order() {
         let mut st = ViewportState::new(ViewportRect::cell(w, h, 1.0));
         st.mode = ym_core::pipeline::ViewportMode::Percent { value: 100.0 };
         st.centre = [(x0 + w / 2.0) / 600.0, (y0 + h / 2.0) / 400.0];
-        r.viewport_frame(s, &st, &opts, &CancelToken::new())
-            .expect("frame")
+        let frame = r
+            .viewport_frame(s, &st, &opts, &CancelToken::new())
+            .expect("frame");
+        if device {
+            assert_eq!(
+                frame.report.device,
+                ym_core::pipeline::ComputeDevice::Gpu,
+                "{route}: cell at ({x0}, {y0}): {:?}",
+                frame.report.cpu_reason
+            );
+            assert!(!frame.report.device_refused, "{route}: refused");
+        }
+        frame
     };
     let mut graphs = orders();
     graphs.insert(0, ("no nodes", plain()));
@@ -900,7 +917,7 @@ fn a_viewport_frame_equals_the_whole_frame_in_every_graph_order() {
                         .unwrap_or(0);
                     assert!(
                         worst <= 1,
-                        "{name}: cell at ({x0}, {y0}), pixel ({x}, {y}): {a:?} against {b:?}"
+                        "{route}, {name}: cell at ({x0}, {y0}), pixel ({x}, {y}): {a:?} against {b:?}"
                     );
                     checked += 1;
                 }
@@ -1101,5 +1118,575 @@ fn a_face_picture_is_a_small_png_of_the_input_without_the_retouch() {
     for n in [0, 3] {
         let e = r.face_crop_png(&node, n).expect_err("no such face");
         assert!(e.to_string().contains("no face"), "{e}");
+    }
+}
+
+// ---- the device (S-13) -------------------------------------------------------------------------------------------------------
+//
+// The face step runs on the device: the per-pixel apply of the cached maps and masks and the low-frequency operator are the
+// kernels of `ym_gpu::kernels::face`, held to the CPU's `ym_retouch` in `ym-gpu/tests/gpu_face.rs`. Here the whole render is on
+// the device (lavapipe in CI; skipped, loudly, when no adapter opens, unless `YM_REQUIRE_GPU=1` makes that a failure): the frames
+// and exports are the device's and agree with the CPU's within the bound of the other device-against-CPU tests, the regions are
+// made whole whatever the tile or the cell (so the device's parts equal its whole, to the dither), and a fault in a face kernel
+// is answered on the CPU.
+
+use std::io::Write as _;
+use std::path::Path;
+
+use ym_core::app::gpu::GpuStages;
+use ym_core::export::{
+    ExportContext, ExportControl, ExportParams, ExportPhoto, ExportReport, export_photo,
+};
+use ym_core::pipeline::{ComputeDevice, RenderedFrame, ViewportMode};
+use ym_export::{BitDepth, ColorSpace, ExportOptions, FormatKind, IfExists};
+use ym_gpu::device::{Gpu, GpuConfig, gpu_required_by_env};
+
+fn gpu(poison: bool) -> Option<Arc<Gpu>> {
+    match Gpu::start(GpuConfig {
+        poison,
+        ..GpuConfig::default()
+    }) {
+        Ok(g) => Some(Arc::new(g)),
+        Err(e) => {
+            assert!(
+                !gpu_required_by_env(),
+                "YM_REQUIRE_GPU is set but no GPU adapter could be opened: {e}"
+            );
+            let _ = writeln!(
+                std::io::stderr(),
+                "\n* GPU TESTS SKIPPED in face_render: {e}\n"
+            );
+            None
+        }
+    }
+}
+
+fn device_renderer(gpu: Option<Arc<Gpu>>, tile: usize) -> Renderer {
+    let stages = if gpu.is_some() {
+        GpuStages::ALL
+    } else {
+        GpuStages::NONE
+    };
+    Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            face_model: Some(two_faces()),
+            data_root: Some(data_root()),
+            full_tile_px: tile,
+            gpu,
+            gpu_stages: stages,
+            ..RenderOptions::default()
+        },
+    )
+    .expect("render thread")
+}
+
+/// Every tool at a clear amount, every face.
+fn everything() -> Value {
+    json!({ "all": { "blemish": 80, "dark_circles": 70, "even_skin": 70, "texture": 20,
+                     "skin_contrast": 40, "shadow_desaturation": 40, "shine_removal": 50, "teeth_whitening": 60 } })
+}
+
+fn device_view(zoom_100: bool) -> ViewportState {
+    let mut st = ViewportState::new(ViewportRect::cell(500.0, 330.0, 1.0));
+    if zoom_100 {
+        st.mode = ViewportMode::Percent { value: 100.0 };
+    }
+    st
+}
+
+/// A frame of `src` as it is now.
+fn frame_of(r: &Renderer, src: &PhotoSource, st: &ViewportState) -> RenderedFrame {
+    r.viewport_frame(
+        src,
+        st,
+        &FrameOptions {
+            no_cache: true,
+            ..FrameOptions::default()
+        },
+        &CancelToken::new(),
+    )
+    .expect("frame")
+}
+
+/// A frame of `src` once its faces are found.
+fn frame_when_ready(r: &Renderer, src: &PhotoSource, st: &ViewportState) -> RenderedFrame {
+    let _ = frame_of(r, src, st);
+    wait_until("the faces", 60, || {
+        !r.faces_worker_alive(src.id) && r.faces_ready(src)
+    });
+    frame_of(r, src, st)
+}
+
+/// The largest difference of two 8-bit frames, and the pixel values more than one code apart.
+fn frame_diff(a: &RenderedFrame, b: &RenderedFrame) -> (u8, usize) {
+    assert_eq!((a.width, a.height), (b.width, b.height));
+    let (mut max, mut over) = (0u8, 0usize);
+    for (x, y) in a.rgba.iter().zip(&b.rgba) {
+        let d = x.abs_diff(*y);
+        max = max.max(d);
+        over += usize::from(d > 1);
+    }
+    (max, over)
+}
+
+fn say(text: &str) {
+    let _ = writeln!(std::io::stderr(), "[face step on the device] {text}");
+}
+
+/// The frame of a live node is the device's (not refused, no note about the CPU), says so to the viewport, agrees with the CPU's
+/// within the view bound at Fit and at 100 %, and is not the frame without the node.
+#[test]
+fn the_face_step_runs_on_the_device_and_a_frame_agrees_with_the_cpu() {
+    let Some(gpu) = gpu(true) else { return };
+    let d = photo();
+    let device = device_renderer(Some(gpu), 256);
+    let cpu = device_renderer(None, 256);
+    device.navigate(d.source().id);
+    cpu.navigate(d.source().id);
+    for (what, body) in [("grading", strong()), ("every tool", everything())] {
+        let src = d.source().with_settings(with_node(body));
+        for zoom_100 in [false, true] {
+            let st = device_view(zoom_100);
+            let at = format!("{what}, 100 % {zoom_100}");
+            let got = frame_when_ready(&device, &src, &st);
+            let want = frame_when_ready(&cpu, &src, &st);
+            assert_eq!(got.report.device, ComputeDevice::Gpu, "{at}");
+            assert!(!got.report.device_refused, "{at}");
+            assert!(
+                got.report.cpu_reason.is_none(),
+                "{at}: {:?}",
+                got.report.cpu_reason
+            );
+            assert!(!device.views_on_cpu(src.id), "{at}: views_on_cpu");
+            assert_eq!(want.report.device, ComputeDevice::Cpu, "{at}");
+            let (max, over) = frame_diff(&got, &want);
+            say(&format!(
+                "view, {at}: largest {max} codes, {over} values over 1"
+            ));
+            assert!(
+                max <= 2 && over < got.rgba.len() / 2000,
+                "{at}: {max}, {over}"
+            );
+            // The node is in the picture: the same photo without it is not this frame, on the device and by a clear amount.
+            let none = frame_of(&device, &d.source(), &st);
+            let (moved, _) = frame_diff(&got, &none);
+            assert!(
+                moved >= 1,
+                "{at}: the node moves the device frame by {moved} codes"
+            );
+        }
+    }
+}
+
+/// A PNG's samples, 16 bit.
+fn decode_png16(path: &Path) -> Vec<u32> {
+    let bytes = std::fs::read(path).expect("read the export");
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut reader = decoder.read_info().expect("png header");
+    let mut buf = vec![0; reader.output_buffer_size().expect("size")];
+    let info = reader.next_frame(&mut buf).expect("png frame");
+    assert_eq!(info.bit_depth, png::BitDepth::Sixteen);
+    buf[..info.buffer_size()]
+        .chunks_exact(2)
+        .map(|c| u32::from(u16::from_be_bytes([c[0], c[1]])))
+        .collect()
+}
+
+fn png_options(out: &Path) -> ExportOptions {
+    ExportOptions {
+        format: FormatKind::Png,
+        bit_depth: BitDepth::Sixteen,
+        color_space: ColorSpace::Srgb,
+        destination: Some(out.to_path_buf()),
+        if_exists: IfExists::Replace,
+        ..ExportOptions::default()
+    }
+}
+
+fn export_png(
+    d: &Developed,
+    settings: &DevelopSettings,
+    r: Renderer,
+    out: &Path,
+) -> Result<ExportReport, ym_core::export::ExportError> {
+    let ctx = ExportContext::new(r).with_home(Some(out.to_path_buf()));
+    let mut photo = ExportPhoto::from_session(&d.session, d.id).expect("export photo");
+    photo.source = photo.source.with_settings(settings.clone());
+    export_photo(
+        &ctx,
+        &photo,
+        &ExportParams::new(png_options(out)),
+        &ExportControl::none(),
+    )
+}
+
+fn code_diff(a: &[u32], b: &[u32]) -> u32 {
+    assert_eq!(a.len(), b.len());
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| x.abs_diff(*y))
+        .max()
+        .unwrap_or(0)
+}
+
+/// One 10-bit code after C13, in the codes of a 16-bit file.
+const TEN_BIT_CODE: u32 = 64;
+
+/// The export tail makes the faces on the device and agrees with the CPU's export within one 10-bit code, and for every tile
+/// size the device's export is the same bytes: a region is made whole in whichever tile it is met.
+#[test]
+fn the_device_export_agrees_with_the_cpu_and_is_the_same_for_every_tile() {
+    let Some(gpu) = gpu(true) else { return };
+    let d = photo();
+    let settings = with_node(everything());
+    let home = tempfile::tempdir().expect("dir");
+    let cpu = export_png(&d, &settings, device_renderer(None, 256), home.path()).expect("cpu");
+    assert_eq!(cpu.device, ComputeDevice::Cpu);
+    let cpu_codes = decode_png16(&cpu.path);
+    // The photo's own difference between the device and the CPU, without the node. With a node the plan is split into passes (a
+    // step that reads a picture made before the colour pass, as a Film node's), and the device's colour pass differs from the CPU's
+    // by up to 37 of 65535 in this photo whatever the node does (`each_tool_alone_and_together_agree_with_the_cpu_in_an_export`:
+    // the same 37, at the same pixel, for every tool), under the 10-bit code the other nodes of this kind are held to.
+    let plain_cpu =
+        export_png(&d, &plain(), device_renderer(None, 256), home.path()).expect("plain");
+    let plain_dev = export_png(
+        &d,
+        &plain(),
+        device_renderer(Some(Arc::clone(&gpu)), 400),
+        home.path(),
+    )
+    .expect("plain on the device");
+    let baseline = code_diff(
+        &decode_png16(&plain_dev.path),
+        &decode_png16(&plain_cpu.path),
+    );
+    say(&format!(
+        "export without the node: largest {baseline} of 65535 against the CPU"
+    ));
+    let mut first: Option<Vec<u32>> = None;
+    for tile in [160usize, 400, 1024] {
+        let out = tempfile::tempdir().expect("dir");
+        let done = export_png(
+            &d,
+            &settings,
+            device_renderer(Some(Arc::clone(&gpu)), tile),
+            out.path(),
+        )
+        .expect("device export");
+        assert_eq!(
+            done.device,
+            ComputeDevice::Gpu,
+            "tile {tile}: {:?}",
+            done.notes
+        );
+        assert!(
+            !done.notes.iter().any(|n| n.contains("graphics card")),
+            "tile {tile}: {:?}",
+            done.notes
+        );
+        let codes = decode_png16(&done.path);
+        let worst = code_diff(&codes, &cpu_codes);
+        assert!(
+            worst <= TEN_BIT_CODE,
+            "tile {tile}: {worst}, the photo alone differs by {baseline}"
+        );
+        say(&format!(
+            "export, tile {tile}: largest {worst} of 65535 against the CPU (a 10-bit code is {TEN_BIT_CODE})"
+        ));
+        let n = codes.iter().zip(&cpu_codes).filter(|(a, b)| a != b).count();
+        say(&format!(
+            "  tile {tile}: {n} of {} codes differ from the CPU's; notes {:?}",
+            codes.len(),
+            done.notes
+        ));
+        // Where the device differs from the CPU: near a face (the tools' reach) and away from the faces, where the node does
+        // nothing and only the colour pass, whose plan the node splits into passes, can differ.
+        let (w, h) = (1200usize, 800usize);
+        let near_face = |x: usize, y: usize| {
+            [FACE_A, FACE_B].iter().any(|f| {
+                let long = (f[2] * w as f64).max(f[3] * h as f64);
+                let (x0, y0) = (f[0] * w as f64 - 0.5 * long, f[1] * h as f64 - 0.5 * long);
+                let (x1, y1) = (
+                    (f[0] + f[2]) * w as f64 + 0.5 * long,
+                    (f[1] + f[3]) * h as f64 + 0.5 * long,
+                );
+                (x as f64) >= x0 && (x as f64) < x1 && (y as f64) >= y0 && (y as f64) < y1
+            })
+        };
+        let (mut worst_near, mut worst_away) = (0u32, 0u32);
+        for (i, (a, b)) in codes.iter().zip(&cpu_codes).enumerate() {
+            let (x, y) = ((i / 3) % w, (i / 3) / w);
+            let d = a.abs_diff(*b);
+            if near_face(x, y) {
+                worst_near = worst_near.max(d);
+            } else {
+                worst_away = worst_away.max(d);
+            }
+        }
+        say(&format!(
+            "  tile {tile}: the largest difference is {worst_near} near the faces and {worst_away} away from them"
+        ));
+        match &first {
+            None => first = Some(codes),
+            Some(f) => assert_eq!(f, &codes, "tile {tile}: the bytes depend on the tile"),
+        }
+    }
+    // The node is in the picture.
+    let none = export_png(&d, &plain(), device_renderer(None, 256), home.path()).expect("plain");
+    assert!(
+        code_diff(
+            first.as_ref().expect("an export"),
+            &decode_png16(&none.path)
+        ) > 300
+    );
+}
+
+/// The device's cells equal its whole frame in every graph order, to the dither: the regions the cell cuts are made whole.
+#[test]
+fn the_devices_viewport_cells_equal_its_whole_frame_in_every_graph_order() {
+    let Some(gpu) = gpu(true) else { return };
+    let r = device_renderer(Some(gpu), 256);
+    cells_equal_the_whole_frame(&r, "device", true);
+}
+
+/// Painted protection holds on the device as it does on the CPU: not one bit of a protected face changes, and the other is made.
+#[test]
+fn painted_protection_holds_on_the_device() {
+    let Some(gpu) = gpu(true) else { return };
+    let d = photo();
+    let home = tempfile::tempdir().expect("dir");
+    let device = |s: &DevelopSettings| {
+        let out = tempfile::tempdir().expect("dir");
+        let done = export_png(
+            &d,
+            s,
+            device_renderer(Some(Arc::clone(&gpu)), 400),
+            out.path(),
+        )
+        .expect("device export");
+        assert_eq!(done.device, ComputeDevice::Gpu, "{:?}", done.notes);
+        let codes = decode_png16(&done.path);
+        drop(out);
+        codes
+    };
+    let _ = &home;
+    let reference = device(&plain());
+    let (cx, cy) = (FACE_A[0] + FACE_A[2] / 2.0, FACE_A[1] + FACE_A[3] / 2.0);
+    let mut body = strong();
+    body["protect"] = json!({ "strokes": [
+        { "size": 0.25, "hardness": 1.0, "erase": false, "points": [[cx - 0.05, cy - 0.25], [cx - 0.05, cy + 0.25]] },
+        { "size": 0.25, "hardness": 1.0, "erase": false, "points": [[cx + 0.05, cy - 0.25], [cx + 0.05, cy + 0.25]] },
+    ] });
+    let open = device(&with_node(strong()));
+    let held = device(&with_node(body));
+    let (w, h) = (1200usize, 800usize);
+    let inside = |face: [f64; 4], x: usize, y: usize| {
+        let (x0, y0) = (face[0] * w as f64, face[1] * h as f64);
+        let (x1, y1) = (
+            (face[0] + face[2]) * w as f64,
+            (face[1] + face[3]) * h as f64,
+        );
+        (x as f64) >= x0 && (x as f64) < x1 && (y as f64) >= y0 && (y as f64) < y1
+    };
+    let (mut a_changed, mut b_changed, mut b_differs) = (0usize, 0usize, 0usize);
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..3 {
+                let i = (y * w + x) * 3 + c;
+                if inside(FACE_A, x, y) && held[i] != reference[i] {
+                    a_changed += 1;
+                }
+                if inside(FACE_B, x, y) {
+                    b_changed += usize::from(held[i] != reference[i]);
+                    b_differs += usize::from(held[i] != open[i]);
+                }
+            }
+        }
+    }
+    assert_eq!(a_changed, 0, "face A is protected: not one code changes");
+    assert!(b_changed > 100, "face B is not protected: {b_changed}");
+    assert_eq!(
+        b_differs, 0,
+        "face B is as it is without protection, where the plane is 0"
+    );
+}
+
+/// A fault in a face kernel is answered on the CPU (`--features fault-injection`; without it this module is empty).
+#[cfg(feature = "fault-injection")]
+mod fallback {
+    use super::*;
+    use ym_gpu::device::GpuFault;
+
+    /// A frame our own check refuses is the CPU's, with the note, and the next frame is the device's.
+    #[test]
+    fn a_refused_face_frame_costs_one_cpu_frame_and_leaves_the_route_open() {
+        let Some(gpu) = gpu(true) else { return };
+        let d = photo();
+        let src = d.source().with_settings(with_node(everything()));
+        let r = device_renderer(Some(Arc::clone(&gpu)), 256);
+        r.navigate(src.id);
+        let st = device_view(false);
+        let device = frame_when_ready(&r, &src, &st);
+        assert_eq!(device.report.device, ComputeDevice::Gpu);
+        gpu.set_fault(Some(GpuFault::FailInvalid(1)));
+        let refused = frame_when_ready(&r, &src, &st);
+        gpu.set_fault(None);
+        assert_eq!(refused.report.device, ComputeDevice::Cpu);
+        assert!(refused.report.device_refused);
+        assert!(
+            refused
+                .report
+                .notes
+                .iter()
+                .any(|n| n.contains("invalid kernel input")),
+            "{:?}",
+            refused.report.notes
+        );
+        assert!(!r.raw_on_cpu(src.id), "the route is still open");
+        let (max, _) = frame_diff(&refused, &device);
+        assert!(max <= 3, "{max} codes");
+        let next = frame_when_ready(&r, &src, &st);
+        assert_eq!(next.report.device, ComputeDevice::Gpu);
+        assert!(!next.report.device_refused);
+    }
+
+    /// The face kernel's pipeline fails to compile (every other kernel is compiled already): the frame is the CPU's, with the
+    /// note, the route stays open for the frames without the node, and an export makes the whole photo again on the CPU,
+    /// bit for bit the CPU export.
+    #[test]
+    fn a_face_kernel_that_fails_is_answered_on_the_cpu() {
+        let Some(gpu) = gpu(true) else { return };
+        let d = photo();
+        let with = d.source().with_settings(with_node(everything()));
+        let without = d.source();
+        let r = device_renderer(Some(Arc::clone(&gpu)), 256);
+        r.navigate(with.id);
+        // Everything the node's frame uses but the face kernel is compiled by a frame of the same photo without the node's work.
+        let st = device_view(false);
+        let warm = frame_of(&r, &without, &st);
+        assert_eq!(warm.report.device, ComputeDevice::Gpu);
+        gpu.set_fault(Some(GpuFault::Shader));
+        let refused = frame_when_ready(&r, &with, &st);
+        gpu.set_fault(None);
+        assert_eq!(
+            refused.report.device,
+            ComputeDevice::Cpu,
+            "{:?}",
+            refused.report.notes
+        );
+        assert!(refused.report.device_refused);
+
+        let home = tempfile::tempdir().expect("dir");
+        let cpu_dir = tempfile::tempdir().expect("dir");
+        let settings = with_node(everything());
+        let cpu =
+            export_png(&d, &settings, device_renderer(None, 256), cpu_dir.path()).expect("cpu");
+        for fault in [GpuFault::Shader, GpuFault::OutOfBudget, GpuFault::Lost] {
+            // A device that is lost stays lost: each case gets a device of its own.
+            let own = Arc::new(Gpu::start(GpuConfig::default()).expect("device"));
+            own.set_fault(Some(fault));
+            let out = tempfile::tempdir().expect("dir");
+            let done = export_png(
+                &d,
+                &settings,
+                device_renderer(Some(Arc::clone(&own)), 256),
+                out.path(),
+            );
+            own.set_fault(None);
+            let done = done.unwrap_or_else(|e| panic!("{fault:?}: {e}"));
+            assert_eq!(done.device, ComputeDevice::Cpu, "{fault:?}");
+            assert!(
+                done.notes
+                    .iter()
+                    .any(|n| n
+                        .contains("The graphics card could not render this photo, so the CPU did")),
+                "{fault:?}: {:?}",
+                done.notes
+            );
+            assert_eq!(
+                std::fs::read(&done.path).expect("read"),
+                std::fs::read(&cpu.path).expect("read"),
+                "{fault:?}: the fallback is not the CPU export"
+            );
+        }
+        let _ = home;
+    }
+}
+
+/// Each tool on its own and some together, on the device against the CPU, in an export: the number for each (and where the worst
+/// pixel is), so that a combination that differs is found at once.
+#[test]
+fn each_tool_alone_and_together_agree_with_the_cpu_in_an_export() {
+    let Some(gpu) = gpu(true) else { return };
+    let d = photo();
+    let amounts = |pairs: &[(&str, i64)]| {
+        let mut all = serde_json::Map::new();
+        for (k, v) in pairs {
+            all.insert((*k).to_owned(), json!(v));
+        }
+        json!({ "all": all })
+    };
+    let mut cases: Vec<(String, Value)> = [
+        "blemish",
+        "dark_circles",
+        "even_skin",
+        "skin_contrast",
+        "shadow_desaturation",
+        "shine_removal",
+        "teeth_whitening",
+    ]
+    .iter()
+    .map(|t| ((*t).to_owned(), amounts(&[(t, 70)])))
+    .collect();
+    cases.push((
+        "texture with dark circles".to_owned(),
+        amounts(&[("dark_circles", 70), ("texture", 20)]),
+    ));
+    cases.push((
+        "blemish with even skin".to_owned(),
+        amounts(&[("blemish", 80), ("even_skin", 70)]),
+    ));
+    cases.push((
+        "grading".to_owned(),
+        amounts(&[
+            ("skin_contrast", 40),
+            ("shadow_desaturation", 40),
+            ("shine_removal", 50),
+        ]),
+    ));
+    cases.push(("every tool".to_owned(), everything()));
+    for (name, body) in cases {
+        let settings = with_node(body);
+        let (cpu_dir, dev_dir) = (
+            tempfile::tempdir().expect("dir"),
+            tempfile::tempdir().expect("dir"),
+        );
+        let cpu =
+            export_png(&d, &settings, device_renderer(None, 256), cpu_dir.path()).expect("cpu");
+        let dev = export_png(
+            &d,
+            &settings,
+            device_renderer(Some(Arc::clone(&gpu)), 400),
+            dev_dir.path(),
+        )
+        .expect("device");
+        assert_eq!(dev.device, ComputeDevice::Gpu, "{name}: {:?}", dev.notes);
+        let (a, b) = (decode_png16(&dev.path), decode_png16(&cpu.path));
+        let worst = code_diff(&a, &b);
+        let at = a
+            .iter()
+            .zip(&b)
+            .enumerate()
+            .max_by_key(|(_, (x, y))| x.abs_diff(**y))
+            .map_or(0, |(i, _)| i / 3);
+        let n = a.iter().zip(&b).filter(|(x, y)| x != y).count();
+        say(&format!(
+            "{name}: the device differs from the CPU by {worst} of 65535 at ({}, {}), {n} of {} codes differ",
+            at % 1200,
+            at / 1200,
+            a.len()
+        ));
+        assert!(worst <= TEN_BIT_CODE, "{name}: {worst} at pixel {at}");
     }
 }
