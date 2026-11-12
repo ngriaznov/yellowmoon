@@ -1510,6 +1510,59 @@ fn painted_protection_holds_on_the_device() {
     );
 }
 
+/// The protection plane's Grow, Feather and Refine edges (the raster passes of the protection row, with the Input's luma as the
+/// guide) give the CPU's picture on the device, within one 10-bit code, and the protection matters in it.
+#[test]
+fn the_protection_planes_edges_agree_with_the_cpu_on_the_device() {
+    let Some(gpu) = gpu(true) else { return };
+    let d = photo();
+    let (cx, cy) = (FACE_A[0] + FACE_A[2] / 2.0, FACE_A[1] + FACE_A[3] / 2.0);
+    let protected = |edges: Value| {
+        let mut body = everything();
+        let mut protect = json!({ "strokes": [
+            { "size": 0.12, "hardness": 0.6, "erase": false, "points": [[cx + 0.02, cy - 0.2], [cx + 0.06, cy + 0.2]] },
+        ] });
+        protect
+            .as_object_mut()
+            .unwrap()
+            .extend(edges.as_object().unwrap().clone());
+        body["protect"] = protect;
+        with_node(body)
+    };
+    let render = |s: &DevelopSettings, on_device: bool| {
+        let out = tempfile::tempdir().expect("dir");
+        let r = device_renderer(on_device.then(|| Arc::clone(&gpu)), 400);
+        let done = export_png(&d, s, r, out.path()).expect("export");
+        assert_eq!(
+            done.device == ComputeDevice::Gpu,
+            on_device,
+            "{:?}",
+            done.notes
+        );
+        decode_png16(&done.path)
+    };
+    let open = render(&with_node(everything()), false);
+    for (what, edges) in [
+        ("feather", json!({ "feather": 0.4 })),
+        ("grow", json!({ "grow": 0.3 })),
+        ("refine", json!({ "refine": 0.7 })),
+        (
+            "all three",
+            json!({ "feather": 0.3, "grow": -0.2, "refine": 0.5 }),
+        ),
+    ] {
+        let s = protected(edges);
+        let (cpu, dev) = (render(&s, false), render(&s, true));
+        let worst = code_diff(&cpu, &dev);
+        let held = code_diff(&cpu, &open);
+        say(&format!(
+            "protection with {what}: the device differs from the CPU by {worst} of 65535 (the protection moves the picture by {held})"
+        ));
+        assert!(held > 300, "{what}: the protection does something ({held})");
+        assert!(worst <= TEN_BIT_CODE, "{what}: {worst}");
+    }
+}
+
 /// A fault in a face kernel is answered on the CPU (`--features fault-injection`; without it this module is empty).
 #[cfg(feature = "fault-injection")]
 mod fallback {
