@@ -1336,7 +1336,10 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
                 // The one resource limit: the pieces of a graph with a Film node (and the raster rows before it) are the piece grown by their summed
                 // reach on every side, so a piece cannot be smaller than that, and a binding under the smallest piece's
                 // pictures leaves no cut that fits. The CPU makes such a frame, with the bytes the smallest piece needs.
-                let film_nodes = g.nodes.iter().filter(|k| **k == NodeKind::Film).count();
+                // A live Face Refinement node is the same: its regions are made whole (`FilmStack::widen`), so the picture the node
+                // makes over a view is at least the regions it meets, and a binding under it has no cut that fits (`docs/27` S-13).
+                let film_nodes = g.nodes.iter().filter(|k| **k == NodeKind::Film).count()
+                    + usize::from(g.face_live);
                 let floor = got.report.device != ComputeDevice::Gpu
                     && film_nodes >= 1
                     && got.report.device_refused
