@@ -123,6 +123,12 @@ pub struct MaskView {
     /// and on the CPU. A `row` that is not a Depth row shows the row's own mask as usual.
     #[serde(default)]
     pub depth: bool,
+    /// Show skin areas (`docs/27` S-11c): with `node` naming a Face Refinement node, the frame shows face `face`'s skin areas
+    /// (1-based, as the node numbers them) tinted over the photo as it is, whatever `style` says. A view like the others: no
+    /// patch, no undo, nothing saved. No faces known yet, or a number past the end, leaves the photo. A node that is not a Face
+    /// Refinement node ignores it.
+    #[serde(default)]
+    pub face: Option<u32>,
 }
 
 /// Pointer input over the photo (`viewport_input`). Coordinates are CSS pixels in the cell.

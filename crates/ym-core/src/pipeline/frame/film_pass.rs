@@ -372,10 +372,12 @@ impl FilmRender {
                 break;
             }
         }
-        joined.iter().fold(core, |out, &(i, ri)| match &self.steps[i].work {
-            StepWork::Face(face) => union(out, face.region_with_protect(ri)),
-            StepWork::Film(_) => out,
-        })
+        joined
+            .iter()
+            .fold(core, |out, &(i, ri)| match &self.steps[i].work {
+                StepWork::Face(face) => union(out, face.region_with_protect(ri)),
+                StepWork::Film(_) => out,
+            })
     }
 
     /// The area the first Film node reads for `need`: `need` grown by every halo, cut to the photo's extent.
@@ -396,6 +398,8 @@ impl FilmRender {
         cover: &Cover<'_>,
         rasters: Option<(&CpuPlanes, Area)>,
     ) -> Result<FilmPlanes, RenderError> {
+        // What the pixels asked for demand of each node's picture, before the area grows to hold whole regions.
+        let demanded = self.schedule().infer(need, &self.frame).made;
         let need = self.widen(need);
         let areas = self.schedule().infer(need, &self.frame);
         let (made, read, want) = (areas.made, areas.read, areas.source);
@@ -415,7 +419,15 @@ impl FilmRender {
         for (i, step) in self.steps.iter().enumerate() {
             job.check()?;
             if let StepWork::Face(face) = &step.work {
-                let parts = self.face_parts(job, step, face, made[i], cover, rasters, &done)?;
+                let parts = self.face_parts(
+                    job,
+                    step,
+                    face,
+                    (made[i], demanded[i]),
+                    cover,
+                    rasters,
+                    &done,
+                )?;
                 done.nodes.insert(step.id, FilmPlane { parts });
                 continue;
             }
@@ -490,7 +502,7 @@ impl FilmRender {
         job: &mut Job<'_>,
         step: &FilmStepRun,
         face: &FaceWork,
-        made: Area,
+        (made, demanded): (Area, Area),
         cover: &Cover<'_>,
         rasters: Option<(&CpuPlanes, Area)>,
         done: &FilmPlanes,
@@ -506,10 +518,20 @@ impl FilmRender {
             if !cover.area.contains(&a) {
                 // `FilmRender::widen` holds whole every region the pixels demanded of this node meet; this is a region that
                 // only the margin of the area meets (the protection plane's reach), whose pixels no output reads.
-                tracing::debug!(
-                    ?a,
-                    "a face region outside what the render demands is not made"
-                );
+                if a.intersect(&demanded).is_empty() {
+                    tracing::debug!(
+                        ?a,
+                        "a face region outside what the render demands is not made"
+                    );
+                } else {
+                    // Never expected: `widen` holds whole every region the demand meets.
+                    tracing::warn!(
+                        ?a,
+                        ?demanded,
+                        "a face region is cut by the picture the node reads; it is left unretouched"
+                    );
+                    job.note_face_region_cut();
+                }
                 continue;
             }
             let prefix_started = Instant::now();

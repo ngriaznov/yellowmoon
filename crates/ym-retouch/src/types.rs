@@ -174,6 +174,14 @@ impl BoundedMask {
         Ok(())
     }
 
+    /// The byte at `(x_px, y_px)` of the full-size image, or 0 outside the region.
+    pub fn value_at(&self, x_px: i64, y_px: i64) -> u8 {
+        self.mask.get(
+            x_px - i64::from(self.region.x_px),
+            y_px - i64::from(self.region.y_px),
+        )
+    }
+
     /// Places the mask on a zero mask of `size_px`, clipping what falls outside it.
     pub fn to_full(&self, size_px: (u32, u32)) -> Result<Mask> {
         self.validate()?;

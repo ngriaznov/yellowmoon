@@ -180,6 +180,14 @@ export const commands = {
 	 */
 	faceState: (photoId: PhotoId) => __TAURI_INVOKE<FaceState>("face_state", { photoId }),
 	/**
+	 *  `face_crop(photo_id, number)` (`docs/27` S-11c): the picture of face `number` (1-based) for the Faces card. The answer is the address
+	 *  of a PNG of 104 x 104 px on the `ym-frame` scheme (`ym-frame://localhost/<launch>/look-<photo>-<n>.png`, `http://ym-frame.localhost/…`
+	 *  on Windows): a square around the face's box, 1.4 times its larger side, from the picture the faces were found on (the Input's colour,
+	 *  without the retouch). Made at the thumbnails' priority and cancelled when the person moves to another photo. It fails with a plain
+	 *  sentence before the faces are known and for a number the photo does not have.
+	 */
+	faceCrop: (photoId: PhotoId, number: number) => __TAURI_INVOKE<string>("face_crop", { photoId, number }),
+	/**
 	 *  `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
 	 *  starting amounts. Empty when the lens data could not be loaded.
 	 */
@@ -2210,6 +2218,8 @@ export type MaskView = {
 	 *  for near, whole and not cut to the row's band, whatever `style` says. A row that is not a Depth row shows its own mask.
 	 */
 	depth?: boolean,
+	/**  Show skin areas (`docs/27` S-11c): with `node` naming a Face Refinement node, the frame shows face `face`'s skin areas tinted over the photo, whatever `style` says. */
+	face?: number | null,
 };
 
 /**

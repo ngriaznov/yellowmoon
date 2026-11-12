@@ -640,6 +640,7 @@ fn view(
         style,
         row,
         depth: false,
+        face: None,
     });
     st
 }

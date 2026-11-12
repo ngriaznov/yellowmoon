@@ -280,6 +280,10 @@ pub fn teeth_mask(mouth: &Mask, image: &LinearAwg4Image, extent_px: f64) -> Resu
 /// parser found no skin, or (for the teeth) found no mouth.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FaceMasks {
+    /// The skin itself (5.2), before the beauty-mark holes: what the Show skin areas view tints pink.
+    pub skin: Option<BoundedMask>,
+    /// The mouth's interior as the parser gives it, unfeathered: what the Show skin areas view cuts out of the skin.
+    pub mouth: Option<BoundedMask>,
     /// Where blemish removal works.
     pub blemish: Option<BoundedMask>,
     /// Where dark circles works.
@@ -290,6 +294,48 @@ pub struct FaceMasks {
     pub grading: Option<BoundedMask>,
     /// Where teeth whitening works (5.6).
     pub teeth: Option<BoundedMask>,
+}
+
+/// What the Show skin areas view (`docs/27` S-11c) draws at one pixel of a face, each 0 to 255.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SkinAreaValues {
+    /// The skin with the mouth's inside cut out.
+    pub skin: u8,
+    /// The dark-circle mask: under the eyes.
+    pub under_eyes: u8,
+    /// The teeth mask (0 when the mouth is closed).
+    pub teeth: u8,
+    /// The even-skin and grading core (the grading mask, 5.6).
+    pub core: u8,
+}
+
+impl FaceMasks {
+    /// The areas at pixel `(x_px, y_px)` of the picture the masks were made on.
+    pub fn areas_at(&self, x_px: i64, y_px: i64) -> SkinAreaValues {
+        let at = |m: &Option<BoundedMask>| m.as_ref().map_or(0, |m| m.value_at(x_px, y_px));
+        SkinAreaValues {
+            skin: mul_inv(at(&self.skin), at(&self.mouth)),
+            under_eyes: at(&self.dark_circles),
+            teeth: at(&self.teeth),
+            core: at(&self.grading),
+        }
+    }
+
+    /// The smallest rectangle `(x0, y0, x1, y1)` that holds every area of this face, or `None` when the face has none.
+    pub fn areas_bounds(&self) -> Option<(i64, i64, i64, i64)> {
+        [&self.skin, &self.dark_circles, &self.teeth, &self.grading]
+            .into_iter()
+            .flatten()
+            .map(|m| {
+                (
+                    i64::from(m.region.x_px),
+                    i64::from(m.region.y_px),
+                    m.region.right_px(),
+                    m.region.bottom_px(),
+                )
+            })
+            .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
+    }
 }
 
 /// Builds the masks of one face with the models from the full-resolution `image`. A failing
@@ -334,11 +380,17 @@ pub fn face_masks(
     let grading = grading_mask(&skin, extent_px)?;
     let even = even_skin_with_edge(&skin, &uniformity, exclude, extent_px, &grading)?;
 
+    let mut mouth_mask = None;
     let teeth = match models
         .parser
         .part_mask(image, face, FacePart::MouthInterior)
     {
-        Ok(Some(mouth)) => Some(teeth_mask(&mouth.to_full(full_size_px)?, image, extent_px)?),
+        Ok(Some(mouth)) => {
+            let mouth = mouth.to_full(full_size_px)?;
+            let teeth = teeth_mask(&mouth, image, extent_px)?;
+            mouth_mask = BoundedMask::from_full(&mouth);
+            Some(teeth)
+        }
         Ok(None) => None,
         Err(error) => {
             tracing::warn!(%error, "the mouth interior failed; teeth whitening is off");
@@ -347,6 +399,8 @@ pub fn face_masks(
     };
 
     Ok(FaceMasks {
+        skin: BoundedMask::from_full(&skin),
+        mouth: mouth_mask,
         blemish: BoundedMask::from_full(&blemish),
         dark_circles: BoundedMask::from_full(&dark),
         even_skin: BoundedMask::from_full(&even),

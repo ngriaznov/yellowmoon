@@ -1434,6 +1434,11 @@ export interface MaskView {
    * row's band, whatever `style` says. A row that is not a Depth row shows its own mask. Left out is `false`.
    */
   depth?: boolean;
+  /**
+   * Show skin areas (`docs/27` S-11c): with `node` naming a Face Refinement node, the frame shows face `face`'s skin areas (1-based) tinted over
+   * the photo, whatever `style` says. Left out, or `null`, is the node's mask as usual.
+   */
+  face?: number | null;
 }
 
 /**

@@ -3235,6 +3235,22 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         return faceStateOf(photoId);
       }),
 
+    // --- Face pictures (S-11c): the Faces card's crops. The shell answers with an address on the `ym-frame` scheme; the mock a data URL of a grey disc with the face's number.
+    faceCrop: (photoId, number) =>
+      run("faceCrop", (): string => {
+        photo(photoId);
+        const state = faceStateOf(photoId);
+        if (state.phase !== "ready") fail("render", "The faces are not found yet. Try again in a moment.");
+        if (!state.faces.some((f) => f.number === number)) {
+          fail("render", `This photo has no face ${number}. It has ${state.faces.length}.`);
+        }
+        const svg =
+          `<svg xmlns="http://www.w3.org/2000/svg" width="104" height="104" viewBox="0 0 104 104">` +
+          `<rect width="104" height="104" fill="#2a2a2c"/><circle cx="52" cy="52" r="40" fill="#8a8a8e"/>` +
+          `<text x="52" y="52" font-family="sans-serif" font-size="34" font-weight="700" fill="#18181a" text-anchor="middle" dominant-baseline="central">${number}</text></svg>`;
+        return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+      }),
+
     lensList: () => run("lensList", () => (options.lensesMissing ? [] : MOCK_LENSES.map((lens) => ({ ...lens })))),
     looksList: () => run("looksList", () => looks),
     lookThumbnail: (photoId, lookId) =>

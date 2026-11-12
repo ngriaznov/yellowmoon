@@ -41,7 +41,11 @@ fn wait_until(what: &str, secs: u64, mut done: impl FnMut() -> bool) {
 /// A photo of 1200 x 800: a ramp from dark to light with a darker patch in each face, so that the low-frequency tools have
 /// something to do.
 fn photo() -> Developed {
-    let (w, h) = (1200u32, 800u32);
+    photo_sized(1200, 800)
+}
+
+/// [`photo`] at another size (the faces are shares of it).
+fn photo_sized(w: u32, h: u32) -> Developed {
     let scene = Scene::new(w, h, light(PROFILE, 5500.0), Layout::Ramp, 0.4).noise(0.0, 0.0);
     let mut mosaic = scene.mosaic();
     let darker = |m: &mut u16, f: f64| {
@@ -707,7 +711,7 @@ fn link(from: Value, port: &str, to: u32, to_port: &str) -> Value {
 }
 
 /// A weaker Face Refinement body than [`strong`], so that two nodes in a line do different things.
-fn light() -> Value {
+fn gentle() -> Value {
     json!({ "all": { "blemish": 0, "dark_circles": 60, "even_skin": 0, "texture": 0,
                      "skin_contrast": 0, "shadow_desaturation": 0, "shine_removal": 50, "teeth_whitening": 0 } })
 }
@@ -715,9 +719,7 @@ fn light() -> Value {
 /// Every graph order the pass has to get right: the Face Refinement node before and after a Film node, two Face Refinement
 /// nodes (with a Film node between and after), and the node on a branch of a Parallel and under a Layer.
 fn orders() -> Vec<(&'static str, DevelopSettings)> {
-    let end = || json!({ "from": { "node": 9, "port": "picture" }, "to": { "node": "output", "port": "picture" } });
     let to_output = |from: u32| json!({ "from": { "node": from, "port": "picture" }, "to": { "node": "output", "port": "picture" } });
-    let _ = end;
     let parallel = doc_of(
         vec![
             face_node(2, strong()),
@@ -751,17 +753,19 @@ fn orders() -> Vec<(&'static str, DevelopSettings)> {
     vec![
         (
             "Face then Film",
+            doc_of(vec![face_node(2, strong()), film_node(3)], line(&[1, 2, 3])),
+        ),
+        (
+            // The halos add: the reach of the two Film nodes is wider than the pad of a face's region.
+            "Face then two Films",
             doc_of(
-                vec![face_node(2, strong()), film_node(3)],
-                line(&[1, 2, 3]),
+                vec![face_node(2, strong()), film_node(3), film_node(4)],
+                line(&[1, 2, 3, 4]),
             ),
         ),
         (
             "Film then Face",
-            doc_of(
-                vec![film_node(2), face_node(3, strong())],
-                line(&[1, 2, 3]),
-            ),
+            doc_of(vec![film_node(2), face_node(3, strong())], line(&[1, 2, 3])),
         ),
         (
             "Film, Face, Film",
@@ -773,14 +777,14 @@ fn orders() -> Vec<(&'static str, DevelopSettings)> {
         (
             "two Face nodes",
             doc_of(
-                vec![face_node(2, strong()), face_node(3, light())],
+                vec![face_node(2, strong()), face_node(3, gentle())],
                 line(&[1, 2, 3]),
             ),
         ),
         (
             "Face, Film, Face",
             doc_of(
-                vec![face_node(2, strong()), film_node(3), face_node(4, light())],
+                vec![face_node(2, strong()), film_node(3), face_node(4, gentle())],
                 line(&[1, 2, 3, 4]),
             ),
         ),
@@ -805,9 +809,10 @@ fn tiled(tile: usize) -> Renderer {
 /// A tiled export gives the same pixels as the export in one piece, for every graph order, and both faces are retouched whole.
 #[test]
 fn a_tiled_export_equals_the_whole_frame_in_every_graph_order() {
-    let d = photo();
+    let d = photo_sized(600, 400);
     let src = d.source();
     let whole = tiled(4096);
+    let mut cuts = 0;
     for (name, graph) in orders() {
         let reference = export(&whole, &src, graph.clone());
         // The faces are in it: the graph is not the same without the Face Refinement nodes (its Film nodes only).
@@ -816,8 +821,10 @@ fn a_tiled_export_equals_the_whole_frame_in_every_graph_order() {
             export(&whole, &src, plain()).rgb,
             "{name}: the graph does something"
         );
-        for tile in [97usize, 256, 400] {
-            let img = export(&tiled(tile), &src, graph.clone());
+        for tile in [97usize, 160] {
+            let renderer = tiled(tile);
+            let img = export(&renderer, &src, graph.clone());
+            cuts += renderer.face_regions_cut();
             let diff = differing(&reference, &img);
             assert!(
                 diff.is_empty(),
@@ -827,12 +834,19 @@ fn a_tiled_export_equals_the_whole_frame_in_every_graph_order() {
             );
         }
     }
+    // No face was left partly unretouched: the halo of a Film node never cut a region (`docs/27` S-11b2).
+    assert_eq!(
+        cuts + whole.face_regions_cut(),
+        0,
+        "regions left unretouched"
+    );
 }
 
-/// A viewport frame equals the same pixels of a frame of the whole photo at 100 %, for every graph order.
+/// A viewport frame equals the same pixels of a frame of the whole photo at 100 % (within the dither's one code), for every graph
+/// order, and no region of a face is left unretouched.
 #[test]
 fn a_viewport_frame_equals_the_whole_frame_in_every_graph_order() {
-    let d = photo();
+    let d = photo_sized(600, 400);
     let src = d.source();
     let r = renderer_with(Some(two_faces()), 0);
     r.navigate(src.id);
@@ -843,40 +857,249 @@ fn a_viewport_frame_equals_the_whole_frame_in_every_graph_order() {
     let view = |s: &PhotoSource, w: f64, h: f64, x0: f64, y0: f64| {
         let mut st = ViewportState::new(ViewportRect::cell(w, h, 1.0));
         st.mode = ym_core::pipeline::ViewportMode::Percent { value: 100.0 };
-        st.centre = [(x0 + w / 2.0) / 1200.0, (y0 + h / 2.0) / 800.0];
+        st.centre = [(x0 + w / 2.0) / 600.0, (y0 + h / 2.0) / 400.0];
         r.viewport_frame(s, &st, &opts, &CancelToken::new())
             .expect("frame")
     };
-    for (name, graph) in orders() {
+    let mut graphs = orders();
+    graphs.insert(0, ("no nodes", plain()));
+    for (name, graph) in graphs {
         let node = src.with_settings(graph);
         let _ = view(&node, 200.0, 200.0, 0.0, 0.0);
-        wait_until("the faces", 60, || {
-            !r.faces_worker_alive(src.id) && r.faces_ready(&node)
-        });
-        let whole = view(&node, 1200.0, 800.0, 0.0, 0.0);
-        assert_eq!((whole.width, whole.height), (1200, 800));
+        if name != "no nodes" {
+            wait_until("the faces", 60, || {
+                !r.faces_worker_alive(src.id) && r.faces_ready(&node)
+            });
+        }
+        let whole = view(&node, 600.0, 400.0, 0.0, 0.0);
+        assert_eq!((whole.width, whole.height), (600, 400));
         // Cells whose edges cut the faces' regions and the halation's reach.
         let mut checked = 0;
         for (x0, y0, w, h) in [
-            (0.0, 0.0, 300.0, 300.0),
-            (150.0, 100.0, 300.0, 300.0),
-            (233.0, 151.0, 301.0, 257.0),
-            (40.0, 330.0, 400.0, 220.0),
-            (500.0, 200.0, 333.0, 301.0),
-            (600.0, 120.0, 250.0, 400.0),
-            (800.0, 500.0, 400.0, 300.0),
+            (0.0, 0.0, 150.0, 150.0),
+            (75.0, 50.0, 150.0, 150.0),
+            (116.0, 75.0, 151.0, 129.0),
+            (20.0, 165.0, 200.0, 110.0),
+            (250.0, 100.0, 167.0, 151.0),
+            (300.0, 60.0, 125.0, 200.0),
+            (400.0, 250.0, 200.0, 150.0),
         ] {
             let part = view(&node, w, h, x0, y0);
             assert_eq!((part.width, part.height), (w as usize, h as usize));
             for y in 0..part.height {
                 for x in 0..part.width {
                     let a = &part.rgba[(y * part.width + x) * 4..][..4];
-                    let b = &whole.rgba[((y + y0 as usize) * 1200 + x + x0 as usize) * 4..][..4];
-                    assert_eq!(a, b, "{name}: cell at ({x0}, {y0}), pixel ({x}, {y})");
+                    let b = &whole.rgba[((y + y0 as usize) * 600 + x + x0 as usize) * 4..][..4];
+                    // The 8-bit frame is dithered by the cell's own pixel grid, so a cell and the crop of the whole differ by one
+                    // code in places even for a photo with no node (the first graph of the list); a region cut would show more.
+                    let worst = a
+                        .iter()
+                        .zip(b)
+                        .map(|(p, q)| p.abs_diff(*q))
+                        .max()
+                        .unwrap_or(0);
+                    assert!(
+                        worst <= 1,
+                        "{name}: cell at ({x0}, {y0}), pixel ({x}, {y}): {a:?} against {b:?}"
+                    );
                     checked += 1;
                 }
             }
         }
         assert!(checked > 0);
+    }
+    assert_eq!(r.face_regions_cut(), 0, "regions left unretouched");
+}
+
+// ---- Show skin areas and the faces' pictures (S-11c) -------------------------------------------------------------------------
+
+fn areas_view(face: Option<u32>, node: u32) -> ViewportState {
+    let mut st = ViewportState::new(ViewportRect::cell(600.0, 400.0, 1.0));
+    st.mask_view = Some(ym_core::pipeline::MaskView {
+        node,
+        style: ym_core::pipeline::MaskStyle::Overlay,
+        row: None,
+        depth: false,
+        face,
+    });
+    st
+}
+
+fn view_frame(
+    r: &Renderer,
+    src: &PhotoSource,
+    st: &ViewportState,
+) -> ym_core::pipeline::RenderedFrame {
+    r.viewport_frame(src, st, &FrameOptions::default(), &CancelToken::new())
+        .expect("frame")
+}
+
+/// The photo with the node and its faces ready, on a renderer that has them.
+fn ready(body: Value) -> (Developed, Renderer, PhotoSource) {
+    let d = photo();
+    let src = d.source();
+    let r = renderer_with(Some(two_faces()), 0);
+    r.navigate(src.id);
+    let node = src.with_settings(with_node(body));
+    let _ = frame(&r, &node);
+    wait_until("the faces", 60, || {
+        !r.faces_worker_alive(src.id) && r.faces_ready(&node)
+    });
+    (d, r, node)
+}
+
+#[test]
+fn show_skin_areas_tints_the_selected_face_and_leaves_the_settings_alone() {
+    let (_d, r, node) = ready(strong());
+    let before = serde_json::to_value(&node.settings).expect("settings");
+    let plain_view = ViewportState::new(ViewportRect::cell(600.0, 400.0, 1.0));
+    let photo_frame = view_frame(&r, &node, &plain_view);
+    let one = view_frame(&r, &node, &areas_view(Some(1), 2));
+    let two = view_frame(&r, &node, &areas_view(Some(2), 2));
+    assert_eq!(
+        (one.width, one.height),
+        (photo_frame.width, photo_frame.height)
+    );
+    // The cell is 600 x 400 for a 1200 x 800 photo: a face's box is half its share of the cell.
+    let near = |f: [f64; 4], x: usize, y: usize| {
+        let (cx, cy) = ((f[0] + f[2] / 2.0) * 600.0, (f[1] + f[3] / 2.0) * 400.0);
+        let (hw, hh) = (f[2] * 600.0 * 0.7, f[3] * 400.0 * 0.7);
+        (x as f64 - cx).abs() <= hw && (y as f64 - cy).abs() <= hh
+    };
+    let changed = |a: &ym_core::pipeline::RenderedFrame, b: &ym_core::pipeline::RenderedFrame| {
+        let mut out = Vec::new();
+        for y in 0..a.height {
+            for x in 0..a.width {
+                let i = (y * a.width + x) * 4;
+                if a.rgba[i..i + 4] != b.rgba[i..i + 4] {
+                    out.push((x, y));
+                }
+            }
+        }
+        out
+    };
+    let c1 = changed(&photo_frame, &one);
+    let c2 = changed(&photo_frame, &two);
+    assert!(
+        c1.len() > 500 && c2.len() > 500,
+        "{} and {}",
+        c1.len(),
+        c2.len()
+    );
+    assert!(
+        c1.iter().all(|&(x, y)| near(FACE_A, x, y)),
+        "face 1's tint is on face 1"
+    );
+    assert!(
+        c2.iter().all(|&(x, y)| near(FACE_B, x, y)),
+        "face 2's tint is on face 2"
+    );
+    // The centre of the skin is tinted pink: red up, blue up.
+    let (cx, cy) = (
+        ((FACE_A[0] + FACE_A[2] * 0.3) * 600.0) as usize,
+        ((FACE_A[1] + FACE_A[3] * 0.25) * 400.0) as usize,
+    );
+    let i = (cy * one.width + cx) * 4;
+    assert!(
+        one.rgba[i] > photo_frame.rgba[i] && one.rgba[i + 2] > photo_frame.rgba[i + 2],
+        "pink on the skin"
+    );
+    // It is a view: the settings are the ones it had, and the photo's own frame is the same as before it.
+    assert_eq!(
+        serde_json::to_value(&node.settings).expect("settings"),
+        before
+    );
+    assert_eq!(view_frame(&r, &node, &plain_view).rgba, photo_frame.rgba);
+    // Whatever the style says.
+    let mut mask_only = areas_view(Some(1), 2);
+    if let Some(v) = mask_only.mask_view.as_mut() {
+        v.style = ym_core::pipeline::MaskStyle::MaskOnly;
+    }
+    assert_eq!(view_frame(&r, &node, &mask_only).rgba, one.rgba);
+}
+
+#[test]
+fn show_skin_areas_with_no_such_face_is_the_photo() {
+    let (_d, r, node) = ready(strong());
+    let photo_frame = view_frame(
+        &r,
+        &node,
+        &ViewportState::new(ViewportRect::cell(600.0, 400.0, 1.0)),
+    );
+    for face in [Some(0), Some(3), Some(99)] {
+        assert_eq!(
+            view_frame(&r, &node, &areas_view(face, 2)).rgba,
+            photo_frame.rgba,
+            "face {face:?}"
+        );
+    }
+    // No faces known yet: the photo.
+    let d = photo();
+    let src = d.source();
+    let fresh = renderer_with(Some(two_faces()), 0);
+    let node = src.with_settings(with_node(strong()));
+    let plain_frame = view_frame(
+        &fresh,
+        &node,
+        &ViewportState::new(ViewportRect::cell(600.0, 400.0, 1.0)),
+    );
+    let early = view_frame(&fresh, &node, &areas_view(Some(1), 2));
+    assert_eq!(early.rgba, plain_frame.rgba);
+}
+
+#[test]
+fn a_node_that_is_not_a_face_refinement_node_ignores_the_face_field() {
+    let (_d, r, src) = ready(strong());
+    let graph = doc_of(
+        vec![corrector(2, 0.5), face_node(3, strong())],
+        line(&[1, 2, 3]),
+    );
+    let node = src.with_settings(graph);
+    // Node 2 is a corrector: its mask view is the same with or without a face number.
+    let without = view_frame(&r, &node, &areas_view(None, 2));
+    let with = view_frame(&r, &node, &areas_view(Some(1), 2));
+    assert_eq!(with.rgba, without.rgba);
+    // A node the photo does not have is the photo.
+    let missing = view_frame(&r, &node, &areas_view(Some(1), 77));
+    let photo_frame = view_frame(
+        &r,
+        &node,
+        &ViewportState::new(ViewportRect::cell(600.0, 400.0, 1.0)),
+    );
+    assert_eq!(missing.rgba, photo_frame.rgba);
+}
+
+#[test]
+fn a_face_picture_is_a_small_png_of_the_input_without_the_retouch() {
+    let d = photo();
+    let src = d.source();
+    let r = renderer_with(Some(two_faces()), 0);
+    r.navigate(src.id);
+    // Before the faces are known: an error with a plain sentence.
+    let early = r
+        .face_crop_png(&src.with_settings(with_node(strong())), 1)
+        .expect_err("no faces yet");
+    assert!(early.to_string().contains("not found yet"), "{early}");
+    let node = src.with_settings(with_node(strong()));
+    let _ = frame(&r, &node);
+    wait_until("the faces", 60, || {
+        !r.faces_worker_alive(src.id) && r.faces_ready(&node)
+    });
+    let png = r.face_crop_png(&node, 2).expect("a crop");
+    let decoded = png::Decoder::new(std::io::Cursor::new(&png))
+        .read_info()
+        .expect("a PNG");
+    let info = decoded.info();
+    assert_eq!((info.width, info.height), (104, 104));
+    // The Input's colour, not the retouch: the node's amounts do not change it.
+    let other = src.with_settings(with_node(
+        json!({ "all": { "blemish": 100, "dark_circles": 100, "even_skin": 100 } }),
+    ));
+    assert_eq!(r.face_crop_png(&other, 2).expect("a crop"), png);
+    assert_ne!(r.face_crop_png(&node, 1).expect("a crop"), png);
+    // A number past the end, and 0.
+    for n in [0, 3] {
+        let e = r.face_crop_png(&node, n).expect_err("no such face");
+        assert!(e.to_string().contains("no face"), "{e}");
     }
 }

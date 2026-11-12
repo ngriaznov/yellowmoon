@@ -231,6 +231,13 @@ export interface Api {
    * (the core finds the faces in the background when a photo with the node is the one looked at); `face_state` events say when it changes.
    */
   faceState(photoId: PhotoId): Promise<FaceState>;
+  /**
+   * `face_crop` (`docs/27` S-11c): the picture of face `number` (1-based) for the Faces card: the address of a PNG of 104 x 104 px on the `ym-frame` scheme,
+   * a square around the face's box (1.4 times its larger side, kept inside the frame) from the picture the faces were found on, which shows the Input's
+   * colour without the retouch. Made at the thumbnails' priority and cancelled when the person moves to another photo. Rejects with a plain sentence
+   * before the faces are known and for a number the photo does not have.
+   */
+  faceCrop(photoId: PhotoId, number: number): Promise<string>;
 
   // --- Lens ----------------------------------------------------------------
 
@@ -436,6 +443,7 @@ export const tauriApi: Api = {
   focusPlane: (photoId) => commands.focusPlane(photoId),
   retryDepth: (photoId) => unit(commands.retryDepth(photoId)),
   faceState: (photoId) => commands.faceState(photoId),
+  faceCrop: (photoId, number) => commands.faceCrop(photoId, number),
 
   lensList: () => commands.lensList(),
   looksList: () => commands.looksList(),

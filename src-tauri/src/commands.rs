@@ -485,6 +485,21 @@ pub async fn face_state(
     run(&state, move |api| api.face_state(photo_id)).await
 }
 
+/// `face_crop(photo_id, number)` (`docs/27` S-11c): the picture of face `number` (1-based) for the Faces card. The answer is the address
+/// of a PNG of 104 x 104 px on the `ym-frame` scheme (`ym-frame://localhost/<launch>/look-<photo>-<n>.png`, `http://ym-frame.localhost/…`
+/// on Windows): a square around the face's box, 1.4 times its larger side, from the picture the faces were found on (the Input's colour,
+/// without the retouch). Made at the thumbnails' priority and cancelled when the person moves to another photo. It fails with a plain
+/// sentence before the faces are known and for a number the photo does not have.
+#[tauri::command]
+#[specta::specta]
+pub async fn face_crop(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+    number: u32,
+) -> Result<String, AppError> {
+    run(&state, move |api| api.face_crop(photo_id, number)).await
+}
+
 // --- Lens -------------------------------------------------------------------------------------
 
 /// `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
@@ -864,6 +879,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             focus_plane,
             retry_depth,
             face_state,
+            face_crop,
             lens_list,
             looks_list,
             look_thumbnail,

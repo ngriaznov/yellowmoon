@@ -44,9 +44,9 @@ pub use lowfreq::{
     shine_removal_texture, teeth_pixel, tones_region,
 };
 pub use mask::{
-    FaceMasks, blemish_mask, dark_circle_mask, even_skin_mask, face_masks, grading_mask, max,
-    max_masks, mul, mul_inv, mul_inv_masks, mul_masks, punch_hole, skin_mask, smoothstep,
-    teeth_gate, teeth_mask,
+    FaceMasks, SkinAreaValues, blemish_mask, dark_circle_mask, even_skin_mask, face_masks,
+    grading_mask, max, max_masks, mul, mul_inv, mul_inv_masks, mul_masks, punch_hole, skin_mask,
+    smoothstep, teeth_gate, teeth_mask,
 };
 pub use models::{
     BeautyMarkDetector, BlemishProposer, FaceMesh, FaceParser, FacePart, MeshTable, Models,
