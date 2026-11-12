@@ -487,6 +487,13 @@ export interface MockOptions {
    */
   exportFailures?: Record<string, string>;
   /**
+   * Photos whose file goes away after they are Ready (`?mockVanish=DSC04207`, `docs/26` H-04), by name. The file is missed the next time
+   * it is read: when the photo is shown (it becomes the current photo) or when an export reaches it. The photo then becomes `skipped`
+   * with the core's sentence for a file that is gone (`FILE_GONE_MESSAGE`) and a `photo_progress` error event is sent, so the filmstrip
+   * says CAN'T OPEN and the cell says why. In an export that file fails with the same sentence and the others go on.
+   */
+  vanish?: string[];
+  /**
    * Bytes free in the destination folder (`?mockFreeBytes=200000000`). `export_estimate` says `low_space` when it is under 1.35 times the
    * estimate (`docs/26` P2-3). Default 500 GB.
    */
@@ -1077,6 +1084,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   downloadsDenied: false,
   existingExports: [],
   exportFailures: {},
+  vanish: [],
   freeBytes: 500_000_000_000,
   exportHoldAt: Number.POSITIVE_INFINITY,
   importHoldAt: Number.POSITIVE_INFINITY,
@@ -1111,7 +1119,7 @@ function withDefaults(...layers: MockOptions[]): Required<MockOptions> {
  * (a reason after a colon), `mockPicked=2,3,4`, `mockCurrent=3`, `mockPhotos=500` (a folder of 500 photos, the twelve repeating), `mockFolder=Name` (the folder's name), `mockUnreadable=Name` (a folder that cannot be read: opening a folder says so), `mockLooks=0` (no imported
  * looks), `mockLibraries=all` (looks in every section of the Look tab), `mockLenses=0` (no lens data: the Lens card's list is empty), `mockMissing=film-warm,film-cool`, `mockHold=5.4`, `mockDownloads=ARRI_LookLibrary_LogC4.zip` (zips that
  * land in Downloads while the wizard watches), `mockDownloadsDenied=1`, `mockExisting=DSC04204_neutral.jpg`,
- * `mockExportFails=DSC04204:reason` (`DSC04204:disk_full` stops the export there, as a full disk does), `mockFreeBytes=200000000` (the free space of the destination folder; under 1.35 times the estimate the panel warns), `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
+ * `mockVanish=DSC04207` (the photo's file goes away once it is Ready: the next time it is shown or exported it is skipped), `mockExportFails=DSC04204:reason` (`DSC04204:disk_full` stops the export there, as a full disk does), `mockFreeBytes=200000000` (the free space of the destination folder; under 1.35 times the estimate the panel warns), `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
  * (preferences survive a reload), `mockViewport=native` or `fallback` (the mock behaves like that viewport backend of the app),
  * `mockAppleAuto=unavailable|pending|answered|failed` (Apple Auto as on a Mac where it is not available, or where every photo is waiting
  * for its answer, has it, or failed; `MockAppleAuto`), `mockProviders=apple,claude,agy:signed_out` (the providers of the computer and their
@@ -1175,6 +1183,8 @@ export function optionsFromLocation(search: string | undefined = typeof location
       }),
     );
   }
+  const vanish = list("mockVanish");
+  if (vanish) out.vanish = vanish.map((name) => name.replace(/\.arw$/i, ""));
   const freeBytes = params.get("mockFreeBytes");
   if (freeBytes !== null && Number(freeBytes) >= 0) out.freeBytes = Number(freeBytes);
   const exportHold = params.get("mockExportHold");
@@ -1531,6 +1541,10 @@ interface PhotoRecord {
   phase: 0 | 1 | 2 | 3;
   skipReason: string | null;
 }
+
+/** What a photo says when its file is not there any more (`MESSAGE_NOT_FOUND` of `ym_raw::error`, `docs/26` P1-2). */
+export const FILE_GONE_MESSAGE =
+  "Yellowmoon can't find this file any more. It may have been moved, renamed or its drive disconnected.";
 
 /** The photos the last removal took out, with their places, for Undo. */
 interface MockRemoval {
@@ -2173,6 +2187,18 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     return { added: fresh.length, already_open: alreadyOpen };
   }
 
+  /**
+   * The photo's file is read again (it is shown, or an export reaches it): a photo named by `?mockVanish` that is Ready has lost its file,
+   * so it becomes skipped, with an event, as the core does (`Session::raw_image`, `docs/26` P1-4). True when it did.
+   */
+  function vanishIfGone(rec: PhotoRecord): boolean {
+    if (rec.phase < 3 || rec.skipReason || !options.vanish.includes(rec.scene.name)) return false;
+    rec.skipReason = FILE_GONE_MESSAGE;
+    setStatus(rec, { kind: "skipped", reason: FILE_GONE_MESSAGE });
+    progress(rec, "decode", true, FILE_GONE_MESSAGE);
+    return true;
+  }
+
   function setStatus(rec: PhotoRecord, status: PhotoStatus): void {
     rec.summary.status = status;
   }
@@ -2199,7 +2225,12 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       progress(rec, "estimate", true);
       emitThumbnail(rec);
       progress(rec, "thumbnail", true);
-      if (photos[current] === rec) sendFrame();
+      const shown = photos[current] === rec;
+      if (shown && vanishIfGone(rec)) {
+        sendFrame();
+        return;
+      }
+      if (shown) sendFrame();
     }
   }
 
@@ -2702,7 +2733,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       taken.add(name);
       files.push(name);
       skips.push(skip);
-      const failure = options.exportFailures[rec.scene.name] ?? null;
+      // A file that is gone when its turn comes fails that photo only, and the export goes on.
+      const failure = options.exportFailures[rec.scene.name] ?? (vanishIfGone(rec) ? FILE_GONE_MESSAGE : null);
       const sentence = failure === null ? null : destinationSentence(failure, folder);
       if (sentence !== null && stopAt === null) stopAt = i;
       errors.push(sentence ?? failure);
@@ -3014,6 +3046,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         const index = photos.findIndex((p) => p.summary.id === photoId);
         if (index < 0) fail("app", "That photo is no longer open. Open it again.");
         current = index;
+        const shown = photos[index];
+        if (shown) vanishIfGone(shown);
         viewport.mode = { kind: "fit" };
         viewport.before = false;
     viewport.maskView = null;
