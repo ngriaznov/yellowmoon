@@ -669,6 +669,105 @@ fn frame_diff(a: &RenderedFrame, b: &RenderedFrame) -> (u8, usize) {
     (max, over)
 }
 
+/// How a device renderer's frame of a Face Refinement graph differs from the CPU renderer's.
+struct FaceDiff {
+    /// The largest difference of a value, in codes of 255, and the count of values over 1.
+    max: u8,
+    over: usize,
+    /// Where the largest one is: the frame's pixel and channel (0 to 3), and the same place in the final image.
+    at: (usize, usize, usize),
+    at_final: (f64, f64),
+    /// Whether that place is inside a face box, or inside the box grown by half its size on every side.
+    in_box: bool,
+    in_grown: bool,
+    /// The largest difference inside the boxes and the count of values over 1 inside and outside them.
+    max_in_boxes: u8,
+    over_in: usize,
+    over_out: usize,
+}
+
+impl FaceDiff {
+    fn text(&self) -> String {
+        format!(
+            "max {} codes at ({}, {}) channel {} = final ({:.1}, {:.1}), in a face box {}, in a box grown by half {}; \
+             {} values over 1 ({} inside the boxes, {} outside); largest inside the boxes {}",
+            self.max,
+            self.at.0,
+            self.at.1,
+            self.at.2,
+            self.at_final.0,
+            self.at_final.1,
+            self.in_box,
+            self.in_grown,
+            self.over,
+            self.over_in,
+            self.over_out,
+            self.max_in_boxes
+        )
+    }
+}
+
+/// Measures `a` against `b` (two frames of the state `st`), and says where the faces are in them: `boxes` are shares of the final
+/// image of size `image`.
+fn face_frame_diff(
+    a: &RenderedFrame,
+    b: &RenderedFrame,
+    st: &ViewportState,
+    image: &(usize, usize),
+    boxes: &[ym_core::pipeline::FaceBox],
+) -> FaceDiff {
+    assert_eq!((a.width, a.height), (b.width, b.height));
+    let to_final = st.view_to_final(*image);
+    let (iw, ih) = (image.0 as f64, image.1 as f64);
+    let inside = |fx: f64, fy: f64, grow: f64| {
+        boxes.iter().any(|f| {
+            let (w, h) = (f.width * iw, f.height * ih);
+            fx >= f.x * iw - w * grow
+                && fx < f.x * iw + w * (1.0 + grow)
+                && fy >= f.y * ih - h * grow
+                && fy < f.y * ih + h * (1.0 + grow)
+        })
+    };
+    let mut r = FaceDiff {
+        max: 0,
+        over: 0,
+        at: (0, 0, 0),
+        at_final: (0.0, 0.0),
+        in_box: false,
+        in_grown: false,
+        max_in_boxes: 0,
+        over_in: 0,
+        over_out: 0,
+    };
+    for (i, (x, y)) in a.rgba.iter().zip(&b.rgba).enumerate() {
+        let d = x.abs_diff(*y);
+        let (px, c) = (i / 4, i % 4);
+        let (vx, vy) = (px % a.width, px / a.width);
+        let (fx, fy) = to_final.apply(vx as f64 + 0.5, vy as f64 + 0.5);
+        let grown = inside(fx, fy, 0.5);
+        let boxed = inside(fx, fy, 0.0);
+        if d > r.max {
+            r.max = d;
+            r.at = (vx, vy, c);
+            r.at_final = (fx, fy);
+            r.in_box = boxed;
+            r.in_grown = grown;
+        }
+        if boxed {
+            r.max_in_boxes = r.max_in_boxes.max(d);
+        }
+        if d > 1 {
+            r.over += 1;
+            if boxed {
+                r.over_in += 1;
+            } else {
+                r.over_out += 1;
+            }
+        }
+    }
+    r
+}
+
 fn export(
     d: &Developed,
     settings: &DevelopSettings,
@@ -910,10 +1009,14 @@ fn no_generated_graph_is_refused_by_the_device() {
             settle_depth(&cpu, &src, &states);
         }
         if g.face_live {
-            // A live Face Refinement node: the whole frame is the CPU's, refused with its reason, the viewport says so, and the
-            // pixels are the CPU renderer's, bit for bit (the faces are found on the CPU reference path on both).
+            // A live Face Refinement node: the view stages are the CPU's, refused with its reason, the viewport says so, and the
+            // pixels agree with the CPU renderer's within the view bound (the raw group is the device's; the faces are the CPU reference's on both).
             settle_faces(&device, &src, &states);
             settle_faces(&cpu, &src, &states);
+            let face_image = cpu
+                .final_size(&src, &CancelToken::new())
+                .expect("the final size");
+            let face_boxes = cpu.face_state(&src).faces;
             for (what, st) in &states {
                 let at = format!("{name}: {what}");
                 let got = frame(&device, &src, st);
@@ -933,20 +1036,24 @@ fn no_generated_graph_is_refused_by_the_device() {
                 }
                 if g.compare {
                     let want = frame(&cpu, &src, st);
-                    if what.ends_with("100 % true") {
-                        // At 100 % the raw group's region is made by the device's raw chain on this renderer (the raw front is not
-                        // the Face Refinement node's colour stage and stays on the device), which agrees with the CPU's within
-                        // the view bound of every other graph, not bit for bit; the colour stage and the faces are the CPU's on
-                        // both, so a face region cut or placed differently would show far above it. At Fit the group is the
-                        // CPU's on both and the bytes are equal.
-                        let (max, over) = frame_diff(&got, &want);
-                        if max > 2 || over >= got.rgba.len() / 2000 {
-                            problems.push(format!(
-                                "{at}: against the CPU {max} codes, {over} values over 1"
-                            ));
-                        }
-                    } else if got.rgba != want.rgba {
-                        problems.push(format!("{at}: not the CPU's bytes"));
+                    // Every pair is measured and written to the log, passing or not, so that a run on a device gives the numbers.
+                    //
+                    // Why a bound and not the CPU's bytes, at Fit as well as at 100 %: "Face Refinement runs on the CPU" refuses
+                    // the *view stages* only (`Job::view_gpu`). The raw group is made before them, by `group_on_device`
+                    // (a reduced group, Fit and any zoom under 100 %) or `raw_route` (100 %), and both use the device's raw
+                    // front (`GpuStages::RAW_FRONT`/`RAW_CHAIN`, on in `GpuStages::ALL`) whatever the plan holds. That front agrees
+                    // with the CPU's within the view bound, as in every other graph of this test, which compares at Fit too.
+                    // What is the CPU's on both renderers is everything the node reads of the faces: the analysis is made by the
+                    // CPU reference renderer (`object_reference`, no device), so the boxes, masks and maps are equal; and the
+                    // colour stage, the node and the dither. So the bound is the view bound, no wider, and the same bound is held
+                    // inside the face regions on their own: the node must not make the device's small input difference larger.
+                    let report = face_frame_diff(&got, &want, st, &face_image, &face_boxes);
+                    say(&format!("{at}: against the CPU: {}", report.text()));
+                    if report.max > 2
+                        || report.over >= got.rgba.len() / 2000
+                        || report.max_in_boxes > 2
+                    {
+                        problems.push(format!("{at}: against the CPU: {}", report.text()));
                     }
                 }
             }
@@ -978,8 +1085,14 @@ fn no_generated_graph_is_refused_by_the_device() {
                 let (max, over) = frame_diff(&got, &want);
                 worst_view = (worst_view.0.max(max), worst_view.1.max(over));
                 if max > 2 || over >= got.rgba.len() / 2000 {
+                    // Where the largest difference is, as for a graph with faces (there are no boxes to say).
+                    let image = cpu
+                        .final_size(&src, &CancelToken::new())
+                        .expect("the final size");
+                    let at_max = face_frame_diff(&got, &want, st, &image, &[]);
                     problems.push(format!(
-                        "{at}: against the CPU {max} codes, {over} values over 1"
+                        "{at}: against the CPU {max} codes, {over} values over 1: {}",
+                        at_max.text()
                     ));
                 }
             }
