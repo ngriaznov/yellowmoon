@@ -547,6 +547,26 @@ impl AppApi {
             .collect()
     }
 
+    /// `thumbnails_in_view(ids)` (`docs/26` H-11): the page shows these photos (the filmstrip draws
+    /// only the ones in view). Answers with the address of the thumbnail the shell holds for each, and
+    /// counts them as used. A photo whose thumbnail the shell let go of to keep its budget
+    /// ([`crate::viewport::THUMBNAIL_BUDGET_BYTES`]) gets a new one at the thumbnails' priority, announced
+    /// with `thumbnail_ready` like any other.
+    #[must_use]
+    pub fn thumbnails_in_view(&self, ids: &[PhotoId]) -> Vec<ThumbnailReady> {
+        let ids: Vec<u32> = ids.iter().map(|id| id.0).collect();
+        let (held, lost) = self.frames.thumbnails_in_view(&ids);
+        if !lost.is_empty() {
+            self.thumbs.refresh(lost.into_iter().map(CorePhotoId));
+        }
+        held.into_iter()
+            .map(|(id, url)| ThumbnailReady {
+                id: PhotoId(id),
+                url,
+            })
+            .collect()
+    }
+
     /// `node_thumbnails` (`docs/23` sections 5.7 and 9): asks for the thumbnails of every node of a
     /// photo. It answers at once; the pictures that changed since the webview was told come as a
     /// `node_thumbnails_ready` event, and are served on the `ym-frame` scheme. A photo that cannot be
@@ -653,6 +673,7 @@ impl AppApi {
             // Subject or People row gets its masks made in the background (section 4.5).
             self.core.prepare_masks(id);
         }
+        self.frames.set_current_photo(current.map(|id| id.0));
         self.viewport.set_photo(current);
     }
 
