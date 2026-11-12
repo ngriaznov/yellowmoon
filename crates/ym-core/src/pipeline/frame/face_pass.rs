@@ -310,7 +310,7 @@ impl FaceWork {
             let tone = self
                 .analysis_samples(ri)
                 .and_then(|a| tone_quantiles(&a))
-                .map_or(ToneSource::Plain, ToneSource::Estimate);
+                .map_or(ToneSource::Plain, |q| ToneSource::Estimate(Box::new(q)));
             regions.push(FaceRegionSpec {
                 area,
                 plan: Arc::new(face_plan(plan)),

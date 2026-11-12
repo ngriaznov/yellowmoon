@@ -639,10 +639,10 @@ fn the_tone_relation_matches_the_cpu_made_and_estimated() {
             let (curves, _) = case.device(
                 dev,
                 &plan,
-                &ToneSource::Curves(curves_of(&rel).expect("curves")),
+                &ToneSource::Curves(Box::new(curves_of(&rel).expect("curves"))),
                 None,
             );
-            let (estimated, _) = case.device(dev, &plan, &ToneSource::Estimate(q), None);
+            let (estimated, _) = case.device(dev, &plan, &ToneSource::Estimate(Box::new(q)), None);
             let (e_curves, e_est, e_plain) = (
                 worst(&curves, &cpu),
                 worst(&estimated, &cpu),

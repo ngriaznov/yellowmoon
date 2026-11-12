@@ -36,7 +36,9 @@ use ym_gpu::device::{Gpu, StorageMode, StoragePreference};
 use ym_gpu::image::GpuImage;
 use ym_gpu::kernels::color::{PreparedChain, Stop};
 use ym_gpu::kernels::film::FilmImage;
-use ym_gpu::kernels::film_stack::{FilmNodeSpec, FilmPictures, FilmStack, FilmTables, NodeWork};
+use ym_gpu::kernels::film_stack::{
+    FilmNodeSpec, FilmPictures, FilmStack, FilmTables, FilmWork, NodeWork,
+};
 use ym_gpu::queue::{JobSpec, Priority};
 use ym_gpu::stream::PassList;
 
@@ -171,7 +173,7 @@ fn stack_of(
             FilmNodeSpec {
                 node: *id,
                 prefix: Arc::clone(prefix),
-                work: NodeWork::Film {
+                work: NodeWork::Film(Box::new(FilmWork {
                     plan: Arc::new(plan_data(f, frame)),
                     scalars,
                     tables: FilmTables {
@@ -181,7 +183,7 @@ fn stack_of(
                         ],
                         build: Arc::new(move || data.clone()),
                     },
-                },
+                })),
                 reads: None,
             }
         })
@@ -674,7 +676,10 @@ fn the_tables_are_uploaded_once_and_a_change_of_scalars_uploads_nothing() {
         assert_eq!(held(dev), 1, "the tables are kept");
         // Another exposure: the scalars differ, the tables are the same ones.
         let mut other = stack.steps()[0].clone();
-        other.scalars.log10_gain += 0.3;
+        let NodeWork::Film(film) = &mut other.work else {
+            panic!("a Film node");
+        };
+        film.scalars.log10_gain += 0.3;
         let stack2 = FilmStack::new(stack.frame(), vec![other]);
         let b = device_pictures(dev, &stack2, f, need);
         assert_eq!(held(dev), 1, "a change of exposure uploads nothing");

@@ -149,10 +149,10 @@ pub enum ToneSource {
     /// The plain multiplication (an exposure change upstream, or nothing known).
     Plain,
     /// The CPU's relation, as numbers (a test of the blemish step alone, or a relation made elsewhere).
-    Curves([ToneCurve; 3]),
+    Curves(Box<[ToneCurve; 3]>),
     /// The device makes it: `ln` of the analysis picture's [`TONE_BINS`] quantiles of each channel over the region
     /// (`ym_retouch::tone_quantiles`), against its own quantiles of the region's decoded input.
-    Estimate([[f64; TONE_BINS]; 3]),
+    Estimate(Box<[[f64; TONE_BINS]; 3]>),
 }
 
 /// The protection plane of a region: 0 leaves a pixel to the tools, 255 leaves it alone.

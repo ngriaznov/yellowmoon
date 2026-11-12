@@ -107,18 +107,22 @@ pub struct FilmRasters<'a> {
     pub key: Option<&'a PlaneKey>,
 }
 
+/// A Film node's work: its passes over the photo's extent and its tables.
+#[derive(Debug, Clone)]
+pub struct FilmWork {
+    /// The passes of the node over the photo's extent.
+    pub plan: Arc<FilmPlan>,
+    /// The scalars of the chain (exposure, print shift, coupler amount, the output's matrix).
+    pub scalars: FilmScalars,
+    /// The tables.
+    pub tables: FilmTables,
+}
+
 /// What makes a node's picture.
 #[derive(Debug, Clone)]
 pub enum NodeWork {
-    /// A Film node: its passes over the photo's extent and its tables.
-    Film {
-        /// The passes of the node over the photo's extent.
-        plan: Arc<FilmPlan>,
-        /// The scalars of the chain (exposure, print shift, coupler amount, the output's matrix).
-        scalars: FilmScalars,
-        /// The tables.
-        tables: FilmTables,
-    },
+    /// A Film node.
+    Film(Box<FilmWork>),
     /// A Face Refinement node: the retouch of the regions around the faces (`kernels::face`).
     Face(Arc<FaceNode>),
 }
@@ -173,7 +177,7 @@ impl FilmNodeSpec {
     #[must_use]
     pub fn halo(&self) -> usize {
         match &self.work {
-            NodeWork::Film { plan, .. } => halos(plan).iter().sum(),
+            NodeWork::Film(film) => halos(&film.plan).iter().sum(),
             NodeWork::Face(_) => 0,
         }
     }
@@ -278,7 +282,7 @@ impl FilmStack {
     pub fn widen(&self, need: Area) -> Area {
         let faces = |s: &FilmNodeSpec| match &s.work {
             NodeWork::Face(f) => Some(Arc::clone(f)),
-            NodeWork::Film { .. } => None,
+            NodeWork::Film(_) => None,
         };
         if need.is_empty() || !self.steps.iter().any(|s| faces(s).is_some()) {
             return need;
@@ -445,19 +449,15 @@ impl FilmStack {
                 shadow: None,
             };
             let out = match &step.work {
-                NodeWork::Film {
-                    plan,
-                    scalars,
-                    tables,
-                } => {
+                NodeWork::Film(film) => {
                     let dev = {
                         let _span = crate::perf::span(crate::perf::Stage::FilmTables);
-                        device_tables(ctx, tables)?
-                            .with_scalars(scalars.clone())
+                        device_tables(ctx, &film.tables)?
+                            .with_scalars(film.scalars.clone())
                             .fast(self.fast)
                     };
                     let _span = crate::perf::span(crate::perf::Stage::FilmPasses);
-                    encode_film_tile(ctx, passes, &dev, plan, &input, frect(made[i]))?
+                    encode_film_tile(ctx, passes, &dev, &film.plan, &input, frect(made[i]))?
                 }
                 NodeWork::Face(face) => {
                     let _span = crate::perf::span(crate::perf::Stage::FilmPasses);

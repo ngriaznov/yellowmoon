@@ -37,7 +37,7 @@ use ym_color::schedule::{Schedule, StepKind};
 use ym_film::spatial::{FilmFrame, Frame as FilmFrameExtent, Plane, Rect as FilmRect, RunOptions};
 use ym_gpu::cpu::Rect;
 use ym_gpu::cpu::sampler::{GridPositions, Sampled, SamplerGrid};
-use ym_gpu::kernels::film_stack::{FilmNodeSpec, FilmStack, NodeWork};
+use ym_gpu::kernels::film_stack::{FilmNodeSpec, FilmStack, FilmWork, NodeWork};
 
 use super::face_pass::{FacePart, FaceWork, ProtectInput, union};
 use super::{Job, RenderError};
@@ -318,11 +318,11 @@ impl FilmRender {
         let mut steps = Vec::with_capacity(self.steps.len());
         for s in &self.steps {
             let work = match &s.work {
-                StepWork::Film(film) => NodeWork::Film {
+                StepWork::Film(film) => NodeWork::Film(Box::new(FilmWork {
                     plan: Arc::new(crate::film::device_plan(film, extent)),
                     scalars: crate::film::device_scalars(film.baked()),
                     tables: crate::film::device_tables(film.baked()),
-                },
+                })),
                 StepWork::Face(face) => NodeWork::Face(Arc::new(face.device_node()?)),
             };
             steps.push(FilmNodeSpec {
