@@ -174,7 +174,7 @@ export const ALREADY_OPEN_NOTICE = "These photos are already open.";
 
 /** Whether two mask views are the same one (a node and a style, or none). */
 function sameMaskView(a: MaskView | null, b: MaskView | null): boolean {
-  return a === b || (a !== null && b !== null && a.node === b.node && a.style === b.style && (a.row ?? null) === (b.row ?? null) && (a.depth ?? false) === (b.depth ?? false));
+  return a === b || (a !== null && b !== null && a.node === b.node && a.style === b.style && (a.row ?? null) === (b.row ?? null) && (a.depth ?? false) === (b.depth ?? false) && (a.face ?? null) === (b.face ?? null));
 }
 
 /** What Photos says after files were added to the session: "Added 3 photos. 2 were already open." */
@@ -267,6 +267,12 @@ export interface AppState {
    * undone, not copied, and exclusive with Show mask and the eyes (turning one on turns the others off). The core draws the photo's depth map as grey for it.
    */
   showDepth: number | null;
+  /**
+   * The face whose **Show skin areas** eye is on (`docs/27` S-11c): its number (from 1) for the Face Refinement node on show, or null. View state like the mask
+   * eye: not saved, not undone, not copied, exclusive with Show mask, the row eyes and Show depth, and it ends where they do (another node, the photo, Before,
+   * Esc) and when the Face tab goes away. The core draws the skin areas tinted over the photo, whatever the style says.
+   */
+  skinAreas: number | null;
   /** The mask view the core was last told to draw: what {@link AppState.maskView} comes to for the node on show (the browser build's fixture draws it). */
   maskShown: MaskView | null;
   /** "Apply to" on the Look card. */
@@ -425,6 +431,7 @@ export function initialState(): AppState {
     maskView: { on: false, style: "overlay" },
     maskEye: null,
     showDepth: null,
+    skinAreas: null,
     maskShown: null,
     applyScope: "this",
     collapsedLookLibraries: [],
@@ -1436,6 +1443,7 @@ export class AppStore {
       maskRow: null,
       maskEye: null,
       showDepth: null,
+      skinAreas: null,
       brushTool: false,
       objectTool: false,
       objectPill: null,
@@ -1676,6 +1684,7 @@ export class AppStore {
       maskRow: null,
       maskEye: null,
       showDepth: null,
+      skinAreas: null,
       brushTool: false,
       objectTool: false,
       objectPill: null,
@@ -2085,7 +2094,7 @@ export class AppStore {
   async setBefore(before: boolean): Promise<void> {
     if (before === this.state.before) return;
     // The Before view has no mask (`docs/23` §5.8): a row's eye ends there.
-    this.set(before && (this.state.maskEye !== null || this.state.showDepth !== null) ? { before, maskEye: null, showDepth: null } : { before });
+    this.set(before && (this.state.maskEye !== null || this.state.showDepth !== null || this.state.skinAreas !== null) ? { before, maskEye: null, showDepth: null, skinAreas: null } : { before });
     if (before) this.syncMaskView();
     try {
       await this.api.setBefore(before);
@@ -2114,9 +2123,9 @@ export class AppStore {
       return;
     }
     if (change.style !== undefined && change.on === undefined) next.on = true;
-    if (next.on === this.state.maskView.on && next.style === this.state.maskView.style && eye === null && (!next.on || this.state.showDepth === null)) return;
+    if (next.on === this.state.maskView.on && next.style === this.state.maskView.style && eye === null && (!next.on || (this.state.showDepth === null && this.state.skinAreas === null))) return;
     // Show mask on ends the eye: one mask at a time.
-    this.set(next.on && (eye !== null || this.state.showDepth !== null) ? { maskView: next, maskEye: null, showDepth: null } : { maskView: next });
+    this.set(next.on && (eye !== null || this.state.showDepth !== null || this.state.skinAreas !== null) ? { maskView: next, maskEye: null, showDepth: null, skinAreas: null } : { maskView: next });
     this.syncMaskView();
   }
 
@@ -2134,8 +2143,8 @@ export class AppStore {
   setMaskEye(row: number | null): void {
     if (row !== null && this.maskNode === null) return;
     // Whatever ends the eye ends Show depth with it (they are one view at a time), and an eye on ends Show depth.
-    if (row === this.state.maskEye && (row !== null || this.state.showDepth === null)) return;
-    this.set(row === null ? { maskEye: null, showDepth: null } : { maskEye: row, showDepth: null, maskView: { ...this.state.maskView, on: false } });
+    if (row === this.state.maskEye && (row !== null || (this.state.showDepth === null && this.state.skinAreas === null))) return;
+    this.set(row === null ? { maskEye: null, showDepth: null, skinAreas: null } : { maskEye: row, showDepth: null, skinAreas: null, maskView: { ...this.state.maskView, on: false } });
     this.syncMaskView();
   }
 
@@ -2147,7 +2156,19 @@ export class AppStore {
   setShowDepth(row: number | null): void {
     if (row !== null && this.maskNode === null) return;
     if (row === this.state.showDepth) return;
-    this.set(row === null ? { showDepth: null } : { showDepth: row, maskEye: null, maskView: { ...this.state.maskView, on: false } });
+    this.set(row === null ? { showDepth: null } : { showDepth: row, maskEye: null, skinAreas: null, maskView: { ...this.state.maskView, on: false } });
+    this.syncMaskView();
+  }
+
+  /**
+   * Show skin areas (`docs/27` S-11c): shows where the Face Refinement node on show works on face `face` (from 1), tinted over the photo, or ends it (`null`).
+   * View state like the eye, no patch and no undo step, and exclusive with Show mask, the row eyes and Show depth. Choosing another face while it is on shows that
+   * face. Ignored while there is no node on show.
+   */
+  setSkinAreas(face: number | null): void {
+    if (face !== null && this.maskNode === null) return;
+    if (face === this.state.skinAreas) return;
+    this.set(face === null ? { skinAreas: null } : { skinAreas: face, maskEye: null, showDepth: null, maskView: { ...this.state.maskView, on: false } });
     this.syncMaskView();
   }
 
@@ -2158,7 +2179,7 @@ export class AppStore {
    */
   setMaskNode(node: number | null): void {
     // A row's eye is for one node: another node, or none, ends it.
-    if (node !== this.maskNode && (this.state.maskEye !== null || this.state.showDepth !== null)) this.set({ maskEye: null, showDepth: null });
+    if (node !== this.maskNode && (this.state.maskEye !== null || this.state.showDepth !== null || this.state.skinAreas !== null)) this.set({ maskEye: null, showDepth: null, skinAreas: null });
     this.maskNode = node;
     this.syncMaskView();
   }
@@ -2174,7 +2195,8 @@ export class AppStore {
     const node = this.maskNode;
     let wanted: MaskView | null = null;
     if (node !== null && photo !== null) {
-      if (this.state.showDepth !== null) wanted = { node, style: "mask_only", row: this.state.showDepth, depth: true };
+      if (this.state.skinAreas !== null) wanted = { node, style: "overlay", face: this.state.skinAreas };
+      else if (this.state.showDepth !== null) wanted = { node, style: "mask_only", row: this.state.showDepth, depth: true };
       else if (eye !== null) wanted = { node, style, row: eye };
       else if (on) wanted = { node, style };
     }

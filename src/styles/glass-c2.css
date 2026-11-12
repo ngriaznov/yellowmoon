@@ -2550,6 +2550,31 @@ html[data-glass="off"] *::after {
   box-shadow: none;
   color: var(--tab-look-ink);
 }
+.ym-face-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--glass-label);
+  font-size: 12px;
+}
+.ym-face-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ym-face-legend__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--swatch);
+}
+.ym-face-legend__swatch[data-dashed] {
+  background: none;
+  box-shadow: inset 0 0 0 2px var(--swatch);
+}
 .ym-face-same {
   margin-top: 8px;
 }

@@ -129,9 +129,10 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
   // Subject and People: the kinds this computer makes, and whether the core is making them now (`docs/23` §4.5).
   const maskKinds = useAppState((s) => s.maskKinds);
   const finding = useAppState((s) => s.viewportBusy.busy && s.viewportBusy.finding);
+  const skinFace = useAppState((s) => (drawsFixture && s.maskShown?.face != null && photo ? (s.faces[photo.id]?.faces.find((f) => f.number === s.maskShown?.face) ?? null) : null));
   const picture = useMemo(
-    () => (photo && drawsFixture ? previewUrl(photo, rs, before, maskShown, { kinds: maskKinds, finding }) : undefined),
-    [photo, rs, before, drawsFixture, maskShown, maskKinds, finding],
+    () => (photo && drawsFixture ? previewUrl(photo, rs, before, maskShown, { kinds: maskKinds, finding, face: skinFace }) : undefined),
+    [photo, rs, before, drawsFixture, maskShown, maskKinds, finding, skinFace],
   );
 
   // The cell's size, for the handles: a new size is a new place for every point they draw.

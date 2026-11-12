@@ -756,7 +756,7 @@ export function Photos() {
           if (picking) setPicking(null);
           else if (brush && !before) store.setBrushTool(false);
           else if (object && objectAsked && !before) store.setObjectTool(false);
-          else if (store.getState().maskEye !== null || store.getState().showDepth !== null) store.setMaskEye(null);
+          else if (store.getState().maskEye !== null || store.getState().showDepth !== null || store.getState().skinAreas !== null) store.setMaskEye(null);
           else if (crop.session) crop.session.cancel();
           else if (panel === "export") store.closeExport();
           else if (view === "nodes" && graph.escape()) return true;

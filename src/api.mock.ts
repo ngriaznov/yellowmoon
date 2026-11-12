@@ -138,7 +138,7 @@ import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
 import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cropMath";
 import { copiedPatch, pastedOnto, refusalOfPatch, validateGraph } from "./fixtures/graph";
-import { hasBackgroundRow, hasObjectRow, maskViewSvg, masksOfView, MOCK_DEPTH, pickDepthFar, SCENES_WITH_PEOPLE, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
+import { hasBackgroundRow, hasObjectRow, maskViewSvg, masksOfView, MOCK_DEPTH, pickDepthFar, SCENES_WITH_PEOPLE, skinAreasSvg, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
 import { diffSettings } from "./state/history";
 import { cardStates, linkInto } from "./state/graphOps";
 import {
@@ -1816,7 +1816,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const view = viewport.maskView;
     if (!view || viewport.before) return "";
     const node = nodeOf(rec.settings, view.node);
-    if (!node || node.kind !== "corrector") return "";
+    const skin = node?.kind === "face_refinement" && typeof view.face === "number" ? view.face : null;
+    if (!node || (node.kind !== "corrector" && skin === null)) return "";
     const { orientation, crop } = inputOf(rec.settings);
     const crossed = crop ? crop.rect.width / crop.rect.height : 1;
     const aspect = imageAspectOf(rec.summary.width_px, rec.summary.height_px, orientation) * crossed;
@@ -1836,6 +1837,11 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       people: scene.people && options.maskKinds.includes("people") && (ready?.has("people") ?? false),
     };
     const depth = { on: view.depth === true, ready: depthReady.has(rec.summary.id) && depthFailure(rec.summary.id) === null };
+    if (skin !== null) {
+      const face = faceStateOf(rec.summary.id).faces.find((f) => f.number === skin);
+      return face ? skinAreasSvg(face, frame) : "";
+    }
+    if (node.kind !== "corrector") return "";
     return maskViewSvg(view.style, masksOfView(node.masks, view.row), { x: fit.x * width, y: fit.y * height, width: fit.width * width, height: fit.height * height }, frame, found, depth);
   }
 

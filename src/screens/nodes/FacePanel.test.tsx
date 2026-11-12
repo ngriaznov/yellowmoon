@@ -34,8 +34,9 @@ const WITH_FACES = (more: Record<string, unknown> = {}): SettingsPatch => ({
 });
 
 /** DSC04204 in the node view with the Face Refinement node selected, the photo cell 600 × 400 and the mock told so. */
-async function setup(settings: SettingsPatch = WITH_FACES(), options: MockOptions = {}, tab: string | null = null): Promise<UpdateSpy> {
+async function setup(settings: SettingsPatch = WITH_FACES(), options: MockOptions = {}, tab: string | null = null, beforeOpen?: (api: Harness["api"]) => void): Promise<UpdateSpy> {
   h = renderApp({ current: 3, picked: [2, 3, 4], initialSettings: { DSC04204: settings }, ...options });
+  beforeOpen?.(h.api);
   await openPhotos(h);
   await openTab(h, "Light");
   await h.user.keyboard("n");
@@ -224,6 +225,90 @@ describe("the Faces card", () => {
     expect(within(card("Teeth")).getByText("Face 3")).toBeInTheDocument();
     expect(within(card("Teeth")).getByText("Copies all of Face 3's settings.")).toBeInTheDocument();
     expect(patches(spy)).toEqual([]);
+  });
+});
+
+describe("the faces' pictures", () => {
+  it("shows the picture the core answers, with the number on a badge", async () => {
+    await setup(WITH_FACES(), { faces: "ok" });
+    await ready(2);
+    await waitFor(() => expect(faceButtons()[0]!.querySelector("img")).not.toBeNull());
+    expect(faceButtons()[0]!.querySelector("img")!.getAttribute("src")).toMatch(/^data:image\/svg/);
+    expect(faceButtons()[0]!.querySelector(".ym-face__num")!.textContent).toBe("1");
+  });
+
+  it("keeps the number on the neutral disc when the picture cannot be made, and the panel stays usable", async () => {
+    await setup(WITH_FACES(), { faces: "five" }, null, (api) => {
+      vi.spyOn(api, "faceCrop").mockRejectedValue(new Error("no"));
+    });
+    await ready(5);
+    await waitFor(() => expect(h!.api.faceCrop).toHaveBeenCalled());
+    expect(faceButtons().every((b) => b.querySelector("img") === null)).toBe(true);
+    expect(faceButtons()[1]!.querySelector(".ym-face__disc")!.textContent).toBe("2");
+    await h!.user.click(faceButtons()[1]!);
+    expect(faceButtons()[1]).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("asks once for a face while face_state is the same", async () => {
+    await setup(WITH_FACES(), { faces: "five" }, null, (api) => {
+      vi.spyOn(api, "faceCrop");
+    });
+    await ready(5);
+    await waitFor(() => expect(h!.api.faceCrop).toHaveBeenCalledTimes(5));
+    await h!.user.click(faceButtons()[0]!);
+    expect(h!.api.faceCrop).toHaveBeenCalledTimes(5);
+  });
+});
+
+describe("Show skin areas", () => {
+  const eye = (): HTMLElement => within(tools()).getByRole("button", { name: "Show skin areas" });
+  const views = (): unknown[] => vi.mocked(h!.api.viewportSetMode).mock.calls.map((c) => c[1] ?? null);
+
+  async function withEye(): Promise<void> {
+    await setup(WITH_FACES({ same_for_all: false }), { faces: "five" });
+    await ready(5);
+    vi.spyOn(h!.api, "viewportSetMode");
+  }
+
+  it("sends the overlay view of the chosen face, and follows another face", async () => {
+    await withEye();
+    await h!.user.click(eye());
+    await waitFor(() => expect(views().at(-1)).toEqual({ node: 2, style: "overlay", face: 1 }));
+    await h!.user.click(faceButtons()[2]!);
+    await waitFor(() => expect(views().at(-1)).toEqual({ node: 2, style: "overlay", face: 3 }));
+    await h!.user.click(eye());
+    await waitFor(() => expect(views().at(-1)).toBeNull());
+    expect(h!.store.getState().skinAreas).toBeNull();
+  });
+
+  it("ends when another node is selected", async () => {
+    await withEye();
+    await h!.user.click(eye());
+    await waitFor(() => expect(h!.store.getState().skinAreas).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: /^Node 1/ }));
+    await waitFor(() => expect(h!.store.getState().skinAreas).toBeNull());
+    expect(views().at(-1)).toBeNull();
+  });
+
+  it("is exclusive with Show mask", async () => {
+    await withEye();
+    await h!.user.click(eye());
+    await waitFor(() => expect(h!.store.getState().skinAreas).toBe(1));
+    h!.store.setMaskView({ on: true });
+    expect(h!.store.getState().skinAreas).toBeNull();
+    h!.store.setSkinAreas(2);
+    expect(h!.store.getState().maskView.on).toBe(false);
+    expect(h!.store.getState().skinAreas).toBe(2);
+  });
+
+  it("shows the legend only while the eye is on", async () => {
+    await withEye();
+    expect(screen.queryByRole("list", { name: "Skin areas" })).toBeNull();
+    await h!.user.click(eye());
+    const legend = await screen.findByRole("list", { name: "Skin areas" });
+    expect(within(legend).getAllByRole("listitem").map((l) => l.textContent)).toEqual(["Skin", "Under the eyes", "Even skin and grading", "Teeth"]);
+    await h!.user.click(eye());
+    expect(screen.queryByRole("list", { name: "Skin areas" })).toBeNull();
   });
 });
 

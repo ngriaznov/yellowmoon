@@ -7,7 +7,7 @@
  * the tab is on changes and the others stay), and `protect` for the brush.
  */
 import { EyeIcon, ScanFaceIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { Progress } from "@/components/glass/progress";
 import { Spinner } from "@/components/glass/spinner";
@@ -63,8 +63,8 @@ function Tip({ text, children, className }: { text: string; children: ReactNode;
 }
 
 /** One item of the Faces list: the face's picture (a neutral disc with its number until the core can make one) and, when it has a picture, its number on a badge. */
-function FaceItem({ store, photoId, number, selected, ringed, sameForAll, onSelect }: { store: AppStore; photoId: number; number: number; selected: boolean; ringed: boolean; sameForAll: boolean; onSelect: (n: number) => void }) {
-  const src = useFacePicture(store, photoId, number, "");
+function FaceItem({ store, photoId, faces, number, selected, ringed, sameForAll, onSelect }: { store: AppStore; photoId: number; faces: FaceState; number: number; selected: boolean; ringed: boolean; sameForAll: boolean; onSelect: (n: number) => void }) {
+  const src = useFacePicture(store, photoId, number, faces);
   return (
     <OptionalTooltip text={sameForAll ? FACE_TEXT.faceTipAll(number) : FACE_TEXT.faceTip(number)} side="top">
       <TooltipTrigger asChild>
@@ -76,6 +76,28 @@ function FaceItem({ store, photoId, number, selected, ringed, sameForAll, onSele
         </button>
       </TooltipTrigger>
     </OptionalTooltip>
+  );
+}
+
+/** The tints of Show skin areas, as the core draws them (`docs/27` S-11b2). */
+const LEGEND: ReadonlyArray<{ label: string; color: string; dashed?: boolean }> = [
+  { label: "Skin", color: "#ff6fd2" },
+  { label: "Under the eyes", color: "#3d9bff" },
+  { label: "Even skin and grading", color: "#8ee56b", dashed: true },
+  { label: "Teeth", color: "#8a5cff" },
+];
+
+/** What the colours of the skin areas on the photo mean; shown under the sliders while the eye is on. */
+function SkinLegend() {
+  return (
+    <ul className="ym-face-legend" aria-label="Skin areas">
+      {LEGEND.map((item) => (
+        <li key={item.label}>
+          <span className="ym-face-legend__swatch" data-dashed={item.dashed || undefined} style={{ "--swatch": item.color } as React.CSSProperties} aria-hidden="true" />
+          {item.label}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -169,19 +191,23 @@ function ProtectCard({ store, rs, node, item }: { store: AppStore; rs: ResolvedS
 export function FaceTab({ store, photo, rs, node, item }: FaceTabProps) {
   const state = useFaces(store, photo.id, true);
   const selected = useAppState((s) => s.faceSelected);
-  const [eye, setEye] = useState(false);
+  // The eye is the store's view state: it ends with the node, the photo, Before and Esc there, and with this tab here.
+  const eye = useAppState((s) => s.skinAreas !== null);
   const count = state?.phase === "ready" ? state.faces.length : 0;
   const number = selectedFace(selected, count);
   const shown = shownSettings(item, number);
-  // The eye is the panel's: it ends with the tab, the node, the photo, or when another face is chosen.
   const latest = useRef({ photo: photo.id, node, number });
   latest.current = { photo: photo.id, node, number };
+  // With the eye on, the view follows the chosen face.
   useEffect(() => {
     if (eye) setSkinAreasView(store, photo.id, node, number, true);
-    return () => {
-      if (eye) setSkinAreasView(store, latest.current.photo, latest.current.node, latest.current.number, false);
-    };
   }, [store, eye, photo.id, node, number]);
+  useEffect(
+    () => () => {
+      setSkinAreasView(store, latest.current.photo, latest.current.node, latest.current.number, false);
+    },
+    [store],
+  );
 
   if (!state || state.phase !== "ready" || count === 0) return <FacesNote state={state} />;
 
@@ -228,6 +254,7 @@ export function FaceTab({ store, photo, rs, node, item }: FaceTabProps) {
               key={face.number}
               store={store}
               photoId={photo.id}
+              faces={state}
               number={face.number}
               selected={face.number === number}
               ringed={item.same_for_all && count > 1}
@@ -248,7 +275,7 @@ export function FaceTab({ store, photo, rs, node, item }: FaceTabProps) {
             aria-label={FACE_TEXT.eye}
             title={eye ? FACE_TEXT.eyeOnTip : FACE_TEXT.eyeTip}
             icon={<EyeIcon aria-hidden="true" />}
-            onClick={() => setEye((was) => !was)}
+            onClick={() => setSkinAreasView(store, photo.id, node, number, !eye)}
           />
         }
         action={<ResetLink size="card" onClick={() => send(resetPartial(FACE_FIELDS, "defaults"))} />}
@@ -257,6 +284,7 @@ export function FaceTab({ store, photo, rs, node, item }: FaceTabProps) {
         {row("dark_circles", "Dark circles", [0, 100])}
         {row("even_skin", "Even skin", [0, 100])}
         {row("texture", "Texture", [-100, 100], { indent: true })}
+        {eye ? <SkinLegend /> : null}
       </Card>
       <Card
         title="Skin grading"

@@ -87,6 +87,19 @@ test.describe("the Face tab", () => {
     await expect.poll(async () => (await faceNode(page)).faces.map((f) => f.blemish)).toEqual([55, 55, 55, 55, 55]);
   });
 
+  test("shows the faces' pictures, and the eye shows the skin areas with its legend", async ({ page }) => {
+    await faceView(page, "one");
+    await expect(panel(page).locator(".ym-face img")).toHaveCount(1);
+    await shot(page, "faces-with-pictures");
+    await expect(panel(page).getByRole("list", { name: "Skin areas" })).toHaveCount(0);
+    await panel(page).getByRole("button", { name: "Show skin areas" }).click();
+    await expect(panel(page).getByRole("list", { name: "Skin areas" })).toBeVisible();
+    await page.waitForTimeout(500);
+    await shot(page, "eye-on-legend");
+    await panel(page).getByRole("button", { name: "Show skin areas" }).click();
+    await expect(panel(page).getByRole("list", { name: "Skin areas" })).toHaveCount(0);
+  });
+
   test("has one face with no list switch, twelve with a scrolling list", async ({ page }) => {
     await faceView(page, "one");
     await expect(panel(page).getByText("1 found")).toBeVisible();
