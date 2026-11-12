@@ -6,6 +6,8 @@ mod grey;
 mod moles;
 mod proposer;
 #[cfg(test)]
+mod protocol;
+#[cfg(test)]
 mod synth;
 #[cfg(test)]
 mod tests;

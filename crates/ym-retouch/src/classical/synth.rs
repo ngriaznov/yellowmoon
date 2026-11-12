@@ -77,6 +77,25 @@ impl Lesion {
 /// Skin without lesions: tone, gradient, texture (white and 2 px grain, about 1.5 % together) and
 /// 40 pores. The same seed gives the same skin, so the version with lesions differs only at them.
 pub fn clean_skin(w: usize, h: usize, seed: u64) -> Vec<[f64; 3]> {
+    clean_skin_tone(w, h, seed, [0.42, 0.30, 0.22])
+}
+
+/// [`clean_skin`] with another skin tone (the linear RGB of the mean skin).
+pub fn clean_skin_tone(w: usize, h: usize, seed: u64, tone: [f64; 3]) -> Vec<[f64; 3]> {
+    clean_skin_rough(w, h, seed, tone, 1.0, 40, 0.12)
+}
+
+/// [`clean_skin_tone`] with a texture `gain` (1 is the 1.5 % of the other functions), `pores`
+/// pores and a pore `depth` (the fraction of light a pore's centre takes away).
+pub fn clean_skin_rough(
+    w: usize,
+    h: usize,
+    seed: u64,
+    tone: [f64; 3],
+    gain: f64,
+    pores: usize,
+    depth: f64,
+) -> Vec<[f64; 3]> {
     let mut rng = Rng(seed);
     let white: Vec<f64> = (0..w * h).map(|_| rng.range(-1.0, 1.0)).collect();
     let grain_src: Vec<f64> = (0..w * h).map(|_| rng.range(-1.0, 1.0)).collect();
@@ -85,12 +104,12 @@ pub fn clean_skin(w: usize, h: usize, seed: u64) -> Vec<[f64; 3]> {
         .map(|i| {
             let (x, y) = ((i % w) as f64, (i / w) as f64);
             let g = 1.0 + 0.04 * (x / w as f64 - 0.5) + 0.03 * (y / h as f64 - 0.5);
-            let t = 1.0 + 0.008 * white[i] + 0.16 * grain.data[i];
+            let t = 1.0 + gain * (0.008 * white[i] + 0.16 * grain.data[i]);
             let f = g * t;
-            [0.42 * f, 0.30 * f, 0.22 * f]
+            [tone[0] * f, tone[1] * f, tone[2] * f]
         })
         .collect();
-    for _ in 0..40 {
+    for _ in 0..pores {
         let (cx, cy) = (
             rng.range(5.0, w as f64 - 5.0),
             rng.range(5.0, h as f64 - 5.0),
@@ -99,7 +118,10 @@ pub fn clean_skin(w: usize, h: usize, seed: u64) -> Vec<[f64; 3]> {
             for x in (cx as usize).saturating_sub(3)..((cx as usize) + 4).min(w) {
                 let d2 = (x as f64 - cx).powi(2) + (y as f64 - cy).powi(2);
                 let wt = (-d2 / (2.0 * 0.8 * 0.8)).exp();
-                for (c, f) in [0.92, 0.88, 0.88].iter().enumerate() {
+                for (c, f) in [1.0 - 0.67 * depth, 1.0 - depth, 1.0 - depth]
+                    .iter()
+                    .enumerate()
+                {
                     px[y * w + x][c] *= 1.0 - wt * (1.0 - f);
                 }
             }
