@@ -48,8 +48,8 @@ export type CorrectorItem = Extract<NodeItem, { kind: "corrector" }>;
 export type FilmItem = Extract<NodeItem, { kind: "film" }>;
 /** A Face Refinement node as an item of the graph (`docs/27`). The node view lists it from S-11c. */
 export type FaceRefinementItem = Extract<NodeItem, { kind: "face_refinement" }>;
-/** A node that has a card in the node view and a number: a corrector (Main included) or a Film node. */
-export type CardItem = CorrectorItem | FilmItem;
+/** A node that has a card in the node view and a number: a corrector (Main included), a Film node or a Face Refinement node. */
+export type CardItem = CorrectorItem | FilmItem | FaceRefinementItem;
 /** A node of `docs/25` as an item of the graph: a Parallel, a Layer, a Splitter or a Combiner. It has a glyph card and no number. */
 export type MixerItem = Extract<NodeItem, { kind: "parallel" | "layer" | "splitter" | "combiner" }>;
 
@@ -110,9 +110,13 @@ export function correctorsOf(settings: DevelopSettings): CorrectorItem[] {
   return settings.nodes.items.filter((item): item is CorrectorItem => item.kind === "corrector");
 }
 
-/** Every node that has a card, in the order the document lists them: the correctors and the Film nodes, by id. */
+/** True for a node that has a card, a number and masks: a corrector, a Film node or a Face Refinement node. */
+export const isCardItem = (item: NodeItem | undefined): item is CardItem =>
+  item?.kind === "corrector" || item?.kind === "film" || item?.kind === "face_refinement";
+
+/** Every node that has a card, in the order the document lists them: the correctors, the Film nodes and the Face Refinement nodes, by id. */
 export function cardsOf(settings: DevelopSettings): CardItem[] {
-  return settings.nodes.items.filter((item): item is CardItem => item.kind === "corrector" || item.kind === "film");
+  return settings.nodes.items.filter(isCardItem);
 }
 
 /** Every numbered node, the ones that count toward the 64: the cards and the nodes of `docs/25` (everything but the Input and the Output). */
@@ -796,7 +800,7 @@ export function diffGraph(before: DevelopSettings, after: DevelopSettings): Grap
         }
         nb[key] = gb;
         na[key] = ga;
-      } else if (key === "masks" && (item.kind === "corrector" || item.kind === "film") && (old.kind === "corrector" || old.kind === "film")) {
+      } else if (key === "masks" && isCardItem(item) && isCardItem(old)) {
         const d = diffMasks(old.masks, item.masks);
         if (d) {
           nb[key] = d.before;

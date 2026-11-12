@@ -13,7 +13,7 @@ import { maskRowKinds } from "../state/maskRows";
 import { lookLabeller, looksInDisplayOrder } from "../state/looks";
 import { folderSubline, isReady, photoName } from "../state/photo";
 import { MASK_KIND_NAME } from "../state/graphOps";
-import { hiddenByPhoto, hiddenFromSimpleView, INPUT_ID, MAIN_ID, nodeOf, OUTPUT_ID } from "../state/settingsGraph";
+import { hiddenByPhoto, hiddenFromSimpleView, INPUT_ID, isCardItem, MAIN_ID, nodeOf, OUTPUT_ID } from "../state/settingsGraph";
 import type { AppStore } from "../state/store";
 import type { Shortcut } from "../state/shortcuts";
 import { useShortcuts } from "../state/useShortcuts";
@@ -325,7 +325,7 @@ export function Photos() {
   // A Film node has the corrector's panel until its own tabs are built (F-09, `docs/24` §4.1).
   const onKind: PanelKind = selectedItem ? panelKindOf(selectedItem.kind) : "corrector";
   // A corrector and a Film node both have masks (`docs/24` section 4.3).
-  const hasMasks = onKind === "corrector" || onKind === "film";
+  const hasMasks = onKind === "corrector" || onKind === "film" || onKind === "face_refinement";
   const nodeTab = nodeTabs[onKind];
   const nodeTabList = NODE_TABS[onKind];
   const onNodeNow = useLatest(onNode);
@@ -338,7 +338,7 @@ export function Photos() {
   // The Mask tab's pick (Pick colour of a Colour range, `docs/23` §7.6) belongs to the Mask tab of the node view and to the Colour range row
   // that is selected: it ends with the tab, the node or the photo, as the others do, and with the row.
   const maskRow = useAppState((s) => s.maskRow);
-  const maskRows = selectedItem?.kind === "corrector" || selectedItem?.kind === "film" ? selectedItem.masks.items : [];
+  const maskRows = isCardItem(selectedItem) ? selectedItem.masks.items : [];
   const rowIndex = maskRow !== null && maskRow < maskRows.length ? maskRow : null;
   const selectedMask = rowIndex === null ? undefined : maskRows[rowIndex];
   const rangeShown = panel === "tools" && view === "nodes" && nodeTab === "mask" && hasMasks && !cropping && selectedMask?.kind === "color_range" && selectedMask.enabled;
@@ -596,12 +596,24 @@ export function Photos() {
   // another row, another node or photo and Esc end it), in the node view with the row on. Crop, Export, Before and a pick hide it (PhotoView draws the pick
   // layer, the crop frame or the brush, never two).
   const brushAsked = useAppState((s) => s.brushTool);
+  // A Face Refinement node's Face tab (`docs/27` S-11c): the same Brush tool paints the node's protection, and with the tool off the faces are drawn on the photo.
+  const faceTab = nodesOn && !cropping && panel !== "export" && selectedItem?.kind === "face_refinement" && nodeTab === "face" && typeof onNode === "number";
+  const faceState = useAppState((s) => (photo ? s.faces[photo.id] : undefined));
   const brush = useMemo(
     () =>
-      brushAsked && nodesOn && !cropping && panel !== "export" && hasMasks && typeof onNode === "number" && rowIndex !== null && selectedMask?.kind === "brush" && selectedMask.enabled
-        ? { node: onNode, index: rowIndex }
+      brushAsked && faceTab && typeof onNode === "number"
+        ? { node: onNode, index: -1, protect: true }
+        : brushAsked && nodesOn && !cropping && panel !== "export" && hasMasks && typeof onNode === "number" && rowIndex !== null && selectedMask?.kind === "brush" && selectedMask.enabled
+          ? { node: onNode, index: rowIndex }
+          : null,
+    [brushAsked, faceTab, nodesOn, cropping, panel, onKind, onNode, rowIndex, selectedMask],
+  );
+  const faces = useMemo(
+    () =>
+      faceTab && !brushAsked && selectedItem?.kind === "face_refinement" && faceState?.phase === "ready" && faceState.faces.length > 0
+        ? { faces: faceState.faces, all: selectedItem.same_for_all && faceState.faces.length > 1 }
         : null,
-    [brushAsked, nodesOn, cropping, panel, onKind, onNode, rowIndex, selectedMask],
+    [faceTab, brushAsked, selectedItem, faceState],
   );
   // The Object row on the photo (`docs/23` §7.6): its points and box are drawn for the selected Object row with the eye on, in the node view, and the tool
   // (on after adding an Object row, a click on one or on a tool; Esc ends it) takes the clicks. Crop, Export, Before and a pick hide it, as they hide the handles.
@@ -744,7 +756,7 @@ export function Photos() {
           if (picking) setPicking(null);
           else if (brush && !before) store.setBrushTool(false);
           else if (object && objectAsked && !before) store.setObjectTool(false);
-          else if (store.getState().maskEye !== null || store.getState().showDepth !== null) store.setMaskEye(null);
+          else if (store.getState().maskEye !== null || store.getState().showDepth !== null || store.getState().skinAreas !== null) store.setMaskEye(null);
           else if (crop.session) crop.session.cancel();
           else if (panel === "export") store.closeExport();
           else if (view === "nodes" && graph.escape()) return true;
@@ -951,6 +963,7 @@ export function Photos() {
           onRect={onRect}
           maskHandles={maskHandles}
           brush={brush}
+          faces={faces}
           object={object}
           objectTool={objectAsked}
           maskChip={maskChip}

@@ -38,6 +38,8 @@ export interface NodeGraphActions {
   addCorrector: () => void;
   /** Add node › Film: after the selected node (`docs/24`). */
   addFilm: () => void;
+  /** Add node › Face Refinement: after the selected node (`docs/27`). */
+  addFaceRefinement: () => void;
   /** Add node › Parallel: a Parallel and a corrector beside the selected node, on its input 2 (`docs/25` §5.4). */
   addParallel: () => void;
   /** Add node › Layer: a Layer and a corrector beside the selected node, on top. */
@@ -154,6 +156,7 @@ export function useNodeGraph({ store, settings, photoId, selected, select }: Use
     selectLink: setSelectedLink,
     addCorrector: () => act((s, here) => insertAfter(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),
     addFilm: () => act((s, here) => insertAfter(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0, kind: "film", name: "Film" })),
+    addFaceRefinement: () => act((s, here) => insertAfter(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0, kind: "face_refinement", name: "Face Refinement" })),
     addParallel: () => act((s, here) => insertMixer(s, here, "parallel", { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),
     addLayer: () => act((s, here) => insertMixer(s, here, "layer", { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),
     addTrio: () => act((s, here) => insertTrio(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),

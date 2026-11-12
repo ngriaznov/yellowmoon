@@ -66,6 +66,7 @@ import type {
   NodeThumbnailsReady,
   ObjectState,
   DepthState,
+  FaceState,
   VisionState,
   OpenSummary,
   Orientation,
@@ -123,6 +124,7 @@ import {
   INPUT_ID,
   inputOf,
   gradeOf,
+  isCardItem,
   isEmptyPatch,
   MAIN_ID,
   mainOf,
@@ -172,7 +174,7 @@ export const ALREADY_OPEN_NOTICE = "These photos are already open.";
 
 /** Whether two mask views are the same one (a node and a style, or none). */
 function sameMaskView(a: MaskView | null, b: MaskView | null): boolean {
-  return a === b || (a !== null && b !== null && a.node === b.node && a.style === b.style && (a.row ?? null) === (b.row ?? null) && (a.depth ?? false) === (b.depth ?? false));
+  return a === b || (a !== null && b !== null && a.node === b.node && a.style === b.style && (a.row ?? null) === (b.row ?? null) && (a.depth ?? false) === (b.depth ?? false) && (a.face ?? null) === (b.face ?? null));
 }
 
 /** What Photos says after files were added to the session: "Added 3 photos. 2 were already open." */
@@ -265,6 +267,12 @@ export interface AppState {
    * undone, not copied, and exclusive with Show mask and the eyes (turning one on turns the others off). The core draws the photo's depth map as grey for it.
    */
   showDepth: number | null;
+  /**
+   * The face whose **Show skin areas** eye is on (`docs/27` S-11c): its number (from 1) for the Face Refinement node on show, or null. View state like the mask
+   * eye: not saved, not undone, not copied, exclusive with Show mask, the row eyes and Show depth, and it ends where they do (another node, the photo, Before,
+   * Esc) and when the Face tab goes away. The core draws the skin areas tinted over the photo, whatever the style says.
+   */
+  skinAreas: number | null;
   /** The mask view the core was last told to draw: what {@link AppState.maskView} comes to for the node on show (the browser build's fixture draws it). */
   maskShown: MaskView | null;
   /** "Apply to" on the Look card. */
@@ -331,6 +339,13 @@ export interface AppState {
    * again. A photo whose map was made (or is being made again) has none.
    */
   depthFailed: Readonly<Record<number, string>>;
+  /**
+   * Where the faces of each photo are (`face_state`, `docs/27` S-11c): the Face Refinement node's panel and the boxes drawn on the photo read it. A photo the
+   * core has said nothing about has no entry ({@link Store.refreshFaces} asks).
+   */
+  faces: Readonly<Record<number, FaceState>>;
+  /** The face the Face tab is on, counted from 1 (window state: not saved, not undone). A number past the faces found reads as the last one. */
+  faceSelected: number;
   /** The photos whose file has no focus point (`focus_plane`'s `no_focus_point`): Focus plane is off for them, with the reason. */
   noFocusPoint: Readonly<Record<number, true>>;
   /**
@@ -416,6 +431,7 @@ export function initialState(): AppState {
     maskView: { on: false, style: "overlay" },
     maskEye: null,
     showDepth: null,
+    skinAreas: null,
     maskShown: null,
     applyScope: "this",
     collapsedLookLibraries: [],
@@ -436,6 +452,8 @@ export function initialState(): AppState {
     objectFinding: null,
     visionNothing: {},
     depthFailed: {},
+    faces: {},
+    faceSelected: 1,
     noFocusPoint: {},
     focusCentre: {},
     objectPill: null,
@@ -541,8 +559,8 @@ export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): Resolve
       const next = node.grade && have ? directGrade(stored as CorrectorItem, resolved as ResolvedCorrector, withoutAuto(node.grade), NO_ESTIMATES, NO_FLAGS) : null;
       change(id, () => (next?.stored ?? stored) as CorrectorItem);
       if (have) values = { ...values, nodes: values.nodes.map((n) => (n.id === id ? ((next?.resolved ?? resolved) as ResolvedCorrector) : n)) };
-    } else if (typeof id === "number" && nodeOf(settings, id)?.kind === "film") {
-      // A Film node (`docs/24`): its fields are plain numbers and ids, so the page folds the patch in at once, as the core will.
+    } else if (typeof id === "number" && (nodeOf(settings, id)?.kind === "film" || nodeOf(settings, id)?.kind === "face_refinement")) {
+      // A Film node (`docs/24`) or a Face Refinement node (`docs/27`): its fields are plain numbers and ids, so the page folds the patch in at once, as the core will.
       settings = applyPatch(settings, { nodes: { [key]: node } });
     }
   }
@@ -885,6 +903,7 @@ export class AppStore {
       api.on("object_state", (e) => this.onObjectState(e)),
       api.on("vision_state", (e) => this.onVisionState(e)),
       api.on("depth_state", (e) => this.onDepthState(e)),
+      api.on("face_state", (e) => this.onFaceState(e)),
       onGestureEnd(() => this.afterGesture()),
     ];
     void this.load();
@@ -1182,6 +1201,32 @@ export class AppStore {
     this.wantNodeThumbnails(e.photo_id);
   }
 
+  /** `face_state`: the core's face worker started or ended for a photo. The node's panel and the boxes on the photo follow; the thumbnails are asked again when it ends. */
+  private onFaceState(e: FaceState): void {
+    this.set({ faces: { ...this.state.faces, [e.photo_id]: e } });
+    if (e.phase !== "finding") this.wantNodeThumbnails(e.photo_id);
+  }
+
+  /**
+   * Asks the core where the faces of a photo are (`face_state` command) and keeps the answer, unless an event of the same worker has already said something
+   * newer. The Face tab asks when it opens, so a photo whose worker ended before the page listened is not left on "Finding faces".
+   */
+  async refreshFaces(photoId: PhotoId): Promise<void> {
+    try {
+      const state = await this.api.faceState(photoId);
+      const had = this.state.faces[photoId];
+      if (!had || had.phase === "finding" || had.phase !== state.phase || had.faces.length !== state.faces.length) this.set({ faces: { ...this.state.faces, [photoId]: state } });
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /** Selects the face the Face tab is on (counted from 1). Nothing is sent. */
+  selectFace(number: number): void {
+    const next = Math.max(1, Math.round(number));
+    if (next !== this.state.faceSelected) this.set({ faceSelected: next });
+  }
+
   private onFrame(frame: ViewportFrame): void {
     // Frames can arrive out of order (the shell numbers a frame before it encodes it, and the news that the picture is gone is sent from
     // another thread): an older one never replaces a newer one, and never brings back a picture that was taken away.
@@ -1398,6 +1443,7 @@ export class AppStore {
       maskRow: null,
       maskEye: null,
       showDepth: null,
+      skinAreas: null,
       brushTool: false,
       objectTool: false,
       objectPill: null,
@@ -1638,6 +1684,7 @@ export class AppStore {
       maskRow: null,
       maskEye: null,
       showDepth: null,
+      skinAreas: null,
       brushTool: false,
       objectTool: false,
       objectPill: null,
@@ -2047,7 +2094,7 @@ export class AppStore {
   async setBefore(before: boolean): Promise<void> {
     if (before === this.state.before) return;
     // The Before view has no mask (`docs/23` §5.8): a row's eye ends there.
-    this.set(before && (this.state.maskEye !== null || this.state.showDepth !== null) ? { before, maskEye: null, showDepth: null } : { before });
+    this.set(before && (this.state.maskEye !== null || this.state.showDepth !== null || this.state.skinAreas !== null) ? { before, maskEye: null, showDepth: null, skinAreas: null } : { before });
     if (before) this.syncMaskView();
     try {
       await this.api.setBefore(before);
@@ -2076,9 +2123,9 @@ export class AppStore {
       return;
     }
     if (change.style !== undefined && change.on === undefined) next.on = true;
-    if (next.on === this.state.maskView.on && next.style === this.state.maskView.style && eye === null && (!next.on || this.state.showDepth === null)) return;
+    if (next.on === this.state.maskView.on && next.style === this.state.maskView.style && eye === null && (!next.on || (this.state.showDepth === null && this.state.skinAreas === null))) return;
     // Show mask on ends the eye: one mask at a time.
-    this.set(next.on && (eye !== null || this.state.showDepth !== null) ? { maskView: next, maskEye: null, showDepth: null } : { maskView: next });
+    this.set(next.on && (eye !== null || this.state.showDepth !== null || this.state.skinAreas !== null) ? { maskView: next, maskEye: null, showDepth: null, skinAreas: null } : { maskView: next });
     this.syncMaskView();
   }
 
@@ -2096,8 +2143,8 @@ export class AppStore {
   setMaskEye(row: number | null): void {
     if (row !== null && this.maskNode === null) return;
     // Whatever ends the eye ends Show depth with it (they are one view at a time), and an eye on ends Show depth.
-    if (row === this.state.maskEye && (row !== null || this.state.showDepth === null)) return;
-    this.set(row === null ? { maskEye: null, showDepth: null } : { maskEye: row, showDepth: null, maskView: { ...this.state.maskView, on: false } });
+    if (row === this.state.maskEye && (row !== null || (this.state.showDepth === null && this.state.skinAreas === null))) return;
+    this.set(row === null ? { maskEye: null, showDepth: null, skinAreas: null } : { maskEye: row, showDepth: null, skinAreas: null, maskView: { ...this.state.maskView, on: false } });
     this.syncMaskView();
   }
 
@@ -2109,7 +2156,19 @@ export class AppStore {
   setShowDepth(row: number | null): void {
     if (row !== null && this.maskNode === null) return;
     if (row === this.state.showDepth) return;
-    this.set(row === null ? { showDepth: null } : { showDepth: row, maskEye: null, maskView: { ...this.state.maskView, on: false } });
+    this.set(row === null ? { showDepth: null } : { showDepth: row, maskEye: null, skinAreas: null, maskView: { ...this.state.maskView, on: false } });
+    this.syncMaskView();
+  }
+
+  /**
+   * Show skin areas (`docs/27` S-11c): shows where the Face Refinement node on show works on face `face` (from 1), tinted over the photo, or ends it (`null`).
+   * View state like the eye, no patch and no undo step, and exclusive with Show mask, the row eyes and Show depth. Choosing another face while it is on shows that
+   * face. Ignored while there is no node on show.
+   */
+  setSkinAreas(face: number | null): void {
+    if (face !== null && this.maskNode === null) return;
+    if (face === this.state.skinAreas) return;
+    this.set(face === null ? { skinAreas: null } : { skinAreas: face, maskEye: null, showDepth: null, maskView: { ...this.state.maskView, on: false } });
     this.syncMaskView();
   }
 
@@ -2120,7 +2179,7 @@ export class AppStore {
    */
   setMaskNode(node: number | null): void {
     // A row's eye is for one node: another node, or none, ends it.
-    if (node !== this.maskNode && (this.state.maskEye !== null || this.state.showDepth !== null)) this.set({ maskEye: null, showDepth: null });
+    if (node !== this.maskNode && (this.state.maskEye !== null || this.state.showDepth !== null || this.state.skinAreas !== null)) this.set({ maskEye: null, showDepth: null, skinAreas: null });
     this.maskNode = node;
     this.syncMaskView();
   }
@@ -2136,7 +2195,8 @@ export class AppStore {
     const node = this.maskNode;
     let wanted: MaskView | null = null;
     if (node !== null && photo !== null) {
-      if (this.state.showDepth !== null) wanted = { node, style: "mask_only", row: this.state.showDepth, depth: true };
+      if (this.state.skinAreas !== null) wanted = { node, style: "overlay", face: this.state.skinAreas };
+      else if (this.state.showDepth !== null) wanted = { node, style: "mask_only", row: this.state.showDepth, depth: true };
       else if (eye !== null) wanted = { node, style, row: eye };
       else if (on) wanted = { node, style };
     }
@@ -2355,7 +2415,7 @@ export class AppStore {
     }
     if (!sample || this.currentId() !== id) return;
     const item = this.state.settings[id] ? nodeOf(this.state.settings[id].settings, node) : undefined;
-    const target = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[row] : undefined;
+    const target = isCardItem(item) ? item.masks.items[row] : undefined;
     if (target?.kind !== "color_range") return;
     const center = clampToDisc([sample.a, sample.b], COLOR_RANGE_REACH);
     await this.update(patchOf(node, { masks: { edit: { [String(row)]: { center } } } }), true);
@@ -2408,7 +2468,7 @@ export class AppStore {
   private depthRowAt(id: PhotoId, node: number, row: number): Extract<MaskItem, { kind: "depth" }> | undefined {
     const rs = this.state.settings[id];
     const item = rs ? nodeOf(rs.settings, node) : undefined;
-    const target = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[row] : undefined;
+    const target = isCardItem(item) ? item.masks.items[row] : undefined;
     return target?.kind === "depth" ? target : undefined;
   }
 
@@ -2488,7 +2548,7 @@ export class AppStore {
     const run = async (): Promise<boolean> => {
       const rs = this.state.settings[id];
       const item = rs ? nodeOf(rs.settings, node) : undefined;
-      const target = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[row] : undefined;
+      const target = isCardItem(item) ? item.masks.items[row] : undefined;
       if (target?.kind !== "object") return false;
       this.set({ objectFinding: id });
       try {
@@ -2545,13 +2605,32 @@ export class AppStore {
     if (photoId === null) return false;
     const rs = this.state.settings[photoId];
     const item = rs ? nodeOf(rs.settings, node) : undefined;
-    const target = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[row] : undefined;
+    const target = isCardItem(item) ? item.masks.items[row] : undefined;
     if (target?.kind !== "brush" || stroke.points.length === 0) return false;
     if (brushPointCount(target) + stroke.points.length > MAX_BRUSH_POINTS) {
       this.fail({ scope: "render", message: BRUSH_FULL });
       return false;
     }
     await this.update(patchOf(node, { masks: { edit: { [String(row)]: { strokes_append: [stroke] } } } }), true, photoId);
+    return true;
+  }
+
+  /**
+   * Appends a stroke to a Face Refinement node's protection (`docs/27` S-11c): one `protect.strokes_append` patch, sent when the pointer is released, one undo
+   * step. A stroke that would take the plane over 100,000 points is refused with the core's sentence in the error bar and changes nothing. Resolves with whether
+   * the stroke was sent.
+   */
+  async addProtectStroke(node: number, stroke: BrushStroke, photoId: PhotoId | null = this.currentId()): Promise<boolean> {
+    if (photoId === null) return false;
+    const rs = this.state.settings[photoId];
+    const item = rs ? nodeOf(rs.settings, node) : undefined;
+    if (item?.kind !== "face_refinement" || stroke.points.length === 0) return false;
+    const have = item.protect.strokes.reduce((n, s) => n + s.points.length, 0);
+    if (have + stroke.points.length > MAX_BRUSH_POINTS) {
+      this.fail({ scope: "render", message: BRUSH_FULL });
+      return false;
+    }
+    await this.update(patchOf(node, { protect: { strokes_append: [stroke] } }), true, photoId);
     return true;
   }
 

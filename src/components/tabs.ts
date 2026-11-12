@@ -9,10 +9,10 @@
 import type { NodeKind } from "../api/types";
 
 /** Tab ids. American spelling in identifiers; the label reads "Colour". `mask` is the corrector's Mask tab of the node view (`docs/23` §7.6). */
-export type TabId = "look" | "lens" | "light" | "color" | "detail" | "curve" | "raw" | "mask" | "film" | "print" | "halation" | "grain" | "inputs" | "blend" | "channels";
+export type TabId = "look" | "lens" | "light" | "color" | "detail" | "curve" | "raw" | "mask" | "film" | "face" | "print" | "halation" | "grain" | "inputs" | "blend" | "channels";
 
 /** The tabs that only the node view has: the Mask tab, a Film node's four and the one tab of each of the nodes of `docs/25`. */
-export type NodeOnlyTabId = "mask" | "film" | "print" | "halation" | "grain" | "inputs" | "blend" | "channels";
+export type NodeOnlyTabId = "mask" | "film" | "face" | "print" | "halation" | "grain" | "inputs" | "blend" | "channels";
 
 /** One tab: its id, the caps label and the blurb under the title (`design/mockups/photos.html`). */
 export interface TabInfo {
@@ -51,6 +51,9 @@ export const FILM_TABS: Readonly<Record<"film" | "print" | "halation" | "grain",
   grain: { id: "grain", label: "Grain", blurb: "The film's grain." },
 };
 
+/** The Face tab of a Face Refinement node (`docs/27` S-11c): it takes the Look tab's yellow, as a Film node's first tab does. */
+export const FACE_TAB: TabInfo = { id: "face", label: "Face", blurb: "The faces the node found, and what it does to each." };
+
 /** The one tab of a Parallel (Inputs), a Layer (Blend), a Splitter and a Combiner (Channels; `docs/25` §5.5): they take the Look tab's yellow. */
 export const MIXER_TABS: Readonly<Record<"inputs" | "blend" | "channels", TabInfo>> = {
   inputs: { id: "inputs", label: "Inputs", blurb: "Adds the change each input makes to the picture they start from." },
@@ -77,8 +80,7 @@ export const NODE_TABS: Readonly<Record<PanelKind, readonly TabId[]>> = {
   input: ["raw", "lens", "light", "color", "detail"],
   corrector: ["light", "color", "curve", "mask"],
   film: ["film", "print", "halation", "grain", "mask"],
-  // The Face tab comes with the node's panel (`docs/27` S-11c); until then the node has its Mask tab only.
-  face_refinement: ["mask"],
+  face_refinement: ["face", "mask"],
   output: ["look", "detail"],
   parallel: ["inputs"],
   layer: ["blend"],
@@ -96,8 +98,7 @@ export const FIRST_NODE_TAB: Readonly<Record<PanelKind, TabId>> = {
   layer: "blend",
   splitter: "channels",
   combiner: "channels",
-  // Until the node's own Face tab (`docs/27` S-11c) the Mask tab is its first.
-  face_refinement: "mask",
+  face_refinement: "face",
 };
 
 /**
@@ -117,7 +118,7 @@ export const NODE_FOR_SIMPLE_TAB: Readonly<Record<Exclude<TabId, NodeOnlyTabId>,
 
 /** The simple view's tab that stands for `tab`: itself when it is one of the seven, Light for the node view's own (Mask, a Film node's and the mixers'). */
 export function simpleTabOf(tab: TabId): Exclude<TabId, NodeOnlyTabId> {
-  return tab === "mask" || tab === "film" || tab === "print" || tab === "halation" || tab === "grain" || tab === "inputs" || tab === "blend" || tab === "channels" ? "light" : tab;
+  return tab === "mask" || tab === "film" || tab === "face" || tab === "print" || tab === "halation" || tab === "grain" || tab === "inputs" || tab === "blend" || tab === "channels" ? "light" : tab;
 }
 
 /** The tab info for an id. */
@@ -125,11 +126,13 @@ export function tabInfo(id: TabId): TabInfo {
   const info =
     id === "mask"
       ? MASK_TAB
-      : id === "film" || id === "print" || id === "halation" || id === "grain"
-        ? FILM_TABS[id]
-        : id === "inputs" || id === "blend" || id === "channels"
-          ? MIXER_TABS[id]
-          : TABS.find((tab) => tab.id === id);
+      : id === "face"
+        ? FACE_TAB
+        : id === "film" || id === "print" || id === "halation" || id === "grain"
+          ? FILM_TABS[id]
+          : id === "inputs" || id === "blend" || id === "channels"
+            ? MIXER_TABS[id]
+            : TABS.find((tab) => tab.id === id);
   // TABS and the Mask tab hold every TabId, so this cannot be undefined.
   return info as TabInfo;
 }

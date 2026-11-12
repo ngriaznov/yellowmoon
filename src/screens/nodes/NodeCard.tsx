@@ -1,4 +1,5 @@
 import type { NodeProps } from "@xyflow/react";
+import { ScanFaceIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
 import type { KeyboardEvent } from "react";
 import type { NodeId } from "../../api/types";
@@ -6,7 +7,7 @@ import { Input } from "@/components/glass/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/glass/tooltip";
 import { OptionalTooltip } from "@/components/OptionalTooltip";
 import { cardName, chipText } from "../../state/graphOps";
-import { nodeOf } from "../../state/settingsGraph";
+import { isCardItem, nodeOf } from "../../state/settingsGraph";
 import type { CardItem } from "../../state/settingsGraph";
 import { Port } from "./Port";
 import { useGraphUi } from "./graphUi";
@@ -66,7 +67,7 @@ function SlashGlyph() {
 }
 
 /** A glyph of the footer with the tooltip that names it. */
-function Tip({ text, glyph, className, children }: { text: string; glyph: "ai" | "mask" | "bypass"; className?: string; children: React.ReactNode }) {
+function Tip({ text, glyph, className, children }: { text: string; glyph: "ai" | "mask" | "bypass" | "face"; className?: string; children: React.ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -147,7 +148,7 @@ export function NodeCard({ data }: NodeProps) {
   const ui = useGraphUi();
   const id = (data as { id: NodeId }).id;
   const node = nodeOf(ui.settings, id);
-  if (!node || (node.kind !== "corrector" && node.kind !== "film")) return null;
+  if (!isCardItem(node)) return null;
   const state = ui.states.get(node.id as number);
   const dead = state?.live === false;
   const selected = ui.selected === id;
@@ -186,6 +187,11 @@ export function NodeCard({ data }: NodeProps) {
             <div className="ym-gnode__foot">
               <span className="ym-gnode__num">{chipText(state?.number ?? 0)}</span>
               <span className="ym-gnode__tools">
+                {node.kind === "face_refinement" ? (
+                  <Tip text="Face Refinement" glyph="face" className="ym-gnode__face">
+                    <ScanFaceIcon aria-hidden="true" width={13} height={13} />
+                  </Tip>
+                ) : null}
                 {glyphs.ai ? (
                   <Tip text="AI mask" glyph="ai" className="ym-gnode__mask">
                     <SparkleGlyph />

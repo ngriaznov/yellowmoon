@@ -4,12 +4,12 @@
  * grades its thumbnails (`fixtures/grade.ts`), so a change in a control is visible. Photos that
  * aren't one of the twelve fixtures have no picture.
  */
-import type { MaskKind, MaskView, PhotoSummary, ResolvedSettings } from "../api/types";
+import type { FaceBox, MaskKind, MaskView, PhotoSummary, ResolvedSettings } from "../api/types";
 import { sceneThroughFilms } from "../fixtures/film";
 import { developScene, flatScene, previewDataUrl } from "../fixtures/grade";
 import type { PreviewOptions } from "../fixtures/grade";
-import { maskViewSvg, masksOfView, turnMatrix, visionFoundIn } from "../fixtures/maskView";
-import { nodeOf } from "../state/settingsGraph";
+import { maskViewSvg, masksOfView, skinAreasSvg, turnMatrix, visionFoundIn } from "../fixtures/maskView";
+import { isCardItem, nodeOf } from "../state/settingsGraph";
 import { SCENES, SVG_HEIGHT, SVG_WIDTH } from "../fixtures/scenes";
 import { photoName } from "../state/photo";
 
@@ -24,6 +24,8 @@ export const lookSlugOf = (id: string): string => id.slice(id.lastIndexOf(":") +
 export interface VisionContext {
   kinds: readonly MaskKind[] | null;
   finding: boolean;
+  /** The face whose skin areas the view shows (`MaskView.face`): its box in the photo's frame, or null. */
+  face?: FaceBox | null;
 }
 
 /**
@@ -50,9 +52,13 @@ export function previewUrl(
     people: inScene.people && (vision.kinds?.includes("people") ?? true) && !vision.finding,
   };
   const over: PreviewOptions["over"] =
-    mask && (node?.kind === "corrector" || node?.kind === "film")
+    mask && isCardItem(node)
       ? (box) =>
-          maskViewSvg(
+          typeof mask.face === "number"
+            ? vision.face
+              ? skinAreasSvg(vision.face, { width: SVG_WIDTH, height: SVG_HEIGHT, matrix: turnMatrix(turn, SVG_WIDTH, SVG_HEIGHT) })
+              : ""
+            : maskViewSvg(
             mask.style,
             masksOfView(node.masks, mask.row),
             box,

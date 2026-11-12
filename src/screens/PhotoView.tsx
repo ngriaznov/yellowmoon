@@ -12,6 +12,8 @@ import { imageAspectOf, isFullRect } from "./crop/cropMath";
 import { CropOverlay } from "./crop/CropOverlay";
 import type { CropSession } from "./crop/useCropSession";
 import { BrushLayer } from "./nodes/BrushLayer";
+import { FaceLayer } from "./nodes/FaceLayer";
+import type { FaceLayerProps } from "./nodes/FaceLayer";
 import type { BrushTarget } from "./nodes/BrushLayer";
 import { MaskHandles } from "./nodes/MaskHandles";
 import { ObjectLayer } from "./nodes/ObjectLayer";
@@ -52,6 +54,8 @@ export interface PhotoViewProps {
   object?: ObjectTarget | null;
   /** The Object tool is on (`store.objectTool`): the layer takes the press. */
   objectTool?: boolean;
+  /** The faces of the Face Refinement node's Face tab (`docs/27` S-11c): ovals drawn over the cell, a click selects a face. Hidden, like the handles, while Crop or a pick shows and in the Before view. */
+  faces?: Pick<FaceLayerProps, "faces" | "all"> | null;
   /** The chip that stands in for the look's while the selected node has a selected mask row ("MASK · LINEAR", `docs/23` §7.1). */
   maskChip?: string;
 }
@@ -79,7 +83,7 @@ function notReadyNote(photo: PhotoSummary): { title: string; text: string } | nu
  *
  * The screen draws it again only when what it shows changes (`memo`): a `render_stats` tick or a zoom step elsewhere does not.
  */
-export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false, maskHandles = null, brush = null, object = null, objectTool = false, maskChip }: PhotoViewProps) {
+export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false, maskHandles = null, brush = null, faces = null, object = null, objectTool = false, maskChip }: PhotoViewProps) {
   const backend = useAppState((s) => s.viewportBackend);
   const sentFrame = useAppState((s) => s.viewportFrame);
   // Only the pick layer needs to know whether the picture is letterboxed; the zoom changes on every wheel step and is not read otherwise.
@@ -125,9 +129,10 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
   // Subject and People: the kinds this computer makes, and whether the core is making them now (`docs/23` §4.5).
   const maskKinds = useAppState((s) => s.maskKinds);
   const finding = useAppState((s) => s.viewportBusy.busy && s.viewportBusy.finding);
+  const skinFace = useAppState((s) => (drawsFixture && s.maskShown?.face != null && photo ? (s.faces[photo.id]?.faces.find((f) => f.number === s.maskShown?.face) ?? null) : null));
   const picture = useMemo(
-    () => (photo && drawsFixture ? previewUrl(photo, rs, before, maskShown, { kinds: maskKinds, finding }) : undefined),
-    [photo, rs, before, drawsFixture, maskShown, maskKinds, finding],
+    () => (photo && drawsFixture ? previewUrl(photo, rs, before, maskShown, { kinds: maskKinds, finding, face: skinFace }) : undefined),
+    [photo, rs, before, drawsFixture, maskShown, maskKinds, finding, skinFace],
   );
 
   // The cell's size, for the handles: a new size is a new place for every point they draw.
@@ -257,6 +262,8 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
         <PickLayer mode={picking} displayAspect={displayAspect} letterboxed={letterboxed} onPick={onPicked} />
       ) : brush && photo && rs && !before && cellSize.width > 0 ? (
         <BrushLayer store={store} photo={photo} rs={rs} cell={cellSize} {...brush} />
+      ) : faces && photo && !before && cellSize.width > 0 ? (
+        <FaceLayer store={store} photo={photo} cell={cellSize} {...faces} />
       ) : object && photo && rs && !before && cellSize.width > 0 ? (
         <ObjectLayer store={store} photo={photo} rs={rs} cell={cellSize} tool={objectTool} {...object} />
       ) : maskHandles && photo && rs && !before && cellSize.width > 0 ? (
