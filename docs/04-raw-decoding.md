@@ -172,6 +172,8 @@ Every failure returns a typed error with a plain message:
 
 No sentence contains "os error", "((", "Huffman", "entropy" or "restart". `RawError::detail()` returns the `detail` or the I/O error text: it goes to the log (`tracing`, level warn), to `ym render --json` and `ym info --json` as `error.detail`, and to stderr with `-v`. `crates/ym-raw/tests/messages.rs` sweeps damaged files of every variant and asserts that every message is in this list.
 
+The session adds two sentences that are not `RawError`s, both checked before a file is read again (`docs/26` P1-4): a file that is gone since it was opened gives the `Io` `NotFound` sentence of the table, and a file whose length or modification time differs from the probe's gives "This file changed after it was opened. Remove it from the filmstrip and open it again." (`ym_core::media::CHANGED_MESSAGE`). A raw file has no checksum, and the stamp is `(length, modified)`, so a rewrite of the same length within the file system's time granularity (1 s on HFS+ and many SMB shares, 2 s on FAT) is not seen.
+
 ## Performance targets
 
 - Metadata probe (no pixels): < 20 ms per file.

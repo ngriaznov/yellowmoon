@@ -1316,6 +1316,7 @@ describe("optionsFromLocation", () => {
     expect(optionsFromLocation("?mockPhotos=500")).toEqual({ photoCount: 500 });
     expect(optionsFromLocation("?mockFreeBytes=200000000")).toEqual({ freeBytes: 200_000_000 });
     expect(optionsFromLocation("?mockUnreadable=Desktop")).toEqual({ unreadable: "Desktop" });
+    expect(optionsFromLocation("?mockVanish=DSC04207,DSC04209.ARW")).toEqual({ vanish: ["DSC04207", "DSC04209"] });
     expect(optionsFromLocation("?mockLibraries=all")).toEqual({ allLibraries: true });
     expect(optionsFromLocation("?mockLibraries=none")).toEqual({});
     expect(optionsFromLocation("?mockViewport=fallback")).toEqual({ viewport: "fallback" });

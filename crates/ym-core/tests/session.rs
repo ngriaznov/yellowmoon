@@ -15,6 +15,7 @@ use common::{Layout, Scene, base_env, light, session_with_events, settle};
 use ym_color::exposure::CAMERA_GAIN_EV;
 use ym_color::wb::LightSource;
 use ym_core::auto::NoiseSource;
+use ym_core::media::{CHANGED_MESSAGE, Media};
 use ym_core::session::{
     ApplyScope, EventSink, OpenOptions, PhotoId, PhotoProgress, PhotoStage, PhotoStatus, Session,
     SessionError, SessionEvent, ThumbnailInput, ThumbnailRenderer, default_decode_threads,
@@ -26,6 +27,7 @@ use ym_core::settings::{
 };
 use ym_core::settings::{GradePatch, NodeId, NodePatch};
 use ym_looks::library::LookId;
+use ym_raw::error::MESSAGE_NOT_FOUND;
 use ym_raw::layout::ChromaSubsampling;
 use ym_raw::testgen::{ArwBuilder, ContainerOnly, CrawEncoder, LosslessL, LosslessMs};
 
@@ -381,6 +383,223 @@ fn a_decode_failure_after_a_good_probe_ends_the_sequence_with_the_reason() {
     // The default profile stands in for an A7 V, and the card says so.
     assert!(camera.stand_in);
     assert!(camera.card().note.unwrap().contains("borrows the A7R IV"));
+}
+
+// --- A file that goes away or changes (docs/26 P1-4, H-04) -----------------------------------
+
+/// Eight photos, settled; the first is current. Returns the folder, the session, its events and
+/// the ids in file order. `p0` and `p1` are cached; `p5` is not.
+fn eight_photos() -> (
+    tempfile::TempDir,
+    Session,
+    mpsc::Receiver<SessionEvent>,
+    Vec<PhotoId>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..8 {
+        write_plain(dir.path(), &format!("p{i}.ARW"), 0.25 + 0.01 * f64::from(i));
+    }
+    let (session, rx) = session_with_events();
+    session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    settle(&session);
+    let ids = session.photo_ids();
+    assert!(!session.cached_ids().contains(&ids[5]));
+    (dir, session, rx, ids)
+}
+
+/// The progress events of `id` that carry an error.
+fn errors_of(rx: &mpsc::Receiver<SessionEvent>, id: PhotoId) -> Vec<PhotoProgress> {
+    progress_by_photo(rx)
+        .remove(&id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.error.is_some())
+        .collect()
+}
+
+fn skipped_with(session: &Session, id: PhotoId, sentence: &str) {
+    assert_eq!(
+        session.status(id),
+        Some(PhotoStatus::Skipped {
+            reason: sentence.to_owned()
+        })
+    );
+}
+
+/// What the person is told when the skipped photo is asked for again: the same sentence.
+fn asked_again(session: &Session, id: PhotoId, sentence: &str) {
+    match session.raw_image(id) {
+        Err(SessionError::Skipped(reason)) => assert_eq!(reason, sentence),
+        other => panic!(
+            "expected the photo to be skipped, got {:?}",
+            other.map(|_| ())
+        ),
+    }
+}
+
+#[test]
+fn a_file_deleted_after_it_was_opened_skips_the_photo_with_the_not_found_sentence_and_an_event() {
+    let (dir, session, rx, ids) = eight_photos();
+    let _ = progress_by_photo(&rx);
+    std::fs::remove_file(dir.path().join("p5.ARW")).unwrap();
+
+    match session.raw_image(ids[5]) {
+        Err(SessionError::Skipped(reason)) => assert_eq!(reason, MESSAGE_NOT_FOUND),
+        other => panic!("expected Skipped, got {:?}", other.map(|_| ())),
+    }
+    skipped_with(&session, ids[5], MESSAGE_NOT_FOUND);
+    let events = errors_of(&rx, ids[5]);
+    assert_eq!(events.len(), 1, "one error event: {events:?}");
+    assert_eq!(events[0].stage, PhotoStage::Decode);
+    assert!(events[0].done);
+    assert_eq!(events[0].error.as_deref(), Some(MESSAGE_NOT_FOUND));
+    // Asked again (every render asks): the same answer, and no second event.
+    asked_again(&session, ids[5], MESSAGE_NOT_FOUND);
+    assert!(errors_of(&rx, ids[5]).is_empty());
+    // Nothing else is touched; a render source and a view refuse the photo the way a photo that was
+    // skipped at open is refused.
+    assert!(matches!(
+        session.view(ids[5]),
+        Err(SessionError::Skipped(_))
+    ));
+    assert_eq!(session.status(ids[4]), Some(PhotoStatus::Ready));
+}
+
+#[test]
+fn a_file_cut_short_after_it_was_opened_skips_the_photo_with_the_changed_sentence() {
+    let (dir, session, rx, ids) = eight_photos();
+    let _ = progress_by_photo(&rx);
+    let path = dir.path().join("p5.ARW");
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+
+    asked_again(&session, ids[5], CHANGED_MESSAGE);
+    skipped_with(&session, ids[5], CHANGED_MESSAGE);
+    let events = errors_of(&rx, ids[5]);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].error.as_deref(), Some(CHANGED_MESSAGE));
+    assert_eq!(
+        CHANGED_MESSAGE,
+        "This file changed after it was opened. Remove it from the filmstrip and open it again."
+    );
+}
+
+#[test]
+fn a_file_made_longer_or_rewritten_with_another_time_is_changed() {
+    let (dir, session, rx, ids) = eight_photos();
+    let _ = progress_by_photo(&rx);
+    // Longer: a few bytes appended.
+    let path = dir.path().join("p5.ARW");
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes.extend_from_slice(&[0; 16]);
+    std::fs::write(&path, &bytes).unwrap();
+    asked_again(&session, ids[5], CHANGED_MESSAGE);
+    assert_eq!(errors_of(&rx, ids[5]).len(), 1);
+
+    // Rewritten with the same length: the modification time is set by hand, so the test does not
+    // depend on the clock moving between two writes.
+    let path = dir.path().join("p6.ARW");
+    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    let file = std::fs::File::options().write(true).open(&path).unwrap();
+    file.set_modified(before + Duration::from_secs(3600))
+        .unwrap();
+    drop(file);
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), bytes.len() as u64);
+    asked_again(&session, ids[6], CHANGED_MESSAGE);
+    skipped_with(&session, ids[6], CHANGED_MESSAGE);
+    assert_eq!(errors_of(&rx, ids[6]).len(), 1);
+
+    // The same bytes with the same time (a file touched and set back) are the same file.
+    let path = dir.path().join("p7.ARW");
+    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    let file = std::fs::File::options().write(true).open(&path).unwrap();
+    file.set_modified(before).unwrap();
+    drop(file);
+    assert!(session.raw_image(ids[7]).is_ok());
+    assert_eq!(session.status(ids[7]), Some(PhotoStatus::Ready));
+}
+
+#[test]
+fn a_photo_whose_mosaic_is_cached_still_renders_until_the_cache_lets_it_go() {
+    let (dir, session, rx, ids) = eight_photos();
+    let _ = progress_by_photo(&rx);
+    assert!(session.cached_ids().contains(&ids[0]));
+    std::fs::remove_file(dir.path().join("p0.ARW")).unwrap();
+
+    // Served from the cache with no `stat`: Ready, the same allocation, no event.
+    let a = session.raw_image(ids[0]).unwrap();
+    let b = session.raw_image(ids[0]).unwrap();
+    assert!(Arc::ptr_eq(&a, &b));
+    assert_eq!(session.status(ids[0]), Some(PhotoStatus::Ready));
+    assert!(session.view(ids[0]).is_ok());
+    assert!(errors_of(&rx, ids[0]).is_empty());
+
+    // The window moves on and the cache lets the mosaic go: the next read misses the file.
+    session.set_current(ids[5]).unwrap();
+    settle(&session);
+    assert!(!session.cached_ids().contains(&ids[0]));
+    asked_again(&session, ids[0], MESSAGE_NOT_FOUND);
+    skipped_with(&session, ids[0], MESSAGE_NOT_FOUND);
+    assert_eq!(errors_of(&rx, ids[0]).len(), 1);
+}
+
+#[test]
+fn a_file_changed_between_the_probe_and_the_develop_job_fails_the_photo_at_decode() {
+    let dir = tempfile::tempdir().unwrap();
+    write_plain(dir.path(), "a.ARW", 0.3);
+    write_plain(dir.path(), "b.ARW", 0.35);
+    // The probe reads the file, then another program appends to it: the stamp taken before the
+    // probe no longer matches when the develop job comes to read the file.
+    let mut media = Media::new();
+    media.probe = Arc::new(|path| {
+        let meta = ym_raw::metadata::probe(path);
+        if path.file_name().is_some_and(|n| n == "a.ARW") {
+            let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+            std::io::Write::write_all(&mut file, &[0; 8]).unwrap();
+        }
+        meta
+    });
+    let (sink, rx) = EventSink::channel();
+    let session = Session::new(base_env().with_events(sink).with_media(media));
+    let outcome = session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    settle(&session);
+    let (a, b) = (outcome.added[0], outcome.added[1]);
+    skipped_with(&session, a, CHANGED_MESSAGE);
+    assert_eq!(session.status(b), Some(PhotoStatus::Ready));
+    let got: Vec<_> = progress_by_photo(&rx)[&a]
+        .iter()
+        .map(|p| (p.stage, p.done, p.error.clone()))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (PhotoStage::Probe, true, None),
+            (PhotoStage::Decode, false, None),
+            (PhotoStage::Decode, true, Some(CHANGED_MESSAGE.to_owned())),
+        ]
+    );
+}
+
+#[test]
+fn a_file_deleted_before_the_develop_job_reads_it_is_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    write_plain(dir.path(), "a.ARW", 0.3);
+    let mut media = Media::new();
+    media.probe = Arc::new(|path| {
+        let meta = ym_raw::metadata::probe(path);
+        std::fs::remove_file(path).unwrap();
+        meta
+    });
+    let (sink, rx) = EventSink::channel();
+    let session = Session::new(base_env().with_events(sink).with_media(media));
+    let outcome = session.open(&[dir.path().to_path_buf()], OpenOptions::default());
+    settle(&session);
+    skipped_with(&session, outcome.added[0], MESSAGE_NOT_FOUND);
+    assert_eq!(errors_of(&rx, outcome.added[0]).len(), 1);
 }
 
 struct Recorder {
