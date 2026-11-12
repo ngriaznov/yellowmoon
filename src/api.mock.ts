@@ -210,6 +210,36 @@ export const MOCK_FACES: readonly FaceBox[] = [
   { number: 1, x: 0.16, y: 0.22, width: 0.2, height: 0.32 },
   { number: 2, x: 0.58, y: 0.3, width: 0.16, height: 0.26 },
 ];
+/**
+ * `count` faces laid out left to right in rows of at most five over the photo's frame (`?mockFaces=one|five|twelve`), numbered from 1 in that order. Each is a
+ * share of the frame, like {@link MOCK_FACES}; they do not overlap, so a click on the photo picks one.
+ */
+export function mockFaceBoxes(count: number): FaceBox[] {
+  const rows = Math.ceil(count / 5);
+  const perRow = Math.min(count, 5);
+  const width = Math.min(0.14, 0.9 / perRow - 0.02);
+  const height = Math.min(0.2, 0.8 / rows - 0.04);
+  return Array.from({ length: count }, (_, i) => {
+    const row = Math.floor(i / 5);
+    const col = i % 5;
+    const inRow = Math.min(5, count - row * 5);
+    return {
+      number: i + 1,
+      x: 0.05 + ((col + 0.5) * 0.9) / inRow - width / 2,
+      y: 0.08 + ((row + 0.5) * 0.84) / rows - height / 2,
+      width,
+      height,
+    };
+  });
+}
+/** How many faces each of the mock's count settings finds. */
+const FACE_COUNTS = { one: 1, five: 5, twelve: 12 } as const;
+/** What the mock's `?mockFaces=` finds: the two of {@link MOCK_FACES}, none, or one, five or twelve laid out by {@link mockFaceBoxes}. */
+function facesFor(kind: NonNullable<MockOptions["faces"]>): FaceBox[] {
+  if (kind === "one" || kind === "five" || kind === "twelve") return mockFaceBoxes(FACE_COUNTS[kind]);
+  return kind === "none" ? [] : MOCK_FACES.map((f) => ({ ...f }));
+}
+
 /** What the decoder's time reads in the mock's "Object found" pill: 0.4 s. */
 export const FOUND_MS = 412;
 
@@ -533,8 +563,9 @@ export interface MockOptions {
   /**
    * What the mock's face worker finds (`?mockFaces=`, `docs/27` S-11b): `ok` (the default) finds two faces ({@link MOCK_FACES}); `none` finds none (`ready`
    * with no face); `fail` fails the first time for each photo with {@link FACES_FAILED}; `missing` is a copy with no face models (`models_missing`, nothing runs).
+   * `one`, `five` and `twelve` find that many faces ({@link mockFaceBoxes}), for the screens that depend on the number.
    */
-  faces?: "ok" | "none" | "fail" | "missing";
+  faces?: "ok" | "none" | "fail" | "missing" | "one" | "five" | "twelve";
 }
 
 /** What the viewport commands have recorded, for tests. */
@@ -1207,7 +1238,7 @@ export function optionsFromLocation(search: string | undefined = typeof location
   const depth = params.get("mockDepth");
   if (depth === "ok" || depth === "fail" || depth === "fail-always") out.depth = depth;
   const faces = params.get("mockFaces");
-  if (faces === "ok" || faces === "none" || faces === "fail" || faces === "missing") out.faces = faces;
+  if (faces === "ok" || faces === "none" || faces === "fail" || faces === "missing" || faces === "one" || faces === "five" || faces === "twelve") out.faces = faces;
   return out;
 }
 
@@ -1916,7 +1947,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
           facesFailedOnce.add(id);
           state = { photo_id: id, phase: "failed", faces: [], message: FACES_FAILED };
         } else {
-          state = { photo_id: id, phase: "ready", faces: options.faces === "none" ? [] : MOCK_FACES.map((f) => ({ ...f })), message: null };
+          state = { photo_id: id, phase: "ready", faces: facesFor(options.faces ?? "ok"), message: null };
         }
         // A failure is kept too: nothing asks again until the picture changes.
         faceStates.set(id, state);
@@ -2284,7 +2315,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     // correctors and the Film nodes grade the scene where they are.
     if (hasMixers(settings)) {
       return sceneAt(settings, rec.scene, outputFeeder(settings), (item, scene) =>
-        item.kind === "film" ? adjustForNode(scene, filmLook(item)) : item.id === MAIN_ID ? scene : adjustForNode(scene, item),
+        item.kind === "film" ? adjustForNode(scene, filmLook(item)) : item.kind === "face_refinement" || item.id === MAIN_ID ? scene : adjustForNode(scene, item),
       );
     }
     return sceneThroughFilms(rec.scene, settings);
@@ -2342,7 +2373,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const adjustment = adjustmentOf(rec, false);
     if (nodeOf(rec.settings, node)?.kind === "corrector") return signalScene(rec.scene, adjustment, pictureChain(rec.settings, node), stage);
     const input = adjustScene(rec.scene, { ...adjustment, warp: undefined });
-    const scene = sceneAfter(rec.settings, input, node, (item, scene) => (item.kind === "film" ? adjustForNode(scene, filmLook(item)) : adjustForNode(scene, item)));
+    const scene = sceneAfter(rec.settings, input, node, (item, scene) =>
+      item.kind === "film" ? adjustForNode(scene, filmLook(item)) : item.kind === "face_refinement" ? scene : adjustForNode(scene, item),
+    );
     return scene ?? fail("render", `Node ${node} has no picture to read here.`);
   }
 
@@ -2373,7 +2406,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       const scene = mixed
         ? developScene(
             sceneAt(settings, adjustScene(rec.scene, { ...input, warp: undefined }), { node, port: "picture" }, (item, s) =>
-              item.kind === "film" ? adjustForNode(s, filmLook(item)) : adjustForNode(s, item),
+              item.kind === "film" ? adjustForNode(s, filmLook(item)) : item.kind === "face_refinement" ? s : adjustForNode(s, item),
             ),
             look,
             null,

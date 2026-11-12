@@ -66,6 +66,7 @@ import type {
   NodeThumbnailsReady,
   ObjectState,
   DepthState,
+  FaceState,
   VisionState,
   OpenSummary,
   Orientation,
@@ -123,6 +124,7 @@ import {
   INPUT_ID,
   inputOf,
   gradeOf,
+  isCardItem,
   isEmptyPatch,
   MAIN_ID,
   mainOf,
@@ -331,6 +333,13 @@ export interface AppState {
    * again. A photo whose map was made (or is being made again) has none.
    */
   depthFailed: Readonly<Record<number, string>>;
+  /**
+   * Where the faces of each photo are (`face_state`, `docs/27` S-11c): the Face Refinement node's panel and the boxes drawn on the photo read it. A photo the
+   * core has said nothing about has no entry ({@link Store.refreshFaces} asks).
+   */
+  faces: Readonly<Record<number, FaceState>>;
+  /** The face the Face tab is on, counted from 1 (window state: not saved, not undone). A number past the faces found reads as the last one. */
+  faceSelected: number;
   /** The photos whose file has no focus point (`focus_plane`'s `no_focus_point`): Focus plane is off for them, with the reason. */
   noFocusPoint: Readonly<Record<number, true>>;
   /**
@@ -436,6 +445,8 @@ export function initialState(): AppState {
     objectFinding: null,
     visionNothing: {},
     depthFailed: {},
+    faces: {},
+    faceSelected: 1,
     noFocusPoint: {},
     focusCentre: {},
     objectPill: null,
@@ -541,8 +552,8 @@ export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): Resolve
       const next = node.grade && have ? directGrade(stored as CorrectorItem, resolved as ResolvedCorrector, withoutAuto(node.grade), NO_ESTIMATES, NO_FLAGS) : null;
       change(id, () => (next?.stored ?? stored) as CorrectorItem);
       if (have) values = { ...values, nodes: values.nodes.map((n) => (n.id === id ? ((next?.resolved ?? resolved) as ResolvedCorrector) : n)) };
-    } else if (typeof id === "number" && nodeOf(settings, id)?.kind === "film") {
-      // A Film node (`docs/24`): its fields are plain numbers and ids, so the page folds the patch in at once, as the core will.
+    } else if (typeof id === "number" && (nodeOf(settings, id)?.kind === "film" || nodeOf(settings, id)?.kind === "face_refinement")) {
+      // A Film node (`docs/24`) or a Face Refinement node (`docs/27`): its fields are plain numbers and ids, so the page folds the patch in at once, as the core will.
       settings = applyPatch(settings, { nodes: { [key]: node } });
     }
   }
@@ -885,6 +896,7 @@ export class AppStore {
       api.on("object_state", (e) => this.onObjectState(e)),
       api.on("vision_state", (e) => this.onVisionState(e)),
       api.on("depth_state", (e) => this.onDepthState(e)),
+      api.on("face_state", (e) => this.onFaceState(e)),
       onGestureEnd(() => this.afterGesture()),
     ];
     void this.load();
@@ -1180,6 +1192,32 @@ export class AppStore {
       this.set({ depthFailed: next });
     }
     this.wantNodeThumbnails(e.photo_id);
+  }
+
+  /** `face_state`: the core's face worker started or ended for a photo. The node's panel and the boxes on the photo follow; the thumbnails are asked again when it ends. */
+  private onFaceState(e: FaceState): void {
+    this.set({ faces: { ...this.state.faces, [e.photo_id]: e } });
+    if (e.phase !== "finding") this.wantNodeThumbnails(e.photo_id);
+  }
+
+  /**
+   * Asks the core where the faces of a photo are (`face_state` command) and keeps the answer, unless an event of the same worker has already said something
+   * newer. The Face tab asks when it opens, so a photo whose worker ended before the page listened is not left on "Finding faces".
+   */
+  async refreshFaces(photoId: PhotoId): Promise<void> {
+    try {
+      const state = await this.api.faceState(photoId);
+      const had = this.state.faces[photoId];
+      if (!had || had.phase === "finding" || had.phase !== state.phase || had.faces.length !== state.faces.length) this.set({ faces: { ...this.state.faces, [photoId]: state } });
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /** Selects the face the Face tab is on (counted from 1). Nothing is sent. */
+  selectFace(number: number): void {
+    const next = Math.max(1, Math.round(number));
+    if (next !== this.state.faceSelected) this.set({ faceSelected: next });
   }
 
   private onFrame(frame: ViewportFrame): void {
@@ -2355,7 +2393,7 @@ export class AppStore {
     }
     if (!sample || this.currentId() !== id) return;
     const item = this.state.settings[id] ? nodeOf(this.state.settings[id].settings, node) : undefined;
-    const target = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[row] : undefined;
+    const target = isCardItem(item) ? item.masks.items[row] : undefined;
     if (target?.kind !== "color_range") return;
     const center = clampToDisc([sample.a, sample.b], COLOR_RANGE_REACH);
     await this.update(patchOf(node, { masks: { edit: { [String(row)]: { center } } } }), true);
@@ -2408,7 +2446,7 @@ export class AppStore {
   private depthRowAt(id: PhotoId, node: number, row: number): Extract<MaskItem, { kind: "depth" }> | undefined {
     const rs = this.state.settings[id];
     const item = rs ? nodeOf(rs.settings, node) : undefined;
-    const target = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[row] : undefined;
+    const target = isCardItem(item) ? item.masks.items[row] : undefined;
     return target?.kind === "depth" ? target : undefined;
   }
 
@@ -2488,7 +2526,7 @@ export class AppStore {
     const run = async (): Promise<boolean> => {
       const rs = this.state.settings[id];
       const item = rs ? nodeOf(rs.settings, node) : undefined;
-      const target = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[row] : undefined;
+      const target = isCardItem(item) ? item.masks.items[row] : undefined;
       if (target?.kind !== "object") return false;
       this.set({ objectFinding: id });
       try {
@@ -2545,13 +2583,32 @@ export class AppStore {
     if (photoId === null) return false;
     const rs = this.state.settings[photoId];
     const item = rs ? nodeOf(rs.settings, node) : undefined;
-    const target = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[row] : undefined;
+    const target = isCardItem(item) ? item.masks.items[row] : undefined;
     if (target?.kind !== "brush" || stroke.points.length === 0) return false;
     if (brushPointCount(target) + stroke.points.length > MAX_BRUSH_POINTS) {
       this.fail({ scope: "render", message: BRUSH_FULL });
       return false;
     }
     await this.update(patchOf(node, { masks: { edit: { [String(row)]: { strokes_append: [stroke] } } } }), true, photoId);
+    return true;
+  }
+
+  /**
+   * Appends a stroke to a Face Refinement node's protection (`docs/27` S-11c): one `protect.strokes_append` patch, sent when the pointer is released, one undo
+   * step. A stroke that would take the plane over 100,000 points is refused with the core's sentence in the error bar and changes nothing. Resolves with whether
+   * the stroke was sent.
+   */
+  async addProtectStroke(node: number, stroke: BrushStroke, photoId: PhotoId | null = this.currentId()): Promise<boolean> {
+    if (photoId === null) return false;
+    const rs = this.state.settings[photoId];
+    const item = rs ? nodeOf(rs.settings, node) : undefined;
+    if (item?.kind !== "face_refinement" || stroke.points.length === 0) return false;
+    const have = item.protect.strokes.reduce((n, s) => n + s.points.length, 0);
+    if (have + stroke.points.length > MAX_BRUSH_POINTS) {
+      this.fail({ scope: "render", message: BRUSH_FULL });
+      return false;
+    }
+    await this.update(patchOf(node, { protect: { strokes_append: [stroke] } }), true, photoId);
     return true;
   }
 

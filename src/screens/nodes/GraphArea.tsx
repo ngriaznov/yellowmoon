@@ -2,7 +2,7 @@ import { Maximize2Icon } from "lucide-react";
 import type { DevelopSettings, NodeId } from "../../api/types";
 import { Button } from "../../components";
 import { GRAPH_OP_TEXT } from "../../state/graphOps";
-import { INPUT_ID, isGlyphItem, MAIN_ID, nodeOf, numberedOf, OUTPUT_ID } from "../../state/settingsGraph";
+import { INPUT_ID, isCardItem, isGlyphItem, MAIN_ID, nodeOf, numberedOf, OUTPUT_ID } from "../../state/settingsGraph";
 import { AddNodeMenu } from "./AddNodeMenu";
 import { NodeGraph } from "./NodeGraph";
 import { PhotoSwitcher } from "./PhotoSwitcher";
@@ -50,7 +50,7 @@ function deleteReason(id: NodeId, link: boolean): string | null {
 export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, expanded, onToggleExpanded, dimmed, maskOn = false, onToggleMask, hidden = false, ...switcher }: GraphAreaProps) {
   const node = settings ? nodeOf(settings, selected) : undefined;
   const count = settings ? numberedOf(settings).length : 0;
-  const isCard = node?.kind === "corrector" || node?.kind === "film";
+  const isCard = isCardItem(node);
   // A Splitter and a Combiner have no Bypass and no mask; a Parallel and a Layer have Bypass and no mask (`docs/25` §5.5).
   const noBypassKind = node?.kind === "splitter" || node?.kind === "combiner";
   const bypassOff = !isCard && !(isGlyphItem(node) && !noBypassKind);
@@ -64,6 +64,7 @@ export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, ex
         <AddNodeMenu
           onAddCorrector={settings ? graph.addCorrector : undefined}
           onAddFilm={settings ? graph.addFilm : undefined}
+          onAddFaceRefinement={settings ? graph.addFaceRefinement : undefined}
           onAddParallel={settings ? graph.addParallel : undefined}
           onAddLayer={settings ? graph.addLayer : undefined}
           onAddTrio={settings ? graph.addTrio : undefined}

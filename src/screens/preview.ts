@@ -9,7 +9,7 @@ import { sceneThroughFilms } from "../fixtures/film";
 import { developScene, flatScene, previewDataUrl } from "../fixtures/grade";
 import type { PreviewOptions } from "../fixtures/grade";
 import { maskViewSvg, masksOfView, turnMatrix, visionFoundIn } from "../fixtures/maskView";
-import { nodeOf } from "../state/settingsGraph";
+import { isCardItem, nodeOf } from "../state/settingsGraph";
 import { SCENES, SVG_HEIGHT, SVG_WIDTH } from "../fixtures/scenes";
 import { photoName } from "../state/photo";
 
@@ -50,7 +50,7 @@ export function previewUrl(
     people: inScene.people && (vision.kinds?.includes("people") ?? true) && !vision.finding,
   };
   const over: PreviewOptions["over"] =
-    mask && (node?.kind === "corrector" || node?.kind === "film")
+    mask && isCardItem(node)
       ? (box) =>
           maskViewSvg(
             mask.style,
