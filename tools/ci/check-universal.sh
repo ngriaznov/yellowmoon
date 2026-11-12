@@ -71,10 +71,17 @@ if [ "$HOST" = arm64 ]; then HOST_NOTE="Apple silicon, the slice runs under Rose
 # is_x86_feature_detected!, and ym doctor does not print which path was taken. Rosetta before macOS 15 is reported not to
 # translate AVX2 (the scalar kernels then run). This line never fails the script.
 LEAF7="$(arch -x86_64 sysctl -n machdep.cpu.leaf7_features 2>/dev/null || true)"
-case " $LEAF7 " in
-  *" AVX2 "*) AVX2_NOTE="AVX2 is reported to the x86_64 slice (the AVX2 kernels are expected)" ;;
-  *) AVX2_NOTE="AVX2 is not reported to the x86_64 slice (the scalar kernels are expected; a valid path)" ;;
-esac
+if [ -z "$LEAF7" ]; then
+  AVX2_NOTE="AVX2: unknown (machdep.cpu.leaf7_features is not readable here)"
+  LEAF7_SHOWN="(empty)"
+else
+  LEAF7_SHOWN="$LEAF7"
+  case " $LEAF7 " in
+    *" AVX2 "*) AVX2_NOTE="AVX2 is reported to the x86_64 slice (the AVX2 kernels are expected)" ;;
+    *) AVX2_NOTE="AVX2 is not reported to the x86_64 slice (the scalar kernels are expected; a valid path)" ;;
+  esac
+fi
+echo "machdep.cpu.leaf7_features: $LEAF7_SHOWN"
 echo "Host: $HOST_NOTE; $AVX2_NOTE"
 
 arch -x86_64 "$YM" --version | tee "$OUT/x86_64-version.txt" \
