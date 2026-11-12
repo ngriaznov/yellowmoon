@@ -610,6 +610,25 @@ fn protection_holds_and_a_region_is_the_same_wherever_it_is_made() {
     }
 }
 
+/// A fully protected region is never re-encoded, and a protection of 255 weighs exactly 0: the kernel keeps the input's bits for a
+/// pixel it leaves alone and does not rely on `encode(decode(x)) == x` or on `255.0 / 255.0 == 1.0`. Metal's fast math turns that
+/// division into a multiplication by a reciprocal (one ulp off 1) and has approximate `log2` and `exp2`. Lavapipe's f32 round trip
+/// is exact on these inputs, so this pins the contract rather than reproducing Metal.
+#[test]
+fn a_fully_protected_region_is_the_input_bit_for_bit_and_nothing_re_encodes_it() {
+    let s = scene(&[all()]);
+    let rects = regions(&s, &s.full, 1.0);
+    let case = Case::new(&s, &s.full, 1.0, rects[0]);
+    let (w, h) = (rects[0].width_px as usize, rects[0].height_px as usize);
+    let plan = plain(&case.plan(&s.faces));
+    let all_protected = vec![255u8; w * h];
+    for dev in f32_devices() {
+        let (a, changed) = case.device(dev, &plan, &ToneSource::Plain, Some(&all_protected));
+        assert_eq!(changed, 0, "no pixel is written when all are protected");
+        assert_eq!(a, case.logc4, "the input, bit for bit");
+    }
+}
+
 /// The CPU's relation applied as numbers, and the device's own estimate of it from its quantiles of the node's input.
 #[test]
 fn the_tone_relation_matches_the_cpu_made_and_estimated() {
