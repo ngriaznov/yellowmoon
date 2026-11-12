@@ -28,7 +28,10 @@ describe("thumbnailsInView", () => {
   it("brings back a thumbnail the shell let go of when its photo comes into view", async () => {
     const { api, store } = await developed(3);
     const ids = store.getState().session!.photos.map((p) => p.id);
-    // Let every photo's thumbnail arrive; the shell's budget of 3 keeps three of the twelve.
+    // Let every photo's thumbnail arrive; the shell's budget of 3 keeps three of the twelve. The shell holds three as soon as
+    // the third arrives, so count the announcements the store has seen (it keeps the addresses the shell let go of): only when
+    // all of them are in is every photo either held or let go, and nothing is left to arrive and evict the photo asked for.
+    await vi.waitFor(() => expect(Object.keys(store.getState().thumbnails).length).toBe(ids.length), { timeout: 15000 });
     await vi.waitFor(async () => expect((await api.thumbnails()).length).toBe(3), { timeout: 5000 });
     const held = new Set((await api.thumbnails()).map((t) => t.id));
     const lost = ids.find((id) => !held.has(id))!;
