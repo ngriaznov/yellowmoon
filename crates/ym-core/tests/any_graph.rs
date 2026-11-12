@@ -967,6 +967,68 @@ fn no_generated_graph_is_refused_by_the_device() {
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
+/// Seed 539, graph 0 of the rotating seed (Mac GPU run 43111535011, main e6d5d71): Main, a corrector with two Depth rows and
+/// +0.8 EV, a corrector with a Linear mask and +0.8 EV, and two Film nodes (film exposure +0.3, grain 100, halation 200 at
+/// size 120, Strength 85), the second linked to the first by a key. On Metal its PNG export was 222 of 65535 from the CPU's
+/// (the bound is one 10-bit code, 64), on lavapipe 180 (169 with output sharpening off).
+///
+/// **It is not a device error, and it is reported here, not enforced.** Every stage is within its own bound: the colour pass
+/// on the CPU's own scene values of the worst pixels is 1e-7 from the CPU (gate 1e-5), and with one Film node after the
+/// correctors the picture is 8e-5 in display light and 3e-5 in AWG4 from the CPU. The second Film node leaves a few pixels
+/// (3 values over 64 codes of 806,400, all at the saturated patches of the chart's left edge) whose scene colour is
+/// AWG4 (3.0, 0.1, -6.0) to (3.9, -0.6, -10.0) after 1.6 EV, grain and halation: far outside the gamut, with a display
+/// blue of 1e-7 to 1e-6. There the picture is ill-conditioned for any `f32` LogC4 between the nodes, the CPU's too: on the
+/// CPU alone, a change of 1e-5 EV in the first Film node's exposure (7e-6 relative) moves the display light of those
+/// pixels by 1 % (1e-4 EV: 5 %), and the device's roundings differ from the CPU's by 6e-6 in AWG4. Output sharpening
+/// spreads such a pixel over its neighbours. Whether the 10-bit bound should hold for such a graph is the owner's decision
+/// (gate thresholds change only when the owner agrees), so this case prints the numbers and asserts only that the export
+/// is the device's.
+const SEED_539_GRAPH_0: &str = r#"{"nodes":{"items":[{"id":1},{"id":2,"kind":"corrector","masks":{"invert":false,"items":[{"far":0.23923923923923926,"feather":0.2912912912912913,"kind":"depth","mode":"add","refine":0.3303303303303303},{"far":0.5027027027027027,"feather":0.4678678678678678,"kind":"depth","mode":"add","refine":0.0970970970970971}]},"pos":[2,0.0],"trim":{"exposure_ev":0.8}},{"id":3,"kind":"corrector","masks":{"invert":false,"items":[{"angle_deg":-27.58758758758759,"center":[0.5,0.5],"feather":0.3,"kind":"linear","mode":"add"}]},"pos":[3,0.0],"trim":{"exposure_ev":0.8}},{"film":{"exposure_ev":0.3},"grain":{"amount":100,"seed":4},"halation":{"amount":200,"size":120},"id":4,"kind":"film","pos":[4,0.0],"strength":85},{"film":{"exposure_ev":0.3},"grain":{"amount":100,"seed":5},"halation":{"amount":200,"size":120},"id":5,"kind":"film","pos":[5,0.0],"strength":85}],"links":[{"from":{"node":"input","port":"picture"},"to":{"node":1,"port":"picture"}},{"from":{"node":1,"port":"picture"},"to":{"node":2,"port":"picture"}},{"from":{"node":2,"port":"picture"},"to":{"node":3,"port":"picture"}},{"from":{"node":3,"port":"picture"},"to":{"node":4,"port":"picture"}},{"from":{"node":4,"port":"picture"},"to":{"node":5,"port":"picture"}},{"from":{"node":5,"port":"picture"},"to":{"node":"output","port":"picture"}},{"from":{"node":4,"port":"key"},"to":{"node":5,"port":"key"}}]}}"#;
+
+#[test]
+fn seed_539_graph_0_reports_its_export_difference_and_is_not_enforced() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(gpu) = gpu() else { return };
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let settings = serde_json::from_str::<DevelopSettings>(SEED_539_GRAPH_0).expect("settings");
+    let home = tempfile::tempdir().expect("dir");
+    let (dev_on, notes, dev) = export(
+        &d,
+        &settings,
+        renderer(Some(Arc::clone(&gpu)), 256),
+        home.path(),
+        FormatKind::Png,
+    );
+    assert!(
+        dev_on == ComputeDevice::Gpu && !notes.iter().any(|n| n.contains("graphics card")),
+        "the export is {dev_on:?}, notes {notes:?}"
+    );
+    let (_, _, cpu_bytes) = export(
+        &d,
+        &settings,
+        renderer(None, 256),
+        home.path(),
+        FormatKind::Png,
+    );
+    let diffs: Vec<u32> = decode_png16_bytes(&dev)
+        .iter()
+        .zip(decode_png16_bytes(&cpu_bytes))
+        .map(|(a, b)| a.abs_diff(b))
+        .collect();
+    let max = diffs.iter().copied().max().unwrap_or(0);
+    let over = diffs.iter().filter(|&&x| x > TEN_BIT_CODE).count();
+    say(&format!(
+        "seed 539 graph 0 (reported, not enforced): PNG export {max} of 65535 from the CPU's, {over} of {} values over {TEN_BIT_CODE}",
+        diffs.len()
+    ));
+}
+
 /// The bindings of the size sweep, in KiB: from 1 MiB up (`docs/23` section 5.12, *Limits*). The reference is the frame at
 /// the default binding, which holds a whole view.
 const SWEEP_KIB: [u64; 2] = [1024, 4096];
