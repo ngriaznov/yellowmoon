@@ -662,7 +662,7 @@ pub(crate) fn join_rects(a: Option<Rect>, b: Rect) -> Rect {
 
 /// What the device needs for one face's low-frequency tools on a part (`docs/27` S-13): the padded region of
 /// [`LowFreqParams`], the amounts, and the tools' masks at the working resolution over that region, all as the CPU pass
-/// reads them. The device runs the maths of [`tones_with`] on these; nothing here is a different rule.
+/// reads them. The device runs the maths of `retouch_tones_at` on these; nothing here is a different rule.
 #[derive(Debug, Clone)]
 pub struct LowPlan {
     /// The padded region of the pass, in pixels of the part (the origin is even on the half path).

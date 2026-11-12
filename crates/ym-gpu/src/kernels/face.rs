@@ -2,7 +2,7 @@
 //!
 //! The CPU twin is `ym-retouch`: `retouch_skin_region_toned` (blemish removal of every face of a region, then the tools of each
 //! face) on the linear AWG4 pixels of a region of the working image, with the LogC4 decode and encode `film_pass` puts around it.
-//! This module makes the CPU's *plan* for the region ([`ym_retouch::plan_skin_region`]: the faces that meet it, the cached maps,
+//! This module makes the CPU's *plan* for the region (`ym_retouch::plan_skin_region`: the faces that meet it, the cached maps,
 //! the masks resampled to the working image and cut to the region, the padded regions and radii: all the CPU's own code and
 //! f64 maths) and runs the per-pixel and per-plane maths of the plan on the device, in f32, in `face.wgsl`:
 //!
