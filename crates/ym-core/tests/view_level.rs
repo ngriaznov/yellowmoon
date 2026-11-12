@@ -904,8 +904,15 @@ fn a_zoom_shows_the_nearest_level_resampled_at_once_and_the_exact_frame_follows(
         again.report.runs.level_drafts, 0,
         "a view with an exact frame is not drafted"
     );
-    // Another cell size makes it a frame nobody has: a draft from the level of 100 %.
-    let c = at(75.0, (280.0, 190.0), image);
+    // The sharp frame above wanted the level of 75 %, which the renderer fills in the background once the debounce is over
+    // (`LEVEL_DEBOUNCE`), on a loaded machine in the middle of the draft's counter window. Let that fill end first, so that
+    // nothing but the draft is left to dispatch. The level of 75 % then exists, which is why the draft below is at another zoom.
+    assert!(
+        wait_ready(&r, &src, b.zoom(image), 120),
+        "the level of 75 % was made in the background"
+    );
+    // Another zoom and cell size make it a frame nobody has: a draft from the level of 100 % (the nearest of the two levels).
+    let c = at(90.0, (280.0, 190.0), image);
     let before = gpu.counters();
     let draft = coarse(&r, &src, &c);
     let spent = gpu.counters().since(before);
