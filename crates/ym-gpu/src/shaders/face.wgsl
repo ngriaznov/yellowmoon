@@ -93,8 +93,23 @@ fn fc_protect(x: u32, y: u32) -> u32 {
     return fc_byte(FU_.pro2.x, y * FU_.prot.y + x);
 }
 
+// A byte as a fraction of 255, exact at both ends. Metal compiles with fast math, which turns a division by a constant into a
+// multiplication by its reciprocal: `255.0 / 255.0` then comes out one ulp off 1, a fully protected pixel gets a weight of
+// 6e-8 and a tool moves it by an ulp. The ends are selected, never computed.
+fn fc_unit(b: u32) -> f32 {
+    if (b >= 255u) {
+        return 1.0;
+    }
+    return f32(b) / 255.0;
+}
+
+// The weight the tools have at a pixel: 1 unprotected, exactly 0 where the protection byte is 255.
 fn fc_keep(x: u32, y: u32) -> f32 {
-    return 1.0 - f32(fc_protect(x, y)) / 255.0;
+    let p = fc_protect(x, y);
+    if (p >= 255u) {
+        return 0.0;
+    }
+    return 1.0 - fc_unit(p);
 }
 
 // ---- 0 DECODE -------------------------------------------------------------------------------------------
@@ -266,7 +281,12 @@ fn fc_blemish(gid: vec3<u32>) {
     if (amount > 0.75) {
         s = s + (1.0 - s) * (4.0 * (amount - 0.75));
     }
-    s = s * fc_keep(gid.x, gid.y);
+    let keep = fc_keep(gid.x, gid.y);
+    if (keep == 0.0 || s == 0.0) {
+        // Protected, or no strength: the pixel is left as it was, bit for bit, whatever the arithmetic below would give.
+        return;
+    }
+    s = s * keep;
     let i = fc_at(0u, gid.x, gid.y);
     let old = vec3<f32>(fc_pic[i], fc_pic[FU_.pic.y + i], fc_pic[2u * FU_.pic.y + i]);
     var new_v = old;
@@ -483,7 +503,7 @@ fn fc_lowfinal(gid: vec3<u32>) {
     if (FU_.d.z >= 0) {
         let byte = fc_byte(u32(FU_.d.z), ri);
         if (byte != 0u) {
-            let m = keep * f32(byte) / 255.0;
+            let m = keep * fc_unit(byte);
             let yv = fc_lay[u32(FU_.b.w) + li];
             let cg = fc_lay[u32(FU_.c.z) + li];
             let flags = u32(FU_.d.w);
@@ -616,7 +636,7 @@ fn fc_tapply(gid: vec3<u32>) {
         return;
     }
     let tw = FU_.f.x;
-    let m = keep * f32(byte) / 255.0;
+    let m = keep * fc_unit(byte);
     let i = fc_at(0u, x, y);
     let old = vec3<f32>(fc_pic[i], fc_pic[FU_.pic.y + i], fc_pic[2u * FU_.pic.y + i]);
     let l = (old.x + old.y + old.z) / 3.0;
