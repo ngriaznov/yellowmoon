@@ -60,7 +60,7 @@ use crate::image::GpuImage;
 use crate::kernels::color::{PreparedChain, Stop, release_tables};
 use crate::kernels::encode::{C13, Encoding, band_bytes, encode_c13, row_words};
 use crate::kernels::film_stack::{FilmPictures, FilmRasters, FilmStack};
-use crate::kernels::mask_raster::{RasterJob, encode_raster_planes, grown_tile};
+use crate::kernels::mask_raster::{RasterJob, encode_raster_planes};
 use crate::kernels::output_sharpen::PreparedSharpen;
 use crate::kernels::resize::{PreparedTaps, Taps, encode_resize_h, encode_resize_v};
 use crate::kernels::sampler::encode_sample_at;
@@ -433,6 +433,30 @@ struct TileData {
     targets: Vec<SlabTarget>,
 }
 
+/// [`grown_tile`] for a tile of a render whose Film stack may have Face Refinement nodes: the tile is first widened to hold,
+/// whole, the face regions it meets (`FilmStack::widen`, `docs/27` S-13).
+fn grown_tile_for(
+    schedule: &ym_color::schedule::Schedule,
+    films: Option<&FilmStack>,
+    frame: (usize, usize),
+    off: (usize, usize),
+    w: usize,
+    h: usize,
+) -> ym_color::mask_raster::Area {
+    let tile = ym_color::mask_raster::Area {
+        x: off.0 as i64,
+        y: off.1 as i64,
+        w,
+        h,
+    };
+    FilmStack::grown_for(
+        schedule,
+        films,
+        &ym_color::mask_raster::Area::whole(frame.0, frame.1),
+        tile,
+    )
+}
+
 /// A chain prepared for a sampled picture of `grown`, with the raster planes of the tile at `off` when the chain
 /// has raster rows (`docs/23` section 5.5): the sampler's image covers the tile grown by the planes' receptive
 /// field, the planes are made over it and cut to the tile, and the colour pass reads the tile's part of the
@@ -449,8 +473,9 @@ fn prepare_tile(
     (w, h): (usize, usize),
     sampled: &GpuImage,
 ) -> Result<PreparedTile, GpuError> {
-    let grown = grown_tile(
+    let grown = grown_tile_for(
         &FilmStack::schedule_of(chain, grid, films),
+        films,
         frame,
         off,
         w,
@@ -546,8 +571,9 @@ fn tile_job(ctx: &GpuContext, token: &CancelToken, d: &TileData) -> Result<(), G
     // The mask shapes and the raster masks of the nodes read the pixels' places in the photo: the sampler writes
     // them, over the tile grown by the raster planes' receptive field.
     let positions = d.chain.uses_photo_position();
-    let grown = grown_tile(
+    let grown = grown_tile_for(
         &FilmStack::schedule_of(&d.chain, &d.grid, d.films.as_deref()),
+        d.films.as_deref(),
         d.frame,
         d.off,
         d.w,
@@ -1206,8 +1232,9 @@ fn host_tile_job(
     // The mask shapes and the raster masks of the nodes read the pixels' places in the photo: the sampler writes
     // them, over the tile grown by the raster planes' receptive field.
     let positions = d.chain.uses_photo_position();
-    let grown = grown_tile(
+    let grown = grown_tile_for(
         &FilmStack::schedule_of(&d.chain, &d.grid, d.films.as_deref()),
+        d.films.as_deref(),
         d.frame,
         d.off,
         d.w,

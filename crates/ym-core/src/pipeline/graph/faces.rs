@@ -908,13 +908,6 @@ impl Job<'_> {
         self.face_view.as_ref()
     }
 
-    /// Whether the plan that ends at `stop` has a Face Refinement node that does something and this machine has a model:
-    /// the frame is then made on the CPU (`docs/27` section 10, S-11b: no device kernels until S-13).
-    pub(crate) fn faces_force_cpu(&self, settings: &DevelopSettings, stop: PlanStop) -> bool {
-        self.opts.face_model.as_ref().is_some_and(|m| m.available())
-            && !live_face_nodes(settings, stop).is_empty()
-    }
-
     /// The photo's analysis for the plan that ends at `stop`, when that plan has a live Face Refinement node. `None` for a
     /// plan with none, when this machine has no model, and (for a viewer) when the photo has no analysis yet: the worker is
     /// started in the background and the node passes its picture through until the listener tells the page to draw again. A

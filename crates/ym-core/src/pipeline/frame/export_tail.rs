@@ -508,7 +508,8 @@ impl Renderer {
             ym_color::mask_raster::Area::whole(fw, fh),
             request.target,
         )?
-        .map(|f| Arc::new(f.device_stack()));
+        .map(|f| f.device_stack().map(Arc::new))
+        .transpose()?;
         let film_halo = films.as_ref().map_or(0, |f| f.schedule().total_reach());
         let halo_allowance = 160usize + job.lens_halo()? + bend + film_halo;
         let per_px = 12u64 * 12; // twelve f32 planes of working set per tile pixel, a generous bound

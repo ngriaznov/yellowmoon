@@ -3330,14 +3330,6 @@ impl<'a> Job<'a> {
         if stages.is_empty() {
             return Ok(None);
         }
-        // A Face Refinement node runs on the CPU until its device kernels exist (`docs/27` S-13): the whole frame is the
-        // CPU's, and the viewport says "Rendering on the CPU" from `device_refused` as for any frame the device did not make.
-        if self.faces_force_cpu(&self.src.settings, PlanStop::Output) {
-            self.device_refused = true;
-            self.cpu_reason
-                .get_or_insert_with(|| "Face Refinement runs on the CPU".to_owned());
-            return Ok(None);
-        }
         // Show skin areas is tinted on the CPU's pixels.
         if self.face_view.is_some() {
             return Ok(None);

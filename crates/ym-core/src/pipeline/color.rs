@@ -1193,6 +1193,7 @@ fn node_set(
                     FilmStep {
                         strength: f.strength / 100.0,
                         bypass: f.bypass,
+                        face: false,
                     },
                 );
             }
@@ -1221,6 +1222,7 @@ fn node_set(
                         FilmStep {
                             strength: 1.0,
                             bypass: false,
+                            face: true,
                         },
                     );
                 } else {

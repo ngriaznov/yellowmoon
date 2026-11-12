@@ -37,7 +37,7 @@ use ym_color::schedule::{Schedule, StepKind};
 use ym_film::spatial::{FilmFrame, Frame as FilmFrameExtent, Plane, Rect as FilmRect, RunOptions};
 use ym_gpu::cpu::Rect;
 use ym_gpu::cpu::sampler::{GridPositions, Sampled, SamplerGrid};
-use ym_gpu::kernels::film_stack::{FilmNodeSpec, FilmStack};
+use ym_gpu::kernels::film_stack::{FilmNodeSpec, FilmStack, NodeWork};
 
 use super::face_pass::{FacePart, FaceWork, ProtectInput, union};
 use super::{Job, RenderError};
@@ -302,34 +302,37 @@ impl FilmRender {
         self.schedule().total_reach()
     }
 
-    /// The Film nodes as plain data for the device (`ym_gpu::kernels::film_stack`): the prefix chain, the passes over the
-    /// photo's extent, the scalars and the tables of each.
-    pub(crate) fn device_stack(&self) -> FilmStack {
+    /// The Film and Face Refinement nodes as plain data for the device (`ym_gpu::kernels::film_stack`): the prefix chain, and for
+    /// a Film node the passes over the photo's extent, the scalars and the tables, for a Face Refinement node its regions with
+    /// the CPU's plan of each (`docs/27` S-13).
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Mask`] when the face library refuses a region.
+    pub(crate) fn device_stack(&self) -> Result<FilmStack, RenderError> {
         let _span = ym_gpu::perf::span(ym_gpu::perf::Stage::FilmBuild);
         let extent = FilmFrameExtent {
             width: self.frame.w,
             height: self.frame.h,
         };
-        // A Face Refinement node has no device kernel (`docs/27` S-13): a render with a live one never takes the device route
-        // (`Job::view_gpu`, the export tail), so the steps here are the Film nodes'.
-        let steps = self
-            .steps
-            .iter()
-            .filter_map(|s| {
-                let StepWork::Film(film) = &s.work else {
-                    return None;
-                };
-                Some(FilmNodeSpec {
-                    node: s.id,
-                    prefix: Arc::clone(&s.prefix),
+        let mut steps = Vec::with_capacity(self.steps.len());
+        for s in &self.steps {
+            let work = match &s.work {
+                StepWork::Film(film) => NodeWork::Film {
                     plan: Arc::new(crate::film::device_plan(film, extent)),
                     scalars: crate::film::device_scalars(film.baked()),
                     tables: crate::film::device_tables(film.baked()),
-                    reads: Some(s.reads.clone()),
-                })
-            })
-            .collect();
-        FilmStack::new(self.frame, steps)
+                },
+                StepWork::Face(face) => NodeWork::Face(Arc::new(face.device_node()?)),
+            };
+            steps.push(FilmNodeSpec {
+                node: s.id,
+                prefix: Arc::clone(&s.prefix),
+                work,
+                reads: Some(s.reads.clone()),
+            });
+        }
+        Ok(FilmStack::new(self.frame, steps))
     }
 
     /// The area a render must ask for to get `need` of the pictures: `need` grown to hold, whole, every face region that the

@@ -25,7 +25,12 @@ use rayon::prelude::*;
 use ym_color::logc::{logc4_decode_rgb, logc4_encode_rgb};
 use ym_color::mask_raster::{Area, PlaneJob, RasterRow, RasterSteps};
 use ym_gpu::cpu::sampler::{GridPositions, SamplerGrid};
-use ym_retouch::{Face, LinearAwg4Image, Mask, Placement, SkinSettings, retouch_regions};
+use ym_gpu::kernels::face::{BlemishStep, FacePlan, FaceStep, LowStep, TeethStep, ToneSource};
+use ym_gpu::kernels::film_stack::{FaceNode, FaceRegionSpec};
+use ym_retouch::{
+    BlemishMap, DevicePlan, Face, LinearAwg4Image, Mask, Placement, SkinSettings, plan_skin_region,
+    retouch_regions, tone_quantiles,
+};
 
 use super::RenderError;
 use crate::pipeline::graph::FaceEntry;
@@ -229,12 +234,10 @@ impl FaceWork {
         Mask::new(window.w as u32, window.h as u32, data).ok()
     }
 
-    /// The tone curve between the analysis picture and the node's input over region `ri` (`docs/27` S-12): the blemish gains
-    /// were made on the analysis picture, which has no grade, and are applied to `part`, which has everything upstream.
-    /// Found by matching the distributions of the two over the same part of the photo (at most [`TONE_SAMPLES`] values of
-    /// each, on a fixed grid), so no pixel needs to line up with another. A relation that is only an exposure change, or
-    /// nothing, is `plain` and the gain is the plain multiplication, as it was before.
-    fn tone_relation(&self, ri: usize, part: &LinearAwg4Image) -> ym_retouch::ToneRelation {
+    /// The analysis picture's values over region `ri` on the fixed grid of at most [`TONE_SAMPLES`] (`docs/27` S-12): the
+    /// region in the analysis picture's pixels, every `step`-th pixel of every `step`-th row. `None` when the region is empty
+    /// there.
+    fn analysis_samples(&self, ri: usize) -> Option<Vec<[f32; 3]>> {
         let area = self.regions[ri];
         let (aw, ah) = (
             self.entry.analysis_px.0 as usize,
@@ -248,24 +251,77 @@ impl FaceWork {
         let x1 = ((((rx + area.w as i64) as f64 / scale).ceil().max(0.0)) as usize).min(aw);
         let y1 = ((((ry + area.h as i64) as f64 / scale).ceil().max(0.0)) as usize).min(ah);
         if x0 >= x1 || y0 >= y1 {
-            return ym_retouch::ToneRelation::none();
+            return None;
         }
         let analysis = &self.entry.linear.data;
-        let grid = |w: usize, h: usize| {
-            (((w * h) as f64 / TONE_SAMPLES as f64).sqrt().ceil() as usize).max(1)
+        let step = tone_grid(x1 - x0, y1 - y0);
+        Some(
+            (y0..y1)
+                .step_by(step)
+                .flat_map(|y| (x0..x1).step_by(step).map(move |x| analysis[y * aw + x]))
+                .collect(),
+        )
+    }
+
+    /// The tone curve between the analysis picture and the node's input over region `ri` (`docs/27` S-12): the blemish gains
+    /// were made on the analysis picture, which has no grade, and are applied to `part`, which has everything upstream.
+    /// Found by matching the distributions of the two over the same part of the photo (at most [`TONE_SAMPLES`] values of
+    /// each, on a fixed grid), so no pixel needs to line up with another. A relation that is only an exposure change, or
+    /// nothing, is `plain` and the gain is the plain multiplication, as it was before.
+    fn tone_relation(&self, ri: usize, part: &LinearAwg4Image) -> ym_retouch::ToneRelation {
+        let Some(a) = self.analysis_samples(ri) else {
+            return ym_retouch::ToneRelation::none();
         };
-        let step = grid(x1 - x0, y1 - y0);
-        let a: Vec<[f32; 3]> = (y0..y1)
-            .step_by(step)
-            .flat_map(|y| (x0..x1).step_by(step).map(move |x| analysis[y * aw + x]))
-            .collect();
-        let step = grid(part.width_px as usize, part.height_px as usize);
+        let step = tone_grid(part.width_px as usize, part.height_px as usize);
         let w = part.width_px as usize;
         let x: Vec<[f32; 3]> = (0..part.height_px as usize)
             .step_by(step)
             .flat_map(|y| (0..w).step_by(step).map(move |x| part.data[y * w + x]))
             .collect();
         ym_retouch::ToneRelation::estimate(&a, &x)
+    }
+
+    /// The node as the device takes it (`ym_gpu::kernels::face`): for each region the CPU's plan (the faces that meet it, the maps,
+    /// the masks resampled to the working image, the padded regions and radii: `ym_retouch::plan_skin_region`) and the analysis
+    /// picture's quantiles, which the device matches against its own quantiles of the node's input to make the tone relation.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Mask`] when the library refuses a region.
+    pub(crate) fn device_node(&self) -> Result<FaceNode, RenderError> {
+        let mut regions = Vec::with_capacity(self.regions.len());
+        for (ri, &area) in self.regions.iter().enumerate() {
+            let place = Placement {
+                origin_px: (
+                    (area.x - self.frame.x) as i32,
+                    (area.y - self.frame.y) as i32,
+                ),
+                working_px: (self.frame.w as u32, self.frame.h as u32),
+            };
+            let plan = plan_skin_region(
+                (area.w as u32, area.h as u32),
+                place,
+                self.entry.analysis_px,
+                &self.faces,
+                self.scale,
+                &self.entry.retouch,
+            )
+            .map_err(|e| render_error(&e))?;
+            let tone = self
+                .analysis_samples(ri)
+                .and_then(|a| tone_quantiles(&a))
+                .map_or(ToneSource::Plain, ToneSource::Estimate);
+            regions.push(FaceRegionSpec {
+                area,
+                plan: Arc::new(face_plan(plan)),
+                tone: Arc::new(tone),
+            });
+        }
+        Ok(FaceNode {
+            regions,
+            protect: self.protect.clone(),
+            protect_halo: self.protect_halo,
+        })
     }
 
     /// Makes region `ri`'s picture from the prefix chain's LogC4 over it (`logc4`, interleaved `w * h * 3`), with the
@@ -341,6 +397,63 @@ impl FaceWork {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)[ri] = Some(Arc::clone(&made));
         Ok(made)
+    }
+}
+
+/// The step of the grid the tone relation samples a region of `w x h` pixels on.
+fn tone_grid(w: usize, h: usize) -> usize {
+    (((w * h) as f64 / TONE_SAMPLES as f64).sqrt().ceil() as usize).max(1)
+}
+
+/// The pixels of a cached blemish map, shared with the cache.
+struct MapOf(Arc<BlemishMap>);
+
+impl AsRef<[[f32; 4]]> for MapOf {
+    fn as_ref(&self) -> &[[f32; 4]] {
+        &self.0.data
+    }
+}
+
+/// The CPU's plan of a region as the device takes it (`ym_gpu::kernels::face::FacePlan`).
+fn face_plan(plan: DevicePlan) -> FacePlan {
+    let rect = |r: ym_retouch::Rect| (r.x_px, r.y_px, r.width_px, r.height_px);
+    FacePlan {
+        origin_px: plan.origin_px,
+        size_px: plan.size_px,
+        render_scale: plan.render_scale,
+        faces: plan
+            .faces
+            .into_iter()
+            .map(|f| {
+                let (low, teeth) = match f.tones {
+                    Some(t) => (t.low, t.teeth),
+                    None => (None, None),
+                };
+                FaceStep {
+                    blemish: f.blemish.map(|b| BlemishStep {
+                        rect: rect(b.map.rect),
+                        size: (b.map.width_px, b.map.height_px),
+                        data: Arc::new(MapOf(b.map)),
+                        amount: b.a,
+                    }),
+                    low: low.map(|l| LowStep {
+                        rect: rect(l.rect),
+                        ds: l.params.ds,
+                        radii: [l.params.r_tex, l.params.r_dc, l.params.r_se, l.params.r_g],
+                        strengths: [l.params.k_dc, l.params.sp_dc, l.params.k_se, l.params.sp_se],
+                        grading: [l.gc, l.gd, l.gs],
+                        dc: l.dc,
+                        se: l.se,
+                        grade: l.grade,
+                    }),
+                    teeth: teeth.map(|t| TeethStep {
+                        rect: rect(t.rect),
+                        bytes: t.bytes,
+                        amount: t.tw,
+                    }),
+                }
+            })
+            .collect(),
     }
 }
 

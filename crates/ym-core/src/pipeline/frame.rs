@@ -1194,8 +1194,9 @@ fn device_film(
     let Some(rr) = rr.filter(|_| chain.has_films()) else {
         return Ok(None);
     };
-    Ok(FilmRender::build(job, chain, rr.frame, rr.spec.target)?
-        .map(|film| Arc::new(film.device_stack().fast(true))))
+    FilmRender::build(job, chain, rr.frame, rr.spec.target)?
+        .map(|film| film.device_stack().map(|stack| Arc::new(stack.fast(true))))
+        .transpose()
 }
 
 /// The raster planes of a CPU colour pass, over the picture it makes: sampled over the area the masks look at
@@ -4282,9 +4283,7 @@ impl Renderer {
         // The colour stage of a DNG's renders runs on the device when the export tail is on; the
         // frame stays on the host. A device error there, or in the raw chain, makes the whole render
         // again on the CPU: one file is wholly device or wholly CPU, never a mix of tiles.
-        let mut device_colour = if request.target.is_dng()
-            && !job.faces_force_cpu(&job.src.settings, ym_color::plan::Stop::Output)
-        {
+        let mut device_colour = if request.target.is_dng() {
             export_tail::dng_colour_gpu(&mut job)?
         } else {
             None
@@ -4307,7 +4306,10 @@ impl Renderer {
         let tiles_total = (fw.div_ceil(tile) * fh.div_ceil(tile)).max(1);
         let colour_on_device = device_colour.is_some();
         // The Film nodes as the device runs them (the same steps as the CPU's `film_render`).
-        let film_stack = film_render.as_ref().map(|f| Arc::new(f.device_stack()));
+        let film_stack = film_render
+            .as_ref()
+            .map(|f| f.device_stack().map(Arc::new))
+            .transpose()?;
         let spec = JobSpec::new(Priority::Export).owned_by(u64::from(src.id.0));
         let mut best_fraction = 0.0f32;
         'render: loop {

@@ -46,6 +46,10 @@ pub struct FilmStep {
     pub strength: f64,
     /// A bypassed node passes its picture through (its key output still carries `m`).
     pub bypass: bool,
+    /// A Face Refinement node's step (`docs/27` S-13): its picture covers only the regions around the faces, and a pixel it
+    /// holds as all zeros is "no picture here" and keeps the node's input, as the CPU's `NaN` marker does. A Film node's
+    /// picture covers everything it is asked for.
+    pub face: bool,
 }
 
 /// What Main has beyond the grade, warp and curves that [`ChainParams`](super::ChainParams) holds.

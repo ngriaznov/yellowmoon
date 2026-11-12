@@ -36,7 +36,7 @@ use ym_gpu::device::{Gpu, StorageMode, StoragePreference};
 use ym_gpu::image::GpuImage;
 use ym_gpu::kernels::color::{PreparedChain, Stop};
 use ym_gpu::kernels::film::FilmImage;
-use ym_gpu::kernels::film_stack::{FilmNodeSpec, FilmPictures, FilmStack, FilmTables};
+use ym_gpu::kernels::film_stack::{FilmNodeSpec, FilmPictures, FilmStack, FilmTables, NodeWork};
 use ym_gpu::queue::{JobSpec, Priority};
 use ym_gpu::stream::PassList;
 
@@ -114,6 +114,7 @@ fn params(g: &PlanGraph, stop: plan::Stop, strengths: &[f64], corrector: bool) -
             FilmStep {
                 strength,
                 bypass: false,
+                face: false,
             },
         );
     }
@@ -170,12 +171,16 @@ fn stack_of(
             FilmNodeSpec {
                 node: *id,
                 prefix: Arc::clone(prefix),
-                plan: Arc::new(plan_data(f, frame)),
-                scalars,
-                tables: FilmTables {
-                    key: vec![Arc::as_ptr(f.baked().t3b()) as usize, *id as usize],
-                    keep: vec![Arc::clone(f.baked().t3b()) as Arc<dyn std::any::Any + Send + Sync>],
-                    build: Arc::new(move || data.clone()),
+                work: NodeWork::Film {
+                    plan: Arc::new(plan_data(f, frame)),
+                    scalars,
+                    tables: FilmTables {
+                        key: vec![Arc::as_ptr(f.baked().t3b()) as usize, *id as usize],
+                        keep: vec![
+                            Arc::clone(f.baked().t3b()) as Arc<dyn std::any::Any + Send + Sync>
+                        ],
+                        build: Arc::new(move || data.clone()),
+                    },
                 },
                 reads: None,
             }
