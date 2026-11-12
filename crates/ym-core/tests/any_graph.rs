@@ -18,6 +18,16 @@
 //! and the same bytes at another tile size, at any binding size. Tests of their own run them on the CPU (tiles, threads,
 //! determinism) and export every one of them on the device (`graphs_with_joins_are_exported_on_the_device`).
 //!
+//! **Film nodes in series (the owner, 2026-11-12: "Follow your recommendation on limits.").** Every bound stays as it is. The
+//! difference from the CPU is enforced only for a graph with at most one Film node in any chain, that is, on any path from the
+//! Input to the Output (`film_chain`: a mixer's branches are parallel, so Film nodes on different branches are not in
+//! series). A graph with two or more is still rendered on the device and checked for everything else (no refusal, no
+//! "graphics card" note, the exports are the device's and the same bytes at another tile size), and its differences from the
+//! CPU are printed with "not enforced: N Film nodes in series". Each Film pass amplifies the `f32` rounding of the one before
+//! it where grain and halation follow an exposure push, and a pixel far outside the gamut is ill-conditioned for any `f32`
+//! pipeline, the CPU's included (seeds 539 and 202; `seed_539_graph_0_reports_its_export_difference_and_is_not_enforced`).
+//! The run prints how many graphs were compared and how many were not enforced.
+//!
 //! The run asserts that every generated kind appeared. The seeds are a fixed set plus one rotating seed, from
 //! `YM_GRAPH_SEED`, else `GITHUB_RUN_NUMBER`; each graph is printed with its seed and index, and a failing one with its
 //! settings as JSON. `YM_GRAPH_SEED=<n> cargo test -p ym-core --test any_graph` replays a rotating seed.
@@ -221,7 +231,59 @@ struct Graph {
     parallel_films: usize,
     /// Whether the CPU's frame is a reference (Subject and People masks are made by a background worker: no).
     compare: bool,
+    /// The most Film nodes on any path from the Input to the Output (see [`film_chain`]).
+    film_chain: usize,
 }
+
+/// The most Film nodes in series: the largest number of Film nodes on any one path from the Input to the Output, through
+/// picture and key links alike (a key is made from the picture before the node, so a Film node behind a key is behind its
+/// Film nodes). Every Film node counts, bypassed or at Strength 0 too. A mixer's branches are parallel: a path takes one
+/// branch at a time, so a Film node on one branch is not in series with a Film node on another. A node nothing live reads
+/// is on no path.
+fn film_chain(doc: &Value) -> usize {
+    use std::collections::HashMap;
+    let id = |v: &Value| v.to_string();
+    let films: BTreeSet<String> = doc["nodes"]["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|n| n["kind"] == "film")
+        .map(|n| id(&n["id"]))
+        .collect();
+    let mut reads: HashMap<String, Vec<String>> = HashMap::new();
+    for l in doc["nodes"]["links"].as_array().into_iter().flatten() {
+        reads
+            .entry(id(&l["to"]["node"]))
+            .or_default()
+            .push(id(&l["from"]["node"]));
+    }
+    // (The graph is acyclic: the settings were validated.)
+    fn depth(
+        node: &str,
+        films: &BTreeSet<String>,
+        reads: &HashMap<String, Vec<String>>,
+        memo: &mut HashMap<String, usize>,
+    ) -> usize {
+        if let Some(&d) = memo.get(node) {
+            return d;
+        }
+        let behind = reads
+            .get(node)
+            .into_iter()
+            .flatten()
+            .map(|a| depth(a, films, reads, memo))
+            .max()
+            .unwrap_or(0);
+        let d = behind + usize::from(films.contains(node));
+        memo.insert(node.to_owned(), d);
+        d
+    }
+    depth("\"output\"", &films, &reads, &mut HashMap::new())
+}
+
+/// Graphs with more Film nodes than this in series are rendered and checked on the device for everything but the
+/// difference from the CPU, which is printed and not enforced (the owner, 2026-11-12; the header comment).
+const MAX_ENFORCED_FILM_CHAIN: usize = 1;
 
 /// `forced_node` and `forced_mask` are the kinds the graph must hold, cycled by the caller so a run covers every kind.
 fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKind) -> Graph {
@@ -383,6 +445,7 @@ fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKin
     let compare = !used_masks
         .iter()
         .any(|k| matches!(k, MaskKind::Subject | MaskKind::People));
+    let chain = film_chain(&doc);
     Graph {
         seed,
         index,
@@ -394,6 +457,7 @@ fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKin
         parallel_films,
         masked,
         compare,
+        film_chain: chain,
     }
 }
 
@@ -554,6 +618,7 @@ fn generate_joined(seed: u64, index: usize, forced: NodeKind) -> Graph {
         .validated()
         .expect("a valid graph")
         .0;
+    let chain = film_chain(&doc);
     Graph {
         seed,
         index,
@@ -565,6 +630,7 @@ fn generate_joined(seed: u64, index: usize, forced: NodeKind) -> Graph {
         branches: 0,
         parallel_films: 0,
         compare: true,
+        film_chain: chain,
     }
 }
 
@@ -718,6 +784,7 @@ fn parallel_branches(seed: u64) -> Graph {
         .validated()
         .expect("a valid graph")
         .0;
+    let chain = film_chain(&doc);
     Graph {
         seed,
         index: 100,
@@ -729,6 +796,7 @@ fn parallel_branches(seed: u64) -> Graph {
         parallel_films: 1,
         masked: Some((4, 0)),
         compare: true,
+        film_chain: chain,
     }
 }
 
@@ -824,17 +892,26 @@ fn no_generated_graph_is_refused_by_the_device() {
     let (mut worst_view, mut worst_export, mut exports) = ((0u8, 0usize), 0u32, 0usize);
     let (mut n_film, mut n_masked, mut n_keys) = (0usize, 0usize, 0usize);
     let (mut n_branched, mut n_parallel) = (0usize, 0usize);
+    // Graphs whose difference from the CPU is enforced, and those that have one that is only printed (`film_chain`).
+    let (mut n_enforced, mut n_reported) = (0usize, 0usize);
     for g in &all {
         let name = format!("seed {} graph {}", g.seed, g.index);
         say(&format!(
-            "{name}: nodes {:?}, masks {:?}, show mask {:?}, compare {}, branches {}, parallel Film pairs {}",
+            "{name}: nodes {:?}, masks {:?}, show mask {:?}, compare {}, Film nodes in series {}, branches {}, parallel Film pairs {}",
             g.nodes.iter().map(|k| k.name()).collect::<Vec<_>>(),
             g.masks.iter().map(|k| k.name()).collect::<Vec<_>>(),
             g.masked,
             g.compare,
+            g.film_chain,
             g.branches,
             g.parallel_films
         ));
+        // The CPU's difference is enforced for a graph with at most one Film node in series; with more it is printed.
+        let enforced = g.compare && g.film_chain <= MAX_ENFORCED_FILM_CHAIN;
+        let reported = g.compare && !enforced;
+        let unenforced = format!("not enforced: {} Film nodes in series", g.film_chain);
+        n_enforced += usize::from(enforced);
+        n_reported += usize::from(reported);
         n_film += usize::from(g.nodes.contains(&NodeKind::Film));
         n_branched += usize::from(g.branches > 0);
         n_parallel += g.parallel_films;
@@ -891,8 +968,14 @@ fn no_generated_graph_is_refused_by_the_device() {
                 let _ = frame(&cpu, &src, st);
                 let want = frame(&cpu, &src, st);
                 let (max, over) = frame_diff(&got, &want);
-                worst_view = (worst_view.0.max(max), worst_view.1.max(over));
-                if max > 2 || over >= got.rgba.len() / 2000 {
+                if reported {
+                    say(&format!(
+                        "{at}: against the CPU {max} codes, {over} values over 1 ({unenforced})"
+                    ));
+                } else {
+                    worst_view = (worst_view.0.max(max), worst_view.1.max(over));
+                }
+                if enforced && (max > 2 || over >= got.rgba.len() / 2000) {
                     problems.push(format!(
                         "{at}: against the CPU {max} codes, {over} values over 1"
                     ));
@@ -925,8 +1008,14 @@ fn no_generated_graph_is_refused_by_the_device() {
                         .map(|(a, b)| a.abs_diff(b))
                         .max()
                         .unwrap_or(0);
-                    worst_export = worst_export.max(max);
-                    if max > TEN_BIT_CODE {
+                    if reported {
+                        say(&format!(
+                            "{name}: the PNG export differs from the CPU's by {max} of 65535 ({unenforced})"
+                        ));
+                    } else {
+                        worst_export = worst_export.max(max);
+                    }
+                    if enforced && max > TEN_BIT_CODE {
                         problems.push(format!(
                             "{name}: the PNG export differs from the CPU's by {max} of 65535"
                         ));
@@ -958,6 +1047,9 @@ fn no_generated_graph_is_refused_by_the_device() {
         }
     }
     say(&format!(
+        "{n_enforced} graphs compared with the CPU, {n_reported} not enforced (more than {MAX_ENFORCED_FILM_CHAIN} Film node in series)"
+    ));
+    say(&format!(
         "{} graphs ({n_film} with a Film node, {n_masked} with masks, {n_keys} key links, {n_branched} with picture branches, {n_parallel} parallel Film pairs), {exports} with exports; worst view {} codes, {} values over 1; worst PNG {worst_export} of 65535; {:?}",
         all.len(),
         worst_view.0,
@@ -972,7 +1064,9 @@ fn no_generated_graph_is_refused_by_the_device() {
 /// size 120, Strength 85), the second linked to the first by a key. On Metal its PNG export was 222 of 65535 from the CPU's
 /// (the bound is one 10-bit code, 64), on lavapipe 180 (169 with output sharpening off).
 ///
-/// **It is not a device error, and it is reported here, not enforced.** Every stage is within its own bound: the colour pass
+/// **It is not a device error, and it is reported here, not enforced:** the rule is the owner's of 2026-11-12 (the header of
+/// this file: a graph with two or more Film nodes in series is not compared with the CPU, and `no_generated_graph_is_refused_by_the_device`
+/// prints its numbers as "not enforced"); this graph is pinned as the case that led to it. Every stage is within its own bound: the colour pass
 /// on the CPU's own scene values of the worst pixels is 1e-7 from the CPU (gate 1e-5), and with one Film node after the
 /// correctors the picture is 8e-5 in display light and 3e-5 in AWG4 from the CPU. The second Film node leaves a few pixels
 /// (3 values over 64 codes of 806,400, all at the saturated patches of the chart's left edge) whose scene colour is
@@ -980,9 +1074,8 @@ fn no_generated_graph_is_refused_by_the_device() {
 /// blue of 1e-7 to 1e-6. There the picture is ill-conditioned for any `f32` LogC4 between the nodes, the CPU's too: on the
 /// CPU alone, a change of 1e-5 EV in the first Film node's exposure (7e-6 relative) moves the display light of those
 /// pixels by 1 % (1e-4 EV: 5 %), and the device's roundings differ from the CPU's by 6e-6 in AWG4. Output sharpening
-/// spreads such a pixel over its neighbours. Whether the 10-bit bound should hold for such a graph is the owner's decision
-/// (gate thresholds change only when the owner agrees), so this case prints the numbers and asserts only that the export
-/// is the device's.
+/// spreads such a pixel over its neighbours. The owner decided on 2026-11-12 ("Follow your recommendation on limits.") to keep the 10-bit bound and not apply
+/// it to such a graph, so this case prints the numbers and asserts only that the export is the device's.
 const SEED_539_GRAPH_0: &str = r#"{"nodes":{"items":[{"id":1},{"id":2,"kind":"corrector","masks":{"invert":false,"items":[{"far":0.23923923923923926,"feather":0.2912912912912913,"kind":"depth","mode":"add","refine":0.3303303303303303},{"far":0.5027027027027027,"feather":0.4678678678678678,"kind":"depth","mode":"add","refine":0.0970970970970971}]},"pos":[2,0.0],"trim":{"exposure_ev":0.8}},{"id":3,"kind":"corrector","masks":{"invert":false,"items":[{"angle_deg":-27.58758758758759,"center":[0.5,0.5],"feather":0.3,"kind":"linear","mode":"add"}]},"pos":[3,0.0],"trim":{"exposure_ev":0.8}},{"film":{"exposure_ev":0.3},"grain":{"amount":100,"seed":4},"halation":{"amount":200,"size":120},"id":4,"kind":"film","pos":[4,0.0],"strength":85},{"film":{"exposure_ev":0.3},"grain":{"amount":100,"seed":5},"halation":{"amount":200,"size":120},"id":5,"kind":"film","pos":[5,0.0],"strength":85}],"links":[{"from":{"node":"input","port":"picture"},"to":{"node":1,"port":"picture"}},{"from":{"node":1,"port":"picture"},"to":{"node":2,"port":"picture"}},{"from":{"node":2,"port":"picture"},"to":{"node":3,"port":"picture"}},{"from":{"node":3,"port":"picture"},"to":{"node":4,"port":"picture"}},{"from":{"node":4,"port":"picture"},"to":{"node":5,"port":"picture"}},{"from":{"node":5,"port":"picture"},"to":{"node":"output","port":"picture"}},{"from":{"node":4,"port":"key"},"to":{"node":5,"port":"key"}}]}}"#;
 
 #[test]
