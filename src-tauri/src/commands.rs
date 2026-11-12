@@ -670,6 +670,18 @@ pub async fn thumbnails(state: State<'_, AppState>) -> Result<Vec<ThumbnailReady
     run(&state, |api| Ok(api.thumbnails_now())).await
 }
 
+/// `thumbnails_in_view(photo_ids)` (`docs/26` H-11): the filmstrip shows these photos. Answers with the
+/// address of the thumbnail the shell holds for each of them; the ones it let go of to keep its byte
+/// budget are made again and arrive as `thumbnail_ready`.
+#[tauri::command]
+#[specta::specta]
+pub async fn thumbnails_in_view(
+    state: State<'_, AppState>,
+    photo_ids: Vec<PhotoId>,
+) -> Result<Vec<ThumbnailReady>, AppError> {
+    run(&state, move |api| Ok(api.thumbnails_in_view(&photo_ids))).await
+}
+
 // --- The system -------------------------------------------------------------------------------
 
 /// `choose_folder(start)`: the system's folder chooser. `null` when cancelled.
@@ -881,6 +893,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             export_busy,
             restart_app,
             thumbnails,
+            thumbnails_in_view,
             choose_folder,
             choose_look_files,
             open_url,

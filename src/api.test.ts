@@ -118,6 +118,7 @@ const calls: Row[] = [
   ["exportBusy", () => tauriApi.exportBusy(), "export_busy", undefined],
   ["restartApp", () => tauriApi.restartApp(), "restart_app", undefined, true],
   ["thumbnails", () => tauriApi.thumbnails(), "thumbnails", undefined],
+  ["thumbnailsInView", () => tauriApi.thumbnailsInView([4, 5]), "thumbnails_in_view", { photoIds: [4, 5] }],
   ["nodeThumbnails", () => tauriApi.nodeThumbnails(4), "node_thumbnails", { photoId: 4 }, true],
   ["preferencesGet", () => tauriApi.preferencesGet(), "preferences_get", undefined],
   ["preferencesSet", () => tauriApi.preferencesSet({ remove_location_from_exports: true }), "preferences_set", { patch: { remove_location_from_exports: true } }],

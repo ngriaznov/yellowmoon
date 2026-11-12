@@ -245,6 +245,12 @@ export const commands = {
 	 *  webview that reloaded can show the filmstrip again.
 	 */
 	thumbnails: () => __TAURI_INVOKE<ThumbnailReady[]>("thumbnails"),
+	/**
+	 *  `thumbnails_in_view(photo_ids)` (`docs/26` H-11): the filmstrip shows these photos. Answers with the
+	 *  address of the thumbnail the shell holds for each of them; the ones it let go of to keep its byte
+	 *  budget are made again and arrive as `thumbnail_ready`.
+	 */
+	thumbnailsInView: (photoIds: PhotoId[]) => __TAURI_INVOKE<ThumbnailReady[]>("thumbnails_in_view", { photoIds }),
 	/**  `choose_folder(start)`: the system's folder chooser. `null` when cancelled. */
 	chooseFolder: (start: string | null) => __TAURI_INVOKE<string | null>("choose_folder", { start }),
 	/**
