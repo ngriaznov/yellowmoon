@@ -299,6 +299,7 @@ export const events = {
 	exportProgress: makeEvent<ExportProgress>("export_progress"),
 	looksChanged: makeEvent<LooksChanged>("looks_changed"),
 	looksImportProgress: makeEvent<LooksImportProgress>("looks_import_progress"),
+	memoryNotice: makeEvent<MemoryNotice>("memory_notice"),
 	menuAction: makeEvent<MenuActionEvent>("menu_action"),
 	nodeThumbnailsReady: makeEvent<NodeThumbnailsReady>("node_thumbnails_ready"),
 	objectState: makeEvent<ObjectState>("object_state"),
@@ -2118,6 +2119,17 @@ export type MatchKind =
 via: string } | 
 /**  The A7R IV stand-in. */
 { kind: "default" };
+
+/**
+ *  `memory_notice { message }` (addition, `docs/26` H-14): the computer is short of memory. `message` is the sentence the error bar shows
+ *  as a notice ("Your Mac is short of memory, so Yellowmoon paused background work. Close other apps to speed it up again."), or null
+ *  when the level is normal again and the sentence goes. Sent once on the way into the critical level and once when the level is
+ *  normal; the core owns the words so the app and the mock say the same.
+ */
+export type MemoryNotice = {
+	/**  The sentence to show, or null to take it away. */
+	message: string | null,
+};
 
 /**
  *  The items of the native menu bar that need the webview. The shell sends `menu_action` with one

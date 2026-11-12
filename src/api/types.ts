@@ -1546,6 +1546,15 @@ export interface ExportBusy {
 }
 
 /**
+ * `memory_notice` (addition, `docs/26` H-14): the computer is short of memory. `message` is the sentence the error bar shows as a
+ * notice, or `null` when the level is normal again and the sentence goes. Sent once on the way into the critical level and once when
+ * the level is normal; the core owns the words.
+ */
+export interface MemoryNotice {
+  message: string | null;
+}
+
+/**
  * `viewport_busy` (addition): whether the viewport is working on a frame of the photo on screen, or on the full-resolution tiles a
  * frame needs, and whether the raw stages of that photo run on the CPU (no usable graphics card, a device error ended the route, the
  * device is lost, or a method the device does not run), which can take seconds. Sent when it changes (at most about 30 times a
@@ -1948,6 +1957,8 @@ export interface ApiEvents {
   vision_state: VisionState;
   /** The depth worker ended its work for a photo, and whether the map failed (`docs/23` §7.6: a failed row says "Can't be made"). */
   depth_state: DepthState;
+  /** The computer is short of memory and background work is paused (the sentence), or it is not any more (`null`). */
+  memory_notice: MemoryNotice;
 }
 
 /** Names of the events the core emits. */

@@ -38,9 +38,9 @@ use tauri_specta::Event;
 
 use crate::wire::{
     AppError, AutoStatusChanged, DepthState, DownloadFound, ErrorEvent, ExportBusy, ExportProgress,
-    LooksChanged, LooksImportProgress, NodeThumbnailsReady, ObjectState, OpenProgress, PhotoId,
-    PhotoProgress, RenderStats, SettingsChanged, ThumbnailReady, ViewportBusy, ViewportFrame,
-    VisionState,
+    LooksChanged, LooksImportProgress, MemoryNotice, NodeThumbnailsReady, ObjectState,
+    OpenProgress, PhotoId, PhotoProgress, RenderStats, SettingsChanged, ThumbnailReady,
+    ViewportBusy, ViewportFrame, VisionState,
 };
 
 /// The least time between two `render_stats` events, between two `viewport_busy` events, and between
@@ -86,6 +86,8 @@ pub enum AppEvent {
     VisionState(VisionState),
     /// `depth_state` (addition): the depth worker ended its work for a photo, and whether the map failed.
     DepthState(DepthState),
+    /// `memory_notice` (addition, `docs/26` H-14): the computer is short of memory (the sentence), or is not any more (none).
+    MemoryNotice(MemoryNotice),
 }
 
 impl AppEvent {
@@ -111,6 +113,7 @@ impl AppEvent {
             Self::ObjectState(_) => "object_state",
             Self::VisionState(_) => "vision_state",
             Self::DepthState(_) => "depth_state",
+            Self::MemoryNotice(_) => "memory_notice",
         }
     }
 }
@@ -164,6 +167,7 @@ fn send<R: Runtime>(app: &tauri::AppHandle<R>, event: AppEvent) {
         AppEvent::ObjectState(e) => e.emit(app),
         AppEvent::VisionState(e) => e.emit(app),
         AppEvent::DepthState(e) => e.emit(app),
+        AppEvent::MemoryNotice(e) => e.emit(app),
     };
     if let Err(e) = sent {
         tracing::debug!(event = name, error = %e, "could not send an event");

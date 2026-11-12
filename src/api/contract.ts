@@ -64,6 +64,7 @@ export type FromCore = AllTrue<{
   objectState: Assignable<B.ObjectState, T.ObjectState>;
   visionState: Assignable<B.VisionState, T.VisionState>;
   depthState: Assignable<B.DepthState, T.DepthState>;
+  memoryNotice: Assignable<B.MemoryNotice, T.MemoryNotice>;
   depthFar: Assignable<B.DepthFar, T.DepthFar>;
   focusPlaneResult: Assignable<B.FocusPlaneResult, T.FocusPlaneResult>;
   maskFindResult: Assignable<B.MaskFindResult, T.MaskFindResult>;

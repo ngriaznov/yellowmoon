@@ -193,6 +193,7 @@ describe("tauriApi.on", () => {
     "viewport_frame",
     "settings_changed",
     "export_busy",
+    "memory_notice",
   ] as const;
 
   it.each(EVENTS)("listens to %s by its wire name, which the shell registers", (name) => {

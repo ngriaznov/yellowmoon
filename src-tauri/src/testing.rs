@@ -122,6 +122,20 @@ impl Harness {
             None,
             Some(model),
             FrameStore::new(),
+            None,
+        )
+    }
+
+    /// An app whose memory-pressure poll reads `source` (`docs/26` H-14); the other harnesses start no poll.
+    pub(crate) fn with_pressure(source: ym_core::memory::PressureSource) -> Self {
+        Self::build_with(
+            WatchConfig::default(),
+            ProviderAdvisors::default(),
+            None,
+            None,
+            None,
+            FrameStore::new(),
+            Some(source),
         )
     }
 
@@ -134,6 +148,7 @@ impl Harness {
             None,
             None,
             FrameStore::with_thumbnail_budget(bytes),
+            None,
         )
     }
 
@@ -158,6 +173,7 @@ impl Harness {
             vision,
             None,
             FrameStore::new(),
+            None,
         )
     }
 
@@ -168,6 +184,7 @@ impl Harness {
         vision: Option<Arc<dyn ym_core::vision::VisionProvider>>,
         depth: Option<Arc<ym_core::pipeline::DepthModel>>,
         frames: FrameStore,
+        pressure: Option<ym_core::memory::PressureSource>,
     ) -> Self {
         let photos = tempfile::tempdir().expect("photos");
         let app_root = tempfile::tempdir().expect("app root");
@@ -195,6 +212,7 @@ impl Harness {
             advisors,
             vision,
             depth,
+            pressure,
         };
         // Only the folders of the test: `CliLink::new` also names the real `/usr/local/bin` and
         // `/opt/homebrew/bin` of a Mac, where a test would look at (and replace) the link of the

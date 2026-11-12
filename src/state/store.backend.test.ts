@@ -236,6 +236,29 @@ describe("settings_changed", () => {
   });
 });
 
+describe("memory_notice", () => {
+  const SENTENCE = "Your Mac is short of memory, so Yellowmoon paused background work. Close other apps to speed it up again.";
+
+  it("shows the core's sentence when it says it and takes it away when the core says null", async () => {
+    const { api, store } = await connected();
+    expect(store.getState().memoryNotice).toBeNull();
+    api.emitEvent("memory_notice", { message: SENTENCE });
+    expect(store.getState().memoryNotice).toBe(SENTENCE);
+    api.emitEvent("memory_notice", { message: null });
+    expect(store.getState().memoryNotice).toBeNull();
+  });
+
+  it("is hidden by Dismiss until the core says it again, and is not the session's: closing the session leaves it", async () => {
+    const { api, store } = await opened();
+    api.emitEvent("memory_notice", { message: SENTENCE });
+    store.dismissMemoryNotice();
+    expect(store.getState().memoryNotice).toBeNull();
+    api.emitEvent("memory_notice", { message: SENTENCE });
+    await store.closeSession();
+    expect(store.getState().memoryNotice).toBe(SENTENCE);
+  });
+});
+
 describe("export_busy", () => {
   it("follows the event, and the command after a reload", async () => {
     const { api, store } = await connected();

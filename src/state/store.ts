@@ -394,6 +394,12 @@ export interface AppState {
   cubeImport: CubeImport | null;
   /** A short message that is not an error ("Yellowmoon is up to date."), until dismissed. */
   notice: string | null;
+  /**
+   * The sentence of the memory notice (`memory_notice`, `docs/26` H-14): the computer is short of memory and background work is
+   * paused. The core sends it once on the way into the critical level and sends `null` when the level is normal again. Shown after an
+   * error and after a notice, in the same bar.
+   */
+  memoryNotice: string | null;
   /** The button the notice has besides Dismiss: Undo, after photos were removed from the filmstrip. Null for every other notice. */
   noticeAction: NoticeAction | null;
   /**
@@ -472,6 +478,7 @@ export function initialState(): AppState {
     cubeImport: null,
     notice: null,
     noticeAction: null,
+    memoryNotice: null,
     viewportBackend: null,
     viewportFrame: null,
     exportBusy: false,
@@ -906,6 +913,8 @@ export class AppStore {
       api.on("object_state", (e) => this.onObjectState(e)),
       api.on("vision_state", (e) => this.onVisionState(e)),
       api.on("depth_state", (e) => this.onDepthState(e)),
+      // The core says it once per stay at the critical level; Dismiss hides it until the core says it again.
+      api.on("memory_notice", (e) => this.set({ memoryNotice: e.message })),
       onGestureEnd(() => this.afterGesture()),
     ];
     void this.load();
@@ -1472,6 +1481,8 @@ export class AppStore {
       cubeImport: this.state.cubeImport,
       notice: this.state.notice,
       noticeAction: this.state.noticeAction,
+      // The computer's memory is not the session's.
+      memoryNotice: this.state.memoryNotice,
       viewportBackend: this.state.viewportBackend,
       exportBusy: this.state.exportBusy,
       // What was copied is for pasting in another folder too; the id of its photo belongs to the closed session.
@@ -1954,6 +1965,11 @@ export class AppStore {
 
   dismissNotice(): void {
     this.set({ notice: null, noticeAction: null });
+  }
+
+  /** Hides the memory notice. The core says it again only after the level has been normal. */
+  dismissMemoryNotice(): void {
+    this.set({ memoryNotice: null });
   }
 
   /** ⌘W: closes the session, after asking when an export is running (`docs/11` §Keyboard shortcuts). */

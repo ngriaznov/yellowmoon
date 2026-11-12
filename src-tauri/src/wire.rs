@@ -3265,6 +3265,17 @@ pub struct DepthState {
     pub failed: Option<String>,
 }
 
+/// `memory_notice { message }` (addition, `docs/26` H-14): the computer is short of memory. `message` is the sentence the error bar shows
+/// as a notice ("Your Mac is short of memory, so Yellowmoon paused background work. Close other apps to speed it up again."), or null
+/// when the level is normal again and the sentence goes. Sent once on the way into the critical level and once when the level is
+/// normal; the core owns the words so the app and the mock say the same.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "memory_notice")]
+pub struct MemoryNotice {
+    /// The sentence to show, or null to take it away.
+    pub message: Option<String>,
+}
+
 /// `vision_state { photo_id, nothing_found }` (addition): the core's worker for the Subject and People masks of a photo has ended
 /// its work, and `nothing_found` lists the kinds whose newest mask for the photo found nothing (`docs/23` section 7.6: their rows
 /// say "Nothing found"). Sent each time the worker ends, with the list as it is then; the rows say "Finding…" while it works

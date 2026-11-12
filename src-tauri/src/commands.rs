@@ -928,6 +928,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             wire::ObjectState,
             wire::VisionState,
             wire::DepthState,
+            wire::MemoryNotice,
         ])
         .typ::<ErrorScope>()
 }
