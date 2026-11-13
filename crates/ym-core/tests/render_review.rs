@@ -85,10 +85,13 @@ fn a_viewport_frame_does_not_wait_for_an_export_in_progress() {
     // Warm the fit view: the frame below is then a cheap colour pass.
     r.viewport_frame(&src, &st, &FrameOptions::default(), &CancelToken::new())
         .expect("warm");
-    let export = r.spawn_full(src.clone(), srgb_export());
     // The export is in progress once it holds its memory reservation (the warm frame left caches in the
-    // ledger already: what the export adds is above them).
+    // ledger already: what the export adds is above them). Read what the caches hold *before* the export
+    // starts: the render thread takes the reservation at once, and a read after the spawn can already
+    // include it, so that `used()` never rises above it again. (The caches do not shrink for the export:
+    // it fits the budget, and the ledger asks them to let go only when it would not.)
     let cached = r.ledger().used();
+    let export = r.spawn_full(src.clone(), srgb_export());
     let started = Instant::now();
     while r.ledger().used() <= cached {
         assert!(started.elapsed() < Duration::from_secs(60), "never started");
