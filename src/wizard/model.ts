@@ -538,9 +538,9 @@ export function heading(state: WizardState): string {
 export function lead(state: WizardState): string {
   switch (state.step) {
     case STEP_CHOOSE:
-      return "ARRI publishes these looks for free. We can't include them in the app, so you download them from ARRI and the app imports them.";
+      return "ARRI publishes these looks for free, as 3D LUTs and as look files. We can't include them, so you download either kind and the app imports it.";
     case STEP_GET:
-      return "Your browser opens ARRI's Look Files page. Download the package there and the app picks it up.";
+      return "Your browser opens ARRI's Look Files page. Download the LUTs or the look files there and the app picks them up.";
     case STEP_RECOGNISE:
       return "Each package is identified from its folder names, file names and LUT sizes.";
     case STEP_IMPORT:

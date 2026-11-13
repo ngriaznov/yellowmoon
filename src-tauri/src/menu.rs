@@ -284,7 +284,12 @@ pub fn spec() -> Vec<Menus> {
                     None,
                     MenuAction::ImportArriLooks,
                 ),
-                web("import_cube", "Import .cube…", None, MenuAction::ImportCube),
+                web(
+                    "import_cube",
+                    "Import LUTs and look files…",
+                    None,
+                    MenuAction::ImportCube,
+                ),
                 web(
                     "make_default_look",
                     "Make Current Look Default",
@@ -562,7 +567,7 @@ mod tests {
             "Previous Photo",
             // Looks
             "Import ARRI Looks…",
-            "Import .cube…",
+            "Import LUTs and look files…",
             "Make Current Look Default",
             "Show Looks Folder",
             // Help

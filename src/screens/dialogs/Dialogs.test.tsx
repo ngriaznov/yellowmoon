@@ -393,12 +393,12 @@ describe("the menu bar", () => {
   });
 });
 
-describe("Import .cube…", () => {
+describe("Import LUTs and look files…", () => {
   async function chooseCube(...files: string[]): Promise<HTMLElement> {
     await start({ looksImported: false });
     h!.api.queueChoice("files", files.map((f) => `~/LUTs/${f}`));
     act(() => h!.api.emitEvent("menu_action", { action: "import_cube" }));
-    return screen.findByRole("dialog", { name: "Import LUTs" });
+    return screen.findByRole("dialog", { name: "Import LUTs and look files" });
   }
 
   it("asks what the LUT expects as input, and imports it into Your LUTs", async () => {
@@ -506,7 +506,7 @@ describe("Import .cube…", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     h!.api.queueChoice("files", [`~/LUTs/${FAILURE_ZIPS.ownCube}`]);
     act(() => h!.api.emitEvent("menu_action", { action: "import_cube" }));
-    const dialog = await screen.findByRole("dialog", { name: "Import LUTs" });
+    const dialog = await screen.findByRole("dialog", { name: "Import LUTs and look files" });
     await h!.user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect((await h!.api.looksList()).filter((l) => l.group.kind === "user")).toHaveLength(0);
@@ -516,7 +516,7 @@ describe("Import .cube…", () => {
     h = renderApp({ current: 3 });
     await openPhotos(h);
     h.api.queueChoice("files", [`~/LUTs/${FAILURE_ZIPS.ownCube}`]);
-    await h.user.click(screen.getByRole("button", { name: "Import .cube…" }));
-    expect(await screen.findByRole("dialog", { name: "Import LUTs" })).toBeInTheDocument();
+    await h.user.click(screen.getByRole("button", { name: "Import LUTs and look files…" }));
+    expect(await screen.findByRole("dialog", { name: "Import LUTs and look files" })).toBeInTheDocument();
   });
 });
