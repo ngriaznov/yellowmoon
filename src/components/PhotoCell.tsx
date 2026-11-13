@@ -32,8 +32,8 @@ export interface PhotoKeyHandlers {
   pan: (dx: number, dy: number) => void;
   /** Home: the view goes back to the middle of the picture. */
   centre: () => void;
-  /** I: read the pixel under the middle of the view. */
-  readPixel: () => void;
+  /** I: read the pixel under the middle of the view. Absent while "Single-key shortcuts" is off (`docs/28` A-P11): I is then a letter and does nothing. */
+  readPixel?: () => void;
 }
 
 export interface PhotoCellProps extends Omit<HTMLAttributes<HTMLElement>, "children" | "className"> {
@@ -270,7 +270,7 @@ export function PhotoCell({
     } else if (event.key === "Home" && !event.shiftKey) {
       event.preventDefault();
       if (!event.repeat) h.centre();
-    } else if ((event.key === "i" || event.key === "I") && !event.shiftKey) {
+    } else if ((event.key === "i" || event.key === "I") && !event.shiftKey && h.readPixel) {
       event.preventDefault();
       if (!event.repeat) h.readPixel();
     }
@@ -325,7 +325,7 @@ export function PhotoCell({
       {keys ? (
         // What the picture was called, and the two keys the name does not say; the name of a zoomed photo is the one that tells how to move it.
         <span id={keyHelp} className="sr-only">
-          {imageLabel}. Home centres it. I reads the pixel at the centre.
+          {imageLabel}. Home centres it.{keys.readPixel ? " I reads the pixel at the centre." : ""}
         </span>
       ) : null}
       <div className="ym-photo-cell__info" role="group" aria-label="Photo information">

@@ -253,6 +253,29 @@ pub fn spec() -> Vec<Menus> {
             ],
         },
         Menus {
+            title: "Photo",
+            entries: vec![
+                web("crop", "Crop", None, MenuAction::Crop),
+                web("auto_crop", "Auto Crop", None, MenuAction::AutoCrop),
+                web("pick_white", "Pick White", None, MenuAction::PickWhite),
+                Separator,
+                web(
+                    "remove_photo",
+                    "Remove Photo",
+                    None,
+                    MenuAction::RemovePhoto,
+                ),
+                Separator,
+                web("bypass_node", "Bypass Node", None, MenuAction::BypassNode),
+                web(
+                    "mask_view",
+                    "Show or Hide Node Mask",
+                    None,
+                    MenuAction::MaskView,
+                ),
+            ],
+        },
+        Menus {
             title: "Looks",
             entries: vec![
                 web(
@@ -268,6 +291,16 @@ pub fn spec() -> Vec<Menus> {
                     None,
                     MenuAction::MakeDefaultLook,
                 ),
+                Separator,
+                web("look_1", "Apply Look 1", None, MenuAction::Look1),
+                web("look_2", "Apply Look 2", None, MenuAction::Look2),
+                web("look_3", "Apply Look 3", None, MenuAction::Look3),
+                web("look_4", "Apply Look 4", None, MenuAction::Look4),
+                web("look_5", "Apply Look 5", None, MenuAction::Look5),
+                web("look_6", "Apply Look 6", None, MenuAction::Look6),
+                web("look_7", "Apply Look 7", None, MenuAction::Look7),
+                web("look_8", "Apply Look 8", None, MenuAction::Look8),
+                web("look_9", "Apply Look 9", None, MenuAction::Look9),
                 Separator,
                 item(
                     "show_looks_folder",
@@ -488,6 +521,7 @@ mod tests {
                 "File",
                 "Edit",
                 "View",
+                "Photo",
                 "Looks",
                 "Window",
                 "Help"
@@ -607,6 +641,21 @@ mod tests {
             MenuAction::CopySettings,
             MenuAction::PasteSettings,
             MenuAction::PasteSettingsToPicked,
+            MenuAction::Crop,
+            MenuAction::AutoCrop,
+            MenuAction::PickWhite,
+            MenuAction::RemovePhoto,
+            MenuAction::BypassNode,
+            MenuAction::MaskView,
+            MenuAction::Look1,
+            MenuAction::Look2,
+            MenuAction::Look3,
+            MenuAction::Look4,
+            MenuAction::Look5,
+            MenuAction::Look6,
+            MenuAction::Look7,
+            MenuAction::Look8,
+            MenuAction::Look9,
         ];
         let ours: HashSet<String> = all
             .iter()
@@ -651,6 +700,55 @@ mod tests {
         }
         // ⌘, ⌘O ⇧⌘O ⌘E ⌘W ⌘= ⌘-
         assert_eq!(seen.len(), 7);
+    }
+
+    /// "Single-key shortcuts" off (`docs/28` A-P11) must really turn those keys off, so the native
+    /// menu may not hold a key equivalent that is one key: every shortcut has ⌘, and no item of the
+    /// menu takes P, Z, C, W, N, F, B, M, A, a digit, a backslash, Delete or Backspace.
+    #[test]
+    fn no_item_has_a_single_key_equivalent() {
+        for (id, _, shortcut, _) in items() {
+            let Some(s) = shortcut else { continue };
+            assert!(s.contains("CmdOrCtrl+"), "{id}: {s} is not a ⌘ key");
+        }
+    }
+
+    /// The actions whose keys the switch turns off each have a menu item (`docs/28` A-P11), so
+    /// nothing is stranded: the Photo menu and the nine look items.
+    #[test]
+    fn every_action_of_a_single_key_has_an_item() {
+        let actions: Vec<MenuAction> = items()
+            .into_iter()
+            .filter_map(|(_, _, _, a)| match a {
+                Do::Webview(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        for needed in [
+            MenuAction::Pick,
+            MenuAction::BeforeAfter,
+            MenuAction::Nodes,
+            MenuAction::Fit,
+            MenuAction::Zoom100,
+            MenuAction::Crop,
+            MenuAction::AutoCrop,
+            MenuAction::PickWhite,
+            MenuAction::RemovePhoto,
+            MenuAction::BypassNode,
+            MenuAction::MaskView,
+            MenuAction::Look1,
+            MenuAction::Look5,
+            MenuAction::Look9,
+        ] {
+            assert!(actions.contains(&needed), "{needed:?}");
+        }
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|a| format!("{a:?}").starts_with("Look"))
+                .count(),
+            9
+        );
     }
 
     #[test]
@@ -773,6 +871,7 @@ mod tests {
                 "File",
                 "Edit",
                 "View",
+                "Photo",
                 "Looks",
                 "Window",
                 "Help"

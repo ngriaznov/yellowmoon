@@ -1014,6 +1014,7 @@ function defaultPreferences(options: Pick<Required<MockOptions>, "autoProvider" 
     auto_provider: options.autoProvider,
     auto_consent: { ...options.consent },
     apple_auto_instructions: "",
+    single_key_shortcuts: true,
   };
 }
 

@@ -899,13 +899,14 @@ export function Photos() {
           return false;
       }
   };
-  // The View menu's Nodes item (`docs/11` §Menus) does what N does, with the same guards. It is not a menu shortcut: N types.
+  // The menu items of single keys (View › Nodes, the Photo menu, Looks › Apply Look 1 to 9; `docs/11` §Menus) do what the key does, with
+  // the same guards, and work with "Single-key shortcuts" off: the switch is in the matcher, not here. They are not menu shortcuts: the keys type.
   const shortcutRef = useRef(onShortcut);
   shortcutRef.current = onShortcut;
   useEffect(() => {
-    store.nodesCommand = () => shortcutRef.current({ action: "nodes" });
+    store.shortcutCommand = (shortcut) => shortcutRef.current(shortcut);
     return () => {
-      store.nodesCommand = null;
+      store.shortcutCommand = null;
     };
   }, [store]);
 

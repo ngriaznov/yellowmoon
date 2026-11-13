@@ -6,6 +6,7 @@
 import type { MenuAction, UpdateState } from "../api/types";
 import { updater } from "../updater";
 import type { CheckResult } from "../updater";
+import type { ShortcutAction } from "./shortcuts";
 import type { AppStore } from "./store";
 import { zoomStep } from "./zoom";
 
@@ -20,6 +21,16 @@ export function checkNotice(result: CheckResult, state: UpdateState): string {
   if (state.phase === "downloading") return `Version ${result.version} is downloading.`;
   return `Version ${result.version} is available. It downloads when you press Update available.`;
 }
+
+/** The shortcut each Photo menu item stands for. */
+const SINGLE_KEY_ACTIONS = {
+  crop: "crop",
+  auto_crop: "auto-crop",
+  pick_white: "pick-white",
+  remove_photo: "remove-photo",
+  bypass_node: "bypass-node",
+  mask_view: "mask-view",
+} as const satisfies Partial<Record<MenuAction, ShortcutAction>>;
 
 /** Runs one menu item. */
 export async function runMenuAction(store: AppStore, action: MenuAction): Promise<void> {
@@ -85,7 +96,28 @@ export async function runMenuAction(store: AppStore, action: MenuAction): Promis
       return;
     case "nodes":
       // The Photos screen owns the node view; a dialog has the keyboard and the menu alike.
-      if (state.overlay === null) store.nodesCommand?.();
+      if (state.overlay === null) store.shortcutCommand?.({ action: "nodes" });
+      return;
+    // The Photo menu and Apply Look 1 to 9 (`docs/28` A-P11): the actions of single keys, so a person who turned those keys off still has
+    // every one. Each runs the key's own handler on the Photos screen, which has the same guards (nothing in Crop or the Export panel where the key does nothing).
+    case "crop":
+    case "auto_crop":
+    case "pick_white":
+    case "remove_photo":
+    case "bypass_node":
+    case "mask_view":
+      if (state.overlay === null) store.shortcutCommand?.({ action: SINGLE_KEY_ACTIONS[action] });
+      return;
+    case "look_1":
+    case "look_2":
+    case "look_3":
+    case "look_4":
+    case "look_5":
+    case "look_6":
+    case "look_7":
+    case "look_8":
+    case "look_9":
+      if (state.overlay === null) store.shortcutCommand?.({ action: "pick-look", look: Number(action.slice(5)) });
       return;
     case "fit":
       await store.setZoom({ kind: "fit" });

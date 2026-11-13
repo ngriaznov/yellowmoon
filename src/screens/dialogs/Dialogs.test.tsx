@@ -108,6 +108,20 @@ describe("Preferences (⌘,)", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("has one \"Single-key shortcuts\" switch, on by default, with its line, that saves the preference (docs/28 A-P11)", async () => {
+    const dialog = await openPreferences();
+    const row = sw(dialog, "Single-key shortcuts");
+    expect(row).toHaveAttribute("aria-checked", "true");
+    expect(within(dialog).getAllByRole("switch", { name: "Single-key shortcuts" })).toHaveLength(1);
+    expect(within(dialog).getByText("Turn off if you use speech input or a screen reader. Every action stays in the menu bar.")).toBeInTheDocument();
+    expect((await h!.api.preferencesGet()).single_key_shortcuts).toBe(true);
+    await h!.user.click(row);
+    expect((await h!.api.preferencesGet()).single_key_shortcuts).toBe(false);
+    expect(sw(dialog, "Single-key shortcuts")).toHaveAttribute("aria-checked", "false");
+    await h!.user.click(sw(dialog, "Single-key shortcuts"));
+    expect((await h!.api.preferencesGet()).single_key_shortcuts).toBe(true);
+  });
+
   it("saves each switch as soon as it is flipped, and shows it again next time", async () => {
     const dialog = await openPreferences();
     await h!.user.click(sw(dialog, "Remove location from exports"));

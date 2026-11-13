@@ -99,6 +99,10 @@ pub struct Preferences {
     /// white space) is the default, [`crate::apple_auto::DEFAULT_INSTRUCTIONS`]. Saved as `""` when
     /// it equals the default.
     pub apple_auto_instructions: String,
+    /// "Single-key shortcuts" (`docs/28` A-P11): on (the default) keeps P, Z, C, W, N, F, B, M, A,
+    /// `\`, 1 to 9, Delete and Backspace as shortcuts outside a text box; off leaves them to speech
+    /// input and screen readers, and every action stays in the menu bar. The webview reads it.
+    pub single_key_shortcuts: bool,
 }
 
 impl Default for Preferences {
@@ -113,6 +117,7 @@ impl Default for Preferences {
             auto_provider: AutoProvider::Apple,
             auto_consent: AutoConsent::default(),
             apple_auto_instructions: String::new(),
+            single_key_shortcuts: true,
         }
     }
 }
@@ -152,6 +157,9 @@ pub struct PreferencesPatch {
     /// [`PreferencesPatch::check`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apple_auto_instructions: Option<String>,
+    /// Replaces `single_key_shortcuts`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub single_key_shortcuts: Option<bool>,
 }
 
 impl PreferencesPatch {
@@ -184,6 +192,9 @@ impl PreferencesPatch {
         }
         if let Some(v) = &self.apple_auto_instructions {
             prefs.apple_auto_instructions = own_instructions(v);
+        }
+        if let Some(v) = self.single_key_shortcuts {
+            prefs.single_key_shortcuts = v;
         }
         *prefs != before
     }
@@ -425,6 +436,9 @@ pub fn parse(text: &str) -> ParsedPreferences {
     }
     if let Some(v) = take(&mut map, "watch_downloads_during_import", &mut warnings) {
         p.watch_downloads_during_import = v;
+    }
+    if let Some(v) = take(&mut map, "single_key_shortcuts", &mut warnings) {
+        p.single_key_shortcuts = v;
     }
     // The provider: a valid `auto_provider` wins; a file from before providers has `apple_auto`
     // (`false` is Default Auto, `true` or absent is Apple); `apple_auto` is never written
@@ -692,6 +706,10 @@ mod tests {
         );
         assert_eq!(p.auto_consent, AutoConsent::default());
         assert_eq!(p.apple_auto_instructions, "");
+        assert!(
+            p.single_key_shortcuts,
+            "single-key shortcuts are on by default (docs/28 A-P11)"
+        );
     }
 
     #[test]
@@ -1006,7 +1024,8 @@ mod tests {
                 "last_used_folders": { "open": null, "export": null, "looks_import": null },
                 "auto_provider": "apple",
                 "auto_consent": { "claude": false, "agy": false },
-                "apple_auto_instructions": ""
+                "apple_auto_instructions": "",
+                "single_key_shortcuts": true
             })
         );
     }
@@ -1182,6 +1201,43 @@ mod tests {
         let again = PreferencesStore::open(dir.path());
         assert!(again.get().watch_downloads_during_import);
         assert!(again.warnings().is_empty());
+    }
+
+    /// "Single-key shortcuts" (`docs/28` A-P11) is saved when it changes, read back as a fresh start
+    /// reads it, and a file from before it reads as on.
+    #[test]
+    fn single_key_shortcuts_survive_a_restart_and_default_to_on() {
+        let dir = root();
+        let path = dir.path().join(FILE_NAME);
+        std::fs::write(&path, r#"{ "default_look": "builtin:neutral" }"#).expect("write");
+        let store = PreferencesStore::open(dir.path());
+        assert!(
+            store.get().single_key_shortcuts,
+            "a file without the field reads as on"
+        );
+        assert!(store.warnings().is_empty());
+        store
+            .update(&PreferencesPatch {
+                single_key_shortcuts: Some(false),
+                ..PreferencesPatch::default()
+            })
+            .expect("saved");
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(text.contains("\"single_key_shortcuts\": false"), "{text}");
+        let restarted = PreferencesStore::open(dir.path());
+        assert!(!restarted.get().single_key_shortcuts);
+        assert_eq!(restarted.get().default_look.as_str(), "builtin:neutral");
+        assert!(restarted.warnings().is_empty());
+        // A value that does not fit takes the default and says so; the rest is kept.
+        std::fs::write(
+            &path,
+            r#"{ "single_key_shortcuts": "no", "remove_location_from_exports": true }"#,
+        )
+        .expect("write");
+        let odd = PreferencesStore::open(dir.path());
+        assert!(odd.get().single_key_shortcuts);
+        assert!(odd.get().remove_location_from_exports);
+        assert_eq!(odd.warnings().len(), 1);
     }
 
     /// Runs `f` and returns what it logged at info level and above (the application's default).

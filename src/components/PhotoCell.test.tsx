@@ -327,6 +327,19 @@ describe("PhotoCell pixel probe", () => {
       expect(view.textContent).toBe("");
     });
 
+    it("without a readPixel (Single-key shortcuts off, docs/28 A-P11) I does nothing, is not described, and Home and the arrows still act", () => {
+      const h = { pan: vi.fn(), centre: vi.fn() };
+      render(<PhotoCell imageLabel="Photo DSC04204, Neutral · 100%" native={false} keys={h} />);
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(box(0, 0, 1000, 600));
+      const view = screen.getByRole("img", { name: "Photo, zoomed. The arrow keys move it." });
+      expect(view).toHaveAccessibleDescription("Photo DSC04204, Neutral · 100%. Home centres it.");
+      expect(fireEvent.keyDown(view, { key: "i" })).toBe(true); // not cancelled: the key is left alone
+      fireEvent.keyDown(view, { key: "Home" });
+      fireEvent.keyDown(view, { key: "ArrowRight" });
+      expect(h.centre).toHaveBeenCalledTimes(1);
+      expect(h.pan).toHaveBeenCalledTimes(1);
+    });
+
     it("the arrows pan by 5 % of the cell, with Shift by 25 %, and the key is not left to the page", () => {
       const h = keys();
       render(<PhotoCell native={false} keys={h} />);

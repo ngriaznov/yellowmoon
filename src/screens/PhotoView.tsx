@@ -24,6 +24,7 @@ import { PickDepthHint } from "./PickDepthHint";
 import { PickWhiteHint } from "./PickWhiteHint";
 import { previewUrl } from "./preview";
 import { RenderingNote } from "./RenderingNote";
+import { useSingleKeys } from "../state/useShortcuts";
 
 export interface PhotoViewProps {
   store: AppStore;
@@ -218,18 +219,22 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
   // The arrows, Home and I. The pan is the wheel's and the drag's: one input, queued, sent once per frame, clamped by the core. The pixel is the
   // ⌥ readout's call (`samplePixelAt`) at the middle of the cell.
   const onReadPixelRef = useLatest(onReadPixel);
+  const singleKeys = useSingleKeys();
   const keys = useMemo<PhotoKeyHandlers | undefined>(
     () =>
       zoomed
         ? {
             pan: (dx, dy) => store.queueViewportInput({ kind: "pan", dx, dy }),
             centre: () => void store.recentreView(),
-            readPixel: () => {
-              void store.samplePixelAt(0.5, 0.5).then((pixel) => onReadPixelRef.current?.(pixel ? pixelText(pixel) : null));
-            },
+            // I is a single key: it is not given while the switch in Preferences is off (`docs/28` A-P11).
+            readPixel: singleKeys
+              ? () => {
+                  void store.samplePixelAt(0.5, 0.5).then((pixel) => onReadPixelRef.current?.(pixel ? pixelText(pixel) : null));
+                }
+              : undefined,
           }
         : undefined,
-    [zoomed, store, onReadPixelRef],
+    [zoomed, store, onReadPixelRef, singleKeys],
   );
 
   const note = photo ? notReadyNote(photo) : null;

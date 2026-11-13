@@ -7,6 +7,7 @@
     {"role":"switch","name":"Remove location from exports","outline":"solid","ring":"outline"},
     {"role":"switch","name":"Watch Downloads during import","outline":"solid","ring":"outline"},
     {"role":"switch","name":"Check for updates automatically","outline":"solid","ring":"outline"},
+    {"role":"switch","name":"Single-key shortcuts","outline":"solid","ring":"outline"},
     {"role":"button","name":"Install…","outline":"solid","ring":"outline"},
     {"role":"button","name":"About Yellowmoon","outline":"solid","ring":"outline"},
     {"role":"button","name":"Done","outline":"solid","ring":"outline"}

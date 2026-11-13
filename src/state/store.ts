@@ -18,6 +18,7 @@
  * the links, between the settings before the gesture and the core's reply (`diffSettings`).
  */
 import type { Announced } from "./announce";
+import type { Shortcut } from "./shortcuts";
 import type { Api, Unsubscribe } from "../api";
 import { toAppError } from "../api";
 import { isUnreadableMessage } from "../api/openMessages";
@@ -801,10 +802,12 @@ export class AppStore {
   /** Runs a menu item that needs the webview (`menu_action`); set by `App`, which knows the screens. */
   menuHandler: ((action: MenuAction) => void) | null = null;
   /**
-   * The View menu's Nodes item: the Photos screen, which owns the node view, sets it while it is on screen. It does what N does and
-   * answers whether it did anything (not in Crop or the Export panel); with no Photos screen it is `null`.
+   * The menu items that are a single key's action (Nodes, the Photo menu, Apply Look 1 to 9): the Photos screen, which owns what the
+   * keys do, sets it while it is on screen. It runs the key's own handler, with the same guards (not in Crop or the Export panel where
+   * the key is not), and answers whether it did anything; with no Photos screen it is `null`. It does not read the switch of
+   * "Single-key shortcuts": a menu item works with the switch off (`docs/28` A-P11).
    */
-  nodesCommand: (() => boolean) | null = null;
+  shortcutCommand: ((shortcut: Shortcut) => boolean) | null = null;
 
   /**
    * Says what a menu item did (`docs/28` A-08): the Photos screen, which owns the live region, sets it while it is on screen; `on` is the

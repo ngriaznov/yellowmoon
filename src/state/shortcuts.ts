@@ -78,6 +78,12 @@ export interface ShortcutContext {
   mode?: "crop" | "pick-white" | "pick-color" | null;
   /** The node view is on: Delete and Backspace never mean "remove the photo on screen", and B, M and ⌥← ⌥→ are the graph's. */
   nodeView?: boolean;
+  /**
+   * "Single-key shortcuts" (Preferences, `docs/28` A-P11; on unless it is `false`). Off, the keys that are one key on their own do
+   * nothing outside a text box: P, Z, C, W, N, F, B, M, A, `\`, 1–9, Delete and Backspace (21 keys). ⌘-keys, the arrows, Esc and
+   * the Return of Crop stay. This is the only place the flag is read; `useShortcuts` puts it in the context.
+   */
+  singleKeys?: boolean;
 }
 
 /** True when the target takes typed text. */
@@ -201,6 +207,8 @@ export function shortcutFor(event: KeyLike, context: ShortcutContext = {}): Shor
   // Return finishes a crop, unless the focused control is a button or link that Return presses itself.
   if (key === "Enter" && context.mode === "crop" && !isTextTarget(event.target) && !pressesItself(event.target)) return { action: "confirm" };
   if (isTextTarget(event.target)) return null;
+  // The switch is off: only the arrows are left (they step photos, and a control that has the focus uses them first).
+  if (context.singleKeys === false && key !== "ArrowLeft" && key !== "ArrowRight") return null;
 
   switch (key) {
     case "ArrowLeft":
