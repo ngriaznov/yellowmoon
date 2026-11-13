@@ -586,6 +586,7 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
    that reads on any picture, and they sit a little in from the corner. */
 .ym-photo-cell__before,
 .ym-photo-cell__chip,
+.ym-photo-cell__camera,
 .ym-photo-cell__readout,
 .ym-photo-cell__busy,
 .ym-photo-cell__hint {
@@ -604,6 +605,7 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
 }
 .ym-photo-cell__before,
 .ym-photo-cell__chip,
+.ym-photo-cell__camera,
 .ym-photo-cell__readout,
 .ym-photo-cell__busy,
 .ym-photo-cell__hint {
@@ -647,14 +649,28 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
 .ym-photo-cell__hint ~ .ym-photo-cell__busy {
   top: 46px;
 }
+/* The camera line is the pair of the look chip at the other corner: the same pill (it was bare white text with a shadow, 1.01:1 on a white
+   photo, `docs/28` A-P4), the same distance from the edge, the same type but in the sentence's own case. */
 .ym-photo-cell__camera {
-  right: 16px;
-  bottom: 14px;
+  right: 12px;
+  bottom: 12px;
+  max-width: calc(100% - 24px);
+  font-weight: var(--fw-heavy);
+  letter-spacing: normal;
+  text-shadow: none;
 }
 
-/* The zoomed photo is a Tab stop (`docs/28` A-10). Its ring is drawn inside the cell, which clips what is outside: a yellow band with a dark line
-   on each side, so that it reads on a white photo and on a black one (A-P5). The outline is the one that forced colours keeps; the bands are
-   the shadow of a layer over the picture. */
+/* The ring of what lies over the photo (`docs/28` A-P5). The accent alone is 1.6:1 on a white photo and nothing on a yellow one, so every ring
+   over the picture has a dark line on each side of it, `--ym-ring-edge`, and reads on any photo: the zoomed photo, the crop frame and its
+   handles, the mask handles and the Pick layer. Where the cell would clip a ring drawn outside (the frame and the picture stand on its edge)
+   the ring is drawn inside, and the dark lines are inset shadows; a handle has room around it, so its dark line is a shadow outside the ring
+   (it fills the gap between the handle and the ring too, which is dark on any photo). The outlines are the ones forced colours keeps. */
+html.dark {
+  --ym-ring-edge: rgb(8 8 12 / 0.9);
+}
+
+/* The zoomed photo is a Tab stop (`docs/28` A-10). Its ring is drawn inside the cell, which clips what is outside it: a yellow band with a dark line
+   on each side, so that it reads on a white photo and on a black one. The bands are the shadow of a layer over the picture. */
 .ym-photo-cell__view[data-pan-view]:focus-visible {
   outline: var(--glass-ring-width) solid var(--ring);
   outline-offset: calc(-2px - var(--glass-ring-width));
@@ -665,9 +681,9 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   inset: 0;
   pointer-events: none;
   box-shadow:
-    inset 0 0 0 2px rgb(8 8 12 / 0.9),
+    inset 0 0 0 2px var(--ym-ring-edge),
     inset 0 0 0 calc(2px + var(--glass-ring-width)) var(--ring),
-    inset 0 0 0 calc(4px + var(--glass-ring-width)) rgb(8 8 12 / 0.9);
+    inset 0 0 0 calc(4px + var(--glass-ring-width)) var(--ym-ring-edge);
 }
 /* ---- Crop and Pick white --------------------------------------------------------------------------------------------------------- */
 .ym-crop__frame {
@@ -681,6 +697,27 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
 .ym-crop__frame:focus-visible {
   outline: var(--glass-ring-width) solid var(--ring);
   outline-offset: calc(-2px - var(--glass-ring-width));
+}
+/* The band of the ring is the first --glass-ring-width inside the frame's border; the dark line is the 2 px after it. The dimming stays. */
+.ym-crop__frame:focus-visible {
+  box-shadow:
+    inset 0 0 0 calc(var(--glass-ring-width) + 2px) var(--ym-ring-edge),
+    0 0 0 4000px rgb(8 8 12 / 0.55);
+}
+/* A handle's ring stands 3 px off it: the dark line is a shadow outside the ring, which also darkens the gap. */
+.ym-crop__handle:focus-visible {
+  box-shadow:
+    0 0 0 calc(3px + var(--glass-ring-width) + 1px) var(--ym-ring-edge),
+    0 1px 4px rgb(0 0 0 / 0.5);
+}
+.ym-mask-handle:focus-visible {
+  box-shadow:
+    0 0 0 calc(3px + var(--glass-ring-width) + 1px) var(--ym-ring-edge),
+    0 0 0 1.5px rgb(0 0 0 / 0.55);
+}
+/* A handle on the cell's edge draws its ring inside itself, over its dark fill, which is the dark line already. */
+.ym-crop__handle[data-at-cell-edge]:focus-visible {
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.5);
 }
 .ym-crop__handle[data-at-cell-edge]:focus-visible {
   outline-offset: calc(var(--glass-ring-width) * -1);
@@ -699,6 +736,10 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
 }
 .ym-pick-layer {
   outline-offset: -3px;
+}
+/* Its ring is drawn inside the cell, 3 px in (the outline above): the dark line is the 2 px inside it. */
+.ym-pick-layer:focus-visible {
+  box-shadow: inset 0 0 0 5px var(--ym-ring-edge);
 }
 
 /* ---- The wheels, the curve plot, the histogram ------------------------------------------------------------------------------------- */
@@ -926,8 +967,12 @@ html:has(.ym-screen[data-screen="import-looks"]) #root {
   filter: none;
   opacity: 1;
 }
+/* Its keycap is the one way to learn the shortcut, so it is not dimmed with the label: the secondary label colour at full strength (the
+   tertiary grey of the label is 2.9:1 on the keycap's fill; the keycap was the accent's ink at 60 %, 1.5:1; `docs/28` A-06). The button still
+   reads as disabled by its label and its material. */
 [data-slot="button"][data-variant="primary"][aria-disabled="true"] [data-slot="kbd"] {
-  opacity: 0.6;
+  color: var(--glass-label-secondary);
+  opacity: 1;
 }
 
 /* A value changed by hand: a solid ring and text in the tab's colour on a neutral box, not a translucent tint of it. */

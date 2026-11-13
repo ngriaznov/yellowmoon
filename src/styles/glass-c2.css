@@ -70,6 +70,28 @@ body {
   color: var(--glass-label);
 }
 
+/* Floating layers (`docs/28` A-P4, `docs/11` *Floating layers*). A menu, a popover, a select list, a tooltip or a dialog opens over the photo as
+   well as over the panes, and at the glass's 40 % a white photo shows through it (the Fit menu was 2.3:1). So their tint never falls under
+   `--glass-floating-opacity`, whatever the glass is set to: the same glass, the same blur, rim and highlight, less see-through. A tint set
+   higher (the stock picker's 92 %) is kept, and Reduce Transparency's 100 % is higher still, so `max()` keeps both. The panes do not use this:
+   they stay translucent over the aurora, which is never a bright photo. It sets the background and not `--glass-liquid-opacity`, which every
+   control inside would inherit. */
+html.dark {
+  --glass-floating-opacity: 88%;
+}
+:is(
+  [data-slot="dropdown-menu-content"],
+  [data-slot="dropdown-menu-sub-content"],
+  [data-slot="context-menu-content"],
+  [data-slot="context-menu-sub-content"],
+  [data-slot="popover-content"],
+  [data-slot="select-content"],
+  [data-slot="tooltip-content"],
+  [data-slot="dialog-content"]
+) {
+  background-color: color-mix(in oklch, var(--glass-tinted, var(--glass-tint)) max(var(--glass-floating-opacity), var(--glass-liquid-opacity)), transparent);
+}
+
 /* ---- 2. Layout --------------------------------------------------------------------------------------------------------------------- */
 /* Glass needs something to frost: the aurora is behind the page, so the page paints nothing on the Photos screen. The aurora is page
    content, and with the native viewport the photo is a layer BEHIND the page: it is masked out of the photo cell's rectangle
@@ -1607,11 +1629,8 @@ span.ym-filmstrip__thumb {
   max-height: min(580px, var(--radix-dropdown-menu-content-available-height, 580px));
   overflow-y: auto;
 }
-/* Ten items and three group titles fit in the 580 px without scrolling, and the lines under the names stay readable over a bright photo (the menu is
-   over the photo, not over the dark panel as the other menus are). */
-.ym-add-mask-menu {
-  --glass-liquid-opacity: 82%;
-}
+/* Ten items and three group titles fit in the 580 px without scrolling. The menu is over the photo, not over the dark panel as the other menus
+   are; like every menu it has the floating layers' tint floor (above, `docs/28` A-P4), which keeps the lines under the names readable. */
 .ym-add-mask-menu [data-slot="dropdown-menu-item"] {
   padding-block: 5px;
 }
