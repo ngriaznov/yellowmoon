@@ -608,7 +608,7 @@ Every edit above the stage re-runs it (it is the last stage), so the colour-only
   | 16 GB | 4 GiB | 5.6 GiB |
   | 24 GB and up | 4 GiB | 6 GiB |
 
-  A GPU with its own memory keeps 4 GiB and the CPU's 6 GiB. The device is opened with the GPU figure (`MemoryBudget::gpu_bytes` goes into `GpuConfig::memory_budget_bytes`). `ym_core::app::gpu::open_gpu`, which both front ends call, opens it again with the shared-memory figure when the first budget turns out to be wrong for the adapter, and the renderer's CPU budget follows (`Renderer::set_budget`). The rule and its constants are in `scheduler.rs`.
+  A GPU with its own memory keeps 4 GiB and the CPU's 6 GiB. The device is opened with the GPU figure (`MemoryBudget::gpu_bytes` goes into `GpuConfig::memory_budget_bytes`). `ym_core::app::gpu::open_gpu`, which both front ends call, opens it again with the shared-memory figure when the first budget turns out to be wrong for the adapter, and the renderer's CPU budget follows (`Renderer::set_budget`). The rule and its constants are in `scheduler.rs`. On a Mac the GPU figure is then capped at 0.75 of the Metal working-set limit of the device wgpu opened (`ym_core::app::metal`, `docs/17-gpu.md` section 8).
 
 #### The job scheduler
 
