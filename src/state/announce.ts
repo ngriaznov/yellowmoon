@@ -10,7 +10,7 @@ import type { AppState } from "./store";
 import { showsWhole } from "./zoom";
 
 /** The actions that have a sentence: the shortcuts, the menu's Clear Picks, which no key does, and the I key of the zoomed photo (`docs/28` A-10). */
-export type Announced = ShortcutAction | "clear-picks" | "read-pixel";
+export type Announced = ShortcutAction | "clear-picks" | "read-pixel" | "point-added" | "point-removed" | "points-placed";
 
 /** What the sentences are made of, read after the action has run. */
 export interface AnnounceFacts {
@@ -31,6 +31,10 @@ export interface AnnounceFacts {
   count: number;
   /** The pixel the I key read at the middle of the view, as the ⌥ readout shows it ("R 127 G 166 B 199"); null when there was nothing to read. */
   pixel: string | null;
+  /** The points the selected Object row has now, for "Place points" (`docs/28` A-11). */
+  points: number;
+  /** The point "Place points" added was a positive one (Return), not a part taken away (⇧Return). */
+  positive: boolean;
   /**
    * The state a toggle went to (crop, auto crop, the node view, bypass, Show mask), or for undo and redo whether there was a step to take. Only
    * the actions that toggle read it.
@@ -57,8 +61,15 @@ export function announceFacts(state: Pick<AppState, "session" | "settings" | "lo
     position: index === null ? null : index + 1,
     count: photos.length,
     pixel: null,
+    points: 0,
+    positive: true,
     on,
   };
+}
+
+/** "2 points.", "1 point.", "No points." (`docs/28` A-11). */
+function pointCount(n: number): string {
+  return n === 0 ? "No points." : n === 1 ? "1 point." : `${n} points.`;
 }
 
 /**
@@ -88,6 +99,12 @@ export function announcementFor(action: Announced, facts: AnnounceFacts): string
       return facts.position === null ? null : `Photo ${facts.position} of ${facts.count}.`;
     case "read-pixel":
       return facts.pixel ? `${facts.pixel}.` : "Nothing to read here.";
+    case "point-added":
+      return `${facts.positive ? "Point added." : "Negative point added."} ${pointCount(facts.points)}`;
+    case "point-removed":
+      return `Point removed. ${pointCount(facts.points)}`;
+    case "points-placed":
+      return facts.points === 0 ? "No points placed." : `Points placed. ${pointCount(facts.points)}`;
     case "undo":
       return facts.on ? "Undone." : null;
     case "redo":

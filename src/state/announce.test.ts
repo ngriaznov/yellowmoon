@@ -14,6 +14,8 @@ const facts = (over: Partial<AnnounceFacts> = {}): AnnounceFacts => ({
   position: 5,
   count: 12,
   pixel: null,
+  points: 2,
+  positive: true,
   on: true,
   ...over,
 });
@@ -63,6 +65,16 @@ describe("the sentence for each shortcut (docs/11 §Announcements)", () => {
     expect(say("read-pixel", { pixel: null })).toBe("Nothing to read here.");
   });
 
+  it("Place points says each point added or removed, with how many there are now, and what Esc ended (docs/28 A-11)", () => {
+    expect(say("point-added")).toBe("Point added. 2 points.");
+    expect(say("point-added", { points: 1 })).toBe("Point added. 1 point.");
+    expect(say("point-added", { points: 3, positive: false })).toBe("Negative point added. 3 points.");
+    expect(say("point-removed", { points: 1 })).toBe("Point removed. 1 point.");
+    expect(say("point-removed", { points: 0 })).toBe("Point removed. No points.");
+    expect(say("points-placed")).toBe("Points placed. 2 points.");
+    expect(say("points-placed", { points: 0 })).toBe("No points placed.");
+  });
+
   it("⌘Z and ⇧⌘Z say so only when there was a step to take", () => {
     expect(say("undo")).toBe("Undone.");
     expect(say("undo", { on: false })).toBeNull();
@@ -95,7 +107,7 @@ describe("the sentence for each shortcut (docs/11 §Announcements)", () => {
   });
 
   it("every sentence is plain: British spelling, no exclamation mark, ends in a full stop", () => {
-    const all: Announced[] = ["pick-look", "before", "toggle-zoom", "toggle-pick", "pick-all", "clear-picks", "next-photo", "undo", "redo", "crop", "confirm", "auto-crop", "nodes", "bypass-node", "mask-view"];
+    const all: Announced[] = ["pick-look", "before", "toggle-zoom", "toggle-pick", "pick-all", "clear-picks", "next-photo", "undo", "redo", "crop", "confirm", "auto-crop", "nodes", "bypass-node", "mask-view", "point-added", "point-removed", "points-placed"];
     for (const action of all) {
       const text = say(action) ?? "";
       expect(text, action).toMatch(/\.$/);

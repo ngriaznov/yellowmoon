@@ -103,7 +103,7 @@ import { clampToDisc, movingPin, WARP_COORD_LIMIT, WARP_MAX_PINS } from "../comp
 import { BRUSH_FULL, brushPointCount, DEFAULT_BRUSH, MAX_BRUSH_POINTS } from "./brushStrokes";
 import type { BrushSettings } from "./brushStrokes";
 import { COLOR_RANGE_REACH } from "./maskRows";
-import { DEFAULT_OBJECT_MODE, foundText, FOUND_PILL_MS, NOTHING_FOUND } from "./objectMask";
+import { clickPrompt, DEFAULT_OBJECT_MODE, foundText, FOUND_PILL_MS, NOTHING_FOUND } from "./objectMask";
 import type { ObjectMode } from "./objectMask";
 import { isTauri } from "../env";
 import { defaultExportOptions, defaultScope, sameOptions } from "../export/options";
@@ -336,6 +336,11 @@ export interface AppState {
    * row, a click on one and a click on a tool turn it on; Esc, another row, another node and another photo turn it off.
    */
   objectTool: boolean;
+  /**
+   * "Place points" is on for the selected Object row (`docs/28` A-11): the crosshair layer of Pick white is over the photo and Return adds a point at it.
+   * A window setting, no patch and no undo step; it ends with the row, the node and the photo like the Object tool.
+   */
+  objectPlacing: boolean;
   /** The photos whose SAM encoder is working (`object_state`): their Object rows say "Getting ready…". */
   objectPreparing: readonly PhotoId[];
   /** A `mask_find` is under way for this photo: its Object rows say "Finding…". */
@@ -458,6 +463,7 @@ export function initialState(): AppState {
     maskKinds: null,
     objectMode: DEFAULT_OBJECT_MODE,
     objectTool: false,
+    objectPlacing: false,
     objectPreparing: [],
     objectFinding: null,
     visionNothing: {},
@@ -1541,6 +1547,7 @@ export class AppStore {
       showDepth: null,
       brushTool: false,
       objectTool: false,
+      objectPlacing: false,
       objectPill: null,
       zoom: { kind: "fit" },
       before: false,
@@ -1781,6 +1788,7 @@ export class AppStore {
       showDepth: null,
       brushTool: false,
       objectTool: false,
+      objectPlacing: false,
       objectPill: null,
       zoom: { kind: "fit" },
       before: false,
@@ -2532,12 +2540,17 @@ export class AppStore {
    * was selected, and so does selecting a row again: the caller that wants the tool turns it on afterwards ({@link Store.setBrushTool}).
    */
   selectMaskRow(index: number | null): void {
-    if (index !== this.state.maskRow || this.state.brushTool || this.state.objectTool) this.set({ maskRow: index, brushTool: false, objectTool: false });
+    if (index !== this.state.maskRow || this.state.brushTool || this.state.objectTool || this.state.objectPlacing) this.set({ maskRow: index, brushTool: false, objectTool: false, objectPlacing: false });
   }
 
   /** Turns the Object tool of the selected row on or off (`docs/23` §7.6). */
   setObjectTool(on: boolean): void {
     if (on !== this.state.objectTool) this.set({ objectTool: on });
+  }
+
+  /** Starts or ends "Place points" of the selected Object row (`docs/28` A-11): the keyboard's way to add the points a click adds. */
+  setObjectPlacing(on: boolean): void {
+    if (on !== this.state.objectPlacing) this.set({ objectPlacing: on });
   }
 
   /** Chooses what a plain click does on the Object card: Add point, Remove point or Box. Nothing is sent. */
@@ -2679,6 +2692,33 @@ export class AppStore {
     const next = this.finds.then(run, run);
     this.finds = next;
     return next;
+  }
+
+  /**
+   * A click of the Object tool (`docs/23` §4.4), and the keyboard's Return of "Place points" (`docs/28` A-11): `at` is a place in the cell in CSS
+   * pixels. The core maps it to the photo frame (`viewport_map_points`, null on the paper: nothing is asked), {@link clickPrompt} gives the point's sign
+   * for the tool and ⌥, and {@link Store.findObject} asks. The one road of both, so the same place gives the same `points`. Resolves with whether a mask was found.
+   */
+  async clickObject(node: number, row: number, tool: ObjectMode, alt: boolean, at: [number, number], photoId: PhotoId | null = this.currentId()): Promise<boolean> {
+    const mapped = await this.mapPoints([at], "cell");
+    const place = mapped?.[0];
+    const prompt = place ? clickPrompt(tool, alt, place[0], place[1]) : null;
+    return prompt ? this.findObject(node, row, prompt, photoId) : false;
+  }
+
+  /**
+   * Takes the last point out of an Object row (`docs/28` A-11, Backspace of "Place points"): one `masks.edit` row patch of `points`, one undo step. The box
+   * stays. Resolves with how many points the row has now, or null when there was none to take (or the row is not an Object row).
+   */
+  async removeLastObjectPoint(node: number, row: number, photoId: PhotoId | null = this.currentId()): Promise<number | null> {
+    if (photoId === null) return null;
+    const rs = this.state.settings[photoId];
+    const item = rs ? nodeOf(rs.settings, node) : undefined;
+    const target = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[row] : undefined;
+    if (target?.kind !== "object" || target.points.length === 0) return null;
+    const points = target.points.slice(0, -1);
+    await this.update(patchOf(node, { masks: { edit: { [String(row)]: { points } } } }), true, photoId);
+    return points.length;
   }
 
   /** Shows the pill "Object found · 0.4 s" for {@link FOUND_PILL_MS}; a newer one replaces it. */

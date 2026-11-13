@@ -687,6 +687,53 @@ export function Photos() {
     (pixel: string | null) => announcer.say(announcementFor("read-pixel", { ...announceFacts(store.getState(), store.fitPercentExact()), pixel })),
     [store, announcer],
   );
+  // "Place points" (`docs/28` A-11): the Object row's points from the keyboard, on the crosshair layer of Pick white. Return in the Masks card starts it
+  // (`store.objectPlacing`); it is on while the selected Object row is on the photo, with no pick and no Before view, and Esc ends it.
+  const placingAsked = useAppState((s) => s.objectPlacing);
+  const placingOn = placingAsked && object !== null && picking === null && !before;
+  const objectNow = useLatest(object);
+  const photoNow = useLatest(photo);
+  /** The points the Object row has now, and the sentence that says so. */
+  const sayPoints = useCallback(
+    (action: "point-added" | "point-removed" | "points-placed", positive = true): void => {
+      const target = objectNow.current;
+      const id = photoNow.current?.id;
+      const item = id === undefined || !target ? undefined : nodeOf(store.getState().settings[id]?.settings ?? ({} as never), target.node);
+      const row = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[target?.index ?? -1] : undefined;
+      const points = row?.kind === "object" ? row.points.length : 0;
+      announcer.say(announcementFor(action, { ...announceFacts(store.getState(), store.fitPercentExact()), points, positive }));
+    },
+    [store, announcer, objectNow, photoNow],
+  );
+  const placing = useMemo(
+    () =>
+      placingOn
+        ? {
+            // The click's road: a place in the cell, mapped by the core, the point's sign from the tool (Add point, or Remove point for ⇧Return).
+            onPlace: (point: { x: number; y: number }, negative: boolean): void => {
+              const target = objectNow.current;
+              const id = photoNow.current?.id ?? null;
+              if (!target || id === null) return;
+              void store.clickObject(target.node, target.index, negative ? "remove" : "add", false, [point.x, point.y], id).then((found) => {
+                if (found) sayPoints("point-added", !negative);
+              });
+            },
+            onBack: (): void => {
+              const target = objectNow.current;
+              const id = photoNow.current?.id ?? null;
+              if (!target || id === null) return;
+              void store.removeLastObjectPoint(target.node, target.index, id).then((left) => {
+                if (left !== null) sayPoints("point-removed");
+              });
+            },
+          }
+        : null,
+    [placingOn, store, objectNow, photoNow, sayPoints],
+  );
+  // The mode ends with the row on the photo (Crop, Export, the node view's Mask tab left for another photo...); Before only hides it.
+  useEffect(() => {
+    if (placingAsked && object === null) store.setObjectPlacing(false);
+  }, [store, placingAsked, object]);
   useEffect(() => {
     store.announce = (action, on) => tell(action, false, undefined, on);
     return () => {
@@ -830,7 +877,12 @@ export function Photos() {
           return true;
         case "escape":
           if (picking) setPicking(null);
-          else if (brush && !before) store.setBrushTool(false);
+          else if (placing) {
+            // The layer is going: the focus goes back to the Object row it was started from.
+            store.setObjectPlacing(false);
+            sayPoints("points-placed");
+            requestAnimationFrame(() => document.querySelector<HTMLElement>("[data-mask-rows] li[data-selected] .ym-mask-row__select")?.focus());
+          } else if (brush && !before) store.setBrushTool(false);
           else if (object && objectAsked && !before) store.setObjectTool(false);
           else if (store.getState().maskEye !== null || store.getState().showDepth !== null) store.setMaskEye(null);
           else if (crop.session) crop.session.cancel();
@@ -862,7 +914,7 @@ export function Photos() {
     {
       // The number keys pick looks on the Look tab, which in the node view is the Output's.
       tab: panel === "tools" ? (view === "nodes" ? nodeTab : tab) : undefined,
-      mode: cropping ? "crop" : picking === "white" ? "pick-white" : picking === "color" || picking === "range" || picking === "depth" ? "pick-color" : null,
+      mode: cropping ? "crop" : picking === "white" ? "pick-white" : picking === "color" || picking === "range" || picking === "depth" || placing ? "pick-color" : null,
       nodeView: view === "nodes",
     },
     overlay === null,
@@ -1042,6 +1094,7 @@ export function Photos() {
           brush={brush}
           object={object}
           objectTool={objectAsked}
+          placing={placing}
           maskChip={maskChip}
           onReadPixel={onReadPixel}
         />

@@ -52,6 +52,11 @@ export interface PhotoViewProps {
   object?: ObjectTarget | null;
   /** The Object tool is on (`store.objectTool`): the layer takes the press. */
   objectTool?: boolean;
+  /**
+   * "Place points" of the selected Object row is on (`docs/28` A-11): the crosshair layer of Pick white is over the photo, with the row's points drawn under
+   * it. `onPlace` adds a point at a place in the cell (negative with ⇧Return or ⌥-click) and `onBack` takes the last one out.
+   */
+  placing?: { onPlace: (point: { x: number; y: number }, negative: boolean) => void; onBack: () => void } | null;
   /** The chip that stands in for the look's while the selected node has a selected mask row ("MASK · LINEAR", `docs/23` §7.1). */
   maskChip?: string;
   /** The I key of the zoomed photo read the pixel at the middle of the view: its text ("R 127 G 166 B 199"), or null when there was nothing to read. The screen says it. */
@@ -81,13 +86,13 @@ function notReadyNote(photo: PhotoSummary): { title: string; text: string } | nu
  *
  * The screen draws it again only when what it shows changes (`memo`): a `render_stats` tick or a zoom step elsewhere does not.
  */
-export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false, maskHandles = null, brush = null, object = null, objectTool = false, maskChip, onReadPixel }: PhotoViewProps) {
+export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false, maskHandles = null, brush = null, object = null, objectTool = false, placing = null, maskChip, onReadPixel }: PhotoViewProps) {
   const backend = useAppState((s) => s.viewportBackend);
   const sentFrame = useAppState((s) => s.viewportFrame);
   // Only the pick layer needs to know whether the picture is letterboxed; the zoom changes on every wheel step and is not read otherwise.
-  const letterboxed = useAppState((s) => picking !== null && showsWhole(s.zoom, store.fitPercentExact()));
+  const letterboxed = useAppState((s) => (picking !== null || placing !== null) && showsWhole(s.zoom, store.fitPercentExact()));
   // The picture is a Tab stop while it is larger than the cell and nothing else has it (`docs/28` A-10).
-  const zoomed = useAppState((s) => crop === null && picking === null && photo !== null && photo.status.kind === "ready" && !showsWhole(s.zoom, store.fitPercentExact()));
+  const zoomed = useAppState((s) => crop === null && picking === null && placing === null && photo !== null && photo.status.kind === "ready" && !showsWhole(s.zoom, store.fitPercentExact()));
   const [readout, setReadout] = useState<string | null>(null);
   const probing = useRef(false);
 
@@ -184,7 +189,7 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
     start: (event) => {
       // A handle of a mask is dragged, not the photo (`MaskHandles` takes the press), and a stroke of the Brush tool is drawn, not panned.
       if ((event.target as HTMLElement).closest?.("[data-mask-handles], [data-brush-layer]")) return false;
-      if (store.showsWholePhoto() || crop || picking) return false;
+      if (store.showsWholePhoto() || crop || picking || placing) return false;
       panning.current = { x: event.clientX, y: event.clientY };
       return true;
     },
@@ -204,7 +209,7 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
   // The wheel and the pinch (native listeners, `usePhotoGestures`): claimed over the whole cell, acted on only when nothing else has
   // the cell (Crop and Pick white do).
   const gestures: PhotoGestureHandlers = {
-    enabled: () => !(crop || picking),
+    enabled: () => !(crop || picking || placing),
     canPan: () => !store.showsWholePhoto(),
     pan: (dx, dy) => store.queueViewportInput({ kind: "pan", dx, dy }),
     zoom: (factor, x, y) => store.queueViewportInput({ kind: "zoom", factor, x, y }),
@@ -260,7 +265,7 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
       onRect={handleRect}
       onPixelProbe={onProbe}
       onDoubleClick={(event: ReactMouseEvent<HTMLElement>) => {
-        if (crop || picking) return;
+        if (crop || picking || placing) return;
         const at = cellPoint(event);
         void store.viewportInput({ kind: "toggle_zoom", ...at });
       }}
@@ -277,6 +282,11 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
         <CropOverlay session={crop} />
       ) : picking ? (
         <PickLayer mode={picking} displayAspect={displayAspect} letterboxed={letterboxed} onPick={onPicked} />
+      ) : placing && object && photo && rs && !before && cellSize.width > 0 ? (
+        <>
+          <ObjectLayer store={store} photo={photo} rs={rs} cell={cellSize} tool={false} {...object} />
+          <PickLayer mode="points" displayAspect={displayAspect} letterboxed={letterboxed} onPick={(point, negative) => placing.onPlace(point, negative === true)} onBack={placing.onBack} />
+        </>
       ) : brush && photo && rs && !before && cellSize.width > 0 ? (
         <BrushLayer store={store} photo={photo} rs={rs} cell={cellSize} {...brush} />
       ) : object && photo && rs && !before && cellSize.width > 0 ? (

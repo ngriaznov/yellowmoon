@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { EyeIcon, EyeOffIcon } from "lucide-react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/glass/context-menu";
 import { Item } from "@/components/glass/item";
@@ -19,6 +20,9 @@ function InvertGlyph() {
   );
 }
 export { InvertGlyph };
+
+/** What the selected Object row says to a screen reader about placing points with the keyboard (`docs/28` A-11). */
+export const PLACE_POINTS_HINT = "Press Return to place points with the keyboard.";
 
 const MODES: ReadonlyArray<SegmentedOption<MaskMode>> = [
   { value: "add", label: "Add" },
@@ -59,12 +63,15 @@ export interface MaskRowsProps {
  * masks need a Mac that supports them" and one whose mask found nothing says "Nothing found".
  */
 export function MaskRows({ rows, selected, eye = null, onEye, onSelect, onEdit, onRemove, onMove, finding = false, object, vision }: MaskRowsProps) {
+  const keysId = useId();
   if (rows.length === 0) return null;
   return (
     <ul className="ym-mask-rows" aria-label="Masks of this node" data-mask-rows="">
       {rows.map((row, i) => {
         const name = maskRowName(row);
         // A row this computer cannot make says so, whatever else the core is doing; one being made says "Finding…"; one that found nothing says that.
+        // The selected Object row says how to place its points from the keyboard (`docs/28` A-11), to a screen reader only: the line would change the card.
+        const keys = selected === i && row.kind === "object" && row.enabled;
         const busyText = isUnsupported(row, vision) ? null : isFinding(row, finding, vision) ? FINDING : objectBusyText(row, object);
         return (
           <ContextMenu key={i}>
@@ -80,8 +87,19 @@ export function MaskRows({ rows, selected, eye = null, onEye, onSelect, onEdit, 
                     title={row.enabled ? "Turn this mask off" : "Turn this mask on"}
                     onChange={(enabled) => onEdit(i, { enabled })}
                   />
-                  <button type="button" className="ym-mask-row__select" aria-label={maskRowLabel(row, finding, object, vision)} aria-pressed={selected === i}>
+                  <button
+                    type="button"
+                    className="ym-mask-row__select"
+                    aria-label={maskRowLabel(row, finding, object, vision)}
+                    aria-pressed={selected === i}
+                    aria-describedby={keys ? keysId : undefined}
+                  >
                     <span className="ym-mask-row__icon">{MASK_KIND_ICON[row.kind]}</span>
+                    {keys ? (
+                      <span id={keysId} className="sr-only">
+                        {PLACE_POINTS_HINT}
+                      </span>
+                    ) : null}
                     <span className="ym-mask-row__text" aria-hidden="true">
                       <span className="ym-mask-row__name">{name}</span>
                       {busyText ? (

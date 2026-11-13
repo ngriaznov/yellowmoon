@@ -1167,6 +1167,77 @@ test.describe("the Object tool", () => {
     await expect(objectLayer(page)).toHaveAttribute("data-tool", "add");
   });
 
+  test("Place points (docs/28 A-11): Return on the Object row, the arrows, Return and ⇧Return place two points that are the two mouse clicks' points; Backspace and Esc", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Object");
+    await expect(objectLayer(page)).toBeVisible();
+    // The row says how, to a screen reader.
+    await expect(rowButton(page, /^Object mask/)).toHaveAccessibleDescription("Press Return to place points with the keyboard.");
+    await rowButton(page, /^Object mask/).focus();
+    await page.keyboard.press("Enter");
+    const place = page.locator(".ym-pick-layer");
+    await expect(place).toHaveAttribute("data-mode", "points");
+    await expect(place).toBeFocused();
+    await expect(place).toHaveAccessibleName(/^Place points\. /);
+    const calls = await recordCalls(page, "updateSettings");
+    // The middle of the hill, (0.5, 0.7): ⇧ twice. Return adds a point there.
+    await page.keyboard.press("Shift+ArrowDown");
+    await page.keyboard.press("Shift+ArrowDown");
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => (await objectRows(page))[0]?.points).toEqual([[0.5, 0.7, true]]);
+    await expect(page.getByText("Point added. 1 point.")).toBeAttached();
+    // A little to the right and down, and a part taken away with ⇧Return.
+    for (const key of ["ArrowRight", "ArrowRight", "ArrowRight", "ArrowRight", "ArrowRight", "ArrowDown", "ArrowDown"]) await page.keyboard.press(key);
+    await page.keyboard.press("Shift+Enter");
+    await expect.poll(async () => (await objectRows(page))[0]?.points).toEqual([[0.5, 0.7, true], [0.55, 0.72, false]]);
+    await expect(page.locator("[data-object-point]")).toHaveCount(2);
+    const byKeys = (await objectRows(page))[0]!.points;
+    expect(await calls()).toHaveLength(2);
+    // Backspace takes the last point out, and the first.
+    await page.keyboard.press("Backspace");
+    await expect.poll(async () => (await objectRows(page))[0]?.points).toEqual([[0.5, 0.7, true]]);
+    await page.keyboard.press("Backspace");
+    await expect.poll(async () => (await objectRows(page))[0]?.points).toEqual([]);
+    // Esc ends it and the focus goes back to the row; the Object tool is still on.
+    await page.keyboard.press("Escape");
+    await expect(place).toHaveCount(0);
+    await expect(rowButton(page, /^Object mask/)).toBeFocused();
+    await expect(objectLayer(page)).toHaveAttribute("data-tool", "add");
+    // The mouse, at the same places, gives the same points.
+    await clickPhoto(page, [0.5, 0.7]);
+    await expect.poll(async () => (await objectRows(page))[0]?.points.length).toBe(1);
+    await clickPhoto(page, [0.55, 0.72], true);
+    await expect.poll(async () => (await objectRows(page))[0]?.points.length).toBe(2);
+    expect((await objectRows(page))[0]!.points).toEqual(byKeys);
+  });
+
+  test("Place points on a zoomed photo: the arrows are the crosshair's while it is on (the photo does not pan), and the pan keys are the photo's again when it ends", async ({ page }) => {
+    await warmth(page);
+    await addMask(page, "Object");
+    const offset = (): Promise<{ x: number; y: number }> =>
+      page.evaluate(() => (window as unknown as { __yellowmoon: { mockApi: { viewport: { offset: { x: number; y: number } } } } }).__yellowmoon.mockApi.viewport.offset);
+    await page.getByRole("button", { name: /^(Fit \d+%|\d+%)$/ }).click();
+    await page.getByRole("menu").getByText("200%", { exact: true }).click();
+    const zoomed = page.getByRole("img", { name: "Photo, zoomed. The arrow keys move it." });
+    await expect(zoomed).toHaveAttribute("tabindex", "0");
+    await rowButton(page, /^Object mask/).focus();
+    await page.keyboard.press("Enter");
+    const place = page.locator(".ym-pick-layer");
+    await expect(place).toBeFocused();
+    // The photo is not a stop while the layer has the cell, and the arrows move the crosshair, not the photo.
+    await expect(page.locator(".ym-photo-cell__view")).not.toHaveAttribute("tabindex", /.*/);
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Shift+ArrowDown");
+    expect(await offset()).toEqual({ x: 0, y: 0 });
+    await expect(place.locator("svg.ym-pick-layer__mark")).toHaveAttribute("style", /left: 51%; top: 60%/);
+    await page.keyboard.press("Escape");
+    await expect(place).toHaveCount(0);
+    await expect(zoomed).toHaveAttribute("tabindex", "0");
+    await zoomed.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect.poll(offset).not.toEqual({ x: 0, y: 0 });
+  });
+
   test("?mockMaskFind=none finds nothing anywhere, and ?mockMasks=noai leaves Object out of the Add mask menu", async ({ page }) => {
     await warmth(page, { mockMaskFind: "none" });
     await addMask(page, "Object");

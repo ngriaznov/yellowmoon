@@ -162,6 +162,17 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange, pickingDep
    * (the graph's Delete leaves the card alone: `data-mask-card`). Not from a menu: a menu's key events reach here through React's tree, not the DOM.
    */
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    // Return on the selected Object row starts "Place points" (`docs/28` A-11): the keyboard's way to add the points a click adds.
+    if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey && !event.repeat) {
+      const button = (event.target as HTMLElement).closest<HTMLElement>("button.ym-mask-row__select");
+      const index = Number(button?.closest<HTMLElement>("li[data-index]")?.dataset.index);
+      const target = rows[index];
+      if (button && index === selected && target?.kind === "object" && target.enabled && event.currentTarget.contains(button)) {
+        event.preventDefault();
+        store.setObjectPlacing(true);
+      }
+      return;
+    }
     if (event.key !== "Delete" && event.key !== "Backspace") return;
     if (event.shiftKey || event.altKey || event.metaKey || event.ctrlKey || event.repeat) return;
     if (!event.currentTarget.contains(event.target as Node)) return;
