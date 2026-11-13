@@ -1,7 +1,8 @@
 //! The DNG gates (`docs/09-export.md`, section Gates; `docs/13-testing.md`):
 //!
 //! 1. every exported DNG passes Adobe's `dng_validate` with no warning and no error;
-//! 2. the picture `dng_validate` renders from the DNG, against our JPEG of the same photo: CIEDE2000 median at most 1.5.
+//! 2. the picture `dng_validate` renders from the DNG, against our JPEG of the same photo made with capture and output
+//!    sharpening off (a DNG has none): CIEDE2000 median at most 1.5.
 //!
 //! Both run on the golden set. For each file the real `ym` binary writes the DNG (`--format dng`) and the JPEG (quality
 //! 92, sRGB) with the same settings; `dng_validate` renders the DNG to sRGB; the two pictures are compared pixel by
@@ -42,7 +43,7 @@ use ym_color::gamut;
 use crate::adobe::{Adobe, write_dng_image};
 use crate::profile_file::ProfileFile;
 
-/// The gate: the median ΔE00 of Adobe's render against our JPEG may not exceed this (`docs/09`).
+/// The gate: the median ΔE00 of Adobe's render against our unsharpened JPEG may not exceed this (`docs/09`).
 pub const MEDIAN_LIMIT: f64 = 1.5;
 
 /// The largest number of pixels compared per file; larger pictures are sampled on a regular stride.
@@ -124,7 +125,7 @@ pub struct FileResult {
     pub reasons: Vec<String>,
     /// Warnings and errors `dng_validate` printed (gate 1).
     pub validation_problems: Vec<String>,
-    /// Adobe's render against our JPEG (gate 2).
+    /// Adobe's render against our JPEG made without sharpening (gate 2).
     pub vs_jpeg: Option<DeltaStats>,
     /// Adobe's render against our 16-bit PNG, when asked for.
     pub vs_png: Option<DeltaStats>,
@@ -344,7 +345,7 @@ pub fn check_file(opts: &GateOptions, entry: &Entry) -> Result<FileResult> {
         Some(opts.ym.render(
             &input,
             &entry.settings,
-            Output::Png16,
+            Output::Png16Unsharpened,
             &work("png"),
             &work("w3"),
         )?)
