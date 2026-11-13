@@ -103,6 +103,31 @@ describe("the shortcut table of docs/11", () => {
     expect(act(key("ArrowRight", {}, handle))).toBeNull();
   });
 
+  it("the arrows stay with the zoomed photo while it has the focus, and step photos from anywhere else", () => {
+    const view = document.createElement("div");
+    view.setAttribute("role", "img");
+    view.setAttribute("data-pan-view", "");
+    expect(act(key("ArrowLeft", {}, view))).toBeNull();
+    expect(act(key("ArrowRight", { shiftKey: true }, view))).toBeNull();
+    // The same picture when it is not zoomed has no such mark, and is not a Tab stop either: the arrows step photos.
+    const flat = document.createElement("div");
+    flat.setAttribute("role", "img");
+    expect(act(key("ArrowRight", {}, flat))).toBe("next-photo");
+    // Not focused: the filmstrip's scroller, a button and the page keep stepping photos.
+    const button = document.createElement("button");
+    const body = document.createElement("div");
+    document.body.append(view, button, body);
+    expect(act(key("ArrowRight", {}, button))).toBe("next-photo");
+    expect(act(key("ArrowLeft", {}, body))).toBe("previous-photo");
+    expect(act(key("ArrowRight"))).toBe("next-photo");
+    // I is no shortcut of the screen: the picture's own key, and nothing in a text box.
+    expect(act(key("i", {}, view))).toBeNull();
+    expect(act(key("i"))).toBeNull();
+    view.remove();
+    button.remove();
+    body.remove();
+  });
+
   it("P picks, backslash flips Before, Z toggles zoom, C crops, W picks white", () => {
     expect(act(key("p"))).toBe("toggle-pick");
     expect(act(key("P", { shiftKey: true }))).toBe("toggle-pick");
@@ -145,7 +170,7 @@ describe("the shortcut table of docs/11", () => {
   it("types normally in a text box", () => {
     const input = document.createElement("input");
     input.type = "search";
-    for (const letter of ["p", "z", "c", "w", "f", "1", "\\"]) expect(act(key(letter, {}, input), { tab: "look" })).toBeNull();
+    for (const letter of ["p", "z", "c", "w", "f", "i", "1", "\\"]) expect(act(key(letter, {}, input), { tab: "look" })).toBeNull();
   });
 
   it("1 to 9 pick looks only on the Look tab", () => {
@@ -476,5 +501,77 @@ describe("the shortcut table of docs/11", () => {
     expect(act(key("p", { altKey: true }))).toBeNull();
     expect(act(cmd("q"))).toBeNull();
     expect(act(cmd("o", { altKey: true }))).toBeNull();
+  });
+});
+
+describe("the single-key switch (docs/28 A-P11)", () => {
+  /** The 21 keys the switch turns off: nine letters, the backslash, the nine digits, Delete and Backspace. */
+  const SINGLE_KEYS: { name: string; event: KeyLike; context: ShortcutContext; action: string }[] = [
+    { name: "P", event: key("p"), context: {}, action: "toggle-pick" },
+    { name: "Z", event: key("z"), context: {}, action: "toggle-zoom" },
+    { name: "C", event: key("c"), context: {}, action: "crop" },
+    { name: "W", event: key("w"), context: {}, action: "pick-white" },
+    { name: "N", event: key("n"), context: {}, action: "nodes" },
+    { name: "F", event: key("f"), context: {}, action: "full-screen" },
+    { name: "B", event: key("b"), context: { nodeView: true }, action: "bypass-node" },
+    { name: "M", event: key("m"), context: { nodeView: true }, action: "mask-view" },
+    { name: "A", event: key("a"), context: { mode: "crop" }, action: "auto-crop" },
+    { name: "\\", event: key("\\"), context: {}, action: "before" },
+    ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({ name: String(n), event: key(String(n)), context: { tab: "look" } as ShortcutContext, action: "pick-look" })),
+    { name: "Delete", event: key("Delete"), context: {}, action: "remove-photo" },
+    { name: "Backspace", event: key("Backspace"), context: {}, action: "remove-photo" },
+  ];
+
+  it("lists 21 keys", () => {
+    expect(SINGLE_KEYS).toHaveLength(21);
+  });
+
+  it.each(SINGLE_KEYS)("$name acts with the switch on (or not set) and does nothing with it off", ({ event, context, action }) => {
+    expect(act(event, context)).toBe(action);
+    expect(act(event, { ...context, singleKeys: true })).toBe(action);
+    expect(act(event, { ...context, singleKeys: false })).toBeNull();
+  });
+
+  it("the letters do nothing off with Shift or Caps Lock too", () => {
+    expect(act(key("P", { shiftKey: true }), { singleKeys: false })).toBeNull();
+    expect(act(key("F", { shiftKey: true }), { singleKeys: false })).toBeNull();
+  });
+
+  it("keeps the ⌘ keys, the arrows, Esc and the Return of Crop with the switch off", () => {
+    const off: ShortcutContext = { singleKeys: false };
+    expect(act(cmd("o"), off)).toBe("open-files");
+    expect(act(cmd("e"), off)).toBe("export");
+    expect(act(cmd("w"), off)).toBe("close-session");
+    expect(act(cmd("z"), off)).toBe("undo");
+    expect(act(cmd("Z", { shiftKey: true }), off)).toBe("redo");
+    expect(act(cmd("a"), off)).toBe("pick-all");
+    expect(act(cmd(","), off)).toBe("preferences");
+    expect(act(cmd("="), off)).toBe("zoom-in");
+    expect(act(cmd("-"), off)).toBe("zoom-out");
+    expect(act(cmd("C", { shiftKey: true }), off)).toBe("copy-settings");
+    expect(act(cmd("V", { shiftKey: true }), off)).toBe("paste-settings");
+    expect(act(cmd("V", { shiftKey: true, altKey: true }), off)).toBe("paste-settings-picked");
+    expect(act(key("ArrowLeft"), off)).toBe("previous-photo");
+    expect(act(key("ArrowRight"), off)).toBe("next-photo");
+    expect(act(key("ArrowRight", { altKey: true }), { ...off, nodeView: true })).toBeNull(); // not in a card of the graph: nothing, as with it on
+    expect(act(key("Escape"), off)).toBe("escape");
+    expect(act(key("Enter"), { ...off, mode: "crop" })).toBe("confirm");
+  });
+
+  it("keeps ⌥← and ⌥→ of a card of the graph with the switch off", () => {
+    const card = document.createElement("div");
+    card.setAttribute("data-graph", "");
+    const inner = document.createElement("button");
+    card.appendChild(inner);
+    document.body.appendChild(card);
+    const off: ShortcutContext = { singleKeys: false, nodeView: true };
+    expect(act(key("ArrowLeft", { altKey: true }, inner), off)).toBe("move-node-earlier");
+    expect(act(key("ArrowRight", { altKey: true }, inner), off)).toBe("move-node-later");
+    card.remove();
+  });
+
+  it("Delete in the node view is the graph's, and is off too", () => {
+    expect(act(key("Delete"), { nodeView: true })).toBe("delete-node");
+    expect(act(key("Delete"), { nodeView: true, singleKeys: false })).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 /**
  * View › Nodes (`docs/11` §Menus): the menu item does what N and the Nodes button do. The shell sends `menu_action { action: "nodes" }`,
- * `runMenuAction` calls the Photos screen's `nodesCommand`, and the screen toggles the node view with the same guards as the key.
+ * `runMenuAction` calls the Photos screen's `shortcutCommand`, and the screen toggles the node view with the same guards as the key.
  */
 import { act, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";

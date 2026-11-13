@@ -2217,7 +2217,40 @@ export type MenuAction =
 /**  Paste the copied settings onto the current photo. */
 "paste_settings" | 
 /**  Paste the copied settings onto the picked photos. */
-"paste_settings_to_picked";
+"paste_settings_to_picked" | 
+/**
+ *  Crop (the Crop button and C). The Photo menu has it so the single-key switch strands nothing
+ *  (`docs/28` A-P11).
+ */
+"crop" | 
+/**  Auto crop on or off while the Crop panel is open (A). */
+"auto_crop" | 
+/**  Pick white (the Colour tab's button and W). */
+"pick_white" | 
+/**  Remove the photo on screen from the filmstrip (Delete and Backspace). */
+"remove_photo" | 
+/**  Bypass the selected node (B; the node view only). */
+"bypass_node" | 
+/**  Show or hide the selected node's mask (M; the node view only). */
+"mask_view" | 
+/**  Pick look 1 of the Look tab (the key 1). */
+"look_1" | 
+/**  Pick look 2 of the Look tab (the key 2). */
+"look_2" | 
+/**  Pick look 3 of the Look tab (the key 3). */
+"look_3" | 
+/**  Pick look 4 of the Look tab (the key 4). */
+"look_4" | 
+/**  Pick look 5 of the Look tab (the key 5). */
+"look_5" | 
+/**  Pick look 6 of the Look tab (the key 6). */
+"look_6" | 
+/**  Pick look 7 of the Look tab (the key 7). */
+"look_7" | 
+/**  Pick look 8 of the Look tab (the key 8). */
+"look_8" | 
+/**  Pick look 9 of the Look tab (the key 9). */
+"look_9";
 
 /**  `menu_action { action }`: a menu item that needs the webview was chosen. */
 export type MenuActionEvent = {
@@ -2786,6 +2819,11 @@ export type Preferences = {
 	 *  most 2000 characters, one text for every provider; `""` is the default.
 	 */
 	apple_auto_instructions: string,
+	/**
+	 *  Single-key shortcuts (`docs/28` A-P11): on by default; off leaves P, Z, C, W, N, F, B, M, A,
+	 *  `\`, 1 to 9, Delete and Backspace to the menu bar.
+	 */
+	single_key_shortcuts: boolean,
 };
 
 /**  A partial update of the preferences. */
@@ -2814,6 +2852,8 @@ export type PreferencesPatch = {
 	 *  text is refused.
 	 */
 	apple_auto_instructions?: string | null,
+	/**  New value of "Single-key shortcuts". */
+	single_key_shortcuts?: boolean | null,
 };
 
 /**  The enlarger's filtration, as shifts from neutral in Kodak CC units, -50 to 50. */

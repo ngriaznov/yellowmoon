@@ -272,6 +272,9 @@ fn choosing_a_destination_remembers_the_folder_in_the_preferences_and_nothing_el
         "auto_consent",
         // "Instructions", the tenth, one text for every provider (the owner's request of 2026-10-19).
         "apple_auto_instructions",
+        // "Single-key shortcuts", the eleventh (docs/28 A-P11; the owner took the default of
+        // question 1, docs/STATUS.md question 46 (1)).
+        "single_key_shortcuts",
     ]
     .into_iter()
     .map(str::to_owned)

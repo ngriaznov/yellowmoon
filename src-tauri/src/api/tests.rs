@@ -3043,6 +3043,26 @@ fn preferences_round_trip_and_nothing_else_is_written() {
     );
 }
 
+/// "Single-key shortcuts" (`docs/28` A-P11) crosses the bridge: on by default, saved when it is
+/// turned off, and still off when the app starts again over the same folder.
+#[test]
+fn single_key_shortcuts_are_on_by_default_and_survive_a_restart() {
+    let h = Harness::new();
+    assert!(h.api.preferences_get().expect("prefs").single_key_shortcuts);
+    let patch: PreferencesPatch =
+        serde_json::from_value(json!({ "single_key_shortcuts": false })).expect("patch");
+    assert!(
+        !h.api
+            .preferences_set(&patch)
+            .expect("set")
+            .single_key_shortcuts
+    );
+    let saved = std::fs::read_to_string(h.app_root.path().join("preferences.json")).expect("file");
+    assert!(saved.contains("\"single_key_shortcuts\": false"), "{saved}");
+    let again = ym_core::preferences::PreferencesStore::open(h.app_root.path());
+    assert!(!again.get().single_key_shortcuts);
+}
+
 /// An advisor that is always available and gives the same answer, or the same failure, for every
 /// picture (`docs/19` section 12).
 struct Scripted(Result<ym_core::apple_auto::AdvisorAnswer, ym_core::apple_auto::AdvisorError>);

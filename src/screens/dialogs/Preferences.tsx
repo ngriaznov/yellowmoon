@@ -421,6 +421,13 @@ export function Preferences() {
               onChange={(on) => void store.setPreferences({ check_for_updates_automatically: on })}
             />
           </Row>
+          <Row title="Single-key shortcuts" hint="Turn off if you use speech input or a screen reader. Every action stays in the menu bar.">
+            <Switch
+              label="Single-key shortcuts"
+              checked={prefs.single_key_shortcuts}
+              onChange={(on) => void store.setPreferences({ single_key_shortcuts: on })}
+            />
+          </Row>
           <Row
             title="Command-line tool"
             hint={cli === null ? "Checking…" : cli.installed ? `Installed at ${cli.path}` : "Not installed. It lets you run ym from Terminal."}

@@ -16,7 +16,7 @@ test.describe("Preferences", () => {
     await page.keyboard.press("Meta+,");
     const dialog = page.getByRole("dialog", { name: "Preferences" });
     await expect(dialog).toBeVisible();
-    for (const row of ["Default look", "Export defaults", "Remove location from exports", "Watch Downloads during import", "Check for updates automatically", "Command-line tool"]) {
+    for (const row of ["Default look", "Export defaults", "Remove location from exports", "Watch Downloads during import", "Check for updates automatically", "Single-key shortcuts", "Command-line tool"]) {
       await expect(dialog.getByRole("group", { name: row })).toBeVisible();
     }
     // A glasscn dialog: a glass pane with a 1 px rim and rounded corners, titled by an h2, over a dimmed window.

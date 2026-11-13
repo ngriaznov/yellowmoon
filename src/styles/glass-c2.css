@@ -659,6 +659,19 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   padding: var(--strip-inset);
   overflow-x: auto;
 }
+/* The list inside the scroller and the list item round each thumbnail (docs/28 A-08: the item carries the position in the set). Both are
+   plain boxes that lay out as the thumbnails did when they were the scroller's own flex items: the same gap, the same top alignment. The
+   item holds the margins that stand in for the thumbnails that are not drawn. */
+.ym-filmstrip__list {
+  display: flex;
+  flex-shrink: 0;
+  align-items: flex-start;
+  gap: var(--strip-gap);
+}
+.ym-filmstrip__item {
+  display: flex;
+  flex-shrink: 0;
+}
 /* Every thumbnail is the same 3:2 box, so a photo keeps its shape inside it (the picture is never stretched). The selected one is told
    apart by its ring, not by its size: a larger one could not keep the inset above and below it. */
 .ym-filmstrip__thumb {
