@@ -17,6 +17,8 @@ fn main() {
 ///   the macOS 14 SDK or later): add `/usr/lib/swift` to the run path. Vision itself is a normal link, made by
 ///   `ym-apple`'s own build script, because the framework is on every macOS the app runs on.
 ///
+/// * Metal (`docs/26-hardening.md` H-17; `DEP_YM_APPLE_AUTO_METAL=1`, like Vision): the same run path.
+///
 /// `/usr/lib/swift` is where macOS keeps the Swift runtime (a binary linked for a macOS older than 12 loads the
 /// concurrency runtime through `@rpath`; `crates/ym-cli/build.rs` says more). A bridge's Swift object carries no link to
 /// FoundationModels, and a library's build script cannot pass linker arguments to the binaries that use it, so each
@@ -26,10 +28,11 @@ fn link_apple_bridges() {
     let built = |name: &str| std::env::var(name).is_ok_and(|v| v == "1");
     let auto = built("DEP_YM_APPLE_AUTO_BRIDGE");
     let vision = built("DEP_YM_APPLE_AUTO_VISION");
+    let metal = built("DEP_YM_APPLE_AUTO_METAL");
     if auto {
         println!("cargo:rustc-link-arg=-Wl,-weak_framework,FoundationModels");
     }
-    if auto || vision {
+    if auto || vision || metal {
         println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
     }
 }

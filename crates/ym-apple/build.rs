@@ -46,6 +46,13 @@
 //! is `1` (`crates/ym-cli/build.rs`, `src-tauri/build.rs`). A binary that forgets fails to link
 //! (undefined FoundationModels symbols) instead of silently linking the framework strongly.
 //!
+//! **The Metal bridge**, `swift/MetalDevices.swift` (`docs/26-hardening.md` H-17: the GPU budget from Metal's
+//! working-set limit), is built exactly like the Vision one: both architectures, a normal link (Metal is on every Mac the
+//! app supports; the Swift needs no `#available`), the macOS 14 SDK or later (every Metal property it reads is older),
+//! not when `YM_APPLE_BRIDGE=off` or `YM_APPLE_METAL=off`. It compiles into `libym_apple_metal.a`, links Metal and
+//! Foundation, sets `cfg(ym_apple_metal)` and tells the binaries `DEP_YM_APPLE_AUTO_METAL=1` (the run path). Without it
+//! the crate reports no Metal devices and the budget rule stands.
+//!
 //! Everywhere else (Linux, Intel Macs for Apple Auto, an older SDK, `YM_APPLE_BRIDGE=off`) nothing is
 //! compiled and the crate reports `not_a_mac`, `intel_mac` or `built_without_support` for Apple Auto and
 //! `not_a_mac` or `not_supported` for Subject and People. A Mac build without a bridge prints a
@@ -68,14 +75,19 @@ const MIN_SDK_MAJOR: u32 = 27;
 /// macOS 14, Xcode 15).
 const VISION_MIN_SDK_MAJOR: u32 = 14;
 
+/// The SDK the Metal bridge is built with: the same floor as the Vision bridge, so that one image builds both.
+const METAL_MIN_SDK_MAJOR: u32 = 14;
+
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(ym_apple_bridge)");
     println!("cargo::rustc-check-cfg=cfg(ym_apple_vision)");
+    println!("cargo::rustc-check-cfg=cfg(ym_apple_metal)");
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-changed=swift");
     for variable in [
         "YM_APPLE_BRIDGE",
         "YM_APPLE_VISION",
+        "YM_APPLE_METAL",
         "DEVELOPER_DIR",
         "SDKROOT",
         "MACOSX_DEPLOYMENT_TARGET",
@@ -88,9 +100,11 @@ fn main() {
     let mac = os == "macos";
     let auto = mac && arch == "aarch64" && build_auto_if_possible();
     let vision = mac && swift_arch(&arch).is_some() && build_vision_if_possible(&arch);
-    // Read by the build scripts of the binaries as DEP_YM_APPLE_AUTO_BRIDGE and DEP_YM_APPLE_AUTO_VISION.
+    let metal = mac && swift_arch(&arch).is_some() && build_metal_if_possible(&arch);
+    // Read by the build scripts of the binaries as DEP_YM_APPLE_AUTO_BRIDGE, _VISION and _METAL.
     println!("cargo::metadata=bridge={}", u8::from(auto));
     println!("cargo::metadata=vision={}", u8::from(vision));
+    println!("cargo::metadata=metal={}", u8::from(metal));
 }
 
 /// The architecture name Swift's `-target` uses for a Rust one, for the two Mac architectures.
@@ -159,6 +173,39 @@ fn build_vision_if_possible(arch: &str) -> bool {
         panic!(
             "The Vision bridge (Subject and People masks) did not build with the macOS {sdk_version} SDK.\n{why}\n\
              Set YM_APPLE_VISION=off to build Yellowmoon without Subject and People."
+        );
+    }
+    true
+}
+
+/// Builds the Metal bridge for `arch` when this Mac's SDK is the macOS 14 one or later, and says why not when it is
+/// not. As for the others, a failure to compile with a recent enough SDK is an error.
+fn build_metal_if_possible(arch: &str) -> bool {
+    if bridge_off() {
+        warn_without_metal("YM_APPLE_BRIDGE=off");
+        return false;
+    }
+    if env::var("YM_APPLE_METAL").is_ok_and(|value| value == "off") {
+        warn_without_metal("YM_APPLE_METAL=off");
+        return false;
+    }
+    let sdk_version = match xcrun(&["--sdk", "macosx", "--show-sdk-version"]) {
+        Ok(version) => version,
+        Err(why) => {
+            warn_without_metal(&why);
+            return false;
+        }
+    };
+    if !sdk_major(&sdk_version).is_some_and(|major| major >= METAL_MIN_SDK_MAJOR) {
+        warn_without_metal(&format!(
+            "the macOS SDK is {sdk_version}; the Metal limit needs the macOS {METAL_MIN_SDK_MAJOR} SDK (Xcode 15) or later"
+        ));
+        return false;
+    }
+    if let Err(why) = build_metal_bridge(arch) {
+        panic!(
+            "The Metal bridge (the GPU memory limit) did not build with the macOS {sdk_version} SDK.\n{why}\n\
+             Set YM_APPLE_METAL=off to build Yellowmoon without it."
         );
     }
     true
@@ -292,6 +339,25 @@ fn build_vision_bridge(arch: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Builds the Metal bridge (`swift/MetalDevices.swift`) for `arch` and links what it needs. A normal link.
+fn build_metal_bridge(arch: &str) -> Result<(), String> {
+    let swift = swift_arch(arch).ok_or_else(|| format!("no Swift architecture for {arch}"))?;
+    compile_swift(&SwiftLibrary {
+        file: "MetalDevices.swift",
+        module: "YmAppleMetal",
+        name: "ym_apple_metal",
+        arch: swift,
+        extra: &[],
+    })?;
+    for framework in ["Foundation", "Metal"] {
+        println!("cargo::rustc-link-lib=framework={framework}");
+    }
+    // This crate's own tests and examples; the binaries of other crates add it themselves.
+    add_swift_run_path();
+    println!("cargo::rustc-cfg=ym_apple_metal");
+    Ok(())
+}
+
 /// Tells cargo where the Swift runtime and the compiler runtime are, once for every Swift library of this build (both
 /// bridges are for the same architecture whenever both are built).
 fn link_swift_runtime(arch: &str) -> Result<(), String> {
@@ -361,6 +427,14 @@ fn warn_without_vision(why: &str) {
     println!(
         "cargo::warning=Subject and People masks are built without their bridge to Apple's Vision framework ({why}); \
          the app and ym will report them as not supported."
+    );
+}
+
+/// Says that this Mac build has no Metal bridge, and why.
+fn warn_without_metal(why: &str) {
+    println!(
+        "cargo::warning=The GPU budget is built without its bridge to Metal's memory limit ({why}); \
+         the app and ym will use the budget rule alone."
     );
 }
 
