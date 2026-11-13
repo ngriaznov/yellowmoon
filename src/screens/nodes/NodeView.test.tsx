@@ -552,3 +552,47 @@ describe("Show mask (N-11)", () => {
     await waitFor(() => expect(h!.api.viewport.maskView).toEqual({ node: 1, style: "mask_only" }));
   });
 });
+
+describe("focus in and out of the node view (docs/28 A-04, docs/11 §Node view)", () => {
+  /** The first control of the graph area: "Add node" at the start of its toolbar. */
+  const firstStop = (): HTMLElement => within(screen.getByRole("group", { name: "Graph tools" })).getByRole("button", { name: /^Add node/ });
+
+  it("N moves the focus into the node view, to Add node at the start of the graph's toolbar", async () => {
+    await setup();
+    screen.getByRole("button", { name: /^Fit/ }).focus();
+    await h!.user.keyboard("n");
+    await waitFor(() => expect(inNodeView()).toBe(true));
+    await waitFor(() => expect(firstStop()).toHaveFocus());
+  });
+
+  it("N again gives the focus back to the control that had it", async () => {
+    await setup();
+    const fit = screen.getByRole("button", { name: /^Fit/ });
+    fit.focus();
+    await h!.user.keyboard("n");
+    await waitFor(() => expect(firstStop()).toHaveFocus());
+    await h!.user.keyboard("n");
+    await waitFor(() => expect(inNodeView()).toBe(false));
+    await waitFor(() => expect(fit).toHaveFocus());
+  });
+
+  it("goes to the Nodes button when nothing had the focus", async () => {
+    await setup();
+    expect(document.activeElement).toBe(document.body);
+    await h!.user.keyboard("n");
+    await waitFor(() => expect(firstStop()).toHaveFocus());
+    await h!.user.keyboard("n");
+    await waitFor(() => expect(inNodeView()).toBe(false));
+    await waitFor(() => expect(nodesButton()).toHaveFocus());
+  });
+
+  it("the Nodes button does the same, and the focus returns to it", async () => {
+    await setup();
+    await h!.user.click(nodesButton());
+    await waitFor(() => expect(firstStop()).toHaveFocus());
+    nodesButton().focus();
+    await h!.user.keyboard("{Enter}");
+    await waitFor(() => expect(inNodeView()).toBe(false));
+    expect(nodesButton()).toHaveFocus();
+  });
+});

@@ -6,6 +6,7 @@ import { FILM_CREDIT, FILM_CREDIT_NAME, FILM_CREDIT_URL } from "../../fixtures/f
 import { openPhotos, renderApp } from "../../test/harness";
 import { updater } from "../../updater";
 import type { Harness } from "../../test/harness";
+import { nextOpener } from "./Overlays";
 
 let h: Harness | undefined;
 afterEach(() => {
@@ -187,6 +188,50 @@ describe("Preferences (⌘,)", () => {
     await h!.user.click(within(dialog).getByRole("button", { name: "About Yellowmoon" }));
     expect(await screen.findByRole("dialog", { name: "About Yellowmoon" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "Preferences" })).toBeNull();
+  });
+});
+
+describe("focus return from About (docs/28 F3, A-04)", () => {
+  /** ⌘, from the Open files button, then About from Preferences' footer: About replaces Preferences. */
+  async function aboutFromPreferences(): Promise<HTMLElement> {
+    await start();
+    const opener = screen.getByRole("button", { name: "Open files ⌘O" });
+    opener.focus();
+    await h!.user.keyboard("{Meta>},{/Meta}");
+    const preferences = await screen.findByRole("dialog", { name: "Preferences" });
+    await waitFor(() => expect(within(preferences).queryByText("Loading your preferences…")).toBeNull());
+    await h!.user.click(within(preferences).getByRole("button", { name: "About Yellowmoon" }));
+    await screen.findByRole("dialog", { name: "About Yellowmoon" });
+    return opener;
+  }
+
+  it("returns to what opened Preferences on Esc", async () => {
+    const opener = await aboutFromPreferences();
+    await h!.user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  it("returns to what opened Preferences on Done", async () => {
+    const opener = await aboutFromPreferences();
+    await h!.user.click(within(screen.getByRole("dialog", { name: "About Yellowmoon" })).getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  it("starts About on Done, not on the Preferences it replaced", async () => {
+    await aboutFromPreferences();
+    const about = screen.getByRole("dialog", { name: "About Yellowmoon" });
+    await waitFor(() => expect(within(about).getByRole("button", { name: "Done" })).toHaveFocus());
+  });
+
+  it("nextOpener keeps the first opener while one dialog replaces another, and drops it when none is open", () => {
+    const first = document.createElement("button");
+    const second = document.createElement("button");
+    expect(nextOpener({ overlay: null, opener: null }, "preferences", first)).toBe(first);
+    expect(nextOpener({ overlay: "preferences", opener: first }, "about", second)).toBe(first);
+    expect(nextOpener({ overlay: "about", opener: first }, null, second)).toBeNull();
+    expect(nextOpener({ overlay: null, opener: null }, "about", second)).toBe(second);
   });
 });
 

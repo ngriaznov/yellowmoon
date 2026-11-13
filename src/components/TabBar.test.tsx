@@ -58,6 +58,28 @@ describe("TabBar", () => {
     expect(screen.getAllByRole("tab")).not.toContain(document.activeElement);
   });
 
+  it("is never a Tab stop itself, also after a click on a tab (docs/28 F1)", async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <button type="button">Before</button>
+        <Harness initial="look" />
+      </>,
+    );
+    const list = screen.getByRole("tablist", { name: "Tool tabs" });
+    expect(list).toHaveAttribute("tabindex", "-1");
+    // Radix's TabsTrigger focuses itself in mousedown, before the group notes the click: the first Tab into an unprotected list then stopped on it.
+    await user.click(screen.getByRole("tab", { name: "Light" }));
+    screen.getByRole("button", { name: "Before" }).focus();
+    await user.tab();
+    expect(screen.getByRole("tab", { name: "Light" })).toHaveFocus();
+    expect(list).toHaveAttribute("tabindex", "-1");
+    expect(screen.getAllByRole("tab").filter((t) => t.getAttribute("tabindex") === "0")).toHaveLength(1);
+    // Shift+Tab leaves the bar for the control before it, not for the list.
+    await user.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Before" })).toHaveFocus();
+  });
+
   it("moves with ← and → inside the bar, and wraps", async () => {
     const user = userEvent.setup();
     render(<Harness initial="raw" />);

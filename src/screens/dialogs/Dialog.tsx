@@ -1,6 +1,12 @@
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 import type { ReactNode } from "react";
 import { Dialog as GlassDialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/glass/dialog";
+
+/**
+ * Where a dialog that replaced another one returns the focus to: the control that opened the first one (`Overlays`). `undefined` (no
+ * provider, or a dialog over a dialog, like the consent question over Preferences) means the dialog uses what had the focus when it opened.
+ */
+export const DialogOpenerContext = createContext<Element | null | undefined>(undefined);
 
 export interface DialogProps {
   /** The title, at the top. Also the dialog's accessible name. */
@@ -27,7 +33,8 @@ export interface DialogProps {
 export function Dialog({ title, blurb, onClose, dismissable = true, footer, width = 560, children }: DialogProps) {
   // Radix gives the focus back to the dialog's trigger; these dialogs open from a shortcut or a menu and have none, so the element that
   // had the focus when the dialog opened is remembered here.
-  const [opener] = useState<Element | null>(() => (typeof document === "undefined" ? null : document.activeElement));
+  const inherited = useContext(DialogOpenerContext);
+  const [opener] = useState<Element | null>(() => (inherited !== undefined ? inherited : typeof document === "undefined" ? null : document.activeElement));
   return (
     <GlassDialog
       open

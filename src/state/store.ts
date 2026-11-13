@@ -135,6 +135,7 @@ import {
   outputPatch,
   patchOf,
 } from "./settingsGraph";
+import { rememberFocus } from "./focusMemory";
 import type { CorrectorItem, InputItem, OutputItem } from "./settingsGraph";
 import { ViewportInputQueue } from "./viewportInputQueue";
 import type { StreamInput } from "./viewportInputQueue";
@@ -2064,6 +2065,8 @@ export class AppStore {
   openExport(): void {
     if (!this.state.session) return;
     if (this.state.panel === "export") return;
+    // The panel takes the focus and gives it back to this control when it closes (`docs/11` §Export, `focusMemory.ts`).
+    rememberFocus("export");
     const fresh = this.state.exportRun === null;
     this.set({
       panel: "export",

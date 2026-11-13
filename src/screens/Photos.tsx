@@ -16,6 +16,7 @@ import { MASK_KIND_NAME } from "../state/graphOps";
 import { hiddenByPhoto, hiddenFromSimpleView, INPUT_ID, MAIN_ID, nodeOf, OUTPUT_ID } from "../state/settingsGraph";
 import type { AppStore } from "../state/store";
 import type { Shortcut } from "../state/shortcuts";
+import { rememberFocus, restoreFocus } from "../state/focusMemory";
 import { useShortcuts } from "../state/useShortcuts";
 import { fitZoomExact, fitZoomOf, showsWhole, ZOOMS, zoomKey, zoomStep } from "../state/zoom";
 import { CropPanel } from "./crop/CropPanel";
@@ -193,7 +194,7 @@ const HeaderActions = memo(function HeaderActions({ store, photo, orientation, c
       <Button variant="header" pressed={cropping} disabled={!canCrop} onClick={onCrop} title="Crop (C)" icon={<CropIcon aria-hidden="true" />}>
         <span className="ym-header-label">Crop</span>
       </Button>
-      <Button variant="header" pressed={nodesOn} disabled={cropping} onClick={onNodes} title="Nodes (N)" icon={<NodesGlyph />}>
+      <Button variant="header" pressed={nodesOn} disabled={cropping} onClick={onNodes} title="Nodes (N)" data-focus-home="nodes" icon={<NodesGlyph />}>
         <span className="ym-header-label">Nodes</span>
       </Button>
       <AddPhotosButton store={store} />
@@ -294,6 +295,14 @@ export function Photos() {
   const visited = useRef<Set<TabId>>(new Set());
   // The simple view (today's Photos) or the node view (`docs/23`), and the node the graph is on. Both are the window's: nothing is kept.
   const [view, setView] = useState<"simple" | "nodes">("simple");
+  // The node view takes the keyboard focus when it opens and gives it back when it closes (`docs/11` §Node view): `moveFocusWith` is called
+  // in the event that changes the view, where the focused control is still the one to come back to, and the effect below moves the focus
+  // once the view is drawn.
+  const nodesFocus = useRef<"in" | "out" | null>(null);
+  const moveFocusWith = (direction: "in" | "out"): void => {
+    if (direction === "in") rememberFocus("nodes");
+    nodesFocus.current = direction;
+  };
   const [selectedNode, setSelectedNode] = useState<NodeId>(MAIN_ID);
   // The tab each kind of node shows in the node view; nodes of one kind share it (`docs/23` §7.5 *Tab memory*).
   const [nodeTabs, setNodeTabs] = useState<Record<PanelKind, TabId>>(FIRST_NODE_TAB);
@@ -377,6 +386,25 @@ export function Photos() {
   // The node view's layout is on while the view is and the window is not full screen (the photo alone is the whole window then).
   const nodesOn = view === "nodes" && !fullScreen.on;
   const nodeLayout = useNodeLayout(nodesOn);
+  // Focus in and out of the node view. In: the first control of the graph area, "Add node" at the start of the toolbar, so Tab goes on into the
+  // graph and its card, and ← and → still step photos (a focus on the card would make them move between nodes). Out: the control that had the
+  // focus when the view opened, else the header's Nodes button; the graph is hidden and `inert` by then, so the focus has fallen to `body`.
+  useEffect(() => {
+    const direction = nodesFocus.current;
+    nodesFocus.current = null;
+    if (direction === "out") {
+      restoreFocus("nodes", () => document.querySelector<HTMLElement>('[data-focus-home="nodes"]'));
+      return;
+    }
+    if (direction === "in") document.querySelector<HTMLElement>(".ym-graph__bar button")?.focus({ preventScroll: true });
+  }, [view]);
+  // The Export panel gives the focus back when it closes (Esc, Done, ← Back to photos, the header's Export cell, a tab shortcut): to the control
+  // that had it when ⌘E or the cell opened the panel (`AppStore.openExport`), else to the header's Export button.
+  const wasExporting = useRef(false);
+  useEffect(() => {
+    if (wasExporting.current && panel !== "export") restoreFocus("export", () => document.querySelector<HTMLElement>('[data-focus-home="export"]'));
+    wasExporting.current = panel === "export";
+  }, [panel]);
   // The graph is built the first time the node view opens and stays built (hidden) when it closes, for the photo it was built for: another photo
   // builds it again on the next opening (xyflow fits the view to a canvas that has a size).
   const graphFor = useRef<number | string | null | undefined>(undefined);
@@ -491,11 +519,13 @@ export function Photos() {
       setSelectedNode(target.kind === "input" ? INPUT_ID : target.kind === "output" ? OUTPUT_ID : MAIN_ID);
       setNodeTabs((was) => ({ ...was, [target.kind]: target.tab }));
     }
+    moveFocusWith(view === "simple" ? "in" : "out");
     setView((was) => (was === "nodes" ? "simple" : "nodes"));
   };
   /** "Open nodes" of the simple view's notice: the node view, with Main selected (on the simple tab's tab when Main has it). */
   const openNodes = (): void => {
     setPicking(null);
+    moveFocusWith("in");
     setSelectedNode(MAIN_ID);
     const target = NODE_FOR_SIMPLE_TAB[simpleTabOf(tab)];
     if (target.kind === "corrector") setNodeTabs((was) => ({ ...was, corrector: target.tab }));
