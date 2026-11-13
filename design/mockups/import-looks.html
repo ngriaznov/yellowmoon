@@ -83,7 +83,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offs
         <div style="border: 3px dashed var(--ink); padding: 28px; display: flex; align-items: center; justify-content: space-between; gap: 16px">
           <span style="display: flex; flex-direction: column; gap: 4px">
             <span style="font-size: 20px; font-weight: 800">Or drop the zip here</span>
-            <span style="font-size: 13px">A zip or an unpacked folder both work.</span>
+            <span style="font-size: 13px">A zip, a folder, or a single .cube or look file.</span>
           </span>
           <button type="button" style="padding: 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 14px; font-weight: 800; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; cursor: pointer">Choose file…</button>
         </div>
@@ -275,8 +275,8 @@ class Component extends DCLogic {
     const wantList = wantNames.length ? wantNames.join(' and ') : 'the packages you chose';
     const h1s = ['Choose what to import', "Download from ARRI", 'Found it', impDone >= totalFiles ? 'Imported' : 'Importing', totalLooks + ' looks ready'];
     const leads = [
-      "ARRI publishes these looks for free. We can't include them in the app, so you download them from ARRI and the app imports them.",
-      'Your browser opens ARRI\'s Look Files page. Download the package there and the app picks it up.',
+      "ARRI publishes these looks for free, as 3D LUTs and as look files. We can't include them, so you download either kind and the app imports it.",
+      'Your browser opens ARRI\'s Look Files page. Download the LUTs or the look files there and the app picks them up.',
       'Each package is identified from its folder names, file names and LUT sizes.',
       'Nothing leaves this Mac. The looks are ready the moment this finishes.',
       'Here they are on your current photo. Pick a default and you are done.'

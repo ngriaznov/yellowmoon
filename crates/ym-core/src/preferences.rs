@@ -1014,7 +1014,7 @@ mod tests {
             serde_json::json!({
                 "default_look": "builtin:signature",
                 "export_defaults": {
-                    "format": "jpeg", "jpeg_quality": 92, "bit_depth": 16, "tiff_compression": "lzw",
+                    "format": "jpeg", "jpeg_quality": 92, "bit_depth": 16, "tiff_compression": "zip",
                     "color_space": "srgb", "size": { "kind": "full" }, "destination": null,
                     "name_template": "{name}_{look}", "if_exists": "keep_both"
                 },

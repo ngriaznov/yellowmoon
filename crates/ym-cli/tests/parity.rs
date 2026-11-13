@@ -377,6 +377,15 @@ fn cases() -> Vec<Case> {
             flags: &["--format", "tiff", "--bits", "16", "--compression", "none"],
         },
         Case {
+            // No `--compression`: both paths take the default, ZIP.
+            name: "tiff-default-compression",
+            options: ExportOptions {
+                format: FormatKind::Tiff,
+                ..ExportOptions::default()
+            },
+            flags: &["--format", "tiff"],
+        },
+        Case {
             name: "png-8",
             options: png(BitDepth::Eight),
             flags: &["--format", "png", "--bits", "8"],

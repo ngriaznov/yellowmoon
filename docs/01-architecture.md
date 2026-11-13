@@ -691,7 +691,7 @@ Code: `ym-core`'s `export.rs`, `export_queue.rs`, `cli_preview.rs`, `preferences
 
 #### `cli_preview`
 
-`cli_preview::cli_preview` builds `ym render <inputs> --look … --format … --out …` (one option to a line, each line but the last ending in a backslash, as the mockup shows) with the options and none of the defaults (`--compression lzw`, `{name}_{look}`, Keep both).
+`cli_preview::cli_preview` builds `ym render <inputs> --look … --format … --out …` (one option to a line, each line but the last ending in a backslash, as the mockup shows) with the options and none of the defaults (`--compression zip`, `{name}_{look}`, Keep both).
 
 - The inputs are the folder when the job is exactly every ARW file in one folder, else each file by absolute path.
 - `--out` is the chosen folder, else `<source folder> export` when the photos share a folder (none with several: the CLI then does what the app does). Words are shell-quoted only when they need it.
@@ -964,7 +964,7 @@ If none exists, fail with "Yellowmoon's data folder is missing. Reinstall the ap
 
 ## Versions written into outputs
 
-- `pipeline_version`: semver of the processing chain (`PIPELINE_VERSION` in `ym-core`'s `version.rs`), bumped when output pixels change for the same settings. It also takes a minor step when a new kind of node lands, because an older build refuses a graph with a kind it does not know (`docs/23` §3.5): **0.10.0** with the Film node (the owner, 2026-11-04: "Minor step to 0.10.0"; no existing graph changes by a bit, only the written version string); **0.11.0** with the mixers (`docs/25`; no existing graph changes by a bit, only the written version string).
+- `pipeline_version`: semver of the processing chain (`PIPELINE_VERSION` in `ym-core`'s `version.rs`), bumped when output pixels change for the same settings. It also takes a minor step when a new kind of node lands, because an older build refuses a graph with a kind it does not know (`docs/23` §3.5): **0.10.0** with the Film node (the owner, 2026-11-04: "Minor step to 0.10.0"; no existing graph changes by a bit, only the written version string); **0.11.0** with the mixers (`docs/25`; no existing graph changes by a bit, only the written version string). **0.11.1** (2026-11-13) reads the lens tables of the NEX-5N and NEX-7 from the SR2 sub-IFD (`docs/04` Lens tags): the pixels of those two bodies change (vignetting, distortion and chromatic aberration are corrected, the picture is a little smaller); no other file changes, so the golden hashes of the synthetic set stay (none of its bodies is a NEX).
 - Camera profile id and version, model ids and versions, look id and SHA-256, DRT id.
 
 These go into XMP (`docs/09-export.md`) so any exported file can be traced.

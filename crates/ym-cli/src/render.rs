@@ -1188,7 +1188,7 @@ mod tests {
         assert_eq!(o.format, FormatKind::Tiff, "the preferred format");
         assert_eq!(o.jpeg_quality.get(), 92);
         assert_eq!(o.bit_depth, BitDepth::Sixteen);
-        assert_eq!(o.tiff_compression, TiffCompression::Lzw);
+        assert_eq!(o.tiff_compression, TiffCompression::Zip);
         assert_eq!(o.color_space, ColorSpace::Srgb);
         assert_eq!(o.size, Size::Full);
         assert_eq!(o.if_exists, IfExists::KeepBoth);

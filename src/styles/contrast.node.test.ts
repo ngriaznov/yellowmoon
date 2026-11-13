@@ -280,7 +280,7 @@ describe("contrast of the text and focus colours of the glass (A-05)", () => {
   // the task that the estimate does not meet, so it is stated, with the number, and the test fails if it ever does (then the line goes).
   it("the tertiary text is under 4.5:1 on the lightest pane estimate, by design of the estimate: the rendered test is what proves it where it is drawn", () => {
     const ratio = contrast(darkColour("glass-label-tertiary"), PANE);
-    expect(ratio, `tertiary on the pane estimate ${PANE}: ${ratio.toFixed(2)}:1 (if this is 4.5 or more, delete this test and assert it on the pane)`).toBeLessThan(4.5);
+    expect(ratio, `tertiary on the pane estimate ${PANE}: ${ratio.toFixed(2)}:1. The owner decided on 2026-11-13 (docs/28 question 46) that the grey stays: the rendered test measures 4.61:1 where it is drawn and Increase Contrast raises it. If this is 4.5 or more, delete this test and assert it on the pane`).toBeLessThan(4.5);
     expect(ratio).toBeGreaterThanOrEqual(3);
   });
 

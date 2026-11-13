@@ -16,18 +16,19 @@ import { openState } from "./helpers/states";
 // Backdrops. The panes are glass over the app's aurora, so the text of the panes is measured on the aurora as it is, and on black as the
 // stress case. What floats over the photo is measured with the photo cell painted white, mid grey (#808080) and black and the picture hidden, and
 // only the texts that overlap the cell count there (a photo is any colour; the cell is cut out of the aurora, so a white photo is never behind a
-// pane). The Fit menu is opened and measured over the same three. The crop frame's ring and its handles are measured the same way (the ring's
+// pane). The Fit menu is opened, and the Fit button's tooltip shown, and measured over the same three. The crop frame's ring and its handles are measured the same way (the ring's
 // pixels, the ones the focus changes, against the pixels they replace).
 //
 // Asserts. 0 non-disabled text under its limit, on every backdrop; 0 rings under 3:1; a disabled button's key hint at 3:1 (disabled text is
-// exempt from 1.4.3 and is only listed, but the hint of a disabled Export is the one way to learn the shortcut). What fails today is in
-// `EXPECTED`, each with the task that fixes it. The test is green while an entry fails and red when an entry stops failing (so a fix has to
-// remove its line, the rule of the allowlist of `axe.spec.ts`) and red for anything that fails and is not listed.
+// exempt from 1.4.3 and is only listed, but the hint of a disabled Export is the one way to learn the shortcut). What fails and cannot
+// be fixed at once is in `EXPECTED`, each with the task that fixes it (A-06 emptied it: every text over the photo reads at 4.5:1 and every ring at 3:1).
+// The test is green while an entry fails and red when an entry stops failing (so a fix has to remove its line, the rule of the allowlist of
+// `axe.spec.ts`) and red for anything that fails and is not listed.
 //
 // Variants (`docs/28` A-07). The whole file runs three times: as it is, with Reduce Transparency set (`?mockDisplay=reduce-transparency`: the shell's
 // attribute, so the real wiring runs), and with the three display options set. Under Reduce Transparency every menu, popover, dialog and tooltip is
-// solid, so what failed only because of the glass (the Fit menu over a white photo, a dialog's secondary text over a white photo) must pass there;
-// what has no surface of its own (the camera line, the crop ring, a dimmed key hint) still fails until A-06. Each `EXPECTED` entry says in which
+// solid, and since A-06 they are never under 88 % tint, so they pass in every variant; the camera line has its own pill, the crop ring its dark
+// lines and the key hint of a disabled Export is not dimmed. Each `EXPECTED` entry says in which
 // variants it fails, and in each variant the test is red for an entry that stopped failing, as it is red for a failure that is not listed.
 //
 // The last test of a variant prints the table of 2.5 (the worst ratio per kind of text and where it is), and the disabled texts under 4.5.
@@ -43,7 +44,6 @@ const VARIANTS: readonly Variant[] = [
   { name: "all-three", options: { mockDisplay: "reduce-transparency,reduce-motion,increase-contrast" } },
 ];
 type VariantName = Variant["name"];
-const EVERY_VARIANT: readonly VariantName[] = ["default", "reduce-transparency", "all-three"];
 
 type Backdrop = "aurora" | "black" | "cell-white" | "cell-grey" | "cell-black";
 const PANE_BACKDROPS: readonly Backdrop[] = ["aurora", "black"];
@@ -69,6 +69,7 @@ const STATE_NAMES = [
   "78-mixers-parallel-inputs", "19-pixel-readout", "18-before-on",
 ] as const;
 const FIT_MENU = "fit-menu";
+const TOOLTIP = "tooltip";
 const CROP_RING = "crop-ring";
 
 /** Where the results of the states are kept for the table (the tests run in several workers). */
@@ -99,7 +100,7 @@ function kindOf(m: Measured, inMenu: boolean): Kind {
   return m.token === "label" ? "body" : m.token;
 }
 
-/** The things that fail today. Each names the task that fixes it, and in which variants, where and over what it fails. */
+/** A thing that fails and is allowed to, until its task lands. Each names the task that fixes it, and in which variants, where and over what it fails. */
 interface Expected {
   /** The variants in which it fails (the others must pass: an entry that fails nowhere it is listed is stale). */
   variants: readonly VariantName[];
@@ -116,70 +117,14 @@ interface Expected {
   reason: string;
 }
 
-/** The states that show the camera line over the cell (not Crop and Pick white, which hide it, nor the dialogs, which cover it). */
-const SHOW_THE_CAMERA_LINE = [
-  "10-tab-look", "11-tab-light", "12-tab-colour", "13-tab-detail", "14-tab-curve", "15-tab-raw", "37-tab-lens", "25-export-jpeg", "29-export-running",
-  "31-colour-warp", "42-nodes-default", "54-nodes-corrector-light", "67-film-tab", "78-mixers-parallel-inputs", "19-pixel-readout", "18-before-on",
-];
-
 /**
- * What fails today. A-06 (`docs/28`) fixes every entry and removes its line; the test is red until it does if the entry has stopped failing, so
- * the list cannot go stale, and red for anything that fails and is not here. What the audit expected to find here and the test did not: the
- * hints over the photo (Pick white's "Click something neutral…", Crop's) are drawn on the chip's dark pill and pass (8.6:1 on white).
+ * What fails today: nothing. `docs/28` A-05 listed five things here, each with the task that fixes it, and A-06 fixed them and removed their lines:
+ * the camera line (now the chip's dark pill), the Fit menu and the dialogs' secondary text over a white photo (the floor of 88 % for floating
+ * layers), the crop frame's ring (the dark line on each side) and the keycap of a disabled Export (no longer dimmed). The list stays, empty, so
+ * that a failure that cannot be fixed at once can be named here, with its task and its variants, instead of being left out of the test: the test is
+ * red when an entry stops failing and for anything that fails and is not here.
  */
-export const EXPECTED: readonly Expected[] = [
-  {
-    element: "the camera line (`.ym-photo-cell__camera`): white text, a shadow and no pill",
-    task: "A-06 (A-P4)",
-    variants: EVERY_VARIANT,
-    scopes: SHOW_THE_CAMERA_LINE,
-    backdrops: ["cell-white", "cell-grey"],
-    match: (f) => f.kind === "camera",
-    measured: "1.01:1 on a white photo, 4.09:1 on mid grey (black: 18:1)",
-    reason: "A text-shadow cannot rescue white on white. A-06 gives it the chip's dark pill.",
-  },
-  {
-    element: "the Fit menu's items (Fit, 50 %, 100 %, 200 %) over the photo",
-    task: "A-06 (A-P4)",
-    variants: ["default"],
-    scopes: [FIT_MENU],
-    backdrops: ["cell-white"],
-    match: (f) => f.kind === "menu",
-    measured: "2.33 to 2.84:1 on a white photo (grey 5.5:1, black 11:1)",
-    reason: "The menu is 40 % glass. A-06 draws menus, popovers, selects and tooltips with an 88 % tint floor. Under Reduce Transparency (A-07) the menu is solid and passes.",
-  },
-  {
-    element: "the key hint of a disabled Export button (the ⌘E keycap)",
-    task: "A-06 (A-P4, added by A-05)",
-    variants: EVERY_VARIANT,
-    scopes: ["01-start-empty", "03-start-ready", "24-error-bar"],
-    backdrops: ["aurora", "black"],
-    match: (f) => f.kind === "key-hint",
-    measured: "1.50:1 on the aurora, 1.49:1 on black (limit 3:1)",
-    reason:
-      "The keycap's text is the secondary label and sits in a button that dims everything to 45 % (`disabled:opacity-45`), so no colour of the keycap alone reaches 3:1; the fix is a look change (the keycap undimmed in a disabled button), which A-06 makes with the owner's review of the screenshots.",
-  },
-  {
-    element: "the crop frame's focus ring (the handles have a dark fill and pass)",
-    task: "A-06 (A-P5)",
-    variants: EVERY_VARIANT,
-    scopes: [CROP_RING],
-    backdrops: ["cell-white", "cell-grey"],
-    match: (f) => f.kind === "ring" && f.label === "crop frame",
-    measured: "1.62:1 on a white photo, 2.44:1 on mid grey (black 12:1)",
-    reason: "One yellow line. A-06 adds the dark line outside it, so that the ring reads on any photo.",
-  },
-  {
-    element: "the secondary text of a dialog over a white photo (Preferences' descriptions, About's lines)",
-    task: "A-06 (added by A-05: found by this test, not in the audit)",
-    variants: ["default"],
-    scopes: ["20-dialog-preferences", "22-dialog-about"],
-    backdrops: ["cell-white"],
-    match: (f) => f.kind === "secondary",
-    measured: "4.06 to 4.49:1 on a white photo (grey and black pass)",
-    reason: "A dialog is near-opaque over the aurora, but over a bright photo its glass lets enough through for the secondary grey to fall under 4.5. A-06's floor for floating layers covers dialogs too. Under Reduce Transparency (A-07) the dialog is solid and passes.",
-  },
-];
+export const EXPECTED: readonly Expected[] = [];
 
 /** Finds what is judged wrong in one scope on one backdrop: the findings under their limit, and which of the expected failures cover them. */
 function judge(variant: VariantName, scope: string, backdrop: Backdrop, findings: readonly Finding[]): { unexpected: string[]; stale: string[] } {
@@ -301,6 +246,35 @@ test.describe(variant.name === "default" ? "contrast as drawn" : `contrast as dr
     }
   });
 
+  test(TOOLTIP, async ({ browser }) => {
+    test.setTimeout(90_000);
+    const restore = useMockDefaults(variant.options);
+    const { page, context } = await openState(browser, "10-tab-look").finally(restore);
+    try {
+      // The Fit button's tooltip opens under the header, over the top of the photo.
+      await page.getByRole("button", { name: /^Fit/ }).hover();
+      const tip = page.locator('[data-slot="tooltip-content"]');
+      await tip.waitFor();
+      const box = (await tip.boundingBox()) as { x: number; y: number; width: number; height: number };
+      const cell = (await cellBox(page)) as Box;
+      const within: Box = { x: box.x, y: box.y, w: box.width, h: box.height };
+      const result: Record<string, Array<{ m: Measured; inMenu: boolean }>> = {};
+      const problems: string[] = [];
+      for (const backdrop of CELL_BACKDROPS) {
+        result[backdrop] = await measureBackdrop(page, backdrop, { cell, within });
+        const { unexpected, stale } = judge(variant.name, TOOLTIP, backdrop, judged(result[backdrop]!));
+        problems.push(...unexpected, ...stale);
+      }
+      // Only the part of the tooltip that is over the cell has a photo behind it; the rest is over the header's glass and the aurora.
+      expect(overlaps(within, cell), "the tooltip is over the cell").toBe(true);
+      expect(Object.values(result).flat().length, "the tooltip's text is found").toBeGreaterThan(0);
+      save(variant.name, TOOLTIP, result);
+      expect(problems, "the tooltip: contrast that is not listed in EXPECTED, or listed and fixed").toEqual([]);
+    } finally {
+      await context.close();
+    }
+  });
+
   test(CROP_RING, async ({ browser }) => {
     test.setTimeout(90_000);
     const restore = useMockDefaults(variant.options);
@@ -345,7 +319,7 @@ test.describe(variant.name === "default" ? "contrast as drawn" : `contrast as dr
 
   test(`the table of docs/28 section 2.5 (${variant.name})`, async ({}, testInfo) => {
     test.setTimeout(150_000);
-    const scopes = [...STATE_NAMES, FIT_MENU, CROP_RING];
+    const scopes = [...STATE_NAMES, FIT_MENU, TOOLTIP, CROP_RING];
     // The states run in other workers: wait for their results of this run (the runner is every worker's parent), until all are in or no new one has come for 20 s.
     const mine = (): Saved[] =>
       existsSync(RESULTS)

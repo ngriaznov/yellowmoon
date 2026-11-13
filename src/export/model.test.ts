@@ -72,7 +72,7 @@ describe("options", () => {
       format: "jpeg",
       jpeg_quality: 92,
       bit_depth: 16,
-      tiff_compression: "lzw",
+      tiff_compression: "zip",
       color_space: "srgb",
       size: { kind: "full" },
       destination: null,

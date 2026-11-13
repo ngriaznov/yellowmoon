@@ -994,7 +994,7 @@ function defaultExportOptions(): ExportOptions {
     format: "jpeg",
     jpeg_quality: 92,
     bit_depth: 16,
-    tiff_compression: "lzw",
+    tiff_compression: "zip",
     color_space: "srgb",
     size: { kind: "full" },
     destination: null,
@@ -2840,8 +2840,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const flags = [`--look ${look}`, `--format ${o.format}`];
     if (o.format === "jpeg") flags.push(`--quality ${o.jpeg_quality}`);
     if (o.format === "tiff" || o.format === "png") flags.push(`--bits ${o.bit_depth}`);
-    // LZW is the default (docs/09), so the command only names another compression, as the mockup's does.
-    if (o.format === "tiff" && o.tiff_compression !== "lzw") flags.push(`--compression ${o.tiff_compression}`);
+    // ZIP is the default (docs/09), so the command only names another compression.
+    if (o.format === "tiff" && o.tiff_compression !== "zip") flags.push(`--compression ${o.tiff_compression}`);
     if (o.format !== "dng") flags.push(`--colour-space ${o.color_space === "display_p3" ? "p3" : o.color_space}`);
     if (o.format !== "dng" && o.size.kind === "long_edge") flags.push(`--long-edge ${o.size.px}`);
     if (o.name_template !== "{name}_{look}") flags.push(`--name "${o.name_template}"`);
