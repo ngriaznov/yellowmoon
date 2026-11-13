@@ -413,6 +413,14 @@ Each task is one branch (`rc-01-cubics` style), one pull request, with the usual
 
 Each has a recommended default, which the plan follows until you say otherwise.
 
+**Answered 2026-11-13** (the owner: "1 - no, 2 - default, 3 - yes, 4 - keep as they are, 5 - default is fine, 6 - record nothing, it doesn't matter where this is coming from"):
+1. A fit that is better on one number and worse on another is **not taken**: today's value stays, and the numbers are reported.
+2. One release carries every accepted fit, `PIPELINE_VERSION` 0.11.1, one golden refresh.
+3. A blind look of six photographs, old against new, before it ships (RC-H1).
+4. The output sharpening's look is kept: the σ map, the presets and the halo map stay; only the tap rule is derived and the step below `R = 0.5` repaired.
+5. RC-01 and RC-02 now; RC-10 and RC-11 after the render-moving fits; RC-12 skipped.
+6. **No source is recorded**: each derivation stands on our own method and names no origin, and `docs/14` says nothing about one.
+
 1. **A fit that is better on one number and worse on another.** For example a chroma-penalty value that raises the PSNR and the false-colour rate together. *Default: not taken.* Today's value stays with its derivation, the numbers are reported, and you decide case by case. This is the failed-gate rule applied to fits (`AGENTS.md`).
 2. **The release and the version.** Several fits would move every picture a little. *Default:* one release that carries every accepted fit together; `PIPELINE_VERSION` 0.11.1 (a patch step: no new kind of node, pictures change slightly; the 0.8.1 rebaseline of all 61 pictures is the precedent) or 0.12.0 if you prefer a minor step; one golden refresh with one note.
 3. **A blind look before it ships.** `docs/05` says a demosaic change is checked on artefacts and on a blind look. *Default:* yes, six photographs, old against new, the existing A/B kit; if you see no difference or prefer the new, it ships.
