@@ -1637,7 +1637,7 @@ export type IfExists = "skip" | "replace" | "keep_both";
 export type ExportSize = { kind: "full" } | { kind: "long_edge"; px: number };
 
 /**
- * The options of `docs/09`. Defaults: JPEG, quality 92, 16-bit, LZW, sRGB, full size,
+ * The options of `docs/09`. Defaults: JPEG, quality 92, 16-bit, ZIP, sRGB, full size,
  * `{name}_{look}`, keep both. Colour space and size don't apply to DNG.
  */
 export interface ExportOptions {

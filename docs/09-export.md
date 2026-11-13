@@ -11,7 +11,7 @@ How a developed photo becomes a JPEG, TIFF, PNG or DNG file: the options, the qu
 | Photos | This photo / Picked · N / All · N | Picked if any are picked, else This photo |
 | Format | JPEG, TIFF, PNG, DNG | JPEG |
 | JPEG quality | 50–100 | 92 |
-| TIFF bit depth / compression | 8 or 16 / None, LZW, ZIP | 16 / LZW |
+| TIFF bit depth / compression | 8 or 16 / None, LZW, ZIP | 16 / ZIP (2026-11-13, the owner: LZW on a real 24 MP frame was larger than ZIP and sometimes larger than the raw samples; the mockup still draws LZW) |
 | PNG bit depth | 8 or 16 | 16 (shares the bit-depth preference with TIFF, as in the mockup) |
 | Colour space (not DNG) | sRGB, Display P3, Rec.2020 | sRGB ("Best for sharing and the web.") |
 | Size (not DNG) | Full, or Long edge 1000–full px in 20 px steps | Full |
@@ -117,7 +117,17 @@ A full-size export holds one more copy of the picture while it runs (12 bytes a 
 
 **PNG.** `iCCP`, `cICP`, `pHYs`, `eXIf` and an `iTXt` with `XML:com.adobe.xmp`.
 
-**Deflate backend.** The bytes of the ZIP strips and of the PNG `IDAT` and `iCCP` depend on which deflate implementation `flate2` is built with: zlib-rs and miniz_oxide write different, equally valid streams, zlib-rs about 1 to 2 % smaller. Cargo features are additive and `ym-looks` pulls `zip` with `deflate-flate2-zlib-rs`, so `ym-export` declares `flate2` with the `zlib-rs` feature itself (`Cargo.toml`) and every build writes the same bytes (`golden_hashes_match`). zlib-rs picks its CPU-specific code at run time; its output at the level used here (level 6) is not known to depend on it, and `golden_hashes_match` must pass on both Apple silicon and Intel (a Mac check, M0-H4). LZW on noisy 16-bit samples can produce a file as large as the uncompressed one (measured 0.8 to 1.2 of raw on noisy data; a 24 MP frame: LZW 182.4 MB, ZIP 132.3 MB, raw 145 MB); Deflate is smaller.
+**Deflate backend.** The bytes of the ZIP strips and of the PNG `IDAT` and `iCCP` depend on which deflate implementation `flate2` is built with: zlib-rs and miniz_oxide write different, equally valid streams, zlib-rs about 1 to 2 % smaller. Cargo features are additive and `ym-looks` pulls `zip` with `deflate-flate2-zlib-rs`, so `ym-export` declares `flate2` with the `zlib-rs` feature itself (`Cargo.toml`) and every build writes the same bytes (`golden_hashes_match`). zlib-rs picks its CPU-specific code at run time; its output at the level used here (level 6) is not known to depend on it, and `golden_hashes_match` must pass on both Apple silicon and Intel (a Mac check, M0-H4). LZW on noisy 16-bit samples can produce a file as large as the uncompressed one (measured 0.8 to 1.2 of raw on noisy data; a 24 MP frame: LZW 182.4 MB, ZIP 132.3 MB, raw 145 MB); Deflate is smaller, which is why ZIP is the default (2026-11-13). A stored preference of `lzw` stays `lzw`; only a missing field takes the new default.
+
+**TIFF compression, measured (2026-11-13, `ILCE-7M3.ARW`, 6000 × 4000 = 24 MP, Signature look, 16 bit, sRGB; the pixels re-encoded from the exported file three times each; dev profile with dependencies at opt-level 3, on a machine at load 13 to 15, so the times are the best of three and only their order is meaningful).**
+
+| Compression | Size | Against raw | Against LZW | Encode time (best of three) |
+|---|---|---|---|---|
+| None | 144.0 MB | 1.00 | 1.07 | 0.7 s |
+| LZW | 134.4 MB | 0.93 | 1.00 | 6.6 s |
+| ZIP | 108.3 MB | 0.75 | 0.81 | 7.4 s |
+
+ZIP is 19 % smaller than LZW for about the same time. The encoder is the one already in the tree (`tiff` with `flate2` on zlib-rs, level 6, `docs/14` unchanged); no crate was added. The strips are deflated on several threads and each strip is its own stream, so the bytes do not depend on the thread count: `tiff_writer.rs::zip_strips_compressed_in_parallel_give_the_same_bytes_every_time` (six strips, four encodes, equal) next to the older small-frame check, and the app/CLI parity test has a case with no `--compression` that must match the default.
 
 **Names and folders.** `{name}` is the source file name without extension, `{look}` the look's slug, `{date}` the **capture date** as `YYYY-MM-DD` (`undated` when unknown; never the export date, for determinism), `{seq}` the 1-based number of the photo in the job with at least three digits, `{camera}` the camera body as a slug (`sony-a1`). `{camera}` and `{look}` are slugs exactly as the export panel previews them (`Sony A1` gives `sony-a1`): `naming::slugify` is the same function as `slugify` in `src/export/template.ts`, so `ym-core` and the CLI pass `slugify(body)`. Unknown `{words}` stay as typed (as in the UI preview).
 

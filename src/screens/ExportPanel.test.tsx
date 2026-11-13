@@ -99,9 +99,9 @@ describe("the options (design/mockups/export.html)", () => {
     await h!.user.click(radio("Format", "TIFF"));
     expect(screen.queryByRole("slider", { name: "Quality" })).toBeNull();
     expect(checked("Bit depth")).toBe("16-bit");
-    expect(checked("Compression")).toBe("LZW");
-    await h!.user.click(radio("Compression", "ZIP"));
     expect(checked("Compression")).toBe("ZIP");
+    await h!.user.click(radio("Compression", "LZW"));
+    expect(checked("Compression")).toBe("LZW");
     await h!.user.click(radio("Bit depth", "8-bit"));
     await waitFor(() => expect(exportButton()).toHaveTextContent("≈ 304 MB")); // 149 MB × 0.68 × 3
     await h!.user.click(radio("Format", "PNG"));

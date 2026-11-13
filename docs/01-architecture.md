@@ -691,7 +691,7 @@ Code: `ym-core`'s `export.rs`, `export_queue.rs`, `cli_preview.rs`, `preferences
 
 #### `cli_preview`
 
-`cli_preview::cli_preview` builds `ym render <inputs> --look … --format … --out …` (one option to a line, each line but the last ending in a backslash, as the mockup shows) with the options and none of the defaults (`--compression lzw`, `{name}_{look}`, Keep both).
+`cli_preview::cli_preview` builds `ym render <inputs> --look … --format … --out …` (one option to a line, each line but the last ending in a backslash, as the mockup shows) with the options and none of the defaults (`--compression zip`, `{name}_{look}`, Keep both).
 
 - The inputs are the folder when the job is exactly every ARW file in one folder, else each file by absolute path.
 - `--out` is the chosen folder, else `<source folder> export` when the photos share a folder (none with several: the CLI then does what the app does). Words are shell-quoted only when they need it.
