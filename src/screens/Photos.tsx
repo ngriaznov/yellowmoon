@@ -246,7 +246,7 @@ function sameProps<P extends object>(a: P, b: P): boolean {
  * The divider and the graph of the node view. Opening the node view builds the graph (xyflow, the cards, their shadows), which takes 300 to
  * 500 ms; the first opening pays it and closing only hides it, so the next opening is a change of `hidden` (U-02). While it is hidden
  * it is not drawn again when the screen draws, and while it is shown it is drawn again only when its props change: the settings it gets are
- * the graph's view of them (`useGraphView`), the same object through a drag of the panel's sliders. Both sit in one landmark, "Node view".
+ * the graph's view of them (`useGraphView`), the same object through a drag of the panel's sliders. Both sit in one landmark, "Node graph area".
  */
 const GraphHost = memo(
   function GraphHost({ active, editor, area, min, max, expanded, onResize, onNudge, onResetDivider, onToggleExpanded, ...graph }: GraphHostProps) {
