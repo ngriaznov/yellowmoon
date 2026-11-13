@@ -54,11 +54,11 @@ test.describe("Preferences", () => {
     await expect(focused).toHaveCSS("outline-offset", "2px");
   });
 
-  test("Import LUTs keeps the keyboard inside while its question is unanswered, and Esc still closes it", async ({ page }) => {
+  test("Import LUTs and look files keeps the keyboard inside while its question is unanswered, and Esc still closes it", async ({ page }) => {
     await openApp(page);
     await page.evaluate(() => window.__yellowmoon!.mockApi.queueChoice("files", ["~/LUTs/Warm_Film.cube"]));
     await menu(page, "import_cube");
-    const dialog = page.getByRole("dialog", { name: "Import LUTs" });
+    const dialog = page.getByRole("dialog", { name: "Import LUTs and look files" });
     await expect(dialog).toBeVisible();
     // Nothing says what Warm_Film.cube expects, so Import is locked (aria-disabled, still in the tab order).
     await expect(dialog.getByRole("button", { name: "Import" })).toHaveAttribute("aria-disabled", "true");
@@ -206,14 +206,14 @@ test.describe("the menu bar", () => {
     await expect(page.getByText("The command-line tool is installed at /usr/local/bin/ym.")).toBeVisible();
   });
 
-  test("Import ARRI Looks… and Import .cube… open the wizard and the dialog", async ({ page }) => {
+  test("Import ARRI Looks… and Import LUTs and look files… open the wizard and the dialog", async ({ page }) => {
     await openApp(page);
     await menu(page, "import_arri_looks");
     await expect(page.getByRole("heading", { level: 1, name: "Choose what to import" })).toBeVisible();
     await page.getByRole("button", { name: "Cancel" }).click();
     await page.evaluate(() => window.__yellowmoon!.mockApi.queueChoice("files", ["~/LUTs/Warm_Film.cube"]));
     await menu(page, "import_cube");
-    await expect(page.getByRole("dialog", { name: "Import LUTs" })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "Import LUTs and look files" })).toBeVisible();
   });
 
   test("File, Edit and View items act on the photos", async ({ page }) => {

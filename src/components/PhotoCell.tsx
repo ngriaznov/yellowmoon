@@ -339,7 +339,11 @@ export function PhotoCell({
             {lookChip}
           </Badge>
         ) : null}
-        {cameraLine ? <span className="ym-photo-cell__camera">{cameraLine}</span> : null}
+        {cameraLine ? (
+          <Badge variant="outline" className="ym-photo-cell__camera">
+            {cameraLine}
+          </Badge>
+        ) : null}
         {pixelReadout ? (
           <Badge variant="outline" className="ym-photo-cell__readout" aria-hidden="true">
             {pixelReadout}

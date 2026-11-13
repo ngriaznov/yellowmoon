@@ -462,7 +462,7 @@ export function LookCard({ store, photo, rs }: TabProps) {
             </LinkButton>
           ) : null}
           <LinkButton className="ym-look-import" onClick={() => void store.startCubeImport()}>
-            Import .cube…
+            Import LUTs and look files…
           </LinkButton>
         </div>
       </div>

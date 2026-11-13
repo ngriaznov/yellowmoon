@@ -216,12 +216,12 @@ test.describe("ARRI Look Files", () => {
     expect(mine.every((l) => l.input === "logc4")).toBe(true);
   });
 
-  test("Looks › Import .cube… takes a look file without a question", async ({ page }) => {
+  test("Looks › Import LUTs and look files… takes a look file without a question", async ({ page }) => {
     await openApp(page, { mockCurrent: 3 });
     await openPhotos(page);
     await page.evaluate(() => window.__yellowmoon!.mockApi.queueChoice("files", ["~/Looks/Warm_Pull.alf4"]));
-    await page.getByRole("button", { name: "Import .cube…" }).click();
-    const dialog = page.getByRole("dialog", { name: "Import LUTs" });
+    await page.getByRole("button", { name: "Import LUTs and look files…" }).click();
+    const dialog = page.getByRole("dialog", { name: "Import LUTs and look files" });
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("radiogroup")).toHaveCount(0);
     await expect(dialog.getByText("Imported as your own looks, with the input read from each file.", { exact: false })).toBeVisible();
@@ -247,12 +247,12 @@ test.describe("the generic .cube question", () => {
     expect(mine).toMatchObject({ name: "Warm Film", input: "logc3_to_rec709" });
   });
 
-  test("Looks › Import .cube… is offered in the Look tab", async ({ page }) => {
+  test("Looks › Import LUTs and look files… is offered in the Look tab", async ({ page }) => {
     await openApp(page, { mockCurrent: 3 });
     await openPhotos(page);
     await page.evaluate(() => window.__yellowmoon!.mockApi.queueChoice("files", ["~/LUTs/Warm_Film.cube"]));
-    await page.getByRole("button", { name: "Import .cube…" }).click();
-    const dialog = page.getByRole("dialog", { name: "Import LUTs" });
+    await page.getByRole("button", { name: "Import LUTs and look files…" }).click();
+    const dialog = page.getByRole("dialog", { name: "Import LUTs and look files" });
     await expect(dialog).toBeVisible();
     await dialog.getByRole("radio", { name: "LogC4" }).click();
     await dialog.getByRole("button", { name: "Import" }).click();

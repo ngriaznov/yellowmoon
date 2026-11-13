@@ -32,7 +32,7 @@
     {"role":"button","name":"Night blue look, key 8","outline":"solid","ring":"outline"},
     {"role":"button","name":"Monochrome look, key 9","outline":"solid","ring":"outline"},
     {"role":"button","name":"Import ARRI looks →","outline":"solid","ring":"outline"},
-    {"role":"button","name":"Import .cube…","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Import LUTs and look files…","outline":"solid","ring":"outline"},
     {"role":"button","name":"Auto temperature","outline":"solid","ring":"outline"},
     {"role":"button","name":"Reset","outline":"solid","ring":"outline"},
     {"role":"slider","name":"Temperature","outline":"solid","ring":"outline"},

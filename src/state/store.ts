@@ -2014,7 +2014,7 @@ export class AppStore {
   // --- Looks import: a loose .cube ----------------------------------------------------------------
 
   /**
-   * Looks › Import .cube…: asks for files, finds out what each is, and opens the dialog that asks what a LUT expects as
+   * Looks › Import LUTs and look files…: asks for files, finds out what each is, and opens the dialog that asks what a LUT expects as
    * input (`docs/08` §Any other .cube); ARRI Look Files (`.alf4`, `.alf4c`, `.aml`) say what they expect and are not asked.
    * A cancelled chooser changes nothing.
    */
