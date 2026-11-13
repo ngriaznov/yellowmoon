@@ -3550,6 +3550,9 @@ pub struct Preferences {
     /// Instructions for the grading model (`docs/19` section 2, `docs/22` D1): the person's own, at
     /// most 2000 characters, one text for every provider; `""` is the default.
     pub apple_auto_instructions: String,
+    /// Single-key shortcuts (`docs/28` A-P11): on by default; off leaves P, Z, C, W, N, F, B, M, A,
+    /// `\`, 1 to 9, Delete and Backspace to the menu bar.
+    pub single_key_shortcuts: bool,
 }
 
 /// A partial update of the preferences.
@@ -3585,6 +3588,9 @@ pub struct PreferencesPatch {
     /// text is refused.
     #[serde(default)]
     pub apple_auto_instructions: Option<String>,
+    /// New value of "Single-key shortcuts".
+    #[serde(default)]
+    pub single_key_shortcuts: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -3734,6 +3740,46 @@ pub enum MenuAction {
     PasteSettings,
     /// Paste the copied settings onto the picked photos.
     PasteSettingsToPicked,
+    /// Crop (the Crop button and C). The Photo menu has it so the single-key switch strands nothing
+    /// (`docs/28` A-P11).
+    Crop,
+    /// Auto crop on or off while the Crop panel is open (A).
+    AutoCrop,
+    /// Pick white (the Colour tab's button and W).
+    PickWhite,
+    /// Remove the photo on screen from the filmstrip (Delete and Backspace).
+    RemovePhoto,
+    /// Bypass the selected node (B; the node view only).
+    BypassNode,
+    /// Show or hide the selected node's mask (M; the node view only).
+    MaskView,
+    /// Pick look 1 of the Look tab (the key 1).
+    #[serde(rename = "look_1")]
+    Look1,
+    /// Pick look 2 of the Look tab (the key 2).
+    #[serde(rename = "look_2")]
+    Look2,
+    /// Pick look 3 of the Look tab (the key 3).
+    #[serde(rename = "look_3")]
+    Look3,
+    /// Pick look 4 of the Look tab (the key 4).
+    #[serde(rename = "look_4")]
+    Look4,
+    /// Pick look 5 of the Look tab (the key 5).
+    #[serde(rename = "look_5")]
+    Look5,
+    /// Pick look 6 of the Look tab (the key 6).
+    #[serde(rename = "look_6")]
+    Look6,
+    /// Pick look 7 of the Look tab (the key 7).
+    #[serde(rename = "look_7")]
+    Look7,
+    /// Pick look 8 of the Look tab (the key 8).
+    #[serde(rename = "look_8")]
+    Look8,
+    /// Pick look 9 of the Look tab (the key 9).
+    #[serde(rename = "look_9")]
+    Look9,
 }
 
 /// `set_menu_state(state)`: which of the Edit menu's settings items are available. The webview

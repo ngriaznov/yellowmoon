@@ -453,6 +453,18 @@ mod tests {
     }
 
     #[test]
+    fn zip_strips_compressed_in_parallel_give_the_same_bytes_every_time() {
+        // 800 x 600 at 16 bit is about 2.9 MB: six strips of about 512 KB, deflated on several threads.
+        let first = encode(BitDepth::Sixteen, TiffCompression::Zip, 800, 600);
+        for _ in 0..3 {
+            assert_eq!(
+                first,
+                encode(BitDepth::Sixteen, TiffCompression::Zip, 800, 600)
+            );
+        }
+    }
+
+    #[test]
     fn predictor_is_the_inverse_of_cumulative_sum() {
         let mut row = vec![10_u8, 20, 30, 15, 25, 35, 250, 1, 2];
         let orig = row.clone();

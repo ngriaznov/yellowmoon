@@ -47,10 +47,10 @@ export interface ExportQueueListProps {
 
 /** One file of the queue, drawn again only when something it shows has changed. */
 const QueueRow = memo(
-  function QueueRow({ item }: { item: ExportQueueItem }) {
+  function QueueRow({ item, pos, size }: { item: ExportQueueItem; pos: number; size: number }) {
     return (
       <Item asChild size="sm">
-        <li className="ym-queue__row">
+        <li className="ym-queue__row" aria-posinset={pos} aria-setsize={size}>
           <span className="ym-queue__text">
             <span className="ym-queue__file" title={item.file}>
               {item.file}
@@ -65,8 +65,10 @@ const QueueRow = memo(
     );
   },
   (a, b) =>
-    a.item === b.item ||
-    (a.item.id === b.item.id && a.item.file === b.item.file && a.item.state === b.item.state && a.item.percent === b.item.percent && a.item.note === b.item.note),
+    a.pos === b.pos &&
+    a.size === b.size &&
+    (a.item === b.item ||
+      (a.item.id === b.item.id && a.item.file === b.item.file && a.item.state === b.item.state && a.item.percent === b.item.percent && a.item.note === b.item.note)),
 );
 
 /**
@@ -85,8 +87,8 @@ export function ExportQueueList({ items, label = "Export queue", className }: Ex
       className={cx("ym-queue", className)}
       style={win.windowed ? { paddingTop: win.before, paddingBottom: win.after } : undefined}
     >
-      {items.slice(win.start, win.end).map((item) => (
-        <QueueRow key={item.id} item={item} />
+      {items.slice(win.start, win.end).map((item, i) => (
+        <QueueRow key={item.id} item={item} pos={win.start + i + 1} size={items.length} />
       ))}
     </ul>
   );
@@ -120,10 +122,10 @@ export interface DevelopListProps {
 
 /** One photo of the Start list, drawn again only when something it shows has changed. */
 const DevelopRow = memo(
-  function DevelopRow({ item }: { item: DevelopItem }) {
+  function DevelopRow({ item, pos, size }: { item: DevelopItem; pos: number; size: number }) {
     return (
       <Item asChild size="sm">
-        <li className="ym-queue__row">
+        <li className="ym-queue__row" aria-posinset={pos} aria-setsize={size}>
           <span className="ym-queue__file" title={item.name}>
             {item.name}
           </span>
@@ -133,7 +135,10 @@ const DevelopRow = memo(
       </Item>
     );
   },
-  (a, b) => a.item === b.item || (a.item.id === b.item.id && a.item.name === b.item.name && a.item.state === b.item.state && a.item.note === b.item.note),
+  (a, b) =>
+    a.pos === b.pos &&
+    a.size === b.size &&
+    (a.item === b.item || (a.item.id === b.item.id && a.item.name === b.item.name && a.item.state === b.item.state && a.item.note === b.item.note)),
 );
 
 /**
@@ -154,8 +159,8 @@ export function DevelopList({ items, label = "Photos being developed", className
         className="ym-queue"
         style={win.windowed ? { paddingTop: win.before, paddingBottom: win.after } : undefined}
       >
-        {items.slice(win.start, win.end).map((item) => (
-          <DevelopRow key={item.id} item={item} />
+        {items.slice(win.start, win.end).map((item, i) => (
+          <DevelopRow key={item.id} item={item} pos={win.start + i + 1} size={items.length} />
         ))}
       </ul>
     </div>

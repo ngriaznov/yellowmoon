@@ -36,7 +36,7 @@ function job(scope: ExportJob["scope"], options: Partial<ExportOptions> = {}): E
       format: "jpeg",
       jpeg_quality: 92,
       bit_depth: 16,
-      tiff_compression: "lzw",
+      tiff_compression: "zip",
       color_space: "srgb",
       size: { kind: "full" },
       destination: null,
@@ -634,7 +634,7 @@ describe("export", () => {
     const jpeg = await api.exportEstimate(job("picked"));
     expect(jpeg.bytes).toBe(Math.round(24.9 * 3 * 1e6));
     expect(jpeg.seconds).toBeCloseTo(3.8, 1);
-    // 16-bit LZW TIFF: 298 × 0.68 MB; DNG: 300 MB; PNG 16-bit: 210 MB.
+    // 16-bit ZIP TIFF: 298 × 0.68 MB; DNG: 300 MB; PNG 16-bit: 210 MB.
     expect((await api.exportEstimate(job("this", { format: "tiff" }))).bytes).toBe(Math.round(298 * 0.68 * 1e6));
     expect((await api.exportEstimate(job("this", { format: "dng" }))).bytes).toBe(300e6);
     expect((await api.exportEstimate(job("this", { format: "png" }))).bytes).toBe(210e6);
@@ -756,7 +756,7 @@ describe("export", () => {
       job("all", {
         format: "tiff",
         bit_depth: 8,
-        tiff_compression: "zip",
+        tiff_compression: "lzw",
         color_space: "display_p3",
         size: { kind: "long_edge", px: 3000 },
         destination: "~/Exports",
@@ -764,7 +764,7 @@ describe("export", () => {
       }),
     );
     expect(tiff).toContain("ym render ~/Pictures/Lisbon \\");
-    for (const flag of ["--format tiff", "--bits 8", "--compression zip", "--colour-space p3", "--long-edge 3000", "--skip-existing", '--out "~/Exports"']) {
+    for (const flag of ["--format tiff", "--bits 8", "--compression lzw", "--colour-space p3", "--long-edge 3000", "--skip-existing", '--out "~/Exports"']) {
       expect(tiff).toContain(flag);
     }
     const dng = await api.cliPreview(job("this", { format: "dng" }));
@@ -817,7 +817,11 @@ describe("viewport", () => {
       before: true,
       maskView: null,
       inputs: [{ kind: "pan", dx: 4, dy: -2 }],
+      // The sum of the pans while zoomed; Fit puts it back (docs/28 A-10).
+      offset: { x: 4, y: -2 },
     });
+    await api.viewportSetMode({ kind: "fit" });
+    expect(api.viewport.offset).toEqual({ x: 0, y: 0 });
   });
 
   it("records the mask view of viewport_set_mode, takes it away with null or a new photo, and draws it only in the fallback frame", async () => {

@@ -147,7 +147,7 @@ The owner asked for the three greyed items of the Add node menu ("Let's implemen
 | Add node › Parallel or Layer | **"Add a corrector too, as Resolve"**: the selected node and a new corrector beside it feed the mixer |
 | Ports | **"Tinted ports + R/G/B letters"** on the Splitter and the Combiner |
 | Links | **"No lines, names only"**: the panels name where each input comes from and draw no lines |
-| `PIPELINE_VERSION` | 0.11.0, a minor step as for the Film node: an older build refuses a graph with a kind it does not know; no existing graph changes by a bit |
+| `PIPELINE_VERSION` | 0.11.1 (the NEX-5N and NEX-7 lens tables, 2026-11-13: pixels of those bodies change); 0.11.0, a minor step as for the Film node: an older build refuses a graph with a kind it does not know; no existing graph changes by a bit |
 | Test build (X-H2) and version | **"Good, merge to main and release 0.2.3"** |
 | Not in the first version | Other blend modes (Screen, Overlay and the like assume a display picture), a mode or a weight per input, masks and key ports on the four kinds, a Key Mixer, Outside, Morph, other channel splits |
 

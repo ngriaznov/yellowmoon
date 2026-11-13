@@ -349,7 +349,7 @@ pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
             ExportOptions {
                 format: FormatKind::Tiff,
                 bit_depth: BitDepth::Sixteen,
-                tiff_compression: TiffCompression::Lzw,
+                tiff_compression: TiffCompression::Zip,
                 ..ExportOptions::default()
             },
             gpu_ref,

@@ -170,9 +170,14 @@ pub enum Output {
     /// The same, with the long edge scaled to this many pixels (`--long-edge`): the device check of a real photo,
     /// whose raw chain is the full resolution's but whose picture is small enough to compare quickly.
     Png16LongEdge(u32),
+    /// The 16-bit sRGB PNG with capture and output sharpening off: what the DNG gate's `--png` option compares
+    /// with, so that it differs from the gate's JPEG by the JPEG coding and the dither only.
+    Png16Unsharpened,
     /// A DNG with the look baked in (the end-to-end colour check reads its linear AWG4 pixels).
     Dng,
-    /// An 8-bit sRGB JPEG at quality 92 (the DNG gate compares with it).
+    /// An 8-bit sRGB JPEG at quality 92 made with capture sharpening and output sharpening off
+    /// (`--sharpen 0,1 --output-sharpening 0`): the DNG gate compares with it. A DNG carries no sharpening of
+    /// any kind (`docs/09`), so a sharpened JPEG would put the sharpening of fine detail into the number.
     Jpeg,
 }
 
@@ -182,6 +187,18 @@ impl Output {
             Self::Png16 | Self::Png16LongEdge(_) => {
                 &["--format", "png", "--bits", "16", "--colour-space", "srgb"]
             }
+            Self::Png16Unsharpened => &[
+                "--format",
+                "png",
+                "--bits",
+                "16",
+                "--colour-space",
+                "srgb",
+                "--sharpen",
+                "0,1",
+                "--output-sharpening",
+                "0",
+            ],
             Self::Dng => &["--format", "dng"],
             Self::Jpeg => &[
                 "--format",
@@ -190,6 +207,10 @@ impl Output {
                 "92",
                 "--colour-space",
                 "srgb",
+                "--sharpen",
+                "0,1",
+                "--output-sharpening",
+                "0",
             ],
         };
         let mut args: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
@@ -600,6 +621,20 @@ mod tests {
         assert!(!has(Output::Png16, "--long-edge"));
         assert!(has(Output::Dng, "dng"));
         assert!(has(Output::Jpeg, "jpeg"));
+        // The DNG gate's JPEG has no sharpening, as a DNG has none: capture and output sharpening off.
+        let jpeg = Output::Jpeg.args();
+        let value_of = |flag: &str| {
+            let at = jpeg.iter().position(|a| a == flag).expect(flag);
+            jpeg[at + 1].clone()
+        };
+        assert_eq!(value_of("--sharpen"), "0,1");
+        assert_eq!(value_of("--output-sharpening"), "0");
+        assert!(!Output::Png16.args().iter().any(|a| a.contains("sharpen")));
+        assert!(
+            Output::Png16Unsharpened
+                .args()
+                .contains(&"--sharpen".to_owned())
+        );
         let edge = Output::Png16LongEdge(1500).args();
         assert_eq!(&edge[edge.len() - 2..], ["--long-edge", "1500"]);
     }

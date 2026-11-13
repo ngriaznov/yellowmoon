@@ -352,9 +352,9 @@ test.describe("keyboard shortcuts", () => {
     await expect(page.getByText(/^3 of 12 · /)).toBeVisible();
     // P picks, ⌘A picks all
     await page.keyboard.press("p");
-    await expect(page.getByText("2 picked")).toBeVisible();
+    await expect(page.locator(".ym-filmstrip__caption")).toContainText("2 picked");
     await page.keyboard.press("Meta+a");
-    await expect(page.getByText("12 picked")).toBeVisible();
+    await expect(page.locator(".ym-filmstrip__caption")).toContainText("12 picked");
     await expect(page.getByRole("button", { name: /Export 12/ })).toBeVisible();
     // \ flips Before
     await page.keyboard.press("\\");
@@ -631,7 +631,7 @@ test("a folder of 500 photos: the first one opens while the rest develop, and th
   await expect(page.getByRole("region", { name: "Automatic" })).toHaveCount(0);
   // The window still takes keys: ⌘A picks the photos that are ready, not the ones still developing.
   await page.keyboard.press("Meta+a");
-  await expect(page.getByText("40 picked")).toBeVisible();
+  await expect(page.locator(".ym-filmstrip__caption")).toContainText("40 picked");
 });
 
 test("settings made before the session opens come through the mock (initialSettings)", async ({ page }) => {

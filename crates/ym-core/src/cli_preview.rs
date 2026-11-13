@@ -15,7 +15,7 @@
 //!   --out '/Users/me/Pictures/Lisbon export'
 //! ```
 //!
-//! Options that are the CLI's defaults are left out (`--compression lzw`, the name template
+//! Options that are the CLI's defaults are left out (`--compression zip`, the name template
 //! `{name}_{look}`, "Keep both"). Per-photo adjustments beyond the look do not fit on a command
 //! line (the CLI takes them through `--settings`, `docs/10`): [`CliPreview::adjusted_photos`] counts
 //! the photos whose settings the command does not reproduce, for the panel's "N photos have
@@ -276,7 +276,7 @@ pub fn build(
         FormatKind::Tiff | FormatKind::Png => flags.push(format!("--bits {}", o.bit_depth.bits())),
         FormatKind::Dng => {}
     }
-    if o.format == FormatKind::Tiff && o.tiff_compression != TiffCompression::Lzw {
+    if o.format == FormatKind::Tiff && o.tiff_compression != TiffCompression::Zip {
         let word = match o.tiff_compression {
             TiffCompression::None => "none",
             TiffCompression::Lzw => "lzw",
@@ -439,14 +439,14 @@ mod tests {
         );
         assert_eq!(jpeg.adjusted_photos, 0);
 
-        // Only one of the two files: each is listed, and a zip tiff names its compression.
+        // Only one of the two files: each is listed, and an lzw tiff names its compression (zip is the default and is left out).
         let tiff = build(
             &paths[..1],
             &settings[..1],
             &job(ExportOptions {
                 format: FormatKind::Tiff,
                 bit_depth: BitDepth::Eight,
-                tiff_compression: TiffCompression::Zip,
+                tiff_compression: TiffCompression::Lzw,
                 color_space: ColorSpace::DisplayP3,
                 size: Size::LongEdge { px: 3000 },
                 if_exists: IfExists::Skip,
@@ -465,7 +465,7 @@ mod tests {
         for flag in [
             "--format tiff",
             "--bits 8",
-            "--compression zip",
+            "--compression lzw",
             "--colour-space p3",
             "--long-edge 3000",
             "--name '{name}-{seq}'",
@@ -475,6 +475,19 @@ mod tests {
             assert!(c.contains(flag), "{flag} in {c}");
         }
         assert!(!c.contains("--quality"), "{c}");
+
+        // The default compression is left out of the command.
+        let zip = build(
+            &paths[..1],
+            &settings[..1],
+            &job(ExportOptions {
+                format: FormatKind::Tiff,
+                ..ExportOptions::default()
+            }),
+            None,
+            None,
+        );
+        assert!(!zip.command.contains("--compression"), "{}", zip.command);
 
         let dng = build(
             &paths,

@@ -131,7 +131,7 @@ The Look tab's Lens card (`docs/21-lens-character.md` §1 and §8). They are the
 | `--format jpeg or tiff or png or dng` | `jpg` and `tif` are accepted | default from the preferences, else jpeg. The help text of `dng` is "DNG with the look baked in. Apps other than Adobe's show the stored linear image darker until their own exposure handling is applied. With a look that includes its own display rendering, the DNG is close to, not the same as, the picture you see." The second and third sentences are `ym_export::dng::OTHER_APPS_NOTE` and `ym_export::dng::OWN_DISPLAY_NOTE`, used word for word by the Export panel's DNG paragraph; tests compare both with the constants (`docs/09-export.md`) |
 | `--quality <50–100>` | JPEG | default 92 |
 | `--bits 8 or 16` | TIFF, PNG | default 16 |
-| `--compression none or lzw or zip` | TIFF | default lzw |
+| `--compression none or lzw or zip` | TIFF | default zip |
 | `--colour-space srgb or p3 or rec2020` | alias `--color-space` | default srgb; not for DNG |
 | `--long-edge <px>` | 16–65535 | scales so the long edge has this many pixels, never enlarges; not for DNG |
 | `--out <dir>` | | default: `<source folder> export` |
@@ -324,7 +324,7 @@ Nothing is saved per photo: the settings live with the photo for this run, and e
 
 ## Export options and preferences
 
-Only `--format` takes its default from the preferences. The others start from the defaults of `docs/09-export.md` (`--quality` 92, `--bits` 16, `--compression` lzw, `--colour-space` srgb, `{name}_{look}`, keep both), so the command `cli_preview` prints, which leaves those defaults out, does what the panel does whatever the preferences say. The preference "Remove location from exports" applies to the CLI too. The CLI never writes the preferences: `--out` is not remembered as the app's last-used folder, and `--look` does not change the default look (`ym looks default` does).
+Only `--format` takes its default from the preferences. The others start from the defaults of `docs/09-export.md` (`--quality` 92, `--bits` 16, `--compression` zip, `--colour-space` srgb, `{name}_{look}`, keep both), so the command `cli_preview` prints, which leaves those defaults out, does what the panel does whatever the preferences say. The preference "Remove location from exports" applies to the CLI too. The CLI never writes the preferences: `--out` is not remembered as the app's last-used folder, and `--look` does not change the default look (`ym looks default` does).
 
 ## `--look`
 

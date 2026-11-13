@@ -510,7 +510,7 @@ fn a_sixteen_bit_tiff_is_byte_identical_through_the_app_path_and_the_binary_on_t
     let from_cli = cli_export(
         &sb,
         &[&arw],
-        &["--format", "tiff", "--bits", "16", "--compression", "lzw"],
+        &["--format", "tiff", "--bits", "16"],
         &sb.root().join("cli"),
     );
     assert_same_files(&from_app, &from_cli, "tiff-16 on the device");
@@ -670,7 +670,7 @@ fn lens_parity(sb: &Sandbox, data: &Path, name: &str, arw: &Path) -> Option<u64>
         ..ExportOptions::default()
     };
     let from_app = app.export(tiff, &out("app-tiff"));
-    let mut tiff_flags = vec!["--format", "tiff", "--bits", "16", "--compression", "lzw"];
+    let mut tiff_flags = vec!["--format", "tiff", "--bits", "16"];
     tiff_flags.extend(flags);
     let from_cli = cli_export_in(sb, data, &[arw], &tiff_flags, &out("cli-tiff"));
     assert_same_files(

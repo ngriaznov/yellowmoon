@@ -57,7 +57,7 @@ export { NodesGlyph } from "./NodesGlyph";
 export { Filmstrip, filmstripCaption } from "./Filmstrip";
 export type { FilmstripPhoto, FilmstripProps, FilmstripStatus } from "./Filmstrip";
 export { PhotoCell } from "./PhotoCell";
-export type { PhotoCellFrame, PhotoCellProps, PhotoProbe } from "./PhotoCell";
+export type { PhotoCellFrame, PhotoCellProps, PhotoKeyHandlers, PhotoProbe } from "./PhotoCell";
 export { usePhotoGestures, WHEEL_ZOOM_RATE } from "./usePhotoGestures";
 export type { PhotoGestureHandlers } from "./usePhotoGestures";
 export { UpdatePill } from "./UpdatePill";

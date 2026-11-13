@@ -569,6 +569,12 @@ export interface MockViewportState {
   /** The mask view the page asked for with `viewport_set_mode`: a corrector's mask over the photo or alone, or none. */
   maskView: MaskView | null;
   inputs: ViewportInput[];
+  /**
+   * How far the picture has been moved since it was last in the middle, in CSS pixels: the sum of the `pan` inputs while the zoom is not Fit.
+   * Fit, a new photo and a fresh `viewport_set_mode` to Fit put it back to 0. The mock has no picture edges, so it is not clamped (the core's
+   * clamp is tested in Rust).
+   */
+  offset: { x: number; y: number };
 }
 
 /** `Api` plus the controls tests and demos need. */
@@ -988,7 +994,7 @@ function defaultExportOptions(): ExportOptions {
     format: "jpeg",
     jpeg_quality: 92,
     bit_depth: 16,
-    tiff_compression: "lzw",
+    tiff_compression: "zip",
     color_space: "srgb",
     size: { kind: "full" },
     destination: null,
@@ -1008,6 +1014,7 @@ function defaultPreferences(options: Pick<Required<MockOptions>, "autoProvider" 
     auto_provider: options.autoProvider,
     auto_consent: { ...options.consent },
     apple_auto_instructions: "",
+    single_key_shortcuts: true,
   };
 }
 
@@ -1677,7 +1684,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   let menuState: MenuState | null = null;
   const system: MockSystemLog = { opened: [], revealed: [], trashed: [], restarts: 0 };
   let cliLink: string | null = null;
-  const viewport: MockViewportState = { rect: null, mode: { kind: "fit" }, before: false, maskView: null, inputs: [] };
+  const viewport: MockViewportState = { rect: null, mode: { kind: "fit" }, before: false, maskView: null, inputs: [], offset: { x: 0, y: 0 } };
   /** The fallback viewport's frame counter, and whether it has a picture on show. */
   let frameSeq = 0;
   let frameShown = false;
@@ -2494,6 +2501,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   /** The viewport shows the photo now current from the start: Fit, the camera view off. */
   function showCurrent(): void {
     viewport.mode = { kind: "fit" };
+    viewport.offset = { x: 0, y: 0 };
     viewport.before = false;
     viewport.maskView = null;
     emitSoon("render_stats", RENDER_STATS);
@@ -2832,8 +2840,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const flags = [`--look ${look}`, `--format ${o.format}`];
     if (o.format === "jpeg") flags.push(`--quality ${o.jpeg_quality}`);
     if (o.format === "tiff" || o.format === "png") flags.push(`--bits ${o.bit_depth}`);
-    // LZW is the default (docs/09), so the command only names another compression, as the mockup's does.
-    if (o.format === "tiff" && o.tiff_compression !== "lzw") flags.push(`--compression ${o.tiff_compression}`);
+    // ZIP is the default (docs/09), so the command only names another compression.
+    if (o.format === "tiff" && o.tiff_compression !== "zip") flags.push(`--compression ${o.tiff_compression}`);
     if (o.format !== "dng") flags.push(`--colour-space ${o.color_space === "display_p3" ? "p3" : o.color_space}`);
     if (o.format !== "dng" && o.size.kind === "long_edge") flags.push(`--long-edge ${o.size.px}`);
     if (o.name_template !== "{name}_{look}") flags.push(`--name "${o.name_template}"`);
@@ -2962,6 +2970,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     cancelDialog = false;
     viewport.rect = null;
     viewport.mode = { kind: "fit" };
+    viewport.offset = { x: 0, y: 0 };
     viewport.before = false;
     viewport.maskView = null;
     viewport.inputs = [];
@@ -3053,6 +3062,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         removal = null;
         developProgress = 0;
         viewport.mode = { kind: "fit" };
+        viewport.offset = { x: 0, y: 0 };
         viewport.before = false;
     viewport.maskView = null;
         sendFrame();
@@ -3065,6 +3075,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         const shown = photos[index];
         if (shown) vanishIfGone(shown);
         viewport.mode = { kind: "fit" };
+        viewport.offset = { x: 0, y: 0 };
         viewport.before = false;
     viewport.maskView = null;
         emitSoon("render_stats", RENDER_STATS);
@@ -3216,8 +3227,11 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         const rec = photos[current];
         // The core draws a frame for every zoom and pan (the mock's own picture does not move).
         if (event.kind !== "pick_white") renderOnCpu();
-        if (event.kind === "toggle_zoom") {
+        if (event.kind === "pan" && viewport.mode.kind !== "fit") {
+          viewport.offset = { x: viewport.offset.x + event.dx, y: viewport.offset.y + event.dy };
+        } else if (event.kind === "toggle_zoom") {
           viewport.mode = viewport.mode.kind === "fit" ? { kind: "percent", value: 100 } : { kind: "fit" };
+          if (viewport.mode.kind === "fit") viewport.offset = { x: 0, y: 0 };
         } else if (event.kind === "pick_white" && rec) {
           // The core finds the spot of the photo under the click (straightening, turns and lens crop included) and sets the pick; a click
           // on the paper picks nothing. Like `update_settings` with a pick, the mock sets the white balance by hand from the colour there.
@@ -3239,6 +3253,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     viewportSetMode: (mode, maskView) =>
       run("viewportSetMode", () => {
         viewport.mode = mode;
+        if (mode.kind === "fit") viewport.offset = { x: 0, y: 0 };
         viewport.maskView = maskView ?? null;
         sendFrame();
       }),

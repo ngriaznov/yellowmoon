@@ -371,7 +371,7 @@ The objective depends on a choice. If the objective is the width of the error ra
 
 **F-08. Documents.** *Fix:* RC-14. *Test:* the registry test above also checks that every ID of this document's inventory is in the registry and the other way round, and that no registry entry says "pending" once RC-14 has landed.
 
-**F-09. The golden images and the version move together, once.** Any accepted fit of A1, A6 to A14 or O1 to O3 changes the picture of every golden file that passes through the adaptive ratio demosaic or the output sharpening: all 61 synthetic pictures (the default set, 1248 × 832, `docs/13`). *Fix:* RC-13 batches the accepted fits behind one `golden update --note`, bumps `PIPELINE_VERSION` (`crates/ym-core/src/version.rs:8`, 0.11.0) and the tests and documents that pin it. *Test:* `golden check` fails before the refresh and passes after; `crates/ym-cli/tests/cli.rs` and the GPU golden jobs pass; the largest ΔE00 any picture moved by is in the note.
+**F-09. The golden images and the version move together, once.** Any accepted fit of A1, A6 to A14 or O1 to O3 changes the picture of every golden file that passes through the adaptive ratio demosaic or the output sharpening: all 61 synthetic pictures (the default set, 1248 × 832, `docs/13`). *Fix:* RC-13 batches the accepted fits behind one `golden update --note`, bumps `PIPELINE_VERSION` (`crates/ym-core/src/version.rs:8`, 0.11.1 since the NEX lens tables of 2026-11-13) and the tests and documents that pin it. *Test:* `golden check` fails before the refresh and passes after; `crates/ym-cli/tests/cli.rs` and the GPU golden jobs pass; the largest ΔE00 any picture moved by is in the note.
 
 ## 5. Tasks
 
@@ -407,7 +407,7 @@ Each task is one branch (`rc-01-cubics` style), one pull request, with the usual
 
 **[HUMAN] RC-H1 · A blind look at old and new** (the R6 rule of `docs/05`: "checked on artefacts and on a blind look"). Six photographs of the owner's choice rendered with the old and the new constants (`Tuning::ORACLE` against the shipped `DEFAULT` through the internal switch), the existing blind A/B kit (`tools/eval/ab`); the owner picks. Needed only if a fit that changes pictures is accepted. Listed under "Waiting on the owner" when RC-07 lands.
 
-**The CHANGELOG entry** (for the release that carries RC-13; the file's own format, `### Changed`): "**Demosaic and output sharpening constants re-derived.** The constants of the demosaic's chroma step, its shadow steps and the output sharpening kernel were taken over from research. They are now fitted or derived by the project on public test images and our own synthetic scenes, and each has its derivation in `docs/29`. Pictures change slightly: the largest change on the test set is [ΔE00 from the golden note], the average [mean codes], and exports at a reduced size change the most. The pipeline version is [x.y.z] (was 0.11.0)." If no fit is accepted the entry is "**The constants of the raw algorithms have recorded derivations.** No picture changes."
+**The CHANGELOG entry** (for the release that carries RC-13; the file's own format, `### Changed`): "**Demosaic and output sharpening constants re-derived.** The constants of the demosaic's chroma step, its shadow steps and the output sharpening kernel were taken over from research. They are now fitted or derived by the project on public test images and our own synthetic scenes, and each has its derivation in `docs/29`. Pictures change slightly: the largest change on the test set is [ΔE00 from the golden note], the average [mean codes], and exports at a reduced size change the most. The pipeline version is [x.y.z] (was 0.11.1)." If no fit is accepted the entry is "**The constants of the raw algorithms have recorded derivations.** No picture changes."
 
 ## 6. Questions for the owner
 
@@ -415,7 +415,7 @@ Each has a recommended default, which the plan follows until you say otherwise.
 
 **Answered 2026-11-13** (the owner: "1 - no, 2 - default, 3 - yes, 4 - keep as they are, 5 - default is fine, 6 - record nothing, it doesn't matter where this is coming from"):
 1. A fit that is better on one number and worse on another is **not taken**: today's value stays, and the numbers are reported.
-2. One release carries every accepted fit, `PIPELINE_VERSION` 0.11.1, one golden refresh.
+2. One release carries every accepted fit, `PIPELINE_VERSION` 0.11.2 (the answer named 0.11.1, the next patch step at the time; 0.11.1 went to the NEX lens tables the same day), one golden refresh.
 3. A blind look of six photographs, old against new, before it ships (RC-H1).
 4. The output sharpening's look is kept: the σ map, the presets and the halo map stay; only the tap rule is derived and the step below `R = 0.5` repaired.
 5. RC-01 and RC-02 now; RC-10 and RC-11 after the render-moving fits; RC-12 skipped.

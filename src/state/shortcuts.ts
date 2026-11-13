@@ -78,6 +78,12 @@ export interface ShortcutContext {
   mode?: "crop" | "pick-white" | "pick-color" | null;
   /** The node view is on: Delete and Backspace never mean "remove the photo on screen", and B, M and ⌥← ⌥→ are the graph's. */
   nodeView?: boolean;
+  /**
+   * "Single-key shortcuts" (Preferences, `docs/28` A-P11; on unless it is `false`). Off, the keys that are one key on their own do
+   * nothing outside a text box: P, Z, C, W, N, F, B, M, A, `\`, 1–9, Delete and Backspace (21 keys). ⌘-keys, the arrows, Esc and
+   * the Return of Crop stay. This is the only place the flag is read; `useShortcuts` puts it in the context.
+   */
+  singleKeys?: boolean;
 }
 
 /** True when the target takes typed text. */
@@ -127,6 +133,7 @@ function usesHorizontalArrows(target: EventTarget | null): boolean {
   const role = el.getAttribute("role");
   if (role && ["slider", "radio", "tab", "menuitemradio", "menuitem", "application"].includes(role)) return true;
   if (el.closest("[data-photo-id]")) return true; // a filmstrip thumbnail
+  if (el.closest("[data-pan-view]")) return true; // the zoomed photo, while it has the focus: the arrows pan it (`docs/28` A-10)
   if (el.closest(".ym-crop")) return true;
   if (el.closest("[data-mask-handles]")) return true; // a handle of a mask: the arrows nudge it
   return false;
@@ -200,6 +207,8 @@ export function shortcutFor(event: KeyLike, context: ShortcutContext = {}): Shor
   // Return finishes a crop, unless the focused control is a button or link that Return presses itself.
   if (key === "Enter" && context.mode === "crop" && !isTextTarget(event.target) && !pressesItself(event.target)) return { action: "confirm" };
   if (isTextTarget(event.target)) return null;
+  // The switch is off: only the arrows are left (they step photos, and a control that has the focus uses them first).
+  if (context.singleKeys === false && key !== "ArrowLeft" && key !== "ArrowRight") return null;
 
   switch (key) {
     case "ArrowLeft":

@@ -210,7 +210,7 @@ pub struct RenderArgs {
     /// Bits per channel for TIFF and PNG, 8 or 16 (default 16).
     #[arg(long, value_name = "BITS", value_parser = bits, help_heading = H_OUTPUT)]
     pub bits: Option<BitDepth>,
-    /// TIFF compression (default lzw).
+    /// TIFF compression (default zip).
     #[arg(long, value_enum, ignore_case = true, value_name = "METHOD", help_heading = H_OUTPUT)]
     pub compression: Option<CompressionArg>,
     /// Colour space of JPEG, TIFF and PNG files (default srgb).

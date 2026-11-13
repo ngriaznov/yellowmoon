@@ -1,4 +1,4 @@
-//! SR2 private data: pad-cipher decryption and the black level (0x7310, 0x7300), white level (0x787F) and white balance (0x7313, 0x7303) tags (`docs/04-raw-decoding.md` section SR2 private data).
+//! SR2 private data: pad-cipher decryption and the black level (0x7310, 0x7300), white level (0x787F), white balance (0x7313, 0x7303) and lens-table (0x797D, 0x7980, 0x7982) tags (`docs/04-raw-decoding.md` section SR2 private data).
 //!
 //! An ARW carries its black level, white level and white-balance gains in an encrypted directory,
 //! the SR2 sub-IFD. The path to it is:
@@ -18,6 +18,7 @@
 //! returns `None` rather than an error, and the caller falls back to other sources.
 
 use crate::layout::CfaPattern;
+use crate::metadata::LensTags;
 use crate::tiff::{ByteOrder, Entry, Ifd, MemSource, Tiff, field_type, tag};
 
 /// `SR2SubIFDOffset`: file offset of the encrypted block.
@@ -36,6 +37,13 @@ pub const TAG_BLACK_LEVEL: u16 = 0x7310;
 pub const TAG_WB_RGGB: u16 = 0x7313;
 /// White level: three values (R, G, B), occasionally one or four.
 pub const TAG_WHITE_LEVEL: u16 = 0x787F;
+
+/// `VignettingCorrParams` of the SR2 sub-IFD: the table of the raw sub-IFD's 0x7032, same layout.
+pub const TAG_VIGNETTING_PARAMS: u16 = 0x797D;
+/// `ChromaticAberrationCorrParams` of the SR2 sub-IFD: the table of the raw sub-IFD's 0x7035.
+pub const TAG_CA_PARAMS: u16 = 0x7980;
+/// `DistortionCorrParams` of the SR2 sub-IFD: the table of the raw sub-IFD's 0x7037.
+pub const TAG_DISTORTION_PARAMS: u16 = 0x7982;
 
 /// The longest SR2 block read (1 MiB). Real blocks are a few kilobytes.
 pub const MAX_BLOCK_BYTES: u32 = 1 << 20;
@@ -100,6 +108,9 @@ pub struct Sr2Data {
     pub wb: Option<[u16; 4]>,
     /// The tag the white balance came from.
     pub wb_tag: Option<u16>,
+    /// The lens-correction tables (tags 0x797D, 0x7980, 0x7982), which the NEX-5N and NEX-7 carry
+    /// only here. `None` when none of the three is present.
+    pub lens: Option<LensTags>,
 }
 
 /// Reads the SR2 data of a file: follows `DNGPrivateData` in `ifd0`, decrypts the block and
@@ -199,7 +210,14 @@ pub fn parse_decrypted(decrypted: &[u8], file_offset: u32) -> Option<Sr2Data> {
         data.wb_tag = Some(TAG_WB_GRBG);
     }
 
-    (data.black.is_some() || data.white.is_some() || data.wb.is_some()).then_some(data)
+    data.lens = crate::metadata::lens_tags_at(
+        &tiff,
+        &ifd,
+        [TAG_VIGNETTING_PARAMS, TAG_CA_PARAMS, TAG_DISTORTION_PARAMS],
+    );
+
+    (data.black.is_some() || data.white.is_some() || data.wb.is_some() || data.lens.is_some())
+        .then_some(data)
 }
 
 /// Four 16-bit values from a SHORT/SSHORT tag with at least four values.
@@ -442,6 +460,67 @@ mod tests {
         assert_eq!(data.wb, Some([2043, 1024, 1025, 1755]));
         assert_eq!(data.wb_tag, Some(TAG_WB_RGGB));
         assert_eq!(data.white, Some([16300, 16301, 16301, 16302]));
+    }
+
+    /// The NEX-7's lens tables as stored in its SR2 sub-IFD (signed 16-bit, 11 knots), alone: a block
+    /// with no levels or white balance still reads, and the values come out as stored.
+    #[test]
+    fn reads_the_lens_tables_under_their_sr2_tags() {
+        let signed = |v: &[i16]| v.iter().map(|&x| x as u16).collect::<Vec<u16>>();
+        let mut vignetting = vec![
+            11_i16, 0, 96, 288, 608, 1088, 1664, 2432, 3392, 4576, 5984, 7680,
+        ];
+        vignetting.resize(17, 0);
+        let mut ca = vec![
+            22_i16, 1316, 1340, 1340, 1316, 1272, 1204, 1112, 984, 832, 664, 488,
+        ];
+        ca.extend([-544, -496, -448, -368, -296, -208, -88, 136, 448, 856, 1376]);
+        ca.resize(33, 0);
+        let mut distortion = vec![11_i16, 16, 5, 0, 0, 0, 5, 16, 38, 74, 128, 205];
+        distortion.resize(17, 0);
+        let block = sr2_block(
+            46_524,
+            &[
+                (
+                    TAG_VIGNETTING_PARAMS,
+                    field_type::SSHORT,
+                    signed(&vignetting),
+                ),
+                (TAG_CA_PARAMS, field_type::SSHORT, signed(&ca)),
+                (
+                    TAG_DISTORTION_PARAMS,
+                    field_type::SSHORT,
+                    signed(&distortion),
+                ),
+            ],
+        );
+        let data = parse_decrypted(&block, 46_524).expect("sr2");
+        assert_eq!((data.black, data.white, data.wb), (None, None, None));
+        let lens = data.lens.expect("lens tables");
+        let table = |t: &Option<crate::metadata::LensTable>| t.as_ref().expect("table").raw.clone();
+        assert_eq!(table(&lens.vignetting), vignetting);
+        assert_eq!(table(&lens.chromatic_aberration), ca);
+        assert_eq!(table(&lens.distortion), distortion);
+        // The CA table leads with 2n and holds red then blue: its second half is negative at the centre.
+        assert_eq!(
+            lens.chromatic_aberration.as_ref().and_then(|t| t.count()),
+            Some(22)
+        );
+        // One table alone is kept; the others stay `None`.
+        let only = sr2_block(
+            1000,
+            &[(
+                TAG_DISTORTION_PARAMS,
+                field_type::SSHORT,
+                signed(&distortion),
+            )],
+        );
+        let lens = parse_decrypted(&only, 1000)
+            .expect("sr2")
+            .lens
+            .expect("lens");
+        assert!(lens.vignetting.is_none() && lens.chromatic_aberration.is_none());
+        assert!(lens.distortion.is_some());
     }
 
     #[test]

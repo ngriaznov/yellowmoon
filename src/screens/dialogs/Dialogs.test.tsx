@@ -108,6 +108,20 @@ describe("Preferences (⌘,)", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("has one \"Single-key shortcuts\" switch, on by default, with its line, that saves the preference (docs/28 A-P11)", async () => {
+    const dialog = await openPreferences();
+    const row = sw(dialog, "Single-key shortcuts");
+    expect(row).toHaveAttribute("aria-checked", "true");
+    expect(within(dialog).getAllByRole("switch", { name: "Single-key shortcuts" })).toHaveLength(1);
+    expect(within(dialog).getByText("Turn off if you use speech input or a screen reader. Every action stays in the menu bar.")).toBeInTheDocument();
+    expect((await h!.api.preferencesGet()).single_key_shortcuts).toBe(true);
+    await h!.user.click(row);
+    expect((await h!.api.preferencesGet()).single_key_shortcuts).toBe(false);
+    expect(sw(dialog, "Single-key shortcuts")).toHaveAttribute("aria-checked", "false");
+    await h!.user.click(sw(dialog, "Single-key shortcuts"));
+    expect((await h!.api.preferencesGet()).single_key_shortcuts).toBe(true);
+  });
+
   it("saves each switch as soon as it is flipped, and shows it again next time", async () => {
     const dialog = await openPreferences();
     await h!.user.click(sw(dialog, "Remove location from exports"));
@@ -379,12 +393,12 @@ describe("the menu bar", () => {
   });
 });
 
-describe("Import .cube…", () => {
+describe("Import LUTs and look files…", () => {
   async function chooseCube(...files: string[]): Promise<HTMLElement> {
     await start({ looksImported: false });
     h!.api.queueChoice("files", files.map((f) => `~/LUTs/${f}`));
     act(() => h!.api.emitEvent("menu_action", { action: "import_cube" }));
-    return screen.findByRole("dialog", { name: "Import LUTs" });
+    return screen.findByRole("dialog", { name: "Import LUTs and look files" });
   }
 
   it("asks what the LUT expects as input, and imports it into Your LUTs", async () => {
@@ -492,7 +506,7 @@ describe("Import .cube…", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     h!.api.queueChoice("files", [`~/LUTs/${FAILURE_ZIPS.ownCube}`]);
     act(() => h!.api.emitEvent("menu_action", { action: "import_cube" }));
-    const dialog = await screen.findByRole("dialog", { name: "Import LUTs" });
+    const dialog = await screen.findByRole("dialog", { name: "Import LUTs and look files" });
     await h!.user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect((await h!.api.looksList()).filter((l) => l.group.kind === "user")).toHaveLength(0);
@@ -502,7 +516,7 @@ describe("Import .cube…", () => {
     h = renderApp({ current: 3 });
     await openPhotos(h);
     h.api.queueChoice("files", [`~/LUTs/${FAILURE_ZIPS.ownCube}`]);
-    await h.user.click(screen.getByRole("button", { name: "Import .cube…" }));
-    expect(await screen.findByRole("dialog", { name: "Import LUTs" })).toBeInTheDocument();
+    await h.user.click(screen.getByRole("button", { name: "Import LUTs and look files…" }));
+    expect(await screen.findByRole("dialog", { name: "Import LUTs and look files" })).toBeInTheDocument();
   });
 });

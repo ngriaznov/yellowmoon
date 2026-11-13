@@ -1637,7 +1637,7 @@ export type IfExists = "skip" | "replace" | "keep_both";
 export type ExportSize = { kind: "full" } | { kind: "long_edge"; px: number };
 
 /**
- * The options of `docs/09`. Defaults: JPEG, quality 92, 16-bit, LZW, sRGB, full size,
+ * The options of `docs/09`. Defaults: JPEG, quality 92, 16-bit, ZIP, sRGB, full size,
  * `{name}_{look}`, keep both. Colour space and size don't apply to DNG.
  */
 export interface ExportOptions {
@@ -1750,6 +1750,11 @@ export interface Preferences {
    * text for every provider; "" (the default) means `AutoStatus.default_instructions`.
    */
   apple_auto_instructions: string;
+  /**
+   * Single-key shortcuts (`docs/28` A-P11): on by default. Off, P, Z, C, W, N, F, B, M, A, `\`, 1 to 9, Delete and Backspace do nothing
+   * outside a text box, and every action stays in the menu bar.
+   */
+  single_key_shortcuts: boolean;
 }
 
 /** A partial update of the preferences. */
@@ -1913,7 +1918,22 @@ export type MenuAction =
   | "make_default_look"
   | "copy_settings"
   | "paste_settings"
-  | "paste_settings_to_picked";
+  | "paste_settings_to_picked"
+  | "crop"
+  | "auto_crop"
+  | "pick_white"
+  | "remove_photo"
+  | "bypass_node"
+  | "mask_view"
+  | "look_1"
+  | "look_2"
+  | "look_3"
+  | "look_4"
+  | "look_5"
+  | "look_6"
+  | "look_7"
+  | "look_8"
+  | "look_9";
 
 /**
  * `set_menu_state(state)` (addition, 2026-10-16): which of the Edit menu's settings items are available. The webview knows (a developed

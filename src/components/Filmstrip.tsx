@@ -141,8 +141,6 @@ interface ThumbProps {
   tabbable: boolean;
   /** A right-click menu about this photo is open. */
   menuOpen: boolean;
-  /** Space that stands in for the thumbnails that are not drawn, on the first and last one drawn. */
-  style?: CSSProperties;
   register: (id: number | string, node: HTMLElement | null) => void;
   onActivate: (id: number | string, pick: boolean) => void;
 }
@@ -166,7 +164,7 @@ const samePhoto = (a: FilmstripPhoto, b: FilmstripPhoto): boolean =>
 
 /** One thumbnail. Memoised by value, so a key press draws the two thumbnails that change and not the other hundreds. */
 const Thumb = memo(
-  function Thumb({ photo, mode, isCurrent, tabbable, menuOpen, style, register, onActivate }: ThumbProps) {
+  function Thumb({ photo, mode, isCurrent, tabbable, menuOpen, register, onActivate }: ThumbProps) {
     const content = (
       <>
         {photo.status !== "failed" && photo.status !== "developing" && photo.src ? (
@@ -193,7 +191,6 @@ const Thumb = memo(
     const common = {
       "data-photo-id": String(photo.id),
       "data-status": photo.status === "ready" ? undefined : photo.status,
-      style,
       ref: (node: HTMLElement | null) => register(photo.id, node),
     };
     if (mode === "export") {
@@ -230,8 +227,6 @@ const Thumb = memo(
     a.isCurrent === b.isCurrent &&
     a.tabbable === b.tabbable &&
     a.menuOpen === b.menuOpen &&
-    a.style?.marginLeft === b.style?.marginLeft &&
-    a.style?.marginRight === b.style?.marginRight &&
     a.register === b.register &&
     a.onActivate === b.onActivate &&
     samePhoto(a.photo, b.photo),
@@ -400,27 +395,32 @@ export function Filmstrip({
           className="ym-filmstrip__scroll"
           {...(mode === "export" ? { role: "region", "aria-label": "List of photos to export", tabIndex: 0 } : undefined)}
         >
-          {photos.slice(win.start, win.end).map((photo, i) => {
-            const index = win.start + i;
-            // The space of the thumbnails that are not drawn is the margin of the first and last one that is.
-            const style: CSSProperties | undefined =
-              win.windowed && (index === win.start || index === win.end - 1)
-                ? { marginLeft: index === win.start ? win.before : undefined, marginRight: index === win.end - 1 ? win.after : undefined }
-                : undefined;
-            return (
-              <Thumb
-                key={photo.id}
-                photo={photo}
-                mode={mode}
-                isCurrent={photo.id === currentId}
-                tabbable={index === tabbableIndex}
-                menuOpen={menu.open && menu.id === photo.id}
-                style={style}
-                register={register}
-                onActivate={activate}
-              />
-            );
-          })}
+          {/* A thumbnail is a button (browse) or a picture (export), and ARIA gives neither a position in a set, so each sits in a list item that
+              has it (docs/28 A-08). Only the drawn ones are in the page, so the set size is the whole folder's. The wrappers are boxes, not
+              `display: contents`, which older WebKit drops from the accessibility tree; they add no Tab stop. */}
+          <div role="list" className="ym-filmstrip__list">
+            {photos.slice(win.start, win.end).map((photo, i) => {
+              const index = win.start + i;
+              // The space of the thumbnails that are not drawn is the margin of the first and last one that is.
+              const style: CSSProperties | undefined =
+                win.windowed && (index === win.start || index === win.end - 1)
+                  ? { marginLeft: index === win.start ? win.before : undefined, marginRight: index === win.end - 1 ? win.after : undefined }
+                  : undefined;
+              return (
+                <div key={photo.id} role="listitem" aria-setsize={photos.length} aria-posinset={index + 1} className="ym-filmstrip__item" style={style}>
+                  <Thumb
+                    photo={photo}
+                    mode={mode}
+                    isCurrent={photo.id === currentId}
+                    tabbable={index === tabbableIndex}
+                    menuOpen={menu.open && menu.id === photo.id}
+                    register={register}
+                    onActivate={activate}
+                  />
+                </div>
+              );
+            })}
+          </div>
           </div>
       </MenuAround>
       <span id={captionId} className="ym-filmstrip__caption">

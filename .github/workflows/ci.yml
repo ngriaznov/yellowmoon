@@ -530,12 +530,12 @@ jobs:
             device-check.txt
           if-no-files-found: ignore
 
-  # M3-12: every exported DNG passes Adobe's dng_validate, and its render is within a median ΔE00 of 1.5 of our JPEG (docs/09
+  # M3-12: every exported DNG passes Adobe's dng_validate, and its render is within a median ΔE00 of 1.5 of our unsharpened JPEG (docs/09
   # Gates). tools/dng/run_gates.sh is the same script a developer runs: it builds `ym` and `dngfit` (two cargo invocations, for
   # the reason given at the golden job), runs `dngfit eval` and `dngfit gate --require-all`. dng_validate is built from the DNG SDK
   # at a pinned commit (about 10 minutes) and the binary is cached; the key has the Ubuntu release because the binary links the
   # system libjpeg and zlib. The image is pinned to ubuntu-24.04, the one this was run on (libjpeg-turbo 2.1.5, the libjxl 0.7
-  # headers): the SDK build and the stub in tools/dng/dng_jxl_stub.cpp are not known to build against the headers of a newer
+  # headers): the SDK build and the JPEG XL stub that tools/dng/build_dng_validate.sh writes are not known to build against the headers of a newer
   # libjxl. The tests run apart from the gates: `cargo test -p ym-export --test dng_validate` runs that one test
   # target only, so `-p dngfit` needs its own command. YM_REQUIRE_EXTERNAL_TOOLS turns "SKIPPED: tool missing" into a failure.
   dng:
@@ -562,7 +562,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: testdata/dng_sdk/dng_validate
-          key: dng-validate-ubuntu-${{ steps.os.outputs.release }}-${{ hashFiles('tools/dng/build_dng_validate.sh', 'tools/dng/dng_jxl_stub.cpp') }}
+          key: dng-validate-ubuntu-${{ steps.os.outputs.release }}-${{ hashFiles('tools/dng/build_dng_validate.sh') }}
       - name: Build dng_validate from the DNG SDK
         if: steps.dng_sdk.outputs.cache-hit != 'true'
         run: tools/dng/build_dng_validate.sh testdata/dng_sdk
