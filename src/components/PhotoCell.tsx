@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { HTMLAttributes, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import type { ViewportRect } from "../api/types";
 import { Badge } from "@/components/glass/badge";
@@ -72,6 +72,40 @@ export interface PhotoCellProps extends Omit<HTMLAttributes<HTMLElement>, "child
   className?: string;
 }
 
+/** The most often a screen reader is told the pixel readout's value (`docs/28` A-03). */
+export const READOUT_ANNOUNCE_MS = 1000;
+
+/**
+ * A copy of `value` that changes at most once in `ms`: a change starts a timer, and when it ends the copy takes the latest value, so
+ * a burst of changes gives one update with the last value. `null` clears the copy at once (nothing is announced for an empty status).
+ */
+function useThrottled(value: string | null, ms: number): string | null {
+  const [shown, setShown] = useState<string | null>(null);
+  const latest = useRef(value);
+  latest.current = value;
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (value === null) {
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = null;
+      setShown(null);
+      return;
+    }
+    if (timer.current) return;
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      setShown(latest.current);
+    }, ms);
+  }, [value, ms]);
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+  return shown;
+}
+
 const sameRect = (a: ViewportRect, b: ViewportRect): boolean =>
   Math.abs(a.x - b.x) < 0.01 &&
   Math.abs(a.y - b.y) < 0.01 &&
@@ -85,7 +119,10 @@ const sameRect = (a: ViewportRect, b: ViewportRect): boolean =>
  * which is what the native viewport follows (`docs/01` §Native viewport). In the browser and the
  * mock it draws the photo as an `<img>` letterboxed on paper; with the native viewport the cell is
  * transparent; with the fallback viewport it shows the shell's picture of the cell (`frame`).
- * Overlays: look chip, camera line, the Before label, the ⌥ pixel readout and a notice at the top centre.
+ * Overlays: look chip, camera line, the Before label, the ⌥ pixel readout and a notice at the top centre. The picture is `role="img"` and
+ * holds only the picture; the chips, the camera line and the readout are in a sibling group, "Photo information", laid over the cell, so
+ * a screen reader reads them as text (an `img` has no accessible children). The readout is drawn live and `aria-hidden`; a hidden status
+ * in the group (there while the readout is) says it at most once a second.
  */
 export function PhotoCell({
   imageSrc,
@@ -113,6 +150,7 @@ export function PhotoCell({
   const probeRef = useLatest(onPixelProbe);
   const pointer = useRef<PhotoProbe | null>(null);
   const probing = useRef(false);
+  const announced = useThrottled(pixelReadout ?? null, READOUT_ANNOUNCE_MS);
 
   useLayoutEffect(() => {
     const el = cell.current;
@@ -234,6 +272,8 @@ export function PhotoCell({
         ) : !native && imageSrc ? (
           <img className="ym-photo-cell__image" src={imageSrc} alt="" draggable={false} />
         ) : null}
+      </div>
+      <div className="ym-photo-cell__info" role="group" aria-label="Photo information">
         {before ? (
           <Badge variant="outline" className="ym-photo-cell__before">
             {beforeLabel}
@@ -246,9 +286,15 @@ export function PhotoCell({
         ) : null}
         {cameraLine ? <span className="ym-photo-cell__camera">{cameraLine}</span> : null}
         {pixelReadout ? (
-          <Badge variant="outline" className="ym-photo-cell__readout">
+          <Badge variant="outline" className="ym-photo-cell__readout" aria-hidden="true">
             {pixelReadout}
           </Badge>
+        ) : null}
+        {pixelReadout ? (
+          // Mounted empty with the readout and filled a second later, so the region is in the tree before its text changes.
+          <span role="status" className="sr-only">
+            {announced}
+          </span>
         ) : null}
       </div>
       {children ? <div className="ym-photo-cell__overlay">{children}</div> : null}

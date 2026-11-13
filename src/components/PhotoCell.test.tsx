@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PhotoCell } from "./PhotoCell";
 
@@ -85,6 +85,73 @@ describe("PhotoCell", () => {
     expect(screen.getByText("R 182 G 164 B 140")).toHaveClass("ym-photo-cell__readout");
     rerender(<PhotoCell pixelReadout={null} native={false} />);
     expect(screen.queryByText("R 182 G 164 B 140")).toBeNull();
+  });
+
+  it("keeps the chips, the camera line and the readout out of the image, in a group beside it", () => {
+    render(
+      <PhotoCell imageLabel="Photo DSC04204, Neutral · 100%" lookChip="Neutral · 100%" cameraLine="Sony A1 · DSC04204" pixelReadout="R 1 G 2 B 3" native={false} />,
+    );
+    const image = screen.getByRole("img", { name: "Photo DSC04204, Neutral · 100%" });
+    const group = screen.getByRole("group", { name: "Photo information" });
+    expect(image).toBeEmptyDOMElement();
+    expect(image.contains(group)).toBe(false);
+    expect(group.parentElement).toBe(image.parentElement);
+    expect(within(group).getByText("Neutral · 100%")).toBeInTheDocument();
+    expect(within(group).getByText("Sony A1 · DSC04204")).toBeInTheDocument();
+  });
+
+  it("puts the Before label in the group too", () => {
+    render(<PhotoCell before native={false} />);
+    expect(within(screen.getByRole("group", { name: "Photo information" })).getByText("Before · camera default")).toBeInTheDocument();
+  });
+
+  describe("the pixel readout as a status", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("draws every value at once but announces at most one a second, the last", () => {
+      const { rerender } = render(<PhotoCell pixelReadout="R 0 G 0 B 0" native={false} />);
+      const status = screen.getByRole("status");
+      expect(status).toBeEmptyDOMElement();
+      for (let i = 1; i <= 10; i++) {
+        rerender(<PhotoCell pixelReadout={`R ${i} G ${i} B ${i}`} native={false} />);
+        // The drawn text is live and hidden from a screen reader.
+        expect(document.querySelector(".ym-photo-cell__readout")).toHaveTextContent(`R ${i} G ${i} B ${i}`);
+        expect(document.querySelector(".ym-photo-cell__readout")).toHaveAttribute("aria-hidden", "true");
+        act(() => void vi.advanceTimersByTime(90));
+      }
+      // Ten moves in 900 ms: nothing was announced yet.
+      expect(status).toBeEmptyDOMElement();
+      act(() => void vi.advanceTimersByTime(100));
+      expect(status).toHaveTextContent("R 10 G 10 B 10");
+    });
+
+    it("announces one update for a burst, then the next burst a second later", () => {
+      const { rerender } = render(<PhotoCell pixelReadout="R 1 G 1 B 1" native={false} />);
+      const status = screen.getByRole("status");
+      rerender(<PhotoCell pixelReadout="R 2 G 2 B 2" native={false} />);
+      act(() => void vi.advanceTimersByTime(1000));
+      expect(status).toHaveTextContent("R 2 G 2 B 2");
+      rerender(<PhotoCell pixelReadout="R 3 G 3 B 3" native={false} />);
+      act(() => void vi.advanceTimersByTime(999));
+      expect(status).toHaveTextContent("R 2 G 2 B 2");
+      act(() => void vi.advanceTimersByTime(1));
+      expect(status).toHaveTextContent("R 3 G 3 B 3");
+    });
+
+    it("clears at once when the readout goes", () => {
+      const { rerender } = render(<PhotoCell pixelReadout="R 1 G 1 B 1" native={false} />);
+      act(() => void vi.advanceTimersByTime(1000));
+      expect(screen.getByRole("status")).toHaveTextContent("R 1 G 1 B 1");
+      rerender(<PhotoCell pixelReadout={null} native={false} />);
+      expect(screen.queryByRole("status")).toBeNull();
+      // A value that arrives later is not shown by a timer of the old one.
+      rerender(<PhotoCell pixelReadout="R 9 G 9 B 9" native={false} />);
+      act(() => void vi.advanceTimersByTime(500));
+      expect(screen.getByRole("status")).toBeEmptyDOMElement();
+      act(() => void vi.advanceTimersByTime(500));
+      expect(screen.getByRole("status")).toHaveTextContent("R 9 G 9 B 9");
+    });
   });
 
   it("lays extra layers over the photo", () => {

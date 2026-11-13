@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { usePointerDrag } from "../../components";
 import { fitInCell, handlePoint, HANDLES, moveRect, resizeRect } from "./cropMath";
@@ -27,6 +27,9 @@ const HANDLE_CURSORS: Record<Handle, string> = {
   w: "ew-resize",
 };
 
+/** What the crop frame's description says: the arrows move it, Shift takes ten times the step (`KEY_STEP`). */
+export const FRAME_HINT = "Arrow keys move the frame. Hold Shift to move it faster.";
+
 const pct = (n: number): string => `${Math.round(n * 10000) / 100}%`;
 
 /** One arrow-key step of a handle or the frame, as a share of the photo; Shift takes ten. */
@@ -46,6 +49,7 @@ export function CropOverlay({ session, cellAspect = 1.5 }: { session: CropSessio
   const { frame: rect, imageAspect, lockedRatio, setRect } = session;
   const picture = fitInCell(cellAspect, imageAspect);
   const image = useRef<HTMLDivElement>(null);
+  const hintId = useId();
   const [dragging, setDragging] = useState(false);
   const gesture = useRef<{ handle: Handle | "move"; start: Rect; x: number; y: number } | null>(null);
 
@@ -124,7 +128,8 @@ export function CropOverlay({ session, cellAspect = 1.5 }: { session: CropSessio
           data-handle="move"
           role="group"
           tabIndex={0}
-          aria-label="Crop frame. The arrow keys move it."
+          aria-label="Crop frame"
+          aria-describedby={hintId}
           style={{ left: pct(rect.x), top: pct(rect.y), width: pct(rect.width), height: pct(rect.height) }}
           onKeyDown={(event) => {
             if (event.target === event.currentTarget) onKey(event, "move");
@@ -153,6 +158,9 @@ export function CropOverlay({ session, cellAspect = 1.5 }: { session: CropSessio
           })}
         </div>
       </div>
+      <span id={hintId} className="sr-only">
+        {FRAME_HINT}
+      </span>
     </div>
   );
 }

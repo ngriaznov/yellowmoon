@@ -58,6 +58,15 @@ describe("the Crop panel", () => {
     expect([pct(frame(), "left"), pct(frame(), "top"), pct(frame(), "width"), pct(frame(), "height")]).toEqual([0, 0, 100, 100]);
   });
 
+  it("describes the frame by what the arrow keys do to it", async () => {
+    await setup();
+    await startCrop();
+    expect(frame()).toHaveAccessibleName("Crop frame");
+    expect(frame()).toHaveAccessibleDescription("Arrow keys move the frame. Hold Shift to move it faster.");
+    expect(frame()).toHaveAttribute("tabindex", "0");
+    expect(frame()).toHaveAttribute("role", "group");
+  });
+
   it("draws a handle on the cell's edge back inside it by the handle's own size, so the cell does not cut it", async () => {
     await setup();
     await startCrop();

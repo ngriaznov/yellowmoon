@@ -209,6 +209,9 @@
 /* In the app the native layer draws the photo behind a transparent cell. */
 .ym-photo-cell[data-native="true"] { background: transparent; }
 .ym-photo-cell__view { position: absolute; inset: 0; overflow: hidden; }
+/* The chips, the camera line and the readout: a sibling of the view (the view is `role="img"` and may hold only the picture), over the
+   same box, so each child keeps the corner it is positioned against. Never in the pointer's way. */
+.ym-photo-cell__info { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .ym-photo-cell__image { width: 100%; height: 100%; object-fit: contain; user-select: none; -webkit-user-drag: none; }
 /* The fallback viewport's picture: the whole cell already, drawn pixel for pixel from the corner. */
 .ym-photo-cell__frame { position: absolute; top: 0; left: 0; max-width: none; user-select: none; -webkit-user-drag: none; }
