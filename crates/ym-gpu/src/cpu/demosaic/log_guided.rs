@@ -21,9 +21,9 @@
 //!   value. This is what `Method::LogGuided` runs.
 //! * [`demosaic_fixed`]: the **fixed-point form** of sections 3.1 to 3.8, 16-bit integers with two
 //!   cubic polynomials ([`log2_fixed`], [`exp2_fixed`]). It is normative for the `expected` field of
-//!   the vectors and is kept for them and as an integer-only fallback. It needs the per-frame
-//!   headroom `H` (spec section 2.4, [`LogGuidedParams::for_mosaic`]); tiles must all use the
-//!   frame's `H`.
+//!   the vectors (under the cubics they were made with, [`ORACLE_CUBICS`]) and is kept for them and
+//!   as an integer-only fallback. It needs the per-frame headroom `H` (spec section 2.4,
+//!   [`LogGuidedParams::for_mosaic`]); tiles must all use the frame's `H`.
 //!
 //! # Where this port follows the reference to the letter, and where it deviates
 //!
@@ -175,13 +175,63 @@ pub fn derive(noise: NoiseDn, guide_detail: i32, headroom_log2: u8) -> Derived {
 // Fixed-point log2 / exp2 (spec sections 3.2 and 3.4)
 // ---------------------------------------------------------------------------------------------
 
+/// The cubic of [`log2_fixed`]: `(A, B, C) / 32768` with `P = A f - B f^2 + C f^3` approximating
+/// `log2(1 + f)` (spec section 3.2). `A - B + C = 32768`, so `p(0) = 0` and `p(1) = 1`. Found by an
+/// exhaustive integer search with the objective of spec section 3.2 (`tools/fit/poly_fit.py`,
+/// `docs/29-raw-constants.md` F-01).
+pub const LOG2_CUBIC: [u32; 3] = [46653, 19114, 5229];
+
+/// The cubic of [`exp2_fixed`]: `(A, B, C) / 65536` with `Q = A f + B f^2 + C f^3` approximating
+/// `2^f - 1` (spec section 3.4). Found by the integer search of spec section 3.4
+/// (`tools/fit/poly_fit.py`, `docs/29-raw-constants.md` F-01).
+pub const EXP2_CUBIC: [u32; 3] = [45559, 14919, 5047];
+
+/// The log2 triple the 16 oracle vectors were made with. Used only to run them
+/// ([`demosaic_fixed_with`] with [`ORACLE_CUBICS`]); nothing else reads it.
+pub const ORACLE_LOG2_CUBIC: [u32; 3] = [46597, 19037, 5208];
+
+/// The exp2 triple the 16 oracle vectors were made with. Used only to run them.
+pub const ORACLE_EXP2_CUBIC: [u32; 3] = [45607, 14741, 5185];
+
+/// The two cubics of the fixed-point form, as a pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FixedCubics {
+    /// `(A, B, C)` of [`log2_fixed_with`].
+    pub log2: [u32; 3],
+    /// `(A, B, C)` of [`exp2_fixed_with`].
+    pub exp2: [u32; 3],
+}
+
+impl FixedCubics {
+    /// The cubics the fixed form ships ([`LOG2_CUBIC`], [`EXP2_CUBIC`]).
+    pub const SHIPPED: Self = Self {
+        log2: LOG2_CUBIC,
+        exp2: EXP2_CUBIC,
+    };
+}
+
+/// The cubics of the oracle vectors ([`ORACLE_LOG2_CUBIC`], [`ORACLE_EXP2_CUBIC`]): the `expected`
+/// field of `tests/cpu_data/log_guided_demosaic/` is the fixed form under these.
+pub const ORACLE_CUBICS: FixedCubics = FixedCubics {
+    log2: ORACLE_LOG2_CUBIC,
+    exp2: ORACLE_EXP2_CUBIC,
+};
+
 /// `L(y)`, about `4096 * log2(y)`, for `1 <= y <= 65535` (spec section 3.2; `log2_fixed(0)` is
-/// defined as 0 and never reached). A cubic on the mantissa: the error is between -4.98 and +2.98
-/// codes (1/4096 stop) for every `y`, and `L(1) = 0`, `L(2) = 4096`, `L(65535) = 65535`. Doubling
-/// `y` adds exactly 4096. It is not strictly monotone: in the top octave it steps back by one code
-/// at 23 values of `y`.
+/// defined as 0 and never reached). A cubic on the mantissa ([`LOG2_CUBIC`]): the error is between
+/// -4.41 and +4.38 codes (1/4096 stop) for every `y`, and `L(1) = 0`, `L(2) = 4096`,
+/// `L(65535) = 65535`. Doubling `y` adds exactly 4096. It is not strictly monotone: in the top
+/// octave it steps back by one code at 20 values of `y`.
 #[must_use]
 pub fn log2_fixed(y: u16) -> u16 {
+    log2_fixed_with(y, LOG2_CUBIC)
+}
+
+/// [`log2_fixed`] with another cubic `(A, B, C)`; the bounds of the doc of [`log2_fixed`] hold for
+/// [`LOG2_CUBIC`] only. The products must fit 32 bits, so `A`, `B` and `C` stay below 65536.
+#[must_use]
+#[inline(always)]
+pub fn log2_fixed_with(y: u16, cubic: [u32; 3]) -> u16 {
     if y == 0 {
         return 0;
     }
@@ -191,24 +241,34 @@ pub fn log2_fixed(y: u16) -> u16 {
     let m = 2 * n - 65536; // mantissa fraction in Q16, 0..65534
     let m2 = (m * m) >> 16;
     let m3 = (m2 * m) >> 16;
-    let poly = ((m * 46597) >> 16) - ((m2 * 19037) >> 16) + ((m3 * 5208) >> 16); // 0..32767
+    let [a, b, c] = cubic;
+    let poly = ((m * a) >> 16) - ((m2 * b) >> 16) + ((m3 * c) >> 16); // 0..32767
     // 4096 * 15 + 4095 = 65535: fits.
     (4096 * e + (poly >> 3)) as u16
 }
 
 /// `C(L)`, about `2^(L / 4096)`, for `0 <= L <= 65535` (spec section 3.4). A cubic on the
-/// fraction: `-(1 + 1.18e-4 t) <= C - t <= 1.24e-4 t` with `t = 2^(L / 4096)`,
-/// `exp2_fixed(4096 e) = 2^e` exactly, monotone non-decreasing, maximum 65522.
+/// fraction ([`EXP2_CUBIC`]): `-(1 + 9.02e-5 t) <= C - t <= 8.97e-5 t` with `t = 2^(L / 4096)`,
+/// `exp2_fixed(4096 e) = 2^e` exactly, monotone non-decreasing, maximum 65518.
 #[must_use]
 pub fn exp2_fixed(l: u16) -> u16 {
+    exp2_fixed_with(l, EXP2_CUBIC)
+}
+
+/// [`exp2_fixed`] with another cubic `(A, B, C)`; the bounds of the doc of [`exp2_fixed`] hold for
+/// [`EXP2_CUBIC`] only. The result must fit 16 bits, which the caller checks.
+#[must_use]
+#[inline(always)]
+pub fn exp2_fixed_with(l: u16, cubic: [u32; 3]) -> u16 {
     let l = u32::from(l);
     let e = l >> 12; // integer part, 0..15
     let f = (l & 4095) << 4; // fraction in Q16, 0..65520
     let f2 = (f * f) >> 16;
     let f3 = (f2 * f) >> 16;
-    let q = ((45607 * f) >> 16) + ((14741 * f2) >> 16) + ((5185 * f3) >> 16); // <= 65509
+    let [a, b, c] = cubic;
+    let q = ((a * f) >> 16) + ((b * f2) >> 16) + ((c * f3) >> 16);
     let s = 1u32 << e;
-    // s + (s * q >> 16) <= 65522: fits.
+    // For EXP2_CUBIC: s + (s * q >> 16) <= 65518: fits.
     (s + ((s * q) >> 16)) as u16
 }
 
@@ -325,6 +385,19 @@ pub fn demosaic_fixed(
     guide_detail: i32,
     headroom_log2: u8,
 ) -> RgbImage {
+    demosaic_fixed_with(m, noise, guide_detail, headroom_log2, FixedCubics::SHIPPED)
+}
+
+/// [`demosaic_fixed`] with other cubics. [`ORACLE_CUBICS`] reproduces the `expected` field of the
+/// 16 oracle vectors; nothing else needs it.
+#[must_use]
+pub fn demosaic_fixed_with(
+    m: &Mosaic,
+    noise: NoiseDn,
+    guide_detail: i32,
+    headroom_log2: u8,
+    cubics: FixedCubics,
+) -> RgbImage {
     let mut out = empty_output(m);
     if !usable(m) {
         return out;
@@ -353,7 +426,7 @@ pub fn demosaic_fixed(
     // 2. Log transform: L = log2_fixed(p + ceil(A / 2)) (1 <= y <= 65535).
     let mut l: Vec<u16> = a
         .iter()
-        .map(|&v| log2_fixed((p + ((u32::from(v) + 1) >> 1)) as u16))
+        .map(|&v| log2_fixed_with((p + ((u32::from(v) + 1) >> 1)) as u16, cubics.log2))
         .collect();
 
     // 3. Horizontal 5-tap guide filter, columns 2..wp-2.
@@ -379,7 +452,7 @@ pub fn demosaic_fixed(
             let acc: i64 = (0..5)
                 .map(|j| i64::from(d.kernel[j]) * i64::from(lh[(y - 2 + j) * wp + x]))
                 .sum();
-            l[y * wp + x] = exp2_fixed(filter_out(acc));
+            l[y * wp + x] = exp2_fixed_with(filter_out(acc), cubics.exp2);
         }
     }
     let c = l;
