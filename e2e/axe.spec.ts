@@ -19,8 +19,8 @@ const MANY = "many-photos-500";
 
 /**
  * Colour contrast is switched off, in every state: the app's text sits on translucent glass (`backdrop-filter`), and axe cannot decide
- * contrast through it ("incomplete" for every text node of all 79 states). `docs/28` A-05 replaces it with a measurement on the pixels
- * (`e2e/contrast.spec.ts`).
+ * contrast through it ("incomplete" for every text node of all 79 states). `e2e/contrast.spec.ts` (`docs/28` A-05) replaces it with a
+ * measurement on the pixels: 25 states, over the aurora, black and a white, grey and black photo, and the focus ring over the photo.
  */
 const OFF = ["color-contrast"];
 
