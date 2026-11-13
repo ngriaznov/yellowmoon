@@ -1,0 +1,21 @@
+{
+  "state": "25-export-jpeg",
+  "end": "leaves",
+  "stops": [
+    {"role":"button","name":"← Back to photos","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Update ready","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Export ⌘E","outline":"solid","ring":"outline"},
+    {"role":"region","name":"List of photos to export","outline":"solid","ring":"outline"},
+    {"role":"radio","name":"Picked · 3","outline":"solid","ring":"outline"},
+    {"role":"radio","name":"JPEG","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Quality","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"Quality value","outline":"solid","ring":"outline"},
+    {"role":"radio","name":"sRGB","outline":"solid","ring":"outline"},
+    {"role":"radio","name":"Full · 8640 px","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Choose…","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"File name template","outline":"solid","ring":"outline"},
+    {"role":"radio","name":"Keep both","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Copy","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Export 3 photos ≈ 75 MB · ⌘↩","outline":"solid","ring":"outline"}
+  ]
+}

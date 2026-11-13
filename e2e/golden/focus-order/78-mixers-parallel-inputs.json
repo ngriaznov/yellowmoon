@@ -1,0 +1,33 @@
+{
+  "state": "78-mixers-parallel-inputs",
+  "end": "leaves",
+  "stops": [
+    {"role":"button","name":"Before","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Crop","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Nodes","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Add photos","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Fit 8%","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Update ready","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Export 3 ⌘E","outline":"solid","ring":"outline"},
+    {"role":"separator","name":"Resize the graph","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Add node","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Bypass","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Delete","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Previous photo","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Next photo","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Show mask","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Expand","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Parallel, mixer with 2 inputs, from node 2 and node 3","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Zoom out","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Zoom in","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Fit the graph","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Bypass this node","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Reset this node","outline":"solid","ring":"outline"},
+    {"role":"button","name":"More","outline":"solid","ring":"outline"},
+    {"role":"tab","name":"Inputs","outline":"solid","ring":"outline"},
+    {"role":"listitem","name":"Input 1, 02 Skin","outline":"solid","ring":"outline"},
+    {"role":"listitem","name":"Input 2, 03 Sky","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Copy settings","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Paste","outline":"solid","ring":"outline"}
+  ]
+}

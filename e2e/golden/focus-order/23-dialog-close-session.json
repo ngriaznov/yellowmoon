@@ -1,0 +1,8 @@
+{
+  "state": "23-dialog-close-session",
+  "end": "wraps",
+  "stops": [
+    {"role":"button","name":"Stop export and close","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Keep exporting","outline":"solid","ring":"outline"}
+  ]
+}

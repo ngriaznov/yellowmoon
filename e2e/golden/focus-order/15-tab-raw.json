@@ -1,0 +1,26 @@
+{
+  "state": "15-tab-raw",
+  "end": "leaves",
+  "stops": [
+    {"role":"button","name":"Before","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Crop","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Nodes","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Add photos","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Fit 12%","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Update ready","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Export 3 ⌘E","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Show DSC04204, picked","outline":"solid","ring":"outline"},
+    {"role":"tab","name":"RAW","outline":"solid","ring":"outline"},
+    {"role":"switch","name":"Neural demosaic","outline":"solid","ring":"outline"},
+    {"role":"switch","name":"Highlight recovery","outline":"solid","ring":"outline"},
+    {"role":"switch","name":"Lens corrections from camera","outline":"solid","ring":"outline"},
+    {"role":"switch","name":"Chromatic aberration","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Reset","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Highlights","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"Highlights value","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Low light","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"Low light value","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Copy settings","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Paste","outline":"solid","ring":"outline"}
+  ]
+}

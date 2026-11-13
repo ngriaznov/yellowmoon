@@ -1,0 +1,16 @@
+{
+  "state": "05-wizard-1-choose",
+  "end": "leaves",
+  "stops": [
+    {"role":"button","name":"Cancel","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Choose. Pick the ARRI packages you want.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Get the files. Download them from ARRI's site.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Recognise. We check what each package is.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Import. Copy the looks into the app.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Finish. Pick a default and clean up.","outline":"solid","ring":"outline"},
+    {"role":"checkbox","name":"Look Library · LogC4","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Show 2 older LogC3 packages","outline":"solid","ring":"outline"},
+    {"role":"button","name":"← Back","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Next","outline":"solid","ring":"outline"}
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "state": "14-tab-curve",
+  "end": "leaves",
+  "stops": [
+    {"role":"button","name":"Before","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Crop","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Nodes","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Add photos","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Fit 12%","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Update ready","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Export 3 ⌘E","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Show DSC04204, picked","outline":"solid","ring":"outline"},
+    {"role":"tab","name":"Curve","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Reset","outline":"solid","ring":"outline"},
+    {"role":"radio","name":"Luma","outline":"solid","ring":"outline"},
+    {"role":"group","name":"Luma curve","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Point 1 of 5","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Point 2 of 5","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Point 3 of 5","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Point 4 of 5","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Point 5 of 5","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Copy settings","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Paste","outline":"solid","ring":"outline"}
+  ]
+}

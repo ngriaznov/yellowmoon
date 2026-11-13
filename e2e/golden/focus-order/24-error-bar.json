@@ -1,0 +1,15 @@
+{
+  "state": "24-error-bar",
+  "end": "leaves",
+  "stops": [
+    {"role":"button","name":"Open files ⌘O","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Open folder ⇧⌘O","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Update ready","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Export ⌘E","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Change","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Import →","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Open files…","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Open folder…","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Dismiss","outline":"solid","ring":"outline"}
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "state": "22-dialog-about",
+  "end": "wraps",
+  "stops": [
+    {"role":"button","name":"Andrea Volpato (spektrafilm)","outline":"solid","ring":"outline"},
+    {"role":"button","name":"CC BY-SA 4.0","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Yellowmoon on GitHub","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Done","outline":"solid","ring":"outline"}
+  ]
+}

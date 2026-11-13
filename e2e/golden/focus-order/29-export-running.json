@@ -1,0 +1,11 @@
+{
+  "state": "29-export-running",
+  "end": "leaves",
+  "stops": [
+    {"role":"button","name":"← Back to photos","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Update ready","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Export ⌘E","outline":"solid","ring":"outline"},
+    {"role":"region","name":"List of photos to export","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Cancel","outline":"solid","ring":"outline"}
+  ]
+}

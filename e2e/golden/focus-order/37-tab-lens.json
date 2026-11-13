@@ -1,0 +1,25 @@
+{
+  "state": "37-tab-lens",
+  "end": "leaves",
+  "stops": [
+    {"role":"button","name":"Before","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Crop","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Nodes","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Add photos","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Fit 12%","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Update ready","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Export 3 ⌘E","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Show DSC04204, picked","outline":"solid","ring":"outline"},
+    {"role":"tab","name":"Lens","outline":"solid","ring":"outline"},
+    {"role":"radio","name":"Default Clean and modern: even sharpness, faint glow.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Reset","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Flares","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"Flares value","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Edges","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"Edges value","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Anamorphic","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"Anamorphic value","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Copy settings","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Paste","outline":"solid","ring":"outline"}
+  ]
+}
