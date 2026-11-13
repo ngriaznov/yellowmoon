@@ -306,4 +306,79 @@ describe("PhotoCell pixel probe", () => {
     fireEvent.keyDown(window, { key: "Alt" });
     expect(onPixelProbe).not.toHaveBeenCalled();
   });
+
+  describe("the keys of a zoomed photo (docs/28 A-10)", () => {
+    const keys = () => ({ pan: vi.fn(), centre: vi.fn(), readPixel: vi.fn() });
+
+    it("is not a Tab stop without keys, and keeps the photo's own name", () => {
+      render(<PhotoCell imageLabel="Photo DSC04204, Neutral · 100%" native={false} />);
+      const view = screen.getByRole("img", { name: "Photo DSC04204, Neutral · 100%" });
+      expect(view).not.toHaveAttribute("tabindex");
+      expect(view).not.toHaveAttribute("data-pan-view");
+    });
+
+    it("is a Tab stop named for what the arrows do, and still says which photo it is", () => {
+      render(<PhotoCell imageLabel="Photo DSC04204, Neutral · 100%" native={false} keys={keys()} />);
+      const view = screen.getByRole("img", { name: "Photo, zoomed. The arrow keys move it." });
+      expect(view).toHaveAttribute("tabindex", "0");
+      expect(view).toHaveAttribute("data-pan-view");
+      expect(view).toHaveAccessibleDescription("Photo DSC04204, Neutral · 100%. Home centres it. I reads the pixel at the centre.");
+      // The picture still holds nothing but the picture.
+      expect(view.textContent).toBe("");
+    });
+
+    it("the arrows pan by 5 % of the cell, with Shift by 25 %, and the key is not left to the page", () => {
+      const h = keys();
+      render(<PhotoCell native={false} keys={h} />);
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(box(0, 0, 1000, 600));
+      const view = screen.getByRole("img");
+      const cancelled = fireEvent.keyDown(view, { key: "ArrowRight" });
+      expect(cancelled).toBe(false);
+      expect(h.pan).toHaveBeenLastCalledWith(-50, 0);
+      fireEvent.keyDown(view, { key: "ArrowDown", shiftKey: true });
+      expect(h.pan).toHaveBeenLastCalledWith(0, -150);
+    });
+
+    it("Home centres, I reads the pixel once, and a key held down does not repeat either", () => {
+      const h = keys();
+      render(<PhotoCell native={false} keys={h} />);
+      const view = screen.getByRole("img");
+      fireEvent.keyDown(view, { key: "Home" });
+      fireEvent.keyDown(view, { key: "Home", repeat: true });
+      fireEvent.keyDown(view, { key: "i" });
+      fireEvent.keyDown(view, { key: "I", repeat: true });
+      expect(h.centre).toHaveBeenCalledTimes(1);
+      expect(h.readPixel).toHaveBeenCalledTimes(1);
+      expect(h.pan).not.toHaveBeenCalled();
+    });
+
+    it("leaves a key with a modifier, and a key that came up from inside the picture, alone", () => {
+      const h = keys();
+      const { container } = render(
+        <PhotoCell native={false} keys={h}>
+          <button type="button">inside</button>
+        </PhotoCell>,
+      );
+      const view = screen.getByRole("img");
+      fireEvent.keyDown(view, { key: "ArrowRight", metaKey: true });
+      fireEvent.keyDown(view, { key: "ArrowRight", altKey: true });
+      // A control over the picture (the crop frame lives in the overlay) is not the picture: its keys are its own.
+      fireEvent.keyDown(container.querySelector("button") as HTMLElement, { key: "ArrowRight" });
+      expect(h.pan).not.toHaveBeenCalled();
+    });
+
+    it("a click on the picture does not take the focus, so the arrows keep stepping photos for a mouse user", () => {
+      render(
+        <>
+          <button type="button">elsewhere</button>
+          <PhotoCell native={false} keys={keys()} />
+        </>,
+      );
+      const other = screen.getByRole("button", { name: "elsewhere" });
+      other.focus();
+      const proceeded = fireEvent.mouseDown(screen.getByRole("img"));
+      expect(proceeded).toBe(false);
+      expect(document.activeElement).not.toBe(screen.getByRole("img"));
+    });
+  });
 });

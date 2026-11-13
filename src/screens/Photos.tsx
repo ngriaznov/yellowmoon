@@ -682,6 +682,11 @@ export function Photos() {
       announcer.say(announcementFor(action, announceFacts(state, store.fitPercentExact(), typeof on === "function" ? on() : on)), held);
     });
   };
+  // The I key of the zoomed photo says the pixel at the middle of the view in the same region (`docs/28` A-10).
+  const onReadPixel = useCallback(
+    (pixel: string | null) => announcer.say(announcementFor("read-pixel", { ...announceFacts(store.getState(), store.fitPercentExact()), pixel })),
+    [store, announcer],
+  );
   useEffect(() => {
     store.announce = (action, on) => tell(action, false, undefined, on);
     return () => {
@@ -1038,6 +1043,7 @@ export function Photos() {
           object={object}
           objectTool={objectAsked}
           maskChip={maskChip}
+          onReadPixel={onReadPixel}
         />
       </div>
 

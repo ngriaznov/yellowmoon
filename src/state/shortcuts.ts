@@ -127,6 +127,7 @@ function usesHorizontalArrows(target: EventTarget | null): boolean {
   const role = el.getAttribute("role");
   if (role && ["slider", "radio", "tab", "menuitemradio", "menuitem", "application"].includes(role)) return true;
   if (el.closest("[data-photo-id]")) return true; // a filmstrip thumbnail
+  if (el.closest("[data-pan-view]")) return true; // the zoomed photo, while it has the focus: the arrows pan it (`docs/28` A-10)
   if (el.closest(".ym-crop")) return true;
   if (el.closest("[data-mask-handles]")) return true; // a handle of a mask: the arrows nudge it
   return false;

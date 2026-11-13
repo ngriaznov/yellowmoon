@@ -13,6 +13,7 @@ const facts = (over: Partial<AnnounceFacts> = {}): AnnounceFacts => ({
   pickedCount: 4,
   position: 5,
   count: 12,
+  pixel: null,
   on: true,
   ...over,
 });
@@ -55,6 +56,11 @@ describe("the sentence for each shortcut (docs/11 §Announcements)", () => {
     expect(say("next-photo")).toBe("Photo 5 of 12.");
     expect(say("previous-photo", { position: 1 })).toBe("Photo 1 of 12.");
     expect(say("next-photo", { position: null })).toBeNull();
+  });
+
+  it("I says the pixel at the middle of the view as the ⌥ readout shows it, or that there was none", () => {
+    expect(say("read-pixel", { pixel: "R 127 G 166 B 199" })).toBe("R 127 G 166 B 199.");
+    expect(say("read-pixel", { pixel: null })).toBe("Nothing to read here.");
   });
 
   it("⌘Z and ⇧⌘Z say so only when there was a step to take", () => {

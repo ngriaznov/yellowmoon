@@ -103,6 +103,31 @@ describe("the shortcut table of docs/11", () => {
     expect(act(key("ArrowRight", {}, handle))).toBeNull();
   });
 
+  it("the arrows stay with the zoomed photo while it has the focus, and step photos from anywhere else", () => {
+    const view = document.createElement("div");
+    view.setAttribute("role", "img");
+    view.setAttribute("data-pan-view", "");
+    expect(act(key("ArrowLeft", {}, view))).toBeNull();
+    expect(act(key("ArrowRight", { shiftKey: true }, view))).toBeNull();
+    // The same picture when it is not zoomed has no such mark, and is not a Tab stop either: the arrows step photos.
+    const flat = document.createElement("div");
+    flat.setAttribute("role", "img");
+    expect(act(key("ArrowRight", {}, flat))).toBe("next-photo");
+    // Not focused: the filmstrip's scroller, a button and the page keep stepping photos.
+    const button = document.createElement("button");
+    const body = document.createElement("div");
+    document.body.append(view, button, body);
+    expect(act(key("ArrowRight", {}, button))).toBe("next-photo");
+    expect(act(key("ArrowLeft", {}, body))).toBe("previous-photo");
+    expect(act(key("ArrowRight"))).toBe("next-photo");
+    // I is no shortcut of the screen: the picture's own key, and nothing in a text box.
+    expect(act(key("i", {}, view))).toBeNull();
+    expect(act(key("i"))).toBeNull();
+    view.remove();
+    button.remove();
+    body.remove();
+  });
+
   it("P picks, backslash flips Before, Z toggles zoom, C crops, W picks white", () => {
     expect(act(key("p"))).toBe("toggle-pick");
     expect(act(key("P", { shiftKey: true }))).toBe("toggle-pick");
@@ -145,7 +170,7 @@ describe("the shortcut table of docs/11", () => {
   it("types normally in a text box", () => {
     const input = document.createElement("input");
     input.type = "search";
-    for (const letter of ["p", "z", "c", "w", "f", "1", "\\"]) expect(act(key(letter, {}, input), { tab: "look" })).toBeNull();
+    for (const letter of ["p", "z", "c", "w", "f", "i", "1", "\\"]) expect(act(key(letter, {}, input), { tab: "look" })).toBeNull();
   });
 
   it("1 to 9 pick looks only on the Look tab", () => {

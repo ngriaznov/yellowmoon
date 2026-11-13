@@ -817,7 +817,11 @@ describe("viewport", () => {
       before: true,
       maskView: null,
       inputs: [{ kind: "pan", dx: 4, dy: -2 }],
+      // The sum of the pans while zoomed; Fit puts it back (docs/28 A-10).
+      offset: { x: 4, y: -2 },
     });
+    await api.viewportSetMode({ kind: "fit" });
+    expect(api.viewport.offset).toEqual({ x: 0, y: 0 });
   });
 
   it("records the mask view of viewport_set_mode, takes it away with null or a new photo, and draws it only in the fallback frame", async () => {

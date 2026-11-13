@@ -1,11 +1,11 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { PhotoSummary, ResolvedSettings, ViewportRect } from "../api/types";
-import { PhotoCell, usePointerDrag } from "../components";
-import type { PhotoGestureHandlers, PhotoProbe } from "../components";
+import { PhotoCell, useLatest, usePointerDrag } from "../components";
+import type { PhotoGestureHandlers, PhotoKeyHandlers, PhotoProbe } from "../components";
 import { isTauri } from "../env";
 import { useAppState } from "../state/context";
-import { cameraLine, photoName } from "../state/photo";
+import { cameraLine, photoName, pixelText } from "../state/photo";
 import { showsWhole } from "../state/zoom";
 import type { AppStore } from "../state/store";
 import { imageAspectOf, isFullRect } from "./crop/cropMath";
@@ -54,6 +54,8 @@ export interface PhotoViewProps {
   objectTool?: boolean;
   /** The chip that stands in for the look's while the selected node has a selected mask row ("MASK · LINEAR", `docs/23` §7.1). */
   maskChip?: string;
+  /** The I key of the zoomed photo read the pixel at the middle of the view: its text ("R 127 G 166 B 199"), or null when there was nothing to read. The screen says it. */
+  onReadPixel?: (pixel: string | null) => void;
 }
 
 /** The note drawn over a photo that is not ready: still developing, or a file that can't be opened. */
@@ -79,11 +81,13 @@ function notReadyNote(photo: PhotoSummary): { title: string; text: string } | nu
  *
  * The screen draws it again only when what it shows changes (`memo`): a `render_stats` tick or a zoom step elsewhere does not.
  */
-export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false, maskHandles = null, brush = null, object = null, objectTool = false, maskChip }: PhotoViewProps) {
+export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false, maskHandles = null, brush = null, object = null, objectTool = false, maskChip, onReadPixel }: PhotoViewProps) {
   const backend = useAppState((s) => s.viewportBackend);
   const sentFrame = useAppState((s) => s.viewportFrame);
   // Only the pick layer needs to know whether the picture is letterboxed; the zoom changes on every wheel step and is not read otherwise.
   const letterboxed = useAppState((s) => picking !== null && showsWhole(s.zoom, store.fitPercentExact()));
+  // The picture is a Tab stop while it is larger than the cell and nothing else has it (`docs/28` A-10).
+  const zoomed = useAppState((s) => crop === null && picking === null && photo !== null && photo.status.kind === "ready" && !showsWhole(s.zoom, store.fitPercentExact()));
   const [readout, setReadout] = useState<string | null>(null);
   const probing = useRef(false);
 
@@ -161,7 +165,7 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
           const pixel = await store.samplePixelAt(read.x, read.y);
           if (!latest.current) break;
           // On the paper around a letterboxed photo there is nothing to read: the readout goes.
-          setReadout(pixel ? `R ${pixel.r} G ${pixel.g} B ${pixel.b}` : null);
+          setReadout(pixel ? pixelText(pixel) : null);
         }
       } finally {
         probing.current = false;
@@ -206,6 +210,23 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
     zoom: (factor, x, y) => store.queueViewportInput({ kind: "zoom", factor, x, y }),
   };
 
+  // The arrows, Home and I. The pan is the wheel's and the drag's: one input, queued, sent once per frame, clamped by the core. The pixel is the
+  // ⌥ readout's call (`samplePixelAt`) at the middle of the cell.
+  const onReadPixelRef = useLatest(onReadPixel);
+  const keys = useMemo<PhotoKeyHandlers | undefined>(
+    () =>
+      zoomed
+        ? {
+            pan: (dx, dy) => store.queueViewportInput({ kind: "pan", dx, dy }),
+            centre: () => void store.recentreView(),
+            readPixel: () => {
+              void store.samplePixelAt(0.5, 0.5).then((pixel) => onReadPixelRef.current?.(pixel ? pixelText(pixel) : null));
+            },
+          }
+        : undefined,
+    [zoomed, store, onReadPixelRef],
+  );
+
   const note = photo ? notReadyNote(photo) : null;
   const frame = backend === "fallback" && sentFrame && !note ? { src: sentFrame.url, widthPx: sentFrame.width, heightPx: sentFrame.height } : undefined;
   const level = rs ? `${lookName(rs.values.output.look)} · ${Math.round(rs.values.output.look_intensity)}%` : undefined;
@@ -244,6 +265,7 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
         void store.viewportInput({ kind: "toggle_zoom", ...at });
       }}
       gestures={gestures}
+      keys={keys}
       onPointerDown={onPointerDown}
     >
       {note ? (

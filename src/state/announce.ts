@@ -9,8 +9,8 @@ import type { ShortcutAction } from "./shortcuts";
 import type { AppState } from "./store";
 import { showsWhole } from "./zoom";
 
-/** The actions that have a sentence: the shortcuts, and the menu's Clear Picks, which no key does. */
-export type Announced = ShortcutAction | "clear-picks";
+/** The actions that have a sentence: the shortcuts, the menu's Clear Picks, which no key does, and the I key of the zoomed photo (`docs/28` A-10). */
+export type Announced = ShortcutAction | "clear-picks" | "read-pixel";
 
 /** What the sentences are made of, read after the action has run. */
 export interface AnnounceFacts {
@@ -29,6 +29,8 @@ export interface AnnounceFacts {
   /** The photo on screen, 1-based, and how many there are. */
   position: number | null;
   count: number;
+  /** The pixel the I key read at the middle of the view, as the ⌥ readout shows it ("R 127 G 166 B 199"); null when there was nothing to read. */
+  pixel: string | null;
   /**
    * The state a toggle went to (crop, auto crop, the node view, bypass, Show mask), or for undo and redo whether there was a step to take. Only
    * the actions that toggle read it.
@@ -54,6 +56,7 @@ export function announceFacts(state: Pick<AppState, "session" | "settings" | "lo
     pickedCount: session?.picked.length ?? 0,
     position: index === null ? null : index + 1,
     count: photos.length,
+    pixel: null,
     on,
   };
 }
@@ -83,6 +86,8 @@ export function announcementFor(action: Announced, facts: AnnounceFacts): string
     case "previous-photo":
     case "next-photo":
       return facts.position === null ? null : `Photo ${facts.position} of ${facts.count}.`;
+    case "read-pixel":
+      return facts.pixel ? `${facts.pixel}.` : "Nothing to read here.";
     case "undo":
       return facts.on ? "Undone." : null;
     case "redo":

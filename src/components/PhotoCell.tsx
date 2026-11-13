@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { HTMLAttributes, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import type { HTMLAttributes, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import type { ViewportRect } from "../api/types";
+import { panKeyDelta } from "../state/zoom";
 import { Badge } from "@/components/glass/badge";
 import { isTauri } from "../env";
 import { cx } from "./cx";
@@ -23,6 +24,16 @@ export interface PhotoCellFrame {
   src: string;
   widthPx: number;
   heightPx: number;
+}
+
+/** What the keys of a zoomed photo do (`docs/28` A-10). The cell is a Tab stop only while it has these. */
+export interface PhotoKeyHandlers {
+  /** An arrow key: the picture moves by this many CSS pixels (the `pan` input of the viewport). */
+  pan: (dx: number, dy: number) => void;
+  /** Home: the view goes back to the middle of the picture. */
+  centre: () => void;
+  /** I: read the pixel under the middle of the view. */
+  readPixel: () => void;
 }
 
 export interface PhotoCellProps extends Omit<HTMLAttributes<HTMLElement>, "children" | "className"> {
@@ -67,6 +78,11 @@ export interface PhotoCellProps extends Omit<HTMLAttributes<HTMLElement>, "child
    * scrolls or bounces under the photo); without it the cell leaves them to the page (`usePhotoGestures`).
    */
   gestures?: PhotoGestureHandlers;
+  /**
+   * The keys of a zoomed photo. With it the picture is a Tab stop named "Photo, zoomed. The arrow keys move it.", and its arrows, Home and I
+   * do these; without it the picture is not focusable. The screen passes it only while the photo is larger than the cell.
+   */
+  keys?: PhotoKeyHandlers;
   /** Extra layers over the photo (the crop rectangle). They fill the cell. */
   children?: ReactNode;
   className?: string;
@@ -138,6 +154,7 @@ export function PhotoCell({
   onRect,
   onPixelProbe,
   gestures,
+  keys,
   children,
   className,
   ...rest
@@ -239,6 +256,33 @@ export function PhotoCell({
     }
   };
 
+  const keyHelp = useId();
+  const keysRef = useLatest(keys);
+  // The picture takes the keys only while it has the focus itself: a crop frame or a handle over it has its own.
+  const onViewKeyDown = (event: ReactKeyboardEvent<HTMLElement>): void => {
+    const h = keysRef.current;
+    if (!h || event.target !== event.currentTarget || event.metaKey || event.ctrlKey || event.altKey) return;
+    const box = place();
+    const step = panKeyDelta(event.key, event.shiftKey, box);
+    if (step) {
+      event.preventDefault();
+      h.pan(step.dx, step.dy);
+    } else if (event.key === "Home" && !event.shiftKey) {
+      event.preventDefault();
+      if (!event.repeat) h.centre();
+    } else if ((event.key === "i" || event.key === "I") && !event.shiftKey) {
+      event.preventDefault();
+      if (!event.repeat) h.readPixel();
+    }
+  };
+  // A click on the picture must not take the focus: the arrows would then pan and no longer step photos until the person tabs away.
+  const onViewMouseDown = (event: ReactMouseEvent<HTMLElement>): void => {
+    if (!keysRef.current) return;
+    event.preventDefault();
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body) active.blur();
+  };
+
   const onPointerLeave = (event: ReactPointerEvent<HTMLElement>): void => {
     rest.onPointerLeave?.(event);
     pointer.current = null;
@@ -259,7 +303,12 @@ export function PhotoCell({
       onPointerMove={onPointerMove}
       onPointerLeave={onPointerLeave}
     >
-      <div className="ym-photo-cell__view" role="img" aria-label={imageLabel}>
+      <div
+        className="ym-photo-cell__view"
+        role="img"
+        aria-label={keys ? "Photo, zoomed. The arrow keys move it." : imageLabel}
+        {...(keys ? { tabIndex: 0, "data-pan-view": "", "aria-describedby": keyHelp, onKeyDown: onViewKeyDown, onMouseDown: onViewMouseDown } : {})}
+      >
         {!native && frame ? (
           <img
             className="ym-photo-cell__frame"
@@ -273,6 +322,12 @@ export function PhotoCell({
           <img className="ym-photo-cell__image" src={imageSrc} alt="" draggable={false} />
         ) : null}
       </div>
+      {keys ? (
+        // What the picture was called, and the two keys the name does not say; the name of a zoomed photo is the one that tells how to move it.
+        <span id={keyHelp} className="sr-only">
+          {imageLabel}. Home centres it. I reads the pixel at the centre.
+        </span>
+      ) : null}
       <div className="ym-photo-cell__info" role="group" aria-label="Photo information">
         {before ? (
           <Badge variant="outline" className="ym-photo-cell__before">

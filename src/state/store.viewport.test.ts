@@ -453,3 +453,22 @@ describe("look tiles", () => {
     await expect(second).resolves.toBe("blob:again");
   });
 });
+
+describe("Home on the zoomed photo (docs/28 A-10)", () => {
+  it("sets Fit and then the zoom again, with the mask view as it is, and leaves the zoom mirror where it was", async () => {
+    const { api, store } = await opened({ current: 3 });
+    await store.setZoom({ kind: "percent", value: 200 });
+    const order: string[] = [];
+    vi.spyOn(api, "viewportSetMode").mockImplementation(async (m) => void order.push(m.kind === "fit" ? "fit" : `percent:${m.value}`));
+    await store.recentreView();
+    expect(order).toEqual(["fit", "percent:200"]);
+    expect(store.getState().zoom).toEqual({ kind: "percent", value: 200 });
+  });
+
+  it("does nothing at Fit, where the picture is already in the middle", async () => {
+    const { api, store } = await opened({ current: 3 });
+    const mode = vi.spyOn(api, "viewportSetMode");
+    await store.recentreView();
+    expect(mode).not.toHaveBeenCalled();
+  });
+});

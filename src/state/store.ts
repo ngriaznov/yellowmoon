@@ -2351,6 +2351,24 @@ export class AppStore {
     }
   }
 
+  /**
+   * Home on the zoomed photo: the view goes back to the middle of the picture at the zoom it has (`docs/28` A-10). The core has no input for
+   * it, and it takes Fit and any zoom to be about the middle of the cell (`ViewportState::set_mode`), so this sets Fit and then the zoom again
+   * with the commands that already exist. The zoom mirror does not move. At Fit there is nothing to do.
+   */
+  async recentreView(): Promise<void> {
+    if (this.viewportQueue.busy) await this.viewportQueue.flush();
+    if (this.showsWholePhoto()) return;
+    const zoom = this.state.zoom;
+    const view = this.state.maskShown;
+    try {
+      await this.api.viewportSetMode({ kind: "fit" }, view);
+      await this.api.viewportSetMode(zoom, view);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
   /** The zoom that fits the whole picture in the cell, in percent of the photo's pixels; null before the cell has reported. */
   fitPercent(): number | null {
     const exact = this.fitPercentExact();
