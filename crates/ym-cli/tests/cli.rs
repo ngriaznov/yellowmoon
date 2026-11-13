@@ -482,6 +482,62 @@ fn doctor_reports_subject_and_people_as_this_machine_answers() {
     }
 }
 
+/// `docs/26` H-17: the Metal working-set limit has a row and a field. On a Mac with an adapter it is a number above 0,
+/// and on Apple silicon above RAM / 4 (finding P5-2); anywhere else the row says why there is none.
+#[test]
+fn doctor_reports_the_metal_limit_or_why_there_is_none() {
+    let sb = Sandbox::new();
+    let out = sb
+        .ym()
+        .env("YELLOWMOON_GPU", "on")
+        .args(["doctor", "--json"])
+        .assert()
+        .success();
+    let v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
+    let text = String::from_utf8(
+        sb.ym()
+            .env("YELLOWMOON_GPU", "on")
+            .arg("doctor")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .expect("UTF-8");
+    let budget = &v["memory_budget"];
+    assert_eq!(budget["metal_factor"], 0.75);
+    assert!(budget["metal_devices"].is_array());
+    let row = text
+        .lines()
+        .find(|l| l.starts_with("GPU Metal limit"))
+        .unwrap_or_else(|| panic!("no `GPU Metal limit` row:\n{text}"));
+    if v["gpu"]["available"] != true {
+        assert_eq!(budget["metal_limit_reason"], "no GPU adapter opened");
+        assert!(row.contains("none (no GPU adapter opened)"), "{row}");
+        return;
+    }
+    if cfg!(target_os = "macos") {
+        let limit = budget["metal_limit_bytes"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("a Mac with an adapter has a Metal limit: {budget}"));
+        assert!(limit > 0);
+        assert!(budget["metal_limit_reason"].is_null());
+        assert!(
+            row.contains("GiB (working set; the GPU budget uses 0.75 of it)"),
+            "{row}"
+        );
+        // The budget never exceeds 0.75 of the limit.
+        let gpu = budget["gpu_bytes"].as_u64().expect("gpu_bytes");
+        assert!(gpu as f64 <= limit as f64 * 0.75 + 1.0, "{budget}");
+    } else {
+        assert!(budget["metal_limit_bytes"].is_null(), "{budget}");
+        assert_eq!(budget["metal_limit_reason"], "not a Mac, so no Metal limit");
+        assert!(row.contains("none (not a Mac"), "{row}");
+        assert_eq!(budget["gpu_bytes"], 4_u64 << 30);
+    }
+}
+
 #[test]
 fn doctor_json_shape_snapshot_on_a_machine_with_no_adapter() {
     // No Direct3D 12 here whatever the machine is, so the GPU section is the same everywhere; the

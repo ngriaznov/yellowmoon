@@ -25,7 +25,7 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use ym_core::app::gpu::{GpuOpener, GpuPolicy, GpuSlot};
+use ym_core::app::gpu::{GpuPolicy, GpuSlot};
 use ym_core::export_queue::{ExportEvent, ExportJob};
 use ym_core::pipeline::{
     FrameOptions, PhotoSource, RenderReport, RenderedFrame, StageTimings, ViewportMode,
@@ -180,7 +180,7 @@ impl Phase<'_> {
 /// A [`Failure`] when the file cannot be developed, `require` finds no device, or an export fails.
 pub fn run(path: &Path, repeat: u32) -> Result<Value, Failure> {
     let choice = GpuPolicy::from_environment(None);
-    let slot: GpuSlot = GpuOpener::new(choice.policy, MemoryBudget::detect())
+    let slot: GpuSlot = ym_apple::gpu_opener(choice.policy, MemoryBudget::detect())
         .with_timestamps(true)
         .open();
     if let Some(reason) = slot.failure() {

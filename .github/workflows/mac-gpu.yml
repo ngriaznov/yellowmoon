@@ -88,6 +88,32 @@ jobs:
         run: system_profiler SPDisplaysDataType SPHardwareDataType | tee system-${{ matrix.runner }}.txt
       - name: The adapter as ym sees it (ym doctor)
         run: cargo run -p ym-cli --release -- doctor --json | tee doctor-${{ matrix.runner }}.json
+      # H-17 (docs/26, finding P5-2): the budget of the GPU follows Metal's working-set limit. The report must carry the
+      # limit (the Metal bridge of ym-apple found the device wgpu opened by its name), it must be above 0, and on Apple
+      # silicon it must be above RAM / 4 (the unified-memory rule's share; a smaller limit would mean the rule overshoots).
+      # The GPU budget is at most 0.75 of the limit. This step has no `if`, so a diagnostic dispatch (one with a filter)
+      # runs it too, before the diagnostic step: the full run is unchanged.
+      - name: The Metal limit in the report (ym doctor, H-17)
+        env:
+          DOCTOR_JSON: doctor-${{ matrix.runner }}.json
+        run: |
+          ram=$(sysctl -n hw.memsize)
+          arch=$(uname -m)
+          python3 - "$DOCTOR_JSON" "$ram" "$arch" <<'PY'
+          import json, sys
+          path, ram, arch = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+          report = json.load(open(path))
+          budget = report["memory_budget"]
+          print("adapter:", report["gpu"].get("name"), "| Metal devices:", json.dumps(budget["metal_devices"]))
+          assert "metal_limit_bytes" in budget, "the report has no metal_limit_bytes"
+          limit = budget["metal_limit_bytes"]
+          assert limit is not None and limit > 0, f"no Metal limit: {budget['metal_limit_reason']}"
+          if arch == "arm64":
+              assert limit > ram // 4, f"the Metal limit {limit} is not above RAM/4 = {ram // 4}"
+          gpu = budget["gpu_bytes"]
+          assert gpu <= limit * budget["metal_factor"] + 1, f"the GPU budget {gpu} is above {budget['metal_factor']} of the limit {limit}"
+          print(f"Metal limit {limit} bytes ({limit / 2**30:.2f} GiB), RAM {ram / 2**30:.2f} GiB, GPU budget {gpu / 2**30:.2f} GiB: ok")
+          PY
       # A dispatch with a filter runs only this step (and the log upload): wgpu debug logging and Metal's debug layer on
       # the tests named by the `tests` and `filter` inputs. The inputs go through env, not into the shell line.
       - name: Diagnostic run (dispatch with a filter)

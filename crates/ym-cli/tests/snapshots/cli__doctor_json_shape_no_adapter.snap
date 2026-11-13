@@ -113,6 +113,10 @@ expression: shape(&v)
   "memory_budget": {
     "cpu_bytes": "number",
     "gpu_bytes": "number",
+    "metal_devices": [],
+    "metal_factor": "number",
+    "metal_limit_bytes": "null",
+    "metal_limit_reason": "string",
     "ram_override_bytes": "null",
     "shared_memory": "bool"
   },

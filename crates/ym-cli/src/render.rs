@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use ym_core::app::Core;
 use ym_core::app::gpu::{
-    CpuReason, GPU_ENV, GpuOutcome, GpuPolicy, GpuSlot, PolicyChoice, PolicySource, open_gpu,
+    CpuReason, GPU_ENV, GpuOutcome, GpuPolicy, GpuSlot, PolicyChoice, PolicySource,
 };
 use ym_core::export::{free_bytes_in, is_low_on_space, low_space_message, planned_destination};
 use ym_core::export_queue::{ExportEvent, ExportJob, FileDone, QueueError};
@@ -412,7 +412,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
     let budget = core.renderer.options().budget;
     let mut gpu_slot: Option<GpuSlot> = None;
     if choice.policy.is_strict() {
-        let slot = open_gpu(choice.policy, budget);
+        let slot = ym_apple::gpu_opener(choice.policy, budget).open();
         if let Some(reason) = slot.failure() {
             return Err(Failure::new(exit::NO_GPU, no_gpu_message(&choice, reason)));
         }

@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
 use ym_agents::StartProbe;
-use ym_core::app::gpu::{GpuPolicy, GpuSlot, open_gpu};
+use ym_core::app::gpu::{GpuPolicy, GpuSlot};
 use ym_core::app::{Core, CoreError, CoreOptions};
 use ym_core::apple_auto::UnavailableReason;
 use ym_core::auto_provider::{
@@ -510,7 +510,7 @@ impl BackgroundGpu {
             std::thread::Builder::new()
                 .name("ym-gpu-open".to_owned())
                 .spawn(move || {
-                    let slot = open_gpu(policy, budget);
+                    let slot = ym_apple::gpu_opener(policy, budget).open();
                     // The handle is not kept: the job runs on the device thread, its result is
                     // only a count, and a failing kernel shows again when its stage runs.
                     drop(slot.warm_up_for_exports());

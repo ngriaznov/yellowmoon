@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use ym_core::app::gpu::{GpuOpener, GpuPolicy, GpuSlot};
+use ym_core::app::gpu::{GpuPolicy, GpuSlot};
 use ym_core::app::{Core, CoreOptions};
 use ym_core::auto_provider::ProviderAdvisors;
 use ym_core::export_queue::{ExportEvent, ExportJob as CoreExportJob, ExportSink};
@@ -1659,7 +1659,7 @@ fn open_app_gpu(enabled: bool, budget: ym_core::scheduler::MemoryBudget) -> GpuS
     }
     // GPU pass times (timestamp queries, where the adapter has them) when `YM_PERF` is on: the `gpu passes`
     // line of `ym::perf`. Off, nothing is timed.
-    let slot = GpuOpener::new(gpu_policy(), budget)
+    let slot = ym_apple::gpu_opener(gpu_policy(), budget)
         .with_pipeline_cache_dir(ym_gpu::device::default_pipeline_cache_dir())
         .with_timestamps(crate::perf::enabled())
         .open();

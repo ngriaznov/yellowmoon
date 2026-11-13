@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use ym_core::app::gpu::{
-    CpuReason, GpuOutcome, GpuPolicy, GpuStages, PolicyChoice, PolicySource, open_gpu,
-    probe_adapter,
+    CpuReason, GpuOutcome, GpuPolicy, GpuStages, PolicyChoice, PolicySource, probe_adapter,
 };
+use ym_core::app::metal::{METAL_WORKING_SET_FACTOR, MetalDevice, MetalLimit, metal_limit_of};
 use ym_core::apple_auto::{PROMPT_VERSION, TABLE_VERSION, UnavailableReason};
 use ym_core::auto_provider::{
     AGY_MIN_VERSION, AdvisorDetails, AutoChoice, AutoProvider, AutoStatus, CLAUDE_DEFAULT_MODEL,
@@ -67,6 +67,10 @@ struct GpuPlan {
     shared_memory: bool,
     /// The RAM `YELLOWMOON_RAM_GB` says, when it is set to a number the budget rule accepts.
     ram_override: Option<u64>,
+    /// The Metal working-set limit of the adapter (`None`: no adapter opened, so nothing to look for) and the
+    /// Metal devices it was looked up in. The budget above is already capped by it.
+    metal: Option<MetalLimit>,
+    metal_devices: Vec<MetalDevice>,
 }
 
 /// The Auto providers as the report says them: the status the app's Preferences would show, and what each
@@ -309,7 +313,7 @@ fn build() -> Result<Report, Failure> {
 /// leaves alone, and the one on a machine where the setting is `off`, are still listed.
 fn gpu_report() -> (Result<GpuInfo, String>, GpuPlan) {
     let choice = GpuPolicy::from_environment(None);
-    let slot = open_gpu(choice.policy, MemoryBudget::detect());
+    let slot = ym_apple::gpu_opener(choice.policy, MemoryBudget::detect()).open();
     let gpu = match (slot.adapter(), slot.missing_device_reason()) {
         (Some(info), _) => Ok(info.clone()),
         (None, Some(reason)) => Err(reason.to_owned()),
@@ -325,6 +329,17 @@ fn gpu_report() -> (Result<GpuInfo, String>, GpuPlan) {
             Some(format!("no adapter opened ({reason})"))
         }
     };
+    // The same list the opener capped the budget with (`ym_apple::gpu_opener`), looked up for the adapter
+    // reported. With no adapter there is nothing to look up, and the list is not read.
+    let metal_devices = if gpu.is_ok() {
+        ym_apple::system_metal_devices().devices()
+    } else {
+        Vec::new()
+    };
+    let metal = gpu
+        .as_ref()
+        .ok()
+        .map(|info| metal_limit_of(info, &metal_devices));
     let plan = GpuPlan {
         uses_gpu: slot.is_using(),
         reason,
@@ -332,6 +347,8 @@ fn gpu_report() -> (Result<GpuInfo, String>, GpuPlan) {
         budget: slot.budget(),
         shared_memory: slot.shares_memory(),
         ram_override: ym_core::scheduler::ram_override(),
+        metal,
+        metal_devices,
         choice,
     };
     (gpu, plan)
@@ -675,6 +692,16 @@ fn to_json(r: &Report) -> Value {
             "gpu_bytes": r.plan.budget.gpu_bytes,
             "shared_memory": r.plan.shared_memory,
             "ram_override_bytes": r.plan.ram_override,
+            "metal_limit_bytes": r.plan.metal.as_ref().and_then(MetalLimit::bytes),
+            "metal_limit_reason": metal_reason(r.plan.metal.as_ref()),
+            "metal_factor": METAL_WORKING_SET_FACTOR,
+            "metal_devices": r.plan.metal_devices.iter().map(|d| json!({
+                "name": d.name,
+                "recommended_max_working_set_bytes": d.recommended_max_working_set_bytes,
+                "has_unified_memory": d.has_unified_memory,
+                "is_low_power": d.is_low_power,
+                "is_removable": d.is_removable,
+            })).collect::<Vec<_>>(),
         },
         "render_path": {
             "demosaic": if r.neural.available { "neural" } else { "classical" },
@@ -702,6 +729,25 @@ fn to_json(r: &Report) -> Value {
         "looks_folder": lossy(&r.looks_folder),
         "data_folder": lossy(&r.data_folder),
     })
+}
+
+/// Why there is no Metal limit, in a short sentence: `None` when there is one.
+fn metal_reason(limit: Option<&MetalLimit>) -> Option<String> {
+    match limit {
+        Some(limit) => limit.why_none(),
+        None => Some("no GPU adapter opened".to_owned()),
+    }
+}
+
+/// The `GPU Metal limit` row: the limit and the share of it the GPU budget uses, or why there is none.
+fn metal_text(limit: Option<&MetalLimit>) -> String {
+    match limit.and_then(MetalLimit::bytes) {
+        Some(bytes) => format!(
+            "{:.1} GiB (working set; the GPU budget uses {METAL_WORKING_SET_FACTOR} of it)",
+            bytes as f64 / f64::from(1u32 << 30)
+        ),
+        None => format!("none ({})", metal_reason(limit).unwrap_or_default()),
+    }
 }
 
 /// The `GPU policy` row: the setting, where it came from, and what it comes to here.
@@ -774,6 +820,7 @@ fn to_text(r: &Report) -> String {
         }
         Err(reason) => row("GPU", format!("none, CPU fallback ({reason})")),
     }
+    row("GPU Metal limit", metal_text(r.plan.metal.as_ref()));
     row("GPU policy", policy_text(&r.plan));
     row(
         "GPU stages",
