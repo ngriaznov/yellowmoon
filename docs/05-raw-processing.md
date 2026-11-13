@@ -440,7 +440,7 @@ What a tile, a group and an export leave on the device between two jobs, and the
 | Fit preview after open (classical, 1/4 res) | < 300 ms |
 | Colour-only edit, viewport refresh | < 16 ms |
 | 1:1 neural tiles visible on a 1440p viewport | < 1.5 s |
-| Full neural export, JPEG | < 6 s per photo |
+| Full neural export, JPEG | < 6 s per photo (JPEG only: TIFF and PNG 16-bit encoding alone takes about twice that, and they have no target; STATUS question 6) |
 | CPU-only fallback export | < 90 s per photo |
 
 These are targets; measured values are reported at each gate. The raw group of the cold fit preview takes 418 ms of 1111 ms at 24 MP on four shared x86-64 cores on the CPU (`docs/01`); the 300 ms target for it depends on the device path of the raw front. The colour-only target depends on the colour pass, which has a kernel (166 to 197 ms with `--gpu` on lavapipe against about 500 ms on the CPU, `docs/01`).

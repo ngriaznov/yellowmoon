@@ -90,7 +90,7 @@ Synthetic training data, Cube++ converted per profile, FFCC-style filter, class 
 
 **M1-07 · Fused colour chain** (M1-05, M1-06)
 C1–C6 as one matrix per photo; Auto WB, Kelvin/tint, light presets, Pick white maths; per-photo `AutoEstimates`.
-*Done when:* unit tests for each mode; "3200 K under daylight" renders warmer than Auto by the amount the ALEXA maths predicts (test against a CPU spectral simulation).
+*Done when:* unit tests for each mode; "3200 K under daylight" renders bluer than Auto by the amount the ALEXA maths predicts (the wording said "warmer" until 2026-11-13; the test always checked the sign the physics gives, STATUS question 8) (test against a CPU spectral simulation).
 
 **M1-08 · Auto exposure** (M1-07)
 Algorithm in `docs/02`; burst consistency.
