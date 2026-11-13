@@ -112,6 +112,17 @@ describe("the Stock picker", () => {
     return screen.findByRole("dialog", { name: "Film stocks" });
   }
 
+  it("has no aria-controls, open or closed: axe cannot decide it on an open aria-haspopup trigger (aria-valid-attr-value)", async () => {
+    await setup();
+    const field = await screen.findByRole("button", { name: /^Stock, / });
+    expect(field).toHaveAttribute("aria-haspopup", "dialog");
+    expect(field).toHaveAttribute("aria-expanded", "false");
+    expect(field).not.toHaveAttribute("aria-controls");
+    await openPicker();
+    expect(field).toHaveAttribute("aria-expanded", "true");
+    expect(field).not.toHaveAttribute("aria-controls");
+  });
+
   it("is tiles in three groups: 20 stocks, a small render of the photo in each, the chosen one marked", async () => {
     await setup();
     const picker = await openPicker();

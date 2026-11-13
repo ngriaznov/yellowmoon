@@ -812,6 +812,10 @@ span.ym-filmstrip__thumb {
   min-width: 0;
   margin: 0;
 }
+/* The landmark around the divider and the graph takes no box: both stay grid items of the screen. */
+.ym-node-view:not([hidden]) {
+  display: contents;
+}
 .ym-screen[data-nodes="true"] .ym-divider {
   grid-area: divider;
 }
@@ -843,6 +847,13 @@ span.ym-filmstrip__thumb {
 .ym-divider:hover .ym-divider__grip,
 .ym-divider[data-dragging="true"] .ym-divider__grip {
   background: color-mix(in oklch, var(--ink) 55%, transparent);
+}
+/* The two scrollers that are a keyboard stop of their own (Start's list, the Export strip): the ring sits inside the box, so no ancestor's
+   overflow clips it, the same as the divider's. */
+.ym-develop-list:focus-visible,
+.ym-filmstrip__scroll:focus-visible {
+  outline: var(--glass-ring-width) solid var(--ring);
+  outline-offset: -3px;
 }
 .ym-divider:focus-visible {
   outline: var(--glass-ring-width) solid var(--ring);

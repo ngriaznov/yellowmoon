@@ -169,6 +169,13 @@ describe("Filmstrip in export mode", () => {
     expect(screen.getByText("2 to export")).toBeInTheDocument();
   });
 
+  it("is a named, focusable region, so the keyboard can scroll it (nothing in it takes the focus)", () => {
+    render(<Filmstrip mode="export" photos={exportPhotos} currentId={2} />);
+    const region = screen.getByRole("region", { name: "List of photos to export" });
+    expect(region).toHaveAttribute("tabindex", "0");
+    expect(region).toHaveClass("ym-filmstrip__scroll");
+  });
+
   it("dims what will not be exported and names what will", () => {
     render(<Filmstrip mode="export" photos={exportPhotos} currentId={2} />);
     expect(screen.getByRole("img", { name: "DSC04202, picked, will be exported" })).toHaveAttribute("data-in-export", "true");

@@ -145,7 +145,9 @@ export function DevelopList({ items, label = "Photos being developed", className
   const list = useRef<HTMLUListElement>(null);
   const win = useWindowedRange({ count: items.length, axis: "y", list, itemSelector: ".ym-queue__row", estimate: 41 });
   return (
-    <div className={cx("ym-develop-list", className)}>
+    // The list scrolls, so it is a keyboard stop (WebKit does not focus a scroller that has nothing to focus, and Chromium shows it with no
+    // name) and a region with a name: the arrow keys, Space and Page keys then scroll it (docs/28 A-02; axe `scrollable-region-focusable`).
+    <div className={cx("ym-develop-list", className)} role="region" aria-label="Photos to develop" tabIndex={0}>
       <ul
         ref={list}
         aria-label={label}

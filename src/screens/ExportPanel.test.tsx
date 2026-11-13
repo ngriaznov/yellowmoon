@@ -266,6 +266,8 @@ describe("the command line", () => {
     await openExport();
     const card = screen.getByRole("region", { name: "Same thing from the command line" });
     await waitFor(() => expect(within(card).getByLabelText("Command line")).toHaveTextContent("ym render DSC04203.ARW DSC04204.ARW DSC04205.ARW"));
+    // The label is on a group around the `code`: `aria-label` is not allowed on `code` itself (axe `aria-prohibited-attr`).
+    expect(within(card).getByRole("group", { name: "Command line" }).querySelector("code")).not.toBeNull();
     const text = within(card).getByLabelText("Command line").textContent ?? "";
     for (const flag of ["--look neutral", "--format jpeg", "--quality 92", "--colour-space srgb", '--out "~/Pictures/Lisbon export"']) expect(text).toContain(flag);
   });

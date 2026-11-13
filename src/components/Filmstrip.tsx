@@ -393,7 +393,13 @@ export function Filmstrip({
           </ContextMenuContent>
         }
       >
-        <div ref={scroller} className="ym-filmstrip__scroll">
+        {/* In export mode the thumbnails are pictures, not controls, so nothing in the strip takes the focus and the keyboard could not scroll
+            it: it is then a stop of its own, a named region (docs/28 A-02; axe `scrollable-region-focusable`). Browse mode has its roving thumbnails. */}
+        <div
+          ref={scroller}
+          className="ym-filmstrip__scroll"
+          {...(mode === "export" ? { role: "region", "aria-label": "List of photos to export", tabIndex: 0 } : undefined)}
+        >
           {photos.slice(win.start, win.end).map((photo, i) => {
             const index = win.start + i;
             // The space of the thumbnails that are not drawn is the margin of the first and last one that is.

@@ -53,38 +53,6 @@ const MENUS = [
 const RADIX_MENU =
   "A Radix menu is open. Radix's modal menus put aria-hidden on everything else (hideOthers), so the page looks empty to axe, and the header, graph and divider hold focusable content under it. Radix keeps Tab and the pointer out of them while the menu is open. A known pattern of the library, not ours.";
 
-/** The node view's states with no menu open: the divider stands outside every landmark (A-02 fixes it). */
-const NODE_VIEW = [
-  "42-nodes-default",
-  "51-nodes-graph-states",
-  "53-nodes-input-colour",
-  "54-nodes-corrector-light",
-  "55-nodes-corrector-colour",
-  "56-nodes-output-look",
-  "57-nodes-mask-view",
-  "58-nodes-masks-two-rows",
-  "60-nodes-linear-card-handles",
-  "61-nodes-colour-range-picking",
-  "62-nodes-brush-card",
-  "63-nodes-background-card",
-  "64-nodes-object-card",
-  "65-nodes-subject-card",
-  "67-film-tab",
-  "68-film-stock-picker",
-  "69-film-print-tab",
-  "71-film-slide-print-tab",
-  "72-film-halation-tab",
-  "73-film-grain-tab",
-  "74-film-mask-tab",
-  "75-film-output-note",
-  "78-mixers-parallel-inputs",
-  "79-mixers-layer-blend",
-  "81-mixers-splitter-channels",
-  "82-mixers-combiner-channels",
-  "83-mixers-link-to-plus",
-  "84-mixers-card-states",
-] as const;
-
 export const ALLOWED: readonly Allowed[] = [
   // Radix, an open menu (the audit's 2.2).
   { rule: "aria-hidden-focus", states: MENUS, reason: RADIX_MENU },
@@ -100,23 +68,6 @@ export const ALLOWED: readonly Allowed[] = [
     rule: "region",
     states: ["40-dialog-preferences-providers"],
     reason: "The open Select's viewport is a Radix portal child of the dialog; it is not ours to put in a landmark.",
-  },
-  // Known, fixed by A-02 (docs/28).
-  {
-    rule: "scrollable-region-focusable",
-    states: ["02-start-developing", "03-start-ready", "25-export-jpeg", "26-export-tiff", "27-export-png", "28-export-dng", "29-export-running"],
-    reason: "Known, fixed by A-02: Start's list and the Export panel's strip scroll and have nothing to focus, so they are no keyboard stop.",
-  },
-  { rule: "region", states: NODE_VIEW, reason: "Known, fixed by A-02: the node view's divider is outside every landmark." },
-  {
-    rule: "aria-prohibited-attr",
-    states: ["25-export-jpeg", "26-export-tiff", "27-export-png", "28-export-dng"],
-    reason: 'Known, fixed by A-02: `<code aria-label="Command line">`, a label on an element that may not carry one.',
-  },
-  {
-    rule: "aria-valid-attr-value",
-    states: ["68-film-stock-picker"],
-    reason: "Known, fixed by A-02: the Stock field's aria-controls names a popover that is not in the page yet.",
   },
 ];
 

@@ -57,11 +57,14 @@ export interface StockPickerProps {
  */
 export function StockPicker({ store, photoId, node, catalogue, value, pictureKey, onChange }: StockPickerProps) {
   const [open, setOpen] = useState(false);
+  // No `aria-controls`: Radix's trigger sets it to the popover's id, and axe cannot decide it on an open `aria-haspopup` trigger ("Unable to
+  // determine if aria-controls referenced ID exists", an incomplete `aria-valid-attr-value` although the id is in the page). The popover is
+  // a portal, `aria-haspopup="dialog"` and `aria-expanded` already say what the button does, and no screen reader needs the id for it.
   const current = catalogue.stocks.find((s) => s.id === value);
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button type="button" className="ym-stock-field" aria-haspopup="dialog" aria-expanded={open} aria-label={`Stock, ${current?.name ?? value}`}>
+        <button type="button" className="ym-stock-field" aria-haspopup="dialog" aria-expanded={open} aria-controls={undefined} aria-label={`Stock, ${current?.name ?? value}`}>
           <span className="ym-stock-field__value">
             {current?.name ?? value}
           </span>

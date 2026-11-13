@@ -337,9 +337,10 @@ export function ExportOptionsForm({ store, options, mode, model, scope, estimate
             </Button>
           }
         >
-          <code className="ym-export__code" aria-label="Command line">
-            {cli ?? "…"}
-          </code>
+          {/* `aria-label` is not allowed on `code` (axe `aria-prohibited-attr`); a group may carry it. */}
+          <div role="group" aria-label="Command line">
+            <code className="ym-export__code">{cli ?? "…"}</code>
+          </div>
           {adjusted > 0 ? (
             <p className="ym-row-note" role="note">
               {adjusted === 1 ? "1 photo has" : `${adjusted} photos have`} adjustments this command doesn&apos;t include.

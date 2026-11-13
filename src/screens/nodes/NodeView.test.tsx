@@ -195,8 +195,12 @@ describe("layout A", () => {
     expect(graph()).toBeInTheDocument();
     expect(screen.getByRole("complementary", { name: "Tools" })).toBeInTheDocument();
     expect(screen.getByRole("main", { name: "Photo" })).toBeInTheDocument();
+    // The divider and the graph share one landmark, "Node graph area" (a `display: contents` wrapper: both stay items of the grid; axe `region`).
+    const landmark = screen.getByRole("region", { name: "Node graph area" });
+    expect(landmark).toContainElement(divider());
+    expect(landmark).toContainElement(graph());
     // In the grid's order: the header, the photo, the divider, the graph and the panel.
-    const order = [...screenEl().children].map((el) => el.className.toString().split(" ").find((c) => /^ym-(header|viewer|divider|graph|tools|filmstrip)$/.test(c)));
+    const order = [...screenEl().children].flatMap((el) => (el === landmark ? [...el.children] : [el])).map((el) => el.className.toString().split(" ").find((c) => /^ym-(header|viewer|divider|graph|tools|filmstrip)$/.test(c)));
     expect(order.filter(Boolean)).toEqual(["ym-header", "ym-viewer", "ym-divider", "ym-graph", "ym-filmstrip", "ym-tools"]);
     expect(screenEl().querySelector(".ym-filmstrip")).not.toBeVisible();
     // And back.
@@ -204,6 +208,7 @@ describe("layout A", () => {
     expect(screen.getByRole("navigation", { name: "Photos" })).toBeInTheDocument();
     expect(screen.queryByRole("separator")).toBeNull();
     expect(screen.queryByRole("region", { name: "Node editor" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Node graph area" })).toBeNull();
   });
 
   it("gives the screen its sizes: the editor at 45 % of the height under the header, the photo row the rest", async () => {
