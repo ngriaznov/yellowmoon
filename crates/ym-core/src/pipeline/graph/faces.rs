@@ -950,7 +950,10 @@ impl Job<'_> {
         settings: &DevelopSettings,
         stop: PlanStop,
     ) -> Result<Option<Arc<FaceEntry>>, RenderError> {
-        if live_face_nodes(settings, stop).is_empty() {
+        // The Before view is the camera default: no node runs, so none needs the analysis. Its source has its own key (no
+        // vignetting correction, no lens, Detail at Auto), which the photo's analysis is not made for; asking would start the
+        // worker again on every Before frame and make a second analysis of a picture nobody looks at.
+        if self.src.before_view || live_face_nodes(settings, stop).is_empty() {
             return Ok(None);
         }
         let Some(model) = self.opts.face_model.clone().filter(|m| m.available()) else {

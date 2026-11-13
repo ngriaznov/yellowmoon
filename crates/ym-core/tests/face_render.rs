@@ -502,6 +502,80 @@ fn a_viewer_never_waits_and_the_worker_finds_the_faces_once() {
     assert_eq!(r.faces_workers(src.id), 1, "one worker for the photo");
 }
 
+/// A frame of the Before view (the camera default: no node runs).
+fn before_frame(r: &Renderer, src: &PhotoSource) -> Vec<u8> {
+    let mut st = ViewportState::new(ViewportRect::cell(600.0, 400.0, 1.0));
+    st.before = true;
+    r.viewport_frame(src, &st, &FrameOptions::default(), &CancelToken::new())
+        .expect("frame")
+        .rgba
+}
+
+#[test]
+fn the_before_view_never_starts_the_face_worker_and_keeps_the_analysis() {
+    let d = photo();
+    let src = d.source();
+    let r = renderer_with(Some(two_faces()), 0);
+    let heard = listen(&r);
+    r.navigate(src.id);
+    let node = src.with_settings(with_node(strong()));
+    let _ = frame(&r, &node);
+    wait_until("the faces", 60, || {
+        !r.faces_worker_alive(src.id) && r.faces_ready(&node)
+    });
+    assert_eq!(r.faces_workers(src.id), 1);
+    let after = frame(&r, &node);
+    let started = |h: &Arc<Mutex<Vec<(u32, FaceEvent)>>>| {
+        h.lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, e)| *e == FaceEvent::Started)
+            .count()
+    };
+    assert_eq!(started(&heard), 1);
+    for _ in 0..3 {
+        let _ = before_frame(&r, &node);
+        let _ = before_frame(&r, &node);
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(!r.faces_worker_alive(src.id), "Before runs no worker");
+        assert_eq!(r.faces_workers(src.id), 1, "Before starts no face worker");
+        assert_eq!(started(&heard), 1, "Before announces no finding");
+        assert!(r.faces_ready(&node), "the analysis survives Before");
+        assert_eq!(r.face_state(&node).phase, FacePhase::Ready);
+        // After shows the retouch at once.
+        assert_eq!(frame(&r, &node), after);
+    }
+    assert_eq!(r.faces_analyses(src.id), 1);
+}
+
+#[test]
+fn bypassing_the_node_and_bringing_it_back_finds_the_faces_no_more_than_once() {
+    let d = photo();
+    let src = d.source();
+    let r = renderer_with(Some(two_faces()), 0);
+    r.navigate(src.id);
+    let node = src.with_settings(with_node(strong()));
+    let _ = frame(&r, &node);
+    wait_until("the faces", 60, || {
+        !r.faces_worker_alive(src.id) && r.faces_ready(&node)
+    });
+    let after = frame(&r, &node);
+    let mut body = strong();
+    body["bypass"] = json!(true);
+    let bypassed = src.with_settings(with_node(body));
+    for _ in 0..3 {
+        let _ = frame(&r, &bypassed);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !r.faces_worker_alive(src.id),
+            "a bypassed node runs no worker"
+        );
+        assert_eq!(frame(&r, &node), after, "the retouch is back at once");
+    }
+    assert_eq!(r.faces_workers(src.id), 1);
+    assert_eq!(r.faces_analyses(src.id), 1);
+}
+
 #[test]
 fn leaving_the_photo_stops_the_worker_without_a_word() {
     let d = photo();
