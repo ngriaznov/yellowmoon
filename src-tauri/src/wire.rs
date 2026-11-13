@@ -3276,6 +3276,23 @@ pub struct MemoryNotice {
     pub message: Option<String>,
 }
 
+/// `display_options { reduce_transparency, reduce_motion, increase_contrast }` (addition, `docs/28` A-P12, `docs/11` *Display options*):
+/// the three accessibility display settings of the system (System Settings, Accessibility, Display), read by the shell on macOS
+/// (`NSWorkspace`) and sent when the system says one changed. It is also what the command `display_options()` returns, because an
+/// event sent at start can arrive before the page listens. The page sets or removes `data-reduce-transparency`,
+/// `data-reduce-motion` and `data-increase-contrast` on `<html>` from it. Off macOS all three are false and no event is sent.
+/// Not saved anywhere: the system is asked each time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "display_options")]
+pub struct DisplayOptions {
+    /// Reduce Transparency is on.
+    pub reduce_transparency: bool,
+    /// Reduce Motion is on.
+    pub reduce_motion: bool,
+    /// Increase Contrast is on.
+    pub increase_contrast: bool,
+}
+
 /// `vision_state { photo_id, nothing_found }` (addition): the core's worker for the Subject and People masks of a photo has ended
 /// its work, and `nothing_found` lists the kinds whose newest mask for the photo found nothing (`docs/23` section 7.6: their rows
 /// say "Nothing found"). Sent each time the worker ends, with the list as it is then; the rows say "Finding…" while it works

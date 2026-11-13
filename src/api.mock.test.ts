@@ -1324,6 +1324,10 @@ describe("optionsFromLocation", () => {
     expect(optionsFromLocation("?mockViewport=metal")).toEqual({});
     expect(optionsFromLocation("?mockCpu=1")).toEqual({ cpu: true });
     expect(optionsFromLocation("?mockCpu=0")).toEqual({});
+    expect(optionsFromLocation("?mockDisplay=reduce-transparency,increase-contrast")).toEqual({
+      displayOptions: { reduce_transparency: true, reduce_motion: false, increase_contrast: true },
+    });
+    expect(optionsFromLocation("?mockDisplay=")).toEqual({ displayOptions: { reduce_transparency: false, reduce_motion: false, increase_contrast: false } });
     expect(optionsFromLocation("?mockPhotos=0")).toEqual({});
     expect(optionsFromLocation("")).toEqual({});
     expect(optionsFromLocation("?mockSpeed=-3&mockHold=x")).toEqual({});

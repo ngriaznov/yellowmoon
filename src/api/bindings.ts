@@ -287,12 +287,19 @@ export const commands = {
 	cliLinkStatus: () => __TAURI_INVOKE<CliLinkStatus>("cli_link_status"),
 	/**  `app_info()`: version numbers for About. */
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	/**
+	 *  `display_options()`: the system's Reduce Transparency, Reduce Motion and Increase Contrast settings (`docs/28` A-P12). It does not
+	 *  need the core, so it answers even when the application could not start. A synchronous command runs on the main thread, where
+	 *  AppKit is read; off macOS it answers all false.
+	 */
+	displayOptions: () => __TAURI_INVOKE<DisplayOptions>("display_options"),
 };
 
 /** Events */
 export const events = {
 	autoStatusChanged: makeEvent<AutoStatusChanged>("auto_status_changed"),
 	depthState: makeEvent<DepthState>("depth_state"),
+	displayOptions: makeEvent<DisplayOptions>("display_options"),
 	downloadFound: makeEvent<DownloadFound>("download_found"),
 	error: makeEvent<ErrorEvent>("error"),
 	exportBusy: makeEvent<ExportBusy>("export_busy"),
@@ -1022,6 +1029,23 @@ export type DepthState = {
 export type DevelopSettings = {
 	/**  The graph. */
 	nodes: NodesSettings,
+};
+
+/**
+ *  `display_options { reduce_transparency, reduce_motion, increase_contrast }` (addition, `docs/28` A-P12, `docs/11` *Display options*):
+ *  the three accessibility display settings of the system (System Settings, Accessibility, Display), read by the shell on macOS
+ *  (`NSWorkspace`) and sent when the system says one changed. It is also what the command `display_options()` returns, because an
+ *  event sent at start can arrive before the page listens. The page sets or removes `data-reduce-transparency`,
+ *  `data-reduce-motion` and `data-increase-contrast` on `<html>` from it. Off macOS all three are false and no event is sent.
+ *  Not saved anywhere: the system is asked each time.
+ */
+export type DisplayOptions = {
+	/**  Reduce Transparency is on. */
+	reduce_transparency: boolean,
+	/**  Reduce Motion is on. */
+	reduce_motion: boolean,
+	/**  Increase Contrast is on. */
+	increase_contrast: boolean,
 };
 
 /**

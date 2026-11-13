@@ -48,6 +48,7 @@ import type {
   ApiEvents,
   AppError,
   AppInfo,
+  DisplayOptions,
   AppleAuto,
   AppleAutoAnswer,
   ApplyScope,
@@ -552,6 +553,12 @@ export interface MockOptions {
    * sentence "The Depth mask can't be made: the model stopped before it finished.", and makes it when `retry_depth` asks again; `fail-always` fails every time.
    */
   depth?: "ok" | "fail" | "fail-always";
+  /**
+   * What `display_options` answers (`?mockDisplay=reduce-transparency,reduce-motion,increase-contrast`, any of the three, `docs/28` A-P12): the
+   * system settings the shell reads on a Mac. The default is all off, as on a computer that has none of them on and off macOS. A later change
+   * is played with `emitEvent("display_options", …)`.
+   */
+  displayOptions?: DisplayOptions;
 }
 
 /** What the viewport commands have recorded, for tests. */
@@ -1099,6 +1106,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   maskKinds: BUILT_MASK_KINDS,
   maskFind: "scene",
   depth: "ok",
+  displayOptions: { reduce_transparency: false, reduce_motion: false, increase_contrast: false },
 };
 
 /** Fills in defaults, ignoring `undefined` values and a speed that isn't a positive number. */
@@ -1126,7 +1134,7 @@ function withDefaults(...layers: MockOptions[]): Required<MockOptions> {
  * states, `none` for no provider; `docs/22` section 12.8), `mockAutoProvider=claude` (the saved choice), `mockConsent=claude,agy` (the programs
  * agreed to), `mockOs=windows` and `mockCpu=1` (frames render on the CPU and take 600 ms divided by
  * `mockSpeed`, with `viewport_busy` around them: the photo cell says "Rendering on the CPU"; `MockOptions.cpu`) and `mockMasks=all|noai|nomac|built`
- * or a list of kinds (the kinds of mask `mask_kinds` says this machine can make; `MockOptions.maskKinds`).
+ * or a list of kinds (the kinds of mask `mask_kinds` says this machine can make; `MockOptions.maskKinds`), and `mockDisplay=reduce-transparency,reduce-motion,increase-contrast` (any of the three: what `display_options` answers, `MockOptions.displayOptions`).
  */
 export function optionsFromLocation(search: string | undefined = typeof location === "undefined" ? undefined : location.search): MockOptions {
   if (search === undefined) return {};
@@ -1211,6 +1219,14 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (maskFind === "none" || maskFind === "scene") out.maskFind = maskFind;
   const depth = params.get("mockDepth");
   if (depth === "ok" || depth === "fail" || depth === "fail-always") out.depth = depth;
+  const display = list("mockDisplay");
+  if (display) {
+    out.displayOptions = {
+      reduce_transparency: display.includes("reduce-transparency"),
+      reduce_motion: display.includes("reduce-motion"),
+      increase_contrast: display.includes("increase-contrast"),
+    };
+  }
   return out;
 }
 
@@ -3561,6 +3577,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     // The mock probes nothing, so the cached read is the same answer; the store's tests tell the two calls apart by spying on them.
     autoStatusCached: () => run("autoStatusCached", autoStatus),
     appInfo: () => run("appInfo", (): AppInfo => ({ version: APP_VERSION, pipeline_version: "1.0.0", os: options.os })),
+    displayOptions: () => run("displayOptions", (): DisplayOptions => ({ ...options.displayOptions })),
 
     chooseFolder: (start) =>
       run("chooseFolder", () => {

@@ -24,6 +24,7 @@ import type {
   AppError,
   ApplyScope,
   AppInfo,
+  DisplayOptions,
   AutoStatus,
   ChromaSample,
   ChromaScatter,
@@ -364,6 +365,8 @@ export interface Api {
   cliLinkStatus(): Promise<CliLinkStatus>;
   /** `app_info`: version numbers for About. Addition. */
   appInfo(): Promise<AppInfo>;
+  /** `display_options`: the system's Reduce Transparency, Reduce Motion and Increase Contrast settings now (`docs/28` A-P12). Addition. */
+  displayOptions(): Promise<DisplayOptions>;
 
   // --- Events --------------------------------------------------------------
 
@@ -475,6 +478,7 @@ export const tauriApi: Api = {
   installCliLink: () => commands.installCliLink(),
   cliLinkStatus: () => commands.cliLinkStatus(),
   appInfo: () => commands.appInfo(),
+  displayOptions: () => commands.displayOptions(),
 
   on(event, handler) {
     // `listen` is asynchronous but `on` hands back its unsubscribe at once, so a call to

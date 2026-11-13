@@ -829,6 +829,15 @@ pub async fn app_info(state: State<'_, AppState>) -> Result<AppInfo, AppError> {
     run(&state, |api| Ok(api.app_info())).await
 }
 
+/// `display_options()`: the system's Reduce Transparency, Reduce Motion and Increase Contrast settings (`docs/28` A-P12). It does not
+/// need the core, so it answers even when the application could not start. A synchronous command runs on the main thread, where
+/// AppKit is read; off macOS it answers all false.
+#[tauri::command]
+#[specta::specta]
+pub fn display_options() -> wire::DisplayOptions {
+    crate::a11y::read()
+}
+
 // --- The registry -----------------------------------------------------------------------------
 
 /// Builds the typed command and event registry shared by the app and the TypeScript bindings.
@@ -906,6 +915,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             install_cli_link,
             cli_link_status,
             app_info,
+            display_options,
         ])
         .events(collect_events![
             wire::PhotoProgress,
@@ -929,6 +939,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             wire::VisionState,
             wire::DepthState,
             wire::MemoryNotice,
+            wire::DisplayOptions,
         ])
         .typ::<ErrorScope>()
 }
@@ -976,6 +987,7 @@ mod tests {
                 auto_status,
                 auto_status_cached,
                 app_info,
+                display_options,
             ])
             .manage(state)
             .build(mock_context(noop_assets()))
@@ -1306,6 +1318,19 @@ mod tests {
         assert_eq!(
             call(&window, "session_state", json!({})).expect("state")["photos"],
             json!([])
+        );
+    }
+
+    #[test]
+    fn display_options_answers_without_the_core() {
+        let reason = AppError::new(
+            ErrorScope::App,
+            "Yellowmoon's data folder is missing. Reinstall the app.",
+        );
+        let (_app, window) = app_with(AppState::failed(reason));
+        assert_eq!(
+            call(&window, "display_options", json!({})).expect("display_options"),
+            serde_json::to_value(crate::a11y::read()).expect("serialise")
         );
     }
 

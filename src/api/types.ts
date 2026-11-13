@@ -1546,6 +1546,17 @@ export interface ExportBusy {
 }
 
 /**
+ * `display_options` (addition, `docs/28` A-P12, `docs/11` *Display options*): the system's Reduce Transparency, Reduce Motion and
+ * Increase Contrast settings, as the command `display_options()` answers them and as the event sends them when one changes. The page sets
+ * `data-reduce-transparency`, `data-reduce-motion` and `data-increase-contrast` on `<html>` from them. All false off macOS.
+ */
+export interface DisplayOptions {
+  reduce_transparency: boolean;
+  reduce_motion: boolean;
+  increase_contrast: boolean;
+}
+
+/**
  * `memory_notice` (addition, `docs/26` H-14): the computer is short of memory. `message` is the sentence the error bar shows as a
  * notice, or `null` when the level is normal again and the sentence goes. Sent once on the way into the critical level and once when
  * the level is normal; the core owns the words.
@@ -1959,6 +1970,8 @@ export interface ApiEvents {
   depth_state: DepthState;
   /** The computer is short of memory and background work is paused (the sentence), or it is not any more (`null`). */
   memory_notice: MemoryNotice;
+  /** One of the system's display options changed (Reduce Transparency, Reduce Motion, Increase Contrast; macOS only). */
+  display_options: DisplayOptions;
 }
 
 /** Names of the events the core emits. */

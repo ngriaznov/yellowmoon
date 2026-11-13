@@ -135,6 +135,7 @@ import {
   outputPatch,
   patchOf,
 } from "./settingsGraph";
+import { watchDisplayOptions } from "../displayOptions";
 import { rememberFocus } from "./focusMemory";
 import type { CorrectorItem, InputItem, OutputItem } from "./settingsGraph";
 import { ViewportInputQueue } from "./viewportInputQueue";
@@ -916,6 +917,8 @@ export class AppStore {
       api.on("depth_state", (e) => this.onDepthState(e)),
       // The core says it once per stay at the critical level; Dismiss hides it until the core says it again.
       api.on("memory_notice", (e) => this.set({ memoryNotice: e.message })),
+      // The system's Reduce Transparency, Reduce Motion and Increase Contrast become attributes of the root (`docs/28` A-P12).
+      watchDisplayOptions(api),
       onGestureEnd(() => this.afterGesture()),
     ];
     void this.load();
