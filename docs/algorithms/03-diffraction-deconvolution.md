@@ -270,6 +270,30 @@ values R5 reconstructed are not sharpened into artefacts.
 | 0.01 | §3.9 | minimum confidence weight |
 | 1.5 | §3.12 | ratio cap of the transfer |
 
+#### Derivation of every constant
+
+Every constant of this spec has a row, with the ID of `docs/29-raw-constants.md` §2.1 and one status: **Maths** (a mathematical fact or an error budget gives the value, and a test proves it), **Fit** (only image data can choose it; the task that fits it), **Design** (the owner's look, `docs/29` §6) or **Guard** (a numeric safeguard; what it protects). No row names an origin: each stands on the method written in it. The tests are in `crates/ym-gpu/src/cpu/sharpen/diffraction.rs`, module `derivations`. "Proof in RC-11" means the derivation is written and the convergence run that proves it is part of RC-11 (`docs/29` §5); no test of RC-02 claims it.
+
+| ID | Constant | Status | Derivation | Proof or task |
+|---|---|---|---|---|
+| D1 | 461 to 619 nm, weight 1 from 540 nm, `(620 − λ)/80` below (§3.2) | Fit | The spectral weight of the polychromatic PSF. To be compared with the camera's luma response from the published curves of the Sony bodies. | RC-11 |
+| D2 | `0.42` µm, 1/4, 500 samples (§3.1, §3.2) | Maths | Radial step `min(p_eff, 0.42·N/π)/4`: an error budget, checked against a finer step. | proof in RC-11 |
+| D3 | `1/6` (§3.2) | Maths | Weight of sample 0 in the encircled energy. The integral of `r·p(r)` over a profile that is linear between its samples weighs sample `k > 0` by exactly `k` and sample 0 by `1/2 − 1/3 = 1/6`; the disc-area value 1/8 is not exact. | `one_sixth_is_the_exact_weight_of_sample_zero_in_the_encircled_energy`, `the_planner_uses_that_weight_to_find_the_80_percent_radius` |
+| D3 | `0.8`, `0.01`, `4·r80`, `6` px, `0.99`, `0.002`, 6 angular samples per px (`+ 0.999`), the 8 × 8 grid, the cos² taper (§3.2) | Maths | Where the kernel is cut: error budgets on the energy outside the kernel and on the ring peaks. | proof in RC-11 |
+| D4 | `π/16` × 8 angles, 3 bins per px, `0.85`, `0.8` (§3.3) | Maths | How the line spread of the kernel is measured: tested on kernels of known width. | proof in RC-11 |
+| D5 | `0.75`, `[0.2, 3.0]` (§3.3) | Maths | `σ_G = f·mean(x80)`. For a Gaussian line spread `x80 = 1.2816σ`, so the exact factor is `1/1.2816 = 0.7803`; the shipped 0.75 is 3.9 % below it and stays until RC-11 decides. For the Airy-like kernel the factor is a fit. The clamp keeps `σ_G` where the Gaussian radius of D6 holds. | `the_exact_sigma_g_factor_for_a_gaussian_is_0_780_and_the_shipped_one_is_0_75`; RC-11 |
+| D6 | `3.5`, `1`, `8` (§3.3) | Maths | Radius `min(floor(3.5σ_G + 1), 8)` over pixel-integrated taps cuts at `radius + 1/2 > 3.5σ_G`, so the mass beyond is under `erfc(3.5/√2) = 4.65e-4` for every `σ_G` up to 2.0. Above 2.0 the cap of 8 governs (4.6e-3 at σ_G = 3, never reached: σ_G is 0.5 at R = 3). | `the_gaussian_radius_cuts_less_than_the_tail_budget_up_to_sigma_two` |
+| D7 | `0.8` of white, `25`, `5`, `1` (§3.4) | Fit | Clip penalty: where the highlight starts and the weights of the sorted channel excesses. | RC-11 |
+| D8 | `12.5`, `0.04` (§3.5) | Fit | Pull-in of the local envelope estimates. | RC-11 |
+| D9 | `0.0005` (§3.9) | Fit | Ridge of the 3 × 3 local solve. | RC-11 |
+| D10 | `0.5`, `2`, `1/4`, `1/2` (§3.9) | Fit | The noise gate and the fade-out band of the residual. | RC-11 |
+| D11 | `0.01`, `−0.5`, `[0, 1)` (§3.9) | Fit | Smallest confidence weight; lower bound of `cD`; range of `cH`. | RC-11 |
+| D12 | `1.5` (§3.12) | Fit | Cap of the luma-to-RGB ratio. | RC-11 |
+| D13 | `1e-20`, `1e-15`, `1 DN` (§2.3, §3.5, §3.9, §3.12) | Guard | Divide guards and floors: they keep the divisions and the solve finite on black and flat input and never bind on a photograph. | n/a |
+| D14 | windows 5 × 5 and 9 × 9 (§3.5, §3.8) | Fit | The envelope, moment and smoothing windows; structure, not a number to tune. | RC-11 |
+
+Counts: Maths 5 (D2, D3, D4, D5, D6), Fit 8 (D1, D7 to D12, D14), Design 0, Guard 1 (D13).
+
 ### 2.7 Derived values (the plan)
 
 | Symbol | Formula | Section |

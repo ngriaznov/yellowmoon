@@ -414,6 +414,27 @@ R', G', B' = R·ratio, G·ratio, B·ratio
 | Halo-map kernel | `2s` | §2.3 |
 | Luma floor, ratio cap | 1e-20, 16 | §3.7 |
 
+#### Derivation of every constant
+
+Every constant of this spec has a row, with the ID of `docs/29-raw-constants.md` §2.1 and one status: **Maths** (a mathematical fact or an error budget gives the value, and a test proves it), **Fit** (only image data can choose it; the task that fits it), **Design** (the owner's look, `docs/29` §6) or **Guard** (a numeric safeguard; what it protects). No row names an origin: each stands on the method written in it. The tests are in `crates/ym-gpu/src/cpu/output_sharpen.rs`, module `derivations`.
+
+| ID | Constant | Status | Derivation | Proof or task |
+|---|---|---|---|---|
+| O1 | `0.7R + 0.3` for `R ≥ 0.5`, `0.97·√(R − 0.09)` below, cap 2.5 px (§2.2) | Design | The radius-to-σ map is the owner's look and is kept (`docs/29` §6, answer 4). The one thing mathematics adds is the step of 0.029 at `R = 0.5` (0.650 above, 0.621 below), which the screen preset never reads and RC-09 repairs. | the owner's look, `docs/29` §6; RC-09 |
+| O2 | `5.0`, `2.5`, `\| 1`, minimum 3, caps 13 and 33 (§2.3) | Maths | The pixel-integrated kernel of `n = 2h + 1` taps drops `erfc((h + 1/2)/(σ√2))` of the Gaussian before it is normalised to 1. The loss is 4.7e-4 at the preset's σ = 1.0, 8.6e-4 at 1.35, 1.2e-3 at 1.7 and 1.5e-3 at 2.05, and under 6e-7 for σ ≤ 0.5 (the floors of 3 and 5 taps cut at 5σ or more). **It is not under 1.5e-3 over the whole map:** the rule steps up by two taps at σ = 0.3, 0.7, 1.1, 1.5 and 1.9, and just below a step the cut is nearest the centre, so the worst is 3.6e-3 at σ = 1.89 (11 taps, cut at 2.9σ). The stated budget is therefore not met by today's rule; RC-09 sets it. | `the_truncated_erf_kernel_sums_to_one_and_drops_exactly_the_tail_mass`, `the_tap_rule_loses_under_two_per_mille_at_the_screen_map_points_and_3_6_at_worst`; RC-09 for the budget |
+| O3 | `0.15` (§2.4) | Fit | The σ below which a downscale does not shrink the radius. Acts in exports at a reduced size. | RC-09 |
+| O4 | 100 %, 1.0 px, 1 level, halo 60 % (§2.5) | Design | The screen preset. | the owner's look, `docs/29` §6 |
+| O5 | `sqrt(h/100)`, dead zone `0.001` (§2.2) | Design | How the halo percentage becomes the limited share of the delta. | the owner's look, `docs/29` §6 |
+| O6 | window 5 × 5, `N = 25`, `k_min = 6`, `1/r = 0.5`, `1/N = 0.04`, tie tolerance `2^-12`, pull fade `0.25`, `η = 2τ/N²` (§3.5) | Fit | The halo limiter's robust envelope. The window is structure; the pull fade and the floor are fitted on the edge profile of §9. | RC-09 |
+| O7 | `max(2σ, 1)`, `2s` (§2.3) | Fit | The widths of the gain-map and halo-map smoothing. | RC-09 |
+| O8 | `16`, `1e-20` (§3.7) | Guard | Ratio cap and luma floor of the transfer back to RGB: they keep the division finite on black and near-black pixels. The cap was never reached on the 24 Kodak images. | n/a |
+| O9 | `1e-10` (§3.3) | Guard | Epsilon of the gain-map denominator: keeps the ratio finite where the high-pass is zero. | n/a |
+| O10 | `0.3125`, `0.09375`, ramp `0.25` to `5·g0` (§3.3) | Maths | Method 2 only. The weights are the normalised Scharr kernel: smoothing `{3, 10, 3}/16` across, central difference `{−1, 0, 1}/2` along, so `10/32` and `3/32`, and a unit ramp reads exactly 1. The ramp is a fit that no render reaches (method 2 is not reachable from the app or `ym`), with no task. | `the_gradient_weights_are_the_normalised_scharr_kernel` |
+| O11 | print: `2500` per px, cap 15 px, 150 %, distance 5000 (§2.2) | Design | The print preset. Not reachable from the app or `ym`. | the owner's look, `docs/29` §6 |
+| O12 | `0.65`, `0.1`, `0.004`, `0.1`, `0.025` (§2.7) | Design | The automatic method rule for extra stages. Unused in v1 (`INTEGRATION.md`); kept as specified. Not the owner's look in the sense of a decision; it is listed here because no other status fits a rule nothing reaches. | none until a use appears |
+
+Counts: Maths 2 (O2, O10), Fit 3 (O3, O6, O7), Design 5 (O1, O4, O5, O11, O12), Guard 2 (O8, O9).
+
 ### 3.9 Precision summary
 
 | Quantity | Precision |

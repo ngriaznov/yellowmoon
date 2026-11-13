@@ -1400,3 +1400,181 @@ mod tests {
         }
     }
 }
+
+/// Tests that prove the derivations of the constants that mathematics gives (`docs/29` RC-02,
+/// spec 03 section 2.6): the weight 1/6 of sample 0 in the encircled energy (D3), the exact
+/// `sigma_G` factor for a Gaussian (D5) and the tail mass of the Gaussian radius (D6).
+#[cfg(test)]
+mod derivations {
+    use super::*;
+
+    /// `integral of r * p(r) dr` from 0 to `profile.len() - 1`, `p` linear between the samples
+    /// (Simpson's rule on every interval; exact, since `r p(r)` is a quadratic there).
+    fn fine_integral(profile: &[f64]) -> f64 {
+        let mut total = 0.0;
+        for k in 0..profile.len() - 1 {
+            let (a, b) = (profile[k], profile[k + 1]);
+            let f = |r: f64| r * (a + (b - a) * (r - k as f64));
+            const SUB: usize = 64;
+            let h = 1.0 / SUB as f64;
+            let mut s = f(k as f64) + f(k as f64 + 1.0);
+            for j in 1..SUB {
+                s += f(k as f64 + j as f64 * h) * if j % 2 == 1 { 4.0 } else { 2.0 };
+            }
+            total += s * h / 3.0;
+        }
+        total
+    }
+
+    #[test]
+    fn one_sixth_is_the_exact_weight_of_sample_zero_in_the_encircled_energy() {
+        // D3. The planner sums the radial profile as `p0 / 6 + sum k p_k`, the weights of the
+        // integral of r p(r) over a profile that is linear between its samples: sample k > 0 is
+        // seen from both sides of its two intervals and weighs exactly k; sample 0 only from its
+        // right, and weighs 1/2 - 1/3 = 1/6. A profile of samples that ends in zero keeps the
+        // end of the array out of the comparison.
+        let mut state = 0x6a09_e667_f3bc_c908u64;
+        for _ in 0..50 {
+            let profile: Vec<f64> = (0..40)
+                .map(|k| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    if k >= 39 {
+                        0.0
+                    } else {
+                        (state >> 11) as f64 / (1u64 << 53) as f64
+                    }
+                })
+                .collect();
+            let exact = fine_integral(&profile);
+            let sum = |w0: f64| {
+                w0 * profile[0]
+                    + (1..profile.len())
+                        .map(|k| k as f64 * profile[k])
+                        .sum::<f64>()
+            };
+            assert!(
+                (sum(1.0 / 6.0) - exact).abs() < 1e-12 * exact,
+                "{} {exact}",
+                sum(1.0 / 6.0)
+            );
+            // 1/8 (the area of the disc of radius 1/2 over 2 pi) is not it: it errs by p0 / 24.
+            assert!((sum(0.125) - exact).abs() > 0.9 * profile[0] / 24.0);
+        }
+    }
+
+    #[test]
+    fn the_planner_uses_that_weight_to_find_the_80_percent_radius() {
+        // The planner's r80 is reproduced from the same profile with a centre weight of 1/6 and is
+        // not with 1/8: the literal in `plan_geometry` is the one the identity above proves.
+        let (pitch, n_f) = (3.76, 8.0);
+        let geometry = plan_geometry(pitch, n_f).expect("a plan");
+        let step = (0.25 * pitch).min(0.25 * (n_f * 0.42 / PI));
+        let mut prof = [0.0f64; PROFILE_SAMPLES];
+        let mut wsum = 0.0f64;
+        for lam in 461u32..=619 {
+            let wl = spectral_weight(lam);
+            let lam_um = f64::from(lam) * 1e-3;
+            for (k, p) in prof.iter_mut().enumerate().skip(1) {
+                let x = PI * k as f64 * step / (lam_um * n_f);
+                let t = bessel_j1(x) / x;
+                *p += 4.0 * wl * t * t;
+            }
+            wsum += wl;
+        }
+        prof[0] = wsum;
+        let r80_with = |w0: f64| {
+            let c0 = wsum * w0;
+            let total = c0
+                + (1..PROFILE_SAMPLES)
+                    .map(|k| k as f64 * prof[k])
+                    .sum::<f64>();
+            let e80 = 0.8 * total;
+            let mut prev = c0;
+            for ix in 0..PROFILE_SAMPLES - 1 {
+                let cur = prev + (ix + 1) as f64 * prof[ix + 1];
+                if cur >= e80 {
+                    return (ix as f64 + (e80 - prev) / (cur - prev).max(0.01 * total)) * step;
+                }
+                prev = cur;
+            }
+            f64::NAN
+        };
+        let got = geometry.r80_um;
+        assert!(
+            (r80_with(1.0 / 6.0) - got).abs() < 1e-9 * got,
+            "{} {got}",
+            r80_with(1.0 / 6.0)
+        );
+        assert!(
+            (r80_with(0.125) - got).abs() > 1e-4 * got,
+            "{} {got}",
+            r80_with(0.125)
+        );
+    }
+
+    /// The half-width `x` with `P(|X| <= x) = fraction` for a Gaussian of standard deviation 1.
+    fn gaussian_half_width(fraction: f64) -> f64 {
+        let (mut lo, mut hi) = (0.0f64, 10.0f64);
+        for _ in 0..200 {
+            let mid = 0.5 * (lo + hi);
+            if libm::erf(mid / std::f64::consts::SQRT_2) < fraction {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        0.5 * (lo + hi)
+    }
+
+    #[test]
+    fn the_exact_sigma_g_factor_for_a_gaussian_is_0_780_and_the_shipped_one_is_0_75() {
+        // D5. The 80 % half-width of a Gaussian line spread is x80 = 1.2816 sigma, so a
+        // `sigma_G = f * x80` that is the Gaussian's own sigma has f = 1 / 1.2816 = 0.7803. The
+        // shipped 0.75 is 3.9 % below it and stays until RC-11 decides.
+        let x80 = gaussian_half_width(0.8);
+        assert!((x80 - 1.281_551_565_5).abs() < 1e-9, "x80 = {x80}");
+        let exact = 1.0 / x80;
+        assert!((exact - 0.780_31).abs() < 1e-5, "exact factor {exact}");
+        let shipped = 0.75;
+        assert!(((exact - shipped) / exact - 0.0388).abs() < 5e-4);
+    }
+
+    #[test]
+    fn the_gaussian_radius_cuts_less_than_the_tail_budget_up_to_sigma_two() {
+        // D6. Radius `min(floor(3.5 sigma + 1), 8)` over pixel-integrated taps cuts the Gaussian
+        // at `radius + 1/2 > 3.5 sigma`, so the mass beyond is under erfc(3.5 / sqrt 2) = 4.65e-4
+        // for every sigma up to 2.0 (3.5 sigma + 1 = 8). Above that the cap of 8 governs (4.6e-3
+        // at sigma = 3, not reached by any lens the planner meets: sigma_G is 0.5 at R = 3).
+        let budget = libm::erfc(3.5 / std::f64::consts::SQRT_2);
+        assert!((budget - 4.65e-4).abs() < 1e-6, "{budget}");
+        let tail = |sigma: f64, radius: usize| {
+            libm::erfc((radius as f64 + 0.5) / (sigma * std::f64::consts::SQRT_2))
+        };
+        for i in 0..=36 {
+            let sigma = 0.2 + 0.05 * f64::from(i); // 0.2 ..= 2.0
+            let radius = ((3.5 * sigma + 1.0).floor() as usize).min(MAX_GAUSS_RADIUS);
+            assert!(
+                tail(sigma, radius) < budget,
+                "sigma {sigma}: {}",
+                tail(sigma, radius)
+            );
+        }
+        assert!(tail(3.0, MAX_GAUSS_RADIUS) > 4.0e-3);
+        // The planner's own radius, for lenses it can meet, obeys it too.
+        for (pitch, n_f) in [
+            (3.76, 5.6),
+            (3.76, 8.0),
+            (3.76, 16.0),
+            (5.9, 11.0),
+            (2.4, 22.0),
+        ] {
+            if let Some(g) = plan_geometry(pitch, n_f) {
+                let sigma = f64::from(g.gauss_sigma);
+                assert!(sigma <= 2.0, "{pitch} {n_f}: sigma_G {sigma}");
+                assert!(tail(sigma, g.gauss_radius) < budget, "{pitch} {n_f}");
+            }
+        }
+    }
+}
