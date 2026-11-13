@@ -28,6 +28,7 @@
 //! renderer.
 
 pub mod gpu;
+pub mod metal;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};

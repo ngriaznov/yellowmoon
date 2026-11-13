@@ -27,6 +27,9 @@ use ym_gpu::device::{Gpu, GpuConfig, GpuError, GpuInfo};
 use ym_gpu::kernels::KernelId;
 use ym_gpu::queue::{JobHandle, JobSpec, Priority};
 
+use super::metal::{
+    METAL_WORKING_SET_FACTOR, MetalDevices, NoMetalDevices, gpu_budget_bytes, metal_limit_of,
+};
 use crate::pipeline::{GpuReopener, RenderOptions};
 use crate::scheduler::{MemoryBudget, total_ram_bytes};
 
@@ -722,6 +725,8 @@ pub struct GpuOpener<P: AdapterProbe = SystemProbe> {
     pipeline_cache_dir: Option<PathBuf>,
     ram_bytes: Option<u64>,
     timestamps: bool,
+    /// Where the Metal working-set limit comes from ([`MetalDevices`]); none by default.
+    metal: Arc<dyn MetalDevices>,
     probe: P,
 }
 
@@ -737,6 +742,7 @@ impl GpuOpener<SystemProbe> {
             pipeline_cache_dir: None,
             ram_bytes: total_ram_bytes(),
             timestamps: false,
+            metal: Arc::new(NoMetalDevices),
             probe: SystemProbe,
         }
     }
@@ -752,8 +758,18 @@ impl<P: AdapterProbe> GpuOpener<P> {
             pipeline_cache_dir: self.pipeline_cache_dir,
             ram_bytes: self.ram_bytes,
             timestamps: self.timestamps,
+            metal: self.metal,
             probe,
         }
+    }
+
+    /// Where the Metal working-set limit comes from. The app and `ym` both hand over
+    /// `ym_apple::system_metal_devices()` (through `ym_apple::gpu_opener`), so their budgets are the
+    /// same; with the default (none) the rule of the budget stands.
+    #[must_use]
+    pub fn with_metal_devices(mut self, metal: Arc<dyn MetalDevices>) -> Self {
+        self.metal = metal;
+        self
     }
 
     /// The folder of the wgpu pipeline cache (the application passes
@@ -831,25 +847,32 @@ impl<P: AdapterProbe> GpuOpener<P> {
             return slot;
         }
 
+        // The budget after the rules: the unified-memory rule where the adapter shares the RAM, then
+        // the cap from Metal's working-set limit of this very adapter (`docs/17` section 8).
         let shared_memory = is_unified_memory(&info);
         let mut info = info;
+        let mut target = budget;
         if shared_memory {
-            let unified = budget.for_unified_memory(self.ram_bytes);
-            if unified.gpu_bytes != budget.gpu_bytes {
-                // Closed *and dropped* before the second is asked for: the device thread is gone
-                // after `close`, but the wgpu device lives as long as the value does, and on an
-                // 8 GB Mac two of them must not exist at once.
-                device.close();
-                drop(device);
-                budget = unified;
-                device = match self.probe.open(self.config(&budget)) {
-                    Ok(device) => device,
-                    Err(e) => return self.without_device(budget, &e),
-                };
-                info = device.info().clone();
-            } else {
-                budget = unified;
-            }
+            target = target.for_unified_memory(self.ram_bytes);
+        }
+        let limit = metal_limit_of(&info, &self.metal.devices());
+        target.gpu_bytes =
+            gpu_budget_bytes(target.gpu_bytes, limit.bytes(), METAL_WORKING_SET_FACTOR);
+        if target.gpu_bytes != budget.gpu_bytes {
+            // The pool is sized when the device is created, so the device is opened again with
+            // the new budget. Closed *and dropped* before the second is asked for: the device
+            // thread is gone after `close`, but the wgpu device lives as long as the value does,
+            // and on an 8 GB Mac two of them must not exist at once.
+            device.close();
+            drop(device);
+            budget = target;
+            device = match self.probe.open(self.config(&budget)) {
+                Ok(device) => device,
+                Err(e) => return self.without_device(budget, &e),
+            };
+            info = device.info().clone();
+        } else {
+            budget = target;
         }
         tracing::info!(
             adapter = %info.name,
@@ -1183,6 +1206,132 @@ mod tests {
                 "{ram} GB: the first device was still alive when the second was opened"
             );
         }
+    }
+
+    fn metal_device(name: &str, limit: u64) -> crate::app::metal::MetalDevice {
+        crate::app::metal::MetalDevice {
+            name: name.to_owned(),
+            recommended_max_working_set_bytes: limit,
+            has_unified_memory: false,
+            is_low_power: false,
+            is_removable: false,
+        }
+    }
+
+    #[test]
+    fn the_metal_limit_of_the_opened_adapter_caps_the_budget_after_the_unified_rule() {
+        use crate::app::metal::FixedMetalDevices;
+        // (adapter, RAM in GiB, Metal devices, opens, the GPU budget)
+        let other = metal_device("Some other GPU", 64 * GIB);
+        let cases = [
+            // A GPU with its own memory: 0.75 of 2 GiB is 1.5 GiB, below the 4 GiB rule: a second open.
+            (
+                Adapter::Hardware,
+                16,
+                vec![other.clone(), metal_device("Test discrete GPU", 2 * GIB)],
+                vec![Some(4 * GIB), Some(3 * GIB / 2)],
+                3 * GIB / 2,
+            ),
+            // A limit above the rule: nothing changes, one open.
+            (
+                Adapter::Hardware,
+                16,
+                vec![metal_device("Test discrete GPU", 16 * GIB)],
+                vec![Some(4 * GIB)],
+                4 * GIB,
+            ),
+            // Unified, 16 GB (rule 4 GiB), limit 3 GiB: 2.25 GiB, a second open.
+            (
+                Adapter::Unified,
+                16,
+                vec![metal_device("Test Apple GPU", 3 * GIB)],
+                vec![Some(4 * GIB), Some(9 * GIB / 4)],
+                9 * GIB / 4,
+            ),
+            // Unified, 8 GB (rule 2 GiB), limit 12 GiB: the rule, as before the cap.
+            (
+                Adapter::Unified,
+                8,
+                vec![metal_device("Test Apple GPU", 12 * GIB)],
+                vec![Some(4 * GIB), Some(2 * GIB)],
+                2 * GIB,
+            ),
+            // No device of the adapter's name, and Metal silent: the rule.
+            (
+                Adapter::Hardware,
+                16,
+                vec![other.clone()],
+                vec![Some(4 * GIB)],
+                4 * GIB,
+            ),
+            (Adapter::Hardware, 16, vec![], vec![Some(4 * GIB)], 4 * GIB),
+            // The name twice: no limit.
+            (
+                Adapter::Hardware,
+                16,
+                vec![
+                    metal_device("Test discrete GPU", GIB),
+                    metal_device("Test discrete GPU", 2 * GIB),
+                ],
+                vec![Some(4 * GIB)],
+                4 * GIB,
+            ),
+            // A zero limit: none.
+            (
+                Adapter::Hardware,
+                16,
+                vec![metal_device("Test discrete GPU", 0)],
+                vec![Some(4 * GIB)],
+                4 * GIB,
+            ),
+        ];
+        for (adapter, ram, devices, opens, gpu) in cases {
+            let probe = FakeProbe::new(adapter);
+            let slot = GpuOpener::new(GpuPolicy::On, MemoryBudget::for_ram(Some(ram * GIB)))
+                .with_ram_bytes(Some(ram * GIB))
+                .with_metal_devices(Arc::new(FixedMetalDevices(devices.clone())))
+                .with_probe(probe.clone())
+                .open();
+            assert_eq!(
+                *probe.budgets.lock().expect("b"),
+                opens,
+                "{adapter:?} {devices:?}"
+            );
+            assert_eq!(slot.budget().gpu_bytes, gpu, "{adapter:?} {devices:?}");
+            assert_eq!(probe.alive.load(Ordering::SeqCst), 1, "one device is left");
+            assert_eq!(
+                probe.most_alive.load(Ordering::SeqCst),
+                1,
+                "never two at once"
+            );
+        }
+    }
+
+    #[test]
+    fn an_adapter_that_is_not_metal_is_never_capped() {
+        use crate::app::metal::FixedMetalDevices;
+        // The Vulkan backend with a device of the same name in the list: the list is Metal's, not its.
+        #[derive(Clone)]
+        struct VulkanProbe(FakeProbe);
+        impl AdapterProbe for VulkanProbe {
+            type Device = FakeDevice;
+            fn open(&self, config: GpuConfig) -> Result<FakeDevice, GpuError> {
+                let mut device = self.0.open(config)?;
+                device.info.backend = "Vulkan".to_owned();
+                Ok(device)
+            }
+        }
+        let probe = FakeProbe::new(Adapter::Hardware);
+        let slot = GpuOpener::new(GpuPolicy::On, MemoryBudget::for_ram(Some(16 * GIB)))
+            .with_ram_bytes(Some(16 * GIB))
+            .with_metal_devices(Arc::new(FixedMetalDevices(vec![metal_device(
+                "Test discrete GPU",
+                GIB,
+            )])))
+            .with_probe(VulkanProbe(probe.clone()))
+            .open();
+        assert_eq!(*probe.budgets.lock().expect("b"), vec![Some(4 * GIB)]);
+        assert_eq!(slot.budget().gpu_bytes, 4 * GIB);
     }
 
     #[test]
