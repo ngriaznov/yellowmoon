@@ -173,7 +173,7 @@ summary:focus-visible,
 [role="radio"]:focus-visible,
 [role="tab"]:focus-visible,
 [role="slider"]:focus-visible {
-  outline: 3px solid var(--focus);
+  outline: var(--ym-focus-width, 3px) solid var(--focus);
   outline-offset: 2px;
 }
 
@@ -188,4 +188,12 @@ summary:focus-visible,
     animation-duration: 0.001ms !important;
     transition-property: none !important;
   }
+}
+
+/* The twin of the query above, for the system setting the shell reads (docs/28 A-P12; see glass.css). */
+:root[data-reduce-motion] *,
+:root[data-reduce-motion] *::before,
+:root[data-reduce-motion] *::after {
+  animation-duration: 0.001ms !important;
+  transition-property: none !important;
 }

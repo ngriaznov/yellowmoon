@@ -1394,7 +1394,7 @@ span.ym-filmstrip__thumb {
   white-space: nowrap;
 }
 .ym-nodehead__name:focus-visible {
-  outline: 2px solid var(--ring);
+  outline: var(--ym-focus-width, 2px) solid var(--ring);
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -1509,7 +1509,7 @@ span.ym-filmstrip__thumb {
   cursor: default;
 }
 .ym-mask-row__select:focus-visible {
-  outline: 3px solid var(--focus);
+  outline: var(--ym-focus-width, 3px) solid var(--focus);
   outline-offset: 3px;
 }
 .ym-mask-row__icon {
@@ -1677,7 +1677,7 @@ span.ym-filmstrip__thumb {
   inset: -9px;
 }
 .ym-mask-handle:focus-visible {
-  outline: 3px solid var(--focus);
+  outline: var(--ym-focus-width, 3px) solid var(--focus);
   outline-offset: 3px;
 }
 .ym-mask-handle[data-kind="move"] {
@@ -2370,7 +2370,7 @@ html[data-glass="off"] *::after {
   background: color-mix(in oklch, var(--ink) 6%, transparent);
 }
 .ym-input-row:focus-visible {
-  outline: 3px solid var(--focus);
+  outline: var(--ym-focus-width, 3px) solid var(--focus);
   outline-offset: 2px;
 }
 .ym-input-row[data-dragging] {

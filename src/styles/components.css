@@ -166,7 +166,7 @@
   -webkit-user-select: none;
   cursor: crosshair;
 }
-.ym-curve__plot:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.ym-curve__plot:focus-visible { outline: var(--ym-focus-width, 3px) solid var(--focus); outline-offset: 2px; }
 .ym-curve__grid { stroke: rgba(0, 0, 0, 0.16); stroke-width: 1.5; fill: none; }
 .ym-curve__identity {
   stroke: rgba(0, 0, 0, 0.32);
@@ -184,7 +184,7 @@
 .ym-curve__plot:hover .ym-curve__point[data-end="true"],
 .ym-curve__plot:focus-within .ym-curve__point[data-end="true"],
 .ym-curve__point[data-end="true"][data-selected="true"] { opacity: 1; }
-.ym-curve__point:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+.ym-curve__point:focus-visible { outline: var(--ym-focus-width, 3px) solid var(--focus); outline-offset: 3px; }
 .ym-curve__readout {
   display: flex;
   gap: 20px;

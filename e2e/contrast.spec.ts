@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { resolve } from "node:path";
 import { collectText, groundsOf, measureText, ringContrast } from "./helpers/contrast";
 import type { Box, Measured } from "./helpers/contrast";
+import { useMockDefaults } from "./helpers/app";
 import { openState } from "./helpers/states";
 
 // Contrast as drawn (`docs/28` A-05, M4-04; the method of its section 2.5). axe cannot decide contrast through the glass's `backdrop-filter`
@@ -23,7 +24,26 @@ import { openState } from "./helpers/states";
 // `EXPECTED`, each with the task that fixes it. The test is green while an entry fails and red when an entry stops failing (so a fix has to
 // remove its line, the rule of the allowlist of `axe.spec.ts`) and red for anything that fails and is not listed.
 //
-// The last test prints the table of 2.5 (the worst ratio per kind of text and where it is), and the disabled texts under 4.5.
+// Variants (`docs/28` A-07). The whole file runs three times: as it is, with Reduce Transparency set (`?mockDisplay=reduce-transparency`: the shell's
+// attribute, so the real wiring runs), and with the three display options set. Under Reduce Transparency every menu, popover, dialog and tooltip is
+// solid, so what failed only because of the glass (the Fit menu over a white photo, a dialog's secondary text over a white photo) must pass there;
+// what has no surface of its own (the camera line, the crop ring, a dimmed key hint) still fails until A-06. Each `EXPECTED` entry says in which
+// variants it fails, and in each variant the test is red for an entry that stopped failing, as it is red for a failure that is not listed.
+//
+// The last test of a variant prints the table of 2.5 (the worst ratio per kind of text and where it is), and the disabled texts under 4.5.
+
+/** A way to run the whole file: the options of the mock that turn the display options on. */
+interface Variant {
+  name: "default" | "reduce-transparency" | "all-three";
+  options: Record<string, string>;
+}
+const VARIANTS: readonly Variant[] = [
+  { name: "default", options: {} },
+  { name: "reduce-transparency", options: { mockDisplay: "reduce-transparency" } },
+  { name: "all-three", options: { mockDisplay: "reduce-transparency,reduce-motion,increase-contrast" } },
+];
+type VariantName = Variant["name"];
+const EVERY_VARIANT: readonly VariantName[] = ["default", "reduce-transparency", "all-three"];
 
 type Backdrop = "aurora" | "black" | "cell-white" | "cell-grey" | "cell-black";
 const PANE_BACKDROPS: readonly Backdrop[] = ["aurora", "black"];
@@ -79,8 +99,10 @@ function kindOf(m: Measured, inMenu: boolean): Kind {
   return m.token === "label" ? "body" : m.token;
 }
 
-/** The things that fail today. Each names the task that fixes it, and where and over what it fails. */
+/** The things that fail today. Each names the task that fixes it, and in which variants, where and over what it fails. */
 interface Expected {
+  /** The variants in which it fails (the others must pass: an entry that fails nowhere it is listed is stale). */
+  variants: readonly VariantName[];
   /** The element, in words. */
   element: string;
   /** The task that fixes it (`docs/28`). */
@@ -109,6 +131,7 @@ export const EXPECTED: readonly Expected[] = [
   {
     element: "the camera line (`.ym-photo-cell__camera`): white text, a shadow and no pill",
     task: "A-06 (A-P4)",
+    variants: EVERY_VARIANT,
     scopes: SHOW_THE_CAMERA_LINE,
     backdrops: ["cell-white", "cell-grey"],
     match: (f) => f.kind === "camera",
@@ -118,15 +141,17 @@ export const EXPECTED: readonly Expected[] = [
   {
     element: "the Fit menu's items (Fit, 50 %, 100 %, 200 %) over the photo",
     task: "A-06 (A-P4)",
+    variants: ["default"],
     scopes: [FIT_MENU],
     backdrops: ["cell-white"],
     match: (f) => f.kind === "menu",
     measured: "2.33 to 2.84:1 on a white photo (grey 5.5:1, black 11:1)",
-    reason: "The menu is 40 % glass. A-06 draws menus, popovers, selects and tooltips with an 88 % tint floor.",
+    reason: "The menu is 40 % glass. A-06 draws menus, popovers, selects and tooltips with an 88 % tint floor. Under Reduce Transparency (A-07) the menu is solid and passes.",
   },
   {
     element: "the key hint of a disabled Export button (the ⌘E keycap)",
     task: "A-06 (A-P4, added by A-05)",
+    variants: EVERY_VARIANT,
     scopes: ["01-start-empty", "03-start-ready", "24-error-bar"],
     backdrops: ["aurora", "black"],
     match: (f) => f.kind === "key-hint",
@@ -137,6 +162,7 @@ export const EXPECTED: readonly Expected[] = [
   {
     element: "the crop frame's focus ring (the handles have a dark fill and pass)",
     task: "A-06 (A-P5)",
+    variants: EVERY_VARIANT,
     scopes: [CROP_RING],
     backdrops: ["cell-white", "cell-grey"],
     match: (f) => f.kind === "ring" && f.label === "crop frame",
@@ -146,17 +172,18 @@ export const EXPECTED: readonly Expected[] = [
   {
     element: "the secondary text of a dialog over a white photo (Preferences' descriptions, About's lines)",
     task: "A-06 (added by A-05: found by this test, not in the audit)",
+    variants: ["default"],
     scopes: ["20-dialog-preferences", "22-dialog-about"],
     backdrops: ["cell-white"],
     match: (f) => f.kind === "secondary",
     measured: "4.06 to 4.49:1 on a white photo (grey and black pass)",
-    reason: "A dialog is near-opaque over the aurora, but over a bright photo its glass lets enough through for the secondary grey to fall under 4.5. A-06's floor for floating layers covers dialogs too.",
+    reason: "A dialog is near-opaque over the aurora, but over a bright photo its glass lets enough through for the secondary grey to fall under 4.5. A-06's floor for floating layers covers dialogs too. Under Reduce Transparency (A-07) the dialog is solid and passes.",
   },
 ];
 
 /** Finds what is judged wrong in one scope on one backdrop: the findings under their limit, and which of the expected failures cover them. */
-function judge(scope: string, backdrop: Backdrop, findings: readonly Finding[]): { unexpected: string[]; stale: string[] } {
-  const covering = EXPECTED.filter((e) => e.scopes.includes(scope) && e.backdrops.includes(backdrop));
+function judge(variant: VariantName, scope: string, backdrop: Backdrop, findings: readonly Finding[]): { unexpected: string[]; stale: string[] } {
+  const covering = EXPECTED.filter((e) => e.variants.includes(variant) && e.scopes.includes(scope) && e.backdrops.includes(backdrop));
   const failing = findings.filter((f) => f.ratio < f.need);
   const unexpected = failing.filter((f) => !covering.some((e) => e.match(f))).map((f) => `${backdrop}: ${f.kind} "${f.label}" ${f.ratio.toFixed(2)}:1 (needs ${f.need}) ${f.cls.split(" ").slice(0, 3).join(" ")}`);
   const stale = covering.filter((e) => !failing.some((f) => e.match(f))).map((e) => `${backdrop}: "${e.element}" (${e.task}) no longer fails`);
@@ -199,28 +226,31 @@ const judged = (rows: ReadonlyArray<{ m: Measured; inMenu: boolean }>): Finding[
   rows.map(({ m, inMenu }) => findingOf(m, inMenu)).filter((f) => f.kind !== "disabled");
 
 interface Saved {
+  variant: VariantName;
   scope: string;
   run: number;
   backdrops: Record<string, Array<{ kind: Kind; text: string; cls: string; ratio: number; need: number; size: number; disabled: boolean; bg: number[] }>>;
 }
 
-function save(scope: string, backdrops: Record<string, ReadonlyArray<{ m: Measured; inMenu: boolean }>>): void {
+function save(variant: VariantName, scope: string, backdrops: Record<string, ReadonlyArray<{ m: Measured; inMenu: boolean }>>): void {
   mkdirSync(RESULTS, { recursive: true });
-  const out: Saved = { scope, run: process.ppid, backdrops: {} };
+  const out: Saved = { variant, scope, run: process.ppid, backdrops: {} };
   for (const [name, rows] of Object.entries(backdrops)) {
     out.backdrops[name] = rows.map(({ m, inMenu }) => ({ kind: kindOf(m, inMenu), text: m.text, cls: m.cls.split(" ").slice(0, 4).join(" "), ratio: +m.ratio.toFixed(2), need: m.keycap && m.disabled ? 3 : m.need, size: m.size, disabled: m.disabled, bg: m.bg.map(Math.round) }));
   }
-  writeFileSync(resolve(RESULTS, `${scope}.json`), JSON.stringify(out));
+  writeFileSync(resolve(RESULTS, `${variant}__${scope}.json`), JSON.stringify(out));
 }
 
-test.describe("contrast as drawn", () => {
+for (const variant of VARIANTS) {
+test.describe(variant.name === "default" ? "contrast as drawn" : `contrast as drawn, ${variant.name}`, () => {
   // One page per state, so they run side by side like the axe states.
   test.describe.configure({ mode: "parallel" });
 
   for (const name of STATE_NAMES) {
     test(name, async ({ browser }) => {
       test.setTimeout(90_000);
-      const { page, context } = await openState(browser, name);
+      const restore = useMockDefaults(variant.options);
+      const { page, context } = await openState(browser, name).finally(restore);
       try {
         // The Start screen, the wizard and the error bar have no photo cell: only the panes are measured there.
         const cell = await cellBox(page);
@@ -229,10 +259,10 @@ test.describe("contrast as drawn", () => {
         const problems: string[] = [];
         for (const backdrop of backdrops) {
           result[backdrop] = await measureBackdrop(page, backdrop, CELL_BACKDROPS.includes(backdrop) ? { cell: cell as Box } : undefined);
-          const { unexpected, stale } = judge(name, backdrop, judged(result[backdrop]!));
+          const { unexpected, stale } = judge(variant.name, name, backdrop, judged(result[backdrop]!));
           problems.push(...unexpected, ...stale);
         }
-        save(name, result);
+        save(variant.name, name, result);
         expect(problems, `${name}: contrast that is not listed in EXPECTED (fix it, or list it with its task), or listed and fixed (remove the entry)`).toEqual([]);
 
         // The disabled texts are listed (not asserted), the way the audit listed them.
@@ -246,7 +276,8 @@ test.describe("contrast as drawn", () => {
 
   test(FIT_MENU, async ({ browser }) => {
     test.setTimeout(90_000);
-    const { page, context } = await openState(browser, "10-tab-look");
+    const restore = useMockDefaults(variant.options);
+    const { page, context } = await openState(browser, "10-tab-look").finally(restore);
     try {
       await page.getByRole("button", { name: /^Fit/ }).click();
       const menu = page.getByRole("menu");
@@ -260,10 +291,10 @@ test.describe("contrast as drawn", () => {
         // The part of the menu over the cell: what the photo is behind.
         result[backdrop] = await measureBackdrop(page, backdrop, { cell, within });
         expect(result[backdrop]!.length, "the menu's items are found").toBeGreaterThan(0);
-        const { unexpected, stale } = judge(FIT_MENU, backdrop, judged(result[backdrop]!));
+        const { unexpected, stale } = judge(variant.name, FIT_MENU, backdrop, judged(result[backdrop]!));
         problems.push(...unexpected, ...stale);
       }
-      save(FIT_MENU, result);
+      save(variant.name, FIT_MENU, result);
       expect(problems, "the Fit menu: contrast that is not listed in EXPECTED, or listed and fixed").toEqual([]);
     } finally {
       await context.close();
@@ -272,7 +303,8 @@ test.describe("contrast as drawn", () => {
 
   test(CROP_RING, async ({ browser }) => {
     test.setTimeout(90_000);
-    const { page, context } = await openState(browser, "16-mode-crop");
+    const restore = useMockDefaults(variant.options);
+    const { page, context } = await openState(browser, "16-mode-crop").finally(restore);
     try {
       const targets = [".ym-crop__frame", ...Array.from({ length: 8 }, (_, i) => `.ym-crop__handle >> nth=${i}`)];
       const problems: string[] = [];
@@ -297,21 +329,21 @@ test.describe("contrast as drawn", () => {
           findings.push({ kind: "ring", label: index === 0 ? "crop frame" : `crop handle ${index}`, cls: "", ratio: pixels === 0 ? 1 : ratio, need: 3 });
         }
         await style.evaluate((node) => (node as Element).remove());
-        const { unexpected, stale } = judge(CROP_RING, backdrop, findings);
+        const { unexpected, stale } = judge(variant.name, CROP_RING, backdrop, findings);
         problems.push(...unexpected, ...stale);
         rows[backdrop] = findings.map((f) => ({
           m: { text: f.label, cls: "", tag: "ring", size: 0, disabled: false, keycap: false, placeholder: false, fg: [0, 0, 0], bg: [0, 0, 0], ratio: f.ratio, need: 3, token: "other" },
           inMenu: false,
         }));
       }
-      save(CROP_RING, rows);
+      save(variant.name, CROP_RING, rows);
       expect(problems, "the crop frame's rings: contrast that is not listed in EXPECTED, or listed and fixed").toEqual([]);
     } finally {
       await context.close();
     }
   });
 
-  test("the table of docs/28 section 2.5", async ({}, testInfo) => {
+  test(`the table of docs/28 section 2.5 (${variant.name})`, async ({}, testInfo) => {
     test.setTimeout(150_000);
     const scopes = [...STATE_NAMES, FIT_MENU, CROP_RING];
     // The states run in other workers: wait for their results of this run (the runner is every worker's parent), until all are in or no new one has come for 20 s.
@@ -320,7 +352,7 @@ test.describe("contrast as drawn", () => {
         ? readdirSync(RESULTS)
             .filter((f) => f.endsWith(".json"))
             .map((f) => JSON.parse(readFileSync(resolve(RESULTS, f), "utf8")) as Saved)
-            .filter((s) => s.run === process.ppid && scopes.includes(s.scope))
+            .filter((s) => s.run === process.ppid && s.variant === variant.name && scopes.includes(s.scope))
         : [];
     let seen = 0;
     let idle = 0;
@@ -330,14 +362,15 @@ test.describe("contrast as drawn", () => {
       idle = now === seen ? idle + 1 : 0;
       seen = now;
     }
-    const table = renderTable(mine());
+    const table = renderTable(variant.name, mine());
     console.log(table);
-    await testInfo.attach("contrast-table.txt", { body: table, contentType: "text/plain" });
+    await testInfo.attach(`contrast-table-${variant.name}.txt`, { body: table, contentType: "text/plain" });
   });
 });
+}
 
 /** The table of `docs/28` 2.5: per kind of text, the worst ratio, where it is, and over what. */
-function renderTable(saved: readonly Saved[]): string {
+function renderTable(variant: VariantName, saved: readonly Saved[]): string {
   type Row = Saved["backdrops"][string][number];
   const worst = (kind: Kind, backdrops: readonly string[], keep: (r: Row) => boolean = () => true): string => {
     let best: { row: Row; scope: string; backdrop: string } | null = null;
@@ -351,7 +384,7 @@ function renderTable(saved: readonly Saved[]): string {
     }
     return best ? `${best.row.ratio.toFixed(2)} (limit ${best.row.need}) "${best.row.text}" in ${best.scope} on ${best.backdrop}` : "none";
   };
-  const lines = ["", "Contrast as drawn, the worst ratio per kind of text (docs/28 section 2.5)", `${saved.length} scopes, ${saved.reduce((n, s) => n + Object.values(s.backdrops).reduce((k, rows) => k + rows.length, 0), 0)} measurements`, ""];
+  const lines = ["", `Contrast as drawn (${variant}), the worst ratio per kind of text (docs/28 section 2.5)`, `${saved.length} scopes, ${saved.reduce((n, s) => n + Object.values(s.backdrops).reduce((k, rows) => k + rows.length, 0), 0)} measurements`, ""];
   const panes = [["Body and labels", "body"], ["Secondary", "secondary"], ["Tertiary", "tertiary"], ["Other colours", "other"], ["Placeholder", "placeholder"], ["Large (48 px step numbers)", "large"], ["Disabled", "disabled"], ["Key hint of a disabled button", "key-hint"]] as const;
   lines.push("On the panes (the aurora and black):");
   for (const [title, kind] of panes) lines.push(`  ${title.padEnd(32)} ${worst(kind, PANE_BACKDROPS)}`);

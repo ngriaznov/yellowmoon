@@ -1010,22 +1010,30 @@
     }
 }
 
-@media (prefers-reduced-transparency: reduce) {
-  :root, [data-glass-scope] {
-    --glass-opacity: 90% !important;
-    --glass-opacity-strong: 96% !important;
-    --glass-opacity-subtle: 84% !important;
-    --glass-liquid-opacity: 90% !important;
-    --glass-liquid-clear-opacity: 70% !important;
-    --glass-clarity: 0.5 !important;
-    --glass-blur: 40px !important;
-    --glass-liquid-blur: 30px !important;
-    --glass-sheen: 0% !important;
-    --glass-texture: none !important;
-    --glass-specular: 0% !important;
-    --glass-illumination: 0% !important;
-    }
-}
+/* The twin of the query above, for the system setting the shell reads (docs/28 A-P12; WebKit may not match the query). Keep the two blocks the
+   same: src/styles/displayOptions.node.test.ts fails when they differ or one is missing. */
+:root[data-reduce-motion] [data-slot=aurora-blob], :root[data-reduce-motion] [data-glass-motion] {
+  animation: none !important;
+  transition: none !important;
+  }
+:root[data-reduce-motion], :root[data-reduce-motion] [data-glass-scope] {
+  --glass-duration: 0ms !important;
+  --glass-press-scale: 1 !important;
+  --glass-ease: linear !important;
+  --glass-press-stretch: 0 !important;
+  --glass-press-grow: 1 !important;
+  --glass-knob-lens-scale: 1 !important;
+  }
+:root[data-reduce-motion] .glass-materialize:is([data-state=open], [data-state=delayed-open], [data-state=instant-open]) {
+  animation: glass-fade 150ms ease-out both !important;
+  }
+:root[data-reduce-motion] .glass-materialize[data-state=closed] {
+  animation: glass-fade 120ms ease-in reverse both !important;
+  }
+:root[data-reduce-motion] .glass-morph-origin {
+  clip-path: none !important;
+  transition: none !important;
+  }
 
 @media (prefers-contrast: more) {
   :root, [data-glass-scope] {
@@ -1048,12 +1056,98 @@
     --glass-press-stretch: 0 !important;
     --glass-press-grow: 1 !important;
     --glass-label-secondary: oklch(0.36 0.01 285) !important;
+    --glass-label-tertiary: var(--glass-label-secondary) !important;
+    --glass-ring-width: 4px !important;
+    --ym-focus-width: 4px !important;
     }
   :is(:root, [data-glass-scope]):is(.dark, .dark *):not(:where(.dark .light, .dark .light *):not(:where(.dark .light .dark, .dark .light .dark *))) {
     --glass-border-color: oklch(1 0 0) !important;
     --glass-label-secondary: oklch(0.93 0.01 285) !important;
     }
 }
+
+/* The twin of the query above (see the one of Reduce motion). */
+:root[data-increase-contrast], :root[data-increase-contrast] [data-glass-scope] {
+  --glass-opacity: 94% !important;
+  --glass-opacity-strong: 97% !important;
+  --glass-opacity-subtle: 90% !important;
+  --glass-liquid-opacity: 94% !important;
+  --glass-liquid-clear-opacity: 80% !important;
+  --glass-clarity: 0.5 !important;
+  --glass-border-width: 1.5px !important;
+  --glass-border-opacity: 100% !important;
+  --glass-border-color: oklch(0.25 0 0) !important;
+  --glass-highlight-opacity: 0% !important;
+  --glass-sheen: 0% !important;
+  --glass-glow: 0% !important;
+  --glass-texture: none !important;
+  --glass-specular: 0% !important;
+  --glass-edge-shade: 0% !important;
+  --glass-illumination: 0% !important;
+  --glass-press-stretch: 0 !important;
+  --glass-press-grow: 1 !important;
+  --glass-label-secondary: oklch(0.36 0.01 285) !important;
+  --glass-label-tertiary: var(--glass-label-secondary) !important;
+  --glass-ring-width: 4px !important;
+  --ym-focus-width: 4px !important;
+  }
+:is(:root[data-increase-contrast], :root[data-increase-contrast] [data-glass-scope]):is(.dark, .dark *):not(:where(.dark .light, .dark .light *):not(:where(.dark .light .dark, .dark .light .dark *))) {
+  --glass-border-color: oklch(1 0 0) !important;
+  --glass-label-secondary: oklch(0.93 0.01 285) !important;
+  }
+
+/* Reduce Transparency comes after Increase Contrast: when both are on the panes are opaque (100 % wins over 94 %), because both blocks have the same
+   specificity and the later one wins. */
+@media (prefers-reduced-transparency: reduce) {
+  :root, [data-glass-scope] {
+    --glass-opacity: 100% !important;
+    --glass-opacity-strong: 100% !important;
+    --glass-opacity-subtle: 100% !important;
+    --glass-liquid-opacity: 100% !important;
+    --glass-liquid-clear-opacity: 100% !important;
+    --glass-clarity: 0.5 !important;
+    --glass-blur: 0px !important;
+    --glass-liquid-blur: 0px !important;
+    --glass-sheen: 0% !important;
+    --glass-texture: none !important;
+    --glass-specular: 0% !important;
+    --glass-illumination: 0% !important;
+    }
+  /* A class that sets its own tint (a menu over the photo, the strips) is beaten only by a rule on the element itself. */
+  * {
+    --glass-liquid-opacity: 100% !important;
+    --strip-alpha: 100% !important;
+    }
+  /* Nothing is frosted: no element has a backdrop filter, whatever draws it (glasscn's surfaces, the chips, the filmstrip). */
+  *, *::before, *::after {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    }
+}
+
+/* The twin of the query above (see the one of Reduce motion). */
+:root[data-reduce-transparency], :root[data-reduce-transparency] [data-glass-scope] {
+  --glass-opacity: 100% !important;
+  --glass-opacity-strong: 100% !important;
+  --glass-opacity-subtle: 100% !important;
+  --glass-liquid-opacity: 100% !important;
+  --glass-liquid-clear-opacity: 100% !important;
+  --glass-clarity: 0.5 !important;
+  --glass-blur: 0px !important;
+  --glass-liquid-blur: 0px !important;
+  --glass-sheen: 0% !important;
+  --glass-texture: none !important;
+  --glass-specular: 0% !important;
+  --glass-illumination: 0% !important;
+  }
+:root[data-reduce-transparency] * {
+  --glass-liquid-opacity: 100% !important;
+  --strip-alpha: 100% !important;
+  }
+:root[data-reduce-transparency] *, :root[data-reduce-transparency] *::before, :root[data-reduce-transparency] *::after {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  }
 
 @media (forced-colors: active) {
   .glass, .glass-strong, .glass-subtle, .glass-liquid, .glass-liquid-clear {

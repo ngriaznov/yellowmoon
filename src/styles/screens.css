@@ -132,7 +132,7 @@
   box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.45);
   cursor: move;
 }
-.ym-crop__frame:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.ym-crop__frame:focus-visible { outline: var(--ym-focus-width, 3px) solid var(--focus); outline-offset: 2px; }
 .ym-crop__thirds { position: absolute; inset: 0; pointer-events: none; opacity: 0; }
 .ym-crop[data-dragging="true"] .ym-crop__thirds { opacity: 1; }
 .ym-crop__thirds i { position: absolute; background: rgba(255, 255, 255, 0.85); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35); }
