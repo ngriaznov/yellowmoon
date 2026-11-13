@@ -17,6 +17,7 @@
  * released drag, a key, a typed value) are recorded for undo as the difference, per node and for
  * the links, between the settings before the gesture and the core's reply (`diffSettings`).
  */
+import type { Announced } from "./announce";
 import type { Api, Unsubscribe } from "../api";
 import { toAppError } from "../api";
 import { isUnreadableMessage } from "../api/openMessages";
@@ -798,6 +799,12 @@ export class AppStore {
    * answers whether it did anything (not in Crop or the Export panel); with no Photos screen it is `null`.
    */
   nodesCommand: (() => boolean) | null = null;
+
+  /**
+   * Says what a menu item did (`docs/28` A-08): the Photos screen, which owns the live region, sets it while it is on screen; `on` is the
+   * state a toggle went to, or whether Undo and Redo had a step. With no Photos screen it is `null`.
+   */
+  announce: ((action: Announced, on?: boolean) => void) | null = null;
 
   /**
    * `batchMs` is how long event-driven changes may wait to be drawn together (about two frames);

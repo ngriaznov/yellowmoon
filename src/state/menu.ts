@@ -54,22 +54,34 @@ export async function runMenuAction(store: AppStore, action: MenuAction): Promis
       await store.requestCloseSession();
       return;
     case "undo":
-      await store.undo();
+      {
+        const can = state.canUndo;
+        await store.undo();
+        store.announce?.("undo", can);
+      }
       return;
     case "redo":
-      await store.redo();
+      {
+        const can = state.canRedo;
+        await store.redo();
+        store.announce?.("redo", can);
+      }
       return;
     case "pick":
       await store.togglePick();
+      store.announce?.("toggle-pick");
       return;
     case "pick_all":
       await store.pickAll();
+      store.announce?.("pick-all");
       return;
     case "clear_picks":
       await store.clearPicks();
+      store.announce?.("clear-picks");
       return;
     case "before_after":
       await store.toggleBefore();
+      store.announce?.("before");
       return;
     case "nodes":
       // The Photos screen owns the node view; a dialog has the keyboard and the menu alike.
@@ -77,21 +89,27 @@ export async function runMenuAction(store: AppStore, action: MenuAction): Promis
       return;
     case "fit":
       await store.setZoom({ kind: "fit" });
+      store.announce?.("toggle-zoom");
       return;
     case "zoom_100":
       await store.setZoom({ kind: "percent", value: 100 });
+      store.announce?.("toggle-zoom");
       return;
     case "zoom_in":
       await store.setZoom(zoomStep(state.zoom, 1, store.fitPercentExact()));
+      store.announce?.("zoom-in");
       return;
     case "zoom_out":
       await store.setZoom(zoomStep(state.zoom, -1, store.fitPercentExact()));
+      store.announce?.("zoom-out");
       return;
     case "next_photo":
       await store.step(1);
+      store.announce?.("next-photo");
       return;
     case "previous_photo":
       await store.step(-1);
+      store.announce?.("previous-photo");
       return;
     case "import_arri_looks":
       store.go("import-looks");
