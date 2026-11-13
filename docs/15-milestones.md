@@ -349,7 +349,7 @@ Tasks (details, dependencies and *Done when* in `docs/25` §10): **X-01** spec (
 **M4-01 · Betas** 0.9.x releases to a small group; local panic log; triage. *Done when:* no open crash or data-loss bugs.
 **M4-02 · Hardening** 8 GB Macs, Intel Macs, 2000-file folders, corrupt files, disk-full during export. *Done when:* each case handled with a clear message. The audit and the tasks H-01 to H-18 are in `docs/26-hardening.md` (2026-11-11).
 **M4-03 · Documentation** README (public), user guide in `docs/user/`, CLI man page (`clap_mangen`), DNG notice. *Done when:* reviewed by the owner.
-**M4-04 · Accessibility** VoiceOver labels, focus order, keyboard-only use, contrast check of tab colours. *Done when:* checklist passes.
+**M4-04 · Accessibility** VoiceOver labels, focus order, keyboard-only use, contrast check of tab colours. *Done when:* checklist passes. The audit, the tasks A-01 to A-12 and the checklist are in `docs/28-accessibility.md` (2026-11-13).
 **M4-05 · Fuzzing campaign** 8 hours per target. *Done when:* no open findings.
 **M4-06 · Release 1.0.0** *Done when:* gate passes and the release pipeline publishes it.
 
