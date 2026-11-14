@@ -159,16 +159,22 @@ n  = y << (15 − e)                      // 32768 ≤ n ≤ 65535
 m  = 2n − 65536                         // mantissa fraction in Q16, 0..65534
 m2 = (m·m) >> 16
 m3 = (m2·m) >> 16
-P  = ((46597·m) >> 16) − ((19037·m2) >> 16) + ((5208·m3) >> 16)   // 0..32767
+P  = ((46653·m) >> 16) − ((19114·m2) >> 16) + ((5229·m3) >> 16)   // 0..32767
 L  = 4096·e + (P >> 3)
 ```
 
-P/32768 approximates log2(1 + f) with f = m/65536, using the cubic 1.422027587890625·f − 0.580963134765625·f² + 0.158935546875·f³ (the constants are 46597/32768, 19037/32768 and 5208/32768). Error bounds, checked exhaustively in the self-test:
+P/32768 approximates log2(1 + f) with f = m/65536, using the cubic 1.423736572265625·f − 0.58331298828125·f² + 0.159576416015625·f³ (the constants are 46653/32768, 19114/32768 and 5229/32768; A − B + C = 32768, so p(0) = 0 and p(1) = 1).
 
-- The cubic alone: −0.00096 … +0.00070 stop.
-- log2_fixed including truncation: L − 4096·log2(y) ∈ [−4.98, +2.98] codes, i.e. −0.00122 … +0.00073 stop, for every y in 1 … 65535. Anchors: L(1) = 0, L(2) = 4096, L(65535) = 65535.
-- L is not strictly monotone. In the top octave it steps back by 1 code at 23 values of y. This is harmless and part of the function as defined.
+**Where the triple comes from.** It is the integer solution of an objective, not a rounded real fit. The objective: minimise the largest |L − 4096·log2(y)| over every y in 1 … 65535, with the exact integer arithmetic above, subject to L(1) = 0, L(2) = 4096 and L(65535) = 65535, at most 23 step-backs (the count of the triple it replaces) and no step-back larger than one code; ties go to fewer step-backs, then to the smaller triple. The search box is B in [18954, 19194] and C in [5157, 5277] with A = 32768 + B − C, centred on the continuous minimax cubic with the same anchors (1.422865, −0.582085, 0.159220; largest error 8.79e-4 stop = 3.60 codes). `tools/fit/poly_fit.py` repeats it (numpy only, deterministic, about a minute) and prints the best five; `cpu_log_guided.rs::nothing_beats_the_stored_cubics_by_the_stated_objective_near_them` repeats it on a smaller box around the stored triple and fails if a neighbour is better. Derivation and the measured alternatives: `docs/29-raw-constants.md` F-01. The best five are (46653, 19114, 5229) at 4.404 codes and 20 step-backs, (46650, 19108, 5226) at 4.417 and 20, (46646, 19096, 5218) at 4.420 and 18, (46649, 19106, 5225) at 4.420 and 19, and (46648, 19100, 5220) at 4.420 and 21.
+
+Error bounds, checked exhaustively in the self-test:
+
+- The cubic alone: −0.00082 … +0.00105 stop.
+- log2_fixed including truncation: L − 4096·log2(y) ∈ [−4.404, +4.378] codes (largest |error| 4.404), i.e. −0.00108 … +0.00107 stop, for every y in 1 … 65535. Anchors: L(1) = 0, L(2) = 4096, L(65535) = 65535.
+- L is not strictly monotone. In the top octave it steps back by 1 code at 20 values of y. This is harmless and part of the function as defined.
 - Doubling y adds exactly 4096.
+
+The first release of this reference used (46597, 19037, 5208)/32768: error [−4.978, +2.979] codes, 23 step-backs. That triple is kept as `ORACLE_LOG2_CUBIC` and used only to run the 16 oracle vectors, whose `expected` field was made with it (section 6.1).
 
 ### 3.3 Guide filter
 
@@ -184,7 +190,7 @@ K_i are the integers (k, 256, 512 − 2k, 256, k). The sum needs a signed 32-bit
 
 ### 3.4 Back to linear: the guide C
 
-  C = exp2_fixed(Lv)     (C ≈ 2^(Lv/4096); 1 ≤ C ≤ 65522)
+  C = exp2_fixed(Lv)     (C ≈ 2^(Lv/4096); 1 ≤ C ≤ 65518)
 
 **exp2_fixed(L)** for 0 ≤ L ≤ 65535:
 
@@ -193,16 +199,22 @@ e  = L >> 12                            // integer part, 0..15
 f  = (L mod 4096) << 4                  // fraction in Q16, 0..65520
 f2 = (f·f) >> 16
 f3 = (f2·f) >> 16
-Q  = ((45607·f) >> 16) + ((14741·f2) >> 16) + ((5185·f3) >> 16)   // ≤ 65509
+Q  = ((45559·f) >> 16) + ((14919·f2) >> 16) + ((5047·f3) >> 16)   // ≤ 65501
 s  = 2^e
 C  = s + ((s·Q) >> 16)
 ```
 
-Q/65536 approximates 2^f − 1 using 0.6959075927734375·f + 0.2249298095703125·f² + 0.0791168212890625·f³ (45607/65536, 14741/65536, 5185/65536). Error bounds, checked exhaustively:
+Q/65536 approximates 2^f − 1 using 0.6951751708984375·f + 0.2276458740234375·f² + 0.0770111083984375·f³ (45559/65536, 14919/65536, 5047/65536; the constant term of 2^f is exactly 1, and the sum of the three, 0.99978, is not forced to 1).
 
-- The cubic alone: relative error −9.7e-5 … +1.38e-4.
-- exp2_fixed with t = 2^(L/4096): −(1 + 1.18e-4·t) ≤ C − t ≤ +1.24e-4·t. The "1" is the final truncation, which matters only for small t.
-- exp2_fixed(4096·e) = 2^e exactly. The function is monotone non-decreasing, and its maximum is 65522, so no saturation is needed.
+**Where the triple comes from.** The objective: minimise the smallest k with −(1 + k·t) ≤ C − t ≤ k·t, t = 2^(L/4096), over every L in 0 … 65535 with the exact integer arithmetic above, subject to exp2_fixed(4096·e) = 2^e, a monotone non-decreasing C and C ≤ 65535; ties go to the smaller triple. The search starts from the continuous relative-error minimax cubic with constant term 1 (0.695117, 0.227645, 0.077067; largest relative error 8.56e-5), climbs in integer steps of up to 8, 16 and 16 on A, B and C, and then tries every triple within ±4 of where it stops (729 triples). `tools/fit/poly_fit.py` repeats it and prints the best five; `cpu_log_guided.rs::nothing_beats_the_stored_cubics_by_the_stated_objective_near_them` repeats the ±4 box around the stored triple. The best five: (45559, 14919, 5047), (45560, 14915, 5050), (45560, 14916, 5049) and (45561, 14917, 5047) tie at k = 9.020e-5 (the lower bound is the binding one) and (45560, 14918, 5047) follows at 9.024e-5; the stored one is the smallest of the four that tie. Nothing outside the box is claimed. Derivation: `docs/29-raw-constants.md` F-01.
+
+Error bounds, checked exhaustively:
+
+- The cubic alone: relative error −8.4e-5 … +9.5e-5.
+- exp2_fixed with t = 2^(L/4096): −(1 + 9.02e-5·t) ≤ C − t ≤ +8.97e-5·t. The "1" is the final truncation, which matters only for small t.
+- exp2_fixed(4096·e) = 2^e exactly. The function is monotone non-decreasing, and its maximum is 65518, so no saturation is needed.
+
+The first release of this reference used (45607, 14741, 5185)/65536: −(1 + 1.18e-4·t) ≤ C − t ≤ 1.24e-4·t, maximum 65522. That triple is kept as `ORACLE_EXP2_CUBIC` and used only to run the 16 oracle vectors (section 6.1).
 
 C lives in the domain of `p + x/2` (half scale plus offset). Only ratios of C are used later, so the factor ½ does not matter.
 
@@ -337,7 +349,7 @@ Only the float form is on the device. *Not on the device yet:* the fixed form ha
 Each file holds `name`, `description` and `params`. `params` has `guide_detail`, `headroom_log2`, `noise` and `derived` (H, r_dn, p for both forms, k, the kernel). The other fields:
 
 - `input`: width, height, cfa, row-major data.
-- `expected`: fixed form, planar RGB.
+- `expected`: fixed form, planar RGB. It was made with the cubics of the first release of the reference, (46597, 19037, 5208)/32768 and (45607, 14741, 5185)/65536 (3.2, 3.4); the tests run it with those (`log_guided::ORACLE_CUBICS`, `demosaic_fixed_with`). The shipped fixed form uses the triples of 3.2 and 3.4.
 - `expected_float`: float form, planar RGB.
 - `tolerance`: for `expected`, one code of the working scale, 1.01·H/65535. A binary64 implementation of 3.7 is bit-exact; an f32 one is within one code.
 - `tolerance_float`: 1e-4 absolute, for `expected_float`.
@@ -368,7 +380,7 @@ The oracle's self-test runs the same checks.
 7. **Native passthrough and no NaN.** Random inputs in [−0.05, 20] with NaN and infinity samples, every headroom: all outputs finite and native samples unchanged.
 8. **Headroom.** Values above H saturate only in interpolated channels.
 9. **Fixed vs float.** The bounds of 3.9.
-10. **log2_fixed and exp2_fixed.** The bounds and anchors of 3.2 and 3.4, checked exhaustively.
+10. **log2_fixed and exp2_fixed.** The bounds and anchors of 3.2 and 3.4, checked exhaustively; the oracle triples keep the bounds of the first release; a search around each stored triple finds nothing better by the stated objective.
 
 ### 6.3 Determinism
 
