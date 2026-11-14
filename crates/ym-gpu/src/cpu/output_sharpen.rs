@@ -127,7 +127,7 @@ const MAX_TAPS_SCREEN: usize = Tuning::DEFAULT.max_taps_screen;
 /// [`Tuning::DEFAULT`] is what ships and equals it until a fit lands (`docs/29` RC-09). Each field
 /// says its row, kind, spec section (`docs/algorithms/04-output-sharpening.md`), derivation status
 /// and task. The structure stays outside it: the 5 x 5 window of the halo limiter
-/// ([`HALO_WINDOW_RADIUS`]) and the `2 sigma` and `2 s` arithmetic.
+/// (`HALO_WINDOW_RADIUS`) and the `2 sigma` and `2 s` arithmetic.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tuning {
     /// O1 · Design · spec §2.2 · the owner's look (`docs/29` §6, answer 4). Slope of the map from the
