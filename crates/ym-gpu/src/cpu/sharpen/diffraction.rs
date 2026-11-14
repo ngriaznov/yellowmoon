@@ -69,6 +69,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::cpu::filters::{self, BAND_ROWS};
 use crate::cpu::noise::{NoiseDn, WORKING_SCALE};
+use crate::cpu::tuning::{Constant, Kind, Status, wgsl_block};
 use crate::cpu::{RgbImage, mirror};
 
 pub mod eval;
@@ -93,10 +94,6 @@ const GRID: usize = 8;
 const MAX_RADIUS: usize = 7;
 /// Largest radius of the Gaussian high-pass.
 const MAX_GAUSS_RADIUS: usize = 8;
-/// Residual gate: pixels with `Q <= GATE * P` are left alone (spec section 3.9).
-const GATE: f64 = 0.5;
-/// Fraction of white above which a channel counts as near clipping (spec section 2.4).
-const CLIP_FRACTION: f64 = 0.8;
 
 /// R8 diffraction deconvolution controls (spec section 2.1).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -111,6 +108,9 @@ pub struct DiffractionParams {
     /// Blend between input and corrected luma, 0 to 3, clamped; `NaN` reads as 1. 1 is the
     /// specified behaviour and 0 returns the input exactly.
     pub strength: f32,
+    /// The tuned constants ([`Tuning::DEFAULT`], what ships; a reference, so that the stage enums
+    /// stay small). The oracle vectors run under [`Tuning::ORACLE`].
+    pub tuning: &'static Tuning,
 }
 
 impl DiffractionParams {
@@ -122,7 +122,15 @@ impl DiffractionParams {
             f_number,
             scale: 1.0,
             strength: 1.0,
+            tuning: &Tuning::DEFAULT,
         }
+    }
+
+    /// The same controls with other tuned constants.
+    #[must_use]
+    pub const fn with_tuning(mut self, tuning: &'static Tuning) -> Self {
+        self.tuning = tuning;
+        self
     }
 
     /// The same controls for an image at `scale` image pixels per sensor pixel.
@@ -186,9 +194,436 @@ impl DiffractionParams {
         if !self.is_valid() {
             return 0;
         }
-        geometry(self.effective_pitch_um(), self.f_number).map_or(0, |g| g.halo_px)
+        geometry_with(self.effective_pitch_um(), self.f_number, self.tuning)
+            .map_or(0, |g| g.halo_px)
     }
 }
+
+// tuning:begin (the one home of the constants; tests/constants_registry.rs searches the rest of the file)
+/// The tuned constants of the diffraction deconvolution (`docs/29-raw-constants.md` §2.1, rows D1 to
+/// D13; the windows of D14 and the grid of D3 are structure). One field per constant. The planner
+/// (`plan_geometry`) reads D1 to D6 once per `(pitch, f-number)`; the correction reads D7 to D13 per
+/// pixel; the device reads the `f32` of D7 to D13 from [`Tuning::wgsl_block`].
+///
+/// [`Tuning::ORACLE`] is what the oracle vectors were made with (`tests/cpu_data/diffraction/`);
+/// [`Tuning::DEFAULT`] is what ships and equals it until a fit lands (`docs/29` RC-11). Each field
+/// says its row, kind, spec section (`docs/algorithms/03-diffraction-deconvolution.md`), derivation
+/// status and task.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tuning {
+    /// D1 · Fit · spec §2.6, §3.2 · pending, RC-11. First wavelength of the polychromatic PSF, nm.
+    pub lambda_min_nm: u32,
+    /// D1 · Fit · spec §2.6, §3.2 · pending, RC-11. Last wavelength (inclusive), nm.
+    pub lambda_max_nm: u32,
+    /// D1 · Fit · spec §2.6, §3.2 · pending, RC-11. From this wavelength up the spectral weight is 1.
+    pub weight_flat_from_nm: u32,
+    /// D1 · Fit · spec §2.6, §3.2 · pending, RC-11. Below it the weight is
+    /// `(top - λ)/width`: the wavelength where the ramp reaches 0, nm.
+    pub weight_ramp_top_nm: f64,
+    /// D1 · Fit · spec §2.6, §3.2 · pending, RC-11. The width of that ramp, nm.
+    pub weight_ramp_width_nm: f64,
+    /// D2 · Maths · spec §2.6, §3.2 · proved by the convergence run of RC-11. The radial step is
+    /// `fraction · min(p_eff, airy_scale · N / π)` (a quarter of the smaller of the pixel pitch and
+    /// of `0.42 N/π` µm).
+    pub step_fraction: f64,
+    /// D2 · Maths · spec §2.6, §3.2 · proved by the convergence run of RC-11. The `0.42` of the
+    /// radial step, µm per f-number over π.
+    pub airy_scale: f64,
+    /// D3 · Maths · spec §2.6, §3.2 · proved by the error budgets of RC-11. The share of the energy
+    /// inside the 80 % encircled-energy radius `r80`.
+    pub r80_energy: f64,
+    /// D3 · Maths · spec §2.6, §3.2 · RC-11. Floor of the last energy step in the interpolation of
+    /// `r80`, as a share of the total.
+    pub r80_floor: f64,
+    /// D3 · Maths · spec §2.6, §3.2 · RC-11. The profile is cut at this multiple of `r80` ...
+    pub support_r80_factor: f64,
+    /// D3 · Maths · spec §2.6, §3.2 · RC-11. ... or at this multiple of the effective pixel pitch,
+    /// whichever is smaller.
+    pub support_pitch_factor: f64,
+    /// D3 · Maths · spec §2.6, §3.2 · RC-11. Angular samples per pixel of ring radius when the
+    /// rings are splatted onto the pixel grid.
+    pub angular_per_px: f64,
+    /// D3 · Maths · spec §2.6, §3.2 · RC-11. The rounding offset of that count, `⌊6 r + 0.999⌋`.
+    pub angular_round: f64,
+    /// D3 · Maths · spec §2.6, §3.2 · RC-11. The kernel radius is the first one whose square holds
+    /// this share of the energy ...
+    pub kernel_energy: f64,
+    /// D3 · Maths · spec §2.6, §3.2 · RC-11. ... and whose rings beyond peak below this share of
+    /// the centre.
+    pub kernel_tail: f64,
+    /// D4 · Maths · spec §2.6, §3.3 · RC-11. Angles (a multiple of `π/(2 n)` from 0) at which the
+    /// line spread of the kernel is measured.
+    pub line_angles: u32,
+    /// D4 · Maths · spec §2.6, §3.3 · RC-11. The cumulative line spread is read up to this share.
+    pub x80_cutoff: f64,
+    /// D4 · Maths · spec §2.6, §3.3 · RC-11. The level at which the half-width `x80` is read.
+    pub x80_level: f64,
+    /// D5 · Maths for a Gaussian, Fit for the Airy-like kernel · spec §2.6, §3.3 · RC-11 decides
+    /// 0.75 or 0.78. `σ_G = factor · mean(x80)`: the width of the high-pass Gaussian.
+    pub sigma_factor: f64,
+    /// D5 · spec §2.6, §3.3 · RC-11. Lower clamp of `σ_G`, pixels.
+    pub sigma_min: f64,
+    /// D5 · spec §2.6, §3.3 · RC-11. Upper clamp of `σ_G`, pixels.
+    pub sigma_max: f64,
+    /// D6 · Maths · spec §2.6, §3.3 · proved, `the_gaussian_radius_cuts_less_than_the_tail_budget_up_to_sigma_two`.
+    /// The high-pass Gaussian radius is `min(⌊per_sigma · σ_G + add⌋, 8)`.
+    pub gauss_radius_per_sigma: f64,
+    /// D6 · Maths · spec §2.6, §3.3 · proved, as above. The `+ 1` of that radius.
+    pub gauss_radius_add: f64,
+    /// D7 · Fit · spec §2.6, §3.4 · pending, RC-11. A channel counts as near clipping above this
+    /// fraction of white (`T = 0.8 S`).
+    pub clip_fraction: f64,
+    /// D7 · Fit · spec §2.6, §3.4 · pending, RC-11. Weight of the largest sorted channel excess in
+    /// the clip penalty `25 e0 + 5 e1 + e2`.
+    pub clip_weight_largest: f64,
+    /// D7 · Fit · spec §2.6, §3.4 · pending, RC-11. Weight of the middle sorted excess.
+    pub clip_weight_middle: f64,
+    /// D8 · Fit · spec §2.6, §3.5 · pending, RC-11. Gain of the pull-in of the local envelope
+    /// estimates.
+    pub pull_gain: f64,
+    /// D8 · Fit · spec §2.6, §3.5 · pending, RC-11. The pull-in is limited to this share of the
+    /// envelope's height.
+    pub pull_band: f64,
+    /// D9 · Fit · spec §2.6, §3.9 · pending, RC-11. Ridge of the 3 x 3 local solve, as a share of
+    /// `S11 + S22 + S33`.
+    pub ridge: f64,
+    /// D10 · Fit · spec §2.6, §3.9 · pending, RC-11. The noise gate: a pixel whose residual is at or
+    /// below this share of the mean clip penalty is left alone.
+    pub gate: f64,
+    /// D10 · Fit · spec §2.6, §3.9 · pending, RC-11. The fade-out of the correction starts where the
+    /// weighted residual energy passes `fade_lo · Q + 1/gate`.
+    pub gate_fade_lo: f64,
+    /// D10 · Fit · spec §2.6, §3.9 · pending, RC-11. It is gone at `fade_hi · Q + 1/gate`.
+    pub gate_fade_hi: f64,
+    /// D11 · Fit · spec §2.6, §3.9 · pending, RC-11. Smallest confidence weight.
+    pub weight_min: f64,
+    /// D11 · Fit · spec §2.6, §3.9 · pending, RC-11. Lower bound of the dark-layer coefficient `cD`.
+    pub cd_min: f64,
+    /// D12 · Fit · spec §2.6, §3.12 · pending, RC-11. Cap of the luma-to-RGB ratio of the transfer.
+    pub ratio_cap: f64,
+    /// D13 · Guard · spec §2.6, §3.5 · keeps the envelope's divisions finite on flat input.
+    pub divide_guard: f64,
+    /// D13 · Guard · spec §2.6, §3.9 · floor of the diagonal moments `S11`, `S22`, `S33`.
+    pub moment_floor: f64,
+    /// D13 · Guard · spec §2.6, §3.12 · floor of the luma in the transfer, DN.
+    pub floor_dn: f64,
+}
+
+impl Tuning {
+    /// The values the oracle vectors were made with, bit for bit.
+    pub const ORACLE: Tuning = Tuning {
+        lambda_min_nm: 461,
+        lambda_max_nm: 619,
+        weight_flat_from_nm: 540,
+        weight_ramp_top_nm: 620.0,
+        weight_ramp_width_nm: 80.0,
+        step_fraction: 0.25,
+        airy_scale: 0.42,
+        r80_energy: 0.8,
+        r80_floor: 0.01,
+        support_r80_factor: 4.0,
+        support_pitch_factor: 6.0,
+        angular_per_px: 6.0,
+        angular_round: 0.999,
+        kernel_energy: 0.99,
+        kernel_tail: 0.002,
+        line_angles: 8,
+        x80_cutoff: 0.85,
+        x80_level: 0.8,
+        sigma_factor: 0.75,
+        sigma_min: 0.2,
+        sigma_max: 3.0,
+        gauss_radius_per_sigma: 3.5,
+        gauss_radius_add: 1.0,
+        clip_fraction: 0.8,
+        clip_weight_largest: 25.0,
+        clip_weight_middle: 5.0,
+        pull_gain: 12.5,
+        pull_band: 0.04,
+        ridge: 0.0005,
+        gate: 0.5,
+        gate_fade_lo: 0.25,
+        gate_fade_hi: 0.5,
+        weight_min: 0.01,
+        cd_min: -0.5,
+        ratio_cap: 1.5,
+        divide_guard: 1e-20,
+        moment_floor: 1e-15,
+        floor_dn: 1.0,
+    };
+
+    /// The values that ship. Equal to [`Tuning::ORACLE`] until a fit lands (RC-11).
+    pub const DEFAULT: Tuning = Tuning::ORACLE;
+
+    /// The `const` block the shader reads (`diffraction.wgsl`), generated from these values: the
+    /// `f32` of each constant of the registry that has a device name. The kernel wrapper puts it in
+    /// front of the shader text.
+    #[must_use]
+    pub fn wgsl_block(&self) -> String {
+        wgsl_block(
+            "generated from cpu::sharpen::diffraction::Tuning (docs/29, RC-03); do not edit",
+            &[
+                ("CLIP_WEIGHT_LARGEST", self.clip_weight_largest as f32),
+                ("CLIP_WEIGHT_MIDDLE", self.clip_weight_middle as f32),
+                ("PULL_GAIN", self.pull_gain as f32),
+                ("PULL_BAND", self.pull_band as f32),
+                ("RIDGE", self.ridge as f32),
+                ("GATE", self.gate as f32),
+                ("GATE_FADE_LO", self.gate_fade_lo as f32),
+                ("GATE_FADE_HI", self.gate_fade_hi as f32),
+                ("WEIGHT_MIN", self.weight_min as f32),
+                ("CD_MIN", self.cd_min as f32),
+                ("RATIO_CAP", self.ratio_cap as f32),
+                ("DIVIDE_GUARD", self.divide_guard as f32),
+                ("MOMENT_FLOOR", self.moment_floor as f32),
+                ("FLOOR_DN", self.floor_dn as f32),
+            ],
+        )
+    }
+}
+
+impl Default for Tuning {
+    fn default() -> Tuning {
+        Tuning::DEFAULT
+    }
+}
+
+/// The constants of the diffraction deconvolution: id, name, value, kind and derivation status of
+/// every row of `docs/29` §2.1 for spec 03 (`tests/constants_registry.rs` holds it to that table, to
+/// [`Tuning::wgsl_block`] and to the source text).
+pub const REGISTRY: &[Constant] = &registry(&Tuning::DEFAULT);
+
+/// The registry of one `Tuning`. Written with a pattern that names every field and no `..`, so a
+/// field added to [`Tuning`] without an entry here does not compile.
+const fn registry(t: &Tuning) -> [Constant; 43] {
+    let Tuning {
+        lambda_min_nm,
+        lambda_max_nm,
+        weight_flat_from_nm,
+        weight_ramp_top_nm,
+        weight_ramp_width_nm,
+        step_fraction,
+        airy_scale,
+        r80_energy,
+        r80_floor,
+        support_r80_factor,
+        support_pitch_factor,
+        angular_per_px,
+        angular_round,
+        kernel_energy,
+        kernel_tail,
+        line_angles,
+        x80_cutoff,
+        x80_level,
+        sigma_factor,
+        sigma_min,
+        sigma_max,
+        gauss_radius_per_sigma,
+        gauss_radius_add,
+        clip_fraction,
+        clip_weight_largest,
+        clip_weight_middle,
+        pull_gain,
+        pull_band,
+        ridge,
+        gate,
+        gate_fade_lo,
+        gate_fade_hi,
+        weight_min,
+        cd_min,
+        ratio_cap,
+        divide_guard,
+        moment_floor,
+        floor_dn,
+    } = *t;
+    const RC11: Status = Status::Pending("RC-11");
+    [
+        Constant::cpu("D1", "lambda_min_nm", lambda_min_nm as f64, Kind::Fit, RC11).distinct(),
+        Constant::cpu("D1", "lambda_max_nm", lambda_max_nm as f64, Kind::Fit, RC11).distinct(),
+        Constant::cpu(
+            "D1",
+            "weight_flat_from_nm",
+            weight_flat_from_nm as f64,
+            Kind::Fit,
+            RC11,
+        )
+        .distinct(),
+        Constant::cpu(
+            "D1",
+            "weight_ramp_top_nm",
+            weight_ramp_top_nm,
+            Kind::Fit,
+            RC11,
+        )
+        .distinct(),
+        Constant::cpu(
+            "D1",
+            "weight_ramp_width_nm",
+            weight_ramp_width_nm,
+            Kind::Fit,
+            RC11,
+        ),
+        Constant::cpu(
+            "D2",
+            "step_fraction",
+            step_fraction,
+            Kind::Maths,
+            Status::Proved,
+        ),
+        Constant::cpu("D2", "airy_scale", airy_scale, Kind::Maths, Status::Proved).distinct(),
+        // D2: the radial profile has PROFILE_SAMPLES = 500 samples (an array length).
+        Constant::cpu("D2", "profile_samples", 500.0, Kind::Maths, Status::Proved),
+        Constant::cpu("D3", "r80_energy", r80_energy, Kind::Maths, Status::Proved),
+        Constant::cpu("D3", "r80_floor", r80_floor, Kind::Maths, Status::Proved),
+        Constant::cpu(
+            "D3",
+            "support_r80_factor",
+            support_r80_factor,
+            Kind::Maths,
+            Status::Proved,
+        ),
+        Constant::cpu(
+            "D3",
+            "support_pitch_factor",
+            support_pitch_factor,
+            Kind::Maths,
+            Status::Proved,
+        ),
+        Constant::cpu(
+            "D3",
+            "angular_per_px",
+            angular_per_px,
+            Kind::Maths,
+            Status::Proved,
+        ),
+        Constant::cpu(
+            "D3",
+            "angular_round",
+            angular_round,
+            Kind::Maths,
+            Status::Proved,
+        )
+        .distinct(),
+        Constant::cpu(
+            "D3",
+            "kernel_energy",
+            kernel_energy,
+            Kind::Maths,
+            Status::Proved,
+        )
+        .distinct(),
+        Constant::cpu(
+            "D3",
+            "kernel_tail",
+            kernel_tail,
+            Kind::Maths,
+            Status::Proved,
+        )
+        .distinct(),
+        // D3: the centre sample of the radial profile weighs 1/6 in the encircled energy (exact
+        // quadrature, `one_sixth_is_the_exact_weight_of_sample_zero_in_the_encircled_energy`).
+        Constant::cpu(
+            "D3",
+            "centre_sample_weight",
+            1.0 / 6.0,
+            Kind::Maths,
+            Status::Proved,
+        ),
+        Constant::cpu(
+            "D4",
+            "line_angles",
+            line_angles as f64,
+            Kind::Maths,
+            Status::Proved,
+        ),
+        Constant::cpu("D4", "x80_cutoff", x80_cutoff, Kind::Maths, Status::Proved).distinct(),
+        Constant::cpu("D4", "x80_level", x80_level, Kind::Maths, Status::Proved),
+        Constant::cpu(
+            "D5",
+            "sigma_factor",
+            sigma_factor,
+            Kind::Maths,
+            Status::Proved,
+        )
+        .distinct(),
+        Constant::cpu("D5", "sigma_min", sigma_min, Kind::Maths, Status::Proved),
+        Constant::cpu("D5", "sigma_max", sigma_max, Kind::Maths, Status::Proved),
+        Constant::cpu(
+            "D6",
+            "gauss_radius_per_sigma",
+            gauss_radius_per_sigma,
+            Kind::Maths,
+            Status::Proved,
+        )
+        .distinct(),
+        Constant::cpu(
+            "D6",
+            "gauss_radius_add",
+            gauss_radius_add,
+            Kind::Maths,
+            Status::Proved,
+        ),
+        // D6: the cap of the Gaussian radius, MAX_GAUSS_RADIUS (it also bounds MAX_HALO_PX).
+        Constant::cpu("D6", "gauss_radius_max", 8.0, Kind::Maths, Status::Proved),
+        Constant::cpu("D7", "clip_fraction", clip_fraction, Kind::Fit, RC11),
+        Constant::cpu(
+            "D7",
+            "clip_weight_largest",
+            clip_weight_largest,
+            Kind::Fit,
+            RC11,
+        )
+        .on_device("CLIP_WEIGHT_LARGEST"),
+        Constant::cpu(
+            "D7",
+            "clip_weight_middle",
+            clip_weight_middle,
+            Kind::Fit,
+            RC11,
+        )
+        .on_device("CLIP_WEIGHT_MIDDLE"),
+        Constant::cpu("D8", "pull_gain", pull_gain, Kind::Fit, RC11)
+            .on_device("PULL_GAIN")
+            .distinct(),
+        Constant::cpu("D8", "pull_band", pull_band, Kind::Fit, RC11).on_device("PULL_BAND"),
+        Constant::cpu("D9", "ridge", ridge, Kind::Fit, RC11)
+            .on_device("RIDGE")
+            .distinct(),
+        Constant::cpu("D10", "gate", gate, Kind::Fit, RC11).on_device("GATE"),
+        Constant::cpu("D10", "gate_fade_lo", gate_fade_lo, Kind::Fit, RC11)
+            .on_device("GATE_FADE_LO"),
+        Constant::cpu("D10", "gate_fade_hi", gate_fade_hi, Kind::Fit, RC11)
+            .on_device("GATE_FADE_HI"),
+        Constant::cpu("D11", "weight_min", weight_min, Kind::Fit, RC11).on_device("WEIGHT_MIN"),
+        Constant::cpu("D11", "cd_min", cd_min, Kind::Fit, RC11).on_device("CD_MIN"),
+        Constant::cpu("D12", "ratio_cap", ratio_cap, Kind::Fit, RC11).on_device("RATIO_CAP"),
+        Constant::cpu(
+            "D13",
+            "divide_guard",
+            divide_guard,
+            Kind::Guard,
+            Status::Safeguard,
+        )
+        .on_device("DIVIDE_GUARD")
+        .distinct(),
+        Constant::cpu(
+            "D13",
+            "moment_floor",
+            moment_floor,
+            Kind::Guard,
+            Status::Safeguard,
+        )
+        .on_device("MOMENT_FLOOR")
+        .distinct(),
+        Constant::cpu("D13", "floor_dn", floor_dn, Kind::Guard, Status::Safeguard)
+            .on_device("FLOOR_DN"),
+        // D14: the windows are structure (5 x 5 for the envelope and the smoothing, 9 x 9 for the
+        // moments), written as the radii 2 and 4 of `box_mean` and the 5 x 5 of `envelopes`.
+        Constant::cpu("D14", "envelope_window_radius", 2.0, Kind::Fit, RC11),
+        Constant::cpu("D14", "moment_window_radius", 4.0, Kind::Fit, RC11),
+    ]
+}
+// tuning:end
 
 /// What depends only on `(p_eff, N)`: the PSF kernel, the high-pass width, the halo.
 #[derive(Debug, PartialEq)]
@@ -218,6 +653,8 @@ pub struct DiffractionPlan {
     /// Factor on the 9x9 clip-penalty mean in the gate (spec section 7.1, item 1): 1 is the
     /// specified behaviour.
     gate_factor: f64,
+    /// The tuned constants of this plan (a copy of [`DiffractionParams::tuning`]).
+    tuning: &'static Tuning,
 }
 
 impl DiffractionPlan {
@@ -244,7 +681,7 @@ impl DiffractionPlan {
         let luma = luma.map(f64::from);
         let scale = p.effective_scale();
         let pitch_eff_um = p.effective_pitch_um();
-        let geometry = geometry(pitch_eff_um, p.f_number)?;
+        let geometry = geometry_with(pitch_eff_um, p.f_number, p.tuning)?;
 
         // Noise of luma on the working scale (spec section 2.3). A NaN or infinite `r` reads as 0.
         let r_dn = if noise.r.is_finite() { noise.r } else { 0.0 };
@@ -260,11 +697,12 @@ impl DiffractionPlan {
             pitch_eff_um,
             sigma0_dn,
             sigma1_dn,
-            clip_threshold_dn: CLIP_FRACTION * WORKING_SCALE,
+            clip_threshold_dn: p.tuning.clip_fraction * WORKING_SCALE,
             luma,
             g0,
             strength: p.effective_strength(),
             gate_factor: 1.0,
+            tuning: p.tuning,
         })
     }
 
@@ -302,6 +740,18 @@ impl DiffractionPlan {
     #[must_use]
     pub fn scaled_gate_factor(&self) -> f64 {
         cmax(1.0, 2.0 * self.white_noise_residual())
+    }
+
+    /// The tuned constants the plan was made with.
+    #[must_use]
+    pub fn tuning(&self) -> &Tuning {
+        self.tuning
+    }
+
+    /// The clip threshold `T` in DN: `clip_fraction` of the working scale.
+    #[must_use]
+    pub fn clip_threshold_dn(&self) -> f64 {
+        self.clip_threshold_dn
     }
 
     /// The factor on the clip-penalty mean in the gate: 1 for the specified behaviour.
@@ -412,7 +862,10 @@ impl DiffractionPlan {
         let mut out = img.clone();
         for ix in 0..n {
             let yv = f64::from(y[ix]);
-            let k = cmin(cmax(l[ix], 1.0) / cmax(yv, 1.0), 1.5);
+            let k = cmin(
+                cmax(l[ix], self.tuning.floor_dn) / cmax(yv, self.tuning.floor_dn),
+                self.tuning.ratio_cap,
+            );
             let off = (l[ix] - yv * k) / WORKING_SCALE;
             for c in 0..3 {
                 out.data[c * n + ix] = (f64::from(img.data[c * n + ix]) * k + off) as f32;
@@ -446,6 +899,7 @@ impl DiffractionPlan {
         let g0 = self.g0;
         let (s0, s1) = (self.sigma0_dn, self.sigma1_dn);
         let t_clip = self.clip_threshold_dn;
+        let tu = self.tuning;
         let g = &*self.geometry;
         let [rp, gp, bp] = img.planes();
 
@@ -467,12 +921,12 @@ impl DiffractionPlan {
                 cmax(xb / g0[2] - t_clip, 0.0) * a[2],
             ];
             sort3(&mut e);
-            let excess = 25.0 * e[0] + 5.0 * e[1] + e[2];
+            let excess = tu.clip_weight_largest * e[0] + tu.clip_weight_middle * e[1] + e[2];
             penalty[ix] = (1.0 + f64::from(wi) * excess * excess) as f32;
         }
 
         // 3.5 envelope estimates, 3.6 dark and bright layers.
-        let (lower, upper) = envelopes(&luma, w, h);
+        let (lower, upper) = envelopes(&luma, w, h, tu);
         let lm = box_mean(&lower, w, h, 2, true);
         let hm = box_mean(&upper, w, h, 2, true);
         drop((lower, upper));
@@ -550,7 +1004,7 @@ impl DiffractionPlan {
                 q: f64::from(q[ix]),
                 p: f64::from(p_bar[ix]) * self.gate_factor,
             };
-            let sol = solve_pixel(&m);
+            let sol = solve_pixel(&m, tu);
             k1[ix] = sol.cd as f32;
             k2[ix] = sol.cb as f32;
             k3[ix] = sol.ch as f32;
@@ -590,9 +1044,19 @@ type CacheEntry = (CacheKey, Option<Arc<Geometry>>);
 /// the key, so the cache changes speed only.
 static CACHE: Mutex<Vec<CacheEntry>> = Mutex::new(Vec::new());
 
-/// The geometry for `(p_eff, N)`, from the cache or planned. Both numbers must already pass the
-/// gate (`p_eff > 0` and finite, `N` in `[1, 50]`).
+/// [`geometry_with`] at the shipped constants (what the tests of the planner and of the cache use).
+#[cfg(test)]
 fn geometry(pitch_eff_um: f64, f_number: f64) -> Option<Arc<Geometry>> {
+    geometry_with(pitch_eff_um, f_number, &Tuning::DEFAULT)
+}
+
+/// The geometry for `(p_eff, N)`, from the cache or planned. Both numbers must already pass the
+/// gate (`p_eff > 0` and finite, `N` in `[1, 50]`). The cache holds the shipped constants only
+/// ([`Tuning::DEFAULT`]): another `tuning` is planned afresh every time.
+fn geometry_with(pitch_eff_um: f64, f_number: f64, tuning: &Tuning) -> Option<Arc<Geometry>> {
+    if *tuning != Tuning::DEFAULT {
+        return plan_geometry_with(pitch_eff_um, f_number, tuning).map(Arc::new);
+    }
     let key = (pitch_eff_um.to_bits(), f_number.to_bits());
     {
         let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
@@ -605,7 +1069,7 @@ fn geometry(pitch_eff_um: f64, f_number: f64) -> Option<Arc<Geometry>> {
     }
     // Planned outside the lock (a few milliseconds): two threads that ask for the same key at the
     // same time both plan it, and `remember` hands both the entry that got in first.
-    let planned = plan_geometry(pitch_eff_um, f_number).map(Arc::new);
+    let planned = plan_geometry_with(pitch_eff_um, f_number, tuning).map(Arc::new);
     let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
     remember(&mut cache, key, planned)
 }
@@ -629,26 +1093,41 @@ fn remember(
 }
 
 /// The spectral weight `w(lambda)` of the polychromatic PSF: 1 from 540 nm, a linear ramp up to
-/// 1.9875 at 461 nm below (spec section 2.6).
-fn spectral_weight(lambda_nm: u32) -> f64 {
-    if lambda_nm >= 540 {
+/// 1.9875 at 461 nm below (spec section 2.6; the numbers are D1 of [`Tuning`]).
+fn spectral_weight_with(lambda_nm: u32, t: &Tuning) -> f64 {
+    if lambda_nm >= t.weight_flat_from_nm {
         1.0
     } else {
-        (620.0 - f64::from(lambda_nm)) / 80.0
+        (t.weight_ramp_top_nm - f64::from(lambda_nm)) / t.weight_ramp_width_nm
     }
+}
+
+/// [`spectral_weight_with`] at the shipped constants.
+#[cfg(test)]
+fn spectral_weight(lambda_nm: u32) -> f64 {
+    spectral_weight_with(lambda_nm, &Tuning::DEFAULT)
+}
+
+/// [`plan_geometry_with`] at the shipped constants.
+#[cfg(test)]
+fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
+    plan_geometry_with(pitch_eff, f_number, &Tuning::DEFAULT)
 }
 
 /// Plans the PSF kernel, its radius, `sigma_G` and the halo (spec sections 3.1 to 3.3).
 #[allow(clippy::too_many_lines, clippy::needless_range_loop)] // one planner, kept in the order of the spec; the index loops are its formulas
-fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
+fn plan_geometry_with(pitch_eff: f64, f_number: f64, t: &Tuning) -> Option<Geometry> {
     let n_f = f_number;
-    let step = cmin(0.25 * pitch_eff, 0.25 * (n_f * 0.42 / PI));
+    let step = cmin(
+        t.step_fraction * pitch_eff,
+        t.step_fraction * (n_f * t.airy_scale / PI),
+    );
 
     // Radial polychromatic Airy profile, 1 nm steps over 461..619 nm.
     let mut prof = [0.0f64; PROFILE_SAMPLES];
     let mut wsum = 0.0f64;
-    for lam in 461u32..=619 {
-        let wl = spectral_weight(lam);
+    for lam in t.lambda_min_nm..=t.lambda_max_nm {
+        let wl = spectral_weight_with(lam, t);
         let lam_um = f64::from(lam) * 1e-3;
         for (k, p) in prof.iter_mut().enumerate().skip(1) {
             let x = PI * k as f64 * step / (lam_um * n_f);
@@ -665,7 +1144,7 @@ fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
     for (k, p) in prof.iter().enumerate().skip(1) {
         total += k as f64 * p;
     }
-    let e80 = 0.8 * total;
+    let e80 = t.r80_energy * total;
     let (mut prev, mut cur) = (c0, c0);
     let mut idx: Option<usize> = None;
     for ix in 0..PROFILE_SAMPLES - 1 {
@@ -677,11 +1156,14 @@ fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
         prev = cur;
     }
     let idx = idx?;
-    let r80 = idx as f64 + (e80 - prev) / cmax(cur - prev, 0.01 * total);
+    let r80 = idx as f64 + (e80 - prev) / cmax(cur - prev, t.r80_floor * total);
     let r80_um = r80 * step;
 
     // Truncation and cos^2 taper.
-    let support = cmin(4.0 * r80 * step, 6.0 * pitch_eff);
+    let support = cmin(
+        t.support_r80_factor * r80 * step,
+        t.support_pitch_factor * pitch_eff,
+    );
     let nsamp = (support / step) as i64;
     if nsamp < 1 {
         return None;
@@ -713,7 +1195,7 @@ fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
     };
     for k in 1..nsamp {
         let rr = k as f64 * step / pitch_eff; // pixels
-        let m = (6.0 * rr + 0.999) as i64;
+        let m = (t.angular_per_px * rr + t.angular_round) as i64;
         if m < 1 {
             continue;
         }
@@ -758,7 +1240,9 @@ fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
     }
     let mut radius = MAX_RADIUS;
     for r in 1..MAX_RADIUS {
-        if energy[r] >= 0.99 * energy[GRID - 1] && tail_peak[r] < 0.002 * tail_peak[0] {
+        if energy[r] >= t.kernel_energy * energy[GRID - 1]
+            && tail_peak[r] < t.kernel_tail * tail_peak[0]
+        {
             radius = r;
             break;
         }
@@ -781,8 +1265,9 @@ fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
     // sigma_G from the 80 % half-width of the line-spread function at 8 angles.
     let n0 = (17 * radius + 16) / 4;
     let mut x80_sum = 0.0f64;
-    for a in 0..8 {
-        let th = f64::from(a) * PI / 16.0;
+    let angles = f64::from(t.line_angles);
+    for a in 0..t.line_angles {
+        let th = f64::from(a) * PI / (2.0 * angles);
         let (sn, cs) = (th.sin(), th.cos());
         let mut bins = vec![0.0f64; 2 * n0 + 2];
         for dy in -(radius as i64)..=radius as i64 {
@@ -811,7 +1296,7 @@ fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
         let mut cnt = 2.0f64;
         for m in 2..n0 {
             c += bins[n0 - m] + bins[n0 + m];
-            if c > 0.85 {
+            if c > t.x80_cutoff {
                 break;
             }
             let x = m as f64 / 3.0;
@@ -824,16 +1309,17 @@ fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
         let d = sxx * cnt - sx * sx;
         let slope = (cnt * sxc - sx * sc) / d;
         let icpt = (sxx * sc - sx * sxc) / d;
-        x80_sum += (0.8 - icpt) / slope;
+        x80_sum += (t.x80_level - icpt) / slope;
     }
-    let sg = 0.75 * (x80_sum / 8.0);
+    let sg = t.sigma_factor * (x80_sum / angles);
     if !sg.is_finite() {
         return None;
     }
-    let sg = cmin(cmax(sg, 0.2), 3.0);
+    let sg = cmin(cmax(sg, t.sigma_min), t.sigma_max);
     let gauss_sigma = sg as f32;
-    let gauss_radius =
-        ((3.5 * f64::from(gauss_sigma) + 1.0).floor() as usize).min(MAX_GAUSS_RADIUS);
+    let gauss_radius = ((t.gauss_radius_per_sigma * f64::from(gauss_sigma) + t.gauss_radius_add)
+        .floor() as usize)
+        .min(MAX_GAUSS_RADIUS);
     Some(Geometry {
         radius,
         kernel,
@@ -1054,7 +1540,7 @@ fn convolve_psf(src: &[f32], w: usize, h: usize, kernel: &[f32], r: usize) -> Ve
 }
 
 /// Lower and upper envelope estimates over a 5x5 window (spec section 3.5).
-fn envelopes(luma: &[f32], w: usize, h: usize) -> (Vec<f32>, Vec<f32>) {
+fn envelopes(luma: &[f32], w: usize, h: usize, t: &Tuning) -> (Vec<f32>, Vec<f32>) {
     let n = w * h;
     let pad = filters::pad_mirror(luma, w, h, 2);
     let pw = w + 4;
@@ -1078,12 +1564,12 @@ fn envelopes(luma: &[f32], w: usize, h: usize) -> (Vec<f32>, Vec<f32>) {
                     }
                 }
             }
-            let gp = 2.0 * sp / ((np * (np - 1)) as f64 + 1e-20);
-            let gn = -2.0 * sn / ((nn * (nn - 1)) as f64 + 1e-20);
+            let gp = 2.0 * sp / ((np * (np - 1)) as f64 + t.divide_guard);
+            let gn = -2.0 * sn / ((nn * (nn - 1)) as f64 + t.divide_guard);
             let top = c + gp * (np - 1) as f64;
             let bottom = c - gn * (nn - 1) as f64;
             let mid = 0.5 * (top + bottom);
-            let pull = 12.5 * cmin(cmin(gp, gn), 0.04 * (top - bottom));
+            let pull = t.pull_gain * cmin(cmin(gp, gn), t.pull_band * (top - bottom));
             lower[y * w + x] = cmin(bottom + pull, mid) as f32;
             upper[y * w + x] = cmax(top - pull, mid) as f32;
         }
@@ -1120,8 +1606,8 @@ struct Solution {
 }
 
 /// The constrained, ridge-regularised 3-parameter least squares with the noise gate.
-fn solve_pixel(m: &Moments) -> Solution {
-    let t = GATE * m.p;
+fn solve_pixel(m: &Moments, tu: &Tuning) -> Solution {
+    let t = tu.gate * m.p;
     if m.q <= t {
         return Solution {
             cd: 0.0,
@@ -1130,13 +1616,13 @@ fn solve_pixel(m: &Moments) -> Solution {
             wgt: 1.0 + (t - m.q) / t,
         };
     }
-    let s11 = cmax(m.s11, 1e-15);
-    let s22 = cmax(m.s22, 1e-15);
-    let s33 = cmax(m.s33, 1e-15);
+    let s11 = cmax(m.s11, tu.moment_floor);
+    let s22 = cmax(m.s22, tu.moment_floor);
+    let s33 = cmax(m.s33, tu.moment_floor);
     let (s12, s13, s23) = (m.s12, m.s13, m.s23);
     let (t1, t2, t3) = (m.t1, m.t2, m.t3);
 
-    let lambda = 0.0005 * (s11 + s22 + s33);
+    let lambda = tu.ridge * (s11 + s22 + s33);
     let (m11, m22, m33) = (s11 + lambda, s22 + lambda, s33 + lambda);
     let cof11 = m22 * m33 - s23 * s23;
     let cof12 = s13 * s23 - s12 * m33;
@@ -1183,9 +1669,9 @@ fn solve_pixel(m: &Moments) -> Solution {
         cd = c;
         cb = c;
     }
-    if cd < -0.5 {
-        cd = -0.5;
-        cb = cmax(cb, -0.5);
+    if cd < tu.cd_min {
+        cd = tu.cd_min;
+        cb = cmax(cb, tu.cd_min);
     }
     if !cd.is_finite() || !cb.is_finite() || !ch.is_finite() {
         // A degenerate system: leave the pixel alone.
@@ -1209,15 +1695,15 @@ fn solve_pixel(m: &Moments) -> Solution {
     } else {
         cmax((m.q - t) / (m.p - t), 0.0)
     };
-    let k = 1.0 / GATE;
-    let lo = 0.25 * m.q + k;
+    let k = 1.0 / tu.gate;
+    let lo = tu.gate_fade_lo * m.q + k;
     if e > lo {
-        let hi = 0.5 * m.q + k;
+        let hi = tu.gate_fade_hi * m.q + k;
         gain *= cmax((hi - e) / (hi - lo), 0.0);
     }
     let mut wgt = 1.0;
     if e > k {
-        wgt = cmax((k / e) * (k / e), 0.01);
+        wgt = cmax((k / e) * (k / e), tu.weight_min);
     }
     let f = gain * wgt;
     Solution {

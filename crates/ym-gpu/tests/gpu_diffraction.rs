@@ -79,7 +79,7 @@ use std::path::{Path, PathBuf};
 use common::{TestGpu, gpus};
 use serde_json::Value;
 use ym_gpu::cpu::sharpen::CaptureSharpen;
-use ym_gpu::cpu::sharpen::diffraction::{DiffractionParams, DiffractionPlan, SPEC_LUMA};
+use ym_gpu::cpu::sharpen::diffraction::{DiffractionParams, DiffractionPlan, SPEC_LUMA, Tuning};
 use ym_gpu::cpu::tiling::Stage;
 use ym_gpu::cpu::{NoiseDn, RgbImage, mirror, synth};
 use ym_gpu::device::{GpuContext, GpuError};
@@ -414,6 +414,9 @@ fn setup_of(params: &Value) -> Option<Setup> {
         f_number: num(params, "f_number"),
         scale: num(params, "scale"),
         strength: num(params, "strength") as f32,
+        // The oracle vectors run under the constants they were made with. The device runs the shipped
+        // constants, which are these until a fit lands (`docs/29` RC-04 runs both sets on it).
+        tuning: &Tuning::ORACLE,
     };
     let g0 = [g0[0], g0[1], g0[2]];
     let luma = [luma[0], luma[1], luma[2]];

@@ -90,14 +90,12 @@ struct SharpenParams {
 @group(0) @binding(10) var<storage, read_write> out_px: array<u32>;  // the core: f32 bits per plane, or RGBA8 words
 @group(0) @binding(11) var<storage, read> dither_tab: array<f32>;    // the 64 x 64 blue-noise thresholds (fused C13)
 
-// Constants of the spec (3.3, 3.5, 3.7).
-const GAIN_EPS: f32 = 1e-10;
-const LUMA_FLOOR: f32 = 1e-20;
-const RATIO_MAX: f32 = 16.0;
-const HALO_INV_N: f32 = 0.04;   // 1 / 25 samples of the 5 x 5 window
-const HALO_INV_R: f32 = 0.5;    // 1 / window radius 2
-const HALO_K_MIN_F: f32 = 6.0;  // (25 + 1) >> 2
-const HALO_PULL_FADE: f32 = 0.25; // with a tie tolerance the pull fades over the last quarter (spec 3.5)
+// The constants of the spec (3.3, 3.5, 3.7) are generated from `Tuning` in `cpu/output_sharpen.rs`
+// (docs/29, RC-03) and put in front of this text: GAIN_EPS (epsilon of the gain-map denominator),
+// LUMA_FLOOR and RATIO_MAX (floor and cap of the transfer), HALO_INV_N (1 / the samples of the 5 x 5
+// window), HALO_INV_R (1 / its radius), HALO_K_MIN_F ((N + 1) >> 2), HALO_PULL_FADE (with a tie
+// tolerance the pull fades over the last quarter, spec 3.5), SCHARR_CENTRE and SCHARR_CORNER
+// (method 2's normalised Scharr kernel, 10/32 and 3/32).
 
 // std::max(a, b) and std::min(a, b) of the reference.
 fn fmax_(a: f32, b: f32) -> f32 {
@@ -334,10 +332,10 @@ fn sharpen_gain_terms(gid: vec3<u32>) {
             let dm = opaque(blurred_luma(xm, yp));
             let d0 = opaque(blurred_luma(gid.x, yp));
             let dp = opaque(blurred_luma(xp, yp));
-            let gx = opaque(opaque((cp - cm) * 0.3125)
-                + opaque(opaque(opaque(opaque(up + dp) - um) - dm) * 0.09375));
-            let gy = opaque(opaque((d0 - u0) * 0.3125)
-                + opaque(opaque(opaque(opaque(dm + dp) - um) - up) * 0.09375));
+            let gx = opaque(opaque((cp - cm) * SCHARR_CENTRE)
+                + opaque(opaque(opaque(opaque(up + dp) - um) - dm) * SCHARR_CORNER));
+            let gy = opaque(opaque((d0 - u0) * SCHARR_CENTRE)
+                + opaque(opaque(opaque(opaque(dm + dp) - um) - up) * SCHARR_CORNER));
             let mag = sharpen_sqrt(opaque(gx * gx) + opaque(gy * gy));
             let t = sp.inv * opaque(mag - sp.g0);
             wgt = fmin_(fmax_(t, 0.0), 1.0);

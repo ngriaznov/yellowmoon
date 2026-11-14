@@ -103,7 +103,7 @@ use ym_color::encode::OutputSpace;
 use super::color::{ColorImage, dither_table};
 use super::shader::KernelId;
 use super::util::{OutKind, PixelData, STORAGE_IN, even, unpack};
-use crate::cpu::output_sharpen::{Method, OutputSharpen, SharpenPlan};
+use crate::cpu::output_sharpen::{Method, OutputSharpen, SharpenPlan, Tuning};
 use crate::cpu::tiling::{Halo, Rect};
 use crate::cpu::{Placement, RgbImage};
 use crate::device::{GpuContext, GpuError};
@@ -186,14 +186,21 @@ fn pass_of(id: KernelId) -> Option<(&'static str, &'static [Slot])> {
     })
 }
 
-/// The kernel body of an output sharpening pass: the shared WGSL, the C13 helpers and the pass's
-/// `main`. Called by [`super::shader::shader_source`]; any other id is a programming error and gets
-/// an empty body.
+/// The kernel body of an output sharpening pass: the generated constants, the shared WGSL, the C13
+/// helpers and the pass's `main`. Called by [`super::shader::shader_source`]; any other id is a
+/// programming error and gets an empty body. The constants are those of [`Tuning::DEFAULT`], what
+/// ships.
 pub(super) fn body(id: KernelId) -> String {
+    body_with(id, &Tuning::DEFAULT)
+}
+
+/// [`body`] with the constants block generated from `tuning`.
+pub(super) fn body_with(id: KernelId, tuning: &Tuning) -> String {
     let Some((function, _)) = pass_of(id) else {
         return String::new();
     };
-    let mut s = String::from(include_str!("../shaders/output_sharpen.wgsl"));
+    let mut s = tuning.wgsl_block();
+    s.push_str(include_str!("../shaders/output_sharpen.wgsl"));
     s.push('\n');
     s.push_str(include_str!("../shaders/c13.wgsl"));
     s.push_str(&entry(function));
@@ -358,16 +365,23 @@ fn is_collapsed(kernel: &[f64]) -> bool {
     kernel.iter().enumerate().all(|(j, &t)| j == c || t == 0.0)
 }
 
-/// Method 2's constants (spec 3.3): `g0 = T ((k_c + k_{c+1}) / 2) / left` in `f64` then `f32`,
-/// `inv = 0.25 / g0` in `f64` then `f32`, with `left` the sum of the taps left of the centre. A
-/// kernel that has collapsed to one tap (`left == 0`) has no ramp. These are the preamble of the CPU
-/// reference's `gradient_gain`, repeated here because that function is private.
+/// [`ramp_constants_with`] at the shipped constants.
+#[cfg(test)]
 fn ramp_constants(kernel: &[f64], threshold: f32) -> (bool, f32, f32) {
+    ramp_constants_with(kernel, threshold, &Tuning::DEFAULT)
+}
+
+/// Method 2's constants (spec 3.3): `g0 = T ((k_c + k_{c+1}) / 2) / left` in `f64` then `f32`,
+/// `inv = width / g0` in `f64` then `f32` (`width` is [`Tuning::ramp_width`]), with `left` the sum of
+/// the taps left of the centre. A kernel that has collapsed to one tap (`left == 0`) has no ramp.
+/// These are the preamble of the CPU reference's `gradient_gain_with`, repeated here because that
+/// function is private.
+fn ramp_constants_with(kernel: &[f64], threshold: f32, tuning: &Tuning) -> (bool, f32, f32) {
     let c = kernel.len() / 2;
     let left: f64 = kernel[..c].iter().sum();
     if left > 0.0 {
         let g0 = f64::from(threshold) * ((kernel[c] + kernel[c + 1]) * 0.5) / left;
-        (true, g0 as f32, (0.25 / g0) as f32)
+        (true, g0 as f32, (tuning.ramp_width / g0) as f32)
     } else {
         (false, 0.0, 0.0)
     }
@@ -401,6 +415,13 @@ impl PreparedSharpen {
     /// [`GpuError::InvalidInput`] for parameters or a scale the CPU reference's `plan` rejects, and
     /// allocation errors from the pool.
     pub fn new(ctx: &GpuContext, params: &OutputSharpen, scale: f32) -> Result<Self, GpuError> {
+        // The shader's constants are generated from `Tuning::DEFAULT` (`body`); until a pipeline is
+        // keyed by its tuning (docs/29 RC-04) the device runs those and no others.
+        if params.tuning != Tuning::DEFAULT {
+            return Err(invalid(
+                "output sharpening: the device runs the shipped Tuning only; use the CPU path for another",
+            ));
+        }
         let plan = params.plan(scale).map_err(invalid)?;
         let mut taps: Vec<f32> = Vec::new();
         let mut stages = Vec::with_capacity(plan.stages().len());
@@ -428,7 +449,7 @@ impl PreparedSharpen {
                 (a, 0.0)
             };
             let (ramp, g0, inv) = if has_gain && st.method == Method::GradientRamp {
-                ramp_constants(&k, st.threshold)
+                ramp_constants_with(&k, st.threshold, plan.tuning())
             } else {
                 (false, 0.0, 0.0)
             };

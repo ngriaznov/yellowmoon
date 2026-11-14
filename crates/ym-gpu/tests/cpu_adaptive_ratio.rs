@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
-use ym_gpu::cpu::demosaic::adaptive_ratio::{self, Derived, Error, Params, ShadowMatch};
+use ym_gpu::cpu::demosaic::adaptive_ratio::{self, Derived, Error, Params, ShadowMatch, Tuning};
 use ym_gpu::cpu::demosaic::{self, DemosaicInputs, Method};
 use ym_gpu::cpu::synth::{self, Rng};
 use ym_gpu::cpu::tiling::{Halo, Rect, tile_grid};
@@ -75,7 +75,11 @@ impl Case {
     }
 }
 
-fn cases() -> Vec<Case> {
+/// Every vector runs under the constants it was made with ([`Tuning::ORACLE`], which proves the
+/// structure is the spec's) and under the shipped ones ([`Tuning::DEFAULT`]).
+const TUNINGS: [Tuning; 2] = [Tuning::ORACLE, Tuning::DEFAULT];
+
+fn cases(tuning: Tuning) -> Vec<Case> {
     vector_files()
         .into_iter()
         .map(|path| {
@@ -120,6 +124,7 @@ fn cases() -> Vec<Case> {
                     strength: num(params, "strength") as f32,
                     shadow_match,
                     shadow_sharpening: params["shadow_sharpening"].as_bool().expect("bool"),
+                    tuning,
                 },
                 expected: floats(&json["expected"]["data"]),
                 tolerance: num(&json, "tolerance"),
@@ -181,8 +186,14 @@ fn image_diff(a: &RgbImage, b: &RgbImage) -> f64 {
 
 #[test]
 fn vectors_match_within_their_tolerance() {
+    for tuning in TUNINGS {
+        vectors_match_within_their_tolerance_under(tuning);
+    }
+}
+
+fn vectors_match_within_their_tolerance_under(tuning: Tuning) {
     let mut checked = 0;
-    for case in cases() {
+    for case in cases(tuning) {
         if case.has_ca() {
             continue; // ca_weighting: cpu_adaptive_ratio_ca.rs
         }
@@ -209,7 +220,13 @@ fn vectors_match_within_their_tolerance() {
 
 #[test]
 fn derived_values_match_the_vectors() {
-    for case in cases() {
+    for tuning in TUNINGS {
+        derived_values_match_the_vectors_under(tuning);
+    }
+}
+
+fn derived_values_match_the_vectors_under(tuning: Tuning) {
+    for case in cases(tuning) {
         // The vectors carry f64 gains (1.9 is not an f32); the f64 constructor reproduces the
         // oracle's derivation exactly, the f32 one is what the demosaic runs on.
         let g = case.json["params"]["gains"].as_array().expect("gains");
@@ -274,10 +291,16 @@ fn derived_values_match_the_vectors() {
 
 #[test]
 fn the_phase_vectors_agree_after_the_shift() {
+    for tuning in TUNINGS {
+        the_phase_vectors_agree_after_the_shift_under(tuning);
+    }
+}
+
+fn the_phase_vectors_agree_after_the_shift_under(tuning: Tuning) {
     // One RGGB frame sampled at offsets (0/1, 0/1): pixels at least 11 px from every edge agree
     // (the spec checked 3675 samples, max difference 0; the oracle ran f64 gains, we run f32
     // ones, so the bound here is the vectors' own tolerance).
-    let by_name: Vec<Case> = cases()
+    let by_name: Vec<Case> = cases(tuning)
         .into_iter()
         .filter(|c| c.name.starts_with("phase_"))
         .collect();
@@ -668,6 +691,7 @@ fn random_input_gives_finite_output_for_every_size_phase_and_model() {
                     detail: if cfg == 1 { 100.0 } else { 0.0 },
                     strength: if cfg == 1 { 100.0 } else { 0.0 },
                     shadow_sharpening: true,
+                    tuning: Tuning::DEFAULT,
                 };
                 let gains = [
                     0.3 + 4.0 * rng.range(0.0, 1.0),

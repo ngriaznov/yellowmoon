@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use ym_gpu::cpu::RgbImage;
 use ym_gpu::cpu::output_sharpen::{
-    ExtraStage, Method, Mode, OutputSharpen, OutputSharpenError, SharpenPlan, gaussian_kernel,
-    scale_for_edges,
+    ExtraStage, Method, Mode, OutputSharpen, OutputSharpenError, SharpenPlan, Tuning,
+    gaussian_kernel, scale_for_edges,
 };
 
 // ------------------------------------------------------------------------------------------------
@@ -265,7 +265,7 @@ fn method_of(v: &Value) -> Method {
 }
 
 /// The parameters and output scale of a vector.
-fn params_of(v: &Value) -> (OutputSharpen, f32) {
+fn params_of(v: &Value, tuning: Tuning) -> (OutputSharpen, f32) {
     let p = &v["params"];
     let mode = match p["mode"].as_str().expect("mode") {
         "screen" => Mode::Screen,
@@ -303,6 +303,7 @@ fn params_of(v: &Value) -> (OutputSharpen, f32) {
             extra_stages,
             // The reference compares exactly; the tie tolerance is ours (spec 7.1 item 5).
             halo_tie_tolerance: 0.0,
+            tuning,
         },
         f32_of(p, "scale"),
     )
@@ -381,13 +382,23 @@ fn check_derived(name: &str, v: &Value, plan: &SharpenPlan) -> f64 {
     worst
 }
 
+/// Every vector runs under the constants it was made with ([`Tuning::ORACLE`], which proves the
+/// structure is the spec's) and under the shipped ones ([`Tuning::DEFAULT`]).
+const TUNINGS: [Tuning; 2] = [Tuning::ORACLE, Tuning::DEFAULT];
+
 #[test]
 fn vectors_match_the_oracle() {
+    for tuning in TUNINGS {
+        vectors_match_the_oracle_under(tuning);
+    }
+}
+
+fn vectors_match_the_oracle_under(tuning: Tuning) {
     let all = vectors();
     assert_eq!(all.len(), 16, "the package has 16 vectors");
     let mut worst_kernel = 0.0f64;
     for (name, v) in &all {
-        let (os, scale) = params_of(v);
+        let (os, scale) = params_of(v, tuning);
         let plan = os.plan(scale).expect("plan");
         worst_kernel = worst_kernel.max(check_derived(name, v, &plan));
 

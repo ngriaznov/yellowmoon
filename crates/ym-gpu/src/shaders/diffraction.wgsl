@@ -93,17 +93,13 @@ const M_T3: u32 = 8u;
 const M_Q: u32 = 9u;
 const M_P: u32 = 10u;
 
-// Constants of the spec (3.4, 3.5, 3.9, 3.12).
-const GATE: f32 = 0.5;           // residual gate, fraction of the mean clip penalty
-const RIDGE: f32 = 0.0005;       // ridge, fraction of S11 + S22 + S33
-const MOMENT_FLOOR: f32 = 1e-15; // floor of S11, S22, S33
-const CD_MIN: f32 = -0.5;        // lower bound of cD
-const WEIGHT_MIN: f32 = 0.01;    // minimum confidence weight
-const DIVIDE_GUARD: f32 = 1e-20; // envelope divide guard
-const PULL_GAIN: f32 = 12.5;     // envelope pull-in
-const PULL_BAND: f32 = 0.04;
-const RATIO_CAP: f32 = 1.5;      // cap of the luma-to-RGB gain
-const FLOOR_DN: f32 = 1.0;       // transfer floors, DN
+// The tuned constants of the spec (3.4, 3.5, 3.9, 3.12) are generated from `Tuning` in
+// `cpu/sharpen/diffraction.rs` (docs/29, RC-03) and put in front of this text: CLIP_WEIGHT_LARGEST,
+// CLIP_WEIGHT_MIDDLE (clip penalty), PULL_GAIN, PULL_BAND (envelope pull-in), RIDGE (fraction of
+// S11 + S22 + S33), GATE (residual gate, fraction of the mean clip penalty), GATE_FADE_LO and
+// GATE_FADE_HI (the fade-out band), WEIGHT_MIN (minimum confidence weight), CD_MIN (lower bound of
+// cD), RATIO_CAP (cap of the luma-to-RGB gain), and the guards DIVIDE_GUARD, MOMENT_FLOOR and
+// FLOOR_DN (transfer floor, DN).
 // A finite input sample is bounded so that the luma of a pixel stays below this many DN (see
 // `bounded`): 1e6 DN is 15 times the white level of the 16-bit working scale.
 const LUMA_LIMIT_DN: f32 = 1.0e6;
@@ -279,7 +275,7 @@ fn diffraction_luma(gid: vec3<u32>) {
         e0 = e1;
         e1 = t;
     }
-    let excess = (25.0 * e0 + 5.0 * e1) + e2;
+    let excess = (CLIP_WEIGHT_LARGEST * e0 + CLIP_WEIGHT_MIDDLE * e1) + e2;
     base[P_Y * dp.plane + i] = y;
     base[P_W * dp.plane + i] = wi;
     base[P_PEN * dp.plane + i] = 1.0 + (wi * excess) * excess;
@@ -585,9 +581,9 @@ fn solve_pixel(
         gain = fmax_((q - t) / (p - t), 0.0);
     }
     let k = 1.0 / GATE;
-    let lo = 0.25 * q + k;
+    let lo = GATE_FADE_LO * q + k;
     if (e > lo) {
-        let hi = 0.5 * q + k;
+        let hi = GATE_FADE_HI * q + k;
         gain = gain * fmax_((hi - e) / (hi - lo), 0.0);
     }
     var wgt = 1.0;
