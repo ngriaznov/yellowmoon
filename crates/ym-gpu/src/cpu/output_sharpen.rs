@@ -922,6 +922,9 @@ pub struct SharpenPlan {
     halo_tie_tolerance: f32,
     /// The tuned constants of this plan (a copy of [`OutputSharpen::tuning`]).
     tuning: Tuning,
+    /// `tuning` is [`Tuning::DEFAULT`] to the last bit: the per-pixel code then runs as the
+    /// `D = true` instance, in which the compiler sees every constant as a literal.
+    tuning_is_default: bool,
 }
 
 impl SharpenPlan {
@@ -1025,6 +1028,16 @@ impl SharpenPlan {
         }
         chain
     }
+}
+
+/// The constants a per-pixel function reads: with `D` they are [`Tuning::DEFAULT`], a promoted
+/// constant whose fields the compiler folds into the instructions as literals (the speed the
+/// code had when each constant was a `const` item); without it they are `t`, read from memory.
+/// The caller picks `D` once per plan from [`SharpenPlan::tuning_is_default`], so both give the
+/// same bits for the same `Tuning`.
+#[inline(always)]
+fn pick<const D: bool>(t: &Tuning) -> &Tuning {
+    if D { &Tuning::DEFAULT } else { t }
 }
 
 /// `std::max(a, b)` of the reference: `a` unless `a < b`.
@@ -1282,6 +1295,9 @@ fn make_plan(p: &OutputSharpen, s: f32) -> SharpenPlan {
         halo_enabled,
         halo_tie_tolerance: p.halo_tie_tolerance,
         tuning: *t,
+        // `Debug` prints every `f32` so that it reads back to the same bits (`-0.0` included),
+        // so equal text is equal bits; this runs once per plan.
+        tuning_is_default: format!("{t:?}") == format!("{:?}", Tuning::DEFAULT),
     }
 }
 
@@ -1457,13 +1473,13 @@ fn gradient_gain(
     k: &[f64],
     k2: &[f64],
 ) -> Vec<f32> {
-    gradient_gain_with(d, b, w, h, thr, k, k2, &Tuning::DEFAULT)
+    gradient_gain_with::<true>(d, b, w, h, thr, k, k2, &Tuning::DEFAULT)
 }
 
 /// Method 2 gain map: a ramp on the Scharr gradient of the blurred luma `B`,
 /// `W2 = blur(d^2 w) / blur(d^2 + eps)`, `T > 0`.
 #[allow(clippy::too_many_arguments)] // the planes, the kernels and the tuned constants of one pass
-fn gradient_gain_with(
+fn gradient_gain_with<const D: bool>(
     d: &[f32],
     b: &[f32],
     w: usize,
@@ -1473,6 +1489,7 @@ fn gradient_gain_with(
     k2: &[f64],
     t: &Tuning,
 ) -> Vec<f32> {
+    let t = pick::<D>(t);
     let c = k.len() / 2;
     let left: f64 = k[..c].iter().sum();
     // g0: gradient of the blurred luma at an ideal step whose high-pass response equals T. A
@@ -1722,15 +1739,21 @@ fn envelope(ca: f64, sa: f64, sums: [f64; 8], tl: f64, soft: bool, pull_fade: f6
 /// [`halo_maps_with`] at the shipped constants.
 #[cfg(test)]
 fn halo_maps(l: &[f32], s: &[f32], w: usize, h: usize, tie: f32) -> [Vec<f32>; 4] {
-    halo_maps_with(l, s, w, h, tie, &Tuning::DEFAULT)
+    halo_maps_with::<true>(l, s, w, h, tie, &Tuning::DEFAULT)
 }
 
 /// Robust local envelopes of `L` and of `S = L + Hacc` on a 5 x 5 window (spec section 3.5):
 /// returns `(v_hi, w_hi, v_lo, w_lo)`. Sums are taken over differences to the centre value, so a
 /// flat window gives exact zeros; the arithmetic is `f64`. `tie` is the relative tie tolerance.
-fn halo_maps_with(l: &[f32], s: &[f32], w: usize, h: usize, tie: f32, t: &Tuning) -> [Vec<f32>; 4] {
+fn halo_maps_with<const D: bool>(
+    l: &[f32],
+    s: &[f32],
+    w: usize,
+    h: usize,
+    tie: f32,
+    t: &Tuning,
+) -> [Vec<f32>; 4] {
     const R: usize = HALO_WINDOW_RADIUS;
-    let pull_fade = t.halo_pull_fade;
     let stride = w + 2 * R;
     // Mirrored copies of both planes, so the 25 reads of a pixel never branch.
     let mut lp = vec![0.0f32; stride * h];
@@ -1754,14 +1777,27 @@ fn halo_maps_with(l: &[f32], s: &[f32], w: usize, h: usize, tie: f32, t: &Tuning
         vec![0.0f32; w * h],
     ];
     let soft = tie > 0.0;
-    let mut finish = |o: usize, ca: f64, sa: f64, tl: f64, sums: [f64; 8]| {
-        for (plane, v) in out
-            .iter_mut()
-            .zip(envelope(ca, sa, sums, tl, soft, pull_fade))
-        {
+    // One function per `D`, so that with `D` the plateau-pull fade is a literal in it.
+    #[inline(never)]
+    fn finish<const D: bool>(
+        out: &mut [Vec<f32>; 4],
+        (soft, t): (bool, &Tuning),
+        o: usize,
+        (ca, sa, tl): (f64, f64, f64),
+        sums: [f64; 8],
+    ) {
+        for (plane, v) in out.iter_mut().zip(envelope(
+            ca,
+            sa,
+            sums,
+            tl,
+            soft,
+            pick::<D>(t).halo_pull_fade,
+        )) {
             plane[o] = v;
         }
-    };
+    }
+    let mode = (soft, t);
     for y in 0..h {
         let rows: [usize; WINDOW_SPAN] =
             std::array::from_fn(|k| mirror(y as isize + k as isize - R as isize, h) * stride);
@@ -1773,17 +1809,23 @@ fn halo_maps_with(l: &[f32], s: &[f32], w: usize, h: usize, tie: f32, t: &Tuning
                 let c = Centres::<2>::at(l, s, i, tie);
                 let sums = window_sums(&lp, &sp, &rows, x, &c);
                 for (j, ((&cl, &cs), &tl)) in c.l.iter().zip(&c.s).zip(&c.tl).enumerate() {
-                    finish(i + j, cl, cs, tl, std::array::from_fn(|k| sums[k][j]));
+                    finish::<D>(
+                        &mut out,
+                        mode,
+                        i + j,
+                        (cl, cs, tl),
+                        std::array::from_fn(|k| sums[k][j]),
+                    );
                 }
                 x += 2;
             } else {
                 let c = Centres::<1>::at(l, s, i, tie);
                 let sums = window_sums(&lp, &sp, &rows, x, &c);
-                finish(
+                finish::<D>(
+                    &mut out,
+                    mode,
                     i,
-                    c.l[0],
-                    c.s[0],
-                    c.tl[0],
+                    (c.l[0], c.s[0], c.tl[0]),
                     std::array::from_fn(|k| sums[k][0]),
                 );
                 x += 1;
@@ -1839,22 +1881,20 @@ fn ratio_plane(plan: &SharpenPlan, luma: &[f32], w: usize, h: usize, band_rows: 
             // edge only corrupts rows farther than `halo` from the core.
             let g0 = y0.saturating_sub(halo);
             let g1 = (y1 + halo).min(h);
-            band_ratio(
-                plan,
-                &kernels,
-                &luma[g0 * w..g1 * w],
-                w,
-                g1 - g0,
-                (y0 - g0)..(y1 - g0),
-                out,
-            );
+            let band = &luma[g0 * w..g1 * w];
+            let core = (y0 - g0)..(y1 - g0);
+            if plan.tuning_is_default {
+                band_ratio::<true>(plan, &kernels, band, w, g1 - g0, core, out);
+            } else {
+                band_ratio::<false>(plan, &kernels, band, w, g1 - g0, core, out);
+            }
         });
     ratio
 }
 
 /// Runs every stage on one band (`luma` is `h` rows of `w`) and writes the ratio of the rows in
 /// `core` to `out`.
-fn band_ratio(
+fn band_ratio<const D: bool>(
     plan: &SharpenPlan,
     kernels: &Kernels,
     luma: &[f32],
@@ -1885,7 +1925,7 @@ fn band_ratio(
             )),
             (Method::GradientRamp, Some(k2)) => {
                 let b: Vec<f32> = luma.iter().zip(&hp).map(|(&l, &v)| l + v).collect(); // G * L
-                Some(gradient_gain_with(
+                Some(gradient_gain_with::<D>(
                     &d,
                     &b,
                     w,
@@ -1927,7 +1967,7 @@ fn band_ratio(
     // The halo-map kernel exists exactly when some stage sends part of its delta to the limiter.
     if let Some(kh) = &kernels.halo {
         let s: Vec<f32> = luma.iter().zip(&limited).map(|(&l, &hv)| l + hv).collect();
-        let maps = halo_maps_with(luma, &s, w, h, plan.halo_tie_tolerance, &plan.tuning);
+        let maps = halo_maps_with::<D>(luma, &s, w, h, plan.halo_tie_tolerance, &plan.tuning);
         drop(s);
         let [b_v_hi, b_w_hi, b_v_lo, b_w_lo] = maps.map(|m| blur(&m, w, h, kh));
         for i in 0..n {
@@ -1937,7 +1977,8 @@ fn band_ratio(
         }
     }
 
-    let (luma_floor, ratio_max) = (plan.tuning.luma_floor, plan.tuning.ratio_max);
+    let t = pick::<D>(&plan.tuning);
+    let (luma_floor, ratio_max) = (t.luma_floor, t.ratio_max);
     for (row, y) in core.clone().enumerate() {
         let o = &mut out[row * w..(row + 1) * w];
         for (x, r) in o.iter_mut().enumerate() {
