@@ -260,7 +260,7 @@ impl DiffractionPlan {
             pitch_eff_um,
             sigma0_dn,
             sigma1_dn,
-            clip_threshold_dn: CLIP_FRACTION * WORKING_SCALE,
+            clip_threshold_dn: crate::cpu::rc_tune::rc(35, CLIP_FRACTION) * WORKING_SCALE,
             luma,
             g0,
             strength: p.effective_strength(),
@@ -412,7 +412,7 @@ impl DiffractionPlan {
         let mut out = img.clone();
         for ix in 0..n {
             let yv = f64::from(y[ix]);
-            let k = cmin(cmax(l[ix], 1.0) / cmax(yv, 1.0), 1.5);
+            let k = cmin(cmax(l[ix], 1.0) / cmax(yv, 1.0), crate::cpu::rc_tune::rc(42, 1.5));
             let off = (l[ix] - yv * k) / WORKING_SCALE;
             for c in 0..3 {
                 out.data[c * n + ix] = (f64::from(img.data[c * n + ix]) * k + off) as f32;
@@ -467,7 +467,7 @@ impl DiffractionPlan {
                 cmax(xb / g0[2] - t_clip, 0.0) * a[2],
             ];
             sort3(&mut e);
-            let excess = 25.0 * e[0] + 5.0 * e[1] + e[2];
+            let excess = crate::cpu::rc_tune::rc(33, 25.0) * e[0] + crate::cpu::rc_tune::rc(34, 5.0) * e[1] + e[2];
             penalty[ix] = (1.0 + f64::from(wi) * excess * excess) as f32;
         }
 
@@ -634,7 +634,7 @@ fn spectral_weight(lambda_nm: u32) -> f64 {
     if lambda_nm >= 540 {
         1.0
     } else {
-        (620.0 - f64::from(lambda_nm)) / 80.0
+        (620.0 - f64::from(lambda_nm)) / crate::cpu::rc_tune::rc(20, 80.0)
     }
 }
 
@@ -642,7 +642,7 @@ fn spectral_weight(lambda_nm: u32) -> f64 {
 #[allow(clippy::too_many_lines, clippy::needless_range_loop)] // one planner, kept in the order of the spec; the index loops are its formulas
 fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
     let n_f = f_number;
-    let step = cmin(0.25 * pitch_eff, 0.25 * (n_f * 0.42 / PI));
+    let step = cmin(0.25 * pitch_eff, 0.25 * (n_f * crate::cpu::rc_tune::rc(21, 0.42) / PI));
 
     // Radial polychromatic Airy profile, 1 nm steps over 461..619 nm.
     let mut prof = [0.0f64; PROFILE_SAMPLES];
@@ -665,7 +665,7 @@ fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
     for (k, p) in prof.iter().enumerate().skip(1) {
         total += k as f64 * p;
     }
-    let e80 = 0.8 * total;
+    let e80 = crate::cpu::rc_tune::rc(22, 0.8) * total;
     let (mut prev, mut cur) = (c0, c0);
     let mut idx: Option<usize> = None;
     for ix in 0..PROFILE_SAMPLES - 1 {
@@ -681,7 +681,7 @@ fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
     let r80_um = r80 * step;
 
     // Truncation and cos^2 taper.
-    let support = cmin(4.0 * r80 * step, 6.0 * pitch_eff);
+    let support = cmin(crate::cpu::rc_tune::rc(23, 4.0) * r80 * step, crate::cpu::rc_tune::rc(24, 6.0) * pitch_eff);
     let nsamp = (support / step) as i64;
     if nsamp < 1 {
         return None;
@@ -758,7 +758,7 @@ fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
     }
     let mut radius = MAX_RADIUS;
     for r in 1..MAX_RADIUS {
-        if energy[r] >= 0.99 * energy[GRID - 1] && tail_peak[r] < 0.002 * tail_peak[0] {
+        if energy[r] >= crate::cpu::rc_tune::rc(25, 0.99) * energy[GRID - 1] && tail_peak[r] < crate::cpu::rc_tune::rc(26, 0.002) * tail_peak[0] {
             radius = r;
             break;
         }
@@ -811,7 +811,7 @@ fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
         let mut cnt = 2.0f64;
         for m in 2..n0 {
             c += bins[n0 - m] + bins[n0 + m];
-            if c > 0.85 {
+            if c > crate::cpu::rc_tune::rc(27, 0.85) {
                 break;
             }
             let x = m as f64 / 3.0;
@@ -824,16 +824,16 @@ fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
         let d = sxx * cnt - sx * sx;
         let slope = (cnt * sxc - sx * sc) / d;
         let icpt = (sxx * sc - sx * sxc) / d;
-        x80_sum += (0.8 - icpt) / slope;
+        x80_sum += (crate::cpu::rc_tune::rc(28, 0.8) - icpt) / slope;
     }
-    let sg = 0.75 * (x80_sum / 8.0);
+    let sg = crate::cpu::rc_tune::rc(29, 0.75) * (x80_sum / 8.0);
     if !sg.is_finite() {
         return None;
     }
-    let sg = cmin(cmax(sg, 0.2), 3.0);
+    let sg = cmin(cmax(sg, crate::cpu::rc_tune::rc(30, 0.2)), crate::cpu::rc_tune::rc(31, 3.0));
     let gauss_sigma = sg as f32;
     let gauss_radius =
-        ((3.5 * f64::from(gauss_sigma) + 1.0).floor() as usize).min(MAX_GAUSS_RADIUS);
+        ((crate::cpu::rc_tune::rc(32, 3.5) * f64::from(gauss_sigma) + 1.0).floor() as usize).min(MAX_GAUSS_RADIUS);
     Some(Geometry {
         radius,
         kernel,
@@ -1083,7 +1083,7 @@ fn envelopes(luma: &[f32], w: usize, h: usize) -> (Vec<f32>, Vec<f32>) {
             let top = c + gp * (np - 1) as f64;
             let bottom = c - gn * (nn - 1) as f64;
             let mid = 0.5 * (top + bottom);
-            let pull = 12.5 * cmin(cmin(gp, gn), 0.04 * (top - bottom));
+            let pull = crate::cpu::rc_tune::rc(36, 12.5) * cmin(cmin(gp, gn), crate::cpu::rc_tune::rc(37, 0.04) * (top - bottom));
             lower[y * w + x] = cmin(bottom + pull, mid) as f32;
             upper[y * w + x] = cmax(top - pull, mid) as f32;
         }
@@ -1121,7 +1121,7 @@ struct Solution {
 
 /// The constrained, ridge-regularised 3-parameter least squares with the noise gate.
 fn solve_pixel(m: &Moments) -> Solution {
-    let t = GATE * m.p;
+    let t = crate::cpu::rc_tune::rc(39, GATE) * m.p;
     if m.q <= t {
         return Solution {
             cd: 0.0,
@@ -1136,7 +1136,7 @@ fn solve_pixel(m: &Moments) -> Solution {
     let (s12, s13, s23) = (m.s12, m.s13, m.s23);
     let (t1, t2, t3) = (m.t1, m.t2, m.t3);
 
-    let lambda = 0.0005 * (s11 + s22 + s33);
+    let lambda = crate::cpu::rc_tune::rc(38, 0.0005) * (s11 + s22 + s33);
     let (m11, m22, m33) = (s11 + lambda, s22 + lambda, s33 + lambda);
     let cof11 = m22 * m33 - s23 * s23;
     let cof12 = s13 * s23 - s12 * m33;
@@ -1209,15 +1209,15 @@ fn solve_pixel(m: &Moments) -> Solution {
     } else {
         cmax((m.q - t) / (m.p - t), 0.0)
     };
-    let k = 1.0 / GATE;
-    let lo = 0.25 * m.q + k;
+    let k = 1.0 / crate::cpu::rc_tune::rc(39, GATE);
+    let lo = crate::cpu::rc_tune::rc(40, 0.25) * m.q + k;
     if e > lo {
-        let hi = 0.5 * m.q + k;
+        let hi = crate::cpu::rc_tune::rc(43, 0.5) * m.q + k;
         gain *= cmax((hi - e) / (hi - lo), 0.0);
     }
     let mut wgt = 1.0;
     if e > k {
-        wgt = cmax((k / e) * (k / e), 0.01);
+        wgt = cmax((k / e) * (k / e), crate::cpu::rc_tune::rc(41, 0.01));
     }
     let f = gain * wgt;
     Solution {

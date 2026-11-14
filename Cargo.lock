@@ -11334,6 +11334,7 @@ dependencies = [
  "ym-film",
  "ym-lens",
  "ym-noise",
+ "ym-raw",
 ]
 
 [[package]]

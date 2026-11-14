@@ -69,6 +69,7 @@ pub mod noise;
 pub mod noise_level;
 pub mod normalize;
 pub mod output_sharpen;
+pub mod rc_tune;
 pub mod resample;
 pub mod sampler;
 pub mod sharpen;

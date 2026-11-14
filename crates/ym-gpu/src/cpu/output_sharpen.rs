@@ -653,9 +653,9 @@ const fn max_taps(mode: Mode) -> usize {
 /// Radius (px) to Gaussian sigma before resolution scaling; 0 means "no stage".
 fn sigma_from_radius(r: f32) -> f32 {
     if r >= 0.5 {
-        r * 0.7 + 0.3
+        r * crate::cpu::rc_tune::rc(60, 0.7) as f32 + crate::cpu::rc_tune::rc(61, 0.3) as f32
     } else if r > 0.09 {
-        (r - 0.09).sqrt() * 0.97
+        (r - 0.09).sqrt() * crate::cpu::rc_tune::rc(62, 0.97) as f32
     } else {
         0.0
     }
@@ -663,10 +663,11 @@ fn sigma_from_radius(r: f32) -> f32 {
 
 /// Resolution scaling for an output `s` times the rendered size, `s` in (0, 1].
 fn scale_sigma(sigma: f32, s: f32) -> f32 {
-    if s >= 1.0 || sigma < SIGMA_KNEE {
+    let knee = crate::cpu::rc_tune::rc(65, f64::from(SIGMA_KNEE)) as f32;
+    if s >= 1.0 || sigma < knee {
         return sigma;
     }
-    s * (sigma - SIGMA_KNEE) + SIGMA_KNEE
+    s * (sigma - knee) + knee
 }
 
 /// Centre tap of a pixel-integrated, unit-area Gaussian without truncation: `erf(1 / (2 sqrt(2) sigma))`.
@@ -709,7 +710,7 @@ fn auto_method(sigma: f32, amount: f32, threshold: f32) -> Method {
 /// and a centre tap instead of underflowing in [`gaussian_kernel`].
 fn tap_count(sigma: f32, max_taps: usize) -> usize {
     let cap = (max_taps.max(3) - 1) / 2 * 2 + 1;
-    let n0 = ((sigma * 5.0 + 2.5) as i32 | 1) as usize;
+    let n0 = ((sigma * crate::cpu::rc_tune::rc(63, 5.0) as f32 + crate::cpu::rc_tune::rc(64, 2.5) as f32) as i32 | 1) as usize;
     if n0 < 3 { 3 } else { n0.min(cap) }
 }
 
@@ -1197,7 +1198,7 @@ fn window_sums<const P: usize>(
 fn pull_weight(near: f64, far: f64, eps: f64) -> f64 {
     let inv_n = 1.0f64 / HALO_WINDOW_SAMPLES as f64;
     if far > near {
-        let fade = ((far - near) / (HALO_PULL_FADE * far)).min(1.0);
+        let fade = ((far - near) / (crate::cpu::rc_tune::rc(67, HALO_PULL_FADE) * far)).min(1.0);
         fade * far / (near + far * inv_n + eps)
     } else {
         0.0
@@ -1456,7 +1457,7 @@ fn band_ratio(
             let ratio = lp / l;
             // A NaN fails the comparison and gives 0.
             *r = if ratio >= 0.0 {
-                fmin(ratio, RATIO_MAX)
+                fmin(ratio, crate::cpu::rc_tune::rc(68, f64::from(RATIO_MAX)) as f32)
             } else {
                 0.0
             };

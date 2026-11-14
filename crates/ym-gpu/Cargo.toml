@@ -46,6 +46,7 @@ fault-injection = []
 tail-probe = []
 
 [dev-dependencies]
+ym-raw.workspace = true
 # The synthetic lens folders of the tests of the lens kernels (`ym_lens::test_support`).
 ym-lens = { workspace = true, features = ["test-support"] }
 # The Film node's CPU reference, the twin the parity tests of `kernels::film` compare with. A dev-dependency only:

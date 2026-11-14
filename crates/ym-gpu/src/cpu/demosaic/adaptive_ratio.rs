@@ -237,8 +237,8 @@ impl Derived {
         }
         let (g, r) = (noise.g, noise.r);
         // Signal level with SNR 10 for var = g x + r^2: x = 50 (g + sqrt(g^2 + 0.04 r^2)).
-        let offset1_dn = (50.0 * (g + (g * g + 0.04 * r * r).sqrt())).clamp(1.0, 65536.0);
-        let s = ((100.0 - (f64::from(params.detail) + f64::from(params.strength))) * 0.2).max(1.0);
+        let offset1_dn = (crate::cpu::rc_tune::rc(9, 50.0) * (g + (g * g + 0.04 * r * r).sqrt())).clamp(1.0, 65536.0);
+        let s = ((100.0 - (f64::from(params.detail) + f64::from(params.strength))) * crate::cpu::rc_tune::rc(10, 0.2)).max(1.0);
         let s2 = s * s;
         // Signal level with SNR s: x = s^2 / 2 (g + sqrt(g^2 + 4 r^2 / s^2)).
         let gate_dn = (0.5 * s2 * (g + (g * g + 4.0 * r * r / s2).sqrt())).clamp(1.0, 65535.0);
@@ -774,7 +774,7 @@ fn green_estimate(m: &[f32], i: usize, pw: usize, rho: f64, k: f64, ca: f64) -> 
     let (gu, gd, gl, gr) = (px.p(0, -1), px.p(0, 1), px.p(-1, 0), px.p(1, 0));
     // Centre colour differences.
     let (du, dd, dl, dr) = (cs - gu, cs - gd, cs - gl, cs - gr);
-    let w2 = 1.6 * rho;
+    let w2 = crate::cpu::rc_tune::rc(0, 1.6) * rho;
     let vbase = (gl - px.p(-1, -2)).abs()
         + (gl - px.p(-1, 2)).abs()
         + (gr - px.p(1, -2)).abs()
@@ -813,7 +813,7 @@ fn green_estimate(m: &[f32], i: usize, pw: usize, rho: f64, k: f64, ca: f64) -> 
     // Decision. The CA relaxation factor f is exactly 1 on the plain path (ca = 0) and for a
     // misregistration under 0.1 px; it is unbounded above, as the spec has it (evaluation note 3).
     let f = if ca >= 0.1 {
-        1.0 + 2.5 * (ca * ca * ca)
+        1.0 + crate::cpu::rc_tune::rc(1, 2.5) * (ca * ca * ca)
     } else {
         1.0
     };
@@ -991,7 +991,7 @@ fn refine_green(m: &[f32], g: &[f32], i: usize, pw: usize, kappa: Option<f64>) -
         // 3-tap from kappa = 0.5); the weight of G0 is 1 + 18 t + 102 t^3, t = (1 - min(1, 2 kappa))^2.
         let t = 1.0 - (2.0 * k).min(1.0);
         let t = t * t;
-        let wt = 1.0 + 18.0 * t + 102.0 * (t * t * t);
+        let wt = 1.0 + crate::cpu::rc_tune::rc(2, 18.0) * t + crate::cpu::rc_tune::rc(3, 102.0) * (t * t * t);
         let num = if best == 0 {
             wt * g0 + n + so
         } else {
@@ -1098,9 +1098,9 @@ fn diagonal_ratio(xp: &[f32], gp: &[f32], yp: &[f32], i: usize, s: isize, k: f64
     let mut w_a = 1.0 + (g_a - g0).abs() + (c_a - c0).abs();
     let mut w_b = 1.0 + (g_b - g0).abs() + (c_b - c0).abs();
     // X not dominant over G: penalise high-chroma samples.
-    if 0.75 * (x_ul + x_ur + x_dl + x_dr) < g_ul + g_ur + g_dl + g_dr {
-        w_a *= (x_a - g_a).abs() / (x_a + g_a + 1.0).max(1.0) + 0.03;
-        w_b *= (x_b - g_b).abs() / (x_b + g_b + 1.0).max(1.0) + 0.03;
+    if crate::cpu::rc_tune::rc(5, 0.75) * (x_ul + x_ur + x_dl + x_dr) < g_ul + g_ur + g_dl + g_dr {
+        w_a *= (x_a - g_a).abs() / (x_a + g_a + 1.0).max(1.0) + crate::cpu::rc_tune::rc(4, 0.03);
+        w_b *= (x_b - g_b).abs() / (x_b + g_b + 1.0).max(1.0) + crate::cpu::rc_tune::rc(4, 0.03);
     }
     // Each sample is weighted by the other sample's cost.
     let t = (w_a + w_b) * k;
@@ -1145,9 +1145,9 @@ fn step2_green_sites(
             for (res, chan) in result.iter_mut().zip([&*pr, &*pb]) {
                 let xn = nb.map(|j| f64::from(chan[j]));
                 let mut cost = cost0;
-                if 0.75 * (xn[0] + xn[1] + xn[2] + xn[3]) < sum_g {
+                if crate::cpu::rc_tune::rc(5, 0.75) * (xn[0] + xn[1] + xn[2] + xn[3]) < sum_g {
                     for j in 0..4 {
-                        cost[j] *= (gn[j] - xn[j]).abs() / (gn[j] + xn[j] + 1.0).max(1.0) + 0.03;
+                        cost[j] *= (gn[j] - xn[j]).abs() / (gn[j] + xn[j] + 1.0).max(1.0) + crate::cpu::rc_tune::rc(4, 0.03);
                     }
                 }
                 let (mut wsum, mut gsum, mut xsum) = (0.0f64, 0.0f64, 0.0f64);
@@ -1212,11 +1212,11 @@ fn shadow_sharpen(m: &[f32], lay: &Layout, mg: &Margins, d: &Derived, planes: [&
             } else {
                 pa
             };
-            let lap = 5.0 * (2.0 * y0 - pair);
+            let lap = crate::cpu::rc_tune::rc(7, 5.0) * (2.0 * y0 - pair);
             let lim = y0.min(d.r_dn);
             let den = lim + lap.abs();
             let add = if den > 0.0 { lim * lap / den } else { 0.0 };
-            let gain = (y0 + 0.75 * f * add) / y0;
+            let gain = (y0 + crate::cpu::rc_tune::rc(6, 0.75) * f * add) / y0;
             pr[i] = (f64::from(pr[i]) * gain) as f32;
             pg[i] = (f64::from(pg[i]) * gain) as f32;
             pb[i] = (f64::from(pb[i]) * gain) as f32;
@@ -1354,7 +1354,7 @@ fn shadow_colour_match(m: &[f32], lay: &Layout, d: &Derived, s3: [&[f32]; 3]) ->
                 var += d.g_dn * d.gains[c] * f64::from(low_planes[c][i]).max(0.0) + rc * rc;
             }
             let excess = (e - 0.5 * var).max(0.0);
-            let a = 3.0 * excess + 1.0;
+            let a = crate::cpu::rc_tune::rc(8, 3.0) * excess + 1.0;
             let b = var + 1.0;
             let top = a.max(b);
             let a2 = (a - 0.5 * top).max(0.0);
