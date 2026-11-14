@@ -1852,3 +1852,134 @@ mod tests {
         assert!(ratio.iter().all(|r| (0.0..=RATIO_MAX).contains(r)));
     }
 }
+
+/// Tests that prove the derivations of the constants that mathematics gives (`docs/29` RC-02,
+/// spec 04): the tail mass of the tap rule and the unit sum of the truncated erf kernel (O2) and the
+/// Scharr gradient weights (O10).
+#[cfg(test)]
+mod derivations {
+    use super::*;
+
+    /// The mass of a unit Gaussian beyond the cut of an `n`-tap pixel-integrated kernel.
+    fn tail_mass(sigma: f64, n: usize) -> f64 {
+        libm::erfc(((n - 1) as f64 / 2.0 + 0.5) / (sigma * SQRT_2))
+    }
+
+    #[test]
+    fn the_truncated_erf_kernel_sums_to_one_and_drops_exactly_the_tail_mass() {
+        // O2. Each raw tap is a difference of two erf values (twice a difference of the Gaussian's
+        // distribution function), so the un-normalised taps telescope to
+        // 2 erf((h + 1/2) / (sigma sqrt 2)) = 2 (1 - tail); the normalisation divides by it, so the
+        // taps sum to 1 and each is the raw tap over 2 (1 - tail).
+        for sigma in [0.1f32, 0.3, 0.5, 0.8, 1.0, 1.35, 1.7, 2.05, 2.5] {
+            let k = gaussian_kernel(sigma, MAX_TAPS_SCREEN);
+            let n = k.len();
+            assert_eq!(n % 2, 1);
+            let sum: f64 = k.iter().sum();
+            assert!((sum - 1.0).abs() < 1e-14, "sigma {sigma}: sum {sum}");
+            let s = f64::from(sigma) * SQRT_2;
+            let half = ((n - 1) / 2) as f64;
+            let raw: Vec<f64> = (0..n)
+                .map(|i| {
+                    let x = i as f64 - half;
+                    libm::erf((x + 0.5) / s) - libm::erf((x - 0.5) / s)
+                })
+                .collect();
+            let raw_sum: f64 = raw.iter().sum();
+            let tail = tail_mass(f64::from(sigma), n);
+            assert!(
+                (raw_sum - 2.0 * (1.0 - tail)).abs() < 1e-14,
+                "sigma {sigma}: {raw_sum} {tail}"
+            );
+            for (t, r) in k.iter().zip(&raw) {
+                assert!((t - r / (2.0 * (1.0 - tail))).abs() < 1e-14);
+            }
+        }
+    }
+
+    #[test]
+    fn the_tap_rule_loses_under_two_per_mille_at_the_screen_map_points_and_3_6_at_worst() {
+        // O2, docs/29 section 2.3. The screen map is sigma = 0.7 R + 0.3 with R up to the cap 2.5.
+        // Mass lost beyond the cut, from the rule `((int)(5 sigma + 2.5)) | 1` (13 taps at most):
+        // 4.7e-4 at the preset's sigma = 1.0, 8.6e-4 at 1.35, 1.2e-3 at 1.7, 1.5e-3 at 2.05. The
+        // rule is a sawtooth, though: the tap count steps up by two at sigma = 0.3, 0.7, 1.1, 1.5
+        // and 1.9, and just below a step the cut is closest to the centre. Over the whole map the
+        // worst is 3.6e-3 at sigma = 1.89 (11 taps, a cut at 2.9 sigma), 2.4 times the 1.5e-3 of the
+        // four points. RC-09 states the budget.
+        for (sigma, want) in [
+            (1.0f32, 4.7e-4),
+            (1.35, 8.6e-4),
+            (1.7, 1.2e-3),
+            (2.05, 1.5e-3),
+        ] {
+            let n = gaussian_kernel(sigma, MAX_TAPS_SCREEN).len();
+            let tail = tail_mass(f64::from(sigma), n);
+            assert!(
+                (tail - want).abs() < 0.05 * want,
+                "sigma {sigma}: {tail:e} against {want:e}"
+            );
+        }
+        let (mut worst, mut at) = (0.0f64, 0.0f32);
+        for i in 0..=195 {
+            let sigma = 0.1 + 0.01 * i as f32; // 0.1 ..= 2.05
+            let n = gaussian_kernel(sigma, MAX_TAPS_SCREEN).len();
+            let tail = tail_mass(f64::from(sigma), n);
+            if sigma <= 0.5 {
+                // The floors of 3 and 5 taps cut at 5 sigma or more.
+                assert!(tail < 6e-7, "sigma {sigma}: {tail:e}");
+            }
+            if tail > worst {
+                (worst, at) = (tail, sigma);
+            }
+        }
+        assert!(
+            (3.5e-3..3.7e-3).contains(&worst),
+            "worst {worst:e} at sigma {at}"
+        );
+        assert!((1.88..1.90).contains(&at), "at sigma {at}");
+    }
+
+    #[test]
+    fn the_gradient_weights_are_the_normalised_scharr_kernel() {
+        // O10. Scharr: smoothing {3, 10, 3} / 16 across, central difference {-1, 0, 1} / 2 along.
+        // The product has 10/32 on the axis row and 3/32 on the two outer rows.
+        assert_eq!(10.0f32 / 32.0, 0.3125);
+        assert_eq!(3.0f32 / 32.0, 0.09375);
+        // So a unit ramp reads exactly 1: 2 (10/32) + 4 (3/32) = 1.
+        assert_eq!(2.0 * 0.3125 + 4.0 * 0.09375, 1.0);
+        // Through the gradient gate: a plane `a x + b y` has gradient magnitude sqrt(a^2 + b^2) at
+        // every interior pixel, which the ramp `0.25 (|grad| - g0) / g0` (0 to 1) turns into a
+        // weight; d = 1 everywhere gives that weight back from the gain map.
+        let (w, h) = (64usize, 64usize);
+        let thr = 0.1f32;
+        let k = gaussian_kernel(1.0, MAX_TAPS_SCREEN);
+        let k2 = gaussian_kernel(2.0, MAX_TAPS_SCREEN);
+        let c = k.len() / 2;
+        let left: f64 = k[..c].iter().sum();
+        let g0 = f64::from(thr) * ((k[c] + k[c + 1]) * 0.5) / left;
+        let d = vec![1.0f32; w * h];
+        for (ax, ay) in [
+            (1.0f64, 0.0f64),
+            (0.0, 1.0),
+            (0.6, 0.8),
+            (1.0, 1.0),
+            (-0.8, 0.6),
+        ] {
+            for factor in [2.0, 3.0, 4.5] {
+                // Scale the direction so that |grad| = factor * g0.
+                let norm = (ax * ax + ay * ay).sqrt();
+                let (sx, sy) = (ax / norm * factor * g0, ay / norm * factor * g0);
+                let b: Vec<f32> = (0..w * h)
+                    .map(|i| (sx * (i % w) as f64 + sy * (i / w) as f64) as f32)
+                    .collect();
+                let gain = gradient_gain(&d, &b, w, h, thr, &k, &k2);
+                let want = (0.25 * (factor - 1.0)).clamp(0.0, 1.0);
+                let got = f64::from(gain[(h / 2) * w + w / 2]);
+                assert!(
+                    (got - want).abs() < 2e-4,
+                    "dir ({ax}, {ay}) x{factor}: {got} against {want}"
+                );
+            }
+        }
+    }
+}

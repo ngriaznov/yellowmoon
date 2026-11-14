@@ -1609,3 +1609,160 @@ mod tests {
         assert!(plain.mosaic <= HALO_PLAIN_PX && matching.mosaic <= HALO_MAX_PX);
     }
 }
+
+/// Tests that prove the derivations of the constants that mathematics gives (`docs/29` RC-02,
+/// spec 01 section 2.3): K and T (A12, A13), `121 = 1 + 18 + 102` (A5) and the integer Gaussian
+/// (A15).
+#[cfg(test)]
+mod derivations {
+    use super::*;
+
+    /// A deterministic stream of values in `[0, 1)`.
+    fn unit_stream(seed: u64) -> impl FnMut() -> f64 {
+        let mut state = seed | 1;
+        move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    /// `x / sigma(x)` for the noise variance `g x + r^2` of spec section 2.2.
+    fn snr(x: f64, g: f64, r: f64) -> f64 {
+        x / (g * x + r * r).sqrt()
+    }
+
+    #[test]
+    fn k_and_t_are_the_signal_levels_where_the_snr_is_ten_and_s() {
+        // A12 and A13. K = 50 (g + sqrt(g^2 + 0.04 r^2)) is the root of x^2 = 100 (g x + r^2); T is
+        // the root of x^2 = s^2 (g x + r^2) with s = max((100 - (detail + strength)) 0.2, 1). The
+        // clamps of the spec are not in the algebra, so only cases inside them are compared.
+        let mut next = unit_stream(0x5eed_0001);
+        let mut checked = 0;
+        for _ in 0..400 {
+            let g = 0.05 + 40.0 * next();
+            let r = 0.5 + 400.0 * next();
+            let detail = (100.0 * next()).round() as f32;
+            let strength = (100.0 * next()).round() as f32;
+            let params = Params {
+                detail,
+                strength,
+                ..Params::default()
+            };
+            let d = Derived::new([1.0, 1.0, 1.0], NoiseDn::new(g, r), &params).unwrap();
+            let s = ((100.0 - f64::from(detail + strength)) * 0.2).max(1.0);
+            assert_eq!(d.snr_target, s);
+            if d.offset1_dn > 1.0 && d.offset1_dn < 65536.0 {
+                let got = snr(d.offset1_dn, g, r);
+                assert!((got - 10.0).abs() < 1e-9, "K: SNR {got} for g {g}, r {r}");
+                checked += 1;
+            }
+            if d.gate_dn > 1.0 && d.gate_dn < 65535.0 {
+                let got = snr(d.gate_dn, g, r);
+                assert!(
+                    (got - s).abs() < 1e-9 * s,
+                    "T: SNR {got}, s {s}, g {g}, r {r}"
+                );
+                checked += 1;
+            }
+            // The root is the larger one: the SNR rises with the level, so a level below K reads
+            // under 10 and a level above it over 10.
+            if d.offset1_dn > 2.0 && d.offset1_dn < 65000.0 {
+                assert!(
+                    snr(0.9 * d.offset1_dn, g, r) < 10.0 && snr(1.1 * d.offset1_dn, g, r) > 10.0
+                );
+            }
+        }
+        assert!(checked > 300, "{checked} unclamped cases");
+    }
+
+    /// A 5 x 5 patch of pass-1 green whose vertical axis wins: the centre `g0` has the vertical
+    /// neighbours `g0 + 1`, every other site is far away. The native plane is flat.
+    fn vertical_patch() -> (Vec<f32>, Vec<f32>) {
+        let mut g = vec![110.0f32; 25];
+        g[12] = 10.0; // centre
+        g[7] = 11.0; // above
+        g[17] = 11.0; // below
+        (vec![10.0f32; 25], g)
+    }
+
+    /// The weight `w` of the centre green in `(w g0 + n + s) / (w + 2)` read back from a value.
+    fn centre_weight_of(value: f32, g0: f64, n_plus_s: f64) -> f64 {
+        (n_plus_s - 2.0 * f64::from(value)) / (f64::from(value) - g0)
+    }
+
+    #[test]
+    fn the_pass_2_centre_weight_at_zero_misregistration_is_1_plus_18_plus_102() {
+        // A4 and A5 (F-02). 121 and 123 are not constants: w(t) = 1 + 18 t + 102 t^3 with t = 1 at
+        // kappa = 0 gives w = 1 + 18 + 102 = 121 and the divisor w + 2 = 123.
+        let (m, g) = vertical_patch();
+        let (g0, n_plus_s) = (10.0f64, 22.0f64);
+        let at = |kappa: Option<f64>| refine_green(&m, &g, 12, 5, kappa);
+
+        let k0 = at(Some(0.0));
+        let w0 = centre_weight_of(k0, g0, n_plus_s);
+        assert!((w0 - (1.0 + 18.0 + 102.0)).abs() < 0.5, "w(0) = {w0}");
+        // Exactly the value of the formula, in f32.
+        let want = (121.0 * g0 + n_plus_s) / 123.0;
+        assert!((f64::from(k0) - want).abs() < 2e-6, "{k0} against {want}");
+
+        // The centre keeps 121/123 = 98.4 % of its own weight and the two neighbours 2/123 = 1.6 %.
+        let share = 2.0f64 / 123.0;
+        assert!((121.0f64 / 123.0 - 0.98374).abs() < 1e-5 && (share - 0.016260).abs() < 1e-6);
+        // So at kappa = 0 the value is the centre plus that 1.6 % of the way to the neighbours' mean.
+        let mean = n_plus_s / 2.0;
+        assert!((f64::from(k0) - (g0 + share * (mean - g0))).abs() < 2e-6);
+
+        // The plain path (no CA curves) leaves the centre alone when an axis wins: G2 = G1. So at
+        // kappa = 0 the CA path differs from it only by the 1.6 % share of the neighbours' mean.
+        let plain = at(None);
+        assert_eq!(f64::from(plain), g0);
+        let gap = f64::from(k0) - f64::from(plain);
+        assert!((gap - share * (mean - g0)).abs() < 2e-6, "gap {gap}");
+        // From kappa = 0.5 on (t = 0, w = 1) the three taps weigh equally.
+        let three_tap = (g0 + n_plus_s) / 3.0;
+        assert!((f64::from(at(Some(0.5))) - three_tap).abs() < 2e-6);
+        assert!((f64::from(at(Some(1.0))) - three_tap).abs() < 2e-6);
+
+        // In between, t = (1 - 2 kappa)^2: kappa = 0.25 gives t = 0.25, w = 1 + 4.5 + 1.59375.
+        let w = centre_weight_of(at(Some(0.25)), g0, n_plus_s);
+        assert!(
+            (w - (1.0 + 18.0 * 0.25 + 102.0 * 0.25f64.powi(3))).abs() < 0.05,
+            "w = {w}"
+        );
+    }
+
+    #[test]
+    fn the_integer_gaussian_weights_sum_to_their_divisor() {
+        // A15: the 5 x 5 weights are integers over 571, so a flat field comes back unchanged.
+        let (pw, flat) = (7, 3.25f32);
+        let plane = vec![flat; pw * pw];
+        let out = gauss5_at([&plane, &plane, &plane], 3 * pw + 3, pw);
+        assert_eq!(out, [flat; 3]);
+        // And the sum itself.
+        let rows = [
+            [2, 7, 12, 7, 2],
+            [7, 31, 52, 31, 7],
+            [12, 52, 127, 52, 12],
+            [7, 31, 52, 31, 7],
+            [2, 7, 12, 7, 2],
+        ];
+        assert_eq!(rows.iter().flatten().sum::<i32>(), 571);
+        // The 3 x 3 mean next to it is nine equal weights: a flat field comes back unchanged.
+        let boxed = box3_at([&plane, &plane, &plane], 3 * pw + 3, pw);
+        assert_eq!(boxed, [f64::from(flat); 3]);
+        // A one-pixel impulse of 571 at (5, 5) reads back each integer weight at the offset of the
+        // centre from it.
+        let pw = 11;
+        let mut plane = vec![0.0f32; pw * pw];
+        plane[5 * pw + 5] = 571.0;
+        for dy in 0..5 {
+            for dx in 0..5 {
+                let centre = (3 + dy) * pw + (3 + dx);
+                let out = gauss5_at([&plane, &plane, &plane], centre, pw);
+                assert_eq!(out, [rows[4 - dy][4 - dx] as f32; 3], "offset ({dx}, {dy})");
+            }
+        }
+    }
+}

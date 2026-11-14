@@ -151,6 +151,30 @@ Examples (the test vectors use them):
 | low: a = 2e-5, b = 1e-8, q = 1/65535 | 1.311 | 6.56 | 158.3 | 555.3 | 39.5 dB | off |
 | high: a = 5e-4, b = 4e-5, sigma_row = 1e-3 | 32.77 | 419.6 | 6143 | 17202 | 23.9 dB | on |
 
+### 2.3 Constants and their derivation
+
+Every constant of this spec has a row, with the ID of `docs/29-raw-constants.md` §2.1 and one status: **Maths** (a mathematical fact or an error budget gives the value, and a test proves it), **Fit** (only image data can choose it; the task that fits it), **Design** (the owner's look, `docs/29` §6) or **Guard** (a numeric safeguard; what it protects). No row names an origin: each stands on the method written in it. The tests named are in `crates/ym-gpu/src/cpu/demosaic/adaptive_ratio.rs`, module `derivations`.
+
+| ID | Constant | Status | Derivation | Proof or task |
+|---|---|---|---|---|
+| A1 | `1.6` (§3.2) | Fit | Weight of the second difference of the same colour in the pass-1 direction scores. Objective: the nine-cell PSNR of §6.3 with the zipper and false-colour rates held at today's. | RC-07 |
+| A2 | `2.5` (§3.2, §3.6) | Fit | How fast the direction test relaxes with the colour misregistration, `f = 1 + 2.5·ca³`. CA path only, which no render reaches (R5b corrects CA on the mosaic first). | RC-10 |
+| A3 | `0.1` px (§3.2, §3.6) | Fit | Misregistration below it does not relax the test. The floor is the precision of the CA table, about 0.002 px per unit at a radius of 4000 px. | RC-10 |
+| A4 | `18`, `102` (§3.6) | Fit | Weight of the centre green in the pass-2 three-tap mean, `w(t) = 1 + 18t + 102t³`, `t = (1 − min(1, 2κ))²`. CA path only. | RC-10 |
+| A5 | `121`, `123` (§3.6) | Maths | Not constants. At zero misregistration `t = 1`, so `w = 1 + 18 + 102 = 121` and the divisor is `w + 2 = 123`: the centre keeps 121/123 = 98.4 % of the three-tap mean and the two neighbours 2/123 = 1.6 %. The plain path leaves the centre alone when an axis wins (`G2 = G1`), so the pass-2 value at `κ = 0` differs from it only by that 1.6 % share (the centre plus 1.6 % of the way to the neighbours' mean); from `κ = 0.5` the three taps weigh equally. | `the_pass_2_centre_weight_at_zero_misregistration_is_1_plus_18_plus_102` |
+| A6 | `0.03` (§3.4.2, §3.4.3) | Fit | Floor of the chroma penalty `\|X − G\|/max(X + G + 1, 1) + 0.03`. Fitted with A7 on the PSNR and the false-colour rate on saturated edges. | RC-07 |
+| A7 | `0.75` dominance (§3.4.2, §3.4.3) | Fit | The penalty applies when `0.75·ΣX < ΣG`. A comparison, so a new value moves the decision near-ties of the GPU parity test. | RC-07 |
+| A8 | `0.75` amount (§3.4.4) | Fit | Share of the soft-limited luma Laplacian that the shadow sharpening adds back. Objective: edge sharpness per unit of noise, not PSNR. A different job from A7 with the same number. | RC-08 |
+| A9 | `5` (§3.4.4) | Fit | Scale of the diagonal Laplacian before the soft limit; with A8 the small-signal gain is 0.75 · 5 = 3.75. | RC-08 |
+| A10 | `4T`, `3T` (§3.4.4) | Fit | The shadow sharpening is full where every native green is below `T` and fades to nothing at `4T`. | RC-08 |
+| A11 | `3` (§3.4.5) | Fit | Weight of the excess error in the shadow colour matching, `u = 3D + 1`. | RC-08 |
+| A12 | `50`, `0.04` (§2.2) | Maths | `K` is the root of `x² = s²(g·x + r²)` at `s = 10`, the signal level where `x/σ(x) = 10` for `σ² = g·x + r²`: `x = (s²/2)(g + √(g² + 4r²/s²)) = 50(g + √(g² + 0.04 r²))`. The algebra is exact; the target SNR 10 is the choice (the noise is a tenth of the signal). | `k_and_t_are_the_signal_levels_where_the_snr_is_ten_and_s` |
+| A13 | `0.2`, `100` (§2.2) | Fit | `s = max((100 − (detail + strength))·0.2, 1)` is the pass-3 SNR target, 20 at the defaults. The factor maps the 0 to 100 sliders onto 20 to 1 and is the fitted part. `T` is the same algebra as `K` with `s` in place of 10 (proved by the A12 test). | RC-08 |
+| A14 | `25 dB` (§2.2) | Fit | Shadow colour matching turns on below 25 dB at 18 % grey: the crossover where matching starts to help. | RC-08 |
+| A15 | the 5 × 5 integer Gaussian over 571, the 3 × 3 mean (§3.4.5) | Maths | Fixed filters. The 25 integer weights sum to 571, so a flat field is unchanged and each weight over 571 is the filter's own tap; the 3 × 3 mean is nine equal weights. Not tuned. | `the_integer_gaussian_weights_sum_to_their_divisor` |
+
+Counts: Maths 3 (A5, A12, A15), Fit 12, Design 0, Guard 0.
+
 ---
 
 ## 3. Algorithm

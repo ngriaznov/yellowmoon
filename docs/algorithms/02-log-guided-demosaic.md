@@ -127,6 +127,18 @@ Everything is defined at the working scale S = 65535, divided by H in the fixed 
 
 Scale-free quantities: the kernel, the box size, the cube exponent, every ratio, and the log2/exp2 constants. These act on the mantissa and are exact under ×2 (L(2y) = L(y) + 4096).
 
+### 2.6 Constants and their derivation
+
+Every constant of this spec has a row, with the ID of `docs/29-raw-constants.md` §2.1 and one status: **Maths** (a mathematical fact or an error budget gives the value, and a test proves it), **Fit** (only image data can choose it; the task that fits it), **Design** (the owner's look, `docs/29` §6) or **Guard** (a numeric safeguard; what it protects). No row names an origin: each stands on the method written in it. The tests are in `crates/ym-gpu/tests/cpu_log_guided.rs`.
+
+| ID | Constant | Status | Derivation | Proof or task |
+|---|---|---|---|---|
+| L1 | `(46653, 19114, 5229)/32768` (§3.2) | Maths | The integer solution of the objective stated in §3.2 (smallest largest error over every input, anchors exact, at most 23 step-backs), by exhaustive search around the continuous minimax cubic. | `tools/fit/poly_fit.py`; `log2_and_exp2_fixed_meet_their_exhaustive_bounds`, `nothing_beats_the_stored_cubics_by_the_stated_objective_near_them` (RC-01) |
+| L2 | `(45559, 14919, 5047)/65536` (§3.4) | Maths | The integer solution of the objective stated in §3.4 (smallest relative-error bound `k`, exact at `2^e`, monotone, 16 bits), by a climb and an exhaustive polish. | as L1 |
+| L3 | exponent `3` (§3.7) | Fit | The inverse-cube structure weight of the green blend. No render path uses the log-guided demosaic, and the owner skipped the task. | RC-12 (skipped, `docs/29` §6 answer 5) |
+
+Counts: Maths 2 (L1, L2), Fit 1, Design 0, Guard 0.
+
 ---
 
 ## 3. Algorithm
