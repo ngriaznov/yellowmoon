@@ -342,7 +342,7 @@ fn ar_green_estimate(b: i32, rho: f32, k: f32, ca: f32) -> f32 {
     let dd = ar_op(cs - gd);
     let dl = ar_op(cs - gl);
     let dr = ar_op(cs - gr);
-    let w2 = ar_op(1.6 * rho);
+    let w2 = ar_op(SECOND_DIFF_WEIGHT * rho);
     let c2 = ar_op(2.0 * c);
     let vbase = ar_op(ar_op(ar_op(ar_op(abs(gl - ar_m(b, -1, -2)) + abs(gl - ar_m(b, -1, 2)))
         + abs(gr - ar_m(b, 1, -2))) + abs(gr - ar_m(b, 1, 2)))
@@ -385,8 +385,8 @@ fn ar_green_estimate(b: i32, rho: f32, k: f32, ca: f32) -> f32 {
     // The CA relaxation factor: exactly 1 on the plain path and under 0.1 px, unbounded above. A NaN
     // misregistration (curves that overflow) relaxes nothing, as on the CPU.
     var f = 1.0;
-    if (!is_nan_f(ca) && ca >= 0.1) {
-        f = ar_op(1.0 + ar_op(2.5 * ar_op(ar_op(ca * ca) * ca)));
+    if (!is_nan_f(ca) && ca >= CA_RELAX_FLOOR_PX) {
+        f = ar_op(1.0 + ar_op(CA_RELAX_SLOPE * ar_op(ar_op(ca * ca) * ca)));
     }
     var dir = 2u;
     if (max(sl, sr) < ar_op(f * min(su, sd)) && sh < sv) {
@@ -553,7 +553,7 @@ fn ar_refine_site(b: i32, use_ca: bool, kappa: f32) -> f32 {
         // G0 is 1 + 18 t + 102 t^3 with t = (1 - min(1, 2 kappa))^2.
         let t0 = 1.0 - min(ar_op(2.0 * kappa), 1.0);
         let t = ar_op(t0 * t0);
-        let wt = ar_op(ar_op(1.0 + ar_op(18.0 * t)) + ar_op(102.0 * ar_op(ar_op(t * t) * t)));
+        let wt = ar_op(ar_op(1.0 + ar_op(CENTRE_WEIGHT_LINEAR * t)) + ar_op(CENTRE_WEIGHT_CUBIC * ar_op(ar_op(t * t) * t)));
         let wg0 = ar_op(wt * g0);
         var num = ar_op(ar_op(wg0 + w) + e);
         if (best == 0u) {
@@ -633,9 +633,9 @@ fn ar_step1(gid: vec3<u32>) {
     // X not dominant over G: penalise high-chroma samples.
     let x_sum = ar_op(ar_op(ar_op(x_ul + x_ur) + x_dl) + x_dr);
     let g_sum = ar_op(ar_op(ar_op(g_ul + g_ur) + g_dl) + g_dr);
-    if (ar_op(0.75 * x_sum) < g_sum) {
-        w_a = ar_op(w_a * ar_op(ar_div(abs(x_a - g_a), max(ar_op(ar_op(x_a + g_a) + 1.0), 1.0)) + 0.03));
-        w_b = ar_op(w_b * ar_op(ar_div(abs(x_b - g_b), max(ar_op(ar_op(x_b + g_b) + 1.0), 1.0)) + 0.03));
+    if (ar_op(SAT_DOMINANCE * x_sum) < g_sum) {
+        w_a = ar_op(w_a * ar_op(ar_div(abs(x_a - g_a), max(ar_op(ar_op(x_a + g_a) + 1.0), 1.0)) + CHROMA_FLOOR));
+        w_b = ar_op(w_b * ar_op(ar_div(abs(x_b - g_b), max(ar_op(ar_op(x_b + g_b) + 1.0), 1.0)) + CHROMA_FLOOR));
     }
     let i_a = ar_div(1.0, w_a);
     let i_b = ar_div(1.0, w_b);
@@ -650,10 +650,10 @@ fn ar_step1(gid: vec3<u32>) {
 // the sum of the greens.
 fn ar_step2_channel(g0: f32, k: f32, gn: vec4<f32>, xn: vec4<f32>, cost0: vec4<f32>, sum_g: f32) -> f32 {
     var cost = cost0;
-    if (ar_op(0.75 * ar_op(ar_op(ar_op(xn.x + xn.y) + xn.z) + xn.w)) < sum_g) {
+    if (ar_op(SAT_DOMINANCE * ar_op(ar_op(ar_op(xn.x + xn.y) + xn.z) + xn.w)) < sum_g) {
         for (var j = 0; j < 4; j = j + 1) {
             let chroma = ar_div(abs(gn[j] - xn[j]), max(ar_op(ar_op(gn[j] + xn[j]) + 1.0), 1.0));
-            cost[j] = ar_op(cost[j] * ar_op(chroma + 0.03));
+            cost[j] = ar_op(cost[j] * ar_op(chroma + CHROMA_FLOOR));
         }
     }
     var wsum = 0.0;
@@ -741,7 +741,7 @@ fn ar_sharpen(gid: vec3<u32>) {
         gmax = max(gmax, ar_m(b, 1, 0));
     }
     let t = u.cst2.x;
-    let f = clamp(ar_div(ar_op(ar_op(4.0 * t) - gmax), ar_op(3.0 * t)), 0.0, 1.0);
+    let f = clamp(ar_div(ar_op(ar_op(SHADOW_FADE_END * t) - gmax), ar_op(SHADOW_FADE_SPAN * t)), 0.0, 1.0);
     if (f <= 0.0) {
         return;
     }
@@ -754,14 +754,14 @@ fn ar_sharpen(gid: vec3<u32>) {
     if (abs(y2 - pm) < abs(y2 - pa)) {
         pair = pm;
     }
-    let lap = ar_op(5.0 * ar_op(y2 - pair));
+    let lap = ar_op(SHADOW_LAPLACIAN_SCALE * ar_op(y2 - pair));
     let lim = min(y0, u.cst2.y);
     let den = ar_op(lim + abs(lap));
     var add = 0.0;
     if (den > 0.0) {
         add = ar_div(ar_op(lim * lap), den);
     }
-    let gain = ar_div(ar_op(y0 + ar_op(ar_op(0.75 * f) * add)), y0);
+    let gain = ar_div(ar_op(y0 + ar_op(ar_op(SHADOW_AMOUNT * f) * add)), y0);
     ar_st(PL_R, i, ar_ld(PL_R, i) * gain);
     ar_st(PL_G, i, ar_ld(PL_G, i) * gain);
     ar_st(PL_B, i, ar_ld(PL_B, i) * gain);
@@ -881,7 +881,7 @@ fn ar_match(gid: vec3<u32>) {
         vr = ar_op(vr + ar_op(ar_op(u.vg[c] * max(ar_ld(PL_LOW + c, i), 0.0)) + u.vr2[c]));
     }
     let excess = max(ar_op(e - ar_op(0.5 * vr)), 0.0);
-    let a = ar_op(ar_op(3.0 * excess) + 1.0);
+    let a = ar_op(ar_op(MATCH_EXCESS_WEIGHT * excess) + 1.0);
     let bb = ar_op(vr + 1.0);
     let top = max(a, bb);
     let a2 = max(ar_op(a - ar_op(0.5 * top)), 0.0);

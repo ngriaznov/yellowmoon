@@ -48,6 +48,7 @@
 //! whole-buffer call give identical bytes.
 
 use super::super::noise::{NoiseDn, WORKING_SCALE};
+use super::super::tuning::{Constant, Kind, Status};
 use super::super::{CfaColor, Mosaic, RgbImage, mirror};
 
 /// Receptive-field radius in pixels (Chebyshev): output pixel `p` depends on mosaic photosites
@@ -216,6 +217,63 @@ pub const ORACLE_CUBICS: FixedCubics = FixedCubics {
     log2: ORACLE_LOG2_CUBIC,
     exp2: ORACLE_EXP2_CUBIC,
 };
+
+/// The constants of the log-guided demosaic: id, name, value, kind and derivation status of every
+/// row of `docs/29` §2.1 for spec 02 (`tests/constants_registry.rs` holds it to that table). The two
+/// cubics have their home in [`FixedCubics::SHIPPED`] (and [`ORACLE_CUBICS`] for the oracle vectors),
+/// so there is no `Tuning` struct and no generated shader block: the device uses `log2` and `exp2`.
+/// The exponent of the structure weight (L3) is the cube of `cube_floor1` and of `log_guided.wgsl`.
+pub const REGISTRY: &[Constant] = &[
+    Constant::cpu(
+        "L1",
+        "log2_cubic_a",
+        FixedCubics::SHIPPED.log2[0] as f64,
+        Kind::Maths,
+        Status::Proved,
+    ),
+    Constant::cpu(
+        "L1",
+        "log2_cubic_b",
+        FixedCubics::SHIPPED.log2[1] as f64,
+        Kind::Maths,
+        Status::Proved,
+    ),
+    Constant::cpu(
+        "L1",
+        "log2_cubic_c",
+        FixedCubics::SHIPPED.log2[2] as f64,
+        Kind::Maths,
+        Status::Proved,
+    ),
+    Constant::cpu(
+        "L2",
+        "exp2_cubic_a",
+        FixedCubics::SHIPPED.exp2[0] as f64,
+        Kind::Maths,
+        Status::Proved,
+    ),
+    Constant::cpu(
+        "L2",
+        "exp2_cubic_b",
+        FixedCubics::SHIPPED.exp2[1] as f64,
+        Kind::Maths,
+        Status::Proved,
+    ),
+    Constant::cpu(
+        "L2",
+        "exp2_cubic_c",
+        FixedCubics::SHIPPED.exp2[2] as f64,
+        Kind::Maths,
+        Status::Proved,
+    ),
+    Constant::cpu(
+        "L3",
+        "structure_weight_exponent",
+        3.0,
+        Kind::Fit,
+        Status::Pending("RC-12 (skipped, docs/29 section 6, answer 5)"),
+    ),
+];
 
 /// `L(y)`, about `4096 * log2(y)`, for `1 <= y <= 65535` (spec section 3.2; `log2_fixed(0)` is
 /// defined as 0 and never reached). A cubic on the mantissa ([`LOG2_CUBIC`]): the error is between

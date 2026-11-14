@@ -78,6 +78,7 @@ use rayon::prelude::*;
 use super::{CaCurves, DemosaicInputs};
 use crate::cpu::filters::{self, BAND_ROWS};
 use crate::cpu::noise::WORKING_SCALE;
+use crate::cpu::tuning::{Constant, Kind, Status, wgsl_block};
 use crate::cpu::{Cfa, CfaColor, Mosaic, NoiseDn, Rect, RgbImage, mirror};
 
 /// The working scale `S` (16-bit white): every absolute constant is defined at `x_dn = S * x`.
@@ -156,6 +157,9 @@ pub struct Params {
     pub shadow_match: ShadowMatch,
     /// The diagonal shadow luma sharpening of pass 3 (default on; the switch is for A/B tests).
     pub shadow_sharpening: bool,
+    /// The tuned constants of the algorithm ([`Tuning::DEFAULT`], what ships). The oracle vectors
+    /// run under [`Tuning::ORACLE`].
+    pub tuning: Tuning,
 }
 
 impl Default for Params {
@@ -165,9 +169,322 @@ impl Default for Params {
             strength: 0.0,
             shadow_match: ShadowMatch::Auto,
             shadow_sharpening: true,
+            tuning: Tuning::DEFAULT,
         }
     }
 }
+
+// tuning:begin (the one home of the constants; tests/constants_registry.rs searches the rest of the file)
+/// The tuned constants of the adaptive ratio demosaic (`docs/29-raw-constants.md` §2.1, rows A1 to
+/// A14; the filters of A15 are fixed). One field per constant, in `f64` (the CPU's arithmetic; the
+/// device reads the `f32` of the same value from [`Tuning::wgsl_block`]).
+///
+/// Every field says its row, its kind ([`Kind`]), its section of
+/// `docs/algorithms/01-adaptive-ratio-demosaic.md`, its derivation status and the task that fits or
+/// proves it. [`Tuning::ORACLE`] is what the oracle vectors were made with and [`Tuning::DEFAULT`] is
+/// what ships; they are equal until a fit lands (`docs/29` RC-07, RC-08, RC-10).
+///
+/// The structure stays outside it: the 5 x 5 and 3 x 3 filters, the number of passes, the
+/// `2g + r` terms of the offsets and every `0.5`, `2` and `1` that is arithmetic rather than a
+/// choice.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tuning {
+    /// A1 · Fit · spec §3.2 · pending, RC-07. Weight of the second difference of the same colour in
+    /// the pass-1 direction scores, `w·rho·|P(0,-2) - 2c + P(0,2)|`.
+    pub second_diff_weight: f64,
+    /// A2 · Fit · spec §3.2, §3.6 · pending, RC-10. How fast the direction test relaxes with the
+    /// colour misregistration `ca`, `f = 1 + slope·ca³`. CA path only.
+    pub ca_relax_slope: f64,
+    /// A3 · Fit · spec §3.2, §3.6 · pending, RC-10. Misregistration below this, in pixels, does not
+    /// relax the test. CA path only.
+    pub ca_relax_floor_px: f64,
+    /// A4 · Fit · spec §3.6 · pending, RC-10. Linear term of the centre-green weight in the pass-2
+    /// three-tap mean, `w(t) = 1 + A·t + B·t³` ([`Tuning::centre_weight`]). CA path only.
+    pub centre_weight_linear: f64,
+    /// A4 · Fit · spec §3.6 · pending, RC-10. Cubic term `B` of the same weight.
+    pub centre_weight_cubic: f64,
+    /// A6 · Fit · spec §3.4.2, §3.4.3 · pending, RC-07. Floor of the chroma penalty
+    /// `|X - G|/max(X + G + 1, 1) + floor` that multiplies the cost of a high-chroma sample. One
+    /// name for steps 1 and 2.
+    pub chroma_floor: f64,
+    /// A7 · Fit · spec §3.4.2, §3.4.3 · pending, RC-07. The penalty applies when
+    /// `dominance·ΣX < ΣG`: the red or blue is not dominant over the greens. A comparison, so a new
+    /// value moves the decision near-ties of the device parity test.
+    pub sat_dominance: f64,
+    /// A8 · Fit · spec §3.4.4 · pending, RC-08. Share of the soft-limited luma Laplacian that the
+    /// shadow sharpening adds back, `gain = (y0 + amount·f·a)/y0`. The same number as
+    /// [`sat_dominance`](Self::sat_dominance) today, a different job.
+    pub shadow_amount: f64,
+    /// A9 · Fit · spec §3.4.4 · pending, RC-08. Scale of the diagonal Laplacian
+    /// `d = scale·(2·y0 - p)` that the soft limit bounds.
+    pub shadow_laplacian_scale: f64,
+    /// A10 · Fit · spec §3.4.4 · pending, RC-08. The shadow sharpening fades to nothing where the
+    /// largest native green reaches this multiple of `T`: `f = clamp((end·T - gmax)/(span·T), 0, 1)`.
+    pub shadow_fade_end: f64,
+    /// A10 · Fit · spec §3.4.4 · pending, RC-08. The width of that fade in multiples of `T`; the
+    /// sharpening is full below `end - span` times `T`.
+    pub shadow_fade_span: f64,
+    /// A11 · Fit · spec §3.4.5 · pending, RC-08. Weight of the excess error in the shadow colour
+    /// matching, `u = weight·D + 1`.
+    pub match_excess_weight: f64,
+    /// A12 · Maths + target · spec §2.2 · proved, test
+    /// `k_and_t_are_the_signal_levels_where_the_snr_is_ten_and_s`. The SNR that sets the pass-1
+    /// offset `K`, the signal level where `x/σ(x) = snr`: `K = (snr²/2)(g + √(g² + 4r²/snr²))`, the
+    /// `50` and `0.04` of the spec for `snr = 10`. The algebra is exact; the target is the choice.
+    pub offset_snr: f64,
+    /// A13 · Fit · spec §2.2 · pending, RC-08. The pass-3 SNR target is
+    /// `s = max((100 - (detail + strength))·factor, 1)`: the factor maps the 0 to 100 sliders onto
+    /// 20 to 1.
+    pub snr_per_slider: f64,
+    /// A14 · Fit · spec §2.2 · pending, RC-08. Shadow colour matching turns on when the SNR at 18 %
+    /// grey is below 25 dB, written without the logarithm: `g·x18 + r² > x18² / ratio` with
+    /// `ratio = 10^(25/10)`.
+    pub match_below_ratio: f64,
+}
+
+impl Tuning {
+    /// The values the oracle vectors were made with (`tests/cpu_data/adaptive_ratio/`): the
+    /// constants of the research package, bit for bit.
+    pub const ORACLE: Tuning = Tuning {
+        second_diff_weight: 1.6,
+        ca_relax_slope: 2.5,
+        ca_relax_floor_px: 0.1,
+        centre_weight_linear: 18.0,
+        centre_weight_cubic: 102.0,
+        chroma_floor: 0.03,
+        sat_dominance: 0.75,
+        shadow_amount: 0.75,
+        shadow_laplacian_scale: 5.0,
+        shadow_fade_end: 4.0,
+        shadow_fade_span: 3.0,
+        match_excess_weight: 3.0,
+        offset_snr: 10.0,
+        snr_per_slider: 0.2,
+        match_below_ratio: 316.227_766_016_837_96,
+    };
+
+    /// The values that ship. Equal to [`Tuning::ORACLE`] until a fit lands (RC-07, RC-08, RC-10).
+    pub const DEFAULT: Tuning = Tuning::ORACLE;
+
+    /// The weight of the centre green in the pass-2 three-tap mean of the CA path (spec §3.6):
+    /// `w(t) = 1 + A·t + B·t³` with `t = (1 - min(1, 2κ))²`.
+    #[must_use]
+    #[inline(always)]
+    pub const fn centre_weight(&self, t: f64) -> f64 {
+        1.0 + self.centre_weight_linear * t + self.centre_weight_cubic * (t * t * t)
+    }
+
+    /// The weight of the centre green with no misregistration, `t = 1`: `1 + A + B`, the 121 of the
+    /// spec. Not a constant of its own.
+    #[must_use]
+    pub const fn centre_weight_at_zero_misregistration(&self) -> f64 {
+        self.centre_weight(1.0)
+    }
+
+    /// The divisor of the three-tap mean at `t = 1`: `1 + A + B + 2`, the 123 of the spec.
+    #[must_use]
+    pub const fn centre_divisor_at_zero_misregistration(&self) -> f64 {
+        self.centre_weight(1.0) + 2.0
+    }
+
+    /// The `const` block the shader reads (`adaptive_ratio.wgsl`), generated from these values: the
+    /// `f32` of each constant of the registry that has a device name. The kernel wrapper puts it in
+    /// front of the shader text.
+    #[must_use]
+    pub fn wgsl_block(&self) -> String {
+        wgsl_block(
+            "generated from cpu::demosaic::adaptive_ratio::Tuning (docs/29, RC-03); do not edit",
+            &[
+                ("SECOND_DIFF_WEIGHT", self.second_diff_weight as f32),
+                ("CA_RELAX_SLOPE", self.ca_relax_slope as f32),
+                ("CA_RELAX_FLOOR_PX", self.ca_relax_floor_px as f32),
+                ("CENTRE_WEIGHT_LINEAR", self.centre_weight_linear as f32),
+                ("CENTRE_WEIGHT_CUBIC", self.centre_weight_cubic as f32),
+                ("CHROMA_FLOOR", self.chroma_floor as f32),
+                ("SAT_DOMINANCE", self.sat_dominance as f32),
+                ("SHADOW_AMOUNT", self.shadow_amount as f32),
+                ("SHADOW_LAPLACIAN_SCALE", self.shadow_laplacian_scale as f32),
+                ("SHADOW_FADE_END", self.shadow_fade_end as f32),
+                ("SHADOW_FADE_SPAN", self.shadow_fade_span as f32),
+                ("MATCH_EXCESS_WEIGHT", self.match_excess_weight as f32),
+            ],
+        )
+    }
+}
+
+impl Default for Tuning {
+    fn default() -> Tuning {
+        Tuning::DEFAULT
+    }
+}
+
+/// The constants of the adaptive ratio demosaic: id, name, value, kind and derivation status of
+/// every row of `docs/29` §2.1 for spec 01 (`tests/constants_registry.rs` holds it to that table, to
+/// [`Tuning::wgsl_block`] and to the source text).
+pub const REGISTRY: &[Constant] = &registry(&Tuning::DEFAULT);
+
+/// The registry of one `Tuning`. Written with a pattern that names every field and no `..`, so a
+/// field added to [`Tuning`] without an entry here does not compile.
+const fn registry(t: &Tuning) -> [Constant; 19] {
+    let Tuning {
+        second_diff_weight,
+        ca_relax_slope,
+        ca_relax_floor_px,
+        centre_weight_linear,
+        centre_weight_cubic,
+        chroma_floor,
+        sat_dominance,
+        shadow_amount,
+        shadow_laplacian_scale,
+        shadow_fade_end,
+        shadow_fade_span,
+        match_excess_weight,
+        offset_snr,
+        snr_per_slider,
+        match_below_ratio,
+    } = *t;
+    [
+        Constant::cpu(
+            "A1",
+            "second_diff_weight",
+            second_diff_weight,
+            Kind::Fit,
+            Status::Pending("RC-07"),
+        )
+        .on_device("SECOND_DIFF_WEIGHT")
+        .distinct(),
+        Constant::cpu(
+            "A2",
+            "ca_relax_slope",
+            ca_relax_slope,
+            Kind::Fit,
+            Status::Pending("RC-10"),
+        )
+        .on_device("CA_RELAX_SLOPE"),
+        Constant::cpu(
+            "A3",
+            "ca_relax_floor_px",
+            ca_relax_floor_px,
+            Kind::Fit,
+            Status::Pending("RC-10"),
+        )
+        .on_device("CA_RELAX_FLOOR_PX"),
+        Constant::cpu(
+            "A4",
+            "centre_weight_linear",
+            centre_weight_linear,
+            Kind::Fit,
+            Status::Pending("RC-10"),
+        )
+        .on_device("CENTRE_WEIGHT_LINEAR")
+        .distinct(),
+        Constant::cpu(
+            "A4",
+            "centre_weight_cubic",
+            centre_weight_cubic,
+            Kind::Fit,
+            Status::Pending("RC-10"),
+        )
+        .on_device("CENTRE_WEIGHT_CUBIC")
+        .distinct(),
+        Constant::cpu(
+            "A5",
+            "centre_weight_at_zero_misregistration",
+            t.centre_weight_at_zero_misregistration(),
+            Kind::Maths,
+            Status::Proved,
+        )
+        .distinct(),
+        Constant::cpu(
+            "A5",
+            "centre_divisor_at_zero_misregistration",
+            t.centre_divisor_at_zero_misregistration(),
+            Kind::Maths,
+            Status::Proved,
+        )
+        .distinct(),
+        Constant::cpu(
+            "A6",
+            "chroma_floor",
+            chroma_floor,
+            Kind::Fit,
+            Status::Pending("RC-07"),
+        )
+        .on_device("CHROMA_FLOOR")
+        .distinct(),
+        Constant::cpu(
+            "A7",
+            "sat_dominance",
+            sat_dominance,
+            Kind::Fit,
+            Status::Pending("RC-07"),
+        )
+        .on_device("SAT_DOMINANCE")
+        .distinct(),
+        Constant::cpu(
+            "A8",
+            "shadow_amount",
+            shadow_amount,
+            Kind::Fit,
+            Status::Pending("RC-08"),
+        )
+        .on_device("SHADOW_AMOUNT")
+        .distinct(),
+        Constant::cpu(
+            "A9",
+            "shadow_laplacian_scale",
+            shadow_laplacian_scale,
+            Kind::Fit,
+            Status::Pending("RC-08"),
+        )
+        .on_device("SHADOW_LAPLACIAN_SCALE"),
+        Constant::cpu(
+            "A10",
+            "shadow_fade_end",
+            shadow_fade_end,
+            Kind::Fit,
+            Status::Pending("RC-08"),
+        )
+        .on_device("SHADOW_FADE_END"),
+        Constant::cpu(
+            "A10",
+            "shadow_fade_span",
+            shadow_fade_span,
+            Kind::Fit,
+            Status::Pending("RC-08"),
+        )
+        .on_device("SHADOW_FADE_SPAN"),
+        Constant::cpu(
+            "A11",
+            "match_excess_weight",
+            match_excess_weight,
+            Kind::Fit,
+            Status::Pending("RC-08"),
+        )
+        .on_device("MATCH_EXCESS_WEIGHT"),
+        Constant::cpu("A12", "offset_snr", offset_snr, Kind::Maths, Status::Proved),
+        Constant::cpu(
+            "A13",
+            "snr_per_slider",
+            snr_per_slider,
+            Kind::Fit,
+            Status::Pending("RC-08"),
+        ),
+        Constant::cpu(
+            "A14",
+            "match_below_ratio",
+            match_below_ratio,
+            Kind::Fit,
+            Status::Pending("RC-08"),
+        )
+        .distinct(),
+        // A15: the fixed filters. Structure, not a field: the divisor is the sum of the 25 integer
+        // weights of `gauss5_at` (proved by `the_integer_gaussian_weights_sum_to_their_divisor`).
+        Constant::cpu("A15", "gauss5_divisor", 571.0, Kind::Maths, Status::Proved),
+        Constant::cpu("A15", "box3_divisor", 9.0, Kind::Maths, Status::Proved),
+    ]
+}
+// tuning:end
 
 /// The per-frame constants derived once from gains, noise model and parameters (spec 2.2). All
 /// `_dn` quantities are on the 16-bit working scale.
@@ -197,6 +514,8 @@ pub struct Derived {
     pub shadow_match: bool,
     /// The halo of this configuration in pixels: 13 with shadow matching, else 11.
     pub halo_px: usize,
+    /// The tuned constants of this frame (a copy of [`Params::tuning`]), which the passes read.
+    pub tuning: Tuning,
 }
 
 impl Derived {
@@ -236,9 +555,16 @@ impl Derived {
             });
         }
         let (g, r) = (noise.g, noise.r);
-        // Signal level with SNR 10 for var = g x + r^2: x = 50 (g + sqrt(g^2 + 0.04 r^2)).
-        let offset1_dn = (50.0 * (g + (g * g + 0.04 * r * r).sqrt())).clamp(1.0, 65536.0);
-        let s = ((100.0 - (f64::from(params.detail) + f64::from(params.strength))) * 0.2).max(1.0);
+        let tuning = params.tuning;
+        // Signal level with SNR q for var = g x + r^2: x = (q^2 / 2) (g + sqrt(g^2 + (4 / q^2) r^2)),
+        // which is 50 (g + sqrt(g^2 + 0.04 r^2)) for q = 10: 10 * 10 / 2 and 4 / 100 are exact in
+        // f64 and round to the literals 50 and 0.04.
+        let q2 = tuning.offset_snr * tuning.offset_snr;
+        let offset1_dn =
+            ((0.5 * q2) * (g + (g * g + (4.0 / q2) * r * r).sqrt())).clamp(1.0, 65536.0);
+        let s = ((100.0 - (f64::from(params.detail) + f64::from(params.strength)))
+            * tuning.snr_per_slider)
+            .max(1.0);
         let s2 = s * s;
         // Signal level with SNR s: x = s^2 / 2 (g + sqrt(g^2 + 4 r^2 / s^2)).
         let gate_dn = (0.5 * s2 * (g + (g * g + 4.0 * r * r / s2).sqrt())).clamp(1.0, 65535.0);
@@ -250,7 +576,7 @@ impl Derived {
             f64::INFINITY
         };
         // SNR at 18 % grey below 25 dB  <=>  g * x18 + r^2 > x18^2 / 10^2.5 (no logarithm).
-        let low_snr = var18 * 316.227_766_016_837_96 > x18 * x18;
+        let low_snr = var18 * tuning.match_below_ratio > x18 * x18;
         let shadow_match = match params.shadow_match {
             ShadowMatch::On => true,
             ShadowMatch::Off => false,
@@ -273,6 +599,7 @@ impl Derived {
             } else {
                 HALO_PLAIN_PX
             },
+            tuning,
         })
     }
 }
@@ -655,7 +982,15 @@ fn compute_core(
     pass_green(&mp, &lay, lay.around(mg.green1), d, ca_plane, &mut g1);
     // Pass 2: refinement along oblique and knight-move directions.
     let mut g2 = plane(n);
-    pass_refine(&mp, &g1, &lay, lay.around(mg.green), ca_plane, &mut g2);
+    pass_refine(
+        &mp,
+        &g1,
+        &lay,
+        lay.around(mg.green),
+        ca_plane,
+        &d.tuning,
+        &mut g2,
+    );
     drop(g1);
 
     // Pass 3: chroma.
@@ -726,8 +1061,8 @@ fn pass_green(m: &[f32], lay: &Layout, r: Region, d: &Derived, ca: Option<&[f64]
             let i = row + x;
             g1[i] = match site(x, y) {
                 Site::G => m[i],
-                Site::R => green_estimate(m, i, pw, d.rho_r, d.offset1_dn, ca_at(ca, i)),
-                Site::B => green_estimate(m, i, pw, d.rho_b, d.offset1_dn, ca_at(ca, i)),
+                Site::R => green_estimate(m, i, pw, d.rho_r, d.offset1_dn, ca_at(ca, i), &d.tuning),
+                Site::B => green_estimate(m, i, pw, d.rho_b, d.offset1_dn, ca_at(ca, i), &d.tuning),
             };
         }
     }
@@ -766,15 +1101,16 @@ enum Direction {
 
 /// The green estimate at the R or B site with flat index `i` (spec 3.2): classification, costs and
 /// the regularised ratio. `rho` is `g_c / g_G` of the site's colour, `k` the pass-1 offset `K`,
-/// `ca` the R/B misregistration at the site in pixels (0 on the plain path).
-fn green_estimate(m: &[f32], i: usize, pw: usize, rho: f64, k: f64, ca: f64) -> f32 {
+/// `ca` the R/B misregistration at the site in pixels (0 on the plain path), `t` the tuned constants
+/// of the frame.
+fn green_estimate(m: &[f32], i: usize, pw: usize, rho: f64, k: f64, ca: f64, t: &Tuning) -> f32 {
     let px = Window::<11>::new(m, i, pw);
     let c = px.p(0, 0);
     let cs = rho * c;
     let (gu, gd, gl, gr) = (px.p(0, -1), px.p(0, 1), px.p(-1, 0), px.p(1, 0));
     // Centre colour differences.
     let (du, dd, dl, dr) = (cs - gu, cs - gd, cs - gl, cs - gr);
-    let w2 = 1.6 * rho;
+    let w2 = t.second_diff_weight * rho;
     let vbase = (gl - px.p(-1, -2)).abs()
         + (gl - px.p(-1, 2)).abs()
         + (gr - px.p(1, -2)).abs()
@@ -811,9 +1147,9 @@ fn green_estimate(m: &[f32], i: usize, pw: usize, rho: f64, k: f64, ca: f64) -> 
         }
     }
     // Decision. The CA relaxation factor f is exactly 1 on the plain path (ca = 0) and for a
-    // misregistration under 0.1 px; it is unbounded above, as the spec has it (evaluation note 3).
-    let f = if ca >= 0.1 {
-        1.0 + 2.5 * (ca * ca * ca)
+    // misregistration under `ca_relax_floor_px`; it is unbounded above, as the spec has it (evaluation note 3).
+    let f = if ca >= t.ca_relax_floor_px {
+        1.0 + t.ca_relax_slope * (ca * ca * ca)
     } else {
         1.0
     };
@@ -908,7 +1244,15 @@ fn wide_direction(px: &Window<'_, 11>, rho: f64, d: [f64; 4]) -> Direction {
 /// Pass 2 (spec 3.3): at G sites `G2 = G1`; at R and B sites the vertical and horizontal scores are
 /// compared with two diagonals and four knight-move directions. `ca` is the misregistration plane
 /// of the CA path (spec 3.6), whose pass-2 weight is `min(ca, 1)`; `None` is the plain path.
-fn pass_refine(m: &[f32], g1: &[f32], lay: &Layout, r: Region, ca: Option<&[f64]>, g2: &mut [f32]) {
+fn pass_refine(
+    m: &[f32],
+    g1: &[f32],
+    lay: &Layout,
+    r: Region,
+    ca: Option<&[f64]>,
+    t: &Tuning,
+    g2: &mut [f32],
+) {
     let pw = lay.pw;
     for y in r.y0..r.y1 {
         let row = y * pw;
@@ -917,7 +1261,7 @@ fn pass_refine(m: &[f32], g1: &[f32], lay: &Layout, r: Region, ca: Option<&[f64]
             g2[i] = if site(x, y) == Site::G {
                 g1[i]
             } else {
-                refine_green(m, g1, i, pw, ca.map(|_| ca_at(ca, i).min(1.0)))
+                refine_green(m, g1, i, pw, ca.map(|_| ca_at(ca, i).min(1.0)), t)
             };
         }
     }
@@ -926,7 +1270,14 @@ fn pass_refine(m: &[f32], g1: &[f32], lay: &Layout, r: Region, ca: Option<&[f64]
 /// The pass-2 value at the R or B site with flat index `i` (spec 3.3, and 3.6 for `kappa`). `m`
 /// holds the native samples, `g` the pass-1 green, `kappa` the CA weight `min(ca, 1)` of the site
 /// (`None`: plain path).
-fn refine_green(m: &[f32], g: &[f32], i: usize, pw: usize, kappa: Option<f64>) -> f32 {
+fn refine_green(
+    m: &[f32],
+    g: &[f32],
+    i: usize,
+    pw: usize,
+    kappa: Option<f64>,
+    tuning: &Tuning,
+) -> f32 {
     let gw = Window::<5>::new(g, i, pw);
     let cw = Window::<5>::new(m, i, pw);
     let g0 = gw.p(0, 0);
@@ -988,10 +1339,10 @@ fn refine_green(m: &[f32], g: &[f32], i: usize, pw: usize, kappa: Option<f64>) -
     // CA path (spec 3.6).
     if best < 2 {
         // A 3-tap mean along the winning axis, which takes over from G0 as kappa grows (plain
-        // 3-tap from kappa = 0.5); the weight of G0 is 1 + 18 t + 102 t^3, t = (1 - min(1, 2 kappa))^2.
+        // 3-tap from kappa = 0.5); the weight of G0 is 1 + A t + B t^3, t = (1 - min(1, 2 kappa))^2.
         let t = 1.0 - (2.0 * k).min(1.0);
         let t = t * t;
-        let wt = 1.0 + 18.0 * t + 102.0 * (t * t * t);
+        let wt = tuning.centre_weight(t);
         let num = if best == 0 {
             wt * g0 + n + so
         } else {
@@ -1052,10 +1403,10 @@ fn step1_diagonals(
             let i = y * pw + x;
             match site(x, y) {
                 Site::R => {
-                    pb[i] = diagonal_ratio(pb, pg, pr, i, s, d.offset3_dn);
+                    pb[i] = diagonal_ratio(pb, pg, pr, i, s, d.offset3_dn, &d.tuning);
                 }
                 Site::B => {
-                    pr[i] = diagonal_ratio(pr, pg, pb, i, s, d.offset3_dn);
+                    pr[i] = diagonal_ratio(pr, pg, pb, i, s, d.offset3_dn, &d.tuning);
                 }
                 Site::G => {}
             }
@@ -1065,8 +1416,16 @@ fn step1_diagonals(
 
 /// The missing colour X at an R or B site (spec 3.4.2). `xp` is the plane of the missing colour
 /// (native at the four diagonal neighbours), `gp` the green plane, `yp` the plane of the site's
-/// own colour, `k` the pass-3 offset.
-fn diagonal_ratio(xp: &[f32], gp: &[f32], yp: &[f32], i: usize, s: isize, k: f64) -> f32 {
+/// own colour, `k` the pass-3 offset, `tuning` the tuned constants of the frame.
+fn diagonal_ratio(
+    xp: &[f32],
+    gp: &[f32],
+    yp: &[f32],
+    i: usize,
+    s: isize,
+    k: f64,
+    tuning: &Tuning,
+) -> f32 {
     let base = i as isize;
     let (ul, ur, dl, dr) = (-s - 1, -s + 1, s - 1, s + 1);
     let (x_ul, x_ur, x_dl, x_dr) = (
@@ -1098,9 +1457,9 @@ fn diagonal_ratio(xp: &[f32], gp: &[f32], yp: &[f32], i: usize, s: isize, k: f64
     let mut w_a = 1.0 + (g_a - g0).abs() + (c_a - c0).abs();
     let mut w_b = 1.0 + (g_b - g0).abs() + (c_b - c0).abs();
     // X not dominant over G: penalise high-chroma samples.
-    if 0.75 * (x_ul + x_ur + x_dl + x_dr) < g_ul + g_ur + g_dl + g_dr {
-        w_a *= (x_a - g_a).abs() / (x_a + g_a + 1.0).max(1.0) + 0.03;
-        w_b *= (x_b - g_b).abs() / (x_b + g_b + 1.0).max(1.0) + 0.03;
+    if tuning.sat_dominance * (x_ul + x_ur + x_dl + x_dr) < g_ul + g_ur + g_dl + g_dr {
+        w_a *= (x_a - g_a).abs() / (x_a + g_a + 1.0).max(1.0) + tuning.chroma_floor;
+        w_b *= (x_b - g_b).abs() / (x_b + g_b + 1.0).max(1.0) + tuning.chroma_floor;
     }
     // Each sample is weighted by the other sample's cost.
     let t = (w_a + w_b) * k;
@@ -1122,6 +1481,7 @@ fn step2_green_sites(
 ) {
     let pw = lay.pw;
     let k = d.offset3_dn;
+    let tuning = &d.tuning;
     for y in r.y0..r.y1 {
         for x in r.x0..r.x1 {
             if site(x, y) != Site::G {
@@ -1145,9 +1505,10 @@ fn step2_green_sites(
             for (res, chan) in result.iter_mut().zip([&*pr, &*pb]) {
                 let xn = nb.map(|j| f64::from(chan[j]));
                 let mut cost = cost0;
-                if 0.75 * (xn[0] + xn[1] + xn[2] + xn[3]) < sum_g {
+                if tuning.sat_dominance * (xn[0] + xn[1] + xn[2] + xn[3]) < sum_g {
                     for j in 0..4 {
-                        cost[j] *= (gn[j] - xn[j]).abs() / (gn[j] + xn[j] + 1.0).max(1.0) + 0.03;
+                        cost[j] *= (gn[j] - xn[j]).abs() / (gn[j] + xn[j] + 1.0).max(1.0)
+                            + tuning.chroma_floor;
                     }
                 }
                 let (mut wsum, mut gsum, mut xsum) = (0.0f64, 0.0f64, 0.0f64);
@@ -1189,6 +1550,7 @@ fn shadow_sharpen(m: &[f32], lay: &Layout, mg: &Margins, d: &Derived, planes: [&
         }
     }
     let t = d.gate_dn;
+    let tuning = &d.tuning;
     let out = lay.around(mg.s3);
     for y in out.y0..out.y1 {
         for x in out.x0..out.x1 {
@@ -1200,7 +1562,8 @@ fn shadow_sharpen(m: &[f32], lay: &Layout, mg: &Margins, d: &Derived, planes: [&
             }
             .into_iter()
             .fold(0.0f64, |top, v| top.max(f64::from(v)));
-            let f = ((4.0 * t - gmax) / (3.0 * t)).clamp(0.0, 1.0);
+            let f = ((tuning.shadow_fade_end * t - gmax) / (tuning.shadow_fade_span * t))
+                .clamp(0.0, 1.0);
             if f <= 0.0 {
                 continue;
             }
@@ -1212,11 +1575,11 @@ fn shadow_sharpen(m: &[f32], lay: &Layout, mg: &Margins, d: &Derived, planes: [&
             } else {
                 pa
             };
-            let lap = 5.0 * (2.0 * y0 - pair);
+            let lap = tuning.shadow_laplacian_scale * (2.0 * y0 - pair);
             let lim = y0.min(d.r_dn);
             let den = lim + lap.abs();
             let add = if den > 0.0 { lim * lap / den } else { 0.0 };
-            let gain = (y0 + 0.75 * f * add) / y0;
+            let gain = (y0 + tuning.shadow_amount * f * add) / y0;
             pr[i] = (f64::from(pr[i]) * gain) as f32;
             pg[i] = (f64::from(pg[i]) * gain) as f32;
             pb[i] = (f64::from(pb[i]) * gain) as f32;
@@ -1354,7 +1717,7 @@ fn shadow_colour_match(m: &[f32], lay: &Layout, d: &Derived, s3: [&[f32]; 3]) ->
                 var += d.g_dn * d.gains[c] * f64::from(low_planes[c][i]).max(0.0) + rc * rc;
             }
             let excess = (e - 0.5 * var).max(0.0);
-            let a = 3.0 * excess + 1.0;
+            let a = d.tuning.match_excess_weight * excess + 1.0;
             let b = var + 1.0;
             let top = a.max(b);
             let a2 = (a - 0.5 * top).max(0.0);
@@ -1698,7 +2061,7 @@ mod derivations {
         // kappa = 0 gives w = 1 + 18 + 102 = 121 and the divisor w + 2 = 123.
         let (m, g) = vertical_patch();
         let (g0, n_plus_s) = (10.0f64, 22.0f64);
-        let at = |kappa: Option<f64>| refine_green(&m, &g, 12, 5, kappa);
+        let at = |kappa: Option<f64>| refine_green(&m, &g, 12, 5, kappa, &Tuning::DEFAULT);
 
         let k0 = at(Some(0.0));
         let w0 = centre_weight_of(k0, g0, n_plus_s);

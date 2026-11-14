@@ -81,6 +81,7 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
+use super::tuning::{Constant, Kind, Status, wgsl_block};
 use super::{RgbImage, mirror};
 
 /// Core rows of one band of the parallel run. An implementation constant (the result does not
@@ -94,44 +95,427 @@ const AMOUNT_MAX_PCT: f32 = 1000.0;
 const THRESHOLD_MAX_LEVELS: f32 = 100.0;
 /// Largest radius of an extra stage, pixels.
 const EXTRA_RADIUS_MAX_PX: f32 = 15.0;
-/// Screen mode: radius cap, pixels.
-const SCREEN_RADIUS_CAP_PX: f32 = 2.5;
-/// Print mode: print distance per pixel of radius.
-const PRINT_DISTANCE_PER_PX: f32 = 2500.0;
-/// Print mode: radius cap, pixels.
-const PRINT_RADIUS_CAP_PX: f32 = 15.0;
-/// Tap cap in screen mode.
-const MAX_TAPS_SCREEN: usize = 13;
-/// Tap cap in print mode.
-const MAX_TAPS_PRINT: usize = 33;
 /// A stage needs at least this amount (fraction, 1.0 = 100 %).
 const MIN_AMOUNT: f32 = 0.001;
 /// A stage needs at least this sigma.
 const MIN_SIGMA: f32 = 0.01;
-/// Sigma below this is not rescaled with the output size.
-const SIGMA_KNEE: f32 = 0.15;
-/// Halo fractions at or below this are zero.
-const HALO_DEAD_ZONE: f32 = 0.001;
 /// Radius of the halo-limiter window (5 x 5).
 const HALO_WINDOW_RADIUS: usize = 2;
 /// Samples in the halo-limiter window.
 const HALO_WINDOW_SAMPLES: usize = (2 * HALO_WINDOW_RADIUS + 1) * (2 * HALO_WINDOW_RADIUS + 1);
 /// Smallest count that triggers the plateau pull of the envelope: `(N + 1) >> 2`.
 const HALO_RANK_MIN: i32 = ((HALO_WINDOW_SAMPLES + 1) >> 2) as i32;
-/// Default tie tolerance of the halo limiter, relative to the window's centre: `2^-12`.
-pub const HALO_TIE_TOLERANCE: f32 = 1.0 / 4096.0;
+/// Default tie tolerance of the halo limiter, relative to the window's centre: `2^-12`
+/// ([`Tuning::halo_tie_tolerance`]).
+pub const HALO_TIE_TOLERANCE: f32 = Tuning::DEFAULT.halo_tie_tolerance;
 /// Largest tie tolerance: `2^-4`. Below 1/2 a sample within the tolerance lies within a factor of
 /// two of the centre, so its difference to the centre is exact in `f32` and `f64` alike.
 const HALO_TIE_TOLERANCE_MAX: f32 = 0.0625;
-/// With a tie tolerance, the plateau pull fades out over the last quarter before the two sides
-/// spread equally (`d_near` from `0.75 d_far` to `d_far`) instead of switching off there.
-const HALO_PULL_FADE: f64 = 0.25;
-/// Epsilon of the gain-map denominator (units of `d` squared).
-const GAIN_EPSILON: f32 = 1e-10;
-/// Floor of the luma in the transfer.
-const LUMA_FLOOR: f32 = 1e-20;
-/// Largest ratio of the transfer.
-const RATIO_MAX: f32 = 16.0;
+/// The shipped largest ratio of the transfer, for the tests of the transfer.
+#[cfg(test)]
+const RATIO_MAX: f32 = Tuning::DEFAULT.ratio_max;
+/// The shipped tap cap of the screen mode, for the tests of the kernels.
+#[cfg(test)]
+const MAX_TAPS_SCREEN: usize = Tuning::DEFAULT.max_taps_screen;
+
+// tuning:begin (the one home of the constants; tests/constants_registry.rs searches the rest of the file)
+/// The tuned constants of output sharpening (`docs/29-raw-constants.md` §2.1, rows O1 to O12). One
+/// field per constant, in the type the code reads it in (`f32` for the arithmetic of the reference,
+/// `f64` where the reference runs in `f64`).
+///
+/// [`Tuning::ORACLE`] is what the oracle vectors were made with (`tests/cpu_data/output_sharpen/`);
+/// [`Tuning::DEFAULT`] is what ships and equals it until a fit lands (`docs/29` RC-09). Each field
+/// says its row, kind, spec section (`docs/algorithms/04-output-sharpening.md`), derivation status
+/// and task. The structure stays outside it: the 5 x 5 window of the halo limiter
+/// (`HALO_WINDOW_RADIUS`) and the `2 sigma` and `2 s` arithmetic.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tuning {
+    /// O1 · Design · spec §2.2 · the owner's look (`docs/29` §6, answer 4). Slope of the map from the
+    /// radius `R` to the Gaussian sigma for `R >= knee`: `slope·R + offset`.
+    pub sigma_slope: f32,
+    /// O1 · Design · spec §2.2 · the owner's look. The offset of that map.
+    pub sigma_offset: f32,
+    /// O1 · Design · spec §2.2 · the owner's look. The radius at which the map changes form. RC-09
+    /// repairs the step of 0.029 here (0.621 below, 0.650 above).
+    pub sigma_knee_radius_px: f32,
+    /// O1 · Design · spec §2.2 · the owner's look. Below the knee, sigma is
+    /// `scale·√(R - origin)`; no stage exists at or below `R = origin`.
+    pub sigma_sqrt_origin: f32,
+    /// O1 · Design · spec §2.2 · the owner's look. The scale of that square-root branch.
+    pub sigma_sqrt_scale: f32,
+    /// O1 · Design · spec §2.2 · the owner's look. Radius cap of the screen mode, pixels.
+    pub screen_radius_cap_px: f32,
+    /// O2 · Maths · spec §2.3 · proved, `the_tap_rule_loses_under_two_per_mille_at_the_screen_map_points_and_3_6_at_worst`.
+    /// The tap count of a kernel is `((int)(per_sigma·σ + offset)) | 1`: how far the Gaussian is cut.
+    pub taps_per_sigma: f32,
+    /// O2 · Maths · spec §2.3 · proved, as above. The `2.5` of that rule.
+    pub taps_offset: f32,
+    /// O2 · Maths · spec §2.3 · proved, as above. The fewest taps of a kernel.
+    pub taps_min: usize,
+    /// O2 · Maths · spec §2.3 · proved, as above. Tap cap of the screen mode.
+    pub max_taps_screen: usize,
+    /// O2 · Maths · spec §2.3 · proved, as above. Tap cap of the print mode.
+    pub max_taps_print: usize,
+    /// O3 · Fit · spec §2.4 · pending, RC-09. The sigma below which a downscale does not shrink the
+    /// radius: `s·(σ - knee) + knee`.
+    pub sigma_knee: f32,
+    /// O4 · Design · spec §2.5 · the owner's look. Amount of the screen preset, percent.
+    pub screen_amount_pct: f32,
+    /// O4 · Design · spec §2.5 · the owner's look. Radius of the screen preset, pixels (reads the
+    /// sigma map at `R = 1.0`).
+    pub screen_radius_px: f32,
+    /// O4 · Design · spec §2.5 · the owner's look. Threshold of the screen preset, 8-bit levels.
+    pub screen_threshold_levels: f32,
+    /// O4 · Design · spec §2.5 · the owner's look. Halo suppression of the screen preset, percent.
+    pub screen_halo_pct: f32,
+    /// O5 · Design · spec §2.2 · the owner's look. Halo fractions (`√(h/100)`) at or below this are 0.
+    pub halo_dead_zone: f32,
+    /// O6 · Fit · spec §3.5 · pending, RC-09. With a tie tolerance the plateau pull of the halo
+    /// limiter fades over the last quarter before the two sides spread equally.
+    pub halo_pull_fade: f64,
+    /// O6 · Fit · spec §3.5 · pending, RC-09. Default tie tolerance of the halo limiter, relative to
+    /// the window's centre (`2^-12`): the default of [`OutputSharpen::halo_tie_tolerance`].
+    pub halo_tie_tolerance: f32,
+    /// O7 · Fit · spec §2.3 · pending, RC-09. The gain-map smoothing has sigma `max(multiple·σ, min)`.
+    pub gain_sigma_multiple: f32,
+    /// O7 · Fit · spec §2.3 · pending, RC-09. The least sigma of the gain-map smoothing, pixels.
+    pub gain_sigma_min: f32,
+    /// O7 · Fit · spec §2.3 · pending, RC-09. The halo-map smoothing has sigma `multiple·s` at the
+    /// output scale `s`.
+    pub halo_sigma_multiple: f32,
+    /// O8 · Guard · spec §3.7 · keeps the ratio of the transfer back to RGB finite on near-black
+    /// pixels: the largest ratio.
+    pub ratio_max: f32,
+    /// O8 · Guard · spec §3.7 · the floor of the luma in that ratio.
+    pub luma_floor: f32,
+    /// O9 · Guard · spec §3.3 · epsilon of the gain-map denominator (units of `d` squared).
+    pub gain_epsilon: f32,
+    /// O10 · Maths · spec §3.3 · proved, `the_gradient_weights_are_the_normalised_scharr_kernel`.
+    /// Method 2 only. Weight of the central difference of the Scharr gradient, `10/32`.
+    pub scharr_centre: f32,
+    /// O10 · Maths · spec §3.3 · proved, as above. Weight of the corner differences, `3/32`.
+    pub scharr_corner: f32,
+    /// O10 · Maths (the row) · spec §3.3 · method 2 only, which no render reaches. The gradient ramp
+    /// reads 0 at `g0` and 1 at `g0 + width·...`: `inv = width / g0`. The ramp is a fit with no task
+    /// (`docs/algorithms/04` §3.8).
+    pub ramp_width: f64,
+    /// O11 · Design · spec §2.2 · the owner's look. Print mode: print distance per pixel of radius.
+    pub print_distance_per_px: f32,
+    /// O11 · Design · spec §2.2 · the owner's look. Print mode: radius cap, pixels.
+    pub print_radius_cap_px: f32,
+    /// O11 · Design · spec §2.5 · the owner's look. Amount of the print preset, percent.
+    pub print_amount_pct: f32,
+    /// O11 · Design · spec §2.5 · the owner's look. Print distance of both presets.
+    pub print_distance: f32,
+    /// O12 · Design · spec §2.7 · the rule of the automatic method for extra stages; unused in v1.
+    /// `t = max(threshold - offset, min)`: the offset.
+    pub auto_t_offset: f32,
+    /// O12 · Design · spec §2.7 · the least `t` of that rule.
+    pub auto_t_min: f32,
+    /// O12 · Design · spec §2.7 · `r = max(sigma - offset, min)`: the offset.
+    pub auto_r_offset: f32,
+    /// O12 · Design · spec §2.7 · the least `r` of that rule.
+    pub auto_r_min: f32,
+    /// O12 · Design · spec §2.7 · method 1 is chosen when `r·amount·t` reaches this.
+    pub auto_cut: f32,
+}
+
+impl Tuning {
+    /// The values the oracle vectors were made with, bit for bit.
+    pub const ORACLE: Tuning = Tuning {
+        sigma_slope: 0.7,
+        sigma_offset: 0.3,
+        sigma_knee_radius_px: 0.5,
+        sigma_sqrt_origin: 0.09,
+        sigma_sqrt_scale: 0.97,
+        screen_radius_cap_px: 2.5,
+        taps_per_sigma: 5.0,
+        taps_offset: 2.5,
+        taps_min: 3,
+        max_taps_screen: 13,
+        max_taps_print: 33,
+        sigma_knee: 0.15,
+        screen_amount_pct: 100.0,
+        screen_radius_px: 1.0,
+        screen_threshold_levels: 1.0,
+        screen_halo_pct: 60.0,
+        halo_dead_zone: 0.001,
+        halo_pull_fade: 0.25,
+        halo_tie_tolerance: 1.0 / 4096.0,
+        gain_sigma_multiple: 2.0,
+        gain_sigma_min: 1.0,
+        halo_sigma_multiple: 2.0,
+        ratio_max: 16.0,
+        luma_floor: 1e-20,
+        gain_epsilon: 1e-10,
+        scharr_centre: 0.3125,
+        scharr_corner: 0.09375,
+        ramp_width: 0.25,
+        print_distance_per_px: 2500.0,
+        print_radius_cap_px: 15.0,
+        print_amount_pct: 150.0,
+        print_distance: 5000.0,
+        auto_t_offset: 0.004,
+        auto_t_min: 0.1,
+        auto_r_offset: 0.65,
+        auto_r_min: 0.1,
+        auto_cut: 0.025,
+    };
+
+    /// The values that ship. Equal to [`Tuning::ORACLE`] until a fit lands (RC-09).
+    pub const DEFAULT: Tuning = Tuning::ORACLE;
+
+    /// The tap cap of a mode: 13 (screen) or 33 (print).
+    #[must_use]
+    pub const fn max_taps(&self, mode: Mode) -> usize {
+        match mode {
+            Mode::Screen => self.max_taps_screen,
+            Mode::Print => self.max_taps_print,
+        }
+    }
+
+    /// The `const` block the shader reads (`output_sharpen.wgsl`), generated from these values: the
+    /// `f32` of each constant of the registry that has a device name, and the three numbers the
+    /// shader takes from the halo window (`1/N`, `1/r` and the smallest count that pulls). The kernel
+    /// wrapper puts it in front of the shader text.
+    #[must_use]
+    pub fn wgsl_block(&self) -> String {
+        wgsl_block(
+            "generated from cpu::output_sharpen::Tuning (docs/29, RC-03); do not edit",
+            &[
+                ("GAIN_EPS", self.gain_epsilon),
+                ("LUMA_FLOOR", self.luma_floor),
+                ("RATIO_MAX", self.ratio_max),
+                ("HALO_INV_N", (1.0 / HALO_WINDOW_SAMPLES as f64) as f32),
+                ("HALO_INV_R", (1.0 / HALO_WINDOW_RADIUS as f64) as f32),
+                ("HALO_K_MIN_F", HALO_RANK_MIN as f32),
+                ("HALO_PULL_FADE", self.halo_pull_fade as f32),
+                ("SCHARR_CENTRE", self.scharr_centre),
+                ("SCHARR_CORNER", self.scharr_corner),
+            ],
+        )
+    }
+}
+
+impl Default for Tuning {
+    fn default() -> Tuning {
+        Tuning::DEFAULT
+    }
+}
+
+/// The constants of output sharpening: id, name, value, kind and derivation status of every row of
+/// `docs/29` §2.1 for spec 04 (`tests/constants_registry.rs` holds it to that table, to
+/// [`Tuning::wgsl_block`] and to the source text).
+pub const REGISTRY: &[Constant] = &registry(&Tuning::DEFAULT);
+
+/// The registry of one `Tuning`. Written with a pattern that names every field and no `..`, so a
+/// field added to [`Tuning`] without an entry here does not compile.
+const fn registry(t: &Tuning) -> [Constant; 41] {
+    let Tuning {
+        sigma_slope,
+        sigma_offset,
+        sigma_knee_radius_px,
+        sigma_sqrt_origin,
+        sigma_sqrt_scale,
+        screen_radius_cap_px,
+        taps_per_sigma,
+        taps_offset,
+        taps_min,
+        max_taps_screen,
+        max_taps_print,
+        sigma_knee,
+        screen_amount_pct,
+        screen_radius_px,
+        screen_threshold_levels,
+        screen_halo_pct,
+        halo_dead_zone,
+        halo_pull_fade,
+        halo_tie_tolerance,
+        gain_sigma_multiple,
+        gain_sigma_min,
+        halo_sigma_multiple,
+        ratio_max,
+        luma_floor,
+        gain_epsilon,
+        scharr_centre,
+        scharr_corner,
+        ramp_width,
+        print_distance_per_px,
+        print_radius_cap_px,
+        print_amount_pct,
+        print_distance,
+        auto_t_offset,
+        auto_t_min,
+        auto_r_offset,
+        auto_r_min,
+        auto_cut,
+    } = *t;
+    const RC09: Status = Status::Pending("RC-09");
+    const fn design(id: &'static str, name: &'static str, v: f32) -> Constant {
+        Constant::cpu(id, name, v as f64, Kind::Design, Status::Owner)
+    }
+    [
+        design("O1", "sigma_slope", sigma_slope).distinct(),
+        design("O1", "sigma_offset", sigma_offset),
+        design("O1", "sigma_knee_radius_px", sigma_knee_radius_px),
+        design("O1", "sigma_sqrt_origin", sigma_sqrt_origin).distinct(),
+        design("O1", "sigma_sqrt_scale", sigma_sqrt_scale).distinct(),
+        design("O1", "screen_radius_cap_px", screen_radius_cap_px),
+        Constant::cpu(
+            "O2",
+            "taps_per_sigma",
+            taps_per_sigma as f64,
+            Kind::Maths,
+            Status::Proved,
+        ),
+        Constant::cpu(
+            "O2",
+            "taps_offset",
+            taps_offset as f64,
+            Kind::Maths,
+            Status::Proved,
+        ),
+        Constant::cpu(
+            "O2",
+            "taps_min",
+            taps_min as f64,
+            Kind::Maths,
+            Status::Proved,
+        ),
+        Constant::cpu(
+            "O2",
+            "max_taps_screen",
+            max_taps_screen as f64,
+            Kind::Maths,
+            Status::Proved,
+        ),
+        Constant::cpu(
+            "O2",
+            "max_taps_print",
+            max_taps_print as f64,
+            Kind::Maths,
+            Status::Proved,
+        ),
+        Constant::cpu("O3", "sigma_knee", sigma_knee as f64, Kind::Fit, RC09).distinct(),
+        design("O4", "screen_amount_pct", screen_amount_pct),
+        design("O4", "screen_radius_px", screen_radius_px),
+        design("O4", "screen_threshold_levels", screen_threshold_levels),
+        design("O4", "screen_halo_pct", screen_halo_pct),
+        design("O5", "halo_dead_zone", halo_dead_zone).distinct(),
+        Constant::cpu("O6", "halo_pull_fade", halo_pull_fade, Kind::Fit, RC09)
+            .on_device("HALO_PULL_FADE"),
+        Constant::cpu(
+            "O6",
+            "halo_tie_tolerance",
+            halo_tie_tolerance as f64,
+            Kind::Fit,
+            RC09,
+        ),
+        // O6: the window is structure (5 x 5, `HALO_WINDOW_RADIUS` = 2); the device reads the three
+        // numbers that follow from it, generated in `Tuning::wgsl_block`.
+        Constant::cpu(
+            "O6",
+            "halo_window_samples",
+            HALO_WINDOW_SAMPLES as f64,
+            Kind::Fit,
+            RC09,
+        ),
+        Constant::cpu(
+            "O6",
+            "halo_inv_n",
+            1.0 / HALO_WINDOW_SAMPLES as f64,
+            Kind::Fit,
+            RC09,
+        )
+        .on_device("HALO_INV_N"),
+        Constant::cpu(
+            "O6",
+            "halo_inv_r",
+            1.0 / HALO_WINDOW_RADIUS as f64,
+            Kind::Fit,
+            RC09,
+        )
+        .on_device("HALO_INV_R"),
+        Constant::cpu("O6", "halo_rank_min", HALO_RANK_MIN as f64, Kind::Fit, RC09)
+            .on_device("HALO_K_MIN_F"),
+        Constant::cpu(
+            "O7",
+            "gain_sigma_multiple",
+            gain_sigma_multiple as f64,
+            Kind::Fit,
+            RC09,
+        ),
+        Constant::cpu(
+            "O7",
+            "gain_sigma_min",
+            gain_sigma_min as f64,
+            Kind::Fit,
+            RC09,
+        ),
+        Constant::cpu(
+            "O7",
+            "halo_sigma_multiple",
+            halo_sigma_multiple as f64,
+            Kind::Fit,
+            RC09,
+        ),
+        Constant::cpu(
+            "O8",
+            "ratio_max",
+            ratio_max as f64,
+            Kind::Guard,
+            Status::Safeguard,
+        )
+        .on_device("RATIO_MAX"),
+        Constant::cpu(
+            "O8",
+            "luma_floor",
+            luma_floor as f64,
+            Kind::Guard,
+            Status::Safeguard,
+        )
+        .on_device("LUMA_FLOOR")
+        .distinct(),
+        Constant::cpu(
+            "O9",
+            "gain_epsilon",
+            gain_epsilon as f64,
+            Kind::Guard,
+            Status::Safeguard,
+        )
+        .on_device("GAIN_EPS")
+        .distinct(),
+        Constant::cpu(
+            "O10",
+            "scharr_centre",
+            scharr_centre as f64,
+            Kind::Maths,
+            Status::Proved,
+        )
+        .on_device("SCHARR_CENTRE")
+        .distinct(),
+        Constant::cpu(
+            "O10",
+            "scharr_corner",
+            scharr_corner as f64,
+            Kind::Maths,
+            Status::Proved,
+        )
+        .on_device("SCHARR_CORNER")
+        .distinct(),
+        Constant::cpu("O10", "ramp_width", ramp_width, Kind::Maths, Status::Proved),
+        design("O11", "print_distance_per_px", print_distance_per_px),
+        design("O11", "print_radius_cap_px", print_radius_cap_px),
+        design("O11", "print_amount_pct", print_amount_pct),
+        design("O11", "print_distance", print_distance),
+        design("O12", "auto_t_offset", auto_t_offset).distinct(),
+        design("O12", "auto_t_min", auto_t_min),
+        design("O12", "auto_r_offset", auto_r_offset).distinct(),
+        design("O12", "auto_r_min", auto_r_min),
+        design("O12", "auto_cut", auto_cut).distinct(),
+    ]
+}
+// tuning:end
 
 /// Errors of output sharpening.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -261,6 +645,9 @@ pub struct OutputSharpen {
     /// flipping the limiter where values tie in exact arithmetic; 0 gives the reference's exact
     /// comparisons and switches.
     pub halo_tie_tolerance: f32,
+    /// The tuned constants ([`Tuning::DEFAULT`], what ships). The oracle vectors run under
+    /// [`Tuning::ORACLE`].
+    pub tuning: Tuning,
 }
 
 impl Default for OutputSharpen {
@@ -277,17 +664,19 @@ impl OutputSharpen {
     /// The screen preset (spec section 2.5): mode Screen, method 1 (smooth gain), amount 100 %,
     /// radius 1.0 px, threshold 1 level, halo 60 %, reference luma weights.
     pub fn screen() -> OutputSharpen {
+        let t = Tuning::DEFAULT;
         OutputSharpen {
             mode: Mode::Screen,
             method: Method::SmoothGain,
-            amount_pct: 100.0,
-            radius_px: 1.0,
-            threshold_levels: 1.0,
-            halo_pct: 60.0,
-            print_distance: 5000.0,
+            amount_pct: t.screen_amount_pct,
+            radius_px: t.screen_radius_px,
+            threshold_levels: t.screen_threshold_levels,
+            halo_pct: t.screen_halo_pct,
+            print_distance: t.print_distance,
             luma_weights: REFERENCE_LUMA_WEIGHTS,
             extra_stages: Vec::new(),
-            halo_tie_tolerance: HALO_TIE_TOLERANCE,
+            halo_tie_tolerance: t.halo_tie_tolerance,
+            tuning: t,
         }
     }
 
@@ -295,11 +684,12 @@ impl OutputSharpen {
     /// 5000 (radius 2 px), threshold 1 level, halo 0, reference luma weights. Kept in the code
     /// and tested; not exposed in the app.
     pub fn print() -> OutputSharpen {
+        let screen = OutputSharpen::screen();
         OutputSharpen {
             mode: Mode::Print,
-            amount_pct: 150.0,
+            amount_pct: screen.tuning.print_amount_pct,
             halo_pct: 0.0,
-            ..OutputSharpen::screen()
+            ..screen
         }
     }
 
@@ -397,10 +787,10 @@ impl OutputSharpen {
     /// The bound of the mode, valid at every scale: 21 px for screen, 41 px for print. Equals the
     /// receptive field of the widest kernels the mode allows (method 2 with halo suppression).
     pub fn max_halo_px(&self) -> usize {
-        let max_taps = max_taps(self.mode);
+        let max_taps = self.tuning.max_taps(self.mode);
         let r = max_taps / 2;
         // Kernel radius, gradient, window, and the halo-map kernel at its largest (sigma 2).
-        2 * r + 1 + HALO_WINDOW_RADIUS + kernel_radius(2.0, max_taps)
+        2 * r + 1 + HALO_WINDOW_RADIUS + kernel_radius(2.0, max_taps, &self.tuning)
     }
 
     /// Sharpens a planar image. The result is identical to [`apply_interleaved`](Self::apply_interleaved)
@@ -530,6 +920,8 @@ pub struct SharpenPlan {
     max_taps: usize,
     halo_enabled: bool,
     halo_tie_tolerance: f32,
+    /// The tuned constants of this plan (a copy of [`OutputSharpen::tuning`]).
+    tuning: Tuning,
 }
 
 impl SharpenPlan {
@@ -564,9 +956,14 @@ impl SharpenPlan {
         self.halo_tie_tolerance
     }
 
+    /// The tuned constants the plan was made with.
+    pub fn tuning(&self) -> &Tuning {
+        &self.tuning
+    }
+
     /// Sigma of the halo-limiter's smoothing kernel: `2 s` (f32).
     pub fn halo_sigma(&self) -> f32 {
-        self.scale + self.scale
+        self.scale * self.tuning.halo_sigma_multiple
     }
 
     /// The high-pass kernel of stage `stage` (an index into [`stages`](Self::stages)): the
@@ -576,7 +973,7 @@ impl SharpenPlan {
     ///
     /// Panics when `stage` is not an index into [`stages`](Self::stages).
     pub fn kernel(&self, stage: usize) -> Vec<f64> {
-        gaussian_kernel(self.stages[stage].sigma, self.max_taps)
+        gaussian_kernel_with(self.stages[stage].sigma, self.max_taps, &self.tuning)
     }
 
     /// The gain-map kernel of stage `stage`, sigma `max(2 sigma, 1)`. Only methods 1 and 2 with a
@@ -586,13 +983,17 @@ impl SharpenPlan {
     ///
     /// Panics when `stage` is not an index into [`stages`](Self::stages).
     pub fn gain_kernel(&self, stage: usize) -> Vec<f64> {
-        gaussian_kernel(gain_sigma(self.stages[stage].sigma), self.max_taps)
+        gaussian_kernel_with(
+            gain_sigma_with(self.stages[stage].sigma, &self.tuning),
+            self.max_taps,
+            &self.tuning,
+        )
     }
 
     /// The kernel that smooths the four halo-limiter maps (sigma `2 s`). Only used when
     /// [`halo_enabled`](Self::halo_enabled).
     pub fn halo_kernel(&self) -> Vec<f64> {
-        gaussian_kernel(self.halo_sigma(), self.max_taps)
+        gaussian_kernel_with(self.halo_sigma(), self.max_taps, &self.tuning)
     }
 
     /// The receptive field in pixels (spec section 1.4): per stage the radius of its blur, plus
@@ -604,10 +1005,14 @@ impl SharpenPlan {
         }
         let mut chain = 0;
         for st in &self.stages {
-            let mut c = kernel_radius(st.sigma, self.max_taps);
+            let mut c = kernel_radius(st.sigma, self.max_taps, &self.tuning);
             let gain = st.method != Method::HardThreshold && st.threshold > 0.0;
             if gain {
-                c += kernel_radius(gain_sigma(st.sigma), self.max_taps);
+                c += kernel_radius(
+                    gain_sigma_with(st.sigma, &self.tuning),
+                    self.max_taps,
+                    &self.tuning,
+                );
                 if st.method == Method::GradientRamp {
                     c += 1;
                 }
@@ -615,7 +1020,8 @@ impl SharpenPlan {
             chain = chain.max(c);
         }
         if self.halo_enabled {
-            chain += HALO_WINDOW_RADIUS + kernel_radius(self.halo_sigma(), self.max_taps);
+            chain +=
+                HALO_WINDOW_RADIUS + kernel_radius(self.halo_sigma(), self.max_taps, &self.tuning);
         }
         chain
     }
@@ -643,30 +1049,35 @@ fn in_range(v: f32, lo: f32, hi: f32) -> bool {
     v.is_finite() && v >= lo && v <= hi
 }
 
-const fn max_taps(mode: Mode) -> usize {
-    match mode {
-        Mode::Screen => MAX_TAPS_SCREEN,
-        Mode::Print => MAX_TAPS_PRINT,
-    }
+/// [`sigma_from_radius_with`] at the shipped constants.
+#[cfg(test)]
+fn sigma_from_radius(r: f32) -> f32 {
+    sigma_from_radius_with(r, &Tuning::DEFAULT)
 }
 
 /// Radius (px) to Gaussian sigma before resolution scaling; 0 means "no stage".
-fn sigma_from_radius(r: f32) -> f32 {
-    if r >= 0.5 {
-        r * 0.7 + 0.3
-    } else if r > 0.09 {
-        (r - 0.09).sqrt() * 0.97
+fn sigma_from_radius_with(r: f32, t: &Tuning) -> f32 {
+    if r >= t.sigma_knee_radius_px {
+        r * t.sigma_slope + t.sigma_offset
+    } else if r > t.sigma_sqrt_origin {
+        (r - t.sigma_sqrt_origin).sqrt() * t.sigma_sqrt_scale
     } else {
         0.0
     }
 }
 
-/// Resolution scaling for an output `s` times the rendered size, `s` in (0, 1].
+/// [`scale_sigma_with`] at the shipped constants.
+#[cfg(test)]
 fn scale_sigma(sigma: f32, s: f32) -> f32 {
-    if s >= 1.0 || sigma < SIGMA_KNEE {
+    scale_sigma_with(sigma, s, &Tuning::DEFAULT)
+}
+
+/// Resolution scaling for an output `s` times the rendered size, `s` in (0, 1].
+fn scale_sigma_with(sigma: f32, s: f32, t: &Tuning) -> f32 {
+    if s >= 1.0 || sigma < t.sigma_knee {
         return sigma;
     }
-    s * (sigma - SIGMA_KNEE) + SIGMA_KNEE
+    s * (sigma - t.sigma_knee) + t.sigma_knee
 }
 
 /// Centre tap of a pixel-integrated, unit-area Gaussian without truncation: `erf(1 / (2 sqrt(2) sigma))`.
@@ -684,18 +1095,24 @@ fn normalise_threshold(t: f32, sigma0: f32, sigma1: f32) -> f32 {
     (((1.0 - c1 * c1) * f64::from(t)) / (1.0 - c0 * c0)) as f32
 }
 
-/// Halo suppression 0 to 100 to the halo-limited fraction `sqrt(h / 100)`, with a dead zone.
+/// [`halo_fraction_with`] at the shipped constants.
+#[cfg(test)]
 fn halo_fraction(pct: f32) -> f32 {
+    halo_fraction_with(pct, &Tuning::DEFAULT)
+}
+
+/// Halo suppression 0 to 100 to the halo-limited fraction `sqrt(h / 100)`, with a dead zone.
+fn halo_fraction_with(pct: f32, tuning: &Tuning) -> f32 {
     let h = fmin(fmax(pct * 0.01, 0.0), 1.0);
     let r = h.sqrt();
-    if r > HALO_DEAD_ZONE { r } else { 0.0 }
+    if r > tuning.halo_dead_zone { r } else { 0.0 }
 }
 
 /// Automatic method choice for an extra stage (spec section 2.7).
-fn auto_method(sigma: f32, amount: f32, threshold: f32) -> Method {
-    let t = fmax(threshold - 0.004, 0.1);
-    let r = fmax(sigma - 0.65, 0.1);
-    if r * amount * t >= 0.025 {
+fn auto_method(sigma: f32, amount: f32, threshold: f32, tuning: &Tuning) -> Method {
+    let t = fmax(threshold - tuning.auto_t_offset, tuning.auto_t_min);
+    let r = fmax(sigma - tuning.auto_r_offset, tuning.auto_r_min);
+    if r * amount * t >= tuning.auto_cut {
         Method::SmoothGain
     } else {
         Method::HardThreshold
@@ -707,27 +1124,52 @@ fn auto_method(sigma: f32, amount: f32, threshold: f32) -> Method {
 /// The spec's caps are 13 and 33. A cap that is not odd and at least 3 (which the stage never
 /// passes) is rounded down to the odd number of at least 3, so the kernel keeps an odd tap count
 /// and a centre tap instead of underflowing in [`gaussian_kernel`].
-fn tap_count(sigma: f32, max_taps: usize) -> usize {
-    let cap = (max_taps.max(3) - 1) / 2 * 2 + 1;
-    let n0 = ((sigma * 5.0 + 2.5) as i32 | 1) as usize;
-    if n0 < 3 { 3 } else { n0.min(cap) }
+fn tap_count_with(sigma: f32, max_taps: usize, t: &Tuning) -> usize {
+    let cap = (max_taps.max(t.taps_min) - 1) / 2 * 2 + 1;
+    let n0 = ((sigma * t.taps_per_sigma + t.taps_offset) as i32 | 1) as usize;
+    if n0 < t.taps_min {
+        t.taps_min
+    } else {
+        n0.min(cap)
+    }
 }
 
-fn kernel_radius(sigma: f32, max_taps: usize) -> usize {
-    tap_count(sigma, max_taps) / 2
+/// [`tap_count_with`] at the shipped constants.
+#[cfg(test)]
+fn tap_count(sigma: f32, max_taps: usize) -> usize {
+    tap_count_with(sigma, max_taps, &Tuning::DEFAULT)
+}
+
+fn kernel_radius(sigma: f32, max_taps: usize, t: &Tuning) -> usize {
+    tap_count_with(sigma, max_taps, t) / 2
+}
+
+/// [`gain_sigma_with`] at the shipped constants.
+#[cfg(test)]
+fn gain_sigma(sigma: f32) -> f32 {
+    gain_sigma_with(sigma, &Tuning::DEFAULT)
 }
 
 /// Sigma of the gain-map smoothing kernel: `max(2 sigma, 1)`.
-fn gain_sigma(sigma: f32) -> f32 {
-    let s2 = sigma + sigma;
-    if s2 <= 1.0 { 1.0 } else { s2 }
+fn gain_sigma_with(sigma: f32, t: &Tuning) -> f32 {
+    let s2 = sigma * t.gain_sigma_multiple;
+    if s2 <= t.gain_sigma_min {
+        t.gain_sigma_min
+    } else {
+        s2
+    }
 }
 
 /// The pixel-integrated Gaussian taps of spec section 2.3 (`f64`, odd count, unit sum): `sigma`
 /// is the standard deviation in pixels, `max_taps` the cap of the mode (13 or 33; any other value
 /// is rounded down to an odd number of at least 3). Exposed so a GPU port can load the same taps.
 pub fn gaussian_kernel(sigma: f32, max_taps: usize) -> Vec<f64> {
-    let n = tap_count(sigma, max_taps);
+    gaussian_kernel_with(sigma, max_taps, &Tuning::DEFAULT)
+}
+
+/// [`gaussian_kernel`] with the tap rule of `tuning`.
+pub fn gaussian_kernel_with(sigma: f32, max_taps: usize, tuning: &Tuning) -> Vec<f64> {
+    let n = tap_count_with(sigma, max_taps, tuning);
     let half = ((n - 1) / 2) as f64;
     let s = f64::from(sigma) * SQRT_2;
     let mut k = vec![0.0f64; n];
@@ -746,7 +1188,8 @@ pub fn gaussian_kernel(sigma: f32, max_taps: usize) -> Vec<f64> {
 
 /// Parameters to stages. Assumes [`OutputSharpen::validate`] passed and `scale` is in (0, 1].
 fn make_plan(p: &OutputSharpen, s: f32) -> SharpenPlan {
-    let max_taps = max_taps(p.mode);
+    let t = &p.tuning;
+    let max_taps = t.max_taps(p.mode);
     let mut stages: Vec<StagePlan> = Vec::new();
     // Raw halo percentages, mapped to fractions below.
     let mut halo_pct: Vec<f32> = Vec::new();
@@ -754,16 +1197,16 @@ fn make_plan(p: &OutputSharpen, s: f32) -> SharpenPlan {
     // The output stage: its method is used as given.
     let r = match p.mode {
         Mode::Print => fmin(
-            p.print_distance / PRINT_DISTANCE_PER_PX,
-            PRINT_RADIUS_CAP_PX,
+            p.print_distance / t.print_distance_per_px,
+            t.print_radius_cap_px,
         ),
-        Mode::Screen => fmin(p.radius_px, SCREEN_RADIUS_CAP_PX),
+        Mode::Screen => fmin(p.radius_px, t.screen_radius_cap_px),
     };
-    let sigma0 = sigma_from_radius(r);
+    let sigma0 = sigma_from_radius_with(r, t);
     let amount = p.amount_pct / 100.0;
     let mut have_output = false;
     if sigma0 >= MIN_SIGMA && amount >= MIN_AMOUNT {
-        let sigma = scale_sigma(sigma0, s);
+        let sigma = scale_sigma_with(sigma0, s, t);
         stages.push(StagePlan {
             method: p.method,
             amount,
@@ -778,13 +1221,13 @@ fn make_plan(p: &OutputSharpen, s: f32) -> SharpenPlan {
 
     // Extra stages (none in Yellowmoon v1).
     for c in &p.extra_stages {
-        let sigma0 = sigma_from_radius(c.radius_px);
-        let sigma = scale_sigma(sigma0, s);
+        let sigma0 = sigma_from_radius_with(c.radius_px, t);
+        let sigma = scale_sigma_with(sigma0, s, t);
         let amount = c.amount_pct / 100.0;
         if sigma >= MIN_SIGMA && amount >= MIN_AMOUNT {
             let threshold = normalise_threshold(c.threshold_levels / 255.0, sigma0, sigma);
             let method = if c.auto_method && c.method == Method::HardThreshold {
-                auto_method(sigma, amount, threshold)
+                auto_method(sigma, amount, threshold, t)
             } else {
                 c.method
             };
@@ -803,7 +1246,7 @@ fn make_plan(p: &OutputSharpen, s: f32) -> SharpenPlan {
     // Halo suppression percentages to fractions.
     let mut halo_enabled = false;
     for (st, &pct) in stages.iter_mut().zip(&halo_pct) {
-        st.halo = halo_fraction(pct);
+        st.halo = halo_fraction_with(pct, t);
         if st.halo > 0.0 {
             halo_enabled = true;
         }
@@ -838,6 +1281,7 @@ fn make_plan(p: &OutputSharpen, s: f32) -> SharpenPlan {
         max_taps,
         halo_enabled,
         halo_tie_tolerance: p.halo_tie_tolerance,
+        tuning: *t,
     }
 }
 
@@ -991,19 +1435,19 @@ fn gain_ratio(p: &[f32], q: &[f32], w: usize, h: usize, k2: &[f64]) -> Vec<f32> 
 }
 
 /// Method 1 gain map: `W1 = blur(|d| max(|d| - T, 0)) / blur(d^2 + eps)`, `T > 0`.
-fn smooth_gain(d: &[f32], w: usize, h: usize, thr: f32, k2: &[f64]) -> Vec<f32> {
+fn smooth_gain(d: &[f32], w: usize, h: usize, thr: f32, k2: &[f64], eps: f32) -> Vec<f32> {
     let mut p = vec![0.0f32; d.len()];
     let mut q = vec![0.0f32; d.len()];
     for ((pv, qv), &v) in p.iter_mut().zip(&mut q).zip(d) {
         let a = v.abs();
         *pv = a * fmax(a - thr, 0.0);
-        *qv = v * v + GAIN_EPSILON;
+        *qv = v * v + eps;
     }
     gain_ratio(&p, &q, w, h, k2)
 }
 
-/// Method 2 gain map: a ramp on the Scharr gradient of the blurred luma `B`,
-/// `W2 = blur(d^2 w) / blur(d^2 + eps)`, `T > 0`.
+/// [`gradient_gain_with`] at the shipped constants.
+#[cfg(test)]
 fn gradient_gain(
     d: &[f32],
     b: &[f32],
@@ -1012,6 +1456,22 @@ fn gradient_gain(
     thr: f32,
     k: &[f64],
     k2: &[f64],
+) -> Vec<f32> {
+    gradient_gain_with(d, b, w, h, thr, k, k2, &Tuning::DEFAULT)
+}
+
+/// Method 2 gain map: a ramp on the Scharr gradient of the blurred luma `B`,
+/// `W2 = blur(d^2 w) / blur(d^2 + eps)`, `T > 0`.
+#[allow(clippy::too_many_arguments)] // the planes, the kernels and the tuned constants of one pass
+fn gradient_gain_with(
+    d: &[f32],
+    b: &[f32],
+    w: usize,
+    h: usize,
+    thr: f32,
+    k: &[f64],
+    k2: &[f64],
+    t: &Tuning,
 ) -> Vec<f32> {
     let c = k.len() / 2;
     let left: f64 = k[..c].iter().sum();
@@ -1024,7 +1484,11 @@ fn gradient_gain(
         0.0
     };
     let g0f = g0 as f32;
-    let inv = if ramp { (0.25 / g0) as f32 } else { 0.0 };
+    let inv = if ramp {
+        (t.ramp_width / g0) as f32
+    } else {
+        0.0
+    };
     let mut p = vec![0.0f32; d.len()];
     let mut q = vec![0.0f32; d.len()];
     for y in 0..h {
@@ -1041,8 +1505,8 @@ fn gradient_gain(
             let (um, u0, up) = (rm[xm], rm[x], rm[xp]);
             let (cm, cp) = (r0[xm], r0[xp]);
             let (dm, d0, dp) = (rp[xm], rp[x], rp[xp]);
-            let gx = (cp - cm) * 0.3125 + (((up + dp) - um) - dm) * 0.09375;
-            let gy = (d0 - u0) * 0.3125 + (((dm + dp) - um) - up) * 0.09375;
+            let gx = (cp - cm) * t.scharr_centre + (((up + dp) - um) - dm) * t.scharr_corner;
+            let gy = (d0 - u0) * t.scharr_centre + (((dm + dp) - um) - up) * t.scharr_corner;
             let wgt = if ramp {
                 let t = inv * ((gx * gx + gy * gy).sqrt() - g0f);
                 fmin(fmax(t, 0.0), 1.0)
@@ -1051,7 +1515,7 @@ fn gradient_gain(
             };
             let v = d[y * w + x];
             p[y * w + x] = v * v * wgt;
-            q[y * w + x] = v * v + GAIN_EPSILON;
+            q[y * w + x] = v * v + t.gain_epsilon;
         }
     }
     gain_ratio(&p, &q, w, h, k2)
@@ -1194,10 +1658,10 @@ fn window_sums<const P: usize>(
 /// while `near <= 0.75 far`, fading linearly to 0 at `near = far`, and with `eps` in the denominator
 /// so that it also fades as both spreads vanish. 0 when `far <= near` or either is NaN.
 #[inline(always)]
-fn pull_weight(near: f64, far: f64, eps: f64) -> f64 {
+fn pull_weight(near: f64, far: f64, eps: f64, pull_fade: f64) -> f64 {
     let inv_n = 1.0f64 / HALO_WINDOW_SAMPLES as f64;
     if far > near {
-        let fade = ((far - near) / (HALO_PULL_FADE * far)).min(1.0);
+        let fade = ((far - near) / (pull_fade * far)).min(1.0);
         fade * far / (near + far * inv_n + eps)
     } else {
         0.0
@@ -1209,7 +1673,7 @@ fn pull_weight(near: f64, far: f64, eps: f64) -> f64 {
 /// `soft` says whether a tolerance is in use; without one the plateau pull switches as in the
 /// reference.
 #[inline(always)]
-fn envelope(ca: f64, sa: f64, sums: [f64; 8], tl: f64, soft: bool) -> [f32; 4] {
+fn envelope(ca: f64, sa: f64, sums: [f64; 8], tl: f64, soft: bool, pull_fade: f64) -> [f32; 4] {
     let inv_n = 1.0f64 / HALO_WINDOW_SAMPLES as f64;
     let inv_r = 1.0f64 / HALO_WINDOW_RADIUS as f64;
     let [n_lo, n_hi, n_slo, n_shi, e_lo, e_hi, e_slo, e_shi] = sums;
@@ -1230,8 +1694,8 @@ fn envelope(ca: f64, sa: f64, sums: [f64; 8], tl: f64, soft: bool) -> [f32; 4] {
         // Continuous: the count condition `n > k_min` ramps over one count, the switch on the
         // spreads fades (`pull_weight`), and `eps` is the spread of one sample `τ` beyond the tie.
         let eps = 2.0 * tl * inv_n * inv_n;
-        let t_hi = (n_hi - rank_min).clamp(0.0, 1.0) * pull_weight(d_hi, d_lo, eps);
-        let t_lo = (n_lo - rank_min).clamp(0.0, 1.0) * pull_weight(d_lo, d_hi, eps);
+        let t_hi = (n_hi - rank_min).clamp(0.0, 1.0) * pull_weight(d_hi, d_lo, eps, pull_fade);
+        let t_lo = (n_lo - rank_min).clamp(0.0, 1.0) * pull_weight(d_lo, d_hi, eps, pull_fade);
         if t_hi > 0.0 {
             v_hi += max_l * t_hi;
             w_hi += t_hi;
@@ -1255,11 +1719,18 @@ fn envelope(ca: f64, sa: f64, sums: [f64; 8], tl: f64, soft: bool) -> [f32; 4] {
     [v_hi as f32, w_hi as f32, v_lo as f32, w_lo as f32]
 }
 
+/// [`halo_maps_with`] at the shipped constants.
+#[cfg(test)]
+fn halo_maps(l: &[f32], s: &[f32], w: usize, h: usize, tie: f32) -> [Vec<f32>; 4] {
+    halo_maps_with(l, s, w, h, tie, &Tuning::DEFAULT)
+}
+
 /// Robust local envelopes of `L` and of `S = L + Hacc` on a 5 x 5 window (spec section 3.5):
 /// returns `(v_hi, w_hi, v_lo, w_lo)`. Sums are taken over differences to the centre value, so a
 /// flat window gives exact zeros; the arithmetic is `f64`. `tie` is the relative tie tolerance.
-fn halo_maps(l: &[f32], s: &[f32], w: usize, h: usize, tie: f32) -> [Vec<f32>; 4] {
+fn halo_maps_with(l: &[f32], s: &[f32], w: usize, h: usize, tie: f32, t: &Tuning) -> [Vec<f32>; 4] {
     const R: usize = HALO_WINDOW_RADIUS;
+    let pull_fade = t.halo_pull_fade;
     let stride = w + 2 * R;
     // Mirrored copies of both planes, so the 25 reads of a pixel never branch.
     let mut lp = vec![0.0f32; stride * h];
@@ -1284,7 +1755,10 @@ fn halo_maps(l: &[f32], s: &[f32], w: usize, h: usize, tie: f32) -> [Vec<f32>; 4
     ];
     let soft = tie > 0.0;
     let mut finish = |o: usize, ca: f64, sa: f64, tl: f64, sums: [f64; 8]| {
-        for (plane, v) in out.iter_mut().zip(envelope(ca, sa, sums, tl, soft)) {
+        for (plane, v) in out
+            .iter_mut()
+            .zip(envelope(ca, sa, sums, tl, soft, pull_fade))
+        {
             plane[o] = v;
         }
     };
@@ -1401,10 +1875,26 @@ fn band_ratio(
         let hp = highpass(luma, w, h, k);
         let d: Vec<f32> = hp.iter().map(|&v| -v).collect(); // d = L - G * L
         let gain: Option<Vec<f32>> = match (st.method, gain_kernel) {
-            (Method::SmoothGain, Some(k2)) => Some(smooth_gain(&d, w, h, st.threshold, k2)),
+            (Method::SmoothGain, Some(k2)) => Some(smooth_gain(
+                &d,
+                w,
+                h,
+                st.threshold,
+                k2,
+                plan.tuning.gain_epsilon,
+            )),
             (Method::GradientRamp, Some(k2)) => {
                 let b: Vec<f32> = luma.iter().zip(&hp).map(|(&l, &v)| l + v).collect(); // G * L
-                Some(gradient_gain(&d, &b, w, h, st.threshold, k, k2))
+                Some(gradient_gain_with(
+                    &d,
+                    &b,
+                    w,
+                    h,
+                    st.threshold,
+                    k,
+                    k2,
+                    &plan.tuning,
+                ))
             }
             _ => None,
         };
@@ -1437,7 +1927,7 @@ fn band_ratio(
     // The halo-map kernel exists exactly when some stage sends part of its delta to the limiter.
     if let Some(kh) = &kernels.halo {
         let s: Vec<f32> = luma.iter().zip(&limited).map(|(&l, &hv)| l + hv).collect();
-        let maps = halo_maps(luma, &s, w, h, plan.halo_tie_tolerance);
+        let maps = halo_maps_with(luma, &s, w, h, plan.halo_tie_tolerance, &plan.tuning);
         drop(s);
         let [b_v_hi, b_w_hi, b_v_lo, b_w_lo] = maps.map(|m| blur(&m, w, h, kh));
         for i in 0..n {
@@ -1447,16 +1937,17 @@ fn band_ratio(
         }
     }
 
+    let (luma_floor, ratio_max) = (plan.tuning.luma_floor, plan.tuning.ratio_max);
     for (row, y) in core.clone().enumerate() {
         let o = &mut out[row * w..(row + 1) * w];
         for (x, r) in o.iter_mut().enumerate() {
             let i = y * w + x;
-            let l = fmax(luma[i], LUMA_FLOOR);
+            let l = fmax(luma[i], luma_floor);
             let lp = luma[i] + free[i];
             let ratio = lp / l;
             // A NaN fails the comparison and gives 0.
             *r = if ratio >= 0.0 {
-                fmin(ratio, RATIO_MAX)
+                fmin(ratio, ratio_max)
             } else {
                 0.0
             };

@@ -131,6 +131,8 @@ Scale-free quantities: the kernel, the box size, the cube exponent, every ratio,
 
 Every constant of this spec has a row, with the ID of `docs/29-raw-constants.md` §2.1 and one status: **Maths** (a mathematical fact or an error budget gives the value, and a test proves it), **Fit** (only image data can choose it; the task that fits it), **Design** (the owner's look, `docs/29` §6) or **Guard** (a numeric safeguard; what it protects). No row names an origin: each stands on the method written in it. The tests are in `crates/ym-gpu/tests/cpu_log_guided.rs`.
 
+**Where each constant lives (`docs/29` RC-03).** The two cubics are `FixedCubics::SHIPPED` and `ORACLE_CUBICS` in `crates/ym-gpu/src/cpu/demosaic/log_guided.rs`, the one home of L1 and L2; the exponent of L3 is the cube of `cube_floor1` and of `shaders/log_guided.wgsl`. There is no `Tuning` struct and no generated shader block (the device uses `log2` and `exp2`). `log_guided::REGISTRY` lists the three rows, and `crates/ym-gpu/tests/constants_registry.rs` holds it to `docs/29` §2.1.
+
 | ID | Constant | Status | Derivation | Proof or task |
 |---|---|---|---|---|
 | L1 | `(46653, 19114, 5229)/32768` (§3.2) | Maths | The integer solution of the objective stated in §3.2 (smallest largest error over every input, anchors exact, at most 23 step-backs), by exhaustive search around the continuous minimax cubic. | `tools/fit/poly_fit.py`; `log2_and_exp2_fixed_meet_their_exhaustive_bounds`, `nothing_beats_the_stored_cubics_by_the_stated_objective_near_them` (RC-01) |
