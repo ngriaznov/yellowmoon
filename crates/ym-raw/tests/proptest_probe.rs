@@ -63,7 +63,7 @@ proptest! {
                 prop_assert!(meta.width > 0 && meta.height > 0);
                 prop_assert!(meta.black.iter().zip(meta.white.iter()).all(|(b, w)| b < w));
             }
-            Err(RawError::NotArw | RawError::Arq | RawError::Corrupt { .. } | RawError::Unsupported { .. }) => {}
+            Err(RawError::NotArw | RawError::Arq | RawError::Corrupt { .. } | RawError::Unsupported { .. } | RawError::UnsupportedDng(_)) => {}
             Err(RawError::Io(e)) => prop_assert!(false, "in-memory probe cannot fail with I/O: {e}"),
         }
     }

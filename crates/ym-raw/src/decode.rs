@@ -179,6 +179,14 @@ pub fn decode_with_metadata(
             white = image.white;
             image.rgb
         }
+        DecodeKind::DngCfa => {
+            layout = meta.layout();
+            crate::dng::decode(source, &meta)?
+        }
+        DecodeKind::DngLinear => {
+            layout = meta.layout();
+            crate::dng::decode(source, &meta)?
+        }
         DecodeKind::Arw6 => {
             #[cfg(feature = "arw6")]
             {

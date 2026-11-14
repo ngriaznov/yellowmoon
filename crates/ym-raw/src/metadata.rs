@@ -323,6 +323,10 @@ pub struct RawMetadata {
     /// Sony's `AFAreaModeSetting` (maker note tag 0x201C), as stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub af_area_setting: Option<u8>,
+    /// The DNG colour data and decoder inputs when the file is a DNG ([`crate::dng`]); `None` for an
+    /// ARW.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dng: Option<crate::dng::DngInfo>,
 }
 
 /// A readable name for the ARW version bytes of maker note tag 0xB000, for example `ARW 2.3.2`
@@ -357,6 +361,10 @@ impl RawMetadata {
     pub fn layout(&self) -> Layout {
         match self.decode {
             DecodeKind::LosslessMS { subsampling } => Layout::Ycbcr { subsampling },
+            // Linear raw is camera RGB already demosaiced, the same shape as Lossless M and S.
+            DecodeKind::DngLinear => Layout::Ycbcr {
+                subsampling: ChromaSubsampling::Yuv444,
+            },
             _ => Layout::Bayer {
                 pattern: self.cfa,
                 active_area: self.active_area,
@@ -394,7 +402,11 @@ pub fn probe_source(source: &dyn ByteSource) -> Result<RawMetadata, RawError> {
         .as_ref()
         .and_then(|entry| makernote::parse(&tiff, entry, is_sony_family(&make, &model)));
 
-    // Files that look like TIFF but are not ARW.
+    // A DNG (a `DNGVersion` in IFD0) is read by its own module; `DNGVersion` anywhere else is a
+    // file that merely looks like TIFF.
+    if crate::dng::is_dng(&nodes) {
+        return crate::dng::probe(&tiff, &nodes);
+    }
     if nodes.iter().any(|n| n.ifd.get(tag::DNG_VERSION).is_some()) {
         return Err(RawError::NotArw);
     }
@@ -569,6 +581,7 @@ pub fn probe_source(source: &dyn ByteSource) -> Result<RawMetadata, RawError> {
         gps: exif.gps,
         focus: maker.as_ref().and_then(|m| m.focus),
         af_area_setting: maker.as_ref().and_then(|m| m.af_area_setting),
+        dng: None,
     };
     quirks::apply(&mut meta);
     Ok(meta)
@@ -617,7 +630,7 @@ pub fn read_preview_from(
 
 /// The parameters of one directory that could hold the raw image.
 #[derive(Clone, Copy, Debug)]
-struct RawIfd {
+pub(crate) struct RawIfd {
     node: usize,
     width: u32,
     height: u32,
@@ -628,6 +641,27 @@ struct RawIfd {
 }
 
 impl RawIfd {
+    /// A description built from already-read tag values (the DNG reader's).
+    pub(crate) fn of(
+        node: usize,
+        width: u32,
+        height: u32,
+        bits: u16,
+        samples: u16,
+        compression: u16,
+        photometric: u16,
+    ) -> Self {
+        Self {
+            node,
+            width,
+            height,
+            bits,
+            samples,
+            compression,
+            photometric,
+        }
+    }
+
     fn pixels(&self) -> u64 {
         u64::from(self.width) * u64::from(self.height)
     }
@@ -826,7 +860,7 @@ fn min_stored_bytes(decode: DecodeKind, compression: u16, pixels: u64) -> Option
 }
 
 /// Reads the strip or tile layout of the raw image and checks it against the file size.
-fn read_storage(tiff: &Tiff, ifd: &Ifd, raw: &RawIfd) -> Result<RawStorage, RawError> {
+pub(crate) fn read_storage(tiff: &Tiff, ifd: &Ifd, raw: &RawIfd) -> Result<RawStorage, RawError> {
     let file_len = tiff.source_len();
     let read = |tag_ref: u16| -> Result<Vec<u64>, RawError> {
         let entry = ifd
@@ -1172,7 +1206,7 @@ fn resolve_levels(
 /// that costs a 33 MP decode, so the choice is the smallest JPEG whose long edge is at least
 /// [`PREVIEW_MIN_LONG_EDGE_PX`] pixels, and when none is that big (or no size can be read) the
 /// largest JPEG. JPEGs coded with a lossless process are never chosen.
-fn find_preview(
+pub(crate) fn find_preview(
     tiff: &Tiff,
     nodes: &[IfdNode],
     maker: Option<&makernote::SonyMakerNote>,

@@ -139,6 +139,58 @@ fn ycbcr_seeds() -> Vec<(String, Vec<u8>)> {
     .collect()
 }
 
+/// Valid synthetic DNGs: a mosaic uncompressed and as tiled lossless JPEG, and linear raw with a
+/// gain map, so the probe and decode targets reach the DNG reader.
+fn dng_seeds() -> Vec<(String, Vec<u8>)> {
+    use ym_raw::dng::{DngKind, GainMap};
+    use ym_raw::testgen::dng::{DngBuilder, DngCompression, DngStorage};
+    let mosaic: Vec<u16> = gradient_mosaic(64, 48, 64, 4000, 21);
+    let mut plain = DngBuilder::new("Acme", "Cam 1", 64, 48);
+    plain.active_area = Some([2, 2, 46, 62]);
+    plain.crop = Some(([1, 1], [40, 30]));
+    let mut jpeg = DngBuilder::new("SONY", "ILCE-7RM4", 64, 48);
+    jpeg.compression = DngCompression::LosslessJpeg {
+        components: 2,
+        predictor: 6,
+    };
+    jpeg.storage = DngStorage::Tiles(32, 16);
+    jpeg.black_repeat = Some((2, 2));
+    jpeg.black = vec![64.0, 65.0, 66.0, 67.0];
+    jpeg.black_delta_h = vec![1.0; 64];
+    jpeg.preview = Some(ym_raw::testgen::tiny_jpeg(16, 16, 2));
+    let mut linear = DngBuilder::new("Acme", "Phone", 32, 24);
+    linear.kind = DngKind::LinearRaw;
+    linear.bits = 16;
+    linear.black = vec![0.0; 3];
+    linear.white = Some(vec![65535; 3]);
+    linear.gain_maps = vec![GainMap {
+        top: 0,
+        left: 0,
+        bottom: 24,
+        right: 32,
+        plane: 0,
+        planes: 3,
+        row_pitch: 1,
+        col_pitch: 1,
+        points_v: 2,
+        points_h: 2,
+        spacing_v: 1.0,
+        spacing_h: 1.0,
+        origin_v: 0.0,
+        origin_h: 0.0,
+        map_planes: 1,
+        gains: vec![1.0, 1.2, 1.1, 1.4],
+    }];
+    vec![
+        ("cfa.dng".to_owned(), plain.build(&mosaic)),
+        ("cfa_ljpeg_tiles.dng".to_owned(), jpeg.build(&mosaic)),
+        (
+            "linear.dng".to_owned(),
+            linear.build(&gradient_rgb(32, 24, 0, 60000, 22)),
+        ),
+    ]
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (dir, fuzz_root) = match &args[..] {
@@ -276,10 +328,11 @@ fn main() {
                 .build(&[]),
         ),
     ];
-    let seeds: Vec<(String, Vec<u8>)> = seeds
+    let mut seeds: Vec<(String, Vec<u8>)> = seeds
         .into_iter()
         .map(|(name, bytes)| (name.to_owned(), bytes))
         .collect();
+    seeds.extend(dng_seeds());
     if let Some(dir) = dir {
         write_all(&dir, &seeds);
     }

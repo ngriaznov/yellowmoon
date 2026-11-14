@@ -23,6 +23,11 @@ pub enum RawError {
     /// A pixel-shift ARQ file (four samples per pixel).
     #[error("Pixel-shift ARQ files aren't supported. Open the individual ARW frames instead.")]
     Arq,
+    /// A DNG that uses something this crate does not read (lossy JPEG, JPEG XL, Deflate, float
+    /// samples, a colour filter that is not 2 x 2 Bayer, ...). The picture is refused, never
+    /// guessed at ([`DngRefusal`]).
+    #[error("{}", .0.message())]
+    UnsupportedDng(DngRefusal),
     /// The file is truncated or malformed.
     ///
     /// `Display` prints one of three catalogue sentences ([`MESSAGE_EMPTY`], [`MESSAGE_CUT_SHORT`],
@@ -36,6 +41,66 @@ pub enum RawError {
     /// the error kind; the underlying error stays available as the source.
     #[error("{}", io_message(.0))]
     Io(#[source] std::io::Error),
+}
+
+/// What a DNG uses that Yellowmoon does not read. Each variant has one plain sentence
+/// ([`DngRefusal::message`]) that says what the file uses and what to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DngRefusal {
+    /// Compression 34892, lossy JPEG.
+    LossyJpeg,
+    /// Compression 52546, JPEG XL.
+    JpegXl,
+    /// Compression 8 or 32946, Deflate.
+    Deflate,
+    /// Another compression value.
+    Compression(u16),
+    /// Floating-point or signed samples (`SampleFormat` other than 1).
+    FloatData,
+    /// A colour filter array that is not a 2 x 2 Bayer pattern (X-Trans, four colours, staggered
+    /// layouts).
+    NotBayer,
+    /// Samples per pixel, bit depth or planar layout outside 1 sample at 8 to 16 bits (a mosaic)
+    /// or 3 interleaved samples at 8 to 16 bits (linear raw).
+    SampleLayout,
+    /// A `DefaultScale` other than 1 : 1.
+    Scaled,
+    /// The DNG holds a developed picture and no raw data (an RGB or YCbCr DNG).
+    NotRaw,
+    /// A mandatory opcode in `OpcodeList2` other than the gain map (the number is the opcode ID).
+    Opcode(u32),
+    /// A DNG whose backward version is newer than 1.7.
+    NewerVersion,
+}
+
+impl DngRefusal {
+    /// The sentence the person sees.
+    pub fn message(&self) -> String {
+        const AGAIN: &str = "Export it again from the camera or converter without it.";
+        match self {
+            Self::LossyJpeg => {
+                format!("This DNG uses lossy JPEG compression, which Yellowmoon can't read. {AGAIN}")
+            }
+            Self::JpegXl => {
+                format!("This DNG uses JPEG XL compression, which Yellowmoon can't read. {AGAIN}")
+            }
+            Self::Deflate => {
+                format!("This DNG uses Deflate compression, which Yellowmoon can't read. {AGAIN}")
+            }
+            Self::Compression(code) => format!(
+                "This DNG uses a compression Yellowmoon can't read (code {code}). {AGAIN}"
+            ),
+            Self::FloatData => "This DNG stores floating-point or signed samples, which Yellowmoon can't read. Export it again from the camera or converter as plain integer data.".to_owned(),
+            Self::NotBayer => "This DNG's colour filter isn't a 2 by 2 Bayer pattern, which Yellowmoon can't read. Export it again from the converter as a linear DNG.".to_owned(),
+            Self::SampleLayout => "This DNG stores its pixels in a layout Yellowmoon can't read. Export it again from the camera or converter as a standard DNG.".to_owned(),
+            Self::Scaled => "This DNG asks for non-square pixels, which Yellowmoon can't read. Export it again from the converter at its normal size.".to_owned(),
+            Self::NotRaw => "This DNG holds a developed picture, not raw sensor data. Open the camera's original raw file instead.".to_owned(),
+            Self::Opcode(id) => format!(
+                "This DNG asks for a correction (opcode {id}) that Yellowmoon can't apply. {AGAIN}"
+            ),
+            Self::NewerVersion => "This DNG is from a newer version of the format than Yellowmoon reads. Export it again from the converter as a standard DNG.".to_owned(),
+        }
+    }
 }
 
 /// The `detail` of a [`RawError::Corrupt`] for a file of length 0.
@@ -108,7 +173,7 @@ impl RawError {
     /// (`unsupported`, `not_arw`, `arq`, `corrupt` or `io`).
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::Unsupported { .. } => "unsupported",
+            Self::Unsupported { .. } | Self::UnsupportedDng(_) => "unsupported",
             Self::NotArw => "not_arw",
             Self::Arq => "arq",
             Self::Corrupt { .. } => "corrupt",

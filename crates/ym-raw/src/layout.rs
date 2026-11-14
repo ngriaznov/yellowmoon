@@ -316,6 +316,13 @@ pub enum DecodeKind {
     Arw1,
     /// ARW 6.0 "Compressed RAW 2" (compression 32766), the A7 V and A7R VI lossy wavelet codec.
     Arw6,
+    /// A DNG with a colour filter array mosaic (one sample per photosite, 2 x 2 Bayer), stored
+    /// uncompressed or as lossless JPEG. Read by [`crate::dng`].
+    DngCfa,
+    /// A DNG with linear raw data: three samples per pixel, already demosaiced camera RGB, stored
+    /// uncompressed or as lossless JPEG. Read by [`crate::dng`]; it takes the same path as Lossless
+    /// M and S ([`Layout::Ycbcr`]) because it is not a mosaic.
+    DngLinear,
     /// A raw layout this crate recognises as a Sony raw file but cannot classify (for example the
     /// A100's ARW 1 Huffman coding).
     Unknown {
@@ -337,6 +344,8 @@ impl DecodeKind {
             Self::LosslessL => "Lossless L".to_owned(),
             Self::LosslessMS { .. } => "Lossless M or S".to_owned(),
             Self::Arw6 => "ARW 6.0 compressed".to_owned(),
+            Self::DngCfa => "DNG".to_owned(),
+            Self::DngLinear => "DNG (linear)".to_owned(),
             Self::Unknown { compression, bits } => {
                 format!("unrecognised (compression {compression}, {bits} bits)")
             }
@@ -344,7 +353,7 @@ impl DecodeKind {
     }
 
     /// A short stable identifier for JSON output: `uncompressed12`, `uncompressed14`, `craw`,
-    /// `arw1`, `lossless_l`, `lossless_ms`, `arw6` or `unknown`.
+    /// `arw1`, `lossless_l`, `lossless_ms`, `arw6`, `dng`, `dng_linear` or `unknown`.
     pub fn id(&self) -> &'static str {
         match self {
             Self::Uncompressed12 => "uncompressed12",
@@ -354,6 +363,8 @@ impl DecodeKind {
             Self::LosslessL => "lossless_l",
             Self::LosslessMS { .. } => "lossless_ms",
             Self::Arw6 => "arw6",
+            Self::DngCfa => "dng",
+            Self::DngLinear => "dng_linear",
             Self::Unknown { .. } => "unknown",
         }
     }

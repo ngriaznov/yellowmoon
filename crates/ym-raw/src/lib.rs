@@ -1,4 +1,4 @@
-//! Sony ARW decoding: our own Apache-2.0 decoder.
+//! Sony ARW and DNG decoding: our own Apache-2.0 decoder.
 //!
 //! Walks the TIFF container, reads EXIF, the Sony maker note and the enciphered SR2 private data,
 //! and decodes every raw variant (uncompressed, cRAW, lossless L, the reduced M/S path and, behind
@@ -11,6 +11,8 @@
 #![warn(missing_docs)]
 
 pub mod decode;
+pub mod dng;
+pub mod dng_color;
 pub mod error;
 pub mod exif;
 pub mod layout;
