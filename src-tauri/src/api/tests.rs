@@ -6075,3 +6075,265 @@ fn a_damaged_folder_opens_and_the_export_writes_every_photo_that_opened() {
         );
     }
 }
+
+// --- Presets (`docs/30` section 8) ------------------------------------------------------------
+
+fn warm_edit() -> SettingsPatch {
+    serde_json::from_value(field_patch(json!({
+        "exposure": { "kind": "manual", "ev": 0.5 },
+        "contrast": 30
+    })))
+    .expect("patch")
+}
+
+#[test]
+fn a_preset_is_saved_listed_applied_and_removed_with_its_events() {
+    let h = Harness::new();
+    h.open(2);
+    let ids: Vec<_> = h.develop().photos.iter().map(|p| p.id).collect();
+    h.api.update_settings(ids[0], &warm_edit()).expect("edit");
+    let before = h.events.events().len();
+
+    let source = PresetSource::Photo { photo_id: ids[0] };
+    let inspect = h.api.preset_inspect(&source).expect("inspect");
+    assert!(!inspect.changed.is_empty());
+    let entry = h
+        .api
+        .preset_save("Warm evening", &inspect.changed, &source, false)
+        .expect("save");
+    assert_eq!(entry.name, "Warm evening");
+    assert_eq!(entry.revision.len(), 12);
+    let events = h.events.events();
+    assert!(
+        events[before..].contains(&AppEvent::PresetsChanged),
+        "presets_changed after a save"
+    );
+    // The same name is refused without `replace`, with the sentence of the spec, scope `presets`.
+    let again = h
+        .api
+        .preset_save("warm evening", &inspect.changed, &source, false)
+        .expect_err("exists");
+    assert_eq!(again.scope, ErrorScope::Presets);
+    assert!(again.message.contains("already exists"), "{}", again.message);
+
+    let listing = h.api.presets_list(Some(ids[0])).expect("list");
+    assert_eq!(listing.presets.len(), 1);
+    assert!(listing.presets[0].matches, "the photo it was made from matches");
+    assert!(!h.api.presets_list(Some(ids[1])).expect("list").presets[0].matches);
+    assert!(!h.api.presets_list(None).expect("list").presets[0].matches);
+    assert!(std::path::Path::new(&listing.folder).ends_with("presets"));
+
+    // Applying is a paste: every photo that changed is announced once, the answer carries the undo steps.
+    let n = h.events.events().len();
+    let report = h
+        .api
+        .preset_apply("Warm evening", &[ids[1], PhotoId(9999)])
+        .expect("apply");
+    assert_eq!(report.skipped, [PhotoId(9999)]);
+    assert_eq!(report.pasted.len(), 1);
+    assert_eq!(report.missing_look, None);
+    let r = h.api.get_settings(ids[1]).expect("settings");
+    assert_eq!(r.values.main.grade.contrast.0, 30.0);
+    assert_eq!(
+        h.events.events()[n..]
+            .iter()
+            .filter(|e| **e == AppEvent::SettingsChanged(ids[1]))
+            .count(),
+        1
+    );
+    assert!(h.api.presets_list(Some(ids[1])).expect("list").presets[0].matches);
+    let gone = h.api.preset_apply("Nope", &[ids[1]]).expect_err("gone");
+    assert_eq!(gone.scope, ErrorScope::Presets);
+
+    // Rename and reveal.
+    let renamed = h.api.preset_rename("Warm evening", "Warm night").expect("rename");
+    assert_eq!(renamed.name, "Warm night");
+    let file = h.api.preset_reveal_path("Warm night").expect("path");
+    assert!(file.is_file());
+    assert_eq!(
+        h.api.preset_reveal_path("Warm evening").expect_err("gone").scope,
+        ErrorScope::Presets
+    );
+    assert!(h.api.presets_folder().expect("folder").is_dir());
+}
+
+#[test]
+fn a_preset_is_exported_and_imported_again() {
+    let h = Harness::new();
+    h.open(1);
+    let id = h.develop().photos[0].id;
+    h.api.update_settings(id, &warm_edit()).expect("edit");
+    let source = PresetSource::Photo { photo_id: id };
+    let groups = h.api.preset_inspect(&source).expect("inspect").changed;
+    h.api.preset_save("Warm", &groups, &source, false).expect("save");
+
+    let out = h.home.path().join("Warm.ympreset");
+    h.api.preset_export("Warm", &out).expect("export");
+    assert!(out.is_file());
+    // The preset is still there, so the import finds its name taken and does not replace it.
+    let result = h
+        .api
+        .presets_import(&[out.to_string_lossy().into_owned()], false)
+        .expect("import");
+    assert!(result.added.is_empty() && result.replaced.is_empty(), "{result:?}");
+    assert_eq!(result.exists.len(), 1, "{result:?}");
+    let replaced = h
+        .api
+        .presets_import(&[out.to_string_lossy().into_owned()], true)
+        .expect("import");
+    assert_eq!(replaced.replaced, ["Warm"]);
+    let bad = h.home.path().join("Bad.ympreset");
+    std::fs::write(&bad, b"not json").expect("write");
+    let result = h
+        .api
+        .presets_import(&[bad.to_string_lossy().into_owned()], false)
+        .expect("import");
+    assert_eq!(result.refused.len(), 1);
+}
+
+#[test]
+fn a_preset_tile_is_a_png_on_the_frame_scheme_and_rejects_a_gone_preset() {
+    let h = Harness::new();
+    h.open(1);
+    let id = h.develop().photos[0].id;
+    h.api.update_settings(id, &warm_edit()).expect("edit");
+    let source = PresetSource::Photo { photo_id: id };
+    let groups = h.api.preset_inspect(&source).expect("inspect").changed;
+    h.api.preset_save("Warm", &groups, &source, false).expect("save");
+
+    let url = h.api.preset_thumbnail(id, "Warm").expect("tile");
+    assert!(url.contains("/look-"), "{url}");
+    let (_, path) = url.split_once("localhost/").expect("address");
+    let served = h.frames.serve(&format!("/{path}"));
+    assert_eq!(served.status, 200);
+    let (w, hgt) = png_size(&served.body);
+    assert!(w.max(hgt) <= 240, "{w}x{hgt}");
+    // A new address for each request, like a look tile.
+    assert_ne!(url, h.api.preset_thumbnail(id, "Warm").expect("tile"));
+    let err = h.api.preset_thumbnail(id, "Gone").expect_err("gone");
+    assert_eq!(err.scope, ErrorScope::Presets);
+    // The tiles go with the session.
+    h.api.close_session();
+    assert_eq!(h.frames.serve(&format!("/{path}")).status, 404);
+}
+
+// --- Albums (`docs/31` section 7) -------------------------------------------------------------
+
+#[test]
+fn an_album_is_saved_in_place_and_as_new_and_opened_again() {
+    let h = Harness::new();
+    h.open(3);
+    let ids: Vec<_> = h.develop().photos.iter().map(|p| p.id).collect();
+    assert_eq!(h.api.session_state().expect("state").album, None);
+    assert_eq!(h.api.album_state().expect("state"), None);
+    let (folder, name) = h.api.album_save_defaults();
+    assert_eq!(folder.as_deref(), Some(h.photos.path()));
+    assert!(name.ends_with(".ymalbum") && name.len() > ".ymalbum".len(), "{name}");
+
+    let dir = tempfile::tempdir().expect("dir");
+    let file = dir.path().join("Lisbon.ymalbum");
+    h.api.update_settings(ids[0], &warm_edit()).expect("edit");
+    let n = h.events.events().len();
+    let saved = h.api.album_save(&file).expect("save");
+    assert_eq!(saved.name, "Lisbon");
+    assert_eq!(saved.path, file.to_string_lossy());
+    assert!(file.is_file());
+    wait_until("album_changed", || {
+        h.events.events()[n..].contains(&AppEvent::AlbumChanged)
+    });
+    let state = h.api.session_state().expect("state").album.expect("album");
+    assert_eq!(
+        (state.name.as_str(), state.edited),
+        ("Lisbon", false),
+        "saving clears the edited state"
+    );
+    // Save As… starts where the album is, with its name.
+    let (folder, name) = h.api.album_save_defaults();
+    assert_eq!(folder.as_deref(), Some(dir.path()));
+    assert_eq!(name, "Lisbon.ymalbum");
+
+    // A change makes it edited, and says so once.
+    let n = h.events.events().len();
+    h.api.set_picked(ids[1], true).expect("pick");
+    wait_until("the album to be edited", || {
+        h.api.album_state().is_ok_and(|a| a.is_some_and(|a| a.edited))
+    });
+    assert!(h.events.events()[n..].contains(&AppEvent::AlbumChanged));
+    assert!(crate::album::edited_album(&h.api).is_some());
+
+    // Saved as a new file, the album is that file.
+    let second = dir.path().join("Porto.ymalbum");
+    h.api.album_save(&second).expect("save as");
+    let state = h.api.album_state().expect("state").expect("album");
+    assert_eq!((state.name.as_str(), state.edited), ("Porto", false));
+
+    // Opening it replaces the session: the same photos in the same order, with the edit and the pick.
+    let opened = h.api.album_open(&file.to_string_lossy()).expect("open");
+    assert_eq!(opened.photos.len(), 3);
+    assert_eq!(opened.album.as_ref().map(|a| a.name.as_str()), Some("Lisbon"));
+    assert_eq!(opened.opened.map(|o| o.added), Some(3));
+    let h_ids: Vec<_> = h.develop().photos.iter().map(|p| p.id).collect();
+    assert_eq!(h.api.get_settings(h_ids[0]).expect("settings").values.main.grade.contrast.0, 30.0);
+}
+
+#[test]
+fn a_refused_album_leaves_the_session_and_says_why() {
+    let h = Harness::new();
+    h.open(2);
+    h.develop();
+    let dir = tempfile::tempdir().expect("dir");
+    let bad = dir.path().join("Bad.ymalbum");
+    std::fs::write(&bad, b"{ \"nope\": true }").expect("write");
+    let err = h.api.album_open(&bad.to_string_lossy()).expect_err("refused");
+    assert_eq!(err.scope, ErrorScope::Album);
+    assert_eq!(h.api.session_state().expect("state").photos.len(), 2, "the session stays");
+    let missing = h.api.album_open(&dir.path().join("none.ymalbum").to_string_lossy());
+    assert_eq!(missing.expect_err("missing").scope, ErrorScope::Album);
+}
+
+#[test]
+fn an_album_is_opened_on_its_own_and_open_paths_routes_it() {
+    let h = Harness::new();
+    h.open(1);
+    h.develop();
+    let dir = tempfile::tempdir().expect("dir");
+    let file = dir.path().join("Lisbon.ymalbum");
+    h.api.album_save(&file).expect("save");
+    let album = file.to_string_lossy().into_owned();
+    let photo = h.photos.path().join("DSC00001.ARW").to_string_lossy().into_owned();
+
+    let mixed = h
+        .api
+        .open_paths(&[album.clone(), photo.clone()])
+        .expect_err("mixed");
+    assert_eq!(
+        mixed.message,
+        "Open an album on its own, or open photos. Yellowmoon can't open both in one go."
+    );
+    assert_eq!(mixed.scope, ErrorScope::Album);
+    let two = h
+        .api
+        .open_paths(&[album.clone(), album.clone()])
+        .expect_err("two");
+    assert_eq!(two.message, "Open one album at a time.");
+    assert_eq!(h.api.session_state().expect("state").photos.len(), 1, "nothing was opened");
+
+    let state = h.api.open_paths(&[album]).expect("an album on its own");
+    assert_eq!(state.album.as_ref().map(|a| a.name.as_str()), Some("Lisbon"));
+}
+
+#[test]
+fn closing_the_session_ends_the_album() {
+    let h = Harness::new();
+    h.open(1);
+    h.develop();
+    let dir = tempfile::tempdir().expect("dir");
+    h.api.album_save(&dir.path().join("Lisbon.ymalbum")).expect("save");
+    assert!(h.api.album_state().expect("state").is_some());
+    let n = h.events.events().len();
+    h.api.close_session();
+    assert_eq!(h.api.album_state().expect("state"), None);
+    wait_until("album_changed", || {
+        h.events.events()[n..].contains(&AppEvent::AlbumChanged)
+    });
+}

@@ -16,12 +16,14 @@ use tauri_specta::{Builder, collect_commands, collect_events};
 use crate::api::AppApi;
 use crate::system;
 use crate::wire::{
-    self, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
+    self, AlbumSaved, AlbumState, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
     CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthFar, ErrorScope, ExportEstimate,
-    ExportJob, ExportJobId, FilmCatalogue, FocusPlaneResult, HistogramData, LensInfo, Look, LookId,
+    ExportJob, ExportJobId, FilmCatalogue, FocusPlaneResult, HistogramData, ImportResult, LensInfo, Look,
+    LookId,
     LookInput, LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView,
     MenuState, NodeId, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample, Preferences,
-    PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
+    PreferencesPatch, PresetApplyReport, PresetEntry, PresetExported, PresetGroup, PresetInspect,
+    PresetsListing, PresetSource, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
     SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
     WatchStatus,
 };
@@ -79,7 +81,9 @@ pub async fn open_paths(
 }
 
 /// `open_dialog(kind)`: asks for files or a folder with the system's dialog, then opens them.
-/// `null` when the dialog is cancelled.
+/// `null` when the dialog is cancelled, or when an album is chosen while the open one has unsaved changes and the person answers
+/// Cancel to "Save changes to the album …?" (`docs/31` section 4). The files dialog has one filter, "Photos and albums" (`arw`, `ARW`,
+/// `ymalbum`): an album chosen opens as an album, on its own.
 #[tauri::command]
 #[specta::specta]
 pub async fn open_dialog(
@@ -94,7 +98,7 @@ pub async fn open_dialog(
             .open
             .map(PathBuf::from);
         let mut dialog = app.dialog().file().set_title(match kind {
-            OpenKind::Files => "Open ARW files",
+            OpenKind::Files => "Open photos or an album",
             OpenKind::Folder => "Open a folder of ARW files",
         });
         if let Some(dir) = start.filter(|d| d.is_dir()) {
@@ -102,7 +106,7 @@ pub async fn open_dialog(
         }
         let paths: Vec<String> = match kind {
             OpenKind::Files => dialog
-                .add_filter("Sony ARW", &["arw", "ARW"])
+                .add_filter(crate::album::OPEN_FILTER_NAME, &crate::album::OPEN_FILTER_EXTENSIONS)
                 .blocking_pick_files()
                 .unwrap_or_default()
                 .into_iter()
@@ -116,6 +120,11 @@ pub async fn open_dialog(
                 .unwrap_or_default(),
         };
         if paths.is_empty() {
+            return Ok(None);
+        }
+        // An album replaces the session: the open one's unsaved changes are asked about first. A refusal (two albums, an album with
+        // photos) is the same sentence whether or not the question was needed, so it comes first.
+        if crate::album::is_album_choice(&paths)? && !crate::album::confirm_close(&app, &api)? {
             return Ok(None);
         }
         api.open_paths(&paths).map(Some)
@@ -281,7 +290,13 @@ pub async fn paste_settings(
 #[tauri::command]
 #[specta::specta]
 pub fn set_menu_state(app: AppHandle, state: MenuState) -> Result<(), AppError> {
-    crate::menu::apply_state(&app, &state).map_err(AppError::internal)
+    crate::menu::apply_state(&app, &state).map_err(AppError::internal)?;
+    // The ticks of Apply Preset are about the current photo: made again when the item is switched on, which the page does for each
+    // developed photo it comes to (the first listing is made then too).
+    if state.apply_preset {
+        crate::menu::refresh_presets(&app);
+    }
+    Ok(())
 }
 
 /// `histogram(photo_id, at)`: the RGB histogram of the signal at a node (`docs/01`): the input of
@@ -515,6 +530,193 @@ pub async fn look_thumbnail(
     look_id: LookId,
 ) -> Result<String, AppError> {
     run(&state, move |api| api.look_thumbnail(photo_id, &look_id)).await
+}
+
+// --- Albums (`docs/31`) -----------------------------------------------------------------------
+
+/// `album_open(path)`: opens an album, replacing the session. The question about the open album's unsaved changes is the page's,
+/// before this call (for Close Session and a drop); `open_dialog` asks it itself.
+#[tauri::command]
+#[specta::specta]
+pub async fn album_open(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<SessionState, AppError> {
+    run(&state, move |api| api.album_open(&path)).await
+}
+
+/// `album_save(as_new)`: writes the session as an album. With `as_new`, or when there is no album file yet, the system's save panel
+/// asks where first (`Lisbon.ymalbum`, in the first photo's folder; Save As starts in the album's folder with its name); otherwise
+/// it writes in place with no question. `null` when the person cancels the panel.
+#[tauri::command]
+#[specta::specta]
+pub async fn album_save(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    as_new: bool,
+) -> Result<Option<AlbumSaved>, AppError> {
+    run(&state, move |api| crate::album::save(&app, &api, as_new)).await
+}
+
+/// `album_state()`: the open album, or `null`.
+#[tauri::command]
+#[specta::specta]
+pub async fn album_state(state: State<'_, AppState>) -> Result<Option<AlbumState>, AppError> {
+    run(&state, |api| api.album_state()).await
+}
+
+// --- Presets (`docs/30`) ----------------------------------------------------------------------
+
+/// `presets_list(photo_id)`: the presets, the damaged files and the folder; `photo_id` (or `null`) is the photo `matches` is about.
+#[tauri::command]
+#[specta::specta]
+pub async fn presets_list(
+    state: State<'_, AppState>,
+    photo_id: Option<PhotoId>,
+) -> Result<PresetsListing, AppError> {
+    run(&state, move |api| api.presets_list(photo_id)).await
+}
+
+/// `preset_inspect(source)`: the groups the Save dialog ticks.
+#[tauri::command]
+#[specta::specta]
+pub async fn preset_inspect(
+    state: State<'_, AppState>,
+    source: PresetSource,
+) -> Result<PresetInspect, AppError> {
+    run(&state, move |api| api.preset_inspect(&source)).await
+}
+
+/// `preset_save(name, groups, source, replace)`: makes the preset from a photo or a settings file and writes it.
+#[tauri::command]
+#[specta::specta]
+pub async fn preset_save(
+    state: State<'_, AppState>,
+    name: String,
+    groups: Vec<PresetGroup>,
+    source: PresetSource,
+    replace: bool,
+) -> Result<PresetEntry, AppError> {
+    run(&state, move |api| {
+        api.preset_save(&name, &groups, &source, replace)
+    })
+    .await
+}
+
+/// `preset_update(name, photo_id)`: the photo's values again for the preset's own groups.
+#[tauri::command]
+#[specta::specta]
+pub async fn preset_update(
+    state: State<'_, AppState>,
+    name: String,
+    photo_id: PhotoId,
+) -> Result<PresetEntry, AppError> {
+    run(&state, move |api| api.preset_update(&name, photo_id)).await
+}
+
+/// `preset_rename(name, new_name)`.
+#[tauri::command]
+#[specta::specta]
+pub async fn preset_rename(
+    state: State<'_, AppState>,
+    name: String,
+    new_name: String,
+) -> Result<PresetEntry, AppError> {
+    run(&state, move |api| api.preset_rename(&name, &new_name)).await
+}
+
+/// `preset_apply(name, photo_ids)`: applies a preset to photos as a paste does.
+#[tauri::command]
+#[specta::specta]
+pub async fn preset_apply(
+    state: State<'_, AppState>,
+    name: String,
+    photo_ids: Vec<PhotoId>,
+) -> Result<PresetApplyReport, AppError> {
+    run(&state, move |api| api.preset_apply(&name, &photo_ids)).await
+}
+
+/// `preset_remove(name)`: the file to the Trash.
+#[tauri::command]
+#[specta::specta]
+pub async fn preset_remove(state: State<'_, AppState>, name: String) -> Result<(), AppError> {
+    run(&state, move |api| api.preset_remove(&name)).await
+}
+
+/// `preset_remove_file(file)`: a damaged file to the Trash, by its file name.
+#[tauri::command]
+#[specta::specta]
+pub async fn preset_remove_file(
+    state: State<'_, AppState>,
+    file: String,
+) -> Result<(), AppError> {
+    run(&state, move |api| api.preset_remove_file(&file)).await
+}
+
+/// `preset_export(name)`: the system's save panel (suggested name `Warm evening.ympreset`) and the file written there. `null` when
+/// the person cancels.
+#[tauri::command]
+#[specta::specta]
+pub async fn preset_export(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<Option<PresetExported>, AppError> {
+    run(&state, move |api| crate::album::export_preset(&app, &api, &name)).await
+}
+
+/// `preset_choose_export()` (addition, for New Preset from Exported Photo…, `docs/30` section 12): the system's open panel for a photo
+/// Yellowmoon exported. The path, or `null` when cancelled; the page reads it with `preset_inspect({ kind: "file", path })`.
+#[tauri::command]
+#[specta::specta]
+pub async fn preset_choose_export(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, AppError> {
+    run(&state, move |_| Ok(crate::album::choose_exported_photo(&app))).await
+}
+
+/// `presets_import_dialog()`: the system's open panel for `.ympreset` files (several), then the import. `null` when cancelled.
+#[tauri::command]
+#[specta::specta]
+pub async fn presets_import_dialog(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<ImportResult>, AppError> {
+    run(&state, move |api| crate::album::import_presets_dialog(&app, &api)).await
+}
+
+/// `presets_import(paths, replace)`: for dropped files, and for Replace after the question.
+#[tauri::command]
+#[specta::specta]
+pub async fn presets_import(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    replace: bool,
+) -> Result<ImportResult, AppError> {
+    run(&state, move |api| api.presets_import(&paths, replace)).await
+}
+
+/// `preset_reveal(name)`: shows the preset's file in Finder.
+#[tauri::command]
+#[specta::specta]
+pub async fn preset_reveal(state: State<'_, AppState>, name: String) -> Result<(), AppError> {
+    run(&state, move |api| {
+        system::reveal_in_finder(&api.preset_reveal_path(&name)?)
+    })
+    .await
+}
+
+/// `preset_thumbnail(photo_id, name)`: the photo with the preset applied. The answer is the address of a PNG of at most 240 px on the
+/// `ym-frame` scheme, like `look_thumbnail`'s; rejects with scope `presets` when the preset is gone.
+#[tauri::command]
+#[specta::specta]
+pub async fn preset_thumbnail(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+    name: String,
+) -> Result<String, AppError> {
+    run(&state, move |api| api.preset_thumbnail(photo_id, &name)).await
 }
 
 /// `film_catalogue()` (`docs/24` section 4.1): the camera films and papers the Film node's pickers list, from `names.json`, with the
@@ -887,6 +1089,23 @@ pub fn builder() -> Builder<tauri::Wry> {
             lens_list,
             looks_list,
             look_thumbnail,
+            album_open,
+            album_save,
+            album_state,
+            presets_list,
+            preset_inspect,
+            preset_save,
+            preset_update,
+            preset_rename,
+            preset_apply,
+            preset_remove,
+            preset_remove_file,
+            preset_export,
+            presets_import_dialog,
+            preset_choose_export,
+            presets_import,
+            preset_reveal,
+            preset_thumbnail,
             film_catalogue,
             film_tile,
             node_thumbnails,
@@ -924,6 +1143,8 @@ pub fn builder() -> Builder<tauri::Wry> {
             wire::RenderStats,
             wire::ExportProgress,
             wire::LooksChanged,
+            wire::PresetsChanged,
+            wire::AlbumChanged,
             wire::AutoStatusChanged,
             wire::UpdateState,
             wire::ErrorEvent,
@@ -1047,7 +1268,7 @@ mod tests {
         let empty = call(&window, "session_state", json!({})).expect("session_state");
         assert_eq!(
             empty,
-            json!({ "folder_name": null, "photos": [], "current_index": null, "picked": [], "default_export_folder": null, "opened": null })
+            json!({ "folder_name": null, "photos": [], "current_index": null, "picked": [], "default_export_folder": null, "opened": null, "album": null })
         );
         assert_eq!(
             call(&window, "viewport_info", json!({})),

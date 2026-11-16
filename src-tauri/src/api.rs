@@ -34,13 +34,14 @@ use crate::node_thumbs::NodeThumbnailer;
 use crate::thumbs::Thumbnails;
 use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
-    AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
+    AlbumSaved, AlbumState, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
     CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthFar, DepthState, ErrorScope,
     ExportEstimate, ExportJob, ExportJobId, FocusPlaneResult, FocusReason, HistogramData, LensInfo,
     Look, LookId, LookInput, LooksImportProgress, LooksImportResult, MapFrom, MaskFindPrompt,
     MaskFindResult, MaskKind, MaskView, MemoryNotice, NodeId, Num, ObjectState, OpenProgress,
     OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample, Preferences,
-    PreferencesPatch, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
+    PreferencesPatch, PresetApplyReport, PresetEntry, PresetGroup, PresetInspect, PresetsListing,
+    PresetSource, ImportResult, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
     SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
     VisionState, WatchStatus, convert,
 };
@@ -197,6 +198,29 @@ fn look_id(id: &LookId) -> Result<CoreLookId, AppError> {
     })
 }
 
+/// The album among `paths`, when one is there: an album is opened on its own (`docs/31` section 4.8), so another album or any
+/// other path with it is refused in words.
+pub(crate) fn album_in(paths: &[String]) -> Result<Option<String>, AppError> {
+    let is_album = |p: &&String| {
+        Path::new(p.as_str())
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("ymalbum"))
+    };
+    let albums: Vec<&String> = paths.iter().filter(is_album).collect();
+    match albums.as_slice() {
+        [] => Ok(None),
+        [album] if paths.len() == 1 => Ok(Some((*album).clone())),
+        [_] => Err(AppError::new(
+            ErrorScope::Album,
+            "Open an album on its own, or open photos. Yellowmoon can't open both in one go.",
+        )),
+        _ => Err(AppError::new(
+            ErrorScope::Album,
+            "Open one album at a time.",
+        )),
+    }
+}
+
 /// The fields of a patch that change what a thumbnail shows.
 fn touches_thumbnail(patch: &SettingsPatch) -> bool {
     patch.nodes.values().any(|node| {
@@ -305,6 +329,18 @@ impl AppApi {
                 emitter.emit(AppEvent::LooksChanged);
                 shared.invalidate();
             });
+        }
+        {
+            // The presets folder changed (`docs/30` section 8). It runs on the thread that changed it, so it only sends the event;
+            // the shell rebuilds Looks › Apply Preset from it (`crate::menu::refresh_presets`).
+            let emitter = Arc::clone(&emitter);
+            core.on_presets_changed(move || emitter.emit(AppEvent::PresetsChanged));
+        }
+        {
+            // The open album became edited, was saved, opened or closed (`docs/31` section 6). The emitter sets the window's title
+            // and edited dot before it tells the page.
+            let emitter = Arc::clone(&emitter);
+            core.on_album_changed(move || emitter.emit(AppEvent::AlbumChanged));
         }
         {
             // A provider's availability changed (a program found, signed in or out, a probe ended):
@@ -466,6 +502,10 @@ impl AppApi {
     /// "Yellowmoon can't read the folder {name}. …" when a folder could not be read (`docs/26`
     /// H-02), or when what was given is not there.
     pub fn open_paths(&self, paths: &[String]) -> Result<SessionState, AppError> {
+        // An album given to `open_paths` (a drop that the page did not route) opens as an album, on its own (`docs/31` section 4).
+        if let Some(album) = album_in(paths)? {
+            return self.album_open(&album);
+        }
         let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
         // Progress goes out as `open_progress` (at most one event per 50 files), so a long read of a
         // folder of thousands shows "Reading {done} of {total} files…" and can be cancelled.
@@ -539,7 +579,9 @@ impl AppApi {
     ///
     /// [`AppError`] only if the shapes of the core and of the bridge disagree (a bug).
     pub fn session_state(&self) -> Result<SessionState, AppError> {
-        convert(&self.core.session.state())
+        let mut state: SessionState = convert(&self.core.session.state())?;
+        state.album = self.album_state()?;
+        Ok(state)
     }
 
     /// `close_session`: forgets the photos and stops what is developing; exports keep going.
@@ -1429,6 +1471,298 @@ impl AppApi {
             )
         })?;
         Ok(folder)
+    }
+
+    // --- Albums (`docs/31`) -------------------------------------------------------------------
+
+    /// `album_open(path)`: replaces the session with the album's photos, settings, picks and current photo. The question "Save changes
+    /// to the album?" was the person's before this ([`crate::album::confirm_close`]); a refused album leaves the session as it was.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `album` and the sentence of `docs/31` section 4.7.
+    pub fn album_open(&self, path: &str) -> Result<SessionState, AppError> {
+        let path = PathBuf::from(path);
+        // Read first: a refused file must not close the session (the core reads it again, which is 100 KiB at most).
+        ym_core::album::Album::read_file(&path).map_err(|e| AppError::from(ym_core::app::CoreError::from(e)))?;
+        self.close_session();
+        let outcome = self
+            .core
+            .album_open(&path, OpenOptions::default())
+            .map_err(AppError::from)?;
+        self.remember_open_folder(std::slice::from_ref(&path));
+        self.sync_current();
+        let mut state = self.session_state()?;
+        state.opened = Some(OpenSummary {
+            added: u32::try_from(outcome.photos.len()).unwrap_or(u32::MAX),
+            already_open: 0,
+            cancelled: false,
+        });
+        Ok(state)
+    }
+
+    /// `album_save` once the shell knows the file: writes the session there and makes it the open album, not edited.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `album`: "Yellowmoon couldn't save the album to {folder}. … Nothing was changed."
+    pub fn album_save(&self, path: &Path) -> Result<AlbumSaved, AppError> {
+        // Changes of a slider drag still on their way are in the session already: the core's lock orders them before the capture.
+        let state = self.core.album_save(path).map_err(AppError::from)?;
+        Ok(AlbumSaved {
+            path: path.to_string_lossy().into_owned(),
+            name: state.name,
+        })
+    }
+
+    /// The photo being looked at, for the menu's presets (`matches` is about it).
+    #[must_use]
+    pub fn current_photo(&self) -> Option<PhotoId> {
+        self.core.session.current().map(|id| PhotoId(id.0))
+    }
+
+    /// `album_state()`: the open album, or `None`.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] only if the shapes disagree (a bug).
+    pub fn album_state(&self) -> Result<Option<AlbumState>, AppError> {
+        self.core.album_state().map(|a| convert(&a)).transpose()
+    }
+
+    /// Where the save panel starts and what it suggests for the file's name (`docs/31` section 5): with an album open, its own folder
+    /// and name (Save As); otherwise the first photo's folder and that folder's name ("Lisbon.ymalbum").
+    #[must_use]
+    pub fn album_save_defaults(&self) -> (Option<PathBuf>, String) {
+        if let Some(album) = self.core.album_state()
+            && let Some(dir) = album.path.parent()
+        {
+            return (Some(dir.to_path_buf()), format!("{}.ymalbum", album.name));
+        }
+        let folder = self
+            .core
+            .session
+            .capture_photos()
+            .into_iter()
+            .next()
+            .and_then(|p| p.path.parent().map(Path::to_path_buf));
+        let name = folder
+            .as_deref()
+            .and_then(Path::file_name)
+            .map_or_else(|| "Photos".to_owned(), |n| n.to_string_lossy().into_owned());
+        (folder, format!("{name}.ymalbum"))
+    }
+
+    // --- Presets (`docs/30`) ------------------------------------------------------------------
+
+    /// `presets_list(photo_id)`: the presets, the damaged files and the folder; reloads the folder first.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] only if the shapes disagree (a bug).
+    pub fn presets_list(&self, photo: Option<PhotoId>) -> Result<PresetsListing, AppError> {
+        convert(&self.core.presets_list(photo.map(core_id)))
+    }
+
+    /// `preset_inspect(source)`: what the Save dialog needs.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `presets`.
+    pub fn preset_inspect(&self, source: &PresetSource) -> Result<PresetInspect, AppError> {
+        convert(
+            &self
+                .core
+                .preset_inspect(&convert(source)?)
+                .map_err(AppError::from)?,
+        )
+    }
+
+    /// `preset_save(name, groups, source, replace)`.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `presets`: "A preset called Warm evening already exists." without `replace`, a name that is empty,
+    /// no group, a folder that cannot be written.
+    pub fn preset_save(
+        &self,
+        name: &str,
+        groups: &[PresetGroup],
+        source: &PresetSource,
+        replace: bool,
+    ) -> Result<PresetEntry, AppError> {
+        let groups: Vec<ym_core::presets::PresetGroup> = convert(&groups)?;
+        convert(
+            &self
+                .core
+                .preset_save(name, &groups, &convert(source)?, replace)
+                .map_err(AppError::from)?,
+        )
+    }
+
+    /// `preset_update(name, photo_id)`.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `presets`.
+    pub fn preset_update(&self, name: &str, photo: PhotoId) -> Result<PresetEntry, AppError> {
+        convert(
+            &self
+                .core
+                .preset_update(name, core_id(photo))
+                .map_err(AppError::from)?,
+        )
+    }
+
+    /// `preset_rename(name, new_name)`.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `presets`.
+    pub fn preset_rename(&self, name: &str, new_name: &str) -> Result<PresetEntry, AppError> {
+        convert(
+            &self
+                .core
+                .preset_rename(name, new_name)
+                .map_err(AppError::from)?,
+        )
+    }
+
+    /// `preset_apply(name, photo_ids)`: applies the preset as `paste_settings` pastes: the viewport draws again if the current photo
+    /// changed, every photo that changed gets a new thumbnail and a `settings_changed` event, and the answer carries each photo's
+    /// change as an undo step.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `presets` for a preset that is gone or a patch that cannot be applied; nothing changes then.
+    pub fn preset_apply(
+        &self,
+        name: &str,
+        ids: &[PhotoId],
+    ) -> Result<PresetApplyReport, AppError> {
+        let core_ids: Vec<CorePhotoId> = ids.iter().map(|id| core_id(*id)).collect();
+        let report = self
+            .core
+            .preset_apply(name, &core_ids)
+            .map_err(AppError::from)?;
+        let changed: Vec<CorePhotoId> = report
+            .pasted
+            .iter()
+            .filter(|p| !(p.before.is_empty() && p.after.is_empty()))
+            .map(|p| p.id)
+            .collect();
+        if let Some(current) = self.core.session.current()
+            && changed.contains(&current)
+        {
+            self.viewport.invalidate();
+        }
+        self.thumbs.refresh(changed.iter().copied());
+        for id in &changed {
+            self.emitter.emit(AppEvent::SettingsChanged(PhotoId(id.0)));
+        }
+        convert(&report)
+    }
+
+    /// `preset_remove(name)`: the file to the Trash.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `presets`.
+    pub fn preset_remove(&self, name: &str) -> Result<(), AppError> {
+        self.core.preset_remove(name).map_err(AppError::from)
+    }
+
+    /// `preset_remove_file(file)`: a damaged file to the Trash, by its file name.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `presets`.
+    pub fn preset_remove_file(&self, file: &str) -> Result<(), AppError> {
+        self.core.preset_remove_file(file).map_err(AppError::from)
+    }
+
+    /// `preset_export` once the shell has the destination from its save panel.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `presets`.
+    pub fn preset_export(&self, name: &str, dest: &Path) -> Result<(), AppError> {
+        self.core.preset_export(name, dest).map_err(AppError::from)
+    }
+
+    /// `presets_import(paths, replace)`: reads `.ympreset` files into the folder; a name that exists is not replaced unless
+    /// `replace`.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] only if the shapes disagree (a bug).
+    pub fn presets_import(&self, paths: &[String], replace: bool) -> Result<ImportResult, AppError> {
+        let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+        convert(&self.core.presets_import(&paths, replace))
+    }
+
+    /// The preset's file, for Show in Finder.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `presets` when the preset is gone.
+    pub fn preset_reveal_path(&self, name: &str) -> Result<PathBuf, AppError> {
+        self.core.preset_reveal(name).ok_or_else(|| {
+            AppError::new(
+                ErrorScope::Presets,
+                format!("The preset {name} isn't there any more. Look in the presets folder, or save it again."),
+            )
+        })
+    }
+
+    /// The folder "Show Presets Folder" opens: `presets/` of the app folder, made if it is not there yet.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] when the folder cannot be made.
+    pub fn presets_folder(&self) -> Result<PathBuf, AppError> {
+        let folder = self.core.presets.store().folder().to_path_buf();
+        std::fs::create_dir_all(&folder).map_err(|e| {
+            AppError::new(
+                ErrorScope::Presets,
+                format!(
+                    "The presets folder could not be opened ({e}). Check that you can write to it."
+                ),
+            )
+        })?;
+        Ok(folder)
+    }
+
+    /// `preset_thumbnail(photo_id, name)`: the photo as it is developed now with the preset applied. The PNG stays here and is served
+    /// on the `ym-frame` scheme in the look tiles' store (key `preset:<revision>`, the same budget, forgotten with the photo); the
+    /// answer is its address.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `presets` when the preset is gone, `render` for a cancelled render.
+    pub fn preset_thumbnail(&self, photo: PhotoId, name: &str) -> Result<String, AppError> {
+        let revision = self
+            .core
+            .presets
+            .store()
+            .get_stored(name)
+            .map_err(|e| AppError::from(ym_core::app::CoreError::from(e)))?
+            .revision;
+        let png = self
+            .core
+            .spawn_preset_tile(core_id(photo), name)
+            .map_err(AppError::from)?
+            .wait()
+            .map_err(job_error)?
+            .map_err(AppError::from)?;
+        // The session closed, or the photo was removed, while the tile was rendering: nobody wants the picture.
+        self.core
+            .session
+            .view(core_id(photo))
+            .map_err(session_error)?;
+        Ok(self
+            .frames
+            .put_look_tile(photo.0, &format!("preset:{revision}"), png))
     }
 
     // --- Export -------------------------------------------------------------------------------

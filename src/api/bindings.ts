@@ -9,7 +9,9 @@ export const commands = {
 	openPaths: (paths: string[]) => __TAURI_INVOKE<SessionState>("open_paths", { paths }),
 	/**
 	 *  `open_dialog(kind)`: asks for files or a folder with the system's dialog, then opens them.
-	 *  `null` when the dialog is cancelled.
+	 *  `null` when the dialog is cancelled, or when an album is chosen while the open one has unsaved changes and the person answers
+	 *  Cancel to "Save changes to the album …?" (`docs/31` section 4). The files dialog has one filter, "Photos and albums" (`arw`, `ARW`,
+	 *  `ymalbum`): an album chosen opens as an album, on its own.
 	 */
 	openDialog: (kind: OpenKind) => __TAURI_INVOKE<{
 	/**  Name of the folder the photos came from, for the header cell. */
@@ -28,6 +30,11 @@ export const commands = {
 	 *  open." when files are added to a session.
 	 */
 	opened?: OpenSummary | null,
+	/**
+	 *  The open album (`docs/31` section 6): its name, its file and whether it has changes that are not saved; null with no
+	 *  album. A session of photos that was never saved has none. The shell fills it (`AppApi::session_state`).
+	 */
+	album?: AlbumState | null,
 } | null>("open_dialog", { kind }),
 	/**  `cancel_open()`: stops the `open_paths` or `open_dialog` call that is reading files; the files read so far stay. */
 	cancelOpen: () => __TAURI_INVOKE<null>("cancel_open"),
@@ -190,6 +197,80 @@ export const commands = {
 	 */
 	lookThumbnail: (photoId: PhotoId, lookId: LookId) => __TAURI_INVOKE<string>("look_thumbnail", { photoId, lookId }),
 	/**
+	 *  `album_open(path)`: opens an album, replacing the session. The question about the open album's unsaved changes is the page's,
+	 *  before this call (for Close Session and a drop); `open_dialog` asks it itself.
+	 */
+	albumOpen: (path: string) => __TAURI_INVOKE<SessionState>("album_open", { path }),
+	/**
+	 *  `album_save(as_new)`: writes the session as an album. With `as_new`, or when there is no album file yet, the system's save panel
+	 *  asks where first (`Lisbon.ymalbum`, in the first photo's folder; Save As starts in the album's folder with its name); otherwise
+	 *  it writes in place with no question. `null` when the person cancels the panel.
+	 */
+	albumSave: (asNew: boolean) => __TAURI_INVOKE<{
+	/**  The album file. */
+	path: string,
+	/**  Its name: the file's name without its extension. */
+	name: string,
+} | null>("album_save", { asNew }),
+	/**  `album_state()`: the open album, or `null`. */
+	albumState: () => __TAURI_INVOKE<{
+	/**  The album's name: the file's name without its extension. */
+	name: string,
+	/**  The album file. */
+	path: string,
+	/**  Something changed since the album was opened or last saved. */
+	edited: boolean,
+} | null>("album_state"),
+	/**  `presets_list(photo_id)`: the presets, the damaged files and the folder; `photo_id` (or `null`) is the photo `matches` is about. */
+	presetsList: (photoId: number | null) => __TAURI_INVOKE<PresetsListing>("presets_list", { photoId }),
+	/**  `preset_inspect(source)`: the groups the Save dialog ticks. */
+	presetInspect: (source: PresetSource) => __TAURI_INVOKE<PresetInspect>("preset_inspect", { source }),
+	/**  `preset_save(name, groups, source, replace)`: makes the preset from a photo or a settings file and writes it. */
+	presetSave: (name: string, groups: PresetGroup[], source: PresetSource, replace: boolean) => __TAURI_INVOKE<PresetEntry>("preset_save", { name, groups, source, replace }),
+	/**  `preset_update(name, photo_id)`: the photo's values again for the preset's own groups. */
+	presetUpdate: (name: string, photoId: PhotoId) => __TAURI_INVOKE<PresetEntry>("preset_update", { name, photoId }),
+	/**  `preset_rename(name, new_name)`. */
+	presetRename: (name: string, newName: string) => __TAURI_INVOKE<PresetEntry>("preset_rename", { name, newName }),
+	/**  `preset_apply(name, photo_ids)`: applies a preset to photos as a paste does. */
+	presetApply: (name: string, photoIds: PhotoId[]) => __TAURI_INVOKE<PresetApplyReport>("preset_apply", { name, photoIds }),
+	/**  `preset_remove(name)`: the file to the Trash. */
+	presetRemove: (name: string) => __TAURI_INVOKE<null>("preset_remove", { name }),
+	/**  `preset_remove_file(file)`: a damaged file to the Trash, by its file name. */
+	presetRemoveFile: (file: string) => __TAURI_INVOKE<null>("preset_remove_file", { file }),
+	/**
+	 *  `preset_export(name)`: the system's save panel (suggested name `Warm evening.ympreset`) and the file written there. `null` when
+	 *  the person cancels.
+	 */
+	presetExport: (name: string) => __TAURI_INVOKE<{
+	/**  The file the person chose in the save panel. */
+	path: string,
+} | null>("preset_export", { name }),
+	/**  `presets_import_dialog()`: the system's open panel for `.ympreset` files (several), then the import. `null` when cancelled. */
+	presetsImportDialog: () => __TAURI_INVOKE<{
+	/**  The names added. */
+	added: string[],
+	/**  The names replaced (only with `replace`). */
+	replaced: string[],
+	/**  The names that exist and were not replaced. */
+	exists: PresetExists[],
+	/**  The files refused. */
+	refused: PresetRefused[],
+} | null>("presets_import_dialog"),
+	/**
+	 *  `preset_choose_export()` (addition, for New Preset from Exported Photo…, `docs/30` section 12): the system's open panel for a photo
+	 *  Yellowmoon exported. The path, or `null` when cancelled; the page reads it with `preset_inspect({ kind: "file", path })`.
+	 */
+	presetChooseExport: () => __TAURI_INVOKE<string | null>("preset_choose_export"),
+	/**  `presets_import(paths, replace)`: for dropped files, and for Replace after the question. */
+	presetsImport: (paths: string[], replace: boolean) => __TAURI_INVOKE<ImportResult>("presets_import", { paths, replace }),
+	/**  `preset_reveal(name)`: shows the preset's file in Finder. */
+	presetReveal: (name: string) => __TAURI_INVOKE<null>("preset_reveal", { name }),
+	/**
+	 *  `preset_thumbnail(photo_id, name)`: the photo with the preset applied. The answer is the address of a PNG of at most 240 px on the
+	 *  `ym-frame` scheme, like `look_thumbnail`'s; rejects with scope `presets` when the preset is gone.
+	 */
+	presetThumbnail: (photoId: PhotoId, name: string) => __TAURI_INVOKE<string>("preset_thumbnail", { photoId, name }),
+	/**
 	 *  `film_catalogue()` (`docs/24` section 4.1): the camera films and papers the Film node's pickers list, from `names.json`, with the
 	 *  credit, disclaimer and trademark lines.
 	 */
@@ -297,6 +378,7 @@ export const commands = {
 
 /** Events */
 export const events = {
+	albumChanged: makeEvent<AlbumChanged>("album_changed"),
 	autoStatusChanged: makeEvent<AutoStatusChanged>("auto_status_changed"),
 	depthState: makeEvent<DepthState>("depth_state"),
 	displayOptions: makeEvent<DisplayOptions>("display_options"),
@@ -312,6 +394,7 @@ export const events = {
 	objectState: makeEvent<ObjectState>("object_state"),
 	openProgress: makeEvent<OpenProgress>("open_progress"),
 	photoProgress: makeEvent<PhotoProgress>("photo_progress"),
+	presetsChanged: makeEvent<PresetsChanged>("presets_changed"),
 	renderStats: makeEvent<RenderStats>("render_stats"),
 	settingsChanged: makeEvent<SettingsChanged>("settings_changed"),
 	thumbnailReady: makeEvent<ThumbnailReady>("thumbnail_ready"),
@@ -322,6 +405,30 @@ export const events = {
 };
 
 /* Types */
+/**
+ *  `album_changed` (`docs/31` section 6): the open album became edited, was saved, opened or closed. No data; the page asks
+ *  `album_state`, and the shell has set the window's title and edited dot already.
+ */
+export type AlbumChanged = null;
+
+/**  The answer of `album_save`: the file written and its name. */
+export type AlbumSaved = {
+	/**  The album file. */
+	path: string,
+	/**  Its name: the file's name without its extension. */
+	name: string,
+};
+
+/**  The open album (`AlbumState` of `types.ts`). */
+export type AlbumState = {
+	/**  The album's name: the file's name without its extension. */
+	name: string,
+	/**  The album file. */
+	path: string,
+	/**  Something changed since the album was opened or last saved. */
+	edited: boolean,
+};
+
 /**
  *  An error that reaches the UI: a plain message that also says what to do next. Commands reject
  *  with it and the `error` event carries it (`AppError` in `types.ts`).
@@ -975,6 +1082,14 @@ export type CurvesPatch = {
 	blue?: ([number, number])[] | null,
 };
 
+/**  A file of the presets folder that could not be used (`DamagedPreset` of `types.ts`). */
+export type DamagedPreset = {
+	/**  The file's name in the folder. */
+	file: string,
+	/**  Why. */
+	reason: string,
+};
+
 /**  RAW › Decode switches; all true by default. */
 export type DecodeOptions = {
 	/**  Neural demosaic and denoise. */
@@ -1092,6 +1207,10 @@ export type ErrorScope =
  *  mask is not there, a row has all its points.
  */
 "mask" | 
+/**  The presets folder and the preset commands (`docs/30`). */
+"presets" | 
+/**  Albums (`docs/31`): opening one, saving one. */
+"album" | 
 /**  Anything else. */
 "app";
 
@@ -1423,6 +1542,18 @@ export type IfExists =
 "replace" | 
 /**  Keep both: add " 2", " 3" to the new name. */
 "keep_both";
+
+/**  The answer of `presets_import` and `presets_import_dialog` (`ImportResult` of `types.ts`). */
+export type ImportResult = {
+	/**  The names added. */
+	added: string[],
+	/**  The names replaced (only with `replace`). */
+	replaced: string[],
+	/**  The names that exist and were not replaced. */
+	exists: PresetExists[],
+	/**  The files refused. */
+	refused: PresetRefused[],
+};
 
 /**  Which of the Input's `Auto` fields are still automatic; the UI shows the AUTO tag for these. */
 export type InputAutoFlags = {
@@ -2250,12 +2381,26 @@ export type MenuAction =
 /**  Pick look 8 of the Look tab (the key 8). */
 "look_8" | 
 /**  Pick look 9 of the Look tab (the key 9). */
-"look_9";
+"look_9" | 
+/**  File › Save (⌘S, `docs/31` section 5): the webview calls `album_save(false)`. */
+"save" | 
+/**  File › Save As… (⇧⌘S): the webview calls `album_save(true)`. */
+"save_as" | 
+/**  Looks › Save Preset… (⌥⌘S, `docs/30` section 9.8): opens the Save preset dialog. */
+"save_preset" | 
+/**  Looks › Import Presets…: the webview calls `presets_import_dialog`. */
+"import_presets" | 
+/**  Looks › Apply Preset › a name: the event carries `preset`, the name. */
+"apply_preset" | 
+/**  Looks › New Preset from Exported Photo… (`docs/30` section 12). */
+"new_preset_from_export";
 
 /**  `menu_action { action }`: a menu item that needs the webview was chosen. */
 export type MenuActionEvent = {
 	/**  Which item. */
 	action: MenuAction,
+	/**  The preset's name, for `apply_preset` (Looks › Apply Preset › a name); null for every other action. */
+	preset?: string | null,
 };
 
 /**
@@ -2269,6 +2414,14 @@ export type MenuState = {
 	paste_settings: boolean,
 	/**  Paste Settings to Picked: something is copied and a photo is picked. */
 	paste_settings_to_picked: boolean,
+	/**  Looks › Save Preset…: the current photo is developed and no dialog is open (`docs/30` section 8). */
+	save_preset: boolean,
+	/**  Looks › Apply Preset: the same. */
+	apply_preset: boolean,
+	/**  File › Save: a photo is open and no dialog is open (`docs/31` section 7). */
+	save: boolean,
+	/**  File › Save As…: the same. */
+	save_as: boolean,
 };
 
 /**
@@ -2856,6 +3009,118 @@ export type PreferencesPatch = {
 	single_key_shortcuts?: boolean | null,
 };
 
+/**  The answer of `preset_apply` (`PresetApplyReport` of `types.ts`). */
+export type PresetApplyReport = {
+	/**  The photos that took the preset, each with its undo pair. */
+	pasted: PastedPhoto[],
+	/**  The photos left out. */
+	skipped: PhotoId[],
+	/**  The name of the preset's look when the library has none. */
+	missing_look: string | null,
+};
+
+/**  One preset of `presets_list` (`PresetEntry` of `types.ts`). */
+export type PresetEntry = {
+	/**  The name, which is the identity (ignoring case). */
+	name: string,
+	/**  The groups it holds, in the order of `docs/30` section 2. */
+	groups: PresetGroup[],
+	/**  The look it names, with the `look` group. */
+	look: PresetLook | null,
+	/**  The look is not in the library, or its file is gone or changed. */
+	look_missing: boolean,
+	/**  Applying the preset to the asked photo would change nothing. */
+	matches: boolean,
+	/**  The first 12 hex digits of the file's SHA-256. */
+	revision: string,
+};
+
+/**  A name of an import that exists and was not replaced (`PresetExists` of `types.ts`). */
+export type PresetExists = {
+	/**  The preset's name. */
+	name: string,
+	/**  The file it came from. */
+	path: string,
+};
+
+/**  The answer of `preset_export`: where the file was written. */
+export type PresetExported = {
+	/**  The file the person chose in the save panel. */
+	path: string,
+};
+
+/**  One of the eight groups of fields a preset holds (`docs/30` section 2), in the order of the dialog and the file. */
+export type PresetGroup = 
+/**  The look and its intensity. */
+"look" | 
+/**  The lens correction. */
+"lens" | 
+/**  Exposure and white balance. */
+"light" | 
+/**  Colour. */
+"color" | 
+/**  Detail. */
+"detail" | 
+/**  The curve. */
+"curve" | 
+/**  The RAW decode settings. */
+"raw" | 
+/**  The node graph. */
+"nodes";
+
+/**  The answer of `preset_inspect` (`PresetInspect` of `types.ts`). */
+export type PresetInspect = {
+	/**  The groups to tick. */
+	changed: PresetGroup[],
+	/**  The source is an export that has no `ym:AutoFields`. */
+	older_export: boolean,
+	/**  The name of the source's look, when it is in the library. */
+	look: string | null,
+};
+
+/**  The look of a preset that holds the `look` group (`PresetLook` of `types.ts`). */
+export type PresetLook = {
+	/**  The look's id. */
+	id: LookId,
+	/**  Its name when the preset was saved. */
+	name: string,
+};
+
+/**  A file of an import that was refused (`PresetRefused` of `types.ts`). */
+export type PresetRefused = {
+	/**  The file's name. */
+	file: string,
+	/**  Why. */
+	reason: string,
+};
+
+/**  Where a preset is made from (`PresetSource` of `types.ts`). */
+export type PresetSource = 
+/**  A photo of the session. */
+{ kind: "photo"; 
+/**  The photo. */
+photo_id: PhotoId } | 
+/**  A settings file. */
+{ kind: "file"; 
+/**  Its path. */
+path: string };
+
+/**
+ *  `presets_changed` (`docs/30` section 8): the presets folder changed (a preset saved, renamed, removed, imported, or one made by
+ *  `ym` found by a listing). No data; the page asks `presets_list` again and the shell rebuilds Looks › Apply Preset.
+ */
+export type PresetsChanged = null;
+
+/**  The answer of `presets_list` (`PresetsListing` of `types.ts`). */
+export type PresetsListing = {
+	/**  The presets, by name. */
+	presets: PresetEntry[],
+	/**  The files that could not be used. */
+	damaged: DamagedPreset[],
+	/**  The presets folder. */
+	folder: string,
+};
+
 /**  The enlarger's filtration, as shifts from neutral in Kodak CC units, -50 to 50. */
 export type PrintLights = {
 	/**  Cyan. */
@@ -3168,6 +3433,11 @@ export type SessionState = {
 	 *  open." when files are added to a session.
 	 */
 	opened?: OpenSummary | null,
+	/**
+	 *  The open album (`docs/31` section 6): its name, its file and whether it has changes that are not saved; null with no
+	 *  album. A session of photos that was never saved has none. The shell fills it (`AppApi::session_state`).
+	 */
+	album?: AlbumState | null,
 };
 
 /**

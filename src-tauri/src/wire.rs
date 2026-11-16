@@ -61,6 +61,10 @@ pub enum ErrorScope {
     /// A mask this computer cannot make or cannot find (`docs/23` section 9): the Object model is missing, the Object
     /// mask is not there, a row has all its points.
     Mask,
+    /// The presets folder and the preset commands (`docs/30`).
+    Presets,
+    /// Albums (`docs/31`): opening one, saving one.
+    Album,
     /// Anything else.
     App,
 }
@@ -78,6 +82,8 @@ impl ErrorScope {
             "preferences" => Self::Preferences,
             "viewport" => Self::Viewport,
             "mask" => Self::Mask,
+            "presets" => Self::Presets,
+            "album" => Self::Album,
             _ => Self::App,
         }
     }
@@ -319,6 +325,10 @@ pub struct SessionState {
     /// open." when files are added to a session.
     #[serde(default)]
     pub opened: Option<OpenSummary>,
+    /// The open album (`docs/31` section 6): its name, its file and whether it has changes that are not saved; null with no
+    /// album. A session of photos that was never saved has none. The shell fills it (`AppApi::session_state`).
+    #[serde(default)]
+    pub album: Option<AlbumState>,
 }
 
 /// The answer of `remove_photos` and `restore_photos`: the photos that were taken out of the filmstrip or put back, and the
@@ -2745,6 +2755,174 @@ pub struct PasteReport {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Presets (docs/30) and albums (docs/31)
+// ---------------------------------------------------------------------------------------------
+
+/// One of the eight groups of fields a preset holds (`docs/30` section 2), in the order of the dialog and the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum PresetGroup {
+    /// The look and its intensity.
+    Look,
+    /// The lens correction.
+    Lens,
+    /// Exposure and white balance.
+    Light,
+    /// Colour.
+    Color,
+    /// Detail.
+    Detail,
+    /// The curve.
+    Curve,
+    /// The RAW decode settings.
+    Raw,
+    /// The node graph.
+    Nodes,
+}
+
+/// The look of a preset that holds the `look` group (`PresetLook` of `types.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct PresetLook {
+    /// The look's id.
+    pub id: LookId,
+    /// Its name when the preset was saved.
+    pub name: String,
+}
+
+/// One preset of `presets_list` (`PresetEntry` of `types.ts`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct PresetEntry {
+    /// The name, which is the identity (ignoring case).
+    pub name: String,
+    /// The groups it holds, in the order of `docs/30` section 2.
+    pub groups: Vec<PresetGroup>,
+    /// The look it names, with the `look` group.
+    pub look: Option<PresetLook>,
+    /// The look is not in the library, or its file is gone or changed.
+    pub look_missing: bool,
+    /// Applying the preset to the asked photo would change nothing.
+    pub matches: bool,
+    /// The first 12 hex digits of the file's SHA-256.
+    pub revision: String,
+}
+
+/// A file of the presets folder that could not be used (`DamagedPreset` of `types.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct DamagedPreset {
+    /// The file's name in the folder.
+    pub file: String,
+    /// Why.
+    pub reason: String,
+}
+
+/// The answer of `presets_list` (`PresetsListing` of `types.ts`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct PresetsListing {
+    /// The presets, by name.
+    pub presets: Vec<PresetEntry>,
+    /// The files that could not be used.
+    pub damaged: Vec<DamagedPreset>,
+    /// The presets folder.
+    pub folder: String,
+}
+
+/// Where a preset is made from (`PresetSource` of `types.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PresetSource {
+    /// A photo of the session.
+    Photo {
+        /// The photo.
+        photo_id: PhotoId,
+    },
+    /// A settings file.
+    File {
+        /// Its path.
+        path: String,
+    },
+}
+
+/// The answer of `preset_inspect` (`PresetInspect` of `types.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct PresetInspect {
+    /// The groups to tick.
+    pub changed: Vec<PresetGroup>,
+    /// The source is an export that has no `ym:AutoFields`.
+    pub older_export: bool,
+    /// The name of the source's look, when it is in the library.
+    pub look: Option<String>,
+}
+
+/// The answer of `preset_apply` (`PresetApplyReport` of `types.ts`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct PresetApplyReport {
+    /// The photos that took the preset, each with its undo pair.
+    pub pasted: Vec<PastedPhoto>,
+    /// The photos left out.
+    pub skipped: Vec<PhotoId>,
+    /// The name of the preset's look when the library has none.
+    pub missing_look: Option<String>,
+}
+
+/// A name of an import that exists and was not replaced (`PresetExists` of `types.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct PresetExists {
+    /// The preset's name.
+    pub name: String,
+    /// The file it came from.
+    pub path: String,
+}
+
+/// A file of an import that was refused (`PresetRefused` of `types.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct PresetRefused {
+    /// The file's name.
+    pub file: String,
+    /// Why.
+    pub reason: String,
+}
+
+/// The answer of `presets_import` and `presets_import_dialog` (`ImportResult` of `types.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ImportResult {
+    /// The names added.
+    pub added: Vec<String>,
+    /// The names replaced (only with `replace`).
+    pub replaced: Vec<String>,
+    /// The names that exist and were not replaced.
+    pub exists: Vec<PresetExists>,
+    /// The files refused.
+    pub refused: Vec<PresetRefused>,
+}
+
+/// The answer of `preset_export`: where the file was written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct PresetExported {
+    /// The file the person chose in the save panel.
+    pub path: String,
+}
+
+/// The open album (`AlbumState` of `types.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AlbumState {
+    /// The album's name: the file's name without its extension.
+    pub name: String,
+    /// The album file.
+    pub path: String,
+    /// Something changed since the album was opened or last saved.
+    pub edited: bool,
+}
+
+/// The answer of `album_save`: the file written and its name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AlbumSaved {
+    /// The album file.
+    pub path: String,
+    /// Its name: the file's name without its extension.
+    pub name: String,
+}
+
+// ---------------------------------------------------------------------------------------------
 // Looks
 // ---------------------------------------------------------------------------------------------
 
@@ -3780,6 +3958,18 @@ pub enum MenuAction {
     /// Pick look 9 of the Look tab (the key 9).
     #[serde(rename = "look_9")]
     Look9,
+    /// File › Save (⌘S, `docs/31` section 5): the webview calls `album_save(false)`.
+    Save,
+    /// File › Save As… (⇧⌘S): the webview calls `album_save(true)`.
+    SaveAs,
+    /// Looks › Save Preset… (⌥⌘S, `docs/30` section 9.8): opens the Save preset dialog.
+    SavePreset,
+    /// Looks › Import Presets…: the webview calls `presets_import_dialog`.
+    ImportPresets,
+    /// Looks › Apply Preset › a name: the event carries `preset`, the name.
+    ApplyPreset,
+    /// Looks › New Preset from Exported Photo… (`docs/30` section 12).
+    NewPresetFromExport,
 }
 
 /// `set_menu_state(state)`: which of the Edit menu's settings items are available. The webview
@@ -3792,6 +3982,14 @@ pub struct MenuState {
     pub paste_settings: bool,
     /// Paste Settings to Picked: something is copied and a photo is picked.
     pub paste_settings_to_picked: bool,
+    /// Looks › Save Preset…: the current photo is developed and no dialog is open (`docs/30` section 8).
+    pub save_preset: bool,
+    /// Looks › Apply Preset: the same.
+    pub apply_preset: bool,
+    /// File › Save: a photo is open and no dialog is open (`docs/31` section 7).
+    pub save: bool,
+    /// File › Save As…: the same.
+    pub save_as: bool,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -3924,6 +4122,18 @@ pub struct ExportProgress {
 #[tauri_specta(event_name = "looks_changed")]
 pub struct LooksChanged;
 
+/// `presets_changed` (`docs/30` section 8): the presets folder changed (a preset saved, renamed, removed, imported, or one made by
+/// `ym` found by a listing). No data; the page asks `presets_list` again and the shell rebuilds Looks › Apply Preset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "presets_changed")]
+pub struct PresetsChanged;
+
+/// `album_changed` (`docs/31` section 6): the open album became edited, was saved, opened or closed. No data; the page asks
+/// `album_state`, and the shell has set the window's title and edited dot already.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "album_changed")]
+pub struct AlbumChanged;
+
 /// `auto_status_changed` (`docs/22` section 12.6): a provider's availability changed (a program was
 /// found, signed in or out, or a check ended). No data; the webview reads `auto_status_cached()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
@@ -3982,11 +4192,14 @@ impl From<AppError> for ErrorEvent {
 }
 
 /// `menu_action { action }`: a menu item that needs the webview was chosen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
 #[tauri_specta(event_name = "menu_action")]
 pub struct MenuActionEvent {
     /// Which item.
     pub action: MenuAction,
+    /// The preset's name, for `apply_preset` (Looks › Apply Preset › a name); null for every other action.
+    #[serde(default)]
+    pub preset: Option<String>,
 }
 
 /// `settings_changed { photo_id }` (addition): the core changed a photo's settings by itself: after

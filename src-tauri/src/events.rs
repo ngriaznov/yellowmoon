@@ -37,9 +37,9 @@ use tauri::Runtime;
 use tauri_specta::Event;
 
 use crate::wire::{
-    AppError, AutoStatusChanged, DepthState, DownloadFound, ErrorEvent, ExportBusy, ExportProgress,
+    AlbumChanged, AppError, AutoStatusChanged, DepthState, DownloadFound, ErrorEvent, ExportBusy, ExportProgress,
     LooksChanged, LooksImportProgress, MemoryNotice, NodeThumbnailsReady, ObjectState,
-    OpenProgress, PhotoId, PhotoProgress, RenderStats, SettingsChanged, ThumbnailReady,
+    OpenProgress, PhotoId, PhotoProgress, PresetsChanged, RenderStats, SettingsChanged, ThumbnailReady,
     ViewportBusy, ViewportFrame, VisionState,
 };
 
@@ -62,6 +62,10 @@ pub enum AppEvent {
     ExportProgress(ExportProgress),
     /// `looks_changed`.
     LooksChanged,
+    /// `presets_changed` (`docs/30` section 8): the presets folder changed.
+    PresetsChanged,
+    /// `album_changed` (`docs/31` section 6): the open album became edited, was saved, opened or closed.
+    AlbumChanged,
     /// `auto_status_changed` (`docs/22` section 12.6): a provider's availability changed.
     AutoStatusChanged,
     /// `error`.
@@ -101,6 +105,8 @@ impl AppEvent {
             Self::RenderStats(_) => "render_stats",
             Self::ExportProgress(_) => "export_progress",
             Self::LooksChanged => "looks_changed",
+            Self::PresetsChanged => "presets_changed",
+            Self::AlbumChanged => "album_changed",
             Self::AutoStatusChanged => "auto_status_changed",
             Self::Error(_) => "error",
             Self::LooksImportProgress(_) => "looks_import_progress",
@@ -155,6 +161,16 @@ fn send<R: Runtime>(app: &tauri::AppHandle<R>, event: AppEvent) {
         AppEvent::RenderStats(e) => e.emit(app),
         AppEvent::ExportProgress(e) => e.emit(app),
         AppEvent::LooksChanged => LooksChanged.emit(app),
+        AppEvent::PresetsChanged => {
+            // Looks > Apply Preset lists the names, so it is made again.
+            crate::menu::refresh_presets(app);
+            PresetsChanged.emit(app)
+        }
+        AppEvent::AlbumChanged => {
+            // The title and the edited dot first, so that the page's `album_state` and the window agree.
+            crate::album::sync_window(app);
+            AlbumChanged.emit(app)
+        }
         AppEvent::AutoStatusChanged => AutoStatusChanged.emit(app),
         AppEvent::Error(e) => ErrorEvent::from(e).emit(app),
         AppEvent::LooksImportProgress(e) => e.emit(app),

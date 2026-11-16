@@ -74,6 +74,8 @@ mod tests {
             "render_stats",
             "export_progress",
             "looks_changed",
+            "presets_changed",
+            "album_changed",
             "auto_status_changed",
             "update_state",
             "error",
