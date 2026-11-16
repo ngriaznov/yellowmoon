@@ -25,14 +25,21 @@ export function cameraLine(photo: PhotoSummary, { body = true }: { body?: boolea
 /** The capture date of a photo, "2026-10-04"; empty when the file has none (the core sends "" for a file it could not probe). */
 export const captureDate = (photo: PhotoSummary): string => photo.captured_at.slice(0, 10);
 
+/** The folder cell's large line: the open album's name, or the folder's (`docs/31` section 6). */
+export function folderTitle(session: Pick<SessionState, "folder_name"> & { album?: SessionState["album"] }): string {
+  return session.album?.name ?? session.folder_name ?? "Yellowmoon";
+}
+
 /**
  * "2026-10-04 · 12 photos" for the folder cell: the date of the first photo that has one, and the count. Without any date it is
  * just "12 photos".
  */
-export function folderSubline(session: Pick<SessionState, "photos">): string {
+export function folderSubline(session: Pick<SessionState, "photos"> & { album?: SessionState["album"] }): string {
   const count = session.photos.length;
   const noun = count === 1 ? "photo" : "photos";
   if (count === 0) return "0 photos";
+  // An album with changes says so in place of the date (`docs/31` section 6): the cell is 300 px wide and 84 px of it are the traffic lights.
+  if (session.album?.edited) return `${count} ${noun} · edited`;
   const date = session.photos.map(captureDate).find((d) => d !== "");
   return date ? `${date} · ${count} ${noun}` : `${count} ${noun}`;
 }

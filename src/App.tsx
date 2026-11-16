@@ -68,7 +68,7 @@ function GlobalShortcuts() {
 function MenuBridge() {
   const store = useStore();
   useEffect(() => {
-    store.menuHandler = (action) => void runMenuAction(store, action);
+    store.menuHandler = (action, preset) => void runMenuAction(store, action, preset);
     return () => {
       store.menuHandler = null;
     };
