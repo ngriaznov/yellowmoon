@@ -61,6 +61,7 @@ const OUTPUT_FLAGS: &[&str] = &["--look", "--intensity", "--output-sharpening"];
 /// Output and Run groups and the options every command has.
 const OTHER_FLAGS: &[&str] = &[
     "--settings",
+    "--preset",
     "--recursive",
     "--profile",
     "--format",
@@ -695,4 +696,49 @@ fn the_film_documentation_the_help_and_ym_film_list_agree() {
         film.contains(&format!("`{value}`")),
         "docs/10 shows the row `{value}`"
     );
+}
+
+/// The long options of a command's help.
+fn options_of(args: &[&str]) -> BTreeSet<String> {
+    let sb = Sandbox::new();
+    let out = sb.ym().args(args).arg("--help").assert().success();
+    help_options(&String::from_utf8_lossy(&out.get_output().stdout))
+}
+
+#[test]
+fn docs_10_has_the_rows_of_presets_and_albums() {
+    let doc = read("docs/10-cli.md");
+    // The command table has a row for every presets subcommand, and the rows name the flags the help has.
+    for sub in ["list", "save", "import", "export", "remove"] {
+        assert!(
+            doc.contains(&format!("| `ym presets {sub}")),
+            "a row for `ym presets {sub}`"
+        );
+        for flag in options_of(&["presets", sub]) {
+            if ["--help", "--quiet", "--verbose"].contains(&flag.as_str()) {
+                continue;
+            }
+            let row = doc
+                .lines()
+                .find(|l| l.starts_with(&format!("| `ym presets {sub}")))
+                .expect("the row");
+            let section = &doc[doc.find("## `presets`").expect("the section")..];
+            assert!(
+                row.contains(&flag) || section.contains(&flag),
+                "docs/10 names {flag} of `ym presets {sub}`"
+            );
+        }
+    }
+    for row in ["| `ym render <album.ymalbum>` |", "| `ym info <album.ymalbum>` |", "| `--preset <name or file>` |"] {
+        assert!(doc.contains(row), "{row}");
+    }
+    for sentence in [
+        "The album already has the settings of its photos.",
+        "Give an album on its own, or photos.",
+        "This file has changed since the album was saved.",
+    ] {
+        assert!(doc.contains(sentence), "{sentence}");
+    }
+    // The help of `render` says what `--preset` does.
+    assert!(help().contains("--preset <NAME_OR_FILE>"));
 }

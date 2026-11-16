@@ -10,7 +10,14 @@ The CLI is a second front end on the same core. A file rendered from the termina
 |---|---|
 | `ym render <files or folders…>` | Develop and export. Defaults match the app: automatic development and the user's default look. Flags change them for this run only. |
 | `ym render -` | Read file paths from stdin, one per line (composes with `find`, `fd`, `xargs`). |
+| `ym render <album.ymalbum>` | Render every photo of an album in album order with its stored settings; the flags and `--preset` go over them (*Albums*). |
 | `ym info <file…>` | Metadata and automatic estimates without rendering, with what Auto grading did (`docs/19-apple-auto.md`, `docs/22-auto-providers.md`). `--suggest-crop[=ASPECT]` adds Auto crop's proposal (below). |
+| `ym info <album.ymalbum>` | List an album's photos (name, path, picked, found, fingerprint) and the versions that wrote it, and the estimates of each photo found (*Albums*). |
+| `ym presets list [--json]` | The saved presets with their groups and looks (*`presets`*). |
+| `ym presets save <name> --from <file> [--groups look,light,…] [--replace]` | Save a preset from a settings file, or from a JPEG, TIFF, PNG or DNG that Yellowmoon exported. |
+| `ym presets import <file.ympreset…> [--replace]` | Add preset files to the saved presets. |
+| `ym presets export <name> <file.ympreset>` | Write a saved preset to a file, over one that is there. |
+| `ym presets remove <name>` | Move a saved preset to the Trash. |
 | `ym looks list` | Built-in and imported looks, with ids, names, groups, libraries, inputs, and which is default. |
 | `ym looks import <zip or folder or .cube or look file…> [--input logc4 or logc3 or logc3-rec709]` | The wizard's importer without the UI: same library folder, recognition rules and checksums. Sources are zips, folders, `.cube` files and ARRI Look Files (`.alf4`, `.alf4c`, `.aml`). `--input` answers the generic question for non-ARRI `.cube` files; look files say what they expect and ignore it. |
 | `ym looks verify` | Re-hash every imported look; report missing or changed files. |
@@ -75,6 +82,7 @@ The other options are not settings and touch no node: `--profile` forces the cam
 |---|---|---|
 | `--look <look>` | full id (`builtin:neutral`), its slug after the colon (`neutral`), or the display name, case-insensitive | ambiguous: exit 2 listing the matches; missing: exit 3 |
 | `--intensity <0–100>` | percent | default 100 |
+| `--preset <name or file>` | a saved preset's name (any case, exactly, then as a prefix), or the path of a `.ympreset` file; repeatable | layered after `--settings` and before the flags: each preset in the order given sets the fields of its groups, and a flag always has the last word. No match exits 3, several matches exit 2 and list them, a file that is not a preset exits 2, all before a photo is opened. A look the library lacks is a warning on stderr and the rest applies (exit 0). `--json` adds `presets` to each photo's record (*`presets`*) |
 | `--settings <file or ->` | a JSON graph of nodes, the `ym:Settings` form (`docs/23` §3; the `ym:Settings` of an export's XMP is one) | covers everything the flags can't: **the other nodes, their trims, grades, masks and the links between them**, colour balance (`{ "kind": "auto" }` puts a shadows or highlights wheel of Main back to Auto), colour warp (`{ "pins": [...] }` in a node's `grade`; a pin names its `source` and may leave out the rest: `target`, `locked`, `range`, `shadows`, `highlights`, `pivot_ev`, `exposure_ev` and `saturation`, −1 to 1, 0 by default; `docs/01`, `docs/02` C9b), curve, crop, orientation, white pick. Flags given alongside it override it. A file with several photos' settings is an object keyed by file name. A file in the form of Yellowmoon 0.1 is refused (*Settings*) |
 | `--auto-crop[=<aspect>]` | `original` (the default), `free`, `1:1` or `square`, `4:5`, `16:9` | crops each photo as the Crop panel's Auto does (`docs/20-auto-crop.md` §8): the proposal's straighten angle and first frame for the aspect, at the photo's orientation, with `auto: true`; the whole photo at 0° is no crop. Replaces a crop from `--settings`. |
 
@@ -397,6 +405,19 @@ A file name (a folder unpacked from a downloaded archive) or a tag in a file can
 - **`verify`** prints one line per missing or changed file and exits 1 when there is one.
 - **`default <look>`** takes what `--look` takes.
 - **`bake`** writes `<name>.cube` (33 points, `TITLE` the look's name) into `--out` (default: the folder of the look file) and, with `--preview`, `<name>_contact.png`: a row per photo, Neutral on the left and the baked look on the right, each 480 px on the long edge, in sRGB. The paths are printed on stdout.
+
+## `presets`
+
+`docs/30-presets.md` section 11 is the spec; the commands use the app's folder, file format, lock and Trash, so a preset made here shows up in the app.
+
+- **`list`** prints NAME, GROUPS (ids, as `--groups` takes them) and LOOK (`Film warm (not imported)` when the library lacks it), one line a preset, sorted as the app sorts; a file that cannot be read is a line after the table, `file: reason`. `--json`: `{ "folder", "presets": [{ "name", "file", "groups", "look": { "id", "name" } or null, "look_missing" }], "damaged": [{ "file", "reason" }] }`.
+- **`save <name> --from <file>`** reads a settings file (the form of `--settings`) or an exported photo (`docs/30` section 12) and saves the groups in `--groups`, or the groups that differ from the default settings. Nothing differing and no `--groups` is exit 2; a name that exists is exit 2 unless `--replace`; a `--from` that is not a file is exit 2. It prints the name on stdout.
+- **`import <file…>`** adds files; a name that exists is exit 2 unless `--replace`, a refused file is exit 2 with its sentence, and the other files still come in. **`export <name> <file>`** overwrites its destination. **`remove <name>`** moves the file to the Trash; these two take a name exactly (any case). A missing preset is exit 3.
+- **`render --preset`** is described with the other options; **`render --json`** has `presets: [{ "name", "file", "missing_look" }]` in each photo's record, in the order given (`file` is the path of a preset read from a file, else `null`; an empty list without `--preset`).
+
+## Albums
+
+`docs/31-albums.md` section 8 is the spec. **`ym render <album.ymalbum> [options]`** renders every photo of the album in album order: its stored settings replace the photo's defaults as `--settings` does, then each `--preset`, then the flags, which have the last word. An album with `--settings` is exit 2 ("The album already has the settings of its photos."), and an album with photos, folders or another album is exit 2 ("Give an album on its own, or photos."). A photo that neither of the album's paths finds is an error of `error.kind` `not_found` ("Not found: <path>"); the others go on and the exit code is 1, or 5 when none was found. A file that has changed since the album was saved renders with its settings and says "This file has changed since the album was saved." in `notes`. The album's stored Auto answers are used and no provider is asked, unless `--auto-provider` or `--apple-auto` is given, which asks that provider anew. The files are byte for byte what the app exports for the same album. **`ym info <album.ymalbum>`** prints the album's photos in order with their path, `picked`, whether the file was found and whether its fingerprint matched, and the versions that wrote it (`--json`: one object, `written_by`, `photos`), then the usual `info` block of each photo found. A file that is not an album, is too new or too large is exit 2 with its sentence. `ym` never writes an album.
 
 ## `film`
 

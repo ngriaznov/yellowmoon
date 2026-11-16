@@ -1,0 +1,16 @@
+---
+source: crates/ym-cli/tests/cli.rs
+expression: "help(&[\"presets\", \"export\"])"
+---
+Write a saved preset to a `.ympreset` file
+
+Usage: ym presets export [OPTIONS] <NAME> <FILE>
+
+Arguments:
+  <NAME>  The preset to write
+  <FILE>  The `.ympreset` file to write. A file that is there is written over
+
+Options:
+  -q, --quiet    Print only errors on stderr
+  -v, --verbose  Print what is happening on stderr: stages, timings and notes
+  -h, --help     Print help

@@ -1,0 +1,18 @@
+---
+source: crates/ym-cli/tests/cli.rs
+expression: "help(&[\"presets\", \"save\"])"
+---
+Save a preset from a settings file, or from a photo that Yellowmoon exported
+
+Usage: ym presets save [OPTIONS] --from <FILE> <NAME>
+
+Arguments:
+  <NAME>  The name of the preset: 1 to 64 characters
+
+Options:
+      --from <FILE>      Where the settings come from: a settings file (the form of `ym render --settings`), or a JPEG, TIFF, PNG or DNG that Yellowmoon exported
+  -q, --quiet            Print only errors on stderr
+      --groups <GROUPS>  The groups to save, as ids: look, lens, light, color, detail, curve, raw and nodes. Without it, the groups in which the settings differ from the defaults
+  -v, --verbose          Print what is happening on stderr: stages, timings and notes
+      --replace          Write over a preset that has this name
+  -h, --help             Print help
