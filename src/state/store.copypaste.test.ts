@@ -547,24 +547,24 @@ describe("what is copied stays in memory", () => {
 describe("the native menu's items", () => {
   it("follow what can be done: a developed photo, something copied, photos picked", async () => {
     const { api, store } = await onPhotos();
-    await vi.waitFor(() => expect(api.menuState).toEqual({ copy_settings: true, paste_settings: false, paste_settings_to_picked: false }));
+    await vi.waitFor(() => expect(api.menuState).toEqual({ copy_settings: true, paste_settings: false, paste_settings_to_picked: false, save_preset: true, apply_preset: true, save: true, save_as: true }));
     await store.copySettings();
-    await vi.waitFor(() => expect(api.menuState).toEqual({ copy_settings: true, paste_settings: true, paste_settings_to_picked: false }));
+    await vi.waitFor(() => expect(api.menuState).toEqual({ copy_settings: true, paste_settings: true, paste_settings_to_picked: false, save_preset: true, apply_preset: true, save: true, save_as: true }));
     await store.setPicked(4, true);
-    await vi.waitFor(() => expect(api.menuState).toEqual({ copy_settings: true, paste_settings: true, paste_settings_to_picked: true }));
+    await vi.waitFor(() => expect(api.menuState).toEqual({ copy_settings: true, paste_settings: true, paste_settings_to_picked: true, save_preset: true, apply_preset: true, save: true, save_as: true }));
     await store.setPicked(4, false);
     await vi.waitFor(() => expect(api.menuState?.paste_settings_to_picked).toBe(false));
     // Nothing open: nothing to copy or paste onto, though what was copied is kept.
     await store.closeSession();
-    await vi.waitFor(() => expect(api.menuState).toEqual({ copy_settings: false, paste_settings: false, paste_settings_to_picked: false }));
+    await vi.waitFor(() => expect(api.menuState).toEqual({ copy_settings: false, paste_settings: false, paste_settings_to_picked: false, save_preset: false, apply_preset: false, save: false, save_as: false }));
   });
 
   it("are all off while a dialog is open, and back when it closes", async () => {
     const { api, store } = await onPhotos();
     await store.copySettings();
     await store.setPicked(4, true);
-    const on = { copy_settings: true, paste_settings: true, paste_settings_to_picked: true };
-    const off = { copy_settings: false, paste_settings: false, paste_settings_to_picked: false };
+    const on = { copy_settings: true, paste_settings: true, paste_settings_to_picked: true, save_preset: true, apply_preset: true, save: true, save_as: true };
+    const off = { copy_settings: false, paste_settings: false, paste_settings_to_picked: false, save_preset: false, apply_preset: false, save: false, save_as: false };
     await vi.waitFor(() => expect(api.menuState).toEqual(on));
     // The Photos keys are switched off under a dialog, and the menu must not do what they would not.
     for (const overlay of ["preferences", "about", "confirm-close", "import-cube"] as const) {

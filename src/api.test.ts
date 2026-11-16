@@ -36,6 +36,23 @@ const rect: ViewportRect = { x: 0, y: 75, width: 1020, height: 680, scale: 2 };
 type Row = [name: string, call: () => Promise<unknown>, command: string, args: Record<string, unknown> | undefined, unit?: true];
 const calls: Row[] = [
   ["openPaths", () => tauriApi.openPaths(["/a.ARW"]), "open_paths", { paths: ["/a.ARW"] }],
+  ["presetsList", () => tauriApi.presetsList(3), "presets_list", { photoId: 3 }],
+  ["presetInspect", () => tauriApi.presetInspect({ kind: "photo", photo_id: 3 }), "preset_inspect", { source: { kind: "photo", photo_id: 3 } }],
+  ["presetSave", () => tauriApi.presetSave("A", ["look"], { kind: "photo", photo_id: 3 }, false), "preset_save", { name: "A", groups: ["look"], source: { kind: "photo", photo_id: 3 }, replace: false }],
+  ["presetUpdate", () => tauriApi.presetUpdate("A", 3), "preset_update", { name: "A", photoId: 3 }],
+  ["presetRename", () => tauriApi.presetRename("A", "B"), "preset_rename", { name: "A", newName: "B" }],
+  ["presetApply", () => tauriApi.presetApply("A", [3, 4]), "preset_apply", { name: "A", photoIds: [3, 4] }],
+  ["presetRemove", () => tauriApi.presetRemove("A"), "preset_remove", { name: "A" }, true],
+  ["presetRemoveFile", () => tauriApi.presetRemoveFile("Old.ympreset"), "preset_remove_file", { file: "Old.ympreset" }, true],
+  ["presetExport", () => tauriApi.presetExport("A"), "preset_export", { name: "A" }],
+  ["presetsImportDialog", () => tauriApi.presetsImportDialog(), "presets_import_dialog", undefined],
+  ["presetsImport", () => tauriApi.presetsImport(["/a.ympreset"], true), "presets_import", { paths: ["/a.ympreset"], replace: true }],
+  ["presetReveal", () => tauriApi.presetReveal("A"), "preset_reveal", { name: "A" }, true],
+  ["presetChooseExport", () => tauriApi.presetChooseExport(), "preset_choose_export", undefined],
+  ["presetThumbnail", () => tauriApi.presetThumbnail(3, "A"), "preset_thumbnail", { photoId: 3, name: "A" }],
+  ["albumOpen", () => tauriApi.albumOpen("/a.ymalbum"), "album_open", { path: "/a.ymalbum" }],
+  ["albumSave", () => tauriApi.albumSave(true), "album_save", { asNew: true }],
+  ["albumState", () => tauriApi.albumState(), "album_state", undefined],
   ["openDialog", () => tauriApi.openDialog("folder"), "open_dialog", { kind: "folder" }],
   ["cancelOpen", () => tauriApi.cancelOpen(), "cancel_open", undefined, true],
   ["sessionState", () => tauriApi.sessionState(), "session_state", undefined],
@@ -50,7 +67,7 @@ const calls: Row[] = [
   ["rerunAuto", () => tauriApi.rerunAuto(3), "rerun_auto", { photoId: 3 }],
   ["copySettings", () => tauriApi.copySettings(3), "copy_settings", { photoId: 3 }],
   ["pasteSettings", () => tauriApi.pasteSettings([4, 5], mainGradePatch({ contrast: manual(4) })), "paste_settings", { photoIds: [4, 5], patch: mainGradePatch({ contrast: manual(4) }) }],
-  ["setMenuState", () => tauriApi.setMenuState({ copy_settings: true, paste_settings: false, paste_settings_to_picked: false }), "set_menu_state", { state: { copy_settings: true, paste_settings: false, paste_settings_to_picked: false } }, true],
+  ["setMenuState", () => tauriApi.setMenuState({ copy_settings: true, paste_settings: false, paste_settings_to_picked: false, save_preset: false, apply_preset: false, save: false, save_as: false }), "set_menu_state", { state: { copy_settings: true, paste_settings: false, paste_settings_to_picked: false, save_preset: false, apply_preset: false, save: false, save_as: false } }, true],
   ["perfReport", () => tauriApi.perfReport('{"page":"x"}'), "perf_report", { report: '{"page":"x"}' }, true],
   // `at` is the node the signal is read at (`docs/01`); left out it goes as null, which the core reads as Main.
   ["histogram", () => tauriApi.histogram(3), "histogram", { photoId: 3, at: null }],
@@ -145,7 +162,7 @@ describe("tauriApi commands", () => {
   });
 
   it("covers every method of the mock, so the two can't drift apart", () => {
-    const mockOnly = ["options", "configure", "reset", "flush", "failNext", "cancelNextDialog", "fixtureUrl", "viewport", "menuState", "system", "queueChoice", "addSource", "removeSource", "simulateDownload", "emitEvent", "setAppleAuto", "setProviders"];
+    const mockOnly = ["options", "configure", "reset", "flush", "failNext", "cancelNextDialog", "fixtureUrl", "viewport", "menuState", "system", "queueChoice", "addSource", "removeSource", "simulateDownload", "emitEvent", "setAppleAuto", "setProviders", "savedPresets", "addDamagedPreset", "savedAlbums"];
     const mock = createMockApi();
     const contract = Object.keys(mock).filter((k) => !mockOnly.includes(k)).sort();
     expect(Object.keys(tauriApi).sort()).toEqual(contract);

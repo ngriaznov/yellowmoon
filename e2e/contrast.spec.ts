@@ -66,7 +66,8 @@ const STATE_NAMES = [
   "01-start-empty", "03-start-ready", "10-tab-look", "11-tab-light", "12-tab-colour", "13-tab-detail", "14-tab-curve", "15-tab-raw", "37-tab-lens",
   "16-mode-crop", "17-mode-pick-white", "20-dialog-preferences", "22-dialog-about", "24-error-bar", "25-export-jpeg", "29-export-running",
   "31-colour-warp", "42-nodes-default", "54-nodes-corrector-light", "58-nodes-masks-two-rows", "05-wizard-1-choose", "67-film-tab",
-  "78-mixers-parallel-inputs", "19-pixel-readout", "18-before-on",
+  "78-mixers-parallel-inputs", "19-pixel-readout", "18-before-on", "85-presets-card", "86-dialog-save-preset", "87-dialog-replace-preset", "88-album-edited",
+  "89-dialog-album-question",
 ] as const;
 const FIT_MENU = "fit-menu";
 const TOOLTIP = "tooltip";

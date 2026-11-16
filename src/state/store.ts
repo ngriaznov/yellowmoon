@@ -23,6 +23,13 @@ import type { Api, Unsubscribe } from "../api";
 import { toAppError } from "../api";
 import { isUnreadableMessage } from "../api/openMessages";
 import type {
+  AlbumState,
+  ImportResult,
+  PastedPhoto,
+  ImportExists,
+  PresetGroup,
+  PresetSource,
+  PresetList,
   ApplyScope,
   AutoProvider,
   AutoStatus,
@@ -117,6 +124,25 @@ import { perfCount } from "../perf";
 import { stampTick } from "../perfTimeline";
 import { isReady, mergeSession, photoName, releaseUrl, removedNotice, restoredNotice, withoutPhotos, withRestoredPhotos } from "./photo";
 import { RequestLimiter } from "./requestLimiter";
+import { TileCache } from "./tileCache";
+import {
+  ALBUM_AND_PHOTOS,
+  albumSavedNotice,
+  appliedNotice,
+  deletedNotice,
+  exportedNotice,
+  importNotice,
+  isAlbumPath,
+  isPresetPath,
+  nameExists,
+  nameProblem,
+  NO_PICKED_NOTICE,
+  renameClash,
+  renamedNotice,
+  savedNotice,
+  TWO_ALBUMS,
+  updatedNotice,
+} from "./presets";
 import { gestureHeld, onGestureEnd } from "./gestureHold";
 import { share } from "./share";
 import {
@@ -154,7 +180,20 @@ export type Panel = "tools" | "export";
 export type NoticeAction = "undo-removal";
 
 /** A dialog laid over the screen: Preferences (⌘,), About, the question before closing a session during an export, the `.cube` import. */
-export type Overlay = "preferences" | "about" | "confirm-close" | "import-cube";
+export type Overlay = "preferences" | "about" | "confirm-close" | "import-cube" | "preset" | "album-question";
+
+/**
+ * The dialog of `Overlay` "preset" (`docs/30` section 9.3, 9.4): the Save dialog (for a photo, or for an exported photo's file), the
+ * Rename dialog, the Update question, and the question for each name an import found (`Replace Warm evening?`).
+ */
+export type PresetDialog =
+  | { kind: "save"; source: PresetSource; photoId: PhotoId | null; changed: PresetGroup[]; olderExport: boolean }
+  | { kind: "rename"; name: string }
+  | { kind: "update"; name: string; photoId: PhotoId; photo: string; groups: PresetGroup[] }
+  | { kind: "replace-import"; queue: ImportExists[] };
+
+/** What the album question (`docs/31` section 6) goes on to when it is answered: closing the session, or opening another album. */
+export type AlbumNext = { kind: "close" } | { kind: "open"; path: string };
 
 /** One file of the `.cube` import dialog (`docs/08` §Any other .cube). */
 export interface CubeItem {
@@ -168,6 +207,13 @@ export interface CubeImport {
   items: CubeItem[];
   /** The import is running. */
   busy: boolean;
+}
+
+/** What `landReport` and the preset apply read of a report: the paste fields and the name of a look that is missing. */
+interface PresetApplyReportLike {
+  pasted: PastedPhoto[];
+  skipped: PhotoId[];
+  missing_look: string | null;
 }
 
 /** Said when a drop holds nothing the app can open. */
@@ -428,6 +474,19 @@ export interface AppState {
   viewportBusy: ViewportBusy;
   /** The settings Copy settings took, or null before the first copy; it outlives a session and is never saved. */
   copied: CopiedSettings | null;
+  /**
+   * The saved presets for the photo on screen (`presets_list`, `docs/30` section 8), null until the first answer. `matches` is for that photo,
+   * so it is asked again when its settings settle and when the photo changes. Nothing about it is saved by the page.
+   */
+  presets: PresetList | null;
+  /** The Presets card's own "Apply to": starts on This photo at every start of the app and is not remembered (`docs/30` section 9.1). */
+  presetScope: ApplyScope;
+  /** The Presets card shows every preset, not six; folded again at the next start (`docs/30` section 9.1). */
+  presetsShowAll: boolean;
+  /** The preset dialog that is open (`overlay` is "preset"), or null. */
+  presetDialog: PresetDialog | null;
+  /** The question "Save changes to the album …?" (`overlay` is "album-question"): what it goes on to when answered, or null. */
+  albumQuestion: AlbumNext | null;
 }
 
 /** The state of an app with nothing open. */
@@ -494,6 +553,11 @@ export function initialState(): AppState {
     exportBusy: false,
     viewportBusy: { busy: false, cpu: false, finding: false },
     copied: null,
+    presets: null,
+    presetScope: "this",
+    presetsShowAll: false,
+    presetDialog: null,
+    albumQuestion: null,
   };
 }
 
@@ -744,7 +808,19 @@ export class AppStore {
    */
   private readonly leaving = new Set<PhotoId>();
   /** The state the native menu was last told, which is the one it starts with: the settings items off. */
-  private menuState: MenuState = { copy_settings: false, paste_settings: false, paste_settings_to_picked: false };
+  private menuState: MenuState = {
+    copy_settings: false,
+    paste_settings: false,
+    paste_settings_to_picked: false,
+    save_preset: false,
+    apply_preset: false,
+    save: false,
+    save_as: false,
+  };
+  /** The preset tiles (`docs/30` section 9.6): the look tiles' machinery, two requests at once. */
+  private readonly presetTiles = new TileCache(LOOK_THUMBNAIL_CONCURRENCY);
+  /** The newest `presets_list` asked for: an older answer is dropped. */
+  private presetsAsked = 0;
   private readonly lookThumbs = new Map<PhotoId, { key: string; urls: Map<LookId, LookThumb> }>();
   /** Holds the look tiles' requests to {@link LOOK_THUMBNAIL_CONCURRENCY} at a time; what waits is dropped when its photo or settings change. */
   private readonly thumbLimiter = new RequestLimiter<{ photoId: PhotoId; key: string }>(LOOK_THUMBNAIL_CONCURRENCY);
@@ -800,7 +876,7 @@ export class AppStore {
   private readonly earlyExport: ExportProgress[] = [];
   private starting = false;
   /** Runs a menu item that needs the webview (`menu_action`); set by `App`, which knows the screens. */
-  menuHandler: ((action: MenuAction) => void) | null = null;
+  menuHandler: ((action: MenuAction, preset?: string | null) => void) | null = null;
   /**
    * The menu items that are a single key's action (Nodes, the Photo menu, Apply Look 1 to 9): the Photos screen, which owns what the
    * keys do, sets it while it is on screen. It runs the key's own handler, with the same guards (not in Crop or the Export panel where
@@ -865,9 +941,14 @@ export class AppStore {
       copy_settings: ready,
       paste_settings: ready && copied !== null,
       paste_settings_to_picked: overlay === null && copied !== null && (session?.picked.length ?? 0) > 0,
+      // Presets need a developed current photo and no dialog (so the Save dialog's Name field cannot open a second one); File › Save needs a photo.
+      save_preset: ready,
+      apply_preset: ready,
+      save: overlay === null && (session?.photos.length ?? 0) > 0,
+      save_as: overlay === null && (session?.photos.length ?? 0) > 0,
     };
     const was = this.menuState;
-    if (next.copy_settings === was.copy_settings && next.paste_settings === was.paste_settings && next.paste_settings_to_picked === was.paste_settings_to_picked) return;
+    if ((Object.keys(next) as Array<keyof MenuState>).every((key) => next[key] === was[key])) return;
     this.menuState = next;
     void this.api.setMenuState(next).catch(() => {
       // The menu keeps its items as they were; the keys and the buttons work without it.
@@ -913,6 +994,9 @@ export class AppStore {
         this.scheduleHistogram();
         this.scheduleChromaScatter();
       }),
+      // A preset was saved, renamed, replaced, imported or removed, here or by `ym`: read the list again (`docs/30` section 8).
+      api.on("presets_changed", () => void this.refreshPresets()),
+      api.on("album_changed", () => void this.refreshAlbum()),
       api.on("looks_changed", () => {
         void this.refreshLooks();
         void this.refreshPreferences();
@@ -923,7 +1007,7 @@ export class AppStore {
       api.on("auto_status_changed", () => void this.refreshAutoCached()),
       api.on("error", (error) => this.set({ error })),
       api.on("export_progress", (e) => this.onExportProgress(e)),
-      api.on("menu_action", (e) => this.menuHandler?.(e.action)),
+      api.on("menu_action", (e) => this.menuHandler?.(e.action, e.preset)),
       api.on("viewport_frame", (frame) => this.onFrame(frame)),
       api.on("settings_changed", (e) => void this.onSettingsChanged(e.photo_id)),
       api.on("export_busy", (e) => this.set({ exportBusy: e.busy })),
@@ -952,6 +1036,7 @@ export class AppStore {
       this.refreshLooks(),
       this.refreshLenses(),
       this.refreshSession(),
+      this.refreshPresets(),
       this.refreshPreferences(),
       this.refreshViewportInfo(),
       this.refreshExportBusy(),
@@ -1325,8 +1410,22 @@ export class AppStore {
    * On Photos the answer is said in a notice ("Added 3 photos. 2 were already open.", `openedNotice`), and the "No ARW files" sentence
    * goes there too, since only Start has a drop zone to show it in.
    */
-  async openPaths(paths: string[]): Promise<void> {
+  async openPaths(given: string[]): Promise<void> {
     const addingToPhotos = this.addingToPhotos();
+    // Presets and albums are files of our own (`docs/30` section 9.7, `docs/31` section 4): presets are added, an album is opened, and the
+    // rest of the drop is handled as before.
+    const presetPaths = given.filter(isPresetPath);
+    const albumPaths = given.filter(isAlbumPath);
+    const paths = given.filter((path) => !isPresetPath(path) && !isAlbumPath(path));
+    if (presetPaths.length > 0) await this.importPresets(presetPaths, addingToPhotos);
+    if (albumPaths.length > 0) {
+      const photos = isTauri() ? paths : filterArwPaths(paths).accepted;
+      if (albumPaths.length > 1) this.sayDropProblem(TWO_ALBUMS, addingToPhotos);
+      else if (photos.length > 0) this.sayDropProblem(ALBUM_AND_PHOTOS, addingToPhotos);
+      else await this.openAlbum(albumPaths[0] as string);
+      return;
+    }
+    if (presetPaths.length > 0 && paths.length === 0) return;
     const toOpen = isTauri() ? paths : filterArwPaths(paths).accepted;
     if (toOpen.length === 0) {
       this.sayNoArw(addingToPhotos);
@@ -1474,6 +1573,7 @@ export class AppStore {
     for (const urls of Object.values(this.state.nodeThumbnails)) for (const url of Object.values(urls)) releaseUrl(url);
     this.nodeThumbAsked.clear();
     this.releaseLookThumbs();
+    this.presetTiles.clear();
     this.pendingStatus.clear();
     this.histories.clear();
     this.gestures.clear();
@@ -1486,6 +1586,9 @@ export class AppStore {
       looks: this.state.looks,
       lenses: this.state.lenses,
       applyScope: this.state.applyScope,
+      presetScope: this.state.presetScope,
+      presetsShowAll: this.state.presetsShowAll,
+      presets: this.state.presets && { ...this.state.presets, presets: this.state.presets.presets.map((p) => ({ ...p, matches: false })) },
       maskView: this.state.maskView,
       collapsedLookLibraries: this.state.collapsedLookLibraries,
       stats: null,
@@ -1539,6 +1642,7 @@ export class AppStore {
     this.viewportQueue.clear();
     this.thumbLimiter.supersede((t) => t.photoId !== id);
     this.filmTileLimiter.supersede((t) => t.photoId !== id);
+    this.presetTiles.supersedeOthers(id);
     this.set({
       session: { ...session, current_index: index },
       histogram: null,
@@ -1977,7 +2081,16 @@ export class AppStore {
 
   closeOverlay(): void {
     // Closing any dialog drops the consent question too (`set`).
-    this.set(this.state.overlay === "import-cube" ? { overlay: null, cubeImport: null } : { overlay: null });
+    const overlay = this.state.overlay;
+    this.set(
+      overlay === "import-cube"
+        ? { overlay: null, cubeImport: null }
+        : overlay === "preset"
+          ? { overlay: null, presetDialog: null }
+          : overlay === "album-question"
+            ? { overlay: null, albumQuestion: null }
+            : { overlay: null },
+    );
   }
 
   /** A short message that is not an error. */
@@ -1997,6 +2110,11 @@ export class AppStore {
   /** ⌘W: closes the session, after asking when an export is running (`docs/11` §Keyboard shortcuts). */
   requestCloseSession(): Promise<void> {
     if (!this.state.session) return Promise.resolve();
+    // An album with changes is asked about first, before the export question (`docs/31` section 6).
+    if (this.state.session.album?.edited) {
+      this.set({ overlay: "album-question", albumQuestion: { kind: "close" } });
+      return Promise.resolve();
+    }
     if (this.exportRunning()) {
       this.set({ overlay: "confirm-close" });
       return Promise.resolve();
@@ -3089,6 +3207,16 @@ export class AppStore {
         }, 0);
       }
     }
+    await this.landReport(report, current);
+    const skipped = wanted.length - ids.length + report.skipped.length;
+    this.showNotice(pastedNotice(copied.source, report.pasted.length, skipped));
+  }
+
+  /**
+   * What a paste (or a preset applied through the same path) did to photos, taken into the page: each changed photo's undo step, the
+   * gestures that were open on it, the settings the mirror knew (dropped, and read again for the photo on screen).
+   */
+  private async landReport(report: { pasted: PastedPhoto[] }, current: PhotoSummary | null): Promise<void> {
     const changed = report.pasted.filter((p) => !isEmptyPatch(p.before) || !isEmptyPatch(p.after));
     for (const step of changed) {
       this.historyOf(step.id).push({ before: step.before, after: step.after });
@@ -3111,8 +3239,6 @@ export class AppStore {
     }
     await Promise.all([...shown].filter((id) => stale.has(id)).map((id) => this.resyncSettings(id)));
     this.syncHistoryFlags();
-    const skipped = wanted.length - ids.length + report.skipped.length;
-    this.showNotice(pastedNotice(copied.source, report.pasted.length, skipped));
   }
 
   /**
@@ -3131,6 +3257,357 @@ export class AppStore {
     const input = settings && inputOf(settings);
     const pickedWhite = input !== undefined && input.white_pick !== null && input.light_source === "auto" && input.white_balance.kind === "auto";
     return pickedWhite ? id : null;
+  }
+
+  // --- Presets (`docs/30-presets.md`) ---------------------------------------------------------
+
+  /**
+   * Reads the preset list for the photo on screen (`presets_list`: it reloads the folder, and `matches` is for that photo). An answer that
+   * an newer ask overtook is dropped. Called when the card shows, when the photo's settings settle, on `presets_changed` and at the start.
+   */
+  async refreshPresets(): Promise<void> {
+    const asked = (this.presetsAsked += 1);
+    try {
+      const listing = await this.api.presetsList(this.currentId());
+      if (asked !== this.presetsAsked) return;
+      const had = this.state.presets;
+      this.set({ presets: had && share(had, listing) === had ? had : listing });
+    } catch (error) {
+      if (asked === this.presetsAsked) this.fail(error);
+    }
+  }
+
+  /** The Presets card's "Apply to". Not remembered: every start of the app begins on This photo. */
+  setPresetScope(scope: ApplyScope): void {
+    this.set({ presetScope: scope });
+  }
+
+  /** Show all N / Show fewer. Folded again at the next start. */
+  setPresetsShowAll(showAll: boolean): void {
+    this.set({ presetsShowAll: showAll });
+  }
+
+  /**
+   * Applies a preset (a click on its tile, Looks › Apply Preset, Apply to Picked Photos). Everything the click means is fixed when it is
+   * made: the photos of the scope (`scope` is the card's unless the menu item names one), and the preset. A move to another photo before the core
+   * has answered changes nothing, and the calls reach the core in the order of the clicks ({@link applyAfter}). The core's Paste path does
+   * the work: one undo step per photo, the patches of the report go to each photo's history.
+   */
+  async applyPreset(name: string, scope: ApplyScope = this.state.presetScope): Promise<void> {
+    const { session } = this.state;
+    if (!session) return;
+    const current = this.currentPhoto();
+    const chosen = scope === "this" ? (current ? [current] : []) : scope === "picked" ? session.photos.filter((p) => p.picked) : session.photos;
+    if (chosen.length === 0) {
+      this.showNotice(scope === "picked" ? NO_PICKED_NOTICE : "There is no photo to apply it to.");
+      return;
+    }
+    const ids = chosen.filter(isReady).map((p) => p.id);
+    const left = chosen.length - ids.length;
+    const only = chosen.length === 1 ? photoName((chosen[0] as PhotoSummary).file_name) : null;
+    const ready = Promise.all(ids.map((id) => this.whenIdle(id))).then(() => undefined);
+    await this.applyAfter(ready, async () => {
+      let report: PresetApplyReportLike = { pasted: [], skipped: [], missing_look: null };
+      if (ids.length > 0) {
+        for (const id of ids) this.pasting.add(id);
+        try {
+          report = await this.api.presetApply(name, ids);
+          this.bulkEpoch += 1;
+        } catch (error) {
+          this.fail(error);
+          void this.refreshPresets();
+          return;
+        } finally {
+          setTimeout(() => {
+            for (const id of ids) this.pasting.delete(id);
+          }, 0);
+        }
+      }
+      await this.landReport(report, current);
+      this.showNotice(appliedNotice(name, report.pasted.length, left + report.skipped.length, only, report.missing_look));
+      void this.refreshPresets();
+    });
+  }
+
+  /** Opens the Save dialog for the photo on screen (⌥⌘S, Save…, Save preset…): the core says which groups to tick. */
+  async openSavePreset(): Promise<void> {
+    const photo = this.currentPhoto();
+    if (!photo || !isReady(photo) || this.state.overlay !== null) return;
+    await this.whenIdle(photo.id);
+    await this.refreshPresets();
+    await this.openSaveDialog({ kind: "photo", photo_id: photo.id }, photo.id);
+  }
+
+  /** Looks › New Preset from Exported Photo…: the system panel chooses the photo, and the same dialog opens with the name empty. */
+  async openSavePresetFromExport(): Promise<void> {
+    if (this.state.overlay !== null) return;
+    try {
+      const path = await this.api.presetChooseExport();
+      if (path === null) return;
+      await this.refreshPresets();
+      await this.openSaveDialog({ kind: "file", path }, null);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  private async openSaveDialog(source: PresetSource, photoId: PhotoId | null): Promise<void> {
+    try {
+      const inspect = await this.api.presetInspect(source);
+      if (this.state.overlay !== null) return;
+      this.set({ overlay: "preset", presetDialog: { kind: "save", source, photoId, changed: inspect.changed, olderExport: inspect.older_export } });
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /**
+   * Saves the preset the dialog describes. `replace` after the question "Replace Warm evening?". Closes the dialog and says it in the
+   * notice bar; a refusal of the core is shown in the error bar and leaves the dialog open. Returns whether it was saved.
+   */
+  async savePreset(name: string, groups: PresetGroup[], source: PresetSource, replace: boolean): Promise<boolean> {
+    const trimmed = name.trim();
+    if (nameProblem(trimmed) !== null || groups.length === 0) return false;
+    try {
+      await this.api.presetSave(trimmed, groups, source, replace);
+    } catch (error) {
+      this.fail(error);
+      return false;
+    }
+    this.closeOverlay();
+    this.showNotice(savedNotice(trimmed, replace));
+    await this.refreshPresets();
+    return true;
+  }
+
+  /** Right-click › Rename…: the Save dialog's Name field alone. */
+  openRenamePreset(name: string): void {
+    if (this.state.overlay !== null) return;
+    this.set({ overlay: "preset", presetDialog: { kind: "rename", name } });
+  }
+
+  /** Renames a preset. A name that exists is refused under the field (the sentence is returned); otherwise null. */
+  async renamePreset(name: string, newName: string): Promise<string | null> {
+    const trimmed = newName.trim();
+    const problem = nameProblem(trimmed);
+    if (problem !== null) return problem;
+    if (nameExists(this.state.presets?.presets ?? [], trimmed, name)) return renameClash(trimmed);
+    try {
+      await this.api.presetRename(name, trimmed);
+    } catch (error) {
+      const failure = toAppError(error);
+      if (failure.scope === "presets") return failure.message;
+      this.fail(failure);
+      return failure.message;
+    }
+    this.closeOverlay();
+    this.showNotice(renamedNotice(name, trimmed));
+    await this.refreshPresets();
+    return null;
+  }
+
+  /** Right-click › Update from This Photo: asks first ("Update Warm evening?"). */
+  openUpdatePreset(name: string): void {
+    const photo = this.currentPhoto();
+    const entry = this.state.presets?.presets.find((p) => p.name === name);
+    if (!photo || !isReady(photo) || !entry || this.state.overlay !== null) return;
+    this.set({ overlay: "preset", presetDialog: { kind: "update", name, photoId: photo.id, photo: photoName(photo.file_name), groups: entry.groups } });
+  }
+
+  /** Update, after the question: the photo's values again for the preset's own groups. */
+  async updatePreset(name: string, photoId: PhotoId, photo: string): Promise<void> {
+    this.closeOverlay();
+    try {
+      await this.whenIdle(photoId);
+      await this.api.presetUpdate(name, photoId);
+    } catch (error) {
+      this.fail(error);
+      return;
+    }
+    this.showNotice(updatedNotice(name, photo));
+    await this.refreshPresets();
+  }
+
+  /** Right-click › Delete: to the Trash, no question (it can be taken back). */
+  async removePreset(name: string): Promise<void> {
+    try {
+      await this.api.presetRemove(name);
+    } catch (error) {
+      this.fail(error);
+      return;
+    }
+    this.showNotice(deletedNotice(name));
+    await this.refreshPresets();
+  }
+
+  /** Delete on a damaged file's row. */
+  async removeDamagedPreset(file: string): Promise<void> {
+    try {
+      await this.api.presetRemoveFile(file);
+    } catch (error) {
+      this.fail(error);
+      return;
+    }
+    await this.refreshPresets();
+  }
+
+  /** Right-click › Export…: the system save panel; nothing happens when the person cancels. */
+  async exportPreset(name: string): Promise<void> {
+    try {
+      const done = await this.api.presetExport(name);
+      if (done) this.showNotice(exportedNotice(name));
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /** Right-click › Show in Finder. */
+  async revealPreset(name: string): Promise<void> {
+    try {
+      await this.api.presetReveal(name);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /** Looks › Import Presets…: the system open panel, then the import. */
+  async importPresetsDialog(): Promise<void> {
+    try {
+      const result = await this.api.presetsImportDialog();
+      if (result) this.landImport(result, true);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /** Dropped `.ympreset` files: added, never replaced behind the person's back (`docs/30` section 9.7). `onPhotos`: where the notice is said. */
+  async importPresets(paths: string[], onPhotos: boolean): Promise<void> {
+    try {
+      this.landImport(await this.api.presetsImport(paths, false), onPhotos);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /** What an import came to: the notice, and the question for each name that exists. */
+  private landImport(result: ImportResult, onPhotos: boolean): void {
+    const notice = importNotice(result);
+    if (notice !== null) this.sayDropProblem(notice, onPhotos || this.state.screen === "photos");
+    if (result.exists.length > 0 && this.state.overlay === null) this.set({ overlay: "preset", presetDialog: { kind: "replace-import", queue: result.exists } });
+    void this.refreshPresets();
+  }
+
+  /** The import's question, answered: Replace writes over that preset; either way the next name is asked about. */
+  async answerImportReplace(replace: boolean): Promise<void> {
+    const dialog = this.state.presetDialog;
+    if (dialog?.kind !== "replace-import") return;
+    const [first, ...rest] = dialog.queue;
+    if (!first) return;
+    this.set(rest.length > 0 ? { presetDialog: { kind: "replace-import", queue: rest } } : { overlay: null, presetDialog: null });
+    if (!replace) return;
+    try {
+      const result = await this.api.presetsImport([first.path], true);
+      const notice = importNotice(result);
+      if (notice !== null) this.showNotice(notice);
+    } catch (error) {
+      this.fail(error);
+    }
+    await this.refreshPresets();
+  }
+
+  /** The thumbnail of a preset tile (`docs/30` section 9.6): the look tiles' machinery; `revision` and `key` say what it was made from. */
+  presetThumbnail(photoId: PhotoId, name: string, revision: string, key: string): Promise<string> {
+    return this.presetTiles.request(photoId, `${name}\u0000${revision}`, key, () => this.api.presetThumbnail(photoId, name));
+  }
+
+  /** The address of a preset tile stopped answering: forgotten, so the next ask makes a new picture. */
+  forgetPresetThumbnail(photoId: PhotoId, name: string, revision: string, key: string, url: string): void {
+    this.presetTiles.forget(photoId, `${name}\u0000${revision}`, key, url);
+  }
+
+  // --- Albums (`docs/31-albums.md`) -----------------------------------------------------------
+
+  /** Reads the album's state again (`album_changed`) into the session mirror. */
+  async refreshAlbum(): Promise<void> {
+    try {
+      const album = await this.api.albumState();
+      const session = this.state.session;
+      if (!session) return;
+      const had = session.album ?? null;
+      if (had === album || (had && album && had.name === album.name && had.path === album.path && had.edited === album.edited)) return;
+      this.set({ session: { ...session, album } });
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /** The open album's state, or null. */
+  albumState(): AlbumState | null {
+    return this.state.session?.album ?? null;
+  }
+
+  /**
+   * File › Save (⌘S) and Save As… (⇧⌘S). Patches still on their way to the core land first, so that what is written is the session as it is.
+   * Resolves true when a file was written; false when the person cancelled the save panel or the write failed (the error bar says why).
+   */
+  async saveAlbum(asNew = false): Promise<boolean> {
+    const session = this.state.session;
+    if (!session || session.photos.length === 0) return false;
+    await Promise.all(session.photos.map((p) => this.whenIdle(p.id)));
+    try {
+      const saved = await this.api.albumSave(asNew);
+      if (saved === null) return false;
+      this.showNotice(albumSavedNotice(saved.name));
+      await this.refreshAlbum();
+      return true;
+    } catch (error) {
+      this.fail(error);
+      return false;
+    }
+  }
+
+  /** Opens an album, replacing the session; asks "Save changes to the album …?" first when the open one has unsaved changes. */
+  async openAlbum(path: string): Promise<void> {
+    if (this.state.session?.album?.edited) {
+      this.set({ overlay: "album-question", albumQuestion: { kind: "open", path } });
+      return;
+    }
+    await this.openAlbumNow(path);
+  }
+
+  private async openAlbumNow(path: string): Promise<void> {
+    const onPhotos = this.addingToPhotos();
+    this.set({ dropNotice: null, opening: true });
+    try {
+      const had = this.state.session !== null;
+      const session = await this.api.albumOpen(path);
+      if (had) this.endSessionView();
+      this.forgetRemoval();
+      this.adoptSession(session, true);
+      await this.refreshThumbnails();
+      if (this.state.screen !== "photos" && session.photos.some(isReady)) this.set({ screen: "photos" });
+      void this.refreshPresets();
+    } catch (error) {
+      const failure = toAppError(error);
+      if (failure.scope === "album") this.sayDropProblem(failure.message, onPhotos);
+      else this.fail(failure);
+    } finally {
+      this.endOpening();
+    }
+  }
+
+  /** The answer to the album question: Save (and go on, unless the save did not happen), Don't Save (go on) or Cancel (stay). */
+  async answerAlbumQuestion(answer: "save" | "discard" | "cancel"): Promise<void> {
+    const next = this.state.albumQuestion;
+    this.closeOverlay();
+    if (answer === "cancel" || !next) return;
+    if (answer === "save" && !(await this.saveAlbum(false))) return;
+    if (next.kind === "open") {
+      await this.openAlbumNow(next.path);
+      return;
+    }
+    if (this.exportRunning()) this.set({ overlay: "confirm-close" });
+    else await this.closeSession();
   }
 
   // --- Looks --------------------------------------------------------------------------------

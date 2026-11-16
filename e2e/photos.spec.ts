@@ -140,8 +140,8 @@ test.describe("the flow", () => {
     const first = await sizes();
     expect(first.length).toBeGreaterThanOrEqual(2);
     expect(first.length).toBeLessThan(9);
-    // The last tile, brought into view, not the end of the panel: the Tone card below the grid is short, so what the end of the panel shows
-    // depends on the window (with the Lens card below Tone, as it was, the end of the panel showed no tile at all).
+    // The last tile, brought into view, not the end of the panel: the Presets card below the grid is short (and empty here), so what the end of
+    // the panel shows depends on the window.
     await page.locator(".ym-look-tile").last().evaluate((el) => el.scrollIntoView({ block: "end" }));
     await expect.poll(async () => (await sizes()).length).toBe(9);
     await settle(page);

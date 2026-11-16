@@ -215,7 +215,15 @@ test.describe("Copy settings and Paste", () => {
     await expect(foot(page).getByRole("button", { name: "Paste" })).toHaveAccessibleName("Paste");
     await expect(header(page).getByRole("button", { name: "Add photos" })).toHaveAccessibleName("Add photos");
     await foot(page).getByRole("button", { name: "Copy settings" }).click();
-    await expect.poll(() => mock(page, (api) => api.menuState)).toEqual({ copy_settings: true, paste_settings: true, paste_settings_to_picked: true });
+    await expect.poll(() => mock(page, (api) => api.menuState)).toEqual({
+      copy_settings: true,
+      paste_settings: true,
+      paste_settings_to_picked: true,
+      save_preset: true,
+      apply_preset: true,
+      save: true,
+      save_as: true,
+    });
     // The notice that says so does not cover the row: Paste can be pressed while it shows.
     const bar = (await page.locator(".ym-error-bar").boundingBox())!;
     const panel = (await page.getByRole("complementary", { name: "Tools" }).boundingBox())!;

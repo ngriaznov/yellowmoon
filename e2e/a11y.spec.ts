@@ -345,8 +345,8 @@ test.describe("Apple Auto (docs/19)", () => {
     await openApp(page, { ...MOCKUP, mockAppleAuto: "answered" });
     await openPhotos(page);
     let snapshot = await expectNamed(page, "Photos with Apple Auto");
-    expect(snapshot).toContain('button "Contrast +15, Auto. Open Tone"');
-    expect(snapshot).toContain('button "Saturation −15, Auto. Open Tone"');
+    expect(snapshot).toContain('button "Contrast +15, Auto. Open Light"');
+    expect(snapshot).toContain('button "Saturation −15, Auto. Open Colour"');
     expect(snapshot).toContain('button "Highlights −20, Auto. Open Light"');
     expect(snapshot).toContain('button "Shadows colour Teal · medium, Auto. Open Colour"');
     expect(snapshot).toContain("Set with Apple Intelligence.");
@@ -363,7 +363,7 @@ test.describe("Apple Auto (docs/19)", () => {
   test("the select opens from the keyboard, and the rows are Tab stops with the ring", async ({ page }) => {
     await openApp(page, { ...MOCKUP, mockAppleAuto: "answered" });
     await openPhotos(page);
-    await tabTo(page, (el) => el.getAttribute("aria-label") === "Contrast +15, Auto. Open Tone");
+    await tabTo(page, (el) => el.getAttribute("aria-label") === "Contrast +15, Auto. Open Light");
     await expect(page.locator(":focus")).toHaveCSS("outline-width", "3px");
     await page.keyboard.press("Meta+,");
     const select = page.getByRole("combobox", { name: "Auto grading" });

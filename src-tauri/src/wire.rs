@@ -2817,9 +2817,9 @@ pub struct DamagedPreset {
     pub reason: String,
 }
 
-/// The answer of `presets_list` (`PresetsListing` of `types.ts`).
+/// The answer of `presets_list` (`PresetList` of `types.ts`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
-pub struct PresetsListing {
+pub struct PresetList {
     /// The presets, by name.
     pub presets: Vec<PresetEntry>,
     /// The files that could not be used.
@@ -2866,18 +2866,18 @@ pub struct PresetApplyReport {
     pub missing_look: Option<String>,
 }
 
-/// A name of an import that exists and was not replaced (`PresetExists` of `types.ts`).
+/// A name of an import that exists and was not replaced (`ImportExists` of `types.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-pub struct PresetExists {
+pub struct ImportExists {
     /// The preset's name.
     pub name: String,
     /// The file it came from.
     pub path: String,
 }
 
-/// A file of an import that was refused (`PresetRefused` of `types.ts`).
+/// A file of an import that was refused (`ImportRefused` of `types.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-pub struct PresetRefused {
+pub struct ImportRefused {
     /// The file's name.
     pub file: String,
     /// Why.
@@ -2892,9 +2892,9 @@ pub struct ImportResult {
     /// The names replaced (only with `replace`).
     pub replaced: Vec<String>,
     /// The names that exist and were not replaced.
-    pub exists: Vec<PresetExists>,
+    pub exists: Vec<ImportExists>,
     /// The files refused.
-    pub refused: Vec<PresetRefused>,
+    pub refused: Vec<ImportRefused>,
 }
 
 /// The answer of `preset_export`: where the file was written.

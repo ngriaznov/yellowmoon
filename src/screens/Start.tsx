@@ -6,7 +6,7 @@ import type { DevelopItem } from "../components";
 import { gradedByNote, gradingHint, gradingTitle } from "../state/autoProviders";
 import { useAppState, useStore } from "../state/context";
 import { lookLabeller } from "../state/looks";
-import { developFraction, folderSubline, isReady, photoName } from "../state/photo";
+import { developFraction, folderSubline, folderTitle, isReady, photoName } from "../state/photo";
 import { ExportCell, Header } from "./Header";
 import { Menu } from "./Menu";
 import { OpenReading } from "./OpenReading";
@@ -104,7 +104,7 @@ export function Start() {
     <div className="ym-screen" data-screen="start">
       <Aurora className="ym-aurora" animate={false} />
       <Header
-        title={busy ? (session?.folder_name ?? "Yellowmoon") : "Yellowmoon"}
+        title={busy && session ? folderTitle(session) : "Yellowmoon"}
         subline={busy && session ? folderSubline(session) : "Drop ARW files to start"}
         export={<ExportCell label="Export" disabled title="Open photos to export" />}
       >

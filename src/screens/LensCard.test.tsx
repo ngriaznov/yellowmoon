@@ -88,7 +88,8 @@ describe("the Lens tab", () => {
     expect(amounts().getByRole("button", { name: "Reset" })).toBeInTheDocument();
     expect(card().queryByRole("button", { name: "Reset" })).toBeNull();
     await h.user.click(screen.getByRole("tab", { name: "Look" }));
-    expect(await screen.findByRole("region", { name: "Tone" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Presets" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Tone" })).toBeNull();
     expect(screen.queryByRole("region", { name: "Lens" })).toBeNull();
     expect(screen.queryByRole("region", { name: "Amounts" })).toBeNull();
     expect(screen.queryByRole("radiogroup", { name: "Lens" })).toBeNull();

@@ -228,8 +228,8 @@ describe("the Automatic card with Apple Auto", () => {
     ]);
     expect(screen.getByRole("button", { name: "Highlights −20, Auto. Open Light" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Black −15, Auto. Open Light" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Contrast +15, Auto. Open Tone" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Saturation −15, Auto. Open Tone" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Contrast +15, Auto. Open Light" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Saturation −15, Auto. Open Colour" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Shadows colour Teal · medium, Auto. Open Colour" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Highlights colour Warm · subtle, Auto. Open Colour" })).toBeInTheDocument();
     // The answer's exposure and warmer white are in the rows above.
@@ -244,12 +244,15 @@ describe("the Automatic card with Apple Auto", () => {
     expect(rowLabels()).toEqual(["Exposure", "White balance", "Noise", "Camera"]);
     expect(automatic().getByText("Apple Intelligence is looking at this photo…")).toBeInTheDocument();
     h!.api.setAppleAuto("answered");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Contrast +15, Auto. Open Tone" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Contrast +15, Auto. Open Light" })).toBeInTheDocument());
     expect(automatic().getByText("Set with Apple Intelligence.")).toBeInTheDocument();
     expect(screen.queryByText("Apple Intelligence is looking at this photo…")).toBeNull();
     // The sliders follow: the detent and the box are at the new Auto value.
+    await openTab(h!, "Light");
     expect(valueOf("Contrast")).toBe("+15");
+    await openTab(h!, "Colour");
     expect(valueOf("Saturation")).toBe("−15");
+    await openTab(h!, "Look");
   });
 
   it("the look tiles are made again when the answer changes the picture", async () => {
@@ -265,8 +268,9 @@ describe("the Automatic card with Apple Auto", () => {
   it("failed: the rule's values, no rows of Apple's, and the line that says so", async () => {
     await onPhotos("failed");
     expect(rowLabels()).toEqual(["Exposure", "White balance", "Noise", "Camera"]);
-    expect(valueOf("Saturation")).toBe("0");
     expect(automatic().getByText("Apple Intelligence couldn't look at this photo, so Default Auto is used.")).toBeInTheDocument();
+    await openTab(h!, "Colour");
+    expect(valueOf("Saturation")).toBe("0");
   });
 
   it("lists only the values that were set, and names the colours with their strengths", () => {
@@ -320,20 +324,22 @@ describe("the Automatic card with Apple Auto", () => {
 
   it("says EDITED for a manual contrast, and Re-run gives it back to Auto", async () => {
     await onPhotos("answered");
+    await openTab(h!, "Light");
     await type("Contrast", "40");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Contrast +40, Edited. Open Tone" })).toBeInTheDocument());
+    await openTab(h!, "Look");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Contrast +40, Edited. Open Light" })).toBeInTheDocument());
     await h!.user.click(automatic().getByRole("button", { name: "Re-run" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Contrast +15, Auto. Open Tone" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Contrast +15, Auto. Open Light" })).toBeInTheDocument());
   });
 
-  it("the arrow of Contrast and Saturation goes to the Tone card's slider on the same tab", async () => {
+  it("the arrow of Contrast opens Light and the arrow of Saturation opens Colour (the Tone card is gone, docs/30 section 9.10)", async () => {
     await onPhotos("answered");
-    await h!.user.click(screen.getByRole("button", { name: "Saturation −15, Auto. Open Tone" }));
-    expect(screen.getByRole("tab", { name: "Look" })).toHaveAttribute("aria-selected", "true");
-    const tone = screen.getByRole("region", { name: "Tone" });
-    await waitFor(() => expect(document.activeElement).toBe(within(tone).getByRole("slider", { name: "Saturation" })));
-    await h!.user.click(screen.getByRole("button", { name: "Contrast +15, Auto. Open Tone" }));
-    await waitFor(() => expect(document.activeElement).toBe(within(tone).getByRole("slider", { name: "Contrast" })));
+    expect(screen.queryByRole("region", { name: "Tone" })).toBeNull();
+    await h!.user.click(screen.getByRole("button", { name: "Saturation −15, Auto. Open Colour" }));
+    expect(screen.getByRole("tab", { name: "Colour" })).toHaveAttribute("aria-selected", "true");
+    await openTab(h!, "Look");
+    await h!.user.click(screen.getByRole("button", { name: "Contrast +15, Auto. Open Light" }));
+    expect(screen.getByRole("tab", { name: "Light" })).toHaveAttribute("aria-selected", "true");
   });
 
   it("the line for each state, and none while Apple Auto is off or not available", () => {
@@ -364,14 +370,12 @@ describe("the Automatic card with Apple Auto", () => {
 });
 
 describe("the Contrast and Saturation sliders with Apple Auto", () => {
-  it("have their detent and Reset at the Auto value, on the Look, Light and Colour tabs", async () => {
+  it("have their detent and Reset at the Auto value, on the Light and Colour tabs", async () => {
     await onPhotos("answered");
-    expect(valueOf("Contrast")).toBe("+15");
-    expect(valueOf("Saturation")).toBe("−15");
-    // At the Auto value there is nothing to reset.
-    expect(screen.queryByRole("button", { name: "Reset Contrast" })).toBeNull();
     await openTab(h!, "Light");
     expect(valueOf("Contrast")).toBe("+15");
+    // At the Auto value there is nothing to reset.
+    expect(screen.queryByRole("button", { name: "Reset Contrast" })).toBeNull();
     expect(sliderOf("Contrast")).toHaveAttribute("aria-valuenow", "15");
     await openTab(h!, "Colour");
     expect(valueOf("Saturation")).toBe("−15");
@@ -379,6 +383,7 @@ describe("the Contrast and Saturation sliders with Apple Auto", () => {
 
   it("send a value equal to the Auto value as Auto, any other value as Manual, and Reset as Auto", async () => {
     const spy = await onPhotos("answered");
+    await openTab(h!, "Light");
     await type("Contrast", "25");
     expect(await lastPatch(spy)).toEqual(mainGradePatch({ contrast: { kind: "manual", value: 25 } }));
     spy.mockClear();
@@ -386,6 +391,7 @@ describe("the Contrast and Saturation sliders with Apple Auto", () => {
     expect(await lastPatch(spy)).toEqual(mainGradePatch({ contrast: { kind: "auto" } }));
     await waitFor(() => expect(h!.store.currentSettings()?.auto.main.contrast).toBe(true));
     spy.mockClear();
+    await openTab(h!, "Colour");
     await type("Saturation", "0");
     expect(await lastPatch(spy)).toEqual(mainGradePatch({ saturation: { kind: "manual", value: 0 } }));
     spy.mockClear();
@@ -396,6 +402,7 @@ describe("the Contrast and Saturation sliders with Apple Auto", () => {
 
   it("a key on the knob is one Manual step from the Auto value, and undo takes it back to Auto", async () => {
     const spy = await onPhotos("answered");
+    await openTab(h!, "Light");
     sliderOf("Contrast").focus();
     await h!.user.keyboard("{ArrowRight}");
     expect(await lastPatch(spy)).toEqual(mainGradePatch({ contrast: { kind: "manual", value: 16 } }));
@@ -407,6 +414,7 @@ describe("the Contrast and Saturation sliders with Apple Auto", () => {
 
   it("a whole drag is one undo step", async () => {
     await onPhotos("answered");
+    await openTab(h!, "Colour");
     await h!.store.update(mainGradePatch({ saturation: { kind: "manual", value: -5 } }), false);
     await h!.store.update(mainGradePatch({ saturation: { kind: "manual", value: 10 } }), false);
     await h!.store.update(mainGradePatch({ saturation: { kind: "manual", value: 30 } }), true);
@@ -418,6 +426,7 @@ describe("the Contrast and Saturation sliders with Apple Auto", () => {
 
   it("copy and paste carry Auto as Auto: the photo pasted onto keeps its own answer", async () => {
     await onPhotos("answered");
+    await openTab(h!, "Colour");
     await type("Saturation", "20");
     await waitFor(() => expect(valueOf("Saturation")).toBe("+20"));
     await h!.store.copySettings();
@@ -428,6 +437,7 @@ describe("the Contrast and Saturation sliders with Apple Auto", () => {
     await h!.store.pasteSettings("this");
     await waitFor(() => expect(mainGradeOf(h!.store.currentSettings()!.settings).saturation).toEqual({ kind: "manual", value: 20 }));
     expect(mainGradeOf(h!.store.currentSettings()!.settings).contrast).toEqual({ kind: "auto" });
+    await openTab(h!, "Light");
     expect(valueOf("Contrast")).toBe("+15");
   });
 });

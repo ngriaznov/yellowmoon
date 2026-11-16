@@ -18,15 +18,15 @@ export interface LookThumbnail {
   onImageError: () => void;
 }
 
-/** True for a refusal that asking again cannot change (the look's file is gone, the look is not in the library). */
-function isFinal(error: unknown): boolean {
-  return typeof error === "object" && error !== null && (error as { scope?: unknown }).scope === "looks";
+/** True for a refusal that asking again cannot change, of the scope given (the look's file is gone, the preset is not saved any more). */
+function isFinalIn(scope: string, error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { scope?: unknown }).scope === scope;
 }
 
 /**
- * The picture of a photo through one look, for a tile of the Look card or of the wizard's last
- * step. The store makes each picture once per photo, look and `key` and hands the same request to
- * every tile that asks, which has two consequences handled here:
+ * The picture of a tile that is made by the core and kept by the store (the look tiles, the preset tiles of `docs/30` section 9.6). The
+ * store makes each picture once per photo, tile and `key` and hands the same request to every tile that asks, which has consequences
+ * handled here:
  *
  * - A request can fail for a reason that is not the tile's (the core cancels the tiles of a photo
  *   when the person moves to another one, and a tile that comes back meanwhile is handed that
@@ -41,27 +41,35 @@ function isFinal(error: unknown): boolean {
  *   reports an error the store forgets that address and the tile asks for a new picture, within the
  *   same allowance.
  *
- * `enabled` false (a tile out of view, a look whose file is missing) asks for nothing and keeps the picture it has; the tile that is
- * enabled again with other settings asks for a new one.
+ * `picture` names the picture (photo, tile and settings): the allowance is renewed when it changes. `enabled` false (a tile out of view,
+ * a look whose file is missing) asks for nothing and keeps the picture it has.
  */
-export function useLookThumbnail(store: AppStore, photoId: PhotoId | null, lookId: LookId, key: string, enabled = true): LookThumbnail {
+export function useTilePicture(
+  picture: string,
+  enabled: boolean,
+  ask: () => Promise<string>,
+  forget: (url: string) => void,
+  scope: string,
+): LookThumbnail {
   const [src, setSrc] = useState<string | undefined>();
   // Bumped to ask again.
   const [round, setRound] = useState(0);
-  // The allowance belongs to one picture (photo, look and settings), and is renewed for the next.
+  // The allowance belongs to one picture, and is renewed for the next.
   const spent = useRef({ picture: "", count: 0 });
+  // The callbacks of the latest draw: a new function every draw must not ask again.
+  const latest = useRef({ ask, forget });
+  latest.current = { ask, forget };
 
   useEffect(() => {
-    if (!enabled || photoId === null) return;
-    const picture = `${photoId} ${lookId} ${key}`;
+    if (!enabled) return;
     if (spent.current.picture !== picture) spent.current = { picture, count: 0 };
     let live = true;
-    store.lookThumbnail(photoId, lookId, key).then(
+    latest.current.ask().then(
       (url) => {
         if (live) setSrc(url);
       },
       (error: unknown) => {
-        if (!live || isSuperseded(error) || isFinal(error) || spent.current.count >= MAX_TILE_RETRIES) return;
+        if (!live || isSuperseded(error) || isFinalIn(scope, error) || spent.current.count >= MAX_TILE_RETRIES) return;
         spent.current.count += 1;
         setRound((n) => n + 1);
       },
@@ -69,16 +77,38 @@ export function useLookThumbnail(store: AppStore, photoId: PhotoId | null, lookI
     return () => {
       live = false;
     };
-  }, [store, enabled, photoId, lookId, key, round]);
+  }, [enabled, picture, scope, round]);
 
   const onImageError = useCallback(() => {
-    if (src === undefined || photoId === null) return;
-    store.forgetLookThumbnail(photoId, lookId, key, src);
+    if (src === undefined) return;
+    latest.current.forget(src);
     setSrc(undefined);
     if (spent.current.count >= MAX_TILE_RETRIES) return;
     spent.current.count += 1;
     setRound((n) => n + 1);
-  }, [store, src, photoId, lookId, key]);
+  }, [src]);
 
   return { src, onImageError };
+}
+
+/** The picture of a photo through one look, for a tile of the Look card or of the wizard's last step (see {@link useTilePicture}). */
+export function useLookThumbnail(store: AppStore, photoId: PhotoId | null, lookId: LookId, key: string, enabled = true): LookThumbnail {
+  return useTilePicture(
+    `${photoId} ${lookId} ${key}`,
+    enabled && photoId !== null,
+    () => store.lookThumbnail(photoId as PhotoId, lookId, key),
+    (url) => store.forgetLookThumbnail(photoId as PhotoId, lookId, key, url),
+    "looks",
+  );
+}
+
+/** The picture of a photo with one preset applied, for a tile of the Presets card (`docs/30` section 9.6). `revision` changes when the preset is saved again. */
+export function usePresetThumbnail(store: AppStore, photoId: PhotoId | null, name: string, revision: string, key: string, enabled = true): LookThumbnail {
+  return useTilePicture(
+    `${photoId} ${name} ${revision} ${key}`,
+    enabled && photoId !== null,
+    () => store.presetThumbnail(photoId as PhotoId, name, revision, key),
+    (url) => store.forgetPresetThumbnail(photoId as PhotoId, name, revision, key, url),
+    "presets",
+  );
 }

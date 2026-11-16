@@ -22,10 +22,9 @@ use crate::wire::{
     HistogramData, ImportResult, LensInfo, Look, LookId, LookInput, LooksImportResult, MapFrom,
     MaskFindPrompt, MaskFindResult, MaskKind, MaskView, MenuState, NodeId, Num, OpenKind,
     Orientation, PasteReport, PhotoId, PixelSample, Preferences, PreferencesPatch,
-    PresetApplyReport, PresetEntry, PresetExported, PresetGroup, PresetInspect, PresetSource,
-    PresetsListing, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
-    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
-    WatchStatus,
+    PresetApplyReport, PresetEntry, PresetExported, PresetGroup, PresetInspect, PresetList,
+    PresetSource, ResolvedSettings, SessionChange, SessionState, SettingsPatch, SourceRecognition,
+    ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, WatchStatus,
 };
 
 /// The managed state: the command handlers, or why the application could not start.
@@ -576,7 +575,7 @@ pub async fn album_state(state: State<'_, AppState>) -> Result<Option<AlbumState
 pub async fn presets_list(
     state: State<'_, AppState>,
     photo_id: Option<PhotoId>,
-) -> Result<PresetsListing, AppError> {
+) -> Result<PresetList, AppError> {
     run(&state, move |api| api.presets_list(photo_id)).await
 }
 

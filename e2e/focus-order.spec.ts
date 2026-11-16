@@ -7,7 +7,7 @@ import { classifyRing, describeStop, roleAndName, walkTabs } from "./helpers/foc
 import type { Walk } from "./helpers/focusWalk";
 import { openState } from "./helpers/states";
 
-// The golden Tab lists (`docs/28` A-04, M4-04): for each of 26 page states (and the Photos screen with 500 photos), press Tab from the start
+// The golden Tab lists (`docs/28` A-04, M4-04): for each of 31 page states (and the Photos screen with 500 photos), press Tab from the start
 // of the page until the focus wraps or leaves the document, and compare each stop (its role, its accessible name, its computed `outline-style`
 // and how the ring shows) with the list kept in `e2e/golden/focus-order/<state>.json`.
 //
@@ -19,7 +19,7 @@ const GOLDEN = resolve(import.meta.dirname, "golden/focus-order");
 const UPDATE = process.env.YM_UPDATE_FOCUS_GOLDEN === "1";
 
 /**
- * The 26 states of the audit's table (`docs/28` 2.4): Start empty and ready; the Photos screen on each of its seven tabs; Crop and Pick white;
+ * The 31 states of the audit's table (`docs/28` 2.4): Start empty and ready; the Photos screen on each of its seven tabs; Crop and Pick white;
  * Colour warp; Preferences, About, the .cube import and the question before closing a session; the error bar; the Export panel and a running
  * export (their strips are the two scrollers of A-02); the node view (default, Light, masks, Film, Parallel); the wizard's first and last step.
  */
@@ -48,6 +48,11 @@ const STATE_NAMES = [
   "58-nodes-masks-two-rows",
   "67-film-tab",
   "78-mixers-parallel-inputs",
+  "85-presets-card",
+  "86-dialog-save-preset",
+  "87-dialog-replace-preset",
+  "88-album-edited",
+  "89-dialog-album-question",
   "05-wizard-1-choose",
   "09-wizard-5-finish",
 ] as const;

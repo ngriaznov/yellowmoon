@@ -114,7 +114,7 @@ test.describe("look tiles", () => {
   test("a tile that focus brings in from under the panel's top edge shows its ring whole", async ({ page }) => {
     // At 1180 × 760, the smallest window: the panel is 590 px high, so it scrolls far enough (to 841 px) for a tile of the first row to stand
     // partly above its top edge. (In a taller window, or for a tile of a later row, the panel cannot scroll that far: the Look tab ends
-    // with the Tone card, and the Lens card, which used to make it long enough, has its own tab.)
+    // with the Presets card, and the Lens card, which used to make it long enough, has its own tab.)
     await photos(page, SIZES[1]);
     await byKeyboard(page);
     const scroller = page.locator(".ym-tools__scroll");

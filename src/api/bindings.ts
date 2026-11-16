@@ -222,7 +222,7 @@ export const commands = {
 	edited: boolean,
 } | null>("album_state"),
 	/**  `presets_list(photo_id)`: the presets, the damaged files and the folder; `photo_id` (or `null`) is the photo `matches` is about. */
-	presetsList: (photoId: number | null) => __TAURI_INVOKE<PresetsListing>("presets_list", { photoId }),
+	presetsList: (photoId: number | null) => __TAURI_INVOKE<PresetList>("presets_list", { photoId }),
 	/**  `preset_inspect(source)`: the groups the Save dialog ticks. */
 	presetInspect: (source: PresetSource) => __TAURI_INVOKE<PresetInspect>("preset_inspect", { source }),
 	/**  `preset_save(name, groups, source, replace)`: makes the preset from a photo or a settings file and writes it. */
@@ -252,9 +252,9 @@ export const commands = {
 	/**  The names replaced (only with `replace`). */
 	replaced: string[],
 	/**  The names that exist and were not replaced. */
-	exists: PresetExists[],
+	exists: ImportExists[],
 	/**  The files refused. */
-	refused: PresetRefused[],
+	refused: ImportRefused[],
 } | null>("presets_import_dialog"),
 	/**
 	 *  `preset_choose_export()` (addition, for New Preset from Exported Photo…, `docs/30` section 12): the system's open panel for a photo
@@ -1543,6 +1543,22 @@ export type IfExists =
 /**  Keep both: add " 2", " 3" to the new name. */
 "keep_both";
 
+/**  A name of an import that exists and was not replaced (`ImportExists` of `types.ts`). */
+export type ImportExists = {
+	/**  The preset's name. */
+	name: string,
+	/**  The file it came from. */
+	path: string,
+};
+
+/**  A file of an import that was refused (`ImportRefused` of `types.ts`). */
+export type ImportRefused = {
+	/**  The file's name. */
+	file: string,
+	/**  Why. */
+	reason: string,
+};
+
 /**  The answer of `presets_import` and `presets_import_dialog` (`ImportResult` of `types.ts`). */
 export type ImportResult = {
 	/**  The names added. */
@@ -1550,9 +1566,9 @@ export type ImportResult = {
 	/**  The names replaced (only with `replace`). */
 	replaced: string[],
 	/**  The names that exist and were not replaced. */
-	exists: PresetExists[],
+	exists: ImportExists[],
 	/**  The files refused. */
-	refused: PresetRefused[],
+	refused: ImportRefused[],
 };
 
 /**  Which of the Input's `Auto` fields are still automatic; the UI shows the AUTO tag for these. */
@@ -3035,14 +3051,6 @@ export type PresetEntry = {
 	revision: string,
 };
 
-/**  A name of an import that exists and was not replaced (`PresetExists` of `types.ts`). */
-export type PresetExists = {
-	/**  The preset's name. */
-	name: string,
-	/**  The file it came from. */
-	path: string,
-};
-
 /**  The answer of `preset_export`: where the file was written. */
 export type PresetExported = {
 	/**  The file the person chose in the save panel. */
@@ -3078,20 +3086,22 @@ export type PresetInspect = {
 	look: string | null,
 };
 
+/**  The answer of `presets_list` (`PresetList` of `types.ts`). */
+export type PresetList = {
+	/**  The presets, by name. */
+	presets: PresetEntry[],
+	/**  The files that could not be used. */
+	damaged: DamagedPreset[],
+	/**  The presets folder. */
+	folder: string,
+};
+
 /**  The look of a preset that holds the `look` group (`PresetLook` of `types.ts`). */
 export type PresetLook = {
 	/**  The look's id. */
 	id: LookId,
 	/**  Its name when the preset was saved. */
 	name: string,
-};
-
-/**  A file of an import that was refused (`PresetRefused` of `types.ts`). */
-export type PresetRefused = {
-	/**  The file's name. */
-	file: string,
-	/**  Why. */
-	reason: string,
 };
 
 /**  Where a preset is made from (`PresetSource` of `types.ts`). */
@@ -3110,16 +3120,6 @@ path: string };
  *  `ym` found by a listing). No data; the page asks `presets_list` again and the shell rebuilds Looks › Apply Preset.
  */
 export type PresetsChanged = null;
-
-/**  The answer of `presets_list` (`PresetsListing` of `types.ts`). */
-export type PresetsListing = {
-	/**  The presets, by name. */
-	presets: PresetEntry[],
-	/**  The files that could not be used. */
-	damaged: DamagedPreset[],
-	/**  The presets folder. */
-	folder: string,
-};
 
 /**  The enlarger's filtration, as shifts from neutral in Kodak CC units, -50 to 50. */
 export type PrintLights = {

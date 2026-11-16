@@ -41,7 +41,7 @@ use crate::wire::{
     LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView, MemoryNotice,
     NodeId, Num, ObjectState, OpenProgress, OpenSummary, Orientation, PasteReport, PhotoId,
     PhotoProgress, PixelSample, Preferences, PreferencesPatch, PresetApplyReport, PresetEntry,
-    PresetGroup, PresetInspect, PresetSource, PresetsListing, ResolvedSettings, SessionChange,
+    PresetGroup, PresetInspect, PresetList, PresetSource, ResolvedSettings, SessionChange,
     SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput,
     ViewportMode, ViewportRect, VisionState, WatchStatus, convert,
 };
@@ -1561,7 +1561,7 @@ impl AppApi {
     /// # Errors
     ///
     /// [`AppError`] only if the shapes disagree (a bug).
-    pub fn presets_list(&self, photo: Option<PhotoId>) -> Result<PresetsListing, AppError> {
+    pub fn presets_list(&self, photo: Option<PhotoId>) -> Result<PresetList, AppError> {
         convert(&self.core.presets_list(photo.map(core_id)))
     }
 

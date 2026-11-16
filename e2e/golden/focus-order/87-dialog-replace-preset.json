@@ -1,0 +1,8 @@
+{
+  "state": "87-dialog-replace-preset",
+  "end": "wraps",
+  "stops": [
+    {"role":"button","name":"Replace","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Cancel","outline":"solid","ring":"outline"}
+  ]
+}

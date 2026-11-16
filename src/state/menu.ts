@@ -33,7 +33,7 @@ const SINGLE_KEY_ACTIONS = {
 } as const satisfies Partial<Record<MenuAction, ShortcutAction>>;
 
 /** Runs one menu item. */
-export async function runMenuAction(store: AppStore, action: MenuAction): Promise<void> {
+export async function runMenuAction(store: AppStore, action: MenuAction, preset?: string | null): Promise<void> {
   const state = store.getState();
   switch (action) {
     case "about":
@@ -157,6 +157,26 @@ export async function runMenuAction(store: AppStore, action: MenuAction): Promis
       return;
     case "paste_settings_to_picked":
       await store.pasteSettings("picked");
+      return;
+    // Looks › the preset items and File › Save (`docs/30` section 8, `docs/31` section 7). The native items are off while a dialog is open; a
+    // dialog has the keyboard and the menu alike, so none of them runs then either.
+    case "save_preset":
+      if (state.overlay === null) await store.openSavePreset();
+      return;
+    case "import_presets":
+      if (state.overlay === null) await store.importPresetsDialog();
+      return;
+    case "new_preset_from_export":
+      await store.openSavePresetFromExport();
+      return;
+    case "apply_preset":
+      if (state.overlay === null && preset) await store.applyPreset(preset);
+      return;
+    case "save":
+      if (state.overlay === null) await store.saveAlbum(false);
+      return;
+    case "save_as":
+      if (state.overlay === null) await store.saveAlbum(true);
       return;
     case "make_default_look": {
       const rs = store.currentSettings();

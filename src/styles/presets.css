@@ -1,0 +1,151 @@
+/* The Presets card, the Save preset dialog and the album header line (`docs/30` section 9, `docs/31` section 6): the few rules the app's own
+   sheets do not have. Controls are glasscn's; the tokens are the app's. */
+
+/* ---- the Presets card ------------------------------------------------------------------------------------------------------------------ */
+.ym-presets__count {
+  color: var(--glass-label-secondary);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+}
+.ym-presets__tiles {
+  --look-ring-room: 8px;
+  padding: var(--look-ring-room);
+  margin: calc(var(--look-ring-room) * -1);
+  margin-top: 10px;
+}
+.ym-presets__more {
+  display: flex;
+  margin-top: 10px;
+}
+.ym-presets__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  padding-top: 4px;
+}
+.ym-presets__empty-text {
+  max-width: 30ch;
+  margin: 0;
+  color: var(--glass-label-secondary);
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+.ym-presets__damaged {
+  display: grid;
+  gap: 6px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.ym-presets__damaged li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  color: var(--glass-label-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+.ym-presets__damaged-file {
+  color: var(--glass-label);
+  font-weight: var(--fw-semibold);
+  overflow-wrap: anywhere;
+}
+.ym-presets__damaged-reason {
+  grid-column: 1;
+}
+.ym-presets__damaged li > button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+/* A tile whose menu is open is ringed as a thumbnail of the filmstrip is. */
+.ym-look-tile[data-state="open"] .ym-look-tile__picture {
+  outline: 2px solid rgb(255 255 255 / 0.55);
+  outline-offset: 2px;
+}
+
+/* ---- the Save preset dialog ------------------------------------------------------------------------------------------------------------ */
+.ym-preset-form {
+  display: grid;
+  gap: 14px;
+  padding: 0 24px 4px;
+}
+.ym-preset-form__name {
+  display: grid;
+  gap: 6px;
+}
+.ym-preset-form__label {
+  color: var(--glass-label-secondary);
+  font-size: 0.8125rem;
+  font-weight: var(--fw-semibold);
+}
+.ym-preset-form__problem {
+  margin: 0;
+  color: var(--destructive, #ff6b6b);
+  font-size: 0.8125rem;
+}
+.ym-preset-groups {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--glass-border);
+}
+.ym-preset-groups > legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.ym-preset-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 9px 2px;
+  border-bottom: 1px solid var(--glass-border);
+  cursor: default;
+}
+.ym-preset-group > [data-slot="checkbox"] {
+  margin-top: 2px;
+}
+.ym-preset-group__text {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.ym-preset-group__label {
+  font-size: 0.875rem;
+  font-weight: var(--fw-semibold);
+}
+.ym-preset-group__line {
+  color: var(--glass-label-secondary);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+.ym-preset-note {
+  margin: 0;
+  color: var(--glass-label-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+.ym-preset-note[data-kind="older"] {
+  padding: 9px 12px;
+  border-radius: var(--glass-radius-control);
+  background: var(--fill, rgb(255 255 255 / 0.07));
+  box-shadow: inset 0 0 0 1px var(--glass-border);
+  color: var(--glass-label);
+}
+.ym-preset-question {
+  margin: 0;
+  padding: 0 24px 4px;
+  color: var(--glass-label-secondary);
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+.ym-preset-question__line {
+  margin: 0;
+}

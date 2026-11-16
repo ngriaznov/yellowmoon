@@ -1423,8 +1423,8 @@ describe("copy and paste settings", () => {
 
   it("remembers the last menu state it was given", async () => {
     expect(api.menuState).toBeNull();
-    await api.setMenuState({ copy_settings: true, paste_settings: false, paste_settings_to_picked: true });
-    expect(api.menuState).toEqual({ copy_settings: true, paste_settings: false, paste_settings_to_picked: true });
+    await api.setMenuState({ copy_settings: true, paste_settings: false, paste_settings_to_picked: true, save_preset: false, apply_preset: false, save: false, save_as: false });
+    expect(api.menuState).toEqual({ copy_settings: true, paste_settings: false, paste_settings_to_picked: true, save_preset: false, apply_preset: false, save: false, save_as: false });
     api.reset();
     expect(api.menuState).toBeNull();
   });

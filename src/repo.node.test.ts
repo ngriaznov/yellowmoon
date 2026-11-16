@@ -1,7 +1,7 @@
 // @vitest-environment node
 // Checks that read files of the repository. They run in Node, so they sit outside the browser
 // tsconfig (see tsconfig.node.json).
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { GRAPH_TEXT } from "./fixtures/graph";
 
@@ -218,5 +218,25 @@ describe("the mock's rules for the graph (docs/23 section 9)", () => {
     for (const text of [GRAPH_TEXT.tooManyMixerInputs, GRAPH_TEXT.mixerGap(7, 3, 2), GRAPH_TEXT.unknownPort(7, "picture"), GRAPH_TEXT.tooManyNodes]) {
       expect(doc, text).toContain(`"${text}"`);
     }
+  });
+});
+
+describe("the Tone card is gone (docs/30 section 9.10)", () => {
+  // The decision and its history live in docs/30, docs/15 and docs/STATUS.md; no other doc places a control on a Look › Tone card.
+  const history = new Set(["30-presets.md", "15-milestones.md", "STATUS.md"]);
+  const docs = readdirSync(new URL("docs/", root)).filter((name) => name.endsWith(".md") && !history.has(name));
+
+  it("no doc says Look › Tone", () => {
+    for (const name of docs) expect(read(`docs/${name}`), name).not.toMatch(/Look\s*›\s*Tone|Open Tone\b|Look tab has the Tone card|with the Tone card/);
+  });
+
+  it("docs/11 names the card only as removed", () => {
+    const ui = read("docs/11-ui.md");
+    expect(ui).toContain("#### Tone card (removed)");
+    expect(ui).not.toMatch(/\*\*Tone\*\*/);
+  });
+
+  it("the Look tab has no Tone component", () => {
+    expect(read("src/screens/tools/LookTab.tsx")).not.toContain("<ToneCard");
   });
 });

@@ -30,7 +30,7 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::about;
 use crate::commands::AppState;
-use crate::wire::{MenuAction, MenuState, PresetsListing};
+use crate::wire::{MenuAction, MenuState, PresetList};
 
 /// What an item of the menu does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -471,7 +471,7 @@ pub struct PresetItem {
 /// The names of Apply Preset for `list`: in the list's order (by name), at most [`MAX_PRESET_NAMES`], a checkmark on the ones that
 /// match the photo the list was asked for. Empty for no presets, which the menu shows as the greyed "No Presets".
 #[must_use]
-pub fn preset_items(list: &PresetsListing) -> Vec<PresetItem> {
+pub fn preset_items(list: &PresetList) -> Vec<PresetItem> {
     list.presets
         .iter()
         .take(MAX_PRESET_NAMES)
@@ -1108,7 +1108,7 @@ mod tests {
             matches: i == 2,
             revision: String::new(),
         };
-        let list = PresetsListing {
+        let list = PresetList {
             presets: (0..45).map(entry).collect(),
             damaged: vec![],
             folder: String::new(),
@@ -1117,7 +1117,7 @@ mod tests {
         assert_eq!(items.len(), MAX_PRESET_NAMES);
         assert_eq!(items[0].name, "Preset 00");
         assert!(items[2].checked && !items[1].checked);
-        let empty = PresetsListing {
+        let empty = PresetList {
             presets: vec![],
             damaged: vec![],
             folder: String::new(),

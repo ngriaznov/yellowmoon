@@ -680,7 +680,7 @@ describe("the Automatic card names the provider", () => {
       await waitFor(() => expect(automatic().getByText(answered)).toBeInTheDocument());
       expect(screen.queryByText(pending)).toBeNull();
       // The rows of the answer and the plan are the same as with Apple Intelligence.
-      expect(screen.getByRole("button", { name: "Contrast +15, Auto. Open Tone" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Contrast +15, Auto. Open Light" })).toBeInTheDocument();
       expect(automatic().getByText("“Teal shadows and warm highlights for a cinematic late-sun street”")).toBeInTheDocument();
       h.api.setAppleAuto("failed");
       await waitFor(() => expect(automatic().getByText(failed)).toBeInTheDocument());
