@@ -143,8 +143,8 @@ test.describe("the Automatic card", () => {
     expect(await rows(page)).toEqual(ANSWERED_ROWS);
     await expect(page.getByRole("button", { name: "Highlights −20, Auto. Open Light" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Black −15, Auto. Open Light" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Contrast +15, Auto. Open Tone" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Saturation −15, Auto. Open Tone" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Contrast +15, Auto. Open Light" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Saturation −15, Auto. Open Colour" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Shadows colour Teal · medium, Auto. Open Colour" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Highlights colour Warm · subtle, Auto. Open Colour" })).toBeVisible();
     const line = page.getByRole("region", { name: "Automatic" }).getByText(LINES.answered);
@@ -156,25 +156,29 @@ test.describe("the Automatic card", () => {
       page.getByRole("region", { name: "Automatic" }).locator(".ym-auto-row__label").first().evaluate((el) => getComputedStyle(el).color),
     ]);
     expect(lineColour).not.toBe(rowColour);
-    // The arrow goes to the Tone card's slider, on the same tab.
-    await page.getByRole("button", { name: "Saturation −15, Auto. Open Tone" }).click();
-    const slider = page.getByRole("region", { name: "Tone" }).getByRole("slider", { name: "Saturation" });
-    await expect(slider).toBeFocused();
-    await expect(slider).toBeInViewport();
-    await expect(page.getByRole("tab", { name: "Look" })).toHaveAttribute("aria-selected", "true");
+    // The arrows open the tab that owns the value (the Tone card is gone, docs/30 section 9.10).
+    await page.getByRole("button", { name: "Saturation −15, Auto. Open Colour" }).click();
+    await expect(page.getByRole("tab", { name: "Colour" })).toHaveAttribute("aria-selected", "true");
+    await page.getByRole("tab", { name: "Look" }).click();
+    await page.getByRole("button", { name: "Contrast +15, Auto. Open Light" }).click();
+    await expect(page.getByRole("tab", { name: "Light" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("region", { name: "Tone" })).toHaveCount(0);
   });
 
   test("pending, then the answer: the rule's values and no rows of Apple's until it arrives, and the line follows", async ({ page }) => {
     await openApp(page, { ...MOCKUP, mockAppleAuto: "pending" });
     await openPhotos(page);
     expect(await rows(page)).toEqual(["Exposure", "White balance", "Noise", "Camera"]);
-    await expect(page.getByRole("textbox", { name: "Contrast value" })).toHaveValue("0");
     await expect(page.getByText(LINES.pending)).toBeVisible();
+    await page.getByRole("tab", { name: "Light" }).click();
+    await expect(page.getByRole("textbox", { name: "Contrast value" })).toHaveValue("0");
+    await page.getByRole("tab", { name: "Look" }).click();
     await page.evaluate(() => window.__yellowmoon!.mockApi.setAppleAuto("answered"));
-    await expect(page.getByRole("button", { name: "Contrast +15, Auto. Open Tone" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Contrast +15, Auto. Open Light" })).toBeVisible();
     await expect(page.getByText(LINES.answered)).toBeVisible();
     await expect(page.getByText(LINES.pending)).toHaveCount(0);
     expect(await rows(page)).toEqual(ANSWERED_ROWS);
+    await page.getByRole("tab", { name: "Light" }).click();
     await expect(page.getByRole("textbox", { name: "Contrast value" })).toHaveValue("+15");
   });
 
@@ -182,8 +186,9 @@ test.describe("the Automatic card", () => {
     await openApp(page, { ...MOCKUP, mockAppleAuto: "failed" });
     await openPhotos(page);
     expect(await rows(page)).toEqual(["Exposure", "White balance", "Noise", "Camera"]);
-    await expect(page.getByRole("textbox", { name: "Saturation value" })).toHaveValue("0");
     await expect(page.getByText(LINES.failed)).toBeVisible();
+    await page.getByRole("tab", { name: "Colour" }).click();
+    await expect(page.getByRole("textbox", { name: "Saturation value" })).toHaveValue("0");
   });
 
   test("choosing Default Auto gives back today's card at once", async ({ page }) => {
@@ -195,6 +200,7 @@ test.describe("the Automatic card", () => {
     await page.keyboard.press("Escape");
     await expect.poll(() => rows(page)).toEqual(["Exposure", "White balance", "Noise", "Camera"]);
     await expect(page.getByText(LINES.answered)).toHaveCount(0);
+    await page.getByRole("tab", { name: "Light" }).click();
     await expect(page.getByRole("textbox", { name: "Contrast value" })).toHaveValue("0");
   });
 });

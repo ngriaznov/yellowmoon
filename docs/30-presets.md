@@ -451,3 +451,15 @@ The simplest reading that meets the acceptance criteria was taken wherever the p
 14. **No cap on the number of presets**; a file above 4 MiB is refused.
 15. **Replace cannot be undone** (the old file is not kept); the question says so.
 16. **Presets replace the Tone card** (the owner, 2026-11-16, after seeing the mock-ups: "Presets should be at the end after tone on Look panel. In fact, remove tone section from Look and replace with Presets"). The Look tab is Automatic · Look · Presets (§9.10). It supersedes the place of the first proposal (between Automatic and Look). The Tone card's three controls were already on Light, Colour and Colour; nothing moves. P-05 removes the code, the tests and the doc references; until then the app and `docs/11` still have the card.
+17. **The webview's readings (P-04, P-05, 2026-11-16).** Where the spec was silent the simplest reading was taken:
+    - **The list is sorted by name** (§6), also in the card: with fourteen presets the first six tiles are the first six by name.
+    - **Show all N / Show fewer** appears only with more than six presets.
+    - **The tooltip** is the groups, "Look, Light, Colour"; for a missing look a second line follows: "Look: Film warm isn't imported."
+    - **Apply Preset in the Looks menu** applies to the card's Apply to (Look's own Apply to is separate), as the keys 1 to 9 use Look's.
+    - **The import's refusals:** the first is named with its reason, the others counted: "Couldn't add Old.ympreset: <reason> Couldn't add 2 more files."
+    - **`ImportResult`** is the wire name of §8 (§7's `ImportOutcome` is the core's own type). `PresetsListing` is the answer of `presets_list`, `PresetInspect` of `preset_inspect`, `PresetSource` its argument.
+    - **`preset_choose_export()` → `string | null`** is added to §8: the system open panel for New Preset from Exported Photo…, because the menu event carries no path. P-06 reads the file with `preset_inspect({ kind: "file", path })`.
+    - **Update's question** puts the focus on Cancel, as Replace's; its line names the groups "Look, Light and Colour".
+    - **Rename** starts with the current name selected; Save… in the header is off while the photo is not developed.
+    - **The Tone card's removal** is done in the webview (the component, its Vitest and e2e cases); the Look tab's doc references (§9.10's list) are the docs task of P-05 and are not yet changed.
+

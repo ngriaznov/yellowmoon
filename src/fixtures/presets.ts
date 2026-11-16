@@ -264,7 +264,10 @@ const wb = (kelvin: number, tint: number): NodePatch => ({
 });
 const grade = (g: object): NodePatch => ({ grade: g });
 
-/** The fourteen presets of the mock-ups (`design/presets/01`): the card starts empty in the app, so these only exist when asked for. */
+/**
+ * The fourteen presets of the mock-ups (`design/presets/01`): the card starts empty in the app, so these only exist when asked for. The list is
+ * sorted by name (`docs/30` section 6), so the last eight are named to come after "Warm evening": the first six tiles are the mock-up's six.
+ */
 export const MOCK_PRESET_RECIPES: readonly PresetRecipe[] = [
   {
     name: "Warm evening",
@@ -342,7 +345,7 @@ export const MOCK_PRESET_RECIPES: readonly PresetRecipe[] = [
     },
   },
   {
-    name: "Golden hour",
+    name: "Winter light",
     groups: ["light", "color"],
     patch: {
       nodes: {
@@ -352,7 +355,7 @@ export const MOCK_PRESET_RECIPES: readonly PresetRecipe[] = [
     },
   },
   {
-    name: "Clean white",
+    name: "Whisper white",
     groups: ["color", "detail"],
     patch: {
       nodes: {
@@ -369,7 +372,7 @@ export const MOCK_PRESET_RECIPES: readonly PresetRecipe[] = [
     },
   },
   {
-    name: "Moody green",
+    name: "Wide sky",
     groups: ["look", "color"],
     patch: {
       nodes: {
@@ -379,7 +382,7 @@ export const MOCK_PRESET_RECIPES: readonly PresetRecipe[] = [
     },
   },
   {
-    name: "Dusk haze",
+    name: "Willow",
     groups: ["look", "light"],
     patch: {
       nodes: {
@@ -389,7 +392,7 @@ export const MOCK_PRESET_RECIPES: readonly PresetRecipe[] = [
     },
   },
   {
-    name: "Matte black",
+    name: "Yellow hour",
     groups: ["light", "curve"],
     patch: {
       nodes: {
@@ -406,7 +409,7 @@ export const MOCK_PRESET_RECIPES: readonly PresetRecipe[] = [
     },
   },
   {
-    name: "Bright and airy",
+    name: "Zinc grey",
     groups: ["light", "color"],
     patch: {
       nodes: {
@@ -416,7 +419,7 @@ export const MOCK_PRESET_RECIPES: readonly PresetRecipe[] = [
     },
   },
   {
-    name: "Teal shadows",
+    name: "Xerox fade",
     groups: ["color"],
     patch: {
       nodes: {
@@ -427,7 +430,7 @@ export const MOCK_PRESET_RECIPES: readonly PresetRecipe[] = [
     },
   },
   {
-    name: "Quiet grey",
+    name: "Wet street",
     groups: ["look", "color"],
     patch: {
       nodes: {

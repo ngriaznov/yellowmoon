@@ -84,7 +84,8 @@ test.describe("the Lens tab", () => {
   test("the Look tab has no Lens card, and Light is the third tab (⌘3)", async ({ page }) => {
     await openApp(page, MOCKUP);
     await openPhotos(page);
-    await expect(page.getByRole("region", { name: "Tone" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Presets" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Tone" })).toHaveCount(0);
     await expect(page.getByRole("region", { name: "Lens" })).toHaveCount(0);
     await expect(page.getByRole("slider", { name: "Flares" })).toHaveCount(0);
     await page.keyboard.press("Meta+3");

@@ -183,3 +183,10 @@ The simplest reading that meets the request was taken wherever the brief was sil
 10. **The privacy is said here and in the user guide**, not in the Save panel (the owner's brief: keep the UI quiet).
 11. **No recent albums, no autosave, no browser, no Locate…, no merge** (§11).
 12. **`ym render <album>` refuses `--settings` and mixed inputs**; `--auto-provider` given explicitly asks that provider anew.
+13. **The webview's readings (P-13, 2026-11-16).**
+    - **The album's state is `SessionState.album`** (`{ name, path, edited }`, absent for none); it is read again on `album_changed` with `album_state`. `open_dialog`'s answer needs no `opened.album`: the page reads the session.
+    - **The question is asked in the webview** for Close Session (the menu item arrives as a `menu_action`, so the shell cannot ask first) and for a dropped album over an edited one; **the shell asks** for the system's close button, Quit and File › Open Files… (it holds the dialog). The webview's dialog has Save (default), Don't Save, Cancel.
+    - **A dropped album with ARW files, or two albums,** is refused by the webview with the sentences of §4.8; `open_dialog` refuses the same in the core.
+    - **The sub-line** reads "12 photos · edited" in the source text (drawn in capitals by CSS, like the rest of the line).
+    - **An album opened from Start** shows the usual list of developing photos, and Open photos goes on, as for any open.
+

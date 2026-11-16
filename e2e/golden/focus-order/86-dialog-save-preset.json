@@ -1,0 +1,17 @@
+{
+  "state": "86-dialog-save-preset",
+  "end": "wraps",
+  "stops": [
+    {"role":"checkbox","name":"Look","outline":"solid","ring":"outline"},
+    {"role":"checkbox","name":"Lens","outline":"solid","ring":"outline"},
+    {"role":"checkbox","name":"Light","outline":"solid","ring":"outline"},
+    {"role":"checkbox","name":"Colour","outline":"solid","ring":"outline"},
+    {"role":"checkbox","name":"Detail","outline":"solid","ring":"outline"},
+    {"role":"checkbox","name":"Curve","outline":"solid","ring":"outline"},
+    {"role":"checkbox","name":"RAW","outline":"solid","ring":"outline"},
+    {"role":"checkbox","name":"Nodes","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Cancel","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Save","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"Name","outline":"solid","ring":"outline"}
+  ]
+}

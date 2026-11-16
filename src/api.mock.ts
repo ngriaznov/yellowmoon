@@ -3064,8 +3064,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
 
   /** `album_open`: the session is replaced by the album's photos, in order, with their settings and picks; photos it cannot find are failed photos. */
   function openAlbumNow(path: string): SessionState {
-    const stored = albums.get(path);
-    if (!stored) fail("album", "Yellowmoon couldn't read this file. Check that it is still there, then try again.");
+    // A browser drop gives a file's name and no folder: the album of that name is the one.
+    const key = albums.has(path) ? path : [...albums.keys()].find((k) => fileNameOf(k).toLowerCase() === fileNameOf(path).toLowerCase());
+    const stored = key === undefined ? undefined : albums.get(key);
+    if (key === undefined || !stored) fail("album", "Yellowmoon couldn't read this file. Check that it is still there, then try again.");
     stopDevelopment();
     for (const timer of thumbTimers.values()) clearTimeout(timer);
     thumbTimers.clear();
@@ -3083,7 +3085,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     current = clamp(stored.current, 0, photos.length - 1);
     removal = null;
     developProgress = 0;
-    album = { name: albumNameOf(path), path, edited: false };
+    album = { name: albumNameOf(key), path: key, edited: false };
     startDevelopment();
     showCurrent();
     emitSoon("album_changed", null);
