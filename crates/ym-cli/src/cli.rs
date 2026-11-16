@@ -686,9 +686,9 @@ fn bits(text: &str) -> Result<BitDepth, String> {
 // ---------------------------------------------------------------------------------------------
 
 /// Arguments of `ym info`.
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 pub struct InfoArgs {
-    /// ARW files to inspect.
+    /// ARW files to inspect, or one album (`.ymalbum`) to list.
     #[arg(required = true, value_name = "FILES")]
     pub files: Vec<PathBuf>,
     /// Print one JSON object per file instead of text (the shape of `render --json` without

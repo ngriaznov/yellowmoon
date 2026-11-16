@@ -729,7 +729,11 @@ fn docs_10_has_the_rows_of_presets_and_albums() {
             );
         }
     }
-    for row in ["| `ym render <album.ymalbum>` |", "| `ym info <album.ymalbum>` |", "| `--preset <name or file>` |"] {
+    for row in [
+        "| `ym render <album.ymalbum>` |",
+        "| `ym info <album.ymalbum>` |",
+        "| `--preset <name or file>` |",
+    ] {
         assert!(doc.contains(row), "{row}");
     }
     for sentence in [

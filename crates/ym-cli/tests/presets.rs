@@ -100,7 +100,9 @@ fn save_makes_a_preset_of_the_groups_that_differ_and_list_shows_it() {
     let l = lines(&out.get_output().stdout);
     assert_eq!(l.len(), 2, "{l:?}");
     assert!(
-        l[1].starts_with("Warm evening") && l[1].contains("light") && l[1].trim_end().ends_with('-'),
+        l[1].starts_with("Warm evening")
+            && l[1].contains("light")
+            && l[1].trim_end().ends_with('-'),
         "{l:?}"
     );
 
@@ -125,10 +127,14 @@ fn save_makes_a_preset_of_the_groups_that_differ_and_list_shows_it() {
 #[test]
 fn groups_are_chosen_with_dash_dash_groups_and_unknown_ones_are_usage_errors() {
     let sb = Sandbox::new();
-    let file = settings_file(&sb, "both.json", &field_doc(json!({
-        "exposure": exposure(0.5),
-        "sharpen": { "kind": "manual", "amount": 90.0, "radius_px": 1.0 },
-    })));
+    let file = settings_file(
+        &sb,
+        "both.json",
+        &field_doc(json!({
+            "exposure": exposure(0.5),
+            "sharpen": { "kind": "manual", "amount": 90.0, "radius_px": 1.0 },
+        })),
+    );
     // Both groups differ; only Detail is asked for.
     sb.ym()
         .args(["presets", "save", "Crisp", "--groups", "detail", "--from"])
@@ -144,7 +150,14 @@ fn groups_are_chosen_with_dash_dash_groups_and_unknown_ones_are_usage_errors() {
     assert_eq!(v["presets"][0]["groups"], json!(["detail"]));
     // The UI's spelling of the group is accepted, and the list may be in any order.
     sb.ym()
-        .args(["presets", "save", "Both", "--groups", "light,colour", "--from"])
+        .args([
+            "presets",
+            "save",
+            "Both",
+            "--groups",
+            "light,colour",
+            "--from",
+        ])
         .arg(&file)
         .assert()
         .success();
@@ -272,7 +285,9 @@ fn export_import_and_remove_work_on_the_same_folder_as_the_app() {
         .arg(sb.root().join("x.ympreset"))
         .assert()
         .code(3)
-        .stderr(predicate::str::contains("There is no preset called Nothing."));
+        .stderr(predicate::str::contains(
+            "There is no preset called Nothing.",
+        ));
 
     // Remove moves it to the Trash (the file is gone from the folder).
     sb.ym()
@@ -325,7 +340,9 @@ fn import_says_why_a_file_is_refused() {
         .arg(&junk)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("This file isn't a Yellowmoon preset."));
+        .stderr(predicate::str::contains(
+            "This file isn't a Yellowmoon preset.",
+        ));
     let newer = sb.root().join("newer.ympreset");
     std::fs::write(
         &newer,
@@ -370,7 +387,10 @@ fn a_damaged_file_is_a_line_after_the_table_and_never_stops_the_list() {
     let out = sb.ym().args(["presets", "list"]).assert().success();
     let l = lines(&out.get_output().stdout);
     assert_eq!(l.len(), 3, "{l:?}");
-    assert_eq!(l[2], "Broken.ympreset: This file isn't a Yellowmoon preset.");
+    assert_eq!(
+        l[2],
+        "Broken.ympreset: This file isn't a Yellowmoon preset."
+    );
     let out = sb
         .ym()
         .args(["presets", "list", "--json"])
@@ -403,7 +423,10 @@ fn a_preset_is_applied_to_every_photo_and_the_json_names_it() {
         node(&with, "input")["exposure"],
         json!({ "kind": "manual", "ev": 0.5 })
     );
-    assert_eq!(node(&with, 1)["grade"]["contrast"], json!({ "kind": "manual", "value": 20.0 }));
+    assert_eq!(
+        node(&with, 1)["grade"]["contrast"],
+        json!({ "kind": "manual", "value": 20.0 })
+    );
     // Another picture than the plain one.
     assert_ne!(
         std::fs::read(plain["output"].as_str().expect("output")).expect("file"),
@@ -440,7 +463,9 @@ fn a_name_matches_ignoring_case_exactly_first_and_then_as_a_prefix() {
         .arg(&arw)
         .assert()
         .code(3)
-        .stderr(predicate::str::contains("There is no preset called nothing."));
+        .stderr(predicate::str::contains(
+            "There is no preset called nothing.",
+        ));
     assert!(!sb.default_export().exists(), "no photo was opened");
 }
 
@@ -486,7 +511,9 @@ fn a_path_to_a_file_works_without_importing_it() {
         .arg(&arw)
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("This file isn't a Yellowmoon preset."));
+        .stderr(predicate::str::contains(
+            "This file isn't a Yellowmoon preset.",
+        ));
 }
 
 #[test]
@@ -499,7 +526,11 @@ fn the_layering_is_settings_then_presets_in_order_then_the_flags() {
         "Bright",
         &field_doc(json!({ "exposure": exposure(1.0), "contrast": 40.0 })),
     );
-    save(&sb, "Dark", &field_doc(json!({ "exposure": exposure(-1.0) })));
+    save(
+        &sb,
+        "Dark",
+        &field_doc(json!({ "exposure": exposure(-1.0) })),
+    );
     save(&sb, "Crisp", &detail_doc());
     let settings = settings_file(
         &sb,
@@ -510,13 +541,19 @@ fn the_layering_is_settings_then_presets_in_order_then_the_flags() {
 
     // --settings, then a preset: Light (all seven fields) is the preset's, so the settings' saturation (Colour) stays.
     let r = render_json(&sb, &arw, &["--settings", base, "--preset", "Bright"]).remove(0);
-    assert_eq!(node(&r, "input")["exposure"], json!({ "kind": "manual", "ev": 1.0 }));
+    assert_eq!(
+        node(&r, "input")["exposure"],
+        json!({ "kind": "manual", "ev": 1.0 })
+    );
     assert_eq!(node(&r, 1)["grade"]["saturation"]["value"], 30.0);
     assert_eq!(node(&r, 1)["grade"]["contrast"]["value"], 40.0);
 
     // Two presets: `a b` is not `b a`.
     let r = render_json(&sb, &arw, &["--preset", "Bright", "--preset", "Dark"]).remove(0);
-    assert_eq!(node(&r, "input")["exposure"], json!({ "kind": "manual", "ev": -1.0 }));
+    assert_eq!(
+        node(&r, "input")["exposure"],
+        json!({ "kind": "manual", "ev": -1.0 })
+    );
     assert_eq!(
         r["presets"].as_array().expect("presets").len(),
         2,
@@ -525,7 +562,10 @@ fn the_layering_is_settings_then_presets_in_order_then_the_flags() {
     assert_eq!(r["presets"][0]["name"], "Bright");
     assert_eq!(r["presets"][1]["name"], "Dark");
     let r = render_json(&sb, &arw, &["--preset", "Dark", "--preset", "Bright"]).remove(0);
-    assert_eq!(node(&r, "input")["exposure"], json!({ "kind": "manual", "ev": 1.0 }));
+    assert_eq!(
+        node(&r, "input")["exposure"],
+        json!({ "kind": "manual", "ev": 1.0 })
+    );
 
     // Stacking is the same as one document: Light then Detail keeps both.
     let stacked = render_json(&sb, &arw, &["--preset", "Bright", "--preset", "Crisp"]).remove(0);
@@ -553,15 +593,29 @@ fn the_layering_is_settings_then_presets_in_order_then_the_flags() {
         &["--preset", "Bright", "--preset", "Dark", "--exposure", "2"],
     )
     .remove(0);
-    assert_eq!(node(&r, "input")["exposure"], json!({ "kind": "manual", "ev": 2.0 }));
+    assert_eq!(
+        node(&r, "input")["exposure"],
+        json!({ "kind": "manual", "ev": 2.0 })
+    );
     let r = render_json(
         &sb,
         &arw,
-        &["--settings", base, "--preset", "Bright", "--contrast", "-10"],
+        &[
+            "--settings",
+            base,
+            "--preset",
+            "Bright",
+            "--contrast",
+            "-10",
+        ],
     )
     .remove(0);
     assert_eq!(node(&r, 1)["grade"]["contrast"]["value"], -10.0);
-    assert_eq!(node(&r, 1)["grade"]["saturation"]["value"], 30.0, "the settings'");
+    assert_eq!(
+        node(&r, 1)["grade"]["saturation"]["value"],
+        30.0,
+        "the settings'"
+    );
 }
 
 #[test]
@@ -578,7 +632,15 @@ fn auto_stays_auto_so_a_preset_never_gives_a_photo_another_photos_exposure() {
     );
     let out = sb
         .ym()
-        .args(["render", "--json", "--cpu", "--auto-provider", "yellowmoon", "--preset", "Contrasty"])
+        .args([
+            "render",
+            "--json",
+            "--cpu",
+            "--auto-provider",
+            "yellowmoon",
+            "--preset",
+            "Contrasty",
+        ])
         .args(["--format", "png", "--bits", "8", "--out"])
         .arg(sb.root().join("out"))
         .arg(&dark)
@@ -649,7 +711,10 @@ fn a_missing_look_warns_once_applies_the_rest_and_exits_zero() {
     for r in &records {
         assert_eq!(r["presets"][0]["missing_look"], "Film warm");
         // The rest applied; the look is the photo's own (the default look), not the missing one.
-        assert_eq!(node(r, "input")["exposure"], json!({ "kind": "manual", "ev": 0.5 }));
+        assert_eq!(
+            node(r, "input")["exposure"],
+            json!({ "kind": "manual", "ev": 0.5 })
+        );
         assert_ne!(r["look"]["id"], "user:film-warm");
         assert_eq!(r["look"]["intensity"], 100);
     }
@@ -671,7 +736,10 @@ fn a_missing_look_warns_once_applies_the_rest_and_exits_zero() {
         .assert()
         .success();
     let v = json_lines(&out.get_output().stdout).remove(0);
-    assert_eq!(v["presets"][0]["look"], json!({ "id": "user:film-warm", "name": "Film warm" }));
+    assert_eq!(
+        v["presets"][0]["look"],
+        json!({ "id": "user:film-warm", "name": "Film warm" })
+    );
     assert_eq!(v["presets"][0]["look_missing"], true);
 }
 

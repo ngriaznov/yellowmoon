@@ -10,9 +10,7 @@ use std::sync::Arc;
 use serde_json::json;
 use ym_core::data_dir::find_data_dir;
 use ym_core::looks::LookService;
-use ym_core::presets::{
-    PresetError, PresetGroup, PresetService, PresetSource, PresetStore,
-};
+use ym_core::presets::{PresetError, PresetGroup, PresetService, PresetSource, PresetStore};
 use ym_core::session::{Session, SessionEnv};
 
 use crate::cli::{
@@ -69,11 +67,7 @@ fn open_presets() -> Result<PresetService, Failure> {
 }
 
 fn groups_text(groups: &[PresetGroup]) -> String {
-    groups
-        .iter()
-        .map(|g| g.id())
-        .collect::<Vec<_>>()
-        .join(",")
+    groups.iter().map(|g| g.id()).collect::<Vec<_>>().join(",")
 }
 
 /// Writes `text` to stdout; a reader that went away is not an error.
@@ -140,7 +134,11 @@ fn list(args: &PresetsListArgs) -> Result<u8, Failure> {
     }
     let mut text = table(&rows);
     for d in &listing.damaged {
-        text.push_str(&format!("{}: {}\n", line_text(&d.file), line_text(&d.reason)));
+        text.push_str(&format!(
+            "{}: {}\n",
+            line_text(&d.file),
+            line_text(&d.reason)
+        ));
     }
     write_out(&text)
 }

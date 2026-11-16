@@ -228,9 +228,7 @@ fn read_album(path: &Path) -> Result<Album, Failure> {
 /// the album's order with their stored settings, one plan each. A photo that has changed since the album was saved says so in
 /// its notes; a photo that is not found is kept as a failed entry and fails with `not_found` below.
 fn open_album_plans(core: &Core, album: &Album, path: &Path) -> Vec<Plan> {
-    let outcome = core
-        .session
-        .open_album(album, path, OpenOptions::default());
+    let outcome = core.session.open_album(album, path, OpenOptions::default());
     let paths: HashMap<PhotoId, PathBuf> = core
         .session
         .capture_photos()
@@ -625,10 +623,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
     }
 
     // The photos: the album's, or the files and folders given.
-    let album = album_path
-        .as_deref()
-        .map(read_album)
-        .transpose()?;
+    let album = album_path.as_deref().map(read_album).transpose()?;
     let Expanded {
         files,
         problems,
@@ -1012,7 +1007,9 @@ fn apply_settings(
             .paste_settings(&[id], &chosen.patch.patch)
             .map_err(|e| e.to_string())?;
         if !report.skipped.is_empty() {
-            return Err("The photo isn't developed, so the preset could not be applied.".to_owned());
+            return Err(
+                "The photo isn't developed, so the preset could not be applied.".to_owned(),
+            );
         }
     }
     if !presets.is_empty() {
@@ -1156,12 +1153,7 @@ fn handle_file(
     let input = &plan.input;
     match done.outcome {
         Ok(report) => {
-            let all_notes: Vec<String> = plan
-                .notes
-                .iter()
-                .chain(&report.notes)
-                .cloned()
-                .collect();
+            let all_notes: Vec<String> = plan.notes.iter().chain(&report.notes).cloned().collect();
             for note in &all_notes {
                 if !notes.contains(note) {
                     notes.push(note.clone());

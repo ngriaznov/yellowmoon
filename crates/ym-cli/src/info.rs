@@ -69,7 +69,30 @@ impl From<Failure> for Stop {
 /// panicking like `println!` would.
 pub fn run(args: &InfoArgs, console: &mut Console) -> u8 {
     let mut stdout = io::stdout().lock();
-    match run_to(args, console, &mut stdout) {
+    let result = match album_files(args) {
+        Ok(None) => run_to(args, console, &mut stdout),
+        Ok(Some((path, found))) => {
+            // The album's list first, then the usual block of each photo that was found.
+            let inner = InfoArgs {
+                files: found,
+                ..args.clone()
+            };
+            album_to(&path, args.json, &mut stdout)
+                .map_err(Stop::from)
+                .and_then(|()| {
+                    if inner.files.is_empty() {
+                        Ok(exit::OK)
+                    } else {
+                        if !args.json {
+                            writeln!(stdout)?;
+                        }
+                        run_to(&inner, console, &mut stdout)
+                    }
+                })
+        }
+        Err(failure) => Err(Stop::Failure(failure)),
+    };
+    match result {
         Ok(code) => code,
         Err(Stop::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe => exit::OK,
         Err(Stop::Io(error)) => {
@@ -80,6 +103,135 @@ pub fn run(args: &InfoArgs, console: &mut Console) -> u8 {
             console.failure(&failure);
             failure.code
         }
+    }
+}
+
+/// The album among the files, with the photos of it that were found (`docs/31` section 8): `None` when no file is an album.
+fn album_files(args: &InfoArgs) -> Result<Option<(PathBuf, Vec<PathBuf>)>, Failure> {
+    let is_album = |p: &PathBuf| {
+        p.extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case(ym_core::album::FILE_EXTENSION))
+    };
+    if !args.files.iter().any(is_album) {
+        return Ok(None);
+    }
+    let [path] = args.files.as_slice() else {
+        return Err(Failure::usage("Give an album on its own, or photos."));
+    };
+    let album = read_album_file(path)?;
+    let found = album_rows(path, &album)
+        .into_iter()
+        .filter_map(|r| r.found)
+        .collect();
+    Ok(Some((path.clone(), found)))
+}
+
+fn read_album_file(path: &Path) -> Result<ym_core::album::Album, Failure> {
+    if !path.is_file() {
+        return Err(Failure::usage(format!(
+            "{}: There is no file with this name. Check the path and try again.",
+            path_text(path)
+        )));
+    }
+    ym_core::album::Album::read_file(path)
+        .map_err(|e| Failure::usage(format!("{}: {e}", path_text(path))))
+}
+
+/// One photo of an album as `info` lists it.
+struct AlbumRow {
+    name: String,
+    absolute: String,
+    relative: Option<String>,
+    picked: bool,
+    found: Option<PathBuf>,
+    matched: Option<bool>,
+}
+
+fn album_rows(path: &Path, album: &ym_core::album::Album) -> Vec<AlbumRow> {
+    let dir = ym_core::album::album_dir(path);
+    album
+        .photos
+        .iter()
+        .map(|p| {
+            let found = p
+                .path
+                .as_deref()
+                .map(|r| ym_core::album::resolve_relative(&dir, r))
+                .into_iter()
+                .chain(std::iter::once(PathBuf::from(&p.absolute)))
+                .find(|c| c.is_file());
+            let matched = found
+                .as_ref()
+                .and_then(|f| ym_core::album::Fingerprint::of(f).ok())
+                .map(|f| f == p.fingerprint);
+            AlbumRow {
+                name: Path::new(&p.absolute)
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+                absolute: p.absolute.clone(),
+                relative: p.path.clone(),
+                picked: p.picked,
+                found,
+                matched,
+            }
+        })
+        .collect()
+}
+
+/// Prints the album's photos in order and the versions that wrote it.
+fn album_to(path: &Path, json: bool, out: &mut dyn Write) -> Result<(), io::Error> {
+    let album = match ym_core::album::Album::read_file(path) {
+        Ok(a) => a,
+        Err(e) => return Err(io::Error::other(e.to_string())),
+    };
+    let rows = album_rows(path, &album);
+    if json {
+        let photos: Vec<Value> = rows
+            .iter()
+            .map(|r| {
+                json!({
+                    "name": r.name,
+                    "path": r.relative,
+                    "absolute": r.absolute,
+                    "picked": r.picked,
+                    "found": r.found.is_some(),
+                    "fingerprint_matches": r.matched,
+                })
+            })
+            .collect();
+        let mut obj = Object::new();
+        obj.insert("album", lossy(path));
+        obj.insert(
+            "written_by",
+            json!({ "version": album.written_by.version, "pipeline": album.written_by.pipeline }),
+        );
+        obj.insert("photos", Value::Array(photos));
+        writeln!(out, "{}", obj.to_line())
+    } else {
+        writeln!(out, "Album: {}", path_text(path))?;
+        writeln!(
+            out,
+            "Written by: Yellowmoon {}, pipeline {}",
+            album.written_by.version, album.written_by.pipeline
+        )?;
+        writeln!(out, "Photos: {}", rows.len())?;
+        for (n, r) in rows.iter().enumerate() {
+            let status = match (&r.found, r.matched) {
+                (None, _) => "not found".to_owned(),
+                (Some(_), Some(false)) => "found, changed since the album was saved".to_owned(),
+                (Some(_), _) => "found".to_owned(),
+            };
+            writeln!(
+                out,
+                "  {}. {}  {}{}  {}",
+                n + 1,
+                crate::text::line_text(&r.name),
+                crate::text::line_text(&r.absolute),
+                if r.picked { "  picked" } else { "" },
+                status
+            )?;
+        }
+        Ok(())
     }
 }
 
