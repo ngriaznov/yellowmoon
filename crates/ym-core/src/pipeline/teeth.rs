@@ -74,11 +74,61 @@ impl Decision {
     }
 }
 
+/// What an answer depends on: the face's rectangle, the picture's size and a hash of the pixels the crop can read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Key {
     rect: (i32, i32, u32, u32),
     size: (u32, u32),
     hash: u64,
+}
+
+impl Key {
+    /// The key of `face` in `image`. The crop lies inside the face's rectangle grown by its own size on every side (a mouth is
+    /// inside the face and the crop is a few mouth widths), so the hash reads that region; a changed picture never gets an old
+    /// answer.
+    fn of(image: &LinearAwg4Image, face: &Face) -> Self {
+        let r = face.rect;
+        let long = i64::from(r.width_px.max(r.height_px));
+        let clamp = |v: i64| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        let region = Rect::new(
+            clamp(i64::from(r.x_px) - long),
+            clamp(i64::from(r.y_px) - long),
+            (i64::from(r.width_px) + 2 * long).min(i64::from(u32::MAX)) as u32,
+            (i64::from(r.height_px) + 2 * long).min(i64::from(u32::MAX)) as u32,
+        );
+        Self {
+            rect: (r.x_px, r.y_px, r.width_px, r.height_px),
+            size: (image.width_px, image.height_px),
+            hash: region_hash(image, region),
+        }
+    }
+}
+
+/// The last [`CACHE_FACES`] answers.
+#[derive(Default)]
+struct AnswerCache(Mutex<Vec<(Key, Option<BoundedMask>)>>);
+
+impl AnswerCache {
+    /// The answer under `key`, made by `make` (and kept) when there is none. A failure is not kept.
+    fn get_or_make(
+        &self,
+        key: Key,
+        make: impl FnOnce() -> RetouchResult<Option<BoundedMask>>,
+    ) -> RetouchResult<Option<BoundedMask>> {
+        {
+            let cache = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((_, answer)) = cache.iter().find(|(k, _)| *k == key) {
+                return Ok(answer.clone());
+            }
+        }
+        let answer = make()?;
+        let mut cache = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if cache.len() >= CACHE_FACES {
+            cache.remove(0);
+        }
+        cache.push((key, answer.clone()));
+        Ok(answer)
+    }
 }
 
 /// The teeth segmenter: SAM 2.1 small and the face analysis of the same picture.
@@ -87,7 +137,7 @@ pub struct SamTeeth {
     sam: Arc<ObjectModel>,
     style: PromptStyle,
     factor: f64,
-    cache: Mutex<Vec<(Key, Option<BoundedMask>)>>,
+    cache: AnswerCache,
 }
 
 impl std::fmt::Debug for SamTeeth {
@@ -172,7 +222,7 @@ impl SamTeeth {
             sam,
             style,
             factor,
-            cache: Mutex::new(Vec::new()),
+            cache: AnswerCache::default(),
         }
     }
 
@@ -287,44 +337,13 @@ impl SamTeeth {
             (image.width_px, image.height_px),
         )
     }
-
-    fn key(&self, image: &LinearAwg4Image, face: &Face) -> Key {
-        // The crop lies inside the face's rectangle grown by its own size on every side (a mouth is inside the face and the
-        // crop is a few mouth widths).
-        let r = face.rect;
-        let long = i64::from(r.width_px.max(r.height_px));
-        let clamp = |v: i64| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
-        let region = Rect::new(
-            clamp(i64::from(r.x_px) - long),
-            clamp(i64::from(r.y_px) - long),
-            (i64::from(r.width_px) + 2 * long).min(i64::from(u32::MAX)) as u32,
-            (i64::from(r.height_px) + 2 * long).min(i64::from(u32::MAX)) as u32,
-        );
-        Key {
-            rect: (r.x_px, r.y_px, r.width_px, r.height_px),
-            size: (image.width_px, image.height_px),
-            hash: region_hash(image, region),
-        }
-    }
 }
 
 impl TeethSegmenter for SamTeeth {
     fn teeth(&self, image: &LinearAwg4Image, face: &Face) -> RetouchResult<Option<BoundedMask>> {
         image.validate()?;
-        let key = self.key(image, face);
-        {
-            let cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some((_, answer)) = cache.iter().find(|(k, _)| *k == key) {
-                return Ok(answer.clone());
-            }
-        }
-        let answer = self.segment(image, face)?;
-        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-        if cache.len() >= CACHE_FACES {
-            cache.remove(0);
-        }
-        cache.push((key, answer.clone()));
-        Ok(answer)
+        self.cache
+            .get_or_make(Key::of(image, face), || self.segment(image, face))
     }
 }
 
@@ -364,6 +383,148 @@ mod tests {
         // The same crop at another resolution has the same ramp.
         let small = crop_rgb8(&image, &crop, 30);
         assert!((i32::from(small[(15 * 30 + 15) * 3]) - i32::from(px(30, 30))).abs() <= 3);
+    }
+
+    fn square(side: u32, fill: [f32; 3]) -> LinearAwg4Image {
+        LinearAwg4Image::filled(side, side, fill).expect("image")
+    }
+
+    fn one_pixel_mask(v: u8) -> Option<BoundedMask> {
+        Some(
+            BoundedMask::new(
+                Rect::new(0, 0, 1, 1),
+                ym_retouch::Mask::new(1, 1, vec![v]).expect("mask"),
+            )
+            .expect("bounded"),
+        )
+    }
+
+    #[test]
+    fn an_answer_is_made_once_per_face_and_picture() {
+        let cache = AnswerCache::default();
+        let face = Face {
+            rect: Rect::new(40, 40, 60, 60),
+            scale: 0.5,
+        };
+        let image = square(200, [0.2; 3]);
+        let calls = std::cell::Cell::new(0);
+        let make = |v: u8| {
+            calls.set(calls.get() + 1);
+            Ok(one_pixel_mask(v))
+        };
+        let key = Key::of(&image, &face);
+        assert_eq!(
+            cache.get_or_make(key, || make(7)).unwrap(),
+            one_pixel_mask(7)
+        );
+        // The same face of the same picture: the cached answer, nothing runs.
+        assert_eq!(
+            cache.get_or_make(key, || make(9)).unwrap(),
+            one_pixel_mask(7)
+        );
+        assert_eq!(calls.get(), 1);
+        // "Found nothing" is an answer too, and is kept.
+        let other = Face {
+            rect: Rect::new(10, 10, 60, 60),
+            ..face
+        };
+        assert_eq!(
+            cache
+                .get_or_make(Key::of(&image, &other), || {
+                    calls.set(calls.get() + 1);
+                    Ok(None)
+                })
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            cache
+                .get_or_make(Key::of(&image, &other), || make(1))
+                .unwrap(),
+            None
+        );
+        assert_eq!(calls.get(), 2);
+        // A failure is not kept: the next call tries again.
+        let third = Face {
+            rect: Rect::new(60, 60, 50, 50),
+            ..face
+        };
+        let failed: RetouchResult<Option<BoundedMask>> = cache
+            .get_or_make(Key::of(&image, &third), || {
+                Err(RetouchError::Model("no".into()))
+            });
+        assert!(failed.is_err());
+        assert_eq!(
+            cache
+                .get_or_make(Key::of(&image, &third), || make(3))
+                .unwrap(),
+            one_pixel_mask(3)
+        );
+    }
+
+    #[test]
+    fn the_key_sees_the_pixels_around_the_face_and_nothing_far_from_it() {
+        let face = Face {
+            rect: Rect::new(80, 80, 40, 40),
+            scale: 0.5,
+        };
+        let mut image = square(400, [0.2; 3]);
+        let base = Key::of(&image, &face);
+        assert_eq!(base, Key::of(&image.clone(), &face));
+        // Far from the face (more than its size away): not part of the key.
+        image.data[5 * 400 + 5][0] = 0.9;
+        assert_eq!(base, Key::of(&image, &face));
+        // In the mouth's neighbourhood: a changed pixel is another key, so a re-developed picture is segmented again.
+        image.data[100 * 400 + 100][1] = 0.9;
+        assert_ne!(base, Key::of(&image, &face));
+        // Another face rectangle, another picture size.
+        assert_ne!(
+            base,
+            Key::of(
+                &square(400, [0.2; 3]),
+                &Face {
+                    rect: Rect::new(81, 80, 40, 40),
+                    ..face
+                }
+            )
+        );
+        assert_ne!(base, Key::of(&square(401, [0.2; 3]), &face));
+    }
+
+    #[test]
+    fn the_cache_keeps_the_last_eight_faces() {
+        let cache = AnswerCache::default();
+        let image = square(300, [0.1; 3]);
+        let key = |i: i32| {
+            Key::of(
+                &image,
+                &Face {
+                    rect: Rect::new(i, 10, 30, 30),
+                    scale: 0.5,
+                },
+            )
+        };
+        for i in 0..=CACHE_FACES as i32 {
+            cache
+                .get_or_make(key(i), || Ok(one_pixel_mask(i as u8)))
+                .unwrap();
+        }
+        let mut runs = 0;
+        // The first one was dropped; the last ones are there.
+        cache
+            .get_or_make(key(0), || {
+                runs += 1;
+                Ok(None)
+            })
+            .unwrap();
+        assert_eq!(runs, 1);
+        cache
+            .get_or_make(key(CACHE_FACES as i32), || {
+                runs += 1;
+                Ok(None)
+            })
+            .unwrap();
+        assert_eq!(runs, 1);
     }
 
     #[test]

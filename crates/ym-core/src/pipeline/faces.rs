@@ -669,6 +669,52 @@ mod tests {
         assert_eq!(capped[31].0, 32);
     }
 
+    /// The repository's model folder, when the three face networks are in it.
+    fn repo_models() -> Option<std::path::PathBuf> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/models");
+        WEIGHT_FILES
+            .iter()
+            .all(|f| dir.join("mediapipe").join(f).is_file())
+            .then_some(dir)
+    }
+
+    #[test]
+    fn without_the_sam_weights_there_is_no_teeth_segmenter() {
+        let Some(models_dir) = repo_models() else {
+            println!("SKIPPED: no face weights in data/models/mediapipe");
+            return;
+        };
+        let root = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir_all(root.path().join("models")).expect("dir");
+        std::os::unix::fs::symlink(
+            models_dir.join("mediapipe"),
+            root.path().join("models/mediapipe"),
+        )
+        .expect("link");
+        let model = FaceModel::probe(root.path()).expect("the face model");
+        assert!(
+            model.weights_id().ends_with("+no-sam"),
+            "{}",
+            model.weights_id()
+        );
+        let models = model.models().expect("models");
+        assert!(
+            models.teeth.is_none(),
+            "no SAM weights: no segmenter, so teeth whitening is off"
+        );
+        // The rest of the face models are there.
+        assert!(models.beauty_marks.is_some());
+        // With the SAM folder next to it there is one, and the analysis' key changes.
+        let sam = models_dir.join("sam2");
+        if sam.join(ym_ml::sam2::WEIGHTS_FILE).is_file() && sam.join("SHA256SUMS").is_file() {
+            std::os::unix::fs::symlink(&sam, root.path().join("models/sam2")).expect("link");
+            let with = FaceModel::probe(root.path()).expect("the face model");
+            assert!(!with.weights_id().ends_with("+no-sam"));
+            assert_ne!(with.weights_id(), model.weights_id());
+            assert!(with.models().expect("models").teeth.is_some());
+        }
+    }
+
     #[test]
     fn the_phases_have_their_wire_names() {
         assert_eq!(FacePhase::Finding.wire(), "finding");

@@ -14,119 +14,21 @@
 
 use std::fmt::Write as _;
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[path = "teeth_support/mod.rs"]
+mod support;
+
+use support::{decode, old_teeth_mask, to_linear_awg4};
 use ym_core::pipeline::object::ObjectModel;
 use ym_core::pipeline::teeth::SamTeeth;
 use ym_ml::mediapipe::blazeface::{BlazeFace, FaceFinder, FinderParams, Rgb8};
 use ym_retouch::face_parts::mouth_interior_mask;
-use ym_retouch::mediapipe::{AWG4_TO_REC709, MediaPipeFaces};
+use ym_retouch::mediapipe::MediaPipeFaces;
 use ym_retouch::teeth::{PromptShape, PromptStyle, crop_mask};
-use ym_retouch::{
-    Face, LinearAwg4Image, Mask, Rect, feather, mul_masks, smoothstep, teeth_from_segment,
-};
-
-fn decode(path: &Path) -> (usize, usize, Vec<u8>) {
-    let mut d = zune_jpeg::JpegDecoder::new(std::io::Cursor::new(
-        std::fs::read(path).expect("read the photo"),
-    ));
-    let rgb = d.decode().expect("decode the photo");
-    let info = d.info().expect("jpeg header");
-    (usize::from(info.width), usize::from(info.height), rgb)
-}
-
-fn invert(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
-    let a = m.map(|r| r.map(f64::from));
-    let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
-        - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
-        + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
-    let c = |r: usize, c: usize| {
-        let (r1, r2, c1, c2) = ((r + 1) % 3, (r + 2) % 3, (c + 1) % 3, (c + 2) % 3);
-        a[r1][c1] * a[r2][c2] - a[r1][c2] * a[r2][c1]
-    };
-    let mut out = [[0.0f32; 3]; 3];
-    for (r, row) in out.iter_mut().enumerate() {
-        for (k, v) in row.iter_mut().enumerate() {
-            *v = (c(k, r) / det) as f32;
-        }
-    }
-    out
-}
-
-fn to_linear_awg4(w: usize, h: usize, rgb: &[u8]) -> LinearAwg4Image {
-    let inv = invert(AWG4_TO_REC709);
-    let decode = |v: u8| {
-        let e = f64::from(v) / 255.0;
-        (if e <= 0.04045 {
-            e / 12.92
-        } else {
-            ((e + 0.055) / 1.055).powf(2.4)
-        }) as f32
-    };
-    let data = rgb
-        .chunks_exact(3)
-        .map(|p| {
-            let l = [decode(p[0]), decode(p[1]), decode(p[2])];
-            [0, 1, 2].map(|r| inv[r][0] * l[0] + inv[r][1] * l[1] + inv[r][2] * l[2])
-        })
-        .collect();
-    LinearAwg4Image::new(w as u32, h as u32, data).expect("image")
-}
-
-/// The teeth mask of S-16 (`docs/27` 5.6 at ab4c63cd), kept here as the baseline of the evaluation: three colour gates inside
-/// the mouth's interior.
-fn old_teeth_mask(mouth: &Mask, image: &LinearAwg4Image, extent_px: f64) -> Mask {
-    let gate = |pixel: [f32; 3], y_mouth: f64| -> u8 {
-        let (r, g, b) = (
-            f64::from(pixel[0]).max(0.0),
-            f64::from(pixel[1]).max(0.0),
-            f64::from(pixel[2]).max(0.0),
-        );
-        let y = (r + g + b) / 3.0;
-        if y_mouth.is_nan() || y_mouth <= 0.0 || !y.is_finite() {
-            return 0;
-        }
-        let max = r.max(g).max(b);
-        let sat = if max > 0.0 {
-            1.0 - r.min(g).min(b) / max
-        } else {
-            0.0
-        };
-        let bright = smoothstep(0.6, 1.0, y / y_mouth);
-        let pale = 1.0 - smoothstep(0.55, 0.85, sat);
-        let notred = 1.0 - smoothstep(0.12, 0.26, (r - g) / y.max(1e-4));
-        (255.0 * bright * pale * notred).round().clamp(0.0, 255.0) as u8
-    };
-    let mouth = feather(mouth, -0.004 * extent_px).expect("feather");
-    let w = image.width_px as usize;
-    let mut ys: Vec<f64> = mouth
-        .data
-        .iter()
-        .enumerate()
-        .filter(|(_, v)| **v != 0)
-        .map(|(i, _)| {
-            let p = image.data[i];
-            (f64::from(p[0]).max(0.0) + f64::from(p[1]).max(0.0) + f64::from(p[2]).max(0.0)) / 3.0
-        })
-        .collect();
-    ys.sort_unstable_by(f64::total_cmp);
-    let y_mouth = if ys.is_empty() {
-        0.0
-    } else {
-        ys[((0.8 * ys.len() as f64).ceil() as usize).clamp(1, ys.len()) - 1]
-    };
-    let mut g = Mask::zeros(image.width_px, image.height_px).expect("mask");
-    for (i, out) in g.data.iter_mut().enumerate() {
-        if mouth.data[i] != 0 {
-            *out = gate(image.data[i], y_mouth);
-        }
-    }
-    let _ = w;
-    let teeth = mul_masks(&mouth, &g).expect("mul");
-    feather(&teeth, 0.002 * extent_px).expect("feather")
-}
+use ym_retouch::{Face, Mask, Rect, teeth_from_segment};
 
 fn iou(pred: &Mask, label: &[u8], window: (usize, usize, usize, usize)) -> (f64, usize, usize) {
     let (x0, y0, x1, y1) = window;
@@ -322,7 +224,7 @@ fn main() {
             continue;
         };
         let mouth_full = mouth.to_full(size).expect("mouth");
-        let old = old_teeth_mask(&mouth_full, &image, extent);
+        let old = old_teeth_mask(&mouth_full, &image, extent, true);
         let (v, p, l) = iou(&old, &label, window);
         writeln!(lines, "{id}\told\tok\t{v:.4}\t{p}\t{l}").unwrap();
         for &factor in &factors {

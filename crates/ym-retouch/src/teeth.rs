@@ -61,6 +61,12 @@ impl PromptShape {
     };
 }
 
+/// An opening lower than this many pixels of the picture shows no teeth to SAM: the face gets none (the mesh puts the lips
+/// together to within a pixel or two on a closed mouth, and a mouth that small is not worth 30 s of the encoder).
+pub const MIN_OPENING_PX: f64 = 3.0;
+/// An opening whose height is under this share of its width shows no teeth either.
+pub const MIN_OPENING_ASPECT: f64 = 0.03;
+
 /// A candidate is refused when more than this share of it lies on the lips or outside the mouth's outer contour.
 pub const MAX_SPILL: f64 = 0.30;
 /// A candidate is refused when it covers less than this share of the opening.
@@ -95,7 +101,7 @@ impl MouthCrop {
             p[usize::from(OUTER_LIPS[10])],
         );
         let width = (a[0] - b[0]).hypot(a[1] - b[1]);
-        if !(width >= 4.0) {
+        if width.is_nan() || width < 4.0 {
             return None;
         }
         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
@@ -169,7 +175,7 @@ impl Frame {
             p[usize::from(INNER_LIPS[10])],
         );
         let w = (b[0] - a[0]).hypot(b[1] - a[1]);
-        if !(w >= 1.0) {
+        if w.is_nan() || w < 1.0 {
             return None;
         }
         let ex = [(b[0] - a[0]) / w, (b[1] - a[1]) / w];
@@ -359,7 +365,8 @@ fn fill(poly: &[[f64; 2]]) -> Vec<bool> {
 
 impl Regions {
     /// The regions of a mouth on the crop's grid: the opening (inner lip contour), the lips (between the contours) and the
-    /// mouth (inside the outer contour). `None` when the opening covers no cell.
+    /// mouth (inside the outer contour). `None` when the opening covers no cell or is lower than [`MIN_OPENING_PX`] or
+    /// [`MIN_OPENING_ASPECT`] of its width.
     pub fn from_geometry(geometry: &FaceGeometry, crop: &MouthCrop) -> Option<Self> {
         let p = geometry.points();
         let ring = |ids: &[u16]| -> Vec<[f64; 2]> {
@@ -387,6 +394,9 @@ impl Regions {
         let (lo, hi) = local.iter().fold((f64::MAX, f64::MIN), |(lo, hi), q| {
             (lo.min(q[1]), hi.max(q[1]))
         });
+        if hi - lo < MIN_OPENING_PX || (hi - lo) / width < MIN_OPENING_ASPECT {
+            return None;
+        }
         Some(Self {
             opening,
             lips,
@@ -571,7 +581,7 @@ mod tests {
                 let a = std::f64::consts::PI - std::f64::consts::TAU * k as f64 / 20.0;
                 // k = 0 is the left corner (angle pi), k = 10 the right one (angle 0).
                 let x = cx + rx * a.cos();
-                let y = cy + ry * a.sin() * if k <= 10 { 1.0 } else { 1.0 };
+                let y = cy + ry * a.sin();
                 pts[usize::from(id)] = [x, y];
             }
         };
@@ -680,6 +690,30 @@ mod tests {
         let crop = MouthCrop::from_geometry(&g, CROP_FACTOR).expect("crop");
         let p = teeth_prompt_with(&g, &crop, PromptStyle::Points, &shape).expect("prompt");
         assert_eq!(p.points.iter().filter(|q| !q.positive).count(), 4);
+    }
+
+    #[test]
+    fn a_mouth_that_is_barely_open_has_nothing_to_look_at() {
+        let crop_of = |g: &FaceGeometry| MouthCrop::from_geometry(g, CROP_FACTOR).expect("crop");
+        for h in [0.5, 2.0, 2.9] {
+            let g = mouth(h);
+            assert!(
+                Regions::from_geometry(&g, &crop_of(&g)).is_none(),
+                "an opening of {h} px"
+            );
+        }
+        let g = mouth(3.5);
+        assert!(Regions::from_geometry(&g, &crop_of(&g)).is_some());
+        // Tall and narrow is as good as short and wide only when it is as tall as the floor says.
+        let mut pts = mouth(24.0).points().to_vec();
+        for &i in &INNER_LIPS {
+            pts[usize::from(i)][0] = 200.0 + (pts[usize::from(i)][0] - 200.0) * 20.0;
+        }
+        let wide = FaceGeometry::new(pts).expect("geometry");
+        assert!(
+            Regions::from_geometry(&wide, &crop_of(&wide)).is_none(),
+            "24 px tall and 1600 px wide: under 3 % of the width"
+        );
     }
 
     #[test]
