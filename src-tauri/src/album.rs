@@ -13,7 +13,9 @@
 use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager, Runtime};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
+use tauri_plugin_dialog::{
+    DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
+};
 
 use crate::api::AppApi;
 use crate::commands::AppState;
@@ -74,11 +76,7 @@ pub fn answer_of(result: &MessageDialogResult) -> Answer {
 }
 
 /// Shows the question and calls `then` with the answer, from the dialog's thread. Does not wait: this is for the main thread.
-pub fn ask<R: Runtime>(
-    app: &AppHandle<R>,
-    name: &str,
-    then: impl FnOnce(Answer) + Send + 'static,
-) {
+pub fn ask<R: Runtime>(app: &AppHandle<R>, name: &str, then: impl FnOnce(Answer) + Send + 'static) {
     app.dialog()
         .message(DETAIL)
         .title(question(name))
@@ -242,7 +240,10 @@ pub fn choose_exported_photo<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
     app.dialog()
         .file()
         .set_title("Choose an exported photo")
-        .add_filter("Exported photos", &["jpg", "jpeg", "tif", "tiff", "png", "dng", "xmp"])
+        .add_filter(
+            "Exported photos",
+            &["jpg", "jpeg", "tif", "tiff", "png", "dng", "xmp"],
+        )
         .blocking_pick_file()
         .and_then(|p| p.into_path().ok())
         .map(|p| p.to_string_lossy().into_owned())
@@ -303,7 +304,10 @@ mod tests {
 
     #[test]
     fn the_buttons_answer_as_they_are_labelled() {
-        assert_eq!(answer_of(&MessageDialogResult::Custom(SAVE.into())), Answer::Save);
+        assert_eq!(
+            answer_of(&MessageDialogResult::Custom(SAVE.into())),
+            Answer::Save
+        );
         assert_eq!(
             answer_of(&MessageDialogResult::Custom(DONT_SAVE.into())),
             Answer::DontSave
@@ -363,7 +367,8 @@ mod tests {
         assert_eq!(is_album_choice(&[one("/a/b.ARW")]), Ok(false));
         assert_eq!(is_album_choice(&[one("/a/Lisbon.ymalbum")]), Ok(true));
         assert_eq!(is_album_choice(&[one("/a/Lisbon.YMALBUM")]), Ok(true));
-        let mixed = is_album_choice(&[one("/a/Lisbon.ymalbum"), one("/a/b.ARW")]).expect_err("mixed");
+        let mixed =
+            is_album_choice(&[one("/a/Lisbon.ymalbum"), one("/a/b.ARW")]).expect_err("mixed");
         assert_eq!(
             mixed.message,
             "Open an album on its own, or open photos. Yellowmoon can't open both in one go."

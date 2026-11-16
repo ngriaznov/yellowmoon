@@ -2759,7 +2759,9 @@ pub struct PasteReport {
 // ---------------------------------------------------------------------------------------------
 
 /// One of the eight groups of fields a preset holds (`docs/30` section 2), in the order of the dialog and the file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum PresetGroup {
     /// The look and its intensity.

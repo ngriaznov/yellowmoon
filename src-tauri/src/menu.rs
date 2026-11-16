@@ -1018,7 +1018,10 @@ mod tests {
 
     #[test]
     fn save_and_save_as_are_in_the_file_menu_with_the_keys_of_docs_31() {
-        let file = spec().into_iter().find(|m| m.title == "File").expect("File");
+        let file = spec()
+            .into_iter()
+            .find(|m| m.title == "File")
+            .expect("File");
         let labels: Vec<&str> = file
             .entries
             .iter()
@@ -1038,9 +1041,14 @@ mod tests {
                 "Close Session"
             ]
         );
-        let by_id: std::collections::HashMap<_, _> =
-            items().into_iter().map(|(id, _, key, act)| (id, (key, act))).collect();
-        assert_eq!(by_id["save"], (Some("CmdOrCtrl+S"), Do::Webview(MenuAction::Save)));
+        let by_id: std::collections::HashMap<_, _> = items()
+            .into_iter()
+            .map(|(id, _, key, act)| (id, (key, act)))
+            .collect();
+        assert_eq!(
+            by_id["save"],
+            (Some("CmdOrCtrl+S"), Do::Webview(MenuAction::Save))
+        );
         assert_eq!(
             by_id["save_as"],
             (Some("CmdOrCtrl+Shift+S"), Do::Webview(MenuAction::SaveAs))
@@ -1076,8 +1084,10 @@ mod tests {
                 "Show Looks Folder"
             ]
         );
-        let by_id: std::collections::HashMap<_, _> =
-            items().into_iter().map(|(id, _, key, act)| (id, (key, act))).collect();
+        let by_id: std::collections::HashMap<_, _> = items()
+            .into_iter()
+            .map(|(id, _, key, act)| (id, (key, act)))
+            .collect();
         // ⌥⌘S, not ⇧⌘S (which is Save As…).
         assert_eq!(
             by_id["save_preset"],
@@ -1114,7 +1124,10 @@ mod tests {
         };
         assert!(preset_items(&empty).is_empty());
         // The item of a name carries the name; no item of ours has an id that could be mistaken for one.
-        assert_eq!(preset_of_item(&preset_item_id("Warm evening")), Some("Warm evening"));
+        assert_eq!(
+            preset_of_item(&preset_item_id("Warm evening")),
+            Some("Warm evening")
+        );
         assert_eq!(preset_of_item("apply_preset"), None);
         assert!(items_ids_never_start_with_the_prefix());
     }

@@ -11,6 +11,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_specta::Event;
 use ym_gpu::device::Gpu;
 
+use crate::album::{self, Answer};
 use crate::api::{AppApi, AppConfig};
 use crate::cli_link::{CliLink, Elevate};
 use crate::commands::{self, AppState};
@@ -20,7 +21,6 @@ use crate::perf;
 use crate::system;
 use crate::viewport::{FRAME_SCHEME, FallbackSink, FrameSink, FrameStore};
 use crate::wire::{AppError, ErrorScope, MenuActionEvent};
-use crate::album::{self, Answer};
 
 /// Set when the person has agreed to quit with an export running.
 static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);

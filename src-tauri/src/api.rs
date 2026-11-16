@@ -34,16 +34,16 @@ use crate::node_thumbs::NodeThumbnailer;
 use crate::thumbs::Thumbnails;
 use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
-    AlbumSaved, AlbumState, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
-    CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthFar, DepthState, ErrorScope,
-    ExportEstimate, ExportJob, ExportJobId, FocusPlaneResult, FocusReason, HistogramData, LensInfo,
-    Look, LookId, LookInput, LooksImportProgress, LooksImportResult, MapFrom, MaskFindPrompt,
-    MaskFindResult, MaskKind, MaskView, MemoryNotice, NodeId, Num, ObjectState, OpenProgress,
-    OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress, PixelSample, Preferences,
-    PreferencesPatch, PresetApplyReport, PresetEntry, PresetGroup, PresetInspect, PresetsListing,
-    PresetSource, ImportResult, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
-    SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
-    VisionState, WatchStatus, convert,
+    AlbumSaved, AlbumState, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter,
+    ChromaTap, CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthFar, DepthState,
+    ErrorScope, ExportEstimate, ExportJob, ExportJobId, FocusPlaneResult, FocusReason,
+    HistogramData, ImportResult, LensInfo, Look, LookId, LookInput, LooksImportProgress,
+    LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView, MemoryNotice,
+    NodeId, Num, ObjectState, OpenProgress, OpenSummary, Orientation, PasteReport, PhotoId,
+    PhotoProgress, PixelSample, Preferences, PreferencesPatch, PresetApplyReport, PresetEntry,
+    PresetGroup, PresetInspect, PresetSource, PresetsListing, ResolvedSettings, SessionChange,
+    SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput,
+    ViewportMode, ViewportRect, VisionState, WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
 
@@ -1484,7 +1484,8 @@ impl AppApi {
     pub fn album_open(&self, path: &str) -> Result<SessionState, AppError> {
         let path = PathBuf::from(path);
         // Read first: a refused file must not close the session (the core reads it again, which is 100 KiB at most).
-        ym_core::album::Album::read_file(&path).map_err(|e| AppError::from(ym_core::app::CoreError::from(e)))?;
+        ym_core::album::Album::read_file(&path)
+            .map_err(|e| AppError::from(ym_core::app::CoreError::from(e)))?;
         self.close_session();
         let outcome = self
             .core
@@ -1635,11 +1636,7 @@ impl AppApi {
     /// # Errors
     ///
     /// [`AppError`] with scope `presets` for a preset that is gone or a patch that cannot be applied; nothing changes then.
-    pub fn preset_apply(
-        &self,
-        name: &str,
-        ids: &[PhotoId],
-    ) -> Result<PresetApplyReport, AppError> {
+    pub fn preset_apply(&self, name: &str, ids: &[PhotoId]) -> Result<PresetApplyReport, AppError> {
         let core_ids: Vec<CorePhotoId> = ids.iter().map(|id| core_id(*id)).collect();
         let report = self
             .core
@@ -1696,7 +1693,11 @@ impl AppApi {
     /// # Errors
     ///
     /// [`AppError`] only if the shapes disagree (a bug).
-    pub fn presets_import(&self, paths: &[String], replace: bool) -> Result<ImportResult, AppError> {
+    pub fn presets_import(
+        &self,
+        paths: &[String],
+        replace: bool,
+    ) -> Result<ImportResult, AppError> {
         let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
         convert(&self.core.presets_import(&paths, replace))
     }

@@ -16,14 +16,14 @@ use tauri_specta::{Builder, collect_commands, collect_events};
 use crate::api::AppApi;
 use crate::system;
 use crate::wire::{
-    self, AlbumSaved, AlbumState, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter, ChromaTap,
-    CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthFar, ErrorScope, ExportEstimate,
-    ExportJob, ExportJobId, FilmCatalogue, FocusPlaneResult, HistogramData, ImportResult, LensInfo, Look,
-    LookId,
-    LookInput, LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView,
-    MenuState, NodeId, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample, Preferences,
-    PreferencesPatch, PresetApplyReport, PresetEntry, PresetExported, PresetGroup, PresetInspect,
-    PresetsListing, PresetSource, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
+    self, AlbumSaved, AlbumState, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample,
+    ChromaScatter, ChromaTap, CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthFar,
+    ErrorScope, ExportEstimate, ExportJob, ExportJobId, FilmCatalogue, FocusPlaneResult,
+    HistogramData, ImportResult, LensInfo, Look, LookId, LookInput, LooksImportResult, MapFrom,
+    MaskFindPrompt, MaskFindResult, MaskKind, MaskView, MenuState, NodeId, Num, OpenKind,
+    Orientation, PasteReport, PhotoId, PixelSample, Preferences, PreferencesPatch,
+    PresetApplyReport, PresetEntry, PresetExported, PresetGroup, PresetInspect, PresetSource,
+    PresetsListing, ResolvedSettings, SessionChange, SessionState, SettingsPatch,
     SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect,
     WatchStatus,
 };
@@ -106,7 +106,10 @@ pub async fn open_dialog(
         }
         let paths: Vec<String> = match kind {
             OpenKind::Files => dialog
-                .add_filter(crate::album::OPEN_FILTER_NAME, &crate::album::OPEN_FILTER_EXTENSIONS)
+                .add_filter(
+                    crate::album::OPEN_FILTER_NAME,
+                    &crate::album::OPEN_FILTER_EXTENSIONS,
+                )
                 .blocking_pick_files()
                 .unwrap_or_default()
                 .into_iter()
@@ -646,10 +649,7 @@ pub async fn preset_remove(state: State<'_, AppState>, name: String) -> Result<(
 /// `preset_remove_file(file)`: a damaged file to the Trash, by its file name.
 #[tauri::command]
 #[specta::specta]
-pub async fn preset_remove_file(
-    state: State<'_, AppState>,
-    file: String,
-) -> Result<(), AppError> {
+pub async fn preset_remove_file(state: State<'_, AppState>, file: String) -> Result<(), AppError> {
     run(&state, move |api| api.preset_remove_file(&file)).await
 }
 
@@ -662,7 +662,10 @@ pub async fn preset_export(
     state: State<'_, AppState>,
     name: String,
 ) -> Result<Option<PresetExported>, AppError> {
-    run(&state, move |api| crate::album::export_preset(&app, &api, &name)).await
+    run(&state, move |api| {
+        crate::album::export_preset(&app, &api, &name)
+    })
+    .await
 }
 
 /// `preset_choose_export()` (addition, for New Preset from Exported Photo…, `docs/30` section 12): the system's open panel for a photo
@@ -673,7 +676,10 @@ pub async fn preset_choose_export(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, AppError> {
-    run(&state, move |_| Ok(crate::album::choose_exported_photo(&app))).await
+    run(&state, move |_| {
+        Ok(crate::album::choose_exported_photo(&app))
+    })
+    .await
 }
 
 /// `presets_import_dialog()`: the system's open panel for `.ympreset` files (several), then the import. `null` when cancelled.
@@ -683,7 +689,10 @@ pub async fn presets_import_dialog(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Option<ImportResult>, AppError> {
-    run(&state, move |api| crate::album::import_presets_dialog(&app, &api)).await
+    run(&state, move |api| {
+        crate::album::import_presets_dialog(&app, &api)
+    })
+    .await
 }
 
 /// `presets_import(paths, replace)`: for dropped files, and for Replace after the question.

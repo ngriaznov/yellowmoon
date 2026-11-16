@@ -37,10 +37,10 @@ use tauri::Runtime;
 use tauri_specta::Event;
 
 use crate::wire::{
-    AlbumChanged, AppError, AutoStatusChanged, DepthState, DownloadFound, ErrorEvent, ExportBusy, ExportProgress,
-    LooksChanged, LooksImportProgress, MemoryNotice, NodeThumbnailsReady, ObjectState,
-    OpenProgress, PhotoId, PhotoProgress, PresetsChanged, RenderStats, SettingsChanged, ThumbnailReady,
-    ViewportBusy, ViewportFrame, VisionState,
+    AlbumChanged, AppError, AutoStatusChanged, DepthState, DownloadFound, ErrorEvent, ExportBusy,
+    ExportProgress, LooksChanged, LooksImportProgress, MemoryNotice, NodeThumbnailsReady,
+    ObjectState, OpenProgress, PhotoId, PhotoProgress, PresetsChanged, RenderStats,
+    SettingsChanged, ThumbnailReady, ViewportBusy, ViewportFrame, VisionState,
 };
 
 /// The least time between two `render_stats` events, between two `viewport_busy` events, and between
