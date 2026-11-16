@@ -42,7 +42,7 @@ const GROUP_ROWS = [
 ];
 
 // ----------------------------------------------------------------------------------------------------------------------------------- the app
-async function openLookTab(browser) {
+async function openLookTab(browser, query = "") {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
   await page.route("http://app.test/**", (route) => {
     const u = new URL(route.request().url());
@@ -50,7 +50,7 @@ async function openLookTab(browser) {
     if (!fs.existsSync(p)) return route.fulfill({ status: 404, body: "" });
     route.fulfill({ status: 200, contentType: MIME[path.extname(p)] ?? "application/octet-stream", body: fs.readFileSync(p) });
   });
-  await page.goto("http://app.test/?mockSpeed=Infinity&mockCurrent=3&mockPicked=2,3,4");
+  await page.goto("http://app.test/?mockSpeed=Infinity&mockCurrent=3&mockPicked=2,3,4" + query);
   await page.evaluate(async () => {
     for (const w of ["400", "600", "700", "800"]) await document.fonts.load(`${w} 14px Figtree`);
     await document.fonts.ready;
@@ -247,7 +247,76 @@ const STATES = {
       ),
     });
   } },
+
+  "09": { title: "The File menu", async run(page) {
+    await page.evaluate(IN_PAGE.presetsCard, { presets: PRESETS, count: 14, shown: 6, ringed: 0, scroll: 0 });
+    await page.evaluate(MAC, { menu: "File", left: 140, width: 290, rows: [
+      ["Open Files…", "⌘O"], ["Open Folder…", "⇧⌘O"], ["-"],
+      ["Save", "⌘S", { fresh: true, hover: true }], ["Save As…", "⇧⌘S", { fresh: true }], ["-"],
+      ["Export…", "⌘E"], ["-"], ["Close Session", "⌘W"],
+    ] });
+  } },
+  "10": { title: "The Save panel", async run(page) {
+    await page.evaluate(IN_PAGE.presetsCard, { presets: PRESETS, count: 14, shown: 6, ringed: 0, scroll: 0 });
+    await page.evaluate(MAC, { panel: `<div class="pr-dim"></div><div class="pr-sheet" role="dialog" aria-label="Save">
+      <div class="pr-sheet__row"><label>Save As:</label><span class="pr-sheet__field">Lisbon.ymalbum</span></div>
+      <div class="pr-sheet__row"><label>Where:</label><span class="pr-sheet__popup">Lisbon <i>⌃</i></span></div>
+      <div class="pr-sheet__list"><div class="pr-sheet__item"><b>DSC04201.ARW</b></div><div class="pr-sheet__item"><b>DSC04202.ARW</b></div><div class="pr-sheet__item"><b>DSC04203.ARW</b></div></div>
+      <div class="pr-sheet__buttons"><span class="pr-btn">New Folder</span><span class="pr-sp"></span><span class="pr-btn">Cancel</span><span class="pr-btn pr-btn--default">Save</span></div></div>` });
+  } },
+  "11": { title: "An album open and edited", async run(page) {
+    await page.evaluate(IN_PAGE.presetsCard, { presets: PRESETS, count: 14, shown: 6, ringed: 0, scroll: 0 });
+    await page.evaluate(() => {
+      const sub = document.querySelector(".ym-brand-sub");
+      sub.textContent = sub.textContent.replace(/^[^·]*· /, "") + " · Edited";
+    });
+    await page.evaluate(MAC, { menu: "Window", left: 392, width: 260, lights: true, shift: true, edited: true, rows: [
+      ["Minimize", "⌘M"], ["Zoom", ""], ["-"], ["Lisbon — Edited", "", { check: true }],
+    ] });
+  } },
+  "12": { title: "Save changes to the album?", async run(page) {
+    await page.evaluate(IN_PAGE.presetsCard, { presets: PRESETS, count: 14, shown: 6, ringed: 0, scroll: 0 });
+    await page.evaluate(() => {
+      const sub = document.querySelector(".ym-brand-sub");
+      sub.textContent = sub.textContent.replace(/^[^·]*· /, "") + " · Edited";
+    });
+    await page.evaluate(MAC, { bar: false, lights: true, edited: true, panel: `<div class="pr-dim"></div><div class="pr-alert" role="alertdialog" aria-label="Save changes to the album Lisbon?">
+      <span class="pr-alert__icon" aria-hidden="true"></span>
+      <b class="pr-alert__title">Save changes to the album Lisbon?</b>
+      <p class="pr-alert__text">Your changes will be lost if you don't save them.</p>
+      <span class="pr-btn pr-btn--default pr-btn--wide">Save</span><span class="pr-btn pr-btn--wide">Cancel</span><span class="pr-btn pr-btn--wide">Don't Save</span></div>` });
+  } },
+  "13": { title: "An album with a missing photo", async query() { return "&mockVanish=DSC04206"; }, async run(page) {
+    await page.evaluate(IN_PAGE.presetsCard, { presets: PRESETS, count: 14, shown: 6, ringed: -1, scroll: 0 });
+    await page.locator('button[aria-label^="Show DSC04206"]').first().click();
+    await page.waitForTimeout(1500);
+    await page.evaluate(() => {
+      const hit = [...document.querySelectorAll("*")].filter((e) => e.children.length === 0 && /\S/.test(e.textContent));
+      const reason = hit.find((e) => /gone|moved|find this file|can't find/i.test(e.textContent));
+      if (reason) reason.textContent = "Not found: /Users/anna/Pictures/Lisbon/DSC04206.ARW";
+      window.__reason = reason ? "found" : "missing";
+    });
+    console.log("  reason text:", await page.evaluate(() => window.__reason));
+  } },
 };
+
+
+/** The macOS menu bar with one menu open, and (for the album states) pieces of macOS's own windows: the Save panel, an alert, the traffic lights. */
+function MAC(spec) {
+  const chk = (on) => `<span class="mm-chk">${on ? "✓" : ""}</span>`;
+  const row = ([label, key, opts = {}]) =>
+    label === "-" ? '<div class="mm-sep"></div>' : `<div class="mm-item${opts.hover ? " mm-item--hover" : ""}${opts.fresh ? " mm-item--new" : ""}">${chk(opts.check)}<span class="mm-label">${label}</span><span class="mm-key">${key ?? ""}</span></div>`;
+  const root = document.createElement("div");
+  root.className = "pr-macos";
+  const bar = ["File", "Edit", "View", "Photo", "Looks", "Window", "Help"].map((m) => `<span${m === spec.menu ? ' class="mm-bar--on"' : ""}>${m}</span>`).join("");
+  let html = spec.bar === false ? "" : `<div class="mm-bar"><span class="mm-apple"></span><b>Yellowmoon</b>${bar}</div>`;
+  if (spec.shift) document.querySelector("#root").style.cssText += "position:relative;top:25px;";
+  if (spec.menu) html += `<div class="mm-menu" style="left:${spec.left}px;width:${spec.width ?? 280}px" role="menu" aria-label="${spec.menu}">${spec.rows.map(row).join("")}</div>`;
+  if (spec.lights) html += `<div class="pr-lights" style="top:${spec.shift ? 47 : 22}px"><i class="r">${spec.edited ? "<u></u>" : ""}</i><i class="y"></i><i class="g"></i></div>`;
+  if (spec.panel) html += spec.panel;
+  root.innerHTML = html;
+  document.body.append(root);
+}
 
 /** The macOS menu bar and the open Looks menu with its Apply Preset submenu: macOS draws them, not the app; this is their look. */
 function MENU_BAR() {
@@ -263,7 +332,7 @@ function MENU_BAR() {
     <div class="mm-bar"><span class="mm-apple"></span><b>Yellowmoon</b><span>File</span><span>Edit</span><span>View</span><span>Photo</span><span class="mm-bar--on">Looks</span><span>Window</span><span>Help</span></div>
     <div class="mm-menu" role="menu" aria-label="Looks">
       ${item("Import ARRI Looks…")}${item("Import LUTs and look files…")}${item("Make Current Look Default")}${sep}${looks}${sep}
-      ${item("Save Preset…", "⇧⌘S", { fresh: true })}${item("Import Presets…", "", { fresh: true })}
+      ${item("Save Preset…", "⌥⌘S", { fresh: true })}${item("Import Presets…", "", { fresh: true })}
       <div class="mm-item mm-item--hover mm-item--new">${chk(false)}<span class="mm-label">Apply Preset</span><span class="mm-key">▸</span></div>
       ${item("New Preset from Exported Photo…", "", { fresh: true })}${sep}${item("Show Presets Folder", "", { fresh: true })}${item("Show Looks Folder")}
     </div>
@@ -309,7 +378,7 @@ const browser = await chromium.launch();
 fs.mkdirSync(path.join(here, "html", "pages"), { recursive: true });
 for (const [id, state] of Object.entries(STATES)) {
   if (only.length && !only.includes(id)) continue;
-  const page = await openLookTab(browser);
+  const page = await openLookTab(browser, state.query ? await state.query() : "");
   await state.run(page);
   await page.waitForTimeout(400);
   await savePage(page, path.join(here, "html", "pages", id + ".html"), `Presets · ${state.title}`);

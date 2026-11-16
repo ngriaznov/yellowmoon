@@ -52,3 +52,33 @@
 /* ---- spacing of the card (the Look card's own sections get it from their header) ---------------------------------------------------------- */
 [data-presets] .ym-field + .ym-look-group__body { margin-top: 10px; }
 .pr-more > button { margin-left: -6px; }
+
+/* ---- the album mock-ups: macOS's own pieces (the traffic lights, the Save panel, an alert), drawn in dark appearance ---------------------------- */
+.pr-lights { position: fixed; left: 18px; top: 32px; display: flex; gap: 8px; z-index: 101; }
+.pr-lights i { position: relative; display: block; width: 13px; height: 13px; border-radius: 50%; box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.3); }
+.pr-lights .r { background: #ff5f57; }
+.pr-lights .y { background: #febc2e; }
+.pr-lights .g { background: #28c840; }
+.pr-lights u { position: absolute; left: 4.5px; top: 4.5px; width: 4px; height: 4px; border-radius: 50%; background: rgb(80 0 0 / 0.75); } /* the edited dot */
+.pr-dim { position: fixed; inset: 0; background: rgb(0 0 0 / 0.38); z-index: 90; }
+.pr-sheet { position: fixed; z-index: 102; top: 25px; left: 50%; margin-left: -260px; width: 520px; padding: 18px 20px 16px; border-radius: 0 0 14px 14px;
+  background: rgb(44 44 47 / 0.97); box-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.18), 0 18px 40px rgb(0 0 0 / 0.55); font-family: -apple-system, "SF Pro Text", "Figtree", system-ui, sans-serif; font-size: 13px; color: #fff; }
+.pr-sheet__row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.pr-sheet__row label { width: 62px; text-align: right; color: rgb(255 255 255 / 0.72); }
+.pr-sheet__field, .pr-sheet__popup { flex: 1; padding: 4px 9px; border-radius: 6px; background: rgb(255 255 255 / 0.1); box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.2); }
+.pr-sheet__popup { flex: 0 0 auto; min-width: 150px; }
+.pr-sheet__popup i { float: right; font-style: normal; opacity: 0.7; margin-left: 18px; }
+.pr-sheet__list { margin: 4px 0 14px; padding: 6px; height: 96px; border-radius: 8px; background: rgb(0 0 0 / 0.28); box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.12); }
+.pr-sheet__item { padding: 3px 8px; color: rgb(255 255 255 / 0.4); }
+.pr-sheet__item b { font-weight: 400; }
+.pr-sheet__buttons { display: flex; gap: 10px; align-items: center; }
+.pr-sp { flex: 1; }
+.pr-btn { display: inline-block; padding: 3px 14px; border-radius: 6px; background: rgb(255 255 255 / 0.14); box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.2); text-align: center; }
+.pr-btn--default { background: #0a60ff; box-shadow: none; }
+.pr-btn--wide { display: block; width: 100%; box-sizing: border-box; margin-top: 8px; padding: 5px 14px; }
+.pr-alert { position: fixed; z-index: 102; top: 190px; left: 50%; margin-left: -140px; width: 280px; box-sizing: border-box; padding: 22px 20px 18px; border-radius: 14px; text-align: left; display: grid; grid-template-columns: 56px 1fr;
+  column-gap: 12px; background: rgb(44 44 47 / 0.97); box-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.18), 0 18px 40px rgb(0 0 0 / 0.55); font-family: -apple-system, "SF Pro Text", "Figtree", system-ui, sans-serif; font-size: 13px; color: #fff; }
+.pr-alert__icon { grid-row: 1 / 3; width: 56px; height: 56px; border-radius: 13px; background: radial-gradient(circle at 50% 45%, #ffc20e 0 38%, #1b1b1d 40%); box-shadow: 0 0 0 1px rgb(255 255 255 / 0.14); }
+.pr-alert__title { font-size: 13px; font-weight: 700; line-height: 1.3; }
+.pr-alert__text { margin: 2px 0 0; font-size: 11.5px; line-height: 1.4; color: rgb(255 255 255 / 0.72); }
+.pr-alert .pr-btn { grid-column: 1 / 3; }

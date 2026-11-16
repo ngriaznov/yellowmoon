@@ -14,8 +14,16 @@ Pictures only. Nothing here is product code. The spec is `docs/30-presets.md`; w
 - **The Replace question** swaps the dialog's body (same title bar, same buttons): the focus goes to Cancel, Replace is primary.
 - **The tile menu** has two rules (after Apply to Picked Photos and Update from This Photo, and before Delete); Delete is in the destructive colour. The menu opens at the pointer; in the picture it sits beside the second tile.
 - **The older-export line** is a quiet glass note under the boxes, not a warning: nothing is wrong, the numbers are just fixed.
-- **The macOS menu** (07) is drawn in dark appearance with the system font: after the nine Apply Look items, one rule, then Save Preset… ⇧⌘S, Import Presets…, Apply Preset ▸ (hovered, its submenu with a check on the presets that match the photo), New Preset from Exported Photo…, a rule, Show Presets Folder, Show Looks Folder.
+- **The macOS menu** (07) is drawn in dark appearance with the system font: after the nine Apply Look items, one rule, then Save Preset… ⌥⌘S, Import Presets…, Apply Preset ▸ (hovered, its submenu with a check on the presets that match the photo), New Preset from Exported Photo…, a rule, Show Presets Folder, Show Looks Folder.
 - **Where the panel is scrolled:** every picture shows the Look tab scrolled to its end: the bottom of the Look card (the short mock library, Built in and a few more) above the whole Presets card. The Automatic card is further up the scroll and out of the picture (the panel is 700 px high); the cards are Automatic · Look · Presets, and no Tone card is drawn.
+
+## Albums (09 to 13; `docs/31-albums.md`)
+- **The menus, the Save panel, the alert and the traffic lights are macOS's**, drawn here in dark appearance with the system font; the app draws none of them (the dialog plugin's panels and message dialogs are native).
+- **The Save panel** (10) is a sheet with the name "Lisbon.ymalbum" and the folder "Lisbon": the name defaults to the folder's name and the panel starts in the first photo's folder. Drawn simply: no tags, no sidebar.
+- **The edited state** (11, 12): the folder cell shows the album's name, and **while the album is edited its sub-line is "12 PHOTOS · EDITED"** (the date goes while it is edited: the cell is 300 px with 84 px kept for the traffic lights, and the longer line wrapped to two lines). The window's title, "Lisbon — Edited", is in the Window menu (11) because the hidden title bar does not draw it. The red button carries the edited dot.
+- **The alert** (12) is stacked, as macOS draws three buttons: Save (the default), Cancel, Don't Save. The brief's order, "Save, Don't Save and Cancel", is the names; the stack is the system's.
+- **The missing photo** (13) is the app's own failed-photo state (the mock's `?mockVanish=`), with the cell's reason set to the album's sentence "Not found: <absolute path>". The strip's tag is the app's "Can't open" pill (the page draws it in sentence case, the strip's text is CAN'T OPEN in the spec).
+- The Presets card is drawn at the end of the Look tab in these pictures, as it will be after P-05.
 
 ## Not drawn
 - The damaged-file rows under the tiles (`docs/30` §9.1), the Rename dialog, the Update question, the import's Replace question (the same dialog as 04), the notice texts other than 06, and the card while the photo is developing. Their copy is in `docs/30` §9.

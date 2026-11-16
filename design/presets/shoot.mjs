@@ -10,6 +10,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const shots = {
   "01": "01-look-tab-presets", "02": "02-empty-state", "03": "03-save-dialog", "04": "04-replace-question",
   "05": "05-tile-menu", "06": "06-missing-look-notice", "07": "07-looks-menu", "08": "08-older-export-line",
+  "09": "09-file-menu", "10": "10-save-panel", "11": "11-album-edited", "12": "12-save-changes-question", "13": "13-album-missing-photo",
 };
 const only = process.argv.slice(2);
 const browser = await chromium.launch();
