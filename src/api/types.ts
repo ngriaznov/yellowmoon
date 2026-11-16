@@ -1300,6 +1300,16 @@ export interface ImportResult {
   refused: ImportRefused[];
 }
 
+/** The open album (`docs/31` section 6): its file, its name and whether it has changes that are not saved. */
+export interface AlbumState {
+  /** The album's name: the file's name without its extension ("Lisbon"). */
+  name: string;
+  /** The album file. */
+  path: string;
+  /** Something changed since the album was opened or last saved (the edited dot, "12 PHOTOS · EDITED"). */
+  edited: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // The ARRI import wizard (docs/08 §Wizard, §Recognition rules, §Any other .cube). Additions to
 // `docs/01`: the wizard needs to ask what a file is before anything is copied.
@@ -1902,6 +1912,7 @@ export type ErrorScope =
   | "viewport"
   | "mask"
   | "presets"
+  | "album"
   | "app";
 
 /**
