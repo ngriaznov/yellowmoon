@@ -4084,6 +4084,25 @@ impl Session {
         self.inner.sync_apple_stage(epoch);
     }
 
+    /// Asks the chosen provider about every photo again, without touching a photo's settings: every answer the session holds is
+    /// dropped (an album's stored answers too) and the photos are no longer frozen ([`Photo::auto_frozen`]). `ym render <album>`
+    /// does this when the run names a provider (`docs/31` section 8); Re-run and new instructions do the same for one photo
+    /// and for all of them, as they have always done, and Re-run also puts the automatic fields back to Auto, which this does not.
+    pub fn ask_auto_again(&self) {
+        let epoch = self.inner.epoch.load(Ordering::SeqCst);
+        let refresh = {
+            let mut st = lock(&self.inner.state);
+            for p in &mut st.photos {
+                p.apple_results = [None, None, None];
+                p.auto_frozen = false;
+            }
+            st.refresh_effective(&self.inner.env.priors)
+        };
+        self.inner.apple_wake.notify_all();
+        self.inner.after_refresh(epoch, refresh);
+        self.inner.sync_apple_stage(epoch);
+    }
+
     /// The person's own instructions for the model, `""` for the default.
     #[must_use]
     pub fn apple_auto_instructions(&self) -> String {

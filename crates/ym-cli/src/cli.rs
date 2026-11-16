@@ -58,6 +58,9 @@ pub enum Command {
     /// Manage the look library.
     #[command(subcommand)]
     Looks(LooksCommand),
+    /// Manage presets: saved recipes of some of a photo's settings (`ym render --preset` applies them).
+    #[command(subcommand)]
+    Presets(PresetsCommand),
     /// Show the film stocks and papers that a Film node of a `--settings` file can use.
     #[command(subcommand)]
     Film(FilmCommand),
@@ -100,6 +103,11 @@ pub struct RenderArgs {
     /// in any case.
     #[arg(long, value_name = "LOOK", help_heading = H_LOOK)]
     pub look: Option<String>,
+    /// A preset, by name (any case, or the start of it) or as the path of a `.ympreset` file; give it more than once
+    /// to stack presets, each over the one before. It is applied after --settings and before the other options, which
+    /// have the last word. `ym presets list` shows the saved ones.
+    #[arg(long, value_name = "NAME_OR_FILE", help_heading = H_LOOK)]
+    pub preset: Vec<String>,
     /// How strongly the look applies, in percent (default 100).
     #[arg(long, value_name = "PERCENT", value_parser = percent, help_heading = H_LOOK)]
     pub intensity: Option<f64>,
@@ -776,6 +784,88 @@ pub enum LooksCommand {
     Default(LooksDefaultArgs),
     /// Developer tool: bake a parametric look to a 33-point LUT and render a contact sheet.
     Bake(LooksBakeArgs),
+}
+
+/// Subcommands of `ym presets` (`docs/30-presets.md` section 11).
+#[derive(Debug, Subcommand)]
+pub enum PresetsCommand {
+    /// List the saved presets with their groups and looks.
+    List(PresetsListArgs),
+    /// Save a preset from a settings file, or from a photo that Yellowmoon exported.
+    Save(PresetsSaveArgs),
+    /// Add `.ympreset` files to the saved presets.
+    Import(PresetsImportArgs),
+    /// Write a saved preset to a `.ympreset` file.
+    Export(PresetsExportArgs),
+    /// Move a saved preset to the Trash.
+    Remove(PresetsRemoveArgs),
+}
+
+/// Arguments of `ym presets list`.
+#[derive(Debug, Args)]
+pub struct PresetsListArgs {
+    /// Print the list as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments of `ym presets save`.
+#[derive(Debug, Args)]
+pub struct PresetsSaveArgs {
+    /// The name of the preset: 1 to 64 characters.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// Where the settings come from: a settings file (the form of `ym render --settings`), or a JPEG, TIFF, PNG or
+    /// DNG that Yellowmoon exported.
+    #[arg(long, value_name = "FILE", required = true)]
+    pub from: PathBuf,
+    /// The groups to save, as ids: look, lens, light, color, detail, curve, raw and nodes. Without it, the groups in
+    /// which the settings differ from the defaults.
+    #[arg(long, value_name = "GROUPS", value_delimiter = ',', value_parser = parse_group)]
+    pub groups: Vec<ym_core::presets::PresetGroup>,
+    /// Write over a preset that has this name.
+    #[arg(long)]
+    pub replace: bool,
+}
+
+/// Arguments of `ym presets import`.
+#[derive(Debug, Args)]
+pub struct PresetsImportArgs {
+    /// The `.ympreset` files to add.
+    #[arg(required = true, value_name = "FILE")]
+    pub files: Vec<PathBuf>,
+    /// Write over a preset that has the same name.
+    #[arg(long)]
+    pub replace: bool,
+}
+
+/// Arguments of `ym presets export`.
+#[derive(Debug, Args)]
+pub struct PresetsExportArgs {
+    /// The preset to write.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// The `.ympreset` file to write. A file that is there is written over.
+    #[arg(value_name = "FILE")]
+    pub file: PathBuf,
+}
+
+/// Arguments of `ym presets remove`.
+#[derive(Debug, Args)]
+pub struct PresetsRemoveArgs {
+    /// The preset to remove.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+}
+
+/// One group id of `--groups`.
+fn parse_group(text: &str) -> Result<ym_core::presets::PresetGroup, String> {
+    let id = text.trim().to_ascii_lowercase();
+    // The UI says Colour; the id is American.
+    let id = if id == "colour" { "color" } else { id.as_str() };
+    ym_core::presets::PresetGroup::from_id(id).ok_or_else(|| {
+        format!("{text} is not a group. Use look, lens, light, color, detail, curve, raw or nodes.")
+    })
 }
 
 /// Subcommands of `ym film`.
