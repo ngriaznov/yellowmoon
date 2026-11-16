@@ -1,7 +1,7 @@
 // Writes the pages of design/presets/html/pages/ (task P-01).
 //
 // The pages are the DOM of the app itself, taken from the BUILT app on its mock API (the flat-shape photos of the mock, no photo of the owner's):
-// the Look tab of the Photos screen, with the Presets card, the dialogs, the tile menu and the notice added to it by hand with the app's own classes
+// the Look tab of the Photos screen (the Tone card taken out, the Presets card added after the Look card), the dialogs, the tile menu and the notice added to it by hand with the app's own classes
 // (`presets.css` has the few rules the app does not have: the checkbox, the macOS menu bar). The Presets card, the Save dialog and the menu are
 // MOCK-UPS, not product code: nothing here is in `src/`.
 //
@@ -50,7 +50,7 @@ async function openLookTab(browser) {
     if (!fs.existsSync(p)) return route.fulfill({ status: 404, body: "" });
     route.fulfill({ status: 200, contentType: MIME[path.extname(p)] ?? "application/octet-stream", body: fs.readFileSync(p) });
   });
-  await page.goto("http://app.test/?mockSpeed=Infinity&mockCurrent=3&mockPicked=2,3,4&mockLibraries=all");
+  await page.goto("http://app.test/?mockSpeed=Infinity&mockCurrent=3&mockPicked=2,3,4");
   await page.evaluate(async () => {
     for (const w of ["400", "600", "700", "800"]) await document.fonts.load(`${w} 14px Figtree`);
     await document.fonts.ready;
@@ -67,7 +67,7 @@ async function openLookTab(browser) {
 
 /** Everything the in-page code needs; it is evaluated in the page. */
 const IN_PAGE = {
-  /** Inserts the Presets card before the Look card. `count` presets exist; `shown` tiles are drawn (0 draws the empty state). */
+  /** Takes the Tone card out and puts the Presets card after the Look card (the owner, 2026-11-16: docs/30 §9.10), then scrolls the panel to its end. `count` presets exist; `shown` tiles are drawn (0 draws the empty state). */
   presetsCard({ presets, count, shown, ringed, scroll }) {
     const look = [...document.querySelectorAll("section.ym-card")].find((s) => s.querySelector(".ym-card__title")?.textContent === "Look");
     const reset = look.querySelector(".ym-card__actions button");
@@ -112,11 +112,9 @@ const IN_PAGE = {
       save.removeAttribute("aria-disabled");
       card.querySelector(".pr-empty").append(save);
     }
-    look.before(card);
-    if (scroll) {
-      const sc = document.querySelector(".ym-tools__scroll");
-      sc.scrollTop = card.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop - scroll;
-    }
+    [...document.querySelectorAll("section.ym-card")].filter((c) => c.querySelector(".ym-card__title")?.textContent === "Tone").forEach((c) => c.remove());
+    look.after(card);
+    document.querySelector(".ym-tools__scroll").scrollTop = 1e6;
   },
   /** The look chip and the photo, as they are with Warm evening applied. */
   warmPhoto() {
@@ -302,6 +300,8 @@ async function savePage(page, file, title) {
   const links = `<link href="../app.css" rel="stylesheet"><link href="../graph.css" rel="stylesheet"><link href="../presets.css" rel="stylesheet">`;
   html = html.replace(/<title>[^<]*<\/title>/, (m) => `${m}${links}`);
   if (!html.includes(links)) html = html.replace("</head>", `${links}</head>`);
+  // A saved page has no scroll position: the tool panel is scrolled to its end when the page loads, as the picture shows it.
+  html = html.replace("</body>", `<script>addEventListener("load", function () { var s = document.querySelector(".ym-tools__scroll"); if (s) s.scrollTop = 1e6; });</script></body>`);
   fs.writeFileSync(file, html);
 }
 

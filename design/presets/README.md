@@ -6,7 +6,7 @@ Mock-ups of the Presets card, the Save preset dialog, a tile's menu, the notice 
 
 | File | What it shows |
 |---|---|
-| `01-look-tab-presets.jpg` | The Look tab with the **Presets card** between Automatic and Look: header ("Presets", the count 14, **Save…**), Apply to on **This photo**, six tiles with the names under them, the first one **ringed** (applying it would change nothing), **Show all 14** |
+| `01-look-tab-presets.jpg` | The Look tab scrolled to its end: the foot of the **Look** card and the **Presets card**, which replaces the Tone card as the tab's last card (the owner, 2026-11-16): header ("Presets", the count 14, **Save…**), Apply to on **This photo**, six tiles with the names under them, the first one **ringed** (applying it would change nothing), **Show all 14** |
 | `02-empty-state.jpg` | The card with no preset: "Set a photo the way you like it, then save it as a preset." and **Save preset…** |
 | `03-save-dialog.jpg` | The **Save preset** dialog: Name "Warm evening", eight boxes with Look, Light and Colour ticked (the groups the photo changed), "Auto stays Auto, so each photo keeps its own exposure and white balance.", Cancel and Save |
 | `04-replace-question.jpg` | The same dialog asking **"Replace Warm evening?"** when the name exists |
