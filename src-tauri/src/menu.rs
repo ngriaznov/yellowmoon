@@ -1210,10 +1210,16 @@ mod tests {
         // The three settings items start off and follow `apply_state`.
         let enabled = |menu: &Menu<tauri::test::MockRuntime>, id: &str| -> bool {
             for kind in menu.items().expect("items") {
-                if let MenuItemKind::Submenu(sub) = kind
-                    && let Some(MenuItemKind::MenuItem(item)) = sub.get(id)
-                {
-                    return item.is_enabled().expect("enabled");
+                if let MenuItemKind::Submenu(sub) = kind {
+                    match sub.get(id) {
+                        Some(MenuItemKind::MenuItem(item)) => {
+                            return item.is_enabled().expect("enabled");
+                        }
+                        Some(MenuItemKind::Submenu(item)) => {
+                            return item.is_enabled().expect("enabled");
+                        }
+                        _ => {}
+                    }
                 }
             }
             panic!("no item {id}");
@@ -1244,7 +1250,7 @@ mod tests {
         assert!(!enabled(&menu, "save"));
         // Apply Preset is a submenu, greyed and switched on as a whole; empty it holds "No Presets", greyed.
         let apply = preset_submenu(app.handle()).expect("Apply Preset");
-        assert!(apply.is_enabled().expect("enabled"));
+        assert!(enabled(&menu, "apply_preset"));
         let names: Vec<String> = apply.items().expect("items").iter().map(label_of).collect();
         assert_eq!(names, ["No Presets"]);
         let items = [
