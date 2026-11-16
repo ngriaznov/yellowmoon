@@ -429,7 +429,7 @@ Per task; each is named so that a failing one says what broke.
 - **Phase 2 · P-08, new photos open with a preset.** The Default look preference becomes "New photos open with" a look or a preset. A change to `preferences.json` (`docs/01`) and to `Session::open`'s defaults.
 - **Phase 3 · P-09, node presets.** Save Node as Preset… on a node and, in the Add node menu, "From a preset": one node's settings as a preset of its own kind.
 - **Phase 3 · P-10, presets that carry instructions for the Auto grading provider** (`docs/22`): a preset names text for Apple Intelligence, Claude Code or Antigravity to grade by.
-- **[HUMAN] P-H3 · The owner's starter presets**, made by the owner and shipped with the app (data in `data/presets/`, not written by an agent).
+- **[HUMAN] P-H3 · The owner's starter presets: not wanted.** The owner, 2026-11-16: "No default presets are needed for now." No preset ships with the app, there is no `data/presets/`, and the Presets card starts empty (§9.2) on every new install.
 
 ## 17. Decisions made while writing the spec
 
