@@ -10,6 +10,7 @@
 
 mod a11y;
 mod about;
+mod album;
 mod api;
 mod app;
 mod bindings;

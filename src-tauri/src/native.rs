@@ -65,7 +65,7 @@ use std::time::Duration;
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSColor, NSView, NSWindowOrderingMode};
+use objc2_app_kit::{NSColor, NSView, NSWindow, NSWindowOrderingMode};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{
     AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
@@ -893,5 +893,23 @@ mod smoke {
                 );
             }
         }
+    }
+}
+
+/// Shows or hides the edited dot of the window's close button (`NSWindow.isDocumentEdited`, `docs/31` section 6): the open album has
+/// changes that are not saved. Called from any thread; the dot is set on the main thread, which is not waited for (the caller may
+/// hold a lock the main thread needs). The window's title is set by the caller.
+pub fn set_document_edited<R: Runtime>(window: &tauri::WebviewWindow<R>, edited: bool) {
+    let Ok(ns_window) = window.ns_window() else {
+        return;
+    };
+    let ptr = MainThreadPtr(ns_window as usize);
+    if let Err(e) = window.run_on_main_thread(move || {
+        // SAFETY: `ptr` is the window's `NSWindow` (`WebviewWindow::ns_window`), which lives as long as the window, and this closure
+        // runs on the main thread.
+        let ns: &NSWindow = unsafe { &*(ptr.0 as *const NSWindow) };
+        ns.setDocumentEdited(edited);
+    }) {
+        tracing::debug!(error = %e, "the edited dot was not set");
     }
 }

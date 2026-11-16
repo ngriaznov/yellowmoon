@@ -20,6 +20,7 @@ use crate::perf;
 use crate::system;
 use crate::viewport::{FRAME_SCHEME, FallbackSink, FrameSink, FrameStore};
 use crate::wire::{AppError, ErrorScope, MenuActionEvent};
+use crate::album::{self, Answer};
 
 /// Set when the person has agreed to quit with an export running.
 static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
@@ -208,11 +209,35 @@ fn frame_response(store: &FrameStore, path: &str) -> Response<Cow<'static, [u8]>
 // --- Menu -------------------------------------------------------------------------------------
 
 fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
+    // A name of Looks › Apply Preset: the page applies the preset the event names.
+    if let Some(name) = menu::preset_of_item(event.id().as_ref()) {
+        let action = MenuActionEvent {
+            action: crate::wire::MenuAction::ApplyPreset,
+            preset: Some(name.to_owned()),
+        };
+        if let Err(e) = action.emit(app) {
+            tracing::warn!(error = %e, "menu action not delivered");
+        }
+        return;
+    }
     match menu::action_for(event.id().as_ref()) {
         Some(Do::Webview(action)) => {
-            if let Err(e) = (MenuActionEvent { action }).emit(app) {
+            if let Err(e) = (MenuActionEvent {
+                action,
+                preset: None,
+            })
+            .emit(app)
+            {
                 tracing::warn!(error = %e, "menu action not delivered");
             }
+        }
+        Some(Do::ShowPresetsFolder) => {
+            let Some(api) = api_of(app) else { return };
+            report(
+                app,
+                api.presets_folder()
+                    .and_then(|folder| system::reveal_in_finder(&folder)),
+            );
         }
         Some(Do::OpenGithub) => report(app, system::open_url(system::GITHUB_URL)),
         Some(Do::ShowLooksFolder) => {
@@ -273,14 +298,37 @@ fn report_a_problem<R: Runtime>(app: &AppHandle<R>) {
 
 // --- Quitting ---------------------------------------------------------------------------------
 
-/// Whether leaving the app has to be held back and put to the person first: an export is running
-/// and they have not agreed yet.
-fn quit_needs_question(export_busy: bool, confirmed: bool) -> bool {
-    export_busy && !confirmed
+/// What has to be asked before the app is left, in the order it is asked (`docs/31` section 6: the album first, then the export).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Question {
+    /// Nothing: the window closes, the app quits.
+    Nothing,
+    /// "Save changes to the album Lisbon?" (Save, Don't Save, Cancel).
+    Album,
+    /// "An export is still running…" (Stop the export and quit, Keep exporting).
+    Export,
+}
+
+/// The first question to put to the person before the app is left: the open album has unsaved changes, else an export is running and
+/// they have not agreed yet.
+fn first_question(album_edited: bool, export_busy: bool, export_confirmed: bool) -> Question {
+    if album_edited {
+        Question::Album
+    } else if export_busy && !export_confirmed {
+        Question::Export
+    } else {
+        Question::Nothing
+    }
 }
 
 fn export_is_running<R: Runtime>(app: &AppHandle<R>) -> bool {
-    quit_needs_question(
+    api_of(app).is_some_and(|a| a.export_busy()) && !QUIT_CONFIRMED.load(Ordering::SeqCst)
+}
+
+/// The question that has to be asked before leaving, for the app as it is now.
+fn question_before_leaving<R: Runtime>(app: &AppHandle<R>) -> Question {
+    first_question(
+        api_of(app).is_some_and(|a| album::edited_album(&a).is_some()),
         api_of(app).is_some_and(|a| a.export_busy()),
         QUIT_CONFIRMED.load(Ordering::SeqCst),
     )
@@ -290,21 +338,21 @@ fn on_run_event<R: Runtime>(app: &AppHandle<R>, event: RunEvent) {
     match event {
         RunEvent::ExitRequested { api, code, .. } => {
             // `app.exit(code)` is deliberate (the person agreed, or the app is failing).
-            if code.is_none() && export_is_running(app) {
+            if code.is_none() && question_before_leaving(app) != Question::Nothing {
                 api.prevent_exit();
-                ask_to_quit(app);
+                ask_before_leaving(app);
             }
         }
         // The close button of the only window quits the app. Asking after the window is gone would
-        // leave the export running in an app with no window to show it in, so the window is held
-        // back too.
+        // leave the export running in an app with no window to show it in, and an album's changes
+        // with no window to save them from, so the window is held back too.
         RunEvent::WindowEvent {
             event: WindowEvent::CloseRequested { api, .. },
             ..
         } => {
-            if export_is_running(app) {
+            if question_before_leaving(app) != Question::Nothing {
                 api.prevent_close();
-                ask_to_quit(app);
+                ask_before_leaving(app);
             }
         }
         RunEvent::Exit => {
@@ -313,6 +361,51 @@ fn on_run_event<R: Runtime>(app: &AppHandle<R>, event: RunEvent) {
             }
         }
         _ => {}
+    }
+}
+
+/// Puts the questions before leaving, album first. Runs on the main thread: the dialogs are shown without waiting, and a Save, which
+/// may open a panel of its own, runs on a thread.
+fn ask_before_leaving<R: Runtime>(app: &AppHandle<R>) {
+    if ASKING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Some(name) = api_of(app).and_then(|api| album::edited_album(&api)) else {
+        after_album_question(app);
+        return;
+    };
+    let handle = app.clone();
+    album::ask(app, &name, move |answer| match answer {
+        Answer::Cancel => ASKING.store(false, Ordering::SeqCst),
+        Answer::DontSave => after_album_question(&handle),
+        Answer::Save => {
+            // The write, and the panel it may show, are not for the dialog's thread.
+            drop(std::thread::spawn(move || {
+                let saved = api_of(&handle)
+                    .ok_or_else(|| AppError::new(ErrorScope::App, "Yellowmoon is not ready."))
+                    .and_then(|api| album::save(&handle, &api, false));
+                match saved {
+                    Ok(Some(_)) => after_album_question(&handle),
+                    // The save panel was cancelled: the person stays.
+                    Ok(None) => ASKING.store(false, Ordering::SeqCst),
+                    // The session stays and the error bar says why.
+                    Err(e) => {
+                        ASKING.store(false, Ordering::SeqCst);
+                        report(&handle, Err(e));
+                    }
+                }
+            }));
+        }
+    });
+}
+
+/// The album is settled (saved, or not to be saved): the export question if one is running, else leave.
+fn after_album_question<R: Runtime>(app: &AppHandle<R>) {
+    ASKING.store(false, Ordering::SeqCst);
+    if export_is_running(app) {
+        ask_to_quit(app);
+    } else {
+        app.exit(0);
     }
 }
 
@@ -736,13 +829,31 @@ mod tests {
 
     #[test]
     fn only_a_running_export_that_nobody_agreed_to_stop_holds_the_quit_back() {
-        assert!(quit_needs_question(true, false));
-        assert!(!quit_needs_question(false, false), "nothing to lose");
-        assert!(
-            !quit_needs_question(true, true),
+        assert_eq!(first_question(false, true, false), Question::Export);
+        assert_eq!(
+            first_question(false, false, false),
+            Question::Nothing,
+            "nothing to lose"
+        );
+        assert_eq!(
+            first_question(false, true, true),
+            Question::Nothing,
             "the person already said yes"
         );
-        assert!(!quit_needs_question(false, true));
+        assert_eq!(first_question(false, false, true), Question::Nothing);
+    }
+
+    /// `docs/31` section 6: with both, the person answers the album first; an album with nothing to save asks nothing of its own.
+    #[test]
+    fn the_album_question_comes_before_the_export_question() {
+        assert_eq!(first_question(true, true, false), Question::Album);
+        assert_eq!(first_question(true, false, false), Question::Album);
+        assert_eq!(
+            first_question(true, true, true),
+            Question::Album,
+            "agreeing to stop the export does not save the album"
+        );
+        assert_eq!(first_question(false, true, false), Question::Export);
     }
 
     /// `/<launch>/<file>` of an address the store made.

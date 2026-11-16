@@ -6,7 +6,8 @@
 //! shell's own business: Show Looks Folder, the Help links, Report a Problem, About, Quit and the
 //! standard window items.
 //!
-//! Shortcuts are given to the items whose keys do not also type: ⌘, ⌘O ⇧⌘O ⌘E ⌘W ⌘= ⌘- ⌘Q. ⌘Z,
+//! Shortcuts are given to the items whose keys do not also type: ⌘, ⌘O ⇧⌘O ⌘S ⇧⌘S ⌘E ⌘W ⌥⌘S ⌘= ⌘- ⌘Q (ten of ours; ⌘Q is the
+//! system's). ⌘S and ⇧⌘S are File › Save and Save As… (`docs/31`), ⌥⌘S is Looks › Save Preset… (`docs/30` section 9.8). ⌘Z,
 //! ⇧⌘Z and ⌘A stay with the webview, which sends them to a text box when one has focus and to the
 //! photos otherwise; a menu item bound to them would take the keys away from the text boxes. So do
 //! the three settings items, whose keys ⇧⌘C, ⇧⌘V and ⌥⇧⌘V are the webview's too: ⇧⌘V and ⌥⇧⌘V mean
@@ -15,16 +16,21 @@
 //! shows all of these items without a key. The single-key shortcuts (P, Z, C, W, N, \ and the arrows)
 //! are not menu shortcuts for the same reason: View › Nodes shows no key.
 //!
-//! Three items change with what is open: Copy Settings needs a developed current photo, Paste
+//! Seven items change with what is open: Copy Settings needs a developed current photo, Paste
 //! Settings something copied as well, and Paste Settings to Picked something copied and a picked
-//! photo. The webview says which are available (`set_menu_state`, [`apply_state`]); the menu starts
-//! with all three off, as Start has nothing to copy.
+//! photo; Save Preset and the Apply Preset submenu need a developed current photo and no dialog; Save and Save As… need a photo and no
+//! dialog. The webview says which are available (`set_menu_state`, [`apply_state`]); the menu starts
+//! with all of them off, as Start has nothing to copy or save. The names in Apply Preset are the shell's own: it lists the presets and
+//! rebuilds the submenu when they change ([`refresh_presets`], `presets_changed`).
 
-use tauri::menu::{AboutMetadata, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
-use tauri::{AppHandle, Runtime};
+use tauri::menu::{
+    AboutMetadata, CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
+};
+use tauri::{AppHandle, Manager, Runtime};
 
 use crate::about;
-use crate::wire::{MenuAction, MenuState};
+use crate::commands::AppState;
+use crate::wire::{MenuAction, MenuState, PresetsListing};
 
 /// What an item of the menu does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +39,8 @@ pub enum Do {
     Webview(MenuAction),
     /// Open the folder of imported looks in Finder.
     ShowLooksFolder,
+    /// Open the folder of saved presets in Finder (made if it is missing).
+    ShowPresetsFolder,
     /// Open the project's GitHub page.
     OpenGithub,
     /// Copy `ym doctor` (after asking) and open the bug report form.
@@ -81,6 +89,14 @@ pub enum Entry {
         shortcut: Option<&'static str>,
         /// What it does.
         action: Do,
+    },
+    /// A submenu whose items are the saved presets, which the shell makes and remakes ([`refresh_presets`]); it starts with the
+    /// greyed "No Presets".
+    PresetSubmenu {
+        /// The id of the submenu, which is also the id of its state item ([`STATE_ITEMS`]).
+        id: &'static str,
+        /// The label.
+        label: &'static str,
     },
     /// A system item.
     Standard(Standard),
@@ -172,6 +188,15 @@ pub fn spec() -> Vec<Menus> {
                     Some("CmdOrCtrl+Shift+O"),
                     MenuAction::OpenFolder,
                 ),
+                Separator,
+                web("save", "Save", Some("CmdOrCtrl+S"), MenuAction::Save),
+                web(
+                    "save_as",
+                    "Save As…",
+                    Some("CmdOrCtrl+Shift+S"),
+                    MenuAction::SaveAs,
+                ),
+                Separator,
                 web("export", "Export…", Some("CmdOrCtrl+E"), MenuAction::Export),
                 Separator,
                 web(
@@ -307,6 +332,36 @@ pub fn spec() -> Vec<Menus> {
                 web("look_8", "Apply Look 8", None, MenuAction::Look8),
                 web("look_9", "Apply Look 9", None, MenuAction::Look9),
                 Separator,
+                web(
+                    "save_preset",
+                    "Save Preset…",
+                    Some("CmdOrCtrl+Alt+S"),
+                    MenuAction::SavePreset,
+                ),
+                web(
+                    "import_presets",
+                    "Import Presets…",
+                    None,
+                    MenuAction::ImportPresets,
+                ),
+                Entry::PresetSubmenu {
+                    id: "apply_preset",
+                    label: "Apply Preset",
+                },
+                web(
+                    "new_preset_from_export",
+                    "New Preset from Exported Photo…",
+                    None,
+                    MenuAction::NewPresetFromExport,
+                ),
+                Separator,
+                item(
+                    "show_presets_folder",
+                    "Show Presets Folder",
+                    None,
+                    Do::ShowPresetsFolder,
+                ),
+                Separator,
                 item(
                     "show_looks_folder",
                     "Show Looks Folder",
@@ -335,19 +390,27 @@ pub fn spec() -> Vec<Menus> {
 }
 
 /// The ids of the items that change with what is open, in the order of [`MenuState`]'s fields.
-pub const STATE_ITEMS: [&str; 3] = [
+pub const STATE_ITEMS: [&str; 7] = [
     "copy_settings",
     "paste_settings",
     "paste_settings_to_picked",
+    "save_preset",
+    "apply_preset",
+    "save",
+    "save_as",
 ];
 
 /// `(id, available)` for each of [`STATE_ITEMS`] under `state`.
 #[must_use]
-pub fn availability(state: &MenuState) -> [(&'static str, bool); 3] {
+pub fn availability(state: &MenuState) -> [(&'static str, bool); 7] {
     [
         (STATE_ITEMS[0], state.copy_settings),
         (STATE_ITEMS[1], state.paste_settings),
         (STATE_ITEMS[2], state.paste_settings_to_picked),
+        (STATE_ITEMS[3], state.save_preset),
+        (STATE_ITEMS[4], state.apply_preset),
+        (STATE_ITEMS[5], state.save),
+        (STATE_ITEMS[6], state.save_as),
     ]
 }
 
@@ -367,12 +430,128 @@ pub fn apply_state<R: Runtime>(app: &AppHandle<R>, state: &MenuState) -> tauri::
             continue;
         };
         for (id, on) in availability(state) {
-            if let Some(MenuItemKind::MenuItem(item)) = sub.get(id) {
-                item.set_enabled(on)?;
+            match sub.get(id) {
+                Some(MenuItemKind::MenuItem(item)) => item.set_enabled(on)?,
+                // Apply Preset is a submenu: greyed as a whole.
+                Some(MenuItemKind::Submenu(item)) => item.set_enabled(on)?,
+                _ => {}
             }
         }
     }
     Ok(())
+}
+
+/// The prefix of the id of a name in Apply Preset: `apply_preset:Warm evening`.
+const PRESET_ITEM_PREFIX: &str = "apply_preset:";
+
+/// The most names Apply Preset lists; the rest are on the Presets card (`docs/30` section 8).
+pub const MAX_PRESET_NAMES: usize = 30;
+
+/// The id of the item that applies the preset `name`.
+#[must_use]
+pub fn preset_item_id(name: &str) -> String {
+    format!("{PRESET_ITEM_PREFIX}{name}")
+}
+
+/// The preset a menu item id names, if it is one of the Apply Preset items.
+#[must_use]
+pub fn preset_of_item(id: &str) -> Option<&str> {
+    id.strip_prefix(PRESET_ITEM_PREFIX)
+}
+
+/// One name of Apply Preset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresetItem {
+    /// The preset's name, which is the label.
+    pub name: String,
+    /// The preset would change nothing on the current photo: it gets a checkmark.
+    pub checked: bool,
+}
+
+/// The names of Apply Preset for `list`: in the list's order (by name), at most [`MAX_PRESET_NAMES`], a checkmark on the ones that
+/// match the photo the list was asked for. Empty for no presets, which the menu shows as the greyed "No Presets".
+#[must_use]
+pub fn preset_items(list: &PresetsListing) -> Vec<PresetItem> {
+    list.presets
+        .iter()
+        .take(MAX_PRESET_NAMES)
+        .map(|p| PresetItem {
+            name: p.name.clone(),
+            checked: p.matches,
+        })
+        .collect()
+}
+
+/// Puts `items` in the Apply Preset submenu, in place of what it holds: the names, or "No Presets" greyed.
+///
+/// # Errors
+///
+/// The error of changing the menu.
+pub fn set_preset_items<R: Runtime>(
+    app: &AppHandle<R>,
+    submenu: &Submenu<R>,
+    items: &[PresetItem],
+) -> tauri::Result<()> {
+    for old in submenu.items()? {
+        submenu.remove(&old)?;
+    }
+    if items.is_empty() {
+        submenu.append(&MenuItem::with_id(
+            app,
+            "apply_preset_none",
+            "No Presets",
+            false,
+            None::<&str>,
+        )?)?;
+    }
+    for item in items {
+        submenu.append(&CheckMenuItem::with_id(
+            app,
+            preset_item_id(&item.name),
+            &item.name,
+            true,
+            item.checked,
+            None::<&str>,
+        )?)?;
+    }
+    Ok(())
+}
+
+/// Finds the Apply Preset submenu of the app's menu.
+fn preset_submenu<R: Runtime>(app: &AppHandle<R>) -> Option<Submenu<R>> {
+    for kind in app.menu()?.items().ok()? {
+        let MenuItemKind::Submenu(sub) = kind else {
+            continue;
+        };
+        if let Some(MenuItemKind::Submenu(apply)) = sub.get("apply_preset") {
+            return Some(apply);
+        }
+    }
+    None
+}
+
+/// Rebuilds Looks › Apply Preset from the presets folder (`presets_changed`). It lists on a thread of its own: the event comes from
+/// the thread that changed the folder, which holds locks the listing needs, and the listing may itself announce a change. The
+/// checkmarks are the presets that match the current photo as it is now.
+pub fn refresh_presets<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    // The handle is dropped: the thread ends by itself.
+    drop(std::thread::spawn(move || {
+        let Some(api) = app.try_state::<AppState>().and_then(|s| s.api().ok()) else {
+            return;
+        };
+        let current = api.current_photo();
+        let Ok(list) = api.presets_list(current) else {
+            return;
+        };
+        let items = preset_items(&list);
+        let Some(submenu) = preset_submenu(&app) else {
+            return;
+        };
+        if let Err(e) = set_preset_items(&app, &submenu, &items) {
+            tracing::warn!(error = %e, "Apply Preset could not be rebuilt");
+        }
+    }));
 }
 
 /// What the item with this id does, if it is one of ours.
@@ -463,6 +642,13 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                     sub.append(&item)?;
                     last_was_separator = false;
                 }
+                Entry::PresetSubmenu { id, label } => {
+                    // Off, with "No Presets" in it, until the first listing (`refresh_presets`) and a developed photo.
+                    let apply = Submenu::with_id(app, id, label, false)?;
+                    set_preset_items(app, &apply, &[])?;
+                    sub.append(&apply)?;
+                    last_was_separator = false;
+                }
                 Entry::Standard(which) => {
                     if on_this_platform(which) {
                         sub.append(&standard(app, which)?)?;
@@ -545,6 +731,8 @@ mod tests {
             // File
             "Open Files…",
             "Open Folder…",
+            "Save",
+            "Save As…",
             "Export…",
             "Close Session",
             // Edit
@@ -569,6 +757,10 @@ mod tests {
             "Import ARRI Looks…",
             "Import LUTs and look files…",
             "Make Current Look Default",
+            "Save Preset…",
+            "Import Presets…",
+            "New Preset from Exported Photo…",
+            "Show Presets Folder",
             "Show Looks Folder",
             // Help
             "Yellowmoon on GitHub",
@@ -661,6 +853,12 @@ mod tests {
             MenuAction::Look7,
             MenuAction::Look8,
             MenuAction::Look9,
+            MenuAction::Save,
+            MenuAction::SaveAs,
+            MenuAction::SavePreset,
+            MenuAction::ImportPresets,
+            MenuAction::ApplyPreset,
+            MenuAction::NewPresetFromExport,
         ];
         let ours: HashSet<String> = all
             .iter()
@@ -703,8 +901,8 @@ mod tests {
                 "{s} belongs to the text boxes"
             );
         }
-        // ⌘, ⌘O ⇧⌘O ⌘E ⌘W ⌘= ⌘-
-        assert_eq!(seen.len(), 7);
+        // ⌘, ⌘O ⇧⌘O ⌘S ⇧⌘S ⌘E ⌘W ⌥⌘S ⌘= ⌘-
+        assert_eq!(seen.len(), 10);
     }
 
     /// "Single-key shortcuts" off (`docs/28` A-P11) must really turn those keys off, so the native
@@ -789,21 +987,140 @@ mod tests {
             copy_settings: false,
             paste_settings: false,
             paste_settings_to_picked: false,
+            save_preset: false,
+            apply_preset: false,
+            save: false,
+            save_as: false,
         };
         assert!(availability(&none).iter().all(|(_, on)| !on));
         let state = MenuState {
             copy_settings: true,
             paste_settings: false,
             paste_settings_to_picked: true,
+            save_preset: true,
+            apply_preset: false,
+            save: true,
+            save_as: false,
         };
         assert_eq!(
             availability(&state),
             [
                 ("copy_settings", true),
                 ("paste_settings", false),
-                ("paste_settings_to_picked", true)
+                ("paste_settings_to_picked", true),
+                ("save_preset", true),
+                ("apply_preset", false),
+                ("save", true),
+                ("save_as", false)
             ]
         );
+    }
+
+    #[test]
+    fn save_and_save_as_are_in_the_file_menu_with_the_keys_of_docs_31() {
+        let file = spec().into_iter().find(|m| m.title == "File").expect("File");
+        let labels: Vec<&str> = file
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Item { label, .. } => Some(*label),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Open Files…",
+                "Open Folder…",
+                "Save",
+                "Save As…",
+                "Export…",
+                "Close Session"
+            ]
+        );
+        let by_id: std::collections::HashMap<_, _> =
+            items().into_iter().map(|(id, _, key, act)| (id, (key, act))).collect();
+        assert_eq!(by_id["save"], (Some("CmdOrCtrl+S"), Do::Webview(MenuAction::Save)));
+        assert_eq!(
+            by_id["save_as"],
+            (Some("CmdOrCtrl+Shift+S"), Do::Webview(MenuAction::SaveAs))
+        );
+        assert!(STATE_ITEMS.contains(&"save") && STATE_ITEMS.contains(&"save_as"));
+    }
+
+    #[test]
+    fn the_looks_menu_has_the_preset_items_after_the_nine_looks() {
+        let looks = spec()
+            .into_iter()
+            .find(|m| m.title == "Looks")
+            .expect("Looks");
+        let after: Vec<&str> = looks
+            .entries
+            .iter()
+            .skip_while(|e| !matches!(e, Entry::Item { id: "look_9", .. }))
+            .filter_map(|e| match e {
+                Entry::Item { label, .. } => Some(*label),
+                Entry::PresetSubmenu { label, .. } => Some(*label),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            after,
+            [
+                "Apply Look 9",
+                "Save Preset…",
+                "Import Presets…",
+                "Apply Preset",
+                "New Preset from Exported Photo…",
+                "Show Presets Folder",
+                "Show Looks Folder"
+            ]
+        );
+        let by_id: std::collections::HashMap<_, _> =
+            items().into_iter().map(|(id, _, key, act)| (id, (key, act))).collect();
+        // ⌥⌘S, not ⇧⌘S (which is Save As…).
+        assert_eq!(
+            by_id["save_preset"],
+            (Some("CmdOrCtrl+Alt+S"), Do::Webview(MenuAction::SavePreset))
+        );
+        assert_eq!(by_id["show_presets_folder"], (None, Do::ShowPresetsFolder));
+        assert!(STATE_ITEMS.contains(&"save_preset") && STATE_ITEMS.contains(&"apply_preset"));
+    }
+
+    #[test]
+    fn apply_preset_lists_at_most_thirty_names_and_ticks_the_matching_ones() {
+        use crate::wire::PresetEntry;
+        let entry = |i: usize| PresetEntry {
+            name: format!("Preset {i:02}"),
+            groups: vec![],
+            look: None,
+            look_missing: false,
+            matches: i == 2,
+            revision: String::new(),
+        };
+        let list = PresetsListing {
+            presets: (0..45).map(entry).collect(),
+            damaged: vec![],
+            folder: String::new(),
+        };
+        let items = preset_items(&list);
+        assert_eq!(items.len(), MAX_PRESET_NAMES);
+        assert_eq!(items[0].name, "Preset 00");
+        assert!(items[2].checked && !items[1].checked);
+        let empty = PresetsListing {
+            presets: vec![],
+            damaged: vec![],
+            folder: String::new(),
+        };
+        assert!(preset_items(&empty).is_empty());
+        // The item of a name carries the name; no item of ours has an id that could be mistaken for one.
+        assert_eq!(preset_of_item(&preset_item_id("Warm evening")), Some("Warm evening"));
+        assert_eq!(preset_of_item("apply_preset"), None);
+        assert!(items_ids_never_start_with_the_prefix());
+    }
+
+    fn items_ids_never_start_with_the_prefix() -> bool {
+        items().iter().all(|(id, ..)| preset_of_item(id).is_none())
     }
 
     #[test]
@@ -913,12 +1230,40 @@ mod tests {
                 copy_settings: true,
                 paste_settings: false,
                 paste_settings_to_picked: true,
+                save_preset: true,
+                apply_preset: true,
+                save: false,
+                save_as: false,
             },
         )
         .expect("apply the state");
         assert!(enabled(&menu, "copy_settings"));
         assert!(!enabled(&menu, "paste_settings"));
         assert!(enabled(&menu, "paste_settings_to_picked"));
+        assert!(enabled(&menu, "save_preset"));
+        assert!(!enabled(&menu, "save"));
+        // Apply Preset is a submenu, greyed and switched on as a whole; empty it holds "No Presets", greyed.
+        let apply = preset_submenu(app.handle()).expect("Apply Preset");
+        assert!(apply.is_enabled().expect("enabled"));
+        let names: Vec<String> = apply.items().expect("items").iter().map(label_of).collect();
+        assert_eq!(names, ["No Presets"]);
+        let items = [
+            PresetItem {
+                name: "Cool".into(),
+                checked: false,
+            },
+            PresetItem {
+                name: "Warm evening".into(),
+                checked: true,
+            },
+        ];
+        set_preset_items(app.handle(), &apply, &items).expect("rebuild");
+        let names: Vec<String> = apply.items().expect("items").iter().map(label_of).collect();
+        assert_eq!(names, ["Cool", "Warm evening"]);
+        match apply.get("apply_preset:Warm evening") {
+            Some(MenuItemKind::Check(c)) => assert!(c.is_checked().expect("checked")),
+            _ => panic!("a check item"),
+        }
         assert!(
             enabled(&menu, "export"),
             "the state leaves other items alone"
