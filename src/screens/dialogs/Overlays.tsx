@@ -2,6 +2,8 @@ import { useRef } from "react";
 import type { Overlay } from "../../state/store";
 import { useAppState } from "../../state/context";
 import { About } from "./About";
+import { AlbumQuestion } from "./AlbumQuestion";
+import { PresetDialogs } from "./PresetDialogs";
 import { AutoConsent } from "./AutoConsent";
 import { ConfirmClose } from "./ConfirmClose";
 import { CubeImport } from "./CubeImport";
@@ -56,6 +58,18 @@ export function Overlays() {
       return (
         <DialogOpenerContext.Provider value={opener}>
           <CubeImport />
+        </DialogOpenerContext.Provider>
+      );
+    case "preset":
+      return (
+        <DialogOpenerContext.Provider value={opener}>
+          <PresetDialogs />
+        </DialogOpenerContext.Provider>
+      );
+    case "album-question":
+      return (
+        <DialogOpenerContext.Provider value={opener}>
+          <AlbumQuestion />
         </DialogOpenerContext.Provider>
       );
     default:

@@ -293,6 +293,40 @@ export const commands = {
 	 *  AppKit is read; off macOS it answers all false.
 	 */
 	displayOptions: () => __TAURI_INVOKE<DisplayOptions>("display_options"),
+	/**  `presets_list(photo_id)`: the saved presets, the damaged files and the folder (`docs/30` section 8). */
+	presetsList: (photoId: PhotoId | null) => __TAURI_INVOKE<PresetList>("presets_list", { photoId }),
+	/**  `preset_inspect(source)`: the groups to tick in the Save dialog. */
+	presetInspect: (source: PresetSource) => __TAURI_INVOKE<PresetInspect>("preset_inspect", { source }),
+	/**  `preset_save(name, groups, source, replace)`. */
+	presetSave: (name: string, groups: PresetGroup[], source: PresetSource, replace: boolean) => __TAURI_INVOKE<PresetEntry>("preset_save", { name, groups, source, replace }),
+	/**  `preset_update(name, photo_id)`. */
+	presetUpdate: (name: string, photoId: PhotoId) => __TAURI_INVOKE<PresetEntry>("preset_update", { name, photoId }),
+	/**  `preset_rename(name, new_name)`. */
+	presetRename: (name: string, newName: string) => __TAURI_INVOKE<PresetEntry>("preset_rename", { name, newName }),
+	/**  `preset_apply(name, photo_ids)`. */
+	presetApply: (name: string, photoIds: PhotoId[]) => __TAURI_INVOKE<PresetApplyReport>("preset_apply", { name, photoIds }),
+	/**  `preset_remove(name)`: to the Trash. */
+	presetRemove: (name: string) => __TAURI_INVOKE<null>("preset_remove", { name }),
+	/**  `preset_remove_file(file)`: a damaged file, to the Trash. */
+	presetRemoveFile: (file: string) => __TAURI_INVOKE<null>("preset_remove_file", { file }),
+	/**  `preset_export(name)`: the system save panel; null when cancelled. */
+	presetExport: (name: string) => __TAURI_INVOKE<PresetExported | null>("preset_export", { name }),
+	/**  `presets_import_dialog()`: the system open panel; null when cancelled. */
+	presetsImportDialog: () => __TAURI_INVOKE<ImportResult | null>("presets_import_dialog"),
+	/**  `presets_import(paths, replace)`. */
+	presetsImport: (paths: string[], replace: boolean) => __TAURI_INVOKE<ImportResult>("presets_import", { paths, replace }),
+	/**  `preset_reveal(name)`: Show in Finder. */
+	presetReveal: (name: string) => __TAURI_INVOKE<null>("preset_reveal", { name }),
+	/**  `preset_choose_export()`: the system open panel for an exported photo (New Preset from Exported Photo…); null when cancelled. */
+	presetChooseExport: () => __TAURI_INVOKE<string | null>("preset_choose_export"),
+	/**  `preset_thumbnail(photo_id, name)`: the address of the tile's PNG. */
+	presetThumbnail: (photoId: PhotoId, name: string) => __TAURI_INVOKE<string>("preset_thumbnail", { photoId, name }),
+	/**  `album_open(path)`. */
+	albumOpen: (path: string) => __TAURI_INVOKE<SessionState>("album_open", { path }),
+	/**  `album_save(as_new)`: the save panel when `as_new` or the album has no file; null when cancelled. */
+	albumSave: (asNew: boolean) => __TAURI_INVOKE<AlbumSaved | null>("album_save", { asNew }),
+	/**  `album_state()`. */
+	albumState: () => __TAURI_INVOKE<AlbumState | null>("album_state"),
 };
 
 /** Events */
@@ -304,6 +338,7 @@ export const events = {
 	error: makeEvent<ErrorEvent>("error"),
 	exportBusy: makeEvent<ExportBusy>("export_busy"),
 	exportProgress: makeEvent<ExportProgress>("export_progress"),
+	albumChanged: makeEvent<AlbumChanged>("album_changed"),
 	looksChanged: makeEvent<LooksChanged>("looks_changed"),
 	looksImportProgress: makeEvent<LooksImportProgress>("looks_import_progress"),
 	memoryNotice: makeEvent<MemoryNotice>("memory_notice"),
@@ -312,6 +347,7 @@ export const events = {
 	objectState: makeEvent<ObjectState>("object_state"),
 	openProgress: makeEvent<OpenProgress>("open_progress"),
 	photoProgress: makeEvent<PhotoProgress>("photo_progress"),
+	presetsChanged: makeEvent<PresetsChanged>("presets_changed"),
 	renderStats: makeEvent<RenderStats>("render_stats"),
 	settingsChanged: makeEvent<SettingsChanged>("settings_changed"),
 	thumbnailReady: makeEvent<ThumbnailReady>("thumbnail_ready"),
@@ -1092,6 +1128,10 @@ export type ErrorScope =
  *  mask is not there, a row has all its points.
  */
 "mask" | 
+/**  Presets (`docs/30`). */
+"presets" | 
+/**  Albums (`docs/31`). */
+"album" | 
 /**  Anything else. */
 "app";
 
@@ -2233,6 +2273,18 @@ export type MenuAction =
 "bypass_node" | 
 /**  Show or hide the selected node's mask (M; the node view only). */
 "mask_view" | 
+/**  Looks › Save Preset…. */
+"save_preset" | 
+/**  Looks › Import Presets…. */
+"import_presets" | 
+/**  Looks › New Preset from Exported Photo…. */
+"new_preset_from_export" | 
+/**  Looks › Apply Preset › a name (`MenuActionEvent.preset`). */
+"apply_preset" | 
+/**  File › Save. */
+"save" | 
+/**  File › Save As…. */
+"save_as" | 
 /**  Pick look 1 of the Look tab (the key 1). */
 "look_1" | 
 /**  Pick look 2 of the Look tab (the key 2). */
@@ -2256,6 +2308,8 @@ export type MenuAction =
 export type MenuActionEvent = {
 	/**  Which item. */
 	action: MenuAction,
+	/**  The name of the preset of `apply_preset`. */
+	preset?: string | null,
 };
 
 /**
@@ -2269,6 +2323,14 @@ export type MenuState = {
 	paste_settings: boolean,
 	/**  Paste Settings to Picked: something is copied and a photo is picked. */
 	paste_settings_to_picked: boolean,
+	/**  Looks › Save Preset…: a developed current photo, and no dialog open. */
+	save_preset: boolean,
+	/**  Looks › Apply Preset: the same. */
+	apply_preset: boolean,
+	/**  File › Save. */
+	save: boolean,
+	/**  File › Save As…. */
+	save_as: boolean,
 };
 
 /**
@@ -3168,6 +3230,8 @@ export type SessionState = {
 	 *  open." when files are added to a session.
 	 */
 	opened?: OpenSummary | null,
+	/**  The open album, or null. */
+	album?: AlbumState | null,
 };
 
 /**
@@ -3528,3 +3592,82 @@ function makeEvent<T>(name: string, serialize?: (payload: T) => unknown, deseria
     return Object.assign(fn, base);
 }
 
+
+/**  `presets_changed`: no data. */
+export type PresetsChanged = null;
+
+/**  `album_changed`: no data. */
+export type AlbumChanged = null;
+
+export type PresetGroup = "look" | "lens" | "light" | "color" | "detail" | "curve" | "raw" | "nodes";
+
+export type PresetLook = {
+	id: LookId,
+	name: string,
+};
+
+export type PresetEntry = {
+	name: string,
+	groups: PresetGroup[],
+	look: PresetLook | null,
+	look_missing: boolean,
+	matches: boolean,
+	revision: string,
+};
+
+export type DamagedPreset = {
+	file: string,
+	reason: string,
+};
+
+export type PresetList = {
+	presets: PresetEntry[],
+	damaged: DamagedPreset[],
+	folder: string,
+};
+
+export type PresetSource = { kind: "photo", photo_id: PhotoId } | { kind: "file", path: string };
+
+export type PresetInspect = {
+	changed: PresetGroup[],
+	older_export: boolean,
+	look: string | null,
+};
+
+export type PresetApplyReport = {
+	pasted: PastedPhoto[],
+	skipped: PhotoId[],
+	missing_look: string | null,
+};
+
+export type ImportExists = {
+	name: string,
+	path: string,
+};
+
+export type ImportRefused = {
+	file: string,
+	reason: string,
+};
+
+export type ImportResult = {
+	added: string[],
+	replaced: string[],
+	exists: ImportExists[],
+	refused: ImportRefused[],
+};
+
+export type PresetExported = {
+	path: string,
+};
+
+export type AlbumState = {
+	name: string,
+	path: string,
+	edited: boolean,
+};
+
+export type AlbumSaved = {
+	path: string,
+	name: string,
+};

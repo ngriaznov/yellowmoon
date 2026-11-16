@@ -1061,6 +1061,75 @@ export const STATES: readonly PageState[] = [
       await p.waitForTimeout(300);
     },
   ],
+  // The Presets card (docs/30 section 9.1, the Look tab's last card), scrolled to its end: fourteen presets, six tiles, Show all 14, a damaged file.
+  [
+    "85-presets-card",
+    async (p) => {
+      await photos(p, { ...MOCKUP, mockPresets: 14, mockPresetsDamaged: 1 });
+      await expect(p.getByRole("region", { name: "Presets" }).getByRole("button", { name: / preset$/ })).toHaveCount(6);
+      await p.locator(".ym-tools__scroll").evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+      });
+      await p.waitForTimeout(300);
+    },
+  ],
+  // The Save preset dialog (docs/30 section 9.3) over the Look tab, with the name filled in.
+  [
+    "86-dialog-save-preset",
+    async (p) => {
+      await photos(p, { ...MOCKUP, mockPresets: 14 });
+      await p.getByRole("region", { name: "Presets" }).getByRole("button", { name: "Save…" }).click();
+      const dialog = p.getByRole("dialog", { name: "Save preset" });
+      await expect(dialog).toBeVisible();
+      await dialog.getByRole("textbox", { name: "Name" }).fill("Warm evening");
+      await p.waitForTimeout(400);
+    },
+  ],
+  // The same dialog asking "Replace Warm evening?" (docs/30 section 9.3).
+  [
+    "87-dialog-replace-preset",
+    async (p) => {
+      await photos(p, { ...MOCKUP, mockPresets: 14 });
+      await p.getByRole("region", { name: "Presets" }).getByRole("button", { name: "Save…" }).click();
+      const dialog = p.getByRole("dialog", { name: "Save preset" });
+      await dialog.getByRole("textbox", { name: "Name" }).fill("Warm evening");
+      await dialog.getByRole("checkbox", { name: "Light" }).check();
+      await p.keyboard.press("Enter");
+      await expect(p.getByRole("dialog", { name: "Replace Warm evening?" })).toBeVisible();
+      await p.waitForTimeout(400);
+    },
+  ],
+  // An album open and edited (docs/31 section 6): the folder cell reads "Lisbon" and "12 photos · edited".
+  [
+    "88-album-edited",
+    async (p) => {
+      await openApp(p, { mockAlbum: "Lisbon" });
+      await dropFiles(p, ["Lisbon.ymalbum"]);
+      await expect(p.getByRole("heading", { level: 2, name: /ready$/ })).toBeVisible();
+      await p.getByRole("button", { name: /Open photos/ }).click();
+      await expect(p.getByRole("tab", { name: "Look" })).toBeVisible();
+      await p.keyboard.press("p");
+      await expect(p.locator(".ym-brand-sub")).toContainText("edited");
+      await showUpdateReady(p);
+      await p.waitForTimeout(300);
+    },
+  ],
+  // "Save changes to the album Lisbon?" (docs/31 section 6; the app's own dialog in the browser, macOS's alert in the shell).
+  [
+    "89-dialog-album-question",
+    async (p) => {
+      await openApp(p, { mockAlbum: "Lisbon" });
+      await dropFiles(p, ["Lisbon.ymalbum"]);
+      await expect(p.getByRole("heading", { level: 2, name: /ready$/ })).toBeVisible();
+      await p.getByRole("button", { name: /Open photos/ }).click();
+      await expect(p.getByRole("tab", { name: "Look" })).toBeVisible();
+      await p.keyboard.press("p");
+      await expect(p.locator(".ym-brand-sub")).toContainText("edited");
+      await p.keyboard.press("Meta+w");
+      await expect(p.getByRole("dialog", { name: "Save changes to the album Lisbon?" })).toBeVisible();
+      await p.waitForTimeout(400);
+    },
+  ],
 ];
 
 /** Opens one state in a new page of the browser, at the size of the screenshots. */

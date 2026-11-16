@@ -44,6 +44,17 @@ import {
 import { UNREADABLE_PREFIX } from "./api/openMessages";
 import type { MockActivity, MockProviders } from "./api/providersMock";
 import type {
+  AlbumSaved,
+  AlbumState,
+  DamagedPreset,
+  ImportResult,
+  PresetApplyReport,
+  PresetEntry,
+  PresetExported,
+  PresetGroup,
+  PresetInspect,
+  PresetSource,
+  PresetList,
   ApiEventName,
   ApiEvents,
   AppError,
@@ -141,6 +152,8 @@ import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cr
 import { copiedPatch, pastedOnto, refusalOfPatch, validateGraph } from "./fixtures/graph";
 import { hasBackgroundRow, hasObjectRow, maskViewSvg, masksOfView, MOCK_DEPTH, pickDepthFar, SCENES_WITH_PEOPLE, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
 import { diffSettings } from "./state/history";
+import { changedGroups, MOCK_PRESET_RECIPES, patchFor, presetFromPhoto, presetFromRecipe, presetMatches } from "./fixtures/presets";
+import type { StoredPreset } from "./fixtures/presets";
 import { cardStates, linkInto } from "./state/graphOps";
 import {
   applyPatch,
@@ -559,6 +572,20 @@ export interface MockOptions {
    * is played with `emitEvent("display_options", …)`.
    */
   displayOptions?: DisplayOptions;
+  /**
+   * How many of the fourteen presets of the mock-ups the preset folder starts with (`?mockPresets=14`, `docs/30` section 9). Default 0: the card
+   * starts empty, as the app does (the owner, 2026-11-16: "No default presets are needed for now").
+   */
+  presets?: number;
+  /** A damaged file sits in the preset folder (`?mockPresetsDamaged=1`): the card lists it with its reason and Delete. */
+  damagedPresets?: boolean;
+  /**
+   * Albums the mock has "on disk" (`?mockAlbum=Lisbon`): each is the twelve fixture photos of that name, `~/Pictures/<name>/<name>.ymalbum`, with the
+   * third and fourth picked and the fourth shown. Opening one with `album_open` (or a drop) replaces the session.
+   */
+  albums?: string[];
+  /** Photos of an album that are not found when it opens (`?mockAlbumMissing=DSC04206`, `docs/31` section 4): they open as failed photos, "Not found: …". */
+  albumMissing?: string[];
 }
 
 /** What the viewport commands have recorded, for tests. */
@@ -595,6 +622,12 @@ export interface MockApi extends Api {
   fixtureUrl(photoId: PhotoId): string | undefined;
   /** What `viewport_*` and `set_before` have been called with. */
   readonly viewport: Readonly<MockViewportState>;
+  /** The presets in the mock's preset folder, in the order they were written. */
+  readonly savedPresets: readonly StoredPreset[];
+  /** Puts a file that cannot be read in the preset folder (it is listed as damaged, with the reason). */
+  addDamagedPreset(file: string, reason: string): void;
+  /** The files the mock holds as saved albums, by path. */
+  readonly savedAlbums: ReadonlyMap<string, { photos: number }>;
   /** The last state `set_menu_state` was given (which of the Edit menu's settings items are available); null before the first. */
   readonly menuState: Readonly<MenuState> | null;
   /** What the system commands were asked to do, in order: pages opened, folders shown in Finder, files moved to the Trash. */
@@ -611,6 +644,12 @@ export interface MockApi extends Api {
    * A name the session does not have is a new photo; one it has is "already open". Answers queue up.
    */
   queueChoice(kind: "open", answer: string[]): void;
+  /** The answer of the next system save panel (Save the album, Export the preset): a path, or `null` for a cancelled panel. */
+  queueChoice(kind: "save", answer: string | null): void;
+  /** The answer of the next Import Presets… panel: the paths, or `null` for a cancelled panel. */
+  queueChoice(kind: "import", answer: string[] | null): void;
+  /** The answer of the next New Preset from Exported Photo… panel: a path, or `null`. */
+  queueChoice(kind: "exported", answer: string | null): void;
   /** Add (or replace) a synthetic file the recogniser can find, by file name. */
   addSource(fileName: string, fixture: SourceFixture): void;
   /** Take a synthetic file away, as if it had been deleted or moved: it is `missing` from now on. */
@@ -1114,6 +1153,10 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   maskFind: "scene",
   depth: "ok",
   displayOptions: { reduce_transparency: false, reduce_motion: false, increase_contrast: false },
+  presets: 0,
+  damagedPresets: false,
+  albums: [],
+  albumMissing: [],
 };
 
 /** Fills in defaults, ignoring `undefined` values and a speed that isn't a positive number. */
@@ -1226,6 +1269,13 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (maskFind === "none" || maskFind === "scene") out.maskFind = maskFind;
   const depth = params.get("mockDepth");
   if (depth === "ok" || depth === "fail" || depth === "fail-always") out.depth = depth;
+  const presets = params.get("mockPresets");
+  if (presets !== null && Number.isInteger(Number(presets)) && Number(presets) >= 0) out.presets = Math.min(Number(presets), MOCK_PRESET_RECIPES.length);
+  if (params.get("mockPresetsDamaged") === "1") out.damagedPresets = true;
+  const albums = list("mockAlbum");
+  if (albums) out.albums = albums;
+  const albumMissing = list("mockAlbumMissing");
+  if (albumMissing) out.albumMissing = albumMissing.map((name) => name.replace(/\.arw$/i, ""));
   const display = list("mockDisplay");
   if (display) {
     out.displayOptions = {
@@ -1680,7 +1730,14 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   let watching = false;
   let downloadTimers: Array<ReturnType<typeof setTimeout>> = [];
   const importRuns = new Set<ImportRun>();
-  const choices: { folder: Array<string | null>; files: Array<string[] | null>; open: string[][] } = { folder: [], files: [], open: [] };
+  const choices: {
+    folder: Array<string | null>;
+    files: Array<string[] | null>;
+    open: string[][];
+    save: Array<string | null>;
+    import: Array<string[] | null>;
+    exported: Array<string | null>;
+  } = { folder: [], files: [], open: [], save: [], import: [], exported: [] };
   let menuState: MenuState | null = null;
   const system: MockSystemLog = { opened: [], revealed: [], trashed: [], restarts: 0 };
   let cliLink: string | null = null;
@@ -2106,6 +2163,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       current_index: current,
       picked: photos.filter((p) => p.summary.picked).map((p) => p.summary.id),
       default_export_folder: `${folderPath()} export`,
+      album: album ? { ...album } : null,
     };
   }
 
@@ -2203,6 +2261,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const before = photos.length;
     for (const name of fresh) photos.push(makePhoto(photos.length, ++highestId, name));
     if (fresh.length > 0) {
+      albumEdited();
       // Only the new photos are left to develop; the others keep what they have.
       developProgress = Math.min(developProgress, before);
       startDevelopment();
@@ -2513,6 +2572,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const doomed = new Set(ids);
     const taken = photos.map((rec, place) => ({ rec, place })).filter(({ rec }) => doomed.has(rec.summary.id));
     if (taken.length === 0) return { photo_ids: [], already_open: 0, session: snapshot() };
+    albumEdited();
     const left = new Set(taken.map(({ rec }) => rec.summary.id));
     const wasCurrent = photos[current]?.summary.id ?? null;
     const successor = successorAfter(left);
@@ -2564,6 +2624,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       restored.push(rec);
     }
     const ids = restored.map((rec) => rec.summary.id);
+    if (restored.length > 0) albumEdited();
     // The photo on screen stays, unless the removal had taken it away and the person has not moved since.
     current = Math.max(0, photos.findIndex((rec) => rec.summary.id === here));
     const back = last.wasCurrent !== null && ids.includes(last.wasCurrent) && here === last.successor ? last.wasCurrent : null;
@@ -2574,6 +2635,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       if (wasEmpty || photos[current]?.summary.id !== here) showCurrent();
     }
     return { photo_ids: ids, already_open: alreadyOpen, session: snapshot() };
+  }
+
+  function isAlbumPath(path: string): boolean {
+    return /\.ymalbum$/i.test(path);
   }
 
   function isArwPath(path: string): boolean {
@@ -2626,6 +2691,14 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   }
 
   function openPathsNow(paths: string[]): SessionState {
+    const albumPaths = paths.filter(isAlbumPath);
+    if (albumPaths.length > 1) fail("open", "Open one album at a time.");
+    if (albumPaths.length === 1) {
+      if (paths.some((path) => !isAlbumPath(path) && (isArwPath(path) || isFolderPath(path)))) {
+        fail("open", "Open an album on its own, or open photos. Yellowmoon can't open both in one go.");
+      }
+      return openAlbumNow(albumPaths[0] as string);
+    }
     // The core's sentence for a folder it could not list, when no file came with it (`docs/26` H-02).
     if (options.unreadable && !paths.some(isArwPath) && paths.some(isFolderPath)) {
       fail("open", `${UNREADABLE_PREFIX}${options.unreadable}. Check that it is still there and that you may open it, then try again.`);
@@ -2905,6 +2978,180 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     });
   }
 
+
+  // --- Presets and albums (`docs/30`, `docs/31`) ----------------------------------------------
+
+  /** Where the presets "are" (`Core::presets_folder`), for the sentence of a failed write. */
+  const PRESETS_FOLDER = "~/Library/Application Support/app.yellowmoon/presets";
+  let presets = new Map<string, StoredPreset>();
+  let damagedPresets: DamagedPreset[] = [];
+  /** The open album, and the albums the mock "has on disk" (their photos as they were when saved). */
+  let album: AlbumState | null = null;
+  const albums = new Map<string, MockAlbum>();
+
+  interface MockAlbum {
+    photos: Array<{ index: number; name: string; settings: DevelopSettings; picked: boolean; absolute: string }>;
+    current: number;
+  }
+
+  const presetKey = (name: string): string => name.trim().toLowerCase();
+
+  /** The look's name for a preset's file, from the library (the id when the library has no such look). */
+  const lookNameOf = (id: LookId): string | null => findLook(id)?.name ?? null;
+
+  /** A short stand-in for the first 12 hex digits of the file's SHA-256: it changes when the preset is written again. */
+  function revisionOf(preset: StoredPreset): string {
+    let h = 2166136261;
+    for (const c of `${preset.version}|${JSON.stringify(preset)}`) h = Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0;
+    return `${h.toString(16).padStart(8, "0")}${preset.version.toString(16).padStart(4, "0")}`.slice(0, 12);
+  }
+
+  function lookUsableFor(preset: StoredPreset): boolean {
+    if (preset.look === null) return true;
+    const look = findLook(preset.look.id);
+    return look !== undefined && !look.missing;
+  }
+
+  function entryOf(preset: StoredPreset, rec: PhotoRecord | null): PresetEntry {
+    return {
+      name: preset.name,
+      groups: [...preset.groups],
+      look: preset.look ? { ...preset.look } : null,
+      look_missing: !lookUsableFor(preset),
+      matches: rec !== null && rec.phase === 3 && !rec.skipReason && presetMatches(preset, rec.settings, lookUsableFor(preset)),
+      revision: revisionOf(preset),
+    };
+  }
+
+  function checkPresetName(name: string): string {
+    const trimmed = name.trim();
+    if (trimmed === "") fail("presets", "Give the preset a name.");
+    if ([...trimmed].length > 64) fail("presets", "Use 64 characters or fewer.");
+    return trimmed;
+  }
+
+  function presetNamed(name: string): StoredPreset {
+    const found = presets.get(presetKey(name));
+    if (!found) fail("presets", `There is no preset called ${name}. It may have been removed.`);
+    return found;
+  }
+
+  function resetPresetsAndAlbums(): void {
+    presets = new Map();
+    damagedPresets = options.damagedPresets ? [{ file: "Old.ympreset", reason: "This preset was made by a newer version of Yellowmoon. Update to use it." }] : [];
+    for (const recipe of MOCK_PRESET_RECIPES.slice(0, options.presets)) {
+      const preset = presetFromRecipe(recipe, lookNameOf);
+      presets.set(presetKey(preset.name), preset);
+    }
+    album = null;
+    albums.clear();
+    for (const name of options.albums) {
+      albums.set(`~/Pictures/${name}/${name}.ymalbum`, {
+        photos: SCENES.map((scene, index) => ({ index, name: scene.name, settings: defaultSettings(NEUTRAL), picked: index === 2 || index === 3 || index === 4, absolute: `~/Pictures/${name}/${scene.name}.ARW` })),
+        current: 3,
+      });
+    }
+  }
+
+  /** The album changed (`album_changed`): an edit of any photo, a pick, a photo added or removed. Undo does not clear it. */
+  function albumEdited(): void {
+    if (!album || album.edited) return;
+    album = { ...album, edited: true };
+    emitSoon("album_changed", null);
+  }
+
+  const albumNameOf = (path: string): string => fileNameOf(path).replace(/\.ymalbum$/i, "");
+
+  /** `album_open`: the session is replaced by the album's photos, in order, with their settings and picks; photos it cannot find are failed photos. */
+  function openAlbumNow(path: string): SessionState {
+    // A browser drop gives a file's name and no folder: the album of that name is the one.
+    const key = albums.has(path) ? path : [...albums.keys()].find((k) => fileNameOf(k).toLowerCase() === fileNameOf(path).toLowerCase());
+    const stored = key === undefined ? undefined : albums.get(key);
+    if (key === undefined || !stored) fail("album", "Yellowmoon couldn't read this file. Check that it is still there, then try again.");
+    stopDevelopment();
+    for (const timer of thumbTimers.values()) clearTimeout(timer);
+    thumbTimers.clear();
+    thumbnailUrls.clear();
+    lostThumbnails.clear();
+    forgetNodeThumbnails([...nodeThumbs.keys(), ...nodeThumbTimers.keys()]);
+    highestId = 0;
+    photos = stored.photos.map((entry, i) => {
+      const rec = makePhoto(entry.index, ++highestId, entry.name, entry.picked);
+      rec.settings = clampSettings(clone(entry.settings));
+      if (options.albumMissing.includes(entry.name)) rec.skipReason = `Not found: ${entry.absolute}`;
+      void i;
+      return rec;
+    });
+    current = clamp(stored.current, 0, photos.length - 1);
+    removal = null;
+    developProgress = 0;
+    album = { name: albumNameOf(key), path: key, edited: false };
+    startDevelopment();
+    showCurrent();
+    emitSoon("album_changed", null);
+    return { ...snapshot(), opened: { added: photos.length, already_open: 0 } };
+  }
+
+  /** `album_save`: writes the strip to the album's file, asking where first for Save As and for a session that has no file yet. */
+  function saveAlbumNow(asNew: boolean): AlbumSaved | null {
+    if (photos.length === 0) fail("album", "There are no photos to save. Open some photos first.");
+    let path = album?.path ?? null;
+    if (asNew || path === null) {
+      const answer = choices.save.length > 0 ? choices.save.shift() : `${folderPath()}/${options.folderName}.ymalbum`;
+      if (answer === undefined || answer === null) return null;
+      path = answer.endsWith(".ymalbum") ? answer : `${answer}.ymalbum`;
+    }
+    albums.set(path, {
+      photos: photos.map((rec) => ({
+        index: Math.max(0, SCENES.findIndex((scene) => scene.name === rec.scene.name)),
+        name: rec.scene.name,
+        settings: clone(rec.settings),
+        picked: rec.summary.picked,
+        absolute: `${folderPath()}/${rec.scene.name}.ARW`,
+      })),
+      current,
+    });
+    album = { name: albumNameOf(path), path, edited: false };
+    emitSoon("album_changed", null);
+    return { path, name: album.name };
+  }
+
+  /** The photo as it is now with the preset applied, as the tile's PNG (an address, as the shell answers). */
+  function presetTile(rec: PhotoRecord, preset: StoredPreset): string {
+    const { patch } = patchFor(preset, rec.settings, lookUsableFor(preset));
+    const next = clampSettings(applyPatch(rec.settings, patch));
+    return bytesToUrl(Array.from(scenePng(developed({ ...rec, settings: next }))));
+  }
+
+  function developedPhoto(id: PhotoId): PhotoRecord {
+    const rec = photo(id);
+    if (rec.skipReason) fail("open", "This file can't be opened, so there are no settings to save.");
+    if (rec.phase < 3) fail("open", "That photo is still developing. Try again in a moment.");
+    return rec;
+  }
+
+  function importOne(path: string, replace: boolean, out: ImportResult): void {
+    const file = fileNameOf(path);
+    const name = file.replace(/\.ympreset$/i, "");
+    if (!/\.ympreset$/i.test(file) || /bad/i.test(name)) {
+      out.refused.push({ file, reason: "This file isn't a Yellowmoon preset." });
+      return;
+    }
+    if (/newer|old/i.test(name)) {
+      out.refused.push({ file, reason: "This preset was made by a newer version of Yellowmoon. Update to use it." });
+      return;
+    }
+    const recipe = MOCK_PRESET_RECIPES[name.length % MOCK_PRESET_RECIPES.length] as (typeof MOCK_PRESET_RECIPES)[number];
+    const made = { ...presetFromRecipe({ ...recipe, name }, lookNameOf), name };
+    const had = presets.get(presetKey(name));
+    if (had && !replace) {
+      out.exists.push({ name: had.name, path });
+      return;
+    }
+    presets.set(presetKey(name), { ...made, version: (had?.version ?? 0) + 1 });
+    (had ? out.replaced : out.added).push(name);
+  }
+
   // --- Lifecycle ------------------------------------------------------------------------
 
   function stopAll(): void {
@@ -2960,12 +3207,16 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     choices.folder = [];
     choices.files = [];
     choices.open = [];
+    choices.save = [];
+    choices.import = [];
+    choices.exported = [];
     menuState = null;
     system.opened = [];
     system.revealed = [];
     system.trashed = [];
     system.restarts = 0;
     looks = buildLooks();
+    resetPresetsAndAlbums();
     failures.clear();
     cancelDialog = false;
     viewport.rect = null;
@@ -3061,6 +3312,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         highestId = 0;
         removal = null;
         developProgress = 0;
+        if (album) {
+          album = null;
+          emitSoon("album_changed", null);
+        }
         viewport.mode = { kind: "fit" };
         viewport.offset = { x: 0, y: 0 };
         viewport.before = false;
@@ -3084,6 +3339,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     setPicked: (photoId, picked) =>
       run("setPicked", () => {
         photo(photoId).summary.picked = picked;
+        albumEdited();
       }),
     removePhotos: (photoIds) => run("removePhotos", () => removeNow(photoIds)),
     restorePhotos: () => run("restorePhotos", restoreNow),
@@ -3094,6 +3350,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       run("updateSettings", () => {
         const rec = photo(photoId);
         rec.settings = patched(rec, patch);
+        albumEdited();
         emitSoon("render_stats", RENDER_STATS);
         scheduleThumbnail(rec);
         if (rec === photos[current]) sendFrame();
@@ -3103,6 +3360,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       run("applyLook", () => {
         const look = findLook(lookId);
         if (!look || look.missing) fail("looks", "That look isn't in the library any more. Import it again.");
+        albumEdited();
         for (const rec of targets(scope)) {
           rec.settings = applyPatch(rec.settings, outputPatch({ look: lookId, look_intensity: clamp(intensity, 0, 100) }));
           scheduleThumbnail(rec);
@@ -3136,6 +3394,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
             })
           : {};
         rec.settings = clampSettings(applyPatch(rec.settings, foldPatches(input, main)));
+        albumEdited();
         emitSoon("render_stats", RENDER_STATS);
         scheduleThumbnail(rec);
         if (rec === photos[current]) sendFrame();
@@ -3169,6 +3428,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
           report.pasted.push({ id, before: step?.before ?? {}, after: step?.after ?? {} });
           if (step) {
             rec.settings = next;
+            albumEdited();
             scheduleThumbnail(rec);
             emitSoon("settings_changed", { photo_id: id });
             if (rec === photos[current]) sendFrame();
@@ -3592,6 +3852,149 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     // The mock probes nothing, so the cached read is the same answer; the store's tests tell the two calls apart by spying on them.
     autoStatusCached: () => run("autoStatusCached", autoStatus),
     appInfo: () => run("appInfo", (): AppInfo => ({ version: APP_VERSION, pipeline_version: "1.0.0", os: options.os })),
+    get savedPresets() {
+      return [...presets.values()];
+    },
+    addDamagedPreset(file, reason) {
+      damagedPresets.push({ file, reason });
+    },
+    get savedAlbums() {
+      return new Map([...albums].map(([path, a]) => [path, { photos: a.photos.length }]));
+    },
+
+    presetsList: (photoId) =>
+      run("presetsList", (): PresetList => {
+        const rec = photoId === null ? null : (photos.find((p) => p.summary.id === photoId) ?? null);
+        const entries = [...presets.values()].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+        return { presets: entries.map((p) => entryOf(p, rec)), damaged: damagedPresets, folder: PRESETS_FOLDER };
+      }),
+    presetInspect: (source: PresetSource) =>
+      run("presetInspect", (): PresetInspect => {
+        if (source.kind === "file") {
+          const older = /older/i.test(source.path);
+          return { changed: older ? ["look"] : ["look", "light", "color"], older_export: older, look: lookNameOf(NEUTRAL) ?? null };
+        }
+        const rec = developedPhoto(source.photo_id);
+        const resolved = resolveSettings(rec.summary.id, rec.settings, estimates());
+        const id = outputOf(rec.settings).look;
+        return { changed: changedGroups(resolved, defaultSettings(preferences.default_look)), older_export: false, look: lookNameOf(id) ?? null };
+      }),
+    presetSave: (name, groups: PresetGroup[], source: PresetSource, replace) =>
+      run("presetSave", (): PresetEntry => {
+        const trimmed = checkPresetName(name);
+        if (groups.length === 0) fail("presets", "Tick at least one group.");
+        const had = presets.get(presetKey(trimmed));
+        if (had && !replace) fail("presets", `A preset called ${had.name} already exists.`);
+        let made: StoredPreset;
+        let rec: PhotoRecord | null = null;
+        if (source.kind === "photo") {
+          rec = developedPhoto(source.photo_id);
+          const resolved = resolveSettings(rec.summary.id, rec.settings, estimates());
+          made = presetFromPhoto(trimmed, resolved, groups, lookNameOf(outputOf(rec.settings).look), (had?.version ?? 0) + 1);
+        } else {
+          const recipe = MOCK_PRESET_RECIPES[0] as (typeof MOCK_PRESET_RECIPES)[number];
+          made = { ...presetFromRecipe({ ...recipe, groups }, lookNameOf), name: trimmed, version: (had?.version ?? 0) + 1 };
+        }
+        presets.set(presetKey(trimmed), made);
+        emitSoon("presets_changed", null);
+        return entryOf(made, rec);
+      }),
+    presetUpdate: (name, photoId) =>
+      run("presetUpdate", (): PresetEntry => {
+        const had = presetNamed(name);
+        const rec = developedPhoto(photoId);
+        const resolved = resolveSettings(rec.summary.id, rec.settings, estimates());
+        const made = presetFromPhoto(had.name, resolved, had.groups, lookNameOf(outputOf(rec.settings).look), had.version + 1);
+        presets.set(presetKey(had.name), made);
+        emitSoon("presets_changed", null);
+        return entryOf(made, rec);
+      }),
+    presetRename: (name, newName) =>
+      run("presetRename", (): PresetEntry => {
+        const had = presetNamed(name);
+        const trimmed = checkPresetName(newName);
+        const clash = presets.get(presetKey(trimmed));
+        if (clash && clash !== had) fail("presets", `A preset called ${clash.name} already exists.`);
+        presets.delete(presetKey(had.name));
+        const made = { ...had, name: trimmed, version: had.version + 1 };
+        presets.set(presetKey(trimmed), made);
+        emitSoon("presets_changed", null);
+        return entryOf(made, null);
+      }),
+    presetApply: (name, photoIds) =>
+      run("presetApply", (): PresetApplyReport => {
+        const preset = presetNamed(name);
+        const usable = lookUsableFor(preset);
+        const report: PresetApplyReport = { pasted: [], skipped: [], missing_look: usable ? null : (preset.look?.name ?? "") };
+        for (const id of new Set(photoIds)) {
+          const rec = photos.find((p) => p.summary.id === id);
+          if (!rec || rec.skipReason || rec.phase < 3) {
+            report.skipped.push(id);
+            continue;
+          }
+          const next = patched(rec, patchFor(preset, rec.settings, usable).patch);
+          const step = diffSettings(rec.settings, next);
+          report.pasted.push({ id, before: step?.before ?? {}, after: step?.after ?? {} });
+          if (step) {
+            rec.settings = next;
+            albumEdited();
+            scheduleThumbnail(rec);
+            emitSoon("settings_changed", { photo_id: id });
+            if (rec === photos[current]) sendFrame();
+          }
+        }
+        if (report.pasted.length > 0) emitSoon("render_stats", RENDER_STATS);
+        return report;
+      }),
+    presetRemove: (name) =>
+      run("presetRemove", () => {
+        const had = presetNamed(name);
+        presets.delete(presetKey(had.name));
+        system.trashed.push(`${PRESETS_FOLDER}/${had.name}.ympreset`);
+        emitSoon("presets_changed", null);
+      }),
+    presetRemoveFile: (file) =>
+      run("presetRemoveFile", () => {
+        damagedPresets = damagedPresets.filter((d) => d.file !== file);
+        system.trashed.push(`${PRESETS_FOLDER}/${file}`);
+        emitSoon("presets_changed", null);
+      }),
+    presetExport: (name) =>
+      run("presetExport", (): PresetExported | null => {
+        const had = presetNamed(name);
+        const answer = choices.save.length > 0 ? choices.save.shift() : `~/Documents/${had.name}.ympreset`;
+        return answer === undefined || answer === null ? null : { path: answer };
+      }),
+    presetsImportDialog: () =>
+      run("presetsImportDialog", (): ImportResult | null => {
+        const paths = choices.import.length > 0 ? choices.import.shift() : null;
+        if (!paths) return null;
+        const out: ImportResult = { added: [], replaced: [], exists: [], refused: [] };
+        for (const path of paths) importOne(path, false, out);
+        if (out.added.length > 0) emitSoon("presets_changed", null);
+        return out;
+      }),
+    presetsImport: (paths, replace) =>
+      run("presetsImport", (): ImportResult => {
+        const out: ImportResult = { added: [], replaced: [], exists: [], refused: [] };
+        for (const path of paths) importOne(path, replace, out);
+        if (out.added.length + out.replaced.length > 0) emitSoon("presets_changed", null);
+        return out;
+      }),
+    presetReveal: (name) =>
+      run("presetReveal", () => {
+        system.revealed.push(`${PRESETS_FOLDER}/${presetNamed(name).name}.ympreset`);
+      }),
+    presetChooseExport: () => run("presetChooseExport", () => (choices.exported.length > 0 ? (choices.exported.shift() ?? null) : `${folderPath()} export/DSC04204.jpg`)),
+    presetThumbnail: (photoId, name) =>
+      run("presetThumbnail", (): string => {
+        const preset = presetNamed(name);
+        return presetTile(photo(photoId), preset);
+      }),
+    albumOpen: (path) => run("albumOpen", () => openAlbumNow(path)),
+    albumSave: (asNew) => run("albumSave", () => saveAlbumNow(asNew)),
+    albumState: () => run("albumState", (): AlbumState | null => (album ? { ...album } : null)),
+
     displayOptions: () => run("displayOptions", (): DisplayOptions => ({ ...options.displayOptions })),
 
     chooseFolder: (start) =>
@@ -3620,8 +4023,11 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     get system() {
       return system;
     },
-    queueChoice(kind: "folder" | "files" | "open", answer: string | string[] | null) {
+    queueChoice(kind: "folder" | "files" | "open" | "save" | "import" | "exported", answer: string | string[] | null) {
       if (kind === "folder") choices.folder.push(answer as string | null);
+      else if (kind === "save") choices.save.push(answer as string | null);
+      else if (kind === "import") choices.import.push(answer as string[] | null);
+      else if (kind === "exported") choices.exported.push(answer as string | null);
       else if (kind === "open") choices.open.push(answer as string[]);
       else choices.files.push(answer as string[] | null);
     },

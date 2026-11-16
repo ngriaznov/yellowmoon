@@ -34,15 +34,7 @@
     {"role":"button","name":"Monochrome look, key 9","outline":"solid","ring":"outline"},
     {"role":"button","name":"Import ARRI looks →","outline":"solid","ring":"outline"},
     {"role":"button","name":"Import LUTs and look files…","outline":"solid","ring":"outline"},
-    {"role":"button","name":"Auto temperature","outline":"solid","ring":"outline"},
-    {"role":"button","name":"Reset","outline":"solid","ring":"outline"},
-    {"role":"slider","name":"Temperature","outline":"solid","ring":"outline"},
-    {"role":"textbox","name":"Temperature value","outline":"solid","ring":"outline"},
-    {"role":"slider","name":"Contrast","outline":"solid","ring":"outline"},
-    {"role":"textbox","name":"Contrast value","outline":"solid","ring":"outline"},
-    {"role":"slider","name":"Saturation","outline":"solid","ring":"outline"},
-    {"role":"textbox","name":"Saturation value","outline":"solid","ring":"outline"},
-    {"role":"button","name":"Reset Saturation","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Save preset…","outline":"solid","ring":"outline"},
     {"role":"button","name":"Copy settings","outline":"solid","ring":"outline"},
     {"role":"button","name":"Paste","outline":"solid","ring":"outline"}
   ]

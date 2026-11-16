@@ -71,7 +71,7 @@ describe("the Edit menu's settings items", () => {
     stops.push(store.connect());
     for (const action of ["copy_settings", "paste_settings", "paste_settings_to_picked"] as const) {
       api.emitEvent("menu_action", { action });
-      expect(handler).toHaveBeenLastCalledWith(action);
+      expect(handler).toHaveBeenLastCalledWith(action, undefined);
     }
   });
 });
@@ -119,5 +119,70 @@ describe("the menu items of the single keys (docs/28 A-P11)", () => {
   it("do nothing, and throw nothing, with no Photos screen", async () => {
     const store = createStore(createMockApi({ speed: Number.POSITIVE_INFINITY }), 0);
     for (const [item] of ITEMS) await runMenuAction(store, item);
+  });
+});
+
+describe("the Looks menu's preset items and File › Save (docs/30 section 8, docs/31 section 7)", () => {
+  const stops: Array<() => void> = [];
+  afterEach(() => {
+    for (const stop of stops.splice(0)) stop();
+  });
+
+  async function onPhotos(options: Parameters<typeof createMockApi>[0] = {}) {
+    const api = createMockApi({ speed: Number.POSITIVE_INFINITY, presets: 14, ...options });
+    const store = createStore(api, 0);
+    stops.push(store.connect());
+    await store.load();
+    await store.openDialog("files");
+    api.flush();
+    await store.openPhotos();
+    await vi.waitFor(() => expect(store.currentSettings()).not.toBeNull());
+    return { api, store };
+  }
+
+  it("Save Preset opens the dialog, and not while another dialog is open", async () => {
+    const { store } = await onPhotos();
+    await runMenuAction(store, "save_preset");
+    expect(store.getState().presetDialog?.kind).toBe("save");
+    store.closeOverlay();
+    store.openOverlay("about");
+    await runMenuAction(store, "save_preset");
+    expect(store.getState().presetDialog).toBeNull();
+  });
+
+  it("Apply Preset applies the named preset to the card's Apply to, and does nothing without a name", async () => {
+    const { api, store } = await onPhotos();
+    const spy = vi.spyOn(api, "presetApply");
+    await runMenuAction(store, "apply_preset");
+    expect(spy).not.toHaveBeenCalled();
+    await runMenuAction(store, "apply_preset", "Cool morning");
+    expect(spy).toHaveBeenCalledWith("Cool morning", [store.currentPhoto()!.id]);
+    // The shell's event carries the name (`MenuActionEvent.preset`); `App`'s bridge hands both on.
+    store.menuHandler = (action, preset) => void runMenuAction(store, action, preset);
+    api.emitEvent("menu_action", { action: "apply_preset", preset: "Warm evening" });
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledWith("Warm evening", [store.currentPhoto()!.id]));
+  });
+
+  it("Import Presets… and New Preset from Exported Photo… use the system panels", async () => {
+    const { api, store } = await onPhotos();
+    const imports = vi.spyOn(api, "presetsImportDialog");
+    await runMenuAction(store, "import_presets");
+    expect(imports).toHaveBeenCalled();
+    api.queueChoice("exported", null);
+    await runMenuAction(store, "new_preset_from_export");
+    expect(store.getState().presetDialog).toBeNull();
+    api.queueChoice("exported", "/x/DSC04204.jpg");
+    await runMenuAction(store, "new_preset_from_export");
+    expect(store.getState().presetDialog).toMatchObject({ kind: "save", source: { kind: "file", path: "/x/DSC04204.jpg" } });
+  });
+
+  it("Save and Save As… write the album (Save asks where the first time)", async () => {
+    const { api, store } = await onPhotos();
+    const spy = vi.spyOn(api, "albumSave");
+    await runMenuAction(store, "save");
+    expect(spy).toHaveBeenLastCalledWith(false);
+    expect(store.getState().notice).toMatch(/^Saved the album /);
+    await runMenuAction(store, "save_as");
+    expect(spy).toHaveBeenLastCalledWith(true);
   });
 });

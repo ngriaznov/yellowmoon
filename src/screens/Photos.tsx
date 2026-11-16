@@ -11,7 +11,7 @@ import { perfCount } from "../perf";
 import { useAppState, useCurrentPhoto, useCurrentSettings, useStore } from "../state/context";
 import { maskRowKinds } from "../state/maskRows";
 import { lookLabeller, looksInDisplayOrder } from "../state/looks";
-import { folderSubline, isReady, photoName } from "../state/photo";
+import { folderSubline, folderTitle, isReady, photoName } from "../state/photo";
 import { MASK_KIND_NAME } from "../state/graphOps";
 import { hiddenByPhoto, hiddenFromSimpleView, INPUT_ID, MAIN_ID, nodeOf, OUTPUT_ID } from "../state/settingsGraph";
 import type { AppStore } from "../state/store";
@@ -1028,7 +1028,7 @@ export function Photos() {
       <Aurora className="ym-aurora" animate={false} />
       <Header
         titleAs="h1"
-        title={session?.folder_name ?? "Yellowmoon"}
+        title={session ? folderTitle(session) : "Yellowmoon"}
         subline={session ? folderSubline(session) : ""}
         export={<ExportCellContainer store={store} />}
         hidden={fullScreen.on}

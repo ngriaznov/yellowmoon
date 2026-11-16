@@ -1,5 +1,5 @@
 /** The header's two jobs that only the real shell makes matter: dragging the window, and holding an update back while the core exports. */
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openPhotos, renderApp } from "../test/harness";
 import type { Harness } from "../test/harness";
@@ -80,5 +80,44 @@ describe("Update ready while the core exports", () => {
     await h.user.click(await screen.findByRole("button", { name: /Update available/ }));
     expect(download).toHaveBeenCalled();
     expect(busy).not.toHaveBeenCalled();
+  });
+});
+
+describe("the folder cell of an album (docs/31 section 6)", () => {
+  it("shows the album's name in place of the folder's, and EDITED in place of the date while it has changes", async () => {
+    h = renderApp({ albums: ["Lisbon"] });
+    await h.store.openPaths(["~/Pictures/Lisbon/Lisbon.ymalbum"]);
+    h.api.flush();
+    await h.store.openPhotos();
+    await screen.findByRole("tab", { name: "Look" });
+    const header = screen.getByRole("banner");
+    expect(header.querySelector(".ym-brand-name")).toHaveTextContent("Lisbon");
+    expect(header.querySelector(".ym-brand-sub")).toHaveTextContent("2026-10-04 · 12 photos");
+    await h.store.togglePick();
+    await waitFor(() => expect(header.querySelector(".ym-brand-sub")).toHaveTextContent("12 photos · edited"));
+    expect(header.querySelector(".ym-brand-sub")).not.toHaveTextContent("2026");
+    // Save brings the date back.
+    await h.store.saveAlbum(false);
+    await waitFor(() => expect(header.querySelector(".ym-brand-sub")).toHaveTextContent("2026-10-04 · 12 photos"));
+  });
+
+  it("asks 'Save changes to the album Lisbon?' with Save as the default when Close Session is chosen", async () => {
+    h = renderApp({ albums: ["Lisbon"] });
+    await h.store.openPaths(["~/Pictures/Lisbon/Lisbon.ymalbum"]);
+    h.api.flush();
+    await h.store.openPhotos();
+    await screen.findByRole("tab", { name: "Look" });
+    await h.store.togglePick();
+    await waitFor(() => expect(h!.store.getState().session?.album?.edited).toBe(true));
+    h.api.emitEvent("menu_action", { action: "close_session" });
+    const dialog = await screen.findByRole("dialog", { name: "Save changes to the album Lisbon?" });
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Save" })).toHaveFocus());
+    expect(within(dialog).getByRole("button", { name: "Don't Save" })).toBeInTheDocument();
+    await h.user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(h.store.getState().session).not.toBeNull();
+    h.api.emitEvent("menu_action", { action: "close_session" });
+    await h.user.click(await screen.findByRole("button", { name: "Don't Save" }));
+    await waitFor(() => expect(h!.store.getState().session).toBeNull());
   });
 });

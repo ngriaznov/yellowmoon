@@ -74,6 +74,12 @@ export type FromCore = AllTrue<{
   openSummary: Assignable<B.OpenSummary, T.OpenSummary>;
   openProgress: Assignable<B.OpenProgress, T.OpenProgress>;
   nodeThumbnailsReady: Assignable<B.NodeThumbnailsReady, T.NodeThumbnailsReady>;
+  presetList: Assignable<B.PresetList, T.PresetList>;
+  presetEntry: Assignable<B.PresetEntry, T.PresetEntry>;
+  presetInspect: Assignable<B.PresetInspect, T.PresetInspect>;
+  importResult: Assignable<B.ImportResult, T.ImportResult>;
+  albumState: Assignable<B.AlbumState, T.AlbumState>;
+  albumSaved: Assignable<B.AlbumSaved, T.AlbumSaved>;
 }>;
 
 /** Arguments: what the screens send has to fit the type the core takes. */
@@ -146,6 +152,8 @@ export type Both = AllTrue<{
   recognition: Same<T.Recognition, B.Recognition>;
   menuAction: Same<T.MenuAction, B.MenuAction>;
   menuState: Same<T.MenuState, B.MenuState>;
+  presetGroup: Same<T.PresetGroup, B.PresetGroup>;
+  presetSource: Same<T.PresetSource, B.PresetSource>;
 }>;
 
 // ---------------------------------------------------------------------------
@@ -184,7 +192,7 @@ type Answer<Fn> = Fn extends (...args: never[]) => Promise<infer Result> ? Resul
 type Args<Fn> = Fn extends (...args: infer Parameters) => unknown ? Parameters : never;
 
 /** Commands whose `Api` method differs from the generated one on purpose. */
-type Adapted = "looksImport" | "viewportInfo" | "copySettings" | "pasteSettings";
+type Adapted = "looksImport" | "viewportInfo" | "copySettings" | "pasteSettings" | "presetApply";
 
 /**
  * Every generated command has an `Api` method of the same name that passes its arguments on (the method's arguments fit the

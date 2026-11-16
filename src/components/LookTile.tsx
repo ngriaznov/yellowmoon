@@ -1,9 +1,16 @@
-import type { ReactNode, Ref } from "react";
+import type { ComponentProps, ReactNode, Ref } from "react";
 import { Badge } from "@/components/glass/badge";
 import { cx } from "./cx";
 import type { TabId } from "./tabs";
 
-export interface LookTileProps {
+export interface LookTileProps extends Omit<ComponentProps<"button">, "onSelect" | "title" | "ref" | "children" | "name" | "type"> {
+  /**
+   * What the tile is: a look (the default) or a preset (`docs/30` section 10: "Warm evening preset"; a preset has no key, no DEFAULT tag
+   * and names its groups in `description`).
+   */
+  kind?: "look" | "preset";
+  /** The accessible description: the groups of a preset ("Look, Light and Colour"). */
+  description?: string;
   /** The look's name ("Film warm"), shown under the picture. */
   name: string;
   /** URL of the thumbnail: the current photo through this look. */
@@ -52,17 +59,22 @@ export function LookTile({
   ref,
   tab,
   className,
+  kind = "look",
+  description,
+  ...rest
 }: LookTileProps) {
   const badge = index !== undefined && index >= 1 && index <= 9 ? index : undefined;
-  const label = `${name} look${badge ? `, key ${badge}` : ""}${disabled && note ? `, ${note.toLowerCase()}` : ""}`;
+  const label = `${name} ${kind}${badge ? `, key ${badge}` : ""}${disabled && note ? `, ${note.toLowerCase()}` : ""}`;
   return (
     <button
+      {...rest}
       ref={ref}
       type="button"
       className={cx("ym-look-tile", className)}
       aria-pressed={selected}
       aria-disabled={disabled || undefined}
       aria-label={label}
+      aria-description={description}
       data-tab={tab}
       title={disabled ? note : title}
       onClick={() => {

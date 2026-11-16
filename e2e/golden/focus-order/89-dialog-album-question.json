@@ -1,0 +1,9 @@
+{
+  "state": "89-dialog-album-question",
+  "end": "wraps",
+  "stops": [
+    {"role":"button","name":"Cancel","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Don't Save","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Save","outline":"solid","ring":"outline"}
+  ]
+}

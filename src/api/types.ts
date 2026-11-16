@@ -130,6 +130,8 @@ export interface SessionState {
    * Photos say "Added 3 photos. 2 were already open." when files are added to a session (addition, 2026-10-16).
    */
   opened?: OpenSummary | null;
+  /** The open album (`docs/31` section 7): its name, its file and whether it has unsaved changes; null with no album. Absent counts as null. */
+  album?: AlbumState | null;
 }
 
 /**
@@ -2024,6 +2026,12 @@ export type MenuAction =
   | "remove_photo"
   | "bypass_node"
   | "mask_view"
+  | "save_preset"
+  | "import_presets"
+  | "new_preset_from_export"
+  | "apply_preset"
+  | "save"
+  | "save_as"
   | "look_1"
   | "look_2"
   | "look_3"
@@ -2045,11 +2053,20 @@ export interface MenuState {
   paste_settings: boolean;
   /** Paste Settings to Picked: something is copied and a photo is picked. */
   paste_settings_to_picked: boolean;
+  /** Looks › Save Preset…: a developed current photo, and no dialog open (`docs/30` section 8). */
+  save_preset: boolean;
+  /** Looks › Apply Preset: the same. */
+  apply_preset: boolean;
+  /** File › Save: a photo is open and no dialog is (`docs/31` section 7). */
+  save: boolean;
+  /** File › Save As…: the same. */
+  save_as: boolean;
 }
 
-/** `menu_action` event payload. */
+/** `menu_action` event payload. `preset` is the name of the preset of `apply_preset` (`docs/30` section 8). */
 export interface MenuActionEvent {
   action: MenuAction;
+  preset?: string | null;
 }
 
 /** Event name → payload type, for the typed `on()`. `looks_changed` carries no data. */
@@ -2063,6 +2080,10 @@ export interface ApiEvents {
   render_stats: RenderStats;
   export_progress: ExportProgress;
   looks_changed: null;
+  /** A preset was saved, renamed, replaced, imported or removed, by the app or by `ym` (`docs/30` section 8): read `presets_list` again. */
+  presets_changed: null;
+  /** The open album's state changed: an edit, a save, an open or a close (`docs/31` section 7): read `album_state` again. */
+  album_changed: null;
   /** A provider's availability changed (a program found, signed in or out, a probe ended): read `auto_status_cached()` again (`docs/22` section 12.6). */
   auto_status_changed: null;
   update_state: UpdateState;
@@ -2095,3 +2116,18 @@ export interface ApiEvents {
 
 /** Names of the events the core emits. */
 export type ApiEventName = keyof ApiEvents;
+
+// ---------------------------------------------------------------------------
+// Presets and albums: the shell's answers (the core's types are above, beside `LooksImportResult`)
+// ---------------------------------------------------------------------------
+
+/** `preset_export`'s answer: where the shell wrote the file. */
+export interface PresetExported {
+  path: string;
+}
+
+/** What `album_save` answers when a file was written: where, and the album's name. */
+export interface AlbumSaved {
+  path: string;
+  name: string;
+}
