@@ -222,6 +222,11 @@ const MIN_CLUSTER: usize = 3;
 const RING_FIT_MIN_SAMPLES: usize = 12;
 /// Of two balls closer than this many radii the dimmer is dropped.
 const MIN_SEPARATION: f64 = 1.2;
+/// A bright region that fails the shape rule alone is held (not stretched) when it has at least this many pixels of the
+/// working grid: a light, not a speck.
+const HELD_MIN_PX: f64 = 24.0;
+/// ... with its edge this many pixels wider.
+const HELD_GROW_PX: i64 = 2;
 /// A region that touches the frame's border is the part of a disc the frame cuts when its rim, the pixels of the
 /// region that have a neighbour in the frame outside it, are at least this many.
 const PARTIAL_MIN_POINTS: usize = 12;
@@ -435,6 +440,9 @@ struct Scratch {
     /// The pixels of the region the last flood fill found, and the window's mask of them (see [`Region`]).
     region: Vec<(usize, usize)>,
     in_region: Vec<bool>,
+    /// Set by [`measure`] when it rejected a bright light-like region for its shape alone (see [`HELD_MIN_PX`]): the
+    /// region is the pixels of `region`.
+    held: bool,
 }
 
 /// The last flood fill's window: its corner and size, and whether the region touches the frame's border.
@@ -625,6 +633,7 @@ fn measure(
     sc: &mut Scratch,
 ) -> Option<Measured> {
     let (w, h) = (inp.w, inp.h);
+    sc.held = false;
     let (mut cx, mut cy) = (c.x as f64 + 0.5, c.y as f64 + 0.5);
     let mut r = c.r0;
     let (mut top, mut ground, mut ring_bright) = (0.0, 0.0, 0.0);
@@ -737,13 +746,16 @@ fn measure(
         };
     }
     // A light the frame cuts is a part of a disc: the region's moments say it is elongated and does not fill its
-    // ellipse, but its rim is an arc of a circle. The circle's centre may lie on or just outside the frame's edge.
-    if (elong > MAX_ELONGATION || fill < MIN_FILL) && region.at_border {
-        let (pcx, pcy, pr) = partial_disc(inp, sc, &region)?;
-        (top, ground, ring_bright) = plateau_and_ground(inp, vmax, (pcx, pcy, pr), sc)?;
+    // ellipse, but its rim is an arc of a circle. The circle's centre may stand on or just outside the frame's edge.
+    let mut shape_ok = elong <= MAX_ELONGATION && fill >= MIN_FILL;
+    if !shape_ok
+        && region.at_border
+        && let Some((pcx, pcy, pr)) = partial_disc(inp, sc, &region)
+        && let Some(found) = plateau_and_ground(inp, vmax, (pcx, pcy, pr), sc)
+    {
+        (top, ground, ring_bright) = found;
         (cx, cy, r) = (pcx, pcy, pr);
-        elong = 1.0;
-        fill = 1.0;
+        shape_ok = true;
     }
     let contrast = top.sqrt() - ground.sqrt();
     if contrast < MIN_CONTRAST || ring_bright > RING_BRIGHT_MAX {
@@ -752,7 +764,10 @@ fn measure(
     if top - ground < MIN_SN * 2.0 * top.max(1e-6).sqrt() * inp.noise_v {
         return None;
     }
-    if elong > MAX_ELONGATION || fill < MIN_FILL {
+    if !shape_ok {
+        // A bright, compact region that is no disc (a tube, two lights that overlap, a light a subject cuts): not a
+        // ball, but still a light, which the gather must not smear into a pillar.
+        sc.held = region.n >= HELD_MIN_PX;
         return None;
     }
     let r_lo = R_MIN_PX.max(R_MIN_HD * hd_of(inp));
@@ -1012,14 +1027,51 @@ fn ring_sharpness(inp: &BallInput, cx: f64, cy: f64, r: f64, claim: &[bool], sec
     share[(share.len() - 1) * 3 / 8]
 }
 
+/// What [`find_balls`] finds: the balls, and the pixels of the lights that are none.
+pub(super) struct Found {
+    pub balls: Vec<BallPx>,
+    /// Pixels of the working grid (row by row) of a bright, compact region that fails the shape rule, or of the dimmer
+    /// of two balls too close to tell apart, grown by [`HELD_GROW_PX`].
+    pub held: Vec<bool>,
+}
+
+/// `mask` grown by `r` pixels (a square).
+fn grow(mask: &[bool], w: usize, h: usize, r: i64) -> Vec<bool> {
+    let pass = |src: &[bool], horizontal: bool| -> Vec<bool> {
+        let mut out = vec![false; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                if !src[y * w + x] {
+                    continue;
+                }
+                for d in -r..=r {
+                    let (nx, ny) = if horizontal {
+                        (x as i64 + d, y as i64)
+                    } else {
+                        (x as i64, y as i64 + d)
+                    };
+                    if nx >= 0 && ny >= 0 && nx < w as i64 && ny < h as i64 {
+                        out[ny as usize * w + nx as usize] = true;
+                    }
+                }
+            }
+        }
+        out
+    };
+    pass(&pass(mask, true), false)
+}
+
 /// Finds the balls of a plane.
-pub(super) fn find_balls(
-    inp: &BallInput,
-    cancel: &dyn Fn() -> bool,
-) -> Result<Vec<BallPx>, LensError> {
+pub(super) fn find_balls(inp: &BallInput, cancel: &dyn Fn() -> bool) -> Result<Found, LensError> {
     let (w, h) = (inp.w, inp.h);
+    // The pixels of the lights that are no balls (see [`HELD_MIN_PX`]), and the discs of the dimmer of two lights too
+    // close to be told apart: the gather leaves them as they are.
+    let mut held = vec![false; w * h];
     if w < 16 || h < 16 {
-        return Ok(Vec::new());
+        return Ok(Found {
+            balls: Vec::new(),
+            held,
+        });
     }
     let (vmax, root) = brightest_channel(inp);
     let cands = candidates(inp, &root, cancel)?;
@@ -1035,6 +1087,7 @@ pub(super) fn find_balls(
         values: Vec::new(),
         region: Vec::new(),
         in_region: Vec::new(),
+        held: false,
     };
     let mut refined: Vec<Measured> = Vec::new();
     for (i, c) in cands.iter().enumerate() {
@@ -1047,6 +1100,10 @@ pub(super) fn find_balls(
         let m = measure(inp, &vmax, &smooth, c, &mut sc);
         if let Some(m) = m {
             refined.push(m);
+        } else if sc.held {
+            for &(x, y) in &sc.region {
+                held[y * w + x] = true;
+            }
         }
     }
     drop(smooth);
@@ -1087,6 +1144,9 @@ pub(super) fn find_balls(
         for (a, _, _) in &accepted {
             let d = ((a.cx - b.cx).powi(2) + (a.cy - b.cy).powi(2)).sqrt();
             if d < MIN_SEPARATION * a.r.max(b.r) {
+                for_each_in_annulus(w, h, b.cx, b.cy, 0.0, b.r, |x, y, _, _, _| {
+                    held[y * w + x] = true;
+                });
                 continue 'cand;
             }
         }
@@ -1257,5 +1317,8 @@ pub(super) fn find_balls(
             clear: *clear,
         });
     }
-    Ok(out)
+    Ok(Found {
+        balls: out,
+        held: grow(&held, w, h, HELD_GROW_PX),
+    })
 }
