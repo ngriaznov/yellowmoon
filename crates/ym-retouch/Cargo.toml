@@ -44,3 +44,7 @@ required-features = ["mediapipe"]
 [[example]]
 name = "face_masks_dump"
 required-features = ["mediapipe"]
+
+[[example]]
+name = "face_retouch_dump"
+required-features = ["mediapipe"]

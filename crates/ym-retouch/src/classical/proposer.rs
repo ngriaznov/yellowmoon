@@ -60,6 +60,28 @@ pub const FILL_SWEEPS: usize = 120;
 /// Default side of the output tile in pixels.
 pub const TILE_PX: u32 = 320;
 
+/// S-16, the wide tier: the window of its top-hat, as a fraction of `D` (7 %: a spot of 6 % across
+/// and its soft edge fit). It takes in acne papules and small clusters; large flat red areas stay the
+/// job of Even skin.
+pub const WIDE_SPOT_MAX_FRAC: f64 = 0.07;
+/// S-16: the longer bounding-box side of a wide-tier spot, as a fraction of `D` (7.5 %, against
+/// [`MAX_SIDE_FRAC`] 5 %): a papule of 6 % across has a detected side of about 7 %.
+pub const WIDE_MAX_SIDE_FRAC: f64 = 0.075;
+/// S-16: the wide tier seeds a red spot at this fraction of [`RED_HI`] (half of today's contrast). Acne is
+/// red; a faint dark or brown spot is as likely a freckle, a pore or a shadow, and a flat area
+/// that is darker in every channel is Even skin's, so the red test alone goes lower.
+pub const WIDE_RED_SEED_RATIO: f64 = 0.5;
+/// S-16: the wide tier seeds a dark spot at this fraction of [`DARK_HI`] (today's, but up to
+/// [`WIDE_SPOT_MAX_FRAC`] wide).
+pub const WIDE_DARK_SEED_RATIO: f64 = 1.5;
+/// S-16: smallest side of a wide-tier spot as a fraction of `D` (1 %). Fainter spots must be a little
+/// bigger than the core tier's, because pores and texture are faint and small.
+pub const WIDE_MIN_FRAC: f64 = 0.01;
+/// S-16: the strength (`alpha`, `docs/27` 6.1 step 6) of what only the wide tier finds is multiplied by
+/// this weight, so the Blemish amount's threshold (6.2) reaches it only above about half. At an amount
+/// of 100 every correction applies in full whatever its weight.
+pub const WIDE_TIER_WEIGHT: f64 = 0.5;
+
 /// The score of a pixel from its per-channel black top-hat depths and its red excess: the larger
 /// of the deepest channel over [`DARK_HI`] and the excess over [`RED_HI`]. 1 means "a seed".
 /// Non-finite or negative inputs count as 0, so the result is finite and non-negative.
@@ -69,12 +91,29 @@ pub fn spot_score(tophat: [f64; 3], red_excess: f64) -> f64 {
     (dark / DARK_HI).max(clean(red_excess) / RED_HI)
 }
 
+/// The largest side of a core-tier spot in pixels for a face of `d` pixels.
+fn max_side_core(d: f64) -> f64 {
+    (MAX_SIDE_FRAC * d).max(MIN_SPOT_SIDE_PX + 1.0)
+}
+
+/// What one tier of the detection accepts.
+struct Rules {
+    closing_r: usize,
+    /// The dark and the red seed thresholds as fractions of today's.
+    seed: (f64, f64),
+    min_side: f64,
+    max_side: f64,
+}
+
 /// The classical [`BlemishProposer`]. Built per face with the face size in map pixels.
 #[derive(Debug, Clone)]
 pub struct ClassicalProposer {
     face_px: f64,
     tile_px: u32,
     closing_r: usize,
+    wide_closing_r: usize,
+    wide_min_side: f64,
+    wide_max_side: f64,
     pre_sigma: f64,
     sep_sigma: f64,
     dilate_r: usize,
@@ -103,20 +142,23 @@ impl ClassicalProposer {
             32.0
         };
         let closing_r = ((0.5 * SPOT_MAX_FRAC * d).ceil() as usize + 1).max(2);
+        let wide_closing_r = ((0.5 * WIDE_SPOT_MAX_FRAC * d).ceil() as usize + 1).max(closing_r);
+        let wide_max_side = (WIDE_MAX_SIDE_FRAC * d).max(max_side_core(d));
+        let wide_min_side = (WIDE_MIN_FRAC * d).max(MIN_SPOT_SIDE_PX + 1.0);
         let pre_sigma = (PRE_SIGMA_FRAC * d).max(PRE_SIGMA_MIN_PX);
         let sep_sigma = (SEP_SIGMA_FRAC * d).max(SEP_SIGMA_MIN_PX);
         let dilate_r = ((DILATE_FRAC * d).round() as usize).max(1);
-        let max_side = (MAX_SIDE_FRAC * d).max(MIN_SPOT_SIDE_PX + 1.0);
+        let max_side = max_side_core(d);
         // Support of the detection (blur + opening or closing) + the largest spot (its component
         // is decided as a whole) + the fill's base blur + the growth + a margin.
         let near_r = (3.0 * sep_sigma).ceil() as usize + 1;
         // The detail of a spot is copied from the skin one spot-width away (`detail_sources`), and
         // that skin must be at least `near_r` from every spot.
-        let reach = max_side.ceil() as usize + 2 * dilate_r + 2 * near_r + 1;
-        let border = 2 * closing_r
+        let reach = wide_max_side.ceil() as usize + 2 * dilate_r + 2 * near_r + 1;
+        let border = 2 * wide_closing_r
             + (3.0 * pre_sigma).ceil() as usize
             + (3.0 * sep_sigma).ceil() as usize
-            + max_side.ceil() as usize
+            + wide_max_side.ceil() as usize
             + dilate_r
             + reach
             + 4;
@@ -124,6 +166,9 @@ impl ClassicalProposer {
             face_px: d,
             tile_px: tile_px.max(1),
             closing_r,
+            wide_closing_r,
+            wide_min_side,
+            wide_max_side,
             pre_sigma,
             sep_sigma,
             dilate_r,
@@ -139,14 +184,50 @@ impl ClassicalProposer {
         self.face_px
     }
 
-    /// The detection mask of a square context (log planes, side `side`), grown by a disc.
-    fn detect(&self, logs: &[Grey; 3]) -> Vec<bool> {
+    /// The detection of a square context (log planes): the mask of every spot to fill, grown by a
+    /// disc, and the part of it the core tier found (today's rules, `docs/27` S-07). The rest is the
+    /// wide tier's (S-16), which is weighted down in the map.
+    fn detect(&self, logs: &[Grey; 3]) -> (Vec<bool>, Vec<bool>) {
         let (w, h) = (logs[0].w, logs[0].h);
         let smooth: Vec<Grey> = logs.iter().map(|l| l.gaussian(self.pre_sigma)).collect();
+        let core = self.accepted(
+            &smooth,
+            &Rules {
+                closing_r: self.closing_r,
+                seed: (1.0, 1.0),
+                min_side: self.min_side,
+                max_side: self.max_side,
+            },
+            None,
+        );
+        let wide = self.accepted(
+            &smooth,
+            &Rules {
+                closing_r: self.wide_closing_r,
+                seed: (WIDE_DARK_SEED_RATIO, WIDE_RED_SEED_RATIO),
+                min_side: self.wide_min_side,
+                max_side: self.wide_max_side,
+            },
+            Some(&core),
+        );
+        let core_grown = dilate_disc(&core, w, h, self.dilate_r);
+        let wide_grown = dilate_disc(&wide, w, h, self.dilate_r);
+        let all = core_grown
+            .iter()
+            .zip(&wide_grown)
+            .map(|(&a, &b)| a || b)
+            .collect();
+        (all, core_grown)
+    }
+
+    /// The pixels of the spots one set of rules accepts (not grown). A component that has a pixel in
+    /// `exclude` is not accepted.
+    fn accepted(&self, smooth: &[Grey], rules: &Rules, exclude: Option<&[bool]>) -> Vec<bool> {
+        let (w, h) = (smooth[0].w, smooth[0].h);
         let tophat: Vec<Grey> = smooth
             .iter()
             .map(|s| {
-                let c = s.closing(self.closing_r);
+                let c = s.closing(rules.closing_r);
                 Grey::new(
                     w,
                     h,
@@ -164,13 +245,16 @@ impl ClassicalProposer {
                 .map(|(r, g)| r - g)
                 .collect(),
         );
-        let open = rho.opening(self.closing_r);
+        let open = rho.opening(rules.closing_r);
         let score: Vec<f64> = (0..w * h)
             .map(|i| {
-                spot_score(
-                    [tophat[0].data[i], tophat[1].data[i], tophat[2].data[i]],
-                    rho.data[i] - open.data[i],
-                )
+                let clean = |v: f64| if v.is_finite() { v.max(0.0) } else { 0.0 };
+                let dark = [tophat[0].data[i], tophat[1].data[i], tophat[2].data[i]]
+                    .into_iter()
+                    .map(clean)
+                    .fold(0.0, f64::max);
+                (dark / (DARK_HI * rules.seed.0))
+                    .max(clean(rho.data[i] - open.data[i]) / (RED_HI * rules.seed.1))
             })
             .collect();
         let raw: Vec<bool> = score.iter().map(|&s| s >= LO_RATIO).collect();
@@ -179,7 +263,11 @@ impl ClassicalProposer {
             let (cw, ch) = (comp.width() as f64, comp.height() as f64);
             let (long, short) = (cw.max(ch), cw.min(ch));
             let seeded = comp.pixels.iter().any(|&p| score[p] >= 1.0);
-            if !seeded || long < self.min_side || long > self.max_side || long / short > ASPECT_MAX
+            if !seeded
+                || long < rules.min_side
+                || long > rules.max_side
+                || long / short > ASPECT_MAX
+                || exclude.is_some_and(|e| comp.pixels.iter().any(|&p| e[p]))
             {
                 continue;
             }
@@ -187,7 +275,7 @@ impl ClassicalProposer {
                 keep[p] = true;
             }
         }
-        dilate_disc(&keep, w, h, self.dilate_r)
+        keep
     }
 
     /// Fills the masked pixels of one channel: harmonic fill of the base from the rim, plus the
@@ -339,6 +427,10 @@ impl BlemishProposer for ClassicalProposer {
     }
 
     fn run(&self, input: &[f32]) -> Result<Vec<f32>> {
+        Ok(self.run_weighted(input)?.0)
+    }
+
+    fn run_weighted(&self, input: &[f32]) -> Result<(Vec<f32>, Option<Vec<f32>>)> {
         let (tile, border) = (self.tile_px as usize, self.border_px as usize);
         let side = tile + 2 * border;
         if input.len() != 3 * side * side {
@@ -368,10 +460,10 @@ impl BlemishProposer for ClassicalProposer {
                     .collect(),
             )
         });
-        let inside = self.detect(&logs);
+        let (inside, core) = self.detect(&logs);
         if !inside.iter().any(|&m| m) {
             copy_centre(&mut out);
-            return Ok(out);
+            return Ok((out, None));
         }
         let ones = Grey::new(
             side,
@@ -401,7 +493,13 @@ impl BlemishProposer for ClassicalProposer {
                 out.extend_from_slice(&chan[start..start + tile]);
             }
         }
-        Ok(out)
+        let weight = WIDE_TIER_WEIGHT as f32;
+        let mut weights = Vec::with_capacity(tile * tile);
+        for y in 0..tile {
+            let start = (y + border) * side + border;
+            weights.extend((start..start + tile).map(|p| if core[p] { 1.0 } else { weight }));
+        }
+        Ok((out, Some(weights)))
     }
 }
 

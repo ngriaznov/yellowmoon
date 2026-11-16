@@ -197,6 +197,18 @@ pub(crate) fn percentile(values: &mut [f64], p: f64) -> f64 {
     values[rank.clamp(1, values.len()) - 1]
 }
 
+/// The `pale` gate of the teeth mask passes teeth up to this saturation fully (`docs/27` 5.6; 0.35 before S-16).
+pub const TEETH_PALE_LO: f64 = 0.55;
+/// The `pale` gate drops everything above this saturation (0.6 before S-16). Strongly yellow teeth
+/// reach a saturation of 0.6 to 0.7 (the blue is what yellow takes away); the `notred` gate, not this
+/// one, keeps lips and gums out.
+pub const TEETH_PALE_HI: f64 = 0.85;
+/// The `notred` gate passes pixels up to this `(r - g) / Y` fully (0.08 before S-16).
+pub const TEETH_NOTRED_LO: f64 = 0.12;
+/// The `notred` gate drops everything above this `(r - g) / Y` (0.2 before S-16). Lips and gums are
+/// above 0.4, and the skin of the mock faces is at 0.26.
+pub const TEETH_NOTRED_HI: f64 = 0.26;
+
 /// The gate of 5.6 for one pixel: `round(255 * bright * pale * notred)`, with `Y = (r + g + b) / 3`,
 /// `sat = 1 - min / max`, `y_mouth` the mouth region's 80th percentile of `Y`.
 pub fn teeth_gate(pixel: [f32; 3], y_mouth: f64) -> u8 {
@@ -216,8 +228,8 @@ pub fn teeth_gate(pixel: [f32; 3], y_mouth: f64) -> u8 {
         0.0
     };
     let bright = smoothstep(0.6, 1.0, y / y_mouth);
-    let pale = 1.0 - smoothstep(0.35, 0.6, sat);
-    let notred = 1.0 - smoothstep(0.08, 0.2, (r - g) / y.max(1e-4));
+    let pale = 1.0 - smoothstep(TEETH_PALE_LO, TEETH_PALE_HI, sat);
+    let notred = 1.0 - smoothstep(TEETH_NOTRED_LO, TEETH_NOTRED_HI, (r - g) / y.max(1e-4));
     (255.0 * bright * pale * notred).round().clamp(0.0, 255.0) as u8
 }
 
@@ -636,6 +648,30 @@ mod tests {
         assert_eq!(gate([0.0; 3]), 0);
         assert_eq!(gate([0.7; 3]), 255, "white teeth pass fully");
         assert_eq!(teeth_gate([0.7; 3], 0.0), 0);
+        // S-16: strongly yellow teeth (saturation 0.62 to 0.64, (r - g) / Y 0.14 to 0.2) still pass; lips,
+        // gums and a pink gum do not.
+        for yellow in [
+            [0.80f32, 0.68, 0.30],
+            [0.78, 0.68, 0.28],
+            [0.74, 0.66, 0.36],
+        ] {
+            let y = f64::from(yellow.iter().sum::<f32>()) / 3.0;
+            assert!(
+                teeth_gate(yellow, y) > 70,
+                "{yellow:?}: {}",
+                teeth_gate(yellow, y)
+            );
+        }
+        let y = 0.6;
+        for gum in [
+            [0.70f32, 0.45, 0.42],
+            [0.62, 0.36, 0.33],
+            [0.70, 0.52, 0.50],
+            [0.80, 0.52, 0.50],
+            [0.55, 0.30, 0.30],
+        ] {
+            assert!(teeth_gate(gum, y) < 8, "{gum:?}: {}", teeth_gate(gum, y));
+        }
         assert_eq!(teeth_gate([f32::NAN; 3], 0.5), 0);
     }
 

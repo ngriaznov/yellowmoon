@@ -1007,6 +1007,30 @@ mod tests {
     use crate::device::StorageMode;
     use crate::kernels::shader_source;
 
+    /// The shader's teeth constants are the CPU's (`ym_retouch::TEETH_*`, `docs/27` 7.8, S-16).
+    #[test]
+    fn the_teeth_constants_are_the_cpus() {
+        let source = body();
+        for (name, value) in [
+            ("TEETH_CHROMA_LIN", ym_retouch::TEETH_CHROMA_LIN),
+            ("TEETH_CHROMA_QUAD", ym_retouch::TEETH_CHROMA_QUAD),
+            ("TEETH_LIGHT_LIN", ym_retouch::TEETH_LIGHT_LIN),
+            ("TEETH_LIGHT_QUAD", ym_retouch::TEETH_LIGHT_QUAD),
+            ("TEETH_CAP_RISE", ym_retouch::TEETH_CAP_RISE),
+        ] {
+            let line = source
+                .lines()
+                .find(|l| l.starts_with(&format!("const {name}: f32 = ")))
+                .unwrap_or_else(|| panic!("{name} is not in the shader"));
+            let got: f64 = line
+                .trim_start_matches(&format!("const {name}: f32 = "))
+                .trim_end_matches(';')
+                .parse()
+                .unwrap();
+            assert_eq!(got, value, "{name}");
+        }
+    }
+
     #[test]
     fn the_uniform_block_has_the_layout_of_the_wgsl_struct() {
         let source = shader_source(StorageMode::F32, KernelId::Face);

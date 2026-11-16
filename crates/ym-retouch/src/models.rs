@@ -63,6 +63,13 @@ pub trait BlemishProposer: Send + Sync {
     fn border_px(&self) -> u32;
     /// Planar RRR..GGG..BBB in, planar out, both in the encoding of `docs/27` 6.1 step 2.
     fn run(&self, input: &[f32]) -> Result<Vec<f32>>;
+    /// Like [`BlemishProposer::run`], and a plane of weights too (`output_size_px()` squared values in 0..=1, rows top to
+    /// bottom; `None`: 1 everywhere). The map multiplies its strength by the weight (`docs/27` 6.1 step 6), so a
+    /// proposer that is less sure of a correction gets it only at a higher Blemish amount (S-16). The default
+    /// has no weights.
+    fn run_weighted(&self, input: &[f32]) -> Result<(Vec<f32>, Option<Vec<f32>>)> {
+        Ok((self.run(input)?, None))
+    }
     /// A proposer made for a face of `face_px` pixels in the blemish map (`min(face, 450)`), for a proposer whose constants
     /// scale with the face (the classical one). `None` (the default) means this one serves every face.
     fn for_face(&self, _face_px: f64) -> Option<Box<dyn BlemishProposer>> {

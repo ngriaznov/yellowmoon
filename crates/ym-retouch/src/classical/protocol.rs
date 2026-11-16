@@ -193,6 +193,9 @@ pub enum Scene {
     Rough,
     /// Skin with two dark under-eye crescents where the mock mesh puts its under-eye zones.
     Circles,
+    /// Acne (S-16): red papules of 1 to 6 % of the face, faint ones, clusters of 3 to 8, pustules with
+    /// a pale centre.
+    Acne,
 }
 
 /// A patch: the clean skin, the same skin with the items, and the items.
@@ -225,6 +228,60 @@ fn place(rng: &mut Rng, placed: &[Item], radius: f64, margin: f64, gap: f64) -> 
         }
     }
     panic!("no room for an item")
+}
+
+/// The items of the acne patch (S-16). Sizes are core diameters over the face `D = 450` px: 1 % is
+/// 4.5 px, 6 % is 27 px. `amp` 1 is a full-strength papule; the faint ones are 0.3 to 0.45 of that,
+/// which is about half of the contrast the classical proposer seeded at before S-16.
+fn acne_items(rng: &mut Rng, items: &mut Vec<Item>, t: usize, margin: f64, gap: f64) {
+    // (class, radius px, amp): single lesions, from 1 % to 6 % of the face.
+    let singles = [
+        (Class::Papule, 2.25, 1.0),
+        (Class::Papule, 3.4, 0.9),
+        (Class::Papule, 5.0, 1.0),
+        (Class::Papule, 7.0, 0.9),
+        (Class::Papule, 9.5, 0.8),
+        (Class::Papule, 13.0, 0.9),
+        (Class::Pustule, 4.5, 1.0),
+        (Class::Pustule, 7.5, 0.9),
+        (Class::Pustule, 11.0, 0.9),
+        // Faint ones: half of today's seed contrast and a bit more.
+        (Class::Papule, 3.4, 0.45),
+        (Class::Papule, 5.5, 0.38),
+        (Class::Papule, 8.5, 0.34),
+    ];
+    for (class, r, amp) in singles {
+        let (x, y) = place(rng, items, r, margin, gap);
+        items.push(disc_item(class, x, y, r, amp * class.tone_scale(t)));
+    }
+    // Two clusters, of 5 and 8 papules of 2.2 to 3.5 px radius (1 to 1.6 % of the face across), 2 px apart at least.
+    for (count, spread) in [(5usize, 16.0), (8, 24.0)] {
+        let (cx, cy) = place(rng, items, spread + 6.0, margin + spread, gap);
+        let first = items.len();
+        let mut tries = 0;
+        while items.len() - first < count && tries < 2000 {
+            tries += 1;
+            let r = rng.range(2.2, 3.5);
+            let (a, d) = (
+                rng.range(0.0, std::f64::consts::TAU),
+                rng.range(0.0, spread),
+            );
+            let (x, y) = (cx + d * a.cos(), cy + d * a.sin());
+            if items[first..]
+                .iter()
+                .all(|o| (o.cx - x).hypot(o.cy - y) >= o.radius + r + 4.0)
+            {
+                let amp = rng.range(0.6, 1.0);
+                items.push(disc_item(
+                    Class::Papule,
+                    x,
+                    y,
+                    r,
+                    amp * Class::Papule.tone_scale(t),
+                ));
+            }
+        }
+    }
 }
 
 /// Builds the patch of tone `t` and `scene`. The seed depends on the tone and the scene only.
@@ -367,6 +424,7 @@ pub fn patch(t: usize, scene: Scene) -> Patch {
             }
         }
         Scene::Clean | Scene::Rough | Scene::Circles => {}
+        Scene::Acne => acne_items(&mut rng, &mut items, t, margin, gap),
     }
     let mut px = clean_px.clone();
     for it in &items {
@@ -605,6 +663,23 @@ pub fn lab(p: [f32; 3]) -> [f64; 3] {
     let rgb = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
     let xyz = [0, 1, 2].map(|r| (0..3).map(|c| m[r][c] * rgb[c]).sum::<f64>());
     ym_color::deltae::xyz_to_lab(xyz, ym_color::deltae::d65_white_xyz())
+}
+
+/// An acne lesion is scored from this optical density (S-16): about a third of a full papule,
+/// the faint ones, which is about half of the contrast the classical proposer seeded at before.
+pub const ACNE_VISIBLE_OD: f64 = 0.20;
+
+/// One acne lesion's result for one setting.
+#[derive(Debug, Clone, Copy)]
+pub struct AcneStat {
+    /// Radius in pixels.
+    pub radius: f64,
+    /// Optical density of the input at the lesion's core.
+    pub od_in: f64,
+    /// Output over input optical density (0 removed, 1 untouched, negative overshoot).
+    pub residual: f64,
+    /// True when a cluster member (its neighbours are within the usual reach).
+    pub clustered: bool,
 }
 
 /// What the protocol measures on one lesion-like item for one setting.
@@ -857,6 +932,19 @@ pub struct Row {
     pub circle_lifted: f64,
     /// Share of the pixels of the rough skin that moved by more than 1 % in some channel.
     pub rough_moved: f64,
+    /// Residual of every visible acne lesion (S-16: papules and pustules, from [`ACNE_VISIBLE_OD`]),
+    /// with the lesion's radius in pixels and its optical density.
+    pub acne: Vec<AcneStat>,
+    /// Pooled mean halo over the rings of the single acne lesions (signed).
+    pub acne_halo_pooled: f64,
+    /// Largest |halo| of any single acne lesion.
+    pub acne_halo_max: f64,
+    /// Largest leak of any single acne lesion.
+    pub acne_leak_max: f64,
+    /// Largest relative change of any pixel beyond every acne lesion's reach.
+    pub acne_far_max_rel: f64,
+    /// Fine-band texture kept on the plateau of the acne lesions of 5 px radius and more, pooled.
+    pub acne_texture: f64,
     /// Clean skin of the lesion patch, of the keepers patch, of the clean patch and of the rough one.
     pub clean: [CleanStat; 4],
 }
@@ -874,6 +962,7 @@ pub fn run_protocol_on(tones: &[usize], only: &[&str]) -> Vec<Row> {
         Scene::Clean,
         Scene::Rough,
         Scene::Circles,
+        Scene::Acne,
     ];
     let list: Vec<_> = settings()
         .into_iter()
@@ -885,6 +974,51 @@ pub fn run_protocol_on(tones: &[usize], only: &[&str]) -> Vec<Row> {
         .map(|&t| run_tone(t, &scenes, &list))
         .collect();
     per_tone.into_iter().flatten().collect()
+}
+
+/// Fills the acne fields of `row` from the acne patch `p` retouched into `out`.
+fn acne_row(row: &mut Row, p: &Patch, out: &LinearAwg4Image) {
+    let stats = item_stats(p, out);
+    let (mut halo_sum, mut halo_n) = (0.0, 0usize);
+    let (mut e_out, mut e_ref) = (0.0, 0.0);
+    for (it, st) in p.items.iter().zip(&stats) {
+        // A cluster member has other items within 3 radii.
+        let clustered = p.items.iter().any(|o| {
+            !std::ptr::eq(o, it) && (o.cx - it.cx).hypot(o.cy - it.cy) < o.radius + it.radius + 12.0
+        });
+        if st.od_in >= ACNE_VISIBLE_OD {
+            row.acne.push(AcneStat {
+                radius: st.radius,
+                od_in: st.od_in,
+                residual: st.residual(),
+                clustered,
+            });
+        }
+        if !clustered {
+            row.acne_leak_max = row.acne_leak_max.max(st.leak);
+            row.acne_halo_max = row.acne_halo_max.max(st.halo.abs());
+            halo_sum += st.halo * st.halo_n as f64;
+            halo_n += st.halo_n;
+            if st.radius >= 5.0 {
+                e_out += st.texture_energy.0;
+                e_ref += st.texture_energy.1;
+            }
+        }
+    }
+    row.acne_halo_pooled = halo_sum / halo_n.max(1) as f64;
+    row.acne_texture = if e_ref > 0.0 {
+        (e_out / e_ref).sqrt()
+    } else {
+        1.0
+    };
+    let mut far_max = 0.0f64;
+    for i in (0..N * N).filter(|&i| p.far[i]) {
+        for c in 0..3 {
+            let (x, y) = (f64::from(p.img.data[i][c]), f64::from(out.data[i][c]));
+            far_max = far_max.max(((y - x) / x).abs());
+        }
+    }
+    row.acne_far_max_rel = far_max;
 }
 
 fn run_tone(t: usize, scenes: &[Scene], list: &[(&'static str, SkinSettings)]) -> Vec<Row> {
@@ -917,6 +1051,10 @@ fn run_tone(t: usize, scenes: &[Scene], list: &[(&'static str, SkinSettings)]) -
                         all += -(1.0 + f).ln();
                     }
                     row.circle_lifted = got / all;
+                    continue;
+                }
+                if prep.patch.scene == Scene::Acne {
+                    acne_row(&mut row, &prep.patch, &out);
                     continue;
                 }
                 row.clean[k] = clean_stat(&prep.patch, &out);
@@ -1324,6 +1462,114 @@ pub fn gates(rows: &[Row]) -> Vec<Gate> {
             &|r| r.leak_max,
         );
     }
+    // Acne (S-16): red papules of 1 to 6 % of the face, faint ones, clusters, pustules, scored from an
+    // optical density of 0.2. The amount stays a threshold on strength, and what only the wider
+    // rules find (the big ones) is weighted down, so at 30 they are mostly still there.
+    let acne = |r: &Row, f: &dyn Fn(&AcneStat) -> bool| -> Vec<f64> {
+        r.acne.iter().filter(|a| f(a)).map(|a| a.residual).collect()
+    };
+    add(
+        "acne removed: worst |residual| of any lesion",
+        "b100",
+        true,
+        0.45,
+        &|r| max_abs(&acne(r, &|_| true)),
+    );
+    add(
+        "acne removed: worst |residual| of a lesion over 3.5 % of the face",
+        "b100",
+        true,
+        0.30,
+        &|r| max_abs(&acne(r, &|a| a.radius >= 8.0)),
+    );
+    add(
+        "acne removed: median lesion residual",
+        "b60",
+        true,
+        0.45,
+        &|r| median(&acne(r, &|_| true)),
+    );
+    add(
+        "acne removed: median lesion over 3.5 % of the face",
+        "b60",
+        true,
+        0.65,
+        &|r| median(&acne(r, &|a| a.radius >= 8.0)),
+    );
+    add(
+        "acne removed: worst residual (no lesion grows)",
+        "b30",
+        true,
+        0.95,
+        &|r| acne(r, &|_| true).iter().copied().fold(f64::MIN, f64::max),
+    );
+    add(
+        "acne at 30: the big lesions (wider rules) are mostly kept, median residual",
+        "b30",
+        false,
+        0.60,
+        &|r| median(&acne(r, &|a| a.radius >= 8.0)),
+    );
+    for (setting, before) in [("b60", "b30"), ("b100", "b60")] {
+        add(
+            "acne monotonic: residual minus the residual at the amount before, worst lesion",
+            setting,
+            true,
+            0.08,
+            &|r| {
+                let prev = of(rows, before)
+                    .find(|q| q.tone == r.tone)
+                    .map(|q| acne(q, &|_| true))
+                    .unwrap_or_default();
+                acne(r, &|_| true)
+                    .iter()
+                    .zip(&prev)
+                    .map(|(a, b)| a - b)
+                    .fold(f64::MIN, f64::max)
+            },
+        );
+    }
+    add(
+        "acne texture kept inside lesions of R >= 5 px",
+        "b100",
+        false,
+        0.60,
+        &|r| r.acne_texture,
+    );
+    for setting in ["b30", "b60", "b100"] {
+        add(
+            "acne patch: largest relative change beyond every lesion's reach",
+            setting,
+            true,
+            0.0,
+            &|r| r.acne_far_max_rel,
+        );
+    }
+    for (setting, pooled, single, leak) in
+        [("b60", 0.005, 0.025, 0.003), ("b100", 0.005, 0.025, 0.003)]
+    {
+        add(
+            "acne no halo: |pooled ring mean| just outside the lesions",
+            setting,
+            true,
+            pooled,
+            &|r| r.acne_halo_pooled.abs(),
+        );
+        add(
+            "acne no halo: largest |ring mean| of any one lesion",
+            setting,
+            true,
+            single,
+            &|r| r.acne_halo_max,
+        );
+        add(
+            "acne no leak: largest mean |change| beyond a lesion's reach",
+            setting,
+            true,
+            leak,
+            &|r| r.acne_leak_max,
+        );
+    }
     out
 }
 
@@ -1442,6 +1688,144 @@ mod tests {
         }
         println!("dark circles 100: worst share of pixels darkened by more than 2 %: {worst:.5}");
         assert!(worst <= 0.005, "{worst}");
+    }
+
+    /// Dev tool: writes the acne patches of some tones, input and retouched at Blemish 30, 60 and 100, as sRGB PNGs into the
+    /// directory `YM_ACNE_OUT` (the names `acne_t<tone>_<b0|b30|b60|b100>.png`; `YM_ACNE_TAG` is put in front of them), for
+    /// a contact sheet.
+    #[test]
+    #[ignore = "writes pictures: needs YM_ACNE_OUT"]
+    fn write_the_acne_pictures() {
+        let dir = std::path::PathBuf::from(std::env::var("YM_ACNE_OUT").expect("YM_ACNE_OUT"));
+        let tag = std::env::var("YM_ACNE_TAG").unwrap_or_default();
+        std::fs::create_dir_all(&dir).unwrap();
+        let encode = |img: &LinearAwg4Image| -> Vec<u8> {
+            let m = ym_color::gamut::matrices();
+            let to709 = m.awg4_to_rec709;
+            img.data
+                .iter()
+                .flat_map(|p| {
+                    (0..3).map(move |r| {
+                        let l = (0..3).map(|c| to709[r][c] * f64::from(p[c])).sum::<f64>();
+                        let l = l.clamp(0.0, 1.0);
+                        let e = if l <= 0.003_130_8 {
+                            12.92 * l
+                        } else {
+                            1.055 * l.powf(1.0 / 2.4) - 0.055
+                        };
+                        (e * 255.0).round() as u8
+                    })
+                })
+                .collect()
+        };
+        for t in [2usize, 6] {
+            let mut prep = Prepared::new(patch(t, Scene::Acne));
+            let save = |name: &str, img: &LinearAwg4Image| {
+                let file =
+                    std::fs::File::create(dir.join(format!("{tag}acne_t{t}_{name}.png"))).unwrap();
+                let mut enc = png::Encoder::new(std::io::BufWriter::new(file), N as u32, N as u32);
+                enc.set_color(png::ColorType::Rgb);
+                enc.set_depth(png::BitDepth::Eight);
+                enc.write_header()
+                    .unwrap()
+                    .write_image_data(&encode(img))
+                    .unwrap();
+            };
+            save("b0", &prep.patch.img.clone());
+            for (name, s) in settings()
+                .into_iter()
+                .filter(|(n, _)| ["b30", "b60", "b100"].contains(n))
+            {
+                let out = prep.run(s);
+                save(name, &out);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "prints every acne lesion"]
+    fn print_the_acne() {
+        let tones: Vec<usize> = std::env::var("YM_TONES")
+            .map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect())
+            .unwrap_or_else(|_| vec![2, 6]);
+        for t in tones {
+            let mut prep = Prepared::new(patch(t, Scene::Acne));
+            let mut per: Vec<(&str, Vec<f64>)> = Vec::new();
+            let mut ods = Vec::new();
+            for (name, s) in settings()
+                .into_iter()
+                .filter(|(n, _)| ["b30", "b60", "b100"].contains(n))
+            {
+                let out = prep.run(s);
+                let stats = item_stats(&prep.patch, &out);
+                ods = stats.iter().map(|st| (st.radius, st.od_in)).collect();
+                per.push((name, stats.iter().map(|st| st.residual()).collect()));
+            }
+            for (k, (r, od)) in ods.iter().enumerate() {
+                println!(
+                    "tone {t} R {r:5.2} od_in {od:.2}  b30 {:+.2} b60 {:+.2} b100 {:+.2}",
+                    per[0].1[k], per[1].1[k], per[2].1[k]
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "prints the acne summary"]
+    fn print_the_acne_summary() {
+        let rows = run_protocol_on(&(0..TONES).collect::<Vec<_>>(), &["b30", "b60", "b100"]);
+        for name in ["b30", "b60", "b100"] {
+            let mut all: Vec<(usize, AcneStat)> = Vec::new();
+            let (mut hp, mut hm, mut lk, mut far, mut tex) =
+                (0.0f64, 0.0f64, 0.0f64, 0.0f64, 1e9f64);
+            for r in of(&rows, name) {
+                all.extend(r.acne.iter().map(|a| (r.tone, *a)));
+                hp = hp.max(r.acne_halo_pooled.abs());
+                hm = hm.max(r.acne_halo_max);
+                lk = lk.max(r.acne_leak_max);
+                far = far.max(r.acne_far_max_rel);
+                tex = tex.min(r.acne_texture);
+            }
+            let res = |f: &dyn Fn(&AcneStat) -> bool| -> Vec<f64> {
+                all.iter()
+                    .filter(|(_, a)| f(a))
+                    .map(|(_, a)| a.residual)
+                    .collect()
+            };
+            let worst_abs = |v: &[f64]| v.iter().fold(0.0f64, |a, b| a.max(b.abs()));
+            let hi = |v: &[f64]| v.iter().copied().fold(f64::MIN, f64::max);
+            let lo = |v: &[f64]| v.iter().copied().fold(f64::MAX, f64::min);
+            let big = res(&|a| a.radius >= 8.0);
+            let small = res(&|a| a.radius < 8.0 && !a.clustered);
+            let clus = res(&|a| a.clustered);
+            let strong = res(&|a| a.od_in >= 0.3);
+            let faint = res(&|a| a.od_in < 0.3);
+            if name == "b100" {
+                for (t, a) in &all {
+                    if a.residual.abs() > 0.3 {
+                        println!(
+                            "  MISS tone {t} R {:.2} od {:.2} res {:+.2} cluster {}",
+                            a.radius, a.od_in, a.residual, a.clustered
+                        );
+                    }
+                }
+            }
+            println!(
+                "{name}: n {} worst|res| {:.3} (big {:.3} small {:.3} cluster {:.3} strong {:.3} faint {:.3}) min {:.3} max {:.3} median {:.3} | big median {:.3} faint median {:.3} | halo pooled {hp:.4} max {hm:.4} leak {lk:.4} far {far:.4} tex {tex:.3}",
+                all.len(),
+                worst_abs(&res(&|_| true)),
+                worst_abs(&big),
+                worst_abs(&small),
+                worst_abs(&clus),
+                worst_abs(&strong),
+                worst_abs(&faint),
+                lo(&res(&|_| true)),
+                hi(&res(&|_| true)),
+                median(&res(&|_| true)),
+                median(&big),
+                median(&faint)
+            );
+        }
     }
 
     #[test]

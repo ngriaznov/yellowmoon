@@ -552,14 +552,17 @@ fn skin_grading_matches_the_cpu() {
 
 #[test]
 fn teeth_whitening_matches_the_cpu() {
-    let teeth = SkinSettings {
-        teeth_whitening: 85.0,
-        ..SkinSettings::default()
-    };
-    let s = scene(&[teeth]);
-    let half = downscale2(&s.full);
-    compare("teeth", &s, &s.full, 1.0, GATE_TOOLS, false);
-    compare("teeth", &s, &half, 0.5, GATE_TOOLS, false);
+    // 85 as before S-16; 60 and 100 are the two ends of the curves of 7.8 (today's whole effect, and the top).
+    for amount in [60.0, 85.0, 100.0] {
+        let teeth = SkinSettings {
+            teeth_whitening: amount,
+            ..SkinSettings::default()
+        };
+        let s = scene(&[teeth]);
+        let half = downscale2(&s.full);
+        compare("teeth", &s, &s.full, 1.0, GATE_TOOLS, false);
+        compare("teeth", &s, &half, 0.5, GATE_TOOLS, false);
+    }
 }
 
 #[test]

@@ -621,6 +621,13 @@ fn fc_tselect(local: u32) {
     }
 }
 
+// The curves of `ym_retouch::teeth_pixel` (S-16): the same numbers as its TEETH_* constants (a test compares them).
+const TEETH_CHROMA_LIN: f32 = 1.5;
+const TEETH_CHROMA_QUAD: f32 = 0.57;
+const TEETH_LIGHT_LIN: f32 = 0.1;
+const TEETH_LIGHT_QUAD: f32 = 0.25;
+const TEETH_CAP_RISE: f32 = 0.1;
+
 // a: the rectangle; b: the first byte of the mask, the layer offset of L_max; f.x: tw.
 fn fc_tapply(gid: vec3<u32>) {
     let rw = u32(FU_.a.z);
@@ -640,9 +647,9 @@ fn fc_tapply(gid: vec3<u32>) {
     let i = fc_at(0u, x, y);
     let old = vec3<f32>(fc_pic[i], fc_pic[FU_.pic.y + i], fc_pic[2u * FU_.pic.y + i]);
     let l = (old.x + old.y + old.z) / 3.0;
-    let f = 1.0 - 0.7 * tw * m;
-    let cap = fc_lay[u32(FU_.b.y)] / max(l, 1.0e-4);
-    let gain = min(1.0 + 0.15 * tw * m, max(cap, 1.0));
+    let f = 1.0 - (TEETH_CHROMA_LIN * tw - TEETH_CHROMA_QUAD * tw * tw) * m;
+    let cap = (1.0 + TEETH_CAP_RISE * tw * tw) * fc_lay[u32(FU_.b.y)] / max(l, 1.0e-4);
+    let gain = min(1.0 + (TEETH_LIGHT_LIN * tw + TEETH_LIGHT_QUAD * tw * tw) * m, max(cap, 1.0));
     let nw = (vec3<f32>(l) + f * (old - vec3<f32>(l))) * gain;
     if (any(nw != old)) {
         fc_pic[i] = nw.x;

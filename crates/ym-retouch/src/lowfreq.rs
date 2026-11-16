@@ -228,15 +228,38 @@ pub fn shine_removal_texture(
     [0, 1, 2].map(|k| t[k] + f * (c[k] * level - t[k]))
 }
 
-/// 7.8 teeth whitening for one pixel: chroma toward neutral and a little more light, never past the
-/// brightest tooth. `c = L + (1 - 0.7 * tw * m) * (src - L)`, `cap = l_max / max(L, 1e-4)`,
-/// `out = c * min(1 + 0.15 * tw * m, max(cap, 1))`; `L = mean(src)`, `l_max` the mask's 99th
-/// percentile of `L`.
+/// Teeth whitening, chroma removed: `r(tw) = TEETH_CHROMA_LIN * tw - TEETH_CHROMA_QUAD * tw^2`
+/// (0.695 at `tw` 0.6, today's whole effect, and 0.93 at 1; `docs/27` 7.8, S-16). The shader
+/// (`face.wgsl`, `TEETH_*`) holds the same numbers; `ym-gpu`'s tests compare them.
+pub const TEETH_CHROMA_LIN: f64 = 1.5;
+/// See [`TEETH_CHROMA_LIN`].
+pub const TEETH_CHROMA_QUAD: f64 = 0.57;
+/// Teeth whitening, light added: `l(tw) = TEETH_LIGHT_LIN * tw + TEETH_LIGHT_QUAD * tw^2` (0.15 at
+/// `tw` 0.6, 0.35 at 1).
+pub const TEETH_LIGHT_LIN: f64 = 0.1;
+/// See [`TEETH_LIGHT_LIN`].
+pub const TEETH_LIGHT_QUAD: f64 = 0.25;
+/// Teeth whitening, the cap on light: `cap(tw) = 1 + TEETH_CAP_RISE * tw^2` times the mask's brightest
+/// tooth (1.1 at 1).
+pub const TEETH_CAP_RISE: f64 = 0.1;
+
+/// 7.8 teeth whitening for one pixel: chroma toward neutral and more light, never far past the
+/// brightest tooth. With `L = mean(src)`, `l_max` the mask's 99th percentile of `L`:
+///
+/// ```text
+/// c    = L + (1 - r(tw) * m) * (src - L)
+/// cap  = (1 + 0.1 * tw^2) * l_max / max(L, 1e-4)
+/// out  = c * min(1 + l(tw) * m, max(cap, 1))
+/// ```
+///
+/// `r` and `l` are the curves of [`TEETH_CHROMA_LIN`] and [`TEETH_LIGHT_LIN`]; both rise with `tw`.
 pub fn teeth_pixel(src: [f64; 3], tw: f64, m: f64, l_max: f64) -> [f64; 3] {
     let l = (src[0] + src[1] + src[2]) / 3.0;
-    let f = 1.0 - 0.7 * tw * m;
-    let cap = l_max / l.max(1e-4);
-    let gain = (1.0 + 0.15 * tw * m).min(cap.max(1.0));
+    let chroma_removed = TEETH_CHROMA_LIN * tw - TEETH_CHROMA_QUAD * tw * tw;
+    let light = TEETH_LIGHT_LIN * tw + TEETH_LIGHT_QUAD * tw * tw;
+    let f = 1.0 - chroma_removed * m;
+    let cap = (1.0 + TEETH_CAP_RISE * tw * tw) * l_max / l.max(1e-4);
+    let gain = (1.0 + light * m).min(cap.max(1.0));
     [0, 1, 2].map(|c| (l + f * (src[c] - l)) * gain)
 }
 
@@ -1630,7 +1653,7 @@ mod tests {
                 assert_eq!(a, b, "pixel {i}");
             }
         }
-        // No tooth ends brighter than the brightest tooth was.
+        // No tooth ends brighter than the brightest tooth was, by more than the cap of 1.1 at 100.
         let brightest = image
             .data
             .iter()
@@ -1645,7 +1668,10 @@ mod tests {
             .filter(|(_, m)| **m > 0)
             .map(|(p, _)| lum(*p))
             .fold(0.0f64, f64::max);
-        assert!(after <= brightest + 1e-6, "{after} against {brightest}");
+        assert!(
+            after <= 1.1 * brightest + 1e-6,
+            "{after} against {brightest}"
+        );
         // Half the amount whitens less.
         let mut half = image.clone();
         let s50 = SkinSettings {
@@ -1655,6 +1681,29 @@ mod tests {
         retouch_tones(&mut half, full, &face, &s50, 1.0, &tools, None).unwrap();
         let i = idx(cx, cy);
         assert!(chroma(half.data[i]) > chroma(out.data[i]));
+    }
+
+    /// S-16: the numbers of 7.8 at 30, 60 and 100 on a yellow tooth below the cap.
+    #[test]
+    fn teeth_pixel_has_the_range_of_s16() {
+        let src = [0.50, 0.44, 0.26];
+        let l = |p: [f64; 3]| (p[0] + p[1] + p[2]) / 3.0;
+        let chroma = |p: [f64; 3]| (0..3).map(|k| (p[k] - l(p)).abs()).sum::<f64>();
+        let rel = |p: [f64; 3]| chroma(p) / l(p);
+        let at = |tw: f64| teeth_pixel(src, tw, 1.0, 10.0);
+        let removed = |tw: f64| 1.0 - rel(at(tw)) / rel(src);
+        let lifted = |tw: f64| l(at(tw)) / l(src) - 1.0;
+        // Today's whole effect (0.7 of the chroma, 15 % light) arrives at 60.
+        assert!((removed(0.6) - 0.695).abs() < 0.01, "{}", removed(0.6));
+        assert!((lifted(0.6) - 0.15).abs() < 0.005, "{}", lifted(0.6));
+        // The top: 93 % of the chroma and 35 % more light.
+        assert!((removed(1.0) - 0.93).abs() < 0.01, "{}", removed(1.0));
+        assert!((lifted(1.0) - 0.35).abs() < 0.005, "{}", lifted(1.0));
+        assert!(removed(0.3) < removed(0.6) && lifted(0.3) < lifted(0.6));
+        // The cap: 1.1 times the brightest tooth at 100, 1.0 times at 0.
+        let bright = teeth_pixel([0.8, 0.8, 0.8], 1.0, 1.0, 0.82);
+        assert!((l(bright) - 0.82 * 1.1).abs() < 1e-9, "{}", l(bright));
+        assert_eq!(teeth_pixel(src, 0.0, 1.0, 10.0), src);
     }
 
     #[test]
@@ -1898,7 +1947,7 @@ mod tests {
                 prop_assert!(c(q) / l(q) <= c(p) / l(p).max(1e-9) + 1e-9);
             }
             // Never above the brightest tooth (or the pixel itself when it is already above).
-            prop_assert!(l(q) <= l(s).max(lmax) + 1e-9);
+            prop_assert!(l(q) <= l(s).max(1.1 * lmax) + 1e-9);
             // Zero amount is the identity.
             let id = teeth_pixel(s, 0.0, m, lmax);
             prop_assert!(id.iter().zip(&s).all(|(o, i)| (o - i).abs() < 1e-12));

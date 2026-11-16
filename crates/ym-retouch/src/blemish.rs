@@ -28,9 +28,9 @@ pub const TARGET_FACE_PX: f64 = 450.0;
 pub const CHROMA_GUARD_MIN_SIDE_PX: usize = 80;
 
 /// The smallest gain and the largest one.
-pub const GAIN_MIN: f64 = 0.5;
+pub const GAIN_MIN: f64 = 0.35;
 /// See [`GAIN_MIN`].
-pub const GAIN_MAX: f64 = 2.5;
+pub const GAIN_MAX: f64 = 3.5;
 
 /// Radius of the max filter and of the box blur that turn the gain into the strength.
 const STRENGTH_RADIUS_PX: usize = 3;
@@ -45,7 +45,7 @@ pub struct BlemishMap {
     /// Map height in pixels.
     pub height_px: u32,
     /// `width_px * height_px` entries of `(gain.r, gain.g, gain.b, alpha)`, rows top to bottom.
-    /// The gain is a linear-light multiplier in 0.5..=2.5; `alpha` is the strength.
+    /// The gain is a linear-light multiplier in 0.35..=3.5 (S-16; 0.5..=2.5 before); `alpha` is the strength.
     pub data: Vec<[f32; 4]>,
 }
 
@@ -136,7 +136,7 @@ pub fn chroma_pull(out: [f64; 3], blurred: [f64; 3], conf: f64) -> [f64; 3] {
 ///
 /// `out_c` and `in_c` are the (guarded) proposer output and its input, both encoded; `mask` is the
 /// blemish mask byte; `edge_distance_px` is `d = min(x, w - 1 - x, y, h - 1 - y)`. The squared ratio
-/// undoes the square root of the encoding; the gain is clamped to 0.5..=2.5, 1 where the mask is 0,
+/// undoes the square root of the encoding; the gain is clamped to 0.35..=3.5, 1 where the mask is 0,
 /// and fades to 1 over the two outermost rings (`d < 2`).
 pub fn blemish_gain(out_c: f64, in_c: f64, mask: u8, edge_distance_px: u32) -> f64 {
     const FLOOR: f64 = 1.0 / 256.0;
@@ -331,7 +331,12 @@ fn tile_origins(len: usize, tile: usize) -> Vec<usize> {
 }
 
 /// Runs the proposer over `input` (size `w x h`) in tiles (`docs/27` 6.1 step 3).
-fn propose(input: &Planar, w: usize, h: usize, proposer: &dyn BlemishProposer) -> Result<Planar> {
+fn propose(
+    input: &Planar,
+    w: usize,
+    h: usize,
+    proposer: &dyn BlemishProposer,
+) -> Result<(Planar, Vec<f32>)> {
     let tile = proposer.output_size_px() as usize;
     let border = proposer.border_px() as usize;
     if tile == 0 {
@@ -343,6 +348,7 @@ fn propose(input: &Planar, w: usize, h: usize, proposer: &dyn BlemishProposer) -
     let mut out = Planar {
         planes: [vec![0.0; w * h], vec![0.0; w * h], vec![0.0; w * h]],
     };
+    let mut weights = vec![1.0f32; w * h];
     let mut tile_in = vec![0.0f32; 3 * side * side];
     for ty in tile_origins(h, tile) {
         for tx in tile_origins(w, tile) {
@@ -357,7 +363,17 @@ fn propose(input: &Planar, w: usize, h: usize, proposer: &dyn BlemishProposer) -
                     }
                 }
             }
-            let tile_out = proposer.run(&tile_in)?;
+            let (tile_out, tile_weights) = proposer.run_weighted(&tile_in)?;
+            if tile_weights
+                .as_ref()
+                .is_some_and(|v| v.len() != tile * tile)
+            {
+                return Err(RetouchError::Model(format!(
+                    "the proposer returned {} weights, expected {}",
+                    tile_weights.map_or(0, |v| v.len()),
+                    tile * tile
+                )));
+            }
             if tile_out.len() != 3 * tile * tile {
                 return Err(RetouchError::Model(format!(
                     "the proposer returned {} values, expected {}",
@@ -373,9 +389,16 @@ fn propose(input: &Planar, w: usize, h: usize, proposer: &dyn BlemishProposer) -
                     out.planes[c][dst..dst + n].copy_from_slice(&tile_out[src..src + n]);
                 }
             }
+            if let Some(tw) = &tile_weights {
+                for j in 0..tile.min(h - ty) {
+                    let n = tile.min(w - tx);
+                    let dst = (ty + j) * w + tx;
+                    weights[dst..dst + n].copy_from_slice(&tw[j * tile..j * tile + n]);
+                }
+            }
         }
     }
-    Ok(out)
+    Ok((out, weights))
 }
 
 /// The chroma guard (`docs/27` 6.1 step 4). Returns `out` unchanged when `max(w, h) < 80`.
@@ -514,7 +537,7 @@ pub fn blemish_map(
     }
 
     // Steps 3 and 4: propose, then guard the chroma.
-    let proposed = propose(&input, w, h, proposer)?;
+    let (proposed, weights) = propose(&input, w, h, proposer)?;
     let guarded = chroma_guard(&input, &proposed, w, h);
 
     // Step 5: gain.
@@ -538,7 +561,11 @@ pub fn blemish_map(
     // Step 6: strength.
     let strength: Vec<f32> = gains
         .par_iter()
-        .map(|g| gain_strength([f64::from(g[0]), f64::from(g[1]), f64::from(g[2])]) as f32)
+        .zip(weights.par_iter())
+        .map(|(g, k)| {
+            gain_strength([f64::from(g[0]), f64::from(g[1]), f64::from(g[2])]) as f32
+                * k.clamp(0.0, 1.0)
+        })
         .collect();
     let strength = max_filter(&strength, w, h, STRENGTH_RADIUS_PX);
     let alpha = box_blur(&strength, w, h, STRENGTH_RADIUS_PX);
@@ -830,17 +857,17 @@ mod tests {
     #[test]
     fn gain_kernel_clamps_masks_and_fades() {
         // Out of range ratios clamp.
-        assert_eq!(blemish_gain(3.0, 1.0, 255, 5), 2.5);
-        assert_eq!(blemish_gain(0.1, 1.0, 255, 5), 0.5);
+        assert_eq!(blemish_gain(3.0, 1.0, 255, 5), 3.5);
+        assert_eq!(blemish_gain(0.1, 1.0, 255, 5), 0.35);
         // Square undoes the sqrt.
         assert!((blemish_gain(1.2, 1.0, 255, 5) - 1.44).abs() < 1e-12);
         // Mask 0 gives exactly 1; half mask is halfway.
         assert_eq!(blemish_gain(3.0, 1.0, 0, 5), 1.0);
-        assert!((blemish_gain(3.0, 1.0, 51, 5) - (1.0 + 0.2 * 1.5)).abs() < 1e-12);
+        assert!((blemish_gain(3.0, 1.0, 51, 5) - (1.0 + 0.2 * 2.5)).abs() < 1e-12);
         // Border fade: d = 0 is 1, d = 1 is halfway.
         assert_eq!(blemish_gain(3.0, 1.0, 255, 0), 1.0);
-        assert!((blemish_gain(3.0, 1.0, 255, 1) - 1.75).abs() < 1e-12);
-        assert_eq!(blemish_gain(3.0, 1.0, 255, 2), 2.5);
+        assert!((blemish_gain(3.0, 1.0, 255, 1) - 2.25).abs() < 1e-12);
+        assert_eq!(blemish_gain(3.0, 1.0, 255, 2), 3.5);
         // The 1/256 floor.
         assert_eq!(blemish_gain(0.0, 0.0, 255, 5), 1.0);
     }
@@ -849,14 +876,14 @@ mod tests {
     fn map_gains_are_clamped_and_one_on_the_ring() {
         let img = textured(100, 100);
         let mask = full_mask(100, 100);
-        for (factor, interior, d1) in [(3.0f32, 2.5f32, 1.75f32), (0.5, 0.5, 0.75)] {
+        for (factor, interior, d1) in [(3.0f32, 3.5f32, 2.25f32), (0.5, 0.35, 0.675)] {
             let map = map_for(&img, &mask, 100.0, &MockProposer::scale(64, factor));
             assert_eq!((map.width_px, map.height_px), (100, 100));
             for (i, e) in map.data.iter().enumerate() {
                 let (x, y) = (i % 100, i / 100);
                 let d = x.min(99 - x).min(y).min(99 - y);
                 for v in &e[..3] {
-                    assert!((0.5..=2.5).contains(v), "gain {v} out of range");
+                    assert!((0.35..=3.5).contains(v), "gain {v} out of range");
                     match d {
                         0 => assert_eq!(*v, 1.0),
                         1 => assert!((v - d1).abs() < 1e-6),
@@ -1308,7 +1335,7 @@ mod tests {
             let pulled = chroma_pull(out, blurred, conf);
             prop_assert!(pulled.iter().all(|v| v.is_finite()));
             let g: Vec<f64> = (0..3).map(|c| blemish_gain(out[c], inp[c], m, d)).collect();
-            prop_assert!(g.iter().all(|v| (0.5..=2.5).contains(v) || *v == 1.0));
+            prop_assert!(g.iter().all(|v| (0.35..=3.5).contains(v) || *v == 1.0));
             let g = [g[0], g[1], g[2]];
             prop_assert!(gain_strength(g).is_finite() && gain_strength(g) >= 1e-6);
             let s = threshold_strength(alpha, a, protect);
