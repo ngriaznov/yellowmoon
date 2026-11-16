@@ -110,6 +110,9 @@ pub enum PresetError {
     /// The settings inside the file cannot be used (the source error is kept for the log).
     #[error("This file isn't a Yellowmoon preset.")]
     Settings(#[source] SettingsError),
+    /// A photo or file that holds no Yellowmoon settings (an export without `ym:Settings`, or not an export).
+    #[error("This file has no Yellowmoon settings. Choose a photo that Yellowmoon exported.")]
+    NoSettings,
     /// A name that cannot be used.
     #[error("{}", name_sentence(*.0))]
     InvalidName(NameProblem),
@@ -190,6 +193,7 @@ impl PresetError {
             | Self::Settings(_)
             | Self::InvalidName(_)
             | Self::NoGroups
+            | Self::NoSettings
             | Self::Exists(_)
             | Self::Ambiguous { .. }
             | Self::SettingsFile(_) => 2,

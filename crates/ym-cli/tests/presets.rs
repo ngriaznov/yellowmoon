@@ -756,3 +756,76 @@ fn a_preset_does_not_change_what_a_run_without_one_does() {
     // Rendering with presets writes nothing in the presets folder (rule 4).
     assert!(!sb.home().join("presets").exists());
 }
+
+#[test]
+fn a_preset_is_saved_from_an_exported_photo_and_auto_stays_auto() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
+    for (format, ext) in [
+        ("jpeg", "jpg"),
+        ("tiff", "tif"),
+        ("png", "png"),
+        ("dng", "dng"),
+    ] {
+        let out = sb
+            .ym()
+            .args([
+                "render",
+                "--json",
+                "--cpu",
+                "--auto-provider",
+                "yellowmoon",
+                "--contrast",
+                "25",
+                "--format",
+                format,
+                "--out",
+            ])
+            .arg(sb.root().join(ext))
+            .arg(&arw)
+            .assert()
+            .success();
+        let record = json_lines(&out.get_output().stdout).remove(0);
+        let file = record["output"].as_str().expect("output").to_owned();
+        assert!(file.ends_with(ext), "{file}");
+        let name = format!("From {ext}");
+        sb.ym()
+            .args(["presets", "save", &name, "--from", &file])
+            .assert()
+            .success()
+            .stderr(predicate::str::contains("(light)"));
+        // The exposure the export pinned is Auto again in the preset, so the preset carries no photo's exposure.
+        let saved = std::fs::read_to_string(sb.home().join(format!("presets/{name}.ympreset")))
+            .expect("preset");
+        let value: Value = serde_json::from_str(&saved).expect("json");
+        let input = value["settings"]["nodes"]["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|i| i["id"] == "input")
+            .expect("the input");
+        assert_eq!(input["exposure"], json!({ "kind": "auto" }), "{ext}");
+        let main = value["settings"]["nodes"]["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|i| i["id"] == 1)
+            .expect("main");
+        assert_eq!(
+            main["grade"]["contrast"],
+            json!({ "kind": "manual", "value": 25.0 }),
+            "{ext}"
+        );
+    }
+    // A photo that is not an export.
+    let junk = sb.root().join("plain.jpg");
+    std::fs::write(&junk, [0xFF, 0xD8, 0xFF, 0xD9]).expect("write");
+    sb.ym()
+        .args(["presets", "save", "Nope", "--from"])
+        .arg(&junk)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "This file has no Yellowmoon settings. Choose a photo that Yellowmoon exported.",
+        ));
+}

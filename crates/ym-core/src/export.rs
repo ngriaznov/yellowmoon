@@ -88,7 +88,7 @@ use crate::pipeline::{
     Renderer,
 };
 use crate::session::{PhotoId, PhotoView, Session, SessionError};
-use crate::settings::{DevelopSettings, LensSettings, ResolvedSettings, SettingsError};
+use crate::settings::{AutoFields, DevelopSettings, LensSettings, ResolvedSettings, SettingsError};
 use crate::version::{PIPELINE_VERSION, app_version};
 
 /// `<source folder> export` next to the source folder of a photo, spelled the way the path gives
@@ -1284,6 +1284,8 @@ fn export_photo_unguarded(
                 auto_advisor: photo.source.estimates.apple.advisor_json(),
                 film_data: crate::film::film_data_of(&photo.source.settings),
                 settings: serde_json::to_value(photo.resolved.pinned_settings()).ok(),
+                // Which Auto fields `ym:Settings` pinned, for a preset made from this file (`docs/30` section 12).
+                auto_fields: Some(AutoFields::of(&photo.resolved).to_json()),
             },
         },
         exif,
@@ -1298,6 +1300,7 @@ fn export_photo_unguarded(
     // work may not fit. The file then says nothing of them, and the report says so.
     if options.format == FormatKind::Jpeg && xmp_too_long_for_jpeg(&metadata.xmp) {
         metadata.xmp.ym.settings = None;
+        metadata.xmp.ym.auto_fields = None;
         notes.push(SETTINGS_TOO_LONG_NOTE.to_owned());
     }
 
