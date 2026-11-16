@@ -283,14 +283,14 @@ Every control in the UI and every CLI flag maps to one field of one node. Defaul
 | `look` | `LookId` | user's default look (Signature out of the box) | Look tab |
 | `look_intensity` | 0–100 % | 100 | Look tab |
 | `exposure` | `Auto` or `Manual(ev)` −4…+4, step 0.01 | Auto | Light › Exposure |
-| `contrast` | `Auto` or `Manual(value)` −100…100 | Auto (0, or Apple Auto's value) | Light › Exposure; Contrast also on Look › Tone |
+| `contrast` | `Auto` or `Manual(value)` −100…100 | Auto (0, or Apple Auto's value) | Light › Exposure |
 | `brightness` | −100…100 | 0 | Light › Exposure |
 | `highlights`, `shadows`, `black` | `Auto` or `Manual(value)` −100…100 | Auto (0, or Apple Auto's value) | Light › High dynamic range |
 | `white` | −100…100 | 0 | Light › High dynamic range |
 | `light_source` | Auto, Day, Shade, Tungsten, LED, Fluorescent | Auto | Colour › White balance (segmented) |
-| `white_balance` | `Auto` or `Manual { kelvin 2000–11000 step 50, tint −50…50 }` | Auto | Colour › White balance; Kelvin also on Look › Tone (Temperature) |
+| `white_balance` | `Auto` or `Manual { kelvin 2000–11000 step 50, tint −50…50 }` | Auto | Colour › White balance |
 | `color_balance` | shadows and highlights wheels: `Auto` or a point `(a, b)` in a unit disc; midtones wheel: a point | Auto, (0, 0), Auto | Colour › Colour balance |
-| `saturation` | `Auto` or `Manual(value)` −100…100, keeps the luminance (`docs/02-colour-pipeline.md` C9) | Auto (0, or Apple Auto's value) | Colour › Colour balance; also on Look › Tone |
+| `saturation` | `Auto` or `Manual(value)` −100…100, keeps the luminance (`docs/02-colour-pipeline.md` C9) | Auto (0, or Apple Auto's value) | Colour › Colour balance |
 | `color_warp` | `{ pins: [...] }`, at most 16 pins; a pin is `{ source: [a, b], target: [a, b], locked, range 0.01–0.25, shadows 0–1, highlights 0–1, pivot_ev −6…6, exposure_ev −2…2, saturation −1…1 }`, points scaled back to a radius of at most 0.5 (`docs/02-colour-pipeline.md` C9b); every pin field but `source` has a default (`target` = `source`, `locked` false, `range` 0.02, `shadows` and `highlights` 1, `pivot_ev`, `exposure_ev` and `saturation` 0; a document from before the saturation existed reads as 0). A patch replaces the whole list. | no pins | Colour › Colour warp |
 | `lens` | `{ kind, flares 0–100, edges 0–100, anamorphic 0–100 }`; `kind` is `default`, `classic`, `vintage`, `petzval`, `triplet`, `sonnar` or `detuned` (`docs/21-lens-character.md` §2). All three amounts at 0 is no lens, whatever `kind` says. A patch may carry only the parts it changes; choosing a lens sends its starting Flares and Edges with it (the card and `--lens`), the core moves nothing by itself. | `{ default, 0, 0, 0 }` | Look › Lens (rendering: docs/21, in progress) |
 | `sharpen` | `Auto` or `{ amount 0–300, radius_px 0.3–2.5 }` | Auto | Detail › Sharpening (Amount, Radius): capture sharpening, R8 |

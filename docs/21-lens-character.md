@@ -10,7 +10,7 @@ Everything here runs in Rust, the same in the app and `ym`. The optics are class
 
 ## 1. What the person sees
 
-The **Lens** tab (the owner's request of 2026-10-25: "lens should be its own tab like Look, Light and others"; it had been the fourth card of the Look tab, under Tone, below the visible part of the panel) is the second tab, ⌘2, in a soft violet (#BD8CFF), and has two cards (`docs/11` *Lens card* has the details of the controls). Its blurb is "How a lens draws light: flares, softer edges, the shape of blur. Off until you raise a slider."
+The **Lens** tab (the owner's request of 2026-10-25: "lens should be its own tab like Look, Light and others"; it had been the fourth card of the Look tab, under the Look card, below the visible part of the panel) is the second tab, ⌘2, in a soft violet (#BD8CFF), and has two cards (`docs/11` *Lens card* has the details of the controls). Its blurb is "How a lens draws light: flares, softer edges, the shape of blur. Off until you raise a slider."
 
 | Part | What it is |
 |---|---|
