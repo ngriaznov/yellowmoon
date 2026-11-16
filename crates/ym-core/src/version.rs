@@ -32,7 +32,9 @@ mod tests {
 
     #[test]
     fn app_version_is_the_workspace_version() {
-        assert!(is_plain_semver(app_version()), "{}", app_version());
+        // A pre-release (0.2.4-beta.1) has a suffix after the plain x.y.z (docs/12).
+        let base = app_version().split('-').next().unwrap_or_default();
+        assert!(is_plain_semver(base), "{}", app_version());
         assert_eq!(app_version(), env!("CARGO_PKG_VERSION"));
     }
 }

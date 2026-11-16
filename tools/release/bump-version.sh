@@ -4,7 +4,8 @@
 # entries of Cargo.lock. A push of the bump to main publishes the release (release.yml).
 #
 #   tools/release/bump-version.sh 0.1.1      # an explicit version
-#   tools/release/bump-version.sh patch      # 0.1.0 -> 0.1.1
+#   tools/release/bump-version.sh 0.2.4-beta.1   # a pre-release: published as a GitHub pre-release (docs/12)
+#   tools/release/bump-version.sh patch      # 0.1.0 -> 0.1.1 (and 0.2.4-beta.1 -> 0.2.4)
 #
 # It edits files only: no commit, no tag. Then add a "## [x.y.z] - date" section to CHANGELOG.md.
 set -euo pipefail
@@ -14,11 +15,17 @@ current=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p;}' C
 [ -n "$current" ] || { echo "no [workspace.package] version in Cargo.toml" >&2; exit 2; }
 
 case "${1:-}" in
-  patch) IFS=. read -r major minor patch <<< "$current"; next="$major.$minor.$((patch + 1))" ;;
+  patch)
+    base=${current%%-*}
+    if [ "$base" != "$current" ]; then
+      next=$base # the final version of a pre-release has the same number without the suffix
+    else
+      IFS=. read -r major minor patch <<< "$current"; next="$major.$minor.$((patch + 1))"
+    fi ;;
   [0-9]*.[0-9]*.[0-9]*) next=$1 ;;
-  *) echo "usage: $0 <x.y.z | patch>   (now $current)" >&2; exit 2 ;;
+  *) echo "usage: $0 <x.y.z | x.y.z-suffix | patch>   (now $current)" >&2; exit 2 ;;
 esac
-[[ $next =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a plain x.y.z version: $next" >&2; exit 2; }
+[[ $next =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] || { echo "not x.y.z or x.y.z-suffix: $next" >&2; exit 2; }
 
 # The version line of [workspace.package], and the versions of the workspace's own crates in
 # [workspace.dependencies] (`ym-core = { path = "crates/ym-core", version = "x.y.z" }`).
