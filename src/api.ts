@@ -19,6 +19,16 @@ import type * as B from "./api/bindings";
 import { isTauri } from "./env";
 import { perf } from "./perf";
 import type {
+  AlbumSaved,
+  AlbumState,
+  ImportResult,
+  PresetApplyReport,
+  PresetEntry,
+  PresetExported,
+  PresetGroup,
+  PresetInspect,
+  PresetSource,
+  PresetsListing,
   ApiEventName,
   ApiEvents,
   AppError,
@@ -368,6 +378,46 @@ export interface Api {
   /** `display_options`: the system's Reduce Transparency, Reduce Motion and Increase Contrast settings now (`docs/28` A-P12). Addition. */
   displayOptions(): Promise<DisplayOptions>;
 
+  // --- Presets (`docs/30` section 8) -----------------------------------------
+
+  /** `presets_list`: reloads the folder; `matches` is for `photoId` (false for `null`). The damaged files are listed with the reason. */
+  presetsList(photoId: PhotoId | null): Promise<PresetsListing>;
+  /** `preset_inspect`: the groups the Save dialog ticks for a source, whether it is an older export, and the look's name. */
+  presetInspect(source: PresetSource): Promise<PresetInspect>;
+  /** `preset_save`: makes the preset from the source and writes it. Without `replace` a name that exists is refused. */
+  presetSave(name: string, groups: PresetGroup[], source: PresetSource, replace: boolean): Promise<PresetEntry>;
+  /** `preset_update`: saves the photo's values again for the preset's own groups. */
+  presetUpdate(name: string, photoId: PhotoId): Promise<PresetEntry>;
+  /** `preset_rename`: refuses a name that exists (case aside from its own). */
+  presetRename(name: string, newName: string): Promise<PresetEntry>;
+  /** `preset_apply`: applies the preset to the photos through the Paste path, one undo step each. */
+  presetApply(name: string, photoIds: PhotoId[]): Promise<PresetApplyReport>;
+  /** `preset_remove`: to the Trash. */
+  presetRemove(name: string): Promise<void>;
+  /** `preset_remove_file`: a damaged file, by its file name, to the Trash. */
+  presetRemoveFile(file: string): Promise<void>;
+  /** `preset_export`: the system save panel and the file; null when the person cancels. */
+  presetExport(name: string): Promise<PresetExported | null>;
+  /** `presets_import_dialog`: the system open panel (`.ympreset`, several) and the import; null when cancelled. */
+  presetsImportDialog(): Promise<ImportResult | null>;
+  /** `presets_import`: dropped files, and Replace after the question. A name that exists is replaced only with `replace`. */
+  presetsImport(paths: string[], replace: boolean): Promise<ImportResult>;
+  /** `preset_reveal`: Show in Finder. */
+  presetReveal(name: string): Promise<void>;
+  /** `preset_choose_export` (addition, P-06's menu item): the system open panel for a photo Yellowmoon exported; null when cancelled. */
+  presetChooseExport(): Promise<string | null>;
+  /** `preset_thumbnail`: the address of the tile's PNG (the photo with the preset applied). Rejects with scope `presets` when the preset is gone. */
+  presetThumbnail(photoId: PhotoId, name: string): Promise<string>;
+
+  // --- Albums (`docs/31` section 7) ------------------------------------------
+
+  /** `album_open`: replaces the session with the album's photos. */
+  albumOpen(path: string): Promise<SessionState>;
+  /** `album_save`: File › Save (`asNew` false) and Save As… (true). The shell asks where when needed; null when the person cancels. */
+  albumSave(asNew: boolean): Promise<AlbumSaved | null>;
+  /** `album_state`: the page's mirror, after `album_changed`. */
+  albumState(): Promise<AlbumState | null>;
+
   // --- Events --------------------------------------------------------------
 
   /** Listen to a core event. Returns a function that stops listening. */
@@ -397,8 +447,10 @@ export function toAppError(value: unknown): AppError {
  * for the Input's `crop` and `white_pick`, which the hand-written `NodePatch` allows too. The screens read the narrower type: this changes the
  * type and nothing at run time.
  */
-const narrowed = <T extends B.SettingsPatch | B.PasteReport>(answer: Promise<T>): Promise<T extends B.PasteReport ? PasteReport : SettingsPatch> =>
-  answer as unknown as Promise<T extends B.PasteReport ? PasteReport : SettingsPatch>;
+const narrowed = <T extends B.SettingsPatch | B.PasteReport | B.PresetApplyReport>(
+  answer: Promise<T>,
+): Promise<T extends B.PresetApplyReport ? PresetApplyReport : T extends B.PasteReport ? PasteReport : SettingsPatch> =>
+  answer as unknown as Promise<T extends B.PresetApplyReport ? PresetApplyReport : T extends B.PasteReport ? PasteReport : SettingsPatch>;
 
 /** The unit commands answer `null` on the wire; the interface says `void`. */
 const unit = (call: Promise<null>): Promise<void> => call.then(() => undefined);
@@ -479,6 +531,24 @@ export const tauriApi: Api = {
   cliLinkStatus: () => commands.cliLinkStatus(),
   appInfo: () => commands.appInfo(),
   displayOptions: () => commands.displayOptions(),
+
+  presetsList: (photoId) => commands.presetsList(photoId),
+  presetInspect: (source) => commands.presetInspect(source),
+  presetSave: (name, groups, source, replace) => commands.presetSave(name, groups, source, replace),
+  presetUpdate: (name, photoId) => commands.presetUpdate(name, photoId),
+  presetRename: (name, newName) => commands.presetRename(name, newName),
+  presetApply: (name, photoIds) => narrowed(commands.presetApply(name, photoIds)),
+  presetRemove: (name) => unit(commands.presetRemove(name)),
+  presetRemoveFile: (file) => unit(commands.presetRemoveFile(file)),
+  presetExport: (name) => commands.presetExport(name),
+  presetsImportDialog: () => commands.presetsImportDialog(),
+  presetsImport: (paths, replace) => commands.presetsImport(paths, replace),
+  presetReveal: (name) => unit(commands.presetReveal(name)),
+  presetChooseExport: () => commands.presetChooseExport(),
+  presetThumbnail: (photoId, name) => commands.presetThumbnail(photoId, name),
+  albumOpen: (path) => commands.albumOpen(path),
+  albumSave: (asNew) => commands.albumSave(asNew),
+  albumState: () => commands.albumState(),
 
   on(event, handler) {
     // `listen` is asynchronous but `on` hands back its unsubscribe at once, so a call to

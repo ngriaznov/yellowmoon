@@ -2,21 +2,26 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDownIcon } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/glass/collapsible";
 import type { ReactNode } from "react";
-import { AutoRow, AutoToggle, Button, Card, Field, formats, LinkButton, LookTile, ResetLink, RowNote, Rows, SearchField, Segmented, Slider, Tag } from "../../components";
+import { AutoRow, Button, Card, Field, formats, LinkButton, LookTile, ResetLink, RowNote, Rows, SearchField, Segmented, Slider } from "../../components";
 import type { TabId } from "../../components";
-import type { AppleAuto, AppleAutoSteps, ApplyScope, AutoProvider, Look, LookId, LookLibrary, ResolvedSettings } from "../../api/types";
+import type { AppleAuto, AppleAutoSteps, ApplyScope, AutoProvider, Look, LookId, LookLibrary } from "../../api/types";
 import { perfCount } from "../../perf";
 import { useAppState, useStore } from "../../state/context";
 import { autoCardLine } from "../../state/autoProviders";
 import { isArriLook, LOOK_LIBRARIES, looksInDisplayOrder, lookTooltip } from "../../state/looks";
 import type { LookLibraryInfo } from "../../state/looks";
-import { foldPatches, inputOf, inputPatch, mainGradePatch, outputOf, withoutLook } from "../../state/settingsGraph";
-import type { AppStore } from "../../state/store";
+import { inputOf, outputOf, withoutLook } from "../../state/settingsGraph";
 import { useLookThumbnail } from "../../state/useLookThumbnail";
+import { PresetsCard } from "./PresetsCard";
 import { shortBody } from "./RawTab";
-import { ContrastSlider, KelvinSlider, SaturationSlider, whiteBalanceState, whiteBalanceToAuto } from "./controls";
-import { AUTO, tintLabel } from "./shared";
+import { createTileWatch, THUMBNAIL_SETTLE_MS, useSettled } from "./tiles";
+import type { TileWatch } from "./tiles";
+
+import { tintLabel } from "./shared";
 import type { TabProps } from "./shared";
+
+export { createTileWatch, THUMBNAIL_SETTLE_MS };
+export type { TileWatch };
 
 /** Said on a tile whose look file is gone or changed (`docs/08-looks.md` §Missing looks). */
 export const MISSING_LOOK_NOTE = "File missing or changed. Import again.";
@@ -70,87 +75,6 @@ export function appleRows(steps: AppleAutoSteps | null): {
     saturation: steps?.saturation != null,
     shadowColor: steps ? appleColorText(steps.shadow_color, steps.shadow_color_strength) : null,
     highlightColor: steps ? appleColorText(steps.highlight_color, steps.highlight_color_strength) : null,
-  };
-}
-
-/**
- * Brings the Tone card into view in the panel that scrolls it and puts the focus on its slider called `label` (the Automatic card's
- * Contrast and Saturation rows: "the arrow opens the Look tab's Tone card", `docs/19` section 10). Only the panel scrolls:
- * `scrollIntoView` would also move the locked page.
- */
-function revealToneSlider(card: HTMLElement | null, label: string): void {
-  if (!card) return;
-  let scroller = card.parentElement;
-  while (scroller && !(scroller.scrollHeight > scroller.clientHeight && /(auto|scroll)/.test(getComputedStyle(scroller).overflowY))) {
-    scroller = scroller.parentElement;
-  }
-  if (scroller) scroller.scrollTop += card.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-  const nameOf = (el: HTMLElement): string | null => {
-    const ids = el.getAttribute("aria-labelledby");
-    return ids ? ids.split(/\s+/).map((id) => document.getElementById(id)?.textContent ?? "").join(" ") : el.getAttribute("aria-label");
-  };
-  const slider = [...card.querySelectorAll<HTMLElement>('[role="slider"]')].find((el) => nameOf(el) === label);
-  slider?.focus({ preventScroll: true });
-}
-
-/**
- * How long the photo's settings must rest before the tiles are made again: a person moving a slider on this tab (the Tone card is
- * here) is not asking to see every look through each step, and each remake is a job for the core's one foreground worker.
- */
-export const THUMBNAIL_SETTLE_MS = 400;
-
-/** Waits `ms` after a value stops changing before passing it on; the first value passes at once. */
-function useSettled<T>(value: T, ms: number): T {
-  const [settled, setSettled] = useState(value);
-  const first = useRef(true);
-  useEffect(() => {
-    if (first.current) {
-      first.current = false;
-      return;
-    }
-    const timer = setTimeout(() => setSettled(value), ms);
-    return () => clearTimeout(timer);
-  }, [value, ms]);
-  return settled;
-}
-
-/**
- * Tells the tiles of the tab when they are in view, with one `IntersectionObserver` for all of them (a tab can hold hundreds of
- * tiles; one observer each was a few hundred objects the page had to keep). Without `IntersectionObserver` (a test) every tile is
- * always in view.
- */
-export interface TileWatch {
-  /** Calls `callback(true)` while `el` is in view and `callback(false)` while it is not, both ways. Returns the function that stops. */
-  observe: (el: Element, callback: (inView: boolean) => void) => () => void;
-  /** Stops watching everything; `observe` starts again if asked. */
-  disconnect: () => void;
-}
-
-/** Makes a {@link TileWatch}. */
-export function createTileWatch(): TileWatch {
-  const callbacks = new Map<Element, (inView: boolean) => void>();
-  let observer: IntersectionObserver | null = null;
-  return {
-    observe(el, callback) {
-      if (typeof IntersectionObserver === "undefined") {
-        callback(true);
-        return () => undefined;
-      }
-      observer ??= new IntersectionObserver((entries) => {
-        for (const entry of entries) callbacks.get(entry.target)?.(entry.isIntersecting);
-      });
-      callbacks.set(el, callback);
-      observer.observe(el);
-      return () => {
-        callbacks.delete(el);
-        observer?.unobserve(el);
-      };
-    },
-    disconnect() {
-      observer?.disconnect();
-      observer = null;
-      callbacks.clear();
-    },
   };
 }
 
@@ -268,49 +192,6 @@ function LookSection({ library, total, shown, searching, collapsed, holdsCurrent
         <div className="ym-look-grid">{children}</div>
       </CollapsibleContent>
     </Collapsible>
-  );
-}
-
-/**
- * The Tone card: Temperature, Contrast and Saturation, under the Look card (owner's decision of
- * 2026-10-13, `docs/16`; the mockup has no such card). The rows are the same settings as Colour ›
- * White balance › Kelvin, Light › Exposure › Contrast and Colour › Colour balance › Saturation,
- * built from the same controls (`controls.tsx`): moving one copy moves the other, with undo, redo
- * and Reset. Temperature keeps the Kelvin control's Auto semantics: it shows the photo's Auto Kelvin,
- * moving it makes the white balance Manual at that Kelvin with the Auto tint, and its Reset goes
- * back to Auto. As on the Exposure card, the AUTO button speaks for the white balance only. Tint
- * stays on the Colour tab. The card's Reset sends Auto for the white balance (a picked white and a
- * light preset go with it, as on the Colour tab) and puts Contrast and Saturation back to Auto (0, or Apple Auto's answer, `docs/19`).
- */
-export function ToneCard({ store, rs }: { store: AppStore; rs: ResolvedSettings }) {
-  const { picked, isAuto } = whiteBalanceState(rs);
-  return (
-    <Card
-      className="ym-tone-card"
-      title="Tone"
-      tag={
-        <>
-          {picked ? <Tag variant="edited" title="White picked from the photo" /> : null}
-          <AutoToggle isAuto={isAuto} onAuto={() => whiteBalanceToAuto(store)} aria-label="Auto temperature" />
-        </>
-      }
-      action={
-        <ResetLink
-          size="card"
-          onClick={() =>
-            void store.update(
-              foldPatches(inputPatch({ white_balance: AUTO, light_source: "auto", white_pick: null }), mainGradePatch({ contrast: AUTO, saturation: AUTO })),
-              true,
-              rs.photo_id,
-            )
-          }
-        />
-      }
-    >
-      <KelvinSlider store={store} rs={rs} label="Temperature" />
-      <ContrastSlider store={store} rs={rs} />
-      <SaturationSlider store={store} rs={rs} />
-    </Card>
   );
 }
 
@@ -472,8 +353,9 @@ export function LookCard({ store, photo, rs }: TabProps) {
 
 /**
  * Look: the Automatic card (what was worked out for this photo, and where to change it), the
- * Look card (strength, "Apply to", search and the grid of looks with lazy thumbnails), the Tone
- * card (Temperature, Contrast, Saturation). The lens has a tab of its own (`LensTab`).
+ * Look card (strength, "Apply to", search and the grid of looks with lazy thumbnails) and the
+ * Presets card (`docs/30` section 9; it took the place of the Tone card, whose controls stay on Light and Colour).
+ * The lens has a tab of its own (`LensTab`).
  */
 export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: LookTabProps) {
   perfCount("LookTab");
@@ -489,7 +371,6 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
   const rows = appleRows(appleLine !== null ? rs.estimates.apple_steps : null);
   const openLight = (): void => onOpenTab("light");
   const openColor = (): void => onOpenTab("color");
-  const openTone = (label: string): void => revealToneSlider(document.querySelector<HTMLElement>(".ym-tone-card"), label);
   const whiteAuto = auto.input.white_balance && auto.input.light_source && inputOf(settings).white_pick === null;
   const profileText =
     photo.camera.match_kind.kind === "exact" ? `${shortBody(photo.camera.body)} · measured profile` : `${shortBody(photo.camera.body)} · ${photo.camera.profile} profile`;
@@ -526,8 +407,8 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
               label="Contrast"
               value={formats.signed(main.grade.contrast)}
               isAuto={auto.main.contrast}
-              tabLabel="Tone"
-              onOpen={() => openTone("Contrast")}
+              tabLabel="Light"
+              onOpen={openLight}
             />
           ) : null}
           {rows.saturation ? (
@@ -535,8 +416,8 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
               label="Saturation"
               value={formats.signed(main.grade.saturation)}
               isAuto={auto.main.saturation}
-              tabLabel="Tone"
-              onOpen={() => openTone("Saturation")}
+              tabLabel="Colour"
+              onOpen={openColor}
             />
           ) : null}
           {rows.shadowColor !== null ? (
@@ -564,7 +445,7 @@ export const LookTab = memo(function LookTab({ store, photo, rs, onOpenTab }: Lo
         {applePlan !== null ? <RowNote>{`\u201c${applePlan}\u201d`}</RowNote> : null}
       </Card>
       <LookCard store={store} photo={photo} rs={rs} />
-      <ToneCard store={store} rs={rs} />
+      <PresetsCard store={store} photo={photo} rs={rs} />
     </>
   );
 });

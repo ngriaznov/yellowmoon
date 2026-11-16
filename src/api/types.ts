@@ -130,6 +130,8 @@ export interface SessionState {
    * Photos say "Added 3 photos. 2 were already open." when files are added to a session (addition, 2026-10-16).
    */
   opened?: OpenSummary | null;
+  /** The open album (`docs/31` section 7): its name, its file and whether it has unsaved changes; null with no album. Absent counts as null. */
+  album?: AlbumState | null;
 }
 
 /**
@@ -1814,6 +1816,8 @@ export type ErrorScope =
   | "preferences"
   | "viewport"
   | "mask"
+  | "presets"
+  | "album"
   | "app";
 
 /**
@@ -1925,6 +1929,12 @@ export type MenuAction =
   | "remove_photo"
   | "bypass_node"
   | "mask_view"
+  | "save_preset"
+  | "import_presets"
+  | "new_preset_from_export"
+  | "apply_preset"
+  | "save"
+  | "save_as"
   | "look_1"
   | "look_2"
   | "look_3"
@@ -1946,11 +1956,20 @@ export interface MenuState {
   paste_settings: boolean;
   /** Paste Settings to Picked: something is copied and a photo is picked. */
   paste_settings_to_picked: boolean;
+  /** Looks › Save Preset…: a developed current photo, and no dialog open (`docs/30` section 8). */
+  save_preset: boolean;
+  /** Looks › Apply Preset: the same. */
+  apply_preset: boolean;
+  /** File › Save: a photo is open and no dialog is (`docs/31` section 7). */
+  save: boolean;
+  /** File › Save As…: the same. */
+  save_as: boolean;
 }
 
-/** `menu_action` event payload. */
+/** `menu_action` event payload. `preset` is the name of the preset of `apply_preset` (`docs/30` section 8). */
 export interface MenuActionEvent {
   action: MenuAction;
+  preset?: string | null;
 }
 
 /** Event name → payload type, for the typed `on()`. `looks_changed` carries no data. */
@@ -1964,6 +1983,10 @@ export interface ApiEvents {
   render_stats: RenderStats;
   export_progress: ExportProgress;
   looks_changed: null;
+  /** A preset was saved, renamed, replaced, imported or removed, by the app or by `ym` (`docs/30` section 8): read `presets_list` again. */
+  presets_changed: null;
+  /** The open album's state changed: an edit, a save, an open or a close (`docs/31` section 7): read `album_state` again. */
+  album_changed: null;
   /** A provider's availability changed (a program found, signed in or out, a probe ended): read `auto_status_cached()` again (`docs/22` section 12.6). */
   auto_status_changed: null;
   update_state: UpdateState;
@@ -1996,3 +2019,104 @@ export interface ApiEvents {
 
 /** Names of the events the core emits. */
 export type ApiEventName = keyof ApiEvents;
+
+// ---------------------------------------------------------------------------
+// Presets (`docs/30-presets.md` section 8)
+// ---------------------------------------------------------------------------
+
+/** The eight groups of a preset, in the order of `docs/30` section 2: the dialog, the file and the help list them so. */
+export type PresetGroup = "look" | "lens" | "light" | "color" | "detail" | "curve" | "raw" | "nodes";
+
+/** The look a preset holds: its id and its name, so that a missing look can be named. */
+export interface PresetLook {
+  id: LookId;
+  name: string;
+}
+
+/** One saved preset as `presets_list` says it (`docs/30` section 8). */
+export interface PresetEntry {
+  name: string;
+  groups: PresetGroup[];
+  /** Present only with the Look group. */
+  look: PresetLook | null;
+  /** The look is not in the library, or its file is gone or changed. */
+  look_missing: boolean;
+  /** Applying the preset to the photo asked about would change nothing (`docs/30` section 4.3); false without a photo. */
+  matches: boolean;
+  /** The first 12 hex digits of the file's SHA-256: the thumbnail key. */
+  revision: string;
+}
+
+/** A file in `presets/` that cannot be read, with the reason, so that it can be deleted. */
+export interface DamagedPreset {
+  file: string;
+  reason: string;
+}
+
+/** The answer of `presets_list(photo_id)`. */
+export interface PresetsListing {
+  presets: PresetEntry[];
+  damaged: DamagedPreset[];
+  /** The folder the presets are in, for the sentence of a failed write. */
+  folder: string;
+}
+
+/** What a preset is made from: a photo of the session, or a file (an exported photo, `docs/30` section 12). */
+export type PresetSource = { kind: "photo"; photo_id: PhotoId } | { kind: "file"; path: string };
+
+/** The answer of `preset_inspect(source)`: the groups to tick, whether the source is an older export, the look's name. */
+export interface PresetInspect {
+  changed: PresetGroup[];
+  older_export: boolean;
+  look: PresetLook | null;
+}
+
+/** The answer of `preset_apply(name, photo_ids)`: the `PasteReport` fields and the name of the missing look, or null. */
+export interface PresetApplyReport {
+  pasted: PastedPhoto[];
+  skipped: PhotoId[];
+  missing_look: string | null;
+}
+
+/** A file whose preset name exists already, for the Replace question. */
+export interface PresetExists {
+  name: string;
+  path: string;
+}
+
+/** A file an import refused, with the sentence. */
+export interface PresetRefused {
+  file: string;
+  reason: string;
+}
+
+/** The answer of `presets_import_dialog` and `presets_import(paths, replace)` (`docs/30` section 8). */
+export interface ImportResult {
+  added: string[];
+  replaced: string[];
+  /** Names that exist: not replaced unless `replace`. */
+  exists: PresetExists[];
+  refused: PresetRefused[];
+}
+
+/** `preset_export`'s answer: where the shell wrote the file. */
+export interface PresetExported {
+  path: string;
+}
+
+// ---------------------------------------------------------------------------
+// Albums (`docs/31-albums.md` section 7)
+// ---------------------------------------------------------------------------
+
+/** The open album: its name ("Lisbon"), its file and whether it has changes that are not saved. */
+export interface AlbumState {
+  name: string;
+  path: string;
+  edited: boolean;
+}
+
+/** What `album_save` answers when a file was written: where, and the album's name. */
+export interface AlbumSaved {
+  path: string;
+  name: string;
+}
