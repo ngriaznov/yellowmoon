@@ -221,6 +221,28 @@ impl App {
         }
     }
 
+    /// The app with an album open (`Core::album_open`, what File > Open does), instead of photos.
+    fn open_album(album: &Path) -> Self {
+        let home = tempfile::tempdir().expect("tempdir");
+        let mut options = CoreOptions::new(data_dir(), home.path().to_path_buf());
+        options.thumbnails = false;
+        let core = Core::open(options).expect("core");
+        let outcome = core
+            .album_open(album, OpenOptions::default())
+            .expect("the album opens");
+        assert!(
+            core.session.wait_idle(Duration::from_secs(120)),
+            "the photos develop"
+        );
+        let photo = outcome.photos[0].0;
+        Self {
+            core,
+            photo,
+            _slot: None,
+            _home: home,
+        }
+    }
+
     /// Exports every photo with `options` to `dir` and returns the files, in job order.
     fn export(&self, options: ExportOptions, dir: &Path) -> Vec<PathBuf> {
         let job = ExportJob {
@@ -2175,4 +2197,134 @@ fn the_test_switch_refuses_a_name_that_is_not_a_method() {
         .arg(sb.root().join("out"))
         .assert()
         .failure();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Presets and albums (docs/30 section 11, docs/31 section 8)
+// ---------------------------------------------------------------------------------------------
+
+/// A preset of `groups` made from `doc`, written to `file`, and the same preset saved in the app's own presets folder.
+fn preset_of(
+    app: &App,
+    file: &Path,
+    doc: serde_json::Value,
+    groups: &[ym_core::presets::PresetGroup],
+) {
+    let (settings, _) =
+        DevelopSettings::from_value(doc, &app.core.looks.effective_default()).expect("settings");
+    let preset =
+        ym_core::presets::Preset::from_settings("Parity", &settings, groups, None).expect("preset");
+    std::fs::write(file, preset.to_json().expect("json")).expect("write");
+    app.core
+        .presets
+        .store()
+        .save(&preset, false)
+        .expect("saved in the app's folder");
+}
+
+/// `preset_apply` in the app and `--preset FILE` in the binary give the same bytes, for a preset with and without `nodes`.
+#[test]
+fn a_preset_is_the_same_files_through_the_app_path_and_the_binary() {
+    use ym_core::presets::PresetGroup;
+    let sb = Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
+    let png = ExportOptions {
+        format: FormatKind::Png,
+        bit_depth: BitDepth::Eight,
+        ..ExportOptions::default()
+    };
+    let plain = cli_export(
+        &sb,
+        &[&arw],
+        &["--format", "png", "--bits", "8"],
+        &sb.root().join("plain"),
+    );
+    let cases = [
+        ("light", vec![PresetGroup::Light, PresetGroup::Color], false),
+        ("nodes", vec![PresetGroup::Light, PresetGroup::Nodes], true),
+    ];
+    for (name, groups, with_nodes) in cases {
+        let app = App::open(&[&arw]);
+        let file = sb.root().join(format!("{name}.ympreset"));
+        preset_of(&app, &file, three_correctors(), &groups);
+        let report = app
+            .core
+            .preset_apply("Parity", &[app.photo])
+            .expect("applied");
+        assert_eq!(report.pasted.len(), 1);
+        assert_eq!(report.missing_look, None);
+        let from_app = app.export(png.clone(), &sb.root().join("app").join(name));
+        let from_cli = cli_export(
+            &sb,
+            &[&arw],
+            &[
+                "--format",
+                "png",
+                "--bits",
+                "8",
+                "--preset",
+                file.to_str().expect("utf-8"),
+            ],
+            &sb.root().join("cli").join(name),
+        );
+        assert_same_files(&from_app, &from_cli, &format!("preset {name}"));
+        assert_ne!(
+            bytes(&plain[0]),
+            bytes(&from_cli[0]),
+            "the preset changed the picture ({with_nodes})"
+        );
+    }
+}
+
+/// An album the core saved, exported through `Core::album_open` and through `ym render <album>`: the same bytes, with a
+/// preset over it too.
+#[test]
+fn an_album_is_the_same_files_through_the_app_path_and_the_binary() {
+    let sb = Sandbox::new();
+    let a = sb.arw("a.ARW");
+    let b = sb.arw_sized("b.ARW", 128, 96, 7);
+    let album = sb.root().join("trip.ymalbum");
+    {
+        let saving = App::open(&[&a, &b]);
+        let ids = saving.core.session.scope_ids(ApplyScope::All);
+        let patch: SettingsPatch = serde_json::from_value(common::field_patch(serde_json::json!({
+            "exposure": { "kind": "manual", "ev": 0.5 },
+            "contrast": 20.0
+        })))
+        .expect("patch");
+        saving
+            .core
+            .session
+            .update_settings(ids[1], &patch)
+            .expect("settings");
+        saving.core.album_save(&album).expect("saved");
+    }
+    let png = ExportOptions {
+        format: FormatKind::Png,
+        bit_depth: BitDepth::Eight,
+        ..ExportOptions::default()
+    };
+    let app = App::open_album(&album);
+    let from_app = app.export(png.clone(), &sb.root().join("app"));
+    let from_cli = cli_export(
+        &sb,
+        &[&album],
+        &["--format", "png", "--bits", "8"],
+        &sb.root().join("cli"),
+    );
+    assert_same_files(&from_app, &from_cli, "album");
+    assert_eq!(from_app.len(), 2);
+    // The stored settings are in the pictures: the album is not the same as the photos with their defaults.
+    let plain = cli_export(
+        &sb,
+        &[&a, &b],
+        &["--format", "png", "--bits", "8"],
+        &sb.root().join("plain"),
+    );
+    assert_ne!(bytes(&plain[1]), bytes(&from_cli[1]));
+    assert_eq!(
+        bytes(&plain[0]),
+        bytes(&from_cli[0]),
+        "the photo that was not edited is as it was"
+    );
 }
