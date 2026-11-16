@@ -1,0 +1,54 @@
+/* The few rules the mock-ups of design/presets/ need that the app's own sheets (app.css) do not have. Mock-up only: nothing here is product code.
+   The tokens are the app's (design/tokens.css, src/styles/glass-c2.css). */
+
+/* ---- the Presets card ------------------------------------------------------------------------------------------------------------------ */
+.pr-count { color: var(--glass-label-secondary); }
+.pr-more { display: flex; margin-top: 10px; }
+.pr-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; padding-top: 4px; }
+.pr-empty__text { margin: 0; font-size: 0.875rem; line-height: 1.45; color: var(--glass-label-secondary); max-width: 30ch; }
+/* A tile whose menu is open is ringed by its menu, as a thumbnail of the filmstrip is. */
+.pr-menu-open .ym-look-tile__picture { outline: 2px solid rgb(255 255 255 / 0.55); outline-offset: 2px; }
+.pr-menu-sep { height: 1px; margin: 4px 8px; background: rgb(255 255 255 / 0.12); }
+
+/* ---- the Save preset dialog ------------------------------------------------------------------------------------------------------------ */
+.pr-name { display: grid; gap: 6px; padding-bottom: 14px; }
+.pr-label { font-size: 0.8125rem; font-weight: 600; color: var(--glass-label-secondary); }
+.pr-input { width: 100%; height: 40px; padding: 0 12px; border-radius: 12px; border: 0; color: inherit; font: inherit; font-size: 0.9375rem; background: rgb(255 255 255 / 0.08);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.14); outline: none; }
+.pr-input:focus { background: rgb(255 255 255 / 0.12); box-shadow: inset 0 0 0 2px #ffc20e; caret-color: #ffc20e; }
+.pr-input::placeholder { color: rgb(255 255 255 / 0.4); }
+.pr-groups { display: grid; border-top: 1px solid rgb(255 255 255 / 0.1); }
+.pr-group { display: flex; align-items: flex-start; gap: 12px; padding: 9px 2px; border-bottom: 1px solid rgb(255 255 255 / 0.1); cursor: default; }
+.pr-group__text { display: grid; gap: 1px; min-width: 0; }
+.pr-group__label { font-size: 0.875rem; font-weight: 600; }
+.pr-group__line { font-size: 0.78rem; line-height: 1.35; color: var(--glass-label-secondary); }
+/* The checkbox is drawn here because the registry component is added in P-04 (docs/30 §9.3): 18 px, the card's radius, the accent when ticked. */
+.pr-check { flex: none; display: grid; place-items: center; width: 18px; height: 18px; margin-top: 2px; border-radius: 6px; color: #000;
+  background: rgb(255 255 255 / 0.08); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.32); }
+.pr-check[data-checked="true"] { background: #ffc20e; box-shadow: none; }
+.pr-check[data-checked="false"] svg { display: none; }
+.pr-note { margin: 12px 0 0; font-size: 0.8125rem; line-height: 1.45; color: var(--glass-label-secondary); }
+.pr-note--older { margin-top: 8px; padding: 9px 12px; border-radius: 12px; background: rgb(255 255 255 / 0.07); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.1); color: inherit; }
+.pr-question { margin: 0; font-size: 0.9375rem; line-height: 1.5; color: var(--glass-label-secondary); }
+
+/* ---- the macOS menu bar and the Looks menu (macOS draws them; this is their look in dark appearance) --------------------------------------- */
+.pr-macos { position: fixed; inset: 0 0 auto 0; z-index: 100; font-family: -apple-system, "SF Pro Text", "Figtree", system-ui, sans-serif; font-size: 13px; color: #fff; pointer-events: none; }
+.mm-bar { display: flex; align-items: center; gap: 0; height: 25px; padding: 0 12px; background: rgb(28 28 30 / 0.78); backdrop-filter: blur(24px) saturate(1.6); box-shadow: 0 0.5px 0 rgb(255 255 255 / 0.12); }
+.mm-bar > span, .mm-bar > b { padding: 0 9px; line-height: 25px; }
+.mm-bar > b { padding-left: 30px; }
+.mm-apple { position: absolute; left: 14px; top: 7px; width: 11px; height: 11px; border-radius: 50%; background: #fff; opacity: 0.9; }
+.mm-bar--on { background: rgb(255 255 255 / 0.2); border-radius: 5px; }
+.mm-menu { position: absolute; top: 28px; left: 316px; width: 300px; padding: 5px; border-radius: 10px; background: rgb(44 44 47 / 0.92);
+  backdrop-filter: blur(30px) saturate(1.8); box-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.18), 0 12px 32px rgb(0 0 0 / 0.5); }
+.mm-menu--sub { top: 366px; left: 618px; width: 188px; }
+.mm-item { display: flex; align-items: center; height: 22px; padding: 0 8px 0 4px; border-radius: 5px; white-space: nowrap; }
+.mm-chk { width: 18px; flex: none; text-align: center; font-size: 12px; }
+.mm-label { flex: 1; }
+.mm-key { margin-left: 18px; color: rgb(255 255 255 / 0.62); }
+.mm-item--hover { background: #0a60ff; }
+.mm-item--hover .mm-key { color: #fff; }
+.mm-sep { height: 1px; margin: 5px 8px; background: rgb(255 255 255 / 0.14); }
+
+/* ---- spacing of the card (the Look card's own sections get it from their header) ---------------------------------------------------------- */
+[data-presets] .ym-field + .ym-look-group__body { margin-top: 10px; }
+.pr-more > button { margin-left: -6px; }
