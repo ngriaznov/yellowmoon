@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 pub mod dng_looks;
+pub mod rich;
 pub mod tiffmini;
 
 use std::path::{Path, PathBuf};

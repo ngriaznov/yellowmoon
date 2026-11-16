@@ -387,6 +387,8 @@ The webview builds patches with pure functions (`src/state/graphOps.ts`, section
 
 The rules are `SettingsPatch::copied_from` and `Session::paste_settings` in the core, not the webview's; the mock repeats them (`copiedPatch`).
 
+**Presets** (`docs/30-presets.md`) are cut from the same patch and applied through the same call. A preset leaves out the same three Input fields and the Object clicks, **and a Brush row's strokes** (`MaskItem::emptied_for_preset`: the row keeps its feather, mode and place and selects nothing); Copy settings and an album (`docs/31`) keep the strokes.
+
 ### 3.9 Resolved settings, XMP, DNG and `ym`
 
 - **Resolved settings are node-first too.** `ResolvedSettings.settings` is the stored document with Auto kept; `values` is the same graph with every Auto replaced by the number it resolves to (the Input's `exposure_ev`, `kelvin`, `tint`, `sharpen` and `noise_reduction`; Main's `contrast`, `highlights`, `shadows`, `black`, `saturation` and the wheels' points; the other correctors' values as they are); **`auto`** says which Auto fields are still automatic, grouped by node (`auto.input`: `exposure`, `light_source`, `white_balance`, `sharpen`, `noise_reduction`; `auto.main`: `contrast`, `highlights`, `shadows`, `black`, `saturation`, `balance_shadows`, `balance_highlights`); **`estimates`** keeps what belongs to the photo (`source`, `provider`, `apple`, `apple_steps`, `light_class`, `light_confidence`, `noise`) and groups the numbers Auto resolves to by the node they are for (`estimates.input`: `exposure_ev`, `kelvin`, `tint`, `sharpen`, `noise_reduction`; `estimates.main`: `contrast`, `saturation`, `highlights`, `shadows`, `black`, `balance_shadows`, `balance_highlights`).

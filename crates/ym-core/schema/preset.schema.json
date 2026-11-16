@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yellowmoon.app/schema/preset.schema.json",
+  "title": "Yellowmoon preset",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["yellowmoon_preset", "name", "groups", "settings"],
+  "properties": {
+    "yellowmoon_preset": { "const": 1 },
+    "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "groups": {
+      "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true,
+      "items": { "enum": ["look", "lens", "light", "color", "detail", "curve", "raw", "nodes"] }
+    },
+    "look": {
+      "type": "object", "additionalProperties": false, "required": ["id", "name"],
+      "properties": { "id": { "type": "string", "minLength": 1 }, "name": { "type": "string" } }
+    },
+    "settings": { "$ref": "settings.schema.json" }
+  },
+  "if": { "properties": { "groups": { "contains": { "const": "look" } } }, "required": ["groups"] },
+  "then": { "required": ["look"] },
+  "else": { "not": { "required": ["look"] } }
+}

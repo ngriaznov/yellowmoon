@@ -49,11 +49,18 @@ use crate::export_queue::{
     ExportEstimate, ExportJob, ExportJobId, ExportQueue, ExportSink, JobSummary, QueueError,
 };
 use crate::looks::{ImportRequest, LookEntry, LookService, LooksError, LooksImportResult};
-use crate::pipeline::{AdvisorPictures, RenderError, RenderOptions, Renderer, Unloadable};
+use crate::pipeline::{
+    AdvisorPictures, PhotoSource, RenderError, RenderOptions, Renderer, Unloadable,
+};
 use crate::preferences::{
     LastUsedFolders, Preferences, PreferencesError, PreferencesPatch, PreferencesStore,
     own_instructions,
 };
+use crate::presets::{
+    ImportOutcome, PresetApplyReport, PresetEntry, PresetError, PresetGroup, PresetInspect,
+    PresetList, PresetService, PresetSource,
+};
+use crate::scheduler::{JobHandle, Priority};
 use crate::session::{
     AppleAutoEnv, ApplyScope, EventSink, PasteReport, PhotoId, PictureRenderer, RemoveOutcome,
     RestoreOutcome, Session, SessionEnv, SessionError, default_decode_threads,
@@ -90,6 +97,9 @@ pub enum CoreError {
     /// The render engine could not start.
     #[error(transparent)]
     Render(#[from] RenderError),
+    /// A preset command failed.
+    #[error(transparent)]
+    Presets(#[from] PresetError),
 }
 
 impl CoreError {
@@ -105,6 +115,7 @@ impl CoreError {
             // A mask this computer cannot make or cannot find (`docs/23` section 9).
             Self::Render(RenderError::Mask(_)) => "mask",
             Self::Render(_) => "render",
+            Self::Presets(_) => "presets",
         }
     }
 }
@@ -193,6 +204,8 @@ pub struct Core {
     pub preferences: Arc<PreferencesStore>,
     /// The look library.
     pub looks: Arc<LookService>,
+    /// The presets folder (`docs/30`).
+    pub presets: Arc<PresetService>,
     /// The render engine.
     pub renderer: Renderer,
     /// The photos opened in this run.
@@ -391,9 +404,16 @@ impl Core {
                 }
             });
         }
+        // The presets folder is read when something asks (nothing is created here).
+        let presets = Arc::new(PresetService::open(
+            &options.app_root,
+            Arc::clone(&looks),
+            Arc::clone(&session),
+        ));
         Ok(Self {
             preferences,
             looks,
+            presets,
             renderer,
             session,
             exports,
@@ -963,6 +983,155 @@ impl Core {
             self.prepare_masks(current);
         }
         Ok(report)
+    }
+
+    // --- Presets (`docs/30`) -----------------------------------------------------------------
+
+    /// `presets_list(photo_id)`: reads the folder again and says for each preset whether applying it to the photo would change
+    /// nothing. When the folder differs from the last listing (a preset made by `ym`), `presets_changed` fires before this
+    /// returns.
+    #[must_use]
+    pub fn presets_list(&self, photo_id: Option<PhotoId>) -> PresetList {
+        self.presets.list(photo_id)
+    }
+
+    /// `preset_inspect(source)`: the groups the Save dialog ticks.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Presets`] (the scope `presets`).
+    pub fn preset_inspect(&self, source: &PresetSource) -> Result<PresetInspect, CoreError> {
+        Ok(self.presets.inspect(source)?)
+    }
+
+    /// `preset_save(name, groups, source, replace)`: makes the preset from a photo or a settings file and writes it. Without
+    /// `replace` a name that exists is refused ("A preset called Warm evening already exists.").
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Presets`].
+    pub fn preset_save(
+        &self,
+        name: &str,
+        groups: &[PresetGroup],
+        source: &PresetSource,
+        replace: bool,
+    ) -> Result<PresetEntry, CoreError> {
+        Ok(self.presets.save(name, groups, source, replace)?)
+    }
+
+    /// `preset_update(name, photo_id)`: the photo's values again for the preset's own groups.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Presets`].
+    pub fn preset_update(&self, name: &str, photo_id: PhotoId) -> Result<PresetEntry, CoreError> {
+        Ok(self.presets.update(name, photo_id)?)
+    }
+
+    /// `preset_rename(name, new_name)`: refuses a name that exists, case aside from its own.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Presets`].
+    pub fn preset_rename(&self, name: &str, new_name: &str) -> Result<PresetEntry, CoreError> {
+        Ok(self.presets.rename(name, new_name)?)
+    }
+
+    /// `preset_apply(name, photo_ids)`: applies the preset through [`Session::paste_settings`], the call every Paste goes
+    /// through: one call for many photos, atomic, one undo pair for each photo, and the photos still developing or failed
+    /// skipped. A look the library has not is left out and named in [`PresetApplyReport::missing_look`]; the rest applies. As
+    /// after a paste, the photo being looked at gets its mask work asked for.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Presets`] for a preset that is gone or a patch that cannot be applied (nothing changes).
+    pub fn preset_apply(
+        &self,
+        name: &str,
+        photo_ids: &[PhotoId],
+    ) -> Result<PresetApplyReport, CoreError> {
+        let report = self.presets.apply(name, photo_ids)?;
+        if let Some(current) = self.session.current()
+            && report.pasted.iter().any(|p| p.id == current)
+        {
+            self.prepare_masks(current);
+        }
+        Ok(report)
+    }
+
+    /// `preset_remove(name)`: moves the preset's file to the Trash.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Presets`].
+    pub fn preset_remove(&self, name: &str) -> Result<(), CoreError> {
+        Ok(self.presets.remove(name)?)
+    }
+
+    /// `preset_remove_file(file)`: moves a damaged file to the Trash, by its file name.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Presets`].
+    pub fn preset_remove_file(&self, file: &str) -> Result<(), CoreError> {
+        Ok(self.presets.remove_file(file)?)
+    }
+
+    /// `preset_export(name)`, after the shell's save panel chose `dest`: writes the preset's file there (an existing file is
+    /// overwritten).
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Presets`].
+    pub fn preset_export(&self, name: &str, dest: &Path) -> Result<(), CoreError> {
+        Ok(self.presets.export(name, dest)?)
+    }
+
+    /// `presets_import(paths, replace)`: reads `.ympreset` files into the folder. A name that exists is not replaced unless
+    /// `replace`, and comes back in `exists` for the page to ask about.
+    #[must_use]
+    pub fn presets_import(&self, paths: &[PathBuf], replace: bool) -> ImportOutcome {
+        self.presets.import(paths, replace)
+    }
+
+    /// `preset_reveal(name)`: the file Show in Finder reveals.
+    #[must_use]
+    pub fn preset_reveal(&self, name: &str) -> Option<PathBuf> {
+        self.presets.path_of(name)
+    }
+
+    /// Registers the application's listener for `presets_changed`.
+    pub fn on_presets_changed(&self, f: impl Fn() + Send + Sync + 'static) {
+        self.presets.on_change(f);
+    }
+
+    /// `preset_thumbnail(photo_id, name)`: queues the tile of a preset, the photo as it is developed now with the preset applied
+    /// (`docs/30` section 8), through the photo's own look. Built like [`crate::film_tiles::spawn_film_tile`]: at most 240 px on
+    /// the long edge, sRGB, [`Priority::Thumbnail`], superseded when the person moves to another photo. The photo's detail
+    /// statistic is left alone and nothing is written to disk.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Session`] for a photo that is unknown or not developed, [`CoreError::Presets`] for a preset that is gone.
+    pub fn spawn_preset_tile(
+        &self,
+        photo_id: PhotoId,
+        name: &str,
+    ) -> Result<JobHandle<Result<Vec<u8>, RenderError>>, CoreError> {
+        let src = PhotoSource::from_session(&self.session, photo_id)?;
+        let settings = self.presets.thumbnail_settings(name, &src.settings)?;
+        let tile = src.with_settings(settings);
+        let renderer = self.renderer.clone();
+        Ok(self.renderer.scheduler().submit_superseded(
+            Priority::Thumbnail,
+            photo_id,
+            move |token| {
+                let look = tile.settings.nodes.output.look.clone();
+                renderer.look_thumbnail_png(&tile, &look, token)
+            },
+            || Err(RenderError::Cancelled),
+        ))
     }
 
     // --- Export -----------------------------------------------------------------------------

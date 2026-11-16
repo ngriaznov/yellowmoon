@@ -828,6 +828,18 @@ impl MaskItem {
         item
     }
 
+    /// The row as a preset keeps it (`docs/30` section 3): [`MaskItem::emptied`] (an Object row without its clicks), and a Brush
+    /// row without its strokes, which selects nothing and keeps its feather, mode and place. Strokes are drawn on one photo's
+    /// content, so a preset does not carry them (Copy settings does).
+    #[must_use]
+    pub fn emptied_for_preset(&self) -> Self {
+        let mut item = self.emptied();
+        if let MaskShape::Brush(b) = &mut item.shape {
+            b.strokes.clear();
+        }
+        item
+    }
+
     /// Reads a row from its JSON object.
     ///
     /// # Errors

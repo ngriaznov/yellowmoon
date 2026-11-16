@@ -13,7 +13,7 @@
 //! settings commands), [`pipeline`] (the render graph: `Renderer`, the stage caches, geometry, the
 //! viewport state and frames, thumbnails, look tiles, histogram, Pick white sampling, full-size
 //! renders), [`scheduler`] (priorities, cancellation, the memory budget), [`preferences`]
-//! (`preferences.json`), [`looks`] (the look library with the default look, the display rendering
+//! (`preferences.json`), [`presets`] (the `presets/` folder: groups, files, the store and the service, `docs/30`), [`looks`] (the look library with the default look, the display rendering
 //! and `looks_changed`), [`vision`] (Subject and People masks from the computer's Vision framework, `docs/23`
 //! section 4.5), [`export`] (the one export function the app and the CLI share),
 //! [`memory`] (what is let go when the computer is short of memory, and the poll that notices),
@@ -45,6 +45,7 @@ pub mod memory;
 pub mod perf;
 pub mod pipeline;
 pub mod preferences;
+pub mod presets;
 pub mod scheduler;
 pub mod session;
 pub mod settings;
