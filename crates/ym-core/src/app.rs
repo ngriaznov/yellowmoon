@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 
+use crate::album::{Album, AlbumError, AlbumOutcome, AlbumState, write_album};
 use crate::apple_auto::{Availability, UnavailableReason, check_instructions};
 use crate::auto_provider::{AutoChoice, AutoStatus, ProviderAdvisors};
 
@@ -62,8 +63,8 @@ use crate::presets::{
 };
 use crate::scheduler::{JobHandle, Priority};
 use crate::session::{
-    AppleAutoEnv, ApplyScope, EventSink, PasteReport, PhotoId, PictureRenderer, RemoveOutcome,
-    RestoreOutcome, Session, SessionEnv, SessionError, default_decode_threads,
+    AppleAutoEnv, ApplyScope, EventSink, OpenOptions, PasteReport, PhotoId, PictureRenderer,
+    RemoveOutcome, RestoreOutcome, Session, SessionEnv, SessionError, default_decode_threads,
 };
 use crate::settings::SettingsPatch;
 
@@ -100,6 +101,9 @@ pub enum CoreError {
     /// A preset command failed.
     #[error(transparent)]
     Presets(#[from] PresetError),
+    /// An album could not be read, saved or opened.
+    #[error(transparent)]
+    Album(#[from] AlbumError),
 }
 
 impl CoreError {
@@ -116,6 +120,7 @@ impl CoreError {
             Self::Render(RenderError::Mask(_)) => "mask",
             Self::Render(_) => "render",
             Self::Presets(_) => "presets",
+            Self::Album(_) => "album",
         }
     }
 }
@@ -983,6 +988,53 @@ impl Core {
             self.prepare_masks(current);
         }
         Ok(report)
+    }
+
+    // --- Albums (`docs/31`) ------------------------------------------------------------------
+
+    /// `album_open(path)`: reads the album at `path`, and only when it is whole and this version can read it replaces the session
+    /// with its photos ([`Core::close_session`] and [`Session::open_album`]): in the album's order, with their settings, picks and
+    /// provider answers, a photo that cannot be found kept as a failed entry, and no provider asked. A refused album leaves the
+    /// session as it was. The question "Save changes to the album?" is the shell's, before this is called.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Album`] (the scope `album`): "This album was made by a newer version of Yellowmoon. Update to open it.",
+    /// "This file isn't a Yellowmoon album.", "This file is too large to be an album." or "Yellowmoon couldn't read this file. …".
+    pub fn album_open(&self, path: &Path, options: OpenOptions) -> Result<AlbumOutcome, CoreError> {
+        let album = Album::read_file(path)?;
+        self.close_session();
+        let outcome = self.session.open_album(&album, path, options);
+        if let Some(current) = self.session.current() {
+            self.prepare_masks(current);
+        }
+        Ok(outcome)
+    }
+
+    /// `album_save(path)`: writes the session as an album at `path` (File > Save when the album has a file, Save As otherwise;
+    /// the shell asks for the file) and makes the session that album, not edited. The write is atomic and writes only the album
+    /// file (hard rules 4 and 5); a write that fails changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Album`]: "Yellowmoon can't save the path of DSC04201.ARW in an album. …", "Yellowmoon couldn't save the album to
+    /// {folder}. … Nothing was changed."
+    pub fn album_save(&self, path: &Path) -> Result<AlbumState, CoreError> {
+        let album = Album::capture(&self.session, path)?;
+        write_album(path, &album)?;
+        self.session.set_album(path);
+        Ok(AlbumState::new(path, false))
+    }
+
+    /// `album_state()`: the open album, or `None`.
+    #[must_use]
+    pub fn album_state(&self) -> Option<AlbumState> {
+        self.session.album_state()
+    }
+
+    /// Registers the application's listener for `album_changed`: the album became edited, was saved, opened or closed.
+    pub fn on_album_changed(&self, f: impl Fn() + Send + Sync + 'static) {
+        self.session.on_album_changed(f);
     }
 
     // --- Presets (`docs/30`) -----------------------------------------------------------------

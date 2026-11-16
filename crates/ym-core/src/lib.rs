@@ -13,7 +13,7 @@
 //! settings commands), [`pipeline`] (the render graph: `Renderer`, the stage caches, geometry, the
 //! viewport state and frames, thumbnails, look tiles, histogram, Pick white sampling, full-size
 //! renders), [`scheduler`] (priorities, cancellation, the memory budget), [`preferences`]
-//! (`preferences.json`), [`presets`] (the `presets/` folder: groups, files, the store and the service, `docs/30`), [`looks`] (the look library with the default look, the display rendering
+//! (`preferences.json`), [`album`] (the strip saved to a `.ymalbum` file, `docs/31`), [`presets`] (the `presets/` folder: groups, files, the store and the service, `docs/30`), [`looks`] (the look library with the default look, the display rendering
 //! and `looks_changed`), [`vision`] (Subject and People masks from the computer's Vision framework, `docs/23`
 //! section 4.5), [`export`] (the one export function the app and the CLI share),
 //! [`memory`] (what is let go when the computer is short of memory, and the poll that notices),
@@ -27,6 +27,7 @@
 
 #![warn(missing_docs)]
 
+pub mod album;
 pub mod app;
 pub mod apple_auto;
 pub mod auto;

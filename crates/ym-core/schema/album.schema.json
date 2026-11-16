@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yellowmoon.app/schema/album.schema.json",
+  "title": "Yellowmoon album",
+  "description": "The strip saved to a file (docs/31): the photos in order with their paths, a fingerprint, the whole settings graph as stored (Auto stays Auto), whether each is picked and the Auto provider's answer it uses, the current photo and the versions that wrote it. Version 1. A reader of version 1 refuses a larger number, an unknown field and settings with an unknown field with one sentence before it looks at anything else, which this schema cannot express.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["yellowmoon_album", "photos"],
+  "properties": {
+    "yellowmoon_album": { "const": 1 },
+    "written_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": { "type": "string" },
+        "pipeline": { "type": "string" }
+      }
+    },
+    "current": { "type": ["integer", "null"], "minimum": 0 },
+    "photos": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/photo" }
+    }
+  },
+  "$defs": {
+    "photo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["absolute", "fingerprint", "settings"],
+      "properties": {
+        "path": { "type": ["string", "null"], "description": "Relative to the folder of the album file, `/` between the parts; null when there is none." },
+        "absolute": { "type": "string" },
+        "fingerprint": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["size", "head_sha256", "tail_sha256"],
+          "properties": {
+            "size": { "type": "integer", "minimum": 0 },
+            "head_sha256": { "type": "string", "pattern": "^([0-9a-f]{64})?$" },
+            "tail_sha256": { "type": "string", "pattern": "^([0-9a-f]{64})?$" }
+          }
+        },
+        "picked": { "type": "boolean", "default": false },
+        "settings": { "$ref": "settings.schema.json" },
+        "auto": { "$ref": "#/$defs/auto" }
+      }
+    },
+    "auto": {
+      "description": "The JSON of `ym:AutoAdvisor` (docs/22 section 14.2) of an answer.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model", "instructions", "instructions_sha256", "prompt", "table", "reproducible", "result", "scene", "plan", "steps"],
+      "properties": {
+        "provider": { "enum": ["apple", "claude", "agy"] },
+        "model": { "type": "string" },
+        "os": { "type": "string" },
+        "tool_version": { "type": "string" },
+        "api": { "type": "string" },
+        "schema": { "type": "integer" },
+        "image": { "type": "string" },
+        "instructions": { "enum": ["default", "edited"] },
+        "instructions_sha256": { "type": "string" },
+        "prompt": { "type": "integer", "minimum": 0 },
+        "table": { "type": "integer", "minimum": 0 },
+        "reproducible": { "type": "boolean" },
+        "result": { "const": "answered" },
+        "scene": { "type": "string" },
+        "plan": { "type": "string" },
+        "steps": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "exposure": { "type": ["integer", "null"] },
+            "highlights": { "type": ["integer", "null"] },
+            "shadows": { "type": ["integer", "null"] },
+            "blacks": { "type": ["integer", "null"] },
+            "contrast": { "type": ["integer", "null"] },
+            "white": { "type": ["integer", "null"] },
+            "tint": { "type": ["integer", "null"] },
+            "saturation": { "type": ["integer", "null"] },
+            "shadow_color": { "type": ["string", "null"] },
+            "shadow_color_strength": { "type": ["integer", "null"] },
+            "highlight_color": { "type": ["string", "null"] },
+            "highlight_color_strength": { "type": ["integer", "null"] }
+          }
+        }
+      }
+    }
+  }
+}

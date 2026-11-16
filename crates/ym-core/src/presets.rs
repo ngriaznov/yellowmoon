@@ -840,7 +840,7 @@ fn prune_node(map: Map<String, Value>, allow: &HashSet<SettingsField>) -> Option
 
 /// Writes `value` as compact JSON with the keys of every object sorted, so that a preset saved twice is the same bytes whatever
 /// order the JSON library keeps its maps in.
-fn write_canonical(value: &Value, out: &mut String) {
+pub(crate) fn write_canonical(value: &Value, out: &mut String) {
     match value {
         Value::Object(map) => {
             let mut keys: Vec<&String> = map.keys().collect();

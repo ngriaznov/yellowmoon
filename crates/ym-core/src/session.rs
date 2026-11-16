@@ -109,6 +109,10 @@ use ym_raw::decode::RawImage;
 use ym_raw::error::RawError;
 use ym_raw::metadata::RawMetadata;
 
+use crate::album::{
+    Album, AlbumOutcome, AlbumPhoto, AlbumPhotoState, AlbumState, Fingerprint, album_dir,
+    not_found_sentence, resolve_relative,
+};
 use crate::apple_auto::{
     Activity, AdvisorAnswer, AdvisorError, AdvisorPicture, AppleAuto, AutoAdvisor, AutoSteps,
     Availability, FailureKind, RETRIES, RETRY_PAUSE_MS, UnavailableReason, effective_instructions,
@@ -490,6 +494,41 @@ pub struct PasteReport {
     pub pasted: Vec<PastedPhoto>,
     /// The photos left out: still developing, failed or not in the session.
     pub skipped: Vec<PhotoId>,
+}
+
+/// One photo of the strip as an album saves it ([`Session::capture_photos`]).
+#[derive(Debug, Clone)]
+pub struct PhotoCapture {
+    /// The photo.
+    pub id: PhotoId,
+    /// Its path (a failed entry's is the album's absolute path).
+    pub path: PathBuf,
+    /// Its settings as stored: Auto kept, nothing pinned.
+    pub settings: DevelopSettings,
+    /// Picked for the batch actions.
+    pub picked: bool,
+    /// The photo on screen.
+    pub current: bool,
+    /// The provider's answer the photo uses, when one answered.
+    pub answer: Option<AppleAuto>,
+    /// The fingerprint an album gave the photo, kept for when the file cannot be read.
+    pub fingerprint: Option<Fingerprint>,
+}
+
+/// Gives a photo what an album kept of it: its settings, its provider's answer and its fingerprint, and freezes its Auto grading
+/// so that nothing asks a provider about it ([`Photo::auto_frozen`]).
+fn give_album_entry(photo: &mut Photo, entry: &AlbumPhoto) {
+    photo.settings = match entry.settings.clone().validated() {
+        Ok((settings, _)) => settings,
+        Err(_) => entry.settings.clone(),
+    };
+    photo.auto_frozen = true;
+    photo.kept_fingerprint = Some(entry.fingerprint.clone());
+    if let Some(answer) = &entry.auto
+        && let Some(slot) = answer.provider.slot()
+    {
+        photo.apple_results[slot] = Some(answer.to_applied());
+    }
 }
 
 /// What [`Session::remove`] did.
@@ -1027,6 +1066,8 @@ enum ProbeFailure {
     Raw(RawError),
     /// The file did not answer in time (`docs/26` H-15).
     NoAnswer,
+    /// An album's photo that is not there: the sentence the cell shows ("Not found: /Users/anna/…"), `docs/31` section 4.
+    Missing(String),
 }
 
 impl OpenOutcome {
@@ -1322,6 +1363,11 @@ struct Photo {
     /// Auto crop's analysis of the photo's picture, with the `own_gen` it was made for
     /// ([`Session::suggest_crop`]); in memory only.
     crop_analysis: Option<(u64, Arc<ym_compose::Analysis>)>,
+    /// Opened from an album (`docs/31` section 4): no provider is asked about the photo, so it is graded by the stored answer
+    /// or by Default Auto's rule, until Re-run or new instructions for the model ask again.
+    auto_frozen: bool,
+    /// The fingerprint the album had for the photo, written back when the file cannot be read (a failed entry kept in the strip).
+    kept_fingerprint: Option<Fingerprint>,
 }
 
 /// The session's Auto switches and what the workers are doing.
@@ -1475,9 +1521,37 @@ struct State {
     apple: AppleState,
     /// What [`Session::restore_removed`] puts back.
     removal: Option<Removal>,
+    /// The open album (`docs/31` section 6), set by [`Session::open_album`] and [`Session::set_album`].
+    album: Option<AlbumMeta>,
+    /// Counts every change to the album: a setting of any photo, a pick, a photo added or removed, a photo put back. The album
+    /// is edited while this is not what it was at the last save. Undo bumps it too: it never clears the state.
+    edits: u64,
+    /// The edited state flipped to true since the listeners were last told ([`Inner::flush_album_event`]).
+    album_notify: bool,
+}
+
+/// The album the session has open: its file, and the value of [`State::edits`] when it was opened or last saved.
+struct AlbumMeta {
+    path: PathBuf,
+    saved: u64,
 }
 
 impl State {
+    /// One more change to the album.
+    fn bump(&mut self) {
+        if self.album.as_ref().is_some_and(|a| a.saved == self.edits) {
+            self.album_notify = true;
+        }
+        self.edits += 1;
+    }
+
+    /// The state of the open album.
+    fn album_state(&self) -> Option<AlbumState> {
+        self.album
+            .as_ref()
+            .map(|a| AlbumState::new(&a.path, a.saved != self.edits))
+    }
+
     fn new(default_look: LookId) -> Self {
         Self {
             photos: Vec::new(),
@@ -1493,6 +1567,9 @@ impl State {
             default_look,
             apple: AppleState::default(),
             removal: None,
+            album: None,
+            edits: 0,
+            album_notify: false,
         }
     }
 
@@ -1868,6 +1945,7 @@ impl State {
     fn apple_pending(&self, p: &Photo) -> bool {
         self.apple.activity().is_active()
             && p.apple_result(self.apple.chosen()).is_none()
+            && !p.auto_frozen
             && !matches!(p.summary.status, PhotoStatus::Skipped { .. })
     }
 
@@ -1876,6 +1954,7 @@ impl State {
     fn apple_wanted(&self, p: &Photo, provider: AutoProvider) -> bool {
         p.own.is_some()
             && p.apple_result(provider).is_none()
+            && !p.auto_frozen
             && !self.apple.in_flight.contains(&(p.id, provider))
             && !matches!(p.summary.status, PhotoStatus::Skipped { .. })
     }
@@ -1989,6 +2068,7 @@ impl State {
         if !self.photos.iter().any(|p| doomed.contains(&p.id)) {
             return None;
         }
+        self.bump();
         let was_current = self.current.map(|i| self.photos[i].id);
         let successor = match self.current {
             Some(cur) if doomed.contains(&self.photos[cur].id) => {
@@ -2094,6 +2174,9 @@ impl State {
             self.photos.insert(at, photo);
         }
         self.reindex();
+        if !restored.is_empty() {
+            self.bump();
+        }
         // The photo on screen stays, unless the removal had taken it away and the person has not moved since: then it
         // comes back to it.
         self.current = current_id.and_then(|id| self.index.get(&id).copied());
@@ -2258,6 +2341,8 @@ struct Inner {
     mosaic_freed: Condvar,
     /// The most holders at once (for tests).
     mosaic_holders_peak: AtomicUsize,
+    /// Told when the open album's state changed ([`Session::on_album_changed`]).
+    album_listeners: Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// How long a decode waits for other decodes to give their mosaics back before it takes its own
@@ -2411,6 +2496,7 @@ impl Session {
             mosaic_wait: Mutex::new(0),
             mosaic_freed: Condvar::new(),
             mosaic_holders_peak: AtomicUsize::new(0),
+            album_listeners: Mutex::new(Vec::new()),
         });
         // A render that would be refused for want of ledger room asks the session to let go of its cached
         // mosaics first (`MemoryLedger::reserve_reclaiming`): they are only a cache.
@@ -2516,6 +2602,18 @@ impl Session {
         options: OpenOptions,
         progress: &(dyn Fn(OpenProgress) + Sync),
     ) -> OpenOutcome {
+        self.open_inner(paths, options, progress, None)
+    }
+
+    /// [`Session::open_with_progress`], with `on_new` called for each photo that is added, before it is registered and before its
+    /// development is queued (an album gives its photos their settings there, so no job ever sees the defaults).
+    fn open_inner(
+        &self,
+        paths: &[PathBuf],
+        options: OpenOptions,
+        progress: &(dyn Fn(OpenProgress) + Sync),
+        on_new: Option<&dyn Fn(&mut Photo)>,
+    ) -> OpenOutcome {
         // Apple Auto may have become available, or stopped being, since the last look (`docs/19`
         // section 1: read again when a session opens).
         self.refresh_apple_auto();
@@ -2614,6 +2712,9 @@ impl Session {
                 let mut photo = inner.new_photo(id, path, canon.clone(), &st.default_look, probe);
                 // The summary read after `open` says whether the photo waits for Apple Auto; the `apple`
                 // stage reports only the changes after that.
+                if let Some(on_new) = on_new {
+                    on_new(&mut photo);
+                }
                 photo.apple_pending_sent = st.apple_pending(&photo);
                 events.push(PhotoProgress {
                     id,
@@ -2634,6 +2735,7 @@ impl Session {
                 outcome.added.push(id);
             }
             if !outcome.added.is_empty() {
+                st.bump();
                 let source = collected
                     .single_folder
                     .clone()
@@ -2654,6 +2756,7 @@ impl Session {
             inner.emit(epoch, SessionEvent::PhotoProgress(e));
         }
         inner.enqueue(epoch, &develop, JobKind::Develop);
+        inner.flush_album_event();
         outcome
     }
 
@@ -2895,6 +2998,7 @@ impl Session {
             }
         }
         drop(emit);
+        inner.flush_album_event();
         // The worker looks at the photos that are left (a removed photo is no work; a burst whose last unanswered frame
         // left is complete), and whoever waits for it to be idle looks again.
         inner.apple_wake.notify_all();
@@ -2951,6 +3055,7 @@ impl Session {
             }
         }
         drop(emit);
+        inner.flush_album_event();
         // Photos that came back without an answer are work for the worker again.
         inner.apple_wake.notify_all();
         inner.sync_apple_stage(epoch);
@@ -3003,11 +3108,16 @@ impl Session {
         if !st.index.contains_key(&id) {
             return Err(SessionError::UnknownPhoto(id));
         }
-        if picked {
-            st.picked.insert(id);
+        let changed = if picked {
+            st.picked.insert(id)
         } else {
-            st.picked.remove(&id);
+            st.picked.remove(&id)
+        };
+        if changed {
+            st.bump();
         }
+        drop(st);
+        self.inner.flush_album_event();
         Ok(())
     }
 
@@ -3020,12 +3130,24 @@ impl Session {
             .filter(|p| !matches!(p.summary.status, PhotoStatus::Skipped { .. }))
             .map(|p| p.id)
             .collect();
+        let before = st.picked.len();
         st.picked.extend(ids);
+        if st.picked.len() != before {
+            st.bump();
+        }
+        drop(st);
+        self.inner.flush_album_event();
     }
 
     /// Clears the picked set.
     pub fn clear_picks(&self) {
-        lock(&self.inner.state).picked.clear();
+        let mut st = lock(&self.inner.state);
+        if !st.picked.is_empty() {
+            st.picked.clear();
+            st.bump();
+        }
+        drop(st);
+        self.inner.flush_album_event();
     }
 
     /// The photos a command with this scope acts on, in filmstrip order. Skipped photos are left
@@ -3169,12 +3291,18 @@ impl Session {
         if how == Commit::IfUnchanged && p.settings != view.settings {
             return Ok(None);
         }
+        let changed = p.settings != next;
         p.settings = next;
         if p.pick != pick {
             // The sample is part of what the colour chain renders from.
             p.version += 1;
         }
         p.pick = pick;
+        if changed {
+            st.bump();
+        }
+        drop(st);
+        self.inner.flush_album_event();
         Ok(Some(resolved))
     }
 
@@ -3210,6 +3338,11 @@ impl Session {
                 }
             }
         }
+        if !changed.is_empty() {
+            st.bump();
+        }
+        drop(st);
+        self.inner.flush_album_event();
         Ok(changed)
     }
 
@@ -3273,6 +3406,7 @@ impl Session {
             next.apply_patch(&for_photo, None)?;
             apply.push((i, next));
         }
+        let mut changed = false;
         for (i, next) in apply {
             let p = &mut st.photos[i];
             report.pasted.push(PastedPhoto {
@@ -3280,8 +3414,14 @@ impl Session {
                 before: SettingsPatch::between(&next, &p.settings),
                 after: SettingsPatch::between(&p.settings, &next),
             });
+            changed |= p.settings != next;
             p.settings = next;
         }
+        if changed {
+            st.bump();
+        }
+        drop(st);
+        self.inner.flush_album_event();
         Ok(report)
     }
 
@@ -3336,6 +3476,8 @@ impl Session {
                 p.own_gen += 1;
                 p.effective = Some(estimates);
                 p.settings.reset_automatic(apple_acts);
+                // Re-run asks the chosen provider again, also for a photo that came from an album (`docs/31` section 4).
+                p.auto_frozen = false;
                 p.pick = None;
                 p.version += 1;
                 // The chosen provider asks again about the new estimates (`docs/19` section 6,
@@ -3350,8 +3492,10 @@ impl Session {
             if let Some(key) = key {
                 st.rebuild_pool(&key, &self.inner.env.priors);
             }
+            st.bump();
             st.refresh_effective(&self.inner.env.priors)
         };
+        self.inner.flush_album_event();
         self.inner.apple_wake.notify_all();
         let Refresh { changed, repaint } = changed;
         self.inner.after_refresh(
@@ -3539,7 +3683,15 @@ impl Session {
             }
         }
         inner.current_hint.store(NO_PHOTO, Ordering::SeqCst);
-        lock(&inner.state).clear();
+        let had_album = {
+            let mut st = lock(&inner.state);
+            let had = st.album.is_some();
+            st.clear();
+            had
+        };
+        if had_album {
+            inner.notify_album();
+        }
         // The requests that are running are of no use now: their answers would be dropped (`docs/22`
         // section 9.4).
         if let Some(apple) = &inner.env.apple_auto {
@@ -3547,6 +3699,229 @@ impl Session {
         }
         // A worker pausing between retries looks again, and whoever waits for it.
         inner.apple_wake.notify_all();
+    }
+
+    // --- Albums (`docs/31`) ------------------------------------------------------------------
+
+    /// The photos of the strip as an album saves them, in order: each one's path, its settings as stored (a failed photo's too),
+    /// whether it is picked and current, the provider's answer it uses, and the fingerprint an album gave it.
+    #[must_use]
+    pub fn capture_photos(&self) -> Vec<PhotoCapture> {
+        let st = lock(&self.inner.state);
+        let chosen = st.apple.chosen();
+        let answered = |a: &&AppleAuto| matches!(a, AppleAuto::Answered { .. });
+        st.photos
+            .iter()
+            .enumerate()
+            .map(|(i, p)| PhotoCapture {
+                id: p.id,
+                path: p.path.clone(),
+                settings: p.settings.clone(),
+                picked: st.picked.contains(&p.id),
+                current: st.current == Some(i),
+                // The chosen provider's answer, else any answer the photo kept (an album's photo graded by another provider keeps
+                // its answer when it is saved again).
+                answer: p
+                    .apple_result(chosen)
+                    .filter(answered)
+                    .or_else(|| p.apple_results.iter().flatten().find(answered))
+                    .cloned(),
+                fingerprint: p.kept_fingerprint.clone(),
+            })
+            .collect()
+    }
+
+    /// The open album: its file, its name and whether it has changes that are not saved. `None` while no album is open (a session
+    /// opened from photos, until the first Save).
+    #[must_use]
+    pub fn album_state(&self) -> Option<AlbumState> {
+        lock(&self.inner.state).album_state()
+    }
+
+    /// Makes the session the album saved at `path` and not edited (after File > Save or Save As): the changes counted so far are
+    /// saved.
+    pub fn set_album(&self, path: &Path) {
+        {
+            let mut st = lock(&self.inner.state);
+            st.album = Some(AlbumMeta {
+                path: path.to_path_buf(),
+                saved: st.edits,
+            });
+            st.album_notify = false;
+        }
+        self.inner.notify_album();
+    }
+
+    /// How many changes the session has counted (every setting, pick, photo added, removed or put back; an undo is one more). The
+    /// album is edited while this is not what it was at the last save.
+    #[must_use]
+    pub fn edit_count(&self) -> u64 {
+        lock(&self.inner.state).edits
+    }
+
+    /// Registers a callback for the album's state changing: it became edited, was saved, opened or closed. It runs on the thread
+    /// that made the change, outside every lock, and must not call back into a command that waits for the session.
+    pub fn on_album_changed(&self, f: impl Fn() + Send + Sync + 'static) {
+        lock(&self.inner.album_listeners).push(Arc::new(f));
+    }
+
+    /// Opens an album (`docs/31` section 4): **replaces the session** ([`Session::close`]) with the album's photos, in its order.
+    ///
+    /// * Each photo is looked for at its relative path (against the folder of the album file), then at its absolute path; the first
+    ///   that is a file is the photo. A photo found by neither stays in the strip as a **failed photo** ("Not found: followed by the absolute path")
+    ///   with its settings, its pick and its place, so that saving again does not drop it. A photo listed twice is one photo.
+    /// * Each photo found gets its stored settings before its development is queued, so nothing is drawn with the defaults; its
+    ///   Pick white sample is taken when it is developed.
+    /// * A photo with an `auto` answer gets it as its provider state; **nothing asks a provider**: a photo without one is graded by
+    ///   Default Auto's rule until Re-run or new instructions.
+    /// * Picks and the current photo are restored. The album is not edited.
+    /// * The fingerprints are compared (128 KiB a photo, in parallel before this returns); a file that differs is
+    ///   [`AlbumPhotoState::Changed`] and its settings still apply.
+    ///
+    /// `album_path` is the album's file (the folder of the photos' relative paths is its folder; a folder given instead is used as
+    /// that folder). The caller reads and checks the album first ([`Album::read_file`]), so that a refused album leaves the
+    /// session as it was.
+    pub fn open_album(
+        &self,
+        album: &Album,
+        album_path: &Path,
+        options: OpenOptions,
+    ) -> AlbumOutcome {
+        let inner = &self.inner;
+        self.close();
+        let dir = album_dir(album_path);
+        let media = &inner.env.media;
+        // Where each photo is: the relative path first, then the absolute one.
+        let located: Vec<Option<PathBuf>> = album
+            .photos
+            .iter()
+            .map(|p| {
+                let relative = p.path.as_deref().map(|r| resolve_relative(&dir, r));
+                relative
+                    .into_iter()
+                    .chain(std::iter::once(PathBuf::from(&p.absolute)))
+                    .find(|c| c.is_file())
+            })
+            .collect();
+        let canons: Vec<Option<PathBuf>> = located
+            .par_iter()
+            .map(|p| p.as_ref().map(|p| media.canonical(p)))
+            .collect();
+        let same_file: Vec<bool> = located
+            .par_iter()
+            .zip(&album.photos)
+            .map(|(found, entry)| {
+                found
+                    .as_ref()
+                    .and_then(|p| Fingerprint::of(p).ok())
+                    .is_none_or(|f| f == entry.fingerprint)
+            })
+            .collect();
+        // The entry that gives a photo its settings, by the file's canonical path (the first one wins for a file listed twice).
+        let mut by_canon: HashMap<PathBuf, &AlbumPhoto> = HashMap::new();
+        for (canon, entry) in canons.iter().zip(&album.photos) {
+            if let Some(c) = canon {
+                by_canon.entry(c.clone()).or_insert(entry);
+            }
+        }
+        let give = |photo: &mut Photo| {
+            if let Some(entry) = by_canon.get(&photo.canon) {
+                give_album_entry(photo, entry);
+            }
+        };
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for p in located.iter().flatten() {
+            if !paths.contains(p) {
+                paths.push(p.clone());
+            }
+        }
+        if !paths.is_empty() {
+            self.open_inner(&paths, options, &|_| {}, Some(&give));
+        }
+
+        let mut st = lock(&inner.state);
+        let mut pool: HashMap<PathBuf, Photo> = std::mem::take(&mut st.photos)
+            .into_iter()
+            .map(|p| (p.canon.clone(), p))
+            .collect();
+        let mut placed: HashMap<PathBuf, PhotoId> = HashMap::new();
+        let mut entry_ids: Vec<PhotoId> = Vec::with_capacity(album.photos.len());
+        let mut photos: Vec<Photo> = Vec::new();
+        let mut states: Vec<(PhotoId, AlbumPhotoState)> = Vec::new();
+        for (n, entry) in album.photos.iter().enumerate() {
+            let key = canons[n]
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(&entry.absolute));
+            if let Some(id) = placed.get(&key) {
+                entry_ids.push(*id);
+                continue;
+            }
+            let (photo, state) = match canons[n].as_ref().and_then(|c| pool.remove(c)) {
+                Some(photo) => (
+                    photo,
+                    if same_file[n] {
+                        AlbumPhotoState::Found
+                    } else {
+                        AlbumPhotoState::Changed
+                    },
+                ),
+                None => {
+                    // Not found by either path: a failed photo that keeps its settings, pick and place.
+                    let id = PhotoId(st.next_id);
+                    st.next_id += 1;
+                    let path = PathBuf::from(&entry.absolute);
+                    let mut photo = inner.new_photo(
+                        id,
+                        path.clone(),
+                        path,
+                        &st.default_look,
+                        Err(ProbeFailure::Missing(not_found_sentence(&entry.absolute))),
+                    );
+                    give_album_entry(&mut photo, entry);
+                    (
+                        photo,
+                        AlbumPhotoState::Missing {
+                            absolute: entry.absolute.clone(),
+                        },
+                    )
+                }
+            };
+            placed.insert(key, photo.id);
+            entry_ids.push(photo.id);
+            states.push((photo.id, state));
+            if entry.picked {
+                st.picked.insert(photo.id);
+            }
+            photos.push(photo);
+        }
+        // Anything `open` made that no entry claimed (it cannot happen: only the entries' files were opened) goes last.
+        let mut left: Vec<Photo> = pool.into_values().collect();
+        left.sort_by_key(|p| p.id);
+        photos.extend(left);
+        st.photos = photos;
+        st.reindex();
+        let current = album
+            .current
+            .and_then(|c| entry_ids.get(c))
+            .and_then(|id| st.index.get(id).copied())
+            .or(if st.photos.is_empty() { None } else { Some(0) });
+        st.current = current;
+        inner.current_hint.store(
+            current.map_or(NO_PHOTO, |i| st.photos[i].id.0),
+            Ordering::SeqCst,
+        );
+        st.edits = 0;
+        st.album = Some(AlbumMeta {
+            path: album_path.to_path_buf(),
+            saved: 0,
+        });
+        st.album_notify = false;
+        drop(st);
+        inner.notify_album();
+        AlbumOutcome {
+            photos: states,
+            album: AlbumState::new(album_path, false),
+        }
     }
 
     // --- Auto providers ------------------------------------------------------------------------
@@ -3696,6 +4071,8 @@ impl Session {
             st.apple.instructions_gen += 1;
             for p in &mut st.photos {
                 p.apple_results = [None, None, None];
+                // New instructions ask every photo again, an album's photos too.
+                p.auto_frozen = false;
             }
             st.refresh_effective(&self.inner.env.priors)
         };
@@ -3972,6 +4349,23 @@ impl Inner {
         true
     }
 
+    /// Tells the album's listeners that the state changed (an open, a save, a close).
+    fn notify_album(&self) {
+        let listeners: Vec<Arc<dyn Fn() + Send + Sync>> = lock(&self.album_listeners).clone();
+        for l in listeners {
+            l();
+        }
+    }
+
+    /// Tells the album's listeners when the album became edited since they were last told. Called by every command that
+    /// changes the album, after it has let go of the state's lock.
+    fn flush_album_event(&self) {
+        let due = std::mem::take(&mut lock(&self.state).album_notify);
+        if due {
+            self.notify_album();
+        }
+    }
+
     /// Sends an event about photo `id` unless the job is cancelled or the photo is not in the session any more (it was
     /// removed, [`Session::remove`]); with `incarnation`, also unless it was removed and put back since the job was queued.
     /// Returns whether the job is still live for the photo.
@@ -4131,6 +4525,8 @@ impl Inner {
                     served: None,
                     repaint: false,
                     crop_analysis: None,
+                    auto_frozen: false,
+                    kept_fingerprint: None,
                 }
             }
             Err(error) => {
@@ -4148,6 +4544,7 @@ impl Inner {
                         tracing::warn!(photo = id.0, "the file did not answer in time");
                         NO_ANSWER_MESSAGE.to_owned()
                     }
+                    ProbeFailure::Missing(reason) => reason.clone(),
                 };
                 Photo {
                     id,
@@ -4188,6 +4585,8 @@ impl Inner {
                     served: None,
                     repaint: false,
                     crop_analysis: None,
+                    auto_frozen: false,
+                    kept_fingerprint: None,
                 }
             }
         }
@@ -4467,6 +4866,7 @@ impl Inner {
             let picture = self.env.apple_auto.is_some()
                 && st.apple.activity().is_active()
                 && st.photos[i].apple_result(st.apple.chosen()).is_none()
+                && !st.photos[i].auto_frozen
                 && st.pictures_held() < PICTURES_HELD;
             {
                 let p = &mut st.photos[i];
@@ -4476,6 +4876,15 @@ impl Inner {
                 p.version += 1;
                 if picture {
                     p.apple_picture = PictureSlot::Rendering;
+                }
+                // A photo that came with a Pick white point (an album's) takes its sample now that its estimates and its
+                // pixels are here; `commit_settings` does the same when the point is set by hand.
+                if let Some(point) = p.settings.input().white_pick
+                    && p.pick.map(|picked| picked.point) != Some(point)
+                    && let Ok(g0) = estimates.initial_gains()
+                    && let Some(sample) = pick_white_sample(&raw, point, g0)
+                {
+                    p.pick = Some(PickedWhite { point, sample });
                 }
             }
             if let Some(key) = key {

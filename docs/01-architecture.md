@@ -262,6 +262,10 @@ Tests: `crates/ym-core/tests/apple_auto.rs` (section *Removing photos from the f
 
 **The shell.** `AppApi::remove_photos` / `restore_photos` (commands `remove_photos(photo_ids)` and `restore_photos()`, both answering `SessionChange { photo_ids, already_open, session }`) forget the pending thumbnail requests of the photos, set their thumbnails aside in the `FrameStore` (`set_aside_photos`: not served, kept for Undo; the next removal drops the earlier ones; Undo announces them again at the addresses they had), and follow the current photo with the renderer and the viewport (`sync_current`).
 
+#### Albums
+
+`Album::capture(&Session, path)`, `write_album` and `Core::album_open` / `album_save` (`ym_core::album`, `docs/31-albums.md`) save the strip to a file the person names and open it again: the photos in order with their relative and absolute paths, a fingerprint, the settings as stored (Auto kept), the picks, the current photo and the provider's answers. **`Session::open_album` replaces the session**, keeps a photo it cannot find as a failed entry, gives each photo its settings before its development is queued, and asks no provider (`Photo::auto_frozen`, cleared by Re-run and new instructions). The session counts every change (`Session::edit_count`), and `album_state()` says whether the open album is edited. Nothing is written to Application Support.
+
 ### DevelopSettings
 
 **The settings are node-first** (the owner, 2026-11-01; `docs/23-nodes.md` §3). `DevelopSettings` is one field, `nodes: { items, links }`, the graph of the photo: the **Input** (`"input"`), **Main** (corrector 1), any other correctors, and the **Output** (`"output"`), with typed links between them. **Every field of the table below is a field of one node, under the same name and with the same type**:
