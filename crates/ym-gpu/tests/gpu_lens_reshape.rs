@@ -390,6 +390,55 @@ fn the_kernel_matches_the_cpu_reference() {
     );
 }
 
+#[test]
+fn the_kernel_matches_the_reference_on_lights_the_frame_cuts() {
+    // Lights centred on the borders and in the corners (and one in the middle): the detector takes them for balls
+    // (`docs/21` section 4, L1, *As built (lights the frame cuts)*), so their centres are on or at the edge of the
+    // frame, and the kernel's bins, reach and reads must hold there as the reference's do. Same bound as the sweep.
+    let _guard = serial();
+    let Some(dev) = common::lens::gpu() else {
+        return;
+    };
+    let (w, h) = (640, 427);
+    let balls = [
+        (320.0, 213.0, 12.0),
+        (160.0, 0.0, 12.0),
+        (160.0, 427.0, 12.0),
+        (0.0, 213.0, 12.0),
+        (640.0, 213.0, 12.0),
+        (0.0, 0.0, 12.0),
+        (640.0, 0.0, 12.0),
+        (0.0, 427.0, 12.0),
+        (640.0, 427.0, 12.0),
+    ];
+    let data = plane_with_balls(w, h, 12.0, &balls, 21);
+    let mut worst = 0.0f32;
+    for kind in [LensKind::Default, LensKind::Petzval] {
+        let p = plan(amounts(kind, 0.0, 0.0, 100.0), w, h, Axis::X);
+        let planes = planes_from_image(&p, &data, w, h);
+        let n = planes.bokeh().map_or(0, |b| b.balls().len());
+        assert!(n >= 8, "{kind}: only {n} balls found");
+        let cell = compare_case(dev, &p, &planes, 1, &data, (w, h)).expect("a pass");
+        worst = worst.max(cell.found.worst);
+        note!(
+            "L1 lights the frame cuts {kind}: {n} balls, worst {:e}, {} of {} over {:e}",
+            cell.found.worst,
+            cell.found.over,
+            cell.found.total,
+            bound(dev)
+        );
+        assert!(
+            cell.found.over as f64 <= FLIP_SHARE * cell.found.total as f64
+                && cell.found.worst <= FLIP_BOUND,
+            "{kind}: {} of {} samples differ by more than {} (worst {})",
+            cell.found.over,
+            cell.found.total,
+            bound(dev),
+            cell.found.worst
+        );
+    }
+}
+
 /// A map of the frame whose cells (2 x 2 pixels) left of `split_x` are in focus and right of it blurred by
 /// `radius_px`.
 fn split_map(split_x: usize, radius_px: f64) -> BlurMapInput {
