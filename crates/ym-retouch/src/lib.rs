@@ -27,6 +27,7 @@ pub mod mediapipe;
 pub mod mock;
 mod models;
 mod pipeline;
+pub mod teeth;
 mod tone;
 mod types;
 
@@ -50,10 +51,11 @@ pub use lowfreq::{
 pub use mask::{
     FaceMasks, SkinAreaValues, blemish_mask, dark_circle_mask, even_skin_mask, face_masks,
     grading_mask, max, max_masks, mul, mul_inv, mul_inv_masks, mul_masks, punch_hole, skin_mask,
-    smoothstep, teeth_gate, teeth_mask,
+    smoothstep, teeth_from_segment,
 };
 pub use models::{
     BeautyMarkDetector, BlemishProposer, FaceMesh, FaceParser, FacePart, MeshTable, Models,
+    TeethSegmenter,
 };
 pub use pipeline::{
     BlemishPlan, DeviceFace, DevicePlan, RetouchCache, plan_skin_region, prepare_skin,

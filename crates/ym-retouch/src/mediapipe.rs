@@ -173,8 +173,9 @@ fn model_error(e: &MlError) -> RetouchError {
     RetouchError::Model(e.to_string())
 }
 
-/// FNV-1a over the bits of every value of the rectangle `region` of the picture, rows in parallel and combined in order.
-fn region_hash(image: &LinearAwg4Image, region: Rect) -> u64 {
+/// FNV-1a over the bits of every value of the rectangle `region` of the picture (clipped to it), rows in parallel and combined in
+/// order: the key of every cache of a face's answer.
+pub fn region_hash(image: &LinearAwg4Image, region: Rect) -> u64 {
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     let w = image.width_px as usize;

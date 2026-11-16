@@ -54,6 +54,7 @@ pub mod graph;
 pub mod object;
 pub mod raw;
 pub mod schedule;
+pub mod teeth;
 pub mod thumbs;
 pub mod viewport;
 pub mod vision;

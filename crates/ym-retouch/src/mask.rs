@@ -197,95 +197,20 @@ pub(crate) fn percentile(values: &mut [f64], p: f64) -> f64 {
     values[rank.clamp(1, values.len()) - 1]
 }
 
-/// The `pale` gate of the teeth mask passes teeth up to this saturation fully (`docs/27` 5.6; 0.35 before S-16).
-pub const TEETH_PALE_LO: f64 = 0.55;
-/// The `pale` gate drops everything above this saturation (0.6 before S-16). Strongly yellow teeth
-/// reach a saturation of 0.6 to 0.7 (the blue is what yellow takes away); the `notred` gate, not this
-/// one, keeps lips and gums out.
-pub const TEETH_PALE_HI: f64 = 0.85;
-/// The `notred` gate passes pixels up to this `(r - g) / Y` fully (0.08 before S-16).
-pub const TEETH_NOTRED_LO: f64 = 0.12;
-/// The `notred` gate drops everything above this `(r - g) / Y` (0.2 before S-16). Lips and gums are
-/// above 0.4, and the skin of the mock faces is at 0.26.
-pub const TEETH_NOTRED_HI: f64 = 0.26;
+/// How far the mouth's interior is grown before the segmenter's teeth are cut to it, as a share of `F` (`docs/27` 5.6, S-17).
+/// The mesh's inner lip line is a few pixels off at the corners; the teeth that touch it must stay.
+pub const TEETH_MOUTH_GROW: f64 = 0.004;
+/// The feather that closes the teeth mask, as a share of `F`.
+pub const TEETH_FEATHER: f64 = 0.002;
 
-/// The gate of 5.6 for one pixel: `round(255 * bright * pale * notred)`, with `Y = (r + g + b) / 3`,
-/// `sat = 1 - min / max`, `y_mouth` the mouth region's 80th percentile of `Y`.
-pub fn teeth_gate(pixel: [f32; 3], y_mouth: f64) -> u8 {
-    let (r, g, b) = (
-        f64::from(pixel[0]).max(0.0),
-        f64::from(pixel[1]).max(0.0),
-        f64::from(pixel[2]).max(0.0),
-    );
-    let y = (r + g + b) / 3.0;
-    if y_mouth.is_nan() || y_mouth <= 0.0 || !y.is_finite() {
-        return 0;
-    }
-    let max = r.max(g).max(b);
-    let sat = if max > 0.0 {
-        1.0 - r.min(g).min(b) / max
-    } else {
-        0.0
-    };
-    let bright = smoothstep(0.6, 1.0, y / y_mouth);
-    let pale = 1.0 - smoothstep(TEETH_PALE_LO, TEETH_PALE_HI, sat);
-    let notred = 1.0 - smoothstep(TEETH_NOTRED_LO, TEETH_NOTRED_HI, (r - g) / y.max(1e-4));
-    (255.0 * bright * pale * notred).round().clamp(0.0, 255.0) as u8
-}
-
-/// The teeth mask (`docs/27` 5.6) from the full-size mouth-interior mask and the full-resolution
-/// image: `mouth = feather(mouth, -0.004 F)`; `Ymouth` is the 80th percentile of `Y` over the
-/// pixels where `mouth` is not 0; `teeth = mul(mouth, gate)`, then `feather(teeth, +0.002 F)`.
-pub fn teeth_mask(mouth: &Mask, image: &LinearAwg4Image, extent_px: f64) -> Result<Mask> {
+/// The teeth mask (`docs/27` 5.6) from the segmenter's answer `segment` and the full-size mouth-interior mask, both full
+/// size: `teeth = mul(segment, feather(mouth, +0.004 F))`, then `feather(teeth, +0.002 F)`. No colour is looked at.
+pub fn teeth_from_segment(mouth: &Mask, segment: &Mask, extent_px: f64) -> Result<Mask> {
     mouth.validate()?;
-    image.validate()?;
-    let size = (image.width_px, image.height_px);
-    if mouth.size_px() != size {
-        return Err(RetouchError::MaskSizeMismatch {
-            left: mouth.size_px(),
-            right: size,
-        });
-    }
-    let mouth = feather(mouth, -0.004 * extent_px)?;
-    let Some(bounds) = BoundedMask::from_full(&mouth) else {
-        return Ok(mouth);
-    };
-    let w = image.width_px as usize;
-    let (x0, y0) = (bounds.region.x_px as usize, bounds.region.y_px as usize);
-    let (rw, rh) = (
-        bounds.region.width_px as usize,
-        bounds.region.height_px as usize,
-    );
-    let mut ys = Vec::new();
-    for y in y0..y0 + rh {
-        for x in x0..x0 + rw {
-            if mouth.data[y * w + x] != 0 {
-                let p = image.data[y * w + x];
-                ys.push(
-                    (f64::from(p[0]).max(0.0)
-                        + f64::from(p[1]).max(0.0)
-                        + f64::from(p[2]).max(0.0))
-                        / 3.0,
-                );
-            }
-        }
-    }
-    let y_mouth = percentile(&mut ys, 0.8);
-    let mut gate = Mask::zeros(image.width_px, image.height_px)?;
-    gate.data
-        .par_chunks_mut(w)
-        .enumerate()
-        .skip(y0)
-        .take(rh)
-        .for_each(|(y, row)| {
-            for (x, out) in row.iter_mut().enumerate().skip(x0).take(rw) {
-                if mouth.data[y * w + x] != 0 {
-                    *out = teeth_gate(image.data[y * w + x], y_mouth);
-                }
-            }
-        });
-    let teeth = mul_masks(&mouth, &gate)?;
-    feather(&teeth, 0.002 * extent_px)
+    segment.validate()?;
+    let grown = feather(mouth, TEETH_MOUTH_GROW * extent_px)?;
+    let teeth = mul_masks(segment, &grown)?;
+    feather(&teeth, TEETH_FEATHER * extent_px)
 }
 
 /// The masks of one face, each cropped to its bounding box; `None` when the mask is all zeros, the
@@ -350,6 +275,35 @@ impl FaceMasks {
     }
 }
 
+/// The teeth of a face with an open mouth: what the segmenter finds, cut to the mouth (5.6). `None` (teeth whitening off for the
+/// face, and the log says why) when there is no segmenter, when it fails or when it finds nothing; never a guess from colours.
+fn teeth_of(
+    models: &Models,
+    image: &LinearAwg4Image,
+    face: &Face,
+    full_size_px: (u32, u32),
+    mouth: &Mask,
+    extent_px: f64,
+) -> Result<Option<Mask>> {
+    let Some(segmenter) = &models.teeth else {
+        tracing::warn!("no teeth segmenter; teeth whitening is off");
+        return Ok(None);
+    };
+    let found = match segmenter.teeth(image, face) {
+        Ok(Some(found)) => found,
+        Ok(None) => {
+            tracing::info!("no teeth found in the mouth; teeth whitening is off for this face");
+            return Ok(None);
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the teeth segmenter failed; teeth whitening is off for this face");
+            return Ok(None);
+        }
+    };
+    let segment = found.to_full(full_size_px)?;
+    Ok(Some(teeth_from_segment(mouth, &segment, extent_px)?))
+}
+
 /// Builds the masks of one face with the models from the full-resolution `image`. A failing
 /// beauty-mark detector is logged and ignored, and so is a parser that fails on the mouth
 /// interior (teeth whitening is then off). `exclude` is the optional exclusion mask of 5.5 (full
@@ -399,9 +353,8 @@ pub fn face_masks(
     {
         Ok(Some(mouth)) => {
             let mouth = mouth.to_full(full_size_px)?;
-            let teeth = teeth_mask(&mouth, image, extent_px)?;
             mouth_mask = BoundedMask::from_full(&mouth);
-            Some(teeth)
+            teeth_of(models, image, face, full_size_px, &mouth, extent_px)?
         }
         Ok(None) => None,
         Err(error) => {
@@ -639,61 +592,20 @@ mod tests {
     }
 
     #[test]
-    fn gate_keeps_teeth_and_drops_lips_and_gums() {
-        let y_mouth = f64::from(mock::mouth_colors::TEETH.iter().sum::<f32>()) / 3.0;
-        let gate = |c: [f32; 3]| teeth_gate(c, y_mouth);
-        assert!(gate(mock::mouth_colors::TEETH) > 150);
-        assert_eq!(gate(mock::mouth_colors::LIPS), 0);
-        assert_eq!(gate(mock::mouth_colors::GAP), 0);
-        assert_eq!(gate([0.0; 3]), 0);
-        assert_eq!(gate([0.7; 3]), 255, "white teeth pass fully");
-        assert_eq!(teeth_gate([0.7; 3], 0.0), 0);
-        // S-16: strongly yellow teeth (saturation 0.62 to 0.64, (r - g) / Y 0.14 to 0.2) still pass; lips,
-        // gums and a pink gum do not.
-        for yellow in [
-            [0.80f32, 0.68, 0.30],
-            [0.78, 0.68, 0.28],
-            [0.74, 0.66, 0.36],
-        ] {
-            let y = f64::from(yellow.iter().sum::<f32>()) / 3.0;
-            assert!(
-                teeth_gate(yellow, y) > 70,
-                "{yellow:?}: {}",
-                teeth_gate(yellow, y)
-            );
-        }
-        let y = 0.6;
-        for gum in [
-            [0.70f32, 0.45, 0.42],
-            [0.62, 0.36, 0.33],
-            [0.70, 0.52, 0.50],
-            [0.80, 0.52, 0.50],
-            [0.55, 0.30, 0.30],
-        ] {
-            assert!(teeth_gate(gum, y) < 8, "{gum:?}: {}", teeth_gate(gum, y));
-        }
-        assert_eq!(teeth_gate([f32::NAN; 3], 0.5), 0);
-    }
-
-    #[test]
-    fn teeth_mask_covers_the_teeth_only() {
+    fn teeth_come_from_the_segmenter_and_stay_inside_the_mouth() {
         let (image, face, models, full) = mouth_scene();
         let masks = face_masks(&models, &image, &face, full, None).unwrap();
         let teeth = masks.teeth.unwrap();
         let tf = teeth.to_full(full).unwrap();
         let (cx, cy, ax, ay) = mock::mouth_ellipse(&face.rect);
-        // Teeth band: inside the mask; lips ring, the dark gap and the skin: outside.
+        // The mock segmenter answers the band across the middle of the opening: inside it the mask is full; the lips ring,
+        // the gap below the teeth and the skin are outside.
         assert!(tf.get(cx as i64, cy as i64) > 150);
         assert_eq!(tf.get((cx + 1.2 * ax) as i64, cy as i64), 0, "lips");
         assert_eq!(
             tf.get(cx as i64, (cy + 0.8 * ay) as i64),
             0,
             "the gap below the teeth"
-        );
-        assert_eq!(
-            tf.get((cx + 0.95 * ax) as i64, cy as i64),
-            0,
-            "gum at the corner"
         );
         assert_eq!(tf.get(10, 10), 0);
         // The mask lies inside the mouth interior grown by the final feather.
@@ -707,31 +619,80 @@ mod tests {
         for (i, &t) in tf.data.iter().enumerate() {
             if t > 0 {
                 let (x, y) = ((i as u32 % full.0) as i64, (i as u32 / full.0) as i64);
-                let near = (-2..=2).any(|dy| (-2..=2).any(|dx| mouth.get(x + dx, y + dy) > 0));
+                let near = (-3..=3).any(|dy| (-3..=3).any(|dx| mouth.get(x + dx, y + dy) > 0));
                 assert!(near, "teeth mask pixel ({x}, {y}) is outside the mouth");
             }
         }
         // Size mismatch is an error; an empty mouth gives an empty mask.
         let small = Mask::zeros(10, 10).unwrap();
-        assert!(teeth_mask(&small, &image, 10.0).is_err());
+        assert!(teeth_from_segment(&small, &mouth, 10.0).is_err());
         let none = Mask::zeros(full.0, full.1).unwrap();
-        assert!(teeth_mask(&none, &image, 10.0).unwrap().is_all_zero());
+        assert!(
+            teeth_from_segment(&none, &mouth, 10.0)
+                .unwrap()
+                .is_all_zero()
+        );
     }
 
     #[test]
-    fn teeth_mask_percentile_adapts_to_the_picture() {
-        // The same mouth in a picture twice as bright (gain) gives the same mask.
+    fn the_teeth_mask_does_not_look_at_the_picture() {
+        // Colours do not matter: the same mouth in a picture twice as bright, or with grey teeth, gives the same mask.
         let (image, face, models, full) = mouth_scene();
         let base = face_masks(&models, &image, &face, full, None)
             .unwrap()
             .teeth;
+        assert!(base.is_some());
         let mut bright = image.clone();
         for p in &mut bright.data {
             *p = p.map(|c| c * 2.0);
         }
-        let again = face_masks(&models, &bright, &face, full, None)
-            .unwrap()
-            .teeth;
-        assert_eq!(base, again);
+        assert_eq!(
+            base,
+            face_masks(&models, &bright, &face, full, None)
+                .unwrap()
+                .teeth
+        );
+        let grey = LinearAwg4Image::filled(full.0, full.1, [0.3; 3]).unwrap();
+        assert_eq!(
+            base,
+            face_masks(&models, &grey, &face, full, None).unwrap().teeth
+        );
+    }
+
+    #[test]
+    fn teeth_whitening_is_off_without_a_segmenter_or_when_it_finds_nothing_or_fails() {
+        let (image, face, mut models, full) = mouth_scene();
+        models.teeth = None;
+        let masks = face_masks(&models, &image, &face, full, None).unwrap();
+        assert!(
+            masks.teeth.is_none(),
+            "no segmenter: no whitening, and no colour fall back"
+        );
+        assert!(
+            masks.mouth.is_some() && masks.skin.is_some(),
+            "the rest of the face is unaffected"
+        );
+        models.teeth = Some(Box::new(mock::NoTeeth));
+        assert!(
+            face_masks(&models, &image, &face, full, None)
+                .unwrap()
+                .teeth
+                .is_none()
+        );
+        models.teeth = Some(Box::new(mock::FailingTeeth));
+        let masks = face_masks(&models, &image, &face, full, None).unwrap();
+        assert!(masks.teeth.is_none() && masks.skin.is_some());
+    }
+
+    #[test]
+    fn a_closed_mouth_has_no_teeth() {
+        let (image, face, mut models, full) = mouth_scene();
+        models.parser = Box::new(mock::NoMouth);
+        assert!(
+            face_masks(&models, &image, &face, full, None)
+                .unwrap()
+                .teeth
+                .is_none()
+        );
     }
 }

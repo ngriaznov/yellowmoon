@@ -8,6 +8,7 @@
 use crate::error::{Result, RetouchError};
 use crate::models::{
     BeautyMarkDetector, BlemishProposer, FaceMesh, FaceParser, FacePart, MeshTable, Models,
+    TeethSegmenter,
 };
 use crate::types::{BoundedMask, Face, LinearAwg4Image, Mask, Rect};
 
@@ -181,6 +182,77 @@ impl FaceParser for NoParts {
     }
 }
 
+/// A parser that finds everything a [`MockParser`] does except the mouth's interior: a closed mouth.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoMouth;
+
+impl FaceParser for NoMouth {
+    fn part_mask(
+        &self,
+        image: &LinearAwg4Image,
+        face: &Face,
+        part: FacePart,
+    ) -> Result<Option<BoundedMask>> {
+        match part {
+            FacePart::MouthInterior => Ok(None),
+            _ => MockParser.part_mask(image, face, part),
+        }
+    }
+}
+
+/// A teeth segmenter that answers the band [`paint_mouth`] draws as teeth (across the middle of the mouth's interior, not
+/// at its corners), whatever the picture's colours are.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MockTeeth;
+
+impl TeethSegmenter for MockTeeth {
+    fn teeth(&self, _image: &LinearAwg4Image, face: &Face) -> Result<Option<BoundedMask>> {
+        let (cx, cy, ax, ay) = mouth_ellipse(&face.rect);
+        let region = Rect::new(
+            (cx - ax).floor() as i32 - 1,
+            (cy - ay).floor() as i32 - 1,
+            (2.0 * ax).ceil() as u32 + 3,
+            (2.0 * ay).ceil() as u32 + 3,
+        );
+        Ok(
+            Some(ellipses(region, &[(cx, cy, ax, ay)], |_| 255)).map(|mut m| {
+                let (w, x0, y0) = (m.mask.width_px as usize, m.region.x_px, m.region.y_px);
+                for (i, v) in m.mask.data.iter_mut().enumerate() {
+                    let (px, py) = (
+                        f64::from(x0) + (i % w) as f64 + 0.5,
+                        f64::from(y0) + (i / w) as f64 + 0.5,
+                    );
+                    let (nx, ny) = ((px - cx) / ax, (py - cy) / ay);
+                    if !(ny.abs() < 0.5 && nx.abs() < 0.8) {
+                        *v = 0;
+                    }
+                }
+                m
+            }),
+        )
+    }
+}
+
+/// A teeth segmenter that finds no teeth.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoTeeth;
+
+impl TeethSegmenter for NoTeeth {
+    fn teeth(&self, _image: &LinearAwg4Image, _face: &Face) -> Result<Option<BoundedMask>> {
+        Ok(None)
+    }
+}
+
+/// A teeth segmenter that always fails.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FailingTeeth;
+
+impl TeethSegmenter for FailingTeeth {
+    fn teeth(&self, _image: &LinearAwg4Image, _face: &Face) -> Result<Option<BoundedMask>> {
+        Err(RetouchError::Model("mock failure".into()))
+    }
+}
+
 /// A mesh that draws analytic tables on the face rectangle: crescent-like under-eye patches (an
 /// ellipse below each eye, brightest at its centre), and an inverted-uniformity pattern that is
 /// bright on the mouth and falls off to 0.
@@ -342,6 +414,7 @@ pub fn models(beauty_marks: Vec<Rect>) -> Models {
             boxes: beauty_marks,
         })),
         proposer: Box::new(MockProposer::identity(64)),
+        teeth: Some(Box::new(MockTeeth)),
     }
 }
 

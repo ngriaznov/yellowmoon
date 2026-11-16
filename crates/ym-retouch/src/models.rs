@@ -77,6 +77,16 @@ pub trait BlemishProposer: Send + Sync {
     }
 }
 
+/// Finds the teeth of a face with an open mouth (`docs/27` 5.6, S-17): SAM 2.1 small prompted from the face mesh.
+///
+/// The answer is a soft mask of where the teeth are, in full image coordinates, with no colour rule behind it. It is made
+/// once per analysis and cached with the other masks; the caller intersects it with the mouth's interior.
+pub trait TeethSegmenter: Send + Sync {
+    /// The teeth of `face`, as a soft mask; `Ok(None)` when the segmenter found nothing it can stand behind (it logs why), in
+    /// which case the face gets no teeth whitening. Only asked for faces whose mouth is open.
+    fn teeth(&self, image: &LinearAwg4Image, face: &Face) -> Result<Option<BoundedMask>>;
+}
+
 /// The models one retouch run uses.
 pub struct Models {
     /// Skin without ears, eyes and the mouth interior. A missing mouth interior only turns
@@ -88,4 +98,7 @@ pub struct Models {
     pub beauty_marks: Option<Box<dyn BeautyMarkDetector>>,
     /// The blemish proposer.
     pub proposer: Box<dyn BlemishProposer>,
+    /// The teeth. Without it (for example when the SAM weights are missing) teeth whitening is off for every face, and the
+    /// log says so; there is no fall back to colours. A failing segmenter is logged and turns teeth whitening off for that face.
+    pub teeth: Option<Box<dyn TeethSegmenter>>,
 }

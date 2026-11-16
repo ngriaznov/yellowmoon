@@ -1209,8 +1209,8 @@ mod tests {
         assert_eq!(cache.map_count(), 1);
         assert_eq!(cache.masks(0), Some(&masks_before));
         assert!(masks_before.grading.is_some());
-        // The synthetic skin has no teeth: the gate of 5.6 finds none.
-        assert!(masks_before.teeth.is_none());
+        // The mock segmenter answers the mock mouth's band, whatever the picture shows (nothing looks at colours, 5.6).
+        assert!(masks_before.teeth.is_some());
         // Another face rectangle rebuilds the masks and adds a map.
         let moved = Face {
             rect: Rect::new(180, 30, 250, 300),

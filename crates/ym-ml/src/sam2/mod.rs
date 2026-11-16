@@ -890,14 +890,36 @@ impl Sam2 {
         ))
     }
 
-    /// The decoder's answer to a prompt, whatever it says: the candidate masks, their IoUs, the object score and the one
-    /// chosen. [`Sam2::decode`] adds the rule that refuses a click.
+    /// Every mask the decoder makes for a prompt, whatever the prompt: the single-mask token first, then the three multimask
+    /// tokens, with their predicted IoUs (S-17: Face Refinement prompts teeth with a box and points and chooses among the
+    /// four itself, `docs/27` 5.6). `chosen` is the multimask token of the highest predicted IoU, as in [`Sam2::decode_raw`]
+    /// for one click, and `token` its number; `multimask` is `true`.
     ///
     /// # Errors
     ///
-    /// [`MlError::Input`] for an empty prompt, too many points or a coordinate that is not finite, or when the decoder
-    /// produces a value that is not finite.
-    pub fn decode_raw(&self, features: &Features, prompt: &Prompt) -> Result<Decoded> {
+    /// As [`Sam2::decode_raw`].
+    pub fn decode_candidates(&self, features: &Features, prompt: &Prompt) -> Result<Decoded> {
+        let raw = self.run_decoder(features, prompt)?;
+        let plane = LOW_RES_PX * LOW_RES_PX;
+        let best = argmax(&raw.iou[1..]);
+        let logits: Vec<f32> = raw
+            .logits
+            .iter()
+            .map(|&v| v.clamp(-LOGIT_CLAMP, LOGIT_CLAMP))
+            .collect();
+        debug_assert_eq!(logits.len(), raw.iou.len() * plane);
+        Ok(Decoded {
+            iou: raw.iou.to_vec(),
+            logits,
+            object_score: raw.object_score,
+            chosen: 1 + best,
+            multimask: true,
+            token: 1 + best,
+        })
+    }
+
+    /// The prompt encoder and the decoder, before any choice of a mask.
+    fn run_decoder(&self, features: &Features, prompt: &Prompt) -> Result<decoder::Raw> {
         prompt.validate()?;
         // The tokens, in Meta's order: the box corners first, then the points, then the padding token.
         let to_frame = |x: f32| x * IMAGE_PX as f32;
@@ -926,6 +948,18 @@ impl Sam2 {
             &self.prompt,
         );
         check_finite(&raw)?;
+        Ok(raw)
+    }
+
+    /// The decoder's answer to a prompt, whatever it says: the candidate masks, their IoUs, the object score and the one
+    /// chosen. [`Sam2::decode`] adds the rule that refuses a click.
+    ///
+    /// # Errors
+    ///
+    /// [`MlError::Input`] for an empty prompt, too many points or a coordinate that is not finite, or when the decoder
+    /// produces a value that is not finite.
+    pub fn decode_raw(&self, features: &Features, prompt: &Prompt) -> Result<Decoded> {
+        let raw = self.run_decoder(features, prompt)?;
         let plane = LOW_RES_PX * LOW_RES_PX;
         let mask = |t: usize| &raw.logits[t * plane..(t + 1) * plane];
         let multimask = prompt.multimask();

@@ -243,6 +243,7 @@ fn models(boxes: Vec<Rect>, classical: bool) -> Models {
             Box::new(MockBeautyMarks { boxes })
         }),
         proposer: Box::new(ClassicalProposer::new(N as f64)),
+        teeth: Some(Box::new(crate::mock::MockTeeth)),
     }
 }
 

@@ -2,7 +2,8 @@
 //! S-11b, and decisions 9, 12 and 13).
 //!
 //! The model ([`FaceModel`]) is MediaPipe's BlazeFace (the finder), Face Mesh V2 and Selfie Multiclass (`ym_ml::mediapipe`,
-//! run through `ym_retouch::mediapipe`), with the classical blemish proposer and mole detector of `ym_retouch`. It loads its
+//! run through `ym_retouch::mediapipe`), with the classical blemish proposer and mole detector of `ym_retouch`, and SAM 2.1
+//! small for the teeth ([`SamTeeth`], S-17; without its weights teeth whitening is off). It loads its
 //! weights the first time something needs them. The renderer keeps one ([`RenderOptions::face_model`](super::RenderOptions));
 //! the node is live when it is there. What runs when a photo has a Face Refinement node is in `graph/faces.rs`: the worker
 //! in the background, the analysis the photo keeps, and the retouch step in `frame/film_pass.rs`.
@@ -23,12 +24,14 @@ use ym_retouch::mediapipe::MediaPipeFaces;
 use ym_retouch::{ClassicalBeautyMarks, ClassicalProposer, Face, Models, Rect};
 
 use super::RenderError;
+use super::object::ObjectModel;
+use super::teeth::{SamTeeth, SharedTeeth};
 
 /// The version of the weights the analysis reads (BlazeFace full range, Face Mesh V2, Selfie Multiclass), part of the key.
 pub const FACES_FORMAT_VERSION: u32 = 1;
 /// The version of the rules that turn the finder's boxes into the numbered faces (the size floor, the cap, the order) and of the
 /// analysis picture, part of the key. A change of any constant below changes this number.
-pub const FACES_RULES_VERSION: u32 = 1;
+pub const FACES_RULES_VERSION: u32 = 2;
 
 /// The long edge, in pixels, of the picture the analysis looks at: the photo's final frame (crop, turn and lens kept) at this
 /// size at most, never enlarged. A face of [`MIN_FACE_FULL_PX`] in a 24 MP photo (6000 px) is 102 px in it, about three times
@@ -232,6 +235,10 @@ pub struct FaceModel {
     weights_id: String,
     /// The smallest face, in pixels of the full-resolution photo ([`MIN_FACE_FULL_PX`], less for a fake).
     min_face_px: u32,
+    /// SAM 2.1 small, for the teeth; `None` when its weights are not in the data folder (teeth whitening is then off).
+    sam: Option<Arc<ObjectModel>>,
+    /// The teeth segmenter, made with the first analysis and kept so that its answers are (S-17).
+    teeth: OnceLock<Option<Arc<SamTeeth>>>,
     pool: OnceLock<Option<rayon::ThreadPool>>,
 }
 
@@ -284,6 +291,19 @@ impl FaceModel {
             return None;
         }
         let weights_id = listed_sha256(&dir)?;
+        // SAM's weights are part of the analysis' key: another file, or none, is another analysis.
+        let sam = ObjectModel::probe(data_root);
+        let sam_id =
+            std::fs::read_to_string(data_root.join("models").join("sam2").join("SHA256SUMS"))
+                .ok()
+                .and_then(|sums| {
+                    sums.lines()
+                        .next()
+                        .map(|l| l.split_whitespace().next().unwrap_or("").to_owned())
+                })
+                .filter(|_| sam.is_some())
+                .unwrap_or_else(|| "no-sam".to_owned());
+        let weights_id = format!("{weights_id}+{sam_id}");
         Some(Arc::new(Self {
             net: Net::Network {
                 dir,
@@ -295,6 +315,8 @@ impl FaceModel {
                 format!("{weights_id}:{min_face_px}")
             },
             min_face_px,
+            sam,
+            teeth: OnceLock::new(),
             pool: OnceLock::new(),
         }))
     }
@@ -309,6 +331,8 @@ impl FaceModel {
             net: Net::Fake(f),
             weights_id: format!("fake:{name}:{min_face_px}"),
             min_face_px,
+            sam: None,
+            teeth: OnceLock::new(),
             pool: OnceLock::new(),
         })
     }
@@ -512,11 +536,25 @@ impl FaceModel {
             Net::Fake(_) => Ok(ym_retouch::mock::models(Vec::new())),
             Net::Network { .. } => {
                 let net = self.loaded()?;
+                let teeth = self.teeth.get_or_init(|| match &self.sam {
+                    Some(sam) => Some(Arc::new(SamTeeth::new(
+                        Arc::clone(&net.faces),
+                        Arc::clone(sam),
+                    ))),
+                    None => {
+                        tracing::warn!("the SAM weights are missing; teeth whitening is off");
+                        None
+                    }
+                });
+                let teeth: Option<Box<dyn ym_retouch::TeethSegmenter>> = teeth.as_ref().map(|t| {
+                    Box::new(SharedTeeth(Arc::clone(t))) as Box<dyn ym_retouch::TeethSegmenter>
+                });
                 Ok(Models {
                     parser: Box::new(net.faces.parser()),
                     mesh: Box::new(net.faces.mesh()),
                     beauty_marks: Some(Box::new(ClassicalBeautyMarks)),
                     proposer: Box::new(ClassicalProposer::new(ym_retouch::TARGET_FACE_PX)),
+                    teeth,
                 })
             }
         }

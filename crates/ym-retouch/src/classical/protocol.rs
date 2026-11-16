@@ -549,6 +549,7 @@ pub fn models(mock_mesh: bool) -> Models {
         },
         beauty_marks: Some(Box::new(ClassicalBeautyMarks)),
         proposer: Box::new(ClassicalProposer::new(N as f64)),
+        teeth: Some(Box::new(crate::mock::MockTeeth)),
     }
 }
 

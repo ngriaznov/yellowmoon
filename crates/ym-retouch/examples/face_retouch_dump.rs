@@ -142,6 +142,8 @@ fn main() {
         mesh: Box::new(engine.mesh()),
         beauty_marks: Some(Box::new(ClassicalBeautyMarks)),
         proposer: Box::new(ClassicalProposer::new(450.0)),
+        // The teeth come from SAM, which `ym-core` runs; this example has no segmenter, so no whitening.
+        teeth: None,
     };
     let settings: Vec<(&str, SkinSettings)> = {
         let b = |blemish: f32| SkinSettings {
