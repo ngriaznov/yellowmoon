@@ -21,7 +21,7 @@ A desktop raw processor for photos from Sony cameras. It reads ARW files, develo
 
 1. **Automatic first.** Every photo opens already developed: exposure, white balance, noise reduction, lens corrections and the default look. Controls are offsets from the automatic result.
 2. **Few controls.** Six tabs (Look, Light, Colour, Detail, Curve, RAW) with a handful of sliders each. Masks only in the optional node view (`docs/23-nodes.md`, from 0.2.0), never in the simple one; no layers or retouching.
-3. **Open, adjust, export, done.** No catalogue, no sidecars, no edit history. Closing the app forgets the session.
+3. **Open, adjust, export, done.** No catalogue, no sidecars, no edit history. Closing the app forgets the session, unless you save the strip as an album (a file you name, `docs/31`).
 4. **Light-aware colour.** The scene's light is estimated per photo and drives how the Sony sensor's response is mapped to the ALEXA's. That is what a static LUT can't do.
 5. **Honest about estimates.** Where we use an estimate (the ALEXA curves, a stand-in camera profile, a reduced decode path), the app says so in plain words.
 6. **Clean licensing.** Everything shipped is Apache-compatible. ARRI's own looks and LUTs stay on the user's machine.
@@ -42,6 +42,7 @@ A desktop raw processor for photos from Sony cameras. It reads ARW files, develo
 - Looks: Signature (default) and Neutral (the identity) built in; ARRI Look Library looks imported by the user through a wizard (ARRI's display LUTs are not imported); any other `.cube` with one question.
 - Export: JPEG, TIFF, PNG, and DNG with the look baked in.
 - Command-line tool with the same features.
+- Albums (milestone P, `docs/31-albums.md`): File › Save writes the filmstrip, with each photo's settings, to a `.ymalbum` file the person names; File › Open opens it again; `ym render` takes one. Nothing is kept in the app's folder.
 - Presets (milestone P, `docs/30-presets.md`): a saved recipe of the groups the person ticks (Look, Lens, Light, Colour, Detail, Curve, RAW, Nodes), on a Presets card on the Look tab; Auto stays Auto; `ym presets` and `ym render --preset`. A preset is a file in `presets/`, about no photo.
 - Nodes and masks (milestone N, 0.2.0, `docs/23-nodes.md`): an optional node view with a graph of corrector nodes and masks (shapes, ranges, brush, Object from SAM 2.1 small, Subject and People from Apple Vision, Background from blur). The simple view stays the default.
 - Auto-update, Homebrew cask, `.dmg`.
@@ -58,7 +59,7 @@ A desktop raw processor for photos from Sony cameras. It reads ARW files, develo
 **Out of scope**
 
 - ALEXA 35 and REVEAL colour science (unpublished; a different sensor).
-- Video, tethering, catalogue or library management, saved edits (a preset is a recipe, not a photo's edit: `docs/30`), sidecar files, retouching, panoramas, HDR merge.
+- Video, tethering, catalogue or library management, saved edits (a preset is a recipe, not a photo's edit: `docs/30`; an album is a file you save yourself: `docs/31`), sidecar files, retouching, panoramas, HDR merge.
 - ARQ pixel-shift files, SRF and SR2 (pre-ARW formats).
 - Non-Sony raw files.
 
@@ -139,6 +140,7 @@ These are fixed unless new evidence turns up. The reasoning is in `research/`.
 | Auto crop | `docs/20-auto-crop.md` |
 | Lens character (specified, not built) | `docs/21-lens-character.md`, `research/lens-character-2026-10-23.md` |
 | Presets | `docs/30-presets.md`, `design/presets/` |
+| Albums (the strip saved to a file; File › Save and Open) | `docs/31-albums.md`, `design/presets/` |
 | Task plan | `docs/15-milestones.md` |
 | Risks and open decisions | `docs/16-risks-and-decisions.md` |
 | Progress | `docs/STATUS.md` |
