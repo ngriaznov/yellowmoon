@@ -344,6 +344,16 @@ Tasks (details, dependencies and *Done when* in `docs/25` §10): **X-01** spec (
 
 ---
 
+## P · Presets
+
+Goal: save a photo's settings as a named **preset** of the groups the person ticks, keep it in `presets/`, and apply it to one photo, the picked photos or all, in the app and with `ym`. **The owner's decision, 2026-11-16: "Go with your recommendations on presets"**: presets persist (hard rule 4 reworded), live on a Presets card on the Look tab between Automatic and Look, hold the eight groups the person ticks (the changed ones ticked for them), and phase 1 comes first. The spec is `docs/30-presets.md`; the pictures are `design/presets/`.
+
+Tasks (details and *Done when* in `docs/30` §15): **P-01** spec, rule change and mock-ups (done 2026-11-16) · **P-02** the core: groups, file and schema, store, apply and match · **P-03** `ym presets` and `ym render --preset` · **P-04** the shell, the IPC, the Presets card, the Save dialog and the tile menu · **P-05** the Looks menu, drops, import and export, accessibility · **P-06** New Preset from Exported Photo and `ym:AutoFields`. **[HUMAN]** P-H1 review the mock-ups and the rule change · P-H2 try the build. **Later** (phases 2 and 3, `docs/30` §16, not designed): P-07 relative values · P-08 new photos open with a preset · P-09 node presets · P-10 presets that carry instructions for the Auto grading provider · **[HUMAN]** P-H3 the owner's starter presets.
+
+**Gate P:** the tests of `docs/30` §14 pass; `golden check` unchanged; `cargo deny check`; app and `ym` byte for byte on the preset parity cases; a session writes nothing to `presets/` unless a preset changes; the owner's approval of the last test build.
+
+---
+
 ## M4 · Beta to 1.0
 
 **M4-01 · Betas** 0.9.x releases to a small group; local panic log; triage. *Done when:* no open crash or data-loss bugs.

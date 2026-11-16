@@ -42,6 +42,7 @@ A desktop raw processor for photos from Sony cameras. It reads ARW files, develo
 - Looks: Signature (default) and Neutral (the identity) built in; ARRI Look Library looks imported by the user through a wizard (ARRI's display LUTs are not imported); any other `.cube` with one question.
 - Export: JPEG, TIFF, PNG, and DNG with the look baked in.
 - Command-line tool with the same features.
+- Presets (milestone P, `docs/30-presets.md`): a saved recipe of the groups the person ticks (Look, Lens, Light, Colour, Detail, Curve, RAW, Nodes), on a Presets card on the Look tab; Auto stays Auto; `ym presets` and `ym render --preset`. A preset is a file in `presets/`, about no photo.
 - Nodes and masks (milestone N, 0.2.0, `docs/23-nodes.md`): an optional node view with a graph of corrector nodes and masks (shapes, ranges, brush, Object from SAM 2.1 small, Subject and People from Apple Vision, Background from blur). The simple view stays the default.
 - Auto-update, Homebrew cask, `.dmg`.
 
@@ -57,7 +58,7 @@ A desktop raw processor for photos from Sony cameras. It reads ARW files, develo
 **Out of scope**
 
 - ALEXA 35 and REVEAL colour science (unpublished; a different sensor).
-- Video, tethering, catalogue or library management, saved edits, sidecar files, retouching, panoramas, HDR merge.
+- Video, tethering, catalogue or library management, saved edits (a preset is a recipe, not a photo's edit: `docs/30`), sidecar files, retouching, panoramas, HDR merge.
 - ARQ pixel-shift files, SRF and SR2 (pre-ARW formats).
 - Non-Sony raw files.
 
@@ -86,7 +87,7 @@ These are fixed unless new evidence turns up. The reasoning is in `research/`.
 | Lens | Sony's embedded correction tags (vignetting, distortion, CA). No Lensfun. |
 | Export | JPEG, TIFF, PNG; DNG as LinearRaw AWG4 with the look baked into pixels and a profile fitted to the cine rendering. |
 | CLI | `ym` binary in the same workspace, shipped inside the app bundle, bit-identical to app exports. |
-| Persistence | Nothing per photo. Only imported looks and preferences (default look, export defaults, watch-Downloads permission, the Auto grading provider with its consent, and the instructions). |
+| Persistence | Nothing per photo. Only imported looks, presets (the owner, 2026-11-16, `docs/30`) and preferences (default look, export defaults, watch-Downloads permission, the Auto grading provider with its consent, and the instructions). |
 | UI | Dark glass: glasscn components on Tailwind 4 and Radix, Figtree, yellow `#FFC20E` only as a button accent, a still cool aurora, dark only, photo edge to edge. The visual reference is `design/screenshots-c2/`; layout, size and copy come from `design/mockups/`; see `docs/11-ui.md` and `docs/16-risks-and-decisions.md`. |
 | Distribution | Version bump on main → signed updater artefacts → GitHub release → cask update (`docs/12-distribution.md`). |
 
@@ -137,6 +138,7 @@ These are fixed unless new evidence turns up. The reasoning is in `research/`.
 | Auto providers (Claude Code, Antigravity) | `docs/22-auto-providers.md` |
 | Auto crop | `docs/20-auto-crop.md` |
 | Lens character (specified, not built) | `docs/21-lens-character.md`, `research/lens-character-2026-10-23.md` |
+| Presets | `docs/30-presets.md`, `design/presets/` |
 | Task plan | `docs/15-milestones.md` |
 | Risks and open decisions | `docs/16-risks-and-decisions.md` |
 | Progress | `docs/STATUS.md` |

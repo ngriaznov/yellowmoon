@@ -151,6 +151,10 @@ The owner asked for the three greyed items of the Add node menu ("Let's implemen
 | Test build (X-H2) and version | **"Good, merge to main and release 0.2.3"** |
 | Not in the first version | Other blend modes (Screen, Overlay and the like assume a display picture), a mode or a weight per input, masks and key ports on the four kinds, a Key Mixer, Outside, Morph, other channel splits |
 
+### Presets (owner, 2026-11-16)
+
+- **Presets persist, as a recipe and not a photo's edit.** The lead proposed them and the owner answered: "Go with your recommendations on presets". A preset is a name and the settings of the groups the person ticks (Look, Lens, Light, Colour, Detail, Curve, RAW, Nodes), saved as `presets/<name>.ympreset` beside `looks/`. Hard rule 4 of `AGENTS.md` now reads "imported looks, presets and a few preferences"; a preset is about no photo, and the photo's own settings are still kept nowhere. The Presets card sits on the Look tab between Automatic and Look; Auto stays Auto; applying goes through the Paste path; `ym presets` and `ym render --preset` give the same bytes as the app. The earlier line "Presets are not planned until the features settle" (`design/nodes/mockup-notes.md`) is replaced. `docs/30-presets.md`.
+
 ### Colour and rendering
 
 - **The default look is Signature.** A LogC4 luma curve pivoting at mid grey (the departure from the identity scaled by 1.6, slope at mid grey about 1.40, with a soft toe and shoulder) followed by CDL saturation 1.45; mid grey is unchanged. Parametric looks are baked into 65-point cubes because the steeper curve needs a finer cube. Neutral stays as the identity. The default look comes from the preferences (`DEFAULT_LOOK` is `builtin:signature`); `DevelopSettings::default()` stays Neutral. It is a built-in look made for the app, not derived from any ARRI or commercial LUT. `docs/08`.

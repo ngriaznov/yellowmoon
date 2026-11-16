@@ -921,8 +921,13 @@ looks/
                                   source URL, import date, SHA-256 per file (no preferences)
   arri/<group_no>-<group_slug>/   imported ARRI look files (copied, never modified)
   user/                           other imported .cube files
+presets/
+  <safe name>.ympreset            one file per preset: a name, the groups it holds and a partial settings
+                                  document (docs/30); .lock beside them
 logs/yellowmoon.log               local only, rotated at 5 MB × 3
 ```
+
+**Presets** (`presets/`, `docs/30-presets.md`) are the third thing that persists, after the looks and the preferences. A preset is about no photo: it is a name and the settings of the groups the person ticked, with no file name, path, camera, date or location, and nothing in it says which photo it came from, so it is a recipe and not a photo's edit. The folder is `presets/` beside `looks/` (`YELLOWMOON_HOME` respected); writes are atomic and run under `presets/.lock`, the same file lock as the look library; a delete moves the file to the Trash. **The owner's decision, 2026-11-16: "Go with your recommendations on presets"**, which is why hard rule 4 now reads "imported looks, presets and a few preferences".
 
 This list is exhaustive (hard rule 4 of `AGENTS.md`): nothing else persists. **The node graph adds nothing to it:** the nodes, links, masks, the SAM features, the Vision masks, the blur maps and the masks found live in the session's memory like every setting (`docs/23` §3.11). Plus `~/Library/Caches/app.yellowmoon/` for the wgpu pipeline cache only (`$XDG_CACHE_HOME/app.yellowmoon` or `~/.cache/app.yellowmoon` on Linux). No image data is cached on disk. The CLI uses the same folders and takes a file lock (`looks/.lock`) when importing. `YELLOWMOON_HOME` replaces the application-support folder.
 
