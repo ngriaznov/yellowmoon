@@ -137,7 +137,14 @@ fn vectors_fixed_form() {
     let mut worst = 0.0f64;
     for v in load_vectors() {
         let noise = NoiseDn::from_model(&v.noise_model);
-        let out = log_guided::demosaic_fixed(&v.mosaic, noise, v.guide_detail, v.headroom_log2);
+        // The vectors were made with the cubics of the first release of the reference.
+        let out = log_guided::demosaic_fixed_with(
+            &v.mosaic,
+            noise,
+            v.guide_detail,
+            v.headroom_log2,
+            log_guided::ORACLE_CUBICS,
+        );
         assert_eq!((out.width, out.height), (v.mosaic.width, v.mosaic.height));
         let diff = max_abs_diff(&out.data, &v.expected);
         println!(
@@ -423,67 +430,253 @@ fn the_texture_port_reproduces_the_oracle_inputs() {
 // Property tests (spec section 6.2)
 // ---------------------------------------------------------------------------------------------
 
-#[test]
-fn log2_and_exp2_fixed_meet_their_exhaustive_bounds() {
-    // log2_fixed (spec 3.2): -4.98 .. +2.98 codes, anchors, doubling adds 4096, steps back by at
-    // most one code (23 times in the top octave).
+/// What an exhaustive run over every input says about a log2 cubic: the lowest and highest error
+/// in codes, the number of step-backs, the largest step-back, and whether the anchors are exact.
+struct Log2Stats {
+    lo: f64,
+    hi: f64,
+    drops: usize,
+    worst_drop: i32,
+    anchors: bool,
+}
+
+fn log2_stats(cubic: [u32; 3], truth: &[f64]) -> Log2Stats {
     let (mut lo, mut hi) = (0.0f64, 0.0f64);
     let (mut drops, mut worst_drop) = (0, 0i32);
+    let mut prev = 0i32;
     for y in 1..=65535u32 {
-        let l = i32::from(log2_guided(y));
-        let e = f64::from(l) - 4096.0 * f64::from(y).log2();
+        let l = i32::from(log_guided::log2_fixed_with(y as u16, cubic));
+        let e = f64::from(l) - truth[y as usize];
         lo = lo.min(e);
         hi = hi.max(e);
-        if y > 1 {
-            let step = l - i32::from(log2_guided(y - 1));
-            if step < 0 {
-                drops += 1;
-                worst_drop = worst_drop.min(step);
-            }
+        if y > 1 && l < prev {
+            drops += 1;
+            worst_drop = worst_drop.min(l - prev);
         }
-        if y <= 32767 {
-            assert_eq!(
-                i32::from(log2_guided(2 * y)),
-                l + 4096,
-                "doubling {y} adds exactly 4096"
-            );
-        }
+        prev = l;
     }
-    println!("log2_fixed - 4096 log2 y in [{lo:.4}, {hi:.4}], {drops} single-step drops");
-    assert!(lo >= -4.98 - 1e-9 && hi <= 2.98 + 1e-9, "[{lo}, {hi}]");
-    assert!(worst_drop >= -1);
-    assert_eq!(drops, 23, "the spec counts 23 one-code drops");
-    assert_eq!(
-        (log2_guided(1), log2_guided(2), log2_guided(65535)),
-        (0, 4096, 65535)
-    );
-    assert_eq!(log_guided::log2_fixed(0), 0);
+    let at = |y: u16| log_guided::log2_fixed_with(y, cubic);
+    Log2Stats {
+        lo,
+        hi,
+        drops,
+        worst_drop,
+        anchors: (at(1), at(2), at(65535)) == (0, 4096, 65535),
+    }
+}
 
-    // exp2_fixed (spec 3.4): -(1 + 1.18e-4 t) <= C - t <= 1.24e-4 t, monotone, max 65522.
+/// `4096 log2 y` for every `y` (index 0 unused).
+fn log2_truth() -> Vec<f64> {
+    (0..=65535u32)
+        .map(|y| {
+            if y == 0 {
+                0.0
+            } else {
+                4096.0 * f64::from(y).log2()
+            }
+        })
+        .collect()
+}
+
+/// `2^(L / 4096)` for every `L`.
+fn exp2_truth() -> Vec<f64> {
+    (0..=65535u32)
+        .map(|l| (f64::from(l) / 4096.0).exp2())
+        .collect()
+}
+
+/// What an exhaustive run over every input says about an exp2 cubic: the smallest `k` with
+/// `-(1 + k t) <= C - t <= k t` as (under, over), whether `C` is monotone, the largest `C`, and
+/// whether `C(4096 e) = 2^e` exactly.
+struct Exp2Stats {
+    under: f64,
+    over: f64,
+    monotone: bool,
+    max: u32,
+    exact_at_powers: bool,
+}
+
+/// `exp2_fixed_with` in 32 bits without the final cast, so that a cubic that overflows 16 bits
+/// shows as one.
+fn exp2_wide(l: u32, cubic: [u32; 3]) -> u32 {
+    let (e, f) = (l >> 12, (l & 4095) << 4);
+    let f2 = (f * f) >> 16;
+    let f3 = (f2 * f) >> 16;
+    let q = ((cubic[0] * f) >> 16) + ((cubic[1] * f2) >> 16) + ((cubic[2] * f3) >> 16);
+    (1 << e) + (((1 << e) * q) >> 16)
+}
+
+fn exp2_stats(cubic: [u32; 3], truth: &[f64]) -> Exp2Stats {
     let (mut under, mut over) = (0.0f64, 0.0f64);
-    let (mut prev, mut max) = (0u16, 0u16);
+    let (mut prev, mut max, mut monotone) = (0u32, 0u32, true);
     for l in 0..=65535u32 {
-        let t = (f64::from(l) / 4096.0).exp2();
-        let c = log_guided::exp2_fixed(l as u16);
+        let t = truth[l as usize];
+        let c = exp2_wide(l, cubic);
         let e = f64::from(c) - t;
         if e < 0.0 {
             under = under.max((-e - 1.0) / t);
         }
         over = over.max(e / t);
-        assert!(c >= prev, "monotone at {l}");
+        monotone &= c >= prev;
         prev = c;
         max = max.max(c);
     }
-    println!("exp2_fixed: -(1 + {under:.3e} t) <= C - t <= {over:.3e} t, max {max}");
-    assert!(under <= 1.18e-4 + 1e-9 && over <= 1.24e-4 + 1e-9);
-    assert_eq!(max, 65522);
-    for e in 0..16u32 {
+    let exact_at_powers = (0..16u32).all(|e| exp2_wide(4096 * e, cubic) == 1 << e);
+    Exp2Stats {
+        under,
+        over,
+        monotone,
+        max,
+        exact_at_powers,
+    }
+}
+
+#[test]
+fn log2_and_exp2_fixed_meet_their_exhaustive_bounds() {
+    // log2_fixed (spec 3.2): -4.41 .. +4.38 codes, anchors, doubling adds 4096, steps back by at
+    // most one code (20 times in the top octave; the replaced triple had 23).
+    let truth = log2_truth();
+    let s = log2_stats(log_guided::LOG2_CUBIC, &truth);
+    println!(
+        "log2_fixed - 4096 log2 y in [{:.4}, {:.4}], {} single-step drops",
+        s.lo, s.hi, s.drops
+    );
+    assert!(s.lo >= -4.41 && s.hi <= 4.41, "[{}, {}]", s.lo, s.hi);
+    assert!(
+        s.lo >= -4.404 - 1e-3 && s.hi <= 4.378 + 1e-3,
+        "[{}, {}]",
+        s.lo,
+        s.hi
+    );
+    assert!(s.worst_drop >= -1);
+    assert_eq!(s.drops, 20, "the spec counts 20 one-code drops");
+    assert!(s.drops <= 23, "no more step-backs than the replaced triple");
+    assert!(s.anchors, "L(1) = 0, L(2) = 4096, L(65535) = 65535");
+    for y in 1..=32767u32 {
         assert_eq!(
-            u32::from(log_guided::exp2_fixed((4096 * e) as u16)),
-            1 << e,
-            "exp2_fixed(4096 * {e})"
+            i32::from(log2_guided(2 * y)),
+            i32::from(log2_guided(y)) + 4096,
+            "doubling {y} adds exactly 4096"
         );
     }
+    assert_eq!(log_guided::log2_fixed(0), 0);
+    // The function the crate calls `log2_fixed` is the shipped cubic.
+    for y in [1u16, 2, 3, 100, 4095, 40000, 65535] {
+        assert_eq!(
+            log_guided::log2_fixed(y),
+            log_guided::log2_fixed_with(y, log_guided::LOG2_CUBIC)
+        );
+    }
+
+    // exp2_fixed (spec 3.4): -(1 + k t) <= C - t <= k t with k <= 9.1e-5, monotone, max 65518.
+    let truth = exp2_truth();
+    let s = exp2_stats(log_guided::EXP2_CUBIC, &truth);
+    println!(
+        "exp2_fixed: -(1 + {:.3e} t) <= C - t <= {:.3e} t, max {}",
+        s.under, s.over, s.max
+    );
+    assert!(
+        s.under <= 9.1e-5 && s.over <= 9.1e-5,
+        "{} {}",
+        s.under,
+        s.over
+    );
+    assert!(s.monotone, "exp2_fixed is monotone non-decreasing");
+    assert_eq!(s.max, 65518);
+    assert!(s.exact_at_powers, "exp2_fixed(4096 e) = 2^e");
+    for l in 0..=65535u32 {
+        assert_eq!(
+            u32::from(log_guided::exp2_fixed(l as u16)),
+            exp2_wide(l, log_guided::EXP2_CUBIC),
+            "exp2_fixed({l})"
+        );
+    }
+}
+
+#[test]
+fn the_oracle_cubics_keep_the_bounds_of_the_first_release() {
+    // The 16 oracle vectors need the triples they were made with; they must stay what they were.
+    let s = log2_stats(log_guided::ORACLE_LOG2_CUBIC, &log2_truth());
+    assert_eq!(log_guided::ORACLE_LOG2_CUBIC, [46597, 19037, 5208]);
+    assert!(
+        s.lo >= -4.98 - 1e-9 && s.hi <= 2.98 + 1e-9,
+        "[{}, {}]",
+        s.lo,
+        s.hi
+    );
+    assert_eq!((s.drops, s.worst_drop, s.anchors), (23, -1, true));
+    let s = exp2_stats(log_guided::ORACLE_EXP2_CUBIC, &exp2_truth());
+    assert_eq!(log_guided::ORACLE_EXP2_CUBIC, [45607, 14741, 5185]);
+    assert!(s.under <= 1.18e-4 + 1e-9 && s.over <= 1.24e-4 + 1e-9);
+    assert_eq!((s.max, s.monotone, s.exact_at_powers), (65522, true, true));
+}
+
+#[test]
+fn nothing_beats_the_stored_cubics_by_the_stated_objective_near_them() {
+    // The integer search of docs/29 F-01 repeated on a box around each stored triple (the tool,
+    // tools/fit/poly_fit.py, searches a larger one). Objective of spec 3.2: smallest largest
+    // |error| in codes, then fewer step-backs, with exact anchors, at most 23 step-backs and none
+    // larger than one code. Objective of spec 3.4: smallest k, with C(4096 e) = 2^e, a monotone C
+    // and C <= 65535.
+    let truth = log2_truth();
+    let [a0, b0, c0] = log_guided::LOG2_CUBIC;
+    let stored = log2_stats(log_guided::LOG2_CUBIC, &truth);
+    let stored_err = (-stored.lo).max(stored.hi);
+    let (mut checked, mut feasible) = (0, 0);
+    for b in b0 - 24..=b0 + 24 {
+        for c in c0 - 12..=c0 + 12 {
+            let a = 32768 + b - c; // p(0) = 0 and p(1) = 1
+            let s = log2_stats([a, b, c], &truth);
+            checked += 1;
+            if !s.anchors || s.drops > 23 || s.worst_drop < -1 {
+                continue;
+            }
+            feasible += 1;
+            let err = (-s.lo).max(s.hi);
+            assert!(
+                err > stored_err - 1e-9 && (err > stored_err + 1e-9 || s.drops >= stored.drops),
+                "({a}, {b}, {c}) beats the stored log2 triple: {err} codes, {} step-backs, against {stored_err}, {}",
+                s.drops,
+                stored.drops
+            );
+        }
+    }
+    assert_eq!(
+        a0 + c0,
+        32768 + b0,
+        "the stored triple keeps p(0) = 0 and p(1) = 1"
+    );
+    println!(
+        "log2: {checked} triples searched, {feasible} feasible, none better than {stored_err:.4}"
+    );
+    assert!(feasible > 100, "the box must hold real competitors");
+
+    let truth = exp2_truth();
+    let [a0, b0, c0] = log_guided::EXP2_CUBIC;
+    let stored = exp2_stats(log_guided::EXP2_CUBIC, &truth);
+    let stored_k = stored.under.max(stored.over);
+    let (mut checked, mut feasible) = (0, 0);
+    for a in a0 - 4..=a0 + 4 {
+        for b in b0 - 4..=b0 + 4 {
+            for c in c0 - 4..=c0 + 4 {
+                let s = exp2_stats([a, b, c], &truth);
+                checked += 1;
+                if !s.monotone || !s.exact_at_powers || s.max > 65535 {
+                    continue;
+                }
+                feasible += 1;
+                let k = s.under.max(s.over);
+                assert!(
+                    k >= stored_k - 1e-12,
+                    "({a}, {b}, {c}) beats the stored exp2 triple: k {k} against {stored_k}"
+                );
+            }
+        }
+    }
+    println!(
+        "exp2: {checked} triples searched, {feasible} feasible, none better than {stored_k:.4e}"
+    );
+    assert!(feasible > 100, "the box must hold real competitors");
 }
 
 fn log2_guided(y: u32) -> u16 {

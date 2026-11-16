@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{Sandbox, data_dir, names_in};
-use ym_core::app::gpu::{GpuPolicy, GpuSlot, open_gpu};
+use ym_core::app::gpu::{GpuPolicy, GpuSlot};
 use ym_core::app::{Core, CoreOptions};
 use ym_core::export_queue::ExportJob;
 use ym_core::scheduler::MemoryBudget;
@@ -53,7 +53,7 @@ fn slot_has_device(slot: &GpuSlot) -> bool {
 
 /// Whether a device opens under the `On` policy.
 fn device_opens() -> bool {
-    slot_has_device(&open_gpu(GpuPolicy::On, MemoryBudget::detect()))
+    slot_has_device(&ym_apple::gpu_opener(GpuPolicy::On, MemoryBudget::detect()).open())
 }
 
 /// The app's side: a core over its own app folder with the device attached.
@@ -73,7 +73,7 @@ impl App {
 
     /// [`App::open`] over the data folder `data`.
     fn open_with(files: &[&Path], data: PathBuf) -> Option<Self> {
-        let slot = open_gpu(GpuPolicy::On, MemoryBudget::detect());
+        let slot = ym_apple::gpu_opener(GpuPolicy::On, MemoryBudget::detect()).open();
         if !slot_has_device(&slot) {
             return None;
         }
@@ -510,7 +510,7 @@ fn a_sixteen_bit_tiff_is_byte_identical_through_the_app_path_and_the_binary_on_t
     let from_cli = cli_export(
         &sb,
         &[&arw],
-        &["--format", "tiff", "--bits", "16", "--compression", "lzw"],
+        &["--format", "tiff", "--bits", "16"],
         &sb.root().join("cli"),
     );
     assert_same_files(&from_app, &from_cli, "tiff-16 on the device");
@@ -670,7 +670,7 @@ fn lens_parity(sb: &Sandbox, data: &Path, name: &str, arw: &Path) -> Option<u64>
         ..ExportOptions::default()
     };
     let from_app = app.export(tiff, &out("app-tiff"));
-    let mut tiff_flags = vec!["--format", "tiff", "--bits", "16", "--compression", "lzw"];
+    let mut tiff_flags = vec!["--format", "tiff", "--bits", "16"];
     tiff_flags.extend(flags);
     let from_cli = cli_export_in(sb, data, &[arw], &tiff_flags, &out("cli-tiff"));
     assert_same_files(

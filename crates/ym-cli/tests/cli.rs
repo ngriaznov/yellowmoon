@@ -38,7 +38,7 @@ fn version_reports_the_workspace_and_pipeline_versions() {
         .assert()
         .success()
         .stdout(predicate::str::starts_with(format!(
-            "ym {} (pipeline 0.12.0, ",
+            "ym {} (pipeline 0.12.1, ",
             env!("CARGO_PKG_VERSION")
         )));
 }
@@ -129,7 +129,7 @@ fn doctor_says_what_it_includes_and_lists_the_parts() {
     let sb = Sandbox::new();
     let out = sb.ym().arg("doctor").assert().success();
     let text = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
-    let version_line = format!("ym {} (pipeline 0.12.0, ", env!("CARGO_PKG_VERSION"));
+    let version_line = format!("ym {} (pipeline 0.12.1, ", env!("CARGO_PKG_VERSION"));
     for needle in [
         "does not include photos, file names, locations",
         "Version",
@@ -152,6 +152,52 @@ fn doctor_says_what_it_includes_and_lists_the_parts() {
     assert!(!sb.home().join("preferences.json").exists());
 }
 
+/// `YELLOWMOON_RAM_GB` (a development switch, `docs/17`): `ym doctor` says the RAM it set, and the budget of
+/// the rule follows it (CPU only: half of 8 GiB). The rule with a GPU that shares the memory (2.0 and 2.8 GiB) is
+/// checked by the unit test of `ym_core::scheduler` and the fake probe of the application's `gpu.rs`.
+#[test]
+fn doctor_shows_the_ram_override_and_the_budget_of_the_rule() {
+    let sb = Sandbox::new();
+    let out = sb
+        .ym()
+        .env("YELLOWMOON_RAM_GB", "8")
+        .env("YELLOWMOON_GPU", "off")
+        .arg("doctor")
+        .assert()
+        .success();
+    let text = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+    assert!(
+        text.contains("RAM") && text.contains("8 GiB (set by YELLOWMOON_RAM_GB)"),
+        "no RAM row in:\n{text}"
+    );
+    assert!(text.contains("CPU 4.0 GiB"), "budget line in:\n{text}");
+    let out = sb
+        .ym()
+        .env("YELLOWMOON_RAM_GB", "8")
+        .env("YELLOWMOON_GPU", "off")
+        .args(["doctor", "--json"])
+        .assert()
+        .success();
+    let v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
+    assert_eq!(v["memory_budget"]["ram_override_bytes"], 8_u64 << 30);
+    assert_eq!(v["memory_budget"]["cpu_bytes"], 4_u64 << 30);
+
+    // Not set, or not a number: no row, the installed RAM is used.
+    for value in [None, Some("0"), Some("eight")] {
+        let mut cmd = sb.ym();
+        cmd.env_remove("YELLOWMOON_RAM_GB").arg("doctor");
+        if let Some(value) = value {
+            cmd.env("YELLOWMOON_RAM_GB", value);
+        }
+        let out = cmd.assert().success();
+        let text = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+        assert!(
+            !text.contains("set by YELLOWMOON_RAM_GB"),
+            "{value:?}:\n{text}"
+        );
+    }
+}
+
 #[test]
 fn doctor_json_has_the_same_parts() {
     let sb = Sandbox::new();
@@ -163,7 +209,7 @@ fn doctor_json_has_the_same_parts() {
             .expect("includes")
             .contains("does not include")
     );
-    assert_eq!(v["pipeline_version"], "0.12.0");
+    assert_eq!(v["pipeline_version"], "0.12.1");
     assert!(v["gpu"]["available"].is_boolean());
     if v["gpu"]["available"] == true {
         assert!(v["gpu"]["name"].is_string() && v["gpu"]["limits"]["max_buffer_size"].is_u64());
@@ -455,6 +501,62 @@ fn doctor_reports_subject_and_people_as_this_machine_answers() {
             kinds.contains(&"subject") && kinds.contains(&"people"),
             "YM_REQUIRE_VISION is set and this computer does not support the Vision requests: {v}"
         );
+    }
+}
+
+/// `docs/26` H-17: the Metal working-set limit has a row and a field. On a Mac with an adapter it is a number above 0,
+/// and on Apple silicon above RAM / 4 (finding P5-2); anywhere else the row says why there is none.
+#[test]
+fn doctor_reports_the_metal_limit_or_why_there_is_none() {
+    let sb = Sandbox::new();
+    let out = sb
+        .ym()
+        .env("YELLOWMOON_GPU", "on")
+        .args(["doctor", "--json"])
+        .assert()
+        .success();
+    let v: Value = serde_json::from_slice(&out.get_output().stdout).expect("JSON");
+    let text = String::from_utf8(
+        sb.ym()
+            .env("YELLOWMOON_GPU", "on")
+            .arg("doctor")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .expect("UTF-8");
+    let budget = &v["memory_budget"];
+    assert_eq!(budget["metal_factor"], 0.75);
+    assert!(budget["metal_devices"].is_array());
+    let row = text
+        .lines()
+        .find(|l| l.starts_with("GPU Metal limit"))
+        .unwrap_or_else(|| panic!("no `GPU Metal limit` row:\n{text}"));
+    if v["gpu"]["available"] != true {
+        assert_eq!(budget["metal_limit_reason"], "no GPU adapter opened");
+        assert!(row.contains("none (no GPU adapter opened)"), "{row}");
+        return;
+    }
+    if cfg!(target_os = "macos") {
+        let limit = budget["metal_limit_bytes"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("a Mac with an adapter has a Metal limit: {budget}"));
+        assert!(limit > 0);
+        assert!(budget["metal_limit_reason"].is_null());
+        assert!(
+            row.contains("GiB (working set; the GPU budget uses 0.75 of it)"),
+            "{row}"
+        );
+        // The budget never exceeds 0.75 of the limit.
+        let gpu = budget["gpu_bytes"].as_u64().expect("gpu_bytes");
+        assert!(gpu as f64 <= limit as f64 * 0.75 + 1.0, "{budget}");
+    } else {
+        assert!(budget["metal_limit_bytes"].is_null(), "{budget}");
+        assert_eq!(budget["metal_limit_reason"], "not a Mac, so no Metal limit");
+        assert!(row.contains("none (not a Mac"), "{row}");
+        assert_eq!(budget["gpu_bytes"], 4_u64 << 30);
     }
 }
 

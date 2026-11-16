@@ -67,6 +67,8 @@ pub fn run() {
         .on_menu_event(on_menu_event)
         .setup(move |app| {
             builder.mount_events(app);
+            // The system's display options reach the page whether or not the core started.
+            crate::a11y::watch(app.handle().clone());
             let state = start(app, &frames);
             app.manage(state);
             Ok(())

@@ -1,0 +1,32 @@
+{
+  "state": "13-tab-detail",
+  "end": "leaves",
+  "stops": [
+    {"role":"button","name":"Before","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Crop","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Nodes","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Add photos","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Fit 12%","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Update ready","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Export 3 ⌘E","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Show DSC04204, picked","outline":"solid","ring":"outline"},
+    {"role":"tab","name":"Detail","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Reset","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Amount","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"Amount value","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Radius","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"Radius value","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Output","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"Output value","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Auto","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Reset","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Luminance","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"Luminance value","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Colour","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"Colour value","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Detail","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"Detail value","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Copy settings","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Paste","outline":"solid","ring":"outline"}
+  ]
+}

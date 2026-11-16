@@ -6,8 +6,10 @@
  * Implemented in Swift with @_cdecl and declared again, with the same types, in Rust
  * (crates/ym-apple/src/bridge.rs and src/vision_bridge.rs, the struct in src/abi.rs, the codes in
  * src/vision_abi.rs). A test reads this file and the Rust declarations to keep the names in step.
- * The two bridges are built separately (build.rs): the Vision one on every Mac whose SDK has the
- * macOS 14 requests, both architectures, the Apple Auto one on Apple silicon with the macOS 27 SDK. The Swift side takes `out` as a `void *` and writes the
+ * The Metal devices' (docs/26-hardening.md H-17; the ym_apple_metal_devices function, MetalDevices.swift) is a
+ * third, built for both architectures like the Vision one. The bridges are built separately (build.rs): the Vision
+ * and Metal ones on every Mac whose SDK has the macOS 14 requests, both architectures, the Apple Auto one on Apple
+ * silicon with the macOS 27 SDK. The Swift side takes `out` as a `void *` and writes the
  * fields at the offsets of the struct below (0, 4, ... 44, the scene at 48 and the plan at 176).
  *
  * Strings are UTF-8 and always NUL-terminated; a string longer than its buffer is cut at a
@@ -144,6 +146,44 @@ int32_t ym_apple_mask_probe(int32_t kind);
  */
 int32_t ym_apple_mask_make(int32_t kind, const uint8_t *rgb, uint32_t width, uint32_t height,
                            float *out, size_t out_len, char *message, size_t message_len);
+
+/*
+ * ---- The Metal devices (docs/26-hardening.md H-17, docs/17-gpu.md section 8) ----
+ *
+ * MTLCopyAllDevices(): every Metal device of this Mac, with the most memory Metal recommends it use
+ * (recommendedMaxWorkingSetSize). wgpu does not expose that limit. Nothing is sent anywhere. The caller
+ * owns the memory; no pointer is kept.
+ */
+
+/* The bytes of YmAppleMetalDevice.name, the NUL included. */
+#define YM_APPLE_METAL_NAME_BYTES 128
+
+/*
+ * One Metal device. `name` is MTLDevice.name, the string wgpu's Metal backend reports as the adapter's
+ * name. recommended_max_working_set_bytes is 0 when Metal gave none. The three flags are 0 or 1.
+ */
+typedef struct YmAppleMetalDevice {
+    uint64_t recommended_max_working_set_bytes;
+    uint32_t has_unified_memory;
+    uint32_t is_low_power;
+    uint32_t is_removable;
+    uint32_t reserved; /* always 0 */
+    char name[YM_APPLE_METAL_NAME_BYTES];
+} YmAppleMetalDevice;
+
+#ifndef __cplusplus
+_Static_assert(sizeof(YmAppleMetalDevice) == 152, "YmAppleMetalDevice is 152 bytes");
+_Static_assert(offsetof(YmAppleMetalDevice, has_unified_memory) == 8, "the flags start at byte 8");
+_Static_assert(offsetof(YmAppleMetalDevice, name) == 24, "the name starts at byte 24");
+#endif
+
+/*
+ * Lists the Metal devices into `out` (`capacity` entries) and sets `*count` to how many entries were
+ * written: the devices Metal lists, at most `capacity`. 0 on success, also when there is no device
+ * (then `*count` is 0); 1 when `count` is NULL, or `out` is NULL with a capacity above 0. Cheap: property
+ * reads. May be called from any thread.
+ */
+int32_t ym_apple_metal_devices(YmAppleMetalDevice *out, size_t capacity, size_t *count);
 
 #ifdef __cplusplus
 }

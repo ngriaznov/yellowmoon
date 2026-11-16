@@ -1657,6 +1657,26 @@ export interface ExportBusy {
 }
 
 /**
+ * `display_options` (addition, `docs/28` A-P12, `docs/11` *Display options*): the system's Reduce Transparency, Reduce Motion and
+ * Increase Contrast settings, as the command `display_options()` answers them and as the event sends them when one changes. The page sets
+ * `data-reduce-transparency`, `data-reduce-motion` and `data-increase-contrast` on `<html>` from them. All false off macOS.
+ */
+export interface DisplayOptions {
+  reduce_transparency: boolean;
+  reduce_motion: boolean;
+  increase_contrast: boolean;
+}
+
+/**
+ * `memory_notice` (addition, `docs/26` H-14): the computer is short of memory. `message` is the sentence the error bar shows as a
+ * notice, or `null` when the level is normal again and the sentence goes. Sent once on the way into the critical level and once when
+ * the level is normal; the core owns the words.
+ */
+export interface MemoryNotice {
+  message: string | null;
+}
+
+/**
  * `viewport_busy` (addition): whether the viewport is working on a frame of the photo on screen, or on the full-resolution tiles a
  * frame needs, and whether the raw stages of that photo run on the CPU (no usable graphics card, a device error ended the route, the
  * device is lost, or a method the device does not run), which can take seconds. Sent when it changes (at most about 30 times a
@@ -1728,7 +1748,7 @@ export type IfExists = "skip" | "replace" | "keep_both";
 export type ExportSize = { kind: "full" } | { kind: "long_edge"; px: number };
 
 /**
- * The options of `docs/09`. Defaults: JPEG, quality 92, 16-bit, LZW, sRGB, full size,
+ * The options of `docs/09`. Defaults: JPEG, quality 92, 16-bit, ZIP, sRGB, full size,
  * `{name}_{look}`, keep both. Colour space and size don't apply to DNG.
  */
 export interface ExportOptions {
@@ -1841,6 +1861,11 @@ export interface Preferences {
    * text for every provider; "" (the default) means `AutoStatus.default_instructions`.
    */
   apple_auto_instructions: string;
+  /**
+   * Single-key shortcuts (`docs/28` A-P11): on by default. Off, P, Z, C, W, N, F, B, M, A, `\`, 1 to 9, Delete and Backspace do nothing
+   * outside a text box, and every action stays in the menu bar.
+   */
+  single_key_shortcuts: boolean;
 }
 
 /** A partial update of the preferences. */
@@ -2004,7 +2029,22 @@ export type MenuAction =
   | "make_default_look"
   | "copy_settings"
   | "paste_settings"
-  | "paste_settings_to_picked";
+  | "paste_settings_to_picked"
+  | "crop"
+  | "auto_crop"
+  | "pick_white"
+  | "remove_photo"
+  | "bypass_node"
+  | "mask_view"
+  | "look_1"
+  | "look_2"
+  | "look_3"
+  | "look_4"
+  | "look_5"
+  | "look_6"
+  | "look_7"
+  | "look_8"
+  | "look_9";
 
 /**
  * `set_menu_state(state)` (addition, 2026-10-16): which of the Edit menu's settings items are available. The webview knows (a developed
@@ -2061,6 +2101,10 @@ export interface ApiEvents {
   depth_state: DepthState;
   /** The face worker started or ended its work for a photo, and where the faces are (`docs/27` S-11b: the Face Refinement node says "Finding faces…"). */
   face_state: FaceState;
+  /** The computer is short of memory and background work is paused (the sentence), or it is not any more (`null`). */
+  memory_notice: MemoryNotice;
+  /** One of the system's display options changed (Reduce Transparency, Reduce Motion, Increase Contrast; macOS only). */
+  display_options: DisplayOptions;
 }
 
 /** Names of the events the core emits. */

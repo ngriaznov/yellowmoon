@@ -78,14 +78,14 @@ test.describe("each format", () => {
     await exportPanel(page);
     await format(page, "TIFF");
     await expect(page.getByRole("radiogroup", { name: "Bit depth" })).toBeVisible();
-    await expect(page.getByRole("radiogroup", { name: "Compression" }).getByRole("radio", { name: "LZW" })).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByRole("radiogroup", { name: "Compression" }).getByRole("radio", { name: "ZIP" })).toHaveAttribute("aria-checked", "true");
     await expect(page.getByText("DSC04203_neutral.tif")).toBeVisible();
     const command = page.getByRole("region", { name: "Same thing from the command line" });
-    // LZW is the default, so the command names only another compression.
+    // ZIP is the default, so the command names only another compression.
     await expect(command).toContainText("--format tiff");
     await expect(command).not.toContainText("--compression");
-    await page.getByRole("radiogroup", { name: "Compression" }).getByRole("radio", { name: "ZIP" }).click();
-    await expect(command).toContainText("--compression zip");
+    await page.getByRole("radiogroup", { name: "Compression" }).getByRole("radio", { name: "LZW" }).click();
+    await expect(command).toContainText("--compression lzw");
   });
 
   test("PNG: Bit depth only", async ({ page }) => {

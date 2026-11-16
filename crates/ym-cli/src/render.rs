@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use ym_core::app::Core;
 use ym_core::app::gpu::{
-    CpuReason, GPU_ENV, GpuOutcome, GpuPolicy, GpuSlot, PolicyChoice, PolicySource, open_gpu,
+    CpuReason, GPU_ENV, GpuOutcome, GpuPolicy, GpuSlot, PolicyChoice, PolicySource,
 };
 use ym_core::export::{free_bytes_in, is_low_on_space, low_space_message, planned_destination};
 use ym_core::export_queue::{ExportEvent, ExportJob, FileDone, QueueError};
@@ -348,6 +348,14 @@ fn skip_kind(path: &Path, reason: &str) -> (&'static str, Option<String>) {
     if reason == ym_core::media::NO_ANSWER_MESSAGE {
         return ("io", Some("the file did not answer in time".to_owned()));
     }
+    // A file that changed after it was opened (`docs/26` H-04) decodes again as a different file:
+    // that is an `io` failure too, and it is not read a second time.
+    if reason == ym_core::media::CHANGED_MESSAGE {
+        return (
+            "io",
+            Some("the file changed after it was opened".to_owned()),
+        );
+    }
     match ym_raw::decode::decode(path) {
         Err(error) => (error.kind(), error.detail()),
         Ok(_) => ("analysis", None),
@@ -404,7 +412,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
     let budget = core.renderer.options().budget;
     let mut gpu_slot: Option<GpuSlot> = None;
     if choice.policy.is_strict() {
-        let slot = open_gpu(choice.policy, budget);
+        let slot = ym_apple::gpu_opener(choice.policy, budget).open();
         if let Some(reason) = slot.failure() {
             return Err(Failure::new(exit::NO_GPU, no_gpu_message(&choice, reason)));
         }
@@ -761,6 +769,13 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
     }
     summary.elapsed = started.elapsed().as_secs_f64();
     summarise(console, args.json, &counts, &summary, total, cancelled);
+    // The same number as `ym doctor --bench` calls `host_ledger_peak_bytes`; the memory gate of CI
+    // (`docs/26` H-12) compares it with the process's peak resident memory.
+    let ledger_peak = core.renderer.ledger().peak();
+    console.detail(&format!(
+        "Ledger peak: {ledger_peak} bytes ({:.0} MiB).",
+        ledger_peak as f64 / 1_048_576.0
+    ));
     if !args.json || console.is_verbose() {
         for note in &notes {
             console.info(&format!("Note: {note}"));
@@ -1173,7 +1188,7 @@ mod tests {
         assert_eq!(o.format, FormatKind::Tiff, "the preferred format");
         assert_eq!(o.jpeg_quality.get(), 92);
         assert_eq!(o.bit_depth, BitDepth::Sixteen);
-        assert_eq!(o.tiff_compression, TiffCompression::Lzw);
+        assert_eq!(o.tiff_compression, TiffCompression::Zip);
         assert_eq!(o.color_space, ColorSpace::Srgb);
         assert_eq!(o.size, Size::Full);
         assert_eq!(o.if_exists, IfExists::KeepBoth);

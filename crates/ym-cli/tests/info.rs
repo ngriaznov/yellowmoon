@@ -491,6 +491,36 @@ fn optional_fields_are_null_or_absent_when_the_file_lacks_them() {
     assert!(out.contains("none"), "{out}");
 }
 
+/// The NEX-7 carries its lens tables only in the SR2 sub-IFD; `info` lists them instead of "none".
+/// Needs the local real file (`tools/fetch/real-eval.sh`); skipped without it.
+#[test]
+fn a_nex_7_shows_its_lens_data_from_the_sr2_sub_ifd() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testdata/real/files/NEX-7.ARW");
+    if !path.is_file() {
+        assert!(
+            std::env::var_os("YM_REQUIRE_REAL_FILES").is_none(),
+            "YM_REQUIRE_REAL_FILES is set but {} is missing",
+            path.display()
+        );
+        eprintln!("SKIPPED: {} is not on this machine", path.display());
+        return;
+    }
+    let text = ym().arg("info").arg(&path).assert().success();
+    let out = String::from_utf8_lossy(&text.get_output().stdout).into_owned();
+    let line = out
+        .lines()
+        .find(|l| l.contains("Lens data"))
+        .expect("a Lens data line");
+    assert!(
+        line.contains("vignetting")
+            && line.contains("chromatic aberration")
+            && line.contains("distortion"),
+        "{line}"
+    );
+    assert!(!line.contains("none"), "{line}");
+}
+
 #[test]
 fn gps_location_is_shown_when_the_file_has_a_fix() {
     let dir = tempfile::tempdir().expect("tempdir");

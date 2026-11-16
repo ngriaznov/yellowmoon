@@ -303,12 +303,19 @@ export const commands = {
 	cliLinkStatus: () => __TAURI_INVOKE<CliLinkStatus>("cli_link_status"),
 	/**  `app_info()`: version numbers for About. */
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	/**
+	 *  `display_options()`: the system's Reduce Transparency, Reduce Motion and Increase Contrast settings (`docs/28` A-P12). It does not
+	 *  need the core, so it answers even when the application could not start. A synchronous command runs on the main thread, where
+	 *  AppKit is read; off macOS it answers all false.
+	 */
+	displayOptions: () => __TAURI_INVOKE<DisplayOptions>("display_options"),
 };
 
 /** Events */
 export const events = {
 	autoStatusChanged: makeEvent<AutoStatusChanged>("auto_status_changed"),
 	depthState: makeEvent<DepthState>("depth_state"),
+	displayOptions: makeEvent<DisplayOptions>("display_options"),
 	downloadFound: makeEvent<DownloadFound>("download_found"),
 	error: makeEvent<ErrorEvent>("error"),
 	exportBusy: makeEvent<ExportBusy>("export_busy"),
@@ -316,6 +323,7 @@ export const events = {
 	faceState: makeEvent<FaceState>("face_state"),
 	looksChanged: makeEvent<LooksChanged>("looks_changed"),
 	looksImportProgress: makeEvent<LooksImportProgress>("looks_import_progress"),
+	memoryNotice: makeEvent<MemoryNotice>("memory_notice"),
 	menuAction: makeEvent<MenuActionEvent>("menu_action"),
 	nodeThumbnailsReady: makeEvent<NodeThumbnailsReady>("node_thumbnails_ready"),
 	objectState: makeEvent<ObjectState>("object_state"),
@@ -1050,6 +1058,23 @@ export type DepthState = {
 export type DevelopSettings = {
 	/**  The graph. */
 	nodes: NodesSettings,
+};
+
+/**
+ *  `display_options { reduce_transparency, reduce_motion, increase_contrast }` (addition, `docs/28` A-P12, `docs/11` *Display options*):
+ *  the three accessibility display settings of the system (System Settings, Accessibility, Display), read by the shell on macOS
+ *  (`NSWorkspace`) and sent when the system says one changed. It is also what the command `display_options()` returns, because an
+ *  event sent at start can arrive before the page listens. The page sets or removes `data-reduce-transparency`,
+ *  `data-reduce-motion` and `data-increase-contrast` on `<html>` from it. Off macOS all three are false and no event is sent.
+ *  Not saved anywhere: the system is asked each time.
+ */
+export type DisplayOptions = {
+	/**  Reduce Transparency is on. */
+	reduce_transparency: boolean,
+	/**  Reduce Motion is on. */
+	reduce_motion: boolean,
+	/**  Increase Contrast is on. */
+	increase_contrast: boolean,
 };
 
 /**
@@ -2266,6 +2291,17 @@ via: string } |
 { kind: "default" };
 
 /**
+ *  `memory_notice { message }` (addition, `docs/26` H-14): the computer is short of memory. `message` is the sentence the error bar shows
+ *  as a notice ("Your Mac is short of memory, so Yellowmoon paused background work. Close other apps to speed it up again."), or null
+ *  when the level is normal again and the sentence goes. Sent once on the way into the critical level and once when the level is
+ *  normal; the core owns the words so the app and the mock say the same.
+ */
+export type MemoryNotice = {
+	/**  The sentence to show, or null to take it away. */
+	message: string | null,
+};
+
+/**
  *  The items of the native menu bar that need the webview. The shell sends `menu_action` with one
  *  of them; the items it handles itself (About, Show Looks Folder, the Help links, Quit) are not
  *  listed.
@@ -2327,7 +2363,40 @@ export type MenuAction =
 /**  Paste the copied settings onto the current photo. */
 "paste_settings" | 
 /**  Paste the copied settings onto the picked photos. */
-"paste_settings_to_picked";
+"paste_settings_to_picked" | 
+/**
+ *  Crop (the Crop button and C). The Photo menu has it so the single-key switch strands nothing
+ *  (`docs/28` A-P11).
+ */
+"crop" | 
+/**  Auto crop on or off while the Crop panel is open (A). */
+"auto_crop" | 
+/**  Pick white (the Colour tab's button and W). */
+"pick_white" | 
+/**  Remove the photo on screen from the filmstrip (Delete and Backspace). */
+"remove_photo" | 
+/**  Bypass the selected node (B; the node view only). */
+"bypass_node" | 
+/**  Show or hide the selected node's mask (M; the node view only). */
+"mask_view" | 
+/**  Pick look 1 of the Look tab (the key 1). */
+"look_1" | 
+/**  Pick look 2 of the Look tab (the key 2). */
+"look_2" | 
+/**  Pick look 3 of the Look tab (the key 3). */
+"look_3" | 
+/**  Pick look 4 of the Look tab (the key 4). */
+"look_4" | 
+/**  Pick look 5 of the Look tab (the key 5). */
+"look_5" | 
+/**  Pick look 6 of the Look tab (the key 6). */
+"look_6" | 
+/**  Pick look 7 of the Look tab (the key 7). */
+"look_7" | 
+/**  Pick look 8 of the Look tab (the key 8). */
+"look_8" | 
+/**  Pick look 9 of the Look tab (the key 9). */
+"look_9";
 
 /**  `menu_action { action }`: a menu item that needs the webview was chosen. */
 export type MenuActionEvent = {
@@ -2910,6 +2979,11 @@ export type Preferences = {
 	 *  most 2000 characters, one text for every provider; `""` is the default.
 	 */
 	apple_auto_instructions: string,
+	/**
+	 *  Single-key shortcuts (`docs/28` A-P11): on by default; off leaves P, Z, C, W, N, F, B, M, A,
+	 *  `\`, 1 to 9, Delete and Backspace to the menu bar.
+	 */
+	single_key_shortcuts: boolean,
 };
 
 /**  A partial update of the preferences. */
@@ -2938,6 +3012,8 @@ export type PreferencesPatch = {
 	 *  text is refused.
 	 */
 	apple_auto_instructions?: string | null,
+	/**  New value of "Single-key shortcuts". */
+	single_key_shortcuts?: boolean | null,
 };
 
 /**  The enlarger's filtration, as shifts from neutral in Kodak CC units, -50 to 50. */

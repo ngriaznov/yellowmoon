@@ -131,9 +131,9 @@ pub enum TiffCompression {
     /// No compression (TIFF compression 1).
     None,
     /// LZW with horizontal predictor (compression 5).
-    #[default]
     Lzw,
-    /// Deflate (zlib) with horizontal predictor, shown to the user as "ZIP" (compression 8).
+    /// Deflate (zlib) with horizontal predictor, shown to the user as "ZIP" (compression 8). The default.
+    #[default]
     #[serde(alias = "deflate")]
     Zip,
 }
@@ -443,7 +443,7 @@ impl Default for ExportOptions {
             format: FormatKind::Jpeg,
             jpeg_quality: JpegQuality::default(),
             bit_depth: BitDepth::Sixteen,
-            tiff_compression: TiffCompression::Lzw,
+            tiff_compression: TiffCompression::Zip,
             color_space: ColorSpace::Srgb,
             size: Size::Full,
             destination: None,
@@ -495,7 +495,7 @@ mod tests {
         assert_eq!(o.format, FormatKind::Jpeg);
         assert_eq!(o.jpeg_quality.get(), 92);
         assert_eq!(o.bit_depth, BitDepth::Sixteen);
-        assert_eq!(o.tiff_compression, TiffCompression::Lzw);
+        assert_eq!(o.tiff_compression, TiffCompression::Zip);
         assert_eq!(o.color_space, ColorSpace::Srgb);
         assert_eq!(o.size, Size::Full);
         assert_eq!(o.destination, None);
@@ -518,7 +518,7 @@ mod tests {
                 "format": "jpeg",
                 "jpeg_quality": 92,
                 "bit_depth": 16,
-                "tiff_compression": "lzw",
+                "tiff_compression": "zip",
                 "color_space": "srgb",
                 "size": { "kind": "full" },
                 "destination": null,

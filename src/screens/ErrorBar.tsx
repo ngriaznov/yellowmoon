@@ -7,13 +7,15 @@ import { useAppState, useStore } from "../state/context";
  * Shows the last error from the core in a bar at the bottom of the window until it is dismissed: a glasscn `Item` on glass, with
  * Dismiss as a button. Errors already say what went wrong and what to do (`docs/01` §Errors and logging); this only shows them.
  * A message that is not an error ("Yellowmoon is up to date.") uses the same bar as a status. The notice of a removal from the filmstrip
- * ("Removed 3 photos. The files are still on disk.") has an Undo button next to Dismiss.
+ * ("Removed 3 photos. The files are still on disk.") has an Undo button next to Dismiss. The memory notice (`memory_notice`: "Your Mac is
+ * short of memory…") is a notice too, shown after those and gone when the core says the level is normal.
  */
 export function ErrorBar() {
   const store = useStore();
   const error = useAppState((s) => s.error);
   const notice = useAppState((s) => s.notice);
   const action = useAppState((s) => s.noticeAction);
+  const memoryNotice = useAppState((s) => s.memoryNotice);
   if (error) {
     return (
       <Item role="alert" size="sm" className="ym-error-bar">
@@ -45,6 +47,22 @@ export function ErrorBar() {
             </Button>
           ) : null}
           <LinkButton onClick={() => store.dismissNotice()}>Dismiss</LinkButton>
+        </ItemActions>
+      </Item>
+    );
+  }
+  if (memoryNotice) {
+    // The computer is short of memory (`docs/26` H-14): the core's sentence, in the notice style. It goes when the level is normal.
+    return (
+      <Item role="status" size="sm" className="ym-error-bar" data-kind="notice" data-memory="">
+        <ItemMedia variant="icon" aria-hidden="true">
+          <InfoIcon />
+        </ItemMedia>
+        <ItemContent>
+          <span>{memoryNotice}</span>
+        </ItemContent>
+        <ItemActions>
+          <LinkButton onClick={() => store.dismissMemoryNotice()}>Dismiss</LinkButton>
         </ItemActions>
       </Item>
     );

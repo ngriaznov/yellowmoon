@@ -10,7 +10,7 @@
 //! worker, the cache, the geometry, the random graphs and the app-and-`ym` parity use it, so they need no weights.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, OnceLock};
 
 use ym_ml::depth::{self, DepthAnything, WEIGHTS_FILE};
 use ym_ml::model::MlError;
@@ -18,6 +18,7 @@ use ym_ml::model::MlError;
 use crate::settings::NO_DEPTH_MODEL_SENTENCE;
 
 use super::RenderError;
+use super::resident::{Clock, ModelSlot, SlotError, Unload, Unloadable};
 
 /// The version of the weights file format the model reads (`format` `yellowmoon-depth`, `version` `1`), part of the map's key.
 pub const DEPTH_FORMAT_VERSION: u32 = 1;
@@ -81,27 +82,23 @@ pub enum FocusPlane {
 }
 
 enum Net {
-    /// Depth Anything V2-Small, read from the model folder when first needed.
+    /// Depth Anything V2-Small, read from the model folder when first needed and let go when idle or when memory is short.
     Network {
         dir: PathBuf,
-        state: Mutex<NetState>,
+        slot: ModelSlot<DepthAnything>,
     },
-    /// A function that stands in for it (tests).
-    Fake(Arc<FakeDepth>),
-}
-
-enum NetState {
-    /// The weights have not been read yet.
-    Untried,
-    /// Loaded.
-    Ready(Arc<DepthAnything>),
-    /// Could not be read, did not match their checksum or are not the model (the reason is in the log).
-    Damaged,
+    /// A function that stands in for it (tests). Its "weights" are a unit value in a slot, so the unload and reload of a model
+    /// can be tested without the 50 MB file ([`DepthModel::fake_unloading`]); [`DepthModel::fake`] pins it.
+    Fake {
+        f: Arc<FakeDepth>,
+        resident: ModelSlot<()>,
+    },
 }
 
 /// Depth Anything V2-Small and where its weights are. The weights load the first time they are asked for
 /// (on the first map); a file that is damaged takes the model away for the rest of the run
-/// ([`DepthModel::available`]).
+/// ([`DepthModel::available`]). They are let go after five minutes without use and when memory is short ([`Unloadable`],
+/// `pipeline/resident.rs`), and the next map reads them again.
 pub struct DepthModel {
     net: Net,
     /// Names the weights in the map's key: their SHA-256 from `SHA256SUMS`, or the fake's name.
@@ -128,6 +125,30 @@ fn listed_sha256(dir: &Path) -> Option<String> {
         .map(|(hash, _)| hash.trim().to_owned())
 }
 
+impl Unloadable for DepthModel {
+    fn name(&self) -> &'static str {
+        "Depth"
+    }
+    fn sweep(&self) -> Unload {
+        match &self.net {
+            Net::Network { slot, .. } => slot.sweep(),
+            Net::Fake { resident, .. } => resident.sweep(),
+        }
+    }
+    fn trim(&self) -> Unload {
+        match &self.net {
+            Net::Network { slot, .. } => slot.trim(),
+            Net::Fake { resident, .. } => resident.trim(),
+        }
+    }
+    fn loaded(&self) -> bool {
+        match &self.net {
+            Net::Network { slot, .. } => slot.loaded(),
+            Net::Fake { resident, .. } => resident.loaded(),
+        }
+    }
+}
+
 impl DepthModel {
     /// The model of a data folder (`<data_root>/models/depth/`), when its weights file and a `SHA256SUMS` that lists it are
     /// there. Nothing is read beyond the sums: the weights load, and are checked against their checksum and their header,
@@ -142,11 +163,26 @@ impl DepthModel {
         Some(Arc::new(Self {
             net: Net::Network {
                 dir,
-                state: Mutex::new(NetState::Untried),
+                slot: ModelSlot::lazy(),
             },
             weights_id,
             pool: OnceLock::new(),
         }))
+    }
+
+    /// [`DepthModel::probe`] with the clock and the idle time of the unload given (tests).
+    #[must_use]
+    pub fn probe_with_clock(
+        data_root: &Path,
+        clock: Clock,
+        idle: std::time::Duration,
+    ) -> Option<Arc<Self>> {
+        let model = Self::probe(data_root)?;
+        let mut model = Arc::into_inner(model)?;
+        if let Net::Network { slot, .. } = &mut model.net {
+            *slot = ModelSlot::lazy_with(clock, idle);
+        }
+        Some(Arc::new(model))
     }
 
     /// A model that is loaded already (tests with synthetic weights).
@@ -156,9 +192,10 @@ impl DepthModel {
             .sha256()
             .map_or_else(|| "loaded".to_owned(), str::to_owned);
         Arc::new(Self {
+            // No folder to read again: it is never unloaded.
             net: Net::Network {
                 dir: PathBuf::new(),
-                state: Mutex::new(NetState::Ready(network)),
+                slot: ModelSlot::pinned(network),
             },
             weights_id,
             pool: OnceLock::new(),
@@ -170,10 +207,50 @@ impl DepthModel {
     #[must_use]
     pub fn fake(name: &str, f: Arc<FakeDepth>) -> Arc<Self> {
         Arc::new(Self {
-            net: Net::Fake(f),
+            net: Net::Fake {
+                f,
+                resident: ModelSlot::pinned(Arc::new(())),
+            },
             weights_id: format!("fake:{name}"),
             pool: OnceLock::new(),
         })
+    }
+
+    /// A fake whose stand-in weights load on first use and unload like the real ones, by the `clock` and `idle` given
+    /// ([`DepthModel::loads`] counts the loads): the tests of the idle unload and of the memory warning use it.
+    #[must_use]
+    pub fn fake_unloading(
+        name: &str,
+        f: Arc<FakeDepth>,
+        clock: Clock,
+        idle: std::time::Duration,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            net: Net::Fake {
+                f,
+                resident: ModelSlot::lazy_with(clock, idle),
+            },
+            weights_id: format!("fake:{name}"),
+            pool: OnceLock::new(),
+        })
+    }
+
+    /// How many times the weights have been read since the model was made (a test's count of loads; a pinned model has none).
+    #[must_use]
+    pub fn loads(&self) -> u64 {
+        match &self.net {
+            Net::Network { slot, .. } => slot.loads(),
+            Net::Fake { resident, .. } => resident.loads(),
+        }
+    }
+
+    /// How many times the weights have been unloaded.
+    #[must_use]
+    pub fn unloads(&self) -> u64 {
+        match &self.net {
+            Net::Network { slot, .. } => slot.unloads(),
+            Net::Fake { resident, .. } => resident.unloads(),
+        }
     }
 
     /// The environment variable that makes [`Core::open`](crate::app::Core::open) use [`DepthModel::fake_default`] in place of
@@ -229,39 +306,31 @@ impl DepthModel {
     #[must_use]
     pub fn available(&self) -> bool {
         match &self.net {
-            Net::Fake(_) => true,
-            Net::Network { state, .. } => !matches!(
-                *state.lock().unwrap_or_else(PoisonError::into_inner),
-                NetState::Damaged
-            ),
+            Net::Fake { .. } => true,
+            Net::Network { slot, .. } => !slot.damaged(),
         }
     }
 
-    /// The network, loading the weights when this is the first call.
+    /// The network, loading the weights when they are not in memory. The caller keeps the `Arc` while it runs the network, which
+    /// is what keeps the weights from being unloaded under it.
     fn network(&self) -> Result<Arc<DepthAnything>, RenderError> {
-        let Net::Network { dir, state } = &self.net else {
+        let Net::Network { dir, slot } = &self.net else {
             return Err(RenderError::Mask(NO_DEPTH_MODEL_SENTENCE.to_owned()));
         };
-        let mut st = state.lock().unwrap_or_else(PoisonError::into_inner);
-        match &*st {
-            NetState::Ready(net) => return Ok(Arc::clone(net)),
-            NetState::Damaged => return Err(RenderError::Mask(NO_DEPTH_MODEL_SENTENCE.to_owned())),
-            NetState::Untried => {}
-        }
-        let started = std::time::Instant::now();
-        match DepthAnything::load(dir) {
-            Ok(net) => {
-                tracing::debug!(
-                    ms = started.elapsed().as_secs_f64() * 1000.0,
-                    "the Depth model loaded"
-                );
-                let net = Arc::new(net);
-                *st = NetState::Ready(Arc::clone(&net));
-                Ok(net)
-            }
-            Err(e) => {
+        let loaded = slot.get(|| {
+            let started = std::time::Instant::now();
+            let net = DepthAnything::load(dir)?;
+            tracing::debug!(
+                ms = started.elapsed().as_secs_f64() * 1000.0,
+                "the Depth model loaded"
+            );
+            Ok::<_, MlError>(net)
+        });
+        match loaded {
+            Ok(net) => Ok(net),
+            Err(SlotError::Damaged) => Err(RenderError::Mask(NO_DEPTH_MODEL_SENTENCE.to_owned())),
+            Err(SlotError::Load(e)) => {
                 tracing::error!(error = %e, "the Depth model could not be loaded");
-                *st = NetState::Damaged;
                 Err(RenderError::Mask(NO_DEPTH_MODEL_SENTENCE.to_owned()))
             }
         }
@@ -306,13 +375,19 @@ impl DepthModel {
         };
         match &self.net {
             // A fake that fails while it is being cancelled was stopped, as the network is (`MlError::Cancelled`).
-            Net::Fake(f) => f(width, height, rgb, cancel).map_err(|e| {
-                if cancel() {
-                    RenderError::Cancelled
-                } else {
-                    failed(&e)
-                }
-            }),
+            Net::Fake { f, resident } => {
+                // Held while the fake runs, as the real weights are held while the network runs.
+                let _weights = resident
+                    .get(|| Ok::<(), ()>(()))
+                    .map_err(|_| RenderError::Mask(NO_DEPTH_MODEL_SENTENCE.to_owned()))?;
+                f(width, height, rgb, cancel).map_err(|e| {
+                    if cancel() {
+                        RenderError::Cancelled
+                    } else {
+                        failed(&e)
+                    }
+                })
+            }
             Net::Network { .. } => {
                 let net = self.network()?;
                 let unit: Vec<f32> = rgb.iter().map(|&v| f32::from(v) / 255.0).collect();

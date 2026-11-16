@@ -6,7 +6,7 @@ import { InputQuestion } from "../wizard/InputQuestion";
 import { Dialog } from "./Dialog";
 
 /**
- * Looks › Import .cube… (`docs/08-looks.md` §Any other .cube, §ARRI Look Files): the files that were chosen, what each is, and for
+ * Looks › Import LUTs and look files… (`docs/08-looks.md` §Any other .cube, §ARRI Look Files): the files that were chosen, what each is, and for
  * LUTs that match no ARRI package the one question: what does it expect as input? A recognised ARRI package, and ARRI Look Files
  * (`.alf4`, `.alf4c`, `.aml`, which say what they expect), are imported without asking.
  */
@@ -21,7 +21,7 @@ export function CubeImport() {
   const locked = importable.length === 0 || unanswered;
   return (
     <Dialog
-      title="Import LUTs"
+      title="Import LUTs and look files"
       blurb="Say what each LUT expects as input, then it joins Your LUTs."
       width={600}
       dismissable={!dialog.busy}

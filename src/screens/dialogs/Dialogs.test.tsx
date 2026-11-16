@@ -6,6 +6,7 @@ import { FILM_CREDIT, FILM_CREDIT_NAME, FILM_CREDIT_URL } from "../../fixtures/f
 import { openPhotos, renderApp } from "../../test/harness";
 import { updater } from "../../updater";
 import type { Harness } from "../../test/harness";
+import { nextOpener } from "./Overlays";
 
 let h: Harness | undefined;
 afterEach(() => {
@@ -107,6 +108,20 @@ describe("Preferences (⌘,)", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("has one \"Single-key shortcuts\" switch, on by default, with its line, that saves the preference (docs/28 A-P11)", async () => {
+    const dialog = await openPreferences();
+    const row = sw(dialog, "Single-key shortcuts");
+    expect(row).toHaveAttribute("aria-checked", "true");
+    expect(within(dialog).getAllByRole("switch", { name: "Single-key shortcuts" })).toHaveLength(1);
+    expect(within(dialog).getByText("Turn off if you use speech input or a screen reader. Every action stays in the menu bar.")).toBeInTheDocument();
+    expect((await h!.api.preferencesGet()).single_key_shortcuts).toBe(true);
+    await h!.user.click(row);
+    expect((await h!.api.preferencesGet()).single_key_shortcuts).toBe(false);
+    expect(sw(dialog, "Single-key shortcuts")).toHaveAttribute("aria-checked", "false");
+    await h!.user.click(sw(dialog, "Single-key shortcuts"));
+    expect((await h!.api.preferencesGet()).single_key_shortcuts).toBe(true);
+  });
+
   it("saves each switch as soon as it is flipped, and shows it again next time", async () => {
     const dialog = await openPreferences();
     await h!.user.click(sw(dialog, "Remove location from exports"));
@@ -187,6 +202,50 @@ describe("Preferences (⌘,)", () => {
     await h!.user.click(within(dialog).getByRole("button", { name: "About Yellowmoon" }));
     expect(await screen.findByRole("dialog", { name: "About Yellowmoon" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "Preferences" })).toBeNull();
+  });
+});
+
+describe("focus return from About (docs/28 F3, A-04)", () => {
+  /** ⌘, from the Open files button, then About from Preferences' footer: About replaces Preferences. */
+  async function aboutFromPreferences(): Promise<HTMLElement> {
+    await start();
+    const opener = screen.getByRole("button", { name: "Open files ⌘O" });
+    opener.focus();
+    await h!.user.keyboard("{Meta>},{/Meta}");
+    const preferences = await screen.findByRole("dialog", { name: "Preferences" });
+    await waitFor(() => expect(within(preferences).queryByText("Loading your preferences…")).toBeNull());
+    await h!.user.click(within(preferences).getByRole("button", { name: "About Yellowmoon" }));
+    await screen.findByRole("dialog", { name: "About Yellowmoon" });
+    return opener;
+  }
+
+  it("returns to what opened Preferences on Esc", async () => {
+    const opener = await aboutFromPreferences();
+    await h!.user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  it("returns to what opened Preferences on Done", async () => {
+    const opener = await aboutFromPreferences();
+    await h!.user.click(within(screen.getByRole("dialog", { name: "About Yellowmoon" })).getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  it("starts About on Done, not on the Preferences it replaced", async () => {
+    await aboutFromPreferences();
+    const about = screen.getByRole("dialog", { name: "About Yellowmoon" });
+    await waitFor(() => expect(within(about).getByRole("button", { name: "Done" })).toHaveFocus());
+  });
+
+  it("nextOpener keeps the first opener while one dialog replaces another, and drops it when none is open", () => {
+    const first = document.createElement("button");
+    const second = document.createElement("button");
+    expect(nextOpener({ overlay: null, opener: null }, "preferences", first)).toBe(first);
+    expect(nextOpener({ overlay: "preferences", opener: first }, "about", second)).toBe(first);
+    expect(nextOpener({ overlay: "about", opener: first }, null, second)).toBeNull();
+    expect(nextOpener({ overlay: null, opener: null }, "about", second)).toBe(second);
   });
 });
 
@@ -334,12 +393,12 @@ describe("the menu bar", () => {
   });
 });
 
-describe("Import .cube…", () => {
+describe("Import LUTs and look files…", () => {
   async function chooseCube(...files: string[]): Promise<HTMLElement> {
     await start({ looksImported: false });
     h!.api.queueChoice("files", files.map((f) => `~/LUTs/${f}`));
     act(() => h!.api.emitEvent("menu_action", { action: "import_cube" }));
-    return screen.findByRole("dialog", { name: "Import LUTs" });
+    return screen.findByRole("dialog", { name: "Import LUTs and look files" });
   }
 
   it("asks what the LUT expects as input, and imports it into Your LUTs", async () => {
@@ -447,7 +506,7 @@ describe("Import .cube…", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     h!.api.queueChoice("files", [`~/LUTs/${FAILURE_ZIPS.ownCube}`]);
     act(() => h!.api.emitEvent("menu_action", { action: "import_cube" }));
-    const dialog = await screen.findByRole("dialog", { name: "Import LUTs" });
+    const dialog = await screen.findByRole("dialog", { name: "Import LUTs and look files" });
     await h!.user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect((await h!.api.looksList()).filter((l) => l.group.kind === "user")).toHaveLength(0);
@@ -457,7 +516,7 @@ describe("Import .cube…", () => {
     h = renderApp({ current: 3 });
     await openPhotos(h);
     h.api.queueChoice("files", [`~/LUTs/${FAILURE_ZIPS.ownCube}`]);
-    await h.user.click(screen.getByRole("button", { name: "Import .cube…" }));
-    expect(await screen.findByRole("dialog", { name: "Import LUTs" })).toBeInTheDocument();
+    await h.user.click(screen.getByRole("button", { name: "Import LUTs and look files…" }));
+    expect(await screen.findByRole("dialog", { name: "Import LUTs and look files" })).toBeInTheDocument();
   });
 });

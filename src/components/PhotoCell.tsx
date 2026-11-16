@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
-import type { HTMLAttributes, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import type { HTMLAttributes, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import type { ViewportRect } from "../api/types";
+import { panKeyDelta } from "../state/zoom";
 import { Badge } from "@/components/glass/badge";
 import { isTauri } from "../env";
 import { cx } from "./cx";
@@ -23,6 +24,16 @@ export interface PhotoCellFrame {
   src: string;
   widthPx: number;
   heightPx: number;
+}
+
+/** What the keys of a zoomed photo do (`docs/28` A-10). The cell is a Tab stop only while it has these. */
+export interface PhotoKeyHandlers {
+  /** An arrow key: the picture moves by this many CSS pixels (the `pan` input of the viewport). */
+  pan: (dx: number, dy: number) => void;
+  /** Home: the view goes back to the middle of the picture. */
+  centre: () => void;
+  /** I: read the pixel under the middle of the view. Absent while "Single-key shortcuts" is off (`docs/28` A-P11): I is then a letter and does nothing. */
+  readPixel?: () => void;
 }
 
 export interface PhotoCellProps extends Omit<HTMLAttributes<HTMLElement>, "children" | "className"> {
@@ -67,9 +78,48 @@ export interface PhotoCellProps extends Omit<HTMLAttributes<HTMLElement>, "child
    * scrolls or bounces under the photo); without it the cell leaves them to the page (`usePhotoGestures`).
    */
   gestures?: PhotoGestureHandlers;
+  /**
+   * The keys of a zoomed photo. With it the picture is a Tab stop named "Photo, zoomed. The arrow keys move it.", and its arrows, Home and I
+   * do these; without it the picture is not focusable. The screen passes it only while the photo is larger than the cell.
+   */
+  keys?: PhotoKeyHandlers;
   /** Extra layers over the photo (the crop rectangle). They fill the cell. */
   children?: ReactNode;
   className?: string;
+}
+
+/** The most often a screen reader is told the pixel readout's value (`docs/28` A-03). */
+export const READOUT_ANNOUNCE_MS = 1000;
+
+/**
+ * A copy of `value` that changes at most once in `ms`: a change starts a timer, and when it ends the copy takes the latest value, so
+ * a burst of changes gives one update with the last value. `null` clears the copy at once (nothing is announced for an empty status).
+ */
+function useThrottled(value: string | null, ms: number): string | null {
+  const [shown, setShown] = useState<string | null>(null);
+  const latest = useRef(value);
+  latest.current = value;
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (value === null) {
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = null;
+      setShown(null);
+      return;
+    }
+    if (timer.current) return;
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      setShown(latest.current);
+    }, ms);
+  }, [value, ms]);
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+  return shown;
 }
 
 const sameRect = (a: ViewportRect, b: ViewportRect): boolean =>
@@ -85,7 +135,10 @@ const sameRect = (a: ViewportRect, b: ViewportRect): boolean =>
  * which is what the native viewport follows (`docs/01` §Native viewport). In the browser and the
  * mock it draws the photo as an `<img>` letterboxed on paper; with the native viewport the cell is
  * transparent; with the fallback viewport it shows the shell's picture of the cell (`frame`).
- * Overlays: look chip, camera line, the Before label, the ⌥ pixel readout and a notice at the top centre.
+ * Overlays: look chip, camera line, the Before label, the ⌥ pixel readout and a notice at the top centre. The picture is `role="img"` and
+ * holds only the picture; the chips, the camera line and the readout are in a sibling group, "Photo information", laid over the cell, so
+ * a screen reader reads them as text (an `img` has no accessible children). The readout is drawn live and `aria-hidden`; a hidden status
+ * in the group (there while the readout is) says it at most once a second.
  */
 export function PhotoCell({
   imageSrc,
@@ -101,6 +154,7 @@ export function PhotoCell({
   onRect,
   onPixelProbe,
   gestures,
+  keys,
   children,
   className,
   ...rest
@@ -113,6 +167,7 @@ export function PhotoCell({
   const probeRef = useLatest(onPixelProbe);
   const pointer = useRef<PhotoProbe | null>(null);
   const probing = useRef(false);
+  const announced = useThrottled(pixelReadout ?? null, READOUT_ANNOUNCE_MS);
 
   useLayoutEffect(() => {
     const el = cell.current;
@@ -201,6 +256,33 @@ export function PhotoCell({
     }
   };
 
+  const keyHelp = useId();
+  const keysRef = useLatest(keys);
+  // The picture takes the keys only while it has the focus itself: a crop frame or a handle over it has its own.
+  const onViewKeyDown = (event: ReactKeyboardEvent<HTMLElement>): void => {
+    const h = keysRef.current;
+    if (!h || event.target !== event.currentTarget || event.metaKey || event.ctrlKey || event.altKey) return;
+    const box = place();
+    const step = panKeyDelta(event.key, event.shiftKey, box);
+    if (step) {
+      event.preventDefault();
+      h.pan(step.dx, step.dy);
+    } else if (event.key === "Home" && !event.shiftKey) {
+      event.preventDefault();
+      if (!event.repeat) h.centre();
+    } else if ((event.key === "i" || event.key === "I") && !event.shiftKey && h.readPixel) {
+      event.preventDefault();
+      if (!event.repeat) h.readPixel();
+    }
+  };
+  // A click on the picture must not take the focus: the arrows would then pan and no longer step photos until the person tabs away.
+  const onViewMouseDown = (event: ReactMouseEvent<HTMLElement>): void => {
+    if (!keysRef.current) return;
+    event.preventDefault();
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body) active.blur();
+  };
+
   const onPointerLeave = (event: ReactPointerEvent<HTMLElement>): void => {
     rest.onPointerLeave?.(event);
     pointer.current = null;
@@ -221,7 +303,12 @@ export function PhotoCell({
       onPointerMove={onPointerMove}
       onPointerLeave={onPointerLeave}
     >
-      <div className="ym-photo-cell__view" role="img" aria-label={imageLabel}>
+      <div
+        className="ym-photo-cell__view"
+        role="img"
+        aria-label={keys ? "Photo, zoomed. The arrow keys move it." : imageLabel}
+        {...(keys ? { tabIndex: 0, "data-pan-view": "", "aria-describedby": keyHelp, onKeyDown: onViewKeyDown, onMouseDown: onViewMouseDown } : {})}
+      >
         {!native && frame ? (
           <img
             className="ym-photo-cell__frame"
@@ -234,6 +321,14 @@ export function PhotoCell({
         ) : !native && imageSrc ? (
           <img className="ym-photo-cell__image" src={imageSrc} alt="" draggable={false} />
         ) : null}
+      </div>
+      {keys ? (
+        // What the picture was called, and the two keys the name does not say; the name of a zoomed photo is the one that tells how to move it.
+        <span id={keyHelp} className="sr-only">
+          {imageLabel}. Home centres it.{keys.readPixel ? " I reads the pixel at the centre." : ""}
+        </span>
+      ) : null}
+      <div className="ym-photo-cell__info" role="group" aria-label="Photo information">
         {before ? (
           <Badge variant="outline" className="ym-photo-cell__before">
             {beforeLabel}
@@ -244,11 +339,21 @@ export function PhotoCell({
             {lookChip}
           </Badge>
         ) : null}
-        {cameraLine ? <span className="ym-photo-cell__camera">{cameraLine}</span> : null}
+        {cameraLine ? (
+          <Badge variant="outline" className="ym-photo-cell__camera">
+            {cameraLine}
+          </Badge>
+        ) : null}
         {pixelReadout ? (
-          <Badge variant="outline" className="ym-photo-cell__readout">
+          <Badge variant="outline" className="ym-photo-cell__readout" aria-hidden="true">
             {pixelReadout}
           </Badge>
+        ) : null}
+        {pixelReadout ? (
+          // Mounted empty with the readout and filled a second later, so the region is in the tree before its text changes.
+          <span role="status" className="sr-only">
+            {announced}
+          </span>
         ) : null}
       </div>
       {children ? <div className="ym-photo-cell__overlay">{children}</div> : null}

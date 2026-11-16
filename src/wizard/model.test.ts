@@ -535,7 +535,7 @@ describe("copy", () => {
     const headings = [0, 1, 2, 3].map((step) => heading({ ...at(step, [pkg(LL4, "look_library_logc4")]), step: step as WizardState["step"] }));
     expect(headings[0]).toBe("Choose what to import");
     expect(headings[1]).toBe("Download from ARRI");
-    expect(lead(initialWizard())).toContain("ARRI publishes these looks for free.");
+    expect(lead(initialWizard())).toContain("ARRI publishes these looks for free, as 3D LUTs and as look files.");
   });
 
   it("never shouts", () => {

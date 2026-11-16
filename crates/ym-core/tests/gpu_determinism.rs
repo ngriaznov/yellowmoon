@@ -368,6 +368,9 @@ fn a_cancel_part_way_leaves_nothing_and_the_next_export_is_the_uninterrupted_one
                 baseline,
                 "{label} at {share}: a cancelled export hands the device buffers back"
             );
+            // What is left is what the caches hold (raw groups, sigma planes: `Renderer::release_caches`); a leak
+            // would stay after they are let go.
+            ctx.renderer().release_caches();
             assert_eq!(ctx.renderer().ledger().used(), 0, "{label} at {share}");
             let again = bytes_of(&ctx, &p, opts.clone());
             assert!(
@@ -467,6 +470,9 @@ fn one_two_and_four_exports_in_flight_give_the_bytes_of_one() {
         }
     }
     assert_eq!(pool_in_use(&gpu), baseline);
+    // What is left is what the caches hold (raw groups, sigma planes: `Renderer::release_caches`); a leak
+    // would stay after they are let go.
+    ctx.renderer().release_caches();
     assert_eq!(ctx.renderer().ledger().used(), 0);
 }
 

@@ -48,6 +48,7 @@ import type {
   ApiEvents,
   AppError,
   AppInfo,
+  DisplayOptions,
   AppleAuto,
   AppleAutoAnswer,
   ApplyScope,
@@ -530,6 +531,13 @@ export interface MockOptions {
    */
   exportFailures?: Record<string, string>;
   /**
+   * Photos whose file goes away after they are Ready (`?mockVanish=DSC04207`, `docs/26` H-04), by name. The file is missed the next time
+   * it is read: when the photo is shown (it becomes the current photo) or when an export reaches it. The photo then becomes `skipped`
+   * with the core's sentence for a file that is gone (`FILE_GONE_MESSAGE`) and a `photo_progress` error event is sent, so the filmstrip
+   * says CAN'T OPEN and the cell says why. In an export that file fails with the same sentence and the others go on.
+   */
+  vanish?: string[];
+  /**
    * Bytes free in the destination folder (`?mockFreeBytes=200000000`). `export_estimate` says `low_space` when it is under 1.35 times the
    * estimate (`docs/26` P2-3). Default 500 GB.
    */
@@ -594,6 +602,12 @@ export interface MockOptions {
    * `one`, `five` and `twelve` find that many faces ({@link mockFaceBoxes}), for the screens that depend on the number.
    */
   faces?: "ok" | "none" | "fail" | "missing" | "one" | "five" | "twelve";
+  /**
+   * What `display_options` answers (`?mockDisplay=reduce-transparency,reduce-motion,increase-contrast`, any of the three, `docs/28` A-P12): the
+   * system settings the shell reads on a Mac. The default is all off, as on a computer that has none of them on and off macOS. A later change
+   * is played with `emitEvent("display_options", …)`.
+   */
+  displayOptions?: DisplayOptions;
 }
 
 /** What the viewport commands have recorded, for tests. */
@@ -604,6 +618,12 @@ export interface MockViewportState {
   /** The mask view the page asked for with `viewport_set_mode`: a corrector's mask over the photo or alone, or none. */
   maskView: MaskView | null;
   inputs: ViewportInput[];
+  /**
+   * How far the picture has been moved since it was last in the middle, in CSS pixels: the sum of the `pan` inputs while the zoom is not Fit.
+   * Fit, a new photo and a fresh `viewport_set_mode` to Fit put it back to 0. The mock has no picture edges, so it is not clamped (the core's
+   * clamp is tested in Rust).
+   */
+  offset: { x: number; y: number };
 }
 
 /** `Api` plus the controls tests and demos need. */
@@ -1046,7 +1066,7 @@ function defaultExportOptions(): ExportOptions {
     format: "jpeg",
     jpeg_quality: 92,
     bit_depth: 16,
-    tiff_compression: "lzw",
+    tiff_compression: "zip",
     color_space: "srgb",
     size: { kind: "full" },
     destination: null,
@@ -1066,6 +1086,7 @@ function defaultPreferences(options: Pick<Required<MockOptions>, "autoProvider" 
     auto_provider: options.autoProvider,
     auto_consent: { ...options.consent },
     apple_auto_instructions: "",
+    single_key_shortcuts: true,
   };
 }
 
@@ -1152,6 +1173,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   downloadsDenied: false,
   existingExports: [],
   exportFailures: {},
+  vanish: [],
   freeBytes: 500_000_000_000,
   exportHoldAt: Number.POSITIVE_INFINITY,
   importHoldAt: Number.POSITIVE_INFINITY,
@@ -1167,6 +1189,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   maskFind: "scene",
   depth: "ok",
   faces: "ok",
+  displayOptions: { reduce_transparency: false, reduce_motion: false, increase_contrast: false },
 };
 
 /** Fills in defaults, ignoring `undefined` values and a speed that isn't a positive number. */
@@ -1187,14 +1210,14 @@ function withDefaults(...layers: MockOptions[]): Required<MockOptions> {
  * (a reason after a colon), `mockPicked=2,3,4`, `mockCurrent=3`, `mockPhotos=500` (a folder of 500 photos, the twelve repeating), `mockFolder=Name` (the folder's name), `mockUnreadable=Name` (a folder that cannot be read: opening a folder says so), `mockLooks=0` (no imported
  * looks), `mockLibraries=all` (looks in every section of the Look tab), `mockLenses=0` (no lens data: the Lens card's list is empty), `mockMissing=film-warm,film-cool`, `mockHold=5.4`, `mockDownloads=ARRI_LookLibrary_LogC4.zip` (zips that
  * land in Downloads while the wizard watches), `mockDownloadsDenied=1`, `mockExisting=DSC04204_neutral.jpg`,
- * `mockExportFails=DSC04204:reason` (`DSC04204:disk_full` stops the export there, as a full disk does), `mockFreeBytes=200000000` (the free space of the destination folder; under 1.35 times the estimate the panel warns), `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
+ * `mockVanish=DSC04207` (the photo's file goes away once it is Ready: the next time it is shown or exported it is skipped), `mockExportFails=DSC04204:reason` (`DSC04204:disk_full` stops the export there, as a full disk does), `mockFreeBytes=200000000` (the free space of the destination folder; under 1.35 times the estimate the panel warns), `mockExportHold=1.45` (an export waits there until `flush()`), `mockImportHold=40` (a look import waits at 40 files until `flush()`) and `mockPersist=1`
  * (preferences survive a reload), `mockViewport=native` or `fallback` (the mock behaves like that viewport backend of the app),
  * `mockAppleAuto=unavailable|pending|answered|failed` (Apple Auto as on a Mac where it is not available, or where every photo is waiting
  * for its answer, has it, or failed; `MockAppleAuto`), `mockProviders=apple,claude,agy:signed_out` (the providers of the computer and their
  * states, `none` for no provider; `docs/22` section 12.8), `mockAutoProvider=claude` (the saved choice), `mockConsent=claude,agy` (the programs
  * agreed to), `mockOs=windows` and `mockCpu=1` (frames render on the CPU and take 600 ms divided by
  * `mockSpeed`, with `viewport_busy` around them: the photo cell says "Rendering on the CPU"; `MockOptions.cpu`) and `mockMasks=all|noai|nomac|built`
- * or a list of kinds (the kinds of mask `mask_kinds` says this machine can make; `MockOptions.maskKinds`).
+ * or a list of kinds (the kinds of mask `mask_kinds` says this machine can make; `MockOptions.maskKinds`), and `mockDisplay=reduce-transparency,reduce-motion,increase-contrast` (any of the three: what `display_options` answers, `MockOptions.displayOptions`).
  */
 export function optionsFromLocation(search: string | undefined = typeof location === "undefined" ? undefined : location.search): MockOptions {
   if (search === undefined) return {};
@@ -1251,6 +1274,8 @@ export function optionsFromLocation(search: string | undefined = typeof location
       }),
     );
   }
+  const vanish = list("mockVanish");
+  if (vanish) out.vanish = vanish.map((name) => name.replace(/\.arw$/i, ""));
   const freeBytes = params.get("mockFreeBytes");
   if (freeBytes !== null && Number(freeBytes) >= 0) out.freeBytes = Number(freeBytes);
   const exportHold = params.get("mockExportHold");
@@ -1279,6 +1304,14 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (depth === "ok" || depth === "fail" || depth === "fail-always") out.depth = depth;
   const faces = params.get("mockFaces");
   if (faces === "ok" || faces === "none" || faces === "fail" || faces === "missing" || faces === "one" || faces === "five" || faces === "twelve") out.faces = faces;
+  const display = list("mockDisplay");
+  if (display) {
+    out.displayOptions = {
+      reduce_transparency: display.includes("reduce-transparency"),
+      reduce_motion: display.includes("reduce-motion"),
+      increase_contrast: display.includes("increase-contrast"),
+    };
+  }
   return out;
 }
 
@@ -1610,6 +1643,10 @@ interface PhotoRecord {
   skipReason: string | null;
 }
 
+/** What a photo says when its file is not there any more (`MESSAGE_NOT_FOUND` of `ym_raw::error`, `docs/26` P1-2). */
+export const FILE_GONE_MESSAGE =
+  "Yellowmoon can't find this file any more. It may have been moved, renamed or its drive disconnected.";
+
 /** The photos the last removal took out, with their places, for Undo. */
 interface MockRemoval {
   taken: Array<{ place: number; rec: PhotoRecord }>;
@@ -1725,7 +1762,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   let menuState: MenuState | null = null;
   const system: MockSystemLog = { opened: [], revealed: [], trashed: [], restarts: 0 };
   let cliLink: string | null = null;
-  const viewport: MockViewportState = { rect: null, mode: { kind: "fit" }, before: false, maskView: null, inputs: [] };
+  const viewport: MockViewportState = { rect: null, mode: { kind: "fit" }, before: false, maskView: null, inputs: [], offset: { x: 0, y: 0 } };
   /** The fallback viewport's frame counter, and whether it has a picture on show. */
   let frameSeq = 0;
   let frameShown = false;
@@ -2298,6 +2335,18 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     return { added: fresh.length, already_open: alreadyOpen };
   }
 
+  /**
+   * The photo's file is read again (it is shown, or an export reaches it): a photo named by `?mockVanish` that is Ready has lost its file,
+   * so it becomes skipped, with an event, as the core does (`Session::raw_image`, `docs/26` P1-4). True when it did.
+   */
+  function vanishIfGone(rec: PhotoRecord): boolean {
+    if (rec.phase < 3 || rec.skipReason || !options.vanish.includes(rec.scene.name)) return false;
+    rec.skipReason = FILE_GONE_MESSAGE;
+    setStatus(rec, { kind: "skipped", reason: FILE_GONE_MESSAGE });
+    progress(rec, "decode", true, FILE_GONE_MESSAGE);
+    return true;
+  }
+
   function setStatus(rec: PhotoRecord, status: PhotoStatus): void {
     rec.summary.status = status;
   }
@@ -2324,7 +2373,12 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       progress(rec, "estimate", true);
       emitThumbnail(rec);
       progress(rec, "thumbnail", true);
-      if (photos[current] === rec) sendFrame();
+      const shown = photos[current] === rec;
+      if (shown && vanishIfGone(rec)) {
+        sendFrame();
+        return;
+      }
+      if (shown) sendFrame();
     }
   }
 
@@ -2574,6 +2628,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   /** The viewport shows the photo now current from the start: Fit, the camera view off. */
   function showCurrent(): void {
     viewport.mode = { kind: "fit" };
+    viewport.offset = { x: 0, y: 0 };
     viewport.before = false;
     viewport.maskView = null;
     emitSoon("render_stats", RENDER_STATS);
@@ -2829,7 +2884,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       taken.add(name);
       files.push(name);
       skips.push(skip);
-      const failure = options.exportFailures[rec.scene.name] ?? null;
+      // A file that is gone when its turn comes fails that photo only, and the export goes on.
+      const failure = options.exportFailures[rec.scene.name] ?? (vanishIfGone(rec) ? FILE_GONE_MESSAGE : null);
       const sentence = failure === null ? null : destinationSentence(failure, folder);
       if (sentence !== null && stopAt === null) stopAt = i;
       errors.push(sentence ?? failure);
@@ -2911,8 +2967,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const flags = [`--look ${look}`, `--format ${o.format}`];
     if (o.format === "jpeg") flags.push(`--quality ${o.jpeg_quality}`);
     if (o.format === "tiff" || o.format === "png") flags.push(`--bits ${o.bit_depth}`);
-    // LZW is the default (docs/09), so the command only names another compression, as the mockup's does.
-    if (o.format === "tiff" && o.tiff_compression !== "lzw") flags.push(`--compression ${o.tiff_compression}`);
+    // ZIP is the default (docs/09), so the command only names another compression.
+    if (o.format === "tiff" && o.tiff_compression !== "zip") flags.push(`--compression ${o.tiff_compression}`);
     if (o.format !== "dng") flags.push(`--colour-space ${o.color_space === "display_p3" ? "p3" : o.color_space}`);
     if (o.format !== "dng" && o.size.kind === "long_edge") flags.push(`--long-edge ${o.size.px}`);
     if (o.name_template !== "{name}_{look}") flags.push(`--name "${o.name_template}"`);
@@ -3041,6 +3097,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     cancelDialog = false;
     viewport.rect = null;
     viewport.mode = { kind: "fit" };
+    viewport.offset = { x: 0, y: 0 };
     viewport.before = false;
     viewport.maskView = null;
     viewport.inputs = [];
@@ -3132,6 +3189,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         removal = null;
         developProgress = 0;
         viewport.mode = { kind: "fit" };
+        viewport.offset = { x: 0, y: 0 };
         viewport.before = false;
     viewport.maskView = null;
         sendFrame();
@@ -3141,7 +3199,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         const index = photos.findIndex((p) => p.summary.id === photoId);
         if (index < 0) fail("app", "That photo is no longer open. Open it again.");
         current = index;
+        const shown = photos[index];
+        if (shown) vanishIfGone(shown);
         viewport.mode = { kind: "fit" };
+        viewport.offset = { x: 0, y: 0 };
         viewport.before = false;
     viewport.maskView = null;
         emitSoon("render_stats", RENDER_STATS);
@@ -3293,8 +3354,11 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         const rec = photos[current];
         // The core draws a frame for every zoom and pan (the mock's own picture does not move).
         if (event.kind !== "pick_white") renderOnCpu();
-        if (event.kind === "toggle_zoom") {
+        if (event.kind === "pan" && viewport.mode.kind !== "fit") {
+          viewport.offset = { x: viewport.offset.x + event.dx, y: viewport.offset.y + event.dy };
+        } else if (event.kind === "toggle_zoom") {
           viewport.mode = viewport.mode.kind === "fit" ? { kind: "percent", value: 100 } : { kind: "fit" };
+          if (viewport.mode.kind === "fit") viewport.offset = { x: 0, y: 0 };
         } else if (event.kind === "pick_white" && rec) {
           // The core finds the spot of the photo under the click (straightening, turns and lens crop included) and sets the pick; a click
           // on the paper picks nothing. Like `update_settings` with a pick, the mock sets the white balance by hand from the colour there.
@@ -3316,6 +3380,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     viewportSetMode: (mode, maskView) =>
       run("viewportSetMode", () => {
         viewport.mode = mode;
+        if (mode.kind === "fit") viewport.offset = { x: 0, y: 0 };
         viewport.maskView = maskView ?? null;
         sendFrame();
       }),
@@ -3676,6 +3741,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     // The mock probes nothing, so the cached read is the same answer; the store's tests tell the two calls apart by spying on them.
     autoStatusCached: () => run("autoStatusCached", autoStatus),
     appInfo: () => run("appInfo", (): AppInfo => ({ version: APP_VERSION, pipeline_version: "1.0.0", os: options.os })),
+    displayOptions: () => run("displayOptions", (): DisplayOptions => ({ ...options.displayOptions })),
 
     chooseFolder: (start) =>
       run("chooseFolder", () => {

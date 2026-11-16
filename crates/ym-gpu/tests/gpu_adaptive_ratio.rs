@@ -66,7 +66,7 @@ use std::path::{Path, PathBuf};
 
 use common::{Rng, TestGpu, gpus};
 use serde_json::Value;
-use ym_gpu::cpu::demosaic::adaptive_ratio::{self, Params, ShadowMatch};
+use ym_gpu::cpu::demosaic::adaptive_ratio::{self, Params, ShadowMatch, Tuning};
 use ym_gpu::cpu::demosaic::{CaCurves, DemosaicInputs, Method, RadialCurve};
 use ym_gpu::cpu::synth;
 use ym_gpu::cpu::tiling::{Rect, Stage};
@@ -474,6 +474,9 @@ fn load_vectors() -> Vec<Vector> {
                         strength: num(params, "strength") as f32,
                         shadow_match,
                         shadow_sharpening: params["shadow_sharpening"].as_bool().expect("bool"),
+                        // The device runs the shipped constants, which are the oracle's until a fit
+                        // lands (`docs/29` RC-04 runs both sets on it).
+                        tuning: Tuning::ORACLE,
                     },
                 },
                 expected: doubles(&json["expected"]["data"])

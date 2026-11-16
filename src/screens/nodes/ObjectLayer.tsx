@@ -3,7 +3,7 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import type { PhotoSummary, ResolvedSettings } from "../../api/types";
 import { usePointerDrag } from "../../components";
 import { useAppState } from "../../state/context";
-import { BOX_MIN_PX, boxPrompt, clickPrompt } from "../../state/objectMask";
+import { BOX_MIN_PX, boxPrompt } from "../../state/objectMask";
 import type { ObjectRow } from "../../state/objectMask";
 import type { AppStore } from "../../state/store";
 import type { Pt } from "./maskGeometry";
@@ -104,10 +104,8 @@ export function ObjectLayer({ store, photo, rs, node, index, row, cell, tool }: 
       return;
     }
     if (moved && Math.hypot(to[0] - from[0], to[1] - from[1]) >= BOX_MIN_PX) return;
-    const mapped = await store.mapPoints([from], "cell");
-    const at = mapped?.[0];
-    const prompt = at ? clickPrompt(m, alt, at[0], at[1]) : null;
-    if (prompt) await store.findObject(n, i, prompt, photoId);
+    // The same road as Return of "Place points" (`docs/28` A-11).
+    await store.clickObject(n, i, m, alt, from, photoId);
   };
 
   const onPointerDown = usePointerDrag({

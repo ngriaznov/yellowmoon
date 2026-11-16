@@ -1,0 +1,16 @@
+{
+  "state": "09-wizard-5-finish",
+  "end": "leaves",
+  "stops": [
+    {"role":"button","name":"Cancel","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Choose, done. Pick the ARRI packages you want.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Get the files, done. Download them from ARRI's site.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Recognise, done. We check what each package is.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Import, done. Copy the looks into the app.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Finish. Pick a default and clean up.","outline":"solid","ring":"outline"},
+    {"role":"radio","name":"Neutral","outline":"solid","ring":"outline"},
+    {"role":"radio","name":"Move to Trash","outline":"solid","ring":"outline"},
+    {"role":"button","name":"← Back","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Done →","outline":"solid","ring":"outline"}
+  ]
+}

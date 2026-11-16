@@ -120,7 +120,7 @@ export function GetStep({ wizard }: { wizard: Wizard }) {
           <ItemContent>{watchProblem}</ItemContent>
         </Item>
       ) : null}
-      <DropZone variant="compact" title="Or drop the zip here" hint="A zip or an unpacked folder both work." active={dragging}>
+      <DropZone variant="compact" title="Or drop the zip here" hint="A zip, a folder, or a single .cube or look file." active={dragging}>
         <LinkButton onClick={() => void wizard.chooseFiles()}>Choose file…</LinkButton>
       </DropZone>
       <Item variant="muted" size="sm" className="ym-wizard__waiting" role="status" data-arrived={arrived || undefined}>

@@ -22,7 +22,7 @@ const job: ExportJob = {
     format: "jpeg",
     jpeg_quality: 92,
     bit_depth: 16,
-    tiff_compression: "lzw",
+    tiff_compression: "zip",
     color_space: "srgb",
     size: { kind: "full" },
     destination: null,
@@ -129,6 +129,7 @@ const calls: Row[] = [
   ["autoStatusCached", () => tauriApi.autoStatusCached(), "auto_status_cached", undefined],
   ["cliLinkStatus", () => tauriApi.cliLinkStatus(), "cli_link_status", undefined],
   ["appInfo", () => tauriApi.appInfo(), "app_info", undefined],
+  ["displayOptions", () => tauriApi.displayOptions(), "display_options", undefined],
 ];
 
 beforeEach(() => {
@@ -195,6 +196,8 @@ describe("tauriApi.on", () => {
     "viewport_frame",
     "settings_changed",
     "export_busy",
+    "memory_notice",
+    "display_options",
   ] as const;
 
   it.each(EVENTS)("listens to %s by its wire name, which the shell registers", (name) => {

@@ -99,9 +99,9 @@ describe("the options (design/mockups/export.html)", () => {
     await h!.user.click(radio("Format", "TIFF"));
     expect(screen.queryByRole("slider", { name: "Quality" })).toBeNull();
     expect(checked("Bit depth")).toBe("16-bit");
-    expect(checked("Compression")).toBe("LZW");
-    await h!.user.click(radio("Compression", "ZIP"));
     expect(checked("Compression")).toBe("ZIP");
+    await h!.user.click(radio("Compression", "LZW"));
+    expect(checked("Compression")).toBe("LZW");
     await h!.user.click(radio("Bit depth", "8-bit"));
     await waitFor(() => expect(exportButton()).toHaveTextContent("≈ 304 MB")); // 149 MB × 0.68 × 3
     await h!.user.click(radio("Format", "PNG"));
@@ -266,6 +266,8 @@ describe("the command line", () => {
     await openExport();
     const card = screen.getByRole("region", { name: "Same thing from the command line" });
     await waitFor(() => expect(within(card).getByLabelText("Command line")).toHaveTextContent("ym render DSC04203.ARW DSC04204.ARW DSC04205.ARW"));
+    // The label is on a group around the `code`: `aria-label` is not allowed on `code` itself (axe `aria-prohibited-attr`).
+    expect(within(card).getByRole("group", { name: "Command line" }).querySelector("code")).not.toBeNull();
     const text = within(card).getByLabelText("Command line").textContent ?? "";
     for (const flag of ["--look neutral", "--format jpeg", "--quality 92", "--colour-space srgb", '--out "~/Pictures/Lisbon export"']) expect(text).toContain(flag);
   });
@@ -564,5 +566,82 @@ describe("closing the session during an export (⌘W)", () => {
     await h!.user.keyboard("{Meta>}w{/Meta}");
     await screen.findByRole("heading", { level: 1, name: "Drop Sony ARW files." });
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
+describe("focus in and out of the panel (docs/28 A-04, docs/11 §Export)", () => {
+  it("⌘E moves the focus into the panel, to the Export button", async () => {
+    await setup();
+    screen.getByRole("button", { name: /^Fit/ }).focus();
+    await h!.user.keyboard("{Meta>}e{/Meta}");
+    const panel = await screen.findByRole("complementary", { name: "Export" });
+    await waitFor(() => expect(within(panel).getByRole("button", { name: /^Export \d+ photos?/ })).toHaveFocus());
+  });
+
+  it("Esc gives the focus back to the control that had it, drawn again by the header", async () => {
+    await setup();
+    screen.getByRole("button", { name: /^Fit/ }).focus();
+    await h!.user.keyboard("{Meta>}e{/Meta}");
+    await screen.findByRole("complementary", { name: "Export" });
+    expect(screen.queryByRole("button", { name: /^Fit/ })).toBeNull();
+    await h!.user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Export" })).toBeNull());
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Fit/ })).toHaveFocus());
+  });
+
+  it("← Back to photos gives it back too", async () => {
+    await setup();
+    screen.getByRole("button", { name: /^Fit/ }).focus();
+    await h!.user.keyboard("{Meta>}e{/Meta}");
+    await screen.findByRole("complementary", { name: "Export" });
+    await h!.user.click(screen.getByRole("button", { name: "← Back to photos" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Fit/ })).toHaveFocus());
+  });
+
+  it("goes to the header's Export button when nothing had the focus", async () => {
+    await setup();
+    expect(document.activeElement).toBe(document.body);
+    await h!.user.keyboard("{Meta>}e{/Meta}");
+    await screen.findByRole("complementary", { name: "Export" });
+    await h!.user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Export" })).toBeNull());
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Export/ })).toHaveFocus());
+  });
+
+  it("goes to the header's Export button when the control that had it is gone", async () => {
+    await setup();
+    const crop = screen.getByRole("button", { name: /^Crop/ });
+    crop.focus();
+    await h!.user.keyboard("{Meta>}e{/Meta}");
+    await screen.findByRole("complementary", { name: "Export" });
+    h!.store.closeExport();
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Export" })).toBeNull());
+    // A control of the same name takes its place, as the header's Fit did; Crop is the same: the focus is on the new one.
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Crop/ })).toHaveFocus());
+  });
+
+  it("leaves the focus alone when it has been put somewhere else", async () => {
+    await setup();
+    screen.getByRole("button", { name: /^Fit/ }).focus();
+    await h!.user.keyboard("{Meta>}e{/Meta}");
+    await screen.findByRole("complementary", { name: "Export" });
+    const thumb = document.querySelector<HTMLElement>(".ym-export-cell button")!;
+    thumb.focus();
+    await h!.user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Export" })).toBeNull());
+    expect(thumb).toHaveFocus();
+  });
+
+  it("Done, after a run, gives it back as well", async () => {
+    await setup();
+    screen.getByRole("button", { name: /^Fit/ }).focus();
+    await h!.user.keyboard("{Meta>}e{/Meta}");
+    const panel = await screen.findByRole("complementary", { name: "Export" });
+    await waitFor(() => expect(within(panel).getByRole("button", { name: /^Export \d+ photos?/ })).toHaveTextContent("≈"));
+    await h!.user.click(exportButton());
+    const done = await within(screen.getByRole("complementary", { name: "Export" })).findByRole("button", { name: "Done" });
+    await waitFor(() => expect(done).toHaveFocus());
+    await h!.user.click(done);
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Fit/ })).toHaveFocus());
   });
 });

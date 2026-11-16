@@ -121,8 +121,9 @@ pub struct JpegRef {
 /// aberration) holds 33 (the count `2n` and `2n` knots: `n` for red, then `n` for blue). `n` is
 /// 16 for a full-frame lens and 11 for an APS-C lens or an APS-C crop mode, on one physical radial
 /// grid. Checked on real files of six bodies (eight files) against the cameras' own corrected JPEGs and the raw
-/// data (`docs/04` section Lens tags, `docs/05` section R9). The maker note and the SR2 sub-IFD
-/// hold other copies that are not read here. The maths lives in `docs/05-raw-processing.md`.
+/// data (`docs/04` section Lens tags, `docs/05` section R9). The maker note holds another copy that is
+/// not read; the SR2 sub-IFD's copy is read when the raw sub-IFD has none (`sr2::Sr2Data::lens`).
+/// The maths lives in `docs/05-raw-processing.md`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LensTable {
     /// The stored values: `raw[0]` is the count, `raw[1..]` the knots.
@@ -513,12 +514,16 @@ pub fn probe_source(source: &dyn ByteSource) -> Result<RawMetadata, RawError> {
         },
     )?;
 
-    let lens_corrections = lens_tags(&tiff, raw_ifd).or_else(|| {
-        nodes
-            .iter()
-            .filter(|n| n.ifd.offset != raw_ifd.offset)
-            .find_map(|n| lens_tags(&tiff, &n.ifd))
-    });
+    let lens_corrections = lens_tags(&tiff, raw_ifd)
+        .or_else(|| {
+            nodes
+                .iter()
+                .filter(|n| n.ifd.offset != raw_ifd.offset)
+                .find_map(|n| lens_tags(&tiff, &n.ifd))
+        })
+        // The NEX-5N and NEX-7 (and every other body that has them) keep the tables in the enciphered SR2
+        // sub-IFD; a plain copy in the raw sub-IFD, where there is one, comes first.
+        .or_else(|| sr2_data.as_ref().and_then(|s| s.lens.clone()));
     let tone_curve = raw_ifd.get(TAG_TONE_CURVE).and_then(|e| four_u16(&tiff, e));
 
     let sony_iso = maker.as_ref().and_then(|m| m.iso).map(|(iso, _tag)| iso);
@@ -1046,8 +1051,21 @@ fn areas(tiff: &Tiff, ifd: &Ifd, width: u32, height: u32) -> (Option<Rect>, Opti
     (active, crop)
 }
 
-/// The lens-correction tables of a directory.
+/// The lens-correction tables of a directory of the raw sub-IFD kind (tags 0x7032, 0x7035, 0x7037).
 fn lens_tags(tiff: &Tiff, ifd: &Ifd) -> Option<LensTags> {
+    lens_tags_at(
+        tiff,
+        ifd,
+        [TAG_VIGNETTING_PARAMS, TAG_CA_PARAMS, TAG_DISTORTION_PARAMS],
+    )
+}
+
+/// The lens-correction tables of a directory whose three tables sit under `tags`, in the order
+/// vignetting, chromatic aberration, distortion. The raw sub-IFD and the SR2 sub-IFD hold the same
+/// tables in the same layout under different tag numbers (`sr2::TAG_VIGNETTING_PARAMS` and its two
+/// neighbours).
+pub(crate) fn lens_tags_at(tiff: &Tiff, ifd: &Ifd, tags: [u16; 3]) -> Option<LensTags> {
+    let [vignetting_tag, ca_tag, distortion_tag] = tags;
     let table = |tag_ref: u16, max: usize| -> Option<LensTable> {
         let entry = ifd.get(tag_ref)?;
         if !matches!(entry.ty, field_type::SSHORT | field_type::SHORT) || entry.count == 0 {
@@ -1059,9 +1077,9 @@ fn lens_tags(tiff: &Tiff, ifd: &Ifd) -> Option<LensTags> {
         })
     };
     let tags = LensTags {
-        vignetting: table(TAG_VIGNETTING_PARAMS, 64),
-        chromatic_aberration: table(TAG_CA_PARAMS, 128),
-        distortion: table(TAG_DISTORTION_PARAMS, 64),
+        vignetting: table(vignetting_tag, 64),
+        chromatic_aberration: table(ca_tag, 128),
+        distortion: table(distortion_tag, 64),
     };
     (!tags.is_empty()).then_some(tags)
 }

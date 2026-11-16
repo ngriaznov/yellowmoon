@@ -1,0 +1,15 @@
+{
+  "state": "03-start-ready",
+  "end": "leaves",
+  "stops": [
+    {"role":"button","name":"Open files ⌘O","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Open folder ⇧⌘O","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Update ready","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Export ⌘E","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Change","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Import →","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Start over","outline":"solid","ring":"outline"},
+    {"role":"region","name":"Photos to develop","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Open photos →","outline":"solid","ring":"outline"}
+  ]
+}

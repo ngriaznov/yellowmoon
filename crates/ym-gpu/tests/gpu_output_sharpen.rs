@@ -66,7 +66,9 @@ use std::path::{Path, PathBuf};
 use common::{Rng, TestGpu, gpus};
 use serde_json::Value;
 use ym_gpu::cpu::RgbImage;
-use ym_gpu::cpu::output_sharpen::{ExtraStage, Method, Mode, OutputSharpen, scale_for_edges};
+use ym_gpu::cpu::output_sharpen::{
+    ExtraStage, Method, Mode, OutputSharpen, Tuning, scale_for_edges,
+};
 use ym_gpu::device::{GpuContext, GpuError};
 use ym_gpu::kernels::PixelData;
 use ym_gpu::kernels::color::release_tables;
@@ -535,6 +537,10 @@ fn params_of(v: &Value) -> (OutputSharpen, f32) {
             extra_stages,
             // The reference compares exactly; the tie tolerance is ours (spec 7.1 item 5).
             halo_tie_tolerance: 0.0,
+            // The oracle vectors run under the constants they were made with. The device runs the
+            // shipped constants, which are these until a fit lands (`docs/29` RC-04 runs both sets
+            // on it).
+            tuning: Tuning::ORACLE,
         },
         f32_of(p, "scale"),
     )

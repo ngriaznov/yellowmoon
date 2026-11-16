@@ -53,7 +53,7 @@ export function WizardReplica({ initialStep = 1, initialImported = 40 }: WizardR
         <h1>{step === 1 ? "Download from ARRI" : importing ? (done >= TOTAL ? "Imported" : "Importing") : "Step"}</h1>
         <p className="rw-lead">
           {step === 1
-            ? "Your browser opens ARRI's Look Files page. Download the package there and the app picks it up."
+            ? "Your browser opens ARRI's Look Files page. Download the LUTs or the look files there and the app picks them up."
             : "Nothing leaves this Mac. The looks are ready the moment this finishes."}
         </p>
         {step === 1 ? (
@@ -69,7 +69,7 @@ export function WizardReplica({ initialStep = 1, initialImported = 40 }: WizardR
               </span>
               <Switch label="Watch my Downloads folder" checked={watch} onChange={setWatch} />
             </div>
-            <DropZone variant="compact" title="Or drop the zip here" hint="A zip or an unpacked folder both work.">
+            <DropZone variant="compact" title="Or drop the zip here" hint="A zip, a folder, or a single .cube or look file.">
               <LinkButton>Choose file…</LinkButton>
             </DropZone>
             <div className="rw-waiting">

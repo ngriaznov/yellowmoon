@@ -147,7 +147,7 @@ Output:
           Bits per channel for TIFF and PNG, 8 or 16 (default 16)
 
       --compression <METHOD>
-          TIFF compression (default lzw)
+          TIFF compression (default zip)
 
           Possible values:
           - none: No compression

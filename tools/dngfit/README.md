@@ -8,7 +8,7 @@ Test and build tooling: never shipped. It renders with Adobe's own reference ren
 |---|---|
 | `dngfit fit` | fit the tone curve, the `BaselineExposure` offset and the look table to the cine rendering and write `data/dng/profile.json` (about 2 s) |
 | `dngfit eval` | how close Adobe's render with that profile is to the cine rendering on the test sets |
-| `dngfit gate` | the DNG gates on the golden set: `dng_validate` passes, and its render is within a median ΔE00 of 1.5 of our JPEG |
+| `dngfit gate` | the DNG gates on the golden set: `dng_validate` passes, and its render is within a median ΔE00 of 1.5 of our JPEG made with sharpening off |
 | `dngfit validate FILE.dng...` | `dng_validate` on DNG files; prints what it complains about |
 
 ## The problem
@@ -62,10 +62,12 @@ and the next build of `ym` carries it.
 
 ## Gates (`dngfit gate`, `tools/dng/run_gates.sh`)
 
-For each golden file the real `ym` writes the DNG and the JPEG (quality 92, sRGB) with the same settings. `dng_validate -v
+For each golden file the real `ym` writes the DNG and the JPEG (quality 92, sRGB) with the same settings, the JPEG with
+capture sharpening and output sharpening off (`--sharpen 0,1 --output-sharpening 0`), because a DNG carries no
+sharpening of any kind and a sharpened reference would measure the sharpening of fine detail (`docs/09`). `dng_validate -v
 -32 -cs1 -tif` renders the DNG: the file must pass with no warning and no error, and the render (turned upright by the
 DNG's `Orientation`) must be within a median CIEDE2000 of 1.5 of our JPEG, **for every file**. `--png` adds the 16-bit PNG
-(no JPEG coding or dither), which shows what the profile alone costs.
+(no JPEG coding or dither; also with sharpening off), which shows what the profile alone costs.
 
 `ym` writes the fitted profile itself (`ym-export` embeds `data/dng/profile.json`, `ym-core` passes it with
 `BaselineExposure::Auto`), so the gate checks each DNG **as written** (`--as-written`, the default of

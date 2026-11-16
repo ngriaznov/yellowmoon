@@ -195,8 +195,12 @@ describe("layout A", () => {
     expect(graph()).toBeInTheDocument();
     expect(screen.getByRole("complementary", { name: "Tools" })).toBeInTheDocument();
     expect(screen.getByRole("main", { name: "Photo" })).toBeInTheDocument();
+    // The divider and the graph share one landmark, "Node graph area" (a `display: contents` wrapper: both stay items of the grid; axe `region`).
+    const landmark = screen.getByRole("region", { name: "Node graph area" });
+    expect(landmark).toContainElement(divider());
+    expect(landmark).toContainElement(graph());
     // In the grid's order: the header, the photo, the divider, the graph and the panel.
-    const order = [...screenEl().children].map((el) => el.className.toString().split(" ").find((c) => /^ym-(header|viewer|divider|graph|tools|filmstrip)$/.test(c)));
+    const order = [...screenEl().children].flatMap((el) => (el === landmark ? [...el.children] : [el])).map((el) => el.className.toString().split(" ").find((c) => /^ym-(header|viewer|divider|graph|tools|filmstrip)$/.test(c)));
     expect(order.filter(Boolean)).toEqual(["ym-header", "ym-viewer", "ym-divider", "ym-graph", "ym-filmstrip", "ym-tools"]);
     expect(screenEl().querySelector(".ym-filmstrip")).not.toBeVisible();
     // And back.
@@ -204,6 +208,7 @@ describe("layout A", () => {
     expect(screen.getByRole("navigation", { name: "Photos" })).toBeInTheDocument();
     expect(screen.queryByRole("separator")).toBeNull();
     expect(screen.queryByRole("region", { name: "Node editor" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Node graph area" })).toBeNull();
   });
 
   it("gives the screen its sizes: the editor at 45 % of the height under the header, the photo row the rest", async () => {
@@ -546,5 +551,49 @@ describe("Show mask (N-11)", () => {
     await waitFor(() => expect(h!.api.viewport.maskView).toBeNull());
     act(() => h!.store.closeExport());
     await waitFor(() => expect(h!.api.viewport.maskView).toEqual({ node: 1, style: "mask_only" }));
+  });
+});
+
+describe("focus in and out of the node view (docs/28 A-04, docs/11 §Node view)", () => {
+  /** The first control of the graph area: "Add node" at the start of its toolbar. */
+  const firstStop = (): HTMLElement => within(screen.getByRole("group", { name: "Graph tools" })).getByRole("button", { name: /^Add node/ });
+
+  it("N moves the focus into the node view, to Add node at the start of the graph's toolbar", async () => {
+    await setup();
+    screen.getByRole("button", { name: /^Fit/ }).focus();
+    await h!.user.keyboard("n");
+    await waitFor(() => expect(inNodeView()).toBe(true));
+    await waitFor(() => expect(firstStop()).toHaveFocus());
+  });
+
+  it("N again gives the focus back to the control that had it", async () => {
+    await setup();
+    const fit = screen.getByRole("button", { name: /^Fit/ });
+    fit.focus();
+    await h!.user.keyboard("n");
+    await waitFor(() => expect(firstStop()).toHaveFocus());
+    await h!.user.keyboard("n");
+    await waitFor(() => expect(inNodeView()).toBe(false));
+    await waitFor(() => expect(fit).toHaveFocus());
+  });
+
+  it("goes to the Nodes button when nothing had the focus", async () => {
+    await setup();
+    expect(document.activeElement).toBe(document.body);
+    await h!.user.keyboard("n");
+    await waitFor(() => expect(firstStop()).toHaveFocus());
+    await h!.user.keyboard("n");
+    await waitFor(() => expect(inNodeView()).toBe(false));
+    await waitFor(() => expect(nodesButton()).toHaveFocus());
+  });
+
+  it("the Nodes button does the same, and the focus returns to it", async () => {
+    await setup();
+    await h!.user.click(nodesButton());
+    await waitFor(() => expect(firstStop()).toHaveFocus());
+    nodesButton().focus();
+    await h!.user.keyboard("{Enter}");
+    await waitFor(() => expect(inNodeView()).toBe(false));
+    expect(nodesButton()).toHaveFocus();
   });
 });

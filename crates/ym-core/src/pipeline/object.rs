@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, OnceLock};
 
 use ym_color::mask_depth::DepthMap;
 use ym_color::mask_raster::SourcePlane;
@@ -17,6 +17,7 @@ use ym_ml::sam2::{self, Sam2};
 
 use super::RenderError;
 use super::color::PhotoSource;
+use super::resident::{Clock, ModelSlot, SlotError, Unload, Unloadable};
 use crate::settings::{
     DevelopSettings, MAX_OBJECT_POINTS, NO_OBJECT_MODEL_SENTENCE, NodeGrade, ObjectMask,
 };
@@ -48,20 +49,12 @@ pub enum ObjectPhase {
 
 /// SAM 2.1 small and where its weights are. The weights load the first time they are asked for
 /// ([`ObjectModel::sam`]); a file that is damaged takes the model away for the rest of the run
-/// ([`ObjectModel::available`]).
+/// ([`ObjectModel::available`]). They are let go after five minutes without use and when memory is short
+/// ([`Unloadable`], `pipeline/resident.rs`), and the next use reads them again.
 pub struct ObjectModel {
     dir: Option<PathBuf>,
-    state: Mutex<ModelState>,
+    slot: ModelSlot<Sam2>,
     pool: OnceLock<Option<rayon::ThreadPool>>,
-}
-
-enum ModelState {
-    /// The weights have not been read yet.
-    Untried,
-    /// Loaded.
-    Ready(Arc<Sam2>),
-    /// Could not be read or did not match their checksum (the reason is in the log).
-    Damaged,
 }
 
 impl std::fmt::Debug for ObjectModel {
@@ -73,27 +66,56 @@ impl std::fmt::Debug for ObjectModel {
     }
 }
 
+impl Unloadable for ObjectModel {
+    fn name(&self) -> &'static str {
+        "Object"
+    }
+    fn sweep(&self) -> Unload {
+        self.slot.sweep()
+    }
+    fn trim(&self) -> Unload {
+        self.slot.trim()
+    }
+    fn loaded(&self) -> bool {
+        self.slot.loaded()
+    }
+}
+
 impl ObjectModel {
     /// The model of a data folder (`<data_root>/models/sam2/`), when its weights file and its `SHA256SUMS` are there.
     /// Nothing is read: the weights load, and are checked against their checksum, on first use.
     #[must_use]
     pub fn probe(data_root: &Path) -> Option<Arc<Self>> {
+        Self::probe_with(data_root, ModelSlot::lazy())
+    }
+
+    /// [`ObjectModel::probe`] with the clock and the idle time of the unload given (tests).
+    #[must_use]
+    pub fn probe_with_clock(
+        data_root: &Path,
+        clock: Clock,
+        idle: std::time::Duration,
+    ) -> Option<Arc<Self>> {
+        Self::probe_with(data_root, ModelSlot::lazy_with(clock, idle))
+    }
+
+    fn probe_with(data_root: &Path, slot: ModelSlot<Sam2>) -> Option<Arc<Self>> {
         let dir = data_root.join("models").join("sam2");
         (dir.join(sam2::WEIGHTS_FILE).is_file() && dir.join("SHA256SUMS").is_file()).then(|| {
             Arc::new(Self {
                 dir: Some(dir),
-                state: Mutex::new(ModelState::Untried),
+                slot,
                 pool: OnceLock::new(),
             })
         })
     }
 
-    /// A model that is loaded already (tests).
+    /// A model that is loaded already (tests). It has no folder to read again, so it is never unloaded.
     #[must_use]
     pub fn from_sam(sam: Arc<Sam2>) -> Arc<Self> {
         Arc::new(Self {
             dir: None,
-            state: Mutex::new(ModelState::Ready(sam)),
+            slot: ModelSlot::pinned(sam),
             pool: OnceLock::new(),
         })
     }
@@ -101,45 +123,40 @@ impl ObjectModel {
     /// Whether Object can be offered: the weights are there and have not been found damaged.
     #[must_use]
     pub fn available(&self) -> bool {
-        !matches!(
-            *self.state.lock().unwrap_or_else(PoisonError::into_inner),
-            ModelState::Damaged
-        )
+        !self.slot.damaged()
     }
 
-    /// The model, loading the weights when this is the first call.
+    /// How many times the weights have been read since the model was made (a test's count of loads).
+    #[must_use]
+    pub fn loads(&self) -> u64 {
+        self.slot.loads()
+    }
+
+    /// The model, loading the weights when they are not in memory (the first call, or the first after an unload). The caller
+    /// keeps the `Arc` for as long as it works with the weights, which is what keeps them from being unloaded under it.
     ///
     /// # Errors
     ///
     /// [`RenderError::Mask`] with [`NO_OBJECT_MODEL_SENTENCE`] when the weights cannot be read or do not match their
     /// checksum (the reason is logged, and the model is not [`available`](Self::available) from then on).
     pub fn sam(&self) -> Result<Arc<Sam2>, RenderError> {
-        let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        match &*st {
-            ModelState::Ready(sam) => return Ok(Arc::clone(sam)),
-            ModelState::Damaged => {
-                return Err(RenderError::Mask(NO_OBJECT_MODEL_SENTENCE.to_owned()));
-            }
-            ModelState::Untried => {}
-        }
-        let started = std::time::Instant::now();
-        let loaded = match &self.dir {
-            Some(dir) => Sam2::load(dir),
-            None => Err(ym_ml::model::MlError::Weights("no folder".to_owned())),
-        };
+        let loaded = self.slot.get(|| {
+            let started = std::time::Instant::now();
+            let sam = match &self.dir {
+                Some(dir) => Sam2::load(dir),
+                None => Err(ym_ml::model::MlError::Weights("no folder".to_owned())),
+            }?;
+            tracing::debug!(
+                ms = started.elapsed().as_secs_f64() * 1000.0,
+                "the Object model loaded"
+            );
+            Ok::<_, ym_ml::model::MlError>(sam)
+        });
         match loaded {
-            Ok(sam) => {
-                tracing::debug!(
-                    ms = started.elapsed().as_secs_f64() * 1000.0,
-                    "the Object model loaded"
-                );
-                let sam = Arc::new(sam);
-                *st = ModelState::Ready(Arc::clone(&sam));
-                Ok(sam)
-            }
-            Err(e) => {
+            Ok(sam) => Ok(sam),
+            Err(SlotError::Damaged) => Err(RenderError::Mask(NO_OBJECT_MODEL_SENTENCE.to_owned())),
+            Err(SlotError::Load(e)) => {
                 tracing::error!(error = %e, "the Object model could not be loaded");
-                *st = ModelState::Damaged;
                 Err(RenderError::Mask(NO_OBJECT_MODEL_SENTENCE.to_owned()))
             }
         }

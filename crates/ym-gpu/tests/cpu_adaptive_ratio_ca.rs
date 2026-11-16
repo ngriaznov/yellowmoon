@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use ym_gpu::cpu::chain::{Chain, RawFrame};
-use ym_gpu::cpu::demosaic::adaptive_ratio::{self, Error, Params};
+use ym_gpu::cpu::demosaic::adaptive_ratio::{self, Error, Params, Tuning};
 use ym_gpu::cpu::demosaic::{CaCurveError, CaCurves, DemosaicInputs, Method, RadialCurve};
 use ym_gpu::cpu::detail::NoiseReduction;
 use ym_gpu::cpu::lens::{LensGeometry, LensSwitches, LensTags};
@@ -159,8 +159,18 @@ fn ca_vector() -> CaVector {
     }
 }
 
+/// The vector runs under the constants it was made with ([`Tuning::ORACLE`]) and under the shipped
+/// ones ([`Tuning::DEFAULT`]).
+const TUNINGS: [Tuning; 2] = [Tuning::ORACLE, Tuning::DEFAULT];
+
 #[test]
 fn the_ca_vector_matches_the_oracle() {
+    for tuning in TUNINGS {
+        the_ca_vector_matches_the_oracle_under(tuning);
+    }
+}
+
+fn the_ca_vector_matches_the_oracle_under(tuning: Tuning) {
     let v = ca_vector();
     let tolerance = v.json["tolerance"].as_f64().expect("tolerance");
     let inputs = DemosaicInputs {
@@ -168,7 +178,10 @@ fn the_ca_vector_matches_the_oracle() {
         noise: v.noise,
         ca: Some(&v.curves),
     };
-    let params = Params::default();
+    let params = Params {
+        tuning,
+        ..Params::default()
+    };
     let whole = adaptive_ratio::demosaic_whole(&v.mosaic, &inputs, &params).expect("whole");
     let banded = adaptive_ratio::demosaic(&v.mosaic, &inputs, &params).expect("banded");
     assert_eq!(bits(&whole), bits(&banded), "banded differs from whole");

@@ -89,6 +89,7 @@ mod tests {
             "vision_state",
             "depth_state",
             "face_state",
+            "display_options",
         ] {
             assert!(
                 bindings.contains(&format!("\"{event}\"")),

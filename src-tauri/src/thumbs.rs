@@ -8,7 +8,7 @@
 //! priority, behind whatever the viewport needs.
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -36,6 +36,9 @@ struct Pending {
     busy: bool,
 }
 
+/// How often a refresher that waits for the background gate looks at whether the app is ending.
+const GATE_SLICE: Duration = Duration::from_millis(100);
+
 struct Shared {
     pending: Mutex<Pending>,
     wake: Condvar,
@@ -45,6 +48,8 @@ struct Shared {
     frames: Arc<FrameStore>,
     core: OnceLock<Weak<Core>>,
     shutdown: AtomicBool,
+    /// How many times a refresh found the background gate paused and waited (a test's counter).
+    gate_waits: AtomicUsize,
 }
 
 /// Re-renders thumbnails in the background (see the module documentation).
@@ -67,6 +72,7 @@ impl Thumbnails {
                 frames,
                 core: OnceLock::new(),
                 shutdown: AtomicBool::new(false),
+                gate_waits: AtomicUsize::new(0),
             }),
             worker: Mutex::new(None),
         }
@@ -117,6 +123,13 @@ impl Thumbnails {
         let mut pending = lock(&self.shared.pending);
         pending.ids.clear();
         pending.due = None;
+    }
+
+    /// How many times a refresh found the background gate paused and waited for it.
+    #[cfg(test)]
+    #[must_use]
+    pub fn gate_waits(&self) -> usize {
+        self.shared.gate_waits.load(Ordering::SeqCst)
     }
 
     /// Waits until nothing is asked for and nothing renders; false if `timeout` ran out first.
@@ -181,6 +194,16 @@ impl Shared {
         };
         for &id in ids {
             if self.shutdown.load(Ordering::SeqCst) {
+                return;
+            }
+            // Memory is critical (`docs/26` H-14): the refresh waits, and goes on when the level falls (or ends with the app).
+            if core.background_gate().is_paused() {
+                self.gate_waits.fetch_add(1, Ordering::SeqCst);
+            }
+            if !core
+                .background_gate()
+                .wait_resumed(&|| self.shutdown.load(Ordering::SeqCst), GATE_SLICE)
+            {
                 return;
             }
             // A photo that is not ready, was skipped or is gone has no thumbnail to refresh.

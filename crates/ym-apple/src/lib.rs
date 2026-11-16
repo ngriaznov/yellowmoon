@@ -16,6 +16,10 @@
 //! universal binary wherever the SDK has the macOS 14 requests, with a normal link, and has its own gate in
 //! `build.rs` (`cfg(ym_apple_vision)`).
 //!
+//! A third bridge, [`metal`] (`swift/MetalDevices.swift`), lists the Metal devices with their working-set limits for
+//! the GPU budget (`docs/26-hardening.md` H-17). It is built like the Vision bridge (both architectures, its own gate,
+//! `cfg(ym_apple_metal)`), and [`gpu_opener`] is how the app and `ym` hand it to the core.
+//!
 //! The model runs on this Mac and nothing is sent anywhere (hard rule 7). Answers are not stored
 //! (hard rule 4); the core keeps them in the session's memory. Retries are the core's.
 //!
@@ -29,6 +33,12 @@
 mod abi;
 #[cfg(ym_apple_bridge)]
 mod bridge;
+pub mod metal;
+// Without the bridge only the tests use the conversions; they are tested on every platform.
+#[cfg_attr(not(ym_apple_metal), allow(dead_code))]
+mod metal_abi;
+#[cfg(ym_apple_metal)]
+mod metal_bridge;
 #[cfg(test)]
 mod source_tests;
 pub mod vision;
@@ -38,6 +48,7 @@ mod vision_abi;
 #[cfg(ym_apple_vision)]
 mod vision_bridge;
 
+pub use metal::{AppleMetal, gpu_opener, system_metal_devices};
 pub use vision::{AppleVision, system_vision};
 
 use std::sync::Arc;

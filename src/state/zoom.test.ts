@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { fitZoomExact, fitZoomOf, fitZoomPercent, MAX_ZOOM_PERCENT, showsWhole, zoomAfter, zoomKey, zoomStep } from "./zoom";
+import { ViewportInputQueue } from "./viewportInputQueue";
+import type { StreamInput } from "./viewportInputQueue";
+import { fitZoomExact, fitZoomOf, fitZoomPercent, MAX_ZOOM_PERCENT, PAN_STEP, PAN_STEP_SHIFT, panKeyDelta, showsWhole, zoomAfter, zoomKey, zoomStep } from "./zoom";
 
 const photo = { width_px: 8640, height_px: 5760 };
 const cell = { width: 1020, height: 680, scale: 2 };
@@ -155,5 +157,52 @@ describe("fitZoomOf", () => {
     expect(fitZoomOf({ fit_percent: 0 }, 33)).toBe(33);
     expect(fitZoomOf({ fit_percent: Number.NaN }, 33)).toBe(33);
     expect(fitZoomOf({ fit_percent: -4 }, null)).toBeNull();
+  });
+});
+
+describe("panKeyDelta (the arrows of the zoomed photo, docs/28 A-10)", () => {
+  const view = { width: 1000, height: 600 };
+
+  it("an arrow moves the picture by 5 % of the view, the way a scroll does: → shows more of the right", () => {
+    expect(PAN_STEP).toBe(0.05);
+    expect(panKeyDelta("ArrowRight", false, view)).toEqual({ dx: -50, dy: 0 });
+    expect(panKeyDelta("ArrowLeft", false, view)).toEqual({ dx: 50, dy: 0 });
+    expect(panKeyDelta("ArrowDown", false, view)).toEqual({ dx: 0, dy: -30 });
+    expect(panKeyDelta("ArrowUp", false, view)).toEqual({ dx: 0, dy: 30 });
+  });
+
+  it("with Shift it is 25 % of the view", () => {
+    expect(PAN_STEP_SHIFT).toBe(0.25);
+    expect(panKeyDelta("ArrowRight", true, view)).toEqual({ dx: -250, dy: 0 });
+    expect(panKeyDelta("ArrowUp", true, view)).toEqual({ dx: 0, dy: 150 });
+  });
+
+  it("no other key is a pan (Home centres, I reads: they are not steps)", () => {
+    for (const key of ["Home", "End", "i", "Enter", "a", " "]) expect(panKeyDelta(key, false, view)).toBeNull();
+  });
+
+  it("an empty view gives no step, and never a negative zero", () => {
+    expect(panKeyDelta("ArrowRight", false, { width: 0, height: 0 })).toEqual({ dx: 0, dy: 0 });
+    expect(Object.is(panKeyDelta("ArrowDown", false, { width: 0, height: 0 })?.dx, 0)).toBe(true);
+  });
+
+  it("a held key's steps are one pan of the sum (the queue the drag and the wheel use), and the core clamps it at the edge", async () => {
+    // The page keeps no offset: it asks for a move and the core, which knows the picture's edges, clamps it (`ViewportState::input`, tested in
+    // Rust: "panning moves the image with the pointer and stops at the edges"). So ten steps at a stop are the sum, and the sum is one command.
+    const sent: StreamInput[] = [];
+    let frame: (() => void) | null = null;
+    const queue = new ViewportInputQueue({
+      send: async (event) => void sent.push(event),
+      mirrorZoom: () => {},
+      onError: () => {},
+      schedule: (callback) => (frame = callback),
+    });
+    for (let i = 0; i < 10; i++) {
+      const step = panKeyDelta("ArrowRight", false, view);
+      if (step) queue.push({ kind: "pan", ...step });
+    }
+    (frame as (() => void) | null)?.();
+    await queue.flush();
+    expect(sent).toEqual([{ kind: "pan", dx: -500, dy: 0 }]);
   });
 });

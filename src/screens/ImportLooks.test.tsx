@@ -64,7 +64,7 @@ describe("step 1 · Choose", () => {
     expect(screen.getByText("ARRI looks")).toBeInTheDocument();
     expect(await step()).toBe("Import · step 1 of 5");
     expect(screen.getByText("Free from ARRI. Imported to this Mac only, never shared or uploaded.")).toBeInTheDocument();
-    expect(screen.getByText("ARRI publishes these looks for free. We can't include them in the app, so you download them from ARRI and the app imports them.")).toBeInTheDocument();
+    expect(screen.getByText("ARRI publishes these looks for free, as 3D LUTs and as look files. We can't include them, so you download either kind and the app imports it.")).toBeInTheDocument();
     const ll4 = screen.getByRole("checkbox", { name: "Look Library · LogC4" });
     expect(ll4).toHaveAttribute("aria-checked", "true");
     expect(ll4).toHaveAccessibleDescription(/87 creative looks, log to log.*87 looks · 65-point · 181 MB/);
@@ -136,7 +136,7 @@ describe("step 2 · Get the files", () => {
     expect(foot()).toHaveTextContent("Next unlocks when the zip arrives.");
     expect(next()).toHaveAccessibleDescription("Next unlocks when the zip arrives.");
     expect(next()).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByRole("group", { name: "Or drop the zip here" })).toHaveTextContent("A zip or an unpacked folder both work.");
+    expect(screen.getByRole("group", { name: "Or drop the zip here" })).toHaveTextContent("A zip, a folder, or a single .cube or look file.");
     expect(rail("Choose")).not.toHaveAttribute("aria-disabled");
     expect(rail("Recognise")).toHaveAttribute("aria-disabled", "true");
   });

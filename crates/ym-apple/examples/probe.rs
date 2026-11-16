@@ -84,7 +84,31 @@ fn vision_report() {
     }
 }
 
+/// The Metal devices and their working-set limits (`docs/26` H-17). A result, never a failure: a platform without Metal
+/// lists none.
+fn metal_report() {
+    println!(
+        "Metal bridge built: {}",
+        if ym_apple::metal::METAL_BUILT {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    for device in ym_apple::metal::devices() {
+        println!(
+            "Metal device: {} | working set {:.2} GiB | unified {} | low power {} | removable {}",
+            device.name,
+            device.recommended_max_working_set_bytes as f64 / f64::from(1u32 << 30),
+            device.has_unified_memory,
+            device.is_low_power,
+            device.is_removable
+        );
+    }
+}
+
 fn main() -> ExitCode {
+    metal_report();
     vision_report();
     let advisor = ym_apple::system_advisor();
     println!(

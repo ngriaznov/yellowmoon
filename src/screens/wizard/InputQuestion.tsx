@@ -14,7 +14,7 @@ export interface InputQuestionProps {
 
 /**
  * The generic `.cube` question (`docs/08` §Any other .cube): what does this LUT expect as input? Three answers, with a line
- * about the one picked. Used by the wizard's Recognise step and by the Import .cube dialog.
+ * about the one picked. Used by the wizard's Recognise step and by the Import LUTs and look files dialog.
  */
 export function InputQuestion({ name, value, onChange, suggestion }: InputQuestionProps) {
   const id = useId();

@@ -1,6 +1,6 @@
 # ym-apple
 
-Two bridges from Swift to Apple's on-device frameworks, each with its own gate in `build.rs`:
+Three bridges from Swift to Apple's frameworks, each with its own gate in `build.rs`:
 
 - **Apple Auto's** bridge to Apple Intelligence's on-device model (`docs/19-apple-auto.md`).
   `ym_apple::system_advisor()` gives the app and `ym` the `AutoAdvisor` of this computer.
@@ -21,6 +21,25 @@ Two bridges from Swift to Apple's on-device frameworks, each with its own gate i
   platform (`not_a_mac`, or `not_supported` on a Mac).
 - `YELLOWMOON_TEST_VISION=fake` gives any platform a computer that supports both requests and makes up a soft
   mask from the picture; `none` a computer that supports nothing.
+
+- **The Metal bridge** lists the Metal devices with `recommendedMaxWorkingSetSize`, which wgpu does not expose
+  (`docs/26-hardening.md` H-17, finding P5-2). `ym_apple::system_metal_devices()` gives the core the
+  `MetalDevices` of this computer (`ym_core::app::metal`), and `ym_apple::gpu_opener(policy, budget)` is the one
+  place the app and `ym` build their `GpuOpener`, with that list: the core matches the device wgpu opened to a Metal
+  device by name and caps the GPU budget at 0.75 of its limit (`ym_core::app::metal::gpu_budget_bytes`). The list is
+  empty off macOS and when Metal does not answer; the budget rule then stands.
+
+  - `swift/MetalDevices.swift`: `MTLCopyAllDevices()`, exposed as one C function, `ym_apple_metal_devices`, which
+    fills a caller-owned array of `YmAppleMetalDevice` (name, working-set limit, `hasUnifiedMemory`, `isLowPower`,
+    `isRemovable`; 152 bytes, the layout asserted in the header and in `src/metal_abi.rs`). Nothing is allocated for
+    the caller and no pointer is kept.
+  - `src/metal.rs`, `src/metal_abi.rs`, `src/metal_bridge.rs`: the safe API, the struct and conversion (built and
+    tested on every platform), and the one unsafe call.
+  - `build.rs` compiles it like the Vision bridge: both architectures (an Intel Mac has Metal, and its AMD GPU is not
+    the default device), macOS 14 SDK or later, normal link against Metal: `cfg(ym_apple_metal)`,
+    `DEP_YM_APPLE_AUTO_METAL=1` for the binaries. `YM_APPLE_METAL=off` (or `YM_APPLE_BRIDGE=off`) builds the stub.
+  - The Swift cannot be compiled off a Mac; the first compile is on the Mac runner (`mac-gpu.yml` runs
+    `ym doctor --json` and asserts the limit). `cargo run -p ym-apple --release --example probe` prints the list.
 
 Apple Auto's bridge:
 

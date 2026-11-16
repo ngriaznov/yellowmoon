@@ -352,9 +352,9 @@ test.describe("keyboard shortcuts", () => {
     await expect(page.getByText(/^3 of 12 · /)).toBeVisible();
     // P picks, ⌘A picks all
     await page.keyboard.press("p");
-    await expect(page.getByText("2 picked")).toBeVisible();
+    await expect(page.locator(".ym-filmstrip__caption")).toContainText("2 picked");
     await page.keyboard.press("Meta+a");
-    await expect(page.getByText("12 picked")).toBeVisible();
+    await expect(page.locator(".ym-filmstrip__caption")).toContainText("12 picked");
     await expect(page.getByRole("button", { name: /Export 12/ })).toBeVisible();
     // \ flips Before
     await page.keyboard.press("\\");
@@ -527,6 +527,26 @@ test.describe("error states", () => {
     await expect(page.getByRole("region", { name: "Automatic" })).toBeVisible();
   });
 
+  test("a Ready photo whose file went away is tagged CAN'T OPEN and says it is not found when it is shown", async ({ page }) => {
+    await openApp(page, { mockVanish: "DSC04207", mockCurrent: 0 });
+    await openPhotos(page);
+    // Ready first: the file is missed when it is read again.
+    const ready = page.getByRole("button", { name: "Show DSC04207" });
+    await expect(ready).toBeVisible();
+    await ready.click();
+    const thumb = page.getByRole("button", { name: "Show DSC04207, can't open" });
+    await expect(thumb).toContainText("Can't open");
+    await expect(thumb.locator('[data-slot="badge"]')).toHaveAttribute("data-variant", "cant-open");
+    await expect(page.getByText("This file can't be opened.", { exact: true })).toBeVisible();
+    await expect(
+      page.locator(".ym-photo-note").getByText("Yellowmoon can't find this file any more. It may have been moved, renamed or its drive disconnected."),
+    ).toBeVisible();
+    // Nothing to adjust, and the other photos still work.
+    await expect(page.getByRole("region", { name: "Automatic" })).toHaveCount(0);
+    await page.keyboard.press("ArrowRight");
+    await expect(page.getByRole("region", { name: "Automatic" })).toBeVisible();
+  });
+
   test("a look whose file is missing is disabled, says why, and can't be picked", async ({ page }) => {
     await photos(page, { mockMissing: "film-warm" });
     const tile = page.getByRole("button", { name: /Film warm look, key 3, file missing or changed/ });
@@ -611,7 +631,7 @@ test("a folder of 500 photos: the first one opens while the rest develop, and th
   await expect(page.getByRole("region", { name: "Automatic" })).toHaveCount(0);
   // The window still takes keys: ⌘A picks the photos that are ready, not the ones still developing.
   await page.keyboard.press("Meta+a");
-  await expect(page.getByText("40 picked")).toBeVisible();
+  await expect(page.locator(".ym-filmstrip__caption")).toContainText("40 picked");
 });
 
 test("settings made before the session opens come through the mock (initialSettings)", async ({ page }) => {

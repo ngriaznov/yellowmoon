@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use ym_core::app::gpu::{GpuOpener, GpuPolicy, GpuSlot};
+use ym_core::app::gpu::{GpuPolicy, GpuSlot};
 use ym_core::app::{Core, CoreOptions};
 use ym_core::auto_provider::ProviderAdvisors;
 use ym_core::export_queue::{ExportEvent, ExportJob as CoreExportJob, ExportSink};
@@ -38,11 +38,11 @@ use crate::wire::{
     CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthFar, DepthState, ErrorScope,
     ExportEstimate, ExportJob, ExportJobId, FaceBox, FacePhase, FaceState, FocusPlaneResult,
     FocusReason, HistogramData, LensInfo, Look, LookId, LookInput, LooksImportProgress,
-    LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView, NodeId, Num,
-    ObjectState, OpenProgress, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress,
-    PixelSample, Preferences, PreferencesPatch, ResolvedSettings, SessionChange, SessionState,
-    SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode,
-    ViewportRect, VisionState, WatchStatus, convert,
+    LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView, MemoryNotice,
+    NodeId, Num, ObjectState, OpenProgress, OpenSummary, Orientation, PasteReport, PhotoId,
+    PhotoProgress, PixelSample, Preferences, PreferencesPatch, ResolvedSettings, SessionChange,
+    SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput,
+    ViewportMode, ViewportRect, VisionState, WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
 
@@ -112,6 +112,10 @@ pub struct AppConfig {
     /// (`models/depth`, `ym_core::pipeline::DepthModel::probe`); the tests give a fake one so that Depth rows work without the
     /// weights.
     pub depth: Option<Arc<ym_core::pipeline::DepthModel>>,
+    /// Where the memory-pressure poll reads the level (`docs/26` H-14): the app gives this computer's
+    /// (`ym_core::memory::system_pressure_source`, the macOS `sysctl`; always normal elsewhere); the tests give none (no poll
+    /// thread) or a source of their own.
+    pub pressure: Option<ym_core::memory::PressureSource>,
 }
 
 /// What the app starts when it launches: **no probe**. The programs' advisors are built with
@@ -158,6 +162,7 @@ impl AppConfig {
             advisors: system_advisors(),
             vision: Some(ym_apple::system_vision()),
             depth: None,
+            pressure: Some(ym_core::memory::system_pressure_source()),
         })
     }
 }
@@ -424,6 +429,20 @@ impl AppApi {
             if let Err(e) = spawned {
                 tracing::warn!(error = %e, "the Vision probe could not start early");
             }
+        }
+        {
+            // The computer is short of memory (`docs/26` H-14): the core says the sentence once on the way into the critical level
+            // and says it is gone when the level is normal. It runs on the poll thread, so it only sends the event.
+            let emitter = Arc::clone(&emitter);
+            core.on_memory_notice(move |message| {
+                emitter.emit(AppEvent::MemoryNotice(MemoryNotice {
+                    message: message.map(str::to_owned),
+                }));
+            });
+        }
+        if let Some(source) = config.pressure.clone() {
+            core.start_memory_watch(source, ym_core::memory::POLL_INTERVAL)
+                .map_err(AppError::internal)?;
         }
         viewport.attach(&core)?;
         let thumbs = Thumbnails::new(Arc::clone(&emitter), Arc::clone(&frames));
@@ -1730,7 +1749,7 @@ fn open_app_gpu(enabled: bool, budget: ym_core::scheduler::MemoryBudget) -> GpuS
     }
     // GPU pass times (timestamp queries, where the adapter has them) when `YM_PERF` is on: the `gpu passes`
     // line of `ym::perf`. Off, nothing is timed.
-    let slot = GpuOpener::new(gpu_policy(), budget)
+    let slot = ym_apple::gpu_opener(gpu_policy(), budget)
         .with_pipeline_cache_dir(ym_gpu::device::default_pipeline_cache_dir())
         .with_timestamps(crate::perf::enabled())
         .open();

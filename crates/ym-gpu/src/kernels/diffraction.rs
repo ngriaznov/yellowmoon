@@ -133,7 +133,7 @@ use super::shader::KernelId;
 use super::util::{GROUP, STORAGE_SCRATCH, storage_buffer};
 use crate::cpu::RgbImage;
 use crate::cpu::noise::WORKING_SCALE;
-use crate::cpu::sharpen::diffraction::DiffractionPlan;
+use crate::cpu::sharpen::diffraction::{DiffractionPlan, Tuning};
 use crate::cpu::tiling::{Halo, Rect};
 use crate::device::{GpuContext, GpuError};
 use crate::image::GpuImage;
@@ -156,9 +156,6 @@ const COEF_PLANES: usize = 4;
 /// [`crate::tiles::tile_size_for_budget`] when choosing a tile size
 /// ([`PreparedDiffraction::recommended_tile_px`] does).
 pub const BYTES_PER_PIXEL: u64 = 4 * (3 + BASE_PLANES + WORK_PLANES + COEF_PLANES + 3) as u64;
-
-/// Fraction of white above which a channel counts as near clipping (spec 2.4): `T = 0.8 S`.
-const CLIP_FRACTION: f64 = 0.8;
 
 /// The bindings of `diffraction.wgsl`: the discriminant is the `@binding` index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,13 +196,20 @@ fn pass_of(id: KernelId) -> Option<(&'static str, &'static [Slot])> {
     })
 }
 
-/// The kernel body of a diffraction pass: the shared WGSL plus the pass's `main`. Called by
-/// [`super::shader::shader_source`]; any other id is a programming error and gets an empty body.
+/// The kernel body of a diffraction pass: the generated constants, the shared WGSL and the pass's
+/// `main`. Called by [`super::shader::shader_source`]; any other id is a programming error and gets
+/// an empty body. The constants are those of [`Tuning::DEFAULT`], what ships.
 pub(super) fn body(id: KernelId) -> String {
+    body_with(id, &Tuning::DEFAULT)
+}
+
+/// [`body`] with the constants block generated from `tuning`.
+pub(super) fn body_with(id: KernelId, tuning: &Tuning) -> String {
     let Some((function, _)) = pass_of(id) else {
         return String::new();
     };
-    let mut s = String::from(include_str!("../shaders/diffraction.wgsl"));
+    let mut s = tuning.wgsl_block();
+    s.push_str(include_str!("../shaders/diffraction.wgsl"));
     s.push_str(&entry(function));
     s
 }
@@ -363,6 +367,14 @@ impl PreparedDiffraction {
     /// check is kept because the values go straight into the shader), and allocation errors from the
     /// pool.
     pub fn new(ctx: &GpuContext, plan: &DiffractionPlan) -> Result<Self, GpuError> {
+        // The shader's constants are generated from `Tuning::DEFAULT` (`body`); until a pipeline is
+        // keyed by its tuning (docs/29 RC-04) the device runs those and no others.
+        if *plan.tuning() != Tuning::DEFAULT {
+            return Err(GpuError::InvalidInput(
+                "diffraction deconvolution: the device runs the shipped Tuning only; use the CPU path for another"
+                    .to_string(),
+            ));
+        }
         let (g0, luma) = (plan.g0(), plan.luma());
         if g0.iter().any(|&g| !g.is_finite() || g <= 0.0) || luma.iter().any(|a| !a.is_finite()) {
             return Err(GpuError::InvalidInput(format!(
@@ -379,7 +391,7 @@ impl PreparedDiffraction {
             constants: Constants {
                 luma,
                 g0,
-                clip_t: (CLIP_FRACTION * WORKING_SCALE) as f32,
+                clip_t: plan.clip_threshold_dn() as f32,
                 sigma0_sq: (s0 * s0) as f32,
                 sigma1: plan.sigma1_dn() as f32,
                 gate_factor: plan.gate_factor() as f32,

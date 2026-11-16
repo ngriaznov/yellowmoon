@@ -460,7 +460,7 @@ export const STATES: readonly PageState[] = [
         mockApi.queueChoice("files", ["~/LUTs/Warm_Film.cube", "~/LUTs/Cool_Day.cube"]);
         mockApi.emitEvent("menu_action", { action: "import_cube" });
       });
-      await expect(p.getByRole("dialog", { name: "Import LUTs" })).toBeVisible();
+      await expect(p.getByRole("dialog", { name: "Import LUTs and look files" })).toBeVisible();
       await p.waitForTimeout(400);
     },
   ],

@@ -54,7 +54,8 @@ describe("design tokens", () => {
     expect(css).toMatch(/font-family:\s*var\(--font\)/);
     expect(css).toMatch(/background:\s*var\(--paper\)/);
     expect(css).toMatch(/color:\s*var\(--ink\)/);
-    expect(css).toMatch(/outline:\s*3px solid var\(--focus\)/);
+    // 3 px, or 4 px under Increase Contrast (docs/28 A-P12): the width is --ym-focus-width, 3 px by default.
+    expect(css).toMatch(/outline:\s*var\(--ym-focus-width, 3px\) solid var\(--focus\)/);
     expect(css).toMatch(/outline-offset:\s*2px/);
     expect(css).not.toMatch(/outline:\s*(none|0)\b/);
   });

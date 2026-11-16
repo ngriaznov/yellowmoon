@@ -731,7 +731,11 @@ fn the_picture_is_never_a_host_frame() {
     // set alone.
     assert_eq!(peak_a - peak_b, frame, "{peak_a} against {peak_b}");
     assert_eq!(report_a.rendered, report_b.rendered);
+    // What is left is what the caches hold (`Renderer::release_caches`); a leak would stay after they go.
+    ca.renderer().release_caches();
     assert_eq!(ca.renderer().ledger().used(), 0);
+    // What is left is what the caches hold (`Renderer::release_caches`); a leak would stay after they go.
+    cb.renderer().release_caches();
     assert_eq!(cb.renderer().ledger().used(), 0);
 }
 
@@ -874,6 +878,8 @@ fn progress_never_goes_back_and_a_cancel_between_bands_leaves_nothing() {
             baseline,
             "{format:?}: the device buffers of a cancelled export are handed back"
         );
+        // What is left is what the caches hold (`Renderer::release_caches`); a leak would stay after they go.
+        ctx.renderer().release_caches();
         assert_eq!(ctx.renderer().ledger().used(), 0);
     }
 }
@@ -1438,6 +1444,8 @@ fn fifty_megapixels_leave_no_host_frame_and_a_dng_keeps_its_own() {
             before.map(|b| b.0),
             after.map(|a| a.1),
         ));
+        // What is left is what the caches hold (`Renderer::release_caches`); a leak would stay after they go.
+        ctx.renderer().release_caches();
         assert_eq!(ctx.renderer().ledger().used(), 0);
         results.push((label, r.device, peak));
     }
@@ -1670,6 +1678,8 @@ mod faults {
                     // The device is usable again and everything was handed back.
                     assert_eq!(pool_in_use(&own), baseline, "{what}");
                 }
+                // What is left is what the caches hold (`Renderer::release_caches`); a leak would stay after they go.
+                ctx.renderer().release_caches();
                 assert_eq!(ctx.renderer().ledger().used(), 0, "{what}");
             }
         }
@@ -1941,6 +1951,9 @@ mod faults {
             }
             assert!(tiles.load(Ordering::SeqCst) >= 12, "{name}");
             assert_eq!(pool_in_use(&own), baseline, "{name}: the buffers are back");
+            // What is left is what the caches hold (`Renderer::release_caches`); a leak would stay after they go.
+            drop(got); // a picture that is held stays counted
+            dev.release_caches();
             assert_eq!(dev.ledger().used(), 0, "{name}");
         }
     }
@@ -2022,6 +2035,8 @@ mod faults {
             "the words were taken away"
         );
         assert_eq!(pool_in_use(&own), baseline);
+        // What is left is what the caches hold (`Renderer::release_caches`); a leak would stay after they go.
+        ctx.renderer().release_caches();
         assert_eq!(ctx.renderer().ledger().used(), 0);
     }
 

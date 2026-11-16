@@ -1,0 +1,31 @@
+{
+  "state": "16-mode-crop",
+  "end": "leaves",
+  "stops": [
+    {"role":"button","name":"Before","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Crop","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Nodes","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Add photos","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Fit 12%","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Update ready","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Export 3 ⌘E","outline":"solid","ring":"outline"},
+    {"role":"group","name":"Crop frame","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Crop top left corner. The arrow keys move it.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Crop top edge. The arrow keys move it.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Crop top right corner. The arrow keys move it.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Crop right edge. The arrow keys move it.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Crop bottom right corner. The arrow keys move it.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Crop bottom edge. The arrow keys move it.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Crop bottom left corner. The arrow keys move it.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Crop left edge. The arrow keys move it.","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Show DSC04204, picked","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Auto crop","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Reset","outline":"solid","ring":"outline"},
+    {"role":"radio","name":"Original","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Straighten","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"Straighten value","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Rotate 90°","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Done ↩","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Cancel Esc","outline":"solid","ring":"outline"}
+  ]
+}

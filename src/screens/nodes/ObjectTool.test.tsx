@@ -352,3 +352,138 @@ describe("Copy settings and Paste", () => {
     expect(within(rowList()).getByRole("button", { name: "Object mask, Click the object on this photo" })).toBeInTheDocument();
   });
 });
+
+// ---- Place points: the Object row's points from the keyboard (docs/28 A-11) ----------------------------------------------------------------
+
+const pickLayer = (): HTMLElement | null => document.querySelector<HTMLElement>(".ym-pick-layer");
+const crosshair = (): { left: string; top: string } => {
+  const mark = pickLayer()!.querySelector<SVGElement>("svg.ym-pick-layer__mark")!;
+  // Whole percents, to a rounding error of the sum of steps.
+  return { left: `${Math.round(parseFloat(mark.style.left) * 1e6) / 1e6}%`, top: `${Math.round(parseFloat(mark.style.top) * 1e6) / 1e6}%` };
+};
+/** Sky gets an Object row and the focus goes to it; Return starts "Place points" and the layer, 600 × 400 like the cell, has the focus. */
+async function placePoints(): Promise<HTMLElement> {
+  await setup();
+  await addObject();
+  await waitFor(() => expect(rows(3)).toHaveLength(1));
+  const row = within(rowList()).getByRole("button", { name: /^Object mask/ });
+  row.focus();
+  await h!.user.keyboard("{Enter}");
+  await waitFor(() => expect(pickLayer()).not.toBeNull());
+  mockRect(pickLayer()!, { left: 0, top: 0, width: 600, height: 400 });
+  return pickLayer()!;
+}
+
+describe("Place points", () => {
+  it("Return on the selected Object row starts it: the layer of Pick white, named for what the keys do, with the focus and the crosshair in the middle", async () => {
+    const el = await placePoints();
+    expect(el).toHaveAttribute("data-mode", "points");
+    expect(el).toHaveAttribute("aria-label", "Place points. Move the crosshair with the arrow keys. Return adds a point, Shift Return takes a part away, Backspace removes the last point, Esc ends.");
+    expect(el).toHaveFocus();
+    expect(crosshair()).toEqual({ left: "50%", top: "50%" });
+    expect(h!.store.getState().objectPlacing).toBe(true);
+    // The Object tool's layer is under it and takes no press; the row's points are still drawn.
+    expect(layer()).not.toHaveAttribute("data-tool");
+  });
+
+  it("the row says how, to a screen reader: its description is 'Press Return to place points with the keyboard.'", async () => {
+    await setup();
+    await addObject();
+    const row = await within(rowList()).findByRole("button", { name: /^Object mask/ });
+    expect(row).toHaveAccessibleDescription("Press Return to place points with the keyboard.");
+  });
+
+  it("Return on a row that is not selected only selects it, and Return elsewhere starts nothing", async () => {
+    await setup(/^Node 2, Mountain/);
+    const row = within(rowList()).getByRole("button", { name: /^Object mask, 1 point/ });
+    expect(row).not.toHaveAccessibleDescription("Press Return to place points with the keyboard.");
+    row.focus();
+    await h!.user.keyboard("{Enter}");
+    expect(h!.store.getState().maskRow).toBe(0);
+    expect(h!.store.getState().objectPlacing).toBe(false);
+    expect(pickLayer()).toBeNull();
+    const slider = within(card("Object")).getAllByRole("textbox")[0]!;
+    slider.focus();
+    await h!.user.keyboard("{Enter}");
+    expect(pickLayer()).toBeNull();
+  });
+
+  it("the arrows move the crosshair by one hundredth of the cell, ⇧ by ten, and it stays in the cell", async () => {
+    await placePoints();
+    const photo = h!.store.currentSettings()!.photo_id;
+    await h!.user.keyboard("{ArrowRight}{ArrowRight}{ArrowDown}");
+    expect(crosshair()).toEqual({ left: "52%", top: "51%" });
+    await h!.user.keyboard("{Shift>}{ArrowLeft}{ArrowUp}{/Shift}");
+    expect(crosshair()).toEqual({ left: "42%", top: "41%" });
+    await h!.user.keyboard("{Shift>}{ArrowLeft}{ArrowLeft}{ArrowLeft}{ArrowLeft}{ArrowLeft}{/Shift}");
+    expect(crosshair().left).toBe("0%");
+    // The arrows are the layer's: the photo does not step.
+    expect(h!.store.currentSettings()!.photo_id).toBe(photo);
+  });
+
+  it("Return adds a positive point and ⇧Return a negative one at the crosshair, Backspace takes the last out, Esc ends: the points are the mouse's", async () => {
+    await placePoints();
+    // The hill's middle, (0.5, 0.7): two steps of ten down; then a little to the right and down for the part taken away.
+    await h!.user.keyboard("{Shift>}{ArrowDown}{ArrowDown}{/Shift}{Enter}");
+    await waitFor(() => expect(objectRow(3, 0).points).toEqual([[0.5, 0.7, true]]));
+    await screen.findByText(/^Point added\. 1 point\./);
+    await h!.user.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowDown}{ArrowDown}{Shift>}{Enter}{/Shift}");
+    await waitFor(() => expect(objectRow(3, 0).points).toEqual([[0.5, 0.7, true], [0.55, 0.72, false]]));
+    await screen.findByText(/^Negative point added\. 2 points\./);
+    const byKeys = objectRow(3, 0).points;
+    await waitFor(() => expect(dots().map((d) => d.dataset.objectPoint)).toEqual(["add", "remove"]));
+
+    // Backspace takes the last one out (one patch, one undo step), and again the first.
+    await h!.user.keyboard("{Backspace}");
+    await waitFor(() => expect(objectRow(3, 0).points).toEqual([[0.5, 0.7, true]]));
+    await screen.findByText(/^Point removed\. 1 point\./);
+    await h!.user.keyboard("{Backspace}");
+    await waitFor(() => expect(objectRow(3, 0).points).toEqual([]));
+    // Nothing left to take out: nothing is sent and nothing is said.
+    const spyUpdate = vi.spyOn(h!.api, "updateSettings");
+    spyUpdate.mockClear();
+    await h!.user.keyboard("{Backspace}");
+    expect(spyUpdate).not.toHaveBeenCalled();
+
+    // The mouse, at the same places of the cell, gives the same points.
+    await h!.user.keyboard("{Escape}");
+    await waitFor(() => expect(pickLayer()).toBeNull());
+    expect(h!.store.getState().objectPlacing).toBe(false);
+    await screen.findByText(/^No points placed\./);
+    await h!.user.click(within(card("Object")).getByRole("radio", { name: "Add point" }));
+    click(300, 280);
+    await waitFor(() => expect(objectRow(3, 0).points).toHaveLength(1));
+    click(330, 288, true);
+    await waitFor(() => expect(objectRow(3, 0).points).toHaveLength(2));
+    expect(objectRow(3, 0).points).toEqual(byKeys);
+  });
+
+  it("Esc ends it, says what was placed, gives the focus back to the row and leaves the Object tool on", async () => {
+    await placePoints();
+    await h!.user.keyboard("{Shift>}{ArrowDown}{ArrowDown}{/Shift}{Enter}");
+    await waitFor(() => expect(objectRow(3, 0).points).toHaveLength(1));
+    await h!.user.keyboard("{Escape}");
+    await waitFor(() => expect(pickLayer()).toBeNull());
+    await screen.findByText(/^Points placed\. 1 point\./);
+    await waitFor(() => expect(within(rowList()).getByRole("button", { name: /^Object mask/ })).toHaveFocus());
+    expect(h!.store.getState().objectTool).toBe(true);
+  });
+
+  it("a point that finds nothing adds nothing and says nothing of a point added", async () => {
+    await placePoints();
+    // The corner of the sky, as SKY is for the mouse: nothing is found there.
+    await h!.user.keyboard("{Shift>}{ArrowLeft}{ArrowLeft}{ArrowLeft}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{/Shift}{Enter}");
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Nothing found there."));
+    expect(objectRow(3, 0).points).toEqual([]);
+    expect(screen.queryByText(/^Point added/)).toBeNull();
+  });
+
+  it("a key held down adds one point, not a row of them", async () => {
+    const el = await placePoints();
+    const find = vi.spyOn(h!.api, "maskFind");
+    await h!.user.keyboard("{Shift>}{ArrowDown}{ArrowDown}{/Shift}");
+    fireEvent.keyDown(el, { key: "Enter", repeat: true });
+    fireEvent.keyDown(el, { key: "Enter", repeat: true });
+    expect(find).not.toHaveBeenCalled();
+  });
+});

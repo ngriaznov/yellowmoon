@@ -3471,6 +3471,34 @@ pub struct FaceState {
     pub message: Option<String>,
 }
 
+/// `memory_notice { message }` (addition, `docs/26` H-14): the computer is short of memory. `message` is the sentence the error bar shows
+/// as a notice ("Your Mac is short of memory, so Yellowmoon paused background work. Close other apps to speed it up again."), or null
+/// when the level is normal again and the sentence goes. Sent once on the way into the critical level and once when the level is
+/// normal; the core owns the words so the app and the mock say the same.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "memory_notice")]
+pub struct MemoryNotice {
+    /// The sentence to show, or null to take it away.
+    pub message: Option<String>,
+}
+
+/// `display_options { reduce_transparency, reduce_motion, increase_contrast }` (addition, `docs/28` A-P12, `docs/11` *Display options*):
+/// the three accessibility display settings of the system (System Settings, Accessibility, Display), read by the shell on macOS
+/// (`NSWorkspace`) and sent when the system says one changed. It is also what the command `display_options()` returns, because an
+/// event sent at start can arrive before the page listens. The page sets or removes `data-reduce-transparency`,
+/// `data-reduce-motion` and `data-increase-contrast` on `<html>` from it. Off macOS all three are false and no event is sent.
+/// Not saved anywhere: the system is asked each time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "display_options")]
+pub struct DisplayOptions {
+    /// Reduce Transparency is on.
+    pub reduce_transparency: bool,
+    /// Reduce Motion is on.
+    pub reduce_motion: bool,
+    /// Increase Contrast is on.
+    pub increase_contrast: bool,
+}
+
 /// `vision_state { photo_id, nothing_found }` (addition): the core's worker for the Subject and People masks of a photo has ended
 /// its work, and `nothing_found` lists the kinds whose newest mask for the photo found nothing (`docs/23` section 7.6: their rows
 /// say "Nothing found"). Sent each time the worker ends, with the list as it is then; the rows say "Finding…" while it works
@@ -3728,6 +3756,9 @@ pub struct Preferences {
     /// Instructions for the grading model (`docs/19` section 2, `docs/22` D1): the person's own, at
     /// most 2000 characters, one text for every provider; `""` is the default.
     pub apple_auto_instructions: String,
+    /// Single-key shortcuts (`docs/28` A-P11): on by default; off leaves P, Z, C, W, N, F, B, M, A,
+    /// `\`, 1 to 9, Delete and Backspace to the menu bar.
+    pub single_key_shortcuts: bool,
 }
 
 /// A partial update of the preferences.
@@ -3763,6 +3794,9 @@ pub struct PreferencesPatch {
     /// text is refused.
     #[serde(default)]
     pub apple_auto_instructions: Option<String>,
+    /// New value of "Single-key shortcuts".
+    #[serde(default)]
+    pub single_key_shortcuts: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -3912,6 +3946,46 @@ pub enum MenuAction {
     PasteSettings,
     /// Paste the copied settings onto the picked photos.
     PasteSettingsToPicked,
+    /// Crop (the Crop button and C). The Photo menu has it so the single-key switch strands nothing
+    /// (`docs/28` A-P11).
+    Crop,
+    /// Auto crop on or off while the Crop panel is open (A).
+    AutoCrop,
+    /// Pick white (the Colour tab's button and W).
+    PickWhite,
+    /// Remove the photo on screen from the filmstrip (Delete and Backspace).
+    RemovePhoto,
+    /// Bypass the selected node (B; the node view only).
+    BypassNode,
+    /// Show or hide the selected node's mask (M; the node view only).
+    MaskView,
+    /// Pick look 1 of the Look tab (the key 1).
+    #[serde(rename = "look_1")]
+    Look1,
+    /// Pick look 2 of the Look tab (the key 2).
+    #[serde(rename = "look_2")]
+    Look2,
+    /// Pick look 3 of the Look tab (the key 3).
+    #[serde(rename = "look_3")]
+    Look3,
+    /// Pick look 4 of the Look tab (the key 4).
+    #[serde(rename = "look_4")]
+    Look4,
+    /// Pick look 5 of the Look tab (the key 5).
+    #[serde(rename = "look_5")]
+    Look5,
+    /// Pick look 6 of the Look tab (the key 6).
+    #[serde(rename = "look_6")]
+    Look6,
+    /// Pick look 7 of the Look tab (the key 7).
+    #[serde(rename = "look_7")]
+    Look7,
+    /// Pick look 8 of the Look tab (the key 8).
+    #[serde(rename = "look_8")]
+    Look8,
+    /// Pick look 9 of the Look tab (the key 9).
+    #[serde(rename = "look_9")]
+    Look9,
 }
 
 /// `set_menu_state(state)`: which of the Edit menu's settings items are available. The webview

@@ -2430,6 +2430,120 @@ fn a_new_photo_goes_back_to_fit() {
     ));
 }
 
+// --- Memory pressure (`docs/26` H-14) --------------------------------------------------------
+
+/// The `MemoryNotice` events seen so far, in order.
+fn memory_notices(h: &Harness) -> Vec<Option<String>> {
+    h.events
+        .events()
+        .iter()
+        .filter_map(|e| match e {
+            AppEvent::MemoryNotice(n) => Some(n.message.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_memory_notice_reaches_the_webview_once_per_stay_and_goes_at_normal() {
+    use ym_core::memory::{MEMORY_NOTICE_SENTENCE, PressureLevel};
+    let h = Harness::new();
+    let core = h.api.core();
+    core.apply_pressure(PressureLevel::Warning);
+    assert!(memory_notices(&h).is_empty(), "warning shows nothing");
+    core.apply_pressure(PressureLevel::Critical);
+    core.apply_pressure(PressureLevel::Critical);
+    assert_eq!(
+        memory_notices(&h),
+        vec![Some(MEMORY_NOTICE_SENTENCE.to_owned())],
+        "once"
+    );
+    core.apply_pressure(PressureLevel::Normal);
+    core.apply_pressure(PressureLevel::Critical);
+    assert_eq!(
+        memory_notices(&h),
+        vec![
+            Some(MEMORY_NOTICE_SENTENCE.to_owned()),
+            None,
+            Some(MEMORY_NOTICE_SENTENCE.to_owned())
+        ]
+    );
+    // The event on the wire: the sentence, or null.
+    let on_wire = serde_json::to_value(crate::wire::MemoryNotice { message: None }).expect("json");
+    assert_eq!(on_wire, json!({ "message": null }));
+}
+
+#[test]
+fn the_app_starts_the_pressure_poll_with_its_source_and_quitting_ends_it() {
+    use std::sync::Mutex;
+    use ym_core::memory::{MEMORY_NOTICE_SENTENCE, PressureLevel, PressureSource};
+    let levels = Mutex::new(std::collections::VecDeque::from([
+        PressureLevel::Critical,
+        PressureLevel::Normal,
+    ]));
+    let probe = Arc::new(());
+    let held = Arc::clone(&probe);
+    let source = PressureSource::new(move || {
+        let _held = &held;
+        levels
+            .lock()
+            .expect("levels")
+            .pop_front()
+            .unwrap_or(PressureLevel::Normal)
+    });
+    let h = Harness::with_pressure(source);
+    // The poll reads at once and then every two seconds: the first two readings come in the first tick or two; what the page
+    // is told is the notice and its going, in that order, whatever the pace.
+    wait_until("the notice to come and go", || {
+        memory_notices(&h).len() == 2
+    });
+    assert_eq!(
+        memory_notices(&h),
+        vec![Some(MEMORY_NOTICE_SENTENCE.to_owned()), None]
+    );
+    // Quitting ends the thread: it lets go of the source.
+    h.api.shutdown();
+    assert_eq!(Arc::strong_count(&probe), 1);
+}
+
+#[test]
+fn the_thumbnail_refresher_waits_while_memory_is_critical_and_goes_on_when_it_falls() {
+    use ym_core::memory::PressureLevel;
+    let h = Harness::new();
+    h.open(2);
+    let state = h.develop();
+    wait_until("the first thumbnails", || {
+        h.events
+            .events()
+            .iter()
+            .filter(|e| matches!(e, AppEvent::ThumbnailReady(_)))
+            .count()
+            >= 2
+    });
+    assert!(h.api.thumbnails().wait_idle(WAIT));
+    let announced = || {
+        h.events
+            .events()
+            .iter()
+            .filter(|e| matches!(e, AppEvent::ThumbnailReady(_)))
+            .count()
+    };
+    let before = announced();
+    h.api.core().apply_pressure(PressureLevel::Critical);
+    h.api
+        .thumbnails()
+        .refresh([ym_core::session::PhotoId(state.photos[0].id.0)]);
+    // The refresher has found the gate paused and is waiting in it: it cannot have rendered anything.
+    wait_until("the refresher to wait", || {
+        h.api.thumbnails().gate_waits() >= 1
+    });
+    assert_eq!(announced(), before);
+    // The level falls: the refresh goes on.
+    h.api.core().apply_pressure(PressureLevel::Normal);
+    wait_until("the refreshed thumbnail", || announced() > before);
+    assert!(h.api.thumbnails().wait_idle(WAIT));
+}
+
 // --- Thumbnails -------------------------------------------------------------------------------
 
 #[test]
@@ -2932,6 +3046,26 @@ fn preferences_round_trip_and_nothing_else_is_written() {
         next,
         "nothing changed"
     );
+}
+
+/// "Single-key shortcuts" (`docs/28` A-P11) crosses the bridge: on by default, saved when it is
+/// turned off, and still off when the app starts again over the same folder.
+#[test]
+fn single_key_shortcuts_are_on_by_default_and_survive_a_restart() {
+    let h = Harness::new();
+    assert!(h.api.preferences_get().expect("prefs").single_key_shortcuts);
+    let patch: PreferencesPatch =
+        serde_json::from_value(json!({ "single_key_shortcuts": false })).expect("patch");
+    assert!(
+        !h.api
+            .preferences_set(&patch)
+            .expect("set")
+            .single_key_shortcuts
+    );
+    let saved = std::fs::read_to_string(h.app_root.path().join("preferences.json")).expect("file");
+    assert!(saved.contains("\"single_key_shortcuts\": false"), "{saved}");
+    let again = ym_core::preferences::PreferencesStore::open(h.app_root.path());
+    assert!(!again.get().single_key_shortcuts);
 }
 
 /// An advisor that is always available and gives the same answer, or the same failure, for every

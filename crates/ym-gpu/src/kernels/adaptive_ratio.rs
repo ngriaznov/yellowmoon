@@ -123,7 +123,7 @@ use bytemuck::{Pod, Zeroable};
 
 use super::shader::KernelId;
 use super::util::{GROUP, even, storage_buffer};
-use crate::cpu::demosaic::adaptive_ratio::{Derived, Params};
+use crate::cpu::demosaic::adaptive_ratio::{Derived, Params, Tuning};
 use crate::cpu::demosaic::{CaCurves, DemosaicInputs, Method};
 use crate::cpu::noise::WORKING_SCALE;
 use crate::cpu::tiling::{Halo, Rect, Stage};
@@ -203,13 +203,20 @@ fn pass_of(id: KernelId) -> Option<(&'static str, &'static [Slot])> {
     })
 }
 
-/// The kernel body of an adaptive ratio pass: the shared WGSL plus the pass's `main`. Called by
-/// [`super::shader::shader_source`]; any other id is a programming error and gets an empty body.
+/// The kernel body of an adaptive ratio pass: the generated constants, the shared WGSL and the pass's
+/// `main`. Called by [`super::shader::shader_source`]; any other id is a programming error and gets
+/// an empty body. The constants are those of [`Tuning::DEFAULT`], what ships.
 pub(super) fn body(id: KernelId) -> String {
+    body_with(id, &Tuning::DEFAULT)
+}
+
+/// [`body`] with the constants block generated from `tuning`.
+pub(super) fn body_with(id: KernelId, tuning: &Tuning) -> String {
     let Some((function, _)) = pass_of(id) else {
         return String::new();
     };
-    let mut s = String::from(include_str!("../shaders/adaptive_ratio.wgsl"));
+    let mut s = tuning.wgsl_block();
+    s.push_str(include_str!("../shaders/adaptive_ratio.wgsl"));
     s.push_str(&entry(function));
     s
 }
@@ -481,6 +488,13 @@ impl PreparedDemosaic {
     ) -> Result<PreparedDemosaic, GpuError> {
         let invalid =
             |what: String| GpuError::InvalidInput(format!("adaptive ratio demosaic: {what}"));
+        // The shader's constants are generated from `Tuning::DEFAULT` (`body`); until a pipeline is
+        // keyed by its tuning (docs/29 RC-04) the device runs those and no others.
+        if params.tuning != Tuning::DEFAULT {
+            return Err(invalid(
+                "the device runs the shipped Tuning only; use the CPU path for another".to_string(),
+            ));
+        }
         let derived =
             Derived::new(inputs.gains, inputs.noise, params).map_err(|e| invalid(e.to_string()))?;
         let constants = Constants::new(&derived)?;

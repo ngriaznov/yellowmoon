@@ -36,7 +36,8 @@
 //! from the driver) taints the device, and a device-lost callback marks it lost. Both are recorded in
 //! a [`DeviceHealth`] shared with the pool and the handle: [`Gpu::is_lost`] reports either, the next
 //! allocation, submission or readback of a job fails with [`GpuError::DeviceLost`], and so does a
-//! readback that takes longer than [`GpuConfig::readback_timeout`] (30 s). Rebuilding the device (at
+//! readback that takes longer than [`GpuConfig::readback_timeout`] (30 s; 300 s on a software adapter, which
+//! shares the cores with the rest of the machine). Rebuilding the device (at
 //! most twice, then the GPU is off for the process) is the integrator's job
 //! (`docs/17-gpu.md` section 9).
 //!
@@ -240,7 +241,8 @@ pub struct GpuConfig {
     /// default: nothing is timed in a normal run.
     pub timestamps: bool,
     /// The longest a readback waits for the GPU. When it expires the device is tainted and the
-    /// readback fails with [`GpuError::DeviceLost`] (`docs/17-gpu.md` section 9). 30 s by default.
+    /// readback fails with [`GpuError::DeviceLost`] (`docs/17-gpu.md` section 9). 30 s by default, and
+    /// [`SOFTWARE_READBACK_TIMEOUT`] on a software adapter when this is left at the default.
     pub readback_timeout: Duration,
     /// A fault to arm when the device opens (feature `fault-injection`; `YM_GPU_FAULT` is read when
     /// this is `None`). [`Gpu::set_fault`] arms one later.
@@ -250,6 +252,22 @@ pub struct GpuConfig {
 
 /// How long a readback waits for the GPU by default.
 pub const READBACK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a readback waits when the adapter is a CPU rasteriser (`DeviceType::Cpu`, lavapipe) and the
+/// config left [`GpuConfig::readback_timeout`] at [`READBACK_TIMEOUT`]. A software device runs on the
+/// same cores as everything else, so on a loaded machine a readback is slow without the device being hung;
+/// 30 s took it for lost, and the export was made again on the CPU reference path, whose bytes are not the
+/// device's (found by the app-against-`ym` parity test under load).
+pub const SOFTWARE_READBACK_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The readback timeout a device opened with `configured` uses.
+fn effective_readback_timeout(configured: Duration, is_software: bool) -> Duration {
+    if is_software && configured == READBACK_TIMEOUT {
+        SOFTWARE_READBACK_TIMEOUT
+    } else {
+        configured
+    }
+}
 
 /// Whether `YM_GPU_POISON` asks for poison mode.
 pub fn poison_requested_by_env() -> bool {
@@ -736,7 +754,10 @@ impl GpuContext {
             health,
             counters,
             fault,
-            readback_timeout: config.readback_timeout,
+            readback_timeout: effective_readback_timeout(
+                config.readback_timeout,
+                adapter_info.device_type == wgpu::DeviceType::Cpu,
+            ),
         })
     }
 
@@ -1246,4 +1267,24 @@ impl Gpu {
 /// Whether the environment demands a GPU (`YM_REQUIRE_GPU=1`, the `gpu-lavapipe` CI job).
 pub fn gpu_required_by_env() -> bool {
     std::env::var("YM_REQUIRE_GPU").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+#[cfg(test)]
+mod readback_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn a_software_adapter_waits_longer_than_a_real_gpu_unless_the_config_names_a_time() {
+        assert_eq!(
+            effective_readback_timeout(READBACK_TIMEOUT, false),
+            READBACK_TIMEOUT
+        );
+        assert_eq!(
+            effective_readback_timeout(READBACK_TIMEOUT, true),
+            SOFTWARE_READBACK_TIMEOUT
+        );
+        let own = Duration::from_millis(50);
+        assert_eq!(effective_readback_timeout(own, true), own);
+        assert_eq!(effective_readback_timeout(own, false), own);
+    }
 }

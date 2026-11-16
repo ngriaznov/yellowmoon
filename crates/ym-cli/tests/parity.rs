@@ -31,7 +31,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{Sandbox, data_dir, names_in};
-use ym_core::app::gpu::{GpuPolicy, GpuSlot, open_gpu};
+use ym_core::app::gpu::{GpuPolicy, GpuSlot};
 use ym_core::app::{Core, CoreOptions};
 use ym_core::apple_auto::FakeAdvisor;
 use ym_core::auto_provider::{AutoChoice, AutoProvider, FakeProvider, ProviderAdvisors};
@@ -131,7 +131,7 @@ impl App {
     /// The GPU leg's app: the device of the `On` policy attached to the core the way the application
     /// attaches it. `None` (with a notice) when no adapter opens; a failure when `YM_REQUIRE_GPU` is set.
     fn open_on_device(files: &[&Path]) -> Option<Self> {
-        let slot = open_gpu(GpuPolicy::On, MemoryBudget::detect());
+        let slot = ym_apple::gpu_opener(GpuPolicy::On, MemoryBudget::detect()).open();
         if slot.gpu().is_none() {
             assert!(
                 !gpu_required_by_env(),
@@ -380,6 +380,15 @@ fn cases() -> Vec<Case> {
             name: "tiff-16-none",
             options: tiff(BitDepth::Sixteen, TiffCompression::None),
             flags: &["--format", "tiff", "--bits", "16", "--compression", "none"],
+        },
+        Case {
+            // No `--compression`: both paths take the default, ZIP.
+            name: "tiff-default-compression",
+            options: ExportOptions {
+                format: FormatKind::Tiff,
+                ..ExportOptions::default()
+            },
+            flags: &["--format", "tiff"],
         },
         Case {
             name: "png-8",
@@ -993,7 +1002,7 @@ fn graph_leg_full(
     let sb = Sandbox::new();
     let arw = sb.arw("DSC00001.ARW");
     let slot = if device {
-        let slot = open_gpu(GpuPolicy::On, MemoryBudget::detect());
+        let slot = ym_apple::gpu_opener(GpuPolicy::On, MemoryBudget::detect()).open();
         if slot.gpu().is_none() {
             assert!(
                 !gpu_required_by_env(),

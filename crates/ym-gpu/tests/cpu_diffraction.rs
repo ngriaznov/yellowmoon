@@ -22,7 +22,7 @@ use ym_gpu::cpu::denoise::BilateralParams;
 use ym_gpu::cpu::detail::NoiseReduction;
 use ym_gpu::cpu::normalize::Levels;
 use ym_gpu::cpu::sharpen::diffraction::{
-    DiffractionParams, DiffractionPlan, MAX_HALO_PX, SPEC_LUMA, bessel_j1,
+    DiffractionParams, DiffractionPlan, MAX_HALO_PX, SPEC_LUMA, Tuning, bessel_j1,
 };
 use ym_gpu::cpu::sharpen::{CaptureSharpen, SharpenParams};
 use ym_gpu::cpu::synth;
@@ -327,7 +327,7 @@ fn floats(v: &Value) -> Vec<f32> {
 }
 
 /// The plan a vector's `params` describe, or `None` when inactive.
-fn plan_of(params: &Value) -> Option<DiffractionPlan> {
+fn plan_of(params: &Value, tuning: &'static Tuning) -> Option<DiffractionPlan> {
     let g0 = floats(&params["g0"]);
     let luma = floats(&params["luma"]);
     let n = &params["noise"];
@@ -347,6 +347,7 @@ fn plan_of(params: &Value) -> Option<DiffractionPlan> {
         f_number: num(params, "f_number"),
         scale: num(params, "scale"),
         strength: num(params, "strength") as f32,
+        tuning,
     };
     DiffractionPlan::new(
         &p,
@@ -389,8 +390,18 @@ fn check_plan_fields(name: &str, plan: &Option<DiffractionPlan>, expected: &Valu
     }
 }
 
+/// Every vector runs under the constants it was made with ([`Tuning::ORACLE`], which proves the
+/// structure is the spec's) and under the shipped ones ([`Tuning::DEFAULT`]).
+const TUNINGS: [&Tuning; 2] = [&Tuning::ORACLE, &Tuning::DEFAULT];
+
 #[test]
 fn vectors_planner() {
+    for tuning in TUNINGS {
+        vectors_planner_under(tuning);
+    }
+}
+
+fn vectors_planner_under(tuning: &'static Tuning) {
     let mut count = 0;
     let mut worst = 0.0f64;
     for (name, v) in vectors() {
@@ -400,7 +411,7 @@ fn vectors_planner() {
         count += 1;
         let tol = num(&v, "tolerance");
         let e = &v["expected"];
-        let plan = plan_of(&v["params"]);
+        let plan = plan_of(&v["params"], tuning);
         check_plan_fields(&name, &plan, e, tol);
         if let Some(plan) = &plan {
             for (got, key) in [(plan.r80_um(), "r80_um"), (plan.support_um(), "support_um")] {
@@ -430,6 +441,12 @@ fn vectors_planner() {
 
 #[test]
 fn vectors_images() {
+    for tuning in TUNINGS {
+        vectors_images_under(tuning);
+    }
+}
+
+fn vectors_images_under(tuning: &'static Tuning) {
     let mut count = 0;
     let mut worst = 0.0f64;
     for (name, v) in vectors() {
@@ -449,7 +466,7 @@ fn vectors_images() {
             (w, h)
         );
         let want = floats(&e["data"]);
-        let plan = plan_of(&v["params"]);
+        let plan = plan_of(&v["params"], tuning);
         let whole = plan
             .as_ref()
             .map_or_else(|| img.clone(), |p| p.apply_whole(&img));

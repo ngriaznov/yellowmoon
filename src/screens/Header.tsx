@@ -87,6 +87,7 @@ export function ExportCell({ label, disabled = false, title, current = false, pr
         className="relative overflow-hidden"
         disabled={disabled}
         aria-current={current || undefined}
+        data-focus-home="export"
         title={title}
         icon={
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

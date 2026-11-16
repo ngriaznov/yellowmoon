@@ -335,8 +335,13 @@ test.describe("Delete and the refusals", () => {
     await expect(page.getByRole("menuitem", { name: /^Move (earlier|later)/ })).toHaveCount(0);
     await expect(page.getByRole("menuitem")).toHaveText(["Rename", "Link picture to", "Remove link", "Delete node"]);
     await page.keyboard.press("Escape");
+    // The menu returns the focus to its opener when it has finished closing (the glass close animation delays it):
+    // wait for that, or the return lands after the card's focus() and takes the focus back.
+    await expect(page.getByRole("menu")).toHaveCount(0);
+    await expect(tools(page).getByRole("button", { name: "More" })).toBeFocused();
     // Alt+Left is refused with the sentence.
     await card(page, 4).focus();
+    await expect(card(page, 4)).toBeFocused();
     await page.keyboard.press("Alt+ArrowLeft");
     await expect(page.getByRole("alert")).toContainText("This node can't be moved along a line. Change its links instead.");
   });

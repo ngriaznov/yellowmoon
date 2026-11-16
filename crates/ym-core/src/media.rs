@@ -34,6 +34,19 @@
 //! `MAX_HUNG_PER_FOLDER` plus the callers in flight threads are ever started; the rest are refused
 //! without one.
 //!
+//! # A file that went away or changed (`docs/26` P1-4, H-04)
+//!
+//! The probe keeps a [`FileStamp`] (length and modification time) of the file it read. Every later
+//! whole-file read ([`Media::decode`]) compares the file's stamp with it with one `stat` **inside
+//! the same guarded call** as the read, so a dead share cannot hang that `stat` outside the time
+//! limit. A file that is gone reads as `NotFound` (the catalogue sentence of `ym_raw::error`); a
+//! file whose length or modification time differs is [`ReadFailure::Changed`], and the caller shows
+//! [`CHANGED_MESSAGE`].
+//!
+//! The stamp does not see a rewrite of the same length within the file system's time granularity
+//! (1 s on HFS+ and many SMB shares, 2 s on FAT). No hash is kept: that would mean reading the
+//! whole file at open.
+//!
 //! The listing of a folder (`read_dir`) and the canonical path of a file are not guarded: a share
 //! that hangs there still hangs `open_paths`. That is for MC-2 to show.
 
@@ -52,6 +65,10 @@ use ym_raw::metadata::RawMetadata;
 /// What a photo says when its file did not answer in time.
 pub const NO_ANSWER_MESSAGE: &str =
     "This file didn't answer. Check the drive or the network connection, then open it again.";
+
+/// What a photo says when its file was replaced or edited after it was opened.
+pub const CHANGED_MESSAGE: &str =
+    "This file changed after it was opened. Remove it from the filmstrip and open it again.";
 
 /// How long one probe may take. A starting value; see the module documentation (MC-2).
 pub const PROBE_LIMIT: Duration = Duration::from_secs(15);
@@ -78,6 +95,62 @@ pub enum Guarded<T> {
     NoAnswer,
     /// The caller was cancelled while it waited.
     Cancelled,
+}
+
+/// What `stat` said about a file when it was probed: its length and modification time. Two stamps
+/// that differ mean the file is not the one that was opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStamp {
+    /// The length in bytes.
+    pub len: u64,
+    /// The modification time, when the file system has one.
+    pub modified: Option<std::time::SystemTime>,
+}
+
+impl FileStamp {
+    /// The stamp of the file at `path` (one `stat`, following symlinks).
+    ///
+    /// # Errors
+    ///
+    /// The error of `stat` (`NotFound` for a file that is gone).
+    pub fn of(path: &Path) -> io::Result<Self> {
+        let meta = std::fs::metadata(path)?;
+        Ok(Self {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+        })
+    }
+}
+
+/// Why a whole-file read gave no image.
+#[derive(Debug)]
+pub enum ReadFailure {
+    /// The file could not be checked or decoded (`NotFound` when it is gone).
+    Raw(RawError),
+    /// The file's length or modification time differs from the probe's: [`CHANGED_MESSAGE`].
+    Changed,
+}
+
+impl ReadFailure {
+    /// True when the file is gone (`NotFound`) or differs from the probe: the photo is skipped
+    /// for it. Any other failure is the read's own and leaves the photo as it was.
+    #[must_use]
+    pub fn is_gone_or_changed(&self) -> bool {
+        match self {
+            Self::Changed => true,
+            Self::Raw(RawError::Io(e)) => e.kind() == io::ErrorKind::NotFound,
+            Self::Raw(_) => false,
+        }
+    }
+
+    /// The sentence a photo is skipped with.
+    #[must_use]
+    pub fn message(&self) -> String {
+        match self {
+            Self::Raw(error) => error.to_string(),
+            Self::Changed => CHANGED_MESSAGE.to_owned(),
+        }
+    }
 }
 
 /// How a file is probed (the standard one is `ym_raw::metadata::probe`).
@@ -154,25 +227,44 @@ impl Media {
     }
 
     /// Probes `path` with the probe limit. `cancelled` is looked at every 25 ms while waiting.
+    ///
+    /// The answer carries the file's [`FileStamp`], read just before the probe (so a file that
+    /// changes while it is probed is seen as changed later); `None` when the `stat` failed.
     pub fn probe(
         &self,
         path: &Path,
         cancelled: &dyn Fn() -> bool,
-    ) -> Guarded<Result<RawMetadata, RawError>> {
+    ) -> Guarded<Result<(RawMetadata, Option<FileStamp>), RawError>> {
         let call = Arc::clone(&self.probe);
         let owned = path.to_path_buf();
-        self.guarded(path, self.probe_limit, cancelled, move || call(&owned))
+        self.guarded(path, self.probe_limit, cancelled, move || {
+            let stamp = FileStamp::of(&owned).ok();
+            call(&owned).map(|meta| (meta, stamp))
+        })
     }
 
-    /// Reads and decodes `path` with the read limit.
+    /// Reads and decodes `path` with the read limit. With a `stamp`, the file is first compared
+    /// with it (one `stat` inside the same guarded call): a file that is gone is
+    /// [`ReadFailure::Raw`] with `NotFound`, a file that differs is [`ReadFailure::Changed`], and
+    /// nothing is decoded for either.
     pub fn decode(
         &self,
         path: &Path,
+        stamp: Option<FileStamp>,
         cancelled: &dyn Fn() -> bool,
-    ) -> Guarded<Result<RawImage, RawError>> {
+    ) -> Guarded<Result<RawImage, ReadFailure>> {
         let call = Arc::clone(&self.decode);
         let owned = path.to_path_buf();
-        self.guarded(path, self.read_limit, cancelled, move || call(&owned))
+        self.guarded(path, self.read_limit, cancelled, move || {
+            if let Some(expected) = stamp {
+                match FileStamp::of(&owned) {
+                    Ok(now) if now == expected => {}
+                    Ok(_) => return Err(ReadFailure::Changed),
+                    Err(error) => return Err(ReadFailure::Raw(RawError::Io(error))),
+                }
+            }
+            call(&owned).map_err(ReadFailure::Raw)
+        })
     }
 
     /// Threads that did not answer in time and have not returned yet.

@@ -241,6 +241,9 @@ fn every_fault_makes_the_whole_photo_again_on_the_cpu_in_every_format() {
             );
             let seen = seen.into_inner().expect("lock");
             assert!(seen.windows(2).all(|w| w[0] <= w[1]), "{cell}: {seen:?}");
+            // What is left is what the caches hold (raw groups, sigma planes: `Renderer::release_caches`); a leak
+            // would stay after they are let go.
+            ctx.renderer().release_caches();
             assert_eq!(ctx.renderer().ledger().used(), 0, "{cell}: host ledger");
             if !matches!(fault, GpuFault::Lost) {
                 assert_eq!(pool_in_use(&own), baseline, "{cell}: the device ledger");
@@ -305,6 +308,9 @@ fn a_strict_policy_fails_the_photo_with_kind_gpu_for_every_fault_and_writes_noth
             let err = result.expect_err(&format!("{cell}: a strict export must fail"));
             assert_eq!(err.kind(), "gpu", "{cell}: {err}");
             assert!(names_in(out.path()).is_empty(), "{cell}: a file was left");
+            // What is left is what the caches hold (raw groups, sigma planes: `Renderer::release_caches`); a leak
+            // would stay after they are let go.
+            ctx.renderer().release_caches();
             assert_eq!(ctx.renderer().ledger().used(), 0, "{cell}: host ledger");
             if !matches!(fault, GpuFault::Lost) {
                 assert_eq!(pool_in_use(&own), baseline, "{cell}: the device ledger");
@@ -346,6 +352,9 @@ fn a_cancel_fault_ends_the_export_cleanly_and_the_next_one_is_whole() {
                 "{label}, cancel@{at}: a file was left"
             );
             assert_eq!(pool_in_use(&gpu), baseline, "{label}, cancel@{at}");
+            // What is left is what the caches hold (raw groups, sigma planes: `Renderer::release_caches`); a leak
+            // would stay after they are let go.
+            ctx.renderer().release_caches();
             assert_eq!(ctx.renderer().ledger().used(), 0, "{label}, cancel@{at}");
             let again = run(&ctx, &photo, opts.clone(), &ExportControl::none()).expect("export");
             assert_eq!(again.device, ComputeDevice::Gpu, "{label}, cancel@{at}");
@@ -523,6 +532,9 @@ fn a_fault_in_the_first_photo_of_a_queue_reaches_the_second_only_as_far_as_the_r
                 }
                 assert_eq!(names_in(out.path()).len(), 2, "{cell}");
             }
+            // What is left is what the caches hold (raw groups, sigma planes: `Renderer::release_caches`); a leak
+            // would stay after they are let go.
+            ctx.renderer().release_caches();
             assert_eq!(ctx.renderer().ledger().used(), 0, "{cell}");
         }
     }
@@ -714,6 +726,9 @@ fn a_fault_in_the_lens_kernels_with(shared: &Arc<Gpu>, what: &str, photo: &Expor
                     "{cell}: one file, no temporary"
                 );
             }
+            // What is left is what the caches hold (raw groups, sigma planes: `Renderer::release_caches`); a leak
+            // would stay after they are let go.
+            ctx.renderer().release_caches();
             assert_eq!(ctx.renderer().ledger().used(), 0, "{cell}: host ledger");
             if !matches!(fault, GpuFault::Lost) {
                 assert_eq!(pool_in_use(&own), baseline, "{cell}: the device ledger");
@@ -761,6 +776,9 @@ fn a_cancel_in_the_lens_kernels_with(gpu: &Arc<Gpu>, what: &str, photo: &ExportP
             "{what}: cancel@{at}: a file was left"
         );
         assert_eq!(pool_in_use(gpu), baseline, "{what}: cancel@{at}");
+        // What is left is what the caches hold (raw groups, sigma planes: `Renderer::release_caches`); a leak
+        // would stay after they are let go.
+        ctx.renderer().release_caches();
         assert_eq!(ctx.renderer().ledger().used(), 0, "{what}: cancel@{at}");
         let out = tempfile::tempdir().expect("out");
         let again = run(&ctx, photo, lens_png(out.path()), &ExportControl::none()).expect("export");

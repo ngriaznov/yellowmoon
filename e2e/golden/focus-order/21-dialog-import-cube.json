@@ -1,0 +1,9 @@
+{
+  "state": "21-dialog-import-cube",
+  "end": "wraps",
+  "stops": [
+    {"role":"button","name":"Cancel","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Import","outline":"solid","ring":"outline"},
+    {"role":"radio","name":"LogC4","outline":"solid","ring":"outline"}
+  ]
+}

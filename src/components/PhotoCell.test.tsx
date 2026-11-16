@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PhotoCell } from "./PhotoCell";
 
@@ -85,6 +85,73 @@ describe("PhotoCell", () => {
     expect(screen.getByText("R 182 G 164 B 140")).toHaveClass("ym-photo-cell__readout");
     rerender(<PhotoCell pixelReadout={null} native={false} />);
     expect(screen.queryByText("R 182 G 164 B 140")).toBeNull();
+  });
+
+  it("keeps the chips, the camera line and the readout out of the image, in a group beside it", () => {
+    render(
+      <PhotoCell imageLabel="Photo DSC04204, Neutral · 100%" lookChip="Neutral · 100%" cameraLine="Sony A1 · DSC04204" pixelReadout="R 1 G 2 B 3" native={false} />,
+    );
+    const image = screen.getByRole("img", { name: "Photo DSC04204, Neutral · 100%" });
+    const group = screen.getByRole("group", { name: "Photo information" });
+    expect(image).toBeEmptyDOMElement();
+    expect(image.contains(group)).toBe(false);
+    expect(group.parentElement).toBe(image.parentElement);
+    expect(within(group).getByText("Neutral · 100%")).toBeInTheDocument();
+    expect(within(group).getByText("Sony A1 · DSC04204")).toBeInTheDocument();
+  });
+
+  it("puts the Before label in the group too", () => {
+    render(<PhotoCell before native={false} />);
+    expect(within(screen.getByRole("group", { name: "Photo information" })).getByText("Before · camera default")).toBeInTheDocument();
+  });
+
+  describe("the pixel readout as a status", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("draws every value at once but announces at most one a second, the last", () => {
+      const { rerender } = render(<PhotoCell pixelReadout="R 0 G 0 B 0" native={false} />);
+      const status = screen.getByRole("status");
+      expect(status).toBeEmptyDOMElement();
+      for (let i = 1; i <= 10; i++) {
+        rerender(<PhotoCell pixelReadout={`R ${i} G ${i} B ${i}`} native={false} />);
+        // The drawn text is live and hidden from a screen reader.
+        expect(document.querySelector(".ym-photo-cell__readout")).toHaveTextContent(`R ${i} G ${i} B ${i}`);
+        expect(document.querySelector(".ym-photo-cell__readout")).toHaveAttribute("aria-hidden", "true");
+        act(() => void vi.advanceTimersByTime(90));
+      }
+      // Ten moves in 900 ms: nothing was announced yet.
+      expect(status).toBeEmptyDOMElement();
+      act(() => void vi.advanceTimersByTime(100));
+      expect(status).toHaveTextContent("R 10 G 10 B 10");
+    });
+
+    it("announces one update for a burst, then the next burst a second later", () => {
+      const { rerender } = render(<PhotoCell pixelReadout="R 1 G 1 B 1" native={false} />);
+      const status = screen.getByRole("status");
+      rerender(<PhotoCell pixelReadout="R 2 G 2 B 2" native={false} />);
+      act(() => void vi.advanceTimersByTime(1000));
+      expect(status).toHaveTextContent("R 2 G 2 B 2");
+      rerender(<PhotoCell pixelReadout="R 3 G 3 B 3" native={false} />);
+      act(() => void vi.advanceTimersByTime(999));
+      expect(status).toHaveTextContent("R 2 G 2 B 2");
+      act(() => void vi.advanceTimersByTime(1));
+      expect(status).toHaveTextContent("R 3 G 3 B 3");
+    });
+
+    it("clears at once when the readout goes", () => {
+      const { rerender } = render(<PhotoCell pixelReadout="R 1 G 1 B 1" native={false} />);
+      act(() => void vi.advanceTimersByTime(1000));
+      expect(screen.getByRole("status")).toHaveTextContent("R 1 G 1 B 1");
+      rerender(<PhotoCell pixelReadout={null} native={false} />);
+      expect(screen.queryByRole("status")).toBeNull();
+      // A value that arrives later is not shown by a timer of the old one.
+      rerender(<PhotoCell pixelReadout="R 9 G 9 B 9" native={false} />);
+      act(() => void vi.advanceTimersByTime(500));
+      expect(screen.getByRole("status")).toBeEmptyDOMElement();
+      act(() => void vi.advanceTimersByTime(500));
+      expect(screen.getByRole("status")).toHaveTextContent("R 9 G 9 B 9");
+    });
   });
 
   it("lays extra layers over the photo", () => {
@@ -238,5 +305,93 @@ describe("PhotoCell pixel probe", () => {
     const { onPixelProbe } = setup();
     fireEvent.keyDown(window, { key: "Alt" });
     expect(onPixelProbe).not.toHaveBeenCalled();
+  });
+
+  describe("the keys of a zoomed photo (docs/28 A-10)", () => {
+    const keys = () => ({ pan: vi.fn(), centre: vi.fn(), readPixel: vi.fn() });
+
+    it("is not a Tab stop without keys, and keeps the photo's own name", () => {
+      render(<PhotoCell imageLabel="Photo DSC04204, Neutral · 100%" native={false} />);
+      const view = screen.getByRole("img", { name: "Photo DSC04204, Neutral · 100%" });
+      expect(view).not.toHaveAttribute("tabindex");
+      expect(view).not.toHaveAttribute("data-pan-view");
+    });
+
+    it("is a Tab stop named for what the arrows do, and still says which photo it is", () => {
+      render(<PhotoCell imageLabel="Photo DSC04204, Neutral · 100%" native={false} keys={keys()} />);
+      const view = screen.getByRole("img", { name: "Photo, zoomed. The arrow keys move it." });
+      expect(view).toHaveAttribute("tabindex", "0");
+      expect(view).toHaveAttribute("data-pan-view");
+      expect(view).toHaveAccessibleDescription("Photo DSC04204, Neutral · 100%. Home centres it. I reads the pixel at the centre.");
+      // The picture still holds nothing but the picture.
+      expect(view.textContent).toBe("");
+    });
+
+    it("without a readPixel (Single-key shortcuts off, docs/28 A-P11) I does nothing, is not described, and Home and the arrows still act", () => {
+      const h = { pan: vi.fn(), centre: vi.fn() };
+      render(<PhotoCell imageLabel="Photo DSC04204, Neutral · 100%" native={false} keys={h} />);
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(box(0, 0, 1000, 600));
+      const view = screen.getByRole("img", { name: "Photo, zoomed. The arrow keys move it." });
+      expect(view).toHaveAccessibleDescription("Photo DSC04204, Neutral · 100%. Home centres it.");
+      expect(fireEvent.keyDown(view, { key: "i" })).toBe(true); // not cancelled: the key is left alone
+      fireEvent.keyDown(view, { key: "Home" });
+      fireEvent.keyDown(view, { key: "ArrowRight" });
+      expect(h.centre).toHaveBeenCalledTimes(1);
+      expect(h.pan).toHaveBeenCalledTimes(1);
+    });
+
+    it("the arrows pan by 5 % of the cell, with Shift by 25 %, and the key is not left to the page", () => {
+      const h = keys();
+      render(<PhotoCell native={false} keys={h} />);
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(box(0, 0, 1000, 600));
+      const view = screen.getByRole("img");
+      const cancelled = fireEvent.keyDown(view, { key: "ArrowRight" });
+      expect(cancelled).toBe(false);
+      expect(h.pan).toHaveBeenLastCalledWith(-50, 0);
+      fireEvent.keyDown(view, { key: "ArrowDown", shiftKey: true });
+      expect(h.pan).toHaveBeenLastCalledWith(0, -150);
+    });
+
+    it("Home centres, I reads the pixel once, and a key held down does not repeat either", () => {
+      const h = keys();
+      render(<PhotoCell native={false} keys={h} />);
+      const view = screen.getByRole("img");
+      fireEvent.keyDown(view, { key: "Home" });
+      fireEvent.keyDown(view, { key: "Home", repeat: true });
+      fireEvent.keyDown(view, { key: "i" });
+      fireEvent.keyDown(view, { key: "I", repeat: true });
+      expect(h.centre).toHaveBeenCalledTimes(1);
+      expect(h.readPixel).toHaveBeenCalledTimes(1);
+      expect(h.pan).not.toHaveBeenCalled();
+    });
+
+    it("leaves a key with a modifier, and a key that came up from inside the picture, alone", () => {
+      const h = keys();
+      const { container } = render(
+        <PhotoCell native={false} keys={h}>
+          <button type="button">inside</button>
+        </PhotoCell>,
+      );
+      const view = screen.getByRole("img");
+      fireEvent.keyDown(view, { key: "ArrowRight", metaKey: true });
+      fireEvent.keyDown(view, { key: "ArrowRight", altKey: true });
+      // A control over the picture (the crop frame lives in the overlay) is not the picture: its keys are its own.
+      fireEvent.keyDown(container.querySelector("button") as HTMLElement, { key: "ArrowRight" });
+      expect(h.pan).not.toHaveBeenCalled();
+    });
+
+    it("a click on the picture does not take the focus, so the arrows keep stepping photos for a mouse user", () => {
+      render(
+        <>
+          <button type="button">elsewhere</button>
+          <PhotoCell native={false} keys={keys()} />
+        </>,
+      );
+      const other = screen.getByRole("button", { name: "elsewhere" });
+      other.focus();
+      const proceeded = fireEvent.mouseDown(screen.getByRole("img"));
+      expect(proceeded).toBe(false);
+      expect(document.activeElement).not.toBe(screen.getByRole("img"));
+    });
   });
 });

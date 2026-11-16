@@ -76,6 +76,7 @@ pub mod spline;
 pub mod synth;
 pub mod tiling;
 pub mod tint;
+pub mod tuning;
 pub mod vignette;
 pub mod ycbcr;
 

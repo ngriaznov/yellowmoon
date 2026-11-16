@@ -3,10 +3,26 @@ import { expect } from "@playwright/test";
 import type { MockOptions } from "../../src/api.mock";
 import "../../src/testHooks";
 
+/** Options added to every page this process opens, under the options a test gives (see `useMockDefaults`). */
+let mockDefaults: Record<string, string | number> = {};
+
+/**
+ * Adds `options` to every page `openApp` opens (and every `mockQuery`) until the returned function is called, so that a spec can run the states
+ * of `helpers/states.ts` with an option on (the contrast test's display options, `?mockDisplay=`). A worker runs one test at a time, so the
+ * setting is the test's own; always restore it in a `finally`.
+ */
+export function useMockDefaults(options: Record<string, string | number>): () => void {
+  const before = mockDefaults;
+  mockDefaults = { ...before, ...options };
+  return () => {
+    mockDefaults = before;
+  };
+}
+
 /** The mock's query string for a state: `mockSpeed=Infinity` runs development at once. */
 export function mockQuery(options: Record<string, string | number> = {}): string {
   const params = new URLSearchParams({ mockSpeed: "Infinity" });
-  for (const [key, value] of Object.entries(options)) params.set(key, String(value));
+  for (const [key, value] of Object.entries({ ...mockDefaults, ...options })) params.set(key, String(value));
   return `/?${params.toString()}`;
 }
 

@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Changed
+
+- **TIFF exports are ZIP by default.** `ym render --compression` and the Export panel start at ZIP instead of LZW: on a 24 MP photo the 16-bit file is 108 MB instead of 134 MB for about the same time. A stored preference of LZW stays LZW; `--compression lzw` still works.
+
 ## [0.2.3] - 2026-11-10
 
 The mixers: nodes that join the pictures a graph has split. **Add node** offers **Parallel**, **Layer** and **Splitter and combiner**, in place of the three items that said "Later". The pipeline version is 0.11.0 (was 0.10.0), because an older build cannot open a graph with a mixer. A photo with no mixer comes out byte for byte as in 0.2.2.

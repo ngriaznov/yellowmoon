@@ -17,6 +17,8 @@
  * released drag, a key, a typed value) are recorded for undo as the difference, per node and for
  * the links, between the settings before the gesture and the core's reply (`diffSettings`).
  */
+import type { Announced } from "./announce";
+import type { Shortcut } from "./shortcuts";
 import type { Api, Unsubscribe } from "../api";
 import { toAppError } from "../api";
 import { isUnreadableMessage } from "../api/openMessages";
@@ -103,7 +105,7 @@ import { clampToDisc, movingPin, WARP_COORD_LIMIT, WARP_MAX_PINS } from "../comp
 import { BRUSH_FULL, brushPointCount, DEFAULT_BRUSH, MAX_BRUSH_POINTS } from "./brushStrokes";
 import type { BrushSettings } from "./brushStrokes";
 import { COLOR_RANGE_REACH } from "./maskRows";
-import { DEFAULT_OBJECT_MODE, foundText, FOUND_PILL_MS, NOTHING_FOUND } from "./objectMask";
+import { clickPrompt, DEFAULT_OBJECT_MODE, foundText, FOUND_PILL_MS, NOTHING_FOUND } from "./objectMask";
 import type { ObjectMode } from "./objectMask";
 import { isTauri } from "../env";
 import { defaultExportOptions, defaultScope, sameOptions } from "../export/options";
@@ -137,6 +139,8 @@ import {
   outputPatch,
   patchOf,
 } from "./settingsGraph";
+import { watchDisplayOptions } from "../displayOptions";
+import { rememberFocus } from "./focusMemory";
 import type { CorrectorItem, InputItem, OutputItem } from "./settingsGraph";
 import { ViewportInputQueue } from "./viewportInputQueue";
 import type { StreamInput } from "./viewportInputQueue";
@@ -341,6 +345,11 @@ export interface AppState {
    * row, a click on one and a click on a tool turn it on; Esc, another row, another node and another photo turn it off.
    */
   objectTool: boolean;
+  /**
+   * "Place points" is on for the selected Object row (`docs/28` A-11): the crosshair layer of Pick white is over the photo and Return adds a point at it.
+   * A window setting, no patch and no undo step; it ends with the row, the node and the photo like the Object tool.
+   */
+  objectPlacing: boolean;
   /** The photos whose SAM encoder is working (`object_state`): their Object rows say "Getting ready…". */
   objectPreparing: readonly PhotoId[];
   /** A `mask_find` is under way for this photo: its Object rows say "Finding…". */
@@ -409,6 +418,12 @@ export interface AppState {
   cubeImport: CubeImport | null;
   /** A short message that is not an error ("Yellowmoon is up to date."), until dismissed. */
   notice: string | null;
+  /**
+   * The sentence of the memory notice (`memory_notice`, `docs/26` H-14): the computer is short of memory and background work is
+   * paused. The core sends it once on the way into the critical level and sends `null` when the level is normal again. Shown after an
+   * error and after a notice, in the same bar.
+   */
+  memoryNotice: string | null;
   /** The button the notice has besides Dismiss: Undo, after photos were removed from the filmstrip. Null for every other notice. */
   noticeAction: NoticeAction | null;
   /**
@@ -465,6 +480,7 @@ export function initialState(): AppState {
     maskKinds: null,
     objectMode: DEFAULT_OBJECT_MODE,
     objectTool: false,
+    objectPlacing: false,
     objectPreparing: [],
     objectFinding: null,
     visionNothing: {},
@@ -490,6 +506,7 @@ export function initialState(): AppState {
     cubeImport: null,
     notice: null,
     noticeAction: null,
+    memoryNotice: null,
     viewportBackend: null,
     viewportFrame: null,
     exportBusy: false,
@@ -803,10 +820,18 @@ export class AppStore {
   /** Runs a menu item that needs the webview (`menu_action`); set by `App`, which knows the screens. */
   menuHandler: ((action: MenuAction) => void) | null = null;
   /**
-   * The View menu's Nodes item: the Photos screen, which owns the node view, sets it while it is on screen. It does what N does and
-   * answers whether it did anything (not in Crop or the Export panel); with no Photos screen it is `null`.
+   * The menu items that are a single key's action (Nodes, the Photo menu, Apply Look 1 to 9): the Photos screen, which owns what the
+   * keys do, sets it while it is on screen. It runs the key's own handler, with the same guards (not in Crop or the Export panel where
+   * the key is not), and answers whether it did anything; with no Photos screen it is `null`. It does not read the switch of
+   * "Single-key shortcuts": a menu item works with the switch off (`docs/28` A-P11).
    */
-  nodesCommand: (() => boolean) | null = null;
+  shortcutCommand: ((shortcut: Shortcut) => boolean) | null = null;
+
+  /**
+   * Says what a menu item did (`docs/28` A-08): the Photos screen, which owns the live region, sets it while it is on screen; `on` is the
+   * state a toggle went to, or whether Undo and Redo had a step. With no Photos screen it is `null`.
+   */
+  announce: ((action: Announced, on?: boolean) => void) | null = null;
 
   /**
    * `batchMs` is how long event-driven changes may wait to be drawn together (about two frames);
@@ -925,6 +950,10 @@ export class AppStore {
       api.on("vision_state", (e) => this.onVisionState(e)),
       api.on("depth_state", (e) => this.onDepthState(e)),
       api.on("face_state", (e) => this.onFaceState(e)),
+      // The core says it once per stay at the critical level; Dismiss hides it until the core says it again.
+      api.on("memory_notice", (e) => this.set({ memoryNotice: e.message })),
+      // The system's Reduce Transparency, Reduce Motion and Increase Contrast become attributes of the root (`docs/28` A-P12).
+      watchDisplayOptions(api),
       onGestureEnd(() => this.afterGesture()),
     ];
     void this.load();
@@ -1517,6 +1546,8 @@ export class AppStore {
       cubeImport: this.state.cubeImport,
       notice: this.state.notice,
       noticeAction: this.state.noticeAction,
+      // The computer's memory is not the session's.
+      memoryNotice: this.state.memoryNotice,
       viewportBackend: this.state.viewportBackend,
       exportBusy: this.state.exportBusy,
       // What was copied is for pasting in another folder too; the id of its photo belongs to the closed session.
@@ -1565,6 +1596,7 @@ export class AppStore {
       skinAreas: null,
       brushTool: false,
       objectTool: false,
+      objectPlacing: false,
       objectPill: null,
       zoom: { kind: "fit" },
       before: false,
@@ -1806,6 +1838,7 @@ export class AppStore {
       skinAreas: null,
       brushTool: false,
       objectTool: false,
+      objectPlacing: false,
       objectPill: null,
       zoom: { kind: "fit" },
       before: false,
@@ -2003,6 +2036,11 @@ export class AppStore {
     this.set({ notice: null, noticeAction: null });
   }
 
+  /** Hides the memory notice. The core says it again only after the level has been normal. */
+  dismissMemoryNotice(): void {
+    this.set({ memoryNotice: null });
+  }
+
   /** ⌘W: closes the session, after asking when an export is running (`docs/11` §Keyboard shortcuts). */
   requestCloseSession(): Promise<void> {
     if (!this.state.session) return Promise.resolve();
@@ -2023,7 +2061,7 @@ export class AppStore {
   // --- Looks import: a loose .cube ----------------------------------------------------------------
 
   /**
-   * Looks › Import .cube…: asks for files, finds out what each is, and opens the dialog that asks what a LUT expects as
+   * Looks › Import LUTs and look files…: asks for files, finds out what each is, and opens the dialog that asks what a LUT expects as
    * input (`docs/08` §Any other .cube); ARRI Look Files (`.alf4`, `.alf4c`, `.aml`) say what they expect and are not asked.
    * A cancelled chooser changes nothing.
    */
@@ -2095,6 +2133,8 @@ export class AppStore {
   openExport(): void {
     if (!this.state.session) return;
     if (this.state.panel === "export") return;
+    // The panel takes the focus and gives it back to this control when it closes (`docs/11` §Export, `focusMemory.ts`).
+    rememberFocus("export");
     const fresh = this.state.exportRun === null;
     this.set({
       panel: "export",
@@ -2382,6 +2422,24 @@ export class AppStore {
     }
   }
 
+  /**
+   * Home on the zoomed photo: the view goes back to the middle of the picture at the zoom it has (`docs/28` A-10). The core has no input for
+   * it, and it takes Fit and any zoom to be about the middle of the cell (`ViewportState::set_mode`), so this sets Fit and then the zoom again
+   * with the commands that already exist. The zoom mirror does not move. At Fit there is nothing to do.
+   */
+  async recentreView(): Promise<void> {
+    if (this.viewportQueue.busy) await this.viewportQueue.flush();
+    if (this.showsWholePhoto()) return;
+    const zoom = this.state.zoom;
+    const view = this.state.maskShown;
+    try {
+      await this.api.viewportSetMode({ kind: "fit" }, view);
+      await this.api.viewportSetMode(zoom, view);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
   /** The zoom that fits the whole picture in the cell, in percent of the photo's pixels; null before the cell has reported. */
   fitPercent(): number | null {
     const exact = this.fitPercentExact();
@@ -2545,12 +2603,17 @@ export class AppStore {
    * was selected, and so does selecting a row again: the caller that wants the tool turns it on afterwards ({@link Store.setBrushTool}).
    */
   selectMaskRow(index: number | null): void {
-    if (index !== this.state.maskRow || this.state.brushTool || this.state.objectTool) this.set({ maskRow: index, brushTool: false, objectTool: false });
+    if (index !== this.state.maskRow || this.state.brushTool || this.state.objectTool || this.state.objectPlacing) this.set({ maskRow: index, brushTool: false, objectTool: false, objectPlacing: false });
   }
 
   /** Turns the Object tool of the selected row on or off (`docs/23` §7.6). */
   setObjectTool(on: boolean): void {
     if (on !== this.state.objectTool) this.set({ objectTool: on });
+  }
+
+  /** Starts or ends "Place points" of the selected Object row (`docs/28` A-11): the keyboard's way to add the points a click adds. */
+  setObjectPlacing(on: boolean): void {
+    if (on !== this.state.objectPlacing) this.set({ objectPlacing: on });
   }
 
   /** Chooses what a plain click does on the Object card: Add point, Remove point or Box. Nothing is sent. */
@@ -2692,6 +2755,33 @@ export class AppStore {
     const next = this.finds.then(run, run);
     this.finds = next;
     return next;
+  }
+
+  /**
+   * A click of the Object tool (`docs/23` §4.4), and the keyboard's Return of "Place points" (`docs/28` A-11): `at` is a place in the cell in CSS
+   * pixels. The core maps it to the photo frame (`viewport_map_points`, null on the paper: nothing is asked), {@link clickPrompt} gives the point's sign
+   * for the tool and ⌥, and {@link Store.findObject} asks. The one road of both, so the same place gives the same `points`. Resolves with whether a mask was found.
+   */
+  async clickObject(node: number, row: number, tool: ObjectMode, alt: boolean, at: [number, number], photoId: PhotoId | null = this.currentId()): Promise<boolean> {
+    const mapped = await this.mapPoints([at], "cell");
+    const place = mapped?.[0];
+    const prompt = place ? clickPrompt(tool, alt, place[0], place[1]) : null;
+    return prompt ? this.findObject(node, row, prompt, photoId) : false;
+  }
+
+  /**
+   * Takes the last point out of an Object row (`docs/28` A-11, Backspace of "Place points"): one `masks.edit` row patch of `points`, one undo step. The box
+   * stays. Resolves with how many points the row has now, or null when there was none to take (or the row is not an Object row).
+   */
+  async removeLastObjectPoint(node: number, row: number, photoId: PhotoId | null = this.currentId()): Promise<number | null> {
+    if (photoId === null) return null;
+    const rs = this.state.settings[photoId];
+    const item = rs ? nodeOf(rs.settings, node) : undefined;
+    const target = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[row] : undefined;
+    if (target?.kind !== "object" || target.points.length === 0) return null;
+    const points = target.points.slice(0, -1);
+    await this.update(patchOf(node, { masks: { edit: { [String(row)]: { points } } } }), true, photoId);
+    return points.length;
   }
 
   /** Shows the pill "Object found · 0.4 s" for {@link FOUND_PILL_MS}; a newer one replaces it. */

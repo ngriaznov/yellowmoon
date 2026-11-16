@@ -75,6 +75,7 @@ jobs:
         shell: bash
         env:
           YM_PERF_SHELL_MAX_MS: "250"
+          YELLOWMOON_DATA: ${{ github.workspace }}/data
         run: |
           code=0
           cargo test -p ym-core --release --test folders_2000 -- --ignored --nocapture 2>&1 | tee latency-open-2000.txt || code=$?

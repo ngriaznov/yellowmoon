@@ -936,3 +936,193 @@ fn the_spec_names_the_vision_bridge_the_way_the_code_has_it() {
         "Node 2 has a Subject mask, and this computer cannot make one. Use a Mac that supports Subject masks, or remove the mask."
     ));
 }
+
+// ---- The Metal bridge (docs/26 H-17) ---------------------------------------------------------------------
+
+fn metal_swift() -> String {
+    read("swift/MetalDevices.swift")
+}
+
+#[test]
+fn the_metal_header_the_swift_and_the_rust_name_the_same_function() {
+    let header = squeeze(&header());
+    let swift = squeeze(&metal_swift());
+    let rust = squeeze(&read("src/metal_bridge.rs"));
+    assert!(header.contains(
+        "int32_t ym_apple_metal_devices(YmAppleMetalDevice *out, size_t capacity, size_t *count);"
+    ));
+    assert!(swift.contains("@_cdecl(\"ym_apple_metal_devices\")"));
+    assert!(swift.contains(
+        "public func ymAppleMetalDevices( _ out: UnsafeMutableRawPointer?, _ capacity: Int, _ count: UnsafeMutablePointer<Int>? ) -> Int32 {"
+    ));
+    assert!(rust.contains(
+        "fn ym_apple_metal_devices( out: *mut YmAppleMetalDevice, capacity: usize, count: *mut usize, ) -> i32;"
+    ));
+    // Exactly one function on each side.
+    assert_eq!(header.matches("ym_apple_metal_devices(").count(), 1);
+    assert_eq!(swift.matches("@_cdecl(").count(), 1);
+    assert_eq!(rust.matches("fn ym_apple_metal_").count(), 1);
+}
+
+#[test]
+fn the_metal_struct_is_laid_out_the_same_in_c_swift_and_rust() {
+    let header = squeeze(&header());
+    let swift = metal_swift();
+    // The sizes and the offsets of the header's asserts are the Rust ones (which `metal_abi` asserts at compile time).
+    assert!(header.contains(&format!(
+        "#define YM_APPLE_METAL_NAME_BYTES {}",
+        crate::metal_abi::NAME_BYTES
+    )));
+    assert!(header.contains(&format!(
+        "sizeof(YmAppleMetalDevice) == {}",
+        size_of::<crate::metal_abi::YmAppleMetalDevice>()
+    )));
+    for (field, offset) in [
+        (
+            "has_unified_memory",
+            std::mem::offset_of!(crate::metal_abi::YmAppleMetalDevice, has_unified_memory),
+        ),
+        (
+            "name",
+            std::mem::offset_of!(crate::metal_abi::YmAppleMetalDevice, name),
+        ),
+    ] {
+        assert!(
+            header.contains(&format!(
+                "offsetof(YmAppleMetalDevice, {field}) == {offset}"
+            )),
+            "the header's offset of {field}"
+        );
+    }
+    // What the Swift writes, at the offsets of the struct.
+    for needed in [
+        "private let metalDeviceStride = 152",
+        "private let metalNameBytes = 128",
+        "static let recommendedMaxWorkingSetSize = 0",
+        "static let hasUnifiedMemory = 8",
+        "static let isLowPower = 12",
+        "static let isRemovable = 16",
+        "static let name = 24",
+        "MTLCopyAllDevices()",
+        "device.recommendedMaxWorkingSetSize",
+        "device.hasUnifiedMemory",
+        "device.isLowPower",
+        "device.isRemovable",
+        "device.name",
+    ] {
+        assert!(
+            swift.contains(needed),
+            "MetalDevices.swift lacks `{needed}`"
+        );
+    }
+    assert_eq!(crate::metal_abi::MAX_DEVICES, 16);
+}
+
+#[test]
+fn the_metal_swift_reaches_no_network_and_throws_nothing() {
+    let swift = metal_swift();
+    assert!(swift.contains("import Metal"));
+    for forbidden in [
+        "URLSession",
+        "URLRequest",
+        "NWConnection",
+        "import Network",
+        "CFNetwork",
+        "FoundationModels",
+        "import Vision",
+        "Process(",
+        "fatalError",
+        "try!",
+        "@_cdecl(\"ym_apple_auto",
+        "@_cdecl(\"ym_apple_mask",
+    ] {
+        assert!(
+            !swift.contains(forbidden),
+            "MetalDevices.swift must not contain `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn the_metal_gate_is_its_own_and_builds_for_both_architectures() {
+    let build = read("build.rs");
+    assert!(build.contains("swift_arch(&arch).is_some() && build_metal_if_possible(&arch)"));
+    assert!(build.contains("cargo::rustc-cfg=ym_apple_metal"));
+    assert!(build.contains("cargo::metadata=metal="));
+    assert!(build.contains("YM_APPLE_METAL"));
+    assert!(build.contains("file: \"MetalDevices.swift\""));
+    // A normal link: Metal is on every Mac the app runs on.
+    assert!(build.contains("[\"Foundation\", \"Metal\"]"));
+    // The binaries that depend on this crate add the run path for it too.
+    for path in ["../ym-cli/build.rs", "../../src-tauri/build.rs"] {
+        assert!(
+            read(path).contains("DEP_YM_APPLE_AUTO_METAL"),
+            "{path} does not read the Metal bridge's metadata"
+        );
+    }
+}
+
+/// Every Rust file under `relative` (a folder of this repository, from this crate), as `(path, text)`; a folder of
+/// tests is left out.
+fn rust_sources(relative: &str) -> Vec<(String, String)> {
+    fn walk(dir: &Path, out: &mut Vec<(String, String)>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+            .filter_map(Result::ok)
+            .collect();
+        entries.sort_by_key(std::fs::DirEntry::path);
+        for entry in entries {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n == "tests") {
+                    continue;
+                }
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && !path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains("tests"))
+            {
+                out.push((
+                    path.display().to_string(),
+                    std::fs::read_to_string(&path).unwrap_or_default(),
+                ));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join(relative),
+        &mut out,
+    );
+    out
+}
+
+/// Hard rule 6: the app and `ym` cap the GPU budget with the same Metal list, because every place that opens the device
+/// does it through `ym_apple::gpu_opener`, which hands over `system_metal_devices()`. A call to `GpuOpener::new` or
+/// `open_gpu` in either front end would open one without the cap and give another budget.
+#[test]
+fn the_app_and_ym_open_the_gpu_through_the_one_opener_that_has_the_metal_limit() {
+    for folder in ["../ym-cli/src", "../../src-tauri/src"] {
+        let files = rust_sources(folder);
+        assert!(!files.is_empty(), "{folder} has no sources");
+        let mut calls = 0;
+        for (path, text) in &files {
+            for forbidden in ["GpuOpener::new(", "open_gpu("] {
+                assert!(
+                    !text.contains(forbidden),
+                    "{path} calls `{forbidden}`; use `ym_apple::gpu_opener` (hard rule 6, docs/26 H-17)"
+                );
+            }
+            calls += text.matches("ym_apple::gpu_opener(").count();
+        }
+        assert!(
+            calls > 0,
+            "{folder} never opens the GPU through ym_apple::gpu_opener"
+        );
+    }
+    // The opener hands over the system's list, and the list is the bridge's.
+    let metal = read("src/metal.rs");
+    assert!(metal.contains(".with_metal_devices(system_metal_devices())"));
+    assert!(metal.contains("Arc::new(AppleMetal)"));
+}

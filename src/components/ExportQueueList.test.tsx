@@ -51,6 +51,13 @@ describe("ExportQueueList", () => {
 });
 
 describe("DevelopList", () => {
+  it("is a named, focusable region around the list, so the keyboard can scroll it", () => {
+    render(<DevelopList items={[{ id: 1, name: "DSC04201", state: "ready" }]} />);
+    const region = screen.getByRole("region", { name: "Photos to develop" });
+    expect(region).toHaveAttribute("tabindex", "0");
+    expect(within(region).getByRole("list", { name: "Photos being developed" })).toBeInTheDocument();
+  });
+
   const items: DevelopItem[] = [
     { id: 1, name: "DSC04201", state: "ready" },
     { id: 2, name: "DSC04202", state: "developing" },

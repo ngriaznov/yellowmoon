@@ -1,5 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DevelopList, ExportQueueList } from "./ExportQueueList";
 import type { DevelopItem } from "./ExportQueueList";
@@ -88,10 +89,26 @@ describe("Filmstrip with 2000 photos", () => {
   it("makes the scroll bar true: the space of the thumbnails that are not drawn is kept", () => {
     layOut();
     const { container } = render(<Harness />);
-    const last = [...container.querySelectorAll<HTMLElement>(".ym-filmstrip__thumb")].at(-1)!;
+    // The margins are the list items' (the thumbnails sit inside them).
+    const last = [...container.querySelectorAll<HTMLElement>(".ym-filmstrip__item")].at(-1)!;
     // Estimated pitch until a browser has measured: the rest of the 2000 thumbnails stand in as the last one's right margin.
     const drawn = container.querySelectorAll(".ym-filmstrip__thumb").length;
     expect(parseFloat(last.style.marginRight)).toBeCloseTo((N - drawn) * 120, 0);
+  });
+
+  it("gives each drawn thumbnail its place in the whole folder (docs/28 A-08)", () => {
+    layOut();
+    render(<Harness start={1500} />);
+    expect(screen.getByRole("list")).toBeInTheDocument();
+    const item = screen.getByRole("button", { name: /^Show DSC01500/ }).closest('[role="listitem"]')!;
+    expect(item).toHaveAttribute("aria-setsize", String(N));
+    expect(item).toHaveAttribute("aria-posinset", "1500");
+    const items = screen.getAllByRole("listitem");
+    expect(items.length).toBeLessThan(100);
+    // Consecutive, and all of the one set.
+    const pos = items.map((el) => Number(el.getAttribute("aria-posinset")));
+    expect(pos.every((n, i) => i === 0 || n === pos[i - 1]! + 1)).toBe(true);
+    expect(items.every((el) => el.getAttribute("aria-setsize") === String(N))).toBe(true);
   });
 
   it("brings a current photo that starts far off into view, and draws it", () => {
@@ -163,6 +180,12 @@ describe("Filmstrip with 2000 photos", () => {
   });
 });
 
+/** Renders `ui` and reads [aria-posinset, aria-setsize] of each list item. */
+function screen_rows(ui: ReactElement): string[][] {
+  render(ui);
+  return screen.getAllByRole("listitem").map((li) => [li.getAttribute("aria-posinset") ?? "", li.getAttribute("aria-setsize") ?? ""]);
+}
+
 describe("the Start list and the export queue with 2000 rows", () => {
   const develop: DevelopItem[] = Array.from({ length: N }, (_, i) => ({ id: i, name: `DSC${i}`, state: "ready" }));
 
@@ -173,6 +196,21 @@ describe("the Start list and the export queue with 2000 rows", () => {
     expect(rows.length).toBeLessThan(100);
     const list = screen.getByRole("list", { name: "Photos being developed" });
     expect(parseFloat(list.style.paddingBottom)).toBeGreaterThan(50_000);
+  });
+
+  it("gives each drawn row its place in the whole list (docs/28 A-08), in the Start list and in the queue", () => {
+    const first = screen_rows(<DevelopList items={develop} />);
+    expect(first[0]).toEqual(["1", String(N)]);
+    expect(first.at(-1)![1]).toBe(String(N));
+    cleanup();
+    const items = Array.from({ length: N }, (_, i) => ({ id: i, file: `f${i}.jpg`, state: "waiting" as const }));
+    const queue = screen_rows(<ExportQueueList items={items} />);
+    expect(queue[0]).toEqual(["1", String(N)]);
+    expect(queue.map((r) => Number(r[0]))).toEqual(queue.map((_, i) => i + 1));
+    cleanup();
+    // A short list has the pair too: 3 rows are 1 of 3, 2 of 3, 3 of 3.
+    const short = screen_rows(<ExportQueueList items={items.slice(0, 3)} />);
+    expect(short).toEqual([["1", "3"], ["2", "3"], ["3", "3"]]);
   });
 
   it("draws the whole queue of a short run", () => {

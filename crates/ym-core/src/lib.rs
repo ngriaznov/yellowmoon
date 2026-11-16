@@ -16,6 +16,7 @@
 //! (`preferences.json`), [`looks`] (the look library with the default look, the display rendering
 //! and `looks_changed`), [`vision`] (Subject and People masks from the computer's Vision framework, `docs/23`
 //! section 4.5), [`export`] (the one export function the app and the CLI share),
+//! [`memory`] (what is let go when the computer is short of memory, and the poll that notices),
 //! [`export_queue`] (jobs, snapshots, progress, cancel, the updater's busy flag), [`cli_preview`]
 //! (the `ym render …` command of a job) and [`app`] (all of them wired together, one method per IPC
 //! command).
@@ -40,6 +41,7 @@ pub mod film;
 pub mod film_tiles;
 pub mod looks;
 pub mod media;
+pub mod memory;
 pub mod perf;
 pub mod pipeline;
 pub mod preferences;

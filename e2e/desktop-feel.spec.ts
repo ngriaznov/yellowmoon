@@ -334,7 +334,7 @@ test.describe("text is not selectable, except where people copy it", () => {
     await photos(page);
     expect(await page.getByRole("button", { name: "Before" }).evaluate((el) => getComputedStyle(el).cursor)).toBe("default");
     expect(await page.getByRole("tab", { name: "Light" }).evaluate((el) => getComputedStyle(el).cursor)).toBe("default");
-    expect(await page.getByRole("button", { name: "Import .cube…" }).evaluate((el) => getComputedStyle(el).cursor)).toBe("pointer");
+    expect(await page.getByRole("button", { name: "Import LUTs and look files…" }).evaluate((el) => getComputedStyle(el).cursor)).toBe("pointer");
     expect(await page.getByRole("searchbox", { name: "Search looks" }).evaluate((el) => getComputedStyle(el).cursor)).toBe("text");
   });
 });
