@@ -1214,6 +1214,93 @@ export interface LooksImportResult {
 }
 
 // ---------------------------------------------------------------------------
+// Presets (docs/30 sections 5 to 8): the wire types of the core's `presets` module.
+// ---------------------------------------------------------------------------
+
+/** The eight groups of fields a preset holds, in the order of `docs/30` section 2 (UI labels: Look, Lens, Light, Colour, Detail, Curve, RAW, Nodes). */
+export type PresetGroup = "look" | "lens" | "light" | "color" | "detail" | "curve" | "raw" | "nodes";
+
+/** The look of a preset that holds the `look` group: its id, and its name so that a missing look can be named. */
+export interface PresetLook {
+  id: LookId;
+  name: string;
+}
+
+/** One preset of `presets_list`. */
+export interface PresetEntry {
+  /** The name, which is the identity (ignoring case). */
+  name: string;
+  /** The groups it holds, in the order of `docs/30` section 2. */
+  groups: PresetGroup[];
+  /** The look it names, with the `look` group; `null` without. */
+  look: PresetLook | null;
+  /** The look is not in the library, or its file is gone or changed. */
+  look_missing: boolean;
+  /** Applying the preset to the asked photo would change nothing (the ring on its tile); false for no photo. */
+  matches: boolean;
+  /** The first 12 hex digits of the file's SHA-256: the thumbnail's key, new when the preset is saved again. */
+  revision: string;
+}
+
+/** A file of the presets folder that could not be used (`docs/30` section 6). */
+export interface DamagedPreset {
+  /** The file's name in the folder. */
+  file: string;
+  /** Why, in the closed list of `docs/30` section 6. */
+  reason: string;
+}
+
+/** The answer of `presets_list(photo_id)`. */
+export interface PresetList {
+  presets: PresetEntry[];
+  damaged: DamagedPreset[];
+  /** The presets folder. */
+  folder: string;
+}
+
+/** Where a preset is made from (`preset_inspect`, `preset_save`). */
+export type PresetSource = { kind: "photo"; photo_id: PhotoId } | { kind: "file"; path: string };
+
+/** The answer of `preset_inspect(source)`: what the Save dialog needs. */
+export interface PresetInspect {
+  /** The groups to tick (`docs/30` section 4.1). */
+  changed: PresetGroup[];
+  /** The source is an export that has no `ym:AutoFields` (`docs/30` section 12). */
+  older_export: boolean;
+  /** The name of the source's look, when it is in the library. */
+  look: string | null;
+}
+
+/** The answer of `preset_apply`: the fields of `PasteReport` and the look that was left out. */
+export interface PresetApplyReport {
+  pasted: PastedPhoto[];
+  skipped: PhotoId[];
+  /** The name of the preset's look when the library has none ("Warm evening uses the look Film warm, which isn't imported. Everything else was applied."); `null` otherwise. */
+  missing_look: string | null;
+}
+
+/** A name of an import that exists and was not replaced. */
+export interface ImportExists {
+  name: string;
+  /** The file it came from. */
+  path: string;
+}
+
+/** A file of an import that was refused. */
+export interface ImportRefused {
+  file: string;
+  reason: string;
+}
+
+/** The answer of `presets_import` and `presets_import_dialog`. */
+export interface ImportResult {
+  added: string[];
+  replaced: string[];
+  exists: ImportExists[];
+  refused: ImportRefused[];
+}
+
+// ---------------------------------------------------------------------------
 // The ARRI import wizard (docs/08 §Wizard, §Recognition rules, §Any other .cube). Additions to
 // `docs/01`: the wizard needs to ask what a file is before anything is copied.
 // ---------------------------------------------------------------------------
@@ -1814,6 +1901,7 @@ export type ErrorScope =
   | "preferences"
   | "viewport"
   | "mask"
+  | "presets"
   | "app";
 
 /**
