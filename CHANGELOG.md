@@ -11,7 +11,7 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Fixed
 
-- **Save Preset could fail on a photo with a Face Refinement node, with "This file isn't a Yellowmoon preset."** Saving a preset with the Nodes group ticked left the Face Refinement nodes out but kept the links to them, so the preset could not be made, and the error said the file was not a preset when no file had been written. Face Refinement nodes are now saved with the other nodes. A preset is also checked before it is written: if it could not be read back, nothing is written and the message says so, so a saved preset is never listed as damaged. A preset that cannot be made now has its own message.
+- **Save Preset could fail on a photo with a Face Refinement node, with "This file isn't a Yellowmoon preset."** Saving a preset with the Nodes group ticked left the Face Refinement nodes out but kept the links to them, so the preset could not be made, and the error said the file was not a preset when no file had been written. Face Refinement nodes are now saved with the other nodes, without the strokes painted on one photo (Protect strokes, Brush strokes and Object clicks), like the other nodes. A preset is also checked before it is written: if it could not be read back, nothing is written and the message says so, so a saved preset is never listed as damaged. A preset that cannot be made now has its own message.
 
 ## [0.2.4-beta.1] - 2026-11-17
 

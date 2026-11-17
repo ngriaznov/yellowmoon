@@ -184,3 +184,64 @@ fn a_preset_that_would_not_read_back_is_refused_and_nothing_is_written() {
                 .all(|e| e.unwrap().file_name().to_string_lossy().starts_with('.'))
     );
 }
+
+#[test]
+fn a_preset_holds_no_protect_strokes_and_no_clicks_in_a_face_node_and_the_rest_is_kept() {
+    let s = every_kind("builtin:signature");
+    let mut face_masks = serde_json::to_value(common::rich::every_mask()).unwrap();
+    face_masks["items"].as_array_mut().unwrap().truncate(9);
+    let mut doc = serde_json::to_value(&s).unwrap();
+    for item in doc["nodes"]["items"].as_array_mut().unwrap() {
+        if item["kind"] == "face_refinement" {
+            item["masks"] = face_masks.clone();
+        }
+    }
+    let s = DevelopSettings::from_value(doc, &LookId::neutral())
+        .unwrap()
+        .0;
+    let before = s.nodes.faces.values().next().expect("a face node").clone();
+    assert!(!before.protect.strokes.is_empty());
+    let kinds = |m: &ym_core::settings::MaskSettings| m.items.len();
+    for p in [
+        Preset::from_settings("Mine", &s, &PresetGroup::ALL, None).unwrap(),
+        Preset::from_photo("Mine", &resolved_of(&s), &PresetGroup::ALL, None).unwrap(),
+    ] {
+        let back = Preset::from_json(&p.to_json().unwrap()).unwrap();
+        let face = back
+            .settings
+            .nodes
+            .faces
+            .values()
+            .next()
+            .expect("a face node");
+        assert!(face.protect.strokes.is_empty());
+        assert_eq!(
+            (face.protect.feather, face.protect.grow, face.protect.refine),
+            (
+                before.protect.feather,
+                before.protect.grow,
+                before.protect.refine
+            )
+        );
+        assert_eq!(
+            kinds(&face.masks),
+            kinds(&before.masks),
+            "the rows are there"
+        );
+        let json = serde_json::to_string(&face.masks).unwrap();
+        assert!(!json.contains("\"strokes\":[{"), "no Brush stroke: {json}");
+        assert!(
+            !json.contains("\"points\":[["),
+            "no Object click or stroke point: {json}"
+        );
+        let mut a = face.clone();
+        let mut b = before.clone();
+        for n in [&mut a, &mut b] {
+            n.protect.strokes.clear();
+            n.masks = Default::default();
+        }
+        assert_eq!(a, b, "the rest of the node is equal");
+        assert_eq!(face.same_for_all, before.same_for_all);
+        assert_eq!(face.faces, before.faces);
+    }
+}

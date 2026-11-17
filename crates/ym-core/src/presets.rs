@@ -416,16 +416,21 @@ fn group_patch(settings: &DevelopSettings, groups: &[PresetGroup]) -> SettingsPa
 }
 
 /// Empties what a preset never holds (`docs/30` section 3): the Object rows' clicks and the Brush rows' strokes, in every node
-/// that has masks.
+/// that has masks (Face Refinement's too), and the Protect strokes of Face Refinement nodes.
 fn empty_rows_for_preset(settings: &mut DevelopSettings) {
     let g = &mut settings.nodes;
     let masks = std::iter::once(&mut g.main.masks)
         .chain(g.extra.values_mut().map(|c| &mut c.masks))
-        .chain(g.films.values_mut().map(|f| &mut f.masks));
+        .chain(g.films.values_mut().map(|f| &mut f.masks))
+        .chain(g.faces.values_mut().map(|f| &mut f.masks));
     for m in masks {
         for row in &mut m.items {
             *row = row.emptied_for_preset();
         }
+    }
+    // Protect strokes are painted over one face's moles and scars: like a Brush row's, they are not saved.
+    for face in g.faces.values_mut() {
+        face.protect.strokes.clear();
     }
 }
 
