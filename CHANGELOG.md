@@ -11,7 +11,7 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [0.2.4-beta.2] - 2026-11-17
 
-A second pre-release (a beta) for testing. It fixes what the owner found in beta 1 (Save Preset on a photo with Face Refinement, the filmstrip after a removal, and gums turning grey under Teeth whitening) and adds two teeth controls, **Desaturation** and **Gamma**. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.12.2 (was 0.12.1), because the gum guard changes teeth pixels whenever a teeth control is above 0; a photo with no Face Refinement node, or with all three teeth controls at 0, comes out with the same pixels as in beta 1. A settings file or preset that uses Desaturation or Gamma needs this version: an older build refuses the new fields.
+A second pre-release (a beta) for testing. It fixes problems found in beta 1 (Save Preset on a photo with Face Refinement, exporting after opening an album, the filmstrip after a removal, and gums turning grey under Teeth whitening) and adds two teeth controls, **Desaturation** and **Gamma**. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.12.2 (was 0.12.1), because the gum guard changes teeth pixels whenever a teeth control is above 0; a photo with no Face Refinement node, or with all three teeth controls at 0, comes out with the same pixels as in beta 1. A settings file or preset that uses Desaturation or Gamma needs this version: an older build refuses the new fields.
 
 ### Added
 
@@ -19,7 +19,7 @@ A second pre-release (a beta) for testing. It fixes what the owner found in beta
 
 ### Fixed
 
-- **Teeth whitening no longer greys the gums.** In a smile the teeth mask can take in the strip of pink gum above the teeth, and Whitening turned it grey-white. The teeth adjustment (Whitening, Desaturation and Gamma) now holds back on pixels much pinker than that face's own teeth: from 1.15 times the red-to-green ratio of the teeth it starts to ease off, and from 1.45 times it leaves the pixel alone. Teeth themselves are whitened as before. At Whitening 100 the gum keeps about 0.56 of its red-green chroma (0.31 before). The pipeline version is 0.12.2, because teeth pixels change whenever a teeth control is above 0.
+- **Teeth whitening no longer greys the gums.** In a smile the teeth mask can take in the strip of pink gum above the teeth, and Whitening turned it grey-white. The teeth adjustment (Whitening, Desaturation and Gamma) now holds back on pixels much pinker than that face's own teeth: from 1.15 times the red-to-green ratio of the teeth it starts to ease off, and from 1.45 times it leaves the pixel alone. Teeth themselves are whitened as before. In a test portrait at Whitening 100, the gum kept nearly twice as much of its pink as before. The pipeline version is 0.12.2, because teeth pixels change whenever a teeth control is above 0.
 
 - **Save Preset could fail on a photo with a Face Refinement node, with "This file isn't a Yellowmoon preset."** Saving a preset with the Nodes group ticked left the Face Refinement nodes out but kept the links to them, so the preset could not be made, and the error said the file was not a preset when no file had been written. Face Refinement nodes are now saved with the other nodes, without the strokes painted on one photo (Protect strokes, Brush strokes and Object clicks), like the other nodes. A preset is also checked before it is written: if it could not be read back, nothing is written and the message says so, so a saved preset is never listed as damaged. A preset that cannot be made now has its own message.
 
@@ -27,11 +27,13 @@ A second pre-release (a beta) for testing. It fixes what the owner found in beta
 
 - **Exporting after opening an album no longer stays at 0 %.** With Apple Auto (or another Auto provider) on, an export waited for every photo to have the provider's answer. A photo of an album that has no stored answer (the provider failed on it, or it was saved without one) is never asked, so the export waited for an answer nobody would produce. Such a photo now counts as ready: it keeps its stored answer if it has one, and otherwise the grade Default Auto gives, which is the picture on screen. Opening an album still asks no provider, and Re-run still asks and the export then waits for the new answer.
 
+- **The library that reads look archives is updated** (`zip` 9.0.5) for a security advisory published on 17 November 2026 (RUSTSEC-2026-0548). The advisory is about a way of unpacking archives that Yellowmoon does not use, so look imports were not affected; nothing changes in how they work.
+
 ### Known limits
 
 - Opening an album does not show "This file has changed since the album was saved." for a photo whose file differs from the one the album saw; its settings still apply. (`ym render --json` and `ym info` do say it.)
 - Face Refinement finds the teeth even when all three teeth controls are 0, so a photo with faces takes a little longer than the sliders suggest.
-- Very yellow teeth can look greyish with Whitening at 100, and neutral with Desaturation at 100 as well; lower Whitening, or raise Gamma to bring the light back. The gum guard does not change this.
+- Very yellow teeth can look greyish with Whitening at 100; lower Whitening a little.
 - The gum guard goes by colour, not by place: a tooth much redder than the rest of that face's teeth (a strong reddish reflection from the lips, say) is held back like gum, and the teeth mask itself still includes the strip of gum. A photo with no teeth or gums in the mask is not affected.
 - The Mac-only parts of this release (VoiceOver, the edited dot, the file dialog's filter for photos and albums together, the new teeth sliders and the filmstrip after a removal on a real Mac, Intel Macs and 8 GB machines) are built but not yet checked on hardware.
 
