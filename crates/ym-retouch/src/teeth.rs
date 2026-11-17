@@ -48,6 +48,9 @@ pub struct PromptShape {
     /// A negative point in the middle of the opening, this share of its height down, when it is taller than
     /// [`CAVITY_OPENING`] of its width (the tongue and the dark behind the teeth); `None` for none.
     pub cavity: Option<f64>,
+    /// Negative points on the band just under the upper lip's inner contour, this share of the opening's width below it, in
+    /// the middle columns (S-18: the gum shows there in a smile); `None` for none.
+    pub band_negatives: Option<f64>,
 }
 
 impl PromptShape {
@@ -58,6 +61,7 @@ impl PromptShape {
         columns: &[0.2, 0.35, 0.5, 0.65, 0.8],
         row_cap: 0.05,
         cavity: None,
+        band_negatives: None,
     };
 }
 
@@ -303,6 +307,20 @@ pub fn teeth_prompt_with(
                 });
             }
         }
+        if let Some(depth) = shape.band_negatives {
+            for &f in &[0.3, 0.5, 0.7] {
+                let s = local[0][0] + f * width;
+                let Some((top, _)) = column_span(&local, s) else {
+                    continue;
+                };
+                let q = unit(frame.to_picture(s, top + depth * width));
+                prompt.points.push(PromptPoint {
+                    x: q[0],
+                    y: q[1],
+                    positive: false,
+                });
+            }
+        }
         // Negative: the middle of the upper and of the lower lip, the two corners.
         let mid = |a: u16, b: u16| {
             let (a, b) = (at(a), at(b));
@@ -323,6 +341,108 @@ pub fn teeth_prompt_with(
         .all(|q| q.x.is_finite() && q.y.is_finite())
         && prompt.bbox.is_none_or(|b| b.iter().all(|v| v.is_finite()));
     (finite && (prompt.bbox.is_some() || prompt.points.iter().any(|q| q.positive)))
+        .then_some(prompt)
+}
+
+/// Where the points of the gum query sit (`docs/27` 5.6, S-18).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GumShape {
+    /// The columns, as shares of the width between the corners of the opening.
+    pub columns: &'static [f64],
+    /// A positive point sits this share of the opening's width below the upper lip's inner contour (the band the gum shows in).
+    pub depth: f64,
+    /// A negative point (the teeth) sits this share of the way down the first answer's column, from its top to its bottom.
+    pub teeth_at: f64,
+}
+
+impl GumShape {
+    /// The shape the spec fixes.
+    pub const DEFAULT: Self = Self {
+        columns: &[0.3, 0.5, 0.7],
+        depth: 0.015,
+        teeth_at: 0.6,
+    };
+}
+
+/// The prompt of the second query, the one that asks SAM for the gum: a positive point on the band just under the upper lip's
+/// inner contour, negative points on the teeth the first answer (`teeth_logits`, `GRID_PX` squared) found, and the lips as
+/// negatives as before. `None` when no column of the first answer has a positive point above its teeth point.
+pub fn gum_prompt(
+    geometry: &FaceGeometry,
+    crop: &MouthCrop,
+    teeth_logits: &[f32],
+    shape: &GumShape,
+) -> Option<TeethPrompt> {
+    if teeth_logits.len() != GRID_PX * GRID_PX {
+        return None;
+    }
+    let frame = Frame::of(geometry)?;
+    let p = geometry.points();
+    let at = |i: u16| p[usize::from(i)];
+    let unit = |q: [f64; 2]| {
+        let u = crop.to_unit(q);
+        [u[0] as f32, u[1] as f32]
+    };
+    let local: Vec<[f64; 2]> = INNER_LIPS.iter().map(|&i| frame.to_mouth(at(i))).collect();
+    let width = local[10][0] - local[0][0];
+    let cell = crop.side_px / GRID_PX as f64;
+    let inside = |s: f64, t: f64| {
+        let u = crop.to_unit(frame.to_picture(s, t));
+        let (x, y) = (u[0] * GRID_PX as f64, u[1] * GRID_PX as f64);
+        x >= 0.0
+            && y >= 0.0
+            && x < GRID_PX as f64
+            && y < GRID_PX as f64
+            && teeth_logits[y as usize * GRID_PX + x as usize] > 0.0
+    };
+    let mut prompt = TeethPrompt::default();
+    for &f in shape.columns {
+        let s = local[0][0] + f * width;
+        let Some((top, bottom)) = column_span(&local, s) else {
+            continue;
+        };
+        let (mut first, mut last) = (f64::MAX, f64::MIN);
+        let mut t = top;
+        while t <= bottom {
+            if inside(s, t) {
+                first = first.min(t);
+                last = last.max(t);
+            }
+            t += cell;
+        }
+        if first > last {
+            continue;
+        }
+        let gum = top + shape.depth * width;
+        let teeth = first + shape.teeth_at * (last - first);
+        if gum >= teeth {
+            continue;
+        }
+        for (t, positive) in [(gum, true), (teeth, false)] {
+            let q = unit(frame.to_picture(s, t));
+            prompt.points.push(PromptPoint {
+                x: q[0],
+                y: q[1],
+                positive,
+            });
+        }
+    }
+    if prompt.points.is_empty() {
+        return None;
+    }
+    for (o, i) in [(5usize, 5usize), (15, 15), (0, 0), (10, 10)] {
+        let (a, b) = (at(OUTER_LIPS[o]), at(INNER_LIPS[i]));
+        let q = unit([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]);
+        prompt.points.push(PromptPoint {
+            x: q[0],
+            y: q[1],
+            positive: false,
+        });
+    }
+    prompt
+        .points
+        .iter()
+        .all(|q| q.x.is_finite() && q.y.is_finite())
         .then_some(prompt)
 }
 

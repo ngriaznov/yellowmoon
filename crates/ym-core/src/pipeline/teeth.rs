@@ -308,6 +308,22 @@ impl SamTeeth {
         }))
     }
 
+    /// What SAM answers for an arbitrary `prompt` on an encoded mouth: the four candidates (the evaluation of S-18).
+    ///
+    /// # Errors
+    ///
+    /// [`RetouchError::Model`] when the decoder fails.
+    pub fn decode_prompt(
+        &self,
+        mouth: &EncodedMouth,
+        prompt: &TeethPrompt,
+    ) -> RetouchResult<Decoded> {
+        let sam = self.sam.sam().map_err(model_error)?;
+        self.sam
+            .run(|| sam.decode_candidates(&mouth.features, &sam_prompt(prompt)))
+            .map_err(model_error)
+    }
+
     fn segment(&self, image: &LinearAwg4Image, face: &Face) -> RetouchResult<Option<BoundedMask>> {
         let Some(mouth) = self.encode(image, face, self.factor)? else {
             tracing::info!("the mesh gives no open mouth; no teeth");
