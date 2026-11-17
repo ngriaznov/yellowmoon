@@ -1884,11 +1884,14 @@ impl State {
         }
         let resolved =
             |p: &Photo| p.own.is_some() || matches!(p.summary.status, PhotoStatus::Skipped { .. });
-        // Apple Auto, while it acts: the photo has its answer or its failure (`docs/19` section 6).
+        // Apple Auto, while it acts: the photo has its answer or its failure (`docs/19` section 6). A
+        // frozen photo (an album's, `Photo::auto_frozen`) is never asked, so it has what it was given
+        // (its stored answer, else Default Auto's grade): waiting for it would wait for nobody.
         let apple_active = self.apple.activity().is_active();
         let chosen = self.apple.chosen();
         let settled = |p: &Photo| {
             !apple_active
+                || p.auto_frozen
                 || p.apple_result(chosen).is_some()
                 || matches!(p.summary.status, PhotoStatus::Skipped { .. })
         };

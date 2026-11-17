@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Exporting after opening an album no longer stays at 0 %.** With Apple Auto (or another Auto provider) on, an export waited for every photo to have the provider's answer. A photo of an album that has no stored answer (the provider failed on it, or it was saved without one) is never asked, so the export waited for an answer nobody would produce. Such a photo now counts as ready: it keeps its stored answer if it has one, and otherwise the grade Default Auto gives, which is the picture on screen. Opening an album still asks no provider, and Re-run still asks and the export then waits for the new answer.
+
 ## [0.2.4-beta.1] - 2026-11-17
 
 A pre-release (a beta) for testing: **Face Refinement**, a node that retouches the faces in a photo, and **presets and albums**, so a way of working can be saved and a strip of photos can be picked up again later. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.12.1 (was 0.11.0), because Face Refinement is a new kind of node, which an older build cannot open, and because the anamorphic fixes below and the lens tables of two cameras change pixels. A photo with no Face Refinement node comes out with the same pixels as in 0.2.3, unless it is from a Sony NEX-5N or NEX-7, or has Anamorphic above 0 and bright lights of the kinds the fixes name. The files differ in bytes in two ways that leave the pixels alone: TIFF exports are ZIP by default, and every export's XMP has one more property.

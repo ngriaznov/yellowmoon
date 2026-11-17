@@ -205,3 +205,6 @@ The simplest reading that meets the request was taken wherever the brief was sil
     - **A dropped album with ARW files, or two albums,** is refused by the webview with the sentences of §4.8; `open_dialog` refuses the same in the core.
     - **The sub-line** reads "12 photos · edited" in the source text (drawn in capitals by CSS, like the rest of the line).
     - **An album opened from Start** shows the usual list of developing photos, and Open photos goes on, as for any open.
+
+**As built (export after opening, 2026-11-17).** `State::estimates_final` (`session.rs`) made an export wait for the chosen provider's answer for every photo of it and of its burst, including photos frozen by an album (`Photo::auto_frozen`), which nothing asks; a frozen photo with no stored answer (a failure is not stored, or the album was saved without a provider) therefore kept the export at 0 % for ever. **The rule:** a frozen photo is settled for the provider. It keeps its stored answer if it has one, else Default Auto's grade, exactly what the viewport shows, so `ym render <album>` gives the same bytes. Re-run, new instructions and `ask_auto_again` unfreeze a photo, and the export then waits for its answer as before. A normal session has no frozen photos and is unchanged. Tests: `tests/album.rs` (`an_opened_album_*`).
+
