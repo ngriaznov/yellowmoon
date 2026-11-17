@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+## [0.2.4-beta.2] - 2026-11-17
+
+A second pre-release (a beta) for testing. It fixes what the owner found in beta 1 (Save Preset on a photo with Face Refinement, the filmstrip after a removal, and gums turning grey under Teeth whitening) and adds two teeth controls, **Desaturation** and **Gamma**. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.12.2 (was 0.12.1), because the gum guard changes teeth pixels whenever a teeth control is above 0; a photo with no Face Refinement node, or with all three teeth controls at 0, comes out with the same pixels as in beta 1. A settings file or preset that uses Desaturation or Gamma needs this version: an older build refuses the new fields.
+
 ### Added
 
 - **Teeth: Desaturation and Gamma.** The **Teeth** card of Face Refinement has two more sliders under **Whitening**, both at 0 for a new node and set for each face like the others (**Same for all faces** and **Copy to other faces** cover them). **Desaturation** (0 to 100) takes the colour cast out of the teeth without making them brighter: at 100 they are neutral grey-white. **Gamma** (-100 to 100) brightens the teeth's midtones above 0 and darkens them below 0, and the brightest tooth stays as it is. At 0 both leave the picture as it was, so existing photos come out the same. A settings file that uses `teeth_desaturation` or `teeth_gamma` needs Yellowmoon 0.2.4-beta.2 or later.
@@ -20,6 +24,14 @@ moves the entries below from Unreleased into a dated section for that version.
 - **Save Preset could fail on a photo with a Face Refinement node, with "This file isn't a Yellowmoon preset."** Saving a preset with the Nodes group ticked left the Face Refinement nodes out but kept the links to them, so the preset could not be made, and the error said the file was not a preset when no file had been written. Face Refinement nodes are now saved with the other nodes, without the strokes painted on one photo (Protect strokes, Brush strokes and Object clicks), like the other nodes. A preset is also checked before it is written: if it could not be read back, nothing is written and the message says so, so a saved preset is never listed as damaged. A preset that cannot be made now has its own message.
 
 - **Removing a photo no longer scrolls the filmstrip back to the start.** The strip stays where it was and the next photo (the previous one at the end) is selected.
+
+### Known limits
+
+- Opening an album does not show "This file has changed since the album was saved." for a photo whose file differs from the one the album saw; its settings still apply. (`ym render --json` and `ym info` do say it.)
+- Face Refinement finds the teeth even when all three teeth controls are 0, so a photo with faces takes a little longer than the sliders suggest.
+- Very yellow teeth can look greyish with Whitening at 100, and neutral with Desaturation at 100 as well; lower Whitening, or raise Gamma to bring the light back. The gum guard does not change this.
+- The gum guard goes by colour, not by place: a tooth much redder than the rest of that face's teeth (a strong reddish reflection from the lips, say) is held back like gum, and the teeth mask itself still includes the strip of gum. A photo with no teeth or gums in the mask is not affected.
+- The Mac-only parts of this release (VoiceOver, the edited dot, the file dialog's filter for photos and albums together, the new teeth sliders and the filmstrip after a removal on a real Mac, Intel Macs and 8 GB machines) are built but not yet checked on hardware.
 
 ## [0.2.4-beta.1] - 2026-11-17
 
