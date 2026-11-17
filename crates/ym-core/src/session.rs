@@ -1713,7 +1713,16 @@ impl State {
         let chosen = self.apple.chosen();
         let states: Vec<AppleAuto> = with
             .iter()
-            .map(|&i| activity.photo_state(self.photos[i].apple_result(chosen)))
+            .map(|&i| {
+                let p = &self.photos[i];
+                // A frozen photo (an album's) with no answer is never asked: it is graded by the
+                // built-in rule, not pending (`docs/31`). Only Re-run unfreezes it.
+                if p.auto_frozen && p.apple_result(chosen).is_none() {
+                    AppleAuto::Off
+                } else {
+                    activity.photo_state(p.apple_result(chosen))
+                }
+            })
             .collect();
         let groups: Vec<usize> = if grouped {
             burst_groups(&frames)
