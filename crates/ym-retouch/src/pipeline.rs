@@ -325,7 +325,7 @@ pub fn retouch_skin(
     let mut output = image.clone();
     let wants_blemish: Vec<bool> = faces.iter().map(|(_, s)| s.blemish > 0.0).collect();
     let wants_low = faces.iter().any(|(_, s)| {
-        s.dark_circles > 0.0 || s.even_skin > 0.0 || s.grading_active() || s.teeth_whitening > 0.0
+        s.dark_circles > 0.0 || s.even_skin > 0.0 || s.grading_active() || s.teeth_active()
     });
     if !wants_blemish.iter().any(|&b| b) && !wants_low {
         return Ok(output);
@@ -1681,7 +1681,7 @@ mod tests {
             let s = SkinSettings {
                 blemish, dark_circles: dark, even_skin: even, texture,
                 skin_contrast: contrast, shadow_desaturation: shadow,
-                shine_removal: shine, teeth_whitening: teeth,
+                shine_removal: shine, teeth_whitening: teeth, ..SkinSettings::default()
             };
             let mut cache = RetouchCache::default();
             let out = retouch_skin(&img, (200, 160), &[(face, s)], 1.0, &models, &mut cache, None).unwrap();
