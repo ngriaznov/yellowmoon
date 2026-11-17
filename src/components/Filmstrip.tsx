@@ -114,11 +114,13 @@ function MenuAround({
   content: ReactNode;
   children: ReactNode;
 }) {
-  if (!enabled) return <>{children}</>;
+  // The same elements whether or not the menu is on: the strip's scroller must not be made again when the Export panel (no menu) comes and
+  // goes, or it comes back at the start with the window of cells still worked out for where it was (an empty strip over a full-width track).
   return (
     <ContextMenu onOpenChange={onOpenChange}>
       <ContextMenuTrigger
         asChild
+        disabled={!enabled}
         onContextMenu={onTarget}
         // A mouse press is no menu; the touch of a long press is (Radix opens it by itself after a moment).
         onPointerDown={(event) => {
