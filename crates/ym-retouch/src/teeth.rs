@@ -484,6 +484,11 @@ fn fill(poly: &[[f64; 2]]) -> Vec<bool> {
 }
 
 impl Regions {
+    /// Whether grid cell `i` (row-major) is in the opening.
+    pub fn opening_at(&self, i: usize) -> bool {
+        self.opening.get(i).copied().unwrap_or(false)
+    }
+
     /// The regions of a mouth on the crop's grid: the opening (inner lip contour), the lips (between the contours) and the
     /// mouth (inside the outer contour). `None` when the opening covers no cell or is lower than [`MIN_OPENING_PX`] or
     /// [`MIN_OPENING_ASPECT`] of its width.
@@ -992,6 +997,93 @@ mod tests {
             select_candidate(&[(&low[..], f32::NAN)], &r).0,
             Err(Refusal::Nothing)
         );
+    }
+
+    #[test]
+    fn band_negatives_sit_in_the_opening_just_under_the_upper_lip() {
+        let g = mouth(24.0);
+        let crop = MouthCrop::from_geometry(&g, CROP_FACTOR).expect("crop");
+        let regions = Regions::from_geometry(&g, &crop).expect("regions");
+        let shape = PromptShape {
+            band_negatives: Some(0.03),
+            ..PromptShape::DEFAULT
+        };
+        let p = teeth_prompt_with(&g, &crop, PromptStyle::Points, &shape).expect("prompt");
+        let neg: Vec<_> = p.points.iter().filter(|q| !q.positive).collect();
+        assert_eq!(neg.len(), 7, "three band points and the four lip points");
+        // The three band points come first among the negatives: in the opening, above the positive of their column.
+        let pos: Vec<_> = p.points.iter().filter(|q| q.positive).collect();
+        for (k, q) in neg.iter().take(3).enumerate() {
+            assert!(regions.opening[cell(q)], "{q:?}");
+            let above = pos
+                .iter()
+                .find(|r| (r.x - q.x).abs() < 0.02)
+                .expect("column");
+            assert!(q.y < above.y + 1e-6 || k == 1, "{q:?} {above:?}");
+        }
+        // The default shape has none.
+        let d = teeth_prompt(&g, &crop, PromptStyle::Points).expect("prompt");
+        assert_eq!(d.points.iter().filter(|q| !q.positive).count(), 4);
+    }
+
+    #[test]
+    fn the_gum_query_puts_a_positive_above_a_negative_on_the_teeth() {
+        let g = mouth(30.0);
+        let crop = MouthCrop::from_geometry(&g, CROP_FACTOR).expect("crop");
+        let r = Regions::from_geometry(&g, &crop).expect("regions");
+        // The first answer: the lower 60 % of the opening.
+        let top = (0..GRID_PX * GRID_PX)
+            .filter(|&i| r.opening[i])
+            .map(|i| i / GRID_PX)
+            .min()
+            .expect("opening");
+        let bottom = (0..GRID_PX * GRID_PX)
+            .filter(|&i| r.opening[i])
+            .map(|i| i / GRID_PX)
+            .max()
+            .expect("opening");
+        let cut = top + (bottom - top) * 2 / 5;
+        let teeth = logits(|x, y| r.opening[y * GRID_PX + x] && y >= cut);
+        let p = gum_prompt(&g, &crop, &teeth, &GumShape::DEFAULT).expect("prompt");
+        assert_eq!(p.points.len(), 3 * 2 + 4);
+        for pair in p.points[..6].chunks(2) {
+            assert!(pair[0].positive && !pair[1].positive);
+            assert!(
+                pair[0].y < pair[1].y,
+                "the gum point is above the teeth point"
+            );
+            assert!(r.opening[cell(&pair[0])]);
+            assert!(
+                teeth[cell(&pair[1])] > 0.0,
+                "the negative is on the first answer"
+            );
+        }
+        // Nothing found, or an answer that runs up to the lip so that the point of the gum would sit on the teeth: no query.
+        assert!(gum_prompt(&g, &crop, &logits(|_, _| false), &GumShape::DEFAULT).is_none());
+        let all = logits(|x, y| r.opening[y * GRID_PX + x]);
+        let tight = GumShape {
+            depth: 0.5,
+            ..GumShape::DEFAULT
+        };
+        assert!(gum_prompt(&g, &crop, &all, &tight).is_none());
+        assert!(gum_prompt(&g, &crop, &all[..10], &GumShape::DEFAULT).is_none());
+    }
+
+    #[test]
+    fn the_lip_gap_is_zero_for_a_mask_at_the_lip_and_grows_with_the_band() {
+        let r = regions(30.0);
+        let first = (0..GRID_PX * GRID_PX)
+            .find(|&i| r.opening[i])
+            .map(|i| i / GRID_PX)
+            .expect("opening");
+        let at_lip = logits(|x, y| r.opening[y * GRID_PX + x]);
+        assert!(lip_gap(&at_lip, &r) < 1e-9, "{}", lip_gap(&at_lip, &r));
+        let below = logits(|x, y| r.opening[y * GRID_PX + x] && y >= first + 4);
+        let deeper = logits(|x, y| r.opening[y * GRID_PX + x] && y >= first + 8);
+        let (a, b) = (lip_gap(&below, &r), lip_gap(&deeper, &r));
+        assert!(a > 0.0 && b > a, "{a} {b}");
+        assert!(b <= LIP_GAP_CAP);
+        assert_eq!(lip_gap(&logits(|_, _| false), &r), 0.0);
     }
 
     #[test]
