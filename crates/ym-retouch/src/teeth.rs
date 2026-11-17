@@ -48,6 +48,9 @@ pub struct PromptShape {
     /// A negative point in the middle of the opening, this share of its height down, when it is taller than
     /// [`CAVITY_OPENING`] of its width (the tongue and the dark behind the teeth); `None` for none.
     pub cavity: Option<f64>,
+    /// Negative points on the band just under the upper lip's inner contour, this share of the opening's width below it, in
+    /// the middle columns (S-18: the gum shows there in a smile); `None` for none.
+    pub band_negatives: Option<f64>,
 }
 
 impl PromptShape {
@@ -58,6 +61,7 @@ impl PromptShape {
         columns: &[0.2, 0.35, 0.5, 0.65, 0.8],
         row_cap: 0.05,
         cavity: None,
+        band_negatives: None,
     };
 }
 
@@ -303,6 +307,20 @@ pub fn teeth_prompt_with(
                 });
             }
         }
+        if let Some(depth) = shape.band_negatives {
+            for &f in &[0.3, 0.5, 0.7] {
+                let s = local[0][0] + f * width;
+                let Some((top, _)) = column_span(&local, s) else {
+                    continue;
+                };
+                let q = unit(frame.to_picture(s, top + depth * width));
+                prompt.points.push(PromptPoint {
+                    x: q[0],
+                    y: q[1],
+                    positive: false,
+                });
+            }
+        }
         // Negative: the middle of the upper and of the lower lip, the two corners.
         let mid = |a: u16, b: u16| {
             let (a, b) = (at(a), at(b));
@@ -323,6 +341,108 @@ pub fn teeth_prompt_with(
         .all(|q| q.x.is_finite() && q.y.is_finite())
         && prompt.bbox.is_none_or(|b| b.iter().all(|v| v.is_finite()));
     (finite && (prompt.bbox.is_some() || prompt.points.iter().any(|q| q.positive)))
+        .then_some(prompt)
+}
+
+/// Where the points of the gum query sit (`docs/27` 5.6, S-18).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GumShape {
+    /// The columns, as shares of the width between the corners of the opening.
+    pub columns: &'static [f64],
+    /// A positive point sits this share of the opening's width below the upper lip's inner contour (the band the gum shows in).
+    pub depth: f64,
+    /// A negative point (the teeth) sits this share of the way down the first answer's column, from its top to its bottom.
+    pub teeth_at: f64,
+}
+
+impl GumShape {
+    /// The shape the spec fixes.
+    pub const DEFAULT: Self = Self {
+        columns: &[0.3, 0.5, 0.7],
+        depth: 0.015,
+        teeth_at: 0.6,
+    };
+}
+
+/// The prompt of the second query, the one that asks SAM for the gum: a positive point on the band just under the upper lip's
+/// inner contour, negative points on the teeth the first answer (`teeth_logits`, `GRID_PX` squared) found, and the lips as
+/// negatives as before. `None` when no column of the first answer has a positive point above its teeth point.
+pub fn gum_prompt(
+    geometry: &FaceGeometry,
+    crop: &MouthCrop,
+    teeth_logits: &[f32],
+    shape: &GumShape,
+) -> Option<TeethPrompt> {
+    if teeth_logits.len() != GRID_PX * GRID_PX {
+        return None;
+    }
+    let frame = Frame::of(geometry)?;
+    let p = geometry.points();
+    let at = |i: u16| p[usize::from(i)];
+    let unit = |q: [f64; 2]| {
+        let u = crop.to_unit(q);
+        [u[0] as f32, u[1] as f32]
+    };
+    let local: Vec<[f64; 2]> = INNER_LIPS.iter().map(|&i| frame.to_mouth(at(i))).collect();
+    let width = local[10][0] - local[0][0];
+    let cell = crop.side_px / GRID_PX as f64;
+    let inside = |s: f64, t: f64| {
+        let u = crop.to_unit(frame.to_picture(s, t));
+        let (x, y) = (u[0] * GRID_PX as f64, u[1] * GRID_PX as f64);
+        x >= 0.0
+            && y >= 0.0
+            && x < GRID_PX as f64
+            && y < GRID_PX as f64
+            && teeth_logits[y as usize * GRID_PX + x as usize] > 0.0
+    };
+    let mut prompt = TeethPrompt::default();
+    for &f in shape.columns {
+        let s = local[0][0] + f * width;
+        let Some((top, bottom)) = column_span(&local, s) else {
+            continue;
+        };
+        let (mut first, mut last) = (f64::MAX, f64::MIN);
+        let mut t = top;
+        while t <= bottom {
+            if inside(s, t) {
+                first = first.min(t);
+                last = last.max(t);
+            }
+            t += cell;
+        }
+        if first > last {
+            continue;
+        }
+        let gum = top + shape.depth * width;
+        let teeth = first + shape.teeth_at * (last - first);
+        if gum >= teeth {
+            continue;
+        }
+        for (t, positive) in [(gum, true), (teeth, false)] {
+            let q = unit(frame.to_picture(s, t));
+            prompt.points.push(PromptPoint {
+                x: q[0],
+                y: q[1],
+                positive,
+            });
+        }
+    }
+    if prompt.points.is_empty() {
+        return None;
+    }
+    for (o, i) in [(5usize, 5usize), (15, 15), (0, 0), (10, 10)] {
+        let (a, b) = (at(OUTER_LIPS[o]), at(INNER_LIPS[i]));
+        let q = unit([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]);
+        prompt.points.push(PromptPoint {
+            x: q[0],
+            y: q[1],
+            positive: false,
+        });
+    }
+    prompt
+        .points
+        .iter()
+        .all(|q| q.x.is_finite() && q.y.is_finite())
         .then_some(prompt)
 }
 
@@ -364,6 +484,11 @@ fn fill(poly: &[[f64; 2]]) -> Vec<bool> {
 }
 
 impl Regions {
+    /// Whether grid cell `i` (row-major) is in the opening.
+    pub fn opening_at(&self, i: usize) -> bool {
+        self.opening.get(i).copied().unwrap_or(false)
+    }
+
     /// The regions of a mouth on the crop's grid: the opening (inner lip contour), the lips (between the contours) and the
     /// mouth (inside the outer contour). `None` when the opening covers no cell or is lower than [`MIN_OPENING_PX`] or
     /// [`MIN_OPENING_ASPECT`] of its width.
@@ -449,6 +574,46 @@ pub fn candidate_stats(logits: &[f32], iou: f32, regions: &Regions) -> Candidate
         score: f64::from(iou) + COVER_WEIGHT * cover - SPILL_WEIGHT * spill,
     }
 }
+
+/// How far a candidate's top edge stays below the opening's top edge (the upper lip's inner contour), as a share of the
+/// opening's width, averaged over the columns where both exist and capped at [`LIP_GAP_CAP`] per column. A mask that runs up to
+/// the lip across the whole opening (teeth and gum together, or teeth that reach the lip) has 0; a mask that stops at the teeth's
+/// own edge under a visible band of gum has the band's height (S-18).
+pub fn lip_gap(logits: &[f32], regions: &Regions) -> f64 {
+    let width = {
+        let (mut x0, mut x1) = (GRID_PX, 0usize);
+        for (i, &o) in regions.opening.iter().enumerate() {
+            if o {
+                x0 = x0.min(i % GRID_PX);
+                x1 = x1.max(i % GRID_PX);
+            }
+        }
+        (x1.saturating_sub(x0) + 1) as f64
+    };
+    let (mut sum, mut cols) = (0.0, 0usize);
+    for x in 0..GRID_PX {
+        let mut open_top = None;
+        let mut mask_top = None;
+        for y in 0..GRID_PX {
+            let i = y * GRID_PX + x;
+            if regions.opening[i] {
+                open_top.get_or_insert(y);
+                if logits[i] > 0.0 {
+                    mask_top = Some(y);
+                    break;
+                }
+            }
+        }
+        if let (Some(o), Some(m)) = (open_top, mask_top) {
+            sum += ((m - o) as f64 / width).min(LIP_GAP_CAP);
+            cols += 1;
+        }
+    }
+    if cols == 0 { 0.0 } else { sum / cols as f64 }
+}
+
+/// The most of the opening's width one column of [`lip_gap`] counts.
+pub const LIP_GAP_CAP: f64 = 0.10;
 
 /// Why no candidate was used. The `Display` is the sentence of the log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -832,6 +997,93 @@ mod tests {
             select_candidate(&[(&low[..], f32::NAN)], &r).0,
             Err(Refusal::Nothing)
         );
+    }
+
+    #[test]
+    fn band_negatives_sit_in_the_opening_just_under_the_upper_lip() {
+        let g = mouth(24.0);
+        let crop = MouthCrop::from_geometry(&g, CROP_FACTOR).expect("crop");
+        let regions = Regions::from_geometry(&g, &crop).expect("regions");
+        let shape = PromptShape {
+            band_negatives: Some(0.03),
+            ..PromptShape::DEFAULT
+        };
+        let p = teeth_prompt_with(&g, &crop, PromptStyle::Points, &shape).expect("prompt");
+        let neg: Vec<_> = p.points.iter().filter(|q| !q.positive).collect();
+        assert_eq!(neg.len(), 7, "three band points and the four lip points");
+        // The three band points come first among the negatives: in the opening, above the positive of their column.
+        let pos: Vec<_> = p.points.iter().filter(|q| q.positive).collect();
+        for (k, q) in neg.iter().take(3).enumerate() {
+            assert!(regions.opening[cell(q)], "{q:?}");
+            let above = pos
+                .iter()
+                .find(|r| (r.x - q.x).abs() < 0.02)
+                .expect("column");
+            assert!(q.y < above.y + 1e-6 || k == 1, "{q:?} {above:?}");
+        }
+        // The default shape has none.
+        let d = teeth_prompt(&g, &crop, PromptStyle::Points).expect("prompt");
+        assert_eq!(d.points.iter().filter(|q| !q.positive).count(), 4);
+    }
+
+    #[test]
+    fn the_gum_query_puts_a_positive_above_a_negative_on_the_teeth() {
+        let g = mouth(30.0);
+        let crop = MouthCrop::from_geometry(&g, CROP_FACTOR).expect("crop");
+        let r = Regions::from_geometry(&g, &crop).expect("regions");
+        // The first answer: the lower 60 % of the opening.
+        let top = (0..GRID_PX * GRID_PX)
+            .filter(|&i| r.opening[i])
+            .map(|i| i / GRID_PX)
+            .min()
+            .expect("opening");
+        let bottom = (0..GRID_PX * GRID_PX)
+            .filter(|&i| r.opening[i])
+            .map(|i| i / GRID_PX)
+            .max()
+            .expect("opening");
+        let cut = top + (bottom - top) * 2 / 5;
+        let teeth = logits(|x, y| r.opening[y * GRID_PX + x] && y >= cut);
+        let p = gum_prompt(&g, &crop, &teeth, &GumShape::DEFAULT).expect("prompt");
+        assert_eq!(p.points.len(), 3 * 2 + 4);
+        for pair in p.points[..6].chunks(2) {
+            assert!(pair[0].positive && !pair[1].positive);
+            assert!(
+                pair[0].y < pair[1].y,
+                "the gum point is above the teeth point"
+            );
+            assert!(r.opening[cell(&pair[0])]);
+            assert!(
+                teeth[cell(&pair[1])] > 0.0,
+                "the negative is on the first answer"
+            );
+        }
+        // Nothing found, or an answer that runs up to the lip so that the point of the gum would sit on the teeth: no query.
+        assert!(gum_prompt(&g, &crop, &logits(|_, _| false), &GumShape::DEFAULT).is_none());
+        let all = logits(|x, y| r.opening[y * GRID_PX + x]);
+        let tight = GumShape {
+            depth: 0.5,
+            ..GumShape::DEFAULT
+        };
+        assert!(gum_prompt(&g, &crop, &all, &tight).is_none());
+        assert!(gum_prompt(&g, &crop, &all[..10], &GumShape::DEFAULT).is_none());
+    }
+
+    #[test]
+    fn the_lip_gap_is_zero_for_a_mask_at_the_lip_and_grows_with_the_band() {
+        let r = regions(30.0);
+        let first = (0..GRID_PX * GRID_PX)
+            .find(|&i| r.opening[i])
+            .map(|i| i / GRID_PX)
+            .expect("opening");
+        let at_lip = logits(|x, y| r.opening[y * GRID_PX + x]);
+        assert!(lip_gap(&at_lip, &r) < 1e-9, "{}", lip_gap(&at_lip, &r));
+        let below = logits(|x, y| r.opening[y * GRID_PX + x] && y >= first + 4);
+        let deeper = logits(|x, y| r.opening[y * GRID_PX + x] && y >= first + 8);
+        let (a, b) = (lip_gap(&below, &r), lip_gap(&deeper, &r));
+        assert!(a > 0.0 && b > a, "{a} {b}");
+        assert!(b <= LIP_GAP_CAP);
+        assert_eq!(lip_gap(&logits(|_, _| false), &r), 0.0);
     }
 
     #[test]
