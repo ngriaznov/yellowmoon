@@ -76,12 +76,17 @@ use crate::settings::MaskShape;
 
 mod background;
 mod depth;
+mod faces;
 mod lens;
 mod lens_device;
 mod object;
 mod vision;
 
 pub use depth::DepthKey;
+#[cfg(test)]
+pub(crate) use faces::FoundFace;
+pub(crate) use faces::{FaceEntry, PLANS_KEPT, PlanKey, face_source};
+pub use faces::{FaceTimings, FacesKey};
 pub(crate) use object::plane_text;
 
 /// The note of a render whose demosaic method is not the adaptive ratio (the test-only switch of
@@ -223,6 +228,12 @@ pub struct RenderOptions {
     /// a kind this machine can make and a Depth row gets its mask; without it (`None`: the weights are missing, or the
     /// renderer was made without a core) a Depth row selects nothing in a view and fails an export with the `mask` error.
     pub depth_model: Option<Arc<crate::pipeline::depth::DepthModel>>,
+    /// MediaPipe's face finder, face mesh and segmenter (`data/models/mediapipe`, `docs/27` decision 12), found by
+    /// [`crate::app::Core::open`] (it reads nothing until a Face Refinement node needs it), or a fake in the tests
+    /// ([`crate::pipeline::FaceModel::fake`]). With it a Face Refinement node retouches the faces of the photo; without it
+    /// (`None`: the weights are missing, or the renderer was made without a core) the node passes its picture through in a
+    /// view and an export fails with the `mask` error.
+    pub face_model: Option<Arc<crate::pipeline::faces::FaceModel>>,
     /// The computer's Vision framework for the Subject and People masks (`docs/23` section 4.5) and what its probe said
     /// (`ym-apple`'s `system_vision()`, handed over by the app and `ym`). With it Subject and People are kinds this
     /// computer can make where the probe says yes; without it (`None`: a caller that has none, as the tests, the golden
@@ -369,6 +380,7 @@ impl Default for RenderOptions {
             bokeh_model: None,
             object_model: None,
             depth_model: None,
+            face_model: None,
             vision: None,
             data_root: None,
             gpu: None,
@@ -715,6 +727,8 @@ pub struct PhotoGraph {
     vision: vision::VisionSlot,
     /// The photo's depth map and the worker's state (`depth::DepthSlot`).
     depth: depth::DepthSlot,
+    /// The photo's faces with their masks and blemish maps, and the worker's state (`faces::FaceSlot`).
+    faces: faces::FaceSlot,
     /// Exports that are rendering the photo: while there is one, the raw words stay on the device
     /// whatever else the renderer uploads (an export asks for them at every tile).
     pins: AtomicU32,
@@ -760,6 +774,7 @@ impl PhotoGraph {
             object: object::ObjectSlot::default(),
             vision: vision::VisionSlot::default(),
             depth: depth::DepthSlot::default(),
+            faces: faces::FaceSlot::default(),
             pins: AtomicU32::new(0),
         }
     }
@@ -824,6 +839,7 @@ impl PhotoGraph {
             + self.object.bytes()
             + self.vision.bytes()
             + self.depth.bytes()
+            + self.faces.bytes()
             + st.lens_groups.as_ref().map_or(0, ByteLru::used)
             + st.lens_tiles.as_ref().map_or(0, ByteLru::used)
             + st.lens_field_groups.as_ref().map_or(0, ByteLru::used)
@@ -1064,6 +1080,8 @@ struct Inner {
     /// A shader of the view stages failed to compile on this machine: the device does not run them
     /// for the rest of the process.
     view_gpu_disabled: AtomicBool,
+    /// Face regions a render left unretouched although pixels it was asked for are in them (`Renderer::face_regions_cut`).
+    face_regions_cut: std::sync::atomic::AtomicU64,
     /// A shader of the lens kernels failed to compile on this machine: the device does not run the lens
     /// for the rest of the process.
     lens_gpu_disabled: AtomicBool,
@@ -1097,6 +1115,8 @@ struct Inner {
     vision_listener: Mutex<Option<vision::VisionListener>>,
     /// Who hears when the depth worker starts or ends its work for a photo (`Renderer::set_depth_listener`).
     depth_listener: Mutex<Option<depth::DepthListener>>,
+    /// Who hears when the face worker starts or ends its work for a photo (`Renderer::set_faces_listener`).
+    faces_listener: Mutex<Option<faces::FacesListener>>,
 }
 
 /// Who hears when the Object encoder starts or stops working for a photo ([`Renderer::set_object_listener`]).
@@ -1198,6 +1218,7 @@ impl Renderer {
                 resident_clock: AtomicU64::new(0),
                 previous: Mutex::new(None),
                 view_gpu_disabled: AtomicBool::new(false),
+                face_regions_cut: std::sync::atomic::AtomicU64::new(0),
                 lens_gpu_disabled: AtomicBool::new(false),
                 prefetch_gate: Mutex::new(()),
                 tail_gpu_disabled: AtomicBool::new(false),
@@ -1208,6 +1229,7 @@ impl Renderer {
                 object_pictures_made: AtomicU64::new(0),
                 vision_listener: Mutex::new(None),
                 depth_listener: Mutex::new(None),
+                faces_listener: Mutex::new(None),
             }),
         };
         // The graphs' counted caches are given up when a reservation would otherwise be refused.
@@ -1537,6 +1559,7 @@ impl Renderer {
             || (!crate::pipeline::color::vision_kinds(settings).is_empty()
                 && self.vision_working(id))
             || (crate::pipeline::color::has_depth_row(settings) && self.depth_working(id))
+            || (crate::pipeline::color::has_face_node(settings) && self.faces_working(id))
     }
 
     /// The graph of a photo, made on first use. The least recently used graphs beyond
@@ -2140,12 +2163,17 @@ pub(crate) struct Job<'a> {
     /// The mask view of a viewport frame ([`Job::with_mask_view`]) and the grade plan that ends at the node's
     /// mask, once the frame has asked for it ([`Job::mask_grade`]).
     mask: Option<(MaskView, Option<Arc<GradePlan>>)>,
+    /// Show skin areas (`docs/27` S-11c): the face (1-based) and the analysis it is drawn from, once
+    /// [`Job::prepare_mask_view`] has found them. The frame is the photo as it is, with the areas tinted on it.
+    face_view: Option<(u32, Arc<faces::FaceEntry>)>,
     /// What this request found out about the photo's Object rows (`object::JobObjects`).
     object: object::JobObjects,
     /// What this request found out about the photo's Subject and People rows (`vision::JobVision`).
     vision: vision::JobVision,
     /// What this request found out about the photo's Depth rows (`depth::JobDepth`).
     depth: depth::JobDepth,
+    /// What this request found out about the photo's Face Refinement nodes (`faces::JobFaces`).
+    faces: faces::JobFaces,
 }
 
 impl Drop for Job<'_> {
@@ -2224,9 +2252,11 @@ impl<'a> Job<'a> {
             blur_job: None,
             lens_job_device: None,
             mask: None,
+            face_view: None,
             object: object::JobObjects::default(),
             vision: vision::JobVision::default(),
             depth: depth::JobDepth::default(),
+            faces: faces::JobFaces::default(),
         }
     }
 
@@ -2261,6 +2291,9 @@ impl<'a> Job<'a> {
     /// What the mask view adds to the key of a finished frame: the node, the style and the key of the plan that
     /// ends at the node's mask.
     pub fn mask_key(&self) -> Option<String> {
+        if let Some((face, entry)) = &self.face_view {
+            return Some(format!("skin_areas:{face}:{:016x}", entry.hash));
+        }
         let (v, g) = self.mask.as_ref()?;
         Some(format!(
             "mask:{}:{:?}:{:?}:{}:{}",
@@ -2301,6 +2334,15 @@ impl<'a> Job<'a> {
         let Some((view, _)) = self.mask else {
             return Ok(());
         };
+        // Show skin areas: the photo as it is, with a face's areas tinted on it (`Job::face_view`). No plan, no mask chain: the
+        // frame is the normal one, and `render_view` tints the finished pixels from the analysis' cached masks.
+        if let Some(face) = view.face
+            && self.src.settings.nodes.face_refinement(view.node).is_some()
+        {
+            self.mask = None;
+            self.face_view = self.faces_for_view().map(|e| (face, e));
+            return Ok(());
+        }
         // The page names the node it has selected; one the photo no longer has (it was deleted a moment ago, an
         // undo took it away) leaves the frame as the photo, not an error.
         if self.src.settings.nodes.corrector(view.node).is_none() {
@@ -3402,6 +3444,10 @@ impl<'a> Job<'a> {
             .filter(|s| self.opts.gpu_stages.contains(*s))
             .fold(GpuStages::NONE, GpuStages::union);
         if stages.is_empty() {
+            return Ok(None);
+        }
+        // Show skin areas is tinted on the CPU's pixels.
+        if self.face_view.is_some() {
             return Ok(None);
         }
         if self.g.view_gpu_failed.load(Ordering::SeqCst)

@@ -1295,6 +1295,128 @@ fn a_settings_file_with_a_mixer_is_read_and_the_photo_renders() {
     );
 }
 
+/// A settings file with a Face Refinement node is read, checked and rendered (`docs/27` task S-11a): the node is accepted with its
+/// per-face amounts and protection, the photo is written, and the record carries the node as the core writes it (the defaults filled
+/// in). The faces are found by the fake finder (`YELLOWMOON_TEST_FACES=fake`), so the test needs no weights; the picture the node makes is checked in
+/// `ym-core`'s `face_render` tests and in `parity.rs`.
+#[test]
+fn a_settings_file_with_a_face_refinement_node_is_read_and_the_photo_renders() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let file = sb.root().join("face.json");
+    std::fs::write(
+        &file,
+        r#"{ "nodes": {
+            "items": [ { "id": 2, "kind": "face_refinement", "same_for_all": false,
+                "faces": [ { "blemish": 45 }, { "teeth_whitening": 40 } ],
+                "protect": { "strokes": [ { "size": 0.02, "points": [[0.4, 0.3], [0.41, 0.31]] } ] } } ],
+            "links": [
+                { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+                { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+                { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } }"#,
+    )
+    .expect("write");
+    let out = sb
+        .ym_fake_faces()
+        .args(["render", "--json", "--settings"])
+        .arg(&file)
+        .arg(&arw)
+        .assert()
+        .success();
+    let objects = json_lines(&out.get_output().stdout);
+    assert_eq!(objects.len(), 1);
+    let o = &objects[0];
+    assert_eq!(o["status"], "ok");
+    let path = o["output"].as_str().expect("output");
+    assert!(std::path::Path::new(path).exists(), "the photo was written");
+    let items = o["settings"]["nodes"]["items"].as_array().expect("items");
+    let node = items
+        .iter()
+        .find(|i| i["kind"] == "face_refinement")
+        .expect("the Face Refinement node is in the record");
+    assert_eq!(node["name"], "Face Refinement");
+    assert_eq!(node["same_for_all"], false);
+    assert_eq!(node["all"]["blemish"], 30.0);
+    assert_eq!(node["faces"][0]["blemish"], 45.0);
+    assert_eq!(node["faces"][0]["even_skin"], 25.0);
+    assert_eq!(node["faces"][1]["teeth_whitening"], 40.0);
+    assert_eq!(node["protect"]["strokes"][0]["size"], 0.02);
+    // A field of another kind and a misspelt amount are refused before any photo is opened.
+    for (content, needle) in [
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "face_refinement", "grade": {} } ] } }"#,
+            "A face refinement node has no field called “grade”.",
+        ),
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "face_refinement", "all": { "blur": 3 } } ] } }"#,
+            "blur",
+        ),
+    ] {
+        std::fs::write(&file, content).expect("write");
+        sb.ym()
+            .args(["render", "--settings"])
+            .arg(&file)
+            .arg(&arw)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(needle));
+    }
+}
+
+/// A copy of Yellowmoon with no face models (`data/models/mediapipe` is not there): a Face Refinement node that does something stops that
+/// photo with `error.kind` `mask` and the node's sentence, exit 1, nothing written, as a Depth row without its model does; a
+/// bypassed node, one with every amount at 0 and a photo without the node go on (`docs/27` S-11b).
+#[cfg(unix)]
+#[test]
+fn a_face_refinement_node_without_the_models_is_the_mask_error_and_the_other_photos_go_on() {
+    let sb = Sandbox::new();
+    sb.arw("a_live.ARW");
+    sb.arw("b_bypassed.ARW");
+    sb.arw("c_plain.ARW");
+    let node = |body: &str| {
+        serde_json::from_str::<Value>(&format!(
+            r#"{{ "nodes": {{ "items": [ {{ "id": 2, "kind": "face_refinement" {body} }} ], "links": [
+                {{ "from": {{ "node": "input", "port": "picture" }}, "to": {{ "node": 1, "port": "picture" }} }},
+                {{ "from": {{ "node": 1, "port": "picture" }}, "to": {{ "node": 2, "port": "picture" }} }},
+                {{ "from": {{ "node": 2, "port": "picture" }}, "to": {{ "node": "output", "port": "picture" }} }} ] }} }}"#
+        ))
+        .expect("a document")
+    };
+    let file = sb.root().join("per-file.json");
+    let doc_text = serde_json::json!({
+        "a_live.ARW": node(""),
+        "b_bypassed.ARW": node(r#", "bypass": true"#),
+        "c_plain.ARW": serde_json::json!({}),
+    });
+    std::fs::write(&file, doc_text.to_string()).expect("write");
+    let without = sb.data_without_the_face_weights();
+    let out = sb
+        .ym_data(&without)
+        .args(["render", "--cpu", "--json", "--settings"])
+        .arg(&file)
+        .arg(sb.photos())
+        .assert()
+        .code(1);
+    let objects = json_lines(&out.get_output().stdout);
+    assert_eq!(objects.len(), 3);
+    let find = |name: &str| {
+        objects
+            .iter()
+            .find(|o| o["input"].as_str().is_some_and(|i| i.ends_with(name)))
+            .unwrap_or_else(|| panic!("no record for {name}"))
+    };
+    let o = find("a_live.ARW");
+    assert_eq!(o["status"], "error");
+    assert_eq!(o["output"], Value::Null);
+    assert_eq!(o["error"]["kind"], "mask");
+    assert_eq!(
+        o["error"]["message"],
+        "Node 2 is a Face Refinement node, and the face models are missing. Reinstall Yellowmoon, or remove the node."
+    );
+    assert_eq!(find("b_bypassed.ARW")["status"], "ok");
+    assert_eq!(find("c_plain.ARW")["status"], "ok");
+}
+
 #[test]
 fn exit_code_2_for_usage_errors() {
     let sb = Sandbox::new();

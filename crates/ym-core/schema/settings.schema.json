@@ -17,7 +17,7 @@
       "additionalProperties": false,
       "properties": {
         "items": {
-          "description": "The nodes, in no particular order when read (written Input, numbered nodes by id, Output). The Input and the Output are items like the others and cannot be added to or taken out; at most 64 numbered nodes together (correctors, Film nodes, mixers, Splitters and Combiners), Main included.",
+          "description": "The nodes, in no particular order when read (written Input, numbered nodes by id, Output). The Input and the Output are items like the others and cannot be added to or taken out; at most 64 numbered nodes together (correctors, Film nodes, Face Refinement nodes, mixers, Splitters and Combiners), Main included.",
           "type": "array",
           "maxItems": 66,
           "items": {
@@ -33,6 +33,9 @@
               },
               {
                 "$ref": "#/$defs/film_node"
+              },
+              {
+                "$ref": "#/$defs/face_refinement_node"
               },
               {
                 "$ref": "#/$defs/parallel_node"
@@ -477,6 +480,157 @@
         },
         "masks": {
           "$ref": "#/$defs/masks"
+        }
+      }
+    },
+    "face_refinement_node": {
+      "description": "A Face Refinement node (docs/27): retouches the faces it finds (found automatically, numbered from 1, left to right) with Blemish, Dark circles, Even skin and Texture, Skin grading and Teeth whitening, leaving the painted `protect` areas alone. A node with an id the default graph does not have must give its `kind`. Until the render step lands (S-11b) the node passes its picture through unchanged.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "description": "A numbered node's id: an integer 2 to 2147483647. Ids are unique within the photo, correctors, Film nodes, Face Refinement nodes and mixers together.",
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 2147483647
+        },
+        "kind": {
+          "const": "face_refinement"
+        },
+        "pos": {
+          "$ref": "#/$defs/pos"
+        },
+        "name": {
+          "description": "1 to 32 characters after trimming; a longer name is cut and an empty one reads as the default (\"Face Refinement\").",
+          "type": "string",
+          "default": "Face Refinement"
+        },
+        "bypass": {
+          "type": "boolean",
+          "default": false
+        },
+        "same_for_all": {
+          "description": "\"Same for all faces\": when true, `all` serves every face and `faces` is kept but not used.",
+          "type": "boolean",
+          "default": true
+        },
+        "all": {
+          "description": "The amounts every face takes while `same_for_all` is true, and when `faces` is empty.",
+          "$ref": "#/$defs/face_settings"
+        },
+        "faces": {
+          "description": "The amounts per face; entry n is face n + 1, numbered from 1, left to right. At most 32. A face past the end of the list takes face 1's amounts.",
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/face_settings"
+          },
+          "default": []
+        },
+        "protect": {
+          "description": "The protection plane: strokes painted on the photo, in the format of a Brush mask row (without its row fields). Painted areas are left alone by every tool; at most 100,000 points in all.",
+          "$ref": "#/$defs/protect_plane"
+        },
+        "masks": {
+          "$ref": "#/$defs/masks"
+        }
+      }
+    },
+    "face_settings": {
+      "description": "The amounts of the Face Refinement tools for one face (docs/27 section 3). A left-out amount takes its default: Blemish 30, Dark circles 30, Even skin 25, everything else 0.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "blemish": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 30,
+          "description": "Blemish removal."
+        },
+        "dark_circles": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 30,
+          "description": "Dark circles."
+        },
+        "even_skin": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 25,
+          "description": "Even skin."
+        },
+        "texture": {
+          "type": "number",
+          "minimum": -100,
+          "maximum": 100,
+          "default": 0,
+          "description": "Texture; 0 keeps the skin's fine detail as it is."
+        },
+        "skin_contrast": {
+          "type": "number",
+          "minimum": -100,
+          "maximum": 100,
+          "default": 0,
+          "description": "Skin grading, Contrast."
+        },
+        "shadow_desaturation": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 0,
+          "description": "Skin grading, Shadow desaturation."
+        },
+        "shine_removal": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 0,
+          "description": "Skin grading, Shine removal."
+        },
+        "teeth_whitening": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 0,
+          "description": "Teeth, Whitening."
+        }
+      }
+    },
+    "protect_plane": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strokes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/brush_stroke"
+          },
+          "default": []
+        },
+        "feather": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0
+        },
+        "grow": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1,
+          "default": 0
+        },
+        "refine": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0
         }
       }
     },

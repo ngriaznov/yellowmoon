@@ -1,17 +1,24 @@
-# Model weights that are too big for git (N-16, D-02, docs/07, docs/12). Two independent jobs, each converts one checkpoint to
-# a f16 safetensors file, writes the oracle fixtures for the runtime's gate, and publishes both as assets of its own GitHub release:
-#   sam2   Meta's SAM 2.1 small checkpoint (N-16, N-17)      release `models-sam2.1-small-1`
-#   depth  Depth Anything V2-Small (D-02, D-03)               release `models-depth-anything-v2-small-1`
+# Model weights that are too big for git (N-16, D-02, S-08, docs/07, docs/12). Three independent jobs; sam2 and depth convert one
+# checkpoint to a f16 safetensors file, write the oracle fixtures for the runtime's gate, and publish both as assets of their own
+# GitHub release; mediapipe converts three TFLite files and publishes them (its parity fixtures are committed, not assets):
+#   sam2       Meta's SAM 2.1 small checkpoint (N-16, N-17)        release `models-sam2.1-small-1`
+#   depth      Depth Anything V2-Small (D-02, D-03)                 release `models-depth-anything-v2-small-1`
+#   mediapipe  Google's BlazeFace, Face Mesh V2, Selfie Multiclass  release `models-mediapipe-faces-1` (S-08, docs/27)
 #
-# How to run one (the job that runs follows the branch name, so the two never start each other):
+# How to run one (the job that runs follows the branch name, so the three never start each other):
 #   * push a branch named models/depth-<anything> to run ONLY the depth job, for example
 #         git push origin depth-mask:models/depth-anything-v2-small-1
+#   * push a branch named models/mediapipe-<anything> to run ONLY the mediapipe job, for example
+#         git push origin skin-retouch:models/mediapipe-faces-1
 #   * push any other branch named models/<anything> to run ONLY the sam2 job (as before), for example
 #         git push origin nodes:models/sam2.1-small-1
-#   * or start it by hand (Actions > models > Run workflow, on a branch) and pick the job: `sam2` (the default), `depth` or `both`.
+#   * or start it by hand (Actions > models > Run workflow, on a branch) and pick the job: `sam2` (the default), `depth`,
+#     `mediapipe`, `both` (sam2 and depth) or `all`.
 # The run's summary prints the two lines of the job's SHA256SUMS asset. Copy them into data/models/<name>/SHA256SUMS (the
 # weights) and tools/fetch/<name>.sha256 (the fixtures), <name> being sam2 or depth; from then on tools/fetch/<name>.sh
-# downloads and checks the weights for the builds (release.yml, build.yml).
+# downloads and checks the weights for the builds (release.yml, build.yml). The mediapipe job needs no copying: the conversion
+# is deterministic and its three hashes are already committed in data/models/mediapipe/SHA256SUMS; the job fails, and
+# publishes nothing, if the bytes it makes differ.
 #
 # Each release is a PRERELEASE and is created with --latest=false. The in-app updater reads
 # releases/latest/download/latest.json (docs/12), so these releases must never become "latest"; a release that is a
@@ -33,9 +40,9 @@ on:
   workflow_dispatch:
     inputs:
       job:
-        description: "Which job to run: sam2, depth or both"
+        description: "Which job to run: sam2, depth, mediapipe, both (sam2 and depth) or all"
         type: choice
-        options: [sam2, depth, both]
+        options: [sam2, depth, mediapipe, both, all]
         default: sam2
 
 permissions:
@@ -43,8 +50,8 @@ permissions:
 
 jobs:
   sam2:
-    # Every models/** branch except models/depth-*, and a manual run for `sam2` or `both`.
-    if: ${{ (github.event_name == 'push' && !startsWith(github.ref_name, 'models/depth-')) || (github.event_name == 'workflow_dispatch' && inputs.job != 'depth') }}
+    # Every models/** branch except models/depth-* and models/mediapipe-*, and a manual run for `sam2`, `both` or `all`.
+    if: ${{ (github.event_name == 'push' && !startsWith(github.ref_name, 'models/depth-') && !startsWith(github.ref_name, 'models/mediapipe-')) || (github.event_name == 'workflow_dispatch' && (inputs.job == 'sam2' || inputs.job == 'both' || inputs.job == 'all')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
     concurrency:
@@ -175,8 +182,8 @@ jobs:
           retention-days: 30
 
   depth:
-    # Branches models/depth-* only, and a manual run for `depth` or `both`.
-    if: ${{ (github.event_name == 'push' && startsWith(github.ref_name, 'models/depth-')) || (github.event_name == 'workflow_dispatch' && inputs.job != 'sam2') }}
+    # Branches models/depth-* only, and a manual run for `depth`, `both` or `all`.
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref_name, 'models/depth-')) || (github.event_name == 'workflow_dispatch' && (inputs.job == 'depth' || inputs.job == 'both' || inputs.job == 'all')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
     concurrency:
@@ -316,6 +323,112 @@ jobs:
             build/depth/export_report.json
             build/depth/fixtures/report.json
             build/depth/fixtures/manifest.json
+            dist/SHA256SUMS
+          if-no-files-found: ignore
+          retention-days: 30
+
+  mediapipe:
+    # Branches models/mediapipe-* only, and a manual run for `mediapipe` or `all`.
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref_name, 'models/mediapipe-')) || (github.event_name == 'workflow_dispatch' && (inputs.job == 'mediapipe' || inputs.job == 'all')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: models-mediapipe
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: models-mediapipe-faces-1
+      PYTHONUNBUFFERED: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: tools/mediapipe/requirements.txt
+
+      - name: Install the pinned packages (tflite bindings and numpy; no TensorFlow)
+        run: |
+          python -m pip install --upgrade pip==24.3.1
+          python -m pip install -r tools/mediapipe/requirements.txt
+          python -m pip freeze | tee "$RUNNER_TEMP/pip-freeze.txt"
+
+      - name: Cache the originals (Google's files, 20 MB)
+        uses: actions/cache@v4
+        with:
+          path: build/mediapipe/cache
+          key: mediapipe-originals-${{ hashFiles('tools/mediapipe/convert.py') }}
+
+      - name: Test the script (no network)
+        run: python -m unittest discover -s tools/mediapipe -p 'test_*.py' -v
+
+      # The script downloads each original from Google's model bucket, refuses a file whose SHA-256 is not the pinned one, and
+      # writes the three safetensors files, SHA256SUMS and conversion_report.json. The bytes depend on the originals only.
+      - name: Convert the three networks (tools/mediapipe/convert.py)
+        run: python tools/mediapipe/convert.py --out dist --download-dir build/mediapipe/cache
+
+      # The hashes are committed; a different byte means a different converter or different originals, and that is a decision
+      # for the owner, not something to publish quietly.
+      - name: Compare with the committed pins
+        run: |
+          cat dist/SHA256SUMS
+          if ! diff -u data/models/mediapipe/SHA256SUMS dist/SHA256SUMS; then
+            echo "::error title=Hashes differ::The converted files do not match data/models/mediapipe/SHA256SUMS (the difference is above). Nothing is published. If the change is meant, copy the new lines into that file and use a new RELEASE_TAG."
+            exit 1
+          fi
+          {
+            echo "### MediaPipe face networks"
+            echo
+            echo "Hashes of the assets (equal to \`data/models/mediapipe/SHA256SUMS\`):"
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+            echo
+            echo '```'
+            python -c "import json; r=json.load(open('dist/conversion_report.json')); [print(f\"{k:18} {v['parameters']:>9} parameters {v['bytes']:>9} bytes  {v['operators']}\") for k,v in sorted(r.items())]"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the release (a prerelease, never latest, never overwritten)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            mkdir -p "$RUNNER_TEMP/existing"
+            gh release download "$RELEASE_TAG" --pattern SHA256SUMS --dir "$RUNNER_TEMP/existing" --clobber
+            if diff -u "$RUNNER_TEMP/existing/SHA256SUMS" dist/SHA256SUMS; then
+              echo "Release $RELEASE_TAG exists with the same hashes; nothing to upload." | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error title=Release exists::$RELEASE_TAG is already published with different hashes (above). Assets are never overwritten: if the new ones are meant, use a new tag."
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --prerelease --latest=false \
+              --title "MediaPipe face networks (1)" \
+              --notes "Model assets for the build, not an app release. Google's MediaPipe BlazeFace (full range), Face Mesh V2 and Selfie Multiclass (256) networks (Apache-2.0, https://github.com/google-ai-edge/mediapipe), converted from the TFLite files Google publishes to safetensors by tools/mediapipe/convert.py (f16 for the first two, f32 for the third; the graph travels in the file header). See data/models/mediapipe/MODEL_CARD.md and NOTICE." \
+              dist/blaze_face_full_range.f16.safetensors dist/face_mesh_v2.f16.safetensors dist/selfie_multiclass_256.f32.safetensors dist/SHA256SUMS
+          fi
+          # The in-app updater reads the latest release; this one must not be it.
+          gh release view "$RELEASE_TAG" --json isPrerelease,tagName --jq '"\(.tagName) prerelease=\(.isPrerelease)"'
+          test "$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" = true
+          latest="$(gh release list --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // ""')"
+          if [ "$latest" = "$RELEASE_TAG" ]; then
+            echo "::error title=Latest release::$RELEASE_TAG is the latest release; the updater would read it."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mediapipe-reports
+          path: |
+            dist/conversion_report.json
             dist/SHA256SUMS
           if-no-files-found: ignore
           retention-days: 30

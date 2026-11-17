@@ -75,6 +75,8 @@
 
 mod device;
 mod export_tail;
+mod face_areas;
+mod face_pass;
 mod film_pass;
 pub mod level;
 
@@ -912,11 +914,30 @@ fn raster_read(
         return Ok(None);
     }
     let u_px = 1.0 / grid.photo_frame().pixel;
+    // The area the picture is asked for, grown to hold, whole, the face regions the pixels of the view demand
+    // (`FilmRender::widen`). The regions are in the photo's extent (its first pixel is (0, 0)) and `picture`, `window` and
+    // `frame` are in the view's pixels, so the window is carried to the extent and the wider area back.
+    let asked = film.as_ref().map_or(picture, |f| {
+        let in_extent = Area {
+            x: window.x - frame.x,
+            y: window.y - frame.y,
+            ..window
+        };
+        let wide = f.widen(in_extent);
+        ym_color::schedule::union_area(
+            picture,
+            Area {
+                x: wide.x + frame.x,
+                y: wide.y + frame.y,
+                ..wide
+            },
+        )
+    });
     let grown = chains
         .iter()
         .map(|c| {
             c.schedule(u_px, &|id| film.as_ref().and_then(|f| f.reach_of(id)))
-                .infer(picture, &frame)
+                .infer(asked, &frame)
                 .source
         })
         .fold(Area::default(), ym_color::schedule::union_area);
@@ -1176,8 +1197,9 @@ fn device_film(
     let Some(rr) = rr.filter(|_| chain.has_films()) else {
         return Ok(None);
     };
-    Ok(FilmRender::build(job, chain, rr.frame, rr.spec.target)?
-        .map(|film| Arc::new(film.device_stack().fast(true))))
+    FilmRender::build(job, chain, rr.frame, rr.spec.target)?
+        .map(|film| film.device_stack().map(|stack| Arc::new(stack.fast(true))))
+        .transpose()
 }
 
 /// The raster planes of a CPU colour pass, over the picture it makes: sampled over the area the masks look at
@@ -3359,6 +3381,21 @@ pub(crate) fn render_view(mut job: Job<'_>, spec: &ViewSpec) -> Result<RenderedF
             ));
         }
     };
+    // Show skin areas: one face's areas tinted on the finished pixels (`face_areas`).
+    let mut rgba = rgba;
+    if let Some((number, entry)) = job.face_view().cloned()
+        && on_device.is_none()
+    {
+        let final_px = job.final_size()?;
+        face_areas::tint_skin_areas(
+            &mut rgba,
+            (spec.out_w, spec.out_h),
+            &spec.view_to_final,
+            final_px,
+            &entry,
+            number,
+        );
+    }
     let graph = Arc::clone(&job.g);
     let report = job.finish(done.scale, done.device, spec.target);
     let frame = RenderedFrame {
@@ -4272,7 +4309,10 @@ impl Renderer {
         let tiles_total = (fw.div_ceil(tile) * fh.div_ceil(tile)).max(1);
         let colour_on_device = device_colour.is_some();
         // The Film nodes as the device runs them (the same steps as the CPU's `film_render`).
-        let film_stack = film_render.as_ref().map(|f| Arc::new(f.device_stack()));
+        let film_stack = film_render
+            .as_ref()
+            .map(|f| f.device_stack().map(Arc::new))
+            .transpose()?;
         let spec = JobSpec::new(Priority::Export).owned_by(u64::from(src.id.0));
         let mut best_fraction = 0.0f32;
         'render: loop {
@@ -4291,7 +4331,11 @@ impl Renderer {
                         w: tw,
                         h: th,
                     };
-                    let grown = schedule.infer(tile_area, &frame_area).source;
+                    // The tile, grown to hold the face regions it meets (`FilmRender::widen`).
+                    let asked = film_render
+                        .as_ref()
+                        .map_or(tile_area, |f| f.widen(tile_area));
+                    let grown = schedule.infer(asked, &frame_area).source;
                     let (gx, gy) = (grown.x as usize, grown.y as usize);
                     if grid.source_bounds(ox, oy, tw, th, 3).is_some()
                         && let Some((x0, y0, x1, y1)) =

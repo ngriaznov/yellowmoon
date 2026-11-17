@@ -478,3 +478,25 @@ export function turnMatrix(orientation: number, width: number, height: number): 
       return [1, 0, 0, 1, 0, 0];
   }
 }
+
+/**
+ * Show skin areas (`MaskView.face`) as the browser build draws it: a stand-in for the core's tints on the face's box (a share of the photo's frame): the skin in
+ * pink, the two bands under the eyes in blue and the even-skin core as a dashed green outline (`docs/27` S-11b2). Drawn in the photo's own pixels, carried to the
+ * picture by its map like the masks of a corrector.
+ */
+export function skinAreasSvg(face: { number: number; x: number; y: number; width: number; height: number }, photo: MaskPhoto): string {
+  const at = (x: number, y: number): [number, number] => [(face.x + x * face.width) * photo.width, (face.y + y * face.height) * photo.height];
+  const ellipse = (cx: number, cy: number, rx: number, ry: number, extra: string): string => {
+    const [px, py] = at(cx, cy);
+    return `<ellipse cx="${round(px)}" cy="${round(py)}" rx="${round(rx * face.width * photo.width)}" ry="${round(ry * face.height * photo.height)}" ${extra}/>`;
+  };
+  const unit = Math.max(photo.width, photo.height) / 400;
+  return (
+    `<g data-skin-areas="${face.number}" transform="matrix(${photo.matrix.map(round).join(" ")})">` +
+    ellipse(0.5, 0.5, 0.5, 0.5, 'fill="#ff6fd2" fill-opacity="0.45"') +
+    ellipse(0.3, 0.38, 0.14, 0.05, 'fill="#3d9bff" fill-opacity="0.6"') +
+    ellipse(0.7, 0.38, 0.14, 0.05, 'fill="#3d9bff" fill-opacity="0.6"') +
+    ellipse(0.5, 0.52, 0.32, 0.38, `fill="none" stroke="#8ee56b" stroke-width="${round(2 * unit)}" stroke-dasharray="${round(6 * unit)} ${round(4 * unit)}"`) +
+    `</g>`
+  );
+}

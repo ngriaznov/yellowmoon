@@ -282,6 +282,9 @@ const FILM_PLANES: u32 = 6;
 /// The Film node does something (`N_FILM_LIVE`: not bypassed, Strength above 0); `ctl.w` is the first plane of the plan
 /// buffer that holds its picture.
 pub(crate) const NODE_FILM_LIVE: u32 = 1024;
+/// The Film step is a Face Refinement node's (`N_FACE`, `docs/27` S-13): its picture covers only the regions around the faces,
+/// and a pixel that holds all zeros there has no picture and keeps the node's input.
+pub(crate) const NODE_FACE: u32 = 4096;
 /// The mask row is subtracted (`MF_SUBTRACT`, in `MaskOpU::head.y`).
 pub(crate) const MASK_SUBTRACT: u32 = 1;
 /// The mask row is inverted (`MF_INVERT`).
@@ -1330,6 +1333,9 @@ impl NodePlan {
                 if let Some(k) = films.iter().position(|&n| n == step.node) {
                     bits |= NODE_FILM_LIVE;
                     r.ctl[3] = FILM_PLANES * k as u32;
+                }
+                if film.face {
+                    bits |= NODE_FACE;
                 }
             }
             // The mask rows (`ym_color::mask`): the same rows, derived once, as the CPU reads. A node blends when

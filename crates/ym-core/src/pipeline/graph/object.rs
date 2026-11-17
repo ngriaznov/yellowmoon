@@ -238,7 +238,20 @@ impl Renderer {
     /// ([`unmakeable_mask_with`]), `None` when the photo can be rendered with all its masks.
     #[must_use]
     pub fn unmakeable_mask(&self, s: &DevelopSettings) -> Option<String> {
-        unmakeable_mask_with(s, self.mask_support())
+        unmakeable_mask_with(s, self.mask_support()).or_else(|| self.unmakeable_face_node(s))
+    }
+
+    /// The sentence for a Face Refinement node that does something in a photo of this computer when it has no face models
+    /// (`docs/27` S-11b: an export does not write the photo without the retouch, as it does not for a Depth row without its model),
+    /// `None` otherwise. A bypassed node and one with every amount at 0 do nothing and need no model.
+    #[must_use]
+    pub fn unmakeable_face_node(&self, s: &DevelopSettings) -> Option<String> {
+        if self.faces_available() {
+            return None;
+        }
+        crate::pipeline::color::live_face_nodes(s, PlanStop::Output)
+            .first()
+            .map(|&id| crate::pipeline::faces::no_face_model_sentence(id))
     }
 
     /// Who hears when the encoder starts or stops working for a photo ([`ObjectPhase`]). Replaces the one set before.
@@ -692,10 +705,14 @@ impl Job<'_> {
         let objects = self.object_planes_for(settings, stop)?;
         let vision = self.vision_planes_for(settings, stop)?;
         let depth = self.depth_for(settings, stop)?;
-        if vision.is_empty() && depth.is_none() {
+        let faces = self.faces_for(settings, stop)?;
+        if vision.is_empty() && depth.is_none() && faces.is_none() {
             return Ok(objects);
         }
         let mut merged = objects.map(|o| (*o).clone()).unwrap_or_default();
+        if let Some(faces) = faces {
+            merged.insert_faces(faces);
+        }
         for (kind, plane) in vision {
             merged.insert_vision(kind, plane);
         }

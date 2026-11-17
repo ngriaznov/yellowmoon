@@ -1205,11 +1205,16 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) 
             m = m * nf(ni, R_GAIN).x;
             if ((ctl & N_FILM_LIVE) != 0u && m != 0.0) {
                 let made = plane_pic(nu(ni, R_CTL).w, n, pix);
-                graded = made;
-                if (m == 1.0) {
-                    out_v = made;
-                } else {
-                    out_v = v_in + m * (made - v_in);
+                // A Face Refinement node's picture of all zeros is "no picture here" (docs/27 S-13): the node's input stays, as
+                // the CPU's NaN marker leaves it.
+                let none = (ctl & N_FACE) != 0u && made.x == 0.0 && made.y == 0.0 && made.z == 0.0;
+                if (!none) {
+                    graded = made;
+                    if (m == 1.0) {
+                        out_v = made;
+                    } else {
+                        out_v = v_in + m * (made - v_in);
+                    }
                 }
             }
         } else if (blends && !skipped) {

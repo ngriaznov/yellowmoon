@@ -313,6 +313,36 @@ impl Sandbox {
         data
     }
 
+    /// The shipped data folder in `<root>/data-no-faces` without the face weights (`models/mediapipe`): the same files, linked
+    /// and not copied. For the tests of what a copy of Yellowmoon with no face models says and does (`docs/27`, S-11b).
+    #[cfg(unix)]
+    pub fn data_without_the_face_weights(&self) -> PathBuf {
+        use std::os::unix::fs::symlink;
+        let data = self.root().join("data-no-faces");
+        std::fs::create_dir_all(data.join("models")).expect("data folder");
+        for entry in std::fs::read_dir(data_dir()).expect("the data folder") {
+            let entry = entry.expect("entry");
+            if entry.file_name() != "models" {
+                symlink(entry.path(), data.join(entry.file_name())).expect("link");
+            }
+        }
+        for entry in std::fs::read_dir(data_dir().join("models")).expect("the models") {
+            let entry = entry.expect("entry");
+            if entry.file_name() != "mediapipe" {
+                symlink(entry.path(), data.join("models").join(entry.file_name())).expect("link");
+            }
+        }
+        data
+    }
+
+    /// [`Sandbox::ym`] with the fake face finder (`YELLOWMOON_TEST_FACES=fake`): a computer that has the Face Refinement node's
+    /// models, with a finder that gives two faces at fixed places, without the weights, on every platform.
+    pub fn ym_fake_faces(&self) -> Command {
+        let mut cmd = self.ym();
+        cmd.env(FAKE_FACES.0, FAKE_FACES.1);
+        cmd
+    }
+
     /// [`Sandbox::ym`] with the fake depth model (`YELLOWMOON_TEST_DEPTH=fake`): a computer that has the Depth mask and makes
     /// its map up from the picture, without the weights, on every platform.
     pub fn ym_fake_depth(&self) -> Command {
@@ -335,6 +365,9 @@ pub const NO_VISION: (&str, &str) = ("YELLOWMOON_TEST_VISION", "none");
 
 /// The environment variable and value that give `ym` the fake depth model (`ym_core::pipeline::DepthModel::TEST_ENV`).
 pub const FAKE_DEPTH: (&str, &str) = ("YELLOWMOON_TEST_DEPTH", "fake");
+
+/// The environment variable and value that give `ym` the fake face finder (`ym_core::pipeline::FaceModel::TEST_ENV`).
+pub const FAKE_FACES: (&str, &str) = ("YELLOWMOON_TEST_FACES", "fake");
 
 /// The environment variable and value that give `ym` the fake Vision (`ym_apple::vision::TEST_VISION_FAKE`).
 pub const FAKE_VISION: (&str, &str) = ("YELLOWMOON_TEST_VISION", "fake");

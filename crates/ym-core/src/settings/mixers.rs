@@ -184,7 +184,11 @@ impl MixerNode {
             NodeKind::Layer => Some(Self::Layer(LayerNode::default())),
             NodeKind::Splitter => Some(Self::Splitter(SplitterNode::default())),
             NodeKind::Combiner => Some(Self::Combiner(CombinerNode::default())),
-            NodeKind::Input | NodeKind::Output | NodeKind::Corrector | NodeKind::Film => None,
+            NodeKind::Input
+            | NodeKind::Output
+            | NodeKind::Corrector
+            | NodeKind::Film
+            | NodeKind::FaceRefinement => None,
         }
     }
 
@@ -291,7 +295,11 @@ impl MixerNode {
             NodeKind::Layer => Self::Layer(serde_json::from_value(value)?),
             NodeKind::Splitter => Self::Splitter(serde_json::from_value(value)?),
             NodeKind::Combiner => Self::Combiner(serde_json::from_value(value)?),
-            NodeKind::Input | NodeKind::Output | NodeKind::Corrector | NodeKind::Film => {
+            NodeKind::Input
+            | NodeKind::Output
+            | NodeKind::Corrector
+            | NodeKind::Film
+            | NodeKind::FaceRefinement => {
                 return Ok(None);
             }
         }))

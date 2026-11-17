@@ -13,6 +13,11 @@ import type { FrameUnits, Pt } from "./maskGeometry";
 export interface BrushTarget {
   node: number;
   index: number;
+  /**
+   * The strokes are a Face Refinement node's protection (`docs/27` S-11c), not a Brush row's: `node` is that node, `index` is not used, and a stroke is
+   * sent as `protect.strokes_append` (`store.addProtectStroke`).
+   */
+  protect?: boolean;
 }
 
 export interface BrushLayerProps extends BrushTarget {
@@ -55,7 +60,7 @@ const coords = (p: Pt): string => `${Math.round(p[0] * 100) / 100},${Math.round(
  * points a brush radius to either side and above and below it, so a lens's bend or the zoom is in it. The layer takes the press (the photo is not
  * panned by a stroke), lets the wheel and the zoom keys through, and is not a Tab stop: it is a surface to draw on, not a control.
  */
-export function BrushLayer({ store, photo, rs, node, index, cell }: BrushLayerProps) {
+export function BrushLayer({ store, photo, rs, node, index, protect = false, cell }: BrushLayerProps) {
   const brush = useAppState((s) => s.brush);
   const units = useMemo(() => frameUnits(photo.width_px / Math.max(1, photo.height_px)), [photo.width_px, photo.height_px]);
   // A frame drawn by the core (the zoom or the pan moved, the photo's geometry changed) changes what the brush measures on screen.
@@ -70,8 +75,23 @@ export function BrushLayer({ store, photo, rs, node, index, cell }: BrushLayerPr
   const [held, setHeld] = useState<Drawn[]>([]);
 
   // What a gesture and the measuring read when they run: the latest props, not the ones of the render that started them.
-  const latest = useRef({ brush, units, node, index, photoId: rs.photo_id, radius });
-  latest.current = { brush, units, node, index, photoId: rs.photo_id, radius };
+  const latest = useRef({ brush, units, node, index, protect, photoId: rs.photo_id, radius });
+  latest.current = { brush, units, node, index, protect, photoId: rs.photo_id, radius };
+  // ⌥ held turns Paint into Erase and Erase into Paint, for the cursor and for the stroke that starts while it is held.
+  const [alt, setAlt] = useState(false);
+  useEffect(() => {
+    const on = (event: KeyboardEvent): void => setAlt(event.altKey);
+    const off = (): void => setAlt(false);
+    window.addEventListener("keydown", on);
+    window.addEventListener("keyup", on);
+    window.addEventListener("blur", off);
+    return () => {
+      window.removeEventListener("keydown", on);
+      window.removeEventListener("keyup", on);
+      window.removeEventListener("blur", off);
+    };
+  }, []);
+  const erasing = brush.erase !== alt;
 
   // The measuring of the cursor: one question at a time to the core, the latest pointer position the one that counts.
   const measuring = useRef<{ busy: boolean; next: Pt | null; last: Pt | null; stale: boolean }>({ busy: false, next: null, last: null, stale: true });
@@ -154,6 +174,7 @@ export function BrushLayer({ store, photo, rs, node, index, cell }: BrushLayerPr
     units: FrameUnits;
     node: number;
     index: number;
+    protect: boolean;
     photoId: ResolvedSettings["photo_id"];
   } | null>(null);
   const strokes = useRef(0);
@@ -162,7 +183,7 @@ export function BrushLayer({ store, photo, rs, node, index, cell }: BrushLayerPr
     // One question to the core for the whole stroke.
     const mapped = await store.mapPoints(g.places, "cell");
     const stroke = mapped ? buildStroke(mapped, g.brush, g.units) : null;
-    if (stroke) await store.addStroke(g.node, g.index, stroke, g.photoId);
+    if (stroke) await (g.protect ? store.addProtectStroke(g.node, stroke, g.photoId) : store.addStroke(g.node, g.index, stroke, g.photoId));
     // The page's drawing stays until the picture the core makes of the stroke has had time to arrive.
     window.setTimeout(() => {
       if (alive.current) setHeld((list) => list.filter((d) => d.id !== g.id));
@@ -185,10 +206,11 @@ export function BrushLayer({ store, photo, rs, node, index, cell }: BrushLayerPr
         points: `${coords(first)} ${coords(first)}`,
         box,
         width: current.radius * 2,
-        brush: { ...current.brush },
+        brush: { ...current.brush, erase: current.brush.erase !== event.altKey },
         units: current.units,
         node: current.node,
         index: current.index,
+        protect: current.protect,
         photoId: current.photoId,
       };
       gesture.current = g;
@@ -258,7 +280,7 @@ export function BrushLayer({ store, photo, rs, node, index, cell }: BrushLayerPr
         <div
           className="ym-brush-cursor"
           data-brush-cursor=""
-          data-erase={brush.erase || undefined}
+          data-erase={erasing || undefined}
           data-radius={Math.round(radius * 100) / 100}
           style={{ left: at[0], top: at[1], width: radius * 2, height: radius * 2 }}
         >

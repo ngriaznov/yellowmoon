@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Checks that the app bundle carries the licence texts its notices promise (the part of THIRD-PARTY.md that no generator can do).
 
-    python3 tools/licences/check_bundle.py [--require-weights [--depth-pending]] [REPO]
+    python3 tools/licences/check_bundle.py [--require-weights [--depth-pending]] [--require-mediapipe] [REPO]
 
 * ``src-tauri/tauri.conf.json`` ``bundle.resources`` lists ``NOTICE``, ``LICENSE`` and the generated ``THIRD-PARTY.md``
   (tools/licences/generate.py; the file is written by ``release.yml`` and by the CI job ``licences``).
@@ -19,6 +19,11 @@
   item 13. With ``--require-weights`` the depth weights are required like SAM's, except with ``--depth-pending``, which ``build.yml``
   and ``release.yml`` pass only while ``data/models/depth/SHA256SUMS`` still holds the placeholder (the ``depth`` job of
   ``models.yml`` has not run yet); a build with the flag has no Depth masks and says so.
+* The MediaPipe face networks (``data/models/mediapipe/``, S-08, ``docs/27``, ``docs/07``, ``docs/14``; Google, Apache-2.0): the model
+  card with the Apache-2.0 terms and the link to Google's model bucket, a ``.gitignore`` for the weights, a ``SHA256SUMS`` line for
+  each of the three files (real hashes from the start: the conversion is deterministic), and in ``NOTICE`` item 14. The files are
+  required only with ``--require-mediapipe``, which ``build.yml`` and ``release.yml`` pass once the release ``models-mediapipe-faces-1``
+  exists (the ``mediapipe`` job of ``models.yml`` has run); a build without the flag has no face finder and says so.
 * The fixtures of the Film node's oracle (``crates/ym-film/tests/oracle/``, F-06) are checked like the data folders below: they are
   numbers computed from the CC BY-SA profiles, so they need ``LICENSE``, ``ATTRIBUTION.md`` and ``SHA256SUMS`` too.
 * ``bundle.resources`` carries ``data/film`` and ``NOTICE`` has the items for the spektrafilm profiles (Andrea Volpato, CC BY-SA 4.0,
@@ -46,7 +51,7 @@ REQUIRED_RESOURCES = {
     "LICENSE": "the Apache-2.0 text of Yellowmoon itself",
     "THIRD-PARTY.md": "the licence texts of the Rust crates, JavaScript packages and fonts (NOTICE item 8, About)",
     "data/film": "the film profiles and CIE tables with their CC BY-SA 4.0 licences (docs/24 section 6)",
-    "data/models": "the models, among them the SAM 2.1 small weights that tools/fetch/sam2.sh puts in data/models/sam2/ and the depth weights that tools/fetch/depth.sh puts in data/models/depth/ (docs/12)",
+    "data/models": "the models, among them the SAM 2.1 small weights that tools/fetch/sam2.sh puts in data/models/sam2/ the depth weights that tools/fetch/depth.sh puts in data/models/depth/ and the MediaPipe face networks that tools/fetch/mediapipe.sh puts in data/models/mediapipe/ (docs/12)",
 }
 
 #: The SAM 2.1 small weights (N-16): the folder, the file, and the pin a SHA256SUMS line has before the models workflow has run.
@@ -56,6 +61,14 @@ SAM2_PLACEHOLDER = "TBD-after-first-run"
 #: The Depth Anything V2-Small weights (D-02): the same layout, fetched by tools/fetch/depth.sh.
 DEPTH_DIR = Path("data") / "models" / "depth"
 DEPTH_WEIGHTS = "depth_anything_v2_vits.f16.safetensors"
+
+#: The MediaPipe face networks (S-08): the folder and the three files fetched by tools/fetch/mediapipe.sh.
+MEDIAPIPE_DIR = Path("data") / "models" / "mediapipe"
+MEDIAPIPE_WEIGHTS = (
+    "blaze_face_full_range.f16.safetensors",
+    "face_mesh_v2.f16.safetensors",
+    "selfie_multiclass_256.f32.safetensors",
+)
 
 #: Phrases a complete BSD 3-Clause text has, and what NOTICE must carry for colour-demosaicing (item 7) and for glasscn (item 9).
 NOTICE_PHRASES = (
@@ -70,6 +83,8 @@ NOTICE_PHRASES = (
     ("Depth Anything V2-Small", "the name of the depth model (NOTICE item 13), Apache-2.0 section 4"),
     ("Lihe Yang", "the authors of the Depth Anything V2-Small weights (Apache-2.0), whose notice the licence requires in every copy"),
     ("github.com/DepthAnything/Depth-Anything-V2", "the link to the depth weights' source (Apache-2.0 section 4)"),
+    ("MediaPipe Authors", "the copyright holder of the MediaPipe face networks (Apache-2.0), whose notice the licence requires in every copy"),
+    ("github.com/google-ai-edge/mediapipe", "the link to the MediaPipe networks' source (Apache-2.0 section 4)"),
     ("Andrea Volpato", "the author of the spektrafilm profiles (CC BY-SA 4.0), who must be named in every copy"),
     ("github.com/andreavolpato/spektrafilm", "the canonical source of the spektrafilm profiles, which the licence requires"),
     ("data/film/spektrafilm/LICENSE", "the pointer to the spektrafilm licence text"),
@@ -187,6 +202,19 @@ def depth_problems(root: Path, require_weights: bool) -> list[str]:
     return model_problems(root, DEPTH_DIR, DEPTH_WEIGHTS, "github.com/DepthAnything/Depth-Anything-V2", "tools/fetch/depth.sh", "Depth masks", require_weights)
 
 
+def mediapipe_problems(root: Path, require_files: bool) -> list[str]:
+    """The MediaPipe face networks' folder: what is committed (card, ``.gitignore``, a SHA-256 line per file), and with ``require_files``
+    the three fetched files as well. One folder, three files: each is checked like a single model's weights."""
+    found: list[str] = []
+    for index, name in enumerate(MEDIAPIPE_WEIGHTS):
+        # The card and the .gitignore are the folder's: report them once.
+        problems_of_file = model_problems(
+            root, MEDIAPIPE_DIR, name, "storage.googleapis.com/mediapipe-models", "tools/fetch/mediapipe.sh", "face finder for the Skin node", require_files
+        )
+        found += problems_of_file if index == 0 else [p for p in problems_of_file if "MODEL_CARD" not in p and ".gitignore" not in p]
+    return found
+
+
 def film_problems(root: Path) -> list[str]:
     """The film data folders (``FILM_DIRS``): LICENSE, ATTRIBUTION.md, and a SHA256SUMS that matches every file."""
     found: list[str] = []
@@ -215,10 +243,11 @@ def film_problems(root: Path) -> list[str]:
     return found
 
 
-def problems(root: Path, require_weights: bool = False, depth_pending: bool = False) -> list[str]:
+def problems(root: Path, require_weights: bool = False, depth_pending: bool = False, require_mediapipe: bool = False) -> list[str]:
     """Everything that is missing, one sentence each.
 
     With ``depth_pending`` the depth weights are not required even under ``require_weights`` (their pin is still the placeholder).
+    The MediaPipe files are required only with ``require_mediapipe`` (the release exists).
     """
     found: list[str] = []
     config = root / "src-tauri" / "tauri.conf.json"
@@ -238,19 +267,26 @@ def problems(root: Path, require_weights: bool = False, depth_pending: bool = Fa
     for phrase, why in NOTICE_PHRASES:
         if phrase not in text:
             found.append(f'NOTICE does not contain "{phrase}": {why}')
-    return found + sam2_problems(root, require_weights) + depth_problems(root, require_weights and not depth_pending) + film_problems(root)
+    return (
+        found
+        + sam2_problems(root, require_weights)
+        + depth_problems(root, require_weights and not depth_pending)
+        + mediapipe_problems(root, require_mediapipe)
+        + film_problems(root)
+    )
 
 
 def main(argv: list[str]) -> int:
     require_weights = "--require-weights" in argv
     depth_pending = "--depth-pending" in argv
+    require_mediapipe = "--require-mediapipe" in argv
     paths = [arg for arg in argv if not arg.startswith("--")]
-    unknown = [arg for arg in argv if arg.startswith("--") and arg not in ("--require-weights", "--depth-pending")]
+    unknown = [arg for arg in argv if arg.startswith("--") and arg not in ("--require-weights", "--depth-pending", "--require-mediapipe")]
     if unknown or (depth_pending and not require_weights):
-        print(f"error: unknown option {unknown[0] if unknown else '--depth-pending without --require-weights'}; usage: check_bundle.py [--require-weights [--depth-pending]] [REPO]")
+        print(f"error: unknown option {unknown[0] if unknown else '--depth-pending without --require-weights'}; usage: check_bundle.py [--require-weights [--depth-pending]] [--require-mediapipe] [REPO]")
         return 2
     root = Path(paths[0]).resolve() if paths else REPO
-    found = problems(root, require_weights, depth_pending)
+    found = problems(root, require_weights, depth_pending, require_mediapipe)
     for line in found:
         print(f"error: {line}")
     for line in warnings(root):
@@ -261,7 +297,9 @@ def main(argv: list[str]) -> int:
         if require_weights:
             weights = "; the SAM 2.1 weights are in place and match SHA256SUMS"
             weights += "; the depth weights are NOT checked (--depth-pending: their pin is the placeholder)" if depth_pending else "; the depth weights are in place and match SHA256SUMS"
-        print(f"bundle check: NOTICE, LICENSE, THIRD-PARTY.md, data/models and data/film are bundled; NOTICE carries the BSD, MIT, Meta, Depth Anything, spektrafilm and CIE notices; the film data folders match their sums{weights}")
+        if require_mediapipe:
+            weights += "; the MediaPipe networks are in place and match SHA256SUMS"
+        print(f"bundle check: NOTICE, LICENSE, THIRD-PARTY.md, data/models and data/film are bundled; NOTICE carries the BSD, MIT, Meta, Depth Anything, MediaPipe, spektrafilm and CIE notices; the film data folders match their sums{weights}")
     return 1 if found else 0
 
 

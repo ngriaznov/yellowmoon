@@ -172,7 +172,7 @@ fn the_four_kinds_have_names_and_sentences() {
         assert_eq!(kind.sentence(), sentence);
         assert_eq!(NodeKind::parse(name).unwrap(), kind);
     }
-    assert_eq!(NodeKind::ALL.len(), 8);
+    assert_eq!(NodeKind::ALL.len(), 9);
     assert_eq!(
         NodeKind::parse("outside").unwrap_err().to_string(),
         "This settings file has a node of a kind (“outside”) that this version of Yellowmoon does not have. Update Yellowmoon."

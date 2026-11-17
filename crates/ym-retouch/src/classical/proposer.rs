@@ -1,0 +1,538 @@
+//! The classical blemish proposer (`docs/27` S-07): a gated detect-and-fill.
+//!
+//! Dark spots are found by a per-channel black top-hat at blemish scale, red spots by a red-excess
+//! test (redness above the local skin), both on slightly smoothed log values. A hysteresis
+//! threshold and a connected-component test (size, aspect) give the detection mask, grown a little.
+//! Inside the mask the low-frequency base of each channel is replaced by a harmonic (membrane)
+//! fill from the rim and the fine detail is taken from the clean skin next to the spot (a displaced
+//! copy of the detail field, clamped; S-12, since the spot's own detail has its rim in it). **Everywhere outside the mask the
+//! output is exactly the input**, so clean skin gets no veil at any Blemish amount.
+//!
+//! The proposer works in the encoding it receives (`docs/27` 6.1 step 2: square root of the linear
+//! value, mean-normalised). All thresholds are in natural-log units of that encoding, which is half
+//! the log of the linear ratio. Every constant below is a starting value for S-12 (tuning).
+
+use rayon::prelude::*;
+
+use super::grey::{Grey, components, dilate_disc};
+use crate::error::{Result, RetouchError};
+use crate::models::BlemishProposer;
+
+/// Smallest value taken to the logarithm (the encoded value of black).
+pub const LOG_FLOOR: f64 = 1e-4;
+/// Smallest blemish diameter, as a fraction of the face size `D` (`docs/27` S-06: 0.7 %).
+pub const SPOT_MIN_FRAC: f64 = 0.007;
+/// Largest blemish diameter, as a fraction of `D` (3.5 %). Sets the radius of the top-hat window.
+pub const SPOT_MAX_FRAC: f64 = 0.035;
+/// Spots whose bounding box is smaller than this many pixels (both sides) are dropped.
+pub const MIN_SPOT_SIDE_PX: f64 = 3.0;
+/// Components whose longer bounding-box side exceeds this fraction of `D` are not blemishes
+/// (lips, brows, creases, shadows).
+pub const MAX_SIDE_FRAC: f64 = 0.05;
+/// Components more elongated than this (long side over short side) are hairs or lines, not spots.
+pub const ASPECT_MAX: f64 = 3.5;
+/// Gaussian sigma of the smoothing before the top-hat, as a fraction of `D` (at least
+/// [`PRE_SIGMA_MIN_PX`]); it keeps pores and sensor noise out of the detection.
+pub const PRE_SIGMA_FRAC: f64 = 0.0035;
+/// Lower bound of the pre-smoothing sigma in pixels.
+pub const PRE_SIGMA_MIN_PX: f64 = 0.7;
+/// Sigma of the base layer of the frequency separation, as a fraction of `D` (at least
+/// [`SEP_SIGMA_MIN_PX`]); roughly pore scale, so spots are in the base and texture in the detail.
+pub const SEP_SIGMA_FRAC: f64 = 0.003;
+/// Lower bound of the separation sigma in pixels.
+pub const SEP_SIGMA_MIN_PX: f64 = 1.0;
+/// Top-hat depth (natural log of the encoded value, any channel) that seeds a dark spot.
+/// 0.05 is about 10 % in linear light.
+pub const DARK_HI: f64 = 0.055;
+/// Red excess (`ln R - ln G` above the local skin) that seeds a red spot.
+pub const RED_HI: f64 = 0.065;
+/// A pixel joins a seeded spot when its score is at least this fraction of the seed threshold.
+pub const LO_RATIO: f64 = 0.55;
+/// Radius by which the detection mask is grown, as a fraction of `D` (at least 1 px).
+pub const DILATE_FRAC: f64 = 0.004;
+/// The detail given to a spot is clamped to this many natural-log units (a pore at the edge of the
+/// source should not come back as a dot).
+pub const DETAIL_CLAMP: f64 = 0.03;
+/// Over-relaxation factor of the harmonic fill.
+pub const SOR_OMEGA: f64 = 1.6;
+/// Sweeps of the harmonic fill (fixed, so the result is deterministic).
+pub const FILL_SWEEPS: usize = 120;
+/// Default side of the output tile in pixels.
+pub const TILE_PX: u32 = 320;
+
+/// S-16, the wide tier: the window of its top-hat, as a fraction of `D` (7 %: a spot of 6 % across
+/// and its soft edge fit). It takes in acne papules and small clusters; large flat red areas stay the
+/// job of Even skin.
+pub const WIDE_SPOT_MAX_FRAC: f64 = 0.07;
+/// S-16: the longer bounding-box side of a wide-tier spot, as a fraction of `D` (7.5 %, against
+/// [`MAX_SIDE_FRAC`] 5 %): a papule of 6 % across has a detected side of about 7 %.
+pub const WIDE_MAX_SIDE_FRAC: f64 = 0.075;
+/// S-16: the wide tier seeds a red spot at this fraction of [`RED_HI`] (half of today's contrast). Acne is
+/// red; a faint dark or brown spot is as likely a freckle, a pore or a shadow, and a flat area
+/// that is darker in every channel is Even skin's, so the red test alone goes lower.
+pub const WIDE_RED_SEED_RATIO: f64 = 0.5;
+/// S-16: the wide tier seeds a dark spot at this fraction of [`DARK_HI`] (today's, but up to
+/// [`WIDE_SPOT_MAX_FRAC`] wide).
+pub const WIDE_DARK_SEED_RATIO: f64 = 1.5;
+/// S-16: smallest side of a wide-tier spot as a fraction of `D` (1 %). Fainter spots must be a little
+/// bigger than the core tier's, because pores and texture are faint and small.
+pub const WIDE_MIN_FRAC: f64 = 0.01;
+/// S-16: the strength (`alpha`, `docs/27` 6.1 step 6) of what only the wide tier finds is multiplied by
+/// this weight, so the Blemish amount's threshold (6.2) reaches it only above about half. At an amount
+/// of 100 every correction applies in full whatever its weight.
+pub const WIDE_TIER_WEIGHT: f64 = 0.5;
+
+/// The score of a pixel from its per-channel black top-hat depths and its red excess: the larger
+/// of the deepest channel over [`DARK_HI`] and the excess over [`RED_HI`]. 1 means "a seed".
+/// Non-finite or negative inputs count as 0, so the result is finite and non-negative.
+pub fn spot_score(tophat: [f64; 3], red_excess: f64) -> f64 {
+    let clean = |v: f64| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    let dark = tophat.iter().copied().map(clean).fold(0.0, f64::max);
+    (dark / DARK_HI).max(clean(red_excess) / RED_HI)
+}
+
+/// The largest side of a core-tier spot in pixels for a face of `d` pixels.
+fn max_side_core(d: f64) -> f64 {
+    (MAX_SIDE_FRAC * d).max(MIN_SPOT_SIDE_PX + 1.0)
+}
+
+/// What one tier of the detection accepts.
+struct Rules {
+    closing_r: usize,
+    /// The dark and the red seed thresholds as fractions of today's.
+    seed: (f64, f64),
+    min_side: f64,
+    max_side: f64,
+}
+
+/// The classical [`BlemishProposer`]. Built per face with the face size in map pixels.
+#[derive(Debug, Clone)]
+pub struct ClassicalProposer {
+    face_px: f64,
+    tile_px: u32,
+    closing_r: usize,
+    wide_closing_r: usize,
+    wide_min_side: f64,
+    wide_max_side: f64,
+    pre_sigma: f64,
+    sep_sigma: f64,
+    dilate_r: usize,
+    min_side: f64,
+    max_side: f64,
+    /// Radius around a spot inside which the detail field still feels the spot (3 sigma of the
+    /// separation filter, plus one).
+    near_r: usize,
+    border_px: u32,
+}
+
+impl ClassicalProposer {
+    /// A proposer for a face of `face_px` pixels in the blemish map (`min(face, 450)`; the trait
+    /// passes no face size, so it is given here). A non-finite or tiny size counts as 32.
+    pub fn new(face_px: f64) -> Self {
+        Self::with_tile_px(face_px, TILE_PX)
+    }
+
+    /// Like [`ClassicalProposer::new`] with an output tile of `tile_px` (at least 1). The result
+    /// does not depend on the tile size except within a few pixels of tile seams, because the
+    /// border covers every filter's support and the largest spot.
+    pub fn with_tile_px(face_px: f64, tile_px: u32) -> Self {
+        let d = if face_px.is_finite() && face_px >= 8.0 {
+            face_px.min(8192.0)
+        } else {
+            32.0
+        };
+        let closing_r = ((0.5 * SPOT_MAX_FRAC * d).ceil() as usize + 1).max(2);
+        let wide_closing_r = ((0.5 * WIDE_SPOT_MAX_FRAC * d).ceil() as usize + 1).max(closing_r);
+        let wide_max_side = (WIDE_MAX_SIDE_FRAC * d).max(max_side_core(d));
+        let wide_min_side = (WIDE_MIN_FRAC * d).max(MIN_SPOT_SIDE_PX + 1.0);
+        let pre_sigma = (PRE_SIGMA_FRAC * d).max(PRE_SIGMA_MIN_PX);
+        let sep_sigma = (SEP_SIGMA_FRAC * d).max(SEP_SIGMA_MIN_PX);
+        let dilate_r = ((DILATE_FRAC * d).round() as usize).max(1);
+        let max_side = max_side_core(d);
+        // Support of the detection (blur + opening or closing) + the largest spot (its component
+        // is decided as a whole) + the fill's base blur + the growth + a margin.
+        let near_r = (3.0 * sep_sigma).ceil() as usize + 1;
+        // The detail of a spot is copied from the skin one spot-width away (`detail_sources`), and
+        // that skin must be at least `near_r` from every spot.
+        let reach = wide_max_side.ceil() as usize + 2 * dilate_r + 2 * near_r + 1;
+        let border = 2 * wide_closing_r
+            + (3.0 * pre_sigma).ceil() as usize
+            + (3.0 * sep_sigma).ceil() as usize
+            + wide_max_side.ceil() as usize
+            + dilate_r
+            + reach
+            + 4;
+        Self {
+            face_px: d,
+            tile_px: tile_px.max(1),
+            closing_r,
+            wide_closing_r,
+            wide_min_side,
+            wide_max_side,
+            pre_sigma,
+            sep_sigma,
+            dilate_r,
+            min_side: MIN_SPOT_SIDE_PX.max(SPOT_MIN_FRAC * d),
+            max_side,
+            near_r,
+            border_px: border as u32,
+        }
+    }
+
+    /// The face size in map pixels this proposer was built for.
+    pub fn face_px(&self) -> f64 {
+        self.face_px
+    }
+
+    /// The detection of a square context (log planes): the mask of every spot to fill, grown by a
+    /// disc, and the part of it the core tier found (today's rules, `docs/27` S-07). The rest is the
+    /// wide tier's (S-16), which is weighted down in the map.
+    fn detect(&self, logs: &[Grey; 3]) -> (Vec<bool>, Vec<bool>) {
+        let (w, h) = (logs[0].w, logs[0].h);
+        let smooth: Vec<Grey> = logs.iter().map(|l| l.gaussian(self.pre_sigma)).collect();
+        let core = self.accepted(
+            &smooth,
+            &Rules {
+                closing_r: self.closing_r,
+                seed: (1.0, 1.0),
+                min_side: self.min_side,
+                max_side: self.max_side,
+            },
+            None,
+        );
+        let wide = self.accepted(
+            &smooth,
+            &Rules {
+                closing_r: self.wide_closing_r,
+                seed: (WIDE_DARK_SEED_RATIO, WIDE_RED_SEED_RATIO),
+                min_side: self.wide_min_side,
+                max_side: self.wide_max_side,
+            },
+            Some(&core),
+        );
+        let core_grown = dilate_disc(&core, w, h, self.dilate_r);
+        let wide_grown = dilate_disc(&wide, w, h, self.dilate_r);
+        let all = core_grown
+            .iter()
+            .zip(&wide_grown)
+            .map(|(&a, &b)| a || b)
+            .collect();
+        (all, core_grown)
+    }
+
+    /// The pixels of the spots one set of rules accepts (not grown). A component that has a pixel in
+    /// `exclude` is not accepted.
+    fn accepted(&self, smooth: &[Grey], rules: &Rules, exclude: Option<&[bool]>) -> Vec<bool> {
+        let (w, h) = (smooth[0].w, smooth[0].h);
+        let tophat: Vec<Grey> = smooth
+            .iter()
+            .map(|s| {
+                let c = s.closing(rules.closing_r);
+                Grey::new(
+                    w,
+                    h,
+                    c.data.iter().zip(&s.data).map(|(a, b)| a - b).collect(),
+                )
+            })
+            .collect();
+        let rho = Grey::new(
+            w,
+            h,
+            smooth[0]
+                .data
+                .iter()
+                .zip(&smooth[1].data)
+                .map(|(r, g)| r - g)
+                .collect(),
+        );
+        let open = rho.opening(rules.closing_r);
+        let score: Vec<f64> = (0..w * h)
+            .map(|i| {
+                let clean = |v: f64| if v.is_finite() { v.max(0.0) } else { 0.0 };
+                let dark = [tophat[0].data[i], tophat[1].data[i], tophat[2].data[i]]
+                    .into_iter()
+                    .map(clean)
+                    .fold(0.0, f64::max);
+                (dark / (DARK_HI * rules.seed.0))
+                    .max(clean(rho.data[i] - open.data[i]) / (RED_HI * rules.seed.1))
+            })
+            .collect();
+        let raw: Vec<bool> = score.iter().map(|&s| s >= LO_RATIO).collect();
+        let mut keep = vec![false; w * h];
+        for comp in components(&raw, w, h) {
+            let (cw, ch) = (comp.width() as f64, comp.height() as f64);
+            let (long, short) = (cw.max(ch), cw.min(ch));
+            let seeded = comp.pixels.iter().any(|&p| score[p] >= 1.0);
+            if !seeded
+                || long < rules.min_side
+                || long > rules.max_side
+                || long / short > ASPECT_MAX
+                || exclude.is_some_and(|e| comp.pixels.iter().any(|&p| e[p]))
+            {
+                continue;
+            }
+            for &p in &comp.pixels {
+                keep[p] = true;
+            }
+        }
+        keep
+    }
+
+    /// Fills the masked pixels of one channel: harmonic fill of the base from the rim, plus the
+    /// clamped detail. `inside` marks the detection mask. Returns the new log values (only the
+    /// masked entries are meaningful).
+    fn fill_channel(
+        &self,
+        log: &Grey,
+        inside: &[bool],
+        outside_weight: &Grey,
+        sources: &[Option<usize>],
+    ) -> Vec<f64> {
+        let (w, h) = (log.w, log.h);
+        let masked: Vec<f64> = log
+            .data
+            .iter()
+            .zip(inside)
+            .map(|(&v, &m)| if m { 0.0 } else { v })
+            .collect();
+        let num = Grey::new(w, h, masked).gaussian(self.sep_sigma);
+        let plain = log.gaussian(self.sep_sigma);
+        // Base from the pixels outside the spots only (no spill of the spot into the rim).
+        let mut base: Vec<f64> = num
+            .data
+            .iter()
+            .zip(&outside_weight.data)
+            .zip(inside)
+            .map(|((&n, &d), &m)| if !m && d > 1e-3 { n / d } else { f64::NAN })
+            .collect();
+        let (mut sum, mut n) = (0.0, 0usize);
+        for &b in base.iter().filter(|b| b.is_finite()) {
+            sum += b;
+            n += 1;
+        }
+        let mean = if n > 0 { sum / n as f64 } else { 0.0 };
+        let list: Vec<usize> = (0..w * h).filter(|&i| inside[i]).collect();
+        for &i in &list {
+            base[i] = mean;
+        }
+        for b in base.iter_mut().filter(|b| !b.is_finite()) {
+            *b = mean;
+        }
+        // Successive over-relaxation on the masked pixels, raster order, fixed sweep count.
+        for _ in 0..FILL_SWEEPS {
+            for &p in &list {
+                let (x, y) = (p % w, p / w);
+                let (mut acc, mut cnt) = (0.0, 0.0);
+                if x > 0 {
+                    acc += base[p - 1];
+                    cnt += 1.0;
+                }
+                if x + 1 < w {
+                    acc += base[p + 1];
+                    cnt += 1.0;
+                }
+                if y > 0 {
+                    acc += base[p - w];
+                    cnt += 1.0;
+                }
+                if y + 1 < h {
+                    acc += base[p + w];
+                    cnt += 1.0;
+                }
+                if cnt > 0.0 {
+                    base[p] += SOR_OMEGA * (acc / cnt - base[p]);
+                }
+            }
+        }
+        list.iter()
+            .map(|&p| {
+                let detail = sources[p].map_or(0.0, |q| {
+                    (log.data[q] - plain.data[q]).clamp(-DETAIL_CLAMP, DETAIL_CLAMP)
+                });
+                base[p] + detail
+            })
+            .collect()
+    }
+
+    /// For each masked pixel, the clean pixel whose detail (`log - plain`) it takes; `None` for the
+    /// pixels with no clean source in reach (they get no detail).
+    ///
+    /// A spot's own detail has the spot's rim in it (the pixels next to a dark spot are lighter than
+    /// their blur, and the other way round inside), which comes back as a bright and a dark ring
+    /// after the fill. The skin next to the spot has texture only, so each connected spot takes its
+    /// detail from the same shape displaced by one bounding box (plus [`Self::near_r`]) to the
+    /// right, left, below, above, then the diagonals: the first displacement whose source is
+    /// everywhere inside the picture and at least `near_r` from every spot, else the one with the
+    /// most such pixels. Deterministic: fixed order, no randomness.
+    fn detail_sources(&self, inside: &[bool], w: usize, h: usize) -> Vec<Option<usize>> {
+        let near = dilate_disc(inside, w, h, self.near_r);
+        let mut sources = vec![None; w * h];
+        for comp in components(inside, w, h) {
+            let sx = (comp.width() + self.near_r + 1) as isize;
+            let sy = (comp.height() + self.near_r + 1) as isize;
+            let candidates = [
+                (sx, 0),
+                (-sx, 0),
+                (0, sy),
+                (0, -sy),
+                (sx, sy),
+                (-sx, sy),
+                (sx, -sy),
+                (-sx, -sy),
+            ];
+            let source = |p: usize, (dx, dy): (isize, isize)| -> Option<usize> {
+                let (x, y) = ((p % w) as isize + dx, (p / w) as isize + dy);
+                if x < 0 || y < 0 || x >= w as isize || y >= h as isize {
+                    return None;
+                }
+                let q = y as usize * w + x as usize;
+                (!near[q]).then_some(q)
+            };
+            let mut best = (0usize, candidates[0]);
+            for &c in &candidates {
+                let valid = comp
+                    .pixels
+                    .iter()
+                    .filter(|&&p| source(p, c).is_some())
+                    .count();
+                if valid > best.0 {
+                    best = (valid, c);
+                }
+                if valid == comp.pixels.len() {
+                    break;
+                }
+            }
+            for &p in &comp.pixels {
+                sources[p] = source(p, best.1);
+            }
+        }
+        sources
+    }
+}
+
+impl BlemishProposer for ClassicalProposer {
+    fn for_face(&self, face_px: f64) -> Option<Box<dyn BlemishProposer>> {
+        Some(Box::new(Self::with_tile_px(
+            face_px.min(crate::blemish::TARGET_FACE_PX),
+            self.tile_px,
+        )))
+    }
+
+    fn output_size_px(&self) -> u32 {
+        self.tile_px
+    }
+
+    fn border_px(&self) -> u32 {
+        self.border_px
+    }
+
+    fn run(&self, input: &[f32]) -> Result<Vec<f32>> {
+        Ok(self.run_weighted(input)?.0)
+    }
+
+    fn run_weighted(&self, input: &[f32]) -> Result<(Vec<f32>, Option<Vec<f32>>)> {
+        let (tile, border) = (self.tile_px as usize, self.border_px as usize);
+        let side = tile + 2 * border;
+        if input.len() != 3 * side * side {
+            return Err(RetouchError::Model(format!(
+                "the proposer got {} values, expected {}",
+                input.len(),
+                3 * side * side
+            )));
+        }
+        let plane = side * side;
+        let copy_centre = |out: &mut Vec<f32>| {
+            for c in 0..3 {
+                for y in 0..tile {
+                    let start = c * plane + (y + border) * side + border;
+                    out.extend_from_slice(&input[start..start + tile]);
+                }
+            }
+        };
+        let mut out = Vec::with_capacity(3 * tile * tile);
+        let logs: [Grey; 3] = std::array::from_fn(|c| {
+            Grey::new(
+                side,
+                side,
+                input[c * plane..(c + 1) * plane]
+                    .iter()
+                    .map(|&v| f64::from(v).max(LOG_FLOOR).ln())
+                    .collect(),
+            )
+        });
+        let (inside, core) = self.detect(&logs);
+        if !inside.iter().any(|&m| m) {
+            copy_centre(&mut out);
+            return Ok((out, None));
+        }
+        let ones = Grey::new(
+            side,
+            side,
+            inside.iter().map(|&m| if m { 0.0 } else { 1.0 }).collect(),
+        )
+        .gaussian(self.sep_sigma);
+        let sources = self.detail_sources(&inside, side, side);
+        let filled: Vec<Vec<f64>> = (0..3)
+            .into_par_iter()
+            .map(|c| self.fill_channel(&logs[c], &inside, &ones, &sources))
+            .collect();
+        for (c, fill) in filled.iter().enumerate() {
+            // Position of each masked pixel in `fill`, in raster order.
+            let mut k = 0usize;
+            let mut chan = vec![0.0f32; plane];
+            for p in 0..plane {
+                if inside[p] {
+                    chan[p] = fill[k].exp() as f32;
+                    k += 1;
+                } else {
+                    chan[p] = input[c * plane + p];
+                }
+            }
+            for y in 0..tile {
+                let start = (y + border) * side + border;
+                out.extend_from_slice(&chan[start..start + tile]);
+            }
+        }
+        let weight = WIDE_TIER_WEIGHT as f32;
+        let mut weights = Vec::with_capacity(tile * tile);
+        for y in 0..tile {
+            let start = (y + border) * side + border;
+            weights.extend((start..start + tile).map(|p| if core[p] { 1.0 } else { weight }));
+        }
+        Ok((out, Some(weights)))
+    }
+}
+
+#[cfg(test)]
+mod unit {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn score_values() {
+        assert_eq!(spot_score([0.0; 3], 0.0), 0.0);
+        assert!((spot_score([0.0, DARK_HI, 0.0], 0.0) - 1.0).abs() < 1e-12);
+        assert!((spot_score([0.0; 3], RED_HI * 2.0) - 2.0).abs() < 1e-12);
+        assert_eq!(spot_score([f64::NAN, -1.0, f64::INFINITY], f64::NAN), 0.0);
+    }
+
+    #[test]
+    fn geometry_scales_with_the_face() {
+        let a = ClassicalProposer::new(450.0);
+        let b = ClassicalProposer::new(200.0);
+        assert!(a.border_px() > b.border_px());
+        assert_eq!(a.output_size_px(), TILE_PX);
+        assert_eq!(ClassicalProposer::new(f64::NAN).face_px(), 32.0);
+        assert!(a.run(&[0.0; 5]).is_err());
+    }
+
+    proptest! {
+        #[test]
+        fn score_is_finite_and_not_negative(
+            t in prop::array::uniform3(-10.0f64..10.0), e in -10.0f64..10.0,
+        ) {
+            let s = spot_score(t, e);
+            prop_assert!(s.is_finite() && s >= 0.0);
+        }
+    }
+}

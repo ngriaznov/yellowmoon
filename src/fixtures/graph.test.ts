@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { MOCK_ESTIMATES, resolveSettings } from "../api.mock";
 import type { DevelopSettings, MaskItem, NodeLink, SettingsPatch } from "../api/types";
-import { applyPatch, defaultLinks, defaultSettings, inputOf, inputPatch, newCorrector, newMixer, nodeOf, outputPatch } from "../state/settingsGraph";
+import {
+  applyPatch,
+  defaultLinks,
+  defaultSettings,
+  faceSettingsFor,
+  inputOf,
+  inputPatch,
+  newCorrector,
+  newFaceRefinement,
+  newMixer,
+  nodeOf,
+  outputPatch,
+} from "../state/settingsGraph";
 import { copiedPatch, COPY_LEAVES_OUT, GRAPH_TEXT, MAX_NODES, pastedOnto, portsOf, refusalOfPatch, validateGraph } from "./graph";
 
 const picture = (from: number | "input", to: number | "output"): NodeLink => ({ from: { node: from, port: "picture" }, to: { node: to, port: "picture" } });
@@ -303,5 +315,82 @@ describe("the nodes of docs/25: ports and rules, with the core's words (docs/25 
     const copy = copiedPatch(resolveSettings(1, s, MOCK_ESTIMATES));
     expect(copy.nodes?.["2"]).toMatchObject({ kind: "layer", mode: "darken", opacity: 0.4 });
     expect(copy.nodes?.["4"]).toEqual({ kind: "splitter", name: "Splitter", pos: [3, 0] });
+  });
+});
+
+describe("the Face Refinement node (docs/27 S-11a)", () => {
+  const threeNodes = (): DevelopSettings => {
+    const base = defaultSettings();
+    return {
+      nodes: {
+        items: [...base.nodes.items.slice(0, 2), newFaceRefinement(2, [1, 0]), ...base.nodes.items.slice(2)],
+        links: [picture("input", 1), picture(1, 2), picture(2, "output")],
+      },
+    };
+  };
+
+  it("starts at the approved amounts, with Same for all faces on and nothing protected", () => {
+    expect(newFaceRefinement(2, [1, 0])).toEqual({
+      kind: "face_refinement",
+      id: 2,
+      name: "Face Refinement",
+      bypass: false,
+      pos: [1, 0],
+      same_for_all: true,
+      all: { blemish: 30, dark_circles: 30, even_skin: 25, texture: 0, skin_contrast: 0, shadow_desaturation: 0, shine_removal: 0, teeth_whitening: 0 },
+      faces: [],
+      protect: { strokes: [], feather: 0, grow: 0, refine: 0 },
+      masks: { invert: false, items: [] },
+    });
+  });
+
+  it("has the ports of a corrector, and the core's sentences for its fields", () => {
+    expect(portsOf("face_refinement")).toEqual(portsOf("corrector"));
+    const s = threeNodes();
+    expect(validateGraph(s)).toBeNull();
+    expect(refusalOfPatch(s, { nodes: { "2": { same_for_all: false, all: { blemish: 5 }, faces: [], protect: { strokes_keep: 0 }, masks: { invert: true } } } })).toBeNull();
+    expect(refusalOfPatch(s, { nodes: { "2": { trim: { tint: 1 } } } })).toBe("A face refinement node has no field called “trim”.");
+    expect(refusalOfPatch(s, { nodes: { "1": { faces: [] } } })).toBe("A corrector has no field called “faces”.");
+    expect(refusalOfPatch(s, { nodes: { "2": { kind: "corrector" } } })).toBe("Node 2 is a face refinement node, not a corrector.");
+    expect(refusalOfPatch(defaultSettings(), { nodes: { "2": { kind: "face_refinement" } } })).toBeNull();
+  });
+
+  it("refuses more than 32 faces and holds the protection to the brush limit", () => {
+    const s = threeNodes();
+    const face = (nodeOf(s, 2) as ReturnType<typeof newFaceRefinement>).all;
+    const many = (n: number): DevelopSettings => applyPatch(s, { nodes: { "2": { faces: Array.from({ length: n }, () => face) } } });
+    expect(validateGraph(many(32))).toBeNull();
+    expect(validateGraph(many(33))).toBe(GRAPH_TEXT.tooManyFaces);
+    const stroke = { size: 0.02, hardness: 0.5, erase: false, points: Array.from({ length: 100_001 }, (): [number, number] => [0.5, 0.5]) };
+    expect(validateGraph(applyPatch(s, { nodes: { "2": { protect: { strokes: [stroke] } } } }))).toBe(GRAPH_TEXT.tooManyBrushPoints);
+  });
+
+  it("merges `all` by amount and applies the protection as a Brush row does", () => {
+    let s = applyPatch(threeNodes(), { nodes: { "2": { all: { blemish: 70, texture: -20 } } } });
+    expect(nodeOf(s, 2)).toMatchObject({ all: { blemish: 70, texture: -20, dark_circles: 30, even_skin: 25 } });
+    const stroke = (x: number) => ({ size: 0.02, hardness: 0.5, erase: false, points: [[x, 0.5]] as [number, number][] });
+    s = applyPatch(s, { nodes: { "2": { protect: { strokes_append: [stroke(0.1)] } } } });
+    s = applyPatch(s, { nodes: { "2": { protect: { strokes_append: [stroke(0.2), stroke(0.3)] } } } });
+    expect(nodeOf(s, 2)).toMatchObject({ protect: { strokes: [stroke(0.1), stroke(0.2), stroke(0.3)] } });
+    s = applyPatch(s, { nodes: { "2": { protect: { strokes_keep: 1, feather: 0.4 } } } });
+    expect(nodeOf(s, 2)).toMatchObject({ protect: { strokes: [stroke(0.1)], feather: 0.4 } });
+  });
+
+  it("gives face N the Nth entry, a face past the list face 1's, and `all` while Same for all faces is on", () => {
+    const entry = (blemish: number) => ({ ...newFaceRefinement(2, [0, 0]).all, blemish });
+    let s = applyPatch(threeNodes(), { nodes: { "2": { same_for_all: false, all: { blemish: 11 }, faces: [entry(40), entry(50)] } } });
+    const node = () => nodeOf(s, 2) as ReturnType<typeof newFaceRefinement>;
+    expect([1, 2, 3, 9, 0].map((n) => faceSettingsFor(node(), n).blemish)).toEqual([40, 50, 40, 40, 40]);
+    s = applyPatch(s, { nodes: { "2": { same_for_all: true } } });
+    expect([1, 2, 9].map((n) => faceSettingsFor(node(), n).blemish)).toEqual([11, 11, 11]);
+    s = applyPatch(s, { nodes: { "2": { same_for_all: false, faces: [] } } });
+    expect(faceSettingsFor(node(), 3).blemish).toBe(11);
+  });
+
+  it("copies the node whole with its masks", () => {
+    const s = applyPatch(threeNodes(), { nodes: { "2": { same_for_all: false, faces: [{ ...newFaceRefinement(2, [0, 0]).all, blemish: 12 }] } } });
+    const copy = copiedPatch(resolveSettings(1, s, MOCK_ESTIMATES));
+    expect(copy.nodes?.["2"]).toMatchObject({ kind: "face_refinement", same_for_all: false, masks: { invert: false, items: [] } });
+    expect(copy.nodes?.["2"]?.faces?.[0]?.blemish).toBe(12);
   });
 });

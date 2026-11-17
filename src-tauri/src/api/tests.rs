@@ -1500,6 +1500,7 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
                 style: MaskStyle::Overlay,
                 row: None,
                 depth: false,
+                face: None,
             }),
         )
         .expect("mask view");
@@ -1512,7 +1513,8 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
             node: 1,
             style: CoreStyle::Overlay,
             row: None,
-            depth: false
+            depth: false,
+            face: None
         })
     );
     assert_eq!(on.mode, zoomed.mode);
@@ -1529,6 +1531,7 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
                 row: Some(3),
                 // Show depth travels with the view (`docs/23` section 9).
                 depth: true,
+                face: None,
             }),
         )
         .expect("mask view");
@@ -1540,7 +1543,8 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
             node: 2,
             style: CoreStyle::MaskOnly,
             row: Some(3),
-            depth: true
+            depth: true,
+            face: None
         })
     );
 
@@ -1572,6 +1576,7 @@ fn a_mask_view_belongs_to_its_photo() {
                 style: MaskStyle::MaskOnly,
                 row: None,
                 depth: false,
+                face: None,
             }),
         )
         .expect("mask view");

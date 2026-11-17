@@ -1,0 +1,504 @@
+//! The Face Refinement node's step on the CPU reference path (`docs/27-skin-retouch.md` section 10, S-11b, decisions 9 and 13).
+//!
+//! The node is a picture step of the colour chain like a Film node (`film_pass`): the chain stops at the node's input
+//! (the prefix chain, no look, LogC4 / AWG4), the node's picture is made from it, and the chain blends it by the node's mask
+//! (`run_film`). What differs is what makes the picture. A face is a small part of the frame and every tool changes only
+//! pixels inside a **region** around it (`ym_retouch::retouch_regions`: the rectangle its tools read and write, rectangles that
+//! overlap merged), so the step makes the picture over those regions only:
+//!
+//! 1. the regions come from the cached analysis ([`FaceEntry`]) and the frame's size, at the render's scale
+//!    (`working / analysis`);
+//! 2. a render that needs a pixel of a region needs the whole region (`FilmRender::widen` grows the area the render asks for
+//!    to the regions that the node's picture is demanded over meets, to a fixed point, and to the reach of the protection
+//!    plane's edges; a Film node after this one demands the picture over a wider area, `docs/27` S-11b2);
+//! 3. per region, the prefix chain's LogC4 over it is decoded to linear AWG4, `retouch_skin_region` applies the cached masks and
+//!    blemish maps to it (no network runs, whatever the grade upstream), the result is encoded back, and the pixels it left as
+//!    they were are marked so that the chain passes them through exactly (a bit-identical pass-through outside the face's
+//!    effect, not a round trip through f32);
+//! 4. the picture is those regions; the chain reads nothing there for any other pixel and passes its input through.
+//!
+//! An export asks for tiles; a region met by several tiles is made once ([`FaceWork::part`] keeps what it made).
+
+use std::sync::{Arc, Mutex};
+
+use rayon::prelude::*;
+use ym_color::logc::{logc4_decode_rgb, logc4_encode_rgb};
+use ym_color::mask_raster::{Area, PlaneJob, RasterRow, RasterSteps};
+use ym_gpu::cpu::sampler::{GridPositions, SamplerGrid};
+use ym_gpu::kernels::face::{
+    BlemishStep, FacePlan, FaceStep, KeptRegion, LowStep, TeethStep, ToneSource,
+};
+use ym_gpu::kernels::film_stack::{FaceNode, FaceRegionSpec};
+use ym_retouch::{
+    BlemishMap, DevicePlan, Face, LinearAwg4Image, Mask, Placement, SkinSettings, plan_skin_region,
+    retouch_regions, tone_quantiles,
+};
+
+use super::RenderError;
+use crate::pipeline::graph::{FaceEntry, PLANS_KEPT, PlanKey};
+use crate::settings::FaceRefinementNode;
+
+/// Values of each picture the tone relation is estimated from, at most.
+const TONE_SAMPLES: usize = 65_536;
+
+/// The picture of one region: LogC4 / AWG4, interleaved f32, with `NaN` for a pixel the retouch left as it was (the chain
+/// then passes its input through for it, exactly).
+#[derive(Debug)]
+pub(crate) struct FacePart {
+    pub area: Area,
+    pub data: Vec<f32>,
+}
+
+/// What the protection plane of a region is made from: the camera picture around it and where its pixels are in the photo.
+pub(crate) struct ProtectInput<'a> {
+    pub grid: &'a SamplerGrid,
+    /// The grid pixel of the picture's first pixel.
+    pub grid_off: (usize, usize),
+    /// The area of the frame the picture covers.
+    pub area: Area,
+    /// The picture, planar camera RGB (`3 * w * h`), and the pixels outside the photo.
+    pub planar: &'a [f32],
+    pub outside: Option<&'a [u8]>,
+    /// The Input's luma of a camera pixel (the guide of Refine edges).
+    pub guide: &'a (dyn Fn([f64; 3]) -> f64 + Sync),
+}
+
+/// One Face Refinement node of a render: its faces with their settings, the regions they are retouched in, and its protection.
+pub(crate) struct FaceWork {
+    entry: Arc<FaceEntry>,
+    faces: Vec<(Face, SkinSettings)>,
+    /// The frame's size over the analysis picture's.
+    scale: f32,
+    /// The frame (the photo's extent at this render's scale).
+    frame: Area,
+    /// The regions, in absolute pixels of the frame.
+    regions: Vec<Area>,
+    protect: Option<RasterRow>,
+    /// The reach of the protection plane's Grow, Feather and Refine edges, in pixels of the frame.
+    protect_halo: usize,
+    done: Mutex<Vec<Option<Arc<FacePart>>>>,
+}
+
+fn render_error(e: &impl std::fmt::Display) -> RenderError {
+    RenderError::Mask(format!("The faces can't be retouched: {e}."))
+}
+
+impl FaceWork {
+    /// The node's work over a frame, or `None` when there is nothing to do: no face has a region, or the regions cannot be
+    /// planned (logged; the node then passes its picture through).
+    pub(crate) fn build(
+        entry: &Arc<FaceEntry>,
+        node: &FaceRefinementNode,
+        frame: Area,
+        protect: Option<RasterRow>,
+    ) -> Option<Self> {
+        if frame.is_empty() || entry.faces.is_empty() {
+            return None;
+        }
+        let faces = entry.with_settings(|n| node.skin_settings_for_face(n));
+        let scale = frame.w as f32 / entry.analysis_px.0.max(1) as f32;
+        let working = (frame.w as u32, frame.h as u32);
+        let regions = match retouch_regions(
+            working,
+            entry.analysis_px,
+            &faces,
+            scale,
+            &entry.retouch,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "the face regions could not be planned; the node passes its picture through");
+                return None;
+            }
+        };
+        if regions.is_empty() {
+            return None;
+        }
+        let regions: Vec<Area> = regions
+            .iter()
+            .map(|r| Area {
+                x: frame.x + i64::from(r.x_px),
+                y: frame.y + i64::from(r.y_px),
+                w: r.width_px as usize,
+                h: r.height_px as usize,
+            })
+            .collect();
+        let u_px = frame.w.max(frame.h) as f64;
+        let protect_halo = protect.as_ref().map_or(0, |r| {
+            RasterSteps::of(r.grow, r.feather, r.refine, u_px).halo() + 2
+        });
+        let done = Mutex::new(vec![None; regions.len()]);
+        Some(Self {
+            entry: Arc::clone(entry),
+            faces,
+            scale,
+            frame,
+            regions,
+            protect,
+            protect_halo,
+            done,
+        })
+    }
+
+    /// The regions a render must make whole to give the pixels of `made` (the area this node's picture is demanded over): the
+    /// ones that meet it and that an earlier tile of the same export did not make already.
+    pub(crate) fn needed_in(&self, made: &Area) -> Vec<usize> {
+        // A region an earlier tile of the same export made is kept: a later tile does not read it again.
+        (0..self.regions.len())
+            .filter(|&i| !self.regions[i].intersect(made).is_empty() && self.kept(i).is_none())
+            .collect()
+    }
+
+    /// Region `ri` grown by the reach of the protection plane around it: what the render must hold to make it.
+    pub(crate) fn region_with_protect(&self, ri: usize) -> Area {
+        self.regions[ri].grown(self.protect_halo, &self.frame)
+    }
+
+    /// The regions that meet `made`, by index.
+    pub(crate) fn regions_in(&self, made: &Area) -> Vec<usize> {
+        (0..self.regions.len())
+            .filter(|&i| !self.regions[i].intersect(made).is_empty())
+            .collect()
+    }
+
+    /// The area of region `ri`.
+    pub(crate) fn region(&self, ri: usize) -> Area {
+        self.regions[ri]
+    }
+
+    /// What region `ri` made before, if anything.
+    pub(crate) fn kept(&self, ri: usize) -> Option<Arc<FacePart>> {
+        self.done
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)[ri]
+            .clone()
+    }
+
+    /// The protection plane over region `ri` as the library takes it: 0 to 255, 255 leaves a pixel alone. `None` without
+    /// protection strokes or without a photo grid to place them.
+    pub(crate) fn protect_mask(&self, ri: usize, input: &ProtectInput<'_>) -> Option<Mask> {
+        let row = self.protect.as_ref()?;
+        let window = self.regions[ri];
+        let photo = input.grid.photo_frame();
+        let steps = RasterSteps::of(row.grow, row.feather, row.refine, 1.0 / photo.pixel);
+        let grown = window
+            .grown(steps.halo(), &self.frame)
+            .intersect(&input.area);
+        if !grown.contains(&window) {
+            return None;
+        }
+        let (cw, off) = (
+            input.area.w,
+            (grown.x - input.area.x, grown.y - input.area.y),
+        );
+        let map = GridPositions::new(
+            input.grid,
+            (
+                input.grid_off.0 + off.0 as usize,
+                input.grid_off.1 + off.1 as usize,
+            ),
+        );
+        let position = |x: usize, y: usize| {
+            let (cx, cy) = (off.0 as usize + x, off.1 as usize + y);
+            if input.outside.is_some_and(|o| o[cy * cw + cx] != 0) {
+                None
+            } else {
+                Some(ym_color::mask::PhotoMap::position(&map, x, y))
+            }
+        };
+        let guide: Option<Vec<f64>> = steps.guided.is_some().then(|| {
+            let plane = cw * input.area.h;
+            let mut g = Vec::with_capacity(grown.w * grown.h);
+            for y in 0..grown.h {
+                for x in 0..grown.w {
+                    let i = (off.1 as usize + y) * cw + off.0 as usize + x;
+                    g.push((input.guide)([
+                        f64::from(input.planar[i]),
+                        f64::from(input.planar[plane + i]),
+                        f64::from(input.planar[2 * plane + i]),
+                    ]));
+                }
+            }
+            g
+        });
+        let codes = row.plane(&PlaneJob {
+            photo,
+            grown,
+            frame: self.frame,
+            window,
+            position: &position,
+            guide: guide.as_deref(),
+        });
+        let data: Vec<u8> = codes
+            .iter()
+            .map(|&v| ((u32::from(v) * 255 + 32767) / 65535) as u8)
+            .collect();
+        Mask::new(window.w as u32, window.h as u32, data).ok()
+    }
+
+    /// The analysis picture's values over region `ri` on the fixed grid of at most [`TONE_SAMPLES`] (`docs/27` S-12): the
+    /// region in the analysis picture's pixels, every `step`-th pixel of every `step`-th row. `None` when the region is empty
+    /// there.
+    fn analysis_samples(&self, ri: usize) -> Option<Vec<[f32; 3]>> {
+        let area = self.regions[ri];
+        let (aw, ah) = (
+            self.entry.analysis_px.0 as usize,
+            self.entry.analysis_px.1 as usize,
+        );
+        let scale = f64::from(self.scale).max(1e-6);
+        // The region in the analysis picture's pixels.
+        let (rx, ry) = (area.x - self.frame.x, area.y - self.frame.y);
+        let x0 = ((rx as f64 / scale).floor().max(0.0) as usize).min(aw);
+        let y0 = ((ry as f64 / scale).floor().max(0.0) as usize).min(ah);
+        let x1 = ((((rx + area.w as i64) as f64 / scale).ceil().max(0.0)) as usize).min(aw);
+        let y1 = ((((ry + area.h as i64) as f64 / scale).ceil().max(0.0)) as usize).min(ah);
+        if x0 >= x1 || y0 >= y1 {
+            return None;
+        }
+        let analysis = &self.entry.linear.data;
+        let step = tone_grid(x1 - x0, y1 - y0);
+        Some(
+            (y0..y1)
+                .step_by(step)
+                .flat_map(|y| (x0..x1).step_by(step).map(move |x| analysis[y * aw + x]))
+                .collect(),
+        )
+    }
+
+    /// The tone curve between the analysis picture and the node's input over region `ri` (`docs/27` S-12): the blemish gains
+    /// were made on the analysis picture, which has no grade, and are applied to `part`, which has everything upstream.
+    /// Found by matching the distributions of the two over the same part of the photo (at most [`TONE_SAMPLES`] values of
+    /// each, on a fixed grid), so no pixel needs to line up with another. A relation that is only an exposure change, or
+    /// nothing, is `plain` and the gain is the plain multiplication, as it was before.
+    fn tone_relation(&self, ri: usize, part: &LinearAwg4Image) -> ym_retouch::ToneRelation {
+        let Some(a) = self.analysis_samples(ri) else {
+            return ym_retouch::ToneRelation::none();
+        };
+        let step = tone_grid(part.width_px as usize, part.height_px as usize);
+        let w = part.width_px as usize;
+        let x: Vec<[f32; 3]> = (0..part.height_px as usize)
+            .step_by(step)
+            .flat_map(|y| (0..w).step_by(step).map(move |x| part.data[y * w + x]))
+            .collect();
+        ym_retouch::ToneRelation::estimate(&a, &x)
+    }
+
+    /// The node as the device takes it (`ym_gpu::kernels::face`): for each region the CPU's plan (the faces that meet it, the maps,
+    /// the masks resampled to the working image, the padded regions and radii: `ym_retouch::plan_skin_region`) and the analysis
+    /// picture's quantiles, which the device matches against its own quantiles of the node's input to make the tone relation.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Mask`] when the library refuses a region.
+    pub(crate) fn device_node(&self) -> Result<FaceNode, RenderError> {
+        let mut regions = Vec::with_capacity(self.regions.len());
+        for (ri, &area) in self.regions.iter().enumerate() {
+            let key = PlanKey::new((self.frame.w, self.frame.h), area, self.faces.clone());
+            let kept = self
+                .entry
+                .device_plans
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, spec)| spec.clone());
+            if let Some(mut spec) = kept {
+                // The plan is the analysis' to keep; the picture a region makes is this render's.
+                spec.kept = KeptRegion::new();
+                regions.push(spec);
+                continue;
+            }
+            let place = Placement {
+                origin_px: (
+                    (area.x - self.frame.x) as i32,
+                    (area.y - self.frame.y) as i32,
+                ),
+                working_px: (self.frame.w as u32, self.frame.h as u32),
+            };
+            let plan = plan_skin_region(
+                (area.w as u32, area.h as u32),
+                place,
+                self.entry.analysis_px,
+                &self.faces,
+                self.scale,
+                &self.entry.retouch,
+            )
+            .map_err(|e| render_error(&e))?;
+            let tone = self
+                .analysis_samples(ri)
+                .and_then(|a| tone_quantiles(&a))
+                .map_or(ToneSource::Plain, |q| ToneSource::Estimate(Box::new(q)));
+            let spec = FaceRegionSpec {
+                area,
+                plan: Arc::new(face_plan(plan)),
+                tone: Arc::new(tone),
+                kept: KeptRegion::new(),
+            };
+            let mut kept = self
+                .entry
+                .device_plans
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            kept.retain(|(k, _)| *k != key);
+            kept.push((key, spec.clone()));
+            if kept.len() > PLANS_KEPT {
+                kept.remove(0);
+            }
+            regions.push(spec);
+        }
+        Ok(FaceNode {
+            regions,
+            protect: self.protect.clone(),
+            protect_halo: self.protect_halo,
+        })
+    }
+
+    /// Makes region `ri`'s picture from the prefix chain's LogC4 over it (`logc4`, interleaved `w * h * 3`), with the
+    /// protection plane over it, and keeps it.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Mask`] when the library refuses the region.
+    pub(crate) fn part(
+        &self,
+        ri: usize,
+        logc4: &[f32],
+        protect: Option<&Mask>,
+    ) -> Result<Arc<FacePart>, RenderError> {
+        let started = std::time::Instant::now();
+        let area = self.regions[ri];
+        let (w, h) = (area.w, area.h);
+        // LogC4 to linear AWG4, per pixel in f64 (the order and rounding are the same on every thread count).
+        let lin: Vec<[f32; 3]> = logc4
+            .par_chunks_exact(3)
+            .map(|p| {
+                let l = logc4_decode_rgb([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
+                [l[0] as f32, l[1] as f32, l[2] as f32]
+            })
+            .collect();
+        let part = LinearAwg4Image::new(w as u32, h as u32, lin).map_err(|e| render_error(&e))?;
+        let place = Placement {
+            origin_px: (
+                (area.x - self.frame.x) as i32,
+                (area.y - self.frame.y) as i32,
+            ),
+            working_px: (self.frame.w as u32, self.frame.h as u32),
+        };
+        let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let tone = self.tone_relation(ri, &part);
+        let out = ym_retouch::retouch_skin_region_toned(
+            &part,
+            place,
+            self.entry.analysis_px,
+            &self.faces,
+            self.scale,
+            &self.entry.retouch,
+            protect,
+            Some(&tone),
+        )
+        .map_err(|e| render_error(&e))?;
+        let retouch_ms = started.elapsed().as_secs_f64() * 1000.0 - decode_ms;
+        let mut data = vec![0.0f32; 3 * w * h];
+        data.par_chunks_exact_mut(3)
+            .zip(out.data.par_iter().zip(part.data.par_iter()))
+            .for_each(|(d, (new, old))| {
+                if new == old {
+                    // Left as it was: the chain passes its own value through.
+                    d.fill(f32::NAN);
+                } else {
+                    let e =
+                        logc4_encode_rgb([f64::from(new[0]), f64::from(new[1]), f64::from(new[2])]);
+                    d[0] = e[0] as f32;
+                    d[1] = e[1] as f32;
+                    d[2] = e[2] as f32;
+                }
+            });
+        tracing::debug!(
+            w,
+            h,
+            decode_ms,
+            retouch_ms,
+            encode_ms = started.elapsed().as_secs_f64() * 1000.0 - decode_ms - retouch_ms,
+            "a face region retouched"
+        );
+        let made = Arc::new(FacePart { area, data });
+        self.done
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)[ri] = Some(Arc::clone(&made));
+        Ok(made)
+    }
+}
+
+/// The step of the grid the tone relation samples a region of `w x h` pixels on.
+fn tone_grid(w: usize, h: usize) -> usize {
+    (((w * h) as f64 / TONE_SAMPLES as f64).sqrt().ceil() as usize).max(1)
+}
+
+/// The pixels of a cached blemish map, shared with the cache.
+struct MapOf(Arc<BlemishMap>);
+
+impl AsRef<[[f32; 4]]> for MapOf {
+    fn as_ref(&self) -> &[[f32; 4]] {
+        &self.0.data
+    }
+}
+
+/// The CPU's plan of a region as the device takes it (`ym_gpu::kernels::face::FacePlan`).
+fn face_plan(plan: DevicePlan) -> FacePlan {
+    let rect = |r: ym_retouch::Rect| (r.x_px, r.y_px, r.width_px, r.height_px);
+    FacePlan {
+        origin_px: plan.origin_px,
+        size_px: plan.size_px,
+        render_scale: plan.render_scale,
+        faces: plan
+            .faces
+            .into_iter()
+            .map(|f| {
+                let (low, teeth) = match f.tones {
+                    Some(t) => (t.low, t.teeth),
+                    None => (None, None),
+                };
+                FaceStep {
+                    blemish: f.blemish.map(|b| BlemishStep {
+                        rect: rect(b.map.rect),
+                        size: (b.map.width_px, b.map.height_px),
+                        data: Arc::new(MapOf(b.map)),
+                        amount: b.a,
+                    }),
+                    low: low.map(|l| LowStep {
+                        rect: rect(l.rect),
+                        ds: l.params.ds,
+                        radii: [l.params.r_tex, l.params.r_dc, l.params.r_se, l.params.r_g],
+                        strengths: [l.params.k_dc, l.params.sp_dc, l.params.k_se, l.params.sp_se],
+                        grading: [l.gc, l.gd, l.gs],
+                        dc: l.dc,
+                        se: l.se,
+                        grade: l.grade,
+                    }),
+                    teeth: teeth.map(|t| TeethStep {
+                        rect: rect(t.rect),
+                        bytes: t.bytes,
+                        amount: t.tw,
+                    }),
+                }
+            })
+            .collect(),
+    }
+}
+
+pub(crate) fn union(a: Area, b: Area) -> Area {
+    if a.is_empty() {
+        return b;
+    }
+    if b.is_empty() {
+        return a;
+    }
+    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+    let (x1, y1) = (a.x1().max(b.x1()), a.y1().max(b.y1()));
+    Area {
+        x,
+        y,
+        w: (x1 - x) as usize,
+        h: (y1 - y) as usize,
+    }
+}

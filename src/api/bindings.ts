@@ -116,6 +116,8 @@ export const commands = {
 	 *  for near, whole and not cut to the row's band, whatever `style` says. A row that is not a Depth row shows its own mask.
 	 */
 	depth?: boolean,
+	/**  Show skin areas (`docs/27` S-11c): with `node` naming a Face Refinement node, the frame shows face `face`'s skin areas tinted over the photo, whatever `style` says. */
+	face?: number | null,
 } | null) => __TAURI_INVOKE<null>("viewport_set_mode", { mode, maskView }),
 	/**  `set_before(before)`: the photo before the look and the display transform. */
 	setBefore: (before: boolean) => __TAURI_INVOKE<null>("set_before", { before }),
@@ -182,6 +184,20 @@ export const commands = {
 	 *  returns at once; `depth_state` says how the worker ended. It changes no settings.
 	 */
 	retryDepth: (photoId: PhotoId) => __TAURI_INVOKE<null>("retry_depth", { photoId }),
+	/**
+	 *  `face_state(photo_id)` (`docs/27` section 10, S-11b): where the faces of the photo are, for the panel of a Face Refinement node:
+	 *  `finding`, `ready` with the numbered faces and their boxes (none is a valid answer), `failed` with the sentence, or
+	 *  `models_missing`. It changes nothing and starts nothing; `face_state` events say when it changes.
+	 */
+	faceState: (photoId: PhotoId) => __TAURI_INVOKE<FaceState>("face_state", { photoId }),
+	/**
+	 *  `face_crop(photo_id, number)` (`docs/27` S-11c): the picture of face `number` (1-based) for the Faces card. The answer is the address
+	 *  of a PNG of 104 x 104 px on the `ym-frame` scheme (`ym-frame://localhost/<launch>/look-<photo>-<n>.png`, `http://ym-frame.localhost/…`
+	 *  on Windows): a square around the face's box, 1.4 times its larger side, from the picture the faces were found on (the Input's colour,
+	 *  without the retouch). Made at the thumbnails' priority and cancelled when the person moves to another photo. It fails with a plain
+	 *  sentence before the faces are known and for a number the photo does not have.
+	 */
+	faceCrop: (photoId: PhotoId, number: number) => __TAURI_INVOKE<string>("face_crop", { photoId, number }),
 	/**
 	 *  `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
 	 *  starting amounts. Empty when the lens data could not be loaded.
@@ -386,6 +402,7 @@ export const events = {
 	error: makeEvent<ErrorEvent>("error"),
 	exportBusy: makeEvent<ExportBusy>("export_busy"),
 	exportProgress: makeEvent<ExportProgress>("export_progress"),
+	faceState: makeEvent<FaceState>("face_state"),
 	looksChanged: makeEvent<LooksChanged>("looks_changed"),
 	looksImportProgress: makeEvent<LooksImportProgress>("looks_import_progress"),
 	memoryNotice: makeEvent<MemoryNotice>("memory_notice"),
@@ -818,6 +835,18 @@ export type BlendMode =
 "darken" | 
 /**  The absolute difference. */
 "difference";
+
+/**  A plane of brush strokes, in the format of a Brush mask row: a Face Refinement node's protection. */
+export type BrushMask = {
+	/**  The strokes in the order they were drawn, at most 100,000 points in all. */
+	strokes: BrushStroke[],
+	/**  Feather, 0 to 1. */
+	feather: number,
+	/**  Grow, -1 to 1. */
+	grow: number,
+	/**  Refine edges, 0 to 1. */
+	refine: number,
+};
 
 /**  One stroke of a Brush mask. */
 export type BrushStroke = {
@@ -1331,6 +1360,121 @@ export type ExposureSetting =
 { kind: "manual"; 
 /**  Absolute exposure in stops, -4 to +4. */
 ev: number };
+
+/**
+ *  One face of a photo as the Face Refinement node's panel lists it (`docs/27` section 10, S-11b): its number (1 for the leftmost,
+ *  up to 32) and its box in the oriented photo frame, the picture as it is shown (crop and turn applied), as shares of the frame's
+ *  width and height.
+ */
+export type FaceBox = {
+	/**  The face's number, from 1, left to right. */
+	number: number,
+	/**  Left edge, 0 to 1. */
+	x: number,
+	/**  Top edge, 0 to 1. */
+	y: number,
+	/**  Width, 0 to 1. */
+	width: number,
+	/**  Height, 0 to 1. */
+	height: number,
+};
+
+/**
+ *  Where the faces of a photo are (`docs/27` decision 9): `finding` (the node says "Finding faces…" and the photo is shown without
+ *  its effect), `ready` (the faces are known; there may be none), `failed` (the sentence says why; nothing asks again until the
+ *  picture changes) and `models_missing` (this copy of Yellowmoon has no face models: the node passes its picture through).
+ */
+export type FacePhase = 
+/**  The faces are being found. */
+"finding" | 
+/**  The faces are known. */
+"ready" | 
+/**  Finding them failed. */
+"failed" | 
+/**  This copy has no face models. */
+"models_missing";
+
+/**  A Face Refinement node: retouches the faces it finds (`docs/27`). */
+export type FaceRefinementNode = {
+	/**  2 to 2147483647 (every numbered node shares the numbers). */
+	id: "input" | "output" | number,
+	/**  The card's name, 1 to 32 characters. */
+	name: string,
+	/**  A bypassed node passes its picture through. */
+	bypass: boolean,
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
+	/**  "Same for all faces": `all` serves every face and `faces` is kept but not used. */
+	same_for_all: boolean,
+	/**  The amounts every face takes while `same_for_all` is on, and when `faces` is empty. */
+	all: FaceSettings,
+	/**
+	 *  The amounts per face; index = face number - 1 (faces are numbered from 1, left to right), at most 32. A
+	 *  face past the end takes face 1's.
+	 */
+	faces: FaceSettings[],
+	/**  The protection plane: painted areas are left alone by every tool. */
+	protect: BrushMask,
+	/**  The masks. */
+	masks: MaskSettings,
+};
+
+/**  The amounts of the Face Refinement tools for one face (`docs/27` section 3). */
+export type FaceSettings = {
+	/**  Blemish, 0 to 100 (default 30). */
+	blemish: number,
+	/**  Dark circles, 0 to 100 (default 30). */
+	dark_circles: number,
+	/**  Even skin, 0 to 100 (default 25). */
+	even_skin: number,
+	/**  Texture, -100 to 100 (default 0). */
+	texture: number,
+	/**  Skin grading › Contrast, -100 to 100 (default 0). */
+	skin_contrast: number,
+	/**  Skin grading › Shadow desaturation, 0 to 100 (default 0). */
+	shadow_desaturation: number,
+	/**  Skin grading › Shine removal, 0 to 100 (default 0). */
+	shine_removal: number,
+	/**  Teeth › Whitening, 0 to 100 (default 0). */
+	teeth_whitening: number,
+};
+
+/**  A Face Refinement node's `all` to change. Serialising leaves absent fields out (see [`NodePatch`]). */
+export type FaceSettingsPatch = {
+	/**  New Blemish, 0 to 100. */
+	blemish?: number | null,
+	/**  New Dark circles, 0 to 100. */
+	dark_circles?: number | null,
+	/**  New Even skin, 0 to 100. */
+	even_skin?: number | null,
+	/**  New Texture, -100 to 100. */
+	texture?: number | null,
+	/**  New Skin contrast, -100 to 100. */
+	skin_contrast?: number | null,
+	/**  New Shadow desaturation, 0 to 100. */
+	shadow_desaturation?: number | null,
+	/**  New Shine removal, 0 to 100. */
+	shine_removal?: number | null,
+	/**  New Teeth whitening, 0 to 100. */
+	teeth_whitening?: number | null,
+};
+
+/**
+ *  `face_state { photo_id, phase, faces, message }` (addition): where the faces of a photo are (`docs/27` section 10, S-11b). Sent
+ *  when the core's face worker starts on a photo (`finding`) and when it ends (`ready`, with the numbered faces, or `failed`), and
+ *  returned by the command of the same name. While the worker runs the viewport is `viewport_busy { busy: true, finding: true }`;
+ *  when it ends the photo is drawn again with the retouch.
+ */
+export type FaceState = {
+	/**  The photo. */
+	photo_id: PhotoId,
+	/**  Where the analysis is. */
+	phase: FacePhase,
+	/**  The faces, numbered from left to right; empty unless `phase` is `ready`. */
+	faces: FaceBox[],
+	/**  The plain sentence of the failure (`failed`) or of the missing models (`models_missing`); null otherwise. */
+	message: string | null,
+};
 
 /**  `film_catalogue`: what the Film node's pickers list, and the lines About and the Film tab carry. */
 export type FilmCatalogue = {
@@ -2265,6 +2409,8 @@ export type MaskView = {
 	 *  for near, whole and not cut to the row's band, whatever `style` says. A row that is not a Depth row shows its own mask.
 	 */
 	depth?: boolean,
+	/**  Show skin areas (`docs/27` S-11c): with `node` naming a Face Refinement node, the frame shows face `face`'s skin areas tinted over the photo, whatever `style` says. */
+	face?: number | null,
 };
 
 /**
@@ -2485,6 +2631,10 @@ export type NodeItem =
 {
 	kind: "film",
 } & FilmNode | 
+/**  A Face Refinement node. */
+{
+	kind: "face_refinement",
+} & FaceRefinementNode | 
 /**  A Parallel mixer. */
 {
 	kind: "parallel",
@@ -2512,6 +2662,8 @@ export type NodeKind =
 "corrector" | 
 /**  A Film node (`docs/24`). */
 "film" | 
+/**  A Face Refinement node (`docs/27`). */
+"face_refinement" | 
 /**  A Parallel mixer (`docs/25`). */
 "parallel" | 
 /**  A Layer mixer (`docs/25`). */
@@ -2594,6 +2746,14 @@ export type NodePatch = {
 	grain?: GrainPatch | null,
 	/**  New Strength of a Film node, percent. */
 	strength?: number | null,
+	/**  A Face Refinement node's "Same for all faces" on or off. */
+	same_for_all?: boolean | null,
+	/**  A Face Refinement node's amounts for every face (while "Same for all faces" is on) to change. */
+	all?: FaceSettingsPatch | null,
+	/**  A Face Refinement node's amounts per face, replaced whole (index = face number - 1). */
+	faces?: FaceSettings[] | null,
+	/**  A Face Refinement node's protection plane to change. */
+	protect?: ProtectPatch | null,
 	/**  A Layer's new blend mode. */
 	mode?: BlendMode | null,
 	/**  A Layer's new opacity, 0 to 1. */
@@ -3149,6 +3309,25 @@ export type PrintSettings = {
 	exposure_ev: number,
 	/**  The enlarger's filtration. */
 	lights: PrintLights,
+};
+
+/**
+ *  A Face Refinement node's `protect` to change: the strokes of a Brush row under the same names, and the three edge
+ *  amounts. Serialising leaves absent fields out (see [`NodePatch`]).
+ */
+export type ProtectPatch = {
+	/**  The strokes, replaced whole. */
+	strokes?: BrushStroke[] | null,
+	/**  Strokes added after the existing ones. */
+	strokes_append?: BrushStroke[] | null,
+	/**  Keep only the first n strokes (the inverse of an append). */
+	strokes_keep?: number | null,
+	/**  Feather, 0 to 1. */
+	feather?: number | null,
+	/**  Grow, -1 to 1. */
+	grow?: number | null,
+	/**  Refine edges, 0 to 1. */
+	refine?: number | null,
 };
 
 /**  Where one provider stands (`docs/22` section 3.1; the core's `ProviderState`). */

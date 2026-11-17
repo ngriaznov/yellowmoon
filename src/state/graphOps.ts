@@ -22,7 +22,10 @@ import {
   neutralGrade,
   NEUTRAL_LOOK,
   newCorrector,
+  newFaceRefinement,
   newFilm,
+  defaultFaceSettings,
+  FACE_REFINEMENT_NAME,
   DEFAULT_STOCK,
   nodeAsPatch,
   nodeOf,
@@ -404,6 +407,11 @@ export function addNode(id: number, pos: NodePos, name = DEFAULT_NAME): Record<s
   return { [String(id)]: nodeAsPatch(newCorrector(id, clampPos(pos), name)) };
 }
 
+/** A new Face Refinement node (`docs/27`): Same for all faces on, the default amounts, nothing protected, as a patch that adds it whole. */
+export function addFaceRefinementNode(id: number, pos: NodePos, name = FACE_REFINEMENT_NAME): Record<string, NodePatch> {
+  return { [String(id)]: nodeAsPatch(newFaceRefinement(id, clampPos(pos), name)) };
+}
+
 /** A new Film node (`docs/24` section 4.5), Portra 400 on its matching paper, as a patch that adds it whole. */
 export function addFilmNode(id: number, pos: NodePos, name = FILM_DEFAULT_NAME): Record<string, NodePatch> {
   return { [String(id)]: nodeAsPatch(newFilm(id, clampPos(pos), name)) };
@@ -416,7 +424,7 @@ export function addFilmNode(id: number, pos: NodePos, name = FILM_DEFAULT_NAME):
  * Output's incoming link. N's `pos` is the node's plus one unit to the right, the nodes downstream of N move one unit right (as far as
  * it takes to leave N its unit: none where a gap is), and N is selected. Refused at 64 nodes.
  */
-export function insertAfter(settings: DevelopSettings, selected: NodeId, options: { usedMax?: number; name?: string; kind?: "corrector" | "film" } = {}): GraphOutcome {
+export function insertAfter(settings: DevelopSettings, selected: NodeId, options: { usedMax?: number; name?: string; kind?: "corrector" | "film" | "face_refinement" } = {}): GraphOutcome {
   if (numberedOf(settings).length >= MAX_CORRECTORS) return refuse(GRAPH_OP_TEXT.tooMany);
   const links = settings.nodes.links;
   let after: NodeId = selected === INPUT_ID ? MAIN_ID : selected;
@@ -431,7 +439,12 @@ export function insertAfter(settings: DevelopSettings, selected: NodeId, options
   if (!slot) return refuse(GRAPH_OP_TEXT.gone);
   const id = nextNodeId(settings, options.usedMax);
   const next = putAfter(settings, links, id, after, into);
-  const added = options.kind === "film" ? addFilmNode(id, slot.pos, options.name) : addNode(id, slot.pos, options.name);
+  const added =
+    options.kind === "film"
+      ? addFilmNode(id, slot.pos, options.name)
+      : options.kind === "face_refinement"
+        ? addFaceRefinementNode(id, slot.pos, options.name)
+        : addNode(id, slot.pos, options.name);
   const nodes = { ...added, ...shifted(settings, downstreamOf(next, id), id, slot.delta) };
   return done({ nodes, links: next }, id);
 }
@@ -492,6 +505,9 @@ export function resetNode(settings: DevelopSettings, id: NodeId, defaults: { loo
       grain: { amount: 100, size: 100 },
       strength: 100,
     };
+  } else if (node.kind === "face_refinement") {
+    // Same for all faces on and every amount at its default, for `all` and for each face; the masks, the protection, the name and the bypass stay (`docs/27` S-11a).
+    patch = { same_for_all: true, all: defaultFaceSettings(), faces: [] };
   } else if (node.kind === "layer") {
     // A Layer's Mode and Opacity; its inputs, name and bypass stay.
     patch = { mode: "normal", opacity: 1 };
@@ -779,7 +795,7 @@ export function headLine(settings: DevelopSettings, id: NodeId, states: Readonly
     const n = Math.max(1, linkedInputs(settings.nodes.links, node.id));
     return `Mixer · ${n} ${n === 1 ? "input" : "inputs"}`;
   }
-  const label = node.kind === "film" ? "Film" : "Corrector";
+  const label = node.kind === "film" ? "Film" : node.kind === "face_refinement" ? "Faces" : "Corrector";
   if (node.bypass) return `${label} · bypassed`;
   if (states.get(node.id as number)?.live === false) return `${label} · not connected`;
   const rows = node.masks.items;

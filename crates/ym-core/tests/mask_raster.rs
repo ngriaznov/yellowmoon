@@ -610,6 +610,7 @@ fn the_mask_view_shows_the_brush_plane_on_the_cpu_and_on_the_device() {
             style,
             row: None,
             depth: false,
+            face: None,
         });
         st
     };
@@ -687,6 +688,7 @@ fn view_100(
             style: MaskStyle::MaskOnly,
             row: None,
             depth: false,
+            face: None,
         });
     }
     st
@@ -1172,6 +1174,7 @@ fn state(zoom_100: bool, style: Option<MaskStyle>) -> ViewportState {
         style,
         row: None,
         depth: false,
+        face: None,
     });
     st
 }

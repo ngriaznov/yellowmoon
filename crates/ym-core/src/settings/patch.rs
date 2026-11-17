@@ -7,13 +7,14 @@ use serde::{Deserialize, Deserializer, Serialize};
 use ym_color::wb::LightSource;
 use ym_looks::library::LookId;
 
+use super::face::{FaceRefinementNode, FaceSettings};
 use super::film::FilmNode;
 use super::graph::Sanitiser;
 use super::graph::{
     CorrectorNode, GraphError, InputNode, MAIN_ID, NodeId, NodeKind, NodeLink, NodePos, OutputNode,
     node_fields,
 };
-use super::masks::MasksPatch;
+use super::masks::{BrushMask, BrushStroke, MasksPatch};
 use super::mixers::{BlendMode, MixerNode};
 use super::{
     AutoOr, AutoSeeds, ColorBalancePatch, ColorWarp, ContrastSetting, Crop, CurvesPatch,
@@ -265,6 +266,131 @@ pub struct GrainPatch {
     pub seed: Option<u32>,
 }
 
+/// A Face Refinement node's `all` to change: the amounts every face takes while "Same for all faces" is on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FaceSettingsPatch {
+    /// New Blemish, 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blemish: Option<f64>,
+    /// New Dark circles, 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dark_circles: Option<f64>,
+    /// New Even skin, 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub even_skin: Option<f64>,
+    /// New Texture, -100 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture: Option<f64>,
+    /// New Skin contrast, -100 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skin_contrast: Option<f64>,
+    /// New Shadow desaturation, 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow_desaturation: Option<f64>,
+    /// New Shine removal, 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shine_removal: Option<f64>,
+    /// New Teeth whitening, 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teeth_whitening: Option<f64>,
+}
+
+impl FaceSettingsPatch {
+    /// A patch that carries every value of `s`.
+    #[must_use]
+    pub fn whole(s: &FaceSettings) -> Self {
+        Self {
+            blemish: Some(s.blemish),
+            dark_circles: Some(s.dark_circles),
+            even_skin: Some(s.even_skin),
+            texture: Some(s.texture),
+            skin_contrast: Some(s.skin_contrast),
+            shadow_desaturation: Some(s.shadow_desaturation),
+            shine_removal: Some(s.shine_removal),
+            teeth_whitening: Some(s.teeth_whitening),
+        }
+    }
+
+    fn apply(&self, s: &mut FaceSettings) {
+        macro_rules! set {
+            ($($f:ident),*) => { $(if let Some(v) = self.$f { s.$f = v; })* };
+        }
+        set!(
+            blemish,
+            dark_circles,
+            even_skin,
+            texture,
+            skin_contrast,
+            shadow_desaturation,
+            shine_removal,
+            teeth_whitening
+        );
+    }
+}
+
+/// A Face Refinement node's `protect` to change: the strokes of a Brush row, under the same names
+/// (`strokes`, `strokes_append`, `strokes_keep`) and the three edge amounts.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProtectPatch {
+    /// The strokes, replaced whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strokes: Option<Vec<BrushStroke>>,
+    /// Strokes added after the existing ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strokes_append: Option<Vec<BrushStroke>>,
+    /// Keep only the first n strokes (the inverse of an append).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strokes_keep: Option<usize>,
+    /// Feather, 0 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feather: Option<f64>,
+    /// Grow, -1 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grow: Option<f64>,
+    /// Refine edges, 0 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refine: Option<f64>,
+}
+
+impl ProtectPatch {
+    /// A patch that carries the whole plane.
+    #[must_use]
+    pub fn whole(b: &BrushMask) -> Self {
+        Self {
+            strokes: Some(b.strokes.clone()),
+            strokes_append: None,
+            strokes_keep: None,
+            feather: Some(b.feather),
+            grow: Some(b.grow),
+            refine: Some(b.refine),
+        }
+    }
+
+    fn apply(&self, b: &mut BrushMask) {
+        if let Some(v) = self.feather {
+            b.feather = v;
+        }
+        if let Some(v) = self.grow {
+            b.grow = v;
+        }
+        if let Some(v) = self.refine {
+            b.refine = v;
+        }
+        if let Some(v) = &self.strokes {
+            b.strokes.clone_from(v);
+        }
+        // Keep first, then append: an undo of an append is a keep, and a redo an append (as a Brush row).
+        if let Some(n) = self.strokes_keep {
+            b.strokes.truncate(n);
+        }
+        if let Some(v) = &self.strokes_append {
+            b.strokes.extend(v.iter().cloned());
+        }
+    }
+}
+
 /// A partial of one node's fields (`docs/23` section 3.7). It is one flat object whatever the kind:
 /// the fields of every kind are here, and a field the node's kind does not have is refused when the
 /// patch is applied ("A corrector has no field called “exposure”."). A node the graph does not have
@@ -374,6 +500,21 @@ pub struct NodePatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strength: Option<f64>,
 
+    // A Face Refinement node (`docs/27` section 10); `name`, `bypass` and `masks` above are its too.
+    /// "Same for all faces" on or off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub same_for_all: Option<bool>,
+    /// The amounts every face takes while "Same for all faces" is on, to change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub all: Option<FaceSettingsPatch>,
+    /// The settings per face, replaced whole (index = face number - 1). An entry that leaves out an amount takes
+    /// its default, so a patch of the list carries every value it means.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub faces: Option<Vec<FaceSettings>>,
+    /// The protection plane to change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protect: Option<ProtectPatch>,
+
     // A Layer (`docs/25` section 2.1); `name` and `bypass` above are the four mixer kinds' too.
     /// New blend mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -451,7 +592,8 @@ impl NodePatch {
             look_intensity => "look_intensity", output_sharpening => "output_sharpening",
             name => "name", bypass => "bypass", trim => "trim", grade => "grade", masks => "masks",
             film => "film", print => "print", halation => "halation", grain => "grain",
-            strength => "strength", mode => "mode", opacity => "opacity",
+            strength => "strength", same_for_all => "same_for_all", all => "all", faces => "faces",
+            protect => "protect", mode => "mode", opacity => "opacity",
         );
         v
     }
@@ -484,6 +626,10 @@ impl NodePatch {
             SettingsField::Halation => self.halation.is_some(),
             SettingsField::Grain => self.grain.is_some(),
             SettingsField::Strength => self.strength.is_some(),
+            SettingsField::SameForAll => self.same_for_all.is_some(),
+            SettingsField::AllFaces => self.all.is_some(),
+            SettingsField::Faces => self.faces.is_some(),
+            SettingsField::Protect => self.protect.is_some(),
             SettingsField::Mode => self.mode.is_some(),
             SettingsField::Opacity => self.opacity.is_some(),
             grade_field => self
@@ -535,6 +681,18 @@ impl NodePatch {
         {
             p.grain = None;
         }
+        if p.all
+            .as_ref()
+            .is_some_and(|m| *m == FaceSettingsPatch::default())
+        {
+            p.all = None;
+        }
+        if p.protect
+            .as_ref()
+            .is_some_and(|m| *m == ProtectPatch::default())
+        {
+            p.protect = None;
+        }
         p == NodePatch::default()
     }
 
@@ -571,6 +729,10 @@ impl NodePatch {
             halation,
             grain,
             strength,
+            same_for_all,
+            all,
+            faces,
+            protect,
             mode,
             opacity,
         );
@@ -762,6 +924,47 @@ impl NodePatch {
             _ => return None,
         }
         Some(p)
+    }
+
+    /// The patch that carries one field of a Face Refinement node.
+    fn of_face_field(n: &FaceRefinementNode, field: SettingsField) -> Option<Self> {
+        let mut p = Self::default();
+        match field {
+            SettingsField::Name => p.name = Some(n.name.clone()),
+            SettingsField::Bypass => p.bypass = Some(n.bypass),
+            SettingsField::Pos => p.pos = Some(n.pos),
+            SettingsField::Masks => {
+                p.masks = Some(MasksPatch {
+                    invert: Some(n.masks.invert),
+                    items: Some(n.masks.items.clone()),
+                    edit: None,
+                });
+            }
+            SettingsField::SameForAll => p.same_for_all = Some(n.same_for_all),
+            SettingsField::AllFaces => p.all = Some(FaceSettingsPatch::whole(&n.all)),
+            SettingsField::Faces => p.faces = Some(n.faces.clone()),
+            SettingsField::Protect => p.protect = Some(ProtectPatch::whole(&n.protect)),
+            _ => return None,
+        }
+        Some(p)
+    }
+
+    /// A patch that holds every field of a Face Refinement node, with its `kind`, so that it adds the node when the
+    /// photo does not have it.
+    #[must_use]
+    pub fn whole_face_refinement(n: &FaceRefinementNode) -> Self {
+        let mut p = Self {
+            kind: Some(NodeKind::FaceRefinement),
+            ..Self::default()
+        };
+        for f in SettingsField::ALL {
+            if f.belongs_to(NodeKind::FaceRefinement)
+                && let Some(one) = Self::of_face_field(n, f)
+            {
+                p.absorb(one);
+            }
+        }
+        p
     }
 
     /// The patch that carries one field of a node of `docs/25`.
@@ -1106,6 +1309,35 @@ impl NodePatch {
         Ok(())
     }
 
+    fn apply_face_refinement(
+        &self,
+        next: &mut FaceRefinementNode,
+        id: u32,
+    ) -> Result<(), SettingsError> {
+        if let Some(v) = &self.name {
+            next.name.clone_from(v);
+        }
+        if let Some(v) = self.bypass {
+            next.bypass = v;
+        }
+        if let Some(v) = self.same_for_all {
+            next.same_for_all = v;
+        }
+        if let Some(a) = &self.all {
+            a.apply(&mut next.all);
+        }
+        if let Some(v) = &self.faces {
+            next.faces.clone_from(v);
+        }
+        if let Some(p) = &self.protect {
+            p.apply(&mut next.protect);
+        }
+        if let Some(m) = &self.masks {
+            m.apply(&mut next.masks, &NodeId::Corrector(id).to_string())?;
+        }
+        Ok(())
+    }
+
     fn apply_mixer(&self, next: &mut MixerNode) {
         if let Some(v) = &self.name {
             next.name_mut().clone_from(v);
@@ -1237,6 +1469,22 @@ impl DevelopSettings {
                     _ => true,
                 }
             }
+            NodeId::Corrector(n) if a.faces.contains_key(&n) || b.faces.contains_key(&n) => {
+                let (Some(a), Some(b)) = (a.face_refinement(n), b.face_refinement(n)) else {
+                    return true;
+                };
+                match field {
+                    SettingsField::Name => a.name == b.name,
+                    SettingsField::Bypass => a.bypass == b.bypass,
+                    SettingsField::Pos => a.pos == b.pos,
+                    SettingsField::Masks => a.masks == b.masks,
+                    SettingsField::SameForAll => a.same_for_all == b.same_for_all,
+                    SettingsField::AllFaces => a.all == b.all,
+                    SettingsField::Faces => a.faces == b.faces,
+                    SettingsField::Protect => a.protect == b.protect,
+                    _ => true,
+                }
+            }
             NodeId::Corrector(n) if a.films.contains_key(&n) || b.films.contains_key(&n) => {
                 let (Some(a), Some(b)) = (a.film(n), b.film(n)) else {
                     return true;
@@ -1356,6 +1604,7 @@ impl DevelopSettings {
                 NodeId::Corrector(n) => {
                     if next.nodes.extra.remove(n).is_none()
                         && next.nodes.films.remove(n).is_none()
+                        && next.nodes.faces.remove(n).is_none()
                         && next.nodes.mixers.remove(n).is_none()
                     {
                         return Err(GraphError::PatchUnknownNode(id.to_string()).into());
@@ -1397,6 +1646,14 @@ impl DevelopSettings {
                 if let Some(mut m) = MixerNode::new_of(actual) {
                     *m.pos_mut() = pos;
                     next.nodes.mixers.insert(n, m);
+                } else if actual == NodeKind::FaceRefinement {
+                    next.nodes.faces.insert(
+                        n,
+                        FaceRefinementNode {
+                            pos,
+                            ..FaceRefinementNode::default()
+                        },
+                    );
                 } else if actual == NodeKind::Film {
                     next.nodes.films.insert(
                         n,
@@ -1439,6 +1696,11 @@ impl DevelopSettings {
                         }
                     } else if let Some(f) = next.nodes.film_mut(n) {
                         np.apply_film(f, n)?;
+                        if let Some(p) = np.pos {
+                            f.pos = p;
+                        }
+                    } else if let Some(f) = next.nodes.face_refinement_mut(n) {
+                        np.apply_face_refinement(f, n)?;
                         if let Some(p) = np.pos {
                             f.pos = p;
                         }
@@ -1673,6 +1935,10 @@ impl SettingsPatch {
                     .nodes
                     .mixer(n)
                     .and_then(|m| NodePatch::of_mixer_field(m, *field)),
+                NodeId::Corrector(n) if from.nodes.faces.contains_key(&n) => from
+                    .nodes
+                    .face_refinement(n)
+                    .and_then(|f| NodePatch::of_face_field(f, *field)),
                 NodeId::Corrector(n) if from.nodes.films.contains_key(&n) => from
                     .nodes
                     .film(n)
@@ -1708,6 +1974,8 @@ impl SettingsPatch {
                     patch.nodes.insert(id, NodePatch::whole_corrector(c));
                 } else if let Some(f) = to.nodes.film(n) {
                     patch.nodes.insert(id, NodePatch::whole_film(f));
+                } else if let Some(f) = to.nodes.face_refinement(n) {
+                    patch.nodes.insert(id, NodePatch::whole_face_refinement(f));
                 } else if let Some(m) = to.nodes.mixer(n) {
                     patch.nodes.insert(id, NodePatch::whole_mixer(m));
                 }
@@ -1778,6 +2046,7 @@ impl SettingsPatch {
                             | SettingsField::Bypass
                             | SettingsField::Pos
                             | SettingsField::Masks
+                            | SettingsField::Protect
                     )
             })
             .collect();
@@ -1834,6 +2103,15 @@ impl SettingsPatch {
                 .nodes
                 .insert(NodeId::Corrector(*id), NodePatch::whole_film(&f));
         }
+        for (id, f) in &g.faces {
+            let mut f = f.clone();
+            for row in &mut f.masks.items {
+                *row = row.emptied();
+            }
+            patch
+                .nodes
+                .insert(NodeId::Corrector(*id), NodePatch::whole_face_refinement(&f));
+        }
         for (id, m) in &g.mixers {
             patch
                 .nodes
@@ -1881,6 +2159,9 @@ fn defaults_for(node: NodeId, default_look: &LookId, kind: NodeKind) -> DevelopS
         match kind {
             NodeKind::Film => {
                 d.nodes.films.insert(n, FilmNode::default());
+            }
+            NodeKind::FaceRefinement => {
+                d.nodes.faces.insert(n, FaceRefinementNode::default());
             }
             NodeKind::Parallel | NodeKind::Layer | NodeKind::Splitter | NodeKind::Combiner => {
                 if let Some(m) = MixerNode::new_of(kind) {

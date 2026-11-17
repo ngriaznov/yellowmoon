@@ -375,6 +375,7 @@ export type NodeKind =
   | "output"
   | "corrector"
   | "film"
+  | "face_refinement"
   | "parallel"
   | "layer"
   | "splitter"
@@ -615,6 +616,64 @@ export interface FilmNode {
   masks: MaskSettings;
 }
 
+/**
+ * The amounts of the Face Refinement tools for one face (`docs/27` section 3). Defaults: Blemish 30, Dark circles 30, Even skin 25 and
+ * everything else 0; Reset returns to them.
+ */
+export interface FaceSettings {
+  /** Blemish, 0 to 100. */
+  blemish: number;
+  /** Dark circles, 0 to 100. */
+  dark_circles: number;
+  /** Even skin, 0 to 100. */
+  even_skin: number;
+  /** Texture, -100 to 100. */
+  texture: number;
+  /** Skin grading › Contrast, -100 to 100. */
+  skin_contrast: number;
+  /** Skin grading › Shadow desaturation, 0 to 100. */
+  shadow_desaturation: number;
+  /** Skin grading › Shine removal, 0 to 100. */
+  shine_removal: number;
+  /** Teeth › Whitening, 0 to 100. */
+  teeth_whitening: number;
+}
+
+/** A plane of brush strokes in the format of a Brush mask row: a Face Refinement node's protection. */
+export interface BrushMask {
+  /** The strokes in the order they were drawn, at most 100,000 points in all. */
+  strokes: BrushStroke[];
+  /** 0…1. */
+  feather: number;
+  /** −1…1. */
+  grow: number;
+  /** Refine edges, 0…1. */
+  refine: number;
+}
+
+/**
+ * A Face Refinement node: retouches the faces it finds, in the node graph only (`docs/27`). Faces are found automatically and numbered
+ * from 1, left to right; nothing about them is saved.
+ */
+export interface FaceRefinementNode {
+  /** 2 to 2³¹ − 1; every numbered node shares the numbers. */
+  id: NodeId;
+  /** The card's name, 1 to 32 characters ("Face Refinement"). */
+  name: string;
+  /** A bypassed node passes its picture through. */
+  bypass: boolean;
+  pos: NodePos;
+  /** "Same for all faces": `all` serves every face and `faces` is kept but not used. */
+  same_for_all: boolean;
+  /** The amounts every face takes while `same_for_all` is on, and when `faces` is empty. */
+  all: FaceSettings;
+  /** The amounts per face; index = face number − 1, at most 32. A face past the end takes face 1's. */
+  faces: FaceSettings[];
+  /** The protection plane: painted areas are left alone by every tool. One plane for the node. */
+  protect: BrushMask;
+  masks: MaskSettings;
+}
+
 /** How a Layer blends an input over the ones below it (`docs/25` section 3.3), computed in linear light. */
 export type BlendMode =
   | "normal"
@@ -668,6 +727,7 @@ export type NodeItem =
   | ({ kind: "output" } & OutputNode)
   | ({ kind: "corrector" } & CorrectorNode)
   | ({ kind: "film" } & FilmNode)
+  | ({ kind: "face_refinement" } & FaceRefinementNode)
   | ({ kind: "parallel" } & ParallelNode)
   | ({ kind: "layer" } & LayerNode)
   | ({ kind: "splitter" } & SplitterNode)
@@ -788,6 +848,21 @@ export interface NodePatch {
   grain?: Partial<GrainSettings>;
   /** A Film node's Strength, percent. */
   strength?: number;
+  /** A Face Refinement node's "Same for all faces". */
+  same_for_all?: boolean;
+  /** A Face Refinement node's amounts for every face; each one whole, or only the amounts to change. */
+  all?: Partial<FaceSettings>;
+  /** A Face Refinement node's amounts per face, replaced whole (index = face number − 1). */
+  faces?: FaceSettings[];
+  /** A Face Refinement node's protection plane: the strokes of a Brush row (`strokes`, `strokes_append`, `strokes_keep`) and the edge amounts. */
+  protect?: {
+    strokes?: BrushStroke[];
+    strokes_append?: BrushStroke[];
+    strokes_keep?: number;
+    feather?: number;
+    grow?: number;
+    refine?: number;
+  };
   /** A Layer's blend mode. */
   mode?: BlendMode;
   /** A Layer's opacity, 0 to 1. */
@@ -1471,6 +1546,11 @@ export interface MaskView {
    * row's band, whatever `style` says. A row that is not a Depth row shows its own mask. Left out is `false`.
    */
   depth?: boolean;
+  /**
+   * Show skin areas (`docs/27` S-11c): with `node` naming a Face Refinement node, the frame shows face `face`'s skin areas (1-based) tinted over
+   * the photo, whatever `style` says. Left out, or `null`, is the node's mask as usual.
+   */
+  face?: number | null;
 }
 
 /**
@@ -1528,6 +1608,37 @@ export interface FocusPlaneResult {
   far: number | null;
   exact_centre: boolean;
   reason: FocusReason | null;
+}
+
+/**
+ * One face of a photo as the Face Refinement node's panel lists it (`docs/27` §10, S-11b): its number (1 for the leftmost, up to 32) and its box in the
+ * oriented photo frame, the picture as it is shown (crop and turn applied), as shares of the frame's width and height.
+ */
+export interface FaceBox {
+  number: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Where the faces of a photo are (`docs/27` decision 9): `finding` (the node says "Finding faces…" and the photo is shown without its effect), `ready` (the
+ * faces are known; there may be none), `failed` (`message` says why; nothing asks again until the picture changes) and `models_missing` (this copy has no face
+ * models: the node passes its picture through).
+ */
+export type FacePhase = "finding" | "ready" | "failed" | "models_missing";
+
+/**
+ * `face_state` (addition; also the answer of the `face_state` command): where the faces of a photo are. Sent when the core's face worker starts on a photo
+ * (`finding`) and when it ends (`ready` with the numbered faces, or `failed`). While it runs the viewport is `viewport_busy { busy: true, finding: true }`; when
+ * it ends the photo is drawn again with the retouch. `message` is the plain sentence of the failure or of the missing models, else `null`.
+ */
+export interface FaceState {
+  photo_id: PhotoId;
+  phase: FacePhase;
+  faces: FaceBox[];
+  message: string | null;
 }
 
 /**
@@ -2108,6 +2219,8 @@ export interface ApiEvents {
   vision_state: VisionState;
   /** The depth worker ended its work for a photo, and whether the map failed (`docs/23` §7.6: a failed row says "Can't be made"). */
   depth_state: DepthState;
+  /** The face worker started or ended its work for a photo, and where the faces are (`docs/27` S-11b: the Face Refinement node says "Finding faces…"). */
+  face_state: FaceState;
   /** The computer is short of memory and background work is paused (the sentence), or it is not any more (`null`). */
   memory_notice: MemoryNotice;
   /** One of the system's display options changed (Reduce Transparency, Reduce Motion, Increase Contrast; macOS only). */

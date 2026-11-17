@@ -48,7 +48,7 @@ use ym_core::pipeline::{
     ComputeDevice, FrameOptions, FullRequest, FullTarget, MaskStyle, MaskView, NeutralOnly,
     PhotoSource, RenderOptions, RenderedFrame, Renderer, ViewportMode, ViewportRect, ViewportState,
 };
-use ym_core::pipeline::{DepthModel, has_depth_row};
+use ym_core::pipeline::{DepthModel, FaceModel, has_depth_row};
 use ym_core::settings::{DevelopSettings, MaskKind, NodeKind};
 use ym_core::vision::{FakeVision, VisionMasks};
 use ym_export::{BitDepth, ColorSpace, ExportOptions, FormatKind, IfExists};
@@ -145,6 +145,8 @@ fn renderer_with(gpu: Option<Arc<Gpu>>, tile: usize, view_band_bytes: u64) -> Re
             vision: Some(VisionMasks::new(Arc::new(FakeVision::new()))),
             // Depth is drawn like the other kinds: a fake model makes its map without the weights (D-04).
             depth_model: Some(DepthModel::fake_default()),
+            // So are the faces (S-11b): a fake finder gives two faces without the weights.
+            face_model: Some(FaceModel::fake_default()),
             data_root: Some(data_root()),
             view_band_bytes,
             ..RenderOptions::default()
@@ -183,6 +185,28 @@ fn settle_depth(r: &Renderer, src: &PhotoSource, states: &[(String, ViewportStat
         assert!(
             std::time::Instant::now() < end,
             "the depth worker did not end"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Waits for the face worker of the photo (a viewer never waits for the faces: the node passes its picture through until they are
+/// found), after the renderer is told the photo is the one looked at and every view has been asked for once.
+fn settle_faces(r: &Renderer, src: &PhotoSource, states: &[(String, ViewportState)]) {
+    if ym_core::pipeline::color::live_face_nodes(&src.settings, ym_color::plan::Stop::Output)
+        .is_empty()
+    {
+        return;
+    }
+    r.navigate(src.id);
+    for (_, st) in states {
+        let _ = frame(r, src, st);
+    }
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while r.faces_worker_alive(src.id) || !r.faces_ready(src) {
+        assert!(
+            std::time::Instant::now() < end,
+            "the face worker did not end"
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -231,6 +255,13 @@ struct Graph {
     parallel_films: usize,
     /// Whether the CPU's frame is a reference (Subject and People masks are made by a background worker: no).
     compare: bool,
+    /// Whether a live Face Refinement node is in the graph (not bypassed, read by the Output): its face step runs on the device
+    /// since S-13 (`docs/27`), so the frame is the device's, not refused, and agrees with the CPU's within the view bound.
+    face_live: bool,
+    // A Face Refinement node is not counted in `film_chain`: the rule of the Film chain is for the rounding the Film nodes
+    // amplify (grain and halation after an exposure push), and the face graphs measured so far, among them
+    // `film, face, film` (seed 37, graph 1; film chain 2) on seeds 539, 202, 7 and 1234 and the default, are within the view bound
+    // (1 code, 0 values over 1), so their difference from the CPU stays enforced.
     /// The most Film nodes on any path from the Input to the Output (see [`film_chain`]).
     film_chain: usize,
 }
@@ -335,6 +366,11 @@ fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKin
             NodeKind::Corrector => {
                 json!({ "id": id, "kind": "corrector", "pos": [id, 0.0], "trim": { "exposure_ev": 0.8 } })
             }
+            // Strong amounts, so the node changes the faces of the fake finder (S-11b).
+            NodeKind::FaceRefinement => {
+                json!({ "id": id, "kind": "face_refinement", "pos": [id, 0.0],
+                "all": { "blemish": 30, "dark_circles": 80, "even_skin": 80, "skin_contrast": 30 } })
+            }
             // Excluded by `NOT_GENERATED_NODES`: `generate_joined` makes the four kinds of `docs/25`.
             NodeKind::Input
             | NodeKind::Output
@@ -430,6 +466,10 @@ fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKin
         .flat_map(|&a| films.iter().filter(move |&&b| a < b).map(move |&b| (a, b)))
         .filter(|&(a, b)| !ancestors(b)[a])
         .count();
+    // Main is the first item; node `i` is item `i + 1`.
+    let face_live = (0..count).any(|i| {
+        live[i] && kinds[i] == NodeKind::FaceRefinement && items[i + 1]["bypass"] != json!(true)
+    });
     let doc = json!({ "nodes": { "items": items, "links": links } });
     let settings = serde_json::from_value::<DevelopSettings>(doc.clone())
         .expect("a document")
@@ -457,6 +497,7 @@ fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKin
         parallel_films,
         masked,
         compare,
+        face_live,
         film_chain: chain,
     }
 }
@@ -603,7 +644,9 @@ fn generate_joined(seed: u64, index: usize, forced: NodeKind) -> Graph {
                 });
                 json!({ "id": id, "kind": "combiner", "pos": pos })
             }
-            NodeKind::Input | NodeKind::Output => unreachable!("fixed"),
+            NodeKind::Input | NodeKind::Output | NodeKind::FaceRefinement => {
+                unreachable!("not in the joined pool")
+            }
         };
         if !node["masks"].is_null() {
             node["masks"]["invert"] = json!(false);
@@ -630,6 +673,7 @@ fn generate_joined(seed: u64, index: usize, forced: NodeKind) -> Graph {
         branches: 0,
         parallel_films: 0,
         compare: true,
+        face_live: false,
         film_chain: chain,
     }
 }
@@ -666,6 +710,7 @@ fn view(
         style,
         row,
         depth: false,
+        face: None,
     });
     st
 }
@@ -692,6 +737,105 @@ fn frame_diff(a: &RenderedFrame, b: &RenderedFrame) -> (u8, usize) {
         over += usize::from(d > 1);
     }
     (max, over)
+}
+
+/// How a device renderer's frame of a Face Refinement graph differs from the CPU renderer's.
+struct FaceDiff {
+    /// The largest difference of a value, in codes of 255, and the count of values over 1.
+    max: u8,
+    over: usize,
+    /// Where the largest one is: the frame's pixel and channel (0 to 3), and the same place in the final image.
+    at: (usize, usize, usize),
+    at_final: (f64, f64),
+    /// Whether that place is inside a face box, or inside the box grown by half its size on every side.
+    in_box: bool,
+    in_grown: bool,
+    /// The largest difference inside the boxes and the count of values over 1 inside and outside them.
+    max_in_boxes: u8,
+    over_in: usize,
+    over_out: usize,
+}
+
+impl FaceDiff {
+    fn text(&self) -> String {
+        format!(
+            "max {} codes at ({}, {}) channel {} = final ({:.1}, {:.1}), in a face box {}, in a box grown by half {}; \
+             {} values over 1 ({} inside the boxes, {} outside); largest inside the boxes {}",
+            self.max,
+            self.at.0,
+            self.at.1,
+            self.at.2,
+            self.at_final.0,
+            self.at_final.1,
+            self.in_box,
+            self.in_grown,
+            self.over,
+            self.over_in,
+            self.over_out,
+            self.max_in_boxes
+        )
+    }
+}
+
+/// Measures `a` against `b` (two frames of the state `st`), and says where the faces are in them: `boxes` are shares of the final
+/// image of size `image`.
+fn face_frame_diff(
+    a: &RenderedFrame,
+    b: &RenderedFrame,
+    st: &ViewportState,
+    image: &(usize, usize),
+    boxes: &[ym_core::pipeline::FaceBox],
+) -> FaceDiff {
+    assert_eq!((a.width, a.height), (b.width, b.height));
+    let to_final = st.view_to_final(*image);
+    let (iw, ih) = (image.0 as f64, image.1 as f64);
+    let inside = |fx: f64, fy: f64, grow: f64| {
+        boxes.iter().any(|f| {
+            let (w, h) = (f.width * iw, f.height * ih);
+            fx >= f.x * iw - w * grow
+                && fx < f.x * iw + w * (1.0 + grow)
+                && fy >= f.y * ih - h * grow
+                && fy < f.y * ih + h * (1.0 + grow)
+        })
+    };
+    let mut r = FaceDiff {
+        max: 0,
+        over: 0,
+        at: (0, 0, 0),
+        at_final: (0.0, 0.0),
+        in_box: false,
+        in_grown: false,
+        max_in_boxes: 0,
+        over_in: 0,
+        over_out: 0,
+    };
+    for (i, (x, y)) in a.rgba.iter().zip(&b.rgba).enumerate() {
+        let d = x.abs_diff(*y);
+        let (px, c) = (i / 4, i % 4);
+        let (vx, vy) = (px % a.width, px / a.width);
+        let (fx, fy) = to_final.apply(vx as f64 + 0.5, vy as f64 + 0.5);
+        let grown = inside(fx, fy, 0.5);
+        let boxed = inside(fx, fy, 0.0);
+        if d > r.max {
+            r.max = d;
+            r.at = (vx, vy, c);
+            r.at_final = (fx, fy);
+            r.in_box = boxed;
+            r.in_grown = grown;
+        }
+        if boxed {
+            r.max_in_boxes = r.max_in_boxes.max(d);
+        }
+        if d > 1 {
+            r.over += 1;
+            if boxed {
+                r.over_in += 1;
+            } else {
+                r.over_out += 1;
+            }
+        }
+    }
+    r
 }
 
 fn export(
@@ -796,6 +940,50 @@ fn parallel_branches(seed: u64) -> Graph {
         parallel_films: 1,
         masked: Some((4, 0)),
         compare: true,
+        face_live: false,
+        film_chain: chain,
+    }
+}
+
+/// S-12: a live Face Refinement node with no mask row (the drawn graphs often put a Background, depth or radial row on it, which can
+/// leave the faces alone), at strong amounts, with a corrector before it and a Film node after it: the node changes the faces of the
+/// fake finder, so the comparison with the CPU is made on a frame the node really retouched.
+fn face_line(seed: u64) -> Graph {
+    let doc = json!({ "nodes": { "items": [
+        { "id": 1 },
+        { "id": 2, "kind": "corrector", "pos": [2, 0.0], "trim": { "exposure_ev": 0.3 } },
+        { "id": 3, "kind": "face_refinement", "pos": [3, 0.0], "same_for_all": true,
+          "all": { "blemish": 80, "dark_circles": 80, "even_skin": 80, "skin_contrast": 30 } },
+        { "id": 4, "kind": "film", "pos": [4, 0.0], "film": { "exposure_ev": 0.3 },
+          "grain": { "amount": 100, "seed": 4 }, "halation": { "amount": 200, "size": 120 }, "strength": 85 } ],
+      "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+        { "from": { "node": 3, "port": "picture" }, "to": { "node": 4, "port": "picture" } },
+        { "from": { "node": 4, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
+    let settings = serde_json::from_value::<DevelopSettings>(doc.clone())
+        .expect("a document")
+        .validated()
+        .expect("a valid graph")
+        .0;
+    let chain = film_chain(&doc);
+    Graph {
+        seed,
+        index: 101,
+        settings,
+        json: doc,
+        nodes: vec![
+            NodeKind::Corrector,
+            NodeKind::FaceRefinement,
+            NodeKind::Film,
+        ],
+        masks: Vec::new(),
+        branches: 0,
+        parallel_films: 0,
+        masked: None,
+        compare: true,
+        face_live: true,
         film_chain: chain,
     }
 }
@@ -817,6 +1005,8 @@ fn graphs() -> Vec<Graph> {
         .collect();
     // Parallel Film branches are rare in the draw; one is always there.
     all.push(parallel_branches(FIXED_SEEDS[0]));
+    // A live Face Refinement graph the node really changes (S-12).
+    all.push(face_line(FIXED_SEEDS[0]));
     // The four kinds of docs/25 (X-05): every device assertion holds for them too.
     all.extend(joined_graphs());
     all
@@ -892,6 +1082,8 @@ fn no_generated_graph_is_refused_by_the_device() {
     let (mut worst_view, mut worst_export, mut exports) = ((0u8, 0usize), 0u32, 0usize);
     let (mut n_film, mut n_masked, mut n_keys) = (0usize, 0usize, 0usize);
     let (mut n_branched, mut n_parallel) = (0usize, 0usize);
+    // S-12: the live Face Refinement graphs that were compared with the CPU, and those whose faces the node really changed.
+    let (mut n_face_compared, mut n_face_changed) = (0usize, 0usize);
     // Graphs whose difference from the CPU is enforced, and those that have one that is only printed (`film_chain`).
     let (mut n_enforced, mut n_reported) = (0usize, 0usize);
     for g in &all {
@@ -944,6 +1136,85 @@ fn no_generated_graph_is_refused_by_the_device() {
         if g.compare && has_depth_row(&src.settings) {
             settle_depth(&cpu, &src, &states);
         }
+        if g.face_live {
+            // A live Face Refinement node (`docs/27` S-13): the frame is the device's like any other (the node's picture is made by
+            // the face kernels, `kernels::face`), not refused and not on the CPU, and the pixels agree with the CPU renderer's within
+            // the view bound (the faces, masks and maps are the CPU reference's on both: the analysis is made without a device).
+            settle_faces(&device, &src, &states);
+            settle_faces(&cpu, &src, &states);
+            let face_image = cpu
+                .final_size(&src, &CancelToken::new())
+                .expect("the final size");
+            let face_boxes = cpu.face_state(&src).faces;
+            // The same graph with its Face Refinement nodes bypassed: what the node changes is the difference.
+            let without_nodes = {
+                let mut doc = g.json.clone();
+                for item in doc["nodes"]["items"].as_array_mut().expect("items") {
+                    if item["kind"] == "face_refinement" {
+                        item["bypass"] = json!(true);
+                    }
+                }
+                serde_json::from_value::<DevelopSettings>(doc)
+                    .expect("a document")
+                    .validated()
+                    .expect("a valid graph")
+                    .0
+            };
+            let src_without = d.source().with_settings(without_nodes);
+            let mut changed_in_boxes = false;
+            n_face_compared += usize::from(g.compare);
+            for (what, st) in &states {
+                let at = format!("{name}: {what}");
+                let got = frame(&device, &src, st);
+                if got.report.device != ComputeDevice::Gpu
+                    || got.report.device_refused
+                    || got.report.cpu_reason.is_some()
+                {
+                    problems.push(format!(
+                        "{at}: a Face Refinement frame is {:?}, refused {}, reason {:?}",
+                        got.report.device, got.report.device_refused, got.report.cpu_reason
+                    ));
+                }
+                if device.views_on_cpu(src.id) {
+                    problems.push(format!(
+                        "{at}: views_on_cpu is true for a Face Refinement frame"
+                    ));
+                }
+                if g.compare {
+                    let want = frame(&cpu, &src, st);
+                    // Every pair is measured and written to the log, passing or not, so that a run on a device gives the numbers.
+                    //
+                    // The bound is the view bound, no wider, and the same bound is held inside the face regions on their own: the node
+                    // must not make the device's small input difference larger.
+                    let report = face_frame_diff(&got, &want, st, &face_image, &face_boxes);
+                    say(&format!("{at}: against the CPU: {}", report.text()));
+                    let plain = frame(&cpu, &src_without, st);
+                    let moved = face_frame_diff(&want, &plain, st, &face_image, &face_boxes);
+                    say(&format!(
+                        "{at}: the node changes the CPU frame by up to {} codes inside the {} face box(es), {} values over 1 there",
+                        moved.max_in_boxes,
+                        face_boxes.len(),
+                        moved.over_in
+                    ));
+                    changed_in_boxes |= moved.max_in_boxes > 0;
+                    // And the device's own frame is not the device's frame without the node.
+                    let device_plain = frame(&device, &src_without, st);
+                    let device_moved =
+                        face_frame_diff(&got, &device_plain, st, &face_image, &face_boxes);
+                    if g.compare && moved.max_in_boxes > 0 && device_moved.max_in_boxes == 0 {
+                        problems.push(format!("{at}: the node changes nothing on the device"));
+                    }
+                    if report.max > 2
+                        || report.over >= got.rgba.len() / 2000
+                        || report.max_in_boxes > 2
+                    {
+                        problems.push(format!("{at}: against the CPU: {}", report.text()));
+                    }
+                }
+            }
+            n_face_changed += usize::from(changed_in_boxes);
+            continue;
+        }
         for (what, st) in &states {
             let at = format!("{name}: {what}");
             let got = frame(&device, &src, st);
@@ -976,8 +1247,14 @@ fn no_generated_graph_is_refused_by_the_device() {
                     worst_view = (worst_view.0.max(max), worst_view.1.max(over));
                 }
                 if enforced && (max > 2 || over >= got.rgba.len() / 2000) {
+                    // Where the largest difference is, as for a graph with faces (there are no boxes to say).
+                    let image = cpu
+                        .final_size(&src, &CancelToken::new())
+                        .expect("the final size");
+                    let at_max = face_frame_diff(&got, &want, st, &image, &[]);
                     problems.push(format!(
-                        "{at}: against the CPU {max} codes, {over} values over 1"
+                        "{at}: against the CPU {max} codes, {over} values over 1: {}",
+                        at_max.text()
                     ));
                 }
             }
@@ -1056,6 +1333,19 @@ fn no_generated_graph_is_refused_by_the_device() {
         worst_view.1,
         started.elapsed()
     ));
+    say(&format!(
+        "{n_face_compared} live Face Refinement graphs compared with the CPU, {n_face_changed} of them with faces the node really changed"
+    ));
+    // S-12: a live Face Refinement graph that was generated but never compared, or whose node changed nothing, would pass every
+    // check above without testing the node. The fixed seeds hold some of each (the forced kinds cycle through the node list).
+    assert!(
+        n_face_compared > 0,
+        "the fixed seeds hold no live Face Refinement graph that is compared with the CPU"
+    );
+    assert!(
+        n_face_changed > 0,
+        "no live Face Refinement graph had its faces changed by the node: the generated graphs do not test it"
+    );
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
@@ -1157,6 +1447,7 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
             continue;
         }
         let src = d.source().with_settings(g.settings.clone());
+        // A live Face Refinement node is here too since S-13: its face step is the device's, and the faces are found first.
         // Fit, 100 % and 147 % (scale 1, the owner's frames), and the mask overlay at 100 %.
         let mut states: Vec<(String, ViewportState)> = vec![
             ("fit".to_owned(), view(false, false, None)),
@@ -1180,6 +1471,9 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
         // A viewer never waits for a Depth row's map (the row selects nothing until the worker has made it, as in the app), so
         // every renderer compared is let finish its map first: else a frame drawn before the map and one drawn after differ.
         settle_depth(&reference, &src, &states);
+        if g.face_live {
+            settle_faces(&reference, &src, &states);
+        }
         let wants: Vec<RenderedFrame> = states
             .iter()
             .map(|(_, st)| frame(&reference, &src, st))
@@ -1188,6 +1482,9 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
             let device = renderer_with(Some(Arc::clone(&gpu)), 256, kib * 1024);
             let _ = frame(&device, &src, &states[0].1);
             settle_depth(&device, &src, &states);
+            if g.face_live {
+                settle_faces(&device, &src, &states);
+            }
             let mut line = Vec::new();
             for ((what, st), want) in states.iter().zip(&wants) {
                 let at = format!("{name}, binding {kib} KiB: {what}");
@@ -1200,7 +1497,10 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
                 // The one resource limit: the pieces of a graph with a Film node (and the raster rows before it) are the piece grown by their summed
                 // reach on every side, so a piece cannot be smaller than that, and a binding under the smallest piece's
                 // pictures leaves no cut that fits. The CPU makes such a frame, with the bytes the smallest piece needs.
-                let film_nodes = g.nodes.iter().filter(|k| **k == NodeKind::Film).count();
+                // A live Face Refinement node is the same: its regions are made whole (`FilmStack::widen`), so the picture the node
+                // makes over a view is at least the regions it meets, and a binding under it has no cut that fits (`docs/27` S-13).
+                let film_nodes = g.nodes.iter().filter(|k| **k == NodeKind::Film).count()
+                    + usize::from(g.face_live);
                 let floor = got.report.device != ComputeDevice::Gpu
                     && film_nodes >= 1
                     && got.report.device_refused

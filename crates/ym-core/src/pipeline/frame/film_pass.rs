@@ -27,6 +27,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use ym_color::display::{ColorChain, Frame as ColorFrame, Layout, OutputTarget};
 use ym_color::mask::RasterPlanes;
@@ -36,26 +37,39 @@ use ym_color::schedule::{Schedule, StepKind};
 use ym_film::spatial::{FilmFrame, Frame as FilmFrameExtent, Plane, Rect as FilmRect, RunOptions};
 use ym_gpu::cpu::Rect;
 use ym_gpu::cpu::sampler::{GridPositions, Sampled, SamplerGrid};
-use ym_gpu::kernels::film_stack::{FilmNodeSpec, FilmStack};
+use ym_gpu::kernels::film_stack::{FilmNodeSpec, FilmStack, FilmWork, NodeWork};
 
+use super::face_pass::{FacePart, FaceWork, ProtectInput, union};
 use super::{Job, RenderError};
 use crate::film::FilmEngine;
 use crate::pipeline::color::node_plan;
 
-/// The picture one Film node made over an area, LogC4 / AWG4, interleaved f32.
+/// The picture one Film node made over an area, LogC4 / AWG4, interleaved f32; or the pictures a Face Refinement node made over
+/// its regions (`face_pass`), in which a pixel the retouch left as it was is `NaN` and reads as no picture.
 #[derive(Debug, Clone)]
 pub(crate) struct FilmPlane {
-    area: Area,
-    data: Vec<f32>,
+    parts: Vec<Arc<FacePart>>,
 }
 
 impl FilmPlane {
-    fn at(&self, ax: i64, ay: i64) -> Option<[f32; 3]> {
-        if ax < self.area.x || ay < self.area.y || ax >= self.area.x1() || ay >= self.area.y1() {
-            return None;
+    fn of_film(area: Area, data: Vec<f32>) -> Self {
+        Self {
+            parts: vec![Arc::new(FacePart { area, data })],
         }
-        let i = ((ay - self.area.y) as usize * self.area.w + (ax - self.area.x) as usize) * 3;
-        Some([self.data[i], self.data[i + 1], self.data[i + 2]])
+    }
+
+    fn at(&self, ax: i64, ay: i64) -> Option<[f32; 3]> {
+        for part in &self.parts {
+            let area = part.area;
+            if ax < area.x || ay < area.y || ax >= area.x1() || ay >= area.y1() {
+                continue;
+            }
+            let i = ((ay - area.y) as usize * area.w + (ax - area.x) as usize) * 3;
+            let v = [part.data[i], part.data[i + 1], part.data[i + 2]];
+            // `NaN`: the retouch left this pixel as it was.
+            return (!v[0].is_nan()).then_some(v);
+        }
+        None
     }
 }
 
@@ -131,9 +145,17 @@ pub(crate) struct Cover<'a> {
     pub grid_off: (usize, usize),
 }
 
+/// What makes a node's picture.
+enum StepWork {
+    /// A Film node's passes.
+    Film(Box<FilmFrame>),
+    /// A Face Refinement node's retouch of its regions.
+    Face(Box<FaceWork>),
+}
+
 struct FilmStepRun {
     id: u32,
-    film: FilmFrame,
+    work: StepWork,
     halo: usize,
     prefix: Arc<ColorChain>,
     /// The Film nodes whose pictures this one reads: its ancestors in the plan's graph.
@@ -192,21 +214,41 @@ impl FilmRender {
         let mut steps = Vec::new();
         let film_reads = chain.film_reads();
         for id in chain.film_nodes() {
-            let Some(node) = settings.nodes.film(id) else {
+            let (work, halo) = if let Some(node) = settings.nodes.film(id) {
+                // A bypassed node and one at Strength 0 pass their input through: nothing to make.
+                if node.is_inert() {
+                    continue;
+                }
+                if engine.is_none() {
+                    engine = Some(engine_for(job)?);
+                }
+                let Some(engine) = engine.as_ref() else {
+                    continue;
+                };
+                let film = engine.frame_for(node, target).map_err(|e| film_error(&e))?;
+                let halo = film.halos(extent).total();
+                (StepWork::Film(Box::new(film)), halo)
+            } else if let Some(node) = settings.nodes.face_refinement(id) {
+                // A Face Refinement node: its regions at this frame's scale. It reads nothing beyond them (`widen` grows what a
+                // render asks for to the regions it meets), so its reach is 0.
+                if node.is_inert() {
+                    continue;
+                }
+                let Some(entry) = job.faces_entry() else {
+                    continue;
+                };
+                let Some(work) = FaceWork::build(
+                    &entry,
+                    node,
+                    frame,
+                    crate::pipeline::color::protect_row(node),
+                ) else {
+                    continue;
+                };
+                (StepWork::Face(Box::new(work)), 0)
+            } else {
                 continue;
             };
-            // A bypassed node and one at Strength 0 pass their input through: nothing to make.
-            if node.is_inert() {
-                continue;
-            }
-            if engine.is_none() {
-                engine = Some(engine_for(job)?);
-            }
-            let Some(engine) = engine.as_ref() else {
-                continue;
-            };
-            let film = engine.frame_for(node, target).map_err(|e| film_error(&e))?;
-            let halo = film.halos(extent).total();
             let mut params = chain.params().clone();
             params.nodes.plan = node_plan(&settings.nodes, Stop::Picture(id))?;
             params.look = None;
@@ -216,7 +258,7 @@ impl FilmRender {
             let prefix = Arc::new(ColorChain::new(&params).map_err(|e| film_error(&e))?);
             steps.push(FilmStepRun {
                 id,
-                film,
+                work,
                 halo,
                 prefix,
                 reads: film_reads.get(&id).cloned().unwrap_or_default(),
@@ -260,32 +302,90 @@ impl FilmRender {
         self.schedule().total_reach()
     }
 
-    /// The Film nodes as plain data for the device (`ym_gpu::kernels::film_stack`): the prefix chain, the passes over the
-    /// photo's extent, the scalars and the tables of each.
-    pub(crate) fn device_stack(&self) -> FilmStack {
+    /// The Film and Face Refinement nodes as plain data for the device (`ym_gpu::kernels::film_stack`): the prefix chain, and for
+    /// a Film node the passes over the photo's extent, the scalars and the tables, for a Face Refinement node its regions with
+    /// the CPU's plan of each (`docs/27` S-13).
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Mask`] when the face library refuses a region.
+    pub(crate) fn device_stack(&self) -> Result<FilmStack, RenderError> {
         let _span = ym_gpu::perf::span(ym_gpu::perf::Stage::FilmBuild);
         let extent = FilmFrameExtent {
             width: self.frame.w,
             height: self.frame.h,
         };
-        let steps = self
-            .steps
-            .iter()
-            .map(|s| FilmNodeSpec {
+        let mut steps = Vec::with_capacity(self.steps.len());
+        for s in &self.steps {
+            let work = match &s.work {
+                StepWork::Film(film) => NodeWork::Film(Box::new(FilmWork {
+                    plan: Arc::new(crate::film::device_plan(film, extent)),
+                    scalars: crate::film::device_scalars(film.baked()),
+                    tables: crate::film::device_tables(film.baked()),
+                })),
+                StepWork::Face(face) => NodeWork::Face(Arc::new(face.device_node()?)),
+            };
+            steps.push(FilmNodeSpec {
                 node: s.id,
                 prefix: Arc::clone(&s.prefix),
-                plan: Arc::new(crate::film::device_plan(&s.film, extent)),
-                scalars: crate::film::device_scalars(s.film.baked()),
-                tables: crate::film::device_tables(s.film.baked()),
+                work,
                 reads: Some(s.reads.clone()),
+            });
+        }
+        Ok(FilmStack::new(self.frame, steps))
+    }
+
+    /// The area a render must ask for to get `need` of the pictures: `need` grown to hold, whole, every face region that the
+    /// picture of a Face Refinement node is demanded over, and the reach of the protection plane around it. A render that
+    /// makes the pictures of an area (a view, a tile of an export) uses this area where it would use `need`.
+    ///
+    /// The demand of a node is the area the nodes after it read of its picture: `need` for the last, `need` grown by a Film
+    /// node's halo for a node before it (`docs/27` S-11b2: a halo that cut a region left that part unretouched). A region
+    /// that joins the area makes a wider demand upstream, so the growth goes on to a fixed point (at most one round per
+    /// region); the protection plane's reach is added at the end and widens no demand.
+    pub(crate) fn widen(&self, need: Area) -> Area {
+        let has_face = self
+            .steps
+            .iter()
+            .any(|s| matches!(s.work, StepWork::Face(_)));
+        if !has_face || need.is_empty() {
+            return need;
+        }
+        let schedule = self.schedule();
+        let mut core = need;
+        let mut joined: Vec<(usize, usize)> = Vec::new();
+        loop {
+            let made = schedule.infer(core, &self.frame).made;
+            let mut grew = false;
+            for (i, s) in self.steps.iter().enumerate() {
+                let StepWork::Face(face) = &s.work else {
+                    continue;
+                };
+                for ri in face.needed_in(&made[i]) {
+                    if joined.contains(&(i, ri)) {
+                        continue;
+                    }
+                    joined.push((i, ri));
+                    let next = union(core, face.region(ri));
+                    grew |= next != core;
+                    core = next;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        joined
+            .iter()
+            .fold(core, |out, &(i, ri)| match &self.steps[i].work {
+                StepWork::Face(face) => union(out, face.region_with_protect(ri)),
+                StepWork::Film(_) => out,
             })
-            .collect();
-        FilmStack::new(self.frame, steps)
     }
 
     /// The area the first Film node reads for `need`: `need` grown by every halo, cut to the photo's extent.
     pub(crate) fn read_area(&self, need: Area) -> Area {
-        self.schedule().infer(need, &self.frame).source
+        self.schedule().infer(self.widen(need), &self.frame).source
     }
 
     /// The pictures of the Film nodes over `need` (cut to the photo's extent). `rasters` are the raster planes
@@ -301,6 +401,9 @@ impl FilmRender {
         cover: &Cover<'_>,
         rasters: Option<(&CpuPlanes, Area)>,
     ) -> Result<FilmPlanes, RenderError> {
+        // What the pixels asked for demand of each node's picture, before the area grows to hold whole regions.
+        let demanded = self.schedule().infer(need, &self.frame).made;
+        let need = self.widen(need);
         let areas = self.schedule().infer(need, &self.frame);
         let (made, read, want) = (areas.made, areas.read, areas.source);
         if want.is_empty() {
@@ -318,6 +421,22 @@ impl FilmRender {
         };
         for (i, step) in self.steps.iter().enumerate() {
             job.check()?;
+            if let StepWork::Face(face) = &step.work {
+                let parts = self.face_parts(
+                    job,
+                    step,
+                    face,
+                    (made[i], demanded[i]),
+                    cover,
+                    rasters,
+                    &done,
+                )?;
+                done.nodes.insert(step.id, FilmPlane { parts });
+                continue;
+            }
+            let StepWork::Film(film) = &step.work else {
+                continue;
+            };
             let a = read[i];
             let (w, h) = (a.w, a.h);
             let (ox, oy) = ((a.x - cover.area.x) as usize, (a.y - cover.area.y) as usize);
@@ -362,8 +481,7 @@ impl FilmRender {
                 x1: m.x1() as usize,
                 y1: m.y1() as usize,
             };
-            let out = step
-                .film
+            let out = film
                 .run_tile(
                     extent,
                     tile,
@@ -374,14 +492,101 @@ impl FilmRender {
                     },
                 )
                 .map_err(|e| film_error(&e))?;
-            done.nodes.insert(
-                step.id,
-                FilmPlane {
-                    area: m,
-                    data: out.data,
-                },
-            );
+            done.nodes.insert(step.id, FilmPlane::of_film(m, out.data));
         }
         Ok(done)
+    }
+
+    /// The pictures of a Face Refinement node's regions that meet `made`: for each, the prefix chain over the region (the
+    /// node's input), then the retouch of it (`face_pass`). A region met by an earlier tile of the same export is not made again.
+    #[allow(clippy::too_many_arguments)]
+    fn face_parts(
+        &self,
+        job: &mut Job<'_>,
+        step: &FilmStepRun,
+        face: &FaceWork,
+        (made, demanded): (Area, Area),
+        cover: &Cover<'_>,
+        rasters: Option<(&CpuPlanes, Area)>,
+        done: &FilmPlanes,
+    ) -> Result<Vec<Arc<FacePart>>, RenderError> {
+        let mut parts = Vec::new();
+        for ri in face.regions_in(&made) {
+            if let Some(kept) = face.kept(ri) {
+                parts.push(kept);
+                continue;
+            }
+            job.check()?;
+            let a = face.region(ri);
+            if !cover.area.contains(&a) {
+                // `FilmRender::widen` holds whole every region the pixels demanded of this node meet; this is a region that
+                // only the margin of the area meets (the protection plane's reach), whose pixels no output reads.
+                if a.intersect(&demanded).is_empty() {
+                    tracing::debug!(
+                        ?a,
+                        "a face region outside what the render demands is not made"
+                    );
+                } else {
+                    // Never expected: `widen` holds whole every region the demand meets.
+                    tracing::warn!(
+                        ?a,
+                        ?demanded,
+                        "a face region is cut by the picture the node reads; it is left unretouched"
+                    );
+                    job.note_face_region_cut();
+                }
+                continue;
+            }
+            let prefix_started = Instant::now();
+            let (w, h) = (a.w, a.h);
+            let (ox, oy) = ((a.x - cover.area.x) as usize, (a.y - cover.area.y) as usize);
+            let sub = cover.sampled.img.extract(Rect::new(ox, oy, w, h));
+            let positions = cover
+                .grid
+                .filter(|_| step.prefix.uses_photo_position())
+                .map(|g| {
+                    (
+                        GridPositions::new(g, (cover.grid_off.0 + ox, cover.grid_off.1 + oy)),
+                        g.photo_frame(),
+                    )
+                });
+            let view = ChainPlanes {
+                rasters,
+                films: done,
+                origin: (a.x, a.y),
+            };
+            let mut frame = ColorFrame::planar(w, h, &sub.data).map_err(|e| film_error(&e))?;
+            if let Some((map, photo)) = &positions {
+                frame = frame.with_photo(map, *photo);
+            }
+            let frame = frame.with_rasters(&view);
+            let mut logc4 = vec![0.0f32; 3 * w * h];
+            step.prefix
+                .render_logc4_f32(&frame, Layout::Interleaved, &mut logc4, self.threads)
+                .map_err(|e| film_error(&e))?;
+            job.check()?;
+            tracing::debug!(
+                w,
+                h,
+                prefix_ms = prefix_started.elapsed().as_secs_f64() * 1000.0,
+                "the prefix chain over a face region"
+            );
+            let guide = |rgb: [f64; 3]| step.prefix.guide_pixel(rgb);
+            let protect = cover.grid.and_then(|grid| {
+                face.protect_mask(
+                    ri,
+                    &ProtectInput {
+                        grid,
+                        grid_off: cover.grid_off,
+                        area: cover.area,
+                        planar: &cover.sampled.img.data,
+                        outside: cover.sampled.outside.as_deref(),
+                        guide: &guide,
+                    },
+                )
+            });
+            parts.push(face.part(ri, &logc4, protect.as_ref())?);
+        }
+        Ok(parts)
     }
 }

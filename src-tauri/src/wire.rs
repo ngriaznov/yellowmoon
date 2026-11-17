@@ -835,6 +835,8 @@ pub enum NodeKind {
     Corrector,
     /// A Film node (`docs/24`).
     Film,
+    /// A Face Refinement node (`docs/27`).
+    FaceRefinement,
     /// A Parallel mixer (`docs/25`).
     Parallel,
     /// A Layer mixer (`docs/25`).
@@ -1312,6 +1314,64 @@ pub struct FilmNode {
     pub masks: MaskSettings,
 }
 
+/// The amounts of the Face Refinement tools for one face (`docs/27` section 3).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct FaceSettings {
+    /// Blemish, 0 to 100 (default 30).
+    pub blemish: Num,
+    /// Dark circles, 0 to 100 (default 30).
+    pub dark_circles: Num,
+    /// Even skin, 0 to 100 (default 25).
+    pub even_skin: Num,
+    /// Texture, -100 to 100 (default 0).
+    pub texture: Num,
+    /// Skin grading › Contrast, -100 to 100 (default 0).
+    pub skin_contrast: Num,
+    /// Skin grading › Shadow desaturation, 0 to 100 (default 0).
+    pub shadow_desaturation: Num,
+    /// Skin grading › Shine removal, 0 to 100 (default 0).
+    pub shine_removal: Num,
+    /// Teeth › Whitening, 0 to 100 (default 0).
+    pub teeth_whitening: Num,
+}
+
+/// A plane of brush strokes, in the format of a Brush mask row: a Face Refinement node's protection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct BrushMask {
+    /// The strokes in the order they were drawn, at most 100,000 points in all.
+    pub strokes: Vec<BrushStroke>,
+    /// Feather, 0 to 1.
+    pub feather: Num,
+    /// Grow, -1 to 1.
+    pub grow: Num,
+    /// Refine edges, 0 to 1.
+    pub refine: Num,
+}
+
+/// A Face Refinement node: retouches the faces it finds (`docs/27`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct FaceRefinementNode {
+    /// 2 to 2147483647 (every numbered node shares the numbers).
+    pub id: NodeId,
+    /// The card's name, 1 to 32 characters.
+    pub name: String,
+    /// A bypassed node passes its picture through.
+    pub bypass: bool,
+    /// The card's place on the canvas, in grid units.
+    pub pos: [Num; 2],
+    /// "Same for all faces": `all` serves every face and `faces` is kept but not used.
+    pub same_for_all: bool,
+    /// The amounts every face takes while `same_for_all` is on, and when `faces` is empty.
+    pub all: FaceSettings,
+    /// The amounts per face; index = face number - 1 (faces are numbered from 1, left to right), at most 32. A
+    /// face past the end takes face 1's.
+    pub faces: Vec<FaceSettings>,
+    /// The protection plane: painted areas are left alone by every tool.
+    pub protect: BrushMask,
+    /// The masks.
+    pub masks: MaskSettings,
+}
+
 /// How a Layer blends an input over the ones below it (`docs/25` section 3.3), in linear light.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
@@ -1396,6 +1456,8 @@ pub enum NodeItem {
     Corrector(CorrectorNode),
     /// A Film node.
     Film(FilmNode),
+    /// A Face Refinement node.
+    FaceRefinement(FaceRefinementNode),
     /// A Parallel mixer.
     Parallel(ParallelNode),
     /// A Layer mixer.
@@ -1684,6 +1746,61 @@ pub struct GrainPatch {
     pub seed: Option<u32>,
 }
 
+/// A Face Refinement node's `all` to change. Serialising leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct FaceSettingsPatch {
+    /// New Blemish, 0 to 100.
+    #[serde(default)]
+    pub blemish: Option<Num>,
+    /// New Dark circles, 0 to 100.
+    #[serde(default)]
+    pub dark_circles: Option<Num>,
+    /// New Even skin, 0 to 100.
+    #[serde(default)]
+    pub even_skin: Option<Num>,
+    /// New Texture, -100 to 100.
+    #[serde(default)]
+    pub texture: Option<Num>,
+    /// New Skin contrast, -100 to 100.
+    #[serde(default)]
+    pub skin_contrast: Option<Num>,
+    /// New Shadow desaturation, 0 to 100.
+    #[serde(default)]
+    pub shadow_desaturation: Option<Num>,
+    /// New Shine removal, 0 to 100.
+    #[serde(default)]
+    pub shine_removal: Option<Num>,
+    /// New Teeth whitening, 0 to 100.
+    #[serde(default)]
+    pub teeth_whitening: Option<Num>,
+}
+
+/// A Face Refinement node's `protect` to change: the strokes of a Brush row under the same names, and the three edge
+/// amounts. Serialising leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct ProtectPatch {
+    /// The strokes, replaced whole.
+    #[serde(default)]
+    pub strokes: Option<Vec<BrushStroke>>,
+    /// Strokes added after the existing ones.
+    #[serde(default)]
+    pub strokes_append: Option<Vec<BrushStroke>>,
+    /// Keep only the first n strokes (the inverse of an append).
+    #[serde(default)]
+    pub strokes_keep: Option<u32>,
+    /// Feather, 0 to 1.
+    #[serde(default)]
+    pub feather: Option<Num>,
+    /// Grow, -1 to 1.
+    #[serde(default)]
+    pub grow: Option<Num>,
+    /// Refine edges, 0 to 1.
+    #[serde(default)]
+    pub refine: Option<Num>,
+}
+
 /// A corrector's trims to change. Serialising leaves absent fields out (see [`NodePatch`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
@@ -1755,6 +1872,26 @@ serialize_present!(LightsPatch, c, m, y);
 serialize_present!(PrintPatch, paper, exposure_ev, lights);
 serialize_present!(HalationPatch, amount, size);
 serialize_present!(GrainPatch, amount, size, seed);
+serialize_present!(
+    FaceSettingsPatch,
+    blemish,
+    dark_circles,
+    even_skin,
+    texture,
+    skin_contrast,
+    shadow_desaturation,
+    shine_removal,
+    teeth_whitening
+);
+serialize_present!(
+    ProtectPatch,
+    strokes,
+    strokes_append,
+    strokes_keep,
+    feather,
+    grow,
+    refine
+);
 
 impl Serialize for TrimPatch {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -2016,6 +2153,18 @@ pub struct NodePatch {
     /// New Strength of a Film node, percent.
     #[serde(default)]
     pub strength: Option<Num>,
+    /// A Face Refinement node's "Same for all faces" on or off.
+    #[serde(default)]
+    pub same_for_all: Option<bool>,
+    /// A Face Refinement node's amounts for every face (while "Same for all faces" is on) to change.
+    #[serde(default)]
+    pub all: Option<FaceSettingsPatch>,
+    /// A Face Refinement node's amounts per face, replaced whole (index = face number - 1).
+    #[serde(default)]
+    pub faces: Option<Vec<FaceSettings>>,
+    /// A Face Refinement node's protection plane to change.
+    #[serde(default)]
+    pub protect: Option<ProtectPatch>,
     /// A Layer's new blend mode.
     #[serde(default)]
     pub mode: Option<BlendMode>,
@@ -2061,6 +2210,10 @@ impl Serialize for NodePatch {
             halation,
             grain,
             strength,
+            same_for_all,
+            all,
+            faces,
+            protect,
             mode,
             opacity,
         );
@@ -3312,6 +3465,9 @@ pub struct MaskView {
     /// for near, whole and not cut to the row's band, whatever `style` says. A row that is not a Depth row shows its own mask.
     #[serde(default)]
     pub depth: bool,
+    /// Show skin areas (`docs/27` S-11c): with `node` naming a Face Refinement node, the frame shows face `face`'s skin areas tinted over the photo, whatever `style` says.
+    #[serde(default)]
+    pub face: Option<u32>,
 }
 
 /// A kind of mask row (`docs/23` section 3.3), as the row's `kind` is written: what `mask_kinds` lists and the Add
@@ -3443,6 +3599,56 @@ pub struct DepthState {
     pub photo_id: PhotoId,
     /// The sentence of the failure, or null when the map is ready.
     pub failed: Option<String>,
+}
+
+/// One face of a photo as the Face Refinement node's panel lists it (`docs/27` section 10, S-11b): its number (1 for the leftmost,
+/// up to 32) and its box in the oriented photo frame, the picture as it is shown (crop and turn applied), as shares of the frame's
+/// width and height.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct FaceBox {
+    /// The face's number, from 1, left to right.
+    pub number: u32,
+    /// Left edge, 0 to 1.
+    pub x: Num,
+    /// Top edge, 0 to 1.
+    pub y: Num,
+    /// Width, 0 to 1.
+    pub width: Num,
+    /// Height, 0 to 1.
+    pub height: Num,
+}
+
+/// Where the faces of a photo are (`docs/27` decision 9): `finding` (the node says "Finding faces…" and the photo is shown without
+/// its effect), `ready` (the faces are known; there may be none), `failed` (the sentence says why; nothing asks again until the
+/// picture changes) and `models_missing` (this copy of Yellowmoon has no face models: the node passes its picture through).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum FacePhase {
+    /// The faces are being found.
+    Finding,
+    /// The faces are known.
+    Ready,
+    /// Finding them failed.
+    Failed,
+    /// This copy has no face models.
+    ModelsMissing,
+}
+
+/// `face_state { photo_id, phase, faces, message }` (addition): where the faces of a photo are (`docs/27` section 10, S-11b). Sent
+/// when the core's face worker starts on a photo (`finding`) and when it ends (`ready`, with the numbered faces, or `failed`), and
+/// returned by the command of the same name. While the worker runs the viewport is `viewport_busy { busy: true, finding: true }`;
+/// when it ends the photo is drawn again with the retouch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "face_state")]
+pub struct FaceState {
+    /// The photo.
+    pub photo_id: PhotoId,
+    /// Where the analysis is.
+    pub phase: FacePhase,
+    /// The faces, numbered from left to right; empty unless `phase` is `ready`.
+    pub faces: Vec<FaceBox>,
+    /// The plain sentence of the failure (`failed`) or of the missing models (`models_missing`); null otherwise.
+    pub message: Option<String>,
 }
 
 /// `memory_notice { message }` (addition, `docs/26` H-14): the computer is short of memory. `message` is the sentence the error bar shows

@@ -15,7 +15,7 @@ import {
 import { Button } from "../../components";
 import { cardStates, endName, GRAPH_OP_TEXT, linksOf, linkTargets, reorderAvailability } from "../../state/graphOps";
 import { CHANNEL_PORTS } from "../../state/ports";
-import { isGlyphItem, MAIN_ID, nodeOf } from "../../state/settingsGraph";
+import { isCardItem, isGlyphItem, MAIN_ID, nodeOf } from "../../state/settingsGraph";
 
 export interface NodeMoreMenuProps {
   settings: DevelopSettings;
@@ -49,12 +49,12 @@ export function NodeMoreMenu({ settings, node, onRename, onMoveEarlier, onMoveLa
   const states = cardStates(settings);
   const glyph = isGlyphItem(item);
   // A corrector, a Film node or one of the four kinds of `docs/25`: they are renamed and deleted; only correctors have Move and a key.
-  const corrector = item?.kind === "corrector" || item?.kind === "film" || glyph;
+  const corrector = isCardItem(item) || glyph;
   const reorder = reorderAvailability(settings, node);
   // A Splitter has three picture outputs and links each by its name; every other node has one.
   const outputs = item?.kind === "splitter" ? CHANNEL_PORTS : (["picture"] as const);
   const pictureTo = (port: NodeRef["port"]): NodeRef[] => linkTargets(settings, { node, port });
-  const keyTo = item?.kind === "corrector" || item?.kind === "film" ? linkTargets(settings, { node, port: "key" }) : [];
+  const keyTo = isCardItem(item) ? linkTargets(settings, { node, port: "key" }) : [];
   const links = linksOf(settings, node);
   const name = (ref: NodeRef, side: "in" | "out"): string => endName(settings, ref, side, states);
   const describe = (link: NodeLink): string =>

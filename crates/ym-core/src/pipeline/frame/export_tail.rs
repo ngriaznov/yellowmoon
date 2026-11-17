@@ -508,7 +508,8 @@ impl Renderer {
             ym_color::mask_raster::Area::whole(fw, fh),
             request.target,
         )?
-        .map(|f| Arc::new(f.device_stack()));
+        .map(|f| f.device_stack().map(Arc::new))
+        .transpose()?;
         let film_halo = films.as_ref().map_or(0, |f| f.schedule().total_reach());
         let halo_allowance = 160usize + job.lens_halo()? + bend + film_halo;
         let per_px = 12u64 * 12; // twelve f32 planes of working set per tile pixel, a generous bound
@@ -553,7 +554,7 @@ impl Renderer {
                 sharpen,
                 space: request.space.output_space(),
                 format: request.format(),
-                films,
+                films: films.clone(),
             },
         )
         .map_err(|e| self.tail_error(&e))?;
@@ -581,7 +582,13 @@ impl Renderer {
                     w: tw,
                     h: th,
                 };
-                let grown = schedule.infer(tile_area, &frame_area).source;
+                // The tile is first widened to hold, whole, the face regions it meets (`FilmStack::widen`, `docs/27` S-13).
+                let grown = ym_gpu::kernels::film_stack::FilmStack::grown_for(
+                    &schedule,
+                    films.as_deref(),
+                    &frame_area,
+                    tile_area,
+                );
                 if grid.source_bounds(ox, oy, tw, th, 3).is_some()
                     && let Some((x0, y0, x1, y1)) =
                         grid.source_bounds(grown.x as usize, grown.y as usize, grown.w, grown.h, 3)

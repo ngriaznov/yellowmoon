@@ -135,16 +135,19 @@ export interface SwitchRowProps {
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
+  /** The switch's tooltip, on hover. */
+  title?: string;
+  className?: string;
 }
 
 /** A 44 px `Item` with a label and a `Switch` (RAW › Decode). */
-export function SwitchRow({ label, checked, onChange, disabled }: SwitchRowProps) {
+export function SwitchRow({ label, checked, onChange, disabled, title, className }: SwitchRowProps) {
   return (
-    <Item size="sm" className="ym-switch-row">
+    <Item size="sm" className={cx("ym-switch-row", className)}>
       <span className="ym-switch-row__label" aria-hidden="true">
         {label}
       </span>
-      <Switch label={label} checked={checked} onChange={onChange} disabled={disabled} />
+      <Switch label={label} checked={checked} onChange={onChange} disabled={disabled} title={title} />
     </Item>
   );
 }

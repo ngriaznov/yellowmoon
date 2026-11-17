@@ -36,16 +36,42 @@ use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
     AlbumSaved, AlbumState, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter,
     ChromaTap, CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthFar, DepthState,
-    ErrorScope, ExportEstimate, ExportJob, ExportJobId, FocusPlaneResult, FocusReason,
-    HistogramData, ImportResult, LensInfo, Look, LookId, LookInput, LooksImportProgress,
-    LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView, MemoryNotice,
-    NodeId, Num, ObjectState, OpenProgress, OpenSummary, Orientation, PasteReport, PhotoId,
-    PhotoProgress, PixelSample, Preferences, PreferencesPatch, PresetApplyReport, PresetEntry,
-    PresetGroup, PresetInspect, PresetList, PresetSource, ResolvedSettings, SessionChange,
-    SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput,
-    ViewportMode, ViewportRect, VisionState, WatchStatus, convert,
+    ErrorScope, ExportEstimate, ExportJob, ExportJobId, FaceBox, FacePhase, FaceState,
+    FocusPlaneResult, FocusReason, HistogramData, ImportResult, LensInfo, Look, LookId, LookInput,
+    LooksImportProgress, LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind,
+    MaskView, MemoryNotice, NodeId, Num, ObjectState, OpenProgress, OpenSummary, Orientation,
+    PasteReport, PhotoId, PhotoProgress, PixelSample, Preferences, PreferencesPatch,
+    PresetApplyReport, PresetEntry, PresetGroup, PresetInspect, PresetList, PresetSource,
+    ResolvedSettings, SessionChange, SessionState, SettingsPatch, SourceRecognition,
+    ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, VisionState,
+    WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
+
+/// The wire form of the core's [`FaceState`](ym_core::pipeline::FaceState) for a photo: the phase, the numbered faces and the sentence.
+fn face_state_of(photo: PhotoId, state: &ym_core::pipeline::FaceState) -> FaceState {
+    FaceState {
+        photo_id: photo,
+        phase: match state.phase {
+            ym_core::pipeline::FacePhase::Finding => FacePhase::Finding,
+            ym_core::pipeline::FacePhase::Ready => FacePhase::Ready,
+            ym_core::pipeline::FacePhase::Failed => FacePhase::Failed,
+            ym_core::pipeline::FacePhase::ModelsMissing => FacePhase::ModelsMissing,
+        },
+        faces: state
+            .faces
+            .iter()
+            .map(|f| FaceBox {
+                number: f.number,
+                x: Num(f.x),
+                y: Num(f.y),
+                width: Num(f.width),
+                height: Num(f.height),
+            })
+            .collect(),
+        message: state.message.clone(),
+    }
+}
 
 /// The paper of the interface as 8-bit sRGB codes: `--paper` of the dark theme in `src/styles/tokens.css` (#0f0f10). It is the
 /// letterbox the core paints around a fitted or cropped photo in viewport frames, thumbnails and look tiles, so that a photo that does
@@ -403,6 +429,28 @@ impl AppApi {
                             photo_id: PhotoId(id.0),
                             failed,
                         }));
+                        shared.estimates_changed(id);
+                    }
+                }));
+        }
+        {
+            // The worker that finds the faces of the photo being looked at (`docs/27` decision 9): while it runs the viewport is busy and
+            // finding (`viewport_busy.finding`, the Face Refinement node says "Finding faces…"); the page learns where the faces are
+            // (`face_state`) when it starts and when it ends, and the photo is drawn again with the retouch.
+            let emitter = Arc::clone(&emitter);
+            let shared = Arc::clone(&shared);
+            core.renderer
+                .set_faces_listener(Arc::new(move |id, event| match event {
+                    ym_core::pipeline::FaceEvent::Started => {
+                        shared.masks_finding(true);
+                        emitter.emit(AppEvent::FaceState(face_state_of(
+                            PhotoId(id.0),
+                            &ym_core::pipeline::FaceState::finding(),
+                        )));
+                    }
+                    ym_core::pipeline::FaceEvent::Finished(state) => {
+                        shared.masks_finding(false);
+                        emitter.emit(AppEvent::FaceState(face_state_of(PhotoId(id.0), &state)));
                         shared.estimates_changed(id);
                     }
                 }));
@@ -1261,6 +1309,49 @@ impl AppApi {
         self.core
             .retry_depth(core_id(photo))
             .map_err(AppError::from)
+    }
+
+    /// `face_state(photo_id)` (`docs/27` section 10, S-11b): where the faces of the photo are, for the panel of a Face Refinement
+    /// node: `finding`, `ready` with the numbered faces and their boxes in the oriented photo frame (none is a valid answer),
+    /// `failed` with the sentence, or `models_missing`. It changes nothing and starts nothing (the core finds the faces in the
+    /// background when a photo with the node is the one looked at); `face_state` events say when it changes.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with the scope of the photo's errors for a photo that is unknown or not developed yet.
+    pub fn face_state(&self, photo: PhotoId) -> Result<FaceState, AppError> {
+        let state = self
+            .core
+            .face_state(core_id(photo))
+            .map_err(AppError::from)?;
+        Ok(face_state_of(photo, &state))
+    }
+
+    /// `face_crop`: the picture of face `number` (1-based) for the Faces card. The PNG stays here and is served on the `ym-frame`
+    /// scheme like a look tile (the same store, its budget and its photo-by-photo forgetting); the answer is its address. It runs
+    /// at the thumbnails' priority and moving to another photo cancels it.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with scope `render` and a plain sentence before the faces are known and for a number the photo does not have.
+    pub fn face_crop(&self, photo: PhotoId, number: u32) -> Result<String, AppError> {
+        let src =
+            PhotoSource::from_session(&self.core.session, core_id(photo)).map_err(session_error)?;
+        let png = self
+            .core
+            .renderer
+            .spawn_face_crop(src, number)
+            .wait()
+            .map_err(job_error)?
+            .map_err(AppError::from)?;
+        self.core
+            .session
+            .view(core_id(photo))
+            .map_err(session_error)?;
+        // A look tile's store keeps it: the key names the face, so a picture of the same face replaces the older.
+        Ok(self
+            .frames
+            .put_look_tile(photo.0, &format!("face:{number}"), png))
     }
 
     // --- Lens ---------------------------------------------------------------------------------

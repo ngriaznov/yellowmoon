@@ -20,6 +20,8 @@ export const MAX_MASKS = 64;
 export const MAX_BRUSH_POINTS = 100_000;
 /** Most clicks in an Object mask. */
 export const MAX_OBJECT_POINTS = 256;
+/** Most faces a Face Refinement node holds settings for (`docs/27` section 11 item 9). */
+export const MAX_FACES = 32;
 
 /** The core's sentences for the graph's rules, word for word (`GraphError` in `crates/ym-core/src/settings/graph.rs`). */
 export const GRAPH_TEXT = {
@@ -34,6 +36,7 @@ export const GRAPH_TEXT = {
   mixerGap: (node: NodeId, linked: number, missing: number) =>
     `${sentence(node)} has a link on input ${linked} and none on input ${missing}. A mixer's inputs are numbered from 1 with no gap.`,
   tooManyMasks: "A node can have up to 64 masks.",
+  tooManyFaces: "A Face Refinement node can hold settings for up to 32 faces.",
   tooManyBrushPoints: "A brush mask can have up to 100,000 points.",
   tooManyObjectPoints: "An Object mask can have up to 256 points.",
   cannotRemove: "The input, the output and node 1, Main, can't be removed.",
@@ -58,6 +61,8 @@ function article(kind: NodeKind): string {
       return "a corrector";
     case "film":
       return "a film node";
+    case "face_refinement":
+      return "a face refinement node";
     case "parallel":
       return "a parallel mixer";
     case "layer":
@@ -94,6 +99,7 @@ const FIELDS: Readonly<Record<NodeKind, ReadonlySet<string>>> = {
   output: new Set(["kind", "pos", "look", "look_intensity", "output_sharpening"]),
   corrector: new Set(["kind", "pos", "name", "bypass", "trim", "grade", "masks"]),
   film: new Set(["kind", "pos", "name", "bypass", "film", "print", "halation", "grain", "strength", "masks"]),
+  face_refinement: new Set(["kind", "pos", "name", "bypass", "same_for_all", "all", "faces", "protect", "masks"]),
   parallel: new Set(["kind", "pos", "name", "bypass"]),
   layer: new Set(["kind", "pos", "name", "bypass", "mode", "opacity"]),
   splitter: new Set(["kind", "pos", "name"]),
@@ -101,7 +107,7 @@ const FIELDS: Readonly<Record<NodeKind, ReadonlySet<string>>> = {
 };
 
 /** The kinds a patch may give a new numbered node (`docs/23` section 3.7, `docs/25` section 2.5). */
-const NUMBERED_KINDS: ReadonlySet<NodeKind> = new Set(["corrector", "film", "parallel", "layer", "splitter", "combiner"]);
+const NUMBERED_KINDS: ReadonlySet<NodeKind> = new Set(["corrector", "film", "face_refinement", "parallel", "layer", "splitter", "combiner"]);
 
 /** The kind a node with this id has to be. */
 const kindOfId = (id: NodeId): NodeKind => (id === INPUT_ID ? "input" : id === OUTPUT_ID ? "output" : "corrector");
@@ -145,6 +151,7 @@ export function portsOf(kind: NodeKind): [readonly Port[], readonly Port[]] {
       return [["picture"], []];
     case "corrector":
     case "film":
+    case "face_refinement":
       return [["picture", "key"], ["picture", "key"]];
     case "parallel":
     case "layer":
@@ -191,9 +198,10 @@ function filmProblem(item: NodeItem): string | null {
 }
 
 function maskProblem(item: NodeItem): string | null {
-  if (item.kind !== "corrector" && item.kind !== "film") return null;
+  if (item.kind !== "corrector" && item.kind !== "film" && item.kind !== "face_refinement") return null;
   if (item.masks.items.length > MAX_MASKS) return GRAPH_TEXT.tooManyMasks;
-  let brush = 0;
+  if (item.kind === "face_refinement" && item.faces.length > MAX_FACES) return GRAPH_TEXT.tooManyFaces;
+  let brush = item.kind === "face_refinement" ? item.protect.strokes.reduce((n, stroke) => n + stroke.points.length, 0) : 0;
   for (const row of item.masks.items) {
     if (row.kind === "object" && row.points.length > MAX_OBJECT_POINTS) return GRAPH_TEXT.tooManyObjectPoints;
     if (row.kind === "brush") brush += row.strokes.reduce((n, stroke) => n + stroke.points.length, 0);
@@ -269,7 +277,7 @@ export function copiedPatch(rs: ResolvedSettings): SettingsPatch {
   for (const item of rs.settings.nodes.items) {
     const patch = nodeAsPatch(item) as Record<string, unknown>;
     if (item.kind === "input") for (const field of COPY_LEAVES_OUT) delete patch[field];
-    if (item.kind === "corrector" || item.kind === "film") {
+    if (item.kind === "corrector" || item.kind === "film" || item.kind === "face_refinement") {
       patch.masks = {
         invert: item.masks.invert,
         items: item.masks.items.map((row) => (row.kind === "object" ? { ...clone(row), points: [], box: null } : clone(row))),

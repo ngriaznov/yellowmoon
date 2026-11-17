@@ -18,7 +18,7 @@ use crate::system;
 use crate::wire::{
     self, AlbumSaved, AlbumState, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample,
     ChromaScatter, ChromaTap, CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthFar,
-    ErrorScope, ExportEstimate, ExportJob, ExportJobId, FilmCatalogue, FocusPlaneResult,
+    ErrorScope, ExportEstimate, ExportJob, ExportJobId, FaceState, FilmCatalogue, FocusPlaneResult,
     HistogramData, ImportResult, LensInfo, Look, LookId, LookInput, LooksImportResult, MapFrom,
     MaskFindPrompt, MaskFindResult, MaskKind, MaskView, MenuState, NodeId, Num, OpenKind,
     Orientation, PasteReport, PhotoId, PixelSample, Preferences, PreferencesPatch,
@@ -499,6 +499,33 @@ pub async fn focus_plane(
 #[specta::specta]
 pub async fn retry_depth(state: State<'_, AppState>, photo_id: PhotoId) -> Result<(), AppError> {
     run(&state, move |api| api.retry_depth(photo_id)).await
+}
+
+/// `face_state(photo_id)` (`docs/27` section 10, S-11b): where the faces of the photo are, for the panel of a Face Refinement node:
+/// `finding`, `ready` with the numbered faces and their boxes (none is a valid answer), `failed` with the sentence, or
+/// `models_missing`. It changes nothing and starts nothing; `face_state` events say when it changes.
+#[tauri::command]
+#[specta::specta]
+pub async fn face_state(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+) -> Result<FaceState, AppError> {
+    run(&state, move |api| api.face_state(photo_id)).await
+}
+
+/// `face_crop(photo_id, number)` (`docs/27` S-11c): the picture of face `number` (1-based) for the Faces card. The answer is the address
+/// of a PNG of 104 x 104 px on the `ym-frame` scheme (`ym-frame://localhost/<launch>/look-<photo>-<n>.png`, `http://ym-frame.localhost/…`
+/// on Windows): a square around the face's box, 1.4 times its larger side, from the picture the faces were found on (the Input's colour,
+/// without the retouch). Made at the thumbnails' priority and cancelled when the person moves to another photo. It fails with a plain
+/// sentence before the faces are known and for a number the photo does not have.
+#[tauri::command]
+#[specta::specta]
+pub async fn face_crop(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+    number: u32,
+) -> Result<String, AppError> {
+    run(&state, move |api| api.face_crop(photo_id, number)).await
 }
 
 // --- Lens -------------------------------------------------------------------------------------
@@ -1094,6 +1121,8 @@ pub fn builder() -> Builder<tauri::Wry> {
             sample_depth,
             focus_plane,
             retry_depth,
+            face_state,
+            face_crop,
             lens_list,
             looks_list,
             look_thumbnail,
@@ -1167,6 +1196,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             wire::ObjectState,
             wire::VisionState,
             wire::DepthState,
+            wire::FaceState,
             wire::MemoryNotice,
             wire::DisplayOptions,
         ])
@@ -1209,6 +1239,7 @@ mod tests {
                 sample_depth,
                 focus_plane,
                 retry_depth,
+                face_state,
                 export_busy,
                 node_thumbnails,
                 looks_recognise,

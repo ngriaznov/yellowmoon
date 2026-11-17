@@ -38,7 +38,7 @@ fn version_reports_the_workspace_and_pipeline_versions() {
         .assert()
         .success()
         .stdout(predicate::str::starts_with(format!(
-            "ym {} (pipeline 0.11.1, ",
+            "ym {} (pipeline 0.12.1, ",
             env!("CARGO_PKG_VERSION")
         )));
 }
@@ -135,7 +135,7 @@ fn doctor_says_what_it_includes_and_lists_the_parts() {
     let sb = Sandbox::new();
     let out = sb.ym().arg("doctor").assert().success();
     let text = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
-    let version_line = format!("ym {} (pipeline 0.11.1, ", env!("CARGO_PKG_VERSION"));
+    let version_line = format!("ym {} (pipeline 0.12.1, ", env!("CARGO_PKG_VERSION"));
     for needle in [
         "does not include photos, file names, locations",
         "Version",
@@ -215,7 +215,7 @@ fn doctor_json_has_the_same_parts() {
             .expect("includes")
             .contains("does not include")
     );
-    assert_eq!(v["pipeline_version"], "0.11.1");
+    assert_eq!(v["pipeline_version"], "0.12.1");
     assert!(v["gpu"]["available"].is_boolean());
     if v["gpu"]["available"] == true {
         assert!(v["gpu"]["name"].is_string() && v["gpu"]["limits"]["max_buffer_size"].is_u64());
@@ -244,6 +244,28 @@ fn doctor_json_has_the_same_parts() {
             "file": "depth/depth_anything_v2_vits.f16.safetensors",
             "sha256": sha256_of("depth"),
         }));
+    }
+    // The three MediaPipe files (Face Refinement) are listed the same way, in path order between depth and SAM 2, each with
+    // its own line of `mediapipe/SHA256SUMS`; a checkout has them only after `tools/fetch/mediapipe.sh`.
+    for name in [
+        "blaze_face_full_range.f16.safetensors",
+        "face_mesh_v2.f16.safetensors",
+        "selfie_multiclass_256.f32.safetensors",
+    ] {
+        if data_dir().join("models/mediapipe").join(name).is_file() {
+            let sums = std::fs::read_to_string(data_dir().join("models/mediapipe/SHA256SUMS"))
+                .expect("mediapipe sums");
+            let sha256 = sums
+                .lines()
+                .filter_map(|l| l.split_once("  "))
+                .find(|(_, n)| n.trim() == name)
+                .map(|(h, _)| h.trim().to_owned())
+                .expect("a line for the file");
+            weights.push(serde_json::json!({
+                "file": format!("mediapipe/{name}"),
+                "sha256": sha256,
+            }));
+        }
     }
     if data_dir()
         .join("models/sam2/sam2.1_hiera_small.f16.safetensors")

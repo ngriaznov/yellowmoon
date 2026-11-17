@@ -5,9 +5,11 @@ import type { TabId } from "../../components";
 import { isReady } from "../../state/photo";
 import { nodeOf } from "../../state/settingsGraph";
 import type { AppStore } from "../../state/store";
+import { facesLine } from "./faceModel";
 import { NodeHead } from "./NodeHead";
 import { NodeMoreMenu } from "./NodeMoreMenu";
 import { NodeTab } from "./NodeTabs";
+import { useFaces } from "./useFaces";
 import type { NodeGraphActions } from "./useNodeGraph";
 
 export interface NodePanelProps {
@@ -46,6 +48,8 @@ export interface NodePanelProps {
  */
 export function NodePanel({ store, photo, rs, node, tab, onTab, graph, pickingWhite, onPickWhite, pickingColor, onPickColor, pickingRange, onPickRange, pickingDepth = false, onPickDepth, foot, hidden }: NodePanelProps) {
   const item = rs ? nodeOf(rs.settings, node) : undefined;
+  // A Face Refinement node's head says how many faces there are (`face_state`); the panel asks the core when it opens.
+  const faces = useFaces(store, photo?.id ?? null, item?.kind === "face_refinement");
   if (!photo || !rs || !item || !isReady(photo)) {
     return (
       <aside aria-label="Tools" className="ym-tools" data-node-panel hidden={hidden || undefined}>
@@ -88,6 +92,7 @@ export function NodePanel({ store, photo, rs, node, tab, onTab, graph, pickingWh
         onRename={(name) => graph.finishRename(node, name)}
         onBypass={graph.toggleBypass}
         onReset={graph.resetNode}
+        line={item.kind === "face_refinement" ? facesLine(faces) : undefined}
         more={more}
       />
       <TabBar value={tab} onChange={onTab} tabs={NODE_TABS[panelKindOf(item.kind)]} />

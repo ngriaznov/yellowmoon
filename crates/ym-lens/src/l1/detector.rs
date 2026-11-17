@@ -486,6 +486,7 @@ fn stamp_balls_and_finish(
     r_est: &mut [f64],
     conf: &mut [f32],
     forced: &mut [bool],
+    held: &[bool],
     anchor: &[bool],
     subject: &[bool],
     (w, h): (usize, usize),
@@ -538,7 +539,9 @@ fn stamp_balls_and_finish(
             conf[i] = 1.0;
             continue;
         }
-        let ok = f64::from(conf[i]) >= CONFIDENCE_MIN && r_est[i] >= r_min_px && !forced[i];
+        // (A light that is no ball is held: no blur there, so the gather does not smear it.)
+        let ok =
+            f64::from(conf[i]) >= CONFIDENCE_MIN && r_est[i] >= r_min_px && !forced[i] && !held[i];
         if ok {
             b[i] = (r_est[i] / hd) as f32;
         } else if forced[i] {
@@ -607,7 +610,7 @@ pub(super) fn detect(
 
     // 3. Bright balls.
     let (ev_w, ev_s, _) = accumulate(&samples, n);
-    let balls = find_balls(
+    let found = find_balls(
         &BallInput {
             w,
             h,
@@ -625,6 +628,7 @@ pub(super) fn detect(
         },
         cancel,
     )?;
+    let (balls, held) = (found.balls, found.held);
     // Their rims are not edges of the blur: drop the readings around them and put their radius there.
     if !balls.is_empty() {
         let mut inside = vec![false; n];
@@ -730,6 +734,7 @@ pub(super) fn detect(
         &mut r_est,
         &mut conf,
         &mut forced,
+        &held,
         &anchor,
         &subject,
         (w, h),
@@ -814,7 +819,7 @@ pub(super) fn detect_with_map(
             sharp[i] = true;
         }
     }
-    let balls = find_balls(
+    let found = find_balls(
         &BallInput {
             w,
             h,
@@ -832,6 +837,7 @@ pub(super) fn detect_with_map(
         },
         cancel,
     )?;
+    let (balls, held) = (found.balls, found.held);
     let ball_perimeters: f64 = balls.iter().map(|b| 2.0 * std::f64::consts::PI * b.r).sum();
     if cancel() {
         return Err(LensError::Cancelled);
@@ -851,6 +857,7 @@ pub(super) fn detect_with_map(
         &mut r_est,
         &mut conf,
         &mut forced,
+        &held,
         &anchor,
         &subject,
         (w, h),

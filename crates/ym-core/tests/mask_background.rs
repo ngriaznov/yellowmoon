@@ -125,6 +125,7 @@ fn mask_view(node: u32) -> ViewportState {
         style: MaskStyle::MaskOnly,
         row: None,
         depth: false,
+        face: None,
     });
     st
 }
@@ -805,6 +806,7 @@ fn a_frame_made_from_kept_planes_is_the_frame_made_without_them_with_a_backgroun
                 style,
                 row: None,
                 depth: false,
+                face: None,
             });
             let _ = render(&at(0.5), &st);
             let (kept, builds, hits) = render(&at(1.5), &st);

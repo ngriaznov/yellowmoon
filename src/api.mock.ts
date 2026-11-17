@@ -81,6 +81,8 @@ import type {
   ExportEstimate,
   ExportJob,
   ExportJobId,
+  FaceBox,
+  FaceState,
   FocusPlaneResult,
   ExportOptions,
   GradeValues,
@@ -150,7 +152,7 @@ import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
 import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cropMath";
 import { copiedPatch, pastedOnto, refusalOfPatch, validateGraph } from "./fixtures/graph";
-import { hasBackgroundRow, hasObjectRow, maskViewSvg, masksOfView, MOCK_DEPTH, pickDepthFar, SCENES_WITH_PEOPLE, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
+import { hasBackgroundRow, hasObjectRow, maskViewSvg, masksOfView, MOCK_DEPTH, pickDepthFar, SCENES_WITH_PEOPLE, skinAreasSvg, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
 import { diffSettings } from "./state/history";
 import { changedGroups, MOCK_PRESET_RECIPES, patchFor, presetFromPhoto, presetFromRecipe, presetMatches } from "./fixtures/presets";
 import type { StoredPreset } from "./fixtures/presets";
@@ -175,7 +177,7 @@ import {
   outputPatch,
   withoutLook,
 } from "./state/settingsGraph";
-import type { CorrectorItem, FilmItem, InputItem, MixerItem } from "./state/settingsGraph";
+import type { CorrectorItem, FaceRefinementItem, FilmItem, InputItem, MixerItem } from "./state/settingsGraph";
 import { bytesToUrl } from "./state/photo";
 
 // ---------------------------------------------------------------------------
@@ -213,6 +215,47 @@ export const DEPTH_MS = 500;
 export const FOCUS_AT_CENTRE_SCENE = "DSC04212";
 /** The sentence the mock's depth worker fails with (`?mockDepth=fail`): the core's "The Depth mask can't be made: <the model's text>." */
 export const DEPTH_FAILED = "The Depth mask can't be made: the model stopped before it finished.";
+/** How long the mock takes to find the faces of a photo in the background (divided by `speed`): long enough for "Finding faces…" to show. */
+export const FACES_MS = 400;
+/** The sentence the mock's face worker fails with (`?mockFaces=fail`): the core's "Faces can't be found: <the model's text>." */
+export const FACES_FAILED = "Faces can't be found: the model stopped before it finished.";
+/** The sentence of `models_missing` (`?mockFaces=missing`): the core's `NO_FACE_MODEL_SENTENCE`. */
+export const FACES_MODELS_MISSING = "Face Refinement needs the face models, and this copy of Yellowmoon has none. Reinstall the app.";
+/** The faces the mock finds in every photo (`?mockFaces=ok`): two, numbered from left to right, as shares of the photo's frame. */
+export const MOCK_FACES: readonly FaceBox[] = [
+  { number: 1, x: 0.16, y: 0.22, width: 0.2, height: 0.32 },
+  { number: 2, x: 0.58, y: 0.3, width: 0.16, height: 0.26 },
+];
+/**
+ * `count` faces laid out left to right in rows of at most five over the photo's frame (`?mockFaces=one|five|twelve`), numbered from 1 in that order. Each is a
+ * share of the frame, like {@link MOCK_FACES}; they do not overlap, so a click on the photo picks one.
+ */
+export function mockFaceBoxes(count: number): FaceBox[] {
+  const rows = Math.ceil(count / 5);
+  const perRow = Math.min(count, 5);
+  const width = Math.min(0.14, 0.9 / perRow - 0.02);
+  const height = Math.min(0.2, 0.8 / rows - 0.04);
+  return Array.from({ length: count }, (_, i) => {
+    const row = Math.floor(i / 5);
+    const col = i % 5;
+    const inRow = Math.min(5, count - row * 5);
+    return {
+      number: i + 1,
+      x: 0.05 + ((col + 0.5) * 0.9) / inRow - width / 2,
+      y: 0.08 + ((row + 0.5) * 0.84) / rows - height / 2,
+      width,
+      height,
+    };
+  });
+}
+/** How many faces each of the mock's count settings finds. */
+const FACE_COUNTS = { one: 1, five: 5, twelve: 12 } as const;
+/** What the mock's `?mockFaces=` finds: the two of {@link MOCK_FACES}, none, or one, five or twelve laid out by {@link mockFaceBoxes}. */
+function facesFor(kind: NonNullable<MockOptions["faces"]>): FaceBox[] {
+  if (kind === "one" || kind === "five" || kind === "twelve") return mockFaceBoxes(FACE_COUNTS[kind]);
+  return kind === "none" ? [] : MOCK_FACES.map((f) => ({ ...f }));
+}
+
 /** What the decoder's time reads in the mock's "Object found" pill: 0.4 s. */
 export const FOUND_MS = 412;
 
@@ -567,6 +610,12 @@ export interface MockOptions {
    */
   depth?: "ok" | "fail" | "fail-always";
   /**
+   * What the mock's face worker finds (`?mockFaces=`, `docs/27` S-11b): `ok` (the default) finds two faces ({@link MOCK_FACES}); `none` finds none (`ready`
+   * with no face); `fail` fails the first time for each photo with {@link FACES_FAILED}; `missing` is a copy with no face models (`models_missing`, nothing runs).
+   * `one`, `five` and `twelve` find that many faces ({@link mockFaceBoxes}), for the screens that depend on the number.
+   */
+  faces?: "ok" | "none" | "fail" | "missing" | "one" | "five" | "twelve";
+  /**
    * What `display_options` answers (`?mockDisplay=reduce-transparency,reduce-motion,increase-contrast`, any of the three, `docs/28` A-P12): the
    * system settings the shell reads on a Mac. The default is all off, as on a computer that has none of them on and off macOS. A later change
    * is played with `emitEvent("display_options", …)`.
@@ -869,6 +918,28 @@ function clampFilm(s: FilmItem): FilmItem {
   };
 }
 
+/** A Face Refinement node in its ranges (`docs/27`): the name trimmed and cut, every amount clamped, at most 32 faces. */
+function clampFaceRefinement(s: FaceRefinementItem): FaceRefinementItem {
+  const name = s.name.trim().slice(0, 32);
+  const face = (f: FaceRefinementItem["all"]): FaceRefinementItem["all"] => ({
+    blemish: clamp(f.blemish, 0, 100),
+    dark_circles: clamp(f.dark_circles, 0, 100),
+    even_skin: clamp(f.even_skin, 0, 100),
+    texture: clamp(f.texture, -100, 100),
+    skin_contrast: clamp(f.skin_contrast, -100, 100),
+    shadow_desaturation: clamp(f.shadow_desaturation, 0, 100),
+    shine_removal: clamp(f.shine_removal, 0, 100),
+    teeth_whitening: clamp(f.teeth_whitening, 0, 100),
+  });
+  return {
+    ...s,
+    name: name === "" ? "Face Refinement" : name,
+    all: face(s.all),
+    faces: s.faces.map(face),
+    protect: { ...s.protect, feather: clamp(s.protect.feather, 0, 1), grow: clamp(s.protect.grow, -1, 1), refine: clamp(s.protect.refine, 0, 1) },
+  };
+}
+
 /** A node of `docs/25` in its ranges: the name trimmed and cut (an empty one reads as the kind's name), a Layer's opacity 0 to 1. */
 function clampMixer(s: MixerItem): MixerItem {
   const name = s.name.trim().slice(0, 32);
@@ -882,6 +953,7 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
     if (item.kind === "input") return clampInput(item);
     if (item.kind === "output") return { ...item, look_intensity: clamp(item.look_intensity, 0, 100), output_sharpening: clamp(item.output_sharpening, 0, 200) };
     if (item.kind === "film") return clampFilm(item);
+    if (item.kind === "face_refinement") return clampFaceRefinement(item);
     if (item.kind === "corrector") return clampCorrector(item);
     return clampMixer(item);
   });
@@ -1073,6 +1145,9 @@ function withoutRetired(stored: Preferences): Preferences {
 const hasDepthRow = (settings: DevelopSettings): boolean =>
   settings.nodes.items.some((node) => (node.kind === "corrector" || node.kind === "film") && node.masks.items.some((row) => row.kind === "depth" && row.enabled));
 
+/** Whether the photo's graph has a Face Refinement node: the mock then "finds" the photo's faces in the background. */
+const hasFaceNode = (settings: DevelopSettings): boolean => settings.nodes.items.some((node) => node.kind === "face_refinement");
+
 /** The depth positions the mock's depth map gives the flat scenes' areas (`docs/algorithms/06` §5.8: 0 is the nearest part of the photo): the near ground, the far hill and the sky. */
 const DEPTH_RANKS = MOCK_DEPTH;
 
@@ -1152,6 +1227,7 @@ const DEFAULT_OPTIONS: Required<MockOptions> = {
   maskKinds: BUILT_MASK_KINDS,
   maskFind: "scene",
   depth: "ok",
+  faces: "ok",
   displayOptions: { reduce_transparency: false, reduce_motion: false, increase_contrast: false },
   presets: 0,
   damagedPresets: false,
@@ -1276,6 +1352,8 @@ export function optionsFromLocation(search: string | undefined = typeof location
   if (albums) out.albums = albums;
   const albumMissing = list("mockAlbumMissing");
   if (albumMissing) out.albumMissing = albumMissing.map((name) => name.replace(/\.arw$/i, ""));
+  const faces = params.get("mockFaces");
+  if (faces === "ok" || faces === "none" || faces === "fail" || faces === "missing" || faces === "one" || faces === "five" || faces === "twelve") out.faces = faces;
   const display = list("mockDisplay");
   if (display) {
     out.displayOptions = {
@@ -1764,6 +1842,15 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
   /** The photos whose depth map has failed once already (`?mockDepth=fail` fails each photo once). */
   const depthFailedOnce = new Set<PhotoId>();
   const depthFailure = (id: PhotoId): string | null => depthFailures.get(id) ?? null;
+  /** What the mock's face worker has said for each photo (`face_state`), and the photos it is finding faces for. */
+  const faceStates = new Map<PhotoId, FaceState>();
+  const faceTimers = new Map<PhotoId, ReturnType<typeof setTimeout>>();
+  /** The photos whose faces have failed once already (`?mockFaces=fail` fails each photo once). */
+  const facesFailedOnce = new Set<PhotoId>();
+  const faceStateOf = (id: PhotoId): FaceState => {
+    if (options.faces === "missing") return { photo_id: id, phase: "models_missing", faces: [], message: FACES_MODELS_MISSING };
+    return faceStates.get(id) ?? { photo_id: id, phase: "finding", faces: [], message: null };
+  };
   /** The photos whose Object features the mock has "made" (`object_state` says "preparing" for a moment, once for each photo). */
   const objectReady = new Set<PhotoId>();
   /** The encoder of the photos that are getting ready: when it ends, and what waits for it (`mask_find`). */
@@ -1867,7 +1954,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const view = viewport.maskView;
     if (!view || viewport.before) return "";
     const node = nodeOf(rec.settings, view.node);
-    if (!node || node.kind !== "corrector") return "";
+    const skin = node?.kind === "face_refinement" && typeof view.face === "number" ? view.face : null;
+    if (!node || (node.kind !== "corrector" && skin === null)) return "";
     const { orientation, crop } = inputOf(rec.settings);
     const crossed = crop ? crop.rect.width / crop.rect.height : 1;
     const aspect = imageAspectOf(rec.summary.width_px, rec.summary.height_px, orientation) * crossed;
@@ -1887,6 +1975,11 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       people: scene.people && options.maskKinds.includes("people") && (ready?.has("people") ?? false),
     };
     const depth = { on: view.depth === true, ready: depthReady.has(rec.summary.id) && depthFailure(rec.summary.id) === null };
+    if (skin !== null) {
+      const face = faceStateOf(rec.summary.id).faces.find((f) => f.number === skin);
+      return face ? skinAreasSvg(face, frame) : "";
+    }
+    if (node.kind !== "corrector") return "";
     return maskViewSvg(view.style, masksOfView(node.masks, view.row), { x: fit.x * width, y: fit.y * height, width: fit.width * width, height: fit.height * height }, frame, found, depth);
   }
 
@@ -1978,6 +2071,37 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     );
   }
 
+  /**
+   * The core finds the faces of the photo being looked at in the background as soon as a Face Refinement node exists (`docs/27` decision 9): the viewport is
+   * busy and `finding` for `FACES_MS / speed` (a viewer never waits: the node passes its picture through meanwhile) with `face_state` `finding`, then
+   * `face_state` says `ready` with the numbered faces (or `failed`) and the photo is drawn again. Once for each photo; nothing for `?mockFaces=missing`.
+   */
+  function prepareFaces(rec: PhotoRecord): void {
+    const id = rec.summary.id;
+    if (options.faces === "missing" || !hasFaceNode(rec.settings) || faceStates.has(id) || faceTimers.has(id)) return;
+    emitSoon("viewport_busy", { busy: true, cpu: options.cpu, finding: true });
+    emit("face_state", { photo_id: id, phase: "finding", faces: [], message: null });
+    faceTimers.set(
+      id,
+      setTimeout(() => {
+        faceTimers.delete(id);
+        const fails = options.faces === "fail" && !facesFailedOnce.has(id);
+        let state: FaceState;
+        if (fails) {
+          facesFailedOnce.add(id);
+          state = { photo_id: id, phase: "failed", faces: [], message: FACES_FAILED };
+        } else {
+          state = { photo_id: id, phase: "ready", faces: facesFor(options.faces ?? "ok"), message: null };
+        }
+        // A failure is kept too: nothing asks again until the picture changes.
+        faceStates.set(id, state);
+        emit("viewport_busy", { busy: false, cpu: options.cpu, finding: false });
+        emit("face_state", state);
+        sendFrame();
+      }, FACES_MS / options.speed),
+    );
+  }
+
   /** Resolves when the photo's depth map is made (at once when it is not being made). */
   function depthDone(id: PhotoId): Promise<void> {
     if (!depthTimers.has(id)) return Promise.resolve();
@@ -2002,6 +2126,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     prepareObject(rec);
     prepareVision(rec);
     prepareDepth(rec);
+    prepareFaces(rec);
     const id = rec.summary.id;
     const finding = !blurMaps.has(id) && hasBackgroundRow(rec.settings);
     if (finding) blurMaps.add(id);
@@ -2353,7 +2478,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     // correctors and the Film nodes grade the scene where they are.
     if (hasMixers(settings)) {
       return sceneAt(settings, rec.scene, outputFeeder(settings), (item, scene) =>
-        item.kind === "film" ? adjustForNode(scene, filmLook(item)) : item.id === MAIN_ID ? scene : adjustForNode(scene, item),
+        item.kind === "film" ? adjustForNode(scene, filmLook(item)) : item.kind === "face_refinement" || item.id === MAIN_ID ? scene : adjustForNode(scene, item),
       );
     }
     return sceneThroughFilms(rec.scene, settings);
@@ -2437,7 +2562,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     const adjustment = adjustmentOf(rec, false);
     if (nodeOf(rec.settings, node)?.kind === "corrector") return signalScene(rec.scene, adjustment, pictureChain(rec.settings, node), stage);
     const input = adjustScene(rec.scene, { ...adjustment, warp: undefined });
-    const scene = sceneAfter(rec.settings, input, node, (item, scene) => (item.kind === "film" ? adjustForNode(scene, filmLook(item)) : adjustForNode(scene, item)));
+    const scene = sceneAfter(rec.settings, input, node, (item, scene) =>
+      item.kind === "film" ? adjustForNode(scene, filmLook(item)) : item.kind === "face_refinement" ? scene : adjustForNode(scene, item),
+    );
     return scene ?? fail("render", `Node ${node} has no picture to read here.`);
   }
 
@@ -2468,7 +2595,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       const scene = mixed
         ? developScene(
             sceneAt(settings, adjustScene(rec.scene, { ...input, warp: undefined }), { node, port: "picture" }, (item, s) =>
-              item.kind === "film" ? adjustForNode(s, filmLook(item)) : adjustForNode(s, item),
+              item.kind === "film" ? adjustForNode(s, filmLook(item)) : item.kind === "face_refinement" ? s : adjustForNode(s, item),
             ),
             look,
             null,
@@ -3618,6 +3745,28 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         // Only a map that failed starts again; the worker runs as it did (the viewport is busy and finding, then `depth_state` says how it ended).
         if (!depthFailures.delete(photoId)) return;
         prepareDepth(rec);
+      }),
+
+    faceState: (photoId) =>
+      run("faceState", (): FaceState => {
+        photo(photoId);
+        return faceStateOf(photoId);
+      }),
+
+    // --- Face pictures (S-11c): the Faces card's crops. The shell answers with an address on the `ym-frame` scheme; the mock a data URL of a grey disc with the face's number.
+    faceCrop: (photoId, number) =>
+      run("faceCrop", (): string => {
+        photo(photoId);
+        const state = faceStateOf(photoId);
+        if (state.phase !== "ready") fail("render", "The faces are not found yet. Try again in a moment.");
+        if (!state.faces.some((f) => f.number === number)) {
+          fail("render", `This photo has no face ${number}. It has ${state.faces.length}.`);
+        }
+        const svg =
+          `<svg xmlns="http://www.w3.org/2000/svg" width="104" height="104" viewBox="0 0 104 104">` +
+          `<rect width="104" height="104" fill="#2a2a2c"/><circle cx="52" cy="52" r="40" fill="#8a8a8e"/>` +
+          `<text x="52" y="52" font-family="sans-serif" font-size="34" font-weight="700" fill="#18181a" text-anchor="middle" dominant-baseline="central">${number}</text></svg>`;
+        return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
       }),
 
     lensList: () => run("lensList", () => (options.lensesMissing ? [] : MOCK_LENSES.map((lens) => ({ ...lens })))),

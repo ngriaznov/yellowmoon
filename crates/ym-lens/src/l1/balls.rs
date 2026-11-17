@@ -222,6 +222,27 @@ const MIN_CLUSTER: usize = 3;
 const RING_FIT_MIN_SAMPLES: usize = 12;
 /// Of two balls closer than this many radii the dimmer is dropped.
 const MIN_SEPARATION: f64 = 1.2;
+/// A bright region that fails the shape rule alone is held (not stretched) when it has at least this many pixels of the
+/// working grid: a light, not a speck.
+const HELD_MIN_PX: f64 = 24.0;
+/// ... with its edge this many pixels wider.
+const HELD_GROW_PX: i64 = 2;
+/// A region that touches the frame's border is the part of a disc the frame cuts when its rim, the pixels of the
+/// region that have a neighbour in the frame outside it, are at least this many.
+const PARTIAL_MIN_POINTS: usize = 12;
+/// ... and no gap in the rim's angles (about the circle fitted to it) is wider than this, in radians (250 degrees: the
+/// frame hides at most a little over two thirds of the circle's turn, so its centre may stand on the border or a
+/// half radius beyond it).
+const PARTIAL_MAX_GAP: f64 = 250.0 * std::f64::consts::PI / 180.0;
+/// ... and the rim lies within this share of the radius (at least [`PARTIAL_RESIDUAL_MIN_PX`]) of the circle, root
+/// mean square.
+const PARTIAL_RESIDUAL: f64 = 0.08;
+const PARTIAL_RESIDUAL_MIN_PX: f64 = 0.8;
+/// ... and the circle's centre is at most this many radii beyond the frame's edge.
+const PARTIAL_CENTRE_OUTSIDE: f64 = 0.5;
+/// ... and the radius that the visible area asks for agrees with the one the rim asks for, within this share of the
+/// radius plus a pixel.
+const PARTIAL_RADII_AGREE: f64 = 0.1;
 
 #[derive(Clone, Copy, Debug)]
 struct Candidate {
@@ -361,8 +382,10 @@ fn candidates(
             continue;
         }
         let d = &dogs[mi];
-        for y in 1..h - 1 {
-            for x in 1..w - 1 {
+        // Every pixel, the frame's outermost rows and columns too: a light the frame cuts has its peak there. (Past
+        // the frame a neighbour is the pixel itself, which never beats it.)
+        for y in 0..h {
+            for x in 0..w {
                 let v = d[y * w + x];
                 if v <= theta {
                     continue;
@@ -379,7 +402,10 @@ fn candidates(
                             if nj == mi && dx == 1 && dy == 1 {
                                 continue;
                             }
-                            let (nx, ny) = (x + dx - 1, y + dy - 1);
+                            let (nx, ny) = (
+                                (x + dx).saturating_sub(1).min(w - 1),
+                                (y + dy).saturating_sub(1).min(h - 1),
+                            );
                             let u = other[ny * w + nx];
                             // Ties go to the neighbour that comes first in (level, row, column) order.
                             let before = (nj, ny, nx) < (mi, y, x);
@@ -411,6 +437,191 @@ struct Scratch {
     seen: Vec<bool>,
     stack: Vec<(usize, usize)>,
     values: Vec<f32>,
+    /// The pixels of the region the last flood fill found, and the window's mask of them (see [`Region`]).
+    region: Vec<(usize, usize)>,
+    in_region: Vec<bool>,
+    /// Set by [`measure`] when it rejected a bright light-like region for its shape alone (see [`HELD_MIN_PX`]): the
+    /// region is the pixels of `region`.
+    held: bool,
+}
+
+/// The last flood fill's window: its corner and size, and whether the region touches the frame's border.
+#[derive(Clone, Copy, Debug)]
+struct Region {
+    x0: i64,
+    y0: i64,
+    ww: usize,
+    wh: usize,
+    /// True when a pixel of the region is on the frame's outermost row or column: the frame may cut the light.
+    at_border: bool,
+    /// The pixel count.
+    n: f64,
+}
+
+/// The plateau's level (75th percentile within half the radius), the ground's (median of the ring from 1.6 to 2.5
+/// radii) and the share of the ring above half way from the ground to the plateau, for a ball at `(cx, cy, r)`.
+/// `None` when the ring or the plateau has too few pixels in the frame, or the plateau is not [`MIN_RATIO`] over
+/// the ground.
+fn plateau_and_ground(
+    inp: &BallInput,
+    vmax: &[f32],
+    (cx, cy, r): (f64, f64, f64),
+    sc: &mut Scratch,
+) -> Option<(f64, f64, f64)> {
+    let (w, h) = (inp.w, inp.h);
+    sc.values.clear();
+    for_each_in_annulus(w, h, cx, cy, 0.0, (0.5 * r).max(1.2), |x, y, _, _, _| {
+        sc.values.push(vmax[y * w + x]);
+    });
+    if sc.values.len() < 3 {
+        return None;
+    }
+    let top = percentile(&mut sc.values, 0.75);
+    sc.values.clear();
+    for_each_in_annulus(
+        w,
+        h,
+        cx,
+        cy,
+        1.6 * r + 1.0,
+        2.5 * r + 2.0,
+        |x, y, _, _, _| {
+            sc.values.push(vmax[y * w + x]);
+        },
+    );
+    if sc.values.len() < 8 {
+        return None;
+    }
+    let ground = median(&mut sc.values);
+    if top < MIN_RATIO * ground {
+        return None;
+    }
+    // A light stands alone: nothing around it is nearly as bright (a patch of a texture has neighbours of
+    // its own brightness).
+    let ring_hi = ground + RING_CALM * (top - ground);
+    let ring_bright = sc
+        .values
+        .iter()
+        .filter(|v| f64::from(**v) > ring_hi)
+        .count() as f64
+        / sc.values.len() as f64;
+    Some((top, ground, ring_bright))
+}
+
+/// The area of the disc `(cx, cy, r)` inside the frame `w x h`, row by row.
+fn visible_area(cx: f64, cy: f64, r: f64, w: usize, h: usize) -> f64 {
+    let y0 = (cy - r).floor().max(0.0) as usize;
+    let y1 = (((cy + r).ceil() as usize) + 1).min(h);
+    let mut area = 0.0;
+    for y in y0..y1 {
+        let dy = y as f64 + 0.5 - cy;
+        if dy.abs() >= r {
+            continue;
+        }
+        let half = (r * r - dy * dy).sqrt();
+        area += ((cx + half).min(w as f64) - (cx - half).max(0.0)).max(0.0);
+    }
+    area
+}
+
+/// The disc a region that touches the frame's border is a part of: its centre, which may lie on the frame's edge or
+/// a little beyond it, and its radius, or `None` when the region is not the part of a disc the frame cuts.
+///
+/// The circle is the least-squares circle (Kasa) through the region's rim (the region's pixels with a neighbour in the
+/// frame that is not in the region; the frame's own edge is no rim). The rim must reach round the circle (no gap
+/// wider than [`PARTIAL_MAX_GAP`]), lie on it ([`PARTIAL_RESIDUAL`]), and the radius is then the one whose disc,
+/// cut by the frame, has the region's area, which must agree with the circle's ([`PARTIAL_RADII_AGREE`]).
+fn partial_disc(inp: &BallInput, sc: &Scratch, region: &Region) -> Option<(f64, f64, f64)> {
+    let (w, h) = (inp.w, inp.h);
+    let at = |x: i64, y: i64| -> bool {
+        x >= region.x0
+            && y >= region.y0
+            && x < region.x0 + region.ww as i64
+            && y < region.y0 + region.wh as i64
+            && sc.in_region[(y - region.y0) as usize * region.ww + (x - region.x0) as usize]
+    };
+    let mut rim: Vec<(f64, f64)> = Vec::new();
+    for &(px, py) in &sc.region {
+        let on_rim = [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)]
+            .iter()
+            .any(|&(dx, dy)| {
+                let (nx, ny) = (px as i64 + dx, py as i64 + dy);
+                nx >= 0 && ny >= 0 && nx < w as i64 && ny < h as i64 && !at(nx, ny)
+            });
+        if on_rim {
+            rim.push((px as f64 + 0.5, py as f64 + 0.5));
+        }
+    }
+    if rim.len() < PARTIAL_MIN_POINTS {
+        return None;
+    }
+    let m = rim.len() as f64;
+    let (mx, my) = (
+        rim.iter().map(|p| p.0).sum::<f64>() / m,
+        rim.iter().map(|p| p.1).sum::<f64>() / m,
+    );
+    let (mut suu, mut suv, mut svv) = (0.0, 0.0, 0.0);
+    let (mut suuu, mut suvv, mut svvv, mut svuu) = (0.0, 0.0, 0.0, 0.0);
+    for &(x, y) in &rim {
+        let (u, v) = (x - mx, y - my);
+        suu += u * u;
+        suv += u * v;
+        svv += v * v;
+        suuu += u * u * u;
+        suvv += u * v * v;
+        svvv += v * v * v;
+        svuu += v * u * u;
+    }
+    let det = suu * svv - suv * suv;
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let (b1, b2) = (0.5 * (suuu + suvv), 0.5 * (svvv + svuu));
+    let (uc, vc) = ((b1 * svv - b2 * suv) / det, (suu * b2 - suv * b1) / det);
+    let (cx, cy) = (mx + uc, my + vc);
+    let r_rim = (uc * uc + vc * vc + (suu + svv) / m).sqrt();
+    if !(cx.is_finite() && cy.is_finite() && r_rim.is_finite()) || r_rim < 1.0 {
+        return None;
+    }
+    // The rim lies on the circle ...
+    let rms = (rim
+        .iter()
+        .map(|&(x, y)| ((x - cx).hypot(y - cy) - r_rim).powi(2))
+        .sum::<f64>()
+        / m)
+        .sqrt();
+    if rms > (PARTIAL_RESIDUAL * r_rim).max(PARTIAL_RESIDUAL_MIN_PX) {
+        return None;
+    }
+    // ... and reaches round it.
+    let mut angles: Vec<f64> = rim.iter().map(|&(x, y)| (y - cy).atan2(x - cx)).collect();
+    angles.sort_by(f64::total_cmp);
+    let mut gap = angles[0] + std::f64::consts::TAU - angles[angles.len() - 1];
+    for pair in angles.windows(2) {
+        gap = gap.max(pair[1] - pair[0]);
+    }
+    if gap > PARTIAL_MAX_GAP {
+        return None;
+    }
+    // The radius whose disc, cut by the frame, has the region's area.
+    let (mut lo, mut hi) = (0.5 * r_rim, 2.0 * r_rim + 2.0);
+    for _ in 0..40 {
+        let mid = 0.5 * (lo + hi);
+        if visible_area(cx, cy, mid, w, h) < region.n {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let r = 0.5 * (lo + hi);
+    if (r - r_rim).abs() > PARTIAL_RADII_AGREE * r + 1.0 {
+        return None;
+    }
+    let beyond = PARTIAL_CENTRE_OUTSIDE * r;
+    if cx < -beyond || cy < -beyond || cx > w as f64 + beyond || cy > h as f64 + beyond {
+        return None;
+    }
+    Some((cx, cy, r))
 }
 
 /// Measures one candidate, or rejects it.
@@ -422,48 +633,22 @@ fn measure(
     sc: &mut Scratch,
 ) -> Option<Measured> {
     let (w, h) = (inp.w, inp.h);
+    sc.held = false;
     let (mut cx, mut cy) = (c.x as f64 + 0.5, c.y as f64 + 0.5);
     let mut r = c.r0;
     let (mut top, mut ground, mut ring_bright) = (0.0, 0.0, 0.0);
     let (mut elong, mut fill) = (1.0, 1.0);
+    let mut region = Region {
+        x0: 0,
+        y0: 0,
+        ww: 0,
+        wh: 0,
+        at_border: false,
+        n: 0.0,
+    };
     for _ in 0..3 {
         // The plateau and the ground.
-        sc.values.clear();
-        for_each_in_annulus(w, h, cx, cy, 0.0, (0.5 * r).max(1.2), |x, y, _, _, _| {
-            sc.values.push(vmax[y * w + x]);
-        });
-        if sc.values.len() < 3 {
-            return None;
-        }
-        top = percentile(&mut sc.values, 0.75);
-        sc.values.clear();
-        for_each_in_annulus(
-            w,
-            h,
-            cx,
-            cy,
-            1.6 * r + 1.0,
-            2.5 * r + 2.0,
-            |x, y, _, _, _| {
-                sc.values.push(vmax[y * w + x]);
-            },
-        );
-        if sc.values.len() < 8 {
-            return None;
-        }
-        ground = median(&mut sc.values);
-        if top < MIN_RATIO * ground {
-            return None;
-        }
-        // A light stands alone: nothing around it is nearly as bright (a patch of a texture has neighbours of
-        // its own brightness).
-        let ring_hi = ground + RING_CALM * (top - ground);
-        ring_bright = sc
-            .values
-            .iter()
-            .filter(|v| f64::from(**v) > ring_hi)
-            .count() as f64
-            / sc.values.len() as f64;
+        (top, ground, ring_bright) = plateau_and_ground(inp, vmax, (cx, cy, r), sc)?;
         let level = (ground + LEVEL * (top - ground)) as f32;
         // The region above the level that holds the centre, in a window around it.
         let win = (WINDOW_RADII * r).ceil() as i64 + 2;
@@ -492,10 +677,17 @@ fn measure(
         sc.stack.clear();
         sc.stack.push((sx as usize, sy as usize));
         sc.seen[(sy - y0) as usize * ww + (sx - x0) as usize] = true;
+        sc.region.clear();
+        sc.in_region.clear();
+        sc.in_region.resize(ww * wh, false);
+        let mut at_border = false;
         let (mut n, mut mx, mut my) = (0.0f64, 0.0f64, 0.0f64);
         let (mut sxx, mut sxy, mut syy) = (0.0f64, 0.0f64, 0.0f64);
         while let Some((px, py)) = sc.stack.pop() {
             let (fx, fy) = (px as f64 + 0.5, py as f64 + 0.5);
+            sc.region.push((px, py));
+            sc.in_region[(py as i64 - y0) as usize * ww + (px as i64 - x0) as usize] = true;
+            at_border |= px == 0 || py == 0 || px + 1 == w || py + 1 == h;
             n += 1.0;
             mx += fx;
             my += fy;
@@ -544,6 +736,26 @@ fn measure(
         cx = mean_x;
         cy = mean_y;
         r = (n / std::f64::consts::PI).sqrt();
+        region = Region {
+            x0,
+            y0,
+            ww,
+            wh,
+            at_border,
+            n,
+        };
+    }
+    // A light the frame cuts is a part of a disc: the region's moments say it is elongated and does not fill its
+    // ellipse, but its rim is an arc of a circle. The circle's centre may stand on or just outside the frame's edge.
+    let mut shape_ok = elong <= MAX_ELONGATION && fill >= MIN_FILL;
+    if !shape_ok
+        && region.at_border
+        && let Some((pcx, pcy, pr)) = partial_disc(inp, sc, &region)
+        && let Some(found) = plateau_and_ground(inp, vmax, (pcx, pcy, pr), sc)
+    {
+        (top, ground, ring_bright) = found;
+        (cx, cy, r) = (pcx, pcy, pr);
+        shape_ok = true;
     }
     let contrast = top.sqrt() - ground.sqrt();
     if contrast < MIN_CONTRAST || ring_bright > RING_BRIGHT_MAX {
@@ -552,7 +764,10 @@ fn measure(
     if top - ground < MIN_SN * 2.0 * top.max(1e-6).sqrt() * inp.noise_v {
         return None;
     }
-    if elong > MAX_ELONGATION || fill < MIN_FILL {
+    if !shape_ok {
+        // A bright, compact region that is no disc (a tube, two lights that overlap, a light a subject cuts): not a
+        // ball, but still a light, which the gather must not smear into a pillar.
+        sc.held = region.n >= HELD_MIN_PX;
         return None;
     }
     let r_lo = R_MIN_PX.max(R_MIN_HD * hd_of(inp));
@@ -812,14 +1027,51 @@ fn ring_sharpness(inp: &BallInput, cx: f64, cy: f64, r: f64, claim: &[bool], sec
     share[(share.len() - 1) * 3 / 8]
 }
 
+/// What [`find_balls`] finds: the balls, and the pixels of the lights that are none.
+pub(super) struct Found {
+    pub balls: Vec<BallPx>,
+    /// Pixels of the working grid (row by row) of a bright, compact region that fails the shape rule, or of the dimmer
+    /// of two balls too close to tell apart, grown by [`HELD_GROW_PX`].
+    pub held: Vec<bool>,
+}
+
+/// `mask` grown by `r` pixels (a square).
+fn grow(mask: &[bool], w: usize, h: usize, r: i64) -> Vec<bool> {
+    let pass = |src: &[bool], horizontal: bool| -> Vec<bool> {
+        let mut out = vec![false; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                if !src[y * w + x] {
+                    continue;
+                }
+                for d in -r..=r {
+                    let (nx, ny) = if horizontal {
+                        (x as i64 + d, y as i64)
+                    } else {
+                        (x as i64, y as i64 + d)
+                    };
+                    if nx >= 0 && ny >= 0 && nx < w as i64 && ny < h as i64 {
+                        out[ny as usize * w + nx as usize] = true;
+                    }
+                }
+            }
+        }
+        out
+    };
+    pass(&pass(mask, true), false)
+}
+
 /// Finds the balls of a plane.
-pub(super) fn find_balls(
-    inp: &BallInput,
-    cancel: &dyn Fn() -> bool,
-) -> Result<Vec<BallPx>, LensError> {
+pub(super) fn find_balls(inp: &BallInput, cancel: &dyn Fn() -> bool) -> Result<Found, LensError> {
     let (w, h) = (inp.w, inp.h);
+    // The pixels of the lights that are no balls (see [`HELD_MIN_PX`]), and the discs of the dimmer of two lights too
+    // close to be told apart: the gather leaves them as they are.
+    let mut held = vec![false; w * h];
     if w < 16 || h < 16 {
-        return Ok(Vec::new());
+        return Ok(Found {
+            balls: Vec::new(),
+            held,
+        });
     }
     let (vmax, root) = brightest_channel(inp);
     let cands = candidates(inp, &root, cancel)?;
@@ -833,6 +1085,9 @@ pub(super) fn find_balls(
         seen: Vec::new(),
         stack: Vec::new(),
         values: Vec::new(),
+        region: Vec::new(),
+        in_region: Vec::new(),
+        held: false,
     };
     let mut refined: Vec<Measured> = Vec::new();
     for (i, c) in cands.iter().enumerate() {
@@ -842,8 +1097,13 @@ pub(super) fn find_balls(
         if inp.anchor[c.y * w + c.x] {
             continue;
         }
-        if let Some(m) = measure(inp, &vmax, &smooth, c, &mut sc) {
+        let m = measure(inp, &vmax, &smooth, c, &mut sc);
+        if let Some(m) = m {
             refined.push(m);
+        } else if sc.held {
+            for &(x, y) in &sc.region {
+                held[y * w + x] = true;
+            }
         }
     }
     drop(smooth);
@@ -884,6 +1144,9 @@ pub(super) fn find_balls(
         for (a, _, _) in &accepted {
             let d = ((a.cx - b.cx).powi(2) + (a.cy - b.cy).powi(2)).sqrt();
             if d < MIN_SEPARATION * a.r.max(b.r) {
+                for_each_in_annulus(w, h, b.cx, b.cy, 0.0, b.r, |x, y, _, _, _| {
+                    held[y * w + x] = true;
+                });
                 continue 'cand;
             }
         }
@@ -1054,5 +1317,8 @@ pub(super) fn find_balls(
             clear: *clear,
         });
     }
-    Ok(out)
+    Ok(Found {
+        balls: out,
+        held: grow(&held, w, h, HELD_GROW_PX),
+    })
 }

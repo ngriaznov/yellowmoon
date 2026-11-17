@@ -853,3 +853,65 @@ fn a_click_that_finds_nothing_says_why() {
         Err(MlError::Input(_))
     ));
 }
+
+#[test]
+fn every_candidate_mask_of_a_prompt_is_available_for_face_refinement() {
+    if !heavy_ok() {
+        return;
+    }
+    let Some(model) = model() else { return };
+    // A picture with a bright disc on a dark ground, as a stand-in; the test is about the shape of the answer, not the mask.
+    let (w, h) = (96usize, 64usize);
+    let mut rgb = vec![30u8; w * h * 3];
+    for y in 0..h {
+        for x in 0..w {
+            let (dx, dy) = (x as f32 - 48.0, y as f32 - 32.0);
+            if dx * dx + dy * dy < 400.0 {
+                rgb[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(&[220, 200, 180]);
+            }
+        }
+    }
+    let features = model
+        .encode(&Picture::new(w, h, &rgb).expect("picture"))
+        .expect("encode");
+    let n = ym_ml::sam2::LOW_RES_PX * ym_ml::sam2::LOW_RES_PX;
+    // Two points and a box: `decode_raw` answers one mask, `decode_candidates` all four, with their predicted IoUs.
+    let prompt = Prompt::rect(0.3, 0.2, 0.7, 0.8)
+        .with_point(0.5, 0.5, true)
+        .with_point(0.05, 0.05, false);
+    let all = model.decode_candidates(&features, &prompt).expect("decode");
+    assert_eq!((all.candidates(), all.logits.len()), (4, 4 * n));
+    assert!(all.multimask && (1..=3).contains(&all.chosen) && all.token == all.chosen);
+    let best = (1..4)
+        .max_by(|&a, &b| all.iou[a].total_cmp(&all.iou[b]).then(b.cmp(&a)))
+        .expect("a best");
+    assert_eq!(
+        all.chosen, best,
+        "the multimask token of the highest predicted IoU"
+    );
+    assert!(
+        all.logits
+            .iter()
+            .all(|v| v.is_finite() && v.abs() <= ym_ml::sam2::LOGIT_CLAMP)
+    );
+    let one = model.decode_raw(&features, &prompt).expect("decode");
+    assert_eq!(one.candidates(), 1);
+    // One positive click: the three multimask candidates are the ones `decode_raw` gives, bit for bit.
+    let click = Prompt::click(0.5, 0.5);
+    let raw = model.decode_raw(&features, &click).expect("decode");
+    let all = model.decode_candidates(&features, &click).expect("decode");
+    assert_eq!(raw.candidates(), 3);
+    for i in 0..3 {
+        assert_eq!(
+            bits(raw.candidate_logits(i)),
+            bits(all.candidate_logits(i + 1)),
+            "candidate {i}"
+        );
+    }
+    assert_eq!(raw.chosen + 1, all.chosen);
+    // The same refusals as `decode_raw`.
+    assert!(matches!(
+        model.decode_candidates(&features, &Prompt::default()),
+        Err(MlError::Input(_))
+    ));
+}

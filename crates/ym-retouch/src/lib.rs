@@ -1,0 +1,71 @@
+//! Face skin retouching (`docs/27-skin-retouch.md`): blemish removal, dark circles, even skin, skin
+//! grading and teeth whitening.
+//!
+//! This crate holds the types and rules of sections 2 to 5 of the spec: the image, mask and
+//! settings types, the model traits and their deterministic mocks, and the mask arithmetic, the
+//! feather and the mask builders. Colour maths is `f64` on this CPU reference path; masks are
+//! `u8` with integer arithmetic. Image-sized passes run over rows with `rayon` and write disjoint
+//! rows, so results never depend on the thread count (hard rule 8).
+
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+mod blemish;
+pub mod classical;
+mod error;
+pub mod face_parts;
+pub mod face_raster;
+pub mod face_tables;
+pub mod face_topology;
+mod feather;
+pub mod guided;
+mod lowfreq;
+mod mask;
+#[cfg(feature = "mediapipe")]
+pub mod mediapipe;
+#[cfg(any(test, feature = "mock"))]
+pub mod mock;
+mod models;
+mod pipeline;
+pub mod teeth;
+mod tone;
+mod types;
+
+pub use blemish::{
+    BlemishMap, BlemishMapCache, BlemishMapKey, CHROMA_GUARD_MIN_SIDE_PX, GAIN_MAX, GAIN_MIN,
+    TARGET_FACE_PX, apply_blemish, apply_blemish_at, apply_blemish_toned, apply_gain, blemish_gain,
+    blemish_map, chroma_confidence, chroma_pull, encode_channel, gain_strength, threshold_strength,
+};
+pub use classical::{ClassicalBeautyMarks, ClassicalProposer};
+pub use error::{Result, RetouchError};
+pub use feather::feather;
+pub use lowfreq::{
+    BRIGHTEN_EXPONENT, DARKEN_EXPONENT, DC_RADIUS_FRAC, GRADE_RADIUS_FRAC, LowFreqParams, LowPlan,
+    Placement, SE_RADIUS_FRAC, TEETH_CAP_RISE, TEETH_CHROMA_LIN, TEETH_CHROMA_QUAD,
+    TEETH_LIGHT_LIN, TEETH_LIGHT_QUAD, TEX_FRAC_MAX, TEX_FRAC_MIN, TEX_FRAC_SLOPE, TeethPlan,
+    TonesPlan, ToolMasks, blend_pixel, blend_weight, contrast_target, dark_circle_k_sp,
+    dark_circles_target, even_skin_target, mask_to_working, masked_blur_combine,
+    retouch_low_frequency, retouch_tones, retouch_tones_at, shadow_desaturation_pixel,
+    shine_removal_texture, teeth_pixel, tones_region,
+};
+pub use mask::{
+    FaceMasks, SkinAreaValues, blemish_mask, dark_circle_mask, even_skin_mask, face_masks,
+    grading_mask, max, max_masks, mul, mul_inv, mul_inv_masks, mul_masks, punch_hole, skin_mask,
+    smoothstep, teeth_from_segment,
+};
+pub use models::{
+    BeautyMarkDetector, BlemishProposer, FaceMesh, FaceParser, FacePart, MeshTable, Models,
+    TeethSegmenter,
+};
+pub use pipeline::{
+    BlemishPlan, DeviceFace, DevicePlan, RetouchCache, plan_skin_region, prepare_skin,
+    retouch_regions, retouch_skin, retouch_skin_region, retouch_skin_region_toned,
+};
+pub use tone::{
+    BINS as TONE_BINS, MIN_PAIRS as TONE_MIN_PAIRS, SLOPE_TOLERANCE, TONE_FLOOR, ToneCurveData,
+    ToneRelation, quantiles as tone_quantiles,
+};
+pub use types::{
+    BoundedMask, Face, LinearAwg4Image, MAX_RENDER_SCALE, Mask, Rect, SkinSettings,
+    check_render_scale, face_extent_px, face_size_px,
+};

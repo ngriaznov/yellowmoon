@@ -6,7 +6,7 @@ import type { SegmentedOption } from "../../components";
 import { useAppState, useStore } from "../../state/context";
 import { editRow, isUnsupported, MASKS_FULL, MAX_MASKS, movedMask, newMask, selectionAfterRemove, withMask, withoutMask } from "../../state/maskRows";
 import type { VisionRows } from "../../state/maskRows";
-import { nodeOf, patchOf } from "../../state/settingsGraph";
+import { isCardItem, nodeOf, patchOf } from "../../state/settingsGraph";
 import type { AppStore } from "../../state/store";
 import { AddMaskMenu } from "./AddMaskMenu";
 import { CARD_KINDS, MaskCard } from "./MaskCards";
@@ -82,7 +82,7 @@ export interface MaskTabProps {
  */
 export function MaskTab({ store, rs, node, pickingRange, onPickRange, pickingDepth = false, onPickDepth }: MaskTabProps) {
   const item = nodeOf(rs.settings, node);
-  const corrector = item?.kind === "corrector" || item?.kind === "film" ? item : null;
+  const corrector = isCardItem(item) ? item : null;
   const rows = corrector?.masks.items ?? [];
   const inverted = corrector?.masks.invert ?? false;
   const stored = useAppState((s) => s.maskRow);

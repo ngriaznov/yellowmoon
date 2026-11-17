@@ -19,6 +19,7 @@ members = [
     "crates/ym-agents",
     "crates/ym-compose",
     "crates/ym-film",
+    "crates/ym-retouch",
     "src-tauri",
     "tools/oracle",
     "tools/golden",
@@ -50,6 +51,7 @@ ym-apple = { path = "crates/ym-apple", version = "0.2.3" }
 ym-agents = { path = "crates/ym-agents", version = "0.2.3" }
 ym-compose = { path = "crates/ym-compose", version = "0.2.3" }
 ym-film = { path = "crates/ym-film", version = "0.2.3" }
+ym-retouch = { path = "crates/ym-retouch", version = "0.2.3" }
 
 # Errors, serialization, numerics.
 thiserror = "2"
@@ -96,6 +98,8 @@ jsonschema = { version = "0.58", default-features = false }
 # Tests.
 approx = "0.5"
 proptest = "1"
+# Benchmarks (MIT OR Apache-2.0). No default features: no plotting, no rayon pulled twice.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 assert_cmd = "2"
 predicates = "3"
 insta = { version = "1", features = ["json"] }
