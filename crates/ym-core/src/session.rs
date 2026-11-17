@@ -1874,13 +1874,23 @@ impl State {
     /// [`SessionError::UnknownPhoto`], and [`SessionError::Skipped`] for a photo that cannot be
     /// developed. A photo with no estimates of its own yet is `Ok(false)`.
     fn estimates_final(&self, id: PhotoId) -> Result<bool, SessionError> {
+        self.estimates_blocker(id).map(|b| b.is_none())
+    }
+
+    /// What keeps the estimates of photo `id` from being final, in a word for the log (`None` when they are final); see
+    /// [`State::estimates_final`].
+    ///
+    /// # Errors
+    ///
+    /// As [`State::estimates_final`].
+    fn estimates_blocker(&self, id: PhotoId) -> Result<Option<&'static str>, SessionError> {
         let i = *self.index.get(&id).ok_or(SessionError::UnknownPhoto(id))?;
         let photo = &self.photos[i];
         if let PhotoStatus::Skipped { reason } = &photo.summary.status {
             return Err(SessionError::Skipped(reason.clone()));
         }
         if photo.own.is_none() {
-            return Ok(false);
+            return Ok(Some("the photo has no estimates of its own yet"));
         }
         let resolved =
             |p: &Photo| p.own.is_some() || matches!(p.summary.status, PhotoStatus::Skipped { .. });
@@ -1896,7 +1906,7 @@ impl State {
                 || matches!(p.summary.status, PhotoStatus::Skipped { .. })
         };
         if !settled(photo) {
-            return Ok(false);
+            return Ok(Some("the photo waits for its provider's answer"));
         }
         // Every frame of the burst has its estimates, and, with Apple Auto, its answer: the burst
         // shares both.
@@ -1905,7 +1915,9 @@ impl State {
             .into_iter()
             .any(|j| !(resolved(&self.photos[j]) && settled(&self.photos[j])))
         {
-            return Ok(false);
+            return Ok(Some(
+                "a frame of the photo's burst has no estimates or no answer yet",
+            ));
         }
         if let Some(key) = &photo.pool_key
             && self
@@ -1913,9 +1925,9 @@ impl State {
                 .iter()
                 .any(|p| p.pool_key.as_ref() == Some(key) && !resolved(p))
         {
-            return Ok(false);
+            return Ok(Some("a photo of the noise pool has no estimates yet"));
         }
-        Ok(true)
+        Ok(None)
     }
 
     /// The indices of the frames of photo `i`'s burst, `i` included, in filmstrip order; `[i]` for a
@@ -2938,6 +2950,15 @@ impl Session {
     /// has no estimates of its own yet.
     pub fn estimates_final(&self, id: PhotoId) -> Result<bool, SessionError> {
         lock(&self.inner.state).estimates_final(id)
+    }
+
+    /// What keeps the estimates of photo `id` from being final, for the log of an export that waits; `None` when they are final.
+    ///
+    /// # Errors
+    ///
+    /// As [`Session::estimates_final`].
+    pub fn estimates_blocker(&self, id: PhotoId) -> Result<Option<&'static str>, SessionError> {
+        lock(&self.inner.state).estimates_blocker(id)
     }
 
     /// `get_settings`: a photo's settings resolved against its estimates.

@@ -692,6 +692,11 @@ fn export_within(r: &Rig, scope: ApplyScope, to: &Path) -> Vec<(String, Vec<u8>)
             }
         }
     }
+    if let Some(sum) = r.core.export_summary(id)
+        && !sum.errors.is_empty()
+    {
+        eprintln!("export errors: {:?}", sum.errors);
+    }
     let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(to)
         .map(|d| {
             d.flatten()
@@ -782,6 +787,85 @@ fn an_opened_album_with_a_missing_photo_exports_the_others_with_a_provider() {
         2,
         "the missing photo is skipped, the others exported"
     );
+}
+
+/// Photos shot in bursts (frames a few tenths of a second apart share an exposure), each frame a scene of its own.
+fn write_burst_photos(dir: &Path, names: &[&str], burst_len: usize) -> Vec<PathBuf> {
+    std::fs::create_dir_all(dir).expect("folder");
+    names
+        .iter()
+        .enumerate()
+        .map(|(k, name)| {
+            let scene = Scene::new(
+                300,
+                200,
+                light(PROFILE, 4600.0 + 300.0 * k as f64),
+                Layout::Patchwork,
+                0.25 + 0.03 * k as f64,
+            )
+            .noise(2e-4, 1e-5)
+            .seed(k as u64 + 7);
+            let path = dir.join(name);
+            let (group, frame) = (k / burst_len, k % burst_len);
+            scene
+                .builder(MODEL)
+                .capture_time(
+                    &format!("2026:10:04 12:{:02}:00", group % 60),
+                    &format!("{}", 10 + 10 * frame),
+                    None,
+                )
+                .write_to(&path, &scene.mosaic())
+                .expect("write");
+            path
+        })
+        .collect()
+}
+
+#[test]
+fn an_opened_album_of_bursts_with_edits_nodes_and_unanswered_photos_exports_every_photo() {
+    // Saved by a session where a provider acted: every photo has its answer. Two of them lose it in the file, as a failed answer is
+    // not kept, then the album is opened where the provider acts.
+    let a = rig_with(fake_advisors());
+    let dir = a.root.path().join("Bursts");
+    let names: Vec<String> = (0..12).map(|k| format!("B{k:02}.ARW")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    write_burst_photos(&dir, &names, 4);
+    let ids = a.open(&dir);
+    a.patch(ids[1], &SettingsPatch::exposure_ev(0.89));
+    let mut s = a.settings(ids[2]);
+    let mut sky = CorrectorNode::default();
+    sky.name = "Sky".to_owned();
+    s.nodes.extra.insert(2, sky);
+    a.set(ids[2], s);
+    a.patch(ids[5], &SettingsPatch::look_at(LookId::neutral(), 86.0));
+    let path = a.root.path().join("Bursts.ymalbum");
+    a.core.album_save(&path).expect("saved");
+    let mut doc = read_json(&path);
+    for k in [1, 5, 9] {
+        doc["photos"][k]
+            .as_object_mut()
+            .expect("an entry")
+            .remove("auto");
+    }
+    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).expect("rewritten");
+    let b = rig_with(fake_advisors());
+    b.core
+        .album_open(&path, OpenOptions::default())
+        .expect("opened");
+    b.settle();
+    let files = export_within(&b, ApplyScope::All, &b.root.path().join("out"));
+    assert_eq!(
+        files.iter().map(|f| f.0.clone()).collect::<Vec<_>>().len(),
+        12,
+        "every photo is exported: {:?}",
+        files.iter().map(|f| f.0.clone()).collect::<Vec<_>>()
+    );
+    assert_eq!(b.core.session.apple_auto_asks(), 0, "nothing was asked");
+    for (n, id) in b.core.session.photo_ids().into_iter().enumerate() {
+        b.core.session.set_current(id).expect("current");
+        let one = export_within(&b, ApplyScope::This, &b.root.path().join(format!("one{n}")));
+        assert_eq!(one.len(), 1, "photo {n} exports alone");
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

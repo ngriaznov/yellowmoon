@@ -6321,6 +6321,56 @@ fn an_album_is_saved_in_place_and_as_new_and_opened_again() {
     );
 }
 
+/// An album saved where a provider answered, with some photos' answers left out of the file (a failure is not stored), opened
+/// where the provider acts: the export of every photo finishes without anything being asked (`docs/31` "As built").
+#[test]
+fn an_opened_album_exports_with_a_provider_that_acts_and_photos_without_answers() {
+    use ym_core::apple_auto::FakeAdvisor;
+    use ym_core::auto_provider::{AutoProvider, ProviderAdvisors};
+    let advisors = ProviderAdvisors::default().with(AutoProvider::Apple, Arc::new(FakeAdvisor));
+    let h = Harness::with_advisors(advisors);
+    h.open(6);
+    let state = h.develop();
+    wait_until("the answers", || {
+        h.api
+            .session_state()
+            .is_ok_and(|s| s.photos.iter().all(|p| !p.apple_pending))
+    });
+    let ids: Vec<_> = state.photos.iter().map(|p| p.id).collect();
+    let dir = tempfile::tempdir().expect("dir");
+    let file = dir.path().join("Burst.ymalbum");
+    h.api.album_save(&file).expect("save");
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("read")).expect("json");
+    for k in [1, 4] {
+        doc["photos"][k]
+            .as_object_mut()
+            .expect("an entry")
+            .remove("auto");
+    }
+    std::fs::write(&file, serde_json::to_vec(&doc).expect("json")).expect("write");
+    let _ = ids;
+
+    h.api.album_open(&file.to_string_lossy()).expect("open");
+    h.develop();
+    let out = tempfile::tempdir().expect("out");
+    let id = h.api.export_start(&jpeg_job(out.path())).expect("start");
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    while h.api.export_busy() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the export did not finish in 90 s"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let summary = h
+        .api
+        .core()
+        .export_summary(u64::from(id.0))
+        .expect("the job has a summary");
+    assert_eq!((summary.saved, summary.failed), (6, 0), "{summary:?}");
+}
+
 #[test]
 fn a_refused_album_leaves_the_session_and_says_why() {
     let h = Harness::new();

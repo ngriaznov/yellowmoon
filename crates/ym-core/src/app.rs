@@ -1254,6 +1254,7 @@ impl Core {
     pub fn export_start(&self, job: &ExportJob) -> Result<ExportJobId, CoreError> {
         // Look at the library folder first: a look whose file has gone since the last look at it is
         // noticed now, and a look the CLI imported is known.
+        tracing::info!("export: start");
         self.looks.reload();
         // The chosen provider is read again (`docs/19` section 1, `docs/22` section 3.3); the export's
         // photos then wait for their answers. The program is asked to check only when it was never
@@ -1262,10 +1263,14 @@ impl Core {
             self.session.refresh_auto_for_export(),
             Some(Availability::Unavailable(UnavailableReason::Checking))
         ) {
+            tracing::info!("export: the chosen program is still checking; waiting for it");
             self.settle_auto(AUTO_SETTLE_BEFORE_EXPORT);
+            tracing::info!("export: the wait for the check is over");
         }
         let remove_location = self.preferences.get().remove_location_from_exports;
+        tracing::info!("export: queueing");
         let id = self.exports.start(&self.session, job, remove_location)?;
+        tracing::info!(job = id, "export: queued");
         if let Some(folder) = &job.options.destination {
             self.remember_folder(|f| f.export = Some(folder.clone()));
         }
