@@ -2073,10 +2073,18 @@ fn the_settings_an_export_records_reproduce_the_file() {
     let again = common::json_lines(&again.get_output().stdout).remove(0);
     // The pinned settings (exposure as a number, white balance still Auto) render the same bytes.
     assert_eq!(again["settings"], reported["settings"]);
-    assert_eq!(
-        bytes(Path::new(again["output"].as_str().expect("output"))),
-        bytes(Path::new(reported["output"].as_str().expect("output")))
-    );
+    // The files differ in `ym:AutoFields` only (the first one's exposure was Auto, the second's is the pinned number) and in the
+    // chunk length and checksum that go with it: the pixels are the same bytes.
+    let after_packet = |record: &serde_json::Value| -> Vec<u8> {
+        let file = bytes(Path::new(record["output"].as_str().expect("output")));
+        // A PNG's chunk checksum follows the packet and goes with it; the image data starts at the first IDAT.
+        let at = file
+            .windows(4)
+            .position(|w| w == b"IDAT")
+            .expect("the image data");
+        file[at..].to_vec()
+    };
+    assert_eq!(after_packet(&again), after_packet(&reported));
     // The auto exposure is pinned as the number it resolved to.
     assert!(matches!(
         serde_json::from_value::<DevelopSettings>(reported["settings"].clone())
