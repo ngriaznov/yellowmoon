@@ -834,8 +834,42 @@ fn the_settings_in_a_files_xmp_make_the_same_file_again() {
         "nothing in the file's settings is out of range: {clamped:?}"
     );
     let second = export(Some(settings), b.path());
+    // `ym:AutoFields` says which fields were Auto: the first file's exposure was, the second's is the number it was pinned to.
+    // Everything else, the pixels and `ym:Settings` included, is the same, so the property is the one difference.
+    let flags = |file: &[u8]| {
+        let xmp = xmp_of(file).expect("xmp");
+        xmp_property(&xmp, "ym:AutoFields")
+            .expect("the property")
+            .replace("&quot;", "\"")
+    };
+    assert!(
+        flags(&first).contains("\"exposure\":true"),
+        "{}",
+        flags(&first)
+    );
+    assert!(
+        flags(&second).contains("\"exposure\":false"),
+        "{}",
+        flags(&second)
+    );
+    // The packet without the property, and everything after the packet (the rest of the JPEG: the profile and the pixels).
+    let split = |file: &[u8]| -> (String, Vec<u8>) {
+        let end = b"<?xpacket end=\"w\"?>";
+        let at = file
+            .windows(end.len())
+            .position(|w| w == end)
+            .expect("the end of the packet")
+            + end.len();
+        let xmp = xmp_of(file).expect("xmp");
+        let property = format!(
+            "<ym:AutoFields>{}</ym:AutoFields>",
+            flags(file).replace('"', "&quot;")
+        );
+        (xmp.replace(&property, ""), file[at..].to_vec())
+    };
     assert_eq!(
-        first, second,
+        split(&first),
+        split(&second),
         "the settings a file records give the same file again"
     );
 }

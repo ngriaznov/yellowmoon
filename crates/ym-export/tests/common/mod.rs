@@ -132,6 +132,7 @@ pub fn metadata() -> Metadata {
                 auto_advisor: None,
                 film_data: None,
                 settings: Some(serde_json::json!({"exposure": "auto", "contrast": 0})),
+                auto_fields: None,
             },
         },
     }

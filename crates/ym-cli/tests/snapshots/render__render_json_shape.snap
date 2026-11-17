@@ -71,6 +71,7 @@ expression: shape(&v)
   ],
   "output": "string",
   "pipeline_version": "string",
+  "presets": [],
   "settings": {
     "nodes": {
       "items": [

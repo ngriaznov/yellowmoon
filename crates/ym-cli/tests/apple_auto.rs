@@ -616,7 +616,17 @@ fn two_renders_with_apple_auto_are_byte_identical_and_their_settings_reproduce_t
     flags.extend(["--settings", settings.to_str().expect("utf-8")]);
     let again = render_json(sb.ym_fake(), &arw, &flags, &sb.root().join("again"));
     assert_eq!(again["settings"], first["settings"]);
-    assert_eq!(bytes(&output_of(&again)), bytes(&output_of(&first)));
+    // Only `ym:AutoFields` differs (the first file's Auto fields were Auto, the pinned ones are numbers): the pixels, which
+    // start at the first IDAT chunk, are the same bytes.
+    let pixels = |v: &Value| -> Vec<u8> {
+        let file = bytes(&output_of(v));
+        let at = file
+            .windows(4)
+            .position(|w| w == b"IDAT")
+            .expect("the image data");
+        file[at..].to_vec()
+    };
+    assert_eq!(pixels(&again), pixels(&first));
 }
 
 #[test]

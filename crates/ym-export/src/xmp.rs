@@ -50,6 +50,11 @@ pub struct YmInfo {
     pub film_data: Option<String>,
     /// `ym:Settings`, the resolved develop settings; written as compact JSON.
     pub settings: Option<serde_json::Value>,
+    /// `ym:AutoFields` (`docs/30` section 12): which Auto fields were still Auto, and the light a picked white resolved to; compact
+    /// JSON with sorted keys. Written after `ym:Settings` and only with it: a preset made from the file puts Auto back where
+    /// `ym:Settings` is pinned.
+    #[serde(default)]
+    pub auto_fields: Option<String>,
 }
 
 /// What goes into the XMP packet.
@@ -152,12 +157,200 @@ pub fn build_xmp(info: &XmpInfo, mime: &str) -> Result<Vec<u8>, ExportError> {
             ExportError::encode("XMP", format!("the settings aren't valid JSON ({e})"))
         })?;
         property(&mut x, "ym:Settings", &json);
+        if let Some(fields) = ym.auto_fields.as_deref() {
+            property(&mut x, "ym:AutoFields", fields);
+        }
     }
     x.push_str("  </rdf:Description>\n");
     x.push_str(" </rdf:RDF>\n");
     x.push_str("</x:xmpmeta>\n");
     x.push_str("<?xpacket end=\"w\"?>");
     Ok(x.into_bytes())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Reading the properties back (`docs/30` section 12)
+// ---------------------------------------------------------------------------------------------
+
+/// What [`read_ym`] finds in an export's XMP.
+#[derive(Debug, Clone, PartialEq)]
+pub struct YmRead {
+    /// `xmp:CreatorTool` (`Yellowmoon 0.2.4`).
+    pub creator_tool: Option<String>,
+    /// `ym:PipelineVersion`.
+    pub pipeline_version: Option<String>,
+    /// `ym:Settings`, the pinned settings document.
+    pub settings: serde_json::Value,
+    /// `ym:AutoFields`, the property's text; `None` for a file made before P-06.
+    pub auto_fields: Option<String>,
+}
+
+/// The text of the property `name` (`ym:Settings`) in `packet`, with the XML escapes undone.
+fn property_text(packet: &str, name: &str) -> Option<String> {
+    let open = format!("<{name}>");
+    let start = packet.find(&open)? + open.len();
+    let end = start + packet[start..].find(&format!("</{name}>"))?;
+    Some(unescape(&packet[start..end]))
+}
+
+fn unescape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        let replaced = [
+            ("&amp;", '&'),
+            ("&lt;", '<'),
+            ("&gt;", '>'),
+            ("&quot;", '"'),
+            ("&apos;", '\''),
+        ]
+        .into_iter()
+        .find(|(entity, _)| rest.starts_with(entity));
+        match replaced {
+            Some((entity, c)) => {
+                out.push(c);
+                rest = &rest[entity.len()..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The XMP packets of a JPEG: the `APP1` segments that start with the XMP header, in file order.
+fn jpeg_packets(bytes: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut at = 2;
+    while at + 4 <= bytes.len() && bytes[at] == 0xFF {
+        let marker = bytes[at + 1];
+        if marker == 0xFF {
+            at += 1;
+            continue;
+        }
+        // The start of the scan, or the end: the segments are over.
+        if marker == 0xDA || marker == 0xD9 {
+            break;
+        }
+        if (0xD0..=0xD8).contains(&marker) || marker == 0x01 {
+            at += 2;
+            continue;
+        }
+        let len = usize::from(u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]));
+        let body = bytes
+            .get(at + 4..(at + 2 + len).min(bytes.len()))
+            .unwrap_or(&[]);
+        if marker == 0xE1
+            && let Some(packet) = body.strip_prefix(XMP_APP1_HEADER)
+        {
+            out.push(String::from_utf8_lossy(packet).into_owned());
+        }
+        at += 2 + len;
+    }
+    out
+}
+
+/// The XMP packet of a TIFF or DNG: tag 700 of the first directory.
+fn tiff_packets(bytes: &[u8]) -> Vec<String> {
+    let big = match bytes.get(..2) {
+        Some(b"II") => false,
+        Some(b"MM") => true,
+        _ => return Vec::new(),
+    };
+    let u16_at = |at: usize| -> Option<u16> {
+        let b: [u8; 2] = bytes.get(at..at + 2)?.try_into().ok()?;
+        Some(if big {
+            u16::from_be_bytes(b)
+        } else {
+            u16::from_le_bytes(b)
+        })
+    };
+    let u32_at = |at: usize| -> Option<u32> {
+        let b: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
+        Some(if big {
+            u32::from_be_bytes(b)
+        } else {
+            u32::from_le_bytes(b)
+        })
+    };
+    let find = || -> Option<String> {
+        if u16_at(2)? != 42 {
+            return None;
+        }
+        let ifd = u32_at(4)? as usize;
+        let count = usize::from(u16_at(ifd)?);
+        for n in 0..count {
+            let entry = ifd + 2 + n * 12;
+            if u16_at(entry)? != 700 {
+                continue;
+            }
+            // BYTE (1), ASCII (2) and UNDEFINED (7) are one byte an item.
+            let len = u32_at(entry + 4)? as usize;
+            let data = if len <= 4 {
+                bytes.get(entry + 8..entry + 8 + len)?
+            } else {
+                let at = u32_at(entry + 8)? as usize;
+                bytes.get(at..at.checked_add(len)?)?
+            };
+            return Some(String::from_utf8_lossy(data).into_owned());
+        }
+        None
+    };
+    find().into_iter().collect()
+}
+
+/// The XMP packet of a PNG: the `iTXt` chunk with the keyword `XML:com.adobe.xmp`.
+fn png_packets(bytes: &[u8]) -> Vec<String> {
+    let Ok(reader) = png::Decoder::new(std::io::Cursor::new(bytes)).read_info() else {
+        return Vec::new();
+    };
+    reader
+        .info()
+        .utf8_text
+        .iter()
+        .filter(|c| c.keyword == crate::png_writer::XMP_ITXT_KEYWORD)
+        .filter_map(|c| c.get_text().ok())
+        .collect()
+}
+
+/// Reads the `ym:` properties of a JPEG, TIFF, PNG or DNG that Yellowmoon exported (`docs/30` section 12): the `APP1` segment of
+/// a JPEG, tag 700 of a TIFF or DNG, the `XML:com.adobe.xmp` chunk of a PNG. It is our own reader and takes only the properties
+/// it needs; a file that holds another tool's packet before ours is read all the same (the first packet with `ym:Settings`).
+///
+/// Returns `Ok(None)` for a file that is not an image of these kinds or has no `ym:Settings` (not an export, or a JPEG whose
+/// settings were too long to record).
+///
+/// # Errors
+///
+/// The error of reading the file.
+pub fn read_ym(path: &std::path::Path) -> std::io::Result<Option<YmRead>> {
+    Ok(read_ym_bytes(&std::fs::read(path)?))
+}
+
+/// [`read_ym`] for a file's bytes.
+#[must_use]
+pub fn read_ym_bytes(bytes: &[u8]) -> Option<YmRead> {
+    let packets = if bytes.starts_with(&[0xFF, 0xD8]) {
+        jpeg_packets(bytes)
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        png_packets(bytes)
+    } else {
+        tiff_packets(bytes)
+    };
+    packets.iter().find_map(|packet| {
+        let settings = serde_json::from_str(&property_text(packet, "ym:Settings")?).ok()?;
+        Some(YmRead {
+            creator_tool: property_text(packet, "xmp:CreatorTool"),
+            pipeline_version: property_text(packet, "ym:PipelineVersion"),
+            settings,
+            auto_fields: property_text(packet, "ym:AutoFields"),
+        })
+    })
 }
 
 #[cfg(test)]
@@ -195,6 +388,7 @@ mod tests {
                 settings: Some(
                     serde_json::json!({ "exposure": { "manual_ev": 0.3 }, "look": "x" }),
                 ),
+                auto_fields: Some(r#"{"input":{"exposure":true},"main":{"black":true}}"#.into()),
             },
         }
     }
@@ -220,6 +414,7 @@ mod tests {
             "AutoAdvisor",
             "FilmData",
             "Settings",
+            "AutoFields",
         ] {
             assert!(xmp.contains(&format!("<ym:{name}>")), "{name}");
         }
@@ -228,6 +423,10 @@ mod tests {
         let at = |name: &str| xmp.find(&format!("<ym:{name}>")).unwrap();
         assert!(at("Models") < at("Auto") && at("Auto") < at("AutoAdvisor"));
         assert!(at("AutoAdvisor") < at("FilmData") && at("FilmData") < at("Settings"));
+        assert!(
+            at("Settings") < at("AutoFields"),
+            "AutoFields follows Settings"
+        );
         assert!(!xmp.contains("AppleAuto"));
         assert!(xmp.contains("<ym:Auto>apple</ym:Auto>"));
         assert!(xmp.contains(

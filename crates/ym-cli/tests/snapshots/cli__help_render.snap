@@ -27,6 +27,9 @@ Look and display:
       --look <LOOK>
           Look: its full id (`builtin:neutral`), the part after the colon (`neutral`) or its name, in any case
 
+      --preset <NAME_OR_FILE>
+          A preset, by name (any case, or the start of it) or as the path of a `.ympreset` file; give it more than once to stack presets, each over the one before. It is applied after --settings and before the other options, which have the last word. `ym presets list` shows the saved ones
+
       --intensity <PERCENT>
           How strongly the look applies, in percent (default 100)
 

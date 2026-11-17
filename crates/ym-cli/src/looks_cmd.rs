@@ -50,7 +50,7 @@ pub fn run(command: &LooksCommand, console: &mut Console) -> u8 {
 
 /// Opens the look library the way the app does: the shipped built-in looks, the user's imports
 /// and the preferences, in the app folder (`YELLOWMOON_HOME` replaces it).
-fn open_service() -> Result<LookService, Failure> {
+pub(crate) fn open_service() -> Result<LookService, Failure> {
     let data_root = find_data_dir().map_err(|e| Failure::usage(e.to_string()))?;
     let app_root = ym_looks::library::default_root().map_err(|e| Failure::usage(e.to_string()))?;
     let prefs = Arc::new(PreferencesStore::open(&app_root));

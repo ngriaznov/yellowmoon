@@ -14,7 +14,7 @@ use super::{
 };
 use crate::looks::LookService;
 use crate::session::{PastedPhoto, PhotoId, Session};
-use crate::settings::DevelopSettings;
+use crate::settings::{AutoFields, DevelopSettings};
 
 /// A preset as `presets_list` shows it (`PresetEntry` of `src/api/types.ts`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -75,7 +75,7 @@ pub enum PresetSource {
 pub struct PresetInspect {
     /// The groups to tick (`docs/30` section 4.1).
     pub changed: Vec<PresetGroup>,
-    /// The source is an export that has no `ym:AutoFields` (`docs/30` section 12; always false until P-06).
+    /// The source is an export that has no `ym:AutoFields` (`docs/30` section 12).
     pub older_export: bool,
     /// The name of the source's look, when it is in the library.
     pub look: Option<String>,
@@ -133,6 +133,24 @@ impl ImportOutcome {
 }
 
 type Listener = Arc<dyn Fn() + Send + Sync>;
+
+/// What a file gives a preset.
+struct FileSource {
+    /// The settings the preset is cut from: Auto put back where `ym:AutoFields` says it was.
+    settings: DevelopSettings,
+    /// The settings the pre-ticking compares with the defaults.
+    compare: DevelopSettings,
+    /// An export that has no `ym:AutoFields`.
+    older_export: bool,
+}
+
+/// Whether the first bytes are those of a JPEG, a PNG or a TIFF (which a DNG is).
+fn is_image(head: &[u8]) -> bool {
+    head.starts_with(&[0xFF, 0xD8])
+        || head.starts_with(b"\x89PNG")
+        || head.starts_with(b"II*\0")
+        || head.starts_with(b"MM\0*")
+}
 
 /// The presets folder behind the look library and the session (see the module documentation).
 pub struct PresetService {
@@ -280,14 +298,52 @@ impl PresetService {
 
     // --- Making -----------------------------------------------------------------------------
 
-    fn settings_from_file(&self, path: &Path) -> Result<DevelopSettings, PresetError> {
+    /// What a file gives a preset (`docs/30` sections 11 and 12): a settings file, or a JPEG, TIFF, PNG or DNG that Yellowmoon
+    /// exported (told by its first bytes), whose pinned `ym:Settings` get their Auto back from `ym:AutoFields`.
+    fn source_from_file(&self, path: &Path) -> Result<FileSource, PresetError> {
         let file = path
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        let meta = std::fs::metadata(path).map_err(|source| PresetError::Read {
+        let read_error = |source| PresetError::Read {
             file: file.clone(),
             source,
-        })?;
+        };
+        let meta = std::fs::metadata(path).map_err(read_error)?;
+        let default_look = self.looks.effective_default();
+        let mut head = [0u8; 8];
+        let n = {
+            use std::io::Read;
+            let mut f = std::fs::File::open(path).map_err(read_error)?;
+            f.read(&mut head).map_err(read_error)?
+        };
+        if is_image(&head[..n]) {
+            let read = ym_export::xmp::read_ym(path)
+                .map_err(read_error)?
+                .ok_or(PresetError::NoSettings)?;
+            let (mut settings, _) = DevelopSettings::from_value(read.settings, &default_look)
+                .map_err(|e| PresetError::SettingsFile(e.to_string()))?;
+            let auto = read.auto_fields.as_deref().and_then(AutoFields::from_json);
+            return Ok(match auto {
+                Some(auto) => {
+                    auto.restore(&mut settings);
+                    FileSource {
+                        settings: settings.clone(),
+                        compare: settings,
+                        older_export: false,
+                    }
+                }
+                None => {
+                    // Fixed as written; the pre-ticking leaves out the fields `pinned_settings` may have pinned.
+                    let mut compare = settings.clone();
+                    AutoFields::all_auto().restore(&mut compare);
+                    FileSource {
+                        settings,
+                        compare,
+                        older_export: true,
+                    }
+                }
+            });
+        }
         if meta.len() > 16 * MAX_PRESET_BYTES as u64 {
             return Err(PresetError::TooLarge);
         }
@@ -296,12 +352,16 @@ impl PresetService {
             if source.kind() == std::io::ErrorKind::InvalidData {
                 PresetError::SettingsFile("the file is not text".to_owned())
             } else {
-                PresetError::Read { file, source }
+                read_error(source)
             }
         })?;
-        DevelopSettings::from_json(&text, &self.looks.effective_default())
-            .map(|(s, _)| s)
-            .map_err(|e| PresetError::SettingsFile(e.to_string()))
+        let (settings, _) = DevelopSettings::from_json(&text, &default_look)
+            .map_err(|e| PresetError::SettingsFile(e.to_string()))?;
+        Ok(FileSource {
+            compare: settings.clone(),
+            settings,
+            older_export: false,
+        })
     }
 
     fn make(
@@ -317,39 +377,43 @@ impl PresetService {
                 Preset::from_photo(name, &resolved, groups, look.as_deref())
             }
             PresetSource::File { path } => {
-                let settings = self.settings_from_file(path)?;
+                let settings = self.source_from_file(path)?.settings;
                 let look = self.look_name(&settings.output().look);
                 Preset::from_settings(name, &settings, groups, look.as_deref())
             }
         }
     }
 
-    /// `preset_inspect`: the groups the Save dialog ticks for the source, and the source's look's name.
+    /// `preset_inspect`: the groups the Save dialog ticks for the source, and the source's look's name. For an exported photo
+    /// without `ym:AutoFields` it also says so (`older_export`), and ticks only the groups in which a field that is never pinned
+    /// differs.
     ///
     /// # Errors
     ///
     /// [`PresetError::Session`] for a photo that cannot be asked, the file's errors for a file.
     pub fn inspect(&self, source: &PresetSource) -> Result<PresetInspect, PresetError> {
         let defaults = DevelopSettings::with_look(self.looks.effective_default());
-        let (changed, look) = match source {
+        let (changed, look, older_export) = match source {
             PresetSource::Photo { photo_id } => {
                 let resolved = self.session.settings(*photo_id)?;
                 (
                     changed_groups(&resolved, &defaults),
                     self.look_name(&resolved.settings.output().look),
+                    false,
                 )
             }
             PresetSource::File { path } => {
-                let settings = self.settings_from_file(path)?;
+                let file = self.source_from_file(path)?;
                 (
-                    changed_groups_of_settings(&settings, &defaults),
-                    self.look_name(&settings.output().look),
+                    changed_groups_of_settings(&file.compare, &defaults),
+                    self.look_name(&file.settings.output().look),
+                    file.older_export,
                 )
             }
         };
         Ok(PresetInspect {
             changed,
-            older_export: false,
+            older_export,
             look,
         })
     }

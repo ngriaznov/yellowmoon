@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
+use ym_core::album::{Album, AlbumPhotoState, CHANGED_SENTENCE, not_found_sentence};
 use ym_core::app::Core;
 use ym_core::app::gpu::{
     CpuReason, GPU_ENV, GpuOutcome, GpuPolicy, GpuSlot, PolicyChoice, PolicySource,
@@ -28,8 +29,9 @@ use ym_core::export::{free_bytes_in, is_low_on_space, low_space_message, planned
 use ym_core::export_queue::{ExportEvent, ExportJob, FileDone, QueueError};
 use ym_core::looks::{LookService, LooksError};
 use ym_core::pipeline::ComputeDevice;
+use ym_core::presets::{Preset, PresetPatch, missing_look_sentence};
 use ym_core::session::{ApplyScope, OpenOptions, PhotoId, PhotoStatus};
-use ym_core::settings::{Crop, CropAspect, LensKind, SettingsPatch};
+use ym_core::settings::{Crop, CropAspect, DevelopSettings, LensKind, SettingsPatch};
 use ym_export::{ExportOptions, FormatKind, IfExists, JpegQuality, Size};
 use ym_looks::library::LookId;
 use ym_looks::library::ResolveError;
@@ -39,6 +41,7 @@ use crate::console::{Console, bar, duration_text, photos, shorten};
 use crate::develop::{LensChoice, LoadedSettings, Overrides, SettingsFile};
 use crate::exit::{self, Failure};
 use crate::inputs::{self, Expanded, Problem};
+use crate::presets_cmd::preset_failure;
 use crate::report::{
     AppleAutoField, Object, develop_fields, render_error, render_low_space, render_ok,
     render_stopped,
@@ -116,6 +119,140 @@ pub fn resolve_look(looks: &LookService, query: &str) -> Result<LookId, Failure>
     let id = looks.resolve(query).map_err(|e| look_failure(&e))?;
     looks.check_usable(&id).map_err(|e| look_failure(&e))?;
     Ok(id)
+}
+
+/// A `--preset` of the run (`docs/30` section 11).
+struct ChosenPreset {
+    /// The preset.
+    preset: Preset,
+    /// The `.ympreset` file it was read from; `None` for a name from the presets folder.
+    file: Option<PathBuf>,
+    /// What it does to a photo, and the look it leaves out because the library has none (`docs/30` section 4.2). It is made
+    /// over the default settings, as `Core::preset_apply` makes it; `Session::paste_settings` then fits it to each photo.
+    patch: PresetPatch,
+}
+
+/// Whether a `--preset` argument is the path of a file: it has a `/` or ends in `.ympreset`.
+fn is_preset_path(query: &str) -> bool {
+    query.contains('/') || query.to_lowercase().ends_with(".ympreset")
+}
+
+/// Finds the presets `--preset` names, in the order given, before any photo is opened. A name matches ignoring case, exactly
+/// and then as a prefix; a path to a `.ympreset` file is read without importing it. A preset whose look is not in the library
+/// is warned about once, with the app's sentence, and its other groups still apply.
+///
+/// # Errors
+///
+/// Exit code 3 for a name or a path that is missing, 2 for a name that matches several presets (the matches are listed) and
+/// for a file that is not a preset.
+fn resolve_presets(
+    core: &Core,
+    queries: &[String],
+    console: &mut Console,
+) -> Result<Vec<ChosenPreset>, Failure> {
+    let mut chosen = Vec::with_capacity(queries.len());
+    for query in queries {
+        let preset = core
+            .presets
+            .store()
+            .resolve(query)
+            .map_err(|e| preset_failure(&e))?;
+        let usable = preset
+            .look
+            .as_ref()
+            .is_none_or(|l| core.looks.check_usable(&l.id).is_ok());
+        let patch = preset.patch_for(&DevelopSettings::default(), usable);
+        if let Some(look) = &patch.missing_look {
+            console.warn(&line_text(&missing_look_sentence(&preset.name, look)));
+        }
+        let file = is_preset_path(query)
+            .then(|| std::path::absolute(query).unwrap_or_else(|_| PathBuf::from(query)));
+        chosen.push(ChosenPreset {
+            preset,
+            file,
+            patch,
+        });
+    }
+    Ok(chosen)
+}
+
+/// The `presets` of a photo's record in `--json`: each preset by name, the file it came from (`null` for a name from the
+/// folder) and the look it left out (`null` when none).
+fn presets_value(presets: &[ChosenPreset]) -> serde_json::Value {
+    serde_json::Value::Array(
+        presets
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "name": p.preset.name,
+                    "file": p.file.as_deref().map(lossy),
+                    "missing_look": p.patch.missing_look,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// The album among the inputs, if there is one. An album is given on its own: with photos, folders or another album it is a
+/// usage error (`docs/31` section 8).
+fn album_input(inputs: &[PathBuf]) -> Result<Option<PathBuf>, Failure> {
+    let is_album = |p: &PathBuf| {
+        p.extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case(ym_core::album::FILE_EXTENSION))
+    };
+    if !inputs.iter().any(is_album) {
+        return Ok(None);
+    }
+    match inputs {
+        [one] => Ok(Some(one.clone())),
+        _ => Err(Failure::usage("Give an album on its own, or photos.")),
+    }
+}
+
+/// Reads and checks the album file before anything is opened.
+///
+/// # Errors
+///
+/// A usage error with the album's own sentence: not an album, made by a newer version, too large, or not readable.
+fn read_album(path: &Path) -> Result<Album, Failure> {
+    if !path.is_file() {
+        return Err(Failure::usage(format!(
+            "{}: There is no file with this name. Check the path and try again.",
+            path_text(path)
+        )));
+    }
+    Album::read_file(path).map_err(|e| Failure::usage(format!("{}: {e}", path_text(path))))
+}
+
+/// Opens the album in the session (`Session::open_album`, which `Core::album_open` calls after reading the file): its photos in
+/// the album's order with their stored settings, one plan each. A photo that has changed since the album was saved says so in
+/// its notes; a photo that is not found is kept as a failed entry and fails with `not_found` below.
+fn open_album_plans(core: &Core, album: &Album, path: &Path) -> Vec<Plan> {
+    let outcome = core.session.open_album(album, path, OpenOptions::default());
+    let paths: HashMap<PhotoId, PathBuf> = core
+        .session
+        .capture_photos()
+        .into_iter()
+        .map(|c| (c.id, c.path))
+        .collect();
+    outcome
+        .photos
+        .into_iter()
+        .map(|(id, state)| {
+            let notes = match state {
+                AlbumPhotoState::Changed => vec![CHANGED_SENTENCE.to_owned()],
+                _ => Vec::new(),
+            };
+            Plan {
+                input: paths.get(&id).cloned().unwrap_or_default(),
+                photo: Some(id),
+                known: None,
+                result: None,
+                album: Some(state),
+                notes,
+            }
+        })
+        .collect()
 }
 
 /// What `--display` says now. The option chose ARRI's display LUT as the rendering; Yellowmoon
@@ -208,6 +345,10 @@ struct Plan {
     known: Option<Object>,
     /// How it ended.
     result: Option<Outcome>,
+    /// Where the photo of an album stands (`docs/31` section 8); `None` for a photo given by name.
+    album: Option<AlbumPhotoState>,
+    /// What the run says of the photo itself: an album's photo that has changed since the album was saved.
+    notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -384,6 +525,14 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         args.inputs.clone()
     };
 
+    // An album (`docs/31` section 8) is given on its own, and brings the settings of its photos.
+    let album_path = album_input(&raw_inputs)?;
+    if album_path.is_some() && args.settings.is_some() {
+        return Err(Failure::usage(
+            "The album already has the settings of its photos. Leave --settings out, or give the photos.",
+        ));
+    }
+
     // The data folder, the preferences, the look library and the Auto providers' advisors.
     let choice = auto_choice(args.auto_provider, args.apple_auto).map_err(Failure::usage)?;
     let auto_instructions = args
@@ -437,6 +586,8 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         .map(|arg| resolve_lens(core, arg.into()))
         .transpose()?;
     let overrides = Overrides::from_args(args, look, lens);
+    // The presets, before any photo is opened: one that cannot be read is a usage error, as a bad `--settings` is.
+    let presets = resolve_presets(core, &args.preset, console)?;
 
     // The settings file.
     let default_look = core.looks.effective_default();
@@ -471,12 +622,17 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         ));
     }
 
-    // The photos.
+    // The photos: the album's, or the files and folders given.
+    let album = album_path.as_deref().map(read_album).transpose()?;
     let Expanded {
         files,
         problems,
         ignored,
-    } = inputs::expand(&raw_inputs, args.recursive);
+    } = if album.is_some() {
+        Expanded::default()
+    } else {
+        inputs::expand(&raw_inputs, args.recursive)
+    };
     let mut stdout = Stdout { open: true };
     let mut counts = Counts::default();
     for Problem {
@@ -497,7 +653,13 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         );
         counts.failed.push((*kind).to_owned());
     }
-    if files.is_empty() {
+    if let Some(album) = &album
+        && album.photos.is_empty()
+    {
+        console.error("The album has no photos to render.");
+        return Ok(exit::NO_INPUT);
+    }
+    if album.is_none() && files.is_empty() {
         // A folder that could not be read was reported above, and it is the reason nothing is left:
         // a failure (1), not "no input" (5).
         if problems.iter().any(|p| p.kind == "unreadable") {
@@ -525,6 +687,14 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         .then(|| BackgroundGpu::start(choice.policy, budget));
 
     let mut plans: Vec<Plan> = Vec::with_capacity(files.len());
+    if let (Some(album), Some(path)) = (&album, &album_path) {
+        plans = open_album_plans(core, album, path);
+        // The stored answers of the Auto providers are used and none is asked, unless the run names a provider: that one is
+        // asked anew for every photo (`docs/31` section 8).
+        if rt.explicit_choice() {
+            core.session.ask_auto_again();
+        }
+    }
     let reading_started = std::time::Instant::now();
     for (n, file) in files.iter().enumerate() {
         // A slow volume: after the first second say how far the reading has got (`docs/26` P3-3).
@@ -541,6 +711,8 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
             photo: outcome.added.first().copied(),
             known: None,
             result: None,
+            album: None,
+            notes: Vec::new(),
         });
     }
     if reading_started.elapsed() > READING_LINE_AFTER {
@@ -573,6 +745,25 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
     let mut by_photo: HashMap<PhotoId, usize> = HashMap::new();
     for (i, plan) in plans.iter_mut().enumerate() {
         let input = &plan.input;
+        // A photo of an album that neither of its paths finds (`docs/31` section 8).
+        if let Some(AlbumPhotoState::Missing { absolute }) = &plan.album {
+            plan.result = Some(Outcome::Failed {
+                kind: "not_found".into(),
+            });
+            plan.photo = None;
+            counts.failed.push("not_found".into());
+            report_failure(
+                console,
+                &mut stdout,
+                args.json,
+                input,
+                None,
+                "not_found",
+                &not_found_sentence(absolute),
+                None,
+            );
+            continue;
+        }
         let Some(id) = plan.photo else {
             plan.result = Some(Outcome::Failed {
                 kind: "open".into(),
@@ -612,6 +803,7 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
             id,
             &plan.input,
             settings_file.as_ref(),
+            &presets,
             &overrides,
             args.auto_crop,
         ) {
@@ -650,6 +842,10 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
             total,
             false,
         );
+        // An album none of whose photos was found is "no input files", as a list of names that are all wrong is.
+        if album.is_some() && counts.failed.iter().all(|k| k == "not_found") {
+            return Ok(exit::NO_INPUT);
+        }
         return Ok(final_code(&counts, false));
     }
 
@@ -794,6 +990,7 @@ fn apply_settings(
     id: PhotoId,
     path: &Path,
     file: Option<&SettingsFile>,
+    presets: &[ChosenPreset],
     overrides: &Overrides,
     auto_crop: Option<CropAspect>,
 ) -> Result<(Object, Option<String>), String> {
@@ -803,6 +1000,20 @@ fn apply_settings(
         resolved = session
             .replace_settings(id, settings.clone())
             .map_err(|e| e.to_string())?;
+    }
+    // The presets, in the order given, each through the call every Paste and `preset_apply` goes through (`docs/30` section 11).
+    for chosen in presets {
+        let report = session
+            .paste_settings(&[id], &chosen.patch.patch)
+            .map_err(|e| e.to_string())?;
+        if !report.skipped.is_empty() {
+            return Err(
+                "The photo isn't developed, so the preset could not be applied.".to_owned(),
+            );
+        }
+    }
+    if !presets.is_empty() {
+        resolved = session.settings(id).map_err(|e| e.to_string())?;
     }
     let mut warning = None;
     if !overrides.is_empty() {
@@ -864,6 +1075,7 @@ fn apply_settings(
     }
     let view = session.view(id).map_err(|e| e.to_string())?;
     let mut known = develop_fields(&view, &resolved, AppleAutoField::WhenActive);
+    known.insert("presets", presets_value(presets));
     if let Some(field) = auto_crop_field {
         known.insert("auto_crop", field);
     }
@@ -941,7 +1153,8 @@ fn handle_file(
     let input = &plan.input;
     match done.outcome {
         Ok(report) => {
-            for note in &report.notes {
+            let all_notes: Vec<String> = plan.notes.iter().chain(&report.notes).cloned().collect();
+            for note in &all_notes {
                 if !notes.contains(note) {
                     notes.push(note.clone());
                 }
@@ -994,7 +1207,7 @@ fn handle_file(
                             report.timings.render_ms,
                             report.timings.encode_ms,
                         ),
-                        &report.notes,
+                        &all_notes,
                     )
                     .to_line(),
                 );

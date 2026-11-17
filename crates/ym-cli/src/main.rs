@@ -15,6 +15,7 @@ mod info;
 mod inputs;
 mod lenses_cmd;
 mod looks_cmd;
+mod presets_cmd;
 mod render;
 mod report;
 mod runtime;
@@ -91,6 +92,7 @@ fn run(cli: Cli) -> u8 {
         Command::Render(args) => render::run(&args, &mut console),
         Command::Info(args) => info::run(&args, &mut console),
         Command::Looks(command) => looks_cmd::run(&command, &mut console),
+        Command::Presets(command) => presets_cmd::run(&command, &mut console),
         Command::Film(command) => film_cmd::run(&command, &mut console),
         Command::Lenses(command) => lenses_cmd::run(&command, &mut console),
         Command::Doctor(args) => doctor::run(&args, &mut console),

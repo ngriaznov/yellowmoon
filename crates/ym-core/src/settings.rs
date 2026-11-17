@@ -1853,6 +1853,141 @@ pub struct AutoFlags {
     pub main: MainAutoFlags,
 }
 
+/// The light a picked white resolved to: the manual Kelvin and tint a preset keeps in its place (`docs/30` section 4.1).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PickedWhite {
+    /// The Kelvin the pick resolved to.
+    pub kelvin: f64,
+    /// The tint it resolved to.
+    pub tint: f64,
+}
+
+/// `ym:AutoFields` (`docs/30` section 12), written beside `ym:Settings` in every export: which Auto fields were still Auto when
+/// the photo was exported, and the light a picked white resolved to. `ym:Settings` is pinned (its Auto numbers are the ones the
+/// photo used), so a preset made from an export reads this to put Auto back where it was.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutoFields {
+    /// The Input's Auto fields.
+    pub input: InputAutoFlags,
+    /// Main's Auto fields.
+    pub main: MainAutoFlags,
+    /// Present only when the white balance came from a picked white (the condition of [`SettingsPatch::copied_from`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picked_white: Option<PickedWhite>,
+}
+
+impl AutoFields {
+    /// What the photo of `resolved` was exported with.
+    #[must_use]
+    pub fn of(resolved: &ResolvedSettings) -> Self {
+        let input = resolved.settings.input();
+        let from_pick = input.white_pick.is_some()
+            && input.light_source == LightSource::Auto
+            && input.white_balance.is_auto();
+        Self {
+            input: resolved.auto.input,
+            main: resolved.auto.main,
+            picked_white: from_pick.then_some(PickedWhite {
+                kelvin: resolved.values.input.kelvin,
+                tint: resolved.values.input.tint,
+            }),
+        }
+    }
+
+    /// Every Auto field flagged and no picked white: what is left of a file's pinned settings that no number can be trusted in.
+    #[must_use]
+    pub fn all_auto() -> Self {
+        Self {
+            input: InputAutoFlags {
+                exposure: true,
+                light_source: true,
+                white_balance: true,
+                sharpen: true,
+                noise_reduction: true,
+            },
+            main: MainAutoFlags {
+                contrast: true,
+                highlights: true,
+                shadows: true,
+                black: true,
+                balance_shadows: true,
+                balance_highlights: true,
+                saturation: true,
+            },
+            picked_white: None,
+        }
+    }
+
+    /// The property's text: compact JSON with sorted keys.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        let mut text = String::new();
+        // A struct of booleans and numbers always serialises.
+        let value = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
+        crate::presets::write_canonical(&value, &mut text);
+        text
+    }
+
+    /// Reads the property's text; `None` for text that is not this document.
+    #[must_use]
+    pub fn from_json(text: &str) -> Option<Self> {
+        serde_json::from_str(text).ok()
+    }
+
+    /// Puts Auto back in `settings` (the pinned `ym:Settings` of an export) where the photo had it: every flagged field, and a
+    /// white balance that came from a picked white becomes the manual Kelvin and tint it resolved to.
+    pub fn restore(&self, settings: &mut DevelopSettings) {
+        let i = &self.input;
+        let input = settings.input_mut();
+        if i.exposure {
+            input.exposure = AutoOr::Auto;
+        }
+        if i.light_source {
+            input.light_source = LightSource::Auto;
+        }
+        if i.white_balance {
+            input.white_balance = AutoOr::Auto;
+        }
+        if i.sharpen {
+            input.sharpen = AutoOr::Auto;
+        }
+        if i.noise_reduction {
+            input.noise_reduction = AutoOr::Auto;
+        }
+        if let Some(pick) = self.picked_white {
+            input.white_balance = AutoOr::Manual(WhiteBalanceValue {
+                kelvin: pick.kelvin,
+                tint: pick.tint,
+            });
+        }
+        let m = &self.main;
+        let g = settings.main_grade_mut();
+        if m.contrast {
+            g.contrast = AutoOr::Auto;
+        }
+        if m.highlights {
+            g.highlights = AutoOr::Auto;
+        }
+        if m.shadows {
+            g.shadows = AutoOr::Auto;
+        }
+        if m.black {
+            g.black = AutoOr::Auto;
+        }
+        if m.saturation {
+            g.saturation = AutoOr::Auto;
+        }
+        if m.balance_shadows {
+            g.color_balance.shadows = AutoOr::Auto;
+        }
+        if m.balance_highlights {
+            g.color_balance.highlights = AutoOr::Auto;
+        }
+    }
+}
+
 /// The Input with every `Auto` replaced by the number it resolves to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedInput {

@@ -1675,3 +1675,188 @@ fn the_interfaces_of_the_wire_are_there_with_the_spellings_of_the_spec() {
     }
     let _ = (WhiteBalanceManualPatch::default(), NodeKind::Input);
 }
+
+// ---------------------------------------------------------------------------------------------
+// New Preset from Exported Photo (P-06, docs/30 section 12)
+// ---------------------------------------------------------------------------------------------
+
+/// Exports every photo of the rig in `format` and returns the first file.
+fn export_first(r: &Rig, format: ym_export::FormatKind, dir: &Path) -> PathBuf {
+    use ym_core::export_queue::ExportJob;
+    use ym_core::session::ApplyScope;
+    let job = ExportJob {
+        scope: ApplyScope::All,
+        options: ym_export::ExportOptions {
+            format,
+            destination: Some(dir.to_path_buf()),
+            ..ym_export::ExportOptions::default()
+        },
+    };
+    let id = r.core.export_start(&job).expect("export starts");
+    assert!(r.core.exports.wait_idle(Duration::from_secs(300)));
+    let summary = r.core.export_summary(id).expect("summary");
+    assert_eq!(summary.failed, 0, "{:?}", summary.errors);
+    summary.files[0].clone()
+}
+
+/// The file of a preset saved from `source`, with the name taken out so that two can be compared.
+fn saved_text(r: &Rig, name: &str, source: &PresetSource) -> String {
+    r.core
+        .preset_save(name, &PresetGroup::ALL, source, false)
+        .expect("saved");
+    let preset = r.core.presets.store().get(name).expect("stored");
+    preset.to_json().expect("json").replace(name, "N")
+}
+
+#[test]
+fn a_preset_made_from_an_export_equals_the_preset_made_from_the_photo_that_was_exported() {
+    use ym_export::FormatKind;
+    let r = pick_rig();
+    let (a, b) = (r.ids[0], r.ids[1]);
+    // a: a picked white, a manual contrast, exposure and the rest Auto. b: manual exposure and sharpening, a manual white balance.
+    r.patch(
+        a,
+        &SettingsPatch::default().and(
+            NodeId::Input,
+            NodePatch {
+                white_pick: Some(Some([0.4167, 0.125])),
+                ..NodePatch::default()
+            },
+        ),
+    );
+    r.patch(
+        a,
+        &serde_json::from_value(json!({ "nodes": { "1": { "grade": { "contrast": { "kind": "manual", "value": 18.0 } } } } }))
+            .expect("patch"),
+    );
+    r.patch(
+        b,
+        &serde_json::from_value(json!({ "nodes": { "input": {
+            "exposure": { "kind": "manual", "ev": 0.6 },
+            "sharpen": { "kind": "manual", "amount": 80.0, "radius_px": 1.1 },
+            "white_balance": { "kind": "manual", "kelvin": 4300.0, "tint": 5.0 }
+        } } }))
+        .expect("patch"),
+    );
+    let out = tempfile::tempdir().expect("out");
+    for (kind, ext) in [
+        (FormatKind::Jpeg, "jpeg"),
+        (FormatKind::Png, "png"),
+        (FormatKind::Tiff, "tiff"),
+    ] {
+        let dir = out.path().join(ext);
+        let first = export_first(&r, kind, &dir);
+        let files: Vec<PathBuf> = {
+            let mut f: Vec<PathBuf> = std::fs::read_dir(&dir)
+                .expect("dir")
+                .flatten()
+                .map(|e| e.path())
+                .collect();
+            f.sort();
+            f
+        };
+        assert_eq!(files.len(), 2, "{first:?}");
+        for (file, photo) in files.iter().zip([a, b]) {
+            let from_photo = saved_text(
+                &r,
+                &format!("photo-{ext}-{photo:?}"),
+                &PresetSource::Photo { photo_id: photo },
+            );
+            let from_file = saved_text(
+                &r,
+                &format!("file-{ext}-{photo:?}"),
+                &PresetSource::File { path: file.clone() },
+            );
+            assert_eq!(from_file, from_photo, "{ext} of {photo:?}");
+            let inspect = r
+                .core
+                .preset_inspect(&PresetSource::File { path: file.clone() })
+                .expect("inspected");
+            assert!(!inspect.older_export);
+            // The pre-ticked groups are the photo's own.
+            let ticked = r
+                .core
+                .preset_inspect(&PresetSource::Photo { photo_id: photo })
+                .expect("inspected")
+                .changed;
+            assert_eq!(inspect.changed, ticked, "{ext} of {photo:?}");
+        }
+    }
+}
+
+#[test]
+fn an_export_that_holds_no_settings_is_refused_with_its_sentence() {
+    let r = rig(1);
+    let dir = tempfile::tempdir().expect("dir");
+    let jpeg = dir.path().join("plain.jpg");
+    // A JPEG that is not an export: the markers and nothing else.
+    std::fs::write(&jpeg, [0xFF, 0xD8, 0xFF, 0xD9]).expect("write");
+    let err = r
+        .core
+        .preset_inspect(&PresetSource::File { path: jpeg })
+        .expect_err("refused");
+    assert_eq!(
+        err.to_string(),
+        "This file has no Yellowmoon settings. Choose a photo that Yellowmoon exported."
+    );
+}
+
+/// A file made before P-06 has no `ym:AutoFields`: it says so, keeps the numbers as written and leaves the pinned fields out of
+/// the pre-ticking.
+#[test]
+fn an_older_export_says_so_and_ignores_the_pinned_fields_when_ticking() {
+    use ym_export::FormatKind;
+    let r = rig(1);
+    let dir = tempfile::tempdir().expect("dir");
+    let file = export_first(&r, FormatKind::Tiff, dir.path());
+    // A photo of the defaults: the pinned exposure and the rest differ from the defaults' Auto, but nothing was edited.
+    let current = r
+        .core
+        .preset_inspect(&PresetSource::File { path: file.clone() })
+        .expect("inspected");
+    assert!(
+        !current.older_export && current.changed.is_empty(),
+        "{current:?}"
+    );
+    // The same file with the property taken out of its packet (blanked in place, so every offset stays; a TIFF has no checksum).
+    let mut bytes = std::fs::read(&file).expect("read");
+    let find = |hay: &[u8], needle: &[u8], from: usize| {
+        from + hay[from..]
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .expect("found")
+    };
+    let at = find(&bytes, b"<ym:AutoFields>", 0);
+    let end = find(&bytes, b"</ym:AutoFields>", at) + b"</ym:AutoFields>".len();
+    for b in &mut bytes[at..end] {
+        *b = b' ';
+    }
+    let older = dir.path().join("older.tif");
+    std::fs::write(&older, &bytes).expect("write");
+    let inspect = r
+        .core
+        .preset_inspect(&PresetSource::File {
+            path: older.clone(),
+        })
+        .expect("inspected");
+    assert!(inspect.older_export);
+    assert!(
+        inspect.changed.is_empty(),
+        "the pinned Light, Colour and Detail fields are not a change: {:?}",
+        inspect.changed
+    );
+    // The numbers are saved as written when the groups are chosen anyway.
+    r.core
+        .preset_save(
+            "Older",
+            &[PresetGroup::Light],
+            &PresetSource::File { path: older },
+            false,
+        )
+        .expect("saved");
+    let stored = r.core.presets.store().get("Older").expect("stored");
+    assert!(
+        !stored.settings.input().exposure.is_auto(),
+        "fixed as written"
+    );
+}

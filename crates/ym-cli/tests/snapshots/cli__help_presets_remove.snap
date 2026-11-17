@@ -1,0 +1,15 @@
+---
+source: crates/ym-cli/tests/cli.rs
+expression: "help(&[\"presets\", \"remove\"])"
+---
+Move a saved preset to the Trash
+
+Usage: ym presets remove [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The preset to remove
+
+Options:
+  -q, --quiet    Print only errors on stderr
+  -v, --verbose  Print what is happening on stderr: stages, timings and notes
+  -h, --help     Print help
