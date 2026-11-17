@@ -739,6 +739,47 @@ fn an_opened_album_exports_when_the_provider_is_active_and_a_photo_has_no_stored
 }
 
 #[test]
+fn an_album_photo_with_no_answer_is_not_pending_and_only_rerun_makes_it_so() {
+    let a = rig();
+    let dir = a.root.path().join("NoAnswer");
+    write_photos(&dir, &["N1.ARW", "N2.ARW"]);
+    a.open(&dir);
+    let path = a.root.path().join("NoAnswer.ymalbum");
+    a.core.album_save(&path).expect("saved");
+    let b = rig_with(fake_advisors());
+    b.core
+        .album_open(&path, OpenOptions::default())
+        .expect("opened");
+    b.settle();
+    let ids = b.core.session.photo_ids();
+    for id in &ids {
+        let served = b.core.session.estimates(*id).expect("estimates");
+        assert_eq!(served.apple, AppleAuto::Off, "graded by the built-in rule");
+        assert_eq!(served.provider, AutoProvider::Yellowmoon);
+        assert!(!b.core.session.summary(*id).unwrap().apple_pending);
+    }
+    // The pixels are the built-in grade the photo already showed (the session without a provider).
+    let files = export_within(&b, ApplyScope::All, &b.root.path().join("out"));
+    let from_a = export_within(&a, ApplyScope::All, &a.root.path().join("out"));
+    assert_eq!(files.len(), 2);
+    assert_eq!(files, from_a, "the export bytes are unchanged");
+    assert_eq!(b.core.session.apple_auto_asks(), 0, "nothing is asked");
+    // Re-run unfreezes it and asks: pending while asked, then answered.
+    b.core.session.rerun_auto(ids[0]).expect("rerun");
+    b.settle();
+    assert_eq!(b.core.session.apple_auto_asks(), 1, "asked once");
+    assert!(matches!(
+        b.core.session.apple_result_of(ids[0]),
+        Some(AppleAuto::Answered { .. })
+    ));
+    assert_eq!(
+        b.core.session.estimates(ids[1]).unwrap().apple,
+        AppleAuto::Off,
+        "the other photo is still not asked"
+    );
+}
+
+#[test]
 fn an_opened_album_exports_with_its_stored_answers_and_rerun_still_asks() {
     let a = rig_with(fake_advisors());
     let dir = a.root.path().join("Ask");
