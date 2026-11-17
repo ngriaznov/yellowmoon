@@ -943,7 +943,10 @@ fn record_low(
     rec.run(Op::LowFinal, u, groups2(rect.2, rect.3))
 }
 
-/// Teeth whitening (7.8): `L_max`, then the pixels.
+/// The mask byte from which a pixel is in the core of the gum guard (`ym_retouch::TEETH_CORE_BYTE`, a test compares them).
+const TEETH_CORE_BYTE: u8 = 230;
+
+/// Teeth whitening (7.8): `L_max`, the gum guard's `R0/G0` (S-18), then the pixels.
 fn record_teeth(rec: &mut Rec<'_, '_>, teeth: &TeethStep, at: usize) -> Result<(), GpuError> {
     let rect = (
         teeth.rect.0 as usize,
@@ -956,6 +959,26 @@ fn record_teeth(rec: &mut Rec<'_, '_>, teeth: &TeethStep, at: usize) -> Result<(
     let mut u = rec.base();
     u.a = [i(rect.0), i(rect.1), i(rect.2), i(rect.3)];
     u.b = [i(at), i(rank), 0, 0];
+    rec.run(Op::TSelect, u, (1, 1, 1))?;
+    // The core is the bytes of `TEETH_CORE_BYTE` or more, or every non-zero byte when none is that high (as the CPU does).
+    let core = teeth
+        .bytes
+        .iter()
+        .filter(|&&b| b >= TEETH_CORE_BYTE)
+        .count();
+    let (core_byte, core_n) = if core > 0 {
+        (usize::from(TEETH_CORE_BYTE), core)
+    } else {
+        (1, n)
+    };
+    let mut u = rec.base();
+    u.a = [i(rect.0), i(rect.1), i(rect.2), i(rect.3)];
+    u.b = [
+        i(at),
+        i(((0.5 * core_n as f64).ceil() as usize).clamp(1, core_n.max(1))),
+        1,
+        i(core_byte),
+    ];
     rec.run(Op::TSelect, u, (1, 1, 1))?;
     let mut u = rec.base();
     u.a = [i(rect.0), i(rect.1), i(rect.2), i(rect.3)];
@@ -1016,9 +1039,10 @@ mod tests {
     use crate::device::StorageMode;
     use crate::kernels::shader_source;
 
-    /// The shader's teeth constants are the CPU's (`ym_retouch::TEETH_*`, `docs/27` 7.8, S-16).
+    /// The shader's teeth constants are the CPU's (`ym_retouch::TEETH_*`, `docs/27` 7.8, S-16, S-18).
     #[test]
     fn the_teeth_constants_are_the_cpus() {
+        assert_eq!(TEETH_CORE_BYTE, ym_retouch::TEETH_CORE_BYTE);
         let source = body();
         for (name, value) in [
             ("TEETH_CHROMA_LIN", ym_retouch::TEETH_CHROMA_LIN),
@@ -1027,6 +1051,8 @@ mod tests {
             ("TEETH_LIGHT_QUAD", ym_retouch::TEETH_LIGHT_QUAD),
             ("TEETH_CAP_RISE", ym_retouch::TEETH_CAP_RISE),
             ("TEETH_GAMMA_FLOOR", ym_retouch::TEETH_GAMMA_FLOOR),
+            ("TEETH_GUM_LOW", ym_retouch::TEETH_GUM_LOW),
+            ("TEETH_GUM_HIGH", ym_retouch::TEETH_GUM_HIGH),
         ] {
             let line = source
                 .lines()

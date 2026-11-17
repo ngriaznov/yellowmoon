@@ -25,7 +25,8 @@
 //    5 MCOMB      the mask-normalised blur's last step: m num / max(den, 1/255) + (1 - m) x.
 //    6 YPLANE     the mean of three planes.
 //    7 LOWFINAL   the per-pixel part of section 7.2 to 7.7 over the padded region: dark circles, even skin, grading.
-//    8 TSELECT    teeth whitening's L_max: the nearest-rank 99th percentile of the mean over the mask's pixels (one workgroup).
+//    8 TSELECT    teeth whitening's L_max (the nearest-rank 99th percentile of the mean over the mask's pixels) and the gum guard's
+//                 R0/G0 (S-18: the nearest-rank median of R/G over the mask's core), one workgroup each.
 //    9 TAPPLY     teeth whitening (7.8) per pixel.
 //   10 ENCODE     fc_out = logc4_encode(fc_pic) where the flag says a tool changed the pixel; a picture of zeros elsewhere.
 //   11 TONE       the tone relation (tone.rs) of the region's pixels against the analysis picture's quantiles (a workgroup a channel).
@@ -569,27 +570,38 @@ fn fc_unkey(k: u32) -> f32 {
 
 var<workgroup> fc_hist: array<atomic<u32>, 256>;
 
-// The k-th smallest (k from 1) of the mean of the pixels where the teeth mask is not 0, by an 8-bit radix select: four rounds,
-// each a histogram of the next byte of the keys that match the bytes chosen so far. a: the rectangle; b: the first byte of the
-// mask, k, the layer offset the answer goes to.
+// R/G of a pixel as the gum guard reads it (`ym_retouch::teeth_red_green`).
+fn fc_red_green(p: vec3<f32>) -> f32 {
+    return max(p.x, 0.0) / max(p.y, 1.0e-4);
+}
+
+// The k-th smallest (k from 1) of the mean of the pixels where the teeth mask is not 0 (b.w 0: L_max) or of R/G over the pixels
+// where the mask byte is b.w or more (the core, S-18), by an 8-bit radix select: four rounds, each a histogram of the next byte
+// of the keys that match the bytes chosen so far. a: the rectangle; b: the first byte of the mask, k, the layer offset the
+// answer goes to, the core's first byte (0: the mean).
 fn fc_tselect(local: u32) {
     let rw = u32(FU_.a.z);
     let rh = u32(FU_.a.w);
     let total = rw * rh;
     var prefix = 0u;
     var k = u32(FU_.b.y);
+    let core_byte = u32(FU_.b.w);
     for (var rnd = 0u; rnd < 4u; rnd = rnd + 1u) {
         let shift = 24u - 8u * rnd;
         // Cleared by all, then counted.
         atomicStore(&fc_hist[local], 0u);
         workgroupBarrier();
         for (var idx = local; idx < total; idx = idx + 256u) {
-            if (fc_byte(u32(FU_.b.x), idx) != 0u) {
+            let byte = fc_byte(u32(FU_.b.x), idx);
+            if (byte != 0u && byte >= core_byte) {
                 let x = u32(FU_.a.x) + idx % rw;
                 let y = u32(FU_.a.y) + idx / rw;
                 let i = fc_at(0u, x, y);
-                let l = (fc_pic[i] + fc_pic[FU_.pic.y + i] + fc_pic[2u * FU_.pic.y + i]) / 3.0;
-                let key = fc_key(l);
+                var v = (fc_pic[i] + fc_pic[FU_.pic.y + i] + fc_pic[2u * FU_.pic.y + i]) / 3.0;
+                if (core_byte != 0u) {
+                    v = fc_red_green(vec3<f32>(fc_pic[i], fc_pic[FU_.pic.y + i], fc_pic[2u * FU_.pic.y + i]));
+                }
+                let key = fc_key(v);
                 // The bytes above this round's must be the ones chosen.
                 var hi = 0u;
                 if (rnd > 0u) {
@@ -629,8 +641,12 @@ const TEETH_LIGHT_QUAD: f32 = 0.25;
 const TEETH_CAP_RISE: f32 = 0.1;
 // S-19: `ym_retouch::teeth_gamma_gain`'s floor on L / L_max.
 const TEETH_GAMMA_FLOOR: f32 = 0.0625;
+// S-18: the gum guard's ends (`ym_retouch::TEETH_GUM_LOW`, `TEETH_GUM_HIGH`).
+const TEETH_GUM_LOW: f32 = 1.15;
+const TEETH_GUM_HIGH: f32 = 1.45;
 
-// a: the rectangle; b: the first byte of the mask, the layer offset of L_max; f.x: tw; f.y: td; f.z: tg (S-19).
+// a: the rectangle; b: the first byte of the mask, the layer offset of L_max (R0/G0 of the gum guard is the next one); f.x: tw;
+// f.y: td; f.z: tg (S-19).
 fn fc_tapply(gid: vec3<u32>) {
     let rw = u32(FU_.a.z);
     let rh = u32(FU_.a.w);
@@ -645,9 +661,12 @@ fn fc_tapply(gid: vec3<u32>) {
         return;
     }
     let tw = FU_.f.x;
-    let m = keep * fc_unit(byte);
     let i = fc_at(0u, x, y);
     let old = vec3<f32>(fc_pic[i], fc_pic[FU_.pic.y + i], fc_pic[2u * FU_.pic.y + i]);
+    // The gum guard (S-18, `ym_retouch::teeth_gum_guard`): the weight falls to 0 where R/G is well above the face's own teeth.
+    let rg0 = max(fc_lay[u32(FU_.b.y) + 1u], 1.0e-4);
+    let gt = clamp((fc_red_green(old) / rg0 - TEETH_GUM_LOW) / (TEETH_GUM_HIGH - TEETH_GUM_LOW), 0.0, 1.0);
+    let m = keep * fc_unit(byte) * (1.0 - gt * gt * (3.0 - 2.0 * gt));
     let l = (old.x + old.y + old.z) / 3.0;
     let td = FU_.f.y;
     let tg = FU_.f.z;

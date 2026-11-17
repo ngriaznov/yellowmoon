@@ -13,6 +13,7 @@
 //! | dark circles and even skin, half-resolution and full-resolution layers | device against CPU | `GATE_TOOLS` |
 //! | skin grading: contrast, shadow desaturation, shine removal | device against CPU | `GATE_TOOLS` |
 //! | teeth whitening (the radix select of `L_max`) | device against CPU | `GATE_TOOLS` |
+//! | the gum guard (the radix select of `R0/G0`), a pink band in the mask | device against CPU | `GATE_TOOLS` |
 //! | every tool, several faces, a protection plane | device against CPU; a protected pixel is untouched | `GATE_TOOLS` |
 //! | the tone relation: the CPU's curves, and the device's own estimate | device against CPU | `GATE_TONE` |
 //! | a region at another place in the output, a repeat | the same bits | bit for bit |
@@ -135,6 +136,28 @@ struct Scene {
 
 /// A picture with faces (two apart, two that overlap, as the part-equals-whole test of `ym-retouch`) and its prepared cache.
 fn scene(mix: &[SkinSettings]) -> Scene {
+    scene_with(mix, false)
+}
+
+/// S-18: a band of pink gum in the top of the teeth mask, from a soft pink (R/G 1.48, 1.33 times the mock teeth's) at the left
+/// to a strong one (R/G 2.0) at the right, so the guard takes every value from 1 to 0 along it.
+fn paint_gum(image: &mut LinearAwg4Image, rect: &Rect, luma: f32) {
+    let (cx, cy, ax, ay) = mock::mouth_ellipse(rect);
+    let w = image.width_px as usize;
+    for y in 0..image.height_px as usize {
+        for x in 0..w {
+            let (nx, ny) = ((x as f64 + 0.5 - cx) / ax, (y as f64 + 0.5 - cy) / ay);
+            if nx.abs() < 0.8 && (-0.5..-0.2).contains(&ny) {
+                let t = ((nx + 0.8) / 1.6) as f32;
+                let (soft, strong) = ([0.62f32, 0.42, 0.40], [0.70f32, 0.35, 0.35]);
+                image.data[y * w + x] =
+                    [0, 1, 2].map(|c| (soft[c] + t * (strong[c] - soft[c])) * luma);
+            }
+        }
+    }
+}
+
+fn scene_with(mix: &[SkinSettings], gum: bool) -> Scene {
     let faces_at = [
         Face {
             rect: Rect::new(60, 40, 220, 260),
@@ -168,6 +191,9 @@ fn scene(mix: &[SkinSettings]) -> Scene {
     // A bright mouth under each face, for the teeth mask.
     for f in &faces_at {
         mock::paint_mouth(&mut full, &f.rect, 0.9);
+        if gum {
+            paint_gum(&mut full, &f.rect, 0.9);
+        }
     }
     let models = Models {
         proposer: Box::new(MockProposer::scale(192, 0.9)),
@@ -592,6 +618,51 @@ fn teeth_desaturation_and_gamma_match_the_cpu() {
         compare("teeth S-19", &s, &s.full, 1.0, GATE_TOOLS, false);
         compare("teeth S-19", &s, &half, 0.5, GATE_TOOLS, false);
     }
+}
+
+/// S-18: the gum guard (a second radix select for the median `R/G` of the mask's core, then the weight `m * g` in the apply
+/// step) with a pink band in the mask, the three sliders alone and together, at full and half resolution. The band must be
+/// there for the test to mean something: some of its pixels are held back by half or more and some are not touched by the guard.
+#[test]
+fn the_gum_guard_matches_the_cpu() {
+    let probe = scene_with(&[SkinSettings::default()], true);
+    let (mut held, mut free) = (0, 0);
+    for (face, _) in &probe.faces {
+        let (cx, cy, ax, ay) = mock::mouth_ellipse(&face.rect);
+        for y in 0..probe.size.1 as usize {
+            for x in 0..probe.size.0 as usize {
+                let (nx, ny) = ((x as f64 + 0.5 - cx) / ax, (y as f64 + 0.5 - cy) / ay);
+                if nx.abs() < 0.8 && ny.abs() < 0.5 {
+                    let p = probe.full.data[y * probe.size.0 as usize + x].map(f64::from);
+                    let g = ym_retouch::teeth_gum_guard(p, 0.82 / 0.74);
+                    held += usize::from(g <= 0.5);
+                    free += usize::from(g >= 0.999);
+                }
+            }
+        }
+    }
+    assert!(held > 100 && free > 100, "held {held}, free {free}");
+    let mut worst: f64 = 0.0;
+    for (whitening, desaturation, gamma) in [
+        (100.0, 0.0, 0.0),
+        (0.0, 100.0, 0.0),
+        (0.0, 0.0, 100.0),
+        (0.0, 0.0, -100.0),
+        (60.0, 100.0, 0.0),
+        (100.0, 100.0, 100.0),
+    ] {
+        let teeth = SkinSettings {
+            teeth_whitening: whitening,
+            teeth_desaturation: desaturation,
+            teeth_gamma: gamma,
+            ..SkinSettings::default()
+        };
+        let s = scene_with(&[teeth], true);
+        let half = downscale2(&s.full);
+        worst = worst.max(compare("gum guard", &s, &s.full, 1.0, GATE_TOOLS, false));
+        worst = worst.max(compare("gum guard", &s, &half, 0.5, GATE_TOOLS, false));
+    }
+    eprintln!("[gpu_face] gum guard: worst over the cases {worst:.2e} (gate {GATE_TOOLS:.0e})");
 }
 
 #[test]

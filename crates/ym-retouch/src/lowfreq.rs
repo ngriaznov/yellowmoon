@@ -248,6 +248,35 @@ pub const TEETH_CAP_RISE: f64 = 0.1;
 /// `(1 / TEETH_GAMMA_FLOOR)^|g - 1|`), so the dark gaps between teeth are not blown up.
 pub const TEETH_GAMMA_FLOOR: f64 = 0.0625;
 
+/// The gum guard (7.8, S-18): where a pixel's red-green ratio `R/G` is this much above the face's own teeth colour
+/// `R0/G0` (the median over the mask's core) the guard starts to hold the teeth adjustment back.
+pub const TEETH_GUM_LOW: f64 = 1.15;
+/// The gum guard's other end: at this ratio over the teeth colour (and above) the teeth adjustment does nothing.
+pub const TEETH_GUM_HIGH: f64 = 1.45;
+/// The mask byte from which a pixel is in the mask's core, the reference of the gum guard (about 0.9 of full weight).
+pub const TEETH_CORE_BYTE: u8 = 230;
+
+/// `R/G` of a pixel as the gum guard reads it: both channels floored at 0 and `G` at 1e-4. The shader does the same.
+pub fn teeth_red_green(p: [f64; 3]) -> f64 {
+    p[0].max(0.0) / p[1].max(1e-4)
+}
+
+/// The gum guard (7.8, S-18) of a pixel `src`, `1` for teeth and `0` for gum: with `rg0` the median `R/G` over the mask's core
+/// (floored at 1e-4),
+///
+/// ```text
+/// t = clamp(((R/G) / rg0 - 1.15) / (1.45 - 1.15), 0, 1)
+/// g = 1 - smoothstep(t) = 1 - t^2 * (3 - 2t)
+/// ```
+///
+/// The teeth adjustment's weight is `m * g` for all three steps (Whitening, Desaturation, Gamma); `L_max` stays over the mask.
+pub fn teeth_gum_guard(src: [f64; 3], rg0: f64) -> f64 {
+    let t = ((teeth_red_green(src) / rg0.max(1e-4) - TEETH_GUM_LOW)
+        / (TEETH_GUM_HIGH - TEETH_GUM_LOW))
+        .clamp(0.0, 1.0);
+    1.0 - t * t * (3.0 - 2.0 * t)
+}
+
 /// The gain of Teeth gamma (7.8, S-19) on a pixel of lightness `l`: `(min(l, l_max) / l_max)^(g - 1)` with `g = 2^(-tg)`, the
 /// ratio floored at [`TEETH_GAMMA_FLOOR`]. 1 above `l_max` (the brightest tooth stays where it is, and nothing is pushed past it),
 /// 1 at `tg` 0 and when `l_max` is not positive.
@@ -895,8 +924,10 @@ fn protect_keep(protect: Option<&Mask>, x: usize, y: usize) -> f64 {
     })
 }
 
-/// Teeth whitening (7.8) in the working-resolution teeth mask: `L_max` is the 99th percentile of
-/// `L` over the pixels where the mask is not 0, taken from the image as it is.
+/// Teeth whitening (7.8) in the working-resolution teeth mask: `L_max` is the 99th percentile of `L` over the pixels where the
+/// mask is not 0, taken from the image as it is; `R0/G0` of the gum guard (S-18) is the nearest-rank median of `R/G` over the
+/// core (mask byte [`TEETH_CORE_BYTE`] or more, and every non-zero byte when none is that high). Both are sorted with a total
+/// order and do not depend on the thread count.
 fn whiten_teeth(
     image: &mut LinearAwg4Image,
     bm: &BoundedMask,
@@ -907,15 +938,26 @@ fn whiten_teeth(
     let (x0, y0) = (bm.region.x_px as usize, bm.region.y_px as usize);
     let (rw, rh) = (bm.region.width_px as usize, bm.region.height_px as usize);
     let mean = |p: &[f32; 3]| (f64::from(p[0]) + f64::from(p[1]) + f64::from(p[2])) / 3.0;
+    let at = |x: usize, y: usize| (y0 + y) * iw + x0 + x;
     let mut ls = Vec::new();
+    let mut core = Vec::new();
+    let mut any = Vec::new();
     for y in 0..rh {
         for x in 0..rw {
-            if bm.mask.data[y * rw + x] != 0 {
-                ls.push(mean(&image.data[(y0 + y) * iw + x0 + x]));
+            let byte = bm.mask.data[y * rw + x];
+            if byte != 0 {
+                let p = &image.data[at(x, y)];
+                ls.push(mean(p));
+                let rg = teeth_red_green([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
+                any.push(rg);
+                if byte >= TEETH_CORE_BYTE {
+                    core.push(rg);
+                }
             }
         }
     }
     let l_max = percentile(&mut ls, 0.99);
+    let rg0 = percentile(if core.is_empty() { &mut any } else { &mut core }, 0.5).max(1e-4);
     image.data[y0 * iw..(y0 + rh) * iw]
         .par_chunks_mut(iw)
         .enumerate()
@@ -928,7 +970,8 @@ fn whiten_teeth(
                 }
                 let px = &mut row[x0 + x];
                 let src = [f64::from(px[0]), f64::from(px[1]), f64::from(px[2])];
-                let out = teeth_pixel_with(src, tw, td, tg, keep * f64::from(byte) / 255.0, l_max);
+                let m = keep * f64::from(byte) / 255.0 * teeth_gum_guard(src, rg0);
+                let out = teeth_pixel_with(src, tw, td, tg, m, l_max);
                 *px = [out[0] as f32, out[1] as f32, out[2] as f32];
             }
         });
@@ -1736,6 +1779,224 @@ mod tests {
         retouch_tones(&mut half, full, &face, &s50, 1.0, &tools, None).unwrap();
         let i = idx(cx, cy);
         assert!(chroma(half.data[i]) > chroma(out.data[i]));
+    }
+
+    /// A mouth for the gum guard (S-18): a 120 x 60 picture, the teeth rows 20..40 in `teeth`, a band of gum above them in rows
+    /// 10..20 (a soft pink in columns 10..60, a strong one in columns 60..110), all of it in one mask of 255.
+    fn gum_mouth(teeth: [f32; 3]) -> (LinearAwg4Image, BoundedMask, Face) {
+        let face = Face {
+            rect: Rect::new(0, 0, 120, 60),
+            scale: 0.5,
+        };
+        let mut image = LinearAwg4Image::filled(120, 60, [0.3, 0.2, 0.18]).unwrap();
+        for y in 10..40 {
+            for x in 10..110 {
+                image.data[y * 120 + x] = if y >= 20 {
+                    teeth
+                } else if x < 60 {
+                    GUM_SOFT
+                } else {
+                    GUM_STRONG
+                };
+            }
+        }
+        let mask = Mask::new(100, 30, vec![255; 3000]).unwrap();
+        (
+            image,
+            BoundedMask::new(Rect::new(10, 10, 100, 30), mask).unwrap(),
+            face,
+        )
+    }
+
+    const GUM_SOFT: [f32; 3] = [0.62, 0.42, 0.40];
+    const GUM_STRONG: [f32; 3] = [0.70, 0.35, 0.35];
+
+    fn all_teeth(tw: f32, td: f32, tg: f32) -> SkinSettings {
+        SkinSettings {
+            teeth_whitening: tw,
+            teeth_desaturation: td,
+            teeth_gamma: tg,
+            ..Default::default()
+        }
+    }
+
+    fn run_teeth(
+        image: &LinearAwg4Image,
+        bm: &BoundedMask,
+        face: &Face,
+        s: &SkinSettings,
+        protect: Option<&Mask>,
+    ) -> LinearAwg4Image {
+        let tools = ToolMasks {
+            teeth: Some(bm),
+            ..ToolMasks::default()
+        };
+        let mut out = image.clone();
+        retouch_tones(&mut out, (120, 60), face, s, 1.0, &tools, protect).unwrap();
+        out
+    }
+
+    /// S-18: the guard's numbers: 1 at the face's own teeth colour and up to 1.15 of it, 0 from 1.45, smooth between.
+    #[test]
+    fn the_gum_guard_is_one_on_teeth_zero_on_gum_and_smooth_between() {
+        let rg0 = 1.2;
+        let at = |ratio: f64| teeth_gum_guard([ratio * rg0, 1.0, 0.8], rg0);
+        assert_eq!(at(1.0), 1.0);
+        assert_eq!(at(1.15), 1.0);
+        assert_eq!(at(1.45), 0.0);
+        assert_eq!(at(2.5), 0.0);
+        // The middle of the ramp: smoothstep(0.5) = 0.5.
+        assert!((at(1.30) - 0.5).abs() < 1e-12);
+        let mut last = 1.0;
+        for k in 0..=300 {
+            let g = at(1.0 + f64::from(k) / 400.0 * 1.0);
+            assert!((0.0..=1.0).contains(&g) && g <= last + 1e-15);
+            last = g;
+        }
+        // Negative channels and a zero green read as the shader does and give finite values.
+        assert!(teeth_gum_guard([-1.0, 0.0, 0.0], rg0).is_finite());
+        assert_eq!(teeth_gum_guard([1.0, 0.0, 0.0], rg0), 0.0);
+    }
+
+    /// S-18: with white or yellow teeth and a pink gum band in the mask, the strong gum keeps its colour to the bit, the soft
+    /// gum keeps most of its pink, and the teeth are whitened exactly as without the guard.
+    #[test]
+    fn the_gum_guard_keeps_the_pink_of_gums_in_the_mask_and_whitens_teeth_as_before() {
+        for teeth in [[0.80f32, 0.78, 0.76], [0.82, 0.74, 0.52]] {
+            let (image, bm, face) = gum_mouth(teeth);
+            for (tw, td, tg) in [
+                (100.0, 0.0, 0.0),
+                (0.0, 100.0, 0.0),
+                (0.0, 0.0, 100.0),
+                (100.0, 100.0, 100.0),
+            ] {
+                let out = run_teeth(&image, &bm, &face, &all_teeth(tw, td, tg), None);
+                // The strong gum (R/G 2.0 against the teeth's 1.03 or 1.11): untouched.
+                for x in 60..110 {
+                    assert_eq!(
+                        out.data[15 * 120 + x],
+                        image.data[15 * 120 + x],
+                        "strong gum, tw {tw} td {td} tg {tg}"
+                    );
+                }
+                // The soft gum (R/G 1.48): at least 0.5 of its red-green chroma kept at the worst (all three at 100 on yellow teeth: the ratio is 1.33 of theirs, a guard of 0.31) (the guard is 0.31 there, the weight falls with the ratio).
+                let (a, b) = (image.data[15 * 120 + 30], out.data[15 * 120 + 30]);
+                let rg = |p: [f32; 3]| f64::from(p[0] - p[1]);
+                assert!(rg(b) >= 0.5 * rg(a), "soft gum {a:?} -> {b:?}");
+                // The teeth: the CPU kernel without the guard, over the mask's own L_max.
+                let src = teeth.map(f64::from);
+                let (l_max, want) = {
+                    let l_max = (src[0] + src[1] + src[2]) / 3.0;
+                    (
+                        l_max,
+                        teeth_pixel_with(
+                            src,
+                            f64::from(tw) / 100.0,
+                            f64::from(td) / 100.0,
+                            f64::from(tg) / 100.0,
+                            1.0,
+                            l_max,
+                        ),
+                    )
+                };
+                let _ = l_max;
+                let got = out.data[30 * 120 + 50].map(f64::from);
+                for c in 0..3 {
+                    assert!(
+                        (got[c] - want[c]).abs() < 1e-6,
+                        "tooth {got:?} against {want:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// S-18: the whole mouth with Whitening 100 keeps the gum's pink well above what it had without the guard.
+    #[test]
+    fn the_gum_guard_keeps_more_pink_than_the_unguarded_step() {
+        let (image, bm, face) = gum_mouth(mouth_colors_teeth());
+        let out = run_teeth(&image, &bm, &face, &all_teeth(100.0, 0.0, 0.0), None);
+        let src = GUM_SOFT.map(f64::from);
+        let l_max = 0.7;
+        let unguarded = teeth_pixel(src, 1.0, 1.0, l_max).map(|v| v as f32);
+        let rg = |p: [f32; 3]| f64::from(p[0] - p[1]);
+        let kept = rg(out.data[15 * 120 + 30]) / rg(image.data[15 * 120 + 30]);
+        let kept_without = rg(unguarded) / rg(image.data[15 * 120 + 30]);
+        assert!(
+            kept > 0.7 && kept_without < 0.3,
+            "{kept} against {kept_without}"
+        );
+    }
+
+    fn mouth_colors_teeth() -> [f32; 3] {
+        crate::mock::mouth_colors::TEETH
+    }
+
+    /// S-18: all three at 0 change nothing, and a pixel protected at 255 is untouched with all three at 100.
+    #[test]
+    fn the_gum_guard_keeps_identity_and_protect_255() {
+        let (image, bm, face) = gum_mouth(mouth_colors_teeth());
+        let tools = ToolMasks {
+            teeth: Some(&bm),
+            ..ToolMasks::default()
+        };
+        let mut out = image.clone();
+        assert!(
+            !retouch_tones(
+                &mut out,
+                (120, 60),
+                &face,
+                &all_teeth(0.0, 0.0, 0.0),
+                1.0,
+                &tools,
+                None
+            )
+            .unwrap()
+        );
+        assert_eq!(out, image);
+        let protect = Mask::new(120, 60, vec![255; 7200]).unwrap();
+        let out = run_teeth(
+            &image,
+            &bm,
+            &face,
+            &all_teeth(100.0, 100.0, 100.0),
+            Some(&protect),
+        );
+        assert_eq!(out, image);
+        // Half protected: the unprotected half moves, the protected half does not.
+        let mut half = vec![0u8; 7200];
+        for y in 0..60 {
+            for x in 0..60 {
+                half[y * 120 + x] = 255;
+            }
+        }
+        let protect = Mask::new(120, 60, half).unwrap();
+        let out = run_teeth(
+            &image,
+            &bm,
+            &face,
+            &all_teeth(100.0, 100.0, 100.0),
+            Some(&protect),
+        );
+        assert_eq!(out.data[30 * 120 + 30], image.data[30 * 120 + 30]);
+        assert_ne!(out.data[30 * 120 + 90], image.data[30 * 120 + 90]);
+    }
+
+    /// S-18: `R0/G0` is a nearest-rank median over a total order, so one thread and four give the same bytes.
+    #[test]
+    fn the_gum_guard_is_the_same_on_one_thread_and_four() {
+        let (image, bm, face) = gum_mouth(mouth_colors_teeth());
+        let run = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| run_teeth(&image, &bm, &face, &all_teeth(100.0, 60.0, -40.0), None))
+        };
+        let (a, b) = (run(1), run(4));
+        assert_eq!(a, b);
+        assert_eq!(a, run(1));
+        assert_ne!(a, image);
     }
 
     /// S-16: the numbers of 7.8 at 30, 60 and 100 on a yellow tooth below the cap.
