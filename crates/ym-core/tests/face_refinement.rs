@@ -882,7 +882,8 @@ fn copy_carries_the_node_and_paste_replaces_the_targets_graph() {
     let mut src = base();
     src.apply_patch(
         &patch_of(json!({ "nodes": { "2": { "same_for_all": false, "name": "Faces",
-            "faces": [ { "blemish": 12 }, { "blemish": 34 } ],
+            "all": { "teeth_desaturation": 25, "teeth_gamma": -15 },
+            "faces": [ { "blemish": 12, "teeth_desaturation": 60 }, { "blemish": 34, "teeth_gamma": 45 } ],
             "protect": { "strokes": [ { "size": 0.03, "points": [[0.5, 0.5]] } ] },
             "masks": { "items": [ { "kind": "radial" }, { "kind": "object", "points": [[0.5, 0.5, true]] } ] } } } })),
         None,
@@ -921,6 +922,22 @@ fn copy_carries_the_node_and_paste_replaces_the_targets_graph() {
     assert_eq!(f.settings_for_face(1).blemish, 12.0);
     assert_eq!(f.settings_for_face(2).blemish, 34.0);
     assert_eq!(f.settings_for_face(5).blemish, 12.0);
+    // S-19: the teeth controls travel with Copy and Paste (and so with a preset's Nodes group), per face and in `all`.
+    assert_eq!((f.all.teeth_desaturation, f.all.teeth_gamma), (25.0, -15.0));
+    assert_eq!(
+        (
+            f.settings_for_face(1).teeth_desaturation,
+            f.settings_for_face(1).teeth_gamma
+        ),
+        (60.0, 0.0)
+    );
+    assert_eq!(
+        (
+            f.settings_for_face(2).teeth_desaturation,
+            f.settings_for_face(2).teeth_gamma
+        ),
+        (0.0, 45.0)
+    );
     assert_eq!(f.protect, face_of(&src).protect);
     // Object clicks are not copied: the pasted row arrives empty, as for correctors.
     assert_eq!(f.masks.items.len(), 2);
