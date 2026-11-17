@@ -258,7 +258,7 @@ describe("About", () => {
 
   it("shows the version, the licence and what it is built on", async () => {
     const dialog = await openAbout();
-    expect(await within(dialog).findByText(/^Version \d+\.\d+\.\d+ · pipeline 1\.0\.0$/)).toBeInTheDocument();
+    expect(await within(dialog).findByText(/^Version \d+\.\d+\.\d+(-[0-9A-Za-z.-]+)? · pipeline 1\.0\.0$/)).toBeInTheDocument();
     expect(within(dialog).getByText("Yellowmoon")).toBeInTheDocument();
     expect(within(dialog).getByText("Apache License 2.0. Copyright 2026 Mykyta Hriaznov and Yellowmoon contributors.")).toBeInTheDocument();
     expect(within(dialog).getByRole("region", { name: "Built with" })).toHaveTextContent("Figtree");

@@ -177,7 +177,7 @@ test.describe("About", () => {
     await menu(page, "about");
     const dialog = page.getByRole("dialog", { name: "About Yellowmoon" });
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByText(/^Version \d+\.\d+\.\d+ · pipeline /)).toBeVisible();
+    await expect(dialog.getByText(/^Version \d+\.\d+\.\d+(-[0-9A-Za-z.-]+)? · pipeline /)).toBeVisible();
     await expect(dialog.getByText("Apache License 2.0.", { exact: false })).toBeVisible();
     await expect(dialog.getByText("This product includes DNG technology under license by Adobe.")).toBeVisible();
     await expect(dialog.getByText("Not affiliated with ARRI or Sony. ARRI and ALEXA are trademarks of ARRI AG; Sony is a trademark of Sony Group Corporation.")).toBeVisible();
