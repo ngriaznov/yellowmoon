@@ -416,6 +416,8 @@ fn the_rust_types_have_the_fields_of_the_typescript_interfaces() {
     })
     .unwrap();
     state["opened"] = Value::Null;
+    // And `album`, the open album: the shell fills it (`AppApi::session_state`), the core has no album state here.
+    state["album"] = Value::Null;
     check("SessionState", state);
     check(
         "PhotoProgress",
