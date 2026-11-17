@@ -9,9 +9,62 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+## [0.2.4-beta.1] - 2026-11-17
+
+A pre-release (a beta) for testing: **Face Refinement**, a node that retouches the faces in a photo, and **presets and albums**, so a way of working can be saved and a strip of photos can be picked up again later. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.12.1 (was 0.11.0), because Face Refinement is a new kind of node, which an older build cannot open, and because the anamorphic fixes below and the lens tables of two cameras change pixels. A photo with no Face Refinement node comes out with the same pixels as in 0.2.3, unless it is from a Sony NEX-5N or NEX-7, or has Anamorphic above 0 and bright lights of the kinds the fixes name. The files differ in bytes in two ways that leave the pixels alone: TIFF exports are ZIP by default, and every export's XMP has one more property.
+
+### Added
+
+- **Face Refinement.** **Add node** offers **Face Refinement**: "Refines each face: skin, under-eyes and teeth." The node finds the faces in the photo by itself (faces at least 200 px across and turned towards the camera; the first time takes a few seconds, and the photo stays as it is until then) and works on each one. Its **Face** tab has five cards, and its **Mask** tab is a corrector's:
+  - **Faces** shows each face found as a round picture ("3 found"). **Same for all faces** gives every face one set of controls; turn it off to set each face on its own, and click a face to choose it.
+  - **Face 1** (the card is named after the chosen face) has **Blemish** (30 for a new node), **Dark circles** (30, the area under the eyes), **Even skin** (25) and **Texture** (0, from -100 to 100, under Even skin). The eye button, **Show skin areas**, tints where the tools work on the photo: skin, under the eyes, even skin and grading, and teeth, with a key under the sliders.
+  - **Skin grading** has **Contrast**, **Shadow desaturation** and **Shine removal**, all at 0 for a new node.
+  - **Teeth** has **Whitening** (0), and **Copy to other faces** when the faces have their own settings. The teeth are found with SAM 2.1, steered by the face's outline, so a brighter or greyer photo gives the same teeth.
+  - **Protect** keeps what you want as it is: **Paint** over moles, freckles and scars and **Erase** (hold ⌥ to erase while you paint), with **Size** and **Clear**.
+  - With no face found the card says "No faces found in this photo." and the node changes nothing. The Before view does not look for faces.
+  - Face Refinement runs on the graphics card, in the app and in `ym`, and gives the same bytes in both. A settings file takes `{ "kind": "face_refinement" }` nodes (`docs/10-cli.md`; `docs/27-skin-retouch.md` has the rest).
+- **Presets.** A preset is a saved recipe: a name and some of a photo's settings. Choosing it on another photo sets those settings and nothing else, and **Auto stays Auto**: a preset never gives a photo another photo's exposure or white balance, and never holds a crop, an orientation, a picked white, Object clicks or Brush strokes. The **Presets** card is the last card of the Look tab:
+  - **Apply to** (This photo, Picked or All) and tiles that show your photo with each preset on it; six show at first, and **Show all 14** (or **Show fewer**) opens the rest. A ring marks a preset the photo already has. Presets stack: each one sets only its own groups, and the later one wins where two share a group.
+  - **Save…** (or **Save preset…** when there is none yet, or Looks › **Save Preset…** ⌥⌘S) asks for a name and ticks the groups the photo changed from its defaults: Look, Lens, Light, Colour, Detail, Curve, RAW and Nodes. A name that exists asks "Replace Warm evening?".
+  - Right-click a tile for **Apply to Picked Photos**, **Update from This Photo**, **Rename…**, **Export…**, **Show in Finder** and **Delete** (to the Trash).
+  - A preset is a `.ympreset` file in a `presets` folder beside the looks. Drop one on the window, or use Looks › **Import Presets…**, to add it, and **Export…** to give one away. A preset that names a look you have not imported applies everything else and says which look is missing. Nothing ships in the card: there are no starter presets.
+  - The Looks menu also has **Apply Preset** (a submenu of your presets, with a tick on the ones the photo has), **New Preset from Exported Photo…** (reads the settings out of a JPEG, TIFF, PNG or DNG that this version exported and opens the Save dialog) and **Show Presets Folder**.
+- **Albums.** **File › Save** (⌘S) writes the filmstrip to a `.ymalbum` file you name: the photos in order, which are picked, the one you were on, each photo's whole settings (Auto stays Auto) and the answers of Claude Code, Antigravity or Apple Intelligence where a photo used them. **File › Save As…** (⇧⌘S) writes it to a new file. **File › Open Files…** (⌘O) opens an album, and so does dropping one on the window; open it on its own, not with photos.
+  - While an album is open the folder cell shows its name, and "EDITED" and the dot in the close button show when it has changes you have not saved. Closing, quitting or opening something else then asks "Save changes to the album Lisbon?" with Save, Don't Save and Cancel.
+  - The photos themselves are not in the file. A photo is found where the album is (the path from the album's folder), then at the path it had. One that is in neither place shows CAN'T OPEN with "Not found:" and its path; its settings stay in the album, so saving again keeps them.
+  - Nothing else is kept: no list of albums, no recent albums, no autosave and no undo history. An album is written only when you choose Save.
+- **Presets and albums in `ym`.** `ym presets` has `list`, `save`, `import`, `export` and `remove`; `ym render --preset <name or file>` applies a preset (repeat it to stack them), after `--settings` and before the other flags; `ym render` and `ym info` take an album and treat its photos in order. The app and `ym` give the same bytes for the same preset or album. `docs/10-cli.md` has the rows.
+
 ### Changed
 
+- **The Look tab is Automatic, Look and Presets.** The Tone card is gone. Temperature is in Colour › White balance, Contrast in Light › Exposure and Saturation in Colour › Colour balance; they are the same settings as before. The Automatic card's Contrast and Saturation rows now open the Light and Colour tabs.
+- **⌥⌘S saves a preset.** ⇧⌘S is now File › Save As… and ⌘S File › Save.
 - **TIFF exports are ZIP by default.** `ym render --compression` and the Export panel start at ZIP instead of LZW: on a 24 MP photo the 16-bit file is 108 MB instead of 134 MB for about the same time. A stored preference of LZW stays LZW; `--compression lzw` still works.
+- **An export's XMP says which values were Auto.** The new `ym:AutoFields` property lets New Preset from Exported Photo keep Auto as Auto. An export made by an older Yellowmoon has no such property: its numbers stay fixed, and the Save dialog says so.
+- **The Sony NEX-5N and NEX-7 get their lens corrections.** Their vignetting, colour-fringe and distortion tables sit in a part of the file that was not read; they are now, the three corrections switch on for these two bodies, and `ym info` lists the tables. Photos from these bodies render differently.
+- **Plainer messages for files and folders.** A damaged file says whether it is empty, incomplete or damaged and what to do; a folder that cannot be read is named instead of reading as "No ARW files"; a file that goes away or changes while it is open says so; a file on a slow or hung drive says "This file didn't answer. Check the drive or the network connection, then open it again."
+- **Opening a folder shows its progress.** "Reading 120 of 2000 files…" with **Cancel**. The Start list, the filmstrip and the export queue draw only the rows in view, so a folder of 2000 photos scrolls as one of 500 does.
+- **Exports stop when the destination cannot take them.** A full disk, a read-only folder or a folder that is gone stops the export at the first photo with a sentence that names the folder, instead of failing every photo in turn. A warning shows before an export when the free space is under 1.35 times what it needs. Temporary files older than a day are cleared.
+- **Less memory on a small Mac.** The memory the app counts now includes the caches it keeps, and it lets them go before it refuses work. The Object and Depth models are unloaded after five minutes unused. When macOS says memory is short, the app frees what the other photos hold and shows "Your Mac is short of memory, so Yellowmoon paused background work. Close other apps to speed it up again." once. The graphics card's share of memory follows what Metal reports for the Mac.
+- **Easier with the keyboard and a screen reader.** Preferences has **Single-key shortcuts** (on by default; turn it off if you use speech input or a screen reader, and every action stays in the menu bar); a **Photo** menu and **Looks › Apply Look 1 to 9** give every key an item; the Photos screen says what a shortcut did ("Look: Film warm.", "Picked. 4 picked."); a zoomed photo takes the arrow keys to pan (⇧ for larger steps), Home to recentre and I to read the centre pixel; an Object mask takes points from the keyboard (Return adds one, Backspace removes the last). The app follows macOS's Reduce Transparency, Reduce Motion and Increase Contrast. The camera line, menus, dialogs and the focus ring read over any photo.
+- **The import dialog says "Import LUTs and look files…"**, in the menu, the Look tab, the wizard and the dialog's title.
+
+### Fixed
+
+- **Anamorphic: a light the frame cuts was stretched into a pillar.** A defocused light at the edge or corner of the picture was not taken for a light, so Anamorphic smeared it into a tall shape with straight sides. It is now read as part of a round light and stretched into an oval as the others are.
+- **Anamorphic: a bright light that is not round was smeared into a rounded rectangle.** A tube light, two lights that overlap or a light a subject cuts is now kept as the photo has it, not stretched. Splitting overlapping lights into separate ones is not done, so these lights are not stretched at all.
+- **A look file whose numbers break a colour is refused.** A look with a luma curve that lifts red and a very large red power was accepted and then produced a broken colour; it is now refused when it is read.
+
+### Known limits
+
+- Opening an album does not show "This file has changed since the album was saved." for a photo whose file differs from the one the album saw; its settings still apply. (`ym render --json` and `ym info` do say it.)
+- Face Refinement finds the teeth even when Whitening is 0, so a photo with faces takes a little longer than the sliders suggest.
+- Very yellow teeth can look greyish with Whitening at 100.
+- The Mac-only parts of this release (VoiceOver, the edited dot, the file dialog's filter for photos and albums together, Intel Macs and 8 GB machines) are built but not yet checked on hardware.
+
+### Credits
+
+- Faces are found and measured by three networks that Google publishes in **MediaPipe**: BlazeFace (full range), Face Mesh V2 and Selfie Multiclass (Copyright 2021 The MediaPipe Authors, Google LLC), under the Apache License 2.0: [github.com/google-ai-edge/mediapipe](https://github.com/google-ai-edge/mediapipe). Yellowmoon bundles Google's weights converted to safetensors and runs them with its own code; they are not trained or changed further. The notice is item 14 of `NOTICE`, which ships in the app, and the model card is `data/models/mediapipe/MODEL_CARD.md`. The teeth are found by **SAM 2.1** (Meta, Apache-2.0), credited with the Object masks in 0.2.0.
 
 ## [0.2.3] - 2026-11-10
 

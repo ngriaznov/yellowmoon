@@ -25,7 +25,7 @@ fn version_prints_version_pipeline_and_git_sha() {
         .success()
         .stdout(
             predicate::str::is_match(
-                r"^ym \d+\.\d+\.\d+ \(pipeline \d+\.\d+\.\d+, ([0-9a-f]{7,40}|unknown)\)\n$",
+                r"^ym \d+\.\d+\.\d+(-[0-9A-Za-z.-]+)? \(pipeline \d+\.\d+\.\d+, ([0-9a-f]{7,40}|unknown)\)\n$",
             )
             .expect("valid regex"),
         )
