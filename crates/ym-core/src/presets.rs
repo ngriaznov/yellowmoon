@@ -110,6 +110,16 @@ pub enum PresetError {
     /// The settings inside the file cannot be used (the source error is kept for the log).
     #[error("This file isn't a Yellowmoon preset.")]
     Settings(#[source] SettingsError),
+    /// The settings of a photo could not be cut into a preset (a bug: the source error says why).
+    #[error(
+        "Yellowmoon couldn't make a preset from these settings. Nothing was saved. Try again with fewer groups ticked, and report the problem on GitHub if it keeps happening."
+    )]
+    CouldNotMake(#[source] SettingsError),
+    /// The text of a preset would not read back, so it was not written (a bug).
+    #[error(
+        "Yellowmoon couldn't save this preset: the file it would write can't be read back. Nothing was saved. Try again with fewer groups ticked, and report the problem on GitHub if it keeps happening."
+    )]
+    WouldNotReadBack(#[source] Box<PresetError>),
     /// A photo or file that holds no Yellowmoon settings (an export without `ym:Settings`, or not an export).
     #[error("This file has no Yellowmoon settings. Choose a photo that Yellowmoon exported.")]
     NoSettings,
@@ -388,6 +398,12 @@ fn group_patch(settings: &DevelopSettings, groups: &[PresetGroup]) -> SettingsPa
                 crate::settings::NodePatch::whole_film(f),
             );
         }
+        for (id, f) in &g.faces {
+            patch.nodes.insert(
+                NodeId::Corrector(*id),
+                crate::settings::NodePatch::whole_face_refinement(f),
+            );
+        }
         for (id, m) in &g.mixers {
             patch.nodes.insert(
                 NodeId::Corrector(*id),
@@ -417,7 +433,7 @@ fn empty_rows_for_preset(settings: &mut DevelopSettings) {
 fn prepared_from_resolved(source: &ResolvedSettings) -> Result<DevelopSettings, PresetError> {
     let mut s = DevelopSettings::default();
     s.apply_patch(&SettingsPatch::copied_from(source), None)
-        .map_err(PresetError::Settings)?;
+        .map_err(PresetError::CouldNotMake)?;
     empty_rows_for_preset(&mut s);
     Ok(s)
 }
@@ -547,7 +563,7 @@ impl Preset {
         let mut settings = DevelopSettings::default();
         settings
             .apply_patch(&group_patch(prepared, &groups), None)
-            .map_err(PresetError::Settings)?;
+            .map_err(PresetError::CouldNotMake)?;
         let look = groups.contains(&PresetGroup::Look).then(|| {
             let id = settings.output().look.clone();
             PresetLook {

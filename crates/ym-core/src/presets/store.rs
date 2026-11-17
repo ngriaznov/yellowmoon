@@ -328,6 +328,9 @@ impl PresetStore {
     }
 
     fn write_file(&self, file: &str, text: &str) -> Result<(), PresetError> {
+        // Nothing is written that the list could not read back (`docs/30` section 17): a file that does not read is listed as
+        // damaged, and the person would be told so right after "Saved".
+        Preset::from_json(text).map_err(|e| PresetError::WouldNotReadBack(Box::new(e)))?;
         (self.write)(&self.folder.join(file), text.as_bytes()).map_err(|e| self.write_error(e))
     }
 
