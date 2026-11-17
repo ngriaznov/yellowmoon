@@ -15,6 +15,8 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Fixed
 
+- **Teeth whitening no longer greys the gums.** In a smile the teeth mask can take in the strip of pink gum above the teeth, and Whitening turned it grey-white. The teeth adjustment (Whitening, Desaturation and Gamma) now holds back on pixels much pinker than that face's own teeth: from 1.15 times the red-to-green ratio of the teeth it starts to ease off, and from 1.45 times it leaves the pixel alone. Teeth themselves are whitened as before. At Whitening 100 the gum keeps about 0.56 of its red-green chroma (0.31 before). The pipeline version is 0.12.2, because teeth pixels change whenever a teeth control is above 0.
+
 - **Save Preset could fail on a photo with a Face Refinement node, with "This file isn't a Yellowmoon preset."** Saving a preset with the Nodes group ticked left the Face Refinement nodes out but kept the links to them, so the preset could not be made, and the error said the file was not a preset when no file had been written. Face Refinement nodes are now saved with the other nodes, without the strokes painted on one photo (Protect strokes, Brush strokes and Object clicks), like the other nodes. A preset is also checked before it is written: if it could not be read back, nothing is written and the message says so, so a saved preset is never listed as damaged. A preset that cannot be made now has its own message.
 
 - **Removing a photo no longer scrolls the filmstrip back to the start.** The strip stays where it was and the next photo (the previous one at the end) is selected.
