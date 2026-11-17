@@ -95,6 +95,9 @@ export function useWindowedRange(options: WindowedOptions): WindowedRange {
   const [geo, setGeo] = useState<Geometry>(initial);
   const shown = useRef<[number, number]>([0, 0]);
   const renderedPitch = useRef(estimate);
+  // Watches the first drawn item, so that an item that changes size (another size of strip, a layout that settled late) is measured again.
+  const itemObserver = useRef<ResizeObserver | null>(null);
+  const watchedItem = useRef<Element | null>(null);
   // The options a listener needs when it runs, without making the listeners depend on them.
   const latest = useRef({ count, overscan, windowed, horizontal, itemSelector, scroller: options.scroller });
   latest.current = { count, overscan, windowed, horizontal, itemSelector, scroller: options.scroller };
@@ -132,6 +135,11 @@ export function useWindowedRange(options: WindowedOptions): WindowedRange {
     const was = geoRef.current;
     let { pitch, size, origin } = was;
     const items = container.querySelectorAll<HTMLElement>(l.itemSelector);
+    if (items[0] !== watchedItem.current) {
+      if (watchedItem.current) itemObserver.current?.unobserve(watchedItem.current);
+      watchedItem.current = items[0] ?? null;
+      if (items[0]) itemObserver.current?.observe(items[0]);
+    }
     const a = items[0]?.getBoundingClientRect();
     if (a) {
       const b = items[1]?.getBoundingClientRect();
@@ -159,6 +167,9 @@ export function useWindowedRange(options: WindowedOptions): WindowedRange {
     const el = horizontal ? (latest.current.scroller?.current ?? list.current) : scrollParent(list.current);
     scrollerRef.current = el;
     if (!el) return;
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => measure());
+    itemObserver.current = observer;
+    watchedItem.current = null;
     measure();
     let frame = 0;
     const onScroll = (): void => {
@@ -173,11 +184,12 @@ export function useWindowedRange(options: WindowedOptions): WindowedRange {
     };
     const target: HTMLElement | Document = el === document.scrollingElement ? document : el;
     target.addEventListener("scroll", onScroll, { passive: true });
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => measure());
     observer?.observe(el);
     return () => {
       target.removeEventListener("scroll", onScroll);
       observer?.disconnect();
+      itemObserver.current = null;
+      watchedItem.current = null;
       if (frame) cancelAnimationFrame(frame);
     };
   }, [windowed, horizontal, list, measure, accept, attached]);
