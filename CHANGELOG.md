@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Save Preset could fail on a photo with a Face Refinement node, with "This file isn't a Yellowmoon preset."** Saving a preset with the Nodes group ticked left the Face Refinement nodes out but kept the links to them, so the preset could not be made, and the error said the file was not a preset when no file had been written. Face Refinement nodes are now saved with the other nodes. A preset is also checked before it is written: if it could not be read back, nothing is written and the message says so, so a saved preset is never listed as damaged. A preset that cannot be made now has its own message.
+
 ## [0.2.4-beta.1] - 2026-11-17
 
 A pre-release (a beta) for testing: **Face Refinement**, a node that retouches the faces in a photo, and **presets and albums**, so a way of working can be saved and a strip of photos can be picked up again later. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.12.1 (was 0.11.0), because Face Refinement is a new kind of node, which an older build cannot open, and because the anamorphic fixes below and the lens tables of two cameras change pixels. A photo with no Face Refinement node comes out with the same pixels as in 0.2.3, unless it is from a Sony NEX-5N or NEX-7, or has Anamorphic above 0 and bright lights of the kinds the fixes name. The files differ in bytes in two ways that leave the pixels alone: TIFF exports are ZIP by default, and every export's XMP has one more property.

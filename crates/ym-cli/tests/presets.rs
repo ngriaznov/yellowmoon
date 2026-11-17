@@ -829,3 +829,39 @@ fn a_preset_is_saved_from_an_exported_photo_and_auto_stays_auto() {
             "This file has no Yellowmoon settings. Choose a photo that Yellowmoon exported.",
         ));
 }
+
+#[test]
+fn a_settings_file_with_a_face_node_and_an_imported_look_saves_with_every_group_and_lists_clean() {
+    let sb = Sandbox::new();
+    let link = |a: Value, b: Value| json!({ "from": { "node": a, "port": "picture" }, "to": { "node": b, "port": "picture" } });
+    let doc = json!({ "nodes": {
+        "items": [
+            { "id": "output", "look": "user:warm-film", "look_intensity": 70 },
+            { "id": 2, "kind": "face_refinement", "same_for_all": false,
+              "faces": [ { "blemish": 90 }, { "texture": 100 } ],
+              "protect": { "strokes": [ { "size": 0.02, "points": [[0.1, 0.2]] } ] } } ],
+        "links": [
+            link(json!("input"), json!(1)),
+            link(json!(1), json!(2)),
+            link(json!(2), json!("output")) ] } });
+    let file = settings_file(&sb, "face.json", &doc);
+    sb.ym()
+        .args([
+            "presets",
+            "save",
+            "Portrait",
+            "--groups",
+            "look,lens,light,color,detail,curve,raw,nodes",
+            "--from",
+        ])
+        .arg(&file)
+        .assert()
+        .success();
+    let out = sb.ym().args(["presets", "list"]).assert().success();
+    let l = lines(&out.get_output().stdout);
+    assert!(l.iter().any(|x| x.starts_with("Portrait")), "listed: {l:?}");
+    assert!(
+        l.iter().all(|x| !x.contains("isn't a Yellowmoon preset")),
+        "{l:?}"
+    );
+}
