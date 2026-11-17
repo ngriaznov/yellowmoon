@@ -587,6 +587,12 @@ impl ExportQueue {
                 Err(e) => return Err(e.into()),
             }
         }
+        tracing::info!(
+            photos = items.len(),
+            unsettled = items.iter().filter(|i| !i.settled).count(),
+            developing,
+            "export: snapshots taken"
+        );
         if developing > 0 {
             return Err(QueueError::Developing(developing));
         }
@@ -631,6 +637,7 @@ impl ExportQueue {
         });
         drop(st);
         self.shared.wake.notify_all();
+        tracing::info!(job = id, "export: job queued");
         Ok(id)
     }
 
@@ -847,13 +854,39 @@ fn wait_for_final_estimates(
     snapshot: &PhotoSnapshot,
 ) -> Settled {
     let id = snapshot.view.id;
+    let started = std::time::Instant::now();
+    let mut logged = 0u64;
+    tracing::info!(photo = id.0, "export: waiting for the final estimates");
     loop {
         if cancel.is_cancelled() {
             return Settled::Cancelled;
         }
         match session.estimates_final(id) {
-            Ok(true) => break,
-            Ok(false) => std::thread::sleep(SETTLE_POLL),
+            Ok(true) => {
+                tracing::info!(
+                    photo = id.0,
+                    waited_ms = started.elapsed().as_millis() as u64,
+                    "export: the estimates are final"
+                );
+                break;
+            }
+            Ok(false) => {
+                let tens = started.elapsed().as_secs() / 10;
+                if tens > logged {
+                    logged = tens;
+                    tracing::info!(
+                        photo = id.0,
+                        waited_s = started.elapsed().as_secs(),
+                        reason = session
+                            .estimates_blocker(id)
+                            .ok()
+                            .flatten()
+                            .unwrap_or("none"),
+                        "export: still waiting for the final estimates"
+                    );
+                }
+                std::thread::sleep(SETTLE_POLL);
+            }
             Err(e) => {
                 tracing::info!(photo = id.0, reason = %e, "exporting with the estimates the job was queued with");
                 return Settled::AsQueued;
@@ -983,6 +1016,13 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
             }));
         };
         event(i, &predicted, Some(0.0), None, false, false);
+        tracing::info!(
+            job = job.id,
+            index = i,
+            settled = item.settled,
+            decode_ms = decode_ms as u64,
+            "export: photo's turn, decoded"
+        );
 
         // A job queued while the photos this one depends on were still developing waits here for
         // their estimates, then reads the shared ones (burst median, pooled noise) again.
@@ -999,6 +1039,7 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
             }
         };
         let snapshot = refreshed.as_ref().unwrap_or(&item.snapshot);
+        tracing::info!(job = job.id, index = i, "export: rendering and encoding");
 
         let result = match blocked {
             Some(e) => Err(e),
@@ -1037,6 +1078,12 @@ fn run_job(ctx: &Arc<ExportContext>, sink: &ExportSink, shared: &Arc<Shared>, jo
             )
         });
 
+        tracing::info!(
+            job = job.id,
+            index = i,
+            ok = result.is_ok(),
+            "export: photo done"
+        );
         match result {
             Ok(report) => {
                 let name = report
