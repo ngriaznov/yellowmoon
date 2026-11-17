@@ -784,6 +784,124 @@ fn an_opened_album_with_a_missing_photo_exports_the_others_with_a_provider() {
     );
 }
 
+/// An album saved by a session in which the provider answered every photo, with the nodes a real album has (a Face Refinement
+/// node with teeth, a lens, an Object row), photos in a burst, opened **in the same Core that saved it** the way the app does
+/// it (`close_session` first), then exported: the current photo, a photo not looked at since, all.
+#[test]
+fn an_album_saved_after_every_answer_exports_when_opened_in_a_working_session() {
+    let r = rig_with(fake_advisors());
+    let dir = r.root.path().join("Burst");
+    std::fs::create_dir_all(&dir).expect("folder");
+    for k in 0..4u64 {
+        let scene = Scene::new(300, 200, light(PROFILE, 4600.0), Layout::Patchwork, 0.25)
+            .noise(2e-4, 1e-5)
+            .seed(k + 7);
+        scene
+            .builder(MODEL)
+            .capture_time("2026:10:04 12:00:00", &format!("{:02}", 10 + k), None)
+            .write_to(&dir.join(format!("S{k}.ARW")), &scene.mosaic())
+            .expect("write");
+    }
+    r.open(&dir);
+    let ids = r.core.session.photo_ids();
+    assert_eq!(ids.len(), 4);
+    // (A Face Refinement node needs the face models, which a test checkout does not have.)
+    let mut s = DevelopSettings::with_look(LookId::neutral());
+    s.input_mut().lens = ym_core::settings::LensSettings {
+        kind: ym_core::settings::LensKind::Vintage,
+        flares: 60.0,
+        edges: 45.0,
+        anamorphic: 30.0,
+    };
+    // No model weights are in a test checkout: the rows that need one (Object, Subject, People, Background) stay out.
+    let mut masks = every_mask();
+    masks.items.retain(|m| {
+        matches!(
+            m.shape,
+            ym_core::settings::MaskShape::Linear(_)
+                | ym_core::settings::MaskShape::Radial(_)
+                | ym_core::settings::MaskShape::Brush(_)
+        )
+    });
+    s.main_mut().masks = masks;
+    for id in &ids {
+        r.set(*id, s.clone());
+    }
+    r.settle();
+    // Every photo answered before the album is saved.
+    let asked = r.core.session.apple_auto_asks();
+    assert!(asked >= 4);
+    for id in &ids {
+        assert!(matches!(
+            r.core.session.apple_result_of(*id),
+            Some(AppleAuto::Answered { .. })
+        ));
+    }
+    let before = export_within(&r, ApplyScope::All, &r.root.path().join("before"));
+    assert_eq!(before.len(), 4);
+    let path = r.root.path().join("Burst.ymalbum");
+    r.core.album_save(&path).expect("saved");
+    // The app: close_session, then album_open (which closes again).
+    r.core.close_session();
+    r.core
+        .album_open(&path, OpenOptions::default())
+        .expect("opened");
+    r.settle();
+    assert_eq!(r.core.session.apple_auto_asks(), asked, "nothing asked on opening");
+    let ids = r.core.session.photo_ids();
+    for id in &ids {
+        assert!(
+            matches!(
+                r.core.session.apple_result_of(*id),
+                Some(AppleAuto::Answered { .. })
+            ),
+            "every stored answer comes back"
+        );
+    }
+    let one = export_within(&r, ApplyScope::This, &r.root.path().join("one"));
+    assert_eq!(one.len(), 1, "the current photo");
+    r.core.session.set_current(ids[3]).expect("current");
+    let other = export_within(&r, ApplyScope::This, &r.root.path().join("other"));
+    assert_eq!(other.len(), 1, "a photo not looked at since opening");
+    let all = export_within(&r, ApplyScope::All, &r.root.path().join("all"));
+    assert_eq!(all.len(), 4, "all");
+    assert_eq!(all, before, "the pictures are the ones before saving");
+    assert_eq!(r.core.session.apple_auto_asks(), asked, "still nothing asked");
+}
+
+/// What the real provider writes (an `os`, a scene and a plan, steps left empty, colours with a strength) is kept by an album
+/// and comes back as the same provider state.
+#[test]
+fn a_real_looking_answer_survives_the_album_unchanged() {
+    use ym_core::apple_auto::{AdvisorAnswer, AdvisorInfo, AutoSteps, ShadowColor};
+    let answered = AppleAuto::Answered {
+        answer: AdvisorAnswer {
+            steps: AutoSteps {
+                exposure: Some(-1),
+                highlights: None,
+                shadows: Some(2),
+                blacks: None,
+                contrast: Some(0),
+                white: Some(-2),
+                tint: None,
+                saturation: Some(1),
+                shadow_color: Some(ShadowColor::Teal),
+                shadow_color_strength: Some(2),
+                highlight_color: None,
+                highlight_color_strength: None,
+            },
+            scene: "A street at dusk, \"neon\" signs".to_owned(),
+            plan: "Cool shadows, keep the signs".to_owned(),
+            served_model: None,
+        },
+        info: AdvisorInfo::new("AFM 3 Core", "27.0.1 (27A404)"),
+    };
+    let stored = ym_core::album::AutoAnswer::from_applied(&answered).expect("an answer is kept");
+    let json = serde_json::to_string(&stored).expect("json");
+    let back: ym_core::album::AutoAnswer = serde_json::from_str(&json).expect("read back");
+    assert_eq!(back.to_applied(), answered);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Finding the photos
 // ---------------------------------------------------------------------------------------------
