@@ -11,7 +11,7 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [0.2.4-beta.2] - 2026-11-17
 
-A second pre-release (a beta) for testing. It fixes problems found in beta 1 (Save Preset on a photo with Face Refinement, exporting after opening an album, the filmstrip after a removal, and gums turning grey under Teeth whitening) and adds two teeth controls, **Desaturation** and **Gamma**. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.12.2 (was 0.12.1), because the gum guard changes teeth pixels whenever a teeth control is above 0; a photo with no Face Refinement node, or with all three teeth controls at 0, comes out with the same pixels as in beta 1. A settings file or preset that uses Desaturation or Gamma needs this version: an older build refuses the new fields.
+A second pre-release (a beta) for testing. It fixes problems found in beta 1 (Save Preset on a photo with Face Refinement, exporting after opening an album, the filmstrip after a removal and after Export, and gums turning grey under Teeth whitening) and adds two teeth controls, **Desaturation** and **Gamma**. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.12.2 (was 0.12.1), because the gum guard changes teeth pixels whenever a teeth control is above 0; a photo with no Face Refinement node, or with all three teeth controls at 0, comes out with the same pixels as in beta 1. A settings file or preset that uses Desaturation or Gamma needs this version: an older build refuses the new fields.
 
 ### Added
 
@@ -24,6 +24,8 @@ A second pre-release (a beta) for testing. It fixes problems found in beta 1 (Sa
 - **Save Preset could fail on a photo with a Face Refinement node, with "This file isn't a Yellowmoon preset."** Saving a preset with the Nodes group ticked left the Face Refinement nodes out but kept the links to them, so the preset could not be made, and the error said the file was not a preset when no file had been written. Face Refinement nodes are now saved with the other nodes, without the strokes painted on one photo (Protect strokes, Brush strokes and Object clicks), like the other nodes. A preset is also checked before it is written: if it could not be read back, nothing is written and the message says so, so a saved preset is never listed as damaged. A preset that cannot be made now has its own message.
 
 - **Removing a photo no longer scrolls the filmstrip back to the start.** The strip stays where it was and the next photo (the previous one at the end) is selected.
+
+- **The filmstrip no longer looks empty after coming back from Export.** Going to Export and back to Photos could leave the strip blank, with its scroll bar but no photos, because the strip was built again and kept drawing for the place it had been. The strip now stays the same strip: it keeps its place, its photos and the photo on screen.
 
 - **Exporting after opening an album no longer stays at 0 %.** With Apple Auto (or another Auto provider) on, an export waited for every photo to have the provider's answer. A photo of an album that has no stored answer (the provider failed on it, or it was saved without one) is never asked, so the export waited for an answer nobody would produce. Such a photo now counts as ready: it keeps its stored answer if it has one, and otherwise the grade Default Auto gives, which is the picture on screen. Opening an album still asks no provider, and Re-run still asks and the export then waits for the new answer.
 
