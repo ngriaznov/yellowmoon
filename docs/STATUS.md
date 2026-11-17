@@ -14,6 +14,8 @@ The current state of Yellowmoon: release, milestone, what is built, gate results
 
 ## Current release and milestone
 
+**Filmstrip after a removal (2026-11-17, branch `filmstrip-remove-fix`, for 0.2.4-beta.2).** The owner found that removing a photo scrolled the strip to the start. The core's handover and the mock follow the spec, and `e2e/remove-scroll.spec.ts` (60 and 150 photos) passes in Chromium before and after the change, so the cause was not reproduced there; `Filmstrip` now puts the offset back after a removal. Unconfirmed on a Mac until the owner tries it in the app.
+
 **Pre-release 0.2.4-beta.1, published 2026-11-17 at 11:22 UTC** as [v0.2.4-beta.1](https://github.com/ngriaznov/yellowmoon/releases/tag/v0.2.4-beta.1) by Release run 44068635347 on `main` fc0c563b (`PIPELINE_VERSION` 0.12.1). It is a GitHub pre-release: `latest` stays v0.2.3, so the updater does not offer it, and people install it from the release page. Assets: `Yellowmoon_0.2.4-beta.1_universal.dmg`, `Yellowmoon.app.tar.gz` with its `.sig`, and `latest.json`. **v0.2.3 is the latest full release.**
 
 - **What it contains:** Face Refinement (S-01 to S-17, with the SAM teeth mask); presets and albums (milestone P: P-02 to P-06 and P-11 to P-14, `docs/30`, `docs/31`); the two anamorphic fixes (lights cut by the frame, and lights the shape rule rejects are held sharp); and the pre-release mode of `release.yml` (R-01, the owner, 2026-11-16).

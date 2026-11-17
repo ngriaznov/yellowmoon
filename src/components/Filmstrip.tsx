@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useId, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, FocusEvent, KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuShortcut, ContextMenuTrigger } from "@/components/glass/context-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/glass/tooltip";
@@ -274,6 +274,20 @@ export function Filmstrip({
   }, [drawnKey, onInView]);
   const pickedCount = photos.filter((p) => p.picked).length;
 
+  // A removal keeps the strip where it was (`docs/11` §Removing photos): the thumbnails in view stay and the gap closes. The offset the
+  // person left the strip at is noted from the scroll events; when photos have left, it is put back before the next paint unless the
+  // strip is now too short for it (then it ends at its end). A strip that is not scrolled by the person is not touched.
+  const lastScroll = useRef(0);
+  const lastCount = useRef(photos.length);
+  useLayoutEffect(() => {
+    const was = lastCount.current;
+    lastCount.current = photos.length;
+    const strip = scroller.current;
+    if (!strip || photos.length >= was || hidden) return;
+    const wanted = Math.min(lastScroll.current, Math.max(0, strip.scrollWidth - strip.clientWidth));
+    if (Math.abs(strip.scrollLeft - wanted) > 1) strip.scrollLeft = wanted;
+  }, [photos.length, hidden]);
+
   // One context menu for the whole strip (a menu per thumbnail would be hundreds of Radix roots to redraw whenever a thumbnail
   // arrives). The thumbnail a menu is about is told when it opens: by the right click, or by the touch that begins a long press.
   const removable = mode === "browse" && onRemove !== undefined;
@@ -319,7 +333,10 @@ export function Filmstrip({
     }
     toReveal.current = null;
     const strip = scroller.current;
-    if (strip) strip.scrollLeft += scrollOffsetToReveal(strip.getBoundingClientRect(), el.getBoundingClientRect());
+    if (strip) {
+      strip.scrollLeft += scrollOffsetToReveal(strip.getBoundingClientRect(), el.getBoundingClientRect());
+      lastScroll.current = strip.scrollLeft;
+    }
     if (focusAfter.current === id) el.focus({ preventScroll: true });
     focusAfter.current = null;
   }, [currentId, hidden, currentIndex, scrollToIndex, win.start, win.end]);
@@ -393,6 +410,9 @@ export function Filmstrip({
         <div
           ref={scroller}
           className="ym-filmstrip__scroll"
+          onScroll={(event) => {
+            lastScroll.current = event.currentTarget.scrollLeft;
+          }}
           {...(mode === "export" ? { role: "region", "aria-label": "List of photos to export", tabIndex: 0 } : undefined)}
         >
           {/* A thumbnail is a button (browse) or a picture (export), and ARIA gives neither a position in a set, so each sits in a list item that
