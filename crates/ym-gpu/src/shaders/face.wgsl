@@ -627,8 +627,10 @@ const TEETH_CHROMA_QUAD: f32 = 0.57;
 const TEETH_LIGHT_LIN: f32 = 0.1;
 const TEETH_LIGHT_QUAD: f32 = 0.25;
 const TEETH_CAP_RISE: f32 = 0.1;
+// S-19: `ym_retouch::teeth_gamma_gain`'s floor on L / L_max.
+const TEETH_GAMMA_FLOOR: f32 = 0.0625;
 
-// a: the rectangle; b: the first byte of the mask, the layer offset of L_max; f.x: tw.
+// a: the rectangle; b: the first byte of the mask, the layer offset of L_max; f.x: tw; f.y: td; f.z: tg (S-19).
 fn fc_tapply(gid: vec3<u32>) {
     let rw = u32(FU_.a.z);
     let rh = u32(FU_.a.w);
@@ -647,10 +649,20 @@ fn fc_tapply(gid: vec3<u32>) {
     let i = fc_at(0u, x, y);
     let old = vec3<f32>(fc_pic[i], fc_pic[FU_.pic.y + i], fc_pic[2u * FU_.pic.y + i]);
     let l = (old.x + old.y + old.z) / 3.0;
-    let f = 1.0 - (TEETH_CHROMA_LIN * tw - TEETH_CHROMA_QUAD * tw * tw) * m;
+    let td = FU_.f.y;
+    let tg = FU_.f.z;
+    let f = (1.0 - (TEETH_CHROMA_LIN * tw - TEETH_CHROMA_QUAD * tw * tw) * m) * (1.0 - td * m);
     let cap = (1.0 + TEETH_CAP_RISE * tw * tw) * fc_lay[u32(FU_.b.y)] / max(l, 1.0e-4);
     let gain = min(1.0 + (TEETH_LIGHT_LIN * tw + TEETH_LIGHT_QUAD * tw * tw) * m, max(cap, 1.0));
-    let nw = (vec3<f32>(l) + f * (old - vec3<f32>(l))) * gain;
+    var nw = (vec3<f32>(l) + f * (old - vec3<f32>(l))) * gain;
+    let lmax = fc_lay[u32(FU_.b.y)];
+    if (tg != 0.0 && lmax > 1.0e-4) {
+        // Gamma about the brightest tooth, as a gain on the colour (`ym_retouch::teeth_gamma_gain`).
+        let lw = (nw.x + nw.y + nw.z) / 3.0;
+        let ratio = max(min(lw, lmax) / lmax, TEETH_GAMMA_FLOOR);
+        let gg = pow(ratio, exp2(-tg) - 1.0);
+        nw = nw * (1.0 + (gg - 1.0) * m);
+    }
     if (any(nw != old)) {
         fc_pic[i] = nw.x;
         fc_pic[FU_.pic.y + i] = nw.y;
