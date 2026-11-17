@@ -713,10 +713,15 @@ fn the_relative_path_wins_and_the_absolute_path_is_the_fallback() {
         .album_open(&path, OpenOptions::default())
         .expect("opened");
     let found = b.core.session.capture_photos();
+    // The path as it would be had the photo been opened by hand: the name the person gave, symbolic
+    // links not resolved (`Session::open` keeps `absolute(path)`; the set of open files is keyed by
+    // the canonical form). On macOS the temporary folder is `/var/...`, a link to `/private/var/...`,
+    // so comparing with a canonicalised path would be wrong.
+    assert_eq!(found[0].path, first, "the relative path wins");
     assert_eq!(
-        found[0].path,
-        first.canonicalize().map_or(first.clone(), |c| c),
-        "the relative path wins"
+        found[0].path.canonicalize().ok(),
+        first.canonicalize().ok(),
+        "and it is the same file as the one opened by hand"
     );
     assert!(
         found[0].path.starts_with(r.root.path().join("Shoot"))
@@ -1087,10 +1092,12 @@ fn a_path_that_is_not_utf8_refuses_the_save_and_writes_nothing() {
     let scene =
         Scene::new(300, 200, light(PROFILE, 5200.0), Layout::Patchwork, 0.3).noise(2e-4, 1e-5);
     let odd = dir.join(std::ffi::OsStr::from_bytes(b"DSC\xff01.ARW"));
-    scene
-        .builder(MODEL)
-        .write_to(&odd, &scene.mosaic())
-        .expect("write");
+    if let Err(e) = scene.builder(MODEL).write_to(&odd, &scene.mosaic()) {
+        // APFS (macOS) refuses a file name that is not valid UTF-8 ("Illegal byte sequence"):
+        // there is nothing to test on such a file system.
+        eprintln!("skipped: this file system refuses a non-UTF-8 file name ({e})");
+        return;
+    }
     let out = r
         .core
         .session
