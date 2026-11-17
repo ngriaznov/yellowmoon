@@ -424,6 +424,8 @@ export function defaultFaceSettings(): FaceSettings {
     shadow_desaturation: 0,
     shine_removal: 0,
     teeth_whitening: 0,
+    teeth_desaturation: 0,
+    teeth_gamma: 0,
   };
 }
 

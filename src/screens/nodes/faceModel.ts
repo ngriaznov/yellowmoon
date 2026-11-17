@@ -65,7 +65,7 @@ export function facesOnSplit(item: FaceRefinementItem, count: number): FaceSetti
 /** The amounts of the Face card, and where Reset puts them back. */
 export const FACE_FIELDS = ["blemish", "dark_circles", "even_skin", "texture"] as const;
 export const GRADING_FIELDS = ["skin_contrast", "shadow_desaturation", "shine_removal"] as const;
-export const TEETH_FIELDS = ["teeth_whitening"] as const;
+export const TEETH_FIELDS = ["teeth_whitening", "teeth_desaturation", "teeth_gamma"] as const;
 
 /** The partial that puts `fields` back to their defaults (the Face card's Reset) or to 0 (the Skin grading and Teeth cards' Reset). */
 export function resetPartial(fields: readonly (keyof FaceSettings)[], to: "defaults" | "zero"): Partial<FaceSettings> {
@@ -89,8 +89,10 @@ export const FACE_TEXT = {
   shadowTip: "Lowers the colour in the skin's shadows.",
   shineTip: "Reduces shine on the forehead, nose and cheeks.",
   whiteningTip: "Makes teeth less yellow and a little brighter.",
+  desaturationTip: "Removes the colour cast from the teeth without brightening them.",
+  gammaTip: "Brightens or darkens the teeth's midtones. The brightest tooth stays as it is.",
   gradingResetTip: "Sets Contrast, Shadow desaturation and Shine removal back to 0.",
-  teethResetTip: "Sets Whitening back to 0.",
+  teethResetTip: "Sets Whitening, Desaturation and Gamma back to 0.",
   copy: "Copy to other faces",
   copyTip: "Gives every other face these settings: Face, Skin grading and Teeth.",
   protectLine: "Paint over moles, freckles and scars you want to keep.",

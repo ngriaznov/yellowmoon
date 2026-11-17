@@ -356,7 +356,7 @@ Tasks (details and *Done when* in `docs/30` §15): **P-01** spec, rule change an
 
 ## S · Face Refinement, face skin retouching (branch `skin-retouch`, from 2026-11-11)
 
-The Face Refinement node: blemish removal, dark circles, even skin with a Texture control, skin grading (contrast, shadow desaturation, shine removal) and teeth whitening, per face, from the owner's brief of 2026-11-11. The spec is `docs/27-skin-retouch.md`. Round 1, the library `ym-retouch` on the CPU with mock models: **S-01** spec · **S-02** crate, types, traits, mocks, masks · **S-03** blemish removal · **S-04** dark circles and even skin · **S-05** pipeline, tests, benchmark. Round 2 (models, the node, interface, GPU) waits on `docs/STATUS.md` question 45.
+The Face Refinement node: blemish removal, dark circles, even skin with a Texture control, skin grading (contrast, shadow desaturation, shine removal) and teeth whitening, per face, from the owner's brief of 2026-11-11. The spec is `docs/27-skin-retouch.md`. Round 1, the library `ym-retouch` on the CPU with mock models: **S-01** spec · **S-02** crate, types, traits, mocks, masks · **S-03** blemish removal · **S-04** dark circles and even skin · **S-05** pipeline, tests, benchmark. Round 2 (models, the node, interface, GPU) waits on `docs/STATUS.md` question 45. Later tasks are in `docs/27` section 10, among them **S-19** teeth Desaturation and Gamma (the owner, 2026-11-17), in pre-release 0.2.4-beta.2.
 
 ---
 

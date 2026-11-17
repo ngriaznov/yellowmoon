@@ -637,6 +637,10 @@ export interface FaceSettings {
   shine_removal: number;
   /** Teeth › Whitening, 0 to 100. */
   teeth_whitening: number;
+  /** Teeth › Desaturation, 0 to 100. */
+  teeth_desaturation: number;
+  /** Teeth › Gamma, -100 to 100. */
+  teeth_gamma: number;
 }
 
 /** A plane of brush strokes in the format of a Brush mask row: a Face Refinement node's protection. */

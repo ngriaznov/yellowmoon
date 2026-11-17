@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Added
+
+- **Teeth: Desaturation and Gamma.** The **Teeth** card of Face Refinement has two more sliders under **Whitening**, both at 0 for a new node and set for each face like the others (**Same for all faces** and **Copy to other faces** cover them). **Desaturation** (0 to 100) takes the colour cast out of the teeth without making them brighter: at 100 they are neutral grey-white. **Gamma** (-100 to 100) brightens the teeth's midtones above 0 and darkens them below 0, and the brightest tooth stays as it is. At 0 both leave the picture as it was, so existing photos come out the same. A settings file that uses `teeth_desaturation` or `teeth_gamma` needs Yellowmoon 0.2.4-beta.2 or later.
+
 ## [0.2.4-beta.1] - 2026-11-17
 
 A pre-release (a beta) for testing: **Face Refinement**, a node that retouches the faces in a photo, and **presets and albums**, so a way of working can be saved and a strip of photos can be picked up again later. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.12.1 (was 0.11.0), because Face Refinement is a new kind of node, which an older build cannot open, and because the anamorphic fixes below and the lens tables of two cameras change pixels. A photo with no Face Refinement node comes out with the same pixels as in 0.2.3, unless it is from a Sony NEX-5N or NEX-7, or has Anamorphic above 0 and bright lights of the kinds the fixes name. The files differ in bytes in two ways that leave the pixels alone: TIFF exports are ZIP by default, and every export's XMP has one more property.

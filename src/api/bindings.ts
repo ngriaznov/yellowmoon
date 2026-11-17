@@ -1437,6 +1437,10 @@ export type FaceSettings = {
 	shine_removal: number,
 	/**  Teeth › Whitening, 0 to 100 (default 0). */
 	teeth_whitening: number,
+	/**  Teeth › Desaturation, 0 to 100 (default 0). */
+	teeth_desaturation: number,
+	/**  Teeth › Gamma, -100 to 100 (default 0). */
+	teeth_gamma: number,
 };
 
 /**  A Face Refinement node's `all` to change. Serialising leaves absent fields out (see [`NodePatch`]). */
@@ -1457,6 +1461,10 @@ export type FaceSettingsPatch = {
 	shine_removal?: number | null,
 	/**  New Teeth whitening, 0 to 100. */
 	teeth_whitening?: number | null,
+	/**  New Teeth desaturation, 0 to 100. */
+	teeth_desaturation?: number | null,
+	/**  New Teeth gamma, -100 to 100. */
+	teeth_gamma?: number | null,
 };
 
 /**

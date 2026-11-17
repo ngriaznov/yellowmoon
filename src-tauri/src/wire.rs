@@ -1333,6 +1333,10 @@ pub struct FaceSettings {
     pub shine_removal: Num,
     /// Teeth › Whitening, 0 to 100 (default 0).
     pub teeth_whitening: Num,
+    /// Teeth › Desaturation, 0 to 100 (default 0).
+    pub teeth_desaturation: Num,
+    /// Teeth › Gamma, -100 to 100 (default 0).
+    pub teeth_gamma: Num,
 }
 
 /// A plane of brush strokes, in the format of a Brush mask row: a Face Refinement node's protection.
@@ -1774,6 +1778,12 @@ pub struct FaceSettingsPatch {
     /// New Teeth whitening, 0 to 100.
     #[serde(default)]
     pub teeth_whitening: Option<Num>,
+    /// New Teeth desaturation, 0 to 100.
+    #[serde(default)]
+    pub teeth_desaturation: Option<Num>,
+    /// New Teeth gamma, -100 to 100.
+    #[serde(default)]
+    pub teeth_gamma: Option<Num>,
 }
 
 /// A Face Refinement node's `protect` to change: the strokes of a Brush row under the same names, and the three edge
@@ -1881,7 +1891,9 @@ serialize_present!(
     skin_contrast,
     shadow_desaturation,
     shine_removal,
-    teeth_whitening
+    teeth_whitening,
+    teeth_desaturation,
+    teeth_gamma
 );
 serialize_present!(
     ProtectPatch,

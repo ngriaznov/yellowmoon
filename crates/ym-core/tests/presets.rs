@@ -356,6 +356,45 @@ fn film_nodes_and_the_mixers_travel_with_nodes() {
     );
 }
 
+/// S-19: a Face Refinement node's Teeth Desaturation and Gamma travel with the Nodes group, per face.
+#[test]
+fn a_face_refinement_nodes_teeth_controls_travel_with_the_nodes_group() {
+    use ym_core::settings::{FaceRefinementNode, FaceSettings};
+    let r = rig(2);
+    let (source, target) = (r.ids[0], r.ids[1]);
+    let mut s = DevelopSettings::with_look(r.core.looks.effective_default());
+    let node = FaceRefinementNode {
+        same_for_all: false,
+        all: FaceSettings {
+            teeth_desaturation: 40.0,
+            teeth_gamma: -30.0,
+            ..FaceSettings::default()
+        },
+        faces: vec![
+            FaceSettings {
+                teeth_desaturation: 70.0,
+                teeth_gamma: 55.0,
+                ..FaceSettings::default()
+            },
+            FaceSettings::default(),
+        ],
+        ..FaceRefinementNode::default()
+    };
+    s.nodes.faces.insert(6, node.clone());
+    r.set(source, s);
+    r.save("Faces", &[PresetGroup::Nodes], source);
+    r.set(
+        target,
+        DevelopSettings::with_look(r.core.looks.effective_default()),
+    );
+    r.apply("Faces", &[target]);
+    let after = r.settings(target);
+    let got = after.nodes.faces.get(&6).expect("the Face Refinement node");
+    assert_eq!(got.all, node.all);
+    assert_eq!(got.faces, node.faces);
+    assert_eq!(got.faces[0].teeth_gamma, 55.0);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Auto stays Auto
 // ---------------------------------------------------------------------------------------------

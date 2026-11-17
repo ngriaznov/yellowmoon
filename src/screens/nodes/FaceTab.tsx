@@ -309,6 +309,8 @@ export function FaceTab({ store, photo, rs, node, item }: FaceTabProps) {
         }
       >
         {row("teeth_whitening", "Whitening", [0, 100], { title: FACE_TEXT.whiteningTip })}
+        {row("teeth_desaturation", "Desaturation", [0, 100], { title: FACE_TEXT.desaturationTip })}
+        {row("teeth_gamma", "Gamma", [-100, 100], { title: FACE_TEXT.gammaTip })}
         {!item.same_for_all && count > 1 ? (
           <div className="ym-face-copy">
             <Button

@@ -1759,6 +1759,8 @@ fn each_tool_alone_and_together_agree_with_the_cpu_in_an_export() {
         "shadow_desaturation",
         "shine_removal",
         "teeth_whitening",
+        "teeth_desaturation",
+        "teeth_gamma",
     ]
     .iter()
     .map(|t| ((*t).to_owned(), amounts(&[(t, 70)])))
