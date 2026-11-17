@@ -7,7 +7,7 @@ Print metadata and the automatic estimates without rendering
 Usage: ym info [OPTIONS] <FILES>...
 
 Arguments:
-  <FILES>...  ARW files to inspect
+  <FILES>...  ARW files to inspect, or one album (`.ymalbum`) to list
 
 Options:
   -q, --quiet

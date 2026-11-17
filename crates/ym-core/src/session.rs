@@ -516,7 +516,7 @@ pub struct PhotoCapture {
 }
 
 /// Gives a photo what an album kept of it: its settings, its provider's answer and its fingerprint, and freezes its Auto grading
-/// so that nothing asks a provider about it ([`Photo::auto_frozen`]).
+/// so that nothing asks a provider about it (`Photo::auto_frozen`).
 fn give_album_entry(photo: &mut Photo, entry: &AlbumPhoto) {
     photo.settings = match entry.settings.clone().validated() {
         Ok((settings, _)) => settings,
@@ -4085,7 +4085,7 @@ impl Session {
     }
 
     /// Asks the chosen provider about every photo again, without touching a photo's settings: every answer the session holds is
-    /// dropped (an album's stored answers too) and the photos are no longer frozen ([`Photo::auto_frozen`]). `ym render <album>`
+    /// dropped (an album's stored answers too) and the photos are no longer frozen (`Photo::auto_frozen`). `ym render <album>`
     /// does this when the run names a provider (`docs/31` section 8); Re-run and new instructions do the same for one photo
     /// and for all of them, as they have always done, and Re-run also puts the automatic fields back to Auto, which this does not.
     pub fn ask_auto_again(&self) {
