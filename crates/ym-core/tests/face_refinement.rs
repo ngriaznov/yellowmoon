@@ -82,6 +82,8 @@ const DEFAULTS: FaceSettings = FaceSettings {
     shadow_desaturation: 0.0,
     shine_removal: 0.0,
     teeth_whitening: 0.0,
+    teeth_desaturation: 0.0,
+    teeth_gamma: 0.0,
 };
 
 #[test]
@@ -145,7 +147,8 @@ fn the_written_form_is_the_documented_one_and_a_full_item_round_trips() {
     assert_eq!(
         item["all"],
         json!({ "blemish": 30.0, "dark_circles": 30.0, "even_skin": 25.0, "texture": 0.0,
-            "skin_contrast": 0.0, "shadow_desaturation": 0.0, "shine_removal": 0.0, "teeth_whitening": 0.0 })
+            "skin_contrast": 0.0, "shadow_desaturation": 0.0, "shine_removal": 0.0, "teeth_whitening": 0.0,
+            "teeth_desaturation": 0.0, "teeth_gamma": 0.0 })
     );
     assert_eq!(item["faces"], json!([]));
     assert_eq!(
@@ -156,8 +159,9 @@ fn the_written_form_is_the_documented_one_and_a_full_item_round_trips() {
     let full = json!({
         "name": "Portraits", "bypass": true, "pos": [3, 1], "same_for_all": false,
         "all": { "blemish": 10, "dark_circles": 20, "even_skin": 30, "texture": -40,
-                 "skin_contrast": 50, "shadow_desaturation": 60, "shine_removal": 70, "teeth_whitening": 80 },
-        "faces": [ { "blemish": 90 }, { "texture": 100, "teeth_whitening": 5 } ],
+                 "skin_contrast": 50, "shadow_desaturation": 60, "shine_removal": 70, "teeth_whitening": 80,
+                 "teeth_desaturation": 35, "teeth_gamma": -45 },
+        "faces": [ { "blemish": 90 }, { "texture": 100, "teeth_whitening": 5, "teeth_gamma": 20 } ],
         "protect": { "strokes": [ { "size": 0.02, "hardness": 0.7, "erase": true, "points": [[0.1, 0.2], [0.3, 0.4]] } ],
                      "feather": 0.1, "grow": -0.2, "refine": 0.3 },
         "masks": { "invert": true, "items": [ { "kind": "radial" } ] },
@@ -171,6 +175,35 @@ fn the_written_form_is_the_documented_one_and_a_full_item_round_trips() {
     );
     assert!(!f.same_for_all);
     assert_eq!(f.all.teeth_whitening, 80.0);
+    // S-19: the two teeth controls are read, and a face entry that leaves them out takes 0.
+    assert_eq!((f.all.teeth_desaturation, f.all.teeth_gamma), (35.0, -45.0));
+    assert_eq!(
+        (f.faces[0].teeth_desaturation, f.faces[0].teeth_gamma),
+        (0.0, 0.0)
+    );
+    assert_eq!(f.faces[1].teeth_gamma, 20.0);
+    assert!(!f.all.is_zero());
+    let zero = FaceSettings {
+        blemish: 0.0,
+        dark_circles: 0.0,
+        even_skin: 0.0,
+        ..DEFAULTS
+    };
+    assert!(zero.is_zero());
+    assert!(
+        !FaceSettings {
+            teeth_gamma: -1.0,
+            ..zero
+        }
+        .is_zero()
+    );
+    assert!(
+        !FaceSettings {
+            teeth_desaturation: 1.0,
+            ..zero
+        }
+        .is_zero()
+    );
     assert_eq!(f.faces.len(), 2);
     // A face entry that leaves an amount out takes its default (30, 30, 25 ...).
     assert_eq!(f.faces[0].blemish, 90.0);
@@ -255,7 +288,8 @@ fn an_unknown_field_is_refused_and_other_kinds_fields_are_not_a_face_refinement_
 fn every_amount_is_clamped_and_reported() {
     let (s, clamped) = with_face(json!({
         "all": { "blemish": 150, "dark_circles": -5, "even_skin": 101, "texture": -300,
-                 "skin_contrast": 120, "shadow_desaturation": -1, "shine_removal": 1000, "teeth_whitening": 100.5 },
+                 "skin_contrast": 120, "shadow_desaturation": -1, "shine_removal": 1000, "teeth_whitening": 100.5,
+                 "teeth_desaturation": 400, "teeth_gamma": -250 },
         "faces": [ { "blemish": 99, "texture": 500 }, { "teeth_whitening": -9 } ],
         "protect": { "feather": 4, "grow": -4, "refine": 9, "strokes": [ { "size": 9, "hardness": 3, "points": [[2, -1]] } ] },
     }))
@@ -272,6 +306,8 @@ fn every_amount_is_clamped_and_reported() {
             shadow_desaturation: 0.0,
             shine_removal: 100.0,
             teeth_whitening: 100.0,
+            teeth_desaturation: 100.0,
+            teeth_gamma: -100.0,
         }
     );
     assert_eq!((f.faces[0].blemish, f.faces[0].texture), (99.0, 100.0));
@@ -846,7 +882,8 @@ fn copy_carries_the_node_and_paste_replaces_the_targets_graph() {
     let mut src = base();
     src.apply_patch(
         &patch_of(json!({ "nodes": { "2": { "same_for_all": false, "name": "Faces",
-            "faces": [ { "blemish": 12 }, { "blemish": 34 } ],
+            "all": { "teeth_desaturation": 25, "teeth_gamma": -15 },
+            "faces": [ { "blemish": 12, "teeth_desaturation": 60 }, { "blemish": 34, "teeth_gamma": 45 } ],
             "protect": { "strokes": [ { "size": 0.03, "points": [[0.5, 0.5]] } ] },
             "masks": { "items": [ { "kind": "radial" }, { "kind": "object", "points": [[0.5, 0.5, true]] } ] } } } })),
         None,
@@ -885,6 +922,22 @@ fn copy_carries_the_node_and_paste_replaces_the_targets_graph() {
     assert_eq!(f.settings_for_face(1).blemish, 12.0);
     assert_eq!(f.settings_for_face(2).blemish, 34.0);
     assert_eq!(f.settings_for_face(5).blemish, 12.0);
+    // S-19: the teeth controls travel with Copy and Paste (and so with a preset's Nodes group), per face and in `all`.
+    assert_eq!((f.all.teeth_desaturation, f.all.teeth_gamma), (25.0, -15.0));
+    assert_eq!(
+        (
+            f.settings_for_face(1).teeth_desaturation,
+            f.settings_for_face(1).teeth_gamma
+        ),
+        (60.0, 0.0)
+    );
+    assert_eq!(
+        (
+            f.settings_for_face(2).teeth_desaturation,
+            f.settings_for_face(2).teeth_gamma
+        ),
+        (0.0, 45.0)
+    );
     assert_eq!(f.protect, face_of(&src).protect);
     // Object clicks are not copied: the pasted row arrives empty, as for correctors.
     assert_eq!(f.masks.items.len(), 2);
@@ -995,10 +1048,11 @@ fn the_schema_validates_what_the_core_writes_and_refuses_what_it_refuses() {
         "shadow_desaturation",
         "shine_removal",
         "teeth_whitening",
+        "teeth_desaturation",
     ] {
         assert_eq!(range(&defs[name]), FACE_AMOUNT_RANGE, "{name}");
     }
-    for name in ["texture", "skin_contrast"] {
+    for name in ["texture", "skin_contrast", "teeth_gamma"] {
         assert_eq!(range(&defs[name]), FACE_BIPOLAR_RANGE, "{name}");
     }
     let d = FaceSettings::default();
@@ -1011,6 +1065,8 @@ fn the_schema_validates_what_the_core_writes_and_refuses_what_it_refuses() {
         ("shadow_desaturation", d.shadow_desaturation),
         ("shine_removal", d.shine_removal),
         ("teeth_whitening", d.teeth_whitening),
+        ("teeth_desaturation", d.teeth_desaturation),
+        ("teeth_gamma", d.teeth_gamma),
     ] {
         assert_eq!(defs[name]["default"].as_f64(), Some(value), "{name}");
     }

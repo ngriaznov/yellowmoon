@@ -111,6 +111,10 @@ pub struct TeethStep {
     pub bytes: Vec<u8>,
     /// Teeth whitening, 0..=1.
     pub amount: f64,
+    /// Teeth desaturation, 0..=1 (S-19).
+    pub desaturation: f64,
+    /// Teeth gamma, -1..=1 (S-19).
+    pub gamma: f64,
 }
 
 /// What the CPU's plan says one face does on a region (`ym_retouch::DeviceFace`).
@@ -956,7 +960,12 @@ fn record_teeth(rec: &mut Rec<'_, '_>, teeth: &TeethStep, at: usize) -> Result<(
     let mut u = rec.base();
     u.a = [i(rect.0), i(rect.1), i(rect.2), i(rect.3)];
     u.b = [i(at), 0, 0, 0];
-    u.f = [teeth.amount as f32, 0.0, 0.0, 0.0];
+    u.f = [
+        teeth.amount as f32,
+        teeth.desaturation as f32,
+        teeth.gamma as f32,
+        0.0,
+    ];
     rec.run(Op::TApply, u, groups2(rect.2, rect.3))
 }
 
@@ -1017,6 +1026,7 @@ mod tests {
             ("TEETH_LIGHT_LIN", ym_retouch::TEETH_LIGHT_LIN),
             ("TEETH_LIGHT_QUAD", ym_retouch::TEETH_LIGHT_QUAD),
             ("TEETH_CAP_RISE", ym_retouch::TEETH_CAP_RISE),
+            ("TEETH_GAMMA_FLOOR", ym_retouch::TEETH_GAMMA_FLOOR),
         ] {
             let line = source
                 .lines()

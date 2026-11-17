@@ -15,9 +15,9 @@ use super::NodePos;
 use super::graph::DEFAULT_FACE_REFINEMENT_NAME;
 use super::masks::{BrushMask, MaskSettings};
 
-/// Range of Blemish, Dark circles, Even skin, Shadow desaturation, Shine removal and Whitening.
+/// Range of Blemish, Dark circles, Even skin, Shadow desaturation, Shine removal, Whitening and Teeth desaturation.
 pub const FACE_AMOUNT_RANGE: (f64, f64) = (0.0, 100.0);
-/// Range of Texture and of Skin contrast.
+/// Range of Texture, of Skin contrast and of Teeth gamma.
 pub const FACE_BIPOLAR_RANGE: (f64, f64) = (-100.0, 100.0);
 /// The most faces a node holds settings for (`docs/27` section 11 item 9: at most 32 faces are kept).
 pub const MAX_FACES: usize = 32;
@@ -45,6 +45,10 @@ pub struct FaceSettings {
     pub shine_removal: f64,
     /// Teeth › Whitening, 0 to 100.
     pub teeth_whitening: f64,
+    /// Teeth › Desaturation, 0 to 100 (S-19; needs 0.2.4-beta.2 or later when above 0).
+    pub teeth_desaturation: f64,
+    /// Teeth › Gamma, -100 to 100 (S-19; needs 0.2.4-beta.2 or later when not 0).
+    pub teeth_gamma: f64,
 }
 
 impl Default for FaceSettings {
@@ -60,6 +64,8 @@ impl Default for FaceSettings {
             shadow_desaturation: 0.0,
             shine_removal: 0.0,
             teeth_whitening: 0.0,
+            teeth_desaturation: 0.0,
+            teeth_gamma: 0.0,
         }
     }
 }
@@ -78,6 +84,8 @@ impl FaceSettings {
             shadow_desaturation: self.shadow_desaturation as f32,
             shine_removal: self.shine_removal as f32,
             teeth_whitening: self.teeth_whitening as f32,
+            teeth_desaturation: self.teeth_desaturation as f32,
+            teeth_gamma: self.teeth_gamma as f32,
         }
     }
 
@@ -92,6 +100,8 @@ impl FaceSettings {
             && self.shadow_desaturation == 0.0
             && self.shine_removal == 0.0
             && self.teeth_whitening == 0.0
+            && self.teeth_desaturation == 0.0
+            && self.teeth_gamma == 0.0
     }
 
     /// Clamps every amount to its range and returns whether any was changed.
@@ -118,6 +128,12 @@ impl FaceSettings {
                 &mut self.teeth_whitening,
                 FACE_AMOUNT_RANGE,
             ),
+            (
+                "teeth_desaturation",
+                &mut self.teeth_desaturation,
+                FACE_AMOUNT_RANGE,
+            ),
+            ("teeth_gamma", &mut self.teeth_gamma, FACE_BIPOLAR_RANGE),
         ] {
             let (x, c) = super::clamp_to(&format!("{prefix}.{name}"), *v, range)?;
             *v = x;

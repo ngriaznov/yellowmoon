@@ -337,7 +337,7 @@ describe("the Face Refinement node (docs/27 S-11a)", () => {
       bypass: false,
       pos: [1, 0],
       same_for_all: true,
-      all: { blemish: 30, dark_circles: 30, even_skin: 25, texture: 0, skin_contrast: 0, shadow_desaturation: 0, shine_removal: 0, teeth_whitening: 0 },
+      all: { blemish: 30, dark_circles: 30, even_skin: 25, texture: 0, skin_contrast: 0, shadow_desaturation: 0, shine_removal: 0, teeth_whitening: 0, teeth_desaturation: 0, teeth_gamma: 0 },
       faces: [],
       protect: { strokes: [], feather: 0, grow: 0, refine: 0 },
       masks: { invert: false, items: [] },

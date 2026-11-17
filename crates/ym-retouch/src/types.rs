@@ -288,6 +288,10 @@ pub struct SkinSettings {
     pub shine_removal: f32,
     /// Teeth whitening, 0..=100.
     pub teeth_whitening: f32,
+    /// Teeth desaturation, 0..=100 (`docs/27` 7.8, S-19).
+    pub teeth_desaturation: f32,
+    /// Teeth gamma, -100..=100; 0 leaves the teeth's light unchanged (`docs/27` 7.8, S-19).
+    pub teeth_gamma: f32,
 }
 
 /// Clamps to a range; NaN becomes `neutral` (clamped too).
@@ -311,6 +315,8 @@ impl SkinSettings {
             shadow_desaturation: clamp_f32(self.shadow_desaturation, 0.0, 100.0, 0.0),
             shine_removal: clamp_f32(self.shine_removal, 0.0, 100.0, 0.0),
             teeth_whitening: clamp_f32(self.teeth_whitening, 0.0, 100.0, 0.0),
+            teeth_desaturation: clamp_f32(self.teeth_desaturation, 0.0, 100.0, 0.0),
+            teeth_gamma: clamp_f32(self.teeth_gamma, -100.0, 100.0, 0.0),
         }
     }
 
@@ -352,6 +358,21 @@ impl SkinSettings {
     /// `tw = teeth_whitening / 100`, in 0..=1.
     pub fn tw(&self) -> f64 {
         f64::from(self.clamped().teeth_whitening) / 100.0
+    }
+
+    /// `td = teeth_desaturation / 100`, in 0..=1.
+    pub fn td(&self) -> f64 {
+        f64::from(self.clamped().teeth_desaturation) / 100.0
+    }
+
+    /// `tg = teeth_gamma / 100`, in -1..=1.
+    pub fn tg(&self) -> f64 {
+        f64::from(self.clamped().teeth_gamma) / 100.0
+    }
+
+    /// True when any of the three teeth amounts (7.8) is not 0: the teeth step runs.
+    pub fn teeth_active(&self) -> bool {
+        self.tw() > 0.0 || self.td() > 0.0 || self.tg() != 0.0
     }
 
     /// True when any of the three skin-grading amounts (7.7) is not 0.

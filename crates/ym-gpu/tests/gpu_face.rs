@@ -120,6 +120,8 @@ fn all() -> SkinSettings {
         shadow_desaturation: 60.0,
         shine_removal: 60.0,
         teeth_whitening: 70.0,
+        teeth_desaturation: 30.0,
+        teeth_gamma: 25.0,
         ..settings(60.0, 60.0, 60.0)
     }
 }
@@ -262,6 +264,8 @@ fn plain(plan: &DevicePlan) -> FacePlan {
                         rect: (t.rect.x_px, t.rect.y_px, t.rect.width_px, t.rect.height_px),
                         bytes: t.bytes.clone(),
                         amount: t.tw,
+                        desaturation: t.td,
+                        gamma: t.tg,
                     }),
             })
             .collect(),
@@ -562,6 +566,31 @@ fn teeth_whitening_matches_the_cpu() {
         let half = downscale2(&s.full);
         compare("teeth", &s, &s.full, 1.0, GATE_TOOLS, false);
         compare("teeth", &s, &half, 0.5, GATE_TOOLS, false);
+    }
+}
+
+/// S-19: Desaturation and Gamma, alone and with Whitening, both signs of Gamma.
+#[test]
+fn teeth_desaturation_and_gamma_match_the_cpu() {
+    for (whitening, desaturation, gamma) in [
+        (0.0, 100.0, 0.0),
+        (0.0, 40.0, 0.0),
+        (0.0, 0.0, 70.0),
+        (0.0, 0.0, -70.0),
+        (60.0, 50.0, 40.0),
+        (100.0, 100.0, 100.0),
+        (30.0, 20.0, -100.0),
+    ] {
+        let teeth = SkinSettings {
+            teeth_whitening: whitening,
+            teeth_desaturation: desaturation,
+            teeth_gamma: gamma,
+            ..SkinSettings::default()
+        };
+        let s = scene(&[teeth]);
+        let half = downscale2(&s.full);
+        compare("teeth S-19", &s, &s.full, 1.0, GATE_TOOLS, false);
+        compare("teeth S-19", &s, &half, 0.5, GATE_TOOLS, false);
     }
 }
 

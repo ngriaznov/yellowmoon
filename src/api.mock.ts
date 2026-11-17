@@ -930,6 +930,8 @@ function clampFaceRefinement(s: FaceRefinementItem): FaceRefinementItem {
     shadow_desaturation: clamp(f.shadow_desaturation, 0, 100),
     shine_removal: clamp(f.shine_removal, 0, 100),
     teeth_whitening: clamp(f.teeth_whitening, 0, 100),
+    teeth_desaturation: clamp(f.teeth_desaturation, 0, 100),
+    teeth_gamma: clamp(f.teeth_gamma, -100, 100),
   });
   return {
     ...s,

@@ -76,6 +76,7 @@ fn bench(c: &mut Criterion) {
         shadow_desaturation: 40.0,
         shine_removal: 40.0,
         teeth_whitening: 60.0,
+        ..SkinSettings::default()
     };
     let faces = [(face, settings)];
     let full = picture(FULL.0, FULL.1);

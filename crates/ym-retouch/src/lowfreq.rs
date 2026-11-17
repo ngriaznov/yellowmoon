@@ -243,6 +243,22 @@ pub const TEETH_LIGHT_QUAD: f64 = 0.25;
 /// tooth (1.1 at 1).
 pub const TEETH_CAP_RISE: f64 = 0.1;
 
+/// Teeth gamma (S-19): the lightness is raised to the power `g = 2^(-tg)` about the brightest tooth, so `tg` 1 is `g` 0.5
+/// (brighter midtones) and -1 is `g` 2 (darker). The curve is linear below this fraction of `L_max` (a gain of at most
+/// `(1 / TEETH_GAMMA_FLOOR)^|g - 1|`), so the dark gaps between teeth are not blown up.
+pub const TEETH_GAMMA_FLOOR: f64 = 0.0625;
+
+/// The gain of Teeth gamma (7.8, S-19) on a pixel of lightness `l`: `(min(l, l_max) / l_max)^(g - 1)` with `g = 2^(-tg)`, the
+/// ratio floored at [`TEETH_GAMMA_FLOOR`]. 1 above `l_max` (the brightest tooth stays where it is, and nothing is pushed past it),
+/// 1 at `tg` 0 and when `l_max` is not positive.
+pub fn teeth_gamma_gain(l: f64, tg: f64, l_max: f64) -> f64 {
+    if tg == 0.0 || l_max <= 1e-4 {
+        return 1.0;
+    }
+    let ratio = (l.min(l_max) / l_max).max(TEETH_GAMMA_FLOOR);
+    ratio.powf((-tg).exp2() - 1.0)
+}
+
 /// 7.8 teeth whitening for one pixel: chroma toward neutral and more light, never far past the
 /// brightest tooth. With `L = mean(src)`, `l_max` the mask's 99th percentile of `L`:
 ///
@@ -253,14 +269,37 @@ pub const TEETH_CAP_RISE: f64 = 0.1;
 /// ```
 ///
 /// `r` and `l` are the curves of [`TEETH_CHROMA_LIN`] and [`TEETH_LIGHT_LIN`]; both rise with `tw`.
+/// This is [`teeth_pixel_with`] with Desaturation and Gamma at 0.
 pub fn teeth_pixel(src: [f64; 3], tw: f64, m: f64, l_max: f64) -> [f64; 3] {
+    teeth_pixel_with(src, tw, 0.0, 0.0, m, l_max)
+}
+
+/// [`teeth_pixel`] with Desaturation `td` (0..=1) and Gamma `tg` (-1..=1), the three steps of 7.8 in order with the one mask `m`
+/// (S-19):
+///
+/// ```text
+/// f    = (1 - r(tw) * m) * (1 - td * m)         the two chroma removals multiply: neither overshoots neutral
+/// c    = L + f * (src - L)
+/// w    = c * min(1 + l(tw) * m, max(cap, 1))    Whitening
+/// out  = w * (1 + (gain_g(mean(w)) - 1) * m)    Gamma, on the colour as a gain, so the hue holds
+/// ```
+///
+/// `td` removes chroma toward the pixel's own neutral and leaves its lightness alone. With `td` and `tg` 0 the result is
+/// [`teeth_pixel`]'s bit for bit, and with all three 0 it is `src`.
+pub fn teeth_pixel_with(src: [f64; 3], tw: f64, td: f64, tg: f64, m: f64, l_max: f64) -> [f64; 3] {
     let l = (src[0] + src[1] + src[2]) / 3.0;
     let chroma_removed = TEETH_CHROMA_LIN * tw - TEETH_CHROMA_QUAD * tw * tw;
     let light = TEETH_LIGHT_LIN * tw + TEETH_LIGHT_QUAD * tw * tw;
-    let f = 1.0 - chroma_removed * m;
+    let f = (1.0 - chroma_removed * m) * (1.0 - td * m);
     let cap = (1.0 + TEETH_CAP_RISE * tw * tw) * l_max / l.max(1e-4);
     let gain = (1.0 + light * m).min(cap.max(1.0));
-    [0, 1, 2].map(|c| (l + f * (src[c] - l)) * gain)
+    let out = [0, 1, 2].map(|c| (l + f * (src[c] - l)) * gain);
+    if tg == 0.0 {
+        return out;
+    }
+    let lw = (out[0] + out[1] + out[2]) / 3.0;
+    let g = 1.0 + (teeth_gamma_gain(lw, tg, l_max) - 1.0) * m;
+    out.map(|v| v * g)
 }
 
 /// Resamples a full-resolution mask to the working image (`docs/27` decision 1): bilinear,
@@ -660,7 +699,7 @@ pub fn tones_region(
     let dc_mask = working(settings.dc() > 0.0, masks.dark_circles)?;
     let se_mask = working(settings.se() > 0.0, masks.even_skin)?;
     let g_mask = working(settings.grading_active(), masks.grading)?;
-    let teeth_mask = working(settings.tw() > 0.0, masks.teeth)?;
+    let teeth_mask = working(settings.teeth_active(), masks.teeth)?;
     let p = LowFreqParams::new(d, settings.t(), settings.dc(), settings.se());
     let mut out = padded_region(
         &[(&dc_mask, p.r_dc), (&se_mask, p.r_se), (&g_mask, p.r_g)],
@@ -715,6 +754,10 @@ pub struct TeethPlan {
     pub bytes: Vec<u8>,
     /// Teeth whitening `tw`, 0..=1.
     pub tw: f64,
+    /// Teeth desaturation `td`, 0..=1.
+    pub td: f64,
+    /// Teeth gamma `tg`, -1..=1.
+    pub tg: f64,
 }
 
 /// The tools of one face on a part, as the device runs them.
@@ -753,7 +796,7 @@ pub(crate) fn tones_plan(
     let dc_mask = working(settings.dc() > 0.0, masks.dark_circles)?;
     let se_mask = working(settings.se() > 0.0, masks.even_skin)?;
     let g_mask = working(settings.grading_active(), masks.grading)?;
-    let teeth_mask = working(settings.tw() > 0.0, masks.teeth)?;
+    let teeth_mask = working(settings.teeth_active(), masks.teeth)?;
     let p = LowFreqParams::new(d, settings.t(), settings.dc(), settings.se());
     let low = padded_region(
         &[(&dc_mask, p.r_dc), (&se_mask, p.r_se), (&g_mask, p.r_g)],
@@ -774,6 +817,8 @@ pub(crate) fn tones_plan(
         rect: bm.region,
         bytes: bm.mask.data,
         tw: settings.tw(),
+        td: settings.td(),
+        tg: settings.tg(),
     });
     if low.is_none() && teeth.is_none() {
         return Ok(None);
@@ -820,7 +865,7 @@ pub(crate) fn tones_with(
     let dc_mask = working(settings.dc() > 0.0, masks.dark_circles)?;
     let se_mask = working(settings.se() > 0.0, masks.even_skin)?;
     let g_mask = working(settings.grading_active(), masks.grading)?;
-    let teeth_mask = working(settings.tw() > 0.0, masks.teeth)?;
+    let teeth_mask = working(settings.teeth_active(), masks.teeth)?;
     let low = dc_mask.is_some() || se_mask.is_some() || g_mask.is_some();
     if low {
         low_frequency_pass(
@@ -833,7 +878,12 @@ pub(crate) fn tones_with(
         );
     }
     if let Some(bm) = &teeth_mask {
-        whiten_teeth(image, bm, settings.tw(), protect);
+        whiten_teeth(
+            image,
+            bm,
+            [settings.tw(), settings.td(), settings.tg()],
+            protect,
+        );
     }
     Ok(low || teeth_mask.is_some())
 }
@@ -847,7 +897,12 @@ fn protect_keep(protect: Option<&Mask>, x: usize, y: usize) -> f64 {
 
 /// Teeth whitening (7.8) in the working-resolution teeth mask: `L_max` is the 99th percentile of
 /// `L` over the pixels where the mask is not 0, taken from the image as it is.
-fn whiten_teeth(image: &mut LinearAwg4Image, bm: &BoundedMask, tw: f64, protect: Option<&Mask>) {
+fn whiten_teeth(
+    image: &mut LinearAwg4Image,
+    bm: &BoundedMask,
+    [tw, td, tg]: [f64; 3],
+    protect: Option<&Mask>,
+) {
     let iw = image.width_px as usize;
     let (x0, y0) = (bm.region.x_px as usize, bm.region.y_px as usize);
     let (rw, rh) = (bm.region.width_px as usize, bm.region.height_px as usize);
@@ -873,7 +928,7 @@ fn whiten_teeth(image: &mut LinearAwg4Image, bm: &BoundedMask, tw: f64, protect:
                 }
                 let px = &mut row[x0 + x];
                 let src = [f64::from(px[0]), f64::from(px[1]), f64::from(px[2])];
-                let out = teeth_pixel(src, tw, keep * f64::from(byte) / 255.0, l_max);
+                let out = teeth_pixel_with(src, tw, td, tg, keep * f64::from(byte) / 255.0, l_max);
                 *px = [out[0] as f32, out[1] as f32, out[2] as f32];
             }
         });
@@ -1704,6 +1759,140 @@ mod tests {
         let bright = teeth_pixel([0.8, 0.8, 0.8], 1.0, 1.0, 0.82);
         assert!((l(bright) - 0.82 * 1.1).abs() < 1e-9, "{}", l(bright));
         assert_eq!(teeth_pixel(src, 0.0, 1.0, 10.0), src);
+    }
+
+    /// S-19: Desaturation and Gamma on one pixel.
+    #[test]
+    fn teeth_desaturation_and_gamma_of_s19() {
+        let src = [0.50, 0.44, 0.26];
+        let l = |p: [f64; 3]| (p[0] + p[1] + p[2]) / 3.0;
+        let chroma = |p: [f64; 3]| (0..3).map(|k| (p[k] - l(p)).abs()).sum::<f64>();
+        // All three at 0: the pixel, bit for bit. The new amounts at 0: Whitening's own result, bit for bit.
+        assert_eq!(teeth_pixel_with(src, 0.0, 0.0, 0.0, 1.0, 0.6), src);
+        for tw in [0.0, 0.3, 1.0] {
+            assert_eq!(
+                teeth_pixel_with(src, tw, 0.0, 0.0, 0.7, 0.6),
+                teeth_pixel(src, tw, 0.7, 0.6)
+            );
+        }
+        // Desaturation 100: neutral teeth, the lightness held.
+        let d = teeth_pixel_with(src, 0.0, 1.0, 0.0, 1.0, 0.6);
+        assert!(chroma(d) < 1e-12, "{d:?}");
+        assert!((l(d) - l(src)).abs() < 1e-12);
+        // Half the amount keeps half the chroma, and the hue (the ratios of the differences).
+        let h = teeth_pixel_with(src, 0.0, 0.5, 0.0, 1.0, 0.6);
+        assert!((chroma(h) - 0.5 * chroma(src)).abs() < 1e-12);
+        // With Whitening at 100 (r 0.93) the two removals multiply, and nothing passes neutral.
+        let both = teeth_pixel_with(src, 1.0, 0.5, 0.0, 1.0, 10.0);
+        let white = teeth_pixel(src, 1.0, 1.0, 10.0);
+        assert!((chroma(both) - 0.5 * chroma(white)).abs() < 1e-12);
+        assert!((l(both) - l(white)).abs() < 1e-12);
+        let full = teeth_pixel_with(src, 1.0, 1.0, 0.0, 1.0, 10.0);
+        assert!(chroma(full) < 1e-12);
+        // Gamma: positive lifts a midtone, negative lowers it, the brightest tooth and above stay.
+        let mid = [0.30, 0.28, 0.26];
+        let up = teeth_pixel_with(mid, 0.0, 0.0, 1.0, 1.0, 0.8);
+        let down = teeth_pixel_with(mid, 0.0, 0.0, -1.0, 1.0, 0.8);
+        assert!(l(up) > l(mid) && l(down) < l(mid));
+        // L' = Lmax * (L / Lmax)^g with g 0.5: sqrt(0.28 * 0.8).
+        assert!((l(up) - (0.28f64 * 0.8).sqrt()).abs() < 1e-9, "{}", l(up));
+        // The hue holds: a gain on the colour.
+        assert!((up[0] / mid[0] - up[2] / mid[2]).abs() < 1e-12);
+        for tg in [-1.0, -0.4, 0.4, 1.0] {
+            let top = [0.8, 0.8, 0.8];
+            assert_eq!(teeth_pixel_with(top, 0.0, 0.0, tg, 1.0, 0.8), top);
+            let above = [0.9, 0.9, 0.9];
+            assert_eq!(teeth_pixel_with(above, 0.0, 0.0, tg, 1.0, 0.8), above);
+        }
+        // Nothing passes the brightest tooth when lifting, and the curve rises with the light.
+        let mut last = 0.0;
+        for k in 1..=40 {
+            let v = f64::from(k) * 0.02;
+            let o = l(teeth_pixel_with([v; 3], 0.0, 0.0, 1.0, 1.0, 0.8));
+            assert!(
+                o >= last - 1e-12 && (v > 0.8 || o <= 0.8 + 1e-12),
+                "{v}: {o}"
+            );
+            last = o;
+        }
+        // Dark gaps are not blown up: the gain is at most 4 at 100.
+        let dark = teeth_pixel_with([0.001; 3], 0.0, 0.0, 1.0, 1.0, 0.8);
+        assert!(dark[0] / 0.001 <= 4.0 + 1e-9);
+        // The mask scales the change.
+        let half = teeth_pixel_with(mid, 0.0, 0.0, 1.0, 0.5, 0.8);
+        assert!(l(half) > l(mid) && l(half) < l(up));
+        assert_eq!(teeth_pixel_with(mid, 0.3, 0.6, 0.6, 0.0, 0.8), mid);
+    }
+
+    /// S-19: through the whole tone pass, with the protect mask.
+    #[test]
+    fn teeth_desaturation_and_gamma_through_the_pass() {
+        let (image, face, masks, full) = mouth_picture();
+        let tools = ToolMasks {
+            teeth: masks.teeth.as_ref(),
+            ..ToolMasks::default()
+        };
+        let (cx, cy, ax, _) = crate::mock::mouth_ellipse(&face.rect);
+        let i = cy as usize * full.0 as usize + (cx + 0.3 * ax) as usize;
+        let run = |s: SkinSettings, protect: Option<&Mask>| {
+            let mut out = image.clone();
+            let done = retouch_tones(&mut out, full, &face, &s, 1.0, &tools, protect).unwrap();
+            (out, done)
+        };
+        // Desaturation alone runs the teeth step, neutralises the teeth and holds their lightness.
+        let (d, done) = run(
+            SkinSettings {
+                teeth_desaturation: 100.0,
+                ..Default::default()
+            },
+            None,
+        );
+        assert!(done);
+        assert!(chroma(d.data[i]) < 1e-5 * lum(d.data[i]), "{:?}", d.data[i]);
+        assert!((lum(d.data[i]) - lum(image.data[i])).abs() < 1e-6);
+        // Gamma alone runs it too: positive lifts, negative lowers, and no tooth passes the brightest.
+        let (up, done) = run(
+            SkinSettings {
+                teeth_gamma: 60.0,
+                ..Default::default()
+            },
+            None,
+        );
+        assert!(done);
+        let (down, _) = run(
+            SkinSettings {
+                teeth_gamma: -60.0,
+                ..Default::default()
+            },
+            None,
+        );
+        assert!(lum(up.data[i]) > lum(image.data[i]) && lum(down.data[i]) < lum(image.data[i]));
+        let tf = masks.teeth.as_ref().unwrap().to_full(full).unwrap();
+        let brightest = |im: &LinearAwg4Image| {
+            im.data
+                .iter()
+                .zip(&tf.data)
+                .filter(|(_, m)| **m > 0)
+                .map(|(p, _)| lum(*p))
+                .fold(0.0f64, f64::max)
+        };
+        assert!(brightest(&up) <= brightest(&image) + 1e-6);
+        // Protect 255 everywhere: the image is untouched, bit for bit.
+        let protect = Mask {
+            width_px: full.0,
+            height_px: full.1,
+            data: vec![255; (full.0 * full.1) as usize],
+        };
+        let (kept, _) = run(
+            SkinSettings {
+                teeth_desaturation: 100.0,
+                teeth_gamma: 80.0,
+                teeth_whitening: 50.0,
+                ..Default::default()
+            },
+            Some(&protect),
+        );
+        assert_eq!(kept, image);
     }
 
     #[test]

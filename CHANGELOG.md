@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Added
+
+- **Teeth: Desaturation and Gamma.** The **Teeth** card of Face Refinement has two more sliders under **Whitening**, both at 0 for a new node and set for each face like the others (**Same for all faces** and **Copy to other faces** cover them). **Desaturation** (0 to 100) takes the colour cast out of the teeth without making them brighter: at 100 they are neutral grey-white. **Gamma** (-100 to 100) brightens the teeth's midtones above 0 and darkens them below 0, and the brightest tooth stays as it is. At 0 both leave the picture as it was, so existing photos come out the same. A settings file that uses `teeth_desaturation` or `teeth_gamma` needs Yellowmoon 0.2.4-beta.2 or later.
+
 ### Fixed
 
 - **Save Preset could fail on a photo with a Face Refinement node, with "This file isn't a Yellowmoon preset."** Saving a preset with the Nodes group ticked left the Face Refinement nodes out but kept the links to them, so the preset could not be made, and the error said the file was not a preset when no file had been written. Face Refinement nodes are now saved with the other nodes, without the strokes painted on one photo (Protect strokes, Brush strokes and Object clicks), like the other nodes. A preset is also checked before it is written: if it could not be read back, nothing is written and the message says so, so a saved preset is never listed as damaged. A preset that cannot be made now has its own message.

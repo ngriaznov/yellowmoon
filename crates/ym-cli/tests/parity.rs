@@ -1666,7 +1666,8 @@ fn face_doc() -> serde_json::Value {
     serde_json::json!({ "nodes": { "items": [
         { "id": 2, "kind": "face_refinement", "pos": [1, 0], "same_for_all": false,
           "faces": [ { "blemish": 60, "dark_circles": 90, "even_skin": 90, "skin_contrast": 40 },
-                     { "dark_circles": 70, "even_skin": 60, "shadow_desaturation": 50, "teeth_whitening": 50 } ],
+                     { "dark_circles": 70, "even_skin": 60, "shadow_desaturation": 50, "teeth_whitening": 50,
+                       "teeth_desaturation": 60, "teeth_gamma": 40 } ],
           "protect": { "strokes": [ { "size": 0.03, "points": [[0.55, 0.4], [0.6, 0.45]] } ], "feather": 0.2 } }
     ], "links": [
         { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },

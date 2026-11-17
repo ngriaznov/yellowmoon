@@ -294,6 +294,12 @@ pub struct FaceSettingsPatch {
     /// New Teeth whitening, 0 to 100.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teeth_whitening: Option<f64>,
+    /// New Teeth desaturation, 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teeth_desaturation: Option<f64>,
+    /// New Teeth gamma, -100 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teeth_gamma: Option<f64>,
 }
 
 impl FaceSettingsPatch {
@@ -309,6 +315,8 @@ impl FaceSettingsPatch {
             shadow_desaturation: Some(s.shadow_desaturation),
             shine_removal: Some(s.shine_removal),
             teeth_whitening: Some(s.teeth_whitening),
+            teeth_desaturation: Some(s.teeth_desaturation),
+            teeth_gamma: Some(s.teeth_gamma),
         }
     }
 
@@ -324,7 +332,9 @@ impl FaceSettingsPatch {
             skin_contrast,
             shadow_desaturation,
             shine_removal,
-            teeth_whitening
+            teeth_whitening,
+            teeth_desaturation,
+            teeth_gamma
         );
     }
 }

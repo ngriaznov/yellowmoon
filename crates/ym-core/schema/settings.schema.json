@@ -600,6 +600,20 @@
           "maximum": 100,
           "default": 0,
           "description": "Teeth, Whitening."
+        },
+        "teeth_desaturation": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 0,
+          "description": "Teeth, Desaturation: removes the colour cast from the teeth without changing their lightness. Needs Yellowmoon 0.2.4-beta.2 or later."
+        },
+        "teeth_gamma": {
+          "type": "number",
+          "minimum": -100,
+          "maximum": 100,
+          "default": 0,
+          "description": "Teeth, Gamma: brightens (above 0) or darkens (below 0) the teeth's midtones; the brightest tooth stays as it is. Needs Yellowmoon 0.2.4-beta.2 or later."
         }
       }
     },

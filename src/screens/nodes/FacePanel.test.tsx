@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MockOptions } from "../../api.mock";
 import type { NodeLink, SettingsPatch } from "../../api/types";
 import { defaultFaceSettings, nodeOf } from "../../state/settingsGraph";
+import { FACE_TEXT } from "./faceModel";
 import type { FaceRefinementItem } from "../../state/settingsGraph";
 import { openPhotos, openTab, renderApp, tools, valueOf } from "../../test/harness";
 import type { Harness, UpdateSpy } from "../../test/harness";
@@ -352,6 +353,26 @@ describe("the Face card and its patches", () => {
     await waitFor(() => expect(node().all.blemish).toBe(30));
   });
 
+  it("has Desaturation from 0 to 100 and Gamma from -100 to 100, both under Whitening in the Teeth card (S-19)", async () => {
+    await setup(WITH_FACES(), { faces: "one" });
+    await ready(1);
+    const desaturation = screen.getByRole("slider", { name: "Desaturation" });
+    expect(desaturation).toHaveAttribute("aria-valuemin", "0");
+    expect(desaturation).toHaveAttribute("aria-valuemax", "100");
+    const gamma = screen.getByRole("slider", { name: "Gamma" });
+    expect(gamma).toHaveAttribute("aria-valuemin", "-100");
+    expect(gamma).toHaveAttribute("aria-valuemax", "100");
+    expect(gamma).toHaveAttribute("aria-valuenow", "0");
+    const teeth = within(card("Teeth"));
+    const whitening = teeth.getByRole("slider", { name: "Whitening" });
+    expect(teeth.getAllByRole("slider")).toEqual([whitening, desaturation, gamma]);
+    expect(FACE_TEXT.desaturationTip).toBe("Removes the colour cast from the teeth without brightening them.");
+    expect(FACE_TEXT.gammaTip).toBe("Brightens or darkens the teeth's midtones. The brightest tooth stays as it is.");
+    await type("Desaturation", "35");
+    await type("Gamma", "-20");
+    await waitFor(() => expect(node().all).toMatchObject({ teeth_desaturation: 35, teeth_gamma: -20 }));
+  });
+
   it("has Contrast and Texture bipolar and the others from 0 to 100", async () => {
     await setup(WITH_FACES(), { faces: "one" });
     await ready(1);
@@ -398,14 +419,18 @@ describe("the Face card and its patches", () => {
     expect(node().all).toEqual({ ...defaultFaceSettings(), skin_contrast: 10, teeth_whitening: 40 });
   });
 
-  it("Skin grading's Reset sets its three to 0, and Teeth's sets Whitening to 0", async () => {
-    await setup(WITH_FACES({ all: { blemish: 80, skin_contrast: 10, shadow_desaturation: 20, shine_removal: 30, teeth_whitening: 40 } }), { faces: "one" });
+  it("Skin grading's Reset sets its three to 0, and Teeth's sets Whitening, Desaturation and Gamma to 0", async () => {
+    await setup(
+      WITH_FACES({ all: { blemish: 80, skin_contrast: 10, shadow_desaturation: 20, shine_removal: 30, teeth_whitening: 40, teeth_desaturation: 50, teeth_gamma: -60 } }),
+      { faces: "one" },
+    );
     await ready(1);
     await h!.user.click(within(card("Skin grading")).getAllByRole("button", { name: "Reset" }).at(-1)!);
     await waitFor(() => expect(node().all.skin_contrast).toBe(0));
     expect(node().all).toMatchObject({ blemish: 80, skin_contrast: 0, shadow_desaturation: 0, shine_removal: 0, teeth_whitening: 40 });
     await h!.user.click(within(card("Teeth")).getAllByRole("button", { name: "Reset" }).at(-1)!);
     await waitFor(() => expect(node().all.teeth_whitening).toBe(0));
+    expect(node().all).toMatchObject({ teeth_desaturation: 0, teeth_gamma: 0 });
     expect(node().all.blemish).toBe(80);
   });
 
@@ -418,12 +443,15 @@ describe("the Face card and its patches", () => {
     await h!.user.click(faceButtons()[1]!);
     await type("Blemish", "66");
     await type("Whitening", "20");
+    await type("Desaturation", "35");
+    await type("Gamma", "-20");
     await waitFor(() => expect(node().faces[1]!.teeth_whitening).toBe(20));
+    await waitFor(() => expect(node().faces[1]).toMatchObject({ teeth_desaturation: 35, teeth_gamma: -20 }));
     expect(node().faces[0]!.blemish).toBe(30);
     await h!.user.click(within(tools()).getByRole("button", { name: "Copy to other faces" }));
     await waitFor(() => expect(node().faces[0]!.blemish).toBe(66));
     expect(node().faces).toHaveLength(5);
-    for (const f of node().faces) expect(f).toMatchObject({ blemish: 66, teeth_whitening: 20 });
+    for (const f of node().faces) expect(f).toMatchObject({ blemish: 66, teeth_whitening: 20, teeth_desaturation: 35, teeth_gamma: -20 });
     expect(node().all.blemish).toBe(30);
   });
 

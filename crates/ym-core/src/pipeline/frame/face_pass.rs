@@ -479,6 +479,8 @@ fn face_plan(plan: DevicePlan) -> FacePlan {
                         rect: rect(t.rect),
                         bytes: t.bytes,
                         amount: t.tw,
+                        desaturation: t.td,
+                        gamma: t.tg,
                     }),
                 }
             })
