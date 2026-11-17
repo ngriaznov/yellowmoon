@@ -20,14 +20,15 @@ mod support;
 
 use support::{decode, to_linear_awg4};
 use ym_core::pipeline::object::ObjectModel;
-use ym_core::pipeline::teeth::{EncodedMouth, SamTeeth};
+use ym_core::pipeline::teeth::SamTeeth;
 use ym_ml::mediapipe::blazeface::{BlazeFace, FaceFinder, FinderParams, Rgb8};
 use ym_retouch::face_parts::mouth_interior_mask;
 use ym_retouch::mediapipe::{FaceAnalysis, MediaPipeFaces};
 use ym_retouch::teeth::{
     CROP_FACTOR, GRID_PX, GumShape, MouthCrop, PromptShape, PromptStyle, Regions, TeethPrompt,
-    crop_mask, gum_prompt, select_candidate, teeth_prompt_with,
+    crop_mask, gum_prompt, lip_gap, select_candidate, teeth_prompt_with,
 };
+use ym_retouch::teeth::{CAVITY_ASPECT, CAVITY_COVER, MAX_SPILL, MIN_COVER};
 use ym_retouch::{Face, LinearAwg4Image, Mask, Rect, teeth_from_segment};
 
 const TEETH: u8 = 8;
@@ -105,7 +106,13 @@ fn locate(
     id: &str,
 ) -> Result<Located, String> {
     let (w, h, rgb) = decode(&images.join(format!("{id}.jpg")));
-    let label = read_label(&labels.join(format!("{id}.png")), w, h);
+    let lp = labels.join(format!("{id}.png"));
+    let unlabelled = !lp.exists();
+    let label = if unlabelled {
+        vec![0u8; w * h]
+    } else {
+        read_label(&lp, w, h)
+    };
     let image = to_linear_awg4(w, h, &rgb);
     let src = Rgb8::new(w, h, &rgb).expect("picture");
     let found = finder.find(&src, &FinderParams::default()).expect("find");
@@ -131,6 +138,17 @@ fn locate(
                 },
             ));
         }
+    }
+    if unlabelled {
+        best = found.first().map(|d| {
+            (
+                1,
+                Face {
+                    rect: Rect::new(d.rect.x_px, d.rect.y_px, d.rect.width_px, d.rect.height_px),
+                    scale: d.scale,
+                },
+            )
+        });
     }
     let Some((_, face)) = best.filter(|b| b.0 > 0) else {
         return Err("no face holds the teeth".into());
@@ -277,6 +295,47 @@ fn dump(args: &[String], from: usize, to: usize, step: usize) {
     }
 }
 
+/// Screening of unlabelled photos: the mouth of the face the finder ranks first, as a PNG, for the photos whose mesh opens.
+fn crops(args: &[String]) {
+    let (data_root, images, out) = (
+        PathBuf::from(&args[0]),
+        PathBuf::from(&args[1]),
+        PathBuf::from(&args[2]),
+    );
+    std::fs::create_dir_all(&out).expect("out");
+    let mp = data_root.join("models/mediapipe");
+    let finder = FaceFinder::new(BlazeFace::load(&mp).expect("blazeface weights"));
+    let engine = MediaPipeFaces::load(&mp).expect("mesh weights");
+    for id in ids(&images) {
+        let (w, h, rgb) = decode(&images.join(format!("{id}.jpg")));
+        let image = to_linear_awg4(w, h, &rgb);
+        let src = Rgb8::new(w, h, &rgb).expect("picture");
+        let found = finder.find(&src, &FinderParams::default()).expect("find");
+        let Some(d) = found.first() else { continue };
+        let face = Face {
+            rect: Rect::new(d.rect.x_px, d.rect.y_px, d.rect.width_px, d.rect.height_px),
+            scale: d.scale,
+        };
+        let Ok(Some(a)) = engine.analyse(&image, &face) else { continue };
+        let Some(crop) = MouthCrop::from_geometry(&a.geometry, 1.75) else { continue };
+        let Some(reg) = Regions::from_geometry(&a.geometry, &MouthCrop::from_geometry(&a.geometry, CROP_FACTOR).unwrap()) else { continue };
+        let side = 200usize;
+        let mut o = vec![0u8; side * side * 3];
+        for j in 0..side {
+            for i in 0..side {
+                let x = (crop.x_px + (i as f64 + 0.5) / side as f64 * crop.side_px).clamp(0.0, w as f64 - 1.0) as usize;
+                let y = (crop.y_px + (j as f64 + 0.5) / side as f64 * crop.side_px).clamp(0.0, h as f64 - 1.0) as usize;
+                o[(j * side + i) * 3..(j * side + i) * 3 + 3].copy_from_slice(&rgb[(y * w + x) * 3..(y * w + x) * 3 + 3]);
+            }
+        }
+        let f = std::fs::File::create(out.join(format!("{id}_a{:.2}.png", reg.aspect))).expect("png");
+        let mut e = png::Encoder::new(std::io::BufWriter::new(f), side as u32, side as u32);
+        e.set_color(png::ColorType::Rgb);
+        e.set_depth(png::BitDepth::Eight);
+        e.write_header().expect("header").write_image_data(&o).expect("data");
+    }
+}
+
 fn ids(images: &Path) -> Vec<String> {
     let mut ids: Vec<String> = std::fs::read_dir(images)
         .expect("images dir")
@@ -352,10 +411,11 @@ fn score(args: &[String]) {
         let band = gum_band(&loc);
         writeln!(
             text,
-            "{id}\t-\tinfo\tbandh_rel {:.4}\tband_px {}\tteeth_px {}",
-            band.rel, band.n_band, band.n_teeth
+            "{id}\t-\tinfo\tbandh_rel {:.4}\tband_px {}\tteeth_px {}\taspect {:.3}",
+            band.rel, band.n_band, band.n_teeth, enc.regions.aspect
         )
         .unwrap();
+        let mut shown: Vec<(String, Option<Mask>)> = Vec::new();
         for (name, method) in &methods {
             let seg = method(base, &loc, &enc, &dumps);
             let line = match seg {
@@ -368,10 +428,17 @@ fn score(args: &[String]) {
                             |m| m.to_full(size).unwrap(),
                         );
                     let fin = teeth_from_segment(&loc.mouth, &mask, loc.extent).expect("teeth");
-                    metrics(&fin, &loc, &band)
+                    let line = format!("{}\tlipgap {:.4}", metrics(&fin, &loc, &band), lip_gap(&logits, &enc.regions));
+                    shown.push((name.clone(), Some(fin)));
+                    line
                 }
             };
             writeln!(text, "{id}\t{name}\t{line}").unwrap();
+        }
+        if let Some(dir) = std::env::var_os("YM_OVERLAYS") {
+            if band.rel >= 0.02 || band.n_teeth == 0 {
+                overlay(&PathBuf::from(dir), &id, &images, &loc, &enc, &shown);
+            }
         }
         eprintln!("{id} scored");
     }
@@ -432,6 +499,60 @@ fn gum_band(loc: &Located) -> Band {
     }
 }
 
+/// Panels of the mouth: the photo, the label's teeth (green) with the opening's outline (blue), and each method's mask (red).
+fn overlay(dir: &Path, id: &str, images: &Path, loc: &Located, enc: &EncodedGeo, shown: &[(String, Option<Mask>)]) {
+    let (w, h, rgb) = decode(&images.join(format!("{id}.jpg")));
+    let c = &enc.crop;
+    let side = (c.side_px / 2.0).round() as i64;
+    let (cx, cy) = (c.x_px + c.side_px / 2.0, c.y_px + c.side_px / 2.0);
+    let (x0, y0) = (cx.round() as i64 - side / 2, cy.round() as i64 - side / 2);
+    let scale = (512 / side.max(1)).max(1) as usize;
+    let pick: Vec<&(String, Option<Mask>)> = shown
+        .iter()
+        .filter(|(n, _)| ["current", "select_mu5", "gumq_i0.7_s0.25", "gumq_i0.5_s0.4"].contains(&n.as_str()))
+        .collect();
+    let panels = 2 + pick.len();
+    let (pw, ph) = (side as usize * scale, side as usize * scale);
+    let mut out = vec![0u8; pw * panels * ph * 3];
+    for k in 0..panels {
+        for j in 0..ph {
+            for i in 0..pw {
+                let x = (x0 + (i / scale) as i64).clamp(0, w as i64 - 1) as usize;
+                let y = (y0 + (j / scale) as i64).clamp(0, h as i64 - 1) as usize;
+                let idx = y * w + x;
+                let mut px = [rgb[idx * 3], rgb[idx * 3 + 1], rgb[idx * 3 + 2]];
+                let blend = |px: &mut [u8; 3], col: [u8; 3]| {
+                    for q in 0..3 {
+                        px[q] = ((u16::from(px[q]) + u16::from(col[q])) / 2) as u8;
+                    }
+                };
+                if k == 1 {
+                    if loc.label[idx] == TEETH {
+                        blend(&mut px, [0, 255, 0]);
+                    }
+                    if loc.mouth.data[idx] >= 128 && loc.label[idx] != TEETH {
+                        blend(&mut px, [0, 0, 255]);
+                    }
+                } else if k >= 2 {
+                    if let Some(m) = &pick[k - 2].1 {
+                        if m.data[idx] >= 128 {
+                            blend(&mut px, [255, 0, 0]);
+                        }
+                    }
+                }
+                let o = (j * pw * panels + k * pw + i) * 3;
+                out[o..o + 3].copy_from_slice(&px);
+            }
+        }
+    }
+    std::fs::create_dir_all(dir).expect("overlay dir");
+    let f = std::fs::File::create(dir.join(format!("{id}.png"))).expect("png");
+    let mut e = png::Encoder::new(std::io::BufWriter::new(f), (pw * panels) as u32, ph as u32);
+    e.set_color(png::ColorType::Rgb);
+    e.set_depth(png::BitDepth::Eight);
+    e.write_header().expect("header").write_image_data(&out).expect("data");
+}
+
 fn metrics(fin: &Mask, loc: &Located, band: &Band) -> String {
     let (w, _h) = (loc.image.width_px as usize, loc.image.height_px as usize);
     let (x0, y0, x1, y1) = loc.window;
@@ -471,19 +592,101 @@ fn metrics(fin: &Mask, loc: &Located, band: &Band) -> String {
     )
 }
 
+/// Chooses with the gap to the lip rewarded: `score + mu * lip_gap`.
+fn choose_gap(c: &Cands, regions: &Regions, mu: f64) -> Option<usize> {
+    let cands: Vec<(&[f32], f32)> = c
+        .logits
+        .iter()
+        .zip(&c.iou)
+        .map(|(l, &i)| (&l[..], i))
+        .collect();
+    let (_, stats) = select_candidate(&cands, regions);
+    let mut best: Option<(usize, f64)> = None;
+    for (i, s) in stats.iter().enumerate() {
+        let valid = s.area > 0
+            && s.cover >= MIN_COVER
+            && s.score.is_finite()
+            && s.spill <= MAX_SPILL
+            && !(s.cover > CAVITY_COVER && regions.aspect > CAVITY_ASPECT);
+        if !valid {
+            continue;
+        }
+        let v = s.score + mu * lip_gap(&c.logits[i], regions);
+        if best.is_none_or(|b| v > b.1) {
+            best = Some((i, v));
+        }
+    }
+    best.map(|b| b.0)
+}
+
+/// The teeth minus the gum: the first answer's logits, cut by the best gum candidate of `name` that is a distinct thin region.
+fn minus_gum(
+    base: &Cands,
+    enc: &EncodedGeo,
+    d: &Dumps,
+    name: &str,
+    min_iou: f32,
+    max_share: f64,
+    mu: f64,
+) -> Option<Vec<f32>> {
+    let i = choose_gap(base, &enc.regions, mu)?;
+    let m1 = &base.logits[i];
+    let Some(g) = d.by_name.get(name) else {
+        return Some(m1.clone());
+    };
+    let area: usize = m1.iter().filter(|&&v| v > 0.0).count();
+    let mut best: Option<(usize, f32)> = None;
+    for (k, l) in g.logits.iter().enumerate() {
+        let both = m1.iter().zip(l).filter(|(a, b)| **a > 0.0 && **b > 0.0).count();
+        let share = both as f64 / area.max(1) as f64;
+        if g.iou[k] >= min_iou
+            && share > 0.01
+            && share <= max_share
+            && best.is_none_or(|b| g.iou[k] > b.1)
+        {
+            best = Some((k, g.iou[k]));
+        }
+    }
+    Some(match best {
+        None => m1.clone(),
+        Some((k, _)) => m1.iter().zip(&g.logits[k]).map(|(a, b)| a.min(-b)).collect(),
+    })
+}
+
 fn methods() -> Vec<(String, Method)> {
     let mut v: Vec<(String, Method)> = Vec::new();
     v.push((
         "current".into(),
         Box::new(|base, _, enc, _| choose(base, &enc.regions).map(|i| base.logits[i].clone())),
     ));
-    for name in ["neg015", "neg03", "deep"] {
+    for name in ["neg015", "deep"] {
         v.push((
             name.into(),
             Box::new(move |_, _, enc, d| {
                 let c = d.by_name.get(name)?;
                 choose(c, &enc.regions).map(|i| c.logits[i].clone())
             }),
+        ));
+    }
+    for mu in [2.0f64, 5.0, 10.0] {
+        v.push((
+            format!("select_mu{mu}"),
+            Box::new(move |base, _, enc, _| {
+                choose_gap(base, &enc.regions, mu).map(|i| base.logits[i].clone())
+            }),
+        ));
+    }
+    for (name, min_iou, share) in [
+        ("gumq", 0.5f32, 0.4f64),
+        ("gumq", 0.7, 0.4),
+        ("gumq", 0.7, 0.25),
+        ("gumq2", 0.5, 0.4),
+        ("gumq2", 0.7, 0.4),
+        ("gumq2", 0.7, 0.25),
+    ] {
+        v.push((
+            format!("{name}_i{min_iou}_s{share}"),
+            Box::new(move |base, _, enc, d| minus_gum(base, enc, d, name, min_iou, share, 0.0)),
         ));
     }
     v
@@ -504,6 +707,7 @@ fn main() {
     match mode.as_str() {
         "dump" => dump(&args, from, to, step),
         "score" => score(&args),
+        "crops" => crops(&args),
         other => panic!("unknown mode {other}"),
     }
     let _ = TeethPrompt::default();

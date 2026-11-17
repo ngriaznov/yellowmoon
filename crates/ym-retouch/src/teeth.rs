@@ -570,6 +570,46 @@ pub fn candidate_stats(logits: &[f32], iou: f32, regions: &Regions) -> Candidate
     }
 }
 
+/// How far a candidate's top edge stays below the opening's top edge (the upper lip's inner contour), as a share of the
+/// opening's width, averaged over the columns where both exist and capped at [`LIP_GAP_CAP`] per column. A mask that runs up to
+/// the lip across the whole opening (teeth and gum together, or teeth that reach the lip) has 0; a mask that stops at the teeth's
+/// own edge under a visible band of gum has the band's height (S-18).
+pub fn lip_gap(logits: &[f32], regions: &Regions) -> f64 {
+    let width = {
+        let (mut x0, mut x1) = (GRID_PX, 0usize);
+        for (i, &o) in regions.opening.iter().enumerate() {
+            if o {
+                x0 = x0.min(i % GRID_PX);
+                x1 = x1.max(i % GRID_PX);
+            }
+        }
+        (x1.saturating_sub(x0) + 1) as f64
+    };
+    let (mut sum, mut cols) = (0.0, 0usize);
+    for x in 0..GRID_PX {
+        let mut open_top = None;
+        let mut mask_top = None;
+        for y in 0..GRID_PX {
+            let i = y * GRID_PX + x;
+            if regions.opening[i] {
+                open_top.get_or_insert(y);
+                if logits[i] > 0.0 {
+                    mask_top = Some(y);
+                    break;
+                }
+            }
+        }
+        if let (Some(o), Some(m)) = (open_top, mask_top) {
+            sum += ((m - o) as f64 / width).min(LIP_GAP_CAP);
+            cols += 1;
+        }
+    }
+    if cols == 0 { 0.0 } else { sum / cols as f64 }
+}
+
+/// The most of the opening's width one column of [`lip_gap`] counts.
+pub const LIP_GAP_CAP: f64 = 0.10;
+
 /// Why no candidate was used. The `Display` is the sentence of the log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
