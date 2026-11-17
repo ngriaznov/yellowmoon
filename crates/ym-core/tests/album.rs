@@ -664,6 +664,127 @@ fn a_photo_without_an_answer_is_graded_by_default_autos_rule_and_never_asked() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Exporting an opened album (docs/31 "As built": an export never waits for an answer nobody will ask for)
+// ---------------------------------------------------------------------------------------------
+
+/// Starts an export and waits for the queue to go idle, at most 90 s: a hang fails the test instead of the suite.
+/// Returns the files written, by name.
+fn export_within(r: &Rig, scope: ApplyScope, to: &Path) -> Vec<(String, Vec<u8>)> {
+    let job = ExportJob {
+        scope,
+        options: ExportOptions {
+            destination: Some(to.to_path_buf()),
+            ..ExportOptions::default()
+        },
+    };
+    let id = r.core.export_start(&job).expect("queued");
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match r.events.recv_timeout(left) {
+            Ok(ExportEvent::Busy(false)) => break,
+            Ok(_) => {}
+            Err(_) => {
+                r.core.export_cancel(id);
+                panic!(
+                    "the export did not finish in 90 s: it is waiting for an answer nobody asks for"
+                );
+            }
+        }
+    }
+    let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(to)
+        .map(|d| {
+            d.flatten()
+                .map(|e| {
+                    (
+                        e.file_name().to_string_lossy().into_owned(),
+                        std::fs::read(e.path()).unwrap(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    files
+}
+
+#[test]
+fn an_opened_album_exports_when_the_provider_is_active_and_a_photo_has_no_stored_answer() {
+    // Saved by a session without a provider: no answer in the file. Opened where a provider acts.
+    let a = rig();
+    let dir = a.root.path().join("Plain");
+    write_photos(&dir, &["P1.ARW", "P2.ARW", "P3.ARW"]);
+    a.open(&dir);
+    let path = a.root.path().join("Plain.ymalbum");
+    a.core.album_save(&path).expect("saved");
+    let b = rig_with(fake_advisors());
+    b.core
+        .album_open(&path, OpenOptions::default())
+        .expect("opened");
+    b.settle();
+    let files = export_within(&b, ApplyScope::All, &b.root.path().join("out"));
+    assert_eq!(files.len(), 3, "every photo is exported");
+    assert_eq!(b.core.session.apple_auto_asks(), 0, "nothing was asked");
+    // The current photo alone, too.
+    let one = export_within(&b, ApplyScope::This, &b.root.path().join("one"));
+    assert_eq!(one.len(), 1);
+    // The file is the picture the viewport shows: the same bytes as the session without a provider.
+    let from_a = export_within(&a, ApplyScope::All, &a.root.path().join("out"));
+    assert_eq!(files, from_a, "Default Auto's grade, as on screen");
+}
+
+#[test]
+fn an_opened_album_exports_with_its_stored_answers_and_rerun_still_asks() {
+    let a = rig_with(fake_advisors());
+    let dir = a.root.path().join("Ask");
+    write_photos(&dir, &["Q1.ARW", "Q2.ARW", "Q3.ARW"]);
+    a.open(&dir);
+    let path = a.root.path().join("Ask.ymalbum");
+    a.core.album_save(&path).expect("saved");
+    let from_a = export_within(&a, ApplyScope::All, &a.root.path().join("out"));
+    let b = rig_with(fake_advisors());
+    b.core
+        .album_open(&path, OpenOptions::default())
+        .expect("opened");
+    b.settle();
+    let from_b = export_within(&b, ApplyScope::All, &b.root.path().join("out"));
+    assert_eq!(from_a.len(), 3);
+    assert_eq!(from_a, from_b, "the stored answers are used");
+    assert_eq!(b.core.session.apple_auto_asks(), 0);
+    // Re-run asks the provider again and the export then uses that answer.
+    let ids = b.core.session.photo_ids();
+    b.core.session.rerun_auto(ids[0]).expect("rerun");
+    let again = export_within(&b, ApplyScope::This, &b.root.path().join("again"));
+    assert_eq!(again.len(), 1);
+    assert_eq!(
+        b.core.session.apple_auto_asks(),
+        1,
+        "Re-run asked the provider"
+    );
+    assert!(matches!(
+        b.core.session.apple_result_of(ids[0]),
+        Some(AppleAuto::Answered { .. })
+    ));
+}
+
+#[test]
+fn an_opened_album_with_a_missing_photo_exports_the_others_with_a_provider() {
+    let (_r, path, shoot) = trip();
+    std::fs::remove_file(shoot.join("D2.ARW")).expect("remove the file");
+    let b = rig_with(fake_advisors());
+    b.core
+        .album_open(&path, OpenOptions::default())
+        .expect("opened");
+    b.settle();
+    let files = export_within(&b, ApplyScope::All, &b.root.path().join("out"));
+    assert_eq!(
+        files.len(),
+        2,
+        "the missing photo is skipped, the others exported"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
 // Finding the photos
 // ---------------------------------------------------------------------------------------------
 

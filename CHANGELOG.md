@@ -25,6 +25,8 @@ A second pre-release (a beta) for testing. It fixes what the owner found in beta
 
 - **Removing a photo no longer scrolls the filmstrip back to the start.** The strip stays where it was and the next photo (the previous one at the end) is selected.
 
+- **Exporting after opening an album no longer stays at 0 %.** With Apple Auto (or another Auto provider) on, an export waited for every photo to have the provider's answer. A photo of an album that has no stored answer (the provider failed on it, or it was saved without one) is never asked, so the export waited for an answer nobody would produce. Such a photo now counts as ready: it keeps its stored answer if it has one, and otherwise the grade Default Auto gives, which is the picture on screen. Opening an album still asks no provider, and Re-run still asks and the export then waits for the new answer.
+
 ### Known limits
 
 - Opening an album does not show "This file has changed since the album was saved." for a photo whose file differs from the one the album saw; its settings still apply. (`ym render --json` and `ym info` do say it.)
