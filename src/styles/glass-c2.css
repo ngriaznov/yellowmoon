@@ -653,6 +653,8 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   @apply glass rounded-none;
   --strip-inset: var(--pad-panel);
   --strip-gap: 8px;
+  /* The height of a thumbnail: the row less the inset above and below. Its width is 3:2 of it. */
+  --strip-thumb-h: calc(var(--filmstrip-min-h) - 1px - 2 * var(--strip-inset));
   /* The strip has a surface of its own, so the warm part of the aurora no longer sits under warm thumbnails. Three tried, one
      chosen: change --strip-surface to --strip-neutral, --strip-graphite, --strip-blue or --strip-tab and nothing else. */
   --strip-graphite: linear-gradient(to bottom, color-mix(in oklch, oklch(0.3 0.008 255) var(--strip-alpha), transparent), color-mix(in oklch, oklch(0.2 0.008 255) var(--strip-alpha), transparent));
@@ -693,6 +695,12 @@ html:has(.ym-screen[data-screen="photos"]) #root {
 .ym-filmstrip__item {
   display: flex;
   flex-shrink: 0;
+  /* The item has the thumbnail's size itself, from the strip's height, and not from what the thumbnail's own box says: an item sized by
+     its content (a height from a container unit through an aspect ratio) was left wider than its thumbnail by WebKit after the strip had
+     been hidden and shown again, a cell-sized gap after every thumbnail. */
+  box-sizing: border-box;
+  height: var(--strip-thumb-h);
+  width: calc(var(--strip-thumb-h) * 1.5);
 }
 /* Every thumbnail is the same 3:2 box, so a photo keeps its shape inside it (the picture is never stretched). The selected one is told
    apart by its ring, not by its size: a larger one could not keep the inset above and below it. */
@@ -700,7 +708,8 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   position: relative;
   flex-shrink: 0;
   box-sizing: border-box;
-  height: calc(var(--filmstrip-min-h) - 1px - 2 * var(--strip-inset));
+  width: 100%;
+  height: 100%;
   aspect-ratio: 3 / 2;
   padding: 0;
   border: 1px solid var(--rim);
@@ -710,8 +719,8 @@ html:has(.ym-screen[data-screen="photos"]) #root {
   cursor: default;
 }
 @supports (height: 1cqh) {
-  .ym-filmstrip__thumb {
-    height: calc(100cqh - 2 * var(--strip-inset));
+  .ym-filmstrip {
+    --strip-thumb-h: calc(100cqh - 2 * var(--strip-inset));
   }
 }
 .ym-filmstrip__thumb[aria-current="true"] {

@@ -25,7 +25,7 @@ A second pre-release (a beta) for testing. It fixes problems found in beta 1 (Sa
 
 - **Removing a photo no longer scrolls the filmstrip back to the start.** The strip stays where it was and the next photo (the previous one at the end) is selected.
 
-- **The filmstrip no longer looks empty after coming back from Export.** Going to Export and back to Photos could leave the strip blank, with its scroll bar but no photos, because the strip was built again and kept drawing for the place it had been. The strip now stays the same strip: it keeps its place, its photos and the photo on screen.
+- **The filmstrip no longer looks empty after coming back from Export.** Going to Export and back to Photos could leave the strip blank, with its scroll bar but no photos, because the strip was built again and kept drawing for the place it had been. The strip now stays the same strip: it keeps its place, its photos and the photo on screen. The thumbnails also no longer stand a cell apart after the trip: each one sits in a box of exactly its own size, and the strip measures its cells again whenever their size changes.
 
 - **Exporting after opening an album no longer stays at 0 %.** With Apple Auto (or another Auto provider) on, an export waited for every photo to have the provider's answer. A photo of an album that has no stored answer (the provider failed on it, or it was saved without one) is never asked, so the export waited for an answer nobody would produce. Such a photo now counts as ready: it keeps its stored answer if it has one, and otherwise the grade Default Auto gives, which is the picture on screen. Opening an album still asks no provider, and Re-run still asks and the export then waits for the new answer.
 
