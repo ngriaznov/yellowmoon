@@ -56,6 +56,9 @@ yanked = "deny"
 ignore = [
   { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained; compile-time proc macro only, pulled in by specta/tauri-specta, which we do not control. No safe upgrade exists." },
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained; compile-time proc macro only, pulled in by the gtk-rs 0.18 crates that Tauri uses on Linux (not part of the macOS app). No safe upgrade exists." },
+  # Published 2026-11-17. On macOS chrono comes only through rawler, the test oracle (tools/oracle, never shipped); on Linux
+  # also through trash (ym-looks), which the macOS app does not build. Revisit when trash and rawler move to another crate.
+  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained (a notice, not a vulnerability); not in the macOS app or CLI: only rawler (test oracle) and, on Linux, trash use it. No safe upgrade exists." },
 ]
 
 [sources]
