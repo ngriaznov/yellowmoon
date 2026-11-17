@@ -3174,7 +3174,12 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     albums.clear();
     for (const name of options.albums) {
       albums.set(`~/Pictures/${name}/${name}.ymalbum`, {
-        photos: SCENES.map((scene, index) => ({ index, name: scene.name, settings: defaultSettings(NEUTRAL), picked: index === 2 || index === 3 || index === 4, absolute: `~/Pictures/${name}/${scene.name}.ARW` })),
+        // `?mockPhotos=N` makes the album N photos long as well (the twelve repeating, named as the folder's are), for a strip that scrolls.
+        photos: Array.from({ length: Math.max(1, Math.floor(options.photoCount)) }, (_, index) => {
+          const scene = SCENES[index % SCENES.length] as Scene;
+          const photoName = index < SCENES.length ? scene.name : `DSC${String(4201 + index).padStart(5, "0")}`;
+          return { index, name: photoName, settings: defaultSettings(NEUTRAL), picked: index === 2 || index === 3 || index === 4, absolute: `~/Pictures/${name}/${photoName}.ARW` };
+        }),
         current: 3,
       });
     }
