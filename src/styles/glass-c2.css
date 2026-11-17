@@ -2549,7 +2549,7 @@ html[data-glass="off"] *::after {
   color: inherit;
 }
 .ym-face:focus-visible {
-  outline: 2px solid var(--ring);
+  outline: var(--ym-focus-width, 2px) solid var(--ring);
   outline-offset: 3px;
 }
 .ym-face__pic {
@@ -2714,6 +2714,10 @@ html[data-glass="off"] *::after {
     margin-left: 22%;
     animation: none;
   }
+}
+:root[data-reduce-motion] .ym-face-bar [data-slot="progress-indicator"] {
+  margin-left: 22%;
+  animation: none;
 }
 .ym-face-empty {
   padding: 6px 0 2px;
