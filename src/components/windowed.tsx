@@ -145,6 +145,14 @@ export function useWindowedRange(options: WindowedOptions): WindowedRange {
     accept({ scroll, view, pitch, size, origin });
   }, [accept, list]);
 
+  // The element that scrolls was made again (its parent was drawn with other elements): listen to the new one and measure it.
+  const [attached, setAttached] = useState(0);
+  useLayoutEffect(() => {
+    if (!windowed) return;
+    const el = horizontal ? (latest.current.scroller?.current ?? list.current) : scrollParent(list.current);
+    if (el !== scrollerRef.current) setAttached((n) => n + 1);
+  });
+
   // Which element scrolls, and listening to it. Re-attached when the list starts or stops being windowed.
   useLayoutEffect(() => {
     if (!windowed) return;
@@ -172,7 +180,7 @@ export function useWindowedRange(options: WindowedOptions): WindowedRange {
       observer?.disconnect();
       if (frame) cancelAnimationFrame(frame);
     };
-  }, [windowed, horizontal, list, measure, accept]);
+  }, [windowed, horizontal, list, measure, accept, attached]);
 
   // The first items drawn (or a first item that changed size) give the pitch; the count changing needs the range worked out again.
   useLayoutEffect(() => {
