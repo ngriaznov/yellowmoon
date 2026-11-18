@@ -28,6 +28,15 @@
 //! pipeline, the CPU's included (seeds 539 and 202; `seed_539_graph_0_reports_its_export_difference_and_is_not_enforced`).
 //! The run prints how many graphs were compared and how many were not enforced.
 //!
+//! **Unstable pixels (the owner, 2026-11-18: "Skip unstable pixels").** The bound of one 10-bit code (64 of 65535) between the device's
+//! export and the CPU's holds on every value except those where the CPU's own export is unstable: when an export is over the bound
+//! anywhere, the CPU renders the graph again with each continuous number of each mask row moved by +1e-5 and by -1e-5, one at a
+//! time, and a value that any of those renders moves by more than the bound is unstable (`judge_export`). Those values are printed,
+//! not enforced. A graph within the bound is never nudged. Three safeguards: a graph with no mask row has no exemption; more than
+//! `max(60, 0.01 % of the values)` unstable values fail; and the device's value at an unstable index must lie within the CPU's own
+//! range widened by the bound. (The case that led to it: seed 23 graph 0 on Metal, a one-code rounding of a Depth plane next to a
+//! thin dark line that the Output's sharpening amplifies; `a_one_code_change_of_a_depth_plane_moves_seed_23_only_through_output_sharpening`.)
+//!
 //! The run asserts that every generated kind appeared. The seeds are a fixed set plus one rotating seed, from
 //! `YM_GRAPH_SEED`, else `GITHUB_RUN_NUMBER`; each graph is printed with its seed and index, and a failing one with its
 //! settings as JSON. `YM_GRAPH_SEED=<n> cargo test -p ym-core --test any_graph` replays a rotating seed.
@@ -1324,9 +1333,19 @@ fn no_generated_graph_is_refused_by_the_device() {
                         worst_export = worst_export.max(max);
                     }
                     if enforced && max > TEN_BIT_CODE {
-                        problems.push(format!(
-                            "{name}: the PNG export differs from the CPU's by {max} of 65535"
-                        ));
+                        let judged = judge_export(
+                            &d,
+                            &g.settings,
+                            &decode_png16_bytes(&dev),
+                            &decode_png16_bytes(&cpu_bytes),
+                            home.path(),
+                            &name,
+                        );
+                        if let Some(f) = judged.failure {
+                            problems.push(format!(
+                                "{f} (the PNG export differs from the CPU's by {max} of 65535)"
+                            ));
+                        }
                     }
                 }
                 let (_, _, other) = export(
@@ -1809,6 +1828,176 @@ fn decode_png16_bytes(bytes: &[u8]) -> Vec<u32> {
         .collect()
 }
 
+/// How far a settings document's mask rows are nudged to see whether a value of the CPU's own export is stable.
+const NUDGE: f64 = 1e-5;
+/// The most unstable values a thin edge can account for: more than this (or 0.01 % of the export's values, if larger) fails.
+const MOST_UNSTABLE: usize = 60;
+
+/// The verdict of [`judge_export`].
+struct Judged {
+    /// Why the export fails the bound, `None` when it holds.
+    failure: Option<String>,
+}
+
+/// The device's PNG export against the CPU's under the 10-bit bound (`TEN_BIT_CODE`), with the owner's rule of 2026-11-18, "Skip
+/// unstable pixels": the bound holds on every value except those where the CPU's own export is unstable, and those are printed.
+///
+/// * Within the bound everywhere: nothing more is done (no nudging, no time).
+/// * Else the CPU renders the settings again with every continuous number of every mask row moved by +[`NUDGE`] and by
+///   -[`NUDGE`], one at a time (depth far, feather and refine; a range's centre, width and softness; a shape's place; ...). A value
+///   is **unstable** when any of those renders moves the CPU's own value there by more than the bound. The bound is enforced on
+///   every other value; each unstable value over the bound is printed with its index, the CPU's value, the device's, and the
+///   CPU's own range.
+/// * The safeguards that keep this from hiding a bug: (a) a graph with no mask row has no exemption; (b) more than
+///   `max(60, 0.01 % of the values)` unstable values fail, too many for a thin edge; (c) the device's value at an unstable index
+///   must lie within the CPU's own range widened by the bound.
+fn judge_export(
+    d: &Developed,
+    settings: &DevelopSettings,
+    dev: &[u32],
+    cpu: &[u32],
+    home: &Path,
+    name: &str,
+) -> Judged {
+    let diff = |a: u32, b: u32| a.abs_diff(b);
+    let over: Vec<usize> = (0..dev.len())
+        .filter(|&i| diff(dev[i], cpu[i]) > TEN_BIT_CODE)
+        .collect();
+    if over.is_empty() {
+        return Judged { failure: None };
+    }
+    let fail = |text: String| Judged {
+        failure: Some(format!("{name}: {text}")),
+    };
+    let Ok(doc) = serde_json::to_value(settings) else {
+        return fail(format!(
+            "{} values over {TEN_BIT_CODE}; the settings cannot be written as JSON to nudge them",
+            over.len()
+        ));
+    };
+    // The continuous numbers of the mask rows, as JSON pointers.
+    fn leaves(v: &Value, at: String, out: &mut Vec<String>) {
+        match v {
+            Value::Number(n) if n.is_f64() => out.push(at),
+            Value::Array(a) => a
+                .iter()
+                .enumerate()
+                .for_each(|(i, x)| leaves(x, format!("{at}/{i}"), out)),
+            Value::Object(o) => o
+                .iter()
+                .for_each(|(k, x)| leaves(x, format!("{at}/{k}"), out)),
+            _ => {}
+        }
+    }
+    let (mut rows, mut targets) = (0usize, Vec::new());
+    for (n, node) in doc["nodes"]["items"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
+        for (r, row) in node["masks"]["items"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+        {
+            rows += 1;
+            leaves(
+                row,
+                format!("/nodes/items/{n}/masks/items/{r}"),
+                &mut targets,
+            );
+        }
+    }
+    if rows == 0 {
+        return fail(format!(
+            "{} values over {TEN_BIT_CODE} (largest {}) and the graph has no mask row, so nothing is exempt",
+            over.len(),
+            over.iter()
+                .map(|&i| diff(dev[i], cpu[i]))
+                .max()
+                .unwrap_or(0)
+        ));
+    }
+    // The CPU's own range at every value, and how far a nudge moved it.
+    let (mut lo, mut hi) = (cpu.to_vec(), cpu.to_vec());
+    for at in &targets {
+        for sign in [1.0, -1.0] {
+            let mut nudged = doc.clone();
+            let Some(slot) = nudged.pointer_mut(at) else {
+                continue;
+            };
+            let Some(old) = slot.as_f64() else { continue };
+            *slot = json!(old + sign * NUDGE);
+            let Ok(Ok(valid)) =
+                serde_json::from_value::<DevelopSettings>(nudged).map(|s| s.validated())
+            else {
+                continue;
+            };
+            let png = export(d, &valid.0, renderer(None, 256), home, FormatKind::Png).2;
+            let moved = decode_png16_bytes(&png);
+            if moved.len() != cpu.len() {
+                continue;
+            }
+            for (i, m) in moved.iter().enumerate() {
+                lo[i] = lo[i].min(*m);
+                hi[i] = hi[i].max(*m);
+            }
+        }
+    }
+    let moved = |i: usize| (hi[i] - cpu[i]).max(cpu[i] - lo[i]);
+    let unstable = (0..dev.len()).filter(|&i| moved(i) > TEN_BIT_CODE).count();
+    let mut problems = Vec::new();
+    let stable_over: Vec<usize> = over
+        .iter()
+        .copied()
+        .filter(|&i| moved(i) <= TEN_BIT_CODE)
+        .collect();
+    if !stable_over.is_empty() {
+        let worst = stable_over
+            .iter()
+            .map(|&i| (diff(dev[i], cpu[i]), i))
+            .max()
+            .unwrap_or((0, 0));
+        problems.push(format!(
+            "{} stable values differ from the CPU's by more than {TEN_BIT_CODE} (largest {} at value {})",
+            stable_over.len(),
+            worst.0,
+            worst.1
+        ));
+    }
+    let most = MOST_UNSTABLE.max(dev.len() / 10_000);
+    if unstable > most {
+        problems.push(format!(
+            "{unstable} values of the CPU's own export are unstable (more than {most}): too many for a thin edge"
+        ));
+    }
+    for &i in over.iter().filter(|&&i| moved(i) > TEN_BIT_CODE) {
+        say(&format!(
+            "{name}: unstable value {i} (not enforced): CPU {}, device {}, the CPU's own range under a mask setting moved by {NUDGE:e}: {} to {}",
+            cpu[i], dev[i], lo[i], hi[i]
+        ));
+        if dev[i] + TEN_BIT_CODE < lo[i] || dev[i] > hi[i] + TEN_BIT_CODE {
+            problems.push(format!(
+                "the device's value {} at unstable value {i} is outside the CPU's own range {} to {} widened by {TEN_BIT_CODE}",
+                dev[i], lo[i], hi[i]
+            ));
+        }
+    }
+    say(&format!(
+        "{name}: {} values over {TEN_BIT_CODE}, {} of them unstable ({unstable} unstable in all, {} mask settings nudged)",
+        over.len(),
+        over.len() - stable_over.len(),
+        targets.len()
+    ));
+    Judged {
+        failure: (!problems.is_empty()).then(|| format!("{name}: {}", problems.join("; "))),
+    }
+}
+
 /// Regression (G-11): a view at scale 1 (zoom 50 to 150 %) of a photo with raster masks was made on the CPU when the wider
 /// picture the masks read did not fit one binding (the owner's 12 CPU frames of 198, 410 to 840 ms). The planes of such a view
 /// are made in tiles (`plane_tiles`), so the route is the device's whatever the binding size, down to the size where the
@@ -2274,11 +2463,22 @@ fn graphs_with_joins_are_exported_on_the_device() {
                     .max()
                     .unwrap_or(0);
                 worst = worst.max(max);
-                assert!(
-                    max <= TEN_BIT_CODE,
-                    "{name}: the PNG export is {max} of 65535 from the CPU's; settings: {}",
-                    g.json
-                );
+                if max > TEN_BIT_CODE {
+                    let judged = judge_export(
+                        &d,
+                        &g.settings,
+                        &decode_png16_bytes(&dev),
+                        &decode_png16_bytes(&want),
+                        home.path(),
+                        &name,
+                    );
+                    assert!(
+                        judged.failure.is_none(),
+                        "{}; the PNG export is {max} of 65535 from the CPU's; settings: {}",
+                        judged.failure.unwrap_or_default(),
+                        g.json
+                    );
+                }
                 changed += usize::from(dev != plain_bytes);
             }
         }
@@ -2444,13 +2644,16 @@ type Worst = (u32, usize, u32, u32);
 type Variant = Box<dyn Fn(&mut Value)>;
 
 /// The PNG exports of a settings document on the device and on the CPU: the largest difference of a value, the count of values
-/// over the 10-bit bound, and the six worst as (difference, value index, CPU's value, device's value).
+/// over the 10-bit bound, and the six worst as (difference, value index, CPU's value, device's value). With `judge`, the verdict of
+/// [`judge_export`] on the two (its failure, `None` when the bound holds or the values over it are the CPU's own unstable ones);
+/// without it the numbers are only reported.
 fn export_difference(
     d: &Developed,
     gpu: &Arc<Gpu>,
     doc: &str,
     home: &Path,
-) -> (u32, usize, Vec<Worst>) {
+    judge: bool,
+) -> (u32, usize, Vec<Worst>, Option<String>) {
     let settings = serde_json::from_str::<DevelopSettings>(doc)
         .expect("settings")
         .validated()
@@ -2469,6 +2672,11 @@ fn export_difference(
     );
     let (_, _, cpu) = export(d, &settings, renderer(None, 256), home, FormatKind::Png);
     let (dev, cpu) = (decode_png16_bytes(&dev), decode_png16_bytes(&cpu));
+    let failure = if judge {
+        judge_export(d, &settings, &dev, &cpu, home, "the export").failure
+    } else {
+        None
+    };
     let mut worst: Vec<Worst> = dev
         .iter()
         .zip(&cpu)
@@ -2478,7 +2686,7 @@ fn export_difference(
     let over = worst.iter().filter(|w| w.0 > TEN_BIT_CODE).count();
     worst.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     worst.truncate(6);
-    (worst.first().map_or(0, |w| w.0), over, worst)
+    (worst.first().map_or(0, |w| w.0), over, worst, failure)
 }
 
 #[test]
@@ -2543,7 +2751,7 @@ fn seed_23_graph_0_export_matches_the_cpu_and_prints_its_stages() {
         ),
         ("the graph", Box::new(|_| {})),
     ];
-    let mut whole = 0;
+    let mut failure: Option<String> = None;
     for (what, change) in &variants {
         let mut doc = full.clone();
         if let Some(items) = doc["nodes"]["items"].as_array_mut() {
@@ -2551,11 +2759,15 @@ fn seed_23_graph_0_export_matches_the_cpu_and_prints_its_stages() {
                 change(n);
             }
         }
-        let (max, over, worst) = export_difference(&d, &gpu, &doc.to_string(), home.path());
+        let last = *what == "the graph";
+        let (max, over, worst, verdict) =
+            export_difference(&d, &gpu, &doc.to_string(), home.path(), last);
         say(&format!(
             "seed 23 graph 0, {what}: PNG export {max} of 65535 from the CPU's, {over} values over {TEN_BIT_CODE}; worst (difference, value index, CPU, device) {worst:?}"
         ));
-        whole = max;
+        if last {
+            failure = verdict;
+        }
     }
     // The same graph at view scale, Fit and 100 %, as `no_generated_graph_is_refused_by_the_device` compares it (codes of 255).
     {
@@ -2614,9 +2826,11 @@ fn seed_23_graph_0_export_matches_the_cpu_and_prints_its_stages() {
             "seed 23 graph 0, conditioning: the CPU's export moves by {moved} of 65535 for 1e-5 EV on Main"
         ));
     }
+    // The bound of 64 holds on every value but the CPU's own unstable ones (the owner, 2026-11-18, "Skip unstable pixels"; `judge_export`).
     assert!(
-        whole <= TEN_BIT_CODE,
-        "seed 23 graph 0: the PNG export differs from the CPU's by {whole} of 65535 (bound {TEN_BIT_CODE})"
+        failure.is_none(),
+        "seed 23 graph 0: the PNG export fails the bound: {}",
+        failure.unwrap_or_default()
     );
 }
 
@@ -2719,6 +2933,91 @@ fn a_one_code_change_of_a_depth_plane_moves_seed_23_only_through_output_sharpeni
     }
 }
 
+/// The rule of `judge_export` on the CPU alone, with a CPU render standing for the device: seed 23 graph 0 with the Depth row's far
+/// limit moved by 5e-6 is a "device" that differs from the CPU by 142 at the two pixels the Mac run failed on, and those are the
+/// CPU's own unstable values, so the rule passes it and prints them. The same "device" with one stable value moved by 500 fails
+/// (the bound is enforced there); with an unstable value moved far outside the CPU's own range it fails (safeguard c); a graph with no
+/// mask row fails at a change of 100 at one value (safeguard a).
+#[test]
+fn the_unstable_pixel_rule_exempts_only_the_cpus_own_unstable_values() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let scene = Scene::new(
+        640,
+        420,
+        light("sony-ilce-7rm4", 4800.0),
+        Layout::Patchwork,
+        0.5,
+    )
+    .noise(2e-4, 2e-6)
+    .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let home = tempfile::tempdir().expect("dir");
+    let png = |doc: &Value| {
+        let settings = serde_json::from_value::<DevelopSettings>(doc.clone())
+            .expect("settings")
+            .validated()
+            .expect("a valid graph")
+            .0;
+        (
+            decode_png16_bytes(
+                &export(
+                    &d,
+                    &settings,
+                    renderer(None, 256),
+                    home.path(),
+                    FormatKind::Png,
+                )
+                .2,
+            ),
+            settings,
+        )
+    };
+    let full: Value = serde_json::from_str(SEED_23_GRAPH_0).expect("json");
+    let (cpu, settings) = png(&full);
+    let mut nudged = full.clone();
+    nudged["nodes"]["items"][1]["masks"]["items"][1]["far"] = json!(0.794994994994995 + 5e-6);
+    let (dev, _) = png(&nudged);
+    let at = 603711;
+    assert!(
+        dev[at].abs_diff(cpu[at]) > TEN_BIT_CODE,
+        "the stand-in differs there"
+    );
+    let verdict = judge_export(&d, &settings, &dev, &cpu, home.path(), "stand-in");
+    assert!(
+        verdict.failure.is_none(),
+        "the CPU's own unstable values pass: {:?}",
+        verdict.failure
+    );
+    // A stable value moved by 500 (value 0 is a bright corner no mask setting moves) and an unstable value moved far outside the CPU's
+    // own range both fail, each for its own reason.
+    let mut bad = dev.clone();
+    bad[0] += 500;
+    bad[at] += 3000;
+    let verdict = judge_export(&d, &settings, &bad, &cpu, home.path(), "stable and range");
+    let text = verdict.failure.unwrap_or_default();
+    assert!(
+        text.contains("stable values differ") && text.contains("outside the CPU's own range"),
+        "{text}"
+    );
+    // No mask row: no exemption, whatever the values.
+    let (plain, plain_settings) = png(&serde_json::json!({"nodes":{"items":[{"id":1}],"links":[
+        {"from":{"node":"input","port":"picture"},"to":{"node":1,"port":"picture"}},
+        {"from":{"node":1,"port":"picture"},"to":{"node":"output","port":"picture"}}]}}));
+    let mut bad = plain.clone();
+    bad[at] += 100;
+    let verdict = judge_export(&d, &plain_settings, &bad, &plain, home.path(), "no rows");
+    assert!(
+        verdict
+            .failure
+            .as_deref()
+            .is_some_and(|f| f.contains("no mask row")),
+        "{:?}",
+        verdict.failure
+    );
+}
+
 /// The other "seed 23 graph 0" of the log, from `generate_joined`: Main, a Splitter, a bypassed Parallel, a Layer (difference, opacity 0),
 /// a bypassed corrector and a Layer (subtract, opacity 0) that is the Output. No Film node and no Colour Uniform node. It is not the
 /// graph the Mac run failed on (that is `SEED_23_GRAPH_0`), and is pinned so that the two cannot be taken for each other again.
@@ -2736,12 +3035,14 @@ fn seed_23_graph_0_joined_export_matches_the_cpu() {
         .seed(5);
     let d = Developed::new(&scene, MODEL);
     let home = tempfile::tempdir().expect("dir");
-    let (max, over, worst) = export_difference(&d, &gpu, SEED_23_GRAPH_0_JOINED, home.path());
+    let (max, over, worst, failure) =
+        export_difference(&d, &gpu, SEED_23_GRAPH_0_JOINED, home.path(), true);
     say(&format!(
         "seed 23 graph 0 (joined): PNG export {max} of 65535 from the CPU's, {over} values over {TEN_BIT_CODE}; worst (difference, value index, CPU, device) {worst:?}"
     ));
     assert!(
-        max <= TEN_BIT_CODE,
-        "seed 23 graph 0 (joined): the PNG export differs from the CPU's by {max} of 65535 (bound {TEN_BIT_CODE})"
+        failure.is_none(),
+        "seed 23 graph 0 (joined): the PNG export differs from the CPU's by {max} of 65535 (bound {TEN_BIT_CODE}): {}",
+        failure.unwrap_or_default()
     );
 }
