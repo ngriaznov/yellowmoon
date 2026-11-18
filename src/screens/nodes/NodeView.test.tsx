@@ -291,15 +291,16 @@ describe("the Add node menu", () => {
     const menu = await screen.findByRole("menu", { name: "Add node" });
     expect(menu).toHaveAttribute("data-side", "top");
     const items = within(menu).getAllByRole("menuitem");
-    expect(items.map((i) => i.querySelector(".ym-menu-line__name")?.textContent)).toEqual(["Corrector", "Film", "Face Refinement", "Parallel", "Layer", "Splitter and combiner"]);
+    expect(items.map((i) => i.querySelector(".ym-menu-line__name")?.textContent)).toEqual(["Corrector", "Film", "Face Refinement", "Colour Uniform", "Parallel", "Layer", "Splitter and combiner"]);
     expect(within(items[0]!).getByText("Grades all or part of the photo.")).toBeInTheDocument();
     expect(within(items[1]!).getByText("Models a colour negative, a print and a scan.")).toBeInTheDocument();
     expect(items[1]).not.toHaveAttribute("aria-disabled");
     expect(within(items[2]!).getByText("Refines each face: skin, under-eyes and teeth.")).toBeInTheDocument();
     // The three items of `docs/25` are on, with their lines, and no "Later" tag.
-    expect(within(items[3]!).getByText("Grade branches side by side.")).toBeInTheDocument();
-    expect(within(items[4]!).getByText("Blend one branch over another.")).toBeInTheDocument();
-    expect(within(items[5]!).getByText("Split a picture, then join it again.")).toBeInTheDocument();
+    expect(within(items[3]!).getByText("Pulls colours toward one colour.")).toBeInTheDocument();
+    expect(within(items[4]!).getByText("Grade branches side by side.")).toBeInTheDocument();
+    expect(within(items[5]!).getByText("Blend one branch over another.")).toBeInTheDocument();
+    expect(within(items[6]!).getByText("Split a picture, then join it again.")).toBeInTheDocument();
     for (const item of items) {
       expect(item).not.toHaveAttribute("aria-disabled");
       expect(within(item).queryByText("Later")).toBeNull();

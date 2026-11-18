@@ -34,6 +34,9 @@ export interface NodePanelProps {
   /** Pick depth of a Depth row is on, and turns it on or off (`docs/23` §7.6). */
   pickingDepth?: boolean;
   onPickDepth?: (on: boolean) => void;
+  /** Pick colour of a Colour Uniform node's target is on, and turns it on or off (`docs/32` §2.1). */
+  pickingUniform?: boolean;
+  onPickUniform?: (on: boolean) => void;
   /** The row at the foot: Copy settings and Paste, which act on the whole photo here too. */
   foot: ReactNode;
   /** Full screen: the panel is not shown. */
@@ -46,7 +49,7 @@ export interface NodePanelProps {
  * · Curve · Mask, the Output Look · Detail), the cards of the tab (`NodeTab`) and the foot row. There is no title block, no Automatic
  * card and no Tone card here, and no notice of what the simple view cannot show. Every control writes the selected node.
  */
-export function NodePanel({ store, photo, rs, node, tab, onTab, graph, pickingWhite, onPickWhite, pickingColor, onPickColor, pickingRange, onPickRange, pickingDepth = false, onPickDepth, foot, hidden }: NodePanelProps) {
+export function NodePanel({ store, photo, rs, node, tab, onTab, graph, pickingWhite, onPickWhite, pickingColor, onPickColor, pickingRange, onPickRange, pickingDepth = false, onPickDepth, pickingUniform = false, onPickUniform, foot, hidden }: NodePanelProps) {
   const item = rs ? nodeOf(rs.settings, node) : undefined;
   // A Face Refinement node's head says how many faces there are (`face_state`); the panel asks the core when it opens.
   const faces = useFaces(store, photo?.id ?? null, item?.kind === "face_refinement");
@@ -112,6 +115,8 @@ export function NodePanel({ store, photo, rs, node, tab, onTab, graph, pickingWh
           onPickRange={onPickRange}
           pickingDepth={pickingDepth}
           onPickDepth={onPickDepth}
+          pickingUniform={pickingUniform}
+          onPickUniform={onPickUniform}
           graph={graph}
         />
       </div>

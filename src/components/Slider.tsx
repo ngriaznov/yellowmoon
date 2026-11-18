@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useId, useRef } from "react";
-import type { MutableRefObject } from "react";
+import type { CSSProperties, MutableRefObject } from "react";
 import { Slider as GlassSlider } from "@/components/glass/slider";
 import { cx } from "./cx";
 import { clampSnap, roundToStep, sameValue } from "./format";
@@ -49,6 +49,8 @@ export interface SliderProps {
   /** Tab whose colour fills the bar and the changed box. Inherited from `data-tab` when omitted. */
   tab?: TabId;
   disabled?: boolean;
+  /** A CSS background for the track in place of the accent range (the Colour Uniform node's rainbow Hue track); the fill is then not drawn. */
+  trackBackground?: string;
   /** `false` drops the 40 px Reset column, as in the Export panel. Default true. */
   resetColumn?: boolean;
   id?: string;
@@ -107,6 +109,7 @@ const SliderRow = memo(function SliderRow({
   changed: changedProp,
   tab,
   disabled = false,
+  trackBackground,
   resetColumn = true,
   id: idProp,
   className,
@@ -194,6 +197,8 @@ const SliderRow = memo(function SliderRow({
       data-tab={tab}
       data-changed={changed || undefined}
       data-disabled={disabled || undefined}
+      data-track={trackBackground ? "custom" : undefined}
+      style={trackBackground ? ({ "--ym-track-bg": trackBackground } as CSSProperties) : undefined}
       data-reset-column={resetColumn ? undefined : "false"}
     >
       <span id={labelId} className="text-[0.8125rem] font-semibold leading-tight">

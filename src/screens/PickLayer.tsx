@@ -3,7 +3,7 @@ import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { fitInCell } from "./crop/cropMath";
 
 /** What a click on the photo picks: a white for the white balance, a colour for the colour warp, the colour of a Colour range mask, or the depth for a Depth mask. */
-export type PickMode = "white" | "color" | "range" | "depth";
+export type PickMode = "white" | "color" | "range" | "depth" | "uniform";
 
 /** What the layer does: a pick, or "Place points" of the Object mask (`docs/28` A-11), where Return adds a point instead of picking a spot. */
 export type LayerMode = PickMode | "points";
@@ -13,6 +13,7 @@ const LAYER_LABELS: Readonly<Record<LayerMode, string>> = {
   white: "Pick white. Click something neutral, or move the crosshair with the arrow keys and press Return.",
   color: "Pick colour. Click a colour in the photo, or move the crosshair with the arrow keys and press Return.",
   range: "Pick colour for the Colour range mask. Click a colour in the photo, or move the crosshair with the arrow keys and press Return.",
+  uniform: "Pick colour for the target of Colour Uniform. Click a colour in the photo, or move the crosshair with the arrow keys and press Return.",
   depth: "Pick depth. Click the part of the photo to select, or move the crosshair with the arrow keys and press Return.",
   points: "Place points. Move the crosshair with the arrow keys. Return adds a point, Shift Return takes a part away, Backspace removes the last point, Esc ends.",
 };

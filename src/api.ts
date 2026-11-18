@@ -202,9 +202,11 @@ export interface Api {
    * `sample_chroma` (addition, Pick colour): the chroma of the pixel under a point of the photo cell (CSS pixels from its corner, as Pick
    * white). `null` on the paper around a letterboxed photo. `at` is the node it is read at (left out: Main's), as for `histogram`. `tap` is
    * where in that node: `"warp_input"` (left out) the input of its colour warp, after its own trim and grade, for the warp's Pick colour;
-   * `"node_input"` the picture the node reads, before its trim and grade, for a Colour range's (`docs/23` §7.6, §9).
+   * `"node_input"` the picture the node reads, before its trim and grade, for a Colour range's (`docs/23` §7.6, §9). `radiusPx` (default 0)
+   * makes the colour the mean of the square of `2·radiusPx + 1` pixels about the point, and the answer carries `tone` (`docs/32` §3.11; the
+   * shell passes both from CU-10, until then the page's own pick of a Colour Uniform node finds no `tone` and does nothing).
    */
-  sampleChroma(x: number, y: number, at?: NodeId, tap?: ChromaTap): Promise<ChromaSample | null>;
+  sampleChroma(x: number, y: number, at?: NodeId, tap?: ChromaTap, radiusPx?: number): Promise<ChromaSample | null>;
   /**
    * `viewport_map_points` (`docs/23` §3.6, §9): maps points between the photo frame and the cell, for the handles and outlines the page draws over
    * the photo. `from` is `"photo"` (points `[x, y]` in the photo frame, answered as CSS pixels from the cell's corner, which may lie outside the

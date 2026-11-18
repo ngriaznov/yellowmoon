@@ -23,9 +23,11 @@ import {
   NEUTRAL_LOOK,
   newCorrector,
   newFaceRefinement,
+  newColorUniform,
   newFilm,
   defaultFaceSettings,
   FACE_REFINEMENT_NAME,
+  COLOR_UNIFORM_NAME,
   DEFAULT_STOCK,
   nodeAsPatch,
   nodeOf,
@@ -33,6 +35,9 @@ import {
   same,
 } from "./settingsGraph";
 import type { CardItem, MixerItem } from "./settingsGraph";
+import { clampToDisc } from "../components/warpMath";
+import { FIRST_PICK_AMOUNTS, targetFromSample } from "../components/uniformMath";
+import { COLOR_RANGE_REACH, newMask, withMask } from "./maskRows";
 import { CHANNEL_PORTS, firstInputPort, inputNumber, isGlyphKind, isMixerKind, MIXER_INPUTS, mixerPort, portRank, portType, portWords } from "./ports";
 
 /** Most corrector nodes a photo can have, Main included (`docs/23` section 3.5). */
@@ -412,6 +417,11 @@ export function addFaceRefinementNode(id: number, pos: NodePos, name = FACE_REFI
   return { [String(id)]: nodeAsPatch(newFaceRefinement(id, clampPos(pos), name)) };
 }
 
+/** A new Colour Uniform node (`docs/32` section 2.5): no target, Compress 0, no masks, as a patch that adds it whole. */
+export function addColorUniformNode(id: number, pos: NodePos, name = COLOR_UNIFORM_NAME): Record<string, NodePatch> {
+  return { [String(id)]: nodeAsPatch(newColorUniform(id, clampPos(pos), name)) };
+}
+
 /** A new Film node (`docs/24` section 4.5), Portra 400 on its matching paper, as a patch that adds it whole. */
 export function addFilmNode(id: number, pos: NodePos, name = FILM_DEFAULT_NAME): Record<string, NodePatch> {
   return { [String(id)]: nodeAsPatch(newFilm(id, clampPos(pos), name)) };
@@ -424,7 +434,7 @@ export function addFilmNode(id: number, pos: NodePos, name = FILM_DEFAULT_NAME):
  * Output's incoming link. N's `pos` is the node's plus one unit to the right, the nodes downstream of N move one unit right (as far as
  * it takes to leave N its unit: none where a gap is), and N is selected. Refused at 64 nodes.
  */
-export function insertAfter(settings: DevelopSettings, selected: NodeId, options: { usedMax?: number; name?: string; kind?: "corrector" | "film" | "face_refinement" } = {}): GraphOutcome {
+export function insertAfter(settings: DevelopSettings, selected: NodeId, options: { usedMax?: number; name?: string; kind?: "corrector" | "film" | "face_refinement" | "color_uniform" } = {}): GraphOutcome {
   if (numberedOf(settings).length >= MAX_CORRECTORS) return refuse(GRAPH_OP_TEXT.tooMany);
   const links = settings.nodes.links;
   let after: NodeId = selected === INPUT_ID ? MAIN_ID : selected;
@@ -444,7 +454,9 @@ export function insertAfter(settings: DevelopSettings, selected: NodeId, options
       ? addFilmNode(id, slot.pos, options.name)
       : options.kind === "face_refinement"
         ? addFaceRefinementNode(id, slot.pos, options.name)
-        : addNode(id, slot.pos, options.name);
+        : options.kind === "color_uniform"
+          ? addColorUniformNode(id, slot.pos, options.name)
+          : addNode(id, slot.pos, options.name);
   const nodes = { ...added, ...shifted(settings, downstreamOf(next, id), id, slot.delta) };
   return done({ nodes, links: next }, id);
 }
@@ -508,6 +520,9 @@ export function resetNode(settings: DevelopSettings, id: NodeId, defaults: { loo
   } else if (node.kind === "face_refinement") {
     // Same for all faces on and every amount at its default, for `all` and for each face; the masks, the protection, the name and the bypass stay (`docs/27` S-11a).
     patch = { same_for_all: true, all: defaultFaceSettings(), faces: [] };
+  } else if (node.kind === "color_uniform") {
+    // The target goes back to none and the three amounts to 0; the masks, the name, the bypass and the links stay (`docs/32` section 5.3).
+    patch = { target: null, compress: { hue: 0, saturation: 0, lightness: 0 } };
   } else if (node.kind === "layer") {
     // A Layer's Mode and Opacity; its inputs, name and bypass stay.
     patch = { mode: "normal", opacity: 1 };
@@ -795,6 +810,8 @@ export function headLine(settings: DevelopSettings, id: NodeId, states: Readonly
     const n = Math.max(1, linkedInputs(settings.nodes.links, node.id));
     return `Mixer · ${n} ${n === 1 ? "input" : "inputs"}`;
   }
+  // A Colour Uniform node's line is short, so it is not cut at 400 px: the corrector's mask text is not repeated (`docs/32` §2.6).
+  if (node.kind === "color_uniform") return node.bypass ? "Bypassed" : states.get(node.id as number)?.live === false ? "Not connected" : "Colour Uniform";
   const label = node.kind === "film" ? "Film" : node.kind === "face_refinement" ? "Faces" : "Corrector";
   if (node.bypass) return `${label} · bypassed`;
   if (states.get(node.id as number)?.live === false) return `${label} · not connected`;
@@ -1120,4 +1137,40 @@ export function baseOf(settings: DevelopSettings, id: NodeId): NodeRef {
     }
   }
   return best;
+}
+
+/** What a pick of the Colour Uniform node answers: the one patch to send, and whether the colour was too grey for a hue. */
+export interface UniformPick {
+  patch: SettingsPatch;
+  /** True for the node's first pick (it had no target). */
+  first: boolean;
+  /** The pick was under Saturation 2 and was held there (`docs/32` §2.1: the card says so once). */
+  tooGrey: boolean;
+}
+
+/**
+ * **A pick on a Colour Uniform node** (`docs/32` §2.1 and §2.3), as the one patch to send. It always sets `target` from the answer of
+ * `sample_chroma` (`{ a, b, tone }`, a 7 × 7 mean at the node's input). The node's **first** pick, the one made while it has no target,
+ * adds to the same patch: Compress 50 / 50 / 0 when all three amounts are 0, and one Colour range row centred on the pick when the node
+ * has no mask rows and no key link. A later pick changes the target only, and so does a pick on a node that already has a mask or a key. One
+ * patch is one undo step. Null when the node is not a Colour Uniform node.
+ */
+export function pickUniform(settings: DevelopSettings, id: NodeId, sample: { a: number; b: number; tone: number }): UniformPick | null {
+  const node = nodeOf(settings, id);
+  if (node?.kind !== "color_uniform") return null;
+  const { target, tooGrey } = targetFromSample(sample);
+  const first = node.target === null;
+  const patch: NodePatch = { target };
+  if (first) {
+    const { hue, saturation, lightness } = node.compress;
+    if (hue === 0 && saturation === 0 && lightness === 0) patch.compress = { ...FIRST_PICK_AMOUNTS };
+    const hasKey = settings.nodes.links.some((l) => l.to.node === id && l.to.port === "key");
+    if (node.masks.items.length === 0 && !hasKey) {
+      // The row's centre is the chroma as read, before the target was held off grey (`docs/32` §2.3).
+      const center = clampToDisc([sample.a, sample.b], COLOR_RANGE_REACH);
+      const row = withMask([], { ...newMask("color_range"), center });
+      if (row) patch.masks = row;
+    }
+  }
+  return { patch: { nodes: { [String(id)]: patch } }, first, tooGrey };
 }

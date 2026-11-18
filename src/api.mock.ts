@@ -144,6 +144,7 @@ import { fixtureUrl } from "./fixtures";
 import { clampPins } from "./components/warpMath";
 import { adjustForNode, adjustScene, developScene, nodeScene, previewSvg, signalScene } from "./fixtures/grade";
 import type { Adjustment, NodeLook } from "./fixtures/grade";
+import { hexTone, sceneThroughUniforms, uniformScene } from "./fixtures/uniform";
 import { filmScene, mockFilmCatalogue, MOCK_FILM_STOCKS, sceneThroughFilms } from "./fixtures/film";
 import { hasMixers, outputFeeder, sceneAfter, sceneAt } from "./fixtures/mixers";
 import { hexChroma, sceneScatter } from "./fixtures/warp";
@@ -177,7 +178,7 @@ import {
   outputPatch,
   withoutLook,
 } from "./state/settingsGraph";
-import type { ColorUniformItem, CorrectorItem, FaceRefinementItem, FilmItem, InputItem, MixerItem } from "./state/settingsGraph";
+import type { CardItem, ColorUniformItem, CorrectorItem, FaceRefinementItem, FilmItem, InputItem, MixerItem } from "./state/settingsGraph";
 import { bytesToUrl } from "./state/photo";
 
 // ---------------------------------------------------------------------------
@@ -2490,16 +2491,33 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     };
   }
 
+  /** What a Colour Uniform node does in the mock: its target and amounts on the flat colours, with no mask (the mock draws none). */
+  function uniformLook(item: ColorUniformItem): NodeLook {
+    return {
+      bypass: item.bypass,
+      trim: { exposure_ev: 0, temperature: 0, tint: 0 },
+      grade: neutralGrade(),
+      apply: (scene) => uniformScene(scene, item.target, item.compress),
+      key: [item.target, item.compress],
+    };
+  }
+
+  /** What a node that is not Main does to a scene in the mock: a Film node, a Colour Uniform node, a Face Refinement node (nothing) or a corrector. */
+  function lookOf(item: CardItem): NodeLook | null {
+    return item.kind === "film" ? filmLook(item) : item.kind === "color_uniform" ? uniformLook(item) : item.kind === "face_refinement" ? null : item;
+  }
+
   /** The photo's scene through every live Film node (the mock draws their stocks flat). */
   function throughFilms(rec: PhotoRecord, settings: DevelopSettings = rec.settings): Scene {
     // A graph with a mixer the Output needs is drawn by walking it (`fixtures/mixers.ts`): Main's own grade is the frame's adjustment, the other
     // correctors and the Film nodes grade the scene where they are.
     if (hasMixers(settings)) {
-      return sceneAt(settings, rec.scene, outputFeeder(settings), (item, scene) =>
-        item.kind === "film" ? adjustForNode(scene, filmLook(item)) : item.kind === "face_refinement" || item.id === MAIN_ID ? scene : adjustForNode(scene, item),
-      );
+      return sceneAt(settings, rec.scene, outputFeeder(settings), (item, scene) => {
+        const look = item.id === MAIN_ID ? null : lookOf(item);
+        return look ? adjustForNode(scene, look) : scene;
+      });
     }
-    return sceneThroughFilms(rec.scene, settings);
+    return sceneThroughUniforms(sceneThroughFilms(rec.scene, settings), settings);
   }
 
   /** The photo's colours where the colour warp takes them: adjusted, not yet warped, not yet through the look (`docs/02` C9b). */
@@ -2552,8 +2570,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     while (typeof at === "number" && !seen.has(at)) {
       seen.add(at);
       const item = nodeOf(settings, at);
-      if (!item || (item.kind !== "corrector" && item.kind !== "film")) break;
-      chain.unshift(item.kind === "film" ? filmLook(item) : item);
+      if (!item || (item.kind !== "corrector" && item.kind !== "film" && item.kind !== "color_uniform")) break;
+      chain.unshift(item.kind === "film" ? filmLook(item) : item.kind === "color_uniform" ? uniformLook(item) : item);
       at = linkInto(settings.nodes.links, { node: at, port: "picture" })?.from.node;
     }
     return chain;
@@ -2568,7 +2586,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     if (at === undefined || at === "input" || at === MAIN_ID) return null;
     if (at === "output") fail("render", "The output has no picture to read here.");
     const kind = nodeOf(rec.settings, at)?.kind;
-    if (kind !== "corrector" && kind !== "parallel" && kind !== "layer" && kind !== "splitter" && kind !== "combiner") fail("render", `This photo has no node ${at}.`);
+    if (kind !== "corrector" && kind !== "color_uniform" && kind !== "parallel" && kind !== "layer" && kind !== "splitter" && kind !== "combiner") fail("render", `This photo has no node ${at}.`);
     return at;
   }
 
@@ -2578,11 +2596,13 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
    */
   function signalSceneAt(rec: PhotoRecord, node: number, stage: "curve" | "warp" | "input"): Scene {
     const adjustment = adjustmentOf(rec, false);
-    if (nodeOf(rec.settings, node)?.kind === "corrector") return signalScene(rec.scene, adjustment, pictureChain(rec.settings, node), stage);
+    const nodeKind = nodeOf(rec.settings, node)?.kind;
+    if (nodeKind === "corrector" || nodeKind === "color_uniform") return signalScene(rec.scene, adjustment, pictureChain(rec.settings, node), stage);
     const input = adjustScene(rec.scene, { ...adjustment, warp: undefined });
-    const scene = sceneAfter(rec.settings, input, node, (item, scene) =>
-      item.kind === "film" ? adjustForNode(scene, filmLook(item)) : item.kind === "face_refinement" ? scene : adjustForNode(scene, item),
-    );
+    const scene = sceneAfter(rec.settings, input, node, (item, scene) => {
+      const look = lookOf(item);
+      return look ? adjustForNode(scene, look) : scene;
+    });
     return scene ?? fail("render", `Node ${node} has no picture to read here.`);
   }
 
@@ -2612,9 +2632,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       if (told.get(node)?.key === key) continue;
       const scene = mixed
         ? developScene(
-            sceneAt(settings, adjustScene(rec.scene, { ...input, warp: undefined }), { node, port: "picture" }, (item, s) =>
-              item.kind === "film" ? adjustForNode(s, filmLook(item)) : item.kind === "face_refinement" ? s : adjustForNode(s, item),
-            ),
+            sceneAt(settings, adjustScene(rec.scene, { ...input, warp: undefined }), { node, port: "picture" }, (item, s) => {
+              const look = lookOf(item);
+              return look ? adjustForNode(s, look) : s;
+            }),
             look,
             null,
           )
@@ -3684,7 +3705,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         return { r, g, b };
       }),
 
-    sampleChroma: (x, y, at, tap) =>
+    sampleChroma: (x, y, at, tap, _radiusPx) =>
       run("sampleChroma", (): ChromaSample | null => {
         const rec = photos[current];
         if (!rec) fail("viewport", "Open a photo first.");
@@ -3696,8 +3717,11 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         // picture it reads, which Main and the Input take from the photo as adjusted at the Input.
         const stage = tap === "node_input" ? "input" : "warp";
         const scene = node === null ? warpInput(rec) : signalSceneAt(rec, node, stage);
-        const [a, b] = hexChroma(scene[layerAt(scene, clamp(point[0], 0, 1), clamp(point[1], 0, 1))]);
-        return { a, b };
+        const hex = scene[layerAt(scene, clamp(point[0], 0, 1), clamp(point[1], 0, 1))];
+        const [a, b] = hexChroma(hex);
+        // `tone` is the mean of the three LogC4 codes of the same colour (`docs/32` §3.11); `radius_px` makes the core read a square mean, and a flat
+        // shape's mean is its colour, so the mock reads one point whatever the radius.
+        return { a, b, tone: hexTone(hex) };
       }),
 
     viewportMapPoints: (points, from: MapFrom) =>

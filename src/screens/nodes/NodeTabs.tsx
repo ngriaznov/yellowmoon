@@ -27,6 +27,7 @@ import { OUTPUT_FILM_NOTE } from "./filmData";
 import { FaceTab } from "./FaceTab";
 import { FilmCard, GrainTab, HalationTab, PrintTab } from "./FilmTabs";
 import { MaskTab } from "./MaskTab";
+import { UniformTab } from "./UniformTab";
 import { ChannelsTab, LayerBlendTab, ParallelInputsTab } from "./MixerTabs";
 import type { NodeGraphActions } from "./useNodeGraph";
 
@@ -202,13 +203,16 @@ export interface NodeTabProps extends TabProps {
   pickingRange: boolean;
   onPickRange: (on: boolean) => void;
   pickingDepth?: boolean;
+  /** Pick colour of a Colour Uniform node's target is on, and turns it on or off. */
+  pickingUniform?: boolean;
+  onPickUniform?: (on: boolean) => void;
   onPickDepth?: (on: boolean) => void;
   /** What a row of a mixer's Inputs card does (`docs/25` §5.5). */
   graph?: NodeGraphActions;
 }
 
 /** The cards of one tab of one node: the Input's (`node` `"input"`), the Output's (`"output"`) or a corrector's. */
-export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite, pickingColor, onPickColor, pickingRange, onPickRange, pickingDepth, onPickDepth, graph }: NodeTabProps) {
+export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite, pickingColor, onPickColor, pickingRange, onPickRange, pickingDepth, onPickDepth, pickingUniform = false, onPickUniform, graph }: NodeTabProps) {
   if (node === "input") {
     switch (tab) {
       case "lens":
@@ -245,6 +249,13 @@ export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite
       default:
         return <FilmCard store={store} photo={photo} rs={rs} node={item.id as number} item={item} />;
     }
+  }
+  if (item?.kind === "color_uniform" && typeof node === "number") {
+    return tab === "mask" ? (
+      <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} pickingDepth={pickingDepth} onPickDepth={onPickDepth} />
+    ) : (
+      <UniformTab store={store} rs={rs} node={node} item={item} picking={pickingUniform} onPick={onPickUniform ?? (() => undefined)} />
+    );
   }
   if (item?.kind === "face_refinement") {
     return tab === "mask" ? (

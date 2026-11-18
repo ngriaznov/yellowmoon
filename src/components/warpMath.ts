@@ -471,7 +471,7 @@ const P3_LUMINANCE: Readonly<Rgb> = [0.2289745641, 0.6917385218, 0.0792869141];
  * toward its own grey (its luminance, at least 8 % of its largest channel) until it fits, then the three channels are scaled together by `m / (0.6 + m)` of the largest, so the bright grey
  * reads light (0.68) and saturated colours roll off instead of clipping into flat bands.
  */
-function renderP3(rgb: Readonly<Rgb>): Rgb {
+export function renderP3(rgb: Readonly<Rgb>): Rgb {
   // AWG4's blue has a negative luminance, so the deepest blues of the plane have none: they are pulled toward a dim grey instead.
   const y = Math.max(dot(P3_LUMINANCE, rgb), 0.08 * Math.max(rgb[0], rgb[1], rgb[2]), 0);
   const low = Math.min(rgb[0], rgb[1], rgb[2]);
