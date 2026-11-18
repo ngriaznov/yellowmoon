@@ -25,6 +25,7 @@ use crate::consts::Vec3;
 use crate::logc::{logc4_decode_rgb, logc4_encode_rgb};
 use crate::warp::smoothstep;
 
+pub mod motion;
 pub mod soft;
 
 /// Radius 100 is this share of the picture's long edge (`docs/33` 2.2).
@@ -713,8 +714,12 @@ fn sums_with(
             gather_table(&planes, width, height, &t)
         }
         BlurKind::Motion { length, angle_deg } => {
-            let t = line_table(length_px(length, u), angle_deg);
-            gather_table(&planes, width, height, &t)
+            if fast {
+                motion::gather(&planes, width, height, length_px(length, u), angle_deg)
+            } else {
+                let t = line_table(length_px(length, u), angle_deg);
+                gather_table(&planes, width, height, &t)
+            }
         }
         BlurKind::Zoom { amount, center } => {
             gather_zoom(&planes, width, height, frame, zoom_span(amount), center)
