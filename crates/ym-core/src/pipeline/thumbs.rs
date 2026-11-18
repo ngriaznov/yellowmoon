@@ -360,9 +360,8 @@ pub(crate) fn signal_source(
             }
             Ok((Cow::Owned(src.with_settings(settings)), Read::Last))
         }
-        // A Blur node (`docs/33` section 6): the signal at the node is the picture it reads, as a Colour Uniform node's.
-        // TODO(BL-04): the histogram and the scatter at the node read its input (`docs/33` section 6); the node renders as
-        // the identity until then, so the rewrite is the same.
+        // A Blur node (`docs/33` section 6): the signal at the node is the picture it reads, as a Colour Uniform node's. The
+        // histogram and the scatter at the node read its input; the same rewrite with the node bypassed.
         Some(NodeId::Corrector(k))
             if src.settings.nodes.kind_of(NodeId::Corrector(k)) == Some(NodeKind::Blur) =>
         {

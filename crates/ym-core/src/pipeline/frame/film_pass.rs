@@ -29,6 +29,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use ym_color::blur::{self, BlurParams};
+use ym_color::consts::Vec3;
 use ym_color::display::{ColorChain, Frame as ColorFrame, Layout, OutputTarget};
 use ym_color::mask::RasterPlanes;
 use ym_color::mask_raster::{Area, CpuPlanes};
@@ -42,7 +44,7 @@ use ym_gpu::kernels::film_stack::{FilmNodeSpec, FilmStack, FilmWork, NodeWork};
 use super::face_pass::{FacePart, FaceWork, ProtectInput, union};
 use super::{Job, RenderError};
 use crate::film::FilmEngine;
-use crate::pipeline::color::node_plan;
+use crate::pipeline::color::{blur_params_of, node_plan};
 
 /// The picture one Film node made over an area, LogC4 / AWG4, interleaved f32; or the pictures a Face Refinement node made over
 /// its regions (`face_pass`), in which a pixel the retouch left as it was is `NaN` and reads as no picture.
@@ -151,6 +153,15 @@ enum StepWork {
     Film(Box<FilmFrame>),
     /// A Face Refinement node's retouch of its regions.
     Face(Box<FaceWork>),
+    /// A Blur node (`docs/33` section 6): the oracle of `ym_color::blur` over the picture it reads and its mask.
+    Blur(Box<BlurWork>),
+}
+
+/// A Blur node's work: what `ym_color::blur` runs and the chain that makes the node's mask `m` (its plan stopped at the node's
+/// `m`, as the Show mask view's).
+struct BlurWork {
+    params: BlurParams,
+    mask: Arc<ColorChain>,
 }
 
 struct FilmStepRun {
@@ -246,6 +257,24 @@ impl FilmRender {
                     continue;
                 };
                 (StepWork::Face(Box::new(work)), 0)
+            } else if let Some(node) = settings.nodes.blur(id) {
+                // A bypassed node and one whose amount is 0 pass their input through: nothing to make.
+                if node.is_inert() {
+                    continue;
+                }
+                let blur = blur_params_of(node);
+                let reach = blur::reach_px(&blur, frame.w, frame.h);
+                let mut mask_params = chain.params().clone();
+                mask_params.nodes.plan = node_plan(&settings.nodes, Stop::Mask(id))?;
+                mask_params.look = None;
+                if let Some(step) = mask_params.films.get_mut(&id) {
+                    step.bypass = true;
+                }
+                let mask = Arc::new(ColorChain::new(&mask_params).map_err(|e| film_error(&e))?);
+                (
+                    StepWork::Blur(Box::new(BlurWork { params: blur, mask })),
+                    reach,
+                )
             } else {
                 continue;
             };
@@ -292,8 +321,11 @@ impl FilmRender {
                     .collect()
             })
             .collect();
-        Schedule::new(self.steps.iter().map(|s| StepKind::Film.declared(s.halo)))
-            .with_picture_deps(deps)
+        Schedule::new(self.steps.iter().map(|s| match s.work {
+            StepWork::Blur(_) => StepKind::Blur.declared(s.halo),
+            StepWork::Film(_) | StepWork::Face(_) => StepKind::Film.declared(s.halo),
+        }))
+        .with_picture_deps(deps)
     }
 
     /// The pixels of the photo the Film nodes read beyond the pixels they make: the sum of their halos (a node
@@ -316,8 +348,17 @@ impl FilmRender {
             height: self.frame.h,
         };
         let mut steps = Vec::with_capacity(self.steps.len());
+        // A Blur node has no device kernel until BL-05: the colour pass refuses the plan (`ColorChain::has_blur`) and the CPU
+        // makes the frame, so the stack holds the other nodes only.
+        let device_ids: Vec<u32> = self
+            .steps
+            .iter()
+            .filter(|s| !matches!(s.work, StepWork::Blur(_)))
+            .map(|s| s.id)
+            .collect();
         for s in &self.steps {
             let work = match &s.work {
+                StepWork::Blur(_) => continue,
                 StepWork::Film(film) => NodeWork::Film(Box::new(FilmWork {
                     plan: Arc::new(crate::film::device_plan(film, extent)),
                     scalars: crate::film::device_scalars(film.baked()),
@@ -329,7 +370,13 @@ impl FilmRender {
                 node: s.id,
                 prefix: Arc::clone(&s.prefix),
                 work,
-                reads: Some(s.reads.clone()),
+                reads: Some(
+                    s.reads
+                        .iter()
+                        .copied()
+                        .filter(|id| device_ids.contains(id))
+                        .collect(),
+                ),
             });
         }
         Ok(FilmStack::new(self.frame, steps))
@@ -379,7 +426,7 @@ impl FilmRender {
             .iter()
             .fold(core, |out, &(i, ri)| match &self.steps[i].work {
                 StepWork::Face(face) => union(out, face.region_with_protect(ri)),
-                StepWork::Film(_) => out,
+                StepWork::Film(_) | StepWork::Blur(_) => out,
             })
     }
 
@@ -432,6 +479,12 @@ impl FilmRender {
                     &done,
                 )?;
                 done.nodes.insert(step.id, FilmPlane { parts });
+                continue;
+            }
+            if let StepWork::Blur(work) = &step.work {
+                let plane =
+                    self.blur_plane(job, step, work, (made[i], read[i]), cover, rasters, &done)?;
+                done.nodes.insert(step.id, plane);
                 continue;
             }
             let StepWork::Film(film) = &step.work else {
@@ -495,6 +548,142 @@ impl FilmRender {
             done.nodes.insert(step.id, FilmPlane::of_film(m, out.data));
         }
         Ok(done)
+    }
+
+    /// A chain over the area `a` of the photo's extent: its LogC4 / AWG4 values (f32, interleaved), from the camera picture
+    /// `cover` holds. `done` are the pictures of the nodes made so far, which a chain reads.
+    fn chain_over(
+        &self,
+        job: &Job<'_>,
+        chain: &ColorChain,
+        a: Area,
+        cover: &Cover<'_>,
+        rasters: Option<(&CpuPlanes, Area)>,
+        done: &FilmPlanes,
+    ) -> Result<Vec<f32>, RenderError> {
+        let (w, h) = (a.w, a.h);
+        let (ox, oy) = ((a.x - cover.area.x) as usize, (a.y - cover.area.y) as usize);
+        let sub = cover.sampled.img.extract(Rect::new(ox, oy, w, h));
+        let positions = cover.grid.filter(|_| chain.uses_photo_position()).map(|g| {
+            (
+                GridPositions::new(g, (cover.grid_off.0 + ox, cover.grid_off.1 + oy)),
+                g.photo_frame(),
+            )
+        });
+        let view = ChainPlanes {
+            rasters,
+            films: done,
+            origin: (a.x, a.y),
+        };
+        let mut frame = ColorFrame::planar(w, h, &sub.data).map_err(|e| film_error(&e))?;
+        if let Some((map, photo)) = &positions {
+            frame = frame.with_photo(map, *photo);
+        }
+        let frame = frame.with_rasters(&view);
+        let mut out = vec![0.0f32; 3 * w * h];
+        chain
+            .render_logc4_f32(&frame, Layout::Interleaved, &mut out, self.threads)
+            .map_err(|e| film_error(&e))?;
+        job.check()?;
+        Ok(out)
+    }
+
+    /// The picture a Blur node makes over `made`, from the picture it reads and its mask over `read` (`made` grown by its
+    /// reach, cut to the frame): `ym_color::blur::apply` in f64 on bands of the rows of `made`, each read over its own rows
+    /// grown by the reach. A pixel's sums are the frame's in-frame taps inside the reach, whatever the band, so the picture is
+    /// the same bit for bit for every tile and every thread count (`docs/33` section 3.8). A band whose own pixels all have
+    /// `m = 0` is the input.
+    #[allow(clippy::too_many_arguments)]
+    fn blur_plane(
+        &self,
+        job: &mut Job<'_>,
+        step: &FilmStepRun,
+        work: &BlurWork,
+        (made, read): (Area, Area),
+        cover: &Cover<'_>,
+        rasters: Option<(&CpuPlanes, Area)>,
+        done: &FilmPlanes,
+    ) -> Result<FilmPlane, RenderError> {
+        let input = self.chain_over(job, &step.prefix, read, cover, rasters, done)?;
+        let mask = self.chain_over(job, &work.mask, read, cover, rasters, done)?;
+        let v: Vec<Vec3> = input
+            .chunks_exact(3)
+            .map(|p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+            .collect();
+        let m: Vec<f64> = mask.chunks_exact(3).map(|p| f64::from(p[0])).collect();
+        let reach = step.halo as i64;
+        let extent = (self.frame.w, self.frame.h);
+        // The rows of `made` in bands, one per thread (at least 8 rows each).
+        let bands = self.threads.clamp(1, (made.h / 8).max(1));
+        let rows: Vec<(i64, i64)> = (0..bands)
+            .map(|b| {
+                (
+                    made.y + (made.h * b / bands) as i64,
+                    made.y + (made.h * (b + 1) / bands) as i64,
+                )
+            })
+            .collect();
+        let run = |&(y0, y1): &(i64, i64)| -> Result<Vec<Vec3>, RenderError> {
+            let own = |y: i64| (y - read.y) as usize * read.w;
+            let (x0c, x1c) = ((made.x - read.x) as usize, (made.x1() - read.x) as usize);
+            let all_zero =
+                (y0..y1).all(|y| m[own(y) + x0c..own(y) + x1c].iter().all(|&q| q == 0.0));
+            if all_zero {
+                let mut out = Vec::with_capacity((y1 - y0) as usize * made.w);
+                for y in y0..y1 {
+                    out.extend_from_slice(&v[own(y) + x0c..own(y) + x1c]);
+                }
+                return Ok(out);
+            }
+            // The window: the band grown by the reach, cut to what was read.
+            let (wy0, wy1) = ((y0 - reach).max(read.y), (y1 + reach).min(read.y1()));
+            let rows = (wy0 - read.y) as usize..(wy1 - read.y) as usize;
+            let frame = blur::Frame {
+                full_w: extent.0,
+                full_h: extent.1,
+                x0: read.x as usize,
+                y0: wy0 as usize,
+            };
+            let (lo, hi) = (rows.start * read.w, rows.end * read.w);
+            let window = blur::apply(
+                &v[lo..hi],
+                &m[lo..hi],
+                read.w,
+                rows.len(),
+                &work.params,
+                &frame,
+            )
+            .map_err(|e| film_error(&e))?;
+            let mut out = Vec::with_capacity((y1 - y0) as usize * made.w);
+            for y in y0..y1 {
+                let r = (y - wy0) as usize * read.w;
+                out.extend_from_slice(&window[r + x0c..r + x1c]);
+            }
+            Ok(out)
+        };
+        let parts: Vec<Result<Vec<Vec3>, RenderError>> = if rows.len() == 1 {
+            vec![run(&rows[0])]
+        } else {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = rows.iter().map(|b| scope.spawn(|| run(b))).collect();
+                handles
+                    .into_iter()
+                    .map(|h| {
+                        h.join().unwrap_or_else(|_| {
+                            Err(RenderError::Color("A Blur thread stopped.".to_owned()))
+                        })
+                    })
+                    .collect()
+            })
+        };
+        job.check()?;
+        let mut data = Vec::with_capacity(3 * made.w * made.h);
+        for part in parts {
+            for p in part? {
+                data.extend(p.map(|c| c as f32));
+            }
+        }
+        Ok(FilmPlane::of_film(made, data))
     }
 
     /// The pictures of a Face Refinement node's regions that meet `made`: for each, the prefix chain over the region (the

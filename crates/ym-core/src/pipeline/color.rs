@@ -49,6 +49,7 @@ use ym_color::plan::{
     self, JoinInput, JoinKind, PictureSource, Plan, PlanGraph, PlanJoin, PlanNode, Stop,
 };
 
+use ym_color::blur::{BlurKind, BlurParams};
 use ym_color::tone::ToneParams;
 use ym_color::uniform::{Amounts, Target};
 use ym_color::warp::{Warp, WarpParams};
@@ -64,9 +65,9 @@ use super::raw::{CaptureMethod, DEFAULT_CAPTURE_METHOD};
 use crate::auto::{AutoEstimates, as_shot_gains, as_shot_rggb};
 use crate::session::{PhotoId, PhotoView, PickedWhite, ThumbnailInput};
 use crate::settings::{
-    AutoOr, BlendMode, ColorUniformNode, ColorWarp, CurvePoint, Curves, DevelopSettings,
-    LensSettings, MIXER_INPUTS, MaskMode, MaskSettings, MaskShape, MaskSupport, MixerNode,
-    NodeGrade, NodeGraph, NodeId, NodeKind, NodeTrim, ObjectMask, Port,
+    AutoOr, BlendMode, BlurNode, BlurType, ColorUniformNode, ColorWarp, CurvePoint, Curves,
+    DevelopSettings, LensSettings, MIXER_INPUTS, MaskMode, MaskSettings, MaskShape, MaskSupport,
+    MixerNode, NodeGrade, NodeGraph, NodeId, NodeKind, NodeTrim, ObjectMask, Port,
 };
 use crate::vision::VisionKind;
 
@@ -991,6 +992,34 @@ fn picture_into(g: &NodeGraph, to: NodeId, port: Port) -> Option<PictureSource> 
         })
 }
 
+/// What `ym_color::blur` runs for a Blur node: the chosen type with its numbers, and the Respect mask edges switch.
+#[must_use]
+pub fn blur_params_of(b: &BlurNode) -> BlurParams {
+    let kind = match b.blur_type {
+        BlurType::Soft => BlurKind::Soft {
+            radius: b.soft.radius,
+        },
+        BlurType::Lens => BlurKind::Lens {
+            radius: b.lens.radius,
+            blades: b.lens.blades,
+            rotation_deg: b.lens.rotation_deg,
+            highlights: b.lens.highlights,
+        },
+        BlurType::Motion => BlurKind::Motion {
+            length: b.motion.length,
+            angle_deg: b.motion.angle_deg,
+        },
+        BlurType::Zoom => BlurKind::Zoom {
+            amount: b.zoom.amount,
+            center: b.zoom.center,
+        },
+    };
+    BlurParams {
+        kind,
+        respect_mask_edges: b.respect_mask_edges,
+    }
+}
+
 /// The chain's step of a Colour Uniform node: its target in the node's plane and its amounts as shares (`docs/32` section 3.2).
 fn uniform_step_of(u: &ColorUniformNode) -> UniformStep {
     UniformStep {
@@ -1213,6 +1242,7 @@ fn node_set(
                         strength: f.strength / 100.0,
                         bypass: f.bypass,
                         face: false,
+                        blur: false,
                     },
                 );
             }
@@ -1242,6 +1272,7 @@ fn node_set(
                             strength: 1.0,
                             bypass: false,
                             face: true,
+                            blur: false,
                         },
                     );
                 } else {
@@ -1273,18 +1304,28 @@ fn node_set(
                 );
             }
             Some(NodeKind::Blur) => {
-                if s.nodes.blur(id).is_none() {
+                let Some(b) = s.nodes.blur(id) else {
                     continue;
-                }
-                // TODO(BL-04): the node's step (`ym_color::blur::apply`, `docs/33` section 6). Until then it is the identity:
-                // the corrector machinery runs it bypassed, so its picture is its input's and its key output is still the mask
-                // of its Mask tab.
+                };
+                // A spatial step (`docs/33` section 6), on the Film node's route: the node is the identity for the corrector
+                // machinery, with its masks (its key output is `m`); the render makes its picture before the colour pass
+                // (`film_pass`, with the blend in linear light done there) and the chain takes it. A bypassed node and one
+                // whose amount is 0 pass their picture through.
                 others.insert(
                     id,
                     NodeParams {
-                        bypass: true,
                         masks: masks.remove(&id).unwrap_or_default(),
                         ..NodeParams::default()
+                    },
+                );
+                films.insert(
+                    id,
+                    FilmStep {
+                        strength: 1.0,
+                        // The mask view of the node ends at its `m`: it does not run the blur (`docs/33` section 6).
+                        bypass: b.is_inert() || stop == Stop::Mask(id),
+                        face: false,
+                        blur: true,
                     },
                 );
             }

@@ -2592,8 +2592,7 @@ fn a_settings_file_with_a_colour_uniform_node_is_read_and_the_photo_renders() {
 }
 
 /// A settings file with a Blur node is read and checked and the photo is written; the record holds the node as the document does.
-/// Until BL-04 the node is the identity (`render_nodes.rs` compares the pixels on the core;
-/// TODO(BL-04): then the node blurs where its masks select).
+/// The node blurs where its masks select (`render_nodes.rs` and `render_blur.rs` compare the pixels on the core).
 #[test]
 fn a_settings_file_with_a_blur_node_is_read_and_the_photo_renders() {
     let sb = Sandbox::new();

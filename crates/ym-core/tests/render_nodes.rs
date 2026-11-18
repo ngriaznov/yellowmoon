@@ -1374,10 +1374,11 @@ fn blur(id: u32, x: f64, body: Value) -> Value {
     node
 }
 
-/// BL-02: until BL-04 a Blur node renders as the identity, with a step in its place and its key output still the mask of its Mask
-/// tab; the grade key sees what the node holds and not its name or place.
+/// BL-04: a Blur node renders (`docs/33` section 6): a live node changes the picture and a node at its identity (bypassed, amount 0
+/// for its type) changes no bit; where the node's mask is 0 the picture is the input's bits; the node's thumbnail is the picture after it;
+/// the histogram at it reads its input; the grade key sees what the node holds and not its name or place.
 #[test]
-fn a_blur_node_renders_as_the_identity_until_bl_04_and_its_settings_are_in_the_grade_key() {
+fn a_blur_node_blurs_where_its_mask_selects_and_its_settings_are_in_the_grade_key() {
     let d = photo(Layout::Patchwork, 0.5);
     let src = d.source();
     let r = renderer();
@@ -1393,26 +1394,76 @@ fn a_blur_node_renders_as_the_identity_until_bl_04_and_its_settings_are_in_the_g
             line(&[1, 2, 3]),
         ),
     );
-    assert_eq!(display(&r, &with_node).rgb, display(&r, &plain).rgb);
-    assert_eq!(frame(&r, &with_node), frame(&r, &plain));
-    // With masks and every type, the same.
+    let on_plain = display(&r, &plain);
+    let blurred = display(&r, &with_node);
+    assert_ne!(
+        blurred.rgb, on_plain.rgb,
+        "a live Blur node changes the picture"
+    );
+    assert_ne!(frame(&r, &with_node), frame(&r, &plain));
+    // Every type, live: the picture changes, and it is finite.
     for body in [
         json!({}),
         json!({ "type": "motion", "motion": { "length": 80, "angle_deg": 30 } }),
-        json!({ "type": "zoom", "zoom": { "amount": 90, "center": [0.2, 0.7] }, "respect_mask_edges": false,
-            "masks": { "invert": true, "items": [ { "kind": "radial" } ] } }),
+        json!({ "type": "zoom", "zoom": { "amount": 90, "center": [0.2, 0.7] }, "respect_mask_edges": false }),
     ] {
         let p = with(
             &src,
             graph(
-                vec![corrector(2, 1.0, trim(0.5)), blur(3, 2.0, body)],
+                vec![corrector(2, 1.0, trim(0.5)), blur(3, 2.0, body.clone())],
                 line(&[1, 2, 3]),
             ),
         );
-        assert_eq!(display(&r, &p).rgb, display(&r, &plain).rgb);
-        assert_eq!(frame(&r, &p), frame(&r, &plain));
+        let img = display(&r, &p);
+        assert_ne!(img.rgb, on_plain.rgb, "{body}");
+        assert!(img.rgb.iter().all(|v| v.is_finite()), "{body}");
     }
-    // The node's thumbnail is the picture after it, which is its input's.
+    // A node at its identity changes no bit: bypassed, or the chosen type's amount 0 (the other types' numbers do not count).
+    for body in [
+        json!({ "bypass": true }),
+        json!({ "soft": { "radius": 0 } }),
+        json!({ "type": "lens", "lens": { "radius": 0 } }),
+        json!({ "type": "motion", "motion": { "length": 0 } }),
+        json!({ "type": "zoom", "zoom": { "amount": 0 }, "soft": { "radius": 90 } }),
+    ] {
+        let p = with(
+            &src,
+            graph(
+                vec![corrector(2, 1.0, trim(0.5)), blur(3, 2.0, body.clone())],
+                line(&[1, 2, 3]),
+            ),
+        );
+        assert_eq!(display(&r, &p).rgb, on_plain.rgb, "{body}");
+        assert_eq!(frame(&r, &p), frame(&r, &plain), "{body}");
+    }
+    // The mask: an inverted Radial leaves its centre as the input's bits and blurs the corners.
+    let masked = with(
+        &src,
+        graph(
+            vec![
+                corrector(2, 1.0, trim(0.5)),
+                blur(
+                    3,
+                    2.0,
+                    json!({ "type": "lens", "lens": { "radius": 60, "blades": 6 },
+                        "masks": { "invert": true, "items": [ { "kind": "radial", "feather": 0.2 } ] } }),
+                ),
+            ],
+            line(&[1, 2, 3]),
+        ),
+    );
+    let img = display(&r, &masked);
+    let at = |i: &FullImage, x: usize, y: usize| -> [u32; 3] {
+        let o = (y * i.width + x) * 3;
+        [0, 1, 2].map(|c| i.rgb[o + c].to_bits())
+    };
+    let (w, h) = (on_plain.width, on_plain.height);
+    assert_eq!(at(&img, w / 2, h / 2), at(&on_plain, w / 2, h / 2));
+    let corners_differ = [(2, 2), (w - 3, 2), (2, h - 3), (w - 3, h - 3)]
+        .iter()
+        .any(|&(x, y)| at(&img, x, y) != at(&on_plain, x, y));
+    assert!(corners_differ, "the mask selects the corners");
+    // The node's thumbnail is the picture after it.
     let thumbs = |p: &ym_core::pipeline::PhotoSource| {
         r.node_thumbnails(p, &CancelToken::new())
             .expect("thumbnails")
@@ -1420,7 +1471,27 @@ fn a_blur_node_renders_as_the_identity_until_bl_04_and_its_settings_are_in_the_g
     let (a, b) = (thumbs(&with_node), thumbs(&plain));
     assert_eq!(a.len(), 3);
     assert_eq!(a[1].png, b[1].png);
-    assert_eq!(a[2].png, b[1].png);
+    assert_ne!(a[2].png, b[1].png, "the thumbnail shows the blur");
+    // The histogram at the node reads its input: the same whatever the node does.
+    let inert = with(
+        &src,
+        graph(
+            vec![
+                corrector(2, 1.0, trim(0.5)),
+                blur(3, 2.0, json!({ "soft": { "radius": 0 } })),
+            ],
+            line(&[1, 2, 3]),
+        ),
+    );
+    let at_node = ym_core::settings::NodeId::Corrector(3);
+    assert_eq!(
+        r.histogram_at(&with_node, Some(at_node), &CancelToken::new())
+            .expect("histogram")
+            .red,
+        r.histogram_at(&inert, Some(at_node), &CancelToken::new())
+            .expect("histogram")
+            .red
+    );
     // The node takes a number and is a step of the plan, in its place.
     let plan = node_plan(&with_node.settings.nodes, ym_color::plan::Stop::Output).unwrap();
     assert_eq!(plan.node_ids(), vec![1, 2, 3]);

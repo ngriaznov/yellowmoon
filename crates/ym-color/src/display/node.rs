@@ -71,6 +71,10 @@ pub struct FilmStep {
     /// holds as all zeros is "no picture here" and keeps the node's input, as the CPU's `NaN` marker does. A Film node's
     /// picture covers everything it is asked for.
     pub face: bool,
+    /// A Blur node's step (`docs/33` section 6): its picture is the node's finished output (the blend in linear light is
+    /// done by the render's pass, with the node's mask), so the chain takes it as it is where the node's mask is above 0 and
+    /// does not blend it again. `strength` is 1.
+    pub blur: bool,
 }
 
 /// What Main has beyond the grade, warp and curves that [`ChainParams`](super::ChainParams) holds.
