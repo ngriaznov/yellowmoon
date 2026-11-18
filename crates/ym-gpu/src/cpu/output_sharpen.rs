@@ -2552,7 +2552,7 @@ mod derivations {
             let n0 = ((sigma * 5.0 + 2.5) as i32 | 1) as usize;
             assert_eq!(
                 tap_count_with(sigma, MAX_TAPS_SCREEN, &oracle),
-                n0.max(3).min(MAX_TAPS_SCREEN)
+                n0.clamp(3, MAX_TAPS_SCREEN)
             );
         }
     }
