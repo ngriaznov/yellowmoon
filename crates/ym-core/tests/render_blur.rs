@@ -291,7 +291,5 @@ fn show_mask_does_not_run_the_blur() {
     let lens = frame(
         &json!({ "type": "lens", "lens": { "radius": 80 }, "respect_mask_edges": false, "masks": masks }),
     );
-    let diff = |a: &[u8], b: &[u8]| a.iter().zip(b).filter(|(x, y)| x != y).count();
-    eprintln!("soft/other {} soft/lens {} of {}", diff(&soft, &other), diff(&soft, &lens), soft.len());
     assert!(soft == other && soft == lens);
 }
