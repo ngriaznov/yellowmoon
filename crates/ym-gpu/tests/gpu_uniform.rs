@@ -418,9 +418,8 @@ fn a_pixel_with_mask_0_is_the_inputs_bits_and_one_with_mask_1_the_nodes() {
         let full = render(dev, &plain, &img, None, &outs);
         let none = render(dev, &without, &img, None, &outs);
         let (mut zeros, mut ones) = (0, 0);
-        for i in 0..n {
+        for (i, &mask) in masks.iter().enumerate().take(n) {
             // C13 of a mask stop is the grey code of `m`; the mask is read from the same stop on every channel.
-            let mask = masks[i];
             for ch in 0..3 {
                 let (g, f, b) = (
                     planar(&got[0])[ch * n + i],
