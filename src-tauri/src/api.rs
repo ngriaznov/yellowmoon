@@ -1114,6 +1114,7 @@ impl AppApi {
     /// # Errors
     ///
     /// [`AppError`] for a photo that cannot be read or rendered, and a node that cannot be read.
+    #[cfg(test)]
     pub fn sample_chroma(
         &self,
         x: f64,
