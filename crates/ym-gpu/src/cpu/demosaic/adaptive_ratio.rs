@@ -371,7 +371,7 @@ const fn registry(t: &Tuning) -> [Constant; 19] {
             ca_relax_slope,
             Kind::Fit,
             Status::Fitted(
-                "RC-10, 2026-11-18: 2.5 to 1.25, the lower bound of the search (within the joint set with A4 no number of the five CA scenes is worse; alone it is 4e-6 px worse at strength 0.5); the surface keeps rising to about 0.2 and then turns mixed; gain 0.014 dB at most, on a path no render reaches",
+                "RC-10, 2026-11-18: 2.5 to 1.25, the lower bound of the search (within the joint set with A4 no number of the five CA scenes is worse; alone it is 4e-6 px worse at strength 0.5); the mean gain peaks near 0.2 but one number is worse from 0.3 down; gain 0.015 dB at most, on a path no render reaches",
             ),
         )
         .on_device("CA_RELAX_SLOPE"),
@@ -381,7 +381,7 @@ const fn registry(t: &Tuning) -> [Constant; 19] {
             ca_relax_floor_px,
             Kind::Fit,
             Status::Fitted(
-                "RC-10, 2026-11-18: kept; 0.05 to 0.15 px moves no number by more than 0.0004 dB or 0.0001 px, under rule 3 (the CA tables of the scenes have no misregistration near the threshold)",
+                "RC-10, 2026-11-18: kept; 0.05 to 0.15 px moves no number by more than 0.0004 dB or 0.0001 px, under rule 3 (at the threshold the relaxation factor is 1.0025)",
             ),
         )
         .on_device("CA_RELAX_FLOOR_PX"),
@@ -391,7 +391,7 @@ const fn registry(t: &Tuning) -> [Constant; 19] {
             centre_weight_linear,
             Kind::Fit,
             Status::Fitted(
-                "RC-10, 2026-11-18: 18 to 9, the lower bound of the search, with the cubic term (0.27 dB at strength 0.5 for both, no number of the five scenes worse); outside the search range the optimum is near 6 with the cubic term at 0",
+                "RC-10, 2026-11-18: 18 to 9, the lower bound of the search, with the cubic term (0.27 dB at strength 0.5 for both, no number of the five scenes worse); outside the search range, with the cubic term at 51, the optimum is near 6",
             ),
         )
         // Not `distinct`: 9 is also the divisor of the 3 x 3 mean (A15), so a literal 9 elsewhere is not a
@@ -2142,7 +2142,10 @@ mod derivations {
         // A4 and A5 (F-02). 121 and 123 are not constants: w(t) = 1 + 18 t + 102 t^3 with t = 1 at
         // kappa = 0 gives w = 1 + 18 + 102 = 121 and the divisor w + 2 = 123, under the oracle's values.
         let o = Tuning::ORACLE;
-        assert_eq!((o.centre_weight_linear, o.centre_weight_cubic), (18.0, 102.0));
+        assert_eq!(
+            (o.centre_weight_linear, o.centre_weight_cubic),
+            (18.0, 102.0)
+        );
         check_the_zero_misregistration_identity(&o);
         assert_eq!(o.centre_weight_at_zero_misregistration(), 121.0);
         assert_eq!(o.centre_divisor_at_zero_misregistration(), 123.0);
