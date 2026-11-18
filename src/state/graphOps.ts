@@ -1168,7 +1168,8 @@ export function pickUniform(settings: DevelopSettings, id: NodeId, sample: { a: 
     if (node.masks.items.length === 0 && !hasKey) {
       // The row's centre is the chroma as read, before the target was held off grey (`docs/32` §2.3).
       const center = clampToDisc([sample.a, sample.b], COLOR_RANGE_REACH);
-      const row = withMask([], { ...newMask("color_range"), center });
+      const base = newMask("color_range");
+      const row = base.kind === "color_range" ? withMask([], { ...base, center }) : null;
       if (row) patch.masks = row;
     }
   }
