@@ -206,22 +206,28 @@ impl DiffractionParams {
 /// pixel; the device reads the `f32` of D7 to D13 from [`Tuning::wgsl_block`].
 ///
 /// [`Tuning::ORACLE`] is what the oracle vectors were made with (`tests/cpu_data/diffraction/`);
-/// [`Tuning::DEFAULT`] is what ships and equals it until a fit lands (`docs/29` RC-11). Each field
+/// [`Tuning::DEFAULT`] is what ships and equals it: RC-11 (2026-11-18) kept every value. Each field
 /// says its row, kind, spec section (`docs/algorithms/03-diffraction-deconvolution.md`), derivation
 /// status and task.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tuning {
-    /// D1 · Fit · spec §2.6, §3.2 · pending, RC-11. First wavelength of the polychromatic PSF, nm.
+    /// D1 · Fit · spec §2.6, §3.2 · fitted, RC-11. First wavelength of the polychromatic PSF, nm.
     pub lambda_min_nm: u32,
-    /// D1 · Fit · spec §2.6, §3.2 · pending, RC-11. Last wavelength (inclusive), nm.
+    /// D1 · Fit · spec §2.6, §3.2 · fitted, RC-11. Last wavelength (inclusive), nm.
     pub lambda_max_nm: u32,
-    /// D1 · Fit · spec §2.6, §3.2 · pending, RC-11. From this wavelength up the spectral weight is 1.
+    /// D1 · Fit · spec §2.6, §3.2 · fitted, RC-11. From this wavelength up the spectral weight is 1.
     pub weight_flat_from_nm: u32,
-    /// D1 · Fit · spec §2.6, §3.2 · pending, RC-11. Below it the weight is
+    /// D1 · Fit · spec §2.6, §3.2 · fitted, RC-11. Below it the weight is
     /// `(top - λ)/width`: the wavelength where the ramp reaches 0, nm.
     pub weight_ramp_top_nm: f64,
-    /// D1 · Fit · spec §2.6, §3.2 · pending, RC-11. The width of that ramp, nm.
+    /// D1 · Fit · spec §2.6, §3.2 · fitted, RC-11. The width of that ramp, nm.
     pub weight_ramp_width_nm: f64,
+    /// D1 · Fit · spec §2.6, §3.2 · kept off, RC-11. A spectral weight per wavelength, 461 to 619 nm
+    /// (index `λ - 461`), that replaces the ramp above when it is set. `None` in both tunings: the
+    /// weights derived from the published curves (`tools/fit/d1_spectral_weight.py`) were worse on the
+    /// gate. The field exists so that the derivation can be repeated and a measured table of V2 can
+    /// be tried without touching the planner.
+    pub weight_table: Option<&'static [f64; 159]>,
     /// D2 · Maths · spec §2.6, §3.2 · proved by the convergence run of RC-11. The radial step is
     /// `fraction · min(p_eff, airy_scale · N / π)` (a quarter of the smaller of the pixel pitch and
     /// of `0.42 N/π` µm).
@@ -258,8 +264,9 @@ pub struct Tuning {
     pub x80_cutoff: f64,
     /// D4 · Maths · spec §2.6, §3.3 · RC-11. The level at which the half-width `x80` is read.
     pub x80_level: f64,
-    /// D5 · Maths for a Gaussian, Fit for the Airy-like kernel · spec §2.6, §3.3 · RC-11 decides
-    /// 0.75 or 0.78. `σ_G = factor · mean(x80)`: the width of the high-pass Gaussian.
+    /// D5 · Fit (the Gaussian's 0.780 is the exact factor of the true half-width; the estimator reads
+    /// 8 % low) · spec §2.6, §3.3 · decided by RC-11: 0.75 kept, 0.78 is mixed. `σ_G = factor ·
+    /// mean(x80)`: the width of the high-pass Gaussian.
     pub sigma_factor: f64,
     /// D5 · spec §2.6, §3.3 · RC-11. Lower clamp of `σ_G`, pixels.
     pub sigma_min: f64,
@@ -270,36 +277,36 @@ pub struct Tuning {
     pub gauss_radius_per_sigma: f64,
     /// D6 · Maths · spec §2.6, §3.3 · proved, as above. The `+ 1` of that radius.
     pub gauss_radius_add: f64,
-    /// D7 · Fit · spec §2.6, §3.4 · pending, RC-11. A channel counts as near clipping above this
+    /// D7 · Fit · spec §2.6, §3.4 · fitted, RC-11. A channel counts as near clipping above this
     /// fraction of white (`T = 0.8 S`).
     pub clip_fraction: f64,
-    /// D7 · Fit · spec §2.6, §3.4 · pending, RC-11. Weight of the largest sorted channel excess in
+    /// D7 · Fit · spec §2.6, §3.4 · fitted, RC-11. Weight of the largest sorted channel excess in
     /// the clip penalty `25 e0 + 5 e1 + e2`.
     pub clip_weight_largest: f64,
-    /// D7 · Fit · spec §2.6, §3.4 · pending, RC-11. Weight of the middle sorted excess.
+    /// D7 · Fit · spec §2.6, §3.4 · fitted, RC-11. Weight of the middle sorted excess.
     pub clip_weight_middle: f64,
-    /// D8 · Fit · spec §2.6, §3.5 · pending, RC-11. Gain of the pull-in of the local envelope
+    /// D8 · Fit · spec §2.6, §3.5 · fitted, RC-11. Gain of the pull-in of the local envelope
     /// estimates.
     pub pull_gain: f64,
-    /// D8 · Fit · spec §2.6, §3.5 · pending, RC-11. The pull-in is limited to this share of the
+    /// D8 · Fit · spec §2.6, §3.5 · fitted, RC-11. The pull-in is limited to this share of the
     /// envelope's height.
     pub pull_band: f64,
-    /// D9 · Fit · spec §2.6, §3.9 · pending, RC-11. Ridge of the 3 x 3 local solve, as a share of
+    /// D9 · Fit · spec §2.6, §3.9 · fitted, RC-11. Ridge of the 3 x 3 local solve, as a share of
     /// `S11 + S22 + S33`.
     pub ridge: f64,
-    /// D10 · Fit · spec §2.6, §3.9 · pending, RC-11. The noise gate: a pixel whose residual is at or
+    /// D10 · Fit · spec §2.6, §3.9 · fitted, RC-11. The noise gate: a pixel whose residual is at or
     /// below this share of the mean clip penalty is left alone.
     pub gate: f64,
-    /// D10 · Fit · spec §2.6, §3.9 · pending, RC-11. The fade-out of the correction starts where the
+    /// D10 · Fit · spec §2.6, §3.9 · fitted, RC-11. The fade-out of the correction starts where the
     /// weighted residual energy passes `fade_lo · Q + 1/gate`.
     pub gate_fade_lo: f64,
-    /// D10 · Fit · spec §2.6, §3.9 · pending, RC-11. It is gone at `fade_hi · Q + 1/gate`.
+    /// D10 · Fit · spec §2.6, §3.9 · fitted, RC-11. It is gone at `fade_hi · Q + 1/gate`.
     pub gate_fade_hi: f64,
-    /// D11 · Fit · spec §2.6, §3.9 · pending, RC-11. Smallest confidence weight.
+    /// D11 · Fit · spec §2.6, §3.9 · fitted, RC-11. Smallest confidence weight.
     pub weight_min: f64,
-    /// D11 · Fit · spec §2.6, §3.9 · pending, RC-11. Lower bound of the dark-layer coefficient `cD`.
+    /// D11 · Fit · spec §2.6, §3.9 · fitted, RC-11. Lower bound of the dark-layer coefficient `cD`.
     pub cd_min: f64,
-    /// D12 · Fit · spec §2.6, §3.12 · pending, RC-11. Cap of the luma-to-RGB ratio of the transfer.
+    /// D12 · Fit · spec §2.6, §3.12 · fitted, RC-11. Cap of the luma-to-RGB ratio of the transfer.
     pub ratio_cap: f64,
     /// D13 · Guard · spec §2.6, §3.5 · keeps the envelope's divisions finite on flat input.
     pub divide_guard: f64,
@@ -317,6 +324,7 @@ impl Tuning {
         weight_flat_from_nm: 540,
         weight_ramp_top_nm: 620.0,
         weight_ramp_width_nm: 80.0,
+        weight_table: None,
         step_fraction: 0.25,
         airy_scale: 0.42,
         r80_energy: 0.8,
@@ -352,7 +360,7 @@ impl Tuning {
         floor_dn: 1.0,
     };
 
-    /// The values that ship. Equal to [`Tuning::ORACLE`] until a fit lands (RC-11).
+    /// The values that ship. Equal to [`Tuning::ORACLE`]: RC-11 (2026-11-18) kept every value.
     pub const DEFAULT: Tuning = Tuning::ORACLE;
 
     /// The `const` block the shader reads (`diffraction.wgsl`), generated from these values: the
@@ -395,13 +403,14 @@ pub const REGISTRY: &[Constant] = &registry(&Tuning::DEFAULT);
 
 /// The registry of one `Tuning`. Written with a pattern that names every field and no `..`, so a
 /// field added to [`Tuning`] without an entry here does not compile.
-const fn registry(t: &Tuning) -> [Constant; 43] {
+const fn registry(t: &Tuning) -> [Constant; 44] {
     let Tuning {
         lambda_min_nm,
         lambda_max_nm,
         weight_flat_from_nm,
         weight_ramp_top_nm,
         weight_ramp_width_nm,
+        weight_table,
         step_fraction,
         airy_scale,
         r80_energy,
@@ -436,16 +445,51 @@ const fn registry(t: &Tuning) -> [Constant; 43] {
         moment_floor,
         floor_dn,
     } = *t;
-    const RC11: Status = Status::Pending("RC-11");
+    // RC-11, 2026-11-18: each fit was decided by rules 3 and 4 of `docs/29` section 2.3 and the owner's
+    // answer 1 against the section 6.4 gate of spec 03 (`capture_sharpen_ab`, 5 f-numbers x 3 ISO, the
+    // plain and the noise-gate variant), the eight cases of `fit_diffraction`, 24 Kodak crops and the
+    // lamps scene (`tools/fit/rc11_scan.py`).
+    const D1_KEPT: Status = Status::Fitted(
+        "RC-11, 2026-11-18: kept; the weights from the 11 published Sony curves (D55, the stage's luma) move the PSF by 0.043 in L1, over the 1e-3 resolution, and make 153 of the 168 numbers of the section 6.4 gate worse",
+    );
+    const MIXED: Status = Status::Fitted(
+        "RC-11, 2026-11-18: kept; every other value in the grid is better on one number of the section 6.4 gate and worse on another (rule 4, answer 1)",
+    );
+    const SIGMA: Status = Status::Fitted(
+        "RC-11, 2026-11-18: kept at 0.75; 0.76 to 0.9 raise the mean PSNR, MTF50 and the Kodak PSNR and lower the mean overshoot, but worsen 77 of the 168 gate numbers (overshoot 15, undershoot 23, flat noise 22, ISO 6400 PSNR 13; at 0.78 the f/8 ISO 100 overshoot goes from 1.65 to 1.84 %); mixed, reported to the owner",
+    );
+    const SMALL: Status = Status::Fitted(
+        "RC-11, 2026-11-18: kept; the values that worsen no number change none by more than 1e-4 (rule 3)",
+    );
+    const INERT: Status = Status::Fitted(
+        "RC-11, 2026-11-18: kept; every value of the grid that makes no number worse moves none of the gate, the cases, the Kodak crops or the lamps by more than 0.0005 dB (rule 3); the others are mixed",
+    );
+    const STRUCTURE: Status = Status::Fitted(
+        "RC-11, 2026-11-18: kept; structure of the solve (the 5 x 5 and 9 x 9 windows), not a value a grid can move",
+    );
     [
-        Constant::cpu("D1", "lambda_min_nm", lambda_min_nm as f64, Kind::Fit, RC11).distinct(),
-        Constant::cpu("D1", "lambda_max_nm", lambda_max_nm as f64, Kind::Fit, RC11).distinct(),
+        Constant::cpu(
+            "D1",
+            "lambda_min_nm",
+            lambda_min_nm as f64,
+            Kind::Fit,
+            D1_KEPT,
+        )
+        .distinct(),
+        Constant::cpu(
+            "D1",
+            "lambda_max_nm",
+            lambda_max_nm as f64,
+            Kind::Fit,
+            D1_KEPT,
+        )
+        .distinct(),
         Constant::cpu(
             "D1",
             "weight_flat_from_nm",
             weight_flat_from_nm as f64,
             Kind::Fit,
-            RC11,
+            D1_KEPT,
         )
         .distinct(),
         Constant::cpu(
@@ -453,7 +497,7 @@ const fn registry(t: &Tuning) -> [Constant; 43] {
             "weight_ramp_top_nm",
             weight_ramp_top_nm,
             Kind::Fit,
-            RC11,
+            D1_KEPT,
         )
         .distinct(),
         Constant::cpu(
@@ -461,7 +505,15 @@ const fn registry(t: &Tuning) -> [Constant; 43] {
             "weight_ramp_width_nm",
             weight_ramp_width_nm,
             Kind::Fit,
-            RC11,
+            D1_KEPT,
+        ),
+        // D1: 1 when a measured table replaces the ramp, 0 for the ramp.
+        Constant::cpu(
+            "D1",
+            "weight_table",
+            if weight_table.is_some() { 1.0 } else { 0.0 },
+            Kind::Fit,
+            D1_KEPT,
         ),
         Constant::cpu(
             "D2",
@@ -538,16 +590,9 @@ const fn registry(t: &Tuning) -> [Constant; 43] {
         ),
         Constant::cpu("D4", "x80_cutoff", x80_cutoff, Kind::Maths, Status::Proved).distinct(),
         Constant::cpu("D4", "x80_level", x80_level, Kind::Maths, Status::Proved),
-        Constant::cpu(
-            "D5",
-            "sigma_factor",
-            sigma_factor,
-            Kind::Maths,
-            Status::Proved,
-        )
-        .distinct(),
-        Constant::cpu("D5", "sigma_min", sigma_min, Kind::Maths, Status::Proved),
-        Constant::cpu("D5", "sigma_max", sigma_max, Kind::Maths, Status::Proved),
+        Constant::cpu("D5", "sigma_factor", sigma_factor, Kind::Fit, SIGMA).distinct(),
+        Constant::cpu("D5", "sigma_min", sigma_min, Kind::Fit, INERT),
+        Constant::cpu("D5", "sigma_max", sigma_max, Kind::Fit, INERT),
         Constant::cpu(
             "D6",
             "gauss_radius_per_sigma",
@@ -565,13 +610,13 @@ const fn registry(t: &Tuning) -> [Constant; 43] {
         ),
         // D6: the cap of the Gaussian radius, MAX_GAUSS_RADIUS (it also bounds MAX_HALO_PX).
         Constant::cpu("D6", "gauss_radius_max", 8.0, Kind::Maths, Status::Proved),
-        Constant::cpu("D7", "clip_fraction", clip_fraction, Kind::Fit, RC11),
+        Constant::cpu("D7", "clip_fraction", clip_fraction, Kind::Fit, MIXED),
         Constant::cpu(
             "D7",
             "clip_weight_largest",
             clip_weight_largest,
             Kind::Fit,
-            RC11,
+            INERT,
         )
         .on_device("CLIP_WEIGHT_LARGEST"),
         Constant::cpu(
@@ -579,24 +624,24 @@ const fn registry(t: &Tuning) -> [Constant; 43] {
             "clip_weight_middle",
             clip_weight_middle,
             Kind::Fit,
-            RC11,
+            INERT,
         )
         .on_device("CLIP_WEIGHT_MIDDLE"),
-        Constant::cpu("D8", "pull_gain", pull_gain, Kind::Fit, RC11)
+        Constant::cpu("D8", "pull_gain", pull_gain, Kind::Fit, MIXED)
             .on_device("PULL_GAIN")
             .distinct(),
-        Constant::cpu("D8", "pull_band", pull_band, Kind::Fit, RC11).on_device("PULL_BAND"),
-        Constant::cpu("D9", "ridge", ridge, Kind::Fit, RC11)
+        Constant::cpu("D8", "pull_band", pull_band, Kind::Fit, SMALL).on_device("PULL_BAND"),
+        Constant::cpu("D9", "ridge", ridge, Kind::Fit, MIXED)
             .on_device("RIDGE")
             .distinct(),
-        Constant::cpu("D10", "gate", gate, Kind::Fit, RC11).on_device("GATE"),
-        Constant::cpu("D10", "gate_fade_lo", gate_fade_lo, Kind::Fit, RC11)
+        Constant::cpu("D10", "gate", gate, Kind::Fit, MIXED).on_device("GATE"),
+        Constant::cpu("D10", "gate_fade_lo", gate_fade_lo, Kind::Fit, MIXED)
             .on_device("GATE_FADE_LO"),
-        Constant::cpu("D10", "gate_fade_hi", gate_fade_hi, Kind::Fit, RC11)
+        Constant::cpu("D10", "gate_fade_hi", gate_fade_hi, Kind::Fit, MIXED)
             .on_device("GATE_FADE_HI"),
-        Constant::cpu("D11", "weight_min", weight_min, Kind::Fit, RC11).on_device("WEIGHT_MIN"),
-        Constant::cpu("D11", "cd_min", cd_min, Kind::Fit, RC11).on_device("CD_MIN"),
-        Constant::cpu("D12", "ratio_cap", ratio_cap, Kind::Fit, RC11).on_device("RATIO_CAP"),
+        Constant::cpu("D11", "weight_min", weight_min, Kind::Fit, MIXED).on_device("WEIGHT_MIN"),
+        Constant::cpu("D11", "cd_min", cd_min, Kind::Fit, MIXED).on_device("CD_MIN"),
+        Constant::cpu("D12", "ratio_cap", ratio_cap, Kind::Fit, SMALL).on_device("RATIO_CAP"),
         Constant::cpu(
             "D13",
             "divide_guard",
@@ -619,8 +664,8 @@ const fn registry(t: &Tuning) -> [Constant; 43] {
             .on_device("FLOOR_DN"),
         // D14: the windows are structure (5 x 5 for the envelope and the smoothing, 9 x 9 for the
         // moments), written as the radii 2 and 4 of `box_mean` and the 5 x 5 of `envelopes`.
-        Constant::cpu("D14", "envelope_window_radius", 2.0, Kind::Fit, RC11),
-        Constant::cpu("D14", "moment_window_radius", 4.0, Kind::Fit, RC11),
+        Constant::cpu("D14", "envelope_window_radius", 2.0, Kind::Fit, STRUCTURE),
+        Constant::cpu("D14", "moment_window_radius", 4.0, Kind::Fit, STRUCTURE),
     ]
 }
 // tuning:end
@@ -1095,7 +1140,9 @@ fn remember(
 /// The spectral weight `w(lambda)` of the polychromatic PSF: 1 from 540 nm, a linear ramp up to
 /// 1.9875 at 461 nm below (spec section 2.6; the numbers are D1 of [`Tuning`]).
 fn spectral_weight_with(lambda_nm: u32, t: &Tuning) -> f64 {
-    if lambda_nm >= t.weight_flat_from_nm {
+    if let Some(tab) = t.weight_table {
+        tab[(lambda_nm.clamp(461, 619) - 461) as usize]
+    } else if lambda_nm >= t.weight_flat_from_nm {
         1.0
     } else {
         (t.weight_ramp_top_nm - f64::from(lambda_nm)) / t.weight_ramp_width_nm
@@ -1115,8 +1162,19 @@ fn plan_geometry(pitch_eff: f64, f_number: f64) -> Option<Geometry> {
 }
 
 /// Plans the PSF kernel, its radius, `sigma_G` and the halo (spec sections 3.1 to 3.3).
-#[allow(clippy::too_many_lines, clippy::needless_range_loop)] // one planner, kept in the order of the spec; the index loops are its formulas
 fn plan_geometry_with(pitch_eff: f64, f_number: f64, t: &Tuning) -> Option<Geometry> {
+    plan_geometry_samples(pitch_eff, f_number, t, PROFILE_SAMPLES)
+}
+
+/// [`plan_geometry_with`] with `samples` radial samples instead of the 500 of D2. Only the convergence
+/// runs of `derivations` use another number (a finer step needs more samples to cover the same radius).
+#[allow(clippy::too_many_lines, clippy::needless_range_loop)] // one planner, kept in the order of the spec; the index loops are its formulas
+fn plan_geometry_samples(
+    pitch_eff: f64,
+    f_number: f64,
+    t: &Tuning,
+    samples: usize,
+) -> Option<Geometry> {
     let n_f = f_number;
     let step = cmin(
         t.step_fraction * pitch_eff,
@@ -1124,7 +1182,7 @@ fn plan_geometry_with(pitch_eff: f64, f_number: f64, t: &Tuning) -> Option<Geome
     );
 
     // Radial polychromatic Airy profile, 1 nm steps over 461..619 nm.
-    let mut prof = [0.0f64; PROFILE_SAMPLES];
+    let mut prof = vec![0.0f64; samples];
     let mut wsum = 0.0f64;
     for lam in t.lambda_min_nm..=t.lambda_max_nm {
         let wl = spectral_weight_with(lam, t);
@@ -1147,7 +1205,7 @@ fn plan_geometry_with(pitch_eff: f64, f_number: f64, t: &Tuning) -> Option<Geome
     let e80 = t.r80_energy * total;
     let (mut prev, mut cur) = (c0, c0);
     let mut idx: Option<usize> = None;
-    for ix in 0..PROFILE_SAMPLES - 1 {
+    for ix in 0..samples - 1 {
         cur = prev + (ix + 1) as f64 * prof[ix + 1];
         if cur >= e80 {
             idx = Some(ix);
@@ -1168,7 +1226,7 @@ fn plan_geometry_with(pitch_eff: f64, f_number: f64, t: &Tuning) -> Option<Geome
     if nsamp < 1 {
         return None;
     }
-    let nsamp = (nsamp as usize).min(PROFILE_SAMPLES);
+    let nsamp = (nsamp as usize).min(samples);
     for (k, p) in prof.iter_mut().enumerate().take(nsamp) {
         let c = (k as f64 * (step / support) * (0.5 * PI)).cos();
         *p *= c * c;
@@ -1263,6 +1321,31 @@ fn plan_geometry_with(pitch_eff: f64, f_number: f64, t: &Tuning) -> Option<Geome
     }
 
     // sigma_G from the 80 % half-width of the line-spread function at 8 angles.
+    let sg = t.sigma_factor * mean_x80(&kernel, radius, t);
+    if !sg.is_finite() {
+        return None;
+    }
+    let sg = cmin(cmax(sg, t.sigma_min), t.sigma_max);
+    let gauss_sigma = sg as f32;
+    let gauss_radius = ((t.gauss_radius_per_sigma * f64::from(gauss_sigma) + t.gauss_radius_add)
+        .floor() as usize)
+        .min(MAX_GAUSS_RADIUS);
+    Some(Geometry {
+        radius,
+        kernel,
+        gauss_sigma,
+        gauss_radius,
+        halo_px: 10 + radius + gauss_radius,
+        step_um: step,
+        r80_um,
+        support_um: support,
+    })
+}
+
+/// The mean over the `line_angles` angles of the 80 % half-width `x80` of the line spread of `kernel`
+/// (`(2 radius + 1)` square, spec section 3.3, D4), in pixels. `sigma_G` is a factor times it.
+fn mean_x80(kernel: &[f32], radius: usize, t: &Tuning) -> f64 {
+    let kw = 2 * radius + 1;
     let n0 = (17 * radius + 16) / 4;
     let mut x80_sum = 0.0f64;
     let angles = f64::from(t.line_angles);
@@ -1311,25 +1394,7 @@ fn plan_geometry_with(pitch_eff: f64, f_number: f64, t: &Tuning) -> Option<Geome
         let icpt = (sxx * sc - sx * sxc) / d;
         x80_sum += (t.x80_level - icpt) / slope;
     }
-    let sg = t.sigma_factor * (x80_sum / angles);
-    if !sg.is_finite() {
-        return None;
-    }
-    let sg = cmin(cmax(sg, t.sigma_min), t.sigma_max);
-    let gauss_sigma = sg as f32;
-    let gauss_radius = ((t.gauss_radius_per_sigma * f64::from(gauss_sigma) + t.gauss_radius_add)
-        .floor() as usize)
-        .min(MAX_GAUSS_RADIUS);
-    Some(Geometry {
-        radius,
-        kernel,
-        gauss_sigma,
-        gauss_radius,
-        halo_px: 10 + radius + gauss_radius,
-        step_um: step,
-        r80_um,
-        support_um: support,
-    })
+    x80_sum / angles
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2018,7 +2083,7 @@ mod derivations {
     fn the_exact_sigma_g_factor_for_a_gaussian_is_0_780_and_the_shipped_one_is_0_75() {
         // D5. The 80 % half-width of a Gaussian line spread is x80 = 1.2816 sigma, so a
         // `sigma_G = f * x80` that is the Gaussian's own sigma has f = 1 / 1.2816 = 0.7803. The
-        // shipped 0.75 is 3.9 % below it and stays until RC-11 decides.
+        // shipped 0.75 is 3.9 % below it; RC-11 kept it (0.78 is mixed on the gate).
         let x80 = gaussian_half_width(0.8);
         assert!((x80 - 1.281_551_565_5).abs() < 1e-9, "x80 = {x80}");
         let exact = 1.0 / x80;
@@ -2061,6 +2126,300 @@ mod derivations {
                 assert!(sigma <= 2.0, "{pitch} {n_f}: sigma_G {sigma}");
                 assert!(tail(sigma, g.gauss_radius) < budget, "{pitch} {n_f}");
             }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // RC-11: the error budget and the convergence runs of D2 to D4 and D6 (`docs/29` section 2.3).
+    //
+    // The budget, stated once: **1e-3 of the energy of the kernel the stage uses**. For the PSF kernel
+    // it is the L1 distance between the normalised kernel and the kernel of a converged reference
+    // (the sum of the absolute differences of two kernels of sum 1; 1e-3 is a tenth of a percent of
+    // the mass in the wrong place). For the high-pass Gaussian it is the same distance between the
+    // Gaussian made from the estimated `sigma_G` and the one of the true width.
+    //
+    // The runs find what spec 03 section 2.6 records: the radius rule, the Gaussian radius and the
+    // floor of the interpolation meet the budget; the radial step, the splat density, the support
+    // and the line-spread estimate do not, and every converged value that a run could try is worse
+    // on one number of the section 6.4 gate (`tools/fit/rc11_scan.py`), so none is taken.
+    // ------------------------------------------------------------------------------------------
+
+    const BUDGET: f64 = 1e-3;
+
+    /// Lenses the planner meets: (pitch of the pixel grid in micrometres, f-number). The last five
+    /// are an export at half scale, a small pixel, two pitch-limited steps (`p_eff < 0.42 N / pi`)
+    /// and a pixel of 1 um.
+    const LENSES: [(f64, f64); 13] = [
+        (3.76, 5.6),
+        (3.76, 8.0),
+        (3.76, 11.0),
+        (3.76, 16.0),
+        (3.76, 22.0),
+        (5.94, 8.0),
+        (5.94, 16.0),
+        (2.4, 11.0),
+        (2.4, 22.0),
+        (7.52, 11.0),
+        (3.76, 32.0),
+        (3.76, 45.0),
+        (1.0, 4.0),
+    ];
+
+    /// The L1 distance between two normalised kernels, on the larger square.
+    fn kernel_l1(a: &Geometry, b: &Geometry) -> f64 {
+        let r = a.radius.max(b.radius) as i64;
+        let at = |g: &Geometry, dy: i64, dx: i64| -> f64 {
+            let gr = g.radius as i64;
+            if dy.abs() > gr || dx.abs() > gr {
+                0.0
+            } else {
+                f64::from(g.kernel[(dy + gr) as usize * (2 * g.radius + 1) + (dx + gr) as usize])
+            }
+        };
+        let mut d = 0.0;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                d += (at(a, dy, dx) - at(b, dy, dx)).abs();
+            }
+        }
+        d
+    }
+
+    /// The worst kernel L1 and the number of lenses whose radius changes, of `variant` (with
+    /// `vs` radial samples) against `reference` (with `rs`), over the lenses.
+    fn compare_tunings(variant: &Tuning, vs: usize, reference: &Tuning, rs: usize) -> (f64, usize) {
+        let (mut worst, mut flips) = (0.0f64, 0usize);
+        for (pitch, n_f) in LENSES {
+            let (Some(a), Some(b)) = (
+                plan_geometry_samples(pitch, n_f, variant, vs),
+                plan_geometry_samples(pitch, n_f, reference, rs),
+            ) else {
+                continue;
+            };
+            worst = worst.max(kernel_l1(&a, &b));
+            flips += usize::from(a.radius != b.radius);
+        }
+        (worst, flips)
+    }
+
+    #[test]
+    fn d2_the_radial_step_misses_the_budget_by_a_factor_of_five_and_an_eighth_step_is_not_better_on_the_gate()
+     {
+        // The reference is an eighth of the shipped step with eight times the samples (the same
+        // radius covered: the total of the encircled energy runs to 500 shipped steps). Measured:
+        // 5.2e-3 for the shipped step, 1.3e-3 for half of it, 2.2e-2 for twice it.
+        let d = Tuning::DEFAULT;
+        let fine = Tuning {
+            step_fraction: d.step_fraction / 8.0,
+            ..d
+        };
+        let big = 8 * PROFILE_SAMPLES;
+        let (shipped, _) = compare_tunings(&d, PROFILE_SAMPLES, &fine, big);
+        assert!((4.0e-3..6.0e-3).contains(&shipped), "{shipped}");
+        assert!(shipped > BUDGET);
+        let half = Tuning {
+            step_fraction: d.step_fraction / 2.0,
+            ..d
+        };
+        let (h, _) = compare_tunings(&half, 2 * PROFILE_SAMPLES, &fine, big);
+        assert!((1.0e-3..1.6e-3).contains(&h), "{h}");
+        let coarse = Tuning {
+            step_fraction: 0.5,
+            ..d
+        };
+        let (c, _) = compare_tunings(&coarse, PROFILE_SAMPLES / 2, &fine, big);
+        assert!(c > 1.5e-2, "{c}");
+        // The pitch-limited step (f/45 at 3.76 um) is the same rule.
+        let g = plan_geometry(3.76, 45.0).expect("plan");
+        assert!((g.step_um - 0.25 * 3.76).abs() < 1e-12, "{}", g.step_um);
+    }
+
+    #[test]
+    fn d3_the_radius_rule_and_the_floor_meet_the_budget_and_the_support_and_the_splat_do_not() {
+        let d = Tuning::DEFAULT;
+        let n = PROFILE_SAMPLES;
+        // The radius rule against no cut at all (R = 7): 4.7e-4, under the budget.
+        let (rule, _) = compare_tunings(
+            &d,
+            n,
+            &Tuning {
+                kernel_energy: 2.0,
+                ..d
+            },
+            n,
+        );
+        assert!(rule < BUDGET && rule > 4.0e-4, "{rule}");
+        // A stricter rule (0.999, 0.0002) moves the kernel as little: the same order.
+        let strict = Tuning {
+            kernel_energy: 0.999,
+            kernel_tail: 0.0002,
+            ..d
+        };
+        let (s2, _) = compare_tunings(&d, n, &strict, n);
+        assert!(s2 < BUDGET, "{s2}");
+        // The floor of the interpolation step never binds.
+        let (floor, _) = compare_tunings(
+            &d,
+            n,
+            &Tuning {
+                r80_floor: 0.001,
+                ..d
+            },
+            n,
+        );
+        assert!(floor == 0.0, "{floor}");
+        // The splat density 6 against 24 per pixel: 1.9e-2, over the budget (a coarse splat blurs the
+        // rings that the quarter-step profile resolves).
+        let (splat, _) = compare_tunings(
+            &d,
+            n,
+            &Tuning {
+                angular_per_px: 24.0,
+                ..d
+            },
+            n,
+        );
+        assert!((1.5e-2..2.5e-2).contains(&splat), "{splat}");
+        // The support is a window, not a quantity that converges: 8 r80 and 8 px move the kernel by
+        // 0.22, which is the taper's own width (the Airy tail falls as 1/r^3).
+        let longer = Tuning {
+            support_r80_factor: 8.0,
+            support_pitch_factor: 8.0,
+            ..d
+        };
+        let (support, flips) = compare_tunings(&d, n, &longer, n);
+        assert!((0.15..0.3).contains(&support), "{support}");
+        assert!(flips >= 3, "{flips}");
+    }
+
+    /// A normalised square kernel of the Gaussian of width `sigma` (pixel-integrated taps).
+    fn gaussian_kernel(sigma: f64, radius: usize) -> Vec<f32> {
+        let tap = |i: i64| {
+            0.5 * (libm::erf((i as f64 + 0.5) / (sigma * std::f64::consts::SQRT_2))
+                - libm::erf((i as f64 - 0.5) / (sigma * std::f64::consts::SQRT_2)))
+        };
+        let r = radius as i64;
+        let mut k = Vec::new();
+        for y in -r..=r {
+            for x in -r..=r {
+                k.push(tap(y) * tap(x));
+            }
+        }
+        let sum: f64 = k.iter().sum();
+        k.iter().map(|v| (v / sum) as f32).collect()
+    }
+
+    #[test]
+    fn d4_the_line_spread_estimate_reads_8_percent_below_the_true_half_width_of_a_gaussian() {
+        // A kernel of known width through the planner's own estimator. The exact `x80` of a Gaussian
+        // is 1.2816 sigma; the estimator (a line fitted to the cumulative line spread up to 0.85 and
+        // read at 0.8) returns 0.921 of it for sigma from 1.25 to 2 and 0.89 to 0.97 below. The factor
+        // that makes `f * x80` the Gaussian's own sigma is therefore 0.847, not 0.780: with 0.75 the
+        // high-pass Gaussian is 0.885 of the width of the kernel's Gaussian, with 0.78 it is 0.921.
+        // The estimate misses the budget (an error of 8 % in sigma is 0.08 in the L1 of the Gaussians),
+        // and the factor of D5 absorbs it: the product is what the gate sees.
+        for sigma in [1.25, 1.5, 1.75, 2.0] {
+            let radius = ((4.0f64 * sigma).ceil() as usize).clamp(2, MAX_RADIUS);
+            let k = gaussian_kernel(sigma, radius);
+            let x80 = mean_x80(&k, radius, &Tuning::DEFAULT);
+            let ratio = x80 / (1.281_551_565_5 * sigma);
+            assert!((0.915..0.925).contains(&ratio), "sigma {sigma}: {ratio}");
+            let factor = sigma / x80;
+            assert!((0.843..0.851).contains(&factor), "sigma {sigma}: {factor}");
+        }
+        for sigma in [0.5, 0.7, 1.0] {
+            let radius = ((4.0f64 * sigma).ceil() as usize).clamp(2, MAX_RADIUS);
+            let x80 = mean_x80(&gaussian_kernel(sigma, radius), radius, &Tuning::DEFAULT);
+            let ratio = x80 / (1.281_551_565_5 * sigma);
+            assert!((0.89..0.98).contains(&ratio), "sigma {sigma}: {ratio}");
+        }
+    }
+
+    #[test]
+    fn d6_the_gaussian_radius_meets_the_one_per_mille_budget_up_to_sigma_2_58() {
+        // The budget of D6 is the mass beyond the cut. 4.65e-4 holds to sigma_G = 2.0 (RC-02); with the
+        // cap of 8 taps the mass beyond is erfc(8.5 / (sigma sqrt 2)), which reaches 1e-3 at 2.58.
+        let tail = |sigma: f64| libm::erfc(8.5 / (sigma * std::f64::consts::SQRT_2));
+        assert!(tail(2.0) < 5e-4 && tail(2.55) < BUDGET && tail(2.62) > BUDGET);
+        assert!(tail(3.0) > 4.0e-3);
+        // No lens of the table has sigma_G above 2.0 (the largest is 1.57, 3.76 um at f/45).
+        let worst = LENSES
+            .iter()
+            .filter_map(|&(p, n)| plan_geometry(p, n))
+            .map(|g| f64::from(g.gauss_sigma))
+            .fold(0.0, f64::max);
+        assert!(worst <= 2.0, "{worst}");
+        // The planner never asks for more: over the whole valid range (pitch 0.5 to 20 um in steps of
+        // a tenth of a micrometre up to 4 and of half a micrometre above, f/1 to f/50 in steps of 1)
+        // sigma_G stays under 1.9, because the kernel radius is capped at 7 pixels. The clamp of 3.0
+        // is never reached and the cap of 8 taps never binds below sigma_G = 2.0.
+        let mut max_sigma = 0.0f64;
+        let mut pitch = 0.5f64;
+        while pitch <= 20.0 {
+            for n in 1..=50 {
+                if let Some(g) = plan_geometry(pitch, f64::from(n)) {
+                    max_sigma = max_sigma.max(f64::from(g.gauss_sigma));
+                }
+            }
+            pitch += if pitch < 4.0 { 0.1 } else { 0.5 };
+        }
+        assert!((1.8..1.9).contains(&max_sigma), "{max_sigma}");
+    }
+
+    #[test]
+    fn the_weight_table_replaces_the_ramp_and_a_table_of_the_ramp_changes_nothing() {
+        // D1. `weight_table: Some(..)` is read instead of the ramp; a table that holds the ramp's own
+        // values gives the same planned geometry, a flat table another one.
+        let d = Tuning::DEFAULT;
+        let mut ramp = [0.0f64; 159];
+        for (i, v) in ramp.iter_mut().enumerate() {
+            *v = spectral_weight_with(461 + i as u32, &d);
+        }
+        let ramp: &'static [f64; 159] = Box::leak(Box::new(ramp));
+        let same = Tuning {
+            weight_table: Some(ramp),
+            ..d
+        };
+        let a = plan_geometry_with(3.76, 11.0, &d).expect("plan");
+        let b = plan_geometry_with(3.76, 11.0, &same).expect("plan");
+        assert_eq!(a, b);
+        let flat: &'static [f64; 159] = Box::leak(Box::new([1.0f64; 159]));
+        let other = Tuning {
+            weight_table: Some(flat),
+            ..d
+        };
+        let c = plan_geometry_with(3.76, 11.0, &other).expect("plan");
+        assert_ne!(a.kernel, c.kernel);
+        assert!(kernel_l1(&a, &c) > BUDGET);
+    }
+
+    #[test]
+    #[ignore = "prints the convergence table of RC-11 (cargo test -- --ignored --nocapture)"]
+    fn rc11_convergence_table() {
+        let d = Tuning::DEFAULT;
+        for (pitch, n_f) in LENSES {
+            let (Some(a), Some(b)) = (
+                plan_geometry(pitch, n_f),
+                plan_geometry_samples(
+                    pitch,
+                    n_f,
+                    &Tuning {
+                        step_fraction: d.step_fraction / 8.0,
+                        ..d
+                    },
+                    8 * PROFILE_SAMPLES,
+                ),
+            ) else {
+                continue;
+            };
+            eprintln!(
+                "D2 pitch {pitch} f/{n_f}: radius {} vs {}, kernel L1 {:.2e}, sigma_G {:.4} vs {:.4}",
+                a.radius,
+                b.radius,
+                kernel_l1(&a, &b),
+                a.gauss_sigma,
+                b.gauss_sigma
+            );
         }
     }
 }

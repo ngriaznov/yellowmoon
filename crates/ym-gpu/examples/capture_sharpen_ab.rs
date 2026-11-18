@@ -4,12 +4,16 @@
 //! item 1.
 //!
 //! ```text
-//! cargo run -p ym-gpu --example capture_sharpen_ab [-- <output-dir>]
+//! cargo run -p ym-gpu --example capture_sharpen_ab [-- <output-dir>] \
+//!     [--from oracle|default] [--set name=value]... [--weights FILE] [--jsonl]
 //! ```
 //!
 //! The output directory (default `testdata/capture_sharpen_ab/synthetic`, git-ignored) gets `results.json`
 //! (every number, plus the normalised edge profiles) and PNG strips of crops. The table is also
-//! printed.
+//! printed. `--from` picks the starting `diffraction::Tuning` (default: `Tuning::DEFAULT`, what ships),
+//! `--set` moves fields of it, `--weights FILE` reads a spectral weight per wavelength (a JSON array of
+//! 159 numbers, 461 to 619 nm, D1) and `--jsonl` prints one JSON line of every record (without the edge
+//! profiles) instead of the table (`docs/29` RC-11).
 //!
 //! Scenes: `synth::fine_text` (glyphs of 2 to 5 px), `synth::natural`, and a slanted edge at 5
 //! degrees (0.05 to 0.5, neutral) with two flat halves. Each is blurred with the diffraction PSF of
@@ -37,10 +41,15 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use ym_gpu::cpu::sharpen::diffraction::eval::{EdgeGeometry, edge_stats, patch_sd};
-use ym_gpu::cpu::sharpen::diffraction::{DiffractionParams, DiffractionPlan, SPEC_LUMA};
+use ym_gpu::cpu::sharpen::diffraction::{DiffractionParams, DiffractionPlan, SPEC_LUMA, Tuning};
 use ym_gpu::cpu::sharpen::{self, auto_sharpen};
 use ym_gpu::cpu::{LUMA, NoiseDn, NoiseSigma, RgbImage, mirror, synth};
 use ym_noise::model::NoiseModel;
+
+#[path = "../tests/common/fit.rs"]
+mod fit;
+
+use fit::{Fields, Start};
 
 const PITCH_UM: f64 = 3.76;
 const G0: [f32; 3] = [2.0, 1.0, 1.5];
@@ -296,13 +305,63 @@ fn write_strip(
 }
 
 fn main() {
-    let out_dir: PathBuf = std::env::args().nth(1).map_or_else(
-        || {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../testdata/capture_sharpen_ab/synthetic")
-        },
-        PathBuf::from,
-    );
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut out: Option<PathBuf> = None;
+    let mut start = Start::Default;
+    let mut sets: Vec<(String, f64)> = Vec::new();
+    let mut weights: Option<String> = None;
+    let mut jsonl = false;
+    let mut i = 0;
+    while i < args.len() {
+        let value = |i: &mut usize| {
+            *i += 1;
+            args.get(*i).cloned().unwrap_or_else(|| {
+                eprintln!("capture_sharpen_ab: {} needs a value", args[*i - 1]);
+                std::process::exit(2)
+            })
+        };
+        match args[i].as_str() {
+            "--from" => {
+                start = match value(&mut i).as_str() {
+                    "oracle" => Start::Oracle,
+                    _ => Start::Default,
+                };
+            }
+            "--set" => sets.push(fit::parse_assignment(&value(&mut i)).unwrap_or_else(|e| {
+                eprintln!("capture_sharpen_ab: {e}");
+                std::process::exit(2)
+            })),
+            "--weights" => weights = Some(value(&mut i)),
+            "--jsonl" => jsonl = true,
+            a if !a.starts_with("--") && out.is_none() => out = Some(PathBuf::from(a)),
+            a => {
+                eprintln!("capture_sharpen_ab: unknown argument `{a}`");
+                std::process::exit(2);
+            }
+        }
+        i += 1;
+    }
+    let mut tuning = if start == Start::Oracle {
+        Tuning::ORACLE
+    } else {
+        Tuning::DEFAULT
+    };
+    for (name, v) in &sets {
+        tuning.set(name, *v).unwrap_or_else(|e| {
+            eprintln!("capture_sharpen_ab: {e}");
+            std::process::exit(2)
+        });
+    }
+    if let Some(path) = weights {
+        let text = std::fs::read_to_string(&path).expect("weights file");
+        let v: Vec<f64> = serde_json::from_str(&text).expect("weights: a JSON array of numbers");
+        let table: [f64; 159] = v.try_into().expect("weights: 159 numbers");
+        tuning.weight_table = Some(Box::leak(Box::new(table)));
+    }
+    let tuning: &'static Tuning = Box::leak(Box::new(tuning));
+    let out_dir: PathBuf = out.unwrap_or_else(|| {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/capture_sharpen_ab/synthetic")
+    });
     std::fs::create_dir_all(&out_dir).expect("output directory");
     let f_numbers = [5.6, 8.0, 11.0, 16.0, 22.0];
     let text = synth::fine_text(192, 128, 2);
@@ -318,7 +377,7 @@ fn main() {
     )
     .expect("write");
     for &f in &f_numbers {
-        let pp = DiffractionParams::new(PITCH_UM, f);
+        let pp = DiffractionParams::new(PITCH_UM, f).with_tuning(tuning);
         for (ii, iso) in isos().iter().enumerate() {
             let model_dn = NoiseDn::from_model(&iso.model);
             let plan = DiffractionPlan::new(&pp, G0, &model_dn, SPEC_LUMA).expect("active plan");
@@ -393,7 +452,19 @@ fn main() {
             }
         }
     }
-    print!("{table}");
+    if jsonl {
+        let lean: Vec<Value> = records
+            .iter()
+            .map(|r| {
+                let mut r = r.clone();
+                r["esf"] = Value::Null;
+                r
+            })
+            .collect();
+        println!("{}", json!({"kind": "gate", "records": lean}));
+    } else {
+        print!("{table}");
+    }
     let doc = json!({
         "description": "Capture-sharpening A/B: Richardson-Lucy Auto vs diffraction deconvolution on synthetic scenes (docs/algorithms/03 section 6.3)",
         "pitch_um": PITCH_UM,
