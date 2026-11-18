@@ -36,5 +36,6 @@ pub mod schedule;
 pub mod sensor_map;
 pub mod spectral;
 pub mod tone;
+pub mod uniform;
 pub mod warp;
 pub mod wb;
