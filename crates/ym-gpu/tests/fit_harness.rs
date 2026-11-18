@@ -484,6 +484,23 @@ fn fit_sharpen_runs_on_tiny_images_and_the_edge_profile_follows_the_sigma_map() 
     );
 }
 
+#[test]
+fn fit_sharpen_gate9_reproduces_the_edge_profile_of_the_spec_tests() {
+    // The numbers `edge_profile_screen_preset` and `edge_profile_noise_gain_on_a_flat_patch` print at
+    // the shipped constants (docs/29 section 2.2a); the harness must measure the same thing.
+    let g = fit_sharpen_ex::gate9_numbers(&output_sharpen::Tuning::DEFAULT);
+    let n = |scale: &str, key: &str| g[scale][key].as_f64().expect("number");
+    assert!((g["rise_before_px"].as_f64().expect("number") - 2.489).abs() < 5e-4);
+    assert!((n("1", "rise_10_90_px") - 1.905).abs() < 5e-4);
+    assert!((n("1", "overshoot_pct") - 3.45).abs() < 5e-3);
+    assert!((n("1", "undershoot_pct") - 3.38).abs() < 5e-3);
+    assert!((n("0.4", "rise_10_90_px") - 2.274).abs() < 5e-4);
+    assert!((n("1", "noise_gain") - 1.0298).abs() < 5e-5);
+    assert!((n("1", "step_overshoot_halo0") - 0.4265).abs() < 5e-5);
+    assert!((n("1", "step_overshoot_halo100") - 0.0069).abs() < 5e-5);
+    assert!((g["1"]["print"]["overshoot_pct"].as_f64().expect("number") - 21.12).abs() < 5e-3);
+}
+
 // ---------------------------------------------------------------------------------------------
 // The driver
 // ---------------------------------------------------------------------------------------------

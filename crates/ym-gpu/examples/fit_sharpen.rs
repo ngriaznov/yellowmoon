@@ -22,12 +22,17 @@
 //! the 10 to 90 % rise, the overshoot and undershoot, and the noise gain of a flat patch. PSNR is not
 //! an objective of a sharpening (`docs/29` G6, F-05): these are, with the change in codes.
 //!
+//! `--gate9` adds the numbers of the gate itself, the edge profile of spec 04 section 9 as `cpu_output_sharpen.rs`
+//! measures it (a soft slanted edge of Gaussian sigma 0.8 px, 0.1 to 0.5, 5 degrees; the noisy flat patch; the
+//! hard step at amount 300 and R 1.5) at scales 1.0 and 0.4, for the screen preset, with the halo-0 and print
+//! rows at full size for the record (`docs/29` RC-09).
+//!
 //! Kodak and McMaster are read from `testdata/demosaic` (`YM_TESTDATA` moves it), are for evaluation and
 //! local fitting, and are never committed; no picture made from them is written.
 
 use serde_json::{Value, json};
 use ym_gpu::cpu::RgbImage;
-use ym_gpu::cpu::output_sharpen::{OutputSharpen, Tuning};
+use ym_gpu::cpu::output_sharpen::{Method, OutputSharpen, Tuning};
 
 #[path = "../tests/common/demosaic_metrics.rs"]
 mod demosaic_metrics;
@@ -161,6 +166,187 @@ pub fn edge_numbers(edge: &RgbImage, t: &Tuning) -> Value {
     Value::Object(m)
 }
 
+// ---------------------------------------------------------------------------------------------
+// The gate: the edge profile of spec 04 section 9, as the tests of `cpu_output_sharpen.rs` measure it
+// ---------------------------------------------------------------------------------------------
+
+/// The slanted edge of section 9: `lo` to `hi` through a Gaussian of `sigma` px, `angle_deg` from vertical,
+/// each pixel the mean of 4 x 4 samples of the analytic profile.
+pub fn slanted_edge(size: usize, angle_deg: f64, sigma: f64, lo: f32, hi: f32) -> RgbImage {
+    const SS: usize = 4;
+    let a = angle_deg.to_radians();
+    let c = size as f64 / 2.0;
+    let mut img = RgbImage::new(size, size);
+    for y in 0..size {
+        for x in 0..size {
+            let mut acc = 0.0;
+            for sy in 0..SS {
+                for sx in 0..SS {
+                    let px = x as f64 + (sx as f64 + 0.5) / SS as f64;
+                    let py = y as f64 + (sy as f64 + 0.5) / SS as f64;
+                    let d = (px - c) * a.cos() - (py - c) * a.sin();
+                    acc += 0.5 * (1.0 + libm::erf(d / (sigma * std::f64::consts::SQRT_2)));
+                }
+            }
+            let t = acc / (SS * SS) as f64;
+            let v = (f64::from(lo) + f64::from(hi - lo) * t) as f32;
+            img.set_pixel(x, y, [v, v, v]);
+        }
+    }
+    img
+}
+
+/// The edge-spread function of the middle rows, binned by the distance from the edge line (0.1 px bins).
+fn esf(img: &RgbImage, angle_deg: f64) -> Vec<f64> {
+    let a = angle_deg.to_radians();
+    let size = img.width;
+    let c = size as f64 / 2.0;
+    let (y0, y1) = (size * 5 / 16, size * 11 / 16);
+    let mut bins: Vec<(f64, usize)> = vec![(0.0, 0); 160];
+    for y in y0..y1 {
+        for x in 0..size {
+            let d = (x as f64 + 0.5 - c) * a.cos() - (y as f64 + 0.5 - c) * a.sin();
+            let b = ((d + 8.0) / 0.1).floor();
+            if (0.0..160.0).contains(&b) {
+                bins[b as usize].0 += f64::from(img.pixel(x, y)[1]);
+                bins[b as usize].1 += 1;
+            }
+        }
+    }
+    bins.iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(s, n)| s / *n as f64)
+        .collect()
+}
+
+/// The 10 to 90 % rise along row `y`, linear interpolation.
+fn row_rise_10_90(img: &RgbImage, y: usize, lo: f64, hi: f64) -> f64 {
+    let v: Vec<f64> = (0..img.width)
+        .map(|x| f64::from(img.pixel(x, y)[1]))
+        .collect();
+    let cross = |level: f64| {
+        (0..v.len() - 1)
+            .find(|&x| (v[x] - level) * (v[x + 1] - level) <= 0.0 && v[x] != v[x + 1])
+            .map(|x| x as f64 + (level - v[x]) / (v[x + 1] - v[x]))
+            .unwrap_or(f64::NAN)
+    };
+    cross(lo + 0.9 * (hi - lo)) - cross(lo + 0.1 * (hi - lo))
+}
+
+/// The reference's generator of the section 9 noise test: splitmix64 with Box-Muller.
+struct BoxMuller(u64);
+
+impl BoxMuller {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(11_400_714_819_323_198_485);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(13_787_848_793_156_543_929);
+        z = (z ^ (z >> 27)).wrapping_mul(10_723_151_780_598_845_931);
+        z ^ (z >> 31)
+    }
+    fn uniform(&mut self) -> f64 {
+        (self.next() >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0)
+    }
+    fn gauss(&mut self) -> f64 {
+        let u1 = ((self.next() >> 11) as f64 + 1.0) * (1.0 / 9_007_199_254_740_992.0);
+        let u2 = self.uniform();
+        (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
+    }
+}
+
+fn std_dev_centre(img: &RgbImage, margin: usize) -> f64 {
+    let mut vals = Vec::new();
+    for y in margin..img.height - margin {
+        for x in margin..img.width - margin {
+            vals.push(f64::from(img.pixel(x, y)[1]));
+        }
+    }
+    let n = vals.len() as f64;
+    let mean = vals.iter().sum::<f64>() / n;
+    (vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0)).sqrt()
+}
+
+/// The profile of one parameter set at scale `s`: rise, overshoot and undershoot of the soft edge.
+fn gate9_profile(p: &OutputSharpen, s: f32, edge: &RgbImage) -> Value {
+    let (flo, fhi) = (0.1f64, 0.5f64);
+    let out = p.apply(edge, s).expect("sharpen");
+    let rise = row_rise_10_90(&out, 64, flo, fhi);
+    let e = esf(&out, 5.0);
+    let max = e.iter().copied().fold(f64::MIN, f64::max);
+    let min = e.iter().copied().fold(f64::MAX, f64::min);
+    json!({
+        "rise_10_90_px": num(rise),
+        "overshoot_pct": num(100.0 * (max - fhi).max(0.0) / (fhi - flo)),
+        "undershoot_pct": num(100.0 * (flo - min).max(0.0) / (fhi - flo)),
+    })
+}
+
+/// The edge profile of spec 04 section 9 for `t`: per scale (1.0 and 0.4) the screen preset's rise and
+/// over- and undershoot, the noise gain of a flat patch (sigma 0.004; threshold 1 level and 0), and the halo
+/// suppression on the hard 0.1 to 0.5 step at amount 300 and R 1.5 (the overshoot and undershoot, as a
+/// fraction of the unit signal, without and with halo 100); at full size also the halo-0 and print rows.
+pub fn gate9_numbers(t: &Tuning) -> Value {
+    let edge = slanted_edge(128, 5.0, 0.8, 0.1, 0.5);
+    let rise_before = row_rise_10_90(&edge, 64, 0.1, 0.5);
+    let mut patch = RgbImage::new(96, 96);
+    for v in &mut patch.data {
+        *v = 0.18;
+    }
+    let mut rng = BoxMuller(1234);
+    for v in &mut patch.data {
+        *v = (f64::from(*v) + 0.004 * rng.gauss()) as f32;
+    }
+    let sd_in = std_dev_centre(&patch, 24);
+    let mut step = RgbImage::new(32, 8);
+    for y in 0..8 {
+        for x in 0..32 {
+            let v = if x >= 16 { 0.5 } else { 0.1 };
+            step.set_pixel(x, y, [v, v, v]);
+        }
+    }
+    let mut m = serde_json::Map::new();
+    m.insert("rise_before_px".into(), num(rise_before));
+    for s in EDGE_SCALES {
+        let screen = screen_with(t);
+        let mut v = gate9_profile(&screen, s, &edge);
+        for (key, threshold) in [("noise_gain", 1.0f32), ("noise_gain_threshold_0", 0.0)] {
+            let mut p = screen_with(t);
+            p.threshold_levels = threshold;
+            let after = std_dev_centre(&p.apply(&patch, s).expect("sharpen"), 24);
+            v[key] = num(after / sd_in);
+        }
+        let mut hp = screen_with(t);
+        hp.method = Method::HardThreshold;
+        hp.threshold_levels = 0.0;
+        hp.amount_pct = 300.0;
+        hp.radius_px = 1.5;
+        for (key, halo) in [("halo0", 0.0f32), ("halo100", 100.0)] {
+            hp.halo_pct = halo;
+            let o = hp.apply(&step, s).expect("sharpen");
+            let (mut over, mut under) = (0.0f64, 0.0f64);
+            for x in 0..32 {
+                let g = f64::from(o.pixel(x, 4)[1]);
+                over = over.max(g - 0.5);
+                under = under.max(0.1 - g);
+            }
+            v[format!("step_overshoot_{key}")] = num(over);
+            v[format!("step_undershoot_{key}")] = num(under);
+        }
+        if s == 1.0 {
+            let mut no_halo = screen_with(t);
+            no_halo.halo_pct = 0.0;
+            v["screen_halo0"] = gate9_profile(&no_halo, s, &edge);
+            let print = OutputSharpen {
+                tuning: *t,
+                ..OutputSharpen::print()
+            };
+            v["print"] = gate9_profile(&print, s, &edge);
+        }
+        m.insert(format!("{s}"), v);
+    }
+    Value::Object(m)
+}
+
 fn load_images(dir: &str) -> Vec<RgbImage> {
     load_set(&demosaic_sets_root().join(dir))
         .iter()
@@ -172,7 +358,7 @@ fn usage(why: &str) -> ! {
     eprintln!("fit_sharpen: {why}");
     eprintln!(
         "usage: fit_sharpen [--from oracle|default] [--set name=value]... [--rel name=f1,f2]... \
-         [--eval \"label@name=v,name=v\"]... [--held] [--edge] [--list]"
+         [--eval \"label@name=v,name=v\"]... [--held] [--edge] [--gate9] [--list]"
     );
     std::process::exit(2);
 }
@@ -181,12 +367,14 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut common = Common::default();
     let mut want_edge = false;
+    let mut want_gate9 = false;
     let mut i = 0;
     while i < args.len() {
         match common.take(&args, &mut i) {
             Ok(true) => {}
             Ok(false) => match args[i].as_str() {
                 "--edge" => want_edge = true,
+                "--gate9" => want_gate9 = true,
                 other => usage(&format!("unknown argument `{other}`")),
             },
             Err(e) => usage(&e),
@@ -235,6 +423,12 @@ fn main() {
     if want_edge {
         used.push(("synthetic soft edge (ours, seeded)".to_owned(), 1));
     }
+    if want_gate9 {
+        used.push((
+            "spec 04 section 9 edge profile (ours, synthetic)".to_owned(),
+            1,
+        ));
+    }
     emit(&data_note("fit_sharpen", &used, &skipped));
 
     let edge = want_edge.then(edge_image);
@@ -263,6 +457,9 @@ fn main() {
         }
         if let Some(e) = &edge {
             v["edge"] = edge_numbers(e, t);
+        }
+        if want_gate9 {
+            v["gate9"] = gate9_numbers(t);
         }
         emit(&v);
     };
