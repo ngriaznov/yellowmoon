@@ -247,3 +247,22 @@ fn the_step_is_a_corrector_like_kind_of_its_own() {
     let s = chain(node(live(), NodeMasks::default())).schedule(1.0, &|_| None);
     assert_eq!(s.total_reach(), 0);
 }
+
+/// The CPU reference's speed (`docs/32` section 9): at most 150 ms per megapixel on one core, three amounts on. The figure is
+/// printed (`cargo test -- --nocapture`); the bound is loose enough for an unoptimised test build.
+#[test]
+fn the_cpu_reference_costs_less_than_150_ms_per_megapixel() {
+    let a = Amounts::from_percent(80.0, 80.0, 40.0);
+    let t = target();
+    let n = 1_000_000usize;
+    let mut sum = 0.0;
+    let start = std::time::Instant::now();
+    for i in 0..n {
+        let f = i as f64 / n as f64;
+        let v = [0.2 + 0.5 * f, 0.4 - 0.2 * f, 0.1 + 0.3 * f];
+        sum += uniform::apply(v, Some(&t), a)[0];
+    }
+    let ms = start.elapsed().as_secs_f64() * 1e3;
+    eprintln!("Colour Uniform CPU: {ms:.1} ms per megapixel on one core (checksum {sum:.3})");
+    assert!(ms < 150.0, "{ms} ms per megapixel");
+}
