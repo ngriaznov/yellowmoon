@@ -658,7 +658,7 @@ describe("the histogram, the scatter and Pick colour read the signal at the sele
     const mains = await h!.api.sampleChroma(450, 100);
     expect(corrector(2).grade.color_warp.pins[0]?.source).toEqual([there!.a, there!.b]);
     expect(there).not.toEqual(mains);
-    expect(mains).toEqual({ a: hexChroma(SCENES[3]!.sky)[0], b: hexChroma(SCENES[3]!.sky)[1] });
+    expect(mains).toMatchObject({ a: hexChroma(SCENES[3]!.sky)[0], b: hexChroma(SCENES[3]!.sky)[1] });
     // Main's pins are untouched.
     expect((nodeOf(h!.store.currentSettings()!.settings, 1) as CorrectorItem).grade.color_warp.pins).toHaveLength(0);
     // The selected pin is this node's: another node starts with none selected.

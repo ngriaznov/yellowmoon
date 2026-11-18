@@ -37,6 +37,7 @@ import type {
   BalanceSetting,
   BrushStroke,
   ChromaSample,
+  TargetValue,
   ChromaScatter,
   CliLinkStatus,
   ColorBalance,
@@ -112,6 +113,8 @@ import { clampToDisc, movingPin, WARP_COORD_LIMIT, WARP_MAX_PINS } from "../comp
 import { BRUSH_FULL, brushPointCount, DEFAULT_BRUSH, MAX_BRUSH_POINTS } from "./brushStrokes";
 import type { BrushSettings } from "./brushStrokes";
 import { COLOR_RANGE_REACH } from "./maskRows";
+import { pickUniform as uniformPick } from "./graphOps";
+import { UNIFORM_PICK_RADIUS_PX } from "../components/uniformMath";
 import { clickPrompt, DEFAULT_OBJECT_MODE, foundText, FOUND_PILL_MS, NOTHING_FOUND } from "./objectMask";
 import type { ObjectMode } from "./objectMask";
 import { isTauri } from "../env";
@@ -366,6 +369,11 @@ export interface AppState {
    */
   warpPin: number | null;
   /**
+   * The last pick of a Colour Uniform node that was too grey for a hue and was held at Saturation 2 (`docs/32` §2.1): the photo, the node
+   * and the target it was held at. The Target card shows its note while the node still has exactly this target, so the note is gone at the next change.
+   */
+  uniformGrey: { photo: PhotoId; node: number; target: TargetValue } | null;
+  /**
    * The selected mask row of the node the node view is on (`docs/23` §7.6): an index into that node's `masks.items`, or null. It belongs to
    * the window, like `warpPin`: nothing about it is undone or copied, another node or photo starts with none, and an index past the end
    * counts as none. Its handles show on the photo, whatever tab the panel is on.
@@ -533,6 +541,7 @@ export function initialState(): AppState {
     middleReadout: null,
     chromaScatter: null,
     warpPin: null,
+    uniformGrey: null,
     maskRow: null,
     brush: DEFAULT_BRUSH,
     brushTool: false,
@@ -2682,6 +2691,35 @@ export class AppStore {
     const next = [...pins, movingPin(clampToDisc([sample.a, sample.b], WARP_COORD_LIMIT))];
     this.selectWarpPin(next.length - 1);
     await this.update(patchOf(node, { grade: { color_warp: { pins: next } } }), true);
+  }
+
+  /**
+   * Pick colour of a Colour Uniform node's target (`docs/32` §2.1, §2.3, §3.11): asks the core for the mean colour of a 7 × 7 square under a click
+   * on the photo cell, **at the node's input** (`sample_chroma` with `tap: "node_input"` and `radius_px: 3`), and sends {@link uniformPick}'s one patch:
+   * the target, and on the node's first pick Compress 50 / 50 / 0 and a Colour range row centred on the pick. One undo step. A click on the paper
+   * around the photo changes nothing, nor does a node that is gone, or a core that does not answer a tone.
+   */
+  async pickUniform(x: number, y: number, node: number): Promise<void> {
+    const id = this.currentId();
+    if (id === null) return;
+    if (this.viewportQueue.busy) await this.viewportQueue.flush();
+    await this.whenIdle(id);
+    let sample: ChromaSample | null;
+    try {
+      sample = await this.api.sampleChroma(x, y, node, "node_input", UNIFORM_PICK_RADIUS_PX);
+    } catch (error) {
+      this.fail(error);
+      return;
+    }
+    const rs = this.state.settings[id];
+    if (!sample || sample.tone === undefined || !rs || this.currentId() !== id) return;
+    const picked = uniformPick(rs.settings, node, { a: sample.a, b: sample.b, tone: sample.tone });
+    if (!picked) return;
+    const held = (picked.patch.nodes?.[String(node)] as { target?: TargetValue } | undefined)?.target;
+    this.set({ uniformGrey: picked.tooGrey && held ? { photo: id, node, target: held } : null });
+    await this.update(picked.patch, true, id);
+    // The row the first pick added is the selected one, so the Mask tab shows its card (`design/colour-uniform/03b-mask-tab.jpg`).
+    if (picked.first && (picked.patch.nodes?.[String(node)] as { masks?: unknown } | undefined)?.masks) this.selectMaskRow(0);
   }
 
   /** Selects a pin of the colour warp (an index into the current photo's pins), or none. */

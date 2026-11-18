@@ -55,7 +55,7 @@ html.dark {
    --primary, so setting it on the tab's subtree is all it takes. */
 [data-tab="look"] { --primary: var(--tab-look); --primary-foreground: var(--tab-look-ink); --ring: var(--tab-look); }
 [data-tab="light"] { --primary: var(--tab-light); --primary-foreground: var(--tab-light-ink); --ring: var(--tab-light); }
-[data-tab="color"] { --primary: var(--tab-colour); --primary-foreground: var(--tab-colour-ink); --ring: var(--tab-colour); }
+[data-tab="color"], [data-tab="compress"] { --primary: var(--tab-colour); --primary-foreground: var(--tab-colour-ink); --ring: var(--tab-colour); }
 [data-tab="detail"] { --primary: var(--tab-detail); --primary-foreground: var(--tab-detail-ink); --ring: var(--tab-detail); }
 [data-tab="curve"] { --primary: var(--tab-curve); --primary-foreground: var(--tab-curve-ink); --ring: var(--tab-curve); }
 [data-tab="raw"] { --primary: var(--tab-raw); --primary-foreground: var(--tab-raw-ink); --ring: var(--tab-raw); }

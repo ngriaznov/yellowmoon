@@ -865,3 +865,43 @@ fn a_settings_file_with_a_face_node_and_an_imported_look_saves_with_every_group_
         "{l:?}"
     );
 }
+
+/// CU-07: a settings file with a Colour Uniform node saves into the Nodes group, lists clean, and the exported preset file holds
+/// the node with its target and amounts.
+#[test]
+fn a_settings_file_with_a_color_uniform_node_saves_in_the_nodes_group_and_lists_clean() {
+    let sb = Sandbox::new();
+    let link = |a: Value, b: Value| json!({ "from": { "node": a, "port": "picture" }, "to": { "node": b, "port": "picture" } });
+    let doc = json!({ "nodes": {
+        "items": [
+            { "id": 2, "kind": "color_uniform", "name": "Skin",
+              "target": { "hue_deg": 26, "saturation": 9.7, "lightness_ev": -0.03 },
+              "compress": { "hue": 60, "saturation": 40, "lightness": 0 } } ],
+        "links": [
+            link(json!("input"), json!(1)),
+            link(json!(1), json!(2)),
+            link(json!(2), json!("output")) ] } });
+    let file = settings_file(&sb, "uniform.json", &doc);
+    sb.ym()
+        .args(["presets", "save", "Skin", "--from"])
+        .arg(&file)
+        .assert()
+        .success();
+    let out = sb.ym().args(["presets", "list"]).assert().success();
+    let l = lines(&out.get_output().stdout);
+    let row = l.iter().find(|x| x.starts_with("Skin")).expect("listed");
+    assert!(row.contains("nodes"), "the Nodes group: {row}");
+    assert!(
+        l.iter().all(|x| !x.contains("isn't a Yellowmoon preset")),
+        "{l:?}"
+    );
+    let exported = sb.root().join("Skin.ympreset");
+    sb.ym()
+        .args(["presets", "export", "Skin"])
+        .arg(&exported)
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(&exported).expect("the preset file");
+    assert!(text.contains("color_uniform"), "{text}");
+    assert!(text.contains("hue_deg"), "{text}");
+}

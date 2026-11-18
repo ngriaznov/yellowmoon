@@ -404,6 +404,12 @@ fn group_patch(settings: &DevelopSettings, groups: &[PresetGroup]) -> SettingsPa
                 crate::settings::NodePatch::whole_face_refinement(f),
             );
         }
+        for (id, u) in &g.uniforms {
+            patch.nodes.insert(
+                NodeId::Corrector(*id),
+                crate::settings::NodePatch::whole_color_uniform(u),
+            );
+        }
         for (id, m) in &g.mixers {
             patch.nodes.insert(
                 NodeId::Corrector(*id),
@@ -422,6 +428,7 @@ fn empty_rows_for_preset(settings: &mut DevelopSettings) {
     let masks = std::iter::once(&mut g.main.masks)
         .chain(g.extra.values_mut().map(|c| &mut c.masks))
         .chain(g.films.values_mut().map(|f| &mut f.masks))
+        .chain(g.uniforms.values_mut().map(|u| &mut u.masks))
         .chain(g.faces.values_mut().map(|f| &mut f.masks));
     for m in masks {
         for row in &mut m.items {

@@ -107,6 +107,36 @@ test.describe("the node view", () => {
     }
   });
 
+  test("a Colour Uniform node: the swatch and the fields are named, Pick colour is a toggle with its layer, and the keyboard alone picks a colour and moves a Compress amount", async ({ page }) => {
+    await openApp(page, MOCKUP);
+    await openPhotos(page);
+    await page.getByRole("tab", { name: "Light", exact: true }).click();
+    await page.getByRole("button", { name: "Nodes", exact: true }).click();
+    await page.getByRole("button", { name: "Add node" }).click();
+    await page.getByRole("menuitem", { name: /^Colour Uniform/ }).click();
+    const target = page.getByRole("region", { name: "Target" });
+    await expect(target.getByRole("button", { name: "Pick colour" })).toHaveAttribute("aria-pressed", "true");
+    let snapshot = await expectNamed(page, "a Colour Uniform node with no target");
+    expect(snapshot).toContain('"No target colour yet"');
+    expect(snapshot).toContain('- application "Pick colour for the target of Colour Uniform.');
+    expect(snapshot).toContain('- tab "Compress" [selected]');
+    // Return on the layer picks at the crosshair; the swatch is then named by its colour.
+    const layer = page.getByRole("application", { name: /Pick colour for the target of Colour Uniform/ });
+    await layer.focus();
+    await page.keyboard.press("Enter");
+    await expect(target.getByRole("img", { name: /^Target colour: / })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(layer).toHaveCount(0);
+    snapshot = await expectNamed(page, "a Colour Uniform node with a target");
+    for (const name of ["Hue", "Saturation", "Lightness (EV)"]) expect(snapshot, name).toContain(`- textbox "${name} value"`);
+    // A Compress amount moves with the arrow keys.
+    const hue = page.getByRole("region", { name: "Compress" }).getByRole("slider", { name: "Hue" });
+    await hue.focus();
+    const before = Number(await hue.getAttribute("aria-valuenow"));
+    await page.keyboard.press("ArrowRight");
+    await expect(hue).toHaveAttribute("aria-valuenow", String(before + 1));
+  });
+
   test("the nodes of docs/25: every card is named with its inputs, the panels' rows and menus are named, the off buttons say why", async ({ page }) => {
     await mixerView(page, LAYER_GRAPH, 5);
     let snapshot = await expectNamed(page, "a Layer");

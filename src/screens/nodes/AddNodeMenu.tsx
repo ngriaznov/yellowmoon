@@ -1,4 +1,4 @@
-import { ChevronDownIcon, ChevronsRightIcon, FilmIcon, LayersIcon, ScanFaceIcon, SlidersVerticalIcon, SplitIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronsRightIcon, FilmIcon, FoldHorizontalIcon, LayersIcon, ScanFaceIcon, SlidersVerticalIcon, SplitIcon } from "lucide-react";
 import { Fragment } from "react";
 import type { ReactNode } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/glass/dropdown-menu";
@@ -10,7 +10,7 @@ import { Button } from "../../components";
 const MAX_NODES = 64;
 
 /** What each item of the menu adds, by the number of nodes (`docs/25` §5.1): the item is off when the photo cannot take them all. */
-const ADDS = { corrector: 1, film: 1, face_refinement: 1, parallel: 2, layer: 2, trio: 5 } as const;
+const ADDS = { corrector: 1, film: 1, face_refinement: 1, color_uniform: 1, parallel: 2, layer: 2, trio: 5 } as const;
 
 export interface AddNodeMenuProps {
   /** Adds a corrector after the selected node. Without it the item is off. */
@@ -19,6 +19,8 @@ export interface AddNodeMenuProps {
   onAddFilm?: () => void;
   /** Adds a Face Refinement node after the selected node (`docs/27`). Without it the item is off. */
   onAddFaceRefinement?: () => void;
+  /** Adds a Colour Uniform node after the selected node, with Pick colour on (`docs/32` §4). Without it the item is off. */
+  onAddColorUniform?: () => void;
   /** Adds a Parallel with a corrector beside the selected node (`docs/25` §5.4). */
   onAddParallel?: () => void;
   /** Adds a Layer with a corrector beside the selected node. */
@@ -46,16 +48,17 @@ function Line({ name, line }: { name: string; line: string }) {
 }
 
 /**
- * "Add node ▾" (`docs/23` §7.4, `docs/25` §5.1): a glass menu that opens upward from the toolbar, over the photo. Corrector, Film and Face Refinement add a
+ * "Add node ▾" (`docs/23` §7.4, `docs/25` §5.1): a glass menu that opens upward from the toolbar, over the photo. Corrector, Film, Face Refinement and Colour Uniform add a
  * node after the selected one; after a rule come Parallel, Layer and Splitter and combiner, each with its line. An item is off when the
  * photo has no room for the nodes it adds: at 64 nodes all of them say "A photo can have up to 64 nodes.", Parallel and Layer (two
  * nodes) from 63 and Splitter and combiner (five) from 60 say how many they add. The tooltip is the item's description for a screen reader.
  */
-export function AddNodeMenu({ onAddCorrector, onAddFilm, onAddFaceRefinement, onAddParallel, onAddLayer, onAddTrio, count = 0 }: AddNodeMenuProps) {
+export function AddNodeMenu({ onAddCorrector, onAddFilm, onAddFaceRefinement, onAddColorUniform, onAddParallel, onAddLayer, onAddTrio, count = 0 }: AddNodeMenuProps) {
   const items: ReadonlyArray<{ key: keyof typeof ADDS; name: string; line: string; icon: ReactNode; onAdd?: () => void }> = [
     { key: "corrector", name: "Corrector", line: "Grades all or part of the photo.", icon: <SlidersVerticalIcon aria-hidden="true" />, onAdd: onAddCorrector },
     { key: "film", name: "Film", line: "Models a colour negative, a print and a scan.", icon: <FilmIcon aria-hidden="true" />, onAdd: onAddFilm },
     { key: "face_refinement", name: "Face Refinement", line: "Refines each face: skin, under-eyes and teeth.", icon: <ScanFaceIcon aria-hidden="true" />, onAdd: onAddFaceRefinement },
+    { key: "color_uniform", name: "Colour Uniform", line: "Pulls colours toward one colour.", icon: <FoldHorizontalIcon aria-hidden="true" />, onAdd: onAddColorUniform },
     { key: "parallel", name: "Parallel", line: "Grade branches side by side.", icon: <ChevronsRightIcon aria-hidden="true" />, onAdd: onAddParallel },
     { key: "layer", name: "Layer", line: "Blend one branch over another.", icon: <LayersIcon aria-hidden="true" />, onAdd: onAddLayer },
     { key: "trio", name: "Splitter and combiner", line: "Split a picture, then join it again.", icon: <SplitIcon aria-hidden="true" />, onAdd: onAddTrio },
@@ -73,7 +76,7 @@ export function AddNodeMenu({ onAddCorrector, onAddFilm, onAddFaceRefinement, on
           const blocked = blockedText(ADDS[item.key], count);
           return (
             <Fragment key={item.key}>
-              {i === 3 ? <DropdownMenuSeparator /> : null}
+              {i === 4 ? <DropdownMenuSeparator /> : null}
               <OptionalTooltip text={blocked} side="right">
                 <TooltipTrigger asChild>
                   <DropdownMenuItem

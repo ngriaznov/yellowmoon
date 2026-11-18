@@ -15,7 +15,7 @@
 }
 [data-tab="look"] { --tab: var(--tab-look); --tab-ink: var(--tab-look-ink); }
 [data-tab="light"] { --tab: var(--tab-light); --tab-ink: var(--tab-light-ink); }
-[data-tab="color"] { --tab: var(--tab-colour); --tab-ink: var(--tab-colour-ink); }
+[data-tab="color"], [data-tab="compress"] { --tab: var(--tab-colour); --tab-ink: var(--tab-colour-ink); }
 [data-tab="detail"] { --tab: var(--tab-detail); --tab-ink: var(--tab-detail-ink); }
 [data-tab="curve"] { --tab: var(--tab-curve); --tab-ink: var(--tab-curve-ink); }
 [data-tab="raw"] { --tab: var(--tab-raw); --tab-ink: var(--tab-raw-ink); }
@@ -440,3 +440,15 @@ button.ym-update-pill { cursor: default; }
 .ym-step-rail__text { font-size: var(--fs-label); line-height: 1.45; }
 .ym-step-rail__step[data-state="locked"] .ym-step-rail__text { opacity: 0.7; }
 .ym-step-rail__step:focus-visible { outline-offset: -5px; }
+
+/* Colour Uniform's Compress tab (docs/32 section 2.6): the target's swatch and texts, and the Hue slider's rainbow track. */
+.ym-uniform__head { display: flex; align-items: center; gap: 12px; padding: 8px 0 12px; }
+.ym-uniform__swatch { width: 44px; height: 44px; flex: none; border-radius: 10px; border: 1px solid var(--glass-border, rgb(255 255 255 / 0.2)); }
+.ym-uniform__swatch[data-empty] { background: repeating-conic-gradient(#3a3a3a 0 25%, #262626 0 50%) 0 0 / 12px 12px; }
+.ym-uniform__text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+.ym-uniform__name { font-weight: 800; font-size: 0.9375rem; }
+.ym-uniform__line { font-size: 0.75rem; opacity: 0.7; }
+.ym-uniform__foot { margin: 6px 0 4px; }
+.ym-uniform__note { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 8px; padding: 8px 10px; border-radius: 10px; font-size: 0.75rem; background: rgb(255 255 255 / 0.06); }
+[data-slider][data-track="custom"] [data-slot="slider-track"] { background: var(--ym-track-bg); }
+[data-slider][data-track="custom"] [data-slot="slider-range"] { display: none; }

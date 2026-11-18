@@ -1726,6 +1726,10 @@ export type ChromaTap = "warp_input" | "node_input";
 export interface ChromaSample {
   a: number;
   b: number;
+  /**
+   * The mean of the three LogC4 codes of the same pixel (`docs/32` §3.11), which Pick colour of a Colour Uniform node turns into Lightness.
+   * Additive: a core that does not answer it (before CU-04) leaves it out, and that pick does nothing.
+   */
   tone?: number;
 }
 

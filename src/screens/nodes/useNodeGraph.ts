@@ -21,7 +21,7 @@ import {
   toggleBypass,
 } from "../../state/graphOps";
 import type { GraphOutcome } from "../../state/graphOps";
-import { INPUT_ID, MAIN_ID, nodeOf, OUTPUT_ID } from "../../state/settingsGraph";
+import { COLOR_UNIFORM_NAME, INPUT_ID, MAIN_ID, nodeOf, OUTPUT_ID } from "../../state/settingsGraph";
 import type { AppStore } from "../../state/store";
 
 /** What the graph's toolbar, menus, keys and canvas ask for. Each is one patch and one undo step, or a sentence in the error bar. */
@@ -40,6 +40,8 @@ export interface NodeGraphActions {
   addFilm: () => void;
   /** Add node › Face Refinement: after the selected node (`docs/27`). */
   addFaceRefinement: () => void;
+  /** Add node › Colour Uniform: after the selected node, selected, on its Compress tab with Pick colour on (`docs/32` §4). */
+  addColorUniform: () => void;
   /** Add node › Parallel: a Parallel and a corrector beside the selected node, on its input 2 (`docs/25` §5.4). */
   addParallel: () => void;
   /** Add node › Layer: a Layer and a corrector beside the selected node, on top. */
@@ -79,6 +81,8 @@ export interface UseNodeGraphOptions {
   /** The node the graph and the panel are on, and how to change it. */
   selected: NodeId;
   select: (id: NodeId) => void;
+  /** A node of this kind was added and is selected (Colour Uniform: the screen opens its Compress tab and turns Pick colour on). */
+  onAdded?: (id: NodeId, kind: "color_uniform") => void;
 }
 
 /**
@@ -87,7 +91,7 @@ export interface UseNodeGraphOptions {
  * is one undo step. The new node, or the one before a deleted node, is selected once the core has answered, so a node that was never
  * made is never selected.
  */
-export function useNodeGraph({ store, settings, photoId, selected, select }: UseNodeGraphOptions): NodeGraphActions {
+export function useNodeGraph({ store, settings, photoId, selected, select, onAdded }: UseNodeGraphOptions): NodeGraphActions {
   const [selectedLink, setSelectedLink] = useState<NodeLink | null>(null);
   const [renaming, setRenaming] = useState<NodeId | null>(null);
   const [renamingIn, setRenamingIn] = useState<"card" | "head">("card");
@@ -116,7 +120,7 @@ export function useNodeGraph({ store, settings, photoId, selected, select }: Use
 
   /** Sends what an operation answers, or says why it is refused. */
   const apply = useCallback(
-    (outcome: GraphOutcome): void => {
+    (outcome: GraphOutcome, added?: "color_uniform"): void => {
       const { photoId: id } = latest.current;
       if (!outcome.ok) {
         refuse(outcome.reason);
@@ -126,16 +130,19 @@ export function useNodeGraph({ store, settings, photoId, selected, select }: Use
       const { select: next } = outcome;
       void store.update(outcome.patch, true, id).then(() => {
         const now = store.getState().settings[id]?.settings;
-        if (next !== undefined && now && nodeOf(now, next)) select(next);
+        if (next !== undefined && now && nodeOf(now, next)) {
+          select(next);
+          if (added) onAdded?.(next, added);
+        }
       });
     },
-    [store, refuse, select],
+    [store, refuse, select, onAdded],
   );
   /** Runs an operation on the settings as they are now. */
   const act = useCallback(
-    (make: (settings: DevelopSettings, selected: NodeId) => GraphOutcome): void => {
+    (make: (settings: DevelopSettings, selected: NodeId) => GraphOutcome, added?: "color_uniform"): void => {
       const { settings: current, selected: here } = latest.current;
-      if (current) apply(make(current, here));
+      if (current) apply(make(current, here), added);
     },
     [apply],
   );
@@ -157,6 +164,8 @@ export function useNodeGraph({ store, settings, photoId, selected, select }: Use
     addCorrector: () => act((s, here) => insertAfter(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),
     addFilm: () => act((s, here) => insertAfter(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0, kind: "film", name: "Film" })),
     addFaceRefinement: () => act((s, here) => insertAfter(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0, kind: "face_refinement", name: "Face Refinement" })),
+    addColorUniform: () =>
+      act((s, here) => insertAfter(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0, kind: "color_uniform", name: COLOR_UNIFORM_NAME }), "color_uniform"),
     addParallel: () => act((s, here) => insertMixer(s, here, "parallel", { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),
     addLayer: () => act((s, here) => insertMixer(s, here, "layer", { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),
     addTrio: () => act((s, here) => insertTrio(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),

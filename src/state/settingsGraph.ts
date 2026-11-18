@@ -48,10 +48,10 @@ export type CorrectorItem = Extract<NodeItem, { kind: "corrector" }>;
 export type FilmItem = Extract<NodeItem, { kind: "film" }>;
 /** A Face Refinement node as an item of the graph (`docs/27`). The node view lists it from S-11c. */
 export type FaceRefinementItem = Extract<NodeItem, { kind: "face_refinement" }>;
-/** A Colour Uniform node as an item of the graph (`docs/32`). The node view lists it from CU-08. */
+/** A Colour Uniform node as an item of the graph (`docs/32`). */
 export type ColorUniformItem = Extract<NodeItem, { kind: "color_uniform" }>;
-/** A node that has a card in the node view and a number: a corrector (Main included), a Film node or a Face Refinement node. */
-export type CardItem = CorrectorItem | FilmItem | FaceRefinementItem;
+/** A node that has a card in the node view and a number: a corrector (Main included), a Film node, a Face Refinement node or a Colour Uniform node. */
+export type CardItem = CorrectorItem | FilmItem | FaceRefinementItem | ColorUniformItem;
 /** A node of `docs/25` as an item of the graph: a Parallel, a Layer, a Splitter or a Combiner. It has a glyph card and no number. */
 export type MixerItem = Extract<NodeItem, { kind: "parallel" | "layer" | "splitter" | "combiner" }>;
 
@@ -112,11 +112,11 @@ export function correctorsOf(settings: DevelopSettings): CorrectorItem[] {
   return settings.nodes.items.filter((item): item is CorrectorItem => item.kind === "corrector");
 }
 
-/** True for a node that has a card, a number and masks: a corrector, a Film node or a Face Refinement node. */
+/** True for a node that has a card, a number and masks: a corrector, a Film node, a Face Refinement node or a Colour Uniform node. */
 export const isCardItem = (item: NodeItem | undefined): item is CardItem =>
-  item?.kind === "corrector" || item?.kind === "film" || item?.kind === "face_refinement";
+  item?.kind === "corrector" || item?.kind === "film" || item?.kind === "face_refinement" || item?.kind === "color_uniform";
 
-/** Every node that has a card, in the order the document lists them: the correctors, the Film nodes and the Face Refinement nodes, by id. */
+/** Every node that has a card, in the order the document lists them: the correctors, the Film nodes, the Face Refinement nodes and the Colour Uniform nodes, by id. */
 export function cardsOf(settings: DevelopSettings): CardItem[] {
   return settings.nodes.items.filter(isCardItem);
 }

@@ -342,7 +342,7 @@ export function Photos() {
   // A Film node has the corrector's panel until its own tabs are built (F-09, `docs/24` §4.1).
   const onKind: PanelKind = selectedItem ? panelKindOf(selectedItem.kind) : "corrector";
   // A corrector and a Film node both have masks (`docs/24` section 4.3).
-  const hasMasks = onKind === "corrector" || onKind === "film" || onKind === "face_refinement";
+  const hasMasks = onKind === "corrector" || onKind === "film" || onKind === "face_refinement" || onKind === "color_uniform";
   const nodeTab = nodeTabs[onKind];
   const nodeTabList = NODE_TABS[onKind];
   const onNodeNow = useLatest(onNode);
@@ -361,8 +361,10 @@ export function Photos() {
   const rangeShown = panel === "tools" && view === "nodes" && nodeTab === "mask" && hasMasks && !cropping && selectedMask?.kind === "color_range" && selectedMask.enabled;
   // Pick depth (`docs/23` §7.6) is the same for the selected Depth row.
   const depthShown = panel === "tools" && view === "nodes" && nodeTab === "mask" && hasMasks && !cropping && selectedMask?.kind === "depth" && selectedMask.enabled;
+  // Pick colour of a Colour Uniform node's target (`docs/32` §2.1) belongs to the Compress tab of that node.
+  const uniformShown = panel === "tools" && view === "nodes" && nodeTab === "compress" && selectedItem?.kind === "color_uniform" && !cropping;
   const picking: PickMode | null =
-    asked !== null && asked.node === onNode && (asked.mode === "range" ? rangeShown : asked.mode === "depth" ? depthShown : colourShown) ? asked.mode : null;
+    asked !== null && asked.node === onNode && (asked.mode === "range" ? rangeShown : asked.mode === "depth" ? depthShown : asked.mode === "uniform" ? uniformShown : colourShown) ? asked.mode : null;
   /** Starts a pick on the selected node, or ends it (null). */
   const setPicking = useCallback((mode: PickMode | null, node?: NodeId): void => {
     setAsked(mode === null ? null : { mode, node: node ?? onNodeNow.current });
@@ -433,7 +435,12 @@ export function Photos() {
   }, [store, picking]);
   // The photos whose graph has more than the simple view shows (a glyph on their thumbnails): a Map that is the same while the answer is.
   const hiddenNodes = useAppState((s) => hiddenByPhoto(s.settings));
-  const graph = useNodeGraph({ store, settings: graphSettings, photoId: photo?.id ?? null, selected: onNode, select: setSelectedNode });
+  // A Colour Uniform node that was just added opens on its Compress tab with Pick colour on (`docs/32` §4).
+  const onAdded = useCallback((id: NodeId): void => {
+    setNodeTabs((was) => ({ ...was, color_uniform: "compress" }));
+    setAsked({ mode: "uniform", node: id });
+  }, []);
+  const graph = useNodeGraph({ store, settings: graphSettings, photoId: photo?.id ?? null, selected: onNode, select: setSelectedNode, onAdded });
   const graphView = useGraphView(graphSettings);
   // A card shows the picture after its node (`docs/23` §5.7), which the store asks the core for while the node view is on (when a change
   // has landed, never during a drag). Until a node's first picture arrives its card shows the photo's thumbnail, the filmstrip's.
@@ -596,6 +603,10 @@ export function Photos() {
   const setPickingRange = useCallback((on: boolean): void => {
     setAsked((was) => (on ? { mode: "range", node: onNodeNow.current } : was?.mode === "range" ? null : was));
   }, [onNodeNow]);
+  // Pick colour of a Colour Uniform node's target, from its Target card's toggle (or when the node is added). Exclusive with the others; stays on for several clicks.
+  const setPickingUniform = useCallback((on: boolean): void => {
+    setAsked((was) => (on ? { mode: "uniform", node: onNodeNow.current } : was?.mode === "uniform" ? null : was));
+  }, [onNodeNow]);
   // Pick depth of a Depth row, from its card's toggle (or when the row is added). Exclusive with the picks above; stays on for several clicks.
   const setPickingDepth = useCallback((on: boolean): void => {
     setAsked((was) => (on ? { mode: "depth", node: onNodeNow.current } : was?.mode === "depth" ? null : was));
@@ -606,6 +617,11 @@ export function Photos() {
     (point: { x: number; y: number }): void => {
       if (picking === "color") {
         void store.pickColor(point.x, point.y, pickedNode);
+        return;
+      }
+      if (picking === "uniform") {
+        // The first pick of the node is one patch with the target, the amounts and the Colour range row (`docs/32` §2.3).
+        if (typeof onNode === "number") void store.pickUniform(point.x, point.y, onNode);
         return;
       }
       if (picking === "range") {
@@ -927,7 +943,7 @@ export function Photos() {
     {
       // The number keys pick looks on the Look tab, which in the node view is the Output's.
       tab: panel === "tools" ? (view === "nodes" ? nodeTab : tab) : undefined,
-      mode: cropping ? "crop" : picking === "white" ? "pick-white" : picking === "color" || picking === "range" || picking === "depth" || placing ? "pick-color" : null,
+      mode: cropping ? "crop" : picking === "white" ? "pick-white" : picking === "color" || picking === "range" || picking === "depth" || picking === "uniform" || placing ? "pick-color" : null,
       nodeView: view === "nodes",
     },
     overlay === null,
@@ -961,6 +977,8 @@ export function Photos() {
         onPickRange={setPickingRange}
         pickingDepth={picking === "depth"}
         onPickDepth={setPickingDepth}
+        pickingUniform={picking === "uniform"}
+        onPickUniform={setPickingUniform}
         foot={copyPaste}
         hidden={fullScreen.on}
       />
@@ -1074,7 +1092,7 @@ export function Photos() {
               onCrop={onCropButton}
               onNodes={onNodesButton}
             />
-            {picking === "color" || picking === "range" ? (
+            {picking === "color" || picking === "range" || picking === "uniform" ? (
               // Pick white's hint is a pill on the photo (`PickWhiteHint`); Pick colour's stays in the header (the Colour range's too).
               <span className="ym-status" data-hint="true" role="status">
                 Click a colour in the photo.

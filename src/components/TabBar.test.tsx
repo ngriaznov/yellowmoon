@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { TabBar } from "./TabBar";
-import { FIRST_NODE_TAB, MASK_TAB, NODE_FOR_SIMPLE_TAB, NODE_TABS, tabInfo, tabPanelProps, TAB_IDS } from "./tabs";
+import { FIRST_NODE_TAB, MASK_TAB, NODE_FOR_SIMPLE_TAB, NODE_TABS, simpleTabOf, tabInfo, tabPanelProps, TAB_IDS } from "./tabs";
 import type { TabId } from "./tabs";
 import { tabForShortcut, useTabShortcuts } from "./useTabShortcuts";
 
@@ -177,7 +177,7 @@ describe("the tabs of the node view (docs/23 §7.5)", () => {
     expect(NODE_TABS.input).toEqual(["raw", "lens", "light", "color", "detail"]);
     expect(NODE_TABS.corrector).toEqual(["light", "color", "curve", "mask"]);
     expect(NODE_TABS.output).toEqual(["look", "detail"]);
-    expect(Object.values(FIRST_NODE_TAB)).toEqual(["raw", "light", "film", "look", "inputs", "blend", "channels", "channels", "face", "mask"]);
+    expect(Object.values(FIRST_NODE_TAB)).toEqual(["raw", "light", "film", "look", "inputs", "blend", "channels", "channels", "face", "compress"]);
     // The nodes of `docs/25` have one tab each (§5.5): Inputs, Blend and Channels twice.
     expect([NODE_TABS.parallel, NODE_TABS.layer, NODE_TABS.splitter, NODE_TABS.combiner]).toEqual([["inputs"], ["blend"], ["channels"], ["channels"]]);
     expect(tabInfo("blend").label).toBe("Blend");
@@ -186,6 +186,10 @@ describe("the tabs of the node view (docs/23 §7.5)", () => {
     expect(NODE_TABS.face_refinement).toEqual(["face", "mask"]);
     expect(tabInfo("face").label).toBe("Face");
     expect(tabInfo("mask")).toBe(MASK_TAB);
+    // A Colour Uniform node has its Compress tab, then the Mask tab (`docs/32` §2.6); Compress takes the Colour tab's green and is not one of the simple view's.
+    expect(NODE_TABS.color_uniform).toEqual(["compress", "mask"]);
+    expect(tabInfo("compress").label).toBe("Compress");
+    expect(simpleTabOf("compress")).toBe("light");
     // The simple view's seven stay seven: Mask is the node view's.
     expect(TAB_IDS).toHaveLength(7);
     expect(TAB_IDS).not.toContain("mask");
