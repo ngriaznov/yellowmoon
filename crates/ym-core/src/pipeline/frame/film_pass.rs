@@ -626,11 +626,8 @@ impl FilmRender {
         let run = |&(y0, y1): &(i64, i64)| -> Result<Vec<Vec3>, RenderError> {
             let own = |y: i64| (y - read.y) as usize * read.w;
             let (x0c, x1c) = ((made.x - read.x) as usize, (made.x1() - read.x) as usize);
-            let all_zero = (y0..y1).all(|y| {
-                m[own(y) + x0c..own(y) + x1c]
-                    .iter()
-                    .all(|&q| q == 0.0)
-            });
+            let all_zero =
+                (y0..y1).all(|y| m[own(y) + x0c..own(y) + x1c].iter().all(|&q| q == 0.0));
             if all_zero {
                 let mut out = Vec::with_capacity((y1 - y0) as usize * made.w);
                 for y in y0..y1 {

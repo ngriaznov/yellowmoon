@@ -1396,7 +1396,10 @@ fn a_blur_node_blurs_where_its_mask_selects_and_its_settings_are_in_the_grade_ke
     );
     let on_plain = display(&r, &plain);
     let blurred = display(&r, &with_node);
-    assert_ne!(blurred.rgb, on_plain.rgb, "a live Blur node changes the picture");
+    assert_ne!(
+        blurred.rgb, on_plain.rgb,
+        "a live Blur node changes the picture"
+    );
     assert_ne!(frame(&r, &with_node), frame(&r, &plain));
     // Every type, live: the picture changes, and it is finite.
     for body in [

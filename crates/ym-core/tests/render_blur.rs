@@ -169,7 +169,7 @@ fn a_view_and_the_export_agree_at_another_scale() {
         let f = r
             .viewport_frame(src, &st, &FrameOptions::default(), &CancelToken::new())
             .expect("frame");
-        let (vw, vh) = (f.width as usize, f.height as usize);
+        let (vw, vh) = (f.width, f.height);
         let (mut sum, mut worst, mut n) = (0.0f64, 0.0f64, 0usize);
         // The view is the export reduced by two where it holds the photo (inside a margin of the border).
         for y in 8..vh - 8 {
@@ -196,7 +196,10 @@ fn a_view_and_the_export_agree_at_another_scale() {
     let off = measure(&d.source().with_settings(graph(&json!({ "bypass": true }))));
     let body = json!({ "type": "soft", "soft": { "radius": 30 } });
     let on = measure(&d.source().with_settings(graph(&body)));
-    eprintln!("view against export: node off mean {:.3} largest {:.1}; on mean {:.3} largest {:.1}", off.0, off.1, on.0, on.1);
+    eprintln!(
+        "view against export: node off mean {:.3} largest {:.1}; on mean {:.3} largest {:.1}",
+        off.0, off.1, on.0, on.1
+    );
     assert!(on.0 <= off.0 + 1.0, "mean {} against {}", on.0, off.0);
     assert!(on.1 <= off.1 + 10.0, "largest {} against {}", on.1, off.1);
 }
@@ -250,10 +253,7 @@ fn the_device_refuses_a_live_blur_node_and_the_cpu_makes_the_frame() {
         got.report.cpu_reason
     );
     // The frame is the picture with the node in it (not the identity).
-    let off = frame(
-        &d.source()
-            .with_settings(graph(&json!({ "bypass": true }))),
-    );
+    let off = frame(&d.source().with_settings(graph(&json!({ "bypass": true }))));
     assert_ne!(got.rgba, off.rgba);
     // A node at its identity keeps the device and says nothing.
     assert!(!off.report.device_refused && off.report.cpu_reason.is_none());

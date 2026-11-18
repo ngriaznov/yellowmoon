@@ -284,10 +284,9 @@ impl Graph {
     /// Whether the graph has a Blur node that is not bypassed, has an amount, and that the Output reads (or a key reads): a plan the
     /// device refuses until BL-05 (`ColorChain::has_blur`). Its frames and exports are the CPU's, with a reason.
     fn blur_live(&self) -> bool {
-        let Ok(plan) = ym_core::pipeline::color::node_plan(
-            &self.settings.nodes,
-            ym_color::plan::Stop::Output,
-        ) else {
+        let Ok(plan) =
+            ym_core::pipeline::color::node_plan(&self.settings.nodes, ym_color::plan::Stop::Output)
+        else {
             return false;
         };
         let ids = plan.node_ids();
@@ -2700,13 +2699,18 @@ fn the_generator_draws_the_blur_node_with_each_type_and_some_graph_has_it_live()
         "the kind never appeared"
     );
     let all = blur_graphs();
-    assert!(all.iter().any(Graph::blur_live), "no live Blur node in a run");
+    assert!(
+        all.iter().any(Graph::blur_live),
+        "no live Blur node in a run"
+    );
     for ty in ["soft", "lens", "motion", "zoom"] {
         assert!(
             all.iter().any(|g| g.blur_live()
-                && g.json["nodes"]["items"].as_array().is_some_and(|items| items
-                    .iter()
-                    .any(|n| n["kind"] == "blur" && n["type"] == ty && n["bypass"] != json!(true)))),
+                && g.json["nodes"]["items"]
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(|n| n["kind"] == "blur"
+                        && n["type"] == ty
+                        && n["bypass"] != json!(true)))),
             "no live Blur node of type {ty}"
         );
     }
@@ -2819,7 +2823,9 @@ fn blur_graphs_are_refused_by_the_device_and_made_on_the_cpu() {
         let want = frame(&cpu, &src, &st);
         let (worst, over) = frame_diff(&got, &want);
         if worst > 2 || over >= got.rgba.len() / 100 {
-            problems.push(format!("{name}: against the CPU {worst} codes, {over} over 1"));
+            problems.push(format!(
+                "{name}: against the CPU {worst} codes, {over} over 1"
+            ));
         }
         // The export of a few: the CPU's colour pass, within the bound of the CPU's own.
         if n < 4 {
@@ -2831,14 +2837,26 @@ fn blur_graphs_are_refused_by_the_device_and_made_on_the_cpu() {
                 home.path(),
                 FormatKind::Png,
             );
-            let (_, _, cpu_bytes) =
-                export(&d, &g.settings, renderer(None, 256), home.path(), FormatKind::Png);
+            let (_, _, cpu_bytes) = export(
+                &d,
+                &g.settings,
+                renderer(None, 256),
+                home.path(),
+                FormatKind::Png,
+            );
             let (a, b) = (decode_png16_bytes(&dev), decode_png16_bytes(&cpu_bytes));
-            let max = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+            let max = a
+                .iter()
+                .zip(&b)
+                .map(|(x, y)| x.abs_diff(*y))
+                .max()
+                .unwrap_or(0);
             if max > TEN_BIT_CODE {
                 let judged = judge_export(&d, &g.settings, &a, &b, home.path(), &name);
                 if let Some(f) = judged.failure {
-                    problems.push(format!("{f} (the PNG export differs from the CPU's by {max} of 65535)"));
+                    problems.push(format!(
+                        "{f} (the PNG export differs from the CPU's by {max} of 65535)"
+                    ));
                 }
             }
         }
