@@ -34,7 +34,6 @@ export const UNIFORM_TEXT = {
 /** What the three target fields rest at while there is no target: the first change to one sets a target from these (`docs/32` §2.1). */
 export const TARGET_REST: Readonly<TargetValue> = { hue_deg: 0, saturation: SATURATION_MIN, lightness_ev: 0 };
 
-const MINUS = "−";
 /** 9.7 → "9.7", 2 → "2". */
 const satText = (v: number): string => String(Number(v.toFixed(1)));
 /** −0.03 → "−0.03", 0 → "0.00". */
