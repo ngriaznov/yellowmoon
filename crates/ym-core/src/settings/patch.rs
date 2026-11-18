@@ -14,9 +14,9 @@ use super::graph::{
     CorrectorNode, GraphError, InputNode, MAIN_ID, NodeId, NodeKind, NodeLink, NodePos, OutputNode,
     node_fields,
 };
-use super::uniform::{ColorUniformNode, TargetValue};
 use super::masks::{BrushMask, BrushStroke, MasksPatch};
 use super::mixers::{BlendMode, MixerNode};
+use super::uniform::{ColorUniformNode, TargetValue};
 use super::{
     AutoOr, AutoSeeds, ColorBalancePatch, ColorWarp, ContrastSetting, Crop, CurvesPatch,
     DecodePatch, DevelopSettings, ExposureSetting, FieldRef, LensPatch, NoiseReductionManualPatch,
@@ -2146,9 +2146,7 @@ impl SettingsPatch {
                 } else if let Some(f) = to.nodes.face_refinement(n) {
                     patch.nodes.insert(id, NodePatch::whole_face_refinement(f));
                 } else if let Some(f) = to.nodes.color_uniform(n) {
-                    patch
-                        .nodes
-                        .insert(id, NodePatch::whole_color_uniform(f));
+                    patch.nodes.insert(id, NodePatch::whole_color_uniform(f));
                 } else if let Some(m) = to.nodes.mixer(n) {
                     patch.nodes.insert(id, NodePatch::whole_mixer(m));
                 }
@@ -2290,10 +2288,9 @@ impl SettingsPatch {
             for row in &mut f.masks.items {
                 *row = row.emptied();
             }
-            patch.nodes.insert(
-                NodeId::Corrector(*id),
-                NodePatch::whole_color_uniform(&f),
-            );
+            patch
+                .nodes
+                .insert(NodeId::Corrector(*id), NodePatch::whole_color_uniform(&f));
         }
         for (id, m) in &g.mixers {
             patch

@@ -1251,3 +1251,78 @@ fn the_device_runs_masks_and_agrees_with_the_cpu() {
     eprintln!("masks: the full render differs from the CPU's by {worst:e}");
     assert!(worst < 2e-3, "{worst}");
 }
+
+/// A Colour Uniform node (`docs/32`): a target, amounts and a Colour range row.
+fn color_uniform(id: u32, x: f64, body: Value) -> Value {
+    let mut node = json!({ "id": id, "kind": "color_uniform", "pos": [x, 0.0] });
+    if let (Some(n), Some(b)) = (node.as_object_mut(), body.as_object()) {
+        n.extend(b.clone());
+    }
+    node
+}
+
+#[test]
+fn until_cu04_a_colour_uniform_node_renders_as_the_identity_and_its_settings_are_in_the_grade_key()
+{
+    // TODO(CU-04): the node gets its step; then this test says the node changes the picture where its masks select.
+    let d = photo(Layout::Patchwork, 0.5);
+    let src = d.source();
+    let r = renderer();
+    let plain = with(
+        &src,
+        graph(vec![corrector(2, 1.0, trim(0.5))], line(&[1, 2])),
+    );
+    let live = json!({
+        "target": { "hue_deg": 26, "saturation": 9.7, "lightness_ev": 0.0 },
+        "compress": { "hue": 80, "saturation": 80, "lightness": 40 },
+    });
+    let with_node = with(
+        &src,
+        graph(
+            vec![
+                corrector(2, 1.0, trim(0.5)),
+                color_uniform(3, 2.0, live.clone()),
+            ],
+            line(&[1, 2, 3]),
+        ),
+    );
+    assert_eq!(display(&r, &with_node).rgb, display(&r, &plain).rgb);
+    assert_eq!(frame(&r, &with_node), frame(&r, &plain));
+    // The node takes a number and is a step of the plan, in its place.
+    let plan = node_plan(&with_node.settings.nodes, ym_color::plan::Stop::Output).unwrap();
+    assert_eq!(plan.node_ids(), vec![1, 2, 3]);
+    // The grade key sees what the node holds, and not its name or place.
+    let color = color_plan(&src).unwrap();
+    let req = GradeRequest {
+        target: OutputTarget::Srgb,
+        dither: false,
+        looks: &NeutralOnly,
+        background: None,
+        objects: None,
+    };
+    let key_of = |body: Value| {
+        let p = with(
+            &src,
+            graph(vec![color_uniform(2, 1.0, body)], line(&[1, 2])),
+        );
+        grade_key(&p, &color, &req)
+    };
+    let base = key_of(live.clone());
+    assert_eq!(base, key_of(live.clone()));
+    let mut other = live.clone();
+    other["compress"]["hue"] = json!(81);
+    assert_ne!(base, key_of(other));
+    let mut other = live.clone();
+    other["target"]["hue_deg"] = json!(27);
+    assert_ne!(base, key_of(other));
+    let mut other = live.clone();
+    other["target"] = Value::Null;
+    assert_ne!(base, key_of(other));
+    let mut other = live.clone();
+    other["bypass"] = json!(true);
+    assert_ne!(base, key_of(other));
+    let mut renamed = live.clone();
+    renamed["name"] = json!("Skin");
+    renamed["pos"] = json!([4.0, 1.0]);
+    assert_eq!(base, key_of(renamed));
+}

@@ -246,7 +246,7 @@ fn the_cli_documentation_and_the_help_agree() {
     );
     assert!(
         paragraph.contains(
-            "other nodes (correctors, mixers, splitters and combiners, Face Refinement nodes, and Film nodes whose stocks `ym film list` shows)"
+            "other nodes (correctors, Colour Uniform nodes, mixers, splitters and combiners, Face Refinement nodes, and Film nodes whose stocks `ym film list` shows)"
         ),
         "the paragraph names the mixers, splitters and combiners (docs/25 section 6)"
     );
@@ -330,8 +330,8 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     let blocks = json_blocks(&doc[start..end]);
     assert_eq!(
         blocks.len(),
-        7,
-        "the complete small file, the per-file example, the Brush row, the Object row, the Parallel and the Splitter-and-Combiner examples of docs/25, and the Face Refinement example of docs/27"
+        8,
+        "the complete small file, the per-file example, the Brush row, the Object row, the Parallel and the Splitter-and-Combiner examples of docs/25, the Face Refinement example of docs/27 and the Colour Uniform example of docs/32"
     );
 
     // The complete small file: read over the default graph, checked, and written back unchanged.
@@ -501,6 +501,36 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     let written = serde_json::to_value(&settings).expect("writes");
     let (again, _) = DevelopSettings::from_value(written, &LookId::neutral()).expect("reads again");
     assert_eq!(again, settings, "written back unchanged");
+    // The Colour Uniform example (`docs/32` section 5.1, CU-03): the target, the amounts and the seeded Colour range row.
+    let value: Value =
+        serde_json::from_str(&blocks[7]).expect("the Colour Uniform example is JSON");
+    let (settings, clamped) = DevelopSettings::from_value(value, &LookId::neutral())
+        .expect("the Colour Uniform example reads");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    assert_eq!(
+        settings
+            .nodes
+            .kind_of(ym_core::settings::NodeId::Corrector(2)),
+        Some(ym_core::settings::NodeKind::ColorUniform)
+    );
+    let node = settings.nodes.color_uniform(2).expect("node 2");
+    let target = node.target.expect("a target");
+    assert_eq!(
+        (target.hue_deg, target.saturation, target.lightness_ev),
+        (26.0, 9.7, -0.03)
+    );
+    assert_eq!(
+        (
+            node.compress.hue,
+            node.compress.saturation,
+            node.compress.lightness
+        ),
+        (60.0, 60.0, 0.0)
+    );
+    assert_eq!(node.masks.items.len(), 1);
+    let written = serde_json::to_value(&settings).expect("writes");
+    let (again, _) = DevelopSettings::from_value(written, &LookId::neutral()).expect("reads again");
+    assert_eq!(again, settings, "written back unchanged");
     // The unknown-kind sentence is quoted with “outside”, and “parallel” is a kind.
     let doc_text = read("docs/10-cli.md");
     assert!(doc_text.contains(
@@ -517,6 +547,7 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
         ("parallel", &blocks[4]),
         ("trio", &blocks[5]),
         ("face", &blocks[6]),
+        ("uniform", &blocks[7]),
     ] {
         let file = sb.root().join(format!("{label}.json"));
         std::fs::write(&file, text).expect("write");

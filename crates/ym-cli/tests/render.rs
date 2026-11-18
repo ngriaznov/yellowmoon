@@ -1229,6 +1229,19 @@ fn a_settings_file_that_does_not_parse_is_a_usage_error_and_nothing_is_rendered(
             r#"{ "nodes": { "items": [ { "id": 7, "kind": "splitter", "masks": {} } ] } }"#,
             "A splitter has no field called “masks”.",
         ),
+        // The Colour Uniform node (docs/32 section 5.2), each refusal with its sentence.
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "color_uniform", "range": { "width": 0.05 } } ] } }"#,
+            "A Colour Uniform node has no field called “range”.",
+        ),
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "corrector", "target": null } ] } }"#,
+            "A corrector has no field called “target”.",
+        ),
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "color_uniform", "target": { "hue_deg": 20, "saturation": 9 } } ] } }"#,
+            "missing field `lightness_ev`",
+        ),
         // A typo whose value is an object must not pass for a photo's file name.
         (
             r#"{ "color_ballance": { "shadows": [0.1, 0.0] } }"#,
@@ -2515,4 +2528,49 @@ fn auto_crop_takes_only_known_aspects() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("2:3 is not an aspect"));
+}
+
+/// A settings file with a Colour Uniform node is read and checked and the photo is written; the record holds the node as
+/// the document does. Until CU-04 the node is the identity (`render_nodes.rs` compares the pixels on the core;
+/// TODO(CU-04): then the node changes the colours its masks select).
+#[test]
+fn a_settings_file_with_a_colour_uniform_node_is_read_and_the_photo_renders() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let file = sb.root().join("uniform.json");
+    std::fs::write(
+        &file,
+        r#"{ "nodes": {
+            "items": [ { "id": 2, "kind": "color_uniform",
+                "target": { "hue_deg": 386, "saturation": 9.7, "lightness_ev": -0.03 },
+                "compress": { "hue": 60, "saturation": 160 } } ],
+            "links": [
+                { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+                { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+                { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } }"#,
+    )
+    .expect("write");
+    let out = sb
+        .ym()
+        .args(["render", "--json", "--settings"])
+        .arg(&file)
+        .arg(&arw)
+        .assert()
+        .success();
+    let objects = json_lines(&out.get_output().stdout);
+    assert_eq!(objects.len(), 1);
+    let o = &objects[0];
+    assert_eq!(o["status"], "ok");
+    let path = o["output"].as_str().expect("output");
+    assert!(std::path::Path::new(path).exists(), "the photo was written");
+    let items = o["settings"]["nodes"]["items"].as_array().expect("items");
+    let node = items
+        .iter()
+        .find(|i| i["kind"] == "color_uniform")
+        .expect("the Colour Uniform node is in the record");
+    assert_eq!(node["name"], "Uniform");
+    // The hue is read modulo 360 and the amount is clamped, as the core does.
+    assert_eq!(node["target"]["hue_deg"], 26.0);
+    assert_eq!(node["compress"]["saturation"], 100.0);
+    assert_eq!(node["compress"]["lightness"], 0.0);
 }

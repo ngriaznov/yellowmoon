@@ -201,6 +201,11 @@ describe("the mock's rules for the graph (docs/23 section 9)", () => {
     expect(GRAPH_TEXT.unknownField("splitter", "bypass")).toBe("A splitter has no field called “bypass”.");
     expect(GRAPH_TEXT.patchWrongKind(7, "layer", "corrector")).toBe("Node 7 is a layer mixer, not a corrector.");
     expect(GRAPH_TEXT.patchWrongKind(7, "combiner", "film")).toBe("Node 7 is a combiner, not a film node.");
+    // The Colour Uniform node's kind in the sentences (`docs/32` section 4): the core's `with_article` and `sentence`.
+    expect(GRAPH_TEXT.unknownField("color_uniform", "range")).toBe("A Colour Uniform node has no field called “range”.");
+    expect(GRAPH_TEXT.patchWrongKind(4, "color_uniform", "corrector")).toBe("Node 4 is a Colour Uniform node, not a corrector.");
+    expect(rust).toContain('Self::ColorUniform => "a Colour Uniform node"');
+    expect(rust).toContain('Self::ColorUniform => "A Colour Uniform node"');
     for (const text of ['"a parallel mixer"', '"a layer mixer"', '"a splitter"', '"a combiner"', '"A parallel mixer"', '"A layer mixer"', '"A splitter"', '"A combiner"']) {
       expect(rust, text).toContain(`=> ${text}`);
     }

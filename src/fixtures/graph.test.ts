@@ -8,6 +8,7 @@ import {
   faceSettingsFor,
   inputOf,
   inputPatch,
+  newColorUniform,
   newCorrector,
   newFaceRefinement,
   newMixer,
@@ -392,5 +393,49 @@ describe("the Face Refinement node (docs/27 S-11a)", () => {
     const copy = copiedPatch(resolveSettings(1, s, MOCK_ESTIMATES));
     expect(copy.nodes?.["2"]).toMatchObject({ kind: "face_refinement", same_for_all: false, masks: { invert: false, items: [] } });
     expect(copy.nodes?.["2"]?.faces?.[0]?.blemish).toBe(12);
+  });
+});
+
+describe("the Colour Uniform node (docs/32 section 5, CU-03)", () => {
+  const withNode = (): DevelopSettings => {
+    const base = defaultSettings();
+    return {
+      nodes: {
+        items: [...base.nodes.items.slice(0, 2), newColorUniform(2, [1, 0]), ...base.nodes.items.slice(2)],
+        links: [picture("input", 1), picture(1, 2), picture(2, "output")],
+      },
+    };
+  };
+
+  it("starts with no target and Compress at 0, and has the ports of a corrector", () => {
+    const n = newColorUniform(2, [1, 0]);
+    expect(n).toMatchObject({ kind: "color_uniform", name: "Uniform", bypass: false, target: null, compress: { hue: 0, saturation: 0, lightness: 0 } });
+    expect(portsOf("color_uniform")).toEqual(portsOf("corrector"));
+    expect(validateGraph(withNode())).toBeNull();
+  });
+
+  it("refuses a field of another kind, and a range, with the kind's name", () => {
+    const s = withNode();
+    expect(refusalOfPatch(s, { nodes: { "2": { target: null, compress: { hue: 10 } } } })).toBeNull();
+    expect(refusalOfPatch(s, { nodes: { "2": { film: { stock: "x" } } } })).toBe("A Colour Uniform node has no field called “film”.");
+    expect(refusalOfPatch(s, { nodes: { "1": { target: null } } })).toBe("A corrector has no field called “target”.");
+    expect(refusalOfPatch(s, { nodes: { "2": { kind: "corrector" } } })).toBe("Node 2 is a Colour Uniform node, not a corrector.");
+  });
+
+  it("adds the node with a patch, sets a target whole, merges Compress and clears the target with null", () => {
+    let s = applyPatch(defaultSettings(), { nodes: { "2": { kind: "color_uniform", target: { hue_deg: 26, saturation: 9.7, lightness_ev: -0.03 }, compress: { hue: 50 } } } });
+    expect(nodeOf(s, 2)).toMatchObject({ kind: "color_uniform", compress: { hue: 50, saturation: 0, lightness: 0 }, target: { hue_deg: 26 } });
+    s = applyPatch(s, { nodes: { "2": { compress: { lightness: 20 } } } });
+    expect(nodeOf(s, 2)).toMatchObject({ compress: { hue: 50, saturation: 0, lightness: 20 } });
+    s = applyPatch(s, { nodes: { "2": { target: null } } });
+    expect(nodeOf(s, 2)).toMatchObject({ target: null });
+  });
+
+  it("copies the node whole, with an Object row emptied, and counts it toward the 64 nodes", () => {
+    const rs = resolveSettings(1, withNode(), MOCK_ESTIMATES);
+    const copy = copiedPatch(rs);
+    expect(copy.nodes?.["2"]).toMatchObject({ kind: "color_uniform", target: null });
+    const many: DevelopSettings = { nodes: { items: [...defaultSettings().nodes.items, ...Array.from({ length: MAX_NODES }, (_, i) => newColorUniform(i + 2, [i, 0]))], links: defaultLinks() } };
+    expect(validateGraph(many)).toBe(GRAPH_TEXT.tooManyNodes);
   });
 });

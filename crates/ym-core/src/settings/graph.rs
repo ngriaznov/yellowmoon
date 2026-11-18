@@ -2062,9 +2062,7 @@ impl ColorUniformNode {
         if let Some(t) = &mut self.target {
             // The hue is any finite number, read modulo 360: not clamped, not reported.
             if !t.hue_deg.is_finite() {
-                return Err(SettingsError::NotFinite(format!(
-                    "{prefix}.target.hue_deg"
-                )));
+                return Err(SettingsError::NotFinite(format!("{prefix}.target.hue_deg")));
             }
             t.hue_deg = wrap_hue_deg(t.hue_deg);
             let (sat, cs) = clamp_to(

@@ -7,6 +7,7 @@
 //! `ym_color::uniform` (section 3.2).
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::NodePos;
 use super::graph::DEFAULT_UNIFORM_NAME;
@@ -21,9 +22,10 @@ pub const TARGET_LIGHTNESS_RANGE_EV: (f64, f64) = (-4.0, 8.0);
 pub const UNIFORM_AMOUNT_RANGE: (f64, f64) = (0.0, 100.0);
 
 /// A target colour: where the node pulls the colours it acts on (`docs/32` section 5.1). The three numbers are in the
-/// units the panel shows.
+/// units the panel shows, and all three are required. It is read from a JSON object only (a list of three numbers is
+/// refused, as serde would otherwise take it).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "Value")]
 pub struct TargetValue {
     /// The hue in degrees. Any finite number; it is read modulo 360 into [0, 360) and never clamped or reported.
     pub hue_deg: f64,
@@ -33,9 +35,61 @@ pub struct TargetValue {
     pub lightness_ev: f64,
 }
 
+/// What [`TargetValue`] is read from: the object form, with every field required.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TargetRaw {
+    hue_deg: f64,
+    saturation: f64,
+    lightness_ev: f64,
+}
+
+impl TryFrom<Value> for TargetValue {
+    type Error = String;
+
+    fn try_from(v: Value) -> Result<Self, String> {
+        if !v.is_object() {
+            return Err(
+                "a target must be an object with hue_deg, saturation and lightness_ev".to_owned(),
+            );
+        }
+        let r: TargetRaw = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        Ok(Self {
+            hue_deg: r.hue_deg,
+            saturation: r.saturation,
+            lightness_ev: r.lightness_ev,
+        })
+    }
+}
+
+/// What [`UniformAmounts`] is read from: the object form, a part left out reading as 0.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct AmountsRaw {
+    hue: f64,
+    saturation: f64,
+    lightness: f64,
+}
+
+impl TryFrom<Value> for UniformAmounts {
+    type Error = String;
+
+    fn try_from(v: Value) -> Result<Self, String> {
+        if !v.is_object() {
+            return Err("compress must be an object with hue, saturation and lightness".to_owned());
+        }
+        let r: AmountsRaw = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        Ok(Self {
+            hue: r.hue,
+            saturation: r.saturation,
+            lightness: r.lightness,
+        })
+    }
+}
+
 /// `compress`: how far the colours the masks let through are pulled to the target on each axis, in percent.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, default)]
+#[serde(try_from = "Value")]
 pub struct UniformAmounts {
     /// Hue, 0 to 100. 0 moves nothing.
     pub hue: f64,
