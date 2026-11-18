@@ -1322,7 +1322,8 @@ fn node_set(
                     id,
                     FilmStep {
                         strength: 1.0,
-                        bypass: b.is_inert(),
+                        // The mask view of the node ends at its `m`: it does not run the blur (`docs/33` section 6).
+                        bypass: b.is_inert() || stop == Stop::Mask(id),
                         face: false,
                         blur: true,
                     },
