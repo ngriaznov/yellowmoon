@@ -6,7 +6,7 @@
 //! CARGO_INCREMENTAL=0 cargo run -p ym-gpu --example fit_diffraction \
 //!     --config 'profile.dev.package.ym-gpu.opt-level=3' -- \
 //!     [--from oracle|default] [--set name=value]... [--rel name=0.9,1.1]... \
-//!     [--eval "label@name=v,name=v"]... [--held] [--list]
+//!     [--eval "label@name=v,name=v"]... [--held] [--list] [--weights FILE] [--kodak] [--lamps]
 //! ```
 //!
 //! Arguments are those of `fit_demosaic` (`--from`, `--set`, `--rel`, `--eval`, `--held`, `--list`); the
@@ -24,6 +24,15 @@
 //! (`docs/29` F-05: the edge numbers next to the PSNR). `mean_delta` is the mean over the cases of the
 //! change against the base, and `max_dout` the largest change of any output sample on the scale of
 //! an 8-bit picture of range 0.5.
+//!
+//! RC-11 adds three inputs. `--weights FILE` reads a spectral weight per wavelength (a JSON array of 159
+//! numbers, 461 to 619 nm; D1) into the starting `Tuning`. `--kodak` adds the 24 Kodak images of
+//! `testdata/demosaic/kodak` (`YM_TESTDATA` moves the root), a centre crop of 160 x 112 of each in linear
+//! light, blurred with the reference optics at the four cases and restored: the mean PSNR against the
+//! sharp crop, as `kodak` (not committed, nothing written). `--lamps` adds a scene of two lamps (a disc
+//! of radius 6 and one of radius 10 on a dark gradient, 1.6 times white before the clip, tinted so that
+//! the channels clip at different places), blurred, noised and clipped at white: the PSNR against the
+//! clipped scene, as `lamps` (the scene is ours; it makes the clip penalty D7 act).
 
 use serde_json::{Value, json};
 use ym_gpu::cpu::sharpen::diffraction::eval::{EdgeGeometry, edge_stats, patch_sd};
@@ -31,8 +40,12 @@ use ym_gpu::cpu::sharpen::diffraction::{DiffractionParams, DiffractionPlan, SPEC
 use ym_gpu::cpu::{NoiseDn, RgbImage, mirror, synth};
 use ym_noise::model::NoiseModel;
 
+#[path = "../tests/common/demosaic_metrics.rs"]
+mod demosaic_metrics;
 #[path = "../tests/common/fit.rs"]
 mod fit;
+
+use demosaic_metrics::{demosaic_sets_root, linearize, load_set};
 
 use fit::{Common, Rng, Start, data_note, emit, mean, num};
 
@@ -300,6 +313,131 @@ pub fn run(sc: &Scenes, tuning: &Tuning) -> Vec<(Res, [RgbImage; 3])> {
         .collect()
 }
 
+/// The scene of two lamps, in the balanced units of the stage (`G0` times the raw radiance, so that the
+/// raw white of channel `c` is `G0[c]`): radiance up to 1.6 of white, so the discs clip once seen
+/// through the optics, and in the second lamp all three channels pass the clip threshold.
+fn lamps_radiance(w: usize, h: usize) -> RgbImage {
+    let mut img = RgbImage::new(w, h);
+    let lamps = [
+        (w as f64 * 0.32, h as f64 * 0.5, 6.0, [1.6f32, 1.4, 0.8]),
+        (w as f64 * 0.70, h as f64 * 0.45, 10.0, [1.5, 1.6, 1.3]),
+    ];
+    for y in 0..h {
+        for x in 0..w {
+            let g = 0.03 + 0.06 * (x as f32 / w as f32) + 0.02 * (y as f32 / h as f32);
+            let mut p = [g, 0.9 * g, 0.7 * g];
+            let ss = 4;
+            for (cx, cy, r, c) in &lamps {
+                let mut cover = 0.0f32;
+                for sy in 0..ss {
+                    for sx in 0..ss {
+                        let px = x as f64 + (f64::from(sx) + 0.5) / f64::from(ss);
+                        let py = y as f64 + (f64::from(sy) + 0.5) / f64::from(ss);
+                        if (px - cx).hypot(py - cy) <= *r {
+                            cover += 1.0;
+                        }
+                    }
+                }
+                let cover = cover / (ss * ss) as f32;
+                for k in 0..3 {
+                    p[k] = p[k] * (1.0 - cover) + c[k] * cover;
+                }
+            }
+            img.set_pixel(x, y, [p[0] * G0[0], p[1] * G0[1], p[2] * G0[2]]);
+        }
+    }
+    img
+}
+
+/// The raw clip: channel `c` saturates at `G0[c]` in balanced units.
+fn clip_white(img: &mut RgbImage) {
+    let n = img.plane_len();
+    for (c, white) in G0.iter().enumerate() {
+        for v in &mut img.data[c * n..(c + 1) * n] {
+            *v = v.min(*white);
+        }
+    }
+}
+
+/// One Kodak or lamps input: the sharp truth, the blurred noisy input and the case it belongs to.
+pub struct Extra {
+    pub set: &'static str,
+    pub case: usize,
+    pub sharp: RgbImage,
+    pub input: RgbImage,
+}
+
+/// The Kodak crops and the lamps, blurred with the reference optics at the four cases of `sc`.
+pub fn build_extras(sc: &Scenes, kodak: bool, lamps: bool) -> Vec<Extra> {
+    let mut sharps: Vec<(&'static str, RgbImage, bool)> = Vec::new();
+    if kodak {
+        for (_, img) in load_set(&demosaic_sets_root().join("kodak")) {
+            let lin = linearize(&img);
+            let (w, h) = (160usize, 112usize);
+            let (x0, y0) = ((lin.width - w) / 2, (lin.height - h) / 2);
+            let mut c = RgbImage::new(w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    c.set_pixel(x, y, lin.pixel(x0 + x, y0 + y));
+                }
+            }
+            sharps.push(("kodak", c, false));
+        }
+    }
+    if lamps {
+        sharps.push(("lamps", lamps_radiance(160, 112), true));
+    }
+    let mut out = Vec::new();
+    for (ci, c) in sc.cases.iter().enumerate() {
+        if c.held {
+            continue;
+        }
+        let truth = DiffractionPlan::new(
+            &DiffractionParams::new(PITCH_UM, c.f).with_tuning(&Tuning::ORACLE),
+            G0,
+            &NoiseDn::from_model(&c.model),
+            SPEC_LUMA,
+        )
+        .expect("active plan");
+        for (k, (set, sharp, clip)) in sharps.iter().enumerate() {
+            let mut b = psf_blur(sharp, &truth);
+            add_correlated_noise(&mut b, &c.model, 7000 + 31 * ci as u64 + k as u64);
+            let mut truth_img = sharp.clone();
+            if *clip {
+                clip_white(&mut b);
+                clip_white(&mut truth_img);
+            }
+            out.push(Extra {
+                set,
+                case: ci,
+                sharp: truth_img,
+                input: b,
+            });
+        }
+    }
+    out
+}
+
+/// The mean PSNR against the sharp scene of every extra of `set`, restored with `tuning`.
+pub fn run_extras(sc: &Scenes, extras: &[Extra], set: &str, tuning: &Tuning) -> Option<(f64, f64)> {
+    let tuning: &'static Tuning = Box::leak(Box::new(*tuning));
+    let (mut sum, mut n, mut sum_in) = (0.0f64, 0.0f64, 0.0f64);
+    for e in extras.iter().filter(|e| e.set == set) {
+        let c = &sc.cases[e.case];
+        let params = DiffractionParams::new(PITCH_UM, c.f).with_tuning(tuning);
+        let plan = DiffractionPlan::new(&params, G0, &NoiseDn::from_model(&c.model), SPEC_LUMA)
+            .expect("plan");
+        let mut o = plan.apply_whole(&e.input);
+        if set == "lamps" {
+            clip_white(&mut o);
+        }
+        sum += psnr(mse_vs(&e.sharp, &o));
+        sum_in += psnr(mse_vs(&e.sharp, &e.input));
+        n += 1.0;
+    }
+    (n > 0.0).then(|| (sum / n, sum_in / n))
+}
+
 fn case_json(c: &Case, r: &Res) -> Value {
     json!({
         "name": c.name, "held": c.held,
@@ -362,11 +500,24 @@ fn usage(why: &str) -> ! {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut common = Common::default();
+    let mut extra: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match common.take(&args, &mut i) {
             Ok(true) => {}
-            Ok(false) => usage(&format!("unknown argument `{}`", args[i])),
+            Ok(false) => match args[i].as_str() {
+                "--kodak" | "--lamps" => extra.push(args[i].clone()),
+                "--weights" => {
+                    extra.push(args[i].clone());
+                    i += 1;
+                    extra.push(
+                        args.get(i)
+                            .cloned()
+                            .unwrap_or_else(|| usage("--weights needs a file")),
+                    );
+                }
+                _ => usage(&format!("unknown argument `{}`", args[i])),
+            },
             Err(e) => usage(&e),
         }
         i += 1;
@@ -379,28 +530,64 @@ fn main() {
         emit(&fit::list_line("diffraction", &start));
         return;
     }
+    let mut start = start;
+    let mut want_kodak = false;
+    let mut want_lamps = false;
+    for (k, a) in extra.iter().enumerate() {
+        match a.as_str() {
+            "--kodak" => want_kodak = true,
+            "--lamps" => want_lamps = true,
+            "--weights" => {
+                let path = extra
+                    .get(k + 1)
+                    .unwrap_or_else(|| usage("--weights needs a file"));
+                let text = std::fs::read_to_string(path).unwrap_or_else(|e| usage(&e.to_string()));
+                let v: Vec<f64> =
+                    serde_json::from_str(&text).unwrap_or_else(|e| usage(&e.to_string()));
+                let table: [f64; 159] = v
+                    .try_into()
+                    .unwrap_or_else(|_| usage("--weights: 159 numbers"));
+                start.weight_table = Some(Box::leak(Box::new(table)));
+            }
+            _ => {}
+        }
+    }
     let evals = common.evaluations(&start).unwrap_or_else(|e| usage(&e));
-    emit(&data_note(
-        "fit_diffraction",
-        &[(
-            "synthetic scenes of capture_sharpen_ab (fine text, natural, slanted edge; ours, seeded)"
-                .to_owned(),
-            3,
-        )],
-        &[],
-    ));
     let sc = build_scenes(common.held);
+    let extras = build_extras(&sc, want_kodak, want_lamps);
+    let kodak_n = extras.iter().filter(|e| e.set == "kodak").count() / 4;
+    let mut used = vec![(
+        "synthetic scenes of capture_sharpen_ab (fine text, natural, slanted edge; ours, seeded)"
+            .to_owned(),
+        3,
+    )];
+    if want_kodak {
+        used.push(("kodak (centre crops, evaluation only)".to_owned(), kodak_n));
+    }
+    if want_lamps {
+        used.push(("lamps (ours, procedural)".to_owned(), 1));
+    }
+    emit(&data_note("fit_diffraction", &used, &[]));
     let base = run(&sc, &start);
     let from = if common.start == Start::Oracle {
         "oracle"
     } else {
         "default"
     };
-    let line = |label: &str, set: Value, res: &[(Res, [RgbImage; 3])], is_base: bool| {
+    let line = |label: &str,
+                set: Value,
+                res: &[(Res, [RgbImage; 3])],
+                is_base: bool,
+                t: &Tuning| {
         let mut v = json!({
             "kind": "eval", "example": "fit_diffraction", "label": label, "from": from, "set": set,
             "cases": sc.cases.iter().zip(res).map(|(c, (r, _))| case_json(c, r)).collect::<Vec<_>>(),
         });
+        for name in ["kodak", "lamps"] {
+            if let Some((p, p_in)) = run_extras(&sc, &extras, name, t) {
+                v[name] = json!({"psnr_db": num(p), "input_psnr_db": num(p_in)});
+            }
+        }
         if !is_base {
             v["mean_delta"] = deltas(&sc, res, &base, false).unwrap_or(Value::Null);
             v["max_dout"] = v["mean_delta"]["max_dout"].clone();
@@ -410,10 +597,10 @@ fn main() {
         }
         emit(&v);
     };
-    line("base", json!({}), &base, true);
+    line("base", json!({}), &base, true, &start);
     for (e, t) in &evals {
         let res = run(&sc, t);
         let set: std::collections::BTreeMap<_, _> = e.sets.iter().cloned().collect();
-        line(&e.label, json!(set), &res, false);
+        line(&e.label, json!(set), &res, false, t);
     }
 }
