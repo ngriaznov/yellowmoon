@@ -12,6 +12,7 @@
 
 pub mod alf;
 pub mod arri;
+pub mod blur;
 pub mod camera_default;
 pub mod cdl;
 pub mod chain;

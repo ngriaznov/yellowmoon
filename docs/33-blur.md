@@ -395,3 +395,5 @@ The order is BL-01 (done), then BL-H1; BL-02 and BL-03 together; BL-04 after bot
 ## 14. As built
 
 *(Filled in by the tasks as they land.)*
+
+**BL-03 (the oracle).** `ym_color::blur` follows §3.2 to §3.5 with four choices the spec left open: the kernel is gathered, `k_p(q) = Table(q - p)` (the sketch's FFT flips it, which shows only for an odd number of blades); Motion's table is the exact length of the line inside each pixel; the Zoom oracle takes `max(64, ⌈2 a |v|⌉)` taps; an aperture with no sample inside is the identity table. The aperture's coverage is a supersampled area, so its gate against the analytic area is the measured 5.2e-4 (disc) and 8.9e-5 (hexagon), exact only for a pixel-aligned square.
