@@ -1012,6 +1012,18 @@ impl ChainTables {
         chain: &ColorChain,
     ) -> Result<PreparedChain, GpuError> {
         let params = chain.params();
+        // A live Colour Uniform node has no kernel yet (CU-05): the device refuses the plan and the CPU makes the frame, with
+        // this as its reason (`RenderReport::cpu_reason`).
+        if params.nodes.others.values().any(|n| {
+            !n.bypass
+                && n.uniform
+                    .as_ref()
+                    .is_some_and(|u| !u.is_identity())
+        }) {
+            return Err(GpuError::InvalidInput(
+                "a Colour Uniform node is not on the device yet".to_owned(),
+            ));
+        }
         let space = chain.space();
         let look_kind = classify_look(params);
         // C1 to C6 (the fused matrix) and C7.

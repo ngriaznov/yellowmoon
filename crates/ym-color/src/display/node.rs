@@ -17,6 +17,7 @@ use crate::grade::{Grade, GradeParams, grade_luma};
 use crate::logc::LogC4;
 use crate::mask::{NodeMasks, PixelAt, PreparedMasks};
 use crate::plan::Plan;
+use crate::uniform::{self, Amounts, Target};
 use crate::warp::{Warp, WarpParams};
 
 /// One corrector's parameters: its trims, its grade (C9), its colour warp (C9b) and its curves (C11).
@@ -34,6 +35,26 @@ pub struct NodeParams {
     pub curves: CurveSet,
     /// The mask rows (the enabled ones) and the node's Invert. None: `m = 1`.
     pub masks: NodeMasks,
+    /// A Colour Uniform node's step (`docs/32`): `Some` for a node of that kind, whatever its values (a node with no
+    /// target or no amount is the identity and is skipped), `None` for a corrector.
+    pub uniform: Option<UniformStep>,
+}
+
+/// A Colour Uniform node's target and amounts (`docs/32` section 3): what [`uniform::apply`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct UniformStep {
+    /// The colour pulled toward; `None` does nothing.
+    pub target: Option<Target>,
+    /// How far each axis is pulled; all zero does nothing.
+    pub amounts: Amounts,
+}
+
+impl UniformStep {
+    /// Whether the step leaves its input as it is: no target, or no amount.
+    #[must_use]
+    pub fn is_identity(&self) -> bool {
+        self.target.is_none() || self.amounts.is_zero()
+    }
 }
 
 /// A Film node in the plan (`docs/24-film.md`). Its spatial passes cannot run per pixel, so the render makes them
@@ -107,6 +128,10 @@ pub(super) struct PreparedNode {
     grade: Option<Grade>,
     warp: Option<Warp>,
     curves: Option<BakedCurves>,
+    /// A Colour Uniform node's live step; `None` for a corrector and for a node at its identity.
+    uniform: Option<(Target, Amounts)>,
+    /// Whether the node is a Colour Uniform node (live or not): its step kind is `ColorUniform`.
+    is_uniform: bool,
     masks: PreparedMasks,
 }
 
@@ -117,16 +142,26 @@ impl PreparedNode {
         grade: &GradeParams,
         warp: &WarpParams,
         curves: &CurveSet,
+        uniform: Option<&UniformStep>,
         masks: &NodeMasks,
     ) -> Self {
         let gain = trim.gain();
         let grade = (!grade.is_identity()).then(|| Grade::new(grade));
         let warp = Some(Warp::new(warp)).filter(|w| !w.is_identity());
         let curves = (!curves.is_identity()).then(|| curves.bake());
-        let skip =
-            bypass || (gain.is_none() && grade.is_none() && warp.is_none() && curves.is_none());
+        let live = uniform
+            .filter(|u| !u.is_identity())
+            .and_then(|u| u.target.map(|t| (t, u.amounts)));
+        let skip = bypass
+            || (gain.is_none()
+                && grade.is_none()
+                && warp.is_none()
+                && curves.is_none()
+                && live.is_none());
         Self {
             skip,
+            uniform: live,
+            is_uniform: uniform.is_some(),
             gain,
             grade,
             warp,
@@ -138,6 +173,11 @@ impl PreparedNode {
     /// Whether the node's picture is its input as it is: bypassed, or every step at its identity.
     pub(super) fn skips(&self) -> bool {
         self.skip
+    }
+
+    /// Whether the node is a Colour Uniform node (`StepKind::ColorUniform`).
+    pub(super) fn is_uniform(&self) -> bool {
+        self.is_uniform
     }
 
     /// The node's prepared mask rows.
@@ -202,6 +242,10 @@ impl PreparedNode {
         }
         if let Some(stages) = main {
             *stages = MainStages { c9, c9b, c11: v };
+        }
+        // 5. A Colour Uniform node's pull (`docs/32` section 3), in f64.
+        if let Some((target, amounts)) = &self.uniform {
+            v = LogC4(uniform::apply(v.0, Some(target), *amounts));
         }
         v
     }

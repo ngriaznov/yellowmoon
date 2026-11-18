@@ -2240,7 +2240,7 @@ fn pick_colour_and_the_chroma_scatter_cross_the_bridge() {
     assert!(inside.a.0.is_finite() && inside.b.0.is_finite());
     assert_eq!(
         serde_json::to_value(inside).expect("json"),
-        json!({ "a": inside.a.0, "b": inside.b.0 })
+        json!({ "a": inside.a.0, "b": inside.b.0, "tone": inside.tone.0 })
     );
     assert_eq!(
         h.api.sample_chroma(150.0, 5.0, None, None).expect("paper"),
@@ -5177,6 +5177,7 @@ fn core_types_convert_without_loss() {
     let sample = ym_core::pipeline::ChromaSample {
         a: 0.125,
         b: -0.0625,
+        tone: 0.5,
     };
     let wire: crate::wire::ChromaSample = convert(&sample).expect("sample");
     assert_same("sample_chroma", &sample, &wire);

@@ -296,6 +296,7 @@ impl Read {
 ///   rewrite with nothing taken out of the node (a mixer has no trim, grade, curve, warp or masks,
 ///   so every tap reads the same picture). A Splitter has no picture of its own (its outputs are
 ///   single channels); it reads its input picture, the picture on the link into it.
+/// * A Colour Uniform node reads its input for every tap (the rewrite with the node bypassed).
 /// * [`Tap::NodeInput`] reads the picture a node takes in: the Input's output (C8) for Main and the
 ///   Input, and for another corrector the rewrite with the node itself at its identity.
 ///
@@ -344,6 +345,19 @@ pub(crate) fn signal_source(
             };
             let mut settings = ending_at_output(&src.settings, from);
             settings.output_mut().look = LookId::neutral();
+            Ok((Cow::Owned(src.with_settings(settings)), Read::Last))
+        }
+        // A Colour Uniform node (`docs/32` section 6) has no trim, grade, curve or warp: whatever panel asks, the signal at
+        // the node is the picture it reads. The same rewrite with the node bypassed, so the chain's last value is its input
+        // (its key output and masks do not change what is read).
+        Some(NodeId::Corrector(k))
+            if src.settings.nodes.kind_of(NodeId::Corrector(k)) == Some(NodeKind::ColorUniform) =>
+        {
+            let mut settings = settings_ending_at(&src.settings, k);
+            settings.output_mut().look = LookId::neutral();
+            if let Some(node) = settings.nodes.color_uniform_mut(k) {
+                node.bypass = true;
+            }
             Ok((Cow::Owned(src.with_settings(settings)), Read::Last))
         }
         Some(NodeId::Corrector(k)) => {

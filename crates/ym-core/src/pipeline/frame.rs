@@ -91,6 +91,7 @@ use ym_color::mask::{
     PhotoFrame, PhotoMap, PhotoSpot, PixelAt, RasterPlanes, accent_display_linear,
 };
 use ym_color::mask_raster::{Area, CpuPlanes, PlaneJob};
+use ym_color::uniform;
 use ym_color::warp::chroma_of;
 use ym_gpu::cpu::magnify::{MagnifyMap, magnify_with};
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
@@ -317,6 +318,9 @@ pub struct ChromaSample {
     pub a: f64,
     /// Along `e2`, green against blue.
     pub b: f64,
+    /// The tone: the mean of the three LogC4 codes of the same colour (`ym_color::uniform::tone_of`), so a page can
+    /// set a Colour Uniform target without converting a colour (`docs/32` section 3.11).
+    pub tone: f64,
 }
 
 /// Where in a node [`Renderer::sample_chroma_at`] reads the chroma (`docs/23` section 9).
@@ -1659,6 +1663,9 @@ struct Sharpened {
 /// `docs/algorithms/04` section 9; a strip of a retina frame is about 0.75 Mpixel), many enough that
 /// the receptive field read above and below (17 to 21 rows) stays a small part of the work.
 const CPU_SHARPEN_STRIP_ROWS: usize = 256;
+
+/// The largest `radius_px` of [`Renderer::sample_chroma_square`] (a 31 x 31 square); a larger one is held to it.
+const MAX_PICK_RADIUS_PX: usize = 15;
 
 /// The cancel check of the CPU stage: the request's own, callable from the threads the strips run on.
 type CancelCheck<'a> = &'a (dyn Fn() -> Result<(), RenderError> + Sync);
@@ -3132,6 +3139,15 @@ pub(crate) struct SampledView {
 }
 
 impl SampledView {
+    /// The place in the photo frame of pixel `(x, y)` of the view.
+    pub(crate) fn spot_at(&self, x: usize, y: usize) -> PixelAt<'static> {
+        let grid = self.grid.as_ref()?;
+        Some(PhotoSpot::new(
+            GridPositions::new(grid, (0, 0)).position(x, y),
+            grid.photo_frame(),
+        ))
+    }
+
     /// The place in the photo frame of pixel (0, 0) of the view, for the readout of a one-pixel view.
     pub(crate) fn spot(&self) -> PixelAt<'static> {
         let grid = self.grid.as_ref()?;
@@ -3818,17 +3834,47 @@ impl Renderer {
         before: bool,
         cancel: &CancelToken,
     ) -> Result<Option<(Vec3, Arc<GradePlan>, PixelAt<'static>)>, RenderError> {
+        Ok(self
+            .point_readings(src, state, css, before, 0, cancel)?
+            .and_then(|(mut pixels, grade)| {
+                let (rgb, at) = pixels.pop()?;
+                Some((rgb, grade, at))
+            }))
+    }
+
+    /// [`Renderer::point_reading`] over the square of `2 * radius_px + 1` output pixels about the point, at the viewport's
+    /// scale (`docs/32` section 3.11): each pixel's camera RGB and place, row by row. `radius_px` 0 is the one pixel
+    /// [`Renderer::point_reading`] reads, with the same view. `None` when the point, or any pixel of the square, is
+    /// outside the photo.
+    #[allow(clippy::type_complexity)]
+    fn point_readings(
+        &self,
+        src: &PhotoSource,
+        state: &ViewportState,
+        css: (f64, f64),
+        before: bool,
+        radius_px: usize,
+        cancel: &CancelToken,
+    ) -> Result<Option<(Vec<(Vec3, PixelAt<'static>)>, Arc<GradePlan>)>, RenderError> {
         let mut job = Job::new(self, src, cancel)?;
         let image = job.final_size()?;
         let Some((fx, fy)) = state.final_point_at(image, css) else {
             return Ok(None);
         };
         let zoom = state.zoom(image);
-        // A 1 x 1 view of exactly that point, at the scale the viewport uses.
+        // A view of exactly that square, at the scale the viewport uses; one output pixel is one final pixel for the
+        // single-pixel reading (as it always was) and `1 / zoom` of one for a square.
+        let side = 2 * radius_px + 1;
+        let step = if radius_px == 0 || !(zoom.is_finite() && zoom > 0.0) {
+            1.0
+        } else {
+            1.0 / zoom
+        };
+        let reach = (radius_px as f64 + 0.5) * step;
         let spec = ViewSpec {
-            out_w: 1,
-            out_h: 1,
-            view_to_final: Affine::scale_translate(1.0, 1.0, fx - 0.5, fy - 0.5),
+            out_w: side,
+            out_h: side,
+            view_to_final: Affine::scale_translate(step, step, fx - reach, fy - reach),
             k: scale_for_zoom(zoom),
             target: OutputTarget::Viewport,
             before,
@@ -3844,10 +3890,18 @@ impl Renderer {
         if view.sampled.outside.is_some() {
             return Ok(None);
         }
-        let rgb = pixel_rgb(&view.sampled.img);
-        let at = view.spot();
+        let mut pixels = Vec::with_capacity(side * side);
+        for y in 0..side {
+            for x in 0..side {
+                let p = view.sampled.img.pixel(x, y);
+                pixels.push((
+                    [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])],
+                    view.spot_at(x, y),
+                ));
+            }
+        }
         job.finish(view.scale, ComputeDevice::Cpu, OutputTarget::Viewport);
-        Ok(Some((rgb, grade, at)))
+        Ok(Some((pixels, grade)))
     }
 
     /// Display values (0 to 255) under a point of the cell, as the viewport shows them (the Before
@@ -3981,16 +4035,53 @@ impl Renderer {
         css: (f64, f64),
         cancel: &CancelToken,
     ) -> Result<Option<ChromaSample>, RenderError> {
+        self.sample_chroma_square(src, node, tap, 0, state, css, cancel)
+    }
+
+    /// [`Renderer::sample_chroma_at`] over a square: the colour is the **mean of the LogC4 triples** of the `2 * radius_px + 1`
+    /// pixels on a side about the point, in the picture the tap reads (output pixels at the viewport's scale), then reduced to
+    /// the chroma and the tone (`docs/32` section 3.11). `radius_px` 0 reads one pixel. `None` when any pixel of the square is
+    /// outside the photo.
+    ///
+    /// # Errors
+    ///
+    /// As [`Renderer::sample_chroma_at`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn sample_chroma_square(
+        &self,
+        src: &PhotoSource,
+        node: Option<NodeId>,
+        tap: ChromaTap,
+        radius_px: usize,
+        state: &ViewportState,
+        css: (f64, f64),
+        cancel: &CancelToken,
+    ) -> Result<Option<ChromaSample>, RenderError> {
         let tap = match tap {
             ChromaTap::WarpInput => Tap::WarpInput,
             ChromaTap::NodeInput => Tap::NodeInput,
         };
         let (src, stage) = signal_source(src, node, tap)?;
-        let Some((rgb, grade, at)) = self.point_reading(&src, state, css, false, cancel)? else {
+        let Some((pixels, grade)) =
+            self.point_readings(&src, state, css, false, radius_px.min(MAX_PICK_RADIUS_PX), cancel)?
+        else {
             return Ok(None);
         };
-        let [a, b] = chroma_of(stage.of(&grade.chain.trace_at(rgb, at)));
-        Ok(Some(ChromaSample { a, b }))
+        let mut sum = [0.0f64; 3];
+        for (rgb, at) in &pixels {
+            let v = stage.of(&grade.chain.trace_at(*rgb, *at)).0;
+            for (s, x) in sum.iter_mut().zip(v) {
+                *s += x;
+            }
+        }
+        let n = pixels.len() as f64;
+        let mean = [sum[0] / n, sum[1] / n, sum[2] / n];
+        let [a, b] = chroma_of(mean);
+        Ok(Some(ChromaSample {
+            a,
+            b,
+            tone: uniform::tone_of(mean),
+        }))
     }
 
     /// Where a click in the cell lands in the space `DevelopSettings::white_pick` uses: fractions

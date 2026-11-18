@@ -35,7 +35,7 @@ use ym_color::consts::Vec3;
 use ym_color::curve::{Curve, CurveSet};
 use ym_color::display::{
     BeforePoint, ChainParams, ColorChain, FilmStep, JoinParams, LookSetting, MainNode, NodeParams,
-    NodeSet, OutputTarget, Trim,
+    NodeSet, OutputTarget, Trim, UniformStep,
 };
 use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::look::LookTransform;
@@ -50,6 +50,7 @@ use ym_color::plan::{
 };
 
 use ym_color::tone::ToneParams;
+use ym_color::uniform::{Amounts, Target};
 use ym_color::warp::{Warp, WarpParams};
 use ym_looks::library::{Library, LookId};
 use ym_profiles::color_matrices::ColorMatrices;
@@ -63,7 +64,7 @@ use super::raw::{CaptureMethod, DEFAULT_CAPTURE_METHOD};
 use crate::auto::{AutoEstimates, as_shot_gains, as_shot_rggb};
 use crate::session::{PhotoId, PhotoView, PickedWhite, ThumbnailInput};
 use crate::settings::{
-    AutoOr, BlendMode, ColorWarp, CurvePoint, Curves, DevelopSettings, LensSettings, MIXER_INPUTS,
+    AutoOr, BlendMode, ColorUniformNode, ColorWarp, CurvePoint, Curves, DevelopSettings, LensSettings, MIXER_INPUTS,
     MaskMode, MaskSettings, MaskShape, MaskSupport, MixerNode, NodeGrade, NodeGraph, NodeId,
     NodeKind, NodeTrim, ObjectMask, Port,
 };
@@ -990,6 +991,16 @@ fn picture_into(g: &NodeGraph, to: NodeId, port: Port) -> Option<PictureSource> 
         })
 }
 
+/// The chain's step of a Colour Uniform node: its target in the node's plane and its amounts as shares (`docs/32` section 3.2).
+fn uniform_step_of(u: &ColorUniformNode) -> UniformStep {
+    UniformStep {
+        target: u
+            .target
+            .map(|t| Target::from_stored(t.hue_deg, t.saturation, t.lightness_ev)),
+        amounts: Amounts::from_percent(u.compress.hue, u.compress.saturation, u.compress.lightness),
+    }
+}
+
 /// The graph as the plan compiler reads it: every corrector and Film node with its place, its picture source
 /// (the link into its picture input) and its key source, and the picture the Output reads. An input with no link
 /// is `None` (the compiler reads the Input's picture there). The mixers, Splitters and Combiners are
@@ -1242,17 +1253,18 @@ fn node_set(
                 }
             }
             Some(NodeKind::ColorUniform) => {
-                if s.nodes.color_uniform(id).is_none() {
+                let Some(u) = s.nodes.color_uniform(id) else {
                     continue;
-                }
-                // TODO(CU-04): the node's step (`ym_color::uniform::apply`). Until then it is the identity: the
-                // corrector machinery runs it bypassed, so its picture is its input's and its key output is still the
-                // mask of its Mask tab.
+                };
+                // A corrector-like step (`docs/32` section 6): the node's masks are a corrector's, its key output is `m`, and
+                // its own work is the pull of `ym_color::uniform::apply`. A bypassed node, one with no target or one with every
+                // amount 0 is skipped by the chain; its key output is still the mask of its Mask tab.
                 others.insert(
                     id,
                     NodeParams {
-                        bypass: true,
+                        bypass: u.bypass,
                         masks: masks.remove(&id).unwrap_or_default(),
+                        uniform: Some(uniform_step_of(u)),
                         ..NodeParams::default()
                     },
                 );
@@ -1270,6 +1282,7 @@ fn node_set(
                         warp: ColorWarp::to_color(&c.grade.color_warp),
                         curves: curves_of(&c.grade.curve)?,
                         masks: masks.remove(&id).unwrap_or_default(),
+                        uniform: None,
                     },
                 );
             }

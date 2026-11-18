@@ -188,6 +188,7 @@ impl ChainParams {
                 warp: self.warp.clone(),
                 curves: self.curves.clone(),
                 masks: self.nodes.main.masks.clone(),
+                uniform: None,
             })
         } else {
             self.nodes.others.get(&id).cloned()
@@ -381,6 +382,7 @@ impl ColorChain {
                         &GradeParams::default(),
                         &WarpParams::default(),
                         &CurveSet::default(),
+                        None,
                         &crate::mask::NodeMasks::default(),
                     );
                     return Ok((*step, node));
@@ -388,8 +390,15 @@ impl ColorChain {
                 let n = params
                     .node_params(step.node)
                     .ok_or(DisplayError::MissingNode(step.node))?;
-                let node =
-                    PreparedNode::new(n.bypass, &n.trim, &n.grade, &n.warp, &n.curves, &n.masks);
+                let node = PreparedNode::new(
+                    n.bypass,
+                    &n.trim,
+                    &n.grade,
+                    &n.warp,
+                    &n.curves,
+                    n.uniform.as_ref(),
+                    &n.masks,
+                );
                 Ok((*step, node))
             })
             .collect::<Result<Vec<_>, DisplayError>>()?;
@@ -784,6 +793,7 @@ impl ColorChain {
                 }
                 .declared(0),
                 (None, Some(reach)) => StepKind::Film.declared(reach),
+                (None, None) if node.is_uniform() => StepKind::ColorUniform.declared(0),
                 (None, None) => StepKind::Corrector.declared(0),
             });
             if self.params.rasters.is_empty() {

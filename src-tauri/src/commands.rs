@@ -410,10 +410,11 @@ pub async fn sample_pixel(
     run(&state, move |api| api.sample_pixel(x.0, y.0)).await
 }
 
-/// `sample_chroma(x, y, at, tap)`: the chroma under a point of the photo cell (Pick colour; `null` for `at` is Main's).
+/// `sample_chroma(x, y, at, tap, radius_px)`: the chroma under a point of the photo cell (Pick colour; `null` for `at` is Main's).
 /// `tap` is `warp_input` (or `null`): at the input of the node's colour warp, after its trim and grade; or `node_input`:
 /// at the picture the node reads, before its trim and grade, which is what a Colour range selects on. `null` on the paper
-/// around the photo.
+/// around the photo. The answer also carries `tone`, the mean of the three codes. `radius_px` (left out: 0) reads the mean
+/// colour of the square of `2 * radius_px + 1` pixels about the point (`docs/32` section 3.11).
 #[tauri::command]
 #[specta::specta]
 pub async fn sample_chroma(
@@ -422,8 +423,12 @@ pub async fn sample_chroma(
     y: Num,
     at: Option<NodeId>,
     tap: Option<ChromaTap>,
+    radius_px: Option<Num>,
 ) -> Result<Option<ChromaSample>, AppError> {
-    run(&state, move |api| api.sample_chroma(x.0, y.0, at, tap)).await
+    run(&state, move |api| {
+        api.sample_chroma_radius(x.0, y.0, at, tap, radius_px.map_or(0.0, |r| r.0))
+    })
+    .await
 }
 
 /// `viewport_map_points(points, from)` (`docs/23` sections 3.6 and 9): maps points between the photo frame and the cell,

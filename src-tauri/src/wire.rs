@@ -3818,6 +3818,8 @@ pub struct ChromaSample {
     pub a: Num,
     /// Along `e2`, green against blue.
     pub b: Num,
+    /// The tone: the mean of the three LogC4 codes of the same colour (`docs/32` section 3.11).
+    pub tone: Num,
 }
 
 /// The photo's colours at the colour warp's input, for the faint scatter behind the pins

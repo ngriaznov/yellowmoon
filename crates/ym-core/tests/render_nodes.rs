@@ -1262,9 +1262,8 @@ fn color_uniform(id: u32, x: f64, body: Value) -> Value {
 }
 
 #[test]
-fn until_cu04_a_colour_uniform_node_renders_as_the_identity_and_its_settings_are_in_the_grade_key()
+fn a_colour_uniform_node_changes_the_picture_where_its_masks_select_and_its_settings_are_in_the_grade_key()
 {
-    // TODO(CU-04): the node gets its step; then this test says the node changes the picture where its masks select.
     let d = photo(Layout::Patchwork, 0.5);
     let src = d.source();
     let r = renderer();
@@ -1286,8 +1285,50 @@ fn until_cu04_a_colour_uniform_node_renders_as_the_identity_and_its_settings_are
             line(&[1, 2, 3]),
         ),
     );
-    assert_eq!(display(&r, &with_node).rgb, display(&r, &plain).rgb);
-    assert_eq!(frame(&r, &with_node), frame(&r, &plain));
+    // The node changes the picture (the full render and the frame), and a node at its identity does not.
+    assert_ne!(display(&r, &with_node).rgb, display(&r, &plain).rgb);
+    assert_ne!(frame(&r, &with_node), frame(&r, &plain));
+    for inert in [
+        json!({ "target": null, "compress": { "hue": 80, "saturation": 80, "lightness": 40 } }),
+        json!({ "target": live["target"].clone() }),
+        json!({ "bypass": true, "target": live["target"].clone(), "compress": live["compress"].clone() }),
+    ] {
+        let p = with(
+            &src,
+            graph(
+                vec![
+                    corrector(2, 1.0, trim(0.5)),
+                    color_uniform(3, 2.0, inert),
+                ],
+                line(&[1, 2, 3]),
+            ),
+        );
+        assert_eq!(display(&r, &p).rgb, display(&r, &plain).rgb);
+        assert_eq!(frame(&r, &p), frame(&r, &plain));
+    }
+    // Where its mask selects nothing the picture is the plain one: a Brightness range above every value of the photo.
+    let masked = {
+        let mut body = live.clone();
+        body["masks"] = json!({ "invert": false, "items": [
+            { "kind": "brightness_range", "mode": "add", "low": 0.999, "high": 1.0, "softness": 0.0 } ] });
+        with(
+            &src,
+            graph(
+                vec![
+                    corrector(2, 1.0, trim(0.5)),
+                    color_uniform(3, 2.0, body),
+                ],
+                line(&[1, 2, 3]),
+            ),
+        )
+    };
+    assert_eq!(display(&r, &masked).rgb, display(&r, &plain).rgb);
+    // The node's thumbnail is the picture after it: it differs from the plain graph's.
+    let thumbs = |p: &ym_core::pipeline::PhotoSource| r.node_thumbnails(p, &CancelToken::new()).expect("thumbnails");
+    let (a, b) = (thumbs(&with_node), thumbs(&plain));
+    assert_eq!(a.len(), 3);
+    assert_eq!(a[1].png, b[1].png);
+    assert_ne!(a[2].png, b[1].png);
     // The node takes a number and is a step of the plan, in its place.
     let plan = node_plan(&with_node.settings.nodes, ym_color::plan::Stop::Output).unwrap();
     assert_eq!(plan.node_ids(), vec![1, 2, 3]);

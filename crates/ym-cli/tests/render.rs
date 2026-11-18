@@ -2531,8 +2531,7 @@ fn auto_crop_takes_only_known_aspects() {
 }
 
 /// A settings file with a Colour Uniform node is read and checked and the photo is written; the record holds the node as
-/// the document does. Until CU-04 the node is the identity (`render_nodes.rs` compares the pixels on the core;
-/// TODO(CU-04): then the node changes the colours its masks select).
+/// the document does (`render_nodes.rs` compares the pixels on the core: the node changes the colours its masks select).
 #[test]
 fn a_settings_file_with_a_colour_uniform_node_is_read_and_the_photo_renders() {
     let sb = Sandbox::new();

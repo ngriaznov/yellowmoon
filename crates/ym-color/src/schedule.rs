@@ -68,6 +68,8 @@ pub struct Declared {
 pub enum StepKind {
     /// A corrector (or Main): per pixel.
     Corrector,
+    /// A Colour Uniform node (`docs/32` section 6): per pixel, like a corrector, with no planes of its own besides its masks.
+    ColorUniform,
     /// A Film node that does something: spatial.
     Film,
     /// A Parallel mixer: per pixel, reads the pictures of its inputs and its base.
@@ -83,8 +85,9 @@ pub enum StepKind {
 impl StepKind {
     /// Every step kind. A `match`-checked list: [`StepKind::declared`] does not compile when a kind is missing, and the
     /// unit test below checks this list against it.
-    pub const ALL: [StepKind; 6] = [
+    pub const ALL: [StepKind; 7] = [
         StepKind::Corrector,
+        StepKind::ColorUniform,
         StepKind::Film,
         StepKind::Parallel,
         StepKind::Layer,
@@ -97,7 +100,7 @@ impl StepKind {
     #[must_use]
     pub fn declared(self, reach_px: usize) -> Declared {
         match self {
-            Self::Corrector => Declared {
+            Self::Corrector | Self::ColorUniform => Declared {
                 footprint: Footprint::PerPixel,
                 reads: Reads {
                     pictures: true,

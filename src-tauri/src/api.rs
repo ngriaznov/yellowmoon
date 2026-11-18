@@ -1121,6 +1121,23 @@ impl AppApi {
         at: Option<NodeId>,
         tap: Option<ChromaTap>,
     ) -> Result<Option<ChromaSample>, AppError> {
+        self.sample_chroma_radius(x, y, at, tap, 0.0)
+    }
+
+    /// [`Api::sample_chroma`] with the optional `radius_px`: the colour is the mean of the square of `2 * radius_px + 1`
+    /// pixels about the point (`Renderer::sample_chroma_square`, `docs/32` section 3.11). The answer carries `tone` too.
+    ///
+    /// # Errors
+    ///
+    /// As [`Api::sample_chroma`].
+    pub fn sample_chroma_radius(
+        &self,
+        x: f64,
+        y: f64,
+        at: Option<NodeId>,
+        tap: Option<ChromaTap>,
+        radius_px: f64,
+    ) -> Result<Option<ChromaSample>, AppError> {
         let (photo, state) = self.viewport.snapshot_synced();
         let Some(photo) = photo else { return Ok(None) };
         let src = PhotoSource::from_session(&self.core.session, photo).map_err(session_error)?;
@@ -1131,10 +1148,16 @@ impl AppApi {
         let sample = self
             .core
             .renderer
-            .sample_chroma_at(
+            .sample_chroma_square(
                 &src,
                 at.map(|n| n.0),
                 tap,
+                // A radius that is not a number or is negative reads one pixel; the core holds a large one to its limit.
+                if radius_px.is_finite() && radius_px > 0.0 {
+                    radius_px.round() as usize
+                } else {
+                    0
+                },
                 &state,
                 (x, y),
                 &CancelToken::new(),
