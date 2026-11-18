@@ -341,6 +341,8 @@ Every gate must pass in CI (or the named job) before its task is done. **A faile
 
 ## 10. Questions for the owner (BL-H1), each with a recommended default
 
+**Answered 2026-11-18** (the owner: "1 - yes, 2 - one node, 3 - yes, 4 - ok, 5 - ok, 6 - ok, 7 - no. Blur is an instrument. It can be used with a depth mask and then it's 'blur the background', 8 - ok, 9 - ok, 10 - yes"): every recommended default below is taken. On 7, no shortcut and no preset: the Blur node is a tool, and with a Depth mask it is the background blur.
+
 | # | Question | Recommended default | Why, and what changes if the answer differs |
 |---|---|---|---|
 | 1 | **Mask behaviour:** (a) blur everything then blend, (b) mask-aware, or both with a control? | **Both, with one switch "Respect mask edges", on (b) by default** | (b) gives a clean background blur with no halo; (a) is what a corrector does and is right for a glow that should spread (§2.3). If only (b): the switch, its card and the `respect_mask_edges` field go (§2.3, §5.1) and the tests of (a) drop. If only (a): the node is simpler and has the halo |
