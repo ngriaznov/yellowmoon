@@ -1163,9 +1163,81 @@ fn pick_colour_reads_the_warp_input_of_the_pixel_under_the_pointer() {
     let mut before = st.clone();
     before.before = true;
     assert_eq!(chroma(&src, &before, at), Some(got));
-    // JSON: `{ a, b }`.
+    // JSON: `{ a, b, tone }`.
     assert_eq!(
         serde_json::to_value(got).expect("json"),
-        serde_json::json!({ "a": got.a, "b": got.b })
+        serde_json::json!({ "a": got.a, "b": got.b, "tone": got.tone })
     );
+}
+
+#[test]
+fn pick_colour_averages_a_square_and_a_colour_uniform_node_reads_its_input() {
+    use ym_core::pipeline::ChromaTap;
+    let d = Developed::new(&patchwork(), MODEL);
+    let src = d.source();
+    let r = Renderer::neutral_only().expect("renderer");
+    let st = state(300.0, 300.0);
+    let token = CancelToken::new();
+    // The centre of a flat patch: the 7 x 7 square reads the same colour as the pixel, and `tone` is in the answer.
+    let at = (75.5, 131.5);
+    let one = r
+        .sample_chroma_square(&src, None, ChromaTap::NodeInput, 0, &st, at, &token)
+        .expect("one")
+        .expect("inside");
+    assert_eq!(
+        Some(one),
+        r.sample_chroma_at(&src, None, ChromaTap::NodeInput, &st, at, &token)
+            .expect("at")
+    );
+    let square = r
+        .sample_chroma_square(&src, None, ChromaTap::NodeInput, 3, &st, at, &token)
+        .expect("square")
+        .expect("inside");
+    assert!((square.a - one.a).abs() < 0.02 && (square.tone - one.tone).abs() < 0.02);
+    assert!(one.tone > 0.0 && one.tone < 1.0);
+    // A point on the paper is `None`, with or without a square.
+    assert_eq!(
+        r.sample_chroma_square(
+            &src,
+            None,
+            ChromaTap::NodeInput,
+            3,
+            &st,
+            (150.0, 5.0),
+            &token
+        )
+        .expect("paper"),
+        None
+    );
+    // A Colour Uniform node reads the picture it takes in, at every tap, whatever it does to it.
+    let doc = serde_json::json!({ "nodes": { "items": [ { "id": 1 },
+        { "id": 2, "kind": "color_uniform", "pos": [2.0, 0.0],
+          "target": { "hue_deg": 26, "saturation": 20, "lightness_ev": 0.0 },
+          "compress": { "hue": 100, "saturation": 100, "lightness": 100 } } ],
+        "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
+    let settings = serde_json::from_value::<DevelopSettings>(doc)
+        .expect("doc")
+        .validated()
+        .expect("valid")
+        .0;
+    let with = src.with_settings(settings);
+    for tap in [ChromaTap::NodeInput, ChromaTap::WarpInput] {
+        let got = r
+            .sample_chroma_at(&with, Some(NodeId::Corrector(2)), tap, &st, at, &token)
+            .expect("node")
+            .expect("inside");
+        let main = r
+            .sample_chroma_at(&with, None, ChromaTap::NodeInput, &st, at, &token)
+            .expect("main")
+            .expect("inside");
+        // Main reads the Input's output (C8), the node reads Main's output: the same colour here (Main is at its defaults
+        // apart from the default grade), so they agree to the rounding of the trim; the point is that it is not pulled.
+        assert!(
+            (got.a - main.a).abs() < 0.05,
+            "{tap:?}: {got:?} against {main:?}"
+        );
+    }
 }

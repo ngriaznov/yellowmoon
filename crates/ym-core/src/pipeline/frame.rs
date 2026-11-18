@@ -3834,8 +3834,7 @@ impl Renderer {
 
     /// [`Renderer::point_reading`] over the square of `2 * radius_px + 1` output pixels about the point, at the viewport's
     /// scale (`docs/32` section 3.11): each pixel's camera RGB and place, row by row. `radius_px` 0 is the one pixel
-    /// [`Renderer::point_reading`] reads, with the same view. `None` when the point, or any pixel of the square, is
-    /// outside the photo.
+    /// [`Renderer::point_reading`] reads, with the same view. `None` when the point is outside the photo.
     #[allow(clippy::type_complexity)]
     fn point_readings(
         &self,
@@ -4030,8 +4029,8 @@ impl Renderer {
 
     /// [`Renderer::sample_chroma_at`] over a square: the colour is the **mean of the LogC4 triples** of the `2 * radius_px + 1`
     /// pixels on a side about the point, in the picture the tap reads (output pixels at the viewport's scale), then reduced to
-    /// the chroma and the tone (`docs/32` section 3.11). `radius_px` 0 reads one pixel. `None` when any pixel of the square is
-    /// outside the photo.
+    /// the chroma and the tone (`docs/32` section 3.11). `radius_px` 0 reads one pixel. `None` when the point is outside the photo (a
+    /// square that reaches past the edge reads the pixels the view makes there).
     ///
     /// # Errors
     ///
