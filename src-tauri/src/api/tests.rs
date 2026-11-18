@@ -2252,6 +2252,48 @@ fn pick_colour_and_the_chroma_scatter_cross_the_bridge() {
             .expect("not a number"),
         None
     );
+    // Pick colour of a Colour Uniform node reads a square (`radius_px`, `docs/32` section 3.11):
+    // no radius, a radius of 0, one that is not a number and a negative one read one pixel; a
+    // radius reads the same point, answers `tone` and is the core's own answer; the paper stays
+    // `null` and a huge radius is held to the core's limit instead of failing.
+    assert_eq!(
+        h.api
+            .sample_chroma_radius(150.0, 150.0, None, None, 0.0)
+            .expect("radius 0"),
+        Some(inside)
+    );
+    for odd in [f64::NAN, -3.0, f64::NEG_INFINITY] {
+        assert_eq!(
+            h.api
+                .sample_chroma_radius(150.0, 150.0, None, None, odd)
+                .expect("odd radius"),
+            Some(inside)
+        );
+    }
+    let square = h
+        .api
+        .sample_chroma_radius(150.0, 150.0, None, None, 3.0)
+        .expect("radius 3")
+        .expect("a point of the photo");
+    assert!(square.a.0.is_finite() && square.b.0.is_finite() && square.tone.0.is_finite());
+    assert_eq!(
+        h.api
+            .sample_chroma_radius(150.0, 150.0, None, None, 3.0)
+            .expect("radius 3"),
+        Some(square)
+    );
+    assert_eq!(
+        h.api
+            .sample_chroma_radius(150.0, 5.0, None, None, 3.0)
+            .expect("paper"),
+        None
+    );
+    assert!(
+        h.api
+            .sample_chroma_radius(150.0, 150.0, None, None, 1.0e9)
+            .expect("a huge radius")
+            .is_some()
+    );
     // A pin on that colour moves the picture there but not what Pick colour reads (the warp's
     // input), and the answer is the core's.
     let pin = json!({ "source": [inside.a.0, inside.b.0], "target": [inside.a.0 + 0.05, inside.b.0],

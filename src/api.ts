@@ -504,8 +504,7 @@ export const tauriApi: Api = {
   viewportSetMode: (mode, maskView) => unit(commands.viewportSetMode(mode, maskView ?? null)),
   setBefore: (before) => unit(commands.setBefore(before)),
   samplePixel: (x, y) => commands.samplePixel(x, y),
-  // TODO(CU-10): pass `radiusPx` and read `tone` once bindings.ts has them (CU-04 adds them to the Rust command).
-  sampleChroma: (x, y, at, tap) => commands.sampleChroma(x, y, at ?? null, tap ?? null),
+  sampleChroma: (x, y, at, tap, radiusPx) => commands.sampleChroma(x, y, at ?? null, tap ?? null, radiusPx ?? null),
   viewportMapPoints: (points, from) => commands.viewportMapPoints(points, from),
   maskKinds: () => commands.maskKinds(),
   maskFind: (photoId, node, mask, prompt) => commands.maskFind(photoId, node, mask, prompt),
