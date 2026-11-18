@@ -182,7 +182,7 @@ impl Default for Params {
 /// Every field says its row, its kind ([`Kind`]), its section of
 /// `docs/algorithms/01-adaptive-ratio-demosaic.md`, its derivation status and the task that fits or
 /// proves it. [`Tuning::ORACLE`] is what the oracle vectors were made with and [`Tuning::DEFAULT`] is
-/// what ships; they are equal except for A6 and A7, which RC-07 fitted (`docs/29` RC-08, RC-10 follow).
+/// what ships; they are equal except for A6 and A7, which RC-07 fitted (RC-08 kept A8 to A14; RC-10 follows).
 ///
 /// The structure stays outside it: the 5 x 5 and 3 x 3 filters, the number of passes, the
 /// `2g + r` terms of the offsets and every `0.5`, `2` and `1` that is arithmetic rather than a
@@ -211,32 +211,33 @@ pub struct Tuning {
     /// `dominance·ΣX < ΣG`: the red or blue is not dominant over the greens. A comparison, so a new
     /// value moves the decision near-ties of the device parity test.
     pub sat_dominance: f64,
-    /// A8 · Fit · spec §3.4.4 · pending, RC-08. Share of the soft-limited luma Laplacian that the
+    /// A8 · Fit · spec §3.4.4 · fitted, RC-08: kept at 0.75. Share of the soft-limited luma Laplacian that the
     /// shadow sharpening adds back, `gain = (y0 + amount·f·a)/y0`. The same number as
     /// [`sat_dominance`](Self::sat_dominance) today, a different job.
     pub shadow_amount: f64,
-    /// A9 · Fit · spec §3.4.4 · pending, RC-08. Scale of the diagonal Laplacian
+    /// A9 · Fit · spec §3.4.4 · fitted, RC-08: kept at 5. Scale of the diagonal Laplacian
     /// `d = scale·(2·y0 - p)` that the soft limit bounds.
     pub shadow_laplacian_scale: f64,
-    /// A10 · Fit · spec §3.4.4 · pending, RC-08. The shadow sharpening fades to nothing where the
+    /// A10 · Fit · spec §3.4.4 · fitted, RC-08: kept at 4 and 3. The shadow sharpening fades to nothing where the
     /// largest native green reaches this multiple of `T`: `f = clamp((end·T - gmax)/(span·T), 0, 1)`.
     pub shadow_fade_end: f64,
-    /// A10 · Fit · spec §3.4.4 · pending, RC-08. The width of that fade in multiples of `T`; the
+    /// A10 · Fit · spec §3.4.4 · fitted, RC-08: kept at 3. The width of that fade in multiples of `T`; the
     /// sharpening is full below `end - span` times `T`.
     pub shadow_fade_span: f64,
-    /// A11 · Fit · spec §3.4.5 · pending, RC-08. Weight of the excess error in the shadow colour
+    /// A11 · Fit · spec §3.4.5 · fitted, RC-08: kept at 3 (every lower value is worse on a gate number). Weight of the excess error in the shadow colour
     /// matching, `u = weight·D + 1`.
     pub match_excess_weight: f64,
     /// A12 · Maths + target · spec §2.2 · proved, test
     /// `k_and_t_are_the_signal_levels_where_the_snr_is_ten_and_s`. The SNR that sets the pass-1
     /// offset `K`, the signal level where `x/σ(x) = snr`: `K = (snr²/2)(g + √(g² + 4r²/snr²))`, the
-    /// `50` and `0.04` of the spec for `snr = 10`. The algebra is exact; the target is the choice.
+    /// `50` and `0.04` of the spec for `snr = 10`. The algebra is exact; the target is the choice, and RC-08
+    /// kept 10 (a higher target raises the PSNR and is worse on a gate number).
     pub offset_snr: f64,
-    /// A13 · Fit · spec §2.2 · pending, RC-08. The pass-3 SNR target is
+    /// A13 · Fit · spec §2.2 · fitted, RC-08: kept at 0.2 (every higher value is worse on a gate number). The pass-3 SNR target is
     /// `s = max((100 - (detail + strength))·factor, 1)`: the factor maps the 0 to 100 sliders onto
     /// 20 to 1.
     pub snr_per_slider: f64,
-    /// A14 · Fit · spec §2.2 · pending, RC-08. Shadow colour matching turns on when the SNR at 18 %
+    /// A14 · Fit · spec §2.2 · fitted, RC-08: kept at 25 dB (24 to 26 dB give the same gate). Shadow colour matching turns on when the SNR at 18 %
     /// grey is below 25 dB, written without the logarithm: `g·x18 + r² > x18² / ratio` with
     /// `ratio = 10^(25/10)`.
     pub match_below_ratio: f64,
@@ -264,7 +265,8 @@ impl Tuning {
     };
 
     /// The values that ship. [`Tuning::ORACLE`] with the fits that were accepted: A6 and A7 (RC-07,
-    /// `docs/29` section 5). A1, A2 to A4 and A8 to A14 are equal to the oracle until RC-08 and RC-10.
+    /// `docs/29` section 5). A1 and A8 to A14 were fitted and kept (RC-07, RC-08: no value passed the gate), A2 to
+    /// A4 are equal to the oracle until RC-10.
     pub const DEFAULT: Tuning = Tuning {
         chroma_floor: 0.9,
         sat_dominance: 3.5,
@@ -437,7 +439,9 @@ const fn registry(t: &Tuning) -> [Constant; 19] {
             "shadow_amount",
             shadow_amount,
             Kind::Fit,
-            Status::Pending("RC-08"),
+            Status::Fitted(
+                "RC-08, 2026-11-18: kept; on the 100-point grid (A8 0.5 to 1, A9 3 to 7, A10 end 3T to 6T) only today's point is as sharp with no more noise and overshoot, and at equal noise the best 10 to 90 % rise is 0.0004 px (0.05 %) sharper with more overshoot, far under the 1 % of rule 3",
+            ),
         )
         .on_device("SHADOW_AMOUNT")
         .distinct(),
@@ -446,7 +450,9 @@ const fn registry(t: &Tuning) -> [Constant; 19] {
             "shadow_laplacian_scale",
             shadow_laplacian_scale,
             Kind::Fit,
-            Status::Pending("RC-08"),
+            Status::Fitted(
+                "RC-08, 2026-11-18: kept; on the 100-point grid (A8 0.5 to 1, A9 3 to 7, A10 end 3T to 6T) only today's point is as sharp with no more noise and overshoot, and at equal noise the best 10 to 90 % rise is 0.0004 px (0.05 %) sharper with more overshoot, far under the 1 % of rule 3",
+            ),
         )
         .on_device("SHADOW_LAPLACIAN_SCALE"),
         Constant::cpu(
@@ -454,7 +460,9 @@ const fn registry(t: &Tuning) -> [Constant; 19] {
             "shadow_fade_end",
             shadow_fade_end,
             Kind::Fit,
-            Status::Pending("RC-08"),
+            Status::Fitted(
+                "RC-08, 2026-11-18: kept; on the 100-point grid (A8 0.5 to 1, A9 3 to 7, A10 end 3T to 6T) only today's point is as sharp with no more noise and overshoot, and at equal noise the best 10 to 90 % rise is 0.0004 px (0.05 %) sharper with more overshoot, far under the 1 % of rule 3",
+            ),
         )
         .on_device("SHADOW_FADE_END"),
         Constant::cpu(
@@ -462,7 +470,9 @@ const fn registry(t: &Tuning) -> [Constant; 19] {
             "shadow_fade_span",
             shadow_fade_span,
             Kind::Fit,
-            Status::Pending("RC-08"),
+            Status::Fitted(
+                "RC-08, 2026-11-18: kept; on the 100-point grid (A8 0.5 to 1, A9 3 to 7, A10 end 3T to 6T) only today's point is as sharp with no more noise and overshoot, and at equal noise the best 10 to 90 % rise is 0.0004 px (0.05 %) sharper with more overshoot, far under the 1 % of rule 3",
+            ),
         )
         .on_device("SHADOW_FADE_SPAN"),
         Constant::cpu(
@@ -470,7 +480,9 @@ const fn registry(t: &Tuning) -> [Constant; 19] {
             "match_excess_weight",
             match_excess_weight,
             Kind::Fit,
-            Status::Pending("RC-08"),
+            Status::Fitted(
+                "RC-08, 2026-11-18: kept; the optimum 0.35 (fit sets, +0.025 dB on the noisy table) is worse on the Kodak ISO 6400-like cell after R6 (-0.031 dB) and on the edge undershoot, as is every value from 0.1 to 2",
+            ),
         )
         .on_device("MATCH_EXCESS_WEIGHT"),
         Constant::cpu("A12", "offset_snr", offset_snr, Kind::Maths, Status::Proved),
@@ -479,14 +491,18 @@ const fn registry(t: &Tuning) -> [Constant; 19] {
             "snr_per_slider",
             snr_per_slider,
             Kind::Fit,
-            Status::Pending("RC-08"),
+            Status::Fitted(
+                "RC-08, 2026-11-18: kept; the nine-cell mean rises with the target up to 100 (+0.18 dB at 40) but the B scenes (-0.015 dB), the Kodak cells at signal scale 0.01 and the noisy table fall for every target above 20",
+            ),
         ),
         Constant::cpu(
             "A14",
             "match_below_ratio",
             match_below_ratio,
             Kind::Fit,
-            Status::Pending("RC-08"),
+            Status::Fitted(
+                "RC-08, 2026-11-18: kept; the on and off crossover of the ladder is 24 to 26 dB and the gate numbers are identical for 24 to 26 dB, so a change would be a change for nothing",
+            ),
         )
         .distinct(),
         // A15: the fixed filters. Structure, not a field: the divisor is the sum of the 25 integer

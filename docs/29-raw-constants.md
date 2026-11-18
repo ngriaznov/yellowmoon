@@ -162,7 +162,7 @@ Today's PSNR (mean over the images of each group, linear light, 10 px border off
 - **On the two real A1 crops (C, stand-in models) every constant moves the picture by 0.02 codes or less**: A7 0.019, A1 0.011, A8 0.008, A6 0.007, A13 0.006, A12 0.006, A11 0.005, A9 0.0005. Nothing here shows a constant that matters on a real mosaic and not on the synthetic scenes.
 - **Today's values are not at the PSNR optimum of this set**: PSNR rises when A6, A7, A12 or A13 is raised, and when A1 is lowered, in both ±10 % and ±50 % (A13 ×1.5: +0.30 dB; A7 ×1.5: +0.11 dB; A6 ×1.5: +0.06 dB; A1 ×0.5: +0.006 dB). The gains are small (the methods of `docs/algorithms/01` §6.4 differ by 0.5 to 1.2 dB) and a PSNR optimum on re-mosaicked 8-bit pictures is not a certainty about sensors (G5). They say the fits have something to find for A6, A7 and A13, and very little for A1.
 - **A8, A9, A11 (shadow sharpening and shadow colour matching) get a higher PSNR when they act less** (A8 ×0.5: +0.23 dB on B; A11 ×0.5: +0.05 dB). For a sharpening that is the expected sign (G6): PSNR is not its objective.
-- **Not moved in this run:** A10 (the 4T/3T window of the shadow sharpening) and A14 (the 25 dB switch). A10 acts in the same shadows as A8 and scales the same step; I expect an effect of the same order as A8's, which is an estimate from the form of the formula and not a measurement. A14 is a per-photo on/off switch; it changes a picture only when the SNR at 18 % grey is near 25 dB, and switching shadow colour matching on or off was not measured separately. RC-08 measures both.
+- **Not moved in this run:** A10 (the 4T/3T window of the shadow sharpening) and A14 (the 25 dB switch). A10 acts in the same shadows as A8 and scales the same step; I expect an effect of the same order as A8's, which is an estimate from the form of the formula and not a measurement. A14 is a per-photo on/off switch; it changes a picture only when the SNR at 18 % grey is near 25 dB, and switching shadow colour matching on or off was not measured separately. RC-08 measured both (section 5): A10 changes nothing the objective can see, and A14 has the same gate for 24 to 26 dB.
 
 #### The CA path (A2 to A4), on its own harness
 
@@ -704,6 +704,87 @@ The optimum of the nine-cell mean is 0.56 and beats today's value by 0.0056 dB, 
 
 **RC-08 · Fit spec 01 pass 3 targets and the shadow group** (A8 to A14; changes pictures where the shadow steps act). As section 2.3, with the sharpening objective for A8 to A10. *Done when:* as RC-07, plus the edge, noise-gain and overshoot numbers for A8 to A10, and the crossover table for A14.
 
+*Done (branch `rc-08-fit-shadows`, commit RC08COMMIT; not on `main`).* **No value of A8 to A14 was taken. `Tuning::DEFAULT` is unchanged** (A6 `0.9` and A7 `3.5` of RC-07, the rest the oracle's), so no self vector, no golden picture, `expected.json` or `PIPELINE_VERSION` moved, section 2.2b stays the floor and there is no section 2.2c. Every group was decided by rules 3 and 4 and the owner's answer 1 against section 2.2b and section 2.2a: A8 to A10 and A14 are kept by rule 3 (no change for nothing); A11, A12 and A13 are **mixed** (better on the PSNR objective, worse on at least one gate number at every value tried) and are not taken; they are in Questions for the owner (STATUS, 12). The registry and spec 01's table say "fitted on 2026-11-18" for each. All runs: 2026-11-18, the machine and data of section 2.2a (Kodak, McMaster and the procedural set; nothing else), release profile, `YM_TESTDATA` for the sets; the raw output is not committed.
+
+*The harness.* `fit_demosaic` gained four flags (Appendix B): `--skip-a` (B scenes and edge only; a grid of 100 points runs in two minutes), `--edge-seeds N` (the edge numbers as a mean over N noise seeds; the gate's single seed stays the default), `--noisy [on|auto|off]` (the noisy table of `demosaic_gate` with the shadow colour matching forced on, left to `auto` or forced off; `--noisy auto --from default` reproduces section 2.2b's 24 cells digit for digit, checked) and `--ladder` (matching on and off over eight noise models). `fit_harness.rs` tests them (39 tests).
+
+**A8 `0.75`, A9 `5`, A10 `4T/3T`: kept.** Objective: edge sharpness gained per unit of noise, on the slanted edge at 0.25 of white with the "high" noise model (23.9 dB at 18 % grey; the mean of 8 noise seeds, `--edge-seeds 8`) and on the 17 B scenes. Grid of 5 × 5 × 4 = 100 points: A8 0.5, 0.625, 0.75, 0.875, 1.0; A9 3, 4, 5, 6, 7; A10 end 3T, 4T, 5T, 6T with the span at end − 1 (the step stays full below `T`). The constraint check against today's (the 10 to 90 % rise no worse, the flat-patch noise and the overshoot no higher, the B-scene PSNR not lower by more than 0.05 dB on B, its fit and held-out images): **one of the 100 points passes, and it is today's.** Today's numbers: rise 0.82814 px, MTF50 0.6042 cycles/px, flat-patch sd 0.009772 (noise gain), overshoot 2.504 %, undershoot 1.861 %, B 27.740 dB (fit 27.352, held out 28.453), B2 27.741. A8 moves along one trade-off curve and nothing else:
+
+| A8 (A9 5, A10 4T/3T) | rise (px) | flat-patch sd | overshoot (%) | undershoot (%) | B (dB) | B held out (dB) |
+|---|---|---|---|---|---|---|
+| 0 (step off) | 0.85140 | 0.009099 | 2.347 | 1.583 | 28.162 | 28.915 |
+| 0.375 | 0.83977 | 0.009422 | 2.409 | 1.714 | 27.968 | 28.705 |
+| **0.75 (today)** | 0.82814 | 0.009772 | 2.504 | 1.861 | 27.740 | 28.453 |
+| 1.125 | 0.81650 | 0.010147 | 2.664 | 2.010 | 27.483 | 28.162 |
+| 1.5 | 0.80510 | 0.010549 | 2.839 | 2.174 | 27.202 | 27.841 |
+
+The step buys 2.7 % of rise (0.851 to 0.828 px) for 7.4 % more noise and 0.16 points of overshoot, and costs 0.42 dB of B-scene PSNR, at today's amount; a higher amount buys more rise at a worse rate and a lower one the reverse. To compare A9 and A10 at the same noise, the A8 of each of the 20 (A9, A10) pairs was interpolated to today's flat-patch sd: the rise then differs from today's by -0.00038 px (A9 3, A10 3T; sharper, with 0.0035 points more overshoot) to +0.00019 px (A9 7, A10 6T), at most 0.05 % of the rise, and moves by 0.0001 px or less along A10. That is far under the 1 % of rule 3, so the objective cannot separate the values and today's stay. "Fitted on 2026-11-18: within 0.05 % of the optimum."
+
+**A11 `3`: not taken (mixed).** Objective: the noisy table of `demosaic_gate` (procedural set, Kodak, McMaster; ISO 100 to 6400-like; demosaic and after R6) with the matching forced on at every level, so that it acts at all four, 16-point grid 0.5 to 8 (step 0.5), then 0 to 0.8 because the grid's best is at its edge. Mean of the 8 cells of the fit sets, McMaster, all 24 cells, and the B scenes (B fit, held out, second seed):
+
+| A11 | fit sets (dB) | McMaster (dB) | 24 cells (dB) | B fit (dB) | B held out (dB) | B2 (dB) |
+|---|---|---|---|---|---|---|
+| 0 | 32.992 | 35.324 | 33.769 | 27.290 | 28.524 | 27.719 |
+| 0.1 | 34.297 | 35.292 | 34.628 | 27.451 | 28.602 | 27.853 |
+| 0.2 | 34.322 | 35.255 | 34.633 | 27.475 | 28.613 | 27.873 |
+| **0.35** (fit-set optimum) | 34.328 | 35.228 | 34.628 | 27.472 | 28.602 | 27.868 |
+| 0.5 | 34.327 | 35.214 | 34.622 | 27.461 | 28.586 | 27.857 |
+| 1 | 34.318 | 35.191 | 34.609 | 27.423 | 28.537 | 27.817 |
+| **3 (today)** | 34.303 | 35.173 | 34.593 | 27.352 | 28.453 | 27.741 |
+| 8 | 34.298 | 35.170 | 34.589 | 27.323 | 28.416 | 27.709 |
+
+The surface is flat between 0.2 and 0.5 (the optimum is 0.35 on the fit sets, 0.2 on all cells, 0.05 on McMaster) and falls off a cliff towards 0 (the match then trusts nothing). At 0.35 (+0.025 dB on the fit sets, +0.055 dB on McMaster, +0.12 dB on B, above the 0.01 dB of rule 3; the clean scenes bit for bit unchanged: `change_codes` of group A is 0) **two gate numbers are worse**, and the same two are worse at every value from 0.1 to 2 that was run: the Kodak ISO 6400-like cell after R6 of the noisy table (33.708 to 33.677 dB at 0.35; -0.074 at 0.2, -0.015 at 0.5, -0.0005 at 1.5) and, from 0.25 up, the slanted-edge undershoot of section 2.2b (1.854 to 1.874 %; the other four edge numbers, B and the other noisy cells improve; with 8 noise seeds the undershoot improves, 1.861 to 1.794 %). Rule 4b and the owner's answer 1: not taken. Matching on or off (section A14) says why the gain is small: at today's `3` the matching changes the PSNR by under 0.06 dB at every level; at `0.35` it helps at all eight rungs of the ladder in the demosaic (+0.011 dB at 40 dB, +0.046 dB at 15 dB) and after R6 on the fit sets down to 20.7 dB, so if the owner takes A11 the A14 fit must be redone and the matching would be worth switching on at every SNR of the ladder.
+
+**A14 `25 dB`: kept.** Matching on and off (A11 at today's `3`) over eight noise models, `b = 1.5e-3·a`, SNR at 18 % grey from 40 dB to 15 dB in equal steps, the 49 images at signal scale 1, the gate's noise generator. Gain of matching on over off (dB; the fit sets are the procedural set and Kodak, McMaster is held out; "R6" is after the bilateral):
+
+| SNR at 18 % grey (dB) | fit sets, demosaic | McMaster, demosaic | fit sets, R6 | McMaster, R6 |
+|---|---|---|---|---|
+| 40.0 | +0.0001 | -0.0000 | -0.0011 | -0.0000 |
+| 36.4 | +0.0006 | -0.0000 | -0.0022 | -0.0000 |
+| 32.9 | -0.0002 | +0.0002 | -0.0058 | +0.0002 |
+| 29.3 | +0.0005 | +0.0010 | -0.0101 | +0.0010 |
+| 25.7 | +0.0026 | +0.0002 | -0.0114 | +0.0015 |
+| 22.1 | -0.0022 | -0.0063 | -0.0225 | -0.0013 |
+| 18.6 | -0.0059 | -0.0189 | -0.0313 | -0.0111 |
+| 15.0 | -0.0092 | -0.0288 | -0.0535 | -0.0291 |
+
+**The crossover (the lowest SNR above which matching helps): 23.8 dB (fit sets, demosaic), 25.6 dB (McMaster, demosaic), 23.8 dB (McMaster, R6); on the fit sets after R6 matching never helps.** Rounded to 1 dB that is 24 to 26 dB, and the gains on both sides are under 0.01 dB near it (at today's A11 the matching is worth almost nothing on these scenes). The gate under A14 = 22, 23, 24, 26, 27, 28 and 30 dB: the numbers are bit for bit those of section 2.2b for 24 and 26 (no scene of the gate has an SNR at 18 % grey between 23.9 dB, the B scenes, and 26.5 dB, ISO 1600-like); 22 and 23 switch the matching off on the B scenes (B -0.047 dB, edge overshoot 2.513 to 2.661 %); 27 and above switch it on at ISO 1600-like (-0.024 dB after R6, procedural set). A change from 25 to 24 would change nothing (rule 3), so 25 stays: "fitted on 2026-11-18: within 0 dB of the optimum (24 to 26 dB give the same gate)". With A11 at `0.35` the ladder gains are +0.011 / +0.001 / +0.005 / +0.001 dB at 40 dB and rise to +0.05 / +0.10 / -0.01 / +0.09 dB at 18.6 dB.
+
+**A12 `offset_snr` 10: not taken (mixed).** Targets 5 to 20 (13 values and today's 10: 14 evaluations), then 25, 30, 40, 60 and 100 to find the optimum. The rows: the nine-cell mean, the fit sets, McMaster, B, zipper and false-colour rates, the edge, and the worst cell of the nine cells or of the noisy table against today's:
+
+| A12 target | nine cells (dB) | fit sets | McMaster | B | zipper (%) | false colour (%) | edge rise (px) | edge overshoot (%) | worst cell |
+|---|---|---|---|---|---|---|---|---|---|
+| 5 | 36.831 | 37.141 | 36.210 | 27.698 | 23.847 | 5.757 | 0.82717 | 2.5123 | ISO 1600-like McMaster demosaic -0.194 |
+| 8 | 36.879 | 37.177 | 36.284 | 27.729 | 23.649 | 5.738 | 0.82727 | 2.5124 | ISO 800-like McMaster demosaic -0.061 |
+| **10 (today)** | 36.902 | 37.194 | 36.319 | 27.740 | 23.538 | 5.726 | 0.82732 | 2.5126 | |
+| 12 | 36.920 | 37.207 | 36.346 | 27.747 | 23.447 | 5.718 | 0.82736 | 2.5128 | Kodak at signal 0.01 -0.019 |
+| 15 | 36.940 | 37.222 | 36.376 | 27.753 | 23.330 | 5.710 | 0.82741 | 2.5130 | Kodak at signal 0.01 -0.047 |
+| 20 | 36.961 | 37.236 | 36.410 | 27.757 | 23.212 | 5.705 | 0.82745 | 2.5138 | Kodak at signal 0.01 -0.089 |
+| 30 | 36.980 | 37.249 | 36.440 | 27.757 | 23.226 | 5.713 | 0.82747 | 2.5154 | Kodak at signal 0.01 -0.145 |
+| 40 | 36.981 | 37.249 | 36.444 | 27.756 | 23.426 | 5.739 | 0.82749 | 2.5162 | Kodak at signal 0.01 -0.177 |
+| 100 | 36.894 | 37.178 | 36.325 | 27.756 | 25.162 | 5.929 | 0.82750 | 2.5164 | Kodak at signal 0.1 -0.364 |
+
+The PSNR optimum is the plateau 30 to 40 (nine cells +0.078 dB, fit sets +0.055, McMaster +0.125, B +0.017), and the zipper and false-colour rates are best at 20 to 25. Every target above 10 is worse on a gate number: the Kodak nine-cell cell at signal scale 0.01 (-0.019 dB at 12), the Kodak ISO 6400-like cell after R6 of the noisy table (-0.002 dB at 11, -0.030 at 20), and the edge overshoot and rise (+0.0001 to +0.0038 points; +0.0001 to +0.0002 px); every target below 10 is worse on almost every number (46 numbers at 5). Not taken.
+
+**A13 `0.2` (target 20): not taken (mixed).** Targets 10 to 40 (`snr_per_slider` 0.1 to 0.4; 13 values and today's 20: 14 evaluations), then 50, 60, 80 and 100:
+
+| A13 target | nine cells (dB) | fit sets | McMaster | B | zipper (%) | false colour (%) | edge rise (px) | edge overshoot (%) | worst cell |
+|---|---|---|---|---|---|---|---|---|---|
+| 10 | 36.678 | 37.049 | 35.935 | 27.726 | 24.445 | 5.844 | 0.84067 | 2.4825 | ISO 800-like McMaster R6 -0.671 |
+| 14 | 36.786 | 37.114 | 36.128 | 27.738 | 24.006 | 5.785 | 0.83261 | 2.5005 | ISO 100-like McMaster R6 -0.333 |
+| 18 | 36.869 | 37.171 | 36.264 | 27.740 | 23.663 | 5.742 | 0.82842 | 2.5101 | ISO 100-like McMaster R6 -0.103 |
+| **20 (today)** | 36.902 | 37.194 | 36.319 | 27.740 | 23.538 | 5.726 | 0.82732 | 2.5126 | |
+| 22 | 36.932 | 37.214 | 36.366 | 27.740 | 23.436 | 5.715 | 0.82723 | 2.5129 | Kodak at signal 0.01 -0.046 |
+| 26 | 36.979 | 37.247 | 36.443 | 27.737 | 23.308 | 5.705 | 0.82721 | 2.5130 | Kodak at signal 0.01 -0.123 |
+| 30 | 37.016 | 37.272 | 36.504 | 27.734 | 23.277 | 5.708 | 0.82720 | 2.5132 | Kodak at signal 0.01 -0.182 |
+| 40 | 37.081 | 37.318 | 36.607 | 27.726 | 23.474 | 5.755 | 0.82718 | 2.5134 | Kodak at signal 0.01 -0.280 |
+| 60 | 37.146 | 37.369 | 36.702 | 27.724 | 24.562 | 5.969 | 0.82717 | 2.5134 | Kodak at signal 0.01 -0.367 |
+| 100 | 37.169 | 37.381 | 36.747 | 27.724 | 26.748 | 6.431 | 0.82717 | 2.5134 | Kodak at signal 0.1 -0.541 |
+
+The nine-cell mean rises all the way to the limit where the pass-3 step is switched off (on the noisy scenes T reaches its clamp of 65535 from a target of about 50: B, the edge and the noisy table stop changing there; the clean scenes go on changing), so there is no interior optimum, as for A6 and A7 in RC-07; the objective alone would take 100 (+0.27 dB). Every target above 20 is worse on a gate number, from the first step: the B-scene PSNR (-0.0004 dB at 22, -0.015 at 40), the Kodak cell at signal scale 0.01 (-0.046 dB at 22), the Kodak and McMaster ISO 6400-like cells, the edge overshoot (+0.0003 to +0.0008 points), then the false-colour rate (from 36) and the zipper rate (from 50). Every target below 20 is worse on the PSNR. Not taken.
+
+**Gate numbers.** The floors are section 2.2b (spec 01) and section 2.2a (specs 03 and 04, untouched). With nothing changed the gate numbers are the floor. `cargo fmt --check`, `cargo clippy -p ym-gpu --all-targets -- -D warnings`, and in the release profile `cargo test -p ym-gpu --lib`, `--test fit_harness`, `--test constants_registry`, `--test self_vectors`, the `cpu_data` tests on the CPU and on lavapipe pass; the tie bounds are the RC-07 ones (`edge_knight` 9 samples over 1e-4 on the self set and 10 on the oracle set; `ca_weighting` 58). No dataset byte is committed (`git ls-files testdata` is empty of datasets).
+
 **RC-09 · Output sharpening** (O1 to O3, O6, O7; changes every export if accepted). The tap rule from the tail-mass budget, the continuity repair of the σ map (no change at `R ≥ 0.5`, so none for the preset), the σ knee, and a check of O6 and O7. The presets, the halo map and the radius slope are design and are not touched (section 6, question 4). *Done when:* as RC-07, with the edge profile of spec 04 §9 at `s = 1` and `s = 0.4` as the gate, and the tap count at or above today's at every σ of 0.1 to 2.5.
 
 **RC-10 · The CA path** (A2 to A5; no picture changes while R5b corrects CA on the mosaic). Coordinate descent on the synthetic CA scenes (ours). *Done when:* as RC-07 on the residual and PSNR tables of `ca_green_residual`, and the vectors `ca_weighting` and the CA property tests pass under `Tuning::ORACLE`.
@@ -795,7 +876,7 @@ $fit --ca-only --eval "A1 to 10@second_diff_weight=10"   # the CA scenes only
 $fit --set no_such_field=1                         # refused, with the list of fields, before any scene loads
 ```
 
-`fit_diffraction` and `fit_sharpen` take the same `--from`, `--set`, `--rel`, `--eval`, `--held` and `--list`; `fit_sharpen` adds `--edge` and `fit_demosaic` adds `--photo`, `--artifacts`, `--edge`, `--cells`, `--ca`, `--ca-only` and `--ca-size`. `--cells` (RC-07) adds the A images at signal scales 0.1 and 0.01 and puts the nine cells of `demosaic_gate` in the line (`cells.cells` per set and scale, `cells.mean9`, `cells.mean_fit` for the procedural set and Kodak, `cells.mean_held` for McMaster, and their `d_` changes); RC-07's grids used it: `tools/fit/search.py grid fit_demosaic --echo --objective cells.mean_fit --axis second_diff_weight=0.4:3.2:0.1 -- --held --cells --artifacts`, and the same with `--axis chroma_floor=... --axis sat_dominance=...` for A6 and A7. With no evaluation argument only the base line is printed. The starting `Tuning` is `--from oracle` (the default: `Tuning::ORACLE`) or `--from default` (what ships); the base of a run is the starting `Tuning`, and every other line carries its change against it.
+`fit_diffraction` and `fit_sharpen` take the same `--from`, `--set`, `--rel`, `--eval`, `--held` and `--list`; `fit_sharpen` adds `--edge` and `fit_demosaic` adds `--photo`, `--artifacts`, `--edge`, `--cells`, `--ca`, `--ca-only` and `--ca-size`. `--skip-a`, `--edge-seeds N`, `--noisy [on|auto|off]` and `--ladder` (RC-08, section 5) leave out the A scenes, average the edge over N noise seeds, print the noisy table of `demosaic_gate` for the Tuning with the shadow colour matching forced on, left to `auto` or forced off, and print the on/off ladder of eight noise models from 40 dB to 15 dB at 18 % grey (keys `noisy` and `ladder` of the evaluation line). `--cells` (RC-07) adds the A images at signal scales 0.1 and 0.01 and puts the nine cells of `demosaic_gate` in the line (`cells.cells` per set and scale, `cells.mean9`, `cells.mean_fit` for the procedural set and Kodak, `cells.mean_held` for McMaster, and their `d_` changes); RC-07's grids used it: `tools/fit/search.py grid fit_demosaic --echo --objective cells.mean_fit --axis second_diff_weight=0.4:3.2:0.1 -- --held --cells --artifacts`, and the same with `--axis chroma_floor=... --axis sat_dominance=...` for A6 and A7. With no evaluation argument only the base line is printed. The starting `Tuning` is `--from oracle` (the default: `Tuning::ORACLE`) or `--from default` (what ships); the base of a run is the starting `Tuning`, and every other line carries its change against it.
 
 **The lines.** Every run prints, in this order: `{"kind":"data_note", ...}` (the sets used with their image counts, the sets skipped and why, and the sentence "Evaluation and local fitting only ... never committed ... no real-sensor ground truth"), then `{"kind":"eval","label":"base", ...}` and one `{"kind":"eval", ...}` per evaluation, with `label`, `set` (the fields moved), `from` and:
 
