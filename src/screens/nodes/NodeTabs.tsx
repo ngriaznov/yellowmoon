@@ -27,6 +27,7 @@ import { OUTPUT_FILM_NOTE } from "./filmData";
 import { FaceTab } from "./FaceTab";
 import { FilmCard, GrainTab, HalationTab, PrintTab } from "./FilmTabs";
 import { MaskTab } from "./MaskTab";
+import { BlurTab } from "./BlurTab";
 import { UniformTab } from "./UniformTab";
 import { ChannelsTab, LayerBlendTab, ParallelInputsTab } from "./MixerTabs";
 import type { NodeGraphActions } from "./useNodeGraph";
@@ -258,8 +259,11 @@ export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite
     );
   }
   if (item?.kind === "blur") {
-    // The Blur tab's cards are BL-13; until then the tab is empty and the Mask tab is a corrector's.
-    return tab === "mask" ? <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} pickingDepth={pickingDepth} onPickDepth={onPickDepth} /> : null;
+    return tab === "mask" || typeof node !== "number" ? (
+      <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} pickingDepth={pickingDepth} onPickDepth={onPickDepth} />
+    ) : (
+      <BlurTab store={store} rs={rs} node={node} item={item} />
+    );
   }
   if (item?.kind === "face_refinement") {
     return tab === "mask" ? (

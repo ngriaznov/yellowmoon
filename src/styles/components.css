@@ -452,3 +452,18 @@ button.ym-update-pill { cursor: default; }
 .ym-uniform__note { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 8px; padding: 8px 10px; border-radius: 10px; font-size: 0.75rem; background: rgb(255 255 255 / 0.06); }
 [data-slider][data-track="custom"] [data-slot="slider-track"] { background: var(--ym-track-bg); }
 [data-slider][data-track="custom"] [data-slot="slider-range"] { display: none; }
+
+/* The Blur tab (`docs/33` §2.6; BL-13). */
+.ym-blur__type { padding: 4px 0 10px; }
+.ym-blur__line { font-size: 0.75rem; opacity: 0.7; }
+p.ym-blur__line { margin: 6px 0 4px; }
+.ym-blur-tip { display: block; }
+.ym-blur__shape { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0; }
+.ym-blur__shape-label { font-size: 0.8125rem; font-weight: 800; flex: none; }
+.ym-blur__shape .ym-blur-tip { flex: 1; min-width: 0; max-width: 260px; }
+.ym-blur__centre { display: flex; align-items: center; gap: 12px; padding: 6px 0 4px; }
+.ym-blur__centre .ym-blur-tip { display: inline-block; flex: none; }
+.ym-blur__centre-line { flex: 1; min-width: 0; }
+.ym-blur__edges { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 6px 0 8px; }
+.ym-blur__edges-text { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.ym-blur__edges-name { font-size: 0.8125rem; font-weight: 800; opacity: 1; }
