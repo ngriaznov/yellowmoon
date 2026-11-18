@@ -269,7 +269,7 @@ fn fit_demosaic_skips_a_missing_set_and_reads_pixelshift200_when_it_is_there() {
     use fit_demosaic_ex::{Group, load_scenes};
     let root = std::env::temp_dir().join(format!("ym-fit-harness-{}", std::process::id()));
     std::fs::create_dir_all(&root).expect("temp folder");
-    let none = load_scenes(&root, false, &[], false);
+    let none = load_scenes(&root, false, &[], false, false);
     let skipped: Vec<&str> = none.skipped.iter().map(|(n, _)| n.as_str()).collect();
     assert!(skipped.contains(&"pixelshift200"), "{skipped:?}");
     assert!(skipped.contains(&"kodak") && skipped.contains(&"mcmaster"));
@@ -277,7 +277,7 @@ fn fit_demosaic_skips_a_missing_set_and_reads_pixelshift200_when_it_is_there() {
     // The procedural set is always there (7 images), and every third one is also a B scene.
     assert_eq!(none.scenes.len(), 7 + 3);
     // `--cells` adds the A images at the two other signal scales of the gate's nine cells (RC-07).
-    let cells = load_scenes(&root, false, &[], true);
+    let cells = load_scenes(&root, false, &[], true, false);
     assert_eq!(cells.scenes.len(), 7 + 7 * 2 + 3);
     let scales: Vec<f64> = cells
         .scenes
@@ -291,6 +291,10 @@ fn fit_demosaic_skips_a_missing_set_and_reads_pixelshift200_when_it_is_there() {
             .iter()
             .all(|&v| (v - 0.1).abs() < 1e-6 || (v - 0.01).abs() < 1e-6)
     );
+    // `--skip-a` leaves the A scenes and the extra cells out (RC-08): only the B scenes are left.
+    let b_only = load_scenes(&root, false, &[], true, true);
+    assert_eq!(b_only.scenes.len(), 3);
+    assert!(b_only.scenes.iter().all(|s| s.group == Group::B));
     // A folder with one image.
     let ps = root.join("pixelshift200");
     std::fs::create_dir_all(&ps).expect("folder");
@@ -303,7 +307,7 @@ fn fit_demosaic_skips_a_missing_set_and_reads_pixelshift200_when_it_is_there() {
         .expect("header")
         .write_image_data(&pixels)
         .expect("data");
-    let some = load_scenes(&root, true, &[], false);
+    let some = load_scenes(&root, true, &[], false, false);
     assert!(
         some.used
             .iter()
@@ -312,9 +316,64 @@ fn fit_demosaic_skips_a_missing_set_and_reads_pixelshift200_when_it_is_there() {
     assert!(some.skipped.iter().all(|(n, _)| n != "pixelshift200"));
     assert_eq!(some.scenes.len(), 7 + 1 + 3 * 2, "A, P, B and B2");
     // A missing photograph is reported, not fatal.
-    let bad = load_scenes(&root, false, &[root.join("missing.ARW")], false);
+    let bad = load_scenes(&root, false, &[root.join("missing.ARW")], false, false);
     assert!(bad.skipped.iter().any(|(n, _)| n.starts_with("photo ")));
     std::fs::remove_dir_all(&root).expect("clean up the temp folder");
+}
+
+#[test]
+fn the_noisy_table_and_the_ladder_follow_the_shadow_switch_and_are_deterministic() {
+    use fit_demosaic_ex::{
+        Level, Source, TruthSet, gate_levels, ladder_json, ladder_levels, noisy_cells, noisy_json,
+    };
+    use ym_gpu::cpu::demosaic::adaptive_ratio::ShadowMatch;
+    let sets = vec![
+        TruthSet {
+            name: "synthetic",
+            source: Source::Synthetic,
+            images: vec![synth::natural(40, 40, 1)],
+        },
+        TruthSet {
+            name: "mcmaster",
+            source: Source::McMaster,
+            images: vec![synth::natural(40, 40, 2)],
+        },
+    ];
+    let levels = gate_levels();
+    assert_eq!(levels.len(), 4);
+    let t = adaptive_ratio::Tuning::DEFAULT;
+    let on = noisy_cells(&sets, &levels, &t, ShadowMatch::On);
+    assert_eq!(
+        on,
+        noisy_cells(&sets, &levels, &t, ShadowMatch::On),
+        "deterministic"
+    );
+    let off = noisy_cells(&sets, &levels, &t, ShadowMatch::Off);
+    assert_ne!(on, off, "the switch moves the table");
+    // `Auto` is `On` at the ISO 6400-like level (19.5 dB at 18 % grey) and `Off` at ISO 100-like (38 dB).
+    let auto = noisy_cells(&sets, &levels, &t, ShadowMatch::Auto);
+    assert_eq!(auto[0][0], off[0][0]);
+    assert_eq!(auto[0][3], on[0][3]);
+    // A11 acts only when matching runs.
+    let mut moved = t;
+    moved.set("match_excess_weight", 6.0).expect("known field");
+    assert_eq!(noisy_cells(&sets, &levels, &moved, ShadowMatch::Off), off);
+    assert_ne!(noisy_cells(&sets, &levels, &moved, ShadowMatch::On), on);
+    let json = noisy_json(&sets, &levels, &on);
+    assert!(json["mean_fit_r6"].is_number() && json["mean_held_demosaic"].is_number());
+    // The ladder: eight rungs from 40 to 15 dB at 18 % grey, `on` and `off` for both splits.
+    let rungs = ladder_levels();
+    assert_eq!(rungs.len(), 8);
+    assert!((rungs[0].0 - 40.0).abs() < 1e-9 && (rungs[7].0 - 15.0).abs() < 1e-9);
+    for (snr, l) in &rungs {
+        let var18 = l.a * 0.18 + l.b;
+        let got = 10.0 * (0.18f64 * 0.18 / var18).log10();
+        assert!((got - snr).abs() < 1e-9, "{snr}: {got}");
+    }
+    let _: &Level = &rungs[0].1;
+    let ladder = ladder_json(&sets, &t);
+    assert_eq!(ladder["rungs"].as_array().map(Vec::len), Some(8));
+    assert!(ladder["rungs"][3]["held_r6"]["gain_db"].is_number());
 }
 
 #[test]
