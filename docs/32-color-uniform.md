@@ -380,7 +380,9 @@ Every gate must pass in CI (or the named job) before its task is done. **A faile
 
 ## 10. Questions for the owner: answered, and one of ours
 
-### Decided by us, say if you'd rather not
+### Decided by us, approved by the owner
+
+**Approved 2026-11-18** (the owner, "Ok, approved", on the screenshots of CU-11 and on the two decisions flagged with them): the first pick adds a Colour range row, and the antipode fade of the hue pull stays at full to 90° and zero from 150° (§11, item 8).
 
 **The first pick also adds a Colour range mask row** (§2.3). With masks alone, a node with no mask acts on the whole photo: after a pick of skin, Hue 50 % would pull every non-grey colour in the photo halfway to orange. So the node's **first pick** adds one Colour range row centred on the picked colour, with the Colour range's own default width (0.05, the slider reads 39) and softness (0.5), when the node has no mask rows and no key link. A later pick moves the target and leaves the masks alone. The pick and the row are one undo step. The person can widen the row, add other masks, or delete it in the Mask tab.
 

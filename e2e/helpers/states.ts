@@ -326,6 +326,51 @@ export async function mixerView(page: Page, graph: { nodes: Record<string, unkno
   await page.waitForTimeout(500);
 }
 
+/** The Colour Uniform node of `design/colour-uniform/01-node.jpg`: an orange target (Hue 26, Saturation 9.7, Lightness −0.03), Compress 50 / 50 / 0 and the row the first pick adds. */
+export const UNIFORM_PICKED = {
+  target: { hue_deg: 26, saturation: 9.7, lightness_ev: -0.03 },
+  compress: { hue: 50, saturation: 50, lightness: 0 },
+  masks: {
+    invert: false,
+    items: [{ kind: "color_range", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.0872, 0.0425], width: 0.05, softness: 0.5 }],
+  },
+};
+
+/**
+ * The node view of the mockup's photo with a Colour Uniform node (2) after Main, selected: with the target of `UNIFORM_PICKED` or with none
+ * (`picked` false), on its Compress or Mask tab, with Pick colour on (`picking`, the Pick button pressed) and with Show mask on in `show`'s style.
+ */
+export async function uniformView(page: Page, opts: { picked?: boolean; tab?: "Compress" | "Mask"; picking?: boolean; show?: "Overlay" | "Mask only" } = {}): Promise<void> {
+  const { picked = true, tab = "Compress", picking = false, show } = opts;
+  const link = (from: number | "input", to: number | "output") => ({ from: { node: from, port: "picture" }, to: { node: to, port: "picture" } });
+  await openApp(page, MOCKUP);
+  await configureMock(page, {
+    initialSettings: {
+      DSC04204: {
+        nodes: { "1": { grade: MOCKUP_GRADE }, "2": { kind: "color_uniform", name: "Uniform", pos: [1, 0], ...(picked ? UNIFORM_PICKED : {}) } },
+        links: [link("input", 1), link(1, 2), link(2, "output")],
+      },
+    } as never,
+  });
+  await openPhotos(page);
+  await showUpdateReady(page);
+  await page.getByRole("tab", { name: "Light", exact: true }).click();
+  await page.getByRole("button", { name: "Nodes", exact: true }).click();
+  await page.getByRole("button", { name: /^Node 2, Uniform/ }).click();
+  await expect(page.getByRole("button", { name: /^Node 2, Uniform/ })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("tab", { name: tab, exact: true }).click();
+  // The row the first pick adds is the selected one (its card shows below the Masks card).
+  if (tab === "Mask" && picked) await page.getByRole("button", { name: /^Colour range mask/ }).click();
+  if (picking) await page.getByRole("complementary", { name: "Tools" }).getByRole("button", { name: "Pick colour" }).click();
+  if (show) {
+    await page.getByRole("tab", { name: "Mask", exact: true }).click();
+    await page.getByRole("radio", { name: show, exact: true }).click();
+    await expect(page.getByRole("button", { name: "Show mask" })).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("tab", { name: tab, exact: true }).click();
+  }
+  await page.waitForTimeout(500);
+}
+
 export const STATES: readonly PageState[] = [
   ["01-start-empty", (p) => start(p)],
   [
@@ -1130,6 +1175,10 @@ export const STATES: readonly PageState[] = [
       await p.waitForTimeout(400);
     },
   ],
+  // The Colour Uniform node (docs/32, design/colour-uniform): the Compress tab with a picked target, with no target and Pick colour on, and the Mask tab with its Colour range row.
+  ["90-uniform-compress", (p) => uniformView(p)],
+  ["91-uniform-pick-empty", (p) => uniformView(p, { picked: false, picking: true })],
+  ["92-uniform-mask-tab", (p) => uniformView(p, { tab: "Mask" })],
 ];
 
 /** Opens one state in a new page of the browser, at the size of the screenshots. */
