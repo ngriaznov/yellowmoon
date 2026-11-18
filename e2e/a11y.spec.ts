@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { configureMock, openApp, openPhotos, setValue } from "./helpers/app";
-import { FOUR_NODES, GRADED_NODES, LAYER_GRAPH, mixerView, TRIO_GRAPH } from "./helpers/states";
+import { FOUR_NODES, GRADED_NODES, LAYER_GRAPH, mixerView, openState, TRIO_GRAPH } from "./helpers/states";
 
 // Accessibility basics (docs/11, a preview of M4-04) in a real browser: every control has a role and a name, every screen has one
 // main landmark, the keyboard alone gets through the main flow, and every stop of the Tab order shows the 3 px focus ring.
@@ -750,6 +750,26 @@ test.describe("the node panel", () => {
     const snapshot = await expectNamed(page, "Sky");
     expect(snapshot).toMatch(/- heading "Sky" \[level=2\]/);
     expect(snapshot).toMatch(/- group "Node actions":/);
+  });
+
+  test("a Colour Uniform node: the head, the Compress tab with no target, with a target and while picking, and the Mask tab's Colour range row are named", async ({ browser }) => {
+    const cases: Array<[string, string[], string[]]> = [
+      ["91-uniform-pick-empty", ['application "Pick colour for the target of Colour Uniform', 'button "Pick colour" [pressed]', "No target colour yet"], ['button "Reset target"']],
+      ["90-uniform-compress", ["Target colour: orange", 'button "Reset target"', 'button "Reset Compress"', 'textbox "Hue value"'], []],
+      ["92-uniform-mask-tab", ['button "Colour range mask'], []],
+    ];
+    for (const [state, present, absent] of cases) {
+      const { page, context } = await openState(browser, state);
+      try {
+        const snapshot = await expectNamed(page, state);
+        expect(snapshot, state).toMatch(/- heading "Uniform" \[level=2\]/);
+        expect(snapshot, state).toMatch(/- group "Node":/);
+        for (const text of present) expect(snapshot, `${state}: ${text}`).toContain(text);
+        for (const text of absent) expect(snapshot, `${state}: no ${text}`).not.toContain(text);
+      } finally {
+        await context.close();
+      }
+    }
   });
 
   test("the Mask tab's rows are named like the cards: kind, 'mask' and what they say, and each row's controls are named", async ({ page }) => {

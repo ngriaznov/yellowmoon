@@ -53,6 +53,8 @@ const STATE_NAMES = [
   "87-dialog-replace-preset",
   "88-album-edited",
   "89-dialog-album-question",
+  "90-uniform-compress",
+  "92-uniform-mask-tab",
   "05-wizard-1-choose",
   "09-wizard-5-finish",
 ] as const;
