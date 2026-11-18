@@ -48,6 +48,7 @@
 
 use std::ops::Range;
 
+pub mod blur;
 pub mod bm_dct;
 pub mod chain;
 pub mod coarse_chroma;

@@ -24,11 +24,11 @@ use ym_color::warp::{
 
 use super::color::{
     J_AL, J_BASE, J_HEAD, J_IN, J_SPLIT, JOIN_COMBINER, JOIN_LAYER, JOIN_PARALLEL, JOIN_ROWS,
-    JOIN_SPLITTER, MASK_INVERT, MASK_ROW_VEC4, MASK_SUBTRACT, NODE_BLEND, NODE_CURVES, NODE_FACE,
-    NODE_FILM, NODE_FILM_LIVE, NODE_GRADE, NODE_INVERT, NODE_JOIN, NODE_LUMA, NODE_MAIN, NODE_NONE,
-    NODE_SKIP, NODE_TRIM, NODE_UNIFORM, NODE_WARP, R_WARP_LK, REC_ROWS, REF_INDEX, REF_INPUT,
-    REF_KEY, REF_PICTURE, REF_REGISTER, REF_SHIFT, REF_SLOT, WARP_LOCK_ROWS, WARP_MOVE_ROWS,
-    blend_code, record_rows,
+    JOIN_SPLITTER, MASK_INVERT, MASK_ROW_VEC4, MASK_SUBTRACT, NODE_BLEND, NODE_BLUR, NODE_CURVES,
+    NODE_FACE, NODE_FILM, NODE_FILM_LIVE, NODE_GRADE, NODE_INVERT, NODE_JOIN, NODE_LUMA, NODE_MAIN,
+    NODE_NONE, NODE_SKIP, NODE_TRIM, NODE_UNIFORM, NODE_WARP, R_WARP_LK, REC_ROWS, REF_INDEX,
+    REF_INPUT, REF_KEY, REF_PICTURE, REF_REGISTER, REF_SHIFT, REF_SLOT, WARP_LOCK_ROWS,
+    WARP_MOVE_ROWS, blend_code, record_rows,
 };
 use crate::cpu::demosaic::adaptive_ratio::Tuning as ArTuning;
 use crate::cpu::output_sharpen::Tuning as SharpTuning;
@@ -144,6 +144,14 @@ pub enum KernelId {
     /// The raster masks' pass: the resample of a row's plane to the output grid, Grow, Feather, the guided
     /// filter of Refine edges and the u16 planes the colour pass reads (one entry point, an op in the uniform).
     MaskRaster,
+    /// The Blur node (`docs/33`), pass 1: decode to linear, the weight and the weighted planes `omega X` and `omega`.
+    BlurPrep,
+    /// The Blur node: one level of the pyramid of the weighted planes (2 x 2 box means at absolute alignment).
+    BlurPyramid,
+    /// The Blur node: a level of cells read back to pixels, nearest or bilinear.
+    BlurUpsample,
+    /// The Blur node, the last pass: the blend in linear light and the encode.
+    BlurBlend,
     /// The Face Refinement node: the apply of the blemish map and the low-frequency operator of dark circles, even skin, skin
     /// grading and teeth whitening over a region (one entry point, an op in the uniform).
     Face,
@@ -289,7 +297,7 @@ impl KernelId {
     /// no render uses. [`KernelSet::kernels`] and `warm_up` compile in this order, so that what the
     /// first frame of the first photo waits for is compiled before what only a zoomed view or an
     /// export needs.
-    pub const ALL: [KernelId; 101] = [
+    pub const ALL: [KernelId; 105] = [
         // The fit view of a mosaic photo.
         KernelId::Prep,
         KernelId::PrepMask,
@@ -342,6 +350,11 @@ impl KernelId {
         KernelId::Tint,
         KernelId::MaskRaster,
         KernelId::Face,
+        // The Blur node's shared passes (docs/33 section 6).
+        KernelId::BlurPrep,
+        KernelId::BlurPyramid,
+        KernelId::BlurUpsample,
+        KernelId::BlurBlend,
         // The Film node's passes (docs/24 section 3.9).
         KernelId::FilmColourIn,
         KernelId::FilmSpatial,
@@ -441,6 +454,10 @@ impl KernelId {
             KernelId::Magnify => "magnify",
             KernelId::LevelDraft => "level_draft",
             KernelId::Tint => "tint",
+            KernelId::BlurPrep => "blur_prep",
+            KernelId::BlurPyramid => "blur_pyramid",
+            KernelId::BlurUpsample => "blur_upsample",
+            KernelId::BlurBlend => "blur_blend",
             KernelId::MaskRaster => "mask_raster",
             KernelId::Face => "face",
             KernelId::Prep => "prep",
@@ -547,6 +564,10 @@ impl KernelId {
             | KernelId::Tint
             | KernelId::MaskRaster
             | KernelId::Face
+            | KernelId::BlurPrep
+            | KernelId::BlurPyramid
+            | KernelId::BlurUpsample
+            | KernelId::BlurBlend
             | KernelId::FilmColourIn
             | KernelId::FilmSpatial
             | KernelId::FilmDevelop
@@ -740,6 +761,10 @@ impl KernelId {
             | KernelId::FilmGrain
             | KernelId::FilmColourOut => super::film::body(self),
             KernelId::Tint => super::tint::body(),
+            KernelId::BlurPrep
+            | KernelId::BlurPyramid
+            | KernelId::BlurUpsample
+            | KernelId::BlurBlend => super::blur_stack::body(self),
             KernelId::MaskRaster => include_str!("../shaders/mask_raster.wgsl").to_string(),
             KernelId::Face => super::face::body(),
             KernelId::Probe => placeholder_body(self),
@@ -934,6 +959,7 @@ fn constants() -> String {
         ("N_FILM", NODE_FILM),
         ("N_FILM_LIVE", NODE_FILM_LIVE),
         ("N_FACE", NODE_FACE),
+        ("N_BLUR", NODE_BLUR),
         ("N_UNIFORM", NODE_UNIFORM),
         ("N_JOIN", NODE_JOIN),
         ("JK_PARALLEL", JOIN_PARALLEL),

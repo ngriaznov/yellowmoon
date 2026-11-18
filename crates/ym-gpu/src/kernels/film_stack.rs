@@ -1,5 +1,6 @@
 //! The Film nodes of a plan on the device (`docs/24-film.md` section 3.9c, `docs/17-gpu.md` section 11a), and the Face
-//! Refinement nodes, which the colour kernel runs as Film steps too (`docs/27` S-13).
+//! Refinement nodes and the Blur nodes, which the colour kernel runs as Film steps too (`docs/27` S-13, `docs/33` section 6;
+//! the Blur node's passes are `kernels::blur_stack`).
 //!
 //! A Film node is not per pixel, so the colour kernel cannot run it in its loop. The render makes the node's picture
 //! **before the colour pass**, from the colour chain stopped at the node's input, and the loop's Film step blends that
@@ -32,6 +33,7 @@ use ym_color::mask::PhotoFrame;
 use ym_color::mask_raster::{Area, RasterRow, RasterSet};
 use ym_color::schedule::{Schedule, StepKind, union_area};
 
+use super::blur_stack::{BlurWork, encode_blur_picture, type_name, window_in};
 use super::color::{PreparedChain, Stop};
 use super::face::{
     FacePlan, FaceRegion, KeptRegion, Protect, ToneSource, make_region, place_region,
@@ -127,6 +129,8 @@ pub enum NodeWork {
     Film(Box<FilmWork>),
     /// A Face Refinement node: the retouch of the regions around the faces (`kernels::face`).
     Face(Arc<FaceNode>),
+    /// A Blur node: the weighted planes, the pyramid, the type's kernel and the blend (`kernels::blur_stack`).
+    Blur(Box<BlurWork>),
 }
 
 /// One region of a Face Refinement node's picture.
@@ -186,13 +190,23 @@ pub struct FilmNodeSpec {
 }
 
 impl FilmNodeSpec {
-    /// The pixels the node reads beyond the pixels it makes: the sum of a Film node's three halos; 0 for a Face Refinement
-    /// node, which reads whole regions (`FilmStack::widen` grows what a render asks for to hold them).
+    /// The pixels the node reads beyond the pixels it makes: the sum of a Film node's three halos, a Blur node's reach
+    /// (`ym_color::blur::reach_px`); 0 for a Face Refinement node, which reads whole regions (`FilmStack::widen` grows what a
+    /// render asks for to hold them).
     #[must_use]
     pub fn halo(&self) -> usize {
         match &self.work {
             NodeWork::Film(film) => halos(&film.plan).iter().sum(),
             NodeWork::Face(_) => 0,
+            NodeWork::Blur(blur) => blur.reach,
+        }
+    }
+
+    /// The scheduler's kind of the step: a Blur node's, or the Film node's (Face Refinement nodes too).
+    fn step_kind(&self) -> StepKind {
+        match self.work {
+            NodeWork::Blur(_) => StepKind::Blur,
+            NodeWork::Film(_) | NodeWork::Face(_) => StepKind::Film,
         }
     }
 }
@@ -267,7 +281,7 @@ impl FilmStack {
     /// The schedule of the Film nodes alone (no mask planes): their made and read areas.
     #[must_use]
     pub fn schedule(&self) -> Schedule {
-        let schedule = Schedule::new(self.steps.iter().map(|s| StepKind::Film.declared(s.halo())));
+        let schedule = Schedule::new(self.steps.iter().map(|s| s.step_kind().declared(s.halo())));
         if self.steps.iter().all(|s| s.reads.is_none()) {
             return schedule;
         }
@@ -296,7 +310,7 @@ impl FilmStack {
     pub fn widen(&self, need: Area) -> Area {
         let faces = |s: &FilmNodeSpec| match &s.work {
             NodeWork::Face(f) => Some(Arc::clone(f)),
-            NodeWork::Film(_) => None,
+            NodeWork::Film(_) | NodeWork::Blur(_) => None,
         };
         if need.is_empty() || !self.steps.iter().any(|s| faces(s).is_some()) {
             return need;
@@ -399,46 +413,15 @@ impl FilmStack {
         for (i, step) in self.steps.iter().enumerate() {
             let a = read[i];
             let prefix_span = crate::perf::span(crate::perf::Stage::FilmPrefix);
-            let mut prefix = PreparedChain::new(ctx, &step.prefix)?.fast(self.fast);
-            if let (6, Some(frame)) = (wide.planes, photo) {
-                prefix = prefix.with_photo_frame(frame);
-            }
-            if !prefix.live_films().is_empty() {
-                prefix = prefix.with_film(
-                    Arc::new(FilmPictures {
-                        images: done.clone(),
-                    }),
-                    (a.x, a.y),
-                );
-            }
-            // The raster rows before the node: planes over the area the node reads.
-            let planes = if step.prefix.uses_rasters() {
-                let (Some(r), Some(frame)) = (rasters, photo.filter(|_| wide.planes == 6)) else {
-                    return Err(GpuError::InvalidInput(
-                        "film: a raster mask row before a Film node needs the photo frame and the six-plane picture"
-                            .to_owned(),
-                    ));
-                };
-                Some(encode_raster_planes_over(
-                    passes,
-                    &prefix,
-                    &step.prefix,
-                    wide,
-                    &RasterJob {
-                        frame: r.frame,
-                        grown: wide_area,
-                        window: a,
-                        extent: a,
-                        photo: frame,
-                    },
-                    r.key,
-                )?)
-            } else {
-                None
-            };
-            if let Some(p) = planes {
-                prefix = prefix.with_rasters(p);
-            }
+            let prefix = self.chain_over(
+                ctx,
+                passes,
+                &step.prefix,
+                a,
+                &done,
+                (wide, wide_area),
+                (photo, rasters),
+            )?;
             // The node's input: LogC4 / AWG4 over the area it reads, in the planes the stage writes (a fourth one is the
             // letterbox mask; the Film kernels read the first three by the image's plane length).
             let input = GpuImage::alloc(
@@ -490,12 +473,117 @@ impl FilmStack {
                     };
                     encode_face_node(ctx, passes, face, &input, made[i], protect.as_ref())?
                 }
+                NodeWork::Blur(blur) => {
+                    let _span = crate::perf::span(crate::perf::Stage::FilmPasses);
+                    // The type's refusal comes before any pass is recorded.
+                    if blur.kernel.is_none() {
+                        return Err(GpuError::InvalidInput(format!(
+                            "a {} Blur node is not on the device yet",
+                            type_name(&blur.params)
+                        )));
+                    }
+                    // The node's mask `m` over the area it reads, by the plan compiled to the node's `m` (the Show mask view's
+                    // chain, its mask in every plane at C10).
+                    let mask_chain = self.chain_over(
+                        ctx,
+                        passes,
+                        &blur.mask,
+                        a,
+                        &done,
+                        (wide, wide_area),
+                        (photo, rasters),
+                    )?;
+                    let mask = GpuImage::alloc(
+                        ctx,
+                        "blur mask",
+                        a.w,
+                        a.h,
+                        wide.planes.min(4),
+                        Placement::whole(a.w, a.h),
+                    )?;
+                    mask_chain.encode_stage(
+                        passes,
+                        wide,
+                        window_in(wide_area, a),
+                        Stop::C10,
+                        &mask,
+                        (0, 0),
+                    )?;
+                    let pic = encode_blur_picture(
+                        ctx,
+                        passes,
+                        blur,
+                        (&input.img, &mask),
+                        (a, made[i], self.frame),
+                    )?;
+                    let _ = passes.keep(mask.buf);
+                    pic
+                }
             };
             let FilmImage { img, .. } = input;
             let _ = passes.keep(img.buf);
             done.push((step.node, Arc::new(out)));
         }
         Ok(Arc::new(FilmPictures { images: done }))
+    }
+}
+
+impl FilmStack {
+    /// The prepared chain `chain` over the area `a` the node reads: its Film pictures (the earlier nodes' `done`), the photo
+    /// frame of the six-plane picture, and the planes of its raster mask rows over `a`. The node's prefix chain and a Blur
+    /// node's mask chain are made the same way.
+    #[allow(clippy::too_many_arguments)] // the render's own pieces: passes, chain, areas, pictures, photo frame, rasters
+    fn chain_over(
+        &self,
+        ctx: &GpuContext,
+        passes: &mut PassList<'_>,
+        chain: &Arc<ColorChain>,
+        a: Area,
+        done: &[(u32, Arc<FilmImage>)],
+        (wide, wide_area): (&GpuImage, Area),
+        (photo, rasters): (Option<PhotoFrame>, Option<FilmRasters<'_>>),
+    ) -> Result<PreparedChain, GpuError> {
+        let mut prepared = PreparedChain::new(ctx, chain)?.fast(self.fast);
+        if let (6, Some(frame)) = (wide.planes, photo) {
+            prepared = prepared.with_photo_frame(frame);
+        }
+        if !prepared.live_films().is_empty() {
+            prepared = prepared.with_film(
+                Arc::new(FilmPictures {
+                    images: done.to_vec(),
+                }),
+                (a.x, a.y),
+            );
+        }
+        // The raster rows before the node: planes over the area the node reads.
+        let planes = if chain.uses_rasters() {
+            let (Some(r), Some(frame)) = (rasters, photo.filter(|_| wide.planes == 6)) else {
+                return Err(GpuError::InvalidInput(
+                    "film: a raster mask row before a Film node needs the photo frame and the six-plane picture"
+                        .to_owned(),
+                ));
+            };
+            Some(encode_raster_planes_over(
+                passes,
+                &prepared,
+                chain,
+                wide,
+                &RasterJob {
+                    frame: r.frame,
+                    grown: wide_area,
+                    window: a,
+                    extent: a,
+                    photo: frame,
+                },
+                r.key,
+            )?)
+        } else {
+            None
+        };
+        if let Some(p) = planes {
+            prepared = prepared.with_rasters(p);
+        }
+        Ok(prepared)
     }
 }
 
