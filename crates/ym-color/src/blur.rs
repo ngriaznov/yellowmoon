@@ -755,6 +755,57 @@ pub fn apply(
         .collect())
 }
 
+// ------------------------------------------------------------------------------------------------ the reach
+
+/// The cell factor `f = 2^L` of the fast methods (`docs/33` 3.8): the power of two at or above the long edge over 256 (32 at
+/// 6000 px and 64 at 8600 px, the table's numbers). The oracle needs none of it, but the scheduler's reach already holds
+/// three cells of it, so that a fast method (BL-06 to BL-09) reads no more than the reach the plan grew the tile by.
+#[must_use]
+pub fn cell_factor(long_edge_px: f64) -> usize {
+    let n = (long_edge_px / 256.0).ceil().max(1.0);
+    if n.is_finite() && n < 1e9 {
+        (n as usize).next_power_of_two()
+    } else {
+        1
+    }
+}
+
+/// The reach of the node in output pixels (`docs/33` 3.8): how far from a pixel the node reads the picture and its mask,
+/// for a frame of `full_w x full_h` pixels. A scalar for the whole tile: Zoom's is the worst case, the farthest corner from
+/// the centre. 0 for a node at its identity.
+///
+/// | Type | Reach |
+/// |---|---|
+/// | Soft | `ceil(2 R) + 3 f` |
+/// | Lens | `ceil(R) + 3 f` |
+/// | Motion | `ceil(l / 2) + 1 + 3 f` |
+/// | Zoom | `ceil(a / 2 d_max) + f` |
+///
+/// with `f` = [`cell_factor`]. Each is at least what the exact kernels read (the tests hold it to the tables' half widths).
+#[must_use]
+pub fn reach_px(params: &BlurParams, full_w: usize, full_h: usize) -> usize {
+    if is_identity(params) || check_finite(params).is_err() {
+        return 0;
+    }
+    let u = full_w.max(full_h) as f64;
+    let f = cell_factor(u);
+    let cells = |r: f64| r.max(0.0).ceil() as usize;
+    match params.kind {
+        BlurKind::Soft { radius } => cells(2.0 * radius_px(radius, u)) + 3 * f,
+        BlurKind::Lens { radius, .. } => cells(radius_px(radius, u)) + 3 * f,
+        BlurKind::Motion { length, .. } => cells(length_px(length, u) / 2.0) + 1 + 3 * f,
+        BlurKind::Zoom { amount, center } => {
+            let c = [
+                center[0].clamp(0.0, 1.0) * full_w as f64,
+                center[1].clamp(0.0, 1.0) * full_h as f64,
+            ];
+            let far = |p: f64, size: usize| p.max(size as f64 - p);
+            let d_max = far(c[0], full_w).hypot(far(c[1], full_h));
+            cells(zoom_span(amount) / 2.0 * d_max) + f
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

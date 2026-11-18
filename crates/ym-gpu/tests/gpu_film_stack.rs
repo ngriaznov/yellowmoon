@@ -117,6 +117,7 @@ fn params(g: &PlanGraph, stop: plan::Stop, strengths: &[f64], corrector: bool) -
                 strength,
                 bypass: false,
                 face: false,
+                blur: false,
             },
         );
     }

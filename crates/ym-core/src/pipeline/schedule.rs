@@ -28,9 +28,9 @@ pub fn step_kind(kind: NodeKind) -> Option<StepKind> {
         NodeKind::FaceRefinement => Some(StepKind::Corrector),
         // A corrector-like step of its own: per pixel, reads the picture and its masks (`docs/32` section 6).
         NodeKind::ColorUniform => Some(StepKind::ColorUniform),
-        // TODO(BL-04): a spatial step of its own (`StepKind::Blur`, a reach from the settings, `docs/33` section 3.8). Until
-        // then the node renders as the identity, so its declared footprint is a corrector's.
-        NodeKind::Blur => Some(StepKind::Corrector),
+        // A spatial step of its own, on the Film node's route, with a reach from its settings (`ym_color::blur::reach_px`,
+        // `docs/33` sections 3.8 and 6).
+        NodeKind::Blur => Some(StepKind::Blur),
         NodeKind::Parallel => Some(StepKind::Parallel),
         NodeKind::Layer => Some(StepKind::Layer),
         NodeKind::Splitter => Some(StepKind::Splitter),

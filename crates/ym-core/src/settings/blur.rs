@@ -16,7 +16,6 @@ use super::masks::MaskSettings;
 
 /// Range of every amount (Radius, Length, Amount, Highlights): 0 to 100. The meaning of 100 is in `ym_color::blur`
 /// (4 % of the long edge for Radius, 8 % for Length, a tenth of the distance for Amount; `docs/33` section 2.2).
-// TODO(BL-03): the meaning of 100 (`RADIUS_MAX`, `MOTION_MAX`, `ZOOM_MAX`) is `ym_color::blur`'s; BL-04 wires it up.
 pub const BLUR_AMOUNT_RANGE: (f64, f64) = (0.0, 100.0);
 /// The fewest blades a polygon has: 3. A `blades` of 1 or 2 is held at this (and reported); 0 is a round aperture.
 pub const BLUR_BLADES_MIN: u32 = 3;

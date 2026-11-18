@@ -738,7 +738,8 @@ impl ColorChain {
             return (v_in.0, m, v_in.0);
         };
         let made = made.map(f64::from);
-        if m == 1.0 {
+        // A Blur node's picture is finished: its blend (in linear light, by the same mask) is in it.
+        if m == 1.0 || film.blur {
             return (made, m, made);
         }
         (
@@ -780,6 +781,7 @@ impl ColorChain {
                 .contains_key(&step.node)
                 .then(|| film_reach_px(step.node))
                 .flatten();
+            let is_blur = self.films.get(&step.node).is_some_and(|f| f.blur);
             picture_of.push(film.map(|_| {
                 pictures += 1;
                 pictures - 1
@@ -792,6 +794,7 @@ impl ColorChain {
                     JoinKind::Combiner => StepKind::Combiner,
                 }
                 .declared(0),
+                (None, Some(reach)) if is_blur => StepKind::Blur.declared(reach),
                 (None, Some(reach)) => StepKind::Film.declared(reach),
                 (None, None) if node.is_uniform() => StepKind::ColorUniform.declared(0),
                 (None, None) => StepKind::Corrector.declared(0),
@@ -857,6 +860,13 @@ impl ColorChain {
     #[must_use]
     pub fn has_films(&self) -> bool {
         self.films.values().any(|f| !f.bypass && f.strength > 0.0)
+    }
+
+    /// Whether the plan runs a Blur node that does something (`docs/33` section 6): a film-like step whose picture the render
+    /// makes before the colour pass. The device refuses such a plan until BL-05.
+    #[must_use]
+    pub fn has_blur(&self) -> bool {
+        self.films.values().any(|f| f.blur && !f.bypass)
     }
 
     fn stages(&self, camera_rgb: Vec3, at: PixelAt<'_>) -> Staged {

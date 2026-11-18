@@ -1041,6 +1041,13 @@ impl ChainTables {
         chain: &ColorChain,
     ) -> Result<PreparedChain, GpuError> {
         let params = chain.params();
+        // A live Blur node has no kernel yet (BL-05): the device refuses the plan and the CPU makes the frame, with this as its
+        // reason (`RenderReport::cpu_reason`).
+        if chain.has_blur() {
+            return Err(GpuError::InvalidInput(
+                "a Blur node is not on the device yet".to_owned(),
+            ));
+        }
         let space = chain.space();
         let look_kind = classify_look(params);
         // C1 to C6 (the fused matrix) and C7.

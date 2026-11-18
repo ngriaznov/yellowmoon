@@ -72,6 +72,9 @@ pub enum StepKind {
     ColorUniform,
     /// A Film node that does something: spatial.
     Film,
+    /// A Blur node that does something (`docs/33` section 3.8): spatial, like a Film node, with a reach from its settings. It
+    /// reads the picture it takes in and its mask over the area it makes grown by that reach.
+    Blur,
     /// A Parallel mixer: per pixel, reads the pictures of its inputs and its base.
     Parallel,
     /// A Layer mixer: per pixel, reads the pictures of its inputs and the keys of the nodes that feed them.
@@ -85,10 +88,11 @@ pub enum StepKind {
 impl StepKind {
     /// Every step kind. A `match`-checked list: [`StepKind::declared`] does not compile when a kind is missing, and the
     /// unit test below checks this list against it.
-    pub const ALL: [StepKind; 7] = [
+    pub const ALL: [StepKind; 8] = [
         StepKind::Corrector,
         StepKind::ColorUniform,
         StepKind::Film,
+        StepKind::Blur,
         StepKind::Parallel,
         StepKind::Layer,
         StepKind::Splitter,
@@ -118,7 +122,7 @@ impl StepKind {
                     ..Reads::default()
                 },
             },
-            Self::Film => Declared {
+            Self::Film | Self::Blur => Declared {
                 footprint: Footprint::Spatial {
                     reach_px,
                     produces: Produces::Picture,
