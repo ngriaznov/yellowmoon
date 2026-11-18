@@ -591,6 +591,8 @@ Tolerance: `1e-5` absolute per output sample in normalised units. The derived va
 
 `edge_knight` and `ca_weighting` contain exact ties, which the f32 GPU kernel resolves differently at a few samples (§12).
 
+**Two classes of vectors (`docs/29` F-06, RC-04).** *Oracle:* the files above, unedited, run under `Tuning::ORACLE`; they prove the structure (borders, phases, ties, decision logic). *Self:* `crates/ym-gpu/tests/cpu_data/adaptive_ratio_demosaic_self/`, the same files, fields and tolerances written by `crates/ym-gpu/examples/gen_self_vectors.rs` from our own Rust under `Tuning::DEFAULT`; they are the regression of the shipped constants and are never called an oracle. The CPU and GPU tests read both folders. After a fit changes a shipped constant, regenerate with `cargo run -p ym-gpu --example gen_self_vectors` and commit the diff; `tests/self_vectors.rs` fails while the committed files differ from a regeneration.
+
 ### 6.2 Property tests (`crates/ym-gpu/tests/cpu_adaptive_ratio.rs`, `cpu_adaptive_ratio_ca.rs`, `cpu_adaptive_ratio_chain.rs`)
 
 - **Flat field.** All 4 phases × 3 gain sets × 3 levels (0.003 to 2.4) × {plain, matching on, CA}. Output = `gain·value` within 1.2e-7 relative (measured 6.4e-8).
