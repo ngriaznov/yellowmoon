@@ -1,0 +1,19 @@
+/* Mockup-only additions for design/colour-compressor/ (CC-01). The rest is the app's CSS (mixers/html/app.css, nodes/html/nv.css, mixers/html/mixers.css, skin/html/skin.css). */
+.cc-target { display: flex; align-items: center; gap: 14px; padding: 2px 0 14px; }
+.cc-swatch { flex-shrink: 0; width: 56px; height: 56px; border-radius: 16px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.28), 0 2px 8px rgba(0,0,0,.35); }
+.cc-swatch--empty { background: repeating-conic-gradient(rgba(255,255,255,.14) 0 25%, rgba(255,255,255,.04) 0 50%) 0 0 / 14px 14px; box-shadow: inset 0 0 0 1px var(--rim), inset 0 0 0 2px rgba(0,0,0,.2); }
+.cc-swatch__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.cc-swatch__name { font-size: 15px; font-weight: 700; line-height: 1.2; }
+.cc-swatch__sub { font-size: 12px; color: var(--glass-label-secondary); line-height: 1.35; }
+.cc-pick-on, .cc-target button.cc-pick-on { color: var(--tab-colour); background: color-mix(in oklch, var(--tab-colour) 20%, transparent); }
+.cc-target > button { flex-shrink: 0; }
+.cc-hue-track { background: linear-gradient(90deg, #ff4d4d, #ffb23a 17%, #e9e24a 25%, #66e060 33%, #2fe0c8 50%, #2fa4ff 62%, #8a63ff 75%, #ff5fd0 88%, #ff4d4d) !important; opacity: .85; }
+.cc-pill { position: fixed; z-index: 60; display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px 6px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; background: rgba(24,24,26,.82); box-shadow: inset 0 0 0 1px rgba(255,255,255,.22), 0 4px 14px rgba(0,0,0,.4); color: #f2f2f2; backdrop-filter: blur(14px); }
+.ym-gnode__mask[data-glyph="color_compressor"] { color: var(--glass-label-secondary); }
+.cc-diagram { display: flex; gap: 22px; align-items: flex-start; flex-wrap: nowrap; }
+.cc-fig { margin: 0; width: 440px; }
+.cc-fig svg { display: block; background: #1a1a1c; border-radius: 16px; box-shadow: inset 0 0 0 1px var(--rim); }
+.cc-fig figcaption { margin-top: 10px; font-size: 13px; line-height: 1.45; color: var(--glass-label-secondary); }
+.cc-fig figcaption b { color: var(--glass-label); }
+.cc-fig text { font-family: Figtree, system-ui, sans-serif; }
+code { font-family: ui-monospace, Menlo, monospace; font-size: .92em; background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 5px; }

@@ -57,7 +57,7 @@ A card named **Target**, first in the node's **Compress** tab.
 
 | Control | Range | Default | Notes |
 |---|---|---|---|
-| **Swatch** | | empty (a checked square) | The target colour as a patch, at a fixed brightness, with the colour's name under it ("Orange", "Orange, a little pale"). Not a Tab stop; its name is read as text |
+| **Swatch** | | empty (a checked square) | The target colour as a patch, as the picture shows it (its own hue, saturation and lightness), with the colour's name beside it ("Orange", "Orange, a little pale"). Not a Tab stop; its name is read as text |
 | **Pick colour** | a toggle with an eyedropper | **on when the node is added**, off after the first pick | Like the warp's and the Colour range's. A click on the photo sets the target to the colour there. It stays on for the next click and **Esc** ends it |
 | **Hue** | 0 to 359° (wraps) | – | A number field with the slider's look (`Slider` with its value box), the track drawn as a hue ramp |
 | **Saturation** | 2 to 50 | – | The chroma of the colour times 100, the number the warp's range uses (a skin tone is about 5 to 12; a strong red 13) |
@@ -118,7 +118,7 @@ The **eye in the Range card's header** ("Show affected area") is a second switch
 
 | Part | Content |
 |---|---|
-| Head | The corrector's compact head (`docs/23` §7.5): the number chip, the name, the line, Bypass, Reset, More. Line: "Colour Compressor", "Colour Compressor · bypassed", "Colour Compressor · not connected" |
+| Head | The corrector's compact head (`docs/23` §7.5): the number chip, the name, the line, Bypass, Reset, More. Line: "Colour Compressor", "Bypassed", "Not connected" (short, because the name is long and the line is cut after it) |
 | Tabs | **Compress · Mask**, in the Colour tab's green (`--tab-colour`; `docs/11`). The Mask tab is a corrector's (`docs/23` §7.6) |
 | Compress › cards | **Target · Compress · Range** |
 | Histogram | none (the node has no light to show); the node's Mask tab and Show mask work as on a corrector |
