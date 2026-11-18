@@ -43,6 +43,11 @@ fn names(dir: &Path) -> Vec<String> {
 /// What differs between a self set on disk and what the generator writes now: files that are
 /// missing, files that should not be there and files whose bytes differ.
 fn differences(committed: &Path, regenerated: &Path) -> Vec<String> {
+    compare_sets(committed, regenerated, BYTES_MUST_MATCH)
+}
+
+/// [`differences`]; `by_bytes` compares the text of the files, else their numbers.
+fn compare_sets(committed: &Path, regenerated: &Path, by_bytes: bool) -> Vec<String> {
     let mut out = Vec::new();
     if !committed.is_dir() {
         out.push(format!("the folder {} is missing", committed.display()));
@@ -62,14 +67,50 @@ fn differences(committed: &Path, regenerated: &Path) -> Vec<String> {
     for name in want.iter().filter(|n| have.contains(n)) {
         let a = std::fs::read(committed.join(name)).expect("committed file");
         let b = std::fs::read(regenerated.join(name)).expect("regenerated file");
-        if a != b {
+        if a == b {
+            continue;
+        }
+        if by_bytes {
             out.push(format!(
                 "{name}: stale (the bytes differ from a regeneration)"
+            ));
+            continue;
+        }
+        // Another platform: its libm may differ in the last digit of a number, so the committed
+        // numbers and the regenerated ones are compared, not their text.
+        let old = self_gen::read_vector(&committed.join(name));
+        let new = self_gen::read_vector(&regenerated.join(name));
+        let tol = old["tolerance"].as_f64().unwrap_or(0.0);
+        let mut found = Vec::new();
+        approx(
+            name,
+            &old,
+            &new,
+            &|x, y| {
+                let rel = PORTABLE_RELATIVE_BOUND * y.abs();
+                (x - y).abs() <= if tol > 0.0 { rel.min(tol) } else { rel }
+            },
+            &mut found,
+        );
+        if !found.is_empty() {
+            out.push(format!(
+                "{name}: stale (numbers differ from a regeneration: {found:?})"
             ));
         }
     }
     out
 }
+
+/// The committed self set is compared with a regeneration byte for byte only on the platform that
+/// wrote it, Linux on x86_64 (the platform of the golden hashes too, `docs/13`): the numbers come from
+/// the platform's libm, which may differ from glibc's in the last digit on another one (a Mac).
+/// Elsewhere the files are compared number by number within [`PORTABLE_RELATIVE_BOUND`], or the
+/// vector's own tolerance if that is tighter. Determinism on one machine
+/// (`generating_twice_gives_the_same_bytes`) is checked by bytes everywhere.
+const BYTES_MUST_MATCH: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+
+/// The relative bound of the portable comparison.
+const PORTABLE_RELATIVE_BOUND: f64 = 1e-12;
 
 const REGENERATE: &str = "run `cargo run -p ym-gpu --example gen_self_vectors` and commit the diff";
 
@@ -111,7 +152,7 @@ fn generating_twice_gives_the_same_bytes() {
     let package = Package::LogGuided;
     self_gen::generate(package, &a);
     self_gen::generate(package, &b);
-    assert_eq!(differences(&a, &b), Vec::<String>::new());
+    assert_eq!(compare_sets(&a, &b, true), Vec::<String>::new());
     let _ = std::fs::remove_dir_all(&a);
     let _ = std::fs::remove_dir_all(&b);
 }
@@ -413,4 +454,32 @@ fn the_f06_rule_rejects_a_missing_or_stale_set_once_the_default_has_moved() {
         self_set_is_current_if_the_default_moved(package, false, &dir),
         Ok(())
     );
+}
+
+#[test]
+fn the_portable_comparison_accepts_a_last_digit_and_rejects_more() {
+    // What a platform whose libm differs in the last digit sees: a number 1e-15 away passes, one
+    // 1e-6 away (a real change of a constant) does not, whatever the platform.
+    let package = Package::LogGuided;
+    let (a, b) = (temp_dir("portable-a"), temp_dir("portable-b"));
+    self_gen::generate(package, &a);
+    self_gen::generate(package, &b);
+    let file = b.join("flat_grey.json");
+    let text = std::fs::read_to_string(&file).expect("file");
+    let mut v: Value = serde_json::from_str(&text).expect("json");
+    let x = v["params"]["derived"]["read_noise_dn"]
+        .as_f64()
+        .expect("number");
+    v["params"]["derived"]["read_noise_dn"] = Value::from(x * (1.0 + 1e-15));
+    std::fs::write(&file, self_gen::render(&v)).expect("write");
+    assert!(!compare_sets(&a, &b, true).is_empty(), "the bytes differ");
+    assert_eq!(compare_sets(&a, &b, false), Vec::<String>::new());
+    v["params"]["derived"]["read_noise_dn"] = Value::from(x * (1.0 + 1e-6));
+    std::fs::write(&file, self_gen::render(&v)).expect("write");
+    assert!(
+        !compare_sets(&a, &b, false).is_empty(),
+        "a change of 1e-6 is stale"
+    );
+    let _ = std::fs::remove_dir_all(&a);
+    let _ = std::fs::remove_dir_all(&b);
 }

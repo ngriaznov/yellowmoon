@@ -266,7 +266,7 @@ fn assert_fields(what: &str, block: &Map<String, Value>, refreshed: &[&str], str
 /// Marks a file as ours, without touching its fields.
 fn mark_self(doc: &mut Value) {
     if let Some(Value::String(s)) = object_mut(doc).get_mut("description") {
-        s.push_str(" [self set: made by gen_self_vectors from our own Rust under the shipped constants; not an oracle]");
+        s.push_str(" [self set: made by gen_self_vectors from our own Rust under the shipped constants; not an oracle; written on Linux x86_64, where the committed bytes must equal a regeneration; elsewhere the numbers are compared within 1e-12 relative]");
     }
 }
 

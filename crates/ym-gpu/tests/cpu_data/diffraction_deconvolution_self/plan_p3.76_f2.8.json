@@ -1,5 +1,5 @@
 {
-  "description": "Planner: 3.76 um pitch at f/2.8 (small kernel). [self set: made by gen_self_vectors from our own Rust under the shipped constants; not an oracle]",
+  "description": "Planner: 3.76 um pitch at f/2.8 (small kernel). [self set: made by gen_self_vectors from our own Rust under the shipped constants; not an oracle; written on Linux x86_64, where the committed bytes must equal a regeneration; elsewhere the numbers are compared within 1e-12 relative]",
   "expected": {"active":1,"gauss_radius":1,"gauss_sigma":0.228825018,"halo_px":13,"kernel":[0.0,1.98497196e-6,0.0000152235571,1.98497196e-6,0.0,1.98497196e-6,0.00428010104,0.0546620004,0.00428010104,1.98497196e-6,0.0000152235571,0.0546620004,0.764154792,0.0546620004,0.0000152235571,1.98497196e-6,0.00428010104,0.0546620004,0.00428010104,1.98497196e-6,0.0,1.98497196e-6,0.0000152235571,1.98497196e-6,0.0],"r80_um":1.3002447686050143,"radius":2,"sigma0_dn":18.320083935874255,"sigma1_dn":2.2216365040526727,"support_um":5.200979074420057},
   "input": null,
   "name": "plan_p3.76_f2.8",
