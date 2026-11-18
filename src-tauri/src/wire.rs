@@ -1758,8 +1758,8 @@ pub struct RolloffPatch {
     pub low_light: Option<Num>,
 }
 
-/// Look › Lens parts to change; the others stay as they are.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, Type)]
+/// Look › Lens parts to change; the others stay as they are. Serialising leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
 pub struct LensPatch {
     /// New lens. The amounts do not follow it: send the lens's starting amounts with it.
@@ -2070,6 +2070,17 @@ macro_rules! serialize_present {
 
 serialize_present!(FilmStockPatch, stock, exposure_ev);
 serialize_present!(LightsPatch, c, m, y);
+serialize_present!(
+    LensPatch,
+    kind,
+    flares,
+    edges,
+    anamorphic,
+    radius,
+    blades,
+    rotation_deg,
+    highlights
+);
 serialize_present!(UniformAmountsPatch, hue, saturation, lightness);
 serialize_present!(BlurSoftPatch, radius);
 serialize_present!(BlurMotionPatch, length, angle_deg);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MOCK_ESTIMATES, resolveSettings } from "../api.mock";
+import { clampSettings, MOCK_ESTIMATES, resolveSettings } from "../api.mock";
 import type { DevelopSettings, MaskItem, NodeLink, SettingsPatch } from "../api/types";
 import {
   applyPatch,
@@ -8,6 +8,7 @@ import {
   faceSettingsFor,
   inputOf,
   inputPatch,
+  newBlur,
   newColorUniform,
   newCorrector,
   newFaceRefinement,
@@ -436,6 +437,81 @@ describe("the Colour Uniform node (docs/32 section 5, CU-03)", () => {
     const copy = copiedPatch(rs);
     expect(copy.nodes?.["2"]).toMatchObject({ kind: "color_uniform", target: null });
     const many: DevelopSettings = { nodes: { items: [...defaultSettings().nodes.items, ...Array.from({ length: MAX_NODES }, (_, i) => newColorUniform(i + 2, [i, 0]))], links: defaultLinks() } };
+    expect(validateGraph(many)).toBe(GRAPH_TEXT.tooManyNodes);
+  });
+});
+
+describe("the Blur node (docs/33 section 5, BL-02)", () => {
+  const withNode = (): DevelopSettings => {
+    const base = defaultSettings();
+    return {
+      nodes: {
+        items: [...base.nodes.items.slice(0, 2), newBlur(2, [1, 0]), ...base.nodes.items.slice(2)],
+        links: [picture("input", 1), picture(1, 2), picture(2, "output")],
+      },
+    };
+  };
+
+  it("starts as Soft at 20 with Respect mask edges on, and has the ports of a corrector", () => {
+    const n = newBlur(2, [1, 0]);
+    expect(n).toMatchObject({ kind: "blur", name: "Blur", bypass: false, type: "soft", soft: { radius: 20 }, respect_mask_edges: true });
+    expect(n.lens).toEqual({ radius: 20, blades: 0, rotation_deg: 0, highlights: 0 });
+    expect(n.motion).toEqual({ length: 20, angle_deg: 0 });
+    expect(n.zoom).toEqual({ amount: 20, center: [0.5, 0.5] });
+    expect(portsOf("blur")).toEqual(portsOf("corrector"));
+    expect(validateGraph(withNode())).toBeNull();
+  });
+
+  it("refuses a field of another kind with the kind's name, and tells the two lens groups apart", () => {
+    const s = withNode();
+    expect(refusalOfPatch(s, { nodes: { "2": { type: "zoom", soft: { radius: 5 }, lens: { blades: 6 }, motion: { length: 3 }, zoom: { center: [0.2, 0.3] }, respect_mask_edges: false } } })).toBeNull();
+    expect(refusalOfPatch(s, { nodes: { "2": { film: { stock: "x" } } } })).toBe("A Blur node has no field called “film”.");
+    expect(refusalOfPatch(s, { nodes: { "1": { type: "soft" } } })).toBe("A corrector has no field called “type”.");
+    expect(refusalOfPatch(s, { nodes: { "2": { kind: "corrector" } } })).toBe("Node 2 is a Blur node, not a corrector.");
+    expect(refusalOfPatch(s, { nodes: { "2": { lens: { kind: "vintage" } } } })).toBe("A Blur node has no field called “lens.kind”.");
+    expect(refusalOfPatch(s, { nodes: { input: { lens: { radius: 30 } } } })).toBe("An input has no field called “lens.radius”.");
+    expect(refusalOfPatch(s, { nodes: { input: { lens: { flares: 30 } } } })).toBeNull();
+  });
+
+  it("adds the node with a patch, merges the groups part by part and keeps every type's values", () => {
+    let s = applyPatch(defaultSettings(), { nodes: { "2": { kind: "blur", type: "lens", lens: { radius: 50, blades: 6 }, zoom: { center: [0.3, 0.6] } } } });
+    expect(nodeOf(s, 2)).toMatchObject({ kind: "blur", type: "lens", lens: { radius: 50, blades: 6, rotation_deg: 0, highlights: 0 }, zoom: { amount: 20, center: [0.3, 0.6] } });
+    s = applyPatch(s, { nodes: { "2": { type: "zoom" } } });
+    s = applyPatch(s, { nodes: { "2": { type: "lens", lens: { highlights: 60 } } } });
+    expect(nodeOf(s, 2)).toMatchObject({ type: "lens", soft: { radius: 20 }, lens: { radius: 50, blades: 6, highlights: 60 }, zoom: { center: [0.3, 0.6] } });
+    // The Input's lens still merges its own parts.
+    s = applyPatch(s, { nodes: { input: { lens: { flares: 40 } } } });
+    expect(inputOf(s).lens.flares).toBe(40);
+  });
+
+  it("is held to its ranges as the core holds it: amounts 0 to 100, blades 0 or 3 to 12, the centre 0 to 1, the angles read modulo", () => {
+    const wild = applyPatch(withNode(), {
+      nodes: {
+        "2": {
+          name: "  ",
+          soft: { radius: 140 },
+          lens: { radius: -5, blades: 2, rotation_deg: -15, highlights: 101 },
+          motion: { length: 200, angle_deg: 200 },
+          zoom: { amount: -1, center: [1.5, -0.25] },
+        },
+      },
+    });
+    expect(nodeOf(clampSettings(wild), 2)).toMatchObject({
+      name: "Blur",
+      soft: { radius: 100 },
+      lens: { radius: 0, blades: 3, rotation_deg: 345, highlights: 100 },
+      motion: { length: 100, angle_deg: 20 },
+      zoom: { amount: 0, center: [1, 0] },
+    });
+    const round = applyPatch(withNode(), { nodes: { "2": { lens: { blades: 0 }, respect_mask_edges: false } } });
+    expect(nodeOf(clampSettings(round), 2)).toMatchObject({ lens: { blades: 0 }, respect_mask_edges: false });
+  });
+
+  it("copies the node whole, with an Object row emptied, and counts it toward the 64 nodes", () => {
+    const rs = resolveSettings(1, withNode(), MOCK_ESTIMATES);
+    const copy = copiedPatch(rs);
+    expect(copy.nodes?.["2"]).toMatchObject({ kind: "blur", type: "soft", respect_mask_edges: true });
+    const many: DevelopSettings = { nodes: { items: [...defaultSettings().nodes.items, ...Array.from({ length: MAX_NODES }, (_, i) => newBlur(i + 2, [i, 0]))], links: defaultLinks() } };
     expect(validateGraph(many)).toBe(GRAPH_TEXT.tooManyNodes);
   });
 });

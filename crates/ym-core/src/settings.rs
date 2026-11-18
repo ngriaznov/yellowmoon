@@ -397,10 +397,12 @@ pub enum SettingsField {
     /// A Colour Uniform node's `compress`.
     Compress,
     /// A Blur node's `type`.
+    #[serde(rename = "type")]
     BlurType,
     /// A Blur node's `soft` group.
     Soft,
-    /// A Blur node's `lens` group (the Input's `lens` is [`SettingsField::Lens`]; both are `lens` in the JSON of their node).
+    /// A Blur node's `lens` group. The Input's `lens` is [`SettingsField::Lens`]; both are `lens` in the JSON of their node
+    /// ([`SettingsField::name`]), and this one is `blur_lens` as a serialised field so that the two stay apart.
     BlurLens,
     /// A Blur node's `motion` group.
     Motion,
@@ -2528,6 +2530,12 @@ mod tests {
             F::Protect,
             F::Target,
             F::Compress,
+            F::BlurType,
+            F::Soft,
+            F::BlurLens,
+            F::Motion,
+            F::Zoom,
+            F::RespectMaskEdges,
         ] {
             assert_eq!(f.group(), Some(StageGroup::Grade), "{f:?}");
         }
@@ -2537,13 +2545,19 @@ mod tests {
         assert_eq!(F::Lens.group(), Some(StageGroup::Lens));
         assert!(StageGroup::Raw < StageGroup::Lens && StageGroup::Lens < StageGroup::Color);
         assert!(StageGroup::Raw < StageGroup::Color && StageGroup::Color < StageGroup::Grade);
-        // Every field has a name that is the serde name.
+        // Every field has a name that is the serde name, but one: a Blur node's `lens` group is `lens` in its JSON like the Input's
+        // and `blur_lens` as a serialised field, so that the two stay apart.
         for f in SettingsField::ALL {
-            assert_eq!(
-                serde_json::to_string(&f).unwrap(),
-                format!("\"{}\"", f.name())
-            );
+            let want = if f == F::BlurLens {
+                "blur_lens"
+            } else {
+                f.name()
+            };
+            assert_eq!(serde_json::to_string(&f).unwrap(), format!("\"{want}\""));
+            let back: SettingsField = serde_json::from_str(&format!("\"{want}\"")).unwrap();
+            assert_eq!(back, f);
         }
-        assert_eq!(SettingsField::ALL.len(), 42);
+        assert_eq!(F::BlurLens.name(), F::Lens.name());
+        assert_eq!(SettingsField::ALL.len(), 48);
     }
 }

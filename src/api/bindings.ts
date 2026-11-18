@@ -1967,7 +1967,7 @@ export type LensKind =
 /**  Sharp only in the centre, with smeared flares. */
 "detuned";
 
-/**  Look › Lens parts to change; the others stay as they are. */
+/**  Look › Lens parts to change; the others stay as they are. Serialising leaves absent fields out (see [`NodePatch`]). */
 export type LensPatch = {
 	/**  New lens. The amounts do not follow it: send the lens's starting amounts with it. */
 	kind?: LensKind | null,

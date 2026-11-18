@@ -246,7 +246,7 @@ fn the_cli_documentation_and_the_help_agree() {
     );
     assert!(
         paragraph.contains(
-            "other nodes (correctors, Colour Uniform nodes, mixers, splitters and combiners, Face Refinement nodes, and Film nodes whose stocks `ym film list` shows)"
+            "other nodes (correctors, Colour Uniform nodes, Blur nodes, mixers, splitters and combiners, Face Refinement nodes, and Film nodes whose stocks `ym film list` shows)"
         ),
         "the paragraph names the mixers, splitters and combiners (docs/25 section 6)"
     );
@@ -330,8 +330,8 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     let blocks = json_blocks(&doc[start..end]);
     assert_eq!(
         blocks.len(),
-        8,
-        "the complete small file, the per-file example, the Brush row, the Object row, the Parallel and the Splitter-and-Combiner examples of docs/25, the Face Refinement example of docs/27 and the Colour Uniform example of docs/32"
+        9,
+        "the complete small file, the per-file example, the Brush row, the Object row, the Parallel and the Splitter-and-Combiner examples of docs/25, the Face Refinement example of docs/27, the Colour Uniform example of docs/32 and the Blur example of docs/33"
     );
 
     // The complete small file: read over the default graph, checked, and written back unchanged.
@@ -531,6 +531,37 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     let written = serde_json::to_value(&settings).expect("writes");
     let (again, _) = DevelopSettings::from_value(written, &LookId::neutral()).expect("reads again");
     assert_eq!(again, settings, "written back unchanged");
+    // The Blur example (`docs/33` section 5.1, BL-02): the lens group and a Radial row.
+    let value: Value = serde_json::from_str(&blocks[8]).expect("the Blur example is JSON");
+    let (settings, clamped) =
+        DevelopSettings::from_value(value, &LookId::neutral()).expect("the Blur example reads");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    assert_eq!(
+        settings
+            .nodes
+            .kind_of(ym_core::settings::NodeId::Corrector(2)),
+        Some(ym_core::settings::NodeKind::Blur)
+    );
+    let node = settings.nodes.blur(2).expect("node 2");
+    assert_eq!(node.blur_type, ym_core::settings::BlurType::Lens);
+    assert_eq!(
+        (
+            node.lens.radius,
+            node.lens.blades,
+            node.lens.rotation_deg,
+            node.lens.highlights
+        ),
+        (50.0, 6, 15.0, 60.0)
+    );
+    assert!(node.respect_mask_edges);
+    assert_eq!(node.masks.items.len(), 1);
+    assert!(matches!(
+        node.masks.items[0].shape,
+        ym_core::settings::MaskShape::Radial(_)
+    ));
+    let written = serde_json::to_value(&settings).expect("writes");
+    let (again, _) = DevelopSettings::from_value(written, &LookId::neutral()).expect("reads again");
+    assert_eq!(again, settings, "written back unchanged");
     // The unknown-kind sentence is quoted with “outside”, and “parallel” is a kind.
     let doc_text = read("docs/10-cli.md");
     assert!(doc_text.contains(
@@ -548,6 +579,7 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
         ("trio", &blocks[5]),
         ("face", &blocks[6]),
         ("uniform", &blocks[7]),
+        ("blur", &blocks[8]),
     ] {
         let file = sb.root().join(format!("{label}.json"));
         std::fs::write(&file, text).expect("write");
