@@ -1364,7 +1364,7 @@ fn edge_profile_screen_preset() {
     let (flo, fhi) = (f64::from(lo), f64::from(hi));
     let edge = slanted_edge(128, 5.0, 0.8, lo, hi);
     let rise0 = row_rise_10_90(&edge, 64, flo, fhi);
-    eprintln!("soft edge before sharpening: rise {rise0:.2} px (spec 2.51)");
+    eprintln!("soft edge before sharpening: rise {rise0:.3} px (spec 2.51)");
     assert!((rise0 - 2.51).abs() < 0.1, "test edge rise {rise0}");
 
     let mut no_halo = OutputSharpen::screen();
@@ -1394,7 +1394,7 @@ fn edge_profile_screen_preset() {
         let rise = row_rise_10_90(&out, 64, flo, fhi);
         let (over, under) = overshoot_undershoot(&esf(&out, 5.0), flo, fhi);
         eprintln!(
-            "{label:<28} rise {rise:.2} px (spec {spec_rise:.2}), overshoot {over:.1} % / undershoot {under:.1} % (spec {spec_over:.1})"
+            "{label:<28} rise {rise:.3} px (spec {spec_rise:.2}), overshoot {over:.2} % / undershoot {under:.2} % (spec {spec_over:.1})"
         );
         measured.push((rise, over, under));
     }
@@ -1455,7 +1455,7 @@ fn edge_profile_noise_gain_on_a_flat_patch() {
         let after = std_dev_centre(&sharpen(&p, 1.0, &patch), 24);
         gain.push(after / before);
         eprintln!(
-            "noise sigma {before:.5} -> {after:.5} (x{:.3}) with threshold {threshold} level(s)",
+            "noise sigma {before:.5} -> {after:.5} (x{:.4}) with threshold {threshold} level(s)",
             after / before
         );
     }

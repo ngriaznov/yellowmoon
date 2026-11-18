@@ -1,0 +1,7 @@
+BASE psnr A 35.678 B 27.604
+BASE f/8 ISO 100: text 30.68 nat 35.80 mtf50 0.340 over 1.7% noise 1.005
+BASE f/8 ISO 800: text 29.84 nat 34.14 mtf50 0.354 over 2.4% noise 1.007
+BASE f/16 ISO 100: text 26.08 nat 31.89 mtf50 0.245 over 3.0% noise 1.577
+BASE f/16 ISO 800: text 25.70 nat 30.75 mtf50 0.235 over 4.2% noise 1.617
+BASE ok n=48
+base	0.055 / 0.043 · 43.38 | 0.114 / 0.092 · 40.09 | 0.204 / 0.175 · 36.10 | 0.112 / 0.094 · 40.31 | 0.187 / 0.161 · 36.62

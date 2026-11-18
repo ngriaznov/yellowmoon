@@ -55,6 +55,8 @@ ym-lens = { workspace = true, features = ["test-support"] }
 # The Film node's CPU reference, the twin the parity tests of `kernels::film` compare with. A dev-dependency only:
 # `ym-gpu` takes plain data (`kernels::film::FilmColourData`, `FilmPlan`) and no `ym-film` type in its API.
 ym-film.workspace = true
+# The fit harness (`examples/fit_demosaic.rs`, docs/29 RC-05) reads two crops of a local ARW as real mosaics. A dev-dependency only.
+ym-raw.workspace = true
 png.workspace = true
 tiff.workspace = true
 # `float_roundtrip`: the self vector generator (`tests/self_gen`) re-writes the oracle files' `params`
