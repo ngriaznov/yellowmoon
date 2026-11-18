@@ -102,6 +102,7 @@ struct ChainU {
 //   R_GAIN  (f32) the trims' gain in linear AWG4 (xyz)
 //   R_GRADE0 x: contrast slope k at grey, y: brightness, z: saturation factor (< 1 blend, > 1 boost F); w: 0
 //   R_ZONE_AMT shadows, highlights, black, white (each / 100);  R_ZONE_CTR their centres (LogC4 codes)
+//   A Colour Uniform step (N_UNIFORM) has no grade and uses the same rows: R_UNI_T (= R_GRADE0) c1, c2, cos, sin of the target; R_UNI_K (= R_ZONE_AMT) tone, hue, saturation, lightness amounts; R_UNI_R (= R_ZONE_CTR) x: the target's chroma
 //   R_BAL0 (a, b) shadows, (a, b) midtones;  R_BAL1 (a, b) highlights;  R_BAL_CTR zone centres
 //   R_WARP_N (u32) C9b: x moving pins (0: the stage is skipped), y locked pins, z flow steps
 //   R_WARP_MV WARP_MOVE_ROWS rows, three a moving pin (c9b_warp);  R_WARP_LK WARP_LOCK_ROWS rows, one a locked pin (c9b_warp)
@@ -739,6 +740,50 @@ fn before_camera_default(cam: vec3<f32>) -> vec3<f32> {
 
 // ---- the nodes (docs/23 section 5.4) -------------------------------------------------------------------------
 
+// Colour Uniform (docs/32 section 3, ym_color::uniform::apply in f32). The record's grade rows hold the target: R_UNI_T
+// (c1, c2, cos, sin of its hue), R_UNI_K (tone, hue, saturation and lightness amounts, each 0 to 1), R_UNI_R.x (its chroma). The
+// amounts are constants of the record, so the `if`s on them choose a path and no computed float decides whether the node runs
+// (K8). atan2 and the rotation run only where the chroma r > 0 (atan2(0, 0) is undefined in WGSL); the neutral guard g and the
+// antipode fade a are smoothsteps, so the tests that remain choose between results that agree within rounding.
+fn uniform_node(ni: u32, v: vec3<f32>) -> vec3<f32> {
+    let t = nf(ni, R_UNI_T);
+    let k = nf(ni, R_UNI_K);
+    let rt = nf(ni, R_UNI_R).x;
+    let c = vec2<f32>(dot(v, E1), dot(v, E2));
+    let m = (v.x + v.y + v.z) / 3.0;
+    let r = sqrt(c.x * c.x + c.y * c.y);
+    let g = smooth01(r / WARP_NEUTRAL_GUARD);
+    // Saturation: the distance to the target's chroma shrinks, not for neutrals.
+    var r2 = r;
+    if (k.z != 0.0) {
+        r2 = rt + (r - rt) * (1.0 - k.z * g);
+    }
+    var n = vec2<f32>(0.0);
+    if (r > 0.0) {
+        n = c * (r2 / r);
+        if (k.y != 0.0) {
+            // Hue: the angle to the target's hue shrinks, not for neutrals, not on the far side. The cross and dot products
+            // are those of the target's unit vector, so they are of the size of r.
+            let cr = t.z * c.y - t.w * c.x;
+            let dt = t.z * c.x + t.w * c.y;
+            if (cr != 0.0 || dt != 0.0) {
+                let delta = atan2(cr, dt);
+                let a = 1.0 - smooth01((abs(delta) - UNI_HUE_FULL) / UNI_HUE_FADE);
+                let dp = delta * (1.0 - k.y * g * a);
+                let cd = cos(dp);
+                let sd = sin(dp);
+                n = r2 * vec2<f32>(t.z * cd - t.w * sd, t.w * cd + t.z * sd);
+            }
+        }
+    }
+    let d = n - c;
+    var o = v + d.x * E1 + d.y * E2;
+    if (k.w != 0.0) {
+        o = o + ((k.x + (m - k.x) * (1.0 - k.w)) - m);
+    }
+    return o;
+}
+
 // One node on one pixel: its trims, C9, C9b and C11 (docs/23 section 1.3), each left out when its bit in `ctl.x` is clear,
 // the whole node when `N_SKIP` is set (bypassed, or every step at its identity). `v_in` is the picture the node reads;
 // `c7` is the linear AWG4 triple C8 was encoded from, which is the node's exact linear input when it reads the Input
@@ -781,6 +826,10 @@ fn node_apply(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, stage: 
     // 4. C11.
     if ((bits & N_CURVES) != 0u) {
         v = c11_curves(v, ni);
+    }
+    // 5. A Colour Uniform node's pull (docs/32 section 3.3), the last step as on the CPU.
+    if ((bits & N_UNIFORM) != 0u) {
+        v = uniform_node(ni, v);
     }
     return v;
 }
@@ -1162,17 +1211,6 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) 
             stage = main_stage;
         }
         let film = (nu(ni, R_CTL).x & N_FILM) != 0u;
-        var nv = v_in;
-        if (!film) {
-            nv = node_apply(ni, v_in, c7, from_input, stage);
-        }
-        if (stage != 0u) {
-            return NodesOut(nv, true);
-        }
-        // The mask blend (docs/23 section 1.3): out = v_in + m (nv - v_in). A node with no mask rows, no Invert and no key
-        // (`N_BLEND` clear, an integer decided on the host) has m = 1 and takes no blend, so its output is the node's own
-        // bits; one that has takes m exactly 1 as nv and exactly 0 as v_in, and the blend between. m is also the node's key
-        // output, which a bypassed or skipped node still has (its picture is its input), and the mask view's grey.
         let ctl = nu(ni, R_CTL).x;
         let blends = (ctl & N_BLEND) != 0u;
         let skipped = (ctl & N_SKIP) != 0u;
@@ -1188,8 +1226,27 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) 
             }
         }
         let key_written = outs.z != NODE_NONE || outs.w != NODE_NONE || (CU.mode.x == 12u && ni == CU.stopn.x);
+        let gr = nu(ni, R_JOIN + J_HEAD);
+        var nv = v_in;
+        // A Colour Uniform node is the one step whose cost is worth skipping: with its mask 0 the blend gives the input's bits,
+        // so the pull is not computed, unless a Layer above reads the graded value (the picture before the blend).
+        var m_known = false;
         var m = 1.0;
-        if (blends && (!skipped || key_written)) {
+        if (!film && (ctl & N_UNIFORM) != 0u && blends && !skipped && stage == 0u && gr.x == NODE_NONE && gr.y == NODE_NONE) {
+            m = node_mask(ni, v_in, c7, from_input, pos, rpix, key_in, has_key);
+            m_known = true;
+        }
+        if (!film && !(m_known && m == 0.0)) {
+            nv = node_apply(ni, v_in, c7, from_input, stage);
+        }
+        if (stage != 0u) {
+            return NodesOut(nv, true);
+        }
+        // The mask blend (docs/23 section 1.3): out = v_in + m (nv - v_in). A node with no mask rows, no Invert and no key
+        // (`N_BLEND` clear, an integer decided on the host) has m = 1 and takes no blend, so its output is the node's own
+        // bits; one that has takes m exactly 1 as nv and exactly 0 as v_in, and the blend between. m is also the node's key
+        // output, which a bypassed or skipped node still has (its picture is its input), and the mask view's grey.
+        if (!m_known && blends && (!skipped || key_written)) {
             m = node_mask(ni, v_in, c7, from_input, pos, rpix, key_in, has_key);
         }
         var out_v = nv;
@@ -1232,7 +1289,6 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) 
             pbuf[(outs.y + 1u) * n + pix] = out_v.y;
             pbuf[(outs.y + 2u) * n + pix] = out_v.z;
         }
-        let gr = nu(ni, R_JOIN + J_HEAD);
         if (gr.x != NODE_NONE) {
             regs[gr.x] = graded;
         }

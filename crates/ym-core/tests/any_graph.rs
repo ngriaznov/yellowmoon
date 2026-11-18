@@ -267,9 +267,8 @@ struct Graph {
 }
 
 impl Graph {
-    /// Whether the graph has a Colour Uniform node that is not bypassed and does something (a target and an amount). The device
-    /// refuses such a plan until CU-05 and the CPU makes the frame with its reason, so the device assertions of the suite
-    /// leave these graphs to `colour_uniform_graphs_are_refused_by_the_device_until_cu05`.
+    /// Whether the graph has a Colour Uniform node that is not bypassed and does something (a target and an amount): the
+    /// graphs `uniform_graphs` collects. The device runs them since CU-05, so every device sweep takes them like any other.
     fn uniform_live(&self) -> bool {
         self.json["nodes"]["items"].as_array().is_some_and(|items| {
             items.iter().any(|n| {
@@ -1120,12 +1119,6 @@ fn no_generated_graph_is_refused_by_the_device() {
     let (mut n_enforced, mut n_reported) = (0usize, 0usize);
     for g in &all {
         let name = format!("seed {} graph {}", g.seed, g.index);
-        if g.uniform_live() {
-            say(&format!(
-                "{name}: a live Colour Uniform node, the device refuses it until CU-05"
-            ));
-            continue;
-        }
         say(&format!(
             "{name}: nodes {:?}, masks {:?}, show mask {:?}, compare {}, Film nodes in series {}, branches {}, parallel Film pairs {}",
             g.nodes.iter().map(|k| k.name()).collect::<Vec<_>>(),
@@ -1482,9 +1475,6 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
             .as_deref()
             .is_some_and(|o| o != format!("{}:{}", g.seed, g.index))
         {
-            continue;
-        }
-        if g.uniform_live() {
             continue;
         }
         let src = d.source().with_settings(g.settings.clone());
@@ -2385,10 +2375,10 @@ fn colour_uniform_graphs_are_the_same_bits_whatever_the_tiles_and_the_threads() 
     );
 }
 
-/// Until CU-05 the device refuses a plan with a live Colour Uniform node, and the frame is the CPU's, with its reason
-/// (`RenderReport::cpu_reason`); the pixels are the CPU renderer's.
+/// Since CU-05 the device runs a plan with a live Colour Uniform node: it is not refused, the frame has no CPU reason, and its
+/// pixels are within the CPU renderer's bounds (a code, as every graph of the sweeps), with the node's pull in them.
 #[test]
-fn colour_uniform_graphs_are_refused_by_the_device_until_cu05() {
+fn colour_uniform_graphs_run_on_the_device_and_match_the_cpu() {
     let _serial = SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2417,7 +2407,7 @@ fn colour_uniform_graphs_are_refused_by_the_device_until_cu05() {
     let st = view(false, false, None);
     let got = frame(&device, &src, &st);
     assert!(
-        got.report.device_refused && got.report.cpu_reason.is_some(),
+        !got.report.device_refused && got.report.cpu_reason.is_none(),
         "device {:?}, refused {}, reason {:?}",
         got.report.device,
         got.report.device_refused,

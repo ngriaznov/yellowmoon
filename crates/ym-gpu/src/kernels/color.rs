@@ -127,6 +127,7 @@ use ym_color::plan::{
     BufferKind, JoinKind, KeyRef, MAIN_NODE, PLAN_INPUTS, PictureRef, PlanResult,
 };
 use ym_color::tone::ToneParams;
+use ym_color::uniform::{Amounts, Target};
 use ym_color::warp::{WARP_MAX_PINS, Warp};
 
 use super::copy::encode_copy_into;
@@ -285,6 +286,10 @@ pub(crate) const NODE_FILM_LIVE: u32 = 1024;
 /// The Film step is a Face Refinement node's (`N_FACE`, `docs/27` S-13): its picture covers only the regions around the faces,
 /// and a pixel that holds all zeros there has no picture and keeps the node's input.
 pub(crate) const NODE_FACE: u32 = 4096;
+/// The step is a Colour Uniform node's (`N_UNIFORM`, `docs/32` section 6): after the trims, C9, C9b and C11 (a node of this kind
+/// has none of them) the kernel pulls the colour toward the target held in the record's grade rows ([`R_UNI_T`], [`R_UNI_K`],
+/// [`R_UNI_R`]). Set only for a live step: a node at its identity is [`NODE_SKIP`].
+pub(crate) const NODE_UNIFORM: u32 = 8192;
 /// The mask row is subtracted (`MF_SUBTRACT`, in `MaskOpU::head.y`).
 pub(crate) const MASK_SUBTRACT: u32 = 1;
 /// The mask row is inverted (`MF_INVERT`).
@@ -295,7 +300,7 @@ pub(crate) const REC_ROWS: u32 = (size_of::<NodeRecU>() / 16) as u32;
 pub(crate) const MASK_ROW_VEC4: u32 = (size_of::<MaskOpU>() / 16) as u32;
 
 /// The row (`vec4`) of each field of a node record: `R_*` in `color.wgsl`, written from [`NodeRecU`].
-pub(crate) fn record_rows() -> [(&'static str, u32); 13] {
+pub(crate) fn record_rows() -> [(&'static str, u32); 16] {
     let row = |bytes: usize| (bytes / 16) as u32;
     [
         ("R_CTL", row(offset_of!(NodeRecU, ctl))),
@@ -311,6 +316,9 @@ pub(crate) fn record_rows() -> [(&'static str, u32); 13] {
         ("R_WARP_N", row(offset_of!(NodeRecU, warp_n))),
         ("R_WARP_MV", row(offset_of!(NodeRecU, warp_mv))),
         ("R_JOIN", row(offset_of!(NodeRecU, join))),
+        ("R_UNI_T", row(offset_of!(NodeRecU, grade0))),
+        ("R_UNI_K", row(offset_of!(NodeRecU, zone_amt))),
+        ("R_UNI_R", row(offset_of!(NodeRecU, zone_ctr))),
     ]
 }
 
@@ -613,6 +621,27 @@ fn lut_data(lut: &Lut) -> (Vec<f32>, LutDescU) {
     d.dmax = f4(lut.cube.domain_max(), 1.0);
     luts.extend(lut.cube.to_rgba_f32());
     (luts, d)
+}
+
+/// Writes a Colour Uniform step into the record's grade rows (`docs/32` section 6, `docs/17`): `R_UNI_T` is the target's chroma
+/// `(c1, c2)` and its unit vector `(cos, sin)`, `R_UNI_K` its tone and the three amounts (hue, saturation, lightness), `R_UNI_R`'s
+/// first lane the target's chroma length. All of them are made in f64 and rounded once.
+fn uniform_record(r: &mut NodeRecU, t: &Target, a: &Amounts) {
+    let rt = t.c1.hypot(t.c2);
+    // The target is held at a chroma of 0.02 or more, so the division is safe; a zero reads as the +e1 axis.
+    let (cs, sn) = if rt > 0.0 {
+        (t.c1 / rt, t.c2 / rt)
+    } else {
+        (1.0, 0.0)
+    };
+    r.grade0 = [t.c1 as f32, t.c2 as f32, cs as f32, sn as f32];
+    r.zone_amt = [
+        t.tone as f32,
+        a.hue as f32,
+        a.saturation as f32,
+        a.lightness as f32,
+    ];
+    r.zone_ctr = [rt as f32, 0.0, 0.0, 0.0];
 }
 
 /// C7 into the block: the highlight range's knee, Sony clip and expansion (stops over grey) and the toe's
@@ -1012,18 +1041,6 @@ impl ChainTables {
         chain: &ColorChain,
     ) -> Result<PreparedChain, GpuError> {
         let params = chain.params();
-        // A live Colour Uniform node has no kernel yet (CU-05): the device refuses the plan and the CPU makes the frame, with
-        // this as its reason (`RenderReport::cpu_reason`).
-        if params
-            .nodes
-            .others
-            .values()
-            .any(|n| !n.bypass && n.uniform.as_ref().is_some_and(|u| !u.is_identity()))
-        {
-            return Err(GpuError::InvalidInput(
-                "a Colour Uniform node is not on the device yet".to_owned(),
-            ));
-        }
         let space = chain.space();
         let look_kind = classify_look(params);
         // C1 to C6 (the fused matrix) and C7.
@@ -1316,7 +1333,14 @@ impl NodePlan {
             let warp = Warp::new(&n.warp);
             let grade = !n.grade.is_identity();
             let curve = !n.curves.is_identity();
-            if n.bypass || (gain.is_none() && !grade && warp.is_identity() && !curve) {
+            // A Colour Uniform node's live step, decided in f64 as the CPU's `PreparedNode::new` does.
+            let uni = n
+                .uniform
+                .filter(|u| !u.is_identity())
+                .and_then(|u| u.target.map(|t| (t, u.amounts)));
+            if n.bypass
+                || (gain.is_none() && !grade && warp.is_identity() && !curve && uni.is_none())
+            {
                 bits |= NODE_SKIP;
             } else {
                 if let Some(g) = gain {
@@ -1336,6 +1360,18 @@ impl NodePlan {
                     r.ctl[2] = curve_bits[next_set];
                     r.ctl[3] = 4 * next_set as u32;
                     next_set += 1;
+                }
+                if let Some((t, a)) = uni {
+                    // The record's grade rows hold the target: a node with a grade of its own would need them too (a Colour
+                    // Uniform node has none; the graph never makes such a node), so the kernel cannot hold it.
+                    if grade {
+                        return Err(GpuError::InvalidInput(format!(
+                            "node {} has a grade and a Colour Uniform step",
+                            step.node
+                        )));
+                    }
+                    bits |= NODE_UNIFORM;
+                    uniform_record(&mut r, &t, &a);
                 }
             }
             // A Film node: its picture is read from the plan buffer, its Strength is in the gain's first lane.
@@ -2627,6 +2663,55 @@ mod tests {
         assert_eq!(MASK_ROW_VEC4, 4);
         assert_eq!(REC_ROWS, 83);
         assert_eq!(MAX_STEPS * 64 * size_of::<MaskOpU>(), 262_144);
+    }
+
+    /// CU-05 (`docs/32` section 6): a Colour Uniform step uses the grade's rows of the record, which a node of that kind has free,
+    /// so the record did not grow and no binding was added; `offset_of!` pins which rows.
+    #[test]
+    fn the_uniform_step_lives_in_the_grade_rows_of_the_record() {
+        let rows: std::collections::BTreeMap<_, _> = record_rows().into_iter().collect();
+        assert_eq!(rows["R_UNI_T"], rows["R_GRADE0"]);
+        assert_eq!(rows["R_UNI_K"], rows["R_ZONE_AMT"]);
+        assert_eq!(rows["R_UNI_R"], rows["R_ZONE_CTR"]);
+        assert_eq!(rows["R_UNI_T"] as usize * 16, offset_of!(NodeRecU, grade0));
+        assert_eq!(
+            rows["R_UNI_K"] as usize * 16,
+            offset_of!(NodeRecU, zone_amt)
+        );
+        assert_eq!(
+            rows["R_UNI_R"] as usize * 16,
+            offset_of!(NodeRecU, zone_ctr)
+        );
+        assert_eq!(size_of::<NodeRecU>(), 1328);
+        // The bit is free: no other `NODE_*` flag is set in it.
+        let others = [
+            NODE_SKIP,
+            NODE_TRIM,
+            NODE_GRADE,
+            NODE_WARP,
+            NODE_CURVES,
+            NODE_MAIN,
+            NODE_BLEND,
+            NODE_INVERT,
+            NODE_LUMA,
+            NODE_FILM,
+            NODE_FILM_LIVE,
+            NODE_JOIN,
+            NODE_FACE,
+        ];
+        assert!(others.iter().all(|b| b & NODE_UNIFORM == 0));
+        assert!(NODE_UNIFORM.is_power_of_two());
+        // The record of a step: the target's chroma and unit vector, the tone and the three amounts, the chroma's length.
+        let mut r = NodeRecU::default();
+        let t = Target::from_stored(26.0, 9.7, 0.3);
+        uniform_record(&mut r, &t, &Amounts::from_percent(80.0, 60.0, 40.0));
+        let rt = t.c1.hypot(t.c2);
+        assert_eq!(r.grade0[0], t.c1 as f32);
+        assert_eq!(r.grade0[1], t.c2 as f32);
+        assert!((f64::from(r.grade0[2]) - 26f64.to_radians().cos()).abs() < 1e-7);
+        assert!((f64::from(r.grade0[3]) - 26f64.to_radians().sin()).abs() < 1e-7);
+        assert_eq!(r.zone_amt, [t.tone as f32, 0.8, 0.6, 0.4]);
+        assert_eq!(r.zone_ctr[0], rt as f32);
     }
 
     #[test]

@@ -17,6 +17,7 @@ use ym_color::grade::{
 };
 use ym_color::plan::{PLAN_KEYS, PLAN_REGISTERS};
 use ym_color::tone::HIGHLIGHT_GREY;
+use ym_color::uniform::{HUE_FADE, HUE_FULL};
 use ym_color::warp::{
     WARP_EXP_LIMIT, WARP_MAX_PINS, WARP_MAX_STEPS, WARP_NEUTRAL_GUARD, WARP_TONE_HALF_WIDTH,
 };
@@ -25,9 +26,9 @@ use super::color::{
     J_AL, J_BASE, J_HEAD, J_IN, J_SPLIT, JOIN_COMBINER, JOIN_LAYER, JOIN_PARALLEL, JOIN_ROWS,
     JOIN_SPLITTER, MASK_INVERT, MASK_ROW_VEC4, MASK_SUBTRACT, NODE_BLEND, NODE_CURVES, NODE_FACE,
     NODE_FILM, NODE_FILM_LIVE, NODE_GRADE, NODE_INVERT, NODE_JOIN, NODE_LUMA, NODE_MAIN, NODE_NONE,
-    NODE_SKIP, NODE_TRIM, NODE_WARP, R_WARP_LK, REC_ROWS, REF_INDEX, REF_INPUT, REF_KEY,
-    REF_PICTURE, REF_REGISTER, REF_SHIFT, REF_SLOT, WARP_LOCK_ROWS, WARP_MOVE_ROWS, blend_code,
-    record_rows,
+    NODE_SKIP, NODE_TRIM, NODE_UNIFORM, NODE_WARP, R_WARP_LK, REC_ROWS, REF_INDEX, REF_INPUT,
+    REF_KEY, REF_PICTURE, REF_REGISTER, REF_SHIFT, REF_SLOT, WARP_LOCK_ROWS, WARP_MOVE_ROWS,
+    blend_code, record_rows,
 };
 use crate::device::StorageMode;
 use ym_color::mask::OpKind;
@@ -789,6 +790,8 @@ fn constants() -> String {
         ("WARP_NEUTRAL_GUARD", WARP_NEUTRAL_GUARD),
         ("WARP_TONE_HALF_WIDTH", WARP_TONE_HALF_WIDTH),
         ("WARP_EXP_LIMIT", WARP_EXP_LIMIT),
+        ("UNI_HUE_FULL", HUE_FULL),
+        ("UNI_HUE_FADE", HUE_FADE),
     ] {
         let _ = writeln!(s, "const {n}: f32 = {};", f(v));
     }
@@ -835,6 +838,7 @@ fn constants() -> String {
         ("N_FILM", NODE_FILM),
         ("N_FILM_LIVE", NODE_FILM_LIVE),
         ("N_FACE", NODE_FACE),
+        ("N_UNIFORM", NODE_UNIFORM),
         ("N_JOIN", NODE_JOIN),
         ("JK_PARALLEL", JOIN_PARALLEL),
         ("JK_LAYER", JOIN_LAYER),
