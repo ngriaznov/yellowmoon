@@ -617,7 +617,7 @@ fn an_identity_kernel_gives_the_input_and_the_cell_kernel_the_twins_picture() {
 }
 
 #[test]
-fn a_type_with_no_kernel_is_refused_with_its_name() {
+fn a_type_with_no_kernel_is_refused_with_its_name_and_one_with_a_kernel_runs() {
     let read = Area {
         x: 0,
         y: 0,
@@ -681,6 +681,16 @@ fn a_type_with_no_kernel_is_refused_with_its_name() {
                     )
                     .map(|_| ())
                 });
+            // A type whose task has landed (Soft, BL-06) runs; the others are refused with their name.
+            let landed = ym_gpu::kernels::blur_stack::device_kernel(&BlurParams {
+                kind,
+                respect_mask_edges: true,
+            })
+            .is_some();
+            if landed {
+                assert!(r.is_ok(), "{name} has a kernel and was refused: {r:?}");
+                continue;
+            }
             let Err(e) = r else {
                 panic!("{name} ran on the device without a kernel");
             };

@@ -125,15 +125,13 @@ pub trait BlurKernel: Send + Sync + std::fmt::Debug {
 }
 
 /// The device kernel of the type `params` names, or `None` while its task has not landed. **The one place a type plugs in**
-/// (BL-06 Soft, BL-07 Lens, BL-08 Motion, BL-09 Zoom): add its arm here. A `None` is a refusal per type, not per node: the
+/// (BL-06 Soft is here, BL-07 Lens, BL-08 Motion, BL-09 Zoom): add its arm here. A `None` is a refusal per type, not per node: the
 /// plan's other nodes still run on the device, and a frame that holds the node is made by the CPU.
 #[must_use]
 pub fn device_kernel(params: &BlurParams) -> Option<Arc<dyn BlurKernel>> {
     match params.kind {
-        BlurKind::Soft { .. }
-        | BlurKind::Lens { .. }
-        | BlurKind::Motion { .. }
-        | BlurKind::Zoom { .. } => None,
+        BlurKind::Soft { radius } => Some(Arc::new(super::blur_soft::BlurSoft::new(radius))),
+        BlurKind::Lens { .. } | BlurKind::Motion { .. } | BlurKind::Zoom { .. } => None,
     }
 }
 
@@ -170,18 +168,18 @@ pub struct BlurWork {
 /// and its plane length.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, Default)]
-struct BlurU {
-    a: [i32; 4],
-    b: [i32; 4],
-    c: [i32; 4],
-    d: [i32; 4],
-    win: [i32; 4],
-    p: [f32; 4],
-    op: [u32; 4],
+pub(super) struct BlurU {
+    pub(super) a: [i32; 4],
+    pub(super) b: [i32; 4],
+    pub(super) c: [i32; 4],
+    pub(super) d: [i32; 4],
+    pub(super) win: [i32; 4],
+    pub(super) p: [f32; 4],
+    pub(super) op: [u32; 4],
 }
 
 /// An image placed at `(x, y)`.
-fn placed(img: &GpuImage, x: i64, y: i64) -> [i32; 4] {
+pub(super) fn placed(img: &GpuImage, x: i64, y: i64) -> [i32; 4] {
     [
         x as i32,
         y as i32,
@@ -190,7 +188,7 @@ fn placed(img: &GpuImage, x: i64, y: i64) -> [i32; 4] {
     ]
 }
 
-fn groups(w: usize, h: usize) -> (u32, u32, u32) {
+pub(super) fn groups(w: usize, h: usize) -> (u32, u32, u32) {
     ((w as u32).div_ceil(GROUP), (h as u32).div_ceil(GROUP), 1)
 }
 
@@ -568,6 +566,7 @@ pub(super) fn body(id: KernelId) -> String {
         KernelId::BlurPyramid => include_str!("../shaders/blur_pyramid.wgsl"),
         KernelId::BlurUpsample => include_str!("../shaders/blur_upsample.wgsl"),
         KernelId::BlurBlend => include_str!("../shaders/blur_blend.wgsl"),
+        KernelId::BlurSoft => include_str!("../shaders/blur_soft.wgsl"),
         _ => return String::new(),
     };
     let mut s = constants();
@@ -640,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn no_type_has_a_device_kernel_until_its_task_lands() {
+    fn the_types_whose_task_has_not_landed_have_no_device_kernel() {
         use ym_color::blur::BlurKind;
         for kind in [
             BlurKind::Soft { radius: 10.0 },
@@ -663,7 +662,13 @@ mod tests {
                 kind,
                 respect_mask_edges: true,
             };
-            assert!(device_kernel(&params).is_none(), "{}", type_name(&params));
+            let landed = matches!(params.kind, BlurKind::Soft { .. });
+            assert_eq!(
+                device_kernel(&params).is_some(),
+                landed,
+                "{}",
+                type_name(&params)
+            );
         }
     }
 }

@@ -115,7 +115,7 @@ pub fn reads_px(sigma_px: f64) -> usize {
 
 /// The sums of the weighted planes `p` (a window of `w x h` pixels at `frame.x0, frame.y0`) by the Soft Gaussian of `sigma`
 /// pixels: the direct separable sum (the oracle's own) up to [`DIRECT_MAX_SIGMA_PX`], else the coarse grid.
-pub(super) fn gather(p: &[Plane4], w: usize, h: usize, frame: &Frame, sigma: f64) -> Vec<Plane4> {
+pub fn gather(p: &[Plane4], w: usize, h: usize, frame: &Frame, sigma: f64) -> Vec<Plane4> {
     let level = cell_level(sigma);
     if level == 0 {
         return gather_separable(p, w, h, &gauss_weights(sigma));

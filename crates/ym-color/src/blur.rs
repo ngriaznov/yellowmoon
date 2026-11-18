@@ -421,7 +421,8 @@ pub fn zoom_taps(line_px: f64) -> usize {
 // ------------------------------------------------------------------------------------------------ the sums
 
 /// A weighted plane: `[omega X (3), omega]`.
-type Plane4 = [f64; 4];
+/// The four planes of a pixel: `omega X` (three) and `omega`.
+pub type Plane4 = [f64; 4];
 
 fn check_finite(params: &BlurParams) -> Result<(), BlurError> {
     let fin = |v: f64, name: &'static str| {
