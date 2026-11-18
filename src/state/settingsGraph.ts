@@ -50,6 +50,8 @@ export type FilmItem = Extract<NodeItem, { kind: "film" }>;
 export type FaceRefinementItem = Extract<NodeItem, { kind: "face_refinement" }>;
 /** A Colour Uniform node as an item of the graph (`docs/32`). */
 export type ColorUniformItem = Extract<NodeItem, { kind: "color_uniform" }>;
+/** A Blur node as an item of the graph (`docs/33`). The node view lists it from BL-12. */
+export type BlurItem = Extract<NodeItem, { kind: "blur" }>;
 /** A node that has a card in the node view and a number: a corrector (Main included), a Film node, a Face Refinement node or a Colour Uniform node. */
 export type CardItem = CorrectorItem | FilmItem | FaceRefinementItem | ColorUniformItem;
 /** A node of `docs/25` as an item of the graph: a Parallel, a Layer, a Splitter or a Combiner. It has a glyph card and no number. */
@@ -236,6 +238,8 @@ export type MixerPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "mode" | "o
 export type FaceRefinementPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "same_for_all" | "all" | "faces" | "protect" | "masks">;
 /** The fields of a Colour Uniform node a patch may set (`docs/32` section 5.3). */
 export type ColorUniformPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "target" | "compress" | "masks">;
+/** The fields of a Blur node a patch may set (`docs/33` section 5.3). */
+export type BlurPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "type" | "soft" | "lens" | "motion" | "zoom" | "respect_mask_edges" | "masks">;
 /** The fields of a Film node a patch may set. */
 export type FilmPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "film" | "print" | "halation" | "grain" | "strength" | "masks">;
 
@@ -246,7 +250,7 @@ export type FilmPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "film" | "pr
  */
 export function patchOf(node: typeof INPUT_ID, partial: InputPatch): SettingsPatch;
 export function patchOf(node: typeof OUTPUT_ID, partial: OutputPatch): SettingsPatch;
-export function patchOf(node: number, partial: CorrectorPatch | FilmPatch | FaceRefinementPatch | ColorUniformPatch | MixerPatch): SettingsPatch;
+export function patchOf(node: number, partial: CorrectorPatch | FilmPatch | FaceRefinementPatch | ColorUniformPatch | BlurPatch | MixerPatch): SettingsPatch;
 export function patchOf(node: NodeId, partial: NodePatch): SettingsPatch {
   return { nodes: { [String(node)]: partial } };
 }
@@ -427,6 +431,27 @@ export function newColorUniform(id: number, pos: NodePos, name = COLOR_UNIFORM_N
     pos,
     target: null,
     compress: { hue: 0, saturation: 0, lightness: 0 },
+    masks: { invert: false, items: [] },
+  };
+}
+
+/** The name a new Blur node has (`docs/33` section 4). */
+export const BLUR_NAME = "Blur";
+
+/** A new Blur node (`docs/33` section 2.5): Soft at Radius 20, every other amount 20, the centre of the picture, Respect mask edges on, no masks. */
+export function newBlur(id: number, pos: NodePos, name = BLUR_NAME): BlurItem {
+  return {
+    kind: "blur",
+    id,
+    name,
+    bypass: false,
+    pos,
+    type: "soft",
+    soft: { radius: 20 },
+    lens: { radius: 20, blades: 0, rotation_deg: 0, highlights: 0 },
+    motion: { length: 20, angle_deg: 0 },
+    zoom: { amount: 20, center: [0.5, 0.5] },
+    respect_mask_edges: true,
     masks: { invert: false, items: [] },
   };
 }
@@ -631,7 +656,7 @@ function applyGrade(grade: NodeGrade, patch: GradePatch): NodeGrade {
 
 /** A node with a node patch applied: whole fields replace, `rolloff`, `decode`, `lens`, `trim`, `grade` and `masks` merge their parts. */
 function applyNode(item: NodeItem, patch: NodePatch): NodeItem {
-  const { kind: _kind, rolloff, decode, lens, trim, grade, masks, film, print, halation, grain, all, protect, compress, ...fields } = patch;
+  const { kind: _kind, rolloff, decode, lens, trim, grade, masks, film, print, halation, grain, all, protect, compress, soft, motion, zoom, ...fields } = patch;
   const next: Record<string, unknown> = { ...item };
   for (const [key, value] of Object.entries(fields)) if (value !== undefined) next[key] = value;
   if (item.kind === "input") {
@@ -669,6 +694,14 @@ function applyNode(item: NodeItem, patch: NodePatch): NodeItem {
     if (compress) next.compress = { ...item.compress, ...compress };
     if (masks) next.masks = applyMasks(item.masks, masks);
   }
+  if (item.kind === "blur") {
+    // Each type's group merges the parts it names, as the core does (`docs/33` section 5.3); `type` and `respect_mask_edges` replace.
+    if (soft) next.soft = { ...item.soft, ...soft };
+    if (lens) next.lens = { ...item.lens, ...lens };
+    if (motion) next.motion = { ...item.motion, ...motion };
+    if (zoom) next.zoom = { ...item.zoom, ...zoom };
+    if (masks) next.masks = applyMasks(item.masks, masks);
+  }
   return next as unknown as NodeItem;
 }
 
@@ -679,6 +712,7 @@ function addedNode(id: NodeId, patch: NodePatch, correctors: number): NodeItem {
   if (patch.kind === "output") return applyNode(defaultOutput(NEUTRAL_LOOK, pos), patch);
   if (patch.kind === "film") return applyNode(newFilm(typeof id === "number" ? id : MAIN_ID, pos), patch);
   if (patch.kind === "face_refinement") return applyNode(newFaceRefinement(typeof id === "number" ? id : MAIN_ID, pos), patch);
+  if (patch.kind === "blur") return applyNode(newBlur(typeof id === "number" ? id : MAIN_ID, pos), patch);
   if (patch.kind === "color_uniform") return applyNode(newColorUniform(typeof id === "number" ? id : MAIN_ID, pos), patch);
   if (patch.kind === "parallel" || patch.kind === "layer" || patch.kind === "splitter" || patch.kind === "combiner") {
     return applyNode(newMixer(patch.kind, typeof id === "number" ? id : MAIN_ID, pos), patch);

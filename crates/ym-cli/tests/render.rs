@@ -1242,6 +1242,23 @@ fn a_settings_file_that_does_not_parse_is_a_usage_error_and_nothing_is_rendered(
             r#"{ "nodes": { "items": [ { "id": 2, "kind": "color_uniform", "target": { "hue_deg": 20, "saturation": 9 } } ] } }"#,
             "missing field `lightness_ev`",
         ),
+        // The Blur node (docs/33 section 5.2), each refusal with its sentence.
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "blur", "range": { "width": 0.05 } } ] } }"#,
+            "A Blur node has no field called “range”.",
+        ),
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "corrector", "type": "soft" } ] } }"#,
+            "A corrector has no field called “type”.",
+        ),
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "blur", "type": "spin" } ] } }"#,
+            "A Blur node has no type called “spin”.",
+        ),
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "blur", "zoom": { "center": [0.5] } } ] } }"#,
+            "expected an array of length 2",
+        ),
         // A typo whose value is an object must not pass for a photo's file name.
         (
             r#"{ "color_ballance": { "shadows": [0.1, 0.0] } }"#,
@@ -2572,4 +2589,59 @@ fn a_settings_file_with_a_colour_uniform_node_is_read_and_the_photo_renders() {
     assert_eq!(node["target"]["hue_deg"], 26.0);
     assert_eq!(node["compress"]["saturation"], 100.0);
     assert_eq!(node["compress"]["lightness"], 0.0);
+}
+
+/// A settings file with a Blur node is read and checked and the photo is written; the record holds the node as the document does.
+/// Until BL-04 the node is the identity (`render_nodes.rs` compares the pixels on the core;
+/// TODO(BL-04): then the node blurs where its masks select).
+#[test]
+fn a_settings_file_with_a_blur_node_is_read_and_the_photo_renders() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let file = sb.root().join("blur.json");
+    std::fs::write(
+        &file,
+        r#"{ "nodes": {
+            "items": [ { "id": 2, "kind": "blur", "type": "zoom",
+                "lens": { "blades": 2, "rotation_deg": 375 },
+                "motion": { "angle_deg": 200 },
+                "zoom": { "amount": 160, "center": [1.5, 0.25] },
+                "masks": { "items": [ { "kind": "radial", "invert": true } ] } } ],
+            "links": [
+                { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+                { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+                { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } }"#,
+    )
+    .expect("write");
+    let out = sb
+        .ym()
+        .args(["render", "--json", "--settings"])
+        .arg(&file)
+        .arg(&arw)
+        .assert()
+        .success();
+    let objects = json_lines(&out.get_output().stdout);
+    assert_eq!(objects.len(), 1);
+    let o = &objects[0];
+    assert_eq!(o["status"], "ok");
+    let path = o["output"].as_str().expect("output");
+    assert!(std::path::Path::new(path).exists(), "the photo was written");
+    let items = o["settings"]["nodes"]["items"].as_array().expect("items");
+    let node = items
+        .iter()
+        .find(|i| i["kind"] == "blur")
+        .expect("the Blur node is in the record");
+    assert_eq!(node["name"], "Blur");
+    assert_eq!(node["type"], "zoom");
+    assert_eq!(node["respect_mask_edges"], true);
+    // The numbers are read as the core reads them: held, wrapped and clamped.
+    assert_eq!(node["lens"]["blades"], 3);
+    assert_eq!(node["lens"]["rotation_deg"], 15.0);
+    assert_eq!(node["motion"]["angle_deg"], 20.0);
+    assert_eq!(node["zoom"]["amount"], 100.0);
+    assert_eq!(node["zoom"]["center"], serde_json::json!([1.0, 0.25]));
+    // Every type's group is in the record.
+    for group in ["soft", "lens", "motion", "zoom"] {
+        assert!(node[group].is_object(), "{group}");
+    }
 }

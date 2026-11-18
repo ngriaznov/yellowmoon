@@ -1779,6 +1779,7 @@ fn edit_everything() -> SettingsPatch {
                     flares: Some(40.0),
                     edges: Some(35.0),
                     anamorphic: Some(15.0),
+                    ..ym_core::settings::LensPatch::default()
                 }),
                 sharpen: Some(AutoOr::Manual(SharpenManualPatch {
                     amount: Some(80.0),

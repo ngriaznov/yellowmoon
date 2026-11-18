@@ -1997,6 +1997,7 @@ fn a_lens_is_the_same_file_through_the_app_the_options_and_a_settings_file() {
                 flares: Some(60.0),
                 edges: Some(start_edges),
                 anamorphic: Some(50.0),
+                ..ym_core::settings::LensPatch::default()
             }),
             ..NodePatch::default()
         },
@@ -2051,6 +2052,7 @@ fn a_lens_is_the_same_picture_through_the_app_and_the_binary() {
         flares: Some(60.0),
         edges: Some(50.0),
         anamorphic: Some(50.0),
+        ..ym_core::settings::LensPatch::default()
     };
     let off: Vec<(&str, Vec<u8>)> = ["jpeg", "dng"]
         .into_iter()

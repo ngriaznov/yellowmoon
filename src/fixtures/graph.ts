@@ -10,7 +10,7 @@ import type { DevelopSettings, NodeId, NodeItem, NodeKind, NodeLink, NodePatch, 
 import { MOCK_FILM_PAPERS, MOCK_FILM_STOCKS } from "./film";
 import { clone, INPUT_ID, MAIN_ID, nodeAsPatch, nodeIdOfKey, nodeOf, numberedOf, OUTPUT_ID } from "../state/settingsGraph";
 
-/** Most numbered nodes a photo can have, Main included: correctors, Film nodes, Face Refinement nodes, Colour Uniform nodes, mixers, Splitters and Combiners (`docs/23` section 3.5, `docs/25` section 2.3). */
+/** Most numbered nodes a photo can have, Main included: correctors, Film nodes, Face Refinement nodes, Colour Uniform nodes, Blur nodes, mixers, Splitters and Combiners (`docs/23` section 3.5, `docs/25` section 2.3). */
 export const MAX_NODES = 64;
 /** Most picture inputs a mixer can have (`docs/25` section 2.1). */
 export const MIXER_INPUTS = 8;
@@ -65,6 +65,8 @@ function article(kind: NodeKind): string {
       return "a face refinement node";
     case "color_uniform":
       return "a Colour Uniform node";
+    case "blur":
+      return "a Blur node";
     case "parallel":
       return "a parallel mixer";
     case "layer":
@@ -103,6 +105,7 @@ const FIELDS: Readonly<Record<NodeKind, ReadonlySet<string>>> = {
   film: new Set(["kind", "pos", "name", "bypass", "film", "print", "halation", "grain", "strength", "masks"]),
   face_refinement: new Set(["kind", "pos", "name", "bypass", "same_for_all", "all", "faces", "protect", "masks"]),
   color_uniform: new Set(["kind", "pos", "name", "bypass", "target", "compress", "masks"]),
+  blur: new Set(["kind", "pos", "name", "bypass", "type", "soft", "lens", "motion", "zoom", "respect_mask_edges", "masks"]),
   parallel: new Set(["kind", "pos", "name", "bypass"]),
   layer: new Set(["kind", "pos", "name", "bypass", "mode", "opacity"]),
   splitter: new Set(["kind", "pos", "name"]),
@@ -110,7 +113,11 @@ const FIELDS: Readonly<Record<NodeKind, ReadonlySet<string>>> = {
 };
 
 /** The kinds a patch may give a new numbered node (`docs/23` section 3.7, `docs/25` section 2.5). */
-const NUMBERED_KINDS: ReadonlySet<NodeKind> = new Set(["corrector", "film", "face_refinement", "color_uniform", "parallel", "layer", "splitter", "combiner"]);
+const NUMBERED_KINDS: ReadonlySet<NodeKind> = new Set(["corrector", "film", "face_refinement", "color_uniform", "blur", "parallel", "layer", "splitter", "combiner"]);
+
+/** The parts of the Input's `lens` and of a Blur node's `lens` group (`docs/33` section 5.3). */
+const INPUT_LENS_PARTS: ReadonlySet<string> = new Set(["kind", "flares", "edges", "anamorphic"]);
+const BLUR_LENS_PARTS: ReadonlySet<string> = new Set(["radius", "blades", "rotation_deg", "highlights"]);
 
 /** The kind a node with this id has to be. */
 const kindOfId = (id: NodeId): NodeKind => (id === INPUT_ID ? "input" : id === OUTPUT_ID ? "output" : "corrector");
@@ -138,6 +145,12 @@ export function refusalOfPatch(settings: DevelopSettings, patch: SettingsPatch):
     for (const field of Object.keys(node)) {
       if (!FIELDS[kind].has(field)) return GRAPH_TEXT.unknownField(kind, field);
     }
+    // `lens` is a field of the Input and of a Blur node, with parts of its own on each: a part of the other's is unknown.
+    if (node.lens !== undefined) {
+      const parts = Object.keys(node.lens);
+      const foreign = parts.find((part) => (kind === "blur" ? INPUT_LENS_PARTS : BLUR_LENS_PARTS).has(part));
+      if (foreign !== undefined) return GRAPH_TEXT.unknownField(kind, kind === "blur" ? "lens.kind" : "lens.radius");
+    }
   }
   return null;
 }
@@ -156,6 +169,7 @@ export function portsOf(kind: NodeKind): [readonly Port[], readonly Port[]] {
     case "film":
     case "face_refinement":
     case "color_uniform":
+    case "blur":
       return [["picture", "key"], ["picture", "key"]];
     case "parallel":
     case "layer":
@@ -202,7 +216,7 @@ function filmProblem(item: NodeItem): string | null {
 }
 
 function maskProblem(item: NodeItem): string | null {
-  if (item.kind !== "corrector" && item.kind !== "film" && item.kind !== "face_refinement" && item.kind !== "color_uniform") return null;
+  if (item.kind !== "corrector" && item.kind !== "film" && item.kind !== "face_refinement" && item.kind !== "color_uniform" && item.kind !== "blur") return null;
   if (item.masks.items.length > MAX_MASKS) return GRAPH_TEXT.tooManyMasks;
   if (item.kind === "face_refinement" && item.faces.length > MAX_FACES) return GRAPH_TEXT.tooManyFaces;
   let brush = item.kind === "face_refinement" ? item.protect.strokes.reduce((n, stroke) => n + stroke.points.length, 0) : 0;
@@ -281,7 +295,7 @@ export function copiedPatch(rs: ResolvedSettings): SettingsPatch {
   for (const item of rs.settings.nodes.items) {
     const patch = nodeAsPatch(item) as Record<string, unknown>;
     if (item.kind === "input") for (const field of COPY_LEAVES_OUT) delete patch[field];
-    if (item.kind === "corrector" || item.kind === "film" || item.kind === "face_refinement" || item.kind === "color_uniform") {
+    if (item.kind === "corrector" || item.kind === "film" || item.kind === "face_refinement" || item.kind === "color_uniform" || item.kind === "blur") {
       patch.masks = {
         invert: item.masks.invert,
         items: item.masks.items.map((row) => (row.kind === "object" ? { ...clone(row), points: [], box: null } : clone(row))),

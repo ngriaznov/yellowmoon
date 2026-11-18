@@ -18,6 +18,9 @@ use serde_json::{Map, Value};
 use ym_color::wb::LightSource;
 use ym_looks::library::LookId;
 
+use super::blur::{
+    BLUR_AMOUNT_RANGE, BLUR_BLADES_MAX, BLUR_BLADES_MIN, BLUR_CENTER_RANGE, BlurNode, wrap_deg,
+};
 use super::face::{FaceRefinementNode, MAX_FACES};
 use super::film::{
     FILM_EXPOSURE_RANGE_EV, FilmNode, GRAIN_AMOUNT_RANGE, HALATION_AMOUNT_RANGE, LIGHTS_RANGE,
@@ -60,6 +63,8 @@ pub const DEFAULT_FILM_NAME: &str = "Film";
 pub const DEFAULT_FACE_REFINEMENT_NAME: &str = "Face Refinement";
 /// The name a new Colour Uniform node has (seven letters, so the card does not cut it).
 pub const DEFAULT_UNIFORM_NAME: &str = "Uniform";
+/// The name a new Blur node has (four letters, so the card does not cut it).
+pub const DEFAULT_BLUR_NAME: &str = "Blur";
 
 // ---------------------------------------------------------------------------------------------
 // Rules
@@ -306,6 +311,8 @@ pub enum NodeKind {
     FaceRefinement,
     /// A Colour Uniform node (`docs/32`).
     ColorUniform,
+    /// A Blur node (`docs/33`).
+    Blur,
     /// A Parallel mixer (`docs/25`).
     Parallel,
     /// A Layer mixer (`docs/25`).
@@ -319,13 +326,14 @@ pub enum NodeKind {
 impl NodeKind {
     /// Every kind. The scheduler's footprint list (`pipeline::schedule::step_kind`) is an exhaustive `match` over the same
     /// kinds, and the random-graph test draws from this list (`docs/23` section 5.12).
-    pub const ALL: [NodeKind; 10] = [
+    pub const ALL: [NodeKind; 11] = [
         NodeKind::Input,
         NodeKind::Output,
         NodeKind::Corrector,
         NodeKind::Film,
         NodeKind::FaceRefinement,
         NodeKind::ColorUniform,
+        NodeKind::Blur,
         NodeKind::Parallel,
         NodeKind::Layer,
         NodeKind::Splitter,
@@ -343,6 +351,7 @@ impl NodeKind {
             Self::Film => "a film node",
             Self::FaceRefinement => "a face refinement node",
             Self::ColorUniform => "a Colour Uniform node",
+            Self::Blur => "a Blur node",
             Self::Parallel => "a parallel mixer",
             Self::Layer => "a layer mixer",
             Self::Splitter => "a splitter",
@@ -360,6 +369,7 @@ impl NodeKind {
             Self::Film => "A film node",
             Self::FaceRefinement => "A face refinement node",
             Self::ColorUniform => "A Colour Uniform node",
+            Self::Blur => "A Blur node",
             Self::Parallel => "A parallel mixer",
             Self::Layer => "A layer mixer",
             Self::Splitter => "A splitter",
@@ -377,6 +387,7 @@ impl NodeKind {
             Self::Film => "film",
             Self::FaceRefinement => "face_refinement",
             Self::ColorUniform => "color_uniform",
+            Self::Blur => "blur",
             Self::Parallel => "parallel",
             Self::Layer => "layer",
             Self::Splitter => "splitter",
@@ -394,16 +405,19 @@ impl NodeKind {
             | Self::Corrector
             | Self::Film
             | Self::FaceRefinement
-            | Self::ColorUniform => false,
+            | Self::ColorUniform
+            | Self::Blur => false,
         }
     }
 
     /// Whether this is a numbered kind other than a corrector (a Film node, a Face Refinement node, a Colour Uniform
-    /// node or one of `docs/25`'s four): the kinds a patch names to add such a node.
+    /// node, a Blur node or one of `docs/25`'s four): the kinds a patch names to add such a node.
     #[must_use]
     pub fn is_numbered_extra(self) -> bool {
-        matches!(self, Self::Film | Self::FaceRefinement | Self::ColorUniform)
-            || self.is_mixer_family()
+        matches!(
+            self,
+            Self::Film | Self::FaceRefinement | Self::ColorUniform | Self::Blur
+        ) || self.is_mixer_family()
     }
 
     /// Whether a node of this kind is a mixer proper (Parallel or Layer): numbered picture inputs, one output.
@@ -425,6 +439,7 @@ impl NodeKind {
             "film" => Ok(Self::Film),
             "face_refinement" => Ok(Self::FaceRefinement),
             "color_uniform" => Ok(Self::ColorUniform),
+            "blur" => Ok(Self::Blur),
             "parallel" => Ok(Self::Parallel),
             "layer" => Ok(Self::Layer),
             "splitter" => Ok(Self::Splitter),
@@ -638,7 +653,8 @@ pub fn ports_out(kind: NodeKind) -> &'static [Port] {
         NodeKind::Corrector
         | NodeKind::Film
         | NodeKind::FaceRefinement
-        | NodeKind::ColorUniform => &[Port::Picture, Port::Key],
+        | NodeKind::ColorUniform
+        | NodeKind::Blur => &[Port::Picture, Port::Key],
         NodeKind::Splitter => &[Port::Red, Port::Green, Port::Blue],
         NodeKind::Output => &[],
     }
@@ -652,7 +668,8 @@ pub fn ports_in(kind: NodeKind) -> &'static [Port] {
         NodeKind::Corrector
         | NodeKind::Film
         | NodeKind::FaceRefinement
-        | NodeKind::ColorUniform => &[Port::Picture, Port::Key],
+        | NodeKind::ColorUniform
+        | NodeKind::Blur => &[Port::Picture, Port::Key],
         NodeKind::Output | NodeKind::Splitter => &[Port::Picture],
         NodeKind::Parallel | NodeKind::Layer => mixer_inputs(),
         NodeKind::Combiner => &[Port::Red, Port::Green, Port::Blue],
@@ -935,6 +952,9 @@ pub struct NodeGraph {
     /// The Colour Uniform nodes by id (`docs/32`). They share the number space of the correctors, the Film nodes and the
     /// Face Refinement nodes.
     pub uniforms: BTreeMap<u32, ColorUniformNode>,
+    /// The Blur nodes by id (`docs/33`). They share the number space of the correctors, the Film nodes, the Face Refinement
+    /// nodes and the Colour Uniform nodes.
+    pub blurs: BTreeMap<u32, BlurNode>,
     /// The nodes of `docs/25` (Parallel, Layer, Splitter, Combiner) by id. They share the number space of the
     /// correctors and the Film nodes, and count toward the 64.
     pub mixers: BTreeMap<u32, MixerNode>,
@@ -956,6 +976,7 @@ impl NodeGraph {
             films: BTreeMap::new(),
             faces: BTreeMap::new(),
             uniforms: BTreeMap::new(),
+            blurs: BTreeMap::new(),
             mixers: BTreeMap::new(),
             output: OutputNode::with_look(look),
             links: Self::default_links(),
@@ -1034,6 +1055,17 @@ impl NodeGraph {
         self.uniforms.get_mut(&id)
     }
 
+    /// The Blur node with this id.
+    #[must_use]
+    pub fn blur(&self, id: u32) -> Option<&BlurNode> {
+        self.blurs.get(&id)
+    }
+
+    /// The Blur node with this id, to change.
+    pub fn blur_mut(&mut self, id: u32) -> Option<&mut BlurNode> {
+        self.blurs.get_mut(&id)
+    }
+
     /// The node of `docs/25` with this id.
     #[must_use]
     pub fn mixer(&self, id: u32) -> Option<&MixerNode> {
@@ -1054,6 +1086,7 @@ impl NodeGraph {
             .or_else(|| self.films.get(&id).map(|f| &f.masks))
             .or_else(|| self.faces.get(&id).map(|f| &f.masks))
             .or_else(|| self.uniforms.get(&id).map(|f| &f.masks))
+            .or_else(|| self.blurs.get(&id).map(|f| &f.masks))
     }
 
     /// The mask rows of a numbered node, to change.
@@ -1070,6 +1103,9 @@ impl NodeGraph {
         if self.uniforms.contains_key(&id) {
             return self.uniforms.get_mut(&id).map(|f| &mut f.masks);
         }
+        if self.blurs.contains_key(&id) {
+            return self.blurs.get_mut(&id).map(|f| &mut f.masks);
+        }
         self.faces.get_mut(&id).map(|f| &mut f.masks)
     }
 
@@ -1080,6 +1116,7 @@ impl NodeGraph {
             .chain(self.films.iter().map(|(id, f)| (*id, &f.masks)))
             .chain(self.faces.iter().map(|(id, f)| (*id, &f.masks)))
             .chain(self.uniforms.iter().map(|(id, f)| (*id, &f.masks)))
+            .chain(self.blurs.iter().map(|(id, f)| (*id, &f.masks)))
     }
 
     /// The number of numbered nodes: the correctors (Main included), the Film nodes, the Face Refinement nodes and the
@@ -1090,6 +1127,7 @@ impl NodeGraph {
             + self.films.len()
             + self.faces.len()
             + self.uniforms.len()
+            + self.blurs.len()
             + self.mixers.len()
     }
 
@@ -1102,6 +1140,7 @@ impl NodeGraph {
             .chain(self.films.keys().map(|id| (*id, NodeKind::Film)))
             .chain(self.faces.keys().map(|id| (*id, NodeKind::FaceRefinement)))
             .chain(self.uniforms.keys().map(|id| (*id, NodeKind::ColorUniform)))
+            .chain(self.blurs.keys().map(|id| (*id, NodeKind::Blur)))
             .chain(self.mixers.iter().map(|(id, m)| (*id, m.kind())))
             .collect();
         v.sort_by_key(|(id, _)| *id);
@@ -1117,6 +1156,7 @@ impl NodeGraph {
             NodeId::Corrector(n) if self.films.contains_key(&n) => Some(NodeKind::Film),
             NodeId::Corrector(n) if self.faces.contains_key(&n) => Some(NodeKind::FaceRefinement),
             NodeId::Corrector(n) if self.uniforms.contains_key(&n) => Some(NodeKind::ColorUniform),
+            NodeId::Corrector(n) if self.blurs.contains_key(&n) => Some(NodeKind::Blur),
             NodeId::Corrector(n) if self.mixers.contains_key(&n) => {
                 self.mixers.get(&n).map(MixerNode::kind)
             }
@@ -1171,6 +1211,7 @@ impl NodeGraph {
                 .or_else(|| self.film(n).map(|f| f.pos))
                 .or_else(|| self.face_refinement(n).map(|f| f.pos))
                 .or_else(|| self.color_uniform(n).map(|f| f.pos))
+                .or_else(|| self.blur(n).map(|f| f.pos))
                 .or_else(|| self.mixer(n).map(MixerNode::pos)),
         }
     }
@@ -1191,6 +1232,9 @@ impl NodeGraph {
         }
         if self.uniforms.contains_key(&id) {
             return self.uniforms.get_mut(&id).map(|f| &mut f.pos);
+        }
+        if self.blurs.contains_key(&id) {
+            return self.blurs.get_mut(&id).map(|f| &mut f.pos);
         }
         self.mixers.get_mut(&id).map(MixerNode::pos_mut)
     }
@@ -1378,6 +1422,11 @@ impl Serialize for NodeGraph {
                         items.push(item(node, kind, f)?);
                     }
                 }
+                NodeKind::Blur => {
+                    if let Some(f) = self.blur(id) {
+                        items.push(item(node, kind, f)?);
+                    }
+                }
                 NodeKind::Corrector => {
                     if let Some(c) = self.corrector(id) {
                         items.push(item(node, kind, c)?);
@@ -1443,6 +1492,17 @@ pub(crate) fn node_fields(kind: NodeKind) -> &'static [&'static str] {
             "masks",
         ],
         NodeKind::ColorUniform => &["name", "bypass", "target", "compress", "masks"],
+        NodeKind::Blur => &[
+            "name",
+            "bypass",
+            "type",
+            "soft",
+            "lens",
+            "motion",
+            "zoom",
+            "respect_mask_edges",
+            "masks",
+        ],
         NodeKind::Parallel => &["name", "bypass"],
         NodeKind::Layer => &["name", "bypass", "mode", "opacity"],
         NodeKind::Splitter | NodeKind::Combiner => &["name"],
@@ -1524,6 +1584,7 @@ impl NodeGraph {
                         k @ (NodeKind::Film
                         | NodeKind::FaceRefinement
                         | NodeKind::ColorUniform
+                        | NodeKind::Blur
                         | NodeKind::Parallel
                         | NodeKind::Layer
                         | NodeKind::Splitter
@@ -1577,6 +1638,22 @@ impl NodeGraph {
                     }
                     graph.faces.insert(n, node);
                 }
+                NodeId::Corrector(n) if kind == NodeKind::Blur => {
+                    let named = map.contains_key("name");
+                    // A group that is not an object is a parse error (serde alone would read a list as a group's fields).
+                    for group in ["soft", "lens", "motion", "zoom"] {
+                        if map.get(group).is_some_and(|v| !v.is_object()) {
+                            return Err(SettingsError::Parse(format!(
+                                "a Blur node's `{group}` must be an object"
+                            )));
+                        }
+                    }
+                    let mut node: BlurNode = read_node(map)?;
+                    if !named {
+                        node.name = DEFAULT_BLUR_NAME.to_owned();
+                    }
+                    graph.blurs.insert(n, node);
+                }
                 NodeId::Corrector(n) if kind == NodeKind::ColorUniform => {
                     let named = map.contains_key("name");
                     let mut node: ColorUniformNode = read_node(map)?;
@@ -1625,6 +1702,7 @@ impl NodeGraph {
             || !graph.films.is_empty()
             || !graph.faces.is_empty()
             || !graph.uniforms.is_empty()
+            || !graph.blurs.is_empty()
             || !graph.mixers.is_empty())
             && !placed.contains(&NodeId::Output)
         {
@@ -2099,6 +2177,83 @@ impl ColorUniformNode {
     }
 }
 
+impl BlurNode {
+    fn sanitise(&mut self, s: &mut Sanitiser, id: u32, prefix: &str) -> Result<(), SettingsError> {
+        let node = NodeId::Corrector(id);
+        let trimmed: String = self.name.trim().chars().take(MAX_NAME_CHARS).collect();
+        let trimmed = trimmed.trim().to_owned();
+        self.name = if trimmed.is_empty() {
+            DEFAULT_BLUR_NAME.to_owned()
+        } else {
+            trimmed
+        };
+        clamp_pos(s, node, prefix, &mut self.pos)?;
+        let (r, c) = clamp_to(
+            &format!("{prefix}.soft.radius"),
+            self.soft.radius,
+            BLUR_AMOUNT_RANGE,
+        )?;
+        self.soft.radius = r;
+        s.note(node, SettingsField::Soft, c);
+        // Lens: the amounts are clamped and reported; the blades 1 and 2 are held at 3 and reported; the rotation is any
+        // finite number, read modulo 360, never reported.
+        let (r, c1) = clamp_to(
+            &format!("{prefix}.lens.radius"),
+            self.lens.radius,
+            BLUR_AMOUNT_RANGE,
+        )?;
+        let (h, c2) = clamp_to(
+            &format!("{prefix}.lens.highlights"),
+            self.lens.highlights,
+            BLUR_AMOUNT_RANGE,
+        )?;
+        (self.lens.radius, self.lens.highlights) = (r, h);
+        let blades = match self.lens.blades {
+            0 => 0,
+            b => b.clamp(BLUR_BLADES_MIN, BLUR_BLADES_MAX),
+        };
+        let c3 = blades != self.lens.blades;
+        self.lens.blades = blades;
+        if !self.lens.rotation_deg.is_finite() {
+            return Err(SettingsError::NotFinite(format!(
+                "{prefix}.lens.rotation_deg"
+            )));
+        }
+        self.lens.rotation_deg = wrap_deg(self.lens.rotation_deg, 360.0);
+        s.note(node, SettingsField::BlurLens, c1 || c2 || c3);
+        // Motion: Length clamped and reported; the angle read modulo 180, never reported.
+        let (l, c) = clamp_to(
+            &format!("{prefix}.motion.length"),
+            self.motion.length,
+            BLUR_AMOUNT_RANGE,
+        )?;
+        self.motion.length = l;
+        if !self.motion.angle_deg.is_finite() {
+            return Err(SettingsError::NotFinite(format!(
+                "{prefix}.motion.angle_deg"
+            )));
+        }
+        self.motion.angle_deg = wrap_deg(self.motion.angle_deg, 180.0);
+        s.note(node, SettingsField::Motion, c);
+        // Zoom: Amount and each coordinate of the centre clamped and reported.
+        let (a, mut c) = clamp_to(
+            &format!("{prefix}.zoom.amount"),
+            self.zoom.amount,
+            BLUR_AMOUNT_RANGE,
+        )?;
+        self.zoom.amount = a;
+        for (i, v) in self.zoom.center.iter_mut().enumerate() {
+            let (x, cc) = clamp_to(&format!("{prefix}.zoom.center[{i}]"), *v, BLUR_CENTER_RANGE)?;
+            *v = x;
+            c |= cc;
+        }
+        s.note(node, SettingsField::Zoom, c);
+        let changed = self.masks.sanitise(&format!("{prefix}.masks"))?;
+        s.note(node, SettingsField::Masks, changed);
+        Ok(())
+    }
+}
+
 impl MixerNode {
     fn sanitise(&mut self, s: &mut Sanitiser, id: u32, prefix: &str) -> Result<(), SettingsError> {
         let node = NodeId::Corrector(id);
@@ -2137,6 +2292,7 @@ impl NodeGraph {
                 + usize::from(self.films.contains_key(id))
                 + usize::from(self.faces.contains_key(id))
                 + usize::from(self.uniforms.contains_key(id))
+                + usize::from(self.blurs.contains_key(id))
                 + usize::from(self.mixers.contains_key(id))
         };
         if let Some(id) = self
@@ -2144,6 +2300,7 @@ impl NodeGraph {
             .keys()
             .chain(self.faces.keys())
             .chain(self.uniforms.keys())
+            .chain(self.blurs.keys())
             .chain(self.mixers.keys())
             .find(|id| **id == MAIN_ID || owners(id) > 1)
         {
@@ -2160,6 +2317,8 @@ impl NodeGraph {
             } else if let Some(f) = self.face_refinement_mut(id) {
                 f.sanitise(s, id, &prefix)?;
             } else if let Some(f) = self.color_uniform_mut(id) {
+                f.sanitise(s, id, &prefix)?;
+            } else if let Some(f) = self.blur_mut(id) {
                 f.sanitise(s, id, &prefix)?;
             } else if let Some(m) = self.mixer_mut(id) {
                 m.sanitise(s, id, &prefix)?;

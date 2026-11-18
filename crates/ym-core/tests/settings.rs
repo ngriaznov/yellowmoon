@@ -3009,6 +3009,7 @@ fn copy_settings_takes_the_lens_and_resolved_values_and_exports_carry_it() {
             flares: Some(60.0),
             edges: Some(45.0),
             anamorphic: Some(30.0),
+            ..LensPatch::default()
         })
     );
     let mut other = DevelopSettings::default();

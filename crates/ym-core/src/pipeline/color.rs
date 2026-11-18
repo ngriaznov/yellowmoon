@@ -1017,7 +1017,8 @@ pub fn plan_graph(g: &NodeGraph) -> PlanGraph {
                 NodeKind::Corrector
                 | NodeKind::Film
                 | NodeKind::FaceRefinement
-                | NodeKind::ColorUniform => {}
+                | NodeKind::ColorUniform
+                | NodeKind::Blur => {}
                 NodeKind::Parallel
                 | NodeKind::Layer
                 | NodeKind::Splitter
@@ -1060,6 +1061,7 @@ pub fn plan_joins(g: &NodeGraph) -> Vec<PlanJoin> {
             // rule), and its `m` is its mask: a Layer reads what it would read from a corrector at its identity.
             Some(NodeKind::FaceRefinement) => g.face_refinement(n).is_some_and(|f| !f.bypass),
             Some(NodeKind::ColorUniform) => g.color_uniform(n).is_some_and(|f| !f.bypass),
+            Some(NodeKind::Blur) => g.blur(n).is_some_and(|f| !f.bypass),
             _ => false,
         },
         PictureSource::Input | PictureSource::Split(..) => false,
@@ -1079,6 +1081,7 @@ pub fn plan_joins(g: &NodeGraph) -> Vec<PlanJoin> {
                 | NodeKind::Film
                 | NodeKind::FaceRefinement
                 | NodeKind::ColorUniform
+                | NodeKind::Blur
                 | NodeKind::Input
                 | NodeKind::Output => {
                     return None;
@@ -1265,6 +1268,22 @@ fn node_set(
                         bypass: u.bypass,
                         masks: masks.remove(&id).unwrap_or_default(),
                         uniform: Some(uniform_step_of(u)),
+                        ..NodeParams::default()
+                    },
+                );
+            }
+            Some(NodeKind::Blur) => {
+                if s.nodes.blur(id).is_none() {
+                    continue;
+                }
+                // TODO(BL-04): the node's step (`ym_color::blur::apply`, `docs/33` section 6). Until then it is the identity:
+                // the corrector machinery runs it bypassed, so its picture is its input's and its key output is still the mask
+                // of its Mask tab.
+                others.insert(
+                    id,
+                    NodeParams {
+                        bypass: true,
+                        masks: masks.remove(&id).unwrap_or_default(),
                         ..NodeParams::default()
                     },
                 );
@@ -1462,6 +1481,28 @@ fn nodes_key(
                 u.compress.saturation.to_bits(),
                 u.compress.lightness.to_bits(),
                 node_masks(&u.masks),
+            );
+        } else if let Some(b) = s.nodes.blur(id) {
+            // A Blur node, by everything that makes its picture (not its name or place): Bypass, the type, every group (a
+            // type's values are kept when another is chosen, but only the chosen type's make the picture; the key still
+            // names all of them, as bits, which costs a re-render and never a wrong picture), the switch and its masks.
+            let _ = write!(
+                k,
+                "blur{id}:{}:{}:{}:{:x}:{:x}:{}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:?};",
+                b.bypass,
+                b.blur_type.name(),
+                b.respect_mask_edges,
+                b.soft.radius.to_bits(),
+                b.lens.radius.to_bits(),
+                b.lens.blades,
+                b.lens.rotation_deg.to_bits(),
+                b.lens.highlights.to_bits(),
+                b.motion.length.to_bits(),
+                b.motion.angle_deg.to_bits(),
+                b.zoom.amount.to_bits(),
+                b.zoom.center[0].to_bits(),
+                b.zoom.center[1].to_bits(),
+                node_masks(&b.masks),
             );
         } else if let Some(m) = s.nodes.mixer(id) {
             // A mixer, a Splitter or a Combiner: its kind, bypass and, for a Layer, mode and opacity. Its links are in

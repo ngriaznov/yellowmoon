@@ -178,7 +178,7 @@ import {
   outputPatch,
   withoutLook,
 } from "./state/settingsGraph";
-import type { CardItem, ColorUniformItem, CorrectorItem, FaceRefinementItem, FilmItem, InputItem, MixerItem } from "./state/settingsGraph";
+import type { BlurItem, CardItem, ColorUniformItem, CorrectorItem, FaceRefinementItem, FilmItem, InputItem, MixerItem } from "./state/settingsGraph";
 import { bytesToUrl } from "./state/photo";
 
 // ---------------------------------------------------------------------------
@@ -958,6 +958,24 @@ function clampColorUniform(s: ColorUniformItem): ColorUniformItem {
   };
 }
 
+/**
+ * A Blur node in its ranges (`docs/33` section 5.2): the name trimmed and cut, every amount held to 0 to 100, the blades 0 or 3 to 12 (1 and
+ * 2 are held at 3), the centre's coordinates to 0 to 1, the rotation read modulo 360 and the angle modulo 180 (not reported).
+ */
+function clampBlur(s: BlurItem): BlurItem {
+  const name = s.name.trim().slice(0, 32);
+  const wrap = (v: number, period: number): number => ((v % period) + period) % period || 0;
+  const blades = s.lens.blades === 0 ? 0 : clamp(s.lens.blades, 3, 12);
+  return {
+    ...s,
+    name: name === "" ? "Blur" : name,
+    soft: { radius: clamp(s.soft.radius, 0, 100) },
+    lens: { radius: clamp(s.lens.radius, 0, 100), blades, rotation_deg: wrap(s.lens.rotation_deg, 360), highlights: clamp(s.lens.highlights, 0, 100) },
+    motion: { length: clamp(s.motion.length, 0, 100), angle_deg: wrap(s.motion.angle_deg, 180) },
+    zoom: { amount: clamp(s.zoom.amount, 0, 100), center: [clamp(s.zoom.center[0], 0, 1), clamp(s.zoom.center[1], 0, 1)] },
+  };
+}
+
 /** A node of `docs/25` in its ranges: the name trimmed and cut (an empty one reads as the kind's name), a Layer's opacity 0 to 1. */
 function clampMixer(s: MixerItem): MixerItem {
   const name = s.name.trim().slice(0, 32);
@@ -974,6 +992,7 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
     if (item.kind === "face_refinement") return clampFaceRefinement(item);
     if (item.kind === "corrector") return clampCorrector(item);
     if (item.kind === "color_uniform") return clampColorUniform(item);
+    if (item.kind === "blur") return clampBlur(item);
     return clampMixer(item);
   });
   return { nodes: { items, links: s.nodes.links } };

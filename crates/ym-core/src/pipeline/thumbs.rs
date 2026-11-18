@@ -360,6 +360,19 @@ pub(crate) fn signal_source(
             }
             Ok((Cow::Owned(src.with_settings(settings)), Read::Last))
         }
+        // A Blur node (`docs/33` section 6): the signal at the node is the picture it reads, as a Colour Uniform node's.
+        // TODO(BL-04): the histogram and the scatter at the node read its input (`docs/33` section 6); the node renders as
+        // the identity until then, so the rewrite is the same.
+        Some(NodeId::Corrector(k))
+            if src.settings.nodes.kind_of(NodeId::Corrector(k)) == Some(NodeKind::Blur) =>
+        {
+            let mut settings = settings_ending_at(&src.settings, k);
+            settings.output_mut().look = LookId::neutral();
+            if let Some(node) = settings.nodes.blur_mut(k) {
+                node.bypass = true;
+            }
+            Ok((Cow::Owned(src.with_settings(settings)), Read::Last))
+        }
         Some(NodeId::Corrector(k)) => {
             if src.settings.nodes.corrector(k).is_none() {
                 return Err(RenderError::Color(format!("This photo has no node {k}.")));

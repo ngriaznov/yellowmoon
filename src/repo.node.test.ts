@@ -206,6 +206,11 @@ describe("the mock's rules for the graph (docs/23 section 9)", () => {
     expect(GRAPH_TEXT.patchWrongKind(4, "color_uniform", "corrector")).toBe("Node 4 is a Colour Uniform node, not a corrector.");
     expect(rust).toContain('Self::ColorUniform => "a Colour Uniform node"');
     expect(rust).toContain('Self::ColorUniform => "A Colour Uniform node"');
+    // The Blur node's kind in the sentences (`docs/33` section 4).
+    expect(GRAPH_TEXT.unknownField("blur", "range")).toBe("A Blur node has no field called “range”.");
+    expect(GRAPH_TEXT.patchWrongKind(4, "blur", "corrector")).toBe("Node 4 is a Blur node, not a corrector.");
+    expect(rust).toContain('Self::Blur => "a Blur node"');
+    expect(rust).toContain('Self::Blur => "A Blur node"');
     for (const text of ['"a parallel mixer"', '"a layer mixer"', '"a splitter"', '"a combiner"', '"A parallel mixer"', '"A layer mixer"', '"A splitter"', '"A combiner"']) {
       expect(rust, text).toContain(`=> ${text}`);
     }

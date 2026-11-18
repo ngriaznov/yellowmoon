@@ -721,6 +721,7 @@ fn lens_parity(sb: &Sandbox, data: &Path, name: &str, arw: &Path) -> Option<u64>
                         flares: Some(60.0),
                         edges: Some(50.0),
                         anamorphic: Some(50.0),
+                        ..LensPatch::default()
                     }),
                     ..NodePatch::default()
                 },

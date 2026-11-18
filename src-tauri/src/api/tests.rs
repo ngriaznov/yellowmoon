@@ -5115,6 +5115,93 @@ fn every_look_library_and_format_of_the_core_crosses_the_bridge_by_the_same_word
     }
 }
 
+/// BL-02: a Blur node crosses the bridge whole: added by a patch with its kind, edited with partial groups (the `lens` group is the
+/// Input's `lens` key too), read back as the core holds it, and the core's refusals come through.
+#[test]
+fn a_blur_node_crosses_the_bridge_without_loss() {
+    let h = Harness::new();
+    h.open(1);
+    let state = h.develop();
+    let id = state.photos[0].id;
+    let patch: SettingsPatch = serde_json::from_value(json!({
+        "nodes": { "2": { "kind": "blur", "type": "lens",
+            "lens": { "radius": 50, "blades": 2, "rotation_deg": 375, "highlights": 60 },
+            "zoom": { "center": [1.5, 0.25] }, "motion": { "angle_deg": 200 },
+            "respect_mask_edges": false } },
+        "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ]
+    }))
+    .expect("patch");
+    let after = h.api.update_settings(id, &patch).expect("update");
+    let node = after
+        .settings
+        .nodes
+        .items
+        .iter()
+        .find_map(|i| match i {
+            crate::wire::NodeItem::Blur(b) => Some(b.clone()),
+            _ => None,
+        })
+        .expect("the Blur node");
+    assert_eq!(node.blur_type, crate::wire::BlurType::Lens);
+    assert_eq!(node.name, "Blur");
+    assert_eq!(
+        (
+            node.lens.radius,
+            node.lens.blades,
+            node.lens.rotation_deg,
+            node.lens.highlights
+        ),
+        (Num(50.0), 3, Num(15.0), Num(60.0))
+    );
+    assert_eq!(node.zoom.center, [Num(1.0), Num(0.25)]);
+    assert_eq!(node.motion.angle_deg, Num(20.0));
+    assert!(!node.respect_mask_edges);
+    let core = h.api.core();
+    assert_same(
+        "get_settings",
+        &core
+            .session
+            .settings(ym_core::session::PhotoId(id.0))
+            .expect("settings"),
+        &h.api.get_settings(id).expect("settings"),
+    );
+    // Pick centre: one patch of `zoom.center` alone.
+    let pick: SettingsPatch =
+        serde_json::from_value(json!({ "nodes": { "2": { "zoom": { "center": [0.3, 0.6] } } } }))
+            .expect("patch");
+    let after = h.api.update_settings(id, &pick).expect("pick");
+    let blur = after.settings.nodes.items.iter().find_map(|i| match i {
+        crate::wire::NodeItem::Blur(b) => Some(b),
+        _ => None,
+    });
+    assert_eq!(blur.map(|b| b.zoom.center), Some([Num(0.3), Num(0.6)]));
+    assert_eq!(blur.map(|b| b.zoom.amount), Some(Num(20.0)));
+    // The core's refusals come through, with the core's words.
+    for (body, text) in [
+        (
+            json!({ "trim": {} }),
+            "A Blur node has no field called “trim”.",
+        ),
+        (
+            json!({ "lens": { "kind": "vintage" } }),
+            "A Blur node has no field called “lens.kind”.",
+        ),
+    ] {
+        let bad: SettingsPatch =
+            serde_json::from_value(json!({ "nodes": { "2": body } })).expect("patch");
+        let e = h.api.update_settings(id, &bad).expect_err("refused");
+        assert!(e.to_string().contains(text), "{e}");
+    }
+    // A type the node does not have is refused at the bridge.
+    assert!(
+        serde_json::from_value::<SettingsPatch>(json!({ "nodes": { "2": { "type": "spin" } } }))
+            .is_err()
+    );
+}
+
 #[test]
 fn core_types_convert_without_loss() {
     let h = Harness::new();
@@ -5251,6 +5338,7 @@ fn core_types_convert_without_loss() {
             flares: Some(35.0),
             edges: Some(50.0),
             anamorphic: Some(20.0),
+            ..ym_core::settings::LensPatch::default()
         })
     );
     let resolved = h.api.get_settings(id).expect("settings");

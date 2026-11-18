@@ -377,6 +377,7 @@ export type NodeKind =
   | "film"
   | "face_refinement"
   | "color_uniform"
+  | "blur"
   | "parallel"
   | "layer"
   | "splitter"
@@ -714,6 +715,66 @@ export interface ColorUniformNode {
   masks: MaskSettings;
 }
 
+/** The kind of blur a Blur node makes (`docs/33` section 2.1). `"spin"` is not a type until BL-17. */
+export type BlurType = "soft" | "lens" | "motion" | "zoom";
+
+/** A Blur node's Soft values. */
+export interface BlurSoft {
+  /** Radius, 0 to 100: a share of the picture's long edge, 100 being 4 %. */
+  radius: number;
+}
+
+/** A Blur node's Lens values. */
+export interface BlurLens {
+  /** Radius, 0 to 100: a share of the long edge, 100 being 4 %. */
+  radius: number;
+  /** 0 for a disc, 3 to 12 blades for a polygon (the panel offers 5 to 9; 1 and 2 are held at 3). */
+  blades: number;
+  /** Degrees, [0, 360) as the core stores it; any finite number is read modulo 360. */
+  rotation_deg: number;
+  /** Highlights, 0 to 100: how much bright lights count for in the blur. */
+  highlights: number;
+}
+
+/** A Blur node's Motion values. */
+export interface BlurMotion {
+  /** Length, 0 to 100: a share of the long edge, 100 being 8 %. */
+  length: number;
+  /** Degrees, [0, 180) as the core stores it; any finite number is read modulo 180. */
+  angle_deg: number;
+}
+
+/** A Blur node's Zoom values. */
+export interface BlurZoom {
+  /** Amount, 0 to 100. */
+  amount: number;
+  /** The centre, `[x, y]` in the photo frame, 0 to 1 each way (so it follows crop and rotation). */
+  center: [number, number];
+}
+
+/**
+ * A Blur node: Soft, Lens, Motion or Zoom blur, with the masks as weights (`docs/33`). Every type's values are kept, so switching the type
+ * finds each where it was.
+ */
+export interface BlurNode {
+  /** 2 to 2³¹ − 1; every numbered node shares the numbers. */
+  id: NodeId;
+  /** The card's name, 1 to 32 characters ("Blur"). */
+  name: string;
+  /** A bypassed node passes its picture through. */
+  bypass: boolean;
+  pos: NodePos;
+  /** The chosen type. */
+  type: BlurType;
+  soft: BlurSoft;
+  lens: BlurLens;
+  motion: BlurMotion;
+  zoom: BlurZoom;
+  /** Whether colours from outside the mask are kept out of the blur (`docs/33` section 2.3). */
+  respect_mask_edges: boolean;
+  masks: MaskSettings;
+}
+
 /** How a Layer blends an input over the ones below it (`docs/25` section 3.3), computed in linear light. */
 export type BlendMode =
   | "normal"
@@ -769,6 +830,7 @@ export type NodeItem =
   | ({ kind: "film" } & FilmNode)
   | ({ kind: "face_refinement" } & FaceRefinementNode)
   | ({ kind: "color_uniform" } & ColorUniformNode)
+  | ({ kind: "blur" } & BlurNode)
   | ({ kind: "parallel" } & ParallelNode)
   | ({ kind: "layer" } & LayerNode)
   | ({ kind: "splitter" } & SplitterNode)
@@ -870,7 +932,8 @@ export interface NodePatch {
   decode?: Partial<DecodeOptions>;
   noise_reduction?: AutoOr<{ luminance: number; color: number; detail: number }>;
   sharpen?: AutoOr<{ amount: number; radius_px: number }>;
-  lens?: Partial<LensSettings>;
+  /** The Input's lens parts, or a Blur node's own `lens` group (`radius`, `blades`, `rotation_deg`, `highlights`); a patch may not mix the two. */
+  lens?: Partial<LensSettings> & Partial<BlurLens>;
   crop?: Crop | null;
   orientation?: Orientation;
   look?: LookId;
@@ -908,6 +971,16 @@ export interface NodePatch {
   target?: TargetValue | null;
   /** A Colour Uniform node's Compress amounts; only the amounts to change. */
   compress?: Partial<UniformAmounts>;
+  /** A Blur node's type. */
+  type?: BlurType;
+  /** A Blur node's Soft values; only the parts to change. */
+  soft?: Partial<BlurSoft>;
+  /** A Blur node's Motion values; only the parts to change. */
+  motion?: Partial<BlurMotion>;
+  /** A Blur node's Zoom values; only the parts to change. Pick centre and a drag of the handle send `center` alone. */
+  zoom?: Partial<BlurZoom>;
+  /** A Blur node's Respect mask edges. */
+  respect_mask_edges?: boolean;
   /** A Layer's blend mode. */
   mode?: BlendMode;
   /** A Layer's opacity, 0 to 1. */

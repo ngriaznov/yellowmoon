@@ -1364,3 +1364,110 @@ fn a_colour_uniform_node_changes_the_picture_where_its_masks_select_and_its_sett
     renamed["pos"] = json!([4.0, 1.0]);
     assert_eq!(base, key_of(renamed));
 }
+
+/// A Blur node (`docs/33`).
+fn blur(id: u32, x: f64, body: Value) -> Value {
+    let mut node = json!({ "id": id, "kind": "blur", "pos": [x, 0.0] });
+    if let (Some(n), Some(b)) = (node.as_object_mut(), body.as_object()) {
+        n.extend(b.clone());
+    }
+    node
+}
+
+/// BL-02: until BL-04 a Blur node renders as the identity, with a step in its place and its key output still the mask of its Mask
+/// tab; the grade key sees what the node holds and not its name or place.
+#[test]
+fn a_blur_node_renders_as_the_identity_until_bl_04_and_its_settings_are_in_the_grade_key() {
+    let d = photo(Layout::Patchwork, 0.5);
+    let src = d.source();
+    let r = renderer();
+    let plain = with(
+        &src,
+        graph(vec![corrector(2, 1.0, trim(0.5))], line(&[1, 2])),
+    );
+    let live = json!({ "type": "lens", "lens": { "radius": 60, "blades": 6 } });
+    let with_node = with(
+        &src,
+        graph(
+            vec![corrector(2, 1.0, trim(0.5)), blur(3, 2.0, live.clone())],
+            line(&[1, 2, 3]),
+        ),
+    );
+    assert_eq!(display(&r, &with_node).rgb, display(&r, &plain).rgb);
+    assert_eq!(frame(&r, &with_node), frame(&r, &plain));
+    // With masks and every type, the same.
+    for body in [
+        json!({}),
+        json!({ "type": "motion", "motion": { "length": 80, "angle_deg": 30 } }),
+        json!({ "type": "zoom", "zoom": { "amount": 90, "center": [0.2, 0.7] }, "respect_mask_edges": false,
+            "masks": { "invert": true, "items": [ { "kind": "radial" } ] } }),
+    ] {
+        let p = with(
+            &src,
+            graph(
+                vec![corrector(2, 1.0, trim(0.5)), blur(3, 2.0, body)],
+                line(&[1, 2, 3]),
+            ),
+        );
+        assert_eq!(display(&r, &p).rgb, display(&r, &plain).rgb);
+        assert_eq!(frame(&r, &p), frame(&r, &plain));
+    }
+    // The node's thumbnail is the picture after it, which is its input's.
+    let thumbs = |p: &ym_core::pipeline::PhotoSource| {
+        r.node_thumbnails(p, &CancelToken::new())
+            .expect("thumbnails")
+    };
+    let (a, b) = (thumbs(&with_node), thumbs(&plain));
+    assert_eq!(a.len(), 3);
+    assert_eq!(a[1].png, b[1].png);
+    assert_eq!(a[2].png, b[1].png);
+    // The node takes a number and is a step of the plan, in its place.
+    let plan = node_plan(&with_node.settings.nodes, ym_color::plan::Stop::Output).unwrap();
+    assert_eq!(plan.node_ids(), vec![1, 2, 3]);
+    // The grade key sees what the node holds, and not its name or place.
+    let color = color_plan(&src).unwrap();
+    let req = GradeRequest {
+        target: OutputTarget::Srgb,
+        dither: false,
+        looks: &NeutralOnly,
+        background: None,
+        objects: None,
+    };
+    let key_of = |body: Value| {
+        let p = with(&src, graph(vec![blur(2, 1.0, body)], line(&[1, 2])));
+        grade_key(&p, &color, &req)
+    };
+    let base = key_of(live.clone());
+    assert_eq!(base, key_of(live.clone()));
+    for change in [
+        json!({ "type": "soft" }),
+        json!({ "lens": { "radius": 61 } }),
+        json!({ "lens": { "blades": 7 } }),
+        json!({ "lens": { "rotation_deg": 10 } }),
+        json!({ "lens": { "highlights": 5 } }),
+        json!({ "soft": { "radius": 21 } }),
+        json!({ "motion": { "length": 21 } }),
+        json!({ "motion": { "angle_deg": 21 } }),
+        json!({ "zoom": { "amount": 21 } }),
+        json!({ "zoom": { "center": [0.1, 0.9] } }),
+        json!({ "respect_mask_edges": false }),
+        json!({ "bypass": true }),
+        json!({ "masks": { "invert": false, "items": [ { "kind": "radial" } ] } }),
+    ] {
+        let mut other = live.clone();
+        for (k, v) in change.as_object().expect("an object") {
+            match (other.get_mut(k), v) {
+                (Some(Value::Object(have)), Value::Object(new)) => have.extend(new.clone()),
+                _ => other[k] = v.clone(),
+            }
+        }
+        assert_ne!(base, key_of(other), "{change}");
+    }
+    // The two coordinates of the centre are two parts of the key.
+    let centre = |x: f64, y: f64| key_of(json!({ "zoom": { "center": [x, y] } }));
+    assert_ne!(centre(0.1, 0.9), centre(0.9, 0.1));
+    let mut renamed = live.clone();
+    renamed["name"] = json!("Background");
+    renamed["pos"] = json!([4.0, 1.0]);
+    assert_eq!(base, key_of(renamed));
+}
