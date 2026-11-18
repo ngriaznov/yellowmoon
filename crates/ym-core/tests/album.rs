@@ -256,13 +256,21 @@ fn ten_photos() -> (Rig, PathBuf) {
           "compress": { "hue": 60, "saturation": 40, "lightness": 10 },
           "masks": { "invert": false, "items": [
             { "kind": "color_range", "mode": "add", "invert": false, "enabled": true, "opacity": 1,
-              "center": [0.0875, 0.0423], "width": 0.05, "softness": 0.5 } ] } } ],
+              "center": [0.0875, 0.0423], "width": 0.05, "softness": 0.5 } ] } },
+        // A Blur node of type Zoom with a centre and a Subject row (BL-11).
+        { "id": 7, "kind": "blur", "name": "Background", "pos": [4, 0], "type": "zoom",
+          "zoom": { "amount": 35, "center": [0.25, 0.75] }, "respect_mask_edges": false,
+          "masks": { "invert": false, "items": [
+            { "kind": "subject", "mode": "add", "invert": true, "enabled": true, "opacity": 1, "feather": 0.08 } ] } } ],
         "links": [
             { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
             { "from": { "node": 1, "port": "picture" }, "to": { "node": 6, "port": "picture" } },
-            { "from": { "node": 6, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
+            { "from": { "node": 6, "port": "picture" }, "to": { "node": 7, "port": "picture" } },
+            { "from": { "node": 7, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
     let (u, _) = DevelopSettings::from_value(uniform, &LookId::neutral()).expect("a node");
     s.nodes.uniforms = u.nodes.uniforms;
+    s.nodes.blurs = u.nodes.blurs;
+    s.nodes.links = u.nodes.links;
     s.main_mut().masks = every_mask();
     r.set(ids[2], s);
     // 3: nothing touched: Auto everywhere.
@@ -1397,6 +1405,65 @@ fn an_album_with_a_color_uniform_node_round_trips_and_an_older_build_refuses_it(
     assert!(matches!(
         Album::from_json(&old.to_string()),
         Err(AlbumError::Settings(_) | AlbumError::TooNew)
+    ));
+}
+
+/// BL-11: the Blur node is in the file as `"kind": "blur"` inside the photo's settings, as stored (type, every group, the switch
+/// and the masks), with no change to the album's version; a build that does not know the kind refuses the album with the
+/// album's sentence.
+#[test]
+fn an_album_with_a_blur_node_round_trips_and_an_older_build_refuses_it() {
+    let (a, path) = ten_photos();
+    a.core.album_save(&path).expect("saved");
+    let good = read_json(&path);
+    assert_eq!(good["yellowmoon_album"], json!(1), "the version stays 1");
+    let items = good["photos"][2]["settings"]["nodes"]["items"]
+        .as_array()
+        .expect("items");
+    let node = items
+        .iter()
+        .find(|i| i["kind"] == "blur")
+        .expect("the node is in the file");
+    assert_eq!(node["name"], json!("Background"));
+    assert_eq!(node["type"], json!("zoom"));
+    assert_eq!(node["zoom"]["amount"], json!(35.0));
+    assert_eq!(node["zoom"]["center"], json!([0.25, 0.75]));
+    assert_eq!(node["respect_mask_edges"], json!(false));
+    assert_eq!(node["masks"]["items"][0]["kind"], json!("subject"));
+    // The groups the type does not use are stored too, so switching type keeps the values.
+    assert!(node["soft"].is_object() && node["lens"].is_object() && node["motion"].is_object());
+    // Reading and writing the text again changes nothing.
+    let album = Album::from_json(&good.to_string()).expect("reads");
+    let blur = album.photos[2].settings.nodes.blur(7).expect("the node");
+    assert_eq!(blur.name, "Background");
+    assert_eq!(blur.zoom.center, [0.25, 0.75]);
+    assert_eq!(
+        read_json_text(&album.to_json().expect("writes")),
+        good,
+        "the same document"
+    );
+    // An older build does not know the kind: the same document, with the kind as that build would see it.
+    let dir = tempfile::tempdir().unwrap();
+    let mut old = good.clone();
+    for item in old["photos"][2]["settings"]["nodes"]["items"]
+        .as_array_mut()
+        .unwrap()
+    {
+        if item["kind"] == "blur" {
+            item["kind"] = json!("a_kind_from_a_later_build");
+        }
+    }
+    let file = dir.path().join("older.ymalbum");
+    std::fs::write(&file, old.to_string()).unwrap();
+    let e = a
+        .core
+        .album_open(&file, OpenOptions::default())
+        .expect_err("refused");
+    assert_eq!(e.to_string(), TOO_NEW_SENTENCE);
+    assert_eq!(e.scope(), "album");
+    assert!(matches!(
+        Album::from_json(&old.to_string()),
+        Err(AlbumError::TooNew)
     ));
 }
 

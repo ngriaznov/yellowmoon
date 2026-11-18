@@ -905,3 +905,47 @@ fn a_settings_file_with_a_color_uniform_node_saves_in_the_nodes_group_and_lists_
     assert!(text.contains("color_uniform"), "{text}");
     assert!(text.contains("hue_deg"), "{text}");
 }
+
+/// BL-11: a settings file with a Blur node saves into the Nodes group, lists clean, and the exported preset file holds the node
+/// with its type, its Zoom centre and its switch.
+#[test]
+fn a_settings_file_with_a_blur_node_saves_in_the_nodes_group_and_lists_clean() {
+    let sb = Sandbox::new();
+    let link = |a: Value, b: Value| json!({ "from": { "node": a, "port": "picture" }, "to": { "node": b, "port": "picture" } });
+    let doc = json!({ "nodes": {
+        "items": [
+            { "id": 2, "kind": "blur", "name": "Background", "type": "zoom",
+              "zoom": { "amount": 35, "center": [0.25, 0.75] }, "respect_mask_edges": false,
+              "masks": { "invert": false, "items": [ { "kind": "radial" } ] } } ],
+        "links": [
+            link(json!("input"), json!(1)),
+            link(json!(1), json!(2)),
+            link(json!(2), json!("output")) ] } });
+    let file = settings_file(&sb, "blur.json", &doc);
+    sb.ym()
+        .args(["presets", "save", "Background", "--from"])
+        .arg(&file)
+        .assert()
+        .success();
+    let out = sb.ym().args(["presets", "list"]).assert().success();
+    let l = lines(&out.get_output().stdout);
+    let row = l
+        .iter()
+        .find(|x| x.starts_with("Background"))
+        .expect("listed");
+    assert!(row.contains("nodes"), "the Nodes group: {row}");
+    assert!(
+        l.iter().all(|x| !x.contains("isn't a Yellowmoon preset")),
+        "{l:?}"
+    );
+    let exported = sb.root().join("Background.ympreset");
+    sb.ym()
+        .args(["presets", "export", "Background"])
+        .arg(&exported)
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(&exported).expect("the preset file");
+    assert!(text.contains("\"blur\""), "{text}");
+    assert!(text.contains("respect_mask_edges"), "{text}");
+    assert!(text.contains("0.25"), "{text}");
+}

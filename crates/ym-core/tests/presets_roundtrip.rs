@@ -19,7 +19,7 @@ fn link(from: Value, fp: &str, to: Value, tp: &str) -> Value {
 }
 
 /// A graph with every node kind: Main, a corrector with masks (2), Face Refinement (3), Film (4), Splitter (5), Combiner (6),
-/// Layer (7), Parallel (8) and Colour Uniform (9).
+/// Layer (7), Parallel (8), Colour Uniform (9) and Blur (10).
 fn every_kind(look: &str) -> DevelopSettings {
     let masks = serde_json::to_value(common::rich::every_mask()).unwrap();
     let doc = json!({ "nodes": {
@@ -43,7 +43,10 @@ fn every_kind(look: &str) -> DevelopSettings {
             { "id": 8, "kind": "parallel", "pos": [7, 0] },
             { "id": 9, "kind": "color_uniform", "name": "Uniform", "pos": [8, 0],
               "target": { "hue_deg": 26, "saturation": 9.7, "lightness_ev": -0.03 },
-              "compress": { "hue": 60, "saturation": 60, "lightness": 10 }, "masks": masks }
+              "compress": { "hue": 60, "saturation": 60, "lightness": 10 }, "masks": masks },
+            { "id": 10, "kind": "blur", "name": "Blur", "pos": [9, 0], "type": "lens",
+              "lens": { "radius": 50, "blades": 6, "rotation_deg": 15, "highlights": 60 },
+              "zoom": { "amount": 35, "center": [0.25, 0.75] }, "respect_mask_edges": false, "masks": masks }
         ],
         "links": [
             link(json!("input"), "picture", json!(1), "picture"),
@@ -58,7 +61,8 @@ fn every_kind(look: &str) -> DevelopSettings {
             link(json!(6), "picture", json!(7), "picture.2"),
             link(json!(7), "picture", json!(8), "picture.1"),
             link(json!(8), "picture", json!(9), "picture"),
-            link(json!(9), "picture", json!("output"), "picture")
+            link(json!(9), "picture", json!(10), "picture"),
+            link(json!(10), "picture", json!("output"), "picture")
         ] } });
     DevelopSettings::from_value(doc, &LookId::neutral())
         .expect("a graph with every kind")

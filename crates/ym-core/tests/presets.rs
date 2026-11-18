@@ -126,7 +126,8 @@ fn emptied(s: &DevelopSettings) -> DevelopSettings {
     let masks = std::iter::once(&mut g.main.masks)
         .chain(g.extra.values_mut().map(|c| &mut c.masks))
         .chain(g.films.values_mut().map(|f| &mut f.masks))
-        .chain(g.uniforms.values_mut().map(|u| &mut u.masks));
+        .chain(g.uniforms.values_mut().map(|u| &mut u.masks))
+        .chain(g.blurs.values_mut().map(|b| &mut b.masks));
     for m in masks {
         for row in &mut m.items {
             *row = row.emptied_for_preset();
@@ -419,6 +420,82 @@ fn a_color_uniform_node_travels_with_the_nodes_group() {
     r.save("Light only", &[PresetGroup::Light], source);
     r.apply("Light only", &[target]);
     assert!(r.settings(target).nodes.uniforms.is_empty());
+    assert_eq!(r.settings(target).nodes.extra, own.nodes.extra);
+}
+
+/// BL-11: a Blur node (type, every group, the Zoom centre, the switch and masks: a Subject row, a Radial row and a Brush row) is
+/// in the `nodes` group, is saved from a photo that has it, applies to another photo and arrives with its Brush strokes
+/// emptied, its Subject row kept (it is worked out again there) and its Zoom centre carried. (Settings and round trips only: the
+/// node renders as the identity until BL-04.)
+#[test]
+fn a_blur_node_travels_with_the_nodes_group() {
+    use ym_core::settings::{BlurNode, BlurType};
+    let r = rig(2);
+    let (source, target) = (r.ids[0], r.ids[1]);
+    let doc = json!({ "nodes": {
+        "items": [
+            { "id": 2, "kind": "blur", "name": "Background", "pos": [1, 0], "type": "zoom",
+              "soft": { "radius": 33 }, "lens": { "radius": 50, "blades": 6, "rotation_deg": 15, "highlights": 60 },
+              "motion": { "length": 40, "angle_deg": 30 },
+              "zoom": { "amount": 35, "center": [0.25, 0.75] }, "respect_mask_edges": false,
+              "masks": { "invert": false, "items": [
+                { "kind": "subject", "mode": "add", "invert": true, "enabled": true, "opacity": 1, "feather": 0.08 },
+                { "kind": "radial" },
+                { "kind": "brush", "mode": "add", "strokes": [ { "size": 0.02, "points": [[0.1, 0.2], [0.3, 0.4]] } ] }
+              ] } } ],
+        "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
+    let (mut s, _) = DevelopSettings::from_value(doc, &r.core.looks.effective_default())
+        .expect("a graph with the node");
+    s.nodes.extra.clear();
+    r.set(source, s.clone());
+    let want = emptied(&r.settings(source));
+    let node: &BlurNode = want.nodes.blur(2).expect("the node");
+    assert_eq!(node.name, "Background");
+    assert_eq!(node.blur_type, BlurType::Zoom);
+    assert_eq!(node.zoom.center, [0.25, 0.75]);
+    assert_eq!(node.masks.items.len(), 3, "the rows stay");
+    // The group's own table has nothing for it: it is carried whole with the other nodes.
+    assert!(
+        PresetGroup::Nodes
+            .fields()
+            .iter()
+            .all(|(n, _)| !matches!(n, NodeId::Corrector(2)))
+    );
+    r.save("Blurred", &[PresetGroup::Nodes], source);
+    let mut own = DevelopSettings::with_look(r.core.looks.effective_default());
+    own.nodes.extra.insert(9, CorrectorNode::default());
+    r.set(target, own);
+    r.apply("Blurred", &[target]);
+    let after = r.settings(target);
+    assert_eq!(after.nodes.blurs, want.nodes.blurs);
+    assert_eq!(after.nodes.links, want.nodes.links);
+    assert!(
+        after.nodes.extra.is_empty(),
+        "the preset's nodes replace the photo's own"
+    );
+    let arrived = after.nodes.blur(2).expect("the node arrived");
+    assert_eq!(arrived.zoom.center, [0.25, 0.75], "the centre is carried");
+    assert!(!arrived.respect_mask_edges);
+    assert_eq!(
+        arrived.masks.items[0].shape.kind_name(),
+        "subject",
+        "the Subject row is kept, to be worked out again here"
+    );
+    let json = serde_json::to_string(&after.nodes.blurs).unwrap();
+    assert!(
+        !json.contains("\"points\":[["),
+        "no Brush stroke arrives: {json}"
+    );
+    // Another group leaves the target's own nodes alone.
+    let mut own = DevelopSettings::with_look(r.core.looks.effective_default());
+    own.nodes.extra.insert(9, CorrectorNode::default());
+    r.set(target, own.clone());
+    r.save("Light only", &[PresetGroup::Light], source);
+    r.apply("Light only", &[target]);
+    assert!(r.settings(target).nodes.blurs.is_empty());
     assert_eq!(r.settings(target).nodes.extra, own.nodes.extra);
 }
 
