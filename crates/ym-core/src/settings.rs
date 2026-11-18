@@ -80,6 +80,7 @@ mod graph;
 mod masks;
 mod mixers;
 mod patch;
+mod uniform;
 
 pub use face::{
     FACE_AMOUNT_RANGE, FACE_BIPOLAR_RANGE, FaceRefinementNode, FaceSettings, MAX_FACES,
@@ -90,7 +91,7 @@ pub use film::{
     PrintLights, PrintSettings, SIZE_RANGE, STRENGTH_RANGE,
 };
 pub use graph::{
-    CorrectorNode, DEFAULT_FACE_REFINEMENT_NAME, DEFAULT_NAME, GraphError, INPUT_POS, InputNode,
+    CorrectorNode, DEFAULT_FACE_REFINEMENT_NAME, DEFAULT_NAME, DEFAULT_UNIFORM_NAME, GraphError, INPUT_POS, InputNode,
     MAIN_ID, MAIN_NAME, MAX_CORRECTORS, MAX_NAME_CHARS, NodeGrade, NodeGraph, NodeId, NodeKind,
     NodeLink, NodePos, NodeRef, NodeTrim, OUTPUT_POS, OutputNode, POS_RANGE, Port, PortType,
     TRIM_EXPOSURE_RANGE_EV, TRIM_RANGE, ports_in, ports_out,
@@ -109,9 +110,14 @@ pub use mixers::{
     DEFAULT_SPLITTER_NAME, LayerNode, MIXER_INPUTS, MixerNode, OPACITY_RANGE, ParallelNode,
     SplitterNode,
 };
+pub use uniform::{
+    ColorUniformNode, TARGET_LIGHTNESS_RANGE_EV, TARGET_SATURATION_RANGE, TargetValue,
+    UNIFORM_AMOUNT_RANGE, UniformAmounts, wrap_hue_deg,
+};
 pub use patch::{
     COPY_LEAVES_OUT, FaceSettingsPatch, FilmStockPatch, GradePatch, GrainPatch, HalationPatch,
     LightsPatch, NodePatch, PatchReport, PrintPatch, ProtectPatch, SettingsPatch, TrimPatch,
+    UniformAmountsPatch,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -380,6 +386,10 @@ pub enum SettingsField {
     Faces,
     /// A Face Refinement node's `protect` (the protection plane).
     Protect,
+    /// A Colour Uniform node's `target`.
+    Target,
+    /// A Colour Uniform node's `compress`.
+    Compress,
     /// A Layer's blend `mode`.
     Mode,
     /// A Layer's `opacity`.
@@ -389,7 +399,7 @@ pub enum SettingsField {
 impl SettingsField {
     /// Every field, in the order of the settings table (the Output's and the Input's, then the grade's,
     /// then the corrector's own).
-    pub const ALL: [SettingsField; 40] = [
+    pub const ALL: [SettingsField; 42] = [
         SettingsField::Look,
         SettingsField::LookIntensity,
         SettingsField::Exposure,
@@ -428,6 +438,8 @@ impl SettingsField {
         SettingsField::AllFaces,
         SettingsField::Faces,
         SettingsField::Protect,
+        SettingsField::Target,
+        SettingsField::Compress,
         SettingsField::Mode,
         SettingsField::Opacity,
     ];
@@ -474,6 +486,8 @@ impl SettingsField {
             Self::AllFaces => "all",
             Self::Faces => "faces",
             Self::Protect => "protect",
+            Self::Target => "target",
+            Self::Compress => "compress",
             Self::Mode => "mode",
             Self::Opacity => "opacity",
         }
@@ -561,6 +575,15 @@ impl SettingsField {
                     | Self::Faces
                     | Self::Protect
             ),
+            NodeKind::ColorUniform => matches!(
+                self,
+                Self::Name
+                    | Self::Bypass
+                    | Self::Pos
+                    | Self::Masks
+                    | Self::Target
+                    | Self::Compress
+            ),
             NodeKind::Parallel => matches!(self, Self::Name | Self::Bypass | Self::Pos),
             NodeKind::Layer => matches!(
                 self,
@@ -599,6 +622,8 @@ impl SettingsField {
             | Self::AllFaces
             | Self::Faces
             | Self::Protect
+            | Self::Target
+            | Self::Compress
             | Self::Mode
             | Self::Opacity
             | Self::Contrast

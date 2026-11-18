@@ -26,6 +26,8 @@ pub fn step_kind(kind: NodeKind) -> Option<StepKind> {
         // picture step like a Film node's, with a reach of 0 (the render widens the area it asks for to the face regions it meets:
         // `FilmRender::widen`, `docs/27` decision 13), so the declared footprint here is a corrector's.
         NodeKind::FaceRefinement => Some(StepKind::Corrector),
+        // TODO(CU-04): a corrector-like step of its own (`StepKind::ColorUniform`); until then the footprint of a corrector.
+        NodeKind::ColorUniform => Some(StepKind::Corrector),
         NodeKind::Parallel => Some(StepKind::Parallel),
         NodeKind::Layer => Some(StepKind::Layer),
         NodeKind::Splitter => Some(StepKind::Splitter),

@@ -1003,7 +1003,10 @@ pub fn plan_graph(g: &NodeGraph) -> PlanGraph {
             match kind {
                 // A Face Refinement node is a step of the plan like a Film node's (`node_set`), with its place, its picture
                 // source and its key like a corrector's.
-                NodeKind::Corrector | NodeKind::Film | NodeKind::FaceRefinement => {}
+                NodeKind::Corrector
+                | NodeKind::Film
+                | NodeKind::FaceRefinement
+                | NodeKind::ColorUniform => {}
                 NodeKind::Parallel
                 | NodeKind::Layer
                 | NodeKind::Splitter
@@ -1045,6 +1048,7 @@ pub fn plan_joins(g: &NodeGraph) -> Vec<PlanJoin> {
             // A Face Refinement node's picture is the retouched one where it has faces and its input elsewhere (`run_film`'s
             // rule), and its `m` is its mask: a Layer reads what it would read from a corrector at its identity.
             Some(NodeKind::FaceRefinement) => g.face_refinement(n).is_some_and(|f| !f.bypass),
+            Some(NodeKind::ColorUniform) => g.color_uniform(n).is_some_and(|f| !f.bypass),
             _ => false,
         },
         PictureSource::Input | PictureSource::Split(..) => false,
@@ -1063,6 +1067,7 @@ pub fn plan_joins(g: &NodeGraph) -> Vec<PlanJoin> {
                 NodeKind::Corrector
                 | NodeKind::Film
                 | NodeKind::FaceRefinement
+                | NodeKind::ColorUniform
                 | NodeKind::Input
                 | NodeKind::Output => {
                     return None;
@@ -1236,6 +1241,22 @@ fn node_set(
                     );
                 }
             }
+            Some(NodeKind::ColorUniform) => {
+                if s.nodes.color_uniform(id).is_none() {
+                    continue;
+                }
+                // TODO(CU-04): the node's step (`ym_color::uniform::apply`). Until then it is the identity: the
+                // corrector machinery runs it bypassed, so its picture is its input's and its key output is still the
+                // mask of its Mask tab.
+                others.insert(
+                    id,
+                    NodeParams {
+                        bypass: true,
+                        masks: masks.remove(&id).unwrap_or_default(),
+                        ..NodeParams::default()
+                    },
+                );
+            }
             Some(NodeKind::Corrector) => {
                 let Some(c) = s.nodes.corrector(id) else {
                     continue;
@@ -1404,6 +1425,30 @@ fn nodes_key(
                 objects
                     .and_then(|o| o.faces())
                     .map_or_else(|| "none".to_owned(), |e| format!("{:x}", e.hash)),
+            );
+        } else if let Some(u) = s.nodes.color_uniform(id) {
+            // A Colour Uniform node, by everything that makes its picture (not its name or place): Bypass, the target and
+            // the three amounts (as bits, so -0.0 and 0.0 are two keys and a NaN cannot be one) and its masks.
+            let _ = write!(k, "uniform{id}:{}:", u.bypass);
+            match u.target {
+                Some(t) => {
+                    let _ = write!(
+                        k,
+                        "{:x}:{:x}:{:x}",
+                        t.hue_deg.to_bits(),
+                        t.saturation.to_bits(),
+                        t.lightness_ev.to_bits()
+                    );
+                }
+                None => k.push_str("none"),
+            }
+            let _ = write!(
+                k,
+                ":{:x}:{:x}:{:x}:{:?};",
+                u.compress.hue.to_bits(),
+                u.compress.saturation.to_bits(),
+                u.compress.lightness.to_bits(),
+                node_masks(&u.masks),
             );
         } else if let Some(m) = s.nodes.mixer(id) {
             // A mixer, a Splitter or a Combiner: its kind, bypass and, for a Layer, mode and opacity. Its links are in

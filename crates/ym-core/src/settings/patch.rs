@@ -14,6 +14,7 @@ use super::graph::{
     CorrectorNode, GraphError, InputNode, MAIN_ID, NodeId, NodeKind, NodeLink, NodePos, OutputNode,
     node_fields,
 };
+use super::uniform::{ColorUniformNode, TargetValue};
 use super::masks::{BrushMask, BrushStroke, MasksPatch};
 use super::mixers::{BlendMode, MixerNode};
 use super::{
@@ -264,6 +265,21 @@ pub struct GrainPatch {
     /// New seed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u32>,
+}
+
+/// A Colour Uniform node's `compress` to change: a partial object, each part read over what the node has.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UniformAmountsPatch {
+    /// New Hue amount, percent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hue: Option<f64>,
+    /// New Saturation amount, percent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saturation: Option<f64>,
+    /// New Lightness amount, percent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lightness: Option<f64>,
 }
 
 /// A Face Refinement node's `all` to change: the amounts every face takes while "Same for all faces" is on.
@@ -525,6 +541,18 @@ pub struct NodePatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protect: Option<ProtectPatch>,
 
+    // A Colour Uniform node (`docs/32` section 5.3); `name`, `bypass` and `masks` above are its too.
+    /// The target colour, replaced whole (all three numbers); `null` clears it.
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub target: Option<Option<TargetValue>>,
+    /// The amounts to change; a part left out keeps the node's value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compress: Option<UniformAmountsPatch>,
+
     // A Layer (`docs/25` section 2.1); `name` and `bypass` above are the four mixer kinds' too.
     /// New blend mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -603,7 +631,8 @@ impl NodePatch {
             name => "name", bypass => "bypass", trim => "trim", grade => "grade", masks => "masks",
             film => "film", print => "print", halation => "halation", grain => "grain",
             strength => "strength", same_for_all => "same_for_all", all => "all", faces => "faces",
-            protect => "protect", mode => "mode", opacity => "opacity",
+            protect => "protect", target => "target", compress => "compress", mode => "mode",
+            opacity => "opacity",
         );
         v
     }
@@ -640,6 +669,8 @@ impl NodePatch {
             SettingsField::AllFaces => self.all.is_some(),
             SettingsField::Faces => self.faces.is_some(),
             SettingsField::Protect => self.protect.is_some(),
+            SettingsField::Target => self.target.is_some(),
+            SettingsField::Compress => self.compress.is_some(),
             SettingsField::Mode => self.mode.is_some(),
             SettingsField::Opacity => self.opacity.is_some(),
             grade_field => self
@@ -703,6 +734,12 @@ impl NodePatch {
         {
             p.protect = None;
         }
+        if p.compress
+            .as_ref()
+            .is_some_and(|m| *m == UniformAmountsPatch::default())
+        {
+            p.compress = None;
+        }
         p == NodePatch::default()
     }
 
@@ -743,6 +780,8 @@ impl NodePatch {
             all,
             faces,
             protect,
+            target,
+            compress,
             mode,
             opacity,
         );
@@ -970,6 +1009,51 @@ impl NodePatch {
         for f in SettingsField::ALL {
             if f.belongs_to(NodeKind::FaceRefinement)
                 && let Some(one) = Self::of_face_field(n, f)
+            {
+                p.absorb(one);
+            }
+        }
+        p
+    }
+
+    /// The patch that carries one field of a Colour Uniform node.
+    fn of_color_uniform_field(n: &ColorUniformNode, field: SettingsField) -> Option<Self> {
+        let mut p = Self::default();
+        match field {
+            SettingsField::Name => p.name = Some(n.name.clone()),
+            SettingsField::Bypass => p.bypass = Some(n.bypass),
+            SettingsField::Pos => p.pos = Some(n.pos),
+            SettingsField::Masks => {
+                p.masks = Some(MasksPatch {
+                    invert: Some(n.masks.invert),
+                    items: Some(n.masks.items.clone()),
+                    edit: None,
+                });
+            }
+            SettingsField::Target => p.target = Some(n.target),
+            SettingsField::Compress => {
+                p.compress = Some(UniformAmountsPatch {
+                    hue: Some(n.compress.hue),
+                    saturation: Some(n.compress.saturation),
+                    lightness: Some(n.compress.lightness),
+                });
+            }
+            _ => return None,
+        }
+        Some(p)
+    }
+
+    /// A patch that holds every field of a Colour Uniform node, with its `kind`, so that it adds the node when the photo
+    /// does not have it.
+    #[must_use]
+    pub fn whole_color_uniform(n: &ColorUniformNode) -> Self {
+        let mut p = Self {
+            kind: Some(NodeKind::ColorUniform),
+            ..Self::default()
+        };
+        for f in SettingsField::ALL {
+            if f.belongs_to(NodeKind::ColorUniform)
+                && let Some(one) = Self::of_color_uniform_field(n, f)
             {
                 p.absorb(one);
             }
@@ -1348,6 +1432,37 @@ impl NodePatch {
         Ok(())
     }
 
+    fn apply_color_uniform(
+        &self,
+        next: &mut ColorUniformNode,
+        id: u32,
+    ) -> Result<(), SettingsError> {
+        if let Some(v) = &self.name {
+            next.name.clone_from(v);
+        }
+        if let Some(v) = self.bypass {
+            next.bypass = v;
+        }
+        if let Some(v) = self.target {
+            next.target = v;
+        }
+        if let Some(c) = &self.compress {
+            if let Some(v) = c.hue {
+                next.compress.hue = v;
+            }
+            if let Some(v) = c.saturation {
+                next.compress.saturation = v;
+            }
+            if let Some(v) = c.lightness {
+                next.compress.lightness = v;
+            }
+        }
+        if let Some(m) = &self.masks {
+            m.apply(&mut next.masks, &NodeId::Corrector(id).to_string())?;
+        }
+        Ok(())
+    }
+
     fn apply_mixer(&self, next: &mut MixerNode) {
         if let Some(v) = &self.name {
             next.name_mut().clone_from(v);
@@ -1495,6 +1610,32 @@ impl DevelopSettings {
                     _ => true,
                 }
             }
+            NodeId::Corrector(n) if a.uniforms.contains_key(&n) || b.uniforms.contains_key(&n) => {
+                let (Some(a), Some(b)) = (a.color_uniform(n), b.color_uniform(n)) else {
+                    return true;
+                };
+                match field {
+                    SettingsField::Name => a.name == b.name,
+                    SettingsField::Bypass => a.bypass == b.bypass,
+                    SettingsField::Pos => a.pos == b.pos,
+                    SettingsField::Masks => a.masks == b.masks,
+                    SettingsField::Target => match (a.target, b.target) {
+                        (None, None) => true,
+                        (Some(x), Some(y)) => {
+                            x.hue_deg.to_bits() == y.hue_deg.to_bits()
+                                && x.saturation.to_bits() == y.saturation.to_bits()
+                                && x.lightness_ev.to_bits() == y.lightness_ev.to_bits()
+                        }
+                        _ => false,
+                    },
+                    SettingsField::Compress => {
+                        a.compress.hue.to_bits() == b.compress.hue.to_bits()
+                            && a.compress.saturation.to_bits() == b.compress.saturation.to_bits()
+                            && a.compress.lightness.to_bits() == b.compress.lightness.to_bits()
+                    }
+                    _ => true,
+                }
+            }
             NodeId::Corrector(n) if a.films.contains_key(&n) || b.films.contains_key(&n) => {
                 let (Some(a), Some(b)) = (a.film(n), b.film(n)) else {
                     return true;
@@ -1615,6 +1756,7 @@ impl DevelopSettings {
                     if next.nodes.extra.remove(n).is_none()
                         && next.nodes.films.remove(n).is_none()
                         && next.nodes.faces.remove(n).is_none()
+                        && next.nodes.uniforms.remove(n).is_none()
                         && next.nodes.mixers.remove(n).is_none()
                     {
                         return Err(GraphError::PatchUnknownNode(id.to_string()).into());
@@ -1662,6 +1804,14 @@ impl DevelopSettings {
                         FaceRefinementNode {
                             pos,
                             ..FaceRefinementNode::default()
+                        },
+                    );
+                } else if actual == NodeKind::ColorUniform {
+                    next.nodes.uniforms.insert(
+                        n,
+                        ColorUniformNode {
+                            pos,
+                            ..ColorUniformNode::default()
                         },
                     );
                 } else if actual == NodeKind::Film {
@@ -1713,6 +1863,11 @@ impl DevelopSettings {
                         np.apply_face_refinement(f, n)?;
                         if let Some(p) = np.pos {
                             f.pos = p;
+                        }
+                    } else if let Some(u) = next.nodes.color_uniform_mut(n) {
+                        np.apply_color_uniform(u, n)?;
+                        if let Some(p) = np.pos {
+                            u.pos = p;
                         }
                     } else if let Some(m) = next.nodes.mixer_mut(n) {
                         np.apply_mixer(m);
@@ -1949,6 +2104,10 @@ impl SettingsPatch {
                     .nodes
                     .face_refinement(n)
                     .and_then(|f| NodePatch::of_face_field(f, *field)),
+                NodeId::Corrector(n) if from.nodes.uniforms.contains_key(&n) => from
+                    .nodes
+                    .color_uniform(n)
+                    .and_then(|f| NodePatch::of_color_uniform_field(f, *field)),
                 NodeId::Corrector(n) if from.nodes.films.contains_key(&n) => from
                     .nodes
                     .film(n)
@@ -1986,6 +2145,10 @@ impl SettingsPatch {
                     patch.nodes.insert(id, NodePatch::whole_film(f));
                 } else if let Some(f) = to.nodes.face_refinement(n) {
                     patch.nodes.insert(id, NodePatch::whole_face_refinement(f));
+                } else if let Some(f) = to.nodes.color_uniform(n) {
+                    patch
+                        .nodes
+                        .insert(id, NodePatch::whole_color_uniform(f));
                 } else if let Some(m) = to.nodes.mixer(n) {
                     patch.nodes.insert(id, NodePatch::whole_mixer(m));
                 }
@@ -2122,6 +2285,16 @@ impl SettingsPatch {
                 .nodes
                 .insert(NodeId::Corrector(*id), NodePatch::whole_face_refinement(&f));
         }
+        for (id, f) in &g.uniforms {
+            let mut f = f.clone();
+            for row in &mut f.masks.items {
+                *row = row.emptied();
+            }
+            patch.nodes.insert(
+                NodeId::Corrector(*id),
+                NodePatch::whole_color_uniform(&f),
+            );
+        }
         for (id, m) in &g.mixers {
             patch
                 .nodes
@@ -2172,6 +2345,9 @@ fn defaults_for(node: NodeId, default_look: &LookId, kind: NodeKind) -> DevelopS
             }
             NodeKind::FaceRefinement => {
                 d.nodes.faces.insert(n, FaceRefinementNode::default());
+            }
+            NodeKind::ColorUniform => {
+                d.nodes.uniforms.insert(n, ColorUniformNode::default());
             }
             NodeKind::Parallel | NodeKind::Layer | NodeKind::Splitter | NodeKind::Combiner => {
                 if let Some(m) = MixerNode::new_of(kind) {
