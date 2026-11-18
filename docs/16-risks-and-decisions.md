@@ -147,9 +147,25 @@ The owner asked for the three greyed items of the Add node menu ("Let's implemen
 | Add node › Parallel or Layer | **"Add a corrector too, as Resolve"**: the selected node and a new corrector beside it feed the mixer |
 | Ports | **"Tinted ports + R/G/B letters"** on the Splitter and the Combiner |
 | Links | **"No lines, names only"**: the panels name where each input comes from and draw no lines |
-| `PIPELINE_VERSION` | 0.12.2 (2026-11-17, S-18: the gum guard in the teeth adjustment, `docs/27` 7.8; only a Face Refinement node with a teeth control above 0 changes pixels); 0.12.1 (2026-11-16, the pre-release merge of Face Refinement, 0.12.0, and the lens fixes, 0.11.2 and 0.11.3: one version above all; pictures with no face retouch and no light cut by the frame at Anamorphic above 0 keep their bits); 0.12.0 (the Face Refinement node: a new kind); 0.11.3 (bright lights that are no balls are held, not smeared, at Anamorphic above 0, 2026-11-16); 0.11.2 (lights the frame cuts are balls at Anamorphic above 0, 2026-11-16: only pictures with such lights and Anamorphic above 0 change); 0.11.1 (the NEX-5N and NEX-7 lens tables, 2026-11-13: pixels of those bodies change); 0.11.0, a minor step as for the Film node: an older build refuses a graph with a kind it does not know; no existing graph changes by a bit |
+| `PIPELINE_VERSION` | 0.13.0 (2026-11-18, CU-12: the Colour Uniform node, a new kind, `docs/32`; no existing graph changes by a bit); 0.12.2 (2026-11-17, S-18: the gum guard in the teeth adjustment, `docs/27` 7.8; only a Face Refinement node with a teeth control above 0 changes pixels); 0.12.1 (2026-11-16, the pre-release merge of Face Refinement, 0.12.0, and the lens fixes, 0.11.2 and 0.11.3: one version above all; pictures with no face retouch and no light cut by the frame at Anamorphic above 0 keep their bits); 0.12.0 (the Face Refinement node: a new kind); 0.11.3 (bright lights that are no balls are held, not smeared, at Anamorphic above 0, 2026-11-16); 0.11.2 (lights the frame cuts are balls at Anamorphic above 0, 2026-11-16: only pictures with such lights and Anamorphic above 0 change); 0.11.1 (the NEX-5N and NEX-7 lens tables, 2026-11-13: pixels of those bodies change); 0.11.0, a minor step as for the Film node: an older build refuses a graph with a kind it does not know; no existing graph changes by a bit |
 | Test build (X-H2) and version | **"Good, merge to main and release 0.2.3"** |
 | Not in the first version | Other blend modes (Screen, Overlay and the like assume a display picture), a mode or a weight per input, masks and key ports on the four kinds, a Key Mixer, Outside, Morph, other channel splits |
+
+### Colour Uniform (owner, 2026-11-18)
+
+The owner's request: "plan 'color compressor' node, similar to Resolve color compressor, that will also go into 0.2.4". Milestone U (`docs/15`), specified in `docs/32-color-uniform.md`. The decisions (CU-H1):
+
+| Topic | Decision |
+|---|---|
+| Name | **Colour Uniform** (identifier `color_uniform`) |
+| Selection | **Masks alone, as Resolve does**: no Range card, no range fields, no eye of its own; the node's mask is its selection. A neutral guard stays on the hue and saturation pulls; the lightness pull acts on everything the mask lets through |
+| First-pick amounts | **Hue 50 %, Saturation 50 %, Lightness 0 %** |
+| Skin preset, target shift, Blend or Strength | **None**: the target's Hue, Saturation and Lightness can be typed and dragged instead |
+| Show mask | The ordinary Show mask of the node's mask |
+| Picking | Pick colour is on when the node is added; the pick is the mean of a 7 x 7 square; "Colour Uniform node needs to allow picking target color" (a swatch with Pick colour, and Hue, Saturation and Lightness to drag or type; glasscn has no colour picker, so the sliders are the picker) |
+| Tab and menu | The Compress tab in the Colour tab's green; the node sits after Face Refinement in the Add node menu |
+| `PIPELINE_VERSION` | **The next minor step, 0.13.0**; no existing graph changes by a bit |
+| Decided by us, open | The first pick also adds a Colour range mask row (`docs/32` section 10). Auto-mask and antipode-fade decisions are flagged in `docs/32` section 10 and wait for the owner |
 
 ### Presets (owner, 2026-11-16)
 

@@ -9,6 +9,15 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Added
+
+- **Colour Uniform.** A new node that makes colours more alike. **Add node › Colour Uniform**, then click a colour on the photo: the node pulls the colours its mask lets through toward it, and hue, saturation and lightness each have their own amount, from 0 to 100 %. A dress that is one hue in the light and another in the shade, or skin with a green cast on one side, comes together. The first pick sets Hue and Saturation to 50 % and adds a Colour range mask on the colour you picked, so the change stays near it; you can widen the mask, add others or delete it in the Mask tab. You can also drag or type the target's Hue, Saturation and Lightness. Greys are left alone. A node with no target, or with every amount at 0, changes nothing. It works in `ym` too: a settings file can hold `"kind": "color_uniform"`.
+- **Pipeline version 0.13.0.** Pictures made without a Colour Uniform node do not change by a single bit; only the version written into exports, `ym --version`, `ym doctor` and `ym info` moves. An older Yellowmoon refuses a photo or album that holds the new node.
+
+### Changed
+
+- The raw-algorithm constants have recorded derivations and two classes of test vectors; no picture changes.
+
 ## [0.2.4-beta.2] - 2026-11-17
 
 A second pre-release (a beta) for testing. It fixes problems found in beta 1 (Save Preset on a photo with Face Refinement, exporting after opening an album, the filmstrip after a removal and after Export, and gums turning grey under Teeth whitening) and adds two teeth controls, **Desaturation** and **Gamma**. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.12.2 (was 0.12.1), because the gum guard changes teeth pixels whenever a teeth control is above 0; a photo with no Face Refinement node, or with all three teeth controls at 0, comes out with the same pixels as in beta 1. A settings file or preset that uses Desaturation or Gamma needs this version: an older build refuses the new fields.

@@ -56,6 +56,8 @@ The default graph, Input → Main → Output, is the plan `[Main]`. Nodes number
 
 **Steps with several inputs or outputs** (milestone X, `docs/25-mixers.md`). A mixer reads up to eight pictures (a Parallel also its base, a Layer the alpha of each upper input), a Combiner three, and a Splitter writes three; a corrector or Film node that feeds a Layer also writes its picture before its mask blend. Their maths is `docs/25` §3 and their place in the plan `docs/25` §4.1; they take part in the order of item 2 and get no card number.
 
+**A Colour Uniform node** (milestone U, `docs/32` §6) is one per-pixel step like a corrector's: a picture input, a key input and a key output, the mask blend of section 1.1 (`out = in + m (node(in) − in)`), no register of its own and no plane. A node with no target, with all three amounts at 0 or bypassed is at its identity and the plan skips it.
+
 *Readings built in N-03* (`crates/ym-color/src/plan.rs`; `docs/23` section 15): a corrector whose picture input has no link reads the Input's picture (the validator allows such a node and this file did not say what it reads); the Input's picture is the pass's input and takes no register; a value takes a register from the step that makes it to the last step of the pass that reads it, and a step may write into the register its own input leaves, so a chain of any length needs one register; a value that a later pass reads is also written to a buffer when it is made; a pass takes as many steps as fit `PLAN_REGISTERS` and `PLAN_KEYS`, and the next starts with the first step that does not.
 
 ### 1.4 Bit-identity of the default graph
