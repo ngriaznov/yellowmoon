@@ -182,7 +182,12 @@ struct BlurU {
 
 /// An image placed at `(x, y)`.
 fn placed(img: &GpuImage, x: i64, y: i64) -> [i32; 4] {
-    [x as i32, y as i32, img.stride as i32, img.plane_len() as i32]
+    [
+        x as i32,
+        y as i32,
+        img.stride as i32,
+        img.plane_len() as i32,
+    ]
 }
 
 fn groups(w: usize, h: usize) -> (u32, u32, u32) {
@@ -230,7 +235,12 @@ pub fn encode_prep(
         b: placed(mask, read.x, read.y),
         c: placed(dst, read.x, read.y),
         win: [read.x as i32, read.y as i32, w as i32, h as i32],
-        p: [(highlights / 100.0) as f32, f32::from(u8::from(respect)), 0.0, 0.0],
+        p: [
+            (highlights / 100.0) as f32,
+            f32::from(u8::from(respect)),
+            0.0,
+            0.0,
+        ],
         ..BlurU::default()
     };
     let ub = passes.uniform("blur prep uniform", &u)?;

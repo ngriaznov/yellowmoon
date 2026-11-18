@@ -178,15 +178,31 @@ fn prep_decodes_and_weighs_like_its_twin() {
                         4,
                         Placement::whole(read.w, read.h),
                     )?;
-                    encode_prep(&mut passes, &picture, &mask, &dst, read, (highlights, respect))?;
+                    encode_prep(
+                        &mut passes,
+                        &picture,
+                        &mask,
+                        &dst,
+                        read,
+                        (highlights, respect),
+                    )?;
                     let r = dst.encode_read(&mut passes)?;
                     let done = passes.submit()?.finish()?;
                     dst.take(&done, r)
                 })
                 .expect("prep");
-            let want = twin::prep(&f64s(&pic), &f64s(&msk), read.w, read.h, highlights, respect);
+            let want = twin::prep(
+                &f64s(&pic),
+                &f64s(&msk),
+                read.w,
+                read.h,
+                highlights,
+                respect,
+            );
             let d = rel_diff(&got, &want);
-            println!("prep, Highlights {highlights}, respect {respect}: largest relative difference {d:.2e}");
+            println!(
+                "prep, Highlights {highlights}, respect {respect}: largest relative difference {d:.2e}"
+            );
             assert!(d < GATE, "Highlights {highlights}, respect {respect}: {d}");
             worst = worst.max(d);
         }
@@ -247,7 +263,10 @@ fn the_pyramid_is_the_twins_inside_the_frame_and_at_its_edge() {
             for ((gg, gv), (wg, wv)) in got.iter().zip(&want) {
                 assert_eq!(gg, wg);
                 let d = rel_diff(gv, wv);
-                println!("pyramid over {read:?}, level {}: {} x {} cells, largest relative difference {d:.2e}", gg.level, gg.w, gg.h);
+                println!(
+                    "pyramid over {read:?}, level {}: {} x {} cells, largest relative difference {d:.2e}",
+                    gg.level, gg.w, gg.h
+                );
                 assert!(d < GATE, "level {}: {d}", gg.level);
                 worst = worst.max(d);
             }
@@ -314,7 +333,9 @@ fn the_read_back_is_the_twins_nearest_and_bilinear() {
             let (grid, planes) = &levels[level as usize];
             let want = twin::upsample(planes, grid, window, bilinear);
             let d = rel_diff(&got, &want);
-            println!("read-back of level {level}, bilinear {bilinear}: largest relative difference {d:.2e}");
+            println!(
+                "read-back of level {level}, bilinear {bilinear}: largest relative difference {d:.2e}"
+            );
             assert!(d < GATE, "level {level}, bilinear {bilinear}: {d}");
             worst = worst.max(d);
         }
@@ -522,7 +543,8 @@ fn node_picture(
             reach: 0,
             kernel: Some(kernel),
         };
-        let out = encode_blur_picture(ctx, &mut passes, &w, (&picture, &mask), (read, made, frame))?;
+        let out =
+            encode_blur_picture(ctx, &mut passes, &w, (&picture, &mask), (read, made, frame))?;
         let r = out.img.encode_read(&mut passes)?;
         let done = passes.submit()?.finish()?;
         out.img.take(&done, r)
@@ -570,7 +592,9 @@ fn an_identity_kernel_gives_the_input_and_the_cell_kernel_the_twins_picture() {
                     }
                 }
             }
-            println!("identity, respect {respect}: largest difference from the input {worst:.2e} in LogC4");
+            println!(
+                "identity, respect {respect}: largest difference from the input {worst:.2e} in LogC4"
+            );
             assert!(worst < GATE, "respect {respect}: {worst}");
             // The cell kernel against the twin's chain: prep, pyramid, read-back, blend.
             for level in [2u32, 3] {
@@ -582,7 +606,9 @@ fn an_identity_kernel_gives_the_input_and_the_cell_kernel_the_twins_picture() {
                 let sums = twin::upsample(planes, grid, made, true);
                 let want = twin::blend(&f64s(&pic), &f64s(&msk), read, &sums, made);
                 let d = abs_diff(&got, &want);
-                println!("cells at level {level}, respect {respect}: picture within {d:.2e} of the twin's, in LogC4");
+                println!(
+                    "cells at level {level}, respect {respect}: picture within {d:.2e} of the twin's, in LogC4"
+                );
                 assert!(d < GATE, "level {level}, respect {respect}: {d}");
             }
         }
@@ -628,25 +654,33 @@ fn a_type_with_no_kernel_is_refused_with_its_name() {
     for dev in f32_devices() {
         for (kind, name) in kinds {
             let (pic, msk) = (picture(read), mask(read));
-            let r = dev.gpu.run(JobSpec::new(Priority::Viewport), move |ctx, _| {
-                let mut passes = PassList::new(ctx, "blur refused");
-                let picture = upload(ctx, "picture", read, 3, &pic);
-                let mask = upload(ctx, "mask", read, 1, &msk);
-                let w = BlurWork {
-                    params: BlurParams {
-                        kind,
-                        respect_mask_edges: true,
-                    },
-                    mask: Arc::new(unused_chain()),
-                    reach: 0,
-                    kernel: ym_gpu::kernels::blur_stack::device_kernel(&BlurParams {
-                        kind,
-                        respect_mask_edges: true,
-                    }),
-                };
-                encode_blur_picture(ctx, &mut passes, &w, (&picture, &mask), (read, read, frame))
+            let r = dev
+                .gpu
+                .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
+                    let mut passes = PassList::new(ctx, "blur refused");
+                    let picture = upload(ctx, "picture", read, 3, &pic);
+                    let mask = upload(ctx, "mask", read, 1, &msk);
+                    let w = BlurWork {
+                        params: BlurParams {
+                            kind,
+                            respect_mask_edges: true,
+                        },
+                        mask: Arc::new(unused_chain()),
+                        reach: 0,
+                        kernel: ym_gpu::kernels::blur_stack::device_kernel(&BlurParams {
+                            kind,
+                            respect_mask_edges: true,
+                        }),
+                    };
+                    encode_blur_picture(
+                        ctx,
+                        &mut passes,
+                        &w,
+                        (&picture, &mask),
+                        (read, read, frame),
+                    )
                     .map(|_| ())
-            });
+                });
             let Err(e) = r else {
                 panic!("{name} ran on the device without a kernel");
             };
@@ -813,7 +847,9 @@ fn stack_picture(gpu: &Gpu, stack: &FilmStack, need: Area) -> (Area, Vec<f32>) {
 /// What a chain makes of `area` of the camera picture on the CPU, planar f32 (all three planes).
 fn cpu_chain(chain: &ColorChain, area: Area, films: &dyn RasterPlanes) -> Vec<f32> {
     let cam = camera(area);
-    let places = Places { origin: (area.x, area.y) };
+    let places = Places {
+        origin: (area.x, area.y),
+    };
     let frame = ColorFrame::planar(area.w, area.h, &cam.data)
         .expect("frame")
         .with_photo(&places, photo_frame())
@@ -907,7 +943,9 @@ fn a_blur_node_in_a_stack_is_the_twin_and_the_colour_pass_takes_its_picture_as_i
         let mm = cpu_chain(&mask_chain, need, &NoFilms);
         let n = need.w * need.h;
         let partial = mm[..n].iter().filter(|&&m| m > 0.01 && m < 0.99).count();
-        println!("the picture differs from its input by up to {moved:.3} in LogC4; {partial} of {n} pixels have a partial mask");
+        println!(
+            "the picture differs from its input by up to {moved:.3} in LogC4; {partial} of {n} pixels have a partial mask"
+        );
         assert!(moved > 0.01 && partial > n / 20);
 
         // The whole chain at C10 on the device against the CPU's chain given the twin's picture as the node's finished
@@ -1035,10 +1073,18 @@ fn tiles_a_repeat_and_a_clean_pool_are_the_same_bits() {
         }
         // A repeat, and a run on a device without the pool's poison.
         let (_, again) = stack_picture(&dev.gpu, &stack, whole);
-        assert!(all.iter().zip(&again).all(|(a, b)| a.to_bits() == b.to_bits()));
+        assert!(
+            all.iter()
+                .zip(&again)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
         if let Some(clean) = start_unpoisoned(StoragePreference::Auto) {
             let (_, other) = stack_picture(&clean, &stack, whole);
-            assert!(all.iter().zip(&other).all(|(a, b)| a.to_bits() == b.to_bits()));
+            assert!(
+                all.iter()
+                    .zip(&other)
+                    .all(|(a, b)| a.to_bits() == b.to_bits())
+            );
         }
     }
     assert!(seen || gpus().is_empty());
@@ -1071,9 +1117,15 @@ fn the_reach_grows_the_tile_the_scheduler_cuts() {
         h: tile,
     };
     let grown = stack.read_area(mid);
-    println!("Soft at 880 px: tile {tile}, grown to {} x {}", grown.w, grown.h);
+    println!(
+        "Soft at 880 px: tile {tile}, grown to {} x {}",
+        grown.w, grown.h
+    );
     assert_eq!((grown.w, grown.h), (tile + 2 * 880, tile + 2 * 880));
-    assert!(tile >= 64 && tile <= 2048);
+    assert!((64..=2048).contains(&tile));
     // Blur planes are at most four f32 planes of the grown window: inside what the raster pass already holds.
-    assert!(GpuImage::buffer_bytes(grown.w, grown.h, 4) <= ym_gpu::kernels::mask_raster::max_binding_bytes(grown.w, grown.h));
+    assert!(
+        GpuImage::buffer_bytes(grown.w, grown.h, 4)
+            <= ym_gpu::kernels::mask_raster::max_binding_bytes(grown.w, grown.h)
+    );
 }

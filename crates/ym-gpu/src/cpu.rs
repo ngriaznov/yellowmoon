@@ -48,6 +48,7 @@
 
 use std::ops::Range;
 
+pub mod blur;
 pub mod bm_dct;
 pub mod chain;
 pub mod coarse_chroma;
@@ -75,7 +76,6 @@ pub mod sharpen;
 pub mod spline;
 pub mod synth;
 pub mod tiling;
-pub mod blur;
 pub mod tint;
 pub mod tuning;
 pub mod vignette;

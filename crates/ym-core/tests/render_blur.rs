@@ -204,8 +204,8 @@ fn a_view_and_the_export_agree_at_another_scale() {
     assert!(on.1 <= off.1 + 10.0, "largest {} against {}", on.1, off.1);
 }
 
-/// Until BL-05 the device refuses a plan with a live Blur node and the CPU makes the frame, with its reason; a node at its
-/// identity keeps the device; the export is the CPU's.
+/// While a type has no device kernel (BL-06 to BL-09 add them one by one) the device refuses a live node of that type by its
+/// name and the CPU makes the frame, with its reason; a node at its identity keeps the device; the export is the CPU's.
 #[test]
 fn the_device_refuses_a_live_blur_node_and_the_cpu_makes_the_frame() {
     let gpu = match Gpu::start(GpuConfig {
@@ -248,7 +248,7 @@ fn the_device_refuses_a_live_blur_node_and_the_cpu_makes_the_frame() {
         got.report
             .cpu_reason
             .as_deref()
-            .is_some_and(|r| r.contains("Blur node")),
+            .is_some_and(|r| r.contains("a Lens Blur node is not on the device yet")),
         "the reason: {:?}",
         got.report.cpu_reason
     );

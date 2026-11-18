@@ -39,6 +39,7 @@ use ym_color::schedule::{Schedule, StepKind};
 use ym_film::spatial::{FilmFrame, Frame as FilmFrameExtent, Plane, Rect as FilmRect, RunOptions};
 use ym_gpu::cpu::Rect;
 use ym_gpu::cpu::sampler::{GridPositions, Sampled, SamplerGrid};
+use ym_gpu::kernels::blur_stack::{BlurWork as BlurDeviceWork, device_kernel};
 use ym_gpu::kernels::film_stack::{FilmNodeSpec, FilmStack, FilmWork, NodeWork};
 
 use super::face_pass::{FacePart, FaceWork, ProtectInput, union};
@@ -334,9 +335,11 @@ impl FilmRender {
         self.schedule().total_reach()
     }
 
-    /// The Film and Face Refinement nodes as plain data for the device (`ym_gpu::kernels::film_stack`): the prefix chain, and for
-    /// a Film node the passes over the photo's extent, the scalars and the tables, for a Face Refinement node its regions with
-    /// the CPU's plan of each (`docs/27` S-13).
+    /// The Film, Face Refinement and Blur nodes as plain data for the device (`ym_gpu::kernels::film_stack`): the prefix chain, and
+    /// for a Film node the passes over the photo's extent, the scalars and the tables, for a Face Refinement node its regions
+    /// with the CPU's plan of each (`docs/27` S-13), for a Blur node its numbers, its mask chain, its reach and the type's
+    /// device kernel (`ym_gpu::kernels::blur_stack::device_kernel`; none while the type's task has not landed, and the device
+    /// refuses the node by its type).
     ///
     /// # Errors
     ///
@@ -348,35 +351,29 @@ impl FilmRender {
             height: self.frame.h,
         };
         let mut steps = Vec::with_capacity(self.steps.len());
-        // A Blur node has no device kernel until BL-05: the colour pass refuses the plan (`ColorChain::has_blur`) and the CPU
-        // makes the frame, so the stack holds the other nodes only.
-        let device_ids: Vec<u32> = self
-            .steps
-            .iter()
-            .filter(|s| !matches!(s.work, StepWork::Blur(_)))
-            .map(|s| s.id)
-            .collect();
         for s in &self.steps {
             let work = match &s.work {
-                StepWork::Blur(_) => continue,
                 StepWork::Film(film) => NodeWork::Film(Box::new(FilmWork {
                     plan: Arc::new(crate::film::device_plan(film, extent)),
                     scalars: crate::film::device_scalars(film.baked()),
                     tables: crate::film::device_tables(film.baked()),
                 })),
                 StepWork::Face(face) => NodeWork::Face(Arc::new(face.device_node()?)),
+                // A Blur node: the scaffold's passes (`ym_gpu::kernels::blur_stack`) with the type's kernel, which a type
+                // whose task has not landed does not have: the device then refuses the node by its type and the CPU makes
+                // the frame (`RenderReport::cpu_reason`), as the oracle does here.
+                StepWork::Blur(blur) => NodeWork::Blur(Box::new(BlurDeviceWork {
+                    params: blur.params,
+                    mask: Arc::clone(&blur.mask),
+                    reach: s.halo,
+                    kernel: device_kernel(&blur.params),
+                })),
             };
             steps.push(FilmNodeSpec {
                 node: s.id,
                 prefix: Arc::clone(&s.prefix),
                 work,
-                reads: Some(
-                    s.reads
-                        .iter()
-                        .copied()
-                        .filter(|id| device_ids.contains(id))
-                        .collect(),
-                ),
+                reads: Some(s.reads.clone()),
             });
         }
         Ok(FilmStack::new(self.frame, steps))

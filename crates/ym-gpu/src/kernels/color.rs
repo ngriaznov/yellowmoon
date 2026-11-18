@@ -2711,7 +2711,10 @@ mod tests {
             NODE_BLUR,
         ];
         assert!(others.iter().all(|b| b & NODE_UNIFORM == 0));
-        assert!(NODE_BLUR.is_power_of_two() && others.iter().all(|&b| b == NODE_BLUR || b & NODE_BLUR == 0));
+        assert!(
+            NODE_BLUR.is_power_of_two()
+                && others.iter().all(|&b| b == NODE_BLUR || b & NODE_BLUR == 0)
+        );
         assert!(NODE_UNIFORM.is_power_of_two());
         // The record of a step: the target's chroma and unit vector, the tone and the three amounts, the chroma's length.
         let mut r = NodeRecU::default();
