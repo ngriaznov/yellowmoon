@@ -2,7 +2,9 @@
 //! `docs/algorithms/01-adaptive-ratio-demosaic.md`).
 //!
 //! * `vectors_match_within_their_tolerance`: every vector of
-//!   `tests/cpu_data/adaptive_ratio_demosaic/` (made by the C++ oracle, never hand-edited) through
+//!   `tests/cpu_data/adaptive_ratio_demosaic/` (made by the C++ oracle, never hand-edited, run under
+//!   `Tuning::ORACLE`: the structure) and of `adaptive_ratio_demosaic_self/` (made by our own code,
+//!   run under `Tuning::DEFAULT`: the regression of the shipped constants, `docs/29` RC-04) through
 //!   the whole-piece routine and through the banded one, within the vector's tolerance (1e-5), and
 //!   `derived_values_match_the_vectors` (1e-9 relative). The CA vector `ca_weighting` is the
 //!   CA path's and is checked in `cpu_adaptive_ratio_ca.rs`.
@@ -12,7 +14,7 @@
 //! * Plumbing: the banded runner equals the whole-piece routine bit for bit, `demosaic_with`
 //!   dispatches to it, invalid input falls back to Menon.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde_json::Value;
 use ym_gpu::cpu::demosaic::adaptive_ratio::{self, Derived, Error, Params, ShadowMatch, Tuning};
@@ -22,17 +24,11 @@ use ym_gpu::cpu::tiling::{Halo, Rect, tile_grid};
 use ym_gpu::cpu::{Cfa, Mosaic, NoiseDn, RgbImage};
 use ym_noise::model::NoiseModel;
 
-const VECTOR_DIR: &str = "tests/cpu_data/adaptive_ratio_demosaic";
+mod self_gen;
+use self_gen::{CLASSES, Class, Package};
 
-fn vector_files() -> Vec<PathBuf> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(VECTOR_DIR);
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .expect("vector directory")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        .collect();
-    files.sort();
-    files
+fn vector_files(class: Class) -> Vec<PathBuf> {
+    self_gen::json_files(&class.dir(Package::AdaptiveRatio))
 }
 
 fn num(v: &Value, key: &str) -> f64 {
@@ -75,12 +71,15 @@ impl Case {
     }
 }
 
-/// Every vector runs under the constants it was made with ([`Tuning::ORACLE`], which proves the
-/// structure is the spec's) and under the shipped ones ([`Tuning::DEFAULT`]).
-const TUNINGS: [Tuning; 2] = [Tuning::ORACLE, Tuning::DEFAULT];
+/// The oracle vectors run under the constants they were made with ([`Tuning::ORACLE`], which proves
+/// the structure is the spec's), the self vectors under the shipped ones ([`Tuning::DEFAULT`]).
+fn tuning_of(class: Class) -> Tuning {
+    class.pick(Tuning::ORACLE, Tuning::DEFAULT)
+}
 
-fn cases(tuning: Tuning) -> Vec<Case> {
-    vector_files()
+fn cases(class: Class) -> Vec<Case> {
+    let tuning = tuning_of(class);
+    vector_files(class)
         .into_iter()
         .map(|path| {
             let json: Value =
@@ -186,14 +185,14 @@ fn image_diff(a: &RgbImage, b: &RgbImage) -> f64 {
 
 #[test]
 fn vectors_match_within_their_tolerance() {
-    for tuning in TUNINGS {
-        vectors_match_within_their_tolerance_under(tuning);
+    for class in CLASSES {
+        vectors_match_within_their_tolerance_under(class);
     }
 }
 
-fn vectors_match_within_their_tolerance_under(tuning: Tuning) {
+fn vectors_match_within_their_tolerance_under(class: Class) {
     let mut checked = 0;
-    for case in cases(tuning) {
+    for case in cases(class) {
         if case.has_ca() {
             continue; // ca_weighting: cpu_adaptive_ratio_ca.rs
         }
@@ -204,8 +203,10 @@ fn vectors_match_within_their_tolerance_under(tuning: Tuning) {
         assert_eq!(whole, banded, "{}: banded differs from whole", case.name);
         let worst = max_abs_diff(&whole, &case.expected);
         println!(
-            "{:<26} max |rust - oracle| = {worst:.3e} (tolerance {:.0e})",
-            case.name, case.tolerance
+            "{:<26} [{}] max |rust - vector| = {worst:.3e} (tolerance {:.0e})",
+            case.name,
+            class.label(),
+            case.tolerance
         );
         assert!(
             worst <= case.tolerance,
@@ -220,13 +221,13 @@ fn vectors_match_within_their_tolerance_under(tuning: Tuning) {
 
 #[test]
 fn derived_values_match_the_vectors() {
-    for tuning in TUNINGS {
-        derived_values_match_the_vectors_under(tuning);
+    for class in CLASSES {
+        derived_values_match_the_vectors_under(class);
     }
 }
 
-fn derived_values_match_the_vectors_under(tuning: Tuning) {
-    for case in cases(tuning) {
+fn derived_values_match_the_vectors_under(class: Class) {
+    for case in cases(class) {
         // The vectors carry f64 gains (1.9 is not an f32); the f64 constructor reproduces the
         // oracle's derivation exactly, the f32 one is what the demosaic runs on.
         let g = case.json["params"]["gains"].as_array().expect("gains");
@@ -291,16 +292,16 @@ fn derived_values_match_the_vectors_under(tuning: Tuning) {
 
 #[test]
 fn the_phase_vectors_agree_after_the_shift() {
-    for tuning in TUNINGS {
-        the_phase_vectors_agree_after_the_shift_under(tuning);
+    for class in CLASSES {
+        the_phase_vectors_agree_after_the_shift_under(class);
     }
 }
 
-fn the_phase_vectors_agree_after_the_shift_under(tuning: Tuning) {
+fn the_phase_vectors_agree_after_the_shift_under(class: Class) {
     // One RGGB frame sampled at offsets (0/1, 0/1): pixels at least 11 px from every edge agree
     // (the spec checked 3675 samples, max difference 0; the oracle ran f64 gains, we run f32
     // ones, so the bound here is the vectors' own tolerance).
-    let by_name: Vec<Case> = cases(tuning)
+    let by_name: Vec<Case> = cases(class)
         .into_iter()
         .filter(|c| c.name.starts_with("phase_"))
         .collect();

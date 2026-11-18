@@ -30,8 +30,36 @@ use super::color::{
     REF_KEY, REF_PICTURE, REF_REGISTER, REF_SHIFT, REF_SLOT, WARP_LOCK_ROWS, WARP_MOVE_ROWS,
     blend_code, record_rows,
 };
+use crate::cpu::demosaic::adaptive_ratio::Tuning as ArTuning;
+use crate::cpu::output_sharpen::Tuning as SharpTuning;
+use crate::cpu::sharpen::diffraction::Tuning as DiffTuning;
 use crate::device::StorageMode;
 use ym_color::mask::OpKind;
+
+/// The constants a pipeline of the three tuned raw-algorithm packages is built with (`docs/29`
+/// RC-04). The shader of each carries a WGSL `const` block generated from its `Tuning`
+/// ([`Tuning::wgsl_block`](crate::cpu::tuning)); the pipeline cache keys a pipeline by the kernel and
+/// by that block, so the device runs `Tuning::DEFAULT` and `Tuning::ORACLE` (or any other) side by
+/// side and a cached pipeline is never reused for different constants.
+#[derive(Clone, Copy, Debug)]
+pub enum Tune<'a> {
+    /// The shipped constants (`Tuning::DEFAULT`), what the kernels without a tuning use too.
+    Shipped,
+    /// The adaptive ratio demosaic's constants.
+    AdaptiveRatio(&'a ArTuning),
+    /// The diffraction deconvolution's constants.
+    Diffraction(&'a DiffTuning),
+    /// The output sharpening's constants.
+    OutputSharpen(&'a SharpTuning),
+}
+
+/// The raw-algorithm package a kernel belongs to, when it reads tuned constants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Package {
+    AdaptiveRatio,
+    Diffraction,
+    OutputSharpen,
+}
 
 /// The kernels of the crate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -548,7 +576,75 @@ impl KernelId {
         }
     }
 
-    fn body(self) -> String {
+    /// The package of the raw algorithms whose constants this kernel reads, if any (`docs/29` RC-04).
+    fn package(self) -> Option<Package> {
+        match self {
+            KernelId::OutputSharpenLuma
+            | KernelId::OutputSharpenHighpassRows
+            | KernelId::OutputSharpenHighpassCols
+            | KernelId::OutputSharpenGainTerms
+            | KernelId::OutputSharpenBlur
+            | KernelId::OutputSharpenAccumulate
+            | KernelId::OutputSharpenWindow
+            | KernelId::OutputSharpenTransfer => Some(Package::OutputSharpen),
+            KernelId::DiffractionLuma
+            | KernelId::DiffractionEnvelope
+            | KernelId::DiffractionLayers
+            | KernelId::DiffractionGaussRows
+            | KernelId::DiffractionGaussCols
+            | KernelId::DiffractionPsf
+            | KernelId::DiffractionMomentRows
+            | KernelId::DiffractionSolve
+            | KernelId::DiffractionOutput => Some(Package::Diffraction),
+            KernelId::AdaptiveRatioPrepare
+            | KernelId::AdaptiveRatioGreen
+            | KernelId::AdaptiveRatioRefine
+            | KernelId::AdaptiveRatioStep1
+            | KernelId::AdaptiveRatioStep2
+            | KernelId::AdaptiveRatioLuma
+            | KernelId::AdaptiveRatioSharpen
+            | KernelId::AdaptiveRatioSimple
+            | KernelId::AdaptiveRatioLowErr
+            | KernelId::AdaptiveRatioMatch
+            | KernelId::AdaptiveRatioExit => Some(Package::AdaptiveRatio),
+            _ => None,
+        }
+    }
+
+    /// What distinguishes this kernel's pipeline under `tune` from the shipped one: `None` for the
+    /// shipped constants (and for a kernel that reads none, or a `tune` of another package), else the
+    /// generated constants block, which is all that differs between two sources of the kernel. It is
+    /// the second half of the pipeline cache's key, so a pipeline is never reused for other constants.
+    pub(crate) fn variant(self, tune: Tune<'_>) -> Option<String> {
+        match (self.package()?, tune) {
+            (Package::AdaptiveRatio, Tune::AdaptiveRatio(t)) if *t != ArTuning::DEFAULT => {
+                Some(t.wgsl_block())
+            }
+            (Package::Diffraction, Tune::Diffraction(t)) if *t != DiffTuning::DEFAULT => {
+                Some(t.wgsl_block())
+            }
+            (Package::OutputSharpen, Tune::OutputSharpen(t)) if *t != SharpTuning::DEFAULT => {
+                Some(t.wgsl_block())
+            }
+            _ => None,
+        }
+    }
+
+    /// The kernel body with the constants of `tune` (the shipped ones for a kernel that reads none
+    /// and for a `tune` of another package).
+    fn body_with(self, tune: Tune<'_>) -> String {
+        match (self.package(), tune) {
+            (Some(Package::AdaptiveRatio), Tune::AdaptiveRatio(t)) => {
+                return super::adaptive_ratio::body_with(self, t);
+            }
+            (Some(Package::Diffraction), Tune::Diffraction(t)) => {
+                return super::diffraction::body_with(self, t);
+            }
+            (Some(Package::OutputSharpen), Tune::OutputSharpen(t)) => {
+                return super::output_sharpen::body_with(self, t);
+            }
+            _ => {}
+        }
         match self {
             KernelId::SpikeNormalize => include_str!("../shaders/spike_normalize.wgsl").to_string(),
             KernelId::SpikeDemosaic => include_str!("../shaders/spike_demosaic.wgsl").to_string(),
@@ -1000,6 +1096,11 @@ fn expand(body: &str, mode: StorageMode) -> String {
 
 /// The complete WGSL module of `id` for a device using `mode`.
 pub fn shader_source(mode: StorageMode, id: KernelId) -> String {
+    shader_source_with(mode, id, Tune::Shipped)
+}
+
+/// [`shader_source`] with the constants of `tune` for the kernels of the three tuned packages.
+pub fn shader_source_with(mode: StorageMode, id: KernelId, tune: Tune<'_>) -> String {
     let mut s = String::new();
     if mode == StorageMode::F16Native {
         s.push_str("enable f16;\n");
@@ -1007,7 +1108,7 @@ pub fn shader_source(mode: StorageMode, id: KernelId) -> String {
     s.push_str(&constants());
     s.push_str(include_str!("../shaders/common.wgsl"));
     s.push('\n');
-    s.push_str(&expand(&id.body(), mode));
+    s.push_str(&expand(&id.body_with(tune), mode));
     s
 }
 
@@ -1269,5 +1370,94 @@ mod tests {
             }
         }
         eprintln!("near-neutrals: worst error {worst:.2e} of the size of the terms of dX and dZ");
+    }
+
+    /// The pipeline cache key (`docs/29` RC-04): the shipped constants, and any constants equal to
+    /// them, are one variant; other constants are a variant of their own named by the generated
+    /// block; a kernel of another package, or one that reads no tuned constant, has none.
+    #[test]
+    fn a_pipeline_variant_is_the_generated_block_and_none_for_the_shipped_constants() {
+        let ar = KernelId::AdaptiveRatioStep1;
+        let diff = KernelId::DiffractionSolve;
+        let sharp = KernelId::OutputSharpenBlur;
+        let other = ArTuning {
+            sat_dominance: 0.5,
+            ..ArTuning::DEFAULT
+        };
+        let third = ArTuning {
+            chroma_floor: 0.5,
+            ..ArTuning::DEFAULT
+        };
+        // The shipped constants, and the oracle's while they are equal: no variant.
+        assert_eq!(ar.variant(Tune::Shipped), None);
+        assert_eq!(ar.variant(Tune::AdaptiveRatio(&ArTuning::DEFAULT)), None);
+        assert_eq!(
+            ar.variant(Tune::AdaptiveRatio(&ArTuning::ORACLE)).is_none(),
+            ArTuning::ORACLE == ArTuning::DEFAULT
+        );
+        // Other constants: the block, and different blocks are different keys.
+        let a = ar.variant(Tune::AdaptiveRatio(&other)).expect("a variant");
+        let b = ar.variant(Tune::AdaptiveRatio(&third)).expect("a variant");
+        assert_eq!(a, other.wgsl_block());
+        assert_ne!(a, b);
+        assert_ne!(Some(a.clone()), ar.variant(Tune::Shipped));
+        // The same constants, the same key.
+        assert_eq!(ar.variant(Tune::AdaptiveRatio(&other)), Some(a.clone()),);
+        // The other two packages.
+        let d = DiffTuning {
+            gate: 0.9,
+            ..DiffTuning::DEFAULT
+        };
+        let s = SharpTuning {
+            ratio_max: 2.0,
+            ..SharpTuning::DEFAULT
+        };
+        assert_eq!(diff.variant(Tune::Diffraction(&d)), Some(d.wgsl_block()));
+        assert_eq!(sharp.variant(Tune::OutputSharpen(&s)), Some(s.wgsl_block()));
+        assert_eq!(diff.variant(Tune::Diffraction(&DiffTuning::DEFAULT)), None);
+        assert_eq!(
+            sharp.variant(Tune::OutputSharpen(&SharpTuning::DEFAULT)),
+            None
+        );
+        // The constants of one package never reach a kernel of another, or one with none.
+        assert_eq!(diff.variant(Tune::AdaptiveRatio(&other)), None);
+        assert_eq!(sharp.variant(Tune::Diffraction(&d)), None);
+        assert_eq!(ar.variant(Tune::OutputSharpen(&s)), None);
+        assert_eq!(KernelId::Color.variant(Tune::AdaptiveRatio(&other)), None);
+        assert_eq!(KernelId::Color.variant(Tune::Shipped), None);
+    }
+
+    /// The source of a tuned kernel carries its own constants block and nothing of the shipped one.
+    #[test]
+    fn the_source_of_a_tuned_kernel_carries_its_own_constants() {
+        let id = KernelId::AdaptiveRatioStep1;
+        let shipped = shader_source(StorageMode::F32, id);
+        assert_eq!(
+            shipped,
+            shader_source_with(StorageMode::F32, id, Tune::Shipped)
+        );
+        assert_eq!(
+            shipped,
+            shader_source_with(
+                StorageMode::F32,
+                id,
+                Tune::AdaptiveRatio(&ArTuning::DEFAULT)
+            )
+        );
+        let other = ArTuning {
+            sat_dominance: 0.5,
+            ..ArTuning::DEFAULT
+        };
+        let tuned = shader_source_with(StorageMode::F32, id, Tune::AdaptiveRatio(&other));
+        assert!(tuned.contains(&other.wgsl_block()));
+        assert!(!tuned.contains(&ArTuning::DEFAULT.wgsl_block()));
+        assert!(shipped.contains(&ArTuning::DEFAULT.wgsl_block()));
+        // A tune of another package changes nothing.
+        let wrong = shader_source_with(
+            StorageMode::F32,
+            id,
+            Tune::Diffraction(&DiffTuning::DEFAULT),
+        );
+        assert_eq!(shipped, wrong);
     }
 }

@@ -121,7 +121,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use super::shader::KernelId;
+use super::shader::{KernelId, Tune};
 use super::util::{GROUP, even, storage_buffer};
 use crate::cpu::demosaic::adaptive_ratio::{Derived, Params, Tuning};
 use crate::cpu::demosaic::{CaCurves, DemosaicInputs, Method};
@@ -488,13 +488,6 @@ impl PreparedDemosaic {
     ) -> Result<PreparedDemosaic, GpuError> {
         let invalid =
             |what: String| GpuError::InvalidInput(format!("adaptive ratio demosaic: {what}"));
-        // The shader's constants are generated from `Tuning::DEFAULT` (`body`); until a pipeline is
-        // keyed by its tuning (docs/29 RC-04) the device runs those and no others.
-        if params.tuning != Tuning::DEFAULT {
-            return Err(invalid(
-                "the device runs the shipped Tuning only; use the CPU path for another".to_string(),
-            ));
-        }
         let derived =
             Derived::new(inputs.gains, inputs.noise, params).map_err(|e| invalid(e.to_string()))?;
         let constants = Constants::new(&derived)?;
@@ -792,8 +785,9 @@ pub fn encode_demosaic(
                 (slot as u32, resource)
             })
             .collect();
-        passes.dispatch(
+        passes.dispatch_tuned(
             id,
+            Tune::AdaptiveRatio(&d.tuning),
             id.name(),
             &entries,
             (

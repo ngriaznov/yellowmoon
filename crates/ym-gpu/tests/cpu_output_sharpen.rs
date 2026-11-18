@@ -1,8 +1,10 @@
 //! Output sharpening, the CPU port (`docs/algorithms/04-output-sharpening.md`).
 //!
 //! * `vectors_*`: every vector of `tests/cpu_data/output_sharpening/` (the C++ oracle's output,
-//!   never hand-edited): the derived plan (stages, kernels, halo) and the sharpened pixels within
-//!   the vector's tolerance (0 means bit-exact), planar and interleaved.
+//!   never hand-edited, run under `Tuning::ORACLE`) and of `output_sharpening_self/` (made by our
+//!   own code, run under `Tuning::DEFAULT`, `docs/29` RC-04): the derived plan (stages, kernels,
+//!   halo) and the sharpened pixels within the vector's tolerance (0 means bit-exact), planar and
+//!   interleaved.
 //! * `property_*`: the spec's section 6.2 property tests, mirrored from the reference's self-test:
 //!   flat fields, identity, tiling parity, flip and transpose equivariance, scale behaviour,
 //!   robustness, hue preservation, halo suppression, plan derivation.
@@ -11,7 +13,7 @@
 //! * `edge_profile_*`: a soft slanted edge and a noisy flat patch measured before and after.
 //! * `determinism_*`: one thread and four threads give the same bytes.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde_json::Value;
 use ym_gpu::cpu::RgbImage;
@@ -229,18 +231,12 @@ fn sharpen(p: &OutputSharpen, scale: f32, img: &RgbImage) -> RgbImage {
 // Vectors
 // ------------------------------------------------------------------------------------------------
 
-fn vector_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cpu_data/output_sharpening")
-}
+mod self_gen;
+use self_gen::{CLASSES, Class, Package};
 
-/// Every vector, sorted by file name.
-fn vectors() -> Vec<(String, Value)> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(vector_dir())
-        .expect("vector directory")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        .collect();
-    files.sort();
+/// Every vector of `class`, sorted by file name.
+fn vectors(class: Class) -> Vec<(String, Value)> {
+    let files: Vec<PathBuf> = self_gen::json_files(&class.dir(Package::OutputSharpen));
     files
         .into_iter()
         .map(|p| {
@@ -382,19 +378,18 @@ fn check_derived(name: &str, v: &Value, plan: &SharpenPlan) -> f64 {
     worst
 }
 
-/// Every vector runs under the constants it was made with ([`Tuning::ORACLE`], which proves the
-/// structure is the spec's) and under the shipped ones ([`Tuning::DEFAULT`]).
-const TUNINGS: [Tuning; 2] = [Tuning::ORACLE, Tuning::DEFAULT];
-
+/// The oracle vectors run under the constants they were made with ([`Tuning::ORACLE`], which proves
+/// the structure is the spec's), the self vectors under the shipped ones ([`Tuning::DEFAULT`]).
 #[test]
-fn vectors_match_the_oracle() {
-    for tuning in TUNINGS {
-        vectors_match_the_oracle_under(tuning);
+fn vectors_match_the_oracle_and_the_self_set() {
+    for class in CLASSES {
+        vectors_match_under(class);
     }
 }
 
-fn vectors_match_the_oracle_under(tuning: Tuning) {
-    let all = vectors();
+fn vectors_match_under(class: Class) {
+    let tuning = class.pick(Tuning::ORACLE, Tuning::DEFAULT);
+    let all = vectors(class);
     assert_eq!(all.len(), 16, "the package has 16 vectors");
     let mut worst_kernel = 0.0f64;
     for (name, v) in &all {
@@ -407,7 +402,10 @@ fn vectors_match_the_oracle_under(tuning: Tuning) {
         let tol = v["tolerance"].as_f64().expect("tolerance");
         let out = os.apply(&input, scale).expect("apply");
         let err = max_abs_diff(&out, &expected);
-        eprintln!("{name:<34} max |error| {err:.3e} (tolerance {tol:.0e})");
+        eprintln!(
+            "{name:<34} [{}] max |error| {err:.3e} (tolerance {tol:.0e})",
+            class.label()
+        );
         if tol == 0.0 {
             assert!(bit_equal(&out, &expected), "{name}: must be bit-exact");
         } else {

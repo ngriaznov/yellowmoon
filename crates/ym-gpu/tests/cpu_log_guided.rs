@@ -2,16 +2,16 @@
 //! `docs/algorithms/02-log-guided-demosaic.md`).
 //!
 //! * `vectors_*`: the 16 vectors of `tests/cpu_data/log_guided_demosaic/` (made by the
-//!   development oracle, never edited). The fixed-point form is checked against `expected` with the
-//!   vector's `tolerance` (one working-scale code), the float form against `expected_float` with
-//!   `tolerance_float`. The actual maxima are printed (`--nocapture`).
+//!   development oracle, never edited; the fixed form runs under `ORACLE_CUBICS`, the cubics they
+//!   were made with) and the 16 of `log_guided_demosaic_self/` (made by our own code; the fixed form
+//!   runs under the shipped cubics, `docs/29` RC-04). The fixed-point form is checked against
+//!   `expected` with the vector's `tolerance` (one working-scale code), the float form against
+//!   `expected_float` with `tolerance_float`. The actual maxima are printed (`--nocapture`).
 //! * The property tests of spec section 6.2: flat fields, tiling, CFA-phase and mirror
 //!   equivariance, receptive field, scale, native passthrough, headroom, fixed against float,
 //!   the exhaustive bounds of `log2_fixed` and `exp2_fixed`.
 //! * Determinism (section 6.3): banded against whole, one thread against four, byte for byte.
 //! * The `Method::LogGuided` dispatch: halo, noise, small buffers.
-
-use std::path::Path;
 
 use ym_gpu::cpu::demosaic::log_guided::{self, LogGuidedParams};
 use ym_gpu::cpu::demosaic::{self, DemosaicInputs, Method};
@@ -23,6 +23,9 @@ use ym_noise::model::NoiseModel;
 // ---------------------------------------------------------------------------------------------
 // Vectors
 // ---------------------------------------------------------------------------------------------
+
+mod self_gen;
+use self_gen::{CLASSES, Class, Package};
 
 struct Vector {
     name: String,
@@ -45,20 +48,17 @@ fn floats(v: &serde_json::Value) -> Vec<f32> {
         .collect()
 }
 
+/// The oracle's vectors.
 fn load_vectors() -> Vec<Vector> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cpu_data/log_guided_demosaic");
-    let mut paths: Vec<_> = std::fs::read_dir(&dir)
-        .expect("vector directory")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        .collect();
-    paths.sort();
+    load_vectors_of(Class::Oracle)
+}
+
+fn load_vectors_of(class: Class) -> Vec<Vector> {
+    let paths = self_gen::json_files(&class.dir(Package::LogGuided));
     paths
         .iter()
         .map(|path| {
-            let v: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(path).expect("vector file"))
-                    .expect("vector json");
+            let v: serde_json::Value = self_gen::read_vector(path);
             let n = &v["params"]["noise"];
             let mut noise_model =
                 NoiseModel::new(n["a"].as_f64().unwrap(), n["b"].as_f64().unwrap());
@@ -97,12 +97,14 @@ fn max_abs_diff(got: &[f32], want: &[f32]) -> f64 {
 
 #[test]
 fn there_are_sixteen_vectors() {
-    assert_eq!(load_vectors().len(), 16);
+    for class in CLASSES {
+        assert_eq!(load_vectors_of(class).len(), 16, "{}", class.label());
+    }
 }
 
 #[test]
 fn vectors_derived_values_match() {
-    for v in load_vectors() {
+    for v in CLASSES.into_iter().flat_map(load_vectors_of) {
         let noise = NoiseDn::from_model(&v.noise_model);
         let fixed = log_guided::derive(noise, v.guide_detail, v.headroom_log2);
         let float = log_guided::derive(noise, v.guide_detail, 0);
@@ -134,22 +136,31 @@ fn vectors_derived_values_match() {
 
 #[test]
 fn vectors_fixed_form() {
+    for class in CLASSES {
+        vectors_fixed_form_under(class);
+    }
+}
+
+fn vectors_fixed_form_under(class: Class) {
     let mut worst = 0.0f64;
-    for v in load_vectors() {
+    for v in load_vectors_of(class) {
         let noise = NoiseDn::from_model(&v.noise_model);
-        // The vectors were made with the cubics of the first release of the reference.
+        // The oracle vectors were made with the cubics of the first release of the reference; the
+        // self vectors with the shipped ones.
+        let cubics = class.pick(log_guided::ORACLE_CUBICS, log_guided::FixedCubics::SHIPPED);
         let out = log_guided::demosaic_fixed_with(
             &v.mosaic,
             noise,
             v.guide_detail,
             v.headroom_log2,
-            log_guided::ORACLE_CUBICS,
+            cubics,
         );
         assert_eq!((out.width, out.height), (v.mosaic.width, v.mosaic.height));
         let diff = max_abs_diff(&out.data, &v.expected);
         println!(
-            "{:<22} fixed: max |diff| {diff:.3e} = {:.4} codes (tolerance {:.3e})",
+            "{:<22} [{}] fixed: max |diff| {diff:.3e} = {:.4} codes (tolerance {:.3e})",
             v.name,
+            class.label(),
             diff * 65535.0 / (1u32 << v.headroom_log2) as f64,
             v.tolerance
         );
@@ -161,19 +172,30 @@ fn vectors_fixed_form() {
         );
         worst = worst.max(diff);
     }
-    println!("fixed form, worst over the vectors: {worst:.3e}");
+    println!(
+        "fixed form [{}], worst over the vectors: {worst:.3e}",
+        class.label()
+    );
 }
 
 #[test]
 fn vectors_float_form() {
+    for class in CLASSES {
+        vectors_float_form_under(class);
+    }
+}
+
+fn vectors_float_form_under(class: Class) {
     let mut worst = 0.0f64;
-    for v in load_vectors() {
+    for v in load_vectors_of(class) {
         let noise = NoiseDn::from_model(&v.noise_model);
         let out = log_guided::demosaic_float(&v.mosaic, noise, v.guide_detail);
         let diff = max_abs_diff(&out.data, &v.expected_float);
         println!(
-            "{:<22} float: max |diff| {diff:.3e} (tolerance {:.0e})",
-            v.name, v.tolerance_float
+            "{:<22} [{}] float: max |diff| {diff:.3e} (tolerance {:.0e})",
+            v.name,
+            class.label(),
+            v.tolerance_float
         );
         assert!(
             diff <= v.tolerance_float,
@@ -183,18 +205,21 @@ fn vectors_float_form() {
         );
         worst = worst.max(diff);
     }
-    println!("float form, worst over the vectors: {worst:.3e}");
+    println!(
+        "float form [{}], worst over the vectors: {worst:.3e}",
+        class.label()
+    );
 }
 
 #[test]
 fn vectors_through_the_method_dispatch_with_the_default_detail() {
     // `Method::LogGuided` is the float form with guide_detail 0 and the noise of the inputs; the
     // vectors with detail 0 therefore reproduce through `demosaic_with`, banded or whole.
-    let vectors = load_vectors();
+    let vectors: Vec<Vector> = CLASSES.into_iter().flat_map(load_vectors_of).collect();
     let detail_zero: Vec<&Vector> = vectors.iter().filter(|v| v.guide_detail == 0).collect();
     // Thirteen of the sixteen vectors have detail 0 (the others are `detail_plus100`,
     // `detail_minus50` and `tiny_6x5`): the filter must not be vacuous.
-    assert_eq!(detail_zero.len(), 13);
+    assert_eq!(detail_zero.len(), 2 * 13, "13 in each set");
     for v in detail_zero {
         let inputs = DemosaicInputs {
             noise: NoiseDn::from_model(&v.noise_model),

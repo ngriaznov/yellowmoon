@@ -42,8 +42,8 @@ use std::time::Duration;
 use bytemuck::Pod;
 
 use crate::device::{DeviceHealth, GpuContext, GpuError};
-use crate::kernels::KernelId;
 use crate::kernels::util::{STAGING, STORAGE_SCRATCH, UNIFORM, bind};
+use crate::kernels::{KernelId, Tune};
 use crate::pool::PooledBuffer;
 
 /// The most workgroups one dispatch may use per dimension (the WebGPU default limit, K4).
@@ -798,6 +798,23 @@ impl<'a> PassList<'a> {
         entries: &[(u32, wgpu::BindingResource<'_>)],
         groups: (u32, u32, u32),
     ) -> Result<(), GpuError> {
+        self.dispatch_tuned(kernel, Tune::Shipped, label, entries, groups)
+    }
+
+    /// [`PassList::dispatch`] with the pipeline built from the constants of `tune` (the three tuned
+    /// raw-algorithm packages, `docs/29` RC-04).
+    ///
+    /// # Errors
+    ///
+    /// As [`PassList::dispatch`].
+    pub fn dispatch_tuned(
+        &mut self,
+        kernel: KernelId,
+        tune: Tune<'_>,
+        label: &str,
+        entries: &[(u32, wgpu::BindingResource<'_>)],
+        groups: (u32, u32, u32),
+    ) -> Result<(), GpuError> {
         if [groups.0, groups.1, groups.2]
             .iter()
             .any(|&g| g > MAX_GROUPS_PER_DIMENSION)
@@ -822,7 +839,7 @@ impl<'a> PassList<'a> {
         {
             self.flush()?;
         }
-        let pipeline = self.ctx.kernels().pipeline(self.ctx, kernel)?;
+        let pipeline = self.ctx.kernels().pipeline_tuned(self.ctx, kernel, tune)?;
         let bind_group = bind(self.ctx, &pipeline, label, entries);
         let timestamp_writes = self.timestamps.as_mut().and_then(|t| {
             let index = t.labels.len() as u32;

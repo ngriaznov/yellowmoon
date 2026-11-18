@@ -129,7 +129,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use super::shader::KernelId;
+use super::shader::{KernelId, Tune};
 use super::util::{GROUP, STORAGE_SCRATCH, storage_buffer};
 use crate::cpu::RgbImage;
 use crate::cpu::noise::WORKING_SCALE;
@@ -278,6 +278,8 @@ pub struct PreparedDiffraction {
     gauss_off: u32,
     halo_px: usize,
     taps: PooledBuffer,
+    /// The constants the plan was made with: the pipelines are built from them (`docs/29` RC-04).
+    tuning: Tuning,
 }
 
 /// Intermediate planes of a run over a whole compute rectangle, read back for diagnostics (see
@@ -367,14 +369,6 @@ impl PreparedDiffraction {
     /// check is kept because the values go straight into the shader), and allocation errors from the
     /// pool.
     pub fn new(ctx: &GpuContext, plan: &DiffractionPlan) -> Result<Self, GpuError> {
-        // The shader's constants are generated from `Tuning::DEFAULT` (`body`); until a pipeline is
-        // keyed by its tuning (docs/29 RC-04) the device runs those and no others.
-        if *plan.tuning() != Tuning::DEFAULT {
-            return Err(GpuError::InvalidInput(
-                "diffraction deconvolution: the device runs the shipped Tuning only; use the CPU path for another"
-                    .to_string(),
-            ));
-        }
         let (g0, luma) = (plan.g0(), plan.luma());
         if g0.iter().any(|&g| !g.is_finite() || g <= 0.0) || luma.iter().any(|a| !a.is_finite()) {
             return Err(GpuError::InvalidInput(format!(
@@ -402,6 +396,7 @@ impl PreparedDiffraction {
             gauss_off,
             halo_px: plan.halo_px(),
             taps,
+            tuning: *plan.tuning(),
         })
     }
 
@@ -724,8 +719,9 @@ impl PreparedDiffraction {
                     (s as u32, resource)
                 })
                 .collect();
-            passes.dispatch(
+            passes.dispatch_tuned(
                 id,
+                Tune::Diffraction(&self.tuning),
                 id.name(),
                 &entries,
                 (

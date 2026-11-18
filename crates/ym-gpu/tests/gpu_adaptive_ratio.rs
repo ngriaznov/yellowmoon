@@ -8,8 +8,8 @@
 //!
 //! | Case | Asserted bound | Measured |
 //! |---|---|---|
-//! | the 16 stable vectors against the oracle's `expected` | the vectors' own tolerance, 1e-5 | 1.4e-6 (`highlights_and_negatives`, values to 3), 3e-7 on the others |
-//! | the 2 tie-sensitive vectors (`edge_knight`, `ca_weighting`) | [`TIE_VECTORS`]: at most 20 / 100 samples over, 2e-3, on every adapter | 10 / 58 samples over, 4.2e-4 / 6.1e-4 (the CPU port moves 8 / 26 samples by up to 6.6e-4 / 1.1e-3 under 1 ulp of input noise); Metal at b6f2e4b, before the fast-math barriers: 40 / 56, 6.6e-4 / 1.08e-3 |
+//! | the 16 stable vectors against `expected`, of the oracle set (run under `Tuning::ORACLE`) and of the self set (`Tuning::DEFAULT`, `docs/29` RC-04) | the vectors' own tolerance, 1e-5 | 1.4e-6 (`highlights_and_negatives`, values to 3), 3e-7 on the others |
+//! | the 2 tie-sensitive vectors (`edge_knight`, `ca_weighting`; both sets) | [`TIE_VECTORS`]: at most 20 / 100 samples over, 2e-3, on every adapter | 10 / 58 samples over, 4.2e-4 / 6.1e-4 (the CPU port moves 8 / 26 samples by up to 6.6e-4 / 1.1e-3 under 1 ulp of input noise); Metal at b6f2e4b, before the fast-math barriers: 40 / 56, 6.6e-4 / 1.08e-3 |
 //! | random frames: 4 phases x 3 noise models x 5 parameter sets x 4 sizes (240 runs, 894 240 samples) | [`FRAME_FRACTION`] over, [`FRAME_FINE_FRACTION`] fine, [`FRAME_BOUND`] | 0 over, 0 fine, worst 7.4e-6 |
 //! | the same on the balanced entry (R6's), and against the unbalanced entry | as above | 0 over, worst 1.7e-6 (CPU), 1.4e-6 (unbalanced GPU) |
 //! | CA path: random curves, off-centre optical centres, placements anywhere in a 6000 x 4000 frame (32 runs) | as above | 0 over, 0 fine, worst 2.4e-6 |
@@ -62,7 +62,7 @@ macro_rules! note {
     }};
 }
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use common::{Rng, TestGpu, gpus};
 use serde_json::Value;
@@ -77,7 +77,8 @@ use ym_gpu::queue::{CancelToken, JobSpec, Priority};
 use ym_gpu::tiles::TilePlan;
 use ym_noise::model::NoiseModel;
 
-const VECTOR_DIR: &str = "tests/cpu_data/adaptive_ratio_demosaic";
+mod self_gen;
+use self_gen::{CLASSES, Class, Package};
 
 /// The 16 vectors without ties: the GPU against the oracle within the vectors' own tolerance.
 const VECTOR_TOLERANCE: f64 = 1e-5;
@@ -397,7 +398,8 @@ fn vector_curve(v: &Value) -> RadialCurve {
     RadialCurve::new(doubles(&v["radius_px"]), doubles(&v["shift_px"])).expect("curve")
 }
 
-/// One vector of the package: the case, the oracle's output and its tolerance.
+/// One vector of the package: the case, the expected output (the oracle's, or our own code's for
+/// the self set) and its tolerance.
 struct Vector {
     name: String,
     case: Case,
@@ -405,14 +407,15 @@ struct Vector {
     tolerance: f64,
 }
 
+/// The oracle's vectors, which run under `Tuning::ORACLE`.
 fn load_vectors() -> Vec<Vector> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(VECTOR_DIR);
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .expect("vector directory")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        .collect();
-    files.sort();
+    load_vectors_of(Class::Oracle)
+}
+
+/// The vectors of `class`: the oracle's under `Tuning::ORACLE`, ours under `Tuning::DEFAULT`. The
+/// device builds its pipelines from the case's tuning (`docs/29` RC-04).
+fn load_vectors_of(class: Class) -> Vec<Vector> {
+    let files: Vec<PathBuf> = self_gen::json_files(&class.dir(Package::AdaptiveRatio));
     files
         .into_iter()
         .map(|path| {
@@ -474,9 +477,7 @@ fn load_vectors() -> Vec<Vector> {
                         strength: num(params, "strength") as f32,
                         shadow_match,
                         shadow_sharpening: params["shadow_sharpening"].as_bool().expect("bool"),
-                        // The device runs the shipped constants, which are the oracle's until a fit
-                        // lands (`docs/29` RC-04 runs both sets on it).
-                        tuning: Tuning::ORACLE,
+                        tuning: class.pick(Tuning::ORACLE, Tuning::DEFAULT),
                     },
                 },
                 expected: doubles(&json["expected"]["data"])
@@ -492,7 +493,13 @@ fn load_vectors() -> Vec<Vector> {
 #[test]
 fn every_vector_matches_the_oracle_on_the_gpu() {
     let Some(dev) = f32_device() else { return };
-    let vectors = load_vectors();
+    for class in CLASSES {
+        every_vector_matches_on_the_gpu(dev, class);
+    }
+}
+
+fn every_vector_matches_on_the_gpu(dev: &TestGpu, class: Class) {
+    let vectors = load_vectors_of(class);
     assert_eq!(
         vectors.len(),
         18,
@@ -511,8 +518,9 @@ fn every_vector_matches_the_oracle_on_the_gpu() {
             over += usize::from(e > 1e-4);
         }
         println!(
-            "{:<26} {} {:>2}x{:<2}: max |gpu - oracle| {to_oracle:.3e} ({over} of {} over 1e-4; vector tolerance {:.0e}), max |gpu - cpu| {:.3e}",
+            "{:<26} [{}] {} {:>2}x{:<2}: max |gpu - vector| {to_oracle:.3e} ({over} of {} over 1e-4; vector tolerance {:.0e}), max |gpu - cpu| {:.3e}",
             v.name,
+            class.label(),
             v.case.mosaic.cfa.name(),
             got.width,
             got.height,
@@ -539,7 +547,77 @@ fn every_vector_matches_the_oracle_on_the_gpu() {
             worst_stable = worst_stable.max(to_oracle);
         }
     }
-    note!("the 16 stable vectors: worst |gpu - oracle| {worst_stable:.3e}");
+    note!(
+        "the 16 stable vectors [{}]: worst |gpu - vector| {worst_stable:.3e}",
+        class.label()
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The device keys its pipelines by their constants (`docs/29` RC-04)
+// ---------------------------------------------------------------------------------------------
+
+/// A tuning that is not the shipped one, in constants the shader reads (`CHROMA_FLOOR`,
+/// `SAT_DOMINANCE`, `SHADOW_AMOUNT`; `scale` moves all three).
+fn other_tuning(scale: f64) -> Tuning {
+    Tuning {
+        chroma_floor: Tuning::DEFAULT.chroma_floor * scale,
+        sat_dominance: Tuning::DEFAULT.sat_dominance * scale,
+        shadow_amount: Tuning::DEFAULT.shadow_amount * scale,
+        ..Tuning::DEFAULT
+    }
+}
+
+#[test]
+fn a_cached_pipeline_is_never_reused_for_another_tuning() {
+    // The pipeline cache is keyed by the kernel and the constants block it was built from. Three
+    // tunings run on one device, shipped first, then the others, then the shipped one again: each
+    // result is the CPU reference under the same tuning, the three differ from one another, and the
+    // second run of a tuning gives the first run's bits (it found its own pipeline, not another).
+    let Some(dev) = f32_device() else { return };
+    let tunings = [Tuning::DEFAULT, other_tuning(6.0), other_tuning(0.1)];
+    let mut first: Vec<RgbImage> = Vec::new();
+    let mut cpu: Vec<RgbImage> = Vec::new();
+    // A dark, noisy frame so that the shadow passes run, with saturated texture for the penalty.
+    let mut base = Case::new(dark_scene(96, 72, Cfa::RGGB, 51), high_noise());
+    for (i, tuning) in tunings.iter().enumerate() {
+        base.params.tuning = *tuning;
+        let gpu = base.gpu(dev);
+        let reference = base.cpu();
+        let s = compare(&gpu, &reference);
+        println!(
+            "tuning {i}: GPU against the CPU under the same tuning: max {:.3e}, {} of {} over 1e-4",
+            s.max_abs, s.over, s.total
+        );
+        assert!(
+            s.fraction() <= FRAME_FRACTION && s.max_abs <= 2e-3,
+            "tuning {i}: the GPU does not run this tuning's constants (max {:.3e}, {} over)",
+            s.max_abs,
+            s.over
+        );
+        first.push(gpu);
+        cpu.push(reference);
+    }
+    for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+        let apart = compare(&cpu[a], &cpu[b]).max_abs;
+        let gpu_apart = compare(&first[a], &cpu[b]).max_abs;
+        println!(
+            "tunings {a} and {b}: CPU results differ by {apart:.3e}; GPU {a} from CPU {b}: {gpu_apart:.3e}"
+        );
+        assert!(apart > 1e-3, "tunings {a} and {b} must change the picture");
+        assert!(
+            gpu_apart > 1e-3,
+            "the GPU result of tuning {a} is the CPU's of tuning {b}"
+        );
+    }
+    // Back again, in another order: the same bits as the first time.
+    for i in [0usize, 2, 1, 0] {
+        base.params.tuning = tunings[i];
+        assert!(
+            bits_equal(&base.gpu(dev), &first[i]),
+            "tuning {i}: the second run gives other bits than the first"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
