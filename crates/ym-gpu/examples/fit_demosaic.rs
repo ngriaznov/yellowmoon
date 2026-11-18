@@ -523,11 +523,17 @@ fn ca_numbers(scenes: &[ca_scenes::CaScene], noise: NoiseDn, tuning: &Tuning) ->
         scenes
             .iter()
             .map(|s| {
-                let (r, _) = ca_scenes::ca_path_result(s, noise, tuning);
+                let (r, out) = ca_scenes::ca_path_result(s, noise, tuning);
+                let psnr_g = psnr(
+                    &ca_scenes::grey_of(&out, 1),
+                    &ca_scenes::grey_of(&s.truth, 1),
+                    16,
+                    1.0,
+                );
                 json!({
                     "strength": s.strength, "barrel": s.distortion,
                     "red_rms_px": num(r.red_rms_px), "blue_rms_px": num(r.blue_rms_px),
-                    "psnr_rgb_db": num(r.psnr_rgb_db),
+                    "psnr_rgb_db": num(r.psnr_rgb_db), "psnr_g_db": num(psnr_g),
                 })
             })
             .collect(),

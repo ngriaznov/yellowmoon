@@ -269,8 +269,12 @@ fn the_centre_weight_expression_gives_the_121_and_123_of_the_spec() {
             .unwrap_or_else(|| panic!("{name}"))
             .value
     };
-    assert_eq!(value("centre_weight_at_zero_misregistration"), 121.0);
-    assert_eq!(value("centre_divisor_at_zero_misregistration"), 123.0);
+    // The registry holds what ships (A4 = 9 and 51 since RC-10: 61 and 63); the oracle's are 121 and 123.
+    assert_eq!(value("centre_weight_at_zero_misregistration"), 61.0);
+    assert_eq!(value("centre_divisor_at_zero_misregistration"), 63.0);
+    let o = adaptive_ratio::Tuning::ORACLE;
+    assert_eq!(o.centre_weight_at_zero_misregistration(), 121.0);
+    assert_eq!(o.centre_divisor_at_zero_misregistration(), 123.0);
     let t = adaptive_ratio::Tuning::DEFAULT;
     assert_eq!(
         t.centre_weight_at_zero_misregistration(),

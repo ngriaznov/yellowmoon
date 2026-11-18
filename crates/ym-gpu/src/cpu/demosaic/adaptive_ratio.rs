@@ -182,7 +182,7 @@ impl Default for Params {
 /// Every field says its row, its kind ([`Kind`]), its section of
 /// `docs/algorithms/01-adaptive-ratio-demosaic.md`, its derivation status and the task that fits or
 /// proves it. [`Tuning::ORACLE`] is what the oracle vectors were made with and [`Tuning::DEFAULT`] is
-/// what ships; they are equal except for A6 and A7, which RC-07 fitted (RC-08 kept A8 to A14; RC-10 follows).
+/// what ships; they differ in A6 and A7 (RC-07), A2 and A4 (RC-10); RC-08 kept A8 to A14 and RC-10 kept A3.
 ///
 /// The structure stays outside it: the 5 x 5 and 3 x 3 filters, the number of passes, the
 /// `2g + r` terms of the offsets and every `0.5`, `2` and `1` that is arithmetic rather than a
@@ -192,16 +192,16 @@ pub struct Tuning {
     /// A1 · Fit · spec §3.2 · fitted, RC-07: kept at 1.6, within 0.006 dB of the optimum. Weight of the second difference of the same colour in
     /// the pass-1 direction scores, `w·rho·|P(0,-2) - 2c + P(0,2)|`.
     pub second_diff_weight: f64,
-    /// A2 · Fit · spec §3.2, §3.6 · pending, RC-10. How fast the direction test relaxes with the
+    /// A2 · Fit · spec §3.2, §3.6 · fitted, RC-10: 2.5 to 1.25 (the lower bound of the search, with A4). How fast the direction test relaxes with the
     /// colour misregistration `ca`, `f = 1 + slope·ca³`. CA path only.
     pub ca_relax_slope: f64,
-    /// A3 · Fit · spec §3.2, §3.6 · pending, RC-10. Misregistration below this, in pixels, does not
+    /// A3 · Fit · spec §3.2, §3.6 · fitted, RC-10: kept at 0.1 (no value within ±50 % moves a number by 0.0005 dB or 0.0001 px). Misregistration below this, in pixels, does not
     /// relax the test. CA path only.
     pub ca_relax_floor_px: f64,
-    /// A4 · Fit · spec §3.6 · pending, RC-10. Linear term of the centre-green weight in the pass-2
+    /// A4 · Fit · spec §3.6 · fitted, RC-10: 18 to 9 (the lower bound of the search), with `B`. Linear term of the centre-green weight in the pass-2
     /// three-tap mean, `w(t) = 1 + A·t + B·t³` ([`Tuning::centre_weight`]). CA path only.
     pub centre_weight_linear: f64,
-    /// A4 · Fit · spec §3.6 · pending, RC-10. Cubic term `B` of the same weight.
+    /// A4 · Fit · spec §3.6 · fitted, RC-10: 102 to 51 (the lower bound of the search), with `A`. Cubic term `B` of the same weight.
     pub centre_weight_cubic: f64,
     /// A6 · Fit · spec §3.4.2, §3.4.3 · fitted, RC-07: 0.03 to 0.9, with A7. Floor of the chroma penalty
     /// `|X - G|/max(X + G + 1, 1) + floor` that multiplies the cost of a high-chroma sample. One
@@ -264,10 +264,13 @@ impl Tuning {
         match_below_ratio: 316.227_766_016_837_96,
     };
 
-    /// The values that ship. [`Tuning::ORACLE`] with the fits that were accepted: A6 and A7 (RC-07,
-    /// `docs/29` section 5). A1 and A8 to A14 were fitted and kept (RC-07, RC-08: no value passed the gate), A2 to
-    /// A4 are equal to the oracle until RC-10.
+    /// The values that ship. [`Tuning::ORACLE`] with the fits that were accepted: A6 and A7 (RC-07),
+    /// A2 and A4 (RC-10; the CA path no render reaches), `docs/29` section 5. A1, A3 and A8 to A14 were
+    /// fitted and kept (RC-07, RC-08, RC-10: no value passed the rules).
     pub const DEFAULT: Tuning = Tuning {
+        ca_relax_slope: 1.25,
+        centre_weight_linear: 9.0,
+        centre_weight_cubic: 51.0,
         chroma_floor: 0.9,
         sat_dominance: 3.5,
         ..Tuning::ORACLE
@@ -282,13 +285,13 @@ impl Tuning {
     }
 
     /// The weight of the centre green with no misregistration, `t = 1`: `1 + A + B`, the 121 of the
-    /// spec. Not a constant of its own.
+    /// spec at the oracle's values (61 at the shipped ones). Not a constant of its own.
     #[must_use]
     pub const fn centre_weight_at_zero_misregistration(&self) -> f64 {
         self.centre_weight(1.0)
     }
 
-    /// The divisor of the three-tap mean at `t = 1`: `1 + A + B + 2`, the 123 of the spec.
+    /// The divisor of the three-tap mean at `t = 1`: `1 + A + B + 2`, the 123 of the spec at the oracle's values (63 at the shipped ones).
     #[must_use]
     pub const fn centre_divisor_at_zero_misregistration(&self) -> f64 {
         self.centre_weight(1.0) + 2.0
@@ -367,7 +370,9 @@ const fn registry(t: &Tuning) -> [Constant; 19] {
             "ca_relax_slope",
             ca_relax_slope,
             Kind::Fit,
-            Status::Pending("RC-10"),
+            Status::Fitted(
+                "RC-10, 2026-11-18: 2.5 to 1.25, the lower bound of the search (within the joint set with A4 no number of the five CA scenes is worse; alone it is 4e-6 px worse at strength 0.5); the surface keeps rising to about 0.2 and then turns mixed; gain 0.014 dB at most, on a path no render reaches",
+            ),
         )
         .on_device("CA_RELAX_SLOPE"),
         Constant::cpu(
@@ -375,7 +380,9 @@ const fn registry(t: &Tuning) -> [Constant; 19] {
             "ca_relax_floor_px",
             ca_relax_floor_px,
             Kind::Fit,
-            Status::Pending("RC-10"),
+            Status::Fitted(
+                "RC-10, 2026-11-18: kept; 0.05 to 0.15 px moves no number by more than 0.0004 dB or 0.0001 px, under rule 3 (the CA tables of the scenes have no misregistration near the threshold)",
+            ),
         )
         .on_device("CA_RELAX_FLOOR_PX"),
         Constant::cpu(
@@ -383,16 +390,21 @@ const fn registry(t: &Tuning) -> [Constant; 19] {
             "centre_weight_linear",
             centre_weight_linear,
             Kind::Fit,
-            Status::Pending("RC-10"),
+            Status::Fitted(
+                "RC-10, 2026-11-18: 18 to 9, the lower bound of the search, with the cubic term (0.27 dB at strength 0.5 for both, no number of the five scenes worse); outside the search range the optimum is near 6 with the cubic term at 0",
+            ),
         )
-        .on_device("CENTRE_WEIGHT_LINEAR")
-        .distinct(),
+        // Not `distinct`: 9 is also the divisor of the 3 x 3 mean (A15), so a literal 9 elsewhere is not a
+        // copy of this value. The device constant stays checked by the generated block.
+        .on_device("CENTRE_WEIGHT_LINEAR"),
         Constant::cpu(
             "A4",
             "centre_weight_cubic",
             centre_weight_cubic,
             Kind::Fit,
-            Status::Pending("RC-10"),
+            Status::Fitted(
+                "RC-10, 2026-11-18: 102 to 51, the lower bound of the search; the PSNR keeps rising down to 0 (a question for the owner, docs/29 section 6)",
+            ),
         )
         .on_device("CENTRE_WEIGHT_CUBIC")
         .distinct(),
@@ -2082,30 +2094,32 @@ mod derivations {
         (n_plus_s - 2.0 * f64::from(value)) / (f64::from(value) - g0)
     }
 
-    #[test]
-    fn the_pass_2_centre_weight_at_zero_misregistration_is_1_plus_18_plus_102() {
-        // A4 and A5 (F-02). 121 and 123 are not constants: w(t) = 1 + 18 t + 102 t^3 with t = 1 at
-        // kappa = 0 gives w = 1 + 18 + 102 = 121 and the divisor w + 2 = 123.
+    /// The identity of A5 under `t`: `w(t = 1) = 1 + A + B` and the divisor `w + 2` (the 121 and 123 of the
+    /// spec at the oracle's `A = 18`, `B = 102`).
+    fn check_the_zero_misregistration_identity(t: &Tuning) {
+        let (a, b) = (t.centre_weight_linear, t.centre_weight_cubic);
+        let (w1, div) = (1.0 + a + b, 1.0 + a + b + 2.0);
         let (m, g) = vertical_patch();
         let (g0, n_plus_s) = (10.0f64, 22.0f64);
-        let at = |kappa: Option<f64>| refine_green(&m, &g, 12, 5, kappa, &Tuning::DEFAULT);
+        let at = |kappa: Option<f64>| refine_green(&m, &g, 12, 5, kappa, t);
 
         let k0 = at(Some(0.0));
         let w0 = centre_weight_of(k0, g0, n_plus_s);
-        assert!((w0 - (1.0 + 18.0 + 102.0)).abs() < 0.5, "w(0) = {w0}");
+        assert!((w0 - w1).abs() < 0.5, "w(0) = {w0}, want {w1}");
         // Exactly the value of the formula, in f32.
-        let want = (121.0 * g0 + n_plus_s) / 123.0;
+        let want = (w1 * g0 + n_plus_s) / div;
         assert!((f64::from(k0) - want).abs() < 2e-6, "{k0} against {want}");
+        assert_eq!(t.centre_weight_at_zero_misregistration(), w1);
+        assert_eq!(t.centre_divisor_at_zero_misregistration(), div);
 
-        // The centre keeps 121/123 = 98.4 % of its own weight and the two neighbours 2/123 = 1.6 %.
-        let share = 2.0f64 / 123.0;
-        assert!((121.0f64 / 123.0 - 0.98374).abs() < 1e-5 && (share - 0.016260).abs() < 1e-6);
-        // So at kappa = 0 the value is the centre plus that 1.6 % of the way to the neighbours' mean.
+        // The centre keeps w1/div of its own weight and the two neighbours 2/div.
+        let share = 2.0f64 / div;
+        // So at kappa = 0 the value is the centre plus that share of the way to the neighbours' mean.
         let mean = n_plus_s / 2.0;
         assert!((f64::from(k0) - (g0 + share * (mean - g0))).abs() < 2e-6);
 
         // The plain path (no CA curves) leaves the centre alone when an axis wins: G2 = G1. So at
-        // kappa = 0 the CA path differs from it only by the 1.6 % share of the neighbours' mean.
+        // kappa = 0 the CA path differs from it only by the share of the neighbours' mean.
         let plain = at(None);
         assert_eq!(f64::from(plain), g0);
         let gap = f64::from(k0) - f64::from(plain);
@@ -2115,12 +2129,36 @@ mod derivations {
         assert!((f64::from(at(Some(0.5))) - three_tap).abs() < 2e-6);
         assert!((f64::from(at(Some(1.0))) - three_tap).abs() < 2e-6);
 
-        // In between, t = (1 - 2 kappa)^2: kappa = 0.25 gives t = 0.25, w = 1 + 4.5 + 1.59375.
+        // In between, t = (1 - 2 kappa)^2: kappa = 0.25 gives t = 0.25.
         let w = centre_weight_of(at(Some(0.25)), g0, n_plus_s);
         assert!(
-            (w - (1.0 + 18.0 * 0.25 + 102.0 * 0.25f64.powi(3))).abs() < 0.05,
+            (w - (1.0 + a * 0.25 + b * 0.25f64.powi(3))).abs() < 0.05,
             "w = {w}"
         );
+    }
+
+    #[test]
+    fn the_pass_2_centre_weight_at_zero_misregistration_is_1_plus_18_plus_102() {
+        // A4 and A5 (F-02). 121 and 123 are not constants: w(t) = 1 + 18 t + 102 t^3 with t = 1 at
+        // kappa = 0 gives w = 1 + 18 + 102 = 121 and the divisor w + 2 = 123, under the oracle's values.
+        let o = Tuning::ORACLE;
+        assert_eq!((o.centre_weight_linear, o.centre_weight_cubic), (18.0, 102.0));
+        check_the_zero_misregistration_identity(&o);
+        assert_eq!(o.centre_weight_at_zero_misregistration(), 121.0);
+        assert_eq!(o.centre_divisor_at_zero_misregistration(), 123.0);
+        // The centre keeps 121/123 = 98.4 % of its own weight and the two neighbours 2/123 = 1.6 %.
+        let share = 2.0f64 / 123.0;
+        assert!((121.0f64 / 123.0 - 0.98374).abs() < 1e-5 && (share - 0.016260).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_shipped_centre_weight_is_1_plus_9_plus_51_over_that_plus_2() {
+        // RC-10 moved A4 to 9 and 51: the identity is the same expression, with 61 and 63 (96.8 %).
+        let d = Tuning::DEFAULT;
+        assert_eq!((d.centre_weight_linear, d.centre_weight_cubic), (9.0, 51.0));
+        check_the_zero_misregistration_identity(&d);
+        assert_eq!(d.centre_weight_at_zero_misregistration(), 61.0);
+        assert_eq!(d.centre_divisor_at_zero_misregistration(), 63.0);
     }
 
     #[test]
