@@ -57,7 +57,9 @@ ym-lens = { workspace = true, features = ["test-support"] }
 ym-film.workspace = true
 png.workspace = true
 tiff.workspace = true
-serde_json.workspace = true
+# `float_roundtrip`: the self vector generator (`tests/self_gen`) re-writes the oracle files' `params`
+# and inputs and must read every number back exactly (the default parser can be one ulp off).
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 # Offline WGSL validation and translation to MSL (Metal), SPIR-V (Vulkan) and HLSL (DirectX 12) (no GPU
 # needed); MIT OR Apache-2.0, already in the tree via wgpu. `hlsl-out` adds no dependency (a feature of naga
 # itself); it is the only offline check of the DX12 path (`docs/17-gpu.md` section 6).

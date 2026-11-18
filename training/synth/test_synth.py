@@ -743,7 +743,11 @@ class Recipes(unittest.TestCase):
         entries = [e for e in doc["entries"] if e["tier"].startswith("synthetic")]
         self.assertEqual(len(entries), len(rc.manifest(True)["entries"]))
         for e in entries:
-            self.assertEqual(e["settings"], {})
+            if e.get("group") == "node-uniform":
+                # the golden entries with a node on (docs/32 section 8): the same file as an entry of the set, settings of one node
+                self.assertEqual([i["kind"] for i in e["settings"]["nodes"]["items"]], ["color_uniform"])
+            else:
+                self.assertEqual(e["settings"], {})
             self.assertEqual((e["expected_hash"], e["reference"]), ("", ""))
             self.assertTrue(e["file"].startswith("synthetic/arw/") and e["file"].endswith(".ARW"))
 

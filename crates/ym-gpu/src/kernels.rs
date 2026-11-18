@@ -89,13 +89,15 @@ use std::collections::HashMap;
 
 use crate::device::{GpuContext, GpuError, StorageMode};
 
-pub use shader::{KernelId, KernelSet, shader_source};
+pub use shader::{KernelId, KernelSet, Tune, shader_source, shader_source_with};
 pub use util::PixelData;
 
 /// Compiled compute pipelines, created on first use. Owned by the device thread.
 pub struct Kernels {
     mode: StorageMode,
-    pipelines: RefCell<HashMap<KernelId, wgpu::ComputePipeline>>,
+    /// Keyed by the kernel and by its tuning variant ([`KernelId::variant`]): `None` for the shipped
+    /// constants, the generated constants block for any other.
+    pipelines: RefCell<HashMap<(KernelId, Option<String>), wgpu::ComputePipeline>>,
 }
 
 impl std::fmt::Debug for Kernels {
@@ -116,7 +118,7 @@ impl Kernels {
         }
     }
 
-    /// The pipeline of `id`, compiling it the first time.
+    /// The pipeline of `id` with the shipped constants, compiling it the first time.
     ///
     /// # Errors
     ///
@@ -126,12 +128,29 @@ impl Kernels {
         ctx: &GpuContext,
         id: KernelId,
     ) -> Result<wgpu::ComputePipeline, GpuError> {
-        if let Some(p) = self.pipelines.borrow().get(&id) {
+        self.pipeline_tuned(ctx, id, Tune::Shipped)
+    }
+
+    /// The pipeline of `id` built with the constants of `tune`, compiling it the first time. A
+    /// pipeline is cached under the kernel and the constants block it was built from, so asking for
+    /// other constants compiles another pipeline and never returns one made for different ones.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::Shader`] with the validation message when the shader does not compile.
+    pub fn pipeline_tuned(
+        &self,
+        ctx: &GpuContext,
+        id: KernelId,
+        tune: Tune<'_>,
+    ) -> Result<wgpu::ComputePipeline, GpuError> {
+        let key = (id, id.variant(tune));
+        if let Some(p) = self.pipelines.borrow().get(&key) {
             return Ok(p.clone());
         }
         ctx.fault().on_pipeline(id.name())?;
         let started = std::time::Instant::now();
-        let source = shader_source(self.mode, id);
+        let source = shader_source_with(self.mode, id, tune);
         let scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = ctx
             .device
@@ -154,7 +173,7 @@ impl Kernels {
         }
         ctx.counters_shared()
             .count_pipeline(started.elapsed().as_micros() as u64);
-        self.pipelines.borrow_mut().insert(id, pipeline.clone());
+        self.pipelines.borrow_mut().insert(key, pipeline.clone());
         Ok(pipeline)
     }
 }

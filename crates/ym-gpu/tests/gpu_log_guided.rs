@@ -54,7 +54,8 @@ macro_rules! note {
     }};
 }
 
-use std::path::Path;
+mod self_gen;
+use self_gen::{CLASSES, Class, Package};
 
 use common::{Rng, TestGpu, gpus};
 use ym_gpu::cpu::demosaic::log_guided::{self, HALO_PX};
@@ -219,20 +220,19 @@ fn floats(v: &serde_json::Value) -> Vec<f32> {
         .collect()
 }
 
+/// The oracle's vectors.
 fn load_vectors() -> Vec<Vector> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cpu_data/log_guided_demosaic");
-    let mut paths: Vec<_> = std::fs::read_dir(&dir)
-        .expect("vector directory")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        .collect();
-    paths.sort();
+    load_vectors_of(Class::Oracle)
+}
+
+/// The vectors of `class`. The kernel is the float form, which has no tuned constants: both sets
+/// run on it (`docs/29` RC-04).
+fn load_vectors_of(class: Class) -> Vec<Vector> {
+    let paths = self_gen::json_files(&class.dir(Package::LogGuided));
     paths
         .iter()
         .map(|path| {
-            let v: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(path).expect("vector file"))
-                    .expect("vector json");
+            let v: serde_json::Value = self_gen::read_vector(path);
             let n = &v["params"]["noise"];
             let mut model = NoiseModel::new(n["a"].as_f64().unwrap(), n["b"].as_f64().unwrap());
             model.sigma_row = n["sigma_row"].as_f64().unwrap();
@@ -266,7 +266,13 @@ fn max_abs_diff(got: &[f32], want: &[f32]) -> f64 {
 #[test]
 fn every_vector_matches_expected_float_on_the_gpu() {
     let Some(dev) = f32_device() else { return };
-    let vectors = load_vectors();
+    for class in CLASSES {
+        every_vector_matches_on_the_gpu(dev, class);
+    }
+}
+
+fn every_vector_matches_on_the_gpu(dev: &TestGpu, class: Class) {
+    let vectors = load_vectors_of(class);
     assert_eq!(vectors.len(), 16, "the vector set");
     let mut worst = 0.0f64;
     for v in &vectors {
@@ -277,8 +283,9 @@ fn every_vector_matches_expected_float_on_the_gpu() {
         // The CPU reference reproduces the vectors to 0.0; the GPU is compared with both.
         let cpu_d = diff(&out, &cpu(&v.mosaic, v.noise, v.guide_detail));
         println!(
-            "{:<22} {}: max |gpu - expected_float| {d:.3e} (vector tolerance {:.0e}, asserted {VECTOR_BOUND:.0e}); against the CPU port {:.3e}",
+            "{:<22} [{}] {}: max |gpu - expected_float| {d:.3e} (vector tolerance {:.0e}, asserted {VECTOR_BOUND:.0e}); against the CPU port {:.3e}",
             v.name,
+            class.label(),
             v.mosaic.cfa.name(),
             v.tolerance_float,
             cpu_d.max_abs
@@ -296,7 +303,10 @@ fn every_vector_matches_expected_float_on_the_gpu() {
         );
         worst = worst.max(d);
     }
-    note!("vectors, worst |gpu - expected_float|: {worst:.3e}");
+    note!(
+        "vectors [{}], worst |gpu - expected_float|: {worst:.3e}",
+        class.label()
+    );
 }
 
 #[test]

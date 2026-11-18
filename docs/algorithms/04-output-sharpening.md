@@ -548,6 +548,8 @@ Each file is JSON with these fields:
 
 Every vector is also checked by the generator against the reference's f32-accumulation mode, and all stay within 7.2e-7. So the tolerance only fails an implementation that deviates from the spec, not one that rounds differently. Vectors with the limiter on clean symmetric content carry light noise so they do not hinge on near-ties (§5.4). The vectors are compared with `halo_tie_tolerance` at 0, so they keep checking every other part against the reference bit for bit.
 
+**Two classes of vectors (`docs/29` F-06, RC-04).** *Oracle:* the files above, unedited, run under `Tuning::ORACLE`; they prove the structure (borders, phases, ties, decision logic). *Self:* `crates/ym-gpu/tests/cpu_data/output_sharpening_self/`, the same files, fields and tolerances written by `crates/ym-gpu/examples/gen_self_vectors.rs` from our own Rust under `Tuning::DEFAULT`; they are the regression of the shipped constants and are never called an oracle. The CPU and GPU tests read both folders. After a fit changes a shipped constant, regenerate with `cargo run -p ym-gpu --example gen_self_vectors` and commit the diff; `tests/self_vectors.rs` fails while the committed files differ from a regeneration.
+
 ### 6.2 Property tests (the reference's self-test, mirrored in `crates/ym-gpu/tests/cpu_output_sharpen.rs`)
 
 - **Flat field exact.** Seven parameter sets × four colours (including values > 1, a negative channel, black and 3e-5): output equals input bit for bit.

@@ -1,8 +1,9 @@
 # The files a push checks on the device (`golden check --device gpu --subset tools/golden/gpu-subset.txt`, docs/13).
-# About ten of the 61 files of the default synthetic set: the four CFA phases, cRAW, lossless L, 12 and 14 bit,
-# camera-processed (lossless M), the highest ISO, a tungsten light and a second body. Every chart scene carries
+# Ten of the 61 files of the default synthetic set: the four CFA phases, cRAW, lossless L, 12 and 14 bit,
+# camera-processed (lossless M), the highest ISO, a tungsten light and a second body; then the three entries with a Colour
+# Uniform node on (docs/32 section 8), which read a file of the first ten. Every chart scene carries
 # blown highlights (a white lamp at +5.3 EV and a coloured one at +3 EV, training/synth/README.md), so each file
-# covers clipped highlights. The nightly run takes all 61 (no --subset).
+# covers clipped highlights. The nightly run takes all 64 (no --subset).
 synthetic/chart__D6500__ILCE-7RM4__iso400__rggb__14b__uncompressed14   # RGGB, uncompressed 14 bit
 synthetic/chart__D6500__ILCE-7RM4__iso400__grbg__14b__lossless-l       # GRBG, lossless L
 synthetic/chart__D6500__ILCE-7RM4__iso400__bggr__14b__craw             # BGGR, cRAW
@@ -13,3 +14,6 @@ synthetic/chart__D6500__ILCE-7RM4__iso12800__rggb__14b__lossless-l     # ISO 128
 synthetic/chart__D6500__ILCE-7RM4__iso400__rggb__12b__packed12         # 12 bit
 synthetic/chart__D6500__ILCE-7M3__iso400__rggb__14b__lossless-ms       # camera-processed (Lossless M)
 synthetic/chart__bb2850__ILCE-7SM3__iso400__rggb__14b__lossless-l      # tungsten, another body
+synthetic/node-uniform-skin__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l   # Colour Uniform: skin, a Colour range row, 60 / 60 / 0
+synthetic/node-uniform-hue__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l    # Colour Uniform: one hue, Hue only at 100 %
+synthetic/node-uniform-tone__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l   # Colour Uniform: tone, Lightness only at 100 %

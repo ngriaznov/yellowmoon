@@ -367,6 +367,24 @@
       "width": 1248,
       "height": 832,
       "pipeline_version": "0.9.0"
+    },
+    "synthetic/node-uniform-hue__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
+      "pixels_sha256": "800f5fd2c58bb60fbb63b49d2ecc7e1a57b8908309fc186edc2c36e184a81cd9",
+      "width": 1248,
+      "height": 832,
+      "pipeline_version": "0.12.2"
+    },
+    "synthetic/node-uniform-skin__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
+      "pixels_sha256": "14b395e1f8d8c5a1a7438d89fccd300e64975f9790cfd20f6aace62a50e2b87e",
+      "width": 1248,
+      "height": 832,
+      "pipeline_version": "0.12.2"
+    },
+    "synthetic/node-uniform-tone__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
+      "pixels_sha256": "949cc2f768a106202ebe74e6348a355f4c170d55fa70fcd78407895b0762ba69",
+      "width": 1248,
+      "height": 832,
+      "pipeline_version": "0.12.2"
     }
   },
   "log": [
@@ -502,6 +520,13 @@
       "changed": 8,
       "added": 0,
       "max_delta_e_2000": 0.000660948659678391
+    },
+    {
+      "pipeline_version": "0.12.2",
+      "note": "new pictures",
+      "changed": 0,
+      "added": 3,
+      "max_delta_e_2000": 0.0
     }
   ]
 }

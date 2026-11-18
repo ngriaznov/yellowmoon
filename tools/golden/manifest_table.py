@@ -24,8 +24,9 @@ TIER_TEXT = {"synthetic": "ours (generated)", "synthetic-eval": "ours (generated
 
 
 def select(manifest: Dict[str, Any], set_name: str) -> List[Dict[str, Any]]:
-    """The entries of one set (``all`` = every entry), in manifest order."""
-    return [e for e in manifest["entries"] if set_name == "all" or e["set"] == set_name]
+    """The entries of one set (``all`` = every entry), in manifest order. An entry with settings (the Colour Uniform entries of
+    docs/32, CU-06) renders a file another entry renders: it is not another file, so the table leaves it out."""
+    return [e for e in manifest["entries"] if (set_name == "all" or e["set"] == set_name) and not e.get("settings")]
 
 
 def per_file(entries: List[Dict[str, Any]]) -> str:

@@ -465,17 +465,11 @@ fn without_halo(p: &OutputSharpen) -> OutputSharpen {
 // Vectors
 // ------------------------------------------------------------------------------------------------
 
-fn vector_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cpu_data/output_sharpening")
-}
+mod self_gen;
+use self_gen::{CLASSES, Class, Package};
 
-fn vectors() -> Vec<(String, Value)> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(vector_dir())
-        .expect("vector directory")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        .collect();
-    files.sort();
+fn vectors(class: Class) -> Vec<(String, Value)> {
+    let files: Vec<PathBuf> = self_gen::json_files(&class.dir(Package::OutputSharpen));
     files
         .into_iter()
         .map(|p| {
@@ -499,7 +493,7 @@ fn method_of(v: &Value) -> Method {
     Method::from_id(v["method_id"].as_u64().expect("method_id") as u32).expect("method")
 }
 
-fn params_of(v: &Value) -> (OutputSharpen, f32) {
+fn params_of(v: &Value, class: Class) -> (OutputSharpen, f32) {
     let p = &v["params"];
     let mode = match p["mode"].as_str().expect("mode") {
         "screen" => Mode::Screen,
@@ -537,10 +531,9 @@ fn params_of(v: &Value) -> (OutputSharpen, f32) {
             extra_stages,
             // The reference compares exactly; the tie tolerance is ours (spec 7.1 item 5).
             halo_tie_tolerance: 0.0,
-            // The oracle vectors run under the constants they were made with. The device runs the
-            // shipped constants, which are these until a fit lands (`docs/29` RC-04 runs both sets
-            // on it).
-            tuning: Tuning::ORACLE,
+            // The oracle vectors run under the constants they were made with, the self vectors under
+            // the shipped ones; the device builds its pipelines from them (`docs/29` RC-04).
+            tuning: class.pick(Tuning::ORACLE, Tuning::DEFAULT),
         },
         f32_of(p, "scale"),
     )
@@ -561,13 +554,19 @@ fn image_of(v: &Value) -> RgbImage {
 
 #[test]
 fn vectors_match_the_oracle_and_the_cpu_port() {
-    let all = vectors();
+    for class in CLASSES {
+        vectors_match_under(class);
+    }
+}
+
+fn vectors_match_under(class: Class) {
+    let all = vectors(class);
     assert_eq!(all.len(), 16, "the package has 16 vectors");
     for (di, dev) in gpus().iter().enumerate() {
         let mut worst_vs_expected = 0.0f64;
         let mut worst_vs_cpu = 0.0f64;
         for (name, v) in &all {
-            let (os, scale) = params_of(v);
+            let (os, scale) = params_of(v, class);
             let input = image_of(&v["input"]);
             let expected = image_of(&v["expected"]);
             let tol = v["tolerance"].as_f64().expect("tolerance");
@@ -578,7 +577,8 @@ fn vectors_match_the_oracle_and_the_cpu_port() {
             let vs_cpu = ErrStats::of_images(&out, &cpu);
             if di == 0 {
                 eprintln!(
-                    "{name:<34} vs oracle: {} | vs cpu port: max {:.3e}",
+                    "{name:<34} [{}] vs vector: {} | vs cpu port: max {:.3e}",
+                    class.label(),
                     vs_expected.line(),
                     vs_cpu.max
                 );
@@ -606,18 +606,97 @@ fn vectors_match_the_oracle_and_the_cpu_port() {
             worst_vs_cpu = worst_vs_cpu.max(vs_cpu.max);
         }
         eprintln!(
-            "[{}] vectors: max |gpu - oracle| {worst_vs_expected:.3e}, max |gpu - cpu port| {worst_vs_cpu:.3e}",
-            dev.mode.name()
+            "[{}] [{}] vectors: max |gpu - vector| {worst_vs_expected:.3e}, max |gpu - cpu port| {worst_vs_cpu:.3e}",
+            dev.mode.name(),
+            class.label()
         );
         if hardware(dev) {
             ci_note(&format!(
-                "hardware vectors: max |gpu - oracle| {worst_vs_expected:.3e}, max |gpu - cpu port| {worst_vs_cpu:.3e} (lavapipe 7.15e-7; Metal at b6f2e4b 1.36e-5)"
+                "hardware vectors [{}]: max |gpu - vector| {worst_vs_expected:.3e}, max |gpu - cpu port| {worst_vs_cpu:.3e} (lavapipe 7.15e-7; Metal at b6f2e4b 1.36e-5)",
+                class.label()
             ));
         }
         assert!(
             worst_vs_expected <= 2e-6,
             "the 16 vectors must stay within 2e-6 on the GPU, got {worst_vs_expected:e}"
         );
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// The device keys its pipelines by their constants (`docs/29` RC-04)
+// ------------------------------------------------------------------------------------------------
+
+#[test]
+fn a_cached_pipeline_is_never_reused_for_another_tuning() {
+    // The pipeline cache is keyed by the kernel and the constants block it was built from. Three
+    // tunings run on one device, shipped first, then the others, then the shipped one again: each
+    // result is the CPU port under the same tuning, the three differ from one another, and the second
+    // run of a tuning gives the first run's bits (it found its own pipelines, not another's).
+    let tunings = [
+        Tuning::DEFAULT,
+        Tuning {
+            gain_epsilon: 2e-3,
+            ratio_max: 1.6,
+            halo_pull_fade: 0.9,
+            ..Tuning::DEFAULT
+        },
+        Tuning {
+            gain_epsilon: 5e-5,
+            ratio_max: 3.0,
+            halo_pull_fade: 0.02,
+            ..Tuning::DEFAULT
+        },
+    ];
+    let img = busy(64, 48, 71);
+    let params: Vec<OutputSharpen> = tunings
+        .iter()
+        .map(|&tuning| OutputSharpen {
+            tuning,
+            ..OutputSharpen::screen().with_amount_pct(250.0)
+        })
+        .collect();
+    let cpus: Vec<RgbImage> = params
+        .iter()
+        .map(|p| p.apply(&img, 1.0).expect("cpu apply"))
+        .collect();
+    for dev in gpus() {
+        let mut first = Vec::new();
+        for (i, p) in params.iter().enumerate() {
+            let got = gpu_sharpen(dev, p, 1.0, &img);
+            let e = ErrStats::of_images(&got, &cpus[i]);
+            eprintln!(
+                "[{}] tuning {i}: GPU against the CPU port under the same tuning: max {:.3e}",
+                dev.mode.name(),
+                e.max
+            );
+            assert!(
+                e.max <= NOISY_BOUND,
+                "tuning {i}: the GPU does not run this tuning's constants (max {:.3e})",
+                e.max
+            );
+            first.push(got);
+        }
+        for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+            let apart = ErrStats::of_images(&cpus[a], &cpus[b]).max;
+            let gpu_apart = ErrStats::of_images(&first[a], &cpus[b]).max;
+            eprintln!(
+                "[{}] tunings {a} and {b}: CPU results differ by {apart:.3e}; GPU {a} from CPU {b}: {gpu_apart:.3e}",
+                dev.mode.name()
+            );
+            assert!(apart > 1e-4, "tunings {a} and {b} must change the picture");
+            assert!(
+                gpu_apart > 1e-4,
+                "the GPU result of tuning {a} is the CPU's of tuning {b}"
+            );
+        }
+        // Back again, in another order: the same bits as the first time.
+        for i in [0usize, 2, 1, 0] {
+            assert!(
+                bit_equal(&gpu_sharpen(dev, &params[i], 1.0, &img), &first[i]),
+                "tuning {i}: the second run gives other bits than the first"
+            );
+        }
     }
 }
 

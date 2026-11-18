@@ -1,8 +1,10 @@
 //! R8 diffraction deconvolution (`docs/algorithms/03-diffraction-deconvolution.md`).
 //!
-//! * `vectors_*`: every vector of `tests/cpu_data/diffraction_deconvolution/` within its stated
-//!   tolerance (planner vectors 1e-6, image vectors 2e-5, exact vectors bit-equal), and the
-//!   planner fields (`active`, `radius`, `gauss_radius`, `halo_px` exactly).
+//! * `vectors_*`: every vector of `tests/cpu_data/diffraction_deconvolution/` (the oracle's, run
+//!   under `Tuning::ORACLE`) and of `diffraction_deconvolution_self/` (made by our own code, run
+//!   under `Tuning::DEFAULT`, `docs/29` RC-04) within its stated tolerance (planner vectors 1e-6,
+//!   image vectors 2e-5, exact vectors bit-equal), and the planner fields (`active`, `radius`,
+//!   `gauss_radius`, `halo_px` exactly).
 //! * the property tests of spec section 6.2, ported from the reference's self-test: flat fields
 //!   and identities exact, tiling parity at the plan's halo, square symmetries, scale behaviour,
 //!   kernel sweep and the plans tabulated in section 2.7, no NaN or Inf, the luma of the output,
@@ -13,7 +15,7 @@
 //! The scenes are the ones of the reference (splitmix64 with Irwin-Hall normals), so the numbers
 //! the spec quotes (error 5.30 to 3.31, rise 2.62 to 2.04 px, noise x1.019) can be compared.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde_json::Value;
 use ym_gpu::cpu::chain::{Chain, RawFrame};
@@ -288,17 +290,11 @@ fn bits_equal(a: &[f32], b: &[f32]) -> bool {
 // Vectors
 // ---------------------------------------------------------------------------------------------
 
-fn vector_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cpu_data/diffraction_deconvolution")
-}
+mod self_gen;
+use self_gen::{CLASSES, Class, Package};
 
-fn vectors() -> Vec<(String, Value)> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(vector_dir())
-        .expect("vector directory")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        .collect();
-    files.sort();
+fn vectors(class: Class) -> Vec<(String, Value)> {
+    let files: Vec<PathBuf> = self_gen::json_files(&class.dir(Package::Diffraction));
     files
         .into_iter()
         .map(|p| {
@@ -390,21 +386,24 @@ fn check_plan_fields(name: &str, plan: &Option<DiffractionPlan>, expected: &Valu
     }
 }
 
-/// Every vector runs under the constants it was made with ([`Tuning::ORACLE`], which proves the
-/// structure is the spec's) and under the shipped ones ([`Tuning::DEFAULT`]).
-const TUNINGS: [&Tuning; 2] = [&Tuning::ORACLE, &Tuning::DEFAULT];
+/// The oracle vectors run under the constants they were made with ([`Tuning::ORACLE`], which proves
+/// the structure is the spec's), the self vectors under the shipped ones ([`Tuning::DEFAULT`]).
+fn tuning_of(class: Class) -> &'static Tuning {
+    class.pick(&Tuning::ORACLE, &Tuning::DEFAULT)
+}
 
 #[test]
 fn vectors_planner() {
-    for tuning in TUNINGS {
-        vectors_planner_under(tuning);
+    for class in CLASSES {
+        vectors_planner_under(class);
     }
 }
 
-fn vectors_planner_under(tuning: &'static Tuning) {
+fn vectors_planner_under(class: Class) {
+    let tuning = tuning_of(class);
     let mut count = 0;
     let mut worst = 0.0f64;
-    for (name, v) in vectors() {
+    for (name, v) in vectors(class) {
         if !v["input"].is_null() {
             continue;
         }
@@ -441,15 +440,16 @@ fn vectors_planner_under(tuning: &'static Tuning) {
 
 #[test]
 fn vectors_images() {
-    for tuning in TUNINGS {
-        vectors_images_under(tuning);
+    for class in CLASSES {
+        vectors_images_under(class);
     }
 }
 
-fn vectors_images_under(tuning: &'static Tuning) {
+fn vectors_images_under(class: Class) {
+    let tuning = tuning_of(class);
     let mut count = 0;
     let mut worst = 0.0f64;
-    for (name, v) in vectors() {
+    for (name, v) in vectors(class) {
         if v["input"].is_null() {
             continue;
         }

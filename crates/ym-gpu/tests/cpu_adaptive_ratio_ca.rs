@@ -2,7 +2,9 @@
 //! (`docs/algorithms/01-adaptive-ratio-demosaic.md` section 3.6, `INTEGRATION.md` section 6).
 //!
 //! * **The vector.** `ca_weighting` (a 32 x 32 tile at frame (4800, 3330) of a 6048 x 4024 frame)
-//!   through the whole-piece routine and the banded one, within its tolerance (1e-5).
+//!   through the whole-piece routine and the banded one, within its tolerance (1e-5): the oracle's
+//!   file under `Tuning::ORACLE` and our own `adaptive_ratio_demosaic_self` file under
+//!   `Tuning::DEFAULT` (`docs/29` RC-04).
 //! * **The curves from the lens.** `LensGeometry::ca_curves` reproduces the curves the vector
 //!   carries from the same 16 + 16 CA knots and 16 distortion knots, and follows the R9 model: at
 //!   the source radius of green, red is displaced by exactly `shift_R(r)`. No CA tag, CA switched
@@ -13,8 +15,6 @@
 //!   constant misregistration does not depend on it, and a centre that is not finite is refused.
 //! * **The chain.** `Chain::run_tile` with a lens that has CA runs the CA path for the adaptive
 //!   ratio demosaic and no other method; without CA (no tag, switched off) it runs the plain path.
-
-use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use ym_gpu::cpu::chain::{Chain, RawFrame};
@@ -28,7 +28,13 @@ use ym_gpu::cpu::tiling::{Halo, Rect, tile_grid};
 use ym_gpu::cpu::{Cfa, Mosaic, NoiseDn, Placement, RgbImage, demosaic, gains, resample};
 use ym_noise::model::NoiseModel;
 
-const VECTOR: &str = "tests/cpu_data/adaptive_ratio_demosaic/ca_weighting.json";
+mod self_gen;
+use self_gen::{CLASSES, Class, Package};
+
+/// The CA vector of `class`.
+fn vector_of(class: Class) -> Value {
+    self_gen::read_vector(&class.dir(Package::AdaptiveRatio).join("ca_weighting.json"))
+}
 
 /// The model of the vectors' "low" noise: SNR at 18 % grey of 39.5 dB, shadow matching off.
 fn low_noise() -> NoiseDn {
@@ -76,9 +82,9 @@ fn image_diff(a: &RgbImage, b: &RgbImage) -> f64 {
 // The vector
 // ---------------------------------------------------------------------------------------------
 
+/// The oracle's CA vector, which the tests of the path's structure use.
 fn vector() -> Value {
-    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join(VECTOR);
-    serde_json::from_str(&std::fs::read_to_string(path).expect("vector file")).expect("json")
+    vector_of(Class::Oracle)
 }
 
 fn doubles(v: &Value) -> Vec<f64> {
@@ -112,7 +118,11 @@ struct CaVector {
 }
 
 fn ca_vector() -> CaVector {
-    let json = vector();
+    ca_vector_of(Class::Oracle)
+}
+
+fn ca_vector_of(class: Class) -> CaVector {
+    let json = vector_of(class);
     let params = &json["params"];
     let input = &json["input"];
     let (w, h) = (
@@ -159,19 +169,18 @@ fn ca_vector() -> CaVector {
     }
 }
 
-/// The vector runs under the constants it was made with ([`Tuning::ORACLE`]) and under the shipped
-/// ones ([`Tuning::DEFAULT`]).
-const TUNINGS: [Tuning; 2] = [Tuning::ORACLE, Tuning::DEFAULT];
-
+/// The oracle's file runs under the constants it was made with ([`Tuning::ORACLE`]), the self file
+/// under the shipped ones ([`Tuning::DEFAULT`]).
 #[test]
-fn the_ca_vector_matches_the_oracle() {
-    for tuning in TUNINGS {
-        the_ca_vector_matches_the_oracle_under(tuning);
+fn the_ca_vector_matches_the_oracle_and_the_self_vector() {
+    for class in CLASSES {
+        the_ca_vector_matches_under(class);
     }
 }
 
-fn the_ca_vector_matches_the_oracle_under(tuning: Tuning) {
-    let v = ca_vector();
+fn the_ca_vector_matches_under(class: Class) {
+    let tuning = class.pick(Tuning::ORACLE, Tuning::DEFAULT);
+    let v = ca_vector_of(class);
     let tolerance = v.json["tolerance"].as_f64().expect("tolerance");
     let inputs = DemosaicInputs {
         gains: v.gains,
@@ -195,7 +204,10 @@ fn the_ca_vector_matches_the_oracle_under(tuning: Tuning) {
         .zip(&v.expected)
         .map(|(a, b)| f64::from(*a - *b).abs())
         .fold(0.0, f64::max);
-    println!("ca_weighting: max |rust - oracle| = {worst:.3e} (tolerance {tolerance:.0e})");
+    println!(
+        "ca_weighting [{}]: max |rust - vector| = {worst:.3e} (tolerance {tolerance:.0e})",
+        class.label()
+    );
     assert!(whole.data.iter().all(|x| x.is_finite()));
     assert!(worst <= tolerance, "{worst} > {tolerance}");
     // The plain path must give a visibly different answer on this tile, or the vector would not

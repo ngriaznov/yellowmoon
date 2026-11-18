@@ -686,6 +686,8 @@ The blurred inputs are the sharp scene convolved with the plan's own kernel (mir
 Poisson–Gaussian noise from the model, applied independently per channel in unbalanced units. The
 generator's PRNG is splitmix64 with Irwin–Hall normals (arithmetic only).
 
+**Two classes of vectors (`docs/29` F-06, RC-04).** *Oracle:* the files above, unedited, run under `Tuning::ORACLE`; they prove the structure (borders, phases, ties, decision logic). *Self:* `crates/ym-gpu/tests/cpu_data/diffraction_deconvolution_self/`, the same files, fields and tolerances written by `crates/ym-gpu/examples/gen_self_vectors.rs` from our own Rust under `Tuning::DEFAULT`; they are the regression of the shipped constants and are never called an oracle. The CPU and GPU tests read both folders. After a fit changes a shipped constant, regenerate with `cargo run -p ym-gpu --example gen_self_vectors` and commit the diff; `tests/self_vectors.rs` fails while the committed files differ from a regeneration.
+
 ### 6.2 Property tests (`crates/ym-gpu/tests/cpu_diffraction.rs`)
 
 1. **Flat fields exact** (bit-equal): levels 0, 0.18 grey, a colour, above white (1.9, 1.3, 1.6

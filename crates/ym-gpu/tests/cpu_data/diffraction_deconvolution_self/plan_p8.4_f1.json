@@ -1,0 +1,8 @@
+{
+  "description": "Planner: 8.4 um pitch at f/1, the lower gate limit (smallest kernel). [self set: made by gen_self_vectors from our own Rust under the shipped constants; not an oracle; written on Linux x86_64, where the committed bytes must equal a regeneration; elsewhere the numbers are compared within 1e-12 relative]",
+  "expected": {"active":1,"gauss_radius":1,"gauss_sigma":0.200000003,"halo_px":13,"kernel":[0.0,0.0,0.0,0.0,0.0,0.0,3.18737739e-6,0.00857562851,3.18737739e-6,0.0,0.0,0.00857562851,0.965684712,0.00857562851,0.0,0.0,3.18737739e-6,0.00857562851,3.18737739e-6,0.0,0.0,0.0,0.0,0.0,0.0],"r80_um":0.464373131644648,"radius":2,"sigma0_dn":18.320083935874255,"sigma1_dn":2.2216365040526727,"support_um":1.857492526578592},
+  "input": null,
+  "name": "plan_p8.4_f1",
+  "params": {"f_number":1,"g0":[2,1,1.5],"luma":[0.298999995,0.587000012,0.114],"noise":{"a":0.000025,"b":4e-8,"q":0,"sigma_row":0.00005},"pixel_pitch_x_um":8.4,"pixel_pitch_y_um":8.4,"scale":1,"strength":1,"working_scale":65535},
+  "tolerance": 1e-6
+}

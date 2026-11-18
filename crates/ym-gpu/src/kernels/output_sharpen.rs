@@ -101,7 +101,7 @@ use bytemuck::{Pod, Zeroable};
 use ym_color::encode::OutputSpace;
 
 use super::color::{ColorImage, dither_table};
-use super::shader::KernelId;
+use super::shader::{KernelId, Tune};
 use super::util::{OutKind, PixelData, STORAGE_IN, even, unpack};
 use crate::cpu::output_sharpen::{Method, OutputSharpen, SharpenPlan, Tuning};
 use crate::cpu::tiling::{Halo, Rect};
@@ -415,13 +415,6 @@ impl PreparedSharpen {
     /// [`GpuError::InvalidInput`] for parameters or a scale the CPU reference's `plan` rejects, and
     /// allocation errors from the pool.
     pub fn new(ctx: &GpuContext, params: &OutputSharpen, scale: f32) -> Result<Self, GpuError> {
-        // The shader's constants are generated from `Tuning::DEFAULT` (`body`); until a pipeline is
-        // keyed by its tuning (docs/29 RC-04) the device runs those and no others.
-        if params.tuning != Tuning::DEFAULT {
-            return Err(invalid(
-                "output sharpening: the device runs the shipped Tuning only; use the CPU path for another",
-            ));
-        }
         let plan = params.plan(scale).map_err(invalid)?;
         let mut taps: Vec<f32> = Vec::new();
         let mut stages = Vec::with_capacity(plan.stages().len());
@@ -777,8 +770,9 @@ impl PreparedSharpen {
             } else {
                 (p.width, p.height)
             };
-            passes.dispatch(
+            passes.dispatch_tuned(
                 id,
+                Tune::OutputSharpen(self.plan.tuning()),
                 id.name(),
                 &entries,
                 (gw.div_ceil(GROUP), gh.div_ceil(GROUP), z),
