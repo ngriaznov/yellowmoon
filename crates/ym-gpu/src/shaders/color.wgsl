@@ -1267,7 +1267,8 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) 
                 let none = (ctl & N_FACE) != 0u && made.x == 0.0 && made.y == 0.0 && made.z == 0.0;
                 if (!none) {
                     graded = made;
-                    if (m == 1.0) {
+                    // A Blur node's picture is finished: its blend (in linear light, by the same mask) is in it.
+                    if (m == 1.0 || (ctl & N_BLUR) != 0u) {
                         out_v = made;
                     } else {
                         out_v = v_in + m * (made - v_in);

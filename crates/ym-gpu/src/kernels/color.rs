@@ -286,6 +286,10 @@ pub(crate) const NODE_FILM_LIVE: u32 = 1024;
 /// The Film step is a Face Refinement node's (`N_FACE`, `docs/27` S-13): its picture covers only the regions around the faces,
 /// and a pixel that holds all zeros there has no picture and keeps the node's input.
 pub(crate) const NODE_FACE: u32 = 4096;
+/// The Film step is a Blur node's (`N_BLUR`, `docs/33` section 6): its picture is the node's finished output (the blend in linear
+/// light, by the node's mask, is done by the pass that made it), so the pixel takes it as it is where `m` is above 0 and
+/// does not blend it again.
+pub(crate) const NODE_BLUR: u32 = 16384;
 /// The step is a Colour Uniform node's (`N_UNIFORM`, `docs/32` section 6): after the trims, C9, C9b and C11 (a node of this kind
 /// has none of them) the kernel pulls the colour toward the target held in the record's grade rows ([`R_UNI_T`], [`R_UNI_K`],
 /// [`R_UNI_R`]). Set only for a live step: a node at its identity is [`NODE_SKIP`].
@@ -1041,13 +1045,9 @@ impl ChainTables {
         chain: &ColorChain,
     ) -> Result<PreparedChain, GpuError> {
         let params = chain.params();
-        // A live Blur node has no kernel yet (BL-05): the device refuses the plan and the CPU makes the frame, with this as its
-        // reason (`RenderReport::cpu_reason`).
-        if chain.has_blur() {
-            return Err(GpuError::InvalidInput(
-                "a Blur node is not on the device yet".to_owned(),
-            ));
-        }
+        // A live Blur node is a Film-like step: its picture is made before the colour pass by `kernels::blur_stack`, which
+        // refuses a type that has no kernel yet (BL-05: "a Soft Blur node is not on the device yet"), and a chain that was given
+        // no pictures for its live nodes is refused by `film_images_for`; either way the CPU makes the frame.
         let space = chain.space();
         let look_kind = classify_look(params);
         // C1 to C6 (the fused matrix) and C7.
@@ -1391,6 +1391,9 @@ impl NodePlan {
                 }
                 if film.face {
                     bits |= NODE_FACE;
+                }
+                if film.blur {
+                    bits |= NODE_BLUR;
                 }
             }
             // The mask rows (`ym_color::mask`): the same rows, derived once, as the CPU reads. A node blends when
@@ -2705,8 +2708,10 @@ mod tests {
             NODE_FILM_LIVE,
             NODE_JOIN,
             NODE_FACE,
+            NODE_BLUR,
         ];
         assert!(others.iter().all(|b| b & NODE_UNIFORM == 0));
+        assert!(NODE_BLUR.is_power_of_two() && others.iter().all(|&b| b == NODE_BLUR || b & NODE_BLUR == 0));
         assert!(NODE_UNIFORM.is_power_of_two());
         // The record of a step: the target's chroma and unit vector, the tone and the three amounts, the chroma's length.
         let mut r = NodeRecU::default();
