@@ -1125,12 +1125,12 @@ impl AppApi {
         self.sample_chroma_radius(x, y, at, tap, 0.0)
     }
 
-    /// [`Api::sample_chroma`] with the optional `radius_px`: the colour is the mean of the square of `2 * radius_px + 1`
+    /// `sample_chroma` (test-only) with the optional `radius_px`: the colour is the mean of the square of `2 * radius_px + 1`
     /// pixels about the point (`Renderer::sample_chroma_square`, `docs/32` section 3.11). The answer carries `tone` too.
     ///
     /// # Errors
     ///
-    /// As [`Api::sample_chroma`].
+    /// As `sample_chroma` (test-only).
     pub fn sample_chroma_radius(
         &self,
         x: f64,
