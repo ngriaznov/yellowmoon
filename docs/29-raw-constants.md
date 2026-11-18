@@ -436,6 +436,77 @@ Noise gain on a flat patch (sigma 0.004): x1.0298 with the 1-level threshold, x1
 | 1 | 2.2487 | 0.851 | 1.080 | 1.0319 |
 | 0.4 | 2.6139 | 0.243 | 0.351 | 1.0213 |
 
+### 2.2b The spec 01 gate at the shipped constants (RC-07)
+
+RC-07 is the first task to move a default (A6 and A7, section 5), so spec 01 now has a second floor. The tables below are those of section 2.2a for spec 01, printed by `tools/fit/baseline.py` from `demosaic_gate all` and `fit_demosaic --from default --held --artifacts --edge --ca` at `Tuning::DEFAULT` after RC-07 (A6 `0.9`, A7 `3.5`, every other constant the oracle's), on 2026-11-18, on the machine and the data of section 2.2a. They are the floor of RC-08 and RC-10 for spec 01. Specs 03 and 04 are not affected (their harnesses do not run the demosaic) and their tables of section 2.2a stand. `tools/fit/baseline.sh` refuses to run while `Tuning::DEFAULT` differs from `Tuning::ORACLE` (it exists to record the oracle's floor, which section 2.2a holds); a later fit of spec 01 starts with `--from default` and is held to the tables here, and to section 2.2a where it asks for the oracle's.
+
+**The nine cells** (`demosaic_gate`: mean PSNR in linear light, 10 px border off, nominal model of spec 01 section 6.3). The R6 rule counts the best of four methods per cell.
+
+| set | split | signal scale | adaptive ratio (dB) | Menon (dB) | LMMSE (dB) | best |
+|---|---|---|---|---|---|---|
+| synthetic | fit | 1 | 36.94 | 31.60 | 32.00 | adaptive_ratio |
+| synthetic | fit | 0.1 | 37.40 | 31.60 | 31.37 | adaptive_ratio |
+| synthetic | fit | 0.01 | 37.72 | 31.60 | 30.16 | adaptive_ratio |
+| Kodak | fit | 1 | 36.46 | 36.14 | 36.41 | adaptive_ratio |
+| Kodak | fit | 0.1 | 37.49 | 36.14 | 35.98 | adaptive_ratio |
+| Kodak | fit | 0.01 | 37.15 | 36.14 | 35.56 | adaptive_ratio |
+| McMaster | held out | 1 | 35.25 | 35.54 | 36.33 | lmmse |
+| McMaster | held out | 0.1 | 36.68 | 35.54 | 35.82 | adaptive_ratio |
+| McMaster | held out | 0.01 | 37.03 | 35.54 | 34.93 | adaptive_ratio |
+| **mean of the 9 cells** |  |  | **36.902** | **34.425** | **34.284** | cells won 8 / 0 / 1 |
+
+**Zipper and false colour** (`demosaic_gate`, signal scale 1, linear light).
+
+| set | split | images | zipper AR (% of edge px) | Menon | LMMSE | false colour AR (% of px) | Menon | LMMSE | chroma dE00 AR |
+|---|---|---|---|---|---|---|---|---|---|
+| synthetic | fit | 7 | 19.37 | 39.13 | 39.59 | 12.230 | 15.251 | 14.998 | 2.293 |
+| Kodak | fit | 24 | 23.31 | 34.29 | 33.32 | 3.914 | 7.635 | 6.775 | 1.477 |
+| McMaster | held out | 18 | 25.46 | 41.77 | 40.00 | 5.614 | 11.203 | 10.000 | 1.652 |
+
+**The noisy table** (`demosaic_gate`, Gaussian noise `a x + b`, signal scale 1, matching model for the adaptive ratio; each cell is demosaic / after the R6 bilateral denoise).
+
+| set | split | level | adaptive ratio: demosaic / + R6 (dB) | Menon | LMMSE |
+|---|---|---|---|---|---|
+| synthetic | fit | ISO 100-like | 35.85 / 36.32 | 31.38 / 31.55 | 31.79 / 31.96 |
+| synthetic | fit | ISO 800-like | 33.29 / 34.95 | 30.26 / 31.20 | 30.70 / 31.63 |
+| synthetic | fit | ISO 1600-like | 31.91 / 34.04 | 29.44 / 30.83 | 29.89 / 31.30 |
+| synthetic | fit | ISO 6400-like | 27.70 / 30.75 | 26.31 / 28.87 | 26.81 / 29.41 |
+| Kodak | fit | ISO 100-like | 36.46 / 36.47 | 36.03 / 36.05 | 36.31 / 36.32 |
+| Kodak | fit | ISO 800-like | 36.48 / 36.61 | 35.36 / 35.57 | 35.69 / 35.82 |
+| Kodak | fit | ISO 1600-like | 35.82 / 36.12 | 34.75 / 35.17 | 35.12 / 35.41 |
+| Kodak | fit | ISO 6400-like | 32.42 / 33.71 | 31.84 / 33.30 | 32.33 / 33.55 |
+| McMaster | held out | ISO 100-like | 35.32 / 35.35 | 35.46 / 35.51 | 36.25 / 36.29 |
+| McMaster | held out | ISO 800-like | 35.87 / 36.15 | 34.93 / 35.28 | 35.72 / 36.01 |
+| McMaster | held out | ISO 1600-like | 35.52 / 36.03 | 34.43 / 35.03 | 35.21 / 35.72 |
+| McMaster | held out | ISO 6400-like | 32.78 / 34.36 | 31.93 / 33.64 | 32.66 / 34.22 |
+
+**The groups of the fit harness** (`fit_demosaic --held --artifacts --edge --ca`).
+
+| group | split | mean PSNR (dB) |
+|---|---|---|
+| A (procedural 7, Kodak 24, McMaster 18) | all 49 | 36.082 |
+| A, fit set (procedural and Kodak) | fit | 36.568 |
+| A, held out (McMaster) | held out | 35.247 |
+| B (dark and noisy, 17 images, noise seed 1) | all | 27.740 |
+| B, fit images | fit | 27.352 |
+| B, held-out images (McMaster) | held out | 28.453 |
+| B2 (the same 17 images, second noise seed) | held out | 27.741 |
+| P (PixelShift200, real sensor) | - | not run: PixelShift200 absent; evaluation data, never committed |
+
+Artifacts, the 49 images of group A: zipper 23.538 % of edge pixels, false colour 5.726 % of pixels, chroma dE00 1.657.
+
+Slanted edge through the demosaic (levels 0.05 and 0.25 of white): MTF50 0.5909 cycles/px, rise 0.8273 px, overshoot 2.513 %, undershoot 1.854 %, flat-patch sd 0.00970.
+
+**The CA path** (`ca_green_residual`'s scenes through `fit_demosaic --ca`; the residual red and blue displacement against green after R9, and the PSNR of all three planes). These scenes are ours and generated, so none is held out.
+
+| scene (600 x 400) | red residual RMS (px) | blue residual RMS (px) | PSNR, all planes (dB) |
+|---|---|---|---|
+| strength 0.5 | 0.040 | 0.032 | 43.51 |
+| strength 1 | 0.084 | 0.066 | 40.78 |
+| strength 2 | 0.149 | 0.123 | 37.19 |
+| strength 1, barrel | 0.083 | 0.069 | 40.95 |
+| strength 2, barrel | 0.135 | 0.114 | 37.71 |
+
 ### 2.3 How each could be fitted
 
 **The protocol every fit follows.**
@@ -580,6 +651,57 @@ Each task is one branch (`rc-01-cubics` style), one pull request, with the usual
 
 **RC-07 · Fit spec 01 pass 1 and the chroma penalty** (A1, A6, A7; changes every picture if accepted). As section 2.3. *Done when:* the PR reports, for each constant, today's value, the fitted value, the objective on the fit sets and on the held-out set, and the full `demosaic_gate` tables; either the values are changed in `Tuning::DEFAULT` with the numbers showing the acceptance rule, or the PR keeps today's values and writes "fitted on <date>: within x of the optimum" into the registry.
 
+*Done (branch `rc-07-fit-pass1`, commits 99cf6ea8 "RC-07: A6 and A7 fitted, A1 kept; the nine cells in the harness; self vectors regenerated" and the docs).* Run on 2026-11-18 with the harness of RC-05 and one addition, `fit_demosaic --cells` (the nine cells of `demosaic_gate` as keys of the evaluation line: `cells.mean9`, `cells.mean_fit` for the six cells of the procedural set and Kodak, `cells.mean_held` for the three of McMaster; at the oracle it gives 36.048, 36.045 and 36.055, the numbers of section 2.2a, cell by cell). The objective of every grid is `cells.mean_fit`; the held-out numbers are McMaster and the second noise seed (`B2`). Raw output of every grid: one `.jsonl` per run, kept outside the repository (the scratch folder of the session); the commands are the ones of Appendix B with `-- --held --cells --artifacts`. 29 + 16 evaluations for A1, 180 + 114 for A6 and A7, about 8 s each.
+
+**A1 `1.6` (pass-1 direction scores): not taken** (rule 3, and rule 4a). One-dimensional grid 0.4 to 3.2 by 0.1, then 0.40 to 0.70 by 0.02. A1 is today's value (1.6) at neither end: the curve is nearly flat, a gain of 0.015 dB at most.
+
+| A1 | nine-cell mean (dB) | fit sets (dB) | McMaster (dB) | zipper (% of edge px, 49 images) | false colour (%) |
+|---|---|---|---|---|---|
+| 0.40 | 36.0500 | 36.0573 | 36.0355 | 24.372 | 6.4489 |
+| 0.50 | 36.0524 | 36.0592 | 36.0388 | 24.375 | 6.4470 |
+| **0.56** (the nine-cell optimum) | **36.0539** | 36.0600 | 36.0416 | 24.378 | 6.4473 |
+| 0.60 | 36.0533 | 36.0585 | 36.0427 | 24.382 | 6.4471 |
+| 1.00 | 36.0496 | 36.0489 | 36.0511 | 24.417 | 6.4509 |
+| **1.60 (today)** | 36.0483 | 36.0448 | 36.0553 | 24.473 | 6.4551 |
+| 2.40 | 36.0404 | 36.0306 | 36.0601 | 24.572 | 6.4770 |
+| 3.20 | 36.0283 | 36.0122 | 36.0606 | 24.710 | 6.5100 |
+
+The optimum of the nine-cell mean is 0.56 and beats today's value by 0.0056 dB, under the 0.01 dB of rule 3: not taken. The optimum of the fit sets alone (0.54 to 0.56, 36.0600) beats today's by 0.0152 dB, but it is 0.0137 to 0.0145 dB worse on McMaster (36.0416 against 36.0553), so it fails rule 4a as well. Today's value is kept; the registry and spec 01 say "fitted on 2026-11-18: within 0.006 dB of the optimum".
+
+**A6 `0.03` and A7 `0.75` (the chroma penalty): taken, `A6 = 0.9`, `A7 = 3.5`.** Started from today's A1 (A1 was not accepted). The two-dimensional grid of section 2.3 (A6 0.01 to 0.12 by 0.01, A7 0.5 to 1.2 by 0.05, 180 evaluations) has its best at its corner, A6 0.12 and A7 1.20 (nine-cell mean 36.5445, fit sets 36.7161, McMaster 36.2012), and every row and column rises towards that corner (excerpt, fit sets / McMaster in dB):
+
+| A6 \ A7 | 0.50 | 0.75 | 1.00 | 1.20 |
+|---|---|---|---|---|
+| 0.01 | 35.485 / 35.882 | 35.698 / 35.977 | 35.970 / 36.014 | 36.181 / 36.069 |
+| 0.03 | 35.850 / 35.975 | **36.045 / 36.055** (today) | 36.235 / 36.080 | 36.379 / 36.117 |
+| 0.06 | 36.133 / 36.048 | 36.308 / 36.114 | 36.438 / 36.131 | 36.539 / 36.157 |
+| 0.09 | 36.311 / 36.093 | 36.468 / 36.149 | 36.563 / 36.163 | 36.642 / 36.183 |
+| 0.12 | 36.437 / 36.125 | 36.578 / 36.174 | 36.651 / 36.184 | 36.716 / 36.201 |
+
+"Then refine around the best" therefore meant going on past the grid: two coordinate descents (`search.py descent`, 114 evaluations, steps of 0.02 and 0.1 from A6 0.12 and A7 1.2, minimum gain 0.002 dB; then steps of 0.08 and 0.5 from A6 0.44 and A7 2.5, minimum gain 0.001 dB) climbed to A6 0.44 and A7 2.5 (nine-cell mean 36.884) and then to A6 0.76 to 0.92 with A7 3.5 to 4.5 (fit sets 37.1944 to 37.1945). The surface is a ridge with no interior optimum. **A7 is the threshold of the penalty (`dominance·ΣX < ΣG`), and a larger A7 makes the test true less often**: at 3.5 it holds only where the greens are 3.5 times the red or blue, and A6 = 0.9 makes the penalty `|X − G|/(X + G + 1) + 0.9` close to one where it does hold. The optimum is the limit in which the penalty is switched off (A7 = 1000 gives 36.9050, fit sets 37.1959, McMaster 36.3233, zipper 23.519 %, false colour 5.721 %), and 3.5 with 0.9 is within 0.0015 dB of it. Round values on the plateau were taken, not the limit; the chroma penalty is, on this data, a loss. Rule 3: the gain is 0.854 dB on the nine cells (1.150 dB on the fit sets), far above 0.01 dB.
+
+| | today (0.03, 0.75) | fitted (0.9, 3.5) | change |
+|---|---|---|---|
+| nine-cell mean (dB) | 36.0483 | 36.9024 | +0.854 |
+| fit sets, six cells (dB) | 36.0448 | 37.1944 | +1.150 |
+| McMaster, held out, three cells (dB) | 36.0553 | 36.3185 | +0.263 |
+| group A, 49 images at scale 1 (dB) | 35.678 | 36.082 | +0.405 |
+| B, dark and noisy, fit / held-out images (dB) | 27.207 / 28.331 | 27.352 / 28.453 | +0.145 / +0.122 |
+| B2, second noise seed, held out (dB) | 27.601 | 27.741 | +0.140 |
+| zipper, group A (% of edge pixels) | 24.473 | 23.538 | -0.935 |
+| false colour, group A (% of pixels) | 6.455 | 5.726 | -0.729 |
+| chroma dE00, group A | 1.724 | 1.657 | -0.066 |
+| slanted edge: MTF50 / rise / overshoot / undershoot / flat sd | 0.5906 / 0.8275 / 2.531 / 1.909 / 0.00977 | 0.5909 / 0.8273 / 2.513 / 1.854 / 0.00970 | none worse |
+| CA path, strength 2 (red / blue residual px, PSNR dB) | 0.204 / 0.175, 36.10 | 0.149 / 0.123, 37.19 | none worse |
+
+*Rule 4a:* better on the objective on the fit sets (+1.150 dB) and on the held-out set (+0.263 dB, and +0.140 dB on the second seed). *Rule 4b:* every number of the `demosaic_gate` gate is no worse; the full tables are section 2.2b, against section 2.2a: the nine cells all rise (the procedural cells by 2.0 to 2.3 dB, Kodak by 0.08 to 0.18, McMaster by 0.22 to 0.31), so the adaptive ratio now also wins Kodak at scale 1 (8 of 9 cells won, was 7; McMaster at scale 1 stays with LMMSE, 35.25 against 36.33); the zipper rate falls on each of the three sets (20.25 to 19.37, 24.15 to 23.31, 26.55 to 25.46), as does the false-colour rate (14.43 to 12.23, 4.27 to 3.91, 6.27 to 5.61) and the chroma difference; all twelve cells of the noisy table rise, both before and after the R6 denoise (for example the procedural set at ISO 6400-like, 27.17 / 29.85 to 27.70 / 30.75). The edge and the CA numbers of the harness are better, none worse. *The owner's answer 1:* no number of the gate is worse, so the fit is not "mixed" and is taken.
+
+**What is worse, and is not a gate number.** Per image, 17 of the 147 PSNR values of the gate (49 images, 3 scales) fall, by 0.011 to 0.33 dB: Kodak kodim01, 05, 08, 13 and 18, McMaster 7, 8 and 16, which are colourful scenes; the largest falls are McMaster 7 (-0.33 dB at scale 0.1) and Kodak kodim08 (-0.24 dB). Three per-image artifact rates of the procedural set rise (edges: zipper 19.6 to 28.0 %, false colour 0.90 to 1.09 %; fine text: zipper 33.0 to 35.5 %). The set means, which are the gate, all improve. The penalty was designed for saturated edges on sensors and the evaluation images are re-mosaicked 8-bit pictures with stand-in noise; group P (the real sensor) is not available (section 2.2a), so the fit says nothing about a real mosaic (G5). This is in the report to the owner (Questions for the owner, 12) and is what the blind look of RC-H1 is for.
+
+**The golden pictures (rule 4c, measured, not refreshed).** `golden check` with a release `ym` built from this branch, against reference pictures made with the release `ym` of RC-06 (61 identical at `Tuning::ORACLE`): 6 of 61 identical (the six `lossless-ms` files of the six bodies), 55 changed, all above the tolerance of ΔE00 0.5 at the maximum, as expected. Per file, median / p99 / max ΔE00 (on the 4 x 4 box filter of `golden check`): the median ranges 0.000 to 0.271 (mean 0.085), the p99 0.000 to 3.386 (mean 2.80), the maximum 0.000 to 14.72 (mean 7.45). The largest: `chart D6500 ILCE-7RM4 iso12800` 0.271 / 3.356 / 14.721, `chart mixed ILCE-7RM4 iso400` 0.090 / 2.771 / 11.602, `chart bb2850 ILCE-6400 iso400 craw` 0.086 / 3.043 / 11.034, `chart LEDB3 DSC-RX100M4 iso400 craw` 0.138 / 3.250 / 10.714, `chart bb2850 ILCE-7RM4 iso400` 0.111 / 3.012 / 10.361. By body (mean median, mean p99, largest max): ILCE-7RM4 0.103 / 3.02 / 14.72, DSC-RX100M4 0.102 / 2.74 / 10.71, ILCE-7M3 0.088 / 2.55 / 8.81, ILCE-6400 0.069 / 2.77 / 11.03, ILCE-1 0.058 / 2.69 / 8.47, ILCE-7SM3 0.039 / 2.40 / 8.55. The synthetic set is colour charts with saturated patches, which is where the penalty acted, so the maximum is a patch edge; the median says that most pixels move very little. `golden update`, `tools/golden/expected.json` and `PIPELINE_VERSION` are not touched: RC-13 refreshes the set once for every accepted fit, and this branch is not merged into `main` before it.
+
+**The code.** `Tuning::DEFAULT` is `Tuning::ORACLE` with `chroma_floor: 0.9` and `sat_dominance: 3.5`; `ORACLE` is unchanged, so the 18 oracle vectors, which run under it, pass as before. The 18 self vectors of `adaptive_ratio_demosaic_self` were regenerated with `gen_self_vectors` and are the only data files that change (the other three packages' self sets are byte-identical); `self_vectors.rs` (8 tests, among them F-06's `a_default_that_moved_needs_a_current_self_set`) failed before the regeneration and passes after it. The registry says `Fitted(..)` for A1, A6 and A7 (`constants_registry.rs`, 11 tests; its block test now compares the names of the `DEFAULT` and `ORACLE` blocks and not their values, since a fit has made them differ). The device runs the new constants from the generated WGSL block: `gpu_adaptive_ratio.rs` passes (24 tests; the tie bounds are not wider: `edge_knight` 9 samples over 1e-4 on the self set and 10 on the oracle set, max 4.20e-4; `ca_weighting` 58, max 6.00e-4 and 6.05e-4), and so do the `fit_harness`, `cpu_adaptive_ratio`, `cpu_adaptive_ratio_ca`, `cpu_adaptive_ratio_chain`, `cpu_demosaic`, `cpu_demosaic_metrics`, `cpu_tiling`, `cpu_log_guided`, `cpu_diffraction`, `cpu_output_sharpen`, `gpu_log_guided`, `gpu_diffraction`, `gpu_output_sharpen` tests and `cargo test -p ym-gpu --lib` (release profile, lavapipe for the device ones), `cargo fmt --check` and `cargo clippy -p ym-gpu --all-targets -- -D warnings`. The spec 01 §6.4 tables and `docs/05`'s numbers describe the oracle constants; the shipped ones are section 2.2b, and RC-13 and RC-14 bring the spec and `docs/05` to them.
+
 **RC-08 · Fit spec 01 pass 3 targets and the shadow group** (A8 to A14; changes pictures where the shadow steps act). As section 2.3, with the sharpening objective for A8 to A10. *Done when:* as RC-07, plus the edge, noise-gain and overshoot numbers for A8 to A10, and the crossover table for A14.
 
 **RC-09 · Output sharpening** (O1 to O3, O6, O7; changes every export if accepted). The tap rule from the tail-mass budget, the continuity repair of the σ map (no change at `R ≥ 0.5`, so none for the preset), the σ knee, and a check of O6 and O7. The presets, the halo map and the radius slope are design and are not touched (section 6, question 4). *Done when:* as RC-07, with the edge profile of spec 04 §9 at `s = 1` and `s = 0.4` as the gate, and the tap count at or above today's at every σ of 0.1 to 2.5.
@@ -673,7 +795,7 @@ $fit --ca-only --eval "A1 to 10@second_diff_weight=10"   # the CA scenes only
 $fit --set no_such_field=1                         # refused, with the list of fields, before any scene loads
 ```
 
-`fit_diffraction` and `fit_sharpen` take the same `--from`, `--set`, `--rel`, `--eval`, `--held` and `--list`; `fit_sharpen` adds `--edge` and `fit_demosaic` adds `--photo`, `--artifacts`, `--edge`, `--ca`, `--ca-only` and `--ca-size`. With no evaluation argument only the base line is printed. The starting `Tuning` is `--from oracle` (the default: `Tuning::ORACLE`) or `--from default` (what ships); the base of a run is the starting `Tuning`, and every other line carries its change against it.
+`fit_diffraction` and `fit_sharpen` take the same `--from`, `--set`, `--rel`, `--eval`, `--held` and `--list`; `fit_sharpen` adds `--edge` and `fit_demosaic` adds `--photo`, `--artifacts`, `--edge`, `--cells`, `--ca`, `--ca-only` and `--ca-size`. `--cells` (RC-07) adds the A images at signal scales 0.1 and 0.01 and puts the nine cells of `demosaic_gate` in the line (`cells.cells` per set and scale, `cells.mean9`, `cells.mean_fit` for the procedural set and Kodak, `cells.mean_held` for McMaster, and their `d_` changes); RC-07's grids used it: `tools/fit/search.py grid fit_demosaic --echo --objective cells.mean_fit --axis second_diff_weight=0.4:3.2:0.1 -- --held --cells --artifacts`, and the same with `--axis chroma_floor=... --axis sat_dominance=...` for A6 and A7. With no evaluation argument only the base line is printed. The starting `Tuning` is `--from oracle` (the default: `Tuning::ORACLE`) or `--from default` (what ships); the base of a run is the starting `Tuning`, and every other line carries its change against it.
 
 **The lines.** Every run prints, in this order: `{"kind":"data_note", ...}` (the sets used with their image counts, the sets skipped and why, and the sentence "Evaluation and local fitting only ... never committed ... no real-sensor ground truth"), then `{"kind":"eval","label":"base", ...}` and one `{"kind":"eval", ...}` per evaluation, with `label`, `set` (the fields moved), `from` and:
 
