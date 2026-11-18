@@ -92,7 +92,6 @@ use ym_color::mask::{
 };
 use ym_color::mask_raster::{Area, CpuPlanes, PlaneJob};
 use ym_color::uniform;
-use ym_color::warp::chroma_of;
 use ym_gpu::cpu::magnify::{MagnifyMap, magnify_with};
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, scale_for_edges};
 use ym_gpu::cpu::sampler::{GridPositions, SamplerGrid, photo_positions};
@@ -3147,15 +3146,6 @@ impl SampledView {
             grid.photo_frame(),
         ))
     }
-
-    /// The place in the photo frame of pixel (0, 0) of the view, for the readout of a one-pixel view.
-    pub(crate) fn spot(&self) -> PixelAt<'static> {
-        let grid = self.grid.as_ref()?;
-        Some(PhotoSpot::new(
-            GridPositions::new(grid, (0, 0)).position(0, 0),
-            grid.photo_frame(),
-        ))
-    }
 }
 
 /// Steps 1 and 2 of the module documentation: the raw group's pixels (the reduced image, or the
@@ -4062,8 +4052,14 @@ impl Renderer {
             ChromaTap::NodeInput => Tap::NodeInput,
         };
         let (src, stage) = signal_source(src, node, tap)?;
-        let Some((pixels, grade)) =
-            self.point_readings(&src, state, css, false, radius_px.min(MAX_PICK_RADIUS_PX), cancel)?
+        let Some((pixels, grade)) = self.point_readings(
+            &src,
+            state,
+            css,
+            false,
+            radius_px.min(MAX_PICK_RADIUS_PX),
+            cancel,
+        )?
         else {
             return Ok(None);
         };
@@ -4076,7 +4072,7 @@ impl Renderer {
         }
         let n = pixels.len() as f64;
         let mean = [sum[0] / n, sum[1] / n, sum[2] / n];
-        let [a, b] = chroma_of(mean);
+        let [a, b] = uniform::chroma_of(mean);
         Ok(Some(ChromaSample {
             a,
             b,
@@ -4650,12 +4646,6 @@ enum Attempt {
     /// The device failed in a stage the attempt had put on it (and the policy is not strict): the
     /// render is made again with no device, and says why.
     DeviceFailed(String),
-}
-
-/// The only pixel of a 1 x 1 image as camera RGB.
-fn pixel_rgb(img: &RgbImage) -> Vec3 {
-    let p = img.pixel(0, 0);
-    [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]
 }
 
 /// `ColorChain` is referenced in doc links above.

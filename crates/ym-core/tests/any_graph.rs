@@ -1121,7 +1121,9 @@ fn no_generated_graph_is_refused_by_the_device() {
     for g in &all {
         let name = format!("seed {} graph {}", g.seed, g.index);
         if g.uniform_live() {
-            say(&format!("{name}: a live Colour Uniform node, the device refuses it until CU-05"));
+            say(&format!(
+                "{name}: a live Colour Uniform node, the device refuses it until CU-05"
+            ));
             continue;
         }
         say(&format!(
@@ -2323,7 +2325,8 @@ fn the_generator_draws_the_colour_uniform_node_and_some_graph_has_it_live() {
     assert!(generated_nodes().contains(&NodeKind::ColorUniform));
     let all = graphs();
     assert!(
-        all.iter().any(|g| g.nodes.contains(&NodeKind::ColorUniform)),
+        all.iter()
+            .any(|g| g.nodes.contains(&NodeKind::ColorUniform)),
         "the kind never appeared"
     );
     assert!(
@@ -2376,7 +2379,10 @@ fn colour_uniform_graphs_are_the_same_bits_whatever_the_tiles_and_the_threads() 
         );
         changed += usize::from(first != plain_bits);
     }
-    assert!(changed > 0, "no graph with a Colour Uniform node changed a pixel");
+    assert!(
+        changed > 0,
+        "no graph with a Colour Uniform node changed a pixel"
+    );
 }
 
 /// Until CU-05 the device refuses a plan with a live Colour Uniform node, and the frame is the CPU's, with its reason
@@ -2417,5 +2423,10 @@ fn colour_uniform_graphs_are_refused_by_the_device_until_cu05() {
         got.report.device_refused,
         got.report.cpu_reason
     );
-    assert_eq!(got.rgba, frame(&cpu, &src, &st).rgba);
+    // The frame is the CPU's colour with the node in it: within a code of the CPU renderer's (the raw stages of the device
+    // renderer differ by rounding), and not the picture without the node.
+    let want = frame(&cpu, &src, &st);
+    let (worst, over) = frame_diff(&got, &want);
+    assert!(worst <= 2 && over < got.rgba.len() / 100, "{worst} codes, {over} over 1");
+    assert!(frame_diff(&got, &frame(&cpu, &d.source(), &st)).0 > 2, "the frame has no node in it");
 }

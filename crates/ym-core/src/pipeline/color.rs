@@ -64,9 +64,9 @@ use super::raw::{CaptureMethod, DEFAULT_CAPTURE_METHOD};
 use crate::auto::{AutoEstimates, as_shot_gains, as_shot_rggb};
 use crate::session::{PhotoId, PhotoView, PickedWhite, ThumbnailInput};
 use crate::settings::{
-    AutoOr, BlendMode, ColorUniformNode, ColorWarp, CurvePoint, Curves, DevelopSettings, LensSettings, MIXER_INPUTS,
-    MaskMode, MaskSettings, MaskShape, MaskSupport, MixerNode, NodeGrade, NodeGraph, NodeId,
-    NodeKind, NodeTrim, ObjectMask, Port,
+    AutoOr, BlendMode, ColorUniformNode, ColorWarp, CurvePoint, Curves, DevelopSettings,
+    LensSettings, MIXER_INPUTS, MaskMode, MaskSettings, MaskShape, MaskSupport, MixerNode,
+    NodeGrade, NodeGraph, NodeId, NodeKind, NodeTrim, ObjectMask, Port,
 };
 use crate::vision::VisionKind;
 

@@ -5,9 +5,7 @@ use std::collections::BTreeMap;
 
 use ym_color::consts::Vec3;
 use ym_color::consts::linalg::Mat3;
-use ym_color::display::{
-    ChainParams, ColorChain, MainNode, NodeParams, NodeSet, UniformStep,
-};
+use ym_color::display::{ChainParams, ColorChain, MainNode, NodeParams, NodeSet, UniformStep};
 use ym_color::logc::LogC4;
 use ym_color::mask::{MaskKind, MaskRow, NodeMasks};
 use ym_color::plan::{MAIN_NODE, PictureSource, PlanGraph, PlanNode, Stop, compile};
@@ -199,7 +197,10 @@ fn the_mask_blends_as_in_plus_m_times_node_minus_in() {
         let full = uniform::apply(v_in, Some(&target()), a);
         let want: Vec3 = std::array::from_fn(|k| v_in[k] + m * (full[k] - v_in[k]));
         let got = masked.apply_logc4_pixel(px).0;
-        assert!(near(got, want, 1e-12), "{px:?}: m {m}: {got:?} against {want:?}");
+        assert!(
+            near(got, want, 1e-12),
+            "{px:?}: m {m}: {got:?} against {want:?}"
+        );
         if m == 0.0 {
             zero += 1;
             assert_eq!(got, v_in);
@@ -209,7 +210,10 @@ fn the_mask_blends_as_in_plus_m_times_node_minus_in() {
             partial += 1;
         }
     }
-    assert!(partial > 0 && zero + one > 0, "partial {partial}, zero {zero}, one {one}");
+    assert!(
+        partial > 0 && zero + one > 0,
+        "partial {partial}, zero {zero}, one {one}"
+    );
 }
 
 #[test]

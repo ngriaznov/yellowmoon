@@ -1263,7 +1263,7 @@ fn color_uniform(id: u32, x: f64, body: Value) -> Value {
 
 #[test]
 fn a_colour_uniform_node_changes_the_picture_where_its_masks_select_and_its_settings_are_in_the_grade_key()
-{
+ {
     let d = photo(Layout::Patchwork, 0.5);
     let src = d.source();
     let r = renderer();
@@ -1296,10 +1296,7 @@ fn a_colour_uniform_node_changes_the_picture_where_its_masks_select_and_its_sett
         let p = with(
             &src,
             graph(
-                vec![
-                    corrector(2, 1.0, trim(0.5)),
-                    color_uniform(3, 2.0, inert),
-                ],
+                vec![corrector(2, 1.0, trim(0.5)), color_uniform(3, 2.0, inert)],
                 line(&[1, 2, 3]),
             ),
         );
@@ -1314,17 +1311,17 @@ fn a_colour_uniform_node_changes_the_picture_where_its_masks_select_and_its_sett
         with(
             &src,
             graph(
-                vec![
-                    corrector(2, 1.0, trim(0.5)),
-                    color_uniform(3, 2.0, body),
-                ],
+                vec![corrector(2, 1.0, trim(0.5)), color_uniform(3, 2.0, body)],
                 line(&[1, 2, 3]),
             ),
         )
     };
     assert_eq!(display(&r, &masked).rgb, display(&r, &plain).rgb);
     // The node's thumbnail is the picture after it: it differs from the plain graph's.
-    let thumbs = |p: &ym_core::pipeline::PhotoSource| r.node_thumbnails(p, &CancelToken::new()).expect("thumbnails");
+    let thumbs = |p: &ym_core::pipeline::PhotoSource| {
+        r.node_thumbnails(p, &CancelToken::new())
+            .expect("thumbnails")
+    };
     let (a, b) = (thumbs(&with_node), thumbs(&plain));
     assert_eq!(a.len(), 3);
     assert_eq!(a[1].png, b[1].png);
