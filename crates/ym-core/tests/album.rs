@@ -249,6 +249,20 @@ fn ten_photos() -> (Rig, PathBuf) {
     let mut sky = CorrectorNode::default();
     sky.name = "Sky".to_owned();
     s.nodes.extra.insert(2, sky);
+    // A Colour Uniform node with a target, amounts and a Colour range row (CU-07): it travels in `settings` as stored.
+    let uniform = json!({ "nodes": { "items": [
+        { "id": 6, "kind": "color_uniform", "name": "Skin", "pos": [3, 0],
+          "target": { "hue_deg": 26, "saturation": 9.7, "lightness_ev": -0.03 },
+          "compress": { "hue": 60, "saturation": 40, "lightness": 10 },
+          "masks": { "invert": false, "items": [
+            { "kind": "color_range", "mode": "add", "invert": false, "enabled": true, "opacity": 1,
+              "center": [0.0875, 0.0423], "width": 0.05, "softness": 0.5 } ] } } ],
+        "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 6, "port": "picture" } },
+            { "from": { "node": 6, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
+    let (u, _) = DevelopSettings::from_value(uniform, &LookId::neutral()).expect("a node");
+    s.nodes.uniforms = u.nodes.uniforms;
     s.main_mut().masks = every_mask();
     r.set(ids[2], s);
     // 3: nothing touched: Auto everywhere.
@@ -1335,6 +1349,60 @@ fn a_photo_listed_twice_is_one_photo() {
 // ---------------------------------------------------------------------------------------------
 // What is refused
 // ---------------------------------------------------------------------------------------------
+
+/// CU-07: the node is in the file as `"kind": "color_uniform"` inside the photo's settings, with no change to the album's own
+/// version, and a build that does not know the kind refuses the album with the album's sentence.
+#[test]
+fn an_album_with_a_color_uniform_node_round_trips_and_an_older_build_refuses_it() {
+    let (a, path) = ten_photos();
+    a.core.album_save(&path).expect("saved");
+    let good = read_json(&path);
+    assert_eq!(good["yellowmoon_album"], json!(1), "the version stays 1");
+    let items = good["photos"][2]["settings"]["nodes"]["items"]
+        .as_array()
+        .expect("items");
+    let node = items
+        .iter()
+        .find(|i| i["kind"] == "color_uniform")
+        .expect("the node is in the file");
+    assert_eq!(node["name"], json!("Skin"));
+    assert_eq!(node["target"]["hue_deg"], json!(26.0));
+    // Reading and writing the text again changes nothing.
+    let album = Album::from_json(&good.to_string()).expect("reads");
+    assert_eq!(album.photos[2].settings.nodes.uniforms.len(), 1);
+    assert_eq!(
+        read_json_text(&album.to_json().expect("writes")),
+        good,
+        "the same document"
+    );
+    // An older build does not know the kind: the same document, with the kind as that build would see it.
+    let dir = tempfile::tempdir().unwrap();
+    let mut old = good.clone();
+    for item in old["photos"][2]["settings"]["nodes"]["items"]
+        .as_array_mut()
+        .unwrap()
+    {
+        if item["kind"] == "color_uniform" {
+            item["kind"] = json!("a_kind_from_a_later_build");
+        }
+    }
+    let file = dir.path().join("older.ymalbum");
+    std::fs::write(&file, old.to_string()).unwrap();
+    let e = a
+        .core
+        .album_open(&file, OpenOptions::default())
+        .expect_err("refused");
+    assert_eq!(e.to_string(), TOO_NEW_SENTENCE);
+    assert_eq!(e.scope(), "album");
+    assert!(matches!(
+        Album::from_json(&old.to_string()),
+        Err(AlbumError::Settings(_) | AlbumError::TooNew)
+    ));
+}
+
+fn read_json_text(text: &str) -> Value {
+    serde_json::from_str(text).expect("json")
+}
 
 #[test]
 fn a_refused_album_leaves_the_session_as_it_was() {

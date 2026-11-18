@@ -629,6 +629,10 @@ fn read_photo(item: Value) -> Result<AlbumPhoto, AlbumError> {
             Ok((s, _)) => s,
             Err(SettingsError::OldForm) => return Err(AlbumError::NotAnAlbum),
             Err(SettingsError::Parse(_)) => return Err(AlbumError::TooNew),
+            // A node kind this version does not have is a newer version's (`docs/31` section 2), not a broken file.
+            Err(SettingsError::Graph(crate::settings::GraphError::UnknownKind(_))) => {
+                return Err(AlbumError::TooNew);
+            }
             Err(e) => return Err(AlbumError::Settings(e)),
         },
         _ => return Err(AlbumError::NotAnAlbum),
