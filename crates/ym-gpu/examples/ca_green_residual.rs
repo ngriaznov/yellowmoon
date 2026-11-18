@@ -155,7 +155,7 @@ fn main() {
         if diagnose {
             // The displacement before R9 against what the tags say it is: amount * rho^3.
             let raw_img = demosaic::demosaic_with(
-                &mosaic,
+                mosaic,
                 Method::Menon,
                 &DemosaicInputs {
                     gains: [1.0; 3],
@@ -195,7 +195,7 @@ fn main() {
                 );
             }
         }
-        let truth_g = grey_of(&truth, 1);
+        let truth_g = grey_of(truth, 1);
         for ((name, run), r) in rows.iter().zip(&res) {
             let mut line = format!("| {name} |");
             for b in 0..bands {
@@ -212,7 +212,7 @@ fn main() {
                 chroma_r,
                 chroma_b,
                 psnr(&grey_of(&run.out, 1), &truth_g, 16, 1.0),
-                psnr(&run.out, &truth, 16, 1.0),
+                psnr(&run.out, truth, 16, 1.0),
                 run.seconds / mpix,
             ));
             say(line);

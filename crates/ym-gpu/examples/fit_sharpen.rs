@@ -30,7 +30,6 @@ use ym_gpu::cpu::RgbImage;
 use ym_gpu::cpu::output_sharpen::{OutputSharpen, Tuning};
 
 #[path = "../tests/common/demosaic_metrics.rs"]
-#[allow(dead_code)]
 mod demosaic_metrics;
 #[path = "../tests/common/fit.rs"]
 mod fit;

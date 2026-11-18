@@ -3,7 +3,9 @@
 //! on tiny scenes. The examples are compiled into this test as modules, so what runs here is the code of
 //! the examples, not a copy.
 
-#![allow(clippy::float_cmp)]
+// The examples are compiled into this test as modules, and each loads the shared files of tests/common
+// itself, so the same file is a module of this crate several times.
+#![allow(clippy::float_cmp, clippy::duplicate_mod)]
 
 use ym_gpu::cpu::demosaic::adaptive_ratio;
 use ym_gpu::cpu::output_sharpen::{self, OutputSharpen};
@@ -13,7 +15,6 @@ use ym_gpu::cpu::{RgbImage, synth};
 #[path = "common/ca_scenes.rs"]
 mod ca_scenes;
 #[path = "common/demosaic_metrics.rs"]
-#[allow(dead_code)]
 mod demosaic_metrics;
 #[path = "common/fit.rs"]
 mod fit;
@@ -294,7 +295,7 @@ fn fit_demosaic_skips_a_missing_set_and_reads_pixelshift200_when_it_is_there() {
             .any(|(n, k)| n == "pixelshift200" && *k == 1)
     );
     assert!(some.skipped.iter().all(|(n, _)| n != "pixelshift200"));
-    assert_eq!(some.scenes.len(), 7 + 1 + 3 * 2 + 0, "A, P, B and B2");
+    assert_eq!(some.scenes.len(), 7 + 1 + 3 * 2, "A, P, B and B2");
     // A missing photograph is reported, not fatal.
     let bad = load_scenes(&root, false, &[root.join("missing.ARW")]);
     assert!(bad.skipped.iter().any(|(n, _)| n.starts_with("photo ")));

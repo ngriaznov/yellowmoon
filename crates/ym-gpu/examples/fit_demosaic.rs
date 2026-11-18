@@ -56,7 +56,6 @@ use ym_noise::model::NoiseModel;
 #[path = "../tests/common/ca_scenes.rs"]
 mod ca_scenes;
 #[path = "../tests/common/demosaic_metrics.rs"]
-#[allow(dead_code)]
 mod demosaic_metrics;
 #[path = "../tests/common/fit.rs"]
 mod fit;
@@ -223,7 +222,7 @@ pub fn load_scenes(root: &Path, second_seed: bool, photos: &[PathBuf]) -> Loaded
             if group == Group::B2 && !second_seed {
                 continue;
             }
-            scenes.push(dark_noisy_scene(group, *source, &t, base + k as u64));
+            scenes.push(dark_noisy_scene(group, *source, t, base + k as u64));
         }
     }
     // P: PixelShift200, when it is there.

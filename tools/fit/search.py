@@ -10,7 +10,7 @@ earlier one, and the examples are deterministic, so the same command gives the s
     tools/fit/search.py grid    fit_demosaic --objective psnr_db.A --axis chroma_floor=0.01:0.12:0.01
     tools/fit/search.py descent fit_demosaic --objective psnr_db.A --axis chroma_floor=0.03:0.005 \\
                                 --axis sat_dominance=0.75:0.05 --bounds chroma_floor=0:0.2
-    tools/fit/search.py table   demosaic < lines.jsonl      # the audit's table format
+    tools/fit/search.py table   demosaic < lines.jsonl      # the audit's table format (demosaic|diffraction|sharpen|ca)
 
 The objective is a dotted path into the line of an evaluation (`psnr_db.A`, `d_psnr_db.B`,
 `edge.mtf50_cpp`, `mean_delta.text_psnr_db`); `--minimize` flips the direction. `--constraint
@@ -99,6 +99,20 @@ def lookup(line, path):
     return cur if isinstance(cur, (int, float)) and not isinstance(cur, bool) else None
 
 
+# Keys that hold a change against the base: the base line has none, and its change is 0 by definition.
+DELTA_ROOTS = ("d_psnr_db", "mean_delta", "mean_delta_held", "change_codes", "held_change_codes")
+
+
+def base_value(base, path):
+    """The objective at the base line: its own number, or 0 for a change against the base."""
+    if base is None:
+        return None
+    v = lookup(base, path)
+    if v is None and path.split(".")[0] in DELTA_ROOTS:
+        return 0.0
+    return v
+
+
 def parse_constraint(text):
     for op in ("<=", ">="):
         if op in text:
@@ -168,7 +182,8 @@ def cmd_grid(a):
     print(f"# grid of {len(candidates)} evaluations over {', '.join(names)}", file=sys.stderr)
     note, base, lines = evaluate_all(a.example, candidates, a.passthrough, a.start, a.echo)
     constraints = [parse_constraint(c) for c in a.constraint]
-    start_score = score(base, a.objective, a.minimize, constraints) if base else None
+    bv = base_value(base, a.objective)
+    start_score = None if bv is None else (-bv if a.minimize else bv)
     best = None
     for cand, line in zip(candidates, lines):
         s = score(line, a.objective, a.minimize, constraints) if line else None
@@ -238,7 +253,7 @@ def report(a, note, base, best, start_score):
         "kind": "search", "example": a.example, "objective": a.objective,
         "direction": "minimize" if a.minimize else "maximize",
         "best": cand, "best_value": lookup(line, a.objective),
-        "start_value": lookup(base, a.objective) if base else None,
+        "start_value": base_value(base, a.objective),
         "gain_over_start": gain, "min_gain": a.min_gain,
         "taken": gain is not None and gain > a.min_gain,
         "line": line,
@@ -288,6 +303,14 @@ def table_sharpen(lines):
         print(text)
 
 
+def table_ca(lines):
+    for line in lines:
+        cells = " | ".join(
+            f"{c['red_rms_px']:.3f} / {c['blue_rms_px']:.3f} \u00b7 {c['psnr_rgb_db']:.2f}" for c in line.get("ca", [])
+        )
+        print(f"{line['label']}\t{cells}")
+
+
 def cmd_table(a):
     lines = []
     for text in sys.stdin:
@@ -296,7 +319,7 @@ def cmd_table(a):
             line = json.loads(text)
             if line.get("kind") == "eval":
                 lines.append(line)
-    {"demosaic": table_demosaic, "diffraction": table_diffraction, "sharpen": table_sharpen}[a.kind](lines)
+    {"demosaic": table_demosaic, "diffraction": table_diffraction, "sharpen": table_sharpen, "ca": table_ca}[a.kind](lines)
 
 
 def main(argv=None):
@@ -321,7 +344,7 @@ def main(argv=None):
         s.add_argument("passthrough", nargs="*", help="after --: arguments for the example")
         s.set_defaults(fn=fn)
     t = sub.add_parser("table", help="print JSON lines from stdin in the audit's table format")
-    t.add_argument("kind", choices=("demosaic", "diffraction", "sharpen"))
+    t.add_argument("kind", choices=("demosaic", "diffraction", "sharpen", "ca"))
     t.set_defaults(fn=cmd_table)
     a = p.parse_args(argv)
     a.fn(a)
