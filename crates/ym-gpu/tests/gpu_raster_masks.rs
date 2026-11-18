@@ -21,6 +21,7 @@ use ym_color::display::{
 };
 use ym_color::grade::GradeParams;
 use ym_color::mask::{MaskKind, MaskRow, NodeMasks, PhotoMap};
+use ym_color::mask_depth::{DepthMap, DepthSource};
 use ym_color::mask_raster::{
     Area, BackgroundSource, BlurMap, BrushStrokes, CpuPlanes, PlaneJob, RasterRow, RasterSet,
     RasterSource, Stroke,
@@ -1938,6 +1939,88 @@ fn background_tiles_equal_the_whole_frame_bit_for_bit_halos_included() {
                     }
                     y += tile;
                 }
+            }
+        }
+    }
+}
+
+/// The depth map a Depth row reads in the tests below: a grid of `cells` cells over the scene, nearer toward the bottom and in
+/// the bright parts (the shape of the fake map of `ym_core::pipeline::DepthModel::fake_default`).
+fn depth_map(img: &RgbImage, cells: (usize, usize)) -> Arc<DepthMap> {
+    let (w, h) = (img.width, img.height);
+    let mut d = Vec::with_capacity(cells.0 * cells.1);
+    for cy in 0..cells.1 {
+        for cx in 0..cells.0 {
+            let x = ((cx as f64 + 0.5) / cells.0 as f64 * w as f64) as usize;
+            let y = ((cy as f64 + 0.5) / cells.1 as f64 * h as f64) as usize;
+            let p = img.pixel(x, y);
+            let luma =
+                (0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2]))
+                    .clamp(0.0, 1.0);
+            d.push(((cy as f64 + 0.5) / cells.1 as f64 + 0.25 * luma) as f32);
+        }
+    }
+    Arc::new(DepthMap::new(1, cells.0, cells.1, d).expect("a depth map"))
+}
+
+/// A Depth row's plane on the device against the CPU's, with the sizes of seed 23 graph 0 of `any_graph` (far 0.795, Feather 0.29,
+/// Refine 0.262 on a 640 x 420 export), step by step. The plane is `1 - z / far` of rank-made cells cut to u16 codes on the CPU, so
+/// the device reads the same bytes; every step after it (the bilinear resample, the feather's boxes, the guided filter) is `f32`
+/// against the CPU's `f64`, which moves a value across a rounding boundary of the final u16 code now and then, by one code and
+/// never more. The test states that: **the plane is within 2 codes of 65535 at every pixel** (the 4e-4 of the other cases is
+/// 26 codes), and prints how many pixels differ by one. A depth value on the far limit itself (`z = far`, where the gradient
+/// reaches 0) is part of the map's cells here too: no decision of the device rounds differently from the CPU's there, the gradient
+/// is a clamp of a continuous ramp.
+#[test]
+fn a_depth_row_plane_on_the_device_is_within_two_codes_of_the_cpu_through_every_step() {
+    let buffer = (640usize, 420usize);
+    let img = scene(buffer.0, buffer.1, 0x5EED);
+    let (grid, frame) = export_grid(buffer, 1.0);
+    let map = depth_map(&img, (45, 30));
+    // A limit that lands on a cell's own depth position: the gradient is 0 there and the cell is the one that sits on the ramp's end.
+    let on_a_cell = map.z(7 * 45 + 11);
+    for dev in gpus() {
+        if dev.mode.is_f16() {
+            continue;
+        }
+        for far in [0.794994994994995, on_a_cell, 1.0] {
+            for (name, feather, refine) in [
+                ("resample only", 0.0, 0.0),
+                ("feathered", 0.29, 0.0),
+                ("refined", 0.0, 0.262),
+                (
+                    "feathered and refined",
+                    0.29009009009009007,
+                    0.26226226226226224,
+                ),
+            ] {
+                let set = RasterSet {
+                    rows: vec![RasterRow {
+                        source: RasterSource::Depth(Arc::new(DepthSource {
+                            map: Arc::clone(&map),
+                            far,
+                        })),
+                        grow: 0.0,
+                        feather,
+                        refine,
+                    }],
+                };
+                let chain = chain_with(set);
+                let halo = chain.rasters().halo(1.0 / grid.photo_frame().pixel);
+                let got = device_planes(dev, &chain, &img, &grid, frame, frame, halo);
+                let want = cpu_planes(&chain, &img, &grid, frame, frame, halo);
+                let diffs: Vec<u32> = got[0]
+                    .iter()
+                    .zip(&want.planes[0])
+                    .map(|(a, b)| u32::from(*a).abs_diff(u32::from(*b)))
+                    .collect();
+                let worst = diffs.iter().copied().max().unwrap_or(0);
+                let ones = diffs.iter().filter(|&&d| d == 1).count();
+                eprintln!(
+                    "depth far {far:.4}, {name}: halo {halo} px, the device differs from the CPU by at most {worst} codes, {ones} of {} pixels by one",
+                    diffs.len()
+                );
+                assert!(worst <= 2, "far {far}, {name}: {worst} codes");
             }
         }
     }
