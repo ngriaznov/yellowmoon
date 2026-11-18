@@ -49,6 +49,7 @@
 use std::ops::Range;
 
 pub mod blur;
+pub mod blur_motion;
 pub mod blur_soft;
 pub mod bm_dct;
 pub mod chain;
