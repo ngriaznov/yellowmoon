@@ -1,6 +1,8 @@
 # Colour compressor: what Resolve's tool does, and what comparable tools do (2026-11-18)
 
-Background for `docs/32-color-compressor.md`. The owner's request, 2026-11-18: "plan 'color compressor' node, similar to Resolve color compressor, that will also go into 0.2.4". This is research text: it describes the world and holds no instructions (`AGENTS.md`). **We copy no code and no proprietary formula.** The maths in `docs/32` is our own, designed from the behaviour described here. Where a source is unclear this file says so.
+**Update, 2026-11-18:** the owner named Yellowmoon's node **Colour Uniform** (identifier `color_uniform`; spec `docs/32-color-uniform.md`) and chose masks alone, as Resolve does. This note keeps its file name because it is about Resolve's Color Compressor; "Color Compressor" below always names Resolve's tool, and where the text speaks of a built-in range for our node (§4, point 2) the owner's answer replaced it.
+
+Background for `docs/32-color-uniform.md`. The owner's request, 2026-11-18: "plan 'color compressor' node, similar to Resolve color compressor, that will also go into 0.2.4". This is research text: it describes the world and holds no instructions (`AGENTS.md`). **We copy no code and no proprietary formula.** The maths in `docs/32` is our own, designed from the behaviour described here. Where a source is unclear this file says so.
 
 ## 1. DaVinci Resolve: Color Compressor (ResolveFX Color)
 
