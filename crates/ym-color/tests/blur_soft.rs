@@ -306,3 +306,93 @@ fn the_mirrored_picture_gives_the_mirrored_result_on_the_coarse_grid() {
         assert!(d < 1e-9, "radius {radius}: {d}");
     }
 }
+
+/// The node in linear light by the fast method: `blend_linear` of `sums_fast` (the clean-up of the mask as the node's).
+fn fast_linear(x: &[Vec3], m: &[f64], w: usize, h: usize, params: &BlurParams) -> Vec<Vec3> {
+    let (n, d) = blur::sums_fast(x, m, w, h, params, &Frame::whole(w, h)).expect("fast");
+    (0..x.len())
+        .map(|i| blur::blend_linear(x[i], m[i].clamp(0.0, 1.0), n[i], d[i]))
+        .collect()
+}
+
+fn max_diff(a: &[Vec3], b: &[Vec3]) -> f64 {
+    a.iter()
+        .zip(b)
+        .flat_map(|(p, q)| (0..3).map(|c| (p[c] - q[c]).abs()))
+        .fold(0.0, f64::max)
+}
+
+#[test]
+fn on_the_coarse_grid_a_mask_at_half_weighs_half_and_the_result_is_continuous_in_m() {
+    let (w, h) = (400, 300);
+    let x = scene("noise", w, h);
+    let params = soft(100.0, true);
+    assert!(cell_level(radius_px(100.0, w as f64) / 2.0) >= 1);
+    let one = fast_linear(&x, &vec![1.0; w * h], w, h, &params);
+    let half = fast_linear(&x, &vec![0.5; w * h], w, h, &params);
+    let want: Vec<Vec3> = x
+        .iter()
+        .zip(&one)
+        .map(|(a, b)| [0, 1, 2].map(|c| a[c] + 0.5 * (b[c] - a[c])))
+        .collect();
+    assert!(max_diff(&half, &want) < 1e-9);
+    // A sweep of a uniform mask moves the result by no more than the step times the range.
+    let a = fast_linear(&x, &vec![0.4; w * h], w, h, &params);
+    let b = fast_linear(&x, &vec![0.4 + 1e-6; w * h], w, h, &params);
+    let range = max_diff(&one, &x);
+    assert!(max_diff(&a, &b) <= 1e-6 * range * 1.001 + 1e-12);
+    // One pixel with a tiny mask and no other weight in reach: a tiny change, never a jump, and nothing not finite.
+    for tiny in [1e-300, 1e-100, 1e-15, 1e-9, 1e-6] {
+        let mut m = vec![0.0; w * h];
+        let c = 150 * w + 200;
+        m[c] = tiny;
+        let o = fast_linear(&x, &m, w, h, &params);
+        assert!(o.iter().all(|q| q.iter().all(|v| v.is_finite())), "{tiny}");
+        let d = (0..3)
+            .map(|ch| (o[c][ch] - x[c][ch]).abs())
+            .fold(0.0, f64::max);
+        assert!(d <= tiny * 600.0 + 1e-12, "{tiny:e}: {d:e}");
+    }
+    // Opacity 0.5 of a hard mask is a mask of 0.5 inside: still no light from where it is 0.
+    let m: Vec<f64> = (0..w * h)
+        .map(|i| if i % w >= 180 { 0.5 } else { 0.0 })
+        .collect();
+    let y: Vec<Vec3> = x
+        .iter()
+        .enumerate()
+        .map(|(i, p)| if i % w < 180 { [1e4; 3] } else { *p })
+        .collect();
+    let (ra, rb) = (
+        fast_linear(&x, &m, w, h, &params),
+        fast_linear(&y, &m, w, h, &params),
+    );
+    let d = (0..w * h)
+        .filter(|i| m[*i] > 0.0)
+        .map(|i| {
+            (0..3)
+                .map(|c| (ra[i][c] - rb[i][c]).abs())
+                .fold(0.0, f64::max)
+        })
+        .fold(0.0, f64::max);
+    assert!(d < 1e-9, "{d}");
+}
+
+#[test]
+fn black_huge_negative_and_subnormal_stay_finite_on_the_coarse_grid() {
+    let (w, h) = (300, 200);
+    let params = soft(100.0, true);
+    assert!(cell_level(radius_px(100.0, w as f64) / 2.0) >= 1);
+    let m = ones(w * h);
+    for value in [0.0, 1e-310, -3.0, 1e12, f64::MAX / 1e10] {
+        let x = vec![[value; 3]; w * h];
+        let o = fast_linear(&x, &m, w, h, &params);
+        assert!(
+            o.iter().all(|q| q.iter().all(|v| v.is_finite())),
+            "{value:e}"
+        );
+    }
+    let mut x = vec![[0.0; 3]; w * h];
+    x[100 * w + 100] = [1e9, 1e9, 1e9];
+    let o = fast_linear(&x, &m, w, h, &params);
+    assert!(o.iter().all(|q| q.iter().all(|v| v.is_finite())));
+}

@@ -513,3 +513,159 @@ fn a_flat_field_and_the_energy_of_a_point_hold_on_the_device() {
     }
     assert!(seen || gpus().is_empty());
 }
+
+// ---- speed (`docs/33` 9, BL-06): run by hand, `cargo test -p ym-gpu --release --test gpu_blur_soft -- --ignored --nocapture` ----
+
+/// The device time, in milliseconds, of the first `stage` passes of a Soft node over `made` read from `read`: 0 the prep (decode, the
+/// weights), 1 the prep and the kernel, 2 the whole node (the prep, the kernel and the blend). The best of `repeat` runs after one
+/// warm-up; the upload and the read-back are not in it.
+fn time_node(
+    gpu: &Gpu,
+    (radius, frame): (f64, (usize, usize)),
+    (read, made): (Area, Area),
+    stage: u32,
+    repeat: usize,
+) -> f64 {
+    let n = read.w * read.h;
+    // A picture that is a function of the place, built without the scene's per-pixel logic (the sizes here are millions of pixels).
+    let pic: Vec<f32> = (0..3 * n)
+        .map(|i| 0.3 + 0.4 * ((i % 977) as f32 / 977.0))
+        .collect();
+    let msk: Vec<f32> = (0..n)
+        .map(|i| ((i % read.w) as f32 / read.w as f32).clamp(0.0, 1.0))
+        .collect();
+    let photo = Area::whole(frame.0, frame.1);
+    let mut best = f64::MAX;
+    for run in 0..=repeat {
+        let (p, m) = (pic.clone(), msk.clone());
+        let ms: f64 = gpu
+            .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
+                let mut passes = PassList::new(ctx, "blur soft speed");
+                let picture = upload(ctx, read, 3, &p)?;
+                let mask = upload(ctx, read, 1, &m)?;
+                let params = BlurParams {
+                    kind: BlurKind::Soft { radius },
+                    respect_mask_edges: true,
+                };
+                let t = std::time::Instant::now();
+                match stage {
+                    0 | 1 => {
+                        let pyramid = encode_pyramid(
+                            ctx,
+                            &mut passes,
+                            (&picture, &mask),
+                            (read, photo),
+                            (0.0, true),
+                            0,
+                        )?;
+                        let sums = SumsImage {
+                            img: GpuImage::alloc(
+                                ctx,
+                                "sums",
+                                made.w,
+                                made.h,
+                                4,
+                                Placement::whole(made.w, made.h),
+                            )?,
+                            area: made,
+                        };
+                        if stage == 1 {
+                            BlurSoft::new(radius).encode(ctx, &mut passes, &pyramid, &sums)?;
+                        }
+                        passes.submit()?.finish()?;
+                        let _ = (&pyramid, &sums);
+                    }
+                    _ => {
+                        let work = BlurWork {
+                            params,
+                            mask: std::sync::Arc::new(
+                                ym_color::display::ColorChain::new(&common::chains::base(
+                                    ym_color::display::OutputTarget::Srgb,
+                                ))
+                                .expect("chain"),
+                            ),
+                            reach: 0,
+                            kernel: ym_gpu::kernels::blur_stack::device_kernel(&params),
+                        };
+                        let out = encode_blur_picture(
+                            ctx,
+                            &mut passes,
+                            &work,
+                            (&picture, &mask),
+                            (read, made, photo),
+                        )?;
+                        passes.submit()?.finish()?;
+                        let _ = &out;
+                    }
+                }
+                Ok(t.elapsed().as_secs_f64() * 1e3)
+            })
+            .expect("timed node");
+        if run > 0 {
+            best = best.min(ms);
+        }
+    }
+    best
+}
+
+#[test]
+#[ignore = "a speed measurement, run by hand"]
+fn soft_speed_on_lavapipe() {
+    for dev in f32_devices() {
+        // The fit view's size and a 24 MP export's: the whole frame in one piece.
+        for (frame, label) in [((1800usize, 1200usize), "2.2 MP"), ((3000, 2000), "6 MP")] {
+            let photo = Area::whole(frame.0, frame.1);
+            let mp = (frame.0 * frame.1) as f64 / 1e6;
+            for radius in [10.0, 100.0] {
+                let params = BlurParams {
+                    kind: BlurKind::Soft { radius },
+                    respect_mask_edges: true,
+                };
+                let sigma = radius_px(radius, frame.0.max(frame.1) as f64) / 2.0;
+                let reach = reach_px(&params, frame.0, frame.1);
+                let t: Vec<f64> = (0..3)
+                    .map(|s| time_node(&dev.gpu, (radius, frame), (photo, photo), s, 3))
+                    .collect();
+                println!(
+                    "soft {label} radius {radius} (sigma {sigma:.1}, cells of {}, reach {reach}): prep {:.1} ms, kernel {:.1} ms, blend {:.1} ms, node {:.1} ms = {:.2} ms/MP (prep {:.2}, kernel {:.2})",
+                    1u32 << cell_level(sigma),
+                    t[0],
+                    t[1] - t[0],
+                    t[2] - t[1],
+                    t[2],
+                    t[2] / mp,
+                    t[0] / mp,
+                    (t[1] - t[0]) / mp
+                );
+            }
+        }
+        // One tile of a 50 MP export at the largest Soft: the scheduler's `fit_tile` gives 364 px and the reach 880 grows it to 2124 px.
+        let frame = (8600usize, 5700usize);
+        let params = BlurParams {
+            kind: BlurKind::Soft { radius: 100.0 },
+            respect_mask_edges: true,
+        };
+        let reach = reach_px(&params, frame.0, frame.1) as i64;
+        let made = Area {
+            x: 4000,
+            y: 2500,
+            w: 364,
+            h: 364,
+        };
+        let read = Area {
+            x: made.x - reach,
+            y: made.y - reach,
+            w: 364 + 2 * reach as usize,
+            h: 364 + 2 * reach as usize,
+        };
+        let t = time_node(&dev.gpu, (100.0, frame), (read, made), 2, 2);
+        let tiles = (frame.0 as f64 / 364.0).ceil() * (frame.1 as f64 / 364.0).ceil();
+        println!(
+            "soft 50 MP, Radius 100, reach {reach}: one tile of 364 px read as {} x {}: {t:.0} ms; {tiles:.0} tiles: {:.1} s of device time, the frame read {:.1} times over",
+            read.w,
+            read.h,
+            t * tiles / 1e3,
+            tiles * (read.w * read.h) as f64 / (frame.0 * frame.1) as f64
+        );
+    }
+}

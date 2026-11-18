@@ -17,3 +17,6 @@ synthetic/chart__bb2850__ILCE-7SM3__iso400__rggb__14b__lossless-l      # tungste
 synthetic/node-uniform-skin__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l   # Colour Uniform: skin, a Colour range row, 60 / 60 / 0
 synthetic/node-uniform-hue__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l    # Colour Uniform: one hue, Hue only at 100 %
 synthetic/node-uniform-tone__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l   # Colour Uniform: tone, Lightness only at 100 %
+# The two entries with a Soft Blur node on (docs/33 section 8, BL-06) read the first of them; the nightly run takes them too.
+synthetic/node-blur-soft__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l      # Soft Blur: Radius 50, an inverted Radial row, Respect mask edges on
+synthetic/node-blur-soft-off__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l  # Soft Blur: the same, Respect mask edges off

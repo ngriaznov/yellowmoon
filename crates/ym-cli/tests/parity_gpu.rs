@@ -361,10 +361,25 @@ fn a_color_uniform_node_is_byte_identical_through_the_app_path_and_the_binary_on
 
 /// A Blur node (`docs/33`, BL-10) with a Radial row and another mask (a Linear) on a photo of six export tiles: the app (its core has
 /// the device) and the binary (`YELLOWMOON_GPU=on`) write the same bytes in a JPEG, a 16-bit TIFF, a 16-bit PNG and a DNG, which are
-/// not the files of the same graph without the node. **Until BL-05 the device refuses the node and the CPU makes every frame, with
-/// its reason, on both sides**; BL-05 and the type tasks run it here with no change to this test (each adds its own type's node).
+/// not the files of the same graph without the node. **A type whose task has not landed is refused by the device and the CPU makes
+/// every frame, with its reason, on both sides** (Lens here); a type that runs on the device (Soft, BL-06) is run there, the six
+/// tiles of an export each cut with the node's reach. Each type task adds its own type's node.
 #[test]
 fn a_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    let lens = serde_json::json!({ "id": 2, "kind": "blur", "pos": [1, 0], "type": "lens",
+        "lens": { "radius": 12, "blades": 6, "rotation_deg": 15, "highlights": 60 } });
+    blur_device_case("lens", lens);
+}
+
+/// The same for a Soft node (BL-06), which the device runs: a radius wide enough for the coarse grid on the photo of 2100 px.
+#[test]
+fn a_soft_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    let soft = serde_json::json!({ "id": 2, "kind": "blur", "pos": [1, 0], "type": "soft",
+        "soft": { "radius": 55 } });
+    blur_device_case("soft", soft);
+}
+
+fn blur_device_case(type_name: &str, body: serde_json::Value) {
     let _serial = serial();
     let sb = Sandbox::new();
     let arw = sb.arw_sized("blur.ARW", 2100, 1100, 9);
@@ -373,13 +388,11 @@ fn a_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_devi
     };
     let doc = |node: bool| {
         let items = if node {
-            serde_json::json!([
-              { "id": 2, "kind": "blur", "pos": [1, 0], "type": "lens",
-                "lens": { "radius": 12, "blades": 6, "rotation_deg": 15, "highlights": 60 },
-                "masks": { "invert": false, "items": [
+            let mut node = body.clone();
+            node["masks"] = serde_json::json!({ "invert": false, "items": [
                   { "kind": "radial", "mode": "add", "invert": true, "feather": 0.1 },
-                  { "kind": "linear", "mode": "subtract", "center": [0.5, 0.8], "angle_deg": 10, "feather": 0.3 } ] } }
-            ])
+                  { "kind": "linear", "mode": "subtract", "center": [0.5, 0.8], "angle_deg": 10, "feather": 0.3 } ] });
+            serde_json::json!([node])
         } else {
             serde_json::json!([{ "id": 2, "kind": "corrector", "pos": [1, 0] }])
         };
@@ -435,7 +448,11 @@ fn a_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_devi
         let mut args = flags;
         args.extend(["--settings", file.to_str().expect("utf-8")]);
         let from_cli = cli_export(&sb, &[&arw], &args, &sb.root().join(format!("cli-{name}")));
-        assert_same_files(&from_app, &from_cli, &format!("a Blur node, {name}"));
+        assert_same_files(
+            &from_app,
+            &from_cli,
+            &format!("a {type_name} Blur node, {name}"),
+        );
         if name == "tiff16" {
             assert!(
                 bytes(&from_app[0]) != bytes(&without[0]),
