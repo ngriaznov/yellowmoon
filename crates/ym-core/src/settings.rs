@@ -74,6 +74,7 @@ use ym_profiles::profile::Profile;
 use crate::auto::{AutoEstimates, AutoSummary, MainAuto};
 use crate::session::PhotoId;
 
+mod blur;
 mod face;
 mod film;
 mod graph;
@@ -82,6 +83,10 @@ mod mixers;
 mod patch;
 mod uniform;
 
+pub use blur::{
+    BLUR_AMOUNT_RANGE, BLUR_BLADES_MAX, BLUR_BLADES_MIN, BLUR_CENTER_RANGE, BLUR_DEFAULT_AMOUNT,
+    BlurLens, BlurMotion, BlurNode, BlurSoft, BlurType, BlurZoom, wrap_deg,
+};
 pub use face::{
     FACE_AMOUNT_RANGE, FACE_BIPOLAR_RANGE, FaceRefinementNode, FaceSettings, MAX_FACES,
 };
@@ -91,10 +96,11 @@ pub use film::{
     PrintLights, PrintSettings, SIZE_RANGE, STRENGTH_RANGE,
 };
 pub use graph::{
-    CorrectorNode, DEFAULT_FACE_REFINEMENT_NAME, DEFAULT_NAME, DEFAULT_UNIFORM_NAME, GraphError,
-    INPUT_POS, InputNode, MAIN_ID, MAIN_NAME, MAX_CORRECTORS, MAX_NAME_CHARS, NodeGrade, NodeGraph,
-    NodeId, NodeKind, NodeLink, NodePos, NodeRef, NodeTrim, OUTPUT_POS, OutputNode, POS_RANGE,
-    Port, PortType, TRIM_EXPOSURE_RANGE_EV, TRIM_RANGE, ports_in, ports_out,
+    CorrectorNode, DEFAULT_BLUR_NAME, DEFAULT_FACE_REFINEMENT_NAME, DEFAULT_NAME,
+    DEFAULT_UNIFORM_NAME, GraphError, INPUT_POS, InputNode, MAIN_ID, MAIN_NAME, MAX_CORRECTORS,
+    MAX_NAME_CHARS, NodeGrade, NodeGraph, NodeId, NodeKind, NodeLink, NodePos, NodeRef, NodeTrim,
+    OUTPUT_POS, OutputNode, POS_RANGE, Port, PortType, TRIM_EXPOSURE_RANGE_EV, TRIM_RANGE,
+    ports_in, ports_out,
 };
 pub use masks::{
     BackgroundMask, BrightnessRangeMask, BrushMask, BrushStroke, ColorRangeMask,
@@ -111,9 +117,9 @@ pub use mixers::{
     SplitterNode,
 };
 pub use patch::{
-    COPY_LEAVES_OUT, FaceSettingsPatch, FilmStockPatch, GradePatch, GrainPatch, HalationPatch,
-    LightsPatch, NodePatch, PatchReport, PrintPatch, ProtectPatch, SettingsPatch, TrimPatch,
-    UniformAmountsPatch,
+    BlurMotionPatch, BlurSoftPatch, BlurZoomPatch, COPY_LEAVES_OUT, FaceSettingsPatch,
+    FilmStockPatch, GradePatch, GrainPatch, HalationPatch, LightsPatch, NodePatch, PatchReport,
+    PrintPatch, ProtectPatch, SettingsPatch, TrimPatch, UniformAmountsPatch,
 };
 pub use uniform::{
     ColorUniformNode, TARGET_LIGHTNESS_RANGE_EV, TARGET_SATURATION_RANGE, TargetValue,
@@ -390,6 +396,18 @@ pub enum SettingsField {
     Target,
     /// A Colour Uniform node's `compress`.
     Compress,
+    /// A Blur node's `type`.
+    BlurType,
+    /// A Blur node's `soft` group.
+    Soft,
+    /// A Blur node's `lens` group (the Input's `lens` is [`SettingsField::Lens`]; both are `lens` in the JSON of their node).
+    BlurLens,
+    /// A Blur node's `motion` group.
+    Motion,
+    /// A Blur node's `zoom` group (its Amount and its centre).
+    Zoom,
+    /// A Blur node's `respect_mask_edges`.
+    RespectMaskEdges,
     /// A Layer's blend `mode`.
     Mode,
     /// A Layer's `opacity`.
@@ -399,7 +417,7 @@ pub enum SettingsField {
 impl SettingsField {
     /// Every field, in the order of the settings table (the Output's and the Input's, then the grade's,
     /// then the corrector's own).
-    pub const ALL: [SettingsField; 42] = [
+    pub const ALL: [SettingsField; 48] = [
         SettingsField::Look,
         SettingsField::LookIntensity,
         SettingsField::Exposure,
@@ -440,6 +458,12 @@ impl SettingsField {
         SettingsField::Protect,
         SettingsField::Target,
         SettingsField::Compress,
+        SettingsField::BlurType,
+        SettingsField::Soft,
+        SettingsField::BlurLens,
+        SettingsField::Motion,
+        SettingsField::Zoom,
+        SettingsField::RespectMaskEdges,
         SettingsField::Mode,
         SettingsField::Opacity,
     ];
@@ -488,6 +512,12 @@ impl SettingsField {
             Self::Protect => "protect",
             Self::Target => "target",
             Self::Compress => "compress",
+            Self::BlurType => "type",
+            Self::Soft => "soft",
+            Self::BlurLens => "lens",
+            Self::Motion => "motion",
+            Self::Zoom => "zoom",
+            Self::RespectMaskEdges => "respect_mask_edges",
             Self::Mode => "mode",
             Self::Opacity => "opacity",
         }
@@ -579,6 +609,19 @@ impl SettingsField {
                 self,
                 Self::Name | Self::Bypass | Self::Pos | Self::Masks | Self::Target | Self::Compress
             ),
+            NodeKind::Blur => matches!(
+                self,
+                Self::Name
+                    | Self::Bypass
+                    | Self::Pos
+                    | Self::Masks
+                    | Self::BlurType
+                    | Self::Soft
+                    | Self::BlurLens
+                    | Self::Motion
+                    | Self::Zoom
+                    | Self::RespectMaskEdges
+            ),
             NodeKind::Parallel => matches!(self, Self::Name | Self::Bypass | Self::Pos),
             NodeKind::Layer => matches!(
                 self,
@@ -619,6 +662,12 @@ impl SettingsField {
             | Self::Protect
             | Self::Target
             | Self::Compress
+            | Self::BlurType
+            | Self::Soft
+            | Self::BlurLens
+            | Self::Motion
+            | Self::Zoom
+            | Self::RespectMaskEdges
             | Self::Mode
             | Self::Opacity
             | Self::Contrast
@@ -1801,6 +1850,40 @@ pub struct LensPatch {
     /// New Anamorphic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anamorphic: Option<f64>,
+    /// A Blur node's `lens` group (`docs/33` section 5.1) is this patch too, as its JSON key is the same: the parts below
+    /// are the Blur node's and the four above are the Input's, and a patch that mixes them or puts them on the wrong kind
+    /// is refused (`NodePatch::check_kind`). New Radius, 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius: Option<f64>,
+    /// A Blur node's new blades: 0 (round) or 3 to 12.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blades: Option<u32>,
+    /// A Blur node's new Rotation, in degrees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation_deg: Option<f64>,
+    /// A Blur node's new Highlights, 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlights: Option<f64>,
+}
+
+impl LensPatch {
+    /// Whether the patch names a part of the Input's lens (`kind`, `flares`, `edges`, `anamorphic`).
+    #[must_use]
+    pub fn has_input_parts(&self) -> bool {
+        self.kind.is_some()
+            || self.flares.is_some()
+            || self.edges.is_some()
+            || self.anamorphic.is_some()
+    }
+
+    /// Whether the patch names a part of a Blur node's lens group (`radius`, `blades`, `rotation_deg`, `highlights`).
+    #[must_use]
+    pub fn has_blur_parts(&self) -> bool {
+        self.radius.is_some()
+            || self.blades.is_some()
+            || self.rotation_deg.is_some()
+            || self.highlights.is_some()
+    }
 }
 
 /// Colour-balance wheels to change. The shadows and highlights wheels take Auto (Reset) or Manual

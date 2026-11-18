@@ -5251,6 +5251,7 @@ fn core_types_convert_without_loss() {
             flares: Some(35.0),
             edges: Some(50.0),
             anamorphic: Some(20.0),
+            ..ym_core::settings::LensPatch::default()
         })
     );
     let resolved = h.api.get_settings(id).expect("settings");

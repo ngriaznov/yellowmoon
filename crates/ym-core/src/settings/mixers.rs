@@ -189,7 +189,8 @@ impl MixerNode {
             | NodeKind::Corrector
             | NodeKind::Film
             | NodeKind::FaceRefinement
-            | NodeKind::ColorUniform => None,
+            | NodeKind::ColorUniform
+            | NodeKind::Blur => None,
         }
     }
 
@@ -301,7 +302,8 @@ impl MixerNode {
             | NodeKind::Corrector
             | NodeKind::Film
             | NodeKind::FaceRefinement
-            | NodeKind::ColorUniform => {
+            | NodeKind::ColorUniform
+            | NodeKind::Blur => {
                 return Ok(None);
             }
         }))

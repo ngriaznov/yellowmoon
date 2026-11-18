@@ -839,6 +839,102 @@ export type BlendMode =
 /**  The absolute difference. */
 "difference";
 
+/**  A Blur node's Lens values. */
+export type BlurLens = {
+	/**  Radius, 0 to 100: a share of the long edge, 100 being 4 %. */
+	radius: number,
+	/**  0 for a disc, 3 to 12 blades for a polygon (the panel offers 5 to 9). */
+	blades: number,
+	/**  Degrees, [0, 360) as the core stores it (any finite number is read modulo 360). */
+	rotation_deg: number,
+	/**  Highlights, 0 to 100. */
+	highlights: number,
+};
+
+/**  A Blur node's Motion values. */
+export type BlurMotion = {
+	/**  Length, 0 to 100: a share of the long edge, 100 being 8 %. */
+	length: number,
+	/**  Degrees, [0, 180) as the core stores it (any finite number is read modulo 180). */
+	angle_deg: number,
+};
+
+/**  A Blur node's `motion` group to change. Serialising leaves absent fields out (see [`NodePatch`]). */
+export type BlurMotionPatch = {
+	/**  New Length, 0 to 100. */
+	length?: number | null,
+	/**  New Angle, degrees. */
+	angle_deg?: number | null,
+};
+
+/**  A Blur node: Soft, Lens, Motion or Zoom blur, with the masks as weights (`docs/33`). */
+export type BlurNode = {
+	/**  2 to 2147483647 (every numbered node shares the numbers). */
+	id: "input" | "output" | number,
+	/**  The card's name, 1 to 32 characters. */
+	name: string,
+	/**  A bypassed node passes its picture through. */
+	bypass: boolean,
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
+	/**  The chosen type; every type's values are kept. */
+	type: BlurType,
+	/**  Soft's values. */
+	soft: BlurSoft,
+	/**  Lens' values. */
+	lens: BlurLens,
+	/**  Motion's values. */
+	motion: BlurMotion,
+	/**  Zoom's values. */
+	zoom: BlurZoom,
+	/**  Whether colours from outside the mask are kept out of the blur. */
+	respect_mask_edges: boolean,
+	/**  The masks: the node's whole selection and its weights. */
+	masks: MaskSettings,
+};
+
+/**  A Blur node's Soft values. */
+export type BlurSoft = {
+	/**  Radius, 0 to 100: a share of the long edge, 100 being 4 %. */
+	radius: number,
+};
+
+/**  A Blur node's `soft` group to change. Serialising leaves absent fields out (see [`NodePatch`]). */
+export type BlurSoftPatch = {
+	/**  New Radius, 0 to 100. */
+	radius?: number | null,
+};
+
+/**  The kind of blur a Blur node makes (`docs/33` section 2.1). */
+export type BlurType = 
+/**  A Gaussian. */
+"soft" | 
+/**  A disc or a regular polygon, the shape of a lens's aperture. */
+"lens" | 
+/**  A line through each pixel. */
+"motion" | 
+/**  A radial line about a centre. */
+"zoom";
+
+/**  A Blur node's Zoom values. */
+export type BlurZoom = {
+	/**  Amount, 0 to 100. */
+	amount: number,
+	/**  The centre, `[x, y]` in the photo frame, 0 to 1 each way. */
+	center: [number, number],
+};
+
+/**
+ *  A Blur node's `zoom` group to change; Pick centre and a drag of the handle send `center` alone. Serialising leaves absent
+ *  fields out (see [`NodePatch`]).
+ */
+export type BlurZoomPatch = {
+	/**  New Amount, 0 to 100. */
+	amount?: number | null,
+	/**  New centre, `[x, y]` in the photo frame. */
+	center?: [number, number] | null,
+};
+
 /**  A plane of brush strokes, in the format of a Brush mask row: a Face Refinement node's protection. */
 export type BrushMask = {
 	/**  The strokes in the order they were drawn, at most 100,000 points in all. */
@@ -1881,6 +1977,17 @@ export type LensPatch = {
 	edges?: number | null,
 	/**  New Anamorphic. */
 	anamorphic?: number | null,
+	/**
+	 *  A Blur node's `lens` group has the same JSON key: its new Radius, 0 to 100 (the four parts above are the Input's,
+	 *  the four below the Blur node's; a patch may not mix them).
+	 */
+	radius?: number | null,
+	/**  A Blur node's new blades: 0 (round) or 3 to 12. */
+	blades?: number | null,
+	/**  A Blur node's new Rotation, degrees. */
+	rotation_deg?: number | null,
+	/**  A Blur node's new Highlights, 0 to 100. */
+	highlights?: number | null,
 };
 
 /**  Why a photo's bokeh was left as it is (`render_stats.lens.reason`). */
@@ -2670,6 +2777,10 @@ export type NodeItem =
 {
 	kind: "color_uniform",
 } & ColorUniformNode | 
+/**  A Blur node. */
+{
+	kind: "blur",
+} & BlurNode | 
 /**  A Parallel mixer. */
 {
 	kind: "parallel",
@@ -2701,6 +2812,8 @@ export type NodeKind =
 "face_refinement" | 
 /**  A Colour Uniform node (`docs/32`). */
 "color_uniform" | 
+/**  A Blur node (`docs/33`). */
+"blur" | 
 /**  A Parallel mixer (`docs/25`). */
 "parallel" | 
 /**  A Layer mixer (`docs/25`). */
@@ -2795,6 +2908,16 @@ export type NodePatch = {
 	target?: TargetValue | null,
 	/**  A Colour Uniform node's amounts to change. */
 	compress?: UniformAmountsPatch | null,
+	/**  A Blur node's new type. */
+	type?: BlurType | null,
+	/**  A Blur node's Soft values to change. */
+	soft?: BlurSoftPatch | null,
+	/**  A Blur node's Motion values to change. */
+	motion?: BlurMotionPatch | null,
+	/**  A Blur node's Zoom values to change. */
+	zoom?: BlurZoomPatch | null,
+	/**  A Blur node's Respect mask edges, on or off. */
+	respect_mask_edges?: boolean | null,
 	/**  A Layer's new blend mode. */
 	mode?: BlendMode | null,
 	/**  A Layer's new opacity, 0 to 1. */

@@ -839,6 +839,8 @@ pub enum NodeKind {
     FaceRefinement,
     /// A Colour Uniform node (`docs/32`).
     ColorUniform,
+    /// A Blur node (`docs/33`).
+    Blur,
     /// A Parallel mixer (`docs/25`).
     Parallel,
     /// A Layer mixer (`docs/25`).
@@ -1419,6 +1421,86 @@ pub struct ColorUniformNode {
     pub masks: MaskSettings,
 }
 
+/// The kind of blur a Blur node makes (`docs/33` section 2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum BlurType {
+    /// A Gaussian.
+    Soft,
+    /// A disc or a regular polygon, the shape of a lens's aperture.
+    Lens,
+    /// A line through each pixel.
+    Motion,
+    /// A radial line about a centre.
+    Zoom,
+}
+
+/// A Blur node's Soft values.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct BlurSoft {
+    /// Radius, 0 to 100: a share of the long edge, 100 being 4 %.
+    pub radius: Num,
+}
+
+/// A Blur node's Lens values.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct BlurLens {
+    /// Radius, 0 to 100: a share of the long edge, 100 being 4 %.
+    pub radius: Num,
+    /// 0 for a disc, 3 to 12 blades for a polygon (the panel offers 5 to 9).
+    pub blades: u32,
+    /// Degrees, [0, 360) as the core stores it (any finite number is read modulo 360).
+    pub rotation_deg: Num,
+    /// Highlights, 0 to 100.
+    pub highlights: Num,
+}
+
+/// A Blur node's Motion values.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct BlurMotion {
+    /// Length, 0 to 100: a share of the long edge, 100 being 8 %.
+    pub length: Num,
+    /// Degrees, [0, 180) as the core stores it (any finite number is read modulo 180).
+    pub angle_deg: Num,
+}
+
+/// A Blur node's Zoom values.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct BlurZoom {
+    /// Amount, 0 to 100.
+    pub amount: Num,
+    /// The centre, `[x, y]` in the photo frame, 0 to 1 each way.
+    pub center: [Num; 2],
+}
+
+/// A Blur node: Soft, Lens, Motion or Zoom blur, with the masks as weights (`docs/33`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct BlurNode {
+    /// 2 to 2147483647 (every numbered node shares the numbers).
+    pub id: NodeId,
+    /// The card's name, 1 to 32 characters.
+    pub name: String,
+    /// A bypassed node passes its picture through.
+    pub bypass: bool,
+    /// The card's place on the canvas, in grid units.
+    pub pos: [Num; 2],
+    /// The chosen type; every type's values are kept.
+    #[serde(rename = "type")]
+    pub blur_type: BlurType,
+    /// Soft's values.
+    pub soft: BlurSoft,
+    /// Lens' values.
+    pub lens: BlurLens,
+    /// Motion's values.
+    pub motion: BlurMotion,
+    /// Zoom's values.
+    pub zoom: BlurZoom,
+    /// Whether colours from outside the mask are kept out of the blur.
+    pub respect_mask_edges: bool,
+    /// The masks: the node's whole selection and its weights.
+    pub masks: MaskSettings,
+}
+
 /// How a Layer blends an input over the ones below it (`docs/25` section 3.3), in linear light.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
@@ -1507,6 +1589,8 @@ pub enum NodeItem {
     FaceRefinement(FaceRefinementNode),
     /// A Colour Uniform node.
     ColorUniform(ColorUniformNode),
+    /// A Blur node.
+    Blur(BlurNode),
     /// A Parallel mixer.
     Parallel(ParallelNode),
     /// A Layer mixer.
@@ -1690,6 +1774,19 @@ pub struct LensPatch {
     /// New Anamorphic.
     #[serde(default)]
     pub anamorphic: Option<Num>,
+    /// A Blur node's `lens` group has the same JSON key: its new Radius, 0 to 100 (the four parts above are the Input's,
+    /// the four below the Blur node's; a patch may not mix them).
+    #[serde(default)]
+    pub radius: Option<Num>,
+    /// A Blur node's new blades: 0 (round) or 3 to 12.
+    #[serde(default)]
+    pub blades: Option<u32>,
+    /// A Blur node's new Rotation, degrees.
+    #[serde(default)]
+    pub rotation_deg: Option<Num>,
+    /// A Blur node's new Highlights, 0 to 100.
+    #[serde(default)]
+    pub highlights: Option<Num>,
 }
 
 /// Colour-balance wheels to change.
@@ -1808,6 +1905,40 @@ pub struct UniformAmountsPatch {
     /// New Lightness amount, percent.
     #[serde(default)]
     pub lightness: Option<Num>,
+}
+
+/// A Blur node's `soft` group to change. Serialising leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct BlurSoftPatch {
+    /// New Radius, 0 to 100.
+    #[serde(default)]
+    pub radius: Option<Num>,
+}
+
+/// A Blur node's `motion` group to change. Serialising leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct BlurMotionPatch {
+    /// New Length, 0 to 100.
+    #[serde(default)]
+    pub length: Option<Num>,
+    /// New Angle, degrees.
+    #[serde(default)]
+    pub angle_deg: Option<Num>,
+}
+
+/// A Blur node's `zoom` group to change; Pick centre and a drag of the handle send `center` alone. Serialising leaves absent
+/// fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct BlurZoomPatch {
+    /// New Amount, 0 to 100.
+    #[serde(default)]
+    pub amount: Option<Num>,
+    /// New centre, `[x, y]` in the photo frame.
+    #[serde(default)]
+    pub center: Option<[Num; 2]>,
 }
 
 /// A Face Refinement node's `all` to change. Serialising leaves absent fields out (see [`NodePatch`]).
@@ -1940,6 +2071,9 @@ macro_rules! serialize_present {
 serialize_present!(FilmStockPatch, stock, exposure_ev);
 serialize_present!(LightsPatch, c, m, y);
 serialize_present!(UniformAmountsPatch, hue, saturation, lightness);
+serialize_present!(BlurSoftPatch, radius);
+serialize_present!(BlurMotionPatch, length, angle_deg);
+serialize_present!(BlurZoomPatch, amount, center);
 serialize_present!(PrintPatch, paper, exposure_ev, lights);
 serialize_present!(HalationPatch, amount, size);
 serialize_present!(GrainPatch, amount, size, seed);
@@ -2245,6 +2379,21 @@ pub struct NodePatch {
     /// A Colour Uniform node's amounts to change.
     #[serde(default)]
     pub compress: Option<UniformAmountsPatch>,
+    /// A Blur node's new type.
+    #[serde(default, rename = "type")]
+    pub blur_type: Option<BlurType>,
+    /// A Blur node's Soft values to change.
+    #[serde(default)]
+    pub soft: Option<BlurSoftPatch>,
+    /// A Blur node's Motion values to change.
+    #[serde(default)]
+    pub motion: Option<BlurMotionPatch>,
+    /// A Blur node's Zoom values to change.
+    #[serde(default)]
+    pub zoom: Option<BlurZoomPatch>,
+    /// A Blur node's Respect mask edges, on or off.
+    #[serde(default)]
+    pub respect_mask_edges: Option<bool>,
     /// A Layer's new blend mode.
     #[serde(default)]
     pub mode: Option<BlendMode>,
@@ -2298,7 +2447,14 @@ impl Serialize for NodePatch {
             compress,
             mode,
             opacity,
+            soft,
+            motion,
+            zoom,
+            respect_mask_edges,
         );
+        if let Some(v) = &self.blur_type {
+            map.serialize_entry("type", v)?;
+        }
         map.end()
     }
 }

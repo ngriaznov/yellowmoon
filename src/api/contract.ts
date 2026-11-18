@@ -110,6 +110,12 @@ export type Both = AllTrue<{
   targetValue: Same<T.TargetValue, B.TargetValue>;
   uniformAmounts: Same<T.UniformAmounts, B.UniformAmounts>;
   colorUniformNode: Same<T.ColorUniformNode, B.ColorUniformNode>;
+  blurType: Same<T.BlurType, B.BlurType>;
+  blurSoft: Same<T.BlurSoft, B.BlurSoft>;
+  blurLens: Same<T.BlurLens, B.BlurLens>;
+  blurMotion: Same<T.BlurMotion, B.BlurMotion>;
+  blurZoom: Same<T.BlurZoom, B.BlurZoom>;
+  blurNode: Same<T.BlurNode, B.BlurNode>;
   colorWarpPin: Same<T.ColorWarpPin, B.ColorWarpPin>;
   lensKind: Same<T.LensKind, B.LensKind>;
   lensSettings: Same<T.LensSettings, B.LensSettings>;

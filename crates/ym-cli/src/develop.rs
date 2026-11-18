@@ -153,6 +153,7 @@ impl Overrides {
             flares: self.flares.or(self.lens.map(|l| l.start_flares)),
             edges: self.edges.or(self.lens.map(|l| l.start_edges)),
             anamorphic: self.anamorphic,
+            ..LensPatch::default()
         })
     }
 
@@ -472,6 +473,7 @@ mod tests {
                 flares: Some(45.0),
                 edges: Some(40.0),
                 anamorphic: None,
+                ..LensPatch::default()
             })
         );
         // An amount beats the lens's start, for that amount only; Anamorphic is never a start.
@@ -488,6 +490,7 @@ mod tests {
                 flares: Some(10.0),
                 edges: Some(40.0),
                 anamorphic: Some(50.0),
+                ..LensPatch::default()
             })
         );
         // An amount alone changes that amount only and leaves the lens as it is.
@@ -502,6 +505,7 @@ mod tests {
                 flares: None,
                 edges: Some(0.0),
                 anamorphic: None,
+                ..LensPatch::default()
             })
         );
     }

@@ -85,6 +85,8 @@ export const NODE_TABS: Readonly<Record<PanelKind, readonly TabId[]>> = {
   film: ["film", "print", "halation", "grain", "mask"],
   face_refinement: ["face", "mask"],
   color_uniform: ["compress", "mask"],
+  // The Blur tab is BL-13; until then the node has the Mask tab only.
+  blur: ["mask"],
   output: ["look", "detail"],
   parallel: ["inputs"],
   layer: ["blend"],
@@ -104,6 +106,7 @@ export const FIRST_NODE_TAB: Readonly<Record<PanelKind, TabId>> = {
   combiner: "channels",
   face_refinement: "face",
   color_uniform: "compress",
+  blur: "mask",
 };
 
 /**

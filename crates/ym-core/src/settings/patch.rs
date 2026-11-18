@@ -7,6 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use ym_color::wb::LightSource;
 use ym_looks::library::LookId;
 
+use super::blur::{BlurNode, BlurType};
 use super::face::{FaceRefinementNode, FaceSettings};
 use super::film::FilmNode;
 use super::graph::Sanitiser;
@@ -282,6 +283,39 @@ pub struct UniformAmountsPatch {
     pub lightness: Option<f64>,
 }
 
+/// A Blur node's `soft` group to change: a partial object, each part read over what the node has.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlurSoftPatch {
+    /// New Radius, 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius: Option<f64>,
+}
+
+/// A Blur node's `motion` group to change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlurMotionPatch {
+    /// New Length, 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<f64>,
+    /// New Angle, in degrees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle_deg: Option<f64>,
+}
+
+/// A Blur node's `zoom` group to change. Pick centre and a drag of the handle are one patch of `center`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlurZoomPatch {
+    /// New Amount, 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f64>,
+    /// New centre, `[x, y]` in the photo frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub center: Option<[f64; 2]>,
+}
+
 /// A Face Refinement node's `all` to change: the amounts every face takes while "Same for all faces" is on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -553,6 +587,23 @@ pub struct NodePatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compress: Option<UniformAmountsPatch>,
 
+    // A Blur node (`docs/33` section 5.3); `name`, `bypass` and `masks` above are its too, and so is `lens` (its own parts).
+    /// The Blur node's new type.
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub blur_type: Option<BlurType>,
+    /// Soft's values to change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soft: Option<BlurSoftPatch>,
+    /// Motion's values to change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion: Option<BlurMotionPatch>,
+    /// Zoom's values to change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoom: Option<BlurZoomPatch>,
+    /// Respect mask edges on or off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub respect_mask_edges: Option<bool>,
+
     // A Layer (`docs/25` section 2.1); `name` and `bypass` above are the four mixer kinds' too.
     /// New blend mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -632,7 +683,8 @@ impl NodePatch {
             film => "film", print => "print", halation => "halation", grain => "grain",
             strength => "strength", same_for_all => "same_for_all", all => "all", faces => "faces",
             protect => "protect", target => "target", compress => "compress", mode => "mode",
-            opacity => "opacity",
+            opacity => "opacity", blur_type => "type", soft => "soft", motion => "motion",
+            zoom => "zoom", respect_mask_edges => "respect_mask_edges",
         );
         v
     }
@@ -649,7 +701,7 @@ impl NodePatch {
             SettingsField::Decode => self.decode.is_some(),
             SettingsField::NoiseReduction => self.noise_reduction.is_some(),
             SettingsField::Sharpen => self.sharpen.is_some(),
-            SettingsField::Lens => self.lens.is_some(),
+            SettingsField::Lens => self.lens.as_ref().is_some_and(LensPatch::has_input_parts),
             SettingsField::Crop => self.crop.is_some(),
             SettingsField::Orientation => self.orientation.is_some(),
             SettingsField::Look => self.look.is_some(),
@@ -671,6 +723,12 @@ impl NodePatch {
             SettingsField::Protect => self.protect.is_some(),
             SettingsField::Target => self.target.is_some(),
             SettingsField::Compress => self.compress.is_some(),
+            SettingsField::BlurType => self.blur_type.is_some(),
+            SettingsField::Soft => self.soft.is_some(),
+            SettingsField::BlurLens => self.lens.as_ref().is_some_and(LensPatch::has_blur_parts),
+            SettingsField::Motion => self.motion.is_some(),
+            SettingsField::Zoom => self.zoom.is_some(),
+            SettingsField::RespectMaskEdges => self.respect_mask_edges.is_some(),
             SettingsField::Mode => self.mode.is_some(),
             SettingsField::Opacity => self.opacity.is_some(),
             grade_field => self
@@ -740,6 +798,25 @@ impl NodePatch {
         {
             p.compress = None;
         }
+        if p.soft
+            .as_ref()
+            .is_some_and(|m| *m == BlurSoftPatch::default())
+        {
+            p.soft = None;
+        }
+        if p.motion
+            .as_ref()
+            .is_some_and(|m| *m == BlurMotionPatch::default())
+        {
+            p.motion = None;
+        }
+        if p.zoom
+            .as_ref()
+            .is_some_and(|m| *m == BlurZoomPatch::default())
+        {
+            p.zoom = None;
+        }
+
         p == NodePatch::default()
     }
 
@@ -784,6 +861,11 @@ impl NodePatch {
             compress,
             mode,
             opacity,
+            blur_type,
+            soft,
+            motion,
+            zoom,
+            respect_mask_edges,
         );
         if let Some(g) = other.grade {
             match &mut self.grade {
@@ -848,6 +930,7 @@ impl NodePatch {
                     flares: Some(n.lens.flares),
                     edges: Some(n.lens.edges),
                     anamorphic: Some(n.lens.anamorphic),
+                    ..LensPatch::default()
                 });
             }
             SettingsField::Crop => p.crop = Some(n.crop),
@@ -1054,6 +1137,71 @@ impl NodePatch {
         for f in SettingsField::ALL {
             if f.belongs_to(NodeKind::ColorUniform)
                 && let Some(one) = Self::of_color_uniform_field(n, f)
+            {
+                p.absorb(one);
+            }
+        }
+        p
+    }
+
+    /// The patch that carries one field of a Blur node.
+    fn of_blur_field(n: &BlurNode, field: SettingsField) -> Option<Self> {
+        let mut p = Self::default();
+        match field {
+            SettingsField::Name => p.name = Some(n.name.clone()),
+            SettingsField::Bypass => p.bypass = Some(n.bypass),
+            SettingsField::Pos => p.pos = Some(n.pos),
+            SettingsField::Masks => {
+                p.masks = Some(MasksPatch {
+                    invert: Some(n.masks.invert),
+                    items: Some(n.masks.items.clone()),
+                    edit: None,
+                });
+            }
+            SettingsField::BlurType => p.blur_type = Some(n.blur_type),
+            SettingsField::Soft => {
+                p.soft = Some(BlurSoftPatch {
+                    radius: Some(n.soft.radius),
+                });
+            }
+            SettingsField::BlurLens => {
+                p.lens = Some(LensPatch {
+                    radius: Some(n.lens.radius),
+                    blades: Some(n.lens.blades),
+                    rotation_deg: Some(n.lens.rotation_deg),
+                    highlights: Some(n.lens.highlights),
+                    ..LensPatch::default()
+                });
+            }
+            SettingsField::Motion => {
+                p.motion = Some(BlurMotionPatch {
+                    length: Some(n.motion.length),
+                    angle_deg: Some(n.motion.angle_deg),
+                });
+            }
+            SettingsField::Zoom => {
+                p.zoom = Some(BlurZoomPatch {
+                    amount: Some(n.zoom.amount),
+                    center: Some(n.zoom.center),
+                });
+            }
+            SettingsField::RespectMaskEdges => p.respect_mask_edges = Some(n.respect_mask_edges),
+            _ => return None,
+        }
+        Some(p)
+    }
+
+    /// A patch that holds every field of a Blur node, with its `kind`, so that it adds the node when the photo does not
+    /// have it.
+    #[must_use]
+    pub fn whole_blur(n: &BlurNode) -> Self {
+        let mut p = Self {
+            kind: Some(NodeKind::Blur),
+            ..Self::default()
+        };
+        for f in SettingsField::ALL {
+            if f.belongs_to(NodeKind::Blur)
+                && let Some(one) = Self::of_blur_field(n, f)
             {
                 p.absorb(one);
             }
@@ -1463,6 +1611,60 @@ impl NodePatch {
         Ok(())
     }
 
+    fn apply_blur(&self, next: &mut BlurNode, id: u32) -> Result<(), SettingsError> {
+        if let Some(v) = &self.name {
+            next.name.clone_from(v);
+        }
+        if let Some(v) = self.bypass {
+            next.bypass = v;
+        }
+        if let Some(v) = self.blur_type {
+            next.blur_type = v;
+        }
+        if let Some(g) = &self.soft
+            && let Some(v) = g.radius
+        {
+            next.soft.radius = v;
+        }
+        if let Some(g) = &self.lens {
+            if let Some(v) = g.radius {
+                next.lens.radius = v;
+            }
+            if let Some(v) = g.blades {
+                next.lens.blades = v;
+            }
+            if let Some(v) = g.rotation_deg {
+                next.lens.rotation_deg = v;
+            }
+            if let Some(v) = g.highlights {
+                next.lens.highlights = v;
+            }
+        }
+        if let Some(g) = &self.motion {
+            if let Some(v) = g.length {
+                next.motion.length = v;
+            }
+            if let Some(v) = g.angle_deg {
+                next.motion.angle_deg = v;
+            }
+        }
+        if let Some(g) = &self.zoom {
+            if let Some(v) = g.amount {
+                next.zoom.amount = v;
+            }
+            if let Some(v) = g.center {
+                next.zoom.center = v;
+            }
+        }
+        if let Some(v) = self.respect_mask_edges {
+            next.respect_mask_edges = v;
+        }
+        if let Some(m) = &self.masks {
+            m.apply(&mut next.masks, &NodeId::Corrector(id).to_string())?;
+        }
+        Ok(())
+    }
+
     fn apply_mixer(&self, next: &mut MixerNode) {
         if let Some(v) = &self.name {
             next.name_mut().clone_from(v);
@@ -1493,6 +1695,19 @@ impl NodePatch {
         let own = node_fields(kind);
         for name in self.field_names() {
             if !own.contains(&name) {
+                return Err(GraphError::UnknownField {
+                    kind: kind.sentence(),
+                    field: name.to_owned(),
+                });
+            }
+        }
+        // `lens` is a field of the Input and of a Blur node, with parts of its own on each: a part of the other's is unknown.
+        if let Some(l) = &self.lens {
+            let foreign = match kind {
+                NodeKind::Blur => l.has_input_parts().then_some("lens.kind"),
+                _ => l.has_blur_parts().then_some("lens.radius"),
+            };
+            if let Some(name) = foreign {
                 return Err(GraphError::UnknownField {
                     kind: kind.sentence(),
                     field: name.to_owned(),
@@ -1607,6 +1822,38 @@ impl DevelopSettings {
                     SettingsField::AllFaces => a.all == b.all,
                     SettingsField::Faces => a.faces == b.faces,
                     SettingsField::Protect => a.protect == b.protect,
+                    _ => true,
+                }
+            }
+            NodeId::Corrector(n) if a.blurs.contains_key(&n) || b.blurs.contains_key(&n) => {
+                let (Some(a), Some(b)) = (a.blur(n), b.blur(n)) else {
+                    return true;
+                };
+                // Numbers compare as bits, so -0.0 and 0.0 are two values and a NaN cannot be equal to anything.
+                let same = |x: f64, y: f64| x.to_bits() == y.to_bits();
+                match field {
+                    SettingsField::Name => a.name == b.name,
+                    SettingsField::Bypass => a.bypass == b.bypass,
+                    SettingsField::Pos => a.pos == b.pos,
+                    SettingsField::Masks => a.masks == b.masks,
+                    SettingsField::BlurType => a.blur_type == b.blur_type,
+                    SettingsField::Soft => same(a.soft.radius, b.soft.radius),
+                    SettingsField::BlurLens => {
+                        same(a.lens.radius, b.lens.radius)
+                            && a.lens.blades == b.lens.blades
+                            && same(a.lens.rotation_deg, b.lens.rotation_deg)
+                            && same(a.lens.highlights, b.lens.highlights)
+                    }
+                    SettingsField::Motion => {
+                        same(a.motion.length, b.motion.length)
+                            && same(a.motion.angle_deg, b.motion.angle_deg)
+                    }
+                    SettingsField::Zoom => {
+                        same(a.zoom.amount, b.zoom.amount)
+                            && same(a.zoom.center[0], b.zoom.center[0])
+                            && same(a.zoom.center[1], b.zoom.center[1])
+                    }
+                    SettingsField::RespectMaskEdges => a.respect_mask_edges == b.respect_mask_edges,
                     _ => true,
                 }
             }
@@ -1757,6 +2004,7 @@ impl DevelopSettings {
                         && next.nodes.films.remove(n).is_none()
                         && next.nodes.faces.remove(n).is_none()
                         && next.nodes.uniforms.remove(n).is_none()
+                        && next.nodes.blurs.remove(n).is_none()
                         && next.nodes.mixers.remove(n).is_none()
                     {
                         return Err(GraphError::PatchUnknownNode(id.to_string()).into());
@@ -1814,6 +2062,14 @@ impl DevelopSettings {
                             ..ColorUniformNode::default()
                         },
                     );
+                } else if actual == NodeKind::Blur {
+                    next.nodes.blurs.insert(
+                        n,
+                        BlurNode {
+                            pos,
+                            ..BlurNode::default()
+                        },
+                    );
                 } else if actual == NodeKind::Film {
                     next.nodes.films.insert(
                         n,
@@ -1868,6 +2124,11 @@ impl DevelopSettings {
                         np.apply_color_uniform(u, n)?;
                         if let Some(p) = np.pos {
                             u.pos = p;
+                        }
+                    } else if let Some(b) = next.nodes.blur_mut(n) {
+                        np.apply_blur(b, n)?;
+                        if let Some(p) = np.pos {
+                            b.pos = p;
                         }
                     } else if let Some(m) = next.nodes.mixer_mut(n) {
                         np.apply_mixer(m);
@@ -2108,6 +2369,10 @@ impl SettingsPatch {
                     .nodes
                     .color_uniform(n)
                     .and_then(|f| NodePatch::of_color_uniform_field(f, *field)),
+                NodeId::Corrector(n) if from.nodes.blurs.contains_key(&n) => from
+                    .nodes
+                    .blur(n)
+                    .and_then(|f| NodePatch::of_blur_field(f, *field)),
                 NodeId::Corrector(n) if from.nodes.films.contains_key(&n) => from
                     .nodes
                     .film(n)
@@ -2147,6 +2412,8 @@ impl SettingsPatch {
                     patch.nodes.insert(id, NodePatch::whole_face_refinement(f));
                 } else if let Some(f) = to.nodes.color_uniform(n) {
                     patch.nodes.insert(id, NodePatch::whole_color_uniform(f));
+                } else if let Some(f) = to.nodes.blur(n) {
+                    patch.nodes.insert(id, NodePatch::whole_blur(f));
                 } else if let Some(m) = to.nodes.mixer(n) {
                     patch.nodes.insert(id, NodePatch::whole_mixer(m));
                 }
@@ -2292,6 +2559,15 @@ impl SettingsPatch {
                 .nodes
                 .insert(NodeId::Corrector(*id), NodePatch::whole_color_uniform(&f));
         }
+        for (id, f) in &g.blurs {
+            let mut f = f.clone();
+            for row in &mut f.masks.items {
+                *row = row.emptied();
+            }
+            patch
+                .nodes
+                .insert(NodeId::Corrector(*id), NodePatch::whole_blur(&f));
+        }
         for (id, m) in &g.mixers {
             patch
                 .nodes
@@ -2345,6 +2621,9 @@ fn defaults_for(node: NodeId, default_look: &LookId, kind: NodeKind) -> DevelopS
             }
             NodeKind::ColorUniform => {
                 d.nodes.uniforms.insert(n, ColorUniformNode::default());
+            }
+            NodeKind::Blur => {
+                d.nodes.blurs.insert(n, BlurNode::default());
             }
             NodeKind::Parallel | NodeKind::Layer | NodeKind::Splitter | NodeKind::Combiner => {
                 if let Some(m) = MixerNode::new_of(kind) {
