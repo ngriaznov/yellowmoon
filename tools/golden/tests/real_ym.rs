@@ -63,6 +63,8 @@ fn two_real_renders_are_stored_and_checked_identical() {
     )
     .into_iter()
     .filter(|e| e.variant.as_deref() == Some("lossless-l") || e.variant.as_deref() == Some("craw"))
+    // the entries with a node on (docs/32) render these files too; this test is about the plain two
+    .filter(|e| e.settings.as_object().is_some_and(|o| o.is_empty()))
     .collect();
     assert_eq!(entries.len(), 2);
     update(&ctx, &manifest, &entries, None, false).unwrap();

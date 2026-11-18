@@ -219,14 +219,30 @@ mod tests {
         let default_set = select(&m, SetChoice::Synthetic, &[]);
         assert_eq!(
             default_set.len(),
-            61,
-            "the default synthetic set has 61 files"
+            64,
+            "the default synthetic set has 61 files and 3 entries with a Colour Uniform node on"
         );
+        // Only the three node entries have settings; the 61 files of the plain set are the default graph.
+        let with_settings: Vec<&str> = default_set
+            .iter()
+            .filter(|e| !e.settings.as_object().is_some_and(|o| o.is_empty()))
+            .map(|e| e.id.as_str())
+            .collect();
+        assert_eq!(with_settings.len(), 3, "{with_settings:?}");
         assert!(
-            default_set
+            with_settings
                 .iter()
-                .all(|e| e.settings.as_object().is_some_and(|o| o.is_empty()))
+                .all(|id| id.starts_with("synthetic/node-uniform-"))
         );
+        // The node entries read the file of one plain entry, so `synthetic.sh` writes nothing new: four entries, one file.
+        for id in &with_settings {
+            let e = default_set.iter().find(|e| e.id == *id).unwrap();
+            assert_eq!(
+                default_set.iter().filter(|o| o.file == e.file).count(),
+                4,
+                "{id}"
+            );
+        }
     }
 
     #[test]

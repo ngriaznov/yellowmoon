@@ -1538,9 +1538,7 @@ fn the_settings_of_a_color_uniform_export_read_back_and_render_the_same_file() {
             let read = ym_export::xmp::read_ym(&first[0])
                 .expect("read")
                 .unwrap_or_else(|| panic!("{what}, {name}: no ym:Settings"));
-            let items = read.settings["nodes"]["items"]
-                .as_array()
-                .expect("items");
+            let items = read.settings["nodes"]["items"].as_array().expect("items");
             let node = items
                 .iter()
                 .find(|i| i["kind"] == "color_uniform")

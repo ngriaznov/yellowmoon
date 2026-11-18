@@ -178,4 +178,54 @@ def manifest(full: bool = True) -> dict:
                     "reference": "",
                 }
             )
+    entries.extend(node_entries(entries))
     return {"entries": entries}
+
+
+# The golden entries with a node on (docs/32 section 8, CU-06): the same ARW file as an existing entry under settings that
+# add one Colour Uniform node after Main, each with one Colour range row. They are new entries, so no existing hash moves;
+# `expected.json` pins their pictures from the pipeline version that has the node. Plane coordinates are read off the scene's
+# truth (LogC4 / AWG4 probes: chroma c = (e1.v, e2.v), see docs/32 section 3.1).
+UNIFORM_BASE = "chart__D6500__ILCE-7RM4__iso400__rggb__14b"
+UNIFORM_NODES = (
+    # skin: the chart's skin patches (hue 17 to 33 degrees, chroma 0.04 to 0.11) pulled halfway to one orange (the example of docs/32 5.1)
+    ("skin", "Skin", {"hue_deg": 26, "saturation": 9.7, "lightness_ev": -0.03}, {"hue": 60, "saturation": 60, "lightness": 0}, [0.0875, 0.0423], 0.05),
+    # one hue: the saturated orange and yellow patches and the hue sweep's first patches (38 to 53 degrees, chroma 0.14 to 0.18) to 60 degrees, Hue only
+    ("hue", "One hue", {"hue_deg": 60, "saturation": 15, "lightness_ev": 0}, {"hue": 100, "saturation": 0, "lightness": 0}, [0.106, 0.106], 0.07),
+    # tone: the grey-brown ramp (the saturation gradient's first six steps and the chart's low-chroma browns, chroma 0.02 to 0.06) to +0.5 EV, Lightness only
+    ("tone", "Tone", {"hue_deg": 40, "saturation": 4, "lightness_ev": 0.5}, {"hue": 0, "saturation": 0, "lightness": 100}, [0.0306, 0.0257], 0.02),
+)
+
+
+def node_entries(entries: list[dict]) -> list[dict]:
+    """The golden entries with a Colour Uniform node on: copies of the entry of ``UNIFORM_BASE`` with settings that add the node
+    after Main. No sidecar (``golden truth`` measures the product against the scene's truth, which a node moves on purpose)."""
+    base = next(e for e in entries if e["id"] == f"synthetic/{UNIFORM_BASE}__lossless-l")
+    out = []
+    for key, name, target, compress, center, width in UNIFORM_NODES:
+        node = {
+            "id": 2,
+            "kind": "color_uniform",
+            "name": name,
+            "pos": [1, 0],
+            "target": target,
+            "compress": compress,
+            "masks": {
+                "invert": False,
+                "items": [
+                    {"kind": "color_range", "mode": "add", "invert": False, "enabled": True, "opacity": 1,
+                     "center": center, "width": width, "softness": 0.5}
+                ],
+            },
+        }
+        links = [
+            {"from": {"node": "input", "port": "picture"}, "to": {"node": 1, "port": "picture"}},
+            {"from": {"node": 1, "port": "picture"}, "to": {"node": 2, "port": "picture"}},
+            {"from": {"node": 2, "port": "picture"}, "to": {"node": "output", "port": "picture"}},
+        ]
+        entry = {k: v for k, v in base.items() if k != "sidecar"}
+        entry["id"] = f"synthetic/node-uniform-{key}__{UNIFORM_BASE}__lossless-l"
+        entry["group"] = "node-uniform"
+        entry["settings"] = {"nodes": {"items": [node], "links": links}}
+        out.append(entry)
+    return out

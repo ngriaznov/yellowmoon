@@ -345,7 +345,11 @@ fn a_color_uniform_node_is_byte_identical_through_the_app_path_and_the_binary_on
         let mut args = flags;
         args.extend(["--settings", file.to_str().expect("utf-8")]);
         let from_cli = cli_export(&sb, &[&arw], &args, &sb.root().join(format!("cli-{name}")));
-        assert_same_files(&from_app, &from_cli, &format!("a Colour Uniform node, {name}"));
+        assert_same_files(
+            &from_app,
+            &from_cli,
+            &format!("a Colour Uniform node, {name}"),
+        );
         if name == "tiff16" {
             assert!(
                 bytes(&from_app[0]) != bytes(&without[0]),
