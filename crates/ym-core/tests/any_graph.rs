@@ -2426,3 +2426,223 @@ fn colour_uniform_graphs_run_on_the_device_and_match_the_cpu() {
         "the frame has no node in it"
     );
 }
+
+/// Seed 23, graph 0 of `generate` (the Mac CI run of `colour-uniform`, `no_generated_graph_is_refused_by_the_device`: "seed 23 graph 0:
+/// the PNG export differs from the CPU's by 134 of 65535", the bound being one 10-bit code, 64). Since CU-03 the forced kind of that
+/// slot is the Colour Uniform node, which `main` never drew there: Main and a Colour Uniform node (target hue 188, saturation 18,
+/// +0.38 EV; compress 71, 67, 74) with two mask rows, a Colour range and a Depth row that subtracts. (`generate_joined` also makes a
+/// "seed 23 graph 0", a Splitter and Layer graph with no Colour Uniform node; the log line that names the failure is the one
+/// printed with "show mask", `FAILED; settings to replay` gives the settings.)
+/// `seed_23_graph_0_export_matches_the_cpu_and_prints_its_stages` is pinned to the same bound, and prints the export difference of
+/// the graph, of Main alone, of the graph with no, one or the other mask row, and of each axis of the node alone, so that the stage where the difference starts can be read on any
+/// device. Run it on Metal with the Mac GPU workflow's diagnostic dispatch (`tests` = `-p ym-core --test any_graph`, `filter` = `seed_23`).
+const SEED_23_GRAPH_0: &str = r#"{"nodes":{"items":[{"id":1},{"compress":{"hue":71,"lightness":74,"saturation":67},"id":2,"kind":"color_uniform","masks":{"invert":false,"items":[{"center":[0.05,0.0],"kind":"color_range","mode":"add","softness":0.5,"width":0.2},{"far":0.794994994994995,"feather":0.29009009009009007,"kind":"depth","mode":"subtract","refine":0.26226226226226224}]},"pos":[2,0.0],"target":{"hue_deg":188,"lightness_ev":0.38,"saturation":18}}],"links":[{"from":{"node":"input","port":"picture"},"to":{"node":1,"port":"picture"}},{"from":{"node":1,"port":"picture"},"to":{"node":2,"port":"picture"}},{"from":{"node":2,"port":"picture"},"to":{"node":"output","port":"picture"}}]}}"#;
+
+/// One value of a PNG export: the difference, its index, the CPU's value and the device's.
+type Worst = (u32, usize, u32, u32);
+/// A change to a Colour Uniform node.
+type Variant = Box<dyn Fn(&mut Value)>;
+
+/// The PNG exports of a settings document on the device and on the CPU: the largest difference of a value, the count of values
+/// over the 10-bit bound, and the six worst as (difference, value index, CPU's value, device's value).
+fn export_difference(
+    d: &Developed,
+    gpu: &Arc<Gpu>,
+    doc: &str,
+    home: &Path,
+) -> (u32, usize, Vec<Worst>) {
+    let settings = serde_json::from_str::<DevelopSettings>(doc)
+        .expect("settings")
+        .validated()
+        .expect("a valid graph")
+        .0;
+    let (dev_on, notes, dev) = export(
+        d,
+        &settings,
+        renderer(Some(Arc::clone(gpu)), 256),
+        home,
+        FormatKind::Png,
+    );
+    assert!(
+        dev_on == ComputeDevice::Gpu && !notes.iter().any(|n| n.contains("graphics card")),
+        "the export is {dev_on:?}, notes {notes:?}"
+    );
+    let (_, _, cpu) = export(d, &settings, renderer(None, 256), home, FormatKind::Png);
+    let (dev, cpu) = (decode_png16_bytes(&dev), decode_png16_bytes(&cpu));
+    let mut worst: Vec<Worst> = dev
+        .iter()
+        .zip(&cpu)
+        .enumerate()
+        .map(|(i, (a, b))| (a.abs_diff(*b), i, *b, *a))
+        .collect();
+    let over = worst.iter().filter(|w| w.0 > TEN_BIT_CODE).count();
+    worst.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    worst.truncate(6);
+    (worst.first().map_or(0, |w| w.0), over, worst)
+}
+
+#[test]
+fn seed_23_graph_0_export_matches_the_cpu_and_prints_its_stages() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(gpu) = gpu() else { return };
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let home = tempfile::tempdir().expect("dir");
+    let full: Value = serde_json::from_str(SEED_23_GRAPH_0).expect("json");
+    // The graph as it is, then the same graph with its node bypassed (Main alone), with no mask rows, and with one row each.
+    let variants: [(&str, Variant); 8] = [
+        (
+            "Main alone (node bypassed)",
+            Box::new(|n| n["bypass"] = json!(true)),
+        ),
+        (
+            "no mask rows",
+            Box::new(|n| n["masks"] = json!({ "invert": false, "items": [] })),
+        ),
+        (
+            "Colour range row only",
+            Box::new(|n| {
+                if let Some(rows) = n["masks"]["items"].as_array_mut() {
+                    rows.truncate(1);
+                }
+            }),
+        ),
+        (
+            "Depth row only",
+            Box::new(|n| {
+                if let Some(rows) = n["masks"]["items"].as_array_mut() {
+                    rows.remove(0);
+                }
+            }),
+        ),
+        (
+            "no mask rows, Hue only",
+            Box::new(|n| {
+                n["masks"] = json!({ "invert": false, "items": [] });
+                n["compress"] = json!({ "hue": 71, "saturation": 0, "lightness": 0 });
+            }),
+        ),
+        (
+            "no mask rows, Saturation only",
+            Box::new(|n| {
+                n["masks"] = json!({ "invert": false, "items": [] });
+                n["compress"] = json!({ "hue": 0, "saturation": 67, "lightness": 0 });
+            }),
+        ),
+        (
+            "no mask rows, Lightness only",
+            Box::new(|n| {
+                n["masks"] = json!({ "invert": false, "items": [] });
+                n["compress"] = json!({ "hue": 0, "saturation": 0, "lightness": 74 });
+            }),
+        ),
+        ("the graph", Box::new(|_| {})),
+    ];
+    let mut whole = 0;
+    for (what, change) in &variants {
+        let mut doc = full.clone();
+        if let Some(items) = doc["nodes"]["items"].as_array_mut() {
+            for n in items.iter_mut().filter(|n| n["kind"] == "color_uniform") {
+                change(n);
+            }
+        }
+        let (max, over, worst) = export_difference(&d, &gpu, &doc.to_string(), home.path());
+        say(&format!(
+            "seed 23 graph 0, {what}: PNG export {max} of 65535 from the CPU's, {over} values over {TEN_BIT_CODE}; worst (difference, value index, CPU, device) {worst:?}"
+        ));
+        whole = max;
+    }
+    // The same graph at view scale, Fit and 100 %, as `no_generated_graph_is_refused_by_the_device` compares it (codes of 255).
+    {
+        let settings = serde_json::from_value::<DevelopSettings>(full.clone())
+            .expect("settings")
+            .validated()
+            .expect("a valid graph")
+            .0;
+        let src = d.source().with_settings(settings);
+        let (device, cpu) = (renderer(Some(Arc::clone(&gpu)), 256), renderer(None, 256));
+        let states: Vec<(String, ViewportState)> = [false, true]
+            .into_iter()
+            .map(|z| (format!("100 % {z}"), view(z, false, None)))
+            .collect();
+        let _ = frame(&device, &src, &states[0].1);
+        settle_depth(&device, &src, &states);
+        settle_depth(&cpu, &src, &states);
+        for (what, st) in &states {
+            let (max, over) = frame_diff(&frame(&device, &src, st), &frame(&cpu, &src, st));
+            say(&format!(
+                "seed 23 graph 0, view {what}: against the CPU {max} codes, {over} values over 1"
+            ));
+        }
+    }
+    // The conditioning of the graph: the CPU's own export of the graph against the CPU's export with Main's exposure moved by 1e-5 EV
+    // (7e-6 relative on every scene value, the size of an `f32` rounding). A graph whose picture moves by more than the bound for
+    // that is ill-conditioned for any `f32` pipeline (as seed 539 was), and a device difference of that size is not a device error.
+    {
+        let cpu_png = |doc: &Value| {
+            let settings = serde_json::from_value::<DevelopSettings>(doc.clone())
+                .expect("settings")
+                .validated()
+                .expect("a valid graph")
+                .0;
+            decode_png16_bytes(
+                &export(
+                    &d,
+                    &settings,
+                    renderer(None, 256),
+                    home.path(),
+                    FormatKind::Png,
+                )
+                .2,
+            )
+        };
+        let mut nudged = full.clone();
+        nudged["nodes"]["items"][0]["trim"] = json!({ "exposure_ev": 1e-5 });
+        let (a, b) = (cpu_png(&full), cpu_png(&nudged));
+        let moved = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| x.abs_diff(*y))
+            .max()
+            .unwrap_or(0);
+        say(&format!(
+            "seed 23 graph 0, conditioning: the CPU's export moves by {moved} of 65535 for 1e-5 EV on Main"
+        ));
+    }
+    assert!(
+        whole <= TEN_BIT_CODE,
+        "seed 23 graph 0: the PNG export differs from the CPU's by {whole} of 65535 (bound {TEN_BIT_CODE})"
+    );
+}
+
+/// The other "seed 23 graph 0" of the log, from `generate_joined`: Main, a Splitter, a bypassed Parallel, a Layer (difference, opacity 0),
+/// a bypassed corrector and a Layer (subtract, opacity 0) that is the Output. No Film node and no Colour Uniform node. It is not the
+/// graph the Mac run failed on (that is `SEED_23_GRAPH_0`), and is pinned so that the two cannot be taken for each other again.
+const SEED_23_GRAPH_0_JOINED: &str = r#"{"nodes":{"items":[{"id":1},{"id":2,"kind":"splitter","pos":[2,0.0]},{"bypass":true,"id":3,"kind":"parallel","pos":[3,0.0]},{"id":4,"kind":"layer","mode":"difference","opacity":0.0,"pos":[4,0.0]},{"bypass":true,"id":5,"kind":"corrector","pos":[5,0.0],"trim":{"exposure_ev":-0.8}},{"id":6,"kind":"layer","mode":"subtract","opacity":0.0,"pos":[6,0.0]}],"links":[{"from":{"node":"input","port":"picture"},"to":{"node":1,"port":"picture"}},{"from":{"node":"input","port":"picture"},"to":{"node":2,"port":"picture"}},{"from":{"node":"input","port":"picture"},"to":{"node":3,"port":"picture.1"}},{"from":{"node":1,"port":"picture"},"to":{"node":3,"port":"picture.2"}},{"from":{"node":1,"port":"picture"},"to":{"node":3,"port":"picture.3"}},{"from":{"node":2,"port":"green"},"to":{"node":4,"port":"picture.1"}},{"from":{"node":1,"port":"picture"},"to":{"node":4,"port":"picture.2"}},{"from":{"node":4,"port":"picture"},"to":{"node":5,"port":"picture"}},{"from":{"node":2,"port":"green"},"to":{"node":6,"port":"picture.1"}},{"from":{"node":"input","port":"picture"},"to":{"node":6,"port":"picture.2"}},{"from":{"node":1,"port":"picture"},"to":{"node":6,"port":"picture.3"}},{"from":{"node":6,"port":"picture"},"to":{"node":"output","port":"picture"}}]}}"#;
+
+#[test]
+fn seed_23_graph_0_joined_export_matches_the_cpu() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(gpu) = gpu() else { return };
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let home = tempfile::tempdir().expect("dir");
+    let (max, over, worst) = export_difference(&d, &gpu, SEED_23_GRAPH_0_JOINED, home.path());
+    say(&format!(
+        "seed 23 graph 0 (joined): PNG export {max} of 65535 from the CPU's, {over} values over {TEN_BIT_CODE}; worst (difference, value index, CPU, device) {worst:?}"
+    ));
+    assert!(
+        max <= TEN_BIT_CODE,
+        "seed 23 graph 0 (joined): the PNG export differs from the CPU's by {max} of 65535 (bound {TEN_BIT_CODE})"
+    );
+}
