@@ -1445,6 +1445,150 @@ fn film_leg(device: bool) {
     );
 }
 
+/// The example file of `docs/32` section 5.1 as a graph (`docs/10`): skin pulled halfway to one orange, with the Colour range row
+/// the first pick adds. Node 2, after Main.
+fn uniform_example() -> serde_json::Value {
+    serde_json::json!({ "nodes": {
+      "items": [
+        { "id": 2, "kind": "color_uniform", "name": "Uniform", "bypass": false, "pos": [1, 0],
+          "target": { "hue_deg": 26.0, "saturation": 9.7, "lightness_ev": -0.03 },
+          "compress": { "hue": 60.0, "saturation": 60.0, "lightness": 0.0 },
+          "masks": { "invert": false, "items": [
+            { "kind": "color_range", "mode": "add", "invert": false, "enabled": true, "opacity": 1,
+              "center": [0.0875, 0.0423], "width": 0.05, "softness": 0.5 } ] } }
+      ],
+      "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+      ] } })
+}
+
+/// A Colour Uniform node with another mask on it, a feathered Linear and a brightness range, and all three amounts on, after a
+/// corrector. The node's picture and key go on as for any node.
+fn uniform_other_mask() -> serde_json::Value {
+    serde_json::json!({ "nodes": {
+      "items": [
+        { "id": 2, "kind": "corrector", "pos": [1, 0], "grade": { "saturation": { "kind": "manual", "value": 30 } } },
+        { "id": 3, "kind": "color_uniform", "name": "Cool", "pos": [2, 0],
+          "target": { "hue_deg": 215.0, "saturation": 12.0, "lightness_ev": 0.4 },
+          "compress": { "hue": 80.0, "saturation": 70.0, "lightness": 50.0 },
+          "masks": { "invert": false, "items": [
+            { "kind": "linear", "mode": "add", "center": [0.5, 0.45], "angle_deg": 20, "feather": 0.4 },
+            { "kind": "brightness_range", "mode": "subtract", "low": 0.8, "high": 1.0, "softness": 0.4 } ] } }
+      ],
+      "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+        { "from": { "node": 3, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+      ] } })
+}
+
+/// Colour Uniform (`docs/32` section 8, *App against `ym`*, CU-06): the example file of section 5.1 and a node with another mask
+/// are the same files through the app path and the binary, in JPEG, TIFF 16, DNG (`graph_leg`) and PNG 16.
+#[test]
+fn a_color_uniform_node_is_the_same_files_through_the_app_path_and_the_binary() {
+    uniform_leg(false);
+}
+
+/// The device leg of Colour Uniform (CU-06): the app's core has the device and the binary `YELLOWMOON_GPU=on`; the colour pass
+/// runs the node on it on both sides, and the files are the same byte for byte.
+#[test]
+fn a_color_uniform_node_is_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
+    uniform_leg(true);
+}
+
+fn uniform_leg(device: bool) {
+    for (what, doc, correctors) in [
+        ("the example file of docs/32", uniform_example(), 1),
+        ("a node with another mask", uniform_other_mask(), 2),
+    ] {
+        graph_leg(what, doc.clone(), correctors, device);
+        png16_leg(what, &doc, device);
+    }
+}
+
+/// The `ym:Settings` round trip of a Colour Uniform node (CU-06): each format's file holds the node in its XMP, the settings the
+/// file holds are a settings file `ym` reads, and rendering with them gives the same file again.
+#[test]
+fn the_settings_of_a_color_uniform_export_read_back_and_render_the_same_file() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
+    for (what, doc) in [
+        ("the example file", uniform_example()),
+        ("another mask", uniform_other_mask()),
+    ] {
+        let file = sb.root().join("graph.json");
+        std::fs::write(&file, doc.to_string()).expect("write");
+        for (name, flags) in [
+            ("jpeg", vec!["--format", "jpeg"]),
+            ("tiff16", vec!["--format", "tiff", "--bits", "16"]),
+            ("png16", vec!["--format", "png", "--bits", "16"]),
+            ("dng", vec!["--format", "dng"]),
+        ] {
+            let mut args = flags.clone();
+            args.extend(["--settings", file.to_str().expect("utf-8")]);
+            let first = cli_export(
+                &sb,
+                &[&arw],
+                &args,
+                &sb.root().join(format!("first-{name}")),
+            );
+            let read = ym_export::xmp::read_ym(&first[0])
+                .expect("read")
+                .unwrap_or_else(|| panic!("{what}, {name}: no ym:Settings"));
+            let items = read.settings["nodes"]["items"]
+                .as_array()
+                .expect("items");
+            let node = items
+                .iter()
+                .find(|i| i["kind"] == "color_uniform")
+                .unwrap_or_else(|| panic!("{what}, {name}: the node is not in ym:Settings"));
+            let want = doc["nodes"]["items"]
+                .as_array()
+                .expect("items")
+                .iter()
+                .find(|i| i["kind"] == "color_uniform")
+                .expect("node");
+            assert_eq!(node["target"], want["target"], "{what}, {name}");
+            assert_eq!(node["compress"], want["compress"], "{what}, {name}");
+            assert_eq!(
+                node["masks"]["items"].as_array().map(Vec::len),
+                want["masks"]["items"].as_array().map(Vec::len),
+                "{what}, {name}"
+            );
+            let back = sb.root().join(format!("back-{name}.json"));
+            std::fs::write(&back, read.settings.to_string()).expect("write");
+            let mut args = flags;
+            args.extend(["--settings", back.to_str().expect("utf-8")]);
+            let again = cli_export(
+                &sb,
+                &[&arw],
+                &args,
+                &sb.root().join(format!("again-{name}")),
+            );
+            // The files differ in `ym:AutoFields` only (the first one's Auto fields are pinned numbers in the second), so the
+            // settings the second file holds are the first's, and a PNG's pixels (from the first IDAT on) are the same bytes.
+            let read_again = ym_export::xmp::read_ym(&again[0])
+                .expect("read")
+                .expect("ym:Settings");
+            assert_eq!(read_again.settings, read.settings, "{what}, {name}");
+            if name == "png16" {
+                let pixels = |file: &Path| {
+                    let all = bytes(file);
+                    let at = all
+                        .windows(4)
+                        .position(|w| w == b"IDAT")
+                        .expect("the image data");
+                    all[at..].to_vec()
+                };
+                assert_eq!(pixels(&first[0]), pixels(&again[0]), "{what}, {name}");
+            }
+        }
+    }
+}
+
 /// Whether this machine has SAM's weights (`data/models/sam2`, `tools/fetch/sam2.sh`): the Object tests need them and say so and pass without
 /// them, unless `YM_REQUIRE_SAM2` makes that a failure (CI's other jobs fetch none).
 fn sam_weights() -> bool {
