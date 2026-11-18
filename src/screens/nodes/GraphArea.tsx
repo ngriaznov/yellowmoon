@@ -66,6 +66,7 @@ export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, ex
           onAddFilm={settings ? graph.addFilm : undefined}
           onAddFaceRefinement={settings ? graph.addFaceRefinement : undefined}
           onAddColorUniform={settings ? graph.addColorUniform : undefined}
+          onAddBlur={settings ? graph.addBlur : undefined}
           onAddParallel={settings ? graph.addParallel : undefined}
           onAddLayer={settings ? graph.addLayer : undefined}
           onAddTrio={settings ? graph.addTrio : undefined}

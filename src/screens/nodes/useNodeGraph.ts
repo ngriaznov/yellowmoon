@@ -21,7 +21,7 @@ import {
   toggleBypass,
 } from "../../state/graphOps";
 import type { GraphOutcome } from "../../state/graphOps";
-import { COLOR_UNIFORM_NAME, INPUT_ID, MAIN_ID, nodeOf, OUTPUT_ID } from "../../state/settingsGraph";
+import { BLUR_NAME, COLOR_UNIFORM_NAME, INPUT_ID, MAIN_ID, nodeOf, OUTPUT_ID } from "../../state/settingsGraph";
 import type { AppStore } from "../../state/store";
 
 /** What the graph's toolbar, menus, keys and canvas ask for. Each is one patch and one undo step, or a sentence in the error bar. */
@@ -42,6 +42,7 @@ export interface NodeGraphActions {
   addFaceRefinement: () => void;
   /** Add node › Colour Uniform: after the selected node, selected, on its Compress tab with Pick colour on (`docs/32` §4). */
   addColorUniform: () => void;
+  addBlur: () => void;
   /** Add node › Parallel: a Parallel and a corrector beside the selected node, on its input 2 (`docs/25` §5.4). */
   addParallel: () => void;
   /** Add node › Layer: a Layer and a corrector beside the selected node, on top. */
@@ -81,8 +82,8 @@ export interface UseNodeGraphOptions {
   /** The node the graph and the panel are on, and how to change it. */
   selected: NodeId;
   select: (id: NodeId) => void;
-  /** A node of this kind was added and is selected (Colour Uniform: the screen opens its Compress tab and turns Pick colour on). */
-  onAdded?: (id: NodeId, kind: "color_uniform") => void;
+  /** A node of this kind was added and is selected (Colour Uniform: the screen opens its Compress tab and turns Pick colour on; Blur: its Blur tab). */
+  onAdded?: (id: NodeId, kind: "color_uniform" | "blur") => void;
 }
 
 /**
@@ -120,7 +121,7 @@ export function useNodeGraph({ store, settings, photoId, selected, select, onAdd
 
   /** Sends what an operation answers, or says why it is refused. */
   const apply = useCallback(
-    (outcome: GraphOutcome, added?: "color_uniform"): void => {
+    (outcome: GraphOutcome, added?: "color_uniform" | "blur"): void => {
       const { photoId: id } = latest.current;
       if (!outcome.ok) {
         refuse(outcome.reason);
@@ -140,7 +141,7 @@ export function useNodeGraph({ store, settings, photoId, selected, select, onAdd
   );
   /** Runs an operation on the settings as they are now. */
   const act = useCallback(
-    (make: (settings: DevelopSettings, selected: NodeId) => GraphOutcome, added?: "color_uniform"): void => {
+    (make: (settings: DevelopSettings, selected: NodeId) => GraphOutcome, added?: "color_uniform" | "blur"): void => {
       const { settings: current, selected: here } = latest.current;
       if (current) apply(make(current, here), added);
     },
@@ -166,6 +167,7 @@ export function useNodeGraph({ store, settings, photoId, selected, select, onAdd
     addFaceRefinement: () => act((s, here) => insertAfter(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0, kind: "face_refinement", name: "Face Refinement" })),
     addColorUniform: () =>
       act((s, here) => insertAfter(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0, kind: "color_uniform", name: COLOR_UNIFORM_NAME }), "color_uniform"),
+    addBlur: () => act((s, here) => insertAfter(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0, kind: "blur", name: BLUR_NAME }), "blur"),
     addParallel: () => act((s, here) => insertMixer(s, here, "parallel", { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),
     addLayer: () => act((s, here) => insertMixer(s, here, "layer", { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),
     addTrio: () => act((s, here) => insertTrio(s, here, { usedMax: used.current.get(latest.current.photoId ?? -1) ?? 0 })),

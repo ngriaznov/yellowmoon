@@ -284,29 +284,47 @@ describe("layout A", () => {
 });
 
 describe("the Add node menu", () => {
-  it("opens upward from the button: Corrector, Film, Face Refinement, then Parallel, Layer and Splitter and combiner, all on, each with its line", async () => {
+  it("opens upward from the button: Corrector, Film, Face Refinement, Colour Uniform, Blur, then Parallel, Layer and Splitter and combiner, all on, each with its line", async () => {
     await setup();
     await openNodeView();
     await h!.user.click(within(graph()).getByRole("button", { name: "Add node" }));
     const menu = await screen.findByRole("menu", { name: "Add node" });
     expect(menu).toHaveAttribute("data-side", "top");
     const items = within(menu).getAllByRole("menuitem");
-    expect(items.map((i) => i.querySelector(".ym-menu-line__name")?.textContent)).toEqual(["Corrector", "Film", "Face Refinement", "Colour Uniform", "Parallel", "Layer", "Splitter and combiner"]);
+    expect(items.map((i) => i.querySelector(".ym-menu-line__name")?.textContent)).toEqual(["Corrector", "Film", "Face Refinement", "Colour Uniform", "Blur", "Parallel", "Layer", "Splitter and combiner"]);
     expect(within(items[0]!).getByText("Grades all or part of the photo.")).toBeInTheDocument();
     expect(within(items[1]!).getByText("Models a colour negative, a print and a scan.")).toBeInTheDocument();
     expect(items[1]).not.toHaveAttribute("aria-disabled");
     expect(within(items[2]!).getByText("Refines each face: skin, under-eyes and teeth.")).toBeInTheDocument();
     // The three items of `docs/25` are on, with their lines, and no "Later" tag.
     expect(within(items[3]!).getByText("Pulls colours toward one colour.")).toBeInTheDocument();
-    expect(within(items[4]!).getByText("Grade branches side by side.")).toBeInTheDocument();
-    expect(within(items[5]!).getByText("Blend one branch over another.")).toBeInTheDocument();
-    expect(within(items[6]!).getByText("Split a picture, then join it again.")).toBeInTheDocument();
+    expect(within(items[4]!).getByText("Soft, lens, motion or zoom blur.")).toBeInTheDocument();
+    expect(within(items[5]!).getByText("Grade branches side by side.")).toBeInTheDocument();
+    expect(within(items[6]!).getByText("Blend one branch over another.")).toBeInTheDocument();
+    expect(within(items[7]!).getByText("Split a picture, then join it again.")).toBeInTheDocument();
     for (const item of items) {
       expect(item).not.toHaveAttribute("aria-disabled");
       expect(within(item).queryByText("Later")).toBeNull();
     }
     await h!.user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+  });
+});
+
+describe("Add node > Blur (docs/33 section 4)", () => {
+  it("adds a Blur node after the selected one, selects it and opens its Blur tab, with its glyph on the card and its type as the head's line", async () => {
+    await setup();
+    await openNodeView();
+    await h!.user.click(within(graph()).getByRole("button", { name: "Add node" }));
+    const menu = await screen.findByRole("menu", { name: "Add node" });
+    await h!.user.click(within(menu).getByRole("menuitem", { name: /^Blur/ }));
+    await waitFor(() => expect(h!.store.currentSettings()!.settings.nodes.items.some((n) => n.kind === "blur")).toBe(true));
+    const added = h!.store.currentSettings()!.settings.nodes.items.find((n) => n.kind === "blur")!;
+    expect(added).toMatchObject({ name: "Blur", type: "soft", soft: { radius: 20 }, respect_mask_edges: true });
+    await waitFor(() => expect(within(tools()).getAllByRole("tab").map((t) => t.textContent)).toEqual(["Blur", "Mask"]));
+    expect(within(tools()).getByRole("tab", { selected: true })).toHaveTextContent("Blur");
+    expect(within(tools()).getByRole("group", { name: "Node" })).toHaveTextContent("Soft");
+    expect(document.querySelector('[data-glyph="blur"]')).not.toBeNull();
   });
 });
 

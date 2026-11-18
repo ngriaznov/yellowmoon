@@ -236,6 +236,24 @@ describe("node thumbnails (docs/23 §5.7)", () => {
     expect(new Set(seen[0]?.thumbnails.map((t) => t.url)).size).toBe(3);
   });
 
+  it("gives a Blur node a picture of its own, draws no blur, and counts the nodes before it for the ones after it (docs/33, BL-12)", async () => {
+    await api.updateSettings(1, {
+      nodes: { "2": { kind: "corrector", name: "Warmth", pos: [1, 0], trim: { temperature: 40 } }, "3": { kind: "blur", pos: [2, 0] }, "4": { kind: "corrector", name: "Lift", pos: [3, 0], trim: { exposure_ev: 0.5 } } },
+      links: [picture("input", 1), picture(1, 2), picture(2, 3), picture(3, 4), picture(4, "output")],
+    });
+    const seen = listen();
+    await ask();
+    expect(nodes(seen[0])).toEqual([1, 2, 3, 4]);
+    // The mock draws no blur, so moving its slider changes no picture; a change before it reaches the node after it.
+    await api.updateSettings(1, { nodes: { "3": { type: "lens", lens: { radius: 80 } } } });
+    await ask();
+    expect(seen).toHaveLength(1);
+    await api.updateSettings(1, { nodes: { "2": { trim: { temperature: -40 } } } });
+    await ask();
+    expect(nodes(seen[1])).toContain(4);
+    expect(nodes(seen[1])).toContain(3);
+  });
+
   it("sends only the thumbnails that changed: a change to node 3 leaves nodes 1 and 2 alone", async () => {
     await api.updateSettings(1, three);
     const seen = listen();

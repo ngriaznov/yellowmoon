@@ -50,10 +50,10 @@ export type FilmItem = Extract<NodeItem, { kind: "film" }>;
 export type FaceRefinementItem = Extract<NodeItem, { kind: "face_refinement" }>;
 /** A Colour Uniform node as an item of the graph (`docs/32`). */
 export type ColorUniformItem = Extract<NodeItem, { kind: "color_uniform" }>;
-/** A Blur node as an item of the graph (`docs/33`). The node view lists it from BL-12. */
+/** A Blur node as an item of the graph (`docs/33`). */
 export type BlurItem = Extract<NodeItem, { kind: "blur" }>;
-/** A node that has a card in the node view and a number: a corrector (Main included), a Film node, a Face Refinement node or a Colour Uniform node. */
-export type CardItem = CorrectorItem | FilmItem | FaceRefinementItem | ColorUniformItem;
+/** A node that has a card in the node view and a number: a corrector (Main included), a Film node, a Face Refinement node, a Colour Uniform node or a Blur node. */
+export type CardItem = CorrectorItem | FilmItem | FaceRefinementItem | ColorUniformItem | BlurItem;
 /** A node of `docs/25` as an item of the graph: a Parallel, a Layer, a Splitter or a Combiner. It has a glyph card and no number. */
 export type MixerItem = Extract<NodeItem, { kind: "parallel" | "layer" | "splitter" | "combiner" }>;
 
@@ -114,11 +114,11 @@ export function correctorsOf(settings: DevelopSettings): CorrectorItem[] {
   return settings.nodes.items.filter((item): item is CorrectorItem => item.kind === "corrector");
 }
 
-/** True for a node that has a card, a number and masks: a corrector, a Film node, a Face Refinement node or a Colour Uniform node. */
+/** True for a node that has a card, a number and masks: a corrector, a Film node, a Face Refinement node, a Colour Uniform node or a Blur node. */
 export const isCardItem = (item: NodeItem | undefined): item is CardItem =>
-  item?.kind === "corrector" || item?.kind === "film" || item?.kind === "face_refinement" || item?.kind === "color_uniform";
+  item?.kind === "corrector" || item?.kind === "film" || item?.kind === "face_refinement" || item?.kind === "color_uniform" || item?.kind === "blur";
 
-/** Every node that has a card, in the order the document lists them: the correctors, the Film nodes, the Face Refinement nodes and the Colour Uniform nodes, by id. */
+/** Every node that has a card, in the order the document lists them: the correctors, the Film nodes, the Face Refinement nodes, the Colour Uniform nodes and the Blur nodes, by id. */
 export function cardsOf(settings: DevelopSettings): CardItem[] {
   return settings.nodes.items.filter(isCardItem);
 }

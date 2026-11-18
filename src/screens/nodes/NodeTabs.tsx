@@ -257,6 +257,10 @@ export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite
       <UniformTab store={store} rs={rs} node={node} item={item} picking={pickingUniform} onPick={onPickUniform ?? (() => undefined)} />
     );
   }
+  if (item?.kind === "blur") {
+    // The Blur tab's cards are BL-13; until then the tab is empty and the Mask tab is a corrector's.
+    return tab === "mask" ? <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} pickingDepth={pickingDepth} onPickDepth={onPickDepth} /> : null;
+  }
   if (item?.kind === "face_refinement") {
     return tab === "mask" ? (
       <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} pickingDepth={pickingDepth} onPickDepth={onPickDepth} />

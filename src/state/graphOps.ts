@@ -28,6 +28,8 @@ import {
   defaultFaceSettings,
   FACE_REFINEMENT_NAME,
   COLOR_UNIFORM_NAME,
+  BLUR_NAME,
+  newBlur,
   DEFAULT_STOCK,
   nodeAsPatch,
   nodeOf,
@@ -422,6 +424,11 @@ export function addColorUniformNode(id: number, pos: NodePos, name = COLOR_UNIFO
   return { [String(id)]: nodeAsPatch(newColorUniform(id, clampPos(pos), name)) };
 }
 
+/** A new Blur node (`docs/33` section 2.5): Soft at Radius 20, Respect mask edges on, no masks, as a patch that adds it whole. */
+export function addBlurNode(id: number, pos: NodePos, name = BLUR_NAME): Record<string, NodePatch> {
+  return { [String(id)]: nodeAsPatch(newBlur(id, clampPos(pos), name)) };
+}
+
 /** A new Film node (`docs/24` section 4.5), Portra 400 on its matching paper, as a patch that adds it whole. */
 export function addFilmNode(id: number, pos: NodePos, name = FILM_DEFAULT_NAME): Record<string, NodePatch> {
   return { [String(id)]: nodeAsPatch(newFilm(id, clampPos(pos), name)) };
@@ -434,7 +441,7 @@ export function addFilmNode(id: number, pos: NodePos, name = FILM_DEFAULT_NAME):
  * Output's incoming link. N's `pos` is the node's plus one unit to the right, the nodes downstream of N move one unit right (as far as
  * it takes to leave N its unit: none where a gap is), and N is selected. Refused at 64 nodes.
  */
-export function insertAfter(settings: DevelopSettings, selected: NodeId, options: { usedMax?: number; name?: string; kind?: "corrector" | "film" | "face_refinement" | "color_uniform" } = {}): GraphOutcome {
+export function insertAfter(settings: DevelopSettings, selected: NodeId, options: { usedMax?: number; name?: string; kind?: "corrector" | "film" | "face_refinement" | "color_uniform" | "blur" } = {}): GraphOutcome {
   if (numberedOf(settings).length >= MAX_CORRECTORS) return refuse(GRAPH_OP_TEXT.tooMany);
   const links = settings.nodes.links;
   let after: NodeId = selected === INPUT_ID ? MAIN_ID : selected;
@@ -456,7 +463,9 @@ export function insertAfter(settings: DevelopSettings, selected: NodeId, options
         ? addFaceRefinementNode(id, slot.pos, options.name)
         : options.kind === "color_uniform"
           ? addColorUniformNode(id, slot.pos, options.name)
-          : addNode(id, slot.pos, options.name);
+          : options.kind === "blur"
+            ? addBlurNode(id, slot.pos, options.name)
+            : addNode(id, slot.pos, options.name);
   const nodes = { ...added, ...shifted(settings, downstreamOf(next, id), id, slot.delta) };
   return done({ nodes, links: next }, id);
 }
@@ -523,6 +532,10 @@ export function resetNode(settings: DevelopSettings, id: NodeId, defaults: { loo
   } else if (node.kind === "color_uniform") {
     // The target goes back to none and the three amounts to 0; the masks, the name, the bypass and the links stay (`docs/32` section 5.3).
     patch = { target: null, compress: { hue: 0, saturation: 0, lightness: 0 } };
+  } else if (node.kind === "blur") {
+    // The type and every type's values go back to the defaults, Zoom's centre too; the masks, the name, the bypass and the links stay (`docs/33` section 2.6).
+    const { type, soft, lens, motion, zoom, respect_mask_edges } = newBlur(0, [0, 0]);
+    patch = { type, soft, lens, motion, zoom, respect_mask_edges };
   } else if (node.kind === "layer") {
     // A Layer's Mode and Opacity; its inputs, name and bypass stay.
     patch = { mode: "normal", opacity: 1 };
@@ -791,6 +804,9 @@ export function maskKindNames(node: Pick<CardItem, "masks">): string[] {
   return names;
 }
 
+/** What a Blur node's head says of its type (`docs/33` section 2.6). */
+export const BLUR_TYPE_NAME: Readonly<Record<"soft" | "lens" | "motion" | "zoom", string>> = { soft: "Soft", lens: "Lens", motion: "Motion", zoom: "Zoom" };
+
 /**
  * The quiet line of a node's head (`docs/23` §7.5). The Input and the Output say what they do; a corrector says what it acts on, after
  * "Corrector ·": "whole photo" with no mask rows, the kind of the row when it has one ("Linear"), "2 masks" from two rows, and "bypassed" or
@@ -812,6 +828,8 @@ export function headLine(settings: DevelopSettings, id: NodeId, states: Readonly
   }
   // A Colour Uniform node's line is short, so it is not cut at 400 px: the corrector's mask text is not repeated (`docs/32` §2.6).
   if (node.kind === "color_uniform") return node.bypass ? "Bypassed" : states.get(node.id as number)?.live === false ? "Not connected" : "Colour Uniform";
+  // A Blur node's line is its type (`docs/33` section 2.6).
+  if (node.kind === "blur") return node.bypass ? "Bypassed" : states.get(node.id as number)?.live === false ? "Not connected" : BLUR_TYPE_NAME[node.type];
   const label = node.kind === "film" ? "Film" : node.kind === "face_refinement" ? "Faces" : "Corrector";
   if (node.bypass) return `${label} · bypassed`;
   if (states.get(node.id as number)?.live === false) return `${label} · not connected`;
