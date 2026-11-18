@@ -456,7 +456,7 @@ const fn registry(t: &Tuning) -> [Constant; 44] {
         "RC-11, 2026-11-18: kept; every other value in the grid is better on one number of the section 6.4 gate and worse on another (rule 4, answer 1)",
     );
     const SIGMA: Status = Status::Fitted(
-        "RC-11, 2026-11-18: kept at 0.75; 0.76 to 0.9 raise the mean PSNR, MTF50 and the Kodak and lamps PSNR and lower the mean overshoot, but worsen 77 of the 168 gate numbers (overshoot 15, undershoot 23, flat noise 22, ISO 6400 PSNR 13; at 0.78 the f/8 ISO 100 overshoot goes from 1.65 to 1.84 %); mixed, reported to the owner",
+        "RC-11, 2026-11-18: kept at 0.75; 0.76 to 0.9 raise the mean PSNR, MTF50 and the Kodak PSNR and lower the mean overshoot, but worsen 77 of the 168 gate numbers (overshoot 15, undershoot 23, flat noise 22, ISO 6400 PSNR 13; at 0.78 the f/8 ISO 100 overshoot goes from 1.65 to 1.84 %); mixed, reported to the owner",
     );
     const SMALL: Status = Status::Fitted(
         "RC-11, 2026-11-18: kept; the values that worsen no number change none by more than 1e-4 (rule 3)",
