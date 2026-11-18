@@ -110,6 +110,19 @@ describe("sample_chroma", () => {
     expect([near?.a, near?.b]).toEqual(hexChroma(SCENE.near));
   });
 
+  it("answers the tone, and reads the same square mean whatever the radius (a flat shape's mean is its colour)", async () => {
+    await api.viewportSetRect({ x: 0, y: 0, width: 1500, height: 1000, scale: 1 });
+    const one = await api.sampleChroma(20, 20);
+    expect(one?.tone).toBeGreaterThan(0);
+    expect(one?.tone).toBeLessThan(1);
+    expect(await api.sampleChroma(20, 20, undefined, undefined, 3)).toEqual(one);
+    expect(await api.sampleChroma(20, 20, 1, "node_input", 3)).toEqual(await api.sampleChroma(20, 20, 1, "node_input"));
+    // On the paper there is nothing to read, with a radius too.
+    await api.updateSettings(4, inputPatch({ orientation: 90 }));
+    await api.viewportSetRect({ x: 0, y: 0, width: 900, height: 600, scale: 2 });
+    expect(await api.sampleChroma(20, 300, undefined, undefined, 3)).toBeNull();
+  });
+
   it("is null on the paper around a letterboxed photo", async () => {
     await api.updateSettings(4, inputPatch({ orientation: 90 }));
     await api.viewportSetRect({ x: 0, y: 0, width: 900, height: 600, scale: 2 });
