@@ -330,8 +330,8 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     let blocks = json_blocks(&doc[start..end]);
     assert_eq!(
         blocks.len(),
-        9,
-        "the complete small file, the per-file example, the Brush row, the Object row, the Parallel and the Splitter-and-Combiner examples of docs/25, the Face Refinement example of docs/27, the Colour Uniform example of docs/32 and the Blur example of docs/33"
+        11,
+        "the complete small file, the per-file example, the Brush row, the Object row, the Parallel and the Splitter-and-Combiner examples of docs/25, the Face Refinement example of docs/27, the Colour Uniform example of docs/32, the Blur example of docs/33 and its two Blur the background examples (Depth and Subject)"
     );
 
     // The complete small file: read over the default graph, checked, and written back unchanged.
@@ -562,6 +562,27 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     let written = serde_json::to_value(&settings).expect("writes");
     let (again, _) = DevelopSettings::from_value(written, &LookId::neutral()).expect("reads again");
     assert_eq!(again, settings, "written back unchanged");
+    // The two Blur the background examples (BL-10): a Lens node with an inverted Depth row and with an inverted Subject row, read
+    // as written (the rows' own fields, no clamping), and written back unchanged.
+    for (index, kind) in [(9, "depth"), (10, "subject")] {
+        let value: Value = serde_json::from_str(&blocks[index]).expect("the example is JSON");
+        assert_eq!(
+            value["nodes"]["items"][0]["masks"]["items"][0]["kind"],
+            kind
+        );
+        let (settings, clamped) = DevelopSettings::from_value(value, &LookId::neutral())
+            .unwrap_or_else(|e| panic!("the {kind} example reads: {e:?}"));
+        assert!(clamped.is_empty(), "{kind}: {clamped:?}");
+        let node = settings.nodes.blur(2).expect("node 2");
+        assert_eq!(node.blur_type, ym_core::settings::BlurType::Lens, "{kind}");
+        assert!(node.respect_mask_edges, "{kind}");
+        assert_eq!(node.masks.items.len(), 1, "{kind}");
+        assert!(node.masks.items[0].invert, "{kind}: the row is inverted");
+        let written = serde_json::to_value(&settings).expect("writes");
+        let (again, _) =
+            DevelopSettings::from_value(written, &LookId::neutral()).expect("reads again");
+        assert_eq!(again, settings, "{kind}: written back unchanged");
+    }
     // The unknown-kind sentence is quoted with “outside”, and “parallel” is a kind.
     let doc_text = read("docs/10-cli.md");
     assert!(doc_text.contains(
@@ -580,6 +601,8 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
         ("face", &blocks[6]),
         ("uniform", &blocks[7]),
         ("blur", &blocks[8]),
+        ("blur-depth", &blocks[9]),
+        ("blur-subject", &blocks[10]),
     ] {
         let file = sb.root().join(format!("{label}.json"));
         std::fs::write(&file, text).expect("write");

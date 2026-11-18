@@ -378,6 +378,42 @@ A Layer as the core writes it: `{ "id": 7, "kind": "layer", "name": "Layer", "by
   ] } }
 ```
 
+**Blur the background (`docs/33` section 5.5, task BL-10).** There is no flag and no preset for it (`docs/33` section 10, answer 7): it is a Blur node whose mask is the subject or the near part of the photo, inverted. With Respect mask edges on, which is the default, nothing from the subject is blurred into the background, so there is no glow around it. With Depth, which runs on any computer (the depth weights are in the data folder), the row is the gradient from the nearest part of the photo to `far`, and `"invert": true` blurs everything but it; `"far": 0.35` keeps the nearest third sharp:
+
+```json
+{ "nodes": {
+  "items": [
+    { "id": 2, "kind": "blur", "name": "Background", "pos": [1, 0],
+      "type": "lens",
+      "lens": { "radius": 40, "blades": 7, "highlights": 50 },
+      "masks": { "invert": false, "items": [
+        { "kind": "depth", "mode": "add", "invert": true, "far": 0.35, "feather": 0.02 } ] } }
+  ],
+  "links": [
+    { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+    { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+    { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+  ] } }
+```
+
+With Subject, which needs a Mac that supports it (Apple's Vision, above; on another computer the file is the `mask` error), the row is the main thing in the photo, inverted:
+
+```json
+{ "nodes": {
+  "items": [
+    { "id": 2, "kind": "blur", "name": "Background", "pos": [1, 0],
+      "type": "lens",
+      "lens": { "radius": 40, "blades": 7, "highlights": 50 },
+      "masks": { "invert": false, "items": [
+        { "kind": "subject", "mode": "add", "invert": true, "feather": 0.02 } ] } }
+  ],
+  "links": [
+    { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+    { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+    { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+  ] } }
+```
+
 Nothing is saved per photo: the settings live with the photo for this run, and each run starts from the automatic development and the default look.
 
 ### The help text

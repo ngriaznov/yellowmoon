@@ -1587,6 +1587,251 @@ fn the_settings_of_a_color_uniform_export_read_back_and_render_the_same_file() {
     }
 }
 
+/// The example file of `docs/33` section 5.1 as a graph (`docs/10`): a 6-blade lens blur of everything but what a Radial row holds
+/// (`invert`, with a feather), Respect mask edges on. Node 2, after Main.
+fn blur_example() -> serde_json::Value {
+    serde_json::json!({ "nodes": {
+      "items": [
+        { "id": 2, "kind": "blur", "name": "Blur", "bypass": false, "pos": [1, 0],
+          "type": "lens",
+          "soft": { "radius": 20 },
+          "lens": { "radius": 50, "blades": 6, "rotation_deg": 15, "highlights": 60 },
+          "motion": { "length": 20, "angle_deg": 0 },
+          "zoom": { "amount": 20, "center": [0.5, 0.5] },
+          "respect_mask_edges": true,
+          "masks": { "invert": false, "items": [
+            { "kind": "radial", "mode": "add", "invert": true, "enabled": true, "opacity": 1, "feather": 0.08 } ] } }
+      ],
+      "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+      ] } })
+}
+
+/// A Zoom Blur node with another mask on it, a feathered Linear and a brightness range taken away, a centre that is not the
+/// middle and Respect mask edges off, after a corrector. The other types' groups are in the file with values of their own.
+fn blur_other_mask() -> serde_json::Value {
+    serde_json::json!({ "nodes": {
+      "items": [
+        { "id": 2, "kind": "corrector", "pos": [1, 0], "grade": { "saturation": { "kind": "manual", "value": 30 } } },
+        { "id": 3, "kind": "blur", "name": "Rush", "pos": [2, 0],
+          "type": "zoom",
+          "soft": { "radius": 35 },
+          "lens": { "radius": 10, "blades": 0, "rotation_deg": 0, "highlights": 0 },
+          "motion": { "length": 45, "angle_deg": 30 },
+          "zoom": { "amount": 60, "center": [0.3, 0.6] },
+          "respect_mask_edges": false,
+          "masks": { "invert": false, "items": [
+            { "kind": "linear", "mode": "add", "center": [0.5, 0.45], "angle_deg": 20, "feather": 0.4 },
+            { "kind": "brightness_range", "mode": "subtract", "low": 0.8, "high": 1.0, "softness": 0.4 } ] } }
+      ],
+      "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+        { "from": { "node": 3, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+      ] } })
+}
+
+/// Blur (`docs/33` section 8, *App against `ym`*, BL-10): the example file of section 5.1 (with a Radial row) and a Zoom node with
+/// another mask are the same files through the app path and the binary, in JPEG, TIFF 16, DNG (`graph_leg`) and PNG 16, on the
+/// CPU. Soft, Lens, Motion and Zoom run on the exact kernels since BL-04; each type's own task adds its case here.
+#[test]
+fn a_blur_node_is_the_same_files_through_the_app_path_and_the_binary() {
+    blur_leg(false);
+}
+
+/// The device leg of Blur (BL-10). **The device has no Blur route until BL-05**: it refuses a plan with a live Blur node and the
+/// frame is the CPU's, with its reason (`RenderReport::cpu_reason`), on both sides. This leg holds that to be the same bytes on the
+/// two sides today; when BL-05 and the type tasks put the node on the device it is the same test, now with the node run there
+/// (`parity_gpu.rs` then adds the check that the report names no fallback).
+#[test]
+fn a_blur_node_is_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
+    blur_leg(true);
+}
+
+fn blur_leg(device: bool) {
+    for (what, doc, correctors) in [
+        ("the example file of docs/33", blur_example(), 1),
+        ("a Zoom node with another mask", blur_other_mask(), 2),
+    ] {
+        if device {
+            blur_on_device_leg(what, &doc);
+        } else {
+            graph_leg(what, doc.clone(), correctors, false);
+            png16_leg(what, &doc, false);
+        }
+    }
+}
+
+/// One graph with a Blur node, exported through the app (its core has the device) and through the binary (`YELLOWMOON_GPU=on`) in
+/// every format. While the device refuses the node the CPU makes the frame on both sides, and the binary says why; `graph_leg`'s
+/// device branch (no note about a node) is the check for when the node runs on the device (BL-05 and the type tasks).
+fn blur_on_device_leg(what: &str, doc: &serde_json::Value) {
+    let sb = Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
+    let Some(app) = App::open_on_device(&[&arw]) else {
+        return;
+    };
+    let (settings, clamped) =
+        DevelopSettings::from_value(doc.clone(), &app.core.looks.effective_default())
+            .expect("settings");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    app.core
+        .session
+        .replace_settings(app.photo, settings)
+        .expect("replace");
+    let file = sb.root().join("graph.json");
+    std::fs::write(&file, doc.to_string()).expect("write");
+    for (name, options, flags) in [
+        ("jpeg", ExportOptions::default(), vec!["--format", "jpeg"]),
+        (
+            "tiff16",
+            ExportOptions {
+                format: FormatKind::Tiff,
+                bit_depth: BitDepth::Sixteen,
+                ..ExportOptions::default()
+            },
+            vec!["--format", "tiff", "--bits", "16"],
+        ),
+        (
+            "png16",
+            ExportOptions {
+                format: FormatKind::Png,
+                bit_depth: BitDepth::Sixteen,
+                ..ExportOptions::default()
+            },
+            vec!["--format", "png", "--bits", "16"],
+        ),
+        (
+            "dng",
+            ExportOptions {
+                format: FormatKind::Dng,
+                ..ExportOptions::default()
+            },
+            vec!["--format", "dng"],
+        ),
+    ] {
+        let from_app = app.export(options, &sb.root().join(format!("app-{name}")));
+        let mut args = flags;
+        args.extend(["--settings", file.to_str().expect("utf-8")]);
+        let from_cli = cli_export_env(
+            &sb,
+            &[&arw],
+            &args,
+            &sb.root().join(format!("cli-{name}")),
+            &[("YELLOWMOON_GPU", "on")],
+        );
+        assert_same_files(&from_app, &from_cli, &format!("{what}, {name}, device"));
+    }
+}
+
+/// A JSON value with every number as a float, so that `20` in a file and `20.0` in the settings it was read into are equal.
+fn as_floats(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Number(n) => n
+            .as_f64()
+            .and_then(serde_json::Number::from_f64)
+            .map_or(Value::Null, Value::Number),
+        Value::Array(a) => Value::Array(a.iter().map(as_floats).collect()),
+        Value::Object(o) => {
+            Value::Object(o.iter().map(|(k, v)| (k.clone(), as_floats(v))).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+/// The `ym:Settings` round trip of a Blur node (BL-10): each format's file holds the node in its XMP, with every type's group, the
+/// settings the file holds are a settings file `ym` reads, and rendering with them gives the same file again. The DNG bakes the
+/// node into its pixels and holds the settings all the same.
+#[test]
+fn the_settings_of_a_blur_export_read_back_and_render_the_same_file() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("DSC00001.ARW");
+    for (what, doc) in [
+        ("the example file", blur_example()),
+        ("a Zoom node", blur_other_mask()),
+    ] {
+        let file = sb.root().join("graph.json");
+        std::fs::write(&file, doc.to_string()).expect("write");
+        for (name, flags) in [
+            ("jpeg", vec!["--format", "jpeg"]),
+            ("tiff16", vec!["--format", "tiff", "--bits", "16"]),
+            ("png16", vec!["--format", "png", "--bits", "16"]),
+            ("dng", vec!["--format", "dng"]),
+        ] {
+            let mut args = flags.clone();
+            args.extend(["--settings", file.to_str().expect("utf-8")]);
+            let first = cli_export(
+                &sb,
+                &[&arw],
+                &args,
+                &sb.root().join(format!("first-{name}")),
+            );
+            let read = ym_export::xmp::read_ym(&first[0])
+                .expect("read")
+                .unwrap_or_else(|| panic!("{what}, {name}: no ym:Settings"));
+            let find = |doc: &serde_json::Value| {
+                doc["nodes"]["items"]
+                    .as_array()
+                    .expect("items")
+                    .iter()
+                    .find(|i| i["kind"] == "blur")
+                    .cloned()
+            };
+            let node = find(&read.settings)
+                .unwrap_or_else(|| panic!("{what}, {name}: the node is not in ym:Settings"));
+            let want = find(&doc).expect("node");
+            for field in [
+                "type",
+                "soft",
+                "lens",
+                "motion",
+                "zoom",
+                "respect_mask_edges",
+            ] {
+                assert_eq!(
+                    as_floats(&node[field]),
+                    as_floats(&want[field]),
+                    "{what}, {name}, {field}"
+                );
+            }
+            assert_eq!(
+                node["masks"]["items"].as_array().map(Vec::len),
+                want["masks"]["items"].as_array().map(Vec::len),
+                "{what}, {name}"
+            );
+            let back = sb.root().join(format!("back-{name}.json"));
+            std::fs::write(&back, read.settings.to_string()).expect("write");
+            let mut args = flags;
+            args.extend(["--settings", back.to_str().expect("utf-8")]);
+            let again = cli_export(
+                &sb,
+                &[&arw],
+                &args,
+                &sb.root().join(format!("again-{name}")),
+            );
+            let read_again = ym_export::xmp::read_ym(&again[0])
+                .expect("read")
+                .expect("ym:Settings");
+            assert_eq!(read_again.settings, read.settings, "{what}, {name}");
+            if name == "png16" {
+                let pixels = |file: &Path| {
+                    let all = bytes(file);
+                    let at = all
+                        .windows(4)
+                        .position(|w| w == b"IDAT")
+                        .expect("the image data");
+                    all[at..].to_vec()
+                };
+                assert_eq!(pixels(&first[0]), pixels(&again[0]), "{what}, {name}");
+            }
+        }
+    }
+}
+
 /// Whether this machine has SAM's weights (`data/models/sam2`, `tools/fetch/sam2.sh`): the Object tests need them and say so and pass without
 /// them, unless `YM_REQUIRE_SAM2` makes that a failure (CI's other jobs fetch none).
 fn sam_weights() -> bool {

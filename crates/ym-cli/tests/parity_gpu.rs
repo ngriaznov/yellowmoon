@@ -359,6 +359,92 @@ fn a_color_uniform_node_is_byte_identical_through_the_app_path_and_the_binary_on
     }
 }
 
+/// A Blur node (`docs/33`, BL-10) with a Radial row and another mask (a Linear) on a photo of six export tiles: the app (its core has
+/// the device) and the binary (`YELLOWMOON_GPU=on`) write the same bytes in a JPEG, a 16-bit TIFF, a 16-bit PNG and a DNG, which are
+/// not the files of the same graph without the node. **Until BL-05 the device refuses the node and the CPU makes every frame, with
+/// its reason, on both sides**; BL-05 and the type tasks run it here with no change to this test (each adds its own type's node).
+#[test]
+fn a_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    let _serial = serial();
+    let sb = Sandbox::new();
+    let arw = sb.arw_sized("blur.ARW", 2100, 1100, 9);
+    let Some(app) = App::open(&[&arw]) else {
+        return;
+    };
+    let doc = |node: bool| {
+        let items = if node {
+            serde_json::json!([
+              { "id": 2, "kind": "blur", "pos": [1, 0], "type": "lens",
+                "lens": { "radius": 12, "blades": 6, "rotation_deg": 15, "highlights": 60 },
+                "masks": { "invert": false, "items": [
+                  { "kind": "radial", "mode": "add", "invert": true, "feather": 0.1 },
+                  { "kind": "linear", "mode": "subtract", "center": [0.5, 0.8], "angle_deg": 10, "feather": 0.3 } ] } }
+            ])
+        } else {
+            serde_json::json!([{ "id": 2, "kind": "corrector", "pos": [1, 0] }])
+        };
+        serde_json::json!({ "nodes": { "items": items, "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+        ] } })
+    };
+    let settings_of = |doc: serde_json::Value| {
+        DevelopSettings::from_value(doc, &app.core.looks.effective_default())
+            .expect("settings")
+            .0
+    };
+    let file = sb.root().join("blur.json");
+    std::fs::write(&file, doc(true).to_string()).expect("write");
+    let tiff = || ExportOptions {
+        format: FormatKind::Tiff,
+        bit_depth: BitDepth::Sixteen,
+        ..ExportOptions::default()
+    };
+    app.core
+        .session
+        .replace_settings(app.photo, settings_of(doc(false)))
+        .expect("replace");
+    let without = app.export(tiff(), &sb.root().join("app-without"));
+    app.core
+        .session
+        .replace_settings(app.photo, settings_of(doc(true)))
+        .expect("replace");
+    for (name, options, flags) in [
+        ("jpeg", ExportOptions::default(), vec!["--format", "jpeg"]),
+        ("tiff16", tiff(), vec!["--format", "tiff", "--bits", "16"]),
+        (
+            "png16",
+            ExportOptions {
+                format: FormatKind::Png,
+                bit_depth: BitDepth::Sixteen,
+                ..ExportOptions::default()
+            },
+            vec!["--format", "png", "--bits", "16"],
+        ),
+        (
+            "dng",
+            ExportOptions {
+                format: FormatKind::Dng,
+                ..ExportOptions::default()
+            },
+            vec!["--format", "dng"],
+        ),
+    ] {
+        let from_app = app.export(options, &sb.root().join(format!("app-{name}")));
+        let mut args = flags;
+        args.extend(["--settings", file.to_str().expect("utf-8")]);
+        let from_cli = cli_export(&sb, &[&arw], &args, &sb.root().join(format!("cli-{name}")));
+        assert_same_files(&from_app, &from_cli, &format!("a Blur node, {name}"));
+        if name == "tiff16" {
+            assert!(
+                bytes(&from_app[0]) != bytes(&without[0]),
+                "the node changed no pixel"
+            );
+        }
+    }
+}
+
 /// An Object row (N-18, `docs/10`) on a photo of six export tiles, on the device: SAM's plane is made on the CPU from the photo's picture
 /// (the CPU reference path, whatever the device), taken to each tile through the raster planes with their halos, and the app (which found
 /// the object with a click) and the binary (which makes the features itself at export time from the stored points) write the same
