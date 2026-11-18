@@ -9,6 +9,7 @@ import { OptionalTooltip } from "@/components/OptionalTooltip";
 import { cardName, chipText } from "../../state/graphOps";
 import { isCardItem, nodeOf } from "../../state/settingsGraph";
 import type { CardItem } from "../../state/settingsGraph";
+import { BlurGlyph } from "./BlurGlyph";
 import { Port } from "./Port";
 import { useGraphUi } from "./graphUi";
 
@@ -67,7 +68,7 @@ function SlashGlyph() {
 }
 
 /** A glyph of the footer with the tooltip that names it. */
-function Tip({ text, glyph, className, children }: { text: string; glyph: "ai" | "mask" | "bypass" | "face" | "uniform"; className?: string; children: React.ReactNode }) {
+function Tip({ text, glyph, className, children }: { text: string; glyph: "ai" | "mask" | "bypass" | "face" | "uniform" | "blur"; className?: string; children: React.ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -195,6 +196,11 @@ export function NodeCard({ data }: NodeProps) {
                 {node.kind === "color_uniform" ? (
                   <Tip text="Colour Uniform" glyph="uniform" className="ym-gnode__face">
                     <FoldHorizontalIcon aria-hidden="true" width={13} height={13} />
+                  </Tip>
+                ) : null}
+                {node.kind === "blur" ? (
+                  <Tip text="Blur" glyph="blur" className="ym-gnode__face">
+                    <BlurGlyph />
                   </Tip>
                 ) : null}
                 {glyphs.ai ? (

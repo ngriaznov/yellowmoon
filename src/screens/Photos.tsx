@@ -342,7 +342,7 @@ export function Photos() {
   // A Film node has the corrector's panel until its own tabs are built (F-09, `docs/24` §4.1).
   const onKind: PanelKind = selectedItem ? panelKindOf(selectedItem.kind) : "corrector";
   // A corrector and a Film node both have masks (`docs/24` section 4.3).
-  const hasMasks = onKind === "corrector" || onKind === "film" || onKind === "face_refinement" || onKind === "color_uniform";
+  const hasMasks = onKind === "corrector" || onKind === "film" || onKind === "face_refinement" || onKind === "color_uniform" || onKind === "blur";
   const nodeTab = nodeTabs[onKind];
   const nodeTabList = NODE_TABS[onKind];
   const onNodeNow = useLatest(onNode);
@@ -436,7 +436,12 @@ export function Photos() {
   // The photos whose graph has more than the simple view shows (a glyph on their thumbnails): a Map that is the same while the answer is.
   const hiddenNodes = useAppState((s) => hiddenByPhoto(s.settings));
   // A Colour Uniform node that was just added opens on its Compress tab with Pick colour on (`docs/32` §4).
-  const onAdded = useCallback((id: NodeId): void => {
+  // A Blur node that was just added opens on its Blur tab (`docs/33` §4).
+  const onAdded = useCallback((id: NodeId, kind: "color_uniform" | "blur"): void => {
+    if (kind === "blur") {
+      setNodeTabs((was) => ({ ...was, blur: "blur" }));
+      return;
+    }
     setNodeTabs((was) => ({ ...was, color_uniform: "compress" }));
     setAsked({ mode: "uniform", node: id });
   }, []);

@@ -666,8 +666,8 @@ export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): Resolve
       const next = node.grade && have ? directGrade(stored as CorrectorItem, resolved as ResolvedCorrector, withoutAuto(node.grade), NO_ESTIMATES, NO_FLAGS) : null;
       change(id, () => (next?.stored ?? stored) as CorrectorItem);
       if (have) values = { ...values, nodes: values.nodes.map((n) => (n.id === id ? ((next?.resolved ?? resolved) as ResolvedCorrector) : n)) };
-    } else if (typeof id === "number" && (nodeOf(settings, id)?.kind === "film" || nodeOf(settings, id)?.kind === "face_refinement")) {
-      // A Film node (`docs/24`) or a Face Refinement node (`docs/27`): its fields are plain numbers and ids, so the page folds the patch in at once, as the core will.
+    } else if (typeof id === "number" && (nodeOf(settings, id)?.kind === "film" || nodeOf(settings, id)?.kind === "face_refinement" || nodeOf(settings, id)?.kind === "blur")) {
+      // A Film node (`docs/24`), a Face Refinement node (`docs/27`) or a Blur node (`docs/33`): its fields are plain numbers and ids, so the page folds the patch in at once, as the core will.
       settings = applyPatch(settings, { nodes: { [key]: node } });
     }
   }

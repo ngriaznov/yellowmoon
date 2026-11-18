@@ -2521,9 +2521,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     };
   }
 
-  /** What a node that is not Main does to a scene in the mock: a Film node, a Colour Uniform node, a Face Refinement node (nothing) or a corrector. */
+  /** What a node that is not Main does to a scene in the mock: a Film node, a Colour Uniform node, a Face Refinement node or a Blur node (nothing: the mock draws no blur) or a corrector. */
   function lookOf(item: CardItem): NodeLook | null {
-    return item.kind === "film" ? filmLook(item) : item.kind === "color_uniform" ? uniformLook(item) : item.kind === "face_refinement" ? null : item;
+    return item.kind === "film" ? filmLook(item) : item.kind === "color_uniform" ? uniformLook(item) : item.kind === "face_refinement" || item.kind === "blur" ? null : item;
   }
 
   /** The photo's scene through every live Film node (the mock draws their stocks flat). */
@@ -2589,8 +2589,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     while (typeof at === "number" && !seen.has(at)) {
       seen.add(at);
       const item = nodeOf(settings, at);
-      if (!item || (item.kind !== "corrector" && item.kind !== "film" && item.kind !== "color_uniform")) break;
-      chain.unshift(item.kind === "film" ? filmLook(item) : item.kind === "color_uniform" ? uniformLook(item) : item);
+      if (!item || (item.kind !== "corrector" && item.kind !== "film" && item.kind !== "color_uniform" && item.kind !== "blur")) break;
+      // A Blur node is passed through: the mock draws no blur, and the nodes before it still count.
+      if (item.kind !== "blur") chain.unshift(item.kind === "film" ? filmLook(item) : item.kind === "color_uniform" ? uniformLook(item) : item);
       at = linkInto(settings.nodes.links, { node: at, port: "picture" })?.from.node;
     }
     return chain;

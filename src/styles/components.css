@@ -16,7 +16,7 @@
 [data-tab="look"] { --tab: var(--tab-look); --tab-ink: var(--tab-look-ink); }
 [data-tab="light"] { --tab: var(--tab-light); --tab-ink: var(--tab-light-ink); }
 [data-tab="color"], [data-tab="compress"] { --tab: var(--tab-colour); --tab-ink: var(--tab-colour-ink); }
-[data-tab="detail"] { --tab: var(--tab-detail); --tab-ink: var(--tab-detail-ink); }
+[data-tab="detail"], [data-tab="blur"] { --tab: var(--tab-detail); --tab-ink: var(--tab-detail-ink); }
 [data-tab="curve"] { --tab: var(--tab-curve); --tab-ink: var(--tab-curve-ink); }
 [data-tab="raw"] { --tab: var(--tab-raw); --tab-ink: var(--tab-raw-ink); }
 [data-tab="lens"] { --tab: var(--tab-lens); --tab-ink: var(--tab-lens-ink); }
