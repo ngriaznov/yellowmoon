@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 use ym_color::display::OutputTarget;
 use ym_core::app::gpu::GpuStages;
 use ym_core::pipeline::{
-    FrameOptions, FullImage, FullRequest, FullTarget, NeutralOnly, PhotoSource, RenderOptions,
-    Renderer, ViewportRect, ViewportState,
+    FrameOptions, FullImage, FullRequest, FullTarget, MaskStyle, MaskView, NeutralOnly,
+    PhotoSource, RenderOptions, Renderer, ViewportRect, ViewportState,
 };
 use ym_core::settings::DevelopSettings;
 use ym_gpu::device::{Gpu, GpuConfig};
@@ -257,4 +257,41 @@ fn the_device_refuses_a_live_blur_node_and_the_cpu_makes_the_frame() {
     assert_ne!(got.rgba, off.rgba);
     // A node at its identity keeps the device and says nothing.
     assert!(!off.report.device_refused && off.report.cpu_reason.is_none());
+}
+
+/// Show mask on a Blur node does not run the blur (`docs/33` section 6): the plan ends at `m`, so the view is the same whatever
+/// the node blurs with.
+#[test]
+fn show_mask_does_not_run_the_blur() {
+    let d = photo();
+    let r = renderer(1024, 4);
+    let mut st = ViewportState::new(ViewportRect::cell(320.0, 210.0, 1.0));
+    st.mask_view = Some(MaskView {
+        node: 2,
+        style: MaskStyle::MaskOnly,
+        row: None,
+        depth: false,
+        face: None,
+    });
+    let masks = json!({ "items": [
+        { "kind": "linear", "center": [0.5, 0.5], "angle_deg": 20, "feather": 0.4 } ] });
+    let frame = |body: &Value| {
+        r.viewport_frame(
+            &d.source().with_settings(graph(body)),
+            &st,
+            &FrameOptions::default(),
+            &CancelToken::new(),
+        )
+        .expect("frame")
+        .rgba
+    };
+    // The grey is `m`: another radius, another type, and the switch change nothing in it.
+    let soft = frame(&json!({ "type": "soft", "soft": { "radius": 80 }, "masks": masks }));
+    let other = frame(&json!({ "type": "soft", "soft": { "radius": 10 }, "masks": masks }));
+    let lens = frame(
+        &json!({ "type": "lens", "lens": { "radius": 80 }, "respect_mask_edges": false, "masks": masks }),
+    );
+    let diff = |a: &[u8], b: &[u8]| a.iter().zip(b).filter(|(x, y)| x != y).count();
+    eprintln!("soft/other {} soft/lens {} of {}", diff(&soft, &other), diff(&soft, &lens), soft.len());
+    assert!(soft == other && soft == lens);
 }

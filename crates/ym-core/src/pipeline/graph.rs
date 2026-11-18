@@ -2344,8 +2344,9 @@ impl<'a> Job<'a> {
             return Ok(());
         }
         // The page names the node it has selected; one the photo no longer has (it was deleted a moment ago, an
-        // undo took it away) leaves the frame as the photo, not an error.
-        if self.src.settings.nodes.corrector(view.node).is_none() {
+        // undo took it away) leaves the frame as the photo, not an error. A node has a mask when it is a corrector, a Film, Face
+        // Refinement, Colour Uniform or Blur node (`NodeGraph::masks_of`), not only a corrector (BL-04).
+        if self.src.settings.nodes.masks_of(view.node).is_none() {
             self.mask = None;
             return Ok(());
         }
