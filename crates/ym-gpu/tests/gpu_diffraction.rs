@@ -74,7 +74,7 @@ macro_rules! note {
     }};
 }
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use common::{TestGpu, gpus};
 use serde_json::Value;
@@ -376,9 +376,8 @@ fn flat(w: usize, h: usize, rgb: [f32; 3]) -> RgbImage {
 // Vectors
 // ---------------------------------------------------------------------------------------------
 
-fn vector_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cpu_data/diffraction_deconvolution")
-}
+mod self_gen;
+use self_gen::{CLASSES, Class, Package};
 
 fn num(v: &Value, key: &str) -> f64 {
     v[key]
@@ -395,7 +394,7 @@ fn floats(v: &Value) -> Vec<f32> {
 }
 
 /// The setup a vector's `params` describe, or `None` when the stage is inactive.
-fn setup_of(params: &Value) -> Option<Setup> {
+fn setup_of(params: &Value, class: Class) -> Option<Setup> {
     let g0 = floats(&params["g0"]);
     let luma = floats(&params["luma"]);
     let n = &params["noise"];
@@ -414,9 +413,9 @@ fn setup_of(params: &Value) -> Option<Setup> {
         f_number: num(params, "f_number"),
         scale: num(params, "scale"),
         strength: num(params, "strength") as f32,
-        // The oracle vectors run under the constants they were made with. The device runs the shipped
-        // constants, which are these until a fit lands (`docs/29` RC-04 runs both sets on it).
-        tuning: &Tuning::ORACLE,
+        // The oracle vectors run under the constants they were made with, the self vectors under the
+        // shipped ones; the device builds its pipelines from the plan's constants (`docs/29` RC-04).
+        tuning: class.pick(&Tuning::ORACLE, &Tuning::DEFAULT),
     };
     let g0 = [g0[0], g0[1], g0[2]];
     let luma = [luma[0], luma[1], luma[2]];
@@ -432,17 +431,11 @@ struct Vector {
     tolerance: f64,
 }
 
-fn image_vectors() -> Vec<Vector> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(vector_dir())
-        .expect("vector directory")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        .collect();
-    files.sort();
+fn image_vectors(class: Class) -> Vec<Vector> {
+    let files: Vec<PathBuf> = self_gen::json_files(&class.dir(Package::Diffraction));
     let mut out = Vec::new();
     for path in files {
-        let text = std::fs::read_to_string(&path).expect("vector file");
-        let v: Value = serde_json::from_str(&text).expect("vector json");
+        let v: Value = self_gen::read_vector(&path);
         if v["input"].is_null() {
             continue; // planner vectors: nothing per pixel to run
         }
@@ -455,7 +448,7 @@ fn image_vectors() -> Vec<Vector> {
                 .expect("stem")
                 .to_string_lossy()
                 .into_owned(),
-            setup: setup_of(&v["params"]),
+            setup: setup_of(&v["params"], class),
             input: RgbImage::from_planar(w, h, floats(&input["data"])).expect("input image"),
             expected: floats(&v["expected"]["data"]),
             tolerance: num(&v, "tolerance"),
@@ -475,7 +468,13 @@ fn max_abs_diff(got: &[f32], want: &[f32]) -> f64 {
 #[test]
 fn every_image_vector_matches_on_the_gpu() {
     let Some(dev) = device() else { return };
-    let vectors = image_vectors();
+    for class in CLASSES {
+        every_image_vector_matches_under(dev, class);
+    }
+}
+
+fn every_image_vector_matches_under(dev: &TestGpu, class: Class) {
+    let vectors = image_vectors(class);
     assert_eq!(vectors.len(), 13, "the image vector set");
     let mut worst = 0.0f64;
     for v in &vectors {
@@ -494,8 +493,13 @@ fn every_image_vector_matches_on_the_gpu() {
         let d = max_abs_diff(&got.data, &v.expected);
         let against_cpu = diff(&got, &cpu(setup, &v.input));
         println!(
-            "{:<28} {:>2}x{:<2}: max |gpu - expected| {d:.3e} (vector tolerance {:.0e}, asserted {VECTOR_BOUND:.0e}); against the CPU port {:.3e}",
-            v.name, v.input.width, v.input.height, v.tolerance, against_cpu.max_abs
+            "{:<28} [{}] {:>2}x{:<2}: max |gpu - expected| {d:.3e} (vector tolerance {:.0e}, asserted {VECTOR_BOUND:.0e}); against the CPU port {:.3e}",
+            v.name,
+            class.label(),
+            v.input.width,
+            v.input.height,
+            v.tolerance,
+            against_cpu.max_abs
         );
         if v.tolerance == 0.0 {
             // Flat fields: an exact identity, on the GPU as on the CPU.
@@ -520,7 +524,82 @@ fn every_image_vector_matches_on_the_gpu() {
             worst = worst.max(d);
         }
     }
-    note!("vectors, worst |gpu - expected|: {worst:.3e}");
+    note!(
+        "vectors [{}], worst |gpu - expected|: {worst:.3e}",
+        class.label()
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The device keys its pipelines by their constants (`docs/29` RC-04)
+// ---------------------------------------------------------------------------------------------
+
+/// Tunings that are not the shipped one, in constants the shader reads (`RATIO_CAP`, `PULL_GAIN`,
+/// `GATE`).
+static TIGHT: Tuning = Tuning {
+    ratio_cap: 1.05,
+    pull_gain: 40.0,
+    gate: 0.9,
+    ..Tuning::DEFAULT
+};
+static LOOSE: Tuning = Tuning {
+    ratio_cap: 4.0,
+    pull_gain: 2.0,
+    gate: 0.1,
+    ..Tuning::DEFAULT
+};
+
+#[test]
+fn a_cached_pipeline_is_never_reused_for_another_tuning() {
+    // The pipeline cache is keyed by the kernel and the constants block it was built from. Three
+    // tunings run on one device, shipped first, then the others, then the shipped one again: each
+    // result is the CPU port under the same tuning, the three differ from one another, and the second
+    // run of a tuning gives the first run's bits (it found its own pipelines, not another's).
+    let Some(dev) = device() else { return };
+    let tunings: [&'static Tuning; 3] = [&Tuning::DEFAULT, &TIGHT, &LOOSE];
+    let c = cfg(3.76, 8.0);
+    let setups: Vec<Setup> = tunings
+        .iter()
+        .map(|&t| {
+            let params = DiffractionParams::new(c.pitch_um, c.f_number).with_tuning(t);
+            let plan =
+                DiffractionPlan::new(&params, c.g0, &NoiseDn::from_model(&c.model()), c.luma)
+                    .expect("an active plan");
+            Setup { plan }
+        })
+        .collect();
+    let img = scene(Kind::Edges, 72, 56, 61, &c, &setups[0].plan);
+    let cpus: Vec<RgbImage> = setups.iter().map(|s| cpu(s, &img)).collect();
+    let mut first = Vec::new();
+    for (i, s) in setups.iter().enumerate() {
+        let got = run_gpu(dev, s, &img);
+        let d = diff(&got, &cpus[i]).max_abs;
+        println!("tuning {i}: GPU against the CPU port under the same tuning: max {d:.3e}");
+        assert!(
+            d <= VECTOR_BOUND,
+            "tuning {i}: the GPU does not run this tuning's constants (max {d:.3e})"
+        );
+        first.push(got);
+    }
+    for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+        let apart = diff(&cpus[a], &cpus[b]).max_abs;
+        let gpu_apart = diff(&first[a], &cpus[b]).max_abs;
+        println!(
+            "tunings {a} and {b}: CPU results differ by {apart:.3e}; GPU {a} from CPU {b}: {gpu_apart:.3e}"
+        );
+        assert!(apart > 1e-4, "tunings {a} and {b} must change the picture");
+        assert!(
+            gpu_apart > 1e-4,
+            "the GPU result of tuning {a} is the CPU's of tuning {b}"
+        );
+    }
+    // Back again, in another order: the same bits as the first time.
+    for i in [0usize, 2, 1, 0] {
+        assert!(
+            bits_equal(&run_gpu(dev, &setups[i], &img).data, &first[i].data),
+            "tuning {i}: the second run gives other bits than the first"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

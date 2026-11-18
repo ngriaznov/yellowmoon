@@ -1,0 +1,8 @@
+{
+  "description": "Planner: f/8 on a 1/4-scale preview (effective pitch 15.04 um, noise scaled by 0.5). [self set: made by gen_self_vectors from our own Rust under the shipped constants; not an oracle]",
+  "expected": {"active":1,"gauss_radius":1,"gauss_sigma":0.210514143,"halo_px":13,"kernel":[0.0,0.0,0.0,0.0,0.0,0.0,0.00177039008,0.0394517705,0.00177039008,0.0,0.0,0.0394517705,0.83511138,0.0394517705,0.0,0.0,0.00177039008,0.0394517705,0.00177039008,0.0,0.0,0.0,0.0,0.0,0.0],"r80_um":3.714985053157184,"radius":2,"sigma0_dn":12.954255582963421,"sigma1_dn":1.1108182520263363,"support_um":14.859940212628736},
+  "input": null,
+  "name": "plan_p3.76_f8_scale0.25",
+  "params": {"f_number":8,"g0":[2,1,1.5],"luma":[0.298999995,0.587000012,0.114],"noise":{"a":0.000025,"b":4e-8,"q":0,"sigma_row":0.00005},"pixel_pitch_x_um":3.76,"pixel_pitch_y_um":3.76,"scale":0.25,"strength":1,"working_scale":65535},
+  "tolerance": 1e-6
+}

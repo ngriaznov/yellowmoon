@@ -1,0 +1,8 @@
+{
+  "description": "Planner: f/64 is outside [1, 50]; the stage is disabled (active 0). [self set: made by gen_self_vectors from our own Rust under the shipped constants; not an oracle]",
+  "expected": {"active":0,"gauss_radius":0,"gauss_sigma":0.0,"halo_px":0,"kernel":[],"r80_um":0.0,"radius":0,"sigma0_dn":0.0,"sigma1_dn":0.0,"support_um":0.0},
+  "input": null,
+  "name": "plan_f_out_of_range",
+  "params": {"f_number":64,"g0":[2,1,1.5],"luma":[0.298999995,0.587000012,0.114],"noise":{"a":0.000025,"b":4e-8,"q":0,"sigma_row":0.00005},"pixel_pitch_x_um":3.76,"pixel_pitch_y_um":3.76,"scale":1,"strength":1,"working_scale":65535},
+  "tolerance": 1e-6
+}
