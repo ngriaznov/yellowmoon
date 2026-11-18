@@ -2620,6 +2620,105 @@ fn seed_23_graph_0_export_matches_the_cpu_and_prints_its_stages() {
     );
 }
 
+/// Why seed 23 graph 0 differs on Metal (the two pixels (277, 314) and (278, 314) of the 640 x 420 export, value indices 603711 to
+/// 603716), on the CPU alone. The two pixels lie on a one-pixel dark line between bright rows (the CPU's values 191 and 5379 of 65535,
+/// the line's neighbours 22,000 and 40,000). Their own Depth plane codes on the CPU (42269 and 42271) do not change when the far limit
+/// moves by 5e-6, and their exports do; so what moves them is a one-code change of the plane at pixels around them, which the
+/// device's `f32` and the CPU's `f64` give differently at about 0.35 % of the pixels (`a_depth_row_plane_on_the_device_is_within_two_codes_of_the_cpu_through_every_step`
+/// counts them in the plane test). This test makes the same one-code changes on the CPU alone: it moves the Depth row's far limit by
+/// 5e-6 (0.3 of a code of the plane, which changes the codes of 13,600 pixels by one) and exports twice.
+///
+/// * With the Output's sharpening at its default (100), the export moves by 142 of 65535 at those two pixels, more than the bound of the
+///   device against the CPU (64): the **graph** is ill-conditioned for a one-code change of a mask next to the line, which no `f32`
+///   pipeline can promise to leave unchanged. The Output's sharpening at 0, 50, 100 and 200 puts the first pixel at 15077, 12624, 191 and 0:
+///   at 100 its sharpened luma is just above the 0 below which a pixel is black (`docs/algorithms/04` section 3.7), where the
+///   hue-preserving ratio `L' / L` is steep. (The cause inside the sharpener's halo limiter was not narrowed further.)
+/// * With the sharpening at 0 the same change moves no value by more than 1: the Depth path and the Colour Uniform node are well
+///   conditioned (a code of the plane is a code of 65535 of the mask, which blends the node's change linearly), so nothing in them is a
+///   decision that rounding can flip.
+///
+/// The test asserts both numbers on the CPU (no device is needed) and prints the same for seed 539's two Depth rows.
+#[test]
+fn a_one_code_change_of_a_depth_plane_moves_seed_23_only_through_output_sharpening() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let scene = Scene::new(
+        640,
+        420,
+        light("sony-ilce-7rm4", 4800.0),
+        Layout::Patchwork,
+        0.5,
+    )
+    .noise(2e-4, 2e-6)
+    .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let home = tempfile::tempdir().expect("dir");
+    let cpu_png = |doc: &Value| {
+        let settings = serde_json::from_value::<DevelopSettings>(doc.clone())
+            .expect("settings")
+            .validated()
+            .expect("a valid graph")
+            .0;
+        decode_png16_bytes(
+            &export(
+                &d,
+                &settings,
+                renderer(None, 256),
+                home.path(),
+                FormatKind::Png,
+            )
+            .2,
+        )
+    };
+    // The largest change of a value between two exports, with its index.
+    let moved = |a: &[u32], b: &[u32]| {
+        a.iter()
+            .zip(b)
+            .enumerate()
+            .map(|(i, (x, y))| (x.abs_diff(*y), i))
+            .max()
+            .unwrap_or((0, 0))
+    };
+    let with_sharpening = |doc: &Value, pct: u32| {
+        let mut doc = doc.clone();
+        if let Some(items) = doc["nodes"]["items"].as_array_mut() {
+            items.push(json!({ "id": "output", "output_sharpening": pct }));
+        }
+        doc
+    };
+    let full: Value = serde_json::from_str(SEED_23_GRAPH_0).expect("json");
+    let mut nudged = full.clone();
+    nudged["nodes"]["items"][1]["masks"]["items"][1]["far"] = json!(0.794994994994995 + 5e-6);
+    let (sharp, sharp_at) = moved(&cpu_png(&full), &cpu_png(&nudged));
+    let (flat, flat_at) = moved(
+        &cpu_png(&with_sharpening(&full, 0)),
+        &cpu_png(&with_sharpening(&nudged, 0)),
+    );
+    say(&format!(
+        "seed 23 graph 0, the CPU alone, the Depth row's far moved by 5e-6: the export moves by {sharp} of 65535 (value {sharp_at}) with the Output's sharpening at 100, by {flat} (value {flat_at}) with it at 0"
+    ));
+    assert!(
+        flat <= 2,
+        "with no output sharpening a one-code change of the plane moves the export by {flat} of 65535"
+    );
+    assert!(
+        sharp > TEN_BIT_CODE,
+        "the graph is no longer ill-conditioned for a one-code change of the plane ({sharp} of 65535): the pinned case needs a new look"
+    );
+    // Seed 539 (two Depth rows, two Film nodes in series): the same change of each row's far limit, reported.
+    let doc: Value = serde_json::from_str(SEED_539_GRAPH_0).expect("json");
+    let base = cpu_png(&doc);
+    for (row, far) in [(0usize, 0.23923923923923926), (1, 0.5027027027027027)] {
+        let mut nudged = doc.clone();
+        nudged["nodes"]["items"][1]["masks"]["items"][row]["far"] = json!(far + 5e-6);
+        let (m, at) = moved(&base, &cpu_png(&nudged));
+        say(&format!(
+            "seed 539 graph 0, the CPU alone, Depth row {row}'s far moved by 5e-6: the export moves by {m} of 65535 (value {at})"
+        ));
+    }
+}
+
 /// The other "seed 23 graph 0" of the log, from `generate_joined`: Main, a Splitter, a bypassed Parallel, a Layer (difference, opacity 0),
 /// a bypassed corrector and a Layer (subtract, opacity 0) that is the Output. No Film node and no Colour Uniform node. It is not the
 /// graph the Mac run failed on (that is `SEED_23_GRAPH_0`), and is pinned so that the two cannot be taken for each other again.
