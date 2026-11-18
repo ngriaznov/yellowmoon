@@ -2617,6 +2617,89 @@
       },
       "expected_hash": "",
       "reference": ""
+    },
+    {
+      "id": "synthetic/node-blur-motion__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l",
+      "tier": "synthetic",
+      "set": "default",
+      "group": "node-blur",
+      "file": "synthetic/arw/chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l.ARW",
+      "scene": "chart",
+      "light": "D6500",
+      "body": "ILCE-7RM4",
+      "model_id": 375,
+      "iso": 400,
+      "cfa": "RGGB",
+      "bits": 14,
+      "variant": "lossless-l",
+      "settings": {
+        "nodes": {
+          "items": [
+            {
+              "id": 2,
+              "kind": "blur",
+              "name": "Motion",
+              "pos": [
+                1,
+                0
+              ],
+              "type": "motion",
+              "motion": {
+                "length": 45,
+                "angle_deg": 20
+              },
+              "respect_mask_edges": true,
+              "masks": {
+                "invert": false,
+                "items": [
+                  {
+                    "kind": "radial",
+                    "mode": "add",
+                    "invert": true,
+                    "enabled": true,
+                    "opacity": 1,
+                    "feather": 0.1
+                  }
+                ]
+              }
+            }
+          ],
+          "links": [
+            {
+              "from": {
+                "node": "input",
+                "port": "picture"
+              },
+              "to": {
+                "node": 1,
+                "port": "picture"
+              }
+            },
+            {
+              "from": {
+                "node": 1,
+                "port": "picture"
+              },
+              "to": {
+                "node": 2,
+                "port": "picture"
+              }
+            },
+            {
+              "from": {
+                "node": 2,
+                "port": "picture"
+              },
+              "to": {
+                "node": "output",
+                "port": "picture"
+              }
+            }
+          ]
+        }
+      },
+      "expected_hash": "",
+      "reference": ""
     }
   ]
 }

@@ -1657,6 +1657,29 @@ fn blur_soft_example() -> serde_json::Value {
       ] } })
 }
 
+/// A Motion Blur node (BL-08) on a Radial row and a Linear row, Respect mask edges on, after Main: a line of 40 px at 20 degrees on
+/// the test photo, a type that runs on the device.
+fn blur_motion_example() -> serde_json::Value {
+    serde_json::json!({ "nodes": {
+      "items": [
+        { "id": 2, "kind": "blur", "name": "Motion", "pos": [1, 0],
+          "type": "motion",
+          "soft": { "radius": 20 },
+          "lens": { "radius": 20, "blades": 0, "rotation_deg": 0, "highlights": 0 },
+          "motion": { "length": 70, "angle_deg": 20 },
+          "zoom": { "amount": 20, "center": [0.5, 0.5] },
+          "respect_mask_edges": true,
+          "masks": { "invert": false, "items": [
+            { "kind": "radial", "mode": "add", "invert": true, "enabled": true, "opacity": 1, "feather": 0.1 },
+            { "kind": "linear", "mode": "subtract", "center": [0.5, 0.8], "angle_deg": 10, "feather": 0.3 } ] } }
+      ],
+      "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+      ] } })
+}
+
 /// Blur (`docs/33` section 8, *App against `ym`*, BL-10): the example file of section 5.1 (with a Radial row) and a Zoom node with
 /// another mask are the same files through the app path and the binary, in JPEG, TIFF 16, DNG (`graph_leg`) and PNG 16, on the
 /// CPU. Soft, Lens, Motion and Zoom run on the exact kernels since BL-04; each type's own task adds its case here.
@@ -1679,8 +1702,9 @@ fn blur_leg(device: bool) {
         ("the example file of docs/33", blur_example(), 1),
         ("a Zoom node with another mask", blur_other_mask(), 2),
         ("a Soft node with two mask rows", blur_soft_example(), 1),
+        ("a Motion node with two mask rows", blur_motion_example(), 1),
     ] {
-        if device && what.contains("Soft") {
+        if device && (what.contains("Soft") || what.contains("Motion")) {
             // The device runs it: no fallback note (`graph_leg`'s device branch).
             graph_leg(what, doc.clone(), correctors, true);
         } else if device {
@@ -1781,6 +1805,7 @@ fn the_settings_of_a_blur_export_read_back_and_render_the_same_file() {
         ("the example file", blur_example()),
         ("a Zoom node", blur_other_mask()),
         ("a Soft node", blur_soft_example()),
+        ("a Motion node", blur_motion_example()),
     ] {
         let file = sb.root().join("graph.json");
         std::fs::write(&file, doc.to_string()).expect("write");

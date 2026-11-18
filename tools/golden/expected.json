@@ -368,6 +368,12 @@
       "height": 832,
       "pipeline_version": "0.9.0"
     },
+    "synthetic/node-blur-motion__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
+      "pixels_sha256": "42b22f67b62a79f51e6d92d8c625ec71dd15f0ca1a77dcbffb664ebc5490ef0a",
+      "width": 1248,
+      "height": 832,
+      "pipeline_version": "0.13.0"
+    },
     "synthetic/node-blur-soft-off__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
       "pixels_sha256": "1d7f196d0c75be9c75b169e453a6a71bcec271fcebbfbee39552d9abf704104d",
       "width": 1248,
@@ -545,6 +551,13 @@
       "note": "new pictures",
       "changed": 0,
       "added": 2,
+      "max_delta_e_2000": 0.0
+    },
+    {
+      "pipeline_version": "0.13.0",
+      "note": "new pictures",
+      "changed": 0,
+      "added": 1,
       "max_delta_e_2000": 0.0
     }
   ]

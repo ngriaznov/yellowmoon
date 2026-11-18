@@ -379,6 +379,14 @@ fn a_soft_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_the
     blur_device_case("soft", soft);
 }
 
+/// The same for a Motion node (BL-08), which the device runs: a line of 30 px at 20 degrees on the photo of 2100 px.
+#[test]
+fn a_motion_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    let motion = serde_json::json!({ "id": 2, "kind": "blur", "pos": [1, 0], "type": "motion",
+        "motion": { "length": 45, "angle_deg": 20 } });
+    blur_device_case("motion", motion);
+}
+
 fn blur_device_case(type_name: &str, body: serde_json::Value) {
     let _serial = serial();
     let sb = Sandbox::new();
