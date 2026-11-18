@@ -385,7 +385,7 @@ test.describe("the toolbar and the photo switcher", () => {
     await expect(page.locator(".ym-graph__canvas")).toHaveAttribute("data-selected-node", "1");
   });
 
-  test("the Add node menu opens upward over the photo, with Corrector, Film and Face Refinement, then the three mixer items, all on", async ({ page }) => {
+  test("the Add node menu opens upward over the photo, with Corrector, Film, Face Refinement and Colour Uniform, then the three mixer items, all on", async ({ page }) => {
     await photos(page);
     await nodesButton(page).click();
     const button = page.getByRole("button", { name: "Add node" });
@@ -396,7 +396,7 @@ test.describe("the toolbar and the photo switcher", () => {
     await expect(menu).toBeVisible();
     const m = await box(menu);
     expect(m.y + m.height).toBeLessThanOrEqual(b.y + 1);
-    await expect(menu.getByRole("menuitem")).toHaveCount(6);
+    await expect(menu.getByRole("menuitem")).toHaveCount(7);
     await expect(menu.getByRole("menuitem").first()).toContainText("Corrector");
     await expect(menu.getByRole("menuitem").first()).toContainText("Grades all or part of the photo.");
     await expect(menu.getByRole("menuitem").nth(1)).toContainText("Film");
@@ -404,6 +404,9 @@ test.describe("the toolbar and the photo switcher", () => {
     await expect(menu.getByRole("menuitem").nth(1)).not.toHaveAttribute("aria-disabled", "true");
     await expect(menu.getByRole("menuitem").nth(2)).toContainText("Face Refinement");
     await expect(menu.getByRole("menuitem").nth(2)).toContainText("Refines each face: skin, under-eyes and teeth.");
+    await expect(menu.getByRole("menuitem").nth(3)).toContainText("Colour Uniform");
+    await expect(menu.getByRole("menuitem").nth(3)).toContainText("Pulls colours toward one colour.");
+    await expect(menu.getByRole("menuitem").nth(3)).not.toHaveAttribute("aria-disabled", "true");
     for (const [name, line] of [
       ["Parallel", "Grade branches side by side."],
       ["Layer", "Blend one branch over another."],
