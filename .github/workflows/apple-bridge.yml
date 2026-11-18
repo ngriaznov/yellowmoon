@@ -2,14 +2,16 @@
 #
 # Why this runner: crates/ym-apple/swift/AppleAuto.swift uses Foundation Models APIs that first ship in the macOS 27 SDK
 # (Attachment, capabilities, variant, LanguageModelError), and only the xcode-27 image (macOS 27, Xcode 27, Apple silicon)
-# has that SDK. On macos-14, macos-15 and macos-26 build.rs builds the stub, so they cannot check the bridge, and Linux has
+# has that SDK. On macos-15 and macos-26 build.rs builds the stub, so they cannot check the bridge, and Linux has
 # no Swift at all. A virtual Mac has no Apple Intelligence, so here the model reports itself unavailable (device_not_eligible
 # or apple_intelligence_off is expected): the job proves that the Swift compiles and links, that the binary carries the bridge
 # and links FoundationModels weakly, that clippy and the tests pass with the bridge, and that the probe runs. Answers from the
 # model itself are checked on a physical Mac (docs/19 section 13, "Waiting on Mykyta").
 #
-# The second job runs the same probe binary on older macOS, where FoundationModels does not exist (14, 15) or lacks its
+# The second job runs the same probe binary on older macOS, where FoundationModels does not exist (15) or lacks its
 # macOS 27 symbols (26). It must start and report macos_too_old, which only a weak link allows.
+# The macos-14 image was retired: jobs on it are cancelled at once (seen 2026-11-18, run 44316307485). macOS 14 is no longer
+# checked in CI; the app's minimum stays 14 (MACOSX_DEPLOYMENT_TARGET below).
 #
 # Runs on every push that touches the bridge, Checkpoint commits included (unlike mac-gpu.yml): nothing else can check it.
 name: Apple Auto bridge (Xcode 27)
@@ -226,7 +228,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-14, macos-15, macos-26]   # all Apple silicon
+        runner: [macos-15, macos-26]   # both Apple silicon
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:

@@ -99,7 +99,7 @@ jobs:
       # app's path against the binary with this Mac's own Vision (tests/parity.rs, `with_this_computers_vision`). The macos-15 and macos-26 runners (macos-latest
       # is one of them) are virtual Macs that do run the requests (a 768 x 512 mask in about 0.7 s, equal bytes twice; the numbers are in docs/STATUS.md), so the
       # two steps below set YM_REQUIRE_VISION: a "not supported" answer from the real provider fails them, where on a computer without Vision (a developer's
-      # Linux box, the macos-14 runner of apple-bridge.yml, which is not asked to) the same tests print the answer plainly and pass. The tests that play
+      # Linux box, a runner without Vision, which is not asked to) the same tests print the answer plainly and pass. The tests that play
       # Vision with a fake (tests/mask_vision.rs) do not read it. `cargo test --workspace` above sets nothing.
       - name: The Vision bridge is in the binary (nm)
         run: |
