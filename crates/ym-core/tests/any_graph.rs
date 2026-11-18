@@ -2798,9 +2798,10 @@ fn blur_graphs_are_the_same_bits_whatever_the_tiles_and_the_threads() {
     assert!(changed > 0, "no graph with a Blur node changed a pixel");
 }
 
-/// A plan with a live Blur node is refused by the device until BL-05 and made on the CPU, with the reason in the frame's report;
-/// the PNG export is the CPU's colour with the device's raw stages, within one 10-bit code of the CPU's (the unstable-pixel rule of
-/// `judge_export` applies as for every graph).
+/// A plan with a live Blur node of a type that has no device kernel (all but Lens until BL-06, BL-08 and BL-09) is refused by the
+/// device and made on the CPU, with the reason in the frame's report; the PNG export is the CPU's colour with the device's raw
+/// stages, within one 10-bit code of the CPU's (the unstable-pixel rule of `judge_export` applies as for every graph). The plans
+/// with a Lens node run on the device and are in the device sweeps (`device_graphs`).
 #[test]
 fn blur_graphs_are_refused_by_the_device_and_made_on_the_cpu() {
     let _serial = SERIAL
@@ -2813,7 +2814,10 @@ fn blur_graphs_are_refused_by_the_device_and_made_on_the_cpu() {
         .seed(5);
     let d = Developed::new(&scene, MODEL);
     let cpu = renderer(None, 256);
-    let live: Vec<Graph> = blur_graphs().into_iter().filter(Graph::blur_live).collect();
+    let live: Vec<Graph> = blur_graphs()
+        .into_iter()
+        .filter(Graph::blur_refused)
+        .collect();
     assert!(!live.is_empty());
     let mut problems: Vec<String> = Vec::new();
     for (n, g) in live.iter().enumerate() {

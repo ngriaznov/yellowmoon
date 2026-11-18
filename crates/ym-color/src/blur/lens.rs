@@ -27,7 +27,8 @@ pub const MAX_CELL_RADIUS: f64 = 8.0;
 /// The level `L` of the cell size `f = 2^L`: the smallest with `r_px / f <= 8` (0 when `r_px <= 8`).
 #[must_use]
 pub fn level_for(r_px: f64) -> u32 {
-    if !(r_px > MAX_CELL_RADIUS) {
+    // A radius that is NaN or at most 8 px is level 0.
+    if r_px.is_nan() || r_px <= MAX_CELL_RADIUS {
         return 0;
     }
     let mut level = 0;

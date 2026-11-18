@@ -7,6 +7,8 @@
 //! * the method against the exact aperture on an edge, a disc, a bright light and a noise field, at small and large radii,
 //!   round and hexagonal: the numbers are printed and held to what was measured (see the note on `MEASURED`).
 
+#![allow(clippy::needless_range_loop)]
+
 use ym_color::blur::lens::{self, cell_size, cell_table, level_for};
 use ym_color::blur::{self, BlurKind, BlurParams, Frame, aperture_table, radius_px, reach_px};
 use ym_color::consts::Vec3;
