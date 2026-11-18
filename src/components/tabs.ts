@@ -81,6 +81,8 @@ export const NODE_TABS: Readonly<Record<PanelKind, readonly TabId[]>> = {
   corrector: ["light", "color", "curve", "mask"],
   film: ["film", "print", "halation", "grain", "mask"],
   face_refinement: ["face", "mask"],
+  // The Compress tab is CU-09; until then the node has the Mask tab only.
+  color_uniform: ["mask"],
   output: ["look", "detail"],
   parallel: ["inputs"],
   layer: ["blend"],
@@ -99,6 +101,7 @@ export const FIRST_NODE_TAB: Readonly<Record<PanelKind, TabId>> = {
   splitter: "channels",
   combiner: "channels",
   face_refinement: "face",
+  color_uniform: "mask",
 };
 
 /**

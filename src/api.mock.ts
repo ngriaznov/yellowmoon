@@ -177,7 +177,7 @@ import {
   outputPatch,
   withoutLook,
 } from "./state/settingsGraph";
-import type { CorrectorItem, FaceRefinementItem, FilmItem, InputItem, MixerItem } from "./state/settingsGraph";
+import type { ColorUniformItem, CorrectorItem, FaceRefinementItem, FilmItem, InputItem, MixerItem } from "./state/settingsGraph";
 import { bytesToUrl } from "./state/photo";
 
 // ---------------------------------------------------------------------------
@@ -942,6 +942,21 @@ function clampFaceRefinement(s: FaceRefinementItem): FaceRefinementItem {
   };
 }
 
+/**
+ * A Colour Uniform node in its ranges (`docs/32` section 5.2): the name trimmed and cut, the target's hue read modulo 360 (not
+ * reported), its Saturation held to 2 to 50 and its Lightness to −4 to +8, the three amounts to 0 to 100.
+ */
+function clampColorUniform(s: ColorUniformItem): ColorUniformItem {
+  const name = s.name.trim().slice(0, 32);
+  const t = s.target;
+  return {
+    ...s,
+    name: name === "" ? "Uniform" : name,
+    target: t === null ? null : { hue_deg: ((t.hue_deg % 360) + 360) % 360 || 0, saturation: clamp(t.saturation, 2, 50), lightness_ev: clamp(t.lightness_ev, -4, 8) },
+    compress: { hue: clamp(s.compress.hue, 0, 100), saturation: clamp(s.compress.saturation, 0, 100), lightness: clamp(s.compress.lightness, 0, 100) },
+  };
+}
+
 /** A node of `docs/25` in its ranges: the name trimmed and cut (an empty one reads as the kind's name), a Layer's opacity 0 to 1. */
 function clampMixer(s: MixerItem): MixerItem {
   const name = s.name.trim().slice(0, 32);
@@ -957,6 +972,7 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
     if (item.kind === "film") return clampFilm(item);
     if (item.kind === "face_refinement") return clampFaceRefinement(item);
     if (item.kind === "corrector") return clampCorrector(item);
+    if (item.kind === "color_uniform") return clampColorUniform(item);
     return clampMixer(item);
   });
   return { nodes: { items, links: s.nodes.links } };

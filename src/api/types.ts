@@ -376,6 +376,7 @@ export type NodeKind =
   | "corrector"
   | "film"
   | "face_refinement"
+  | "color_uniform"
   | "parallel"
   | "layer"
   | "splitter"
@@ -678,6 +679,41 @@ export interface FaceRefinementNode {
   masks: MaskSettings;
 }
 
+/** A Colour Uniform node's target colour, in the units the panel shows (`docs/32` section 5.1). */
+export interface TargetValue {
+  /** Degrees, [0, 360) as the core stores it; any finite number is read modulo 360. */
+  hue_deg: number;
+  /** The chroma times 100, 2 to 50 (a lower value is held at 2). */
+  saturation: number;
+  /** Stops from middle grey, −4 to +8. */
+  lightness_ev: number;
+}
+
+/** A Colour Uniform node's Compress amounts, in percent, 0 to 100 each. */
+export interface UniformAmounts {
+  hue: number;
+  saturation: number;
+  lightness: number;
+}
+
+/**
+ * A Colour Uniform node: pulls the colours its masks let through toward one target colour (`docs/32`). It has no range of its own: the
+ * masks are its whole selection.
+ */
+export interface ColorUniformNode {
+  /** 2 to 2³¹ − 1; every numbered node shares the numbers. */
+  id: NodeId;
+  /** The card's name, 1 to 32 characters ("Uniform"). */
+  name: string;
+  /** A bypassed node passes its picture through. */
+  bypass: boolean;
+  pos: NodePos;
+  /** The colour pulled toward; `null` is none, and then the node does nothing. */
+  target: TargetValue | null;
+  compress: UniformAmounts;
+  masks: MaskSettings;
+}
+
 /** How a Layer blends an input over the ones below it (`docs/25` section 3.3), computed in linear light. */
 export type BlendMode =
   | "normal"
@@ -732,6 +768,7 @@ export type NodeItem =
   | ({ kind: "corrector" } & CorrectorNode)
   | ({ kind: "film" } & FilmNode)
   | ({ kind: "face_refinement" } & FaceRefinementNode)
+  | ({ kind: "color_uniform" } & ColorUniformNode)
   | ({ kind: "parallel" } & ParallelNode)
   | ({ kind: "layer" } & LayerNode)
   | ({ kind: "splitter" } & SplitterNode)
@@ -867,6 +904,10 @@ export interface NodePatch {
     grow?: number;
     refine?: number;
   };
+  /** A Colour Uniform node's target, all three numbers; `null` clears it. */
+  target?: TargetValue | null;
+  /** A Colour Uniform node's Compress amounts; only the amounts to change. */
+  compress?: Partial<UniformAmounts>;
   /** A Layer's blend mode. */
   mode?: BlendMode;
   /** A Layer's opacity, 0 to 1. */

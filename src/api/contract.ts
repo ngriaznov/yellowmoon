@@ -107,6 +107,9 @@ export type Both = AllTrue<{
   colorBalancePoints: Same<T.ColorBalancePoints, B.ColorBalancePoints>;
   balanceSetting: Same<T.BalanceSetting, B.BalanceSetting>;
   colorWarp: Same<T.ColorWarp, B.ColorWarp>;
+  targetValue: Same<T.TargetValue, B.TargetValue>;
+  uniformAmounts: Same<T.UniformAmounts, B.UniformAmounts>;
+  colorUniformNode: Same<T.ColorUniformNode, B.ColorUniformNode>;
   colorWarpPin: Same<T.ColorWarpPin, B.ColorWarpPin>;
   lensKind: Same<T.LensKind, B.LensKind>;
   lensSettings: Same<T.LensSettings, B.LensSettings>;

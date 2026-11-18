@@ -48,6 +48,8 @@ export type CorrectorItem = Extract<NodeItem, { kind: "corrector" }>;
 export type FilmItem = Extract<NodeItem, { kind: "film" }>;
 /** A Face Refinement node as an item of the graph (`docs/27`). The node view lists it from S-11c. */
 export type FaceRefinementItem = Extract<NodeItem, { kind: "face_refinement" }>;
+/** A Colour Uniform node as an item of the graph (`docs/32`). The node view lists it from CU-08. */
+export type ColorUniformItem = Extract<NodeItem, { kind: "color_uniform" }>;
 /** A node that has a card in the node view and a number: a corrector (Main included), a Film node or a Face Refinement node. */
 export type CardItem = CorrectorItem | FilmItem | FaceRefinementItem;
 /** A node of `docs/25` as an item of the graph: a Parallel, a Layer, a Splitter or a Combiner. It has a glyph card and no number. */
@@ -232,6 +234,8 @@ export type CorrectorPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "trim" 
 export type MixerPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "mode" | "opacity">;
 /** The fields of a Face Refinement node a patch may set (`docs/27`). */
 export type FaceRefinementPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "same_for_all" | "all" | "faces" | "protect" | "masks">;
+/** The fields of a Colour Uniform node a patch may set (`docs/32` section 5.3). */
+export type ColorUniformPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "target" | "compress" | "masks">;
 /** The fields of a Film node a patch may set. */
 export type FilmPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "film" | "print" | "halation" | "grain" | "strength" | "masks">;
 
@@ -242,7 +246,7 @@ export type FilmPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "film" | "pr
  */
 export function patchOf(node: typeof INPUT_ID, partial: InputPatch): SettingsPatch;
 export function patchOf(node: typeof OUTPUT_ID, partial: OutputPatch): SettingsPatch;
-export function patchOf(node: number, partial: CorrectorPatch | FilmPatch | FaceRefinementPatch | MixerPatch): SettingsPatch;
+export function patchOf(node: number, partial: CorrectorPatch | FilmPatch | FaceRefinementPatch | ColorUniformPatch | MixerPatch): SettingsPatch;
 export function patchOf(node: NodeId, partial: NodePatch): SettingsPatch {
   return { nodes: { [String(node)]: partial } };
 }
@@ -406,6 +410,23 @@ export function newFilm(id: number, pos: NodePos, name = FILM_NAME): FilmItem {
     halation: { amount: 100, size: 100 },
     grain: { amount: 100, size: 100, seed: 0 },
     strength: 100,
+    masks: { invert: false, items: [] },
+  };
+}
+
+/** The name a new Colour Uniform node has (`docs/32` section 4). */
+export const COLOR_UNIFORM_NAME = "Uniform";
+
+/** A new Colour Uniform node (`docs/32` section 2.5): no target, Compress 0, 0, 0, no masks. It changes no pixel. */
+export function newColorUniform(id: number, pos: NodePos, name = COLOR_UNIFORM_NAME): ColorUniformItem {
+  return {
+    kind: "color_uniform",
+    id,
+    name,
+    bypass: false,
+    pos,
+    target: null,
+    compress: { hue: 0, saturation: 0, lightness: 0 },
     masks: { invert: false, items: [] },
   };
 }
@@ -610,7 +631,7 @@ function applyGrade(grade: NodeGrade, patch: GradePatch): NodeGrade {
 
 /** A node with a node patch applied: whole fields replace, `rolloff`, `decode`, `lens`, `trim`, `grade` and `masks` merge their parts. */
 function applyNode(item: NodeItem, patch: NodePatch): NodeItem {
-  const { kind: _kind, rolloff, decode, lens, trim, grade, masks, film, print, halation, grain, all, protect, ...fields } = patch;
+  const { kind: _kind, rolloff, decode, lens, trim, grade, masks, film, print, halation, grain, all, protect, compress, ...fields } = patch;
   const next: Record<string, unknown> = { ...item };
   for (const [key, value] of Object.entries(fields)) if (value !== undefined) next[key] = value;
   if (item.kind === "input") {
@@ -643,6 +664,11 @@ function applyNode(item: NodeItem, patch: NodePatch): NodeItem {
     }
     if (masks) next.masks = applyMasks(item.masks, masks);
   }
+  if (item.kind === "color_uniform") {
+    // `compress` merges the amounts it names; `target` replaces whole (or clears with null), as the core does (`docs/32` section 5.3).
+    if (compress) next.compress = { ...item.compress, ...compress };
+    if (masks) next.masks = applyMasks(item.masks, masks);
+  }
   return next as unknown as NodeItem;
 }
 
@@ -653,6 +679,7 @@ function addedNode(id: NodeId, patch: NodePatch, correctors: number): NodeItem {
   if (patch.kind === "output") return applyNode(defaultOutput(NEUTRAL_LOOK, pos), patch);
   if (patch.kind === "film") return applyNode(newFilm(typeof id === "number" ? id : MAIN_ID, pos), patch);
   if (patch.kind === "face_refinement") return applyNode(newFaceRefinement(typeof id === "number" ? id : MAIN_ID, pos), patch);
+  if (patch.kind === "color_uniform") return applyNode(newColorUniform(typeof id === "number" ? id : MAIN_ID, pos), patch);
   if (patch.kind === "parallel" || patch.kind === "layer" || patch.kind === "splitter" || patch.kind === "combiner") {
     return applyNode(newMixer(patch.kind, typeof id === "number" ? id : MAIN_ID, pos), patch);
   }

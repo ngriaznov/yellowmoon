@@ -837,6 +837,8 @@ pub enum NodeKind {
     Film,
     /// A Face Refinement node (`docs/27`).
     FaceRefinement,
+    /// A Colour Uniform node (`docs/32`).
+    ColorUniform,
     /// A Parallel mixer (`docs/25`).
     Parallel,
     /// A Layer mixer (`docs/25`).
@@ -1376,6 +1378,47 @@ pub struct FaceRefinementNode {
     pub masks: MaskSettings,
 }
 
+/// A Colour Uniform node's target colour, in the units the panel shows (`docs/32` section 5.1).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct TargetValue {
+    /// The hue in degrees, [0, 360) as the core stores it (any finite number is read modulo 360).
+    pub hue_deg: Num,
+    /// The chroma times 100, 2 to 50.
+    pub saturation: Num,
+    /// Stops from middle grey, -4 to +8.
+    pub lightness_ev: Num,
+}
+
+/// A Colour Uniform node's `compress`: how far each axis is pulled to the target, in percent.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct UniformAmounts {
+    /// Hue, 0 to 100.
+    pub hue: Num,
+    /// Saturation, 0 to 100.
+    pub saturation: Num,
+    /// Lightness, 0 to 100.
+    pub lightness: Num,
+}
+
+/// A Colour Uniform node: pulls the colours its masks let through toward one colour (`docs/32`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ColorUniformNode {
+    /// 2 to 2147483647 (every numbered node shares the numbers).
+    pub id: NodeId,
+    /// The card's name, 1 to 32 characters.
+    pub name: String,
+    /// A bypassed node passes its picture through.
+    pub bypass: bool,
+    /// The card's place on the canvas, in grid units.
+    pub pos: [Num; 2],
+    /// The colour pulled toward; `null` is none and the node then does nothing.
+    pub target: Option<TargetValue>,
+    /// How far each axis is pulled.
+    pub compress: UniformAmounts,
+    /// The masks: the node's whole selection.
+    pub masks: MaskSettings,
+}
+
 /// How a Layer blends an input over the ones below it (`docs/25` section 3.3), in linear light.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
@@ -1462,6 +1505,8 @@ pub enum NodeItem {
     Film(FilmNode),
     /// A Face Refinement node.
     FaceRefinement(FaceRefinementNode),
+    /// A Colour Uniform node.
+    ColorUniform(ColorUniformNode),
     /// A Parallel mixer.
     Parallel(ParallelNode),
     /// A Layer mixer.
@@ -1750,6 +1795,21 @@ pub struct GrainPatch {
     pub seed: Option<u32>,
 }
 
+/// A Colour Uniform node's `compress` to change. Serialising leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct UniformAmountsPatch {
+    /// New Hue amount, percent.
+    #[serde(default)]
+    pub hue: Option<Num>,
+    /// New Saturation amount, percent.
+    #[serde(default)]
+    pub saturation: Option<Num>,
+    /// New Lightness amount, percent.
+    #[serde(default)]
+    pub lightness: Option<Num>,
+}
+
 /// A Face Refinement node's `all` to change. Serialising leaves absent fields out (see [`NodePatch`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
@@ -1879,6 +1939,7 @@ macro_rules! serialize_present {
 
 serialize_present!(FilmStockPatch, stock, exposure_ev);
 serialize_present!(LightsPatch, c, m, y);
+serialize_present!(UniformAmountsPatch, hue, saturation, lightness);
 serialize_present!(PrintPatch, paper, exposure_ev, lights);
 serialize_present!(HalationPatch, amount, size);
 serialize_present!(GrainPatch, amount, size, seed);
@@ -2177,6 +2238,13 @@ pub struct NodePatch {
     /// A Face Refinement node's protection plane to change.
     #[serde(default)]
     pub protect: Option<ProtectPatch>,
+    /// A Colour Uniform node's new target, all three numbers; `null` clears it.
+    #[serde(default, deserialize_with = "double_option")]
+    #[specta(type = Option<TargetValue>)]
+    pub target: Option<Option<TargetValue>>,
+    /// A Colour Uniform node's amounts to change.
+    #[serde(default)]
+    pub compress: Option<UniformAmountsPatch>,
     /// A Layer's new blend mode.
     #[serde(default)]
     pub mode: Option<BlendMode>,
@@ -2226,6 +2294,8 @@ impl Serialize for NodePatch {
             all,
             faces,
             protect,
+            target,
+            compress,
             mode,
             opacity,
         );

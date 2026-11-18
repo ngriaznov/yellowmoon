@@ -973,6 +973,24 @@ export type ColorSpace =
 /**  Rec.2020. */
 "rec2020";
 
+/**  A Colour Uniform node: pulls the colours its masks let through toward one colour (`docs/32`). */
+export type ColorUniformNode = {
+	/**  2 to 2147483647 (every numbered node shares the numbers). */
+	id: "input" | "output" | number,
+	/**  The card's name, 1 to 32 characters. */
+	name: string,
+	/**  A bypassed node passes its picture through. */
+	bypass: boolean,
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
+	/**  The colour pulled toward; `null` is none and the node then does nothing. */
+	target: TargetValue | null,
+	/**  How far each axis is pulled. */
+	compress: UniformAmounts,
+	/**  The masks: the node's whole selection. */
+	masks: MaskSettings,
+};
+
 /**  Colour › Colour warp: at most 16 pins, in order; none by default. */
 export type ColorWarp = {
 	/**  The pins. */
@@ -2643,6 +2661,10 @@ export type NodeItem =
 {
 	kind: "face_refinement",
 } & FaceRefinementNode | 
+/**  A Colour Uniform node. */
+{
+	kind: "color_uniform",
+} & ColorUniformNode | 
 /**  A Parallel mixer. */
 {
 	kind: "parallel",
@@ -2672,6 +2694,8 @@ export type NodeKind =
 "film" | 
 /**  A Face Refinement node (`docs/27`). */
 "face_refinement" | 
+/**  A Colour Uniform node (`docs/32`). */
+"color_uniform" | 
 /**  A Parallel mixer (`docs/25`). */
 "parallel" | 
 /**  A Layer mixer (`docs/25`). */
@@ -2762,6 +2786,10 @@ export type NodePatch = {
 	faces?: FaceSettings[] | null,
 	/**  A Face Refinement node's protection plane to change. */
 	protect?: ProtectPatch | null,
+	/**  A Colour Uniform node's new target, all three numbers; `null` clears it. */
+	target?: TargetValue | null,
+	/**  A Colour Uniform node's amounts to change. */
+	compress?: UniformAmountsPatch | null,
 	/**  A Layer's new blend mode. */
 	mode?: BlendMode | null,
 	/**  A Layer's new opacity, 0 to 1. */
@@ -3735,6 +3763,16 @@ export type SubjectSource =
 /**  The picture alone. */
 "picture";
 
+/**  A Colour Uniform node's target colour, in the units the panel shows (`docs/32` section 5.1). */
+export type TargetValue = {
+	/**  The hue in degrees, [0, 360) as the core stores it (any finite number is read modulo 360). */
+	hue_deg: number,
+	/**  The chroma times 100, 2 to 50. */
+	saturation: number,
+	/**  Stops from middle grey, -4 to +8. */
+	lightness_ev: number,
+};
+
 /**
  *  `thumbnail_ready { id, url }`: the photo's thumbnail, a PNG of at most 240 px on its long edge,
  *  is at `url`.
@@ -3771,6 +3809,26 @@ export type TrimPatch = {
 	temperature?: number | null,
 	/**  New tint trim. */
 	tint?: number | null,
+};
+
+/**  A Colour Uniform node's `compress`: how far each axis is pulled to the target, in percent. */
+export type UniformAmounts = {
+	/**  Hue, 0 to 100. */
+	hue: number,
+	/**  Saturation, 0 to 100. */
+	saturation: number,
+	/**  Lightness, 0 to 100. */
+	lightness: number,
+};
+
+/**  A Colour Uniform node's `compress` to change. Serialising leaves absent fields out (see [`NodePatch`]). */
+export type UniformAmountsPatch = {
+	/**  New Hue amount, percent. */
+	hue?: number | null,
+	/**  New Saturation amount, percent. */
+	saturation?: number | null,
+	/**  New Lightness amount, percent. */
+	lightness?: number | null,
 };
 
 /**  `update_state { phase, version?, percent?, message? }` (the updater's phases, `docs/12`). */
