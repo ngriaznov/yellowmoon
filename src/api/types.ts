@@ -1726,6 +1726,7 @@ export type ChromaTap = "warp_input" | "node_input";
 export interface ChromaSample {
   a: number;
   b: number;
+  tone?: number;
 }
 
 /** Display values under the pointer, 0–255 per channel (`sample_pixel`). */

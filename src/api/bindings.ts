@@ -124,10 +124,11 @@ export const commands = {
 	/**  `sample_pixel(x, y)`: display values under a point of the photo cell. */
 	samplePixel: (x: number, y: number) => __TAURI_INVOKE<PixelSample>("sample_pixel", { x, y }),
 	/**
-	 *  `sample_chroma(x, y, at, tap)`: the chroma under a point of the photo cell (Pick colour; `null` for `at` is Main's).
+	 *  `sample_chroma(x, y, at, tap, radius_px)`: the chroma under a point of the photo cell (Pick colour; `null` for `at` is Main's).
 	 *  `tap` is `warp_input` (or `null`): at the input of the node's colour warp, after its trim and grade; or `node_input`:
 	 *  at the picture the node reads, before its trim and grade, which is what a Colour range selects on. `null` on the paper
-	 *  around the photo.
+	 *  around the photo. The answer also carries `tone`, the mean of the three codes. `radius_px` (left out: 0) reads the mean
+	 *  colour of the square of `2 * radius_px + 1` pixels about the point (`docs/32` section 3.11).
 	 */
 	sampleChroma: (x: number, y: number, at: "input" | "output" | number | null, tap: 
 /**
@@ -139,12 +140,14 @@ export const commands = {
  *  At the node's own input, before its trim and its grade: Pick colour of a Colour range,
  *  which selects on the chroma of exactly this.
  */
-"node_input" | null) => __TAURI_INVOKE<{
+"node_input" | null, radiusPx: number | null) => __TAURI_INVOKE<{
 	/**  Along `e1`, red against cyan. */
 	a: number,
 	/**  Along `e2`, green against blue. */
 	b: number,
-} | null>("sample_chroma", { x, y, at, tap }),
+	/**  The tone: the mean of the three LogC4 codes of the same colour (`docs/32` section 3.11). */
+	tone: number,
+} | null>("sample_chroma", { x, y, at, tap, radiusPx }),
 	/**
 	 *  `viewport_map_points(points, from)` (`docs/23` sections 3.6 and 9): maps points between the photo frame and the cell,
 	 *  for the handles and outlines the page draws over the photo. `from` is `photo` (points in the photo frame, answered as
@@ -887,6 +890,8 @@ export type ChromaSample = {
 	a: number,
 	/**  Along `e2`, green against blue. */
 	b: number,
+	/**  The tone: the mean of the three LogC4 codes of the same colour (`docs/32` section 3.11). */
+	tone: number,
 };
 
 /**

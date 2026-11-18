@@ -1143,7 +1143,8 @@ fn pick_colour_reads_the_warp_input_of_the_pixel_under_the_pointer() {
         // ... and its chroma at the warp's input is the answer, exactly.
         let [a, b] = chroma_of(chain.trace(rgb).c9_logc4);
         let got = chroma(&src, &st, at).expect("inside");
-        assert_eq!(got, ChromaSample { a, b }, "{at:?}");
+        let tone = ym_color::uniform::tone_of(chain.trace(rgb).c9_logc4.0);
+        assert_eq!(got, ChromaSample { a, b, tone }, "{at:?}");
         if a.hypot(b) > 0.05 {
             colourful = Some((at, got));
         }

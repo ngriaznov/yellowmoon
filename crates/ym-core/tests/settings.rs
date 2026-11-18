@@ -459,7 +459,12 @@ fn the_rust_types_have_the_fields_of_the_typescript_interfaces() {
     );
     check(
         "ChromaSample",
-        serde_json::to_value(ym_core::pipeline::ChromaSample { a: 0.12, b: -0.03 }).unwrap(),
+        serde_json::to_value(ym_core::pipeline::ChromaSample {
+            a: 0.12,
+            b: -0.03,
+            tone: 0.4,
+        })
+        .unwrap(),
     );
     // The camera card has no TypeScript twin yet; it must at least be plain data.
     let _ = serde_json::to_value(CameraCard {

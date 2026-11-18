@@ -218,6 +218,7 @@ fn random_node(rng: &mut Rng, scale: f64) -> NodeParams {
             random_pins(rng, scale)
         },
         curves: random_curves(rng),
+        uniform: None,
     }
 }
 

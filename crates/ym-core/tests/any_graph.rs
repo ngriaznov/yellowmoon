@@ -2427,6 +2427,12 @@ fn colour_uniform_graphs_are_refused_by_the_device_until_cu05() {
     // renderer differ by rounding), and not the picture without the node.
     let want = frame(&cpu, &src, &st);
     let (worst, over) = frame_diff(&got, &want);
-    assert!(worst <= 2 && over < got.rgba.len() / 100, "{worst} codes, {over} over 1");
-    assert!(frame_diff(&got, &frame(&cpu, &d.source(), &st)).0 > 2, "the frame has no node in it");
+    assert!(
+        worst <= 2 && over < got.rgba.len() / 100,
+        "{worst} codes, {over} over 1"
+    );
+    assert!(
+        frame_diff(&got, &frame(&cpu, &d.source(), &st)).0 > 2,
+        "the frame has no node in it"
+    );
 }
