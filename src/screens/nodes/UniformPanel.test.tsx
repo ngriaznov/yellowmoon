@@ -126,6 +126,8 @@ describe("Pick colour", () => {
     expect(within(card("Target")).getByText(UNIFORM_TEXT.picked)).toBeInTheDocument();
     expect(within(card("Compress")).getAllByRole("slider", { name: "Hue" })[0]).not.toHaveAttribute("data-disabled");
     expect(pickLayer()).toBeInTheDocument();
+    // The row the pick added is the selected one in the Mask tab.
+    expect(h!.store.getState().maskRow).toBe(0);
     await h!.user.keyboard("{Meta>}z{/Meta}");
     await waitFor(() => expect(node().target).toBeNull());
     expect(node().masks.items).toEqual([]);

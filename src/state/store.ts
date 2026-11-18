@@ -2718,6 +2718,8 @@ export class AppStore {
     const held = (picked.patch.nodes?.[String(node)] as { target?: TargetValue } | undefined)?.target;
     this.set({ uniformGrey: picked.tooGrey && held ? { photo: id, node, target: held } : null });
     await this.update(picked.patch, true, id);
+    // The row the first pick added is the selected one, so the Mask tab shows its card (`design/colour-uniform/03b-mask-tab.jpg`).
+    if (picked.first && (picked.patch.nodes?.[String(node)] as { masks?: unknown } | undefined)?.masks) this.selectMaskRow(0);
   }
 
   /** Selects a pin of the colour warp (an index into the current photo's pins), or none. */
