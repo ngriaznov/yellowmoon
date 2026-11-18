@@ -8,7 +8,7 @@ let chromium;
 try { ({ chromium } = require("playwright")); } catch { ({ chromium } = require(path.join(process.env.NODE_PATH ?? "", "playwright"))); }
 const here = path.dirname(fileURLToPath(import.meta.url));
 const shots = {
-  "01": "01-node", "02": "02-pick-target", "03": "03-show-affected-area", "04": "04-add-node-menu", "05": "05-simple-view",
+  "01": "01-node", "02": "02-pick-target", "03": "03-show-mask", "03b": "03b-mask-tab", "04": "04-add-node-menu", "05": "05-simple-view",
   "06": "06-how-the-pull-works", states: "states",
 };
 const only = process.argv.slice(2);

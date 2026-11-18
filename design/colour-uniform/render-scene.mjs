@@ -1,4 +1,4 @@
-// Renders html/assets/scene-portrait.svg (drawn by ../skin/html/faces.py) to html/assets/portrait-before.png at 1500 x 1000, for compress-demo.py.
+// Renders html/assets/scene-portrait.svg (drawn by ../skin/html/faces.py) to html/assets/portrait-before.png at 1500 x 1000, for compress_demo.py.
 // Run:  PLAYWRIGHT_BROWSERS_PATH=<scratch> node render-scene.mjs
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";

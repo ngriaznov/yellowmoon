@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Builds the pages of design/colour-compressor/html/pages/ (task CC-01; the owner reviews them at CC-H1).
+"""Builds the pages of design/colour-uniform/html/pages/ (task CU-01, revised 2026-11-18 after the owner's answers, CU-H1).
 
 Same method as design/skin/html/build.py and design/mixers/html/build.py: the app's DOM and CSS captured in design/nodes/html/pages/ (header, photo cell,
 toolbar, panel head, tabs, cards, sliders), the graph and the panel rebuilt from the app's own classes. This file imports the skin builder (which imports the
-mixers builder) for the shared pieces and adds the Colour Compressor node (kind `color_compressor`, docs/32). The pictures are the drawing of design/skin/
+mixers builder) for the shared pieces and adds the Colour Uniform node (kind `color_uniform`, docs/32). The pictures are the drawing of design/skin/
 with the maths of docs/32 section 3 applied by compress_ref.py (compress_demo.py writes portrait-before/after/affected.jpg and assets/target.json).
 Run: python3 build.py   (needs bs4, numpy). Not product code.
 """
@@ -30,14 +30,16 @@ AS = "../assets/"
 T = json.load(open(os.path.join(HERE, "assets", "target.json")))
 RGB = "rgb(%d,%d,%d)" % tuple(T["rgb"])
 
-# the node's glyph: two arrows pointing at a line (a range pulled onto one colour)
+# the node's glyph: two arrows pointing at a line (colours pulled onto one colour)
 CC_ICON = '<path d="M2 12h6"/><path d="m5 9 3 3-3 3"/><path d="M22 12h-6"/><path d="m19 9-3 3 3 3"/><path d="M12 4v16" stroke-dasharray="2 3"/>'
 EYE = S.EYE
-M.ICON["color_compressor"] = CC_ICON
+M.ICON["color_uniform"] = CC_ICON
 INFO = '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>'
 PICK_ICON = '<path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/>'
 DROP = '<path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/>'
 
+
+PALETTE = '<circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/>'
 
 # ------------------------------------------------------------------------------------------------------------------------------ rows
 _uid = [100]
@@ -105,20 +107,6 @@ def pick_button(on):
     return str(b)
 
 
-def eye(on, disabled=False):
-    e = BeautifulSoup(str(S.EYE_BTN), "html.parser")
-    b = e.find("button")
-    b["aria-label"] = "Show affected area"
-    b["aria-pressed"] = "true" if on else "false"
-    b["data-state"] = "on" if on else "off"
-    e.select_one(".sr-only").string = "Pick a colour first." if disabled else ("Hide the affected area" if on else "Show affected area")
-    if on:
-        b["class"] = b.get("class", []) + ["sk-eye-on"]
-    if disabled:
-        b["aria-disabled"] = "true"
-    return str(e)
-
-
 def colour_name(h, s):
     names = [(0, "Red"), (30, "Orange"), (60, "Yellow"), (120, "Green"), (180, "Cyan"), (240, "Blue"), (270, "Purple"), (300, "Magenta"), (360, "Red")]
     n = min(names, key=lambda a: abs(((h - a[0] + 180) % 360) - 180))[1]
@@ -138,69 +126,104 @@ def target_card(state="set", hue=None, sat=None, ev=None, note=None, rgb=RGB):
         name = f'<span class="cc-swatch__name">{colour_name(hue, sat)}</span><span class="cc-swatch__sub">Picked from the photo</span>'
     else:
         sw = '<span class="cc-swatch cc-swatch--empty" role="img" aria-label="No target colour"></span>'
-        name = '<span class="cc-swatch__name">No colour yet</span><span class="cc-swatch__sub">Click a colour in the photo.</span>'
+        name = '<span class="cc-swatch__name">No colour yet</span><span class="cc-swatch__sub">Click a colour in the photo, or set Hue, Saturation and Lightness.</span>'
     reset = S.link_button("Reset") if has else ""
     top = f'<div class="cc-target">{sw}<div class="cc-swatch__text">{name}</div>{pick_button(on)}</div>'
     n = f'<div class="sk-note" role="note">{svg(INFO, 16)}<p>{note}</p></div>' if note else ""
-    dis = not has
+    # The target's three numbers are typed or dragged: they are the other way to choose the colour, so they are on with no target too (resting at 0, 2, 0)
+    if not has:
+        hue, sat, ev = 0, 2, 0
     rows = (
-        srow("Hue", round(hue), 0, 359, round(hue), f"{round(hue)}°" if has else "–", disabled=dis, track="hue")
-        + srow("Saturation", sat, 2, 50, sat, f"{sat:g}" if has else "–", disabled=dis)
-        + srow("Lightness (EV)", ev, -4, 8, ev, (f"{ev:+.2f}".replace("-", "−")) if has else "–", disabled=dis, bipolar=True)
+        srow("Hue", round(hue), 0, 359, round(hue), f"{round(hue)}°" if has else "–", track="hue")
+        + srow("Saturation", sat, 2, 50, sat, f"{sat:g}" if has else "–")
+        + srow("Lightness (EV)", ev, -4, 8, ev, (f"{ev:+.2f}".replace("-", "−")) if has else "–", bipolar=True)
     )
-    d = ' data-disabled' if dis else ""
-    return f'<section class="ym-card" data-last="false">{head_of("Target", None, "", reset)}{top}{n}<div class="sk-rows"{d}>{rows}</div></section>'
+    return f'<section class="ym-card" data-last="false">{head_of("Target", None, "", reset)}{top}{n}<div class="sk-rows">{rows}</div></section>'
 
 
-def compress_card(h=60, s=60, l=0, disabled=False):
+def compress_card(h=60, s=60, l=0, disabled=False, last=True):
     rows = srow("Hue", h, 0, 100, 0, f"{h}%", disabled=disabled) + srow("Saturation", s, 0, 100, 0, f"{s}%", disabled=disabled) + srow("Lightness", l, 0, 100, 0, f"{l}%", disabled=disabled)
-    line = "Pick a colour to compress toward." if disabled else "At 100 % every colour in the range takes the target's value."
+    line = "Pick or set a target colour first." if disabled else "At 100 % every colour in the mask takes the target's value."
     d = " data-disabled" if disabled else ""
     reset = S.link_button("Reset") if (h or s or l) and not disabled else ""
-    return f'<section class="ym-card" data-last="false">{head_of("Compress", None, "", reset)}<div class="sk-rows"{d}>{rows}</div><p class="ym-row-note" style="margin:8px 0 0">{line}</p></section>'
+    return f'<section class="ym-card" data-last="{"true" if last else "false"}">{head_of("Compress", None, "", reset)}<div class="sk-rows"{d}>{rows}</div><p class="ym-row-note" style="margin:8px 0 0">{line}</p></section>'
 
 
-RANGE_DEFAULT = (20, 5, 1.5, 50)
+def cards(target="set", compress=(60, 60, 0), **kw):
+    return target_card(target, **kw) + compress_card(*compress, disabled=(target == "empty"))
 
 
-def range_card(hue=30, sat=5, ev=1.5, soft=60, eye_on=False, eye_disabled=False, last=True):
-    rows = (
-        srow("Hue", hue, 1, 85, 20, f"±{hue:g}°")
-        + srow("Saturation", sat, 0.5, 30, 5, f"±{sat:g}")
-        + srow("Lightness", ev, 0.1, 8, 1.5, f"±{ev:g} EV")
-        + srow("Softness", soft, 0, 100, 50, f"{soft}%")
+# the Mask tab: the Masks card with the Colour range row that the first pick added, the Colour range card, the View card
+def mask_cards(rows=1, selected=True, mask_view=False):
+    sec = BeautifulSoup(str(S.SOUP07.select_one("#ym-tabpanel-mask")), "html.parser")
+    secs = sec.select_one("#ym-tabpanel-mask").find_all("section", recursive=False)
+    masks, view = secs[0], secs[2]
+    mrows = masks.select(".nv-maskrow")
+    row = mrows[0]
+    for r in mrows[1:]:
+        r.decompose()
+    if rows == 0:
+        row.decompose()
+    else:
+        row["aria-label"] = "Colour range mask, Width 39"
+        row["data-selected"] = "true" if selected else "false"
+        row.select_one(".nv-maskrow__name").string = "Colour range"
+        row.select_one(".nv-maskrow__sub").string = "Width 39"
+        glyph = row.find("svg")
+        glyph.clear()
+        glyph.append(BeautifulSoup(PALETTE, "html.parser"))
+        for sr in row.select("span.sr-only"):
+            if sr.text == "Show this mask" and mask_view:
+                sr.string = "Hide this mask"
+        if mask_view:
+            eyeb = row.select('button[aria-label="Show this mask"]')
+            for b in eyeb:
+                b["aria-label"], b["aria-pressed"], b["data-state"] = "Hide this mask", "true", "on"
+                b["class"] = b.get("class", []) + ["sk-eye-on"]
+    # the Masks card's Reset is in the mask accent; the row's own mode is Add
+    masks_html = str(masks)
+    # the Colour range card
+    rc = (
+        f'<section class="ym-card" data-last="false">{head_of("Colour range", None, "", S.link_button("Reset"))}'
+        f'<div class="cc-target" style="padding:2px 0 12px">{pick_button(False)}<span class="ym-row-note" style="margin:0">The centre is the colour the first pick found. Pick again to move it.</span></div>'
+        f'<div class="sk-rows">{srow("Width", 39, 0, 100, 39, "39")}{srow("Softness", 50, 0, 100, 50, "50")}{srow("Opacity", 100, 0, 100, 100, "100%")}</div></section>'
     )
-    changed = (hue, sat, ev, soft) != RANGE_DEFAULT
-    reset = S.link_button("Reset") if changed else ""
-    return f'<section class="ym-card" data-last="{"true" if last else "false"}">{head_of("Range", None, eye(eye_on, eye_disabled), reset)}<div class="sk-rows">{rows}</div></section>'
-
-
-def cards(target="set", compress=(60, 60, 0), rng=(30, 5, 1.5, 60), eye_on=False, **kw):
-    no = target == "empty"
-    return (
-        target_card(target, **kw)
-        + compress_card(*compress, disabled=no)
-        + range_card(*rng, eye_on=eye_on, eye_disabled=no)
-    )
+    # the View card: Show mask, Overlay or Mask only (the mockups' third segment, Off, is not built; docs/23 section 7.6)
+    items = view.select('[data-slot="segmented-control-item"]')
+    items[-1].decompose()
+    view_html = str(view)
+    return (masks_html + (rc if rows else "") + view_html)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ panel
-def tabs_cc():
-    t = M.TABLIST.replace('data-tab="raw"', 'data-tab="color"').replace(">Blend</button>", ">Compress</button>").replace("ym-tab-raw-blend", "ym-tab-color-compress").replace("ym-tabpanel-raw", "ym-tabpanel-color")
+def tabs_cu(active="compress"):
+    """Compress and Mask, in the Colour tab's green and the mask accent."""
+    t = M.TABLIST.replace('data-tab="raw"', 'data-tab="color"' if active == "compress" else 'data-tab="mask"').replace(">Blend</button>", ">Compress</button>")
+    t = t.replace("ym-tab-raw-blend", "ym-tab-color-compress").replace("ym-tabpanel-raw", "ym-tabpanel-color")
+    t = t.replace('data-tab="raw"', 'data-tab="color"')
+    if active == "mask":
+        t = t.replace('aria-selected="true"', 'aria-selected="__A"').replace('aria-selected="false"', 'aria-selected="true"').replace('aria-selected="__A"', 'aria-selected="false"')
+        t = t.replace('data-state="active"', 'data-state="__A"').replace('data-state="inactive"', 'data-state="active"').replace('data-state="__A"', 'data-state="inactive"')
+        t = t.replace('tabindex="0" type="button">Compress', 'tabindex="-1" type="button">Compress').replace('tabindex="-1" type="button">Mask', 'tabindex="0" type="button">Mask')
     return t
 
 
-def aside(headhtml, cardshtml):
+def aside(headhtml, cardshtml, active="compress"):
+    panel = ("ym-tabpanel-color", "ym-tab-color-compress", "color") if active == "compress" else ("ym-tabpanel-mask", "ym-tab-mask-mask", "mask")
     return (
-        f'<aside aria-label="Tools" class="ym-tools" data-tab="color">{headhtml}{tabs_cc()}'
-        f'<div aria-labelledby="ym-tab-color-compress" class="ym-tools__scroll" data-tab="color" id="ym-tabpanel-color" role="tabpanel">{cardshtml}</div>{M.FOOT}</aside>'
+        f'<aside aria-label="Tools" class="ym-tools" data-tab="{panel[2]}">{headhtml}{tabs_cu(active)}'
+        f'<div aria-labelledby="{panel[1]}" class="ym-tools__scroll" data-tab="{panel[2]}" id="{panel[0]}" role="tabpanel">{cardshtml}</div>{M.FOOT}</aside>'
         '<div aria-live="polite" class="sr-only"></div></div></div>'
     )
 
 
 def head(line, bypass_on=False, num="02"):
-    h = M.head("color_compressor", "Compressor", line, pressed_on=bypass_on)
+    h = M.head("color_uniform", "Uniform", line, pressed_on=bypass_on)
     return re.sub(r'<span class="ym-nodehead__chip">.*?</span>', f'<span class="ym-nodehead__chip" style="font-size:12px;font-weight:800">{num}</span>', h, count=1, flags=re.S)
+
+
+LINE = "Colour Uniform"  # the line is short because the head is narrow; the mask text of a corrector's head is not repeated here
+LINE0 = LINE
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the page
@@ -218,11 +241,11 @@ def write(name, html):
     print("wrote", name, len(html))
 
 
-def cc_card(g, key, x, y, num, thumb_, selected=False, bypass=False, dead=False, name="Compressor"):
-    """The node's card: a corrector's, with the node's glyph in the footer where a mask glyph would be."""
-    g.corrector(key, name, x, y, num, thumb_, masks=("mask",), selected=selected, bypass=bypass, dead=dead)
+def cc_card(g, key, x, y, num, thumb_, selected=False, bypass=False, dead=False, name="Uniform", masked=True):
+    """The node's card: a corrector's, with the node's glyph in the footer beside the mask glyph (the Film node's and Face Refinement's way)."""
+    g.corrector(key, name, x, y, num, thumb_, masks=("cu", "mask") if masked else ("cu",), selected=selected, bypass=bypass, dead=dead)
     h = g.html[-1]
-    h = h.replace(f'data-glyph="mask">{M.HALF}', f'data-glyph="color_compressor">{svg(CC_ICON, 14)}')
+    h = h.replace(f'data-glyph="cu">{M.HALF}', f'data-glyph="color_uniform">{svg(CC_ICON, 14)}')
     g.html[-1] = h
 
 
@@ -232,20 +255,20 @@ def photo(src, overlay="", name="Portrait", sub="2026-10-04 · 7 photos"):
     return pre
 
 
-def graph(selected=True, bypass=False, dead=False, thumbs=("portrait-before.jpg", "portrait-after.jpg")):
+def graph(selected=True, bypass=False, dead=False, thumbs=("portrait-before.jpg", "portrait-after.jpg"), masked=True):
     g = M.Graph()
     mid = 160
     xs = [120, 334]
     g.marker("input", "Input", xs[0] - 86, mid)
     g.corrector("main", "Main", xs[0], mid - 56, "01", AS + thumbs[0])
-    cc_card(g, "cc", xs[1], mid - 56, "02", AS + thumbs[1], selected=selected, bypass=bypass, dead=dead)
+    cc_card(g, "cc", xs[1], mid - 56, "02", AS + thumbs[1], selected=selected, bypass=bypass, dead=dead, masked=masked)
     g.marker("output", "Output", xs[1] + 150 + 86, mid)
     for a, b in (("input", "main"), ("main", "cc"), ("cc", "output")):
         g.link(a, b)
     return g
 
 
-def editor(graph_html, mask_on=False):
+def editor(graph_html, mask_on=False, tab="color"):
     bar = M.BAR06
     add = str(bar["add"])
     byp = M.pressed(str(bar["bypass"]), False)
@@ -254,18 +277,16 @@ def editor(graph_html, mask_on=False):
         msk = msk.replace('data-state="off"', 'data-state="on"')
     exp = M.pressed(str(bar["expand"]), False)
     return (
-        f'<section aria-label="Node editor" class="ym-filmstrip nv2-editor" data-tab="color"><div class="nv2-bar">{add}{byp}{bar["delete"]}'
+        f'<section aria-label="Node editor" class="ym-filmstrip nv2-editor" data-tab="{tab}"><div class="nv2-bar">{add}{byp}{bar["delete"]}'
         f'<span class="nv2-bar__sp"></span>{bar["switcher"]}{msk}{exp}</div>'
         f'<div class="nv2-canvas" style="--cw:1040px;">{graph_html}{M.ZOOM}</div></section>'
     )
 
 
-def node_page(name, title, src, headline, cardshtml, overlay="", mask_on=False, bypass_on=False, scroll_end=False, extra=""):
+def node_page(name, title, src, headline, cardshtml, overlay="", mask_on=False, bypass_on=False, active="compress", masked=True, extra=""):
     pre = photo(src, overlay)
-    g = graph(bypass=bypass_on)
-    inner = pre + editor(g.render(h=327), mask_on) + aside(head(headline, bypass_on), cardshtml) + extra
-    if scroll_end:
-        inner += '<script>const go=()=>{const s=document.querySelector(".ym-tools__scroll");if(s)s.scrollTop=s.scrollHeight;};addEventListener("load",()=>{go();setTimeout(go,100);});</script>'
+    g = graph(bypass=bypass_on, masked=masked)
+    inner = pre + editor(g.render(h=327), mask_on, "color" if active == "compress" else "mask") + aside(head(headline, bypass_on), cardshtml, active) + extra
     write(name, page(title, inner))
 
 
@@ -285,33 +306,50 @@ def pill(text, left, top):
     return f'<div class="cc-pill" style="left:{left}px;top:{top}px">{svg(PICK_ICON, 14)}<span>{text}</span></div>'
 
 
+def callout(left, top, text, width=340):
+    return f'<div class="sk-callout" style="left:{left}px;top:{top}px;max-width:{width}px">{text}</div>'
+
+
 # ---- 01 the node ------------------------------------------------------------------------------------------------------------------
 def page01():
-    node_page("01.html", "Colour Compressor node", "portrait-after.jpg", "Colour Compressor", cards("set"))
+    node_page(
+        "01.html", "Colour Uniform node", "portrait-after.jpg", LINE, cards("set"),
+        extra=callout(640, 440, "<b>After the first pick.</b> The node pulls the colours its mask lets through toward the picked colour: Hue 60 %, Saturation 60 %, Lightness 0 %. The mask is the Colour range row the first pick added (Mask tab).", 360),
+    )
 
 
 # ---- 02 picking the target -----------------------------------------------------------------------------------------------------------
 def page02():
     pre = photo("portrait-before.jpg", crosshair())
-    g = graph()
-    inner = pre + editor(g.render(h=327)) + aside(head("Colour Compressor"), cards("empty", compress=(0, 0, 0))) + pill("Click a colour in the photo.", 560, 126)
-    inner += '<div class="sk-callout" style="left:640px;top:440px;width:330px"><b>7 × 7 square.</b> The target is the mean colour of the pixels in the yellow square, so a noisy pixel is not the target.</div>'
+    g = graph(masked=False)
+    inner = pre + editor(g.render(h=327)) + aside(head(LINE0), cards("empty", compress=(0, 0, 0))) + pill("Click a colour in the photo.", 560, 126)
+    inner += callout(640, 440, "<b>7 × 7 square.</b> The target is the mean colour of the pixels in the yellow square, so a noisy pixel is not the target. <b>The first click also adds a Colour range mask</b> centred on this colour, so the pull stays on the skin.", 360)
     write("02.html", page("Picking the target", inner))
 
 
-# ---- 03 Show affected area -------------------------------------------------------------------------------------------------------------
+# ---- 03 Show mask ---------------------------------------------------------------------------------------------------------------------
 def page03():
-    node_page("03.html", "Show affected area", "portrait-affected.jpg", "Colour Compressor", cards("set", eye_on=True), mask_on=True, scroll_end=True,
-              extra='<div class="sk-callout" style="left:640px;top:440px;max-width:340px"><b>Show affected area</b> is Show mask (M) on this node. It draws the node\'s mask times its range, with the soft edge. Hair, eyes, lips, teeth and the mole are not in the range.</div>')
+    node_page(
+        "03.html", "Show mask", "portrait-affected.jpg", LINE, cards("set"), mask_on=True,
+        extra=callout(640, 440, "<b>Show mask</b> (M) is the ordinary Show mask: here the Colour range row the first pick added. Skin, neck and a warm corner of the background are in it; hair, eyes, lips and the shirt are not.", 360),
+    )
+
+
+# ---- 03b the Mask tab -------------------------------------------------------------------------------------------------------------------
+def page03b():
+    node_page(
+        "03b.html", "The Mask tab", "portrait-after.jpg", LINE, mask_cards(1), active="mask",
+        extra=callout(640, 440, "<b>The row the first pick added.</b> A Colour range, centred on the picked colour, with the Colour range's own defaults (Width 39, Softness 50). Widen it, add other masks, or delete the row.", 360),
+    )
 
 
 # ---- 04 Add node menu --------------------------------------------------------------------------------------------------------------------
-def add_menu(highlight="Colour Compressor"):
+def add_menu(highlight="Colour Uniform"):
     items = [
         ("Corrector", "corrector", "Grades all or part of the photo."),
         ("Film", "film", "Models a colour negative, a print and a scan."),
         ("Face Refinement", "face_refinement", "Refines each face: skin, under-eyes and teeth."),
-        ("Colour Compressor", "color_compressor", "Pulls a range of colours toward one colour."),
+        ("Colour Uniform", "color_uniform", "Pulls colours toward one colour."),
         None,
         ("Parallel", "parallel", "Grade branches side by side."),
         ("Layer", "layer", "Blend one branch over another."),
@@ -349,7 +387,7 @@ def page04():
     aside06 = M.BODY06[M.BODY06.find("<aside"): M.BODY06.find("</aside>") + 8].replace('src="../assets/', 'src="' + S.A).replace("Mountain", "Warmth").replace("Corrector · 2 masks", "Corrector · whole photo")
     tail = '<div aria-live="polite" class="sr-only"></div></div></div>'
     inner = pre + M.editor(g.render(h=327), M.BAR06, False, add_open=True, mask_off=False) + aside06 + tail + add_menu()
-    inner += '<div class="sk-callout" style="left:400px;top:560px;max-width:340px"><b>One new item.</b> Adds a Colour Compressor after the selected node, selects it and turns Pick colour on, as Film and Face Refinement are added.</div>'
+    inner += callout(400, 560, "<b>One new item.</b> Adds a Colour Uniform node after the selected one, selects it and turns Pick colour on, as Film and Face Refinement are added.")
     write("04.html", page("Add node menu", inner))
 
 
@@ -364,13 +402,13 @@ def page05():
     s = re.sub(r'(<link[^>]*href=")\.\./(app\.css|nv\.css)', lambda m_: m_.group(1) + ("../../../mixers/html/app.css" if m_.group(2) == "app.css" else "../../../nodes/html/nv.css"), s)
     s = s.replace("</head>", '<link href="../../../mixers/html/mixers.css" rel="stylesheet"/><link href="../../../skin/html/skin.css" rel="stylesheet"/><link href="../cc.css" rel="stylesheet"/></head>', 1)
     s = s.replace("<title>Yellowmoon</title>", "<title>Yellowmoon · Simple view</title>")
-    s = s.replace("</body>", '<div class="sk-callout" style="left:24px;top:132px;max-width:380px"><b>Simple view.</b> It has no Colour Compressor controls. The photo shows the result; the notice counts the node, and Open nodes goes to the node view.</div></body>', 1)
+    s = s.replace("</body>", '<div class="sk-callout" style="left:24px;top:132px;max-width:380px"><b>Simple view.</b> It has no Colour Uniform controls. The photo shows the result; the notice counts the node, and Open nodes goes to the node view.</div></body>', 1)
     write("05.html", s)
 
 
 # ---- 06 how it works (a diagram) ---------------------------------------------------------------------------------------------------------
 def plane_svg():
-    """The chroma plane: the target, the selected wedge and ring, and what 50 % and 100 % do to a few colours (computed by compress_ref)."""
+    """The chroma plane: the target, the neutral guard, the hue pull's reach and what 50 % and 100 % do to colours (computed by compress_ref)."""
     import numpy as np
 
     W_ = 420
@@ -382,12 +420,7 @@ def plane_svg():
     ta, tb = tgt["chroma"]
     rt = math.hypot(ta, tb)
     th = math.atan2(tb, ta)
-    rng = dict(hue_deg=30.0, chroma=0.05, tone_ev=1.5, softness=0.6)
-    wh = math.radians(30.0)
-    qh = max(0.6 * wh, 0.05)
-    rin, rout = rt - 0.05, rt + 0.05
     out = []
-    # the hue wheel, faded toward the centre
     out.append(f'<circle cx="{cx}" cy="{cy}" r="{ext * k:.1f}" fill="url(#cc-fade)"/>')
     for rr in (0.1, 0.2):
         out.append(f'<circle cx="{cx}" cy="{cy}" r="{rr * k:.1f}" fill="none" stroke="#fff" stroke-opacity=".14"/>')
@@ -397,21 +430,25 @@ def plane_svg():
         p = [px(r0 * math.cos(a0), r0 * math.sin(a0)), px(r1 * math.cos(a0), r1 * math.sin(a0)), px(r1 * math.cos(a1), r1 * math.sin(a1)), px(r0 * math.cos(a1), r0 * math.sin(a1))]
         return f"M{p[0][0]:.1f} {p[0][1]:.1f}L{p[1][0]:.1f} {p[1][1]:.1f}A{r1 * k:.1f} {r1 * k:.1f} 0 0 0 {p[2][0]:.1f} {p[2][1]:.1f}L{p[3][0]:.1f} {p[3][1]:.1f}A{r0 * k:.1f} {r0 * k:.1f} 0 0 1 {p[0][0]:.1f} {p[0][1]:.1f}Z"
 
-    # the soft edge, then the full range
-    out.append(f'<path d="{sector(max(rin - 0.025, 0.02), rout + 0.025, th - wh - qh, th + wh + qh)}" fill="#ff6fd2" fill-opacity=".16" stroke="#ff6fd2" stroke-opacity=".5" stroke-dasharray="4 4"/>')
-    out.append(f'<path d="{sector(rin, rout, th - wh, th + wh)}" fill="#ff6fd2" fill-opacity=".30" stroke="#ff6fd2" stroke-opacity=".9"/>')
+    # the hue pull: full within 90 degrees of the target's hue, fading to nothing at 150 degrees (the antipode fade)
+    fade = math.radians(150)
+    full = math.radians(90)
+    out.append(f'<path d="{sector(0.0, ext, th - fade, th + fade)}" fill="#ffc20e" fill-opacity=".07"/>')
+    out.append(f'<path d="{sector(0.0, ext, th - full, th + full)}" fill="#ffc20e" fill-opacity=".13" stroke="#ffc20e" stroke-opacity=".5" stroke-dasharray="4 4"/>')
+    # the seeded Colour range mask: a disc about the picked colour (width 0.05, edge 0.025)
+    out.append(f'<circle cx="{px(ta, tb)[0]:.1f}" cy="{px(ta, tb)[1]:.1f}" r="{0.075 * k:.1f}" fill="none" stroke="#ff6fd2" stroke-opacity=".5" stroke-dasharray="4 4"/>')
+    out.append(f'<circle cx="{px(ta, tb)[0]:.1f}" cy="{px(ta, tb)[1]:.1f}" r="{0.05 * k:.1f}" fill="#ff6fd2" fill-opacity=".16" stroke="#ff6fd2" stroke-opacity=".9"/>')
     out.append(f'<circle cx="{cx}" cy="{cy}" r="{0.02 * k:.1f}" fill="#000" fill-opacity=".55" stroke="#fff" stroke-opacity=".5" stroke-dasharray="2 3"/>')
-    # a few colours: before (ring) and after at 50 and 100 % on hue and saturation
-    rs = np.random.default_rng(3)
+    rs = np.random.default_rng(11)
     pts = []
-    for _ in range(9):
-        a = th + rs.uniform(-1.1 * wh, 1.1 * wh)
-        r = rt + rs.uniform(-1.1 * 0.05, 1.1 * 0.05)
+    for _ in range(14):
+        a = th + rs.uniform(-2.3, 2.3)
+        r = rs.uniform(0.03, 0.17)
         pts.append((r * math.cos(a), r * math.sin(a)))
     for a, b in pts:
         v = tgt["tone"] * R.ONE + a * R.E1 + b * R.E2
-        o50, _w = R.compress(v, tgt, 0.5, 0.5, 0.0, rng)
-        o100, _w = R.compress(v, tgt, 1.0, 1.0, 0.0, rng)
+        o50 = R.uniform(v, tgt, 0.5, 0.5, 0.0)
+        o100 = R.uniform(v, tgt, 1.0, 1.0, 0.0)
         x0, y0 = px(a, b)
         c5 = px(o50 @ R.E1, o50 @ R.E2)
         c1 = px(o100 @ R.E1, o100 @ R.E2)
@@ -422,61 +459,66 @@ def plane_svg():
     tx, ty = px(ta, tb)
     out.append(f'<circle cx="{tx:.1f}" cy="{ty:.1f}" r="8" fill="{RGB}" stroke="#fff" stroke-width="2.5"/>')
     out.append(f'<text x="{tx + 12:.1f}" y="{ty - 10:.1f}" fill="#fff" font-size="13" font-weight="700">Target</text>')
-    out.append(f'<text x="{cx + 6}" y="{cy + 16}" fill="#fff" fill-opacity=".6" font-size="11">neutral: never selected</text>')
+    out.append(f'<text x="{cx + 6}" y="{cy + 16}" fill="#fff" fill-opacity=".6" font-size="11">neutral: kept</text>')
     defs = (
-        '<defs><radialGradient id="cc-fade"><stop offset="0" stop-color="#1c1c1e" stop-opacity=".92"/><stop offset=".55" stop-color="#1c1c1e" stop-opacity=".62"/><stop offset="1" stop-color="#1c1c1e" stop-opacity=".25"/></radialGradient>'
-        '<radialGradient id="cc-wheel" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#777"/><stop offset="1" stop-color="#777"/></radialGradient></defs>'
+        '<defs><radialGradient id="cc-fade"><stop offset="0" stop-color="#1c1c1e" stop-opacity=".92"/><stop offset=".55" stop-color="#1c1c1e" stop-opacity=".62"/><stop offset="1" stop-color="#1c1c1e" stop-opacity=".25"/></radialGradient></defs>'
     )
     wheel = (
         f'<foreignObject x="{cx - ext * k:.1f}" y="{cy - ext * k:.1f}" width="{2 * ext * k:.1f}" height="{2 * ext * k:.1f}"><div xmlns="http://www.w3.org/1999/xhtml" '
         f'style="width:100%;height:100%;border-radius:50%;background:conic-gradient(from 90deg, #ff4d4d 0deg, #e6e04a 60deg, #4fe05a 120deg, #2fe0e0 180deg, #4a6bff 240deg, #ff5fd0 300deg, #ff4d4d 360deg);transform:scaleY(-1)"></div></foreignObject>'
     )
-    return f'<svg viewBox="0 0 {W_} {W_}" width="{W_}" height="{W_}" role="img" aria-label="The chroma plane with the target, the selected range and what the pull does">{defs}{wheel}{"".join(out)}</svg>'
+    return f'<svg viewBox="0 0 {W_} {W_}" width="{W_}" height="{W_}" role="img" aria-label="The chroma plane with the target, the reach of the hue pull, the seeded mask and what the pull does">{defs}{wheel}{"".join(out)}</svg>'
 
 
 def law_svg(kind):
-    """The law on one axis: input against output for 0, 50 and 100 %, with the window drawn behind (computed from compress_ref's windows)."""
+    """The law on one axis: input against output for 0, 50 and 100 %, with the hue pull's reach drawn behind it (computed from compress_ref's guards)."""
     import numpy as np
 
     W_, H_, pad = 420, 300, 34
     if kind == "hue":
-        lo, hi, t, w, q = -90.0, 90.0, 0.0, 30.0, max(0.6 * 30, math.degrees(0.05))
+        lo, hi, t = -180.0, 180.0, 0.0
         unit, xl = "°", "Hue of a colour, from the target's hue"
+        xs = np.linspace(lo, hi, 1441)
+        win = 1.0 - R.smooth((np.abs(np.radians(xs)) - R.HUE_FULL) / R.HUE_FADE)
     else:
-        lo, hi = -4.0, 4.0
-        t, w, q = 0.0, 1.5, max(0.6 * 1.5, 0.02 / R.STOP)
+        lo, hi, t = -4.0, 4.0, 0.0
         unit, xl = " EV", "Lightness of a colour, from the target's"
-    xs = np.linspace(lo, hi, 721)
-    win = 1.0 - R.smooth((np.abs(xs - t) - w) / q)
+        xs = np.linspace(lo, hi, 721)
+        win = np.ones_like(xs)
     px = lambda x: pad + (x - lo) / (hi - lo) * (W_ - 2 * pad)
     py = lambda y: H_ - pad - (y - lo) / (hi - lo) * (H_ - 2 * pad)
     out = []
-    # the window behind
-    area = f"M{px(lo):.1f} {py(lo):.1f}" + "".join(f"L{px(x):.1f} {H_ - pad - w_ * 0.28 * (H_ - 2 * pad):.1f}" for x, w_ in zip(xs[::6], win[::6])) + f"L{px(hi):.1f} {py(lo):.1f}Z"
-    out.append(f'<path d="{area}" fill="#ff6fd2" fill-opacity=".20"/>')
+    if kind == "hue":
+        area = f"M{px(lo):.1f} {py(lo):.1f}" + "".join(f"L{px(x):.1f} {H_ - pad - w_ * 0.28 * (H_ - 2 * pad):.1f}" for x, w_ in zip(xs[::6], win[::6])) + f"L{px(hi):.1f} {py(lo):.1f}Z"
+        out.append(f'<path d="{area}" fill="#ffc20e" fill-opacity=".16"/>')
     out.append(f'<path d="M{px(lo):.1f} {py(lo):.1f}L{px(hi):.1f} {py(hi):.1f}" stroke="#fff" stroke-opacity=".28" stroke-dasharray="3 5"/>')
-    for kap, col, lab in ((0.5, "#ffc20e", "50 %"), (1.0, "#fff", "100 %")):
+    for kap, col in ((0.5, "#ffc20e"), (1.0, "#fff")):
         ys = t + (xs - t) * (1.0 - kap * win)
         out.append(f'<path d="M' + "L".join(f"{px(x):.1f} {py(y):.1f}" for x, y in zip(xs[::3], ys[::3])) + f'" fill="none" stroke="{col}" stroke-width="2.4"/>')
     out.append(f'<path d="M{pad} {H_ - pad}H{W_ - pad}M{pad} {pad}V{H_ - pad}" stroke="#fff" stroke-opacity=".5"/>')
     out.append(f'<text x="{W_ / 2}" y="{H_ - 6}" text-anchor="middle" fill="#fff" fill-opacity=".7" font-size="12">{xl}</text>')
     out.append(f'<text x="12" y="{pad + 4}" fill="#fff" fill-opacity=".7" font-size="12" transform="rotate(-90 12 {H_ / 2})" text-anchor="middle">after</text>')
     out.append(f'<text x="{px(0):.1f}" y="{H_ - pad + 16}" text-anchor="middle" fill="#fff" fill-opacity=".8" font-size="11">0</text>')
-    out.append(f'<text x="{px(w):.1f}" y="{H_ - pad + 16}" text-anchor="middle" fill="#ff6fd2" font-size="11">{w:g}{unit}</text>')
-    out.append(f'<text x="{px(lo) + 4:.1f}" y="{py(lo) - 6:.1f}" fill="#ff6fd2" fill-opacity=".9" font-size="11">the range</text>')
+    if kind == "hue":
+        for xv in (90, 150):
+            out.append(f'<text x="{px(xv):.1f}" y="{H_ - pad + 16}" text-anchor="middle" fill="#ffc20e" font-size="11">{xv}{unit}</text>')
+        out.append(f'<text x="{px(lo) + 4:.1f}" y="{py(lo) - 6:.1f}" fill="#ffc20e" fill-opacity=".9" font-size="11">how far the pull reaches</text>')
     return f'<svg viewBox="0 0 {W_} {H_}" width="{W_}" height="{H_}" role="img" aria-label="Output against input on one axis">{"".join(out)}</svg>'
 
 
 def page06():
-    legend = '<span><i style="background:none;box-shadow:inset 0 0 0 2px #fff"></i>a colour before</span><span><i style="background:#ffc20e"></i>after, 50 %</span><span><i style="background:#fff"></i>after, 100 %</span><span><i style="background:#ff6fd2;opacity:.5"></i>the range (dashed: the soft edge)</span>'
+    legend = (
+        '<span><i style="background:none;box-shadow:inset 0 0 0 2px #fff"></i>a colour before</span><span><i style="background:#ffc20e"></i>after, 50 %</span><span><i style="background:#fff"></i>after, 100 %</span>'
+        '<span><i style="background:#ffc20e;opacity:.4"></i>how far the hue pull reaches</span><span><i style="background:#ff6fd2;opacity:.5"></i>the seeded Colour range mask</span>'
+    )
     inner = (
         '<body><div class="mx-sheet sk-sheet">'
-        '<h1 class="mx-sheet__title">Colour Compressor · how the pull works</h1>'
-        '<p class="mx-sheet__sub">Drawn from the maths of <code>docs/32</code> §3 by the sketch <code>compress_ref.py</code>, not by hand. Each colour keeps the share <code>1 − κW</code> of its distance to the target on each axis: 0 % leaves it, 100 % puts it on the target. Outside the range <code>W</code> is 0, so nothing moves; at the soft edge it moves by a share.</p>'
+        '<h1 class="mx-sheet__title">Colour Uniform · how the pull works</h1>'
+        '<p class="mx-sheet__sub">Drawn from the maths of <code>docs/32</code> §3 by the sketch <code>compress_ref.py</code>, not by hand. On each axis a colour keeps the share <code>1 − κ</code> of its distance to the target (with a neutral guard on hue and saturation, and a fade on the far side of the wheel for hue): 0 % leaves it, 100 % puts it on the target. The node has no range of its own: its masks decide which pixels it changes.</p>'
         '<section><h2>The chroma plane: hue and saturation</h2><div class="mx-row cc-diagram">'
-        f'<figure class="cc-fig">{plane_svg()}<figcaption>Nine colours near the target are pulled toward it, on hue and saturation together. Greys are never selected.<div class="sk-legend">{legend}</div></figcaption></figure>'
-        f'<figure class="cc-fig">{law_svg("hue")}<figcaption><b>Hue, one axis.</b> A colour 20° from the target (inside ±30°) is pulled to 10° at 50 % and to 0° at 100 %. Outside the range the line is the diagonal: nothing moves. The line never turns back: no colour order is inverted, and below 100 % no two colours are made equal.</figcaption></figure>'
-        f'<figure class="cc-fig">{law_svg("tone")}<figcaption><b>Lightness, one axis.</b> The same law on the mean of the three codes, in stops. At 100 % the colours inside the range share the target\'s lightness: that is the point of the tool, and why Lightness starts at 0 % and a face stays round.</figcaption></figure>'
+        f'<figure class="cc-fig">{plane_svg()}<figcaption>Fourteen colours pulled toward the target, on hue and saturation together. Neutrals are kept. The pink disc is the Colour range mask the first pick adds: colours outside it are left alone by the picture.<div class="sk-legend">{legend}</div></figcaption></figure>'
+        f'<figure class="cc-fig">{law_svg("hue")}<figcaption><b>Hue, one axis.</b> A colour 40° from the target\'s hue goes to 20° at 50 % and to 0° at 100 %. The pull is full up to 90° and fades out by 150°, so the colour opposite the target is never dragged across the wheel. The line never turns back: no colour order is inverted, and below 100 % no two colours are made equal.</figcaption></figure>'
+        f'<figure class="cc-fig">{law_svg("tone")}<figcaption><b>Lightness, one axis.</b> The same law on the mean of the three codes, in stops, on everything in the mask. At 100 % the colours in the mask share the target\'s lightness: that is the point of the tool, and why Lightness starts at 0 % and a face stays round.</figcaption></figure>'
         '</div></section></div>'
     )
     write("06.html", page("How the pull works", inner))
@@ -500,55 +542,48 @@ def node_cell(caption, note="", **kw):
 
 def states_page():
     cells = [
-        node_cell("Normal", "numbered like Film; the node's glyph sits where mask glyphs do"),
+        node_cell("Normal", "numbered like Film; the node's glyph sits beside the mask glyph"),
         node_cell("Selected", selected=True),
         node_cell("Bypassed", "half-strength thumbnail and the slash", bypass=True),
         node_cell("Dead", "not on a path to the Output: 45 %", dead=True),
     ]
     grey_rgb = "rgb(126,120,116)"
     panels = [
-        ("A new node (Pick colour on)", "Colour Compressor", cards("empty", compress=(0, 0, 0)), "no target: Hue, Saturation and Lightness are off and the Compress sliders say why; the Range card still works and its eye is off"),
-        ("After the first click", "Colour Compressor", cards("picking", compress=(50, 50, 0), rng=RANGE_DEFAULT), "the first pick set Hue and Saturation to 50 %; Pick colour stays on for the next click; the Range card shows its defaults"),
-        ("A target set, Pick colour off", "Colour Compressor", cards("set"), "the numbers can be typed: this is the target's shift"),
-        ("A pick too grey for a hue", "Colour Compressor", cards("set", hue=22, sat=2, ev=0.1, rgb=grey_rgb, note="That colour is too grey for a hue. It was moved to Saturation 2."), "held at Saturation 2; the line goes at the next change"),
-        ("The widest range", "Colour Compressor", cards("set", rng=(85, 30, 8, 100)), "Hue ±85° is the most; Saturation ±30 and Lightness ±8 EV take every saturation and every tone, which is the axis off"),
+        ("A new node (Pick colour on)", LINE0, cards("empty", compress=(0, 0, 0)), "no target and no mask: the Compress sliders are off and say why; Hue, Saturation and Lightness of the target can already be set"),
+        ("After the first click", LINE, cards("picking", compress=(50, 50, 0)), "the first pick set Hue and Saturation to 50 % and added a Colour range row (one undo step); Pick colour stays on for the next click"),
+        ("A target set, Pick colour off", LINE, cards("set"), "the numbers can be typed or dragged: the other way to choose the target colour; the swatch opens no picker (glasscn has none)"),
+        ("A pick too grey for a hue", LINE, cards("set", hue=22, sat=2, ev=0.1, rgb=grey_rgb, note="That colour is too grey for a hue. It was moved to Saturation 2."), "held at Saturation 2; the line goes at the next change"),
         ("Bypassed", "Bypassed", cards("set"), "the head's Bypass is on; the node passes its picture through"),
     ]
     pcells = [sheet_card(cap, panel_fragment(line, ch, bypass=(line == "Bypassed")), note) for cap, line, ch, note in panels]
     tips = [
-        ("Add node › Colour Compressor", "Pulls a range of colours toward one colour."),
-        ("Add node › Colour Compressor, at 64 nodes", "A photo can have up to 64 nodes."),
+        ("Add node › Colour Uniform", "Pulls colours toward one colour."),
+        ("Add node › Colour Uniform, at 64 nodes", "A photo can have up to 64 nodes."),
         ("Pick colour (the toggle)", "Click a colour in the photo. Esc stops."),
         ("The hint over the photo", "Click a colour in the photo."),
-        ("The empty target", "No colour yet. Click a colour in the photo."),
-        ("Hue, Saturation and Lightness of the target, no target", "Pick a colour first."),
+        ("The empty target", "No colour yet. Click a colour in the photo, or set Hue, Saturation and Lightness."),
         ("The swatch (its accessible name)", "Target colour: orange, hue 26 degrees, saturation 9.7, lightness minus 0.03 stops."),
         ("A pick too grey for a hue", "That colour is too grey for a hue. It was moved to Saturation 2."),
-        ("Compress, no target", "Pick a colour to compress toward."),
-        ("Compress, with a target", "At 100 % every colour in the range takes the target's value."),
-        ("Range › Hue", "How far from the target's hue colours are still pulled."),
-        ("Range › Saturation", "How far from the target's saturation colours are still pulled."),
-        ("Range › Lightness", "How far from the target's lightness colours are still pulled."),
-        ("Range › Softness", "How gradually the pull fades at the edge of the range."),
-        ("Show affected area (the eye)", "Show affected area"),
-        ("Show affected area, no target", "Pick a colour first."),
-        ("Target › Reset", "Clears the target. The amounts stay."),
+        ("Compress, no target", "Pick or set a target colour first."),
+        ("Compress, with a target", "At 100 % every colour in the mask takes the target's value."),
+        ("Target › Reset", "Clears the target. The amounts and the masks stay."),
         ("Compress › Reset", "Sets Hue, Saturation and Lightness back to 0."),
-        ("Range › Reset", "Puts the range back to ±20°, ±5, ±1.5 EV and 50 %."),
         ("Reset (the head)", "Reset this node. Masks stay."),
+        ("The row the first pick adds", "Colour range · Width 39"),
+        ("Colour range card, under Pick colour", "The centre is the colour the first pick found. Pick again to move it."),
         ("The simple view's notice", "This photo has 2 nodes. These controls change the input, the output and node 1, Main."),
     ]
     tip_html = "".join(f'<div class="mx-tiprow"><span>{a}</span>{M.tip(b)}</div>' for a, b in tips)
     inner = (
         '<body><div class="mx-sheet sk-sheet">'
-        '<h1 class="mx-sheet__title">Colour Compressor · states</h1>'
-        '<p class="mx-sheet__sub">The panel is 400 px wide, as in the app. The face is a drawing made for design/skin/; the compressed picture is the maths of docs/32 §3 applied to it.</p>'
+        '<h1 class="mx-sheet__title">Colour Uniform · states</h1>'
+        '<p class="mx-sheet__sub">The panel is 400 px wide, as in the app. The face is a drawing made for design/skin/; the picture is the maths of docs/32 §3 applied to it through the seeded Colour range mask.</p>'
         f'<section><h2>Node card</h2><div class="mx-row">{"".join(cells)}</div></section>'
         f'<section><h2>Panel</h2><div class="mx-row sk-grid">{"".join(pcells)}</div></section>'
         f'<section><h2>Copy for tooltips and notes (drafts)</h2><div class="mx-tips">{tip_html}</div></section>'
         "</div>"
     )
-    write("states.html", page("Colour Compressor states", inner))
+    write("states.html", page("Colour Uniform states", inner))
 
 
 if __name__ == "__main__":
@@ -556,6 +591,7 @@ if __name__ == "__main__":
     page01()
     page02()
     page03()
+    page03b()
     page04()
     page05()
     page06()
