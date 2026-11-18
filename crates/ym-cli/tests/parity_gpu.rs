@@ -361,25 +361,46 @@ fn a_color_uniform_node_is_byte_identical_through_the_app_path_and_the_binary_on
 
 /// A Blur node (`docs/33`, BL-10) with a Radial row and another mask (a Linear) on a photo of six export tiles: the app (its core has
 /// the device) and the binary (`YELLOWMOON_GPU=on`) write the same bytes in a JPEG, a 16-bit TIFF, a 16-bit PNG and a DNG, which are
-/// not the files of the same graph without the node. **Until BL-05 the device refuses the node and the CPU makes every frame, with
-/// its reason, on both sides**; BL-05 and the type tasks run it here with no change to this test (each adds its own type's node).
+/// not the files of the same graph without the node. **A Lens node (BL-07) runs on the device on both sides** (`R` = 10 px, cells of
+/// 2 px) and the binary's report names no node (no fallback); each type task adds its own type's node.
 #[test]
 fn a_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    blur_node_leg(
+        "a Lens with six blades",
+        serde_json::json!(
+          { "id": 2, "kind": "blur", "pos": [1, 0], "type": "lens",
+            "lens": { "radius": 12, "blades": 6, "rotation_deg": 15, "highlights": 60 },
+            "masks": { "invert": false, "items": [
+              { "kind": "radial", "mode": "add", "invert": true, "feather": 0.1 },
+              { "kind": "linear", "mode": "subtract", "center": [0.5, 0.8], "angle_deg": 10, "feather": 0.3 } ] } }),
+    );
+}
+
+/// The same with a wide round Lens (`R` = 84 px, cells of 16 px: the largest Lens radius the photo allows), Respect mask edges off.
+#[test]
+fn a_wide_round_lens_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    blur_node_leg(
+        "a wide round Lens",
+        serde_json::json!(
+          { "id": 2, "kind": "blur", "pos": [1, 0], "type": "lens",
+            "lens": { "radius": 100, "blades": 0, "rotation_deg": 0, "highlights": 0 },
+            "respect_mask_edges": false,
+            "masks": { "invert": false, "items": [
+              { "kind": "linear", "mode": "add", "center": [0.5, 0.5], "angle_deg": 80, "feather": 0.4 } ] } }),
+    );
+}
+
+fn blur_node_leg(what: &str, node: serde_json::Value) {
     let _serial = serial();
     let sb = Sandbox::new();
     let arw = sb.arw_sized("blur.ARW", 2100, 1100, 9);
     let Some(app) = App::open(&[&arw]) else {
         return;
     };
+    let blur = node;
     let doc = |node: bool| {
         let items = if node {
-            serde_json::json!([
-              { "id": 2, "kind": "blur", "pos": [1, 0], "type": "lens",
-                "lens": { "radius": 12, "blades": 6, "rotation_deg": 15, "highlights": 60 },
-                "masks": { "invert": false, "items": [
-                  { "kind": "radial", "mode": "add", "invert": true, "feather": 0.1 },
-                  { "kind": "linear", "mode": "subtract", "center": [0.5, 0.8], "angle_deg": 10, "feather": 0.3 } ] } }
-            ])
+            serde_json::json!([blur.clone()])
         } else {
             serde_json::json!([{ "id": 2, "kind": "corrector", "pos": [1, 0] }])
         };
@@ -435,7 +456,7 @@ fn a_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_devi
         let mut args = flags;
         args.extend(["--settings", file.to_str().expect("utf-8")]);
         let from_cli = cli_export(&sb, &[&arw], &args, &sb.root().join(format!("cli-{name}")));
-        assert_same_files(&from_app, &from_cli, &format!("a Blur node, {name}"));
+        assert_same_files(&from_app, &from_cli, &format!("{what}, {name}"));
         if name == "tiff16" {
             assert!(
                 bytes(&from_app[0]) != bytes(&without[0]),
@@ -443,6 +464,37 @@ fn a_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_devi
             );
         }
     }
+    // The node ran on the device: the binary's report names no node (a refused node says "a Lens Blur node is not on the device
+    // yet" and the CPU makes the frame).
+    let out = sb
+        .ym_data(&data_dir())
+        .env("YELLOWMOON_GPU", "on")
+        .args([
+            "render",
+            "--json",
+            "--format",
+            "jpeg",
+            "--apple-auto",
+            "off",
+        ])
+        .arg(&arw)
+        .args(["--settings", file.to_str().expect("utf-8")])
+        .arg("--out")
+        .arg(sb.root().join("cli-json"))
+        .assert()
+        .success();
+    let line = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+    let v: serde_json::Value = serde_json::from_str(line.trim_end()).expect("JSON");
+    let notes: Vec<&str> = v["notes"]
+        .as_array()
+        .expect("notes")
+        .iter()
+        .filter_map(|n| n.as_str())
+        .collect();
+    assert!(
+        !notes.iter().any(|n| n.to_lowercase().contains("node")),
+        "{what}: {notes:?}"
+    );
 }
 
 /// An Object row (N-18, `docs/10`) on a photo of six export tiles, on the device: SAM's plane is made on the CPU from the photo's picture

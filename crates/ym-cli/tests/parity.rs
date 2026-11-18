@@ -1642,27 +1642,52 @@ fn a_blur_node_is_the_same_files_through_the_app_path_and_the_binary() {
     blur_leg(false);
 }
 
-/// The device leg of Blur (BL-10). **The device has no Blur route until BL-05**: it refuses a plan with a live Blur node and the
-/// frame is the CPU's, with its reason (`RenderReport::cpu_reason`), on both sides. This leg holds that to be the same bytes on the
-/// two sides today; when BL-05 and the type tasks put the node on the device it is the same test, now with the node run there
-/// (`parity_gpu.rs` then adds the check that the report names no fallback).
+/// The device leg of Blur (BL-10). A type with no device kernel is refused by the device and the frame is the CPU's, with its
+/// reason (`RenderReport::cpu_reason`), on both sides: that leg holds it to be the same bytes. **A type with a kernel (Lens, BL-07)
+/// runs on the device on both sides, and `graph_leg` asserts the binary's report names no node (no fallback).**
 #[test]
 fn a_blur_node_is_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
     blur_leg(true);
 }
 
 fn blur_leg(device: bool) {
-    for (what, doc, correctors) in [
-        ("the example file of docs/33", blur_example(), 1),
-        ("a Zoom node with another mask", blur_other_mask(), 2),
+    // The last number: whether the type's device kernel has landed (`ym_gpu::kernels::blur_stack::device_kernel`): Lens (BL-07)
+    // has, so its device leg is `graph_leg`'s, which also asserts the binary's report names no node (no fallback); the others keep
+    // the fallback leg until their tasks add their own case here.
+    for (what, doc, correctors, on_device) in [
+        ("the example file of docs/33", blur_example(), 1, true),
+        ("a Zoom node with another mask", blur_other_mask(), 2, false),
+        ("a round Lens with another mask", blur_lens_other(), 2, true),
     ] {
-        if device {
+        if device && !on_device {
             blur_on_device_leg(what, &doc);
         } else {
-            graph_leg(what, doc.clone(), correctors, false);
-            png16_leg(what, &doc, false);
+            graph_leg(what, doc.clone(), correctors, device);
+            png16_leg(what, &doc, device);
         }
     }
+}
+
+/// A round Lens Blur node with no Highlights, Respect mask edges off, a Linear row and a brightness range taken away, after a
+/// corrector: the other branch of the Lens settings than the example file's (6 blades, Highlights 60, Respect on).
+fn blur_lens_other() -> serde_json::Value {
+    serde_json::json!({ "nodes": {
+      "items": [
+        { "id": 2, "kind": "corrector", "pos": [1, 0], "grade": { "saturation": { "kind": "manual", "value": 20 } } },
+        { "id": 3, "kind": "blur", "name": "Bokeh", "pos": [2, 0],
+          "type": "lens",
+          "lens": { "radius": 100, "blades": 0, "rotation_deg": 0, "highlights": 0 },
+          "respect_mask_edges": false,
+          "masks": { "invert": false, "items": [
+            { "kind": "linear", "mode": "add", "center": [0.5, 0.5], "angle_deg": 80, "feather": 0.5 },
+            { "kind": "brightness_range", "mode": "subtract", "low": 0.9, "high": 1.0, "softness": 0.3 } ] } }
+      ],
+      "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+        { "from": { "node": 3, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+      ] } })
 }
 
 /// One graph with a Blur node, exported through the app (its core has the device) and through the binary (`YELLOWMOON_GPU=on`) in

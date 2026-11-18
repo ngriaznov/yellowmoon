@@ -628,15 +628,6 @@ fn a_type_with_no_kernel_is_refused_with_its_name() {
     let kinds = [
         (BlurKind::Soft { radius: 20.0 }, "Soft"),
         (
-            BlurKind::Lens {
-                radius: 20.0,
-                blades: 6,
-                rotation_deg: 0.0,
-                highlights: 10.0,
-            },
-            "Lens",
-        ),
-        (
             BlurKind::Motion {
                 length: 20.0,
                 angle_deg: 10.0,

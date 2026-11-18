@@ -213,7 +213,7 @@ For a node over the area `read` (the area `made` that the nodes after it need, g
 | the node's *prefix* chain and its *mask* chain (the plan stopped at the node's `m`, `Stop::C10`) | the sampled picture | `X` in LogC4 / AWG4 and `m`, over `read` | `ColorChain::render_logc4_f32` |
 | `blur_prep` | the two | the four weighted planes `omega X` (linear AWG4) and `omega`, over `read`: decode, the highlight weight, `omega = h m` (Respect on) or `h` | `prep` |
 | `blur_pyramid` | one level | the 2 x 2 box means of it: the next level, `((c00 + c10) + (c01 + c11)) / 4` | `pyramid_level`, `pyramid` |
-| the type's kernel (**BL-06 to BL-09**) | the pyramid | the sums `N` (three planes) and `D` (one) over `made` | the type's twin |
+| the type's kernel (**BL-06 to BL-09**; **Lens, BL-07: `blur_lens`**, the table of an aperture's coverage over the cells of its level, then `blur_upsample` bilinear) | the pyramid | the sums `N` (three planes) and `D` (one) over `made` | the type's twin (Lens: `lens_cells`) |
 | `blur_upsample` (a helper of the kernels) | a level | its pixels over a window, nearest or bilinear | `upsample` |
 | `blur_blend` | `X`, `m`, `N`, `D` | the node's picture over `made`: `X + m (N - X D) / (D + EPS)` in linear light, encoded, with the exact `m = 0` (the input's bits) and `m = 1` (`encode(N / (D + EPS))`) branches; a NaN mask is 0 | `blend` |
 

@@ -179,6 +179,7 @@ def manifest(full: bool = True) -> dict:
                 }
             )
     entries.extend(node_entries(entries))
+    entries.extend(blur_entries(entries))
     return {"entries": entries}
 
 
@@ -226,6 +227,51 @@ def node_entries(entries: list[dict]) -> list[dict]:
         entry = {k: v for k, v in base.items() if k != "sidecar"}
         entry["id"] = f"synthetic/node-uniform-{key}__{UNIFORM_BASE}__lossless-l"
         entry["group"] = "node-uniform"
+        entry["settings"] = {"nodes": {"items": [node], "links": links}}
+        out.append(entry)
+    return out
+
+
+# The golden entries with a Blur node on (docs/33 section 8, BL-07 onward): the same ARW file as an existing entry under settings that
+# add one Blur node after Main, with a Radial row inverted (the node blurs outside the ellipse). Each type's task adds its entry
+# to ``BLUR_NODES`` (one block), so a cut type loses its entry only. They are new entries, so no existing hash moves.
+BLUR_BASE = "chart__D6500__ILCE-7RM4__iso400__rggb__14b"
+BLUR_NODES = (
+    # lens: Radius 50 (25 px on the 1248 px picture, a 4 px cell), 6 blades turned 15 degrees, Highlights 60, Respect mask edges on
+    ("lens", "Lens",
+     {"type": "lens", "lens": {"radius": 50, "blades": 6, "rotation_deg": 15, "highlights": 60}},
+     {"center": [0.5, 0.5], "radii": [0.28, 0.22], "angle_deg": 0, "feather": 0.45}),
+)
+
+
+def blur_entries(entries: list[dict]) -> list[dict]:
+    """The golden entries with a Blur node on: copies of the entry of ``BLUR_BASE`` with settings that add the node after Main.
+    No sidecar (``golden truth`` measures the product against the scene's truth, which a node moves on purpose)."""
+    base = next(e for e in entries if e["id"] == f"synthetic/{BLUR_BASE}__lossless-l")
+    out = []
+    for key, name, fields, radial in BLUR_NODES:
+        node = {
+            "id": 2,
+            "kind": "blur",
+            "name": name,
+            "pos": [1, 0],
+            **fields,
+            "respect_mask_edges": True,
+            "masks": {
+                "invert": False,
+                "items": [
+                    {"kind": "radial", "mode": "add", "invert": True, "enabled": True, "opacity": 1, **radial}
+                ],
+            },
+        }
+        links = [
+            {"from": {"node": "input", "port": "picture"}, "to": {"node": 1, "port": "picture"}},
+            {"from": {"node": 1, "port": "picture"}, "to": {"node": 2, "port": "picture"}},
+            {"from": {"node": 2, "port": "picture"}, "to": {"node": "output", "port": "picture"}},
+        ]
+        entry = {k: v for k, v in base.items() if k != "sidecar"}
+        entry["id"] = f"synthetic/node-blur-{key}__{BLUR_BASE}__lossless-l"
+        entry["group"] = "node-blur"
         entry["settings"] = {"nodes": {"items": [node], "links": links}}
         out.append(entry)
     return out

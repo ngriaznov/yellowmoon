@@ -586,7 +586,7 @@ impl FilmRender {
     }
 
     /// The picture a Blur node makes over `made`, from the picture it reads and its mask over `read` (`made` grown by its
-    /// reach, cut to the frame): `ym_color::blur::apply` in f64 on bands of the rows of `made`, each read over its own rows
+    /// reach, cut to the frame): `ym_color::blur::apply_fast` (the fast methods of the types that have one, the exact kernel of the others) in f64 on bands of the rows of `made`, each read over its own rows
     /// grown by the reach. A pixel's sums are the frame's in-frame taps inside the reach, whatever the band, so the picture is
     /// the same bit for bit for every tile and every thread count (`docs/33` section 3.8). A band whose own pixels all have
     /// `m = 0` is the input.
@@ -642,7 +642,7 @@ impl FilmRender {
                 y0: wy0 as usize,
             };
             let (lo, hi) = (rows.start * read.w, rows.end * read.w);
-            let window = blur::apply(
+            let window = blur::apply_fast(
                 &v[lo..hi],
                 &m[lo..hi],
                 read.w,

@@ -17,3 +17,4 @@ synthetic/chart__bb2850__ILCE-7SM3__iso400__rggb__14b__lossless-l      # tungste
 synthetic/node-uniform-skin__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l   # Colour Uniform: skin, a Colour range row, 60 / 60 / 0
 synthetic/node-uniform-hue__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l    # Colour Uniform: one hue, Hue only at 100 %
 synthetic/node-uniform-tone__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l   # Colour Uniform: tone, Lightness only at 100 %
+synthetic/node-blur-lens__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l   # Blur: Lens, 6 blades, Highlights 60, a Radial row inverted (docs/33 section 8)

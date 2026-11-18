@@ -297,6 +297,26 @@ impl Graph {
             .any(|(id, b)| ids.contains(id) && !b.is_inert())
     }
 
+    /// Whether the graph has a live Blur node (`blur_live`) of a type that has no device kernel yet (`device_kernel`: Lens has had
+    /// one since BL-07; Soft, Motion and Zoom get theirs from BL-06, BL-08 and BL-09): a plan the device refuses, whose frames and
+    /// exports are the CPU's with a reason.
+    fn blur_refused(&self) -> bool {
+        let Ok(plan) =
+            ym_core::pipeline::color::node_plan(&self.settings.nodes, ym_color::plan::Stop::Output)
+        else {
+            return false;
+        };
+        let ids = plan.node_ids();
+        self.settings.nodes.blurs.iter().any(|(id, b)| {
+            ids.contains(id)
+                && !b.is_inert()
+                && ym_gpu::kernels::blur_stack::device_kernel(
+                    &ym_core::pipeline::color::blur_params_of(b),
+                )
+                .is_none()
+        })
+    }
+
     /// Whether the graph has a Colour Uniform node that is not bypassed and does something (a target and an amount): the
     /// graphs `uniform_graphs` collects. The device runs them since CU-05, so every device sweep takes them like any other.
     fn uniform_live(&self) -> bool {
@@ -1092,9 +1112,10 @@ fn graphs() -> Vec<Graph> {
     all
 }
 
-/// The graphs the device makes: `graphs()` without the plans the device refuses (a live Blur node, until BL-05).
+/// The graphs the device makes: `graphs()` without the plans the device refuses (a live Blur node of a type with no device kernel:
+/// every type but Lens, until BL-06, BL-08 and BL-09 land theirs).
 fn device_graphs() -> Vec<Graph> {
-    graphs().into_iter().filter(|g| !g.blur_live()).collect()
+    graphs().into_iter().filter(|g| !g.blur_refused()).collect()
 }
 
 #[test]
