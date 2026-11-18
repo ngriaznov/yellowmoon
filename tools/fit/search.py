@@ -282,7 +282,7 @@ def table_sharpen(lines):
             print(f"BASE ok n={line['outputs']}")
             continue
         text = line["label"]
-        for scale in line["change_codes"]:
+        for scale in sorted(line["change_codes"], key=lambda k: -float(k)):
             c = line["change_codes"][scale]
             text += f"\tscale {scale}: mean|d| {c['mean_codes']:.4f} max|d| {c['max_codes']:.1f}"
         print(text)

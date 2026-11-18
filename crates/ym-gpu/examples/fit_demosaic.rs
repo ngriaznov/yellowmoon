@@ -7,7 +7,7 @@
 //!     --config 'profile.dev.package.ym-gpu.opt-level=3' -- \
 //!     [--from oracle|default] [--set name=value]... [--rel name=0.9,1.1]... \
 //!     [--eval "label@name=v,name=v"]... [--held] [--photo FILE.ARW]... \
-//!     [--artifacts] [--edge] [--ca [--ca-size WxH]] [--list]
+//!     [--artifacts] [--edge] [--ca | --ca-only] [--ca-size WxH] [--list]
 //! ```
 //!
 //! With no evaluation argument only the base line is printed. The base is the starting `Tuning`
@@ -30,8 +30,9 @@
 //!   against the base is measured.
 //! * **P, PixelShift200:** the images of `testdata/demosaic/pixelshift200` when that folder exists, as A
 //!   (the one real-sensor ground truth). When it does not, the data note says the set was skipped.
-//! * `--ca`: the five CA scenes of `ca_green_residual` (`tests/common/ca_scenes.rs`), the residual of red and
-//!   blue against green after R9 and the PSNR of the CA path.
+//! * `--ca`: the five CA scenes of `ca_green_residual` (`tests/common/ca_scenes.rs`, ours, 600 x 400 by
+//!   default), the residual of red and blue against green after R9 and the PSNR of the CA path; `--ca-only`
+//!   runs these scenes and no other.
 //! * `--artifacts`: zipper rate, false-colour rate and chroma difference on the A scenes (the gate's
 //!   definitions, `tests/common/demosaic_metrics.rs`).
 //! * `--edge`: a slanted edge at 0.25 of white with the noise of B through the demosaic: MTF50, rise,
@@ -41,7 +42,7 @@
 //! sRGB codes. The data lives in `testdata/` (`YM_TESTDATA` moves it), is for evaluation and local fitting,
 //! and is never committed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use ym_gpu::cpu::demosaic::DemosaicInputs;
@@ -68,7 +69,7 @@ use fit::{Common, Fields, Rng, Start, code_diff, data_note, emit, mean, num};
 
 /// What a scene is for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Group {
+pub enum Group {
     /// Clean, scale 1, nominal model.
     A,
     /// Dark and noisy, noise seed 1.
@@ -82,7 +83,7 @@ enum Group {
 }
 
 impl Group {
-    fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Group::A => "A",
             Group::B => "B",
@@ -95,7 +96,7 @@ impl Group {
 
 /// The source of a scene: the fit set is the procedural set and Kodak, McMaster is held out.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Source {
+pub enum Source {
     Synthetic,
     Kodak,
     McMaster,
@@ -104,25 +105,25 @@ enum Source {
 }
 
 impl Source {
-    fn held_out(self) -> bool {
+    pub fn held_out(self) -> bool {
         matches!(self, Source::McMaster | Source::PixelShift)
     }
 }
 
-struct Scene {
-    group: Group,
-    source: Source,
+pub struct Scene {
+    pub group: Group,
+    pub source: Source,
     /// The truth, scaled like the mosaic (`None` for a real mosaic).
-    truth: Option<RgbImage>,
-    mosaic: Mosaic,
-    gains: [f32; 3],
-    noise: NoiseDn,
+    pub truth: Option<RgbImage>,
+    pub mosaic: Mosaic,
+    pub gains: [f32; 3],
+    pub noise: NoiseDn,
     /// The signal scale of the scene (white = 1 / scale).
-    scale: f64,
-    shadow: ShadowMatch,
+    pub scale: f64,
+    pub shadow: ShadowMatch,
 }
 
-fn model(a: f64, b: f64, row: f64) -> NoiseModel {
+pub fn model(a: f64, b: f64, row: f64) -> NoiseModel {
     NoiseModel {
         a,
         b,
@@ -133,7 +134,7 @@ fn model(a: f64, b: f64, row: f64) -> NoiseModel {
 }
 
 /// Poisson-Gaussian noise of `m` on every photosite of the mosaic, seeded, in the order of the data.
-fn add_noise(mosaic: &mut Mosaic, m: &NoiseModel, seed: u64) {
+pub fn add_noise(mosaic: &mut Mosaic, m: &NoiseModel, seed: u64) {
     let mut rng = Rng(seed);
     for v in mosaic.data.iter_mut() {
         let x = f64::from(*v).max(0.0);
@@ -141,15 +142,51 @@ fn add_noise(mosaic: &mut Mosaic, m: &NoiseModel, seed: u64) {
     }
 }
 
-struct Loaded {
-    scenes: Vec<Scene>,
-    used: Vec<(String, usize)>,
-    skipped: Vec<(String, String)>,
+/// A clean scene: the mosaic of `truth` at signal scale 1, unit gains, the nominal low-noise model of
+/// spec 01 section 6.3 (`a = 2e-5`, `b = 1e-8`), shadow matching `Auto`.
+pub fn clean_scene(group: Group, source: Source, truth: &RgbImage) -> Scene {
+    Scene {
+        group,
+        source,
+        truth: Some(truth.clone()),
+        mosaic: synth::mosaic_from_rgb(truth, Cfa::RGGB),
+        gains: [1.0; 3],
+        noise: NoiseDn::from_model(&model(2e-5, 1e-8, 0.0)),
+        scale: 1.0,
+        shadow: ShadowMatch::Auto,
+    }
+}
+
+/// A dark, noisy scene: `truth` at 0.25 of white with Poisson-Gaussian noise (`a = 5e-4`, `b = 4e-5`,
+/// row noise 1e-3, the "high" model of spec 01 section 2.2) from `seed`, the matching model passed.
+pub fn dark_noisy_scene(group: Group, source: Source, truth: &RgbImage, seed: u64) -> Scene {
+    let high = model(5e-4, 4e-5, 1e-3);
+    let mut ts = truth.clone();
+    for v in ts.data.iter_mut() {
+        *v *= 0.25;
+    }
+    let mut m = synth::mosaic_from_rgb(&ts, Cfa::RGGB);
+    add_noise(&mut m, &high, seed);
+    Scene {
+        group,
+        source,
+        truth: Some(ts),
+        mosaic: m,
+        gains: [1.0; 3],
+        noise: NoiseDn::from_model(&high),
+        scale: 0.25,
+        shadow: ShadowMatch::Auto,
+    }
+}
+
+pub struct Loaded {
+    pub scenes: Vec<Scene>,
+    pub used: Vec<(String, usize)>,
+    pub skipped: Vec<(String, String)>,
 }
 
 /// Every scene of the run. `second_seed` adds B2, `photos` the C scenes.
-fn load_scenes(second_seed: bool, photos: &[PathBuf]) -> Loaded {
-    let root = demosaic_sets_root();
+pub fn load_scenes(root: &Path, second_seed: bool, photos: &[PathBuf]) -> Loaded {
     let mut sets: Vec<(String, Source, RgbImage)> = Vec::new();
     let mut used = Vec::new();
     let mut skipped = Vec::new();
@@ -175,44 +212,18 @@ fn load_scenes(second_seed: bool, photos: &[PathBuf]) -> Loaded {
     for (n, img) in synthetic {
         sets.push((n, Source::Synthetic, img));
     }
-    let low = model(2e-5, 1e-8, 0.0);
-    let high = model(5e-4, 4e-5, 1e-3);
     let mut scenes = Vec::new();
     for (_, source, t) in &sets {
-        scenes.push(Scene {
-            group: Group::A,
-            source: *source,
-            truth: Some(t.clone()),
-            mosaic: synth::mosaic_from_rgb(t, Cfa::RGGB),
-            gains: [1.0; 3],
-            noise: NoiseDn::from_model(&low),
-            scale: 1.0,
-            shadow: ShadowMatch::Auto,
-        });
+        scenes.push(clean_scene(Group::A, *source, t));
     }
     // B: every third image, at 0.25 of white, ISO 6400-like.
     for (k, (_, source, t)) in sets.iter().enumerate().filter(|(k, _)| k % 3 == 0) {
-        let mut ts = t.clone();
-        for v in ts.data.iter_mut() {
-            *v *= 0.25;
-        }
         let seeds = [(Group::B, 77u64), (Group::B2, 1077u64)];
         for (group, base) in seeds {
             if group == Group::B2 && !second_seed {
                 continue;
             }
-            let mut m = synth::mosaic_from_rgb(&ts, Cfa::RGGB);
-            add_noise(&mut m, &high, base + k as u64);
-            scenes.push(Scene {
-                group,
-                source: *source,
-                truth: Some(ts.clone()),
-                mosaic: m,
-                gains: [1.0; 3],
-                noise: NoiseDn::from_model(&high),
-                scale: 0.25,
-                shadow: ShadowMatch::Auto,
-            });
+            scenes.push(dark_noisy_scene(group, *source, &t, base + k as u64));
         }
     }
     // P: PixelShift200, when it is there.
@@ -229,16 +240,7 @@ fn load_scenes(second_seed: bool, photos: &[PathBuf]) -> Loaded {
         used.push(("pixelshift200".to_owned(), ps.len()));
         for (_, img) in ps {
             let t = linearize(&img);
-            scenes.push(Scene {
-                group: Group::P,
-                source: Source::PixelShift,
-                mosaic: synth::mosaic_from_rgb(&t, Cfa::RGGB),
-                truth: Some(t),
-                gains: [1.0; 3],
-                noise: NoiseDn::from_model(&low),
-                scale: 1.0,
-                shadow: ShadowMatch::Auto,
-            });
+            scenes.push(clean_scene(Group::P, Source::PixelShift, &t));
         }
     }
     // C: crops of real files.
@@ -319,7 +321,7 @@ fn load_photo_crops(path: &PathBuf) -> Result<Vec<Scene>, String> {
     Ok(out)
 }
 
-fn run_scene(s: &Scene, tuning: &Tuning) -> RgbImage {
+pub fn run_scene(s: &Scene, tuning: &Tuning) -> RgbImage {
     let inputs = DemosaicInputs {
         gains: s.gains,
         noise: s.noise,
@@ -346,7 +348,7 @@ const PSNR_KEYS: [(&str, Group, Option<bool>); 8] = [
     ("P", Group::P, None),
 ];
 
-fn psnr_means(scenes: &[Scene], outs: &[RgbImage]) -> Vec<(&'static str, f64)> {
+pub fn psnr_means(scenes: &[Scene], outs: &[RgbImage]) -> Vec<(&'static str, f64)> {
     PSNR_KEYS
         .iter()
         .map(|&(key, group, split)| {
@@ -427,12 +429,12 @@ fn flat_windows(size: usize) -> [(usize, usize, usize, usize); 2] {
     [(8, 76, 40, 40), (size - 48, 76, 40, 40)]
 }
 
-struct EdgeScene {
-    scene: Scene,
-    geometry: EdgeGeometry,
+pub struct EdgeScene {
+    pub scene: Scene,
+    pub geometry: EdgeGeometry,
 }
 
-fn edge_scene() -> EdgeScene {
+pub fn edge_scene() -> EdgeScene {
     let (img, normal, centre) = slanted_edge(EDGE_SIZE);
     let high = model(5e-4, 4e-5, 1e-3);
     let mut m = synth::mosaic_from_rgb(&img, Cfa::RGGB);
@@ -452,7 +454,7 @@ fn edge_scene() -> EdgeScene {
     }
 }
 
-fn edge_numbers(e: &EdgeScene, tuning: &Tuning) -> Value {
+pub fn edge_numbers(e: &EdgeScene, tuning: &Tuning) -> Value {
     let out = run_scene(&e.scene, tuning);
     let luma = luma_spec(&out);
     let es = edge_stats(&luma, EDGE_SIZE, EDGE_SIZE, &e.geometry, 32);
@@ -509,7 +511,7 @@ fn usage(why: &str) -> ! {
     eprintln!(
         "usage: fit_demosaic [--from oracle|default] [--set name=value]... [--rel name=f1,f2]... \
          [--eval \"label@name=v,name=v\"]... [--held] [--photo FILE.ARW]... [--artifacts] [--edge] \
-         [--ca [--ca-size WxH]] [--list]"
+         [--ca | --ca-only [--ca-size WxH]] [--list]"
     );
     std::process::exit(2);
 }
@@ -518,7 +520,8 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut common = Common::default();
     let mut photos: Vec<PathBuf> = Vec::new();
-    let (mut want_artifacts, mut want_edge, mut want_ca) = (false, false, false);
+    let (mut want_artifacts, mut want_edge, mut want_ca, mut ca_only) =
+        (false, false, false, false);
     let mut ca_size = (600usize, 400usize);
     let mut i = 0;
     while i < args.len() {
@@ -534,6 +537,10 @@ fn main() {
                 "--artifacts" => want_artifacts = true,
                 "--edge" => want_edge = true,
                 "--ca" => want_ca = true,
+                "--ca-only" => {
+                    want_ca = true;
+                    ca_only = true;
+                }
                 "--ca-size" => {
                     i += 1;
                     let v = args.get(i).unwrap_or_else(|| usage("--ca-size needs WxH"));
@@ -561,7 +568,15 @@ fn main() {
     }
     let evals = common.evaluations(&start).unwrap_or_else(|e| usage(&e));
 
-    let loaded = load_scenes(common.held, &photos);
+    let loaded = if ca_only {
+        Loaded {
+            scenes: Vec::new(),
+            used: Vec::new(),
+            skipped: Vec::new(),
+        }
+    } else {
+        load_scenes(&demosaic_sets_root(), common.held, &photos)
+    };
     let ca_set = want_ca.then(|| ca_scenes::ca_scene_set(ca_size, 0.0, 2024));
     let ca_noise = NoiseDn::from_model(&ca_scenes::ca_noise_model(0.0));
     let edge = want_edge.then(edge_scene);

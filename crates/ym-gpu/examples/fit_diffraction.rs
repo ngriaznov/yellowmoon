@@ -187,36 +187,36 @@ fn psnr(mse: f64) -> f64 {
 }
 
 /// One scene set of one case: the blurred, noisy inputs and what to compare them with.
-struct Case {
-    name: String,
-    held: bool,
-    f: f64,
-    model: NoiseModel,
-    text_in: RgbImage,
-    nat_in: RgbImage,
-    edge_in: RgbImage,
-    sd_in: f64,
+pub struct Case {
+    pub name: String,
+    pub held: bool,
+    pub f: f64,
+    pub model: NoiseModel,
+    pub text_in: RgbImage,
+    pub nat_in: RgbImage,
+    pub edge_in: RgbImage,
+    pub sd_in: f64,
 }
 
 /// The measures of one restored case.
 #[derive(Clone, Copy)]
-struct Res {
-    text: f64,
-    nat: f64,
-    mtf: f64,
-    rise: f64,
-    over: f64,
-    noise: f64,
+pub struct Res {
+    pub text: f64,
+    pub nat: f64,
+    pub mtf: f64,
+    pub rise: f64,
+    pub over: f64,
+    pub noise: f64,
 }
 
-struct Scenes {
-    text: RgbImage,
-    natural: RgbImage,
-    geometry: EdgeGeometry,
-    cases: Vec<Case>,
+pub struct Scenes {
+    pub text: RgbImage,
+    pub natural: RgbImage,
+    pub geometry: EdgeGeometry,
+    pub cases: Vec<Case>,
 }
 
-fn build_scenes(held: bool) -> Scenes {
+pub fn build_scenes(held: bool) -> Scenes {
     let text = synth::fine_text(192, 128, 2);
     let natural = synth::natural(192, 128, 7);
     let (edge, normal, centre) = slanted_edge(EDGE_SIZE);
@@ -271,7 +271,7 @@ fn build_scenes(held: bool) -> Scenes {
 }
 
 /// Restores every case with `tuning`; returns the measures and the three outputs of each case.
-fn run(sc: &Scenes, tuning: &Tuning) -> Vec<(Res, [RgbImage; 3])> {
+pub fn run(sc: &Scenes, tuning: &Tuning) -> Vec<(Res, [RgbImage; 3])> {
     // One leaked copy per evaluation: `DiffractionParams` holds a `&'static Tuning`. An example run
     // makes a few dozen evaluations at most, a few hundred bytes each.
     let tuning: &'static Tuning = Box::leak(Box::new(*tuning));
@@ -309,7 +309,7 @@ fn case_json(c: &Case, r: &Res) -> Value {
 }
 
 /// The mean change against the base over the cases with `held`, and the largest change of any sample.
-fn deltas(
+pub fn deltas(
     sc: &Scenes,
     res: &[(Res, [RgbImage; 3])],
     base: &[(Res, [RgbImage; 3])],
