@@ -281,8 +281,9 @@ struct Graph {
 }
 
 impl Graph {
-    /// Whether the graph has a Blur node that is not bypassed, has an amount, and that the Output reads (or a key reads): a plan the
-    /// device refuses until BL-05 (`ColorChain::has_blur`). Its frames and exports are the CPU's, with a reason.
+    /// Whether the graph has a Blur node that is not bypassed, has an amount, and that the Output reads (or a key reads)
+    /// (`ColorChain::has_blur`). A node of a type with no device kernel yet (`blur_refused`) makes the frames and exports the
+    /// CPU's, with a reason; one of a type whose task has landed runs on the device.
     fn blur_live(&self) -> bool {
         let Ok(plan) =
             ym_core::pipeline::color::node_plan(&self.settings.nodes, ym_color::plan::Stop::Output)
@@ -295,6 +296,25 @@ impl Graph {
             .blurs
             .iter()
             .any(|(id, b)| ids.contains(id) && !b.is_inert())
+    }
+
+    /// Whether a live Blur node of the graph has a type the device does not run yet (`device_kernel` is `None`: Lens, Motion and Zoom
+    /// until BL-07 to BL-09; Soft runs since BL-06): the plan is refused and the frame is the CPU's.
+    fn blur_refused(&self) -> bool {
+        let Ok(plan) =
+            ym_core::pipeline::color::node_plan(&self.settings.nodes, ym_color::plan::Stop::Output)
+        else {
+            return false;
+        };
+        let ids = plan.node_ids();
+        self.settings.nodes.blurs.iter().any(|(id, b)| {
+            ids.contains(id)
+                && !b.is_inert()
+                && ym_gpu::kernels::blur_stack::device_kernel(
+                    &ym_core::pipeline::color::blur_params_of(b),
+                )
+                .is_none()
+        })
     }
 
     /// Whether the graph has a Colour Uniform node that is not bypassed and does something (a target and an amount): the
@@ -1092,9 +1112,10 @@ fn graphs() -> Vec<Graph> {
     all
 }
 
-/// The graphs the device makes: `graphs()` without the plans the device refuses (a live Blur node, until BL-05).
+/// The graphs the device makes: `graphs()` without the plans the device refuses (a live Blur node of a type with no device kernel
+/// yet; a Soft node runs on the device since BL-06, so these sweeps hold it).
 fn device_graphs() -> Vec<Graph> {
-    graphs().into_iter().filter(|g| !g.blur_live()).collect()
+    graphs().into_iter().filter(|g| !g.blur_refused()).collect()
 }
 
 #[test]
@@ -2777,11 +2798,12 @@ fn blur_graphs_are_the_same_bits_whatever_the_tiles_and_the_threads() {
     assert!(changed > 0, "no graph with a Blur node changed a pixel");
 }
 
-/// A plan with a live Blur node is refused by the device until BL-05 and made on the CPU, with the reason in the frame's report;
-/// the PNG export is the CPU's colour with the device's raw stages, within one 10-bit code of the CPU's (the unstable-pixel rule of
-/// `judge_export` applies as for every graph).
+/// A plan with a live Blur node of a type with no device kernel yet is refused by the device and made on the CPU, with the reason in
+/// the frame's report; one whose live nodes are all of types that run on the device (Soft, BL-06) is not refused, has no CPU reason
+/// and is within the CPU renderer's bounds. The PNG export is, either way, within one 10-bit code of the CPU's (the unstable-pixel
+/// rule of `judge_export` applies as for every graph).
 #[test]
-fn blur_graphs_are_refused_by_the_device_and_made_on_the_cpu() {
+fn blur_graphs_are_refused_by_the_device_or_run_on_it_and_match_the_cpu() {
     let _serial = SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2808,15 +2830,22 @@ fn blur_graphs_are_refused_by_the_device_and_made_on_the_cpu() {
         let got = device
             .viewport_frame(&src, &st, &FrameOptions::default(), &CancelToken::new())
             .expect("frame");
-        if !got.report.device_refused
-            || !got
-                .report
-                .cpu_reason
-                .as_deref()
-                .is_some_and(|r| r.contains("Blur node"))
-        {
+        if g.blur_refused() {
+            if !got.report.device_refused
+                || !got
+                    .report
+                    .cpu_reason
+                    .as_deref()
+                    .is_some_and(|r| r.contains("Blur node"))
+            {
+                problems.push(format!(
+                    "{name}: not refused with its reason: refused {}, reason {:?}",
+                    got.report.device_refused, got.report.cpu_reason
+                ));
+            }
+        } else if got.report.device_refused || got.report.cpu_reason.is_some() {
             problems.push(format!(
-                "{name}: not refused with its reason: refused {}, reason {:?}",
+                "{name}: the device runs its Blur nodes but refused: refused {}, reason {:?}",
                 got.report.device_refused, got.report.cpu_reason
             ));
         }

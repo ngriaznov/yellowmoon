@@ -21,7 +21,7 @@ Golden-image tooling (`docs/13-testing.md`, section Golden images). Test tooling
 ```bash
 cargo build -p ym-cli                                  # the binary under test (target/debug/ym or target/release/ym)
 tools/fetch/synthetic.sh                               # the input files (testdata/synthetic), a few minutes, no download
-cargo run -p golden --release -- check                 # the default synthetic set (64 entries: 61 files and the three Colour Uniform entries), about 2 minutes on 4 cores
+cargo run -p golden --release -- check                 # the default synthetic set (66 entries: 61 files, the three Colour Uniform entries and the two Soft Blur entries), about 2 minutes on 4 cores
 cargo run -p golden --release -- check --set cc0       # the CC0 tier, once tools/fetch/golden.sh has fetched it
 cargo run -p golden --release -- check --filter D6500 --filter ILCE-1
 cargo run -p golden --release -- update --note "why the pictures changed"
@@ -77,7 +77,7 @@ of a skip.
 **The manifest.** The entries of tier `synthetic` are written by `python3 -m training.synth.make_scenes --write-manifest
 tools/golden/manifest.json` and leave `expected_hash` and `reference` empty on purpose (a test pins that): this runner
 keeps the hashes in `expected.json` and the pictures under `testdata/golden/refs`. An entry's `settings` is the
-`ym:Settings` document passed to `--settings`, **node-first** from 0.2.0 (`docs/10`, `docs/23` §3): `{}` is the default graph (everything Auto, Input → Main → Output), and an entry that changes something names the nodes it changes, for example `{"nodes":{"items":[{"id":"input","exposure":{"kind":"manual","ev":0.3}}]}}`; a field that is not a setting of the node is an error in `ym`, so a typo fails loudly, and a flat document of Yellowmoon 0.1 is refused. N-02 rewrites what holds the old form: no plain entry has settings (the 114 file entries are `{}`, which stays valid); the three `node-uniform` entries of the default set (`docs/32` §8, CU-06) are the only ones that do, so the change is in `truth_settings` (`src/truth.rs`), which builds the node-first document of the Neutral look (the Output's `look`) and the highlight range 0 (the Input's `rolloff`), and in the manifest's own description of `settings`.
+`ym:Settings` document passed to `--settings`, **node-first** from 0.2.0 (`docs/10`, `docs/23` §3): `{}` is the default graph (everything Auto, Input → Main → Output), and an entry that changes something names the nodes it changes, for example `{"nodes":{"items":[{"id":"input","exposure":{"kind":"manual","ev":0.3}}]}}`; a field that is not a setting of the node is an error in `ym`, so a typo fails loudly, and a flat document of Yellowmoon 0.1 is refused. N-02 rewrites what holds the old form: no plain entry has settings (the 114 file entries are `{}`, which stays valid); the three `node-uniform` entries (`docs/32` §8, CU-06) and the two `node-blur` entries (`docs/33` §8, BL-06) of the default set are the only ones that do, so the change is in `truth_settings` (`src/truth.rs`), which builds the node-first document of the Neutral look (the Output's `look`) and the highlight range 0 (the Input's `rolloff`), and in the manifest's own description of `settings`.
 
 ## GPU mode: `golden check --device gpu` and `golden device-check`
 

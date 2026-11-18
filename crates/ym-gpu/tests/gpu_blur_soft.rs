@@ -22,7 +22,7 @@ use ym_gpu::device::{Gpu, GpuError, StorageMode, StoragePreference};
 use ym_gpu::image::GpuImage;
 use ym_gpu::kernels::blur_soft::BlurSoft;
 use ym_gpu::kernels::blur_stack::{
-    BlurKernel, BlurWork, SumsImage, encode_blur_picture, encode_prep, encode_pyramid,
+    BlurKernel, BlurWork, SumsImage, encode_blur_picture, encode_pyramid,
 };
 use ym_gpu::queue::{JobSpec, Priority};
 use ym_gpu::stream::PassList;
