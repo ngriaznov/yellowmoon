@@ -182,14 +182,14 @@ impl Default for Params {
 /// Every field says its row, its kind ([`Kind`]), its section of
 /// `docs/algorithms/01-adaptive-ratio-demosaic.md`, its derivation status and the task that fits or
 /// proves it. [`Tuning::ORACLE`] is what the oracle vectors were made with and [`Tuning::DEFAULT`] is
-/// what ships; they are equal until a fit lands (`docs/29` RC-07, RC-08, RC-10).
+/// what ships; they are equal except for A6 and A7, which RC-07 fitted (`docs/29` RC-08, RC-10 follow).
 ///
 /// The structure stays outside it: the 5 x 5 and 3 x 3 filters, the number of passes, the
 /// `2g + r` terms of the offsets and every `0.5`, `2` and `1` that is arithmetic rather than a
 /// choice.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tuning {
-    /// A1 · Fit · spec §3.2 · pending, RC-07. Weight of the second difference of the same colour in
+    /// A1 · Fit · spec §3.2 · fitted, RC-07: kept at 1.6, within 0.006 dB of the optimum. Weight of the second difference of the same colour in
     /// the pass-1 direction scores, `w·rho·|P(0,-2) - 2c + P(0,2)|`.
     pub second_diff_weight: f64,
     /// A2 · Fit · spec §3.2, §3.6 · pending, RC-10. How fast the direction test relaxes with the
@@ -203,11 +203,11 @@ pub struct Tuning {
     pub centre_weight_linear: f64,
     /// A4 · Fit · spec §3.6 · pending, RC-10. Cubic term `B` of the same weight.
     pub centre_weight_cubic: f64,
-    /// A6 · Fit · spec §3.4.2, §3.4.3 · pending, RC-07. Floor of the chroma penalty
+    /// A6 · Fit · spec §3.4.2, §3.4.3 · fitted, RC-07: 0.03 to 0.9, with A7. Floor of the chroma penalty
     /// `|X - G|/max(X + G + 1, 1) + floor` that multiplies the cost of a high-chroma sample. One
     /// name for steps 1 and 2.
     pub chroma_floor: f64,
-    /// A7 · Fit · spec §3.4.2, §3.4.3 · pending, RC-07. The penalty applies when
+    /// A7 · Fit · spec §3.4.2, §3.4.3 · fitted, RC-07: 0.75 to 3.5, with A6. The penalty applies when
     /// `dominance·ΣX < ΣG`: the red or blue is not dominant over the greens. A comparison, so a new
     /// value moves the decision near-ties of the device parity test.
     pub sat_dominance: f64,
@@ -263,8 +263,13 @@ impl Tuning {
         match_below_ratio: 316.227_766_016_837_96,
     };
 
-    /// The values that ship. Equal to [`Tuning::ORACLE`] until a fit lands (RC-07, RC-08, RC-10).
-    pub const DEFAULT: Tuning = Tuning::ORACLE;
+    /// The values that ship. [`Tuning::ORACLE`] with the fits that were accepted: A6 and A7 (RC-07,
+    /// `docs/29` section 5). A1, A2 to A4 and A8 to A14 are equal to the oracle until RC-08 and RC-10.
+    pub const DEFAULT: Tuning = Tuning {
+        chroma_floor: 0.9,
+        sat_dominance: 3.5,
+        ..Tuning::ORACLE
+    };
 
     /// The weight of the centre green in the pass-2 three-tap mean of the CA path (spec §3.6):
     /// `w(t) = 1 + A·t + B·t³` with `t = (1 - min(1, 2κ))²`.
@@ -349,7 +354,9 @@ const fn registry(t: &Tuning) -> [Constant; 19] {
             "second_diff_weight",
             second_diff_weight,
             Kind::Fit,
-            Status::Pending("RC-07"),
+            Status::Fitted(
+                "RC-07, 2026-11-18: kept; the nine-cell optimum 0.56 is 0.006 dB better, below the 0.01 dB of rule 3, and the fit-set optimum 0.54 gains 0.015 dB on the fit sets and loses 0.015 dB on McMaster",
+            ),
         )
         .on_device("SECOND_DIFF_WEIGHT")
         .distinct(),
@@ -408,7 +415,9 @@ const fn registry(t: &Tuning) -> [Constant; 19] {
             "chroma_floor",
             chroma_floor,
             Kind::Fit,
-            Status::Pending("RC-07"),
+            Status::Fitted(
+                "RC-07, 2026-11-18: 0.03 to 0.9, fitted with A7; the optimum is the penalty switched off, 0.9 is within 0.002 dB of it",
+            ),
         )
         .on_device("CHROMA_FLOOR")
         .distinct(),
@@ -417,7 +426,9 @@ const fn registry(t: &Tuning) -> [Constant; 19] {
             "sat_dominance",
             sat_dominance,
             Kind::Fit,
-            Status::Pending("RC-07"),
+            Status::Fitted(
+                "RC-07, 2026-11-18: 0.75 to 3.5, fitted with A6; the optimum is the penalty switched off, 3.5 is within 0.002 dB of it",
+            ),
         )
         .on_device("SAT_DOMINANCE")
         .distinct(),

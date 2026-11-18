@@ -266,16 +266,31 @@ fn fit_demosaic_runs_on_a_tiny_scene_and_a_moved_constant_moves_it() {
 
 #[test]
 fn fit_demosaic_skips_a_missing_set_and_reads_pixelshift200_when_it_is_there() {
-    use fit_demosaic_ex::load_scenes;
+    use fit_demosaic_ex::{Group, load_scenes};
     let root = std::env::temp_dir().join(format!("ym-fit-harness-{}", std::process::id()));
     std::fs::create_dir_all(&root).expect("temp folder");
-    let none = load_scenes(&root, false, &[]);
+    let none = load_scenes(&root, false, &[], false);
     let skipped: Vec<&str> = none.skipped.iter().map(|(n, _)| n.as_str()).collect();
     assert!(skipped.contains(&"pixelshift200"), "{skipped:?}");
     assert!(skipped.contains(&"kodak") && skipped.contains(&"mcmaster"));
     assert!(none.used.iter().all(|(n, _)| !n.starts_with("pixelshift")));
     // The procedural set is always there (7 images), and every third one is also a B scene.
     assert_eq!(none.scenes.len(), 7 + 3);
+    // `--cells` adds the A images at the two other signal scales of the gate's nine cells (RC-07).
+    let cells = load_scenes(&root, false, &[], true);
+    assert_eq!(cells.scenes.len(), 7 + 7 * 2 + 3);
+    let scales: Vec<f64> = cells
+        .scenes
+        .iter()
+        .filter(|s| matches!(s.group, Group::Cell01 | Group::Cell001))
+        .map(|s| s.scale)
+        .collect();
+    assert_eq!(scales.len(), 14);
+    assert!(
+        scales
+            .iter()
+            .all(|&v| (v - 0.1).abs() < 1e-6 || (v - 0.01).abs() < 1e-6)
+    );
     // A folder with one image.
     let ps = root.join("pixelshift200");
     std::fs::create_dir_all(&ps).expect("folder");
@@ -288,7 +303,7 @@ fn fit_demosaic_skips_a_missing_set_and_reads_pixelshift200_when_it_is_there() {
         .expect("header")
         .write_image_data(&pixels)
         .expect("data");
-    let some = load_scenes(&root, true, &[]);
+    let some = load_scenes(&root, true, &[], false);
     assert!(
         some.used
             .iter()
@@ -297,7 +312,7 @@ fn fit_demosaic_skips_a_missing_set_and_reads_pixelshift200_when_it_is_there() {
     assert!(some.skipped.iter().all(|(n, _)| n != "pixelshift200"));
     assert_eq!(some.scenes.len(), 7 + 1 + 3 * 2, "A, P, B and B2");
     // A missing photograph is reported, not fatal.
-    let bad = load_scenes(&root, false, &[root.join("missing.ARW")]);
+    let bad = load_scenes(&root, false, &[root.join("missing.ARW")], false);
     assert!(bad.skipped.iter().any(|(n, _)| n.starts_with("photo ")));
     std::fs::remove_dir_all(&root).expect("clean up the temp folder");
 }

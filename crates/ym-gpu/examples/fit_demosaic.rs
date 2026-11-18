@@ -37,6 +37,8 @@
 //!   definitions, `tests/common/demosaic_metrics.rs`).
 //! * `--edge`: a slanted edge at 0.25 of white with the noise of B through the demosaic: MTF50, rise,
 //!   overshoot and the noise of the flat halves (the objective of the shadow sharpening, `docs/29` F-05).
+//! * `--cells`: the nine cells of `demosaic_gate` (the A images at signal scales 1, 0.1 and 0.01, nominal
+//!   model fixed): the set means, `mean9` (the gate's aggregate), `mean_fit` and `mean_held` (RC-07).
 //!
 //! The change against the base is the audit's measure: the mean and the largest `|difference|` in 8-bit
 //! sRGB codes. The data lives in `testdata/` (`YM_TESTDATA` moves it), is for evaluation and local fitting,
@@ -79,6 +81,10 @@ pub enum Group {
     C,
     /// PixelShift200 ground truth.
     P,
+    /// The clean A images at signal scale 0.1 (the nine cells of the gate; only with `--cells`).
+    Cell01,
+    /// The clean A images at signal scale 0.01 (the nine cells of the gate; only with `--cells`).
+    Cell001,
 }
 
 impl Group {
@@ -89,6 +95,8 @@ impl Group {
             Group::B2 => "B2",
             Group::C => "C",
             Group::P => "P",
+            Group::Cell01 => "cell_0.1",
+            Group::Cell001 => "cell_0.01",
         }
     }
 }
@@ -185,7 +193,7 @@ pub struct Loaded {
 }
 
 /// Every scene of the run. `second_seed` adds B2, `photos` the C scenes.
-pub fn load_scenes(root: &Path, second_seed: bool, photos: &[PathBuf]) -> Loaded {
+pub fn load_scenes(root: &Path, second_seed: bool, photos: &[PathBuf], cells: bool) -> Loaded {
     let mut sets: Vec<(String, Source, RgbImage)> = Vec::new();
     let mut used = Vec::new();
     let mut skipped = Vec::new();
@@ -214,6 +222,17 @@ pub fn load_scenes(root: &Path, second_seed: bool, photos: &[PathBuf]) -> Loaded
     let mut scenes = Vec::new();
     for (_, source, t) in &sets {
         scenes.push(clean_scene(Group::A, *source, t));
+    }
+    // The other two signal scales of the nine cells of `demosaic_gate`: the same images scaled by 0.1 and
+    // 0.01, the nominal model unchanged (it is fixed at every scale in the gate).
+    if cells {
+        for (_, source, t) in &sets {
+            for (group, scale) in [(Group::Cell01, 0.1f32), (Group::Cell001, 0.01f32)] {
+                let mut sc = clean_scene(group, *source, &demosaic_metrics::scaled(t, scale));
+                sc.scale = f64::from(scale);
+                scenes.push(sc);
+            }
+        }
     }
     // B: every third image, at 0.25 of white, ISO 6400-like.
     for (k, (_, source, t)) in sets.iter().enumerate().filter(|(k, _)| k % 3 == 0) {
@@ -505,12 +524,55 @@ fn change(scenes: &[Scene], outs: &[RgbImage], base: &[RgbImage]) -> Value {
     Value::Object(m)
 }
 
+/// The nine cells of `demosaic_gate` (procedural, Kodak, McMaster at scales 1, 0.1 and 0.01): the mean PSNR
+/// of each set at each scale and the mean of the cells (equal weight), all, fit sets only and held out only.
+fn cells_numbers(scenes: &[Scene], outs: &[RgbImage]) -> Value {
+    let sets = [
+        ("synthetic", Source::Synthetic),
+        ("kodak", Source::Kodak),
+        ("mcmaster", Source::McMaster),
+    ];
+    let scales = [
+        ("1", Group::A),
+        ("0.1", Group::Cell01),
+        ("0.01", Group::Cell001),
+    ];
+    let mut cells = serde_json::Map::new();
+    let (mut all, mut fit_c, mut held_c) = (Vec::new(), Vec::new(), Vec::new());
+    for (sname, source) in sets {
+        for (cname, group) in scales {
+            let v: Vec<f64> = scenes
+                .iter()
+                .zip(outs)
+                .filter(|(s, _)| s.group == group && s.source == source)
+                .filter_map(|(s, o)| s.truth.as_ref().map(|t| psnr(o, t, 10, s.scale)))
+                .collect();
+            if v.is_empty() {
+                continue;
+            }
+            let m = mean(&v);
+            cells.insert(format!("{sname}@{cname}"), num(m));
+            all.push(m);
+            if source.held_out() {
+                held_c.push(m);
+            } else {
+                fit_c.push(m);
+            }
+        }
+    }
+    json!({
+        "cells": cells,
+        "mean9": num(mean(&all)), "mean_fit": num(mean(&fit_c)), "mean_held": num(mean(&held_c)),
+        "n": all.len(),
+    })
+}
+
 fn usage(why: &str) -> ! {
     eprintln!("fit_demosaic: {why}");
     eprintln!(
         "usage: fit_demosaic [--from oracle|default] [--set name=value]... [--rel name=f1,f2]... \
          [--eval \"label@name=v,name=v\"]... [--held] [--photo FILE.ARW]... [--artifacts] [--edge] \
-         [--ca | --ca-only [--ca-size WxH]] [--list]"
+         [--cells] [--ca | --ca-only [--ca-size WxH]] [--list]"
     );
     std::process::exit(2);
 }
@@ -521,6 +583,7 @@ fn main() {
     let mut photos: Vec<PathBuf> = Vec::new();
     let (mut want_artifacts, mut want_edge, mut want_ca, mut ca_only) =
         (false, false, false, false);
+    let mut want_cells = false;
     let mut ca_size = (600usize, 400usize);
     let mut i = 0;
     while i < args.len() {
@@ -535,6 +598,7 @@ fn main() {
                 }
                 "--artifacts" => want_artifacts = true,
                 "--edge" => want_edge = true,
+                "--cells" => want_cells = true,
                 "--ca" => want_ca = true,
                 "--ca-only" => {
                     want_ca = true;
@@ -574,7 +638,7 @@ fn main() {
             skipped: Vec::new(),
         }
     } else {
-        load_scenes(&demosaic_sets_root(), common.held, &photos)
+        load_scenes(&demosaic_sets_root(), common.held, &photos, want_cells)
     };
     let ca_set = want_ca.then(|| ca_scenes::ca_scene_set(ca_size, 0.0, 2024));
     let ca_noise = NoiseDn::from_model(&ca_scenes::ca_noise_model(0.0));
@@ -624,6 +688,18 @@ fn main() {
                     .collect::<std::collections::BTreeMap<_, _>>()
             );
             line["change_codes"] = change(scenes, outs, &base_outs);
+        }
+        if want_cells {
+            let mut c = cells_numbers(scenes, outs);
+            if !is_base {
+                let b = cells_numbers(scenes, &base_outs);
+                for k in ["mean9", "mean_fit", "mean_held"] {
+                    if let (Some(x), Some(y)) = (c[k].as_f64(), b[k].as_f64()) {
+                        c[format!("d_{k}")] = num(x - y);
+                    }
+                }
+            }
+            line["cells"] = c;
         }
         if want_artifacts {
             line["artifacts"] = artifact_means(scenes, outs, &truth_labs);

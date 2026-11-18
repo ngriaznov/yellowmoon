@@ -321,8 +321,17 @@ fn the_block_of_each_package_is_the_registrys_device_constants() {
             assert!(p.registry.iter().all(|c| c.wgsl.is_none()), "{}", p.name);
             continue;
         };
-        // Deterministic text, and the same under the oracle constants until a fit lands.
-        assert_eq!(*block, *oracle, "{}: DEFAULT and ORACLE differ", p.name);
+        // The same constants under the oracle and the shipped values. The values may differ once a fit
+        // has landed (RC-07: A6 and A7); the names and their order may not.
+        let name_list = |text: &str| -> Vec<String> {
+            block_constants(text).into_iter().map(|(n, _)| n).collect()
+        };
+        assert_eq!(
+            name_list(block),
+            name_list(oracle),
+            "{}: DEFAULT and ORACLE name different constants",
+            p.name
+        );
         let generated = block_constants(block);
         let on_device: Vec<_> = p.registry.iter().filter(|c| c.wgsl.is_some()).collect();
         let mut names: Vec<&str> = generated.iter().map(|(n, _)| n.as_str()).collect();
