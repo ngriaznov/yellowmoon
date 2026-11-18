@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yellowmoon Blur node mockups</title>
+<style>
+@font-face { font-family: Figtree; font-weight: 300 900; src: url("../nodes/html/assets/fonts/figtree-latin-wght-normal.woff2") format("woff2"); }
+:root { color-scheme: dark; --bg:#0f0f10; --line:rgba(255,255,255,.14); --ink:#f2f2f2; --quiet:#a2a2a6; --yellow:#ffc20e; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 Figtree, system-ui, sans-serif; }
+header.top { position:sticky; top:0; z-index:5; background:rgba(15,15,16,.92); backdrop-filter: blur(10px); border-bottom:1px solid var(--line); padding:12px 16px; display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; }
+header.top h1 { font-size:15px; margin:0 12px 0 0; font-weight:800; }
+header.top small { color:var(--quiet); font-weight:600; margin-right:auto; }
+.chip { display:inline-grid; place-items:center; min-width:34px; height:28px; padding:0 8px; border-radius:9px; border:1px solid var(--line); color:var(--ink); text-decoration:none; font-weight:800; font-size:13px; }
+.chip:hover { border-color:var(--yellow); }
+main { max-width:1480px; margin:0 auto; padding:24px 16px 80px; }
+section { margin:0 0 72px; scroll-margin-top:64px; }
+.head { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+.head h2 { margin:0; font-size:22px; font-weight:800; }
+.num { display:inline-grid; place-items:center; min-width:38px; height:28px; border-radius:9px; background:rgba(255,255,255,.12); font-weight:800; font-size:14px; }
+.shot { display:block; border-radius:14px; overflow:hidden; border:1px solid var(--line); }
+.shot img { display:block; width:100%; height:auto; }
+.cap { max-width:960px; padding-top:14px; }
+.cap .what { font-size:17px; margin:0 0 8px; }
+.cap ul { margin:0 0 8px; padding-left:20px; color:#d4d4d8; }
+.cap li { margin:4px 0; }
+.note { max-width:960px; color:var(--quiet); }
+.nav { display:flex; gap:20px; margin:14px 0 0; font-weight:700; }
+.nav a { color:var(--ink); text-decoration:none; border-bottom:2px solid var(--line); padding-bottom:2px; }
+.nav a.next { border-color:var(--yellow); }
+</style></head>
+<body>
+<header class="top"><h1>Yellowmoon · Blur node, mockups (BL-01, 2026-11-18)</h1><small>Pictures only. The scene is synthetic, and every "after" picture is the node's maths applied to it. Click a picture to open its page.</small><a href="#s01" class="chip">01</a><a href="#s02" class="chip">02</a><a href="#s03" class="chip">03</a><a href="#s04" class="chip">04</a><a href="#s05" class="chip">05</a><a href="#s06" class="chip">06</a><a href="#s07" class="chip">07</a><a href="#s08" class="chip">08</a><a href="#s09" class="chip">09</a><a href="#s10" class="chip">10</a><a href="#sS" class="chip">S</a></header>
+<main>
+<p class="note">The spec is <a href="../../docs/33-blur.md" style="color:var(--yellow)">docs/33</a>; its §10 has the questions for the owner (BL-H1), each with a recommended default. <a href="mockup-notes.md" style="color:var(--yellow)">mockup-notes.md</a> lists what the drawings decided. The research is <a href="../../research/blur-node-2026-11-18.md" style="color:var(--yellow)">research/blur-node-2026-11-18.md</a>.</p>
+<section id="s01"><div class="head"><span class="num">01</span><h2>Soft</h2></div>
+<a class="shot" href="html/pages/01.html"><img src="01-soft.jpg" alt="Soft" loading="lazy"></a>
+<div class="cap"><p class="what">Main, a Blur node, the Output. Soft, Radius 50, through the inverted Subject mask: the street is blurred, the figure stays sharp, and there is no red glow around it.</p><ul><li>The Type control is a segmented control at the top of the Blur card; the card changes with the type.</li><li><b>Mask edges</b> is its own card: the switch Respect mask edges, on by default.</li></ul><p class="nav"><a href="html/pages/01.html">Open the page</a><a href="#s02" class="next">Next →</a></p></div></section>
+<section id="s02"><div class="head"><span class="num">02</span><h2>Lens</h2></div>
+<a class="shot" href="html/pages/02.html"><img src="02-lens.jpg" alt="Lens" loading="lazy"></a>
+<div class="cap"><p class="what">Lens, Radius 50, 6 blades, Rotation 15°, Highlights 60. The string lights and the windows become hexagons because the blur is in linear light, where a light is far brighter than the sky.</p><ul><li>Shape: Round, or 5 to 9 blades. Rotation is off with Round.</li><li>Highlights weights the bright lights up so they read as discs.</li></ul><p class="nav"><a href="html/pages/02.html">Open the page</a><a href="#s03" class="next">Next →</a></p></div></section>
+<section id="s03"><div class="head"><span class="num">03</span><h2>Motion</h2></div>
+<a class="shot" href="html/pages/03.html"><img src="03-motion.jpg" alt="Motion" loading="lazy"></a>
+<div class="cap"><p class="what">Motion, Length 45, Angle 20°. The background streaks along one line; the figure is outside the mask and stays sharp.</p><ul><li>Length is a share of the picture's size (100 is 8 % of the long edge).</li><li>Angle 0° is along the picture's width.</li></ul><p class="nav"><a href="html/pages/03.html">Open the page</a><a href="#s04" class="next">Next →</a></p></div></section>
+<section id="s04"><div class="head"><span class="num">04</span><h2>Zoom</h2></div>
+<a class="shot" href="html/pages/04.html"><img src="04-zoom.jpg" alt="Zoom" loading="lazy"></a>
+<div class="cap"><p class="what">Zoom, Amount 80, with the centre on the figure's face. The handle and its rays are drawn over the photo; Pick centre in the card puts the centre where the person clicks.</p><ul><li>Pixels farther from the centre blur more; the centre stays sharp.</li><li>The centre follows crop and rotation; Reset puts it back in the middle.</li></ul><p class="nav"><a href="html/pages/04.html">Open the page</a><a href="#s05" class="next">Next →</a></p></div></section>
+<section id="s05"><div class="head"><span class="num">05</span><h2>The Mask tab</h2></div>
+<a class="shot" href="html/pages/05.html"><img src="05-mask-tab.jpg" alt="The Mask tab" loading="lazy"></a>
+<div class="cap"><p class="what">A corrector's Mask tab: one Subject row, inverted, so the node blurs the background. A Depth row works the same way (picture 10). Every blur type reads the same mask.</p><ul><li>Feather 8 on the Subject row is the mask's own feather: the Blur node reads the finished mask.</li><li>A Linear row with a feather is a tilt-shift band: a mask plus a Blur node, not a type.</li></ul><p class="nav"><a href="html/pages/05.html">Open the page</a><a href="#s06" class="next">Next →</a></p></div></section>
+<section id="s06"><div class="head"><span class="num">06</span><h2>Show mask</h2></div>
+<a class="shot" href="html/pages/06.html"><img src="06-show-mask.jpg" alt="Show mask" loading="lazy"></a>
+<div class="cap"><p class="what">Show mask (M) is the ordinary one: the node's mask, here the background, in the mask accent. It does not change with the type, the radius or the switch.</p><ul><li>A node with no mask shows the whole photo tinted.</li></ul><p class="nav"><a href="html/pages/06.html">Open the page</a><a href="#s07" class="next">Next →</a></p></div></section>
+<section id="s07"><div class="head"><span class="num">07</span><h2>Add node › Blur</h2></div>
+<a class="shot" href="html/pages/07.html"><img src="07-add-node-menu.jpg" alt="Add node › Blur" loading="lazy"></a>
+<div class="cap"><p class="what">The new item sits after Colour Uniform, with the line "Soft, lens, motion or zoom blur."</p><ul><li>It adds one Blur node after the selected one and selects it.</li><li>A new node is Soft at Radius 20, so it blurs a little at once (docs/33 §2.5).</li><li>Off at 64 nodes, with the usual tooltip.</li></ul><p class="nav"><a href="html/pages/07.html">Open the page</a><a href="#s08" class="next">Next →</a></p></div></section>
+<section id="s08"><div class="head"><span class="num">08</span><h2>The simple view</h2></div>
+<a class="shot" href="html/pages/08.html"><img src="08-simple-view.jpg" alt="The simple view" loading="lazy"></a>
+<div class="cap"><p class="what">No Blur controls. The photo shows the result; the notice counts the node and offers Open nodes (docs/23 §6).</p><p class="nav"><a href="html/pages/08.html">Open the page</a><a href="#s09" class="next">Next →</a></p></div></section>
+<section id="s09"><div class="head"><span class="num">09</span><h2>Respect mask edges, off and on</h2></div>
+<a class="shot" href="html/pages/09.html"><img src="09-respect-mask-edges.jpg" alt="Respect mask edges, off and on" loading="lazy"></a>
+<div class="cap"><p class="what"><b>The owner's first requirement.</b> The same picture, mask and Soft blur; only the switch differs. Off: blur everything, then blend by the mask, so the figure's red spreads into the blurred street and shows as a rim. On (the default): only background pixels are blurred, so there is no glow and the jacket keeps its edge.</p><ul><li>Just outside the silhouette 27 % of the blurred colour comes from the figure with the switch off, 0 % with it on (measured by the sketch on this scene).</li><li>The one limit of "on": it never spreads light out of the mask, so a blurred subject keeps a sharp outline. For a glow that should spread, switch it off.</li></ul><p class="nav"><a href="html/pages/09.html">Open the page</a><a href="#s10" class="next">Next →</a></p></div></section>
+<section id="s10"><div class="head"><span class="num">10</span><h2>The four types through one mask</h2></div>
+<a class="shot" href="html/pages/10.html"><img src="10-types.jpg" alt="The four types through one mask" loading="lazy"></a>
+<div class="cap"><p class="what">The scene, then Soft, Lens (hexagons), Motion and Zoom through the same inverted Subject mask with the switch on, and Soft through a Depth mask (the street recedes upward) instead of a Subject row.</p><ul><li>Every type reads the mask the same way.</li><li>The Depth picture is the "blur the background" starting point that question 7 of docs/33 §10 asks about.</li></ul><p class="nav"><a href="html/pages/10.html">Open the page</a><a href="#sS" class="next">Next →</a></p></div></section>
+<section id="sS"><div class="head"><span class="num">S</span><h2>States and copy</h2></div>
+<a class="shot" href="html/pages/states.html"><img src="states.jpg" alt="States and copy" loading="lazy"></a>
+<div class="cap"><p class="what">Node card states; the panel for a new node, a round Lens, Zoom while picking the centre, the switch off and bypassed; and the drafts of every tooltip and note.</p><p class="nav"><a href="html/pages/states.html">Open the page</a></p></div></section>
+</main></body></html>

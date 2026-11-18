@@ -1,0 +1,1 @@
+ring 19879 mean_share_off 0.2652 p95_off 0.3759

@@ -1,0 +1,395 @@
+# 33 · Blur
+
+Blur is a node that blurs the photo, or the part of it that its masks let through, in one of four ways: **Soft** (a smooth blur), **Lens** (the blur of an out-of-focus lens, where lights become discs), **Motion** (along a line) and **Zoom** (stronger the farther from a centre). It is for the things a photographer does with a blur: a background pushed out of focus behind a subject, a night street with bokeh lights, a hint of motion, a zoom burst, a soft tilt-shift band. This file covers what it does, its controls, the maths, where it sits in the graph, the settings, the pipeline version, the tests, the speed budget, the questions for the owner, the mock-ups and the tasks.
+
+**Status: planned (BL-01, 2026-11-18). Waiting on the owner's review of the mock-ups and the questions of §10 (BL-H1); nothing is built.** The owner's requests of 2026-11-18: "Can we in next release also add blur node? It should tolerate mask." and then "We want different type of blur too." It is planned for 0.2.4 with the Colour Uniform node (`docs/32`), as presets (`docs/30`), mixers (`docs/25`) and Colour Uniform were planned: a spec, mock-ups (`design/blur/`) and a task list (milestone B of `docs/15`). The research behind it is `research/blur-node-2026-11-18.md`; **this file wins where they differ**. The maths is ours: we copy no code and no formula from any tool (`docs/14`).
+
+**In short.**
+
+- A new node kind, `blur`, in the graph of `docs/23`: a numbered node like a corrector, with masks, a key output, a thumbnail and a number on its card. **One node with a Type control** (glasscn's segmented control): **Soft · Lens · Motion · Zoom**. Add node › **Blur**, "Soft, lens, motion or zoom blur." (§4). It counts toward the 64 nodes.
+- **"It should tolerate the mask" is the owner's first requirement, and it is the centre of the design** (§2.3, §3.2). Every type reads the mask the same way. By default the blur is **mask-aware**: pixels outside the mask are given no weight, so nothing from outside the mask is blurred in, and a blurred background has **no glow around the subject** (the halo that "blur everything, then blend by the mask" gives). A switch, **Respect mask edges** (on by default), turns it off to give the plain behaviour of any corrector. On the mock-up scene, just outside the silhouette 27 % of a blurred pixel's colour comes from the figure with the switch off and 0 % with it on (`design/blur/09-respect-mask-edges.jpg`).
+- **Controls are few** (§2): Soft has **Radius**; Lens has Radius, Shape (round, or 5 to 9 blades), Rotation and Highlights; Motion has Length and Angle; Zoom has Amount and a Centre picked on the photo. Sizes are **fractions of the picture's long edge**, so the view at any zoom, a reduced export and a full export look the same.
+- **Maths** (§3): in **linear light** (`LinearAwg4`), so lights spread as light does; the mask-aware law `B = Σ k ω X / Σ k ω` with `ω = m` (or 1), result `in + m (B − in)`; four kernels (Gaussian cut at 4 σ, disc or polygon, line, radial line); the picture's edge renormalised; f64 on the CPU and f32 on the device within 2e-4 in LogC4 (*starting*).
+- **A new node blurs a little at once** (Radius 20, §2.5), and a Radius of 0 is the exact identity. `PIPELINE_VERSION` takes the next minor step, **0.14.0**; no existing graph changes by a bit (§7).
+- **Each type is its own task** (§13): the shared framework (settings, masks, tiles and halos, the interface shell) is built once, and a type's kernel, parity and panel section are one task each, so a type can be cut without touching the rest.
+
+## 1. What it does
+
+A photographer has a street at night with a person in front of it, and wants the street out of focus. Or a row of lights that should be soft discs, a skyline streaked by motion, a burst of lines running out from a face. A corrector cannot blur. Face Refinement smooths skin only. The Lens character stage (`docs/21`) reshapes blur the lens already made. The Blur node blurs, wherever the masks say, in the way the person picks:
+
+1. Add node › Blur. It starts as a Soft blur at Radius 20 over the whole photo.
+2. Choose the type, and raise or lower its amount.
+3. Limit it with the node's masks: Add mask › Subject, then Invert, blurs everything but the subject; Add mask › Depth blurs what is far; a Linear mask with a feather is a tilt-shift band. **The blur stays on its side of the mask edge**: the subject's colours do not spread into the background (§2.3).
+
+### 1.1 How it differs from the spatial work that exists, and what it reuses
+
+| | What it does | Blur node |
+|---|---|---|
+| **Lens character, bokeh** (`docs/21`, `data/models/bokeh`, `crates/ym-ml/src/bokeh_net.rs`) | A learned model finds the out-of-focus balls the lens made and **reshapes** them (anamorphic stretch, a different outline). It never adds blur where there is none, and it is part of the raw-side lens stage, per photo | **Adds** blur, anywhere the masks say, with a kernel the person picks. No model, no network, no blur map. A Lens blur and the bokeh reshape can both be on: the reshape runs first (it is before the nodes), the Blur node blurs what it made. It **reuses nothing** of `bokeh_net`: the two kernel sets have different jobs (a stretched box line per pixel against a disc or polygon of one size) |
+| **Film node** (`docs/24`: halation, grain) | Spatial, with large Gaussian and exponential kernels, in micrometres on the film | **Reuses its way of doing large radii**: a coarse grid of `2^k`-pixel cells at absolute positions (so a cell never depends on the tile), a direct blur of the cells, a bilinear read back, and a halo that is a function of the settings alone (`docs/24` §3.9a). It reuses its **device route** too: a spatial step makes its picture before the colour pass and the step reads it (`docs/24` §3.9c, `docs/23` §5.12) |
+| **Face Refinement** (`docs/27`) | Smooths skin inside face masks; its low-frequency operator is a **mask-normalised blur**, `m · blur(X m) / max(blur(m), 1/255) + (1 − m) X` (`docs/27` §7.2) | **The same idea, in general**: normalized convolution is the Blur node's mask behaviour, with an exact denominator and for four kernels. It reuses the idea, not the code (that is box blurs on 8-bit planes for faces) |
+| **Output sharpening and the masks' feather and refine** (`docs/algorithms/04`, `docs/algorithms/06` §5) | Pixel-integrated Gaussians; the feather is three cascaded boxes | The Soft kernel is the **pixel-integrated Gaussian** of `docs/algorithms/04` (so a radius near 0 tends to the identity). The mask's own feather is untouched: the Blur node **reads** the finished mask |
+| **The Depth mask** (`crates/ym-color/src/mask_depth.rs`, `docs/23` §4.8) | A depth map made a gradient: full at the nearest part, none at a far limit | **The natural partner.** A Depth row on a Blur node is a fake shallow depth of field (the "far things" mask); every type works with it. The node needs no depth of its own and no variable radius (a blur that **grows** with depth is a later idea, §1.2) |
+
+### 1.2 What is not in this version
+
+- **A blur whose radius grows with depth or with a map** (Photoshop's Field Blur, Lightroom's Lens Blur): *a later idea*. It needs a per-pixel radius, which breaks the separable and coarse-grid methods (cost: a pyramid read with a per-pixel level, about the Zoom kernel's cost, and a larger halo). A Depth mask with one radius covers the common case.
+- **Spin** (rotation about a centre): *a later idea, BL-17*. It is Zoom's kernel with an arc in place of a radial line and the same centre control; cheap once Zoom is built, and cut from 0.2.4 only to keep four types (§10 question 4).
+- **H/V ratio** on Soft (Resolve's H/V Ratio; two sigmas instead of one): *a later idea*. Cost: one control and two sigmas in a separable kernel, nothing else. Motion covers the directional use.
+- **Per-channel radius** (Resolve's ganged R, G, B), **Mix** (the mask's Opacity does it), **Box** and **Mosaic** blurs, **edge-preserving smoothing** (Surface, Smart: `docs/27`'s area). Not planned.
+- **Tilt-shift is a Linear mask with a feather plus a Blur node, not a type** (§1.3). **"Blur the background" is a Subject or Depth mask, inverted where needed, plus a Blur node.**
+- **Blade curvature, a bright rim ("onion rings"), noise** in Lens (Photoshop's iris curvature and noise): *later ideas*.
+- **Auto.** None, as for every node but Main (`docs/23` §3.2).
+
+### 1.3 Tilt-shift, in one line
+
+Add a Blur node, set Soft or Lens, add a **Linear** mask with a feather over the band that must stay sharp and **Invert** the node (or the row). The blur reads the mask, so the picture is sharp in the band and softens outward, and with Respect mask edges on the sharp band does not bleed into the blur. No separate type.
+
+## 2. Controls
+
+All copy is British, short and plain. Controls are glasscn's (`docs/16`); a control glasscn has is never hand-written. glasscn has a **segmented control** (`src/components/glass/segmented-control.tsx`, also used for the View card's Overlay / Mask only), a **select**, a **toggle group**, a **slider** and a **switch**; **the Type control is the segmented control** (four short words fit one row at 352 px; a select would hide the choice that most changes the panel). The mock-ups are `design/blur/` (§12).
+
+### 2.1 Type
+
+| Control | Choices | Default | Notes |
+|---|---|---|---|
+| **Type** (segmented control, first in the Blur card) | **Soft**, **Lens**, **Motion**, **Zoom** | Soft | Switching type keeps every type's own values (the file holds a group for each, §5.1), so going back to Soft finds Soft's Radius where it was. Only the chosen type's controls show. The accessible name is "Blur type". Keyboard: arrow keys move, as the control does |
+
+### 2.2 The controls of each type
+
+Every size is **a fraction of the picture's long edge** `u_px`: the long edge, in pixels, of the **whole picture at the scale of this render** (as the masks' Feather is, `docs/algorithms/06` §5.1), never of a tile, a crop or the window. So the view at 28 % zoom, a 100 % view, a half-size export and a full-size export blur the same fraction of the picture. The slider numbers are 0 to 100; the meaning of 100 is in the table.
+
+| Type | Control | Range | Default | Reads as | Meaning |
+|---|---|---|---|---|---|
+| **Soft** | **Radius** | 0 to 100 | 20 | "20" | The blur radius `R = Radius/100 · 0.04 · u_px` (Radius 100 is 4 % of the long edge: 240 px on a 6000 px picture). The Gaussian's standard deviation is `σ = R/2` (the same blur size as a disc of radius `R` has, so changing type keeps the blur about as big) |
+| **Lens** | **Radius** | 0 to 100 | 20 | "20" | The aperture's radius (a disc, or the polygon's circumradius) `R = Radius/100 · 0.04 · u_px` |
+| | **Shape** | Round, 5, 6, 7, 8, 9 (blades) | Round | "Round", "6" | A disc, or a regular polygon of that many blades |
+| | **Rotation** | 0 to 359° | 0 | "15°" | Turns the polygon; **off with Round** (a disc is its own rotation) |
+| | **Highlights** | 0 to 100 | 0 | "60" | Makes bright lights count for more in the blur so they form clear discs (§3.5). 0 is the plain aperture |
+| **Motion** | **Length** | 0 to 100 | 20 | "20" | The length of the line `ℓ = Length/100 · 0.08 · u_px` (Length 100 is 8 %), centred on each pixel |
+| | **Angle** | 0 to 179° | 0 | "20°" | The direction of the line; 0° is along the picture's width, counter-clockwise on screen. A direction has no sense, so 180° is 0° |
+| **Zoom** | **Amount** | 0 to 100 | 20 | "20" | A pixel at distance `d` from the centre is spread over a radial line of length `a · d`, with `a = Amount/100 · 0.10` (Amount 100: a tenth of the distance), centred on the pixel. The centre stays sharp |
+| | **Centre** | a point of the photo | the centre of the picture | – | Set with **Pick centre** (a toggle with a crosshair) by clicking the photo, or by dragging the handle the page draws over the photo, as the Radial mask's centre is (`docs/23` §3.3). **Reset** puts it back at the centre. It is a point of the photo frame (0 to 1 each way), so it follows crop and rotation. The line under it reads "Click the photo or drag the handle." while picking and "Centre of the picture." or "Moved from the centre." otherwise |
+
+- **Reset** (card header) puts the node's type and every type's values back to the defaults (the masks stay). A type has no Reset of its own: the controls are few.
+- A control's tooltip says what it does in one line (the copy is in `design/blur/states.jpg`): "How far the blur reaches, as a share of the picture's size." (Radius), "A round aperture. Choose a number of blades for a polygon." (Shape), "Makes bright lights count for more, so they form clear discs." (Highlights), "How far the blur runs, as a share of the picture's size." (Length), "The direction of the blur. 0° is along the picture's width." (Angle), "How much blur grows toward the edges." (Amount).
+- The line under the sliders names the type's trait: Soft "Radius is a share of the picture's size, so the view and every export look alike."; Lens "Bright lights become discs, or the shape of the blades. Highlights makes them stronger."; Motion "Length is a share of the picture's size. Angle 0° is along the picture's width."; Zoom "Pixels farther from the centre blur more. Amount 0 changes nothing."
+
+### 2.3 Mask edges: "it should tolerate the mask"
+
+This is the owner's one requirement, and the node's central decision. There are two ways a blur can meet a mask.
+
+**(a) Blur everything, then blend by the mask**, as any corrector does: `out = in + m (blur(in) − in)`. Simple, and it is what Resolve, Photoshop and Capture One do with a mask (research §5). Its fault: `blur(in)` was made from the **whole** picture, so near the mask's edge the blurred background contains the **subject's colours**. Blend it back through an inverted subject mask and the leak shows as a glow around the subject: a red jacket gives a pink rim on a dark street (`design/blur/09-respect-mask-edges.jpg`; on that scene 27 % of the blurred colour just outside the silhouette comes from the figure, 95th percentile 38 %).
+
+**(b) A mask-aware blur**: the mask is also a **weight** in the convolution, `B = Σ k m X / Σ k m`, so a pixel outside the mask contributes nothing, and what is blurred is only what is inside, normalised by how much of it there is (research §6: normalized convolution). Then `out = in + m (B − in)`. A background pixel next to the subject is the mean of **background** pixels alone: **no glow, no halo**, and the subject keeps its crisp edge.
+
+**Recommendation: (b) is the default, with a switch for (a).**
+
+- (b) is what a photographer means by "blur the background": the background gets blurred, and the subject's colour is not in it. (a) needs the hand fixes Photoshop users describe (cut the background out, fill the hole). Nothing in the four tools of the research offers (b) as an option.
+- (b) has **one honest limit**: it never spreads light **out of** the mask. Blur a subject with the mask on the subject and its outline stays sharp, because the blur is made from subject pixels and is shown only where the mask is. For a glow that is meant to spread (a soft diffusion of a bright subject into its surroundings) the plain blend (a) is the right one. So both are worth having, and the control is one switch.
+- **The control** is **Respect mask edges**, a switch in its own card, **Mask edges**, under the Blur card, **on by default**. The line under it says what it does: on, "Colours from outside the mask are not blurred in, so there is no glow around the subject."; off, "The whole picture is blurred, then the mask decides where the blur shows." With no mask the node's `m` is 1 everywhere and the two are the same, so the card says "This node has no mask, so this changes nothing yet." until a mask row exists. There is no jargon in the names: not "matte", "normalised", "premultiplied" or "bleed".
+- **Every type reads the mask the same way** (§3.2): the same weight `ω`, in the same sum, for the Gaussian, the disc, the line and the radial line. The switch is one field, not one per type.
+- **Mask edges stay smooth, never depending on a rounding** (`docs/23` §4.3). The weight is the mask `m` itself, a smooth value: there is no threshold on `m` and no step, so a pixel whose mask is 0.5 contributes half as much as one at 1, and the result is continuous in `m`. The only test on `m` is the exact 0 and the exact 1 of the blend (§3.3), as every node's is.
+
+### 2.4 Masks and Show mask
+
+The node has the **Mask tab of a corrector** (`docs/23` §7.6): rows, modes, Invert, the key input, Opacity, the row eye. The node's mask `m` is **how much of the node's blurred picture shows** (and, with Respect mask edges on, which pixels are blurred in), exactly as `docs/algorithms/06` §1 defines it. **Show mask** (M) is the ordinary Show mask of `m` (`docs/23` §5.8): Overlay tints it in the mask accent, Mask only shows it as grey. It does not change with the type, the radius or the switch. A node with no mask shows the whole photo tinted (`m = 1`). The mask view is a view: not in an export, the Before view, a thumbnail or the pixel readout.
+
+### 2.5 Defaults and the identity
+
+- **A new node is Soft at Radius 20, masks none, Respect mask edges on, not bypassed.** It **blurs a little at once** (0.8 % of the long edge: a Gaussian of σ about 24 px on a 6000 px picture, 6 px at the fit view). *Why not start at 0:* every other node that is a *tool* (Film, Face Refinement) acts as soon as it is added, and a Blur node that shows nothing reads as broken; Colour Uniform starts at 0 because it needs a colour first, which Blur does not. The first slider move is then a visible change in both directions. A person who wants the identity sets Radius 0 (or bypasses the node). *Alternative:* Radius 0 on add, as a corrector (§10 question 5).
+- **Radius 0, Length 0, Amount 0 is the exact identity**: the node runs no code and changes no bit for that type (§3.3). A node with all of Soft's, Lens' and the others' amounts at 0 **but another type chosen** is judged by its own type's amount only.
+- A node with `m = 0` at a pixel gives that pixel's input bits; a tile whose own pixels all have `m = 0` skips the blur (§3.3).
+
+### 2.6 The panel
+
+| Part | Content |
+|---|---|
+| Head | The corrector's compact head (`docs/23` §7.5): the number chip, the name ("Blur"), the line, Bypass, Reset, More. Line: the type ("Soft", "Lens", "Motion", "Zoom"), "Bypassed", "Not connected" |
+| Tabs | **Blur · Mask**, in the Detail tab's colour (`--tab-detail`; `docs/11`; blur is detail, and not Colour Uniform's green or Film's yellow) and the mask accent. The Mask tab is a corrector's |
+| Blur › cards | **Blur** (the Type control, then the chosen type's controls and its line) · **Mask edges** (the switch). About 330 + 140 px: both fit the scroll area at 1440 × 900, for the tallest type (Lens) too |
+| Mask › cards | the Masks card, the selected row's card, the View card, as a corrector's |
+| Histogram | none |
+| Keys | ⌘1 and ⌘2 select the tabs. No new single key. Pick centre has no key (a toggle; Esc ends it) |
+
+**Reset this node** (the head) puts the type and every value back to the defaults; masks stay (`docs/23` §7.5). The More menu is a corrector's.
+
+## 3. The maths
+
+The CPU reference is `ym_color::blur` (BL-03 for the law and the exact kernels, BL-06 to BL-09 for each type's fast path), in f64. The kernels (`blur_*.wgsl`) are the same expressions in f32 (§3.7). A sketch in Python (`design/blur/html/blur_ref.py`, numpy) was used to try every statement below and to draw the mock-ups; it is not product code, and the property checks of §8 run on it (37 lines, all pass; `python3 -I blur_ref.py`).
+
+### 3.1 The space, and why
+
+The node reads a LogC4 / AWG4 triple `v` like every node (`docs/23` §1.2), **decodes it to linear AWG4** `X = decode(v)` (`docs/02` *LogC4*), blurs the linear values, blends in linear light, and **encodes** the result back (C8's encode). Values below LogC4's linear toe may be negative; they are blurred as they are.
+
+**Why linear light.** A blur adds light. In scene-linear values a lamp is many times the sky's value, so a lamp spread over a disc stays a bright disc, which is what a lens does and what makes bokeh. In LogC4 the lamp's code is only a little above the sky's, so blurring codes gives a dim smear and a **dark fringe** where bright meets dark (a log-domain mean is a geometric mean). The same reason holds for the **blend** at a feathered mask edge: `in + m (B − in)` in linear light mixes light, so a bright disc fades with the mask instead of dimming first. **This differs from the corrector's blend, which is in LogC4** (`docs/algorithms/06` §1.1); it is a decision of ours, flagged in §10 (question 6). `m = 0` and `m = 1` agree in both spaces (the input's bits, and the blurred value). A against-the-grain reason would be consistency with the other nodes' blend; I found none that outweighs the physical one. **Cost:** a decode and an encode per pixel, six `exp2` and `log2` on the device (`docs/32` §3.1 avoided them for Colour Uniform; here they are needed), about 0.05 ms per megapixel.
+
+### 3.2 One law for every type
+
+For a pixel `p` of the frame `F` (the pixels whose centres are inside the final image, as `docs/algorithms/06` §5.2):
+
+```
+X(q)   = decode(v(q))                       linear AWG4 triple, the node's input
+m(q)   = the node's mask at q               docs/23 §4: a function of the node's input and of q; smooth
+h(q)   = highlight weight of q              1, except for Lens with Highlights above 0 (§3.5)
+ω(q)   = h(q) · m(q)     if Respect mask edges is on
+       = h(q)            if it is off
+
+N(p) = Σ_{q∈F} k_p(q) ω(q) X(q)             k_p(q) ≥ 0: the type's kernel (§3.5), Σ_q k_p(q) = 1 over the plane
+D(p) = Σ_{q∈F} k_p(q) ω(q)
+B(p) = N(p) / (D(p) + ε)                    ε = 1e-12: a constant that keeps the quotient finite, not a threshold
+out(p) = X(p) + m(p) · (N(p) − X(p) D(p)) / (D(p) + ε)      the blend, written on the difference (§3.3)
+v_out(p) = encode(out(p))
+```
+
+- `B` is a **weighted mean of the pixels in the kernel's reach** (a convex combination: `D` is the sum of the weights), so it lies between their smallest and largest value on each channel.
+- **Respect on, `ω = m`:** a pixel with `m(q) = 0` has weight exactly 0, so **nothing from outside the mask is in `B`** (the property test of §8). A pixel half in the mask counts half. This is normalized convolution (research §6).
+- **Respect off, `ω = 1` (times `h`):** `B` is the plain blur of the whole picture and `out = in + m (blur(in) − in)`, a corrector's blend, in linear light. `D = 1` where the whole kernel is in the frame.
+- **The mask is read at the neighbours, not only at the pixel.** `m(q)` for `q` in the kernel's reach is the node's mask at those pixels, so the node needs its mask over its **made area** (the tile grown by the type's reach, §3.8): `m` is made by the plan compiled to the node's `m` (the Show mask stop, `docs/23` §5.8), over that area, into a plane. Shapes are analytic, ranges read the node's input (which the node reads over the same area), raster rows have their planes over grown windows already (`docs/23` §5.5); the plan's scheduler asks for that area (§6).
+- **`m` here is the node's whole mask** (rows, Invert, key input, Opacity). Opacity below 1 therefore also lowers the weights: a mask row at Opacity 0.5 counts half in the sum as well as half in the blend.
+
+### 3.3 The blend, exactly
+
+- **The difference form.** `out = X + m (N − X D)/(D + ε)` is `X + m (B − X)` with `B = N/(D + ε)`, written so that a pixel with a tiny `m` and a tiny `D` (no weight in reach) gets a tiny change: `|m (N − X D)/(D + ε)| ≤ m · max |X(q) − X(p)|` over the weighted pixels, and `N − X D` is exactly 0 when `D` is 0, so the node is continuous in `m` and in the data. No result depends on a threshold.
+- **`m = 0` gives the input's bits.** The kernel branches on `m` being exactly 0 and returns `v` untouched (no `encode(decode(v))`), and on exactly 1 and returns `encode(N/(D + ε))`, as every node's blend does (`docs/algorithms/06` §1.1). For `0 < m < 1` the mixture is computed, and its tiny rounding in the encode is no break of continuity (about 1e-7 of a code).
+- **A node whose type amount is 0** is skipped: it runs no code and changes no bit (`docs/23` §1.3). **A tile whose own pixels all have `m = 0` skips the blur** (the output depends on a pixel's own `m` only through the factor `m(p)`, so the neighbours' masks are not needed there); a node with `m = 0` everywhere is skipped whole (`docs/23` §5.1).
+- **ε is not a threshold.** It matters only where `D` is below about 1e-9, i.e. where almost no weight is in reach, and there the term it guards is multiplied by `m(p) ≤ D(p)/k_p(p)` (the pixel's own weight is in the sum). The test of §8 checks the continuity numerically.
+
+### 3.4 The picture's edge
+
+**Renormalize.** The sums run over the frame `F` only: a kernel tap outside the picture has weight 0, and `N`, `D` are summed over what is inside. A flat picture stays flat to the edge, with no mirrored ghost of a bright light at the border (reflect would double it) and no dark edge (zero fill would give one). It is also what makes respect-on natural: a pixel outside the frame is "outside the mask". The window sums are clipped to the frame as the raster masks' are (`docs/algorithms/06` §5.2, `view_frame`); a tile of an export reads only inside the frame, so the tile equals the whole frame (§3.8). The clamp (Resolve's Replicate) and reflect options are not offered: one behaviour, no control.
+
+### 3.5 The kernels
+
+The type chooses `k_p(q)`; everything else of §3.2 is shared. Each kernel has an **exact definition** (the oracle, a direct sum in f64, BL-03) and a **fast method**; the fast method must match the oracle within a stated bound (§8). `f = 2^j` is a cell size in pixels; the **coarse grid** is the Film node's (`docs/24` §3.9a): the planes `ωX` and `ω` are reduced to the mean of each `f × f` block **at absolute multiples of `f`** (so a cell never depends on the tile), the cells are blurred directly, and the result is read back bilinearly.
+
+**Soft: the pixel-integrated Gaussian.** `k_p(q) = g(q_x − p_x) g(q_y − p_y)`, `g(i) = Φ((i + ½)/σ) − Φ((i − ½)/σ)` (the Gaussian integrated over each pixel, so `σ → 0` tends to the identity, `docs/algorithms/04`), `σ = R/2`, **cut at 4 σ** and renormalised (the truncation is part of the definition: weights beyond `⌈4σ⌉` are 0; the cut leaves 6e-5 of the mass, which the renormalisation puts back). Separable: two passes of a 1-D sum over `N` and `D` (the same two planes as the rest). Up to `σ = 4` px: a direct sum, taps `2⌈4σ⌉ + 1 ≤ 33`. Wider: the coarse grid with the smallest `f = 2^j` that gives a cell sigma of at most 4 cells, the cell sigma making up the variance the box mean and the bilinear read-back add (Film's rule, `docs/24` §3.9a). Halo `⌈4σ⌉ + 3f` (the `3f` only on the coarse grid) = `2R + 3f`.
+
+**Lens: a disc or a regular polygon.** `k_p(q)` is the **area of the pixel `q` that lies inside the aperture centred on `p`**, over the aperture's area: a disc of radius `R`, or a regular polygon of circumradius `R` with `n` blades rotated by the Rotation. The coverage of each pixel (or cell) is computed once, in f64, by `8 × 8` supersampling in the kernel's table (a function of `R`, `n`, rotation and `f` alone), so the kernel is continuous in `R` and in the rotation. Not separable: a direct sum over the table. **Cells:** the smallest `f = 2^j` with `R/f ≤ 8`, so the table has at most about 200 entries; the cells' bilinear read-back softens the aperture's edge by about `f/2`, at most 1/16 of the radius. Halo `R + 3f`. **Highlights:** `h(q) = 1 + 15 H · S((ev − 2)/2)` with `H` = Highlights/100, `ev = log2(Y(X)/0.18)` the stops of the AWG4 luma `Y` over middle grey, `S` the smoothstep of `docs/algorithms/06`: 1 up to 4× middle grey (+2 EV), `1 + 15 H` from 16× (+4 EV). It is a weight in the mean, not a gain on the picture: the mean leans toward the lights, so a light of a few pixels, spread over a disc of thousands, still reads as a disc (a raw file's clipped lights are weaker than the real ones, so a lens blur of them is dull otherwise; Photoshop's "specular highlights" serve the same case, research §2). The two constants are ours, tuned in BL-07 on the synthetic scenes. Energy is conserved in the sense of a weighted mean: a flat field stays flat to 1e-9.
+
+**Motion: a line.** `k_p(q)` is the share of the line of length `ℓ` through `p` at the Angle that falls in `q`, equal weight along the line. Taps at spacing of one cell along the line, `t_i = −ℓ/2 + i · f`, bilinear reads of the `N`, `D` planes (or cells), the two end taps weighted by the fraction of a cell the line covers, so the blur is continuous in `ℓ`. **Cells:** the smallest `f` with `ℓ/f ≤ 16` (at most 17 taps). Halo `ℓ/2 + 1 + 3f`.
+
+**Zoom: a radial line.** For a pixel at `v = p − c` from the centre `c`, taps at `q_i = c + v (1 + a t_i)`, `t_i = (i + ½)/n − ½`, `i = 0 … n − 1`, equal weights, `a = Amount/100 · 0.10` (a line of length `a |v|` centred on `p`). The reads are **trilinear from a pyramid** of the `N`, `D` planes (2×2 box means at absolute alignment, levels `0 … L`): the level is `clamp(log2(spacing), 0, L)` with `spacing = a |v|/(n − 1)` and `n = clamp(⌈a |v|⌉ + 1, 2, 32)`, so the blur near the centre reads the sharp level and far from it a coarse one. It is **not a convolution** (the kernel's length depends on `p`), so energy is conserved to about 0.3 % (the sketch: 3.4e-3 for a blob of σ 3 px), a flat field exactly. Near the centre `a |v| → 0` and the node tends to the identity. **Reach:** `(a/2) · d_max + 2^L`, where `d_max` is the distance from the centre to the farthest corner of the frame: at Amount 100 and a corner centre, 5 % of that distance (about 0.06 of the long edge): the largest halo of the four types and the reason for the range of 10 % (§10 question 8).
+
+### 3.6 What it does not do
+
+It does not change the picture's size, its colour space or its dynamic range, and it adds no noise (Photoshop's Lens Blur does). A picture's own grain is blurred with the picture, as it would be by a lens (it is far smaller than a radius of a few pixels, so a strong blur removes it, and the **Film node's grain, which is added later in the graph, is not**: order the nodes accordingly).
+
+### 3.7 f64 on the CPU, f32 on the device, and the parity bound
+
+- **CPU reference** (`ym_color::blur`): f64, the sums in a fixed tap order, the weight tables built once in f64. Rows are split across threads and the result is the same for any number of threads (`docs/17` D5).
+- **Device**: the same expressions in f32. The weight tables are f32 copies of the f64 tables (so the weights are identical to rounding), the sums are f32 with the planes of `N` and `D` in f32 storage; `exp2` and `log2` of WGSL for the decode and the encode. **No f16 in the sums.**
+- **Parity bound.** The device is held to the CPU reference at **2e-4 in LogC4** (the grade's, `docs/13`, `docs/17` C10) and **one 10-bit code after C12 and C13**: *starting*; each type's task measures the error and writes it into `docs/STATUS.md`, and the gate stays 2e-4 unless the owner agrees (`AGENTS.md`). The expected error is a few 1e-6 for Soft, Lens and Motion (sums of at most 200 terms of the same sign, relative precision 6e-8 of a value in linear light, then the encode's slope `1/(14 ln 2 · …)`) and a few 1e-5 for Zoom (trilinear reads). A bright light (400 × middle grey) in a sum with dark pixels is the case to test: the f32 sum is relative, so its encoded error is small.
+- **Fast methods against the oracle** (a different gate from parity: the fast method is an approximation of the exact kernel): Soft against the direct Gaussian sum `≤ 5e-3` relative in linear light on an edge, a disc and a light (Film measured 0.0038 at σ 25 and 0.0070 at σ 40 against its direct sum, `docs/24` §3.9a), Lens `≤ 1e-2` against the exact aperture, Motion `≤ 3e-3`, Zoom `≤ 1e-2` against the exact radial line: *starting*, measured by the type's task.
+- **Metal (K8).** The kernel's float tests are the exact `m = 0` and `m = 1` branches and the `D + ε` quotient, which choose between results that agree within rounding, so fast-math re-association moves a result by rounding only. The Mac GPU CI (`.github/workflows/mac-gpu.yml`) runs the parity cases on Metal.
+- **Determinism.** Cells and the pyramid are at **absolute positions**, the taps and the weights are functions of `p` and the settings alone, so a tile of any size equals the whole frame bit for bit and a repeat render is identical (hard rule 8). The app and `ym` write byte-identical files (hard rule 6).
+- **Unstable pixels.** The CPU-against-device export check skips the CPU's own unstable pixels (the rule of 2026-11-18, `docs/13`): a mask value moved by ±1e-5 moves `ω` smoothly, so a Blur node adds none of its own; the check stays as it is.
+
+### 3.8 Tiles, halos and the cost at a large radius
+
+A pixel's output depends on the pixels (and the mask) within the type's **reach** of it (§3.5). The scheduler (`docs/23` §5.12) reads the reach from the step's footprint, **a scalar number of output pixels computed from the settings at the render's scale**, and grows every tile by it, cut to the frame. The node needs both the picture (`X`) and its mask over that area.
+
+| Type | Reach (px) | At Radius, Length or Amount 100 on 6000 px (24 MP) | On 8600 px (50 MP) |
+|---|---|---|---|
+| Soft | `2R + 3f` | R = 240: 480 + 3·32 = **576** | R = 344: 688 + 3·64 = **880** |
+| Lens | `R + 3f` | 240 + 3·32 = **336** | 344 + 3·64 = **536** |
+| Motion | `ℓ/2 + 1 + 3f` | ℓ = 480: 240 + 1 + 3·32 = **337** | ℓ = 688: 344 + 1 + 3·64 = **537** |
+| Zoom | `(a/2) d_max + 2^L` | 0.05 · 7210 + 32 = **393** (centre in a corner) | 0.05 · 10333 + 64 = **581** |
+
+- **A 50 MP export at the largest radius is acceptable on the device.** Soft with a halo of 880 px: a tile of 2048 px is read as 3808² = 14.5 MP, 3.5 times its own area, so the frame is processed about 3.5 times over (about 12 tiles, 174 MP of kernel work) at 0.35 ms per megapixel: about 61 ms plus the transfers, **under a second**. The scheduler's `fit_tile` and the limits of `docs/23` §5.12 choose the tile from these areas; the picture planes are f32 `N` (3 channels) and `D` (1): 16 bytes a pixel, 14.5 MP is 232 MB, in the budget of a Mac (`docs/23` §5.12: about 170 MB a piece, so the cut is into a few more pieces, never the CPU). **On the CPU fallback** (`ym --cpu`) it is slow: about 250 ms per megapixel per core for Soft (§9), a 50 MP export on 8 cores about 1.6 s for the node alone, and 3.5 times that with the halo.
+- **Zoom's reach is a scalar for the whole tile**, the worst case for the tile that is farthest from the centre; a tile near the centre reads more than it needs. A position-dependent reach would save tiles' work and is a later idea.
+- A view (not an export) is cut into the cheapest pieces by the same rule (`docs/23` §5.12), and the fit view is one piece.
+
+## 4. Where it sits
+
+**A corrector-like numbered node, spatial like the Film node** (`docs/24` §4.5; `docs/25` §2). `kind` is `blur`.
+
+| Property | Value |
+|---|---|
+| Ports | in `picture`, `key`; out `picture`, `key` (as a corrector's, `docs/23` §3.4) |
+| Number, thumbnail | numbered in the plan's order; a card with a thumbnail and a number chip; the thumbnail path makes one for it (`docs/23` §5.7) |
+| Masks | `masks` as a corrector's: the Mask tab, Invert, the key input, Show mask. They are the node's whole selection and, with Respect mask edges, its weights (§2.3) |
+| Bypass | a bypassed node passes its picture through; its key output still carries `m` (as a corrector's) |
+| Add node | **Blur**, after Colour Uniform and before the separator: "Soft, lens, motion or zoom blur." **Adds one node after the selected one, like Film** (`docs/23` §7.4), selects it and opens its Blur tab. Off at 64 nodes with "A photo can have up to 64 nodes." |
+| Auto | none |
+| More menu | a corrector's: Rename · Move earlier · Move later · Link picture to ▸ · Link key to ▸ · Remove link ▸ · Delete node |
+| Card | a corrector's card (112 × 84 px at 100 %: thumbnail, number chip, name, footer glyphs); the node's glyph, three concentric dotted rings, sits in the footer beside the mask glyph |
+| Simple view | **not shown there**. The notice counts it with the others ("This photo has 2 nodes.", `docs/23` §6), and **Open nodes** goes to the node view (`design/blur/08-simple-view.jpg`) |
+| Name | the field `name`, default `"Blur"` (four letters), 1 to 32 characters as a corrector's |
+| Sentence name | "a Blur node": "Node 4 is a Blur node, not a corrector." (`NodeKind::with_article`, `sentence`) |
+| Order in the graph | after Main and anywhere. **Put it before the Film node** if the blur should soften the picture the film then grains; after it to blur the grain too (§3.6) |
+
+**One node or several.** The recommendation is **one Blur node with a Type control** (§10 question 2). It is one place to learn, one entry in the Add node menu, one settings shape, one panel; the types share everything but a kernel and two or three controls. Separate nodes ("Lens Blur", "Motion Blur", "Zoom Blur") would triple the menu, the node kinds, the schema and the tests for a difference of one control group, and would leave a photographer to hunt for the right item. The cost of one node is a Type control and a panel that changes with it, which the segmented control and the stored per-type values make cheap. **Cutting a type** (§13) removes one case from the Type enum, one panel component and one kernel; the rest does not change.
+
+## 5. Settings
+
+### 5.1 The format
+
+A new value of `kind` (`docs/23` §3.2): `blur`. The node has these fields and no others; another field is an unknown field and is refused.
+
+| Field | Type / range | Default | Notes |
+|---|---|---|---|
+| `name`, `bypass`, `pos`, `masks` | as a corrector's | `"Blur"`, false, – , none | |
+| `type` | `"soft"`, `"lens"`, `"motion"`, `"zoom"` | `"soft"` | any other string is a parse error ("A Blur node has no type called “x”."); `"spin"` is not accepted until BL-17 |
+| `soft` | `{ radius }` | `{ 20 }` | `radius` 0 to 100 |
+| `lens` | `{ radius, blades, rotation_deg, highlights }` | `{ 20, 0, 0, 0 }` | `radius` 0 to 100; `blades` 0 (round) or 3 to 12 (the panel offers 5 to 9); a value of 1 or 2 is held at 3, reported; `rotation_deg` any finite number, read modulo 360 (**not reported**); `highlights` 0 to 100 |
+| `motion` | `{ length, angle_deg }` | `{ 20, 0 }` | `length` 0 to 100; `angle_deg` any finite number, read modulo 180 (not reported) |
+| `zoom` | `{ amount, center }` | `{ 20, [0.5, 0.5] }` | `amount` 0 to 100; `center` `[x, y]` in the photo frame, each clamped to 0 to 1 (reported) |
+| `respect_mask_edges` | bool | `true` | |
+
+Every type's group is present in a stored node, so switching type keeps the values; a partial group is read over the defaults. The numbers are in the units the panel shows, so a file written by hand reads like the panel (the core converts to pixels once, §2.2).
+
+```json
+{ "id": 4, "kind": "blur", "name": "Blur", "bypass": false, "pos": [2, 0],
+  "type": "lens",
+  "soft": { "radius": 20 },
+  "lens": { "radius": 50, "blades": 6, "rotation_deg": 15, "highlights": 60 },
+  "motion": { "length": 20, "angle_deg": 0 },
+  "zoom": { "amount": 20, "center": [0.5, 0.5] },
+  "respect_mask_edges": true,
+  "masks": { "invert": false, "items": [
+    { "kind": "subject", "mode": "add", "invert": true, "enabled": true, "opacity": 1, "feather": 0.08 } ] } }
+```
+
+(The Subject row's field names are the mask's own, `docs/23` §3.3; the example in the build uses a Linear or Radial row, which needs no Vision, for `docs/10`'s test.) A graph that has the node is `docs/23` §3.1's with one more item and two more links.
+
+### 5.2 Validation and clamping
+
+- A value out of range is **clamped and reported** by its path (`4.lens.radius`, `4.zoom.center[0]`), as `docs/23` §3.5; a value that is **not finite** is `SettingsError::NotFinite` and nothing is applied. A field of another type, a `type` that is not a string, a `center` that is not a pair of numbers, or a group that is not an object is `SettingsError::Parse`.
+- **Another field is refused** ("A Blur node has no field called “range”.").
+- The rules of `docs/23` §3.5 hold: ports exist on their kind, an input port has one link, no cycles, ids are unique, **at most 64 numbered nodes** counting this one, the kind is known. The unknown-kind example of `docs/10` and the tests stays “outside” (`docs/25`).
+
+### 5.3 Patches, Reset, Copy and Paste, undo
+
+- **Patches** (`docs/23` §3.7): a node is added by giving its `kind` in `nodes` and removed with `remove`; its links go with it. `SettingsField` gains `type`, `soft`, `lens`, `motion`, `zoom` and `respect_mask_edges`, in the **nodes' group** (a change runs the colour pass again, and the node's own planes; names and `pos` re-run nothing). A patch carries a partial group over what the node has. A drag on a slider is a patch per frame that folds into one undo step. **Pick centre is one patch** (`zoom.center`), one undo step; so is a drag of the handle.
+- **Reset** (`SettingsPatch::reset_node_in`): type to `"soft"`, every group and `respect_mask_edges` to the defaults; name, bypass, masks and links stay.
+- **Copy settings and Paste** carry the node like any node, in the whole graph (`docs/23` §3.8). Undo diffs per node.
+- **Resolved settings, XMP and DNG.** The node has no Auto, so it is in `ResolvedSettings.settings` as it is. `ym:Settings` holds it, and the **DNG bakes it into the pixels** like every node (`docs/09`).
+- **The JSON Schema** (`crates/ym-core/schema/settings.schema.json`) gains `blur_node` (with `blur_soft`, `blur_lens`, `blur_motion`, `blur_zoom` definitions and `blur_type` enum) and the kind in the `kind` enum. The wire types gain `NodeKind::Blur` and `NodeItem::BlurNode`; `bindings.ts` is regenerated and the field-name test compares them.
+
+### 5.4 Presets and albums
+
+- **Presets** (`docs/30` §2). A preset's **`nodes` group** holds every node other than the Input, Main and the Output, so Blur nodes are in it with no change to the groups: a preset saved from a photo that has the node holds the node, its type, values and masks, and applying it adds or replaces them like the other nodes of the group. The table text of §2 gains "Blur nodes" in the list of kinds (BL-11). A Zoom **centre** is a point of one photo's frame, so a preset carries it as a Radial's centre and a warp's pins are carried; a preset's Subject or Depth row is **worked out again** on the target photo (`docs/23` §4.1: it "copies to another photo" as a rule, not a pixel). Nothing about the node is a stroke or a click, so §3 of `docs/30` is unchanged. The test that a field in no group fails (`docs/30` §14) covers the new fields: they are in `nodes`.
+- **Albums** (`docs/31`). An album holds the photo's whole settings graph as stored, so the node travels in `settings` with no change to the file (version 1 stays). An album written with the node is refused by an older build with "This album was made by a newer version of Yellowmoon. Update to open it." (the unknown-kind rule). `written_by.pipeline` records the version (§7).
+- **Older documents.** Every document of an older version has no such node and reads as it did. A document that holds the node is refused by an older Yellowmoon with the plain unknown-kind sentence (`docs/23` §3.5).
+
+### 5.5 `ym`
+
+- **No new flag.** The flags set fields of the Input, Main and the Output (`docs/10`); the new kind is not in the default graph. A graph with it goes through `--settings`; **the example of §5.1, with a Radial or Linear row, in a graph is `docs/10`'s example file**, and the docs test reads and validates it (`crates/ym-cli/tests/docs.rs`).
+- **The help.** The closing paragraph of `ym render --help` names the kind: "other nodes (correctors, Colour Uniform nodes, Blur nodes, mixers, splitters and combiners, Face Refinement nodes, and Film nodes whose stocks `ym film list` shows)" (BL-02; `docs/10` quotes it word for word and the snapshot `cli__help_render` changes with it).
+- **A background blur from the shell** is the node with a Depth or Subject row inverted; `docs/10` gets two examples ("Blur the background" with Depth, and with Subject, which needs a Mac).
+- **Errors.** A file that breaks a rule is a usage error (exit 2) with the rule's sentence after "The settings file can't be used:". `ym render --json` and `ym info --json` print the node in `settings` as the document holds it.
+- **Version.** `ym --version`, `ym doctor` and `ym info` print the new pipeline version from BL-16 (§7).
+
+## 6. Rendering
+
+- **The plan** (`docs/23` §5.2). The node is a **spatial step** with a picture input, a key input and a key output. It cannot fuse into the per-pixel colour pass (its output at a pixel depends on neighbours), so it follows **the Film node's route** (`docs/23` §5.4, `docs/24` §3.9c): the render makes the node's picture **before the colour pass** with its own passes over the made area, and the node's step in the plan reads that picture from the pass buffers and gives it as the node's output; the key output is `m`, bypassed or not. A graph with a Blur node runs on the device like any other. `StepKind` gains `Blur` (`ym_color::plan`, `pipeline::schedule::step_kind`; their exhaustive matches fail to compile without it), declared **spatial with a reach in output pixels** (§3.8), reading the earlier pictures and the node's mask plane (`StepKind::declared`). A step at its identity (§3.3) is skipped.
+- **The passes of a tile.** (1) The node's picture over the made area (from the prefix chain, as Film's), decoded to linear. (2) The node's mask `m` over the made area, from the plan compiled to the node's `m` stop. (3) The weighted planes `ωX` and `ω`. (4) The type's passes (§3.5): Soft's two separable passes over cells or pixels; Lens' gather over cells; Motion's line gather; Zoom's pyramid and radial gather. (5) The blend and the encode (§3.2, §3.3) into the picture the step gives. The planes `N` and `D` are f32 and share one storage binding; **no new binding is added to the colour kernel** (K3: 8 storage buffers and 1 uniform; the Blur passes are their own kernels with their own bindings, as Film's).
+- **The CPU reference** is `ColorChain::run_nodes` calling `ym_color::blur::apply` in f64 (BL-04), then the node's key.
+- **Show mask** (`docs/23` §5.8). The node's mask stop is a corrector's: it shows `m`. The mask view of a Blur node **does not run the blur** (the plan ends at `m`).
+- **Thumbnails, histogram, scatter, pixel readout.** The thumbnail is the picture after the node (`docs/23` §5.7). The histogram and scatter at the node read the picture at the node's input (the panel has none). `signal_source` answers an `at` that names the node as it does a corrector's.
+- **Ancestors.** `Plan::picture_ancestors` is a corrector's (one picture input). A node reads only its ancestors' pictures (`docs/23` §5.12).
+- **Dead nodes** are dimmed like a dead corrector and not run when the Output does not need them.
+
+## 7. `PIPELINE_VERSION`
+
+**A new node kind takes the next minor step** (the rule `docs/13` and `docs/23` set when a node kind lands: 0.10.0 with the Film node, 0.11.0 with the mixers, 0.12.0 with Face Refinement, 0.13.0 with Colour Uniform; `docs/01` *pipeline_version*): an older build refuses a graph with a kind it does not know, so a file that holds a Blur node must say it needs a newer build. **Blur takes 0.14.0**, set by BL-16 and written to `ym:PipelineVersion`, `ym --version`, `ym doctor`, `ym info` and an album's `written_by` (the snapshots and the tests that assert the number follow).
+
+- **Where it stands today.** 0.2.4-beta.2 shipped 0.12.2. Colour Uniform takes 0.13.0 (set on its branch by CU-12) and the raw-constants refresh (RC-13, `docs/29`) takes **0.13.1**, a patch, because it moves pixels without a new kind; **neither is released**. So 0.14.0 is the next free minor number above them, in the order 0.13.0, 0.13.1, 0.14.0.
+- **If another number lands first.** The rule does not depend on the value: BL-16 takes the next free minor number above whatever is on `main` when it merges (0.13.0 if Colour Uniform were cut, 0.14.0 as planned, 0.15.0 if something else takes it). If RC-13 lands after Blur it takes the next free patch above Blur's (0.14.1).
+- **No existing graph changes by a bit** (§3.3: a node that is not there runs nothing), so **no golden entry moves and `golden check` stays 64 of 64 on the current entries.** `expected.json` keeps each entry's own recorded version, as the mixers and Colour Uniform did. Only the written version string changes for an existing file. The new golden entries (node on, §8) are new, so they pin the new maths from this version and are not a change of an existing one.
+
+## 8. Tests
+
+Every gate must pass in CI (or the named job) before its task is done. **A failed gate is reported, never loosened** (`AGENTS.md`). Numbers marked *starting* are first bounds that the named task measures and writes into `docs/STATUS.md`. The sketch's property checks (37 lines, `blur_ref.py`) are the ones to match.
+
+| Area | Test | Gate | Task |
+|---|---|---|---|
+| Format and rules | the fields, defaults and clamping (`lens.blades` 1 and 2 held at 3, `center` clamped, `rotation_deg` and `angle_deg` read modulo and not reported), a value that is not finite, an unknown field and its text, an unknown `type`, a partial group, the 64-node limit counting the node, the schema, the written order | every refusal is atomic and has its plain text | BL-02 |
+| Patches | add and remove; the group patches and their reports; Pick centre as one patch; Reset; copy and paste of a graph with the node; undo | tested | BL-02 |
+| Identity (the law, on the exact oracle) | **radius, length or amount 0: the input's bits** for each type; mask 0 at every pixel: the input's bits; a bypassed node; a black picture stays black and finite; a zero mask on a bright picture is finite; a flat field is unchanged to 1e-9 (the sketch: 3.7e-13) | bit for bit where stated | BL-03 |
+| **The mask** | **respect on: change the picture wildly wherever `m = 0`, the result where `m > 0` does not move (to 1e-9), for each type**; respect off: the same change does move it (so the test bites); a mask at 0.5 weighs half; the result is continuous in `m` (a ramp of `m`, no step above the ramp's slope times the blur's range); `m` with Opacity 0.5; the picture's edge (renormalise: a flat field is flat at the edge and the corner) | as stated | BL-03, BL-06 to BL-09 |
+| Properties | **symmetry** (the mirrored picture and mask give the mirrored result: Soft, round Lens, Motion at 0° and 90°; 1e-9); **energy** of a point in the interior: `Σ out / Σ in − 1` within 1e-9 for Soft, Lens, Motion, and 2e-2 for Zoom (not a convolution); **determinism** (repeat; threads 1, 3, 4); **tile invariance** (a tile with its halo equals the frame bit for bit, at tiles of 97, 160 and 256 px); the **resolution independence** (the view at k = 4 against the export reduced by 4: *starting* 0.02 largest, 0.002 mean in display linear, as Film's, `docs/24` §3.9c); no NaN on black, huge, negative and subnormal codes | as stated | BL-03, BL-04, BL-06 to BL-09 |
+| Fast kernels against the exact ones | each type's fast method against the oracle, on an edge, a disc, a bright light and a noise field, at small and large radii | Soft ≤ 5e-3, Lens ≤ 1e-2, Motion ≤ 3e-3, Zoom ≤ 1e-2 relative in linear light (*starting*) | BL-06 to BL-09 |
+| Formulas | the Gaussian's weights against `erf` values, the aperture's coverage against an analytic disc area and a hexagon's, the line's weights, the highlight weight at +2, +3, +4 EV, the reach table of §3.8 | 1e-12 | BL-03, BL-06 to BL-09 |
+| Existing graphs | every golden entry and settings fixture, the CLI's and the app's parity tests, the device suites | **byte-identical**; `golden check` 64 of 64 on the current entries; only the written version moves, in BL-16 | BL-04, BL-05, BL-16 |
+| Plan and random graphs | the node in the plan with correctors, Film and Colour Uniform nodes, live and dead, numbering, `picture_ancestors`; `crates/ym-core/tests/any_graph.rs` draws `blur` from `NodeKind::ALL`, with each type and masks; the run asserts that the kind appeared | CPU: tiles of 97, 160 and 256 px on 1, 3 and 4 threads bit for bit; device: not refused, within the CPU bounds, exports byte for byte across tile sizes; the 10-bit export check skips the CPU's own unstable pixels | BL-04, BL-05 |
+| Device parity | lavapipe: for each type, small and large radius, a bright light among dark pixels, a mask edge (respect on and off), a node after a node, the picture's edge and corner; the Mac GPU CI (Metal, fast-math) the same cases | **2e-4 in LogC4** and one 10-bit code after C12 and C13; the identity cases exact; expected error a few 1e-6 | BL-06 to BL-09 |
+| Golden images, node on | five new entries of the synthetic set with the node on, each rendered by `ym` (CPU) and pinned in `expected.json`: **soft** (Radius 50, a Radial mask inverted, respect on), **soft-off** (the same, respect off: the halo is pinned too), **lens** (6 blades, Highlights 60), **motion** (Length 45, 20°) and **zoom** (Amount 80, centre off the middle); the device checked against them on the GPU subset; the entries are new so no hash moves. Each type's entry is part of its task, so a cut type loses its entry only | `golden check` 69 of 69 with all four types; device within the golden gates | BL-06 to BL-09 |
+| App against `ym` | the example file of §5.1 (with a Radial row) and one with another mask and a Zoom: JPEG, TIFF 16, PNG 16 and DNG | byte-identical, on the CPU and on the device (`parity.rs`, `parity_gpu.rs`) | BL-10 |
+| Presets and albums | a preset saved from a photo with the node holds it in `nodes` and applies it to another photo; an album with the node round-trips and an older build's refusal text is the album's; the field test (`docs/30` §14) | tested | BL-11 |
+| CLI | the example file read and validated (`docs/10`, `crates/ym-cli/tests/docs.rs`), the help's closing paragraph, the unknown-field and unknown-type sentences | the test fails on any difference | BL-02 |
+| Interface | unit tests: `graphOps` (add after the selected node, delete, reorder like a corrector, the 64-node limit), the Type control and the per-type panels, the Zoom centre's patches (pick, drag, reset: one undo step each), the disabled Rotation with Round, the Mask edges line with and without a mask; Playwright against the mock: the Add node menu, switching type and back (values kept), the sliders, Pick centre and Esc, the switch, Show mask, Reset, Copy and Paste, the keyboard path; the glass audit and a11y with the new page states. Reference screenshots (`design/screenshots-c2/photos-blur-*.png`) | green; the owner sees the screenshots before they are committed | BL-12, BL-13, BL-14, BL-15 |
+| Speed (on a Mac) | a slider move in the fit view with 8 nodes, one a Blur node of each type; the node's own cost per megapixel at a small and a large radius | the node view's 100 ms; the per-megapixel budget of §9 (*starting*) | BL-16, M0-H4 |
+| Licences | `cargo deny check` and the npm licence check | pass; no new dependency | BL-02 to BL-13 |
+
+## 9. Speed
+
+`docs/23` §5.9 asks for a slider move in the fit view with 8 nodes within 100 ms. A fit view is about 2 megapixels. The cost of a Blur node is its passes over the made area: a decode, a mask plane, the type's gather, an encode. **Starting budgets** (measured by the task named; a lavapipe figure is not a Mac figure and is reported as such):
+
+| GPU, Apple M-series, per megapixel of the picture | Small: Radius 10 (0.4 %, 24 px on 6000 px), Length 10, Amount 10 | Large: 100 | Where the cost is |
+|---|---|---|---|
+| **Soft** | ≤ 0.30 ms | ≤ 0.35 ms | the decode, the reduce to cells, two separable passes over `N`, `D`, the read-back and the encode: memory traffic, not taps (the cell grid keeps the taps at most 33) |
+| **Lens** | ≤ 1.0 ms (worst ≤ **2.0** ms at `R` just under 8 px at the fit view: `f = 1`, up to 200 taps a pixel) | ≤ 0.5 ms | the table gather: about 200 taps over cells, divided by `f²` per pixel, so it falls as the radius grows |
+| **Motion** | ≤ 0.4 ms | ≤ 0.8 ms | at most 17 bilinear taps over `N`, `D` |
+| **Zoom** | ≤ 0.8 ms | ≤ 1.2 ms | the pyramid build (a third of a plane) and up to 32 trilinear taps |
+
+- Add **about 0.1 ms per megapixel** for the node's mask plane (the Show mask stop's cost) and **0.3 ms per megapixel at the most** for an inverted Subject or Depth plane that is already made (it is read, not made, `docs/23` §5.6). At the fit view the worst node (Lens, 2.0 ms/MP) is about 4 ms of the 100 ms.
+- **A 50 MP export at the largest radius: acceptable on the device** (§3.8): about 55 ms of kernel for Soft and a few times that for Lens and Zoom, with 3.5 times the pixels for the halo; the transfers dominate. **CPU reference** (`ym --cpu` and the fallback), *starting*: ≤ 250 ms per megapixel per core for Soft, ≤ 600 ms for Lens, ≤ 400 ms for Motion, ≤ 500 ms for Zoom (the decode and the encode are about 100 ms of it: six transcendentals a pixel); a 50 MP export on 8 cores about 1.6 s for Soft, 3.8 s for Lens (50 MP × 600 ms ÷ 8), 3.5 times that with the halo.
+- Memory: the planes `N` (3) and `D` (1) in f32 over the made area, 16 bytes a pixel; Zoom's pyramid adds a third. No new binding.
+- Thumbnail: the node's thumbnail (about 160 px) is a few milliseconds.
+
+## 10. Questions for the owner (BL-H1), each with a recommended default
+
+| # | Question | Recommended default | Why, and what changes if the answer differs |
+|---|---|---|---|
+| 1 | **Mask behaviour:** (a) blur everything then blend, (b) mask-aware, or both with a control? | **Both, with one switch "Respect mask edges", on (b) by default** | (b) gives a clean background blur with no halo; (a) is what a corrector does and is right for a glow that should spread (§2.3). If only (b): the switch, its card and the `respect_mask_edges` field go (§2.3, §5.1) and the tests of (a) drop. If only (a): the node is simpler and has the halo |
+| 2 | **One node with a Type control, or one node per type** (Blur, Lens Blur, Motion Blur, Zoom Blur)? | **One Blur node with a Type control** (the segmented control: Soft, Lens, Motion, Zoom) | §4: one menu item, one shape, one panel; a Type control costs little. Separate nodes triple the menu, kinds, schema and tests |
+| 3 | **The name in the UI** | **"Blur"** (the menu item, the card and the tab; the identifier is `blur`; "a Blur node") | the types' names, Soft, Lens, Motion and Zoom, are the owner's own words ("different type of blur") and the Photoshop and Lightroom ones |
+| 4 | **Which types are in 0.2.4, which are later** | **In: Soft, Lens, Motion, Zoom. Later: Spin (BL-17), H/V ratio on Soft, depth-growing blur, blade curvature.** Tilt-shift is a Linear mask plus a Blur node (§1.3), not a type | Spin shares Zoom's centre control and almost its kernel, so it is cheap *after* Zoom; leave it for the next release to keep 0.2.4's tests and speed checks to four. Adding Spin now costs one task (BL-17) and one segment |
+| 5 | **The radius range and its default** | **Radius 0 to 100 = 0 to 4 % of the long edge; a new node starts at 20 (0.8 %)** | a new node blurs a little at once, like Film and Face Refinement; 4 % is a very heavy blur (a 240 px disc on 6000 px). Alternative: start at 0 as a corrector (a new node changes nothing until raised). Motion's 8 % and Zoom's 10 % are from the same reasoning (§2.2, §3.5) |
+| 6 | **The blend space** | **Linear light** (the blur and the blend; a corrector's blend is in LogC4) | §3.1: lights keep their brightness across a feathered mask edge. Alternative: LogC4 blend like every node: simpler to explain, a dimmer edge on bright lights. The blur itself is linear in either case |
+| 7 | **A "Blur the background" shortcut or preset** | **No built-in preset or menu item in 0.2.4.** The recipe is: Blur node, Mask › Add mask › Depth (or Subject, then Invert); it goes into `docs/10` as an example and into the user guide | the Depth and Subject masks exist only where the weights or this Mac support them (`docs/23` §3.10, §3.10a), so a built-in item would be missing on some machines; the owner declined a built-in Skin preset for Colour Uniform on the same ground (`docs/32` §10, answer 4); a person can **save their own preset** (`docs/30`). If wanted: an item in the Add node menu's footer "Blur background" that adds the node and a Depth row, in one undo step (one task) |
+| 8 | **Zoom's range** | **Amount 100 = a tenth of the distance from the centre** (reach about 6 % of the long edge) | the reach is a scalar for the whole tile, so a larger range costs bigger tiles (§3.8) |
+| 9 | **Lens' Highlights control: in, or cut** | **In** | without it a lens blur of clipped raw lights is dull; costs a slider and one weight in the sum; BL-07 can drop it without touching the rest |
+| 10 | **Lens' blade count: Round and 5 to 9** | **Round, 5, 6, 7, 8, 9**, plus Rotation | the shapes real lenses have; the file allows 3 to 12 |
+
+## 11. Decisions made while writing the spec
+
+The simplest readings where the request was silent. The owner's answers are in §10 once they are in; these are ours.
+
+| # | Choice | Why |
+|---|---|---|
+| 1 | The kind is `blur`; the default name is `"Blur"` | four letters, never cut on a card |
+| 2 | One node, a Type control (a segmented control), a stored group per type so the values are kept | §4 |
+| 3 | A **spatial** numbered node on the Film node's device route, with masks, a key output, a thumbnail and a number; no new port type | `docs/23` §5.12 (the generic scheduler) |
+| 4 | **Mask-aware by default** (normalized convolution), with a switch for the plain blend | the owner's first requirement; §2.3 |
+| 5 | The weight is the mask `m` itself, with no threshold | `docs/23` §4.3 |
+| 6 | The space is linear AWG4, the blend too | §3.1 |
+| 7 | The picture's edge **renormalises** | §3.4 |
+| 8 | Sizes are fractions of the long edge of the whole picture at the render's scale | the masks' Feather's rule |
+| 9 | Soft's `σ = R/2`, so the types agree on blur size | a disc of radius `R` has a per-axis standard deviation of `R/2` |
+| 10 | The Gaussian is cut at 4 σ, as a definition | halo and cost; the cut leaves 6e-5, renormalised |
+| 11 | Lens' aperture is a coverage-weighted disc or regular polygon; Highlights is a weight in the mean, not a gain | continuous kernel; no energy created |
+| 12 | Zoom is a pyramid gather with a scalar reach | §3.5, §3.8 |
+| 13 | `blades` is 0 or 3 to 12 in the file, 0 and 5 to 9 in the panel | a file may hold what a panel does not offer |
+| 14 | Defaults: Soft Radius 20, every other amount 20 | a new node blurs a little; §2.5 |
+| 15 | `PIPELINE_VERSION` 0.14.0 | §7 |
+| 16 | The tab is in the Detail tab's colour | blur is detail |
+| 17 | Other documents (`docs/23`, `docs/10`, `docs/11`, `docs/16`, `docs/17`, `docs/30`, `docs/algorithms/06`) are updated by the tasks that change what they describe, not by this plan | as X-01 and CU-01 did; this plan only adds `docs/33`, the research, the mock-ups, milestone B and the STATUS lines |
+
+## 12. Mock-ups
+
+`design/blur/` (`README.md`, `index.html`, `mockup-notes.md`, the JPEGs, `shoot.mjs`, `html/`): pages at 1440 × 900 built from the app's DOM and CSS, as `design/colour-uniform/`, shot at 2× to JPEGs. The pictures are **a synthetic scene** (a drawn street at dusk with string lights and a figure in a red jacket; no photograph, nobody's likeness) in linear light, with the **maths of §3 applied by the sketch** `blur_ref.py` through the inverted Subject mask (and a Depth mask for one picture): `01` Soft, `02` Lens (6 blades, Highlights 60), `03` Motion, `04` Zoom (centre handle on the photo), `05` the Mask tab with the Subject row, `06` Show mask, `07` the Add node menu, `08` the simple view, **`09` Respect mask edges off and on, side by side, with the edge of the jacket three times larger**, `10` the four types and a Depth-mask picture through one mask, and `states` (card states, five panel states, and the copy of every tooltip and note).
+
+## 13. Tasks
+
+Task format of `docs/15`, milestone B. The work goes on its own branch, one reviewed commit per task with its checks green (`cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `npm test`, `npm run build`). Every task that changes what `ym` does or prints updates `docs/10` and the help in the same commit. The tasks are listed with their *Done when* in `docs/15` (milestone B: **BL-01** to **BL-16**, with **BL-17** later, and **[HUMAN] BL-H1**, **[HUMAN] BL-H2**).
+
+**The structure.** The **shared framework** is built once: BL-02 (the format), BL-03 (the law and the exact kernels), BL-04 (the plan and the CPU run), BL-05 (the device scaffold), BL-10 to BL-14 (`ym` and the app, presets and albums, the interface, the shell). **Each type is one task** that adds its kernel's fast CPU method, its device kernel, its parity, its golden entry and its panel section: **BL-06 Soft, BL-07 Lens, BL-08 Motion, BL-09 Zoom**, in that order, each needing only BL-03 to BL-05. **Cutting a type** (the owner says no to Lens, say) is: do not build its task; if it exists, remove its case from the Type enum and the schema, its panel component, its kernel and its golden entry, each in its own file; the framework does not change, and a type not yet built **renders as the identity** until its task lands (the Colour Uniform precedent, `docs/32` §11 item 23), so the interface can be built before every type exists.
+
+The order is BL-01 (done), then BL-H1; BL-02 and BL-03 together; BL-04 after both; BL-05 after BL-04; BL-06 to BL-09 after BL-05 (each independent of the others); BL-10 and BL-11 after BL-02 and BL-04; BL-12 after BL-02 (it can start before the kernels, with types disabled until they land); BL-13 after BL-12; BL-14 after BL-12 and BL-09 (the Zoom centre) and BL-04; BL-15 after BL-13 and BL-14; BL-16 last, then BL-H2. BL-17 (Spin) is later and not in 0.2.4.
+
+## 14. As built
+
+*(Filled in by the tasks as they land.)*

@@ -1,0 +1,32 @@
+/* Mockup-only additions for design/blur/ (BL-01). The rest is the app's CSS (mixers/html/app.css, nodes/html/nv.css, mixers/html/mixers.css, skin/html/skin.css, colour-uniform/html/cc.css). */
+.bl-seg { padding: 2px 0 12px; }
+.bl-seg [data-slot="segmented-control"] { width: 100% !important; }
+.bl-seg [data-slot="segmented-control-item"] { flex: 1 1 0 !important; min-width: 0 !important; }
+.bl-shape { display: flex; align-items: center; gap: 12px; padding: 4px 0 10px; }
+.bl-shape > span { font-size: 13px; min-width: 64px; }
+.bl-shape [data-slot="segmented-control"] { flex: 1; }
+.bl-shape [data-slot="segmented-control-item"] { flex: 1 1 0 !important; min-width: 0 !important; padding-inline: 4px !important; }
+.bl-centre { display: flex; align-items: center; gap: 12px; padding: 4px 0 10px; }
+.bl-centre p { margin: 0; font-size: 12px; line-height: 1.35; color: var(--glass-label-secondary); flex: 1; }
+.bl-handle { position: fixed; }
+.bl-pick-on { color: var(--tab-detail); background: color-mix(in oklch, var(--tab-detail) 20%, transparent); }
+.ym-gnode__mask[data-glyph="blur"] { color: var(--glass-label-secondary); }
+.bl-grid { display: grid; grid-template-columns: repeat(3, 440px); gap: 22px 22px; }
+.bl-tile { margin: 0; }
+.bl-tile img { display: block; width: 440px; height: 293px; object-fit: cover; border-radius: 14px; box-shadow: inset 0 0 0 1px var(--rim), 0 2px 10px rgba(0,0,0,.35); }
+.bl-tile figcaption { margin-top: 8px; font-size: 13px; line-height: 1.4; color: var(--glass-label-secondary); }
+.bl-tile figcaption b { color: var(--glass-label); font-size: 15px; }
+.bl-halo { display: grid; grid-template-columns: repeat(3, 440px); gap: 18px; }
+.bl-halo figure { margin: 0; }
+.bl-halo img.crop { display: block; width: 440px; height: 293px; border-radius: 14px; box-shadow: inset 0 0 0 1px var(--rim); object-fit: cover; }
+.bl-halo figcaption { margin-top: 8px; font-size: 13px; line-height: 1.45; color: var(--glass-label-secondary); }
+.bl-halo figcaption b { color: var(--glass-label); font-size: 15px; }
+.bl-full { display: grid; grid-template-columns: repeat(2, 660px); gap: 22px; margin-top: 8px; }
+.bl-full figure { margin: 0; position: relative; }
+.bl-full img { display: block; width: 660px; height: 440px; border-radius: 14px; box-shadow: inset 0 0 0 1px var(--rim); }
+.bl-box { position: absolute; left: 20%; top: 56%; width: 16%; height: 16%; border: 2px solid #ffc20e; border-radius: 4px; box-shadow: 0 0 0 1px rgba(0,0,0,.5); }
+.bl-two { display: grid; grid-template-columns: repeat(2, 640px); gap: 22px; }
+.bl-num { font-size: 15px; line-height: 1.5; margin: 12px 0 0; }
+.bl-num b { color: #ffc20e; }
+code { font-family: ui-monospace, Menlo, monospace; font-size: .92em; background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 5px; }
+.bl-halo figcaption b, .bl-tile figcaption b { display: block; margin-bottom: 2px; }
