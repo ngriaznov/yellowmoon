@@ -121,7 +121,7 @@ tuning_fields!(diffraction::Tuning;
 
 tuning_fields!(output_sharpen::Tuning;
     sigma_slope, sigma_offset, sigma_knee_radius_px, sigma_sqrt_origin, sigma_sqrt_scale,
-    screen_radius_cap_px, taps_per_sigma, taps_offset, taps_min, max_taps_screen, max_taps_print,
+    screen_radius_cap_px, taps_per_sigma, taps_offset, tap_tail_budget, taps_min, max_taps_screen, max_taps_print,
     sigma_knee, screen_amount_pct, screen_radius_px, screen_threshold_levels, screen_halo_pct,
     halo_dead_zone, halo_pull_fade, halo_tie_tolerance, gain_sigma_multiple, gain_sigma_min,
     halo_sigma_multiple, ratio_max, luma_floor, gain_epsilon, scharr_centre, scharr_corner,

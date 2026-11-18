@@ -19,7 +19,7 @@ use serde_json::Value;
 use ym_gpu::cpu::RgbImage;
 use ym_gpu::cpu::output_sharpen::{
     ExtraStage, Method, Mode, OutputSharpen, OutputSharpenError, SharpenPlan, Tuning,
-    gaussian_kernel, scale_for_edges,
+    gaussian_kernel, gaussian_kernel_with, scale_for_edges,
 };
 
 // ------------------------------------------------------------------------------------------------
@@ -873,7 +873,9 @@ fn plan_of(p: &OutputSharpen, s: f32) -> SharpenPlan {
 
 #[test]
 fn property_plan_derivation_radius_sigma_and_taps() {
-    // Spec section 2.2: radius to sigma, and the tap count at the screen cap.
+    // Spec section 2.2: radius to sigma, and the tap count at the screen cap. The table is the
+    // reference's, so it runs under the constants the reference had; the shipped constants
+    // (`docs/29` RC-09) give the same sigma from R = 0.5 upward and the continuous branch below it.
     let table = [
         (0.1f32, 0.097f32, 3usize),
         (0.2, 0.322, 5),
@@ -888,19 +890,38 @@ fn property_plan_derivation_radius_sigma_and_taps() {
     ];
     for (r, sigma, taps) in table {
         let mut p = OutputSharpen::screen();
+        p.tuning = Tuning::ORACLE;
         p.radius_px = r;
         let plan = plan_of(&p, 1.0);
         let st = plan.stages()[0];
         assert!((st.sigma - sigma).abs() < 6e-4, "R {r}: sigma {}", st.sigma);
         assert_eq!(plan.kernel(0).len(), taps, "R {r}: taps");
+        // Shipped: the same from 0.5 up; below it 0.65 / 0.621 = 1.0465 times the reference's; the
+        // same tap counts (the budget asks for no more at any of these sigmas).
+        let mut p = OutputSharpen::screen();
+        p.radius_px = r;
+        let plan = plan_of(&p, 1.0);
+        let st = plan.stages()[0];
+        let want = if r >= 0.5 { sigma } else { sigma * 1.0465 };
+        assert!(
+            (st.sigma - want).abs() < 7e-4,
+            "R {r}: shipped sigma {}",
+            st.sigma
+        );
+        assert_eq!(plan.kernel(0).len(), taps, "R {r}: shipped taps");
     }
-    // The step of the radius map at R = 0.5: just below it sigma is 0.621.
+    // The step of the radius map at R = 0.5: just below it the reference's sigma is 0.621 and the
+    // shipped one 0.650.
     let mut p = OutputSharpen::screen();
     p.radius_px = 0.4999;
+    assert!((plan_of(&p, 1.0).stages()[0].sigma - 0.650).abs() < 2e-3);
+    p.tuning = Tuning::ORACLE;
     assert!((plan_of(&p, 1.0).stages()[0].sigma - 0.621).abs() < 2e-3);
-    // Tap count: 4.1 gives 13 (screen cap) and 23 (print cap) taps.
+    // Tap count: 4.1 gives 13 (screen cap) taps, and 23 (the reference's linear rule) or 27 (the
+    // tail budget: 3.1747 sigma - 1/2 = 12.5, so h = 13) at the print cap.
     assert_eq!(gaussian_kernel(4.1, 13).len(), 13);
-    assert_eq!(gaussian_kernel(4.1, 33).len(), 23);
+    assert_eq!(gaussian_kernel_with(4.1, 33, &Tuning::ORACLE).len(), 23);
+    assert_eq!(gaussian_kernel(4.1, 33).len(), 27);
     assert_eq!(gaussian_kernel(0.01, 13).len(), 3);
 }
 
@@ -1203,7 +1224,12 @@ fn preset_screen_derived_values() {
 
 #[test]
 fn preset_print_derived_values() {
-    let p = OutputSharpen::print();
+    // The numbers are the reference's (spec section 6.3): its constants. The shipped tail budget
+    // lengthens the print gain kernel (3.4 sigma: 19 taps to 23); the end of this test says so.
+    let p = OutputSharpen {
+        tuning: Tuning::ORACLE,
+        ..OutputSharpen::print()
+    };
     assert_eq!(p.mode, Mode::Print);
     assert_eq!(p.method, Method::SmoothGain);
     assert_eq!(
@@ -1236,6 +1262,16 @@ fn preset_print_derived_values() {
     assert!(st.threshold < 1.0 / 255.0 && st.threshold > 0.0);
     assert_eq!(plan.kernel(0).len(), 5);
     assert_eq!(plan.gain_kernel(0).len(), 9);
+    assert_eq!(plan.halo_px(), 2 + 4);
+
+    // The shipped constants (`docs/29` RC-09): the same, except that the gain kernel of the print
+    // preset at full size (sigma 3.4) has the 23 taps of the tail budget and not the linear rule's 19.
+    let plan = plan_of(&OutputSharpen::print(), 1.0);
+    assert_eq!(plan.kernel(0).len(), 11);
+    assert_eq!(plan.gain_kernel(0).len(), 23);
+    assert_eq!(plan.halo_px(), 5 + 11);
+    let plan = plan_of(&OutputSharpen::print(), s);
+    assert_eq!((plan.kernel(0).len(), plan.gain_kernel(0).len()), (5, 9));
     assert_eq!(plan.halo_px(), 2 + 4);
 }
 
@@ -1525,7 +1561,10 @@ fn oracle_digests_of_frames_taller_than_one_band() {
         16,
     ));
     for (i, (p, s, img, digest, halo)) in cases.iter_mut().enumerate() {
-        // The reference compares exactly; the tie tolerance is ours (spec 7.1 item 5).
+        // The reference compares exactly; the tie tolerance is ours (spec 7.1 item 5). The digests are
+        // the reference's, so they run under the constants it had (`Tuning::ORACLE`: the linear tap
+        // rule and the `0.97` branch of the radius map), not the shipped ones (`docs/29` RC-09).
+        p.tuning = Tuning::ORACLE;
         p.halo_tie_tolerance = 0.0;
         assert_eq!(p.halo_px(*s), Ok(*halo), "case {i}: halo_px");
         let out = sharpen(p, *s, img);

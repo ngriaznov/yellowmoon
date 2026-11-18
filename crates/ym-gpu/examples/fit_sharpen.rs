@@ -286,6 +286,11 @@ fn gate9_profile(p: &OutputSharpen, s: f32, edge: &RgbImage) -> Value {
 /// suppression on the hard 0.1 to 0.5 step at amount 300 and R 1.5 (the overshoot and undershoot, as a
 /// fraction of the unit signal, without and with halo 100); at full size also the halo-0 and print rows.
 pub fn gate9_numbers(t: &Tuning) -> Value {
+    gate9_numbers_at(t, &EDGE_SCALES)
+}
+
+/// [`gate9_numbers`] at other output scales (`--gate9-scales`): the keys of the result are the scales.
+pub fn gate9_numbers_at(t: &Tuning, scales: &[f32]) -> Value {
     let edge = slanted_edge(128, 5.0, 0.8, 0.1, 0.5);
     let rise_before = row_rise_10_90(&edge, 64, 0.1, 0.5);
     let mut patch = RgbImage::new(96, 96);
@@ -306,7 +311,7 @@ pub fn gate9_numbers(t: &Tuning) -> Value {
     }
     let mut m = serde_json::Map::new();
     m.insert("rise_before_px".into(), num(rise_before));
-    for s in EDGE_SCALES {
+    for &s in scales {
         let screen = screen_with(t);
         let mut v = gate9_profile(&screen, s, &edge);
         for (key, threshold) in [("noise_gain", 1.0f32), ("noise_gain_threshold_0", 0.0)] {
@@ -358,7 +363,7 @@ fn usage(why: &str) -> ! {
     eprintln!("fit_sharpen: {why}");
     eprintln!(
         "usage: fit_sharpen [--from oracle|default] [--set name=value]... [--rel name=f1,f2]... \
-         [--eval \"label@name=v,name=v\"]... [--held] [--edge] [--gate9] [--list]"
+         [--eval \"label@name=v,name=v\"]... [--held] [--edge] [--gate9] [--gate9-scales s1,s2,...] [--list]"
     );
     std::process::exit(2);
 }
@@ -368,6 +373,7 @@ fn main() {
     let mut common = Common::default();
     let mut want_edge = false;
     let mut want_gate9 = false;
+    let mut gate9_scales: Vec<f32> = EDGE_SCALES.to_vec();
     let mut i = 0;
     while i < args.len() {
         match common.take(&args, &mut i) {
@@ -375,6 +381,24 @@ fn main() {
             Ok(false) => match args[i].as_str() {
                 "--edge" => want_edge = true,
                 "--gate9" => want_gate9 = true,
+                "--gate9-scales" => {
+                    i += 1;
+                    let list = args
+                        .get(i)
+                        .unwrap_or_else(|| usage("--gate9-scales needs a list"));
+                    gate9_scales = list
+                        .split(',')
+                        .map(|v| {
+                            v.parse::<f32>()
+                                .ok()
+                                .filter(|s| *s > 0.0 && *s <= 1.0)
+                                .unwrap_or_else(|| {
+                                    usage(&format!("`{v}` is not a scale in (0, 1]"))
+                                })
+                        })
+                        .collect();
+                    want_gate9 = true;
+                }
                 other => usage(&format!("unknown argument `{other}`")),
             },
             Err(e) => usage(&e),
@@ -459,7 +483,7 @@ fn main() {
             v["edge"] = edge_numbers(e, t);
         }
         if want_gate9 {
-            v["gate9"] = gate9_numbers(t);
+            v["gate9"] = gate9_numbers_at(t, &gate9_scales);
         }
         emit(&v);
     };

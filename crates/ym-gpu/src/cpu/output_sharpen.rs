@@ -141,22 +141,31 @@ pub struct Tuning {
     /// O1 · Design · spec §2.2 · the owner's look. Below the knee, sigma is
     /// `scale·√(R - origin)`; no stage exists at or below `R = origin`.
     pub sigma_sqrt_origin: f32,
-    /// O1 · Design · spec §2.2 · the owner's look. The scale of that square-root branch.
+    /// O1 · Design · spec §2.2 · the owner's look. The scale of that square-root branch. The oracle's
+    /// `0.97` leaves a step of 0.029 at the knee (0.621 below, 0.650 above); the shipped value is
+    /// `(slope·knee + offset)/√(knee − origin)` = `0.65/√0.41`, which meets the line exactly there
+    /// (`docs/29` RC-09). Nothing at or above the knee changes.
     pub sigma_sqrt_scale: f32,
     /// O1 · Design · spec §2.2 · the owner's look. Radius cap of the screen mode, pixels.
     pub screen_radius_cap_px: f32,
-    /// O2 · Maths · spec §2.3 · proved, `the_tap_rule_loses_under_two_per_mille_at_the_screen_map_points_and_3_6_at_worst`.
-    /// The tap count of a kernel is `((int)(per_sigma·σ + offset)) | 1`: how far the Gaussian is cut.
+    /// O2 · Maths · spec §2.3 · proved, `the_tap_rule_loses_under_two_per_mille_at_the_screen_map_points_and_3_6_at_worst`
+    /// and `the_tail_budget_never_gives_a_shorter_kernel_than_the_linear_rule`. The linear rule: the tap
+    /// count of a kernel is at least `((int)(per_sigma·σ + offset)) | 1`: how far the Gaussian is cut.
     pub taps_per_sigma: f32,
     /// O2 · Maths · spec §2.3 · proved, as above. The `2.5` of that rule.
     pub taps_offset: f32,
+    /// O2 · Maths · spec §2.3 · proved, as above. The tail-mass budget (`docs/29` RC-09): a kernel has
+    /// at least as many taps as it needs for the part of the Gaussian cut off, `erfc((h + ½)/(σ√2))` for
+    /// `n = 2h + 1` taps, to be at most this. `1.0` is no budget (a cut may drop everything): the
+    /// linear rule alone, as the oracle vectors were made.
+    pub tap_tail_budget: f64,
     /// O2 · Maths · spec §2.3 · proved, as above. The fewest taps of a kernel.
     pub taps_min: usize,
     /// O2 · Maths · spec §2.3 · proved, as above. Tap cap of the screen mode.
     pub max_taps_screen: usize,
     /// O2 · Maths · spec §2.3 · proved, as above. Tap cap of the print mode.
     pub max_taps_print: usize,
-    /// O3 · Fit · spec §2.4 · pending, RC-09. The sigma below which a downscale does not shrink the
+    /// O3 · Fit · spec §2.4 · fitted, RC-09: mixed, kept. The sigma below which a downscale does not shrink the
     /// radius: `s·(σ - knee) + knee`.
     pub sigma_knee: f32,
     /// O4 · Design · spec §2.5 · the owner's look. Amount of the screen preset, percent.
@@ -170,17 +179,17 @@ pub struct Tuning {
     pub screen_halo_pct: f32,
     /// O5 · Design · spec §2.2 · the owner's look. Halo fractions (`√(h/100)`) at or below this are 0.
     pub halo_dead_zone: f32,
-    /// O6 · Fit · spec §3.5 · pending, RC-09. With a tie tolerance the plateau pull of the halo
+    /// O6 · Fit · spec §3.5 · fitted, RC-09: mixed, kept. With a tie tolerance the plateau pull of the halo
     /// limiter fades over the last quarter before the two sides spread equally.
     pub halo_pull_fade: f64,
-    /// O6 · Fit · spec §3.5 · pending, RC-09. Default tie tolerance of the halo limiter, relative to
+    /// O6 · Fit · spec §3.5 · fitted, RC-09: mixed, kept. Default tie tolerance of the halo limiter, relative to
     /// the window's centre (`2^-12`): the default of [`OutputSharpen::halo_tie_tolerance`].
     pub halo_tie_tolerance: f32,
-    /// O7 · Fit · spec §2.3 · pending, RC-09. The gain-map smoothing has sigma `max(multiple·σ, min)`.
+    /// O7 · Fit · spec §2.3 · fitted, RC-09: under 0.1 % of the gate, kept. The gain-map smoothing has sigma `max(multiple·σ, min)`.
     pub gain_sigma_multiple: f32,
-    /// O7 · Fit · spec §2.3 · pending, RC-09. The least sigma of the gain-map smoothing, pixels.
+    /// O7 · Fit · spec §2.3 · fitted, RC-09: under 0.2 % of the gate, kept. The least sigma of the gain-map smoothing, pixels.
     pub gain_sigma_min: f32,
-    /// O7 · Fit · spec §2.3 · pending, RC-09. The halo-map smoothing has sigma `multiple·s` at the
+    /// O7 · Fit · spec §2.3 · fitted, RC-09: mixed, kept. The halo-map smoothing has sigma `multiple·s` at the
     /// output scale `s`.
     pub halo_sigma_multiple: f32,
     /// O8 · Guard · spec §3.7 · keeps the ratio of the transfer back to RGB finite on near-black
@@ -231,6 +240,7 @@ impl Tuning {
         screen_radius_cap_px: 2.5,
         taps_per_sigma: 5.0,
         taps_offset: 2.5,
+        tap_tail_budget: 1.0,
         taps_min: 3,
         max_taps_screen: 13,
         max_taps_print: 33,
@@ -262,8 +272,15 @@ impl Tuning {
         auto_cut: 0.025,
     };
 
-    /// The values that ship. Equal to [`Tuning::ORACLE`] until a fit lands (RC-09).
-    pub const DEFAULT: Tuning = Tuning::ORACLE;
+    /// The values that ship: [`Tuning::ORACLE`] with the two changes of RC-09 (`docs/29` §5), neither of
+    /// which a render at the screen preset's radius (1.0) reads: the tail-mass budget of the tap rule, which
+    /// lengthens a kernel only at some export scales between 0.66 and 0.95 (never at 1 or 0.4), and the
+    /// continuous square-root branch of the radius map below `R = 0.5`.
+    pub const DEFAULT: Tuning = Tuning {
+        sigma_sqrt_scale: 1.0151294,
+        tap_tail_budget: 0.0015,
+        ..Tuning::ORACLE
+    };
 
     /// The tap cap of a mode: 13 (screen) or 33 (print).
     #[must_use]
@@ -310,7 +327,7 @@ pub const REGISTRY: &[Constant] = &registry(&Tuning::DEFAULT);
 
 /// The registry of one `Tuning`. Written with a pattern that names every field and no `..`, so a
 /// field added to [`Tuning`] without an entry here does not compile.
-const fn registry(t: &Tuning) -> [Constant; 41] {
+const fn registry(t: &Tuning) -> [Constant; 42] {
     let Tuning {
         sigma_slope,
         sigma_offset,
@@ -320,6 +337,7 @@ const fn registry(t: &Tuning) -> [Constant; 41] {
         screen_radius_cap_px,
         taps_per_sigma,
         taps_offset,
+        tap_tail_budget,
         taps_min,
         max_taps_screen,
         max_taps_print,
@@ -350,7 +368,17 @@ const fn registry(t: &Tuning) -> [Constant; 41] {
         auto_r_min,
         auto_cut,
     } = *t;
-    const RC09: Status = Status::Pending("RC-09");
+    // RC-09, 2026-11-18: each fit was decided by the failed-gate rule against the edge profile of spec 04
+    // section 9 at s = 1 and 0.4 (`docs/29` section 5, `tools/fit/rc09.sh`).
+    const MIXED: Status = Status::Fitted(
+        "RC-09, 2026-11-18: kept; every other value in the grid is better on one number of the section 9 edge profile and worse on another",
+    );
+    const SMALL: Status = Status::Fitted(
+        "RC-09, 2026-11-18: kept; the best value that worsens no number of the section 9 edge profile gains under 0.2 % on any of them, below the 1 % of rule 3",
+    );
+    const STRUCTURE: Status = Status::Fitted(
+        "RC-09, 2026-11-18: kept; structure of the limiter (the 5 x 5 window and what follows from it), not a value a grid can move",
+    );
     const fn design(id: &'static str, name: &'static str, v: f32) -> Constant {
         Constant::cpu(id, name, v as f64, Kind::Design, Status::Owner)
     }
@@ -377,6 +405,14 @@ const fn registry(t: &Tuning) -> [Constant; 41] {
         ),
         Constant::cpu(
             "O2",
+            "tap_tail_budget",
+            tap_tail_budget,
+            Kind::Maths,
+            Status::Proved,
+        )
+        .distinct(),
+        Constant::cpu(
+            "O2",
             "taps_min",
             taps_min as f64,
             Kind::Maths,
@@ -396,20 +432,20 @@ const fn registry(t: &Tuning) -> [Constant; 41] {
             Kind::Maths,
             Status::Proved,
         ),
-        Constant::cpu("O3", "sigma_knee", sigma_knee as f64, Kind::Fit, RC09).distinct(),
+        Constant::cpu("O3", "sigma_knee", sigma_knee as f64, Kind::Fit, MIXED).distinct(),
         design("O4", "screen_amount_pct", screen_amount_pct),
         design("O4", "screen_radius_px", screen_radius_px),
         design("O4", "screen_threshold_levels", screen_threshold_levels),
         design("O4", "screen_halo_pct", screen_halo_pct),
         design("O5", "halo_dead_zone", halo_dead_zone).distinct(),
-        Constant::cpu("O6", "halo_pull_fade", halo_pull_fade, Kind::Fit, RC09)
+        Constant::cpu("O6", "halo_pull_fade", halo_pull_fade, Kind::Fit, MIXED)
             .on_device("HALO_PULL_FADE"),
         Constant::cpu(
             "O6",
             "halo_tie_tolerance",
             halo_tie_tolerance as f64,
             Kind::Fit,
-            RC09,
+            MIXED,
         ),
         // O6: the window is structure (5 x 5, `HALO_WINDOW_RADIUS` = 2); the device reads the three
         // numbers that follow from it, generated in `Tuning::wgsl_block`.
@@ -418,14 +454,14 @@ const fn registry(t: &Tuning) -> [Constant; 41] {
             "halo_window_samples",
             HALO_WINDOW_SAMPLES as f64,
             Kind::Fit,
-            RC09,
+            STRUCTURE,
         ),
         Constant::cpu(
             "O6",
             "halo_inv_n",
             1.0 / HALO_WINDOW_SAMPLES as f64,
             Kind::Fit,
-            RC09,
+            STRUCTURE,
         )
         .on_device("HALO_INV_N"),
         Constant::cpu(
@@ -433,31 +469,37 @@ const fn registry(t: &Tuning) -> [Constant; 41] {
             "halo_inv_r",
             1.0 / HALO_WINDOW_RADIUS as f64,
             Kind::Fit,
-            RC09,
+            STRUCTURE,
         )
         .on_device("HALO_INV_R"),
-        Constant::cpu("O6", "halo_rank_min", HALO_RANK_MIN as f64, Kind::Fit, RC09)
-            .on_device("HALO_K_MIN_F"),
+        Constant::cpu(
+            "O6",
+            "halo_rank_min",
+            HALO_RANK_MIN as f64,
+            Kind::Fit,
+            STRUCTURE,
+        )
+        .on_device("HALO_K_MIN_F"),
         Constant::cpu(
             "O7",
             "gain_sigma_multiple",
             gain_sigma_multiple as f64,
             Kind::Fit,
-            RC09,
+            SMALL,
         ),
         Constant::cpu(
             "O7",
             "gain_sigma_min",
             gain_sigma_min as f64,
             Kind::Fit,
-            RC09,
+            SMALL,
         ),
         Constant::cpu(
             "O7",
             "halo_sigma_multiple",
             halo_sigma_multiple as f64,
             Kind::Fit,
-            RC09,
+            MIXED,
         ),
         Constant::cpu(
             "O8",
@@ -1119,7 +1161,17 @@ fn auto_method(sigma: f32, amount: f32, threshold: f32, tuning: &Tuning) -> Meth
     }
 }
 
-/// Number of taps: `((int)(5 sigma + 2.5)) | 1`, at least 3, at most `max_taps` (f32 arithmetic).
+/// Number of taps (f32 arithmetic for the linear rule, f64 for the budget): the larger of
+///
+/// * the linear rule `((int)(5 sigma + 2.5)) | 1`, at least 3, and
+/// * the fewest taps whose cut drops at most the tail-mass budget of the Gaussian
+///   ([`Tuning::tap_tail_budget`], `docs/29` RC-09): `n = 2h + 1` taps drop `erfc((h + ½)/(σ√2))`,
+///   so the smallest `h` that brings it to the budget,
+///
+/// and at most `max_taps`. So a kernel is never shorter than the linear rule gives, and where
+/// that rule cuts more than the budget allows (just below each of its steps) the kernel is longer;
+/// the cap keeps the last word. With the budget at 1 (the oracle) the second term is the minimum
+/// and the rule is the linear one alone.
 ///
 /// The spec's caps are 13 and 33. A cap that is not odd and at least 3 (which the stage never
 /// passes) is rounded down to the odd number of at least 3, so the kernel keeps an odd tap count
@@ -1127,11 +1179,20 @@ fn auto_method(sigma: f32, amount: f32, threshold: f32, tuning: &Tuning) -> Meth
 fn tap_count_with(sigma: f32, max_taps: usize, t: &Tuning) -> usize {
     let cap = (max_taps.max(t.taps_min) - 1) / 2 * 2 + 1;
     let n0 = ((sigma * t.taps_per_sigma + t.taps_offset) as i32 | 1) as usize;
-    if n0 < t.taps_min {
-        t.taps_min
-    } else {
-        n0.min(cap)
+    let linear = n0.max(t.taps_min);
+    linear.max(budget_taps(sigma, cap, t)).min(cap)
+}
+
+/// The fewest taps (odd, at least `taps_min`, at most `cap`) whose cut drops at most
+/// `tap_tail_budget` of the Gaussian's mass: `erfc((h + ½)/(σ√2)) ≤ budget` for `n = 2h + 1`. If no
+/// count up to the cap does, the cap.
+fn budget_taps(sigma: f32, cap: usize, t: &Tuning) -> usize {
+    let s = f64::from(sigma) * SQRT_2;
+    let mut n = t.taps_min | 1;
+    while n < cap && libm::erfc((((n - 1) / 2) as f64 + 0.5) / s) > t.tap_tail_budget {
+        n += 2;
     }
+    n
 }
 
 /// [`tap_count_with`] at the shipped constants.
@@ -2286,15 +2347,20 @@ mod tests {
 
     #[test]
     fn derived_scalars_follow_the_spec() {
-        // Sigma map and its step at R = 0.5.
+        // Sigma map and its step at R = 0.5 (the oracle's; the shipped map is continuous there, see
+        // `derivations::the_radius_map_is_continuous_at_the_knee_and_unchanged_from_it_upward`).
         assert_eq!(sigma_from_radius(0.09), 0.0);
-        assert!((sigma_from_radius(0.4999) - 0.621).abs() < 2e-3);
+        assert!((sigma_from_radius_with(0.4999, &Tuning::ORACLE) - 0.621).abs() < 2e-3);
+        assert!((sigma_from_radius(0.4999) - 0.650).abs() < 2e-3);
         assert!((sigma_from_radius(0.5) - 0.650).abs() < 1e-6);
         // Tap rule.
         assert_eq!(tap_count(0.86, 13), 7);
         assert_eq!(tap_count(2.05, 13), 13);
         assert_eq!(tap_count(4.1, 13), 13);
-        assert_eq!(tap_count(4.1, 33), 23);
+        // The linear rule asks for 23 taps at sigma 4.1; the tail budget (h >= 3.1747 sigma - 1/2 = 12.5)
+        // asks for 27.
+        assert_eq!(tap_count_with(4.1, 33, &Tuning::ORACLE), 23);
+        assert_eq!(tap_count(4.1, 33), 27);
         assert_eq!(tap_count(0.01, 13), 3);
         // Gain kernel sigma: max(2 sigma, 1).
         assert_eq!(gain_sigma(0.4), 1.0);
@@ -2396,14 +2462,15 @@ mod derivations {
         // rule is a sawtooth, though: the tap count steps up by two at sigma = 0.3, 0.7, 1.1, 1.5
         // and 1.9, and just below a step the cut is closest to the centre. Over the whole map the
         // worst is 3.6e-3 at sigma = 1.89 (11 taps, a cut at 2.9 sigma), 2.4 times the 1.5e-3 of the
-        // four points. RC-09 states the budget.
+        // four points. This is the linear rule alone (`Tuning::ORACLE`); RC-09 states the budget and
+        // the next tests hold the shipped rule to it.
         for (sigma, want) in [
             (1.0f32, 4.7e-4),
             (1.35, 8.6e-4),
             (1.7, 1.2e-3),
             (2.05, 1.5e-3),
         ] {
-            let n = gaussian_kernel(sigma, MAX_TAPS_SCREEN).len();
+            let n = gaussian_kernel_with(sigma, MAX_TAPS_SCREEN, &Tuning::ORACLE).len();
             let tail = tail_mass(f64::from(sigma), n);
             assert!(
                 (tail - want).abs() < 0.05 * want,
@@ -2413,7 +2480,7 @@ mod derivations {
         let (mut worst, mut at) = (0.0f64, 0.0f32);
         for i in 0..=195 {
             let sigma = 0.1 + 0.01 * i as f32; // 0.1 ..= 2.05
-            let n = gaussian_kernel(sigma, MAX_TAPS_SCREEN).len();
+            let n = gaussian_kernel_with(sigma, MAX_TAPS_SCREEN, &Tuning::ORACLE).len();
             let tail = tail_mass(f64::from(sigma), n);
             if sigma <= 0.5 {
                 // The floors of 3 and 5 taps cut at 5 sigma or more.
@@ -2428,6 +2495,138 @@ mod derivations {
             "worst {worst:e} at sigma {at}"
         );
         assert!((1.88..1.90).contains(&at), "at sigma {at}");
+    }
+
+    #[test]
+    fn the_tail_budget_never_gives_a_shorter_kernel_than_the_linear_rule() {
+        // O2, RC-09. Budget 1.5e-3 of the Gaussian's mass: n = 2h + 1 taps drop erfc((h + 1/2)/(sigma
+        // sqrt 2)), so the smallest h with erfc <= 1.5e-3 is h >= 3.1747 sigma - 1/2. The shipped rule
+        // is the larger of that and the linear rule, so no kernel is shorter than before.
+        let (oracle, shipped) = (Tuning::ORACLE, Tuning::DEFAULT);
+        assert_eq!(shipped.tap_tail_budget, 1.5e-3);
+        let mut longer = 0;
+        for cap in [MAX_TAPS_SCREEN, 33] {
+            for i in 10..=2500 {
+                let sigma = i as f32 / 1000.0; // 0.01 ..= 2.5
+                let (was, now) = (
+                    tap_count_with(sigma, cap, &oracle),
+                    tap_count_with(sigma, cap, &shipped),
+                );
+                assert!(
+                    now >= was,
+                    "sigma {sigma}, cap {cap}: {now} taps against {was}"
+                );
+                assert!(now <= cap && now % 2 == 1);
+                longer += usize::from(now > was);
+                // The budget holds wherever the cap does not bind.
+                if now < cap {
+                    let lost = tail_mass(f64::from(sigma), now);
+                    assert!(lost <= 1.5e-3, "sigma {sigma}, cap {cap}: {lost:e}");
+                }
+                // And it is the smallest such count above the linear rule's: one tap pair fewer
+                // would drop more than the budget unless the linear rule asked for the count.
+                if now > was {
+                    assert!(
+                        tail_mass(f64::from(sigma), now - 2) > 1.5e-3,
+                        "sigma {sigma}"
+                    );
+                }
+            }
+        }
+        assert!(longer > 0, "the budget lengthens some kernel");
+        // Over the screen map (sigma up to 2.05 at R = 2.5) the screen cap of 13 holds the budget up to
+        // sigma = 6.5 / 3.1747 = 2.047; at 2.05 the loss is 1.53e-3 and the cap governs.
+        let worst = (10..=2040)
+            .map(|i| {
+                let sigma = i as f32 / 1000.0;
+                tail_mass(
+                    f64::from(sigma),
+                    tap_count_with(sigma, MAX_TAPS_SCREEN, &shipped),
+                )
+            })
+            .fold(0.0f64, f64::max);
+        assert!(worst <= 1.5e-3, "{worst:e}");
+        // The linear rule alone is the oracle's, bit for bit, whatever the budget field says elsewhere.
+        for i in 10..=2500 {
+            let sigma = i as f32 / 1000.0;
+            let n0 = ((sigma * 5.0 + 2.5) as i32 | 1) as usize;
+            assert_eq!(
+                tap_count_with(sigma, MAX_TAPS_SCREEN, &oracle),
+                n0.max(3).min(MAX_TAPS_SCREEN)
+            );
+        }
+    }
+
+    #[test]
+    fn the_budget_lengthens_a_kernel_only_at_some_export_scales_and_never_at_1_or_0_4() {
+        // RC-09. The screen preset's kernels at output scale s are the stage kernel (sigma
+        // s (1 - 0.15) + 0.15), the gain kernel (max(2 sigma, 1)) and the halo-map kernel (2 s). The
+        // budget lengthens one or two of them for s between 0.66 and 0.95; at s = 1 (the gate's full
+        // size) and s = 0.4 (its reduced size) all three have the oracle's tap count, so the edge profile
+        // of spec 04 section 9 is bit for bit the same.
+        let (oracle, shipped) = (Tuning::ORACLE, Tuning::DEFAULT);
+        let kernels = |s: f32, t: &Tuning| {
+            let stage = scale_sigma_with(1.0, s, t);
+            [
+                tap_count_with(stage, MAX_TAPS_SCREEN, t),
+                tap_count_with(gain_sigma_with(stage, t), MAX_TAPS_SCREEN, t),
+                tap_count_with(s * t.halo_sigma_multiple, MAX_TAPS_SCREEN, t),
+            ]
+        };
+        for s in [1.0f32, 0.4] {
+            assert_eq!(kernels(s, &oracle), kernels(s, &shipped), "s = {s}");
+        }
+        let changed: Vec<f32> = (1..=1000)
+            .map(|i| i as f32 / 1000.0)
+            .filter(|&s| kernels(s, &oracle) != kernels(s, &shipped))
+            .collect();
+        assert!(!changed.is_empty());
+        assert!(
+            changed.iter().all(|s| (0.65..=0.95).contains(s)),
+            "{changed:?}"
+        );
+    }
+
+    #[test]
+    fn the_radius_map_is_continuous_at_the_knee_and_unchanged_from_it_upward() {
+        // O1, RC-09. The oracle's `0.97 sqrt(R - 0.09)` meets `0.7 R + 0.3` with a step of 0.029 at
+        // R = 0.5 (0.621 below, 0.650 above). The shipped scale is (0.7 0.5 + 0.3) / sqrt(0.5 - 0.09),
+        // which meets it; the line, the origin 0.09 and the cap are untouched.
+        let (oracle, shipped) = (Tuning::ORACLE, Tuning::DEFAULT);
+        let knee = shipped.sigma_knee_radius_px;
+        let below = f32::from_bits(knee.to_bits() - 1);
+        let step_was =
+            sigma_from_radius_with(knee, &oracle) - sigma_from_radius_with(below, &oracle);
+        let step_is =
+            sigma_from_radius_with(knee, &shipped) - sigma_from_radius_with(below, &shipped);
+        assert!((step_was - 0.029).abs() < 1e-3, "{step_was}");
+        assert!(step_is.abs() < 2e-7, "{step_is}");
+        let exact = (0.7f64 * 0.5 + 0.3) / (0.5f64 - 0.09).sqrt();
+        assert!((f64::from(shipped.sigma_sqrt_scale) - exact).abs() < 1e-7);
+        // Nothing changes from the knee upward, bit for bit (the preset reads R = 1.0).
+        for i in 500..=2500 {
+            let r = i as f32 / 1000.0;
+            assert_eq!(
+                sigma_from_radius_with(r, &oracle).to_bits(),
+                sigma_from_radius_with(r, &shipped).to_bits(),
+                "R = {r}"
+            );
+        }
+        assert_eq!(sigma_from_radius_with(1.0, &shipped), 1.0);
+        // Below it the branch keeps its form: the same origin (no stage at or below 0.09), increasing, and
+        // a constant 1.0465 times the oracle's (0.65 / 0.621).
+        assert_eq!(sigma_from_radius_with(0.09, &shipped), 0.0);
+        let mut last = 0.0f32;
+        for i in 91..500 {
+            let r = i as f32 / 1000.0;
+            let (was, is) = (
+                sigma_from_radius_with(r, &oracle),
+                sigma_from_radius_with(r, &shipped),
+            );
+            assert!(is > last, "R = {r}");
+            last = is;
+            assert!((is / was - 1.0465252).abs() < 1e-5, "R = {r}: {}", is / was);
+        }
     }
 
     #[test]
