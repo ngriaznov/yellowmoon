@@ -26,6 +26,7 @@ use crate::logc::{logc4_decode_rgb, logc4_encode_rgb};
 use crate::warp::smoothstep;
 
 pub mod lens;
+pub mod soft;
 
 /// Radius 100 is this share of the picture's long edge (`docs/33` 2.2).
 pub const RADIUS_MAX: f64 = 0.04;
@@ -265,7 +266,15 @@ pub fn gauss_weights(sigma: f64) -> Vec<f64> {
     if sigma <= 1e-6 {
         return vec![1.0];
     }
-    let half = (SIGMA_CUT * sigma).ceil() as i64;
+    gauss_weights_cut(sigma, (SIGMA_CUT * sigma).ceil() as i64)
+}
+
+/// [`gauss_weights`] cut at `half` taps each side instead of `ceil(4 sigma)` (renormalised).
+#[must_use]
+pub fn gauss_weights_cut(sigma: f64, half: i64) -> Vec<f64> {
+    if sigma <= 1e-6 || half <= 0 {
+        return vec![1.0];
+    }
     let phi = |v: f64| 0.5 * (1.0 + erf(v / (sigma * std::f64::consts::SQRT_2)));
     let mut w: Vec<f64> = (-half..=half)
         .map(|i| phi(i as f64 + 0.5) - phi(i as f64 - 0.5))
@@ -413,7 +422,8 @@ pub fn zoom_taps(line_px: f64) -> usize {
 // ------------------------------------------------------------------------------------------------ the sums
 
 /// A weighted plane: `[omega X (3), omega]`.
-type Plane4 = [f64; 4];
+/// The four planes of a pixel: `omega X` (three) and `omega`.
+pub type Plane4 = [f64; 4];
 
 fn check_finite(params: &BlurParams) -> Result<(), BlurError> {
     let fin = |v: f64, name: &'static str| {
@@ -620,8 +630,8 @@ pub fn sums(
     sums_with(x, m, width, height, params, frame, false)
 }
 
-/// [`sums`] by the **fast** methods of the types that have one (Lens: the cell method of [`lens`]); the other types are the
-/// exact kernel until their task lands. A window of the reach (`reach_px`) around a pixel gives the same bits as the whole frame.
+/// [`sums`] by the type's fast method where it has one (`docs/33` 3.5; Soft's coarse grid, [`soft`]; Lens' cells, [`lens`]) and by
+/// the exact kernel where its task has not landed. Held to [`sums`] by the bounds of `docs/33` 3.7.
 ///
 /// # Errors
 ///
@@ -688,8 +698,12 @@ fn sums_with(
         .collect();
     let out = match params.kind {
         BlurKind::Soft { radius } => {
-            let r = radius_px(radius, u);
-            gather_separable(&planes, width, height, &gauss_weights(r / 2.0))
+            let sigma = radius_px(radius, u) / 2.0;
+            if fast {
+                soft::gather(&planes, width, height, frame, sigma)
+            } else {
+                gather_separable(&planes, width, height, &gauss_weights(sigma))
+            }
         }
         BlurKind::Lens {
             radius,
@@ -802,8 +816,8 @@ pub fn apply(
     apply_with(v, m, width, height, params, frame, false)
 }
 
-/// [`apply`] by the fast methods ([`sums_fast`]): what the CPU run of the node renders (`docs/33` 6), and what the device is
-/// held to.
+/// [`apply`] by the fast methods ([`sums_fast`]): what the CPU run of the render calls. The oracle [`apply`] stays the
+/// reference.
 ///
 /// # Errors
 ///
@@ -875,7 +889,7 @@ pub fn cell_factor(long_edge_px: f64) -> usize {
 ///
 /// | Type | Reach |
 /// |---|---|
-/// | Soft | `ceil(2 R) + 3 f` |
+/// | Soft | `ceil(2 R) + 3 f`, or what [`soft::reads_px`] needs when that is more |
 /// | Lens | `ceil(R) + 3 f_L`, `f_L` = [`lens::cell_size`] (the smallest cell with `R / f_L <= 8`) |
 /// | Motion | `ceil(l / 2) + 1 + 3 f` |
 /// | Zoom | `ceil(a / 2 d_max) + f` |
@@ -890,9 +904,13 @@ pub fn reach_px(params: &BlurParams, full_w: usize, full_h: usize) -> usize {
     let f = cell_factor(u);
     let cells = |r: f64| r.max(0.0).ceil() as usize;
     match params.kind {
-        BlurKind::Soft { radius } => cells(2.0 * radius_px(radius, u)) + 3 * f,
-        // Lens' cell is its own (`lens::level_for`: the smallest with `R / f <= 8`), at most the picture's `f`, so 3 cells of it
-        // hold what the cell method reads (`R + 2.5 f`).
+        BlurKind::Soft { radius } => {
+            // The table's number, or what the fast method reads when that is more (`soft::reads_px`).
+            let r = radius_px(radius, u);
+            (cells(2.0 * r) + 3 * f).max(soft::reads_px(r / 2.0))
+        }
+        // Lens' cell is its own (`lens::level_for`: the smallest with `R / f <= 8`), so 3 cells of it hold what the cell method
+        // reads (`R + 2.5 f`).
         BlurKind::Lens { radius, .. } => {
             let r = radius_px(radius, u);
             cells(r) + 3 * lens::cell_size(r)

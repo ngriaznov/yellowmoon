@@ -179,7 +179,8 @@ def manifest(full: bool = True) -> dict:
                 }
             )
     entries.extend(node_entries(entries))
-    entries.extend(blur_entries(entries))
+    entries.extend(soft_blur_entries(entries))
+    entries.extend(lens_blur_entries(entries))
     return {"entries": entries}
 
 
@@ -232,11 +233,54 @@ def node_entries(entries: list[dict]) -> list[dict]:
     return out
 
 
-# The golden entries with a Blur node on (docs/33 section 8, BL-07 onward): the same ARW file as an existing entry under settings that
+# The golden entries with a Soft Blur node on (docs/33 section 8, BL-06): the same ARW file as the entry of ``UNIFORM_BASE``
+# under settings that add one Blur node of type Soft after Main with one inverted Radial row (the blur is everything but the
+# middle): ``soft`` with Respect mask edges on and ``soft-off`` with it off, which pins the halo too. They are new entries, so no
+# existing hash moves; `expected.json` pins their pictures from the pipeline version that has the node. Radius 50 is a Gaussian
+# sigma of 0.01 of the long edge: 12.5 px on the 1248 px picture, on the coarse grid (cells of 4).
+SOFT_BLUR_NODES = (
+    ("soft", True),
+    ("soft-off", False),
+)
+
+
+def soft_blur_entries(entries: list[dict]) -> list[dict]:
+    """The golden entries with a Soft Blur node on: copies of the entry of ``UNIFORM_BASE`` with settings that add the node after
+    Main. No sidecar (``golden truth`` measures the product against the scene's truth, which a node moves on purpose)."""
+    base = next(e for e in entries if e["id"] == f"synthetic/{UNIFORM_BASE}__lossless-l")
+    out = []
+    for key, respect in SOFT_BLUR_NODES:
+        node = {
+            "id": 2,
+            "kind": "blur",
+            "name": "Soft",
+            "pos": [1, 0],
+            "type": "soft",
+            "soft": {"radius": 50},
+            "respect_mask_edges": respect,
+            "masks": {
+                "invert": False,
+                "items": [
+                    {"kind": "radial", "mode": "add", "invert": True, "enabled": True, "opacity": 1, "feather": 0.1}
+                ],
+            },
+        }
+        links = [
+            {"from": {"node": "input", "port": "picture"}, "to": {"node": 1, "port": "picture"}},
+            {"from": {"node": 1, "port": "picture"}, "to": {"node": 2, "port": "picture"}},
+            {"from": {"node": 2, "port": "picture"}, "to": {"node": "output", "port": "picture"}},
+        ]
+        entry = {k: v for k, v in base.items() if k != "sidecar"}
+        entry["id"] = f"synthetic/node-blur-{key}__{UNIFORM_BASE}__lossless-l"
+        entry["group"] = "node-blur"
+        entry["settings"] = {"nodes": {"items": [node], "links": links}}
+        out.append(entry)
+    return out
+# The golden entries with a Lens Blur node on (docs/33 section 8, BL-07): the same ARW file as an existing entry under settings that
 # add one Blur node after Main, with a Radial row inverted (the node blurs outside the ellipse). Each type's task adds its entry
-# to ``BLUR_NODES`` (one block), so a cut type loses its entry only. They are new entries, so no existing hash moves.
-BLUR_BASE = "chart__D6500__ILCE-7RM4__iso400__rggb__14b"
-BLUR_NODES = (
+# to ``LENS_BLUR_NODES`` (one block), so a cut type loses its entry only. They are new entries, so no existing hash moves.
+LENS_BLUR_BASE = "chart__D6500__ILCE-7RM4__iso400__rggb__14b"
+LENS_BLUR_NODES = (
     # lens: Radius 50 (25 px on the 1248 px picture, a 4 px cell), 6 blades turned 15 degrees, Highlights 60, Respect mask edges on
     ("lens", "Lens",
      {"type": "lens", "lens": {"radius": 50, "blades": 6, "rotation_deg": 15, "highlights": 60}},
@@ -244,12 +288,12 @@ BLUR_NODES = (
 )
 
 
-def blur_entries(entries: list[dict]) -> list[dict]:
-    """The golden entries with a Blur node on: copies of the entry of ``BLUR_BASE`` with settings that add the node after Main.
+def lens_blur_entries(entries: list[dict]) -> list[dict]:
+    """The golden entries with a Blur node on: copies of the entry of ``LENS_BLUR_BASE`` with settings that add the node after Main.
     No sidecar (``golden truth`` measures the product against the scene's truth, which a node moves on purpose)."""
-    base = next(e for e in entries if e["id"] == f"synthetic/{BLUR_BASE}__lossless-l")
+    base = next(e for e in entries if e["id"] == f"synthetic/{LENS_BLUR_BASE}__lossless-l")
     out = []
-    for key, name, fields, radial in BLUR_NODES:
+    for key, name, fields, radial in LENS_BLUR_NODES:
         node = {
             "id": 2,
             "kind": "blur",
@@ -270,7 +314,7 @@ def blur_entries(entries: list[dict]) -> list[dict]:
             {"from": {"node": 2, "port": "picture"}, "to": {"node": "output", "port": "picture"}},
         ]
         entry = {k: v for k, v in base.items() if k != "sidecar"}
-        entry["id"] = f"synthetic/node-blur-{key}__{BLUR_BASE}__lossless-l"
+        entry["id"] = f"synthetic/node-blur-{key}__{LENS_BLUR_BASE}__lossless-l"
         entry["group"] = "node-blur"
         entry["settings"] = {"nodes": {"items": [node], "links": links}}
         out.append(entry)

@@ -743,7 +743,10 @@ class Recipes(unittest.TestCase):
         entries = [e for e in doc["entries"] if e["tier"].startswith("synthetic")]
         self.assertEqual(len(entries), len(rc.manifest(True)["entries"]))
         for e in entries:
-            if e.get("group") == "node-uniform":
+            if e.get("group") == "node-blur":
+                # the Soft Blur entries (docs/33 section 8, BL-06)
+                self.assertEqual([i["kind"] for i in e["settings"]["nodes"]["items"]], ["blur"])
+            elif e.get("group") == "node-uniform":
                 # the golden entries with a node on (docs/32 section 8): the same file as an entry of the set, settings of one node
                 self.assertEqual([i["kind"] for i in e["settings"]["nodes"]["items"]], ["color_uniform"])
             elif e.get("group") == "node-blur":

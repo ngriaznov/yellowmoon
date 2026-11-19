@@ -1634,6 +1634,29 @@ fn blur_other_mask() -> serde_json::Value {
       ] } })
 }
 
+/// A Soft Blur node (BL-06) on a Radial row and a Linear row, Respect mask edges on, after Main: the type that runs on the device.
+/// The radius is wide enough for the coarse grid on the test photo.
+fn blur_soft_example() -> serde_json::Value {
+    serde_json::json!({ "nodes": {
+      "items": [
+        { "id": 2, "kind": "blur", "name": "Soft", "pos": [1, 0],
+          "type": "soft",
+          "soft": { "radius": 70 },
+          "lens": { "radius": 20, "blades": 0, "rotation_deg": 0, "highlights": 0 },
+          "motion": { "length": 20, "angle_deg": 0 },
+          "zoom": { "amount": 20, "center": [0.5, 0.5] },
+          "respect_mask_edges": true,
+          "masks": { "invert": false, "items": [
+            { "kind": "radial", "mode": "add", "invert": true, "enabled": true, "opacity": 1, "feather": 0.1 },
+            { "kind": "linear", "mode": "subtract", "center": [0.5, 0.8], "angle_deg": 10, "feather": 0.3 } ] } }
+      ],
+      "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+      ] } })
+}
+
 /// Blur (`docs/33` section 8, *App against `ym`*, BL-10): the example file of section 5.1 (with a Radial row) and a Zoom node with
 /// another mask are the same files through the app path and the binary, in JPEG, TIFF 16, DNG (`graph_leg`) and PNG 16, on the
 /// CPU. Soft, Lens, Motion and Zoom run on the exact kernels since BL-04; each type's own task adds its case here.
@@ -1642,25 +1665,28 @@ fn a_blur_node_is_the_same_files_through_the_app_path_and_the_binary() {
     blur_leg(false);
 }
 
-/// The device leg of Blur (BL-10). A type with no device kernel is refused by the device and the frame is the CPU's, with its
-/// reason (`RenderReport::cpu_reason`), on both sides: that leg holds it to be the same bytes. **A type with a kernel (Lens, BL-07)
-/// runs on the device on both sides, and `graph_leg` asserts the binary's report names no node (no fallback).**
+/// The device leg of Blur (BL-10). **Soft (BL-06) and Lens (BL-07) run on the device**: their cases go through `graph_leg` on the
+/// device, which holds the same bytes on both sides, the picture to differ from the graph without the node and the binary's report
+/// to name no fallback. A type whose task has not landed (Zoom) is refused by the device and the frame is the CPU's, with its reason
+/// (`RenderReport::cpu_reason`), on both sides: `blur_on_device_leg` holds that to be the same bytes until its task lands.
 #[test]
 fn a_blur_node_is_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
     blur_leg(true);
 }
 
 fn blur_leg(device: bool) {
-    // The last number: whether the type's device kernel has landed (`ym_gpu::kernels::blur_stack::device_kernel`): Lens (BL-07)
-    // has, so its device leg is `graph_leg`'s, which also asserts the binary's report names no node (no fallback); the others keep
-    // the fallback leg until their tasks add their own case here.
-    for (what, doc, correctors, on_device) in [
-        ("the example file of docs/33", blur_example(), 1, true),
-        ("a Zoom node with another mask", blur_other_mask(), 2, false),
-        ("a round Lens with another mask", blur_lens_other(), 2, true),
+    for (what, doc, correctors) in [
+        ("the example file of docs/33", blur_example(), 1),
+        ("a Zoom node with another mask", blur_other_mask(), 2),
+        ("a Soft node with two mask rows", blur_soft_example(), 1),
+        ("a round Lens with another mask", blur_lens_other(), 2),
     ] {
-        if device && !on_device {
+        // The example file is a Lens, `blur_lens_other` a round Lens, `blur_soft_example` a Soft: the device runs them.
+        if device && what.contains("Zoom") {
             blur_on_device_leg(what, &doc);
+        } else if device {
+            graph_leg(what, doc.clone(), correctors, true);
+            png16_leg(what, &doc, true);
         } else {
             graph_leg(what, doc.clone(), correctors, device);
             png16_leg(what, &doc, device);
@@ -1778,6 +1804,7 @@ fn the_settings_of_a_blur_export_read_back_and_render_the_same_file() {
     for (what, doc) in [
         ("the example file", blur_example()),
         ("a Zoom node", blur_other_mask()),
+        ("a Soft node", blur_soft_example()),
     ] {
         let file = sb.root().join("graph.json");
         std::fs::write(&file, doc.to_string()).expect("write");
