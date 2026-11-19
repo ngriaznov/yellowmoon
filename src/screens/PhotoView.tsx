@@ -16,6 +16,8 @@ import { FaceLayer } from "./nodes/FaceLayer";
 import type { FaceLayerProps } from "./nodes/FaceLayer";
 import type { BrushTarget } from "./nodes/BrushLayer";
 import { MaskHandles } from "./nodes/MaskHandles";
+import { ZoomCentre } from "./nodes/ZoomCentre";
+import type { ZoomCentreTarget } from "./nodes/ZoomCentre";
 import { ObjectLayer } from "./nodes/ObjectLayer";
 import type { ObjectTarget } from "./nodes/ObjectLayer";
 import { ObjectPill } from "./nodes/ObjectPill";
@@ -46,6 +48,8 @@ export interface PhotoViewProps {
   compactCaption?: boolean;
   /** The handles of the selected mask row (`docs/23` §7.6 *On the photo*): drawn over the cell, except while Crop or a pick shows. */
   maskHandles?: MaskHandlesTarget | null;
+  /** The Zoom centre of the selected Blur node (BL-14): its handle with the rays, and with `picking` the click that sets it. Hidden, like the handles, while Crop shows and in the Before view. */
+  zoomCentre?: ZoomCentreTarget | null;
   /** The Brush tool for the selected Brush row (`docs/23` §7.6): a layer over the cell with the cursor circle, where a drag paints. Hidden, like the handles, while Crop or a pick shows and in the Before view. */
   brush?: BrushTarget | null;
   /**
@@ -91,7 +95,7 @@ function notReadyNote(photo: PhotoSummary): { title: string; text: string } | nu
  *
  * The screen draws it again only when what it shows changes (`memo`): a `render_stats` tick or a zoom step elsewhere does not.
  */
-export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false, maskHandles = null, brush = null, faces = null, object = null, objectTool = false, placing = null, maskChip, onReadPixel }: PhotoViewProps) {
+export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, before, picking, onPicked, crop, onRect, compactCaption = false, maskHandles = null, zoomCentre = null, brush = null, faces = null, object = null, objectTool = false, placing = null, maskChip, onReadPixel }: PhotoViewProps) {
   const backend = useAppState((s) => s.viewportBackend);
   const sentFrame = useAppState((s) => s.viewportFrame);
   // Only the pick layer needs to know whether the picture is letterboxed; the zoom changes on every wheel step and is not read otherwise.
@@ -194,7 +198,7 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
   const onPointerDown = usePointerDrag({
     start: (event) => {
       // A handle of a mask is dragged, not the photo (`MaskHandles` takes the press), and a stroke of the Brush tool is drawn, not panned.
-      if ((event.target as HTMLElement).closest?.("[data-mask-handles], [data-brush-layer]")) return false;
+      if ((event.target as HTMLElement).closest?.("[data-mask-handles], [data-zoom-centre], [data-brush-layer]")) return false;
       if (store.showsWholePhoto() || crop || picking || placing) return false;
       panning.current = { x: event.clientX, y: event.clientY };
       return true;
@@ -290,6 +294,8 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
         </div>
       ) : crop ? (
         <CropOverlay session={crop} />
+      ) : picking === "centre" ? (
+        zoomCentre && photo && rs && !before && cellSize.width > 0 ? <ZoomCentre store={store} photo={photo} rs={rs} cell={cellSize} {...zoomCentre} /> : null
       ) : picking ? (
         <PickLayer mode={picking} displayAspect={displayAspect} letterboxed={letterboxed} onPick={onPicked} />
       ) : placing && object && photo && rs && !before && cellSize.width > 0 ? (
@@ -303,6 +309,8 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
         <FaceLayer store={store} photo={photo} cell={cellSize} {...faces} />
       ) : object && photo && rs && !before && cellSize.width > 0 ? (
         <ObjectLayer store={store} photo={photo} rs={rs} cell={cellSize} tool={objectTool} {...object} />
+      ) : zoomCentre && photo && rs && !before && cellSize.width > 0 ? (
+        <ZoomCentre store={store} photo={photo} rs={rs} cell={cellSize} {...zoomCentre} />
       ) : maskHandles && photo && rs && !before && cellSize.width > 0 ? (
         <MaskHandles store={store} photo={photo} rs={rs} cell={cellSize} {...maskHandles} />
       ) : null}

@@ -207,13 +207,16 @@ export interface NodeTabProps extends TabProps {
   /** Pick colour of a Colour Uniform node's target is on, and turns it on or off. */
   pickingUniform?: boolean;
   onPickUniform?: (on: boolean) => void;
+  /** Pick centre of a Zoom blur is on, and turns it on or off. */
+  pickingCentre?: boolean;
+  onPickCentre?: (on: boolean) => void;
   onPickDepth?: (on: boolean) => void;
   /** What a row of a mixer's Inputs card does (`docs/25` §5.5). */
   graph?: NodeGraphActions;
 }
 
 /** The cards of one tab of one node: the Input's (`node` `"input"`), the Output's (`"output"`) or a corrector's. */
-export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite, pickingColor, onPickColor, pickingRange, onPickRange, pickingDepth, onPickDepth, pickingUniform = false, onPickUniform, graph }: NodeTabProps) {
+export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite, pickingColor, onPickColor, pickingRange, onPickRange, pickingDepth, onPickDepth, pickingUniform = false, onPickUniform, pickingCentre = false, onPickCentre, graph }: NodeTabProps) {
   if (node === "input") {
     switch (tab) {
       case "lens":
@@ -262,7 +265,7 @@ export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite
     return tab === "mask" || typeof node !== "number" ? (
       <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} pickingDepth={pickingDepth} onPickDepth={onPickDepth} />
     ) : (
-      <BlurTab store={store} rs={rs} node={node} item={item} />
+      <BlurTab store={store} rs={rs} node={node} item={item} pickingCentre={pickingCentre} onPickCentre={onPickCentre} />
     );
   }
   if (item?.kind === "face_refinement") {

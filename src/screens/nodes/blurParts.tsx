@@ -18,6 +18,7 @@ export const BLUR_TEXT = {
   lensLine: "Bright lights become discs, or the shape of the blades. Highlights makes them stronger.",
   motionLine: "Length is a share of the picture's size. Angle 0° is along the picture's width.",
   zoomLine: "Pixels farther from the centre blur more. Amount 0 changes nothing.",
+  centrePicking: "Click the photo or drag the handle.",
   centreAtMiddle: "Centre of the picture.",
   centreMoved: "Moved from the centre.",
   centreResetTip: "Puts the centre back in the middle of the picture.",
