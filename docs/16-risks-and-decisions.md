@@ -147,7 +147,7 @@ The owner asked for the three greyed items of the Add node menu ("Let's implemen
 | Add node › Parallel or Layer | **"Add a corrector too, as Resolve"**: the selected node and a new corrector beside it feed the mixer |
 | Ports | **"Tinted ports + R/G/B letters"** on the Splitter and the Combiner |
 | Links | **"No lines, names only"**: the panels name where each input comes from and draw no lines |
-| `PIPELINE_VERSION` | 0.13.0 (2026-11-18, CU-12: the Colour Uniform node, a new kind, `docs/32`; no existing graph changes by a bit); 0.12.2 (2026-11-17, S-18: the gum guard in the teeth adjustment, `docs/27` 7.8; only a Face Refinement node with a teeth control above 0 changes pixels); 0.12.1 (2026-11-16, the pre-release merge of Face Refinement, 0.12.0, and the lens fixes, 0.11.2 and 0.11.3: one version above all; pictures with no face retouch and no light cut by the frame at Anamorphic above 0 keep their bits); 0.12.0 (the Face Refinement node: a new kind); 0.11.3 (bright lights that are no balls are held, not smeared, at Anamorphic above 0, 2026-11-16); 0.11.2 (lights the frame cuts are balls at Anamorphic above 0, 2026-11-16: only pictures with such lights and Anamorphic above 0 change); 0.11.1 (the NEX-5N and NEX-7 lens tables, 2026-11-13: pixels of those bodies change); 0.11.0, a minor step as for the Film node: an older build refuses a graph with a kind it does not know; no existing graph changes by a bit |
+| `PIPELINE_VERSION` | 0.14.0 (2026-11-19, BL-16: the Blur node, a new kind, `docs/33`; no existing graph changes by a bit); 0.13.0 (2026-11-18, CU-12: the Colour Uniform node, a new kind, `docs/32`; no existing graph changes by a bit); 0.12.2 (2026-11-17, S-18: the gum guard in the teeth adjustment, `docs/27` 7.8; only a Face Refinement node with a teeth control above 0 changes pixels); 0.12.1 (2026-11-16, the pre-release merge of Face Refinement, 0.12.0, and the lens fixes, 0.11.2 and 0.11.3: one version above all; pictures with no face retouch and no light cut by the frame at Anamorphic above 0 keep their bits); 0.12.0 (the Face Refinement node: a new kind); 0.11.3 (bright lights that are no balls are held, not smeared, at Anamorphic above 0, 2026-11-16); 0.11.2 (lights the frame cuts are balls at Anamorphic above 0, 2026-11-16: only pictures with such lights and Anamorphic above 0 change); 0.11.1 (the NEX-5N and NEX-7 lens tables, 2026-11-13: pixels of those bodies change); 0.11.0, a minor step as for the Film node: an older build refuses a graph with a kind it does not know; no existing graph changes by a bit |
 | Test build (X-H2) and version | **"Good, merge to main and release 0.2.3"** |
 | Not in the first version | Other blend modes (Screen, Overlay and the like assume a display picture), a mode or a weight per input, masks and key ports on the four kinds, a Key Mixer, Outside, Morph, other channel splits |
 
@@ -166,6 +166,21 @@ The owner's request: "plan 'color compressor' node, similar to Resolve color com
 | Tab and menu | The Compress tab in the Colour tab's green; the node sits after Face Refinement in the Add node menu |
 | `PIPELINE_VERSION` | **The next minor step, 0.13.0**; no existing graph changes by a bit |
 | Decided by us, open | The first pick also adds a Colour range mask row (`docs/32` section 10). Auto-mask and antipode-fade decisions are flagged in `docs/32` section 10 and wait for the owner |
+
+### Blur (owner, 2026-11-18)
+
+The owner's requests: "Can we in next release also add blur node? It should tolerate mask." and "We want different type of blur too." Milestone B (`docs/15`), specified in `docs/33-blur.md`. The owner answered BL-H1 on 2026-11-18 ("1 - yes, 2 - one node, 3 - yes, 4 - ok, 5 - ok, 6 - ok, 7 - no. Blur is an instrument. It can be used with a depth mask and then it's 'blur the background', 8 - ok, 9 - ok, 10 - yes"): every recommended default was taken.
+
+| Topic | Decision |
+|---|---|
+| Name and shape | **One node, Blur** (identifier `blur`), with a Type control: **Soft, Lens, Motion, Zoom**. Spin is later (BL-17); tilt-shift is a Linear mask plus a Blur node |
+| Masks | **Mask-aware by default, with a switch**: **Respect mask edges** (on) gives a background blur with no glow around the subject; off is the plain blur-then-blend of a corrector |
+| Sizes | Radius 0 to 100 is 0 to 4 % of the long edge, Motion's Length up to 8 %, Zoom's Amount up to a tenth of the distance from the centre; a new node starts at Radius 20 and a Radius of 0 is the exact identity |
+| Blend space | **Linear light** |
+| Lens | Round and 5 to 9 blades, Rotation, and **Highlights** (in). The disc is exact (row segments, BL-07b); the owner chose exact discs over a cell method that missed its gate, and accepted about one to two seconds for a 50 MP export at the largest radius (`docs/33` section 9) |
+| "Blur the background" | **No shortcut and no preset.** "Blur is an instrument": with a Depth mask it is the background blur |
+| `PIPELINE_VERSION` | **The next minor step, 0.14.0** (above Colour Uniform's 0.13.0 and the raw-constants refresh's 0.13.1); no existing graph changes by a bit |
+| Open | The owner's look on real photos on a Mac (BL-H2) and the speed check on a Mac (M0-H4) |
 
 ### Presets (owner, 2026-11-16)
 

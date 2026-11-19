@@ -19,7 +19,7 @@ The maths is in `docs/algorithms/06-masks.md` (the node's order, the two trims, 
 - **A real graph in the data and the engine.** Nodes, typed ports and links are the format from version 1, and the core evaluates a compiled plan (section 5.2). The interface edits the graph by inserting, deleting, reordering and moving nodes, and by **drawing links by hand**: drag from an output port to an input port, as in Resolve and other node editors (the owner, 2026-11-01; section 7.2).
 - **Pick white moves** from the header into the Colour tab (section 8).
 
-**Added in 0.2.3.** Parallel, Layer, and Splitter and combiner nodes (the Add node menu showed them as "Later" until then; the format, the validator and the plan were built so they could be added as new node kinds without changing the format). **They are specified in `docs/25-mixers.md`** (milestone X, the owner's request of 2026-11-10): four new kinds, `parallel`, `layer`, `splitter` and `combiner`, with their ports, maths, plan and interface. **Added in 0.2.4.** The **Colour Uniform** node (`color_uniform`, milestone U, the owner's request of 2026-11-18): pick a colour and the node pulls the colours its masks let through toward it, hue, saturation and lightness each by its own amount. **It is specified in `docs/32-color-uniform.md`**: one new kind, a numbered node with the ports of a corrector, a Compress tab and the corrector's Mask tab, and `PIPELINE_VERSION` 0.13.0. Not in this version: DCTL and OpenFX; presets and nodes shared across photos; the list view (dropped by the owner); a "pick neutral" in a corrector.
+**Added in 0.2.3.** Parallel, Layer, and Splitter and combiner nodes (the Add node menu showed them as "Later" until then; the format, the validator and the plan were built so they could be added as new node kinds without changing the format). **They are specified in `docs/25-mixers.md`** (milestone X, the owner's request of 2026-11-10): four new kinds, `parallel`, `layer`, `splitter` and `combiner`, with their ports, maths, plan and interface. **Added in 0.2.4.** The **Colour Uniform** node (`color_uniform`, milestone U, the owner's request of 2026-11-18): pick a colour and the node pulls the colours its masks let through toward it, hue, saturation and lightness each by its own amount. **It is specified in `docs/32-color-uniform.md`**: one new kind, a numbered node with the ports of a corrector, a Compress tab and the corrector's Mask tab, and `PIPELINE_VERSION` 0.13.0. **Added in 0.2.4.** The **Blur** node (`blur`, milestone B, the owner's requests of 2026-11-18): one node with a Type control (Soft, Lens, Motion, Zoom) that blurs the photo or the part its masks let through, mask-aware by default (**Respect mask edges**), so a blurred background has no glow around the subject. **It is specified in `docs/33-blur.md`**: one new kind, a numbered node with the ports of a corrector, a spatial step like Film's, a Blur tab and the corrector's Mask tab, and `PIPELINE_VERSION` 0.14.0. Not in this version: DCTL and OpenFX; presets and nodes shared across photos; the list view (dropped by the owner); a "pick neutral" in a corrector.
 
 ### 1.2 The three zones
 
@@ -203,7 +203,7 @@ A graph with a **key link**, a node that only makes a mask for another (a dead p
 
 ### 3.2 The nodes
 
-Every item has `id`, `kind` and `pos`. **`id`** is `"input"`, `"output"` or an integer 1 to 2³¹ − 1 (Main is 1); it is stable within the photo and is used by links, selection, thumbnails and undo. A number on a card is not the id: it is the node's place in the flow (section 7.2). New ids are one more than the largest the page has used in the session, so an id is not reused after a delete. **`kind`** is `input`, `output`, `corrector` or `film`, and with milestone X `parallel`, `layer`, `splitter` or `combiner` (`docs/25-mixers.md` §2.1) and `color_uniform` (`docs/32-color-uniform.md` §5) (the id `"input"` is always kind `input`, and so on; every numbered kind shares the numbers); any other kind is refused (section 3.5). **`pos`** is `[x, y]`, finite numbers in −1000 to 1000, in grid units: the card's place on the canvas (one unit is 214 px across and 150 px down at 100 % zoom). A document may leave it out: the core then places the nodes in a row by their number, the Input first and the Output last, at y = 0 (the default graph is −1, 0 and 1). It is always written, it travels with copy and paste and with undo like the rest, and it lives in memory only.
+Every item has `id`, `kind` and `pos`. **`id`** is `"input"`, `"output"` or an integer 1 to 2³¹ − 1 (Main is 1); it is stable within the photo and is used by links, selection, thumbnails and undo. A number on a card is not the id: it is the node's place in the flow (section 7.2). New ids are one more than the largest the page has used in the session, so an id is not reused after a delete. **`kind`** is `input`, `output`, `corrector` or `film`, and with milestone X `parallel`, `layer`, `splitter` or `combiner` (`docs/25-mixers.md` §2.1) `color_uniform` (`docs/32-color-uniform.md` §5) and `blur` (`docs/33-blur.md` §5) (the id `"input"` is always kind `input`, and so on; every numbered kind shares the numbers); any other kind is refused (section 3.5). **`pos`** is `[x, y]`, finite numbers in −1000 to 1000, in grid units: the card's place on the canvas (one unit is 214 px across and 150 px down at 100 % zoom). A document may leave it out: the core then places the nodes in a row by their number, the Input first and the Output last, at y = 0 (the default graph is −1, 0 and 1). It is always written, it travels with copy and paste and with undo like the rest, and it lives in memory only.
 
 A node has only the fields of its kind below; another field is an unknown field and is refused.
 
@@ -301,6 +301,7 @@ The numbers are what the sliders show divided or scaled as `docs/algorithms/06` 
 | a Film node (`"film"`) | `picture`, `key` | `picture`, `key` |
 | a Face Refinement node (`"face_refinement"`, `docs/27`) | `picture`, `key` | `picture`, `key` |
 | a Colour Uniform node (`"color_uniform"`, `docs/32`) | `picture`, `key` | `picture`, `key` |
+| a Blur node (`"blur"`, `docs/33`) | `picture`, `key` | `picture`, `key` |
 | Output (`"output"`) | `picture` | none |
 
 A `picture` carries the LogC4 picture as the node before made it. A `key` carries a mask. **A node's key output carries its final mask `m`** (after its Invert; it does not depend on its Bypass). **A node's key input feeds its mask as one more region term**: an implicit first row, added like a mask, with the linked node's `m` as its value (`docs/algorithms/06` section 3). A link names its two ends: `{ "from": { "node": <id | "input">, "port": … }, "to": { "node": <id | "output">, "port": … } }`.
@@ -625,6 +626,7 @@ The mask view is a view: it is not in an export, the Before view, a thumbnail or
 
 - A slider move in the fit view with **8 nodes**: within 100 ms, the target the lens spec already uses.
 - A click on an Object mask: the mask shows within **300 ms** once the encoder has run.
+- A Blur node costs its passes over the made area; the budgets per megapixel and the Mac check are `docs/33` §9 (a slider move in the fit view with 8 nodes, one a Blur node of each type, within the same 100 ms; to be measured on a Mac, M0-H4).
 - The fused kernel is already large; a 16-node plan with masks may cost time on older Macs (N-04 and N-10 measure it, and the plan's identity skipping keeps untouched nodes free).
 
 ### 5.10 Determinism and tiles
@@ -637,7 +639,7 @@ Every node structure renders on the device when one is attached; no graph is ref
 
 **Footprint.** Each step declares one (`ym_color::schedule`):
 
-- *per pixel*, or *spatial* with a reach in output pixels at the render's scale (a Film node's halo, the raster planes' receptive field `H`);
+- *per pixel*, or *spatial* with a reach in output pixels at the render's scale (a Film node's halo, a **Blur node's reach** (`ym_color::blur::reach_px`, `docs/33` §3.8), the raster planes' receptive field `H`);
 - what it makes: a picture at the node's output (Film) or a mask plane (the raster rows; all planes are one shared value);
 - what it reads: the camera picture, the planes, the earlier pictures;
 - its result must not depend on the window it is made in (tile invariance); a step that cannot say so is not allowed.
@@ -769,6 +771,7 @@ A glass menu that opens upward from the button over the photo:
 | **Film** | "Models a colour negative, a print and a scan." | enabled (built in F-07 and F-09, released in 0.2.1; `docs/24` §4) |
 | **Face Refinement** | "Refines each face: skin, under-eyes and teeth." | enabled (S-11c; `docs/27`); adds one node after the selected one, like Film |
 | **Colour Uniform** | "Pulls colours toward one colour." | enabled (CU-09; `docs/32` §4); adds one node after the selected one, like Film, selects it and turns Pick colour on |
+| **Blur** | "Soft, lens, motion or zoom blur." | enabled (BL-12; `docs/33` §4); adds one node after the selected one, like Film, and selects it |
 | *(separator)* | | |
 | **Parallel** | "Grade branches side by side." | enabled from X-06 (`docs/25-mixers.md` §5.1) |
 | **Layer** | "Blend one branch over another." | enabled from X-06 |
@@ -784,6 +787,7 @@ The panel edits the selected node. A compact head (52 px) has no 40 px title: a 
 |---|---|---|
 | Corrector | "Corrector · whole photo" (no masks), "Corrector · 1 mask" and "Corrector · 2 masks" (the row text says which), "Corrector · Linear" (one mask: its kind), "Corrector · bypassed", "Corrector · not connected" | Bypass ("Bypass this node (B)"), Reset ("Reset this node"), More ("More") |
 | Colour Uniform | "Colour Uniform", "Bypassed", "Not connected" (short; the mask text is not repeated) | Bypass, Reset ("Reset this node"), More, as a corrector's (`docs/32` §4) |
+| Blur | the type: "Soft", "Lens", "Motion", "Zoom", or "Bypassed", "Not connected" | Bypass, Reset ("Reset this node"), More, as a corrector's (`docs/33` §2.6) |
 | Face Refinement | the faces the core found, not the mask text: "5 faces", "1 face", "No faces found", "Finding faces" (and "Can't find faces" and "Face models missing" for a failure and a copy with no models) | Bypass, Reset ("Reset this node"), More, as a corrector's. The name is shown whole ("Face Refinement"): the line after it is what is cut |
 | Input | "Turns the camera's data into the scene." | Reset ("Reset input") |
 | Output | "Cine rendering, look and export" | Reset ("Reset output") |
@@ -795,6 +799,7 @@ The tabs follow the head (46 px), each underlined in its tab colour (`docs/11`);
 | Input | **RAW · Lens · Light · Colour · Detail** |
 | Corrector | **Light · Colour · Curve · Mask** |
 | Colour Uniform | **Compress · Mask** (Compress in the Colour tab's green; the Mask tab is a corrector's) |
+| Blur | **Blur · Mask** (Blur in the Detail tab's colour; the Mask tab is a corrector's) |
 | Face Refinement | **Face · Mask** (Face in the Look tab's yellow, as a Film node's first tab; the Mask tab is a corrector's) |
 | Output | **Look · Detail** |
 
@@ -815,6 +820,8 @@ What each tab holds. Where a tab matches today's, its cards are today's.
 | Corrector › Mask | the Masks card, the selected mask's card, the View card (section 7.6) |
 | Colour Uniform › Compress | **Target** (the swatch, Pick colour, Hue, Saturation, Lightness) · **Compress** (Hue, Saturation, Lightness, 0 to 100 %; Reset) |
 | Colour Uniform › Mask | the Masks card, the selected mask's card, the View card (a corrector's) |
+| Blur › Blur | **Blur** (the Type control, then the chosen type's controls: Soft Radius; Lens Radius, Shape, Rotation, Highlights; Motion Length, Angle; Zoom Amount and Centre with Pick centre; Reset) · **Mask edges** (Respect mask edges) |
+| Blur › Mask | the Masks card, the selected mask's card, the View card (a corrector's) |
 | Face Refinement › Face | **Faces** (round items, "N found", Same for all faces) · **Face N** / **All faces** / **Face** (the eye "Show skin areas", Reset; Blemish, Dark circles, Even skin, Texture) · **Skin grading** (Contrast, Shadow desaturation, Shine removal; tagged "Face N" or "All faces") · **Teeth** (Whitening; Copy to other faces) · **Protect** (Paint · Erase, Size, Clear). While the faces are not known the tab shows "Finding faces…"; with none, "No faces found in this photo."; after a failure the core's sentence. Section 15, S-11c |
 | Output › Look | **Look**: Intensity, Apply to (This photo · Picked · N · All · N), search, the libraries (today's Look card, one look per photo) |
 | Output › Detail | **Sharpening** with the **Output** row only; its head reads "Output · cine rendering, look and export" |

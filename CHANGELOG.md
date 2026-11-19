@@ -12,11 +12,20 @@ moves the entries below from Unreleased into a dated section for that version.
 ### Added
 
 - **Colour Uniform.** A new node that makes colours more alike. **Add node › Colour Uniform**, then click a colour on the photo: the node pulls the colours its mask lets through toward it, and hue, saturation and lightness each have their own amount, from 0 to 100 %. A dress that is one hue in the light and another in the shade, or skin with a green cast on one side, comes together. The first pick sets Hue and Saturation to 50 % and adds a Colour range mask on the colour you picked, so the change stays near it; you can widen the mask, add others or delete it in the Mask tab. You can also drag or type the target's Hue, Saturation and Lightness. Greys are left alone. A node with no target, or with every amount at 0, changes nothing. It works in `ym` too: a settings file can hold `"kind": "color_uniform"`.
-- **Pipeline version 0.13.0.** Pictures made without a Colour Uniform node do not change by a single bit; only the version written into exports, `ym --version`, `ym doctor` and `ym info` moves. An older Yellowmoon refuses a photo or album that holds the new node.
+- **Blur.** A new node that blurs the photo, or only the part its masks let through. **Add node › Blur**, then pick one of four types: **Soft** (a smooth blur), **Lens** (the blur of an out-of-focus lens: lights become crisp discs, round or with 5 to 9 blades, and **Highlights** makes bright lights count for more), **Motion** (along a line, at the angle you choose) and **Zoom** (stronger the farther from a centre, which you pick by clicking the photo or dragging the handle on it). Sizes are a share of the photo's size, so what you see on screen is what you export. **Respect mask edges** is on for a new node: the colours of what is outside the mask are not blurred in, so a blurred background has no glow around the subject; turn it off for the plain blur-then-blend of a corrector, where a glow is what you want. With a **Depth** mask, or a Subject mask inverted, the node blurs the background. It takes masks and links like any corrector, travels in presets and albums, and a settings file for `ym` can hold it (`"kind": "blur"`).
+- **Pipeline version 0.14.0.** Pictures made without a Colour Uniform or Blur node do not change by a single bit; only the version written into exports, `ym --version`, `ym doctor` and `ym info` moves. An older Yellowmoon refuses a photo or album that holds a Colour Uniform or Blur node.
 
 ### Changed
 
 - The raw-algorithm constants have recorded derivations and two classes of test vectors; no picture changes.
+
+### Fixed
+
+- **Show mask on a Film, Face Refinement or Colour Uniform node showed the photo instead of the mask.** Only a corrector's mask could be shown; for the other nodes the view stayed on the photo. Show mask now shows the node's mask on every node that has one.
+
+### Known limits
+
+- On a Mac whose graphics card cannot run the Blur node, Lens, Motion and Zoom render on the processor instead, and slowly at large sizes: a large Lens, Motion or Zoom on a full-size photo can take minutes, where Soft takes seconds. On the graphics card the node is estimated at a few milliseconds a megapixel for a small blur and tens of milliseconds for the largest Lens, but its speed has not been measured on a Mac yet. (`docs/33` sections 9 and 11, items 65 and 75 to 80, have the numbers.)
 
 ## [0.2.4-beta.2] - 2026-11-17
 
