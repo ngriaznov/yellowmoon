@@ -55,6 +55,11 @@ const STATE_NAMES = [
   "89-dialog-album-question",
   "90-uniform-compress",
   "92-uniform-mask-tab",
+  "93-blur-soft",
+  "94-blur-lens",
+  "95-blur-motion",
+  "96-blur-zoom",
+  "97-blur-zoom-pick",
   "05-wizard-1-choose",
   "09-wizard-5-finish",
 ] as const;

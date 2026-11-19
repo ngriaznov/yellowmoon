@@ -371,6 +371,39 @@ export async function uniformView(page: Page, opts: { picked?: boolean; tab?: "C
   await page.waitForTimeout(500);
 }
 
+/** A Radial row for a Blur node's masks, as the Mask tab of a corrector has: the blur shows inside it. */
+export const BLUR_MASKS = {
+  invert: false,
+  items: [{ kind: "radial", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.5, 0.5], radii: [0.3, 0.2], angle_deg: 0, feather: 0.45 }],
+};
+
+/**
+ * The node view of the mockup's photo with a Blur node (2) after Main, selected, on its Blur tab (`design/blur/states.jpg`): of `type` (the node's
+ * other types keep their start values), with a Radial mask row or none (`masked`), and with Pick centre on (`picking`, Zoom only).
+ */
+export async function blurView(page: Page, opts: { type?: "soft" | "lens" | "motion" | "zoom"; masked?: boolean; picking?: boolean; more?: Record<string, unknown> } = {}): Promise<void> {
+  const { type = "soft", masked = false, picking = false, more = {} } = opts;
+  const link = (from: number | "input", to: number | "output") => ({ from: { node: from, port: "picture" }, to: { node: to, port: "picture" } });
+  await openApp(page, MOCKUP);
+  await configureMock(page, {
+    initialSettings: {
+      DSC04204: {
+        nodes: { "1": { grade: MOCKUP_GRADE }, "2": { kind: "blur", name: "Blur", pos: [1, 0], type, ...(masked ? { masks: BLUR_MASKS } : {}), ...more } },
+        links: [link("input", 1), link(1, 2), link(2, "output")],
+      },
+    } as never,
+  });
+  await openPhotos(page);
+  await showUpdateReady(page);
+  await page.getByRole("tab", { name: "Light", exact: true }).click();
+  await page.getByRole("button", { name: "Nodes", exact: true }).click();
+  await page.getByRole("button", { name: /^Node 2, Blur/ }).click();
+  await expect(page.getByRole("button", { name: /^Node 2, Blur/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("tab", { name: "Blur", exact: true })).toHaveAttribute("aria-selected", "true");
+  if (picking) await page.getByRole("complementary", { name: "Tools" }).getByRole("button", { name: "Pick centre" }).click();
+  await page.waitForTimeout(500);
+}
+
 export const STATES: readonly PageState[] = [
   ["01-start-empty", (p) => start(p)],
   [
@@ -1179,6 +1212,12 @@ export const STATES: readonly PageState[] = [
   ["90-uniform-compress", (p) => uniformView(p)],
   ["91-uniform-pick-empty", (p) => uniformView(p, { picked: false, picking: true })],
   ["92-uniform-mask-tab", (p) => uniformView(p, { tab: "Mask" })],
+  // The Blur node (docs/33, design/blur): the Blur tab of each type, and Zoom with Pick centre on.
+  ["93-blur-soft", (p) => blurView(p)],
+  ["94-blur-lens", (p) => blurView(p, { type: "lens", masked: true })],
+  ["95-blur-motion", (p) => blurView(p, { type: "motion" })],
+  ["96-blur-zoom", (p) => blurView(p, { type: "zoom", more: { zoom: { amount: 40, center: [0.35, 0.4] } } })],
+  ["97-blur-zoom-pick", (p) => blurView(p, { type: "zoom", picking: true })],
 ];
 
 /** Opens one state in a new page of the browser, at the size of the screenshots. */

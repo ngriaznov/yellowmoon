@@ -772,6 +772,28 @@ test.describe("the node panel", () => {
     }
   });
 
+  test("a Blur node: the head, the Type control, each type's controls, the Zoom centre and the Mask edges switch are named", async ({ browser }) => {
+    const cases: Array<[string, string[], string[]]> = [
+      ["93-blur-soft", ['radiogroup "Blur type"', 'radio "Soft"', 'slider "Radius"', 'switch "Respect mask edges"'], ['button "Pick centre"', 'slider "Length"']],
+      ["94-blur-lens", ['radiogroup "Shape"', 'radio "Round"', 'radio "6 blades"', 'slider "Rotation"', 'slider "Highlights"', 'switch "Respect mask edges"'], ['button "Pick centre"']],
+      ["95-blur-motion", ['slider "Length"', 'slider "Angle"'], ['slider "Radius"']],
+      ["96-blur-zoom", ['slider "Amount"', 'button "Pick centre"', 'button "Reset centre"', 'button "Zoom centre. The arrow keys move it."'], []],
+      ["97-blur-zoom-pick", ['button "Pick centre" [pressed]', "Click the photo or drag the handle."], ['button "Reset centre"']],
+    ];
+    for (const [state, present, absent] of cases) {
+      const { page, context } = await openState(browser, state);
+      try {
+        const snapshot = await expectNamed(page, state);
+        expect(snapshot, state).toMatch(/- heading "Blur" \[level=2\]/);
+        expect(snapshot, state).toMatch(/- group "Node":/);
+        for (const text of present) expect(snapshot, `${state}: ${text}`).toContain(text);
+        for (const text of absent) expect(snapshot, `${state}: no ${text}`).not.toContain(text);
+      } finally {
+        await context.close();
+      }
+    }
+  });
+
   test("the Mask tab's rows are named like the cards: kind, 'mask' and what they say, and each row's controls are named", async ({ page }) => {
     await graded(page, "Light");
     await page.locator('[data-node-card="2"]').click();
