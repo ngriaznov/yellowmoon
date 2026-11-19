@@ -5202,6 +5202,66 @@ fn a_blur_node_crosses_the_bridge_without_loss() {
     );
 }
 
+/// BL-14: Pick centre of a Zoom blur. A click on the cell is mapped to the photo frame by the core (`viewport_map_points`, from the cell) and
+/// written as one `zoom.center` patch; the centre then maps back to the cell where the click was, and a click on the paper maps to nothing.
+#[test]
+fn a_zoom_centre_picked_on_the_cell_is_one_patch_and_maps_back_to_the_click() {
+    use crate::wire::MapFrom;
+    let h = Harness::new();
+    h.open(1);
+    let state = h.develop();
+    let id = state.photos[0].id;
+    h.rect(300.0, 300.0);
+    h.frame_of_size(300, 300);
+    assert!(h.api.viewport().wait_idle(WAIT));
+    let add: SettingsPatch = serde_json::from_value(json!({
+        "nodes": { "2": { "kind": "blur", "type": "zoom" } },
+        "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ]
+    }))
+    .expect("patch");
+    h.api.update_settings(id, &add).expect("a Blur node");
+    // The click: a point of the cell, mapped by the core to the photo frame, held to four decimals as the page does.
+    let click = [Num(90.0), Num(150.0)];
+    let at = h
+        .api
+        .viewport_map_points(&[click], MapFrom::Cell)
+        .expect("mapped")[0]
+        .expect("a place in the photo");
+    let center = [
+        Num((at[0].0 * 1e4).round() / 1e4),
+        Num((at[1].0 * 1e4).round() / 1e4),
+    ];
+    let pick: SettingsPatch = serde_json::from_value(
+        json!({ "nodes": { "2": { "zoom": { "center": [center[0].0, center[1].0] } } } }),
+    )
+    .expect("patch");
+    let after = h.api.update_settings(id, &pick).expect("pick");
+    let blur = after.settings.nodes.items.iter().find_map(|i| match i {
+        crate::wire::NodeItem::Blur(b) => Some(b),
+        _ => None,
+    });
+    assert_eq!(blur.map(|b| b.zoom.center), Some(center));
+    // The handle is drawn where the click was (to the rounding of four decimals of a 300 px cell).
+    let back = h
+        .api
+        .viewport_map_points(&[center], MapFrom::Photo)
+        .expect("mapped")[0]
+        .expect("a place in the cell");
+    assert!(
+        (back[0].0 - 90.0).abs() < 0.05 && (back[1].0 - 150.0).abs() < 0.05,
+        "{back:?}"
+    );
+    // A click on the paper above the 3:2 photo has no place in it, so nothing would be written.
+    let paper = h
+        .api
+        .viewport_map_points(&[[Num(150.0), Num(1.0)]], MapFrom::Cell)
+        .expect("mapped");
+    assert_eq!(paper, vec![None]);
+}
+
 #[test]
 fn core_types_convert_without_loss() {
     let h = Harness::new();

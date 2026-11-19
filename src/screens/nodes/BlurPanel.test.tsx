@@ -2,12 +2,13 @@
  * The Blur node's panel (`docs/33` §2.1 to §2.6, §5.3; BL-13): the Type control, each type's controls, the Mask edges card, the card's Reset
  * and the undo steps. The screen runs on the mock, as in a browser.
  */
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NodeLink, SettingsPatch } from "../../api/types";
 import { nodeOf } from "../../state/settingsGraph";
 import type { BlurItem } from "../../state/settingsGraph";
 import { openPhotos, openTab, renderApp, tools } from "../../test/harness";
+import { mockRect } from "../../test/raf";
 import type { Harness, UpdateSpy } from "../../test/harness";
 import { BLUR_TEXT } from "./blurParts";
 
@@ -150,10 +151,10 @@ describe("Motion", () => {
 });
 
 describe("Zoom", () => {
-  it("has Amount, a Centre readout and a Pick centre that waits for BL-14", async () => {
+  it("has Amount, a Centre readout and a Pick centre toggle that is off", async () => {
     const spy = await setup(WITH_BLUR({ type: "zoom" }));
     expect(field("Amount").value).toBe("20");
-    expect(within(card("Blur")).getByRole("button", { name: "Pick centre" })).toHaveAttribute("aria-disabled", "true");
+    expect(within(card("Blur")).getByRole("button", { name: "Pick centre" })).toHaveAttribute("aria-pressed", "false");
     expect(within(card("Blur")).getByText(BLUR_TEXT.centreAtMiddle)).toBeInTheDocument();
     expect(within(card("Blur")).queryByRole("button", { name: "Reset centre" })).toBeNull();
     await type("Amount", "80");
@@ -172,6 +173,131 @@ describe("Zoom", () => {
     expect(within(card("Blur")).getByText(BLUR_TEXT.centreAtMiddle)).toBeInTheDocument();
     await h!.user.keyboard("{Meta>}z{/Meta}");
     await waitFor(() => expect(node().zoom.center).toEqual([0.3, 0.6]));
+  });
+});
+
+describe("the Zoom centre on the photo", () => {
+  /** The photo cell, 600 x 400, and the mock told so: its own mapping answers for it. */
+  async function placeCell(): Promise<void> {
+    const cell = document.querySelector<HTMLElement>("[data-viewport]")!;
+    mockRect(cell, { left: 0, top: 0, width: 600, height: 400 });
+    await h!.api.viewportSetRect({ x: 0, y: 0, width: 600, height: 400, scale: 1 });
+    await act(async () => {
+      fireEvent(window, new Event("resize"));
+    });
+  }
+  const handle = (): HTMLElement => screen.getByRole("button", { name: /^Zoom centre/ });
+  const layer = (): HTMLElement | null => document.querySelector<HTMLElement>("[data-zoom-centre]");
+  const pickButton = (): HTMLElement => within(card("Blur")).getByRole("button", { name: "Pick centre" });
+
+  it("is drawn at the centre the core maps, with eight rays, for a Zoom node only", async () => {
+    await setup(WITH_BLUR({ type: "zoom", zoom: { center: [0.25, 0.5] } }));
+    await placeCell();
+    await waitFor(() => expect(layer()).not.toBeNull());
+    await waitFor(() => expect(parseFloat(handle().style.left)).toBeCloseTo(150, 3));
+    expect(parseFloat(handle().style.top)).toBeCloseTo(200, 3);
+    expect(layer()!.querySelectorAll(".ym-zoom-centre__ray")).toHaveLength(8);
+    // Another type has no handle, and the type again has it.
+    await h!.user.click(within(card("Blur")).getByRole("radio", { name: "Soft" }));
+    await waitFor(() => expect(layer()).toBeNull());
+  });
+
+  it("a drag of the handle writes the centre where the pointer is, a patch per move, and is one undo step", async () => {
+    const spy = await setup(WITH_BLUR({ type: "zoom" }));
+    await placeCell();
+    await waitFor(() => expect(handle()).toBeInTheDocument());
+    spy.mockClear();
+    fireEvent.pointerDown(handle(), { clientX: 300, clientY: 200, button: 0, buttons: 1, pointerId: 1 });
+    fireEvent.pointerMove(window, { clientX: 360, clientY: 240, pointerId: 1 });
+    await waitFor(() => expect(node().zoom.center).toEqual([0.6, 0.6]));
+    fireEvent.pointerMove(window, { clientX: 420, clientY: 300, pointerId: 1 });
+    await waitFor(() => expect(node().zoom.center).toEqual([0.7, 0.75]));
+    fireEvent.pointerUp(window, { clientX: 420, clientY: 300, pointerId: 1 });
+    await waitFor(() => expect(patches(spy).at(-1)!.nodes!["2"]).toEqual({ zoom: { center: [0.7, 0.75] } }));
+    await waitFor(() => expect(h!.store.getState().canUndo).toBe(true));
+    await h!.user.keyboard("{Meta>}z{/Meta}");
+    await waitFor(() => expect(node().zoom.center).toEqual([0.5, 0.5]));
+    expect(h!.store.getState().canUndo).toBe(false);
+  });
+
+  it("the arrow keys nudge the handle 1 px, Shift 10 px, each one undo step", async () => {
+    const spy = await setup(WITH_BLUR({ type: "zoom" }));
+    await placeCell();
+    await waitFor(() => expect(handle()).toBeInTheDocument());
+    act(() => handle().focus());
+    spy.mockClear();
+    await h!.user.keyboard("{ArrowRight}");
+    await waitFor(() => expect(node().zoom.center).toEqual([0.5017, 0.5]));
+    await h!.user.keyboard("{Shift>}{ArrowDown}{/Shift}");
+    await waitFor(() => expect(node().zoom.center).toEqual([0.5017, 0.525]));
+    expect(patches(spy)).toHaveLength(2);
+  });
+
+  it("Pick centre is a toggle: on, a click on the photo sets the centre as one patch and ends the pick", async () => {
+    const spy = await setup(WITH_BLUR({ type: "zoom" }));
+    await placeCell();
+    await h!.user.click(pickButton());
+    expect(pickButton()).toHaveAttribute("aria-pressed", "true");
+    expect(within(card("Blur")).getByText(BLUR_TEXT.centrePicking)).toBeInTheDocument();
+    const catcher = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>("[data-zoom-catch]");
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    mockRect(catcher.parentElement!, { left: 0, top: 0, width: 600, height: 400 });
+    spy.mockClear();
+    fireEvent.click(catcher, { clientX: 150, clientY: 100 });
+    await waitFor(() => expect(node().zoom.center).toEqual([0.25, 0.25]));
+    expect(patches(spy)).toHaveLength(1);
+    expect(patches(spy)[0]!.nodes!["2"]).toEqual({ zoom: { center: [0.25, 0.25] } });
+    await waitFor(() => expect(pickButton()).toHaveAttribute("aria-pressed", "false"));
+    expect(document.querySelector("[data-zoom-catch]")).toBeNull();
+    expect(within(card("Blur")).getByText(BLUR_TEXT.centreMoved)).toBeInTheDocument();
+    await h!.user.keyboard("{Meta>}z{/Meta}");
+    await waitFor(() => expect(node().zoom.center).toEqual([0.5, 0.5]));
+  });
+
+  it("Esc cancels a pick and changes nothing; so does the toggle, and a change of type", async () => {
+    const spy = await setup(WITH_BLUR({ type: "zoom" }));
+    await placeCell();
+    spy.mockClear();
+    await h!.user.click(pickButton());
+    await waitFor(() => expect(document.querySelector("[data-zoom-catch]")).not.toBeNull());
+    await h!.user.keyboard("{Escape}");
+    await waitFor(() => expect(pickButton()).toHaveAttribute("aria-pressed", "false"));
+    expect(document.querySelector("[data-zoom-catch]")).toBeNull();
+    await h!.user.click(pickButton());
+    await h!.user.click(pickButton());
+    expect(pickButton()).toHaveAttribute("aria-pressed", "false");
+    await h!.user.click(pickButton());
+    await h!.user.click(within(card("Blur")).getByRole("radio", { name: "Lens" }));
+    await waitFor(() => expect(document.querySelector("[data-zoom-catch]")).toBeNull());
+    expect(patches(spy).filter((p) => (p.nodes?.["2"] as { zoom?: unknown } | undefined)?.zoom)).toHaveLength(0);
+    expect(node().zoom.center).toEqual([0.5, 0.5]);
+  });
+
+  it("a click on the paper around the photo sets nothing and the pick stays on", async () => {
+    await setup(WITH_BLUR({ type: "zoom" }));
+    // A cell of 3:4 has paper above and below the 3:2 photo.
+    const cell = document.querySelector<HTMLElement>("[data-viewport]")!;
+    mockRect(cell, { left: 0, top: 0, width: 300, height: 400 });
+    await h!.api.viewportSetRect({ x: 0, y: 0, width: 300, height: 400, scale: 1 });
+    await act(async () => {
+      fireEvent(window, new Event("resize"));
+    });
+    await h!.user.click(pickButton());
+    const catcher = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>("[data-zoom-catch]");
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    mockRect(catcher.parentElement!, { left: 0, top: 0, width: 300, height: 400 });
+    fireEvent.click(catcher, { clientX: 150, clientY: 5 });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(node().zoom.center).toEqual([0.5, 0.5]);
+    expect(pickButton()).toHaveAttribute("aria-pressed", "true");
   });
 });
 

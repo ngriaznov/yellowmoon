@@ -363,8 +363,14 @@ export function Photos() {
   const depthShown = panel === "tools" && view === "nodes" && nodeTab === "mask" && hasMasks && !cropping && selectedMask?.kind === "depth" && selectedMask.enabled;
   // Pick colour of a Colour Uniform node's target (`docs/32` §2.1) belongs to the Compress tab of that node.
   const uniformShown = panel === "tools" && view === "nodes" && nodeTab === "compress" && selectedItem?.kind === "color_uniform" && !cropping;
+  // Pick centre of a Zoom blur (`docs/33` §2.2) belongs to the Blur tab of a Blur node whose type is Zoom.
+  const centreShown = panel === "tools" && view === "nodes" && nodeTab !== "mask" && selectedItem?.kind === "blur" && selectedItem.type === "zoom" && !cropping;
   const picking: PickMode | null =
-    asked !== null && asked.node === onNode && (asked.mode === "range" ? rangeShown : asked.mode === "depth" ? depthShown : asked.mode === "uniform" ? uniformShown : colourShown) ? asked.mode : null;
+    asked !== null &&
+    asked.node === onNode &&
+    (asked.mode === "range" ? rangeShown : asked.mode === "depth" ? depthShown : asked.mode === "uniform" ? uniformShown : asked.mode === "centre" ? centreShown : colourShown)
+      ? asked.mode
+      : null;
   /** Starts a pick on the selected node, or ends it (null). */
   const setPicking = useCallback((mode: PickMode | null, node?: NodeId): void => {
     setAsked(mode === null ? null : { mode, node: node ?? onNodeNow.current });
@@ -616,12 +622,21 @@ export function Photos() {
   const setPickingDepth = useCallback((on: boolean): void => {
     setAsked((was) => (on ? { mode: "depth", node: onNodeNow.current } : was?.mode === "depth" ? null : was));
   }, [onNodeNow]);
+  // Pick centre of a Zoom blur, from its Centre line's toggle. Exclusive with the others; it ends with one click that lands on the photo, with Esc and with the toggle.
+  const setPickingCentre = useCallback((on: boolean): void => {
+    setAsked((was) => (on ? { mode: "centre", node: onNodeNow.current } : was?.mode === "centre" ? null : was));
+  }, [onNodeNow]);
   // A click with Pick colour on reads the chroma at the input of the selected node's warp and puts the pin in that node (`docs/23` §7.5).
   const pickedNode = view === "nodes" && typeof onNode === "number" ? onNode : MAIN_ID;
   const onPicked = useCallback(
     (point: { x: number; y: number }): void => {
       if (picking === "color") {
         void store.pickColor(point.x, point.y, pickedNode);
+        return;
+      }
+      if (picking === "centre") {
+        // One `zoom.center` patch; a click on the paper around the photo sets nothing and the pick stays on.
+        if (typeof onNode === "number") void store.pickCentre(point.x, point.y, onNode).then((set) => set && setPicking(null));
         return;
       }
       if (picking === "uniform") {
@@ -652,6 +667,15 @@ export function Photos() {
         ? { node: onNode, index: rowIndex, row: selectedMask }
         : null,
     [nodesOn, cropping, panel, onKind, onNode, rowIndex, selectedMask],
+  );
+  // The Zoom centre on the photo (`docs/33` §2.2): the handle of the selected Zoom blur's centre, on the Blur tab, in the node view; with Pick centre on the click
+  // that sets it too (also in full screen, where the pick stays on). Crop, Export and Before hide it, as they hide the handles.
+  const zoomCentre = useMemo(
+    () =>
+      (nodesOn || picking === "centre") && !cropping && panel !== "export" && nodeTab !== "mask" && selectedItem?.kind === "blur" && selectedItem.type === "zoom" && typeof onNode === "number"
+        ? { node: onNode, center: selectedItem.zoom.center, picking: picking === "centre", onPick: onPicked }
+        : null,
+    [nodesOn, cropping, panel, nodeTab, selectedItem, onNode, picking, onPicked],
   );
   // The Brush tool (`docs/23` §7.6): on for the selected Brush row while the store says so (adding a Brush row, a click on it or on Paint or Erase starts it;
   // another row, another node or photo and Esc end it), in the node view with the row on. Crop, Export, Before and a pick hide it (PhotoView draws the pick
@@ -984,6 +1008,8 @@ export function Photos() {
         onPickDepth={setPickingDepth}
         pickingUniform={picking === "uniform"}
         onPickUniform={setPickingUniform}
+        pickingCentre={picking === "centre"}
+        onPickCentre={setPickingCentre}
         foot={copyPaste}
         hidden={fullScreen.on}
       />
@@ -1127,6 +1153,7 @@ export function Photos() {
           crop={crop.session}
           onRect={onRect}
           maskHandles={maskHandles}
+          zoomCentre={zoomCentre}
           brush={brush}
           faces={faces}
           object={object}

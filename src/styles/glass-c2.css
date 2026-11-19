@@ -1748,6 +1748,22 @@ span.ym-filmstrip__thumb {
 .ym-mask-handles[data-dragging="true"] .ym-mask-handle {
   cursor: grabbing;
 }
+
+/* The Zoom centre on the photo (ZoomCentre, docs/33 section 2.2): the mask handles' layer and handle, with eight dashed rays; with Pick centre on a
+   surface under the handle takes the click. */
+.ym-zoom-centre__ray {
+  fill: none;
+  stroke: #fff;
+  stroke-opacity: 0.22;
+  stroke-width: 2px;
+  stroke-dasharray: 10 12;
+}
+.ym-zoom-centre__catch {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  cursor: crosshair;
+}
 .ym-mask-handle[data-kind="rotate"] svg {
   width: 14px;
   height: 14px;

@@ -2802,6 +2802,27 @@ export class AppStore {
     await this.update(patchOf(node, { masks: { edit: { [String(row)]: { far: picked.far } } } }), true, id);
   }
 
+  /**
+   * Pick centre of a Zoom blur (`docs/33` §2.2, BL-14): a click at `(x, y)` of the cell (CSS pixels from its corner) is mapped to the photo frame by the
+   * core (`viewport_map_points`, as the Radial mask's handle is: the turn, the crop, the straightening, the lens's bend and the view's zoom and pan are the
+   * core's) and written as one `zoom.center` patch, held to the frame and to four decimals: one undo step. A click on the paper around the photo changes
+   * nothing, nor does a node that is gone or is not a Blur node. Answers whether a centre was written (the pick ends only then).
+   */
+  async pickCentre(x: number, y: number, node: number): Promise<boolean> {
+    const id = this.currentId();
+    if (id === null) return false;
+    if (this.viewportQueue.busy) await this.viewportQueue.flush();
+    await this.whenIdle(id);
+    const mapped = await this.mapPoints([[x, y]], "cell");
+    const at = mapped?.[0];
+    if (!at || this.currentId() !== id) return false;
+    const rs = this.state.settings[id];
+    if (!rs || nodeOf(rs.settings, node)?.kind !== "blur") return false;
+    const hold = (v: number): number => Math.round(Math.min(1, Math.max(0, v)) * 1e4) / 1e4;
+    await this.update(patchOf(node, { zoom: { center: [hold(at[0]), hold(at[1])] } }), true, id);
+    return true;
+  }
+
   /** The Depth row `row` of `node` of a photo, as the page has it. */
   private depthRowAt(id: PhotoId, node: number, row: number): Extract<MaskItem, { kind: "depth" }> | undefined {
     const rs = this.state.settings[id];

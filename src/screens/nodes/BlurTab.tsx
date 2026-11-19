@@ -31,6 +31,9 @@ export interface BlurTabProps {
   rs: ResolvedSettings;
   node: number;
   item: BlurItem;
+  /** Pick centre of the Zoom type is on, and turns it on or off (`Photos` keeps it, as the other picks). */
+  pickingCentre?: boolean;
+  onPickCentre?: (on: boolean) => void;
 }
 
 /**
@@ -38,7 +41,7 @@ export interface BlurTabProps {
  * edges card (the switch and its line). Every control writes the node as one patch; a drag is a patch per frame that folds into one undo step,
  * and the card's Reset is one patch of the type and every value (the masks stay). Switching type changes `type` alone, so each type keeps its values.
  */
-export function BlurTab({ store, rs, node, item }: BlurTabProps) {
+export function BlurTab({ store, rs, node, item, pickingCentre = false, onPickCentre }: BlurTabProps) {
   const send: BlurControlProps["send"] = (partial, final = true) => void store.update(patchOf(node, partial), final, rs.photo_id);
   const options: ReadonlyArray<SegmentedOption<BlurType>> = TYPES.map(([value, label]) => ({ value, label, disabled: !BLUR_TYPE_READY[value] && value !== item.type }));
   const defaults = newBlur(0, [0, 0]);
@@ -55,7 +58,7 @@ export function BlurTab({ store, rs, node, item }: BlurTabProps) {
         {item.type === "soft" ? <SoftControls {...controls} /> : null}
         {item.type === "lens" ? <LensControls {...controls} /> : null}
         {item.type === "motion" ? <MotionControls {...controls} /> : null}
-        {item.type === "zoom" ? <ZoomControls {...controls} /> : null}
+        {item.type === "zoom" ? <ZoomControls {...controls} picking={pickingCentre} onPick={onPickCentre ?? (() => undefined)} /> : null}
       </Card>
       <Card title={BLUR_TEXT.edgesTitle} last>
         <div className="ym-blur__edges">
