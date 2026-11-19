@@ -46,18 +46,71 @@ def polygon_mask(px, py, n, rot_deg, R):
     return ok
 
 
-def aperture_kernel(R, n=0, rot_deg=0.0, ss=8):
-    """Coverage of each pixel by a disc (n = 0) or a regular n-gon of circumradius R: a supersampled area, normalised."""
+def _disc_quadrant(x, y, R):
+    """Area of the disc of radius R inside 0 <= X <= x, 0 <= Y <= y (x, y >= 0), in closed form."""
+    x, y = min(x, R), min(y, R)
+    if x * x + y * y <= R * R:
+        return x * y
+    xc = math.sqrt(R * R - y * y)
+    prim = lambda t: 0.5 * (t * math.sqrt(max(R * R - t * t, 0.0)) + R * R * math.asin(min(t / R, 1.0)))
+    return xc * y + prim(x) - prim(xc)
+
+
+def disc_rect_area(R, x0, x1, y0, y1):
+    """Exact area of the rectangle [x0, x1] x [y0, y1] inside the disc of radius R about the origin (signed quadrants)."""
+    s = lambda x, y: math.copysign(1.0, x) * math.copysign(1.0, y) * _disc_quadrant(abs(x), abs(y), R)
+    return s(x1, y1) - s(x0, y1) - s(x1, y0) + s(x0, y0)
+
+
+def polygon_pixel_area(cx, cy, sides, apothem):
+    """Exact area of the pixel square centred (cx, cy) inside the convex polygon x nx + y ny <= apothem: the square clipped by each side in turn."""
+    poly = [(cx - .5, cy - .5), (cx + .5, cy - .5), (cx + .5, cy + .5), (cx - .5, cy + .5)]
+    for nx, ny in sides:
+        dist = lambda p: p[0] * nx + p[1] * ny - apothem
+        out = []
+        for i, p in enumerate(poly):
+            q = poly[(i + 1) % len(poly)]
+            dp, dq = dist(p), dist(q)
+            if dp <= 0:
+                out.append(p)
+            if (dp < 0 < dq) or (dq < 0 < dp):
+                t = dp / (dp - dq)
+                out.append((p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])))
+        poly = out
+        if len(poly) < 3:
+            return 0.0
+    twice = sum(p[0] * q[1] - q[0] * p[1] for p, q in zip(poly, poly[1:] + poly[:1]))
+    return abs(twice) / 2
+
+
+def aperture_kernel(R, n=0, rot_deg=0.0):
+    """Coverage of each pixel by a disc (n = 0) or a regular n-gon of circumradius R: the exact area of the pixel square inside the shape (the disc in closed form, the polygon by clipping), normalised. The same maths as the Rust oracle's aperture_coverage."""
     if R <= 1e-6:
         return np.ones((1, 1))
     h = int(math.ceil(R)) + 1
-    g = (np.arange(ss) + 0.5) / ss - 0.5
-    ys, xs = np.meshgrid(np.arange(-h, h + 1), np.arange(-h, h + 1), indexing="ij")
-    cov = np.zeros(ys.shape)
-    for dy in g:
-        for dx in g:
-            cov += polygon_mask(xs + dx, ys + dy, n, rot_deg, R)
-    cov /= ss * ss
+    cov = np.zeros((2 * h + 1, 2 * h + 1))
+    rot = math.radians(rot_deg)
+    apothem = R * math.cos(math.pi / max(n, 1))
+    sides = [(math.cos(rot + (i + .5) * 2 * math.pi / n), math.sin(rot + (i + .5) * 2 * math.pi / n)) for i in range(n)]
+    for iy in range(2 * h + 1):
+        for ix in range(2 * h + 1):
+            cx, cy = ix - h, iy - h
+            near = math.hypot(max(abs(cx) - .5, 0.0), max(abs(cy) - .5, 0.0))
+            far = math.hypot(abs(cx) + .5, abs(cy) + .5)
+            if n == 0:
+                if far * far <= R * R:
+                    v = 1.0
+                elif near * near >= R * R:
+                    v = 0.0
+                else:
+                    v = min(max(disc_rect_area(R, cx - .5, cx + .5, cy - .5, cy + .5), 0.0), 1.0)
+            elif near > R:
+                v = 0.0
+            elif far <= apothem:
+                v = 1.0
+            else:
+                v = polygon_pixel_area(cx, cy, sides, apothem)
+            cov[iy, ix] = v
     return cov / cov.sum()
 
 

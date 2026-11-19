@@ -736,16 +736,9 @@ fn agrees_with_the_numpy_sketch() {
     for (i, sum, pix) in PY_FIXTURE.iter() {
         let o = run_lin(&x, &m, W, H, &cases[*i]);
         let motion = matches!(cases[*i].kind, BlurKind::Motion { .. });
-        // The sketch supersamples the aperture's coverage 8 x 8; the oracle's is exact since BL-07b (`docs/33` 11 item 76), so a
-        // Lens differs by the supersampling's error (at most 2.7e-2 of a value here, measured) and the other types by rounding.
-        let lens = matches!(cases[*i].kind, BlurKind::Lens { .. });
-        let tol = if motion {
-            2e-3
-        } else if lens {
-            4e-2
-        } else {
-            1e-9
-        };
+        // The sketch's aperture coverage is the exact pixel area, as the oracle's (`docs/33` 11 item 81), so Lens is as
+        // tight as Soft and Zoom.
+        let tol = if motion { 2e-3 } else { 1e-9 };
         let mut worst = 0.0f64;
         for (y, xx, want) in pix {
             for c in 0..3 {
@@ -759,7 +752,7 @@ fn agrees_with_the_numpy_sketch() {
         eprintln!("sketch case {i}: pixel {worst:e}, sum {sum_rel:e}");
         assert!(worst < tol, "case {i}: {worst:e}");
         assert!(
-            sum_rel < if motion { 2e-3 } else if lens { 1e-3 } else { 1e-9 },
+            sum_rel < if motion { 2e-3 } else { 1e-9 },
             "case {i} sum: {sum_rel:e}"
         );
     }
