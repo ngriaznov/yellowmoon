@@ -19,15 +19,20 @@
 //!   `ORACLE`, a missing or stale self set fails.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 
 mod self_gen;
 use self_gen::{Class, PACKAGES, Package, Regime};
 
-/// A fresh folder under the system's temporary directory.
+/// A fresh folder under the system's temporary directory. Every call returns a folder no other
+/// call uses, so tests running at the same time in one process cannot delete each other's files.
 fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("ym-self-vectors-{}-{tag}", std::process::id()));
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let dir =
+        std::env::temp_dir().join(format!("ym-self-vectors-{}-{n}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("temporary folder");
     dir
