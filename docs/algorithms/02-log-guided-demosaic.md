@@ -133,6 +133,10 @@ Every constant of this spec has a row, with the ID of `docs/29-raw-constants.md`
 
 **Where each constant lives (`docs/29` RC-03).** The two cubics are `FixedCubics::SHIPPED` and `ORACLE_CUBICS` in `crates/ym-gpu/src/cpu/demosaic/log_guided.rs`, the one home of L1 and L2; the exponent of L3 is the cube of `cube_floor1` and of `shaders/log_guided.wgsl`. There is no `Tuning` struct and no generated shader block (the device uses `log2` and `exp2`). `log_guided::REGISTRY` lists the three rows, and `crates/ym-gpu/tests/constants_registry.rs` holds it to `docs/29` §2.1.
 
+**Where the constants come from (`docs/29` RC-14).** The values were taken over from research (the owner's answer to question 12 of `docs/STATUS.md`, 2026-11-13: "from research, but you need to readjust"). The project has re-derived every one of them: each is proved by mathematics, fitted on public test images and our own synthetic scenes (no measurement of our own, no real-sensor data), kept with the numbers that show it sits at its optimum or on a trade-off curve, or marked as the owner's look. The derivation of each row is in the table and in `docs/29`; the value that ships is `Tuning::DEFAULT`. No row cites a source for its number, and none needs one. A constant that is not in this table is not added; it is raised as a question first.
+
+L1 and L2, the two cubics, were re-derived (RC-01); L3, the exponent, was not fitted: the stage is not a render path, and the owner skipped the task (`docs/29` §6, answer 5).
+
 | ID | Constant | Status | Derivation | Proof or task |
 |---|---|---|---|---|
 | L1 | `(46653, 19114, 5229)/32768` (§3.2) | Maths | The integer solution of the objective stated in §3.2 (smallest largest error over every input, anchors exact, at most 23 step-backs), by exhaustive search around the continuous minimax cubic. | `tools/fit/poly_fit.py`; `log2_and_exp2_fixed_meet_their_exhaustive_bounds`, `nothing_beats_the_stored_cubics_by_the_stated_objective_near_them` (RC-01) |
@@ -427,6 +431,7 @@ The numbers are in section 9.2.
 
 | Question | Choice |
 |---|---|
+| Where do the constants come from? | Taken over from research and re-derived by the project: each row of the constants table (§2.6) has its derivation or its fit, and `docs/29` has the numbers. Nothing is added to a table without a question first |
 | Which form does `Method::LogGuided` run? | The float form, on the CPU and the device. The fixed form serves the vectors and as an integer-only variant |
 | How is H chosen when the frame maximum is unknown? | H = 4 (`headroom_log2` = 2) |
 | Does `p` follow the pooled noise model or the photo's own? | Whatever `RawParams::noise` carries (the pooled model when it is used); it reaches the method through `DemosaicInputs::noise`. `demosaic(m, method)` uses the zero model |

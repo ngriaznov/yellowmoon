@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use ym_gpu::cpu::demosaic::{adaptive_ratio, log_guided};
 use ym_gpu::cpu::output_sharpen;
 use ym_gpu::cpu::sharpen::diffraction;
-use ym_gpu::cpu::tuning::{Constant, Kind};
+use ym_gpu::cpu::tuning::{Constant, Kind, Status};
 use ym_gpu::device::StorageMode;
 use ym_gpu::kernels::{KernelId, shader_source};
 
@@ -180,6 +180,24 @@ fn the_registries_and_the_inventory_list_the_same_rows() {
         missing_from_inventory.is_empty(),
         "registry entries with no row in docs/29 section 2.1: {missing_from_inventory:?}"
     );
+}
+
+#[test]
+fn no_row_is_pending() {
+    // RC-14: every fit has run, been kept with its numbers, or been skipped by the owner and said so.
+    // A `Pending` row would mean a derivation that is still to come.
+    for p in packages() {
+        for c in p.registry {
+            assert!(
+                !matches!(c.status, Status::Pending(_)),
+                "{}: {} ({}) is still pending: {:?}",
+                p.name,
+                c.id,
+                c.name,
+                c.status
+            );
+        }
+    }
 }
 
 #[test]

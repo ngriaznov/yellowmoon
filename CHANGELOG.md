@@ -12,11 +12,12 @@ moves the entries below from Unreleased into a dated section for that version.
 ### Added
 
 - **Colour Uniform.** A new node that makes colours more alike. **Add node › Colour Uniform**, then click a colour on the photo: the node pulls the colours its mask lets through toward it, and hue, saturation and lightness each have their own amount, from 0 to 100 %. A dress that is one hue in the light and another in the shade, or skin with a green cast on one side, comes together. The first pick sets Hue and Saturation to 50 % and adds a Colour range mask on the colour you picked, so the change stays near it; you can widen the mask, add others or delete it in the Mask tab. You can also drag or type the target's Hue, Saturation and Lightness. Greys are left alone. A node with no target, or with every amount at 0, changes nothing. It works in `ym` too: a settings file can hold `"kind": "color_uniform"`.
-- **Pipeline version 0.13.0.** Pictures made without a Colour Uniform node do not change by a single bit; only the version written into exports, `ym --version`, `ym doctor` and `ym info` moves. An older Yellowmoon refuses a photo or album that holds the new node.
+- **Pipeline version 0.13.0 with the node.** Adding the node changes no picture that has no Colour Uniform node; only the version written into exports, `ym --version`, `ym doctor` and `ym info` moves. An older Yellowmoon refuses a photo or album that holds the new node.
 
 ### Changed
 
-- The raw-algorithm constants have recorded derivations and two classes of test vectors; no picture changes.
+- **Demosaic and output sharpening constants re-derived.** The constants of the demosaic's chroma step, its shadow steps and the output sharpening kernel were taken over from research. They are now fitted or derived by the project on public test images and our own synthetic scenes, and each has its derivation in `docs/29`. Pictures change slightly: on the 64 pictures of the test set, 58 change and 6 stay bit for bit; the typical pixel moves by a median of ΔE00 0.09 (0.03 to 0.27 per picture), and the largest change is ΔE00 21.1, on the edge of a saturated colour patch (14.7 on the 61 older pictures). The two values of the demosaic's chroma step moved every one of those pictures; the output sharpening and the colour-fringe path changed none of them. The pipeline version is 0.13.1 (was 0.13.0).
+- The raw-algorithm constants have recorded derivations and two classes of test vectors.
 
 ## [0.2.4-beta.2] - 2026-11-17
 

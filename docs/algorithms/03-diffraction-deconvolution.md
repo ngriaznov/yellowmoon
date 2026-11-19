@@ -276,6 +276,10 @@ Every constant of this spec has a row, with the ID of `docs/29-raw-constants.md`
 
 **Where each constant lives (`docs/29` RC-03).** In the code every constant of this table that is a number is a field of `diffraction::Tuning` (`crates/ym-gpu/src/cpu/sharpen/diffraction.rs`), documented with its row, kind, section, status and task. `Tuning::ORACLE` holds the values the oracle vectors were made with and `Tuning::DEFAULT` the shipped ones; they are equal: RC-11 kept every value. The planner reads D1 to D6 once per `(pitch, f-number)`; the device reads D7 to D13 from a WGSL `const` block generated from the `Tuning` and put in front of `shaders/diffraction.wgsl`, so there is one copy of each. The windows of D14, the 8 × 8 grid and the 500 radial samples are structure and stay in the code. `diffraction::REGISTRY` lists id, name, value, kind and status, and `crates/ym-gpu/tests/constants_registry.rs` fails for a copy outside the `Tuning`, for a generated block that differs from the registry, and for a row missing from `docs/29` §2.1 or the other way round.
 
+**Where the constants come from (`docs/29` RC-14).** The values were taken over from research (the owner's answer to question 12 of `docs/STATUS.md`, 2026-11-13: "from research, but you need to readjust"). The project has re-derived every one of them: each is proved by mathematics, fitted on public test images and our own synthetic scenes (no measurement of our own, no real-sensor data), kept with the numbers that show it sits at its optimum or on a trade-off curve, or marked as the owner's look. The derivation of each row is in the table and in `docs/29`; the value that ships is `Tuning::DEFAULT`. No row cites a source for its number, and none needs one. A constant that is not in this table is not added; it is raised as a question first.
+
+RC-11 ran every fit of this spec and **changed no value**: the default stays equal to the oracle. The one fit that is better on the means and worse on a minority of cells (the σ_G factor `0.78`) is not taken.
+
 | ID | Constant | Status | Derivation | Proof or task |
 |---|---|---|---|---|
 | D1 | 461 to 619 nm, weight 1 from 540 nm, `(620 − λ)/80` below (§3.2) | Fit | The spectral weight of the polychromatic PSF. Compared with the luma response of the eleven published Sony curves (D55, balanced channels, the stage's luma): the PSF moves by 0.043 in L1, and the gate is worse in 153 of 168 numbers with them, so the ramp stays. | RC-11, `tools/fit/d1_spectral_weight.py`; `the_weight_table_replaces_the_ramp_and_a_table_of_the_ramp_changes_nothing` |
@@ -827,6 +831,7 @@ The **noise-gate variant** `DiffractionPlan::with_noise_gate(true)` scales the g
 
 | Question | Choice |
 |---|---|
+| Where do the constants come from? | Taken over from research and re-derived by the project: each row of the constants table (§2.6) has its derivation or its fit, and `docs/29` has the numbers. Nothing is added to a table without a question first |
 | Fallback when inactive (no f-number or no pitch) | Richardson–Lucy with the resolved Auto parameters |
 | Mapping of the Sharpening Amount | None; `strength = 1` |
 | Vignetting gain in the noise weight | Ignored: corners carry `G(r)²` more variance than the model |

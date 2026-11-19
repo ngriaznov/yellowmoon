@@ -157,6 +157,10 @@ Every constant of this spec has a row, with the ID of `docs/29-raw-constants.md`
 
 **Where each constant lives (`docs/29` RC-03).** In the code every constant of this table is a field of `adaptive_ratio::Tuning` (`crates/ym-gpu/src/cpu/demosaic/adaptive_ratio.rs`), documented with its row, kind, section, status and task. `Tuning::ORACLE` holds the values the oracle vectors were made with and `Tuning::DEFAULT` the shipped ones; they differ in A6 and A7, which RC-07 fitted (A6 `0.9`, A7 `3.5`), and in A2 and A4, which RC-10 fitted (A2 `1.25`, A4 `9` and `51`; the research constants of §3.2 and §3.6 below are the oracle's). The device reads the same values from a WGSL `const` block generated from the `Tuning` and put in front of `shaders/adaptive_ratio.wgsl`, so there is one copy of each. A7's 0.75 is `SAT_DOMINANCE` and A8's is `SHADOW_AMOUNT`; A6's 0.03 is `CHROMA_FLOOR` in steps 1 and 2; A5's 121 and 123 are `Tuning::centre_weight(1.0)` and that value plus 2. `adaptive_ratio::REGISTRY` lists id, name, value, kind and status, and `crates/ym-gpu/tests/constants_registry.rs` fails for a copy outside the `Tuning`, for a generated block that differs from the registry, and for a row missing from `docs/29` §2.1 or the other way round.
 
+**Where the constants come from (`docs/29` RC-14).** The values were taken over from research (the owner's answer to question 12 of `docs/STATUS.md`, 2026-11-13: "from research, but you need to readjust"). The project has re-derived every one of them: each is proved by mathematics, fitted on public test images and our own synthetic scenes (no measurement of our own, no real-sensor data), kept with the numbers that show it sits at its optimum or on a trade-off curve, or marked as the owner's look. The derivation of each row is in the table and in `docs/29`; the value that ships is `Tuning::DEFAULT`. No row cites a source for its number, and none needs one. A constant that is not in this table is not added; it is raised as a question first.
+
+The fits that changed a shipped value are A6 `0.03` to `0.9` and A7 `0.75` to `3.5` (RC-07, a chroma penalty that is effectively off), and A2 `2.5` to `1.25` and A4 `18`, `102` to `9`, `51` (RC-10, a path no render reaches). A1, A3, A8 to A10 and A14 were fitted and kept. A11 to A13 are mixed fits: better on the PSNR objective and worse on a gate number at every value tried, so they are not taken (the owner's answer 1, `docs/29` §6; the numbers are in `docs/29` §2.2b). `PIPELINE_VERSION` 0.13.1 carries the change.
+
 | ID | Constant | Status | Derivation | Proof or task |
 |---|---|---|---|---|
 | A1 | `1.6` (§3.2) | Fit | Weight of the second difference of the same colour in the pass-1 direction scores. Objective: the nine-cell PSNR of §6.3 with the zipper and false-colour rates held at today's. **Fitted on 2026-11-18: within 0.006 dB of the optimum.** The grid 0.4 to 3.2 has its nine-cell optimum at 0.56 (+0.0056 dB, under the 0.01 dB of rule 3) and the fit sets alone prefer 0.54 to 0.56 but McMaster loses 0.014 dB; today's value is kept (`docs/29` §5, RC-07). | RC-07 |
@@ -616,7 +620,7 @@ The gate (`crates/ym-gpu/examples/demosaic_gate.rs`, run by `tools/eval/demosaic
 
 ### 6.4 Measured
 
-*These tables are at the oracle constants (`Tuning::ORACLE`). The shipped constants since RC-07 (A6 `0.9`, A7 `3.5`) give the tables of `docs/29-raw-constants.md` §2.2b: nine-cell mean 36.90 dB, best in 8 of 9 cells. RC-13 and RC-14 bring this section to them.*
+*These tables are at the oracle constants (`Tuning::ORACLE`). The shipped constants since RC-07 (A6 `0.9`, A7 `3.5`) give the tables of `docs/29-raw-constants.md` §2.2b: nine-cell mean 36.90 dB, best in 8 of 9 cells. The tables below are not regenerated.*
 
 CPU reference. Mean PSNR in dB, linear light (the log-guided column is in `docs/algorithms/02-log-guided-demosaic.md` section 9):
 
@@ -652,13 +656,14 @@ Speed, CPU seconds per megapixel on one thread (4 MP, `ym-gpu` at opt-level 3, b
 4. **CA path at κ = 0.** Pass 2's CA path at κ = 0 still smooths the vertical/horizontal case (weight 121/123 on G0), unlike the plain path, which keeps G0. Near the optical centre that is a slight softening.
 5. **Shadow sharpening.** The luma proxy weights unbalanced R, G, B as 1:2:1, not as Yellowmoon's `LUMA` on balanced data.
 6. **Negative residual.** The clamp residual of a photosite goes back into its own channel only (§3.5), not as a neutral offset on all three channels.
-7. **Saturation penalty.** The constants 0.75 (dominance test) and 0.03 (floor) are fixed (§3.4.2, §3.4.3).
+7. **Saturation penalty.** The dominance test and the floor are fixed (§3.4.2, §3.4.3). The shipped values are A7 `3.5` and A6 `0.9` (RC-07): the penalty is effectively off, which gave the better PSNR and false-colour rate on every set mean and a lower PSNR on 17 of 147 per-image values of colourful pictures (`docs/29` §2.2b). The oracle's are `0.75` and `0.03`.
 8. **Shadow chroma noise.** Shadow matching (§3.4.5) and the R6 denoise both act on shadow chroma noise.
 
 **Fixed choices:**
 
 | Question | Choice |
 |---|---|
+| Where do the constants come from? | Taken over from research and re-derived by the project: each row of the constants table (§2.3) has its derivation or its fit, and `docs/29` has the numbers. Nothing is added to a table without a question first |
 | Is `Method::halo()` configuration-dependent (11 against 13)? | No. It returns 13 |
 | R5-reconstructed photosites (clip mask set) | Treated as normal samples |
 | Per-position black offsets `delta_c` of the noise model | Not used; the variance is `a·mu + b_total` only |
