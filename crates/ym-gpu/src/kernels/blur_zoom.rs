@@ -3,7 +3,7 @@
 //!
 //! The scaffold ([`super::blur_stack`]) makes the weighted planes and the pyramid up to the level
 //! `L = ym_color::blur::zoom::top_level` (the smallest cell that holds the largest spacing of the taps in the frame, from the
-//! span and the centre). The kernel is one pass per level `k = 0 ..= L` ([`ZoomU`], `blur_zoom.wgsl`): a pixel is made by the pass
+//! span and the centre). The kernel is one pass per level `k = 0 ..= L` (`ZoomU`, `blur_zoom.wgsl`): a pixel is made by the pass
 //! of the lower level `l0` its taps read (the others return at once), which reads the levels `l0` and `l0 + 1` and writes the
 //! sums `N` and `D` over the made area, so a pass binds two levels whatever `L` is (K3: one uniform and a few storage buffers).
 //!

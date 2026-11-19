@@ -1,8 +1,8 @@
 //! Zoom, the fast method (`docs/33-blur.md` section 3.5, BL-09): a radial line read from a **pyramid**, in f64.
 //!
-//! The exact kernel ([`super::gather_zoom`]) takes at least 64 bilinear taps along the line of every pixel. The fast method
+//! The exact kernel (`super::gather_zoom`) takes at least 64 bilinear taps along the line of every pixel. The fast method
 //! takes at most [`MAX_TAPS`] (32) and reads them **trilinearly** from the pyramid of the weighted planes `omega X` and
-//! `omega` (2 x 2 box means at absolute alignment, [`super::lens::box_level`]), so a long line is read from coarse cells:
+//! `omega` (2 x 2 box means at absolute alignment, `super::lens::box_level`), so a long line is read from coarse cells:
 //!
 //! * a pixel at `v = p - c` from the centre has the line `a |v|` (a length in pixels) and `n = clamp(ceil(a |v|) + 1, 2, 32)`
 //!   taps at `q_i = p + v a t_i`, `t_i = (i + 1/2) / n - 1/2`, equal weights ([`tap_count`]);
