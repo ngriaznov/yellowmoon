@@ -21,7 +21,7 @@ fn the_cell_factor_and_the_reach_table_of_the_spec() {
     assert_eq!(cell_factor(8600.0), 64);
     assert_eq!(cell_factor(100.0), 1);
     assert_eq!(cell_factor(f64::NAN), 1);
-    // Amount 100 on 6000 px: Soft 480 + 3 x 32, Lens 240 + 96, Motion 240 + 1 + 96 (the table, section 3.8).
+    // Amount 100 on 6000 px: Soft 480 + 3 x 32, Lens 240 + 1 (row segments, BL-07b), Motion 240 + 1 + 96 (the table, section 3.8).
     assert_eq!(
         reach_px(&p(BlurKind::Soft { radius: 100.0 }), 6000, 4000),
         576
@@ -37,7 +37,7 @@ fn the_cell_factor_and_the_reach_table_of_the_spec() {
             6000,
             4000
         ),
-        336
+        241
     );
     assert_eq!(
         reach_px(

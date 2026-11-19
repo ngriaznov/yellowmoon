@@ -1,15 +1,15 @@
-//! Lens' fast method (the cell method of `ym_color::blur::lens`, BL-07) against the exact aperture (`docs/33-blur.md` sections
+//! Lens' fast method (the row segments of `ym_color::blur::lens`, BL-07b) against the exact aperture (`docs/33-blur.md` sections
 //! 3.5, 3.7 and 8).
 //!
-//! * `R <= 8` px is the exact kernel bit for bit; the cell size is the smallest with `R / f <= 8`;
+//! * `R <= 8` px is the exact kernel bit for bit; the row table sums to 1 and holds the aperture's area;
 //! * the method's own properties: a flat field stays flat (to the picture's edge and corner), nothing from outside the mask
 //!   reaches inside with Respect mask edges on, a window of the reach equals the whole frame bit for bit;
-//! * the method against the exact aperture on an edge, a disc, a bright light and a noise field, at small and large radii,
-//!   round and hexagonal: the numbers are printed and held to what was measured (see the note on `MEASURED`).
+//! * the method against the exact aperture (exact pixel coverage) on an edge, a disc, a bright light and a noise field, at
+//!   `R` 12 to 240 px, round and hexagonal, and on a light for 5 to 9 blades at many rotations: held to the gate of 1e-2.
 
 #![allow(clippy::needless_range_loop)]
 
-use ym_color::blur::lens::{self, cell_size, cell_table, level_for};
+use ym_color::blur::lens::{SubRow, reach, row_table, uses_rows};
 use ym_color::blur::{self, BlurKind, BlurParams, Frame, aperture_table, radius_px, reach_px};
 use ym_color::consts::Vec3;
 
@@ -35,63 +35,79 @@ fn noise(x: i64, y: i64) -> f64 {
 }
 
 #[test]
-fn the_cell_is_the_smallest_with_the_radius_at_most_eight_cells() {
-    for (r, level) in [
-        (0.0, 0),
-        (1.0, 0),
-        (8.0, 0),
-        (8.000_001, 1),
-        (16.0, 1),
-        (16.01, 2),
-        (48.0, 3),
-        (64.0, 3),
-        (240.0, 5),
-        (256.0, 5),
-        (344.0, 6),
+fn up_to_eight_pixels_is_the_table_above_it_the_rows_and_the_reach_is_the_radius_plus_one() {
+    for (r, rows) in [
+        (0.0, false),
+        (1.0, false),
+        (8.0, false),
+        (8.000_001, true),
+        (48.0, true),
+        (240.0, true),
     ] {
-        assert_eq!(level_for(r), level, "R = {r}");
-        assert_eq!(cell_size(r), 1usize << level);
-        assert!(r / (1u64 << level) as f64 <= 8.0 || r.is_nan());
+        assert_eq!(uses_rows(r), rows, "R = {r}");
     }
-    assert_eq!(level_for(f64::NAN), 0);
-    assert_eq!(level_for(f64::INFINITY), 30);
+    assert!(!uses_rows(f64::NAN));
+    for (r, want) in [(0.0, 1), (7.2, 9), (8.0, 9), (240.0, 241), (343.5, 345)] {
+        assert_eq!(reach(r), want, "R = {r}");
+    }
+    assert_eq!(reach(f64::NAN), 1);
 }
 
 #[test]
-fn the_cell_table_sums_to_one_holds_every_nonzero_weight_and_is_at_most_17_cells_wide() {
-    for (r, blades, level) in [
-        (6.0, 0, 0),
-        (12.0, 0, 1),
-        (60.0, 6, 3),
-        (240.0, 7, 5),
-        (8.0, 0, 0),
+fn the_row_table_sums_to_one_holds_the_apertures_area_and_stays_inside_its_rows() {
+    for (r, blades, rot) in [
+        (12.0, 0, 0.0),
+        (60.0, 6, 25.0),
+        (240.0, 7, 0.0),
+        (9.3, 5, 17.0),
+        (30.0, 4, 45.0),
+        (30.0, 8, 22.5),
     ] {
-        let t = cell_table(r, blades, 25.0, level);
-        let total: f64 = t.weights.iter().sum();
-        assert!((total - 1.0).abs() < 1e-12, "R {r}: {total}");
-        assert!(t.half <= 8, "R {r}: half {}", t.half);
-        assert_eq!(
-            t.weights.len(),
-            ((2 * t.half + 1) * (2 * t.half + 1)) as usize
+        let t = row_table(r, blades, rot);
+        assert!(!t.is_empty(), "R {r}");
+        println!(
+            "R {r} blades {blades} rotation {rot}: {} sub-rows over {} rows = {:.2} a row",
+            t.len(),
+            2 * r.ceil() as usize + 1,
+            t.len() as f64 / (2 * r.ceil() as usize + 1) as f64
         );
-        // The untrimmed table of the same radius in cells has the same nonzero weights.
-        let full = aperture_table(r / (1u64 << level) as f64, blades, 25.0);
-        for dy in -full.half..=full.half {
-            for dx in -full.half..=full.half {
-                let w = full.at(dx, dy);
-                assert_eq!(t.at(dx, dy).to_bits(), w.to_bits(), "R {r} ({dx}, {dy})");
-            }
+        let area: f64 = t
+            .iter()
+            .map(|e| e.w * ((e.kb as f64 + e.fb) - (e.ka as f64 + e.fa)))
+            .sum();
+        assert!((area - 1.0).abs() < 1e-12, "R {r}: {area}");
+        let half = r.ceil() as i32 + 1;
+        let mut last = i32::MIN;
+        for e in &t {
+            assert!(e.w > 0.0 && (0.0..1.0).contains(&e.fa) && (0.0..1.0).contains(&e.fb));
+            assert!(e.dy.abs() <= half && e.dy >= last, "R {r}: rows ascend");
+            assert!(e.ka.abs() <= half + 1 && e.kb.abs() <= half + 1);
+            last = e.dy;
+        }
+        // The table's sub-rows weigh what the exact table's rows do: the row `dy`'s share of the area.
+        let exact = aperture_table(r, blades, rot);
+        for dy in -exact.half..=exact.half {
+            let want: f64 = (-exact.half..=exact.half).map(|dx| exact.at(dx, dy)).sum();
+            let got: f64 = t
+                .iter()
+                .filter(|e| i64::from(e.dy) == dy)
+                .map(|e: &SubRow| e.w * ((e.kb as f64 + e.fb) - (e.ka as f64 + e.fa)))
+                .sum();
+            assert!(
+                (got - want).abs() < 2e-3,
+                "R {r} blades {blades} row {dy}: {got} against {want}"
+            );
         }
     }
-    // A round aperture's table is symmetric.
-    let t = cell_table(30.0, 0, 0.0, 2);
-    for dy in -t.half..=t.half {
-        for dx in -t.half..=t.half {
-            assert!((t.at(dx, dy) - t.at(-dx, dy)).abs() < 1e-15);
-            assert!((t.at(dx, dy) - t.at(dx, -dy)).abs() < 1e-15);
-            assert!((t.at(dx, dy) - t.at(dy, dx)).abs() < 1e-15);
-        }
+    // A round aperture's table is symmetric in x (its chord's ends are mirrors).
+    for e in row_table(30.0, 0, 0.0) {
+        let (a, b) = (e.ka as f64 + e.fa, e.kb as f64 + e.fb);
+        assert!(
+            (a + b - 1.0).abs() < 1e-12,
+            "a chord of a disc is centred: {a} {b}"
+        );
     }
+    assert!(row_table(0.0, 0, 0.0).is_empty() && row_table(f64::NAN, 6, 0.0).is_empty());
 }
 
 /// A window of a frame as the tests use them: values `f(x, y)` and a mask.
@@ -265,21 +281,9 @@ fn a_window_of_the_reach_equals_the_whole_frame_bit_for_bit() {
     }
 }
 
-/// What the method measured against the exact aperture on `docs/33` section 8's scenes (`max |fast - exact| / peak of the exact
-/// result`, in linear light, on a line and a diagonal through the feature across the aperture's rim), the worst over the radii
-/// and the two shapes below, and what the test holds the method to (about 1.25 times the measurement).
-///
-/// **The spec's gate of 1e-2 is met on the noise field and, but at R = 144 px, on the edge, and not on the disc and the light**:
-/// the cell method softens the aperture's rim by about `f / 2`, so a light smaller than a cell shows a rim of `f` pixels at
-/// every radius (error up to 0.45 of the light's own peak at its rim), and a disc as wide as the aperture shows 3 to 6 per
-/// cent. This is the method of `docs/33` section 3.5 as written; the numbers are in `docs/STATUS.md` for the owner (the gate
-/// is not changed here).
-const MEASURED: [(&str, f64); 4] = [
-    ("edge", 2.0e-2),
-    ("disc", 7.0e-2),
-    ("light", 0.55),
-    ("noise", 1.8e-2),
-];
+/// The gate of `docs/33` section 3.7 for Lens: the fast method against the exact aperture, `max |fast - exact| / the peak of
+/// the exact result`, in linear light, on a line and a diagonal through the feature across the aperture's rim, `<= 1e-2`.
+const GATE: f64 = 1e-2;
 
 fn scenes(r: f64) -> Vec<(&'static str, Scene)> {
     let (cx, cy) = (3000i64, 2000i64);
@@ -309,77 +313,104 @@ fn scenes(r: f64) -> Vec<(&'static str, Scene)> {
     ]
 }
 
-#[test]
-fn the_cell_method_against_the_exact_aperture_on_an_edge_a_disc_a_light_and_noise() {
+/// The error of the fast method against the exact aperture on the four scenes at `radius` (the panel's number, `u = 6000` px):
+/// `[edge, disc, light, noise]`.
+fn measure(radius: f64, blades: u32, rotation_deg: f64) -> [f64; 4] {
     let (fw, fh) = (6000usize, 4000usize);
     let (cx, cy) = (3000i64, 2000i64);
+    let p = BlurParams {
+        kind: BlurKind::Lens {
+            radius,
+            blades,
+            rotation_deg,
+            highlights: 0.0,
+        },
+        respect_mask_edges: true,
+    };
+    let r = radius_px(radius, fw as f64);
+    let reach = reach_px(&p, fw, fh) as i64;
+    let half = r.ceil() as i64 + 3;
+    let step = (half / 24).max(1);
+    let mut pts = vec![];
+    let mut x = -half;
+    while x <= half {
+        pts.push((cx + x, cy));
+        pts.push((cx + x, cy + x / 2));
+        x += step;
+    }
+    let (x0, x1) = (cx - half - reach, cx + half + reach + 1);
+    let (y0, y1) = (cy - half / 2 - reach - 1, cy + half / 2 + reach + 2);
+    let (ww, wh) = ((x1 - x0) as usize, (y1 - y0) as usize);
+    let t = aperture_table(r, blades, rotation_deg);
+    let side = (2 * t.half + 1) as usize;
+    let mut out = [0.0; 4];
+    for (si, (_, scene)) in scenes(r).into_iter().enumerate() {
+        let (xs, ms) = window(x0 as usize, y0 as usize, ww, wh, &scene, |_, _| 1.0);
+        let frame = Frame {
+            full_w: fw,
+            full_h: fh,
+            x0: x0 as usize,
+            y0: y0 as usize,
+        };
+        let fast = blur::apply_linear_fast(&xs, &ms, ww, wh, &p, &frame).expect("fast");
+        let (mut err, mut peak) = (0.0f64, 0.0f64);
+        for &(px, py) in &pts {
+            let mut acc = 0.0;
+            for dy in -t.half..=t.half {
+                for dx in -t.half..=t.half {
+                    let k = t.weights[(dy + t.half) as usize * side + (dx + t.half) as usize];
+                    if k != 0.0 {
+                        acc += k * scene(px + dx, py + dy)[1];
+                    }
+                }
+            }
+            let f = fast[(py - y0) as usize * ww + (px - x0) as usize][1];
+            err = err.max((f - acc).abs());
+            peak = peak.max(acc);
+        }
+        out[si] = err / peak;
+    }
+    out
+}
+
+#[test]
+fn the_row_segments_against_the_exact_aperture_on_an_edge_a_disc_a_light_and_noise() {
     let mut worst = [0.0f64; 4];
     for blades in [0u32, 6] {
         for radius in [5.0, 20.0, 60.0, 100.0] {
-            let p = params(radius, blades, true);
-            let r = radius_px(radius, fw as f64);
-            let reach = reach_px(&p, fw, fh) as i64;
-            let half = r.ceil() as i64 + 3 * cell_size(r) as i64;
-            let step = (half / 24).max(1);
-            let mut pts = vec![];
-            let mut x = -half;
-            while x <= half {
-                pts.push((cx + x, cy));
-                pts.push((cx + x, cy + x / 2));
-                x += step;
-            }
-            let (x0, x1) = (cx - half - reach, cx + half + reach + 1);
-            let (y0, y1) = (cy - half / 2 - reach - 1, cy + half / 2 + reach + 2);
-            let (ww, wh) = ((x1 - x0) as usize, (y1 - y0) as usize);
-            let t = aperture_table(r, blades, 10.0);
-            let side = (2 * t.half + 1) as usize;
-            for (si, (name, scene)) in scenes(r).into_iter().enumerate() {
-                let (xs, ms) = window(x0 as usize, y0 as usize, ww, wh, &scene, |_, _| 1.0);
-                let frame = Frame {
-                    full_w: fw,
-                    full_h: fh,
-                    x0: x0 as usize,
-                    y0: y0 as usize,
-                };
-                let fast = blur::apply_linear_fast(&xs, &ms, ww, wh, &p, &frame).expect("fast");
-                let (mut err, mut peak) = (0.0f64, 0.0f64);
-                for &(px, py) in &pts {
-                    let mut acc = 0.0;
-                    for dy in -t.half..=t.half {
-                        for dx in -t.half..=t.half {
-                            let k =
-                                t.weights[(dy + t.half) as usize * side + (dx + t.half) as usize];
-                            if k != 0.0 {
-                                acc += k * scene(px + dx, py + dy)[1];
-                            }
-                        }
-                    }
-                    let f = fast[(py - y0) as usize * ww + (px - x0) as usize][1];
-                    err = err.max((f - acc).abs());
-                    peak = peak.max(acc);
-                }
-                let rel = err / peak;
-                println!(
-                    "blades {blades} radius {radius:5} R {r:6.1} f {:2} {name:6}: {rel:.2e} of the peak",
-                    cell_size(r)
-                );
-                worst[si] = worst[si].max(rel);
-                // R <= 8 would be exact; here every R is above it except the smallest, which is exact too.
-                if r <= 8.0 {
-                    assert!(rel < 1e-9, "{name}: {rel}");
-                }
+            let r = radius_px(radius, 6000.0);
+            let e = measure(radius, blades, 10.0);
+            println!(
+                "blades {blades} radius {radius:5} R {r:6.1}: edge {:.2e} disc {:.2e} light {:.2e} noise {:.2e} of the peak",
+                e[0], e[1], e[2], e[3]
+            );
+            for i in 0..4 {
+                worst[i] = worst[i].max(e[i]);
             }
         }
     }
-    for (i, (name, bound)) in MEASURED.iter().enumerate() {
-        println!(
-            "worst {name}: {:.2e} (held to {bound:.1e}; the spec's gate is 1e-2)",
-            worst[i]
-        );
-        assert!(worst[i] < *bound, "{name}: {} against {bound}", worst[i]);
+    for (i, name) in ["edge", "disc", "light", "noise"].iter().enumerate() {
+        println!("worst {name}: {:.2e} (the gate is {GATE:.0e})", worst[i]);
+        assert!(worst[i] < GATE, "{name}: {} against {GATE}", worst[i]);
     }
-    // The module's doc names the cap the cell radius is held to.
-    assert!((lens::MAX_CELL_RADIUS - 8.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn a_light_of_4_by_4_pixels_is_within_the_gate_for_5_to_9_blades_at_any_rotation() {
+    // Radius 6.25 on the 6000 px frame is R = 15 px.
+    let mut worst = 0.0f64;
+    for blades in [5u32, 6, 7, 8, 9] {
+        for rot in [0.0, 7.0, 22.5, 45.0, 80.0] {
+            let e = measure(6.25, blades, rot);
+            worst = worst.max(e[2]);
+            assert!(
+                e[2] < GATE,
+                "blades {blades} rotation {rot}: light {:.2e}",
+                e[2]
+            );
+        }
+    }
+    println!("5 to 9 blades, 5 rotations, R 15 px: the light's worst {worst:.2e}");
 }
 
 /// The CPU run's cost per megapixel on one thread (`docs/33` section 9 budgets 600 ms for Lens): printed, not asserted, since it
@@ -393,9 +424,10 @@ fn the_cpu_cost_per_megapixel_is_measured() {
     });
     let frame = Frame::whole(w, h);
     for (name, radius) in [
-        ("R 4.8 px (Radius 10)", 10.0),
-        ("R 7.9 px (Radius 16.5)", 16.5),
-        ("R 48 px (Radius 100)", 100.0),
+        ("R 4.8 px (Radius 10), the exact table", 10.0),
+        ("R 7.9 px (Radius 16.5), the exact table", 16.5),
+        ("R 9.6 px (Radius 20), rows", 20.0),
+        ("R 48 px (Radius 100), rows", 100.0),
     ] {
         let p = params(radius, 6, true);
         let t = std::time::Instant::now();

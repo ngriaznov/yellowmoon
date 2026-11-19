@@ -362,8 +362,8 @@ fn a_color_uniform_node_is_byte_identical_through_the_app_path_and_the_binary_on
 /// A Blur node (`docs/33`, BL-10) with a Radial row and another mask (a Linear) on a photo of six export tiles: the app (its core has
 /// the device) and the binary (`YELLOWMOON_GPU=on`) write the same bytes in a JPEG, a 16-bit TIFF, a 16-bit PNG and a DNG, which are
 /// not the files of the same graph without the node. **A type whose task has not landed is refused by the device and the CPU makes
-/// every frame, with its reason, on both sides**; a type that runs on the device (Soft, BL-06; Zoom, BL-09; Lens, BL-07, R = 10 px on cells of
-/// 2 px) is run there, the six tiles of an export each cut with the node's reach, and the binary's report names no node (no
+/// every frame, with its reason, on both sides**; a type that runs on the device (Soft, BL-06; Zoom, BL-09; Lens, BL-07b, R = 10 px as row segments)
+/// is run there, the six tiles of an export each cut with the node's reach, and the binary's report names no node (no
 /// fallback). Each type task adds its own type's node.
 #[test]
 fn a_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
@@ -405,7 +405,7 @@ fn a_motion_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_t
     blur_device_case("motion", motion);
 }
 
-/// The same with a wide round Lens (BL-07: `R` = 84 px, cells of 16 px, the largest the photo allows), Respect mask edges off.
+/// The same with a wide round Lens (BL-07b: `R` = 84 px as row segments, the largest the photo allows), Respect mask edges off.
 #[test]
 fn a_wide_round_lens_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
     let lens = serde_json::json!({ "id": 2, "kind": "blur", "pos": [1, 0], "type": "lens",

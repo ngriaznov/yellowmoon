@@ -580,6 +580,7 @@ pub(super) fn body(id: KernelId) -> String {
         KernelId::BlurBlend => include_str!("../shaders/blur_blend.wgsl"),
         KernelId::BlurSoft => include_str!("../shaders/blur_soft.wgsl"),
         KernelId::BlurMotion => include_str!("../shaders/blur_motion.wgsl"),
+        KernelId::BlurLens => include_str!("../shaders/blur_lens.wgsl"),
         _ => return String::new(),
     };
     let mut s = constants();

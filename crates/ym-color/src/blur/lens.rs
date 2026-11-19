@@ -1,75 +1,321 @@
-//! Lens, the fast method (`docs/33-blur.md` section 3.5, BL-07): the coverage of an aperture over **cells**, in f64.
+//! Lens, the fast method: **row segments** (`docs/33-blur.md` section 3.5, BL-07b), in f64.
 //!
-//! The exact kernel ([`super::aperture_table`]) is a direct sum over up to `(2 R + 3)^2` pixels: 235 000 taps at `R = 240`
-//! px. The fast method is the Film node's coarse grid (`docs/24` section 3.9a) with a table in place of a Gaussian:
+//! The exact kernel ([`super::aperture_table`]) is the coverage of each pixel by the aperture, a direct sum over up to
+//! `(2 R + 3)^2` pixels: 235 000 taps at `R = 240` px. A disc and a convex regular `n`-gon meet each pixel row of the kernel's
+//! support in **one interval** `[x0(y), x1(y)]`, so with a prefix sum of each row of the weighted planes every kernel row is
+//! two lookups, and a pixel costs about `2 R + 1` row lookups (times the sub-rows below) instead of `(2 R + 1)^2` taps:
 //!
-//! 1. the weighted planes `omega X` and `omega` are reduced to the mean of each `f x f` block, **at absolute multiples of
-//!    `f`** (so a cell is the same number in every tile), by `level` rounds of 2 x 2 box means; `f = 2^level` is the smallest
-//!    cell with `R / f <= 8` ([`level_for`], [`MAX_CELL_RADIUS`]);
-//! 2. every cell is replaced by the table's weighted sum of the cells around it: the **coverage of a cell by the aperture**
-//!    (8 x 8 supersampled, f64, a function of `R / f`, the blades and the rotation alone: [`cell_table`]), at most 17 x 17
-//!    cells and about 200 nonzero;
-//! 3. a pixel reads its four nearest blurred cells bilinearly (a cell's centre at `(I + 1/2) f`).
+//! 1. **The row table** ([`row_table`], a function of `R`, the blades and the rotation alone). Each pixel row `dy` of the
+//!    kernel is cut at the aperture's vertices (and at its widest point, for a disc) into pieces over which each end of the
+//!    chord moves monotonically (a polygon's linearly), and a piece of height `h` whose ends move `d` pixels gets
+//!    `S = clamp(ceil(3 d), 1, 32)` **sub-rows** at its midpoints, each of weight `h / S` and covering the chord's exact `x`
+//!    overlap with every pixel (a fraction of the end pixels). That is the pixel's coverage by the aperture, integrated exactly
+//!    in `x` and by the midpoint rule with `S` samples in `y`: the rim is anti-aliased and continuous in `R` and in the
+//!    rotation, a flat edge is exact (the cuts), and a pole of a disc (where the chord moves fast) gets up to 32 sub-rows.
+//!    About 3 to 5 sub-rows a row on average. The weights are normalised to sum 1 over the table's own area, so a flat field
+//!    stays flat.
+//! 2. **The prefix** of each row of the window, in **integer fixed point** (`2^-32`, 64 bits): sums of integers are exact in any
+//!    order, so a window of any origin gives the same bits as the whole frame (hard rule 8; a floating prefix would differ by
+//!    its rounding with where the window starts). A value is clamped to `+-` [`FIXED_MAX`] first.
+//! 3. A pixel adds its sub-rows in table order: `w * (F(b) - F(a))`, `F` the row's running integral, which is the prefix at the
+//!    whole pixels (an exact integer difference) plus the two end pixels' own values times the fraction of them the chord
+//!    covers (`a = x + x0`: whole part `x + ka`, fraction `fa`, both exact: no float depends on the window's origin).
 //!
-//! The reads soften the aperture's edge by about `f / 2` (at most `R / 16`), which is the method's error ([`super`] holds it
-//! to `docs/33` section 3.7's bound against the exact kernel). With `R <= 8` the cell is the pixel (`level` 0) and the method
-//! **is** the exact kernel, bit for bit. A cell outside the frame has no weight (it is not in the grid) and a cell the frame's
-//! edge cuts counts its missing pixels as 0, so the picture's edge renormalises as the exact kernel's does.
+//! `R <= 8` px ([`EXACT_MAX_RADIUS`]) is **the exact kernel bit for bit**: the table's nonzero taps, summed in its order. A
+//! pixel outside the window has no weight (the window is the made area grown by the reach and cut to the frame), so the
+//! picture's edge renormalises as the exact kernel's does.
 //!
-//! The device does the same in f32 (`ym_gpu::kernels::blur_lens`); the arithmetic here is written in the device's order so
-//! that the two agree to rounding.
+//! The device does the same in f32 (`ym_gpu::kernels::blur_lens`), the prefix in two `u32` words per plane; the arithmetic here
+//! is written in the device's order so that the two agree to rounding.
 
 use super::{Plane4, Table, aperture_table};
 
-/// The aperture's radius in cells at most: the table is at most 17 x 17 cells (`docs/33` section 3.5, `R / f <= 8`).
-pub const MAX_CELL_RADIUS: f64 = 8.0;
+/// The aperture's radius in pixels up to which the fast method is the exact table (`docs/33` section 3.5).
+pub const EXACT_MAX_RADIUS: f64 = 8.0;
 
-/// The level `L` of the cell size `f = 2^L`: the smallest with `r_px / f <= 8` (0 when `r_px <= 8`).
+/// The prefix's fixed point: a value is the integer `v * 2^FIXED_SHIFT`.
+pub const FIXED_SHIFT: u32 = 32;
+
+/// The magnitude a weighted value is clamped to before the prefix (131072 times the largest LogC4 linear value is far above any
+/// picture): a row of 16384 columns of it is at most `2^14 * 2^14 * 2^32 = 2^60`, inside 64 bits.
+pub const FIXED_MAX: f64 = 16384.0;
+
+/// Sub-rows a row gets per pixel its chord's ends move across it ([`row_table`]).
+pub const SUBROWS_PER_PX: f64 = 3.0;
+
+/// The most sub-rows of one piece of a row.
+pub const SUBROWS_MAX: usize = 32;
+
+/// Whether the aperture of radius `r_px` is made by row segments (`r_px > 8`); else it is the exact table.
 #[must_use]
-pub fn level_for(r_px: f64) -> u32 {
-    // A radius that is NaN or at most 8 px is level 0.
-    if r_px.is_nan() || r_px <= MAX_CELL_RADIUS {
-        return 0;
-    }
-    let mut level = 0;
-    while r_px / f64::from(1u32 << level) > MAX_CELL_RADIUS && level < 30 {
-        level += 1;
-    }
-    level
+pub fn uses_rows(r_px: f64) -> bool {
+    r_px > EXACT_MAX_RADIUS
 }
 
-/// The cell size `f = 2^level` in pixels of the aperture of radius `r_px`.
+/// The pixels a pixel reads on each side: `ceil(R) + 1` (the aperture's pixels, and the end pixel a chord reaches into).
 #[must_use]
-pub fn cell_size(r_px: f64) -> usize {
-    1usize << level_for(r_px)
+pub fn reach(r_px: f64) -> usize {
+    if r_px.is_nan() {
+        return 1;
+    }
+    r_px.max(0.0).ceil() as usize + 1
 }
 
-/// The weights of the aperture over cells at `level`: the coverage of each `f x f` cell by the aperture of radius `r_px / f`
-/// centred on a cell's centre, normalised to sum 1 and **trimmed** to the square that holds every nonzero weight (so at most
-/// 17 x 17). At level 0 it is the exact table's weights, trimmed.
+/// One sub-row of the row table: a horizontal chord of the aperture at row `dy`, weight `w`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SubRow {
+    /// The kernel row (pixels below the centre).
+    pub dy: i32,
+    /// The chord's left end `x0 + 1/2` is `ka + fa`, `ka` an integer and `fa` in `[0, 1)`.
+    pub ka: i32,
+    /// The chord's right end `x1 + 1/2` is `kb + fb`.
+    pub kb: i32,
+    /// The fraction part of the left end.
+    pub fa: f64,
+    /// The fraction part of the right end.
+    pub fb: f64,
+    /// The sub-row's weight: the share of the row it carries over the table's area, so that the whole table sums to 1.
+    pub w: f64,
+}
+
+/// The aperture: a disc (`n = 0`) or a regular `n`-gon of circumradius `r`, rotated by `rot` radians, centred on the origin.
+struct Shape {
+    r: f64,
+    n: u32,
+    apothem: f64,
+    normals: Vec<(f64, f64)>,
+    vertices_y: Vec<f64>,
+}
+
+impl Shape {
+    fn new(r: f64, blades: u32, rotation_deg: f64) -> Self {
+        let n = blades;
+        let rot = rotation_deg.to_radians();
+        let tau = std::f64::consts::TAU;
+        let (apothem, normals, vertices_y) = if n == 0 {
+            (r, vec![], vec![])
+        } else {
+            (
+                r * (std::f64::consts::PI / f64::from(n)).cos(),
+                (0..n)
+                    .map(|i| {
+                        let a = rot + (f64::from(i) + 0.5) * tau / f64::from(n);
+                        (a.cos(), a.sin())
+                    })
+                    .collect(),
+                (0..n)
+                    .map(|i| r * (rot + f64::from(i) * tau / f64::from(n)).sin())
+                    .collect(),
+            )
+        };
+        Self {
+            r,
+            n,
+            apothem,
+            normals,
+            vertices_y,
+        }
+    }
+
+    fn y_range(&self) -> (f64, f64) {
+        if self.n == 0 {
+            (-self.r, self.r)
+        } else {
+            let lo = self
+                .vertices_y
+                .iter()
+                .copied()
+                .fold(f64::INFINITY, f64::min);
+            let hi = self
+                .vertices_y
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max);
+            (lo, hi)
+        }
+    }
+
+    /// The chord's ends at height `y`, or `None` when it is empty.
+    fn chord(&self, y: f64) -> Option<(f64, f64)> {
+        let (lo, hi) = self.chord_loose(y)?;
+        (lo <= hi).then_some((lo, hi))
+    }
+
+    /// The chord's ends at height `y` where `y` is within the shape's rows up to rounding: at a vertex the two ends may cross
+    /// by rounding, and are then both their mean (the vertex). `None` for a parallel side the point is outside of.
+    fn chord_loose(&self, y: f64) -> Option<(f64, f64)> {
+        if self.n == 0 {
+            let c = (self.r * self.r - y * y).max(0.0).sqrt();
+            return Some((-c, c));
+        }
+        let (mut lo, mut hi) = (f64::NEG_INFINITY, f64::INFINITY);
+        for &(c, s) in &self.normals {
+            let rhs = self.apothem - y * s;
+            if c.abs() < 1e-12 {
+                if rhs < 0.0 {
+                    return None;
+                }
+            } else if c > 0.0 {
+                hi = hi.min(rhs / c);
+            } else {
+                lo = lo.max(rhs / c);
+            }
+        }
+        if lo > hi {
+            Some((0.5 * (lo + hi), 0.5 * (lo + hi)))
+        } else {
+            Some((lo, hi))
+        }
+    }
+}
+
+/// The row table of the aperture of radius `r_px` (`blades` 0 for a disc, else the polygon's blades; `rotation_deg`), in the
+/// order the sums run: `dy` ascending, a row's pieces from the top, a piece's sub-rows from the top. Empty for a radius that is
+/// not positive and finite. The weights sum to 1 over the table's own area (`sum w (x1 - x0) = 1`).
 #[must_use]
-pub fn cell_table(r_px: f64, blades: u32, rotation_deg: f64, level: u32) -> Table {
-    let t = aperture_table(r_px / f64::from(1u32 << level), blades, rotation_deg);
-    let side = (2 * t.half + 1) as usize;
-    let mut half = 0i64;
-    for dy in -t.half..=t.half {
-        for dx in -t.half..=t.half {
-            if t.weights[(dy + t.half) as usize * side + (dx + t.half) as usize] != 0.0 {
-                half = half.max(dx.abs()).max(dy.abs());
+pub fn row_table(r_px: f64, blades: u32, rotation_deg: f64) -> Vec<SubRow> {
+    if !(r_px > 0.0 && r_px.is_finite()) {
+        return Vec::new();
+    }
+    let shape = Shape::new(r_px, blades, rotation_deg);
+    let (y_lo, y_hi) = shape.y_range();
+    let half = r_px.ceil() as i32 + 1;
+    let mut out: Vec<SubRow> = Vec::new();
+    let mut area = 0.0;
+    for dy in -half..=half {
+        let a0 = (f64::from(dy) - 0.5).max(y_lo);
+        let b0 = (f64::from(dy) + 0.5).min(y_hi);
+        if b0 - a0 <= 1e-12 {
+            continue;
+        }
+        let mut cuts = vec![a0];
+        let mut inner: Vec<f64> = if shape.n == 0 {
+            vec![0.0]
+        } else {
+            shape.vertices_y.clone()
+        };
+        inner.retain(|&v| v > a0 && v < b0);
+        inner.sort_by(f64::total_cmp);
+        cuts.extend(inner);
+        cuts.push(b0);
+        for pair in cuts.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let h = b - a;
+            if h <= 1e-12 {
+                continue;
+            }
+            // How far each end of the chord moves over the piece: its ends are monotone (linear for a polygon).
+            let near = |y: f64| shape.chord_loose(y).unwrap_or((0.0, 0.0));
+            let (la, ra) = near(a.clamp(y_lo, y_hi));
+            let (lb, rb) = near(b.clamp(y_lo, y_hi));
+            let d = (lb - la).abs().max((rb - ra).abs());
+            let s = ((SUBROWS_PER_PX * d).ceil().max(1.0) as usize).min(SUBROWS_MAX);
+            for i in 0..s {
+                let y = a + (i as f64 + 0.5) / s as f64 * h;
+                let Some((x0, x1)) = shape.chord(y) else {
+                    continue;
+                };
+                if x1 <= x0 {
+                    continue;
+                }
+                let (u0, u1) = (x0 + 0.5, x1 + 0.5);
+                let (ka, kb) = (u0.floor(), u1.floor());
+                let w = h / s as f64;
+                area += w * (x1 - x0);
+                out.push(SubRow {
+                    dy,
+                    ka: ka as i32,
+                    kb: kb as i32,
+                    fa: u0 - ka,
+                    fb: u1 - kb,
+                    w,
+                });
             }
         }
     }
-    if half == t.half {
-        return t;
-    }
-    let ns = (2 * half + 1) as usize;
-    let mut weights = Vec::with_capacity(ns * ns);
-    for dy in -half..=half {
-        for dx in -half..=half {
-            weights.push(t.weights[(dy + t.half) as usize * side + (dx + t.half) as usize]);
+    if area > 0.0 {
+        for e in &mut out {
+            e.w /= area;
         }
     }
-    Table { half, weights }
+    out
+}
+
+/// `v` as the prefix's integer: `round(v * 2^32)` with the value clamped to `+-` [`FIXED_MAX`] (NaN is 0).
+#[must_use]
+pub fn quantize(v: f64) -> i64 {
+    if v.is_nan() {
+        return 0;
+    }
+    (v.clamp(-FIXED_MAX, FIXED_MAX) * 4_294_967_296.0).round_ties_even() as i64
+}
+
+/// The exact table's nonzero taps `(dx, dy, k)` of the aperture of radius `r_px`, in the order the exact gather sums.
+#[must_use]
+pub fn exact_taps(r_px: f64, blades: u32, rotation_deg: f64) -> Vec<(i64, i64, f64)> {
+    taps(&aperture_table(r_px, blades, rotation_deg))
+}
+
+/// The sums of a window `w x h` of weighted planes over the rows `rows` by the row table: the prefix of every row in integers,
+/// then for each pixel of `rows` the sub-rows in table order.
+fn gather_row_segments(
+    p: &[Plane4],
+    w: usize,
+    h: usize,
+    table: &[SubRow],
+    rows: std::ops::Range<usize>,
+) -> Vec<Plane4> {
+    let stride = w + 2;
+    let mut prefix = vec![[0i64; 4]; stride * h];
+    for y in 0..h {
+        let mut acc = [0i64; 4];
+        for x in 0..w {
+            prefix[y * stride + x] = acc;
+            let q = &p[y * w + x];
+            for k in 0..4 {
+                acc[k] += quantize(q[k]);
+            }
+        }
+        prefix[y * stride + w] = acc;
+        prefix[y * stride + w + 1] = acc;
+    }
+    let unit = 1.0 / 4_294_967_296.0;
+    let mut out = Vec::with_capacity(w * rows.len());
+    for y in rows {
+        for x in 0..w {
+            let mut acc = [0.0f64; 4];
+            for e in table {
+                let yy = y as i64 + i64::from(e.dy);
+                if yy < 0 || yy >= h as i64 {
+                    continue;
+                }
+                let yy = yy as usize;
+                // The end pixel (clamped to the window: left of it nothing, right of it all) and the fraction of it.
+                let end = |k: i32, f: f64| -> (usize, f64) {
+                    let i = x as i64 + i64::from(k);
+                    if i < 0 {
+                        (0, 0.0)
+                    } else if i >= w as i64 {
+                        (w, 0.0)
+                    } else {
+                        (i as usize, f)
+                    }
+                };
+                let (ia, ua) = end(e.ka, e.fa);
+                let (ib, ub) = end(e.kb, e.fb);
+                let (pa, pb) = (&prefix[yy * stride + ia], &prefix[yy * stride + ib]);
+                let zero = [0.0; 4];
+                let va = if ia < w { &p[yy * w + ia] } else { &zero };
+                let vb = if ib < w { &p[yy * w + ib] } else { &zero };
+                for k in 0..4 {
+                    let whole = (pb[k] - pa[k]) as f64 * unit;
+                    acc[k] += e.w * ((whole + vb[k] * ub) - va[k] * ua);
+                }
+            }
+            out.push(acc);
+        }
+    }
+    out
 }
 
 /// A grid of cells at absolute multiples of `f = 2^level` (the device's `CellGrid`, `ym_gpu::cpu::blur`): cell `(i, j)` holds
@@ -224,50 +470,8 @@ fn gather_taps(p: &[Plane4], w: usize, h: usize, table: &Table) -> Vec<Plane4> {
     out
 }
 
-/// The pixels of a window read back from `cells` bilinearly (a cell's centre at `(I + 1/2) f`), a cell outside the grid being 0.
-fn read_back(
-    cells: &[Plane4],
-    grid: &Grid,
-    window: (usize, usize, usize, usize),
-    rows: std::ops::Range<usize>,
-) -> Vec<Plane4> {
-    let (x0, y0, w, _) = window;
-    let f = (1u64 << grid.level) as f64;
-    let cell = |i: i64, j: i64| -> Plane4 {
-        if grid.has(i, j) {
-            cells[grid.index(i, j)]
-        } else {
-            [0.0; 4]
-        }
-    };
-    let mut out = Vec::with_capacity(w * rows.len());
-    for y in rows {
-        for x in 0..w {
-            let (px, py) = ((x0 + x) as f64, (y0 + y) as f64);
-            let u = (px + 0.5) / f - 0.5;
-            let v = (py + 0.5) / f - 0.5;
-            let (i0, j0) = (u.floor() as i64, v.floor() as i64);
-            let (tx, ty) = (u - i0 as f64, v - j0 as f64);
-            let (c00, c10, c01, c11) = (
-                cell(i0, j0),
-                cell(i0 + 1, j0),
-                cell(i0, j0 + 1),
-                cell(i0 + 1, j0 + 1),
-            );
-            let mut s = [0.0; 4];
-            for k in 0..4 {
-                let top = (1.0 - tx) * c00[k] + tx * c10[k];
-                let bottom = (1.0 - tx) * c01[k] + tx * c11[k];
-                s[k] = (1.0 - ty) * top + ty * bottom;
-            }
-            out.push(s);
-        }
-    }
-    out
-}
-
 /// The sums `[N (3), D]` of a Lens over a window of weighted planes `[omega X (3), omega]` (`w x h` pixels at `(x0, y0)` of a
-/// frame of `frame` pixels), by the cell method. `r_px` is the aperture's radius in pixels. At `r_px <= 8` it is the exact
+/// frame of `frame` pixels), by row segments. `r_px` is the aperture's radius in pixels. At `r_px <= 8` it is the exact
 /// kernel's gather, bit for bit.
 #[must_use]
 pub fn gather(
@@ -279,39 +483,20 @@ pub fn gather(
     gather_rows(planes, window, frame, params, 0..window.3)
 }
 
-/// [`gather`] over the window's rows `rows` only: those rows' pixels, row by row, the same bits as in [`gather`]. At a level
-/// above 0 only the read-back is cut to the rows; the cells are those of the whole window.
+/// [`gather`] over the window's rows `rows` only: those rows' pixels, row by row, the same bits as in [`gather`]. The prefix is
+/// the whole window's (a pixel reads rows above and below it).
 #[must_use]
 pub fn gather_rows(
     planes: &[Plane4],
     window: (usize, usize, usize, usize),
-    frame: (usize, usize),
+    _frame: (usize, usize),
     (r_px, blades, rotation_deg): (f64, u32, f64),
     rows: std::ops::Range<usize>,
 ) -> Vec<Plane4> {
     let (_, _, w, h) = window;
-    let level = level_for(r_px);
-    if level == 0 {
+    if !uses_rows(r_px) {
         let all = gather_taps(planes, w, h, &aperture_table(r_px, blades, rotation_deg));
         return all[rows.start * w..rows.end * w].to_vec();
     }
-    let mut cells = planes.to_vec();
-    let mut grid = Grid {
-        level: 0,
-        i0: window.0 as i64,
-        j0: window.1 as i64,
-        w,
-        h,
-    };
-    for l in 1..=level {
-        let Some(up) = Grid::of(window, frame, l) else {
-            // No whole cell at this size in the window: nothing is read (the window is smaller than a cell).
-            return vec![[0.0; 4]; w * rows.len()];
-        };
-        cells = box_level(&cells, &grid, &up);
-        grid = up;
-    }
-    let table = cell_table(r_px, blades, rotation_deg, level);
-    let blurred = gather_taps(&cells, grid.w, grid.h, &table);
-    read_back(&blurred, &grid, window, rows)
+    gather_row_segments(planes, w, h, &row_table(r_px, blades, rotation_deg), rows)
 }

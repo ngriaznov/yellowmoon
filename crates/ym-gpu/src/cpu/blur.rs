@@ -215,48 +215,6 @@ pub fn upsample(cells: &[f64], grid: &CellGrid, out: Area, bilinear: bool) -> Ve
     res
 }
 
-/// The Lens gather over cells (`docs/33` section 3.5): each cell of `out` (a sub-grid of `grid`, the same level) becomes the
-/// table's weighted sum of the cells around it, a cell outside `grid` being 0. `cells` is four planes over `grid`; `table` is
-/// `(2 half + 1)^2` weights, row-major, a weight of 0 skipped, `dy` then `dx` ascending: the device's order. Four planes over
-/// `out`.
-#[must_use]
-pub fn lens_cells(
-    cells: &[f64],
-    grid: &CellGrid,
-    (half, table): (i64, &[f64]),
-    out: &CellGrid,
-) -> Vec<f64> {
-    let (gn, on) = (grid.len(), out.len());
-    let side = (2 * half + 1) as usize;
-    let mut res = vec![0.0; 4 * on];
-    for y in 0..out.h {
-        for x in 0..out.w {
-            let (i, j) = (out.i0 + x as i64, out.j0 + y as i64);
-            let mut acc = [0.0; 4];
-            for dy in -half..=half {
-                for dx in -half..=half {
-                    let (ii, jj) = (i + dx, j + dy);
-                    if !grid.has(ii, jj) {
-                        continue;
-                    }
-                    let k = table[(dy + half) as usize * side + (dx + half) as usize];
-                    if k == 0.0 {
-                        continue;
-                    }
-                    let at = (jj - grid.j0) as usize * grid.w + (ii - grid.i0) as usize;
-                    for c in 0..4 {
-                        acc[c] += k * cells[c * gn + at];
-                    }
-                }
-            }
-            for c in 0..4 {
-                res[c * on + y * out.w + x] = acc[c];
-            }
-        }
-    }
-    res
-}
-
 /// The picture a node makes over `made` (`docs/33` section 3.3): `logc4` and `m` are over `read` (three planes and one), `sums`
 /// is `N` and `D` over `made` (four planes). The pixel's own bits where `m = 0`; else the blend in linear light and the
 /// encode. Three planes over `made`.
