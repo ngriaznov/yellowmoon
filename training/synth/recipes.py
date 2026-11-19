@@ -285,6 +285,11 @@ LENS_BLUR_NODES = (
     ("lens", "Lens",
      {"type": "lens", "lens": {"radius": 50, "blades": 6, "rotation_deg": 15, "highlights": 60}},
      {"center": [0.5, 0.5], "radii": [0.28, 0.22], "angle_deg": 0, "feather": 0.45}),
+    # BL-09, zoom: Amount 100, the centre off the middle at (0.3, 0.4) (a line of up to 100 px read from cells of up to 4 px: levels 0 to
+    # 2), Respect mask edges on, the same inverted Radial row
+    ("zoom", "Zoom",
+     {"type": "zoom", "zoom": {"amount": 100, "center": [0.3, 0.4]}},
+     {"center": [0.5, 0.5], "radii": [0.28, 0.22], "angle_deg": 0, "feather": 0.45}),
 )
 
 

@@ -362,7 +362,7 @@ fn a_color_uniform_node_is_byte_identical_through_the_app_path_and_the_binary_on
 /// A Blur node (`docs/33`, BL-10) with a Radial row and another mask (a Linear) on a photo of six export tiles: the app (its core has
 /// the device) and the binary (`YELLOWMOON_GPU=on`) write the same bytes in a JPEG, a 16-bit TIFF, a 16-bit PNG and a DNG, which are
 /// not the files of the same graph without the node. **A type whose task has not landed is refused by the device and the CPU makes
-/// every frame, with its reason, on both sides**; a type that runs on the device (Soft, BL-06; Lens, BL-07, R = 10 px on cells of
+/// every frame, with its reason, on both sides**; a type that runs on the device (Soft, BL-06; Zoom, BL-09; Lens, BL-07, R = 10 px on cells of
 /// 2 px) is run there, the six tiles of an export each cut with the node's reach, and the binary's report names no node (no
 /// fallback). Each type task adds its own type's node.
 #[test]
@@ -378,6 +378,23 @@ fn a_soft_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_the
     let soft = serde_json::json!({ "id": 2, "kind": "blur", "pos": [1, 0], "type": "soft",
         "soft": { "radius": 55 } });
     blur_device_case("soft", soft);
+}
+
+/// The same for a Zoom node (BL-09): Amount 100 with a centre off the middle, on the photo of 2100 px (a line of up to 180 px read
+/// from cells of up to 8 px: the pyramid's levels 0 to 3), each of the six export tiles cut with the node's reach.
+#[test]
+fn a_zoom_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    let zoom = serde_json::json!({ "id": 2, "kind": "blur", "pos": [1, 0], "type": "zoom",
+        "zoom": { "amount": 100, "center": [0.3, 0.6] } });
+    blur_device_case("zoom", zoom);
+}
+
+/// The same with a Zoom node whose centre is in the corner of the photo (the largest reach), Respect mask edges off.
+#[test]
+fn a_zoom_blur_node_with_its_centre_in_the_corner_is_byte_identical_on_the_device() {
+    let zoom = serde_json::json!({ "id": 2, "kind": "blur", "pos": [1, 0], "type": "zoom",
+        "zoom": { "amount": 70, "center": [0.0, 0.0] }, "respect_mask_edges": false });
+    blur_device_case("corner zoom", zoom);
 }
 
 /// The same with a wide round Lens (BL-07: `R` = 84 px, cells of 16 px, the largest the photo allows), Respect mask edges off.
@@ -470,9 +487,9 @@ fn blur_device_case(type_name: &str, body: serde_json::Value) {
             );
         }
     }
-    // A type with a device kernel (Soft, Lens) ran there: the binary's report names no node (a refused node says "a Zoom Blur node
-    // is not on the device yet" and the CPU makes the frame).
-    if !matches!(type_name, "motion" | "zoom") {
+    // A type with a device kernel (Soft, Lens, Zoom) ran there: the binary's report names no node (a refused node says "a Motion Blur
+    // node is not on the device yet" and the CPU makes the frame).
+    if !matches!(type_name, "motion") {
         let out = sb
             .ym_data(&data_dir())
             .env("YELLOWMOON_GPU", "on")

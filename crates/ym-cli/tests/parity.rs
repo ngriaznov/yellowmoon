@@ -1665,10 +1665,10 @@ fn a_blur_node_is_the_same_files_through_the_app_path_and_the_binary() {
     blur_leg(false);
 }
 
-/// The device leg of Blur (BL-10). **Soft (BL-06) and Lens (BL-07) run on the device**: their cases go through `graph_leg` on the
-/// device, which holds the same bytes on both sides, the picture to differ from the graph without the node and the binary's report
-/// to name no fallback. A type whose task has not landed (Zoom) is refused by the device and the frame is the CPU's, with its reason
-/// (`RenderReport::cpu_reason`), on both sides: `blur_on_device_leg` holds that to be the same bytes until its task lands.
+/// The device leg of Blur (BL-10). **Soft (BL-06), Lens (BL-07) and Zoom (BL-09) run on the device**: their cases go through
+/// `graph_leg` on the device, which holds the same bytes on both sides, the picture to differ from the graph without the node and
+/// the binary's report to name no fallback. A type whose task has not landed is refused by the device and the frame is the CPU's,
+/// with its reason (`RenderReport::cpu_reason`), on both sides.
 #[test]
 fn a_blur_node_is_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
     blur_leg(true);
@@ -1681,16 +1681,10 @@ fn blur_leg(device: bool) {
         ("a Soft node with two mask rows", blur_soft_example(), 1),
         ("a round Lens with another mask", blur_lens_other(), 2),
     ] {
-        // The example file is a Lens, `blur_lens_other` a round Lens, `blur_soft_example` a Soft: the device runs them.
-        if device && what.contains("Zoom") {
-            blur_on_device_leg(what, &doc);
-        } else if device {
-            graph_leg(what, doc.clone(), correctors, true);
-            png16_leg(what, &doc, true);
-        } else {
-            graph_leg(what, doc.clone(), correctors, device);
-            png16_leg(what, &doc, device);
-        }
+        // The example file is a Lens, `blur_other_mask` a Zoom, `blur_lens_other` a round Lens, `blur_soft_example` a Soft: the
+        // device runs them all.
+        graph_leg(what, doc.clone(), correctors, device);
+        png16_leg(what, &doc, device);
     }
 }
 
@@ -1714,68 +1708,6 @@ fn blur_lens_other() -> serde_json::Value {
         { "from": { "node": 2, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
         { "from": { "node": 3, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
       ] } })
-}
-
-/// One graph with a Blur node, exported through the app (its core has the device) and through the binary (`YELLOWMOON_GPU=on`) in
-/// every format. While the device refuses the node the CPU makes the frame on both sides, and the binary says why; `graph_leg`'s
-/// device branch (no note about a node) is the check for when the node runs on the device (BL-05 and the type tasks).
-fn blur_on_device_leg(what: &str, doc: &serde_json::Value) {
-    let sb = Sandbox::new();
-    let arw = sb.arw("DSC00001.ARW");
-    let Some(app) = App::open_on_device(&[&arw]) else {
-        return;
-    };
-    let (settings, clamped) =
-        DevelopSettings::from_value(doc.clone(), &app.core.looks.effective_default())
-            .expect("settings");
-    assert!(clamped.is_empty(), "{clamped:?}");
-    app.core
-        .session
-        .replace_settings(app.photo, settings)
-        .expect("replace");
-    let file = sb.root().join("graph.json");
-    std::fs::write(&file, doc.to_string()).expect("write");
-    for (name, options, flags) in [
-        ("jpeg", ExportOptions::default(), vec!["--format", "jpeg"]),
-        (
-            "tiff16",
-            ExportOptions {
-                format: FormatKind::Tiff,
-                bit_depth: BitDepth::Sixteen,
-                ..ExportOptions::default()
-            },
-            vec!["--format", "tiff", "--bits", "16"],
-        ),
-        (
-            "png16",
-            ExportOptions {
-                format: FormatKind::Png,
-                bit_depth: BitDepth::Sixteen,
-                ..ExportOptions::default()
-            },
-            vec!["--format", "png", "--bits", "16"],
-        ),
-        (
-            "dng",
-            ExportOptions {
-                format: FormatKind::Dng,
-                ..ExportOptions::default()
-            },
-            vec!["--format", "dng"],
-        ),
-    ] {
-        let from_app = app.export(options, &sb.root().join(format!("app-{name}")));
-        let mut args = flags;
-        args.extend(["--settings", file.to_str().expect("utf-8")]);
-        let from_cli = cli_export_env(
-            &sb,
-            &[&arw],
-            &args,
-            &sb.root().join(format!("cli-{name}")),
-            &[("YELLOWMOON_GPU", "on")],
-        );
-        assert_same_files(&from_app, &from_cli, &format!("{what}, {name}, device"));
-    }
 }
 
 /// A JSON value with every number as a float, so that `20` in a file and `20.0` in the settings it was read into are equal.

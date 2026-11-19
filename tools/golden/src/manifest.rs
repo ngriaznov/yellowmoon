@@ -219,28 +219,28 @@ mod tests {
         let default_set = select(&m, SetChoice::Synthetic, &[]);
         assert_eq!(
             default_set.len(),
-            67,
-            "the default synthetic set has 61 files, 3 entries with a Colour Uniform node on, 2 with a Soft Blur node on and 1 with a Lens Blur node on"
+            68,
+            "the default synthetic set has 61 files, 3 entries with a Colour Uniform node on, 2 with a Soft Blur node on, 1 with a Lens Blur node on and 1 with a Zoom Blur node on"
         );
-        // Only the six node entries have settings; the 61 files of the plain set are the default graph.
+        // Only the seven node entries have settings; the 61 files of the plain set are the default graph.
         let with_settings: Vec<&str> = default_set
             .iter()
             .filter(|e| !e.settings.as_object().is_some_and(|o| o.is_empty()))
             .map(|e| e.id.as_str())
             .collect();
-        assert_eq!(with_settings.len(), 6, "{with_settings:?}");
+        assert_eq!(with_settings.len(), 7, "{with_settings:?}");
         assert!(
             with_settings
                 .iter()
                 .all(|id| id.starts_with("synthetic/node-uniform-")
                     || id.starts_with("synthetic/node-blur-"))
         );
-        // The node entries read the file of one plain entry, so `synthetic.sh` writes nothing new: seven entries, one file.
+        // The node entries read the file of one plain entry, so `synthetic.sh` writes nothing new: eight entries, one file.
         for id in &with_settings {
             let e = default_set.iter().find(|e| e.id == *id).unwrap();
             assert_eq!(
                 default_set.iter().filter(|o| o.file == e.file).count(),
-                7,
+                8,
                 "{id}"
             );
         }
