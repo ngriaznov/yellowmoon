@@ -298,8 +298,8 @@ impl Graph {
             .any(|(id, b)| ids.contains(id) && !b.is_inert())
     }
 
-    /// Whether a live Blur node of the graph has a type the device does not run yet (`device_kernel` is `None`: Lens, Motion and Zoom
-    /// until BL-07 to BL-09; Soft runs since BL-06): the plan is refused and the frame is the CPU's.
+    /// Whether a live Blur node of the graph has a type the device does not run yet (`device_kernel` is `None`: Motion until
+    /// BL-08; Soft, Lens and Zoom run since BL-06, BL-07 and BL-09): the plan is refused and the frame is the CPU's.
     fn blur_refused(&self) -> bool {
         let Ok(plan) =
             ym_core::pipeline::color::node_plan(&self.settings.nodes, ym_color::plan::Stop::Output)
@@ -2799,7 +2799,7 @@ fn blur_graphs_are_the_same_bits_whatever_the_tiles_and_the_threads() {
 }
 
 /// A plan with a live Blur node of a type with no device kernel yet is refused by the device and made on the CPU, with the reason in
-/// the frame's report; one whose live nodes are all of types that run on the device (Soft, BL-06) is not refused, has no CPU reason
+/// the frame's report; one whose live nodes are all of types that run on the device (Soft, BL-06; Lens, BL-07; Zoom, BL-09) is not refused, has no CPU reason
 /// and is within the CPU renderer's bounds. The PNG export is, either way, within one 10-bit code of the CPU's (the unstable-pixel
 /// rule of `judge_export` applies as for every graph).
 #[test]
