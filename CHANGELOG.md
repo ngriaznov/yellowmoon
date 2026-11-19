@@ -17,7 +17,8 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Changed
 
-- The raw-algorithm constants have recorded derivations and two classes of test vectors; no picture changes.
+- **Demosaic and output sharpening constants re-derived.** The constants of the demosaic's chroma step, its shadow steps and the output sharpening kernel were taken over from research. They are now fitted or derived by the project on public test images and our own synthetic scenes, and each has its derivation in `docs/29`. Pictures change slightly: on the 64 pictures of the test set, 58 change and 6 stay bit for bit; the typical pixel moves by a median of ΔE00 0.09 (0.03 to 0.27 per picture), and the largest change is ΔE00 21.1, on the edge of a saturated colour patch (14.7 on the 61 older pictures). The two values of the demosaic's chroma step moved every one of those pictures; the output sharpening and the colour-fringe path changed none of them. The pipeline version is 0.13.1 (was 0.13.0).
+- The raw-algorithm constants have recorded derivations and two classes of test vectors.
 
 ### Fixed
 

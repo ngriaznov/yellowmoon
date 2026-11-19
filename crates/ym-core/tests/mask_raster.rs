@@ -576,12 +576,20 @@ fn the_dng_colour_stage_with_a_brush_row_is_tile_exact_on_the_device() {
     let cpu = render(&stage_renderer(None, GpuStages::NONE, 200));
     assert_eq!(small.report.device, ComputeDevice::Gpu);
     assert_eq!(small.rgb, large.rgb, "device tiles of 80 and 700 px differ");
-    let mut worst = 0.0f64;
+    let (mut worst, mut over) = (0.0f64, 0usize);
     for (x, y) in cpu.rgb.iter().zip(&small.rgb) {
-        worst = worst.max(f64::from((x - y).abs()) / f64::from(x.abs().max(1.0)));
+        let r = f64::from((x - y).abs()) / f64::from(x.abs().max(1.0));
+        worst = worst.max(r);
+        over += usize::from(r > 1e-3);
     }
-    eprintln!("a Brush row in the DNG's colour stage, device against CPU: {worst:e}");
-    assert!(worst < 2e-3, "{worst:e}");
+    eprintln!(
+        "a Brush row in the DNG's colour stage, device against CPU: {worst:e}, {over} samples over 1e-3"
+    );
+    // Before RC-13 (A6 `0.9`, A7 `3.5`): 9.5e-4 and none over 1e-3 (576 over 1e-4), the bound 2e-3. On the new demosaic
+    // planes one decision went the other way in a patch of 8 x 11 pixels around (177, 245), in a highlight above 1:
+    // 45 samples over 1e-3, the worst 2.07e-3 (777 samples over 1e-4 against 576). Twice those; the 45 are one
+    // patch, so a plumbing error that moves a tile or a plane is far above the count.
+    assert!(worst < 4.2e-3 && over <= 90, "{worst:e}, {over}");
 }
 
 // ---- the mask view -------------------------------------------------------------------------------

@@ -271,7 +271,9 @@ pub const REGISTRY: &[Constant] = &[
         "structure_weight_exponent",
         3.0,
         Kind::Fit,
-        Status::Pending("RC-12 (skipped, docs/29 section 6, answer 5)"),
+        Status::Fitted(
+            "RC-12: not fitted, skipped by the owner (docs/29 section 6, answer 5); no render path uses it",
+        ),
     ),
 ];
 

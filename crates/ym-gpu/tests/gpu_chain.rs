@@ -2926,9 +2926,28 @@ const METHOD_A_TIE_PRONE: Limits = Limits {
 
 /// Method A, the false-colour stage and R8 on the very planes the device demosaic made, on tie-free content:
 /// R6..R8 against R6..R6 (the CPU runs them after the same device demosaic), so only their kernels differ.
-/// Largest difference over all cases, twice the first measured value (4.05e-6: no decision went the other
-/// way).
+/// A case where no decision of method A went the other way is within this, twice the first measured value
+/// (4.05e-6, over all 48 cases at `Tuning::ORACLE`).
+///
+/// Since RC-13 (A6 `0.9` and A7 `3.5`) the demosaic hands method A other planes, and a few runs take a decision
+/// the other way on them ([`METHOD_A_POST_FLIPPED_CASES`]). That is the rate this kernel has on any content
+/// (`tests/gpu_bm_dct.rs`: 4 of 29 frames at the render's thresholds, up to 1.35e-3), not a constant
+/// that the device runs wrong: the pipelines are keyed by the same `Tuning` as the CPU's, the same sweep at
+/// 96 other seeds flips in 4 of 96 cases at `Tuning::ORACLE` (largest 3.6e-3) and in 7 of 96 at
+/// `Tuning::DEFAULT` (largest 4.3e-3), and the 0 of 32 cases of this sweep on the old planes was the lucky end of
+/// that rate. A flip is not a tau knife edge either: scaling the sigma plane by 1 +/- 1e-4 moves neither the
+/// CPU's nor the device's picture by more than 2e-6 and leaves the difference where it is. The strict bound
+/// stays for every case that did not flip.
 const METHOD_A_POST_TIE_FREE: f64 = 8.1e-6;
+
+/// The most tie-free runs (a case and one of its four outputs) of the R6..R8 sweep that may take a method A
+/// decision the other way on the very planes of the device demosaic. Measured with the shipped constants: 4 of
+/// 128 runs, from 2 of the 32 cases (RGGB 96 x 80 Vignette, 6.65e-4, and GBRG 96 x 80 Full, 1.255e-3, whose
+/// whole frame and two tiles see the flip); twice that.
+const METHOD_A_POST_FLIPPED_CASES: usize = 8;
+
+/// The largest difference of such a flipped case: twice the first measured value (1.255e-3).
+const METHOD_A_POST_FLIP_LARGEST: f64 = 2.6e-3;
 
 /// The same on tie-prone content: twice the first measured value (1.15e-2, all on the bare grid,
 /// `tests/gpu_bm_dct.rs` measures the kind on its own).
@@ -2956,9 +2975,10 @@ fn outputs_of(ow: usize, oh: usize) -> [Rect; 4] {
 
 /// Runs the sweep with method A on `setup_of`'s range and compares it with the CPU chain and, on the same
 /// device demosaic, with the CPU's method A (R6..R6 or, for `front`, R6..R8 behind the CPU's front).
-fn method_a_sweep(dev: &TestGpu, front: bool) -> (Stats, Stats, f64, f64, f64) {
+fn method_a_sweep(dev: &TestGpu, front: bool) -> (Stats, Stats, f64, f64, f64, Vec<f64>) {
     let (mut free, mut prone) = (Stats::default(), Stats::default());
     let (mut post_free, mut post_prone, mut worst_case) = (0.0f64, 0.0f64, 0.0f64);
+    let mut post_free_cases = Vec::new();
     let range = if front { "R1..R9" } else { "R6..R8" };
     for (n, (cfa, w, h, lens, nname, noise, seed)) in sweep().into_iter().enumerate() {
         let variant = [Variant::Scalar, Variant::Half, Variant::HalfWithGains][n % 3];
@@ -2989,6 +3009,7 @@ fn method_a_sweep(dev: &TestGpu, front: bool) -> (Stats, Stats, f64, f64, f64) {
             } else {
                 free.add(&s);
                 post_free = post_free.max(p.max_abs);
+                post_free_cases.push(p.max_abs);
             }
         }
     }
@@ -2997,7 +3018,14 @@ fn method_a_sweep(dev: &TestGpu, front: bool) -> (Stats, Stats, f64, f64, f64) {
     note!(
         "[{range}] method A against the CPU's on the same planes: largest {post_free:.3e} tie-free, {post_prone:.3e} tie-prone; worst single case {worst_case:.3e} over 1e-4"
     );
-    (free, prone, post_free, post_prone, worst_case)
+    (
+        free,
+        prone,
+        post_free,
+        post_prone,
+        worst_case,
+        post_free_cases,
+    )
 }
 
 #[test]
@@ -3005,7 +3033,7 @@ fn r6_to_r8_with_method_a_matches_the_cpu_chain() {
     let Some(dev) = f32_device_or_skip() else {
         return;
     };
-    let (free, prone, post_free, post_prone, _) = method_a_sweep(dev, false);
+    let (free, prone, _, post_prone, _, post_free_cases) = method_a_sweep(dev, false);
     assert_within(
         "R6..R8 chain with method A, tie-free content",
         &free,
@@ -3016,7 +3044,22 @@ fn r6_to_r8_with_method_a_matches_the_cpu_chain() {
         &prone,
         METHOD_A_TIE_PRONE,
     );
-    assert!(post_free <= METHOD_A_POST_TIE_FREE, "{post_free:e}");
+    // Every case is within the strict bound or a flipped case, and the flips are few and bounded.
+    let flipped: Vec<f64> = post_free_cases
+        .iter()
+        .copied()
+        .filter(|&d| d > METHOD_A_POST_TIE_FREE)
+        .collect();
+    assert!(
+        flipped.len() <= METHOD_A_POST_FLIPPED_CASES,
+        "{} of {} tie-free runs took a method A decision the other way: {flipped:?}",
+        flipped.len(),
+        post_free_cases.len()
+    );
+    assert!(
+        flipped.iter().all(|&d| d <= METHOD_A_POST_FLIP_LARGEST),
+        "{flipped:?}"
+    );
     assert!(post_prone <= METHOD_A_POST_TIE_PRONE, "{post_prone:e}");
 }
 
@@ -3028,7 +3071,7 @@ fn r1_to_r9_with_method_a_matches_the_cpu_chain() {
     let Some(dev) = f32_device_or_skip() else {
         return;
     };
-    let (free, prone, post_free, _, _) = method_a_sweep(dev, true);
+    let (free, prone, post_free, _, _, _) = method_a_sweep(dev, true);
     assert_within(
         "R1..R9 chain with method A, tie-free content",
         &free,
@@ -3244,6 +3287,20 @@ const STRIPED_CHAIN: Limits = Limits {
 /// Method A, the false-colour stage and R8 on the very planes the device demosaic made (R6..R8 against
 /// R6..R6) on the striped scenes: twice the first measured value (8.58e-6).
 const STRIPED_POST: f64 = 1.72e-5;
+/// Since RC-13 (A6 `0.9`, A7 `3.5`) one of the six striped runs, BGGR on the bare grid (tie-prone content), takes
+/// a method A decision the other way on the planes of the device demosaic, in R6..R8 and R1..R9 alike (the same
+/// demosaic planes): 113 of 50 400 samples over 1e-4, largest 1.306e-3, and the CPU's stages on the very same
+/// planes differ from the device's by the same 1.306e-3. At `Tuning::ORACLE` it is the strict case (largest
+/// 3.2e-5). The flip is the kernel's own rate and not a constant on the device (`METHOD_A_POST_TIE_FREE`
+/// has the evidence). The strict limits above hold for the other five runs; this one is bounded at twice the
+/// measured values, and at most [`STRIPED_FLIPPED_RUNS`] runs may be in it.
+const STRIPED_FLIP: Limits = Limits {
+    over: 4.5e-3,
+    fine: 1.4e-2,
+    largest: 2.7e-3,
+};
+/// The most striped runs that may be in [`STRIPED_FLIP`]: measured 2 of 6 (one scene in two ranges), twice that.
+const STRIPED_FLIPPED_RUNS: usize = 4;
 
 #[test]
 fn the_false_colour_stage_on_stripes_matches_the_cpu_chain_and_its_tiles() {
@@ -3251,6 +3308,7 @@ fn the_false_colour_stage_on_stripes_matches_the_cpu_chain_and_its_tiles() {
         return;
     };
     let (mut all, mut post, mut effect) = (Stats::default(), 0.0f64, f64::INFINITY);
+    let mut flipped = Vec::new();
     let mut seed = 3300;
     for (cfa, lens) in [
         (Cfa::RGGB, Lens::Vignette),
@@ -3267,10 +3325,24 @@ fn the_false_colour_stage_on_stripes_matches_the_cpu_chain_and_its_tiles() {
             let s = compare(&got, &setup.cpu(out));
             let label = format!("striped {} {lens:?} {}", cfa.name(), setup.range.label());
             s.print(&label);
-            all.add(&s);
+            let flip = s.max_abs > STRIPED_CHAIN.largest;
+            if flip {
+                assert_within(&label, &s, STRIPED_FLIP);
+                flipped.push(label.clone());
+            } else {
+                all.add(&s);
+            }
             if setup.range == StageRange::DEMOSAIC_TO_SHARPEN {
                 let p = compare(&got, &on_r6(&setup).gpu(dev, out));
-                post = post.max(p.max_abs);
+                if flip {
+                    assert!(
+                        p.max_abs <= STRIPED_FLIP.largest,
+                        "{label}: {:e}",
+                        p.max_abs
+                    );
+                } else {
+                    post = post.max(p.max_abs);
+                }
                 // The stage does something on the stripes: the chain without it is another picture there.
                 let without = compare(&got, &off.gpu(dev, out));
                 effect = effect.min(without.max_abs);
@@ -3283,6 +3355,11 @@ fn the_false_colour_stage_on_stripes_matches_the_cpu_chain_and_its_tiles() {
     all.print("striped scenes with false colour, R6..R8 and R1..R9");
     note!(
         "[R6..R8] false colour on stripes against the CPU's stages on the same planes: largest {post:.3e}; the stage moves the picture by at least {effect:.3e}"
+    );
+    assert!(
+        flipped.len() <= STRIPED_FLIPPED_RUNS,
+        "{} of 6 striped runs took a method A decision the other way: {flipped:?}",
+        flipped.len()
     );
     assert_within("striped scenes with false colour", &all, STRIPED_CHAIN);
     assert!(post <= STRIPED_POST, "{post:e}");

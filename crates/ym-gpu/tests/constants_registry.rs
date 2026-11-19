@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use ym_gpu::cpu::demosaic::{adaptive_ratio, log_guided};
 use ym_gpu::cpu::output_sharpen;
 use ym_gpu::cpu::sharpen::diffraction;
-use ym_gpu::cpu::tuning::{Constant, Kind};
+use ym_gpu::cpu::tuning::{Constant, Kind, Status};
 use ym_gpu::device::StorageMode;
 use ym_gpu::kernels::{KernelId, shader_source};
 
@@ -183,6 +183,24 @@ fn the_registries_and_the_inventory_list_the_same_rows() {
 }
 
 #[test]
+fn no_row_is_pending() {
+    // RC-14: every fit has run, been kept with its numbers, or been skipped by the owner and said so.
+    // A `Pending` row would mean a derivation that is still to come.
+    for p in packages() {
+        for c in p.registry {
+            assert!(
+                !matches!(c.status, Status::Pending(_)),
+                "{}: {} ({}) is still pending: {:?}",
+                p.name,
+                c.id,
+                c.name,
+                c.status
+            );
+        }
+    }
+}
+
+#[test]
 fn each_registry_holds_the_rows_of_its_spec() {
     // The ID letter says the package: A spec 01, L spec 02, D spec 03, O spec 04.
     for (p, letter) in packages().iter().zip(['A', 'L', 'D', 'O']) {
@@ -269,8 +287,12 @@ fn the_centre_weight_expression_gives_the_121_and_123_of_the_spec() {
             .unwrap_or_else(|| panic!("{name}"))
             .value
     };
-    assert_eq!(value("centre_weight_at_zero_misregistration"), 121.0);
-    assert_eq!(value("centre_divisor_at_zero_misregistration"), 123.0);
+    // The registry holds what ships (A4 = 9 and 51 since RC-10: 61 and 63); the oracle's are 121 and 123.
+    assert_eq!(value("centre_weight_at_zero_misregistration"), 61.0);
+    assert_eq!(value("centre_divisor_at_zero_misregistration"), 63.0);
+    let o = adaptive_ratio::Tuning::ORACLE;
+    assert_eq!(o.centre_weight_at_zero_misregistration(), 121.0);
+    assert_eq!(o.centre_divisor_at_zero_misregistration(), 123.0);
     let t = adaptive_ratio::Tuning::DEFAULT;
     assert_eq!(
         t.centre_weight_at_zero_misregistration(),
@@ -321,8 +343,17 @@ fn the_block_of_each_package_is_the_registrys_device_constants() {
             assert!(p.registry.iter().all(|c| c.wgsl.is_none()), "{}", p.name);
             continue;
         };
-        // Deterministic text, and the same under the oracle constants until a fit lands.
-        assert_eq!(*block, *oracle, "{}: DEFAULT and ORACLE differ", p.name);
+        // The same constants under the oracle and the shipped values. The values may differ once a fit
+        // has landed (RC-07: A6 and A7); the names and their order may not.
+        let name_list = |text: &str| -> Vec<String> {
+            block_constants(text).into_iter().map(|(n, _)| n).collect()
+        };
+        assert_eq!(
+            name_list(block),
+            name_list(oracle),
+            "{}: DEFAULT and ORACLE name different constants",
+            p.name
+        );
         let generated = block_constants(block);
         let on_device: Vec<_> = p.registry.iter().filter(|c| c.wgsl.is_some()).collect();
         let mut names: Vec<&str> = generated.iter().map(|(n, _)| n.as_str()).collect();

@@ -272,29 +272,48 @@ values R5 reconstructed are not sharpened into artefacts.
 
 #### Derivation of every constant
 
-Every constant of this spec has a row, with the ID of `docs/29-raw-constants.md` §2.1 and one status: **Maths** (a mathematical fact or an error budget gives the value, and a test proves it), **Fit** (only image data can choose it; the task that fits it), **Design** (the owner's look, `docs/29` §6) or **Guard** (a numeric safeguard; what it protects). No row names an origin: each stands on the method written in it. The tests are in `crates/ym-gpu/src/cpu/sharpen/diffraction.rs`, module `derivations`. "Proof in RC-11" means the derivation is written and the convergence run that proves it is part of RC-11 (`docs/29` §5); no test of RC-02 claims it.
+Every constant of this spec has a row, with the ID of `docs/29-raw-constants.md` §2.1 and one status: **Maths** (a mathematical fact or an error budget gives the value, and a test proves it), **Fit** (only image data can choose it; the task that fits it), **Design** (the owner's look, `docs/29` §6) or **Guard** (a numeric safeguard; what it protects). No row names an origin: each stands on the method written in it. The tests are in `crates/ym-gpu/src/cpu/sharpen/diffraction.rs`, module `derivations`. The convergence runs of D2 to D4 and D6 and the fits of D1 and D5 to D12 are RC-11's (2026-11-18, `docs/29` §5); how they were decided is under "What RC-11 decided" below.
 
-**Where each constant lives (`docs/29` RC-03).** In the code every constant of this table that is a number is a field of `diffraction::Tuning` (`crates/ym-gpu/src/cpu/sharpen/diffraction.rs`), documented with its row, kind, section, status and task. `Tuning::ORACLE` holds the values the oracle vectors were made with and `Tuning::DEFAULT` the shipped ones; they are equal until a fit lands (RC-11). The planner reads D1 to D6 once per `(pitch, f-number)`; the device reads D7 to D13 from a WGSL `const` block generated from the `Tuning` and put in front of `shaders/diffraction.wgsl`, so there is one copy of each. The windows of D14, the 8 × 8 grid and the 500 radial samples are structure and stay in the code. `diffraction::REGISTRY` lists id, name, value, kind and status, and `crates/ym-gpu/tests/constants_registry.rs` fails for a copy outside the `Tuning`, for a generated block that differs from the registry, and for a row missing from `docs/29` §2.1 or the other way round.
+**Where each constant lives (`docs/29` RC-03).** In the code every constant of this table that is a number is a field of `diffraction::Tuning` (`crates/ym-gpu/src/cpu/sharpen/diffraction.rs`), documented with its row, kind, section, status and task. `Tuning::ORACLE` holds the values the oracle vectors were made with and `Tuning::DEFAULT` the shipped ones; they are equal: RC-11 kept every value. The planner reads D1 to D6 once per `(pitch, f-number)`; the device reads D7 to D13 from a WGSL `const` block generated from the `Tuning` and put in front of `shaders/diffraction.wgsl`, so there is one copy of each. The windows of D14, the 8 × 8 grid and the 500 radial samples are structure and stay in the code. `diffraction::REGISTRY` lists id, name, value, kind and status, and `crates/ym-gpu/tests/constants_registry.rs` fails for a copy outside the `Tuning`, for a generated block that differs from the registry, and for a row missing from `docs/29` §2.1 or the other way round.
+
+**Where the constants come from (`docs/29` RC-14).** The values were taken over from research (the owner's answer to question 12 of `docs/STATUS.md`, 2026-11-13: "from research, but you need to readjust"). The project has re-derived every one of them: each is proved by mathematics, fitted on public test images and our own synthetic scenes (no measurement of our own, no real-sensor data), kept with the numbers that show it sits at its optimum or on a trade-off curve, or marked as the owner's look. The derivation of each row is in the table and in `docs/29`; the value that ships is `Tuning::DEFAULT`. No row cites a source for its number, and none needs one. A constant that is not in this table is not added; it is raised as a question first.
+
+RC-11 ran every fit of this spec and **changed no value**: the default stays equal to the oracle. The one fit that is better on the means and worse on a minority of cells (the σ_G factor `0.78`) is not taken.
 
 | ID | Constant | Status | Derivation | Proof or task |
 |---|---|---|---|---|
-| D1 | 461 to 619 nm, weight 1 from 540 nm, `(620 − λ)/80` below (§3.2) | Fit | The spectral weight of the polychromatic PSF. To be compared with the camera's luma response from the published curves of the Sony bodies. | RC-11 |
-| D2 | `0.42` µm, 1/4, 500 samples (§3.1, §3.2) | Maths | Radial step `min(p_eff, 0.42·N/π)/4`: an error budget, checked against a finer step. | proof in RC-11 |
+| D1 | 461 to 619 nm, weight 1 from 540 nm, `(620 − λ)/80` below (§3.2) | Fit | The spectral weight of the polychromatic PSF. Compared with the luma response of the eleven published Sony curves (D55, balanced channels, the stage's luma): the PSF moves by 0.043 in L1, and the gate is worse in 153 of 168 numbers with them, so the ramp stays. | RC-11, `tools/fit/d1_spectral_weight.py`; `the_weight_table_replaces_the_ramp_and_a_table_of_the_ramp_changes_nothing` |
+| D2 | `0.42` µm, 1/4, 500 samples (§3.1, §3.2) | Maths | Radial step `min(p_eff, 0.42·N/π)/4`, an error budget against a step of one eighth: the kernel is 5.2e-3 away in L1 (budget 1e-3), half the step 1.3e-3, twice the step 2.2e-2. Over the budget, and the finer steps are mixed on the gate, so it stays. | `d2_the_radial_step_misses_the_budget_by_a_factor_of_five_and_an_eighth_step_is_not_better_on_the_gate` |
 | D3 | `1/6` (§3.2) | Maths | Weight of sample 0 in the encircled energy. The integral of `r·p(r)` over a profile that is linear between its samples weighs sample `k > 0` by exactly `k` and sample 0 by `1/2 − 1/3 = 1/6`; the disc-area value 1/8 is not exact. | `one_sixth_is_the_exact_weight_of_sample_zero_in_the_encircled_energy`, `the_planner_uses_that_weight_to_find_the_80_percent_radius` |
-| D3 | `0.8`, `0.01`, `4·r80`, `6` px, `0.99`, `0.002`, 6 angular samples per px (`+ 0.999`), the 8 × 8 grid, the cos² taper (§3.2) | Maths | Where the kernel is cut: error budgets on the energy outside the kernel and on the ring peaks. | proof in RC-11 |
-| D4 | `π/16` × 8 angles, 3 bins per px, `0.85`, `0.8` (§3.3) | Maths | How the line spread of the kernel is measured: tested on kernels of known width. | proof in RC-11 |
-| D5 | `0.75`, `[0.2, 3.0]` (§3.3) | Maths | `σ_G = f·mean(x80)`. For a Gaussian line spread `x80 = 1.2816σ`, so the exact factor is `1/1.2816 = 0.7803`; the shipped 0.75 is 3.9 % below it and stays until RC-11 decides. For the Airy-like kernel the factor is a fit. The clamp keeps `σ_G` where the Gaussian radius of D6 holds. | `the_exact_sigma_g_factor_for_a_gaussian_is_0_780_and_the_shipped_one_is_0_75`; RC-11 |
-| D6 | `3.5`, `1`, `8` (§3.3) | Maths | Radius `min(floor(3.5σ_G + 1), 8)` over pixel-integrated taps cuts at `radius + 1/2 > 3.5σ_G`, so the mass beyond is under `erfc(3.5/√2) = 4.65e-4` for every `σ_G` up to 2.0. Above 2.0 the cap of 8 governs (4.6e-3 at σ_G = 3, never reached: σ_G is 0.5 at R = 3). | `the_gaussian_radius_cuts_less_than_the_tail_budget_up_to_sigma_two` |
-| D7 | `0.8` of white, `25`, `5`, `1` (§3.4) | Fit | Clip penalty: where the highlight starts and the weights of the sorted channel excesses. | RC-11 |
-| D8 | `12.5`, `0.04` (§3.5) | Fit | Pull-in of the local envelope estimates. | RC-11 |
-| D9 | `0.0005` (§3.9) | Fit | Ridge of the 3 × 3 local solve. | RC-11 |
-| D10 | `0.5`, `2`, `1/4`, `1/2` (§3.9) | Fit | The noise gate and the fade-out band of the residual. | RC-11 |
-| D11 | `0.01`, `−0.5`, `[0, 1)` (§3.9) | Fit | Smallest confidence weight; lower bound of `cD`; range of `cH`. | RC-11 |
-| D12 | `1.5` (§3.12) | Fit | Cap of the luma-to-RGB ratio. | RC-11 |
+| D3 | `0.8`, `0.01`, `4·r80`, `6` px, `0.99`, `0.002`, 6 angular samples per px (`+ 0.999`), the 8 × 8 grid, the cos² taper (§3.2) | Maths | Where the kernel is cut. The radius rule (`0.99`, `0.002`) loses 4.7e-4 of the kernel against no cut (R = 7) and the floor `0.01` never binds: both inside the budget. The splat density 6 is 1.9e-2 from 24 (over); the support (`0.8`, `4·r80`, `6` px, the taper) is a window, not a quantity that converges (8·r80 and 8 px move the kernel by 0.22). None of the converged values is better on every gate number, so all stay. | `d3_the_radius_rule_and_the_floor_meet_the_budget_and_the_support_and_the_splat_do_not` |
+| D4 | `π/16` × 8 angles, 3 bins per px, `0.85`, `0.8` (§3.3) | Maths | How the line spread of the kernel is measured, tested on Gaussians of known width: the estimate is 0.921 of the true `x80 = 1.2816σ` for σ from 1.25 to 2 (0.89 to 0.97 below), so the factor that returns σ is 0.847, not 0.780. Over the budget; D5 absorbs it, and the cutoff and level are mixed on the gate (a level of 0.82 or a cutoff of 0.9 raise the mean numbers and worsen 77 and 71 of 168). | `d4_the_line_spread_estimate_reads_8_percent_below_the_true_half_width_of_a_gaussian` |
+| D5 | `0.75`, `[0.2, 3.0]` (§3.3) | Fit | `σ_G = f·mean(x80)`. For a Gaussian line spread `x80 = 1.2816σ`, so the exact factor of the true half-width is `1/1.2816 = 0.7803`; the estimator of D4 reads 8 % low, so for it the factor that returns the kernel's own σ is 0.847. **RC-11 kept 0.75**: 0.76 to 0.9 raise the mean PSNR, MTF50 and the Kodak PSNR and lower the mean overshoot, but worsen 77 of 168 numbers (§6.4 and "What RC-11 decided"). The clamp is never reached: σ_G is at most 1.87 for every pitch from 0.5 to 20 µm and f/1 to f/50. | `the_exact_sigma_g_factor_for_a_gaussian_is_0_780_and_the_shipped_one_is_0_75`; RC-11 |
+| D6 | `3.5`, `1`, `8` (§3.3) | Maths | Radius `min(floor(3.5σ_G + 1), 8)` over pixel-integrated taps cuts at `radius + 1/2 > 3.5σ_G`, so the mass beyond is under `erfc(3.5/√2) = 4.65e-4` for every `σ_G` up to 2.0, and under the budget of 1e-3 up to 2.58 (with the cap of 8). σ_G is at most 1.87 for every valid pitch and f-number, so the budget holds everywhere the planner goes. Radii from `3.25σ` to `3.75σ` change nothing; 3.0 and 4.0 are mixed by under 0.0005 dB. | `the_gaussian_radius_cuts_less_than_the_tail_budget_up_to_sigma_two`, `d6_the_gaussian_radius_meets_the_one_per_mille_budget_up_to_sigma_2_58` |
+| D7 | `0.8` of white, `25`, `5`, `1` (§3.4) | Fit | Clip penalty: where the highlight starts and the weights of the sorted channel excesses. **Kept.** The threshold is mixed (0.82 and 0.9 raise the Kodak PSNR by 0.013 and 0.056 dB and the lamps by 0.005 and 0.53 dB, and worsen 17 and 25 gate numbers; 0.5 to 0.78 lose up to 0.99 dB of gate text PSNR and 0.56 dB of Kodak); the weights 5 to 60 and 1 to 15 move no number by more than 0.0005 dB, even on the lamps scene where three channels clip. | RC-11 |
+| D8 | `12.5`, `0.04` (§3.5) | Fit | Pull-in of the local envelope estimates. **Kept.** The gain is mixed on every value (3 to 40: 46 to 119 gate numbers worse, 13 and 14 each 50); the band from 0.045 up worsens nothing and moves two numbers by under 1e-4 (rule 3). | RC-11 |
+| D9 | `0.0005` (§3.9) | Fit | Ridge of the 3 × 3 local solve. **Kept.** Mixed on every value from 1e-5 to 5e-3 (0.0004 and below lower the mean overshoot and noise and worsen 87 to 93 numbers; 0.0006 and above raise them and worsen 79 to 93). | RC-11 |
+| D10 | `0.5`, `2`, `1/4`, `1/2` (§3.9) | Fit | The noise gate and the fade-out band of the residual. **Kept.** The gate (0.2 to 1.0) trades overshoot and flat noise against the PSNR of the natural scene at every value (0.4: overshoot −0.11, noise −0.08, natural PSNR −0.04 dB, 96 numbers worse); the band edges are mixed (the `1/4` and `1/2` from 0.28 and 0.55 up each leave 19 numbers worse for 19 better). | RC-11 |
+| D11 | `0.01`, `−0.5`, `[0, 1)` (§3.9) | Fit | Smallest confidence weight; lower bound of `cD`; range of `cH`. **Kept.** The weight floor 0.001 to 0.0125 moves no number by more than 0.003 dB, 0.02 to 0.1 is mixed (0.1: text PSNR +0.043 dB, overshoot −0.08 points, 28 numbers worse); `cD` from −3 to −0.6 moves 34 gate numbers by under 0.001 (mixed), −0.4 to 0 is mixed (0: Kodak −1.1 dB). `cH` is a range, not a value. | RC-11 |
+| D12 | `1.5` (§3.12) | Fit | Cap of the luma-to-RGB ratio. **Kept.** From 1.6 to 5 no number moves; 1.4 improves four numbers by under 1e-6; below it mixed. | RC-11 |
 | D13 | `1e-20`, `1e-15`, `1 DN` (§2.3, §3.5, §3.9, §3.12) | Guard | Divide guards and floors: they keep the divisions and the solve finite on black and flat input and never bind on a photograph. | n/a |
-| D14 | windows 5 × 5 and 9 × 9 (§3.5, §3.8) | Fit | The envelope, moment and smoothing windows; structure, not a number to tune. | RC-11 |
+| D14 | windows 5 × 5 and 9 × 9 (§3.5, §3.8) | Fit | The envelope, moment and smoothing windows; structure, not a number to tune. Kept. | RC-11 |
 
-Counts: Maths 5 (D2, D3, D4, D5, D6), Fit 8 (D1, D7 to D12, D14), Design 0, Guard 1 (D13).
+Counts: Maths 4 (D2, D3, D4, D6), Fit 9 (D1, D5, D7 to D12, D14), Design 0, Guard 1 (D13).
+
+#### What RC-11 decided (2026-11-18)
+
+**Nothing in `Tuning::DEFAULT` changed.** R8 does not use this stage by default, so no picture moves. The rules are those of `docs/29` §2.3 (rule 3: no change for under 1 % of the objective; rule 4 and the owner's answer 1: a value that is better on one number and worse on another is not taken), with this spec's §6.4 table as the floor.
+
+*The evaluation.* Four sets, each with the shipped constants as the base: (1) the §6.4 gate itself (`capture_sharpen_ab --from oracle`: five f-numbers, three ISO, the plain stage and the noise-gate variant, 168 numbers); (2) the eight cases of `fit_diffraction --held` (f/8 and f/16 at ISO 100 and 800, a second noise seed held out; the scenes are blurred with the reference optics); (3) 24 centre crops of 160 × 112 of the Kodak images in linear light, blurred with the same optics, PSNR against the sharp crop (evaluation only, not committed, `YM_TESTDATA`); (4) a lamps scene of ours (two discs of 6 and 10 px at 1.6 times white, three channels past the clip threshold in the larger one, clipped after the blur). `tools/fit/rc11_scan.py NAME v1,v2,...` runs one constant over a grid and prints, per value, the number of gate cells better and worse, the same for the cases, the Kodak and lamps change in dB and the mean change of each gate number. The objectives are taken in the order of §6.3: MTF50 against Richardson–Lucy Auto at f/8 and above, then overshoot, then flat-patch noise (at most ×1.10), then PSNR. Coordinate descent over D5 and D7 to D12 in the order of the sensitivity table of `docs/29` §2.2 found no move: no value of any grid (about 150 evaluations, 4 s each) is better on every number and by more than rule 3; the first sweep accepts nothing, so it is also the last.
+
+*D1.* `tools/fit/d1_spectral_weight.py` takes the eleven curves of `data/cameras/sony`, multiplies each channel by CIE D55 (D50 and equal energy give the same result), balances the channels to the same total (the stage works on balanced RGB), combines them with 0.299, 0.587, 0.114 and normalises to a mean of 1 from 540 nm. The weights are not a ramp: 0.69 at 461 nm, 1.18 at 520, 1.13 at 540, 0.86 at 560, 1.07 at 580, 1.14 at 600, 0.71 at 619 (today's ramp: 1.99, 1.25, 1.0, 1.0, 1.0, 1.0, 1.0); the bodies differ from their mean by 0.006 in PSF L1 at most. The two PSFs differ by **0.043** in L1 (0.027 without balancing), which is above the evaluation's resolution (a change of ±10 % of the ramp width moves the PSF by 0.0075 and no gate number; the stated budget is 1e-3). So the first condition of the rule is met, the second is not: with the derived weights (mean, each body, three illuminants, balanced and raw, smoothed over 21 nm: 19 sets) the §6.4 gate is worse in 146 to 153 of 168 numbers (mean text PSNR −0.04 to −0.13 dB, MTF50 −0.001 to −0.003). They put more weight on the middle of the band than the ramp and less on 461 nm, which makes the PSF wider, and the stage's other constants were shaped on the ramp's PSF. **The ramp stays; the published curves do not agree with it to within the budget, and the derivation is that they were tried and made the gate worse.** The field `weight_table` of `Tuning` (off in both tunings) holds a measured table; the evaluation is repeatable with `--weights`.
+
+*D2 to D4 and D6 (the budget).* **1e-3 of the energy of the kernel the stage uses**, as an L1 distance between the normalised kernel and that of a converged reference (for the Gaussian, between the Gaussian of the estimated width and of the true width). Thirteen lenses (3.76 µm at f/5.6 to f/45, 5.94, 2.4, 7.52 and 1 µm pitches); results in the table above. The radius rule, the floor of the interpolation step and the Gaussian radius meet it (D6 to σ_G = 2.58; σ_G never exceeds 1.87, so it always holds, and RC-02's 4.65e-4 holds to 2.0). The radial step (5.2e-3), the splat density (1.9e-2), the support (a window, 0.22) and the line-spread estimate (8 % low) do not. For each, the converged value was run through the gate (`step_fraction` 0.125 and 0.0625: 27 and 33 numbers worse, the mean PSNR +0.008 and +0.027 dB; `angular_per_px` 12 and 24: 152 and 151 numbers worse; `support_pitch_factor` 8, `support_r80_factor` 6 and 8, `r80_energy` 0.7 to 0.9: 56 to 74 numbers worse or 14 worse for 68 better) and none is better on every number, so none is taken (answer 1).
+
+*D5, the σ_G factor: 0.75 or 0.78.* Both, on the §6.4 cells (text PSNR dB / natural PSNR dB / MTF50 / overshoot % / undershoot % / flat noise at 0.75, then at 0.78): f/8 ISO 100 30.68 / 35.80 / 0.340 / 1.65 / 1.63 / ×1.005, then 30.79 / 35.95 / 0.346 / 1.84 / 1.73 / ×1.005; f/8 ISO 800 29.84 / 34.14 / 0.354 / 2.38 / 1.99 / ×1.007, then 29.90 / 34.17 / 0.360 / 2.27 / 2.10 / ×1.007; f/8 ISO 6400 24.58 / 27.71 / 0.314 / 4.75 / 2.30 / ×1.011, then 24.53 / 27.69 / 0.371 / 4.73 / 2.40 / ×1.012; f/16 ISO 100 26.08 / 31.89 / 0.245 / 3.00 / 2.11 / ×1.577, then 26.14 / 31.92 / 0.246 / 3.11 / 2.28 / ×1.577. On the means over the 168 numbers (165 move): text PSNR +0.038 dB, natural +0.024 dB, MTF50 +0.0047, overshoot −0.041 points, flat noise −0.0008, and on the other sets Kodak +0.089 dB, lamps +0.0003 dB (the clip does not meet this constant), held-out cases 18 better and 6 worse. But 77 of the 165 are worse (overshoot 15, undershoot 23, flat noise 22, ISO 6400 PSNR 13, MTF50 and rise 2 each). 0.78 is therefore **mixed and not taken**; 0.75 stays. The §6.3 bars (MTF50 at least that of Richardson–Lucy Auto, overshoot no higher, flat noise at most ×1.10, over the 12 cells from f/8) are met by 9, 5 and 3 cells and all three by 1 cell with either factor; the noise-gate variant meets them in 0 of 9 cells from f/11 with either. The exact factor for a Gaussian line spread (0.780) is not the factor of this estimator (0.847), which is why the maths does not decide it.
+
+*D7 to D12.* See the rows above. Every value of every grid either worsens a gate number or moves nothing by more than rule 3's 1 %. (Where the grid shows a value that worsens no number, it moves two to nine numbers by 1e-4 or less.)
+
 
 ### 2.7 Derived values (the plan)
 
@@ -729,21 +748,66 @@ generator's PRNG is splitmix64 with Irwin–Hall normals (arithmetic only).
 
 ### 6.4 Measured
 
-Synthetic scenes at a 3.76 µm pitch, ISO 100 (MTF50 in cycles per pixel, edge rise 10 to 90 % in px, overshoot in % of the step, flat-patch luma noise after R7 relative to the input):
+Synthetic scenes at a 3.76 µm pitch, regenerated by RC-11 on 2026-11-18 with `cargo run --release -p ym-gpu --example capture_sharpen_ab` at the shipped `Tuning::DEFAULT` (the numbers are those of the first measurement: RC-11 changed no constant). The scenes are blurred with the stage's own PSF; PSNR is against the sharp scene (fine text and natural), MTF50 in cycles per pixel, the 10 to 90 % rise of the edge in px, overshoot and undershoot in % of the step, flat-patch luma noise relative to the input:
 
-| f | method | MTF50 | rise | overshoot | flat noise |
-|---|---|---|---|---|---|
-| 8 | input | 0.273 | 1.94 | 0.3 | ×1.000 |
-| 8 | Richardson–Lucy, Auto | 0.380 | 1.11 | 7.0 | ×1.255 |
-| 8 | diffraction | 0.340 | 1.26 | 1.7 | ×1.005 |
-| 16 | input | 0.184 | 2.63 | 0.3 | ×1.000 |
-| 16 | Richardson–Lucy, Auto | 0.238 | 2.17 | 1.0 | ×1.255 |
-| 16 | diffraction | 0.245 | 1.97 | 3.0 | ×1.577 |
-| 16 | diffraction with the noise gate | 0.244 | 1.97 | 3.0 | ×1.085 |
-| 22 | input | 0.152 | 3.15 | 0.3 | ×1.000 |
-| 22 | Richardson–Lucy, Auto | 0.180 | 2.68 | 0.6 | ×1.255 |
-| 22 | diffraction | 0.196 | 2.30 | 4.6 | ×1.759 |
-| 22 | diffraction with the noise gate | 0.196 | 2.30 | 4.6 | ×1.080 |
+| f | ISO | method | text PSNR (dB) | natural PSNR (dB) | MTF50 (c/px) | rise (px) | overshoot (%) | undershoot (%) | flat noise (x) |
+|---|---|---|---|---|---|---|---|---|---|
+| 5.6 | ISO 100 | input | 32.40 | 37.18 | 0.323 | 1.46 | 0.3 | 0.1 | 1.000 |
+| 5.6 | ISO 100 | Richardson-Lucy Auto | 28.65 | 35.97 | 0.419 | 0.91 | 13.9 | 4.3 | 1.216 |
+| 5.6 | ISO 100 | diffraction | 33.32 | 38.02 | 0.389 | 1.15 | 1.1 | 1.0 | 1.000 |
+| 5.6 | ISO 800 | input | 31.17 | 35.12 | 0.334 | 1.46 | 0.7 | 0.3 | 1.000 |
+| 5.6 | ISO 800 | Richardson-Lucy Auto | 28.89 | 34.41 | 0.408 | 0.98 | 10.8 | 4.1 | 1.168 |
+| 5.6 | ISO 800 | diffraction | 31.86 | 35.66 | 0.400 | 1.12 | 1.9 | 1.5 | 1.000 |
+| 5.6 | ISO 6400 | input | 25.75 | 28.24 | 0.301 | 1.59 | 3.1 | 0.4 | 1.000 |
+| 5.6 | ISO 6400 | Richardson-Lucy Auto | 24.99 | 27.51 | 0.387 | 1.11 | 8.9 | 2.9 | 1.118 |
+| 5.6 | ISO 6400 | diffraction | 25.68 | 28.25 | 0.375 | 1.24 | 3.1 | 0.8 | 1.000 |
+| 8 | ISO 100 | input | 29.30 | 34.56 | 0.273 | 1.94 | 0.3 | 0.1 | 1.000 |
+| 8 | ISO 100 | Richardson-Lucy Auto | 33.19 | 38.04 | 0.380 | 1.11 | 7.0 | 2.7 | 1.255 |
+| 8 | ISO 100 | diffraction | 30.68 | 35.80 | 0.340 | 1.26 | 1.7 | 1.6 | 1.005 |
+| 8 | ISO 800 | input | 28.65 | 33.31 | 0.275 | 1.92 | 0.7 | 0.3 | 1.000 |
+| 8 | ISO 800 | Richardson-Lucy Auto | 31.28 | 34.68 | 0.363 | 1.18 | 6.1 | 2.7 | 1.200 |
+| 8 | ISO 800 | diffraction | 29.84 | 34.14 | 0.354 | 1.26 | 2.4 | 2.0 | 1.007 |
+| 8 | ISO 6400 | input | 24.87 | 27.80 | 0.269 | 2.06 | 3.1 | 0.4 | 1.000 |
+| 8 | ISO 6400 | Richardson-Lucy Auto | 24.92 | 27.21 | 0.299 | 1.48 | 5.6 | 1.7 | 1.141 |
+| 8 | ISO 6400 | diffraction | 24.58 | 27.71 | 0.314 | 1.27 | 4.7 | 2.3 | 1.011 |
+| 11 | ISO 100 | input | 26.50 | 32.30 | 0.227 | 2.29 | 0.3 | 0.1 | 1.000 |
+| 11 | ISO 100 | Richardson-Lucy Auto | 31.24 | 35.60 | 0.312 | 1.55 | 4.6 | 1.8 | 1.255 |
+| 11 | ISO 100 | diffraction | 28.49 | 34.05 | 0.303 | 1.59 | 2.7 | 2.7 | 1.200 |
+| 11 | ISO 100 | diffraction, noise gate | 28.40 | 33.95 | 0.303 | 1.59 | 2.7 | 2.7 | 1.081 |
+| 11 | ISO 800 | input | 26.15 | 31.52 | 0.223 | 2.31 | 0.7 | 0.3 | 1.000 |
+| 11 | ISO 800 | Richardson-Lucy Auto | 29.42 | 33.11 | 0.306 | 1.66 | 3.7 | 1.7 | 1.200 |
+| 11 | ISO 800 | diffraction | 27.88 | 32.56 | 0.319 | 1.55 | 3.3 | 3.1 | 1.242 |
+| 11 | ISO 800 | diffraction, noise gate | 27.86 | 32.58 | 0.319 | 1.55 | 3.3 | 3.1 | 1.103 |
+| 11 | ISO 6400 | input | 23.65 | 27.21 | 0.211 | 2.36 | 3.1 | 0.4 | 1.000 |
+| 11 | ISO 6400 | Richardson-Lucy Auto | 24.16 | 26.81 | 0.264 | 2.03 | 3.7 | 0.7 | 1.141 |
+| 11 | ISO 6400 | diffraction | 22.79 | 26.13 | 0.289 | 1.60 | 6.7 | 3.6 | 1.275 |
+| 11 | ISO 6400 | diffraction, noise gate | 23.04 | 26.67 | 0.289 | 1.60 | 6.3 | 3.7 | 1.114 |
+| 16 | ISO 100 | input | 23.75 | 30.11 | 0.184 | 2.63 | 0.3 | 0.1 | 1.000 |
+| 16 | ISO 100 | Richardson-Lucy Auto | 26.96 | 32.25 | 0.238 | 2.17 | 1.0 | 0.3 | 1.255 |
+| 16 | ISO 100 | diffraction | 26.08 | 31.89 | 0.245 | 1.97 | 3.0 | 2.1 | 1.577 |
+| 16 | ISO 100 | diffraction, noise gate | 25.87 | 31.67 | 0.244 | 1.97 | 3.0 | 2.1 | 1.085 |
+| 16 | ISO 800 | input | 23.56 | 29.62 | 0.183 | 2.67 | 0.7 | 0.3 | 1.000 |
+| 16 | ISO 800 | Richardson-Lucy Auto | 25.96 | 30.85 | 0.223 | 2.27 | 0.9 | 0.5 | 1.200 |
+| 16 | ISO 800 | diffraction | 25.70 | 30.75 | 0.235 | 1.93 | 4.2 | 2.5 | 1.617 |
+| 16 | ISO 800 | diffraction, noise gate | 25.66 | 30.83 | 0.236 | 1.93 | 4.2 | 2.5 | 1.101 |
+| 16 | ISO 6400 | input | 22.01 | 26.40 | 0.183 | 2.67 | 3.1 | 0.4 | 1.000 |
+| 16 | ISO 6400 | Richardson-Lucy Auto | 22.66 | 26.15 | 0.201 | 2.44 | 3.5 | 0.6 | 1.141 |
+| 16 | ISO 6400 | diffraction | 21.30 | 24.37 | 0.227 | 1.97 | 7.4 | 3.2 | 1.714 |
+| 16 | ISO 6400 | diffraction, noise gate | 21.84 | 25.99 | 0.232 | 1.99 | 5.9 | 3.4 | 1.118 |
+| 22 | ISO 100 | input | 21.45 | 28.38 | 0.152 | 3.15 | 0.3 | 0.1 | 1.000 |
+| 22 | ISO 100 | Richardson-Lucy Auto | 23.37 | 29.69 | 0.180 | 2.68 | 0.6 | 0.2 | 1.255 |
+| 22 | ISO 100 | diffraction | 24.19 | 30.29 | 0.196 | 2.30 | 4.6 | 3.1 | 1.759 |
+| 22 | ISO 100 | diffraction, noise gate | 23.90 | 30.02 | 0.196 | 2.30 | 4.6 | 3.1 | 1.080 |
+| 22 | ISO 800 | input | 21.34 | 28.05 | 0.150 | 3.14 | 0.7 | 0.3 | 1.000 |
+| 22 | ISO 800 | Richardson-Lucy Auto | 22.84 | 28.87 | 0.173 | 2.78 | 0.9 | 0.4 | 1.200 |
+| 22 | ISO 800 | diffraction | 23.85 | 29.37 | 0.195 | 2.28 | 5.5 | 3.3 | 1.815 |
+| 22 | ISO 800 | diffraction, noise gate | 23.80 | 29.45 | 0.195 | 2.28 | 5.4 | 3.3 | 1.098 |
+| 22 | ISO 6400 | input | 20.35 | 25.58 | 0.153 | 3.08 | 3.1 | 0.4 | 1.000 |
+| 22 | ISO 6400 | Richardson-Lucy Auto | 20.88 | 25.39 | 0.169 | 2.85 | 3.5 | 0.5 | 1.141 |
+| 22 | ISO 6400 | diffraction | 20.09 | 23.52 | 0.202 | 2.25 | 10.1 | 4.3 | 1.900 |
+| 22 | ISO 6400 | diffraction, noise gate | 20.65 | 25.33 | 0.203 | 2.28 | 6.8 | 4.6 | 1.116 |
+
+The ISO 100 rows, as the first measurement printed them (MTF50, rise, overshoot, flat noise): f/8 diffraction 0.340, 1.26, 1.7, ×1.005 against Richardson–Lucy 0.380, 1.11, 7.0, ×1.255; f/16 0.245, 1.97, 3.0, ×1.577 (with the noise gate ×1.085) against 0.238, 2.17, 1.0, ×1.255; f/22 0.196, 2.30, 4.6, ×1.759 (gate ×1.080) against 0.180, 2.68, 0.6, ×1.255.
 
 - At ISO 100 Richardson–Lucy has the higher MTF50 at f/5.6 to f/11 (f/5.6 0.419 against 0.389, f/11 0.312 against 0.303) and Diffraction from f/16. Diffraction has less overshoot at f/5.6 and f/8 (1.1 and 1.7 % against 13.9 and 7.0 %) and more at f/16 and f/22.
 - The ISO moves the comparison, because the Auto amount of Richardson–Lucy falls as the ISO rises: at ISO 800 Diffraction has the higher MTF50 from f/11 (0.319 against 0.306), and at ISO 6400 from f/8 (0.314 against 0.299 at f/8, 0.289 against 0.264 at f/11, 0.227 against 0.201 at f/16), where at f/8 it also has less overshoot (4.7 against 5.6 %) and less flat-patch noise (×1.011 against ×1.141).
@@ -767,6 +831,7 @@ The **noise-gate variant** `DiffractionPlan::with_noise_gate(true)` scales the g
 
 | Question | Choice |
 |---|---|
+| Where do the constants come from? | Taken over from research and re-derived by the project: each row of the constants table (§2.6) has its derivation or its fit, and `docs/29` has the numbers. Nothing is added to a table without a question first |
 | Fallback when inactive (no f-number or no pitch) | Richardson–Lucy with the resolved Auto parameters |
 | Mapping of the Sharpening Amount | None; `strength = 1` |
 | Vignetting gain in the noise weight | Ignored: corners carry `G(r)²` more variance than the model |

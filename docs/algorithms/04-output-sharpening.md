@@ -115,7 +115,7 @@ Validation rejects NaN, infinity and out-of-range values (a negative one include
 A      = amount_pct / 100                                          (f32)
 R      = Screen: min(radius_px, 2.5)        Print: min(print_distance / 2500, 15)
 σ'     = R ≥ 0.5  ?  0.7·R + 0.3
-       : R > 0.09 ?  0.97·sqrt(R − 0.09)
+       : R > 0.09 ?  k·sqrt(R − 0.09)             k = 1.0151294 shipped (0.97 in the reference)
        :             0                                             (f32)
 stage exists iff σ' ≥ 0.01 and A ≥ 0.001
 σ      = scale_sigma(σ', s)                                        (§2.4)
@@ -128,26 +128,29 @@ Radius to σ (`s = 1`):
 
 | R (px) | 0.1 | 0.2 | 0.3 | 0.5 | 0.6 | 0.8 | 1.0 | 1.5 | 2.0 | 2.5 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| σ' | 0.097 | 0.322 | 0.445 | 0.650 | 0.720 | 0.860 | 1.000 | 1.350 | 1.700 | 2.050 |
+| σ' | 0.102 | 0.337 | 0.465 | 0.650 | 0.720 | 0.860 | 1.000 | 1.350 | 1.700 | 2.050 |
 | taps (cap 13) | 3 | 5 | 5 | 5 | 7 | 7 | 7 | 9 | 11 | 13 |
 
-The map has a small step at R = 0.5: just below it σ' = 0.621, at 0.5 it is 0.650 (§7.1 item 6).
+The table is the shipped map. The reference's constant `k = 0.97` gives 0.097, 0.322 and 0.445 for the first three columns and leaves a step at R = 0.5: just below it σ' = 0.621, at 0.5 it is 0.650 (§7.1 item 6). The shipped `k = 0.65/√0.41` (`docs/29` RC-09) meets the line there, and nothing changes from R = 0.5 upward. The oracle vectors run under the reference's `k` (`Tuning::ORACLE`); the self vectors under the shipped one.
 
 Halo mapping: 10 → 0.316, 20 → 0.447, 40 → 0.632, 60 → 0.775, 80 → 0.894, 100 → 1.
 
-All derived scalars are computed in f32 exactly as written, so the tap count, which truncates `5σ + 2.5`, is the same in every implementation. The `erf` terms are computed in f64.
+All derived scalars are computed in f32 exactly as written, so the tap count, which truncates `5σ + 2.5`, is the same in every implementation. The `erf` terms are computed in f64; so is the tail-mass test of §2.3, which uses `erfc` of the `libm` crate.
 
 ### 2.3 Kernel
 
 ```
 n0 = (int)(σ·5.0 + 2.5) | 1                (f32 product and sum, truncation toward zero, then set bit 0)
-n  = n0 < 3 ? 3 : min(n0, maxTaps)         (odd, 3 ≤ n ≤ maxTaps)
+nB = the smallest odd n ≥ 3 with erfc(((n − 1)/2 + 1/2)/(σ·√2)) ≤ 1.5e-3      (f64; the tail-mass budget)
+n  = min(max(n0, nB, 3), maxTaps)          (odd, 3 ≤ n ≤ maxTaps)
 x_i = i − (n − 1)/2,  i = 0 … n−1
 k_i = erf((x_i + 0.5)/(σ·√2)) − erf((x_i − 0.5)/(σ·√2))      (f64)
 k_i ← k_i / Σ_j k_j                         (f64, sum left to right)
 ```
 
 Each tap is the Gaussian integrated over its pixel, normalised to unit sum after truncation. A full-precision `erf` is required (the CPU implementation uses the `libm` crate; a low-order approximation shifts the taps by more than the vectors allow; its taps differ from the vectors' kernels by at most 1.7e-16). Every vector lists its kernels with `%.17g` so an implementation can check them directly. `gaussian_kernel(sigma, max_taps)` rounds a cap down to an odd number of at least 3, so a cap of 0 or an even cap cannot panic or lose the centre tap; the caps of 13 and 33 are untouched.
+
+The tail-mass budget (RC-09): `n = 2h + 1` taps cut the Gaussian where `erfc((h + 1/2)/(σ√2))` of its mass lies beyond, and the kernel keeps at least as many taps as it needs for that to be at most 1.5e-3 (`h ≥ 3.1747σ − 1/2`). The reference's linear rule `n0` stays as the other term, so **no kernel is shorter than before**; it is longer where `n0` cuts more than the budget allows, just below each step of `n0`: for σ in (1.4175, 1.5) (9 to 11 taps) and (1.7325, 1.9) (11 to 13), and, where the cap is 33, in (2.047, 2.3) and (2.365, 2.5). At the preset's σ = 1.0 (7 taps), at `G_2` = 2.0 and at `G_h` = 2.0 (13 taps) the two rules agree, and so they do for the screen preset at `s = 0.4`; at full size and at `s = 0.4` the output is bit for bit the one of the linear rule. The kernels differ for export scales between 0.66 and 0.95 (the stage, gain or halo-map kernel is then one tap pair longer), by at most 3.3e-5 px of rise and 0.001 percentage points of overshoot (`docs/29` section 2.2c). In screen mode the cap of 13 governs from σ = 2.047 (6.5/3.1747), where the budget is no longer met (1.52e-3 at 2.05, 9.3e-3 at 2.5); in print mode the cap of 33 holds the budget up to σ = 5.2. The oracle vectors run with the budget off (`Tuning::ORACLE`: budget 1, which is the linear rule alone).
 
 Example, `σ = 1.0`: `[0.005979818, 0.060625743, 0.241842857, 0.383103164, 0.241842857, 0.060625743, 0.005979818]`.
 
@@ -159,7 +162,7 @@ The stage uses three kernels:
 | `G_2` | `max(2σ, 1)` (f32: `σ + σ`, then `≤ 1 → 1`) | smoothing the gain maps of methods 1 and 2 |
 | `G_h` | `2s` (f32: `s + s`) | smoothing the four halo-limiter maps |
 
-All three are capped at `maxTaps`. In screen mode, `G_2` is therefore cut to 13 taps (±6 px) from `2σ ≈ 2.3` (σ ≈ 1.15) upward, where the tap rule would ask for more.
+All three are capped at `maxTaps`. In screen mode, `G_2` is therefore cut to 13 taps (±6 px) from `2σ ≈ 2.05` (σ ≈ 1.02) upward, where the tap rule would ask for more (from `2σ ≈ 2.3`, σ ≈ 1.15, under the linear rule alone).
 
 ### 2.4 Resolution scaling
 
@@ -396,13 +399,13 @@ R', G', B' = R·ratio, G·ratio, B·ratio
 
 | Constant | Value | Use |
 |---|---|---|
-| Radius map | 0.5, 0.7, 0.3, 0.09, 0.97 | §2.2 |
+| Radius map | 0.5, 0.7, 0.3, 0.09, 1.0151294 (0.97 in the reference) | §2.2 |
 | σ knee | 0.15 | resolution scaling |
 | Minimum σ, amount | 0.01, 0.001 | stage creation |
 | Screen radius cap | 2.5 px | §2.2 |
 | Print distance scale and radius cap | 2500 per px, 15 px | §2.2 |
 | Tap cap | 13 (screen), 33 (print) | §2.3 |
-| Tap rule | 5.0, 2.5, `\| 1`, minimum 3 | §2.3 |
+| Tap rule | 5.0, 2.5, `\| 1`, minimum 3; tail-mass budget 1.5e-3 | §2.3 |
 | Percent, 8-bit levels | 100, 255 | `A`, `T0` |
 | Halo mapping | 0.01, sqrt, dead zone 0.001 | §2.2 |
 | Gain kernel | `max(2σ, 1)` | §2.3 |
@@ -418,17 +421,21 @@ R', G', B' = R·ratio, G·ratio, B·ratio
 
 Every constant of this spec has a row, with the ID of `docs/29-raw-constants.md` §2.1 and one status: **Maths** (a mathematical fact or an error budget gives the value, and a test proves it), **Fit** (only image data can choose it; the task that fits it), **Design** (the owner's look, `docs/29` §6) or **Guard** (a numeric safeguard; what it protects). No row names an origin: each stands on the method written in it. The tests are in `crates/ym-gpu/src/cpu/output_sharpen.rs`, module `derivations`.
 
-**Where each constant lives (`docs/29` RC-03).** In the code every constant of this table is a field of `output_sharpen::Tuning` (`crates/ym-gpu/src/cpu/output_sharpen.rs`), documented with its row, kind, section, status and task. `Tuning::ORACLE` holds the values the oracle vectors were made with and `Tuning::DEFAULT` the shipped ones; they are equal until a fit lands (RC-09). The device reads the same values from a WGSL `const` block generated from the `Tuning` and put in front of `shaders/output_sharpen.wgsl`, so there is one copy of each; the halo window (5 × 5) is structure, and the block derives `1/N`, `1/r` and the smallest pulling count from it. `output_sharpen::REGISTRY` lists id, name, value, kind and status, and `crates/ym-gpu/tests/constants_registry.rs` fails for a copy outside the `Tuning`, for a generated block that differs from the registry, and for a row missing from `docs/29` §2.1 or the other way round.
+**Where each constant lives (`docs/29` RC-03).** In the code every constant of this table is a field of `output_sharpen::Tuning` (`crates/ym-gpu/src/cpu/output_sharpen.rs`), documented with its row, kind, section, status and task. `Tuning::ORACLE` holds the values the oracle vectors were made with and `Tuning::DEFAULT` the shipped ones; they differ in two values since RC-09 (`sigma_sqrt_scale`, the tail-mass budget), neither of which a render at the screen preset's radius reads at full size or at `s = 0.4`. The device reads the same values from a WGSL `const` block generated from the `Tuning` and put in front of `shaders/output_sharpen.wgsl`, so there is one copy of each; the halo window (5 × 5) is structure, and the block derives `1/N`, `1/r` and the smallest pulling count from it. `output_sharpen::REGISTRY` lists id, name, value, kind and status, and `crates/ym-gpu/tests/constants_registry.rs` fails for a copy outside the `Tuning`, for a generated block that differs from the registry, and for a row missing from `docs/29` §2.1 or the other way round.
+
+**Where the constants come from (`docs/29` RC-14).** The values were taken over from research (the owner's answer to question 12 of `docs/STATUS.md`, 2026-11-13: "from research, but you need to readjust"). The project has re-derived every one of them: each is proved by mathematics, fitted on public test images and our own synthetic scenes (no measurement of our own, no real-sensor data), kept with the numbers that show it sits at its optimum or on a trade-off curve, or marked as the owner's look. The derivation of each row is in the table and in `docs/29`; the value that ships is `Tuning::DEFAULT`. No row cites a source for its number, and none needs one. A constant that is not in this table is not added; it is raised as a question first.
+
+The fits that changed a shipped value are O1 (the square-root branch of the radius map is continuous at R = 0.5) and O2 (the tap rule is the larger of the old rule and a tail-mass budget), both RC-09 and neither read by the screen preset at full size or at `s = 0.4`. No golden picture moved for them (the 0.13.1 refresh comes from spec 01). O3, O6 and O7 are kept: mixed fits are not taken.
 
 | ID | Constant | Status | Derivation | Proof or task |
 |---|---|---|---|---|
-| O1 | `0.7R + 0.3` for `R ≥ 0.5`, `0.97·√(R − 0.09)` below, cap 2.5 px (§2.2) | Design | The radius-to-σ map is the owner's look and is kept (`docs/29` §6, answer 4). The one thing mathematics adds is the step of 0.029 at `R = 0.5` (0.650 above, 0.621 below), which the screen preset never reads and RC-09 repairs. | the owner's look, `docs/29` §6; RC-09 |
-| O2 | `5.0`, `2.5`, `\| 1`, minimum 3, caps 13 and 33 (§2.3) | Maths | The pixel-integrated kernel of `n = 2h + 1` taps drops `erfc((h + 1/2)/(σ√2))` of the Gaussian before it is normalised to 1. The loss is 4.7e-4 at the preset's σ = 1.0, 8.6e-4 at 1.35, 1.2e-3 at 1.7 and 1.5e-3 at 2.05, and under 6e-7 for σ ≤ 0.5 (the floors of 3 and 5 taps cut at 5σ or more). **It is not under 1.5e-3 over the whole map:** the rule steps up by two taps at σ = 0.3, 0.7, 1.1, 1.5 and 1.9, and just below a step the cut is nearest the centre, so the worst is 3.6e-3 at σ = 1.89 (11 taps, cut at 2.9σ). The stated budget is therefore not met by today's rule; RC-09 sets it. | `the_truncated_erf_kernel_sums_to_one_and_drops_exactly_the_tail_mass`, `the_tap_rule_loses_under_two_per_mille_at_the_screen_map_points_and_3_6_at_worst`; RC-09 for the budget |
-| O3 | `0.15` (§2.4) | Fit | The σ below which a downscale does not shrink the radius. Acts in exports at a reduced size. | RC-09 |
+| O1 | `0.7R + 0.3` for `R ≥ 0.5`, `k·√(R − 0.09)` below with `k = 1.0151294` (0.97 in the reference), cap 2.5 px (§2.2) | Design | The radius-to-σ map is the owner's look and is kept (`docs/29` §6, answer 4): slope, offset and the preset are not fitted. The one thing mathematics adds is the step of 0.029 at `R = 0.5` (0.650 above, 0.621 below with the reference's 0.97), which the screen preset never reads. RC-09 repairs it by the one change that keeps the form of the branch: `k = (0.7·0.5 + 0.3)/√(0.5 − 0.09) = 0.65/√0.41`, so the two branches meet at R = 0.5 (to one `f32` ulp) and σ' below 0.5 is 1.0465 times the reference's. Nothing at or above R = 0.5 changes, bit for bit. | the owner's look, `docs/29` §6; `the_radius_map_is_continuous_at_the_knee_and_unchanged_from_it_upward` |
+| O2 | `5.0`, `2.5`, `\| 1`, minimum 3, caps 13 and 33; tail-mass budget 1.5e-3 (§2.3) | Maths | The pixel-integrated kernel of `n = 2h + 1` taps drops `erfc((h + 1/2)/(σ√2))` of the Gaussian before it is normalised to 1. The linear rule (5σ + 2.5) loses 4.7e-4 at the preset's σ = 1.0, 8.6e-4 at 1.35, 1.2e-3 at 1.7 and 1.5e-3 at 2.05, and under 6e-7 for σ ≤ 0.5, but it is a sawtooth: the worst is 3.6e-3 at σ = 1.89 (11 taps, cut at 2.9σ). RC-09 states the budget (a cut drops at most 1.5e-3, the figure the rule meets at four points of the screen map) and derives `h ≥ 3.1747σ − 1/2` from it. The shipped count is the larger of the linear rule and that, at most the cap, so no kernel is shorter than before (checked for σ = 0.01 to 2.5 at both caps) and the budget holds wherever the cap does not bind (screen: σ up to 2.047). The two rules agree at the screen preset's σ = 1.0 and at the gate scales `s = 1` and 0.4; the kernel is longer for σ in (1.4175, 1.5) and (1.7325, 1.9) (and, at the print cap, (2.047, 2.3) and (2.365, 2.5)). | `the_truncated_erf_kernel_sums_to_one_and_drops_exactly_the_tail_mass`, `the_tap_rule_loses_under_two_per_mille_at_the_screen_map_points_and_3_6_at_worst` (the linear rule), `the_tail_budget_never_gives_a_shorter_kernel_than_the_linear_rule`, `the_budget_lengthens_a_kernel_only_at_some_export_scales_and_never_at_1_or_0_4` |
+| O3 | `0.15` (§2.4) | Fit | The σ below which a downscale does not shrink the radius. Fitted on 2026-11-18 (RC-09) on the edge profile of §9 at `s = 1` and `s = 0.4` (it acts only below full size): **mixed, kept.** Every value from 0 to 0.4 is better on one number and worse on another: raising it lowers the rise at `s = 0.4` (2.274 px at 0.15, 2.158 at 0.4) and raises the overshoot (0.43 % to 1.26 %) and the noise gain (×1.0195 to ×1.0259); lowering it does the opposite (2.345 px, 0.14 % at 0). The value is on the trade-off curve and no point of it is better on every number. | RC-09 |
 | O4 | 100 %, 1.0 px, 1 level, halo 60 % (§2.5) | Design | The screen preset. | the owner's look, `docs/29` §6 |
 | O5 | `sqrt(h/100)`, dead zone `0.001` (§2.2) | Design | How the halo percentage becomes the limited share of the delta. | the owner's look, `docs/29` §6 |
-| O6 | window 5 × 5, `N = 25`, `k_min = 6`, `1/r = 0.5`, `1/N = 0.04`, tie tolerance `2^-12`, pull fade `0.25`, `η = 2τ/N²` (§3.5) | Fit | The halo limiter's robust envelope. The window is structure; the pull fade and the floor are fitted on the edge profile of §9. | RC-09 |
-| O7 | `max(2σ, 1)`, `2s` (§2.3) | Fit | The widths of the gain-map and halo-map smoothing. | RC-09 |
+| O6 | window 5 × 5, `N = 25`, `k_min = 6`, `1/r = 0.5`, `1/N = 0.04`, tie tolerance `2^-12`, pull fade `0.25`, `η = 2τ/N²` (§3.5) | Fit | The halo limiter's robust envelope. Fitted on 2026-11-18 (RC-09) on the edge profile of §9 at `s = 1` and `s = 0.4`: **mixed, kept.** The window and what follows from it (`N`, `1/r`, `1/N`, `k_min`) are structure and have no grid. Pull fade, 0 to 1: every other value is better on one number and worse on another (0 to 0.2 lowers the noise gain at threshold 0 by up to 0.6 % and raises the full-size overshoot by up to 0.008 percentage points; 0.3 to 1 lowers the overshoot and raises the rise and the noise gain). Tie tolerance, 0 and `2^-14` to `2^-8`: the same (a smaller one raises the rise and the noise gain; a larger one lowers the noise gain, ×1.0298 to ×1.0250 at `2^-9` and ×1.0204 at `2^-8`, and raises the undershoot by 0.06 percentage points or the rise by 0.003 px; it is also what keeps the device and the CPU together, §7.1 item 5). | RC-09 |
+| O7 | `max(2σ, 1)`, `2s` (§2.3) | Fit | The widths of the gain-map and halo-map smoothing. Fitted on 2026-11-18 (RC-09), same objective. Gain multiple `2`: values from 1.6 to 1.99 worsen no number of §9, and the best of them (1.6) gains 0.07 % of the noise gain and 0.01 % of the rise at full size, under the 1 % below which `docs/29` §2.3 rule 3 changes nothing; 1.0 to 1.55 are mixed. Gain minimum `1`: the values below 1 give one result (the minimum is not reached at the gate scales), 0.15 % of the overshoot at `s = 0.4` better, again under 1 %; above 1 they are worse or mixed. Halo-map multiple `2`: mixed at every value from 1 to 3 (1.5: the rise 0.3 % lower and the halo-step overshoot 4 % lower at `s = 1`, 25 % at `s = 0.4`, but the overshoot 5 % and the noise gain higher; 2.5 the other way round). All kept. | RC-09 |
 | O8 | `16`, `1e-20` (§3.7) | Guard | Ratio cap and luma floor of the transfer back to RGB: they keep the division finite on black and near-black pixels. The cap was never reached on the 24 Kodak images. | n/a |
 | O9 | `1e-10` (§3.3) | Guard | Epsilon of the gain-map denominator: keeps the ratio finite where the high-pass is zero. | n/a |
 | O10 | `0.3125`, `0.09375`, ramp `0.25` to `5·g0` (§3.3) | Maths | Method 2 only. The weights are the normalised Scharr kernel: smoothing `{3, 10, 3}/16` across, central difference `{−1, 0, 1}/2` along, so `10/32` and `3/32`, and a unit ramp reads exactly 1. The ramp is a fit that no render reaches (method 2 is not reachable from the app or `ym`), with no task. | `the_gradient_weights_are_the_normalised_scharr_kernel` |
@@ -597,9 +604,9 @@ There is no PSNR target, because sharpening is a look.
 3. **Absolute threshold in linear light.** A fixed `T` is a larger fraction of the signal in shadows, so shadows are protected more than highlights. The threshold is not proportional to the local noise and is not applied to an encoded luma.
 4. **Display-linear placement.** The stage runs after the display transform, where highlights are already compressed by the tone curve, not on scene-linear camera RGB before the output colour conversion.
 5. **Limiter continuity.** The rank counts and the `t` weights of the reference limiter are discontinuous (§5.4). The stage uses a continuous limiter with a relative tie tolerance, `halo_tie_tolerance = 2^-12` (§3.5). Measured on the CPU implementation, a frame against itself moved by up to 8 ulps per sample (as the device's `f32` colour chain moves it), the five limiter parameter sets of the self-test, four seeds, worst change with exact comparisons → with the tolerance: clean chart 1.1e-1 → 4.9e-6, checkerboard 1.3e-1 → 1.1e-6, bars scene 1.1e-1 → 1.2e-4, noise-free sky gradient with a skyline 3.1e-2 → 3.5e-5, the bars and the sky with noise 1.1e-3 → 2.3e-4 and 5.0e-5. End to end on lavapipe, on the golden chart bb2850 (ILCE-7SM3, 8-bit PNG, exposures −0.3 to +1 EV) the worst CPU-to-device difference is 3 to 10 codes of 255 (up to 4 without output sharpening); with exact comparisons it was 76 to 110. The tolerance changes the look little: CPU against CPU, the golden charts per file have a median ΔE00 of 0.000 to 0.001, p99 0.05 to 0.18, max 1.1 to 5.5; five real photos at full size have median 0, p99.9 0.63 to 0.93, max 1.1 to 7.9 (161 to 6786 of about 20 million pixels over ΔE00 1), dark undershoot samples along edges that look the same at 6× zoom. A larger tolerance makes the limiter less sensitive and moves the look further (`2^-10`: the look up to twice as far).
-6. **Step in the radius map at R = 0.5** (σ' 0.621 → 0.650). A UI with fine radius steps would show a small jump; the app exposes no radius. A continuous map would be `0.97·sqrt(R − 0.09)` up to the crossing point with `0.7R + 0.3`.
+6. **Step in the radius map at R = 0.5** (σ' 0.621 → 0.650 in the reference). A UI with fine radius steps would show a small jump; the app exposes no radius. The shipped map repairs it (RC-09): the square-root branch has `k = (0.7·0.5 + 0.3)/√(0.5 − 0.09) = 1.0151294` instead of 0.97, which meets `0.7R + 0.3` at R = 0.5, keeps the origin 0.09 and changes nothing from R = 0.5 upward, so nothing at the screen preset's R = 1.0. Below 0.5 σ' is 1.0465 times the reference's.
 7. **Method-0 compensation `1/(1 − T)`** sharpens strong edges slightly more than amount alone suggests. Method 1 has no compensation, and the output stage uses method 1.
-8. **Kernel truncation.** In screen mode the gain kernel is capped at 13 taps (±6 px) for σ ≥ 1.15, where the tap rule asks for more. The high-pass kernel is never capped in screen mode (σ ≤ 2.05 gives at most 13 taps).
+8. **Kernel truncation.** In screen mode the gain kernel is capped at 13 taps (±6 px) for σ ≥ 1.02 (σ ≥ 1.15 under the linear rule alone), where the tap rule asks for more. The high-pass kernel is capped in screen mode only from σ = 2.047 (the tail-mass budget of §2.3; σ ≤ 2.05 gives at most 13 taps).
 9. **Interaction with the Lanczos-3 ringing.** The resize overshoots about 7 % at steps, and sharpening after it amplifies that; halo suppression (60 in the screen preset) limits the overshoot of the sharpening itself.
 10. **Method of the output stage.** The output stage uses its method as given (method 1), not the automatic rule of §2.7.
 
@@ -607,6 +614,7 @@ There is no PSNR target, because sharpening is a look.
 
 | Topic | Behaviour |
 |---|---|
+| Constants | Taken over from research and re-derived by the project: each row of the constants table (§3.8) has its derivation or its fit, and `docs/29` has the numbers. Nothing is added to a table without a question first |
 | Default and presets | On by default at 100 %, the screen preset, one slider; no preset choice in the UI; the print preset is not reachable from the app or `ym` |
 | Print distance | `print_distance` is the parameter of the print preset. A viewing distance `D` (mm) and print resolution `ppi` map to it by making the radius one arcminute of visual angle: `R = D · ppi / 25.4 · tan(1/60°)`, `print_distance = 2500 · R`. The default 5000 (R = 2 px) corresponds to about 580 mm at 300 ppi. |
 | Luma weights | The reference weights in every export space |
@@ -663,9 +671,11 @@ The halo limiter's 5 × 5 window pass is about half of the cost of the screen pr
 
 | | rise before | rise after | overshoot / undershoot |
 |---|---|---|---|
-| Screen, full size | 2.49 px | 1.91 px | 3.2 % / 3.2 % |
-| Screen, `s = 0.4` | 2.49 px | 2.27 px | 0.4 % / 0.4 % |
-| Print, full size | 2.49 px | 1.10 px | 21.1 % / 21.1 % |
+| Screen, full size | 2.489 px | 1.905 px | 3.45 % / 3.38 % |
+| Screen, `s = 0.4` | 2.489 px | 2.274 px | 0.43 % / 0.43 % |
+| Print, full size | 2.489 px | 1.101 px | 21.12 % / 21.12 % |
+
+*Correction of 2026-11-18 (RC-09).* The text of this table gave the screen preset at full size as 1.91 px and 3.2 % / 3.2 %. The test that makes the profile (`edge_profile_screen_preset`) prints 1.905 px and 3.45 % / 3.38 % (its own limit is 3.5 %), as RC-06 measured at the oracle constants (`docs/29` §2.2a) and RC-09 measured again at the shipped ones (the screen rows at `s = 1` and `s = 0.4` are bit for bit unchanged by RC-09; the print row moves by 5e-6 px and 2e-4 percentage points, because its gain kernel has 23 taps instead of 19, and keeps its digits). The other rows agree with the old text to its digits; they are given here with three decimals of rise and two of overshoot.
 
 **Noise and halo suppression.** Noise on a flat patch (sigma 0.004): ×1.030 with the 1-level threshold, ×1.375 with threshold 0. Halo suppression on the hard 0.1 to 0.5 step at amount 300 and R 1.5: overshoot 0.4265 to 0.0069, undershoot 0.1000 to 0.0069.
 

@@ -70,13 +70,15 @@ pub trait Fields: Copy {
 }
 
 macro_rules! tuning_fields {
-    ($t:ty; $($name:ident),* $(,)?) => {
+    ($t:ty; $($name:ident),* $(,)? $(; optional $($opt:ident),* $(,)?)?) => {
         impl Fields for $t {
-            const NAMES: &'static [&'static str] = &[$(stringify!($name)),*];
+            const NAMES: &'static [&'static str] = &[$(stringify!($name),)* $($(stringify!($opt),)*)?];
 
             fn get(&self, name: &str) -> Option<f64> {
                 match name {
                     $(stringify!($name) => format!("{}", self.$name).parse().ok(),)*
+                    // An optional table reads as 1 when it is set and 0 when it is not.
+                    $($(stringify!($opt) => Some(if self.$opt.is_some() { 1.0 } else { 0.0 }),)*)?
                     _ => None,
                 }
             }
@@ -90,6 +92,13 @@ macro_rules! tuning_fields {
                         self.$name = FieldValue::from_f64(v).map_err(|e| format!("{name}: {e}"))?;
                         Ok(())
                     })*
+                    $($(stringify!($opt) => {
+                        if (v != 0.0) == self.$opt.is_some() {
+                            Ok(())
+                        } else {
+                            Err(format!("{name}: a table is read from a file (--weights), not set by value"))
+                        }
+                    })*)?
                     _ => Err(unknown_field(name, Self::NAMES)),
                 }
             }
@@ -117,11 +126,12 @@ tuning_fields!(diffraction::Tuning;
     angular_per_px, angular_round, kernel_energy, kernel_tail, line_angles, x80_cutoff, x80_level,
     sigma_factor, sigma_min, sigma_max, gauss_radius_per_sigma, gauss_radius_add, clip_fraction,
     clip_weight_largest, clip_weight_middle, pull_gain, pull_band, ridge, gate, gate_fade_lo,
-    gate_fade_hi, weight_min, cd_min, ratio_cap, divide_guard, moment_floor, floor_dn);
+    gate_fade_hi, weight_min, cd_min, ratio_cap, divide_guard, moment_floor, floor_dn;
+    optional weight_table);
 
 tuning_fields!(output_sharpen::Tuning;
     sigma_slope, sigma_offset, sigma_knee_radius_px, sigma_sqrt_origin, sigma_sqrt_scale,
-    screen_radius_cap_px, taps_per_sigma, taps_offset, taps_min, max_taps_screen, max_taps_print,
+    screen_radius_cap_px, taps_per_sigma, taps_offset, tap_tail_budget, taps_min, max_taps_screen, max_taps_print,
     sigma_knee, screen_amount_pct, screen_radius_px, screen_threshold_levels, screen_halo_pct,
     halo_dead_zone, halo_pull_fade, halo_tie_tolerance, gain_sigma_multiple, gain_sigma_min,
     halo_sigma_multiple, ratio_max, luma_floor, gain_epsilon, scharr_centre, scharr_corner,
