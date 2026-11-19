@@ -303,7 +303,7 @@ impl KernelId {
     /// no render uses. [`KernelSet::kernels`] and `warm_up` compile in this order, so that what the
     /// first frame of the first photo waits for is compiled before what only a zoomed view or an
     /// export needs.
-    pub const ALL: [KernelId; 107] = [
+    pub const ALL: [KernelId; 108] = [
         // The fit view of a mosaic photo.
         KernelId::Prep,
         KernelId::PrepMask,
