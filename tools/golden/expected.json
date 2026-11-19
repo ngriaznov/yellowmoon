@@ -369,34 +369,34 @@
       "pipeline_version": "0.13.1"
     },
     "synthetic/node-blur-lens__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "05fb7af9e033b7907fe2571077d5a16d200c5da9691b43a7e4de0b9f21fcd691",
+      "pixels_sha256": "3fb6ee39ae34968b91e89768407616c47a415f59b2f967db8241b0a5de69c56d",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.13.0"
+      "pipeline_version": "0.14.0"
     },
     "synthetic/node-blur-motion__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "42b22f67b62a79f51e6d92d8c625ec71dd15f0ca1a77dcbffb664ebc5490ef0a",
+      "pixels_sha256": "7815bc44d1174d7da01a8cf1b1e0304d8b7f36792ef58db67e945642029be129",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.13.0"
+      "pipeline_version": "0.14.0"
     },
     "synthetic/node-blur-soft-off__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "1d7f196d0c75be9c75b169e453a6a71bcec271fcebbfbee39552d9abf704104d",
+      "pixels_sha256": "5644c7cd1ed6bc44d60df64af3af62ecaccf78e4977243df7cc7da8ac6f698ce",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.13.0"
+      "pipeline_version": "0.14.0"
     },
     "synthetic/node-blur-soft__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "9ce9525e99aecd0904d421d4d5593ada4d7244bcc4b301d9c4494cbcd3365065",
+      "pixels_sha256": "b604ca14d91801b39889611387d19104949d2857b250958b86a19f16d30b7c91",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.13.0"
+      "pipeline_version": "0.14.0"
     },
     "synthetic/node-blur-zoom__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
-      "pixels_sha256": "1c7660b7bdb914a30bead0dcb514235736b9f25cc41bec81af3a54e5695c7f45",
+      "pixels_sha256": "612a50c120f265fe5ccebb7e0425ff7280126f2d4485041bafb5ac656d4a99e3",
       "width": 1248,
       "height": 832,
-      "pipeline_version": "0.13.0"
+      "pipeline_version": "0.14.0"
     },
     "synthetic/node-uniform-hue__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
       "pixels_sha256": "3f24144b1017cee56cc5b9751135ea1a519bdf88b4935fe5d89c13cd7026b1ef",
@@ -592,6 +592,13 @@
       "changed": 58,
       "added": 0,
       "max_delta_e_2000": 21.128062809117633
+    },
+    {
+      "pipeline_version": "0.14.0",
+      "note": "Blur entries re-made at the RC-13 constants; PIPELINE 0.14.0. Their scenes go through the new demosaic (docs/29). Against each entry's old picture, delta E00 median / p99 / max: soft 0.128 / 1.664 / 6.151; soft-off 0.127 / 1.661 / 6.151; motion 0.113 / 2.003 / 6.151; lens 0.116 / 1.675 / 5.741; zoom 0.103 / 2.224 / 5.791. The 64 older entries are unchanged.",
+      "changed": 5,
+      "added": 0,
+      "max_delta_e_2000": 6.151227549832976
     }
   ]
 }
