@@ -392,6 +392,8 @@ test.describe("Photos", () => {
     await cardPicturesMade(page, 3);
     await page.getByRole("button", { name: "Add node" }).click();
     await expect(page.getByRole("menuitem", { name: /^Splitter and combiner/ })).toBeVisible();
+    // The menu finishes opening first: a pointer that arrives while it still materializes leaves its text on another pixel in some runs.
+    await dialogsSettled(page);
     await page.getByRole("menuitem", { name: /^Parallel/ }).hover();
     await dialogsSettled(page);
     await compareScreen(page, "photos-mixers-add-node");
