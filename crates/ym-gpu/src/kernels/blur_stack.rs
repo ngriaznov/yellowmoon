@@ -131,9 +131,9 @@ pub trait BlurKernel: Send + Sync + std::fmt::Debug {
 pub fn device_kernel(params: &BlurParams) -> Option<Arc<dyn BlurKernel>> {
     match params.kind {
         BlurKind::Soft { radius } => Some(Arc::new(super::blur_soft::BlurSoft::new(radius))),
-        BlurKind::Motion { length, angle_deg } => Some(Arc::new(super::blur_motion::BlurMotion::new(
-            length, angle_deg,
-        ))),
+        BlurKind::Motion { length, angle_deg } => Some(Arc::new(
+            super::blur_motion::BlurMotion::new(length, angle_deg),
+        )),
         BlurKind::Lens { .. } | BlurKind::Zoom { .. } => None,
     }
 }
@@ -666,10 +666,7 @@ mod tests {
                 kind,
                 respect_mask_edges: true,
             };
-            let landed = matches!(
-                params.kind,
-                BlurKind::Soft { .. } | BlurKind::Motion { .. }
-            );
+            let landed = matches!(params.kind, BlurKind::Soft { .. } | BlurKind::Motion { .. });
             assert_eq!(
                 device_kernel(&params).is_some(),
                 landed,

@@ -34,7 +34,6 @@ fn f32_devices() -> impl Iterator<Item = &'static TestGpu> {
     gpus().iter().filter(|d| d.mode == StorageMode::F32)
 }
 
-
 /// A LogC4 value at the absolute pixel `(x, y)` of a frame of `w x h`: a gradient, a bright disc, a few 3 x 3 lights (code
 /// about 0.95: hundreds of times middle grey) on a dark square below the toe, a function of the place alone.
 fn logc4_at(x: i64, y: i64, (w, h): (usize, usize)) -> [f64; 3] {
@@ -128,7 +127,6 @@ fn abs_diff(a: &[f32], b: &[f64]) -> f64 {
         .map(|(&x, &y)| (f64::from(x) - y).abs())
         .fold(0.0, f64::max)
 }
-
 
 /// The Length and Angle of a case.
 type Line = (f64, f64);
@@ -524,7 +522,12 @@ fn time_node(gpu: &Gpu, (line, frame): (Line, (usize, usize)), stage: u32, repea
                         area: photo,
                     };
                     if stage == 1 {
-                        BlurMotion::new(line.0, line.1).encode(ctx, &mut passes, &pyramid, &sums)?;
+                        BlurMotion::new(line.0, line.1).encode(
+                            ctx,
+                            &mut passes,
+                            &pyramid,
+                            &sums,
+                        )?;
                     }
                     passes.submit()?.finish()?;
                     let _ = (&pyramid, &sums);
@@ -566,7 +569,13 @@ fn motion_speed_on_lavapipe() {
     for dev in f32_devices() {
         for (frame, label) in [((1800usize, 1200usize), "2.2 MP"), ((3000, 2000), "6 MP")] {
             let mp = (frame.0 * frame.1) as f64 / 1e6;
-            for (length, angle) in [(10.0, 0.0), (10.0, 30.0), (100.0, 0.0), (100.0, 30.0), (100.0, 45.0)] {
+            for (length, angle) in [
+                (10.0, 0.0),
+                (10.0, 30.0),
+                (100.0, 0.0),
+                (100.0, 30.0),
+                (100.0, 45.0),
+            ] {
                 let l = length_px(length, frame.0.max(frame.1) as f64);
                 let taps = ym_color::blur::motion::taps(l, angle).len();
                 let t: Vec<f64> = (0..3)

@@ -91,7 +91,10 @@ fn the_fast_method_is_within_three_thousandths_of_the_oracle_and_in_fact_the_ora
         for angle in [0.0, 20.0, 45.0, 90.0, 137.0, 179.9, -33.0] {
             for name in ["edge", "disc", "light", "noise"] {
                 let e = fast_against_oracle(name, w, h, length, angle);
-                assert!(e <= 3e-3, "{name} {w}x{h} length {length} angle {angle}: {e}");
+                assert!(
+                    e <= 3e-3,
+                    "{name} {w}x{h} length {length} angle {angle}: {e}"
+                );
                 worst = worst.max(e);
             }
         }
@@ -130,7 +133,11 @@ fn the_taps_are_the_nonzero_weights_of_the_oracles_table_in_its_order() {
         // A line touches about l (|cos| + |sin|) + 2 pixels, a few more than that at most, never the whole square.
         let a = angle.to_radians();
         let bound = len * (a.cos().abs() + a.sin().abs()) + 4.0;
-        assert!(taps.len() as f64 <= bound.max(1.0), "{len} {angle}: {}", taps.len());
+        assert!(
+            taps.len() as f64 <= bound.max(1.0),
+            "{len} {angle}: {}",
+            taps.len()
+        );
     }
 }
 
@@ -197,7 +204,10 @@ fn the_reach_holds_what_the_fast_method_reads() {
             let params = motion_params(length, 30.0, true);
             let l = length_px(length, long as f64);
             let (reach, reads) = (reach_px(&params, long, long * 2 / 3), motion::reads_px(l));
-            assert!(reach >= reads, "{long} px length {length}: {reach} < {reads}");
+            assert!(
+                reach >= reads,
+                "{long} px length {length}: {reach} < {reads}"
+            );
             let half = blur::line_table(l, 30.0).half as usize;
             assert_eq!(reads, half, "{long} px length {length}");
             assert!(motion::taps(l, 30.0).iter().all(|t| {
@@ -296,7 +306,10 @@ fn black_huge_negative_and_subnormal_stay_finite() {
     for value in [0.0, 1e-310, -3.0, 1e12, f64::MAX / 1e10] {
         let x = vec![[value; 3]; w * h];
         let (n, d) = blur::sums_fast(&x, &m, w, h, &params, &Frame::whole(w, h)).expect("sums");
-        assert!(n.iter().all(|q| q.iter().all(|v| v.is_finite())), "{value:e}");
+        assert!(
+            n.iter().all(|q| q.iter().all(|v| v.is_finite())),
+            "{value:e}"
+        );
         assert!(d.iter().all(|v| v.is_finite()));
     }
 }
@@ -349,7 +362,12 @@ fn cells_method(p: &[Plane4], w: usize, h: usize, l: f64, angle_deg: f64, f: usi
                 let (u0, v0) = (u.floor(), v.floor());
                 let (fx, fy) = (u - u0, v - v0);
                 let (i0, j0) = (u0 as i64, v0 as i64);
-                let q = [at(i0, j0), at(i0 + 1, j0), at(i0, j0 + 1), at(i0 + 1, j0 + 1)];
+                let q = [
+                    at(i0, j0),
+                    at(i0 + 1, j0),
+                    at(i0, j0 + 1),
+                    at(i0 + 1, j0 + 1),
+                ];
                 let wts = [
                     (1.0 - fx) * (1.0 - fy),
                     fx * (1.0 - fy),
