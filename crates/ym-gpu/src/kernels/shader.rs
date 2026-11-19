@@ -156,6 +156,8 @@ pub enum KernelId {
     BlurLens,
     /// The Blur node, Soft's kernel: the B-spline reduction to cells, the Gaussian of the cells and the read-back (`docs/33` 3.5).
     BlurSoft,
+    /// The Blur node's Zoom type: a radial line of up to 32 taps read trilinearly from the pyramid (`docs/33` section 3.5).
+    BlurZoom,
     /// The Face Refinement node: the apply of the blemish map and the low-frequency operator of dark circles, even skin, skin
     /// grading and teeth whitening over a region (one entry point, an op in the uniform).
     Face,
@@ -301,7 +303,7 @@ impl KernelId {
     /// no render uses. [`KernelSet::kernels`] and `warm_up` compile in this order, so that what the
     /// first frame of the first photo waits for is compiled before what only a zoomed view or an
     /// export needs.
-    pub const ALL: [KernelId; 107] = [
+    pub const ALL: [KernelId; 108] = [
         // The fit view of a mosaic photo.
         KernelId::Prep,
         KernelId::PrepMask,
@@ -361,6 +363,7 @@ impl KernelId {
         KernelId::BlurBlend,
         KernelId::BlurLens,
         KernelId::BlurSoft,
+        KernelId::BlurZoom,
         // The Film node's passes (docs/24 section 3.9).
         KernelId::FilmColourIn,
         KernelId::FilmSpatial,
@@ -466,6 +469,7 @@ impl KernelId {
             KernelId::BlurBlend => "blur_blend",
             KernelId::BlurLens => "blur_lens",
             KernelId::BlurSoft => "blur_soft",
+            KernelId::BlurZoom => "blur_zoom",
             KernelId::MaskRaster => "mask_raster",
             KernelId::Face => "face",
             KernelId::Prep => "prep",
@@ -776,6 +780,7 @@ impl KernelId {
             | KernelId::BlurBlend
             | KernelId::BlurSoft => super::blur_stack::body(self),
             KernelId::BlurLens => super::blur_lens::body(),
+            KernelId::BlurZoom => super::blur_zoom::body(),
             KernelId::MaskRaster => include_str!("../shaders/mask_raster.wgsl").to_string(),
             KernelId::Face => super::face::body(),
             KernelId::Probe => placeholder_body(self),

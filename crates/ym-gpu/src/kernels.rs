@@ -49,6 +49,7 @@ pub mod bilateral;
 pub mod bin;
 pub mod blur_lens;
 pub mod blur_soft;
+pub mod blur_zoom;
 pub mod blur_stack;
 pub mod bm_dct;
 pub mod coarse_chroma;

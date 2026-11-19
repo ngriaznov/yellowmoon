@@ -48,6 +48,7 @@ use ym_color::display::ColorChain;
 use ym_color::mask_raster::Area;
 
 use super::blur_lens::LensKernel;
+use super::blur_zoom::ZoomKernel;
 use super::shader::KernelId;
 use super::util::GROUP;
 use crate::cpu::Placement;
@@ -139,7 +140,8 @@ pub fn device_kernel(params: &BlurParams) -> Option<Arc<dyn BlurKernel>> {
     match params.kind {
         BlurKind::Soft { radius } => Some(Arc::new(super::blur_soft::BlurSoft::new(radius))),
         BlurKind::Lens { .. } => LensKernel::of(params).map(|k| Arc::new(k) as Arc<dyn BlurKernel>),
-        BlurKind::Motion { .. } | BlurKind::Zoom { .. } => None,
+        BlurKind::Zoom { .. } => ZoomKernel::of(params).map(|k| Arc::new(k) as Arc<dyn BlurKernel>),
+        BlurKind::Motion { .. } => None,
     }
 }
 
@@ -649,7 +651,7 @@ mod tests {
     #[test]
     fn a_type_has_a_device_kernel_once_its_task_lands() {
         use ym_color::blur::BlurKind;
-        // BL-07 landed Lens: it has a kernel; the types whose tasks have not landed have none.
+        // BL-06 to BL-09 add their types: a type has a kernel once its task has landed, the others have none.
         for (kind, _) in [
             (BlurKind::Soft { radius: 10.0 }, false),
             (
@@ -680,7 +682,10 @@ mod tests {
                 kind,
                 respect_mask_edges: true,
             };
-            let landed = matches!(params.kind, BlurKind::Soft { .. } | BlurKind::Lens { .. });
+            let landed = matches!(
+                params.kind,
+                BlurKind::Soft { .. } | BlurKind::Lens { .. } | BlurKind::Zoom { .. }
+            );
             assert_eq!(
                 device_kernel(&params).is_some(),
                 landed,
