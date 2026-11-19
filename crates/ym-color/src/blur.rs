@@ -27,6 +27,7 @@ use crate::warp::smoothstep;
 
 pub mod lens;
 pub mod soft;
+pub mod zoom;
 
 /// Radius 100 is this share of the picture's long edge (`docs/33` 2.2).
 pub const RADIUS_MAX: f64 = 0.04;
@@ -630,7 +631,7 @@ pub fn sums(
     sums_with(x, m, width, height, params, frame, false)
 }
 
-/// [`sums`] by the type's fast method where it has one (`docs/33` 3.5; Soft's coarse grid, [`soft`]; Lens' cells, [`lens`]) and by
+/// [`sums`] by the type's fast method where it has one (`docs/33` 3.5; Soft's coarse grid, [`soft`]; Lens' cells, [`lens`]; Zoom's pyramid, [`zoom`]) and by
 /// the exact kernel where its task has not landed. Held to [`sums`] by the bounds of `docs/33` 3.7.
 ///
 /// # Errors
@@ -729,7 +730,16 @@ fn sums_with(
             gather_table(&planes, width, height, &t)
         }
         BlurKind::Zoom { amount, center } => {
-            gather_zoom(&planes, width, height, frame, zoom_span(amount), center)
+            if fast {
+                zoom::gather(
+                    &planes,
+                    (frame.x0, frame.y0, width, height),
+                    (frame.full_w, frame.full_h),
+                    (zoom_span(amount), center),
+                )
+            } else {
+                gather_zoom(&planes, width, height, frame, zoom_span(amount), center)
+            }
         }
     };
     Ok((
@@ -892,7 +902,7 @@ pub fn cell_factor(long_edge_px: f64) -> usize {
 /// | Soft | `ceil(2 R) + 3 f`, or what [`soft::reads_px`] needs when that is more |
 /// | Lens | `ceil(R) + 3 f_L`, `f_L` = [`lens::cell_size`] (the smallest cell with `R / f_L <= 8`) |
 /// | Motion | `ceil(l / 2) + 1 + 3 f` |
-/// | Zoom | `ceil(a / 2 d_max) + f` |
+/// | Zoom | `ceil(a / 2 d_max) + ceil(1.5 * 2^L) + 2`, `L` = [`zoom::top_level`] |
 ///
 /// with `f` = [`cell_factor`]. Each is at least what the exact kernels read (the tests hold it to the tables' half widths).
 #[must_use]
@@ -916,15 +926,7 @@ pub fn reach_px(params: &BlurParams, full_w: usize, full_h: usize) -> usize {
             cells(r) + 3 * lens::cell_size(r)
         }
         BlurKind::Motion { length, .. } => cells(length_px(length, u) / 2.0) + 1 + 3 * f,
-        BlurKind::Zoom { amount, center } => {
-            let c = [
-                center[0].clamp(0.0, 1.0) * full_w as f64,
-                center[1].clamp(0.0, 1.0) * full_h as f64,
-            ];
-            let far = |p: f64, size: usize| p.max(size as f64 - p);
-            let d_max = far(c[0], full_w).hypot(far(c[1], full_h));
-            cells(zoom_span(amount) / 2.0 * d_max) + f
-        }
+        BlurKind::Zoom { amount, center } => zoom::reach(zoom_span(amount), center, full_w, full_h),
     }
 }
 

@@ -122,21 +122,21 @@ impl Grid {
         })
     }
 
-    fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         self.w * self.h
     }
 
-    fn has(&self, i: i64, j: i64) -> bool {
+    pub(super) fn has(&self, i: i64, j: i64) -> bool {
         i >= self.i0 && j >= self.j0 && i < self.i0 + self.w as i64 && j < self.j0 + self.h as i64
     }
 
-    fn index(&self, i: i64, j: i64) -> usize {
+    pub(super) fn index(&self, i: i64, j: i64) -> usize {
         (j - self.j0) as usize * self.w + (i - self.i0) as usize
     }
 }
 
 /// The 2 x 2 box means of `child` over `grid`, a child outside its grid being 0, summed `((c00 + c10) + (c01 + c11)) / 4`.
-fn box_level(child: &[Plane4], child_grid: &Grid, grid: &Grid) -> Vec<Plane4> {
+pub(super) fn box_level(child: &[Plane4], child_grid: &Grid, grid: &Grid) -> Vec<Plane4> {
     let at = |i: i64, j: i64| -> Plane4 {
         if child_grid.has(i, j) {
             child[child_grid.index(i, j)]

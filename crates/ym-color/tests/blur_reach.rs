@@ -50,7 +50,9 @@ fn the_cell_factor_and_the_reach_table_of_the_spec() {
         ),
         337
     );
-    // Zoom with the centre in a corner: 0.05 x the diagonal (7211) + 32.
+    // Zoom with the centre in a corner: 0.05 x the diagonal (7211) for the line, plus the pyramid's cells (`docs/33` section 11
+    // item 55): the top level is 5 (the largest spacing is 721 / 31 = 23 px, a cell of 32), whose 2 x 2 cells read 1.5 x 32 = 48
+    // px beyond a tap, and two pixels of slack. The spec's table had `2^L` (32) where this has 50.
     let z = reach_px(
         &p(BlurKind::Zoom {
             amount: 100.0,
@@ -59,8 +61,11 @@ fn the_cell_factor_and_the_reach_table_of_the_spec() {
         6000,
         4000,
     );
-    assert_eq!(z, (0.05 * (6000f64).hypot(4000.0)).ceil() as usize + 32);
-    assert!((392..=394).contains(&z), "{z}");
+    assert_eq!(
+        z,
+        (0.05 * (6000f64).hypot(4000.0)).ceil() as usize + 48 + 2
+    );
+    assert!((409..=411).contains(&z), "{z}");
     // 8600 px: Soft 688 + 192 = 880.
     assert_eq!(
         reach_px(&p(BlurKind::Soft { radius: 100.0 }), 8600, 5733),
@@ -109,6 +114,13 @@ fn the_reach_holds_what_the_exact_kernels_read() {
             );
             let half = line_table(blur::length_px(amount, u), 33.0).half as usize;
             assert!(motion >= half, "motion {motion} against {half}");
+            // The exact Zoom reads a line of `a |v|` through each pixel (half of it each side) and one pixel for the bilinear read.
+            for center in [[0.5, 0.5], [0.0, 0.0], [0.9, 0.2]] {
+                let zoom = reach_px(&p(BlurKind::Zoom { amount, center }), w, h);
+                let d_max = blur::zoom::d_max_px(center, w, h);
+                let read = (blur::zoom_span(amount) / 2.0 * d_max).ceil() as usize + 1;
+                assert!(zoom >= read, "zoom {zoom} against {read} at {w} x {h}");
+            }
         }
     }
 }
