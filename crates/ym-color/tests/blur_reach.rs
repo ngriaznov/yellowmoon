@@ -61,10 +61,7 @@ fn the_cell_factor_and_the_reach_table_of_the_spec() {
         6000,
         4000,
     );
-    assert_eq!(
-        z,
-        (0.05 * (6000f64).hypot(4000.0)).ceil() as usize + 48 + 2
-    );
+    assert_eq!(z, (0.05 * (6000f64).hypot(4000.0)).ceil() as usize + 48 + 2);
     assert!((409..=411).contains(&z), "{z}");
     // 8600 px: Soft 688 + 192 = 880.
     assert_eq!(

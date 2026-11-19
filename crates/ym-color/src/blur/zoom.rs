@@ -16,8 +16,8 @@
 //! field exactly. A window of the [`reach`] equals the whole frame bit for bit: every number is a function of the pixel, the
 //! settings and the cells at absolute positions. The device does the same in f32 (`ym_gpu::kernels::blur_zoom`).
 
-use super::lens::{Grid, box_level};
 use super::Plane4;
+use super::lens::{Grid, box_level};
 
 /// The most taps along a Zoom line.
 pub const MAX_TAPS: usize = 32;
@@ -25,7 +25,7 @@ pub const MAX_TAPS: usize = 32;
 /// The number of taps along a line of `line_px` pixels: `clamp(ceil(line) + 1, 2, 32)`.
 #[must_use]
 pub fn tap_count(line_px: f64) -> usize {
-    if !(line_px > 0.0) {
+    if line_px.is_nan() || line_px <= 0.0 {
         return 2;
     }
     if line_px >= (MAX_TAPS - 1) as f64 {
@@ -84,7 +84,7 @@ pub fn top_level(a: f64, center: [f64; 2], full_w: usize, full_h: usize) -> u32 
 /// (`docs/33` section 11, item 55).
 #[must_use]
 pub fn reach(a: f64, center: [f64; 2], full_w: usize, full_h: usize) -> usize {
-    if !(a > 0.0) {
+    if a.is_nan() || a <= 0.0 {
         return 0;
     }
     let half_line = (a / 2.0 * d_max_px(center, full_w, full_h)).max(0.0).ceil() as usize;

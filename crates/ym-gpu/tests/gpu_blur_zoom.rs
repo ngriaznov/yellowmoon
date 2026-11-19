@@ -512,12 +512,24 @@ fn the_cost_per_megapixel_is_measured() {
         let base = time(zoom_node(0.01, [0.5, 0.5], true));
         println!("scaffold only (Amount 0.01): {base:.0} ms per MP");
         for (name, params) in [
-            ("Amount 20, centre (0.1, 0.2)", zoom_node(20.0, [0.1, 0.2], true)),
-            ("Amount 100, centre (0.1, 0.2)", zoom_node(100.0, [0.1, 0.2], true)),
-            ("Amount 100, corner (0, 0)", zoom_node(100.0, [0.0, 0.0], true)),
+            (
+                "Amount 20, centre (0.1, 0.2)",
+                zoom_node(20.0, [0.1, 0.2], true),
+            ),
+            (
+                "Amount 100, centre (0.1, 0.2)",
+                zoom_node(100.0, [0.1, 0.2], true),
+            ),
+            (
+                "Amount 100, corner (0, 0)",
+                zoom_node(100.0, [0.0, 0.0], true),
+            ),
         ] {
             let t = time(params);
-            println!("{name}: {t:.0} ms per MP ({:.0} over the scaffold)", t - base);
+            println!(
+                "{name}: {t:.0} ms per MP ({:.0} over the scaffold)",
+                t - base
+            );
         }
     }
 }

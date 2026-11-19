@@ -110,7 +110,12 @@ impl BlurKernel for ZoomKernel {
                     hi.grid.h as i32,
                 ],
                 cen: [cxi as i32, cyi as i32, k as i32, top as i32],
-                p: [self.span() as f32, (cx - cxi) as f32, (cy - cyi) as f32, 0.0],
+                p: [
+                    self.span() as f32,
+                    (cx - cxi) as f32,
+                    (cy - cyi) as f32,
+                    0.0,
+                ],
             };
             let ub = passes.uniform("blur zoom uniform", &u)?;
             passes.dispatch(

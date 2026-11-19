@@ -178,7 +178,9 @@ fn a_flat_field_stays_flat_to_the_edge_and_the_corner_and_the_mask_keeps_the_out
                     worst = worst.max((oa[y * w + x][0] - ob[y * w + x][0]).abs());
                 }
             }
-            println!("centre {center:?}, amount {amount}: the outside moves the inside by {worst:.1e}");
+            println!(
+                "centre {center:?}, amount {amount}: the outside moves the inside by {worst:.1e}"
+            );
             assert!(worst < 1e-9, "centre {center:?}, amount {amount}: {worst}");
         }
     }
@@ -270,7 +272,12 @@ fn energy_of_a_blob_is_conserved_to_a_few_per_mille() {
     let center = [0.4, 0.45];
     let (cx, cy) = (0.4 * fw as f64, 0.45 * fh as f64);
     let mut worst = 0.0f64;
-    for (dx, dy) in [(40.0, 10.0), (300.0, 200.0), (900.0, -400.0), (-1100.0, 600.0)] {
+    for (dx, dy) in [
+        (40.0, 10.0),
+        (300.0, 200.0),
+        (900.0, -400.0),
+        (-1100.0, 600.0),
+    ] {
         let (bx, by) = (cx + dx, cy + dy);
         let blob = |x: i64, y: i64| {
             let r2 = (x as f64 - bx).powi(2) + (y as f64 - by).powi(2);
@@ -299,7 +306,8 @@ fn energy_of_a_blob_is_conserved_to_a_few_per_mille() {
             for y in 0..wh {
                 for x in 0..ww {
                     let (ax, ay) = (x0 + x as i64, y0 + y as i64);
-                    if (ax as f64 - bx).abs() <= half as f64 && (ay as f64 - by).abs() <= half as f64
+                    if (ax as f64 - bx).abs() <= half as f64
+                        && (ay as f64 - by).abs() <= half as f64
                     {
                         sin += xs[y * ww + x][1] - 0.02;
                         sout += out[y * ww + x][1] - 0.02;
@@ -391,10 +399,7 @@ fn the_pyramid_against_the_exact_line_on_an_edge_a_disc_a_light_and_noise() {
         // functions of their own coordinates, so the centre is moved instead. The centre is put `dist` px from the feature along
         // a 30 degree line, and the frame is the 6000 x 4000 one.
         for dist in [150.0f64, 600.0, 1500.0, 2600.0] {
-            let cc = [
-                3000.0 - dist * 0.866,
-                2000.0 - dist * 0.5,
-            ];
+            let cc = [3000.0 - dist * 0.866, 2000.0 - dist * 0.5];
             let cen = [(cc[0] + 0.5) / fw as f64, (cc[1] + 0.5) / fh as f64];
             let reach = reach_px(&params(amount, cen, true), fw, fh) as i64;
             let line = a * dist;
@@ -436,7 +441,9 @@ fn the_pyramid_against_the_exact_line_on_an_edge_a_disc_a_light_and_noise() {
                     y += step;
                 }
                 let rel = err / peak;
-                println!("amount {amount:3} dist {dist:6} line {line:6.1} {name:6}: {rel:.2e} of the peak");
+                println!(
+                    "amount {amount:3} dist {dist:6} line {line:6.1} {name:6}: {rel:.2e} of the peak"
+                );
                 if rel > worst[si] {
                     worst[si] = rel;
                     worst_at[si] = format!("amount {amount}, {dist} px from the centre");
@@ -477,6 +484,8 @@ fn the_cpu_cost_per_megapixel_is_measured() {
         let exact = blur::apply(&v, &m, w, h, &p, &frame).expect("exact");
         let ms_exact = t.elapsed().as_secs_f64() * 1000.0 / mp;
         assert_eq!(exact.len(), w * h);
-        println!("{name}: the fast method {ms:.0} ms per MP, the exact kernel {ms_exact:.0} ms per MP, one thread");
+        println!(
+            "{name}: the fast method {ms:.0} ms per MP, the exact kernel {ms_exact:.0} ms per MP, one thread"
+        );
     }
 }
