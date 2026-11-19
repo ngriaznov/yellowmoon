@@ -362,8 +362,9 @@ fn a_color_uniform_node_is_byte_identical_through_the_app_path_and_the_binary_on
 /// A Blur node (`docs/33`, BL-10) with a Radial row and another mask (a Linear) on a photo of six export tiles: the app (its core has
 /// the device) and the binary (`YELLOWMOON_GPU=on`) write the same bytes in a JPEG, a 16-bit TIFF, a 16-bit PNG and a DNG, which are
 /// not the files of the same graph without the node. **A type whose task has not landed is refused by the device and the CPU makes
-/// every frame, with its reason, on both sides** (Lens here); a type that runs on the device (Soft, BL-06) is run there, the six
-/// tiles of an export each cut with the node's reach. Each type task adds its own type's node.
+/// every frame, with its reason, on both sides**; a type that runs on the device (Soft, BL-06; Lens, BL-07, R = 10 px on cells of
+/// 2 px) is run there, the six tiles of an export each cut with the node's reach, and the binary's report names no node (no
+/// fallback). Each type task adds its own type's node.
 #[test]
 fn a_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
     let lens = serde_json::json!({ "id": 2, "kind": "blur", "pos": [1, 0], "type": "lens",
@@ -385,6 +386,15 @@ fn a_motion_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_t
     let motion = serde_json::json!({ "id": 2, "kind": "blur", "pos": [1, 0], "type": "motion",
         "motion": { "length": 45, "angle_deg": 20 } });
     blur_device_case("motion", motion);
+}
+
+/// The same with a wide round Lens (BL-07: `R` = 84 px, cells of 16 px, the largest the photo allows), Respect mask edges off.
+#[test]
+fn a_wide_round_lens_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    let lens = serde_json::json!({ "id": 2, "kind": "blur", "pos": [1, 0], "type": "lens",
+        "lens": { "radius": 100, "blades": 0, "rotation_deg": 0, "highlights": 0 },
+        "respect_mask_edges": false });
+    blur_device_case("wide lens", lens);
 }
 
 fn blur_device_case(type_name: &str, body: serde_json::Value) {
@@ -467,6 +477,39 @@ fn blur_device_case(type_name: &str, body: serde_json::Value) {
                 "the node changed no pixel"
             );
         }
+    }
+    // A type with a device kernel (Soft, Lens) ran there: the binary's report names no node (a refused node says "a Zoom Blur node
+    // is not on the device yet" and the CPU makes the frame).
+    if !matches!(type_name, "motion" | "zoom") {
+        let out = sb
+            .ym_data(&data_dir())
+            .env("YELLOWMOON_GPU", "on")
+            .args([
+                "render",
+                "--json",
+                "--format",
+                "jpeg",
+                "--apple-auto",
+                "off",
+            ])
+            .arg(&arw)
+            .args(["--settings", file.to_str().expect("utf-8")])
+            .arg("--out")
+            .arg(sb.root().join("cli-json"))
+            .assert()
+            .success();
+        let line = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+        let v: serde_json::Value = serde_json::from_str(line.trim_end()).expect("JSON");
+        let notes: Vec<&str> = v["notes"]
+            .as_array()
+            .expect("notes")
+            .iter()
+            .filter_map(|n| n.as_str())
+            .collect();
+        assert!(
+            !notes.iter().any(|n| n.to_lowercase().contains("node")),
+            "{type_name}: {notes:?}"
+        );
     }
 }
 

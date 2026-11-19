@@ -204,10 +204,11 @@ fn a_view_and_the_export_agree_at_another_scale() {
     assert!(on.1 <= off.1 + 10.0, "largest {} against {}", on.1, off.1);
 }
 
-/// While a type has no device kernel (BL-06 to BL-09 add them one by one) the device refuses a live node of that type by its
-/// name and the CPU makes the frame, with its reason; a node at its identity keeps the device; the export is the CPU's.
+/// A type with no device kernel (BL-06 to BL-09 add them one by one; Lens, BL-07, has one) is refused by the device by its name
+/// and the CPU makes the frame, with its reason; a type with one runs on the device with no reason; a node at its identity keeps
+/// the device either way.
 #[test]
-fn the_device_refuses_a_live_blur_node_and_the_cpu_makes_the_frame() {
+fn the_device_refuses_a_type_with_no_kernel_and_runs_one_that_has_it() {
     let gpu = match Gpu::start(GpuConfig {
         poison: true,
         ..GpuConfig::default()
@@ -239,24 +240,60 @@ fn the_device_refuses_a_live_blur_node_and_the_cpu_makes_the_frame() {
             .viewport_frame(src, &st, &FrameOptions::default(), &CancelToken::new())
             .expect("frame")
     };
-    let live = d
-        .source()
-        .with_settings(graph(&json!({ "type": "lens", "lens": { "radius": 30 } })));
-    let got = frame(&live);
-    assert!(got.report.device_refused, "the device refused the plan");
-    assert!(
-        got.report
-            .cpu_reason
-            .as_deref()
-            .is_some_and(|r| r.contains("a Lens Blur node is not on the device yet")),
-        "the reason: {:?}",
-        got.report.cpu_reason
-    );
-    // The frame is the picture with the node in it (not the identity).
     let off = frame(&d.source().with_settings(graph(&json!({ "bypass": true }))));
-    assert_ne!(got.rgba, off.rgba);
     // A node at its identity keeps the device and says nothing.
     assert!(!off.report.device_refused && off.report.cpu_reason.is_none());
+    for (name, label, body) in [
+        (
+            "soft",
+            "Soft",
+            json!({ "type": "soft", "soft": { "radius": 30 } }),
+        ),
+        (
+            "lens",
+            "Lens",
+            json!({ "type": "lens", "lens": { "radius": 30 } }),
+        ),
+        (
+            "motion",
+            "Motion",
+            json!({ "type": "motion", "motion": { "length": 30 } }),
+        ),
+        (
+            "zoom",
+            "Zoom",
+            json!({ "type": "zoom", "zoom": { "amount": 30 } }),
+        ),
+    ] {
+        let settings = graph(&body);
+        let params = ym_core::pipeline::color::blur_params_of(
+            settings.nodes.blur(2).expect("the blur node"),
+        );
+        let live = d.source().with_settings(settings);
+        let has_kernel = ym_gpu::kernels::blur_stack::device_kernel(&params).is_some();
+        let got = frame(&live);
+        if has_kernel {
+            assert!(
+                !got.report.device_refused && got.report.cpu_reason.is_none(),
+                "{name}: the device runs it: {:?}",
+                got.report.cpu_reason
+            );
+        } else {
+            assert!(
+                got.report.device_refused,
+                "{name}: the device refused the plan"
+            );
+            assert!(
+                got.report.cpu_reason.as_deref().is_some_and(
+                    |r| r.contains(&format!("a {label} Blur node is not on the device yet"))
+                ),
+                "{name}: the reason: {:?}",
+                got.report.cpu_reason
+            );
+        }
+        // The frame is the picture with the node in it (not the identity).
+        assert_ne!(got.rgba, off.rgba, "{name}");
+    }
 }
 
 /// Show mask on a Blur node does not run the blur (`docs/33` section 6): the plan ends at `m`, so the view is the same whatever

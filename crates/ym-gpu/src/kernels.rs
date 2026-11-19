@@ -47,6 +47,7 @@
 pub mod adaptive_ratio;
 pub mod bilateral;
 pub mod bin;
+pub mod blur_lens;
 pub mod blur_motion;
 pub mod blur_soft;
 pub mod blur_stack;

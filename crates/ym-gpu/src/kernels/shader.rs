@@ -152,6 +152,8 @@ pub enum KernelId {
     BlurUpsample,
     /// The Blur node, the last pass: the blend in linear light and the encode.
     BlurBlend,
+    /// The Blur node's Lens type: the table of an aperture's coverage over cells (`docs/33` section 3.5).
+    BlurLens,
     /// The Blur node, Soft's kernel: the B-spline reduction to cells, the Gaussian of the cells and the read-back (`docs/33` 3.5).
     BlurSoft,
     /// The Blur node, Motion's kernel: the exact line gathered over the pixels it touches (`docs/33` 3.5, 11 item 50).
@@ -359,6 +361,7 @@ impl KernelId {
         KernelId::BlurPyramid,
         KernelId::BlurUpsample,
         KernelId::BlurBlend,
+        KernelId::BlurLens,
         KernelId::BlurSoft,
         KernelId::BlurMotion,
         // The Film node's passes (docs/24 section 3.9).
@@ -464,6 +467,7 @@ impl KernelId {
             KernelId::BlurPyramid => "blur_pyramid",
             KernelId::BlurUpsample => "blur_upsample",
             KernelId::BlurBlend => "blur_blend",
+            KernelId::BlurLens => "blur_lens",
             KernelId::BlurSoft => "blur_soft",
             KernelId::BlurMotion => "blur_motion",
             KernelId::MaskRaster => "mask_raster",
@@ -777,6 +781,7 @@ impl KernelId {
             | KernelId::BlurBlend
             | KernelId::BlurSoft
             | KernelId::BlurMotion => super::blur_stack::body(self),
+            KernelId::BlurLens => super::blur_lens::body(),
             KernelId::MaskRaster => include_str!("../shaders/mask_raster.wgsl").to_string(),
             KernelId::Face => super::face::body(),
             KernelId::Probe => placeholder_body(self),

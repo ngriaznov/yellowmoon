@@ -22,3 +22,4 @@ synthetic/node-blur-soft__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l
 synthetic/node-blur-soft-off__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l  # Soft Blur: the same, Respect mask edges off
 # The entry with a Motion Blur node on (BL-08).
 synthetic/node-blur-motion__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l    # Motion Blur: Length 45 at 20 degrees, an inverted Radial row, Respect mask edges on
+synthetic/node-blur-lens__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l   # Blur: Lens, 6 blades, Highlights 60, a Radial row inverted (docs/33 section 8)

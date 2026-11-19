@@ -25,6 +25,7 @@ use crate::consts::Vec3;
 use crate::logc::{logc4_decode_rgb, logc4_encode_rgb};
 use crate::warp::smoothstep;
 
+pub mod lens;
 pub mod motion;
 pub mod soft;
 
@@ -613,7 +614,8 @@ fn gather_zoom(
     out
 }
 
-/// The sums `N` and `D` of the law (`docs/33` 3.2) of a window of linear AWG4 pixels `x` and its mask `m`.
+/// The sums `N` and `D` of the law (`docs/33` 3.2) of a window of linear AWG4 pixels `x` and its mask `m`, by the **exact**
+/// kernels (the oracle).
 ///
 /// # Errors
 ///
@@ -629,8 +631,8 @@ pub fn sums(
     sums_with(x, m, width, height, params, frame, false)
 }
 
-/// [`sums`] by the type's fast method where it has one (`docs/33` 3.5; Soft's coarse grid, [`soft`]) and by the exact kernel
-/// where its task has not landed. Held to [`sums`] by the bounds of `docs/33` 3.7.
+/// [`sums`] by the type's fast method where it has one (`docs/33` 3.5; Soft's coarse grid, [`soft`]; Lens' cells, [`lens`]) and by
+/// the exact kernel where its task has not landed. Held to [`sums`] by the bounds of `docs/33` 3.7.
 ///
 /// # Errors
 ///
@@ -710,8 +712,18 @@ fn sums_with(
             rotation_deg,
             ..
         } => {
-            let t = aperture_table(radius_px(radius, u), blades, rotation_deg);
-            gather_table(&planes, width, height, &t)
+            let r = radius_px(radius, u);
+            if fast {
+                lens::gather(
+                    &planes,
+                    (frame.x0, frame.y0, width, height),
+                    (frame.full_w, frame.full_h),
+                    (r, blades, rotation_deg),
+                )
+            } else {
+                let t = aperture_table(r, blades, rotation_deg);
+                gather_table(&planes, width, height, &t)
+            }
         }
         BlurKind::Motion { length, angle_deg } => {
             if fast {
@@ -745,6 +757,34 @@ pub fn apply_linear(
     params: &BlurParams,
     frame: &Frame,
 ) -> Result<Vec<Vec3>, BlurError> {
+    apply_linear_with(x, m, width, height, params, frame, false)
+}
+
+/// [`apply_linear`] by the fast methods ([`sums_fast`]).
+///
+/// # Errors
+///
+/// As [`sums`].
+pub fn apply_linear_fast(
+    x: &[Vec3],
+    m: &[f64],
+    width: usize,
+    height: usize,
+    params: &BlurParams,
+    frame: &Frame,
+) -> Result<Vec<Vec3>, BlurError> {
+    apply_linear_with(x, m, width, height, params, frame, true)
+}
+
+fn apply_linear_with(
+    x: &[Vec3],
+    m: &[f64],
+    width: usize,
+    height: usize,
+    params: &BlurParams,
+    frame: &Frame,
+    fast: bool,
+) -> Result<Vec<Vec3>, BlurError> {
     check_finite(params)?;
     if is_identity(params) {
         // Still validate the sizes, so an identity call fails like any other on a bad window.
@@ -758,14 +798,14 @@ pub fn apply_linear(
         }
         return Ok(x.to_vec());
     }
-    let (n, d) = sums(x, m, width, height, params, frame)?;
+    let (n, d) = sums_with(x, m, width, height, params, frame, fast)?;
     Ok((0..x.len())
         .map(|i| blend_linear(x[i], clean_mask(m[i]), n[i], d[i]))
         .collect())
 }
 
 /// The node on LogC4 AWG4 pixels (the graph's working encoding): decode, [`apply_linear`], encode. A pixel with
-/// `m = 0` and a node at amount 0 return the input's bits (no encode of a decode).
+/// `m = 0` and a node at amount 0 return the input's bits (no encode of a decode). The exact kernels: the oracle.
 ///
 /// # Errors
 ///
@@ -855,7 +895,7 @@ pub fn cell_factor(long_edge_px: f64) -> usize {
 /// | Type | Reach |
 /// |---|---|
 /// | Soft | `ceil(2 R) + 3 f`, or what [`soft::reads_px`] needs when that is more |
-/// | Lens | `ceil(R) + 3 f` |
+/// | Lens | `ceil(R) + 3 f_L`, `f_L` = [`lens::cell_size`] (the smallest cell with `R / f_L <= 8`) |
 /// | Motion | `ceil(l / 2) + 1 + 3 f` |
 /// | Zoom | `ceil(a / 2 d_max) + f` |
 ///
@@ -874,7 +914,12 @@ pub fn reach_px(params: &BlurParams, full_w: usize, full_h: usize) -> usize {
             let r = radius_px(radius, u);
             (cells(2.0 * r) + 3 * f).max(soft::reads_px(r / 2.0))
         }
-        BlurKind::Lens { radius, .. } => cells(radius_px(radius, u)) + 3 * f,
+        // Lens' cell is its own (`lens::level_for`: the smallest with `R / f <= 8`), so 3 cells of it hold what the cell method
+        // reads (`R + 2.5 f`).
+        BlurKind::Lens { radius, .. } => {
+            let r = radius_px(radius, u);
+            cells(r) + 3 * lens::cell_size(r)
+        }
         BlurKind::Motion { length, .. } => cells(length_px(length, u) / 2.0) + 1 + 3 * f,
         BlurKind::Zoom { amount, center } => {
             let c = [

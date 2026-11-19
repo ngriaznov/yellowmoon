@@ -47,6 +47,7 @@ use ym_color::blur::{
 use ym_color::display::ColorChain;
 use ym_color::mask_raster::Area;
 
+use super::blur_lens::LensKernel;
 use super::shader::KernelId;
 use super::util::GROUP;
 use crate::cpu::Placement;
@@ -109,6 +110,12 @@ pub trait BlurKernel: Send + Sync + std::fmt::Debug {
     /// it; a level with no whole cell in the read area is absent and [`BlurKernel::encode`] is given a shorter pyramid.
     fn levels(&self) -> u32;
 
+    /// [`BlurKernel::levels`] for a photo whose extent is `frame`: a type whose cell depends on its size in pixels (Lens: the
+    /// smallest cell with `R / f <= 8`, `R` a fraction of the long edge) answers here. The scaffold asks this one.
+    fn levels_for(&self, _frame: Area) -> u32 {
+        self.levels()
+    }
+
     /// Records the passes that write `N` and `D` over `out.area` from `src`. A pixel of `out.area` reads the pixels (and the
     /// cells) within the node's reach of it; what lies outside the pyramid's grids has no weight.
     ///
@@ -134,7 +141,8 @@ pub fn device_kernel(params: &BlurParams) -> Option<Arc<dyn BlurKernel>> {
         BlurKind::Motion { length, angle_deg } => Some(Arc::new(
             super::blur_motion::BlurMotion::new(length, angle_deg),
         )),
-        BlurKind::Lens { .. } | BlurKind::Zoom { .. } => None,
+        BlurKind::Lens { .. } => LensKernel::of(params).map(|k| Arc::new(k) as Arc<dyn BlurKernel>),
+        BlurKind::Zoom { .. } => None,
     }
 }
 
@@ -503,7 +511,7 @@ pub fn encode_blur_picture(
         (picture, mask),
         (read, frame),
         (highlights, work.params.respect_mask_edges),
-        kernel.levels(),
+        kernel.levels_for(frame),
     )?;
     let sums = SumsImage {
         img: GpuImage::alloc(
@@ -643,30 +651,43 @@ mod tests {
     }
 
     #[test]
-    fn the_types_whose_task_has_not_landed_have_no_device_kernel() {
+    fn a_type_has_a_device_kernel_once_its_task_lands() {
         use ym_color::blur::BlurKind;
-        for kind in [
-            BlurKind::Soft { radius: 10.0 },
-            BlurKind::Lens {
-                radius: 10.0,
-                blades: 0,
-                rotation_deg: 0.0,
-                highlights: 0.0,
-            },
-            BlurKind::Motion {
-                length: 10.0,
-                angle_deg: 0.0,
-            },
-            BlurKind::Zoom {
-                amount: 10.0,
-                center: [0.5, 0.5],
-            },
+        // BL-07 landed Lens: it has a kernel; the types whose tasks have not landed have none.
+        for (kind, _) in [
+            (BlurKind::Soft { radius: 10.0 }, false),
+            (
+                BlurKind::Lens {
+                    radius: 10.0,
+                    blades: 0,
+                    rotation_deg: 0.0,
+                    highlights: 0.0,
+                },
+                true,
+            ),
+            (
+                BlurKind::Motion {
+                    length: 10.0,
+                    angle_deg: 0.0,
+                },
+                false,
+            ),
+            (
+                BlurKind::Zoom {
+                    amount: 10.0,
+                    center: [0.5, 0.5],
+                },
+                false,
+            ),
         ] {
             let params = BlurParams {
                 kind,
                 respect_mask_edges: true,
             };
-            let landed = matches!(params.kind, BlurKind::Soft { .. } | BlurKind::Motion { .. });
+            let landed = matches!(
+                params.kind,
+                BlurKind::Soft { .. } | BlurKind::Motion { .. } | BlurKind::Lens { .. }
+            );
             assert_eq!(
                 device_kernel(&params).is_some(),
                 landed,
