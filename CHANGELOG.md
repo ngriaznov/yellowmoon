@@ -17,7 +17,7 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Changed
 
-- **Demosaic and output sharpening constants re-derived.** The constants of the demosaic's chroma step, its shadow steps and the output sharpening kernel were taken over from research. They are now fitted or derived by the project on public test images and our own synthetic scenes, and each has its derivation in `docs/29`. Pictures change slightly: on the 64 pictures of the test set, 58 change and 6 stay bit for bit; the typical pixel moves by a median of ΔE00 0.09 (0.03 to 0.27 per picture), and the largest change is ΔE00 21.1, on the edge of a saturated colour patch (14.7 on the 61 older pictures). The two values of the demosaic's chroma step moved every one of those pictures; the output sharpening and the colour-fringe path changed none of them. The pipeline version is 0.13.1 (was 0.13.0).
+- **Demosaic and output sharpening constants re-derived.** The constants of the demosaic's chroma step, its shadow steps and the output sharpening kernel were taken over from research. They are now fitted or derived by the project on public test images and our own synthetic scenes, and each has its derivation in `docs/29`. Pictures change slightly: on the 64 pictures of the test set, 58 change and 6 stay bit for bit; the typical pixel moves by a median of ΔE00 0.09 (0.03 to 0.27 per picture), and the largest change is ΔE00 21.1, on the edge of a saturated colour patch (14.7 on the 61 older pictures). The two values of the demosaic's chroma step moved every one of those pictures; the output sharpening and the colour-fringe path changed none of them. The pipeline version is 0.13.1 (was 0.13.0); the Blur node then takes it to 0.14.0.
 - The raw-algorithm constants have recorded derivations and two classes of test vectors.
 
 ### Fixed
@@ -27,6 +27,7 @@ moves the entries below from Unreleased into a dated section for that version.
 ### Known limits
 
 - On a Mac whose graphics card cannot run the Blur node, Lens, Motion and Zoom render on the processor instead, and slowly at large sizes: a large Lens, Motion or Zoom on a full-size photo can take minutes, where Soft takes seconds. On the graphics card the node is estimated at a few milliseconds a megapixel for a small blur and tens of milliseconds for the largest Lens, but its speed has not been measured on a Mac yet. (`docs/33` sections 9 and 11, items 65 and 75 to 80, have the numbers.)
+- A Zoom blur makes a tiny bright light (a few pixels wide) streak wider and dimmer than an exact streak would; smooth edges and large areas are right. A sharper streak may come later.
 
 ## [0.2.4-beta.2] - 2026-11-17
 
