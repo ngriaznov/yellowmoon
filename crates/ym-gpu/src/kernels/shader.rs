@@ -158,6 +158,8 @@ pub enum KernelId {
     BlurSoft,
     /// The Blur node's Zoom type: a radial line of up to 32 taps read trilinearly from the pyramid (`docs/33` section 3.5).
     BlurZoom,
+    /// The Blur node, Motion's kernel: the exact line gathered over the pixels it touches (`docs/33` 3.5, 11 item 50).
+    BlurMotion,
     /// The Face Refinement node: the apply of the blemish map and the low-frequency operator of dark circles, even skin, skin
     /// grading and teeth whitening over a region (one entry point, an op in the uniform).
     Face,
@@ -303,7 +305,7 @@ impl KernelId {
     /// no render uses. [`KernelSet::kernels`] and `warm_up` compile in this order, so that what the
     /// first frame of the first photo waits for is compiled before what only a zoomed view or an
     /// export needs.
-    pub const ALL: [KernelId; 108] = [
+    pub const ALL: [KernelId; 109] = [
         // The fit view of a mosaic photo.
         KernelId::Prep,
         KernelId::PrepMask,
@@ -364,6 +366,7 @@ impl KernelId {
         KernelId::BlurLens,
         KernelId::BlurSoft,
         KernelId::BlurZoom,
+        KernelId::BlurMotion,
         // The Film node's passes (docs/24 section 3.9).
         KernelId::FilmColourIn,
         KernelId::FilmSpatial,
@@ -470,6 +473,7 @@ impl KernelId {
             KernelId::BlurLens => "blur_lens",
             KernelId::BlurSoft => "blur_soft",
             KernelId::BlurZoom => "blur_zoom",
+            KernelId::BlurMotion => "blur_motion",
             KernelId::MaskRaster => "mask_raster",
             KernelId::Face => "face",
             KernelId::Prep => "prep",
@@ -581,6 +585,7 @@ impl KernelId {
             | KernelId::BlurUpsample
             | KernelId::BlurBlend
             | KernelId::BlurSoft
+            | KernelId::BlurMotion
             | KernelId::FilmColourIn
             | KernelId::FilmSpatial
             | KernelId::FilmDevelop
@@ -778,7 +783,8 @@ impl KernelId {
             | KernelId::BlurPyramid
             | KernelId::BlurUpsample
             | KernelId::BlurBlend
-            | KernelId::BlurSoft => super::blur_stack::body(self),
+            | KernelId::BlurSoft
+            | KernelId::BlurMotion => super::blur_stack::body(self),
             KernelId::BlurLens => super::blur_lens::body(),
             KernelId::BlurZoom => super::blur_zoom::body(),
             KernelId::MaskRaster => include_str!("../shaders/mask_raster.wgsl").to_string(),

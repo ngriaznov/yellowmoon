@@ -397,6 +397,14 @@ fn a_zoom_blur_node_with_its_centre_in_the_corner_is_byte_identical_on_the_devic
     blur_device_case("corner zoom", zoom);
 }
 
+/// The same for a Motion node (BL-08), which the device runs: a line of 30 px at 20 degrees on the photo of 2100 px.
+#[test]
+fn a_motion_blur_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    let motion = serde_json::json!({ "id": 2, "kind": "blur", "pos": [1, 0], "type": "motion",
+        "motion": { "length": 45, "angle_deg": 20 } });
+    blur_device_case("motion", motion);
+}
+
 /// The same with a wide round Lens (BL-07: `R` = 84 px, cells of 16 px, the largest the photo allows), Respect mask edges off.
 #[test]
 fn a_wide_round_lens_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
@@ -487,9 +495,9 @@ fn blur_device_case(type_name: &str, body: serde_json::Value) {
             );
         }
     }
-    // A type with a device kernel (Soft, Lens, Zoom) ran there: the binary's report names no node (a refused node says "a Motion Blur
-    // node is not on the device yet" and the CPU makes the frame).
-    if !matches!(type_name, "motion") {
+    // Every type has a device kernel: the binary's report names no node (a refused node says "a Motion Blur node is not on the
+    // device yet" and the CPU makes the frame).
+    {
         let out = sb
             .ym_data(&data_dir())
             .env("YELLOWMOON_GPU", "on")

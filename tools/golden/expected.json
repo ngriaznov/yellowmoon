@@ -368,6 +368,12 @@
       "height": 832,
       "pipeline_version": "0.9.0"
     },
+    "synthetic/node-blur-motion__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
+      "pixels_sha256": "42b22f67b62a79f51e6d92d8c625ec71dd15f0ca1a77dcbffb664ebc5490ef0a",
+      "width": 1248,
+      "height": 832,
+      "pipeline_version": "0.13.0"
+    },
     "synthetic/node-blur-lens__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
       "pixels_sha256": "cfcfc570c839a8d3cc5b6a955343b3c3fe0586d02856efd4442e0754cc53cfa2",
       "width": 1248,

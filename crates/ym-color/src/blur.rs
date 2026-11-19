@@ -26,6 +26,7 @@ use crate::logc::{logc4_decode_rgb, logc4_encode_rgb};
 use crate::warp::smoothstep;
 
 pub mod lens;
+pub mod motion;
 pub mod soft;
 pub mod zoom;
 
@@ -726,8 +727,12 @@ fn sums_with(
             }
         }
         BlurKind::Motion { length, angle_deg } => {
-            let t = line_table(length_px(length, u), angle_deg);
-            gather_table(&planes, width, height, &t)
+            if fast {
+                motion::gather(&planes, width, height, length_px(length, u), angle_deg)
+            } else {
+                let t = line_table(length_px(length, u), angle_deg);
+                gather_table(&planes, width, height, &t)
+            }
         }
         BlurKind::Zoom { amount, center } => {
             if fast {

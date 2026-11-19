@@ -139,9 +139,11 @@ pub trait BlurKernel: Send + Sync + std::fmt::Debug {
 pub fn device_kernel(params: &BlurParams) -> Option<Arc<dyn BlurKernel>> {
     match params.kind {
         BlurKind::Soft { radius } => Some(Arc::new(super::blur_soft::BlurSoft::new(radius))),
+        BlurKind::Motion { length, angle_deg } => Some(Arc::new(
+            super::blur_motion::BlurMotion::new(length, angle_deg),
+        )),
         BlurKind::Lens { .. } => LensKernel::of(params).map(|k| Arc::new(k) as Arc<dyn BlurKernel>),
         BlurKind::Zoom { .. } => ZoomKernel::of(params).map(|k| Arc::new(k) as Arc<dyn BlurKernel>),
-        BlurKind::Motion { .. } => None,
     }
 }
 
@@ -577,6 +579,7 @@ pub(super) fn body(id: KernelId) -> String {
         KernelId::BlurUpsample => include_str!("../shaders/blur_upsample.wgsl"),
         KernelId::BlurBlend => include_str!("../shaders/blur_blend.wgsl"),
         KernelId::BlurSoft => include_str!("../shaders/blur_soft.wgsl"),
+        KernelId::BlurMotion => include_str!("../shaders/blur_motion.wgsl"),
         _ => return String::new(),
     };
     let mut s = constants();
@@ -684,7 +687,10 @@ mod tests {
             };
             let landed = matches!(
                 params.kind,
-                BlurKind::Soft { .. } | BlurKind::Lens { .. } | BlurKind::Zoom { .. }
+                BlurKind::Soft { .. }
+                    | BlurKind::Motion { .. }
+                    | BlurKind::Lens { .. }
+                    | BlurKind::Zoom { .. }
             );
             assert_eq!(
                 device_kernel(&params).is_some(),

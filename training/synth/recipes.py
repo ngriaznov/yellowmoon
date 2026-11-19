@@ -180,6 +180,7 @@ def manifest(full: bool = True) -> dict:
             )
     entries.extend(node_entries(entries))
     entries.extend(soft_blur_entries(entries))
+    entries.extend(motion_blur_entries(entries))
     entries.extend(lens_blur_entries(entries))
     return {"entries": entries}
 
@@ -276,6 +277,40 @@ def soft_blur_entries(entries: list[dict]) -> list[dict]:
         entry["settings"] = {"nodes": {"items": [node], "links": links}}
         out.append(entry)
     return out
+
+
+# The golden entry with a Motion Blur node on (docs/33 section 8, BL-08): the same ARW file as the entry of ``UNIFORM_BASE`` under
+# settings that add one Blur node of type Motion after Main, Length 45 (0.036 of the long edge: 45 px on the 1248 px picture) at 20
+# degrees, with one inverted Radial row and Respect mask edges on. A new entry, so no existing hash moves.
+def motion_blur_entries(entries: list[dict]) -> list[dict]:
+    """The golden entry with a Motion Blur node on: a copy of the entry of ``UNIFORM_BASE`` with settings that add the node after
+    Main. No sidecar (a node moves the picture from the scene's truth on purpose)."""
+    base = next(e for e in entries if e["id"] == f"synthetic/{UNIFORM_BASE}__lossless-l")
+    node = {
+        "id": 2,
+        "kind": "blur",
+        "name": "Motion",
+        "pos": [1, 0],
+        "type": "motion",
+        "motion": {"length": 45, "angle_deg": 20},
+        "respect_mask_edges": True,
+        "masks": {
+            "invert": False,
+            "items": [{"kind": "radial", "mode": "add", "invert": True, "enabled": True, "opacity": 1, "feather": 0.1}],
+        },
+    }
+    links = [
+        {"from": {"node": "input", "port": "picture"}, "to": {"node": 1, "port": "picture"}},
+        {"from": {"node": 1, "port": "picture"}, "to": {"node": 2, "port": "picture"}},
+        {"from": {"node": 2, "port": "picture"}, "to": {"node": "output", "port": "picture"}},
+    ]
+    entry = {k: v for k, v in base.items() if k != "sidecar"}
+    entry["id"] = f"synthetic/node-blur-motion__{UNIFORM_BASE}__lossless-l"
+    entry["group"] = "node-blur"
+    entry["settings"] = {"nodes": {"items": [node], "links": links}}
+    return [entry]
+
+
 # The golden entries with a Lens Blur node on (docs/33 section 8, BL-07): the same ARW file as an existing entry under settings that
 # add one Blur node after Main, with a Radial row inverted (the node blurs outside the ellipse). Each type's task adds its entry
 # to ``LENS_BLUR_NODES`` (one block), so a cut type loses its entry only. They are new entries, so no existing hash moves.
