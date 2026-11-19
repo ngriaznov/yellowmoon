@@ -152,7 +152,7 @@ pub enum KernelId {
     BlurUpsample,
     /// The Blur node, the last pass: the blend in linear light and the encode.
     BlurBlend,
-    /// The Blur node's Lens type: the table of an aperture's coverage over cells (`docs/33` section 3.5).
+    /// The Blur node's Lens type: the exact table up to 8 px, above it the aperture's row segments from integer prefix sums (`docs/33` 3.5).
     BlurLens,
     /// The Blur node, Soft's kernel: the B-spline reduction to cells, the Gaussian of the cells and the read-back (`docs/33` 3.5).
     BlurSoft,
@@ -784,8 +784,8 @@ impl KernelId {
             | KernelId::BlurUpsample
             | KernelId::BlurBlend
             | KernelId::BlurSoft
+            | KernelId::BlurLens
             | KernelId::BlurMotion => super::blur_stack::body(self),
-            KernelId::BlurLens => super::blur_lens::body(),
             KernelId::BlurZoom => super::blur_zoom::body(),
             KernelId::MaskRaster => include_str!("../shaders/mask_raster.wgsl").to_string(),
             KernelId::Face => super::face::body(),

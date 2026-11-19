@@ -1,6 +1,6 @@
-//! The Lens type of a Blur node on the device (`docs/33-blur.md` section 3.5, BL-07; `kernels::blur_lens`) against its CPU
-//! references: the gather over cells against the twin (`cpu::blur::lens_cells`, f64) and the node's picture against the CPU's
-//! fast method (`ym_color::blur::apply_fast`, f64), on lavapipe. Tiles of the node equal the whole made area bit for bit.
+//! The Lens type of a Blur node on the device (`docs/33-blur.md` section 3.5, BL-07b; `kernels::blur_lens`) against its CPU
+//! references: the sums against the twin (`cpu::blur_lens::sums`, f64) and the node's picture against the CPU's fast method
+//! (`ym_color::blur::apply_fast`, f64), on lavapipe. Tiles of the node equal the whole made area bit for bit.
 //!
 //! The stated bound is 2e-4 in LogC4 for the picture (`docs/33` section 3.7) and 2e-4 relative for the sums.
 #![allow(clippy::needless_range_loop)]
@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use common::chains;
 use common::{TestGpu, gpus};
-use ym_color::blur::lens::{cell_table, level_for};
 use ym_color::blur::{self, BlurKind, BlurParams, Frame, radius_px};
 use ym_color::consts::Vec3;
 use ym_color::display::{ColorChain, OutputTarget};
@@ -19,10 +18,10 @@ use ym_color::logc::logc4_encode_rgb;
 use ym_color::mask_raster::Area;
 use ym_gpu::cpu::Placement;
 use ym_gpu::cpu::blur as twin;
-use ym_gpu::cpu::blur::CellGrid;
+use ym_gpu::cpu::blur_lens;
 use ym_gpu::device::{GpuContext, StorageMode};
 use ym_gpu::image::GpuImage;
-use ym_gpu::kernels::blur_lens::{LensKernel, output_grid};
+use ym_gpu::kernels::blur_lens::LensKernel;
 use ym_gpu::kernels::blur_stack::{
     BlurKernel, BlurWork, SumsImage, device_kernel, encode_blur_picture, encode_pyramid,
 };
@@ -116,22 +115,22 @@ fn lens(radius: f64, blades: u32, rotation_deg: f64, highlights: f64, respect: b
     }
 }
 
-/// The cases: the level 0 (R = 7.2 px), 1, 2, 3 (R = 48 px) and 4 (the largest the frame allows is 48; a 2000 px frame is not
-/// needed: the level is a function of R), round and polygon, Highlights, Respect on and off.
+/// The cases (the frame is 1200 px, so `R = 0.48 Radius` px): R = 7.2 px (the exact table), 14.4, 28.8, 48 and 43 px (rows), round
+/// and polygon, Highlights, Respect on and off.
 fn cases() -> Vec<(&'static str, BlurParams)> {
     vec![
-        ("level 0, round", lens(15.0, 0, 0.0, 0.0, true)),
-        ("level 1, hexagon", lens(30.0, 6, 15.0, 0.0, true)),
         (
-            "level 2, round, respect off",
-            lens(60.0, 0, 0.0, 0.0, false),
+            "R 7.2, the exact table, round",
+            lens(15.0, 0, 0.0, 0.0, true),
         ),
+        ("R 14.4, hexagon", lens(30.0, 6, 15.0, 0.0, true)),
+        ("R 28.8, round, respect off", lens(60.0, 0, 0.0, 0.0, false)),
         (
-            "level 3, 7 blades, Highlights 60",
+            "R 48, 7 blades, Highlights 60",
             lens(100.0, 7, 33.0, 60.0, true),
         ),
         (
-            "level 3, round, Highlights 100, respect off",
+            "R 43, round, Highlights 100, respect off",
             lens(90.0, 0, 0.0, 100.0, false),
         ),
     ]
@@ -283,10 +282,10 @@ fn the_node_picture_at_the_frames_edge_and_corner_is_the_cpu_fast_method() {
     assert!(seen || gpus().is_empty());
 }
 
-/// The gather alone: the sums `N` and `D` over `made` from the pyramid of the device, against the twin's from the twin's
-/// pyramid, relative to 2e-4 (a floor of 1e-3 for values near 0).
+/// The kernel alone: the sums `N` and `D` over `made` from the pyramid of the device, against the twin's from the twin's prep,
+/// relative to 2e-4 (a floor of 1e-3 for values near 0).
 #[test]
-fn the_gather_over_cells_is_the_twins() {
+fn the_sums_are_the_twins() {
     let made = Area {
         x: 500,
         y: 320,
@@ -343,10 +342,8 @@ fn the_gather_over_cells_is_the_twins() {
                     sums.img.take(&done, r)
                 })
                 .expect("sums");
-            // The twin: prep, the pyramid, the gather over the cells the pixels read, the bilinear read-back.
+            // The twin: prep, then the kernel's f64 twin.
             let r_px = radius_px(radius, FRAME.0.max(FRAME.1) as f64);
-            let level = level_for(r_px);
-            let table = cell_table(r_px, blades, rotation_deg, level);
             let base = twin::prep(
                 &f64s(&pic),
                 &f64s(&msk),
@@ -355,23 +352,7 @@ fn the_gather_over_cells_is_the_twins() {
                 highlights,
                 params.respect_mask_edges,
             );
-            let g0 = CellGrid::of(read, frame, 0).expect("grid");
-            let levels = twin::pyramid(&base, g0, frame, level);
-            let (grid, planes) = &levels[level as usize];
-            let want = if level == 0 {
-                let out = CellGrid {
-                    level: 0,
-                    i0: made.x,
-                    j0: made.y,
-                    w: made.w,
-                    h: made.h,
-                };
-                twin::lens_cells(planes, grid, (table.half, &table.weights), &out)
-            } else {
-                let out = output_grid(grid, made).expect("output grid");
-                let cells = twin::lens_cells(planes, grid, (table.half, &table.weights), &out);
-                twin::upsample(&cells, &out, made, true)
-            };
+            let want = blur_lens::sums(&base, read, made, r_px, blades, rotation_deg);
             let mut worst = 0.0f64;
             for (g, w) in got.iter().zip(&want) {
                 worst = worst.max((f64::from(*g) - w).abs() / w.abs().max(1e-3));
@@ -397,7 +378,7 @@ fn tiles_of_the_node_equal_the_whole_made_area_bit_for_bit() {
         for (name, params) in cases() {
             let full = node_picture(&dev.gpu, params, whole);
             let n = whole.w * whole.h;
-            // 97 x 71 tiles (odd sizes: the cell grid is at absolute positions whatever the tile).
+            // 97 x 71 tiles (odd sizes: the prefix sums are integers, so the window's origin does not matter).
             let mut y = whole.y;
             while y < whole.y1() {
                 let mut x = whole.x;
@@ -437,9 +418,10 @@ fn tiles_of_the_node_equal_the_whole_made_area_bit_for_bit() {
 }
 
 /// The node's cost on this machine's device (lavapipe is a software Vulkan, so this is a CPU figure and not a Mac's), per
-/// megapixel, for a whole 0.96 MP picture: upload, the prep, the pyramid, the gather, the read-back and the blend, the
-/// scaffold's own cost (a radius too small to blur) taken apart. Printed, not asserted (`docs/33` section 9).
+/// megapixel, for a whole 0.96 MP picture: upload, the prep, the kernel, the read-back and the blend, the scaffold's own cost (a
+/// radius too small to blur) taken apart. Printed, not asserted (`docs/33` section 9).
 #[test]
+#[ignore = "speed: run by hand with --release --ignored --nocapture"]
 fn the_cost_per_megapixel_is_measured() {
     let made = Area::whole(FRAME.0, FRAME.1);
     let mp = (FRAME.0 * FRAME.1) as f64 / 1e6;
@@ -455,9 +437,9 @@ fn the_cost_per_megapixel_is_measured() {
         let base = time(lens(0.01, 0, 0.0, 0.0, true));
         println!("scaffold only (R 0.005 px): {base:.0} ms per MP");
         for (name, radius) in [
-            ("R 4.8 px (Radius 10)", 10.0),
-            ("R 7.9 px (Radius 16.5), the worst", 16.5),
-            ("R 48 px (Radius 100)", 100.0),
+            ("R 4.8 px (Radius 10), the table", 10.0),
+            ("R 7.9 px (Radius 16.5), the table", 16.5),
+            ("R 48 px (Radius 100), rows", 100.0),
         ] {
             let round = time(lens(radius, 0, 0.0, 0.0, true));
             let hex = time(lens(radius, 6, 15.0, 60.0, true));
@@ -465,6 +447,98 @@ fn the_cost_per_megapixel_is_measured() {
                 "{name}: round {round:.0} ms per MP ({:.0} over the scaffold), 6 blades and Highlights {hex:.0} ms per MP",
                 round - base
             );
+        }
+    }
+}
+
+/// The kernel's device time per megapixel of the made area at `R` = 5, 8, 48, 120 and 240 px on a 6000 x 4000 frame and 344 px on an
+/// 8600 x 5700 one (the radii the brief names and the largest; the made area is 640 x 480 in the middle, its read area grown by the reach), round and hexagon: the scan and the
+/// kernel passes, the best of three runs after one warm-up, the upload not counted (`docs/33` 11 item 79).
+#[test]
+#[ignore = "speed: run by hand with --release --ignored --nocapture"]
+fn the_kernel_cost_per_megapixel_at_the_radii_of_the_brief() {
+    let mp = 640.0 * 480.0 / 1e6;
+    for dev in f32_devices() {
+        for r_px in [5.0f64, 8.0, 48.0, 120.0, 240.0, 344.0] {
+            // The 8600 x 5700 frame of a 50 MP photo for its largest radius; the 6000 x 4000 frame else.
+            let (fw, fh) = if r_px > 240.0 {
+                (8600, 5700)
+            } else {
+                (6000, 4000)
+            };
+            let frame = Area::whole(fw, fh);
+            let made = Area {
+                x: (fw as i64 - 640) / 2,
+                y: (fh as i64 - 480) / 2,
+                w: 640,
+                h: 480,
+            };
+            let radius = r_px / (0.0004 * fw as f64);
+            for blades in [0u32, 6] {
+                let params = lens(radius, blades, 15.0, 0.0, true);
+                let reach = blur::reach_px(&params, fw, fh);
+                let read = Area {
+                    x: made.x - reach as i64,
+                    y: made.y - reach as i64,
+                    w: made.w + 2 * reach,
+                    h: made.h + 2 * reach,
+                };
+                let n = read.w * read.h;
+                let pic: Vec<f32> = (0..3 * n)
+                    .map(|i| 0.3 + 0.4 * ((i % 977) as f32 / 977.0))
+                    .collect();
+                let msk = vec![1.0f32; n];
+                let mut best = f64::MAX;
+                for run in 0..4 {
+                    let (p, m) = (pic.clone(), msk.clone());
+                    let ms: f64 = dev
+                        .gpu
+                        .run(JobSpec::new(Priority::Viewport), move |ctx, _| {
+                            let mut passes = PassList::new(ctx, "lens speed");
+                            let picture = upload(ctx, read, 3, &p);
+                            let mask = upload(ctx, read, 1, &m);
+                            let kernel = LensKernel::of(&params).expect("lens");
+                            let pyr = encode_pyramid(
+                                ctx,
+                                &mut passes,
+                                (&picture, &mask),
+                                (read, frame),
+                                (0.0, true),
+                                0,
+                            )?;
+                            let sums = SumsImage {
+                                img: GpuImage::alloc(
+                                    ctx,
+                                    "sums",
+                                    made.w,
+                                    made.h,
+                                    4,
+                                    Placement::whole(made.w, made.h),
+                                )?,
+                                area: made,
+                            };
+                            // The prep alone first, so that its time can be taken off.
+                            passes.submit()?.finish()?;
+                            let mut passes = PassList::new(ctx, "lens speed kernel");
+                            let t = std::time::Instant::now();
+                            kernel.encode(ctx, &mut passes, &pyr, &sums)?;
+                            passes.submit()?.finish()?;
+                            let _ = (&picture, &mask, &pyr, &sums);
+                            Ok(t.elapsed().as_secs_f64() * 1000.0)
+                        })
+                        .expect("speed");
+                    if run > 0 {
+                        best = best.min(ms);
+                    }
+                }
+                println!(
+                    "R {r_px:5.0} px, {} : kernel {best:8.1} ms for {mp:.2} MP = {:8.1} ms per MP (read area {} x {})",
+                    if blades == 0 { "round" } else { "6 blades" },
+                    best / mp,
+                    read.w,
+                    read.h
+                );
+            }
         }
     }
 }

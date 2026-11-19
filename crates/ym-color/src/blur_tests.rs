@@ -587,14 +587,14 @@ fn aperture_coverage_matches_the_analytic_areas() {
     }
     let t = aperture_table(r, 4, -45.0);
     assert!((t.at(5, -5) - 1.0 / 121.0).abs() < 1e-12 && t.at(6, 0) == 0.0);
-    // A disc and a hexagon against their areas, to the supersampling's error (stated, measured here).
+    // A disc and a hexagon against their areas: the coverage is exact (BL-07b), so to rounding.
     let area = |blades: u32, r: f64, rot: f64| aperture_coverage(r, blades, rot).1.iter().sum::<f64>();
     let disc = area(0, 12.0, 0.0);
     let hex = area(6, 12.0, 7.0);
     let e_disc = (disc / (std::f64::consts::PI * 144.0) - 1.0).abs();
     let e_hex = (hex / (1.5 * 3f64.sqrt() * 144.0) - 1.0).abs();
     eprintln!("coverage area error: disc {e_disc:e}, hexagon {e_hex:e}");
-    assert!(e_disc < 5e-3 && e_hex < 5e-3);
+    assert!(e_disc < 1e-9 && e_hex < 1e-9, "{e_disc:e} {e_hex:e}");
     // A disc is symmetric under the pixel grid's mirrors.
     let t = aperture_table(6.3, 0, 0.0);
     assert_eq!(t.at(3, -2), t.at(-3, 2));
@@ -736,7 +736,16 @@ fn agrees_with_the_numpy_sketch() {
     for (i, sum, pix) in PY_FIXTURE.iter() {
         let o = run_lin(&x, &m, W, H, &cases[*i]);
         let motion = matches!(cases[*i].kind, BlurKind::Motion { .. });
-        let tol = if motion { 2e-3 } else { 1e-9 };
+        // The sketch supersamples the aperture's coverage 8 x 8; the oracle's is exact since BL-07b (`docs/33` 11 item 76), so a
+        // Lens differs by the supersampling's error (at most 2.7e-2 of a value here, measured) and the other types by rounding.
+        let lens = matches!(cases[*i].kind, BlurKind::Lens { .. });
+        let tol = if motion {
+            2e-3
+        } else if lens {
+            4e-2
+        } else {
+            1e-9
+        };
         let mut worst = 0.0f64;
         for (y, xx, want) in pix {
             for c in 0..3 {
@@ -749,6 +758,9 @@ fn agrees_with_the_numpy_sketch() {
         let sum_rel = (total - sum).abs() / sum;
         eprintln!("sketch case {i}: pixel {worst:e}, sum {sum_rel:e}");
         assert!(worst < tol, "case {i}: {worst:e}");
-        assert!(sum_rel < if motion { 2e-3 } else { 1e-9 }, "case {i} sum: {sum_rel:e}");
+        assert!(
+            sum_rel < if motion { 2e-3 } else if lens { 1e-3 } else { 1e-9 },
+            "case {i} sum: {sum_rel:e}"
+        );
     }
 }

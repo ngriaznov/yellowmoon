@@ -48,8 +48,6 @@ pub const HIGHLIGHT_EV: [f64; 2] = [2.0, 4.0];
 pub const HIGHLIGHT_GAIN: f64 = 15.0;
 /// The AWG4 luminance row (`docs/02` C9), used by the highlight weight.
 pub const AWG4_LUMA: Vec3 = [0.2722287, 0.6740818, 0.0536895];
-/// Supersampling per side for the aperture's pixel coverage (8 x 8, `docs/33` 3.5).
-pub const COVERAGE_SS: usize = 8;
 /// The fewest taps along a Zoom line (the oracle takes more when the line is long, see [`zoom_taps`]).
 pub const ZOOM_TAPS_MIN: usize = 64;
 /// The fewest taps of the Zoom oracle per pixel of line length (two, so the bilinear reads never undersample).
@@ -329,44 +327,110 @@ impl Table {
     }
 }
 
-/// Whether the point `(px, py)` (pixels from the aperture's centre, y down) is inside a disc (`n = 0`) or a regular
-/// `n`-gon of circumradius `r` rotated by `rot_deg`.
-fn in_aperture(px: f64, py: f64, n: u32, rot_deg: f64, r: f64) -> bool {
-    if n == 0 {
-        return px * px + py * py <= r * r;
-    }
-    let rot = rot_deg.to_radians();
-    let apothem = r * (std::f64::consts::PI / f64::from(n)).cos();
-    (0..n).all(|i| {
-        let a = rot + (f64::from(i) + 0.5) * 2.0 * std::f64::consts::PI / f64::from(n);
-        px * a.cos() + py * a.sin() <= apothem
-    })
+/// The area of the part of the disc of radius `r` at the origin inside the rectangle `[x0, x1] x [y0, y1]`, in closed form
+/// (the signed quadrant areas `Q(a, b)` of the disc between the origin and a corner, combined by inclusion and exclusion).
+fn disc_rect_area(r: f64, (x0, x1): (f64, f64), (y0, y1): (f64, f64)) -> f64 {
+    let g = |x: f64| {
+        0.5 * (x * (r * r - x * x).max(0.0).sqrt() + r * r * (x / r).clamp(-1.0, 1.0).asin())
+    };
+    let quad = |a: f64, b: f64| -> f64 {
+        let (sa, sb) = (a.abs().min(r), b.abs().min(r));
+        // The disc's top is above `sb` for x below `xc`: the rectangle's top there, the arc beyond.
+        let xc = (r * r - sb * sb).max(0.0).sqrt();
+        let m = sa.min(xc);
+        let q = sb * m + g(sa) - g(m);
+        if (a < 0.0) == (b < 0.0) { q } else { -q }
+    };
+    quad(x1, y1) - quad(x0, y1) - quad(x1, y0) + quad(x0, y0)
 }
 
-/// The coverage of each pixel by a disc (`blades = 0`) or a regular polygon of circumradius `r`: the area of the pixel
-/// inside the aperture (8 x 8 supersampled, each in `0..=1`), not normalised. Returns the half width and the
-/// `(2 half + 1)^2` row-major values.
+/// The area of the pixel `[cx - 1/2, cx + 1/2] x [cy - 1/2, cy + 1/2]` inside the regular polygon whose sides are the
+/// half-planes `x nx + y ny <= apothem` (the square clipped by each side in turn, then its area).
+fn polygon_pixel_area(cx: f64, cy: f64, sides: &[(f64, f64)], apothem: f64) -> f64 {
+    let mut poly: Vec<(f64, f64)> = vec![
+        (cx - 0.5, cy - 0.5),
+        (cx + 0.5, cy - 0.5),
+        (cx + 0.5, cy + 0.5),
+        (cx - 0.5, cy + 0.5),
+    ];
+    for &(nx, ny) in sides {
+        let dist = |p: (f64, f64)| p.0 * nx + p.1 * ny - apothem;
+        let mut next = Vec::with_capacity(poly.len() + 1);
+        for i in 0..poly.len() {
+            let (p, q) = (poly[i], poly[(i + 1) % poly.len()]);
+            let (dp, dq) = (dist(p), dist(q));
+            if dp <= 0.0 {
+                next.push(p);
+            }
+            if (dp < 0.0 && dq > 0.0) || (dp > 0.0 && dq < 0.0) {
+                let t = dp / (dp - dq);
+                next.push((p.0 + t * (q.0 - p.0), p.1 + t * (q.1 - p.1)));
+            }
+        }
+        poly = next;
+        if poly.len() < 3 {
+            return 0.0;
+        }
+    }
+    let mut twice = 0.0;
+    for i in 0..poly.len() {
+        let (p, q) = (poly[i], poly[(i + 1) % poly.len()]);
+        twice += p.0 * q.1 - q.0 * p.1;
+    }
+    // A pixel that only touches a side, or lies along it, has rounding for an area: snap to 0 and 1.
+    let area = 0.5 * twice.abs();
+    if area < 1e-12 {
+        0.0
+    } else if area > 1.0 - 1e-12 {
+        1.0
+    } else {
+        area
+    }
+}
+
+/// The coverage of each pixel by a disc (`blades = 0`) or a regular polygon of circumradius `r`: **the exact area of the pixel
+/// inside the aperture** (each in `0..=1`; a disc in closed form, a polygon by clipping the pixel), not normalised. Returns the
+/// half width and the `(2 half + 1)^2` row-major values. (BL-03 supersampled 8 x 8; BL-07b made it exact so that the fast
+/// method's error is its own: the supersampling's rim error was as large as the gate, `docs/33` section 11 item 76.)
 #[must_use]
 pub fn aperture_coverage(r: f64, blades: u32, rotation_deg: f64) -> (i64, Vec<f64>) {
     let half = r.max(0.0).ceil() as i64 + 1;
     let side = (2 * half + 1) as usize;
-    let ss = COVERAGE_SS;
     let mut weights = vec![0.0; side * side];
+    let n = blades;
+    let apothem = r * (std::f64::consts::PI / f64::from(n.max(1))).cos();
+    let rot = rotation_deg.to_radians();
+    let sides: Vec<(f64, f64)> = (0..n)
+        .map(|i| {
+            let a = rot + (f64::from(i) + 0.5) * 2.0 * std::f64::consts::PI / f64::from(n);
+            (a.cos(), a.sin())
+        })
+        .collect();
     for (iy, row) in weights.chunks_mut(side).enumerate() {
         for (ix, cell) in row.iter_mut().enumerate() {
             let cx = (ix as i64 - half) as f64;
             let cy = (iy as i64 - half) as f64;
-            let mut hits = 0u32;
-            for sy in 0..ss {
-                for sx in 0..ss {
-                    let gx = (sx as f64 + 0.5) / ss as f64 - 0.5;
-                    let gy = (sy as f64 + 0.5) / ss as f64 - 0.5;
-                    if in_aperture(cx + gx, cy + gy, blades, rotation_deg, r) {
-                        hits += 1;
-                    }
+            // The pixel's nearest and farthest corners from the centre: wholly in, or wholly out, need no area.
+            let near = ((cx.abs() - 0.5).max(0.0)).hypot((cy.abs() - 0.5).max(0.0));
+            let far = (cx.abs() + 0.5).hypot(cy.abs() + 0.5);
+            *cell = if n == 0 {
+                if far * far <= r * r {
+                    1.0
+                } else if near * near >= r * r {
+                    0.0
+                } else {
+                    // The disc is symmetric under the pixel grid's mirrors and the swap of axes: one canonical pixel.
+                    let (ax, ay) = (cx.abs(), cy.abs());
+                    let (ax, ay) = if ax >= ay { (ax, ay) } else { (ay, ax) };
+                    disc_rect_area(r, (ax - 0.5, ax + 0.5), (ay - 0.5, ay + 0.5)).clamp(0.0, 1.0)
                 }
-            }
-            *cell = f64::from(hits) / (ss * ss) as f64;
+            } else if near > r {
+                0.0
+            } else if far <= apothem {
+                1.0
+            } else {
+                polygon_pixel_area(cx, cy, &sides, apothem)
+            };
         }
     }
     (half, weights)
@@ -974,7 +1038,7 @@ pub fn cell_factor(long_edge_px: f64) -> usize {
 /// | Type | Reach |
 /// |---|---|
 /// | Soft | `ceil(2 R) + 3 f`, or what [`soft::reads_px`] needs when that is more |
-/// | Lens | `ceil(R) + 3 f_L`, `f_L` = [`lens::cell_size`] (the smallest cell with `R / f_L <= 8`) |
+/// | Lens | `ceil(R) + 1` ([`lens::reach`]) |
 /// | Motion | `ceil(l / 2) + 1 + 3 f` |
 /// | Zoom | `ceil(a / 2 d_max) + ceil(1.5 * 2^L) + 2`, `L` = [`zoom::top_level`] |
 ///
@@ -993,12 +1057,8 @@ pub fn reach_px(params: &BlurParams, full_w: usize, full_h: usize) -> usize {
             let r = radius_px(radius, u);
             (cells(2.0 * r) + 3 * f).max(soft::reads_px(r / 2.0))
         }
-        // Lens' cell is its own (`lens::level_for`: the smallest with `R / f <= 8`), so 3 cells of it hold what the cell method
-        // reads (`R + 2.5 f`).
-        BlurKind::Lens { radius, .. } => {
-            let r = radius_px(radius, u);
-            cells(r) + 3 * lens::cell_size(r)
-        }
+        // The row segments read the pixels of the aperture and the end pixel a chord reaches into: `ceil(R) + 1`.
+        BlurKind::Lens { radius, .. } => lens::reach(radius_px(radius, u)),
         BlurKind::Motion { length, .. } => cells(length_px(length, u) / 2.0) + 1 + 3 * f,
         BlurKind::Zoom { amount, center } => zoom::reach(zoom_span(amount), center, full_w, full_h),
     }
