@@ -261,8 +261,8 @@ fn the_tiles_run_r1_to_r9_with_the_front_and_r6_to_r8_without_it() {
     // goes the other way for some seeds. With the demosaic of RC-13 (A6 `0.9`, A7 `3.5`) this fixture (seed 5) is such
     // a seed: worst 3.87e-4, mean 5.9e-8, none over 1e-3, where the old planes gave 7.7e-7 and 2.9e-8. Over 24 other
     // seeds of the same scene (1300 x 900) the pair differs by up to 7.3e-4 (mean up to 5.6e-8) at `Tuning::DEFAULT` and by up
-    // to 7.6e-4 (mean up to 6.5e-8) at `Tuning::ORACLE`, in 17 and in 10 of the 24; against the CPU render, the truth, the
-    // device is within 1.2e-5 here. So the pair keeps its strict bounds when no decision flips, and a flipped fixture gets
+    // to 7.6e-4 (mean up to 6.5e-8) at `Tuning::ORACLE`, in 17 and in 10 of the 24. Here it is R6..R8 (behind the CPU's front) that
+    // took the other decision (3.9e-4 against the CPU render, the truth, inside its own bound); R1..R9 is within 1.2e-5 of the CPU. So the pair keeps its strict bounds when no decision flips, and a flipped fixture gets
     // twice the largest measured over the 48 renders.
     let strict = w3 < 1.7e-6 && o3 <= 1e-5 && m3 < 4.3e-8;
     assert!(
