@@ -74,6 +74,7 @@ struct PassArea {
 
 #[allow(clippy::too_many_arguments)]
 fn pass(
+    ctx: &GpuContext,
     passes: &mut PassList<'_>,
     label: &str,
     mode: Mode,
@@ -96,18 +97,28 @@ fn pass(
         ..BlurU::default()
     };
     let ub = passes.uniform("blur soft uniform", &u)?;
-    let wb = passes.uniform("blur soft weights", weights)?;
-    passes.dispatch(
+    let wimg = GpuImage::upload(
+        ctx,
+        "blur soft weights",
+        36,
+        1,
+        1,
+        bytemuck::cast_slice::<[f32; 4], f32>(&weights.0),
+        Placement::whole(36, 1),
+    )?;
+    let done = passes.dispatch(
         KernelId::BlurSoft,
         label,
         &[
             (0, ub.binding()),
             (1, from.0.buf.binding()),
             (2, to.0.buf.binding()),
-            (3, wb.binding()),
+            (3, wimg.buf.binding()),
         ],
         groups(area.win.w, area.win.h),
-    )
+    );
+    let _ = passes.keep(wimg.buf);
+    done
 }
 
 fn range(a: Area) -> [i32; 4] {
@@ -172,6 +183,7 @@ impl BlurKernel for BlurSoft {
             };
             let tmp = alloc(ctx, "blur soft rows", rows.w, rows.h)?;
             pass(
+                ctx,
                 passes,
                 "blur soft x",
                 Mode::GaussX,
@@ -184,6 +196,7 @@ impl BlurKernel for BlurSoft {
                 &wts,
             )?;
             pass(
+                ctx,
                 passes,
                 "blur soft y",
                 Mode::GaussY,
@@ -225,6 +238,7 @@ impl BlurKernel for BlurSoft {
             let c3 = alloc(ctx, "blur soft cells blurred", cells.w, cells.h)?;
             let fu = f as u32;
             pass(
+                ctx,
                 passes,
                 "blur soft reduce x",
                 Mode::ReduceX,
@@ -237,6 +251,7 @@ impl BlurKernel for BlurSoft {
                 &none,
             )?;
             pass(
+                ctx,
                 passes,
                 "blur soft reduce y",
                 Mode::ReduceY,
@@ -249,6 +264,7 @@ impl BlurKernel for BlurSoft {
                 &none,
             )?;
             pass(
+                ctx,
                 passes,
                 "blur soft cells x",
                 Mode::GaussX,
@@ -261,6 +277,7 @@ impl BlurKernel for BlurSoft {
                 &wts,
             )?;
             pass(
+                ctx,
                 passes,
                 "blur soft cells y",
                 Mode::GaussY,
@@ -273,6 +290,7 @@ impl BlurKernel for BlurSoft {
                 &wts,
             )?;
             pass(
+                ctx,
                 passes,
                 "blur soft read-back",
                 Mode::ReadBack,

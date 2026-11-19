@@ -10,17 +10,17 @@
 //   4  the read-back: pixel (x, y) = sum_J sum_I spline(y, J) spline(x, I) src(I, J), cells (I, J) in the grid
 //
 // Bindings: 0 uniform BU, 1 the source (four planes, image A), 2 the result (four planes, image B), 3 the one-sided weights
-// of the Gaussian (`array<vec4<f32>, 9>`, 33 taps at most each side of 16). `bu.c` is the range the source holds, in its own
+// of the Gaussian (a storage buffer of 36 floats: at most 16 taps each side; the contract allows one uniform, K3). `bu.c` is the range the source holds, in its own
 // coordinates: first column, first row, width, height (taps outside it are skipped, as the CPU's); for the read-back it is the
 // grid of cells. `bu.op.y` is f, `bu.op.z` the taps each side. Every sum runs in ascending order; the spline's weights are
 // integers over a power of two, exact in f32 (docs/33 section 3.7).
 
 @group(0) @binding(1) var<storage, read> src: array<f32>;
 @group(0) @binding(2) var<storage, read_write> dst: array<f32>;
-@group(0) @binding(3) var<uniform> wts: array<vec4<f32>, 9>;
+@group(0) @binding(3) var<storage, read> wts: array<f32>;
 
 fn soft_w(k: u32) -> f32 {
-    return wts[k >> 2u][k & 3u];
+    return wts[k];
 }
 
 // The quadratic B-spline weight of pixel x on cell i of cells of f pixels (ym_color::blur::soft::spline).
