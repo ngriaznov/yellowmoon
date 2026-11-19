@@ -359,45 +359,147 @@ impl Dct8 {
     }
 }
 
+/// Half width of the soft threshold's band, relative to `tau` (RC-15, `docs/algorithms/05` A-f): a
+/// coefficient below `tau (1 - SOFT_BAND)` is zeroed, one above `tau (1 + SOFT_BAND)` is kept, and
+/// in between it is kept by the smoothstep of its place in the band. The device forms a coefficient
+/// with a relative error of a few 1e-7 of the group's samples, so a band of 2 % turns what was a
+/// jump of the whole coefficient into a change of about 1e-5 of it.
+pub(crate) const SOFT_BAND: f64 = 0.02;
+
+/// The weight a coefficient of magnitude `a` keeps at threshold `tau`.
+pub(crate) fn keep_weight(a: f64, tau: f64) -> f64 {
+    let e = SOFT_BAND;
+    let (lo, hi) = (tau * (1.0 - e), tau * (1.0 + e));
+    if a <= lo {
+        0.0
+    } else if a >= hi {
+        1.0
+    } else {
+        let t = (a - lo) / (hi - lo);
+        t * t * (3.0 - 2.0 * t)
+    }
+}
+
 /// Corner offset `(dx, dy)` of candidate `idx` from its reference.
 const fn offset(idx: usize) -> (isize, isize) {
     ((idx % 5) as isize * 4 - 8, (idx / 5) as isize * 4 - 8)
 }
 
-/// The slots of a group from the candidates' distances (`+∞` for a block that is not a
-/// candidate): slot 0 the reference, then the 7 other candidates of smallest distance in order (a
-/// tie goes to the smaller index), and the reference for any slot whose distance exceeds `theta`
-/// or for which no candidate is left.
-fn select(d: &[f64; CANDIDATES], theta: f64) -> [usize; 8] {
-    let mut best = [(f64::INFINITY, REF); 7];
-    let mut n = 0;
+/// The part of the half width of the band, in units of the distance `D`, that does not depend on `D`
+/// (RC-15, `docs/algorithms/05` A-g). `D` is a sum of 64 window-weighted differences of the encoded
+/// luma, which the device forms in `f32` and this file in `f64`.
+pub(crate) const GROUP_BAND_ABS: f64 = 1e-3;
+/// The part of the half width that is a share of the larger of the two values compared.
+pub(crate) const GROUP_BAND_REL: f64 = 5e-4;
+
+/// The key of a register no candidate has reached (`+∞` on this side, a large finite number on the
+/// device).
+const EMPTY_KEY: f64 = f64::INFINITY;
+
+/// Weights of the 26 sources of a register: the 25 candidates and, last, "nothing yet".
+const SOURCES: usize = CANDIDATES + 1;
+
+/// How far a compare-exchange of two keys `diff` apart goes, `scale` the larger of the two: 0 for
+/// `diff <= -h`, 1 for `diff >= h`, the smoothstep of the position between (0.5 at 0), with the half
+/// width `h = ` [`GROUP_BAND_ABS`] ` + ` [`GROUP_BAND_REL`] ` * scale`.
+pub(crate) fn soft_step(diff: f64, scale: f64) -> f64 {
+    let h = GROUP_BAND_ABS + GROUP_BAND_REL * scale;
+    if diff >= h {
+        1.0
+    } else if diff <= -h {
+        0.0
+    } else {
+        let t = (diff + h) / (2.0 * h);
+        t * t * (3.0 - 2.0 * t)
+    }
+}
+
+/// The weights of the group: row `k` holds, for slot `k`, how much of each candidate block the slot's
+/// block is made of (`docs/algorithms/05` A-g). Slot 0 is the reference. `d` holds the candidates'
+/// distances (`+∞` for a block that is not a candidate), `theta` the distance threshold.
+///
+/// The 7 nearest candidates in order of distance are found by an insertion into seven registers
+/// whose compare-exchange is soft: a candidate whose distance is within the band ([`soft_step`]) of a
+/// register's takes a share of it and leaves the rest, so the weights are continuous in the
+/// distances, and two candidates at the same distance share their slots equally whatever the
+/// rounding of either. Away from a tie every row has one weight of 1 and the others 0 and the
+/// slots are the 7 candidates of smallest distance in order. A slot whose distance is above `theta`
+/// (within the band: a share of it) or that no candidate reaches is the reference.
+fn select(d: &[f64; CANDIDATES], theta: f64) -> [[f64; CANDIDATES]; 8] {
+    // Vector `v` of a register: its weights over the sources. Register `q` is `vec[id[q]]`; `id[7]`
+    // is the carry, the candidate that is being inserted (or what it has exchanged for).
+    let mut vecs = [[0.0f64; SOURCES]; 8];
+    let mut id: [usize; 8] = from_fn(|q| q);
+    let mut key = [EMPTY_KEY; 7];
+    for v in &mut vecs[..7] {
+        v[CANDIDATES] = 1.0;
+    }
     for (idx, &di) in d.iter().enumerate() {
         if idx == REF || !di.is_finite() {
             continue;
         }
-        // After every kept entry of distance <= di: a tie keeps the smaller index first.
-        let at = best[..n].iter().position(|&(bd, _)| bd > di).unwrap_or(n);
-        if at >= best.len() {
-            continue;
+        vecs[id[7]] = [0.0; SOURCES];
+        vecs[id[7]][idx] = 1.0;
+        let mut kc = di;
+        for q in 0..7 {
+            if kc == EMPTY_KEY {
+                break;
+            }
+            let kr = key[q];
+            let s = if kr == EMPTY_KEY {
+                1.0
+            } else {
+                soft_step(kr - kc, kr.max(kc))
+            };
+            if s == 0.0 {
+                continue;
+            }
+            if s == 1.0 {
+                id.swap(q, 7);
+                key[q] = kc;
+                kc = kr;
+                continue;
+            }
+            let om = 1.0 - s;
+            let (rv, cv) = (id[q], id[7]);
+            let (a, b) = if rv < cv {
+                let (lo, hi) = vecs.split_at_mut(cv);
+                (&mut lo[rv], &mut hi[0])
+            } else {
+                let (lo, hi) = vecs.split_at_mut(rv);
+                (&mut hi[0], &mut lo[cv])
+            };
+            for (x, y) in a.iter_mut().zip(b.iter_mut()) {
+                (*x, *y) = (om * *x + s * *y, om * *y + s * *x);
+            }
+            (key[q], kc) = (om * kr + s * kc, om * kc + s * kr);
         }
-        let end = n.min(best.len() - 1);
-        best.copy_within(at..end, at + 1);
-        best[at] = (di, idx);
-        n = (n + 1).min(best.len());
     }
-    let mut slots = [REF; 8];
-    for (slot, &(bd, idx)) in slots[1..].iter_mut().zip(&best[..n]) {
-        if bd <= theta {
-            *slot = idx;
+    let mut w = [[0.0f64; CANDIDATES]; 8];
+    w[0][REF] = 1.0;
+    for q in 0..7 {
+        let v = &vecs[id[q]];
+        let u = if key[q] == EMPTY_KEY {
+            1.0
+        } else {
+            soft_step(key[q] - theta, key[q].max(theta))
+        };
+        let keep = 1.0 - u;
+        for (i, wi) in w[q + 1].iter_mut().enumerate() {
+            *wi = keep * v[i];
         }
+        w[q + 1][REF] = u + keep * v[CANDIDATES];
     }
-    slots
+    w
 }
 
 /// Per-worker scratch of one reference.
 struct Scratch {
-    /// Buffer position (top-left) of each slot's block.
-    pos: [(usize, usize); 8],
+    /// The blocks the slots are made of: slot, buffer position (top-left) and weight, slots in order
+    /// and candidates in index order inside a slot (the order of the device's sums); `len` of them.
+    parts: [(usize, usize, usize, f64); 8 * CANDIDATES],
+    /// How many of `parts` are in use.
+    len: usize,
     /// The group of each channel (Y, Cb, Cr); after [`Ctx::filter`], the filtered blocks times 512.
     groups: [Group; 3],
 }
@@ -406,7 +508,8 @@ impl Scratch {
     /// Zeroed scratch on the heap (12 KiB).
     fn boxed() -> Box<Scratch> {
         Box::new(Scratch {
-            pos: [(0, 0); 8],
+            parts: [(0, 0, 0, 0.0); 8 * CANDIDATES],
+            len: 0,
             groups: [[[[0.0; B]; B]; 8]; 3],
         })
     }
@@ -609,22 +712,30 @@ impl Ctx {
         (d, pos)
     }
 
-    /// The slots (candidate indices) of the group of the reference at frame `(rx, ry)` and the
-    /// buffer positions of their blocks.
-    fn group(&self, rx: usize, ry: usize) -> ([usize; 8], [(usize, usize); 8]) {
+    /// The parts of the group of the reference at frame `(rx, ry)`, in `s.parts`, and the buffer
+    /// position of the reference block.
+    fn group(&self, rx: usize, ry: usize, s: &mut Scratch) -> (usize, usize) {
         let (d, pos) = self.distances(rx, ry);
-        let slots = select(&d, self.theta);
-        (slots, slots.map(|idx| pos[idx]))
+        let weights = select(&d, self.theta);
+        s.len = 0;
+        for (k, row) in weights.iter().enumerate() {
+            for (idx, &wt) in row.iter().enumerate() {
+                if wt != 0.0 {
+                    s.parts[s.len] = (k, pos[idx].0, pos[idx].1, wt);
+                    s.len += 1;
+                }
+            }
+        }
+        pos[REF]
     }
 
     /// Groups, transforms, thresholds and inverts the blocks of the reference at frame `(rx, ry)`.
     fn filter(&self, rx: usize, ry: usize, s: &mut Scratch) {
-        let (_, pos) = self.group(rx, ry);
-        s.pos = pos;
+        let pos0 = self.group(rx, ry, s);
         let w = self.width;
         let chroma_tau = self.level.map(|l| {
             // The reference block's mean Y, Cb and Cr, each summed in raster order.
-            let (cx, cy) = pos[0];
+            let (cx, cy) = pos0;
             let mean: [f64; 3] = from_fn(|ch| {
                 let mut sum = 0.0;
                 for i in 0..B {
@@ -642,9 +753,16 @@ impl Ctx {
             }
             let plane = &self.planes[ch];
             let g = &mut s.groups[ch];
-            for (b, &(cx, cy)) in g.iter_mut().zip(&pos) {
-                for (i, row) in b.iter_mut().enumerate() {
-                    row.copy_from_slice(&plane[(cy + i) * w + cx..][..B]);
+            for b in g.iter_mut() {
+                *b = [[0.0; B]; B];
+            }
+            // A slot's block is the weighted sum of its parts, in index order: one part of weight 1
+            // (away from a tie) is the candidate's block itself.
+            for &(k, cx, cy, wt) in &s.parts[..s.len] {
+                for (i, row) in g[k].iter_mut().enumerate() {
+                    for (v, p) in row.iter_mut().zip(&plane[(cy + i) * w + cx..][..B]) {
+                        *v += wt * p;
+                    }
                 }
             }
             self.dct.forward_3d(g);
@@ -653,28 +771,26 @@ impl Ctx {
                 _ => self.tau[ch],
             };
             for v in g.iter_mut().flatten().flatten() {
-                if v.abs() < tau {
-                    *v = 0.0;
-                }
+                *v *= keep_weight(v.abs(), tau);
             }
             self.dct.inverse_3d(g);
         }
     }
 
     /// Adds the filtered group in `s` to `band`, the accumulators of the buffer rows from `r0` on,
-    /// in slot order.
+    /// part by part in slot order, each slot's share of a candidate's position by its weight.
     fn scatter(&self, s: &Scratch, band: &mut [[f64; 4]], r0: usize) {
         let w = self.width;
-        for (k, &(cx, cy)) in s.pos.iter().enumerate() {
+        for &(k, cx, cy, wt) in &s.parts[..s.len] {
             for (i, k_row) in self.window.iter().enumerate() {
                 let out = &mut band[(cy + i - r0) * w + cx..][..B];
                 for (j, (a, &kk)) in out.iter_mut().zip(k_row).enumerate() {
                     for (ch, g) in s.groups.iter().enumerate() {
                         if self.active[ch] {
-                            a[ch] += kk * g[k][i][j] / ROUND_TRIP_GAIN;
+                            a[ch] += wt * (kk * g[k][i][j] / ROUND_TRIP_GAIN);
                         }
                     }
-                    a[3] += kk;
+                    a[3] += kk * wt;
                 }
             }
         }
@@ -952,40 +1068,67 @@ mod tests {
         }
     }
 
+    /// The candidate of each slot of weights that are all 0 or 1 (a test fails on a blend).
+    fn hard(w: &[[f64; CANDIDATES]; 8]) -> [usize; 8] {
+        from_fn(|k| {
+            let at: Vec<usize> = (0..CANDIDATES).filter(|&i| w[k][i] != 0.0).collect();
+            assert_eq!(at.len(), 1, "slot {k}: {:?}", w[k]);
+            assert_eq!(w[k][at[0]], 1.0, "slot {k}");
+            at[0]
+        })
+    }
+
     #[test]
-    fn grouping_takes_the_nearest_candidates_by_distance_then_index() {
+    fn grouping_takes_the_nearest_candidates_by_distance() {
         let (w, h) = (48, 48);
         let place = Placement::whole(w, h);
         let ctx = ctx_on_luma(dyadic_luma(w, h, place, 1.0), w, h, place, 50.0);
+        let (d, pos) = ctx.distances(20, 20);
         // |dx/64 + dy/16|: 11 and 13 at 1/16; 9, 10, 14, 15 at 1/8; 8 and 16 at 3/16 (θ = 10 is
         // above all of them: ΣK · 3/16 ≈ 6.7).
-        let (slots, pos) = ctx.group(20, 20);
-        assert_eq!(slots, [12, 11, 13, 9, 10, 14, 15, 8]);
-        assert_eq!(pos[0], (20, 20));
-        assert_eq!(pos[1], (16, 20));
-        assert_eq!(pos[7], (24, 16));
-        let (d, _) = ctx.distances(20, 20);
         let sum_k: f64 = window_2d().iter().flatten().sum();
         assert_eq!(d[9], d[15]);
         assert_eq!(d[9], sum_k / 8.0);
         assert_eq!(d[11], sum_k / 16.0);
+        assert_eq!(pos[11], (16, 20));
+        // Distances apart by more than the band: the slots are the 7 nearest in order of distance.
+        let mut apart = [f64::INFINITY; CANDIDATES];
+        for (n, idx) in [12, 11, 13, 9, 10, 14, 15, 8, 16].into_iter().enumerate() {
+            apart[idx] = n as f64 * 0.01;
+        }
+        assert_eq!(hard(&select(&apart, 10.0)), [12, 11, 13, 9, 10, 14, 15, 8]);
+        // Equal distances share their slots: 9 and 15 at the same D take half of each of two slots,
+        // in whatever way the two distances round.
+        let mut tied = apart;
+        tied[15] = tied[9];
+        let w = select(&tied, 10.0);
+        assert_eq!((w[3][9], w[3][15], w[4][9], w[4][15]), (0.5, 0.5, 0.5, 0.5));
+        let mut off = tied;
+        off[15] += 1e-9;
+        let v = select(&off, 10.0);
+        for k in 0..8 {
+            for i in 0..CANDIDATES {
+                assert!((w[k][i] - v[k][i]).abs() < 1e-5, "{k} {i}");
+            }
+        }
     }
 
     #[test]
     fn grouping_replaces_slots_over_theta_with_the_reference() {
-        let (w, h) = (48, 48);
-        let place = Placement::whole(w, h);
-        // θ = 0.2 · 27.5 = 5.5 lies between ΣK/8 ≈ 4.45 and ΣK · 3/16 ≈ 6.67.
-        let ctx = ctx_on_luma(dyadic_luma(w, h, place, 1.0), w, h, place, 27.5);
-        assert_eq!(ctx.group(20, 20).0, [12, 11, 13, 9, 10, 14, 15, 12]);
-        // A slot without a candidate takes the reference too.
+        // A slot without a candidate takes the reference.
         let mut d = [f64::INFINITY; CANDIDATES];
         d[REF] = 0.0;
-        (d[3], d[20], d[7]) = (2.0, 1.0, 1.0);
-        assert_eq!(select(&d, 10.0), [12, 7, 20, 3, 12, 12, 12, 12]);
-        assert_eq!(select(&d, 1.5), [12, 7, 20, 12, 12, 12, 12, 12]);
+        (d[3], d[20], d[7]) = (2.0, 1.0, 1.5);
+        assert_eq!(hard(&select(&d, 10.0)), [12, 20, 7, 3, 12, 12, 12, 12]);
+        // Over theta the reference takes the slot.
+        assert_eq!(hard(&select(&d, 1.7)), [12, 20, 7, 12, 12, 12, 12, 12]);
+        assert_eq!(hard(&select(&d, 1.2)), [12, 20, 12, 12, 12, 12, 12, 12]);
+        // Within the band of theta a slot is shared: the half at the middle.
+        let w = select(&d, 1.5);
+        assert!((w[2][7] - 0.5).abs() < 1e-12 && (w[2][REF] - 0.5).abs() < 1e-12);
+        // A distance that is not a number is no candidate.
         d[4] = f64::NAN;
-        assert_eq!(select(&d, 10.0), [12, 7, 20, 3, 12, 12, 12, 12]);
+        assert_eq!(hard(&select(&d, 10.0)), [12, 20, 7, 3, 12, 12, 12, 12]);
     }
 
     #[test]
@@ -995,10 +1138,16 @@ mod tests {
         let (w, h) = (40, 40);
         let place = Placement::whole(w, h);
         let ctx = ctx_on_luma(dyadic_luma(w, h, place, 0.5), w, h, place, 100.0);
-        assert_eq!(ctx.group(0, 0).0, [12, 13, 14, 17, 18, 19, 22, 23]);
         let (d, _) = ctx.distances(0, 0);
         for idx in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 20, 21] {
             assert_eq!(d[idx], f64::INFINITY, "{idx}");
+        }
+        let weights = select(&d, ctx.theta);
+        for row in &weights {
+            assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+            for idx in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 20, 21] {
+                assert_eq!(row[idx], 0.0, "{idx}");
+            }
         }
 
         // The bottom-right corner of the frame, seen through a window of it: frame coordinates.
@@ -1011,9 +1160,39 @@ mod tests {
             frame_height: fh,
         };
         let ctx = ctx_on_luma(dyadic_luma(bw, bh, place, 0.5), bw, bh, place, 100.0);
-        let (slots, pos) = ctx.group(fw - 8, fh - 8);
-        assert_eq!(slots, [12, 11, 10, 7, 6, 5, 2, 1]);
-        assert_eq!(pos[0], (bw - 8, bh - 8));
+        let (d, pos) = ctx.distances(fw - 8, fh - 8);
+        assert_eq!(pos[REF], (bw - 8, bh - 8));
+        for idx in [13, 14, 17, 18, 19, 22, 23, 24] {
+            assert_eq!(d[idx], f64::INFINITY, "{idx}");
+        }
+        for row in &select(&d, ctx.theta) {
+            assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn the_weights_are_continuous_in_the_distances() {
+        // Every weight moves by at most about (change / band) times a constant when a distance moves,
+        // including through a tie and through theta.
+        let mut base = [f64::INFINITY; CANDIDATES];
+        for (n, idx) in [12, 3, 7, 8, 9, 13, 14, 18, 19, 20, 22]
+            .into_iter()
+            .enumerate()
+        {
+            base[idx] = 0.5 + 0.0005 * n as f64;
+        }
+        for step in 0..400 {
+            let mut a = base;
+            a[8] = 0.5 + 0.0005 * 3.0 + (step as f64 - 200.0) * 1e-5;
+            let mut b = a;
+            b[8] += 1e-10;
+            let (wa, wb) = (select(&a, 0.503), select(&b, 0.503));
+            for k in 0..8 {
+                for i in 0..CANDIDATES {
+                    assert!((wa[k][i] - wb[k][i]).abs() < 2e-5, "{step} {k} {i}");
+                }
+            }
+        }
     }
 
     #[test]

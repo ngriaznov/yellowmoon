@@ -516,6 +516,11 @@ pub(super) fn constants() -> String {
         ("BM_TWO_OVER_LN2", 2.0 / ln2),
         // The slope of the power segment, `1.055 / 2.4 v^(1 / 2.4 - 1)` (`denoise_space::srgb_slope`).
         ("BM_SRGB_DA", SRGB_A / SRGB_GAMMA),
+        ("BM_GROUP_BAND_ABS", bm_dct::GROUP_BAND_ABS),
+        ("BM_GROUP_BAND_REL", bm_dct::GROUP_BAND_REL),
+        ("BM_EMPTY", 3.0e38),
+        ("BM_BAND_LO", 1.0 - bm_dct::SOFT_BAND),
+        ("BM_BAND_HI", 1.0 + bm_dct::SOFT_BAND),
     ] {
         let _ = writeln!(s, "const {name}: f32 = {};", lit(v));
     }
@@ -775,7 +780,7 @@ mod tests {
 
     #[test]
     fn the_decisions_and_the_sums_are_hidden_from_the_optimiser() {
-        // Metal compiles with fast-math: the sums that the hard threshold, the distance order and theta
+        // Metal compiles with fast-math: the sums that the soft threshold, the soft distance order and theta
         // compare, and the quotients, must stay behind `bm_op`. Lavapipe does not re-associate, so only the
         // text can pin it.
         let common = include_str!("../shaders/bm_dct.wgsl");
@@ -795,7 +800,14 @@ mod tests {
                 "p = bm_op(p + bm_op(bm_kwin(i * 8u + j) * abs(bm_op(bm_win[ro + j] - bm_win[co + j]))));",
             ),
             (pass, "d = bm_op(d + bm_part[at + i]);"),
-            (pass, "if (abs(y[q]) < tau) {"),
+            (pass, "y[q] = bm_keep(y[q], tau);"),
+            (pass, "return bm_op(c * w);"),
+            (pass, "s = bm_soft(bm_op(kr - kc), max(kr, kc));"),
+            (pass, "vecs[rv + i] = bm_op(bm_op(om * a) + bm_op(s * b));"),
+            (
+                pass,
+                "v = bm_op(v + bm_op(bm_ew[e] * bm_ycc[ch * n + (sy + (q / 8u) % 8u) * bw + sx + q % 8u]));",
+            ),
             (pass, "bm_acc[at] = bm_op(bm_acc[at] + term);"),
             (output, "let d = bm_div(bm_acc[i], w);"),
             (output, "yv = bm_blend(d, yv, bp.tau.w);"),

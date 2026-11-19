@@ -40,8 +40,14 @@ var<workgroup> bm_win: array<f32, 576>;
 var<workgroup> bm_part: array<f32, 200>;
 var<workgroup> bm_dist: array<f32, 25>;
 var<workgroup> bm_ok: array<u32, 25>;
-var<workgroup> bm_sx: array<u32, 8>;
-var<workgroup> bm_sy: array<u32, 8>;
+// The parts of the group (`cpu::bm_dct::select`): part e is candidate bm_ei[e] of slot bm_ek[e] with weight
+// bm_ew[e], slots in order and candidates in index order inside a slot; slot k's parts are
+// bm_start[k] .. bm_start[k + 1]. At most 1 + 7 * 25.
+var<workgroup> bm_ek: array<u32, 176>;
+var<workgroup> bm_ei: array<u32, 176>;
+var<workgroup> bm_ew: array<f32, 176>;
+var<workgroup> bm_start: array<u32, 9>;
+var<workgroup> bm_nent: u32;
 var<workgroup> bm_grp: array<f32, 1536>;
 var<workgroup> bm_mean: array<f32, 3>;
 var<workgroup> bm_var: array<f32, 3>;
@@ -165,16 +171,137 @@ fn bm_store8(base: u32, st: u32, x: array<f32, 8>) {
     }
 }
 
+// The soft threshold (`cpu::bm_dct::keep_weight`): 0 below tau (1 - e), the coefficient above tau (1 + e), and
+// between them the coefficient times the smoothstep of its position in the band.
+fn bm_keep(c: f32, tau: f32) -> f32 {
+    let a = abs(c);
+    let lo = bm_op(tau * BM_BAND_LO);
+    let hi = bm_op(tau * BM_BAND_HI);
+    if (a <= lo) {
+        return 0.0;
+    }
+    if (a >= hi) {
+        return c;
+    }
+    let t = bm_div(bm_op(a - lo), bm_op(hi - lo));
+    let w = bm_op(bm_op(t * t) * bm_op(3.0 - bm_op(2.0 * t)));
+    return bm_op(c * w);
+}
+
 // Across the 8 blocks of the line at `base` (stride 64): the forward transform, the hard threshold
 // |X| < tau -> 0 and the inverse, in place.
 fn bm_across(base: u32, tau: f32) {
     var y = bm_fwd8(bm_load8(base, 64u));
     for (var q = 0u; q < 8u; q++) {
-        if (abs(y[q]) < tau) {
-            y[q] = 0.0;
-        }
+        y[q] = bm_keep(y[q], tau);
     }
     bm_store8(base, 64u, bm_inv8(y));
+}
+
+// How far a compare-exchange of two keys `diff` apart goes, `scale` the larger of the two
+// (`cpu::bm_dct::soft_step`): 0 for diff <= -h, 1 for diff >= h, the smoothstep of the position between, 0.5 at 0,
+// with the half width h = BM_GROUP_BAND_ABS + BM_GROUP_BAND_REL scale.
+fn bm_soft(diff: f32, scale: f32) -> f32 {
+    let h = bm_op(BM_GROUP_BAND_ABS + bm_op(BM_GROUP_BAND_REL * scale));
+    if (diff >= h) {
+        return 1.0;
+    }
+    if (diff <= -h) {
+        return 0.0;
+    }
+    let t = bm_div(bm_op(diff + h), bm_op(2.0 * h));
+    return bm_op(bm_op(t * t) * bm_op(3.0 - bm_op(2.0 * t)));
+}
+
+// The weights of the group by the soft insertion of `cpu::bm_dct::select`, thread 0's: the 25 candidates
+// (those with bm_ok) through seven registers of 26 weights (the 25 candidates and "nothing yet") and a
+// key each, the carry being the 8th vector, then the shares of the reference for the registers whose key is
+// over theta. The parts are written to workgroup memory.
+fn bm_group(bx: u32, by: u32) {
+    var vecs: array<f32, 208>;
+    var id: array<u32, 8>;
+    var key: array<f32, 7>;
+    for (var q = 0u; q < 8u; q++) {
+        id[q] = q;
+    }
+    for (var q = 0u; q < 7u; q++) {
+        key[q] = BM_EMPTY;
+        vecs[q * 26u + 25u] = 1.0;
+    }
+    for (var idx = 0u; idx < 25u; idx++) {
+        if (bm_ok[idx] == 0u) {
+            continue;
+        }
+        let cv = id[7] * 26u;
+        for (var i = 0u; i < 26u; i++) {
+            vecs[cv + i] = 0.0;
+        }
+        vecs[cv + idx] = 1.0;
+        var kc = bm_dist[idx];
+        for (var q = 0u; q < 7u; q++) {
+            if (kc >= BM_EMPTY) {
+                break;
+            }
+            let kr = key[q];
+            var s = 1.0;
+            if (kr < BM_EMPTY) {
+                s = bm_soft(bm_op(kr - kc), max(kr, kc));
+            }
+            if (s == 0.0) {
+                continue;
+            }
+            if (s == 1.0) {
+                let t = id[q];
+                id[q] = id[7];
+                id[7] = t;
+                key[q] = kc;
+                kc = kr;
+                continue;
+            }
+            let om = bm_op(1.0 - s);
+            let rv = id[q] * 26u;
+            let cw = id[7] * 26u;
+            for (var i = 0u; i < 26u; i++) {
+                let a = vecs[rv + i];
+                let b = vecs[cw + i];
+                vecs[rv + i] = bm_op(bm_op(om * a) + bm_op(s * b));
+                vecs[cw + i] = bm_op(bm_op(om * b) + bm_op(s * a));
+            }
+            let nr = bm_op(bm_op(om * kr) + bm_op(s * kc));
+            let nc = bm_op(bm_op(om * kc) + bm_op(s * kr));
+            key[q] = nr;
+            kc = nc;
+        }
+    }
+    // The reference is slot 0.
+    bm_ek[0] = 0u;
+    bm_ei[0] = 12u;
+    bm_ew[0] = 1.0;
+    bm_start[0] = 0u;
+    var n = 1u;
+    for (var q = 0u; q < 7u; q++) {
+        bm_start[q + 1u] = n;
+        let v = id[q] * 26u;
+        var u = 1.0;
+        if (key[q] < BM_EMPTY) {
+            u = bm_soft(bm_op(key[q] - bp.tau.z), max(key[q], bp.tau.z));
+        }
+        let keep = bm_op(1.0 - u);
+        for (var i = 0u; i < 25u; i++) {
+            var w = bm_op(keep * vecs[v + i]);
+            if (i == 12u) {
+                w = bm_op(u + bm_op(keep * vecs[v + 25u]));
+            }
+            if (w != 0.0) {
+                bm_ek[n] = q + 1u;
+                bm_ei[n] = i;
+                bm_ew[n] = w;
+                n += 1u;
+            }
+        }
+    }
+    bm_start[8] = n;
+    bm_nent = n;
 }
 
 fn bm_pass(wid: vec3<u32>, lid: u32) {
@@ -240,50 +367,9 @@ fn bm_pass(wid: vec3<u32>, lid: u32) {
     }
     workgroupBarrier();
 
-    // D: the group (`cpu::bm_dct::select`): an insertion into the 7 best, after every kept entry of a distance
-    // at or below the new one, so a tie keeps the smaller index first.
+    // D: the group (`cpu::bm_dct::select`): the soft insertion of the candidates into the 7 nearest, thread 0's.
     if (lid == 0u) {
-        var bd: array<f32, 7>;
-        var bi: array<u32, 7>;
-        var m = 0u;
-        for (var idx = 0u; idx < 25u; idx++) {
-            if (bm_ok[idx] == 0u) {
-                continue;
-            }
-            let di = bm_dist[idx];
-            var at = m;
-            for (var q = 0u; q < m; q++) {
-                if (bd[q] > di) {
-                    at = q;
-                    break;
-                }
-            }
-            if (at >= 7u) {
-                continue;
-            }
-            var q = min(m, 6u);
-            loop {
-                if (q <= at) {
-                    break;
-                }
-                bd[q] = bd[q - 1u];
-                bi[q] = bi[q - 1u];
-                q = q - 1u;
-            }
-            bd[at] = di;
-            bi[at] = idx;
-            m = min(m + 1u, 7u);
-        }
-        bm_sx[0] = bx;
-        bm_sy[0] = by;
-        for (var q = 0u; q < 7u; q++) {
-            var idx = 12u;
-            if (q < m && bd[q] <= bp.tau.z) {
-                idx = bi[q];
-            }
-            bm_sx[q + 1u] = u32(i32(bx) + i32(idx % 5u) * 4 - 8);
-            bm_sy[q + 1u] = u32(i32(by) + i32(idx / 5u) * 4 - 8);
-        }
+        bm_group(bx, by);
     }
     // With switch 8, while thread 0 forms the group: the reference block's chroma threshold.
     if (lid == 32u && bm_on(8u)) {
@@ -291,12 +377,20 @@ fn bm_pass(wid: vec3<u32>, lid: u32) {
     }
     workgroupBarrier();
 
-    // E: the group of every filtered channel.
+    // E: the group of every filtered channel: slot k's block is the sum of its parts, in index order (a part of
+    // weight 1 on its own is the candidate's block).
     for (var t = lid; t < 8u * lines; t += 256u) {
         let ch = first + t / 512u;
         let q = t % 512u;
         let k = q / 64u;
-        bm_grp[ch * 512u + q] = bm_ycc[ch * n + (bm_sy[k] + (q / 8u) % 8u) * bw + bm_sx[k] + q % 8u];
+        var v = 0.0;
+        for (var e = bm_start[k]; e < bm_start[k + 1u]; e++) {
+            let i = bm_ei[e];
+            let sx = u32(i32(bx) + i32(i % 5u) * 4 - 8);
+            let sy = u32(i32(by) + i32(i / 5u) * 4 - 8);
+            v = bm_op(v + bm_op(bm_ew[e] * bm_ycc[ch * n + (sy + (q / 8u) % 8u) * bw + sx + q % 8u]));
+        }
+        bm_grp[ch * 512u + q] = v;
     }
     workgroupBarrier();
 
@@ -344,12 +438,18 @@ fn bm_pass(wid: vec3<u32>, lid: u32) {
     let kk = bm_kwin(q);
     let i = q / 8u;
     let j = q % 8u;
-    for (var k = 0u; k < 8u; k++) {
+    let n_ent = workgroupUniformLoad(&bm_nent);
+    for (var e = 0u; e < n_ent; e++) {
         if (on) {
-            let at = plane * n + (bm_sy[k] + i) * bw + bm_sx[k] + j;
-            var term = kk;
+            let k = bm_ek[e];
+            let w = bm_ew[e];
+            let c = bm_ei[e];
+            let sx = u32(i32(bx) + i32(c % 5u) * 4 - 8);
+            let sy = u32(i32(by) + i32(c / 5u) * 4 - 8);
+            let at = plane * n + (sy + i) * bw + sx + j;
+            var term = bm_op(kk * w);
             if (plane < 3u) {
-                term = bm_term(kk, bm_grp[plane * 512u + k * 64u + q]);
+                term = bm_op(w * bm_term(kk, bm_grp[plane * 512u + k * 64u + q]));
             }
             bm_acc[at] = bm_op(bm_acc[at] + term);
         }

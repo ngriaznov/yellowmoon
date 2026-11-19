@@ -552,7 +552,6 @@ fn the_raw_chain_is_said_to_be_on_the_cpu_exactly_where_the_route_puts_it() {
 fn small_and_odd_photos_render_on_the_device_like_on_the_cpu() {
     let Some(gpu) = gpu() else { return };
     let white = light("sony-ilce-7rm4", 4500.0);
-    let mut flipped = 0;
     for (w, h) in [
         (66u32, 50u32),
         (131, 97),
@@ -577,27 +576,11 @@ fn small_and_odd_photos_render_on_the_device_like_on_the_cpu() {
         eprintln!("{w}x{h}: worst {worst:e}, mean {mean:e}");
         // The bounds of the full render above (measured here: worst 1.1e-7 to 6.9e-7, mean 1.4e-8
         // to 2.2e-8): a plumbing error moves the mean by orders of magnitude.
-        if mean < 1e-6 && worst < 1e-3 {
-            continue;
-        }
-        // A photo on which a demosaic or denoise decision went the other way (a tie flip, `docs/17`): a few
-        // samples move by a few 1e-4, the mean by 1e-6 to 1e-5. Since RC-13 (A6 `0.9`, A7 `3.5`) the 131 x 97
-        // photo is one (worst 2.9e-4, mean 1.6e-6); its 1.4e-8 to 2.2e-8 was the quiet end of the rate. The same
-        // render over 90 other seeds (131 x 97, 66 x 50 and 250 x 250, 30 each) at `Tuning::ORACLE` gave 9 photos
-        // over the mean bound (mean up to 6.0e-6, worst up to 4.4e-3) and at `Tuning::DEFAULT` none, so the
-        // flips are the content's and the shipped constants are not the cause. A flip stays under twice
-        // those values; a plumbing error is orders of magnitude above them.
-        eprintln!("{w}x{h}: a decision went the other way");
-        flipped += 1;
         assert!(
-            mean < 1.2e-5 && worst < 9e-3,
+            mean < 1e-6 && worst < 1e-3,
             "{w}x{h}: worst {worst}, mean {mean}"
         );
     }
-    assert!(
-        flipped <= 2,
-        "{flipped} of 6 small photos took a decision the other way (measured 1)"
-    );
 }
 
 #[test]

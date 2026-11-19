@@ -51,16 +51,21 @@ use ym_noise::model::NoiseModel;
 /// same numbers to the last digit (macOS 14 and 15, Mac GPU run 39516017050, 2026-10-21: 2.086e-6, 0 over
 /// 1e-4), as the kernel pins its arithmetic, so one set of bounds holds for every adapter. With the blend of Y
 /// alone (pipeline 0.5.1) lavapipe measures 2.33e-6, 0 over 1e-4, within the bound.
-const BOUND: f32 = 4.2e-6;
+///
+/// RC-15 (soft decisions, `docs/algorithms/05` A-f and A-g): the first measured value is 1.21e-4 (a frame at the render's
+/// noise level; the others are within 5.8e-6), no decision went the other way, and the bound is twice that.
+const BOUND: f32 = 2.5e-4;
 /// The share of those samples over 1e-4: twice the first measured value (0, on lavapipe and on Metal).
-const OVER_1E4: f64 = 0.0;
+/// RC-15: measured 13 of 1 910 895 (6.8e-6); twice that.
+const OVER_1E4: f64 = 1.4e-5;
 /// A frame on which a decision went the other way (one of the frames of
 /// `tiles_equal_the_whole_frame_bit_for_bit`, luma only, R 0): twice the first measured values (largest
 /// 1.68e-3, 204 of 99 381 samples over 1e-4, on lavapipe and on Metal alike). A flip moves the reference's 8
 /// blocks by up to about `tau / 512` in the encoding.
-const FLIP_LARGEST: f32 = 3.4e-3;
+/// RC-15: no decision goes the other way any more; measured 1.04e-4, 1 of 99 381 over 1e-4; twice those.
+const FLIP_LARGEST: f32 = 2.1e-4;
 /// See [`FLIP_LARGEST`].
-const FLIP_OVER_1E4: f64 = 4.1e-3;
+const FLIP_OVER_1E4: f64 = 2.1e-5;
 /// Largest `|gpu - cpu|` when the method changes nothing (the input encoded and decoded): twice the first
 /// measured value (2.38e-7, two ulp of the values near 1; Metal the same).
 const ROUND_TRIP_BOUND: f32 = 4.8e-7;
@@ -242,10 +247,11 @@ fn matches_the_cpu_on_every_frame() {
 /// block's `tau_C` (the device's agrees with the CPU's to a few `f32` ulp,
 /// `the_kernels_chroma_threshold_is_the_cpus_to_a_few_ulp`); with `level: None` the same frames have no chroma
 /// flip. The other 25 frames are within 1.9e-6.
-const LEVEL_LARGEST: f32 = 2.7e-3;
+/// RC-15: with soft decisions the frames measure 1.04e-4 at the largest and 1 sample in 99 381 over 1e-4; twice that.
+const LEVEL_LARGEST: f32 = 2.1e-4;
 /// The share of those samples over 1e-4: twice the first measured value (971 of 1 299 360, 7.47e-4, 4 over 1e-3,
 /// on lavapipe).
-const LEVEL_OVER_1E4: f64 = 1.5e-3;
+const LEVEL_OVER_1E4: f64 = 2.1e-5;
 
 #[test]
 fn matches_the_cpu_with_the_level_threshold() {
@@ -949,9 +955,11 @@ fn tie_prone_scene(w: usize, h: usize, kind: usize, seed: u64) -> RgbImage {
 /// (`matches_the_cpu_on_every_frame`).
 /// First measured on lavapipe: 35 044 of 611 901 samples over 1e-4 (5.73e-2, nearly all on the flat patches
 /// at R 1, whose blocks straddle the edges), largest 7.3e-3.
-const TIE_PRONE_OVER_1E4: f64 = 0.115;
+/// RC-15: two candidates at the same distance share their slots, so the tie breaks by no rounding: measured
+/// 1.9e-5 at the largest, none over 1e-4; twice that.
+const TIE_PRONE_OVER_1E4: f64 = 0.0;
 /// See [`TIE_PRONE_OVER_1E4`].
-const TIE_PRONE_LARGEST: f32 = 1.46e-2;
+const TIE_PRONE_LARGEST: f32 = 3.8e-5;
 
 #[test]
 fn tie_prone_content_differs_only_by_tie_flips() {

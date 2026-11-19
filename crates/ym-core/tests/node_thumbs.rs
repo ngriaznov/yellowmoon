@@ -330,30 +330,13 @@ fn the_device_and_the_cpu_make_the_same_thumbnails_within_the_device_tolerance()
         let a = thumbnails(&device, &with(&src, s.clone()));
         let b = thumbnails(&host, &with(&src, s));
         for (x, y) in a.iter().zip(&b) {
-            let (dx, dy) = (decode(&x.png).2, decode(&y.png).2);
-            let (worst, mean) = differ(&dx, &dy);
-            let over = dx
-                .iter()
-                .zip(&dy)
-                .filter(|(p, q)| p.abs_diff(**q) > 2)
-                .count();
+            let (worst, mean) = differ(&decode(&x.png).2, &decode(&y.png).2);
             eprintln!(
-                "{what}, node {}: the device against the CPU: largest {worst} codes, mean {mean:.5}, {over} samples over 2 codes",
+                "{what}, node {}: the device against the CPU: largest {worst} codes, mean {mean:.5}",
                 x.node
             );
-            // render_gpu.rs: the device's frame is the CPU's within two codes, but for an edge pixel on which the
-            // two take another decision (the pixel differs by 1 code in node 1's own picture): the steep S curve of
-            // node 3 and the warm node 4 after it multiply that by 3 to 9. Since RC-13 (A6 `0.9`, A7 `3.5`) that is the
-            // pixels (59, 79) and (60, 79) of the 160 x 107 thumbnail, a dark row under a bright one: nodes 3 and 4,
-            // largest 5 and 11 codes (nodes 1 and 2 stay within 1), 3 and 6 samples over 2 codes, the mean 0.0006 and
-            // 0.0012; at the old constants all four nodes were within 1 code. The CPU's own pixel does not move
-            // under 1e-5 EV of node 2's trim, so the graph is not ill-conditioned there. Twice the measured values; a
-            // plumbing error moves the mean and thousands of samples.
-            assert!(
-                (worst <= 2 || (worst <= 22 && over <= 12)) && mean < 0.25,
-                "{what} node {}",
-                x.node
-            );
+            // render_gpu.rs: the device's frame is the CPU's within two codes.
+            assert!(worst <= 2 && mean < 0.25, "{what} node {}", x.node);
         }
     }
 }

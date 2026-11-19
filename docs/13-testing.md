@@ -346,3 +346,8 @@ Per light (A7R IV, ISO 400, chart median): D 5500 0.49, D 6500 0.61, D 7500 0.53
 - 50 A1 photos covering daylight, shade, tungsten, LED, mixed light, night, skin, foliage, high ISO.
 - Each photo exported by Yellowmoon (Neutral look) and by Capture One, Lightroom and DxO with default settings and a matched exposure. Pairs shown in random order and side, on a calibrated P3 display, through a small web page that records choices (`tools/abtest`).
 - Raters: the maintainer plus at least two others. Report preference with a binomial confidence interval.
+
+
+## The device and the CPU take the same decisions (RC-15, owner 2026-11-19: "I like simplifying tests, go ahead")
+
+A device-against-CPU test is strict: one bound, measured, twice the first value, and no count of "flipped" cases, photos or runs. Where an algorithm decides (a threshold, an argmin, a ranking, a `step`), the decision is either exact (integer arithmetic on both sides, a fixed tie rule) or continuous (a smoothstep over a narrow band of the compared values, so a rounding gives a small difference and not a jump; `docs/23` §4.3). A test that needs a flip allowance is a sign that a decision is still hard, and the fix is in the algorithm, in the CPU reference and the WGSL together, written into its spec. Method A (`docs/algorithms/05` A-f, A-g) is the first to follow the rule; the demosaic's decisions (`docs/algorithms/01` §12) and the false-colour stage are not yet.
