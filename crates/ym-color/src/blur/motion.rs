@@ -63,8 +63,22 @@ pub fn reads_px(length_px: f64) -> usize {
 /// oracle's order, taps outside the window skipped. Written tap by tap over rows so the inner loop is a straight run.
 #[must_use]
 pub fn gather(p: &[Plane4], w: usize, h: usize, length_px: f64, angle_deg: f64) -> Vec<Plane4> {
+    gather_rows(p, w, h, length_px, angle_deg, 0..h)
+}
+
+/// [`gather`] over the window's rows `rows` only: those rows' pixels, row by row, the same bits as in [`gather`] (a pixel's taps
+/// are added in the same order; the rows outside `rows` are read, not made).
+#[must_use]
+pub fn gather_rows(
+    p: &[Plane4],
+    w: usize,
+    h: usize,
+    length_px: f64,
+    angle_deg: f64,
+    rows: std::ops::Range<usize>,
+) -> Vec<Plane4> {
     let line = taps(length_px, angle_deg);
-    let mut out = vec![[0.0; 4]; w * h];
+    let mut out = vec![[0.0; 4]; w * rows.len()];
     for t in &line {
         let (dx, dy) = (i64::from(t.dx), i64::from(t.dy));
         let x_lo = (-dx).max(0) as usize;
@@ -72,13 +86,13 @@ pub fn gather(p: &[Plane4], w: usize, h: usize, length_px: f64, angle_deg: f64) 
         if x_lo >= x_hi {
             continue;
         }
-        for y in 0..h {
+        for y in rows.clone() {
             let yy = y as i64 + dy;
             if yy < 0 || yy >= h as i64 {
                 continue;
             }
             let src = &p[yy as usize * w..(yy as usize + 1) * w];
-            let dst = &mut out[y * w..(y + 1) * w];
+            let dst = &mut out[(y - rows.start) * w..(y - rows.start + 1) * w];
             for x in x_lo..x_hi {
                 let q = &src[(x as i64 + dx) as usize];
                 let o = &mut dst[x];

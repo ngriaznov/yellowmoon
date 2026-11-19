@@ -116,9 +116,23 @@ pub fn reads_px(sigma_px: f64) -> usize {
 /// The sums of the weighted planes `p` (a window of `w x h` pixels at `frame.x0, frame.y0`) by the Soft Gaussian of `sigma`
 /// pixels: the direct separable sum (the oracle's own) up to [`DIRECT_MAX_SIGMA_PX`], else the coarse grid.
 pub fn gather(p: &[Plane4], w: usize, h: usize, frame: &Frame, sigma: f64) -> Vec<Plane4> {
+    gather_rows(p, w, h, frame, sigma, 0..h)
+}
+
+/// [`gather`] over the window's rows `rows` only: those rows' pixels, row by row, the same bits as in [`gather`]. The cells are
+/// those of the whole window; only the read-back (the per-pixel work) is cut to the rows.
+pub fn gather_rows(
+    p: &[Plane4],
+    w: usize,
+    h: usize,
+    frame: &Frame,
+    sigma: f64,
+    rows: std::ops::Range<usize>,
+) -> Vec<Plane4> {
     let level = cell_level(sigma);
     if level == 0 {
-        return gather_separable(p, w, h, &gauss_weights(sigma));
+        let all = gather_separable(p, w, h, &gauss_weights(sigma));
+        return all[rows.start * w..rows.end * w].to_vec();
     }
     let f = 1i64 << level;
     let (x0, y0) = (frame.x0 as i64, frame.y0 as i64);
@@ -126,12 +140,12 @@ pub fn gather(p: &[Plane4], w: usize, h: usize, frame: &Frame, sigma: f64) -> Ve
     let (cj0, ch) = cell_range(y0, y0 + h as i64, frame.full_h as i64, f);
     if cw == 0 || ch == 0 {
         // No whole cell (a window narrower than a cell): nothing to read, the sums are 0 and the blend keeps the input.
-        return vec![[0.0; 4]; w * h];
+        return vec![[0.0; 4]; w * rows.len()];
     }
     let (cw, ch) = (cw as usize, ch as usize);
     let inv = 1.0 / f as f64;
     // The reduction along x: for each row of the window, the cells' columns (a pixel outside the frame counts 0).
-    let mut rows = vec![[0.0; 4]; cw * h];
+    let mut strips = vec![[0.0; 4]; cw * h];
     for y in 0..h {
         for ci in 0..cw {
             let i = ci0 + ci as i64;
@@ -143,7 +157,7 @@ pub fn gather(p: &[Plane4], w: usize, h: usize, frame: &Frame, sigma: f64) -> Ve
                     acc[c] += k * q[c];
                 }
             }
-            rows[y * cw + ci] = acc.map(|a| a * inv);
+            strips[y * cw + ci] = acc.map(|a| a * inv);
         }
     }
     // The reduction along y.
@@ -154,7 +168,7 @@ pub fn gather(p: &[Plane4], w: usize, h: usize, frame: &Frame, sigma: f64) -> Ve
             let mut acc = [0.0; 4];
             for y in ((j - 1) * f).max(0)..((j + 2) * f).min(frame.full_h as i64) {
                 let k = spline(y, j, f);
-                let q = &rows[(y - y0) as usize * cw + ci];
+                let q = &strips[(y - y0) as usize * cw + ci];
                 for c in 0..4 {
                     acc[c] += k * q[c];
                 }
@@ -164,8 +178,8 @@ pub fn gather(p: &[Plane4], w: usize, h: usize, frame: &Frame, sigma: f64) -> Ve
     }
     let blurred = gather_separable(&cells, cw, ch, &cell_weights(sigma, f as usize));
     // The read-back; a cell outside the grid reads 0. The nearest cell of a pixel is `x div f`.
-    let mut out = vec![[0.0; 4]; w * h];
-    for y in 0..h {
+    let mut out = vec![[0.0; 4]; w * rows.len()];
+    for y in rows.clone() {
         let ay = y0 + y as i64;
         let j0 = ay.div_euclid(f);
         for x in 0..w {
@@ -194,7 +208,7 @@ pub fn gather(p: &[Plane4], w: usize, h: usize, frame: &Frame, sigma: f64) -> Ve
                     acc[c] += ky * line[c];
                 }
             }
-            out[y * w + x] = acc;
+            out[(y - rows.start) * w + x] = acc;
         }
     }
     out

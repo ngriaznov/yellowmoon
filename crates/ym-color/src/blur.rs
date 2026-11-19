@@ -21,6 +21,8 @@
 //!
 //! Not product code of the node's scheduling: the plan step, tiles and threads are BL-04, the device is BL-05.
 
+use std::ops::Range;
+
 use crate::consts::Vec3;
 use crate::logc::{logc4_decode_rgb, logc4_encode_rgb};
 use crate::warp::smoothstep;
@@ -578,6 +580,11 @@ fn bilinear(p: &[Plane4], w: usize, h: usize, frame: &Frame, qx: f64, qy: f64) -
     out
 }
 
+/// The rows `rows` of a `width`-wide plane of pixels.
+fn rows_of(all: Vec<Plane4>, width: usize, rows: Range<usize>) -> Vec<Plane4> {
+    all[rows.start * width..rows.end * width].to_vec()
+}
+
 /// The exact radial line of Zoom: `n` equal-weight bilinear taps at `c + v (1 + a t_i)`, `t_i = (i + 1/2)/n - 1/2`.
 fn gather_zoom(
     p: &[Plane4],
@@ -629,7 +636,7 @@ pub fn sums(
     params: &BlurParams,
     frame: &Frame,
 ) -> Result<(Vec<Vec3>, Vec<f64>), BlurError> {
-    sums_with(x, m, width, height, params, frame, false)
+    sums_with(x, m, width, height, params, frame, false, 0..height)
 }
 
 /// [`sums`] by the type's fast method where it has one (`docs/33` 3.5; Soft's coarse grid, [`soft`]; Lens' cells, [`lens`]; Zoom's pyramid, [`zoom`]) and by
@@ -646,9 +653,10 @@ pub fn sums_fast(
     params: &BlurParams,
     frame: &Frame,
 ) -> Result<(Vec<Vec3>, Vec<f64>), BlurError> {
-    sums_with(x, m, width, height, params, frame, true)
+    sums_with(x, m, width, height, params, frame, true, 0..height)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sums_with(
     x: &[Vec3],
     m: &[f64],
@@ -657,6 +665,7 @@ fn sums_with(
     params: &BlurParams,
     frame: &Frame,
     fast: bool,
+    rows: Range<usize>,
 ) -> Result<(Vec<Vec3>, Vec<f64>), BlurError> {
     if x.len() != width * height || m.len() != width * height {
         return Err(BlurError::Size {
@@ -676,6 +685,16 @@ fn sums_with(
             y0: frame.y0,
             width,
             height,
+            full_w: frame.full_w,
+            full_h: frame.full_h,
+        });
+    }
+    if rows.start > rows.end || rows.end > height {
+        return Err(BlurError::Window {
+            x0: frame.x0,
+            y0: frame.y0 + rows.start,
+            width,
+            height: rows.len(),
             full_w: frame.full_w,
             full_h: frame.full_h,
         });
@@ -702,9 +721,13 @@ fn sums_with(
         BlurKind::Soft { radius } => {
             let sigma = radius_px(radius, u) / 2.0;
             if fast {
-                soft::gather(&planes, width, height, frame, sigma)
+                soft::gather_rows(&planes, width, height, frame, sigma, rows)
             } else {
-                gather_separable(&planes, width, height, &gauss_weights(sigma))
+                rows_of(
+                    gather_separable(&planes, width, height, &gauss_weights(sigma)),
+                    width,
+                    rows,
+                )
             }
         }
         BlurKind::Lens {
@@ -715,35 +738,48 @@ fn sums_with(
         } => {
             let r = radius_px(radius, u);
             if fast {
-                lens::gather(
+                lens::gather_rows(
                     &planes,
                     (frame.x0, frame.y0, width, height),
                     (frame.full_w, frame.full_h),
                     (r, blades, rotation_deg),
+                    rows,
                 )
             } else {
                 let t = aperture_table(r, blades, rotation_deg);
-                gather_table(&planes, width, height, &t)
+                rows_of(gather_table(&planes, width, height, &t), width, rows)
             }
         }
         BlurKind::Motion { length, angle_deg } => {
             if fast {
-                motion::gather(&planes, width, height, length_px(length, u), angle_deg)
+                motion::gather_rows(
+                    &planes,
+                    width,
+                    height,
+                    length_px(length, u),
+                    angle_deg,
+                    rows,
+                )
             } else {
                 let t = line_table(length_px(length, u), angle_deg);
-                gather_table(&planes, width, height, &t)
+                rows_of(gather_table(&planes, width, height, &t), width, rows)
             }
         }
         BlurKind::Zoom { amount, center } => {
             if fast {
-                zoom::gather(
+                zoom::gather_region(
                     &planes,
                     (frame.x0, frame.y0, width, height),
                     (frame.full_w, frame.full_h),
                     (zoom_span(amount), center),
+                    (frame.x0, frame.y0 + rows.start, width, rows.len()),
                 )
             } else {
-                gather_zoom(&planes, width, height, frame, zoom_span(amount), center)
+                rows_of(
+                    gather_zoom(&planes, width, height, frame, zoom_span(amount), center),
+                    width,
+                    rows,
+                )
             }
         }
     };
@@ -808,7 +844,7 @@ fn apply_linear_with(
         }
         return Ok(x.to_vec());
     }
-    let (n, d) = sums_with(x, m, width, height, params, frame, fast)?;
+    let (n, d) = sums_with(x, m, width, height, params, frame, fast, 0..height)?;
     Ok((0..x.len())
         .map(|i| blend_linear(x[i], clean_mask(m[i]), n[i], d[i]))
         .collect())
@@ -828,7 +864,7 @@ pub fn apply(
     params: &BlurParams,
     frame: &Frame,
 ) -> Result<Vec<Vec3>, BlurError> {
-    apply_with(v, m, width, height, params, frame, false)
+    apply_with(v, m, width, height, params, frame, false, 0..height)
 }
 
 /// [`apply`] by the fast methods ([`sums_fast`]): what the CPU run of the render calls. The oracle [`apply`] stays the
@@ -845,9 +881,30 @@ pub fn apply_fast(
     params: &BlurParams,
     frame: &Frame,
 ) -> Result<Vec<Vec3>, BlurError> {
-    apply_with(v, m, width, height, params, frame, true)
+    apply_with(v, m, width, height, params, frame, true, 0..height)
 }
 
+/// [`apply_fast`] returning only the window's rows `rows` (`rows.len() * width` pixels, row by row): the same bits as those rows
+/// of [`apply_fast`], the type's per-pixel work done for them alone. The window still has to hold what the rows read (the plan's
+/// reach grown by the caller), and the planes of the whole window are still made; what is saved is the gather, the blend and the
+/// encode over the rows outside `rows`. What the render's CPU run calls, band by band.
+///
+/// # Errors
+///
+/// As [`sums`], and [`BlurError::Window`] when `rows` leaves the window.
+pub fn apply_fast_rows(
+    v: &[Vec3],
+    m: &[f64],
+    width: usize,
+    height: usize,
+    params: &BlurParams,
+    frame: &Frame,
+    rows: Range<usize>,
+) -> Result<Vec<Vec3>, BlurError> {
+    apply_with(v, m, width, height, params, frame, true, rows)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn apply_with(
     v: &[Vec3],
     m: &[f64],
@@ -856,6 +913,7 @@ fn apply_with(
     params: &BlurParams,
     frame: &Frame,
     fast: bool,
+    rows: Range<usize>,
 ) -> Result<Vec<Vec3>, BlurError> {
     check_finite(params)?;
     if is_identity(params) {
@@ -867,17 +925,28 @@ fn apply_with(
                 height,
             });
         }
-        return Ok(v.to_vec());
+        if rows.start > rows.end || rows.end > height {
+            return Err(BlurError::Window {
+                x0: frame.x0,
+                y0: frame.y0 + rows.start,
+                width,
+                height: rows.len(),
+                full_w: frame.full_w,
+                full_h: frame.full_h,
+            });
+        }
+        return Ok(v[rows.start * width..rows.end * width].to_vec());
     }
     let x: Vec<Vec3> = v.iter().map(|p| logc4_decode_rgb(*p)).collect();
-    let (n, d) = sums_with(&x, m, width, height, params, frame, fast)?;
-    Ok((0..v.len())
+    let (n, d) = sums_with(&x, m, width, height, params, frame, fast, rows.clone())?;
+    Ok((rows.start * width..rows.end * width)
         .map(|i| {
             let mv = clean_mask(m[i]);
             if mv == 0.0 {
                 v[i]
             } else {
-                logc4_encode_rgb(blend_linear(x[i], mv, n[i], d[i]))
+                let k = i - rows.start * width;
+                logc4_encode_rgb(blend_linear(x[i], mv, n[k], d[k]))
             }
         })
         .collect())

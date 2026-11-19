@@ -642,19 +642,22 @@ impl FilmRender {
                 y0: wy0 as usize,
             };
             let (lo, hi) = (rows.start * read.w, rows.end * read.w);
-            let window = blur::apply_fast(
+            // Only the band's own rows are made (`apply_fast_rows`): the window is read whole, the gather and the blend run over
+            // the band, the same bits as the whole window's rows.
+            let own_rows = (y0 - wy0) as usize..(y1 - wy0) as usize;
+            let window = blur::apply_fast_rows(
                 &v[lo..hi],
                 &m[lo..hi],
                 read.w,
                 rows.len(),
                 &work.params,
                 &frame,
+                own_rows,
             )
             .map_err(|e| film_error(&e))?;
             let mut out = Vec::with_capacity((y1 - y0) as usize * made.w);
-            for y in y0..y1 {
-                let r = (y - wy0) as usize * read.w;
-                out.extend_from_slice(&window[r + x0c..r + x1c]);
+            for r in 0..(y1 - y0) as usize {
+                out.extend_from_slice(&window[r * read.w + x0c..r * read.w + x1c]);
             }
             Ok(out)
         };

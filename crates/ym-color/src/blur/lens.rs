@@ -225,8 +225,13 @@ fn gather_taps(p: &[Plane4], w: usize, h: usize, table: &Table) -> Vec<Plane4> {
 }
 
 /// The pixels of a window read back from `cells` bilinearly (a cell's centre at `(I + 1/2) f`), a cell outside the grid being 0.
-fn read_back(cells: &[Plane4], grid: &Grid, window: (usize, usize, usize, usize)) -> Vec<Plane4> {
-    let (x0, y0, w, h) = window;
+fn read_back(
+    cells: &[Plane4],
+    grid: &Grid,
+    window: (usize, usize, usize, usize),
+    rows: std::ops::Range<usize>,
+) -> Vec<Plane4> {
+    let (x0, y0, w, _) = window;
     let f = (1u64 << grid.level) as f64;
     let cell = |i: i64, j: i64| -> Plane4 {
         if grid.has(i, j) {
@@ -235,8 +240,8 @@ fn read_back(cells: &[Plane4], grid: &Grid, window: (usize, usize, usize, usize)
             [0.0; 4]
         }
     };
-    let mut out = Vec::with_capacity(w * h);
-    for y in 0..h {
+    let mut out = Vec::with_capacity(w * rows.len());
+    for y in rows {
         for x in 0..w {
             let (px, py) = ((x0 + x) as f64, (y0 + y) as f64);
             let u = (px + 0.5) / f - 0.5;
@@ -269,12 +274,26 @@ pub fn gather(
     planes: &[Plane4],
     window: (usize, usize, usize, usize),
     frame: (usize, usize),
+    params: (f64, u32, f64),
+) -> Vec<Plane4> {
+    gather_rows(planes, window, frame, params, 0..window.3)
+}
+
+/// [`gather`] over the window's rows `rows` only: those rows' pixels, row by row, the same bits as in [`gather`]. At a level
+/// above 0 only the read-back is cut to the rows; the cells are those of the whole window.
+#[must_use]
+pub fn gather_rows(
+    planes: &[Plane4],
+    window: (usize, usize, usize, usize),
+    frame: (usize, usize),
     (r_px, blades, rotation_deg): (f64, u32, f64),
+    rows: std::ops::Range<usize>,
 ) -> Vec<Plane4> {
     let (_, _, w, h) = window;
     let level = level_for(r_px);
     if level == 0 {
-        return gather_taps(planes, w, h, &aperture_table(r_px, blades, rotation_deg));
+        let all = gather_taps(planes, w, h, &aperture_table(r_px, blades, rotation_deg));
+        return all[rows.start * w..rows.end * w].to_vec();
     }
     let mut cells = planes.to_vec();
     let mut grid = Grid {
@@ -287,12 +306,12 @@ pub fn gather(
     for l in 1..=level {
         let Some(up) = Grid::of(window, frame, l) else {
             // No whole cell at this size in the window: nothing is read (the window is smaller than a cell).
-            return vec![[0.0; 4]; w * h];
+            return vec![[0.0; 4]; w * rows.len()];
         };
         cells = box_level(&cells, &grid, &up);
         grid = up;
     }
     let table = cell_table(r_px, blades, rotation_deg, level);
     let blurred = gather_taps(&cells, grid.w, grid.h, &table);
-    read_back(&blurred, &grid, window)
+    read_back(&blurred, &grid, window, rows)
 }
