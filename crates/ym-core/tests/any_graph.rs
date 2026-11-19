@@ -1698,8 +1698,10 @@ fn a_depth_frame_drawn_before_the_map_differs_from_the_frame_after_it() {
 /// The CPU frames of `a_before_view_makes_no_planes_and_is_not_cut_by_their_reach` (Fit, and 147 %), found before the Before
 /// view stopped reading the spatial steps of its chain. The 147 % frame was found again when the viewport began to snap the
 /// origin of a pan to a whole device pixel (G-13, `ViewportState::view_to_final`): the same view, up to half a device pixel
-/// further on. Fit is unchanged.
-const EXPECTED_BEFORE_HASHES: [u64; 2] = [0x8d45_9d4b_fe28_cfc1, 0x94ff_67c7_c4e9_7b96];
+/// further on. Fit is unchanged. The 147 % frame was found again at `PIPELINE_VERSION` 0.13.1 (RC-13: the demosaic's A6 `0.9` and
+/// A7 `3.5`; the Fit frame reads no full-size demosaic and is unchanged). With A6 and A7 put back to `0.03` and `0.75` and nothing
+/// else changed, the old hash `0x94ff_67c7_c4e9_7b96` comes back, so the constants and nothing else moved it.
+const EXPECTED_BEFORE_HASHES: [u64; 2] = [0x8d45_9d4b_fe28_cfc1, 0x973d_65e3_a3fb_95f5];
 
 /// G-11 part 3, item 3: the Before view runs no node, so it has no spatial step: its chain reads nothing beyond the view. A
 /// graph with raster rows and Film nodes makes no raster planes for it and is not cut by their reach (one piece at the
@@ -1814,8 +1816,10 @@ fn parallel_film_branches_keep_their_pixels() {
 
 /// The CPU frames of `parallel_film_branches_keep_their_pixels`, found with every Film node reading every earlier picture.
 /// The zoomed frame was found again when the viewport began to snap the origin of a pan to a whole device pixel (G-13); the
-/// Fit frame is unchanged.
-const EXPECTED_BRANCH_HASHES: [u64; 2] = [0x9c79_44fc_79cf_83bd, 0x3e9e_d1c8_69ff_71fd];
+/// Fit frame is unchanged. It was found again at `PIPELINE_VERSION` 0.13.1 (RC-13: A6 `0.9` and A7 `3.5` of the demosaic); with A6 and
+/// A7 put back to `0.03` and `0.75` and nothing else changed, the old hash `0x3e9e_d1c8_69ff_71fd` comes back, so the constants and
+/// nothing else moved it.
+const EXPECTED_BRANCH_HASHES: [u64; 2] = [0x9c79_44fc_79cf_83bd, 0x6ac4_1b30_96d7_4bd7];
 
 fn decode_png16_bytes(bytes: &[u8]) -> Vec<u32> {
     let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
@@ -2834,22 +2838,31 @@ fn seed_23_graph_0_export_matches_the_cpu_and_prints_its_stages() {
     );
 }
 
-/// Why seed 23 graph 0 differs on Metal (the two pixels (277, 314) and (278, 314) of the 640 x 420 export, value indices 603711 to
-/// 603716), on the CPU alone. The two pixels lie on a one-pixel dark line between bright rows (the CPU's values 191 and 5379 of 65535,
-/// the line's neighbours 22,000 and 40,000). Their own Depth plane codes on the CPU (42269 and 42271) do not change when the far limit
-/// moves by 5e-6, and their exports do; so what moves them is a one-code change of the plane at pixels around them, which the
+/// Why seed 23 graph 0 differs on Metal (two pixels on a one-pixel dark line of the 640 x 420 export), on the CPU alone. On the pictures
+/// of `PIPELINE_VERSION` 0.13.0 and before they were (277, 314) and (278, 314), value indices 603711 to 603716: the CPU's values 191 and
+/// 5379 of 65535 between neighbours of 22,000 and 40,000. RC-13 (A6 `0.9` and A7 `3.5` of the demosaic) changed the pictures, and the
+/// line is where it was: the pixels are now (276, 314) and (277, 314), value indices 603708 to 603713, the CPU's values 1573 and 373
+/// (the neighbours 22,761 and 40,253). Their Depth plane codes on the old pictures (42269 and 42271) did not change when the far limit
+/// moved by 5e-6, and their exports did; so what moves them is a one-code change of the plane at pixels around them, which the
 /// device's `f32` and the CPU's `f64` give differently at about 0.35 % of the pixels (`a_depth_row_plane_on_the_device_is_within_two_codes_of_the_cpu_through_every_step`
 /// counts them in the plane test). This test makes the same one-code changes on the CPU alone: it moves the Depth row's far limit by
 /// 5e-6 (0.3 of a code of the plane, which changes the codes of 13,600 pixels by one) and exports twice.
 ///
-/// * With the Output's sharpening at its default (100), the export moves by 142 of 65535 at those two pixels, more than the bound of the
+/// **The direction matters on the new pictures.** On the old ones +5e-6 moved the line by 142. On the new ones +5e-6 moves nothing there
+/// (the largest change is 9, at a pixel elsewhere; the step of the plane at the line is not crossed), and -5e-6 crosses it: 70 at the
+/// line's first pixel, 6 values over 64 (value indices 603708 to 603713), the same from -1e-6 to -20e-6 (69 to 71) and 168 at -30e-6. So
+/// the pinned case is the far limit at -5e-6, the same pixels' instability seen from the other side of one code step. Measured with
+/// the Output's sharpening at 0, 50, 100 and 200 on the new pictures, the first pixel is 15192, 12786, 1573 and 0 (nudged: 15192,
+/// 12786, 1642 and 0).
+///
+/// * With the Output's sharpening at its default (100), the export moves by 70 of 65535 at those two pixels, more than the bound of the
 ///   device against the CPU (64): the **graph** is ill-conditioned for a one-code change of a mask next to the line, which no `f32`
-///   pipeline can promise to leave unchanged. The Output's sharpening at 0, 50, 100 and 200 puts the first pixel at 15077, 12624, 191 and 0:
-///   at 100 its sharpened luma is just above the 0 below which a pixel is black (`docs/algorithms/04` section 3.7), where the
-///   hue-preserving ratio `L' / L` is steep. (The cause inside the sharpener's halo limiter was not narrowed further.)
-/// * With the sharpening at 0 the same change moves no value by more than 1: the Depth path and the Colour Uniform node are well
-///   conditioned (a code of the plane is a code of 65535 of the mask, which blends the node's change linearly), so nothing in them is a
-///   decision that rounding can flip.
+///   pipeline can promise to leave unchanged. The sharpened luma of the first pixel at 100 is a few hundred codes above the 0 below
+///   which a pixel is black (`docs/algorithms/04` section 3.7), where the hue-preserving ratio `L' / L` is steep (at 200 it is below
+///   0 and the pixel is black, the same in both). (The cause inside the sharpener's halo limiter was not narrowed further.)
+/// * With the sharpening at 0 the same change moves no value by more than 1 (7 at 50): the Depth path and the Colour Uniform node are
+///   well conditioned (a code of the plane is a code of 65535 of the mask, which blends the node's change linearly), so nothing in them
+///   is a decision that rounding can flip.
 ///
 /// The test asserts both numbers on the CPU (no device is needed) and prints the same for seed 539's two Depth rows.
 #[test]
@@ -2903,14 +2916,14 @@ fn a_one_code_change_of_a_depth_plane_moves_seed_23_only_through_output_sharpeni
     };
     let full: Value = serde_json::from_str(SEED_23_GRAPH_0).expect("json");
     let mut nudged = full.clone();
-    nudged["nodes"]["items"][1]["masks"]["items"][1]["far"] = json!(0.794994994994995 + 5e-6);
+    nudged["nodes"]["items"][1]["masks"]["items"][1]["far"] = json!(0.794994994994995 - 5e-6);
     let (sharp, sharp_at) = moved(&cpu_png(&full), &cpu_png(&nudged));
     let (flat, flat_at) = moved(
         &cpu_png(&with_sharpening(&full, 0)),
         &cpu_png(&with_sharpening(&nudged, 0)),
     );
     say(&format!(
-        "seed 23 graph 0, the CPU alone, the Depth row's far moved by 5e-6: the export moves by {sharp} of 65535 (value {sharp_at}) with the Output's sharpening at 100, by {flat} (value {flat_at}) with it at 0"
+        "seed 23 graph 0, the CPU alone, the Depth row's far moved by -5e-6: the export moves by {sharp} of 65535 (value {sharp_at}) with the Output's sharpening at 100, by {flat} (value {flat_at}) with it at 0"
     ));
     assert!(
         flat <= 2,
@@ -2919,6 +2932,11 @@ fn a_one_code_change_of_a_depth_plane_moves_seed_23_only_through_output_sharpeni
     assert!(
         sharp > TEN_BIT_CODE,
         "the graph is no longer ill-conditioned for a one-code change of the plane ({sharp} of 65535): the pinned case needs a new look"
+    );
+    // On the dark line of the pixels (276, 314) and (277, 314), as before: the same instability, not another one.
+    assert!(
+        (603708..=603713).contains(&sharp_at),
+        "the unstable value moved to {sharp_at}: look again before pinning it"
     );
     // Seed 539 (two Depth rows, two Film nodes in series): the same change of each row's far limit, reported.
     let doc: Value = serde_json::from_str(SEED_539_GRAPH_0).expect("json");
@@ -2934,7 +2952,8 @@ fn a_one_code_change_of_a_depth_plane_moves_seed_23_only_through_output_sharpeni
 }
 
 /// The rule of `judge_export` on the CPU alone, with a CPU render standing for the device: seed 23 graph 0 with the Depth row's far
-/// limit moved by 5e-6 is a "device" that differs from the CPU by 142 at the two pixels the Mac run failed on, and those are the
+/// limit moved by -5e-6 is a "device" that differs from the CPU by 69 or 70 at the two pixels of the dark line (on the pictures before
+/// RC-13: moved by +5e-6, 142 at the two pixels the Mac run failed on), and those are the
 /// CPU's own unstable values, so the rule passes it and prints them. The same "device" with one stable value moved by 500 fails
 /// (the bound is enforced there); with an unstable value moved far outside the CPU's own range it fails (safeguard c); a graph with no
 /// mask row fails at a change of 100 at one value (safeguard a).
@@ -2977,8 +2996,9 @@ fn the_unstable_pixel_rule_exempts_only_the_cpus_own_unstable_values() {
     let full: Value = serde_json::from_str(SEED_23_GRAPH_0).expect("json");
     let (cpu, settings) = png(&full);
     let mut nudged = full.clone();
-    nudged["nodes"]["items"][1]["masks"]["items"][1]["far"] = json!(0.794994994994995 + 5e-6);
+    nudged["nodes"]["items"][1]["masks"]["items"][1]["far"] = json!(0.794994994994995 - 5e-6);
     let (dev, _) = png(&nudged);
+    // The second of the two pixels of the dark line, (277, 314), red (the first, 603708, is (276, 314)).
     let at = 603711;
     assert!(
         dev[at].abs_diff(cpu[at]) > TEN_BIT_CODE,
