@@ -14,6 +14,8 @@ The current state of Yellowmoon: release, milestone, what is built, gate results
 
 ## Current release and milestone
 
+- **CU-fix (branch `cu-pick-ui`):** a pressed `Button` inside a `TooltipTrigger asChild` kept Radix's `data-state` instead of the toggle's `on`, so Colour Uniform's Pick colour looked off after Add node; `Button` now drops the given `data-state`. Vitest and e2e tests added; no screenshot changed.
+
 - **0.2.4-beta.3 prepared (release-0.2.4-beta.3, this commit):** Colour Uniform, the raw constants, Blur; pipeline 0.14.0. Not pushed; the lead reviews, runs CI and the Mac run, and publishes.
 
 **Blur node (milestone B, branch `blur`, 2026-11-18 to 2026-11-19; spec `docs/33-blur.md`; BL-02 to BL-16 built, `main` merged in by BL-17 (branch `blur-main`); Spin, which `docs/33` also calls BL-17, is later).** The owner, 2026-11-18: "Can we in next release also add blur node? It should tolerate mask." and "We want different type of blur too." BL-H1 answered the same day (every default taken: one node with a Type control, mask-aware with a switch, Radius 20, linear light, no "blur the background" shortcut: "Blur is an instrument. It can be used with a depth mask and then it's 'blur the background'"). Research `research/blur-node-2026-11-18.md`, pictures `design/blur/`, tasks in `docs/15`. What is built:

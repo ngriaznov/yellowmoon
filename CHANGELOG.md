@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pick colour on a Colour Uniform node shows when it is on.** After adding the node, the Pick colour button looked off although picking was on, so the first click turned it off. Any pressed button inside a tooltip now keeps its pressed look; Pick colour was the only one affected.
+
 ## [0.2.4-beta.3] - 2026-11-20
 
 A third pre-release (a beta) for testing. It adds two nodes, **Colour Uniform** and **Blur**, and re-derives the constants of the raw processing. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.14.0 (beta 2 had 0.12.2), and most photos look slightly different because of the new constants. A settings file, preset or album that uses a Colour Uniform or Blur node needs this version: an older build refuses it.

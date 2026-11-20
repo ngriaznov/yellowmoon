@@ -74,8 +74,12 @@ function ButtonImpl({
   const descriptionId = useId();
   const describedBy = [rest["aria-describedby"], title ? descriptionId : undefined].filter(Boolean).join(" ") || undefined;
   const toggle = pressed !== undefined;
+  // A `TooltipTrigger asChild` around this button hands it a `data-state` ("closed", "delayed-open") with the rest of its props. The
+  // pressed style reads the Toggle's own `data-state="on"`, which props spread after it would overwrite, so the button drops the one it
+  // is given: a pressed button keeps its pressed look inside a tooltip trigger.
+  const { "data-state": _tooltipState, ...own } = rest as typeof rest & { "data-state"?: string };
   const shared = {
-    ...rest,
+    ...own,
     type: "button" as const,
     "data-variant": variant,
     "data-size": size,
