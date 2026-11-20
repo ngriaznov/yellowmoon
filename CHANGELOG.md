@@ -9,9 +9,23 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+## [0.2.4-beta.4] - 2026-11-20
+
+A fourth pre-release (a beta) for testing. It fixes **Pick colour** on a new Colour Uniform node. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is unchanged at 0.14.0, so pictures are the same as in beta 3.
+
 ### Fixed
 
 - **Pick colour on a Colour Uniform node shows when it is on.** After adding the node, the Pick colour button looked off although picking was on, so the first click turned it off. Any pressed button inside a tooltip now keeps its pressed look; Pick colour was the only one affected.
+
+### Known limits
+
+- On a Mac whose graphics card cannot run the Blur node, Lens, Motion and Zoom render on the processor instead, and slowly at large sizes: a large Lens, Motion or Zoom on a full-size photo can take minutes, where Soft takes seconds. On the graphics card the node is estimated at a few milliseconds a megapixel for a small blur and tens of milliseconds for the largest Lens, but its speed has not been measured on a Mac yet. (`docs/33` sections 9 and 11, items 65 and 75 to 80, have the numbers.)
+- A Zoom blur makes a tiny bright light (a few pixels wide) streak wider and dimmer than an exact streak would; smooth edges and large areas are right. A sharper streak may come later.
+- Opening an album does not show "This file has changed since the album was saved." for a photo whose file differs from the one the album saw; its settings still apply. (`ym render --json` and `ym info` do say it.)
+- Face Refinement finds the teeth even when all three teeth controls are 0, so a photo with faces takes a little longer than the sliders suggest.
+- Very yellow teeth can look greyish with Whitening at 100; lower Whitening a little.
+- The gum guard goes by colour, not by place: a tooth much redder than the rest of that face's teeth (a strong reddish reflection from the lips, say) is held back like gum, and the teeth mask itself still includes the strip of gum. A photo with no teeth or gums in the mask is not affected.
+- The Mac-only parts of this release are built but not yet checked on hardware: Colour Uniform and Blur on Metal (speed and the pick handles in the app), VoiceOver, the edited dot, the file dialog's filter for photos and albums together, the teeth sliders and the filmstrip on a real Mac, Intel Macs and 8 GB machines.
 
 ## [0.2.4-beta.3] - 2026-11-20
 
