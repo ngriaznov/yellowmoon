@@ -1,4 +1,5 @@
-# Diagnostic run 2 for the branch `diag-masks` only (never merged). Round 1 showed the `gpu_masks` failures depend on the
+# Diagnostic run 4: the commits built and run are variant A (select, main's control flow), variant B (branch-free select),
+# the release 40433dac (fails on AMD Zen 4) and main 0d990cd2 (passes). Earlier text, for context: diagnostic run 2 for the branch `diag-masks` only (never merged). Round 1 showed the `gpu_masks` failures depend on the
 # machine (probably its CPU, because llvmpipe compiles shaders for the host). Eight jobs land on different CPUs; each prints
 # the CPU, builds the test binary at four commits, runs each three times, and runs HEAD three more times with
 # LP_NATIVE_VECTOR_WIDTH=128 and three with 256. Round 3: each test binary comes from cargo JSON; build failures are shown. Every job ends green so the summary line and the failing outputs are uploaded.
@@ -48,7 +49,7 @@ jobs:
       - name: Rust toolchain from rust-toolchain.toml
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - name: Build gpu_masks at four commits
+      - name: Build gpu_masks at variants A and B, the release and main
         run: |
           set +e
           root="$PWD"
@@ -103,10 +104,10 @@ jobs:
             fi
             echo "$name $rev dir=$dir bin=$bin"
           }
-          build HEAD HEAD
-          build 0d990cd2 0d990cd2
-          build cc161946 cc161946
-          build 5cebd5ca 5cebd5ca
+          build A eee5d896bc885a48b72b9aee21e4ac76157e81a5
+          build B ccdc7b2426e94043943a4813c697fc47a552f135
+          build release 40433dac10be9ee1ba0f3d33d462f7bb9813e763
+          build main 0d990cd20d7e5e42b152a626ddf0b15b60553719
           ls -l "$root/bins"
       - name: Run the binaries
         run: |
@@ -129,18 +130,16 @@ jobs:
             echo "$failed/3"
           }
           touch "$out/failing-tests.txt"
-          r_head=$(runs HEAD head)
-          r_0d=$(runs 0d990cd2 0d990cd2)
-          r_cc=$(runs cc161946 cc161946)
-          r_5c=$(runs 5cebd5ca 5cebd5ca)
-          r_vw=$(runs HEAD head-vw128 LP_NATIVE_VECTOR_WIDTH=128)
-          r_v256=$(runs HEAD head-vw256 LP_NATIVE_VECTOR_WIDTH=256)
+          r_a=$(runs A A)
+          r_b=$(runs B B)
+          r_rel=$(runs release release)
+          r_main=$(runs main main)
           cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -n 1)
-          line="CPU $cpu | HEAD $r_head | 0d990cd2 $r_0d | cc161946 $r_cc | 5cebd5ca $r_5c | HEAD vw128 $r_vw | HEAD vw256 $r_v256"
+          line="CPU $cpu | A $r_a | B $r_b | release $r_rel | main $r_main"
           echo "$line"
           { echo "$line"; echo "failing tests:"; cat "$out/failing-tests.txt"; cat "$out/build-failures.txt" 2>/dev/null; } > "$out/summary.txt"
           echo "### ${{ matrix.index }}: $line" >> "$GITHUB_STEP_SUMMARY"
-          grep -a -h "DIAG" "$out"/head-*.log 2>/dev/null | cut -c1-600 | head -40
+          grep -a -h "DIAG" "$out"/release-*.log 2>/dev/null | cut -c1-600 | head -40
           exit 0
       - uses: actions/upload-artifact@v4
         if: always()
