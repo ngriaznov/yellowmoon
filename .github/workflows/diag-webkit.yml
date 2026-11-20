@@ -1,0 +1,63 @@
+# Diagnostic only (branch diag-webkit): the Colour Uniform and Pick colour e2e specs in WebKit, the engine of WKWebView.
+name: diag-webkit
+on:
+  push:
+    branches: [diag-webkit]
+
+jobs:
+  webkit:
+    runs-on: ubuntu-24.04   # as ci.yml's e2e job: Playwright 1.56 has no browsers for 26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps webkit
+      # Uniform specs plus the specs that cover Pick colour elsewhere (Colour range masks, Colour warp, white pick), all in WebKit.
+      # The mock server is the webServer of playwright.config.ts (npm run dev), started by Playwright as in ci.yml.
+      - name: Uniform and Pick colour specs in WebKit
+        continue-on-error: true
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: webkit-results.json
+        run: >
+          npx playwright test --project=webkit --trace on --reporter=list,html,json
+          e2e/uniform.spec.ts e2e/masks.spec.ts e2e/colour-warp.spec.ts e2e/pick-white.spec.ts e2e/node-panel.spec.ts
+          e2e/copy-paste.spec.ts e2e/a11y.spec.ts
+      - name: Summary per spec
+        if: always()
+        run: |
+          node -e '
+          const fs = require("fs");
+          if (!fs.existsSync("webkit-results.json")) { console.log("no results file"); process.exit(0); }
+          const r = JSON.parse(fs.readFileSync("webkit-results.json", "utf8"));
+          const rows = {};
+          const walk = (s) => {
+            for (const sp of s.specs || []) {
+              const row = (rows[sp.file] ||= { passed: 0, failed: 0, skipped: 0, failing: [] });
+              const st = sp.tests.map((t) => t.status);
+              if (st.every((x) => x === "skipped")) row.skipped++;
+              else if (sp.ok) row.passed++;
+              else { row.failed++; row.failing.push(sp.title); }
+            }
+            (s.suites || []).forEach(walk);
+          };
+          r.suites.forEach(walk);
+          let out = "| spec | passed | failed | skipped |\n|---|---|---|---|\n";
+          for (const [f, v] of Object.entries(rows)) {
+            out += `| ${f} | ${v.passed} | ${v.failed} | ${v.skipped} |\n`;
+            v.failing.forEach((t) => (out += `|  - FAIL: ${t} | | | |\n`));
+          }
+          console.log(out);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, out);
+          '
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-webkit
+          path: |
+            playwright-report
+            test-results
+            webkit-results.json

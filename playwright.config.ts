@@ -1,4 +1,4 @@
-import { defineConfig } from "@playwright/test";
+import { defineConfig, devices } from "@playwright/test";
 
 // The e2e suite runs against the Vite dev server with the mocked API (no Tauri).
 // Chromium is the build that ships in /opt/pw-browsers (1194 = Playwright 1.56.x).
@@ -40,5 +40,9 @@ export default defineConfig({
     url: "http://localhost:1420",
     reuseExistingServer: !process.env.CI,
   },
-  projects: [{ name: "chromium", use: { browserName: "chromium" } }],
+  projects: [
+    { name: "chromium", use: { browserName: "chromium" } },
+    // Diagnostic branch only: WebKit, the engine of macOS's WKWebView. The Chromium launch flags do not apply to it.
+    { name: "webkit", use: { ...devices["Desktop Safari"], deviceScaleFactor: 2, launchOptions: { args: [] } } },
+  ],
 });
