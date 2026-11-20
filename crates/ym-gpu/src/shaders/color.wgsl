@@ -1268,11 +1268,10 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) 
                 if (!none) {
                     graded = made;
                     // A Blur node's picture is finished: its blend (in linear light, by the same mask) is in it.
-                    if (m == 1.0 || (ctl & N_BLUR) != 0u) {
-                        out_v = made;
-                    } else {
-                        out_v = v_in + m * (made - v_in);
-                    }
+                    // Branch-free: an llvmpipe miscompile on AMD Zen 4 with LLVM 21 (diag runs, 2026-11-20) broke unrelated
+                    // mask-key tests with the `m == 1.0 || blur` branch here.
+                    let take = (m == 1.0) | ((ctl & N_BLUR) != 0u);
+                    out_v = select(v_in + m * (made - v_in), made, take);
                 }
             }
         } else if (blends && !skipped) {
