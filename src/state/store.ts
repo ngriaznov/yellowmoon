@@ -3178,6 +3178,8 @@ export class AppStore {
     }
     const record = final ? { base: gesture.base } : null;
     if (final) this.gestures.delete(id);
+    // A node that goes takes the view of its mask with it, before the patch is sent: the core would have a view of a node it no longer has.
+    if (patch.remove?.length && id === this.currentId() && this.maskNode !== null && patch.remove.includes(this.maskNode)) this.setMaskNode(null);
     this.setSettings(id, applyDirect(rs, patch));
     return this.enqueue(id, patch, record);
   }

@@ -820,6 +820,18 @@ impl AppApi {
             .core
             .update_settings(core_id(id), &core_patch)
             .map_err(session_error)?;
+        // A mask view of a node the patch deleted ends with it (`Viewport::forget_nodes`).
+        let removed: Vec<u32> = core_patch
+            .remove
+            .iter()
+            .filter_map(|node| match node {
+                ym_core::settings::NodeId::Corrector(k) => Some(*k),
+                _ => None,
+            })
+            .collect();
+        if self.core.session.current() == Some(core_id(id)) {
+            self.viewport.forget_nodes(&removed);
+        }
         self.settings_changed(core_id(id), touches_thumbnail(patch));
         convert(&resolved)
     }

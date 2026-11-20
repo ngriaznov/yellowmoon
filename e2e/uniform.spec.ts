@@ -320,3 +320,44 @@ test.describe("Copy and Paste", () => {
     await expect.poll(async () => await uniformOf(page, 6)).toBeUndefined();
   });
 });
+
+test.describe("deleting the node", () => {
+  const range = {
+    kind: "color_range", mode: "add", invert: false, enabled: true, opacity: 1,
+    center: [0.0872, 0.0425], width: 0.05, softness: 0.5,
+  };
+  test("ends the view of its mask with it, and the photo goes on taking edits of Main", async ({ page }) => {
+    await uniformView(page, { target: PICKED, compress: { hue: 50, saturation: 50, lightness: 0 }, masks: { invert: false, items: [range] } });
+    // What the page tells the viewport, in order.
+    await page.evaluate(() => {
+      const api = window.__yellowmoon!.mockApi as unknown as Record<string, (...a: unknown[]) => unknown>;
+      const log: string[] = [];
+      (window as unknown as { __calls: string[] }).__calls = log;
+      for (const name of ["viewportSetMode", "updateSettings"]) {
+        const call = api[name]!;
+        api[name] = (...a: unknown[]) => {
+          log.push(name === "viewportSetMode" ? `${name} ${JSON.stringify(a[1] ?? null)}` : `${name} ${JSON.stringify(a[1])}`);
+          return call.apply(api, a);
+        };
+      }
+    });
+    const calls = (): Promise<string[]> => page.evaluate(() => (window as unknown as { __calls: string[] }).__calls);
+    const show = page.getByRole("button", { name: "Show mask" });
+    await show.click();
+    await expect(page.locator(".ym-photo-cell__image")).toHaveAttribute("src", /data-mask-view/);
+    await page.getByRole("complementary", { name: "Tools" }).getByRole("button", { name: /more/i }).first().click();
+    await page.getByRole("menuitem", { name: "Delete node" }).click();
+    await expect.poll(async () => await uniformOf(page)).toBeUndefined();
+    // The view of node 2 ended before the patch that deleted it was sent, and nothing named node 2 again (Show mask stays on, now for Main).
+    const log = await calls();
+    const patch = log.findIndex((c) => c.startsWith("updateSettings") && c.includes('"remove":[2]'));
+    expect(patch).toBeGreaterThan(0);
+    expect(log[patch - 1]).toBe("viewportSetMode null");
+    expect(log.slice(patch).filter((c) => c.startsWith("viewportSetMode") && c.includes('"node":2'))).toEqual([]);
+    // An edit of Main after it reaches the core.
+    const slider = page.getByRole("complementary", { name: "Tools" }).getByRole("slider").first();
+    await slider.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect.poll(async () => (await calls()).filter((c) => c.startsWith("updateSettings") && c.includes('"1":')).length).toBeGreaterThan(0);
+  });
+});

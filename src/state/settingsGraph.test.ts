@@ -213,6 +213,17 @@ describe("foldPatches", () => {
     expect(foldPatches({ links }, { remove: [5] }).links).toBe(links);
   });
 
+  it("drops the waiting node patches of a node that the later patch removes (the core refuses a patch that names a node it deletes)", () => {
+    const links = defaultLinks();
+    const drag = { nodes: { "2": { compress: { hue: 51 } }, "1": { trim: { exposure_ev: 0.5 } } } } as SettingsPatch;
+    const folded = foldPatches(drag, { remove: [2], links });
+    expect(Object.keys(folded.nodes ?? {})).toEqual(["1"]);
+    expect(folded.remove).toEqual([2]);
+    expect(folded.links).toBe(links);
+    // A removal that came first and a patch that came later for the same node is as refused as it was: only the removal's own fold is cleaned.
+    expect(foldPatches({ remove: [2] }, { nodes: { "1": { trim: { exposure_ev: 1 } } } }).nodes).toEqual({ "1": { trim: { exposure_ev: 1 } } });
+  });
+
   it("changes the document as the two patches do in turn", () => {
     const a = foldPatches(mainGradePatch({ contrast: manual(5), brightness: 1 }), inputPatch({ lens: { flares: 20 } }));
     const b = mainGradePatch({ brightness: 8, white: -3 });

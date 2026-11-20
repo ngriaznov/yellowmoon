@@ -11,12 +11,14 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [0.2.4-beta.4] - 2026-11-20
 
-A fourth pre-release (a beta) for testing. It fixes **Pick colour** on a new Colour Uniform node. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is unchanged at 0.14.0, so pictures are the same as in beta 3.
+A fourth pre-release (a beta) for testing. It fixes **Pick colour** on a new Colour Uniform node and **Show mask** on a Film-like node with a linked key, and adds two safeguards for removing a node. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is unchanged at 0.14.0, so pictures are the same as in beta 3.
 
 ### Fixed
 
 - **Show mask on a node whose mask depends on another node no longer breaks the preview on a graphics card.** With a Film, Face Refinement or Blur node that takes its key from an earlier node, Show mask on it made every frame fail with "the plan runs node 2, which the chain has no parameters for". The picture of a node that only gives its key is not needed in that view, so it is no longer asked for. (Found by the graph test on a Mac with seed 296. A plain delete of a Colour Uniform node was checked on the graphics card too, with and without its mask view left on, and it renders and updates correctly; the stuck preview after a delete is not explained by this.)
 - **Pick colour on a Colour Uniform node shows when it is on.** After adding the node, the Pick colour button looked off although picking was on, so the first click turned it off. Any pressed button inside a tooltip now keeps its pressed look; Pick colour was the only one affected.
+- **Removing a node also clears a mask display of it.** A view of a deleted node's mask is now ended with the node, in the page before the patch is sent and in the app when the patch lands, so that the viewport never keeps a mask view for a node the photo does not have. This is a safeguard: the stuck preview after removing a node was not reproduced off the Mac (the sequence leaves the preview working on the processor and on a software graphics card), so it is not known to be the cause.
+- **Removing a node while a slider is still being dragged is no longer refused.** A slider drag that was still waiting for a node is dropped when the same send deletes the node, where the core would have refused the whole delete. Also a safeguard, for the same reason.
 
 ### Known limits
 
