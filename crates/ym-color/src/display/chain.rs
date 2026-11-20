@@ -845,12 +845,18 @@ impl ColorChain {
             .collect()
     }
 
-    /// The ids of the Film nodes the plan runs, in the plan's order.
+    /// The ids of the Film nodes whose picture the plan uses, in the plan's order.
+    ///
+    /// A film-like node that the plan runs only for its key (the mask view of a node, or a node whose picture
+    /// output nobody reads) has no picture to make: its picture is not read, and the plan that would make it
+    /// (`Stop::Picture`) needs the node's input ancestors, which a plan that stops at a mask does not
+    /// run and the chain has no parameters for.
     #[must_use]
     pub fn film_nodes(&self) -> Vec<u32> {
         self.steps
             .iter()
             .filter(|(s, _)| self.films.contains_key(&s.node))
+            .filter(|(s, _)| s.picture_out.is_some() || s.graded_out.is_some())
             .map(|(s, _)| s.node)
             .collect()
     }

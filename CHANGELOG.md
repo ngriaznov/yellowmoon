@@ -15,6 +15,7 @@ A fourth pre-release (a beta) for testing. It fixes **Pick colour** on a new Col
 
 ### Fixed
 
+- **Show mask on a node whose mask depends on another node no longer breaks the preview on a graphics card.** With a Film, Face Refinement or Blur node that takes its key from an earlier node, Show mask on it made every frame fail with "the plan runs node 2, which the chain has no parameters for". The picture of a node that only gives its key is not needed in that view, so it is no longer asked for. (Found by the graph test on a Mac with seed 296. A plain delete of a Colour Uniform node was checked on the graphics card too, with and without its mask view left on, and it renders and updates correctly; the stuck preview after a delete is not explained by this.)
 - **Pick colour on a Colour Uniform node shows when it is on.** After adding the node, the Pick colour button looked off although picking was on, so the first click turned it off. Any pressed button inside a tooltip now keeps its pressed look; Pick colour was the only one affected.
 
 ### Known limits

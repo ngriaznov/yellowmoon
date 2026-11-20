@@ -3335,3 +3335,119 @@ fn seed_23_graph_0_joined_export_matches_the_cpu() {
         failure.unwrap_or_default()
     );
 }
+
+/// Plan-fix: the owner's sequence of 0.2.4-beta.3 on the device. A Colour Uniform node with a target and a Colour range row, a frame, the
+/// node's Show mask view, then the node is deleted with the page's patch (`remove` and the links), a frame, and an edit of Main, a frame.
+/// With the view of the deleted node kept (the page did not clear it), the frame must still be made (the view of a node the photo no longer
+/// has is the picture's own view), and the edit of Main must change it; with the view cleared the same holds.
+#[test]
+fn a_deleted_colour_uniform_node_leaves_the_device_frames_working() {
+    use ym_core::settings::SettingsPatch;
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(gpu) = gpu() else { return };
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let patch = |v: Value| -> SettingsPatch { serde_json::from_value(v).expect("patch") };
+    let link = |from: Value, to: Value| json!({ "from": { "node": from, "port": "picture" }, "to": { "node": to, "port": "picture" } });
+    for keep_view in [false, true] {
+        let device = renderer(Some(Arc::clone(&gpu)), 256);
+        let mut settings = d.source().settings.clone();
+        let build = json!({
+            "nodes": { "2": { "kind": "color_uniform", "name": "Uniform", "pos": [1.0, 0.0],
+                "target": { "hue_deg": 30.0, "saturation": 30.0, "lightness_ev": 0.0 },
+                "compress": { "hue": 50, "saturation": 50, "lightness": 0 },
+                "masks": { "invert": false, "items": [ { "kind": "color_range", "mode": "add", "invert": false,
+                    "enabled": true, "opacity": 1, "center": [0.0, 0.0], "width": 0.5, "softness": 0.5 } ] } } },
+            "links": [link(json!("input"), json!(1)), link(json!(1), json!(2)), link(json!(2), json!("output"))],
+        });
+        settings
+            .apply_patch(&patch(build), None)
+            .expect("add the node");
+        let shown = Some((2, MaskStyle::Overlay, Some(0)));
+        let src = d.source().with_settings(settings.clone());
+        let live = frame(&device, &src, &view(false, false, shown));
+        assert!(
+            !live.report.device_refused,
+            "the node's frame is the device's"
+        );
+        settings
+            .apply_patch(
+                &patch(json!({ "remove": [2],
+                    "links": [link(json!("input"), json!(1)), link(json!(1), json!("output"))] })),
+                None,
+            )
+            .expect("delete the node");
+        let st = if keep_view {
+            view(false, false, shown)
+        } else {
+            view(false, false, None)
+        };
+        let deleted = frame(&device, &d.source().with_settings(settings.clone()), &st);
+        settings
+            .apply_patch(
+                &patch(json!({ "nodes": { "1": { "trim": { "exposure_ev": 1.0 } } } })),
+                None,
+            )
+            .expect("edit Main");
+        let edited = frame(&device, &d.source().with_settings(settings), &st);
+        assert!(
+            frame_diff(&deleted, &edited).0 > 2,
+            "keep_view {keep_view}: the edit of Main changes the frame"
+        );
+    }
+}
+
+/// Plan-fix (seed 296 graph 0 on Metal): the Show mask view of a Film-like node whose key is linked from another node. The chain's plan
+/// stops at the node's mask (only that node runs, for its key), and the render once built the node's picture from a `Stop::Picture` plan
+/// that runs the node its key comes from, which the chain has no parameters for: "the plan runs node 2, which the chain has no parameters for", on every frame of the view.
+#[test]
+fn the_mask_view_of_a_film_node_with_a_linked_key_is_made_on_the_device() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(gpu) = gpu() else { return };
+    let white = light("sony-ilce-7rm4", 4800.0);
+    let scene = Scene::new(640, 420, white, Layout::Patchwork, 0.5)
+        .noise(2e-4, 2e-6)
+        .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let device = renderer(Some(gpu), 256);
+    let cpu = renderer(None, 256);
+    let doc = json!({ "nodes": { "items": [ { "id": 1 },
+        { "id": 2, "kind": "corrector", "pos": [2.0, 0.0], "trim": { "exposure_ev": 0.8 },
+          "masks": { "invert": false, "items": [ { "kind": "radial", "mode": "add", "invert": false, "enabled": true, "opacity": 1, "center": [0.4, 0.5], "radii": [0.3, 0.2], "angle_deg": 0.0, "feather": 0.3 } ] } },
+        { "id": 3, "kind": "film", "pos": [3.0, 0.0], "film": { "exposure_ev": 0.3 },
+          "grain": { "amount": 100, "seed": 3 }, "halation": { "amount": 200, "size": 120 }, "strength": 85,
+          "masks": { "invert": false, "items": [ { "kind": "radial", "mode": "add", "invert": false, "enabled": true,
+              "opacity": 1, "center": [0.5, 0.5], "radii": [0.3, 0.2], "angle_deg": 0.0, "feather": 0.3 } ] } } ],
+        "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+            { "from": { "node": 2, "port": "key" }, "to": { "node": 3, "port": "key" } },
+            { "from": { "node": 3, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
+    let settings = serde_json::from_value::<DevelopSettings>(doc)
+        .expect("a document")
+        .validated()
+        .expect("a valid graph")
+        .0;
+    let src = d.source().with_settings(settings);
+    let st = view(false, false, Some((3, MaskStyle::Overlay, Some(0))));
+    let got = frame(&device, &src, &st);
+    assert!(
+        !got.report.device_refused && got.report.cpu_reason.is_none(),
+        "device refused {}, reason {:?}",
+        got.report.device_refused,
+        got.report.cpu_reason
+    );
+    let (worst, over) = frame_diff(&got, &frame(&cpu, &src, &st));
+    assert!(
+        worst <= 2 && over < got.rgba.len() / 100,
+        "{worst} codes, {over} over 1"
+    );
+}
