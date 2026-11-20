@@ -1,6 +1,7 @@
-# Diagnostic run for the branch `diag-masks` only (never merged). It repeats the `gpu_masks` test on GitHub's lavapipe
-# (Mesa 26 with LLVM 21) to catch the intermittent device zeros seen once in CI run 44627429956. Four identical jobs; each
-# loops the test binary and ends green so the counts and the failing outputs are uploaded.
+# Diagnostic run 2 for the branch `diag-masks` only (never merged). Round 1 showed the `gpu_masks` failures depend on the
+# machine (probably its CPU, because llvmpipe compiles shaders for the host). Eight jobs land on different CPUs; each prints
+# the CPU, builds the test binary at four commits, runs each three times, and runs HEAD three more times with
+# LP_NATIVE_VECTOR_WIDTH=128. Every job ends green so the summary line and the failing outputs are uploaded.
 name: Diag masks
 
 on:
@@ -17,76 +18,92 @@ env:
 jobs:
   diag:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        index: [0, 1, 2, 3]
+        index: [0, 1, 2, 3, 4, 5, 6, 7]
     env:
       YM_REQUIRE_GPU: "1"
       WGPU_BACKEND: vulkan
-      YELLOWMOON_DATA: ${{ github.workspace }}/data
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Mesa lavapipe (software Vulkan)
         run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools
-      - name: Show the adapter
-        run: vulkaninfo --summary || true
+      - name: CPU and adapter
+        run: |
+          mkdir -p diag-out
+          {
+            echo "## lscpu"
+            lscpu | grep -a -i -E "model name|vendor|cpu family|^model:|stepping|^CPU\(s\)"
+            echo "flags:"
+            lscpu | grep -a -i "^flags" | tr ' ' '\n' | grep -a -E "^(avx512.*|fma|f16c|avx2|avx|sse4_2)$" | tr '\n' ' '
+            echo
+            echo "## vulkaninfo"
+            vulkaninfo --summary 2>&1
+          } | tee diag-out/cpu.txt
+          cat diag-out/cpu.txt >> "$GITHUB_STEP_SUMMARY"
       - name: Rust toolchain from rust-toolchain.toml
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - name: Build the test binary once
-        run: |
-          cargo test --release -p ym-gpu --test gpu_masks --no-run 2>&1 | tee build.log
-          bin=$(sed -n 's/^ *Executable tests\/gpu_masks.rs (\(.*\))$/\1/p' build.log | tail -n 1)
-          test -x "$bin"
-          echo "BIN=$(realpath "$bin")" >> "$GITHUB_ENV"
-      - name: Loop the test
+      - name: Build gpu_masks at four commits
         run: |
           set +e
-          out="$PWD/diag-out"
-          mkdir -p "$out"
-          cd crates/ym-gpu
-          export CARGO_MANIFEST_DIR="$PWD"
-          # The default threads: no --test-threads flag.
-          run_default() {
-            local failed=0 i
-            for i in $(seq 1 40); do
-              if "$BIN" > "$out/default-$i.log" 2>&1; then rm -f "$out/default-$i.log"; else
-                failed=$((failed + 1)); echo "FAILED default run $i"
-                grep -a "DIAG\|panicked\|^test .* FAILED" "$out/default-$i.log" | cut -c1-600 | head -20
+          root="$PWD"
+          mkdir -p "$root/bins"
+          export CARGO_TARGET_DIR="$root/target"
+          build() {
+            local name="$1" rev="$2" dir
+            if [ "$rev" = HEAD ]; then dir="$root"; else
+              dir="$root/../wt-$name"
+              git worktree add --detach "$dir" "$rev" || return 1
+            fi
+            ( cd "$dir" && rustup toolchain install >/dev/null 2>&1
+              cargo test --release -p ym-gpu --test gpu_masks --no-run 2>&1 | tee "$root/bins/$name.build.log" ) || true
+            local bin
+            bin=$(sed -n 's/^ *Executable tests\/gpu_masks.rs (\(.*\))$/\1/p' "$root/bins/$name.build.log" | tail -n 1)
+            if [ -n "$bin" ] && [ -x "$dir/$bin" ]; then cp "$dir/$bin" "$root/bins/$name"; fi
+            echo "$name $rev dir=$dir bin=$bin"
+          }
+          build HEAD HEAD
+          build 0d990cd2 0d990cd2
+          build cc161946 cc161946
+          build 5cebd5ca 5cebd5ca
+          ls -l "$root/bins"
+      - name: Run the binaries
+        run: |
+          set +e
+          root="$PWD"
+          out="$root/diag-out"
+          # Run $1 (name) 3 times; $2 is a label, the rest are env assignments. Prints "failed/3".
+          runs() {
+            local name="$1" label="$2" failed=0 i dir; shift 2
+            if [ "$name" = HEAD ]; then dir="$root"; else dir="$root/../wt-$name"; fi
+            if [ ! -x "$root/bins/$name" ]; then echo "nobuild"; return; fi
+            for i in 1 2 3; do
+              if ( cd "$dir/crates/ym-gpu" && env CARGO_MANIFEST_DIR="$dir/crates/ym-gpu" YELLOWMOON_DATA="$dir/data" "$@" "$root/bins/$name" ) > "$out/$label-$i.log" 2>&1; then
+                rm -f "$out/$label-$i.log"
+              else
+                failed=$((failed + 1))
+                grep -a "^test .* FAILED" "$out/$label-$i.log" | sed "s/^/  [$label run $i] /" >> "$out/failing-tests.txt"
               fi
             done
-            DEF=$failed
+            echo "$failed/3"
           }
-          run_debug() {
-            local failed=0 i
-            for i in $(seq 1 20); do
-              if YM_GPU_LOG=debug "$BIN" > "$out/debug-$i.log" 2>&1; then rm -f "$out/debug-$i.log"; else
-                failed=$((failed + 1)); echo "FAILED debug run $i"
-                grep -a "DIAG\|panicked\|^test .* FAILED" "$out/debug-$i.log" | cut -c1-600 | head -20
-              fi
-            done
-            DBG=$failed
-          }
-          run_repeat() {
-            local failed=0 i
-            for i in $(seq 1 5); do
-              if YM_DIAG_REPS=100 "$BIN" > "$out/repeat-$i.log" 2>&1; then rm -f "$out/repeat-$i.log"; else
-                failed=$((failed + 1)); echo "FAILED repeat run $i"
-                grep -a "DIAG\|panicked\|REPEAT MISMATCH\|^test .* FAILED" "$out/repeat-$i.log" | cut -c1-600 | head -20
-              fi
-            done
-            REP=$failed
-          }
-          run_default
-          run_debug
-          run_repeat
-          line="DIAG failures: default $DEF/40, debug $DBG/20, repeat $REP/5"
+          touch "$out/failing-tests.txt"
+          r_head=$(runs HEAD head)
+          r_0d=$(runs 0d990cd2 0d990cd2)
+          r_cc=$(runs cc161946 cc161946)
+          r_5c=$(runs 5cebd5ca 5cebd5ca)
+          r_vw=$(runs HEAD head-vw128 LP_NATIVE_VECTOR_WIDTH=128)
+          cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -n 1)
+          line="CPU $cpu | HEAD $r_head | 0d990cd2 $r_0d | cc161946 $r_cc | 5cebd5ca $r_5c | HEAD vw128 $r_vw"
           echo "$line"
-          echo "$line" > "$out/summary.txt"
-          vulkaninfo --summary 2>&1 | grep -a -i "driverInfo\|deviceName\|apiVersion" >> "$out/summary.txt"
+          { echo "$line"; echo "failing tests:"; cat "$out/failing-tests.txt"; } > "$out/summary.txt"
           echo "### ${{ matrix.index }}: $line" >> "$GITHUB_STEP_SUMMARY"
+          grep -a -h "DIAG" "$out"/head-*.log 2>/dev/null | cut -c1-600 | head -40
           exit 0
       - uses: actions/upload-artifact@v4
         if: always()
