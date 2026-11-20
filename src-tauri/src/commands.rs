@@ -1239,6 +1239,7 @@ mod tests {
                 viewport_info,
                 viewport_set_rect,
                 viewport_map_points,
+                sample_chroma,
                 mask_kinds,
                 mask_find,
                 sample_depth,
@@ -1303,6 +1304,86 @@ mod tests {
             },
         )
         .map(|body| body.deserialize::<Value>().expect("json"))
+    }
+
+    /// CU-fix: Pick colour of a Colour Uniform node over the real command wire (the JSON the page sends: `radiusPx`, `tap`, `at` as
+    /// `src/api.ts` names them). The answer carries `tone`, and the first pick's patch (`graphOps.pickUniform`) sets the target.
+    #[test]
+    fn pick_colour_of_a_colour_uniform_node_works_over_the_command_wire() {
+        let h = Harness::new();
+        let (_app, window) = app_with(AppState::ready(h.api.clone()));
+        crate::testing::write_arw(h.photos.path(), "DSC00001.ARW", 1);
+        let opened = call(
+            &window,
+            "open_paths",
+            json!({ "paths": [h.photos.path().to_string_lossy()] }),
+        )
+        .expect("open_paths");
+        let id = opened["photos"][0]["id"].as_u64().expect("an id");
+        wait_until("development", || {
+            call(&window, "session_state", json!({}))
+                .is_ok_and(|s| s["photos"][0]["status"] == json!({ "kind": "ready" }))
+        });
+        h.rect(300.0, 300.0);
+        assert!(
+            h.api
+                .viewport()
+                .wait_idle(std::time::Duration::from_secs(30))
+        );
+        let link = |from: Value, to: Value| json!({ "from": from, "to": to });
+        let port = |node: Value| json!({ "node": node, "port": "picture" });
+        call(
+            &window,
+            "update_settings",
+            json!({ "photoId": id, "patch": {
+                "nodes": { "2": { "kind": "color_uniform", "pos": [2.0, 0.0], "name": "Colour Uniform" } },
+                "links": [ link(port(json!("input")), port(json!(1))), link(port(json!(1)), port(json!(2))),
+                           link(port(json!(2)), port(json!("output"))) ] } }),
+        )
+        .map(|r| {
+            // The node as `src/state/graphOps.ts` `pickUniform` reads it: its kind, no target and Compress 0, 0, 0.
+            let node = r["settings"]["nodes"]["items"]
+                .as_array()
+                .and_then(|a| a.iter().find(|n| n["id"] == json!(2)))
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(node["kind"], json!("color_uniform"));
+            assert!(node["target"].is_null() && node["masks"]["items"] == json!([]));
+            assert_eq!(node["compress"], json!({ "hue": 0.0, "saturation": 0.0, "lightness": 0.0 }));
+        })
+        .expect("add the node");
+        let sample = call(
+            &window,
+            "sample_chroma",
+            json!({ "x": 150.0, "y": 150.0, "at": 2, "tap": "node_input", "radiusPx": 3 }),
+        )
+        .expect("sample_chroma");
+        let number = |k: &str| sample[k].as_f64();
+        assert!(
+            number("a").is_some() && number("b").is_some() && number("tone").is_some(),
+            "{sample}"
+        );
+        // A whole number for the radius, as JavaScript sends 3, and the page's first-pick patch.
+        let (a, b) = (number("a").unwrap_or(0.0), number("b").unwrap_or(0.0));
+        let reply = call(
+            &window,
+            "update_settings",
+            json!({ "photoId": id, "patch": { "nodes": { "2": {
+                "target": { "hue_deg": (b.atan2(a).to_degrees() + 360.0) % 360.0, "saturation": (100.0 * a.hypot(b)).clamp(2.0, 50.0), "lightness_ev": 0 },
+                "compress": { "hue": 50, "saturation": 50, "lightness": 0 },
+                "masks": { "items": [ { "mode": "add", "invert": false, "enabled": true, "opacity": 1, "kind": "color_range",
+                    "center": [a, b], "width": 0.05, "softness": 0.5 } ] } } } } }),
+        )
+        .expect("the pick patch");
+        let node = &reply["settings"]["nodes"]["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|n| n["id"] == json!(2))
+            .expect("node 2")
+            .clone();
+        assert!(node["target"].is_object(), "{node}");
+        assert_eq!(node["masks"]["items"].as_array().map(Vec::len), Some(1));
     }
 
     #[test]
