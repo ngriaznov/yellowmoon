@@ -6646,3 +6646,95 @@ fn closing_the_session_ends_the_album() {
         h.events.events()[n..].contains(&AppEvent::AlbumChanged)
     });
 }
+
+/// CU-fix: the finished picture the viewport shows, as PNG bytes, once it has gone idle.
+fn settled_frame(h: &Harness) -> Vec<u8> {
+    assert!(h.api.viewport().wait_idle(WAIT));
+    let (_, png) = h.frames.latest().expect("a frame");
+    (*png).clone()
+}
+
+/// CU-fix: a node added by a patch and then deleted by the patch the page sends (`{ remove, links }`) leaves the picture as it was.
+fn removing_a_node_restores_the_picture(node: serde_json::Value, gpu: bool) {
+    let h = if gpu {
+        Harness::with_gpu()
+    } else {
+        Harness::new()
+    };
+    h.open(1);
+    let state = h.develop();
+    let id = state.photos[0].id;
+    h.rect(300.0, 300.0);
+    h.frame_of_size(300, 300);
+    let a = settled_frame(&h);
+    let add: SettingsPatch = serde_json::from_value(json!({
+        "nodes": { "2": node },
+        "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ]
+    }))
+    .expect("patch");
+    h.api.update_settings(id, &add).expect("add the node");
+    let b = settled_frame(&h);
+    assert_ne!(a, b, "the node changes the picture");
+    let remove: SettingsPatch = serde_json::from_value(json!({
+        "remove": [2],
+        "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ]
+    }))
+    .expect("patch");
+    let after = h.api.update_settings(id, &remove).expect("remove the node");
+    assert_eq!(after.settings.nodes.items.len(), 3, "Input, Main, Output");
+    assert_eq!(
+        h.api
+            .get_settings(id)
+            .expect("settings")
+            .settings
+            .nodes
+            .items
+            .len(),
+        3
+    );
+    let c = settled_frame(&h);
+    assert_eq!(a, c, "the picture is the one without the node");
+}
+
+#[test]
+fn removing_a_colour_uniform_node_restores_the_picture() {
+    removing_a_node_restores_the_picture(
+        json!({ "kind": "color_uniform",
+        "target": { "hue_deg": 30, "saturation": 30, "lightness_ev": 0 },
+        "compress": { "hue": 50, "saturation": 50, "lightness": 0 },
+        "masks": { "items": [ { "kind": "color_range", "mode": "add", "invert": false, "enabled": true, "opacity": 1, "center": [0.0, 0.0], "width": 0.5, "softness": 0.5 } ] } }),
+        false,
+    );
+}
+
+#[test]
+fn removing_a_colour_uniform_node_restores_the_picture_on_the_device() {
+    removing_a_node_restores_the_picture(
+        json!({ "kind": "color_uniform",
+        "target": { "hue_deg": 30, "saturation": 30, "lightness_ev": 0 },
+        "compress": { "hue": 50, "saturation": 50, "lightness": 0 },
+        "masks": { "items": [ { "kind": "color_range", "mode": "add", "invert": false, "enabled": true, "opacity": 1, "center": [0.0, 0.0], "width": 0.5, "softness": 0.5 } ] } }),
+        true,
+    );
+}
+
+#[test]
+fn removing_a_blur_node_restores_the_picture() {
+    removing_a_node_restores_the_picture(
+        json!({ "kind": "blur", "type": "soft", "soft": { "radius": 60 } }),
+        false,
+    );
+}
+
+#[test]
+fn removing_a_corrector_restores_the_picture() {
+    removing_a_node_restores_the_picture(
+        json!({ "kind": "corrector", "trim": { "exposure_ev": 1.0 } }),
+        false,
+    );
+}

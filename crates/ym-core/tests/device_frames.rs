@@ -707,3 +707,88 @@ fn without_a_device_a_request_for_a_device_frame_gets_the_host_frame() {
     assert!(host.rgba == device.rgba);
     assert_eq!(device.bytes(), 4 * 192 * 128);
 }
+
+/// CU-fix: a node taken out of the graph again leaves the frame the graph had before it, whether the frame is read back or kept on the
+/// device, with the caches on and one renderer seeing all three requests (as the viewport's worker does).
+#[test]
+fn a_frame_after_a_node_was_removed_is_the_frame_before_it_was_added() {
+    use ym_core::settings::SettingsPatch;
+    let Some(gpu) = gpu() else { return };
+    let photo = picture(900, 600);
+    let src = photo.source();
+    let patch =
+        |json: serde_json::Value| -> SettingsPatch { serde_json::from_value(json).expect("patch") };
+    for (name, node) in [
+        (
+            "Colour Uniform",
+            serde_json::json!({ "kind": "color_uniform",
+                "target": { "hue_deg": 30, "saturation": 30, "lightness_ev": 0 },
+                "compress": { "hue": 50, "saturation": 50, "lightness": 0 },
+        "masks": { "items": [ { "kind": "color_range", "center": [0.0, 0.0], "width": 0.5, "softness": 0.5 } ] } }),
+        ),
+        (
+            "Blur",
+            serde_json::json!({ "kind": "blur", "type": "soft", "soft": { "radius": 60 } }),
+        ),
+        (
+            "corrector",
+            serde_json::json!({ "kind": "corrector", "trim": { "exposure_ev": 1.0 } }),
+        ),
+    ] {
+        let with = {
+            let mut s = src.settings.clone();
+            s.apply_patch(
+                &patch(serde_json::json!({
+                    "nodes": { "2": node },
+                    "links": [
+                        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+                        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+                        { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ]
+                })),
+                None,
+            )
+            .expect("add the node");
+            src.with_settings(s.clone())
+        };
+        let without = {
+            let mut s = with.settings.clone();
+            s.apply_patch(
+                &patch(serde_json::json!({
+                    "remove": [2],
+                    "links": [
+                        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+                        { "from": { "node": 1, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ]
+                })),
+                None,
+            )
+            .expect("remove the node");
+            src.with_settings(s)
+        };
+        let image = renderer(Some(&gpu), None)
+            .final_size(&src, &CancelToken::new())
+            .expect("size");
+        for (output, st) in [
+            (FrameOutput::Host, cell(576.0, 384.0, 1.0)),
+            (FrameOutput::Device, cell(576.0, 384.0, 1.0)),
+            (FrameOutput::Host, at(100.0, 400.0, 300.0, image)),
+            (FrameOutput::Device, at(100.0, 400.0, 300.0, image)),
+        ] {
+            let r = renderer(Some(&gpu), None);
+            let bytes = |f: &RenderedFrame| -> Vec<u8> {
+                if f.on_device.is_some() {
+                    f.host_rgba().expect("read back").to_vec()
+                } else {
+                    f.rgba.clone()
+                }
+            };
+            let a = bytes(&cached(&r, &src, &st, output));
+            let b = bytes(&cached(&r, &with, &st, output));
+            let c = bytes(&cached(&r, &without, &st, output));
+            assert!(a != b, "{name} {output:?}: the node changes the frame");
+            assert!(
+                a == c,
+                "{name} {output:?}: the frame after the node was removed is the frame without it"
+            );
+        }
+    }
+}

@@ -152,6 +152,20 @@ impl Harness {
         )
     }
 
+    /// An app whose renders run on the device (Mesa lavapipe on Linux, Metal on a Mac) when there is one; the others run on the CPU.
+    pub(crate) fn with_gpu() -> Self {
+        Self::build_with_gpu(
+            WatchConfig::default(),
+            ProviderAdvisors::default(),
+            None,
+            None,
+            None,
+            FrameStore::new(),
+            None,
+            true,
+        )
+    }
+
     fn with_files(
         watch: WatchConfig,
         advisors: ProviderAdvisors,
@@ -186,6 +200,29 @@ impl Harness {
         frames: FrameStore,
         pressure: Option<ym_core::memory::PressureSource>,
     ) -> Self {
+        Self::build_with_gpu(
+            watch,
+            advisors,
+            preferences,
+            vision,
+            depth,
+            frames,
+            pressure,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_with_gpu(
+        watch: WatchConfig,
+        advisors: ProviderAdvisors,
+        preferences: Option<&str>,
+        vision: Option<Arc<dyn ym_core::vision::VisionProvider>>,
+        depth: Option<Arc<ym_core::pipeline::DepthModel>>,
+        frames: FrameStore,
+        pressure: Option<ym_core::memory::PressureSource>,
+        gpu: bool,
+    ) -> Self {
         let photos = tempfile::tempdir().expect("photos");
         let app_root = tempfile::tempdir().expect("app root");
         if let Some(text) = preferences {
@@ -205,7 +242,7 @@ impl Harness {
             data_root: ym_core::data_dir::find_data_dir().expect("the data folder"),
             app_root: app_root.path().to_path_buf(),
             home: Some(home.path().to_path_buf()),
-            gpu: false,
+            gpu,
             thumbnails: true,
             decode_threads: Some(2),
             watch,
