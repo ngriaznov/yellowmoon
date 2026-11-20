@@ -217,4 +217,27 @@ describe("Show depth (docs/23 §4.8)", () => {
     expect(store.getState().showDepth).toBeNull();
     expect(views(sent)).toEqual([{ node: 1, style: "mask_only", row: 0, depth: true }, null]);
   });
+
+  it("ends the view of a node the page deletes, before the patch is sent (the core is not left with a view of a node it does not have)", async () => {
+    const { api, store, sent } = await opened();
+    const picture = (from: number | "input", to: number | "output") => ({ from: { node: from, port: "picture" as const }, to: { node: to, port: "picture" as const } });
+    await store.update({ nodes: { "2": { kind: "corrector" } }, links: [picture("input", 1), picture(1, 2), picture(2, "output")] });
+    store.setMaskNode(2);
+    store.setMaskView({ on: true });
+    expect(views(sent)).toEqual([{ node: 2, style: "overlay" }]);
+    const patches = vi.spyOn(api, "updateSettings");
+    const order: string[] = [];
+    sent.mockImplementation(async () => void order.push("mask view"));
+    patches.mockImplementation(async () => {
+      order.push("patch");
+      return store.currentSettings() as never;
+    });
+    await store.update({ remove: [2], links: [picture("input", 1), picture(1, "output")] });
+    expect(views(sent)).toEqual([{ node: 2, style: "overlay" }, null]);
+    expect(order).toEqual(["mask view", "patch"]);
+    expect(store.getState().maskShown).toBeNull();
+    // The page's own effect says the same afterwards and sends nothing more.
+    store.setMaskNode(null);
+    expect(views(sent)).toHaveLength(2);
+  });
 });

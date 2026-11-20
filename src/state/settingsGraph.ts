@@ -592,7 +592,7 @@ function foldNode(first: NodePatch, second: NodePatch): NodePatch {
  * Two patches in a row as one: what the store sends when a drag's patch is still waiting and the next one arrives. The result changes
  * the document as the two do in turn. Two partials of the same node merge field by field (a later field wins whole; `grade` and `trim`
  * merge one level further, so a contrast and a brightness dragged in turn are both kept), a patch that names more nodes keeps them all,
- * `remove` is the union, and `links` are the later ones.
+ * `remove` is the union (and takes the node patches of the nodes it removes out), and `links` are the later ones.
  */
 export function foldPatches(first: SettingsPatch, second: SettingsPatch): SettingsPatch {
   const out: SettingsPatch = {};
@@ -605,6 +605,9 @@ export function foldPatches(first: SettingsPatch, second: SettingsPatch): Settin
     out.nodes = nodes;
   }
   if (first.remove || second.remove) out.remove = [...new Set([...(first.remove ?? []), ...(second.remove ?? [])])];
+  // A node that goes has nothing left to change: the core refuses a patch that names a node it is deleting ("names node 2, which this photo does not have"),
+  // and with it the whole patch, so a drag's waiting patch for the node is dropped from the fold.
+  if (out.nodes && out.remove) for (const id of out.remove) delete out.nodes[String(id)];
   const links = second.links ?? first.links;
   if (links !== undefined) out.links = links;
   return out;

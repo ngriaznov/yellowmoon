@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Removing a node no longer stops the photo from updating.** A view of a deleted node's mask is now ended with the node, in the page before the patch is sent and in the app when the patch lands, so that the viewport never keeps a mask view for a node the photo does not have; and a slider drag that was still waiting for a node is dropped when the same send deletes the node, where the core would have refused the whole delete.
+
 ## [0.2.4-beta.3] - 2026-11-20
 
 A third pre-release (a beta) for testing. It adds two nodes, **Colour Uniform** and **Blur**, and re-derives the constants of the raw processing. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.14.0 (beta 2 had 0.12.2), and most photos look slightly different because of the new constants. A settings file, preset or album that uses a Colour Uniform or Blur node needs this version: an older build refuses it.

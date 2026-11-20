@@ -1785,6 +1785,28 @@ impl Viewport {
         Ok(())
     }
 
+    /// Nodes a patch deleted: a mask view that names one of them goes (the one the worker holds and one still waiting to be applied).
+    /// The page ends the view when it deletes the node it shows; this is the shell's own guard, so that a view the page did not end
+    /// (a command that failed, one that came late, another front end) is never kept for a node the photo no longer has. Nothing is
+    /// drawn here: the caller invalidates the photo.
+    pub fn forget_nodes(&self, removed: &[u32]) {
+        if removed.is_empty() {
+            return;
+        }
+        let gone = |view: &CoreMaskView| removed.contains(&view.node);
+        let mut st = lock(&self.shared.state);
+        if st.vp.mask_view.as_ref().is_some_and(gone) {
+            st.vp.mask_view = None;
+        }
+        for op in &mut st.ops {
+            if let Op::MaskView(view) = op
+                && view.as_ref().is_some_and(gone)
+            {
+                *view = None;
+            }
+        }
+    }
+
     /// `set_before`.
     pub fn set_before(&self, before: bool) {
         let mut st = lock(&self.shared.state);

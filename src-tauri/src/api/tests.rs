@@ -6738,3 +6738,254 @@ fn removing_a_corrector_restores_the_picture() {
         false,
     );
 }
+
+/// CU-fix: what the page does around a Colour Uniform node, in the order it does it (the owner's report of 0.2.4-beta.3): add the node,
+/// Pick colour (a chroma reading at the node's input, a patch with the target, the amounts and a Colour range row), a slider, then Delete,
+/// then an edit of Main. Every step asks for the node thumbnails and the histogram as the page does, and the picture after the last edit
+/// must differ from the one before it.
+///
+/// `mask_view` is what the page told the viewport about node 2 before the delete: `None` nothing, `Some(true)` a mask view of node 2 that the page
+/// clears after the delete patch, `Some(false)` one that is never cleared (the page's `maskSent` thinks the core has none).
+fn colour_uniform_pick_edit_delete_edit(gpu: bool, mask_view: Option<bool>) {
+    use ym_core::settings::NodeId as Core;
+    let h = if gpu {
+        Harness::with_gpu()
+    } else {
+        Harness::new()
+    };
+    h.open(1);
+    let state = h.develop();
+    let id = state.photos[0].id;
+    h.rect(300.0, 300.0);
+    h.frame_of_size(300, 300);
+    let after_each = |h: &Harness| {
+        h.api.node_thumbnails(id);
+        h.api.histogram(id, None).expect("histogram");
+        h.api.sample_pixel(150.0, 150.0).expect("pixel");
+        assert!(h.api.node_thumbnailer().wait_idle(WAIT));
+        settled_frame(h)
+    };
+    let patch =
+        |v: serde_json::Value| -> SettingsPatch { serde_json::from_value(v).expect("patch") };
+    let link = |from: serde_json::Value, to: serde_json::Value| json!({ "from": { "node": from, "port": "picture" }, "to": { "node": to, "port": "picture" } });
+    let a = after_each(&h);
+    h.api
+        .update_settings(
+            id,
+            &patch(json!({
+                "nodes": { "2": { "kind": "color_uniform", "name": "Uniform", "pos": [1.0, 0.0], "target": null,
+                    "compress": { "hue": 0, "saturation": 0, "lightness": 0 }, "masks": { "invert": false, "items": [] } } },
+                "links": [link(json!("input"), json!(1)), link(json!(1), json!(2)), link(json!(2), json!("output"))],
+            })),
+        )
+        .expect("add");
+    after_each(&h);
+    // Pick colour: a reading at the node's input, over a 7 x 7 square, then the one patch.
+    let sample = h
+        .api
+        .sample_chroma_radius(
+            150.0,
+            100.0,
+            wire_node(Core::Corrector(2)),
+            Some(ChromaTap::NodeInput),
+            3.0,
+        )
+        .expect("chroma")
+        .expect("a colour");
+    assert!(sample.tone.0.is_finite());
+    h.api
+        .update_settings(
+            id,
+            &patch(json!({ "nodes": { "2": {
+                "target": { "hue_deg": 30.0, "saturation": 30.0, "lightness_ev": 0.0 },
+                "compress": { "hue": 50, "saturation": 50, "lightness": 0 },
+                "masks": { "items": [ { "kind": "color_range", "mode": "add", "invert": false, "enabled": true, "opacity": 1,
+                    "center": [0.0, 0.0], "width": 0.5, "softness": 0.5 } ] } } } })),
+        )
+        .expect("pick");
+    after_each(&h);
+    let shown = MaskView {
+        node: 2,
+        style: MaskStyle::Overlay,
+        row: Some(0),
+        depth: false,
+        face: None,
+    };
+    if mask_view.is_some() {
+        h.api
+            .viewport_set_mode(&ViewportMode::Fit, Some(&shown))
+            .expect("mask view");
+    }
+    h.api
+        .update_settings(
+            id,
+            &patch(json!({ "nodes": { "2": { "compress": { "hue": 51 } } } })),
+        )
+        .expect("slider");
+    let before_delete = after_each(&h);
+    h.api
+        .update_settings(
+            id,
+            &patch(json!({ "remove": [2], "links": [link(json!("input"), json!(1)), link(json!(1), json!("output"))] })),
+        )
+        .expect("delete");
+    if mask_view == Some(false) {
+        // The page never cleared it: the shell drops a view of a node the patch deleted.
+        let (_, held) = h.api.viewport().snapshot_synced();
+        assert_eq!(held.mask_view, None, "the mask view of node 2 went with it");
+    }
+    if mask_view == Some(true) {
+        h.api
+            .viewport_set_mode(&ViewportMode::Fit, None)
+            .expect("mask view off");
+    }
+    let deleted = after_each(&h);
+    assert_eq!(a, deleted, "the picture is the one without the node");
+    assert_ne!(before_delete, deleted);
+    h.api
+        .update_settings(
+            id,
+            &patch(json!({ "nodes": { "1": { "trim": { "exposure_ev": 1.0 } } } })),
+        )
+        .expect("main edit");
+    let edited = after_each(&h);
+    assert_ne!(
+        deleted, edited,
+        "an edit of Main after the delete changes the picture"
+    );
+}
+
+#[test]
+fn a_colour_uniform_node_picked_edited_and_deleted_leaves_the_preview_alive() {
+    colour_uniform_pick_edit_delete_edit(false, None);
+}
+
+#[test]
+fn a_mask_view_of_a_deleted_node_is_cleared_with_it() {
+    colour_uniform_pick_edit_delete_edit(false, Some(true));
+}
+
+#[test]
+fn a_mask_view_of_a_deleted_node_never_cleared_by_the_page_does_not_stop_the_preview() {
+    colour_uniform_pick_edit_delete_edit(false, Some(false));
+}
+
+#[test]
+fn a_colour_uniform_node_picked_edited_and_deleted_leaves_the_preview_alive_on_the_device() {
+    colour_uniform_pick_edit_delete_edit(true, None);
+}
+
+#[test]
+fn a_mask_view_of_a_deleted_node_never_cleared_by_the_page_does_not_stop_the_preview_on_the_device()
+{
+    colour_uniform_pick_edit_delete_edit(true, Some(false));
+}
+
+/// CU-fix: the same steps as the page takes them, with nothing waited for between them (the page does not wait for a frame, the thumbnails or
+/// the histogram), over and over. The preview must still draw an edit of Main at the end.
+fn colour_uniform_churn(gpu: bool, rounds: usize) {
+    use ym_core::settings::NodeId as Core;
+    let h = if gpu {
+        Harness::with_gpu()
+    } else {
+        Harness::new()
+    };
+    h.open(1);
+    let state = h.develop();
+    let id = state.photos[0].id;
+    h.rect(300.0, 300.0);
+    h.frame_of_size(300, 300);
+    let patch =
+        |v: serde_json::Value| -> SettingsPatch { serde_json::from_value(v).expect("patch") };
+    let link = |from: serde_json::Value, to: serde_json::Value| json!({ "from": { "node": from, "port": "picture" }, "to": { "node": to, "port": "picture" } });
+    let ask = |h: &Harness| {
+        h.api.node_thumbnails(id);
+        let _ = h.api.histogram(id, None);
+        let _ = h.api.sample_pixel(150.0, 150.0);
+    };
+    let shown = MaskView {
+        node: 2,
+        style: MaskStyle::Overlay,
+        row: Some(0),
+        depth: false,
+        face: None,
+    };
+    for round in 0..rounds {
+        h.api
+            .update_settings(
+                id,
+                &patch(json!({
+                    "nodes": { "2": { "kind": "color_uniform", "name": "Uniform", "pos": [1.0, 0.0], "target": null,
+                        "compress": { "hue": 0, "saturation": 0, "lightness": 0 }, "masks": { "invert": false, "items": [] } } },
+                    "links": [link(json!("input"), json!(1)), link(json!(1), json!(2)), link(json!(2), json!("output"))],
+                })),
+            )
+            .expect("add");
+        ask(&h);
+        let _ = h.api.sample_chroma_radius(
+            150.0,
+            100.0,
+            wire_node(Core::Corrector(2)),
+            Some(ChromaTap::NodeInput),
+            3.0,
+        );
+        h.api
+            .update_settings(
+                id,
+                &patch(json!({ "nodes": { "2": {
+                    "target": { "hue_deg": 30.0, "saturation": 30.0, "lightness_ev": 0.0 },
+                    "compress": { "hue": 50, "saturation": 50, "lightness": 0 },
+                    "masks": { "items": [ { "kind": "color_range", "mode": "add", "invert": false, "enabled": true, "opacity": 1,
+                        "center": [0.0, 0.0], "width": 0.5, "softness": 0.5 } ] } } } })),
+            )
+            .expect("pick");
+        ask(&h);
+        if round % 2 == 0 {
+            h.api
+                .viewport_set_mode(&ViewportMode::Fit, Some(&shown))
+                .expect("mask view");
+        }
+        h.api
+            .update_settings(
+                id,
+                &patch(json!({ "nodes": { "2": { "compress": { "hue": 51 } } } })),
+            )
+            .expect("slider");
+        ask(&h);
+        h.api
+            .update_settings(
+                id,
+                &patch(json!({ "remove": [2], "links": [link(json!("input"), json!(1)), link(json!(1), json!("output"))] })),
+            )
+            .expect("delete");
+        ask(&h);
+        let exposure = if round % 2 == 0 { 0.5 } else { -0.5 };
+        h.api
+            .update_settings(
+                id,
+                &patch(json!({ "nodes": { "1": { "trim": { "exposure_ev": exposure } } } })),
+            )
+            .expect("main edit");
+        ask(&h);
+    }
+    assert!(h.api.viewport().wait_idle(WAIT));
+    let last = settled_frame(&h);
+    h.api
+        .update_settings(
+            id,
+            &patch(json!({ "nodes": { "1": { "trim": { "exposure_ev": 0.0 } } } })),
+        )
+        .expect("last edit");
+    let after = settled_frame(&h);
+    assert_ne!(last, after, "the last edit changes the picture");
+}
+
+#[test]
+fn churn_around_a_colour_uniform_node_leaves_the_preview_alive() {
+    colour_uniform_churn(false, 25);
+}
+
+#[test]
+fn churn_around_a_colour_uniform_node_leaves_the_preview_alive_on_the_device() {
+    colour_uniform_churn(true, 25);
+}
