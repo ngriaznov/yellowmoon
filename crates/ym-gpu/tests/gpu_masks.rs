@@ -346,8 +346,43 @@ fn logc4_look() -> Option<LookSetting> {
 /// The device's pictures of a chain over a window of a grid: the sampler writes the colour and, when the chain's
 /// shapes read them, the places in the photo; the colour pass colours it. Planar f32 of the stage (three planes
 /// and the letterbox mask).
+/// The device's pictures of a chain (see `gpu_stage_once`). With `YM_DIAG_REPS=N` (branch `diag-masks` only) each
+/// render is repeated N times on the same device and every repeat must equal the first bit for bit; unset, it is one
+/// render, as before.
 #[allow(clippy::too_many_arguments)] // a fixture: every piece of the job
 fn gpu_stage(
+    dev: &TestGpu,
+    chain: &ColorChain,
+    img: &RgbImage,
+    grid: &SamplerGrid,
+    off: (usize, usize),
+    size: (usize, usize),
+    stop: Stop,
+    node_stop: Option<NodeStop>,
+) -> Vec<f32> {
+    let reps: usize = std::env::var("YM_DIAG_REPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    let first = gpu_stage_once(dev, chain, img, grid, off, size, stop, node_stop);
+    for r in 1..reps {
+        let again = gpu_stage_once(dev, chain, img, grid, off, size, stop, node_stop);
+        let differing = first
+            .iter()
+            .zip(&again)
+            .filter(|(a, b)| a.to_bits() != b.to_bits() && !(a.is_nan() && b.is_nan()))
+            .count();
+        assert!(
+            differing == 0,
+            "REPEAT MISMATCH at repetition {r}, stop {stop:?}, node stop {node_stop:?}: {differing} of {} values differ",
+            first.len()
+        );
+    }
+    first
+}
+
+#[allow(clippy::too_many_arguments)] // a fixture: every piece of the job
+fn gpu_stage_once(
     dev: &TestGpu,
     chain: &ColorChain,
     img: &RgbImage,
@@ -534,6 +569,12 @@ fn parity(
     );
     let mut w = Worst::default();
     let n = r.n;
+    // Diagnostics (branch `diag-masks` only): the CPU's values per plane, for the report of a failed gate.
+    let mut want = [
+        vec![f64::NAN; 3 * n],
+        vec![f64::NAN; 3 * n],
+        vec![f64::NAN; 3 * n],
+    ];
     for i in 0..n {
         if r.outside[i] {
             continue;
@@ -542,6 +583,9 @@ fn parity(
         let m = mask_chain.apply_logc4_pixel_at(r.cam[i], r.at[i]).0[0];
         let unmasked = plain.apply_logc4_pixel_at(r.cam[i], r.at[i]).0;
         for ch in 0..3 {
+            want[0][ch * n + i] = t.c10_logc4.0[ch];
+            want[1][ch * n + i] = t.c13_encoded[ch];
+            want[2][ch * n + i] = m;
             let d10 = (f64::from(g10[ch * n + i]) - t.c10_logc4.0[ch]).abs();
             if d10 > w.c10 {
                 w.c10_at = Some(WorstPixel {
@@ -561,7 +605,130 @@ fn parity(
         }
         w.partial += usize::from(m > 1e-3 && m < 1.0 - 1e-3);
     }
+    let what = format!("mask_of {mask_of}, size {}x{}, off {off:?}", size.0, size.1);
+    if w.c10 > LOGC4_GATE {
+        diagnose(
+            "C10",
+            "Stop::C10",
+            &what,
+            &g10,
+            &want[0],
+            LOGC4_GATE,
+            &r.outside,
+            size,
+        );
+    }
+    if w.c13 > CODE10 {
+        diagnose(
+            "C13",
+            "Stop::C13",
+            &what,
+            &g13,
+            &want[1],
+            CODE10,
+            &r.outside,
+            size,
+        );
+    }
+    if w.mask > MASK_GATE {
+        diagnose(
+            "m",
+            "Stop::C13 + NodeStop::Mask",
+            &what,
+            &gm,
+            &want[2],
+            MASK_GATE,
+            &r.outside,
+            size,
+        );
+    }
     w
+}
+
+/// Diagnostics for a failed gate (branch `diag-masks` only, no effect on the decision): over the whole frame, how
+/// many pixels differ by more than the gate (or are NaN), how many of the device's values there are exactly 0, NaN
+/// or something else, where they sit (bounding box, 8x8 and 16x16 blocks, rows, first and last index).
+#[allow(clippy::too_many_arguments)]
+fn diagnose(
+    plane: &str,
+    stage: &str,
+    what: &str,
+    got: &[f32],
+    want: &[f64],
+    gate: f64,
+    outside: &[bool],
+    (w, h): (usize, usize),
+) {
+    let n = w * h;
+    let mut bad = vec![false; n];
+    let (mut zero, mut nan, mut other, mut samples) = (0usize, 0usize, 0usize, 0usize);
+    for i in 0..n {
+        if outside[i] {
+            continue;
+        }
+        for ch in 0..3 {
+            let g = got[ch * n + i];
+            let d = (f64::from(g) - want[ch * n + i]).abs();
+            if d.is_nan() || d > gate {
+                bad[i] = true;
+                samples += 1;
+                if g.is_nan() {
+                    nan += 1;
+                } else if g == 0.0 {
+                    zero += 1;
+                } else {
+                    other += 1;
+                }
+            }
+        }
+    }
+    let idx: Vec<usize> = (0..n).filter(|&i| bad[i]).collect();
+    let (Some(&first), Some(&last)) = (idx.first(), idx.last()) else {
+        eprintln!("DIAG {plane} [{stage}] ({what}): no pixel differs by more than {gate:.1e}");
+        return;
+    };
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+    for &i in &idx {
+        let (x, y) = (i % w, i / w);
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x);
+        y1 = y1.max(y);
+    }
+    let blocks = |b: usize| {
+        let (bw, bh) = (w.div_ceil(b), h.div_ceil(b));
+        let mut count = vec![0usize; bw * bh];
+        let mut size = vec![0usize; bw * bh];
+        for y in 0..h {
+            for x in 0..w {
+                let k = (y / b) * bw + x / b;
+                size[k] += 1;
+                count[k] += usize::from(bad[y * w + x]);
+            }
+        }
+        let touched = count.iter().filter(|&&c| c > 0).count();
+        let full = (0..count.len()).filter(|&k| count[k] == size[k]).count();
+        format!("{touched} of {} blocks touched, {full} wholly", bw * bh)
+    };
+    let mut row_count = vec![0usize; h];
+    for &i in &idx {
+        row_count[i / w] += 1;
+    }
+    let rows_touched = row_count.iter().filter(|&&c| c > 0).count();
+    let rows_whole = row_count.iter().filter(|&&c| c == w).count();
+    let contiguous = last - first + 1 == idx.len();
+    eprintln!(
+        "DIAG {plane} [{stage}] ({what}): {} of {n} pixels differ by more than {gate:.1e} ({} channel values: {zero} exactly 0, {nan} NaN, {other} other); bounding box x {x0}..={x1}, y {y0}..={y1} of {w}x{h}; indices {first}..={last}{}; 8x8: {}; 16x16: {}; rows: {rows_touched} touched, {rows_whole} wholly",
+        idx.len(),
+        samples,
+        if contiguous {
+            " (one contiguous run)"
+        } else {
+            ""
+        },
+        blocks(8),
+        blocks(16),
+    );
 }
 
 fn f32_devices() -> impl Iterator<Item = &'static TestGpu> {

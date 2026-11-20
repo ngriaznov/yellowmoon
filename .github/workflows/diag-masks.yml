@@ -1,0 +1,96 @@
+# Diagnostic run for the branch `diag-masks` only (never merged). It repeats the `gpu_masks` test on GitHub's lavapipe
+# (Mesa 26 with LLVM 21) to catch the intermittent device zeros seen once in CI run 44627429956. Four identical jobs; each
+# loops the test binary and ends green so the counts and the failing outputs are uploaded.
+name: Diag masks
+
+on:
+  push:
+    branches: [diag-masks]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        index: [0, 1, 2, 3]
+    env:
+      YM_REQUIRE_GPU: "1"
+      WGPU_BACKEND: vulkan
+      YELLOWMOON_DATA: ${{ github.workspace }}/data
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mesa lavapipe (software Vulkan)
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools
+      - name: Show the adapter
+        run: vulkaninfo --summary || true
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the test binary once
+        run: |
+          cargo test --release -p ym-gpu --test gpu_masks --no-run 2>&1 | tee build.log
+          bin=$(sed -n 's/^ *Executable tests\/gpu_masks.rs (\(.*\))$/\1/p' build.log | tail -n 1)
+          test -x "$bin"
+          echo "BIN=$(realpath "$bin")" >> "$GITHUB_ENV"
+      - name: Loop the test
+        run: |
+          set +e
+          out="$PWD/diag-out"
+          mkdir -p "$out"
+          cd crates/ym-gpu
+          export CARGO_MANIFEST_DIR="$PWD"
+          # The default threads: no --test-threads flag.
+          run_default() {
+            local failed=0 i
+            for i in $(seq 1 40); do
+              if "$BIN" > "$out/default-$i.log" 2>&1; then rm -f "$out/default-$i.log"; else
+                failed=$((failed + 1)); echo "FAILED default run $i"
+                grep -a "DIAG\|panicked\|^test .* FAILED" "$out/default-$i.log" | cut -c1-600 | head -20
+              fi
+            done
+            DEF=$failed
+          }
+          run_debug() {
+            local failed=0 i
+            for i in $(seq 1 20); do
+              if YM_GPU_LOG=debug "$BIN" > "$out/debug-$i.log" 2>&1; then rm -f "$out/debug-$i.log"; else
+                failed=$((failed + 1)); echo "FAILED debug run $i"
+                grep -a "DIAG\|panicked\|^test .* FAILED" "$out/debug-$i.log" | cut -c1-600 | head -20
+              fi
+            done
+            DBG=$failed
+          }
+          run_repeat() {
+            local failed=0 i
+            for i in $(seq 1 5); do
+              if YM_DIAG_REPS=100 "$BIN" > "$out/repeat-$i.log" 2>&1; then rm -f "$out/repeat-$i.log"; else
+                failed=$((failed + 1)); echo "FAILED repeat run $i"
+                grep -a "DIAG\|panicked\|REPEAT MISMATCH\|^test .* FAILED" "$out/repeat-$i.log" | cut -c1-600 | head -20
+              fi
+            done
+            REP=$failed
+          }
+          run_default
+          run_debug
+          run_repeat
+          line="DIAG failures: default $DEF/40, debug $DBG/20, repeat $REP/5"
+          echo "$line"
+          echo "$line" > "$out/summary.txt"
+          vulkaninfo --summary 2>&1 | grep -a -i "driverInfo\|deviceName\|apiVersion" >> "$out/summary.txt"
+          echo "### ${{ matrix.index }}: $line" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-masks-${{ matrix.index }}
+          path: diag-out/
+          if-no-files-found: warn
