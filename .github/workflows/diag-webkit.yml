@@ -15,7 +15,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps webkit
+      - run: npx playwright install --with-deps chromium webkit
       # Uniform specs plus the specs that cover Pick colour elsewhere (Colour range masks, Colour warp, white pick), all in WebKit.
       # The mock server is the webServer of playwright.config.ts (npm run dev), started by Playwright as in ci.yml.
       - name: Uniform and Pick colour specs in WebKit
