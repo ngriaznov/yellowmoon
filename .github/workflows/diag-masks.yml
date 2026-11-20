@@ -1,7 +1,7 @@
 # Diagnostic run 2 for the branch `diag-masks` only (never merged). Round 1 showed the `gpu_masks` failures depend on the
 # machine (probably its CPU, because llvmpipe compiles shaders for the host). Eight jobs land on different CPUs; each prints
 # the CPU, builds the test binary at four commits, runs each three times, and runs HEAD three more times with
-# LP_NATIVE_VECTOR_WIDTH=128. Every job ends green so the summary line and the failing outputs are uploaded.
+# LP_NATIVE_VECTOR_WIDTH=128 and three with 256. Round 3: each test binary comes from cargo JSON; build failures are shown. Every job ends green so the summary line and the failing outputs are uploaded.
 name: Diag masks
 
 on:
@@ -52,19 +52,55 @@ jobs:
         run: |
           set +e
           root="$PWD"
-          mkdir -p "$root/bins"
+          mkdir -p "$root/bins" "$root/diag-out"
           export CARGO_TARGET_DIR="$root/target"
+          # Helper: "exe" prints the gpu_masks test executable from cargo's JSON; "errors" prints rendered compiler errors.
+          cat > "$RUNNER_TEMP/cargo_json.py" <<'PY'
+          import json, sys
+          mode = sys.argv[1]
+          exe = None
+          for line in sys.stdin:
+              try:
+                  m = json.loads(line)
+              except ValueError:
+                  continue
+              if mode == "exe" and m.get("reason") == "compiler-artifact" and m.get("target", {}).get("name") == "gpu_masks" and m.get("executable"):
+                  exe = m["executable"]
+              if mode == "errors" and m.get("reason") == "compiler-message" and m.get("message", {}).get("level") == "error":
+                  print(m["message"].get("rendered", ""))
+          if mode == "exe" and exe:
+              print(exe)
+          PY
+          fail() {
+            local name="$1" why="$2"
+            {
+              echo "BUILD FAILED $name: $why"
+              echo "--- last 40 lines of $name build log ---"
+              { cat "$root/bins/$name.worktree.log" "$root/bins/$name.build.log" "$root/bins/$name.errors.log"; } 2>/dev/null | tail -n 40
+            } | tee -a "$root/diag-out/build-failures.txt" >> "$GITHUB_STEP_SUMMARY"
+          }
           build() {
-            local name="$1" rev="$2" dir
+            local name="$1" rev="$2" dir bin
+            : > "$root/bins/$name.worktree.log"
             if [ "$rev" = HEAD ]; then dir="$root"; else
               dir="$root/../wt-$name"
-              git worktree add --detach "$dir" "$rev" || return 1
+              if ! git worktree add --detach "$dir" "$rev" > "$root/bins/$name.worktree.log" 2>&1; then
+                { echo "git cat-file -t $rev: $(git cat-file -t "$rev" 2>&1)"; git log --oneline -n 3 2>&1; } >> "$root/bins/$name.worktree.log"
+                fail "$name" "git worktree add failed"; return 1
+              fi
             fi
-            ( cd "$dir" && rustup toolchain install >/dev/null 2>&1
-              cargo test --release -p ym-gpu --test gpu_masks --no-run 2>&1 | tee "$root/bins/$name.build.log" ) || true
-            local bin
-            bin=$(sed -n 's/^ *Executable tests\/gpu_masks.rs (\(.*\))$/\1/p' "$root/bins/$name.build.log" | tail -n 1)
-            if [ -n "$bin" ] && [ -x "$dir/$bin" ]; then cp "$dir/$bin" "$root/bins/$name"; fi
+            ( cd "$dir" && rustup toolchain install > "$root/bins/$name.toolchain.log" 2>&1
+              cargo test --release -p ym-gpu --test gpu_masks --no-run --message-format=json \
+                > "$root/bins/$name.build.json" 2> "$root/bins/$name.build.log"
+              echo "cargo exit: $?" >> "$root/bins/$name.build.log" )
+            python3 -I "$RUNNER_TEMP/cargo_json.py" errors < "$root/bins/$name.build.json" > "$root/bins/$name.errors.log"
+            bin=$(python3 -I "$RUNNER_TEMP/cargo_json.py" exe < "$root/bins/$name.build.json" | tail -n 1)
+            if [ -n "$bin" ] && [ -f "$bin" ]; then
+              # Copy at once: the next commit's build replaces it in the shared target folder.
+              cp "$bin" "$root/bins/$name" && chmod +x "$root/bins/$name"
+            else
+              fail "$name" "no gpu_masks executable in cargo JSON (bin='$bin')"
+            fi
             echo "$name $rev dir=$dir bin=$bin"
           }
           build HEAD HEAD
@@ -98,10 +134,11 @@ jobs:
           r_cc=$(runs cc161946 cc161946)
           r_5c=$(runs 5cebd5ca 5cebd5ca)
           r_vw=$(runs HEAD head-vw128 LP_NATIVE_VECTOR_WIDTH=128)
+          r_v256=$(runs HEAD head-vw256 LP_NATIVE_VECTOR_WIDTH=256)
           cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -n 1)
-          line="CPU $cpu | HEAD $r_head | 0d990cd2 $r_0d | cc161946 $r_cc | 5cebd5ca $r_5c | HEAD vw128 $r_vw"
+          line="CPU $cpu | HEAD $r_head | 0d990cd2 $r_0d | cc161946 $r_cc | 5cebd5ca $r_5c | HEAD vw128 $r_vw | HEAD vw256 $r_v256"
           echo "$line"
-          { echo "$line"; echo "failing tests:"; cat "$out/failing-tests.txt"; } > "$out/summary.txt"
+          { echo "$line"; echo "failing tests:"; cat "$out/failing-tests.txt"; cat "$out/build-failures.txt" 2>/dev/null; } > "$out/summary.txt"
           echo "### ${{ matrix.index }}: $line" >> "$GITHUB_STEP_SUMMARY"
           grep -a -h "DIAG" "$out"/head-*.log 2>/dev/null | cut -c1-600 | head -40
           exit 0
@@ -109,5 +146,7 @@ jobs:
         if: always()
         with:
           name: diag-masks-${{ matrix.index }}
-          path: diag-out/
+          path: |
+            diag-out/
+            bins/*.log
           if-no-files-found: warn
