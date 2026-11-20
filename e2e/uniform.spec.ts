@@ -74,6 +74,15 @@ test.describe("the Add node menu", () => {
     await expect(page.getByRole("tab")).toHaveText(["Compress", "Mask"]);
     await expect(page.getByRole("tab", { name: "Compress", exact: true })).toHaveAttribute("aria-selected", "true");
     await expect(pickButton(page)).toHaveAttribute("aria-pressed", "true");
+    // It also looks pressed: the tooltip's trigger must not overwrite the toggle's data-state (0.2.4-beta.3: the first click turned it off).
+    await expect(pickButton(page)).toHaveAttribute("data-state", "on");
+    await expect(pickLayer(page)).toBeVisible();
+    await pickButton(page).click();
+    await expect(pickButton(page)).toHaveAttribute("aria-pressed", "false");
+    await expect(pickButton(page)).toHaveAttribute("data-state", "off");
+    await expect(pickLayer(page)).toHaveCount(0);
+    await pickButton(page).click();
+    await expect(pickButton(page)).toHaveAttribute("data-state", "on");
     await expect(pickLayer(page)).toBeVisible();
     await expect(card(page, "Target").getByText("No colour yet")).toBeVisible();
     expect((await uniformOf(page))?.target).toBeNull();
