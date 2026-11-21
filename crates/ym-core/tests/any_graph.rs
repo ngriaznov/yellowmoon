@@ -1898,8 +1898,15 @@ fn decode_png16_bytes(bytes: &[u8]) -> Vec<u32> {
         .collect()
 }
 
-/// How far a settings document's mask rows are nudged to see whether a value of the CPU's own export is stable.
+/// The settings schema: the range and default of every real number of a settings document, read by [`nudge_leaves`].
+const SETTINGS_SCHEMA: &str = include_str!("../schema/settings.schema.json");
+/// How far each continuous setting is nudged to see whether a value of the CPU's own export is stable: this fraction of the
+/// setting's own range (1e-5 absolute where the schema gives no range).
 const NUDGE: f64 = 1e-5;
+/// How many renders nudge every continuous setting at once, each by plus or minus its step with signs from [`NUDGE_SEED`].
+const COMBINED_NUDGES: usize = 8;
+/// The seed of the signs of the combined nudges: fixed, so a verdict is the same on every run.
+const NUDGE_SEED: u64 = 0x756e_7374_6162_6c65;
 /// The most unstable values a thin edge can account for: more than this (or 0.01 % of the export's values, if larger) fails.
 const MOST_UNSTABLE: usize = 60;
 
@@ -1909,18 +1916,220 @@ struct Judged {
     failure: Option<String>,
 }
 
+/// One continuous setting of a settings document: where it is, its value, how far it is nudged and the range it is clamped to.
+#[derive(Clone, Debug)]
+struct Leaf {
+    /// The JSON pointer of the number.
+    at: String,
+    /// Its value (the schema's default when the document leaves it out).
+    value: f64,
+    /// The size of a nudge.
+    step: f64,
+    /// The range of the setting (infinite where the schema gives none).
+    lo: f64,
+    hi: f64,
+}
+
+impl Leaf {
+    /// The value moved by `sign` steps, kept in the setting's range.
+    fn nudged(&self, sign: f64) -> f64 {
+        (self.value + sign * self.step).clamp(self.lo, self.hi)
+    }
+}
+
+/// The schema a `$ref` names (the schema itself without one).
+fn resolve<'a>(root: &'a Value, schema: &'a Value) -> &'a Value {
+    static NULL: Value = Value::Null;
+    let mut s = schema;
+    for _ in 0..8 {
+        let Some(r) = s.get("$ref").and_then(Value::as_str) else {
+            break;
+        };
+        s = root.pointer(r.trim_start_matches('#')).unwrap_or(&NULL);
+    }
+    s
+}
+
+/// Whether `v` is a value of the `oneOf` variant `variant`: its type, its constants (`kind`, `id`) and its required properties agree.
+fn variant_fits(root: &Value, variant: &Value, v: &Value) -> bool {
+    let s = resolve(root, variant);
+    match s.get("type").and_then(Value::as_str) {
+        Some("null") => v.is_null(),
+        Some("array") => v.is_array(),
+        Some("number" | "integer") => v.is_number(),
+        Some("string") => v.is_string(),
+        Some("boolean") => v.is_boolean(),
+        Some("object") => {
+            let required = s.get("required").and_then(Value::as_array);
+            let props = s.get("properties").and_then(Value::as_object);
+            v.is_object()
+                && required.is_none_or(|r| {
+                    r.iter()
+                        .all(|k| k.as_str().is_some_and(|k| v.get(k).is_some()))
+                })
+                && props.is_none_or(|p| {
+                    p.iter()
+                        .all(|(k, ps)| match (resolve(root, ps).get("const"), v.get(k)) {
+                            (Some(c), Some(x)) => c == x,
+                            _ => true,
+                        })
+                })
+        }
+        _ => true,
+    }
+}
+
+/// The real numbers of `value` under `schema` (and the ones the document leaves out where the schema has a number for them).
+fn schema_leaves(
+    root: &Value,
+    schema: &Value,
+    value: Option<&Value>,
+    at: &str,
+    out: &mut Vec<Leaf>,
+) {
+    let s = resolve(root, schema);
+    if let Some(variants) = s
+        .get("oneOf")
+        .or_else(|| s.get("anyOf"))
+        .and_then(Value::as_array)
+    {
+        if let Some(v) = value
+            && let Some(variant) = variants.iter().find(|x| variant_fits(root, x, v))
+        {
+            schema_leaves(root, variant, Some(v), at, out);
+        }
+        return;
+    }
+    match s.get("type").and_then(Value::as_str) {
+        Some("number") => {
+            let value = match value {
+                Some(v) => v.as_f64(),
+                None => s.get("default").and_then(Value::as_f64),
+            };
+            let Some(value) = value else { return };
+            let lo = s.get("minimum").and_then(Value::as_f64);
+            let hi = s.get("maximum").and_then(Value::as_f64);
+            let step = match (lo, hi) {
+                (Some(lo), Some(hi)) if hi > lo => NUDGE * (hi - lo),
+                _ => NUDGE,
+            };
+            out.push(Leaf {
+                at: at.to_owned(),
+                value,
+                step,
+                lo: lo.unwrap_or(f64::NEG_INFINITY),
+                hi: hi.unwrap_or(f64::INFINITY),
+            });
+        }
+        Some("object") => {
+            if let Some(props) = s.get("properties").and_then(Value::as_object) {
+                for (k, ps) in props {
+                    schema_leaves(
+                        root,
+                        ps,
+                        value.and_then(|v| v.get(k)),
+                        &format!("{at}/{k}"),
+                        out,
+                    );
+                }
+            }
+        }
+        Some("array") => {
+            if let Some(items) = value.and_then(Value::as_array) {
+                let prefix = s.get("prefixItems").and_then(Value::as_array);
+                for (i, x) in items.iter().enumerate() {
+                    let item = prefix
+                        .and_then(|p| p.get(i))
+                        .or_else(|| s.get("items").filter(|x| x.is_object()));
+                    if let Some(item) = item {
+                        schema_leaves(root, item, Some(x), &format!("{at}/{i}"), out);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Every continuous setting of a settings document, whatever node it belongs to: the numbers the schema types as `number` (those the
+/// document gives and those it leaves at a numeric default), then any other real number the document holds (1e-5 absolute). Integers,
+/// enums, booleans, seeds and ids are not among them. Nothing here names a node kind or a setting.
+fn nudge_leaves(doc: &Value) -> Vec<Leaf> {
+    let mut out = Vec::new();
+    if let Ok(root) = serde_json::from_str::<Value>(SETTINGS_SCHEMA) {
+        schema_leaves(&root, &root, Some(doc), "", &mut out);
+    }
+    fn others(v: &Value, at: String, known: &BTreeSet<String>, out: &mut Vec<Leaf>) {
+        match v {
+            Value::Number(n) if n.is_f64() && !known.contains(&at) => out.push(Leaf {
+                value: n.as_f64().unwrap_or_default(),
+                at,
+                step: NUDGE,
+                lo: f64::NEG_INFINITY,
+                hi: f64::INFINITY,
+            }),
+            Value::Array(a) => a
+                .iter()
+                .enumerate()
+                .for_each(|(i, x)| others(x, format!("{at}/{i}"), known, out)),
+            Value::Object(o) => o
+                .iter()
+                .for_each(|(k, x)| others(x, format!("{at}/{k}"), known, out)),
+            _ => {}
+        }
+    }
+    let known: BTreeSet<String> = out.iter().map(|l| l.at.clone()).collect();
+    others(doc, String::new(), &known, &mut out);
+    out
+}
+
+/// Sets the number at a JSON pointer, making the objects on the way when the document leaves them out.
+fn set_number(doc: &mut Value, at: &str, to: f64) {
+    let mut cur = doc;
+    for tok in at.split('/').skip(1) {
+        cur = match cur {
+            Value::Array(a) => match tok.parse::<usize>().ok().and_then(|i| a.get_mut(i)) {
+                Some(x) => x,
+                None => return,
+            },
+            other => {
+                if !other.is_object() {
+                    *other = json!({});
+                }
+                match other.as_object_mut() {
+                    Some(o) => o.entry(tok.to_owned()).or_insert(Value::Null),
+                    None => return,
+                }
+            }
+        };
+    }
+    *cur = json!(to);
+}
+
+/// The CPU's PNG export of a settings document, as 16-bit values (`None` when the document is not a valid graph or the size differs).
+fn cpu_png_of(d: &Developed, doc: &Value, home: &Path, len: usize) -> Option<Vec<u32>> {
+    let valid = serde_json::from_value::<DevelopSettings>(doc.clone())
+        .ok()?
+        .validated()
+        .ok()?;
+    let png = export(d, &valid.0, renderer(None, 256), home, FormatKind::Png).2;
+    let values = decode_png16_bytes(&png);
+    (values.len() == len).then_some(values)
+}
+
 /// The device's PNG export against the CPU's under the 10-bit bound (`TEN_BIT_CODE`), with the owner's rule of 2026-11-18, "Skip
-/// unstable pixels": the bound holds on every value except those where the CPU's own export is unstable, and those are printed.
+/// unstable pixels", made general on 2026-11-21 ("extend the rule so there are no exceptions for specific cases"): the bound holds on
+/// every value except those where the CPU's own export is unstable, and those are printed.
 ///
 /// * Within the bound everywhere: nothing more is done (no nudging, no time).
-/// * Else the CPU renders the settings again with every continuous number of every mask row moved by +[`NUDGE`] and by
-///   -[`NUDGE`], one at a time (depth far, feather and refine; a range's centre, width and softness; a shape's place; ...). A value
-///   is **unstable** when any of those renders moves the CPU's own value there by more than the bound. The bound is enforced on
-///   every other value; each unstable value over the bound is printed with its index, the CPU's value, the device's, and the
-///   CPU's own range.
-/// * The safeguards that keep this from hiding a bug: (a) a graph with no mask row has no exemption; (b) more than
-///   `max(60, 0.01 % of the values)` unstable values fail, too many for a thin edge; (c) the device's value at an unstable index
-///   must lie within the CPU's own range widened by the bound.
+/// * Else the CPU renders the settings again with the continuous settings of **every node** (see [`nudge_leaves`]: each real number
+///   of the document, the Input's and Main's included, each by [`NUDGE`] of its own range) moved: [`COMBINED_NUDGES`] renders that
+///   move all of them at once by plus or minus a step with seeded signs. A value is **unstable** when any of those renders moves the CPU's own value there by more than the
+///   bound. The bound is enforced on every other value; each unstable value over the bound is printed with its index, the CPU's
+///   value, the device's, and the CPU's own range.
+/// * The safeguards that keep this from hiding a bug: (a) when nothing could be nudged, nothing is exempt; (b) more than
+///   `max(60, 0.01 % of the values)` exempt values fail, too many for a thin edge; (c) the device's value at an unstable index
+///   must lie within the CPU's nudged range widened by the bound.
 fn judge_export(
     d: &Developed,
     settings: &DevelopSettings,
@@ -1945,78 +2154,62 @@ fn judge_export(
             over.len()
         ));
     };
-    // The continuous numbers of the mask rows, as JSON pointers.
-    fn leaves(v: &Value, at: String, out: &mut Vec<String>) {
-        match v {
-            Value::Number(n) if n.is_f64() => out.push(at),
-            Value::Array(a) => a
-                .iter()
-                .enumerate()
-                .for_each(|(i, x)| leaves(x, format!("{at}/{i}"), out)),
-            Value::Object(o) => o
-                .iter()
-                .for_each(|(k, x)| leaves(x, format!("{at}/{k}"), out)),
-            _ => {}
-        }
+    judge_export_with(d, &doc, &nudge_leaves(&doc), dev, cpu, home, name)
+}
+
+/// [`judge_export`] with the settings to nudge given: the document and its continuous settings (a test gives none to see the
+/// safeguard that nothing nudged means nothing exempt).
+fn judge_export_with(
+    d: &Developed,
+    doc: &Value,
+    leaves: &[Leaf],
+    dev: &[u32],
+    cpu: &[u32],
+    home: &Path,
+    name: &str,
+) -> Judged {
+    let diff = |a: u32, b: u32| a.abs_diff(b);
+    let over: Vec<usize> = (0..dev.len())
+        .filter(|&i| diff(dev[i], cpu[i]) > TEN_BIT_CODE)
+        .collect();
+    if over.is_empty() {
+        return Judged { failure: None };
     }
-    let (mut rows, mut targets) = (0usize, Vec::new());
-    for (n, node) in doc["nodes"]["items"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-        .iter()
-        .enumerate()
-    {
-        for (r, row) in node["masks"]["items"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-            .iter()
-            .enumerate()
-        {
-            rows += 1;
-            leaves(
-                row,
-                format!("/nodes/items/{n}/masks/items/{r}"),
-                &mut targets,
-            );
+    let fail = |text: String| Judged {
+        failure: Some(format!("{name}: {text}")),
+    };
+    // The CPU's own range at every value, and how far a nudge moved it.
+    let (mut lo, mut hi) = (cpu.to_vec(), cpu.to_vec());
+    let mut renders = 0usize;
+    let mut take = |doc: &Value| {
+        let Some(moved) = cpu_png_of(d, doc, home, cpu.len()) else {
+            return;
+        };
+        renders += 1;
+        for (i, m) in moved.iter().enumerate() {
+            lo[i] = lo[i].min(*m);
+            hi[i] = hi[i].max(*m);
         }
+    };
+    // All the settings at once, with seeded signs.
+    let mut rng = SplitMix64(NUDGE_SEED);
+    for _ in 0..COMBINED_NUDGES {
+        let mut nudged = doc.clone();
+        for leaf in leaves {
+            let sign = if rng.below(2) == 0 { 1.0 } else { -1.0 };
+            set_number(&mut nudged, &leaf.at, leaf.nudged(sign));
+        }
+        take(&nudged);
     }
-    if rows == 0 {
+    if leaves.is_empty() || renders == 0 {
         return fail(format!(
-            "{} values over {TEN_BIT_CODE} (largest {}) and the graph has no mask row, so nothing is exempt",
+            "{} values over {TEN_BIT_CODE} (largest {}) and nothing could be nudged, so nothing is exempt",
             over.len(),
             over.iter()
                 .map(|&i| diff(dev[i], cpu[i]))
                 .max()
                 .unwrap_or(0)
         ));
-    }
-    // The CPU's own range at every value, and how far a nudge moved it.
-    let (mut lo, mut hi) = (cpu.to_vec(), cpu.to_vec());
-    for at in &targets {
-        for sign in [1.0, -1.0] {
-            let mut nudged = doc.clone();
-            let Some(slot) = nudged.pointer_mut(at) else {
-                continue;
-            };
-            let Some(old) = slot.as_f64() else { continue };
-            *slot = json!(old + sign * NUDGE);
-            let Ok(Ok(valid)) =
-                serde_json::from_value::<DevelopSettings>(nudged).map(|s| s.validated())
-            else {
-                continue;
-            };
-            let png = export(d, &valid.0, renderer(None, 256), home, FormatKind::Png).2;
-            let moved = decode_png16_bytes(&png);
-            if moved.len() != cpu.len() {
-                continue;
-            }
-            for (i, m) in moved.iter().enumerate() {
-                lo[i] = lo[i].min(*m);
-                hi[i] = hi[i].max(*m);
-            }
-        }
     }
     let moved = |i: usize| (hi[i] - cpu[i]).max(cpu[i] - lo[i]);
     let unstable = (0..dev.len()).filter(|&i| moved(i) > TEN_BIT_CODE).count();
@@ -2039,15 +2232,16 @@ fn judge_export(
             worst.1
         ));
     }
+    let exempt = over.len() - stable_over.len();
     let most = MOST_UNSTABLE.max(dev.len() / 10_000);
-    if unstable > most {
+    if exempt > most {
         problems.push(format!(
-            "{unstable} values of the CPU's own export are unstable (more than {most}): too many for a thin edge"
+            "{exempt} values over {TEN_BIT_CODE} would be exempt as unstable (more than {most}): too many for a thin edge"
         ));
     }
     for &i in over.iter().filter(|&&i| moved(i) > TEN_BIT_CODE) {
         say(&format!(
-            "{name}: unstable value {i} (not enforced): CPU {}, device {}, the CPU's own range under a mask setting moved by {NUDGE:e}: {} to {}",
+            "{name}: unstable value {i} (not enforced): CPU {}, device {}, the CPU's own range with its settings moved by {NUDGE:e} of their ranges: {} to {}",
             cpu[i], dev[i], lo[i], hi[i]
         ));
         if dev[i] + TEN_BIT_CODE < lo[i] || dev[i] > hi[i] + TEN_BIT_CODE {
@@ -2058,21 +2252,16 @@ fn judge_export(
         }
     }
     say(&format!(
-        "{name}: {} values over {TEN_BIT_CODE}, {} of them unstable ({unstable} unstable in all, {} mask settings nudged)",
+        "{name}: {} values over {TEN_BIT_CODE}, {} of them exempt as unstable ({unstable} unstable in all, {} settings nudged, {renders} CPU renders)",
         over.len(),
-        over.len() - stable_over.len(),
-        targets.len()
+        exempt,
+        leaves.len()
     ));
     Judged {
         failure: (!problems.is_empty()).then(|| format!("{name}: {}", problems.join("; "))),
     }
 }
 
-/// Regression (G-11): a view at scale 1 (zoom 50 to 150 %) of a photo with raster masks was made on the CPU when the wider
-/// picture the masks read did not fit one binding (the owner's 12 CPU frames of 198, 410 to 840 ms). The planes of such a view
-/// are made in tiles (`plane_tiles`), so the route is the device's whatever the binding size, down to the size where the
-/// frame itself cannot be held: 1 MiB and up for a small photo, 4 MiB and up for a 1332 x 888 view of a 4000 px one. Below that
-/// the CPU may make the frame, never quietly: it says why, in the report and in the note.
 #[test]
 fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size() {
     let _serial = SERIAL
@@ -3290,18 +3479,15 @@ fn the_unstable_pixel_rule_exempts_only_the_cpus_own_unstable_values() {
         text.contains("stable values differ") && text.contains("outside the CPU's own range"),
         "{text}"
     );
-    // No mask row: no exemption, whatever the values.
-    let (plain, plain_settings) = png(&serde_json::json!({"nodes":{"items":[{"id":1}],"links":[
-        {"from":{"node":"input","port":"picture"},"to":{"node":1,"port":"picture"}},
-        {"from":{"node":1,"port":"picture"},"to":{"node":"output","port":"picture"}}]}}));
-    let mut bad = plain.clone();
+    // Nothing to nudge: nothing is exempt, whatever the values.
+    let mut bad = dev.clone();
     bad[at] += 100;
-    let verdict = judge_export(&d, &plain_settings, &bad, &plain, home.path(), "no rows");
+    let verdict = judge_export_with(&d, &full, &[], &bad, &cpu, home.path(), "nothing nudged");
     assert!(
         verdict
             .failure
             .as_deref()
-            .is_some_and(|f| f.contains("no mask row")),
+            .is_some_and(|f| f.contains("nothing could be nudged")),
         "{:?}",
         verdict.failure
     );
@@ -3449,5 +3635,127 @@ fn the_mask_view_of_a_film_node_with_a_linked_key_is_made_on_the_device() {
     assert!(
         worst <= 2 && over < got.rgba.len() / 100,
         "{worst} codes, {over} over 1"
+    );
+}
+
+const SEED_297_GRAPH_0: &str = r#"{"nodes":{"items":[{"id":1},{"id":2,"kind":"blur","lens":{"blades":6,"highlights":90,"radius":38,"rotation_deg":81},"masks":{"invert":false,"items":[{"center":[0.05,0.0],"kind":"color_range","mode":"add","softness":0.5,"width":0.2},{"far":0.5723723723723724,"feather":0.2948948948948949,"kind":"depth","mode":"add","refine":0.8378378378378378}]},"motion":{"angle_deg":66,"length":38},"pos":[2,0.0],"respect_mask_edges":true,"soft":{"radius":35},"type":"motion","zoom":{"amount":57,"center":[0.08,0.39]}},{"all":{"blemish":30,"dark_circles":80,"even_skin":80,"skin_contrast":30},"id":3,"kind":"face_refinement","pos":[3,0.0]},{"compress":{"hue":67,"lightness":96,"saturation":100},"id":4,"kind":"color_uniform","masks":{"invert":false,"items":[{"angle_deg":0.0,"center":[0.5,0.5],"feather":0.3,"kind":"radial","mode":"add","radii":[0.3,0.2]}]},"pos":[4,0.0],"target":{"hue_deg":43,"lightness_ev":-0.09000000000000002,"saturation":31}},{"compress":{"hue":57,"lightness":64,"saturation":84},"id":5,"kind":"color_uniform","pos":[5,0.0],"target":{"hue_deg":314,"lightness_ev":0.39,"saturation":28}}],"links":[{"from":{"node":"input","port":"picture"},"to":{"node":1,"port":"picture"}},{"from":{"node":1,"port":"picture"},"to":{"node":2,"port":"picture"}},{"from":{"node":2,"port":"picture"},"to":{"node":3,"port":"picture"}},{"from":{"node":"input","port":"picture"},"to":{"node":4,"port":"picture"}},{"from":{"node":4,"port":"picture"},"to":{"node":5,"port":"picture"}},{"from":{"node":5,"port":"picture"},"to":{"node":"output","port":"picture"}},{"from":{"node":2,"port":"key"},"to":{"node":4,"port":"key"}},{"from":{"node":3,"port":"key"},"to":{"node":5,"port":"key"}}]}}"#;
+
+/// The rule of `judge_export` for a sensitivity that comes from no mask row (the owner, 2026-11-21: "extend the rule so there are no
+/// exceptions for specific cases"). Seed 297, graph 0 of `generate` (CI run 44814457514 on Metal): Main, a Blur node and a Face
+/// Refinement node that the picture does not use, and two Colour Uniform nodes in a row, the second with no mask row. Two pixels
+/// (value indices 204639 to 204644, the red, green and blue of (213, 162) and of its neighbour) are hypersensitive to the second
+/// node's settings: on the CPU alone one unit of its saturation compress moves them by about 2,000 codes, and the device differs
+/// from the CPU there by 72 on Metal (52 on lavapipe), over the bound of 64. The rule that nudged only mask rows called those values
+/// stable and failed the run. Every continuous setting is nudged now, all together with seeded signs, and the CPU's own export there
+/// moves by more than 64.
+///
+/// A CPU render stands for the device. Moved by +72 at the six values, it passes (they are unstable and the "device" is in the CPU's
+/// range); nudging only the settings of mask rows, as the old rule did, it fails; a value moved by 3,000 (outside the range) and a
+/// stable value moved by 500 each fail for their own reasons.
+#[test]
+fn the_unstable_pixel_rule_sees_the_sensitivity_of_a_setting_that_is_not_a_mask_row() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let scene = Scene::new(
+        640,
+        420,
+        light("sony-ilce-7rm4", 4800.0),
+        Layout::Patchwork,
+        0.5,
+    )
+    .noise(2e-4, 2e-6)
+    .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let home = tempfile::tempdir().expect("dir");
+    let settings = serde_json::from_str::<DevelopSettings>(SEED_297_GRAPH_0)
+        .expect("settings")
+        .validated()
+        .expect("a valid graph")
+        .0;
+    let doc = serde_json::to_value(&settings).expect("json");
+    let leaves = nudge_leaves(&doc);
+    // The settings are found by their schema, not by a list: the Colour Uniform compress, the Input's, Main's (left out of the
+    // document, at the schema's default) and the Blur node's are there; integers, enums, booleans, seeds and ids are not.
+    for at in [
+        "/nodes/items/5/compress/saturation",
+        "/nodes/items/5/target/hue_deg",
+        "/nodes/items/4/masks/items/0/radii/0",
+        "/nodes/items/0/rolloff/highlights",
+        "/nodes/items/1/trim/exposure_ev",
+        "/nodes/items/2/soft/radius",
+    ] {
+        assert!(leaves.iter().any(|l| l.at == at), "{at} is not nudged");
+    }
+    for l in &leaves {
+        let last = l.at.rsplit('/').next().unwrap_or_default();
+        assert!(
+            ![
+                "id", "kind", "bypass", "seed", "type", "mode", "blades", "invert"
+            ]
+            .contains(&last),
+            "{} is not a continuous setting",
+            l.at
+        );
+    }
+    let cpu = cpu_png_of(&d, &doc, home.path(), usize::MAX).unwrap_or_else(|| {
+        decode_png16_bytes(
+            &export(
+                &d,
+                &settings,
+                renderer(None, 256),
+                home.path(),
+                FormatKind::Png,
+            )
+            .2,
+        )
+    });
+    let hyper = 204_639..=204_644usize;
+    let mut dev = cpu.clone();
+    for i in hyper.clone() {
+        dev[i] += 72;
+    }
+    let started = std::time::Instant::now();
+    let verdict = judge_export(&d, &settings, &dev, &cpu, home.path(), "seed 297 graph 0");
+    say(&format!(
+        "seed 297 graph 0, the rule on the CPU alone: {:?} for {} settings",
+        started.elapsed(),
+        leaves.len()
+    ));
+    assert!(
+        verdict.failure.is_none(),
+        "the CPU's own unstable values pass: {:?}",
+        verdict.failure
+    );
+    // The rule of 2026-11-18: each continuous number of each mask row alone, by plus and minus 1e-5. None moves these values by more
+    // than the bound, so they were stable and the export failed.
+    let mut widest = 0u32;
+    for l in leaves.iter().filter(|l| l.at.contains("/masks/items/")) {
+        for sign in [1.0, -1.0] {
+            let mut nudged = doc.clone();
+            set_number(&mut nudged, &l.at, l.value + sign * NUDGE);
+            let moved = cpu_png_of(&d, &nudged, home.path(), cpu.len()).unwrap_or_default();
+            for i in hyper.clone() {
+                widest = widest.max(moved.get(i).map_or(0, |m| m.abs_diff(cpu[i])));
+            }
+        }
+    }
+    say(&format!(
+        "seed 297 graph 0, mask rows one at a time by 1e-5: the six values move by {widest} at most"
+    ));
+    assert!(
+        widest <= TEN_BIT_CODE,
+        "a mask row moves them by {widest}: the case no longer shows what the old rule missed"
+    );
+    // A real device error: far outside the CPU's range at an unstable value, and 500 at a stable one (value 0 is a bright corner).
+    let mut bad = dev.clone();
+    bad[204_641] += 3000;
+    bad[0] += 500;
+    let text = judge_export(&d, &settings, &bad, &cpu, home.path(), "errors")
+        .failure
+        .unwrap_or_default();
+    assert!(
+        text.contains("outside the CPU's own range") && text.contains("stable values differ"),
+        "{text}"
     );
 }
