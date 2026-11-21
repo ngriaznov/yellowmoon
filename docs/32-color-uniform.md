@@ -97,29 +97,37 @@ The node has **no Range card and no range fields**. What it acts on is its masks
 - It happens on the **first** pick only. A later pick moves the target and leaves the masks alone. A target set by the sliders (no pick) adds no row.
 - **The pick and the row are one undo step.** The Colour range row is an ordinary mask: the person can widen it (Width), add other masks, delete the row, or invert; the node then acts on whatever the masks say. The row's own Pick colour moves its centre and does not move the target.
 - The row is not selected and starts no tool; the panel stays on the Compress tab, where the first pick was made.
-- **Why 0.02 and not the Colour range's 0.05** (the owner, 2026-11-21: "color uniform color mask is very wide - likely to capture entire picture"). The Colour range reads chroma only: a disc of radius `w` about the picked chroma, full inside it and fading to nothing over a further `σ w` (`docs/algorithms/06` §4.3). Natural colours are low in chroma (the plane reaches 0.30; the colours measured below are 0.005 to 0.08), and the pixels of a photo crowd into a small part of it, so a disc of 0.05 reaches most of them. **It is the width, not the centre:** the centre is the chroma the mask reads (the pick reads the node's input, as the mask does), and on the synthetic patches and on 8 of the 13 real picks at least 95 % of the pixels around the click are inside the row even at the narrowest width, 0.005; the rest (the foliage, the trees, the ochre wall, the roof, the white monument) are textured or near grey and lose some of their own pixels when the row is that narrow. Measured on the synthetic patches and on the owner's Sony A1 raw files of `testdata/readme-photos` (Mask only frame, the mean of `m` and the share of the photo's pixels with `m > 0.5`; `uniform_first_pick.rs`, `survey_of_the_first_picks_row`):
+- **Why 0.02 and not the Colour range's 0.05** (the owner, 2026-11-21: "color uniform color mask is very wide - likely to capture entire picture"). The Colour range reads chroma only: a disc of radius `w` about the picked chroma, full inside it and fading to nothing over a further `σ w` (`docs/algorithms/06` §4.3). Natural colours are low in chroma (the plane reaches 0.30; the colours measured below are 0.001 to 0.12), and the pixels of a photo crowd into a small part of it, so a disc of 0.05 reaches most of them. **It is the width, not the centre:** the centre is the chroma the mask reads (the pick reads the node's input, as the mask does), and the pixels around the click are inside the row at narrow widths on the synthetic patches and on most real picks.
+  **Chosen on public data only** (the owner: nothing is tuned to his own photos): the four synthetic patches of `Layout::Patchwork`; two public JPEG portraits (`tools/fetch/mediapipe.sh --photos`, test data of an Apache-2.0 repository; made into raw files by the linear values of their pixels, as `tests/face_real.rs` does, so the colours are approximate); and four public Sony raws of `tools/fetch/real-eval.sh` (DSLR-A300, DSLR-A500, ILCE-5000, ILCE-6300; `docs/test-photo-sources.md` says their licence is unclear, so they are local evaluation data, not corpus data, and no picture of them is committed). Skin is in two portraits and in the A300's face and shoulder; the sets have no photograph of grass, so foliage stands for it. Mask only frame; "share" is the share of the photo's pixels with `m > 0.5`, "kept" the share of the 21 x 21 pixels around the click with `m > 0.5` (how much of the picked place the row holds); `|c|` is the picked chroma. `uniform_first_pick.rs`, `survey_of_the_first_picks_row_on_public_data`.
 
-  | Pick | \|c\| | 0.05 (beta 4): mean / share | **0.02**: mean / share | kept at 0.02 |
-  |---|---|---|---|---|
-  | synthetic orange patch (8 % of the frame) | 0.063 | 0.49 / 0.17 | **0.08 / 0.08** | 1.00 |
-  | synthetic green patch (4 %) | 0.075 | 0.05 / 0.05 | 0.04 / 0.04 | 1.00 |
-  | synthetic blue patch (4 %) | 0.069 | 0.17 / 0.06 | 0.04 / 0.04 | 1.00 |
-  | synthetic yellow patch (4 %) | 0.096 | 0.12 / 0.12 | 0.04 / 0.04 | 1.00 |
-  | warm wall (skin-like colour), A1M03159 | 0.049 | 0.87 / 0.87 | 0.36 / 0.34 | 1.00 |
-  | blue sky, A1M03159 | 0.078 | 0.13 / 0.13 | 0.13 / 0.13 | 1.00 |
-  | foliage, A1M03159 | 0.012 | 0.87 / 0.87 | 0.67 / 0.67 | 0.57 |
-  | white monument, A1M03159 | 0.008 | 0.87 / 0.87 | 0.67 / 0.68 | 1.00 |
-  | blue sky, A1M01454 | 0.050 | 0.63 / 0.56 | 0.37 / 0.37 | 1.00 |
-  | green field, A1M01454 | 0.019 | 0.86 / 0.85 | 0.62 / 0.63 | 1.00 |
-  | trees, A1M01454 | 0.005 | 1.00 / 1.00 | 0.64 / 0.63 | 1.00 |
-  | ochre wall, A1M01749 | 0.023 | 1.00 / 1.00 | 0.55 / 0.60 | 0.74 |
-  | terracotta roof, A1M01749 | 0.031 | 0.93 / 1.00 | 0.48 / 0.54 | 0.88 |
-  | grass, A1M01749 | 0.040 | 0.80 / 0.79 | 0.47 / 0.48 | 1.00 |
-  | sky, A1M01739 | 0.026 | 0.99 / 0.99 | 0.62 / 0.61 | 1.00 |
-  | ploughed field, A1M01739 | 0.008 | 1.00 / 1.00 | 0.79 / 0.81 | 1.00 |
-  | grass, A1M01739 | 0.022 | 1.00 / 1.00 | 0.52 / 0.50 | 1.00 |
+  | Pick | \|c\| | share at 0.05 (the old row) | share at **0.02** | kept at 0.02 | share / kept at 0.03 |
+  |---|---|---|---|---|---|
+  | synthetic: orange patch | 0.063 | 0.17 | **0.08** | 1.00 | 0.09 / 1.00 |
+  | synthetic: green patch | 0.075 | 0.05 | **0.04** | 1.00 | 0.04 / 1.00 |
+  | synthetic: blue patch | 0.069 | 0.06 | **0.04** | 1.00 | 0.04 / 1.00 |
+  | synthetic: yellow patch | 0.096 | 0.12 | **0.04** | 1.00 | 0.04 / 1.00 |
+  | portrait (JPEG) skin, cheek | 0.073 | 0.37 | **0.10** | 0.88 | 0.13 / 0.95 |
+  | portrait (JPEG) skin, forehead | 0.090 | 0.35 | **0.09** | 0.82 | 0.12 / 0.93 |
+  | portrait (JPEG) red curtain | 0.119 | 0.30 | **0.19** | 1.00 | 0.21 / 1.00 |
+  | portrait (JPEG) navy suit | 0.049 | 0.55 | **0.41** | 0.99 | 0.47 / 1.00 |
+  | woman (JPEG) skin, cheek | 0.080 | 0.25 | **0.10** | 0.57 | 0.14 / 0.67 |
+  | woman (JPEG) skin, hand | 0.051 | 0.96 | **0.15** | 0.91 | 0.43 / 0.95 |
+  | woman (JPEG) cream sweater | 0.001 | 0.89 | **0.80** | 1.00 | 0.83 / 1.00 |
+  | DSLR-A300 skin, cheek | 0.041 | 1.00 | **0.42** | 1.00 | 0.62 / 1.00 |
+  | DSLR-A300 skin, shoulder | 0.048 | 1.00 | **0.34** | 1.00 | 0.61 / 1.00 |
+  | DSLR-A300 beige wall | 0.016 | 0.99 | **0.78** | 1.00 | 0.95 / 1.00 |
+  | DSLR-A300 white wall | 0.011 | 0.92 | **0.65** | 1.00 | 0.68 / 1.00 |
+  | DSLR-A500 red brick | 0.014 | 0.92 | **0.79** | 0.81 | 0.91 / 1.00 |
+  | DSLR-A500 sky | 0.059 | 0.43 | **0.09** | 0.64 | 0.15 / 0.68 |
+  | ILCE-5000 yellow flowers | 0.027 | 0.91 | **0.43** | 0.47 | 0.50 / 0.61 |
+  | ILCE-5000 sky | 0.011 | 0.84 | **0.56** | 0.79 | 0.68 / 0.81 |
+  | ILCE-5000 wood | 0.026 | 0.91 | **0.43** | 0.96 | 0.50 / 0.97 |
+  | ILCE-6300 sky | 0.048 | 0.84 | **0.65** | 1.00 | 0.72 / 1.00 |
+  | ILCE-6300 foliage | 0.029 | 0.39 | **0.26** | 0.92 | 0.31 / 1.00 |
+  | ILCE-6300 brick tower | 0.035 | 0.36 | **0.21** | 0.90 | 0.27 / 0.93 |
 
-  "Kept" is the share of the 21 x 21 pixels around the click with `m > 0.5`: how much of the picked place the row holds. **Median share of the 13 real picks: 0.87 at 0.05 and 0.60 at 0.02; picks that select more than 80 % of the frame: 10 of 13 at 0.05 and 1 of 13 at 0.02 (the ploughed field, 0.81).** The width was chosen as the narrowest that still holds the picked place for most picks: at 0.015 the kept share falls to 0.75 or less for the ochre wall, the roof and the foliage, and 0.03 already takes in 95 % of the ploughed field. On the synthetic orange patch the row is clean through 0.03 (a share of 0.085 for a colour that is 0.083 of the frame), leaks at 0.04 (0.095) and reaches into the neutral patches at 0.05 (0.17). **A near-grey pick stays wide however narrow the row is** (the plough, the trees and the white monument, |c| below 0.01): their colour is the neutral axis that most of a photo crowds on, and no chroma width makes them local; the person narrows the row, adds a Brightness range or a shape. The survey has no photo of a person (no raw portrait is among the public sample photos); the warm wall and the orange patch stand in for skin (chroma 0.05 to 0.06, the low end of §2.1's 5 to 12). The Colour range's own default width stays 0.05 (the Add mask menu's row, `docs/23` §4.1); only this row is narrower. Nothing stored changes: the row is made at the pick, and a photo that has one keeps its own width.
+  **The rule:** the narrowest width at which at least 80 % of the 19 real public picks keep 0.75 of the picked place, and no pick selects more than 80 % of the frame. 0.015 keeps it on 15 of 19 (79 %); **0.02 on 16 of 19 (84 %) and no pick above 0.80**; 0.03 keeps it on the same 16 but takes in more than 80 % of the frame on three picks (the beige wall, the red brick, the cream sweater); 0.05, the old row, takes in more than 80 % on 11 of the 19. Median share over the 19 real picks: 0.84 at 0.05, 0.41 at 0.02 (0.50 at 0.03); over all 23 including the synthetic patches, 0.55 and 0.26. On the synthetic scene 0.02 selects exactly the picked colour's own patches and 0.05 reaches into the neutral ones (0.17 for an 8 % colour). The first survey of this task, made on the owner's own photos, also gave 0.02; it is **not** what the width rests on, and the three of those photos held out afterwards (7 picks; no pick above 0.80 at 0.02, five of seven keep 0.75) do not change it.
+  **What it costs:** skin lit unevenly keeps only part of itself at 0.02 (kept 0.88 and 0.82 on the portrait, 0.57 on the woman's cheek; 0.95 and 0.93, and 0.67, at 0.03), and a thin yellow flower pick keeps 0.47, because a chroma disc cannot follow shading and fine texture. The person widens the row (Width) when the first result leaves a part of the subject out; the slider starts at 23. **A near-grey pick stays wide however narrow the row is** (the cream sweater, |c| 0.001, selects 0.80 at 0.02; the white wall 0.65): grey is most of a photo, and no chroma width makes it local; the person narrows the row, adds a Brightness range or a shape. The Colour range's own default width stays 0.05 (the Add mask menu's row, `docs/23` §4.1) and shows the same reach on the same picks (the table's 0.05 column); only this row is narrower. Nothing stored changes: the row is made at the pick, and a photo that has one keeps its own width.
 
 The alternative (no automatic mask; a hint line in the empty Mask tab) is in §10.
 
@@ -406,7 +414,7 @@ Every gate must pass in CI (or the named job) before its task is done. **A faile
 
 **Approved 2026-11-18** (the owner, "Ok, approved", on the screenshots of CU-11 and on the two decisions flagged with them): the first pick adds a Colour range row, and the antipode fade of the hue pull stays at full to 90° and zero from 150° (§11, item 8).
 
-**The first pick also adds a Colour range mask row** (§2.3). With masks alone, a node with no mask acts on the whole photo: after a pick of skin, Hue 50 % would pull every non-grey colour in the photo halfway to orange. So the node's **first pick** adds one Colour range row centred on the picked colour, with a width of 0.02 (the slider reads 23; the Colour range's own default is 0.05, which selected 80 to 100 % of a real photo for most picks, the owner, 2026-11-21: §2.3 has the measurements) and the Colour range's softness (0.5), when the node has no mask rows and no key link. A later pick moves the target and leaves the masks alone. The pick and the row are one undo step. The person can widen the row, add other masks, or delete it in the Mask tab.
+**The first pick also adds a Colour range mask row** (§2.3). With masks alone, a node with no mask acts on the whole photo: after a pick of skin, Hue 50 % would pull every non-grey colour in the photo halfway to orange. So the node's **first pick** adds one Colour range row centred on the picked colour, with a width of 0.02 (the slider reads 23; the Colour range's own default is 0.05, which selected more than 80 % of the frame on 11 of 19 public picks, the owner, 2026-11-21: §2.3 has the measurements) and the Colour range's softness (0.5), when the node has no mask rows and no key link. A later pick moves the target and leaves the masks alone. The pick and the row are one undo step. The person can widen the row, add other masks, or delete it in the Mask tab.
 
 **The alternative:** no automatic mask. The first pick sets only the target and the amounts, and the empty Mask tab shows a hint line: "Colour Uniform acts on the whole photo until a mask limits it. Add mask › Colour range picks a colour to limit it." The first result would be global; the person adds the mask. **Recommended default: the automatic row** (it is what the mock-ups show). If the owner prefers the alternative, §2.1 loses its row, §2.3 and §5.3 lose the seed, the first pick's patch has no `masks.items`, and CU-08 and CU-09 gain the hint line.
 

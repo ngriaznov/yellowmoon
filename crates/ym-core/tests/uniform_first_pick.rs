@@ -199,95 +199,183 @@ fn the_first_picks_row_selects_the_picked_colour_and_not_the_whole_frame() {
     assert!(old.share > 0.12, "the old row selects {}", old.share);
 }
 
-/// The survey of `docs/32` section 10: synthetic patches, then the real photos of `testdata/` where they are at hand.
+/// A pick: a label and a share of the photo's width and height.
+type Pick<'a> = (&'a str, f64, f64);
+/// A file under `testdata/`, its aspect (width over height) and its picks.
+type Survey<'a> = (&'a str, f64, &'a [Pick<'a>]);
+
+fn link(from: &Path, to: &Path) {
+    std::os::unix::fs::symlink(from.canonicalize().expect("the file"), to).expect("a link");
+}
+
+fn testdata() -> std::path::PathBuf {
+    data_root().join("../testdata")
+}
+
+/// A public JPEG portrait as a raw file: its linear values on the camera's white (as `tests/face_real.rs` does), so skin has a skin chroma.
+fn developed_jpeg(path: &Path) -> Developed {
+    let mut d =
+        zune_jpeg::JpegDecoder::new(std::io::Cursor::new(std::fs::read(path).expect("photo")));
+    let rgb = d.decode().expect("decode");
+    let info = d.info().expect("header");
+    let white = light("sony-ilce-7rm4", 5500.0);
+    let (pw, w, h) = (
+        usize::from(info.width),
+        u32::from(info.width) & !1,
+        u32::from(info.height) & !1,
+    );
+    let scene = Scene::new(w, h, white, Layout::Uniform, 0.5).noise(0.0, 0.0);
+    let peak = white.iter().copied().fold(0.0, f64::max);
+    let decode = |v: u8| {
+        let e = f64::from(v) / 255.0;
+        if e <= 0.04045 {
+            e / 12.92
+        } else {
+            ((e + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let range = scene.white_level - scene.black;
+    let mut mosaic = Vec::with_capacity((w * h) as usize);
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let c = [0usize, 1, 1, 2][(y & 1) * 2 + (x & 1)];
+            let v = (0.9 * decode(rgb[(y * pw + x) * 3 + c]) * white[c] / peak).clamp(0.0, 1.0);
+            mosaic.push((scene.black + v * range).round() as u16);
+        }
+    }
+    let dir = tempfile::tempdir().expect("temp dir");
+    scene
+        .builder("ILCE-7RM4")
+        .write_to(&dir.path().join("DSC00001.ARW"), &mosaic)
+        .expect("write the synthetic ARW");
+    Developed::open(dir)
+}
+
+fn open_raw(path: &Path) -> Developed {
+    let dir = tempfile::tempdir().expect("temp dir");
+    link(path, &dir.path().join("DSC00001.ARW"));
+    Developed::open(dir)
+}
+
+/// One line of the table for a pick: its chroma, then for each width the mean and share of `m` and how much of the picked place is kept.
+fn report(r: &Renderer, label: &str, src: &PhotoSource, css: (f64, f64)) {
+    let c = picked(r, src, css);
+    let mut line = format!("{label}: |c| {:.4};", c.0.hypot(c.1));
+    for w in WIDTHS {
+        let t = selected(r, src, c, w, css);
+        line.push_str(&format!(
+            " w{w:.3}(s{:.0}) mean {:.3} share {:.3} kept {:.2};",
+            slider_of(w),
+            t.mean,
+            t.share,
+            t.kept
+        ));
+    }
+    println!("{line}");
+}
+
+/// The survey of `docs/32` section 10. **The width is chosen on public data only**: the synthetic patches, the public JPEG portraits of
+/// `tools/fetch/mediapipe.sh --photos` (skin, a red curtain, a dark suit, a cream sweater) and the public Sony raws of `tools/fetch/real-eval.sh`
+/// (a face and skin, walls, brick, sky, yellow flowers, foliage). Run with `YM_PICK_SURVEY=1 cargo test --release -p ym-core --test
+/// uniform_first_pick -- --ignored --nocapture`.
 #[test]
 #[ignore = "a survey that decodes real photos; prints the table of docs/32 section 10"]
-fn survey_of_the_first_picks_row() {
+fn survey_of_the_first_picks_row_on_public_data() {
     if std::env::var_os("YM_PICK_SURVEY").is_none() {
         return;
     }
     let r = renderer();
-    let print = |label: &str, src: &PhotoSource, css: (f64, f64)| {
-        let c = picked(&r, src, css);
-        let mut line = format!(
-            "{label}: chroma ({:+.4}, {:+.4}) |c| {:.4};",
-            c.0,
-            c.1,
-            c.0.hypot(c.1)
-        );
-        for w in WIDTHS {
-            let t = selected(&r, src, c, w, css);
-            line.push_str(&format!(
-                " w{w:.3}(s{:.0}) mean {:.3} share {:.3} kept {:.2};",
-                slider_of(w),
-                t.mean,
-                t.share,
-                t.kept
-            ));
-        }
-        println!("{line}");
-    };
     let d = patchwork();
-    for (k, name) in [
-        (3, "orange patch"),
-        (8, "green patch"),
-        (13, "blue patch"),
-        (18, "yellow patch"),
-    ] {
-        print(&format!("synthetic {name}"), &d.source(), patch_point(k));
+    for (k, name) in [(3, "orange"), (8, "green"), (13, "blue"), (18, "yellow")] {
+        report(
+            &r,
+            &format!("synthetic {name} patch"),
+            &d.source(),
+            patch_point(k),
+        );
     }
-    let root = data_root().join("../testdata");
-    // (file under testdata/, aspect, [(label, fx, fy)]).
-    let photos: [Survey; 4] = [
+    let jpegs: [Survey; 2] = [
         (
-            "readme-photos/src/A1M03159.ARW",
+            "mediapipe/photos/mp-portrait.jpg",
+            0.8,
+            &[
+                ("skin, cheek", 0.41, 0.20),
+                ("skin, forehead", 0.475, 0.09),
+                ("red curtain", 0.22, 0.12),
+                ("navy suit", 0.5, 0.62),
+            ],
+        ),
+        (
+            "mediapipe/photos/mp-woman-hands.jpg",
             2.0 / 3.0,
             &[
-                ("warm wall (skin-like)", 0.22, 0.30),
-                ("sky", 0.45, 0.07),
-                ("foliage", 0.40, 0.38),
-                ("white monument", 0.52, 0.58),
-            ],
-        ),
-        (
-            "readme-photos/src/A1M01454.ARW",
-            1.5,
-            &[
-                ("sky", 0.30, 0.10),
-                ("field", 0.50, 0.85),
-                ("trees", 0.30, 0.45),
-            ],
-        ),
-        (
-            "readme-photos/src/A1M01749.ARW",
-            1.5,
-            &[
-                ("ochre wall", 0.21, 0.43),
-                ("terracotta roof", 0.52, 0.44),
-                ("grass", 0.50, 0.88),
-            ],
-        ),
-        (
-            "readme-photos/src/A1M01739.ARW",
-            1.5,
-            &[
-                ("sky", 0.50, 0.08),
-                ("plough", 0.40, 0.65),
-                ("grass", 0.50, 0.90),
+                ("skin, cheek", 0.46, 0.54),
+                ("skin, hand", 0.55, 0.37),
+                ("cream sweater", 0.12, 0.48),
             ],
         ),
     ];
-    for (file, aspect, points) in photos {
-        let path = root.join(file);
+    for (file, aspect, points) in jpegs {
+        let path = testdata().join(file);
         if !path.exists() {
             println!("{file}: absent, skipped");
             continue;
         }
-        let dir = tempfile::tempdir().expect("temp dir");
-        link(&path, &dir.path().join("DSC00001.ARW"));
-        let d = Developed::open(dir);
+        let d = developed_jpeg(&path);
         for (label, fx, fy) in points {
-            print(
+            report(
+                &r,
+                &format!("{file} {label}"),
+                &d.source(),
+                cell_point(aspect, *fx, *fy),
+            );
+        }
+    }
+    let raws: [Survey; 4] = [
+        (
+            "real/files/DSLR-A300.ARW",
+            1.5,
+            &[
+                ("skin, cheek", 0.48, 0.54),
+                ("skin, shoulder", 0.73, 0.84),
+                ("beige wall", 0.20, 0.87),
+                ("white wall", 0.12, 0.25),
+            ],
+        ),
+        (
+            "real/files/DSLR-A500.ARW",
+            1.5,
+            &[("red brick", 0.17, 0.47), ("sky", 0.04, 0.03)],
+        ),
+        (
+            "real/files/ILCE-5000.ARW",
+            1.5,
+            &[
+                ("yellow flowers", 0.50, 0.47),
+                ("sky", 0.10, 0.30),
+                ("wood", 0.25, 0.85),
+            ],
+        ),
+        (
+            "real/files/ILCE-6300_craw.ARW",
+            1.5,
+            &[
+                ("sky", 0.15, 0.30),
+                ("foliage", 0.46, 0.87),
+                ("brick tower", 0.54, 0.72),
+            ],
+        ),
+    ];
+    for (file, aspect, points) in raws {
+        let path = testdata().join(file);
+        if !path.exists() {
+            println!("{file}: absent, skipped");
+            continue;
+        }
+        let d = open_raw(&path);
+        for (label, fx, fy) in points {
+            report(
+                &r,
                 &format!("{file} {label}"),
                 &d.source(),
                 cell_point(aspect, *fx, *fy),
@@ -296,9 +384,50 @@ fn survey_of_the_first_picks_row() {
     }
 }
 
-/// A file under `testdata/`, its aspect (width over height) and the picks: a label and a share of the width and of the height.
-type Survey<'a> = (&'a str, f64, &'a [(&'a str, f64, f64)]);
-
-fn link(from: &Path, to: &Path) {
-    std::os::unix::fs::symlink(from.canonicalize().expect("the file"), to).expect("a link");
+/// **Held out, not used to choose the width:** four Sony A1 raws that the owner allows as test data (`tools/fetch/owner-photos.sh`), run
+/// after the choice to see whether it holds on photos it was not chosen on.
+#[test]
+#[ignore = "held-out check on the owner's photos; not used to choose the width"]
+fn held_out_check_on_the_owners_photos() {
+    if std::env::var_os("YM_PICK_SURVEY").is_none() {
+        return;
+    }
+    let r = renderer();
+    let photos: [Survey; 3] = [
+        (
+            "readme-photos/src/A1M03159.ARW",
+            2.0 / 3.0,
+            &[
+                ("warm wall", 0.22, 0.30),
+                ("sky", 0.45, 0.07),
+                ("foliage", 0.40, 0.38),
+            ],
+        ),
+        (
+            "readme-photos/src/A1M01454.ARW",
+            1.5,
+            &[("sky", 0.30, 0.10), ("field", 0.50, 0.85)],
+        ),
+        (
+            "readme-photos/src/A1M01749.ARW",
+            1.5,
+            &[("ochre wall", 0.21, 0.43), ("grass", 0.50, 0.88)],
+        ),
+    ];
+    for (file, aspect, points) in photos {
+        let path = testdata().join(file);
+        if !path.exists() {
+            println!("{file}: absent, skipped");
+            continue;
+        }
+        let d = open_raw(&path);
+        for (label, fx, fy) in points {
+            report(
+                &r,
+                &format!("HELD OUT {file} {label}"),
+                &d.source(),
+                cell_point(aspect, *fx, *fy),
+            );
+        }
+    }
 }
