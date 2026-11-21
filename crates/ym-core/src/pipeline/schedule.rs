@@ -145,6 +145,36 @@ pub(crate) fn tiles_of(
     tiles
 }
 
+/// The tiles of a grid (`tiles`, row by row, as [`tiles_of`] makes them) whose bindings are tested for a grid of more than 16
+/// tiles: the four corners, where the photo's edge cuts the pieces most, and the tiles in the middle of the grid, which are
+/// grown by the reach on every side and are so the largest. An even number of columns or rows has two middles, so both are
+/// taken: the tile at index `n / 2` alone is on the first column of an even grid, where the photo's edge clips it, and a
+/// tile one in from the edge was larger than any tile tested (CI run 44869390323: a 706,464-byte buffer against a
+/// 699,050-byte limit in an 8 x 4 grid).
+#[must_use]
+pub(crate) fn sample_tiles(tiles: &[Tile]) -> Vec<Tile> {
+    let Some(first) = tiles.first() else {
+        return Vec::new();
+    };
+    let cols = tiles.iter().take_while(|t| t.1 == first.1).count().max(1);
+    let rows = tiles.len().div_ceil(cols);
+    let ends = [0, cols - 1];
+    let middles = [(cols - 1) / 2, cols / 2];
+    let mut picks: Vec<usize> = Vec::new();
+    // The corners, then the middle: the pairs (column, row) of both lists.
+    let corners = [0, rows - 1].into_iter().flat_map(|r| ends.map(|c| (c, r)));
+    let centre = [(rows - 1) / 2, rows / 2]
+        .into_iter()
+        .flat_map(|r| middles.map(|c| (c, r)));
+    for (c, r) in corners.chain(centre) {
+        let i = r * cols + c;
+        if i < tiles.len() && !picks.contains(&i) {
+            picks.push(i);
+        }
+    }
+    picks.into_iter().map(|i| tiles[i]).collect()
+}
+
 impl Shape {
     /// The tiles of a `(width, height)` window in this shape.
     #[must_use]
@@ -326,6 +356,34 @@ mod tests {
             }))
         })
         .expect("no error")
+    }
+
+    #[test]
+    fn the_sample_of_a_large_grid_holds_its_corners_and_its_interior() {
+        // An 8 x 4 grid of 80 x 105 tiles: the tile at index n / 2 is on the first column, where the photo's edge clips it.
+        let tiles = tiles_of(640, 420, 80, 105);
+        let picks = sample_tiles(&tiles);
+        for corner in [0, 7, 24, 31] {
+            assert!(picks.contains(&tiles[corner]), "corner {corner}");
+        }
+        // An interior tile (not on the first or last row or column) is among them.
+        assert!(
+            picks
+                .iter()
+                .any(|t| t.0 > 0 && t.0 < 560 && t.1 > 0 && t.1 < 315)
+        );
+        assert!(picks.len() <= 8);
+        // An odd grid has one middle; a grid of one row has no interior; none is repeated.
+        let odd = tiles_of(500, 300, 100, 100);
+        assert!(sample_tiles(&odd).contains(&odd[7]));
+        let row = tiles_of(400, 10, 10, 10);
+        let picks = sample_tiles(&row);
+        assert!(picks.contains(&row[0]) && picks.contains(&row[39]));
+        let mut unique = picks.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), picks.len());
+        assert!(sample_tiles(&[]).is_empty());
     }
 
     #[test]

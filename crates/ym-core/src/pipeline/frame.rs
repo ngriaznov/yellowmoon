@@ -117,7 +117,8 @@ use super::graph::{
     TileImage,
 };
 use super::schedule::{
-    NO_TILES, Shape, Tile, area_bytes, camera_bytes, picture_bytes, search_cut, tiles_of,
+    NO_TILES, Shape, Tile, area_bytes, camera_bytes, picture_bytes, sample_tiles, search_cut,
+    tiles_of,
 };
 use super::thumbs::{Tap, signal_source};
 use super::viewport::{MapFrom, MaskStyle, ViewportState};
@@ -2968,16 +2969,10 @@ fn band_split(
         },
         &mut |shape, tiles| {
             // The photo's edge cuts the pieces differently, so every piece of a cut into at most 16 is tested; of more
-            // tiles the four corners and the middle one are (the escaped buffer of G-12: the middle tile alone was not the
-            // largest at the photo's corner).
+            // tiles the four corners and the tiles in the middle of the grid are (`sample_tiles`: the escaped buffers of
+            // G-12 and of CI run 44869390323).
             let tested: Vec<(usize, usize, usize, usize)> = match shape {
-                Shape::Tiles(..) if tiles.len() > 16 => {
-                    let cols = tiles.iter().take_while(|t| t.1 == tiles[0].1).count();
-                    let n = tiles.len();
-                    let mut picks = vec![0, cols - 1, n / 2, n - cols, n - 1];
-                    picks.dedup();
-                    picks.into_iter().map(|i| tiles[i]).collect()
-                }
+                Shape::Tiles(..) if tiles.len() > 16 => sample_tiles(tiles),
                 _ => tiles.to_vec(),
             };
             let mut pixels = 0u64;

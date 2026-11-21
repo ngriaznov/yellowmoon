@@ -330,3 +330,92 @@ fn show_mask_does_not_run_the_blur() {
     );
     assert!(soft == other && soft == lens);
 }
+
+/// A view the binding forces into a grid of more than 16 tiles is checked on a sample of them (`sample_tiles`), and the sample
+/// holds the tiles in the middle of the grid, which are grown by the reach on every side and so the largest. The grid of CI run
+/// 44869390323 (seed 299 graph 2, Metal) was 8 x 4 tiles of 80 x 105 pixels: the sample was the corners and the tile at index
+/// `n / 2`, the first column of the middle row, where the photo's edge clips the tile, and the tile one in from the edge needed
+/// a 706,464-byte picture against a binding of 699,050. The view was refused for a buffer the cut had not counted, and the CPU
+/// made it, though a smaller cut fit. Two Blur nodes and two raster masks at a binding of 1 MiB, at radii that make grids of
+/// every cut up to 72 tiles: the device makes each frame, within 2 codes of the frame at 4 MiB.
+#[test]
+fn a_blur_view_cut_in_a_large_grid_is_checked_on_its_interior_tiles() {
+    let gpu = match Gpu::start(GpuConfig::default()) {
+        Ok(g) => Arc::new(g),
+        Err(e) => {
+            assert!(
+                !ym_gpu::device::gpu_required_by_env(),
+                "YM_REQUIRE_GPU is set but no GPU adapter could be opened: {e}"
+            );
+            eprintln!("\n* GPU TESTS SKIPPED in render_blur: {e}\n");
+            return;
+        }
+    };
+    let d = photo();
+    let device = |bytes: u64| {
+        Renderer::new(
+            Arc::new(NeutralOnly),
+            RenderOptions {
+                gpu: Some(Arc::clone(&gpu)),
+                gpu_stages: GpuStages::ALL,
+                data_root: Some(data_root()),
+                view_band_bytes: bytes,
+                ..RenderOptions::default()
+            },
+        )
+        .expect("render thread")
+    };
+    let st = ViewportState::new(ViewportRect::cell(1332.0, 888.0, 1.0));
+    let masks = json!({ "items": [
+        { "kind": "radial", "center": [0.5, 0.5], "feather": 0.4 },
+        { "kind": "linear", "center": [0.5, 0.5], "angle_deg": 20, "feather": 0.4 } ] });
+    let two = |radius: u32| {
+        let blur = |id: u32, x: f64| {
+            json!({ "id": id, "kind": "blur", "pos": [x, 0.0], "type": "soft",
+                "soft": { "radius": radius }, "masks": masks })
+        };
+        let doc = json!({ "nodes": { "items": [ { "id": 1 }, blur(2, 1.0), blur(3, 2.0) ], "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+            { "from": { "node": 3, "port": "picture" }, "to": { "node": "output", "port": "picture" } },
+        ] } });
+        serde_json::from_value::<DevelopSettings>(doc)
+            .expect("a document")
+            .validated()
+            .expect("a valid graph")
+            .0
+    };
+    let frame = |r: &Renderer, src: &PhotoSource| {
+        r.viewport_frame(src, &st, &FrameOptions::default(), &CancelToken::new())
+            .expect("frame")
+    };
+    // The two Blur nodes grow every piece by the sum of their reaches. At radius 34 the cut is 72 tiles, and the sample once
+    // missed the interior ones; a larger radius is the binding's floor (`docs/23` section 5.12), not checked here.
+    for radius in 24..=34u32 {
+        let src = d.source().with_settings(two(radius));
+        let want = frame(&device(4 << 20), &src);
+        let got = frame(&device(1 << 20), &src);
+        assert!(
+            got.report.device == ym_core::pipeline::ComputeDevice::Gpu
+                && !got.report.device_refused
+                && got.report.cpu_reason.is_none(),
+            "radius {radius}: {:?}, refused {}, reason {:?}",
+            got.report.device,
+            got.report.device_refused,
+            got.report.cpu_reason
+        );
+        assert!(got.report.runs.color_passes > 1, "radius {radius}: cut");
+        let worst = got
+            .rgba
+            .iter()
+            .zip(&want.rgba)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        assert!(
+            worst <= 2,
+            "radius {radius}: {worst} codes from the 4 MiB frame"
+        );
+    }
+}
