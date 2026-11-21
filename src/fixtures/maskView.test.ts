@@ -9,6 +9,36 @@ const row = (more: Record<string, unknown>): MaskItem => ({ mode: "add", invert:
 const radial = (more: Record<string, unknown> = {}): MaskItem => row({ kind: "radial", center: [0.5, 0.5], radii: [0.3, 0.2], angle_deg: 0, feather: 0.4, ...more });
 const masks = (items: MaskItem[], invert = false): MaskSettings => ({ invert, items });
 
+describe("maskViewSvg of a node that intersects (Mask Intersect, docs/algorithms/06 §3)", () => {
+  const intersecting = (items: MaskItem[], invert = false): MaskSettings => ({ invert, combine: "intersect", items });
+
+  it("starts white and paints each Add row by what it takes away, so that the rows multiply", () => {
+    const svg = maskViewSvg("mask_only", intersecting([radial(), radial({ center: [0.6, 0.5] })]), BOX);
+    // The start is the whole photo; each Add row is a black rectangle seen through a mask of its own (`o` minus the row's `a`).
+    expect(svg).toMatch(/<mask id="mvmask"[^>]*><rect [^>]*fill="#fff"\/>/);
+    expect(svg).not.toContain('stop-color="#fff"');
+    expect(svg).toContain('<mask id="mvim0"');
+    expect(svg).toContain('<mask id="mvim1"');
+    expect(svg.match(/fill="#000" mask="url\(#mvim\d\)"/g)?.length).toBe(2);
+  });
+
+  it("paints a Subtract row black as it is, and the node's Invert as the same picture inverted", () => {
+    const cut = maskViewSvg("mask_only", intersecting([radial(), radial({ mode: "subtract", radii: [0.1, 0.1] })]), BOX);
+    expect(cut).toContain("scale(60 60)");
+    // The Subtract row is painted black as it is, with no mask of its own.
+    expect(cut).not.toContain('<mask id="mvim1"');
+    const inverted = maskViewSvg("mask_only", intersecting([radial()], true), BOX);
+    expect(inverted).toContain('filter="url(#mvinvert)"');
+  });
+
+  it("is the whole photo with no rows and, for a row's own eye, the row alone as it is in Add", () => {
+    expect(maskViewSvg("mask_only", intersecting([]), BOX)).toMatch(/<mask [^>]*><rect [^>]*fill="#fff"\/><\/mask>/);
+    const eye = masksOfView(intersecting([radial()]), 0);
+    expect(eye.combine).toBeUndefined();
+    expect(eye.items).toHaveLength(1);
+  });
+});
+
 describe("maskViewSvg", () => {
   it("tints the accent at 0.55 over the picture's rectangle through the mask, for Overlay", () => {
     const svg = maskViewSvg("overlay", masks([radial()]), BOX);

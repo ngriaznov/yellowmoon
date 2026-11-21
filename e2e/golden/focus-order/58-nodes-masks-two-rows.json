@@ -28,6 +28,7 @@
     {"role":"button","name":"Add mask","outline":"solid","ring":"outline"},
     {"role":"button","name":"Invert","outline":"solid","ring":"outline"},
     {"role":"button","name":"Reset","outline":"solid","ring":"outline"},
+    {"role":"radio","name":"Add","outline":"solid","ring":"outline"},
     {"role":"switch","name":"Turn this mask off","outline":"solid","ring":"outline"},
     {"role":"button","name":"Object mask, 2 points","outline":"solid","ring":"outline"},
     {"role":"radio","name":"Add","outline":"solid","ring":"outline"},

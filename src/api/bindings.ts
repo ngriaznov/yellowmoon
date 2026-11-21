@@ -2520,12 +2520,15 @@ export type MaskPatch = {
 	high?: number | null,
 };
 
-/**  A node's masks: its Invert and the rows. */
+/**
+ *  A node's masks: its Invert and the rows. Serialising leaves `combine` out at Add (the core writes the document so, and it refuses a
+ *  `null`); the derive cannot do that without `skip_serializing_if`, which the unified TypeScript export refuses, hence the manual `Serialize`.
+ */
 export type MaskSettings = {
 	/**  The node's Invert: `m = 1 - m`. */
 	invert: boolean,
-	/**  How the rows combine; the core leaves it out of a written document at Add. */
-	combine: MaskCombine,
+	/**  How the rows combine; left out (Add) in a document that does not intersect, as the core writes it. */
+	combine?: MaskCombine | null,
 	/**  The rows, in the order they are drawn and combined, at most 64. */
 	items: MaskItem[],
 };

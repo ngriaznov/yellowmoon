@@ -64,6 +64,7 @@ const rowList = (): HTMLElement => within(tools()).getByRole("list", { name: "Ma
 const rowButton = (name: string | RegExp): HTMLElement => within(rowList()).getByRole("button", { name });
 const rowOf = (name: string | RegExp): HTMLElement => rowButton(name).closest("li") as HTMLElement;
 const masks = (node: number): MaskItem[] => (nodeOf(h!.store.currentSettings()!.settings, node) as CorrectorItem).masks.items;
+const combineOf = (node: number): string => (nodeOf(h!.store.currentSettings()!.settings, node) as CorrectorItem).masks.combine ?? "add";
 const invertOf = (node: number): boolean => (nodeOf(h!.store.currentSettings()!.settings, node) as CorrectorItem).masks.invert;
 const edit = (node: number, index: number, row: object): SettingsPatch => patchOf(node, { masks: { edit: { [String(index)]: row } } });
 async function undo(): Promise<void> {
@@ -279,7 +280,7 @@ describe("the node's Invert and Reset", () => {
     expect(cardTitles()).toContain("Radial");
     spy.mockClear();
     await h!.user.click(within(card("Masks")).getByRole("button", { name: "Reset" }));
-    await waitFor(() => expect(patches(spy)).toEqual([patchOf(3, { masks: { items: [], invert: false } })]));
+    await waitFor(() => expect(patches(spy)).toEqual([patchOf(3, { masks: { items: [], invert: false, combine: "add" } })]));
     expect(masks(3)).toEqual([]);
     expect(invertOf(3)).toBe(false);
     expect(within(tools()).queryByRole("list", { name: "Masks of this node" })).toBeNull();
@@ -1130,5 +1131,112 @@ describe("Copy settings and Paste (docs/23 §3.8)", () => {
     // One undo step takes the whole paste back.
     await undo();
     await waitFor(() => expect(nodeOf(h!.store.currentSettings()!.settings, 2)).toBeUndefined());
+  });
+});
+
+describe("the combine control (Mask Intersect, docs/23 §7.6)", () => {
+  const INTERSECT: SettingsPatch = {
+    nodes: {
+      "2": { kind: "corrector", name: "Mountain", pos: [1, 0], masks: { invert: false, combine: "intersect", items: [LINEAR, { ...RADIAL, mode: "add" }] } },
+      "3": { kind: "corrector", name: "Sky", pos: [2, 0], masks: { invert: false, items: [OBJECT, RADIAL] } },
+    },
+    links: [picture("input", 1), picture(1, 2), picture(2, 3), picture(3, "output")],
+  };
+  const control = (): HTMLElement => within(card("Masks")).getByRole("radiogroup", { name: "How the masks combine" });
+  const segment = (name: string): HTMLElement => within(control()).getByRole("radio", { name });
+  const ADD_LINE = "Masks add up. Subtract cuts a mask out. Colour and brightness ranges keep only their part of the rest.";
+  const INTERSECT_LINE = "Only where every mask overlaps counts. Subtract cuts a mask out.";
+
+  it("is a radio group of Add and Intersect under the card's header and above the rows, Add chosen by default, with the Add line", async () => {
+    await setup();
+    expect(within(control()).getAllByRole("radio").map((e) => e.textContent)).toEqual(["Add", "Intersect"]);
+    expect(segment("Add")).toHaveAttribute("aria-checked", "true");
+    expect(segment("Intersect")).toHaveAttribute("aria-checked", "false");
+    // The header keeps Add mask, Invert and Reset; the control is the card's first line, above the rows (it does not fit in the header: docs/23 §7.6).
+    const follows = (a: Element, b: Element): boolean => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(within(card("Masks")).getByRole("button", { name: "Reset" }), control())).toBe(true);
+    expect(follows(control(), rowList())).toBe(true);
+    expect(within(card("Masks")).getByText(ADD_LINE)).toBeInTheDocument();
+    expect(within(card("Masks")).queryByText(INTERSECT_LINE)).toBeNull();
+  });
+
+  it("reads Intersect from the document and shows the Intersect line", async () => {
+    await setup(INTERSECT, {}, /^Node 2, Mountain/);
+    expect(segment("Intersect")).toHaveAttribute("aria-checked", "true");
+    expect(within(card("Masks")).getByText(INTERSECT_LINE)).toBeInTheDocument();
+    expect(within(card("Masks")).queryByText(ADD_LINE)).toBeNull();
+  });
+
+  it("sends one masks.combine patch and nothing else, shows it at once, and undoes in one step", async () => {
+    const spy = await setup();
+    await h!.user.click(segment("Intersect"));
+    await waitFor(() => expect(patches(spy)).toEqual([patchOf(3, { masks: { combine: "intersect" } })]));
+    expect(combineOf(3)).toBe("intersect");
+    expect(masks(3)).toHaveLength(2);
+    expect(segment("Intersect")).toHaveAttribute("aria-checked", "true");
+    expect(within(card("Masks")).getByText(INTERSECT_LINE)).toBeInTheDocument();
+    // Another node is untouched.
+    expect(combineOf(2)).toBe("add");
+    await undo();
+    await waitFor(() => expect(combineOf(3)).toBe("add"));
+    expect(within(card("Masks")).getByText(ADD_LINE)).toBeInTheDocument();
+    expect(segment("Add")).toHaveAttribute("aria-checked", "true");
+    // Redo is one step too.
+    await h!.user.keyboard("{Meta>}{Shift>}z{/Shift}{/Meta}");
+    await waitFor(() => expect(combineOf(3)).toBe("intersect"));
+  });
+
+  it("is moved by the arrow keys inside the group, and clicking the chosen segment sends nothing", async () => {
+    const spy = await setup();
+    segment("Add").focus();
+    await h!.user.keyboard("{ArrowRight}");
+    await waitFor(() => expect(combineOf(3)).toBe("intersect"));
+    await waitFor(() => expect(segment("Intersect")).toHaveFocus());
+    spy.mockClear();
+    await h!.user.click(segment("Intersect"));
+    expect(patches(spy)).toEqual([]);
+  });
+
+  it("shows Reset for an Intersect node with no rows, and Reset puts the switch back to Add with the rows removed and Invert off", async () => {
+    const spy = await setup(INTERSECT, {}, /^Node 2, Mountain/);
+    await h!.user.click(within(card("Masks")).getByRole("button", { name: "Invert" }));
+    await waitFor(() => expect(invertOf(2)).toBe(true));
+    spy.mockClear();
+    await h!.user.click(within(card("Masks")).getByRole("button", { name: "Reset" }));
+    await waitFor(() => expect(patches(spy)).toEqual([patchOf(2, { masks: { items: [], invert: false, combine: "add" } })]));
+    expect(combineOf(2)).toBe("add");
+    expect(masks(2)).toEqual([]);
+    expect(invertOf(2)).toBe(false);
+    expect(segment("Add")).toHaveAttribute("aria-checked", "true");
+    // Reset is gone with nothing to reset, and back for an Intersect node with no row.
+    expect(within(card("Masks")).queryByRole("button", { name: "Reset" })).toBeNull();
+    await h!.user.click(segment("Intersect"));
+    await waitFor(() => expect(within(card("Masks")).getByRole("button", { name: "Reset" })).toBeInTheDocument());
+    // One undo step takes the whole reset back.
+    await h!.user.click(within(card("Masks")).getByRole("button", { name: "Reset" }));
+    await waitFor(() => expect(combineOf(2)).toBe("add"));
+    await undo();
+    await waitFor(() => expect(combineOf(2)).toBe("intersect"));
+  });
+
+  it("has the tooltip sentence", async () => {
+    await setup();
+    await h!.user.hover(control());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("How the masks combine: Add joins them, Intersect keeps only where they all overlap.");
+  });
+
+  it("is on a Colour Uniform node and a Blur node too, which have the corrector's Mask tab", async () => {
+    const nodes: SettingsPatch = {
+      nodes: {
+        "2": { kind: "color_uniform", name: "Uniform", pos: [1, 0], masks: { invert: false, combine: "intersect", items: [LINEAR] } },
+        "3": { kind: "blur", name: "Blur", pos: [2, 0], masks: { invert: false, items: [LINEAR] } },
+      },
+      links: [picture("input", 1), picture(1, 2), picture(2, 3), picture(3, "output")],
+    };
+    await setup(nodes, {}, /^Node 2, Uniform/);
+    expect(segment("Intersect")).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("button", { name: /^Node 3, Blur/ }));
+    await h!.user.click(await within(tools()).findByRole("tab", { name: "Mask" }));
+    await waitFor(() => expect(segment("Add")).toHaveAttribute("aria-checked", "true"));
   });
 });

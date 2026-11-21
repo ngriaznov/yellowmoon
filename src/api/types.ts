@@ -501,8 +501,8 @@ export type MaskItem =
 /** A node's masks: its Invert (`m = 1 − m`) and the rows, in the order they are drawn and combined, at most 64. */
 export interface MaskSettings {
   invert: boolean;
-  /** Left out (read as `"add"`) unless the node intersects its masks. */
-  combine?: MaskCombine;
+  /** Left out (read as `"add"`) unless the node intersects its masks; the core never sends `null`. */
+  combine?: MaskCombine | null;
   items: MaskItem[];
 }
 

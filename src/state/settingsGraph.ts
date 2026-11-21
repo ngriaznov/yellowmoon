@@ -645,7 +645,9 @@ export function applyMasks(masks: CorrectorItem["masks"], patch: MasksPatch): Co
       return edit ? applyRowPatch(row, edit) : row;
     });
   }
-  return { invert: patch.invert ?? masks.invert, items };
+  // `combine` is kept only at Intersect, as the core writes it: a document at Add has no such field (`docs/23` §3.3).
+  const combine = patch.combine ?? masks.combine ?? "add";
+  return { invert: patch.invert ?? masks.invert, ...(combine !== "add" ? { combine } : {}), items };
 }
 
 function applyGrade(grade: NodeGrade, patch: GradePatch): NodeGrade {
@@ -804,6 +806,10 @@ function diffMasks(before: CorrectorItem["masks"], after: CorrectorItem["masks"]
   if (before.invert !== after.invert) {
     b.invert = before.invert;
     a.invert = after.invert;
+  }
+  if ((before.combine ?? "add") !== (after.combine ?? "add")) {
+    b.combine = before.combine ?? "add";
+    a.combine = after.combine ?? "add";
   }
   if (!same(before.items, after.items)) {
     const rowsMatch = before.items.length === after.items.length && before.items.every((row, i) => row.kind === (after.items[i] as MaskItem).kind);

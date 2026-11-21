@@ -1178,16 +1178,30 @@ pub enum MaskItem {
     },
 }
 
-/// A node's masks: its Invert and the rows.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+/// A node's masks: its Invert and the rows. Serialising leaves `combine` out at Add (the core writes the document so, and it refuses a
+/// `null`); the derive cannot do that without `skip_serializing_if`, which the unified TypeScript export refuses, hence the manual `Serialize`.
+#[derive(Debug, Clone, PartialEq, Deserialize, Type)]
 pub struct MaskSettings {
     /// The node's Invert: `m = 1 - m`.
     pub invert: bool,
-    /// How the rows combine; the core leaves it out of a written document at Add.
+    /// How the rows combine; left out (Add) in a document that does not intersect, as the core writes it.
     #[serde(default)]
-    pub combine: MaskCombine,
+    pub combine: Option<MaskCombine>,
     /// The rows, in the order they are drawn and combined, at most 64.
     pub items: Vec<MaskItem>,
+}
+
+impl Serialize for MaskSettings {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("invert", &self.invert)?;
+        if let Some(combine) = &self.combine {
+            map.serialize_entry("combine", combine)?;
+        }
+        map.serialize_entry("items", &self.items)?;
+        map.end()
+    }
 }
 
 /// The Input: the raw, light and framing settings (`docs/23` section 3.2).
