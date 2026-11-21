@@ -66,7 +66,7 @@ describe("a mask edit shows at once", () => {
     expect(spy).toHaveBeenCalledTimes(1);
     expect(rowsOf(store)[1]).toMatchObject({ width: 0.2 });
     await store.undo();
-    expect(rowsOf(store)[1]).toMatchObject({ width: 0.05 });
+    expect(rowsOf(store)[1]).toMatchObject({ width: 0.02 });
   });
 });
 

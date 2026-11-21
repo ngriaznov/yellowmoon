@@ -287,7 +287,7 @@ and, by kind (sizes are fractions of the photo's long edge; points are in the ph
 | `linear` | `center` `[x, y]` ([0.5, 0.5]), `angle_deg` −180…180 (0), `feather` 0…1 (0.2) |
 | `radial` | `center` ([0.5, 0.5]), `radii` `[rx, ry]` 0.002…1 ([0.25, 0.18]), `angle_deg` (0), `feather` 0…1 (0.3) |
 | `brush` | `strokes` `[{ size 0.001…0.25 (0.03), hardness 0…1 (0.5), erase (false), points [[x, y]] }]` (at most 100,000 points in all; `[]`), `feather` (0), `grow` (0), `refine` (0) |
-| `color_range` | `center` `[a, b]` in the C9 chroma plane, length at most 0.5 ([0, 0]), `width` 0.005…0.3 (0.05), `softness` 0…1 (0.5) |
+| `color_range` | `center` `[a, b]` in the C9 chroma plane, length at most 0.5 ([0, 0]), `width` 0.005…0.3 (0.05 when a document leaves it out; **a new row the page makes starts at 0.02**, the slider reads 23: the owner, 2026-11-21, "0.02 for new rows", after `docs/32` §2.3's survey, where 0.05 selected more than 80 % of the frame on 11 of 19 public real picks and 0.02 on none), `softness` 0…1 (0.5) |
 | `brightness_range` | `low` 0…1 (0.35), `high` 0…1 (1), `softness` 0…1 (0.5); `low` above `high` is read as both at their mean |
 
 The numbers are what the sliders show divided or scaled as `docs/algorithms/06` section 4.5 says. An Object row with no `points` and no `box` **selects nothing**.

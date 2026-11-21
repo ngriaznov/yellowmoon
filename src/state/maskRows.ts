@@ -102,11 +102,12 @@ const plural = (n: number, one: string, many: string): string => `${n} ${n === 1
 export const COLOR_RANGE_REACH = 0.5;
 
 /**
- * The width of the Colour range row that the first pick of a Colour Uniform node adds (`docs/32` §2.3, the slider reads 23): narrower than the Colour range's own
- * default of 0.05, which selected more than 80 % of the frame on 11 of 19 public real picks. The reasons and the table are in `docs/32` §2.3 and §10; the
- * core's `tests/uniform_first_pick.rs` holds the same number.
+ * The width a **new** Colour range row starts with, from the Add mask menu or from the first pick of a Colour Uniform node (the slider reads 23): narrower than the
+ * 0.05 the core reads when a document leaves `width` out (that parse default stays, so no stored document changes). The owner, 2026-11-21: "0.02 for new rows".
+ * At 0.05 a row selected more than 80 % of the frame on 11 of 19 public real picks; at 0.02 none (`docs/32` §2.3 has the measurements, the core's
+ * `tests/uniform_first_pick.rs` the same number).
  */
-export const FIRST_PICK_WIDTH = 0.02;
+export const NEW_COLOR_RANGE_WIDTH = 0.02;
 
 /** The most mask rows a node may hold (`docs/23` §3.5) and the sentence the core gives when it would hold more. */
 export const MAX_MASKS = 64;
@@ -136,7 +137,7 @@ export function newMask(kind: MaskKind, mode: MaskMode = "add"): MaskItem {
     case "brush":
       return { ...base, ...edge, refine: 0, kind, strokes: [] };
     case "color_range":
-      return { ...base, kind, center: [0, 0], width: 0.05, softness: 0.5 };
+      return { ...base, kind, center: [0, 0], width: NEW_COLOR_RANGE_WIDTH, softness: 0.5 };
     case "brightness_range":
       return { ...base, kind, low: 0.35, high: 1, softness: 0.5 };
   }

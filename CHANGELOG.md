@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Changed
+
+- **A new Colour range mask starts narrower, so it selects one colour rather than most of the photo.** Add mask › Colour range now starts at Width 23 instead of 39, as the first pick of a Colour Uniform node does. On public sample photos the old width selected more than 80 % of the frame on 11 of 19 picks; the new one on none. Masks already in a photo, preset or album keep their width.
+
 ### Fixed
 
 - **An Object mask works on every node that has masks.** Clicking the photo to select an object failed with "That mask is not an Object mask. Select an Object mask and try again." when the Object mask was on a Film, Face Refinement, Colour Uniform or Blur node (it worked on Main and on correctors). The core looked for the row only in Main and the correctors. It now looks in any node that has masks, and the page does the same for the point count, the Depth, Background and Brush rows, Subject and People finding, and the Link key menu. Saved settings and pictures are unchanged.
