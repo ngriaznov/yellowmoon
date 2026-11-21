@@ -289,6 +289,40 @@ describe("what the row says while the core works", () => {
   });
 });
 
+/** Main, then one node of this kind with an empty Object row, then the Output: an Object row on a node that is not a corrector (0.2.4-beta.4). */
+const ON_KIND = (item: Record<string, unknown>): SettingsPatch => ({
+  nodes: { "2": { ...item, pos: [1, 0], masks: { invert: false, items: [OBJECT()] } } as never },
+  links: [picture("input", 1), picture(1, 2), picture(2, "output")],
+});
+
+describe("an Object row on a node that is not a corrector", () => {
+  const KINDS: Array<[string, Record<string, unknown>, RegExp]> = [
+    ["a Film node", { kind: "film", name: "Stock" }, /^Node 2, Stock/],
+    ["a Colour Uniform node", { kind: "color_uniform", name: "Uniform" }, /^Node 2, Uniform/],
+    ["a Blur node", { kind: "blur", name: "Soften", type: "soft", soft: { radius: 10 } }, /^Node 2, Soften/],
+  ];
+  it.each(KINDS)("on %s a click on the hill finds the object: one patch with the point, and the pill", async (_name, item, button) => {
+    const spy = await setup(button, {}, ON_KIND(item));
+    await h!.user.click(within(rowList()).getByRole("button", { name: /^Object mask/ }));
+    await waitFor(() => expect(layer()).toHaveAttribute("data-tool", "add"));
+    spy.mockClear();
+    click(...HILL);
+    await waitFor(() => expect(objectRow(2, 0).points).toEqual([[0.5, 0.7, true]]));
+    expect(patches(spy)).toHaveLength(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(await screen.findByText(/^Object found/)).toBeInTheDocument();
+  });
+
+  it("the mock's mask_find answers for the row of a Colour Uniform node", async () => {
+    await setup(/^Node 2, Uniform/, {}, ON_KIND({ kind: "color_uniform", name: "Uniform" }));
+    const answer = await h!.api.maskFind(h!.store.currentPhoto()!.id, 2, 0, { kind: "point", x: 0.5, y: 0.7, positive: true });
+    expect(answer).toMatchObject({ kind: "found", points: [[0.5, 0.7, true]] });
+    await expect(h!.api.maskFind(h!.store.currentPhoto()!.id, 2, 3, { kind: "point", x: 0.5, y: 0.7, positive: true })).rejects.toMatchObject({
+      message: "That mask is not an Object mask. Select an Object mask and try again.",
+    });
+  });
+});
+
 describe("Esc, Crop, a pick and Before", () => {
   it("Esc ends the tool and leaves the points drawn; the layer takes nothing then", async () => {
     await setup(/^Node 2, Mountain/);

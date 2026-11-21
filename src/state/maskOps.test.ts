@@ -9,7 +9,7 @@ describe("a new mask row (docs/23 §3.3)", () => {
   it("has the defaults of its kind, in Add mode, on, not inverted, at full opacity", () => {
     expect(newMask("linear")).toEqual({ kind: "linear", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.5, 0.5], angle_deg: 0, feather: 0.2 });
     expect(newMask("radial")).toMatchObject({ center: [0.5, 0.5], radii: [0.25, 0.18], angle_deg: 0, feather: 0.3 });
-    expect(newMask("color_range")).toMatchObject({ center: [0, 0], width: 0.05, softness: 0.5 });
+    expect(newMask("color_range")).toMatchObject({ center: [0, 0], width: 0.02, softness: 0.5 });
     expect(newMask("brightness_range")).toMatchObject({ low: 0.35, high: 1, softness: 0.5 });
     expect(newMask("object")).toMatchObject({ points: [], box: null, feather: 0, grow: 0, refine: 0.5 });
     expect(newMask("brush")).toMatchObject({ strokes: [], feather: 0, grow: 0, refine: 0 });

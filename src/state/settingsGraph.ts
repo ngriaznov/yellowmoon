@@ -118,6 +118,16 @@ export function correctorsOf(settings: DevelopSettings): CorrectorItem[] {
 export const isCardItem = (item: NodeItem | undefined): item is CardItem =>
   item?.kind === "corrector" || item?.kind === "film" || item?.kind === "face_refinement" || item?.kind === "color_uniform" || item?.kind === "blur";
 
+/**
+ * The mask rows of a node, whatever its kind: every node that has a card has them (the same kinds as {@link isCardItem}, as the core's `masks_of`).
+ * `undefined` for the Input, the Output, a mixer and a node the document does not have. Use this where a node "that has masks" is meant, so a kind added
+ * later needs no edit at the call sites.
+ */
+export const masksOf = (item: NodeItem | undefined): MasksOf | undefined => (isCardItem(item) ? item.masks : undefined);
+
+/** The mask rows and the Invert of a node that has masks. */
+export type MasksOf = CardItem["masks"];
+
 /** Every node that has a card, in the order the document lists them: the correctors, the Film nodes, the Face Refinement nodes, the Colour Uniform nodes and the Blur nodes, by id. */
 export function cardsOf(settings: DevelopSettings): CardItem[] {
   return settings.nodes.items.filter(isCardItem);

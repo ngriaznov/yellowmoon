@@ -564,8 +564,8 @@ impl Renderer {
         let row: &ObjectMask = src
             .settings
             .nodes
-            .corrector(node)
-            .and_then(|c| c.masks.items.get(mask))
+            .masks_of(node)
+            .and_then(|m| m.items.get(mask))
             .and_then(|r| match &r.shape {
                 MaskShape::Object(o) => Some(o),
                 _ => None,

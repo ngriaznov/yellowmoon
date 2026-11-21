@@ -14,6 +14,7 @@ import {
   inputOf,
   MAIN_ID,
   mainOf,
+  masksOf,
   numberedOf,
   OUTPUT_ID,
   outputOf,
@@ -77,12 +78,13 @@ export function groupValue(settings: DevelopSettings, group: PresetGroup): unkno
 
 /** Empties the Brush rows of a node (a preset never holds strokes, `docs/30` section 3); Object clicks are emptied by `copiedPatch`. */
 function withoutStrokes(item: NodeItem): NodeItem {
-  if ((item.kind !== "corrector" && item.kind !== "film") || !item.masks.items.some((row) => row.kind === "brush")) return item;
+  const masks = masksOf(item);
+  if (!masks?.items.some((row) => row.kind === "brush")) return item;
   return {
     ...item,
     masks: {
-      ...item.masks,
-      items: item.masks.items.map((row) => (row.kind === "brush" ? { ...row, strokes: [] } : row)),
+      ...masks,
+      items: masks.items.map((row) => (row.kind === "brush" ? { ...row, strokes: [] } : row)),
     },
   } as NodeItem;
 }

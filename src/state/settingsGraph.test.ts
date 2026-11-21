@@ -20,6 +20,7 @@ import {
   MAIN_ID,
   mainOf,
   mainPatch,
+  masksOf,
   newCorrector,
   nodeAsPatch,
   nodeOf,
@@ -463,5 +464,19 @@ describe("withoutLook and same", () => {
     expect(same({ a: 1 }, { a: 1, b: undefined })).toBe(false);
     expect(same([1, 2], [1, 2, 3])).toBe(false);
     expect(same(null, undefined)).toBe(false);
+  });
+});
+
+describe("masksOf", () => {
+  it("gives the mask rows of every kind of node that has masks, and nothing for the others", () => {
+    const base = defaultSettings();
+    const row = (id: number, kind: string): never => ({ id, kind, name: kind, pos: [id, 0], masks: { invert: false, items: [] } }) as never;
+    const items = [row(2, "corrector"), row(3, "film"), row(4, "face_refinement"), row(5, "color_uniform"), row(6, "blur")];
+    for (const item of items as Array<{ id: number; kind: string; masks: unknown }>) expect(masksOf(item as never)).toBe(item.masks);
+    expect(masksOf(mainOf(base))).toBe(mainOf(base).masks);
+    expect(masksOf(inputOf(base))).toBeUndefined();
+    expect(masksOf(outputOf(base))).toBeUndefined();
+    expect(masksOf(undefined)).toBeUndefined();
+    expect(masksOf({ id: 7, kind: "parallel" } as never)).toBeUndefined();
   });
 });

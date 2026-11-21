@@ -9,6 +9,16 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Changed
+
+- **A new Colour range mask starts narrower, so it selects one colour rather than most of the photo.** Add mask › Colour range now starts at Width 23 instead of 39, as the first pick of a Colour Uniform node does. On public sample photos the old width selected more than 80 % of the frame on 11 of 19 picks; the new one on none. Masks already in a photo, preset or album keep their width.
+
+### Fixed
+
+- **An Object mask works on every node that has masks.** Clicking the photo to select an object failed with "That mask is not an Object mask. Select an Object mask and try again." when the Object mask was on a Film, Face Refinement, Colour Uniform or Blur node (it worked on Main and on correctors). The core looked for the row only in Main and the correctors. It now looks in any node that has masks, and the page does the same for the point count, the Depth, Background and Brush rows, Subject and People finding, and the Link key menu. Saved settings and pictures are unchanged.
+- **Pick colour on a Colour Uniform node turns off after each pick.** After a click on the photo sets the target, the Pick colour button now shows unpressed, every time and not only after the first pick. Press it again for another pick; Esc still ends a pick that is on. The Pick colour of the Colour warp and of a Colour range work as before.
+- **The Colour range that the first pick adds is no longer so wide.** It was as wide as a new Colour range (Width 39) and, on public sample photos, selected more than 80 % of the frame on 11 of 19 picks (median 84 %), so the first result acted on nearly the whole picture. It is now Width 23, which selects 41 % of the frame (median) and never more than 80 %, and on a plain scene only the picked colour's own area. Skin lit unevenly can leave a part of the face out; widen the row with Width then. A very grey pick, such as a ploughed field or a white wall, still selects a lot, because grey is most of a photo: narrow the row, or add another mask. A photo that already has such a row keeps it. Saved pictures are unchanged.
+
 ## [0.2.4-beta.4] - 2026-11-20
 
 A fourth pre-release (a beta) for testing. It fixes **Pick colour** on a new Colour Uniform node and **Show mask** on a Film-like node with a linked key, and adds two safeguards for removing a node. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is unchanged at 0.14.0, so pictures are the same as in beta 3.

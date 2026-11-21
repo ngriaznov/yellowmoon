@@ -171,6 +171,7 @@ import {
   MIXER_NAMES,
   mainGradePatch,
   mainOf,
+  masksOf,
   neutralGrade,
   nodeOf,
   OUTPUT_ID,
@@ -1181,7 +1182,7 @@ function withoutRetired(stored: Preferences): Preferences {
 
 /** Whether the photo's graph has a Depth row with the eye on: the mock then "makes" the photo's depth map in the background. */
 const hasDepthRow = (settings: DevelopSettings): boolean =>
-  settings.nodes.items.some((node) => (node.kind === "corrector" || node.kind === "film") && node.masks.items.some((row) => row.kind === "depth" && row.enabled));
+  settings.nodes.items.some((node) => masksOf(node)?.items.some((row) => row.kind === "depth" && row.enabled) === true);
 
 /** Whether the photo's graph has a Face Refinement node: the mock then "finds" the photo's faces in the background. */
 const hasFaceNode = (settings: DevelopSettings): boolean => settings.nodes.items.some((node) => node.kind === "face_refinement");
@@ -3762,7 +3763,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         if (!options.maskKinds.includes("object")) fail("mask", "This copy of Yellowmoon has no Object model. Reinstall the app.");
         const rec = photo(photoId);
         const item = nodeOf(rec.settings, node);
-        const row = item?.kind === "corrector" ? item.masks.items[mask] : undefined;
+        const row = masksOf(item)?.items[mask];
         if (row?.kind !== "object") fail("mask", "That mask is not an Object mask. Select an Object mask and try again.");
         if (prompt.kind === "point" && row.points.length >= 256) fail("mask", "An Object mask can have up to 256 points.");
         // The click waits for the encoder if it is still running, then takes a moment of its own.

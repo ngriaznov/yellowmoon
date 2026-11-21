@@ -51,6 +51,8 @@ describe("Pick colour of a Colour Uniform node", () => {
     expect(picked.compress.saturation).toBeGreaterThan(0);
     expect(picked.masks.items).toHaveLength(1);
     expect(picked.masks.items[0]!.kind).toBe("color_range");
+    // The row is narrower than the Colour range's own default of 0.05 (docs/32 §2.3).
+    expect(picked.masks.items[0]).toMatchObject({ width: 0.02, softness: 0.5 });
   });
 
   it("undoes the first pick in one step, back to the node as it was added", async () => {

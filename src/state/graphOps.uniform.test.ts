@@ -6,6 +6,7 @@ import type { DevelopSettings, NodeLink, SettingsPatch } from "../api/types";
 import { validateGraph } from "../fixtures/graph";
 import { headLine, insertAfter, pickUniform, resetNode } from "./graphOps";
 import type { GraphOutcome } from "./graphOps";
+import { NEW_COLOR_RANGE_WIDTH, widthSlider } from "./maskRows";
 import { applyPatch, defaultSettings, diffGraph, nodeOf } from "./settingsGraph";
 import type { ColorUniformItem } from "./settingsGraph";
 
@@ -95,8 +96,13 @@ describe("pickUniform (docs/32 sections 2.1 and 2.3)", () => {
     expect(node.target!.saturation).toBeCloseTo(10, 6);
     expect(node.compress).toEqual({ hue: 50, saturation: 50, lightness: 0 });
     expect(node.masks.items).toHaveLength(1);
-    const row = node.masks.items[0] as unknown as { kind: string; center: [number, number] };
+    const row = node.masks.items[0] as unknown as { kind: string; center: [number, number]; width: number; softness: number };
     expect(row.kind).toBe("color_range");
+    // Narrower than the Colour range's own 0.05 (the slider reads 23, not 39), with its default softness (docs/32 §2.3).
+    expect(row.width).toBe(NEW_COLOR_RANGE_WIDTH);
+    expect(NEW_COLOR_RANGE_WIDTH).toBe(0.02);
+    expect(widthSlider(row.width)).toBe(23);
+    expect(row.softness).toBe(0.5);
     expect(row.center[0]).toBeCloseTo(0.06, 9);
     expect(row.center[1]).toBeCloseTo(0.08, 9);
   });

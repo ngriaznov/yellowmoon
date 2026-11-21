@@ -475,7 +475,7 @@ describe("the selected mask's card: sliders write one field each with the scales
     await h!.user.click(within(card("Colour range")).getByRole("button", { name: "Reset" }));
     await waitFor(() => expect(masks(2)[0]).toEqual(newMask("color_range", "subtract")));
     const last = patches(spy).at(-1);
-    expect(last).toEqual(edit(2, 0, { center: [0, 0], width: 0.05, softness: 0.5, opacity: 1, invert: false, enabled: true }));
+    expect(last).toEqual(edit(2, 0, { center: [0, 0], width: 0.02, softness: 0.5, opacity: 1, invert: false, enabled: true }));
   });
 
   it("Brightness range: Low and High are the code values times 100, and Low never goes above High", async () => {

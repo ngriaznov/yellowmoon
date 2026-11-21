@@ -332,6 +332,103 @@ fn the_row_acts_in_a_frame_and_its_mask_follows_the_points_not_the_grade() {
     assert_eq!(r.object_encodes(src.id), 1, "the encoder ran once");
 }
 
+// ---- the Object row on every node that has masks ---------------------------------------------------------
+
+/// Input, Main, then node 2 of this kind (`None`: the rows are on Main), Output; `row` is the node's one Object row.
+fn graph_on(kind: Option<&str>, row: Value) -> DevelopSettings {
+    let masks = json!({ "invert": false, "items": [row] });
+    let mut items = vec![json!({ "id": 1 })];
+    let target = match kind {
+        None => {
+            items[0]["masks"] = masks;
+            1
+        }
+        Some(k) => {
+            let mut n = json!({ "id": 2, "kind": k, "pos": [1.0, 0.0], "masks": masks });
+            if k == "blur" {
+                n["type"] = json!("soft");
+                n["soft"] = json!({ "radius": 10 });
+            }
+            items.push(n);
+            2
+        }
+    };
+    let mut links = vec![
+        json!({ "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } }),
+    ];
+    if target != 1 {
+        links.push(json!({ "from": { "node": 1, "port": "picture" }, "to": { "node": target, "port": "picture" } }));
+    }
+    links.push(json!({ "from": { "node": target, "port": "picture" }, "to": { "node": "output", "port": "picture" } }));
+    let doc = json!({ "nodes": { "items": items, "links": links } });
+    serde_json::from_value::<DevelopSettings>(doc)
+        .expect("a document")
+        .validated()
+        .expect("a valid graph")
+        .0
+}
+
+#[test]
+fn mask_find_finds_the_object_for_an_object_row_on_every_node_that_has_masks() {
+    let Some(model) = model() else { return };
+    let r = renderer(model);
+    let d = disc_photo();
+    // Main, a corrector, and the four kinds of nodes with their own masks (`NodeGraph::masks_of`).
+    let kinds: [Option<&str>; 6] = [
+        None,
+        Some("corrector"),
+        Some("film"),
+        Some("face_refinement"),
+        Some("color_uniform"),
+        Some("blur"),
+    ];
+    for kind in kinds {
+        let node = if kind.is_some() { 2 } else { 1 };
+        let empty = d
+            .source()
+            .with_settings(graph_on(kind, object_row(json!({}))));
+        let answer = r
+            .mask_find(&empty, node, 0, point(0.45, 0.5, true), &CancelToken::new())
+            .unwrap_or_else(|e| panic!("{kind:?}: {e}"));
+        let MaskFound::Found { points, box_, .. } = answer else {
+            panic!("{kind:?}: the click on the disc finds nothing");
+        };
+        assert_eq!(points.len(), 1, "{kind:?}");
+        // A render with the found points uses the row: the node's mask is not empty and is not the empty row's.
+        let with = d.source().with_settings(graph_on(
+            kind,
+            object_row(json!({ "points": points, "box": box_ })),
+        ));
+        r.object_prepare(&with);
+        wait_until("the features", 120, || r.object_ready(&with));
+        let (c_with, c_empty) = (
+            coverage(&frame(&r, &with, &mask_view(node))),
+            coverage(&frame(&r, &empty, &mask_view(node))),
+        );
+        assert!(c_with > 0.01 && c_with < 0.6, "{kind:?}: covers {c_with}");
+        assert!(c_with != c_empty, "{kind:?}: the row changes nothing");
+    }
+    // A row that is not an Object row, and a node with no masks, are still refused.
+    let radial = d.source().with_settings(graph_on(
+        Some("film"),
+        json!({ "kind": "radial", "mode": "add" }),
+    ));
+    assert!(
+        r.mask_find(&radial, 2, 0, point(0.45, 0.5, true), &CancelToken::new())
+            .is_err()
+    );
+    assert!(
+        r.mask_find(
+            &d.source(),
+            9,
+            0,
+            point(0.45, 0.5, true),
+            &CancelToken::new()
+        )
+        .is_err()
+    );
+}
+
 // ---- the background encoder, the cache, mask_find ---------------------------------------------------------
 
 #[test]
