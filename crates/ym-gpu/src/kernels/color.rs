@@ -290,9 +290,6 @@ pub(crate) const NODE_FACE: u32 = 4096;
 /// light, by the node's mask, is done by the pass that made it), so the pixel takes it as it is where `m` is above 0 and
 /// does not blend it again.
 pub(crate) const NODE_BLUR: u32 = 16384;
-/// The node's mask rows combine as an intersection (`N_INTERSECT`, `docs/algorithms/06` section 3): every row multiplies. The
-/// accumulators and the rows' values are chosen with `select`; the control flow of the Add fold is the same.
-pub(crate) const NODE_INTERSECT: u32 = 32768;
 /// The step is a Colour Uniform node's (`N_UNIFORM`, `docs/32` section 6): after the trims, C9, C9b and C11 (a node of this kind
 /// has none of them) the kernel pulls the colour toward the target held in the record's grade rows ([`R_UNI_T`], [`R_UNI_K`],
 /// [`R_UNI_R`]). Set only for a live step: a node at its identity is [`NODE_SKIP`].
@@ -502,13 +499,20 @@ pub(crate) struct MaskOpU {
 
 impl MaskOpU {
     /// The row for a prepared mask op.
-    fn of(op: &MaskOp) -> Self {
+    fn of(op: &MaskOp, intersect: bool) -> Self {
         let p = op.params.map(|v| v as f32);
+        // An intersection is the Add fold's own subtract: the row's factor f = 1 - o (1 - a) for an add row and 1 - o a for a subtract
+        // row is `1 - a'` with a' = o a (subtract row, same Invert) or a' = o (1 - a) (an add row: a subtract row with Invert flipped).
+        // The kernel then folds acc (1 - a'), which is the product, with the code of main: no kernel change for Intersect.
+        let (subtract, invert) = if intersect {
+            (true, op.invert != !op.subtract)
+        } else {
+            (op.subtract, op.invert)
+        };
         Self {
             head: [
                 op.kind.code(),
-                if op.subtract { MASK_SUBTRACT } else { 0 }
-                    | if op.invert { MASK_INVERT } else { 0 },
+                if subtract { MASK_SUBTRACT } else { 0 } | if invert { MASK_INVERT } else { 0 },
                 // A raster row names its plane; one with no plane (a kind this machine cannot make) is NODE_NONE.
                 if op.kind == OpKind::Raster && op.params[0] < f64::from(u32::MAX) {
                     op.params[0] as u32
@@ -1408,14 +1412,12 @@ impl NodePlan {
             if masks.invert() {
                 bits |= NODE_INVERT;
             }
-            if masks.intersect() {
-                bits |= NODE_INTERSECT;
-            }
             if masks.needs_luma() {
                 bits |= NODE_LUMA;
             }
             let first_row = mask_rows.len() as u32;
-            mask_rows.extend(masks.ops().iter().map(MaskOpU::of));
+            let intersect = masks.intersect();
+            mask_rows.extend(masks.ops().iter().map(|op| MaskOpU::of(op, intersect)));
             r.ctl[0] = bits;
             r.wire = [
                 picture_ref(step.picture),
@@ -2715,7 +2717,6 @@ mod tests {
             NODE_JOIN,
             NODE_FACE,
             NODE_BLUR,
-            NODE_INTERSECT,
         ];
         assert!(others.iter().all(|b| b & NODE_UNIFORM == 0));
         assert!(
