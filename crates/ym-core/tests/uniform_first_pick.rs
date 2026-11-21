@@ -238,7 +238,7 @@ fn survey_of_the_first_picks_row() {
     }
     let root = data_root().join("../testdata");
     // (file under testdata/, aspect, [(label, fx, fy)]).
-    let photos: [(&str, f64, &[(&str, f64, f64)]); 4] = [
+    let photos: [Survey; 4] = [
         (
             "readme-photos/src/A1M03159.ARW",
             2.0 / 3.0,
@@ -295,6 +295,9 @@ fn survey_of_the_first_picks_row() {
         }
     }
 }
+
+/// A file under `testdata/`, its aspect (width over height) and the picks: a label and a share of the width and of the height.
+type Survey<'a> = (&'a str, f64, &'a [(&'a str, f64, f64)]);
 
 fn link(from: &Path, to: &Path) {
     std::os::unix::fs::symlink(from.canonicalize().expect("the file"), to).expect("a link");
