@@ -35,8 +35,17 @@ async function expectLinks(page: Page, when: string): Promise<void> {
 async function drag(page: Page, id: number, dx: number, dy: number, steps = 2): Promise<void> {
   const box = await page.locator(`[data-node-card="${id}"]`).boundingBox();
   if (!box) throw new Error(`card ${id} is not on screen`);
-  const x = box.x + box.width / 2;
-  const y = box.y + box.height / 2;
+  // Grab the card at the middle of the part of it that lies inside the canvas. The page clips a card at the canvas's edge, and the graph bar
+  // above the canvas (its Delete button among them) is then what the mouse is over: a press there is a click on the bar, not a drag of the card.
+  const canvas = await page.locator(".ym-flow").boundingBox();
+  if (!canvas) throw new Error("the canvas is not on screen");
+  const left = Math.max(box.x, canvas.x);
+  const right = Math.min(box.x + box.width, canvas.x + canvas.width);
+  const top = Math.max(box.y, canvas.y);
+  const bottom = Math.min(box.y + box.height, canvas.y + canvas.height);
+  if (right - left < 20 || bottom - top < 20) throw new Error(`card ${id} is outside the canvas: the test drifted it away`);
+  const x = (left + right) / 2;
+  const y = (top + bottom) / 2;
   await page.mouse.move(x, y);
   await page.mouse.down();
   await page.mouse.move(x + dx, y + dy, { steps });
@@ -52,8 +61,10 @@ test("the links stay drawn through many drags, pans and selections", async ({ pa
   await expectLinks(page, "when the graph opens");
 
   // Quick drops, one after the other with no pause: the case that lost the links (it showed in 1 run of 3 within 40 drops).
+  // Each card goes up 30 px on its turn and down 30 on the next (the turns are every fourth drop), and right for 30 drops and left for 30, so the
+  // cards stay about where they were. With a sign by `i % 2` the cards 1 and 3 only ever went up and left the canvas, under the graph bar.
   for (let i = 0; i < 60; i++) {
-    await drag(page, 1 + (i % 4), i < 30 ? 10 : -10, i % 2 ? 30 : -30);
+    await drag(page, 1 + (i % 4), i < 30 ? 10 : -10, Math.floor(i / 4) % 2 ? 30 : -30);
     await expectLinks(page, `after drop ${i + 1}`);
   }
 
