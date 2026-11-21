@@ -2968,15 +2968,20 @@ fn band_split(
             (false, false) => 0,
         },
         &mut |shape, tiles| {
-            // The photo's edge cuts the pieces differently, so every piece of a cut into at most 16 is tested; of more
-            // tiles the four corners and the tiles in the middle of the grid are (`sample_tiles`: the escaped buffers of
-            // G-12 and of CI run 44869390323).
-            let tested: Vec<(usize, usize, usize, usize)> = match shape {
+            // A shape is accepted only when every one of its pieces fits: the cut's invariant is for every piece, not for a
+            // sample (the escaped buffers of G-12 and of CI run 44869390323, and at 147 % a piece's read area depends on its
+            // fractional offset). Of a grid of more than 16 tiles the corners and the middle tiles are measured first
+            // (`sample_tiles`), so that a shape that does not fit is rejected after a few pieces; the rest follow only for a
+            // shape whose sample fits. The pixels are the sum over every piece.
+            let sample: Vec<(usize, usize, usize, usize)> = match shape {
                 Shape::Tiles(..) if tiles.len() > 16 => sample_tiles(tiles),
-                _ => tiles.to_vec(),
+                _ => Vec::new(),
             };
             let mut pixels = 0u64;
-            for &(x, y, w, h) in &tested {
+            for &(x, y, w, h) in sample
+                .iter()
+                .chain(tiles.iter().filter(|t| !sample.contains(t)))
+            {
                 match measure(job, &tile_of(spec, x, y, w, h))? {
                     Ok(px) => pixels += px,
                     Err(over) => {
@@ -2985,9 +2990,7 @@ fn band_split(
                     }
                 }
             }
-            // Of a sample of tiles, their mean cost stands for every tile.
-            let scaled = pixels * tiles.len() as u64 / tested.len().max(1) as u64;
-            Ok::<Option<u64>, RenderError>(Some(scaled))
+            Ok::<Option<u64>, RenderError>(Some(pixels))
         },
     )?;
     tracing::debug!(
@@ -3001,6 +3004,8 @@ fn band_split(
     );
     if shape.is_none() {
         let (requested, limit) = last.unwrap_or((0, route.band_bytes));
+        // The planner's own refusal: no cut of the view fits, and no pass has run for it (`RenderReport::cut_refused`).
+        job.cut_refused = true;
         job.view_gpu_failed(&GpuError::BufferTooLarge { requested, limit })?;
     }
     Ok(shape)

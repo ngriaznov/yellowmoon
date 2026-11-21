@@ -1923,6 +1923,7 @@ mod tests {
                 notes: Vec::new(),
                 device_refused: false,
                 cpu_reason: None,
+                cut_refused: false,
                 zoom: None,
                 lens: None,
             },

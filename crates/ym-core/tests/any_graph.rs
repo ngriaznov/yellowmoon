@@ -1627,15 +1627,14 @@ fn every_generated_graph_stays_on_the_device_at_any_binding_size() {
                 cut_frames += usize::from(passes > 1);
                 most_passes = most_passes.max(passes);
                 line.push(format!("{what} {passes}"));
-                // The one resource limit: the pieces of a graph with a Film node (and the raster rows before it) are the piece grown by their summed
-                // reach on every side, so a piece cannot be smaller than that, and a binding under the smallest piece's
-                // pictures leaves no cut that fits. The CPU makes such a frame, with the bytes the smallest piece needs.
-                // A live Face Refinement node is the same: its regions are made whole (`FilmStack::widen`), so the picture the node
-                // makes over a view is at least the regions it meets, and a binding under it has no cut that fits (`docs/27` S-13).
-                let film_nodes = g.nodes.iter().filter(|k| **k == NodeKind::Film).count()
-                    + usize::from(g.face_live);
+                // The one resource limit, a floor: the planner found no cut. The pieces of a view are the piece grown by the summed
+                // reach of the spatial steps (Film, Face Refinement and Blur alike) and the raster rows before them, so a binding
+                // under the smallest piece's pictures leaves no cut of at most 256 pieces that fits, and the CPU makes the frame
+                // (`RenderReport::cut_refused`: `band_split` ended with no shape, and no device pass ran). The report says it,
+                // not the graph's node kinds. A size refusal after the planner accepted a cut is a miscount of the planner and
+                // always a failure (CI run 44869390323), whatever the nodes.
                 let floor = got.report.device != ComputeDevice::Gpu
-                    && film_nodes >= 1
+                    && got.report.cut_refused
                     && got.report.device_refused
                     && got.report.cpu_reason.as_deref().is_some_and(|r| {
                         r.contains("byte buffer is larger than the adapter's limit")

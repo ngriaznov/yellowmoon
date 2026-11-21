@@ -592,6 +592,11 @@ pub struct RenderReport {
     /// buffer that does not fit one binding, an error). `None` when the device made it, or never was asked. Logged in
     /// the `ym::perf` line as `route=cpu(reason)`.
     pub cpu_reason: Option<String>,
+    /// The planner found no cut: no division of a view into at most 256 pieces has every buffer of every piece within the
+    /// device's bindings (the summed reach of the spatial steps alone fills a binding), so the CPU made the frame and no device
+    /// pass was run for it (`docs/23` section 5.12, *Limits*). `false` for any other CPU frame: a size refusal after a cut was
+    /// accepted is a miscount of the planner, and a bug.
+    pub cut_refused: bool,
     /// The zoom of the frame, for a viewport frame ([`Renderer::viewport_frame`] sets it, also on a
     /// frame served from the cache); `None` for every other request.
     pub zoom: Option<FrameZoom>,
@@ -2115,6 +2120,8 @@ pub(crate) struct Job<'a> {
     device_refused: bool,
     /// The first reason the CPU took over ([`RenderReport::cpu_reason`]).
     cpu_reason: Option<String>,
+    /// The planner found no cut ([`RenderReport::cut_refused`]).
+    pub(crate) cut_refused: bool,
     started: Instant,
     params: Option<RawParams>,
     /// The decoded area of this request (see [`Job::frame`]).
@@ -2233,6 +2240,7 @@ impl<'a> Job<'a> {
             notes: Vec::new(),
             device_refused: false,
             cpu_reason: None,
+            cut_refused: false,
             started: Instant::now(),
             params: None,
             frame: None,
@@ -2514,6 +2522,7 @@ impl<'a> Job<'a> {
             notes: std::mem::take(&mut self.notes),
             device_refused: self.device_refused,
             cpu_reason: self.cpu_reason.take(),
+            cut_refused: self.cut_refused,
             zoom: None,
             lens,
         };

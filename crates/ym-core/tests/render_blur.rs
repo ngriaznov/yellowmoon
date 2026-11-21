@@ -418,4 +418,23 @@ fn a_blur_view_cut_in_a_large_grid_is_checked_on_its_interior_tiles() {
             "radius {radius}: {worst} codes from the 4 MiB frame"
         );
     }
+    // From radius 36 no cut of at most 256 tiles fits 1 MiB: the planner's floor. The CPU makes the frame, and the report says the
+    // planner refused (`cut_refused`), which is what the binding sweep excuses; a device frame never says it.
+    let floor = frame(&device(1 << 20), &d.source().with_settings(two(36)));
+    assert!(
+        floor.report.device == ym_core::pipeline::ComputeDevice::Cpu
+            && floor.report.cut_refused
+            && floor.report.device_refused
+            && floor
+                .report
+                .cpu_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("byte buffer is larger than the adapter's limit")),
+        "radius 36: {:?}, cut_refused {}, reason {:?}",
+        floor.report.device,
+        floor.report.cut_refused,
+        floor.report.cpu_reason
+    );
+    let fits = frame(&device(1 << 20), &d.source().with_settings(two(34)));
+    assert!(!fits.report.cut_refused, "radius 34 has a cut");
 }
