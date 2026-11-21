@@ -290,6 +290,9 @@ pub(crate) const NODE_FACE: u32 = 4096;
 /// light, by the node's mask, is done by the pass that made it), so the pixel takes it as it is where `m` is above 0 and
 /// does not blend it again.
 pub(crate) const NODE_BLUR: u32 = 16384;
+/// The node's mask rows combine as an intersection (`N_INTERSECT`, `docs/algorithms/06` section 3): every row multiplies. The
+/// accumulators and the rows' values are chosen with `select`; the control flow of the Add fold is the same.
+pub(crate) const NODE_INTERSECT: u32 = 32768;
 /// The step is a Colour Uniform node's (`N_UNIFORM`, `docs/32` section 6): after the trims, C9, C9b and C11 (a node of this kind
 /// has none of them) the kernel pulls the colour toward the target held in the record's grade rows ([`R_UNI_T`], [`R_UNI_K`],
 /// [`R_UNI_R`]). Set only for a live step: a node at its identity is [`NODE_SKIP`].
@@ -1404,6 +1407,9 @@ impl NodePlan {
             }
             if masks.invert() {
                 bits |= NODE_INVERT;
+            }
+            if masks.intersect() {
+                bits |= NODE_INTERSECT;
             }
             if masks.needs_luma() {
                 bits |= NODE_LUMA;
@@ -2709,6 +2715,7 @@ mod tests {
             NODE_JOIN,
             NODE_FACE,
             NODE_BLUR,
+            NODE_INTERSECT,
         ];
         assert!(others.iter().all(|b| b & NODE_UNIFORM == 0));
         assert!(

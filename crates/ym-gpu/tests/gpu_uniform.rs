@@ -395,6 +395,7 @@ fn a_pixel_with_mask_0_is_the_inputs_bits_and_one_with_mask_1_the_nodes() {
                 softness: 0.2,
             })],
             invert: false,
+            ..NodeMasks::default()
         },
         ..node(step(26.0, 9.7, 0.0, (80.0, 80.0, 40.0)))
     };

@@ -732,6 +732,7 @@ fn chain_params(g: &PlanGraph, stop: plan::Stop) -> ChainParams {
                     softness: 0.6,
                 })],
                 invert: false,
+                ..NodeMasks::default()
             },
             ..NodeParams::default()
         },
