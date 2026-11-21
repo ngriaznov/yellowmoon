@@ -900,8 +900,8 @@ fn mask_select(kind: u32, plane: u32, rpix: u32, p0: vec4<f32>, p1: vec4<f32>, v
 // 1 - (1 - acc)(1 - a) and a subtract as acc (1 - a), the first row of a group taken exactly (a added, 1 - a subtracted);
 // m = R K with a group that has no row 1, and the node's Invert gives 1 - m. With N_INTERSECT the rows multiply instead (docs/algorithms/06
 // section 3): an add row gives f = o a + (1 - o) and a subtract row f = 1 - o a (a without its opacity), each group starts at 1 and
-// folds acc f. The same loop and the same branches serve both rules: every value that differs is picked with select, so the control flow
-// of the Add fold is what it was (the llvmpipe lesson of docs/STATUS.md: no new branch near the mask code).
+// folds acc f. The Add fold is 853e5522's code line for line; the intersection has its own two product accumulators, which the Add fold never
+// reads, and one select at the end picks the rule, so the control flow of the Add fold is what it was (the llvmpipe lesson of docs/STATUS.md: no new branch near the mask code).
 fn node_mask(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, pos: vec2<f32>, rpix: u32, key_in: f32, has_key: bool) -> f32 {
     let bits = nu(ni, R_CTL).x;
     let rows = nu(ni, R_WIRE);
@@ -913,41 +913,47 @@ fn node_mask(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, pos: vec
         }
         l_in = logc4_encode(dot(Y_AWG4, lin));
     }
-    let intersect = (bits & N_INTERSECT) != 0u;
     var regions = key_in;
     var has_regions = has_key;
     var ranges = 0.0;
     var has_ranges = false;
+    // The intersection's products (N_INTERSECT): their own accumulators, which the Add fold below never reads. The Add fold is
+    // the code of 853e5522 line for line; the rule is picked once, at the end, by a select.
+    var i_regions = select(1.0, key_in, has_key);
+    var i_ranges = 1.0;
     for (var i = 0u; i < rows.z; i++) {
         let b = CU.mrow.x + (rows.w + i) * MASK_ROW_VEC4;
         let head = nodes[b];
         let s = mask_select(head.x, head.z, rpix, bitcast<vec4<f32>>(nodes[b + 1u]), bitcast<vec4<f32>>(nodes[b + 2u]), v_in, l_in, pos);
-        var a0 = s;
+        var a = s;
         if ((head.y & MF_INVERT) != 0u) {
-            a0 = 1.0 - s;
+            a = 1.0 - s;
         }
         let o = bitcast<f32>(head.w);
-        let a = o * a0;
+        a = o * a;
         let subtract = (head.y & MF_SUBTRACT) != 0u;
         // The row's factor in an intersection: o a + (1 - o) for an add (a at o = 1, 1 at o = 0), 1 - o a for a subtract.
         let f = select(a + (1.0 - o), 1.0 - a, subtract);
+        let is_range = head.x == MK_COLOR || head.x == MK_BRIGHTNESS;
+        i_ranges = i_ranges * select(1.0, f, is_range);
+        i_regions = i_regions * select(f, 1.0, is_range);
         if (head.x == MK_COLOR || head.x == MK_BRIGHTNESS) {
             if (!has_ranges) {
-                ranges = select(select(a, 1.0 - a, subtract), f, intersect);
+                ranges = select(a, 1.0 - a, subtract);
                 has_ranges = true;
             } else if (subtract) {
-                ranges = select(ranges * (1.0 - a), ranges * f, intersect);
+                ranges = ranges * (1.0 - a);
             } else {
-                ranges = select(1.0 - (1.0 - ranges) * (1.0 - a), ranges * f, intersect);
+                ranges = 1.0 - (1.0 - ranges) * (1.0 - a);
             }
         } else {
             if (!has_regions) {
-                regions = select(select(a, 1.0 - a, subtract), f, intersect);
+                regions = select(a, 1.0 - a, subtract);
                 has_regions = true;
             } else if (subtract) {
-                regions = select(regions * (1.0 - a), regions * f, intersect);
+                regions = regions * (1.0 - a);
             } else {
-                regions = select(1.0 - (1.0 - regions) * (1.0 - a), regions * f, intersect);
+                regions = 1.0 - (1.0 - regions) * (1.0 - a);
             }
         }
     }
@@ -958,6 +964,7 @@ fn node_mask(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, pos: vec
     if (has_ranges) {
         m = m * ranges;
     }
+    m = select(m, i_regions * i_ranges, (bits & N_INTERSECT) != 0u);
     if ((bits & N_INVERT) != 0u) {
         m = 1.0 - m;
     }
