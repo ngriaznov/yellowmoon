@@ -164,9 +164,15 @@ test.describe("Pick colour", () => {
     await clickPhoto(page, 0.5, 0.3);
     await expect.poll(async () => (await uniformOf(page))?.masks.items.length).toBe(1);
     const first = (await uniformOf(page))?.target;
+    // The first pick turned Pick colour off; the button turns it on for the second.
+    await expect(pickButton(page)).toHaveAttribute("data-state", "off");
+    await pickButton(page).click();
     await clickPhoto(page, 0.5, 0.9);
     await expect.poll(async () => JSON.stringify((await uniformOf(page))?.target)).not.toBe(JSON.stringify(first));
     expect((await uniformOf(page))?.masks.items).toHaveLength(1);
+    // The pick leaves with the tab: on again, then to the Mask tab.
+    await pickButton(page).click();
+    await expect(pickLayer(page)).toBeVisible();
     await page.getByRole("tab", { name: "Mask", exact: true }).click();
     await expect(pickLayer(page)).toHaveCount(0);
   });
