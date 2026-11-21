@@ -182,6 +182,7 @@ def manifest(full: bool = True) -> dict:
     entries.extend(soft_blur_entries(entries))
     entries.extend(motion_blur_entries(entries))
     entries.extend(lens_blur_entries(entries))
+    entries.extend(mask_intersect_entries(entries))
     return {"entries": entries}
 
 
@@ -359,3 +360,43 @@ def lens_blur_entries(entries: list[dict]) -> list[dict]:
         entry["settings"] = {"nodes": {"items": [node], "links": links}}
         out.append(entry)
     return out
+
+
+# The golden entry with Mask Intersect on (MI-05, docs/23 section 4.2): the same ARW file as the entry of ``UNIFORM_BASE`` under
+# settings that add one corrector after Main with an exposure trim of -1 EV and three rows that combine as an intersection
+# (``masks.combine`` is ``"intersect"``): two overlapping Radial rows, the second at Opacity 60 %, and a Colour range at the
+# neutral axis. So the picture is darkened only where both ovals and the greys overlap, with the second oval's edge half open.
+# A new entry, so no existing hash moves; `expected.json` pins its picture from the pipeline version that has the field.
+def mask_intersect_entries(entries: list[dict]) -> list[dict]:
+    """The golden entry with Mask Intersect on: a copy of the entry of ``UNIFORM_BASE`` with settings that add the corrector after
+    Main. No sidecar (a node moves the picture from the scene's truth on purpose)."""
+    base = next(e for e in entries if e["id"] == f"synthetic/{UNIFORM_BASE}__lossless-l")
+    node = {
+        "id": 2,
+        "kind": "corrector",
+        "name": "Overlap",
+        "pos": [1, 0],
+        "trim": {"exposure_ev": -1.0},
+        "masks": {
+            "invert": False,
+            "combine": "intersect",
+            "items": [
+                {"kind": "radial", "mode": "add", "invert": False, "enabled": True, "opacity": 1,
+                 "center": [0.42, 0.5], "radii": [0.34, 0.3], "angle_deg": 0, "feather": 0.3},
+                {"kind": "radial", "mode": "add", "invert": False, "enabled": True, "opacity": 0.6,
+                 "center": [0.6, 0.5], "radii": [0.34, 0.3], "angle_deg": 0, "feather": 0.3},
+                {"kind": "color_range", "mode": "add", "invert": False, "enabled": True, "opacity": 1,
+                 "center": [0.0, 0.0], "width": 0.2, "softness": 0.5},
+            ],
+        },
+    }
+    links = [
+        {"from": {"node": "input", "port": "picture"}, "to": {"node": 1, "port": "picture"}},
+        {"from": {"node": 1, "port": "picture"}, "to": {"node": 2, "port": "picture"}},
+        {"from": {"node": 2, "port": "picture"}, "to": {"node": "output", "port": "picture"}},
+    ]
+    entry = {k: v for k, v in base.items() if k != "sidecar"}
+    entry["id"] = f"synthetic/node-mask-intersect__{UNIFORM_BASE}__lossless-l"
+    entry["group"] = "node-mask-intersect"
+    entry["settings"] = {"nodes": {"items": [node], "links": links}}
+    return [entry]

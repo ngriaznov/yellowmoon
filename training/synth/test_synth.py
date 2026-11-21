@@ -746,6 +746,10 @@ class Recipes(unittest.TestCase):
             if e.get("group") == "node-blur":
                 # the Soft Blur entries (docs/33 section 8, BL-06)
                 self.assertEqual([i["kind"] for i in e["settings"]["nodes"]["items"]], ["blur"])
+            elif e.get("group") == "node-mask-intersect":
+                # the golden entry with Mask Intersect on (docs/23 section 4.2, MI-05): one corrector whose masks intersect
+                self.assertEqual([i["kind"] for i in e["settings"]["nodes"]["items"]], ["corrector"])
+                self.assertEqual(e["settings"]["nodes"]["items"][0]["masks"]["combine"], "intersect")
             elif e.get("group") == "node-uniform":
                 # the golden entries with a node on (docs/32 section 8): the same file as an entry of the set, settings of one node
                 self.assertEqual([i["kind"] for i in e["settings"]["nodes"]["items"]], ["color_uniform"])
