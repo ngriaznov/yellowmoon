@@ -502,13 +502,21 @@ pub(crate) struct MaskOpU {
 
 impl MaskOpU {
     /// The row for a prepared mask op.
-    fn of(op: &MaskOp) -> Self {
+    fn of(op: &MaskOp, intersect: bool) -> Self {
         let p = op.params.map(|v| v as f32);
+        // An intersection is the Add fold's own subtract: the row's factor f = 1 - o (1 - a) for an add row and 1 - o a for a subtract
+        // row is `1 - a'` with a' = o a (subtract row, same Invert) or a' = o (1 - a) (an add row: a subtract row with Invert flipped).
+        // The kernel then folds acc (1 - a'), which is the product, with the code of main: no kernel change for Intersect.
+        let (subtract, invert) = if intersect {
+            (true, op.invert != !op.subtract)
+        } else {
+            (op.subtract, op.invert)
+        };
         Self {
             head: [
                 op.kind.code(),
-                if op.subtract { MASK_SUBTRACT } else { 0 }
-                    | if op.invert { MASK_INVERT } else { 0 },
+                if subtract { MASK_SUBTRACT } else { 0 }
+                    | if invert { MASK_INVERT } else { 0 },
                 // A raster row names its plane; one with no plane (a kind this machine cannot make) is NODE_NONE.
                 if op.kind == OpKind::Raster && op.params[0] < f64::from(u32::MAX) {
                     op.params[0] as u32
@@ -1408,14 +1416,12 @@ impl NodePlan {
             if masks.invert() {
                 bits |= NODE_INVERT;
             }
-            if masks.intersect() {
-                bits |= NODE_INTERSECT;
-            }
             if masks.needs_luma() {
                 bits |= NODE_LUMA;
             }
             let first_row = mask_rows.len() as u32;
-            mask_rows.extend(masks.ops().iter().map(MaskOpU::of));
+            let intersect = masks.intersect();
+            mask_rows.extend(masks.ops().iter().map(|op| MaskOpU::of(op, intersect)));
             r.ctl[0] = bits;
             r.wire = [
                 picture_ref(step.picture),
