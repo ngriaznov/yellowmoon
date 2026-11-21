@@ -123,11 +123,11 @@ fn one_row_at_full_opacity_is_the_same_mask_in_both_rules_bit_for_bit() {
                 let r = MaskRow {
                     invert,
                     subtract,
-                    ..row.clone()
+                    ..row
                 };
                 for at in PLACES {
-                    let add = run(&[r.clone()], false, false, None, at);
-                    let int = run(&[r.clone()], true, false, None, at);
+                    let add = run(&[r], false, false, None, at);
+                    let int = run(&[r], true, false, None, at);
                     assert_eq!(
                         add.to_bits(),
                         int.to_bits(),
@@ -147,7 +147,7 @@ fn an_opacity_of_zero_is_neutral_for_an_add_row_and_for_a_subtract_row() {
         let mut rows = base.to_vec();
         rows.push(MaskRow {
             opacity: 0.0,
-            ..zero.clone()
+            ..zero
         });
         assert_eq!(
             mid(&rows, true).to_bits(),
@@ -197,12 +197,8 @@ fn opacity_scales_a_row_towards_one() {
             None,
             at,
         );
-        assert!(
-            (run(&[half.clone()], true, false, None, at) - factor(a, 0.5, false)).abs() < 1e-15
-        );
-        assert!(
-            (run(&[sub(half.clone())], true, false, None, at) - factor(a, 0.5, true)).abs() < 1e-15
-        );
+        assert!((run(&[half], true, false, None, at) - factor(a, 0.5, false)).abs() < 1e-15);
+        assert!((run(&[sub(half)], true, false, None, at) - factor(a, 0.5, true)).abs() < 1e-15);
     }
 }
 
@@ -242,12 +238,12 @@ fn a_subtract_row_cuts_out_exactly_its_coverage() {
     let a = whole(1.0);
     let b = radial([0.5, 0.5], [0.2, 0.2], 0.3);
     for at in PLACES {
-        let sb = run(&[b.clone()], false, false, None, at);
-        let m = run(&[a.clone(), sub(b.clone())], true, false, None, at);
+        let sb = run(&[b], false, false, None, at);
+        let m = run(&[a, sub(b)], true, false, None, at);
         assert!((m - (1.0 - sb)).abs() < 1e-15, "{at:?}");
     }
     // The subtract is not special when it comes first: the product does not care about the order.
-    let first = run(&[sub(b.clone()), a.clone()], true, false, None, (0.5, 0.5));
+    let first = run(&[sub(b), a], true, false, None, (0.5, 0.5));
     let last = run(&[a, sub(b)], true, false, None, (0.5, 0.5));
     assert!((first - last).abs() < 1e-15);
     // A lone subtract is the whole photo minus its coverage, as in Add; at 100 % it is the same bits.
@@ -279,7 +275,7 @@ fn with_every_row_0_or_1_intersect_is_and_and_add_is_or() {
             "{bits:03b}"
         );
         // Each Subtract row is the complement.
-        let cut: Vec<MaskRow> = rows.iter().cloned().map(sub).collect();
+        let cut: Vec<MaskRow> = rows.iter().copied().map(sub).collect();
         assert_eq!(
             mid(&cut, true),
             if ones == 0 { 1.0 } else { 0.0 },
@@ -312,7 +308,7 @@ fn the_list_order_does_not_matter_up_to_rounding() {
     for at in PLACES {
         let reference = run(&rows, true, false, None, at);
         for order in orders {
-            let permuted: Vec<MaskRow> = order.iter().map(|&i| rows[i].clone()).collect();
+            let permuted: Vec<MaskRow> = order.iter().map(|&i| rows[i]).collect();
             let m = run(&permuted, true, false, None, at);
             assert!(
                 (m - reference).abs() < 1e-15,
@@ -343,8 +339,8 @@ fn the_node_invert_comes_after_the_product_and_no_rows_is_the_whole_photo() {
 fn the_key_input_is_an_implicit_first_region_and_ranges_multiply_into_k() {
     let r = radial([0.5, 0.5], [0.3, 0.3], 0.4);
     for at in PLACES {
-        let a = run(&[r.clone()], true, false, None, at);
-        let m = run(&[r.clone()], true, false, Some(0.6), at);
+        let a = run(&[r], true, false, None, at);
+        let m = run(&[r], true, false, Some(0.6), at);
         assert!((m - 0.6 * a).abs() < 1e-15);
     }
     // A key and a Subtract row: key (1 - a).
@@ -354,10 +350,10 @@ fn the_key_input_is_an_implicit_first_region_and_ranges_multiply_into_k() {
     let b = brightness(0.2, 0.6, 0.4);
     let c = colour([0.0, 0.0], 0.05, 0.5);
     for at in PLACES {
-        let r_ = run(&[r.clone()], true, false, None, at);
-        let k1 = run(&[b.clone()], true, false, None, at);
-        let k2 = run(&[c.clone()], true, false, None, at);
-        let all = run(&[r.clone(), b.clone(), c.clone()], true, false, None, at);
+        let r_ = run(&[r], true, false, None, at);
+        let k1 = run(&[b], true, false, None, at);
+        let k2 = run(&[c], true, false, None, at);
+        let all = run(&[r, b, c], true, false, None, at);
         assert!((all - r_ * k1 * k2).abs() < 1e-15);
     }
 }

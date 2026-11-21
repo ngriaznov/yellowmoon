@@ -21,7 +21,7 @@ Golden-image tooling (`docs/13-testing.md`, section Golden images). Test tooling
 ```bash
 cargo build -p ym-cli                                  # the binary under test (target/debug/ym or target/release/ym)
 tools/fetch/synthetic.sh                               # the input files (testdata/synthetic), a few minutes, no download
-cargo run -p golden --release -- check                 # the default synthetic set (69 entries: 61 files, the three Colour Uniform entries, the two Soft Blur entries, the Motion, Lens and Zoom Blur entries), about 2 minutes on 4 cores
+cargo run -p golden --release -- check                 # the default synthetic set (70 entries: 61 files, the three Colour Uniform entries, the two Soft Blur entries, the Motion, Lens and Zoom Blur entries, and the Mask Intersect entry), about 2 minutes on 4 cores
 cargo run -p golden --release -- check --set cc0       # the CC0 tier, once tools/fetch/golden.sh has fetched it
 cargo run -p golden --release -- check --filter D6500 --filter ILCE-1
 cargo run -p golden --release -- update --note "why the pictures changed"

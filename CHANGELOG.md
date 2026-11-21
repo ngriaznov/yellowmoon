@@ -9,6 +9,14 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Added
+
+- **Masks can intersect.** A new switch on the Masks card, **Add** or **Intersect**, sits under the card's title. Add is how masks have always worked and is the default. Intersect keeps only where every mask overlaps: two shapes give just the part they share, a Subtract row still cuts a mask out, a row at Opacity 0 leaves the others as they are, and an Object row with no point empties the mask. It is one switch for the whole node, on every node that has masks (the correctors, Film, Face Refinement, Colour Uniform and Blur), and Reset puts it back to Add. Show mask and the node thumbnails show the result.
+
+### Changed
+
+- **Pipeline version 0.15.0.** No photo, preset or album that exists changes by a bit: the switch is written into a settings file, a preset or an album only when a node uses Intersect. A version older than this one reading such a file says "The settings can't be read: unknown field `combine`, expected `invert` or `items`" (an album or a preset says it was made by a newer version of Yellowmoon); everything else still opens in older versions.
+
 ## [0.2.4-beta.4] - 2026-11-20
 
 A fourth pre-release (a beta) for testing. It fixes **Pick colour** on a new Colour Uniform node and **Show mask** on a Film-like node with a linked key, and adds two safeguards for removing a node. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is unchanged at 0.14.0, so pictures are the same as in beta 3.

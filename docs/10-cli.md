@@ -416,6 +416,27 @@ With Subject, which needs a Mac that supports it (Apple's Vision, above; on anot
 
 Nothing is saved per photo: the settings live with the photo for this run, and each run starts from the automatic development and the default look.
 
+**Masks that intersect (from 0.2.4, Mask Intersect, `docs/23` §3.3 and §4.2).** A node's `masks` has `"combine"`, `"add"` (the default: the rows add up and a Subtract row cuts out) or `"intersect"` (only where every mask overlaps: the rows multiply, a row at Opacity 0 narrows nothing, a Subtract row cuts out, an Object row with no point empties the mask). It is one switch for the node, on every node that has masks, and `ym` writes it (in the `ym:Settings` of an export too) only at `"intersect"`: a file without it reads as `"add"`. Any other value is refused for that file with "The settings file can't be used: The masks of node 3 combine as “add” or “intersect”, not “merge”." An older `ym` that meets the field says "The settings can't be read: unknown field `combine`, expected `invert` or `items`", so a file that uses it needs this version (the pipeline version is 0.15.0). An example, a node whose two Radial rows must overlap:
+
+```json
+{
+  "nodes": {
+    "items": [
+      { "id": 2, "kind": "corrector", "name": "Overlap", "pos": [1, 0],
+        "trim": { "exposure_ev": -1 },
+        "masks": { "invert": false, "combine": "intersect", "items": [
+          { "kind": "radial", "center": [0.38, 0.5], "radii": [0.25, 0.25], "feather": 0.1 },
+          { "kind": "radial", "center": [0.62, 0.5], "radii": [0.25, 0.25], "feather": 0.1 } ] } }
+    ],
+    "links": [
+      { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+      { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+      { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } }
+    ]
+  }
+}
+```
+
 ### The help text
 
 `ym render --help` changes in three places (the snapshot `crates/ym-cli/tests/snapshots/cli__help_render.snap`; the flags' own lines are as they were, and the other snapshots change only as the paragraph after this list says):

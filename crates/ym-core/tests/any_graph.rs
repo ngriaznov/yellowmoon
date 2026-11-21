@@ -1206,10 +1206,7 @@ fn the_generator_draws_both_combine_rules() {
         }
     }
     eprintln!("nodes with masks: {intersect} intersect, {add} add");
-    assert!(
-        intersect > 2 && add > 2,
-        "{intersect} intersect, {add} add"
-    );
+    assert!(intersect > 2 && add > 2, "{intersect} intersect, {add} add");
 }
 
 #[test]

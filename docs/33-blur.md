@@ -93,7 +93,7 @@ This is the owner's one requirement, and the node's central decision. There are 
 
 ### 2.4 Masks and Show mask
 
-The node has the **Mask tab of a corrector** (`docs/23` §7.6): rows, modes, Invert, the key input, Opacity, the row eye. The node's mask `m` is **how much of the node's blurred picture shows** (and, with Respect mask edges on, which pixels are blurred in), exactly as `docs/algorithms/06` §1 defines it. **Show mask** (M) is the ordinary Show mask of `m` (`docs/23` §5.8): Overlay tints it in the mask accent, Mask only shows it as grey. It does not change with the type, the radius or the switch. A node with no mask shows the whole photo tinted (`m = 1`). The mask view is a view: not in an export, the Before view, a thumbnail or the pixel readout.
+The node has the **Mask tab of a corrector** (`docs/23` §7.6): rows, modes, the Add | Intersect control (`masks.combine`, 0.2.4), Invert, the key input, Opacity, the row eye. The node's mask `m` is **how much of the node's blurred picture shows** (and, with Respect mask edges on, which pixels are blurred in), exactly as `docs/algorithms/06` §1 defines it. **Show mask** (M) is the ordinary Show mask of `m` (`docs/23` §5.8): Overlay tints it in the mask accent, Mask only shows it as grey. It does not change with the type, the radius or the switch. A node with no mask shows the whole photo tinted (`m = 1`). The mask view is a view: not in an export, the Before view, a thumbnail or the pixel readout.
 
 ### 2.5 Defaults and the identity
 
