@@ -21,6 +21,8 @@ The maths is in `docs/algorithms/06-masks.md` (the node's order, the two trims, 
 
 **Added in 0.2.3.** Parallel, Layer, and Splitter and combiner nodes (the Add node menu showed them as "Later" until then; the format, the validator and the plan were built so they could be added as new node kinds without changing the format). **They are specified in `docs/25-mixers.md`** (milestone X, the owner's request of 2026-11-10): four new kinds, `parallel`, `layer`, `splitter` and `combiner`, with their ports, maths, plan and interface. **Added in 0.2.4.** The **Colour Uniform** node (`color_uniform`, milestone U, the owner's request of 2026-11-18): pick a colour and the node pulls the colours its masks let through toward it, hue, saturation and lightness each by its own amount. **It is specified in `docs/32-color-uniform.md`**: one new kind, a numbered node with the ports of a corrector, a Compress tab and the corrector's Mask tab, and `PIPELINE_VERSION` 0.13.0. **Added in 0.2.4.** The **Blur** node (`blur`, milestone B, the owner's requests of 2026-11-18): one node with a Type control (Soft, Lens, Motion, Zoom) that blurs the photo or the part its masks let through, mask-aware by default (**Respect mask edges**), so a blurred background has no glow around the subject. **It is specified in `docs/33-blur.md`**: one new kind, a numbered node with the ports of a corrector, a spatial step like Film's, a Blur tab and the corrector's Mask tab, and `PIPELINE_VERSION` 0.14.0. Not in this version: DCTL and OpenFX; presets and nodes shared across photos; the list view (dropped by the owner); a "pick neutral" in a corrector.
 
+**Added in 0.2.4: Mask Intersect** (the owner's request of 2026-11-21: "I also want for masks a setting when adds mask (as it is right now) and only intersection of masks, on the mask panel"; asked whether it should be one switch for the node or a mode per row, the owner chose **one switch per node**). The `masks` object gains `combine`, `"add"` (today's rule and the default) or `"intersect"` (only where every mask overlaps). Sections 3.3, 3.5, 3.7, 4.2 and 7.6 say how; the maths is `docs/algorithms/06` section 3; the tasks are MI-01 to MI-07 in `docs/15`. No existing document, preset or album changes by a bit.
+
 ### 1.2 The three zones
 
 | Zone | What it does | Today's stages | Space out |
@@ -266,7 +268,17 @@ A stock or paper that is not in `data/film/` (or of the wrong kind) is refused w
 
 ### 3.3 Masks
 
-`masks.items` is the list of rows, in the order they are drawn and combined (section 4.2), at most 64. `masks.invert` is the node's Invert. Every row has:
+`masks.items` is the list of rows, in the order they are drawn (section 4.2), at most 64. `masks.invert` is the node's Invert. `masks.combine` is how the rows combine:
+
+| Field | Type / range | Default |
+|---|---|---|
+| `combine` | `"add"` or `"intersect"` | `"add"` |
+
+- **`"add"`** is the rule of every document before 0.2.4 (the rows add up, Subtract cuts out; section 4.2). **`"intersect"`** keeps only where every present row overlaps (section 4.2, `docs/algorithms/06` section 3). It is **one switch for the whole node**, not a mode per row; it lives on the shared `masks` object, so every node that has masks has it: Main, the correctors, Film, Face Refinement, Colour Uniform and Blur nodes (`docs/32` and `docs/33` reuse the corrector's Mask tab and take it with it).
+- **A document without the field reads as `"add"`**, so no photo, preset or album that exists changes. **The field is written only when it is `"intersect"`**; at `"add"` it is left out. This is **not** `masks.invert`'s convention (that one is always written, as `"invert": false`), and it is deliberate: an older build refuses a field it does not know (`MaskSettings` has `deny_unknown_fields`: "The settings can't be read: unknown field `combine`, expected `invert` or `items`"), so writing `"combine": "add"` would make every document, XMP `ym:Settings`, preset and album that this version writes unreadable to older builds, and would change the bytes of every settings file that exists. With the field omitted at the default, only a node that really uses Intersect needs a newer build (section 3.5; `PIPELINE_VERSION`, `docs/13`).
+- Any other value is a settings error (section 3.5), in a document and in a patch.
+
+Every row has:
 
 | Field | Type / range | Default |
 |---|---|---|
@@ -290,7 +302,7 @@ and, by kind (sizes are fractions of the photo's long edge; points are in the ph
 | `color_range` | `center` `[a, b]` in the C9 chroma plane, length at most 0.5 ([0, 0]), `width` 0.005…0.3 (0.05), `softness` 0…1 (0.5) |
 | `brightness_range` | `low` 0…1 (0.35), `high` 0…1 (1), `softness` 0…1 (0.5); `low` above `high` is read as both at their mean |
 
-The numbers are what the sliders show divided or scaled as `docs/algorithms/06` section 4.5 says. An Object row with no `points` and no `box` **selects nothing**.
+The numbers are what the sliders show divided or scaled as `docs/algorithms/06` section 4.5 says. An Object row with no `points` and no `box` **selects nothing** (and in Intersect that empties the node's mask, section 4.2).
 
 ### 3.4 Ports and links
 
@@ -332,6 +344,7 @@ A document or a patch that breaks the **graph rules** is refused with a plain er
 | node kinds are known | "This settings file has a node of a kind (“outside”) that this version of Yellowmoon does not have. Update Yellowmoon." |
 | at most 64 numbered nodes (correctors, Film nodes, and the mixers, Splitters and Combiners of `docs/25`), Main included (the Input and the Output do not count) | "A photo can have up to 64 nodes." |
 | at most 64 masks in a node | "A node can have up to 64 masks." |
+| `masks.combine` is `"add"` or `"intersect"` | "The masks of node 3 combine as “add” or “intersect”, not “merge”." (`GraphError::MaskCombine`; the core reads the value as text and refuses any other, in a document and in a `masks.combine` patch, so the serde sentence "unknown variant" never reaches the person) |
 | at most 100,000 brush points in a mask, 256 points in an Object mask | "A brush mask can have up to 100,000 points." / "An Object mask can have up to 256 points." |
 | a patch does not remove the Input, the Output or Main | "The input, the output and node 1, Main, can't be removed." |
 | a patch names a node it neither has nor adds (no `kind`), or gives a `kind` other than the node's | "The patch names node 7, which this photo does not have." / "Node 7 is a corrector, not an input." |
@@ -370,7 +383,7 @@ each part optional:
 
 - `masks.edit` maps a row's index (a string) to a **row patch**: a partial of that row's fields (`{ "nodes": { "2": { "masks": { "edit": { "0": { "feather": 0.3 } } } } } }`). A row patch cannot change the row's `kind`.
 - A **Brush** row also takes `strokes_append` (strokes added after the existing ones) and `strokes_keep` (an integer: keep only the first n strokes). **A stroke is sent as an append when the pointer is released**, so a mask's other strokes are never resent: `{ "masks": { "edit": { "0": { "strokes_append": [ { "size": 0.03, "hardness": 0.5, "erase": false, "points": [[0.4, 0.5], …] } ] } } } }`. Its inverse for undo is `strokes_keep` with the old count. An Object row's `mask_find` answer is a row patch of `points` and `box` (at most 256 points).
-- `masks.invert` is the node's Invert.
+- `masks.invert` is the node's Invert. **`masks.combine`** is the node's `"add"` or `"intersect"`; a patch that gives the value the node has is not a change. It is sent alone, with no `items`, so a change of mode is **one patch and one undo step**; it is a field of the node's `masks` for the undo's `diffGraph` (a field whole, like `invert`), for copy and paste and for presets and albums, which carry `masks` whole: **every place that builds a `MasksPatch` from a node (the copy of a node, `settings_to_patch`, the preset core) carries `combine` with `invert`**, and a test fails if one does not (MI-02). **Reset** of the Masks card puts `combine` back to `"add"` with the rows removed and Invert off.
 
 **Reset** (`SettingsPatch::reset`) names a node and a group of its fields and gives the patch that puts them at their defaults (Auto where there is Auto, for the Input and Main). The node head's Reset (section 7.5) is a reset of the node's trim and grade (the Input's and the Output's: all their fields).
 
@@ -453,9 +466,11 @@ The menu calls the last group **Keys**; this file and the maths call its rows **
 
 ### 4.2 How they combine
 
-The formulas are in `docs/algorithms/06` section 3. In words:
+The formulas are in `docs/algorithms/06` section 3. The node's `masks.combine` (section 3.3) says which rule is used: **Add** (the default, and the only rule before 0.2.4) or **Intersect**. Both rules share steps 1, 2, 4, 6 and 7; they differ in steps 1b, 3 and 5.
 
-1. Each mask gives `a`. It is inverted if its own Invert is on, then scaled by its Opacity.
+**Add** (`"combine": "add"`):
+
+1. Each mask gives `a`. It is inverted if its own Invert is on, then scaled by its Opacity (`a · o`).
 2. A linked **key input** is an implicit first region row, added with the linked node's mask as its value.
 3. **Regions** (the key input, Find and Shapes) combine in list order. Add: `R = 1 − (1 − R)(1 − a)`. Subtract: `R = R · (1 − a)`. The screen rule is the owner's choice for overlapping soft edges.
 4. **Ranges** (Keys) combine among themselves the same way into `K`.
@@ -464,6 +479,19 @@ The formulas are in `docs/algorithms/06` section 3. In words:
 7. A switched-off row (the row's switch) counts as absent.
 
 A row that selects nothing (an Object row with no point, a Subject row on a Mac that cannot make one) is present with `a = 0`, so a node whose only mask is empty changes nothing.
+
+**Intersect** (`"combine": "intersect"`): only where every mask overlaps. It is the dual of the screen rule: Add's neutral value is 0 (a row adds nothing), Intersect's is 1 (a row narrows nothing).
+
+1. Each mask gives `s` and then `a`, inverted first if its own Invert is on, as in Add. The Opacity `o` is then applied so that **Opacity 0 leaves the other rows as they are**: an **Add** row gives `f = 1 − o · (1 − a)` (written `o · a + (1 − o)`, which is exactly `a` at 100 % and exactly 1 at 0 %), and a **Subtract** row gives `f = 1 − o · a` (exactly `1 − a` at 100 % and exactly 1 at 0 %: a Subtract row at 0 % cuts nothing). In Add the Opacity is `a · o` for both.
+2. A linked key input is an implicit first region row, as in Add (an Add row at 100 %, so `f` is the linked node's mask).
+3. Every present row **multiplies**: `R` is the product of the regions' `f` and `K` the product of the ranges', each starting at 1. The order of the rows does not matter, because a product commutes (it is the one rule the list order does not touch). Add's special first row is not needed: `1 · f` is `f` exactly.
+4. With no region rows `R = 1`; with no range rows `K = 1`; with no rows at all `m = 1`, the whole photo.
+5. **The node's mask** is `m = R · K`, and the node's Invert gives `m = 1 − m` **after** the product (it inverts the intersection).
+6. A switched-off row is absent (it does not narrow anything).
+
+**A row that selects nothing is present** and counts: an Object row with no point is `a = 0`, so in Intersect (an Add row at 100 %) `f = 0` and **the node's mask is empty** (the node changes nothing, as in Add where it is the only mask; unlike Add, it also empties the other rows' overlap, which is the meaning of "every mask overlaps"). A row at Opacity below 100 % lets the rest through by `1 − o`. Turn the row off to leave it out. With its own Invert on, an empty row is `a = 1` and narrows nothing.
+
+*Consequences the tests pin* (section 11): with every `a` 0 or 1, Add is "or" and Intersect "and" of the present rows; a node with one Add row at 100 % has the same mask in both rules, bit for bit, and so has one Subtract row at 100 %; a Subtract row in Intersect cuts out exactly its own coverage; Show mask, the row's eye (unchanged: a row's own picture does not depend on the other rows or on the rule) and the node thumbnails show `m` and need nothing else.
 
 ### 4.3 Edges that never depend on a rounding, and raster masks
 
@@ -838,9 +866,20 @@ What each tab holds. Where a tab matches today's, its cards are today's.
 
 Three cards fit without scrolling at 1440 × 900 with **two mask rows** (the head is 52 px, the tab row 46, and the cards are 244 + 316 + 114 = 674 px in a 678 px scroll area); from a third row the panel scrolls a little.
 
-**The Masks card.** Header: "MASKS", **Add mask ▾**, **Invert** (a toggle with an invert icon: the node's whole combined mask, `masks.invert`) and **Reset** (in the mask accent: removes every row and un-inverts). Then the rows, then one line:
+**The Masks card.** Header: "MASKS", **Add mask ▾**, the **combine control**, **Invert** (a toggle with an invert icon: the node's whole combined mask, `masks.invert`) and **Reset** (in the mask accent: removes every row, un-inverts and puts the control back to Add). Then the rows, then one line that follows the mode:
 
-"Masks add up. Subtract cuts a mask out. Colour and brightness ranges keep only their part of the rest."
+- **Add:** "Masks add up. Subtract cuts a mask out. Colour and brightness ranges keep only their part of the rest." (today's sentence)
+- **Intersect:** "Only where every mask overlaps counts. Subtract cuts a mask out."
+
+**The combine control** is glasscn's **`SegmentedControl`** (`src/components/glass/segmented-control.tsx`, through our `Segmented` wrapper; no hand-written control) with two segments, **Add** and **Intersect**, between Add mask and Invert; it is a radio group named "How the masks combine", Add chosen by default, one Tab stop for the group (the arrow keys move inside it). Its **tooltip** (glasscn's `Tooltip`, on the group): "How the masks combine: Add joins them, Intersect keeps only where they all overlap." The header must still fit the panel at 1440 × 900 with Add mask, the control, Invert and Reset; if it does not, the header's controls wrap to a second line, and the check of MI-06 decides (a screenshot, `design/screenshots-c2/`). **A change is one `masks.combine` patch and one undo step**, shown at once by `applyDirect` (which applies a masks patch to every node that has masks). **Reset** is shown while the node has a row, is inverted **or combines as Intersect**; it removes the rows, un-inverts and sets Add, as one patch. Show mask (toolbar and the View card) and the node thumbnails follow the mode with nothing added: they draw the node's `m`. With no rows the control still works and shows its line (nothing to combine yet; the setting is kept for the rows that come). Names and lines are short plain British English, with no exclamation mark. The preview the owner approved:
+
+```
+MASKS   Add mask ▾   [ Add | Intersect ]   Invert   Reset
+  ● Radial
+  ● Object
+  ● Colour range
+Intersect: only where every mask overlaps.
+```
 
 **The Add mask menu** (573 px tall with its ten items, 580 px at most; it opens to the left of the panel):
 
@@ -942,7 +981,7 @@ Pick white **moves into the Colour tab**, as part of this feature (task N-06, be
 
 ## 9. IPC, wire types and the mock
 
-**Settings are node-first on the wire** (the Rust wire types and `bindings.ts` are N-02; `types.ts`, `contract.ts` and the mock are N-02b). `DevelopSettings` is `{ nodes: NodesSettings }` with `NodesSettings { items: NodeItem[], links: NodeLink[] }`. `NodeItem` is a union tagged by `kind`: `InputNode`, `OutputNode` and `CorrectorNode`, each with the fields of section 3.2 **under today's names and types** (`AutoOr`, `PercentSetting`, `BalanceSetting`, `LensSettings`, `Crop`, …), plus `NodeTrim`, `NodeGrade` and, for masks, `MaskSettings { invert, items }` and `MaskItem` (a union tagged by `kind`, section 3.3). `NodeId` is `"input"`, `"output"` or a number (Main is 1); `NodeLink { from, to }` with `NodeRef { node: NodeId, port: "picture" | "key" }`. **`SettingsPatch`** is `{ nodes?: { [id]: NodePatch }, remove?: NodeId[], links?: NodeLink[] }` (section 3.7), with `NodePatch` the partial of a node's fields, `MaskPatch` the row patch (`masks.edit`, `strokes_append`, `strokes_keep`) and `FieldRef { node, field }` in `PatchReport`. **`ResolvedSettings`** keeps `{ photo_id, settings, values, auto, estimates }` with the node-first shapes of section 3.9, and `PastedPhoto.before` and `.after` are patches in the same form. All of it is in `src/api/types.ts` (the hand contract), in the generated `src/api/bindings.ts` and in the mock, and the field-name test of `docs/01` compares them.
+**Settings are node-first on the wire** (Mask Intersect, 0.2.4, adds one field to the shared `MaskSettings` and `MasksPatch`, `combine: "add" | "intersect"` (optional on the wire, section 3.3); no command, event or answer changes shape) (the Rust wire types and `bindings.ts` are N-02; `types.ts`, `contract.ts` and the mock are N-02b). `DevelopSettings` is `{ nodes: NodesSettings }` with `NodesSettings { items: NodeItem[], links: NodeLink[] }`. `NodeItem` is a union tagged by `kind`: `InputNode`, `OutputNode` and `CorrectorNode`, each with the fields of section 3.2 **under today's names and types** (`AutoOr`, `PercentSetting`, `BalanceSetting`, `LensSettings`, `Crop`, …), plus `NodeTrim`, `NodeGrade` and, for masks, `MaskSettings { invert, items }` and `MaskItem` (a union tagged by `kind`, section 3.3). `NodeId` is `"input"`, `"output"` or a number (Main is 1); `NodeLink { from, to }` with `NodeRef { node: NodeId, port: "picture" | "key" }`. **`SettingsPatch`** is `{ nodes?: { [id]: NodePatch }, remove?: NodeId[], links?: NodeLink[] }` (section 3.7), with `NodePatch` the partial of a node's fields, `MaskPatch` the row patch (`masks.edit`, `strokes_append`, `strokes_keep`) and `FieldRef { node, field }` in `PatchReport`. **`ResolvedSettings`** keeps `{ photo_id, settings, values, auto, estimates }` with the node-first shapes of section 3.9, and `PastedPhoto.before` and `.after` are patches in the same form. All of it is in `src/api/types.ts` (the hand contract), in the generated `src/api/bindings.ts` and in the mock, and the field-name test of `docs/01` compares them.
 
 **Commands that change shape** (`docs/01` *IPC*): `get_settings`, `update_settings(photo_id, patch)` (a node patch) and `rerun_auto` answer the node-first `ResolvedSettings`; `copy_settings(photo_id)` answers a patch that holds the whole graph and `paste_settings(photo_ids, patch)` applies it (section 3.8); `apply_look(scope, look, intensity)` writes the Output; a `viewport_input` Pick white click sets the Input's `white_pick`; `settings_changed { photo_id }` is unchanged.
 
@@ -981,6 +1020,7 @@ Every gate below must pass in CI before a phase is done. **A failed gate is repo
 | The form of 0.1 | a flat document (today's top-level fields, no `nodes`) is refused with the sentence of section 3.12, in `from_json`, `--settings` (exit 2) and `update_settings`. **This is the only test that holds a flat document**, and the sentence is compared word for word with `docs/10` | the refusal | N-02 |
 | Auto belongs to Main | Auto in any corrector but Main reads, writes and renders as a manual 0 (every field, the wheels too); Main keeps its Auto through read, write and copy; a patch with Auto on node 3 stores a manual 0; a new node is manual 0; Re-run and the providers write the Input and Main only | tested | N-02 |
 | Node patches | a patch of one node's partial changes only that node's fields; a new id with a `kind` adds a node; `remove` drops the node and its links; `links` replaces the links whole; the Input, the Output and Main cannot be removed; a bad patch changes nothing; `masks.edit`, `strokes_append` and `strokes_keep` (an append and its inverse restore the strokes exactly); the patch report names `<node>.<field>` and the stage group (`name` and `pos` re-run nothing) | tested | N-02 |
+| Mask Intersect | `combine` reads as Add when missing and is written only at Intersect (old documents, presets and albums byte-identical; the golden set unchanged); a bad value gives the sentence of section 3.5; the CPU rule and the kernel (every kind mix, parity 2e-4); one row in Intersect equals one row in Add at 100 %; Opacity 0 is neutral; an empty Object row empties the mask; a Subtract row cuts out; the product is order-free; Invert after the product; one patch and one undo step; Reset; the panel and the mock's mask view; an e2e of two overlapping shapes | bit for bit on the CPU; ≤ 2e-4 on the device | MI-02 to MI-06 |
 | Resolved settings | `values`, `auto` and `estimates` are node-first and agree with the flat numbers they replace; `pinned_settings` pins the Input's and Main's Auto and nothing else; the XMP `ym:Settings` and the CLI's `settings` are the pinned document and feeding them back through `--settings` reproduces the file | byte-identical | N-02 |
 | The graph's rules | one test per rule of section 3.5 with its error text: link direction, port types, unknown node, unknown port, a second link on an input, the Output's link, Main's input, **cycles** (through picture links, through key links, through both), duplicate ids, unknown kind, Main with a grade, 64 nodes, 64 masks, 100,000 brush points, 256 Object points; `links` and node ids survive a round trip; clamping and `NotFinite` paths | every refusal is atomic and has its plain text | N-02 |
 | Dead branches | **a graph with a dead branch** (a node whose picture goes nowhere) renders the bytes of the same graph without it; the same node with its key output linked to a live node's key input is live and its mask acts | byte-identical | N-03 |
