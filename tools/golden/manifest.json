@@ -2889,6 +2889,126 @@
       },
       "expected_hash": "",
       "reference": ""
+    },
+    {
+      "id": "synthetic/node-mask-intersect__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l",
+      "tier": "synthetic",
+      "set": "default",
+      "group": "node-mask-intersect",
+      "file": "synthetic/arw/chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l.ARW",
+      "scene": "chart",
+      "light": "D6500",
+      "body": "ILCE-7RM4",
+      "model_id": 375,
+      "iso": 400,
+      "cfa": "RGGB",
+      "bits": 14,
+      "variant": "lossless-l",
+      "settings": {
+        "nodes": {
+          "items": [
+            {
+              "id": 2,
+              "kind": "corrector",
+              "name": "Overlap",
+              "pos": [
+                1,
+                0
+              ],
+              "trim": {
+                "exposure_ev": -1.0
+              },
+              "masks": {
+                "invert": false,
+                "combine": "intersect",
+                "items": [
+                  {
+                    "kind": "radial",
+                    "mode": "add",
+                    "invert": false,
+                    "enabled": true,
+                    "opacity": 1,
+                    "center": [
+                      0.42,
+                      0.5
+                    ],
+                    "radii": [
+                      0.34,
+                      0.3
+                    ],
+                    "angle_deg": 0,
+                    "feather": 0.3
+                  },
+                  {
+                    "kind": "radial",
+                    "mode": "add",
+                    "invert": false,
+                    "enabled": true,
+                    "opacity": 0.6,
+                    "center": [
+                      0.6,
+                      0.5
+                    ],
+                    "radii": [
+                      0.34,
+                      0.3
+                    ],
+                    "angle_deg": 0,
+                    "feather": 0.3
+                  },
+                  {
+                    "kind": "color_range",
+                    "mode": "add",
+                    "invert": false,
+                    "enabled": true,
+                    "opacity": 1,
+                    "center": [
+                      0.0,
+                      0.0
+                    ],
+                    "width": 0.2,
+                    "softness": 0.5
+                  }
+                ]
+              }
+            }
+          ],
+          "links": [
+            {
+              "from": {
+                "node": "input",
+                "port": "picture"
+              },
+              "to": {
+                "node": 1,
+                "port": "picture"
+              }
+            },
+            {
+              "from": {
+                "node": 1,
+                "port": "picture"
+              },
+              "to": {
+                "node": 2,
+                "port": "picture"
+              }
+            },
+            {
+              "from": {
+                "node": 2,
+                "port": "picture"
+              },
+              "to": {
+                "node": "output",
+                "port": "picture"
+              }
+            }
+          ]
+        }
+      },
+      "expected_hash": "",
+      "reference": ""
     }
   ]
 }

@@ -2205,6 +2205,13 @@ export type MapFrom =
  */
 "cell";
 
+/**  How a node's mask rows combine (`docs/23` section 3.3): one switch for the node. */
+export type MaskCombine = 
+/**  The rows add up and Subtract cuts out. */
+"add" | 
+/**  Only where every row overlaps. */
+"intersect";
+
 /**  What the person did on the photo to find an object: `mask_find`'s `prompt` (`docs/23` section 9), in the photo frame. */
 export type MaskFindPrompt = 
 /**  A click: on the object (`positive`), or on a part to take away. */
@@ -2513,10 +2520,15 @@ export type MaskPatch = {
 	high?: number | null,
 };
 
-/**  A node's masks: its Invert and the rows. */
+/**
+ *  A node's masks: its Invert and the rows. Serialising leaves `combine` out at Add (the core writes the document so, and it refuses a
+ *  `null`); the derive cannot do that without `skip_serializing_if`, which the unified TypeScript export refuses, hence the manual `Serialize`.
+ */
 export type MaskSettings = {
 	/**  The node's Invert: `m = 1 - m`. */
 	invert: boolean,
+	/**  How the rows combine; left out (Add) in a document that does not intersect, as the core writes it. */
+	combine?: MaskCombine | null,
 	/**  The rows, in the order they are drawn and combined, at most 64. */
 	items: MaskItem[],
 };
@@ -2558,6 +2570,8 @@ export type MaskView = {
 export type MasksPatch = {
 	/**  The node's Invert. */
 	invert?: boolean | null,
+	/**  How the node's rows combine. */
+	combine?: MaskCombine | null,
 	/**  The whole list of rows: add, remove or reorder rows. */
 	items?: MaskItem[] | null,
 	/**  Row patches by the row's index (a string), applied after `items`. */

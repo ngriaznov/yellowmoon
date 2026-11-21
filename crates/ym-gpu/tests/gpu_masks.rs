@@ -220,6 +220,15 @@ fn masks(rows: Vec<MaskRow>) -> NodeMasks {
     NodeMasks {
         rows,
         invert: false,
+        ..NodeMasks::default()
+    }
+}
+
+/// The same rows combining as an intersection (`masks.combine = "intersect"`).
+fn intersecting(m: NodeMasks) -> NodeMasks {
+    NodeMasks {
+        intersect: true,
+        ..m
     }
 }
 
@@ -675,6 +684,7 @@ fn inverted_subtracted_and_combined_rows_match_the_cpu() {
             NodeMasks {
                 rows: vec![rad(), subtract(lin()), col()],
                 invert: true,
+                ..NodeMasks::default()
             },
         ),
         (
@@ -682,6 +692,7 @@ fn inverted_subtracted_and_combined_rows_match_the_cpu() {
             NodeMasks {
                 rows: vec![],
                 invert: true,
+                ..NodeMasks::default()
             },
         ),
         ("no rows", NodeMasks::default()),
@@ -726,6 +737,185 @@ fn inverted_subtracted_and_combined_rows_match_the_cpu() {
             dev.mode,
             cases.len()
         ));
+    }
+}
+
+#[test]
+fn intersecting_rows_of_every_kind_mix_match_the_cpu() {
+    // Mask Intersect (MI-04, `docs/algorithms/06` section 3): every present row multiplies. Each kind alone, each region with a
+    // range, shapes with a raster row that has no plane, Add and Subtract rows, Opacity 0, 50 % and 100 %, Invert on rows and on
+    // the node, an empty row and no rows, on the whole picture and with the node reading the Input.
+    let buffer = (89usize, 61usize);
+    let img = scene(buffer.0, buffer.1, 0x1D7E);
+    let rad = || radial([0.5, 0.5], [0.3, 0.22], 15.0, 0.4);
+    let rad2 = || radial([0.62, 0.45], [0.25, 0.2], -30.0, 0.3);
+    let lin = || linear([0.5, 0.55], 40.0, 0.3);
+    let col = || colour([0.0, 0.0], 0.05, 0.6);
+    let bri = || brightness(0.2, 0.75, 0.3);
+    let empty = || MaskRow::new(MaskKind::Raster { plane: 0 });
+    let cases: Vec<(&str, NodeMasks)> = vec![
+        ("a Radial alone", masks(vec![rad()])),
+        ("a Linear alone", masks(vec![lin()])),
+        ("a Colour range alone", masks(vec![col()])),
+        ("a Brightness range alone", masks(vec![bri()])),
+        ("a subtracted Radial alone", masks(vec![subtract(rad())])),
+        ("two Radials", masks(vec![rad(), rad2()])),
+        ("Radial and Linear", masks(vec![rad(), lin()])),
+        ("Radial and Colour range", masks(vec![rad(), col()])),
+        ("Linear and Brightness range", masks(vec![lin(), bri()])),
+        ("two ranges", masks(vec![col(), bri()])),
+        ("Radial minus Linear", masks(vec![rad(), subtract(lin())])),
+        (
+            "a subtract first, then a Radial",
+            masks(vec![subtract(lin()), rad()]),
+        ),
+        (
+            "Radial, Linear and a range, one inverted",
+            masks(vec![rad(), invert(lin()), col()]),
+        ),
+        (
+            "opacity 0, 50 % and 100 %",
+            masks(vec![
+                opacity(rad(), 0.0),
+                opacity(lin(), 0.5),
+                opacity(rad2(), 1.0),
+            ]),
+        ),
+        (
+            "a subtract at opacity 0 and at 50 %",
+            masks(vec![
+                rad(),
+                subtract(opacity(lin(), 0.0)),
+                subtract(opacity(rad2(), 0.5)),
+            ]),
+        ),
+        (
+            "ranges at half opacity beside a Radial",
+            masks(vec![rad(), opacity(col(), 0.5), opacity(bri(), 0.5)]),
+        ),
+        (
+            "an empty row among shapes",
+            masks(vec![rad(), empty(), lin()]),
+        ),
+        (
+            "an empty row at opacity 40 %",
+            masks(vec![rad(), opacity(empty(), 0.4)]),
+        ),
+        ("an inverted empty row", masks(vec![rad(), invert(empty())])),
+        (
+            "the node's Invert on an intersection",
+            NodeMasks {
+                rows: vec![rad(), rad2(), col()],
+                invert: true,
+                intersect: true,
+            },
+        ),
+        (
+            "the node's Invert alone",
+            NodeMasks {
+                rows: vec![],
+                invert: true,
+                intersect: true,
+            },
+        ),
+        ("no rows", intersecting(NodeMasks::default())),
+        (
+            "nine rows of every kind",
+            masks(vec![
+                rad(),
+                subtract(opacity(lin(), 0.4)),
+                opacity(col(), 0.8),
+                subtract(opacity(bri(), 0.3)),
+                opacity(radial([0.7, 0.3], [0.15, 0.1], -20.0, 0.6), 0.9),
+                invert(opacity(linear([0.3, 0.6], -50.0, 0.2), 0.5)),
+                opacity(empty(), 0.2),
+                colour([0.03, 0.02], 0.08, 0.4),
+                brightness(0.1, 0.5, 0.6),
+            ]),
+        ),
+    ]
+    .into_iter()
+    .map(|(what, m)| (what, intersecting(m)))
+    .collect();
+    let (_, grid, w, h) = grids(buffer).swap_remove(2);
+    for dev in f32_devices() {
+        let mut all = Worst::default();
+        for (what, m) in &cases {
+            for scenario in [
+                Scenario::after_main(effect_with(m.clone())),
+                Scenario::on_input(effect_with(m.clone())),
+            ] {
+                let worst = parity(dev, &scenario, 2, None, &img, &grid, (0, 0), (w, h));
+                worst.assert_within_the_gates(what);
+                all = all.max(worst);
+            }
+        }
+        all.report(&format!(
+            "{:?} {} Intersect combinations of rows",
+            dev.mode,
+            cases.len()
+        ));
+    }
+}
+
+#[test]
+fn a_graph_with_an_adding_node_and_an_intersecting_node_and_a_key_matches_the_cpu() {
+    let buffer = (83usize, 59usize);
+    let img = scene(buffer.0, buffer.1, 0x1D7F);
+    let (_, grid, w, h) = grids(buffer).swap_remove(2);
+    let rows = || {
+        vec![
+            radial([0.4, 0.5], [0.3, 0.25], 10.0, 0.3),
+            linear([0.55, 0.5], 60.0, 0.4),
+            opacity(colour([0.0, 0.0], 0.06, 0.5), 0.8),
+        ]
+    };
+    // Node 2 adds and makes a key; node 3 intersects its own rows with node 2's key (an implicit first region row); node 4
+    // after it adds again.
+    let scenario = |two: bool, three: bool, with_key: bool| Scenario {
+        nodes: vec![
+            node(MAIN_NODE, PictureSource::Input, None),
+            node(2, PictureSource::Node(MAIN_NODE), None),
+            node(3, PictureSource::Node(2), with_key.then_some(2)),
+            node(4, PictureSource::Node(3), None),
+        ],
+        params: [
+            (
+                2,
+                effect_with(NodeMasks {
+                    rows: rows(),
+                    intersect: two,
+                    ..NodeMasks::default()
+                }),
+            ),
+            (
+                3,
+                effect_with(NodeMasks {
+                    rows: vec![
+                        rows().swap_remove(0),
+                        subtract(opacity(radial([0.5, 0.5], [0.15, 0.1], 0.0, 0.5), 0.6)),
+                    ],
+                    intersect: three,
+                    ..NodeMasks::default()
+                }),
+            ),
+            (4, effect_with(masks(vec![brightness(0.2, 0.7, 0.3)]))),
+        ]
+        .into(),
+        output: 4,
+    };
+    for dev in f32_devices() {
+        for (what, s) in [
+            ("Add, Intersect, no key", scenario(false, true, false)),
+            ("Add, Intersect, keyed by Add", scenario(false, true, true)),
+            ("Intersect, Intersect, keyed", scenario(true, true, true)),
+            ("Intersect, Add, keyed", scenario(true, false, true)),
+        ] {
+            for node_id in [2u32, 3, 4] {
+                parity(dev, &s, node_id, None, &img, &grid, (0, 0), (w, h))
+                    .assert_within_the_gates(&format!("{what}, node {node_id}"));
+            }
+        }
     }
 }
 
@@ -822,6 +1012,7 @@ fn a_key_link_carries_the_final_mask_and_a_dead_branch_feeds_a_live_node() {
                 opacity(colour([0.0, 0.0], 0.06, 0.5), 0.9),
             ],
             invert: invert_node,
+            ..NodeMasks::default()
         },
         ..effect()
     };

@@ -60,6 +60,8 @@ An album is **not** a catalogue: it has no index, nothing watches it, nothing ou
   - **`auto`** (only where a provider answered): **the Auto provider's answer the photo uses**: Apple Intelligence, Claude Code or Antigravity. It is the same JSON as `ym:AutoAdvisor` (`docs/09`, `docs/22` §14.2): `provider`, `model`, the tool's or system's version, `table` and `prompt`, the `steps`, the plan's words. **This is the album's one deliberate copy of a provider's answer.** Without it, opening the album would ask a cloud provider again and could give another picture (answers differ from run to run, `docs/22`). With it the estimates come out as they did. **Re-run still asks the chosen provider again.** A photo graded by Default Auto (the rule) has no `auto`.
 - **`current`**: the index of the current photo, or `null`.
 
+**Mask Intersect (0.2.4):** the settings graph is held as stored, so `masks.combine` travels with it, written only at `"intersect"`; an album that has it is refused by an older build with "This album was made by a newer version of Yellowmoon. Update to open it." (the unknown-field rule), and every other album is as before.
+
 **Not in the file:** renders, masks' rasters, SAM features, depth and Vision maps, the estimates (worked out again on opening), the undo history (rule 4: no edit history), the photos' pixels, EXIF or GPS (which live in the ARW), and anything from Application Support (preferences, looks, presets: a look is an id, and a missing one is handled as Paste handles it).
 
 **Limits.** A file above 512 MiB is refused: "This file is too large to be an album." At most 100,000 photos (`docs/26`'s windowed lists hold 2,000 comfortably; the limit is a sanity bound).

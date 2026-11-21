@@ -36,6 +36,7 @@ export const GRAPH_TEXT = {
   mixerGap: (node: NodeId, linked: number, missing: number) =>
     `${sentence(node)} has a link on input ${linked} and none on input ${missing}. A mixer's inputs are numbered from 1 with no gap.`,
   tooManyMasks: "A node can have up to 64 masks.",
+  maskCombine: (id: unknown, value: unknown): string => `The masks of node ${String(id)} combine as “add” or “intersect”, not “${typeof value === "string" ? value : JSON.stringify(value)}”.`,
   tooManyFaces: "A Face Refinement node can hold settings for up to 32 faces.",
   tooManyBrushPoints: "A brush mask can have up to 100,000 points.",
   tooManyObjectPoints: "An Object mask can have up to 256 points.",
@@ -218,6 +219,8 @@ function filmProblem(item: NodeItem): string | null {
 function maskProblem(item: NodeItem): string | null {
   if (item.kind !== "corrector" && item.kind !== "film" && item.kind !== "face_refinement" && item.kind !== "color_uniform" && item.kind !== "blur") return null;
   if (item.masks.items.length > MAX_MASKS) return GRAPH_TEXT.tooManyMasks;
+  const combine: unknown = item.masks.combine;
+  if (combine !== undefined && combine !== "add" && combine !== "intersect") return GRAPH_TEXT.maskCombine(item.id, combine);
   if (item.kind === "face_refinement" && item.faces.length > MAX_FACES) return GRAPH_TEXT.tooManyFaces;
   let brush = item.kind === "face_refinement" ? item.protect.strokes.reduce((n, stroke) => n + stroke.points.length, 0) : 0;
   for (const row of item.masks.items) {
@@ -298,6 +301,7 @@ export function copiedPatch(rs: ResolvedSettings): SettingsPatch {
     if (item.kind === "corrector" || item.kind === "film" || item.kind === "face_refinement" || item.kind === "color_uniform" || item.kind === "blur") {
       patch.masks = {
         invert: item.masks.invert,
+        ...(item.masks.combine === "intersect" ? { combine: item.masks.combine } : {}),
         items: item.masks.items.map((row) => (row.kind === "object" ? { ...clone(row), points: [], box: null } : clone(row))),
       };
     }

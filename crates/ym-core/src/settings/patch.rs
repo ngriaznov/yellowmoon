@@ -652,6 +652,16 @@ impl<'de> Deserialize<'de> for SettingsPatch {
         {
             return Err(serde::de::Error::custom(SettingsError::OldForm));
         }
+        if let Some(nodes) = value.get("nodes").and_then(serde_json::Value::as_object) {
+            for (key, node) in nodes {
+                let name = match key.parse::<u32>() {
+                    Ok(n) => format!("Node {n}"),
+                    Err(_) => format!("The {key}"),
+                };
+                super::masks::check_combine(node.get("masks"), &name)
+                    .map_err(serde::de::Error::custom)?;
+            }
+        }
         let doc: PatchDocument = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
         Ok(Self {
             nodes: doc.nodes,
@@ -973,6 +983,7 @@ impl NodePatch {
             SettingsField::Masks => {
                 p.masks = Some(MasksPatch {
                     invert: Some(n.masks.invert),
+                    combine: Some(n.masks.combine),
                     items: Some(n.masks.items.clone()),
                     edit: None,
                 });
@@ -1018,6 +1029,7 @@ impl NodePatch {
             SettingsField::Masks => {
                 p.masks = Some(MasksPatch {
                     invert: Some(n.masks.invert),
+                    combine: Some(n.masks.combine),
                     items: Some(n.masks.items.clone()),
                     edit: None,
                 });
@@ -1068,6 +1080,7 @@ impl NodePatch {
             SettingsField::Masks => {
                 p.masks = Some(MasksPatch {
                     invert: Some(n.masks.invert),
+                    combine: Some(n.masks.combine),
                     items: Some(n.masks.items.clone()),
                     edit: None,
                 });
@@ -1109,6 +1122,7 @@ impl NodePatch {
             SettingsField::Masks => {
                 p.masks = Some(MasksPatch {
                     invert: Some(n.masks.invert),
+                    combine: Some(n.masks.combine),
                     items: Some(n.masks.items.clone()),
                     edit: None,
                 });
@@ -1154,6 +1168,7 @@ impl NodePatch {
             SettingsField::Masks => {
                 p.masks = Some(MasksPatch {
                     invert: Some(n.masks.invert),
+                    combine: Some(n.masks.combine),
                     items: Some(n.masks.items.clone()),
                     edit: None,
                 });

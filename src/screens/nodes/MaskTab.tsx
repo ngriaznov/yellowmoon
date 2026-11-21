@@ -1,6 +1,8 @@
 import { useEffect, useMemo } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
-import type { MaskKind, MaskMode, MasksPatch, MaskStyle, ResolvedSettings } from "../../api/types";
+import { TooltipTrigger } from "@/components/glass/tooltip";
+import { OptionalTooltip } from "@/components/OptionalTooltip";
+import type { MaskCombine, MaskKind, MaskMode, MasksPatch, MaskStyle, ResolvedSettings } from "../../api/types";
 import { Button, Card, Field, KeyHint, ResetLink, RowNote, Segmented } from "../../components";
 import type { SegmentedOption } from "../../components";
 import { useAppState, useStore } from "../../state/context";
@@ -20,6 +22,15 @@ const NO_PICK = (): void => {};
 
 /** What the Masks card says under its rows (`docs/23` §7.6), word for word. */
 export const MASKS_ADD_UP = "Masks add up. Subtract cuts a mask out. Colour and brightness ranges keep only their part of the rest.";
+/** The line under the rows while the node combines its masks as an intersection (`docs/23` §7.6). */
+export const MASKS_INTERSECT = "Only where every mask overlaps counts. Subtract cuts a mask out.";
+/** The tooltip of the combine control (`docs/23` §7.6). */
+export const MASKS_COMBINE_TIP = "How the masks combine: Add joins them, Intersect keeps only where they all overlap.";
+/** The combine control's two segments: `masks.combine` (`docs/23` §3.3). */
+export const MASK_COMBINE_OPTIONS: ReadonlyArray<SegmentedOption<MaskCombine>> = [
+  { value: "add", label: "Add" },
+  { value: "intersect", label: "Intersect" },
+];
 
 /** The View card's two segments (`docs/23` §7.6). The mockups draw a third, "Off"; the toolbar's Show mask and M turn the view on and off. */
 export const MASK_VIEW_OPTIONS: ReadonlyArray<SegmentedOption<MaskStyle>> = [
@@ -77,7 +88,7 @@ export interface MaskTabProps {
  * combined mask, and **Reset**, which removes every row and un-inverts; then the rows and the line "Masks add up…"), the **selected mask's
  * card** (an Object, a Background, a Linear, a Radial, a Brush, a Colour range or a Brightness range: Subject and People have theirs with their task, and a raster row that a
  * file or a paste brought shows its row and no card), and the View card. Adding a Brush row, and choosing one, starts the Brush tool. Every change is one node patch: adding, removing and moving a row
- * is `masks.items`, a row's mode, Invert and eye and every slider is a `masks.edit` row patch, the node's Invert is `masks.invert`; each
+ * is `masks.items`, a row's mode, Invert and eye and every slider is a `masks.edit` row patch, the node's Invert is `masks.invert` and its **combine control** (Add | Intersect) `masks.combine` (Reset puts it back to Add); each
  * is one undo step (a slider's drag is one).
  */
 export function MaskTab({ store, rs, node, pickingRange, onPickRange, pickingDepth = false, onPickDepth }: MaskTabProps) {
@@ -85,6 +96,7 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange, pickingDep
   const corrector = isCardItem(item) ? item : null;
   const rows = corrector?.masks.items ?? [];
   const inverted = corrector?.masks.invert ?? false;
+  const combine: MaskCombine = corrector?.masks.combine ?? "add";
   const stored = useAppState((s) => s.maskRow);
   const kinds = useAppState((s) => s.maskKinds);
   const eye = useAppState((s) => s.maskEye);
@@ -151,7 +163,7 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange, pickingDep
   const edit = (index: number, change: { mode?: MaskMode; invert?: boolean; enabled?: boolean }): void => send(editRow(index, change));
   const reset = (): void => {
     store.setMaskEye(null);
-    send({ items: [], invert: false });
+    send({ items: [], invert: false, combine: "add" });
     store.selectMaskRow(null);
     onPickRange(false);
     onPickDepth?.(false);
@@ -193,12 +205,19 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange, pickingDep
               <Button variant="header" size="sm" pressed={inverted} icon={<InvertGlyph />} title="Invert the whole mask of this node" onClick={() => send({ invert: !inverted })}>
                 Invert
               </Button>
-              {rows.length > 0 || inverted ? <ResetLink size="card" onClick={reset} /> : null}
+              {rows.length > 0 || inverted || combine === "intersect" ? <ResetLink size="card" onClick={reset} /> : null}
             </>
           }
         >
+            <OptionalTooltip text={MASKS_COMBINE_TIP} side="top">
+              <TooltipTrigger asChild>
+                <span className="ym-mask-combine">
+                  <Segmented label="How the masks combine" size="sm" fit value={combine} onChange={(next) => send({ combine: next })} options={MASK_COMBINE_OPTIONS} />
+                </span>
+              </TooltipTrigger>
+            </OptionalTooltip>
           <MaskRows rows={rows} selected={selected} eye={eye} onEye={(index) => store.setMaskEye(index)} onSelect={select} onEdit={edit} onRemove={remove} onMove={move} finding={finding} object={objectBusy} vision={vision} />
-          <RowNote>{MASKS_ADD_UP}</RowNote>
+          <RowNote>{combine === "intersect" ? MASKS_INTERSECT : MASKS_ADD_UP}</RowNote>
         </Card>
       </div>
       {row && selected !== null && CARD_KINDS.has(row.kind) && !isUnsupported(row, vision) ? (

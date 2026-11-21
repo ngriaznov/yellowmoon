@@ -380,6 +380,18 @@ fn film_chain(doc: &Value) -> usize {
     depth("\"output\"", &films, &reads, &mut HashMap::new())
 }
 
+/// Mask Intersect (`docs/23` section 4.2): whether node `id` of graph (`seed`, `index`) combines its rows as an intersection,
+/// about one node in three. It has a generator of its own, so that **no other draw moves** and every graph made before this
+/// one is the same graph (the documents of the regression seeds have no `combine` and stay as they are).
+fn combines(seed: u64, index: usize, id: u32) -> bool {
+    let mut rng = SplitMix64(
+        seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add((index as u64) << 20)
+            .wrapping_add(u64::from(id) ^ 0xC0B1),
+    );
+    rng.below(3) == 0
+}
+
 /// `forced_node` and `forced_mask` are the kinds the graph must hold, cycled by the caller so a run covers every kind.
 fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKind) -> Graph {
     let mut rng = SplitMix64(seed.wrapping_mul(1_000_003).wrapping_add(index as u64));
@@ -478,6 +490,9 @@ fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKin
             let items_json: Vec<Value> = rows[i].iter().map(|k| row_json(*k, &mut rng)).collect();
             used_masks.extend(rows[i].iter().copied());
             n["masks"] = json!({ "invert": false, "items": items_json });
+            if combines(seed, index, id) {
+                n["masks"]["combine"] = json!("intersect");
+            }
         }
         match rng.below(8) {
             0 => n["bypass"] = json!(true),
@@ -670,6 +685,9 @@ fn generate_joined(seed: u64, index: usize, forced: NodeKind) -> Graph {
                     let k = mask_kinds[rng.below(mask_kinds.len() as u64) as usize];
                     used_masks.push(k);
                     n["masks"] = json!({ "invert": false, "items": [row_json(k, &mut rng)] });
+                    if combines(seed, index, id) {
+                        n["masks"]["combine"] = json!("intersect");
+                    }
                 }
                 if rng.below(8) == 0 {
                     n["bypass"] = json!(true);
@@ -1165,6 +1183,27 @@ fn the_generator_draws_from_the_kind_lists() {
             "{k:?} is generated twice"
         );
     }
+}
+
+#[test]
+fn the_generator_draws_both_combine_rules() {
+    let (mut intersect, mut add) = (0usize, 0usize);
+    for g in graphs() {
+        let items = g.json["nodes"]["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        for item in items {
+            match item["masks"]["combine"].as_str() {
+                Some("intersect") => intersect += 1,
+                None if item["masks"]["items"].is_array() => add += 1,
+                None => {}
+                other => panic!("a combine of {other:?}"),
+            }
+        }
+    }
+    eprintln!("nodes with masks: {intersect} intersect, {add} add");
+    assert!(intersect > 2 && add > 2, "{intersect} intersect, {add} add");
 }
 
 #[test]

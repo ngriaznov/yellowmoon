@@ -986,3 +986,61 @@ fn the_device_shows_a_rows_mask_as_the_cpu_does() {
         assert!(worst <= 1, "row {row}: {worst} codes");
     }
 }
+
+// ---- Mask Intersect (`docs/23` section 4.2, MI-03) ----------------------------------------------------
+
+fn main_intersecting(rows: Vec<Value>, combine: &str) -> DevelopSettings {
+    let mut n = node(1, json!({}), rows);
+    n["masks"]["combine"] = json!(combine);
+    doc(vec![n], line(&[1]))
+}
+
+#[test]
+fn mask_only_of_an_intersecting_node_is_only_where_the_rows_overlap_and_the_eye_is_unchanged() {
+    let d = photo();
+    let r = renderer(None, None);
+    // Two overlapping ovals: the left one reaches the middle and past it, the right one starts before it.
+    let rows = vec![
+        radial([0.4, 0.5], [0.25, 0.3], 0.1),
+        radial([0.6, 0.5], [0.25, 0.3], 0.1),
+    ];
+    let st = view(Some(MaskStyle::MaskOnly), 1);
+    let add = frame(
+        &r,
+        &with(&d.source(), main_intersecting(rows.clone(), "add")),
+        &st,
+    );
+    let int = frame(
+        &r,
+        &with(&d.source(), main_intersecting(rows.clone(), "intersect")),
+        &st,
+    );
+    // The middle is in both ovals; a pixel near each end is in one only; a corner is in neither.
+    let (middle, left_only, right_only, corner) = ((150, 150), (95, 150), (205, 150), (3, 52));
+    assert!(m_at(&int, middle.0, middle.1) > 0.95, "the overlap stays");
+    assert!(
+        m_at(&int, left_only.0, left_only.1) < 0.05,
+        "left only is out"
+    );
+    assert!(
+        m_at(&int, right_only.0, right_only.1) < 0.05,
+        "right only is out"
+    );
+    assert!(m_at(&int, corner.0, corner.1) < 0.01);
+    // Add keeps what either gives.
+    assert!(m_at(&add, left_only.0, left_only.1) > 0.9);
+    assert!(m_at(&add, right_only.0, right_only.1) > 0.9);
+    // A row's eye shows the row's own mask, whatever the node's rule: the same frame in both.
+    let eye = row_view(MaskStyle::MaskOnly, 1, 0);
+    let a = frame(
+        &r,
+        &with(&d.source(), main_intersecting(rows.clone(), "add")),
+        &eye,
+    );
+    let b = frame(
+        &r,
+        &with(&d.source(), main_intersecting(rows, "intersect")),
+        &eye,
+    );
+    assert_eq!(a.rgba, b.rgba);
+}

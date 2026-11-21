@@ -79,6 +79,7 @@ fn node_params(rng: &mut Rng, masked: bool) -> NodeParams {
                     softness: 0.4,
                 })],
                 invert: false,
+                ..NodeMasks::default()
             }
         } else {
             NodeMasks::default()

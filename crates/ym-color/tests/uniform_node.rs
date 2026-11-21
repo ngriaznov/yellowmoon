@@ -151,6 +151,7 @@ fn feathered() -> NodeMasks {
             softness: 0.5,
         })],
         invert: false,
+        ..NodeMasks::default()
     }
 }
 
@@ -228,6 +229,7 @@ fn the_seeded_colour_range_row_is_one_at_the_picked_chroma() {
             softness: 0.5,
         })],
         invert: false,
+        ..NodeMasks::default()
     };
     let v = t.to_rgb();
     let m = rows.prepare().mask(None, LogC4(v), 0.3, None);

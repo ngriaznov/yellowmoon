@@ -1619,6 +1619,10 @@ span.ym-filmstrip__thumb {
 .ym-mask-row__tool[data-tool="eye"][aria-pressed="false"] {
   color: var(--glass-label-secondary);
 }
+.ym-mask-combine {
+  display: block;
+  margin-bottom: 10px;
+}
 .ym-mask-pick {
   display: flex;
   align-items: center;

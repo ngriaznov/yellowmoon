@@ -180,6 +180,11 @@ fn row(grow: f64, feather: f64, refine: f64) -> RasterRow {
 /// Main and node 2 behind it, node 2 with an exposure trim, a contrast and a saturation and one raster row of
 /// the set for each plane (added); the effect is at most about 0.25 in LogC4.
 fn chain_with(set: RasterSet) -> ColorChain {
+    chain_with_rule(set, false)
+}
+
+/// [`chain_with`] with the node's rows combining as an intersection (`masks.combine`) or adding.
+fn chain_with_rule(set: RasterSet, intersect: bool) -> ColorChain {
     let plan = plan::compile(
         &PlanGraph {
             nodes: vec![
@@ -223,6 +228,7 @@ fn chain_with(set: RasterSet) -> ColorChain {
                 masks: NodeMasks {
                     rows,
                     invert: false,
+                    intersect,
                 },
                 ..NodeParams::default()
             },
@@ -1157,6 +1163,46 @@ fn the_colour_pass_with_the_planes_is_within_one_ten_bit_code_of_the_cpu() {
 }
 
 #[test]
+fn the_colour_pass_with_intersecting_raster_rows_is_within_one_ten_bit_code_of_the_cpu() {
+    // Mask Intersect (MI-04): the rows' planes multiply, in the kernel and in the reference.
+    let buffer = (480usize, 320usize);
+    let img = scene(buffer.0, buffer.1, 0xC011);
+    let (grid, frame) = export_grid(buffer, 0.25);
+    let window = Area {
+        x: 400,
+        y: 250,
+        w: 160,
+        h: 120,
+    };
+    for (name, rows) in [
+        ("a plain dab", vec![row(0.0, 0.0, 0.0)]),
+        ("two rows", vec![row(0.0, 0.2, 0.0), row(-0.4, 0.0, 0.5)]),
+        (
+            "three rows",
+            vec![row(0.3, 0.3, 0.7), row(0.0, 0.2, 0.0), row(-0.4, 0.0, 0.5)],
+        ),
+    ] {
+        let chain = chain_with_rule(RasterSet { rows }, true);
+        for dev in gpus() {
+            if dev.mode.is_f16() {
+                continue;
+            }
+            let (device, cpu) = colour_both(dev, &chain, &img, &grid, frame, window);
+            let n = window.w * window.h;
+            let mut worst = 0.0f64;
+            for c in 0..3 {
+                for i in 0..n {
+                    let (a, b) = (f64::from(device[c * n + i]), f64::from(cpu[c * n + i]));
+                    worst = worst.max((a - b).abs());
+                }
+            }
+            eprintln!("Intersect, {name}: C13 device against CPU {worst:.2e} (gate {CODE10:.2e})");
+            assert!(worst < CODE10, "{name}: {worst}");
+        }
+    }
+}
+
+#[test]
 fn the_colour_pass_of_a_tile_with_its_planes_equals_the_whole_frame_bit_for_bit() {
     let buffer = (240usize, 160usize);
     let img = scene(buffer.0, buffer.1, 0x7117);
@@ -1335,6 +1381,7 @@ fn fan_chain(set: RasterSet) -> ColorChain {
         masks: NodeMasks {
             rows,
             invert: false,
+            ..NodeMasks::default()
         },
         ..NodeParams::default()
     };

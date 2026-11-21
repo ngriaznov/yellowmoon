@@ -19,6 +19,14 @@ moves the entries below from Unreleased into a dated section for that version.
 - **Pick colour on a Colour Uniform node turns off after each pick.** After a click on the photo sets the target, the Pick colour button now shows unpressed, every time and not only after the first pick. Press it again for another pick; Esc still ends a pick that is on. The Pick colour of the Colour warp and of a Colour range work as before.
 - **The Colour range that the first pick adds is no longer so wide.** It was as wide as a new Colour range (Width 39) and, on public sample photos, selected more than 80 % of the frame on 11 of 19 picks (median 84 %), so the first result acted on nearly the whole picture. It is now Width 23, which selects 41 % of the frame (median) and never more than 80 %, and on a plain scene only the picked colour's own area. Skin lit unevenly can leave a part of the face out; widen the row with Width then. A very grey pick, such as a ploughed field or a white wall, still selects a lot, because grey is most of a photo: narrow the row, or add another mask. A photo that already has such a row keeps it. Saved pictures are unchanged.
 
+### Added
+
+- **Masks can intersect.** A new switch on the Masks card, **Add** or **Intersect**, sits under the card's title. Add is how masks have always worked and is the default. Intersect keeps only where every mask overlaps: two shapes give just the part they share, a Subtract row still cuts a mask out, a row at Opacity 0 leaves the others as they are, and an Object row with no point empties the mask. It is one switch for the whole node, on every node that has masks (the correctors, Film, Face Refinement, Colour Uniform and Blur), and Reset puts it back to Add. Show mask and the node thumbnails show the result.
+
+### Changed
+
+- **Pipeline version 0.15.0.** No photo, preset or album that exists changes by a bit: the switch is written into a settings file, a preset or an album only when a node uses Intersect. A version older than this one reading such a file says "The settings can't be read: unknown field `combine`, expected `invert` or `items`" (an album or a preset says it was made by a newer version of Yellowmoon); everything else still opens in older versions.
+
 ## [0.2.4-beta.4] - 2026-11-20
 
 A fourth pre-release (a beta) for testing. It fixes **Pick colour** on a new Colour Uniform node and **Show mask** on a Film-like node with a linked key, and adds two safeguards for removing a node. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is unchanged at 0.14.0, so pictures are the same as in beta 3.

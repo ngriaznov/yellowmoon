@@ -45,6 +45,58 @@ pub enum MaskMode {
     Subtract,
 }
 
+/// How a node's mask rows combine (`docs/23` sections 3.3 and 4.2, `docs/algorithms/06` section 3):
+/// one switch for the whole node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskCombine {
+    /// The rows add up and Subtract cuts out: the rule of every document before 0.2.4.
+    #[default]
+    Add,
+    /// Only where every present row overlaps: the rows multiply.
+    Intersect,
+}
+
+impl MaskCombine {
+    /// Whether this is the default, which is left out of a written document.
+    #[must_use]
+    pub fn is_add(&self) -> bool {
+        matches!(self, Self::Add)
+    }
+
+    /// The JSON name.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Intersect => "intersect",
+        }
+    }
+}
+
+/// Checks the value of a `masks.combine` that is still raw JSON (a document's node or a patch's):
+/// anything but `"add"` or `"intersect"` is [`GraphError::MaskCombine`] with the node's name
+/// ("Node 3"). A missing value is fine.
+///
+/// # Errors
+///
+/// [`GraphError::MaskCombine`] for any other value.
+pub(crate) fn check_combine(masks: Option<&Value>, node: &str) -> Result<(), super::GraphError> {
+    let Some(value) = masks.and_then(|m| m.get("combine")) else {
+        return Ok(());
+    };
+    match value.as_str() {
+        Some("add" | "intersect") => Ok(()),
+        _ => Err(super::GraphError::MaskCombine {
+            node: node.to_owned(),
+            value: match value {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            },
+        }),
+    }
+}
+
 /// The kinds of mask row, as their JSON names.
 pub const MASK_KINDS: [&str; 10] = [
     "object",
@@ -925,6 +977,10 @@ impl<'de> Deserialize<'de> for MaskItem {
 pub struct MaskSettings {
     /// The node's Invert: `m = 1 - m`.
     pub invert: bool,
+    /// How the rows combine. Written only at [`MaskCombine::Intersect`], so a document that does
+    /// not use it is the one older versions wrote and read.
+    #[serde(skip_serializing_if = "MaskCombine::is_add")]
+    pub combine: MaskCombine,
     /// The rows, in the order they are drawn and combined, at most [`MAX_MASKS_PER_NODE`].
     pub items: Vec<MaskItem>,
 }
@@ -1346,6 +1402,9 @@ pub struct MasksPatch {
     /// The node's Invert.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invert: Option<bool>,
+    /// How the node's rows combine (`"add"` or `"intersect"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combine: Option<MaskCombine>,
     /// The whole list of rows: add, remove or reorder rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<Vec<MaskItem>>,
@@ -1364,6 +1423,9 @@ impl MasksPatch {
     pub(crate) fn apply(&self, masks: &mut MaskSettings, node: &str) -> Result<(), SettingsError> {
         if let Some(v) = self.invert {
             masks.invert = v;
+        }
+        if let Some(v) = self.combine {
+            masks.combine = v;
         }
         if let Some(items) = &self.items {
             masks.items.clone_from(items);

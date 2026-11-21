@@ -940,6 +940,7 @@ test.describe("the node panel", () => {
   // The stops of each state, counted: the head's buttons, the tab row (one: the selected tab; the tab list is not a stop, `docs/28` A-04: until
   // then it was a second one, a container that drew no ring), the cards' controls (a slider is two: its thumb and its value box), and the foot's two buttons.
   type Stops = { state: string; simple: string; node: number | "input" | "output"; tab: string; stops: number; before?: (page: Page) => Promise<void> };
+  // Mask Intersect (MI-06): the Masks card has one Tab stop more, the combine control (one radio group; the arrow keys move inside it), so each Mask-tab count below includes it.
   const STOPS: Stops[] = [
     { state: "the Input's Colour tab", simple: "Colour", node: "input", tab: "Colour", stops: 13 },
     { state: "a corrector's Light tab", simple: "Light", node: 2, tab: "Light", stops: 24 },
@@ -947,7 +948,7 @@ test.describe("the node panel", () => {
     { state: "the Output's Look tab", simple: "Look", node: "output", tab: "Look", stops: 22 },
     // The head's buttons (3), the tab row (1), the Masks card's Add mask, Invert and Reset (3), the two rows' four stops each (the row's button, the chosen
     // segment of Add | Subtract, Invert and the eye: 8), the View card's chosen segment, and the foot's two buttons.
-    { state: "a corrector's Mask tab with two rows and the View card", simple: "Light", node: 2, tab: "Mask", stops: 20 },
+    { state: "a corrector's Mask tab with two rows and the View card", simple: "Light", node: 2, tab: "Mask", stops: 21 },
     // Sky's one row, selected: its card has Reset and three sliders (Angle, Feather, Opacity; a slider is two stops, and Reset in a row's end is a stop only
     // while the slider differs from its default, which Sky's Linear does at an angle of 4 and a feather of 25). Counted below, with the ring on every stop.
     {
@@ -955,7 +956,7 @@ test.describe("the node panel", () => {
       simple: "Light",
       node: 3,
       tab: "Mask",
-      stops: 24,
+      stops: 25,
       before: (page) => page.getByRole("button", { name: /^Linear mask/ }).click(),
     },
     // A Brush row just added, on Warmth (node 4): the head's 3, the tab row's 1, the Masks card's 3, the row's 5 (the switch first), then the BRUSH card: its Reset, the chosen segment of
@@ -966,7 +967,7 @@ test.describe("the node panel", () => {
       simple: "Light",
       node: 4,
       tab: "Mask",
-      stops: 29,
+      stops: 30,
       before: async (page) => {
         await page.getByRole("button", { name: "Add mask" }).click();
         await page.getByRole("menuitem", { name: /^Brush/ }).click();
@@ -982,7 +983,7 @@ test.describe("the node panel", () => {
       simple: "Light",
       node: 4,
       tab: "Mask",
-      stops: 25,
+      stops: 26,
       before: async (page) => {
         await page.getByRole("button", { name: "Add mask" }).click();
         await page.getByRole("menuitem", { name: /^Object/ }).click();
@@ -999,7 +1000,7 @@ test.describe("the node panel", () => {
       simple: "Light",
       node: 4,
       tab: "Mask",
-      stops: 28,
+      stops: 29,
       before: async (page) => {
         await page.getByRole("button", { name: "Add mask" }).click();
         await page.getByRole("menuitem", { name: /^Background/ }).click();
@@ -1015,7 +1016,7 @@ test.describe("the node panel", () => {
       simple: "Light",
       node: 4,
       tab: "Mask",
-      stops: 24,
+      stops: 25,
       before: async (page) => {
         await page.getByRole("button", { name: "Add mask" }).click();
         await page.getByRole("menuitem", { name: /^Subject/ }).click();

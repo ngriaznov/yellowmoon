@@ -330,6 +330,32 @@ describe("applyPatch", () => {
   });
 });
 
+describe("masks.combine (Mask Intersect, docs/23 §3.3 and §3.7)", () => {
+  it("is applied by a patch of its own, kept only at Intersect as the core writes it, and leaves the rows alone", () => {
+    const s = graph();
+    const was = nodeOf(s, 3) as { masks: { items: unknown[]; combine?: string } };
+    expect(was.masks.combine).toBeUndefined();
+    const next = applyPatch(s, patchOf(3, { masks: { combine: "intersect" } }));
+    const node = nodeOf(next, 3) as { masks: { items: unknown[]; combine?: string } };
+    expect(node.masks.combine).toBe("intersect");
+    expect(node.masks.items).toEqual(was.masks.items);
+    // Back to Add leaves no field: the document is the one that was.
+    const back = applyPatch(next, patchOf(3, { masks: { combine: "add" } }));
+    expect(back).toEqual(s);
+    expect("combine" in (nodeOf(back, 3) as { masks: object }).masks).toBe(false);
+  });
+
+  it("is a field of the diff and its inverse, with Add and a missing field the same value", () => {
+    const before = graph();
+    const after = applyPatch(before, patchOf(3, { masks: { combine: "intersect" } }));
+    const d = diffGraph(before, after);
+    expect(d).toEqual({ before: { nodes: { "3": { masks: { combine: "add" } } } }, after: { nodes: { "3": { masks: { combine: "intersect" } } } } });
+    expect(applyPatch(after, d?.before as SettingsPatch)).toEqual(before);
+    // The same rule over a document that says "add" and one that has no field.
+    expect(diffGraph(before, applyPatch(before, patchOf(3, { masks: { combine: "add" } })))).toBeNull();
+  });
+});
+
 describe("diffGraph", () => {
   it("is null when nothing changed", () => {
     expect(diffGraph(graph(), graph())).toBeNull();

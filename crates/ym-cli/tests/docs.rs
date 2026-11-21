@@ -330,8 +330,8 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     let blocks = json_blocks(&doc[start..end]);
     assert_eq!(
         blocks.len(),
-        11,
-        "the complete small file, the per-file example, the Brush row, the Object row, the Parallel and the Splitter-and-Combiner examples of docs/25, the Face Refinement example of docs/27, the Colour Uniform example of docs/32, the Blur example of docs/33 and its two Blur the background examples (Depth and Subject)"
+        12,
+        "the complete small file, the per-file example, the Brush row, the Object row, the Parallel and the Splitter-and-Combiner examples of docs/25, the Face Refinement example of docs/27, the Colour Uniform example of docs/32, the Blur example of docs/33 and its two Blur the background examples (Depth and Subject) and the Mask Intersect example of this section"
     );
 
     // The complete small file: read over the default graph, checked, and written back unchanged.
@@ -562,6 +562,21 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     let written = serde_json::to_value(&settings).expect("writes");
     let (again, _) = DevelopSettings::from_value(written, &LookId::neutral()).expect("reads again");
     assert_eq!(again, settings, "written back unchanged");
+    // The Mask Intersect example (MI-07): a document the core reads, whose node intersects, written back with the field once.
+    let value: Value = serde_json::from_str(&blocks[11]).expect("the Intersect example is JSON");
+    let (settings, clamped) =
+        DevelopSettings::from_value(value, &LookId::neutral()).expect("the example reads");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    let masks = &settings.nodes.corrector(2).expect("node 2").masks;
+    assert_eq!(masks.combine, ym_core::settings::MaskCombine::Intersect);
+    assert_eq!(masks.items.len(), 2);
+    assert_eq!(
+        serde_json::to_string(&settings)
+            .expect("writes")
+            .matches("\"combine\":\"intersect\"")
+            .count(),
+        1
+    );
     // The two Blur the background examples (BL-10): a Lens node with an inverted Depth row and with an inverted Subject row, read
     // as written (the rows' own fields, no clamping), and written back unchanged.
     for (index, kind) in [(9, "depth"), (10, "subject")] {

@@ -412,6 +412,22 @@ function maskContent(masks: MaskSettings, box: MaskRect, found: VisionFound, dep
   const flip = masks.invert;
   const paper = (ink: string): string => `<rect x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}" fill="${ink}"/>`;
   if (rows.length === 0) return paper(flip ? "#000" : "#fff");
+  // Intersect (`docs/algorithms/06` §3): the rows multiply. Black painted at an alpha multiplies what is under it by one minus the alpha, so the picture
+  // starts white and each row paints black by what it takes away: a Subtract row by `o a` (the row as it is, in black), an Add row by `o (1 − a)`: a black
+  // rectangle seen through a mask that is `o` minus the row's own `a` (the row drawn at full opacity, in black, over a grey of `o`).
+  if (masks.combine === "intersect") {
+    const shapes = rows
+      .map((row, i) => {
+        if (row.mode === "subtract") return rowShape(row, i, "#000", box, found, depthReady);
+        const id = `mvim${i}`;
+        const at = `x="${round(box.x)}" y="${round(box.y)}" width="${round(box.width)}" height="${round(box.height)}"`;
+        const mask = `<mask id="${id}" maskUnits="userSpaceOnUse" ${at}><rect ${at} fill="#fff" fill-opacity="${Math.max(0, Math.min(1, row.opacity))}"/>${rowShape({ ...row, opacity: 1 }, i, "#000", box, found, depthReady)}</mask>`;
+        return `${mask}<rect ${at} fill="#000" mask="url(#${id})"/>`;
+      })
+      .join("");
+    const content = paper("#fff") + shapes;
+    return flip ? `<g filter="url(#mvinvert)">${content}</g>` : content;
+  }
   // A lone Subtract starts from the whole photo; every other list starts from nothing.
   const first = rows[0];
   const base = first?.mode === "subtract" ? "#fff" : "#000";

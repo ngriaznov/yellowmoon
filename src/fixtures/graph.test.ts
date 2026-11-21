@@ -183,6 +183,21 @@ describe("Copy and Paste: the core's rules (docs/23 section 3.8)", () => {
     expect(patch.nodes?.["1"]?.grade?.contrast).toEqual({ kind: "auto" });
   });
 
+  it("copies the node's combine mode with its masks, only at Intersect", () => {
+    const linear: MaskItem = { kind: "linear", mode: "add", invert: false, enabled: true, opacity: 1, center: [0.5, 0.2], angle_deg: 4, feather: 0.25 };
+    const s = applyPatch(line(), { nodes: { "2": { masks: { items: [linear], combine: "intersect" } }, "3": { masks: { items: [linear] } } } });
+    const copy = copiedPatch(resolveSettings(1, s, MOCK_ESTIMATES));
+    expect(copy.nodes?.["2"]?.masks?.combine).toBe("intersect");
+    expect(copy.nodes?.["3"]?.masks && "combine" in copy.nodes["3"].masks).toBe(false);
+  });
+
+  it("refuses a combine other than add or intersect with the core's sentence", () => {
+    const s = applyPatch(line(), { nodes: { "3": { masks: { combine: "merge" as never } } } });
+    expect(validateGraph(s)).toBe("The masks of node 3 combine as “add” or “intersect”, not “merge”.");
+    expect(GRAPH_TEXT.maskCombine(3, "merge")).toBe("The masks of node 3 combine as “add” or “intersect”, not “merge”.");
+    expect(validateGraph(applyPatch(line(), { nodes: { "3": { masks: { combine: "intersect" } } } }))).toBeNull();
+  });
+
   it("copies an Object mask empty, so it selects nothing on the new photo until it is clicked", () => {
     const object: MaskItem = { kind: "object", mode: "add", invert: false, enabled: true, opacity: 1, points: [[0.4, 0.4, true]], box: [0.1, 0.1, 0.5, 0.5], feather: 0, grow: 0, refine: 0.5 };
     const linear: MaskItem = { kind: "linear", mode: "subtract", invert: false, enabled: true, opacity: 1, center: [0.5, 0.2], angle_deg: 4, feather: 0.25 };

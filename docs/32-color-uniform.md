@@ -146,7 +146,7 @@ The toolbar's **Show mask** (M) and the Mask tab's View card (`docs/23` §5.8, �
 | Part | Content |
 |---|---|
 | Head | The corrector's compact head (`docs/23` §7.5): the number chip, the name ("Uniform"), the line, Bypass, Reset, More. Line: "Colour Uniform", "Bypassed", "Not connected" (short, so the line is not cut at 400 px; the corrector's mask text is not repeated) |
-| Tabs | **Compress · Mask**, in the Colour tab's green (`--tab-colour`; `docs/11`) and the mask accent. The Mask tab is a corrector's (`docs/23` §7.6) |
+| Tabs | **Compress · Mask**, in the Colour tab's green (`--tab-colour`; `docs/11`) and the mask accent. The Mask tab is a corrector's (with its Add | Intersect control, `docs/23` §7.6) (`docs/23` §7.6) |
 | Compress › cards | **Target · Compress** (about 250 + 190 px: both fit the 678 px scroll area at 1440 × 900) |
 | Mask › cards | the Masks card, the selected mask's card, the View card, as a corrector's; after the first pick: one **Colour range** row (Width 23) and its **COLOUR RANGE** card (Pick colour, Width, Softness, Opacity) |
 | Histogram | none (the node has no light to show) |
