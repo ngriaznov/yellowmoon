@@ -14,7 +14,7 @@ The current state of Yellowmoon: release, milestone, what is built, gate results
 
 ## Current release and milestone
 
-- **The unstable-pixel rule is general (branch `unstable-rule`, 2026-11-21; not pushed):** `judge_export` nudges every continuous setting of every node (found through the settings schema), the owner's "extend the rule so there are no exceptions for specific cases"; the follow-up "extend `judge_export` to nudge Colour Uniform settings" is done by it, and seed 297 graph 0 passes on lavapipe (`docs/13`). 0.2.4-beta.4 shipped with CI red only on seed 297 for this reason, the owner's choice.
+- **The unstable-pixel rule is general (branch `unstable-rule`, 2026-11-21; not pushed):** `judge_export` nudges every continuous setting of every node (found through the settings schema), the owner's "extend the rule so there are no exceptions for specific cases"; the follow-up "extend `judge_export` to nudge Colour Uniform settings" is done by it, and seed 297 graph 0 passes on lavapipe (`docs/13`). Round 2: the 8-bit view is judged by the same rule, so since 2026-11-21 neither the view nor the export has a Film-chain exception. 0.2.4-beta.4 shipped with CI red only on seed 297 for this reason, the owner's choice.
 - **0.2.4-beta.4 prepared (release-0.2.4-beta.4):** the Colour Uniform Pick colour fix; CI only, no Mac run, by the owner's choice (2026-11-20). Not pushed.
 
 - **0.2.4-beta.3 published 2026-11-20 (pre-release, GitHub Releases only):** https://github.com/ngriaznov/yellowmoon/releases/tag/v0.2.4-beta.3, from eee5d896 (CI 44709985163 and Mac GPU 44709989305 green on that commit; release run 44747410687). Colour Uniform, the raw constants, Blur; pipeline 0.14.0.

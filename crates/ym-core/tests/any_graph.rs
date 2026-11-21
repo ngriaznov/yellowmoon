@@ -18,16 +18,12 @@
 //! and the same bytes at another tile size, at any binding size. Tests of their own run them on the CPU (tiles, threads,
 //! determinism) and export every one of them on the device (`graphs_with_joins_are_exported_on_the_device`).
 //!
-//! **Film nodes in series (the owner, 2026-11-12: "Follow your recommendation on limits.").** Every bound stays as it is. The
-//! difference of the 8-bit *view* from the CPU is enforced only for a graph with at most one Film node in any chain, that is, on any
-//! path from the Input to the Output (`film_chain`: a mixer's branches are parallel, so Film nodes on different branches are not in
-//! series). A graph with two or more is still rendered on the device and checked for everything else (no refusal, no "graphics
-//! card" note, the exports are the device's and the same bytes at another tile size), and its view differences are printed with
-//! "view not enforced: N Film nodes in series". Each Film pass amplifies the `f32` rounding of the one before it where grain and
-//! halation follow an exposure push, and a pixel far outside the gamut is ill-conditioned for any `f32` pipeline, the CPU's
-//! included (seeds 539 and 202). **The export has no such exception since 2026-11-21:** it is judged by the unstable-pixel rule
-//! below, like every graph's (`seed_539_graph_0_export_is_judged_by_the_unstable_pixel_rule`). The run prints how many graphs were
-//! compared and how many had their view not enforced.
+//! **Film nodes in series (the owner, 2026-11-12: "Follow your recommendation on limits.").** Until 2026-11-21 a graph with two or more
+//! Film nodes in any chain (`film_chain`) was compared with the CPU in neither its view nor its export, because each Film pass
+//! amplifies the `f32` rounding of the one before it and a pixel far outside the gamut is ill-conditioned for any `f32` pipeline, the
+//! CPU's included (seeds 539 and 202). **Since 2026-11-21 neither the view nor the export has a Film-chain exception:** both are
+//! judged by the unstable-pixel rule below, like every graph's (`seed_539_graph_0_export_is_judged_by_the_unstable_pixel_rule`,
+//! `the_unstable_view_rule_exempts_only_the_cpus_own_unstable_values`). `film_chain` is printed with each graph and decides nothing.
 //!
 //! **Unstable pixels (the owner, 2026-11-18: "Skip unstable pixels"; made general on 2026-11-21: "extend the rule so there are no
 //! exceptions for specific cases").** The bound of one 10-bit code (64 of 65535) between the device's export and the CPU's holds on every
@@ -37,7 +33,10 @@
 //! that any of those renders moves by more than the bound is unstable (`judge_export`). Those values are printed, not enforced. A
 //! graph within the bound is never nudged. Three safeguards: when nothing could be nudged nothing is exempt; more than
 //! `max(60, 0.01 % of the values)` exempt values fail; and the device's value at an unstable index must lie within the CPU's nudged
-//! range widened by the bound. (The cases that led to it: seed 23 graph 0 on Metal, a one-code rounding of a Depth plane next to a thin
+//! range widened by the bound. The same rule judges the 8-bit view (`judge_view`): a view within its bound (2 codes, fewer than a
+//! 2000th of the values over 1) costs nothing; otherwise the CPU renders the view state eight times with the same nudges, a value its
+//! view moves by more than 1 code is unstable and is left out of both bounds, and the same three safeguards hold (the cap on exempt
+//! values, the range widened by 2 codes). (The cases that led to it: seed 23 graph 0 on Metal, a one-code rounding of a Depth plane next to a thin
 //! dark line that the Output's sharpening amplifies, `a_one_code_change_of_a_depth_plane_moves_seed_23_only_through_output_sharpening`;
 //! and seed 297 graph 0, two chained Colour Uniform nodes whose second has no mask row,
 //! `the_unstable_pixel_rule_sees_the_sensitivity_of_a_setting_that_is_not_a_mask_row`.)
@@ -277,11 +276,8 @@ struct Graph {
     /// Whether a live Face Refinement node is in the graph (not bypassed, read by the Output): its face step runs on the device
     /// since S-13 (`docs/27`), so the frame is the device's, not refused, and agrees with the CPU's within the view bound.
     face_live: bool,
-    // A Face Refinement node is not counted in `film_chain`: the rule of the Film chain is for the rounding the Film nodes
-    // amplify (grain and halation after an exposure push), and the face graphs measured so far, among them
-    // `film, face, film` (seed 37, graph 1; film chain 2) on seeds 539, 202, 7 and 1234 and the default, are within the view bound
-    // (1 code, 0 values over 1), so their difference from the CPU stays enforced.
-    /// The most Film nodes on any path from the Input to the Output (see [`film_chain`]).
+    /// The most Film nodes on any path from the Input to the Output (see [`film_chain`]). Printed information only: since 2026-11-21
+    /// it decides nothing, neither for a view nor for an export (a Face Refinement node is not counted in it, as before).
     film_chain: usize,
 }
 
@@ -383,11 +379,6 @@ fn film_chain(doc: &Value) -> usize {
     }
     depth("\"output\"", &films, &reads, &mut HashMap::new())
 }
-
-/// Graphs with more Film nodes than this in series are rendered and checked on the device for everything but the 8-bit view's
-/// difference from the CPU, which is printed and not enforced (the owner, 2026-11-12; the header comment). Their exports are judged
-/// like any other (`judge_export`, 2026-11-21).
-const MAX_ENFORCED_FILM_CHAIN: usize = 1;
 
 /// `forced_node` and `forced_mask` are the kinds the graph must hold, cycled by the caller so a run covers every kind.
 fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKind) -> Graph {
@@ -1196,8 +1187,10 @@ fn no_generated_graph_is_refused_by_the_device() {
     let (mut n_branched, mut n_parallel) = (0usize, 0usize);
     // S-12: the live Face Refinement graphs that were compared with the CPU, and those whose faces the node really changed.
     let (mut n_face_compared, mut n_face_changed) = (0usize, 0usize);
-    // Graphs whose difference from the CPU is enforced, and those that have one that is only printed (`film_chain`).
-    let (mut n_enforced, mut n_reported) = (0usize, 0usize);
+    // Graphs whose views are compared with the CPU's.
+    let mut n_compared = 0usize;
+    // The views over the bound that the rule excused as the CPU's own unstable values, and how many CPU renders that took.
+    let mut view_judged = 0usize;
     for g in &all {
         let name = format!("seed {} graph {}", g.seed, g.index);
         say(&format!(
@@ -1210,13 +1203,9 @@ fn no_generated_graph_is_refused_by_the_device() {
             g.branches,
             g.parallel_films
         ));
-        // The 8-bit view's difference from the CPU is enforced for a graph with at most one Film node in series; with more it is
-        // printed (the owner, 2026-11-12). The export is judged for every graph (below).
-        let enforced = g.compare && g.film_chain <= MAX_ENFORCED_FILM_CHAIN;
-        let reported = g.compare && !enforced;
-        let unenforced = format!("view not enforced: {} Film nodes in series", g.film_chain);
-        n_enforced += usize::from(enforced);
-        n_reported += usize::from(reported);
+        // The view and the export of every graph with a CPU reference are judged, Film nodes in series or not (`judge_view`,
+        // `judge_export`; the owner, 2026-11-21).
+        n_compared += usize::from(g.compare);
         n_film += usize::from(g.nodes.contains(&NodeKind::Film));
         n_branched += usize::from(g.branches > 0);
         n_parallel += g.parallel_films;
@@ -1352,21 +1341,16 @@ fn no_generated_graph_is_refused_by_the_device() {
                 let _ = frame(&cpu, &src, st);
                 let want = frame(&cpu, &src, st);
                 let (max, over) = frame_diff(&got, &want);
-                if reported {
-                    say(&format!(
-                        "{at}: against the CPU {max} codes, {over} values over 1 ({unenforced})"
-                    ));
-                } else {
-                    worst_view = (worst_view.0.max(max), worst_view.1.max(over));
-                }
-                if enforced && (max > 2 || over >= got.rgba.len() / 2000) {
+                worst_view = (worst_view.0.max(max), worst_view.1.max(over));
+                let judged = judge_view(&cpu, &src, st, &got, &want, &at, &mut view_judged);
+                if let Some(f) = judged.failure {
                     // Where the largest difference is, as for a graph with faces (there are no boxes to say).
                     let image = cpu
                         .final_size(&src, &CancelToken::new())
                         .expect("the final size");
                     let at_max = face_frame_diff(&got, &want, st, &image, &[]);
                     problems.push(format!(
-                        "{at}: against the CPU {max} codes, {over} values over 1: {}",
+                        "{f} (against the CPU {max} codes, {over} values over 1: {})",
                         at_max.text()
                     ));
                 }
@@ -1443,7 +1427,7 @@ fn no_generated_graph_is_refused_by_the_device() {
         }
     }
     say(&format!(
-        "{n_enforced} graphs compared with the CPU in their views, {n_reported} with the view not enforced (more than {MAX_ENFORCED_FILM_CHAIN} Film node in series); every export is judged"
+        "{n_compared} graphs compared with the CPU in their views and exports, {view_judged} of their views over the bound and judged by the unstable-pixel rule"
     ));
     say(&format!(
         "{} graphs ({n_film} with a Film node, {n_masked} with masks, {n_keys} key links, {n_branched} with picture branches, {n_parallel} parallel Film pairs), {exports} with exports; worst view {} codes, {} values over 1; worst PNG {worst_export} of 65535; {:?}",
@@ -2225,13 +2209,7 @@ fn judge_export_with(
         }
     };
     // All the settings at once, with seeded signs.
-    let mut rng = SplitMix64(NUDGE_SEED);
-    for _ in 0..COMBINED_NUDGES {
-        let mut nudged = doc.clone();
-        for leaf in leaves {
-            let sign = if rng.below(2) == 0 { 1.0 } else { -1.0 };
-            set_number(&mut nudged, &leaf.at, leaf.nudged(sign));
-        }
+    for nudged in nudged_documents(doc, leaves) {
         take(&nudged);
     }
     if leaves.is_empty() || renders == 0 {
@@ -2295,6 +2273,164 @@ fn judge_export_with(
     }
 }
 
+/// The settings document with every continuous setting moved at once by plus or minus a step, [`COMBINED_NUDGES`] times, the signs
+/// drawn from [`NUDGE_SEED`]: the documents the CPU renders again to see what is unstable.
+fn nudged_documents(doc: &Value, leaves: &[Leaf]) -> Vec<Value> {
+    let mut rng = SplitMix64(NUDGE_SEED);
+    (0..COMBINED_NUDGES)
+        .map(|_| {
+            let mut nudged = doc.clone();
+            for leaf in leaves {
+                let sign = if rng.below(2) == 0 { 1.0 } else { -1.0 };
+                set_number(&mut nudged, &leaf.at, leaf.nudged(sign));
+            }
+            nudged
+        })
+        .collect()
+}
+
+/// The CPU's own range of every value of a view (codes of 255, alpha included) over the nudged settings of `leaves`, and how many
+/// renders there were. The CPU renders the same view state of the same photo with the settings changed, as the app does when a
+/// control moves (`PhotoSource::with_settings`).
+fn view_ranges(
+    cpu: &Renderer,
+    src: &PhotoSource,
+    st: &ViewportState,
+    doc: &Value,
+    leaves: &[Leaf],
+    base: &RenderedFrame,
+) -> (Vec<u8>, Vec<u8>, usize) {
+    let (mut lo, mut hi) = (base.rgba.clone(), base.rgba.clone());
+    let mut renders = 0usize;
+    if leaves.is_empty() {
+        return (lo, hi, renders);
+    }
+    for nudged in nudged_documents(doc, leaves) {
+        let Some(valid) = serde_json::from_value::<DevelopSettings>(nudged)
+            .ok()
+            .and_then(|s| s.validated().ok())
+        else {
+            continue;
+        };
+        let moved = frame(cpu, &src.with_settings(valid.0), st);
+        if moved.rgba.len() != base.rgba.len() {
+            continue;
+        }
+        renders += 1;
+        for (i, m) in moved.rgba.iter().enumerate() {
+            lo[i] = lo[i].min(*m);
+            hi[i] = hi[i].max(*m);
+        }
+    }
+    (lo, hi, renders)
+}
+
+/// The device's 8-bit view against the CPU's under the view bound (at most 2 codes, and fewer than a 2000th of the values over 1),
+/// with the unstable-pixel rule of the export applied to the view (the owner, 2026-11-21: "extend the rule so there are no exceptions
+/// for specific cases").
+///
+/// * Within the bound: nothing more is done.
+/// * Else the CPU renders the same view state [`COMBINED_NUDGES`] times with the continuous settings of every node ([`nudge_leaves`])
+///   nudged at once with seeded signs, and a value that any of them moves by more than 1 code is **unstable**. Unstable values are
+///   left out of both the bound on the largest difference and the count of values over 1; each unstable value the device differs at
+///   by more than 1 code is printed.
+/// * Safeguards: when nothing could be nudged nothing is exempt; more than `max(60, 0.01 % of the values)` exempt values fail; and the
+///   device's value at an exempt index must lie within the CPU's nudged range widened by 2 codes.
+fn judge_view(
+    cpu: &Renderer,
+    src: &PhotoSource,
+    st: &ViewportState,
+    dev: &RenderedFrame,
+    want: &RenderedFrame,
+    name: &str,
+    judged_views: &mut usize,
+) -> Judged {
+    let (max, over) = frame_diff(dev, want);
+    if max <= 2 && over < dev.rgba.len() / 2000 {
+        return Judged { failure: None };
+    }
+    *judged_views += 1;
+    let Ok(doc) = serde_json::to_value(&src.settings) else {
+        return Judged {
+            failure: Some(format!(
+                "{name}: against the CPU {max} codes, {over} values over 1; the settings cannot be written as JSON to nudge them"
+            )),
+        };
+    };
+    let leaves = nudge_leaves(&doc);
+    let (lo, hi, renders) = view_ranges(cpu, src, st, &doc, &leaves, want);
+    judge_view_with(dev, want, &lo, &hi, renders, name)
+}
+
+/// [`judge_view`] with the CPU's nudged range given (`renders` is how many renders made it; none means nothing nudged).
+fn judge_view_with(
+    dev: &RenderedFrame,
+    want: &RenderedFrame,
+    lo: &[u8],
+    hi: &[u8],
+    renders: usize,
+    name: &str,
+) -> Judged {
+    let n = dev.rgba.len();
+    let diff = |i: usize| dev.rgba[i].abs_diff(want.rgba[i]);
+    let unstable = |i: usize| (hi[i] - want.rgba[i]).max(want.rgba[i] - lo[i]) > 1;
+    if renders == 0 {
+        let (max, over) = frame_diff(dev, want);
+        return Judged {
+            failure: Some(format!(
+                "{name}: against the CPU {max} codes, {over} values over 1, and nothing could be nudged, so nothing is exempt"
+            )),
+        };
+    }
+    let (mut max, mut over, mut exempt) = (0u8, 0usize, Vec::new());
+    for i in 0..n {
+        if diff(i) > 1 && unstable(i) {
+            exempt.push(i);
+        } else if !unstable(i) {
+            max = max.max(diff(i));
+            over += usize::from(diff(i) > 1);
+        }
+    }
+    let mut problems = Vec::new();
+    if max > 2 || over >= n / 2000 {
+        problems.push(format!(
+            "the values the CPU holds still differ by {max} codes, {over} over 1 (bound 2 codes, fewer than {} over 1)",
+            n / 2000
+        ));
+    }
+    let most = MOST_UNSTABLE.max(n / 10_000);
+    if exempt.len() > most {
+        problems.push(format!(
+            "{} values over 1 would be exempt as unstable (more than {most}): too many for a thin edge",
+            exempt.len()
+        ));
+    }
+    for &i in &exempt {
+        say(&format!(
+            "{name}: unstable value {i} (not enforced): CPU {}, device {}, the CPU's own range {} to {}",
+            want.rgba[i], dev.rgba[i], lo[i], hi[i]
+        ));
+        if u16::from(dev.rgba[i]) + 2 < u16::from(lo[i]) || dev.rgba[i] > hi[i].saturating_add(2) {
+            problems.push(format!(
+                "the device's value {} at unstable value {i} is outside the CPU's own range {} to {} widened by 2",
+                dev.rgba[i], lo[i], hi[i]
+            ));
+        }
+    }
+    say(&format!(
+        "{name}: view against the CPU: {} values over 1 excused as unstable, {renders} CPU renders",
+        exempt.len()
+    ));
+    Judged {
+        failure: (!problems.is_empty()).then(|| format!("{name}: {}", problems.join("; "))),
+    }
+}
+
+/// Regression (G-11): a view at scale 1 (zoom 50 to 150 %) of a photo with raster masks was made on the CPU when the wider
+/// picture the masks read did not fit one binding (the owner's 12 CPU frames of 198, 410 to 840 ms). The planes of such a view
+/// are made in tiles (`plane_tiles`), so the route is the device's whatever the binding size, down to the size where the
+/// frame itself cannot be held: 1 MiB and up for a small photo, 4 MiB and up for a 1332 x 888 view of a 4000 px one. Below that
+/// the CPU may make the frame, never quietly: it says why, in the report and in the note.
 #[test]
 fn views_at_scale_one_with_raster_masks_stay_on_the_device_at_any_binding_size() {
     let _serial = SERIAL
@@ -3790,5 +3926,124 @@ fn the_unstable_pixel_rule_sees_the_sensitivity_of_a_setting_that_is_not_a_mask_
     assert!(
         text.contains("outside the CPU's own range") && text.contains("stable values differ"),
         "{text}"
+    );
+}
+
+/// The rule of `judge_view` on the CPU alone, with a CPU frame standing for the device (the owner, 2026-11-21). The graphs are the
+/// pinned ones with the most ill-conditioned pixels (seed 539: two Film nodes in series, the case the Film-chain exception of
+/// 2026-11-12 was made for; seed 297 and seed 23: Colour Uniform). The first whose CPU view moves by 3 codes or more at some value
+/// under the nudges is the case: a "device" that differs from the CPU there by 3 codes passes (the value is unstable, and the device
+/// is in the CPU's range); the same size of difference at a stable value fails (the bound of 2 codes is enforced there); an unstable
+/// value moved far outside the CPU's range fails (safeguard c); with nothing nudged nothing is exempt (safeguard a).
+#[test]
+fn the_unstable_view_rule_exempts_only_the_cpus_own_unstable_values() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let scene = Scene::new(
+        640,
+        420,
+        light("sony-ilce-7rm4", 4800.0),
+        Layout::Patchwork,
+        0.5,
+    )
+    .noise(2e-4, 2e-6)
+    .seed(5);
+    let d = Developed::new(&scene, MODEL);
+    let cpu = renderer(None, 256);
+    let mut found = false;
+    for (what, json) in [
+        ("seed 539 graph 0", SEED_539_GRAPH_0),
+        ("seed 297 graph 0", SEED_297_GRAPH_0),
+        ("seed 23 graph 0", SEED_23_GRAPH_0),
+    ] {
+        let settings = serde_json::from_str::<DevelopSettings>(json)
+            .expect("settings")
+            .validated()
+            .expect("a valid graph")
+            .0;
+        let src = d.source().with_settings(settings);
+        let doc = serde_json::to_value(&src.settings).expect("json");
+        let leaves = nudge_leaves(&doc);
+        let st = view(false, false, None);
+        let _ = frame(&cpu, &src, &st);
+        settle_depth(&cpu, &src, &[("fit".to_owned(), st.clone())]);
+        let base = frame(&cpu, &src, &st);
+        let started = std::time::Instant::now();
+        let (lo, hi, renders) = view_ranges(&cpu, &src, &st, &doc, &leaves, &base);
+        let moved = |i: usize| (hi[i] - base.rgba[i]).max(base.rgba[i] - lo[i]);
+        let most = (0..base.rgba.len()).map(moved).max().unwrap_or(0);
+        let unstable = (0..base.rgba.len()).filter(|&i| moved(i) > 1).count();
+        say(&format!(
+            "{what}: the CPU's view moves by {most} codes at most under the nudges, {unstable} unstable values, {renders} renders in {:?}",
+            started.elapsed()
+        ));
+        let Some(at) = (0..base.rgba.len())
+            .filter(|&i| moved(i) >= 3 && base.rgba[i] >= 8 && base.rgba[i] <= 247)
+            .max_by_key(|&i| moved(i))
+        else {
+            continue;
+        };
+        found = true;
+        let with = |i: usize, to: u8| {
+            let mut dev = base.clone();
+            dev.rgba[i] = to;
+            dev
+        };
+        // An unstable value 3 codes from the CPU's, inside its range (the end of the range it moves to, or 3 on that side).
+        let up = hi[at] - base.rgba[at] >= base.rgba[at] - lo[at];
+        let inside = if up {
+            base.rgba[at] + 3.min(hi[at] - base.rgba[at])
+        } else {
+            base.rgba[at] - 3.min(base.rgba[at] - lo[at])
+        };
+        assert!(
+            base.rgba[at].abs_diff(inside) > 1,
+            "{what}: a difference over 1"
+        );
+        let verdict = judge_view_with(&with(at, inside), &base, &lo, &hi, renders, what);
+        assert!(
+            verdict.failure.is_none(),
+            "{what}: the CPU's own unstable value passes: {:?}",
+            verdict.failure
+        );
+        // The same 3 codes at a stable value (the first with no movement at all and room to move).
+        let stable = (0..base.rgba.len())
+            .find(|&i| moved(i) == 0 && base.rgba[i] >= 8 && base.rgba[i] <= 247)
+            .expect("a stable value");
+        let text = judge_view_with(
+            &with(stable, base.rgba[stable] + 3),
+            &base,
+            &lo,
+            &hi,
+            renders,
+            what,
+        )
+        .failure
+        .unwrap_or_default();
+        assert!(text.contains("differ by 3 codes"), "{what}: {text}");
+        // An unstable value far outside the CPU's range.
+        let far = if up {
+            hi[at].saturating_add(40)
+        } else {
+            lo[at].saturating_sub(40)
+        };
+        let text = judge_view_with(&with(at, far), &base, &lo, &hi, renders, what)
+            .failure
+            .unwrap_or_default();
+        assert!(
+            text.contains("outside the CPU's own range"),
+            "{what}: {text}"
+        );
+        // Nothing nudged: nothing is exempt.
+        let text = judge_view_with(&with(at, inside), &base, &lo, &hi, 0, what)
+            .failure
+            .unwrap_or_default();
+        assert!(text.contains("nothing could be nudged"), "{what}: {text}");
+        break;
+    }
+    assert!(
+        found,
+        "no pinned graph has a view value that moves by 3 codes"
     );
 }
