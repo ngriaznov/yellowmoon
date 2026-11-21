@@ -38,6 +38,7 @@
     {"role":"button","name":"Pick colour","outline":"solid","ring":"outline"},
     {"role":"slider","name":"Width","outline":"solid","ring":"outline"},
     {"role":"textbox","name":"Width value","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Reset Width","outline":"solid","ring":"outline"},
     {"role":"slider","name":"Softness","outline":"solid","ring":"outline"},
     {"role":"textbox","name":"Softness value","outline":"solid","ring":"outline"},
     {"role":"slider","name":"Opacity","outline":"solid","ring":"outline"},

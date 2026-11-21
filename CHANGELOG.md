@@ -9,15 +9,9 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
-### Changed
+## [0.2.4-beta.5] - 2026-11-21
 
-- **A new Colour range mask starts narrower, so it selects one colour rather than most of the photo.** Add mask › Colour range now starts at Width 23 instead of 39, as the first pick of a Colour Uniform node does. On public sample photos the old width selected more than 80 % of the frame on 11 of 19 picks; the new one on none. Masks already in a photo, preset or album keep their width.
-
-### Fixed
-
-- **An Object mask works on every node that has masks.** Clicking the photo to select an object failed with "That mask is not an Object mask. Select an Object mask and try again." when the Object mask was on a Film, Face Refinement, Colour Uniform or Blur node (it worked on Main and on correctors). The core looked for the row only in Main and the correctors. It now looks in any node that has masks, and the page does the same for the point count, the Depth, Background and Brush rows, Subject and People finding, and the Link key menu. Saved settings and pictures are unchanged.
-- **Pick colour on a Colour Uniform node turns off after each pick.** After a click on the photo sets the target, the Pick colour button now shows unpressed, every time and not only after the first pick. Press it again for another pick; Esc still ends a pick that is on. The Pick colour of the Colour warp and of a Colour range work as before.
-- **The Colour range that the first pick adds is no longer so wide.** It was as wide as a new Colour range (Width 39) and, on public sample photos, selected more than 80 % of the frame on 11 of 19 picks (median 84 %), so the first result acted on nearly the whole picture. It is now Width 23, which selects 41 % of the frame (median) and never more than 80 %, and on a plain scene only the picked colour's own area. Skin lit unevenly can leave a part of the face out; widen the row with Width then. A very grey pick, such as a ploughed field or a white wall, still selects a lot, because grey is most of a photo: narrow the row, or add another mask. A photo that already has such a row keeps it. Saved pictures are unchanged.
+A fifth pre-release (a beta) for testing. It adds **Mask Intersect** and fixes the Object mask on every node and Colour Uniform's Pick colour. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.15.0 (beta 4 had 0.14.0), and photos look the same unless a node uses Intersect. A settings file, preset or album that uses Intersect needs this version: an older build refuses it.
 
 ### Added
 
@@ -26,6 +20,24 @@ moves the entries below from Unreleased into a dated section for that version.
 ### Changed
 
 - **Pipeline version 0.15.0.** No photo, preset or album that exists changes by a bit: the switch is written into a settings file, a preset or an album only when a node uses Intersect. A version older than this one reading such a file says "The settings can't be read: unknown field `combine`, expected `invert` or `items`" (an album or a preset says it was made by a newer version of Yellowmoon); everything else still opens in older versions.
+- **A new Colour range mask starts narrower, so it selects one colour rather than most of the photo.** Add mask › Colour range now starts at Width 23 (0.02) instead of 39 (0.05), the same as the first pick of a Colour Uniform node. Masks already in a photo, preset or album keep their width.
+
+### Fixed
+
+- **An Object mask works on every node that has masks.** Clicking the photo to select an object failed with "That mask is not an Object mask. Select an Object mask and try again." when the Object mask was on a Film, Face Refinement, Colour Uniform or Blur node (it worked on Main and on correctors). The core looked for the row only in Main and the correctors. It now looks in any node that has masks, and the page does the same for the point count, the Depth, Background and Brush rows, Subject and People finding, and the Link key menu. Saved settings and pictures are unchanged.
+- **Pick colour on a Colour Uniform node turns off after each pick.** After a click on the photo sets the target, the Pick colour button now shows unpressed, every time and not only after the first pick. Press it again for another pick; Esc still ends a pick that is on. The Pick colour of the Colour warp and of a Colour range work as before.
+- **The Colour range that the first pick adds is no longer so wide.** It was as wide as a new Colour range was (Width 39), so on public sample photos the first result acted on nearly the whole picture (more than 80 % of the frame on 11 of 19 picks). It is now Width 23, which selects 41 % of the frame (median) and never more than 80 %, and on a plain scene only the picked colour's own area. Skin lit unevenly can leave a part of the face out; widen the row with Width then. A very grey pick, such as a ploughed field or a white wall, still selects a lot, because grey is most of a photo: narrow the row, or add another mask. A photo that already has such a row keeps it. Saved pictures are unchanged.
+- **A view cut into many pieces for a small graphics memory limit could fall back to the processor when a smaller cut fitted.** The check on the size of each piece was not exact for a view cut into more than 16 pieces, so one piece could be too big for the card and that frame was made on the processor. It is now exact. Pictures are unchanged.
+
+### Known limits
+
+- On a Mac whose graphics card cannot run the Blur node, Lens, Motion and Zoom render on the processor instead, and slowly at large sizes: a large Lens, Motion or Zoom on a full-size photo can take minutes, where Soft takes seconds. On the graphics card the node is estimated at a few milliseconds a megapixel for a small blur and tens of milliseconds for the largest Lens, but its speed has not been measured on a Mac yet. (`docs/33` sections 9 and 11, items 65 and 75 to 80, have the numbers.)
+- A Zoom blur makes a tiny bright light (a few pixels wide) streak wider and dimmer than an exact streak would; smooth edges and large areas are right. A sharper streak may come later.
+- Opening an album does not show "This file has changed since the album was saved." for a photo whose file differs from the one the album saw; its settings still apply. (`ym render --json` and `ym info` do say it.)
+- Face Refinement finds the teeth even when all three teeth controls are 0, so a photo with faces takes a little longer than the sliders suggest.
+- Very yellow teeth can look greyish with Whitening at 100; lower Whitening a little.
+- The gum guard goes by colour, not by place: a tooth much redder than the rest of that face's teeth (a strong reddish reflection from the lips, say) is held back like gum, and the teeth mask itself still includes the strip of gum. A photo with no teeth or gums in the mask is not affected.
+- The Mac-only parts of this release are built but not yet checked on hardware: Mask Intersect on Metal, Colour Uniform and Blur on Metal (speed and the pick handles in the app), VoiceOver, the edited dot, the file dialog's filter for photos and albums together, the teeth sliders and the filmstrip on a real Mac, Intel Macs and 8 GB machines.
 
 ## [0.2.4-beta.4] - 2026-11-20
 
