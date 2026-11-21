@@ -315,9 +315,9 @@ describe("an Object row on a node that is not a corrector", () => {
 
   it("the mock's mask_find answers for the row of a Colour Uniform node", async () => {
     await setup(/^Node 2, Uniform/, {}, ON_KIND({ kind: "color_uniform", name: "Uniform" }));
-    const answer = await h!.api.maskFind(h!.store.currentId()!, 2, 0, { kind: "point", x: 0.5, y: 0.7, positive: true });
+    const answer = await h!.api.maskFind(h!.store.currentPhoto()!.id, 2, 0, { kind: "point", x: 0.5, y: 0.7, positive: true });
     expect(answer).toMatchObject({ kind: "found", points: [[0.5, 0.7, true]] });
-    await expect(h!.api.maskFind(h!.store.currentId()!, 2, 3, { kind: "point", x: 0.5, y: 0.7, positive: true })).rejects.toMatchObject({
+    await expect(h!.api.maskFind(h!.store.currentPhoto()!.id, 2, 3, { kind: "point", x: 0.5, y: 0.7, positive: true })).rejects.toMatchObject({
       message: "That mask is not an Object mask. Select an Object mask and try again.",
     });
   });
