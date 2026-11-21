@@ -93,11 +93,33 @@ The node has **no Range card and no range fields**. What it acts on is its masks
 
 **Decided by us, flagged in §10: the first pick adds a Colour range row.** After a pick of skin, Hue 50 % with no mask would pull every non-grey colour in the photo halfway to orange: a bad first result. So:
 
-- The **first pick** (a pick made while the node has no target) **adds one `color_range` row to the node's masks**, when the node has **no mask rows and no key link** (`docs/23` §3.4). The row has `center` = the picked colour's chroma `[a, b]` in the C9 plane (as read, before the target is held off grey), and the Colour range's own defaults for the rest: `width` 0.05 (the Width slider reads 39) and `softness` 0.5, `mode` add, `opacity` 1, enabled (`docs/23` §3.3, §4.1 and §7.6; maths in `docs/algorithms/06` §4.3).
+- The **first pick** (a pick made while the node has no target) **adds one `color_range` row to the node's masks**, when the node has **no mask rows and no key link** (`docs/23` §3.4). The row has `center` = the picked colour's chroma `[a, b]` in the C9 plane (as read, before the target is held off grey), and `width` **0.02** (the Width slider reads 23; narrower than the Colour range's own 0.05, see below) with the Colour range's own defaults for the rest: `softness` 0.5, `mode` add, `opacity` 1, enabled (`docs/23` §3.3, §4.1 and §7.6; maths in `docs/algorithms/06` §4.3).
 - It happens on the **first** pick only. A later pick moves the target and leaves the masks alone. A target set by the sliders (no pick) adds no row.
 - **The pick and the row are one undo step.** The Colour range row is an ordinary mask: the person can widen it (Width), add other masks, delete the row, or invert; the node then acts on whatever the masks say. The row's own Pick colour moves its centre and does not move the target.
 - The row is not selected and starts no tool; the panel stays on the Compress tab, where the first pick was made.
-- The skin seed is the default because the Colour range reads chroma only: a disc of radius 0.05, with an edge of 0.025, about the picked chroma. For a skin pick (chroma 0.097) it reaches from about 0.02 to 0.17, so near-neutral colours (chroma below 0.02) are outside it, which is also why the near-neutral gain of §3.7 does not show in the first result.
+- **Why 0.02 and not the Colour range's 0.05** (the owner, 2026-11-21: "color uniform color mask is very wide - likely to capture entire picture"). The Colour range reads chroma only: a disc of radius `w` about the picked chroma, full inside it and fading to nothing over a further `σ w` (`docs/algorithms/06` §4.3). Natural colours are low in chroma (the plane reaches 0.30; the colours measured below are 0.005 to 0.08), and the pixels of a photo crowd into a small part of it, so a disc of 0.05 reaches most of them. **It is the width, not the centre:** the centre is the chroma the mask reads (the pick reads the node's input, as the mask does), and on the synthetic patches and on 8 of the 13 real picks at least 95 % of the pixels around the click are inside the row even at the narrowest width, 0.005; the rest (the foliage, the trees, the ochre wall, the roof, the white monument) are textured or near grey and lose some of their own pixels when the row is that narrow. Measured on the synthetic patches and on the owner's Sony A1 raw files of `testdata/readme-photos` (Mask only frame, the mean of `m` and the share of the photo's pixels with `m > 0.5`; `uniform_first_pick.rs`, `survey_of_the_first_picks_row`):
+
+  | Pick | \|c\| | 0.05 (beta 4): mean / share | **0.02**: mean / share | kept at 0.02 |
+  |---|---|---|---|---|
+  | synthetic orange patch (8 % of the frame) | 0.063 | 0.49 / 0.17 | **0.08 / 0.08** | 1.00 |
+  | synthetic green patch (4 %) | 0.075 | 0.05 / 0.05 | 0.04 / 0.04 | 1.00 |
+  | synthetic blue patch (4 %) | 0.069 | 0.17 / 0.06 | 0.04 / 0.04 | 1.00 |
+  | synthetic yellow patch (4 %) | 0.096 | 0.12 / 0.12 | 0.04 / 0.04 | 1.00 |
+  | warm wall (skin-like colour), A1M03159 | 0.049 | 0.87 / 0.87 | 0.36 / 0.34 | 1.00 |
+  | blue sky, A1M03159 | 0.078 | 0.13 / 0.13 | 0.13 / 0.13 | 1.00 |
+  | foliage, A1M03159 | 0.012 | 0.87 / 0.87 | 0.67 / 0.67 | 0.57 |
+  | white monument, A1M03159 | 0.008 | 0.87 / 0.87 | 0.67 / 0.68 | 1.00 |
+  | blue sky, A1M01454 | 0.050 | 0.63 / 0.56 | 0.37 / 0.37 | 1.00 |
+  | green field, A1M01454 | 0.019 | 0.86 / 0.85 | 0.62 / 0.63 | 1.00 |
+  | trees, A1M01454 | 0.005 | 1.00 / 1.00 | 0.64 / 0.63 | 1.00 |
+  | ochre wall, A1M01749 | 0.023 | 1.00 / 1.00 | 0.55 / 0.60 | 0.74 |
+  | terracotta roof, A1M01749 | 0.031 | 0.93 / 1.00 | 0.48 / 0.54 | 0.88 |
+  | grass, A1M01749 | 0.040 | 0.80 / 0.79 | 0.47 / 0.48 | 1.00 |
+  | sky, A1M01739 | 0.026 | 0.99 / 0.99 | 0.62 / 0.61 | 1.00 |
+  | ploughed field, A1M01739 | 0.008 | 1.00 / 1.00 | 0.79 / 0.81 | 1.00 |
+  | grass, A1M01739 | 0.022 | 1.00 / 1.00 | 0.52 / 0.50 | 1.00 |
+
+  "Kept" is the share of the 21 x 21 pixels around the click with `m > 0.5`: how much of the picked place the row holds. **Median share of the 13 real picks: 0.87 at 0.05 and 0.60 at 0.02; picks that select more than 80 % of the frame: 10 of 13 at 0.05 and 1 of 13 at 0.02 (the ploughed field, 0.81).** The width was chosen as the narrowest that still holds the picked place for most picks: at 0.015 the kept share falls to 0.75 or less for the ochre wall, the roof and the foliage, and 0.03 already takes in 95 % of the ploughed field. On the synthetic orange patch the row is clean through 0.03 (a share of 0.085 for a colour that is 0.083 of the frame), leaks at 0.04 (0.095) and reaches into the neutral patches at 0.05 (0.17). **A near-grey pick stays wide however narrow the row is** (the plough, the trees and the white monument, |c| below 0.01): their colour is the neutral axis that most of a photo crowds on, and no chroma width makes them local; the person narrows the row, adds a Brightness range or a shape. The survey has no photo of a person (no raw portrait is among the public sample photos); the warm wall and the orange patch stand in for skin (chroma 0.05 to 0.06, the low end of §2.1's 5 to 12). The Colour range's own default width stays 0.05 (the Add mask menu's row, `docs/23` §4.1); only this row is narrower. Nothing stored changes: the row is made at the pick, and a photo that has one keeps its own width.
 
 The alternative (no automatic mask; a hint line in the empty Mask tab) is in §10.
 
@@ -118,7 +140,7 @@ The toolbar's **Show mask** (M) and the Mask tab's View card (`docs/23` §5.8, �
 | Head | The corrector's compact head (`docs/23` §7.5): the number chip, the name ("Uniform"), the line, Bypass, Reset, More. Line: "Colour Uniform", "Bypassed", "Not connected" (short, so the line is not cut at 400 px; the corrector's mask text is not repeated) |
 | Tabs | **Compress · Mask**, in the Colour tab's green (`--tab-colour`; `docs/11`) and the mask accent. The Mask tab is a corrector's (`docs/23` §7.6) |
 | Compress › cards | **Target · Compress** (about 250 + 190 px: both fit the 678 px scroll area at 1440 × 900) |
-| Mask › cards | the Masks card, the selected mask's card, the View card, as a corrector's; after the first pick: one **Colour range** row (Width 39) and its **COLOUR RANGE** card (Pick colour, Width, Softness, Opacity) |
+| Mask › cards | the Masks card, the selected mask's card, the View card, as a corrector's; after the first pick: one **Colour range** row (Width 23) and its **COLOUR RANGE** card (Pick colour, Width, Softness, Opacity) |
 | Histogram | none (the node has no light to show) |
 | Keys | ⌘1 and ⌘2 select the tabs. No new single key: Pick colour is the toggle, and it is on when the node is added |
 
@@ -384,7 +406,7 @@ Every gate must pass in CI (or the named job) before its task is done. **A faile
 
 **Approved 2026-11-18** (the owner, "Ok, approved", on the screenshots of CU-11 and on the two decisions flagged with them): the first pick adds a Colour range row, and the antipode fade of the hue pull stays at full to 90° and zero from 150° (§11, item 8).
 
-**The first pick also adds a Colour range mask row** (§2.3). With masks alone, a node with no mask acts on the whole photo: after a pick of skin, Hue 50 % would pull every non-grey colour in the photo halfway to orange. So the node's **first pick** adds one Colour range row centred on the picked colour, with the Colour range's own default width (0.05, the slider reads 39) and softness (0.5), when the node has no mask rows and no key link. A later pick moves the target and leaves the masks alone. The pick and the row are one undo step. The person can widen the row, add other masks, or delete it in the Mask tab.
+**The first pick also adds a Colour range mask row** (§2.3). With masks alone, a node with no mask acts on the whole photo: after a pick of skin, Hue 50 % would pull every non-grey colour in the photo halfway to orange. So the node's **first pick** adds one Colour range row centred on the picked colour, with a width of 0.02 (the slider reads 23; the Colour range's own default is 0.05, which selected 80 to 100 % of a real photo for most picks, the owner, 2026-11-21: §2.3 has the measurements) and the Colour range's softness (0.5), when the node has no mask rows and no key link. A later pick moves the target and leaves the masks alone. The pick and the row are one undo step. The person can widen the row, add other masks, or delete it in the Mask tab.
 
 **The alternative:** no automatic mask. The first pick sets only the target and the amounts, and the empty Mask tab shows a hint line: "Colour Uniform acts on the whole photo until a mask limits it. Add mask › Colour range picks a colour to limit it." The first result would be global; the person adds the mask. **Recommended default: the automatic row** (it is what the mock-ups show). If the owner prefers the alternative, §2.1 loses its row, §2.3 and §5.3 lose the seed, the first pick's patch has no `masks.items`, and CU-08 and CU-09 gain the hint line.
 

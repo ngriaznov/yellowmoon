@@ -101,6 +101,13 @@ const plural = (n: number, one: string, many: string): string => `${n} ${n === 1
 /** The longest centre a Colour range may have: its distance from the middle of the chroma plane (`docs/23` §3.3). */
 export const COLOR_RANGE_REACH = 0.5;
 
+/**
+ * The width of the Colour range row that the first pick of a Colour Uniform node adds (`docs/32` §2.3, the slider reads 23): narrower than the Colour range's own
+ * default of 0.05, which on real photos selected 80 to 100 % of the frame for most picks. The reasons and the table are in `docs/32` §2.3 and §10; the
+ * core's `tests/uniform_first_pick.rs` holds the same number.
+ */
+export const FIRST_PICK_WIDTH = 0.02;
+
 /** The most mask rows a node may hold (`docs/23` §3.5) and the sentence the core gives when it would hold more. */
 export const MAX_MASKS = 64;
 export const MASKS_FULL = "A node can have up to 64 masks.";

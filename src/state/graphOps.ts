@@ -39,7 +39,7 @@ import {
 import type { CardItem, MixerItem } from "./settingsGraph";
 import { clampToDisc } from "../components/warpMath";
 import { FIRST_PICK_AMOUNTS, targetFromSample } from "../components/uniformMath";
-import { COLOR_RANGE_REACH, newMask, withMask } from "./maskRows";
+import { COLOR_RANGE_REACH, FIRST_PICK_WIDTH, newMask, withMask } from "./maskRows";
 import { CHANNEL_PORTS, firstInputPort, inputNumber, isGlyphKind, isMixerKind, MIXER_INPUTS, mixerPort, portRank, portType, portWords } from "./ports";
 
 /** Most corrector nodes a photo can have, Main included (`docs/23` section 3.5). */
@@ -1187,7 +1187,7 @@ export function pickUniform(settings: DevelopSettings, id: NodeId, sample: { a: 
       // The row's centre is the chroma as read, before the target was held off grey (`docs/32` §2.3).
       const center = clampToDisc([sample.a, sample.b], COLOR_RANGE_REACH);
       const base = newMask("color_range");
-      const row = base.kind === "color_range" ? withMask([], { ...base, center }) : null;
+      const row = base.kind === "color_range" ? withMask([], { ...base, center, width: FIRST_PICK_WIDTH }) : null;
       if (row) patch.masks = row;
     }
   }
