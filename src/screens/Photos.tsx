@@ -614,7 +614,7 @@ export function Photos() {
   const setPickingRange = useCallback((on: boolean): void => {
     setAsked((was) => (on ? { mode: "range", node: onNodeNow.current } : was?.mode === "range" ? null : was));
   }, [onNodeNow]);
-  // Pick colour of a Colour Uniform node's target, from its Target card's toggle (or when the node is added). Exclusive with the others; stays on for several clicks.
+  // Pick colour of a Colour Uniform node's target, from its Target card's toggle (or when the node is added). Exclusive with the others; ends with each pick that sets the target.
   const setPickingUniform = useCallback((on: boolean): void => {
     setAsked((was) => (on ? { mode: "uniform", node: onNodeNow.current } : was?.mode === "uniform" ? null : was));
   }, [onNodeNow]);
@@ -640,8 +640,9 @@ export function Photos() {
         return;
       }
       if (picking === "uniform") {
-        // The first pick of the node is one patch with the target, the amounts and the Colour range row (`docs/32` §2.3).
-        if (typeof onNode === "number") void store.pickUniform(point.x, point.y, onNode);
+        // The first pick of the node is one patch with the target, the amounts and the Colour range row (`docs/32` §2.3). A pick that sets the target
+        // turns Pick colour off, so the button shows unpressed (the owner, 2026-11-21); a click on the paper sets nothing and the pick stays on.
+        if (typeof onNode === "number") void store.pickUniform(point.x, point.y, onNode).then((set) => set && setPicking(null));
         return;
       }
       if (picking === "range") {

@@ -2698,11 +2698,12 @@ export class AppStore {
    * Pick colour of a Colour Uniform node's target (`docs/32` §2.1, §2.3, §3.11): asks the core for the mean colour of a 7 × 7 square under a click
    * on the photo cell, **at the node's input** (`sample_chroma` with `tap: "node_input"` and `radius_px: 3`), and sends {@link uniformPick}'s one patch:
    * the target, and on the node's first pick Compress 50 / 50 / 0 and a Colour range row centred on the pick. One undo step. A click on the paper
-   * around the photo changes nothing, nor does a node that is gone, or a core that does not answer a tone.
+   * around the photo changes nothing, nor does a node that is gone, or a core that does not answer a tone. Resolves with whether the target was set: the screen
+   * turns Pick colour off then (the owner, 2026-11-21: off after each pick).
    */
-  async pickUniform(x: number, y: number, node: number): Promise<void> {
+  async pickUniform(x: number, y: number, node: number): Promise<boolean> {
     const id = this.currentId();
-    if (id === null) return;
+    if (id === null) return false;
     if (this.viewportQueue.busy) await this.viewportQueue.flush();
     await this.whenIdle(id);
     let sample: ChromaSample | null;
@@ -2710,17 +2711,18 @@ export class AppStore {
       sample = await this.api.sampleChroma(x, y, node, "node_input", UNIFORM_PICK_RADIUS_PX);
     } catch (error) {
       this.fail(error);
-      return;
+      return false;
     }
     const rs = this.state.settings[id];
-    if (!sample || sample.tone === undefined || !rs || this.currentId() !== id) return;
+    if (!sample || sample.tone === undefined || !rs || this.currentId() !== id) return false;
     const picked = uniformPick(rs.settings, node, { a: sample.a, b: sample.b, tone: sample.tone });
-    if (!picked) return;
+    if (!picked) return false;
     const held = (picked.patch.nodes?.[String(node)] as { target?: TargetValue } | undefined)?.target;
     this.set({ uniformGrey: picked.tooGrey && held ? { photo: id, node, target: held } : null });
     await this.update(picked.patch, true, id);
     // The row the first pick added is the selected one, so the Mask tab shows its card (`design/colour-uniform/03b-mask-tab.jpg`).
     if (picked.first && (picked.patch.nodes?.[String(node)] as { masks?: unknown } | undefined)?.masks) this.selectMaskRow(0);
+    return true;
   }
 
   /** Selects a pin of the colour warp (an index into the current photo's pins), or none. */

@@ -121,17 +121,35 @@ describe("Pick colour", () => {
     expect(only.masks).toBeTruthy();
     expect(node().target).not.toBeNull();
     expect(node().masks.items).toHaveLength(1);
-    // The swatch is named by its colour, the card says how to go on, the amounts are on and the pick stays on.
+    // The swatch is named by its colour, the card says how to go on, the amounts are on and the pick is off.
     expect(within(card("Target")).getByRole("img", { name: /^Target colour: / })).toBeInTheDocument();
     expect(within(card("Target")).getByText(UNIFORM_TEXT.picked)).toBeInTheDocument();
     expect(within(card("Compress")).getAllByRole("slider", { name: "Hue" })[0]).not.toHaveAttribute("data-disabled");
-    expect(pickLayer()).toBeInTheDocument();
+    // Pick colour turns off after the pick (the owner, 2026-11-21): the button shows unpressed and the layer is gone.
+    await waitFor(() => expect(pickButton()).toHaveAttribute("aria-pressed", "false"));
+    expect(pickButton()).toHaveAttribute("data-state", "off");
+    expect(screen.queryByRole("application", { name: /Pick colour/ })).toBeNull();
     // The row the pick added is the selected one in the Mask tab.
     expect(h!.store.getState().maskRow).toBe(0);
     await h!.user.keyboard("{Meta>}z{/Meta}");
     await waitFor(() => expect(node().target).toBeNull());
     expect(node().masks.items).toEqual([]);
     expect(node().compress).toEqual({ hue: 0, saturation: 0, lightness: 0 });
+  });
+
+  it("turns off after every pick, not only the first, and a click on the button turns it on again", async () => {
+    const spy = await setup();
+    for (const clientX of [300, 200]) {
+      await h!.user.click(pickButton());
+      expect(pickButton()).toHaveAttribute("data-state", "on");
+      mockRect(pickLayer(), { left: 0, top: 0, width: 600, height: 400 });
+      spy.mockClear();
+      await h!.user.pointer({ target: pickLayer(), coords: { clientX, clientY: 20 }, keys: "[MouseLeft]" });
+      await waitFor(() => expect(patches(spy)).toHaveLength(1));
+      await waitFor(() => expect(pickButton()).toHaveAttribute("aria-pressed", "false"));
+      expect(pickButton()).toHaveAttribute("data-state", "off");
+      expect(screen.queryByRole("application", { name: /Pick colour/ })).toBeNull();
+    }
   });
 
   it("ends with Esc and with the toggle", async () => {

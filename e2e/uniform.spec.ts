@@ -100,12 +100,13 @@ test.describe("Pick colour", () => {
     await expect(pickLayer(page)).toBeVisible();
     await clickPhoto(page, 0.5, 0.3);
 
-    // The card says how to go on, the amounts are on, and the pick stays on for the next click.
+    // The card says how to go on, the amounts are on, and Pick colour is off: the button shows unpressed (the owner, 2026-11-21).
     await expect(card(page, "Target").getByText("Pick again on the photo, or set the numbers.")).toBeVisible();
     await expect(card(page, "Target").getByRole("img", { name: /^Target colour: / })).toBeVisible();
     await expect(amount(page, "Hue")).not.toHaveAttribute("data-disabled");
-    await expect(pickLayer(page)).toBeVisible();
-    await expect(pickButton(page)).toHaveAttribute("aria-pressed", "true");
+    await expect(pickLayer(page)).toHaveCount(0);
+    await expect(pickButton(page)).toHaveAttribute("aria-pressed", "false");
+    await expect(pickButton(page)).toHaveAttribute("data-state", "off");
     const node = await uniformOf(page);
     expect(node?.target).not.toBeNull();
     expect(node?.compress).toEqual({ hue: 50, saturation: 50, lightness: 0 });
@@ -117,14 +118,29 @@ test.describe("Pick colour", () => {
     await expect(page.getByRole("region", { name: "Masks" }).getByRole("button", { name: /^Colour range mask/ })).toHaveAttribute("aria-pressed", "true");
     await page.getByRole("tab", { name: "Compress", exact: true }).click();
 
-    // One undo for the whole first pick.
+    // Esc still ends a pick that is on.
+    await pickButton(page).click();
+    await expect(pickLayer(page)).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(pickLayer(page)).toHaveCount(0);
+    // One undo for the whole first pick.
     await page.keyboard.press("Meta+z");
     await expect.poll(async () => (await uniformOf(page))?.target).toBeNull();
     const undone = await uniformOf(page);
     expect(undone?.masks.items).toEqual([]);
     expect(undone?.compress).toEqual({ hue: 0, saturation: 0, lightness: 0 });
+
+    // A click on the button turns Pick colour on again, and a later pick turns it off again: every pick, not only the first.
+    await pickButton(page).click();
+    await expect(pickButton(page)).toHaveAttribute("data-state", "on");
+    await clickPhoto(page, 0.2, 0.3);
+    await expect(pickButton(page)).toHaveAttribute("data-state", "off");
+    await expect(pickButton(page)).toHaveAttribute("aria-pressed", "false");
+    await expect(pickLayer(page)).toHaveCount(0);
+    await pickButton(page).click();
+    await expect(pickButton(page)).toHaveAttribute("data-state", "on");
+    await clickPhoto(page, 0.7, 0.6);
+    await expect(pickButton(page)).toHaveAttribute("data-state", "off");
   });
 
   test("Esc ends the pick and the button goes off; so does a second press of the button", async ({ page }) => {
