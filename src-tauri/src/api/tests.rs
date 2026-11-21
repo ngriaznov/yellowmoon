@@ -5656,6 +5656,56 @@ fn mask_find_refuses_what_is_not_an_object_row_with_the_scope_mask_and_a_plain_s
     assert_eq!(err.scope, ErrorScope::Mask);
 }
 
+/// The Object row of a node that is not Main is found like Main's: a Colour Uniform node and a Blur node hold masks (`masks_of`), so a row of theirs is
+/// an Object row and never "not an Object mask". Where the model is missing the refusal is the missing model; where it is there the click finds the object.
+#[test]
+fn mask_find_reaches_an_object_row_on_a_colour_uniform_node_and_a_blur_node() {
+    use crate::wire::{ErrorScope, MaskFindPrompt, MaskFindResult};
+    let h = Harness::new();
+    h.open(1);
+    let id = h.develop().photos[0].id;
+    let patch =
+        |v: serde_json::Value| -> SettingsPatch { serde_json::from_value(v).expect("a patch") };
+    let object = json!({ "kind": "object", "mode": "add", "invert": false, "enabled": true, "opacity": 1, "points": [], "box": null, "feather": 0, "grow": 0, "refine": 0.5 });
+    let link = |from: serde_json::Value, to: serde_json::Value| json!({ "from": { "node": from, "port": "picture" }, "to": { "node": to, "port": "picture" } });
+    h.api
+        .update_settings(
+            id,
+            &patch(json!({
+                "nodes": {
+                    "2": { "kind": "color_uniform", "name": "Uniform", "pos": [1.0, 0.0], "target": null,
+                        "compress": { "hue": 0, "saturation": 0, "lightness": 0 }, "masks": { "invert": false, "items": [object.clone()] } },
+                    "3": { "kind": "blur", "type": "soft", "soft": { "radius": 10 }, "masks": { "invert": false, "items": [object] } },
+                },
+                "links": [link(json!("input"), json!(1)), link(json!(1), json!(2)), link(json!(2), json!(3)), link(json!(3), json!("output"))],
+            })),
+        )
+        .expect("two nodes with an Object row");
+    let click = MaskFindPrompt::Point {
+        x: Num(0.5),
+        y: Num(0.5),
+        positive: true,
+    };
+    for node in [2, 3] {
+        if object_weights() {
+            let found = h.api.mask_find(id, node, 0, click).expect("an answer");
+            assert!(
+                matches!(found, MaskFindResult::Found { .. }),
+                "node {node}: {found:?}"
+            );
+        } else {
+            let err = h.api.mask_find(id, node, 0, click).expect_err("no model");
+            assert_eq!(err.scope, ErrorScope::Mask);
+            assert_eq!(
+                err.message,
+                "This copy of Yellowmoon has no Object model. Reinstall the app."
+            );
+        }
+    }
+    // A node that has no row 5 is still the refusal.
+    assert!(h.api.mask_find(id, 2, 5, click).is_err());
+}
+
 /// The whole path through the shell: an Object row on the photo being looked at starts the encoder (`object_state` says so, and says when it has
 /// stopped), a click is answered with the row's new points in the shapes of the wire, and nothing changes in the settings.
 #[test]

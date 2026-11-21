@@ -13,7 +13,7 @@ import { maskRowKinds } from "../state/maskRows";
 import { lookLabeller, looksInDisplayOrder } from "../state/looks";
 import { folderSubline, folderTitle, isReady, photoName } from "../state/photo";
 import { MASK_KIND_NAME } from "../state/graphOps";
-import { hiddenByPhoto, hiddenFromSimpleView, INPUT_ID, isCardItem, MAIN_ID, nodeOf, OUTPUT_ID } from "../state/settingsGraph";
+import { hiddenByPhoto, hiddenFromSimpleView, INPUT_ID, isCardItem, MAIN_ID, masksOf, nodeOf, OUTPUT_ID } from "../state/settingsGraph";
 import type { AppStore } from "../state/store";
 import type { Shortcut } from "../state/shortcuts";
 import { rememberFocus, restoreFocus } from "../state/focusMemory";
@@ -756,7 +756,7 @@ export function Photos() {
       const target = objectNow.current;
       const id = photoNow.current?.id;
       const item = id === undefined || !target ? undefined : nodeOf(store.getState().settings[id]?.settings ?? ({} as never), target.node);
-      const row = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[target?.index ?? -1] : undefined;
+      const row = masksOf(item)?.items[target?.index ?? -1];
       const points = row?.kind === "object" ? row.points.length : 0;
       announcer.say(announcementFor(action, { ...announceFacts(store.getState(), store.fitPercentExact()), points, positive }));
     },

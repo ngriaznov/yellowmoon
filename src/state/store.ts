@@ -161,6 +161,7 @@ import {
   isEmptyPatch,
   MAIN_ID,
   mainOf,
+  masksOf,
   nodeIdOfKey,
   nodeOf,
   OUTPUT_ID,
@@ -2954,7 +2955,7 @@ export class AppStore {
     if (photoId === null) return null;
     const rs = this.state.settings[photoId];
     const item = rs ? nodeOf(rs.settings, node) : undefined;
-    const target = item?.kind === "corrector" || item?.kind === "film" ? item.masks.items[row] : undefined;
+    const target = masksOf(item)?.items[row];
     if (target?.kind !== "object" || target.points.length === 0) return null;
     const points = target.points.slice(0, -1);
     await this.update(patchOf(node, { masks: { edit: { [String(row)]: { points } } } }), true, photoId);

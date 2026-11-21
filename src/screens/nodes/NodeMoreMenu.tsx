@@ -122,7 +122,7 @@ export function NodeMoreMenu({ settings, node, onRename, onMoveEarlier, onMoveLa
             )}
           </Fragment>
         ))}
-        {item?.kind === "corrector" || item?.kind === "film"
+        {isCardItem(item)
           ? submenu(
               "Link key to",
               keyTo.map((to) => (

@@ -12,6 +12,7 @@
  * subtract (in black), the row's Invert and the node's Invert swap the two, and a node with no row shows 1: the whole photo.
  */
 import type { DevelopSettings, MaskItem, MaskSettings, MaskStyle } from "../api/types";
+import { masksOf } from "../state/settingsGraph";
 
 /** The mask accent (`--mask` in `design/tokens.css`). */
 export const MASK_ACCENT = "#ff6fd2";
@@ -106,7 +107,7 @@ export const MOCK_BLUR = { sky: 0.95, hill: 0.05, near: 0.55 } as const;
 
 /** Whether the photo's graph has an Object row with the eye on: the mock then "makes ready" the photo's features (`object_state`). */
 export const hasObjectRow = (settings: DevelopSettings): boolean =>
-  settings.nodes.items.some((node) => node.kind === "corrector" && node.masks.items.some((row) => row.kind === "object" && row.enabled));
+  settings.nodes.items.some((node) => masksOf(node)?.items.some((row) => row.kind === "object" && row.enabled) === true);
 
 /**
  * The Subject and People rows with the eye on in the photo's graph, as the kinds the mock's Vision "works for" (`vision_state`, `viewport_busy.finding`), Subject
@@ -115,8 +116,7 @@ export const hasObjectRow = (settings: DevelopSettings): boolean =>
 export const visionRowKinds = (settings: DevelopSettings): Array<"subject" | "people"> => {
   const kinds = new Set<string>();
   for (const node of settings.nodes.items) {
-    if (node.kind !== "corrector") continue;
-    for (const row of node.masks.items) if (row.enabled && (row.kind === "subject" || row.kind === "people")) kinds.add(row.kind);
+    for (const row of masksOf(node)?.items ?? []) if (row.enabled && (row.kind === "subject" || row.kind === "people")) kinds.add(row.kind);
   }
   return (["subject", "people"] as const).filter((k) => kinds.has(k));
 };
@@ -138,7 +138,7 @@ export const PERSON = { x: 0.3, headY: 0.58, headRadius: 0.035, bodyY: 0.76, bod
 
 /** Whether the photo's graph has a Background row with the eye on: the mock then "makes" the photo's blur map on its first frame. */
 export const hasBackgroundRow = (settings: DevelopSettings): boolean =>
-  settings.nodes.items.some((node) => node.kind === "corrector" && node.masks.items.some((row) => row.kind === "background" && row.enabled));
+  settings.nodes.items.some((node) => masksOf(node)?.items.some((row) => row.kind === "background" && row.enabled) === true);
 
 /**
  * A Background row on the flat scene: the scene's three areas (the sky over the frame, the far hill — the half ellipse of `scenes.ts` — and the near

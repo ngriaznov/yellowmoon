@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An Object mask works on every node that has masks.** Clicking the photo to select an object failed with "That mask is not an Object mask. Select an Object mask and try again." when the Object mask was on a Film, Face Refinement, Colour Uniform or Blur node (it worked on Main and on correctors). The core looked for the row only in Main and the correctors. It now looks in any node that has masks, and the page does the same for the point count, the Depth, Background and Brush rows, Subject and People finding, and the Link key menu. Saved settings and pictures are unchanged.
+
 ## [0.2.4-beta.4] - 2026-11-20
 
 A fourth pre-release (a beta) for testing. It fixes **Pick colour** on a new Colour Uniform node and **Show mask** on a Film-like node with a linked key, and adds two safeguards for removing a node. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is unchanged at 0.14.0, so pictures are the same as in beta 3.
