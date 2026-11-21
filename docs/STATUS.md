@@ -14,7 +14,7 @@ The current state of Yellowmoon: release, milestone, what is built, gate results
 
 ## Current release and milestone
 
-- **Mask Intersect specified (mask-intersect, COMMIT), waiting for the lead's review.** `docs/23` (3.3, 3.5, 3.7, 4.2, 7.6), `docs/algorithms/06` section 3, `docs/15` milestone MI (MI-01 to MI-07). Two departures from the brief, for the lead to confirm: `combine` is written only at `"intersect"` (`masks.invert` is always written, which would make every document unreadable to older builds), and a Subtract row's opacity is `1 − o·a`. `PIPELINE_VERSION` 0.15.0 is proposed.
+- **Mask Intersect specified (mask-intersect, 371b10a2), waiting for the lead's review.** `docs/23` (3.3, 3.5, 3.7, 4.2, 7.6), `docs/algorithms/06` section 3, `docs/15` milestone MI (MI-01 to MI-07). Two departures from the brief, for the lead to confirm: `combine` is written only at `"intersect"` (`masks.invert` is always written, which would make every document unreadable to older builds), and a Subtract row's opacity is `1 − o·a`. `PIPELINE_VERSION` 0.15.0 is proposed.
 
 - **0.2.4-beta.4 prepared (release-0.2.4-beta.4):** the Colour Uniform Pick colour fix; CI only, no Mac run, by the owner's choice (2026-11-20). Not pushed.
 
