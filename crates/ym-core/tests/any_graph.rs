@@ -19,23 +19,28 @@
 //! determinism) and export every one of them on the device (`graphs_with_joins_are_exported_on_the_device`).
 //!
 //! **Film nodes in series (the owner, 2026-11-12: "Follow your recommendation on limits.").** Every bound stays as it is. The
-//! difference from the CPU is enforced only for a graph with at most one Film node in any chain, that is, on any path from the
-//! Input to the Output (`film_chain`: a mixer's branches are parallel, so Film nodes on different branches are not in
-//! series). A graph with two or more is still rendered on the device and checked for everything else (no refusal, no
-//! "graphics card" note, the exports are the device's and the same bytes at another tile size), and its differences from the
-//! CPU are printed with "not enforced: N Film nodes in series". Each Film pass amplifies the `f32` rounding of the one before
-//! it where grain and halation follow an exposure push, and a pixel far outside the gamut is ill-conditioned for any `f32`
-//! pipeline, the CPU's included (seeds 539 and 202; `seed_539_graph_0_reports_its_export_difference_and_is_not_enforced`).
-//! The run prints how many graphs were compared and how many were not enforced.
+//! difference of the 8-bit *view* from the CPU is enforced only for a graph with at most one Film node in any chain, that is, on any
+//! path from the Input to the Output (`film_chain`: a mixer's branches are parallel, so Film nodes on different branches are not in
+//! series). A graph with two or more is still rendered on the device and checked for everything else (no refusal, no "graphics
+//! card" note, the exports are the device's and the same bytes at another tile size), and its view differences are printed with
+//! "view not enforced: N Film nodes in series". Each Film pass amplifies the `f32` rounding of the one before it where grain and
+//! halation follow an exposure push, and a pixel far outside the gamut is ill-conditioned for any `f32` pipeline, the CPU's
+//! included (seeds 539 and 202). **The export has no such exception since 2026-11-21:** it is judged by the unstable-pixel rule
+//! below, like every graph's (`seed_539_graph_0_export_is_judged_by_the_unstable_pixel_rule`). The run prints how many graphs were
+//! compared and how many had their view not enforced.
 //!
-//! **Unstable pixels (the owner, 2026-11-18: "Skip unstable pixels").** The bound of one 10-bit code (64 of 65535) between the device's
-//! export and the CPU's holds on every value except those where the CPU's own export is unstable: when an export is over the bound
-//! anywhere, the CPU renders the graph again with each continuous number of each mask row moved by +1e-5 and by -1e-5, one at a
-//! time, and a value that any of those renders moves by more than the bound is unstable (`judge_export`). Those values are printed,
-//! not enforced. A graph within the bound is never nudged. Three safeguards: a graph with no mask row has no exemption; more than
-//! `max(60, 0.01 % of the values)` unstable values fail; and the device's value at an unstable index must lie within the CPU's own
-//! range widened by the bound. (The case that led to it: seed 23 graph 0 on Metal, a one-code rounding of a Depth plane next to a
-//! thin dark line that the Output's sharpening amplifies; `a_one_code_change_of_a_depth_plane_moves_seed_23_only_through_output_sharpening`.)
+//! **Unstable pixels (the owner, 2026-11-18: "Skip unstable pixels"; made general on 2026-11-21: "extend the rule so there are no
+//! exceptions for specific cases").** The bound of one 10-bit code (64 of 65535) between the device's export and the CPU's holds on every
+//! value except those where the CPU's own export is unstable: when an export is over the bound anywhere, the CPU renders the graph
+//! again eight times with every continuous setting of every node (each real number of the settings document, found through the
+//! settings schema, not through a list of kinds) moved at once by plus or minus 1e-5 of its own range with seeded signs, and a value
+//! that any of those renders moves by more than the bound is unstable (`judge_export`). Those values are printed, not enforced. A
+//! graph within the bound is never nudged. Three safeguards: when nothing could be nudged nothing is exempt; more than
+//! `max(60, 0.01 % of the values)` exempt values fail; and the device's value at an unstable index must lie within the CPU's nudged
+//! range widened by the bound. (The cases that led to it: seed 23 graph 0 on Metal, a one-code rounding of a Depth plane next to a thin
+//! dark line that the Output's sharpening amplifies, `a_one_code_change_of_a_depth_plane_moves_seed_23_only_through_output_sharpening`;
+//! and seed 297 graph 0, two chained Colour Uniform nodes whose second has no mask row,
+//! `the_unstable_pixel_rule_sees_the_sensitivity_of_a_setting_that_is_not_a_mask_row`.)
 //!
 //! The run asserts that every generated kind appeared. The seeds are a fixed set plus one rotating seed, from
 //! `YM_GRAPH_SEED`, else `GITHUB_RUN_NUMBER`; each graph is printed with its seed and index, and a failing one with its
@@ -379,8 +384,9 @@ fn film_chain(doc: &Value) -> usize {
     depth("\"output\"", &films, &reads, &mut HashMap::new())
 }
 
-/// Graphs with more Film nodes than this in series are rendered and checked on the device for everything but the
-/// difference from the CPU, which is printed and not enforced (the owner, 2026-11-12; the header comment).
+/// Graphs with more Film nodes than this in series are rendered and checked on the device for everything but the 8-bit view's
+/// difference from the CPU, which is printed and not enforced (the owner, 2026-11-12; the header comment). Their exports are judged
+/// like any other (`judge_export`, 2026-11-21).
 const MAX_ENFORCED_FILM_CHAIN: usize = 1;
 
 /// `forced_node` and `forced_mask` are the kinds the graph must hold, cycled by the caller so a run covers every kind.
@@ -1204,10 +1210,11 @@ fn no_generated_graph_is_refused_by_the_device() {
             g.branches,
             g.parallel_films
         ));
-        // The CPU's difference is enforced for a graph with at most one Film node in series; with more it is printed.
+        // The 8-bit view's difference from the CPU is enforced for a graph with at most one Film node in series; with more it is
+        // printed (the owner, 2026-11-12). The export is judged for every graph (below).
         let enforced = g.compare && g.film_chain <= MAX_ENFORCED_FILM_CHAIN;
         let reported = g.compare && !enforced;
-        let unenforced = format!("not enforced: {} Film nodes in series", g.film_chain);
+        let unenforced = format!("view not enforced: {} Film nodes in series", g.film_chain);
         n_enforced += usize::from(enforced);
         n_reported += usize::from(reported);
         n_film += usize::from(g.nodes.contains(&NodeKind::Film));
@@ -1391,14 +1398,10 @@ fn no_generated_graph_is_refused_by_the_device() {
                         .map(|(a, b)| a.abs_diff(b))
                         .max()
                         .unwrap_or(0);
-                    if reported {
-                        say(&format!(
-                            "{name}: the PNG export differs from the CPU's by {max} of 65535 ({unenforced})"
-                        ));
-                    } else {
-                        worst_export = worst_export.max(max);
-                    }
-                    if enforced && max > TEN_BIT_CODE {
+                    // The export is judged for every graph, Film nodes in series or not: the unstable-pixel rule (`judge_export`)
+                    // is what excuses a value the CPU's own export cannot hold still, the same for every kind of node.
+                    worst_export = worst_export.max(max);
+                    if max > TEN_BIT_CODE {
                         let judged = judge_export(
                             &d,
                             &g.settings,
@@ -1440,7 +1443,7 @@ fn no_generated_graph_is_refused_by_the_device() {
         }
     }
     say(&format!(
-        "{n_enforced} graphs compared with the CPU, {n_reported} not enforced (more than {MAX_ENFORCED_FILM_CHAIN} Film node in series)"
+        "{n_enforced} graphs compared with the CPU in their views, {n_reported} with the view not enforced (more than {MAX_ENFORCED_FILM_CHAIN} Film node in series); every export is judged"
     ));
     say(&format!(
         "{} graphs ({n_film} with a Film node, {n_masked} with masks, {n_keys} key links, {n_branched} with picture branches, {n_parallel} parallel Film pairs), {exports} with exports; worst view {} codes, {} values over 1; worst PNG {worst_export} of 65535; {:?}",
@@ -1470,9 +1473,7 @@ fn no_generated_graph_is_refused_by_the_device() {
 /// size 120, Strength 85), the second linked to the first by a key. On Metal its PNG export was 222 of 65535 from the CPU's
 /// (the bound is one 10-bit code, 64), on lavapipe 180 (169 with output sharpening off).
 ///
-/// **It is not a device error, and it is reported here, not enforced:** the rule is the owner's of 2026-11-12 (the header of
-/// this file: a graph with two or more Film nodes in series is not compared with the CPU, and `no_generated_graph_is_refused_by_the_device`
-/// prints its numbers as "not enforced"); this graph is pinned as the case that led to it. Every stage is within its own bound: the colour pass
+/// **It is not a device error.** Every stage is within its own bound: the colour pass
 /// on the CPU's own scene values of the worst pixels is 1e-7 from the CPU (gate 1e-5), and with one Film node after the
 /// correctors the picture is 8e-5 in display light and 3e-5 in AWG4 from the CPU. The second Film node leaves a few pixels
 /// (3 values over 64 codes of 806,400, all at the saturated patches of the chart's left edge) whose scene colour is
@@ -1480,12 +1481,13 @@ fn no_generated_graph_is_refused_by_the_device() {
 /// blue of 1e-7 to 1e-6. There the picture is ill-conditioned for any `f32` LogC4 between the nodes, the CPU's too: on the
 /// CPU alone, a change of 1e-5 EV in the first Film node's exposure (7e-6 relative) moves the display light of those
 /// pixels by 1 % (1e-4 EV: 5 %), and the device's roundings differ from the CPU's by 6e-6 in AWG4. Output sharpening
-/// spreads such a pixel over its neighbours. The owner decided on 2026-11-12 ("Follow your recommendation on limits.") to keep the 10-bit bound and not apply
-/// it to such a graph, so this case prints the numbers and asserts only that the export is the device's.
+/// spreads such a pixel over its neighbours. Until 2026-11-21 this case was "reported, not enforced" by the Film-chain rule of
+/// 2026-11-12; the unstable-pixel rule is general now (the owner, 2026-11-21), and the export is judged by it like any other: the
+/// CPU's own export moves by more than the bound at those values when the settings are nudged, so they are exempt and printed.
 const SEED_539_GRAPH_0: &str = r#"{"nodes":{"items":[{"id":1},{"id":2,"kind":"corrector","masks":{"invert":false,"items":[{"far":0.23923923923923926,"feather":0.2912912912912913,"kind":"depth","mode":"add","refine":0.3303303303303303},{"far":0.5027027027027027,"feather":0.4678678678678678,"kind":"depth","mode":"add","refine":0.0970970970970971}]},"pos":[2,0.0],"trim":{"exposure_ev":0.8}},{"id":3,"kind":"corrector","masks":{"invert":false,"items":[{"angle_deg":-27.58758758758759,"center":[0.5,0.5],"feather":0.3,"kind":"linear","mode":"add"}]},"pos":[3,0.0],"trim":{"exposure_ev":0.8}},{"film":{"exposure_ev":0.3},"grain":{"amount":100,"seed":4},"halation":{"amount":200,"size":120},"id":4,"kind":"film","pos":[4,0.0],"strength":85},{"film":{"exposure_ev":0.3},"grain":{"amount":100,"seed":5},"halation":{"amount":200,"size":120},"id":5,"kind":"film","pos":[5,0.0],"strength":85}],"links":[{"from":{"node":"input","port":"picture"},"to":{"node":1,"port":"picture"}},{"from":{"node":1,"port":"picture"},"to":{"node":2,"port":"picture"}},{"from":{"node":2,"port":"picture"},"to":{"node":3,"port":"picture"}},{"from":{"node":3,"port":"picture"},"to":{"node":4,"port":"picture"}},{"from":{"node":4,"port":"picture"},"to":{"node":5,"port":"picture"}},{"from":{"node":5,"port":"picture"},"to":{"node":"output","port":"picture"}},{"from":{"node":4,"port":"key"},"to":{"node":5,"port":"key"}}]}}"#;
 
 #[test]
-fn seed_539_graph_0_reports_its_export_difference_and_is_not_enforced() {
+fn seed_539_graph_0_export_is_judged_by_the_unstable_pixel_rule() {
     let _serial = SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1515,17 +1517,48 @@ fn seed_539_graph_0_reports_its_export_difference_and_is_not_enforced() {
         home.path(),
         FormatKind::Png,
     );
-    let diffs: Vec<u32> = decode_png16_bytes(&dev)
+    let (dev, cpu) = (decode_png16_bytes(&dev), decode_png16_bytes(&cpu_bytes));
+    let max = dev
         .iter()
-        .zip(decode_png16_bytes(&cpu_bytes))
-        .map(|(a, b)| a.abs_diff(b))
-        .collect();
-    let max = diffs.iter().copied().max().unwrap_or(0);
-    let over = diffs.iter().filter(|&&x| x > TEN_BIT_CODE).count();
+        .zip(&cpu)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap_or(0);
     say(&format!(
-        "seed 539 graph 0 (reported, not enforced): PNG export {max} of 65535 from the CPU's, {over} of {} values over {TEN_BIT_CODE}",
-        diffs.len()
+        "seed 539 graph 0: PNG export {max} of 65535 from the CPU's, {} values",
+        dev.len()
     ));
+    let verdict = judge_export(&d, &settings, &dev, &cpu, home.path(), "seed 539 graph 0");
+    assert!(
+        verdict.failure.is_none(),
+        "seed 539 graph 0: the PNG export fails the bound: {}",
+        verdict.failure.unwrap_or_default()
+    );
+    // What the Mac run saw (222 of 65535 at a few values, on lavapipe 180 on the pictures before RC-13), with a CPU render for the
+    // device: the three values the device differs most at, moved to 180 from the CPU's (at most 65535).
+    let mut order: Vec<usize> = (0..dev.len()).collect();
+    order.sort_unstable_by_key(|&i| std::cmp::Reverse(dev[i].abs_diff(cpu[i])));
+    let mut standin = cpu.clone();
+    for &i in &order[..3] {
+        standin[i] = if dev[i] >= cpu[i] {
+            (cpu[i] + 180).min(65535)
+        } else {
+            cpu[i].saturating_sub(180)
+        };
+    }
+    let verdict = judge_export(
+        &d,
+        &settings,
+        &standin,
+        &cpu,
+        home.path(),
+        "seed 539 graph 0, 180",
+    );
+    assert!(
+        verdict.failure.is_none(),
+        "seed 539 graph 0 at 180 codes: {}",
+        verdict.failure.unwrap_or_default()
+    );
 }
 
 /// The bindings of the size sweep, in KiB: from 1 MiB up (`docs/23` section 5.12, *Limits*). The reference is the frame at
@@ -3413,8 +3446,8 @@ fn a_one_code_change_of_a_depth_plane_moves_seed_23_only_through_output_sharpeni
 /// limit moved by -5e-6 is a "device" that differs from the CPU by 69 or 70 at the two pixels of the dark line (on the pictures before
 /// RC-13: moved by +5e-6, 142 at the two pixels the Mac run failed on), and those are the
 /// CPU's own unstable values, so the rule passes it and prints them. The same "device" with one stable value moved by 500 fails
-/// (the bound is enforced there); with an unstable value moved far outside the CPU's own range it fails (safeguard c); a graph with no
-/// mask row fails at a change of 100 at one value (safeguard a).
+/// (the bound is enforced there); with an unstable value moved far outside the CPU's own range it fails (safeguard c); with nothing to
+/// nudge it fails at a change of 100 at one value (safeguard a).
 #[test]
 fn the_unstable_pixel_rule_exempts_only_the_cpus_own_unstable_values() {
     let _serial = SERIAL
