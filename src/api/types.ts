@@ -453,6 +453,9 @@ export interface NodeGrade {
 /** Whether a mask row adds to the node's mask or takes away from it. */
 export type MaskMode = "add" | "subtract";
 
+/** How a node's mask rows combine (`docs/23` §3.3): `"add"` (the default, left out of a written document) or `"intersect"` (only where every row overlaps). */
+export type MaskCombine = "add" | "intersect";
+
 /** One stroke of a Brush mask: its size (0.001…0.25 of the long edge), hardness (0…1), whether it erases, and its points in the photo frame. */
 export interface BrushStroke {
   size: number;
@@ -498,6 +501,8 @@ export type MaskItem =
 /** A node's masks: its Invert (`m = 1 − m`) and the rows, in the order they are drawn and combined, at most 64. */
 export interface MaskSettings {
   invert: boolean;
+  /** Left out (read as `"add"`) unless the node intersects its masks. */
+  combine?: MaskCombine;
   items: MaskItem[];
 }
 
@@ -907,9 +912,11 @@ export interface MaskPatch {
   high?: number;
 }
 
-/** `masks` in a patch: the node's Invert, the whole list of rows, and row patches by index (a string), applied after `items`. */
+/** `masks` in a patch: the node's Invert, how its rows combine, the whole list of rows, and row patches by index (a string), applied after `items`. */
 export interface MasksPatch {
   invert?: boolean;
+  /** The node's `"add"` or `"intersect"`. */
+  combine?: MaskCombine;
   items?: MaskItem[];
   edit?: Record<string, MaskPatch>;
 }

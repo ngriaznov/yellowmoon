@@ -951,6 +951,17 @@ pub struct NodeGrade {
     pub curve: Curves,
 }
 
+/// How a node's mask rows combine (`docs/23` section 3.3): one switch for the node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskCombine {
+    /// The rows add up and Subtract cuts out.
+    #[default]
+    Add,
+    /// Only where every row overlaps.
+    Intersect,
+}
+
 /// Add or subtract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
@@ -1172,6 +1183,9 @@ pub enum MaskItem {
 pub struct MaskSettings {
     /// The node's Invert: `m = 1 - m`.
     pub invert: bool,
+    /// How the rows combine; the core leaves it out of a written document at Add.
+    #[serde(default)]
+    pub combine: MaskCombine,
     /// The rows, in the order they are drawn and combined, at most 64.
     pub items: Vec<MaskItem>,
 }
@@ -2258,6 +2272,9 @@ pub struct MasksPatch {
     /// The node's Invert.
     #[serde(default)]
     pub invert: Option<bool>,
+    /// How the node's rows combine.
+    #[serde(default)]
+    pub combine: Option<MaskCombine>,
     /// The whole list of rows: add, remove or reorder rows.
     #[serde(default)]
     pub items: Option<Vec<MaskItem>>,
@@ -2275,7 +2292,7 @@ impl Serialize for MasksPatch {
                 $(if let Some(v) = &self.$field { map.serialize_entry(stringify!($field), v)?; })*
             };
         }
-        put!(invert, items, edit);
+        put!(invert, combine, items, edit);
         map.end()
     }
 }

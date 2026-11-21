@@ -53,6 +53,7 @@ pub fn every_mask() -> MaskSettings {
     MaskSettings {
         invert: true,
         items,
+        ..MaskSettings::default()
     }
 }
 

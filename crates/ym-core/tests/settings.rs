@@ -192,6 +192,7 @@ fn every_mask() -> MaskSettings {
     MaskSettings {
         invert: true,
         items,
+        ..MaskSettings::default()
     }
 }
 
@@ -346,7 +347,10 @@ fn the_rust_types_have_the_fields_of_the_typescript_interfaces() {
     check("OutputNode", untagged(&items[4]));
     check("NodeTrim", items[1]["trim"].clone());
     check("NodeGrade", items[1]["grade"].clone());
-    check("MaskSettings", items[2]["masks"].clone());
+    // `combine` is written only at Intersect (docs/23 section 3.3), so the check adds it.
+    let mut masks = items[2]["masks"].clone();
+    masks["combine"] = serde_json::json!("intersect");
+    check("MaskSettings", masks);
     check("NodeLink", doc["nodes"]["links"][0].clone());
     check("NodeRef", doc["nodes"]["links"][0]["from"].clone());
     check(

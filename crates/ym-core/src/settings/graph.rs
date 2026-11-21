@@ -85,6 +85,14 @@ pub enum GraphError {
         /// The field.
         field: String,
     },
+    /// A node's `masks.combine` is neither `"add"` nor `"intersect"`.
+    #[error("The masks of {} combine as “add” or “intersect”, not “{value}”.", .node.to_lowercase())]
+    MaskCombine {
+        /// "Node 3".
+        node: String,
+        /// The value found.
+        value: String,
+    },
     /// A link goes from an input port or to an output port.
     #[error("A link goes from the output of one node to the input of another.")]
     LinkDirection,
@@ -1609,6 +1617,14 @@ impl NodeGraph {
                     .into());
                 }
             }
+            super::masks::check_combine(
+                map.get("masks"),
+                &match id {
+                    NodeId::Corrector(n) => format!("Node {n}"),
+                    NodeId::Input => "The input".to_owned(),
+                    NodeId::Output => "The output".to_owned(),
+                },
+            )?;
             if map.contains_key("pos") {
                 placed.insert(id);
             } else {

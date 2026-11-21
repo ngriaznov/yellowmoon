@@ -1051,6 +1051,12 @@
           "type": "boolean",
           "default": false
         },
+        "combine": {
+          "description": "How the rows combine: `add` (the rows add up; the default, left out of a written document) or `intersect` (only where every row overlaps). Docs/23 sections 3.3 and 4.2.",
+          "type": "string",
+          "enum": ["add", "intersect"],
+          "default": "add"
+        },
         "items": {
           "type": "array",
           "maxItems": 64,
