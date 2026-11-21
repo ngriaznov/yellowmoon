@@ -1,3 +1,9 @@
+# Round 2: the first round (run 44920123054) showed `fix` (56c4adc1) fails on AMD EPYC 9V45 like the release, main passes, so
+# the miscompile is not in how the fold is written alone. Each job now builds and runs the three tests at: main 853e5522, release
+# 9363e36a, fix 56c4adc1, V1 86fb0e65 (separate function, called always, one select), V2 7f01340c (separate function inside an
+# `if`), V3 46775843 (early return at the top of `node_mask`), V5 1ee29530 (kernel is main's; the host packs Intersect rows as
+# subtract rows), and the release again with LP_NATIVE_VECTOR_WIDTH=128 (V4). The failing lines of the first failing run of each
+# test are printed in the job log. Round 1 text follows.
 # Diagnostic for the branch `diag-alf` only (never merged). CI run 44908112612 (job gpu-lavapipe, commit 9363e36a) failed
 # `gpu_alf_look` with a C13 difference of 1.0 on an AMD runner; main 853e5522 had passed. Llvmpipe compiles shaders for the host CPU,
 # so each of the eight jobs prints its CPU, builds the three test binaries (gpu_alf_look, gpu_masks, gpu_chain) at three commits
@@ -20,7 +26,7 @@ env:
 jobs:
   diag:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
@@ -106,7 +112,11 @@ jobs:
           }
           build main 853e5522
           build release 9363e36a
-          build fix HEAD
+          build fix 56c4adc1
+          build v1 86fb0e65
+          build v2 7f01340c
+          build v3 46775843
+          build v5 1ee29530
           ls -l "$root/bins"
       - name: Run the binaries
         run: |
@@ -115,15 +125,22 @@ jobs:
           out="$root/diag-out"
           # runs NAME TEST: three runs of one binary; prints "failed/3".
           runs() {
-            local name="$1" t="$2" failed=0 i dir
-            if [ "$name" = fix ]; then dir="$root"; else dir="$root/../wt-$name"; fi
+            local name="$1" t="$2" label="$3" failed=0 i dir
+            shift 3
+            [ -n "$label" ] || label="$name"
+            dir="$root/../wt-$name"
             if [ ! -x "$root/bins/$name-$t" ]; then echo "nobuild"; return; fi
             for i in 1 2 3; do
-              if ( cd "$dir/crates/ym-gpu" && env CARGO_MANIFEST_DIR="$dir/crates/ym-gpu" YELLOWMOON_DATA="$dir/data" "$root/bins/$name-$t" ) > "$out/$name-$t-$i.log" 2>&1; then
-                rm -f "$out/$name-$t-$i.log"
+              if ( cd "$dir/crates/ym-gpu" && env CARGO_MANIFEST_DIR="$dir/crates/ym-gpu" YELLOWMOON_DATA="$dir/data" "$@" "$root/bins/$name-$t" ) > "$out/$label-$t-$i.log" 2>&1; then
+                rm -f "$out/$label-$t-$i.log"
               else
                 failed=$((failed + 1))
-                grep -a -E "^test .* FAILED|panicked|\|GPU - CPU\|" "$out/$name-$t-$i.log" | cut -c1-300 | sed "s/^/  [$name $t run $i] /" >> "$out/failing-tests.txt"
+                grep -a -E "^test .* FAILED|panicked|\|GPU - CPU\||mismatch|differ|left:|right:" "$out/$label-$t-$i.log" | cut -c1-300 | sed "s/^/  [$label $t run $i] /" >> "$out/failing-tests.txt"
+                if [ "$i" = 1 ]; then
+                  { echo "::group::$label $t run 1 (failed): last 60 lines"
+                    tail -n 60 "$out/$label-$t-$i.log" | cut -c1-400
+                    echo "::endgroup::"; } >&2
+                fi
               fi
             done
             echo "$failed/3"
@@ -131,10 +148,15 @@ jobs:
           touch "$out/failing-tests.txt"
           cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -n 1)
           line="CPU $cpu"
-          for name in main release fix; do
+          for name in main release fix v1 v2 v3 v5 release_lp128; do
             line="$line | $name:"
             for t in gpu_alf_look gpu_masks gpu_chain; do
-              line="$line $t $(runs $name $t)"
+              if [ "$name" = release_lp128 ]; then
+                r=$(runs release $t release_lp128 LP_NATIVE_VECTOR_WIDTH=128)
+              else
+                r=$(runs $name $t "")
+              fi
+              line="$line $t $r"
             done
           done
           echo "$line"
