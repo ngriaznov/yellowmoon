@@ -525,6 +525,7 @@ fn the_mask_is_applied_once_at_a_soft_edge() {
                 feather: 0.5,
             })],
             invert: false,
+            ..NodeMasks::default()
         },
         ..visible(1.0)
     };
@@ -567,6 +568,7 @@ fn the_mask_is_applied_once_at_a_soft_edge() {
                         feather: 0.5,
                     })],
                     invert: false,
+                    ..NodeMasks::default()
                 },
                 ..visible(1.0)
             },

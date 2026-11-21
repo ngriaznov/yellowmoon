@@ -78,6 +78,7 @@ fn masks(rows: Vec<MaskRow>) -> NodeMasks {
     NodeMasks {
         rows,
         invert: false,
+        ..NodeMasks::default()
     }
 }
 
@@ -508,9 +509,13 @@ fn all(opacity: f64) -> MaskRow {
 
 fn mask_of(rows: Vec<MaskRow>, invert: bool, key: Option<f64>) -> f64 {
     let f = frame(1000.0, 1000.0, 1.0);
-    NodeMasks { rows, invert }
-        .prepare()
-        .mask(key, grey(), 0.3, spot(0.5, 0.5, f))
+    NodeMasks {
+        rows,
+        invert,
+        ..NodeMasks::default()
+    }
+    .prepare()
+    .mask(key, grey(), 0.3, spot(0.5, 0.5, f))
 }
 
 #[test]
@@ -548,9 +553,13 @@ fn regions_and_ranges_fold_apart_and_multiply() {
     let near = colour([0.0, 0.0], 0.05, 0.5);
     let far = colour([0.25, 0.25], 0.005, 0.0);
     let run = |rows: Vec<MaskRow>, invert: bool| {
-        NodeMasks { rows, invert }
-            .prepare()
-            .mask(None, grey(), 0.3, spot(0.5, 0.5, f))
+        NodeMasks {
+            rows,
+            invert,
+            ..NodeMasks::default()
+        }
+        .prepare()
+        .mask(None, grey(), 0.3, spot(0.5, 0.5, f))
     };
     // A node with only ranges is the range alone (R = 1).
     assert_eq!(run(vec![near], false), 1.0);
@@ -613,6 +622,7 @@ fn the_key_input_is_an_implicit_first_region_row() {
     let m = NodeMasks {
         rows: vec![half],
         invert: false,
+        ..NodeMasks::default()
     }
     .prepare()
     .mask(Some(0.6), grey(), 0.3, spot(0.5, 0.5, f));
@@ -635,6 +645,7 @@ fn a_node_blends_only_when_it_has_rows_an_invert_or_a_key() {
     let inverted = NodeMasks {
         rows: vec![],
         invert: true,
+        ..NodeMasks::default()
     }
     .prepare();
     assert!(inverted.blends(false));
@@ -646,6 +657,7 @@ fn inverted_is_empty() -> bool {
     NodeMasks {
         rows: vec![],
         invert: true,
+        ..NodeMasks::default()
     }
     .is_empty()
 }
@@ -879,6 +891,7 @@ fn a_node_without_masks_or_a_key_keeps_its_own_bits() {
                 masks: NodeMasks {
                     rows: vec![],
                     invert: true,
+                    ..NodeMasks::default()
                 },
                 ..visible()
             },
@@ -1064,6 +1077,7 @@ fn the_mask_stop_shows_the_nodes_final_mask() {
     let node = NodeMasks {
         rows: rows.clone(),
         invert: true,
+        ..NodeMasks::default()
     };
     let c = chain_of(
         vec![Spec {

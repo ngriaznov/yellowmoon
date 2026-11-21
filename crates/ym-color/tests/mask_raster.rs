@@ -1004,6 +1004,7 @@ fn chain_with_raster(rows: Vec<MaskRow>, set: RasterSet) -> ColorChain {
             masks: NodeMasks {
                 rows,
                 invert: false,
+                ..NodeMasks::default()
             },
             ..Default::default()
         },

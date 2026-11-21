@@ -66,8 +66,8 @@ use crate::auto::{AutoEstimates, as_shot_gains, as_shot_rggb};
 use crate::session::{PhotoId, PhotoView, PickedWhite, ThumbnailInput};
 use crate::settings::{
     AutoOr, BlendMode, BlurNode, BlurType, ColorUniformNode, ColorWarp, CurvePoint, Curves,
-    DevelopSettings, LensSettings, MIXER_INPUTS, MaskMode, MaskSettings, MaskShape, MaskSupport,
-    MixerNode, NodeGrade, NodeGraph, NodeId, NodeKind, NodeTrim, ObjectMask, Port,
+    DevelopSettings, LensSettings, MIXER_INPUTS, MaskCombine, MaskMode, MaskSettings, MaskShape,
+    MaskSupport, MixerNode, NodeGrade, NodeGraph, NodeId, NodeKind, NodeTrim, ObjectMask, Port,
 };
 use crate::vision::VisionKind;
 
@@ -693,6 +693,7 @@ fn mask_rows(
     NodeMasks {
         rows,
         invert: m.invert,
+        intersect: m.combine == MaskCombine::Intersect,
     }
 }
 
@@ -709,6 +710,8 @@ pub fn only_row(s: &DevelopSettings, node: u32, row: usize) -> Option<DevelopSet
     item.enabled = true;
     masks.items = vec![item];
     masks.invert = false;
+    // The eye shows the row's own mask, whatever the node's rule (`docs/23` section 4.2).
+    masks.combine = MaskCombine::Add;
     let to = NodeId::Corrector(node);
     only.nodes
         .links

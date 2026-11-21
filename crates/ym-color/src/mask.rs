@@ -283,6 +283,9 @@ pub struct NodeMasks {
     pub rows: Vec<MaskRow>,
     /// The node's Invert: `m = 1 - m` after the rows combine.
     pub invert: bool,
+    /// The rows combine as an intersection (`masks.combine = "intersect"`, `docs/algorithms/06` section 3): every present row
+    /// multiplies. `false` is the rule of Add: the rows add up and Subtract cuts out.
+    pub intersect: bool,
 }
 
 impl NodeMasks {
@@ -304,6 +307,7 @@ impl NodeMasks {
             needs_rasters: ops.iter().any(|o| o.kind == OpKind::Raster),
             ops,
             invert: self.invert,
+            intersect: self.intersect,
         }
     }
 }
@@ -570,6 +574,22 @@ impl MaskOp {
     }
 }
 
+impl MaskOp {
+    /// The row's factor in an intersection (`docs/algorithms/06` section 3): `a` is the row's `s`, inverted if the row is; an
+    /// Add row gives `o a + (1 - o)` (`a` exactly at `o = 1`, 1 exactly at `o = 0`) and a Subtract row `1 - o a` (`1 - a` exactly
+    /// at `o = 1`, 1 at `o = 0`), so that an opacity of 0 narrows nothing: the neutral value of a product is 1.
+    #[must_use]
+    pub fn factor(&self, v_in: LogC4, l_in: f64, spot: PixelAt<'_>) -> f64 {
+        let s = self.select(v_in, l_in, spot);
+        let a = if self.invert { 1.0 - s } else { s };
+        if self.subtract {
+            1.0 - self.opacity * a
+        } else {
+            self.opacity * a + (1.0 - self.opacity)
+        }
+    }
+}
+
 /// `((px - cx) W, (py - cy) H) / L`: the pixel's offset from a centre, in units of the long edge.
 fn frame_xy(cx: f64, cy: f64, spot: &PhotoSpot<'_>) -> (f64, f64) {
     (
@@ -646,6 +666,7 @@ pub fn overlay_pixel(display: Vec3, m: f64, accent: Vec3) -> Vec3 {
 pub struct PreparedMasks {
     ops: Vec<MaskOp>,
     invert: bool,
+    intersect: bool,
     needs_luma: bool,
     needs_position: bool,
     needs_rasters: bool,
@@ -662,6 +683,12 @@ impl PreparedMasks {
     #[must_use]
     pub fn invert(&self) -> bool {
         self.invert
+    }
+
+    /// Whether the node's rows combine as an intersection.
+    #[must_use]
+    pub fn intersect(&self) -> bool {
+        self.intersect
     }
 
     /// Whether a row reads the luma of the node's input (a Brightness range).
@@ -698,13 +725,17 @@ impl PreparedMasks {
         let mut regions = key;
         let mut ranges: Option<f64> = None;
         for op in &self.ops {
-            let a = op.amount(v_in, l_in, spot);
             let acc = if op.is_range() {
                 &mut ranges
             } else {
                 &mut regions
             };
-            *acc = Some(fold(*acc, op.subtract, a));
+            *acc = Some(if self.intersect {
+                // Intersect: every present row multiplies; the first row is taken exactly (`1 * f`).
+                acc.unwrap_or(1.0) * op.factor(v_in, l_in, spot)
+            } else {
+                fold(*acc, op.subtract, op.amount(v_in, l_in, spot))
+            });
         }
         let m = match (regions, ranges) {
             (None, None) => 1.0,
