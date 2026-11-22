@@ -654,14 +654,14 @@ fn a_graded_node_with_no_pull_and_a_pull_with_a_neutral_grade_keep_their_bits() 
     for dev in gpus() {
         let a = render(
             dev,
-            &chain_of(&[corrector.clone()], OutputTarget::Srgb),
+            &chain_of(std::slice::from_ref(&corrector), OutputTarget::Srgb),
             &img,
             None,
             &outs,
         );
         let b = render(
             dev,
-            &chain_of(&[no_pull.clone()], OutputTarget::Srgb),
+            &chain_of(std::slice::from_ref(&no_pull), OutputTarget::Srgb),
             &img,
             None,
             &outs,

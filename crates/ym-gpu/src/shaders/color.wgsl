@@ -784,6 +784,30 @@ fn uniform_node(ni: u32, v: vec3<f32>) -> vec3<f32> {
     return o;
 }
 
+// A Colour Uniform node that also has a corrector's steps (docs/32 section 12a.1): the pull first, on the node's input, then the trims,
+// C9, C9b and C11 on its result, whose exact linear values are not c7, so they are decoded from it. Called only from the top of
+// `node_apply` for such a node (`N_UNIFORM` with at least one of the four steps), which returns its value: every other node runs
+// `node_apply`'s own steps unchanged (an llvmpipe miscompile on AMD Zen 4 and 5 made a reorder inside `node_apply` unusable, docs/STATUS.md).
+fn cu_graded_apply(ni: u32, v_in: vec3<f32>, bits: u32) -> vec3<f32> {
+    var v = uniform_node(ni, v_in);
+    var lin = logc4_decode3(v);
+    if ((bits & N_TRIM) != 0u) {
+        lin = lin * nf(ni, R_GAIN).xyz;
+        v = logc4_encode3(lin);
+    }
+    if ((bits & N_GRADE) != 0u) {
+        let l = logc4_encode(dot(Y_AWG4, lin));
+        v = c9_grade(v, l, ni);
+    }
+    if ((bits & N_WARP) != 0u) {
+        v = c9b_warp(v, ni);
+    }
+    if ((bits & N_CURVES) != 0u) {
+        v = c11_curves(v, ni);
+    }
+    return v;
+}
+
 // One node on one pixel: its trims, C9, C9b and C11 (docs/23 section 1.3), each left out when its bit in `ctl.x` is clear,
 // the whole node when `N_SKIP` is set (bypassed, or every step at its identity). `v_in` is the picture the node reads;
 // `c7` is the linear AWG4 triple C8 was encoded from, which is the node's exact linear input when it reads the Input
@@ -795,25 +819,22 @@ fn node_apply(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, stage: 
     if ((bits & N_SKIP) != 0u) {
         return v_in;
     }
+    if ((bits & N_UNIFORM) != 0u && (bits & (N_TRIM | N_GRADE | N_WARP | N_CURVES)) != 0u) {
+        return cu_graded_apply(ni, v_in, bits);
+    }
     var v = v_in;
     var lin = c7;
-    // 0. A Colour Uniform node's pull (docs/32 section 12a.1): first, on the node's input, then the corrector's steps on its
-    // result, whose exact linear values are no longer c7, so they are decoded from it (`fin`, an integer test of a host bit).
-    if ((bits & N_UNIFORM) != 0u) {
-        v = uniform_node(ni, v);
-    }
-    let fin = from_input && (bits & N_UNIFORM) == 0u;
     // 1. The trims: a gain in linear AWG4.
     if ((bits & N_TRIM) != 0u) {
-        if (!fin) {
-            lin = logc4_decode3(v);
+        if (!from_input) {
+            lin = logc4_decode3(v_in);
         }
         lin = lin * nf(ni, R_GAIN).xyz;
         v = logc4_encode3(lin);
     }
     // 2. C9, with L the LogC4 code of the luminance of the linear values entering it.
     if ((bits & N_GRADE) != 0u) {
-        if (!fin && (bits & N_TRIM) == 0u) {
+        if (!from_input && (bits & N_TRIM) == 0u) {
             lin = logc4_decode3(v);
         }
         let l = logc4_encode(dot(Y_AWG4, lin));
@@ -832,6 +853,10 @@ fn node_apply(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, stage: 
     // 4. C11.
     if ((bits & N_CURVES) != 0u) {
         v = c11_curves(v, ni);
+    }
+    // 5. A Colour Uniform node's pull (docs/32 section 3.3), the last step as on the CPU.
+    if ((bits & N_UNIFORM) != 0u) {
+        v = uniform_node(ni, v);
     }
     return v;
 }
