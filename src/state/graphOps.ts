@@ -531,7 +531,13 @@ export function resetNode(settings: DevelopSettings, id: NodeId, defaults: { loo
     patch = { same_for_all: true, all: defaultFaceSettings(), faces: [] };
   } else if (node.kind === "color_uniform") {
     // The target goes back to none and the three amounts to 0; the masks, the name, the bypass and the links stay (`docs/32` section 5.3).
-    patch = { target: null, compress: { hue: 0, saturation: 0, lightness: 0 } };
+    // Its trim and grade (a corrector's, `docs/32` §12a) go back to their defaults with them; a node that has neither has nothing to put back.
+    patch = {
+      target: null,
+      compress: { hue: 0, saturation: 0, lightness: 0 },
+      ...(node.trim ? { trim: { exposure_ev: 0, temperature: 0, tint: 0 } } : {}),
+      ...(node.grade ? { grade: neutralGrade() } : {}),
+    };
   } else if (node.kind === "blur") {
     // The type and every type's values go back to the defaults, Zoom's centre too; the masks, the name, the bypass and the links stay (`docs/33` section 2.6).
     const { type, soft, lens, motion, zoom, respect_mask_edges } = newBlur(0, [0, 0]);

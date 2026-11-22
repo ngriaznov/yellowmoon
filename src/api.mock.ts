@@ -144,7 +144,7 @@ import { fixtureUrl } from "./fixtures";
 import { clampPins } from "./components/warpMath";
 import { adjustForNode, adjustScene, developScene, nodeScene, previewSvg, signalScene } from "./fixtures/grade";
 import type { Adjustment, NodeLook } from "./fixtures/grade";
-import { hexTone, sceneThroughUniforms, uniformScene } from "./fixtures/uniform";
+import { hexTone, sceneThroughUniforms, uniformGradedScene } from "./fixtures/uniform";
 import { filmScene, mockFilmCatalogue, MOCK_FILM_STOCKS, sceneThroughFilms } from "./fixtures/film";
 import { hasMixers, outputFeeder, sceneAfter, sceneAt } from "./fixtures/mixers";
 import { hexChroma, sceneScatter } from "./fixtures/warp";
@@ -956,6 +956,9 @@ function clampColorUniform(s: ColorUniformItem): ColorUniformItem {
     name: name === "" ? "Uniform" : name,
     target: t === null ? null : { hue_deg: ((t.hue_deg % 360) + 360) % 360 || 0, saturation: clamp(t.saturation, 2, 50), lightness_ev: clamp(t.lightness_ev, -4, 8) },
     compress: { hue: clamp(s.compress.hue, 0, 100), saturation: clamp(s.compress.saturation, 0, 100), lightness: clamp(s.compress.lightness, 0, 100) },
+    // The corrector's trim and grade (`docs/32` §12a.3): clamped as a corrector's other than Main (no Auto).
+    ...(s.trim ? { trim: { exposure_ev: clamp(s.trim.exposure_ev, -4, 4), temperature: clamp(s.trim.temperature, -100, 100), tint: clamp(s.trim.tint, -100, 100) } } : {}),
+    ...(s.grade ? { grade: clampGrade(s.grade, false) } : {}),
   };
 }
 
@@ -1066,9 +1069,15 @@ export function resolveSettings(photoId: PhotoId, settings: DevelopSettings, est
       white_pick: input.white_pick,
     },
     main: resolvedCorrector(main, estimates.main),
-    nodes: correctorsOf(settings)
-      .filter((item) => item.id !== MAIN_ID)
-      .map((item) => resolvedCorrector(item, null)),
+    nodes: [
+      ...correctorsOf(settings)
+        .filter((item) => item.id !== MAIN_ID)
+        .map((item) => resolvedCorrector(item, null)),
+      // A Colour Uniform node's trim and grade are read by the corrector's tabs (`docs/32` §12a.2); it has no Auto.
+      ...settings.nodes.items
+        .filter((item): item is ColorUniformItem => item.kind === "color_uniform")
+        .map((item) => resolvedCorrector({ ...item, kind: "corrector" as const, trim: item.trim ?? { exposure_ev: 0, temperature: 0, tint: 0 }, grade: item.grade ?? neutralGrade() }, null)),
+    ],
     output: { pos: output.pos, look: output.look, look_intensity: output.look_intensity, output_sharpening: output.output_sharpening },
   };
   const grade = main.grade;
@@ -2517,8 +2526,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       bypass: item.bypass,
       trim: { exposure_ev: 0, temperature: 0, tint: 0 },
       grade: neutralGrade(),
-      apply: (scene) => uniformScene(scene, item.target, item.compress),
-      key: [item.target, item.compress],
+      apply: (scene) => uniformGradedScene(scene, item),
+      key: [item.target, item.compress, item.trim, item.grade],
     };
   }
 

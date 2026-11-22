@@ -158,13 +158,22 @@ export function mainGradeOf(settings: DevelopSettings): NodeGrade {
  */
 export function gradeOf(settings: DevelopSettings, id: number): NodeGrade {
   const node = nodeOf(settings, id);
+  // A Colour Uniform node has the corrector's grade too (`docs/32` §12a.3); the core leaves it out at the neutral grade.
+  if (node?.kind === "color_uniform") return node.grade ?? neutralGrade();
   return node?.kind === "corrector" ? node.grade : mainOf(settings).grade;
 }
 
-/** A corrector with its numbers resolved, Main's (`values.main`) or another's (`values.nodes`); undefined for a node the core has not answered for. */
-export function resolvedCorrector(values: ResolvedValues, id: number): ResolvedCorrector | undefined {
+/**
+ * A node with a corrector's trim and grade, its numbers resolved: Main's (`values.main`) or another corrector's or a Colour Uniform node's
+ * (`values.nodes`, `docs/32` §12a.2); undefined for a node the core has not answered for. The tabs of a corrector read through it, so a
+ * Colour Uniform node shares them with no copy.
+ */
+export function resolvedGraded(values: ResolvedValues, id: number): ResolvedCorrector | undefined {
   return id === MAIN_ID ? values.main : values.nodes.find((node) => node.id === id);
 }
+
+/** Alias of {@link resolvedGraded}, the name the corrector's tabs have always used. */
+export const resolvedCorrector = resolvedGraded;
 
 // ---------------------------------------------------------------------------
 // What the simple view cannot show (`docs/23` section 6: the notice and the filmstrip glyph)
@@ -247,7 +256,7 @@ export type MixerPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "mode" | "o
 /** The fields of a Face Refinement node a patch may set (`docs/27`). */
 export type FaceRefinementPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "same_for_all" | "all" | "faces" | "protect" | "masks">;
 /** The fields of a Colour Uniform node a patch may set (`docs/32` section 5.3). */
-export type ColorUniformPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "target" | "compress" | "masks">;
+export type ColorUniformPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "target" | "compress" | "trim" | "grade" | "masks">;
 /** The fields of a Blur node a patch may set (`docs/33` section 5.3). */
 export type BlurPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "type" | "soft" | "lens" | "motion" | "zoom" | "respect_mask_edges" | "masks">;
 /** The fields of a Film node a patch may set. */
@@ -707,6 +716,9 @@ function applyNode(item: NodeItem, patch: NodePatch): NodeItem {
   if (item.kind === "color_uniform") {
     // `compress` merges the amounts it names; `target` replaces whole (or clears with null), as the core does (`docs/32` section 5.3).
     if (compress) next.compress = { ...item.compress, ...compress };
+    // `trim` and `grade` are a corrector's (`docs/32` §12a.3): this node is not Main, so Auto reads as a manual 0 (the tabs send plain numbers).
+    if (trim) next.trim = { ...(item.trim ?? { exposure_ev: 0, temperature: 0, tint: 0 }), ...trim };
+    if (grade) next.grade = applyGrade(item.grade ?? neutralGrade(), grade);
     if (masks) next.masks = applyMasks(item.masks, masks);
   }
   if (item.kind === "blur") {

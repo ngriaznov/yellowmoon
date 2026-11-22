@@ -255,11 +255,20 @@ export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite
     }
   }
   if (item?.kind === "color_uniform" && typeof node === "number") {
-    return tab === "mask" ? (
-      <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} pickingDepth={pickingDepth} onPickDepth={onPickDepth} />
-    ) : (
-      <UniformTab store={store} rs={rs} node={node} item={item} picking={pickingUniform} onPick={onPickUniform ?? (() => undefined)} />
-    );
+    // Compress is the node's own; Light, Colour and Curve are a corrector's tabs, the same components on this node's trim and grade
+    // (`docs/32` §12a.2), and Mask is a corrector's.
+    switch (tab) {
+      case "mask":
+        return <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} pickingDepth={pickingDepth} onPickDepth={onPickDepth} />;
+      case "light":
+        return <CorrectorLightTab store={store} photo={photo} rs={rs} node={node} />;
+      case "color":
+        return <CorrectorColourTab store={store} photo={photo} rs={rs} node={node} pickingColor={pickingColor} onPickColor={onPickColor} />;
+      case "curve":
+        return <CorrectorCurveTab store={store} photo={photo} rs={rs} node={node} />;
+      default:
+        return <UniformTab store={store} rs={rs} node={node} item={item} picking={pickingUniform} onPick={onPickUniform ?? (() => undefined)} />;
+    }
   }
   if (item?.kind === "blur") {
     return tab === "mask" || typeof node !== "number" ? (

@@ -80,14 +80,15 @@ export function panelKindOf(kind: NodeKind): PanelKind {
 
 /**
  * The tabs of each kind of node in the node view, in bar order (`docs/23` §7.5): the Input RAW · Lens · Light · Colour · Detail, a corrector
- * (Main included) Light · Colour · Curve · Mask, the Output Look · Detail. ⌘1 selects the first, up to ⌘5 on the Input.
+ * (Main included) Light · Colour · Curve · Mask, a Colour Uniform node Compress · Light · Colour · Curve · Mask (`docs/32` §12a.2), the Output
+ * Look · Detail. ⌘1 selects the first, up to ⌘5 on the Input, a Film node and a Colour Uniform node.
  */
 export const NODE_TABS: Readonly<Record<PanelKind, readonly TabId[]>> = {
   input: ["raw", "lens", "light", "color", "detail"],
   corrector: ["light", "color", "curve", "mask"],
   film: ["film", "print", "halation", "grain", "mask"],
   face_refinement: ["face", "mask"],
-  color_uniform: ["compress", "mask"],
+  color_uniform: ["compress", "light", "color", "curve", "mask"],
   blur: ["blur", "mask"],
   output: ["look", "detail"],
   parallel: ["inputs"],
