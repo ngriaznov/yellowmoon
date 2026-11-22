@@ -132,7 +132,7 @@ fn build_auto_if_possible() -> bool {
     };
     if !sdk_major(&sdk_version).is_some_and(|major| major >= MIN_SDK_MAJOR) {
         warn_without_auto(&format!(
-            "the macOS SDK is {sdk_version}; Apple Auto needs the macOS {MIN_SDK_MAJOR} SDK (Xcode {MIN_SDK_MAJOR}) or later"
+            "macOS SDK {sdk_version}; the bridge needs the macOS {MIN_SDK_MAJOR} SDK, Xcode {MIN_SDK_MAJOR}"
         ));
         return false;
     }
@@ -414,11 +414,14 @@ fn deployment_target() -> String {
     format!("{major}.{minor}")
 }
 
-/// Says that this Mac build has no Apple Auto bridge, and why.
+/// Says that this Mac build has no Apple Auto bridge, and why. A build machine without the macOS 27 SDK
+/// (Xcode 27), such as the standard GitHub macOS runners, always gets this; the release is built on the
+/// `xcode-27` image and has the bridge, so the text says that this is expected and not a fault.
 fn warn_without_auto(why: &str) {
     println!(
-        "cargo::warning=Apple Auto is built without its bridge to Apple's model ({why}); \
-         the app and ym will report it as not available."
+        "cargo::warning=Apple Auto is built without its bridge here ({why}). This is expected on a \
+         machine without Xcode 27: release builds are made on the xcode-27 image and include the \
+         bridge (release.yml; apple-bridge.yml checks it). This build reports Apple Auto as not available."
     );
 }
 
