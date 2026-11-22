@@ -1,3 +1,8 @@
+# Round 4 (CG-04): round 3 (run 45001435947) failed gpu_masks and gpu_uniform on AMD EPYC 9V74 and 9V45 with the reordered
+# `node_apply` (cg04, 725e2892). Two other shapes: W1 8ef4573b059d928d87614c7927b48095cdc3dcab (`node_apply` is main's below an early return into
+# `cu_graded_apply`, the shape V3 of round 2 had) and W2 4a1ea8a3fae036819813ff5ccb69f6d431bfa5f8 (color.wgsl and kernels/color.rs are main's; the plan
+# lowers a graded Colour Uniform node to two steps). Each job builds the four test binaries at main d127a1f9, cg04, W1 and W2
+# and runs each three times; one field per variant in the summary line. Round 3 text follows.
 # Round 3 (CG-04, the Colour Uniform grade tabs): `node_apply` in color.wgsl runs a Colour Uniform node's pull first (one block
 # moved to the top of the function, `fin` for `from_input`), which LLVM sees because it is inlined into `run_nodes`. The rule of
 # docs/STATUS.md (2026-11-20 and 2026-11-21) says a change there must pass this workflow before a release. Each of the eight jobs
@@ -120,6 +125,8 @@ jobs:
           }
           build main d127a1f9
           build cg04 725e28929396d41f513f5278daf8cb24b4b37ecb
+          build w1 8ef4573b059d928d87614c7927b48095cdc3dcab
+          build w2 4a1ea8a3fae036819813ff5ccb69f6d431bfa5f8
           ls -l "$root/bins"
       - name: Run the binaries
         run: |
@@ -151,7 +158,7 @@ jobs:
           touch "$out/failing-tests.txt"
           cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -n 1)
           line="CPU $cpu"
-          for name in main cg04; do
+          for name in main cg04 w1 w2; do
             line="$line | $name:"
             for t in gpu_alf_look gpu_masks gpu_chain gpu_uniform; do
               r=$(runs $name $t "")
