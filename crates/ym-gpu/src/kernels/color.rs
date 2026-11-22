@@ -2738,23 +2738,45 @@ mod tests {
         assert_eq!(MAX_STEPS * 64 * size_of::<MaskOpU>(), 262_144);
     }
 
-    /// CU-05 (`docs/32` section 6): a Colour Uniform step uses the grade's rows of the record, which a node of that kind has free,
-    /// so the record did not grow and no binding was added; `offset_of!` pins which rows.
+    /// CU-05 and CG-04 (`docs/32` sections 6 and 12a): a Colour Uniform step's three rows are in the mixers' join region of the
+    /// record (`R_UNI_T` and `R_UNI_K` are the two `J_IN` rows, `R_UNI_R` the first `J_AL` row), no longer in the grade's rows, so a
+    /// node that has both a grade and a pull keeps each in its own rows; `offset_of!` pins which rows.
     #[test]
-    fn the_uniform_step_lives_in_the_grade_rows_of_the_record() {
+    fn the_uniform_step_lives_in_the_mixers_join_rows_of_the_record() {
         let rows: std::collections::BTreeMap<_, _> = record_rows().into_iter().collect();
-        assert_eq!(rows["R_UNI_T"], rows["R_GRADE0"]);
-        assert_eq!(rows["R_UNI_K"], rows["R_ZONE_AMT"]);
-        assert_eq!(rows["R_UNI_R"], rows["R_ZONE_CTR"]);
-        assert_eq!(rows["R_UNI_T"] as usize * 16, offset_of!(NodeRecU, grade0));
+        let join = (offset_of!(NodeRecU, join) / 16) as u32;
+        assert_eq!(rows["R_UNI_T"], join + J_IN);
+        assert_eq!(rows["R_UNI_K"], join + J_IN + 1);
+        assert_eq!(rows["R_UNI_R"], join + J_AL);
         assert_eq!(
-            rows["R_UNI_K"] as usize * 16,
-            offset_of!(NodeRecU, zone_amt)
+            rows["R_UNI_T"] as usize * 16,
+            offset_of!(NodeRecU, join) + 16 * J_IN as usize
         );
-        assert_eq!(
-            rows["R_UNI_R"] as usize * 16,
-            offset_of!(NodeRecU, zone_ctr)
-        );
+        // The pull's rows are no longer the grade's first rows.
+        assert_ne!(rows["R_UNI_T"], rows["R_GRADE0"]);
+        assert_ne!(rows["R_UNI_K"], rows["R_ZONE_AMT"]);
+        assert_ne!(rows["R_UNI_R"], rows["R_ZONE_CTR"]);
+        // A corrector's grade rows (the grade, the zones, the balance) and the pull's rows share no row, so a node with both works.
+        let grade = [
+            "R_GRADE0",
+            "R_ZONE_AMT",
+            "R_ZONE_CTR",
+            "R_BAL0",
+            "R_BAL1",
+            "R_BAL_CTR",
+        ];
+        for uni in ["R_UNI_T", "R_UNI_K", "R_UNI_R"] {
+            for g in grade {
+                assert_ne!(rows[uni], rows[g], "{uni} overlaps {g}");
+            }
+            // Nor is it inside the span the grade's fields cover in the record.
+            let lo = rows["R_GRADE0"].min(rows["R_BAL_CTR"]);
+            let hi = rows["R_GRADE0"].max(rows["R_BAL_CTR"]);
+            assert!(
+                !(lo..=hi).contains(&rows[uni]),
+                "{uni} is inside the grade's span"
+            );
+        }
         assert_eq!(size_of::<NodeRecU>(), 1328);
         // The bit is free: no other `NODE_*` flag is set in it.
         let others = [
