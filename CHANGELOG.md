@@ -9,6 +9,65 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-11-22
+
+The stable release that follows six pre-releases (0.2.4-beta.1 to 0.2.4-beta.6), so the app's updater offers it. If you are updating from 0.2.3, this is everything that is new since then. It adds **Face Refinement**, **Colour Uniform** and **Blur** nodes, **presets and albums** and **Mask Intersect**. The pipeline version is 0.16.0 (0.2.3 had 0.11.0), and **most photos look slightly different**, because the constants of the raw processing were re-derived (under Changed); a photo from a Sony NEX-5N or NEX-7, or one with bright lights and Anamorphic above 0, can change more. A settings file, preset or album that uses a new node or option needs this version: an older build refuses it.
+
+### Added
+
+- **Face Refinement.** **Add node › Face Refinement** retouches each face the node finds (faces at least 200 px across and turned towards the camera) and leaves the rest of the photo as it is.
+  - Its **Face** tab has **Blemish**, **Dark circles**, **Even skin** and **Texture**, then **Skin grading** (Contrast, Shadow desaturation, Shine removal) and **Teeth** (Whitening, Desaturation and Gamma, all at 0 for a new node). Each face can have its own settings, or all faces share one set.
+  - **Show skin areas** tints where the tools work. **Protect** keeps moles, freckles and scars as they are: paint over them, or erase with ⌥ held.
+  - Whitening holds back on gums, so a smile does not turn grey. With no face found the node changes nothing. Its Mask tab is a corrector's.
+  - It gives the same bytes in the app and in `ym`.
+- **Colour Uniform.** **Add node › Colour Uniform**, then click a colour on the photo: the node pulls the colours its mask lets through toward it, and hue, saturation and lightness each have their own amount. A dress that is one hue in the light and another in the shade, or skin with a green cast on one side, comes together. The first pick adds a Colour range mask on the colour you picked, so the change stays near it. Greys are left alone.
+  - The node has the same **Light**, **Colour** and **Curve** tabs as a corrector, next to Compress and Mask, so a photo can be graded in the same node, under the same mask. **Reset this node** resets the grade too.
+- **Blur.** **Add node › Blur** blurs the photo, or only the part its masks let through. Pick **Soft**, **Lens** (crisp discs, round or with 5 to 9 blades, and **Highlights** to make bright lights count for more), **Motion** (along a line, at an angle) or **Zoom** (stronger the farther from a centre you pick). Sizes are a share of the photo's size, so what you see is what you export. **Respect mask edges** is on for a new node, so a blurred background has no glow around the subject. With a Depth mask, or a Subject mask inverted, the node blurs the background.
+- **Masks can intersect.** A switch on the Masks card, **Add** or **Intersect**, sits under the card's title. Add is how masks have always worked. Intersect keeps only where every mask overlaps: two shapes give just the part they share. It works on every node that has masks.
+- **The Masks card header has an eye and an Invert icon.** The eye, "Show the mask of all rows", shows every mask of the node together on the photo; it is the same as Show mask (key M). Invert is a small icon, as on each mask's own row.
+- **Presets.** A preset is a saved recipe: a name and some of a photo's settings. Choosing it on another photo sets those settings and nothing else, and Auto stays Auto. The **Presets** card is the last card of the Look tab, with tiles that show your photo with each preset on it, and Looks › **Save Preset…** (⌥⌘S) saves one. Presets stack, can be renamed, exported, imported by dropping a `.ympreset` file on the window, and applied to the picked photos or all of them.
+- **Albums.** **File › Save** (⌘S) writes the filmstrip to a `.ymalbum` file: the photos in order, which are picked, each photo's settings and the answers of Claude Code, Antigravity or Apple Intelligence where a photo used them. **File › Open Files…** or a drop on the window opens it. The photos themselves are not in the file, and nothing else is kept: no list of albums, no autosave.
+- **Presets and albums in `ym`.** `ym presets` lists, saves, imports, exports and removes presets; `ym render --preset` applies one; `ym render` and `ym info` take an album. A settings file can hold `face_refinement`, `color_uniform` and `blur` nodes and the Intersect switch. The app and `ym` give the same bytes.
+
+### Changed
+
+- **The raw constants were re-derived.** The constants of the demosaic's chroma step, its shadow steps and the output sharpening kernel had been taken over from research. They are now fitted or derived on public test images and synthetic scenes, each with its derivation in `docs/29`. On the 64 pictures of the test set, 58 change and 6 stay bit for bit; the typical pixel moves by a median of ΔE00 0.09, and the largest change is ΔE00 21.1, on the edge of a saturated colour patch.
+- **The Look tab is Automatic, Look and Presets.** The Tone card is gone: Temperature is in Colour › White balance, Contrast in Light › Exposure and Saturation in Colour › Colour balance. They are the same settings as before. ⌥⌘S saves a preset; ⇧⌘S is File › Save As… and ⌘S File › Save.
+- **A new Colour range mask starts narrower.** It starts at Width 23 instead of 39, so it selects one colour rather than most of the photo. Masks already in a photo keep their width.
+- **TIFF exports are ZIP by default.** On a 24 MP photo the 16-bit file is 108 MB instead of 134 MB for about the same time. A stored choice of LZW stays LZW, and `--compression lzw` still works.
+- **An export's XMP says which values were Auto**, so New Preset from Exported Photo keeps Auto as Auto. Exports from an older version have no such property.
+- **The Sony NEX-5N and NEX-7 get their lens corrections.** Their vignetting, colour-fringe and distortion tables were in a part of the file that was not read. Photos from these bodies render differently.
+- **Plainer messages for files and folders.** A damaged file says whether it is empty, incomplete or damaged and what to do. A folder that cannot be read is named instead of reading as "No ARW files". A file on a slow or hung drive says so.
+- **Opening a folder shows its progress**, "Reading 120 of 2000 files…", with Cancel. The Start list, the filmstrip and the export queue draw only the rows in view, so a folder of 2000 photos scrolls as one of 500 does.
+- **Exports stop when the destination cannot take them.** A full disk, a read-only folder or a folder that is gone stops the export at the first photo with a sentence that names the folder. A warning shows before an export when the free space is short.
+- **Less memory on a small Mac.** The app counts its caches and lets them go before it refuses work, unloads the Object and Depth models after five minutes unused, and says once when macOS reports that memory is short.
+- **Easier with the keyboard and a screen reader.** Preferences has **Single-key shortcuts** (on by default; turn it off if you use speech input or a screen reader). A **Photo** menu and Looks › **Apply Look 1 to 9** give every key a menu item. The Photos screen says what a shortcut did, a zoomed photo takes the arrow keys to pan, and an Object mask takes points from the keyboard. The app follows macOS's Reduce Transparency, Reduce Motion and Increase Contrast.
+- **The import dialog says "Import LUTs and look files…"**, in the menu, the Look tab, the wizard and the dialog's title.
+
+### Fixed
+
+- **An Object mask works on a Film node.** Clicking the photo to select an object failed with "That mask is not an Object mask" on a Film node (it worked on Main and on correctors). It now works on every node that has masks.
+- **Show mask on a Film node showed the photo instead of the mask.** It now shows the node's mask.
+- **Anamorphic: a light the frame cuts was stretched into a pillar.** A defocused light at the edge or corner of the picture is now stretched into an oval, as the others are.
+- **Anamorphic: a bright light that is not round was smeared into a rounded rectangle.** A tube light, two lights that overlap or a light a subject cuts is now kept as the photo has it.
+- **A look file whose numbers break a colour is refused.** It used to be accepted and then produce a broken colour.
+- **A large photo could be drawn on the processor when a smaller cut fitted the graphics card.** The check on the size of each piece was not exact for a view cut into many pieces. It is now exact. Pictures are unchanged.
+- **Two libraries were updated for security advisories** (the one that reads look archives, and one that reads web addresses). Look imports were not affected, and nothing changes in how they work.
+
+### Known limits
+
+- On a Mac whose graphics card cannot run the Blur node, Lens, Motion and Zoom render on the processor instead, and slowly at large sizes: a large Lens, Motion or Zoom on a full-size photo can take minutes, where Soft takes seconds. On the graphics card the node is estimated at a few milliseconds a megapixel for a small blur and tens of milliseconds for the largest Lens, but its speed has not been measured on a Mac yet. (`docs/33` sections 9 and 11, items 65 and 75 to 80, have the numbers.)
+- A Zoom blur makes a tiny bright light (a few pixels wide) streak wider and dimmer than an exact streak would; smooth edges and large areas are right. A sharper streak may come later.
+- Opening an album does not show "This file has changed since the album was saved." for a photo whose file differs from the one the album saw; its settings still apply. (`ym render --json` and `ym info` do say it.)
+- Face Refinement finds the teeth even when all three teeth controls are 0, so a photo with faces takes a little longer than the sliders suggest.
+- Very yellow teeth can look greyish with Whitening at 100; lower Whitening a little.
+- The gum guard goes by colour, not by place: a tooth much redder than the rest of that face's teeth (a strong reddish reflection from the lips, say) is held back like gum, and the teeth mask itself still includes the strip of gum. A photo with no teeth or gums in the mask is not affected.
+- The Mac-only parts of this release are built but not yet checked on hardware: the Colour Uniform Light, Colour and Curve tabs on Metal, Mask Intersect on Metal, Colour Uniform and Blur on Metal (speed and the pick handles in the app), VoiceOver, the edited dot, the file dialog's filter for photos and albums together, the teeth sliders and the filmstrip on a real Mac, Intel Macs and 8 GB machines.
+
+### Credits
+
+- Faces are found and measured by three networks that Google publishes in **MediaPipe**: BlazeFace (full range), Face Mesh V2 and Selfie Multiclass (Copyright 2021 The MediaPipe Authors, Google LLC), under the Apache License 2.0: [github.com/google-ai-edge/mediapipe](https://github.com/google-ai-edge/mediapipe). Yellowmoon bundles Google's weights converted to safetensors and runs them with its own code; they are not trained or changed further. The notice is item 14 of `NOTICE`, which ships in the app, and the model card is `data/models/mediapipe/MODEL_CARD.md`. The teeth are found by **SAM 2.1** (Meta, Apache-2.0), credited with the Object masks in 0.2.0.
+
 ## [0.2.4-beta.6] - 2026-11-22
 
 A sixth pre-release (a beta) for testing. It adds **Light, Colour and Curve to the Colour Uniform node** and an **eye on the Masks card**. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.16.0 (beta 5 had 0.15.0), and photos look the same unless a Colour Uniform node uses the new tabs. A settings file, preset or album that uses them needs this version: an older build refuses it, with the message quoted under Changed.
