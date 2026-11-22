@@ -1,3 +1,11 @@
+# Round 3 (CG-04, the Colour Uniform grade tabs): `node_apply` in color.wgsl runs a Colour Uniform node's pull first (one block
+# moved to the top of the function, `fin` for `from_input`), which LLVM sees because it is inlined into `run_nodes`. The rule of
+# docs/STATUS.md (2026-11-20 and 2026-11-21) says a change there must pass this workflow before a release. Each of the eight jobs
+# prints its CPU, builds the four test binaries (gpu_alf_look, gpu_masks, gpu_chain, gpu_uniform) at main d127a1f9 and at the
+# CG-04 commit 725e28929396d41f513f5278daf8cb24b4b37ecb, and runs each three times. The summary line has the format of rounds 1 and 2. The gate is 0 failures of
+# every test on every runner (AMD EPYC 9V74 and 9V45, EPYC 7763, Xeon Platinum 8573C). The failing lines of the first failing run
+# of each test are printed in the job log. Rounds 1 and 2 text follows.
+#
 # Round 2: the first round (run 44920123054) showed `fix` (56c4adc1) fails on AMD EPYC 9V45 like the release, main passes, so
 # the miscompile is not in how the fold is written alone. Each job now builds and runs the three tests at: main 853e5522, release
 # 9363e36a, fix 56c4adc1, V1 86fb0e65 (separate function, called always, one select), V2 7f01340c (separate function inside an
@@ -56,7 +64,7 @@ jobs:
       - name: Rust toolchain from rust-toolchain.toml
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - name: Build the three test binaries at main, the release and the fix
+      - name: Build the four test binaries at main and at the CG-04 commit
         run: |
           set +e
           root="$PWD"
@@ -97,11 +105,11 @@ jobs:
               fi
             fi
             ( cd "$dir" && rustup toolchain install > "$root/bins/$name.toolchain.log" 2>&1
-              cargo test --release -p ym-gpu --test gpu_alf_look --test gpu_masks --test gpu_chain --no-run --message-format=json \
+              cargo test --release -p ym-gpu --test gpu_alf_look --test gpu_masks --test gpu_chain --test gpu_uniform --no-run --message-format=json \
                 > "$root/bins/$name.build.json" 2> "$root/bins/$name.build.log"
               echo "cargo exit: $?" >> "$root/bins/$name.build.log" )
             python3 -I "$RUNNER_TEMP/cargo_json.py" errors < "$root/bins/$name.build.json" > "$root/bins/$name.errors.log"
-            for t in gpu_alf_look gpu_masks gpu_chain; do
+            for t in gpu_alf_look gpu_masks gpu_chain gpu_uniform; do
               bin=$(python3 -I "$RUNNER_TEMP/cargo_json.py" exe "$t" < "$root/bins/$name.build.json" | tail -n 1)
               if [ -n "$bin" ] && [ -f "$bin" ]; then
                 cp "$bin" "$root/bins/$name-$t" && chmod +x "$root/bins/$name-$t"
@@ -110,13 +118,8 @@ jobs:
               fi
             done
           }
-          build main 853e5522
-          build release 9363e36a
-          build fix 56c4adc1
-          build v1 86fb0e65
-          build v2 7f01340c
-          build v3 46775843
-          build v5 1ee29530
+          build main d127a1f9
+          build cg04 725e28929396d41f513f5278daf8cb24b4b37ecb
           ls -l "$root/bins"
       - name: Run the binaries
         run: |
@@ -148,14 +151,10 @@ jobs:
           touch "$out/failing-tests.txt"
           cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -n 1)
           line="CPU $cpu"
-          for name in main release fix v1 v2 v3 v5 release_lp128; do
+          for name in main cg04; do
             line="$line | $name:"
-            for t in gpu_alf_look gpu_masks gpu_chain; do
-              if [ "$name" = release_lp128 ]; then
-                r=$(runs release $t release_lp128 LP_NATIVE_VECTOR_WIDTH=128)
-              else
-                r=$(runs $name $t "")
-              fi
+            for t in gpu_alf_look gpu_masks gpu_chain gpu_uniform; do
+              r=$(runs $name $t "")
               line="$line $t $r"
             done
           done
