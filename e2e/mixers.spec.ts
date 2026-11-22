@@ -23,11 +23,21 @@ const centreOf = async (locator: Locator): Promise<Pt> => {
   const b = (await locator.boundingBox())!;
   return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
 };
-/** Clicks a menu item with the pointer travelling to it, as a hand does (a submenu closes when the pointer jumps to an item in one step). */
+/**
+ * Chooses an item of an open submenu by keyboard: focus it, press Enter. A pointer path to it is a race: Radix closes the whole menu when the
+ * pointer leaves the trigger's grace area before it reaches the submenu, and how many of the move events arrive in time depends on the load of
+ * the machine (11 of 40 runs failed with 8 workers on 4 cores, and the CI run of 2026-11-22 failed once). The node head's More opens its
+ * submenus to the left, away from the trigger, which makes the path long. Focus and Enter are the menu's own keyboard path.
+ */
 async function clickSubItem(page: Page, item: Locator): Promise<void> {
-  const b = (await item.boundingBox())!;
-  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 12 });
-  await item.click();
+  await item.focus();
+  await page.keyboard.press("Enter");
+}
+
+/** Opens a submenu by keyboard: focus its trigger, press ArrowRight (a click leaves the pointer over the menu, and the synthetic mouse move Chrome sends after a layout change can re-focus another row). */
+async function openSub(page: Page, name: string): Promise<void> {
+  await page.getByRole("menuitem", { name }).focus();
+  await page.keyboard.press("ArrowRight");
 }
 async function dragBetween(page: Page, from: Pt, to: Pt, steps = 14): Promise<void> {
   await page.mouse.move(from.x, from.y);
@@ -240,14 +250,14 @@ test.describe("links by hand", () => {
     await nodeView(page, PARALLEL_NODES, PARALLEL_LINKS);
     await card(page, 1).click();
     await page.getByRole("button", { name: "More" }).last().click();
-    await page.getByRole("menuitem", { name: "Link picture to" }).click();
+    await openSub(page, "Link picture to");
     await expect(page.getByRole("menuitem", { name: "Parallel, a new input" })).toBeVisible();
     await clickSubItem(page, page.getByRole("menuitem", { name: "Parallel, a new input" }));
     await expect.poll(() => linkIds(page)).toContain("1.picture>4.picture.3");
     // Remove link lists the same names.
     await card(page, 4).click();
     await page.getByRole("button", { name: "More" }).last().click();
-    await page.getByRole("menuitem", { name: "Remove link" }).click();
+    await openSub(page, "Remove link");
     await expect(page.getByRole("menuitem", { name: "Picture from Node 2, Skin" })).toBeVisible();
     await expect(page.getByRole("menuitem", { name: "Picture to Output" })).toBeVisible();
   });

@@ -1542,13 +1542,20 @@ test.describe("the graph: reordering", () => {
 
 
 /**
- * Clicks a menu item with the pointer travelling to it, as a hand does. A submenu closes when the pointer jumps from its trigger to an item of
- * it in one step (Playwright's click moves in one), which no hand does: the node head's More opens its submenus to the left, away from the trigger.
+ * Chooses an item of an open submenu by keyboard: focus it, press Enter. A pointer path to it is a race: Radix closes the whole menu when the
+ * pointer leaves the trigger's grace area before it reaches the submenu, and how many of the move events arrive in time depends on the load of
+ * the machine (11 of 40 runs failed with 8 workers on 4 cores, and the CI run of 2026-11-22 failed once). The node head's More opens its
+ * submenus to the left, away from the trigger, which makes the path long. Focus and Enter are the menu's own keyboard path.
  */
 async function clickSubItem(page: Page, item: Locator): Promise<void> {
-  const b = (await item.boundingBox())!;
-  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 12 });
-  await item.click();
+  await item.focus();
+  await page.keyboard.press("Enter");
+}
+
+/** Opens a submenu by keyboard: focus its trigger, press ArrowRight (a click leaves the pointer over the menu, and the synthetic mouse move Chrome sends after a layout change can re-focus another row). */
+async function openSub(page: Page, name: string): Promise<void> {
+  await page.getByRole("menuitem", { name }).focus();
+  await page.keyboard.press("ArrowRight");
 }
 
 test.describe("the graph: the More menu's keyboard path", () => {
@@ -1556,7 +1563,7 @@ test.describe("the graph: the More menu's keyboard path", () => {
     await fourNodes(page);
     await card(page, 2).click();
     await page.getByRole("button", { name: "More" }).click();
-    await page.getByRole("menuitem", { name: "Link picture to" }).click();
+    await openSub(page, "Link picture to");
     const items = page.getByRole("menuitem").filter({ hasText: /^(Node|Output)/ });
     await expect(items).toHaveText(["Node 4, Warmth", "Output"]);
     await clickSubItem(page, page.getByRole("menuitem", { name: "Output", exact: true }));
@@ -1570,14 +1577,14 @@ test.describe("the graph: the More menu's keyboard path", () => {
     await fourNodes(page);
     await card(page, 2).click();
     await page.getByRole("button", { name: "More" }).click();
-    await page.getByRole("menuitem", { name: "Link key to" }).click();
+    await openSub(page, "Link key to");
     await expect(page.getByRole("menuitem").filter({ hasText: /^Node/ })).toHaveText(["Node 3, Sky", "Node 4, Warmth"]);
     await clickSubItem(page, page.getByRole("menuitem", { name: "Node 4, Warmth" }));
     await expect.poll(() => linkIds(page)).toContain("2.key>4.key");
     await expect(card(page, 4)).toHaveAccessibleName("Node 4, Warmth, picture from node 3, key from node 2");
     // Remove link ▸: the picture links of Mountain and its key link.
     await page.getByRole("button", { name: "More" }).click();
-    await page.getByRole("menuitem", { name: "Remove link" }).click();
+    await openSub(page, "Remove link");
     await expect(page.getByRole("menuitem").filter({ hasText: /^(Picture|Key)/ })).toHaveText(["Picture from Node 1, Main", "Picture to Node 3, Sky", "Key to Node 4, Warmth"]);
     await clickSubItem(page, page.getByRole("menuitem", { name: "Key to Node 4, Warmth" }));
     await expect.poll(() => linkIds(page)).toEqual(LINE);
@@ -1588,7 +1595,7 @@ test.describe("the graph: the More menu's keyboard path", () => {
     await fourNodes(page);
     await card(page, 1).click();
     await page.getByRole("button", { name: "More" }).click();
-    await page.getByRole("menuitem", { name: "Remove link" }).click();
+    await openSub(page, "Remove link");
     await clickSubItem(page, page.getByRole("menuitem", { name: "Picture from Input" }));
     await expect(errorBar(page)).toHaveText(/Main always takes its picture from the input\./);
     expect(await linkIds(page)).toEqual(LINE);
@@ -1601,7 +1608,7 @@ test.describe("the graph: the More menu's keyboard path", () => {
     await page.getByRole("button", { name: "More" }).click();
     const names = await page.getByRole("menuitem").allTextContents();
     expect(names.map((n) => n.trim())).toEqual(["Link picture to", "Remove link"]);
-    await page.getByRole("menuitem", { name: "Link picture to" }).click();
+    await openSub(page, "Link picture to");
     await expect(page.getByRole("menuitem").filter({ hasText: /^(Node|Output)/ })).toHaveText(["Node 2, Mountain", "Node 3, Sky", "Node 4, Warmth", "Output"]);
   });
 });

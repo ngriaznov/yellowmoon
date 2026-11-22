@@ -47,7 +47,9 @@ test.describe("the Colour Uniform node's five tabs", () => {
       });
       expect(clipped, `${size.width} x ${size.height}`).toEqual({ wide: false, cut: [] });
     }
-    expect(problems).toEqual([]);
+    // React Flow's dev-mode attribution warning (`docs/14`: the notice is in THIRD-PARTY.md) fires once, a second after the graph mounts, so
+    // whether it lands before this read depends on how fast the run is; nothing else may be said.
+    expect(problems.filter((p) => !/React Flow: It seems like you are hiding the attribution/.test(p))).toEqual([]);
   });
 
   test("Light, Colour and Curve are a corrector's cards, and ⌘1 to ⌘5 select the five", async ({ page }) => {
