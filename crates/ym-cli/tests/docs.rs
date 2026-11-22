@@ -529,8 +529,31 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     );
     assert_eq!(node.masks.items.len(), 1);
     let written = serde_json::to_value(&settings).expect("writes");
+    // A node with neither `trim` nor `grade` writes neither (`docs/32` section 12a.3).
+    let item = written["nodes"]["items"]
+        .as_array()
+        .and_then(|a| a.iter().find(|n| n["id"] == 2))
+        .expect("node 2 written");
+    assert!(
+        item.get("trim").is_none() && item.get("grade").is_none(),
+        "{item}"
+    );
     let (again, _) = DevelopSettings::from_value(written, &LookId::neutral()).expect("reads again");
     assert_eq!(again, settings, "written back unchanged");
+    // The graded form the text of `docs/10` describes (`docs/32` section 12a): the same node with `trim` and `grade`.
+    let mut graded: Value =
+        serde_json::from_str(&blocks[7]).expect("the Colour Uniform example is JSON");
+    graded["nodes"]["items"][0]["trim"] = serde_json::json!({ "exposure_ev": 0.5 });
+    graded["nodes"]["items"][0]["grade"] = serde_json::json!({
+        "contrast": { "kind": "manual", "value": 15 },
+        "saturation": { "kind": "manual", "value": -20 },
+        "curve": { "luma": [[0, 0], [0.5, 0.55], [1, 1]] } });
+    let (graded, clamped) =
+        DevelopSettings::from_value(graded, &LookId::neutral()).expect("the graded example reads");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    let g = graded.nodes.color_uniform(2).expect("node 2");
+    assert_eq!(g.trim.exposure_ev, 0.5);
+    assert_eq!(g.grade.curve.luma.len(), 3);
     // The Blur example (`docs/33` section 5.1, BL-02): the lens group and a Radial row.
     let value: Value = serde_json::from_str(&blocks[8]).expect("the Blur example is JSON");
     let (settings, clamped) =

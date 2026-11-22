@@ -416,7 +416,8 @@ fn grade_of(seed: u64, index: usize, id: u32) -> Option<(Value, Value)> {
         "color_balance": { "midtones": [signed(&mut rng, 20) / 100.0, signed(&mut rng, 20) / 100.0] } });
     if rng.below(2) == 0 {
         let (a, b) = (signed(&mut rng, 10) / 100.0, signed(&mut rng, 10) / 100.0);
-        grade["color_warp"] = json!({ "pins": [ { "source": [a, b], "target": [b, a], "range": 0.2 } ] });
+        grade["color_warp"] =
+            json!({ "pins": [ { "source": [a, b], "target": [b, a], "range": 0.2 } ] });
     }
     if rng.below(2) == 0 {
         let mid = 0.5 + signed(&mut rng, 10) / 100.0;
@@ -3039,7 +3040,9 @@ fn a_graded_colour_uniform_node_appears_and_its_settings_are_nudged() {
         .filter(|g| {
             g.json["nodes"]["items"].as_array().is_some_and(|items| {
                 items.iter().any(|n| {
-                    n["kind"] == "color_uniform" && n.get("grade").is_some() && n.get("trim").is_some()
+                    n["kind"] == "color_uniform"
+                        && n.get("grade").is_some()
+                        && n.get("trim").is_some()
                 })
             })
         })
@@ -3048,12 +3051,20 @@ fn a_graded_colour_uniform_node_appears_and_its_settings_are_nudged() {
     let g = &graded[0];
     let at = g.json["nodes"]["items"]
         .as_array()
-        .and_then(|items| items.iter().position(|n| n["kind"] == "color_uniform" && n.get("grade").is_some()))
+        .and_then(|items| {
+            items
+                .iter()
+                .position(|n| n["kind"] == "color_uniform" && n.get("grade").is_some())
+        })
         .expect("a graded node");
     let leaves = nudge_leaves(&g.json);
     for field in ["trim/exposure_ev", "grade/brightness"] {
         let want = format!("/nodes/items/{at}/{field}");
-        assert!(leaves.iter().any(|l| l.at == want), "{want} is not nudged: {:?}", leaves.iter().map(|l| &l.at).collect::<Vec<_>>());
+        assert!(
+            leaves.iter().any(|l| l.at == want),
+            "{want} is not nudged: {:?}",
+            leaves.iter().map(|l| &l.at).collect::<Vec<_>>()
+        );
     }
 }
 

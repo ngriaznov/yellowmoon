@@ -18,7 +18,12 @@ use ym_color::warp::{WarpParams, WarpPin};
 
 fn matrix() -> Mat3 {
     let g = 0.25_f64.exp2();
-    [[0.92, 0.10, -0.02], [0.04, 0.97, -0.01], [-0.03, 0.08, 0.95]].map(|row| row.map(|v| v * g))
+    [
+        [0.92, 0.10, -0.02],
+        [0.04, 0.97, -0.01],
+        [-0.03, 0.08, 0.95],
+    ]
+    .map(|row| row.map(|v| v * g))
 }
 
 fn tone() -> ToneParams {
@@ -179,11 +184,17 @@ fn the_order_is_pinned_the_other_order_differs() {
     let widest = pixels()
         .into_iter()
         .map(|px| {
-            let (a, b) = (both.apply_logc4_pixel(px).0, reversed.apply_logc4_pixel(px).0);
+            let (a, b) = (
+                both.apply_logc4_pixel(px).0,
+                reversed.apply_logc4_pixel(px).0,
+            );
             (0..3).map(|k| (a[k] - b[k]).abs()).fold(0.0, f64::max)
         })
         .fold(0.0, f64::max);
-    assert!(widest > 1e-3, "grade first gives the same picture: {widest}");
+    assert!(
+        widest > 1e-3,
+        "grade first gives the same picture: {widest}"
+    );
 }
 
 #[test]
@@ -201,7 +212,11 @@ fn a_pull_at_its_identity_with_a_grade_is_a_correctors_grade_bit_for_bit() {
             ..steps()
         }]);
         for px in pixels() {
-            assert_eq!(node.apply_logc4_pixel(px), corrector.apply_logc4_pixel(px), "{px:?}");
+            assert_eq!(
+                node.apply_logc4_pixel(px),
+                corrector.apply_logc4_pixel(px),
+                "{px:?}"
+            );
         }
     }
 }
@@ -219,7 +234,10 @@ fn a_pull_with_a_neutral_grade_is_the_node_it_was() {
         ..NodeParams::default()
     }]);
     for px in pixels() {
-        assert_eq!(alone.apply_logc4_pixel(px), with_neutral.apply_logc4_pixel(px));
+        assert_eq!(
+            alone.apply_logc4_pixel(px),
+            with_neutral.apply_logc4_pixel(px)
+        );
     }
 }
 
@@ -262,7 +280,10 @@ fn the_mask_blends_the_whole_result_once() {
         let full = unmasked.apply_logc4_pixel(px).0;
         let want: Vec3 = std::array::from_fn(|k| v_in[k] + m * (full[k] - v_in[k]));
         let got = masked.apply_logc4_pixel(px).0;
-        assert!((0..3).all(|k| (got[k] - want[k]).abs() <= 1e-12), "{px:?} m {m}: {got:?} {want:?}");
+        assert!(
+            (0..3).all(|k| (got[k] - want[k]).abs() <= 1e-12),
+            "{px:?} m {m}: {got:?} {want:?}"
+        );
         if m == 0.0 {
             zero += 1;
             assert_eq!(got, v_in);

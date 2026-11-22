@@ -169,7 +169,9 @@ impl ColorUniformNode {
     #[must_use]
     pub fn is_inert(&self) -> bool {
         self.bypass
-            || (self.pull_is_inert() && trim_is_default(&self.trim) && grade_is_neutral(&self.grade))
+            || (self.pull_is_inert()
+                && trim_is_default(&self.trim)
+                && grade_is_neutral(&self.grade))
     }
 }
 

@@ -9,6 +9,15 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Added
+
+- **Light, Colour and Curve on the Colour Uniform node** (the owner's request). The node now has the same Light, Colour and Curve tabs as a corrector, after its own Compress tab and before Mask, so the result of the pull can be graded in the same node: Compress, Light, Colour, Curve, Mask. The pull runs first, then the node's exposure and temperature trims, its contrast, brightness, highlights, shadows, colour balance, saturation, colour warp and curves, and the node's masks blend the whole result once. The Mask tab is now ⌘5 on this node (it was ⌘2). **Reset this node** also puts the grade back. `ym --settings` takes `trim` and `grade` on a `color_uniform` node (`docs/10`).
+
+### Changed
+
+- **Pipeline version 0.16.0.** No photo, preset or album that exists changes by a bit: the trim and grade of a Colour Uniform node are written into a settings file, a preset or an album only when they differ from their defaults. A version older than this one reading such a file says "A Colour Uniform node has no field called “grade”." (an album or a preset: "This album was made by a newer version of Yellowmoon. Update to open it."), and a file that does not use them reads in every version.
+- **The colour warp's Pick colour, the histogram and the curve on a Colour Uniform node read the picture after its pull** (and after its own trim and grade before that stage), as they do for a corrector; the target's Pick colour still reads the node's input.
+
 ## [0.2.4-beta.5] - 2026-11-21
 
 A fifth pre-release (a beta) for testing. It adds **Mask Intersect** and fixes the Object mask on every node and Colour Uniform's Pick colour. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.15.0 (beta 4 had 0.14.0), and photos look the same unless a node uses Intersect. A settings file, preset or album that uses Intersect needs this version: an older build refuses it.

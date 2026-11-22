@@ -1489,7 +1489,8 @@ fn uniform_other_mask() -> serde_json::Value {
 /// node, graded after the pull.
 fn uniform_graded_example() -> serde_json::Value {
     let mut doc = uniform_example();
-    doc["nodes"]["items"][0]["trim"] = serde_json::json!({ "exposure_ev": 0.5, "temperature": 0.0, "tint": 0.0 });
+    doc["nodes"]["items"][0]["trim"] =
+        serde_json::json!({ "exposure_ev": 0.5, "temperature": 0.0, "tint": 0.0 });
     doc["nodes"]["items"][0]["grade"] = serde_json::json!({
         "contrast": { "kind": "manual", "value": 15 },
         "saturation": { "kind": "manual", "value": -20 },
@@ -1515,7 +1516,11 @@ fn uniform_leg(device: bool) {
     for (what, doc, correctors) in [
         ("the example file of docs/32", uniform_example(), 1),
         ("a node with another mask", uniform_other_mask(), 2),
-        ("the example file graded (CG-05)", uniform_graded_example(), 1),
+        (
+            "the example file graded (CG-05)",
+            uniform_graded_example(),
+            1,
+        ),
     ] {
         graph_leg(what, doc.clone(), correctors, device);
         png16_leg(what, &doc, device);

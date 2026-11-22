@@ -279,7 +279,8 @@ fn a_color_uniform_node_is_byte_identical_through_the_app_path_and_the_binary_on
 
 /// The same with the node's trim, grade and a luma curve after the pull (`docs/32` section 12a, CG-05).
 #[test]
-fn a_graded_color_uniform_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+fn a_graded_color_uniform_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_device()
+{
     uniform_device_case(true);
 }
 
@@ -305,7 +306,8 @@ fn uniform_device_case(graded: bool) {
         };
         let mut items = items;
         if node && graded {
-            items[0]["trim"] = serde_json::json!({ "exposure_ev": 0.5, "temperature": 8.0, "tint": 0.0 });
+            items[0]["trim"] =
+                serde_json::json!({ "exposure_ev": 0.5, "temperature": 8.0, "tint": 0.0 });
             items[0]["grade"] = serde_json::json!({
                 "contrast": { "kind": "manual", "value": 15 },
                 "saturation": { "kind": "manual", "value": -20 },

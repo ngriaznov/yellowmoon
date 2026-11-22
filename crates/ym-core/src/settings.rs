@@ -2359,15 +2359,21 @@ impl ResolvedSettings {
                 .map(|(id, c)| corrector(*id, c, &none))
                 // A Colour Uniform node's trim and grade are read by the same tabs as a corrector's (`docs/32` section 12a.3);
                 // it has no Auto.
-                .chain(settings.nodes.uniforms.iter().map(|(id, u)| ResolvedCorrector {
-                    id: *id,
-                    name: u.name.clone(),
-                    bypass: u.bypass,
-                    pos: u.pos,
-                    trim: u.trim,
-                    grade: GradeValues::of(&u.grade, &none),
-                    masks: u.masks.clone(),
-                }))
+                .chain(
+                    settings
+                        .nodes
+                        .uniforms
+                        .iter()
+                        .map(|(id, u)| ResolvedCorrector {
+                            id: *id,
+                            name: u.name.clone(),
+                            bypass: u.bypass,
+                            pos: u.pos,
+                            trim: u.trim,
+                            grade: GradeValues::of(&u.grade, &none),
+                            masks: u.masks.clone(),
+                        }),
+                )
                 .collect(),
             output: ResolvedOutput {
                 pos: settings.output().pos,

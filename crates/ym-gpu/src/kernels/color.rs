@@ -2693,10 +2693,22 @@ mod tests {
         // None of them is a row the grade, the warp or the join head uses.
         for (name, row) in &rows {
             if name.starts_with("R_UNI") {
-                assert!(row >= &(join + 1) && row < &(join + JOIN_ROWS as u32), "{name}");
-                assert!(!["R_GRADE0", "R_ZONE_AMT", "R_ZONE_CTR", "R_BAL0", "R_BAL1", "R_BAL_CTR"]
+                assert!(
+                    row >= &(join + 1) && row < &(join + JOIN_ROWS as u32),
+                    "{name}"
+                );
+                assert!(
+                    ![
+                        "R_GRADE0",
+                        "R_ZONE_AMT",
+                        "R_ZONE_CTR",
+                        "R_BAL0",
+                        "R_BAL1",
+                        "R_BAL_CTR"
+                    ]
                     .iter()
-                    .any(|g| rows[g] == *row));
+                    .any(|g| rows[g] == *row)
+                );
             }
         }
         assert_eq!(size_of::<NodeRecU>(), 1328);
@@ -2781,7 +2793,10 @@ mod tests {
         assert_eq!(f(r.join[J_IN as usize + 1]), [t.tone as f32, 0.8, 0.6, 0.4]);
         assert_eq!(f(r.join[J_AL as usize])[0], rt as f32);
         // The grade's rows are untouched.
-        assert_eq!((r.grade0, r.zone_amt, r.zone_ctr), ([0.0; 4], [0.0; 4], [0.0; 4]));
+        assert_eq!(
+            (r.grade0, r.zone_amt, r.zone_ctr),
+            ([0.0; 4], [0.0; 4], [0.0; 4])
+        );
     }
 
     #[test]

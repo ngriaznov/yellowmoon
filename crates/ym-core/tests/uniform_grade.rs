@@ -99,9 +99,16 @@ fn a_graded_node_round_trips_and_writes_both_fields_once() {
     assert_eq!(n["grade"]["contrast"]["value"], 15.0);
     assert_eq!(n["grade"]["curve"]["luma"][1][1], 0.55);
     // A grade is written whole, as a corrector's is.
-    assert_eq!(n["grade"]["saturation"], json!({ "kind": "manual", "value": 0.0 }));
+    assert_eq!(
+        n["grade"]["saturation"],
+        json!({ "kind": "manual", "value": 0.0 })
+    );
     let text = serde_json::to_string(&s).unwrap();
-    assert_eq!(text.matches("\"trim\"").count(), 2, "Main's and the node's: {text}");
+    assert_eq!(
+        text.matches("\"trim\"").count(),
+        2,
+        "Main's and the node's: {text}"
+    );
     let back = read(serde_json::from_str(&text).unwrap()).unwrap().0;
     assert_eq!(back, s);
     assert_eq!(serde_json::to_string(&back).unwrap(), text);
@@ -113,8 +120,10 @@ fn a_graded_node_round_trips_and_writes_both_fields_once() {
 #[test]
 fn auto_reads_as_a_manual_zero_in_a_document_a_patch_and_a_paste() {
     // A document.
-    let s = settings_of(json!({ "grade": { "contrast": { "kind": "auto" }, "brightness": 4,
-        "color_balance": { "shadows": { "kind": "auto" } } } }));
+    let s = settings_of(
+        json!({ "grade": { "contrast": { "kind": "auto" }, "brightness": 4,
+        "color_balance": { "shadows": { "kind": "auto" } } } }),
+    );
     let g = &s.nodes.color_uniform(2).unwrap().grade;
     assert!(!g.contrast.is_auto() && !g.color_balance.shadows.is_auto());
     // A patch that sets Auto stores a manual 0.
@@ -124,12 +133,16 @@ fn auto_reads_as_a_manual_zero_in_a_document_a_patch_and_a_paste() {
     s.apply_patch(&p, None).unwrap();
     let g = &s.nodes.color_uniform(2).unwrap().grade;
     assert!(!g.contrast.is_auto() && !g.saturation.is_auto());
-    assert!(item(&s).get("grade").is_none(), "a manual 0 is the neutral grade");
+    assert!(
+        item(&s).get("grade").is_none(),
+        "a manual 0 is the neutral grade"
+    );
     // A paste: Main keeps its Auto in the target's Main and the node gets a manual 0.
     let source = settings_of(json!({ "grade": { "contrast": { "kind": "manual", "value": 9 } } }));
     let whole = SettingsPatch::copied_from(&resolved_of(&source));
     let mut onto = DevelopSettings::default();
-    onto.apply_patch(&whole.pasted_onto(&onto.clone()), None).unwrap();
+    onto.apply_patch(&whole.pasted_onto(&onto.clone()), None)
+        .unwrap();
     assert!(onto.main().grade.contrast.is_auto());
     assert_eq!(onto.nodes.color_uniform(2), source.nodes.color_uniform(2));
 }
@@ -141,21 +154,36 @@ fn clamping_is_reported_under_the_nodes_path() {
     .unwrap();
     let n = s.nodes.color_uniform(2).unwrap();
     assert_eq!(n.trim.tint, 100.0);
-    assert!(clamped.contains(&FieldRef { node: uid(), field: SettingsField::Trim }));
-    assert!(clamped.contains(&FieldRef { node: uid(), field: SettingsField::Contrast }));
+    assert!(clamped.contains(&FieldRef {
+        node: uid(),
+        field: SettingsField::Trim
+    }));
+    assert!(clamped.contains(&FieldRef {
+        node: uid(),
+        field: SettingsField::Contrast
+    }));
     // A patch reports it too, and applies nothing for a field it does not clamp.
     let mut s = settings_of(json!({}));
     let rep = s
-        .apply_patch(&patch_of(json!({ "nodes": { "2": { "trim": { "exposure_ev": 40 } } } })), None)
+        .apply_patch(
+            &patch_of(json!({ "nodes": { "2": { "trim": { "exposure_ev": 40 } } } })),
+            None,
+        )
         .unwrap();
-    assert!(rep.clamped.contains(&FieldRef { node: uid(), field: SettingsField::Trim }));
+    assert!(rep.clamped.contains(&FieldRef {
+        node: uid(),
+        field: SettingsField::Trim
+    }));
     assert_eq!(s.nodes.color_uniform(2).unwrap().trim.exposure_ev, 4.0);
 }
 
 #[test]
 fn an_unknown_field_is_still_refused_and_the_older_builds_sentence_is_pinned() {
     let e = read(doc_of(json!({ "strength": 3 }))).unwrap_err();
-    assert_eq!(e.to_string(), "A Colour Uniform node has no field called “strength”.");
+    assert_eq!(
+        e.to_string(),
+        "A Colour Uniform node has no field called “strength”."
+    );
     // What a build without the fields says for `grade` (and for `trim`): the sentence of `docs/23` section 3.5.
     for field in ["grade", "trim"] {
         let old = GraphError::UnknownField {
@@ -168,14 +196,22 @@ fn an_unknown_field_is_still_refused_and_the_older_builds_sentence_is_pinned() {
         );
     }
     // A kind that never had them still refuses them.
-    let e = read(json!({ "nodes": { "items": [{ "id": 2, "kind": "blur", "grade": {} }] } })).unwrap_err();
+    let e = read(json!({ "nodes": { "items": [{ "id": 2, "kind": "blur", "grade": {} }] } }))
+        .unwrap_err();
     assert_eq!(e.to_string(), "A Blur node has no field called “grade”.");
     // A patch to a Colour Uniform node takes them; a patch with a field it has not is refused.
     let mut s = settings_of(json!({}));
-    s.apply_patch(&patch_of(json!({ "nodes": { "2": { "trim": { "tint": 3 } } } })), None).unwrap();
+    s.apply_patch(
+        &patch_of(json!({ "nodes": { "2": { "trim": { "tint": 3 } } } })),
+        None,
+    )
+    .unwrap();
     assert!(
-        s.apply_patch(&patch_of(json!({ "nodes": { "2": { "film": { "exposure_ev": 1 } } } })), None)
-            .is_err()
+        s.apply_patch(
+            &patch_of(json!({ "nodes": { "2": { "film": { "exposure_ev": 1 } } } })),
+            None
+        )
+        .is_err()
     );
 }
 
@@ -200,21 +236,39 @@ fn every_patch_builder_carries_the_fields() {
     // Copy and paste to another photo (the whole-node patch).
     let whole = SettingsPatch::copied_from(&resolved_of(&graded));
     let mut onto = DevelopSettings::default();
-    onto.apply_patch(&whole.pasted_onto(&onto.clone()), None).unwrap();
+    onto.apply_patch(&whole.pasted_onto(&onto.clone()), None)
+        .unwrap();
     assert_eq!(onto.nodes.color_uniform(2), graded.nodes.color_uniform(2));
     // One field changed is one field reported.
     let mut s = graded.clone();
     let rep = s
-        .apply_patch(&patch_of(json!({ "nodes": { "2": { "grade": { "brightness": 9 } } } })), None)
+        .apply_patch(
+            &patch_of(json!({ "nodes": { "2": { "grade": { "brightness": 9 } } } })),
+            None,
+        )
         .unwrap();
-    assert_eq!(rep.changed, vec![FieldRef { node: uid(), field: SettingsField::Brightness }]);
+    assert_eq!(
+        rep.changed,
+        vec![FieldRef {
+            node: uid(),
+            field: SettingsField::Brightness
+        }]
+    );
     // The same value is not a change.
     let rep = s
-        .apply_patch(&patch_of(json!({ "nodes": { "2": { "grade": { "brightness": 9 } } } })), None)
+        .apply_patch(
+            &patch_of(json!({ "nodes": { "2": { "grade": { "brightness": 9 } } } })),
+            None,
+        )
         .unwrap();
     assert!(rep.changed.is_empty());
     // The grade fields belong to the kind, and to the nodes' group.
-    for f in [SettingsField::Trim, SettingsField::Contrast, SettingsField::ColorWarp, SettingsField::Curve] {
+    for f in [
+        SettingsField::Trim,
+        SettingsField::Contrast,
+        SettingsField::ColorWarp,
+        SettingsField::Curve,
+    ] {
         assert!(f.belongs_to(NodeKind::ColorUniform), "{f:?}");
         assert_eq!(f.group(), SettingsField::Target.group());
     }
@@ -236,15 +290,30 @@ fn reset_this_node_puts_target_compress_trim_and_grade_back_and_keeps_the_masks(
 
 #[test]
 fn a_preset_and_an_album_carry_the_fields() {
-    let graded = settings_of(json!({ "trim": { "exposure_ev": 0.5 }, "grade": { "brightness": 5 } }));
+    let graded =
+        settings_of(json!({ "trim": { "exposure_ev": 0.5 }, "grade": { "brightness": 5 } }));
     let preset = Preset::from_settings("Graded", &graded, &[PresetGroup::Nodes], None).unwrap();
-    assert_eq!(preset.settings.nodes.color_uniform(2), graded.nodes.color_uniform(2));
-    let applied = preset.applied_to(&DevelopSettings::default(), true).unwrap();
-    assert_eq!(applied.nodes.color_uniform(2), graded.nodes.color_uniform(2));
+    assert_eq!(
+        preset.settings.nodes.color_uniform(2),
+        graded.nodes.color_uniform(2)
+    );
+    let applied = preset
+        .applied_to(&DevelopSettings::default(), true)
+        .unwrap();
+    assert_eq!(
+        applied.nodes.color_uniform(2),
+        graded.nodes.color_uniform(2)
+    );
     let back = Preset::from_json(&preset.to_json().unwrap()).unwrap();
     assert_eq!(back.settings, preset.settings);
     // A preset of a node with no grade writes neither field.
-    let plain = Preset::from_settings("Plain", &settings_of(json!({})), &[PresetGroup::Nodes], None).unwrap();
+    let plain = Preset::from_settings(
+        "Plain",
+        &settings_of(json!({})),
+        &[PresetGroup::Nodes],
+        None,
+    )
+    .unwrap();
     let text = plain.to_json().unwrap();
     assert!(!text.contains("\"grade\""), "{text}");
     // An album holds the settings as stored: the same round trip.
@@ -257,16 +326,25 @@ fn a_preset_and_an_album_carry_the_fields() {
 fn resolved_values_hold_the_nodes_trim_and_grade() {
     let graded = settings_of(json!({ "trim": { "tint": 9 }, "grade": { "brightness": 5 } }));
     let r = resolved_of(&graded);
-    let v = r.values.nodes.iter().find(|n| n.id == 2).expect("node 2 in values");
+    let v = r
+        .values
+        .nodes
+        .iter()
+        .find(|n| n.id == 2)
+        .expect("node 2 in values");
     assert_eq!(v.trim.tint, 9.0);
     assert_eq!(v.grade.brightness, 5.0);
 }
 
 #[test]
 fn the_schema_validates_both_forms_and_refuses_a_field_it_does_not_have() {
-    let schema: Value = serde_json::from_str(include_str!("../schema/settings.schema.json")).unwrap();
+    let schema: Value =
+        serde_json::from_str(include_str!("../schema/settings.schema.json")).unwrap();
     let node_def = &schema["$defs"]["color_uniform_node"]["properties"];
     assert_eq!(node_def["trim"]["$ref"], "#/$defs/trim");
     assert_eq!(node_def["grade"]["$ref"], "#/$defs/grade");
-    assert_eq!(schema["$defs"]["color_uniform_node"]["additionalProperties"], false);
+    assert_eq!(
+        schema["$defs"]["color_uniform_node"]["additionalProperties"],
+        false
+    );
 }

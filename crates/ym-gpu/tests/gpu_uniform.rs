@@ -20,10 +20,10 @@ use ym_color::display::{
     ChainParams, ColorChain, MainNode, NodeParams, NodeSet, OutputTarget, Trim, UniformStep,
 };
 use ym_color::grade::{ColorBalance, GradeParams};
-use ym_color::warp::{WarpParams, WarpPin};
 use ym_color::mask::{MaskKind, MaskRow, NodeMasks};
 use ym_color::plan::{MAIN_NODE, PictureSource, PlanGraph, PlanNode, Stop as PlanStop, compile};
 use ym_color::uniform::{Amounts, Target};
+use ym_color::warp::{WarpParams, WarpPin};
 use ym_gpu::cpu::RgbImage;
 use ym_gpu::cpu::tiling::Rect;
 use ym_gpu::kernels::PixelData;
@@ -581,10 +581,26 @@ fn graded(u: UniformStep, which: &str) -> NodeParams {
     let on = |k: &str| which == "all" || which == k;
     NodeParams {
         uniform: Some(u),
-        trim: if on("trim") { graded_trim() } else { Trim::default() },
-        grade: if on("grade") { graded_grade() } else { GradeParams::default() },
-        warp: if on("warp") { graded_warp() } else { WarpParams::default() },
-        curves: if on("curves") { graded_curves() } else { CurveSet::default() },
+        trim: if on("trim") {
+            graded_trim()
+        } else {
+            Trim::default()
+        },
+        grade: if on("grade") {
+            graded_grade()
+        } else {
+            GradeParams::default()
+        },
+        warp: if on("warp") {
+            graded_warp()
+        } else {
+            WarpParams::default()
+        },
+        curves: if on("curves") {
+            graded_curves()
+        } else {
+            CurveSet::default()
+        },
         ..NodeParams::default()
     }
 }
@@ -610,7 +626,10 @@ fn a_pull_with_each_grade_step_matches_the_cpu() {
             assert!(m.c13 <= CODE10, "{which}: C13 differs by {:.3e}", m.c13);
             worst = worst.max(m.c10);
         }
-        eprintln!("{:?}: pull and grade, worst C10 {worst:.2e} (gate {LOGC4_GATE:.0e})", dev.mode);
+        eprintln!(
+            "{:?}: pull and grade, worst C10 {worst:.2e} (gate {LOGC4_GATE:.0e})",
+            dev.mode
+        );
     }
 }
 
@@ -620,23 +639,71 @@ fn a_pull_with_each_grade_step_matches_the_cpu() {
 fn a_graded_node_with_no_pull_and_a_pull_with_a_neutral_grade_keep_their_bits() {
     let img = chroma_image(53, 41, 0xC60A);
     let live = step(26.0, 9.7, 0.0, (80.0, 80.0, 40.0));
-    let corrector = NodeParams { uniform: None, ..graded(UniformStep::default(), "all") };
-    let no_pull = graded(UniformStep { amounts: Amounts::default(), ..live }, "all");
+    let corrector = NodeParams {
+        uniform: None,
+        ..graded(UniformStep::default(), "all")
+    };
+    let no_pull = graded(
+        UniformStep {
+            amounts: Amounts::default(),
+            ..live
+        },
+        "all",
+    );
     let outs = [ColorOutput::Stage(Stop::C10), ColorOutput::Stage(Stop::C13)];
     for dev in gpus() {
-        let a = render(dev, &chain_of(&[corrector.clone()], OutputTarget::Srgb), &img, None, &outs);
-        let b = render(dev, &chain_of(&[no_pull.clone()], OutputTarget::Srgb), &img, None, &outs);
+        let a = render(
+            dev,
+            &chain_of(&[corrector.clone()], OutputTarget::Srgb),
+            &img,
+            None,
+            &outs,
+        );
+        let b = render(
+            dev,
+            &chain_of(&[no_pull.clone()], OutputTarget::Srgb),
+            &img,
+            None,
+            &outs,
+        );
         assert_bit_equal("no pull", planar(&b[0]), planar(&a[0]));
         assert_bit_equal("no pull, C13", planar(&b[1]), planar(&a[1]));
         // A pull with a neutral grade: the same bits as the node of CU-05.
-        let c = render(dev, &chain_of(&[node(live)], OutputTarget::Srgb), &img, None, &outs);
-        let d = render(dev, &chain_of(&[graded(live, "none")], OutputTarget::Srgb), &img, None, &outs);
+        let c = render(
+            dev,
+            &chain_of(&[node(live)], OutputTarget::Srgb),
+            &img,
+            None,
+            &outs,
+        );
+        let d = render(
+            dev,
+            &chain_of(&[graded(live, "none")], OutputTarget::Srgb),
+            &img,
+            None,
+            &outs,
+        );
         assert_bit_equal("neutral grade", planar(&d[0]), planar(&c[0]));
         // The order: the pull then the steps against the steps then the pull.
-        let both = render(dev, &chain_of(&[graded(live, "all")], OutputTarget::Srgb), &img, None, &outs);
+        let both = render(
+            dev,
+            &chain_of(&[graded(live, "all")], OutputTarget::Srgb),
+            &img,
+            None,
+            &outs,
+        );
         let reversed = render(
             dev,
-            &chain_of(&[NodeParams { uniform: None, ..graded(live, "all") }, node(live)], OutputTarget::Srgb),
+            &chain_of(
+                &[
+                    NodeParams {
+                        uniform: None,
+                        ..graded(live, "all")
+                    },
+                    node(live),
+                ],
+                OutputTarget::Srgb,
+            ),
             &img,
             None,
             &outs,
@@ -645,7 +712,11 @@ fn a_graded_node_with_no_pull_and_a_pull_with_a_neutral_grade_keep_their_bits() 
         let widest = (0..3 * n)
             .map(|i| f64::from((planar(&both[0])[i] - planar(&reversed[0])[i]).abs()))
             .fold(0.0, f64::max);
-        assert!(widest > 1e-3, "{:?}: the other order gives the same picture ({widest})", dev.mode);
+        assert!(
+            widest > 1e-3,
+            "{:?}: the other order gives the same picture ({widest})",
+            dev.mode
+        );
     }
 }
 
@@ -671,7 +742,10 @@ fn a_graded_node_after_a_node_with_a_mask_and_in_tiles_matches_the_cpu() {
     let chain = chain_of(&nodes, OutputTarget::DisplayP3);
     for dev in gpus() {
         let m = measure(dev, &chain, &base, &img);
-        eprintln!("{:?}: a graded masked node after a node: C10 {:.2e}, C13 {:.2e}", dev.mode, m.c10, m.c13);
+        eprintln!(
+            "{:?}: a graded masked node after a node: C10 {:.2e}, C13 {:.2e}",
+            dev.mode, m.c10, m.c13
+        );
         assert!(m.moved > 50);
         assert!(m.c10 <= LOGC4_GATE, "C10 differs by {:.3e}", m.c10);
         assert!(m.c13 <= CODE10, "C13 differs by {:.3e}", m.c13);
