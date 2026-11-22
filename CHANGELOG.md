@@ -9,15 +9,30 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+## [0.2.4-beta.6] - 2026-11-22
+
+A sixth pre-release (a beta) for testing. It adds **Light, Colour and Curve to the Colour Uniform node** and an **eye on the Masks card**. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.16.0 (beta 5 had 0.15.0), and photos look the same unless a Colour Uniform node uses the new tabs. A settings file, preset or album that uses them needs this version: an older build refuses it, with the message quoted under Changed.
+
 ### Added
 
-- **The Colour Uniform node has Light, Colour and Curve tabs.** They are the same tabs a corrector has, and they act on the node's result, so a photo can be graded in the same node, under the same mask. The tabs are Compress, Light, Colour, Curve and Mask; Mask is now ⌘5 on this node (it was ⌘2). Reset this node also resets the grade. `ym --settings` takes the new fields (`docs/10`).
+- **The Colour Uniform node has Light, Colour and Curve tabs.** They are the same tabs a corrector has, and they act on the node's result, so a photo can be graded in the same node, under the same mask. The tabs are Compress, Light, Colour, Curve and Mask; Reset this node also resets the grade. `ym --settings` takes the new fields (`docs/10`).
 
 ### Changed
 
 - **Pipeline version 0.16.0.** No photo, preset or album that exists changes by a bit: the trim and grade of a Colour Uniform node are written into a settings file, a preset or an album only when they differ from their defaults. A version older than this one reading such a file says "A Colour Uniform node has no field called “grade”." (an album or a preset: "This album was made by a newer version of Yellowmoon. Update to open it."), and a file that does not use them reads in every version.
+- **On a Colour Uniform node the Mask tab is now ⌘5.** The node has five tabs (Compress, Light, Colour, Curve, Mask) and ⌘1 to ⌘5 select them in that order; Mask was ⌘2. Other nodes keep their shortcuts.
 - **The colour warp's Pick colour, the histogram and the curve on a Colour Uniform node read the picture after its pull** (and after its own trim and grade before that stage), as they do for a corrector; the target's Pick colour still reads the node's input.
 - **The Masks card header has icons for Invert and Show mask.** Invert no longer has a word: it is the same small icon as each mask's own Invert, and its tooltip says "Invert all masks". Next to it is a new eye, "Show the mask of all rows", which shows every mask of the node together on the photo. It is the toolbar's Show mask (key M), so the two stay in step, and it turns off a single mask's eye.
+
+### Known limits
+
+- On a Mac whose graphics card cannot run the Blur node, Lens, Motion and Zoom render on the processor instead, and slowly at large sizes: a large Lens, Motion or Zoom on a full-size photo can take minutes, where Soft takes seconds. On the graphics card the node is estimated at a few milliseconds a megapixel for a small blur and tens of milliseconds for the largest Lens, but its speed has not been measured on a Mac yet. (`docs/33` sections 9 and 11, items 65 and 75 to 80, have the numbers.)
+- A Zoom blur makes a tiny bright light (a few pixels wide) streak wider and dimmer than an exact streak would; smooth edges and large areas are right. A sharper streak may come later.
+- Opening an album does not show "This file has changed since the album was saved." for a photo whose file differs from the one the album saw; its settings still apply. (`ym render --json` and `ym info` do say it.)
+- Face Refinement finds the teeth even when all three teeth controls are 0, so a photo with faces takes a little longer than the sliders suggest.
+- Very yellow teeth can look greyish with Whitening at 100; lower Whitening a little.
+- The gum guard goes by colour, not by place: a tooth much redder than the rest of that face's teeth (a strong reddish reflection from the lips, say) is held back like gum, and the teeth mask itself still includes the strip of gum. A photo with no teeth or gums in the mask is not affected.
+- The Mac-only parts of this release are built but not yet checked on hardware: the Colour Uniform Light, Colour and Curve tabs on Metal, Mask Intersect on Metal, Colour Uniform and Blur on Metal (speed and the pick handles in the app), VoiceOver, the edited dot, the file dialog's filter for photos and albums together, the teeth sliders and the filmstrip on a real Mac, Intel Macs and 8 GB machines.
 
 ## [0.2.4-beta.5] - 2026-11-21
 
