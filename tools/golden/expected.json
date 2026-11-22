@@ -404,6 +404,12 @@
       "height": 832,
       "pipeline_version": "0.14.0"
     },
+    "synthetic/node-uniform-graded__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
+      "pixels_sha256": "e8e0671e6d5ea0321461ba19f339db3443556925e1c9ac22e13a4a018f398411",
+      "width": 1248,
+      "height": 832,
+      "pipeline_version": "0.15.0"
+    },
     "synthetic/node-uniform-hue__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l": {
       "pixels_sha256": "3f24144b1017cee56cc5b9751135ea1a519bdf88b4935fe5d89c13cd7026b1ef",
       "width": 1248,
@@ -609,6 +615,13 @@
     {
       "pipeline_version": "0.14.0",
       "note": "Mask Intersect (MI-05, docs/23 section 4.2): one new entry, a corrector with masks.combine intersect (two Radials, the second at 60 %, and a Colour range). The 69 older entries are unchanged: delta E00 0 on every one. PIPELINE 0.15.0.",
+      "changed": 0,
+      "added": 1,
+      "max_delta_e_2000": 0.0
+    },
+    {
+      "pipeline_version": "0.15.0",
+      "note": "new entry: a Colour Uniform node with a trim, a grade and a luma curve after the pull (docs/32 section 12a, CG-05); no existing picture changes",
       "changed": 0,
       "added": 1,
       "max_delta_e_2000": 0.0

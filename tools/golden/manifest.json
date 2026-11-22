@@ -2455,6 +2455,129 @@
       "reference": ""
     },
     {
+      "id": "synthetic/node-uniform-graded__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l",
+      "tier": "synthetic",
+      "set": "default",
+      "group": "node-uniform",
+      "file": "synthetic/arw/chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l.ARW",
+      "scene": "chart",
+      "light": "D6500",
+      "body": "ILCE-7RM4",
+      "model_id": 375,
+      "iso": 400,
+      "cfa": "RGGB",
+      "bits": 14,
+      "variant": "lossless-l",
+      "settings": {
+        "nodes": {
+          "items": [
+            {
+              "id": 2,
+              "kind": "color_uniform",
+              "name": "Graded",
+              "pos": [
+                1,
+                0
+              ],
+              "target": {
+                "hue_deg": 26,
+                "saturation": 9.7,
+                "lightness_ev": -0.03
+              },
+              "compress": {
+                "hue": 60,
+                "saturation": 60,
+                "lightness": 0
+              },
+              "masks": {
+                "invert": false,
+                "items": [
+                  {
+                    "kind": "color_range",
+                    "mode": "add",
+                    "invert": false,
+                    "enabled": true,
+                    "opacity": 1,
+                    "center": [
+                      0.0875,
+                      0.0423
+                    ],
+                    "width": 0.05,
+                    "softness": 0.5
+                  }
+                ]
+              },
+              "trim": {
+                "exposure_ev": 0.5,
+                "temperature": 0,
+                "tint": 0
+              },
+              "grade": {
+                "contrast": {
+                  "kind": "manual",
+                  "value": 15
+                },
+                "saturation": {
+                  "kind": "manual",
+                  "value": -20
+                },
+                "curve": {
+                  "luma": [
+                    [
+                      0,
+                      0
+                    ],
+                    [
+                      0.5,
+                      0.55
+                    ],
+                    [
+                      1,
+                      1
+                    ]
+                  ]
+                }
+              }
+            }
+          ],
+          "links": [
+            {
+              "from": {
+                "node": "input",
+                "port": "picture"
+              },
+              "to": {
+                "node": 1,
+                "port": "picture"
+              }
+            },
+            {
+              "from": {
+                "node": 1,
+                "port": "picture"
+              },
+              "to": {
+                "node": 2,
+                "port": "picture"
+              }
+            },
+            {
+              "from": {
+                "node": 2,
+                "port": "picture"
+              },
+              "to": {
+                "node": "output",
+                "port": "picture"
+              }
+            }
+          ]
+        }
+      },
+      "expected_hash": "",
+      "reference": ""
+    },
+    {
       "id": "synthetic/node-blur-soft__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l",
       "tier": "synthetic",
       "set": "default",
