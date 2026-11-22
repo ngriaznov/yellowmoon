@@ -392,6 +392,40 @@ fn combines(seed: u64, index: usize, id: u32) -> bool {
     rng.below(3) == 0
 }
 
+/// The corrector's trim and grade of a Colour Uniform node (`docs/32` section 12a), drawn for about one node in two. It has a
+/// generator of its own, so that **no other draw moves** (the regression seeds' documents have neither field and stay as they
+/// are). The draw is the corrector's own kinds of setting: a trim, a few grade sliders, a wheel, a warp pin and a curve point.
+fn grade_of(seed: u64, index: usize, id: u32) -> Option<(Value, Value)> {
+    let mut rng = SplitMix64(
+        seed.wrapping_mul(0xD1B5_4A32_D192_ED03)
+            .wrapping_add((index as u64) << 22)
+            .wrapping_add(u64::from(id) ^ 0x6A4D),
+    );
+    if rng.below(2) == 0 {
+        return None;
+    }
+    let signed = |rng: &mut SplitMix64, span: u64| rng.below(2 * span + 1) as f64 - span as f64;
+    let trim = json!({ "exposure_ev": signed(&mut rng, 100) / 100.0,
+        "temperature": signed(&mut rng, 30), "tint": signed(&mut rng, 20) });
+    let mut grade = json!({
+        "contrast": { "kind": "manual", "value": signed(&mut rng, 30) },
+        "brightness": signed(&mut rng, 20),
+        "highlights": { "kind": "manual", "value": signed(&mut rng, 30) },
+        "shadows": { "kind": "manual", "value": signed(&mut rng, 30) },
+        "saturation": { "kind": "manual", "value": signed(&mut rng, 30) },
+        "color_balance": { "midtones": [signed(&mut rng, 20) / 100.0, signed(&mut rng, 20) / 100.0] } });
+    if rng.below(2) == 0 {
+        let (a, b) = (signed(&mut rng, 10) / 100.0, signed(&mut rng, 10) / 100.0);
+        grade["color_warp"] =
+            json!({ "pins": [ { "source": [a, b], "target": [b, a], "range": 0.2 } ] });
+    }
+    if rng.below(2) == 0 {
+        let mid = 0.5 + signed(&mut rng, 10) / 100.0;
+        grade["curve"] = json!({ "luma": [[0, 0], [0.5, mid], [1, 1]] });
+    }
+    Some((trim, grade))
+}
+
 /// `forced_node` and `forced_mask` are the kinds the graph must hold, cycled by the caller so a run covers every kind.
 fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKind) -> Graph {
     let mut rng = SplitMix64(seed.wrapping_mul(1_000_003).wrapping_add(index as u64));
@@ -493,6 +527,12 @@ fn generate(seed: u64, index: usize, forced_node: NodeKind, forced_mask: MaskKin
             if combines(seed, index, id) {
                 n["masks"]["combine"] = json!("intersect");
             }
+        }
+        if *kind == NodeKind::ColorUniform
+            && let Some((trim, grade)) = grade_of(seed, index, id)
+        {
+            n["trim"] = trim;
+            n["grade"] = grade;
         }
         match rng.below(8) {
             0 => n["bypass"] = json!(true),
@@ -2989,6 +3029,43 @@ fn the_generator_draws_the_colour_uniform_node_and_some_graph_has_it_live() {
         uniform_graphs().iter().any(Graph::uniform_live),
         "no live Colour Uniform node in a run"
     );
+}
+
+/// A Colour Uniform node's trim and grade (`docs/32` section 12a) are drawn and appear in a run, on a node that does something,
+/// and `judge_export`'s nudges reach them through the schema: no line of the rule names the kind or the fields.
+#[test]
+fn a_graded_colour_uniform_node_appears_and_its_settings_are_nudged() {
+    let graded: Vec<Graph> = graphs()
+        .into_iter()
+        .filter(|g| {
+            g.json["nodes"]["items"].as_array().is_some_and(|items| {
+                items.iter().any(|n| {
+                    n["kind"] == "color_uniform"
+                        && n.get("grade").is_some()
+                        && n.get("trim").is_some()
+                })
+            })
+        })
+        .collect();
+    assert!(!graded.is_empty(), "no graded Colour Uniform node in a run");
+    let g = &graded[0];
+    let at = g.json["nodes"]["items"]
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .position(|n| n["kind"] == "color_uniform" && n.get("grade").is_some())
+        })
+        .expect("a graded node");
+    let leaves = nudge_leaves(&g.json);
+    for field in ["trim/exposure_ev", "grade/brightness"] {
+        let want = format!("/nodes/items/{at}/{field}");
+        assert!(
+            leaves.iter().any(|l| l.at == want),
+            "{want} is not nudged: {:?}",
+            leaves.iter().map(|l| &l.at).collect::<Vec<_>>()
+        );
+    }
 }
 
 /// Random graphs with a Colour Uniform node render on the CPU, the same bits whatever the tile size (97, 160, 256 px) and the

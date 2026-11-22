@@ -547,7 +547,7 @@
       }
     },
     "color_uniform_node": {
-      "description": "A Colour Uniform node (docs/32): pulls the colours its masks let through toward one target colour, by a percentage on each of hue, saturation and lightness. It has no range of its own: its masks are its whole selection, and a `range` field is refused. With no `target`, or with all three `compress` amounts 0, it changes nothing. A node with an id the default graph does not have must give its `kind`. Until the render step lands (CU-04) a render passes the picture through unchanged.",
+      "description": "A Colour Uniform node (docs/32): pulls the colours its masks let through toward one target colour, by a percentage on each of hue, saturation and lightness. It has no range of its own: its masks are its whole selection, and a `range` field is refused. With no `target`, or with all three `compress` amounts 0, it changes nothing. A node with an id the default graph does not have must give its `kind`. The pull runs first, then the trim and grade.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -591,6 +591,14 @@
         "compress": {
           "description": "How far each axis is pulled to the target, in percent. A partial object is read over the defaults.",
           "$ref": "#/$defs/uniform_amounts"
+        },
+        "trim": {
+          "description": "A corrector's trims, run after the pull (docs/32 section 12a). Written only when not all 0.",
+          "$ref": "#/$defs/trim"
+        },
+        "grade": {
+          "description": "A corrector's grade, colour warp and curves, run after the trims (docs/32 section 12a). Auto reads as a manual 0. Written only when it differs from the neutral grade.",
+          "$ref": "#/$defs/grade"
         },
         "masks": {
           "$ref": "#/$defs/masks"

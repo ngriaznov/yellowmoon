@@ -81,7 +81,7 @@ describe("Add node > Colour Uniform", () => {
     await h.user.click(within(menu).getByRole("menuitem", { name: /^Colour Uniform/ }));
     await waitFor(() => expect(screen.getByRole("button", { name: /^Node 2, Uniform/ })).toHaveAttribute("aria-pressed", "true"));
     expect(within(tools()).getByRole("tab", { name: "Compress" })).toHaveAttribute("aria-selected", "true");
-    expect(within(tools()).getAllByRole("tab").map((t) => t.textContent)).toEqual(["Compress", "Mask"]);
+    expect(within(tools()).getAllByRole("tab").map((t) => t.textContent)).toEqual(["Compress", "Light", "Colour", "Curve", "Mask"]);
     await waitFor(() => expect(pickButton()).toHaveAttribute("aria-pressed", "true"));
     expect(pickLayer()).toBeInTheDocument();
   });

@@ -717,6 +717,10 @@ export interface ColorUniformNode {
   /** The colour pulled toward; `null` is none, and then the node does nothing. */
   target: TargetValue | null;
   compress: UniformAmounts;
+  /** A corrector's trims, run after the pull (`docs/32` §12a); the core leaves it out when all 0, and a left-out one reads as all 0. */
+  trim?: NodeTrim | null;
+  /** A corrector's grade, run after the trims; the core leaves it out at the neutral grade (a manual 0 everywhere), and a left-out one reads so. */
+  grade?: NodeGrade | null;
   masks: MaskSettings;
 }
 

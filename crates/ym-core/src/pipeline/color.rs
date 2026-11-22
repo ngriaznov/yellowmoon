@@ -1300,9 +1300,14 @@ fn node_set(
                     id,
                     NodeParams {
                         bypass: u.bypass,
+                        // The corrector's steps run on the result of the pull (`docs/32` section 12a.1): its trims, grade, colour
+                        // warp and curves, read as a corrector's other than Main (no Auto).
+                        trim: trim_of(&u.trim),
+                        grade: grade_params_of(&u.grade, None),
+                        warp: ColorWarp::to_color(&u.grade.color_warp),
+                        curves: curves_of(&u.grade.curve)?,
                         masks: masks.remove(&id).unwrap_or_default(),
                         uniform: Some(uniform_step_of(u)),
-                        ..NodeParams::default()
                     },
                 );
             }
@@ -1525,6 +1530,15 @@ fn nodes_key(
                 u.compress.saturation.to_bits(),
                 u.compress.lightness.to_bits(),
                 node_masks(&u.masks),
+            );
+            // And its corrector steps, by what makes them (the corrector's own key, `docs/32` section 12a.4).
+            let _ = write!(
+                k,
+                "graded{id}:{:?}:{:?}:{:?}:{:?};",
+                trim_of(&u.trim),
+                grade_params_of(&u.grade, None),
+                Warp::new(&u.grade.color_warp.to_color()),
+                u.grade.curve,
             );
         } else if let Some(b) = s.nodes.blur(id) {
             // A Blur node, by everything that makes its picture (not its name or place): Bypass, the type, every group (a

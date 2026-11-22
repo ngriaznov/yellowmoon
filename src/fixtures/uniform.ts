@@ -9,6 +9,8 @@ import { applyUniform, fromStored, toneOf } from "../components/uniformMath";
 import { cardStates } from "../state/graphOps";
 import type { DevelopSettings } from "../api/types";
 import type { ColorUniformItem } from "../state/settingsGraph";
+import { neutralGrade } from "../state/settingsGraph";
+import { adjustForNode } from "./grade";
 import { hexToLogC4, logC4ToHex } from "./warp";
 import type { Scene } from "./scenes";
 
@@ -23,6 +25,13 @@ export function uniformScene(scene: Scene, target: TargetValue | null, compress:
   return out;
 }
 
+/** The node's whole result on a scene: the pull, then the corrector's trims and grade on it (`docs/32` §12a.1). */
+export function uniformGradedScene(scene: Scene, item: ColorUniformItem): Scene {
+  const pulled = uniformScene(scene, item.target, item.compress);
+  if (!item.trim && !item.grade) return pulled;
+  return adjustForNode(pulled, { bypass: false, trim: item.trim ?? { exposure_ev: 0, temperature: 0, tint: 0 }, grade: item.grade ?? neutralGrade() });
+}
+
 /** The tone (the mean of the three LogC4 codes) of an sRGB `#RRGGBB`, as the mock reads it. */
 export const hexTone = (hex: string): number => toneOf(hexToLogC4(hex));
 
@@ -32,5 +41,5 @@ export function sceneThroughUniforms(scene: Scene, settings: DevelopSettings): S
   return settings.nodes.items
     .filter((item): item is ColorUniformItem => item.kind === "color_uniform" && !item.bypass && states.get(item.id as number)?.live !== false)
     .sort((a, b) => (states.get(a.id as number)?.number ?? 0) - (states.get(b.id as number)?.number ?? 0))
-    .reduce((out, item) => uniformScene(out, item.target, item.compress), scene);
+    .reduce((out, item) => uniformGradedScene(out, item), scene);
 }

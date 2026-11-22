@@ -336,18 +336,27 @@ export const UNIFORM_PICKED = {
   },
 };
 
+/** The trim and grade a graded Colour Uniform node has in the states (`docs/32` §12a): a half-stop trim, more contrast, less saturation. */
+export const UNIFORM_GRADED = {
+  trim: { exposure_ev: 0.5, temperature: 0, tint: 0 },
+  grade: { contrast: { kind: "manual", value: 15 }, saturation: { kind: "manual", value: -20 } },
+};
+
 /**
  * The node view of the mockup's photo with a Colour Uniform node (2) after Main, selected: with the target of `UNIFORM_PICKED` or with none
  * (`picked` false), on its Compress or Mask tab, with Pick colour on (`picking`, the Pick button pressed) and with Show mask on in `show`'s style.
  */
-export async function uniformView(page: Page, opts: { picked?: boolean; tab?: "Compress" | "Mask"; picking?: boolean; show?: "Overlay" | "Mask only" } = {}): Promise<void> {
-  const { picked = true, tab = "Compress", picking = false, show } = opts;
+export async function uniformView(
+  page: Page,
+  opts: { picked?: boolean; tab?: "Compress" | "Light" | "Colour" | "Curve" | "Mask"; picking?: boolean; show?: "Overlay" | "Mask only"; graded?: boolean } = {},
+): Promise<void> {
+  const { picked = true, tab = "Compress", picking = false, show, graded = false } = opts;
   const link = (from: number | "input", to: number | "output") => ({ from: { node: from, port: "picture" }, to: { node: to, port: "picture" } });
   await openApp(page, MOCKUP);
   await configureMock(page, {
     initialSettings: {
       DSC04204: {
-        nodes: { "1": { grade: MOCKUP_GRADE }, "2": { kind: "color_uniform", name: "Uniform", pos: [1, 0], ...(picked ? UNIFORM_PICKED : {}) } },
+        nodes: { "1": { grade: MOCKUP_GRADE }, "2": { kind: "color_uniform", name: "Uniform", pos: [1, 0], ...(picked ? UNIFORM_PICKED : {}), ...(graded ? UNIFORM_GRADED : {}) } },
         links: [link("input", 1), link(1, 2), link(2, "output")],
       },
     } as never,

@@ -1485,6 +1485,19 @@ fn uniform_other_mask() -> serde_json::Value {
       ] } })
 }
 
+/// The example file of `docs/32` section 5.1 with the node's trim, grade and a luma curve (`docs/32` section 12a.3): the same
+/// node, graded after the pull.
+fn uniform_graded_example() -> serde_json::Value {
+    let mut doc = uniform_example();
+    doc["nodes"]["items"][0]["trim"] =
+        serde_json::json!({ "exposure_ev": 0.5, "temperature": 0.0, "tint": 0.0 });
+    doc["nodes"]["items"][0]["grade"] = serde_json::json!({
+        "contrast": { "kind": "manual", "value": 15 },
+        "saturation": { "kind": "manual", "value": -20 },
+        "curve": { "luma": [[0, 0], [0.5, 0.55], [1, 1]] } });
+    doc
+}
+
 /// Colour Uniform (`docs/32` section 8, *App against `ym`*, CU-06): the example file of section 5.1 and a node with another mask
 /// are the same files through the app path and the binary, in JPEG, TIFF 16, DNG (`graph_leg`) and PNG 16.
 #[test]
@@ -1503,6 +1516,11 @@ fn uniform_leg(device: bool) {
     for (what, doc, correctors) in [
         ("the example file of docs/32", uniform_example(), 1),
         ("a node with another mask", uniform_other_mask(), 2),
+        (
+            "the example file graded (CG-05)",
+            uniform_graded_example(),
+            1,
+        ),
     ] {
         graph_leg(what, doc.clone(), correctors, device);
         png16_leg(what, &doc, device);

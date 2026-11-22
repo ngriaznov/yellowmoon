@@ -71,7 +71,7 @@ test.describe("the Add node menu", () => {
     await expect(item).toContainText("Pulls colours toward one colour.");
     await item.click();
     await expect(page.getByRole("button", { name: /^Node 2, Uniform/ })).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByRole("tab")).toHaveText(["Compress", "Mask"]);
+    await expect(page.getByRole("tab")).toHaveText(["Compress", "Light", "Colour", "Curve", "Mask"]);
     await expect(page.getByRole("tab", { name: "Compress", exact: true })).toHaveAttribute("aria-selected", "true");
     await expect(pickButton(page)).toHaveAttribute("aria-pressed", "true");
     // It also looks pressed: the tooltip's trigger must not overwrite the toggle's data-state (0.2.4-beta.3: the first click turned it off).

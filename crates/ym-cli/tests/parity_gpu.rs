@@ -274,6 +274,17 @@ fn a_brush_with_grow_feather_and_refine_edges_is_byte_identical_through_the_app_
 /// a 16-bit TIFF, a 16-bit PNG and a DNG, which are not the files of the same graph without the node.
 #[test]
 fn a_color_uniform_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    uniform_device_case(false);
+}
+
+/// The same with the node's trim, grade and a luma curve after the pull (`docs/32` section 12a, CG-05).
+#[test]
+fn a_graded_color_uniform_node_is_byte_identical_through_the_app_path_and_the_binary_on_the_device()
+{
+    uniform_device_case(true);
+}
+
+fn uniform_device_case(graded: bool) {
     let _serial = serial();
     let sb = Sandbox::new();
     let arw = sb.arw_sized("uniform.ARW", 2100, 1100, 9);
@@ -293,6 +304,16 @@ fn a_color_uniform_node_is_byte_identical_through_the_app_path_and_the_binary_on
         } else {
             serde_json::json!([{ "id": 2, "kind": "corrector", "pos": [1, 0] }])
         };
+        let mut items = items;
+        if node && graded {
+            items[0]["trim"] =
+                serde_json::json!({ "exposure_ev": 0.5, "temperature": 8.0, "tint": 0.0 });
+            items[0]["grade"] = serde_json::json!({
+                "contrast": { "kind": "manual", "value": 15 },
+                "saturation": { "kind": "manual", "value": -20 },
+                "color_warp": { "pins": [ { "source": [0.05, 0.0], "target": [0.05, 0.08], "range": 0.25 } ] },
+                "curve": { "luma": [[0, 0], [0.5, 0.55], [1, 1]] } });
+        }
         serde_json::json!({ "nodes": { "items": items, "links": [
             { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
             { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },

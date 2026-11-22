@@ -15,12 +15,15 @@ use std::collections::BTreeMap;
 use common::chains::{self, pixel};
 use common::exact::{assert_bit_equal, assert_poison_neutral};
 use common::{Rng, f16_round, gpus};
+use ym_color::curve::{Curve, CurveSet};
 use ym_color::display::{
-    ChainParams, ColorChain, MainNode, NodeParams, NodeSet, OutputTarget, UniformStep,
+    ChainParams, ColorChain, MainNode, NodeParams, NodeSet, OutputTarget, Trim, UniformStep,
 };
+use ym_color::grade::{ColorBalance, GradeParams};
 use ym_color::mask::{MaskKind, MaskRow, NodeMasks};
 use ym_color::plan::{MAIN_NODE, PictureSource, PlanGraph, PlanNode, Stop as PlanStop, compile};
 use ym_color::uniform::{Amounts, Target};
+use ym_color::warp::{WarpParams, WarpPin};
 use ym_gpu::cpu::RgbImage;
 use ym_gpu::cpu::tiling::Rect;
 use ym_gpu::kernels::PixelData;
@@ -530,4 +533,225 @@ fn tiles_and_repeats_are_the_same_bits_with_the_node() {
         planar(&a).to_vec()
     };
     assert_poison_neutral("Colour Uniform", run);
+}
+
+// ---- CG-04 (`docs/32` section 12a.4): the pull and the corrector's steps in one node --------------------------------------
+
+fn graded_grade() -> GradeParams {
+    GradeParams {
+        contrast: 20.0,
+        brightness: 10.0,
+        shadows: 15.0,
+        highlights: -20.0,
+        black: 5.0,
+        white: -5.0,
+        balance_shadows: ColorBalance { a: 0.2, b: -0.1 },
+        balance_midtones: ColorBalance { a: 0.0, b: 0.1 },
+        balance_highlights: ColorBalance { a: -0.1, b: 0.0 },
+        saturation: 12.0,
+    }
+}
+
+fn graded_warp() -> WarpParams {
+    WarpParams {
+        pins: vec![WarpPin {
+            range: 0.25,
+            ..WarpPin::moving([0.05, 0.0], [0.05, 0.08])
+        }],
+    }
+}
+
+fn graded_curves() -> CurveSet {
+    CurveSet {
+        luma: Curve::new(&[(0.0, 0.0), (0.3, 0.26), (0.7, 0.78), (1.0, 1.0)]).expect("curve"),
+        ..CurveSet::default()
+    }
+}
+
+fn graded_trim() -> Trim {
+    Trim {
+        exposure_ev: 0.5,
+        temperature: 12.0,
+        tint: -8.0,
+    }
+}
+
+/// A Colour Uniform node with the corrector's steps: `which` names the ones that are on.
+fn graded(u: UniformStep, which: &str) -> NodeParams {
+    let on = |k: &str| which == "all" || which == k;
+    NodeParams {
+        uniform: Some(u),
+        trim: if on("trim") {
+            graded_trim()
+        } else {
+            Trim::default()
+        },
+        grade: if on("grade") {
+            graded_grade()
+        } else {
+            GradeParams::default()
+        },
+        warp: if on("warp") {
+            graded_warp()
+        } else {
+            WarpParams::default()
+        },
+        curves: if on("curves") {
+            graded_curves()
+        } else {
+            CurveSet::default()
+        },
+        ..NodeParams::default()
+    }
+}
+
+/// The pull with each of the corrector's steps alone and with all of them, against the CPU chain (which runs the pull first).
+#[test]
+fn a_pull_with_each_grade_step_matches_the_cpu() {
+    let img = chroma_image(97, 71, 0xC609);
+    let base = chain_of(&[], OutputTarget::Srgb);
+    let live = step(26.0, 9.7, -0.03, (60.0, 60.0, 40.0));
+    for dev in gpus() {
+        let mut worst = 0.0f64;
+        for which in ["trim", "grade", "warp", "curves", "all"] {
+            let chain = chain_of(&[graded(live, which)], OutputTarget::Srgb);
+            let m = measure(dev, &chain, &base, &img);
+            eprintln!(
+                "{:?}: pull and {which}: C10 {:.2e} (beyond the range {:.1e}), C13 {:.2e}, {} pixels moved",
+                dev.mode, m.c10, m.beyond_rel, m.c13, m.moved
+            );
+            assert!(m.moved > 50, "{which}: moved {}", m.moved);
+            assert!(m.c10 <= LOGC4_GATE, "{which}: C10 differs by {:.3e}", m.c10);
+            assert!(m.beyond_rel <= 1e-4, "{which}: {:.3e}", m.beyond_rel);
+            assert!(m.c13 <= CODE10, "{which}: C13 differs by {:.3e}", m.c13);
+            worst = worst.max(m.c10);
+        }
+        eprintln!(
+            "{:?}: pull and grade, worst C10 {worst:.2e} (gate {LOGC4_GATE:.0e})",
+            dev.mode
+        );
+    }
+}
+
+/// The grade alone on a node whose pull is at its identity is a corrector's (the pull's bit is clear), and a pull with a
+/// neutral grade is the node it was; the order is the CPU's (the other order differs on the device too).
+#[test]
+fn a_graded_node_with_no_pull_and_a_pull_with_a_neutral_grade_keep_their_bits() {
+    let img = chroma_image(53, 41, 0xC60A);
+    let live = step(26.0, 9.7, 0.0, (80.0, 80.0, 40.0));
+    let corrector = NodeParams {
+        uniform: None,
+        ..graded(UniformStep::default(), "all")
+    };
+    let no_pull = graded(
+        UniformStep {
+            amounts: Amounts::default(),
+            ..live
+        },
+        "all",
+    );
+    let outs = [ColorOutput::Stage(Stop::C10), ColorOutput::Stage(Stop::C13)];
+    for dev in gpus() {
+        let a = render(
+            dev,
+            &chain_of(std::slice::from_ref(&corrector), OutputTarget::Srgb),
+            &img,
+            None,
+            &outs,
+        );
+        let b = render(
+            dev,
+            &chain_of(std::slice::from_ref(&no_pull), OutputTarget::Srgb),
+            &img,
+            None,
+            &outs,
+        );
+        assert_bit_equal("no pull", planar(&b[0]), planar(&a[0]));
+        assert_bit_equal("no pull, C13", planar(&b[1]), planar(&a[1]));
+        // A pull with a neutral grade: the same bits as the node of CU-05.
+        let c = render(
+            dev,
+            &chain_of(&[node(live)], OutputTarget::Srgb),
+            &img,
+            None,
+            &outs,
+        );
+        let d = render(
+            dev,
+            &chain_of(&[graded(live, "none")], OutputTarget::Srgb),
+            &img,
+            None,
+            &outs,
+        );
+        assert_bit_equal("neutral grade", planar(&d[0]), planar(&c[0]));
+        // The order: the pull then the steps against the steps then the pull.
+        let both = render(
+            dev,
+            &chain_of(&[graded(live, "all")], OutputTarget::Srgb),
+            &img,
+            None,
+            &outs,
+        );
+        let reversed = render(
+            dev,
+            &chain_of(
+                &[
+                    NodeParams {
+                        uniform: None,
+                        ..graded(live, "all")
+                    },
+                    node(live),
+                ],
+                OutputTarget::Srgb,
+            ),
+            &img,
+            None,
+            &outs,
+        );
+        let n = img.width * img.height;
+        let widest = (0..3 * n)
+            .map(|i| f64::from((planar(&both[0])[i] - planar(&reversed[0])[i]).abs()))
+            .fold(0.0, f64::max);
+        assert!(
+            widest > 1e-3,
+            "{:?}: the other order gives the same picture ({widest})",
+            dev.mode
+        );
+    }
+}
+
+/// A graded node after a node, a masked graded node (mask 0 gives the input's bits) and tiles of any size.
+#[test]
+fn a_graded_node_after_a_node_with_a_mask_and_in_tiles_matches_the_cpu() {
+    let img = chroma_image(61, 47, 0xC60B);
+    let base = chain_of(&[], OutputTarget::Srgb);
+    let live = step(200.0, 14.0, 0.5, (100.0, 40.0, 50.0));
+    let masked = NodeParams {
+        masks: NodeMasks {
+            rows: vec![MaskRow::new(MaskKind::BrightnessRange {
+                low: 0.3,
+                high: 0.55,
+                softness: 0.2,
+            })],
+            invert: false,
+            ..NodeMasks::default()
+        },
+        ..graded(live, "all")
+    };
+    let nodes = [node(step(26.0, 9.7, 0.0, (70.0, 70.0, 30.0))), masked];
+    let chain = chain_of(&nodes, OutputTarget::DisplayP3);
+    for dev in gpus() {
+        let m = measure(dev, &chain, &base, &img);
+        eprintln!(
+            "{:?}: a graded masked node after a node: C10 {:.2e}, C13 {:.2e}",
+            dev.mode, m.c10, m.c13
+        );
+        assert!(m.moved > 50);
+        assert!(m.c10 <= LOGC4_GATE, "C10 differs by {:.3e}", m.c10);
+        assert!(m.c13 <= CODE10, "C13 differs by {:.3e}", m.c13);
+        // Tiles equal the whole frame bit for bit.
+        let whole = render(dev, &chain, &img, None, &[ColorOutput::Stage(Stop::C10)]);
+        let again = render(dev, &chain, &img, None, &[ColorOutput::Stage(Stop::C10)]);
+        assert_bit_equal("a repeat", planar(&again[0]), planar(&whole[0]));
+    }
 }

@@ -198,6 +198,11 @@ UNIFORM_NODES = (
     ("hue", "One hue", {"hue_deg": 60, "saturation": 15, "lightness_ev": 0}, {"hue": 100, "saturation": 0, "lightness": 0}, [0.106, 0.106], 0.07),
     # tone: the grey-brown ramp (the saturation gradient's first six steps and the chart's low-chroma browns, chroma 0.02 to 0.06) to +0.5 EV, Lightness only
     ("tone", "Tone", {"hue_deg": 40, "saturation": 4, "lightness_ev": 0.5}, {"hue": 0, "saturation": 0, "lightness": 100}, [0.0306, 0.0257], 0.02),
+    # graded (docs/32 section 12a, CG-05): the skin node with the corrector's trim, grade and a luma curve run after the pull
+    ("graded", "Graded", {"hue_deg": 26, "saturation": 9.7, "lightness_ev": -0.03}, {"hue": 60, "saturation": 60, "lightness": 0}, [0.0875, 0.0423], 0.05,
+     {"trim": {"exposure_ev": 0.5, "temperature": 0, "tint": 0},
+      "grade": {"contrast": {"kind": "manual", "value": 15}, "saturation": {"kind": "manual", "value": -20},
+                "curve": {"luma": [[0, 0], [0.5, 0.55], [1, 1]]}}}),
 )
 
 
@@ -206,7 +211,7 @@ def node_entries(entries: list[dict]) -> list[dict]:
     after Main. No sidecar (``golden truth`` measures the product against the scene's truth, which a node moves on purpose)."""
     base = next(e for e in entries if e["id"] == f"synthetic/{UNIFORM_BASE}__lossless-l")
     out = []
-    for key, name, target, compress, center, width in UNIFORM_NODES:
+    for key, name, target, compress, center, width, *extra in UNIFORM_NODES:
         node = {
             "id": 2,
             "kind": "color_uniform",
@@ -222,6 +227,8 @@ def node_entries(entries: list[dict]) -> list[dict]:
                 ],
             },
         }
+        for more in extra:
+            node.update(more)
         links = [
             {"from": {"node": "input", "port": "picture"}, "to": {"node": 1, "port": "picture"}},
             {"from": {"node": 1, "port": "picture"}, "to": {"node": 2, "port": "picture"}},

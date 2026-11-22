@@ -1209,7 +1209,7 @@ fn pick_colour_averages_a_square_and_a_colour_uniform_node_reads_its_input() {
         .expect("paper"),
         None
     );
-    // A Colour Uniform node reads the picture it takes in, at every tap, whatever it does to it.
+    // A Colour Uniform node's input is the picture it takes in, whatever it does to it; its warp's input is after the pull.
     let doc = serde_json::json!({ "nodes": { "items": [ { "id": 1 },
         { "id": 2, "kind": "color_uniform", "pos": [2.0, 0.0],
           "target": { "hue_deg": 26, "saturation": 20, "lightness_ev": 0.0 },
@@ -1234,10 +1234,15 @@ fn pick_colour_averages_a_square_and_a_colour_uniform_node_reads_its_input() {
             .expect("main")
             .expect("inside");
         // Main reads the Input's output (C8), the node reads Main's output: the same colour here (Main is at its defaults
-        // apart from the default grade), so they agree to the rounding of the trim; the point is that it is not pulled.
-        assert!(
-            (got.a - main.a).abs() < 0.05,
-            "{tap:?}: {got:?} against {main:?}"
-        );
+        // apart from the default grade), so they agree to the rounding of the trim. The node's own input is not pulled; the
+        // warp's input is after the pull (`docs/32` section 12a.2), so it is.
+        // The patch is nearly neutral, so what the pull moves is its tone (Lightness 100 % to the target's 0 EV).
+        let moved = (got.a - main.a)
+            .hypot(got.b - main.b)
+            .max((got.tone - main.tone).abs());
+        match tap {
+            ChromaTap::NodeInput => assert!(moved < 0.05, "{tap:?}: {got:?} against {main:?}"),
+            ChromaTap::WarpInput => assert!(moved > 0.02, "{tap:?}: {got:?} against {main:?}"),
+        }
     }
 }

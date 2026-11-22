@@ -1430,8 +1430,10 @@ pub struct UniformAmounts {
     pub lightness: Num,
 }
 
-/// A Colour Uniform node: pulls the colours its masks let through toward one colour (`docs/32`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+/// A Colour Uniform node: pulls the colours its masks let through toward one colour (`docs/32`). Serialising leaves `trim` and
+/// `grade` out at their defaults, as the core writes the document (`docs/32` section 12a.3); the derive cannot do that without
+/// `skip_serializing_if`, which the unified TypeScript export refuses, hence the manual `Serialize`.
+#[derive(Debug, Clone, PartialEq, Deserialize, Type)]
 pub struct ColorUniformNode {
     /// 2 to 2147483647 (every numbered node shares the numbers).
     pub id: NodeId,
@@ -1445,8 +1447,35 @@ pub struct ColorUniformNode {
     pub target: Option<TargetValue>,
     /// How far each axis is pulled.
     pub compress: UniformAmounts,
+    /// A corrector's trims, run after the pull; left out when all 0.
+    #[serde(default)]
+    pub trim: Option<NodeTrim>,
+    /// A corrector's grade, run after the trims; left out when it is the neutral grade.
+    #[serde(default)]
+    pub grade: Option<NodeGrade>,
     /// The masks: the node's whole selection.
     pub masks: MaskSettings,
+}
+
+impl Serialize for ColorUniformNode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("id", &self.id)?;
+        map.serialize_entry("name", &self.name)?;
+        map.serialize_entry("bypass", &self.bypass)?;
+        map.serialize_entry("pos", &self.pos)?;
+        map.serialize_entry("target", &self.target)?;
+        map.serialize_entry("compress", &self.compress)?;
+        if let Some(trim) = &self.trim {
+            map.serialize_entry("trim", trim)?;
+        }
+        if let Some(grade) = &self.grade {
+            map.serialize_entry("grade", grade)?;
+        }
+        map.serialize_entry("masks", &self.masks)?;
+        map.end()
+    }
 }
 
 /// The kind of blur a Blur node makes (`docs/33` section 2.1).

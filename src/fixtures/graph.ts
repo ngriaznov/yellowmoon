@@ -105,7 +105,7 @@ const FIELDS: Readonly<Record<NodeKind, ReadonlySet<string>>> = {
   corrector: new Set(["kind", "pos", "name", "bypass", "trim", "grade", "masks"]),
   film: new Set(["kind", "pos", "name", "bypass", "film", "print", "halation", "grain", "strength", "masks"]),
   face_refinement: new Set(["kind", "pos", "name", "bypass", "same_for_all", "all", "faces", "protect", "masks"]),
-  color_uniform: new Set(["kind", "pos", "name", "bypass", "target", "compress", "masks"]),
+  color_uniform: new Set(["kind", "pos", "name", "bypass", "target", "compress", "trim", "grade", "masks"]),
   blur: new Set(["kind", "pos", "name", "bypass", "type", "soft", "lens", "motion", "zoom", "respect_mask_edges", "masks"]),
   parallel: new Set(["kind", "pos", "name", "bypass"]),
   layer: new Set(["kind", "pos", "name", "bypass", "mode", "opacity"]),

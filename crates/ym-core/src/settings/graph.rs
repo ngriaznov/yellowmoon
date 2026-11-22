@@ -1499,7 +1499,9 @@ pub(crate) fn node_fields(kind: NodeKind) -> &'static [&'static str] {
             "protect",
             "masks",
         ],
-        NodeKind::ColorUniform => &["name", "bypass", "target", "compress", "masks"],
+        NodeKind::ColorUniform => &[
+            "name", "bypass", "target", "compress", "trim", "grade", "masks",
+        ],
         NodeKind::Blur => &[
             "name",
             "bypass",
@@ -2187,6 +2189,10 @@ impl ColorUniformNode {
             changed |= c;
         }
         s.note(node, SettingsField::Compress, changed);
+        // Auto belongs to Main (`docs/23` section 3.2): in this node's grade it is a manual 0, silently.
+        self.grade.make_manual();
+        self.trim.sanitise(s, node, prefix)?;
+        self.grade.sanitise(s, node, prefix)?;
         let changed = self.masks.sanitise(&format!("{prefix}.masks"))?;
         s.note(node, SettingsField::Masks, changed);
         Ok(())

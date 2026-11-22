@@ -320,9 +320,9 @@ pub(crate) fn record_rows() -> [(&'static str, u32); 16] {
         ("R_WARP_N", row(offset_of!(NodeRecU, warp_n))),
         ("R_WARP_MV", row(offset_of!(NodeRecU, warp_mv))),
         ("R_JOIN", row(offset_of!(NodeRecU, join))),
-        ("R_UNI_T", row(offset_of!(NodeRecU, grade0))),
-        ("R_UNI_K", row(offset_of!(NodeRecU, zone_amt))),
-        ("R_UNI_R", row(offset_of!(NodeRecU, zone_ctr))),
+        ("R_UNI_T", row(offset_of!(NodeRecU, join)) + J_IN),
+        ("R_UNI_K", row(offset_of!(NodeRecU, join)) + J_IN + 1),
+        ("R_UNI_R", row(offset_of!(NodeRecU, join)) + J_AL),
     ]
 }
 
@@ -634,9 +634,11 @@ fn lut_data(lut: &Lut) -> (Vec<f32>, LutDescU) {
     (luts, d)
 }
 
-/// Writes a Colour Uniform step into the record's grade rows (`docs/32` section 6, `docs/17`): `R_UNI_T` is the target's chroma
-/// `(c1, c2)` and its unit vector `(cos, sin)`, `R_UNI_K` its tone and the three amounts (hue, saturation, lightness), `R_UNI_R`'s
-/// first lane the target's chroma length. All of them are made in f64 and rounded once.
+/// Writes a Colour Uniform step into the record's mixer rows (`docs/32` section 12a.4, `docs/17`): `R_UNI_T` (`join[J_IN]`) is
+/// the target's chroma `(c1, c2)` and its unit vector `(cos, sin)`, `R_UNI_K` (`join[J_IN + 1]`) its tone and the three amounts
+/// (hue, saturation, lightness), `R_UNI_R` (`join[J_AL]`)'s first lane the target's chroma length, as `f32` bits. All of them
+/// are made in f64 and rounded once. A Colour Uniform node is never a join, and the mixers' rows are otherwise unused for it,
+/// so the grade's rows are free for the node's own grade.
 fn uniform_record(r: &mut NodeRecU, t: &Target, a: &Amounts) {
     let rt = t.c1.hypot(t.c2);
     // The target is held at a chroma of 0.02 or more, so the division is safe; a zero reads as the +e1 axis.
@@ -645,14 +647,15 @@ fn uniform_record(r: &mut NodeRecU, t: &Target, a: &Amounts) {
     } else {
         (1.0, 0.0)
     };
-    r.grade0 = [t.c1 as f32, t.c2 as f32, cs as f32, sn as f32];
-    r.zone_amt = [
+    let bits = |v: [f32; 4]| v.map(f32::to_bits);
+    r.join[J_IN as usize] = bits([t.c1 as f32, t.c2 as f32, cs as f32, sn as f32]);
+    r.join[J_IN as usize + 1] = bits([
         t.tone as f32,
         a.hue as f32,
         a.saturation as f32,
         a.lightness as f32,
-    ];
-    r.zone_ctr = [rt as f32, 0.0, 0.0, 0.0];
+    ]);
+    r.join[J_AL as usize] = bits([rt as f32, 0.0, 0.0, 0.0]);
 }
 
 /// C7 into the block: the highlight range's knee, Sony clip and expansion (stops over grey) and the toe's
@@ -1376,14 +1379,8 @@ impl NodePlan {
                     next_set += 1;
                 }
                 if let Some((t, a)) = uni {
-                    // The record's grade rows hold the target: a node with a grade of its own would need them too (a Colour
-                    // Uniform node has none; the graph never makes such a node), so the kernel cannot hold it.
-                    if grade {
-                        return Err(GpuError::InvalidInput(format!(
-                            "node {} has a grade and a Colour Uniform step",
-                            step.node
-                        )));
-                    }
+                    // The pull's rows are the mixers' rows of the record, which a node of this kind never uses, so the
+                    // grade's rows stay the node's own (`docs/32` section 12a.4).
                     bits |= NODE_UNIFORM;
                     uniform_record(&mut r, &t, &a);
                 }
@@ -2683,6 +2680,64 @@ mod tests {
         assert_eq!(MAX_STEPS * 64 * size_of::<MaskOpU>(), 262_144);
     }
 
+    /// CG-04 (`docs/32` section 12a.4): a Colour Uniform step uses the mixers' rows of the record, which a node of that kind never
+    /// uses, so the grade's rows are free for its own grade; the record did not grow and no binding was added; `offset_of!` pins
+    /// which rows.
+    #[test]
+    fn the_uniform_step_lives_in_the_mixer_rows_of_the_record() {
+        let rows: std::collections::BTreeMap<_, _> = record_rows().into_iter().collect();
+        let join = (offset_of!(NodeRecU, join) / 16) as u32;
+        assert_eq!(rows["R_UNI_T"], join + J_IN);
+        assert_eq!(rows["R_UNI_K"], join + J_IN + 1);
+        assert_eq!(rows["R_UNI_R"], join + J_AL);
+        // None of them is a row the grade, the warp or the join head uses.
+        for (name, row) in &rows {
+            if name.starts_with("R_UNI") {
+                assert!(
+                    row >= &(join + 1) && row < &(join + JOIN_ROWS as u32),
+                    "{name}"
+                );
+                assert!(
+                    ![
+                        "R_GRADE0",
+                        "R_ZONE_AMT",
+                        "R_ZONE_CTR",
+                        "R_BAL0",
+                        "R_BAL1",
+                        "R_BAL_CTR"
+                    ]
+                    .iter()
+                    .any(|g| rows[g] == *row)
+                );
+            }
+        }
+        assert_eq!(size_of::<NodeRecU>(), 1328);
+        assert_eq!(size_of::<NodeRecU>() % 16, 0);
+        assert_eq!(
+            size_of::<NodeRecU>() - offset_of!(NodeRecU, join),
+            16 * JOIN_ROWS
+        );
+        assert_eq!(
+            offset_of!(NodeRecU, join) - offset_of!(NodeRecU, warp_n),
+            16 + 16 * (WARP_MOVE_ROWS + WARP_LOCK_ROWS)
+        );
+        assert_eq!(JOIN_ROWS, 8);
+        // Every row the mixers name is inside the region: the Splitter's last row is the last.
+        assert_eq!(J_SPLIT as usize + 2, JOIN_ROWS);
+        assert_eq!(J_IN + 2, J_AL);
+        assert_eq!(J_AL + 2, J_BASE);
+        assert_eq!(J_BASE + 1, J_SPLIT);
+        assert_eq!(WARP_MOVE_ROWS, 48);
+        assert_eq!(WARP_LOCK_ROWS, 16);
+        // A plan of the most steps (a graph has 64 nodes) is 83 KiB of records.
+        assert_eq!(MAX_STEPS * size_of::<NodeRecU>(), 84_992);
+        // A mask row is four rows of 16 bytes, and 64 rows a node (the settings' limit) at 64 nodes are 256 KiB.
+        assert_eq!(size_of::<MaskOpU>(), 64);
+        assert_eq!(MASK_ROW_VEC4, 4);
+        assert_eq!(REC_ROWS, 83);
+        assert_eq!(MAX_STEPS * 64 * size_of::<MaskOpU>(), 262_144);
+    }
+
     /// CU-05 (`docs/32` section 6): a Colour Uniform step uses the grade's rows of the record, which a node of that kind has free,
     /// so the record did not grow and no binding was added; `offset_of!` pins which rows.
     #[test]
@@ -2729,12 +2784,19 @@ mod tests {
         let t = Target::from_stored(26.0, 9.7, 0.3);
         uniform_record(&mut r, &t, &Amounts::from_percent(80.0, 60.0, 40.0));
         let rt = t.c1.hypot(t.c2);
-        assert_eq!(r.grade0[0], t.c1 as f32);
-        assert_eq!(r.grade0[1], t.c2 as f32);
-        assert!((f64::from(r.grade0[2]) - 26f64.to_radians().cos()).abs() < 1e-7);
-        assert!((f64::from(r.grade0[3]) - 26f64.to_radians().sin()).abs() < 1e-7);
-        assert_eq!(r.zone_amt, [t.tone as f32, 0.8, 0.6, 0.4]);
-        assert_eq!(r.zone_ctr[0], rt as f32);
+        let f = |row: [u32; 4]| row.map(f32::from_bits);
+        let tgt = f(r.join[J_IN as usize]);
+        assert_eq!(tgt[0], t.c1 as f32);
+        assert_eq!(tgt[1], t.c2 as f32);
+        assert!((f64::from(tgt[2]) - 26f64.to_radians().cos()).abs() < 1e-7);
+        assert!((f64::from(tgt[3]) - 26f64.to_radians().sin()).abs() < 1e-7);
+        assert_eq!(f(r.join[J_IN as usize + 1]), [t.tone as f32, 0.8, 0.6, 0.4]);
+        assert_eq!(f(r.join[J_AL as usize])[0], rt as f32);
+        // The grade's rows are untouched.
+        assert_eq!(
+            (r.grade0, r.zone_amt, r.zone_ctr),
+            ([0.0; 4], [0.0; 4], [0.0; 4])
+        );
     }
 
     #[test]

@@ -242,10 +242,11 @@ fn an_unknown_field_is_refused_with_its_text_and_a_range_among_them() {
         e.to_string(),
         "A Colour Uniform node has no field called “range”."
     );
-    let e = with_node(json!({ "trim": {} })).unwrap_err();
+    // `trim` and `grade` are the node's own since CG-02 (`docs/32` section 12a.3); `mode` is not.
+    let e = with_node(json!({ "mode": "add" })).unwrap_err();
     assert_eq!(
         e.to_string(),
-        "A Colour Uniform node has no field called “trim”."
+        "A Colour Uniform node has no field called “mode”."
     );
     let e = with_node(json!({ "strength": 3 })).unwrap_err();
     assert_eq!(
@@ -815,7 +816,7 @@ fn the_schema_validates_what_the_core_writes_and_refuses_what_it_refuses() {
     };
     for body in [
         json!({ "range": {} }),
-        json!({ "trim": {} }),
+        json!({ "trim": { "x": 1 } }),
         json!({ "target": 5 }),
         json!({ "target": { "hue_deg": 1, "saturation": 5 } }),
         json!({ "target": { "hue_deg": 1, "saturation": 1, "lightness_ev": 0 } }),
@@ -884,7 +885,8 @@ fn the_kind_is_in_all_and_its_names_are_the_specs() {
                 | SettingsField::Masks
                 | SettingsField::Target
                 | SettingsField::Compress
-        );
+                | SettingsField::Trim
+        ) || f.is_grade();
         assert_eq!(has, want, "{f:?}");
     }
     assert!(SettingsField::Target.group().is_some());

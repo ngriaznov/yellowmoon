@@ -23,6 +23,8 @@ The maths is in `docs/algorithms/06-masks.md` (the node's order, the two trims, 
 
 **Added in 0.2.4 (built, MI-02 to MI-07): Mask Intersect** (the owner's request of 2026-11-21: "I also want for masks a setting when adds mask (as it is right now) and only intersection of masks, on the mask panel"; asked whether it should be one switch for the node or a mode per row, the owner chose **one switch per node**). The `masks` object gains `combine`, `"add"` (today's rule and the default) or `"intersect"` (only where every mask overlaps). Sections 3.3, 3.5, 3.7, 4.2 and 7.6 say how; the maths is `docs/algorithms/06` section 3; the tasks are MI-01 to MI-07 in `docs/15`. No existing document, preset or album changes by a bit.
 
+**Added in 0.2.4 (specified, CG-01; the owner, 2026-11-22): Light, Colour and Curve on the Colour Uniform node.** "On color uniform node add a standard light/color/curve tabs so I can control the final view or the colour uniform result." The node gains a corrector's `trim` and `grade` (written only when they differ from the defaults) and its Light, Colour and Curve tabs; the pull runs first and the corrector's steps on its result, under one blend (section 1.3). The spec is `docs/32` §12a; the tasks are milestone CG of `docs/15`; `PIPELINE_VERSION` takes the next minor step.
+
 ### 1.2 The three zones
 
 | Zone | What it does | Today's stages | Space out |
@@ -44,6 +46,8 @@ The steps run in this order (`docs/algorithms/06` section 1):
 5. **The mask blend:** `out = in + m · (node(in) − in)`, in LogC4, where `in` is the node's input and `m` its mask (section 4.2). The look's intensity blends the same way.
 
 A step at its identity is skipped, so a node at defaults changes no bit.
+
+**A Colour Uniform node** (`docs/32`) has the same steps and one more in front: its pull (step 0, `docs/32` §3) runs first, then steps 1 to 4 on the compressed colours, then the blend, so `out = in + m · (grade(compress(in)) − in)` with one blend for the whole result (`docs/32` §12a.1). A Colour Uniform node at its defaults, or with only a pull, is the node it was before the grade was added.
 
 ### 1.4 What changes for existing photos
 
@@ -260,10 +264,12 @@ The crop and the turn are the Input's framing: they are data of the Input, and t
 
 A stock or paper that is not in `data/film/` (or of the wrong kind) is refused with `Unknown film stock "x". Run "ym film list" to see the stocks.` There is no Auto in a Film node. A Film node is a live node when the Output needs its picture, and it renders on the device like any node (`docs/24` §3.9c), on the CPU when the device refuses the frame.
 
+**Colour Uniform** (`kind` `color_uniform`; `docs/32` §5 has the whole format). A numbered node like a corrector (`picture` and `key` ports, masks, Bypass, `name` default `"Uniform"`), with its own fields `target` and `compress` and, since 0.2.4 (CG-02, `docs/32` §12a), a corrector's **`trim` and `grade`** under the same names and types (a Colour Uniform node is not Main, so Auto reads as a manual 0). `trim` and `grade` are **written only when they differ from their defaults** (as `masks.combine` is, section 3.3), so a node that uses neither is written as before and older builds still read it; an older build refuses a document that has one with "A Colour Uniform node has no field called “grade”." Left out, they read as the defaults. They carry through patches, copy, presets, albums and undo as a corrector's do.
+
 **Auto belongs to the photo's Main.** Auto (the Automatic card, Apple Auto, Claude Code, Antigravity, `docs/19`, `docs/22`) grades the photo's Input and Main and writes nothing else. So:
 
 - In **Main** (id 1) a grade field may be Auto, and a missing one is Auto; this is what the default graph has, and what Re-run puts back.
-- In **any other corrector** Auto **reads as the neutral value and is written as a manual 0**: `{ "kind": "auto" }` for a contrast, a highlights, a shadows, a black or a saturation is read as `{ "kind": "manual", "value": 0 }`, and an Auto wheel as `{ "kind": "manual", "point": [0, 0] }`. A field left out of such a node is a manual 0 too, and **a new node is manual 0 everywhere** (`graphOps.addNode`). The reading is not an error and is not reported as clamping; it is done by every path that makes a node, a document, a patch, a paste.
+- In **any other corrector** (a Colour Uniform node's grade included) Auto **reads as the neutral value and is written as a manual 0**: `{ "kind": "auto" }` for a contrast, a highlights, a shadows, a black or a saturation is read as `{ "kind": "manual", "value": 0 }`, and an Auto wheel as `{ "kind": "manual", "point": [0, 0] }`. A field left out of such a node is a manual 0 too, and **a new node is manual 0 everywhere** (`graphOps.addNode`). The reading is not an error and is not reported as clamping; it is done by every path that makes a node, a document, a patch, a paste.
 - The tests of section 11 pin it: a document with Auto in node 2 reads, writes and renders as a manual 0; Main keeps its Auto through a round trip; a patch that sets `{ "kind": "auto" }` on node 3 stores a manual 0; a pasted graph keeps Main's Auto in the target's Main and gives node 3 its manual 0.
 
 ### 3.3 Masks
@@ -584,7 +590,7 @@ The worker asks the model's probe first, before it waits or makes anything; wher
 
 ### 5.1 Order
 
-Per node: trims, C9, C9b, C11, mask blend (section 1.3). After the nodes, in the plan's order: C10 look, C12 cine rendering, output sharpening, C13 (`docs/02` *Stage order*). The curve is before the look, with `PIPELINE_VERSION` 0.9.0 (section 1.4). A bypassed node, a node at its identity and a node with `m = 0` everywhere are skipped as a whole.
+Per node: trims, C9, C9b, C11, mask blend (section 1.3; a Colour Uniform node runs its pull first, `docs/32` §12a.4). After the nodes, in the plan's order: C10 look, C12 cine rendering, output sharpening, C13 (`docs/02` *Stage order*). The curve is before the look, with `PIPELINE_VERSION` 0.9.0 (section 1.4). A bypassed node, a node at its identity and a node with `m = 0` everywhere are skipped as a whole.
 
 ### 5.2 The plan
 
@@ -826,7 +832,7 @@ The tabs follow the head (46 px), each underlined in its tab colour (`docs/11`);
 |---|---|
 | Input | **RAW · Lens · Light · Colour · Detail** |
 | Corrector | **Light · Colour · Curve · Mask** |
-| Colour Uniform | **Compress · Mask** (Compress in the Colour tab's green; the Mask tab is a corrector's) |
+| Colour Uniform | **Compress · Light · Colour · Curve · Mask** (Compress in the Colour tab's green; Light, Colour and Curve are a corrector's, the same components; the Mask tab is a corrector's; `docs/32` §12a.2) |
 | Blur | **Blur · Mask** (Blur in the Detail tab's colour; the Mask tab is a corrector's) |
 | Face Refinement | **Face · Mask** (Face in the Look tab's yellow, as a Film node's first tab; the Mask tab is a corrector's) |
 | Output | **Look · Detail** |
@@ -847,6 +853,9 @@ What each tab holds. Where a tab matches today's, its cards are today's.
 | Corrector › Curve | **Curve** (Luma · Red · Green · Blue; the plot with the node's histogram) |
 | Corrector › Mask | the Masks card, the selected mask's card, the View card (section 7.6) |
 | Colour Uniform › Compress | **Target** (the swatch, Pick colour, Hue, Saturation, Lightness) · **Compress** (Hue, Saturation, Lightness, 0 to 100 %; Reset) |
+| Colour Uniform › Light | a corrector's Light tab, on this node's trim and grade (the histogram is at the curve's input, after the pull) |
+| Colour Uniform › Colour | a corrector's Colour tab (Temperature and tint · Colour balance · Colour warp, whose scatter and Pick colour read the picture after the pull) |
+| Colour Uniform › Curve | a corrector's Curve tab |
 | Colour Uniform › Mask | the Masks card, the selected mask's card, the View card (a corrector's) |
 | Blur › Blur | **Blur** (the Type control, then the chosen type's controls: Soft Radius; Lens Radius, Shape, Rotation, Highlights; Motion Length, Angle; Zoom Amount and Centre with Pick centre; Reset) · **Mask edges** (Respect mask edges) |
 | Blur › Mask | the Masks card, the selected mask's card, the View card (a corrector's) |
@@ -856,9 +865,9 @@ What each tab holds. Where a tab matches today's, its cards are today's.
 
 - **On Main** the Contrast, Highlights, Shadows, Black, Saturation and wheel controls keep their Auto semantics (a value equal to Auto *is* Auto; the detent and Reset are at the Auto value, `docs/11` *Auto semantics*). On every other node they are plain numbers with the detent and Reset at 0.
 - **The Automatic card, the Presets card and Re-run** belong to the simple view. The Input's Reset puts every Input field to its default, Auto where there is Auto (the Output's: the look, its intensity and the output sharpening); Re-run itself is not in the node view.
-- **Reset this node** (the head) puts the node's trim and grade back at their defaults (Main's at Auto where there is Auto, the others' at a manual 0); **masks stay** (the Masks card has its own Reset). One undo step.
+- **Reset this node** (the head) puts the node's trim and grade back at their defaults (Main's at Auto where there is Auto, the others' at a manual 0; a Colour Uniform node's also its target and Compress); **masks stay** (the Masks card has its own Reset). One undo step.
 - **More** (correctors): Rename · Move earlier · Move later · Link picture to ▸ · Link key to ▸ · Remove link ▸ · Delete node (Delete node is off for Main, which also has no Move items; Main's picture input cannot be relinked). The Input's More has Link picture to ▸ (an extra branch from the Input).
-- **Tab memory.** Entering the node view with the simple view on a tab selects the matching node and tab: Look → Output › Look; Lens → Input › Lens; Light → Main › Light; Colour → Main › Colour; Detail → Input › Detail; Curve → Main › Curve; RAW → Input › RAW. Nodes of one kind share a remembered tab. ⌘1 to ⌘5 switch tabs in the order of the row (⌘1 to ⌘4 on a corrector, ⌘1 and ⌘2 on the Output).
+- **Tab memory.** Entering the node view with the simple view on a tab selects the matching node and tab: Look → Output › Look; Lens → Input › Lens; Light → Main › Light; Colour → Main › Colour; Detail → Input › Detail; Curve → Main › Curve; RAW → Input › RAW. Nodes of one kind share a remembered tab. ⌘1 to ⌘5 switch tabs in the order of the row (⌘1 to ⌘4 on a corrector, ⌘1 to ⌘5 on the Input, a Film node and a Colour Uniform node, ⌘1 and ⌘2 on the Output).
 - **Pick white** is on the Input's Colour tab (section 8). In the node view the key W selects the Input and opens that tab.
 - **The histogram and the Curve plot** read the signal at the selected node: its curve's input for a corrector, the Input's output for the Input (`histogram`, `chroma_scatter` and `sample_chroma` take the node, section 9). The pixel readout (⌥) is the final picture.
 

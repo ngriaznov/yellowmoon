@@ -187,7 +187,7 @@ describe("the tabs of the node view (docs/23 §7.5)", () => {
     expect(tabInfo("face").label).toBe("Face");
     expect(tabInfo("mask")).toBe(MASK_TAB);
     // A Colour Uniform node has its Compress tab, then the Mask tab (`docs/32` §2.6); Compress takes the Colour tab's green and is not one of the simple view's.
-    expect(NODE_TABS.color_uniform).toEqual(["compress", "mask"]);
+    expect(NODE_TABS.color_uniform).toEqual(["compress", "light", "color", "curve", "mask"]);
     expect(tabInfo("compress").label).toBe("Compress");
     expect(simpleTabOf("compress")).toBe("light");
     // The simple view's seven stay seven: Mask is the node view's.
