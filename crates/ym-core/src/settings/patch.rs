@@ -12,8 +12,8 @@ use super::face::{FaceRefinementNode, FaceSettings};
 use super::film::FilmNode;
 use super::graph::Sanitiser;
 use super::graph::{
-    CorrectorNode, GraphError, InputNode, MAIN_ID, NodeId, NodeKind, NodeLink, NodePos, OutputNode,
-    node_fields,
+    CorrectorNode, GraphError, InputNode, MAIN_ID, NodeGrade, NodeId, NodeKind, NodeLink, NodePos,
+    NodeTrim, OutputNode, node_fields,
 };
 use super::masks::{BrushMask, BrushStroke, MasksPatch};
 use super::mixers::{BlendMode, MixerNode};
@@ -967,25 +967,35 @@ impl NodePatch {
     /// The patch that carries one field of a corrector.
     fn of_corrector_field(n: &CorrectorNode, field: SettingsField) -> Option<Self> {
         let mut p = Self::default();
-        let mut g = GradePatch::default();
-        let g_ = &n.grade;
         match field {
             SettingsField::Name => p.name = Some(n.name.clone()),
             SettingsField::Bypass => p.bypass = Some(n.bypass),
             SettingsField::Pos => p.pos = Some(n.pos),
-            SettingsField::Trim => {
-                p.trim = Some(TrimPatch {
-                    exposure_ev: Some(n.trim.exposure_ev),
-                    temperature: Some(n.trim.temperature),
-                    tint: Some(n.trim.tint),
-                });
-            }
             SettingsField::Masks => {
                 p.masks = Some(MasksPatch {
                     invert: Some(n.masks.invert),
                     combine: Some(n.masks.combine),
                     items: Some(n.masks.items.clone()),
                     edit: None,
+                });
+            }
+            _ => return Self::of_graded_field(&n.trim, &n.grade, field),
+        }
+        Some(p)
+    }
+
+    /// The patch that carries one trim or grade field: the one place that turns them into a patch, for a corrector and for a
+    /// Colour Uniform node (`docs/32` section 12a.3).
+    fn of_graded_field(trim: &NodeTrim, grade: &NodeGrade, field: SettingsField) -> Option<Self> {
+        let mut p = Self::default();
+        let mut g = GradePatch::default();
+        let g_ = grade;
+        match field {
+            SettingsField::Trim => {
+                p.trim = Some(TrimPatch {
+                    exposure_ev: Some(trim.exposure_ev),
+                    temperature: Some(trim.temperature),
+                    tint: Some(trim.tint),
                 });
             }
             SettingsField::Contrast => g.contrast = Some(g_.contrast),
@@ -1135,7 +1145,7 @@ impl NodePatch {
                     lightness: Some(n.compress.lightness),
                 });
             }
-            _ => return None,
+            _ => return Self::of_graded_field(&n.trim, &n.grade, field),
         }
         Some(p)
     }
@@ -1484,24 +1494,29 @@ impl NodePatch {
         if let Some(v) = self.bypass {
             next.bypass = v;
         }
-        if let Some(t) = &self.trim {
-            if let Some(v) = t.exposure_ev {
-                next.trim.exposure_ev = v;
-            }
-            if let Some(v) = t.temperature {
-                next.trim.temperature = v;
-            }
-            if let Some(v) = t.tint {
-                next.trim.tint = v;
-            }
-        }
-        if let Some(g) = &self.grade {
-            g.apply(&mut next.grade);
-        }
+        self.apply_graded(&mut next.trim, &mut next.grade);
         if let Some(m) = &self.masks {
             m.apply(&mut next.masks, &NodeId::Corrector(id).to_string())?;
         }
         Ok(())
+    }
+
+    /// Applies the patch's trim and grade: shared by a corrector and a Colour Uniform node.
+    fn apply_graded(&self, trim: &mut NodeTrim, grade: &mut NodeGrade) {
+        if let Some(t) = &self.trim {
+            if let Some(v) = t.exposure_ev {
+                trim.exposure_ev = v;
+            }
+            if let Some(v) = t.temperature {
+                trim.temperature = v;
+            }
+            if let Some(v) = t.tint {
+                trim.tint = v;
+            }
+        }
+        if let Some(g) = &self.grade {
+            g.apply(grade);
+        }
     }
 
     fn apply_film(&self, next: &mut FilmNode, id: u32) -> Result<(), SettingsError> {
@@ -1620,6 +1635,9 @@ impl NodePatch {
                 next.compress.lightness = v;
             }
         }
+        self.apply_graded(&mut next.trim, &mut next.grade);
+        // Auto belongs to Main (`docs/23` section 3.2): in this node's grade it reads as a manual 0.
+        next.grade.make_manual();
         if let Some(m) = &self.masks {
             m.apply(&mut next.masks, &NodeId::Corrector(id).to_string())?;
         }
@@ -1895,7 +1913,7 @@ impl DevelopSettings {
                             && a.compress.saturation.to_bits() == b.compress.saturation.to_bits()
                             && a.compress.lightness.to_bits() == b.compress.lightness.to_bits()
                     }
-                    _ => true,
+                    _ => graded_same(&a.trim, &a.grade, &b.trim, &b.grade, field),
                 }
             }
             NodeId::Corrector(n) if a.films.contains_key(&n) || b.films.contains_key(&n) => {
@@ -1919,27 +1937,40 @@ impl DevelopSettings {
                 let (Some(a), Some(b)) = (a.corrector(n), b.corrector(n)) else {
                     return true;
                 };
-                let (ga, gb) = (&a.grade, &b.grade);
                 match field {
                     SettingsField::Name => a.name == b.name,
                     SettingsField::Bypass => a.bypass == b.bypass,
                     SettingsField::Pos => a.pos == b.pos,
-                    SettingsField::Trim => a.trim == b.trim,
                     SettingsField::Masks => a.masks == b.masks,
-                    SettingsField::Contrast => ga.contrast == gb.contrast,
-                    SettingsField::Brightness => ga.brightness == gb.brightness,
-                    SettingsField::Highlights => ga.highlights == gb.highlights,
-                    SettingsField::Shadows => ga.shadows == gb.shadows,
-                    SettingsField::White => ga.white == gb.white,
-                    SettingsField::Black => ga.black == gb.black,
-                    SettingsField::ColorBalance => ga.color_balance == gb.color_balance,
-                    SettingsField::Saturation => ga.saturation == gb.saturation,
-                    SettingsField::ColorWarp => ga.color_warp == gb.color_warp,
-                    SettingsField::Curve => ga.curve == gb.curve,
-                    _ => true,
+                    _ => graded_same(&a.trim, &a.grade, &b.trim, &b.grade, field),
                 }
             }
         }
+    }
+}
+
+/// Whether a trim or grade field is the same in two nodes (a corrector's or a Colour Uniform node's); any other field is
+/// the same here.
+fn graded_same(
+    ta: &NodeTrim,
+    ga: &NodeGrade,
+    tb: &NodeTrim,
+    gb: &NodeGrade,
+    field: SettingsField,
+) -> bool {
+    match field {
+        SettingsField::Trim => ta == tb,
+        SettingsField::Contrast => ga.contrast == gb.contrast,
+        SettingsField::Brightness => ga.brightness == gb.brightness,
+        SettingsField::Highlights => ga.highlights == gb.highlights,
+        SettingsField::Shadows => ga.shadows == gb.shadows,
+        SettingsField::White => ga.white == gb.white,
+        SettingsField::Black => ga.black == gb.black,
+        SettingsField::ColorBalance => ga.color_balance == gb.color_balance,
+        SettingsField::Saturation => ga.saturation == gb.saturation,
+        SettingsField::ColorWarp => ga.color_warp == gb.color_warp,
+        SettingsField::Curve => ga.curve == gb.curve,
+        _ => true,
     }
 }
 

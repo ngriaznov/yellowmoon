@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::NodePos;
-use super::graph::DEFAULT_UNIFORM_NAME;
+use super::graph::{DEFAULT_UNIFORM_NAME, NodeGrade, NodeTrim};
 use super::masks::MaskSettings;
 
 /// Range of the target's Saturation: the chroma of the colour times 100 (a skin tone is about 5 to 12). A value
@@ -121,8 +121,24 @@ pub struct ColorUniformNode {
     pub target: Option<TargetValue>,
     /// How far each axis is pulled.
     pub compress: UniformAmounts,
+    /// The corrector's trims, run after the pull (`docs/32` section 12a). Written only when not all 0, so a node that does not
+    /// use them is the one older versions wrote and read.
+    #[serde(skip_serializing_if = "trim_is_default")]
+    pub trim: NodeTrim,
+    /// The corrector's grade, colour warp and curves, run after the trims. Written only when it differs from the neutral
+    /// grade (Auto reads as a manual 0: this node is not Main).
+    #[serde(skip_serializing_if = "grade_is_neutral")]
+    pub grade: NodeGrade,
     /// The masks, as a corrector's: the node's whole selection.
     pub masks: MaskSettings,
+}
+
+fn trim_is_default(t: &NodeTrim) -> bool {
+    *t == NodeTrim::default()
+}
+
+fn grade_is_neutral(g: &NodeGrade) -> bool {
+    *g == NodeGrade::neutral()
 }
 
 impl Default for ColorUniformNode {
@@ -134,16 +150,26 @@ impl Default for ColorUniformNode {
             pos: [0.0, 0.0],
             target: None,
             compress: UniformAmounts::default(),
+            trim: NodeTrim::default(),
+            grade: NodeGrade::neutral(),
             masks: MaskSettings::default(),
         }
     }
 }
 
 impl ColorUniformNode {
-    /// Whether the node does nothing to the picture: bypassed, no target, or every amount 0 (`docs/32` section 2.5).
+    /// Whether the pull does nothing: no target, or every amount 0 (`docs/32` section 2.5).
+    #[must_use]
+    pub fn pull_is_inert(&self) -> bool {
+        self.target.is_none() || self.compress.is_zero()
+    }
+
+    /// Whether the node does nothing to the picture: bypassed, or no pull and a trim and grade at their defaults
+    /// (`docs/32` sections 2.5 and 12a.1).
     #[must_use]
     pub fn is_inert(&self) -> bool {
-        self.bypass || self.target.is_none() || self.compress.is_zero()
+        self.bypass
+            || (self.pull_is_inert() && trim_is_default(&self.trim) && grade_is_neutral(&self.grade))
     }
 }
 

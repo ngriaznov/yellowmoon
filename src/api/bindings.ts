@@ -1088,6 +1088,10 @@ export type ColorUniformNode = {
 	target: TargetValue | null,
 	/**  How far each axis is pulled. */
 	compress: UniformAmounts,
+	/**  A corrector's trims, run after the pull; left out when all 0. */
+	trim?: NodeTrim | null,
+	/**  A corrector's grade, run after the trims; left out when it is the neutral grade. */
+	grade?: NodeGrade | null,
 	/**  The masks: the node's whole selection. */
 	masks: MaskSettings,
 };
