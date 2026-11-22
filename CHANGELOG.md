@@ -11,7 +11,7 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Added
 
-- **Light, Colour and Curve on the Colour Uniform node** (the owner's request). The node now has the same Light, Colour and Curve tabs as a corrector, after its own Compress tab and before Mask, so the result of the pull can be graded in the same node: Compress, Light, Colour, Curve, Mask. The pull runs first, then the node's exposure and temperature trims, its contrast, brightness, highlights, shadows, colour balance, saturation, colour warp and curves, and the node's masks blend the whole result once. The Mask tab is now ⌘5 on this node (it was ⌘2). **Reset this node** also puts the grade back. `ym --settings` takes `trim` and `grade` on a `color_uniform` node (`docs/10`).
+- **The Colour Uniform node has Light, Colour and Curve tabs.** They are the same tabs a corrector has, and they act on the node's result, so a photo can be graded in the same node, under the same mask. The tabs are Compress, Light, Colour, Curve and Mask; Mask is now ⌘5 on this node (it was ⌘2). Reset this node also resets the grade. `ym --settings` takes the new fields (`docs/10`).
 
 ### Changed
 
