@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Changed
+
+- **The Masks card header has icons for Invert and Show mask.** Invert no longer has a word: it is the same small icon as each mask's own Invert, and its tooltip says "Invert all masks". Next to it is a new eye, "Show the mask of all rows", which shows every mask of the node together on the photo. It is the toolbar's Show mask (key M), so the two stay in step, and it turns off a single mask's eye.
+
 ## [0.2.4-beta.5] - 2026-11-21
 
 A fifth pre-release (a beta) for testing. It adds **Mask Intersect** and fixes the Object mask on every node and Colour Uniform's Pick colour. It is offered on GitHub Releases only, and the app's updater does not offer it. The pipeline version is 0.15.0 (beta 4 had 0.14.0), and photos look the same unless a node uses Intersect. A settings file, preset or album that uses Intersect needs this version: an older build refuses it.

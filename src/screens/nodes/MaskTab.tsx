@@ -1,3 +1,4 @@
+import { EyeIcon, EyeOffIcon } from "lucide-react";
 import { useEffect, useMemo } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
 import { TooltipTrigger } from "@/components/glass/tooltip";
@@ -19,6 +20,11 @@ const VISION_KINDS: readonly MaskKind[] = ["subject", "people"];
 
 /** The Depth card's Pick depth where the screen has none. */
 const NO_PICK = (): void => {};
+
+/** The header's Invert icon: its accessible name and tooltip (`docs/23` §7.6). */
+export const MASKS_INVERT_ALL = "Invert all masks";
+/** The header's eye: its accessible name; the tooltip adds the key, like the toolbar's "Show mask (M)" (`docs/23` §5.8, §7.6). */
+export const MASKS_SHOW_ALL = "Show the mask of all rows";
 
 /** What the Masks card says under its rows (`docs/23` §7.6), word for word. */
 export const MASKS_ADD_UP = "Masks add up. Subtract cuts a mask out. Colour and brightness ranges keep only their part of the rest.";
@@ -84,8 +90,8 @@ export interface MaskTabProps {
 }
 
 /**
- * A corrector's Mask tab (`docs/23` §7.6): the **Masks card** (its header "MASKS", **Add mask ▾**, **Invert**, which is the node's whole
- * combined mask, and **Reset**, which removes every row and un-inverts; then the rows and the line "Masks add up…"), the **selected mask's
+ * A corrector's Mask tab (`docs/23` §7.6): the **Masks card** (its header "MASKS", **Add mask ▾**, **Invert** (an icon, the node's whole
+ * combined mask), the **eye** (Show mask, the toolbar's toggle) and **Reset**, which removes every row and un-inverts; then the rows and the line "Masks add up…"), the **selected mask's
  * card** (an Object, a Background, a Linear, a Radial, a Brush, a Colour range or a Brightness range: Subject and People have theirs with their task, and a raster row that a
  * file or a paste brought shows its row and no card), and the View card. Adding a Brush row, and choosing one, starts the Brush tool. Every change is one node patch: adding, removing and moving a row
  * is `masks.items`, a row's mode, Invert and eye and every slider is a `masks.edit` row patch, the node's Invert is `masks.invert` and its **combine control** (Add | Intersect) `masks.combine` (Reset puts it back to Add); each
@@ -100,6 +106,8 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange, pickingDep
   const stored = useAppState((s) => s.maskRow);
   const kinds = useAppState((s) => s.maskKinds);
   const eye = useAppState((s) => s.maskEye);
+  // The header's eye is the toolbar's Show mask: pressed while the node's whole mask is shown, and not while a row's eye has the view.
+  const maskViewOn = useAppState((s) => s.maskView.on && s.maskEye === null);
   const finding = useAppState((s) => s.viewportBusy.busy && s.viewportBusy.finding);
   // SAM's encoder is getting the photo ready, or a click is being answered (`docs/23` §7.6): the Object rows say so.
   const preparing = useAppState((s) => s.objectPreparing.includes(rs.photo_id));
@@ -202,8 +210,29 @@ export function MaskTab({ store, rs, node, pickingRange, onPickRange, pickingDep
           action={
             <>
               <AddMaskMenu kinds={kinds} onAdd={add} blocked={rows.length >= MAX_MASKS ? MASKS_FULL : null} />
-              <Button variant="header" size="sm" pressed={inverted} icon={<InvertGlyph />} title="Invert the whole mask of this node" onClick={() => send({ invert: !inverted })}>
-                Invert
+              <Button
+                variant="quiet"
+                size="sm"
+                className="ym-mask-row__tool"
+                pressed={inverted}
+                data-tool="invert"
+                aria-label={MASKS_INVERT_ALL}
+                title={MASKS_INVERT_ALL}
+                onClick={() => send({ invert: !inverted })}
+              >
+                <InvertGlyph />
+              </Button>
+              <Button
+                variant="quiet"
+                size="sm"
+                className="ym-mask-row__tool"
+                pressed={maskViewOn}
+                data-tool="eye"
+                aria-label={MASKS_SHOW_ALL}
+                title={`${MASKS_SHOW_ALL} (M)`}
+                onClick={() => store.toggleMaskView()}
+              >
+                {maskViewOn ? <EyeIcon aria-hidden="true" /> : <EyeOffIcon aria-hidden="true" />}
               </Button>
               {rows.length > 0 || inverted || combine === "intersect" ? <ResetLink size="card" onClick={reset} /> : null}
             </>

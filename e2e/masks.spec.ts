@@ -442,10 +442,10 @@ test.describe("the rows", () => {
     await expect.poll(async () => (await rowsOf(page, 4))[0]?.invert).toBe(false);
     // The node's Invert: the whole picture inverted.
     expect(await picture(page)).not.toContain("mvinvert)");
-    await page.getByRole("region", { name: "Masks" }).getByRole("button", { name: "Invert", exact: true }).click();
+    await page.getByRole("region", { name: "Masks" }).getByRole("button", { name: "Invert all masks", exact: true }).click();
     await expect.poll(async () => (await masksOf(page, 4))?.invert).toBe(true);
     await expect.poll(() => picture(page)).toContain('filter="url(#mvinvert)"');
-    await page.getByRole("region", { name: "Masks" }).getByRole("button", { name: "Invert", exact: true }).click();
+    await page.getByRole("region", { name: "Masks" }).getByRole("button", { name: "Invert all masks", exact: true }).click();
     await expect.poll(async () => (await masksOf(page, 4))?.invert).toBe(false);
     // The switch: a row that is off counts as absent, so the node's mask is the whole photo.
     await row.getByRole("switch", { name: "Turn this mask off" }).click();
@@ -560,7 +560,7 @@ test.describe("the rows", () => {
     await warmth(page);
     await addMask(page, "Linear");
     await addMask(page, "Radial");
-    await page.getByRole("region", { name: "Masks" }).getByRole("button", { name: "Invert", exact: true }).click();
+    await page.getByRole("region", { name: "Masks" }).getByRole("button", { name: "Invert all masks", exact: true }).click();
     await expect.poll(async () => (await masksOf(page, 4))?.invert).toBe(true);
     await page.getByRole("region", { name: "Masks" }).getByRole("button", { name: "Reset" }).click();
     await expect.poll(async () => (await masksOf(page, 4))?.items.length).toBe(0);
