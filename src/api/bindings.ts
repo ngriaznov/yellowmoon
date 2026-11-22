@@ -1074,7 +1074,11 @@ export type ColorSpace =
 /**  Rec.2020. */
 "rec2020";
 
-/**  A Colour Uniform node: pulls the colours its masks let through toward one colour (`docs/32`). */
+/**
+ *  A Colour Uniform node: pulls the colours its masks let through toward one colour (`docs/32`). Serialising leaves `trim` and
+ *  `grade` out at their defaults, as the core writes the document (`docs/32` section 12a.3); the derive cannot do that without
+ *  `skip_serializing_if`, which the unified TypeScript export refuses, hence the manual `Serialize`.
+ */
 export type ColorUniformNode = {
 	/**  2 to 2147483647 (every numbered node shares the numbers). */
 	id: "input" | "output" | number,
