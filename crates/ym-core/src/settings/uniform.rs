@@ -164,6 +164,12 @@ impl ColorUniformNode {
         self.target.is_none() || self.compress.is_zero()
     }
 
+    /// Whether the node has a corrector's trim or grade that is not at its default (`docs/32` section 12a).
+    #[must_use]
+    pub fn has_grade(&self) -> bool {
+        !trim_is_default(&self.trim) || !grade_is_neutral(&self.grade)
+    }
+
     /// Whether the node does nothing to the picture: bypassed, or no pull and a trim and grade at their defaults
     /// (`docs/32` sections 2.5 and 12a.1).
     #[must_use]

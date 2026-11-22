@@ -989,10 +989,35 @@ fn picture_into(g: &NodeGraph, to: NodeId, port: Port) -> Option<PictureSource> 
                 Port::Red => PictureSource::Split(m, 0),
                 Port::Green => PictureSource::Split(m, 1),
                 Port::Blue => PictureSource::Split(m, 2),
-                _ => PictureSource::Node(m),
+                _ => PictureSource::Node(lowered_out(g, m)),
             },
             NodeId::Input | NodeId::Output => PictureSource::Input,
         })
+}
+
+/// The id bit of the second step a graded Colour Uniform node is lowered to (`docs/32` section 12a.4, variant W2): no node the
+/// settings hold has it (ids go up one at a time from 2).
+pub const GRADE_TAIL: u32 = 0x4000_0000;
+
+/// Whether `id` is the grade step a Colour Uniform node was lowered to.
+#[must_use]
+pub fn is_grade_tail(id: u32) -> bool {
+    id & GRADE_TAIL != 0
+}
+
+/// Whether a Colour Uniform node is lowered to two steps: the pull with the node's masks, then a corrector's steps that take the
+/// pull's mask through the key mechanism.
+fn is_lowered(g: &NodeGraph, id: u32) -> bool {
+    g.color_uniform(id).is_some_and(ColorUniformNode::has_grade)
+}
+
+/// The node whose picture output carries node `id`'s result: the grade step of a lowered Colour Uniform node, else `id`.
+fn lowered_out(g: &NodeGraph, id: u32) -> u32 {
+    if is_lowered(g, id) {
+        id | GRADE_TAIL
+    } else {
+        id
+    }
 }
 
 /// What `ym_color::blur` runs for a Blur node: the chosen type with its numbers, and the Respect mask edges switch.
@@ -1059,7 +1084,7 @@ pub fn plan_graph(g: &NodeGraph) -> PlanGraph {
                 | NodeKind::Output => return None,
             }
             let pos = g.pos(NodeId::Corrector(id))?;
-            Some(PlanNode {
+            let first = PlanNode {
                 id,
                 pos,
                 picture: picture_into(g, NodeId::Corrector(id), Port::Picture),
@@ -1071,8 +1096,19 @@ pub fn plan_graph(g: &NodeGraph) -> PlanGraph {
                         NodeId::Corrector(m) => Some(m),
                         _ => None,
                     }),
-            })
+            };
+            // A graded Colour Uniform node is two steps: the pull with the node's masks, then the corrector's steps, which read
+            // the pull's picture and its mask `m` as their key (`docs/32` section 12a.4).
+            let tail = is_lowered(g, id).then(|| PlanNode {
+                id: id | GRADE_TAIL,
+                pos,
+                picture: Some(PictureSource::Node(id)),
+                key: Some(id),
+            });
+            Some([Some(first), tail])
         })
+        .flatten()
+        .flatten()
         .collect();
     let output = picture_into(g, NodeId::Output, Port::Picture).unwrap_or(PictureSource::Input);
     PlanGraph { nodes, output }
@@ -1086,13 +1122,15 @@ pub fn plan_graph(g: &NodeGraph) -> PlanGraph {
 pub fn plan_joins(g: &NodeGraph) -> Vec<PlanJoin> {
     // The picture output of a node that has a mask `m` to give: a corrector or Film node that is not bypassed.
     let masked = |src: PictureSource| match src {
-        PictureSource::Node(n) => match g.kind_of(NodeId::Corrector(n)) {
+        PictureSource::Node(n) => match g.kind_of(NodeId::Corrector(n & !GRADE_TAIL)) {
             Some(NodeKind::Corrector) => g.corrector(n).is_some_and(|c| !c.bypass),
             Some(NodeKind::Film) => g.film(n).is_some_and(|f| !f.bypass),
             // A Face Refinement node's picture is the retouched one where it has faces and its input elsewhere (`run_film`'s
             // rule), and its `m` is its mask: a Layer reads what it would read from a corrector at its identity.
             Some(NodeKind::FaceRefinement) => g.face_refinement(n).is_some_and(|f| !f.bypass),
-            Some(NodeKind::ColorUniform) => g.color_uniform(n).is_some_and(|f| !f.bypass),
+            Some(NodeKind::ColorUniform) => {
+                g.color_uniform(n & !GRADE_TAIL).is_some_and(|f| !f.bypass)
+            }
             Some(NodeKind::Blur) => g.blur(n).is_some_and(|f| !f.bypass),
             _ => false,
         },
@@ -1159,8 +1197,23 @@ fn mixer_ports(g: &NodeGraph, id: u32) -> Vec<Port> {
 /// [`RenderError::Color`] when the graph cannot be compiled (a validated graph can, unless `stop`
 /// names a node it does not have, or a mask stop names a mixer, a Splitter or a Combiner, which have no mask).
 pub fn node_plan(g: &NodeGraph, stop: Stop) -> Result<Plan, RenderError> {
-    plan::compile_with(&plan_graph(g), &plan_joins(g), stop)
-        .map_err(|e| RenderError::Color(e.to_string()))
+    // The picture of a lowered node is its grade step's; its mask is the pull step's.
+    let stop = match stop {
+        Stop::Picture(id) => Stop::Picture(lowered_out(g, id)),
+        other => other,
+    };
+    let mut plan = plan::compile_with(&plan_graph(g), &plan_joins(g), stop)
+        .map_err(|e| RenderError::Color(e.to_string()))?;
+    // The grade steps are no cards: a card's number is its node's place among the nodes the person sees.
+    plan.cards.retain(|c| !is_grade_tail(c.id));
+    let mut n = 0;
+    for card in &mut plan.cards {
+        if card.number.is_some() {
+            n += 1;
+            card.number = Some(n);
+        }
+    }
+    Ok(plan)
 }
 
 /// The mixers of a photo for the chain: each Parallel's bypass and each Layer's bypass, mode and opacity, for the
@@ -1223,6 +1276,24 @@ fn node_set(
     let mut films = std::collections::BTreeMap::new();
     for id in plan.node_ids() {
         if id == plan::MAIN_NODE {
+            continue;
+        }
+        // The grade step of a lowered Colour Uniform node (`docs/32` section 12a.4): a corrector's steps with no masks of its own,
+        // which take the pull step's mask through their key input, and a node's bypass.
+        if is_grade_tail(id) {
+            if let Some(u) = s.nodes.color_uniform(id & !GRADE_TAIL) {
+                others.insert(
+                    id,
+                    NodeParams {
+                        bypass: u.bypass,
+                        trim: trim_of(&u.trim),
+                        grade: grade_params_of(&u.grade, None),
+                        warp: ColorWarp::to_color(&u.grade.color_warp),
+                        curves: curves_of(&u.grade.curve)?,
+                        ..NodeParams::default()
+                    },
+                );
+            }
             continue;
         }
         match s.nodes.kind_of(NodeId::Corrector(id)) {
@@ -1302,12 +1373,10 @@ fn node_set(
                         bypass: u.bypass,
                         // The corrector's steps run on the result of the pull (`docs/32` section 12a.1): its trims, grade, colour
                         // warp and curves, read as a corrector's other than Main (no Auto).
-                        trim: trim_of(&u.trim),
-                        grade: grade_params_of(&u.grade, None),
-                        warp: ColorWarp::to_color(&u.grade.color_warp),
-                        curves: curves_of(&u.grade.curve)?,
+                        // A node with a corrector's steps is lowered to two steps (`plan_graph`): this is the pull, with the masks.
                         masks: masks.remove(&id).unwrap_or_default(),
                         uniform: Some(uniform_step_of(u)),
+                        ..NodeParams::default()
                     },
                 );
             }

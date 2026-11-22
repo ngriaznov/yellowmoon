@@ -102,7 +102,7 @@ struct ChainU {
 //   R_GAIN  (f32) the trims' gain in linear AWG4 (xyz)
 //   R_GRADE0 x: contrast slope k at grey, y: brightness, z: saturation factor (< 1 blend, > 1 boost F); w: 0
 //   R_ZONE_AMT shadows, highlights, black, white (each / 100);  R_ZONE_CTR their centres (LogC4 codes)
-//   A Colour Uniform step (N_UNIFORM) keeps its target in the mixers' rows, which a node of that kind never uses, so its grade rows are its own: R_UNI_T (= R_JOIN + J_IN) c1, c2, cos, sin of the target; R_UNI_K (= R_JOIN + J_IN + 1) tone, hue, saturation, lightness amounts; R_UNI_R (= R_JOIN + J_AL) x: the target's chroma
+//   A Colour Uniform step (N_UNIFORM) has no grade and uses the same rows: R_UNI_T (= R_GRADE0) c1, c2, cos, sin of the target; R_UNI_K (= R_ZONE_AMT) tone, hue, saturation, lightness amounts; R_UNI_R (= R_ZONE_CTR) x: the target's chroma
 //   R_BAL0 (a, b) shadows, (a, b) midtones;  R_BAL1 (a, b) highlights;  R_BAL_CTR zone centres
 //   R_WARP_N (u32) C9b: x moving pins (0: the stage is skipped), y locked pins, z flow steps
 //   R_WARP_MV WARP_MOVE_ROWS rows, three a moving pin (c9b_warp);  R_WARP_LK WARP_LOCK_ROWS rows, one a locked pin (c9b_warp)
@@ -740,7 +740,7 @@ fn before_camera_default(cam: vec3<f32>) -> vec3<f32> {
 
 // ---- the nodes (docs/23 section 5.4) -------------------------------------------------------------------------
 
-// Colour Uniform (docs/32 section 3, ym_color::uniform::apply in f32). The record's mixer rows hold the target: R_UNI_T
+// Colour Uniform (docs/32 section 3, ym_color::uniform::apply in f32). The record's grade rows hold the target: R_UNI_T
 // (c1, c2, cos, sin of its hue), R_UNI_K (tone, hue, saturation and lightness amounts, each 0 to 1), R_UNI_R.x (its chroma). The
 // amounts are constants of the record, so the `if`s on them choose a path and no computed float decides whether the node runs
 // (K8). atan2 and the rotation run only where the chroma r > 0 (atan2(0, 0) is undefined in WGSL); the neutral guard g and the
@@ -784,30 +784,6 @@ fn uniform_node(ni: u32, v: vec3<f32>) -> vec3<f32> {
     return o;
 }
 
-// A Colour Uniform node that also has a corrector's steps (docs/32 section 12a.1): the pull first, on the node's input, then the trims,
-// C9, C9b and C11 on its result, whose exact linear values are not c7, so they are decoded from it. Called only from the top of
-// `node_apply` for such a node (`N_UNIFORM` with at least one of the four steps), which returns its value: every other node runs
-// `node_apply`'s own steps unchanged (an llvmpipe miscompile on AMD Zen 4 and 5 made a reorder inside `node_apply` unusable, docs/STATUS.md).
-fn cu_graded_apply(ni: u32, v_in: vec3<f32>, bits: u32) -> vec3<f32> {
-    var v = uniform_node(ni, v_in);
-    var lin = logc4_decode3(v);
-    if ((bits & N_TRIM) != 0u) {
-        lin = lin * nf(ni, R_GAIN).xyz;
-        v = logc4_encode3(lin);
-    }
-    if ((bits & N_GRADE) != 0u) {
-        let l = logc4_encode(dot(Y_AWG4, lin));
-        v = c9_grade(v, l, ni);
-    }
-    if ((bits & N_WARP) != 0u) {
-        v = c9b_warp(v, ni);
-    }
-    if ((bits & N_CURVES) != 0u) {
-        v = c11_curves(v, ni);
-    }
-    return v;
-}
-
 // One node on one pixel: its trims, C9, C9b and C11 (docs/23 section 1.3), each left out when its bit in `ctl.x` is clear,
 // the whole node when `N_SKIP` is set (bypassed, or every step at its identity). `v_in` is the picture the node reads;
 // `c7` is the linear AWG4 triple C8 was encoded from, which is the node's exact linear input when it reads the Input
@@ -818,9 +794,6 @@ fn node_apply(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, stage: 
     let bits = nu(ni, R_CTL).x;
     if ((bits & N_SKIP) != 0u) {
         return v_in;
-    }
-    if ((bits & N_UNIFORM) != 0u && (bits & (N_TRIM | N_GRADE | N_WARP | N_CURVES)) != 0u) {
-        return cu_graded_apply(ni, v_in, bits);
     }
     var v = v_in;
     var lin = c7;
