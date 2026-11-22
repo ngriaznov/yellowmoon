@@ -220,11 +220,18 @@ impl PreparedNode {
         if self.skip {
             return v_in;
         }
-        // 1. The trims, in linear AWG4.
         let mut linear = linear;
         let mut v = v_in;
+        // 0. A Colour Uniform node's pull (`docs/32` sections 3 and 12a.1), in f64: first, on the node's input, so that the
+        // target the person picked there is a fixed point of it. The corrector's steps then run on its result, whose exact
+        // linear values are no longer known: they are decoded from it.
+        if let Some((target, amounts)) = &self.uniform {
+            v = LogC4(uniform::apply(v.0, Some(target), *amounts));
+            linear = None;
+        }
+        // 1. The trims, in linear AWG4.
         if let Some(g) = self.gain {
-            let lin = linear.unwrap_or_else(|| v_in.to_linear().0);
+            let lin = linear.unwrap_or_else(|| v.to_linear().0);
             let scaled = [lin[0] * g[0], lin[1] * g[1], lin[2] * g[2]];
             v = LinearAwg4(scaled).to_logc4();
             linear = Some(scaled);
@@ -246,10 +253,6 @@ impl PreparedNode {
         }
         if let Some(stages) = main {
             *stages = MainStages { c9, c9b, c11: v };
-        }
-        // 5. A Colour Uniform node's pull (`docs/32` section 3), in f64.
-        if let Some((target, amounts)) = &self.uniform {
-            v = LogC4(uniform::apply(v.0, Some(target), *amounts));
         }
         v
     }

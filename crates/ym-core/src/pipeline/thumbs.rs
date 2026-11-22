@@ -296,7 +296,8 @@ impl Read {
 ///   rewrite with nothing taken out of the node (a mixer has no trim, grade, curve, warp or masks,
 ///   so every tap reads the same picture). A Splitter has no picture of its own (its outputs are
 ///   single channels); it reads its input picture, the picture on the link into it.
-/// * A Colour Uniform node reads its input for every tap (the rewrite with the node bypassed).
+/// * A Colour Uniform node reads its input for [`Tap::NodeInput`] (the rewrite with the node bypassed); at the curve's and the
+///   warp's input it reads the picture after its pull and its earlier steps, like a corrector (`docs/32` section 12a.2).
 /// * [`Tap::NodeInput`] reads the picture a node takes in: the Input's output (C8) for Main and the
 ///   Input, and for another corrector the rewrite with the node itself at its identity.
 ///
@@ -347,16 +348,31 @@ pub(crate) fn signal_source(
             settings.output_mut().look = LookId::neutral();
             Ok((Cow::Owned(src.with_settings(settings)), Read::Last))
         }
-        // A Colour Uniform node (`docs/32` section 6) has no trim, grade, curve or warp: whatever panel asks, the signal at
-        // the node is the picture it reads. The same rewrite with the node bypassed, so the chain's last value is its input
-        // (its key output and masks do not change what is read).
+        // A Colour Uniform node (`docs/32` sections 6 and 12a.2). Its input is read with the node bypassed. At the curve's and the warp's
+        // input the signal is the node's own: the pull and the node's trims, grade (and, for the curve, warp) before that stage, with the
+        // node's masks and key input taken out, as for a corrector (its blend is the last thing it does).
         Some(NodeId::Corrector(k))
             if src.settings.nodes.kind_of(NodeId::Corrector(k)) == Some(NodeKind::ColorUniform) =>
         {
             let mut settings = settings_ending_at(&src.settings, k);
             settings.output_mut().look = LookId::neutral();
+            if matches!(tap, Tap::CurveInput | Tap::WarpInput) {
+                let key_input = NodeRef::key(NodeId::Corrector(k));
+                settings.nodes.links.retain(|l| l.to != key_input);
+            }
             if let Some(node) = settings.nodes.color_uniform_mut(k) {
-                node.bypass = true;
+                match tap {
+                    Tap::CurveInput => {
+                        node.grade.curve = Curves::default();
+                        node.masks = MaskSettings::default();
+                    }
+                    Tap::WarpInput => {
+                        node.grade.curve = Curves::default();
+                        node.grade.color_warp = ColorWarp::default();
+                        node.masks = MaskSettings::default();
+                    }
+                    Tap::NodeInput => node.bypass = true,
+                }
             }
             Ok((Cow::Owned(src.with_settings(settings)), Read::Last))
         }
