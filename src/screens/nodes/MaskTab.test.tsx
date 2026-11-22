@@ -88,7 +88,7 @@ describe("the Masks card", () => {
     expect(cardTitles()).toEqual(["Masks", "View"]);
     const masksCard = card("Masks");
     expect(within(masksCard).getByRole("button", { name: "Add mask" })).toBeInTheDocument();
-    expect(within(masksCard).getByRole("button", { name: "Invert" })).toHaveAttribute("aria-pressed", "false");
+    expect(within(masksCard).getByRole("button", { name: "Invert all masks" })).toHaveAttribute("aria-pressed", "false");
     expect(within(masksCard).getByRole("button", { name: "Reset" })).toBeInTheDocument();
     expect(within(masksCard).getByText("Masks add up. Subtract cuts a mask out. Colour and brightness ranges keep only their part of the rest.")).toBeInTheDocument();
   });
@@ -259,10 +259,84 @@ describe("a row's controls: the switch, Add | Subtract, Invert this mask, Show t
   });
 });
 
+describe("the header's Invert icon and eye", () => {
+  const headerEye = (): HTMLElement => within(card("Masks")).getByRole("button", { name: "Show the mask of all rows" });
+
+  it("Invert is an icon with no text, keeps its name and tooltip, and is one masks.invert patch", async () => {
+    const spy = await setup();
+    const invert = within(card("Masks")).getByRole("button", { name: "Invert all masks" });
+    expect(invert).toHaveTextContent("");
+    expect(invert).toHaveAttribute("data-tool", "invert");
+    expect(invert).toHaveAccessibleDescription("Invert all masks");
+    spy.mockClear();
+    await h!.user.click(invert);
+    await waitFor(() => expect(patches(spy)).toEqual([patchOf(3, { masks: { invert: true } })]));
+  });
+
+  it("the order is Add mask, Invert, the eye, Reset: the rows' order", async () => {
+    await setup();
+    const names = within(card("Masks"))
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent)
+      .slice(0, 4);
+    expect(names).toEqual(["Add mask", "Invert all masks", "Show the mask of all rows", "Reset"]);
+  });
+
+  it("the eye is the toolbar's Show mask: pressed together, off with a second click, no patch", async () => {
+    const spy = await setup();
+    const store = h!.store;
+    const toolbar = screen.getByRole("button", { name: "Show mask" });
+    expect(headerEye()).toHaveAttribute("aria-pressed", "false");
+    expect(headerEye()).toHaveAccessibleDescription("Show the mask of all rows (M)");
+    await h!.user.click(headerEye());
+    expect(store.getState().maskView.on).toBe(true);
+    expect(store.getState().maskShown).toEqual({ node: 3, style: "overlay" });
+    expect(headerEye()).toHaveAttribute("aria-pressed", "true");
+    expect(toolbar).toHaveAttribute("aria-pressed", "true");
+    // The toolbar turns it off, and the eye follows; the eye turns it on again from there.
+    await h!.user.click(toolbar);
+    expect(headerEye()).toHaveAttribute("aria-pressed", "false");
+    await h!.user.click(toolbar);
+    expect(headerEye()).toHaveAttribute("aria-pressed", "true");
+    await h!.user.click(headerEye());
+    expect(store.getState().maskView.on).toBe(false);
+    expect(store.getState().maskShown).toBeNull();
+    expect(toolbar).toHaveAttribute("aria-pressed", "false");
+    expect(patches(spy)).toEqual([]);
+  });
+
+  it("it uses the View card's style", async () => {
+    await setup();
+    // Choosing the style turns the view on; the eye turns it off, and on again with the style kept.
+    await h!.user.click(within(card("View")).getByRole("radio", { name: "Mask only" }));
+    expect(headerEye()).toHaveAttribute("aria-pressed", "true");
+    await h!.user.click(headerEye());
+    expect(h!.store.getState().maskShown).toBeNull();
+    await h!.user.click(headerEye());
+    expect(h!.store.getState().maskShown).toEqual({ node: 3, style: "mask_only" });
+  });
+
+  it("a row's eye turns the header eye off, and the header eye turns a row's eye off", async () => {
+    await setup();
+    const store = h!.store;
+    const rowEye = (): HTMLElement => within(rowOf("Radial mask, Feather 45")).getByRole("button", { name: /^(Show|Hide) this mask$/ });
+    await h!.user.click(headerEye());
+    await h!.user.click(rowEye());
+    expect(store.getState().maskEye).toBe(1);
+    expect(store.getState().maskView.on).toBe(false);
+    expect(headerEye()).toHaveAttribute("aria-pressed", "false");
+    await h!.user.click(headerEye());
+    expect(store.getState().maskEye).toBeNull();
+    expect(store.getState().maskView.on).toBe(true);
+    expect(headerEye()).toHaveAttribute("aria-pressed", "true");
+    expect(rowEye()).toHaveAttribute("aria-pressed", "false");
+  });
+});
+
 describe("the node's Invert and Reset", () => {
   it("Invert is the node's masks.invert, a toggle, one undo step", async () => {
     const spy = await setup();
-    const invert = within(card("Masks")).getByRole("button", { name: "Invert" });
+    const invert = within(card("Masks")).getByRole("button", { name: "Invert all masks" });
     await h!.user.click(invert);
     await waitFor(() => expect(patches(spy).at(-1)).toEqual(patchOf(3, { masks: { invert: true } })));
     expect(invert).toHaveAttribute("aria-pressed", "true");
@@ -275,7 +349,7 @@ describe("the node's Invert and Reset", () => {
 
   it("Reset removes every row and un-inverts, in one patch and one undo step", async () => {
     const spy = await setup();
-    await h!.user.click(within(card("Masks")).getByRole("button", { name: "Invert" }));
+    await h!.user.click(within(card("Masks")).getByRole("button", { name: "Invert all masks" }));
     await h!.user.click(rowButton("Radial mask, Feather 45"));
     expect(cardTitles()).toContain("Radial");
     spy.mockClear();
@@ -1064,7 +1138,7 @@ describe("Delete in the Masks card", () => {
     await h!.user.keyboard("{Backspace}");
     await waitFor(() => expect(masks(3)).toEqual([]));
     // No row at all: the key does nothing in the card, and the node stays.
-    within(card("Masks")).getByRole("button", { name: "Invert" }).focus();
+    within(card("Masks")).getByRole("button", { name: "Invert all masks" }).focus();
     await h!.user.keyboard("{Delete}");
     expect(screen.getByRole("button", { name: /^Node 3, Sky/ })).toBeInTheDocument();
   });
@@ -1199,7 +1273,7 @@ describe("the combine control (Mask Intersect, docs/23 §7.6)", () => {
 
   it("shows Reset for an Intersect node with no rows, and Reset puts the switch back to Add with the rows removed and Invert off", async () => {
     const spy = await setup(INTERSECT, {}, /^Node 2, Mountain/);
-    await h!.user.click(within(card("Masks")).getByRole("button", { name: "Invert" }));
+    await h!.user.click(within(card("Masks")).getByRole("button", { name: "Invert all masks" }));
     await waitFor(() => expect(invertOf(2)).toBe(true));
     spy.mockClear();
     await h!.user.click(within(card("Masks")).getByRole("button", { name: "Reset" }));

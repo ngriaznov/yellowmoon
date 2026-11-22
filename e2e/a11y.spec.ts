@@ -807,7 +807,8 @@ test.describe("the node panel", () => {
     expect(snapshot.match(/- button "Show this mask"/g)).toHaveLength(2);
     expect(snapshot.match(/- switch "Turn this mask off"/g)).toHaveLength(2);
     expect(snapshot).toMatch(/- button "Add mask"/);
-    expect(snapshot).toMatch(/- button "Invert"/);
+    expect(snapshot).toMatch(/- button "Invert all masks"/);
+    expect(snapshot).toMatch(/- button "Show the mask of all rows"/);
     await expect(page.getByRole("button", { name: "Add mask" })).not.toHaveAttribute("aria-disabled", "true");
     // The selected row is the pressed one.
     await page.getByRole("button", { name: "Radial mask, Feather 45" }).click();
@@ -946,9 +947,9 @@ test.describe("the node panel", () => {
     { state: "a corrector's Light tab", simple: "Light", node: 2, tab: "Light", stops: 24 },
     { state: "a corrector's Colour tab", simple: "Colour", node: 2, tab: "Colour", stops: 20 },
     { state: "the Output's Look tab", simple: "Look", node: "output", tab: "Look", stops: 22 },
-    // The head's buttons (3), the tab row (1), the Masks card's Add mask, Invert and Reset (3), the two rows' four stops each (the row's button, the chosen
+    // The head's buttons (3), the tab row (1), the Masks card's Add mask, Invert, the eye and Reset (4), the two rows' four stops each (the row's button, the chosen
     // segment of Add | Subtract, Invert and the eye: 8), the View card's chosen segment, and the foot's two buttons.
-    { state: "a corrector's Mask tab with two rows and the View card", simple: "Light", node: 2, tab: "Mask", stops: 21 },
+    { state: "a corrector's Mask tab with two rows and the View card", simple: "Light", node: 2, tab: "Mask", stops: 22 },
     // Sky's one row, selected: its card has Reset and three sliders (Angle, Feather, Opacity; a slider is two stops, and Reset in a row's end is a stop only
     // while the slider differs from its default, which Sky's Linear does at an angle of 4 and a feather of 25). Counted below, with the ring on every stop.
     {
@@ -956,10 +957,10 @@ test.describe("the node panel", () => {
       simple: "Light",
       node: 3,
       tab: "Mask",
-      stops: 25,
+      stops: 26,
       before: (page) => page.getByRole("button", { name: /^Linear mask/ }).click(),
     },
-    // A Brush row just added, on Warmth (node 4): the head's 3, the tab row's 1, the Masks card's 3, the row's 5 (the switch first), then the BRUSH card: its Reset, the chosen segment of
+    // A Brush row just added, on Warmth (node 4): the head's 3, the tab row's 1, the Masks card's 4, the row's 5 (the switch first), then the BRUSH card: its Reset, the chosen segment of
     // Paint · Erase, six sliders of two stops each (none of them differs from its default, so none has a Reset stop), the View card's chosen segment and the foot's two
     // buttons. The drawing surface adds none.
     {
@@ -967,7 +968,7 @@ test.describe("the node panel", () => {
       simple: "Light",
       node: 4,
       tab: "Mask",
-      stops: 30,
+      stops: 31,
       before: async (page) => {
         await page.getByRole("button", { name: "Add mask" }).click();
         await page.getByRole("menuitem", { name: /^Brush/ }).click();
@@ -975,7 +976,7 @@ test.describe("the node panel", () => {
         await expect(page.locator("[data-brush-layer]")).toBeVisible();
       },
     },
-    // An Object row just added, on Warmth (node 4): the head's 3, the tab row's 1, the Masks card's 3, the row's 5 (the switch first), then the OBJECT card: its Reset, the chosen segment of
+    // An Object row just added, on Warmth (node 4): the head's 3, the tab row's 1, the Masks card's 4, the row's 5 (the switch first), then the OBJECT card: its Reset, the chosen segment of
     // Add point · Remove point · Box, four sliders of two stops each (Refine edges, Feather, Grow, Opacity; none differs from its default), the View card's chosen segment
     // and the foot's two buttons: 25. The surface over the photo adds none.
     {
@@ -983,7 +984,7 @@ test.describe("the node panel", () => {
       simple: "Light",
       node: 4,
       tab: "Mask",
-      stops: 26,
+      stops: 27,
       before: async (page) => {
         await page.getByRole("button", { name: "Add mask" }).click();
         await page.getByRole("menuitem", { name: /^Object/ }).click();
@@ -992,7 +993,7 @@ test.describe("the node panel", () => {
         await expect(page.getByRole("button", { name: "Object mask, Click the object on this photo" })).toBeVisible();
       },
     },
-    // A Background row just added, on Warmth (node 4): the head's 3, the tab row's 1, the Masks card's 3, the row's 5 (the switch first), then the BACKGROUND card: its Reset, six sliders of two
+    // A Background row just added, on Warmth (node 4): the head's 3, the tab row's 1, the Masks card's 4, the row's 5 (the switch first), then the BACKGROUND card: its Reset, six sliders of two
     // stops each (Level, Softness, Refine edges, Feather, Grow, Opacity; none differs from its default, so none has a Reset stop of its own), the View card's chosen segment
     // and the foot's two buttons: 28. Nothing is drawn on the photo.
     {
@@ -1000,7 +1001,7 @@ test.describe("the node panel", () => {
       simple: "Light",
       node: 4,
       tab: "Mask",
-      stops: 29,
+      stops: 30,
       before: async (page) => {
         await page.getByRole("button", { name: "Add mask" }).click();
         await page.getByRole("menuitem", { name: /^Background/ }).click();
@@ -1008,7 +1009,7 @@ test.describe("the node panel", () => {
         await expect(page.getByRole("button", { name: "Background mask, Level 50" })).toBeVisible();
       },
     },
-    // A Subject row just added, on Warmth (node 4): the head's 3, the tab row's 1, the Masks card's 3, the row's 5 (the switch first), then the SUBJECT card: its Reset, four sliders of two stops
+    // A Subject row just added, on Warmth (node 4): the head's 3, the tab row's 1, the Masks card's 4, the row's 5 (the switch first), then the SUBJECT card: its Reset, four sliders of two stops
     // each (Refine edges, Feather, Grow, Opacity; none differs from its default, so none has a Reset stop of its own), the View card's chosen segment and the foot's two
     // buttons: 3 + 1 + 3 + 4 + 9 + 3 = 23. Nothing is drawn on the photo, and no tool: Vision's mask has nothing of its own to set.
     {
@@ -1016,7 +1017,7 @@ test.describe("the node panel", () => {
       simple: "Light",
       node: 4,
       tab: "Mask",
-      stops: 25,
+      stops: 26,
       before: async (page) => {
         await page.getByRole("button", { name: "Add mask" }).click();
         await page.getByRole("menuitem", { name: /^Subject/ }).click();

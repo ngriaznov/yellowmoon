@@ -71,11 +71,14 @@ test.describe("the combine control", () => {
     await expect(control(page).getByRole("radio")).toHaveText(["Add", "Intersect"]);
     await expect(control(page).getByRole("radio", { name: "Add" })).toHaveAttribute("aria-checked", "true");
     await expect(masksCard(page).getByText("Masks add up. Subtract cuts a mask out.")).toBeVisible();
-    const boxes = await Promise.all([masksCard(page).getByRole("button", { name: "Add mask" }), masksCard(page).getByRole("button", { name: "Invert", exact: true }), masksCard(page).getByRole("button", { name: "Reset", exact: true }), control(page), masksCard(page).getByRole("list", { name: "Masks of this node" })].map((l) => l.boundingBox()));
-    const [add, invert, reset, ctrl, rows] = boxes as [Box, Box, Box, Box, Box];
-    // The header keeps Add mask, Invert and Reset on one line, inside the panel at 1440 x 900; the control is the first line of the card, above the rows.
+    const boxes = await Promise.all([masksCard(page).getByRole("button", { name: "Add mask" }), masksCard(page).getByRole("button", { name: "Invert all masks", exact: true }), masksCard(page).getByRole("button", { name: "Show the mask of all rows", exact: true }), masksCard(page).getByRole("button", { name: "Reset", exact: true }), control(page), masksCard(page).getByRole("list", { name: "Masks of this node" })].map((l) => l.boundingBox()));
+    const [add, invert, eye, reset, ctrl, rows] = boxes as [Box, Box, Box, Box, Box, Box];
+    // The header keeps Add mask, Invert, the eye and Reset on one line, inside the panel at 1440 x 900; the control is the first line of the card, above the rows.
     expect(add.x + add.width).toBeLessThanOrEqual(invert.x + 1);
-    expect(invert.x + invert.width).toBeLessThanOrEqual(reset.x + 1);
+    expect(invert.x + invert.width).toBeLessThanOrEqual(eye.x + 1);
+    expect(eye.x + eye.width).toBeLessThanOrEqual(reset.x + 1);
+    // Invert and the eye are the rows' 32 px icons, and have no text.
+    expect([invert.width, invert.height, eye.width, eye.height]).toEqual([32, 32, 32, 32]);
     expect(Math.abs(add.y - reset.y)).toBeLessThan(10);
     expect(ctrl.y).toBeGreaterThan(add.y + add.height - 1);
     expect(ctrl.y + ctrl.height).toBeLessThanOrEqual(rows.y + 1);
@@ -126,6 +129,34 @@ test.describe("Show mask follows the mode", () => {
     expect(intersect[3]).toBeLessThan(40);
     await control(page).getByRole("radio", { name: "Add" }).click();
     await expect.poll(async () => (await sample(page))[1]!).toBeGreaterThan(150);
+  });
+
+  test("the header eye shows the whole mask: in Intersect and Mask only only the overlap is light, a row's eye takes over, a second click ends it", async ({ page }) => {
+    await nodeView(page, TWO, { combine: "intersect" });
+    const eye = masksCard(page).getByRole("button", { name: "Show the mask of all rows", exact: true });
+    const toolbar = page.getByRole("group", { name: "Graph tools" }).getByRole("button", { name: "Show mask" });
+    await expect(eye).toHaveAttribute("aria-pressed", "false");
+    await page.getByRole("radio", { name: "Mask only", exact: true }).click();
+    await expect(eye).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(async () => (await sample(page))[1]!).toBeLessThan(40);
+    const lit = await sample(page);
+    expect(lit[0]).toBeGreaterThan(200);
+    expect(lit[2]).toBeLessThan(40);
+    expect(lit[3]).toBeLessThan(40);
+    // A row's eye takes over: it shows that row alone, and the header eye and the toolbar let go.
+    await masksCard(page).getByRole("button", { name: "Show this mask" }).first().click();
+    await expect(eye).toHaveAttribute("aria-pressed", "false");
+    await expect(toolbar).toHaveAttribute("aria-pressed", "false");
+    await expect.poll(async () => (await sample(page))[1]!).toBeGreaterThan(150);
+    // The header eye takes it back: the overlap alone, and the toolbar is pressed with it.
+    await eye.click();
+    await expect(eye).toHaveAttribute("aria-pressed", "true");
+    await expect(toolbar).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(async () => (await sample(page))[1]!).toBeLessThan(40);
+    // A second click ends the view.
+    await eye.click();
+    await expect(eye).toHaveAttribute("aria-pressed", "false");
+    await expect(toolbar).toHaveAttribute("aria-pressed", "false");
   });
 
   test("a Subtract row cuts out of the overlap, and Opacity 0 on a row leaves the others as they are", async ({ page }) => {

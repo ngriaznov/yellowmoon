@@ -17,6 +17,7 @@ moves the entries below from Unreleased into a dated section for that version.
 
 - **Pipeline version 0.16.0.** No photo, preset or album that exists changes by a bit: the trim and grade of a Colour Uniform node are written into a settings file, a preset or an album only when they differ from their defaults. A version older than this one reading such a file says "A Colour Uniform node has no field called “grade”." (an album or a preset: "This album was made by a newer version of Yellowmoon. Update to open it."), and a file that does not use them reads in every version.
 - **The colour warp's Pick colour, the histogram and the curve on a Colour Uniform node read the picture after its pull** (and after its own trim and grade before that stage), as they do for a corrector; the target's Pick colour still reads the node's input.
+- **The Masks card header has icons for Invert and Show mask.** Invert no longer has a word: it is the same small icon as each mask's own Invert, and its tooltip says "Invert all masks". Next to it is a new eye, "Show the mask of all rows", which shows every mask of the node together on the photo. It is the toolbar's Show mask (key M), so the two stay in step, and it turns off a single mask's eye.
 
 ## [0.2.4-beta.5] - 2026-11-21
 

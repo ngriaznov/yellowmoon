@@ -637,7 +637,7 @@ Each card shows the picture after its node: the plan stopped there, then the Out
 
 ### 5.8 Show mask
 
-The core renders it: the photo is a native layer under a transparent page, and the page cannot tint it. The toolbar's **Show mask** (key M) turns it on and off; the View card chooses **Overlay** or **Mask only**. With the mask view set, the viewport frame is the plan compiled to the selected node's `m`:
+The core renders it: the photo is a native layer under a transparent page, and the page cannot tint it. The toolbar's **Show mask** (key M) turns it on and off, and so does the **eye in the Masks card's header** (section 7.6; the same toggle, not another view); the View card chooses **Overlay** or **Mask only**. With the mask view set, the viewport frame is the plan compiled to the selected node's `m`:
 
 - **Overlay** tints the selected node's mask in the mask accent (orchid pink, `#FF6FD2`) over the photo as it is now: `out = display + 0.55 · m · (accent − display)` in display-linear, after output sharpening and before C13.
 - **Mask only** shows `m` as grey: the code value after C13 is `m`.
@@ -875,7 +875,7 @@ What each tab holds. Where a tab matches today's, its cards are today's.
 
 Three cards fit without scrolling at 1440 × 900 with **two mask rows** (the head is 52 px, the tab row 46, and the cards are 244 + 316 + 114 = 674 px in a 678 px scroll area); from a third row the panel scrolls a little.
 
-**The Masks card.** Header: "MASKS", **Add mask ▾**, **Invert** (a toggle with an invert icon: the node's whole combined mask, `masks.invert`) and **Reset** (in the mask accent: removes every row, un-inverts and puts the control back to Add). Then **the combine control** (the card's first line, under the header), the rows, then one line that follows the mode:
+**The Masks card.** Header: "MASKS", **Add mask ▾**, **Invert**, the **eye** and **Reset**. **Invert** is an icon toggle with no text, the rows' own Invert (the square split on its diagonal, 32 px, solid in the mask accent while on): the node's whole combined mask, `masks.invert`; its accessible name and tooltip are "Invert all masks" (owner, 2026-11-22). The **eye** is the toolbar's Show mask in the card (section 5.8): the rows' eye icon and style, named "Show the mask of all rows", tooltip "Show the mask of all rows (M)"; it is pressed while the node's mask view is on and no row's eye is, a click is `store.toggleMaskView()` (the View card's style; it turns a row's eye off, and a second click turns the view off), and it writes nothing. The card is only on a corrector, where Show mask is never off, so the eye has no disabled state. The order mirrors a row's (Invert, then the eye); **Reset** (in the mask accent: removes every row, un-inverts and puts the control back to Add). Then **the combine control** (the card's first line, under the header), the rows, then one line that follows the mode:
 
 - **Add:** "Masks add up. Subtract cuts a mask out. Colour and brightness ranges keep only their part of the rest." (today's sentence)
 - **Intersect:** "Only where every mask overlaps counts. Subtract cuts a mask out."
@@ -883,7 +883,7 @@ Three cards fit without scrolling at 1440 × 900 with **two mask rows** (the hea
 **The combine control** is glasscn's **`SegmentedControl`** (`src/components/glass/segmented-control.tsx`, through our `Segmented` wrapper, size `sm`, sized by its labels; no hand-written control) with two segments, **Add** and **Intersect**. **As built (MI-06) it is the first line of the card body, under the header and above the rows, not in the header:** with Add mask, the control, Invert and Reset the header overflowed the panel at 1440 × 900 (Reset 13 px past the edge and the title under Add mask), so the header keeps Add mask, Invert and Reset and the control has a line of its own (`.ym-mask-combine`; the screenshot `photos-masks-intersect.png`). It is a radio group named "How the masks combine", Add chosen by default, one Tab stop for the group (after Reset, before the first row; the arrow keys move inside it). Its **tooltip** (glasscn's `Tooltip`, on the group): "How the masks combine: Add joins them, Intersect keeps only where they all overlap." **A change is one `masks.combine` patch and one undo step**, shown at once by `applyDirect` (which applies a masks patch to every node that has masks). **Reset** is shown while the node has a row, is inverted **or combines as Intersect**; it removes the rows, un-inverts and sets Add, as one patch (`{ items: [], invert: false, combine: "add" }`). Show mask (toolbar and the View card) and the node thumbnails follow the mode with nothing added: they draw the node's `m`. With no rows the control still works and shows its line (the setting is kept for the rows that come). The Colour Uniform and Blur nodes show it with no code of their own (they use the corrector's Mask tab). Names and lines are short plain British English, with no exclamation mark. The preview the owner approved had the control on the header's line; the layout built is:
 
 ```
-MASKS   Add mask ▾   Invert   Reset
+MASKS   Add mask ▾   [invert]  [eye]   Reset
 [ Add | Intersect ]
   ● Radial
   ● Object
