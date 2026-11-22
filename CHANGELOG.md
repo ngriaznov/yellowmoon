@@ -24,6 +24,10 @@ A sixth pre-release (a beta) for testing. It adds **Light, Colour and Curve to t
 - **The colour warp's Pick colour, the histogram and the curve on a Colour Uniform node read the picture after its pull** (and after its own trim and grade before that stage), as they do for a corrector; the target's Pick colour still reads the node's input.
 - **The Masks card header has icons for Invert and Show mask.** Invert no longer has a word: it is the same small icon as each mask's own Invert, and its tooltip says "Invert all masks". Next to it is a new eye, "Show the mask of all rows", which shows every mask of the node together on the photo. It is the toolbar's Show mask (key M), so the two stay in step, and it turns off a single mask's eye.
 
+### Fixed
+
+- **Updated the `url` library for a security advisory (RUSTSEC-2026-0592).**
+
 ### Known limits
 
 - On a Mac whose graphics card cannot run the Blur node, Lens, Motion and Zoom render on the processor instead, and slowly at large sizes: a large Lens, Motion or Zoom on a full-size photo can take minutes, where Soft takes seconds. On the graphics card the node is estimated at a few milliseconds a megapixel for a small blur and tens of milliseconds for the largest Lens, but its speed has not been measured on a Mac yet. (`docs/33` sections 9 and 11, items 65 and 75 to 80, have the numbers.)
