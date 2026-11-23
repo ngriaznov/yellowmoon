@@ -228,6 +228,8 @@ Both match one image to another without a trained model, which supports the prod
 4. **Phase 2 budget:** only later, and only if Phase 1 misses the bar. Confirm the Modal balance first.
 5. **The name** stays "Reference Grade"; never "REVEAL".
 
+**Answered 2026-11-23: parked.** Nothing is planned or built. The owner's answers for when it is picked up: reference sources are both image files and photos in the strip; hue moves use a new hue-curve field on the node instead of warp pins, so the change touches the colour kernel's node code and must pass `diag-alf` before a release.
+
 ## Sources
 
 Repository (at `origin/main`, d0674e53): `AGENTS.md`; `docs/00`, `02`, `07`, `08`, `13`, `14`, `17`, `19`, `22`, `23`, `32`, `STATUS.md`; `crates/ym-color/src/{grade,warp,curve,look,deltae}.rs`; `crates/ym-ml/src/depth/`; `crates/ym-gpu/tests/shaders_naga.rs`; `training/cine/`; `tools/eval/ab/`.
