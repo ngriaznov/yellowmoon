@@ -72,6 +72,7 @@ struct Ctx {
     network6: Option<Network>,
     network7: Option<Network>,
     network8: Option<Network>,
+    network9: Option<Network>,
 }
 
 static CTX: std::sync::OnceLock<Ctx> = std::sync::OnceLock::new();
@@ -85,6 +86,7 @@ fn ctx() -> &'static Ctx {
         network6: None,
         network7: None,
         network8: None,
+        network9: None,
     })
 }
 
@@ -917,6 +919,8 @@ enum Objective {
     /// Round 9: network v9: mean-vector hue and chroma in every wall, a dark-colours group, a memory-colour wall for sky and
     /// foliage.
     V9,
+    /// Round 10: network v10: a pixel-level purple guard (the share of pixels that turn purple), `T.purple_max_share`.
+    V10,
 }
 
 impl Objective {
@@ -924,7 +928,12 @@ impl Objective {
     fn net(self) -> bool {
         matches!(
             self,
-            Objective::V5 | Objective::V6 | Objective::V7 | Objective::V8 | Objective::V9
+            Objective::V5
+                | Objective::V6
+                | Objective::V7
+                | Objective::V8
+                | Objective::V9
+                | Objective::V10
         )
     }
 }
@@ -1188,6 +1197,7 @@ impl Terms {
                 + t.guard_white_dir
                 + t.guard_skin_drift
                 + t.guard_mem
+                + t.guard_purple_px
                 + common
         } else if self.v3 {
             on(MASK_BASE) * (self.floor + self.ceil + V2_W_ANCHOR * self.anchor)
@@ -1226,7 +1236,7 @@ impl Terms {
                 "saturation": t.sat, "sector_hue": t.sec_hue, "sector_chroma": t.sec_chroma,
                 "element_hue": t.el_hue, "element_chroma": t.el_chroma, "element_exposure": t.el_exp,
                 "subject_separation": t.subject,
-                "guard_hue_drift": t.guard_hue, "guard_skin": t.guard_skin, "guard_sky_chroma": t.guard_sky, "guard_highlights": t.guard_hl, "guard_purple": t.guard_purple, "guard_white_direction": t.guard_white_dir, "guard_skin_drift": t.guard_skin_drift, "guard_memory": t.guard_mem,
+                "guard_hue_drift": t.guard_hue, "guard_skin": t.guard_skin, "guard_sky_chroma": t.guard_sky, "guard_highlights": t.guard_hl, "guard_purple": t.guard_purple, "guard_white_direction": t.guard_white_dir, "guard_skin_drift": t.guard_skin_drift, "guard_memory": t.guard_mem, "guard_purple_pixels": t.guard_purple_px,
                 "regulariser_global": self.reg, "regulariser_local": self.reg_local, "clip": self.clip,
                 "weighted_total": self.total(),
             })
@@ -2235,6 +2245,12 @@ const V9_MEM: (f64, f64) = (3.0, 3.0);
 /// V8: the purple band (hue, degrees), the wall's weight and scale, the approach term's reach, scale and weight, a group counts
 /// when its median C* is at least this; the whites' direction wall (weight, scale); the skin drift wall (weight, scale).
 const V8_PURPLE_BAND: (f64, f64) = (285.0, 345.0);
+/// V10: a pixel is newly purple at C* of at least this in the candidate, and it was not purple in photo0 (outside the band, or
+/// under `V10_NP_FROM_C`). Penalty `V10_NP_WEIGHT * ((share - T.purple_max_share) / V10_NP_SCALE)^2` above the limit.
+const V10_NP_C: f64 = 4.0;
+const V10_NP_FROM_C: f64 = 2.0;
+const V10_NP_WEIGHT: f64 = 6.0;
+const V10_NP_SCALE: f64 = 0.01;
 const V8_PURPLE_WEIGHT: f64 = 3.0;
 const V8_PURPLE_SCALE_DEG: f64 = 5.0;
 const V8_APPROACH_REACH_DEG: f64 = 15.0;
@@ -2968,6 +2984,31 @@ fn network_check(net: &Network) -> R<bool> {
             &mut ok,
         );
     }
+    if net.index.contains_key("T.purple_max_share") {
+        // The v10 vectors: one pixel in a hundred may turn purple, up to a quarter where the reference holds magenta.
+        let none = NetOut::new(net, &r_same)?;
+        println!("== check 13 (v10): a reference with magenta_share 0");
+        show(
+            "T.purple_max_share",
+            0.0,
+            &none,
+            "0.01",
+            (none.get("T.purple_max_share") - 0.01).abs() < 1e-9,
+            &mut ok,
+        );
+        let mut p14 = r_same.clone();
+        set(&mut p14, "R.magenta_share", 0.10);
+        let some = NetOut::new(net, &p14)?;
+        println!("== check 14 (v10): a reference with magenta_share 0.10");
+        show(
+            "T.purple_max_share",
+            0.0,
+            &some,
+            "0.25",
+            (some.get("T.purple_max_share") - 0.25).abs() < 1e-9,
+            &mut ok,
+        );
+    }
     if net.index.contains_key("T.mem.sky_deg") {
         // The v9 vectors: the sky and foliage limits depend on whether the reference matches them.
         let out_m = NetOut::new(net, &r_same)?;
@@ -3401,6 +3442,10 @@ struct V5Ctx {
     v8: bool,
     /// Whether the network is v9 (it also has `T.mem.sky_deg`): the walls read mean-vector hue and chroma.
     v9: bool,
+    /// Whether the network is v10 (it also has `T.purple_max_share`): the pixel-level purple guard.
+    v10: bool,
+    /// V10: per sample pixel, whether it may count as newly purple (not skin, and in P outside the purple band or under C* 2).
+    np_scope: Vec<bool>,
     /// V9: P's mean (a*, b*) over its whites and over each sector, and the dark-colours group (P's pixels with L* < 35 and
     /// C* >= 2, not skin): its scope and P's mean (a*, b*) there.
     p_hl_a: f64,
@@ -3480,10 +3525,21 @@ fn build_v5_ctx(
         })
         .collect();
     let p_dark_ab = mean_ab(p_px, &dark_scope);
+    let np_scope: Vec<bool> = p_px
+        .iter()
+        .enumerate()
+        .map(|(i, q)| {
+            let h = q.lab[2].atan2(q.lab[1]).to_degrees().rem_euclid(360.0);
+            let in_band = (V8_PURPLE_BAND.0..=V8_PURPLE_BAND.1).contains(&h);
+            !scene.skin[i] && (!in_band || q.lab[1].hypot(q.lab[2]) < V10_NP_FROM_C)
+        })
+        .collect();
     Ok(V5Ctx {
         v7,
         v8: net.index.contains_key("T.purple_ok"),
         v9: net.index.contains_key("T.mem.sky_deg"),
+        v10: net.index.contains_key("T.purple_max_share"),
+        np_scope,
         p_hl_a,
         p_hl_b,
         p_sec_ab,
@@ -3550,6 +3606,25 @@ fn hl_stats(px: &[Px], scope: &[bool]) -> (f64, Option<f64>, f64, f64) {
     )
 }
 
+/// V10: the share of `px` that is newly purple: hue inside the purple band and C* at least [`V10_NP_C`], on a pixel that `scope`
+/// allows (not skin; in photo0 outside the band, or under C* [`V10_NP_FROM_C`]).
+fn newly_purple_share(px: &[Px], scope: &[bool]) -> f64 {
+    if px.is_empty() {
+        return 0.0;
+    }
+    let n = px
+        .iter()
+        .zip(scope)
+        .filter(|&(q, &ok)| {
+            ok && q.lab[1].hypot(q.lab[2]) >= V10_NP_C && {
+                let h = q.lab[2].atan2(q.lab[1]).to_degrees().rem_euclid(360.0);
+                (V8_PURPLE_BAND.0..=V8_PURPLE_BAND.1).contains(&h)
+            }
+        })
+        .count();
+    n as f64 / px.len() as f64
+}
+
 /// A candidate's measurements: the picture's, and per sector the mean hue shift and log chroma change against P on P's pixels.
 struct CandMeas {
     m: Meas,
@@ -3564,6 +3639,8 @@ struct CandMeas {
     /// V9: the candidate's mean (a*, b*) over each of P's sectors' pixels and over P's dark-colours pixels.
     sec_ab: [[f64; 2]; SECTORS],
     dark_ab: [f64; 2],
+    /// V10: the share of the sample's pixels that are newly purple in the candidate.
+    np_share: f64,
 }
 
 fn cand_meas(px: &[Px], scene: &Scene, ctx: &V5Ctx) -> CandMeas {
@@ -3616,8 +3693,10 @@ fn cand_meas(px: &[Px], scene: &Scene, ctx: &V5Ctx) -> CandMeas {
             sec_dlogc[j] = median_of(&mut cs[j]).max(1.0).ln() - ctx.p_sec_logc[j];
         }
     }
+    let np_share = newly_purple_share(px, &ctx.np_scope);
     CandMeas {
         m,
+        np_share,
         sec_shift,
         sec_dlogc,
         hl_c,
@@ -3657,6 +3736,10 @@ struct V5T {
     guard_skin_drift: f64,
     /// V9: the memory-colour wall (sky and foliage).
     guard_mem: f64,
+    /// V10: the pixel-level purple guard.
+    guard_purple_px: f64,
+    /// The share of the sample's pixels that are newly purple (a diagnostic for every network objective).
+    np_share: f64,
 }
 
 fn sq(x: f64) -> f64 {
@@ -3807,7 +3890,10 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
 fn terms_v5(c: &CandMeas, ctx: &V5Ctx) -> V5T {
     let o = &ctx.out;
     let m = &c.m;
-    let mut t = V5T::default();
+    let mut t = V5T {
+        np_share: c.np_share,
+        ..V5T::default()
+    };
     let term = |err: f64, scale: f64, dead_band: f64| sq(dead(err, dead_band) / scale);
     t.floor = V5_FLOOR.2 * term(m.p2 - o.get("T.p2"), V5_FLOOR.0, V5_FLOOR.1);
     t.ceil = V5_CEIL.2 * term(m.p98 - o.get("T.p98"), V5_CEIL.0, V5_CEIL.1);
@@ -3892,6 +3978,12 @@ fn terms_v5(c: &CandMeas, ctx: &V5Ctx) -> V5T {
     // Guards.
     if ctx.v9 {
         guards_v9(&mut t, c, ctx);
+        if ctx.v10 {
+            let limit = o.get("T.purple_max_share");
+            if c.np_share > limit {
+                t.guard_purple_px = V10_NP_WEIGHT * sq((c.np_share - limit) / V10_NP_SCALE);
+            }
+        }
         return t;
     }
     let drift = |d: f64, limit: f64| {
@@ -4639,9 +4731,10 @@ fn v5_extra(
     }
     let g = |t: &Terms| {
         let t5 = t.t5;
-        json!({ "guard_hue_drift": t5.guard_hue, "guard_skin": t5.guard_skin, "guard_sky_chroma": t5.guard_sky, "guard_highlights": t5.guard_hl, "guard_purple": t5.guard_purple, "guard_white_direction": t5.guard_white_dir, "guard_skin_drift": t5.guard_skin_drift, "guard_memory": t5.guard_mem })
+        json!({ "guard_hue_drift": t5.guard_hue, "guard_skin": t5.guard_skin, "guard_sky_chroma": t5.guard_sky, "guard_highlights": t5.guard_hl, "guard_purple": t5.guard_purple, "guard_white_direction": t5.guard_white_dir, "guard_skin_drift": t5.guard_skin_drift, "guard_memory": t5.guard_mem, "guard_purple_pixels": t5.guard_purple_px })
     };
     json!({
+        "newly_purple_share": after.t5.np_share,
         "network_inputs": ctx.inputs,
         "network": o.outputs_json(),
         "excluded_from_sectors": ctx.excl,
@@ -5276,6 +5369,8 @@ fn run_fit(
             ctx().network7.as_ref()
         } else if objective == Objective::V8 && ctx().network8.is_some() {
             ctx().network8.as_ref()
+        } else if objective == Objective::V9 && ctx().network9.is_some() {
+            ctx().network9.as_ref()
         } else {
             ctx().network.as_ref()
         }
@@ -5376,6 +5471,7 @@ fn write_pair(
     round6: Option<&PairOutcome>,
     round7: Option<&PairOutcome>,
     round8: Option<&PairOutcome>,
+    round9: Option<&PairOutcome>,
 ) -> R<()> {
     fs::create_dir_all(dir)?;
     let default8 = linear_to_rgb8(&pf.default_show);
@@ -5391,17 +5487,20 @@ fn write_pair(
             | Objective::V7
             | Objective::V8
             | Objective::V9
+            | Objective::V10
     ) && (round2.is_some()
         || round5.is_some()
         || round6.is_some()
         || round7.is_some()
-        || round8.is_some())
+        || round8.is_some()
+        || round9.is_some())
     {
         let r2_8 = round2.map(|r| linear_to_rgb8(&r.fitted_show));
         let r5_8 = round5.map(|r| linear_to_rgb8(&r.fitted_show));
         let r6_8 = round6.map(|r| linear_to_rgb8(&r.fitted_show));
         let r7_8 = round7.map(|r| linear_to_rgb8(&r.fitted_show));
         let r8_8 = round8.map(|r| linear_to_rgb8(&r.fitted_show));
+        let r9_8 = round9.map(|r| linear_to_rgb8(&r.fitted_show));
         let mut rounds: Vec<(&str, &Rgb8)> = Vec::new();
         if let Some(r) = &r2_8 {
             rounds.push(("Round 2", r));
@@ -5418,8 +5517,12 @@ fn write_pair(
         if let Some(r) = &r8_8 {
             rounds.push(("Round 8", r));
         }
+        if let Some(r) = &r9_8 {
+            rounds.push(("Round 9", r));
+        }
         rounds.push((
             match objective {
+                Objective::V10 => "Round 10",
                 Objective::V9 => "Round 9",
                 Objective::V8 => "Round 8",
                 Objective::V7 => "Round 7",
@@ -5977,6 +6080,7 @@ struct Args {
     network6: Option<PathBuf>,
     network7: Option<PathBuf>,
     network8: Option<PathBuf>,
+    network9: Option<PathBuf>,
     network_check: bool,
     grades: usize,
 }
@@ -6008,6 +6112,7 @@ fn parse_args() -> R<Args> {
             "--network6" => a.network6 = Some(PathBuf::from(val()?)),
             "--network7" => a.network7 = Some(PathBuf::from(val()?)),
             "--network8" => a.network8 = Some(PathBuf::from(val()?)),
+            "--network9" => a.network9 = Some(PathBuf::from(val()?)),
             "--keep-key" => a.keep_key = true,
             "--grades" => a.grades = val()?.parse()?,
             "--objective" => {
@@ -6020,6 +6125,7 @@ fn parse_args() -> R<Args> {
                     "v7" => Objective::V7,
                     "v8" => Objective::V8,
                     "v9" => Objective::V9,
+                    "v10" => Objective::V10,
                     other => return Err(format!("--objective takes v1 or v2, not {other}").into()),
                 })
             }
@@ -6102,6 +6208,13 @@ fn main() -> R<()> {
         ),
         None => None,
     };
+    let network9 = match &args.network9 {
+        Some(path) => Some(
+            parse_network(&fs::read_to_string(path)?)
+                .map_err(|e| format!("{}: {e}", path.display()))?,
+        ),
+        None => None,
+    };
     if args.network_check {
         let net = network
             .as_ref()
@@ -6141,6 +6254,7 @@ fn main() -> R<()> {
         network6,
         network7,
         network8,
+        network9,
     });
     let core = open_core(&args.out)?;
     let cache = args.out.join("cache");
@@ -6226,6 +6340,7 @@ fn main() -> R<()> {
         let mut outcomes6: Vec<Option<PairOutcome>> = Vec::new();
         let mut outcomes7: Vec<Option<PairOutcome>> = Vec::new();
         let mut outcomes8: Vec<Option<PairOutcome>> = Vec::new();
+        let mut outcomes9: Vec<Option<PairOutcome>> = Vec::new();
         let mut index: BTreeMap<String, Value> = BTreeMap::new();
         for r in &loaded {
             let o = run_pair(&pf, r, args.strength, !args.no_hue, objective)?;
@@ -6258,13 +6373,27 @@ fn main() -> R<()> {
                 };
             // Round 7 next to Round 8: the V7 fit of the same pair (with `--network7`).
             // Round 8 next to Round 9: the V8 fit of the same pair (with `--network8`).
-            let o8 = if objective == Objective::V9 && ctx().network8.is_some() {
+            let o8 = if matches!(objective, Objective::V9 | Objective::V10)
+                && ctx().network8.is_some()
+            {
                 Some(run_pair(
                     &pf,
                     r,
                     args.strength,
                     !args.no_hue,
                     Objective::V8,
+                )?)
+            } else {
+                None
+            };
+            // Round 9 next to Round 10: the V9 fit of the same pair (with `--network9`).
+            let o9 = if objective == Objective::V10 && ctx().network9.is_some() {
+                Some(run_pair(
+                    &pf,
+                    r,
+                    args.strength,
+                    !args.no_hue,
+                    Objective::V9,
                 )?)
             } else {
                 None
@@ -6293,13 +6422,18 @@ fn main() -> R<()> {
                 None
             };
             eprintln!(
-                "   {}: fit {:.2} s, {} evals, {:.2} ms/eval, objective {:.3} -> {:.3}",
+                "   {}: fit {:.2} s, {} evals, {:.2} ms/eval, objective {:.3} -> {:.3}; newly purple {} -> {:.4}",
                 r.stem,
                 o.fit.seconds,
                 o.fit.evals,
                 o.fit.per_eval_ms,
                 o.fit.before.total(),
-                o.fit.after.total()
+                o.fit.after.total(),
+                o9.as_ref().map_or("-".to_string(), |q| format!(
+                    "{:.4}",
+                    q.fit.extra["newly_purple_share"].as_f64().unwrap_or(0.0)
+                )),
+                o.fit.extra["newly_purple_share"].as_f64().unwrap_or(0.0)
             );
             write_pair(
                 &photo_dir.join(&r.stem),
@@ -6315,12 +6449,14 @@ fn main() -> R<()> {
                 o6.as_ref(),
                 o7.as_ref(),
                 o8.as_ref(),
+                o9.as_ref(),
             )?;
             outcomes2.push(o2);
             outcomes5.push(o5);
             outcomes6.push(o6);
             outcomes7.push(o7);
             outcomes8.push(o8);
+            outcomes9.push(o9);
             index.insert(
                 r.stem.clone(),
                 json!({ "fit_seconds": o.fit.seconds, "per_eval_ms": o.fit.per_eval_ms, "before": o.fit.before.total(), "after": o.fit.after.total() }),
@@ -6328,7 +6464,9 @@ fn main() -> R<()> {
             outcomes.push(o);
         }
         let pairs: Vec<(&Reference, &PairOutcome)> = loaded.iter().zip(&outcomes).collect();
-        let grid_rows = if outcomes8.iter().any(Option::is_some) {
+        let grid_rows = if outcomes9.iter().any(Option::is_some) {
+            &outcomes9
+        } else if outcomes8.iter().any(Option::is_some) {
             &outcomes8
         } else if outcomes7.iter().any(Option::is_some) {
             &outcomes7
