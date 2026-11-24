@@ -817,19 +817,93 @@ impl LabConv {
     }
 }
 
+/// Groups of V2 terms. A stage of the optimiser sees only the terms its parameters act on, so that a tone parameter is
+/// never used to fix a colour term (which would be an arbitrary move the objective cannot see).
+const MASK_TONE: u8 = 1;
+const MASK_CAST: u8 = 2;
+const MASK_CHROMA: u8 = 4;
+const MASK_HUE: u8 = 8;
+const MASK_ALL: u8 = 15;
+
+/// Which objective the fit minimises.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Objective {
+    /// Round 1: the full L* quantile shape, band means of all pixels, chroma per sector weighted by share.
+    V1,
+    /// Round 2: what a grade does, not what the picture contains (see the `V2_*` constants).
+    V2,
+}
+
+/// V2 weights and scales. Tone: black floor, white ceiling, midtone contrast, and an anchor on the photo's own median.
+const V2_W_FLOOR: f64 = 1.0;
+const V2_W_CEIL: f64 = 1.0;
+const V2_W_CONTRAST: f64 = 1.0;
+const V2_W_ANCHOR: f64 = 4.0;
+const V2_W_CAST: f64 = 1.5;
+const V2_W_HUE: f64 = 1.0;
+const V2_W_SECTOR_CHROMA: f64 = 1.0;
+const V2_W_CHROMA_RATIO: f64 = 0.7;
+/// Scales (an error of this size counts as 1).
+const V2_FLOOR_L_SCALE: f64 = 4.0;
+const V2_CEIL_L_SCALE: f64 = 4.0;
+const V2_CONTRAST_SCALE: f64 = 0.08;
+const V2_CAST_SCALE: f64 = 3.0;
+const V2_HUE_SCALE_DEG: f64 = 8.0;
+const V2_RATIO_SCALE: f64 = 0.25;
+/// Dead bands: differences the content of two different pictures can explain cost nothing (L* units, ratio, Lab units,
+/// degrees, ln ratio).
+const V2_FLOOR_BAND_L: f64 = 6.0;
+const V2_CEIL_BAND_L: f64 = 12.0;
+const V2_CONTRAST_BAND: f64 = 0.12;
+const V2_CAST_BAND_AB: f64 = 4.0;
+const V2_HUE_BAND_DEG: f64 = 8.0;
+const V2_RATIO_BAND: f64 = 0.45;
+/// The regulariser's weight under V2 (the dead bands leave the fit free to wander, so it is stronger than V1's).
+const V2_W_REG: f64 = 0.5;
+/// The photo's median L* may move this far from the ungraded photo's before the anchor penalty starts.
+const V2_ANCHOR_DEAD_BAND_L: f64 = 5.0;
+/// Black floor and white ceiling quantiles of L*, in percent.
+const V2_FLOOR_PCT: f64 = 2.0;
+const V2_CEIL_PCT: f64 = 98.0;
+/// Pixels with C* below this are "near neutral" and carry the tint of a lightness band.
+const V2_NEUTRAL_CHROMA_MAX: f64 = 8.0;
+/// A band's near-neutral set is also never smaller than this fraction of the band (its least coloured pixels), so that a
+/// picture with a strong overall tint, in which nothing is under [`V2_NEUTRAL_CHROMA_MAX`], still has a cast to match.
+const V2_NEUTRAL_MIN_FRACTION: f64 = 0.15;
+/// A band's cast counts only if both pictures have at least this share of their pixels near neutral in it.
+const V2_MIN_NEUTRAL_SHARE_PER_BAND: f64 = 0.01;
+/// Pixels with C* below this have no useful hue and are left out of the per-hue measures.
+const V2_HUE_MIN_CHROMA: f64 = 8.0;
+/// A hue sector counts only if both pictures have at least this share of their pixels (hue-bearing) in it.
+const V2_MIN_SECTOR_SHARE: f64 = 0.04;
+
 /// What the objective reads from a picture.
 #[derive(Clone, Debug)]
 struct Stats {
-    /// L* quantiles minus the median.
+    /// L* quantiles minus the median (V1).
     shape: [f64; 19],
     median: f64,
-    /// Mean (a*, b*) in the darkest, middle and lightest third of the picture's own L*.
+    /// Mean (a*, b*) in the darkest, middle and lightest third of the picture's own L* (V1).
     band_ab: [[f64; 2]; 3],
     sector_chroma: [f64; SECTORS],
     sector_share: [f64; SECTORS],
     mean_chroma: f64,
     hi_share: f64,
     lo_share: f64,
+    /// V2: black floor and white ceiling (L*), and the IQR of L* relative to the floor-to-ceiling spread.
+    floor: f64,
+    ceil: f64,
+    iqr_ratio: f64,
+    /// V2: mean (a*, b*) of the near-neutral pixels in each of the picture's own L* terciles, and the share of all
+    /// pixels they are.
+    neutral_ab: [[f64; 2]; 3],
+    neutral_share: [f64; 3],
+    /// V2: per hue sector, over the hue-bearing pixels: the mean hue angle (degrees), the mean chroma and the share.
+    hue_angle: [f64; SECTORS],
+    hue_chroma: [f64; SECTORS],
+    hue_share: [f64; SECTORS],
+    /// V2: the median C* of all pixels.
+    median_chroma: f64,
 }
 
 fn stats_of(px: &[Px]) -> Stats {
@@ -847,33 +921,73 @@ fn stats_of(px: &[Px]) -> Stats {
     for (s, q) in shape.iter_mut().zip(QUANTILES_PCT) {
         *s = l_at(q) - median;
     }
+    let (floor, ceil) = (l_at(V2_FLOOR_PCT), l_at(V2_CEIL_PCT));
+    let iqr_ratio = (l_at(75.0) - l_at(25.0)) / (ceil - floor).max(1.0);
     let mut band_ab = [[0.0; 2]; 3];
     let mut band_n = [0usize; 3];
+    let mut neutral_ab = [[0.0; 2]; 3];
+    let mut neutral_n = [0usize; 3];
+    let mut band_px: [Vec<(f64, f64, f64)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for (rank, &i) in idx.iter().enumerate() {
         let band = (rank * 3 / n).min(2);
         band_ab[band][0] += px[i].lab[1];
         band_ab[band][1] += px[i].lab[2];
         band_n[band] += 1;
+        band_px[band].push((px[i].lab[1].hypot(px[i].lab[2]), px[i].lab[1], px[i].lab[2]));
     }
+    for b in 0..3 {
+        let mut c: Vec<f64> = band_px[b].iter().map(|p| p.0).collect();
+        c.sort_unstable_by(f64::total_cmp);
+        let floor_c = c
+            .get((c.len() as f64 * V2_NEUTRAL_MIN_FRACTION) as usize)
+            .copied()
+            .unwrap_or(0.0);
+        let limit = V2_NEUTRAL_CHROMA_MAX.max(floor_c);
+        for &(chroma, a, bb) in &band_px[b] {
+            if chroma <= limit {
+                neutral_ab[b][0] += a;
+                neutral_ab[b][1] += bb;
+                neutral_n[b] += 1;
+            }
+        }
+    }
+    let mut neutral_share = [0.0; 3];
     for b in 0..3 {
         let k = band_n[b].max(1) as f64;
         band_ab[b] = [band_ab[b][0] / k, band_ab[b][1] / k];
+        let m = neutral_n[b].max(1) as f64;
+        neutral_ab[b] = [neutral_ab[b][0] / m, neutral_ab[b][1] / m];
+        neutral_share[b] = neutral_n[b] as f64 / n as f64;
     }
     let mut sector_c = [0.0; SECTORS];
     let mut sector_n = [0usize; SECTORS];
+    let (mut hue_c, mut hue_n) = ([0.0; SECTORS], [0usize; SECTORS]);
+    let mut hue_vec = [[0.0; 2]; SECTORS];
     let (mut total_c, mut hi, mut lo) = (0.0, 0usize, 0usize);
+    let mut chromas = Vec::with_capacity(n);
     for p in px {
         let (a, b) = (p.lab[1], p.lab[2]);
         let c = a.hypot(b);
+        chromas.push(c);
         total_c += c;
         let h = b.atan2(a).to_degrees();
         let s = (((h + 30.0).rem_euclid(360.0)) / 60.0) as usize % SECTORS;
         sector_c[s] += c;
         sector_n[s] += 1;
+        if c >= V2_HUE_MIN_CHROMA {
+            hue_c[s] += c;
+            hue_n[s] += 1;
+            hue_vec[s][0] += a / c;
+            hue_vec[s][1] += b / c;
+        }
         hi += usize::from(p.hi);
         lo += usize::from(p.lo);
     }
+    chromas.sort_unstable_by(f64::total_cmp);
+    let median_chroma = chromas[n / 2];
     let mut sector_share = [0.0; SECTORS];
+    let (mut hue_angle, mut hue_chroma, mut hue_share) =
+        ([0.0; SECTORS], [0.0; SECTORS], [0.0; SECTORS]);
     for s in 0..SECTORS {
         sector_share[s] = sector_n[s] as f64 / n as f64;
         sector_c[s] = if sector_n[s] > 0 {
@@ -881,6 +995,11 @@ fn stats_of(px: &[Px]) -> Stats {
         } else {
             0.0
         };
+        hue_share[s] = hue_n[s] as f64 / n as f64;
+        if hue_n[s] > 0 {
+            hue_chroma[s] = hue_c[s] / hue_n[s] as f64;
+            hue_angle[s] = hue_vec[s][1].atan2(hue_vec[s][0]).to_degrees();
+        }
     }
     Stats {
         shape,
@@ -891,56 +1010,197 @@ fn stats_of(px: &[Px]) -> Stats {
         mean_chroma: total_c / n as f64,
         hi_share: hi as f64 / n as f64,
         lo_share: lo as f64 / n as f64,
+        floor,
+        ceil,
+        iqr_ratio,
+        neutral_ab,
+        neutral_share,
+        hue_angle,
+        hue_chroma,
+        hue_share,
+        median_chroma,
     }
 }
 
 /// The objective's terms, unweighted (each is 0 for a perfect match; an error of one "scale" counts about 1).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 struct Terms {
+    v2: bool,
+    // V1
     shape: f64,
     level: f64,
     ab: f64,
     sector: f64,
     chroma: f64,
+    // V2
+    floor: f64,
+    ceil: f64,
+    contrast: f64,
+    anchor: f64,
+    cast: f64,
+    hue: f64,
+    sector_chroma_ratio: f64,
+    chroma_ratio: f64,
+    // both
     reg: f64,
     clip: f64,
 }
 
 impl Terms {
     fn total(&self) -> f64 {
-        W_SHAPE * self.shape
-            + W_LEVEL * self.level
-            + W_AB * self.ab
-            + W_SECTOR * self.sector
-            + W_CHROMA * self.chroma
-            + W_REG * self.reg
-            + W_CLIP * self.clip
+        self.total_masked(MASK_ALL)
+    }
+    /// The weighted total of the V2 terms in `mask` (V1 ignores it).
+    fn total_masked(&self, mask: u8) -> f64 {
+        let on = |m: u8| if mask & m != 0 { 1.0 } else { 0.0 };
+        let common = if self.v2 { V2_W_REG } else { W_REG } * self.reg + W_CLIP * self.clip;
+        if self.v2 {
+            on(MASK_TONE)
+                * (V2_W_FLOOR * self.floor
+                    + V2_W_CEIL * self.ceil
+                    + V2_W_CONTRAST * self.contrast
+                    + V2_W_ANCHOR * self.anchor)
+                + on(MASK_CAST) * V2_W_CAST * self.cast
+                + on(MASK_HUE) * V2_W_HUE * self.hue
+                + on(MASK_CHROMA)
+                    * (V2_W_SECTOR_CHROMA * self.sector_chroma_ratio
+                        + V2_W_CHROMA_RATIO * self.chroma_ratio)
+                + common
+        } else {
+            W_SHAPE * self.shape
+                + W_LEVEL * self.level
+                + W_AB * self.ab
+                + W_SECTOR * self.sector
+                + W_CHROMA * self.chroma
+                + common
+        }
     }
     fn to_json(self) -> Value {
-        json!({
-            "shape": self.shape, "level": self.level, "ab_bands": self.ab, "chroma_sectors": self.sector,
-            "mean_chroma": self.chroma, "regulariser": self.reg, "clip": self.clip,
-            "weighted_total": self.total(),
-            "weights": { "shape": W_SHAPE, "level": W_LEVEL, "ab_bands": W_AB, "chroma_sectors": W_SECTOR,
-                "mean_chroma": W_CHROMA, "regulariser": W_REG, "clip": W_CLIP },
-        })
+        if self.v2 {
+            json!({
+                "objective": "v2",
+                "black_floor": self.floor, "white_ceiling": self.ceil, "midtone_contrast": self.contrast,
+                "median_anchor": self.anchor, "neutral_cast": self.cast, "hue_shift": self.hue,
+                "hue_chroma_ratio": self.sector_chroma_ratio, "median_chroma_ratio": self.chroma_ratio,
+                "regulariser": self.reg, "clip": self.clip, "weighted_total": self.total(),
+                "weights": { "black_floor": V2_W_FLOOR, "white_ceiling": V2_W_CEIL, "midtone_contrast": V2_W_CONTRAST,
+                    "median_anchor": V2_W_ANCHOR, "neutral_cast": V2_W_CAST, "hue_shift": V2_W_HUE,
+                    "hue_chroma_ratio": V2_W_SECTOR_CHROMA, "median_chroma_ratio": V2_W_CHROMA_RATIO,
+                    "regulariser": W_REG, "clip": W_CLIP },
+            })
+        } else {
+            json!({
+                "objective": "v1",
+                "shape": self.shape, "level": self.level, "ab_bands": self.ab, "chroma_sectors": self.sector,
+                "mean_chroma": self.chroma, "regulariser": self.reg, "clip": self.clip,
+                "weighted_total": self.total(),
+                "weights": { "shape": W_SHAPE, "level": W_LEVEL, "ab_bands": W_AB, "chroma_sectors": W_SECTOR,
+                    "mean_chroma": W_CHROMA, "regulariser": W_REG, "clip": W_CLIP },
+            })
+        }
     }
 }
 
-fn terms(out: &Stats, reference: &Stats, x: &[f64; N_PARAMS]) -> Terms {
-    let shape = out
+/// A difference with a dead band: 0 inside `band`, the excess outside.
+fn dead(d: f64, band: f64) -> f64 {
+    (d.abs() - band).max(0.0)
+}
+
+/// Wraps an angle difference to -180..180 degrees.
+fn wrap_deg(d: f64) -> f64 {
+    (d + 180.0).rem_euclid(360.0) - 180.0
+}
+
+/// The terms of `out` against `reference`. `anchor` is the ungraded photo's median L* (V2 keeps the photo's key).
+fn terms(
+    obj: Objective,
+    out: &Stats,
+    reference: &Stats,
+    anchor: f64,
+    x: &[f64; N_PARAMS],
+) -> Terms {
+    let reg = x.iter().map(|v| v * v).sum::<f64>() / N_PARAMS as f64;
+    let over = |o: f64, r: f64| ((o - r - CLIP_SLACK).max(0.0) / CLIP_SCALE).powi(2);
+    let clip = over(out.hi_share, reference.hi_share) + over(out.lo_share, reference.lo_share);
+    let mut t = Terms {
+        v2: obj == Objective::V2,
+        shape: 0.0,
+        level: 0.0,
+        ab: 0.0,
+        sector: 0.0,
+        chroma: 0.0,
+        floor: 0.0,
+        ceil: 0.0,
+        contrast: 0.0,
+        anchor: 0.0,
+        cast: 0.0,
+        hue: 0.0,
+        sector_chroma_ratio: 0.0,
+        chroma_ratio: 0.0,
+        reg,
+        clip,
+    };
+    if obj == Objective::V2 {
+        t.floor = (dead(out.floor - reference.floor, V2_FLOOR_BAND_L) / V2_FLOOR_L_SCALE).powi(2);
+        t.ceil = (dead(out.ceil - reference.ceil, V2_CEIL_BAND_L) / V2_CEIL_L_SCALE).powi(2);
+        t.contrast = (dead(out.iqr_ratio - reference.iqr_ratio, V2_CONTRAST_BAND)
+            / V2_CONTRAST_SCALE)
+            .powi(2);
+        t.anchor =
+            (((out.median - anchor).abs() - V2_ANCHOR_DEAD_BAND_L).max(0.0) / L_SCALE).powi(2);
+        let (mut sum, mut k) = (0.0, 0usize);
+        for b in 0..3 {
+            if out.neutral_share[b] >= V2_MIN_NEUTRAL_SHARE_PER_BAND
+                && reference.neutral_share[b] >= V2_MIN_NEUTRAL_SHARE_PER_BAND
+            {
+                let da = out.neutral_ab[b][0] - reference.neutral_ab[b][0];
+                let db = out.neutral_ab[b][1] - reference.neutral_ab[b][1];
+                sum += (dead(da.hypot(db), V2_CAST_BAND_AB) / V2_CAST_SCALE).powi(2);
+                k += 1;
+            }
+        }
+        t.cast = if k > 0 { sum / k as f64 } else { 0.0 };
+        let (mut sh, mut sr, mut k) = (0.0, 0.0, 0usize);
+        for s in 0..SECTORS {
+            if out.hue_share[s] >= V2_MIN_SECTOR_SHARE
+                && reference.hue_share[s] >= V2_MIN_SECTOR_SHARE
+            {
+                sh += (dead(
+                    wrap_deg(out.hue_angle[s] - reference.hue_angle[s]),
+                    V2_HUE_BAND_DEG,
+                ) / V2_HUE_SCALE_DEG)
+                    .powi(2);
+                sr += (dead(
+                    (out.hue_chroma[s] / reference.hue_chroma[s].max(1e-6)).ln(),
+                    V2_RATIO_BAND,
+                ) / V2_RATIO_SCALE)
+                    .powi(2);
+                k += 1;
+            }
+        }
+        if k > 0 {
+            t.hue = sh / k as f64;
+            t.sector_chroma_ratio = sr / k as f64;
+        }
+        t.chroma_ratio = (dead(
+            ((out.median_chroma + 1.0) / (reference.median_chroma + 1.0)).ln(),
+            V2_RATIO_BAND,
+        ) / V2_RATIO_SCALE)
+            .powi(2);
+        return t;
+    }
+    t.shape = out
         .shape
         .iter()
         .zip(&reference.shape)
         .map(|(a, b)| ((a - b) / L_SCALE).powi(2))
         .sum::<f64>()
         / 19.0;
-    let level = ((out.median - reference.median) / L_SCALE).powi(2);
-    let mut ab = 0.0;
+    t.level = ((out.median - reference.median) / L_SCALE).powi(2);
     for b in 0..3 {
         let da = (out.band_ab[b][0] - reference.band_ab[b][0]) / AB_SCALE;
         let db = (out.band_ab[b][1] - reference.band_ab[b][1]) / AB_SCALE;
-        ab += 0.5 * (da * da + db * db) / 3.0;
+        t.ab += 0.5 * (da * da + db * db) / 3.0;
     }
     let (mut sum_w, mut sum) = (0.0, 0.0);
     for s in 0..SECTORS {
@@ -948,20 +1208,9 @@ fn terms(out: &Stats, reference: &Stats, x: &[f64; N_PARAMS]) -> Terms {
         sum_w += w;
         sum += w * ((out.sector_chroma[s] - reference.sector_chroma[s]) / CHROMA_SCALE).powi(2);
     }
-    let sector = if sum_w > 0.0 { sum / sum_w } else { 0.0 };
-    let chroma = ((out.mean_chroma - reference.mean_chroma) / CHROMA_SCALE).powi(2);
-    let reg = x.iter().map(|v| v * v).sum::<f64>() / N_PARAMS as f64;
-    let over = |o: f64, r: f64| ((o - r - CLIP_SLACK).max(0.0) / CLIP_SCALE).powi(2);
-    let clip = over(out.hi_share, reference.hi_share) + over(out.lo_share, reference.lo_share);
-    Terms {
-        shape,
-        level,
-        ab,
-        sector,
-        chroma,
-        reg,
-        clip,
-    }
+    t.sector = if sum_w > 0.0 { sum / sum_w } else { 0.0 };
+    t.chroma = ((out.mean_chroma - reference.mean_chroma) / CHROMA_SCALE).powi(2);
+    t
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -989,6 +1238,11 @@ struct Evaluator<'a> {
     output: &'a ChainParamsOut,
     lin: Vec<[f64; 3]>,
     reference: Stats,
+    objective: Objective,
+    /// The ungraded photo's median L* (V2's anchor).
+    anchor: f64,
+    /// The V2 term groups the current stage minimises.
+    mask: u8,
     conv: LabConv,
     with_hue: bool,
     strength: f64,
@@ -1027,10 +1281,10 @@ impl Evaluator<'_> {
     fn objective(&mut self, x: &[f64; N_PARAMS]) -> (f64, Terms) {
         let t0 = Instant::now();
         let s = self.stats(x);
-        let t = terms(&s, &self.reference, x);
+        let t = terms(self.objective, &s, &self.reference, self.anchor, x);
         self.evals += 1;
         self.eval_time += t0.elapsed();
-        (t.total(), t)
+        (t.total_masked(self.mask), t)
     }
 }
 
@@ -1100,10 +1354,17 @@ fn fit(ev: &mut Evaluator<'_>) -> FitResult {
     // The fit itself runs at strength 1 (the deltas are scaled afterwards by `strength`, see `to_real`).
     ev.strength = 1.0;
     let mut x = [0.0f64; N_PARAMS];
-    let (f0, before) = ev.objective(&x);
-    let mut f = f0;
+    let (_, before) = ev.objective(&x);
+    let mut f: f64;
     let mut log = Vec::new();
     for (name, range, frac, iters) in STAGES.iter().cloned() {
+        ev.mask = match name {
+            "tone" => MASK_TONE,
+            "colour per band" => MASK_TONE | MASK_CAST,
+            "saturation and hue-vs-sat" => MASK_TONE | MASK_CAST | MASK_CHROMA,
+            _ => MASK_ALL,
+        };
+        f = ev.objective(&x).0;
         let start = f;
         for i in range {
             if ev.with_hue || !(HSAT_RANGE.contains(&i) || HHUE_RANGE.contains(&i)) {
@@ -1113,6 +1374,7 @@ fn fit(ev: &mut Evaluator<'_>) -> FitResult {
         log.push(json!({ "stage": name, "half_range": frac, "iterations": iters, "objective_before": start, "objective_after": f }));
     }
     let seconds = t0.elapsed().as_secs_f64();
+    ev.mask = MASK_ALL;
     let (_, after) = ev.objective(&x);
     ev.strength = strength;
     FitResult {
@@ -1551,6 +1813,7 @@ fn run_fit(
     reference_fit: &Img,
     strength: f64,
     with_hue: bool,
+    objective: Objective,
 ) -> R<(FitResult, Stats)> {
     let conv = LabConv::new();
     let ref_stats = picture_stats(&conv, reference_fit);
@@ -1558,6 +1821,9 @@ fn run_fit(
         output: &pf.output,
         lin: pf.lin_sample.clone(),
         reference: ref_stats.clone(),
+        objective,
+        anchor: 0.0,
+        mask: MASK_ALL,
         conv,
         with_hue,
         strength,
@@ -1565,6 +1831,7 @@ fn run_fit(
         buf: vec![Px::default(); pf.lin_sample.len()],
         eval_time: Duration::ZERO,
     };
+    ev.anchor = ev.stats(&[0.0; N_PARAMS]).median;
     Ok((fit(&mut ev), ref_stats))
 }
 
@@ -1573,9 +1840,10 @@ fn run_pair(
     reference: &Reference,
     strength: f64,
     with_hue: bool,
+    objective: Objective,
 ) -> R<PairOutcome> {
     let t0 = Instant::now();
-    let (fit_res, _) = run_fit(pf, &reference.fit, strength, with_hue)?;
+    let (fit_res, _) = run_fit(pf, &reference.fit, strength, with_hue, objective)?;
     let mut x_scaled = fit_res.x;
     for v in &mut x_scaled {
         *v *= strength;
@@ -1592,6 +1860,7 @@ fn run_pair(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_pair(
     dir: &Path,
     photo_name: &str,
@@ -1600,6 +1869,7 @@ fn write_pair(
     o: &PairOutcome,
     strength: f64,
     with_hue: bool,
+    objective: Objective,
 ) -> R<()> {
     fs::create_dir_all(dir)?;
     let default8 = linear_to_rgb8(&pf.default_show);
@@ -1622,14 +1892,27 @@ fn write_pair(
     let def_stats = picture_stats(&conv, &default_fit);
     let fit_stats = picture_stats(&conv, &fitted_fit);
     let mut reg_zero = [0.0; N_PARAMS];
-    let before_full = terms(&def_stats, &ref_stats, &reg_zero);
+    let before_full = terms(
+        objective,
+        &def_stats,
+        &ref_stats,
+        def_stats.median,
+        &reg_zero,
+    );
     reg_zero = o.x_scaled.map(|v| v / strength.max(1e-9));
-    let after_full = terms(&fit_stats, &ref_stats, &reg_zero);
+    let after_full = terms(
+        objective,
+        &fit_stats,
+        &ref_stats,
+        def_stats.median,
+        &reg_zero,
+    );
     let report = json!({
         "photo": photo_name,
         "reference": reference.stem,
         "strength": strength,
         "hue_step": with_hue,
+        "objective": format!("{objective:?}"),
         "reference_bars_stripped_top_bottom_left_right": reference.bars,
         "fitted_values": real_json(&o.real, &o.fit.x, strength),
         "objective_on_fit_sample": { "before": o.fit.before.to_json(), "after": o.fit.after.to_json() },
@@ -1708,6 +1991,8 @@ fn selftest(
     photo_name: &str,
     trials: usize,
     moderate: f64,
+    objective: Objective,
+    keep_key: bool,
 ) -> R<Value> {
     let conv = LabConv::new();
     let mut rng = Rng(SEED ^ 0xE1);
@@ -1716,15 +2001,12 @@ fn selftest(
     let mut pooled_default: Vec<f64> = Vec::new();
     let mut trial_json = Vec::new();
     for t in 0..trials {
-        let mut x_true = [0.0; N_PARAMS];
-        for v in &mut x_true {
-            *v = moderate * (2.0 * rng.unit() - 1.0);
-        }
+        let x_true = random_grade(&mut rng, moderate, keep_key, &[pf])?;
         let truth_real = to_real(&x_true, 1.0);
         let truth_cand = Candidate::new(&truth_real, true)?;
         let truth = render_image(&pf.fit_img, &truth_cand, &pf.output);
         let t0 = Instant::now();
-        let (fit_res, _) = run_fit(pf, &truth, 1.0, true)?;
+        let (fit_res, _) = run_fit(pf, &truth, 1.0, true, objective)?;
         let fitted_real = to_real(&fit_res.x, 1.0);
         let fitted_cand = Candidate::new(&fitted_real, true)?;
         let fitted = render_image(&pf.fit_img, &fitted_cand, &pf.output);
@@ -1761,6 +2043,8 @@ fn selftest(
         trial_json.push(json!({
             "trial": t, "fitted_vs_truth_de2000": { "median": s.median, "p95": s.p95, "mean": s.mean },
             "ungraded_vs_truth_de2000": { "median": sd.median, "p95": sd.p95 },
+            "median_L": { "ungraded": picture_stats(&conv, &ungraded).median, "truth": picture_stats(&conv, &truth).median,
+                "fitted": picture_stats(&conv, &fitted).median },
             "rms_normalised_parameter_error": rms_param, "rms_normalised_true_parameters": rms_true,
             "objective_before": fit_res.before.total(), "objective_after": fit_res.after.total(),
             "fit_seconds": fit_res.seconds, "seconds_with_renders": t0.elapsed().as_secs_f64(),
@@ -1797,6 +2081,8 @@ fn selftest(
     };
     Ok(json!({
         "photo": photo_name,
+        "objective": format!("{objective:?}"),
+        "grades_keep_the_photos_key": keep_key,
         "trials": trials,
         "random_parameter_amplitude_fraction_of_bound": moderate,
         "pooled_over_all_pixels_of_all_trials": {
@@ -1806,6 +2092,137 @@ fn selftest(
         "median_of_trial_medians": med_of_trial_medians,
         "per_trial": trial_json,
     }))
+}
+
+/// Median L* of a photo graded with `x` (at the fit picture's size).
+fn graded_median(pf: &PhotoFit<'_>, x: &[f64; N_PARAMS]) -> R<f64> {
+    let cand = Candidate::new(&to_real(x, 1.0), true)?;
+    Ok(picture_stats(
+        &LabConv::new(),
+        &render_image(&pf.fit_img, &cand, &pf.output),
+    )
+    .median)
+}
+
+/// Draws a random grade of the family: each normalised parameter uniform in `+-amplitude`. With `keep_key` the draw is
+/// repeated until the grade moves the median L* of every photo in `photos` by no more than the anchor's dead band
+/// ([`V2_ANCHOR_DEAD_BAND_L`]): a grade that keeps the photo's key, which is what V2 can be asked to recover.
+fn random_grade(
+    rng: &mut Rng,
+    amplitude: f64,
+    keep_key: bool,
+    photos: &[&PhotoFit<'_>],
+) -> R<[f64; N_PARAMS]> {
+    for _ in 0..400 {
+        let mut x = [0.0; N_PARAMS];
+        for v in &mut x {
+            *v = amplitude * (2.0 * rng.unit() - 1.0);
+        }
+        if !keep_key {
+            return Ok(x);
+        }
+        let mut ok = true;
+        for pf in photos {
+            let base = graded_median(pf, &[0.0; N_PARAMS])?;
+            ok &= (graded_median(pf, &x)? - base).abs() <= V2_ANCHOR_DEAD_BAND_L;
+        }
+        if ok {
+            return Ok(x);
+        }
+    }
+    Err("no key-preserving grade found in 400 draws".into())
+}
+
+/// CIEDE2000 between two pictures of the same size, per pixel.
+fn delta_e_pixels(conv: &LabConv, a: &Img, b: &Img) -> Vec<f64> {
+    (0..a.w * a.h)
+        .into_par_iter()
+        .map(|i| {
+            let l = |im: &Img| {
+                let p = &im.px[3 * i..3 * i + 3];
+                conv.px([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+                    .lab
+            };
+            delta_e_2000(l(a), l(b))
+        })
+        .collect()
+}
+
+/// E2, the cross-content check: the reference is photo A graded with G, the truth is photo B graded with the same G;
+/// B is fitted to the reference and compared with the truth. Over every ordered pair of different photos and
+/// `grades` seeded random grades G of the family.
+fn e2(
+    pfs: &[PhotoFit<'_>],
+    names: &[String],
+    grades: usize,
+    amplitude: f64,
+    objs: &[Objective],
+    keep_key: bool,
+) -> R<Value> {
+    let conv = LabConv::new();
+    let mut rng = Rng(SEED ^ 0xE2);
+    // One set of grades for all photos: with `keep_key` each keeps every photo's key.
+    let all: Vec<&PhotoFit<'_>> = pfs.iter().collect();
+    let mut gs: Vec<[f64; N_PARAMS]> = Vec::new();
+    for _ in 0..grades {
+        gs.push(random_grade(&mut rng, amplitude, keep_key, &all)?);
+    }
+    let mut results = serde_json::Map::new();
+    let mut summary = serde_json::Map::new();
+    for &obj in objs {
+        let mut pooled: Vec<f64> = Vec::new();
+        let mut pooled_default: Vec<f64> = Vec::new();
+        let mut fit_medians: Vec<f64> = Vec::new();
+        let mut fit_secs: Vec<f64> = Vec::new();
+        let mut fits = Vec::new();
+        for a in 0..pfs.len() {
+            for b in 0..pfs.len() {
+                if a == b {
+                    continue;
+                }
+                for (g, x) in gs.iter().enumerate() {
+                    let cand = Candidate::new(&to_real(x, 1.0), true)?;
+                    let reference = render_image(&pfs[a].fit_img, &cand, &pfs[a].output);
+                    let truth = render_image(&pfs[b].fit_img, &cand, &pfs[b].output);
+                    let (fr, _) = run_fit(&pfs[b], &reference, 1.0, true, obj)?;
+                    let fitted_cand = Candidate::new(&to_real(&fr.x, 1.0), true)?;
+                    let fitted = render_image(&pfs[b].fit_img, &fitted_cand, &pfs[b].output);
+                    let ungraded = render_image(
+                        &pfs[b].fit_img,
+                        &Candidate::new(&to_real(&[0.0; N_PARAMS], 1.0), false)?,
+                        &pfs[b].output,
+                    );
+                    let d = delta_e_pixels(&conv, &fitted, &truth);
+                    let dd = delta_e_pixels(&conv, &ungraded, &truth);
+                    let s = Summary::of(&d).ok_or("empty")?;
+                    pooled.extend(d.iter().step_by(4));
+                    pooled_default.extend(dd.iter().step_by(4));
+                    fit_medians.push(s.median);
+                    fit_secs.push(fr.seconds);
+                    fits.push(
+                        json!({ "reference_photo": names[a], "target_photo": names[b], "grade": g,
+                        "median": s.median, "p95": s.p95, "fit_seconds": fr.seconds, "x": fr.x.to_vec(), "x_true": x.to_vec(), "terms_after": fr.after.to_json(), "terms_before": fr.before.to_json() }),
+                    );
+                }
+            }
+        }
+        let sp = Summary::of(&pooled).ok_or("empty")?;
+        let sd = Summary::of(&pooled_default).ok_or("empty")?;
+        fit_medians.sort_by(f64::total_cmp);
+        let sum = json!({
+            "fits": fits.len(),
+            "fitted_vs_truth_de2000_pooled": { "median": sp.median, "p95": sp.p95, "mean": sp.mean },
+            "ungraded_vs_truth_de2000_pooled": { "median": sd.median, "p95": sd.p95 },
+            "median_of_fit_medians": fit_medians[fit_medians.len() / 2],
+            "mean_fit_seconds": fit_secs.iter().sum::<f64>() / fit_secs.len() as f64,
+        });
+        summary.insert(format!("{obj:?}"), sum);
+        results.insert(format!("{obj:?}"), Value::Array(fits));
+    }
+    Ok(
+        json!({ "grades": grades, "grades_keep_every_photos_key": keep_key, "amplitude_fraction_of_bound": amplitude, "photos": names,
+        "summary": summary, "fits": results }),
+    )
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1822,6 +2239,10 @@ struct Args {
     selftest: bool,
     trials: usize,
     amplitude: f64,
+    objective: Option<Objective>,
+    e2: bool,
+    keep_key: bool,
+    grades: usize,
 }
 
 fn parse_args() -> R<Args> {
@@ -1829,6 +2250,7 @@ fn parse_args() -> R<Args> {
         strength: 1.0,
         trials: 10,
         amplitude: 0.5,
+        grades: 5,
         ..Args::default()
     };
     let mut it = std::env::args().skip(1);
@@ -1842,6 +2264,16 @@ fn parse_args() -> R<Args> {
             "--trials" => a.trials = val()?.parse()?,
             "--amplitude" => a.amplitude = val()?.parse()?,
             "--no-hue" => a.no_hue = true,
+            "--e2" => a.e2 = true,
+            "--keep-key" => a.keep_key = true,
+            "--grades" => a.grades = val()?.parse()?,
+            "--objective" => {
+                a.objective = Some(match val()?.as_str() {
+                    "v1" => Objective::V1,
+                    "v2" => Objective::V2,
+                    other => return Err(format!("--objective takes v1 or v2, not {other}").into()),
+                })
+            }
             "--selftest" => a.selftest = true,
             other => return Err(format!("unknown argument {other}").into()),
         }
@@ -1886,6 +2318,37 @@ fn main() -> R<()> {
     }
     let core = open_core(&args.out)?;
     let cache = args.out.join("cache");
+    let objective = args.objective.unwrap_or(Objective::V2);
+    if args.e2 {
+        let mut nodes = Vec::new();
+        for p in &photos {
+            nodes.push((
+                p.file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                load_photo(&core, p, &cache)?,
+            ));
+        }
+        let mut pfs = Vec::new();
+        for (_, n) in &nodes {
+            pfs.push(prepare_photo(n)?);
+        }
+        let names: Vec<String> = nodes.iter().map(|(n, _)| n.clone()).collect();
+        let objs: Vec<Objective> = args
+            .objective
+            .map_or(vec![Objective::V1, Objective::V2], |o| vec![o]);
+        let r = e2(
+            &pfs,
+            &names,
+            args.grades,
+            args.amplitude,
+            &objs,
+            args.keep_key,
+        )?;
+        fs::write(args.out.join("e2.json"), serde_json::to_string_pretty(&r)?)?;
+        println!("{}", serde_json::to_string_pretty(&r["summary"])?);
+        return Ok(());
+    }
     let mut summary = Vec::new();
     for photo_path in &photos {
         let name = photo_path
@@ -1906,7 +2369,15 @@ fn main() -> R<()> {
         let photo_dir = args.out.join(&name);
         fs::create_dir_all(&photo_dir)?;
         if args.selftest {
-            let r = selftest(&pf, &photo_dir, &name, args.trials, args.amplitude)?;
+            let r = selftest(
+                &pf,
+                &photo_dir,
+                &name,
+                args.trials,
+                args.amplitude,
+                objective,
+                args.keep_key,
+            )?;
             fs::write(photo_dir.join("e1.json"), serde_json::to_string_pretty(&r)?)?;
             eprintln!(
                 "   E1 pooled: {}",
@@ -1926,7 +2397,7 @@ fn main() -> R<()> {
         let mut outcomes = Vec::new();
         let mut index: BTreeMap<String, Value> = BTreeMap::new();
         for r in &loaded {
-            let o = run_pair(&pf, r, args.strength, !args.no_hue)?;
+            let o = run_pair(&pf, r, args.strength, !args.no_hue, objective)?;
             eprintln!(
                 "   {}: fit {:.2} s, {} evals, {:.2} ms/eval, objective {:.3} -> {:.3}",
                 r.stem,
@@ -1944,6 +2415,7 @@ fn main() -> R<()> {
                 &o,
                 args.strength,
                 !args.no_hue,
+                objective,
             )?;
             index.insert(
                 r.stem.clone(),
