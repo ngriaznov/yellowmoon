@@ -71,6 +71,7 @@ struct Ctx {
     network5: Option<Network>,
     network6: Option<Network>,
     network7: Option<Network>,
+    network8: Option<Network>,
 }
 
 static CTX: std::sync::OnceLock<Ctx> = std::sync::OnceLock::new();
@@ -83,6 +84,7 @@ fn ctx() -> &'static Ctx {
         network5: None,
         network6: None,
         network7: None,
+        network8: None,
     })
 }
 
@@ -912,6 +914,9 @@ enum Objective {
     /// Round 8: network v8: the purple wall, the whites' direction, the skin drift wall, clothing as a group, the clip term
     /// against the photo's own shares.
     V8,
+    /// Round 9: network v9: mean-vector hue and chroma in every wall, a dark-colours group, a memory-colour wall for sky and
+    /// foliage.
+    V9,
 }
 
 impl Objective {
@@ -919,7 +924,7 @@ impl Objective {
     fn net(self) -> bool {
         matches!(
             self,
-            Objective::V5 | Objective::V6 | Objective::V7 | Objective::V8
+            Objective::V5 | Objective::V6 | Objective::V7 | Objective::V8 | Objective::V9
         )
     }
 }
@@ -1182,6 +1187,7 @@ impl Terms {
                 + t.guard_purple
                 + t.guard_white_dir
                 + t.guard_skin_drift
+                + t.guard_mem
                 + common
         } else if self.v3 {
             on(MASK_BASE) * (self.floor + self.ceil + V2_W_ANCHOR * self.anchor)
@@ -1220,7 +1226,7 @@ impl Terms {
                 "saturation": t.sat, "sector_hue": t.sec_hue, "sector_chroma": t.sec_chroma,
                 "element_hue": t.el_hue, "element_chroma": t.el_chroma, "element_exposure": t.el_exp,
                 "subject_separation": t.subject,
-                "guard_hue_drift": t.guard_hue, "guard_skin": t.guard_skin, "guard_sky_chroma": t.guard_sky, "guard_highlights": t.guard_hl, "guard_purple": t.guard_purple, "guard_white_direction": t.guard_white_dir, "guard_skin_drift": t.guard_skin_drift,
+                "guard_hue_drift": t.guard_hue, "guard_skin": t.guard_skin, "guard_sky_chroma": t.guard_sky, "guard_highlights": t.guard_hl, "guard_purple": t.guard_purple, "guard_white_direction": t.guard_white_dir, "guard_skin_drift": t.guard_skin_drift, "guard_memory": t.guard_mem,
                 "regulariser_global": self.reg, "regulariser_local": self.reg_local, "clip": self.clip,
                 "weighted_total": self.total(),
             })
@@ -2219,6 +2225,13 @@ const V5_SUBJECT: (f64, f64, f64) = (3.0, 2.0, 1.0);
 /// V7: the cast is measured on pixels between these L* values (and not skin), when they cover this share of the frame.
 const V7_CAST_L: (f64, f64) = (15.0, 80.0);
 const V7_CAST_MIN_SHARE: f64 = 0.10;
+/// V9: a group counts in the hue walls when its mean-vector chroma in photo0 is at least this; the dark-colours group (P's
+/// pixels with L* below `V9_DARK_L` and C* at least `V9_DARK_C`, not skin; it needs 2 % of the frame); the memory-colour wall's
+/// weight and scale.
+const V9_MIN_MV_C: f64 = 2.5;
+const V9_DARK_L: f64 = 35.0;
+const V9_DARK_C: f64 = 2.0;
+const V9_MEM: (f64, f64) = (3.0, 3.0);
 /// V8: the purple band (hue, degrees), the wall's weight and scale, the approach term's reach, scale and weight, a group counts
 /// when its median C* is at least this; the whites' direction wall (weight, scale); the skin drift wall (weight, scale).
 const V8_PURPLE_BAND: (f64, f64) = (285.0, 345.0);
@@ -2955,6 +2968,48 @@ fn network_check(net: &Network) -> R<bool> {
             &mut ok,
         );
     }
+    if net.index.contains_key("T.mem.sky_deg") {
+        // The v9 vectors: the sky and foliage limits depend on whether the reference matches them.
+        let out_m = NetOut::new(net, &r_same)?;
+        let mut pu = r_same.clone();
+        set(&mut pu, "R.sky.share", 0.0);
+        set(&mut pu, "R.vegetation.share", 0.0);
+        let out_u = NetOut::new(net, &pu)?;
+        println!("== check 11 (v9): the sky unmatched (P.sky.share 0.3, R.sky.share 0)");
+        show(
+            "T.mem.sky_deg",
+            10.0,
+            &out_u,
+            "10",
+            (out_u.get("T.mem.sky_deg") - 10.0).abs() < 1e-9,
+            &mut ok,
+        );
+        show(
+            "T.mem.vegetation_deg",
+            12.0,
+            &out_u,
+            "12",
+            (out_u.get("T.mem.vegetation_deg") - 12.0).abs() < 1e-9,
+            &mut ok,
+        );
+        println!("== check 12 (v9): the sky matched (both pictures hold 30 %)");
+        show(
+            "T.mem.sky_deg",
+            10.0,
+            &out_m,
+            "45",
+            (out_m.get("T.mem.sky_deg") - 45.0).abs() < 1e-9,
+            &mut ok,
+        );
+        show(
+            "T.mem.vegetation_deg",
+            12.0,
+            &out_m,
+            "40",
+            (out_m.get("T.mem.vegetation_deg") - 40.0).abs() < 1e-9,
+            &mut ok,
+        );
+    }
     println!(
         "{}",
         if ok {
@@ -2992,6 +3047,19 @@ struct ElM {
     logc: f64,
     n: usize,
     has_hue: bool,
+    /// V9: the mean (a*, b*) of every member pixel: its angle is the group's hue and its length the group's chroma in the walls.
+    mv_a: f64,
+    mv_b: f64,
+}
+
+impl ElM {
+    /// The mean-vector hue (degrees, 0..360) and chroma.
+    fn mv(&self) -> (f64, f64) {
+        (
+            circ_mean_deg(self.mv_a, self.mv_b),
+            self.mv_a.hypot(self.mv_b),
+        )
+    }
 }
 
 /// One hue sector's statistics.
@@ -3056,6 +3124,7 @@ fn measure(px: &[Px], scene: &Scene, excl: &[bool; 6], v7_cast: bool) -> Meas {
     let mut el_c: [Vec<f64>; 6] = Default::default();
     let mut el_v = [[0.0f64; 2]; 6];
     let mut el_hn = [0usize; 6];
+    let mut el_ab = [[0.0f64; 2]; 6];
     let (mut pool_a, mut pool_b): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
     let mut capable: [Vec<(f64, f64, f64)>; 3] = Default::default();
     let (mut subj, mut bg): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
@@ -3068,6 +3137,8 @@ fn measure(px: &[Px], scene: &Scene, excl: &[bool; 6], v7_cast: bool) -> Meas {
         let e = usize::from(scene.elem[i]);
         for k in 0..6 {
             if in_elem(scene, i, k) {
+                el_ab[k][0] += a;
+                el_ab[k][1] += b;
                 el_l[k].push(p.lab[0]);
                 el_c[k].push(c);
                 if c > V3_HUE_MIN_CHROMA {
@@ -3175,6 +3246,7 @@ fn measure(px: &[Px], scene: &Scene, excl: &[bool; 6], v7_cast: bool) -> Meas {
     let mut mag = 0usize;
     let (mut cl_l, mut cl_c) = (Vec::new(), Vec::new());
     let (mut cl_x, mut cl_y, mut cl_hn) = (0.0, 0.0, 0usize);
+    let (mut cl_sa, mut cl_sb) = (0.0, 0.0);
     for (i, p) in px.iter().enumerate() {
         let (a, b) = (p.lab[1], p.lab[2]);
         let c = a.hypot(b);
@@ -3185,6 +3257,8 @@ fn measure(px: &[Px], scene: &Scene, excl: &[bool; 6], v7_cast: bool) -> Meas {
             }
         }
         if usize::from(scene.elem[i]) == ELEM_PERSON && !scene.skin[i] {
+            cl_sa += a;
+            cl_sb += b;
             cl_l.push(p.lab[0]);
             cl_c.push(c);
             if c > V3_HUE_MIN_CHROMA {
@@ -3209,6 +3283,8 @@ fn measure(px: &[Px], scene: &Scene, excl: &[bool; 6], v7_cast: bool) -> Meas {
             logc: c.max(1.0).ln(),
             n: cl_hn,
             has_hue: cl_hn > 0,
+            mv_a: cl_sa / cl_l.len() as f64,
+            mv_b: cl_sb / cl_l.len() as f64,
         };
     }
     for k in 0..6 {
@@ -3229,6 +3305,8 @@ fn measure(px: &[Px], scene: &Scene, excl: &[bool; 6], v7_cast: bool) -> Meas {
             logc: c.max(1.0).ln(),
             n: cnt,
             has_hue: el_hn[k] > 0,
+            mv_a: el_ab[k][0] / cnt as f64,
+            mv_b: el_ab[k][1] / cnt as f64,
         };
     }
     let enough = |v: &Vec<f64>| v.len() as f64 >= (0.01 * nf).max(30.0);
@@ -3321,6 +3399,15 @@ struct V5Ctx {
     /// Whether the network is v8 (it also has `T.purple_ok`): the purple wall, the whites' direction, the skin drift wall,
     /// clothing as a group and the clip term against the photo's own shares.
     v8: bool,
+    /// Whether the network is v9 (it also has `T.mem.sky_deg`): the walls read mean-vector hue and chroma.
+    v9: bool,
+    /// V9: P's mean (a*, b*) over its whites and over each sector, and the dark-colours group (P's pixels with L* < 35 and
+    /// C* >= 2, not skin): its scope and P's mean (a*, b*) there.
+    p_hl_a: f64,
+    p_hl_b: f64,
+    p_sec_ab: [[f64; 2]; SECTORS],
+    dark_scope: Vec<bool>,
+    p_dark_ab: [f64; 2],
     /// V7: the sample pixels that are whites in P (L* >= 80, C* < 10), their share, P's median C* there and P's mean hue there.
     hl_scope: Vec<bool>,
     p_hl_c: f64,
@@ -3349,6 +3436,8 @@ fn build_v5_ctx(
     let mut sector = vec![255u8; p_px.len()];
     let mut p_hue = vec![0.0; p_px.len()];
     let mut cs: [Vec<f64>; SECTORS] = Default::default();
+    let mut sec_sum = [[0.0f64; 2]; SECTORS];
+    let mut sec_n = [0usize; SECTORS];
     for (i, q) in p_px.iter().enumerate() {
         let (a, b) = (q.lab[1], q.lab[2]);
         let c = a.hypot(b);
@@ -3360,6 +3449,9 @@ fn build_v5_ctx(
             let s = ((((p_hue[i] + 30.0).rem_euclid(360.0)) / 60.0) as usize) % SECTORS;
             sector[i] = s as u8;
             cs[s].push(c);
+            sec_sum[s][0] += a;
+            sec_sum[s][1] += b;
+            sec_n[s] += 1;
         }
     }
     let mut p_sec_logc = [0.0; SECTORS];
@@ -3370,10 +3462,33 @@ fn build_v5_ctx(
         .iter()
         .map(|q| q.lab[0] >= V7_HL_L_MIN && q.lab[1].hypot(q.lab[2]) < V7_HL_C_MAX)
         .collect();
-    let (p_hl_c, p_hl_h, _, _) = hl_stats(p_px, &hl_scope);
+    let (p_hl_c, p_hl_h, p_hl_a, p_hl_b) = hl_stats(p_px, &hl_scope);
+    let mut p_sec_ab = [[0.0; 2]; SECTORS];
+    for j in 0..SECTORS {
+        if sec_n[j] > 0 {
+            p_sec_ab[j] = [
+                sec_sum[j][0] / sec_n[j] as f64,
+                sec_sum[j][1] / sec_n[j] as f64,
+            ];
+        }
+    }
+    let dark_scope: Vec<bool> = p_px
+        .iter()
+        .enumerate()
+        .map(|(i, q)| {
+            !scene.skin[i] && q.lab[0] < V9_DARK_L && q.lab[1].hypot(q.lab[2]) >= V9_DARK_C
+        })
+        .collect();
+    let p_dark_ab = mean_ab(p_px, &dark_scope);
     Ok(V5Ctx {
         v7,
         v8: net.index.contains_key("T.purple_ok"),
+        v9: net.index.contains_key("T.mem.sky_deg"),
+        p_hl_a,
+        p_hl_b,
+        p_sec_ab,
+        dark_scope,
+        p_dark_ab,
         hl_scope,
         p_hl_c,
         p_hl_h,
@@ -3387,6 +3502,21 @@ fn build_v5_ctx(
         p_hue,
         p_sec_logc,
     })
+}
+
+/// The mean (a*, b*) over the pixels in the scope.
+fn mean_ab(px: &[Px], scope: &[bool]) -> [f64; 2] {
+    let (mut sa, mut sb, mut n) = (0.0, 0.0, 0usize);
+    for (q, _) in px.iter().zip(scope).filter(|&(_, &s)| s) {
+        sa += q.lab[1];
+        sb += q.lab[2];
+        n += 1;
+    }
+    if n == 0 {
+        [0.0, 0.0]
+    } else {
+        [sa / n as f64, sb / n as f64]
+    }
 }
 
 /// The median C* and the circular mean hue (of the pixels with C* above 5) over the group.
@@ -3431,6 +3561,9 @@ struct CandMeas {
     /// V8: the candidate's mean a* and b* over P's whites.
     hl_a: f64,
     hl_b: f64,
+    /// V9: the candidate's mean (a*, b*) over each of P's sectors' pixels and over P's dark-colours pixels.
+    sec_ab: [[f64; 2]; SECTORS],
+    dark_ab: [f64; 2],
 }
 
 fn cand_meas(px: &[Px], scene: &Scene, ctx: &V5Ctx) -> CandMeas {
@@ -3454,6 +3587,27 @@ fn cand_meas(px: &[Px], scene: &Scene, ctx: &V5Ctx) -> CandMeas {
         cnt[s] += 1;
         cs[s].push(q.lab[1].hypot(q.lab[2]));
     }
+    let mut sec_ab = [[0.0; 2]; SECTORS];
+    if ctx.v9 {
+        let mut sum = [[0.0f64; 2]; SECTORS];
+        for (i, q) in px.iter().enumerate() {
+            let s = ctx.sector[i];
+            if s != 255 {
+                sum[usize::from(s)][0] += q.lab[1];
+                sum[usize::from(s)][1] += q.lab[2];
+            }
+        }
+        for j in 0..SECTORS {
+            if cnt[j] > 0 {
+                sec_ab[j] = [sum[j][0] / cnt[j] as f64, sum[j][1] / cnt[j] as f64];
+            }
+        }
+    }
+    let dark_ab = if ctx.v9 {
+        mean_ab(px, &ctx.dark_scope)
+    } else {
+        [0.0, 0.0]
+    };
     let mut sec_shift = [0.0; SECTORS];
     let mut sec_dlogc = [0.0; SECTORS];
     for j in 0..SECTORS {
@@ -3470,6 +3624,8 @@ fn cand_meas(px: &[Px], scene: &Scene, ctx: &V5Ctx) -> CandMeas {
         hl_h,
         hl_a,
         hl_b,
+        sec_ab,
+        dark_ab,
     }
 }
 
@@ -3499,10 +3655,152 @@ struct V5T {
     guard_purple: f64,
     guard_white_dir: f64,
     guard_skin_drift: f64,
+    /// V9: the memory-colour wall (sky and foliage).
+    guard_mem: f64,
 }
 
 fn sq(x: f64) -> f64 {
     x * x
+}
+
+/// The walls of network v9: every group's hue and chroma are those of its mean (a*, b*) vector, which holds steady for dark,
+/// low-chroma colours. Groups: the elements, clothing, the sectors of unelemented pixels, the whites and the dark colours.
+fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
+    let o = &ctx.out;
+    let m = &c.m;
+    let wall = o.get("T.wall_deg");
+    let drift = |d: f64, limit: f64| {
+        if d.abs() > limit {
+            V5_GUARD_HUE_WEIGHT * sq((d.abs() - limit) / V5_GUARD_HUE_SCALE_DEG)
+        } else {
+            0.0
+        }
+    };
+    let vec_hc = |a: f64, b: f64| (circ_mean_deg(a, b), a.hypot(b));
+    // (photo0 hue, photo0 chroma, candidate hue) of every group that counts.
+    let mut groups: Vec<(f64, f64, f64)> = Vec::new();
+    let n = ctx.hl_scope.len() as f64;
+    for (k, e) in V5_ELEMS.iter().enumerate() {
+        let (pe, me) = (&ctx.p.el[k], &m.el[k]);
+        if pe.share < V5_PRESENT_SHARE || me.n == 0 {
+            continue;
+        }
+        let ((ph, pc), (ch, _)) = (pe.mv(), me.mv());
+        if pc < V9_MIN_MV_C {
+            continue;
+        }
+        let limit = if o.get(&format!("G.{e}.hue")) > V5_GATE_OPEN {
+            wall.max(V5_CAP_DEG[k] + V5_GUARD_HUE_EXTRA_DEG)
+        } else {
+            wall
+        };
+        t.guard_hue += drift(wrap_deg(ch - ph), limit);
+        groups.push((ph, pc, ch));
+        // The memory-colour wall: sky and foliage hold their hue within the network's limit.
+        let key = match k {
+            0 => Some("T.mem.sky_deg"),
+            1 => Some("T.mem.vegetation_deg"),
+            _ => None,
+        };
+        if let Some(key) = key {
+            let excess = (wrap_deg(ch - ph).abs() - o.get(key)).max(0.0);
+            t.guard_mem += V9_MEM.0 * sq(excess / V9_MEM.1);
+        }
+    }
+    let cl = (&ctx.p.clothing, &m.clothing);
+    if cl.0.share >= V5_PRESENT_SHARE && cl.1.n > 0 {
+        let ((ph, pc), (ch, _)) = (cl.0.mv(), cl.1.mv());
+        if pc >= V9_MIN_MV_C {
+            t.guard_hue += drift(wrap_deg(ch - ph), wall);
+            groups.push((ph, pc, ch));
+        }
+    }
+    for j in 0..SECTORS {
+        if ctx.p.sec[j].share >= V5_GUARD_SECTOR_MIN_SHARE && ctx.p.sec[j].n > 0 {
+            let (ph, pc) = vec_hc(ctx.p_sec_ab[j][0], ctx.p_sec_ab[j][1]);
+            let (ch, _) = vec_hc(c.sec_ab[j][0], c.sec_ab[j][1]);
+            if pc >= V9_MIN_MV_C {
+                t.guard_hue += drift(wrap_deg(ch - ph), wall);
+                groups.push((ph, pc, ch));
+            }
+        }
+    }
+    let n_hl = ctx.hl_scope.iter().filter(|&&s| s).count() as f64;
+    if n_hl >= V7_HL_MIN_SHARE * n {
+        let (ph, pc) = vec_hc(ctx.p_hl_a, ctx.p_hl_b);
+        let (ch, cc) = vec_hc(c.hl_a, c.hl_b);
+        // The highlight chroma cap, on the mean-vector chroma.
+        t.guard_hl = V7_HL_WEIGHT * sq((cc - o.get("T.hl_cmax")).max(0.0) / V7_HL_SCALE);
+        if pc >= V7_HL_MIN_C {
+            t.guard_hl += drift(wrap_deg(ch - ph), wall);
+        }
+        if pc >= V9_MIN_MV_C {
+            groups.push((ph, pc, ch));
+        }
+        // The whites' direction.
+        let d = (c.hl_a - o.get("T.white_a")).hypot(c.hl_b - o.get("T.white_b"));
+        let tol = o.get("T.white_tol");
+        if d > tol {
+            t.guard_white_dir = V8_WHITE_DIR.0 * sq((d - tol) / V8_WHITE_DIR.1);
+        }
+    }
+    let n_dark = ctx.dark_scope.iter().filter(|&&s| s).count() as f64;
+    if n_dark >= V5_PRESENT_SHARE * n {
+        let (ph, pc) = vec_hc(ctx.p_dark_ab[0], ctx.p_dark_ab[1]);
+        let (ch, _) = vec_hc(c.dark_ab[0], c.dark_ab[1]);
+        if pc >= V9_MIN_MV_C {
+            t.guard_hue += drift(wrap_deg(ch - ph), wall);
+            groups.push((ph, pc, ch));
+        }
+    }
+    // The purple wall, with its approach term.
+    let ok = 1.0 - o.get("T.purple_ok");
+    let (lo, hi) = V8_PURPLE_BAND;
+    let in_band = |h: f64| (lo..=hi).contains(&h.rem_euclid(360.0));
+    let dist = |h: f64| {
+        if in_band(h) {
+            0.0
+        } else {
+            wrap_deg(h - lo).abs().min(wrap_deg(h - hi).abs())
+        }
+    };
+    for (ph, pc, ch) in groups {
+        if in_band(ph) || pc < V9_MIN_MV_C {
+            continue;
+        }
+        let ch = ch.rem_euclid(360.0);
+        if in_band(ch) {
+            let d_in = (ch - lo).min(hi - ch);
+            t.guard_purple += V8_PURPLE_WEIGHT * sq(d_in / V8_PURPLE_SCALE_DEG) * ok;
+        } else if dist(ch) < V8_APPROACH_REACH_DEG && dist(ch) < dist(ph) {
+            t.guard_purple += V8_APPROACH_WEIGHT
+                * sq((V8_APPROACH_REACH_DEG - dist(ch)) / V5_GUARD_HUE_SCALE_DEG)
+                * ok;
+        }
+    }
+    // Skin: the absolute wall and the drift wall, on the mean vector.
+    let (pe, me) = (&ctx.p.el[5], &m.el[5]);
+    if pe.share >= V5_PRESENT_SHARE && me.n > 0 {
+        let ((ph, pc), (h, chroma)) = (pe.mv(), me.mv());
+        let eh = (V5_GUARD_SKIN_HUE.0 - h)
+            .max(h - V5_GUARD_SKIN_HUE.1)
+            .max(0.0);
+        let ec = (V5_GUARD_SKIN_CHROMA.0 - chroma)
+            .max(chroma - V5_GUARD_SKIN_CHROMA.1)
+            .max(0.0);
+        t.guard_skin =
+            V7_GUARD_SKIN_WEIGHT * (sq(eh / V5_GUARD_SKIN_SCALE) + sq(ec / V5_GUARD_SKIN_SCALE));
+        if pc >= V9_MIN_MV_C {
+            let excess = (wrap_deg(h - ph).abs() - o.get("T.skin_drift")).max(0.0);
+            t.guard_skin_drift = V8_SKIN_DRIFT.0 * sq(excess / V8_SKIN_DRIFT.1);
+        }
+    }
+    // The sky chroma wall, on the mean-vector chroma.
+    if ctx.p.el[0].share >= V5_PRESENT_SHARE {
+        let limit = (V5_GUARD_SKY_FACTOR * ctx.p.el[0].mv().1).max(o.get("T.sky.logC").exp());
+        let excess = (m.el[0].mv().1 - limit).max(0.0);
+        t.guard_sky = V5_GUARD_SKY_WEIGHT * sq(excess / V5_GUARD_SKY_SCALE);
+    }
 }
 
 /// The objective of `09` section 4 for a candidate.
@@ -3592,6 +3890,10 @@ fn terms_v5(c: &CandMeas, ctx: &V5Ctx) -> V5T {
         t.subject = V5_SUBJECT.2 * gs * term(m.sep - o.get("T.sep"), V5_SUBJECT.0, V5_SUBJECT.1);
     }
     // Guards.
+    if ctx.v9 {
+        guards_v9(&mut t, c, ctx);
+        return t;
+    }
     let drift = |d: f64, limit: f64| {
         if d.abs() > limit {
             V5_GUARD_HUE_WEIGHT * sq((d.abs() - limit) / V5_GUARD_HUE_SCALE_DEG)
@@ -4337,7 +4639,7 @@ fn v5_extra(
     }
     let g = |t: &Terms| {
         let t5 = t.t5;
-        json!({ "guard_hue_drift": t5.guard_hue, "guard_skin": t5.guard_skin, "guard_sky_chroma": t5.guard_sky, "guard_highlights": t5.guard_hl, "guard_purple": t5.guard_purple, "guard_white_direction": t5.guard_white_dir, "guard_skin_drift": t5.guard_skin_drift })
+        json!({ "guard_hue_drift": t5.guard_hue, "guard_skin": t5.guard_skin, "guard_sky_chroma": t5.guard_sky, "guard_highlights": t5.guard_hl, "guard_purple": t5.guard_purple, "guard_white_direction": t5.guard_white_dir, "guard_skin_drift": t5.guard_skin_drift, "guard_memory": t5.guard_mem })
     };
     json!({
         "network_inputs": ctx.inputs,
@@ -4972,6 +5274,8 @@ fn run_fit(
             ctx().network6.as_ref()
         } else if objective == Objective::V7 && ctx().network7.is_some() {
             ctx().network7.as_ref()
+        } else if objective == Objective::V8 && ctx().network8.is_some() {
+            ctx().network8.as_ref()
         } else {
             ctx().network.as_ref()
         }
@@ -5071,6 +5375,7 @@ fn write_pair(
     round5: Option<&PairOutcome>,
     round6: Option<&PairOutcome>,
     round7: Option<&PairOutcome>,
+    round8: Option<&PairOutcome>,
 ) -> R<()> {
     fs::create_dir_all(dir)?;
     let default8 = linear_to_rgb8(&pf.default_show);
@@ -5080,13 +5385,23 @@ fn write_pair(
     let aspect = pf.default_show.w as f64 / pf.default_show.h as f64;
     if matches!(
         objective,
-        Objective::V3 | Objective::V5 | Objective::V6 | Objective::V7 | Objective::V8
-    ) && (round2.is_some() || round5.is_some() || round6.is_some() || round7.is_some())
+        Objective::V3
+            | Objective::V5
+            | Objective::V6
+            | Objective::V7
+            | Objective::V8
+            | Objective::V9
+    ) && (round2.is_some()
+        || round5.is_some()
+        || round6.is_some()
+        || round7.is_some()
+        || round8.is_some())
     {
         let r2_8 = round2.map(|r| linear_to_rgb8(&r.fitted_show));
         let r5_8 = round5.map(|r| linear_to_rgb8(&r.fitted_show));
         let r6_8 = round6.map(|r| linear_to_rgb8(&r.fitted_show));
         let r7_8 = round7.map(|r| linear_to_rgb8(&r.fitted_show));
+        let r8_8 = round8.map(|r| linear_to_rgb8(&r.fitted_show));
         let mut rounds: Vec<(&str, &Rgb8)> = Vec::new();
         if let Some(r) = &r2_8 {
             rounds.push(("Round 2", r));
@@ -5100,8 +5415,12 @@ fn write_pair(
         if let Some(r) = &r7_8 {
             rounds.push(("Round 7", r));
         }
+        if let Some(r) = &r8_8 {
+            rounds.push(("Round 8", r));
+        }
         rounds.push((
             match objective {
+                Objective::V9 => "Round 9",
                 Objective::V8 => "Round 8",
                 Objective::V7 => "Round 7",
                 Objective::V6 => "Round 6",
@@ -5657,6 +5976,7 @@ struct Args {
     network5: Option<PathBuf>,
     network6: Option<PathBuf>,
     network7: Option<PathBuf>,
+    network8: Option<PathBuf>,
     network_check: bool,
     grades: usize,
 }
@@ -5687,6 +6007,7 @@ fn parse_args() -> R<Args> {
             "--network5" => a.network5 = Some(PathBuf::from(val()?)),
             "--network6" => a.network6 = Some(PathBuf::from(val()?)),
             "--network7" => a.network7 = Some(PathBuf::from(val()?)),
+            "--network8" => a.network8 = Some(PathBuf::from(val()?)),
             "--keep-key" => a.keep_key = true,
             "--grades" => a.grades = val()?.parse()?,
             "--objective" => {
@@ -5698,6 +6019,7 @@ fn parse_args() -> R<Args> {
                     "v6" => Objective::V6,
                     "v7" => Objective::V7,
                     "v8" => Objective::V8,
+                    "v9" => Objective::V9,
                     other => return Err(format!("--objective takes v1 or v2, not {other}").into()),
                 })
             }
@@ -5773,6 +6095,13 @@ fn main() -> R<()> {
         ),
         None => None,
     };
+    let network8 = match &args.network8 {
+        Some(path) => Some(
+            parse_network(&fs::read_to_string(path)?)
+                .map_err(|e| format!("{}: {e}", path.display()))?,
+        ),
+        None => None,
+    };
     if args.network_check {
         let net = network
             .as_ref()
@@ -5811,6 +6140,7 @@ fn main() -> R<()> {
         network5,
         network6,
         network7,
+        network8,
     });
     let core = open_core(&args.out)?;
     let cache = args.out.join("cache");
@@ -5895,6 +6225,7 @@ fn main() -> R<()> {
         let mut outcomes5: Vec<Option<PairOutcome>> = Vec::new();
         let mut outcomes6: Vec<Option<PairOutcome>> = Vec::new();
         let mut outcomes7: Vec<Option<PairOutcome>> = Vec::new();
+        let mut outcomes8: Vec<Option<PairOutcome>> = Vec::new();
         let mut index: BTreeMap<String, Value> = BTreeMap::new();
         for r in &loaded {
             let o = run_pair(&pf, r, args.strength, !args.no_hue, objective)?;
@@ -5926,17 +6257,30 @@ fn main() -> R<()> {
                     None
                 };
             // Round 7 next to Round 8: the V7 fit of the same pair (with `--network7`).
-            let o7 = if objective == Objective::V8 && ctx().network7.is_some() {
+            // Round 8 next to Round 9: the V8 fit of the same pair (with `--network8`).
+            let o8 = if objective == Objective::V9 && ctx().network8.is_some() {
                 Some(run_pair(
                     &pf,
                     r,
                     args.strength,
                     !args.no_hue,
-                    Objective::V7,
+                    Objective::V8,
                 )?)
             } else {
                 None
             };
+            let o7 =
+                if matches!(objective, Objective::V8 | Objective::V9) && ctx().network7.is_some() {
+                    Some(run_pair(
+                        &pf,
+                        r,
+                        args.strength,
+                        !args.no_hue,
+                        Objective::V7,
+                    )?)
+                } else {
+                    None
+                };
             let o2 = if matches!(objective, Objective::V3 | Objective::V5 | Objective::V6) {
                 Some(run_pair(
                     &pf,
@@ -5970,11 +6314,13 @@ fn main() -> R<()> {
                 o5.as_ref(),
                 o6.as_ref(),
                 o7.as_ref(),
+                o8.as_ref(),
             )?;
             outcomes2.push(o2);
             outcomes5.push(o5);
             outcomes6.push(o6);
             outcomes7.push(o7);
+            outcomes8.push(o8);
             index.insert(
                 r.stem.clone(),
                 json!({ "fit_seconds": o.fit.seconds, "per_eval_ms": o.fit.per_eval_ms, "before": o.fit.before.total(), "after": o.fit.after.total() }),
@@ -5982,7 +6328,9 @@ fn main() -> R<()> {
             outcomes.push(o);
         }
         let pairs: Vec<(&Reference, &PairOutcome)> = loaded.iter().zip(&outcomes).collect();
-        let grid_rows = if outcomes7.iter().any(Option::is_some) {
+        let grid_rows = if outcomes8.iter().any(Option::is_some) {
+            &outcomes8
+        } else if outcomes7.iter().any(Option::is_some) {
             &outcomes7
         } else if outcomes6.iter().any(Option::is_some) {
             &outcomes6
