@@ -11337,6 +11337,7 @@ version = "0.2.4"
 dependencies = [
  "fs4",
  "half",
+ "jpeg-encoder",
  "jsonschema",
  "libc",
  "png 0.18.1",
