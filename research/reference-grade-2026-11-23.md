@@ -228,7 +228,7 @@ Both match one image to another without a trained model, which supports the prod
 4. **Phase 2 budget:** only later, and only if Phase 1 misses the bar. Confirm the Modal balance first.
 5. **The name** stays "Reference Grade"; never "REVEAL".
 
-**Answered 2026-11-23: parked.** Nothing is planned or built. The owner's answers for when it is picked up: reference sources are both image files and photos in the strip; hue moves use a new hue-curve field on the node instead of warp pins, so the change touches the colour kernel's node code and must pass `diag-alf` before a release.
+**Answered 2026-11-23: parked.** Nothing is planned or built. The owner's answers for when it is picked up: reference sources are both image files and photos in the strip; hue moves use a new hue-curve field on the node instead of warp pins, so the change touches the colour kernel's node code and must pass `diag-alf` before a release. **2026-11-24: unparked; the spec is `docs/34-reference-grade.md`.**
 
 ## Sources
 
