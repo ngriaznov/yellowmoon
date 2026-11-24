@@ -68,6 +68,7 @@ struct Ctx {
     labels: Option<PathBuf>,
     seg: Option<ym_ml::mediapipe::selfie::SelfieSegmenter>,
     network: Option<Network>,
+    network5: Option<Network>,
 }
 
 static CTX: std::sync::OnceLock<Ctx> = std::sync::OnceLock::new();
@@ -77,6 +78,7 @@ fn ctx() -> &'static Ctx {
         labels: None,
         seg: None,
         network: None,
+        network5: None,
     })
 }
 
@@ -899,6 +901,15 @@ enum Objective {
     V3,
     /// Round 5: a hand-written network sets the targets, the solver sets the settings (`refgrade-notes/09-model-v5.md`).
     V5,
+    /// Round 6: network v6, a stronger look: the frame cast, the unify gate and the wall limit as network outputs.
+    V6,
+}
+
+impl Objective {
+    /// Whether the objective reads a network (V5 and V6).
+    fn net(self) -> bool {
+        matches!(self, Objective::V5 | Objective::V6)
+    }
 }
 
 /// V2 weights and scales. Tone: black floor, white ceiling, midtone contrast, and an anchor on the photo's own median.
@@ -1147,7 +1158,7 @@ impl Terms {
             let t = &self.t5;
             on(MASK_BASE) * (t.floor + t.ceil + t.anchor)
                 + on(MASK_TONE) * t.contrast
-                + on(MASK_CAST) * t.tint
+                + on(MASK_CAST) * (t.tint + t.frame_cast)
                 + on(MASK_CHROMA) * (t.sat + t.sec_chroma)
                 + on(MASK_HUE) * t.sec_hue
                 + on(MASK_ELEM_COL) * (t.el_hue + t.el_chroma)
@@ -1189,7 +1200,7 @@ impl Terms {
             let t = self.t5;
             json!({
                 "objective": "v5",
-                "floor": t.floor, "ceiling": t.ceil, "contrast": t.contrast, "anchor": t.anchor, "tint": t.tint,
+                "floor": t.floor, "ceiling": t.ceil, "contrast": t.contrast, "anchor": t.anchor, "tint": t.tint, "frame_cast": t.frame_cast,
                 "saturation": t.sat, "sector_hue": t.sec_hue, "sector_chroma": t.sec_chroma,
                 "element_hue": t.el_hue, "element_chroma": t.el_chroma, "element_exposure": t.el_exp,
                 "subject_separation": t.subject,
@@ -1250,7 +1261,7 @@ fn terms(obj: Objective, out: &Stats, reference: &Stats, p0: &Stats, x: &[f64; N
     let mut t = Terms {
         v2: obj == Objective::V2,
         v3: obj == Objective::V3,
-        v5: obj == Objective::V5,
+        v5: obj.net(),
         t5: V5T::default(),
         reg_local: 0.0,
         elem_colour: 0.0,
@@ -2189,6 +2200,8 @@ const V5_EL_HUE: (f64, f64) = (10.0, 3.0);
 const V5_EL_CHROMA: (f64, f64) = (0.10, 0.03);
 const V5_EL_EXPOSURE: (f64, f64) = (3.0, 2.0);
 const V5_SUBJECT: (f64, f64, f64) = (3.0, 2.0, 1.0);
+/// V6 frame cast term (`10`): scale, dead band, weight (times `G.unify`).
+const V6_CAST: (f64, f64, f64) = (2.0, 1.0, 1.2);
 /// Guards (`09` section 4.3): hue drift limit, its band scale and weight; the element limit is `cap + 5`.
 const V5_GUARD_HUE_LIMIT_DEG: f64 = 25.0;
 const V5_GUARD_HUE_EXTRA_DEG: f64 = 5.0;
@@ -2236,7 +2249,9 @@ struct Network {
 fn network_input_names() -> Vec<String> {
     let mut v = Vec::new();
     for x in ["P", "R"] {
-        for n in ["p2", "p50", "p98", "iqr_rel", "logsat", "subj", "sep"] {
+        for n in [
+            "p2", "p50", "p98", "iqr_rel", "logsat", "subj", "sep", "cast_a", "cast_b", "conc",
+        ] {
             v.push(format!("{x}.{n}"));
         }
         for b in ["s", "m", "h"] {
@@ -2481,6 +2496,9 @@ impl NetOut {
                 || n == "glob.ka"
                 || n == "glob.kb"
                 || n.ends_with(".e_gate")
+                || n == "sky.m0"
+                || n == "sky.litP"
+                || n == "sky.litR"
             {
                 gates.insert(n.clone(), json!(v));
             }
@@ -2533,6 +2551,8 @@ fn network_check(net: &Network) -> R<bool> {
             set(&mut p, &format!("{x}.s{j}.logC"), logc);
         }
     }
+    let v6 = net.index.contains_key("G.unify");
+    let (w_sky, k_sat) = if v6 { (0.85, 0.85) } else { (0.7, 0.6) };
     let r_same = p.clone();
     let out1 = NetOut::new(net, &p)?;
     let mut ok = true;
@@ -2620,16 +2640,19 @@ fn network_check(net: &Network) -> R<bool> {
         "T.sky.h",
         255.0,
         &out2,
-        "255 - 0.7 x 40 = 227 (move capped at 40)",
-        (t("T.sky.h") - 227.0).abs() < 1e-6,
+        &format!(
+            "255 - {w_sky} x 40 = {} (move capped at 40)",
+            255.0 - w_sky * 40.0
+        ),
+        (t("T.sky.h") - (255.0 - w_sky * 40.0)).abs() < 1e-6,
         &mut ok,
     );
     show(
         "T.logsat",
         15f64.ln(),
         &out2,
-        "up by 0.6 x ln 1.35",
-        (t("T.logsat") - (15f64.ln() + 0.6 * 1.35f64.ln())).abs() < 1e-9,
+        &format!("up by {k_sat} x ln 1.35"),
+        (t("T.logsat") - (15f64.ln() + k_sat * 1.35f64.ln())).abs() < 1e-9,
         &mut ok,
     );
     show(
@@ -2696,6 +2719,91 @@ fn network_check(net: &Network) -> R<bool> {
         (out3.get("T.sep") - 6.0).abs() < 1e-9,
         &mut ok,
     );
+    if v6 {
+        // A fourth vector: a one-colour amber reference against a neutral photo: unify opens, the frame cast target moves up
+        // by 0.8 of the (clipped) difference and the hue-drift wall opens to 55.
+        let mut p4 = r_same.clone();
+        set(&mut p4, "P.cast_a", 0.0);
+        set(&mut p4, "P.cast_b", 1.0);
+        set(&mut p4, "P.conc", 0.1);
+        set(&mut p4, "R.cast_a", 6.0);
+        set(&mut p4, "R.cast_b", 28.0);
+        set(&mut p4, "R.conc", 0.9);
+        let out4 = NetOut::new(net, &p4)?;
+        println!(
+            "== check 4 (v6): a one-colour amber reference (cast 6, 28; conc 0.9) against a neutral photo (cast 0, 1; conc 0.1)"
+        );
+        show(
+            "G.unify",
+            0.0,
+            &out4,
+            "1",
+            (out4.get("G.unify") - 1.0).abs() < 1e-9,
+            &mut ok,
+        );
+        show(
+            "T.cast_b",
+            1.0,
+            &out4,
+            "1 + 0.8 x 15 = 13",
+            (out4.get("T.cast_b") - 13.0).abs() < 1e-9,
+            &mut ok,
+        );
+        show(
+            "T.cast_a",
+            0.0,
+            &out4,
+            "0.8 x 6 = 4.8",
+            (out4.get("T.cast_a") - 4.8).abs() < 1e-9,
+            &mut ok,
+        );
+        show(
+            "T.wall_deg",
+            25.0,
+            &out4,
+            "55",
+            (out4.get("T.wall_deg") - 55.0).abs() < 1e-9,
+            &mut ok,
+        );
+        // Identical pictures and a one-colour frame in both: unify stays shut and the wall stays at 25.
+        let mut p5 = r_same.clone();
+        for x in ["P", "R"] {
+            set(&mut p5, &format!("{x}.cast_a"), 6.0);
+            set(&mut p5, &format!("{x}.cast_b"), 28.0);
+            set(&mut p5, &format!("{x}.conc"), 0.9);
+        }
+        let out5 = NetOut::new(net, &p5)?;
+        println!("== check 5 (v6): both pictures one-colour amber (nothing to unify)");
+        show(
+            "G.unify",
+            0.0,
+            &out5,
+            "0",
+            out5.get("G.unify").abs() < 1e-9,
+            &mut ok,
+        );
+        show(
+            "T.wall_deg",
+            25.0,
+            &out5,
+            "25",
+            (out5.get("T.wall_deg") - 25.0).abs() < 1e-9,
+            &mut ok,
+        );
+        // A black studio backdrop for a sky (median L* 10) in the reference: the dark-sky rule shuts the sky's gate.
+        let mut p6 = r_same.clone();
+        set(&mut p6, "R.sky.L", 10.0);
+        let out6 = NetOut::new(net, &p6)?;
+        println!("== check 6 (v6): the reference's \"sky\" has median L* 10 (a black backdrop)");
+        show(
+            "G.sky.matched",
+            1.0,
+            &out6,
+            "0 (dark-sky rule)",
+            out6.get("G.sky.matched").abs() < 1e-9,
+            &mut ok,
+        );
+    }
     println!(
         "{}",
         if ok {
@@ -2760,6 +2868,10 @@ struct Meas {
     sec: [SecM; SECTORS],
     hi: f64,
     lo: f64,
+    /// V6: the mean a* and b* over all pixels, and `conc`: their length over the mean C* (0: colours cancel, 1: one hue).
+    cast_a: f64,
+    cast_b: f64,
+    conc: f64,
 }
 
 fn circ_mean_deg(sx: f64, sy: f64) -> f64 {
@@ -2836,7 +2948,19 @@ fn measure(px: &[Px], scene: &Scene, excl: &[bool; 6]) -> Meas {
         lo += usize::from(p.lo);
     }
     let nf = n as f64;
+    let (sum_a, sum_b, sum_c) = px.iter().fold((0.0, 0.0, 0.0), |s, p| {
+        (
+            s.0 + p.lab[1],
+            s.1 + p.lab[2],
+            s.2 + p.lab[1].hypot(p.lab[2]),
+        )
+    });
+    let (cast_a, cast_b) = (sum_a / n as f64, sum_b / n as f64);
+    let conc = cast_a.hypot(cast_b) / (sum_c / n as f64).max(1.0);
     let mut m = Meas {
+        cast_a,
+        cast_b,
+        conc,
         p2,
         p50,
         p98,
@@ -2921,6 +3045,9 @@ fn network_inputs(p: &Meas, r: &Meas) -> BTreeMap<String, f64> {
         m.insert(format!("{x}.logsat"), q.logsat);
         m.insert(format!("{x}.subj"), if q.subj { 1.0 } else { 0.0 });
         m.insert(format!("{x}.sep"), q.sep);
+        m.insert(format!("{x}.cast_a"), q.cast_a);
+        m.insert(format!("{x}.cast_b"), q.cast_b);
+        m.insert(format!("{x}.conc"), q.conc);
         for (b, name) in ["s", "m", "h"].iter().enumerate() {
             m.insert(format!("{x}.tint_{name}_a"), q.tint[b][0]);
             m.insert(format!("{x}.tint_{name}_b"), q.tint[b][1]);
@@ -2969,6 +3096,8 @@ struct V5Ctx {
     sector: Vec<u8>,
     p_hue: Vec<f64>,
     p_sec_logc: [f64; SECTORS],
+    /// Whether the network is v6 (it has the frame cast and the wall limit as outputs).
+    v6: bool,
 }
 
 fn build_v5_ctx(
@@ -3010,6 +3139,7 @@ fn build_v5_ctx(
         p_sec_logc[j] = median_of(&mut cs[j]).max(1.0).ln();
     }
     Ok(V5Ctx {
+        v6: net.index.contains_key("G.unify"),
         excl,
         p,
         r,
@@ -3077,6 +3207,8 @@ struct V5T {
     guard_hue: f64,
     guard_skin: f64,
     guard_sky: f64,
+    /// V6: the frame cast term.
+    frame_cast: f64,
 }
 
 fn sq(x: f64) -> f64 {
@@ -3158,6 +3290,13 @@ fn terms_v5(c: &CandMeas, ctx: &V5Ctx) -> V5T {
                 );
         }
     }
+    if ctx.v6 {
+        let g = o.get("G.unify");
+        if g > 0.0 {
+            let e = |got: f64, name: &str| sq(dead(got - o.get(name), V6_CAST.1) / V6_CAST.0);
+            t.frame_cast = V6_CAST.2 * g * (e(m.cast_a, "T.cast_a") + e(m.cast_b, "T.cast_b"));
+        }
+    }
     let gs = o.get("G.subj");
     if gs > 0.0 {
         t.subject = V5_SUBJECT.2 * gs * term(m.sep - o.get("T.sep"), V5_SUBJECT.0, V5_SUBJECT.1);
@@ -3170,19 +3309,29 @@ fn terms_v5(c: &CandMeas, ctx: &V5Ctx) -> V5T {
             0.0
         }
     };
+    // The wall limit: 25 degrees in v5; in v6 the network's `T.wall_deg` (25, up to 55 when unify is open).
+    let wall = if ctx.v6 {
+        o.get("T.wall_deg")
+    } else {
+        V5_GUARD_HUE_LIMIT_DEG
+    };
     for (k, e) in V5_ELEMS.iter().enumerate() {
         if ctx.p.el[k].share >= V5_PRESENT_SHARE && ctx.p.el[k].has_hue && m.el[k].has_hue {
             let limit = if o.get(&format!("G.{e}.hue")) > V5_GATE_OPEN {
-                V5_CAP_DEG[k] + V5_GUARD_HUE_EXTRA_DEG
+                if ctx.v6 {
+                    wall.max(V5_CAP_DEG[k] + V5_GUARD_HUE_EXTRA_DEG)
+                } else {
+                    V5_CAP_DEG[k] + V5_GUARD_HUE_EXTRA_DEG
+                }
             } else {
-                V5_GUARD_HUE_LIMIT_DEG
+                wall
             };
             t.guard_hue += drift(wrap_deg(m.el[k].h - ctx.p.el[k].h), limit);
         }
     }
     for j in 0..SECTORS {
         if ctx.p.sec[j].share >= V5_GUARD_SECTOR_MIN_SHARE {
-            t.guard_hue += drift(c.sec_shift[j], V5_GUARD_HUE_LIMIT_DEG);
+            t.guard_hue += drift(c.sec_shift[j], wall);
         }
     }
     if ctx.p.el[5].share >= V5_PRESENT_SHARE && m.el[5].has_hue {
@@ -3471,7 +3620,7 @@ impl Evaluator<'_> {
 
     fn objective(&mut self, x: &[f64; N_PARAMS]) -> (f64, Terms) {
         let t0 = Instant::now();
-        let t = if self.objective == Objective::V5 {
+        let t = if self.objective.net() {
             self.v5_terms(x).0
         } else {
             let s = self.stats(x);
@@ -3552,7 +3701,7 @@ struct FitResult {
 }
 
 fn fit(ev: &mut Evaluator<'_>) -> FitResult {
-    if ev.objective == Objective::V5 {
+    if ev.objective.net() {
         return fit_v5(ev);
     }
     let t0 = Instant::now();
@@ -3768,6 +3917,13 @@ fn v5_extra(
                 o.get(&format!("T.{e}.off")) - (pm.l - ctx.p.p50)
             ));
         }
+    }
+    if o.names.iter().any(|n| n == "G.unify") {
+        lines.push(format!(
+            "unify: {:.0}  wall {:.0} deg",
+            o.get("G.unify"),
+            o.get("T.wall_deg")
+        ));
     }
     let open: Vec<String> = (0..SECTORS)
         .filter(|&j| o.get(&format!("G.s{j}")) > V5_GATE_OPEN)
@@ -4380,7 +4536,7 @@ fn run_fit(
     ref_scene: Option<&Scene>,
 ) -> R<(FitResult, Stats)> {
     let conv = LabConv::new();
-    let v5 = objective == Objective::V5;
+    let v5 = objective.net();
     let v3 = objective == Objective::V3 || v5;
     if v3 && (ref_scene.is_none() || pf.scene_samples.is_none()) {
         return Err(
@@ -4428,10 +4584,13 @@ fn run_fit(
         });
     }
     if v5 {
-        let net = ctx()
-            .network
-            .as_ref()
-            .ok_or("objective v5 needs --network <file.ywn>")?;
+        // V5 runs next to V6 (for the Round 5 panel) read their own network, `--network5`.
+        let net = if objective == Objective::V5 && ctx().network5.is_some() {
+            ctx().network5.as_ref()
+        } else {
+            ctx().network.as_ref()
+        }
+        .ok_or("objective v5 and v6 need --network <file.ywn>")?;
         let (Some(sc), Some(rs)) = (ev.scene.as_ref(), ref_scene) else {
             return Err("objective v5 needs labels".into());
         };
@@ -4503,14 +4662,7 @@ fn run_pair(
         *v *= strength;
     }
     let real = to_real(&fit_res.x, strength);
-    let fitted_show = render_fitted(
-        pf,
-        &fit_res.x,
-        strength,
-        with_hue,
-        true,
-        objective == Objective::V5,
-    )?;
+    let fitted_show = render_fitted(pf, &fit_res.x, strength, with_hue, true, objective.net())?;
     Ok(PairOutcome {
         fitted_show,
         fit: fit_res,
@@ -4531,6 +4683,7 @@ fn write_pair(
     with_hue: bool,
     objective: Objective,
     round2: Option<&PairOutcome>,
+    round5: Option<&PairOutcome>,
 ) -> R<()> {
     fs::create_dir_all(dir)?;
     let default8 = linear_to_rgb8(&pf.default_show);
@@ -4538,19 +4691,28 @@ fn write_pair(
     let ref_show_lin = rgb8_to_linear(&reference.show8);
     let reinhard8 = linear_to_rgb8(&reinhard(&pf.default_show, &ref_show_lin));
     let aspect = pf.default_show.w as f64 / pf.default_show.h as f64;
-    if let (Objective::V3 | Objective::V5, Some(r2)) = (objective, round2) {
+    if let (Objective::V3 | Objective::V5 | Objective::V6, Some(r2)) = (objective, round2) {
         let round2_8 = linear_to_rgb8(&r2.fitted_show);
+        let round5_8 = round5.map(|r| linear_to_rgb8(&r.fitted_show));
+        let mut rounds: Vec<(&str, &Rgb8)> = vec![("Round 2", &round2_8)];
+        if let Some(r5) = &round5_8 {
+            rounds.push(("Round 5", r5));
+        }
+        rounds.push((
+            match objective {
+                Objective::V6 => "Round 6",
+                Objective::V5 => "Round 5",
+                _ => "Round 3",
+            },
+            &fitted8,
+        ));
         write_sheet_v3(
             &dir.join("sheet.jpg"),
             reference,
-            [&default8, &round2_8, &fitted8],
+            &default8,
+            &rounds,
             pf,
             aspect,
-            if objective == Objective::V5 {
-                "Round 5"
-            } else {
-                "Round 3"
-            },
             o.fit.extra["panel_lines"]
                 .as_array()
                 .map(|a| {
@@ -4630,7 +4792,7 @@ fn write_pair(
         "reference_bars_stripped_top_bottom_left_right": reference.bars,
         "fitted_values": real_json(&o.real, &o.fit.x, strength),
         "objective_on_fit_sample": { "before": o.fit.before.to_json(), "after": o.fit.after.to_json() },
-        "objective_on_full_fit_pictures_512px": if objective == Objective::V5 { Value::Null } else { json!({ "default": before_full.to_json(), "fitted_at_strength": after_full.to_json() }) },
+        "objective_on_full_fit_pictures_512px": if objective.net() { Value::Null } else { json!({ "default": before_full.to_json(), "fitted_at_strength": after_full.to_json() }) },
         "v5": o.fit.extra,
         "picture_stats": {
             "median_L": { "reference": ref_stats.median, "default": def_stats.median, "fitted": fit_stats.median },
@@ -4650,7 +4812,7 @@ fn write_pair(
         "output_look": pf.photo.output.look_id,
         "output_look_intensity_pct": pf.photo.output.intensity_pct,
         "notes": pf.photo.notes,
-        "settings_json_note": if objective == Objective::V5 { "settings.json holds the global grade as real corrector settings (saturation and the four curves). The hue curves and the local grades are POC-only CPU steps with no settings field, so `ym render` with it gives the picture without them." } else if with_hue { "settings.json holds the part that is real corrector settings; the hue curves have no settings field yet, so `ym render` with it gives the picture without the hue step." } else { "no hue step: `ym render --settings settings.json` should reproduce the fitted picture (up to output sharpening)." },
+        "settings_json_note": if objective.net() { "settings.json holds the global grade as real corrector settings (saturation and the four curves). The hue curves and the local grades are POC-only CPU steps with no settings field, so `ym render` with it gives the picture without them." } else if with_hue { "settings.json holds the part that is real corrector settings; the hue curves have no settings field yet, so `ym render` with it gives the picture without the hue step." } else { "no hue step: `ym render --settings settings.json` should reproduce the fitted picture (up to output sharpening)." },
     });
     fs::write(
         dir.join("params.json"),
@@ -4703,26 +4865,34 @@ fn label_overlay(img: &Rgb8, scene: &Scene, sw: usize, sh: usize) -> Rgb8 {
     }
 }
 
-/// The V3 sheet: Reference, Yellowmoon default, Round 2, Round 3, and under them a strip with the labels the model
-/// recognised in the reference and in the photo (and the palette).
+/// The sheet of the scene-aware rounds: Reference, Yellowmoon default, then one panel per round in `rounds` (label and
+/// picture), and under them a strip with the labels the model recognised in the reference and in the photo, the text panel
+/// of the last round's decisions, and the palette.
 fn write_sheet_v3(
     path: &Path,
     reference: &Reference,
-    panels: [&Rgb8; 3],
+    default8: &Rgb8,
+    rounds: &[(&str, &Rgb8)],
     pf: &PhotoFit<'_>,
     photo_aspect: f64,
-    round_label: &str,
     lines: Vec<String>,
 ) -> R<()> {
     const GAP: usize = 8;
     const BAND: usize = 30;
     const STRIP_H: usize = 150;
+    let n = 2 + rounds.len();
     let panel_h = (PANEL_W_PX as f64 / photo_aspect).round() as usize;
-    let (w, h) = (4 * PANEL_W_PX + 5 * GAP, panel_h + BAND + STRIP_H + 3 * GAP);
+    let (w, h) = (
+        n * PANEL_W_PX + (n + 1) * GAP,
+        panel_h + BAND + STRIP_H + 3 * GAP,
+    );
     let mut c = Canvas::new(w, h, 18);
-    let labels = ["Reference", "Yellowmoon default", "Round 2", round_label];
-    let all = [&reference.show8, panels[0], panels[1], panels[2]];
-    for (i, (img, label)) in all.iter().zip(labels).enumerate() {
+    let mut all: Vec<(&str, &Rgb8)> = vec![
+        ("Reference", &reference.show8),
+        ("Yellowmoon default", default8),
+    ];
+    all.extend(rounds.iter().cloned());
+    for (i, (label, img)) in all.iter().enumerate() {
         let x = GAP + i * (PANEL_W_PX + GAP);
         c.text(label, x, GAP + 4, 3, 235);
         c.put_fit(img, x, GAP + BAND, PANEL_W_PX, panel_h);
@@ -4744,13 +4914,14 @@ fn write_sheet_v3(
         let ov = label_overlay(&small, sc, pf.fit_img.w, pf.fit_img.h);
         c.put_fit(&ov, GAP + PANEL_W_PX + GAP, y, PANEL_W_PX, STRIP_H);
     }
-    // The text panel (the network's decisions and the local grades) under Round 2, the palette under Round 5 (one swatch per
-    // element in label order: sky, vegetation, water, ground, architecture, interior, person, other thing, other stuff, skin).
+    // The text panel (the network's decisions and the local grades) under the first round, the palette under the last one
+    // (one swatch per element in label order: sky, vegetation, water, ground, architecture, interior, person, other thing,
+    // other stuff, skin).
     let x0 = GAP + 2 * (PANEL_W_PX + GAP);
     for (i, l) in lines.iter().take(8).enumerate() {
         c.text(l, x0 + 8, y + 4 + i * 17, 2, 225);
     }
-    let x1 = x0 + PANEL_W_PX + GAP;
+    let x1 = GAP + (n - 1) * (PANEL_W_PX + GAP);
     for (k, id) in [1usize, 2, 3, 4, 5, 6, 7, 8, 9, 10].iter().enumerate() {
         for yy in 0..30 {
             for xx in 0..30 {
@@ -4838,7 +5009,7 @@ fn selftest(
         let truth = render_image(&pf.fit_img, &truth_cand, &pf.output);
         let t0 = Instant::now();
         let (fit_res, _) = run_fit(pf, &truth, 1.0, true, objective, pf.scene_fit.as_ref())?;
-        let fitted = render_fitted(pf, &fit_res.x, 1.0, true, false, objective == Objective::V5)?;
+        let fitted = render_fitted(pf, &fit_res.x, 1.0, true, false, objective.net())?;
         let ident = Candidate::new(&to_real(&[0.0; N_PARAMS], 1.0), false)?;
         let ungraded = render_image(&pf.fit_img, &ident, &pf.output);
         let de = |a: &Img, b: &Img| -> Vec<f64> {
@@ -5021,8 +5192,7 @@ fn e2(
                         obj,
                         pfs[a].scene_fit.as_ref(),
                     )?;
-                    let fitted =
-                        render_fitted(&pfs[b], &fr.x, 1.0, true, false, obj == Objective::V5)?;
+                    let fitted = render_fitted(&pfs[b], &fr.x, 1.0, true, false, obj.net())?;
                     let ungraded = render_image(
                         &pfs[b].fit_img,
                         &Candidate::new(&to_real(&[0.0; N_PARAMS], 1.0), false)?,
@@ -5080,6 +5250,7 @@ struct Args {
     keep_key: bool,
     labels: Option<PathBuf>,
     network: Option<PathBuf>,
+    network5: Option<PathBuf>,
     network_check: bool,
     grades: usize,
 }
@@ -5107,6 +5278,7 @@ fn parse_args() -> R<Args> {
             "--labels" => a.labels = Some(PathBuf::from(val()?)),
             "--network" => a.network = Some(PathBuf::from(val()?)),
             "--network-check" => a.network_check = true,
+            "--network5" => a.network5 = Some(PathBuf::from(val()?)),
             "--keep-key" => a.keep_key = true,
             "--grades" => a.grades = val()?.parse()?,
             "--objective" => {
@@ -5115,6 +5287,7 @@ fn parse_args() -> R<Args> {
                     "v2" => Objective::V2,
                     "v3" => Objective::V3,
                     "v5" => Objective::V5,
+                    "v6" => Objective::V6,
                     other => return Err(format!("--objective takes v1 or v2, not {other}").into()),
                 })
             }
@@ -5169,6 +5342,13 @@ fn main() -> R<()> {
         }
         None => None,
     };
+    let network5 = match &args.network5 {
+        Some(path) => Some(
+            parse_network(&fs::read_to_string(path)?)
+                .map_err(|e| format!("{}: {e}", path.display()))?,
+        ),
+        None => None,
+    };
     if args.network_check {
         let net = network
             .as_ref()
@@ -5204,6 +5384,7 @@ fn main() -> R<()> {
         labels: args.labels.clone(),
         seg,
         network,
+        network5,
     });
     let core = open_core(&args.out)?;
     let cache = args.out.join("cache");
@@ -5285,11 +5466,24 @@ fn main() -> R<()> {
         }
         let mut outcomes = Vec::new();
         let mut outcomes2: Vec<Option<PairOutcome>> = Vec::new();
+        let mut outcomes5: Vec<Option<PairOutcome>> = Vec::new();
         let mut index: BTreeMap<String, Value> = BTreeMap::new();
         for r in &loaded {
             let o = run_pair(&pf, r, args.strength, !args.no_hue, objective)?;
             // Round 2 for comparison: the V2 fit of the same pair.
-            let o2 = if matches!(objective, Objective::V3 | Objective::V5) {
+            // Round 5 next to Round 6: the V5 fit of the same pair (with `--network5`).
+            let o5 = if objective == Objective::V6 && ctx().network5.is_some() {
+                Some(run_pair(
+                    &pf,
+                    r,
+                    args.strength,
+                    !args.no_hue,
+                    Objective::V5,
+                )?)
+            } else {
+                None
+            };
+            let o2 = if matches!(objective, Objective::V3 | Objective::V5 | Objective::V6) {
                 Some(run_pair(
                     &pf,
                     r,
@@ -5319,8 +5513,10 @@ fn main() -> R<()> {
                 !args.no_hue,
                 objective,
                 o2.as_ref(),
+                o5.as_ref(),
             )?;
             outcomes2.push(o2);
+            outcomes5.push(o5);
             index.insert(
                 r.stem.clone(),
                 json!({ "fit_seconds": o.fit.seconds, "per_eval_ms": o.fit.per_eval_ms, "before": o.fit.before.total(), "after": o.fit.after.total() }),
@@ -5328,7 +5524,12 @@ fn main() -> R<()> {
             outcomes.push(o);
         }
         let pairs: Vec<(&Reference, &PairOutcome)> = loaded.iter().zip(&outcomes).collect();
-        write_grid(&photo_dir.join("grid.jpg"), &pf, &pairs, &outcomes2)?;
+        let grid_rows = if outcomes5.iter().any(Option::is_some) {
+            &outcomes5
+        } else {
+            &outcomes2
+        };
+        write_grid(&photo_dir.join("grid.jpg"), &pf, &pairs, grid_rows)?;
         let legend: Vec<Value> = loaded
             .iter()
             .enumerate()
