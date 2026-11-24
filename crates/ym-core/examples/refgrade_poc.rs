@@ -73,6 +73,7 @@ struct Ctx {
     network7: Option<Network>,
     network8: Option<Network>,
     network9: Option<Network>,
+    network10: Option<Network>,
 }
 
 static CTX: std::sync::OnceLock<Ctx> = std::sync::OnceLock::new();
@@ -87,6 +88,7 @@ fn ctx() -> &'static Ctx {
         network7: None,
         network8: None,
         network9: None,
+        network10: None,
     })
 }
 
@@ -853,8 +855,26 @@ fn render_pixel_m(
 #[derive(Clone, Copy, Debug, Default)]
 struct Px {
     lab: [f64; 3],
+    /// Oklab (a, b), for the purple tests of V11.
+    ok: [f64; 2],
     hi: bool,
     lo: bool,
+}
+
+/// Oklab (a, b) of a linear sRGB colour (Ottosson's matrices).
+fn oklab_ab(c: [f64; 3]) -> [f64; 2] {
+    let l = (0.412_221_470_8 * c[0] + 0.536_332_536_3 * c[1] + 0.051_445_992_9 * c[2]).cbrt();
+    let m = (0.211_903_498_2 * c[0] + 0.680_699_545_1 * c[1] + 0.107_396_956_6 * c[2]).cbrt();
+    let s = (0.088_302_461_9 * c[0] + 0.281_718_837_6 * c[1] + 0.629_978_700_5 * c[2]).cbrt();
+    [
+        1.977_998_495_1 * l - 2.428_592_205_0 * m + 0.450_593_709_9 * s,
+        0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766_0 * s,
+    ]
+}
+
+/// The hue, in degrees 0..360, of an Oklab (a, b) vector.
+fn oklab_hue(ab: [f64; 2]) -> f64 {
+    ab[1].atan2(ab[0]).to_degrees().rem_euclid(360.0)
 }
 
 struct LabConv {
@@ -879,6 +899,7 @@ impl LabConv {
         let xyz = linalg::mul_vec(&self.m, c);
         Px {
             lab: xyz_to_lab(xyz, self.white),
+            ok: oklab_ab(c),
             hi: c.iter().any(|&v| v >= self.hi),
             lo: c.iter().all(|&v| v <= self.lo),
         }
@@ -921,6 +942,8 @@ enum Objective {
     V9,
     /// Round 10: network v10: a pixel-level purple guard (the share of pixels that turn purple), `T.purple_max_share`.
     V10,
+    /// Round 11: network v11: the purple band in Oklab hue, turn-based purple guards, a skin chroma wall.
+    V11,
 }
 
 impl Objective {
@@ -934,6 +957,7 @@ impl Objective {
                 | Objective::V8
                 | Objective::V9
                 | Objective::V10
+                | Objective::V11
         )
     }
 }
@@ -1198,6 +1222,7 @@ impl Terms {
                 + t.guard_skin_drift
                 + t.guard_mem
                 + t.guard_purple_px
+                + t.guard_skin_chroma
                 + common
         } else if self.v3 {
             on(MASK_BASE) * (self.floor + self.ceil + V2_W_ANCHOR * self.anchor)
@@ -1236,7 +1261,7 @@ impl Terms {
                 "saturation": t.sat, "sector_hue": t.sec_hue, "sector_chroma": t.sec_chroma,
                 "element_hue": t.el_hue, "element_chroma": t.el_chroma, "element_exposure": t.el_exp,
                 "subject_separation": t.subject,
-                "guard_hue_drift": t.guard_hue, "guard_skin": t.guard_skin, "guard_sky_chroma": t.guard_sky, "guard_highlights": t.guard_hl, "guard_purple": t.guard_purple, "guard_white_direction": t.guard_white_dir, "guard_skin_drift": t.guard_skin_drift, "guard_memory": t.guard_mem, "guard_purple_pixels": t.guard_purple_px,
+                "guard_hue_drift": t.guard_hue, "guard_skin": t.guard_skin, "guard_sky_chroma": t.guard_sky, "guard_highlights": t.guard_hl, "guard_purple": t.guard_purple, "guard_white_direction": t.guard_white_dir, "guard_skin_drift": t.guard_skin_drift, "guard_memory": t.guard_mem, "guard_purple_pixels": t.guard_purple_px, "guard_skin_chroma": t.guard_skin_chroma,
                 "regulariser_global": self.reg, "regulariser_local": self.reg_local, "clip": self.clip,
                 "weighted_total": self.total(),
             })
@@ -2248,6 +2273,19 @@ const V8_PURPLE_BAND: (f64, f64) = (285.0, 345.0);
 /// V10: a pixel is newly purple at C* of at least this in the candidate, and it was not purple in photo0 (outside the band, or
 /// under `V10_NP_FROM_C`). Penalty `V10_NP_WEIGHT * ((share - T.purple_max_share) / V10_NP_SCALE)^2` above the limit.
 const V10_NP_C: f64 = 4.0;
+/// V11: the purple band in Oklab hue, degrees.
+const V11_PURPLE_BAND: (f64, f64) = (300.0, 355.0);
+/// V11: the purple group wall `3 * (excess / 5)^2`, `excess` in degrees of turn beyond `T.purple_rot_deg`.
+const V11_TURN: (f64, f64) = (3.0, 5.0);
+/// V11: the skin chroma wall `12 * ((r - max) / 0.05)^2`, for skin of at least this share of the frame.
+const V11_SKIN_CHROMA: (f64, f64) = (12.0, 0.05);
+const V11_SKIN_MIN_SHARE: f64 = 0.01;
+/// V11: the purple groups: the elements 0..6, clothing, the sectors, the whites and the dark colours.
+const PG_CLOTH: usize = 6;
+const PG_SEC: usize = 7;
+const PG_HL: usize = PG_SEC + SECTORS;
+const PG_DARK: usize = PG_HL + 1;
+const PG_N: usize = PG_DARK + 1;
 const V10_NP_FROM_C: f64 = 2.0;
 const V10_NP_WEIGHT: f64 = 6.0;
 const V10_NP_SCALE: f64 = 0.01;
@@ -3009,6 +3047,58 @@ fn network_check(net: &Network) -> R<bool> {
             &mut ok,
         );
     }
+    if net.index.contains_key("T.purple_rot_deg") {
+        // The v11 vectors: a turn of 10 degrees into the purple band, 45 where the reference holds purple; skin chroma may rise
+        // 0.12 (log), 0.30 where the reference's skin is matched.
+        let none = NetOut::new(net, &r_same)?;
+        println!("== check 15 (v11): a reference with magenta_share 0");
+        show(
+            "T.purple_rot_deg",
+            0.0,
+            &none,
+            "10",
+            (none.get("T.purple_rot_deg") - 10.0).abs() < 1e-9,
+            &mut ok,
+        );
+        let mut p16 = r_same.clone();
+        set(&mut p16, "R.magenta_share", 0.10);
+        let some = NetOut::new(net, &p16)?;
+        println!("== check 16 (v11): a reference with magenta_share 0.10");
+        show(
+            "T.purple_rot_deg",
+            0.0,
+            &some,
+            "45",
+            (some.get("T.purple_rot_deg") - 45.0).abs() < 1e-9,
+            &mut ok,
+        );
+        let mut p17 = r_same.clone();
+        set(&mut p17, "P.skin.share", 0.30);
+        set(&mut p17, "R.skin.share", 0.30);
+        let matched = NetOut::new(net, &p17)?;
+        println!("== check 17 (v11): the skin matched (both pictures hold 30 %)");
+        show(
+            "T.skin_dlogC_max",
+            0.0,
+            &matched,
+            "0.30",
+            (matched.get("T.skin_dlogC_max") - 0.30).abs() < 1e-9,
+            &mut ok,
+        );
+        let mut p18 = r_same.clone();
+        set(&mut p18, "P.skin.share", 0.30);
+        set(&mut p18, "R.skin.share", 0.0);
+        let unmatched = NetOut::new(net, &p18)?;
+        println!("== check 18 (v11): the skin unmatched (R.skin.share 0)");
+        show(
+            "T.skin_dlogC_max",
+            0.0,
+            &unmatched,
+            "0.12",
+            (unmatched.get("T.skin_dlogC_max") - 0.12).abs() < 1e-9,
+            &mut ok,
+        );
+    }
     if net.index.contains_key("T.mem.sky_deg") {
         // The v9 vectors: the sky and foliage limits depend on whether the reference matches them.
         let out_m = NetOut::new(net, &r_same)?;
@@ -3145,7 +3235,7 @@ fn circ_mean_deg(sx: f64, sy: f64) -> f64 {
 /// Measures a picture (`09` section 2). `excl` are the elements left out of the sectors (skin always is).
 /// `v7_cast`: measure the frame cast only on pixels with 15 <= L* <= 80 that are not skin (all non-skin pixels if those cover
 /// under 10 % of the frame), as network v7 wants; otherwise on every pixel.
-fn measure(px: &[Px], scene: &Scene, excl: &[bool; 6], v7_cast: bool) -> Meas {
+fn measure(px: &[Px], scene: &Scene, excl: &[bool; 6], v7_cast: bool, v11: bool) -> Meas {
     let n = px.len();
     let mut idx: Vec<usize> = (0..n).collect();
     idx.sort_unstable_by(|&a, &b| px[a].lab[0].total_cmp(&px[b].lab[0]).then(a.cmp(&b)));
@@ -3292,8 +3382,12 @@ fn measure(px: &[Px], scene: &Scene, excl: &[bool; 6], v7_cast: bool) -> Meas {
         let (a, b) = (p.lab[1], p.lab[2]);
         let c = a.hypot(b);
         if c > 8.0 {
-            let h = b.atan2(a).to_degrees().rem_euclid(360.0);
-            if (V8_PURPLE_BAND.0..=V8_PURPLE_BAND.1).contains(&h) {
+            let (band, h) = if v11 {
+                (V11_PURPLE_BAND, oklab_hue(p.ok))
+            } else {
+                (V8_PURPLE_BAND, b.atan2(a).to_degrees().rem_euclid(360.0))
+            };
+            if (band.0..=band.1).contains(&h) {
                 mag += 1;
             }
         }
@@ -3444,6 +3538,15 @@ struct V5Ctx {
     v9: bool,
     /// Whether the network is v10 (it also has `T.purple_max_share`): the pixel-level purple guard.
     v10: bool,
+    /// Whether the network is v11 (it also has `T.purple_rot_deg`): Oklab purple band, turn-based purple guards, skin chroma wall.
+    v11: bool,
+    /// V11: per sample pixel, P's Oklab hue and CIELAB C*, and whether it is not skin.
+    p_okh: Vec<f64>,
+    p_cstar: Vec<f64>,
+    not_skin: Vec<bool>,
+    /// V11: the purple groups' pixel indices and P's mean Oklab (a, b) over each.
+    pg: Vec<Vec<u32>>,
+    p_pg_ab: Vec<[f64; 2]>,
     /// V10: per sample pixel, whether it may count as newly purple (not skin, and in P outside the purple band or under C* 2).
     np_scope: Vec<bool>,
     /// V9: P's mean (a*, b*) over its whites and over each sector, and the dark-colours group (P's pixels with L* < 35 and
@@ -3467,14 +3570,15 @@ fn build_v5_ctx(
     r_scene: &Scene,
 ) -> R<V5Ctx> {
     let v7 = net.index.contains_key("T.hl_cmax");
-    let p0 = measure(p_px, scene, &[false; 6], v7);
-    let r0 = measure(r_px, r_scene, &[false; 6], v7);
+    let v11 = net.index.contains_key("T.purple_rot_deg");
+    let p0 = measure(p_px, scene, &[false; 6], v7, v11);
+    let r0 = measure(r_px, r_scene, &[false; 6], v7, v11);
     let mut excl = [false; 6];
     for (k, flag) in excl.iter_mut().enumerate().take(5) {
         *flag = p0.el[k].share >= V5_EXCLUDE_SHARE && r0.el[k].share >= V5_EXCLUDE_SHARE;
     }
-    let p = measure(p_px, scene, &excl, v7);
-    let r = measure(r_px, r_scene, &excl, v7);
+    let p = measure(p_px, scene, &excl, v7, v11);
+    let r = measure(r_px, r_scene, &excl, v7, v11);
     let inputs = network_inputs(&p, &r);
     let out = NetOut::new(net, &inputs)?;
     // P's sectors on the same pixels every candidate is measured on.
@@ -3525,6 +3629,32 @@ fn build_v5_ctx(
         })
         .collect();
     let p_dark_ab = mean_ab(p_px, &dark_scope);
+    let p_okh: Vec<f64> = p_px.iter().map(|q| oklab_hue(q.ok)).collect();
+    let p_cstar: Vec<f64> = p_px.iter().map(|q| q.lab[1].hypot(q.lab[2])).collect();
+    let not_skin: Vec<bool> = (0..p_px.len()).map(|i| !scene.skin[i]).collect();
+    let mut pg: Vec<Vec<u32>> = vec![Vec::new(); PG_N];
+    if v11 {
+        for i in 0..p_px.len() {
+            for k in 0..6 {
+                if in_elem(scene, i, k) {
+                    pg[k].push(i as u32);
+                }
+            }
+            if usize::from(scene.elem[i]) == ELEM_PERSON && !scene.skin[i] {
+                pg[PG_CLOTH].push(i as u32);
+            }
+            if sector[i] != 255 {
+                pg[PG_SEC + usize::from(sector[i])].push(i as u32);
+            }
+            if hl_scope[i] {
+                pg[PG_HL].push(i as u32);
+            }
+            if dark_scope[i] {
+                pg[PG_DARK].push(i as u32);
+            }
+        }
+    }
+    let p_pg_ab = pg_means(p_px, &pg);
     let np_scope: Vec<bool> = p_px
         .iter()
         .enumerate()
@@ -3539,6 +3669,12 @@ fn build_v5_ctx(
         v8: net.index.contains_key("T.purple_ok"),
         v9: net.index.contains_key("T.mem.sky_deg"),
         v10: net.index.contains_key("T.purple_max_share"),
+        v11,
+        p_okh,
+        p_cstar,
+        not_skin,
+        pg,
+        p_pg_ab,
         np_scope,
         p_hl_a,
         p_hl_b,
@@ -3606,6 +3742,44 @@ fn hl_stats(px: &[Px], scope: &[bool]) -> (f64, Option<f64>, f64, f64) {
     )
 }
 
+/// V11: the mean Oklab (a, b) of `px` over each group's pixels.
+fn pg_means(px: &[Px], pg: &[Vec<u32>]) -> Vec<[f64; 2]> {
+    pg.iter()
+        .map(|g| {
+            if g.is_empty() {
+                return [0.0, 0.0];
+            }
+            let (mut a, mut b) = (0.0, 0.0);
+            for &i in g {
+                a += px[i as usize].ok[0];
+                b += px[i as usize].ok[1];
+            }
+            [a / g.len() as f64, b / g.len() as f64]
+        })
+        .collect()
+}
+
+/// V11: the share of `px` that is newly purple: Oklab hue in the purple band, C* at least [`V10_NP_C`], and either a grey in
+/// photo0 (C* under [`V10_NP_FROM_C`]) or a hue that turned by at least `rot` degrees; skin left out.
+fn turned_purple_share(px: &[Px], ctx: &V5Ctx, rot: f64) -> f64 {
+    if px.is_empty() {
+        return 0.0;
+    }
+    let n = px
+        .iter()
+        .enumerate()
+        .filter(|&(i, q)| {
+            if !ctx.not_skin[i] || q.lab[1].hypot(q.lab[2]) < V10_NP_C {
+                return false;
+            }
+            let h = oklab_hue(q.ok);
+            (V11_PURPLE_BAND.0..=V11_PURPLE_BAND.1).contains(&h)
+                && (ctx.p_cstar[i] < V10_NP_FROM_C || wrap_deg(h - ctx.p_okh[i]).abs() >= rot)
+        })
+        .count();
+    n as f64 / px.len() as f64
+}
+
 /// V10: the share of `px` that is newly purple: hue inside the purple band and C* at least [`V10_NP_C`], on a pixel that `scope`
 /// allows (not skin; in photo0 outside the band, or under C* [`V10_NP_FROM_C`]).
 fn newly_purple_share(px: &[Px], scope: &[bool]) -> f64 {
@@ -3641,10 +3815,12 @@ struct CandMeas {
     dark_ab: [f64; 2],
     /// V10: the share of the sample's pixels that are newly purple in the candidate.
     np_share: f64,
+    /// V11: the candidate's mean Oklab (a, b) over each purple group's pixels.
+    pg_ab: Vec<[f64; 2]>,
 }
 
 fn cand_meas(px: &[Px], scene: &Scene, ctx: &V5Ctx) -> CandMeas {
-    let m = measure(px, scene, &ctx.excl, ctx.v7);
+    let m = measure(px, scene, &ctx.excl, ctx.v7, ctx.v11);
     let (hl_c, hl_h, hl_a, hl_b) = if ctx.v7 {
         hl_stats(px, &ctx.hl_scope)
     } else {
@@ -3693,10 +3869,20 @@ fn cand_meas(px: &[Px], scene: &Scene, ctx: &V5Ctx) -> CandMeas {
             sec_dlogc[j] = median_of(&mut cs[j]).max(1.0).ln() - ctx.p_sec_logc[j];
         }
     }
-    let np_share = newly_purple_share(px, &ctx.np_scope);
+    let np_share = if ctx.v11 {
+        turned_purple_share(px, ctx, ctx.out.get("T.purple_rot_deg"))
+    } else {
+        newly_purple_share(px, &ctx.np_scope)
+    };
+    let pg_ab = if ctx.v11 {
+        pg_means(px, &ctx.pg)
+    } else {
+        Vec::new()
+    };
     CandMeas {
         m,
         np_share,
+        pg_ab,
         sec_shift,
         sec_dlogc,
         hl_c,
@@ -3738,6 +3924,9 @@ struct V5T {
     guard_mem: f64,
     /// V10: the pixel-level purple guard.
     guard_purple_px: f64,
+    /// V11: the skin chroma wall, and the skin's log chroma change against photo0 (a diagnostic for every network objective).
+    guard_skin_chroma: f64,
+    skin_dlogc: f64,
     /// The share of the sample's pixels that are newly purple (a diagnostic for every network objective).
     np_share: f64,
 }
@@ -3761,7 +3950,7 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
     };
     let vec_hc = |a: f64, b: f64| (circ_mean_deg(a, b), a.hypot(b));
     // (photo0 hue, photo0 chroma, candidate hue) of every group that counts.
-    let mut groups: Vec<(f64, f64, f64)> = Vec::new();
+    let mut groups: Vec<(f64, f64, f64, usize)> = Vec::new();
     let n = ctx.hl_scope.len() as f64;
     for (k, e) in V5_ELEMS.iter().enumerate() {
         let (pe, me) = (&ctx.p.el[k], &m.el[k]);
@@ -3778,7 +3967,7 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
             wall
         };
         t.guard_hue += drift(wrap_deg(ch - ph), limit);
-        groups.push((ph, pc, ch));
+        groups.push((ph, pc, ch, k));
         // The memory-colour wall: sky and foliage hold their hue within the network's limit.
         let key = match k {
             0 => Some("T.mem.sky_deg"),
@@ -3795,7 +3984,7 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
         let ((ph, pc), (ch, _)) = (cl.0.mv(), cl.1.mv());
         if pc >= V9_MIN_MV_C {
             t.guard_hue += drift(wrap_deg(ch - ph), wall);
-            groups.push((ph, pc, ch));
+            groups.push((ph, pc, ch, PG_CLOTH));
         }
     }
     for j in 0..SECTORS {
@@ -3804,7 +3993,7 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
             let (ch, _) = vec_hc(c.sec_ab[j][0], c.sec_ab[j][1]);
             if pc >= V9_MIN_MV_C {
                 t.guard_hue += drift(wrap_deg(ch - ph), wall);
-                groups.push((ph, pc, ch));
+                groups.push((ph, pc, ch, PG_SEC + j));
             }
         }
     }
@@ -3818,7 +4007,7 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
             t.guard_hl += drift(wrap_deg(ch - ph), wall);
         }
         if pc >= V9_MIN_MV_C {
-            groups.push((ph, pc, ch));
+            groups.push((ph, pc, ch, PG_HL));
         }
         // The whites' direction.
         let d = (c.hl_a - o.get("T.white_a")).hypot(c.hl_b - o.get("T.white_b"));
@@ -3833,12 +4022,21 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
         let (ch, _) = vec_hc(c.dark_ab[0], c.dark_ab[1]);
         if pc >= V9_MIN_MV_C {
             t.guard_hue += drift(wrap_deg(ch - ph), wall);
-            groups.push((ph, pc, ch));
+            groups.push((ph, pc, ch, PG_DARK));
         }
     }
-    // The purple wall, with its approach term.
+    // The purple wall, with its approach term. V11 measures hue in Oklab and counts turns, not entries.
     let ok = 1.0 - o.get("T.purple_ok");
-    let (lo, hi) = V8_PURPLE_BAND;
+    let (lo, hi) = if ctx.v11 {
+        V11_PURPLE_BAND
+    } else {
+        V8_PURPLE_BAND
+    };
+    let rot = if ctx.v11 {
+        o.get("T.purple_rot_deg")
+    } else {
+        0.0
+    };
     let in_band = |h: f64| (lo..=hi).contains(&h.rem_euclid(360.0));
     let dist = |h: f64| {
         if in_band(h) {
@@ -3847,8 +4045,25 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
             wrap_deg(h - lo).abs().min(wrap_deg(h - hi).abs())
         }
     };
-    for (ph, pc, ch) in groups {
-        if in_band(ph) || pc < V9_MIN_MV_C {
+    for (ph, pc, ch, gid) in groups {
+        if pc < V9_MIN_MV_C {
+            continue;
+        }
+        let (ph, ch) = if ctx.v11 {
+            (oklab_hue(ctx.p_pg_ab[gid]), oklab_hue(c.pg_ab[gid]))
+        } else {
+            (ph, ch)
+        };
+        if ctx.v11 {
+            if in_band(ch) {
+                let excess = (wrap_deg(ch - ph).abs() - rot).max(0.0);
+                t.guard_purple += V11_TURN.0 * sq(excess / V11_TURN.1);
+                continue;
+            }
+        } else if in_band(ph) {
+            continue;
+        }
+        if in_band(ph) {
             continue;
         }
         let ch = ch.rem_euclid(360.0);
@@ -3877,6 +4092,10 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
             let excess = (wrap_deg(h - ph).abs() - o.get("T.skin_drift")).max(0.0);
             t.guard_skin_drift = V8_SKIN_DRIFT.0 * sq(excess / V8_SKIN_DRIFT.1);
         }
+        if ctx.v11 && pe.share >= V11_SKIN_MIN_SHARE {
+            let excess = (t.skin_dlogc - o.get("T.skin_dlogC_max")).max(0.0);
+            t.guard_skin_chroma = V11_SKIN_CHROMA.0 * sq(excess / V11_SKIN_CHROMA.1);
+        }
     }
     // The sky chroma wall, on the mean-vector chroma.
     if ctx.p.el[0].share >= V5_PRESENT_SHARE {
@@ -3894,6 +4113,12 @@ fn terms_v5(c: &CandMeas, ctx: &V5Ctx) -> V5T {
         np_share: c.np_share,
         ..V5T::default()
     };
+    {
+        let (pe, me) = (&ctx.p.el[5], &m.el[5]);
+        if pe.share >= V11_SKIN_MIN_SHARE && me.n > 0 {
+            t.skin_dlogc = (me.mv().1.max(1.0) / pe.mv().1.max(1.0)).ln();
+        }
+    }
     let term = |err: f64, scale: f64, dead_band: f64| sq(dead(err, dead_band) / scale);
     t.floor = V5_FLOOR.2 * term(m.p2 - o.get("T.p2"), V5_FLOOR.0, V5_FLOOR.1);
     t.ceil = V5_CEIL.2 * term(m.p98 - o.get("T.p98"), V5_CEIL.0, V5_CEIL.1);
@@ -4731,10 +4956,12 @@ fn v5_extra(
     }
     let g = |t: &Terms| {
         let t5 = t.t5;
-        json!({ "guard_hue_drift": t5.guard_hue, "guard_skin": t5.guard_skin, "guard_sky_chroma": t5.guard_sky, "guard_highlights": t5.guard_hl, "guard_purple": t5.guard_purple, "guard_white_direction": t5.guard_white_dir, "guard_skin_drift": t5.guard_skin_drift, "guard_memory": t5.guard_mem, "guard_purple_pixels": t5.guard_purple_px })
+        json!({ "guard_hue_drift": t5.guard_hue, "guard_skin": t5.guard_skin, "guard_sky_chroma": t5.guard_sky, "guard_highlights": t5.guard_hl, "guard_purple": t5.guard_purple, "guard_white_direction": t5.guard_white_dir, "guard_skin_drift": t5.guard_skin_drift, "guard_memory": t5.guard_mem, "guard_purple_pixels": t5.guard_purple_px, "guard_skin_chroma": t5.guard_skin_chroma })
     };
     json!({
         "newly_purple_share": after.t5.np_share,
+        "skin_dlogC": after.t5.skin_dlogc,
+        "skin_chroma_ratio": after.t5.skin_dlogc.exp(),
         "network_inputs": ctx.inputs,
         "network": o.outputs_json(),
         "excluded_from_sectors": ctx.excl,
@@ -5369,6 +5596,8 @@ fn run_fit(
             ctx().network7.as_ref()
         } else if objective == Objective::V8 && ctx().network8.is_some() {
             ctx().network8.as_ref()
+        } else if objective == Objective::V10 && ctx().network10.is_some() {
+            ctx().network10.as_ref()
         } else if objective == Objective::V9 && ctx().network9.is_some() {
             ctx().network9.as_ref()
         } else {
@@ -5472,6 +5701,7 @@ fn write_pair(
     round7: Option<&PairOutcome>,
     round8: Option<&PairOutcome>,
     round9: Option<&PairOutcome>,
+    round10: Option<&PairOutcome>,
 ) -> R<()> {
     fs::create_dir_all(dir)?;
     let default8 = linear_to_rgb8(&pf.default_show);
@@ -5488,12 +5718,14 @@ fn write_pair(
             | Objective::V8
             | Objective::V9
             | Objective::V10
+            | Objective::V11
     ) && (round2.is_some()
         || round5.is_some()
         || round6.is_some()
         || round7.is_some()
         || round8.is_some()
-        || round9.is_some())
+        || round9.is_some()
+        || round10.is_some())
     {
         let r2_8 = round2.map(|r| linear_to_rgb8(&r.fitted_show));
         let r5_8 = round5.map(|r| linear_to_rgb8(&r.fitted_show));
@@ -5501,6 +5733,7 @@ fn write_pair(
         let r7_8 = round7.map(|r| linear_to_rgb8(&r.fitted_show));
         let r8_8 = round8.map(|r| linear_to_rgb8(&r.fitted_show));
         let r9_8 = round9.map(|r| linear_to_rgb8(&r.fitted_show));
+        let r10_8 = round10.map(|r| linear_to_rgb8(&r.fitted_show));
         let mut rounds: Vec<(&str, &Rgb8)> = Vec::new();
         if let Some(r) = &r2_8 {
             rounds.push(("Round 2", r));
@@ -5520,8 +5753,12 @@ fn write_pair(
         if let Some(r) = &r9_8 {
             rounds.push(("Round 9", r));
         }
+        if let Some(r) = &r10_8 {
+            rounds.push(("Round 10", r));
+        }
         rounds.push((
             match objective {
+                Objective::V11 => "Round 11",
                 Objective::V10 => "Round 10",
                 Objective::V9 => "Round 9",
                 Objective::V8 => "Round 8",
@@ -6081,6 +6318,7 @@ struct Args {
     network7: Option<PathBuf>,
     network8: Option<PathBuf>,
     network9: Option<PathBuf>,
+    network10: Option<PathBuf>,
     network_check: bool,
     grades: usize,
 }
@@ -6113,6 +6351,7 @@ fn parse_args() -> R<Args> {
             "--network7" => a.network7 = Some(PathBuf::from(val()?)),
             "--network8" => a.network8 = Some(PathBuf::from(val()?)),
             "--network9" => a.network9 = Some(PathBuf::from(val()?)),
+            "--network10" => a.network10 = Some(PathBuf::from(val()?)),
             "--keep-key" => a.keep_key = true,
             "--grades" => a.grades = val()?.parse()?,
             "--objective" => {
@@ -6126,6 +6365,7 @@ fn parse_args() -> R<Args> {
                     "v8" => Objective::V8,
                     "v9" => Objective::V9,
                     "v10" => Objective::V10,
+                    "v11" => Objective::V11,
                     other => return Err(format!("--objective takes v1 or v2, not {other}").into()),
                 })
             }
@@ -6215,6 +6455,13 @@ fn main() -> R<()> {
         ),
         None => None,
     };
+    let network10 = match &args.network10 {
+        Some(path) => Some(
+            parse_network(&fs::read_to_string(path)?)
+                .map_err(|e| format!("{}: {e}", path.display()))?,
+        ),
+        None => None,
+    };
     if args.network_check {
         let net = network
             .as_ref()
@@ -6255,6 +6502,7 @@ fn main() -> R<()> {
         network7,
         network8,
         network9,
+        network10,
     });
     let core = open_core(&args.out)?;
     let cache = args.out.join("cache");
@@ -6341,6 +6589,7 @@ fn main() -> R<()> {
         let mut outcomes7: Vec<Option<PairOutcome>> = Vec::new();
         let mut outcomes8: Vec<Option<PairOutcome>> = Vec::new();
         let mut outcomes9: Vec<Option<PairOutcome>> = Vec::new();
+        let mut outcomes10: Vec<Option<PairOutcome>> = Vec::new();
         let mut index: BTreeMap<String, Value> = BTreeMap::new();
         for r in &loaded {
             let o = run_pair(&pf, r, args.strength, !args.no_hue, objective)?;
@@ -6387,7 +6636,21 @@ fn main() -> R<()> {
                 None
             };
             // Round 9 next to Round 10: the V9 fit of the same pair (with `--network9`).
-            let o9 = if objective == Objective::V10 && ctx().network9.is_some() {
+            // Round 10 next to Round 11: the V10 fit of the same pair (with `--network10`).
+            let o10 = if objective == Objective::V11 && ctx().network10.is_some() {
+                Some(run_pair(
+                    &pf,
+                    r,
+                    args.strength,
+                    !args.no_hue,
+                    Objective::V10,
+                )?)
+            } else {
+                None
+            };
+            let o9 = if matches!(objective, Objective::V10 | Objective::V11)
+                && ctx().network9.is_some()
+            {
                 Some(run_pair(
                     &pf,
                     r,
@@ -6422,18 +6685,27 @@ fn main() -> R<()> {
                 None
             };
             eprintln!(
-                "   {}: fit {:.2} s, {} evals, {:.2} ms/eval, objective {:.3} -> {:.3}; newly purple {} -> {:.4}",
+                "   {}: fit {:.2} s, {} evals, {:.2} ms/eval, objective {:.3} -> {:.3}; newly purple {} -> {:.4}; skin ratio {} -> {:.3}",
                 r.stem,
                 o.fit.seconds,
                 o.fit.evals,
                 o.fit.per_eval_ms,
                 o.fit.before.total(),
                 o.fit.after.total(),
-                o9.as_ref().map_or("-".to_string(), |q| format!(
-                    "{:.4}",
-                    q.fit.extra["newly_purple_share"].as_f64().unwrap_or(0.0)
-                )),
-                o.fit.extra["newly_purple_share"].as_f64().unwrap_or(0.0)
+                o10.as_ref()
+                    .or(o9.as_ref())
+                    .map_or("-".to_string(), |q| format!(
+                        "{:.4}",
+                        q.fit.extra["newly_purple_share"].as_f64().unwrap_or(0.0)
+                    )),
+                o.fit.extra["newly_purple_share"].as_f64().unwrap_or(0.0),
+                o10.as_ref()
+                    .or(o9.as_ref())
+                    .map_or("-".to_string(), |q| format!(
+                        "{:.3}",
+                        q.fit.extra["skin_chroma_ratio"].as_f64().unwrap_or(1.0)
+                    )),
+                o.fit.extra["skin_chroma_ratio"].as_f64().unwrap_or(1.0)
             );
             write_pair(
                 &photo_dir.join(&r.stem),
@@ -6450,6 +6722,7 @@ fn main() -> R<()> {
                 o7.as_ref(),
                 o8.as_ref(),
                 o9.as_ref(),
+                o10.as_ref(),
             )?;
             outcomes2.push(o2);
             outcomes5.push(o5);
@@ -6457,6 +6730,7 @@ fn main() -> R<()> {
             outcomes7.push(o7);
             outcomes8.push(o8);
             outcomes9.push(o9);
+            outcomes10.push(o10);
             index.insert(
                 r.stem.clone(),
                 json!({ "fit_seconds": o.fit.seconds, "per_eval_ms": o.fit.per_eval_ms, "before": o.fit.before.total(), "after": o.fit.after.total() }),
@@ -6464,7 +6738,9 @@ fn main() -> R<()> {
             outcomes.push(o);
         }
         let pairs: Vec<(&Reference, &PairOutcome)> = loaded.iter().zip(&outcomes).collect();
-        let grid_rows = if outcomes9.iter().any(Option::is_some) {
+        let grid_rows = if outcomes10.iter().any(Option::is_some) {
+            &outcomes10
+        } else if outcomes9.iter().any(Option::is_some) {
             &outcomes9
         } else if outcomes8.iter().any(Option::is_some) {
             &outcomes8
@@ -6500,4 +6776,22 @@ fn main() -> R<()> {
         serde_json::to_string_pretty(&summary)?,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Oklab hue of an sRGB colour (display-linear input from encoded 0..1 values given as linear here).
+    fn hue_of(lin: [f64; 3]) -> f64 {
+        oklab_hue(oklab_ab(lin))
+    }
+
+    #[test]
+    fn oklab_hue_of_primaries() {
+        assert!((hue_of([0.0, 0.0, 1.0]) - 264.05).abs() < 0.5, "blue");
+        assert!((hue_of([1.0, 0.0, 1.0]) - 328.36).abs() < 0.5, "magenta");
+        assert!((hue_of([1.0, 0.0, 0.0]) - 29.23).abs() < 0.5, "red");
+        assert!((hue_of([1.0, 1.0, 0.0]) - 109.77).abs() < 0.5, "yellow");
+    }
 }
