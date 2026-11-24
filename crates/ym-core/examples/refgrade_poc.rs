@@ -801,7 +801,7 @@ fn render_pixel(cand: &Candidate, output: &ColorChain, lin: [f64; 3]) -> [f64; 3
 // ---------------------------------------------------------------------------------------------
 
 /// One measured pixel.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 struct Px {
     lab: [f64; 3],
     hi: bool,
@@ -842,7 +842,9 @@ const MASK_TONE: u8 = 1;
 const MASK_CAST: u8 = 2;
 const MASK_CHROMA: u8 = 4;
 const MASK_HUE: u8 = 8;
-const MASK_ALL: u8 = 15;
+/// V3: the anchor, black floor and white ceiling, which take part in every stage.
+const MASK_BASE: u8 = 16;
+const MASK_ALL: u8 = 31;
 
 /// Which objective the fit minimises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -929,7 +931,7 @@ struct Stats {
     v3: Option<V3Stats>,
 }
 
-fn stats_of(px: &[Px], scene: Option<&Scene>) -> Stats {
+fn stats_of(px: &[Px], scene: Option<&Scene>, dnh: Option<&DnhCtx>) -> Stats {
     let n = px.len();
     let mut idx: Vec<usize> = (0..n).collect();
     idx.sort_unstable_by(|&a, &b| px[a].lab[0].total_cmp(&px[b].lab[0]).then(a.cmp(&b)));
@@ -950,9 +952,11 @@ fn stats_of(px: &[Px], scene: Option<&Scene>) -> Stats {
     let mut band_n = [0usize; 3];
     let mut neutral_ab = [[0.0; 2]; 3];
     let mut neutral_n = [0usize; 3];
+    let mut band_of = vec![0u8; n];
     let mut band_px: [Vec<(f64, f64, f64)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for (rank, &i) in idx.iter().enumerate() {
         let band = (rank * 3 / n).min(2);
+        band_of[i] = band as u8;
         band_ab[band][0] += px[i].lab[1];
         band_ab[band][1] += px[i].lab[2];
         band_n[band] += 1;
@@ -1042,7 +1046,7 @@ fn stats_of(px: &[Px], scene: Option<&Scene>) -> Stats {
         hue_chroma,
         hue_share,
         median_chroma,
-        v3: scene.map(|sc| v3_stats(px, sc)),
+        v3: scene.map(|sc| v3_stats(px, sc, &band_of, dnh)),
     }
 }
 
@@ -1071,6 +1075,7 @@ struct Terms {
     elem_exposure: f64,
     separation: f64,
     global_sat: f64,
+    dnh: f64,
     // both
     reg: f64,
     clip: f64,
@@ -1086,14 +1091,10 @@ impl Terms {
         let common =
             if self.v2 || self.v3 { V2_W_REG } else { W_REG } * self.reg + W_CLIP * self.clip;
         if self.v3 {
-            on(MASK_TONE)
-                * (self.floor
-                    + self.ceil
-                    + self.elem_exposure
-                    + self.separation
-                    + V2_W_ANCHOR * self.anchor)
+            on(MASK_BASE) * (self.floor + self.ceil + V2_W_ANCHOR * self.anchor)
+                + on(MASK_TONE) * (self.elem_exposure + self.separation)
                 + on(MASK_CAST) * V3_W_CAST * self.cast
-                + on(MASK_HUE) * self.elem_colour
+                + on(MASK_HUE) * (self.elem_colour + self.dnh)
                 + on(MASK_CHROMA) * self.global_sat
                 + common
         } else if self.v2 {
@@ -1124,7 +1125,7 @@ impl Terms {
                 "element_colour": self.elem_colour, "neutral_cast": self.cast, "black_floor": self.floor,
                 "white_ceiling": self.ceil, "element_exposure": self.elem_exposure,
                 "subject_separation": self.separation, "median_anchor": self.anchor,
-                "global_saturation": self.global_sat, "regulariser": self.reg, "clip": self.clip,
+                "global_saturation": self.global_sat, "do_no_harm": self.dnh, "regulariser": self.reg, "clip": self.clip,
                 "weighted_total": self.total(),
             })
         } else if self.v2 {
@@ -1175,6 +1176,7 @@ fn terms(obj: Objective, out: &Stats, reference: &Stats, p0: &Stats, x: &[f64; N
         elem_exposure: 0.0,
         separation: 0.0,
         global_sat: 0.0,
+        dnh: 0.0,
         shape: 0.0,
         level: 0.0,
         ab: 0.0,
@@ -1344,6 +1346,13 @@ const V3_SAT_MIN: f64 = 0.55;
 const V3_SAT_MAX: f64 = 1.4;
 const V3_SAT_SCALE: f64 = 0.05;
 const V3_SAT_BAND: f64 = 0.03;
+/// Round 3b do-no-harm: weight, sector threshold (share of the pixels outside the eligible elements), scales and bands.
+const V3_DNH_WEIGHT: f64 = 1.2;
+const V3_DNH_MIN_SHARE: f64 = 0.02;
+const V3_DNH_HUE_SCALE_DEG: f64 = 8.0;
+const V3_DNH_RATIO_SCALE: f64 = 0.08;
+const V3_DNH_HUE_BAND_DEG: f64 = 2.0;
+const V3_DNH_RATIO_BAND: f64 = 0.03;
 /// Neutral cast weight (the term itself is V2's).
 const V3_W_CAST: f64 = 1.0;
 /// Fallback skin: person pixels with L* 25..85, C* 8..45 and hue 20..80 degrees.
@@ -1373,7 +1382,7 @@ const ELEM_MODELS: [ElemModel; 7] = [
         w_hue: 0.70,
         cap_deg: 40.0,
         w_sat: 0.80,
-        window: Some((170.0, 300.0)),
+        window: Some((175.0, 285.0)),
         w_term: 1.5,
     },
     ElemModel {
@@ -1460,6 +1469,33 @@ struct V3Stats {
     /// Median C* of the labelled non-person pixels and their share of the frame.
     nonperson_chroma: f64,
     nonperson_share: f64,
+    /// Mean (a*, b*) of the near-neutral pixels of the neutral-capable elements in each of the picture's L* terciles, and the
+    /// share of all pixels they are (round 3b: sky, vegetation, water and skin never count).
+    neutral_ab: [[f64; 2]; 3],
+    neutral_share: [f64; 3],
+    /// The do-no-harm sums per hue sector of photo0, when the evaluator gave a [`DnhCtx`].
+    dnh: Option<[DnhSector; SECTORS]>,
+    dnh_total: usize,
+    n_px: usize,
+}
+
+/// Do-no-harm sums of one hue sector over the pixels outside every eligible element.
+#[derive(Clone, Copy, Debug, Default)]
+struct DnhSector {
+    count: usize,
+    /// Sum of the pixels' hue shifts against photo0, degrees (each wrapped to -180..180).
+    shift_sum: f64,
+    /// Sums of the candidate's and of photo0's C*.
+    chroma_cand: f64,
+    chroma_p0: f64,
+}
+
+/// What the do-no-harm term needs from photo0, fixed for a pair: its pixels, which of them are in scope (outside every
+/// eligible element) and their hue sector (255 for none).
+#[derive(Clone, Debug)]
+struct DnhCtx {
+    p0_px: Vec<Px>,
+    sector: Vec<u8>,
 }
 
 fn median_of(v: &mut [f64]) -> f64 {
@@ -1470,7 +1506,7 @@ fn median_of(v: &mut [f64]) -> f64 {
     v[v.len() / 2]
 }
 
-fn v3_stats(px: &[Px], scene: &Scene) -> V3Stats {
+fn v3_stats(px: &[Px], scene: &Scene, band: &[u8], dnh: Option<&DnhCtx>) -> V3Stats {
     let n = px.len();
     let mut lights: Vec<Vec<f64>> = vec![Vec::new(); N_ELEM];
     let mut chromas: Vec<Vec<f64>> = vec![Vec::new(); N_ELEM];
@@ -1478,6 +1514,7 @@ fn v3_stats(px: &[Px], scene: &Scene) -> V3Stats {
     let mut hue_n = [0usize; N_ELEM];
     let (mut subj, mut bg): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
     let mut np_c: Vec<f64> = Vec::new();
+    let mut capable: [Vec<(f64, f64, f64)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for (i, p) in px.iter().enumerate() {
         let e = usize::from(scene.elem[i]);
         let (a, b) = (p.lab[1], p.lab[2]);
@@ -1503,6 +1540,14 @@ fn v3_stats(px: &[Px], scene: &Scene) -> V3Stats {
         if e != 0 && e != ELEM_PERSON {
             np_c.push(c);
         }
+        // Round 3b: only these elements carry a neutral (never sky, vegetation, water or skin).
+        let neutral_capable = matches!(
+            e,
+            0 | ELEM_GROUND | ELEM_ARCHITECTURE | ELEM_INTERIOR | ELEM_OTHER_THING | 9
+        ) || (e == ELEM_PERSON && !scene.skin[i]);
+        if neutral_capable {
+            capable[usize::from(band[i])].push((c, a, b));
+        }
     }
     let mut s = V3Stats {
         share: [0.0; N_ELEM],
@@ -1516,7 +1561,58 @@ fn v3_stats(px: &[Px], scene: &Scene) -> V3Stats {
         background_count: bg.len(),
         nonperson_chroma: 0.0,
         nonperson_share: np_c.len() as f64 / n as f64,
+        neutral_ab: [[0.0; 2]; 3],
+        neutral_share: [0.0; 3],
+        dnh: None,
+        dnh_total: 0,
+        n_px: n,
     };
+    for b in 0..3 {
+        let mut cs: Vec<f64> = capable[b].iter().map(|p| p.0).collect();
+        cs.sort_unstable_by(f64::total_cmp);
+        let floor_c = cs
+            .get((cs.len() as f64 * V2_NEUTRAL_MIN_FRACTION) as usize)
+            .copied()
+            .unwrap_or(0.0);
+        let limit = V2_NEUTRAL_CHROMA_MAX.max(floor_c);
+        let (mut sa, mut sb, mut k) = (0.0, 0.0, 0usize);
+        for &(c, a, bb) in &capable[b] {
+            if c <= limit {
+                sa += a;
+                sb += bb;
+                k += 1;
+            }
+        }
+        s.neutral_ab[b] = [sa / k.max(1) as f64, sb / k.max(1) as f64];
+        s.neutral_share[b] = k as f64 / n as f64;
+    }
+    if let Some(ctx) = dnh {
+        let mut acc = [DnhSector::default(); SECTORS];
+        let mut total = 0usize;
+        for (i, p) in px.iter().enumerate() {
+            let sec = ctx.sector[i];
+            if sec == 255 {
+                continue;
+            }
+            total += 1;
+            let q = &ctx.p0_px[i];
+            let (c, h) = (
+                p.lab[1].hypot(p.lab[2]),
+                p.lab[2].atan2(p.lab[1]).to_degrees(),
+            );
+            let (c0, h0) = (
+                q.lab[1].hypot(q.lab[2]),
+                q.lab[2].atan2(q.lab[1]).to_degrees(),
+            );
+            let a = &mut acc[usize::from(sec)];
+            a.count += 1;
+            a.shift_sum += wrap_deg(h - h0);
+            a.chroma_cand += c;
+            a.chroma_p0 += c0;
+        }
+        s.dnh = Some(acc);
+        s.dnh_total = total;
+    }
     for k in 0..N_ELEM {
         s.count[k] = lights[k].len();
         s.share[k] = lights[k].len() as f64 / n as f64;
@@ -1753,6 +1849,37 @@ fn wrap180(d: f64) -> f64 {
     wrap_deg(d)
 }
 
+/// Which elements are eligible in a pair: at least 2 % of the frame in both images and enough photo samples.
+fn eligibility(r: &V3Stats, z: &V3Stats) -> [bool; N_ELEM] {
+    let mut e = [false; N_ELEM];
+    for (k, flag) in e.iter_mut().enumerate() {
+        *flag = r.share[k] >= V3_ELEM_MIN_SHARE
+            && z.share[k] >= V3_ELEM_MIN_SHARE
+            && z.count[k] >= V3_ELEM_MIN_SAMPLES;
+    }
+    e
+}
+
+/// Round 3b, do-no-harm: the hue sector (of photo0) of every photo pixel outside every eligible element with C* above
+/// [`V3_HUE_MIN_CHROMA`]; 255 for the others. Clothing (person minus skin) is outside, and so are unlabelled, other things,
+/// and elements with no eligible counterpart.
+fn dnh_sectors(p0: &[Px], scene: &Scene, elig: &[bool; N_ELEM]) -> Vec<u8> {
+    p0.iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let e = usize::from(scene.elem[i]);
+            let in_element = (e != ELEM_PERSON && e < ELEM_SKIN && elig[e])
+                || (scene.skin[i] && elig[ELEM_SKIN]);
+            let (a, b) = (p.lab[1], p.lab[2]);
+            if in_element || a.hypot(b) <= V3_HUE_MIN_CHROMA {
+                return 255;
+            }
+            let h = b.atan2(a).to_degrees();
+            ((((h + 30.0).rem_euclid(360.0)) / 60.0) as usize % SECTORS) as u8
+        })
+        .collect()
+}
+
 /// The V3 terms (`07-grading-model-v3.md` sections 2 and 3) of `out` against the reference, with the photo's own
 /// statistics `p0` as the base of every move. `diag` collects what each element's target was.
 fn terms_v3(
@@ -1779,11 +1906,8 @@ fn terms_v3(
     } else {
         V3_FLOOR_MOVE
     };
-    let eligible = |e: usize| {
-        r.share[e] >= V3_ELEM_MIN_SHARE
-            && z.share[e] >= V3_ELEM_MIN_SHARE
-            && z.count[e] >= V3_ELEM_MIN_SAMPLES
-    };
+    let elig = eligibility(r, z);
+    let eligible = |e: usize| elig[e];
     // 3.1 element colour
     let mut colour = 0.0;
     for m in &ELEM_MODELS {
@@ -1833,8 +1957,7 @@ fn terms_v3(
     }
     t.elem_colour = colour;
     // 3.2 neutral cast: V2's term as it is.
-    let cast_only = terms_v2_cast(out, reference);
-    t.cast = cast_only;
+    t.cast = v3_cast(o, r);
     // 3.3a black floor and white ceiling
     let p2_target = p0.floor
         + floor_move
@@ -1888,12 +2011,14 @@ fn terms_v3(
     t.anchor = (dead((out.median - p0.median).abs(), V2_ANCHOR_DEAD_BAND_L) / L_SCALE).powi(2);
     // 3.4 global saturation
     let mut sat = 0.0;
+    let mut ratio_star = 1.0;
     if r.nonperson_share >= V3_ELEM_MIN_SHARE
         && z.nonperson_share >= V3_ELEM_MIN_SHARE
         && z.nonperson_chroma > 1e-6
     {
         let target = ((r.nonperson_chroma / z.nonperson_chroma).powf(V3_SAT_POWER))
             .clamp(V3_SAT_MIN, V3_SAT_MAX);
+        ratio_star = target;
         let ratio = o.nonperson_chroma / z.nonperson_chroma;
         sat = (dead(ratio - target, V3_SAT_BAND) / V3_SAT_SCALE).powi(2);
         if let Some(d) = diag.as_deref_mut() {
@@ -1901,6 +2026,32 @@ fn terms_v3(
         }
     }
     t.global_sat = sat;
+    // 3.6 (round 3b) do-no-harm: outside the eligible elements each hue sector with at least 2 % of those pixels keeps its
+    // mean hue shift at 0 and its chroma ratio at the global saturation target, against photo0.
+    let mut dnh = 0.0;
+    if let Some(acc) = &o.dnh {
+        for (sec, a) in acc.iter().enumerate() {
+            if o.dnh_total == 0
+                || (a.count as f64) < V3_DNH_MIN_SHARE * o.dnh_total as f64
+                || a.chroma_p0 <= 1e-6
+            {
+                continue;
+            }
+            let shift = a.shift_sum / a.count as f64;
+            let ratio = a.chroma_cand / a.chroma_p0;
+            let share = a.count as f64 / o.n_px as f64;
+            let c = V3_DNH_WEIGHT
+                * share.sqrt()
+                * ((dead(shift, V3_DNH_HUE_BAND_DEG) / V3_DNH_HUE_SCALE_DEG).powi(2)
+                    + (dead(ratio - ratio_star, V3_DNH_RATIO_BAND) / V3_DNH_RATIO_SCALE).powi(2));
+            dnh += c;
+            if let Some(d) = diag.as_deref_mut() {
+                d.push(json!({ "term": "do_no_harm", "sector": sec, "pixel_share": share, "mean_hue_shift": shift,
+                    "chroma_ratio": ratio, "ratio_target": ratio_star, "contribution": c }));
+            }
+        }
+    }
+    t.dnh = dnh;
     if let Some(d) = diag {
         d.push(json!({ "term": "gates", "low_key_reference": low_key_ref, "high_key_photo": high_key_photo,
             "key_mismatch": mismatch, "floor_move": floor_move, "p2_target": p2_target, "p98_target": p98_target,
@@ -1908,8 +2059,8 @@ fn terms_v3(
     }
 }
 
-/// V2's neutral-cast term (dead band and scale as in V2).
-fn terms_v2_cast(out: &Stats, reference: &Stats) -> f64 {
+/// The neutral-cast term over the neutral-capable elements only (round 3b): V2's dead band and scale, and the same gate.
+fn v3_cast(out: &V3Stats, reference: &V3Stats) -> f64 {
     let (mut sum, mut k) = (0.0, 0usize);
     for b in 0..3 {
         if out.neutral_share[b] >= V2_MIN_NEUTRAL_SHARE_PER_BAND
@@ -1956,6 +2107,8 @@ struct Evaluator<'a> {
     photo0: Stats,
     /// V3: the photo's scene at the sample pixels.
     scene: Option<Scene>,
+    /// V3: what the do-no-harm term needs from photo0 (set once photo0 and the reference are known).
+    dnh: Option<DnhCtx>,
     /// The V2 term groups the current stage minimises.
     mask: u8,
     conv: LabConv,
@@ -1982,11 +2135,11 @@ impl Evaluator<'_> {
                             *d = conv.px(render_pixel(&cand, output, *s));
                         }
                     });
-                stats_of(&self.buf, self.scene.as_ref())
+                stats_of(&self.buf, self.scene.as_ref(), self.dnh.as_ref())
             }
             // A candidate the chain refuses is worse than anything.
             Err(_) => {
-                let mut s = stats_of(&self.buf, self.scene.as_ref());
+                let mut s = stats_of(&self.buf, self.scene.as_ref(), self.dnh.as_ref());
                 s.median = 1e6;
                 s
             }
@@ -2075,11 +2228,12 @@ fn fit(ev: &mut Evaluator<'_>) -> FitResult {
     for (name, range, frac, iters) in STAGES.iter().cloned() {
         ev.mask = match name {
             // V3 (notes section 4): tone sees 3.3, the colour stages 3.1 + 3.2 + 3.4, hue-vs-hue 3.1.
-            "tone" => MASK_TONE,
+            "tone" if ev.objective == Objective::V3 => MASK_BASE | MASK_TONE,
             "colour per band" | "saturation and hue-vs-sat" if ev.objective == Objective::V3 => {
-                MASK_HUE | MASK_CAST | MASK_CHROMA
+                MASK_BASE | MASK_HUE | MASK_CAST | MASK_CHROMA
             }
-            "hue-vs-hue" if ev.objective == Objective::V3 => MASK_HUE,
+            "hue-vs-hue" if ev.objective == Objective::V3 => MASK_BASE | MASK_HUE,
+            "tone" => MASK_TONE,
             "colour per band" => MASK_TONE | MASK_CAST,
             "saturation and hue-vs-sat" => MASK_TONE | MASK_CAST | MASK_CHROMA,
             _ => MASK_ALL,
@@ -2528,7 +2682,7 @@ fn picture_stats_scene(conv: &LabConv, img: &Img, scene: Option<&Scene>) -> Stat
                 .unwrap_or([0.0; 3]))
         })
         .collect();
-    stats_of(&px, scene)
+    stats_of(&px, scene, None)
 }
 
 /// One photo prepared for fitting against many references.
@@ -2604,6 +2758,7 @@ fn run_fit(
         objective,
         photo0: ref_stats.clone(),
         scene: if v3 { pf.scene_samples.clone() } else { None },
+        dnh: None,
         mask: MASK_ALL,
         conv,
         with_hue,
@@ -2613,6 +2768,16 @@ fn run_fit(
         eval_time: Duration::ZERO,
     };
     ev.photo0 = ev.stats(&[0.0; N_PARAMS]);
+    if let (true, Some(sc), Some(r), Some(z)) =
+        (v3, ev.scene.as_ref(), &ref_stats.v3, &ev.photo0.v3)
+    {
+        let elig = eligibility(r, z);
+        let sector = dnh_sectors(&ev.buf, sc, &elig);
+        ev.dnh = Some(DnhCtx {
+            p0_px: ev.buf.clone(),
+            sector,
+        });
+    }
     Ok((fit(&mut ev), ref_stats))
 }
 
