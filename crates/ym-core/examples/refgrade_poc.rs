@@ -40,7 +40,7 @@
 // A proof of concept: index loops over the three channels read better than iterator chains here.
 #![allow(clippy::needless_range_loop)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -53,7 +53,7 @@ use ym_color::consts::{REC709, linalg};
 use ym_color::curve::{Curve, CurveSet};
 use ym_color::deltae::{Summary, d65_white_xyz, delta_e_2000, xyz_to_lab};
 use ym_color::display::{ChainParams, ColorChain, LookSetting, OutputTarget};
-use ym_color::grade::{GradeParams, logc4_at_stops};
+use ym_color::grade::{E1, E2, GradeParams, logc4_at_stops};
 use ym_color::look::{HuePoint, ParametricLook, ParametricLookSpec, SCHEMA_ID};
 use ym_color::tone::ToneParams;
 use ym_core::app::{Core, CoreOptions};
@@ -67,6 +67,7 @@ type R<T> = Result<T, Box<dyn Error>>;
 struct Ctx {
     labels: Option<PathBuf>,
     seg: Option<ym_ml::mediapipe::selfie::SelfieSegmenter>,
+    network: Option<Network>,
 }
 
 static CTX: std::sync::OnceLock<Ctx> = std::sync::OnceLock::new();
@@ -75,6 +76,7 @@ fn ctx() -> &'static Ctx {
     CTX.get_or_init(|| Ctx {
         labels: None,
         seg: None,
+        network: None,
     })
 }
 
@@ -110,8 +112,11 @@ const RGB_STOPS: [f64; 3] = [-3.0, 0.0, 3.0];
 /// Hue curve knots, in degrees of the LogC4 chroma plane.
 const HUE_KNOTS_DEG: [f64; 6] = [0.0, 60.0, 120.0, 180.0, 240.0, 300.0];
 
-/// Number of parameters: 8 luma, 9 RGB, 1 saturation, 6 hue-vs-sat, 6 hue-vs-hue.
-const N_PARAMS: usize = 30;
+/// Number of global parameters: 8 luma, 9 RGB, 1 saturation, 6 hue-vs-sat, 6 hue-vs-hue.
+const N_GLOBAL: usize = 30;
+/// All parameters: the global ones, then V5's local grades (3 for each of sky, vegetation, water, ground, built and skin,
+/// and the subject's exposure offset).
+const N_PARAMS: usize = N_GLOBAL + 19;
 /// Index ranges of the parameter groups.
 const LUMA_RANGE: std::ops::Range<usize> = 0..8;
 const RGB_RANGE: std::ops::Range<usize> = 8..17;
@@ -180,8 +185,8 @@ const STAGES: [(&str, std::ops::Range<usize>, f64, usize); 10] = [
     ),
     ("hue-vs-hue", HHUE_RANGE, 1.0, 7),
     ("hue-vs-hue", HHUE_RANGE, 0.4, 6),
-    ("joint polish", 0..N_PARAMS, 0.25, 6),
-    ("joint polish", 0..N_PARAMS, 0.1, 5),
+    ("joint polish", 0..N_GLOBAL, 0.25, 6),
+    ("joint polish", 0..N_GLOBAL, 0.1, 5),
 ];
 
 fn bound(i: usize) -> f64 {
@@ -191,7 +196,13 @@ fn bound(i: usize) -> f64 {
         8..=16 => BOUND_RGB_STOPS,
         17 => BOUND_SATURATION_PCT,
         18..=23 => BOUND_HUE_SAT,
-        _ => BOUND_HUE_DEG,
+        24..=29 => BOUND_HUE_DEG,
+        // Local grades: exposure up to one stop, hue up to the element's cap, chroma scale in 0.5..1.6 (normalised).
+        _ => match (i - N_GLOBAL) % 3 {
+            _ if i == N_PARAMS - 1 => 1.0,
+            1 => V5_CAP_DEG[(i - N_GLOBAL) / 3],
+            _ => 1.0,
+        },
     }
 }
 
@@ -205,7 +216,13 @@ fn param_name(i: usize) -> String {
         }
         17 => "saturation_pct".into(),
         18..=23 => format!("hue_vs_sat[{}deg]", HUE_KNOTS_DEG[i - 18]),
-        _ => format!("hue_vs_hue[{}deg]", HUE_KNOTS_DEG[i - 24]),
+        24..=29 => format!("hue_vs_hue[{}deg]", HUE_KNOTS_DEG[i - 24]),
+        _ if i == N_PARAMS - 1 => "local.subject.exposure_stops".into(),
+        _ => format!(
+            "local.{}.{}",
+            V5_ELEMS[(i - N_GLOBAL) / 3],
+            ["exposure_stops", "hue_deg", "chroma_scale"][(i - N_GLOBAL) % 3]
+        ),
     }
 }
 
@@ -719,6 +736,8 @@ struct Candidate {
     node: ColorChain,
     /// The hue curves, applied to the node's output (`None` when both are neutral).
     hue: Option<ParametricLook>,
+    /// V5: the local grades, applied after the hue step through the elements' soft masks (`None`: none).
+    local: Option<LocalSet>,
 }
 
 impl Candidate {
@@ -763,22 +782,37 @@ impl Candidate {
         } else {
             None
         };
-        Ok(Self { node, hue })
+        Ok(Self {
+            node,
+            hue,
+            local: None,
+        })
     }
 
     /// The node's output for a pixel at its input (linear AWG4), as linear AWG4 for the Output.
     ///
     /// Order: the corrector (C9, C9b, C11, the real code), then the POC hue step on its LogC4 result, then back to
     /// linear for the Output's look (C10), the cine rendering (C12) and the encode (C13).
-    fn apply(&self, lin: [f64; 3]) -> [f64; 3] {
+    /// [`Candidate::apply`] with the pixel's soft masks: the local grades (a POC-only CPU step, like the hue step) run in
+    /// LogC4 after the hue step, element by element in the fixed order, each blended as `v + m * (local(v) - v)`.
+    fn apply_m(&self, lin: [f64; 3], masks: Option<&[f32; 7]>) -> [f64; 3] {
         let v = self.node.apply_logc4_pixel(lin);
-        match &self.hue {
-            None => v.to_linear().0,
-            Some(look) => {
-                let h = look.evaluate(v.0);
-                ym_color::logc::LogC4(h).to_linear().0
+        let mut v = match &self.hue {
+            None => v.0,
+            Some(look) => look.evaluate(v.0),
+        };
+        if let (Some(loc), Some(m)) = (&self.local, masks) {
+            for k in 0..7 {
+                let mk = f64::from(m[k]);
+                if mk > 0.0 && !(loc.exp[k] == 0.0 && loc.hue[k] == 0.0 && loc.chroma[k] == 1.0) {
+                    let l = local_apply(v, loc.exp[k], loc.hue[k], loc.chroma[k]);
+                    for c in 0..3 {
+                        v[c] += mk * (l[c] - v[c]);
+                    }
+                }
             }
         }
+        ym_color::logc::LogC4(v).to_linear().0
     }
 }
 
@@ -791,9 +825,14 @@ fn make_output_chain(out: &OutputStage) -> R<ColorChain> {
     Ok(ColorChain::new(&p)?)
 }
 
-/// Display-linear sRGB of one node-input pixel (not clamped).
-fn render_pixel(cand: &Candidate, output: &ColorChain, lin: [f64; 3]) -> [f64; 3] {
-    output.apply_to_display_linear(cand.apply(lin))
+/// Display-linear sRGB of one node-input pixel (not clamped), with its soft masks for the local grades.
+fn render_pixel_m(
+    cand: &Candidate,
+    output: &ColorChain,
+    lin: [f64; 3],
+    masks: Option<&[f32; 7]>,
+) -> [f64; 3] {
+    output.apply_to_display_linear(cand.apply_m(lin, masks))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -844,7 +883,10 @@ const MASK_CHROMA: u8 = 4;
 const MASK_HUE: u8 = 8;
 /// V3: the anchor, black floor and white ceiling, which take part in every stage.
 const MASK_BASE: u8 = 16;
-const MASK_ALL: u8 = 31;
+/// V5: the element terms (colour, then exposure and the subject).
+const MASK_ELEM_COL: u8 = 32;
+const MASK_ELEM_EXP: u8 = 64;
+const MASK_ALL: u8 = 127;
 
 /// Which objective the fit minimises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -855,6 +897,8 @@ enum Objective {
     V2,
     /// Round 3: the hand-written, scene-aware grading model (`refgrade-notes/07-grading-model-v3.md`).
     V3,
+    /// Round 5: a hand-written network sets the targets, the solver sets the settings (`refgrade-notes/09-model-v5.md`).
+    V5,
 }
 
 /// V2 weights and scales. Tone: black floor, white ceiling, midtone contrast, and an anchor on the photo's own median.
@@ -901,7 +945,7 @@ const V2_HUE_MIN_CHROMA: f64 = 8.0;
 const V2_MIN_SECTOR_SHARE: f64 = 0.04;
 
 /// What the objective reads from a picture.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct Stats {
     /// L* quantiles minus the median (V1).
     shape: [f64; 19],
@@ -1076,6 +1120,10 @@ struct Terms {
     separation: f64,
     global_sat: f64,
     dnh: f64,
+    // V5
+    v5: bool,
+    t5: V5T,
+    reg_local: f64,
     // both
     reg: f64,
     clip: f64,
@@ -1088,9 +1136,27 @@ impl Terms {
     /// The weighted total of the V2 terms in `mask` (V1 ignores it).
     fn total_masked(&self, mask: u8) -> f64 {
         let on = |m: u8| if mask & m != 0 { 1.0 } else { 0.0 };
-        let common =
-            if self.v2 || self.v3 { V2_W_REG } else { W_REG } * self.reg + W_CLIP * self.clip;
-        if self.v3 {
+        let common = if self.v2 || self.v3 || self.v5 {
+            V2_W_REG
+        } else {
+            W_REG
+        } * self.reg
+            + V2_W_REG * self.reg_local
+            + W_CLIP * self.clip;
+        if self.v5 {
+            let t = &self.t5;
+            on(MASK_BASE) * (t.floor + t.ceil + t.anchor)
+                + on(MASK_TONE) * t.contrast
+                + on(MASK_CAST) * t.tint
+                + on(MASK_CHROMA) * (t.sat + t.sec_chroma)
+                + on(MASK_HUE) * t.sec_hue
+                + on(MASK_ELEM_COL) * (t.el_hue + t.el_chroma)
+                + on(MASK_ELEM_EXP) * (t.el_exp + t.subject)
+                + t.guard_hue
+                + t.guard_skin
+                + t.guard_sky
+                + common
+        } else if self.v3 {
             on(MASK_BASE) * (self.floor + self.ceil + V2_W_ANCHOR * self.anchor)
                 + on(MASK_TONE) * (self.elem_exposure + self.separation)
                 + on(MASK_CAST) * V3_W_CAST * self.cast
@@ -1119,7 +1185,19 @@ impl Terms {
         }
     }
     fn to_json(self) -> Value {
-        if self.v3 {
+        if self.v5 {
+            let t = self.t5;
+            json!({
+                "objective": "v5",
+                "floor": t.floor, "ceiling": t.ceil, "contrast": t.contrast, "anchor": t.anchor, "tint": t.tint,
+                "saturation": t.sat, "sector_hue": t.sec_hue, "sector_chroma": t.sec_chroma,
+                "element_hue": t.el_hue, "element_chroma": t.el_chroma, "element_exposure": t.el_exp,
+                "subject_separation": t.subject,
+                "guard_hue_drift": t.guard_hue, "guard_skin": t.guard_skin, "guard_sky_chroma": t.guard_sky,
+                "regulariser_global": self.reg, "regulariser_local": self.reg_local, "clip": self.clip,
+                "weighted_total": self.total(),
+            })
+        } else if self.v3 {
             json!({
                 "objective": "v3",
                 "element_colour": self.elem_colour, "neutral_cast": self.cast, "black_floor": self.floor,
@@ -1166,12 +1244,15 @@ fn wrap_deg(d: f64) -> f64 {
 /// The terms of `out` against `reference`. `anchor` is the ungraded photo's median L* (V2 keeps the photo's key).
 fn terms(obj: Objective, out: &Stats, reference: &Stats, p0: &Stats, x: &[f64; N_PARAMS]) -> Terms {
     let anchor = p0.median;
-    let reg = x.iter().map(|v| v * v).sum::<f64>() / N_PARAMS as f64;
+    let reg = x[..N_GLOBAL].iter().map(|v| v * v).sum::<f64>() / N_GLOBAL as f64;
     let over = |o: f64, r: f64| ((o - r - CLIP_SLACK).max(0.0) / CLIP_SCALE).powi(2);
     let clip = over(out.hi_share, reference.hi_share) + over(out.lo_share, reference.lo_share);
     let mut t = Terms {
         v2: obj == Objective::V2,
         v3: obj == Objective::V3,
+        v5: obj == Objective::V5,
+        t5: V5T::default(),
+        reg_local: 0.0,
         elem_colour: 0.0,
         elem_exposure: 0.0,
         separation: 0.0,
@@ -2076,6 +2157,1204 @@ fn v3_cast(out: &V3Stats, reference: &V3Stats) -> f64 {
 }
 
 // ---------------------------------------------------------------------------------------------
+// V5: a hand-written network sets the targets (`refgrade-notes/09-model-v5.md`, `refgrade-v5.ywn`)
+// ---------------------------------------------------------------------------------------------
+
+/// The elements of V5, in the order of the local grades: `built` is architecture plus interior, `skin` is MediaPipe skin.
+const V5_ELEMS: [&str; 6] = ["sky", "vegetation", "water", "ground", "built", "skin"];
+/// The cap (degrees) of each element's hue move: the network's `cap` constants, which also bound the local hue rotation.
+const V5_CAP_DEG: [f64; 6] = [40.0, 35.0, 35.0, 30.0, 25.0, 15.0];
+/// The objective's `w_term` per element (`09` section 4.2).
+const V5_W_TERM: [f64; 6] = [1.5, 1.2, 1.0, 1.0, 0.6, 2.0];
+/// Code value of one stop of a local exposure offset (`09` section 5).
+const V5_STOP_CODE: f64 = 0.0648;
+/// Local grades: bounds of the chroma scale.
+const V5_CHROMA_SCALE_MIN: f64 = 0.5;
+const V5_CHROMA_SCALE_MAX: f64 = 1.6;
+/// A share of the frame at which an element or a sector counts as present (the network gates take over from here).
+const V5_PRESENT_SHARE: f64 = 0.02;
+/// Excluded from the sector inputs: elements both pictures hold at this share.
+const V5_EXCLUDE_SHARE: f64 = 0.02;
+/// Objective scales, dead bands and weights (`09` section 4).
+const V5_FLOOR: (f64, f64, f64) = (2.0, 1.0, 1.0);
+const V5_CEIL: (f64, f64, f64) = (2.0, 1.0, 1.0);
+const V5_CONTRAST: (f64, f64, f64) = (0.03, 0.01, 1.0);
+const V5_ANCHOR: (f64, f64, f64) = (1.0, 5.0, 4.0);
+const V5_TINT: (f64, f64) = (3.0, 1.0);
+const V5_TINT_BAND_WEIGHT: [f64; 3] = [1.0, 0.7, 1.0];
+const V5_SAT: (f64, f64, f64) = (0.05, 0.03, 1.0);
+const V5_SECTOR_HUE: (f64, f64, f64) = (8.0, 2.0, 0.8);
+const V5_SECTOR_CHROMA: (f64, f64, f64) = (0.08, 0.03, 0.8);
+const V5_EL_HUE: (f64, f64) = (10.0, 3.0);
+const V5_EL_CHROMA: (f64, f64) = (0.10, 0.03);
+const V5_EL_EXPOSURE: (f64, f64) = (3.0, 2.0);
+const V5_SUBJECT: (f64, f64, f64) = (3.0, 2.0, 1.0);
+/// Guards (`09` section 4.3): hue drift limit, its band scale and weight; the element limit is `cap + 5`.
+const V5_GUARD_HUE_LIMIT_DEG: f64 = 25.0;
+const V5_GUARD_HUE_EXTRA_DEG: f64 = 5.0;
+const V5_GUARD_HUE_SCALE_DEG: f64 = 5.0;
+const V5_GUARD_HUE_WEIGHT: f64 = 2.0;
+const V5_GUARD_SECTOR_MIN_SHARE: f64 = 0.04;
+const V5_GUARD_SKIN_HUE: (f64, f64) = (30.0, 70.0);
+const V5_GUARD_SKIN_CHROMA: (f64, f64) = (12.0, 38.0);
+const V5_GUARD_SKIN_SCALE: f64 = 3.0;
+const V5_GUARD_SKIN_WEIGHT: f64 = 3.0;
+const V5_GUARD_SKY_FACTOR: f64 = 1.3;
+const V5_GUARD_SKY_SCALE: f64 = 2.0;
+const V5_GUARD_SKY_WEIGHT: f64 = 2.0;
+/// Need test (`09` section 5): hue error, log chroma error and exposure error that earn a local grade.
+const V5_NEED_HUE_DEG: f64 = 6.0;
+const V5_NEED_LOGC: f64 = 0.14;
+const V5_NEED_EXPOSURE_L: f64 = 4.0;
+/// A gate above this counts as open.
+const V5_GATE_OPEN: f64 = 0.5;
+/// Guided filter of the soft masks: radius as a share of the short side, and epsilon on L*/100.
+const V5_GF_RADIUS: f64 = 0.02;
+const V5_GF_EPS: f64 = 1e-3;
+/// Two golden-section passes over the local parameters: (half range, iterations).
+const V5_LOCAL_PASSES: [(f64, usize); 2] = [(1.0, 7), (0.4, 6)];
+/// The polish pass over the global and the needed local parameters.
+const V5_POLISH: (f64, usize) = (0.25, 6);
+
+/// One neuron: `name = act(bias + sum w * node)`.
+#[derive(Debug, Clone)]
+struct Neuron {
+    name: String,
+    relu: bool,
+    bias: f64,
+    terms: Vec<(f64, String)>,
+}
+
+/// The hand-written network, expanded.
+#[derive(Debug, Clone)]
+struct Network {
+    neurons: Vec<Neuron>,
+    index: BTreeMap<String, usize>,
+}
+
+/// Every input name the network may read.
+fn network_input_names() -> Vec<String> {
+    let mut v = Vec::new();
+    for x in ["P", "R"] {
+        for n in ["p2", "p50", "p98", "iqr_rel", "logsat", "subj", "sep"] {
+            v.push(format!("{x}.{n}"));
+        }
+        for b in ["s", "m", "h"] {
+            for c in ["a", "b"] {
+                v.push(format!("{x}.tint_{b}_{c}"));
+            }
+        }
+        for e in V5_ELEMS {
+            for n in ["share", "L", "h", "C", "logC"] {
+                v.push(format!("{x}.{e}.{n}"));
+            }
+        }
+        for j in 0..SECTORS {
+            v.push(format!("{x}.s{j}.share"));
+            v.push(format!("{x}.s{j}.logC"));
+        }
+    }
+    for e in V5_ELEMS {
+        v.push(format!("D.{e}.dh"));
+    }
+    for j in 0..SECTORS {
+        v.push(format!("D.s{j}.dh"));
+    }
+    v
+}
+
+fn parse_neuron(
+    line: &str,
+    inputs: &BTreeSet<String>,
+    defined: &BTreeMap<String, usize>,
+) -> R<Neuron> {
+    let (name, rest) = line
+        .split_once('=')
+        .ok_or_else(|| format!("no '=' in: {line}"))?;
+    let name = name.trim().to_owned();
+    let rest = rest.trim();
+    let open = rest.find('(').ok_or_else(|| format!("{name}: no '('"))?;
+    let close = rest.rfind(')').ok_or_else(|| format!("{name}: no ')'"))?;
+    let act = rest[..open].trim();
+    let relu = match act {
+        "relu" => true,
+        "lin" => false,
+        other => return Err(format!("{name}: unknown activation {other}").into()),
+    };
+    let toks: Vec<&str> = rest[open + 1..close].split_whitespace().collect();
+    let bias: f64 = toks
+        .first()
+        .ok_or_else(|| format!("{name}: empty"))?
+        .parse()
+        .map_err(|_| format!("{name}: bias is not a number: {}", toks[0]))?;
+    let mut terms = Vec::new();
+    let mut i = 1;
+    while i < toks.len() {
+        let sign = match toks[i] {
+            "+" => 1.0,
+            "-" => -1.0,
+            other => return Err(format!("{name}: expected + or -, got {other}").into()),
+        };
+        let t = *toks
+            .get(i + 1)
+            .ok_or_else(|| format!("{name}: sign without a term"))?;
+        let (w, node) = match t.split_once('*') {
+            Some((w, n)) => (
+                w.parse::<f64>()
+                    .map_err(|_| format!("{name}: weight {w} is not a number"))?,
+                n,
+            ),
+            None => (1.0, t),
+        };
+        if !defined.contains_key(node) && !inputs.contains(node) {
+            return Err(format!(
+                "{name}: refers to {node}, which is not an input and not defined earlier"
+            )
+            .into());
+        }
+        terms.push((sign * w, node.to_owned()));
+        i += 2;
+    }
+    Ok(Neuron {
+        name,
+        relu,
+        bias,
+        terms,
+    })
+}
+
+/// Parses and expands the network file (templates, constants, `apply`). Refuses a reference to a node not defined earlier,
+/// a constant missing for a template value, and a duplicate name; there is no fallback.
+fn parse_network(text: &str) -> R<Network> {
+    let inputs: BTreeSet<String> = network_input_names().into_iter().collect();
+    let mut consts: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let mut templates: BTreeMap<String, (String, Vec<String>)> = BTreeMap::new();
+    let mut current: Option<(String, String, Vec<String>)> = None;
+    let mut lines: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        let l = raw.trim();
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        if let Some((name, var, body)) = current.as_mut() {
+            if l == "end" {
+                templates.insert(name.clone(), (var.clone(), std::mem::take(body)));
+                current = None;
+            } else {
+                body.push(l.to_owned());
+            }
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("const ") {
+            let mut it = rest.split_whitespace();
+            let name = it.next().ok_or("const without a name")?.to_owned();
+            let kv = it
+                .map(|p| {
+                    p.split_once('=')
+                        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                        .ok_or_else(|| format!("const {name}: {p} is not k=v"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            consts.insert(name, kv);
+        } else if let Some(rest) = l.strip_prefix("template ") {
+            let rest = rest.trim();
+            let open = rest.find('(').ok_or("template without (var)")?;
+            let close = rest.find(')').ok_or("template without (var)")?;
+            current = Some((
+                rest[..open].trim().to_owned(),
+                rest[open + 1..close].trim().to_owned(),
+                Vec::new(),
+            ));
+        } else if let Some(rest) = l.strip_prefix("apply ") {
+            let mut it = rest.split_whitespace();
+            let tname = it.next().ok_or("apply without a name")?;
+            let (var, body) = templates
+                .get(tname)
+                .ok_or_else(|| format!("apply: no template {tname}"))?;
+            for value in it {
+                for b in body {
+                    let mut s = b.replace(&format!("{{{var}}}"), value);
+                    if let Some(kv) = consts.get(value) {
+                        for (k, v) in kv {
+                            s = s.replace(&format!("{{{k}}}"), v);
+                        }
+                    }
+                    if let Some(p) = s.find('{') {
+                        let end = s[p..].find('}').map_or(s.len(), |e| p + e + 1);
+                        return Err(format!(
+                            "template {tname}, value {value}: constant {} is missing (in: {})",
+                            &s[p..end],
+                            b
+                        )
+                        .into());
+                    }
+                    lines.push(s);
+                }
+            }
+        } else {
+            lines.push(l.to_owned());
+        }
+    }
+    if current.is_some() {
+        return Err("a template has no `end`".into());
+    }
+    let mut neurons: Vec<Neuron> = Vec::new();
+    let mut index: BTreeMap<String, usize> = BTreeMap::new();
+    for l in &lines {
+        let n = parse_neuron(l, &inputs, &index)?;
+        if index.contains_key(&n.name) || inputs.contains(&n.name) {
+            return Err(format!("duplicate name {}", n.name).into());
+        }
+        index.insert(n.name.clone(), neurons.len());
+        neurons.push(n);
+    }
+    Ok(Network { neurons, index })
+}
+
+impl Network {
+    /// Evaluates every neuron in file order, in f64.
+    fn eval(&self, inputs: &BTreeMap<String, f64>) -> R<Vec<f64>> {
+        let mut vals: Vec<f64> = Vec::with_capacity(self.neurons.len());
+        for n in &self.neurons {
+            let mut s = n.bias;
+            for (w, node) in &n.terms {
+                let v = match self.index.get(node) {
+                    Some(&i) => vals[i],
+                    None => *inputs
+                        .get(node)
+                        .ok_or_else(|| format!("input {node} was not given"))?,
+                };
+                s += w * v;
+            }
+            vals.push(if n.relu { s.max(0.0) } else { s });
+        }
+        Ok(vals)
+    }
+
+    /// The expanded network, every weight with its number.
+    fn dump(&self) -> String {
+        let mut out = String::new();
+        for n in &self.neurons {
+            out.push_str(&format!(
+                "{} = {}( {:+}",
+                n.name,
+                if n.relu { "relu" } else { "lin" },
+                n.bias
+            ));
+            for (w, node) in &n.terms {
+                out.push_str(&format!(" {:+}*{}", w, node));
+            }
+            out.push_str(" )\n");
+        }
+        out
+    }
+}
+
+/// The values of the network for one pair, by name.
+struct NetOut {
+    names: Vec<String>,
+    vals: Vec<f64>,
+    map: BTreeMap<String, f64>,
+}
+
+impl NetOut {
+    fn new(net: &Network, inputs: &BTreeMap<String, f64>) -> R<Self> {
+        let vals = net.eval(inputs)?;
+        let names: Vec<String> = net.neurons.iter().map(|n| n.name.clone()).collect();
+        let map = names.iter().cloned().zip(vals.iter().copied()).collect();
+        Ok(Self { names, vals, map })
+    }
+    fn get(&self, name: &str) -> f64 {
+        self.map.get(name).copied().unwrap_or(0.0)
+    }
+    /// The outputs (`T.*`, `G.*`) and the gate neurons the notes ask for, as JSON.
+    fn outputs_json(&self) -> Value {
+        let mut outs = serde_json::Map::new();
+        let mut gates = serde_json::Map::new();
+        for (n, v) in self.names.iter().zip(&self.vals) {
+            if n.starts_with("T.") || n.starts_with("G.") {
+                outs.insert(n.clone(), json!(v));
+            }
+            if n.starts_with("G.")
+                || n.ends_with(".matched")
+                || n.ends_with(".reliable")
+                || n == "glob.ka"
+                || n == "glob.kb"
+                || n.ends_with(".e_gate")
+            {
+                gates.insert(n.clone(), json!(v));
+            }
+        }
+        json!({ "outputs": outs, "gates": gates })
+    }
+}
+
+/// The self-check: two hand-made input vectors. Prints both and returns whether every check passed.
+fn network_check(net: &Network) -> R<bool> {
+    let mut p: BTreeMap<String, f64> = network_input_names()
+        .into_iter()
+        .map(|n| (n, 0.0))
+        .collect();
+    // A photo: a mid-key landscape with sky, vegetation and ground, and a little warm tint in the shadows.
+    let set = |m: &mut BTreeMap<String, f64>, k: &str, v: f64| {
+        m.insert(k.to_owned(), v);
+    };
+    for x in ["P", "R"] {
+        for (k, v) in [
+            ("p2", 6.0),
+            ("p50", 52.0),
+            ("p98", 94.0),
+            ("iqr_rel", 0.42),
+            ("logsat", 15f64.ln()),
+            ("subj", 1.0),
+            ("sep", 6.0),
+            ("tint_s_a", 1.0),
+            ("tint_s_b", 2.0),
+            ("tint_m_a", 0.5),
+            ("tint_m_b", 1.0),
+            ("tint_h_a", -0.5),
+            ("tint_h_b", 1.5),
+        ] {
+            set(&mut p, &format!("{x}.{k}"), v);
+        }
+        for (e, share, l, h, c) in [
+            ("sky", 0.30, 74.0, 255.0, 22.0),
+            ("vegetation", 0.20, 42.0, 120.0, 26.0),
+            ("ground", 0.10, 45.0, 70.0, 14.0),
+        ] {
+            set(&mut p, &format!("{x}.{e}.share"), share);
+            set(&mut p, &format!("{x}.{e}.L"), l);
+            set(&mut p, &format!("{x}.{e}.h"), h);
+            set(&mut p, &format!("{x}.{e}.C"), c);
+            set(&mut p, &format!("{x}.{e}.logC"), f64::max(c, 1.0).ln());
+        }
+        for (j, share, logc) in [(0, 0.08, 2.4), (3, 0.07, 2.6)] {
+            set(&mut p, &format!("{x}.s{j}.share"), share);
+            set(&mut p, &format!("{x}.s{j}.logC"), logc);
+        }
+    }
+    let r_same = p.clone();
+    let out1 = NetOut::new(net, &p)?;
+    let mut ok = true;
+    println!("== check 1: R identical to P");
+    let expect_eq = |name: &str, want: f64, out: &NetOut, ok: &mut bool| {
+        let got = out.get(name);
+        let pass = (got - want).abs() < 1e-9;
+        *ok &= pass;
+        println!(
+            "   {name:<16} = {got:>10.5}  (P's own value {want:>10.5})  {}",
+            if pass { "ok" } else { "FAIL" }
+        );
+    };
+    for k in [
+        "p2", "p98", "iqr_rel", "p50", "logsat", "tint_s_a", "tint_s_b", "tint_m_a", "tint_m_b",
+        "tint_h_a", "tint_h_b", "sep",
+    ] {
+        let tname = match k {
+            "p2" | "p98" | "iqr_rel" | "p50" | "logsat" | "sep" => format!("T.{k}"),
+            _ => format!("T.{k}"),
+        };
+        expect_eq(&tname, p[&format!("P.{k}")], &out1, &mut ok);
+    }
+    for e in ["sky", "vegetation", "ground"] {
+        expect_eq(&format!("T.{e}.h"), p[&format!("P.{e}.h")], &out1, &mut ok);
+        expect_eq(
+            &format!("T.{e}.logC"),
+            p[&format!("P.{e}.logC")],
+            &out1,
+            &mut ok,
+        );
+        expect_eq(
+            &format!("T.{e}.off"),
+            p[&format!("P.{e}.L")] - p["P.p50"],
+            &out1,
+            &mut ok,
+        );
+    }
+    for j in [0, 3] {
+        expect_eq(&format!("T.s{j}.dh"), 0.0, &out1, &mut ok);
+        expect_eq(&format!("T.s{j}.dlogC"), 0.0, &out1, &mut ok);
+    }
+    println!(
+        "   gates: key_mismatch {:.2}, sky.matched {:.2}, sky.hue {:.2}, veg.matched {:.2}, water.matched {:.2}, subj {:.2}, s0 {:.2}, s3 {:.2}",
+        out1.get("G.key_mismatch"),
+        out1.get("G.sky.matched"),
+        out1.get("G.sky.hue"),
+        out1.get("G.vegetation.matched"),
+        out1.get("G.water.matched"),
+        out1.get("G.subj"),
+        out1.get("G.s0"),
+        out1.get("G.s3")
+    );
+    // The second vector: R has a teal sky (hue 255 -> 205), a darker floor (p2 6 -> 0) and more saturation (x1.35), and a
+    // brighter sky (74 -> 84).
+    let mut r = r_same.clone();
+    set(&mut r, "R.p2", 0.0);
+    set(&mut r, "R.logsat", 15f64.ln() + 1.35f64.ln());
+    set(&mut r, "R.sky.h", 205.0);
+    set(&mut r, "R.sky.L", 84.0);
+    let dh = ((205.0f64 - 255.0 + 180.0).rem_euclid(360.0)) - 180.0;
+    set(&mut r, "D.sky.dh", dh);
+    let out2 = NetOut::new(net, &r)?;
+    println!(
+        "== check 2: R with a teal sky (255 -> 205 deg), a darker floor (p2 6 -> 0) and 1.35x saturation, a brighter sky (74 -> 84)"
+    );
+    let show = |name: &str, base: f64, out: &NetOut, want: &str, pass: bool, ok: &mut bool| {
+        let got = out.get(name);
+        *ok &= pass;
+        println!(
+            "   {name:<16} = {got:>10.5}  (P {base:>10.5}, expected {want})  {}",
+            if pass { "ok" } else { "FAIL" }
+        );
+    };
+    let t = |n: &str| out2.get(n);
+    show(
+        "T.p2",
+        6.0,
+        &out2,
+        "below 6, by 0.8 x 6 = 4.8",
+        (t("T.p2") - (6.0 - 4.8)).abs() < 1e-9,
+        &mut ok,
+    );
+    show(
+        "T.sky.h",
+        255.0,
+        &out2,
+        "255 - 0.7 x 40 = 227 (move capped at 40)",
+        (t("T.sky.h") - 227.0).abs() < 1e-6,
+        &mut ok,
+    );
+    show(
+        "T.logsat",
+        15f64.ln(),
+        &out2,
+        "up by 0.6 x ln 1.35",
+        (t("T.logsat") - (15f64.ln() + 0.6 * 1.35f64.ln())).abs() < 1e-9,
+        &mut ok,
+    );
+    show(
+        "T.sky.off",
+        74.0 - 52.0,
+        &out2,
+        "22 + 0.5 x 10 = 27",
+        (t("T.sky.off") - 27.0).abs() < 1e-9,
+        &mut ok,
+    );
+    show(
+        "T.vegetation.h",
+        120.0,
+        &out2,
+        "unchanged (no difference)",
+        (t("T.vegetation.h") - 120.0).abs() < 1e-9,
+        &mut ok,
+    );
+    show(
+        "T.p98",
+        94.0,
+        &out2,
+        "unchanged",
+        (t("T.p98") - 94.0).abs() < 1e-9,
+        &mut ok,
+    );
+    // A third vector: a low-key reference (median 20) on the same high-key photo: the key-mismatch gate must open, the floor
+    // moves only 0.4 of the difference and the exposure targets and the subject separation switch off.
+    let mut r3 = r_same.clone();
+    set(&mut r3, "R.p50", 20.0);
+    set(&mut r3, "R.p2", 0.0);
+    set(&mut r3, "R.sep", 14.0);
+    let out3 = NetOut::new(net, &r3)?;
+    println!("== check 3: a low-key reference (median 20), p2 6 -> 0, subject separation 6 -> 14");
+    show(
+        "G.key_mismatch",
+        0.0,
+        &out3,
+        "1",
+        (out3.get("G.key_mismatch") - 1.0).abs() < 1e-9,
+        &mut ok,
+    );
+    show(
+        "T.p2",
+        6.0,
+        &out3,
+        "6 - 0.4 x 6 = 3.6",
+        (out3.get("T.p2") - 3.6).abs() < 1e-9,
+        &mut ok,
+    );
+    show(
+        "T.sky.off",
+        22.0,
+        &out3,
+        "22 (no exposure move)",
+        (out3.get("T.sky.off") - 22.0).abs() < 1e-9,
+        &mut ok,
+    );
+    show(
+        "T.sep",
+        6.0,
+        &out3,
+        "6 (gate closed)",
+        (out3.get("T.sep") - 6.0).abs() < 1e-9,
+        &mut ok,
+    );
+    println!(
+        "{}",
+        if ok {
+            "network check: all passed"
+        } else {
+            "network check: FAILED"
+        }
+    );
+    Ok(ok)
+}
+
+// ---- V5 measurements ------------------------------------------------------------------------
+
+/// Whether pixel `i` belongs to V5 element `k` (see [`V5_ELEMS`]).
+fn in_elem(scene: &Scene, i: usize, k: usize) -> bool {
+    let e = usize::from(scene.elem[i]);
+    match k {
+        0 => e == ELEM_SKY,
+        1 => e == ELEM_VEGETATION,
+        2 => e == ELEM_WATER,
+        3 => e == ELEM_GROUND,
+        4 => e == ELEM_ARCHITECTURE || e == ELEM_INTERIOR,
+        _ => scene.skin[i],
+    }
+}
+
+/// One element's statistics.
+#[derive(Clone, Debug, Default)]
+#[allow(dead_code)]
+struct ElM {
+    share: f64,
+    l: f64,
+    h: f64,
+    c: f64,
+    logc: f64,
+    n: usize,
+    has_hue: bool,
+}
+
+/// One hue sector's statistics.
+#[derive(Clone, Debug, Default)]
+struct SecM {
+    share: f64,
+    logc: f64,
+    hue: f64,
+    n: usize,
+}
+
+/// What the network and the objective read from a picture.
+#[derive(Clone, Debug, Default)]
+struct Meas {
+    p2: f64,
+    p50: f64,
+    p98: f64,
+    iqr_rel: f64,
+    logsat: f64,
+    /// Mean (a*, b*) of the near-neutral, neutral-capable pixels per L* tercile (shadows, mids, highlights).
+    tint: [[f64; 2]; 3],
+    el: [ElM; 6],
+    subj: bool,
+    sep: f64,
+    sec: [SecM; SECTORS],
+    hi: f64,
+    lo: f64,
+}
+
+fn circ_mean_deg(sx: f64, sy: f64) -> f64 {
+    sy.atan2(sx).to_degrees().rem_euclid(360.0)
+}
+
+/// Measures a picture (`09` section 2). `excl` are the elements left out of the sectors (skin always is).
+fn measure(px: &[Px], scene: &Scene, excl: &[bool; 6]) -> Meas {
+    let n = px.len();
+    let mut idx: Vec<usize> = (0..n).collect();
+    idx.sort_unstable_by(|&a, &b| px[a].lab[0].total_cmp(&px[b].lab[0]).then(a.cmp(&b)));
+    let l_at = |q: f64| {
+        let pos = q / 100.0 * (n - 1) as f64;
+        let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
+        let (a, b) = (px[idx[lo]].lab[0], px[idx[hi]].lab[0]);
+        a + (b - a) * (pos - lo as f64)
+    };
+    let (p2, p50, p98) = (l_at(2.0), l_at(50.0), l_at(98.0));
+    let iqr_rel = (l_at(75.0) - l_at(25.0)) / (p98 - p2).max(1.0);
+    let mut band = vec![0u8; n];
+    for (rank, &i) in idx.iter().enumerate() {
+        band[i] = ((rank * 3 / n).min(2)) as u8;
+    }
+    let mut el_l: [Vec<f64>; 6] = Default::default();
+    let mut el_c: [Vec<f64>; 6] = Default::default();
+    let mut el_v = [[0.0f64; 2]; 6];
+    let mut el_hn = [0usize; 6];
+    let (mut pool_a, mut pool_b): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
+    let mut capable: [Vec<(f64, f64, f64)>; 3] = Default::default();
+    let (mut subj, mut bg): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
+    let mut sec_c: [Vec<f64>; SECTORS] = Default::default();
+    let mut sec_v = [[0.0f64; 2]; SECTORS];
+    let (mut hi, mut lo) = (0usize, 0usize);
+    for (i, p) in px.iter().enumerate() {
+        let (a, b) = (p.lab[1], p.lab[2]);
+        let c = a.hypot(b);
+        let e = usize::from(scene.elem[i]);
+        for k in 0..6 {
+            if in_elem(scene, i, k) {
+                el_l[k].push(p.lab[0]);
+                el_c[k].push(c);
+                if c > V3_HUE_MIN_CHROMA {
+                    el_v[k][0] += a / c;
+                    el_v[k][1] += b / c;
+                    el_hn[k] += 1;
+                }
+            }
+        }
+        if matches!(e, 2 | 3 | 4 | 5 | 6 | 8 | 9) {
+            pool_a.push(c);
+        }
+        if e != ELEM_SKY && e != ELEM_PERSON {
+            pool_b.push(c);
+        }
+        if matches!(e, 0 | 4 | 5 | 6 | 8 | 9) || (e == ELEM_PERSON && !scene.skin[i]) {
+            capable[usize::from(band[i])].push((c, a, b));
+        }
+        if scene.subject[i] {
+            subj.push(p.lab[0]);
+        } else if e != 0 {
+            bg.push(p.lab[0]);
+        }
+        if c > V3_HUE_MIN_CHROMA
+            && !scene.skin[i]
+            && !(0..5).any(|k| excl[k] && in_elem(scene, i, k))
+        {
+            let h = b.atan2(a).to_degrees();
+            let s = ((((h + 30.0).rem_euclid(360.0)) / 60.0) as usize) % SECTORS;
+            sec_c[s].push(c);
+            sec_v[s][0] += a / c;
+            sec_v[s][1] += b / c;
+        }
+        hi += usize::from(p.hi);
+        lo += usize::from(p.lo);
+    }
+    let nf = n as f64;
+    let mut m = Meas {
+        p2,
+        p50,
+        p98,
+        iqr_rel,
+        hi: hi as f64 / nf,
+        lo: lo as f64 / nf,
+        ..Meas::default()
+    };
+    let pool = if pool_a.len() as f64 / nf >= 0.01 {
+        &mut pool_a
+    } else {
+        &mut pool_b
+    };
+    m.logsat = median_of(pool).max(1.0).ln();
+    for b in 0..3 {
+        let mut cs: Vec<f64> = capable[b].iter().map(|p| p.0).collect();
+        cs.sort_unstable_by(f64::total_cmp);
+        let floor_c = cs
+            .get((cs.len() as f64 * V2_NEUTRAL_MIN_FRACTION) as usize)
+            .copied()
+            .unwrap_or(0.0);
+        let limit = V2_NEUTRAL_CHROMA_MAX.max(floor_c);
+        let (mut sa, mut sb, mut k) = (0.0, 0.0, 0usize);
+        for &(c, a, bb) in &capable[b] {
+            if c <= limit {
+                sa += a;
+                sb += bb;
+                k += 1;
+            }
+        }
+        if k > 0 {
+            m.tint[b] = [sa / k as f64, sb / k as f64];
+        }
+    }
+    for k in 0..6 {
+        let cnt = el_l[k].len();
+        if cnt == 0 {
+            continue;
+        }
+        let c = median_of(&mut el_c[k]);
+        m.el[k] = ElM {
+            share: cnt as f64 / nf,
+            l: median_of(&mut el_l[k]),
+            h: if el_hn[k] > 0 {
+                circ_mean_deg(el_v[k][0], el_v[k][1])
+            } else {
+                0.0
+            },
+            c,
+            logc: c.max(1.0).ln(),
+            n: cnt,
+            has_hue: el_hn[k] > 0,
+        };
+    }
+    let enough = |v: &Vec<f64>| v.len() as f64 >= (0.01 * nf).max(30.0);
+    m.subj = enough(&subj) && enough(&bg);
+    if m.subj {
+        m.sep = median_of(&mut subj) - median_of(&mut bg);
+    }
+    for j in 0..SECTORS {
+        let cnt = sec_c[j].len();
+        if cnt > 0 {
+            m.sec[j] = SecM {
+                share: cnt as f64 / nf,
+                logc: median_of(&mut sec_c[j]).max(1.0).ln(),
+                hue: circ_mean_deg(sec_v[j][0], sec_v[j][1]),
+                n: cnt,
+            };
+        }
+    }
+    m
+}
+
+/// The network's input vector from the photo's and the reference's measurements.
+fn network_inputs(p: &Meas, r: &Meas) -> BTreeMap<String, f64> {
+    let mut m = BTreeMap::new();
+    for (x, q) in [("P", p), ("R", r)] {
+        m.insert(format!("{x}.p2"), q.p2);
+        m.insert(format!("{x}.p50"), q.p50);
+        m.insert(format!("{x}.p98"), q.p98);
+        m.insert(format!("{x}.iqr_rel"), q.iqr_rel);
+        m.insert(format!("{x}.logsat"), q.logsat);
+        m.insert(format!("{x}.subj"), if q.subj { 1.0 } else { 0.0 });
+        m.insert(format!("{x}.sep"), q.sep);
+        for (b, name) in ["s", "m", "h"].iter().enumerate() {
+            m.insert(format!("{x}.tint_{name}_a"), q.tint[b][0]);
+            m.insert(format!("{x}.tint_{name}_b"), q.tint[b][1]);
+        }
+        for (k, e) in V5_ELEMS.iter().enumerate() {
+            let em = &q.el[k];
+            m.insert(format!("{x}.{e}.share"), em.share);
+            m.insert(format!("{x}.{e}.L"), em.l);
+            m.insert(format!("{x}.{e}.h"), em.h);
+            m.insert(format!("{x}.{e}.C"), em.c);
+            m.insert(format!("{x}.{e}.logC"), em.logc);
+        }
+        for j in 0..SECTORS {
+            m.insert(format!("{x}.s{j}.share"), q.sec[j].share);
+            m.insert(format!("{x}.s{j}.logC"), q.sec[j].logc);
+        }
+    }
+    for (k, e) in V5_ELEMS.iter().enumerate() {
+        let d = if p.el[k].has_hue && r.el[k].has_hue {
+            wrap_deg(r.el[k].h - p.el[k].h)
+        } else {
+            0.0
+        };
+        m.insert(format!("D.{e}.dh"), d);
+    }
+    for j in 0..SECTORS {
+        let d = if p.sec[j].n > 0 && r.sec[j].n > 0 {
+            wrap_deg(r.sec[j].hue - p.sec[j].hue)
+        } else {
+            0.0
+        };
+        m.insert(format!("D.s{j}.dh"), d);
+    }
+    m
+}
+
+/// Everything fixed for one pair: the photo's and the reference's measurements, the network's answer, and the photo's
+/// pixels as they are ungraded.
+struct V5Ctx {
+    excl: [bool; 6],
+    p: Meas,
+    r: Meas,
+    inputs: BTreeMap<String, f64>,
+    out: NetOut,
+    /// Per sample pixel: the sector of its hue in P (255: not in a sector), P's hue, and per sector P's log median C*.
+    sector: Vec<u8>,
+    p_hue: Vec<f64>,
+    p_sec_logc: [f64; SECTORS],
+}
+
+fn build_v5_ctx(
+    net: &Network,
+    p_px: &[Px],
+    scene: &Scene,
+    r_px: &[Px],
+    r_scene: &Scene,
+) -> R<V5Ctx> {
+    let p0 = measure(p_px, scene, &[false; 6]);
+    let r0 = measure(r_px, r_scene, &[false; 6]);
+    let mut excl = [false; 6];
+    for (k, flag) in excl.iter_mut().enumerate().take(5) {
+        *flag = p0.el[k].share >= V5_EXCLUDE_SHARE && r0.el[k].share >= V5_EXCLUDE_SHARE;
+    }
+    let p = measure(p_px, scene, &excl);
+    let r = measure(r_px, r_scene, &excl);
+    let inputs = network_inputs(&p, &r);
+    let out = NetOut::new(net, &inputs)?;
+    // P's sectors on the same pixels every candidate is measured on.
+    let mut sector = vec![255u8; p_px.len()];
+    let mut p_hue = vec![0.0; p_px.len()];
+    let mut cs: [Vec<f64>; SECTORS] = Default::default();
+    for (i, q) in p_px.iter().enumerate() {
+        let (a, b) = (q.lab[1], q.lab[2]);
+        let c = a.hypot(b);
+        p_hue[i] = b.atan2(a).to_degrees();
+        if c > V3_HUE_MIN_CHROMA
+            && !scene.skin[i]
+            && !(0..5).any(|k| excl[k] && in_elem(scene, i, k))
+        {
+            let s = ((((p_hue[i] + 30.0).rem_euclid(360.0)) / 60.0) as usize) % SECTORS;
+            sector[i] = s as u8;
+            cs[s].push(c);
+        }
+    }
+    let mut p_sec_logc = [0.0; SECTORS];
+    for j in 0..SECTORS {
+        p_sec_logc[j] = median_of(&mut cs[j]).max(1.0).ln();
+    }
+    Ok(V5Ctx {
+        excl,
+        p,
+        r,
+        inputs,
+        out,
+        sector,
+        p_hue,
+        p_sec_logc,
+    })
+}
+
+/// A candidate's measurements: the picture's, and per sector the mean hue shift and log chroma change against P on P's pixels.
+struct CandMeas {
+    m: Meas,
+    sec_shift: [f64; SECTORS],
+    sec_dlogc: [f64; SECTORS],
+}
+
+fn cand_meas(px: &[Px], scene: &Scene, ctx: &V5Ctx) -> CandMeas {
+    let m = measure(px, scene, &ctx.excl);
+    let mut shift = [0.0f64; SECTORS];
+    let mut cnt = [0usize; SECTORS];
+    let mut cs: [Vec<f64>; SECTORS] = Default::default();
+    for (i, q) in px.iter().enumerate() {
+        let s = ctx.sector[i];
+        if s == 255 {
+            continue;
+        }
+        let s = usize::from(s);
+        let h = q.lab[2].atan2(q.lab[1]).to_degrees();
+        shift[s] += wrap_deg(h - ctx.p_hue[i]);
+        cnt[s] += 1;
+        cs[s].push(q.lab[1].hypot(q.lab[2]));
+    }
+    let mut sec_shift = [0.0; SECTORS];
+    let mut sec_dlogc = [0.0; SECTORS];
+    for j in 0..SECTORS {
+        if cnt[j] > 0 {
+            sec_shift[j] = shift[j] / cnt[j] as f64;
+            sec_dlogc[j] = median_of(&mut cs[j]).max(1.0).ln() - ctx.p_sec_logc[j];
+        }
+    }
+    CandMeas {
+        m,
+        sec_shift,
+        sec_dlogc,
+    }
+}
+
+/// The V5 terms, unweighted by stage.
+#[derive(Clone, Copy, Debug, Default)]
+struct V5T {
+    floor: f64,
+    ceil: f64,
+    contrast: f64,
+    anchor: f64,
+    tint: f64,
+    sat: f64,
+    sec_hue: f64,
+    sec_chroma: f64,
+    el_hue: f64,
+    el_chroma: f64,
+    el_exp: f64,
+    subject: f64,
+    guard_hue: f64,
+    guard_skin: f64,
+    guard_sky: f64,
+}
+
+fn sq(x: f64) -> f64 {
+    x * x
+}
+
+/// The objective of `09` section 4 for a candidate.
+fn terms_v5(c: &CandMeas, ctx: &V5Ctx) -> V5T {
+    let o = &ctx.out;
+    let m = &c.m;
+    let mut t = V5T::default();
+    let term = |err: f64, scale: f64, dead_band: f64| sq(dead(err, dead_band) / scale);
+    t.floor = V5_FLOOR.2 * term(m.p2 - o.get("T.p2"), V5_FLOOR.0, V5_FLOOR.1);
+    t.ceil = V5_CEIL.2 * term(m.p98 - o.get("T.p98"), V5_CEIL.0, V5_CEIL.1);
+    t.contrast = V5_CONTRAST.2 * term(m.iqr_rel - o.get("T.iqr_rel"), V5_CONTRAST.0, V5_CONTRAST.1);
+    t.anchor = V5_ANCHOR.2 * term(m.p50 - o.get("T.p50"), V5_ANCHOR.0, V5_ANCHOR.1);
+    for (b, name) in ["s", "m", "h"].iter().enumerate() {
+        for (ch, cn) in ["a", "b"].iter().enumerate() {
+            t.tint += V5_TINT_BAND_WEIGHT[b]
+                * term(
+                    m.tint[b][ch] - o.get(&format!("T.tint_{name}_{cn}")),
+                    V5_TINT.0,
+                    V5_TINT.1,
+                );
+        }
+    }
+    t.sat = V5_SAT.2 * term(m.logsat - o.get("T.logsat"), V5_SAT.0, V5_SAT.1);
+    for j in 0..SECTORS {
+        let g = o.get(&format!("G.s{j}"));
+        if g <= 0.0 {
+            continue;
+        }
+        let w = g * ctx.p.sec[j].share.sqrt();
+        t.sec_hue += V5_SECTOR_HUE.2
+            * w
+            * term(
+                c.sec_shift[j] - o.get(&format!("T.s{j}.dh")),
+                V5_SECTOR_HUE.0,
+                V5_SECTOR_HUE.1,
+            );
+        t.sec_chroma += V5_SECTOR_CHROMA.2
+            * w
+            * term(
+                c.sec_dlogc[j] - o.get(&format!("T.s{j}.dlogC")),
+                V5_SECTOR_CHROMA.0,
+                V5_SECTOR_CHROMA.1,
+            );
+    }
+    for (k, e) in V5_ELEMS.iter().enumerate() {
+        let (gm, gh) = (
+            o.get(&format!("G.{e}.matched")),
+            o.get(&format!("G.{e}.hue")),
+        );
+        let w = V5_W_TERM[k] * ctx.p.el[k].share.sqrt();
+        let em = &m.el[k];
+        if gh > 0.0 && em.has_hue {
+            t.el_hue += w
+                * gh
+                * term(
+                    wrap_deg(em.h - o.get(&format!("T.{e}.h"))),
+                    V5_EL_HUE.0,
+                    V5_EL_HUE.1,
+                );
+        }
+        if gm > 0.0 {
+            t.el_chroma += w
+                * gm
+                * term(
+                    em.logc - o.get(&format!("T.{e}.logC")),
+                    V5_EL_CHROMA.0,
+                    V5_EL_CHROMA.1,
+                );
+            t.el_exp += w
+                * gm
+                * term(
+                    (em.l - m.p50) - o.get(&format!("T.{e}.off")),
+                    V5_EL_EXPOSURE.0,
+                    V5_EL_EXPOSURE.1,
+                );
+        }
+    }
+    let gs = o.get("G.subj");
+    if gs > 0.0 {
+        t.subject = V5_SUBJECT.2 * gs * term(m.sep - o.get("T.sep"), V5_SUBJECT.0, V5_SUBJECT.1);
+    }
+    // Guards.
+    let drift = |d: f64, limit: f64| {
+        if d.abs() > limit {
+            V5_GUARD_HUE_WEIGHT * sq((d.abs() - limit) / V5_GUARD_HUE_SCALE_DEG)
+        } else {
+            0.0
+        }
+    };
+    for (k, e) in V5_ELEMS.iter().enumerate() {
+        if ctx.p.el[k].share >= V5_PRESENT_SHARE && ctx.p.el[k].has_hue && m.el[k].has_hue {
+            let limit = if o.get(&format!("G.{e}.hue")) > V5_GATE_OPEN {
+                V5_CAP_DEG[k] + V5_GUARD_HUE_EXTRA_DEG
+            } else {
+                V5_GUARD_HUE_LIMIT_DEG
+            };
+            t.guard_hue += drift(wrap_deg(m.el[k].h - ctx.p.el[k].h), limit);
+        }
+    }
+    for j in 0..SECTORS {
+        if ctx.p.sec[j].share >= V5_GUARD_SECTOR_MIN_SHARE {
+            t.guard_hue += drift(c.sec_shift[j], V5_GUARD_HUE_LIMIT_DEG);
+        }
+    }
+    if ctx.p.el[5].share >= V5_PRESENT_SHARE && m.el[5].has_hue {
+        let h = m.el[5].h;
+        let eh = (V5_GUARD_SKIN_HUE.0 - h)
+            .max(h - V5_GUARD_SKIN_HUE.1)
+            .max(0.0);
+        let ec = (V5_GUARD_SKIN_CHROMA.0 - m.el[5].c)
+            .max(m.el[5].c - V5_GUARD_SKIN_CHROMA.1)
+            .max(0.0);
+        t.guard_skin =
+            V5_GUARD_SKIN_WEIGHT * (sq(eh / V5_GUARD_SKIN_SCALE) + sq(ec / V5_GUARD_SKIN_SCALE));
+    }
+    if ctx.p.el[0].share >= V5_PRESENT_SHARE {
+        let limit = (V5_GUARD_SKY_FACTOR * ctx.p.el[0].c).max(o.get("T.sky.logC").exp());
+        let excess = (m.el[0].c - limit).max(0.0);
+        t.guard_sky = V5_GUARD_SKY_WEIGHT * sq(excess / V5_GUARD_SKY_SCALE);
+    }
+    t
+}
+
+// ---- V5 local grades --------------------------------------------------------------------------
+
+/// The local grades of one candidate: per element (sky, vegetation, water, ground, built, skin, subject) an exposure offset in
+/// stops, a hue rotation in degrees and a chroma scale. The subject has the exposure offset only.
+#[derive(Clone, Debug, Default)]
+struct LocalSet {
+    exp: [f64; 7],
+    hue: [f64; 7],
+    chroma: [f64; 7],
+}
+
+impl LocalSet {
+    fn is_identity(&self) -> bool {
+        (0..7).all(|k| self.exp[k] == 0.0 && self.hue[k] == 0.0 && self.chroma[k] == 1.0)
+    }
+}
+
+/// The local block of the normalised parameters (`N_GLOBAL..`), scaled by `strength`: 3 per element, then the subject's exposure.
+fn local_from_x(x: &[f64; N_PARAMS], strength: f64) -> LocalSet {
+    let mut s = LocalSet {
+        chroma: [1.0; 7],
+        ..LocalSet::default()
+    };
+    for k in 0..6 {
+        let b = N_GLOBAL + 3 * k;
+        s.exp[k] = strength * x[b];
+        s.hue[k] = strength * x[b + 1] * V5_CAP_DEG[k];
+        let c = strength * x[b + 2];
+        s.chroma[k] = if c >= 0.0 {
+            V5_CHROMA_SCALE_MAX.powf(c)
+        } else {
+            V5_CHROMA_SCALE_MIN.powf(-c)
+        };
+    }
+    s.exp[6] = strength * x[N_PARAMS - 1];
+    s
+}
+
+/// One local grade on a LogC4 triple: exposure, then a rotation and a scale of the chroma in the `e1, e2` plane.
+fn local_apply(v: [f64; 3], exp_stops: f64, hue_deg: f64, chroma: f64) -> [f64; 3] {
+    let mean = (v[0] + v[1] + v[2]) / 3.0;
+    let p = v[0] * E1[0] + v[1] * E1[1] + v[2] * E1[2];
+    let q = v[0] * E2[0] + v[1] * E2[1] + v[2] * E2[2];
+    let (s, c) = hue_deg.to_radians().sin_cos();
+    let (p2, q2) = (chroma * (p * c - q * s), chroma * (p * s + q * c));
+    let shift = exp_stops * V5_STOP_CODE;
+    [
+        mean + shift + p2 * E1[0] + q2 * E2[0],
+        mean + shift + p2 * E1[1] + q2 * E2[1],
+        mean + shift + p2 * E1[2] + q2 * E2[2],
+    ]
+}
+
+/// Soft masks per element (sky, vegetation, water, ground, built, skin, subject) over a picture.
+#[allow(dead_code)]
+struct MaskSet {
+    w: usize,
+    h: usize,
+    data: Vec<[f32; 7]>,
+}
+
+/// Box mean with edge clamping, radius `r`, by prefix sums.
+fn box_mean(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    let mut tmp = vec![0f64; w * h];
+    for y in 0..h {
+        let mut pre = vec![0f64; w + 1];
+        for x in 0..w {
+            pre[x + 1] = pre[x] + f64::from(src[y * w + x]);
+        }
+        for x in 0..w {
+            let (a, b) = (x.saturating_sub(r), (x + r + 1).min(w));
+            tmp[y * w + x] = (pre[b] - pre[a]) / (b - a) as f64;
+        }
+    }
+    let mut out = vec![0f32; w * h];
+    for x in 0..w {
+        let mut pre = vec![0f64; h + 1];
+        for y in 0..h {
+            pre[y + 1] = pre[y] + tmp[y * w + x];
+        }
+        for y in 0..h {
+            let (a, b) = (y.saturating_sub(r), (y + r + 1).min(h));
+            out[y * w + x] = ((pre[b] - pre[a]) / (b - a) as f64) as f32;
+        }
+    }
+    out
+}
+
+/// The soft masks: each element's binary mask refined by a guided filter on P's L*/100 (radius 2 % of the short side,
+/// epsilon 1e-3), clamped to 0..1. `binary` is per pixel the 7 binary masks.
+fn soft_masks(binary: &[[bool; 7]], guide: &[f32], w: usize, h: usize) -> MaskSet {
+    let r = ((V5_GF_RADIUS * w.min(h) as f64).round() as usize).max(1);
+    let mean_i = box_mean(guide, w, h, r);
+    let ii: Vec<f32> = guide.iter().map(|v| v * v).collect();
+    let corr_i = box_mean(&ii, w, h, r);
+    let mut data = vec![[0f32; 7]; w * h];
+    for k in 0..7 {
+        let p: Vec<f32> = binary
+            .iter()
+            .map(|b| if b[k] { 1.0 } else { 0.0 })
+            .collect();
+        if p.iter().all(|&v| v == 0.0) {
+            continue;
+        }
+        let mean_p = box_mean(&p, w, h, r);
+        let ip: Vec<f32> = guide.iter().zip(&p).map(|(a, b)| a * b).collect();
+        let corr_ip = box_mean(&ip, w, h, r);
+        let mut a = vec![0f32; w * h];
+        let mut b = vec![0f32; w * h];
+        for i in 0..w * h {
+            let var = corr_i[i] - mean_i[i] * mean_i[i];
+            let cov = corr_ip[i] - mean_i[i] * mean_p[i];
+            a[i] = cov / (var + V5_GF_EPS as f32);
+            b[i] = mean_p[i] - a[i] * mean_i[i];
+        }
+        let (ma, mb) = (box_mean(&a, w, h, r), box_mean(&b, w, h, r));
+        for i in 0..w * h {
+            data[i][k] = (ma[i] * guide[i] + mb[i]).clamp(0.0, 1.0);
+        }
+    }
+    MaskSet { w, h, data }
+}
+
+/// Nearest-neighbour resize of a per-pixel array.
+fn resize_nn<T: Copy>(src: &[T], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<T> {
+    let mut out = Vec::with_capacity(dw * dh);
+    for y in 0..dh {
+        let sy = (((y as f64 + 0.5) / dh as f64) * sh as f64) as usize;
+        for x in 0..dw {
+            let sx = (((x as f64 + 0.5) / dw as f64) * sw as f64) as usize;
+            out.push(src[sy.min(sh - 1) * sw + sx.min(sw - 1)]);
+        }
+    }
+    out
+}
+
+/// The 7 binary masks of a picture from its labels.
+fn binary_masks(scene: &Scene) -> Vec<[bool; 7]> {
+    (0..scene.elem.len())
+        .map(|i| {
+            let mut b = [false; 7];
+            for (k, flag) in b.iter_mut().enumerate().take(6) {
+                *flag = in_elem(scene, i, k);
+            }
+            b[6] = scene.subject[i];
+            b
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------------------------
 // Samples, evaluation, optimiser
 // ---------------------------------------------------------------------------------------------
 
@@ -2109,6 +3388,11 @@ struct Evaluator<'a> {
     scene: Option<Scene>,
     /// V3: what the do-no-harm term needs from photo0 (set once photo0 and the reference are known).
     dnh: Option<DnhCtx>,
+    /// V5: the network's answer and the fixed measurements of the pair.
+    v5: Option<V5Ctx>,
+    /// V5: the photo's soft masks at the sample pixels, and which elements have a mask of at least 2 % of the frame.
+    masks: Option<Vec<[f32; 7]>>,
+    mask_ok: [bool; 7],
     /// The V2 term groups the current stage minimises.
     mask: u8,
     conv: LabConv,
@@ -2122,38 +3406,87 @@ struct Evaluator<'a> {
 type ChainParamsOut = ColorChain;
 
 impl Evaluator<'_> {
-    fn stats(&mut self, x: &[f64; N_PARAMS]) -> Stats {
+    /// Renders the sample pixels of a candidate into `buf`; false if the chain refused it.
+    fn fill(&mut self, x: &[f64; N_PARAMS]) -> bool {
         let real = to_real(x, self.strength);
         match Candidate::new(&real, self.with_hue) {
-            Ok(cand) => {
-                let (output, conv) = (self.output, &self.conv);
+            Ok(mut cand) => {
+                if self.v5.is_some() {
+                    let loc = local_from_x(x, self.strength);
+                    if !loc.is_identity() {
+                        cand.local = Some(loc);
+                    }
+                }
+                let (output, conv, masks) = (self.output, &self.conv, self.masks.as_deref());
                 self.buf
                     .par_chunks_mut(256)
                     .zip(self.lin.par_chunks(256))
-                    .for_each(|(o, i)| {
-                        for (d, s) in o.iter_mut().zip(i) {
-                            *d = conv.px(render_pixel(&cand, output, *s));
+                    .enumerate()
+                    .for_each(|(ci, (o, i))| {
+                        for (j, (d, s)) in o.iter_mut().zip(i).enumerate() {
+                            let m = masks.map(|ms| &ms[ci * 256 + j]);
+                            *d = conv.px(render_pixel_m(&cand, output, *s, m));
                         }
                     });
-                stats_of(&self.buf, self.scene.as_ref(), self.dnh.as_ref())
+                true
             }
-            // A candidate the chain refuses is worse than anything.
-            Err(_) => {
-                let mut s = stats_of(&self.buf, self.scene.as_ref(), self.dnh.as_ref());
-                s.median = 1e6;
-                s
-            }
+            Err(_) => false,
         }
+    }
+
+    fn stats(&mut self, x: &[f64; N_PARAMS]) -> Stats {
+        if self.fill(x) {
+            stats_of(&self.buf, self.scene.as_ref(), self.dnh.as_ref())
+        } else {
+            // A candidate the chain refuses is worse than anything.
+            let mut s = stats_of(&self.buf, self.scene.as_ref(), self.dnh.as_ref());
+            s.median = 1e6;
+            s
+        }
+    }
+
+    /// V5: the candidate's measurements and terms.
+    fn v5_terms(&mut self, x: &[f64; N_PARAMS]) -> (Terms, Option<CandMeas>) {
+        let ok = self.fill(x);
+        let reg = x[..N_GLOBAL].iter().map(|v| v * v).sum::<f64>() / N_GLOBAL as f64;
+        let reg_local =
+            x[N_GLOBAL..].iter().map(|v| v * v).sum::<f64>() / (N_PARAMS - N_GLOBAL) as f64;
+        let mut t = blank_terms();
+        t.v5 = true;
+        t.reg = reg;
+        t.reg_local = reg_local;
+        let (Some(ctx), Some(scene)) = (self.v5.as_ref(), self.scene.as_ref()) else {
+            return (t, None);
+        };
+        if !ok {
+            t.clip = 1e6;
+            return (t, None);
+        }
+        let cm = cand_meas(&self.buf, scene, ctx);
+        t.t5 = terms_v5(&cm, ctx);
+        let over = |o: f64, r: f64| ((o - r - CLIP_SLACK).max(0.0) / CLIP_SCALE).powi(2);
+        t.clip = over(cm.m.hi, ctx.r.hi) + over(cm.m.lo, ctx.r.lo);
+        (t, Some(cm))
     }
 
     fn objective(&mut self, x: &[f64; N_PARAMS]) -> (f64, Terms) {
         let t0 = Instant::now();
-        let s = self.stats(x);
-        let t = terms(self.objective, &s, &self.reference, &self.photo0, x);
+        let t = if self.objective == Objective::V5 {
+            self.v5_terms(x).0
+        } else {
+            let s = self.stats(x);
+            terms(self.objective, &s, &self.reference, &self.photo0, x)
+        };
         self.evals += 1;
         self.eval_time += t0.elapsed();
         (t.total_masked(self.mask), t)
     }
+}
+
+/// A `Terms` with every term at 0.
+fn blank_terms() -> Terms {
+    let z = Stats::default();
+    terms(Objective::V1, &z, &z, &z, &[0.0; N_PARAMS])
 }
 
 /// Golden-section search of one coordinate over `[lo, hi]` (clamped to -1..1): a fixed number of iterations.
@@ -2214,9 +3547,14 @@ struct FitResult {
     seconds: f64,
     per_eval_ms: f64,
     stage_log: Vec<Value>,
+    /// V5: the network's answer, the need test, the local grades, the guards that fired, and the text of the sheet's panel.
+    extra: Value,
 }
 
 fn fit(ev: &mut Evaluator<'_>) -> FitResult {
+    if ev.objective == Objective::V5 {
+        return fit_v5(ev);
+    }
     let t0 = Instant::now();
     let strength = ev.strength;
     // The fit itself runs at strength 1 (the deltas are scaled afterwards by `strength`, see `to_real`).
@@ -2259,7 +3597,222 @@ fn fit(ev: &mut Evaluator<'_>) -> FitResult {
         seconds,
         per_eval_ms: ev.eval_time.as_secs_f64() * 1000.0 / ev.evals.max(1) as f64,
         stage_log: log,
+        extra: Value::Null,
     }
+}
+
+/// The V5 need test (`09` section 5): which elements get a local grade after the global stages.
+fn v5_need(ev: &mut Evaluator<'_>, x: &[f64; N_PARAMS]) -> ([bool; 7], Vec<Value>) {
+    let (_, cm) = ev.v5_terms(x);
+    let mask_ok = ev.mask_ok;
+    let mut need = [false; 7];
+    let mut report = Vec::new();
+    let (Some(cm), Some(ctx)) = (cm, ev.v5.as_ref()) else {
+        return (need, report);
+    };
+    let o = &ctx.out;
+    for (k, e) in V5_ELEMS.iter().enumerate() {
+        let matched = o.get(&format!("G.{e}.matched")) > V5_GATE_OPEN;
+        let hue_on = o.get(&format!("G.{e}.hue")) > V5_GATE_OPEN;
+        let exp_on = o.get(&format!("{e}.e_gate")) > V5_GATE_OPEN;
+        let em = &cm.m.el[k];
+        let hue_err = if hue_on && em.has_hue {
+            wrap_deg(em.h - o.get(&format!("T.{e}.h"))).abs()
+        } else {
+            0.0
+        };
+        let logc_err = if matched {
+            (em.logc - o.get(&format!("T.{e}.logC"))).abs()
+        } else {
+            0.0
+        };
+        let exp_err = if exp_on {
+            ((em.l - cm.m.p50) - o.get(&format!("T.{e}.off"))).abs()
+        } else {
+            0.0
+        };
+        let want = matched
+            && (hue_err > V5_NEED_HUE_DEG
+                || logc_err > V5_NEED_LOGC
+                || exp_err > V5_NEED_EXPOSURE_L);
+        need[k] = want && mask_ok[k];
+        report.push(json!({ "element": e, "matched": matched, "mask_at_least_2_percent": mask_ok[k], "hue_error_deg": hue_err,
+            "log_chroma_error": logc_err, "exposure_error_L": exp_err, "local_grade": need[k] }));
+    }
+    let sep_err = if o.get("G.subj") > V5_GATE_OPEN {
+        (cm.m.sep - o.get("T.sep")).abs()
+    } else {
+        0.0
+    };
+    need[6] = sep_err > V5_NEED_EXPOSURE_L && mask_ok[6];
+    report.push(
+        json!({ "element": "subject", "separation_error_L": sep_err, "local_grade": need[6] }),
+    );
+    (need, report)
+}
+
+/// The V5 fit: the global stages, the need test, the local stage, the joint polish.
+fn fit_v5(ev: &mut Evaluator<'_>) -> FitResult {
+    let t0 = Instant::now();
+    let strength = ev.strength;
+    ev.strength = 1.0;
+    let mut x = [0.0f64; N_PARAMS];
+    ev.mask = MASK_ALL;
+    let (_, before) = ev.objective(&x);
+    let mut log = Vec::new();
+    let mut f: f64;
+    for (name, range, frac, iters) in STAGES[..8].iter().cloned() {
+        // Every stage sees the whole objective (a stage only chooses which parameters it moves), so each golden-section pass
+        // can only lower it: the fit never ends above where it began.
+        ev.mask = MASK_ALL;
+        f = ev.objective(&x).0;
+        let start = f;
+        for i in range {
+            if ev.with_hue || !(HSAT_RANGE.contains(&i) || HHUE_RANGE.contains(&i)) {
+                f = golden(ev, &mut x, i, frac, iters, f);
+            }
+        }
+        log.push(json!({ "stage": name, "half_range": frac, "iterations": iters, "objective_before": start, "objective_after": f }));
+    }
+    ev.mask = MASK_ALL;
+    let (f_global, after_global) = ev.objective(&x);
+    let (need, need_report) = v5_need(ev, &x);
+    let mut local_idx: Vec<usize> = Vec::new();
+    for (k, &n) in need.iter().enumerate() {
+        if n {
+            if k < 6 {
+                local_idx.extend([N_GLOBAL + 3 * k, N_GLOBAL + 3 * k + 1, N_GLOBAL + 3 * k + 2]);
+            } else {
+                local_idx.push(N_PARAMS - 1);
+            }
+        }
+    }
+    f = f_global;
+    for (pass, (frac, iters)) in V5_LOCAL_PASSES.iter().cloned().enumerate() {
+        let start = f;
+        for &i in &local_idx {
+            f = golden(ev, &mut x, i, frac, iters, f);
+        }
+        log.push(json!({ "stage": "local", "pass": pass, "half_range": frac, "iterations": iters, "objective_before": start, "objective_after": f }));
+    }
+    let start = f;
+    let polish: Vec<usize> = (0..N_GLOBAL).chain(local_idx.iter().copied()).collect();
+    for i in polish {
+        if ev.with_hue || !(HSAT_RANGE.contains(&i) || HHUE_RANGE.contains(&i)) {
+            f = golden(ev, &mut x, i, V5_POLISH.0, V5_POLISH.1, f);
+        }
+    }
+    log.push(json!({ "stage": "joint polish", "half_range": V5_POLISH.0, "iterations": V5_POLISH.1, "objective_before": start, "objective_after": f }));
+    let seconds = t0.elapsed().as_secs_f64();
+    let (_, after) = ev.objective(&x);
+    let extra = v5_extra(ev, &x, &need, need_report, &after_global, &after);
+    ev.strength = strength;
+    FitResult {
+        x,
+        before,
+        after,
+        evals: ev.evals,
+        seconds,
+        per_eval_ms: ev.eval_time.as_secs_f64() * 1000.0 / ev.evals.max(1) as f64,
+        stage_log: log,
+        extra,
+    }
+}
+
+/// What the V5 report says about a fit: the network's inputs, outputs and gates, the need test, the local grades, the guards.
+fn v5_extra(
+    ev: &Evaluator<'_>,
+    x: &[f64; N_PARAMS],
+    need: &[bool; 7],
+    need_report: Vec<Value>,
+    after_global: &Terms,
+    after: &Terms,
+) -> Value {
+    let Some(ctx) = ev.v5.as_ref() else {
+        return Value::Null;
+    };
+    let o = &ctx.out;
+    let loc = local_from_x(x, 1.0);
+    let names = [
+        "sky",
+        "vegetation",
+        "water",
+        "ground",
+        "built",
+        "skin",
+        "subject",
+    ];
+    let local: Vec<Value> = (0..7)
+        .filter(|&k| need[k])
+        .map(|k| json!({ "element": names[k], "exposure_stops": loc.exp[k], "hue_deg": loc.hue[k], "chroma_scale": loc.chroma[k] }))
+        .collect();
+    let mut lines = vec![format!(
+        "key mismatch: {}",
+        if o.get("G.key_mismatch") > V5_GATE_OPEN {
+            "yes"
+        } else {
+            "no"
+        }
+    )];
+    let short = ["sky", "veg", "water", "ground", "built", "skin"];
+    for (k, e) in V5_ELEMS.iter().enumerate() {
+        if o.get(&format!("G.{e}.matched")) > V5_GATE_OPEN {
+            let pm = &ctx.p.el[k];
+            lines.push(format!(
+                "{}: h {:.0}>{:.0} c {:.0}>{:.0} e {:+.1}",
+                short[k],
+                pm.h,
+                o.get(&format!("T.{e}.h")).rem_euclid(360.0),
+                pm.c,
+                o.get(&format!("T.{e}.logC")).exp(),
+                o.get(&format!("T.{e}.off")) - (pm.l - ctx.p.p50)
+            ));
+        }
+    }
+    let open: Vec<String> = (0..SECTORS)
+        .filter(|&j| o.get(&format!("G.s{j}")) > V5_GATE_OPEN)
+        .map(|j| j.to_string())
+        .collect();
+    lines.push(format!(
+        "sectors open: {}",
+        if open.is_empty() {
+            "none".into()
+        } else {
+            open.join(" ")
+        }
+    ));
+    let mut any = false;
+    for k in 0..7 {
+        if need[k] {
+            any = true;
+            lines.push(if k == 6 {
+                format!("local subject: {:+.2} st", loc.exp[k])
+            } else {
+                format!(
+                    "local {}: {:+.2} st, {:+.0}*, x{:.2}",
+                    short[k], loc.exp[k], loc.hue[k], loc.chroma[k]
+                )
+            });
+        }
+    }
+    if !any {
+        lines.push("local grades: none".into());
+    }
+    let g = |t: &Terms| {
+        let t5 = t.t5;
+        json!({ "guard_hue_drift": t5.guard_hue, "guard_skin": t5.guard_skin, "guard_sky_chroma": t5.guard_sky })
+    };
+    json!({
+        "network_inputs": ctx.inputs,
+        "network": o.outputs_json(),
+        "excluded_from_sectors": ctx.excl,
+        "need_test": need_report,
+        "local_grades": local,
+        "guards_after": g(after),
+        "terms_after_global_stages": after_global.to_json(),
+        "panel_lines": lines,
+        "note": "The local grades are a POC-only CPU step (like the hue step) and cannot be written to settings.json; its settings.json holds the global grade's real corrector settings only.",
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2268,15 +3821,28 @@ fn fit(ev: &mut Evaluator<'_>) -> FitResult {
 
 /// Renders a node picture through a candidate and the Output: linear sRGB (clamped).
 fn render_image(node: &Img, cand: &Candidate, output: &ColorChain) -> Img {
+    render_image_m(node, cand, output, None)
+}
+
+/// [`render_image`] with soft masks (of the picture's size) for the local grades.
+fn render_image_m(
+    node: &Img,
+    cand: &Candidate,
+    output: &ColorChain,
+    masks: Option<&MaskSet>,
+) -> Img {
     let mut px = vec![0f32; node.px.len()];
     px.par_chunks_mut(3 * node.w)
         .zip(node.px.par_chunks(3 * node.w))
-        .for_each(|(o, i)| {
-            for (d, s) in o.chunks_exact_mut(3).zip(i.chunks_exact(3)) {
-                let v = render_pixel(
+        .enumerate()
+        .for_each(|(y, (o, i))| {
+            for (x, (d, s)) in o.chunks_exact_mut(3).zip(i.chunks_exact(3)).enumerate() {
+                let m = masks.map(|ms| &ms.data[y * ms.w + x]);
+                let v = render_pixel_m(
                     cand,
                     output,
                     [f64::from(s[0]), f64::from(s[1]), f64::from(s[2])],
+                    m,
                 );
                 for c in 0..3 {
                     d[c] = if v[c].is_nan() {
@@ -2436,6 +4002,26 @@ fn glyph(c: char) -> [u8; 7] {
         '9' => [
             0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100,
         ],
+        'g' => [0, 0b01111, 0b10001, 0b10001, 0b01111, 0b00001, 0b01110],
+        'j' => [0b00010, 0, 0b00110, 0b00010, 0b00010, 0b10010, 0b01100],
+        'k' => [
+            0b10000, 0b10000, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010,
+        ],
+        'p' => [0, 0, 0b11110, 0b10001, 0b11110, 0b10000, 0b10000],
+        'q' => [0, 0, 0b01111, 0b10001, 0b01111, 0b00001, 0b00001],
+        'v' => [0, 0, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+        'x' => [0, 0, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001],
+        'y' => [0, 0, 0b10001, 0b10001, 0b01111, 0b00001, 0b01110],
+        'z' => [0, 0, 0b11111, 0b00010, 0b00100, 0b01000, 0b11111],
+        '+' => [0, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0],
+        '-' => [0, 0, 0, 0b11111, 0, 0, 0],
+        '.' => [0, 0, 0, 0, 0, 0b01100, 0b01100],
+        ':' => [0, 0b01100, 0b01100, 0, 0b01100, 0b01100, 0],
+        ',' => [0, 0, 0, 0, 0b01100, 0b00100, 0b01000],
+        '>' => [
+            0b10000, 0b01000, 0b00100, 0b00010, 0b00100, 0b01000, 0b10000,
+        ],
+        '*' => [0b01100, 0b10010, 0b10010, 0b01100, 0, 0, 0],
         _ => [0; 7],
     }
 }
@@ -2695,6 +4281,12 @@ struct PhotoFit<'a> {
     /// V3: the photo's labels at the fit picture's pixels and gathered at the sample pixels.
     scene_fit: Option<Scene>,
     scene_samples: Option<Scene>,
+    /// V5: the soft masks of the local grades at the fit and the render sizes, which elements have a mask of at least 2 % of
+    /// the frame, and the pixel index of every sample.
+    masks_fit: Option<MaskSet>,
+    masks_show: Option<MaskSet>,
+    mask_ok: [bool; 7],
+    sample_idx: Vec<usize>,
 }
 
 fn prepare_photo(photo: &PhotoNode) -> R<PhotoFit<'_>> {
@@ -2705,6 +4297,7 @@ fn prepare_photo(photo: &PhotoNode) -> R<PhotoFit<'_>> {
     let ident = Candidate::new(&to_real(&[0.0; N_PARAMS], 1.0), false)?;
     let default_show = render_image(&photo.show, &ident, &output);
     let (mut scene_fit, mut scene_samples) = (None, None);
+    let (mut masks_fit, mut masks_show, mut mask_ok) = (None, None, [false; 7]);
     if let Some(dir) = &ctx().labels {
         let file = dir
             .join("labels")
@@ -2713,7 +4306,44 @@ fn prepare_photo(photo: &PhotoNode) -> R<PhotoFit<'_>> {
             let (lw, lh, labels) = read_label_png(&file)?;
             let elem = resize_labels(&labels, lw, lh, [0; 4], fit_img.w, fit_img.h);
             let display = resize_area(&default_show, fit_img.w, fit_img.h);
-            let sc = make_scene(elem, &display, ctx().seg.as_ref(), &LabConv::new());
+            let conv = LabConv::new();
+            let sc = make_scene(elem, &display, ctx().seg.as_ref(), &conv);
+            // V5's soft masks: the binary masks refined by a guided filter on P's L*/100, at the fit and the render sizes.
+            let guide = |img: &Img| -> Vec<f32> {
+                (0..img.w * img.h)
+                    .map(|i| {
+                        let p = &img.px[3 * i..3 * i + 3];
+                        (conv
+                            .px([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+                            .lab[0]
+                            / 100.0) as f32
+                    })
+                    .collect()
+            };
+            let binary_fit = binary_masks(&sc);
+            for (k, ok) in mask_ok.iter_mut().enumerate() {
+                let n = binary_fit.iter().filter(|b| b[k]).count();
+                *ok = n as f64 / binary_fit.len() as f64 >= V5_PRESENT_SHARE;
+            }
+            masks_fit = Some(soft_masks(
+                &binary_fit,
+                &guide(&display),
+                fit_img.w,
+                fit_img.h,
+            ));
+            let (sw, sh) = (photo.show.w, photo.show.h);
+            let show_scene = Scene {
+                elem: resize_labels(&labels, lw, lh, [0; 4], sw, sh),
+                skin: resize_nn(&sc.skin, fit_img.w, fit_img.h, sw, sh),
+                subject: resize_nn(&sc.subject, fit_img.w, fit_img.h, sw, sh),
+                skin_source: sc.skin_source,
+            };
+            masks_show = Some(soft_masks(
+                &binary_masks(&show_scene),
+                &guide(&default_show),
+                sw,
+                sh,
+            ));
             scene_samples = Some(gather_scene(&sc, &sample_idx));
             scene_fit = Some(sc);
         }
@@ -2726,6 +4356,10 @@ fn prepare_photo(photo: &PhotoNode) -> R<PhotoFit<'_>> {
         default_show,
         scene_fit,
         scene_samples,
+        masks_fit,
+        masks_show,
+        mask_ok,
+        sample_idx,
     })
 }
 
@@ -2746,9 +4380,12 @@ fn run_fit(
     ref_scene: Option<&Scene>,
 ) -> R<(FitResult, Stats)> {
     let conv = LabConv::new();
-    let v3 = objective == Objective::V3;
+    let v5 = objective == Objective::V5;
+    let v3 = objective == Objective::V3 || v5;
     if v3 && (ref_scene.is_none() || pf.scene_samples.is_none()) {
-        return Err("objective v3 needs labels for the photo and the reference (--labels)".into());
+        return Err(
+            "objective v3 and v5 need labels for the photo and the reference (--labels)".into(),
+        );
     }
     let ref_stats = picture_stats_scene(&conv, reference_fit, if v3 { ref_scene } else { None });
     let mut ev = Evaluator {
@@ -2759,6 +4396,15 @@ fn run_fit(
         photo0: ref_stats.clone(),
         scene: if v3 { pf.scene_samples.clone() } else { None },
         dnh: None,
+        v5: None,
+        masks: if v5 {
+            pf.masks_fit
+                .as_ref()
+                .map(|m| pf.sample_idx.iter().map(|&i| m.data[i]).collect())
+        } else {
+            None
+        },
+        mask_ok: pf.mask_ok,
         mask: MASK_ALL,
         conv,
         with_hue,
@@ -2768,9 +4414,12 @@ fn run_fit(
         eval_time: Duration::ZERO,
     };
     ev.photo0 = ev.stats(&[0.0; N_PARAMS]);
-    if let (true, Some(sc), Some(r), Some(z)) =
-        (v3, ev.scene.as_ref(), &ref_stats.v3, &ev.photo0.v3)
-    {
+    if let (true, Some(sc), Some(r), Some(z)) = (
+        objective == Objective::V3,
+        ev.scene.as_ref(),
+        &ref_stats.v3,
+        &ev.photo0.v3,
+    ) {
         let elig = eligibility(r, z);
         let sector = dnh_sectors(&ev.buf, sc, &elig);
         ev.dnh = Some(DnhCtx {
@@ -2778,7 +4427,59 @@ fn run_fit(
             sector,
         });
     }
+    if v5 {
+        let net = ctx()
+            .network
+            .as_ref()
+            .ok_or("objective v5 needs --network <file.ywn>")?;
+        let (Some(sc), Some(rs)) = (ev.scene.as_ref(), ref_scene) else {
+            return Err("objective v5 needs labels".into());
+        };
+        let p_px = ev.buf.clone();
+        let r_px = picture_px(&ev.conv, reference_fit);
+        let c = build_v5_ctx(net, &p_px, sc, &r_px, rs)?;
+        ev.v5 = Some(c);
+    }
     Ok((fit(&mut ev), ref_stats))
+}
+
+/// Every pixel of a linear sRGB picture, measured.
+fn picture_px(conv: &LabConv, img: &Img) -> Vec<Px> {
+    (0..img.w * img.h)
+        .map(|i| {
+            let p = &img.px[3 * i..3 * i + 3];
+            conv.px([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+        })
+        .collect()
+}
+
+/// The fitted picture: the global grade, and for V5 the local grades through the soft masks, at the fit or the render size.
+fn render_fitted(
+    pf: &PhotoFit<'_>,
+    x: &[f64; N_PARAMS],
+    strength: f64,
+    with_hue: bool,
+    show: bool,
+    v5: bool,
+) -> R<Img> {
+    let mut cand = Candidate::new(&to_real(x, strength), with_hue)?;
+    let (node, masks) = if show {
+        (&pf.photo.show, pf.masks_show.as_ref())
+    } else {
+        (&pf.fit_img, pf.masks_fit.as_ref())
+    };
+    if v5 {
+        let loc = local_from_x(x, strength);
+        if !loc.is_identity() {
+            cand.local = Some(loc);
+        }
+    }
+    Ok(render_image_m(
+        node,
+        &cand,
+        &pf.output,
+        if v5 { masks } else { None },
+    ))
 }
 
 fn run_pair(
@@ -2802,8 +4503,14 @@ fn run_pair(
         *v *= strength;
     }
     let real = to_real(&fit_res.x, strength);
-    let cand = Candidate::new(&real, with_hue)?;
-    let fitted_show = render_image(&pf.photo.show, &cand, &pf.output);
+    let fitted_show = render_fitted(
+        pf,
+        &fit_res.x,
+        strength,
+        with_hue,
+        true,
+        objective == Objective::V5,
+    )?;
     Ok(PairOutcome {
         fitted_show,
         fit: fit_res,
@@ -2831,7 +4538,7 @@ fn write_pair(
     let ref_show_lin = rgb8_to_linear(&reference.show8);
     let reinhard8 = linear_to_rgb8(&reinhard(&pf.default_show, &ref_show_lin));
     let aspect = pf.default_show.w as f64 / pf.default_show.h as f64;
-    if let (Objective::V3, Some(r2)) = (objective, round2) {
+    if let (Objective::V3 | Objective::V5, Some(r2)) = (objective, round2) {
         let round2_8 = linear_to_rgb8(&r2.fitted_show);
         write_sheet_v3(
             &dir.join("sheet.jpg"),
@@ -2839,6 +4546,19 @@ fn write_pair(
             [&default8, &round2_8, &fitted8],
             pf,
             aspect,
+            if objective == Objective::V5 {
+                "Round 5"
+            } else {
+                "Round 3"
+            },
+            o.fit.extra["panel_lines"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
         )?;
     } else {
         write_sheet(
@@ -2910,7 +4630,8 @@ fn write_pair(
         "reference_bars_stripped_top_bottom_left_right": reference.bars,
         "fitted_values": real_json(&o.real, &o.fit.x, strength),
         "objective_on_fit_sample": { "before": o.fit.before.to_json(), "after": o.fit.after.to_json() },
-        "objective_on_full_fit_pictures_512px": { "default": before_full.to_json(), "fitted_at_strength": after_full.to_json() },
+        "objective_on_full_fit_pictures_512px": if objective == Objective::V5 { Value::Null } else { json!({ "default": before_full.to_json(), "fitted_at_strength": after_full.to_json() }) },
+        "v5": o.fit.extra,
         "picture_stats": {
             "median_L": { "reference": ref_stats.median, "default": def_stats.median, "fitted": fit_stats.median },
             "mean_chroma": { "reference": ref_stats.mean_chroma, "default": def_stats.mean_chroma, "fitted": fit_stats.mean_chroma },
@@ -2929,7 +4650,7 @@ fn write_pair(
         "output_look": pf.photo.output.look_id,
         "output_look_intensity_pct": pf.photo.output.intensity_pct,
         "notes": pf.photo.notes,
-        "settings_json_note": if with_hue { "settings.json holds the part that is real corrector settings; the hue curves have no settings field yet, so `ym render` with it gives the picture without the hue step." } else { "no hue step: `ym render --settings settings.json` should reproduce the fitted picture (up to output sharpening)." },
+        "settings_json_note": if objective == Objective::V5 { "settings.json holds the global grade as real corrector settings (saturation and the four curves). The hue curves and the local grades are POC-only CPU steps with no settings field, so `ym render` with it gives the picture without them." } else if with_hue { "settings.json holds the part that is real corrector settings; the hue curves have no settings field yet, so `ym render` with it gives the picture without the hue step." } else { "no hue step: `ym render --settings settings.json` should reproduce the fitted picture (up to output sharpening)." },
     });
     fs::write(
         dir.join("params.json"),
@@ -2990,6 +4711,8 @@ fn write_sheet_v3(
     panels: [&Rgb8; 3],
     pf: &PhotoFit<'_>,
     photo_aspect: f64,
+    round_label: &str,
+    lines: Vec<String>,
 ) -> R<()> {
     const GAP: usize = 8;
     const BAND: usize = 30;
@@ -2997,7 +4720,7 @@ fn write_sheet_v3(
     let panel_h = (PANEL_W_PX as f64 / photo_aspect).round() as usize;
     let (w, h) = (4 * PANEL_W_PX + 5 * GAP, panel_h + BAND + STRIP_H + 3 * GAP);
     let mut c = Canvas::new(w, h, 18);
-    let labels = ["Reference", "Yellowmoon default", "Round 2", "Round 3"];
+    let labels = ["Reference", "Yellowmoon default", "Round 2", round_label];
     let all = [&reference.show8, panels[0], panels[1], panels[2]];
     for (i, (img, label)) in all.iter().zip(labels).enumerate() {
         let x = GAP + i * (PANEL_W_PX + GAP);
@@ -3021,13 +4744,17 @@ fn write_sheet_v3(
         let ov = label_overlay(&small, sc, pf.fit_img.w, pf.fit_img.h);
         c.put_fit(&ov, GAP + PANEL_W_PX + GAP, y, PANEL_W_PX, STRIP_H);
     }
-    // The palette: one swatch per element in label order (sky, vegetation, water, ground, architecture, interior, person,
-    // other thing, other stuff, skin), under Round 2 and Round 3.
+    // The text panel (the network's decisions and the local grades) under Round 2, the palette under Round 5 (one swatch per
+    // element in label order: sky, vegetation, water, ground, architecture, interior, person, other thing, other stuff, skin).
     let x0 = GAP + 2 * (PANEL_W_PX + GAP);
+    for (i, l) in lines.iter().take(8).enumerate() {
+        c.text(l, x0 + 8, y + 4 + i * 17, 2, 225);
+    }
+    let x1 = x0 + PANEL_W_PX + GAP;
     for (k, id) in [1usize, 2, 3, 4, 5, 6, 7, 8, 9, 10].iter().enumerate() {
-        for yy in 0..40 {
-            for xx in 0..40 {
-                let d = 3 * ((y + 20 + yy) * c.w + x0 + 20 + k * 56 + xx);
+        for yy in 0..30 {
+            for xx in 0..30 {
+                let d = 3 * ((y + STRIP_H - 40 + yy) * c.w + x1 + 20 + k * 44 + xx);
                 c.data[d..d + 3].copy_from_slice(&LABEL_PALETTE[*id]);
             }
         }
@@ -3111,9 +4838,7 @@ fn selftest(
         let truth = render_image(&pf.fit_img, &truth_cand, &pf.output);
         let t0 = Instant::now();
         let (fit_res, _) = run_fit(pf, &truth, 1.0, true, objective, pf.scene_fit.as_ref())?;
-        let fitted_real = to_real(&fit_res.x, 1.0);
-        let fitted_cand = Candidate::new(&fitted_real, true)?;
-        let fitted = render_image(&pf.fit_img, &fitted_cand, &pf.output);
+        let fitted = render_fitted(pf, &fit_res.x, 1.0, true, false, objective == Objective::V5)?;
         let ident = Candidate::new(&to_real(&[0.0; N_PARAMS], 1.0), false)?;
         let ungraded = render_image(&pf.fit_img, &ident, &pf.output);
         let de = |a: &Img, b: &Img| -> Vec<f64> {
@@ -3141,9 +4866,9 @@ fn selftest(
             .zip(fit_res.x)
             .map(|(a, b)| (a - b).powi(2))
             .sum::<f64>()
-            / N_PARAMS as f64)
+            / N_GLOBAL as f64)
             .sqrt();
-        let rms_true = (x_true.iter().map(|a| a * a).sum::<f64>() / N_PARAMS as f64).sqrt();
+        let rms_true = (x_true.iter().map(|a| a * a).sum::<f64>() / N_GLOBAL as f64).sqrt();
         trial_json.push(json!({
             "trial": t, "fitted_vs_truth_de2000": { "median": s.median, "p95": s.p95, "mean": s.mean },
             "ungraded_vs_truth_de2000": { "median": sd.median, "p95": sd.p95 },
@@ -3219,7 +4944,7 @@ fn random_grade(
 ) -> R<[f64; N_PARAMS]> {
     for _ in 0..400 {
         let mut x = [0.0; N_PARAMS];
-        for v in &mut x {
+        for v in &mut x[..N_GLOBAL] {
             *v = amplitude * (2.0 * rng.unit() - 1.0);
         }
         if !keep_key {
@@ -3296,8 +5021,8 @@ fn e2(
                         obj,
                         pfs[a].scene_fit.as_ref(),
                     )?;
-                    let fitted_cand = Candidate::new(&to_real(&fr.x, 1.0), true)?;
-                    let fitted = render_image(&pfs[b].fit_img, &fitted_cand, &pfs[b].output);
+                    let fitted =
+                        render_fitted(&pfs[b], &fr.x, 1.0, true, false, obj == Objective::V5)?;
                     let ungraded = render_image(
                         &pfs[b].fit_img,
                         &Candidate::new(&to_real(&[0.0; N_PARAMS], 1.0), false)?,
@@ -3354,6 +5079,8 @@ struct Args {
     e2: bool,
     keep_key: bool,
     labels: Option<PathBuf>,
+    network: Option<PathBuf>,
+    network_check: bool,
     grades: usize,
 }
 
@@ -3378,6 +5105,8 @@ fn parse_args() -> R<Args> {
             "--no-hue" => a.no_hue = true,
             "--e2" => a.e2 = true,
             "--labels" => a.labels = Some(PathBuf::from(val()?)),
+            "--network" => a.network = Some(PathBuf::from(val()?)),
+            "--network-check" => a.network_check = true,
             "--keep-key" => a.keep_key = true,
             "--grades" => a.grades = val()?.parse()?,
             "--objective" => {
@@ -3385,6 +5114,7 @@ fn parse_args() -> R<Args> {
                     "v1" => Objective::V1,
                     "v2" => Objective::V2,
                     "v3" => Objective::V3,
+                    "v5" => Objective::V5,
                     other => return Err(format!("--objective takes v1 or v2, not {other}").into()),
                 })
             }
@@ -3426,6 +5156,30 @@ fn expand(paths: &[PathBuf], exts: &[&str]) -> Vec<PathBuf> {
 fn main() -> R<()> {
     let args = parse_args()?;
     fs::create_dir_all(&args.out)?;
+    let network = match &args.network {
+        Some(path) => {
+            let net = parse_network(&fs::read_to_string(path)?)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            fs::write(args.out.join("expanded-network.txt"), net.dump())?;
+            eprintln!(
+                "network: {} neurons, expanded to expanded-network.txt",
+                net.neurons.len()
+            );
+            Some(net)
+        }
+        None => None,
+    };
+    if args.network_check {
+        let net = network
+            .as_ref()
+            .ok_or("--network-check needs --network <file.ywn>")?;
+        let ok = network_check(net)?;
+        return if ok {
+            Ok(())
+        } else {
+            Err("network check failed".into())
+        };
+    }
     let photos = expand(&args.photos, &["arw"]);
     if photos.is_empty() {
         return Err("no photos".into());
@@ -3449,6 +5203,7 @@ fn main() -> R<()> {
     let _ = CTX.set(Ctx {
         labels: args.labels.clone(),
         seg,
+        network,
     });
     let core = open_core(&args.out)?;
     let cache = args.out.join("cache");
@@ -3534,7 +5289,7 @@ fn main() -> R<()> {
         for r in &loaded {
             let o = run_pair(&pf, r, args.strength, !args.no_hue, objective)?;
             // Round 2 for comparison: the V2 fit of the same pair.
-            let o2 = if objective == Objective::V3 {
+            let o2 = if matches!(objective, Objective::V3 | Objective::V5) {
                 Some(run_pair(
                     &pf,
                     r,
