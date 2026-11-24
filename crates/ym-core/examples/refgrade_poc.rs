@@ -61,6 +61,9 @@ use ym_core::pipeline::{FullRequest, FullTarget, PhotoSource};
 use ym_core::session::OpenOptions;
 use ym_gpu::queue::CancelToken;
 
+#[path = "refgrade_poc/eval.rs"]
+mod eval;
+
 type R<T> = Result<T, Box<dyn Error>>;
 
 /// What V3 needs from outside: the label folder and the skin network.
@@ -6321,6 +6324,28 @@ struct Args {
     network10: Option<PathBuf>,
     network_check: bool,
     grades: usize,
+    /// The evaluation harness (`eval.rs`): the split file, the set, the previous round for the grids, `--compare a b`.
+    eval: bool,
+    split: Option<PathBuf>,
+    set: Option<String>,
+    prev: Option<Objective>,
+    compare: Option<(PathBuf, PathBuf)>,
+}
+
+fn parse_objective(name: &str) -> R<Objective> {
+    Ok(match name {
+        "v1" => Objective::V1,
+        "v2" => Objective::V2,
+        "v3" => Objective::V3,
+        "v5" => Objective::V5,
+        "v6" => Objective::V6,
+        "v7" => Objective::V7,
+        "v8" => Objective::V8,
+        "v9" => Objective::V9,
+        "v10" => Objective::V10,
+        "v11" => Objective::V11,
+        other => return Err(format!("--objective takes v1 to v11, not {other}").into()),
+    })
 }
 
 fn parse_args() -> R<Args> {
@@ -6354,24 +6379,23 @@ fn parse_args() -> R<Args> {
             "--network10" => a.network10 = Some(PathBuf::from(val()?)),
             "--keep-key" => a.keep_key = true,
             "--grades" => a.grades = val()?.parse()?,
-            "--objective" => {
-                a.objective = Some(match val()?.as_str() {
-                    "v1" => Objective::V1,
-                    "v2" => Objective::V2,
-                    "v3" => Objective::V3,
-                    "v5" => Objective::V5,
-                    "v6" => Objective::V6,
-                    "v7" => Objective::V7,
-                    "v8" => Objective::V8,
-                    "v9" => Objective::V9,
-                    "v10" => Objective::V10,
-                    "v11" => Objective::V11,
-                    other => return Err(format!("--objective takes v1 or v2, not {other}").into()),
-                })
+            "--objective" => a.objective = Some(parse_objective(&val()?)?),
+            "--prev" => a.prev = Some(parse_objective(&val()?)?),
+            "--eval" => a.eval = true,
+            "--split" => a.split = Some(PathBuf::from(val()?)),
+            "--set" => a.set = Some(val()?),
+            "--compare" => {
+                let (x, y) = (val()?, val()?);
+                a.compare = Some((PathBuf::from(x), PathBuf::from(y)));
             }
             "--selftest" => a.selftest = true,
             other => return Err(format!("unknown argument {other}").into()),
         }
+    }
+    if a.out.as_os_str().is_empty()
+        && let Some((_, b)) = &a.compare
+    {
+        a.out = b.clone();
     }
     if a.out.as_os_str().is_empty() {
         return Err("--out <folder> is required".into());
@@ -6473,8 +6497,11 @@ fn main() -> R<()> {
             Err("network check failed".into())
         };
     }
+    if let Some((a, b)) = &args.compare {
+        return eval::compare(a, b, &args.out);
+    }
     let photos = expand(&args.photos, &["arw"]);
-    if photos.is_empty() {
+    if photos.is_empty() && args.split.is_none() {
         return Err("no photos".into());
     }
     // V3's inputs: the label folder, and the skin network when its weights are in the data folder.
@@ -6507,6 +6534,24 @@ fn main() -> R<()> {
     let core = open_core(&args.out)?;
     let cache = args.out.join("cache");
     let objective = args.objective.unwrap_or(Objective::V2);
+    if args.eval {
+        let split = match &args.split {
+            Some(p) => eval::read_split(p)?,
+            None => eval::builtin_split(&photos),
+        };
+        return eval::run_eval(&eval::EvalOpts {
+            split,
+            set: args.set.clone().unwrap_or_else(|| "all".into()),
+            objective,
+            prev: args.prev,
+            references: args.references.clone(),
+            out: &args.out,
+            core: &core,
+            cache: &cache,
+            strength: args.strength,
+            with_hue: !args.no_hue,
+        });
+    }
     if args.e2 {
         let mut nodes = Vec::new();
         for p in &photos {
