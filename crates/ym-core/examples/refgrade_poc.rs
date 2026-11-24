@@ -3486,10 +3486,10 @@ fn terms_v5(c: &CandMeas, ctx: &V5Ctx) -> V5T {
         if n_hl as f64 >= V7_HL_MIN_SHARE * ctx.hl_scope.len() as f64 {
             let over = (c.hl_c - o.get("T.hl_cmax")).max(0.0);
             t.guard_hl = V7_HL_WEIGHT * sq(over / V7_HL_SCALE);
-            if ctx.p_hl_c >= V7_HL_MIN_C {
-                if let (Some(ch), Some(ph)) = (c.hl_h, ctx.p_hl_h) {
-                    t.guard_hl += drift(wrap_deg(ch - ph), wall);
-                }
+            if ctx.p_hl_c >= V7_HL_MIN_C
+                && let (Some(ch), Some(ph)) = (c.hl_h, ctx.p_hl_h)
+            {
+                t.guard_hl += drift(wrap_deg(ch - ph), wall);
             }
         }
     }
