@@ -69,6 +69,7 @@ struct Ctx {
     seg: Option<ym_ml::mediapipe::selfie::SelfieSegmenter>,
     network: Option<Network>,
     network5: Option<Network>,
+    network6: Option<Network>,
 }
 
 static CTX: std::sync::OnceLock<Ctx> = std::sync::OnceLock::new();
@@ -79,6 +80,7 @@ fn ctx() -> &'static Ctx {
         seg: None,
         network: None,
         network5: None,
+        network6: None,
     })
 }
 
@@ -903,12 +905,14 @@ enum Objective {
     V5,
     /// Round 6: network v6, a stronger look: the frame cast, the unify gate and the wall limit as network outputs.
     V6,
+    /// Round 7: network v7: the cast measured off the whites and the skin, a stronger skin wall, a highlight-neutrality wall.
+    V7,
 }
 
 impl Objective {
     /// Whether the objective reads a network (V5 and V6).
     fn net(self) -> bool {
-        matches!(self, Objective::V5 | Objective::V6)
+        matches!(self, Objective::V5 | Objective::V6 | Objective::V7)
     }
 }
 
@@ -1166,6 +1170,7 @@ impl Terms {
                 + t.guard_hue
                 + t.guard_skin
                 + t.guard_sky
+                + t.guard_hl
                 + common
         } else if self.v3 {
             on(MASK_BASE) * (self.floor + self.ceil + V2_W_ANCHOR * self.anchor)
@@ -1204,7 +1209,7 @@ impl Terms {
                 "saturation": t.sat, "sector_hue": t.sec_hue, "sector_chroma": t.sec_chroma,
                 "element_hue": t.el_hue, "element_chroma": t.el_chroma, "element_exposure": t.el_exp,
                 "subject_separation": t.subject,
-                "guard_hue_drift": t.guard_hue, "guard_skin": t.guard_skin, "guard_sky_chroma": t.guard_sky,
+                "guard_hue_drift": t.guard_hue, "guard_skin": t.guard_skin, "guard_sky_chroma": t.guard_sky, "guard_highlights": t.guard_hl,
                 "regulariser_global": self.reg, "regulariser_local": self.reg_local, "clip": self.clip,
                 "weighted_total": self.total(),
             })
@@ -2200,6 +2205,20 @@ const V5_EL_HUE: (f64, f64) = (10.0, 3.0);
 const V5_EL_CHROMA: (f64, f64) = (0.10, 0.03);
 const V5_EL_EXPOSURE: (f64, f64) = (3.0, 2.0);
 const V5_SUBJECT: (f64, f64, f64) = (3.0, 2.0, 1.0);
+/// V7: the cast is measured on pixels between these L* values (and not skin), when they cover this share of the frame.
+const V7_CAST_L: (f64, f64) = (15.0, 80.0);
+const V7_CAST_MIN_SHARE: f64 = 0.10;
+/// V7: the skin wall's weight (was 3).
+const V7_GUARD_SKIN_WEIGHT: f64 = 12.0;
+/// V7 highlight-neutrality wall: the whites of the photo are pixels with L* at least this and C* under that; the wall's scale
+/// and weight; the hue drift of the group counts when photo0's median C* there is at least `V7_HL_MIN_C`; and the group needs
+/// this share of the frame.
+const V7_HL_L_MIN: f64 = 80.0;
+const V7_HL_C_MAX: f64 = 10.0;
+const V7_HL_SCALE: f64 = 2.0;
+const V7_HL_WEIGHT: f64 = 3.0;
+const V7_HL_MIN_C: f64 = 4.0;
+const V7_HL_MIN_SHARE: f64 = 0.02;
 /// V6 frame cast term (`10`): scale, dead band, weight (times `G.unify`).
 const V6_CAST: (f64, f64, f64) = (2.0, 1.0, 1.2);
 /// Guards (`09` section 4.3): hue drift limit, its band scale and weight; the element limit is `cap + 5`.
@@ -2553,6 +2572,8 @@ fn network_check(net: &Network) -> R<bool> {
     }
     let v6 = net.index.contains_key("G.unify");
     let (w_sky, k_sat) = if v6 { (0.85, 0.85) } else { (0.7, 0.6) };
+    let v7 = net.index.contains_key("T.hl_cmax");
+    let wall_open = if v7 { 45.0 } else { 55.0 };
     let r_same = p.clone();
     let out1 = NetOut::new(net, &p)?;
     let mut ok = true;
@@ -2761,8 +2782,8 @@ fn network_check(net: &Network) -> R<bool> {
             "T.wall_deg",
             25.0,
             &out4,
-            "55",
-            (out4.get("T.wall_deg") - 55.0).abs() < 1e-9,
+            &format!("{wall_open}"),
+            (out4.get("T.wall_deg") - wall_open).abs() < 1e-9,
             &mut ok,
         );
         // Identical pictures and a one-colour frame in both: unify stays shut and the wall stays at 25.
@@ -2801,6 +2822,42 @@ fn network_check(net: &Network) -> R<bool> {
             &out6,
             "0 (dark-sky rule)",
             out6.get("G.sky.matched").abs() < 1e-9,
+            &mut ok,
+        );
+    }
+    if v7 {
+        // A seventh vector: a reference with a highlight tint (a*, b*) = (2, 9): the most C* a white may take is 5 + 0.8 x 11.
+        let mut p7 = r_same.clone();
+        set(&mut p7, "R.tint_h_a", 2.0);
+        set(&mut p7, "R.tint_h_b", 9.0);
+        let out7 = NetOut::new(net, &p7)?;
+        println!("== check 7 (v7): a reference whose highlights lean (a*, b*) = (2, 9)");
+        show(
+            "T.hl_cmax",
+            5.0,
+            &out7,
+            "5 + 0.8 x 11 = 13.8",
+            (out7.get("T.hl_cmax") - 13.8).abs() < 1e-9,
+            &mut ok,
+        );
+        let mut p8 = r_same.clone();
+        set(&mut p8, "R.tint_h_a", -20.0);
+        set(&mut p8, "R.tint_h_b", -20.0);
+        let out8 = NetOut::new(net, &p8)?;
+        show(
+            "T.hl_cmax",
+            5.0,
+            &out8,
+            "14 (capped)",
+            (out8.get("T.hl_cmax") - 14.0).abs() < 1e-9,
+            &mut ok,
+        );
+        show(
+            "T.hl_cmax",
+            5.0,
+            &NetOut::new(net, &r_same)?,
+            "5 + 0.8 x (0.5 + 1.5) = 6.6 (the reference's own highlight tint)",
+            (NetOut::new(net, &r_same)?.get("T.hl_cmax") - 6.6).abs() < 1e-9,
             &mut ok,
         );
     }
@@ -2879,7 +2936,9 @@ fn circ_mean_deg(sx: f64, sy: f64) -> f64 {
 }
 
 /// Measures a picture (`09` section 2). `excl` are the elements left out of the sectors (skin always is).
-fn measure(px: &[Px], scene: &Scene, excl: &[bool; 6]) -> Meas {
+/// `v7_cast`: measure the frame cast only on pixels with 15 <= L* <= 80 that are not skin (all non-skin pixels if those cover
+/// under 10 % of the frame), as network v7 wants; otherwise on every pixel.
+fn measure(px: &[Px], scene: &Scene, excl: &[bool; 6], v7_cast: bool) -> Meas {
     let n = px.len();
     let mut idx: Vec<usize> = (0..n).collect();
     idx.sort_unstable_by(|&a, &b| px[a].lab[0].total_cmp(&px[b].lab[0]).then(a.cmp(&b)));
@@ -2948,15 +3007,34 @@ fn measure(px: &[Px], scene: &Scene, excl: &[bool; 6]) -> Meas {
         lo += usize::from(p.lo);
     }
     let nf = n as f64;
-    let (sum_a, sum_b, sum_c) = px.iter().fold((0.0, 0.0, 0.0), |s, p| {
+    let cast_set: Vec<usize> = if v7_cast {
+        let mid: Vec<usize> = (0..n)
+            .filter(|&i| !scene.skin[i] && (V7_CAST_L.0..=V7_CAST_L.1).contains(&px[i].lab[0]))
+            .collect();
+        if mid.len() as f64 >= V7_CAST_MIN_SHARE * nf {
+            mid
+        } else {
+            (0..n).filter(|&i| !scene.skin[i]).collect()
+        }
+    } else {
+        (0..n).collect()
+    };
+    let cast_set = if cast_set.is_empty() {
+        (0..n).collect()
+    } else {
+        cast_set
+    };
+    let (sum_a, sum_b, sum_c) = cast_set.iter().fold((0.0, 0.0, 0.0), |s, &i| {
+        let p = &px[i];
         (
             s.0 + p.lab[1],
             s.1 + p.lab[2],
             s.2 + p.lab[1].hypot(p.lab[2]),
         )
     });
-    let (cast_a, cast_b) = (sum_a / n as f64, sum_b / n as f64);
-    let conc = cast_a.hypot(cast_b) / (sum_c / n as f64).max(1.0);
+    let cn = cast_set.len() as f64;
+    let (cast_a, cast_b) = (sum_a / cn, sum_b / cn);
+    let conc = cast_a.hypot(cast_b) / (sum_c / cn).max(1.0);
     let mut m = Meas {
         cast_a,
         cast_b,
@@ -3098,6 +3176,13 @@ struct V5Ctx {
     p_sec_logc: [f64; SECTORS],
     /// Whether the network is v6 (it has the frame cast and the wall limit as outputs).
     v6: bool,
+    /// Whether the network is v7 (it also has `T.hl_cmax`): the cast off the whites and the skin, the stronger skin wall and
+    /// the highlight wall.
+    v7: bool,
+    /// V7: the sample pixels that are whites in P (L* >= 80, C* < 10), their share, P's median C* there and P's mean hue there.
+    hl_scope: Vec<bool>,
+    p_hl_c: f64,
+    p_hl_h: Option<f64>,
 }
 
 fn build_v5_ctx(
@@ -3107,14 +3192,15 @@ fn build_v5_ctx(
     r_px: &[Px],
     r_scene: &Scene,
 ) -> R<V5Ctx> {
-    let p0 = measure(p_px, scene, &[false; 6]);
-    let r0 = measure(r_px, r_scene, &[false; 6]);
+    let v7 = net.index.contains_key("T.hl_cmax");
+    let p0 = measure(p_px, scene, &[false; 6], v7);
+    let r0 = measure(r_px, r_scene, &[false; 6], v7);
     let mut excl = [false; 6];
     for (k, flag) in excl.iter_mut().enumerate().take(5) {
         *flag = p0.el[k].share >= V5_EXCLUDE_SHARE && r0.el[k].share >= V5_EXCLUDE_SHARE;
     }
-    let p = measure(p_px, scene, &excl);
-    let r = measure(r_px, r_scene, &excl);
+    let p = measure(p_px, scene, &excl, v7);
+    let r = measure(r_px, r_scene, &excl, v7);
     let inputs = network_inputs(&p, &r);
     let out = NetOut::new(net, &inputs)?;
     // P's sectors on the same pixels every candidate is measured on.
@@ -3138,7 +3224,16 @@ fn build_v5_ctx(
     for j in 0..SECTORS {
         p_sec_logc[j] = median_of(&mut cs[j]).max(1.0).ln();
     }
+    let hl_scope: Vec<bool> = p_px
+        .iter()
+        .map(|q| q.lab[0] >= V7_HL_L_MIN && q.lab[1].hypot(q.lab[2]) < V7_HL_C_MAX)
+        .collect();
+    let (p_hl_c, p_hl_h) = hl_stats(p_px, &hl_scope);
     Ok(V5Ctx {
+        v7,
+        hl_scope,
+        p_hl_c,
+        p_hl_h,
         v6: net.index.contains_key("G.unify"),
         excl,
         p,
@@ -3151,15 +3246,48 @@ fn build_v5_ctx(
     })
 }
 
+/// The median C* and the circular mean hue (of the pixels with C* above 5) over the group.
+fn hl_stats(px: &[Px], scope: &[bool]) -> (f64, Option<f64>) {
+    let mut cs = Vec::new();
+    let (mut sx, mut sy, mut hn) = (0.0, 0.0, 0usize);
+    for (q, _) in px.iter().zip(scope).filter(|&(_, &s)| s) {
+        let (a, b) = (q.lab[1], q.lab[2]);
+        let c = a.hypot(b);
+        cs.push(c);
+        if c > V3_HUE_MIN_CHROMA {
+            sx += a / c;
+            sy += b / c;
+            hn += 1;
+        }
+    }
+    let med = median_of(&mut cs);
+    (
+        med,
+        if hn > 0 {
+            Some(circ_mean_deg(sx, sy))
+        } else {
+            None
+        },
+    )
+}
+
 /// A candidate's measurements: the picture's, and per sector the mean hue shift and log chroma change against P on P's pixels.
 struct CandMeas {
     m: Meas,
     sec_shift: [f64; SECTORS],
     sec_dlogc: [f64; SECTORS],
+    /// V7: the candidate's median C* and mean hue over P's whites.
+    hl_c: f64,
+    hl_h: Option<f64>,
 }
 
 fn cand_meas(px: &[Px], scene: &Scene, ctx: &V5Ctx) -> CandMeas {
-    let m = measure(px, scene, &ctx.excl);
+    let m = measure(px, scene, &ctx.excl, ctx.v7);
+    let (hl_c, hl_h) = if ctx.v7 {
+        hl_stats(px, &ctx.hl_scope)
+    } else {
+        (0.0, None)
+    };
     let mut shift = [0.0f64; SECTORS];
     let mut cnt = [0usize; SECTORS];
     let mut cs: [Vec<f64>; SECTORS] = Default::default();
@@ -3186,6 +3314,8 @@ fn cand_meas(px: &[Px], scene: &Scene, ctx: &V5Ctx) -> CandMeas {
         m,
         sec_shift,
         sec_dlogc,
+        hl_c,
+        hl_h,
     }
 }
 
@@ -3209,6 +3339,8 @@ struct V5T {
     guard_sky: f64,
     /// V6: the frame cast term.
     frame_cast: f64,
+    /// V7: the highlight-neutrality wall (chroma and hue drift of the whites).
+    guard_hl: f64,
 }
 
 fn sq(x: f64) -> f64 {
@@ -3342,8 +3474,24 @@ fn terms_v5(c: &CandMeas, ctx: &V5Ctx) -> V5T {
         let ec = (V5_GUARD_SKIN_CHROMA.0 - m.el[5].c)
             .max(m.el[5].c - V5_GUARD_SKIN_CHROMA.1)
             .max(0.0);
-        t.guard_skin =
-            V5_GUARD_SKIN_WEIGHT * (sq(eh / V5_GUARD_SKIN_SCALE) + sq(ec / V5_GUARD_SKIN_SCALE));
+        let w = if ctx.v7 {
+            V7_GUARD_SKIN_WEIGHT
+        } else {
+            V5_GUARD_SKIN_WEIGHT
+        };
+        t.guard_skin = w * (sq(eh / V5_GUARD_SKIN_SCALE) + sq(ec / V5_GUARD_SKIN_SCALE));
+    }
+    if ctx.v7 {
+        let n_hl = ctx.hl_scope.iter().filter(|&&s| s).count();
+        if n_hl as f64 >= V7_HL_MIN_SHARE * ctx.hl_scope.len() as f64 {
+            let over = (c.hl_c - o.get("T.hl_cmax")).max(0.0);
+            t.guard_hl = V7_HL_WEIGHT * sq(over / V7_HL_SCALE);
+            if ctx.p_hl_c >= V7_HL_MIN_C {
+                if let (Some(ch), Some(ph)) = (c.hl_h, ctx.p_hl_h) {
+                    t.guard_hl += drift(wrap_deg(ch - ph), wall);
+                }
+            }
+        }
     }
     if ctx.p.el[0].share >= V5_PRESENT_SHARE {
         let limit = (V5_GUARD_SKY_FACTOR * ctx.p.el[0].c).max(o.get("T.sky.logC").exp());
@@ -3956,7 +4104,7 @@ fn v5_extra(
     }
     let g = |t: &Terms| {
         let t5 = t.t5;
-        json!({ "guard_hue_drift": t5.guard_hue, "guard_skin": t5.guard_skin, "guard_sky_chroma": t5.guard_sky })
+        json!({ "guard_hue_drift": t5.guard_hue, "guard_skin": t5.guard_skin, "guard_sky_chroma": t5.guard_sky, "guard_highlights": t5.guard_hl })
     };
     json!({
         "network_inputs": ctx.inputs,
@@ -4587,6 +4735,8 @@ fn run_fit(
         // V5 runs next to V6 (for the Round 5 panel) read their own network, `--network5`.
         let net = if objective == Objective::V5 && ctx().network5.is_some() {
             ctx().network5.as_ref()
+        } else if objective == Objective::V6 && ctx().network6.is_some() {
+            ctx().network6.as_ref()
         } else {
             ctx().network.as_ref()
         }
@@ -4684,6 +4834,7 @@ fn write_pair(
     objective: Objective,
     round2: Option<&PairOutcome>,
     round5: Option<&PairOutcome>,
+    round6: Option<&PairOutcome>,
 ) -> R<()> {
     fs::create_dir_all(dir)?;
     let default8 = linear_to_rgb8(&pf.default_show);
@@ -4691,15 +4842,27 @@ fn write_pair(
     let ref_show_lin = rgb8_to_linear(&reference.show8);
     let reinhard8 = linear_to_rgb8(&reinhard(&pf.default_show, &ref_show_lin));
     let aspect = pf.default_show.w as f64 / pf.default_show.h as f64;
-    if let (Objective::V3 | Objective::V5 | Objective::V6, Some(r2)) = (objective, round2) {
-        let round2_8 = linear_to_rgb8(&r2.fitted_show);
-        let round5_8 = round5.map(|r| linear_to_rgb8(&r.fitted_show));
-        let mut rounds: Vec<(&str, &Rgb8)> = vec![("Round 2", &round2_8)];
-        if let Some(r5) = &round5_8 {
-            rounds.push(("Round 5", r5));
+    if matches!(
+        objective,
+        Objective::V3 | Objective::V5 | Objective::V6 | Objective::V7
+    ) && (round2.is_some() || round5.is_some() || round6.is_some())
+    {
+        let r2_8 = round2.map(|r| linear_to_rgb8(&r.fitted_show));
+        let r5_8 = round5.map(|r| linear_to_rgb8(&r.fitted_show));
+        let r6_8 = round6.map(|r| linear_to_rgb8(&r.fitted_show));
+        let mut rounds: Vec<(&str, &Rgb8)> = Vec::new();
+        if let Some(r) = &r2_8 {
+            rounds.push(("Round 2", r));
+        }
+        if let Some(r) = &r5_8 {
+            rounds.push(("Round 5", r));
+        }
+        if let Some(r) = &r6_8 {
+            rounds.push(("Round 6", r));
         }
         rounds.push((
             match objective {
+                Objective::V7 => "Round 7",
                 Objective::V6 => "Round 6",
                 Objective::V5 => "Round 5",
                 _ => "Round 3",
@@ -5251,6 +5414,7 @@ struct Args {
     labels: Option<PathBuf>,
     network: Option<PathBuf>,
     network5: Option<PathBuf>,
+    network6: Option<PathBuf>,
     network_check: bool,
     grades: usize,
 }
@@ -5279,6 +5443,7 @@ fn parse_args() -> R<Args> {
             "--network" => a.network = Some(PathBuf::from(val()?)),
             "--network-check" => a.network_check = true,
             "--network5" => a.network5 = Some(PathBuf::from(val()?)),
+            "--network6" => a.network6 = Some(PathBuf::from(val()?)),
             "--keep-key" => a.keep_key = true,
             "--grades" => a.grades = val()?.parse()?,
             "--objective" => {
@@ -5288,6 +5453,7 @@ fn parse_args() -> R<Args> {
                     "v3" => Objective::V3,
                     "v5" => Objective::V5,
                     "v6" => Objective::V6,
+                    "v7" => Objective::V7,
                     other => return Err(format!("--objective takes v1 or v2, not {other}").into()),
                 })
             }
@@ -5349,6 +5515,13 @@ fn main() -> R<()> {
         ),
         None => None,
     };
+    let network6 = match &args.network6 {
+        Some(path) => Some(
+            parse_network(&fs::read_to_string(path)?)
+                .map_err(|e| format!("{}: {e}", path.display()))?,
+        ),
+        None => None,
+    };
     if args.network_check {
         let net = network
             .as_ref()
@@ -5385,6 +5558,7 @@ fn main() -> R<()> {
         seg,
         network,
         network5,
+        network6,
     });
     let core = open_core(&args.out)?;
     let cache = args.out.join("cache");
@@ -5467,18 +5641,32 @@ fn main() -> R<()> {
         let mut outcomes = Vec::new();
         let mut outcomes2: Vec<Option<PairOutcome>> = Vec::new();
         let mut outcomes5: Vec<Option<PairOutcome>> = Vec::new();
+        let mut outcomes6: Vec<Option<PairOutcome>> = Vec::new();
         let mut index: BTreeMap<String, Value> = BTreeMap::new();
         for r in &loaded {
             let o = run_pair(&pf, r, args.strength, !args.no_hue, objective)?;
             // Round 2 for comparison: the V2 fit of the same pair.
             // Round 5 next to Round 6: the V5 fit of the same pair (with `--network5`).
-            let o5 = if objective == Objective::V6 && ctx().network5.is_some() {
+            let o5 =
+                if matches!(objective, Objective::V6 | Objective::V7) && ctx().network5.is_some() {
+                    Some(run_pair(
+                        &pf,
+                        r,
+                        args.strength,
+                        !args.no_hue,
+                        Objective::V5,
+                    )?)
+                } else {
+                    None
+                };
+            // Round 6 next to Round 7: the V6 fit of the same pair (with `--network6`).
+            let o6 = if objective == Objective::V7 && ctx().network6.is_some() {
                 Some(run_pair(
                     &pf,
                     r,
                     args.strength,
                     !args.no_hue,
-                    Objective::V5,
+                    Objective::V6,
                 )?)
             } else {
                 None
@@ -5514,9 +5702,11 @@ fn main() -> R<()> {
                 objective,
                 o2.as_ref(),
                 o5.as_ref(),
+                o6.as_ref(),
             )?;
             outcomes2.push(o2);
             outcomes5.push(o5);
+            outcomes6.push(o6);
             index.insert(
                 r.stem.clone(),
                 json!({ "fit_seconds": o.fit.seconds, "per_eval_ms": o.fit.per_eval_ms, "before": o.fit.before.total(), "after": o.fit.after.total() }),
@@ -5524,7 +5714,9 @@ fn main() -> R<()> {
             outcomes.push(o);
         }
         let pairs: Vec<(&Reference, &PairOutcome)> = loaded.iter().zip(&outcomes).collect();
-        let grid_rows = if outcomes5.iter().any(Option::is_some) {
+        let grid_rows = if outcomes6.iter().any(Option::is_some) {
+            &outcomes6
+        } else if outcomes5.iter().any(Option::is_some) {
             &outcomes5
         } else {
             &outcomes2
