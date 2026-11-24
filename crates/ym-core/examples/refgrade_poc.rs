@@ -63,6 +63,21 @@ use ym_gpu::queue::CancelToken;
 
 type R<T> = Result<T, Box<dyn Error>>;
 
+/// What V3 needs from outside: the label folder and the skin network.
+struct Ctx {
+    labels: Option<PathBuf>,
+    seg: Option<ym_ml::mediapipe::selfie::SelfieSegmenter>,
+}
+
+static CTX: std::sync::OnceLock<Ctx> = std::sync::OnceLock::new();
+
+fn ctx() -> &'static Ctx {
+    CTX.get_or_init(|| Ctx {
+        labels: None,
+        seg: None,
+    })
+}
+
 // ---------------------------------------------------------------------------------------------
 // Constants (every one named; the objective's weights and scales are the tuning knobs)
 // ---------------------------------------------------------------------------------------------
@@ -510,6 +525,8 @@ struct OutputStage {
 
 /// A photo as the fit sees it.
 struct PhotoNode {
+    /// The file's stem.
+    name: String,
     /// Linear AWG4 at the node's input, long edge [`SHOW_LONG_EDGE_PX`].
     show: Img,
     output: OutputStage,
@@ -584,6 +601,7 @@ fn load_photo(core: &Core, file: &Path, cache: &Path) -> R<PhotoNode> {
     if let Some(show) = read_cache(&cache_file) {
         notes.push("node picture read from the cache".into());
         return Ok(PhotoNode {
+            name: stem.clone(),
             show,
             output,
             notes,
@@ -628,6 +646,7 @@ fn load_photo(core: &Core, file: &Path, cache: &Path) -> R<PhotoNode> {
     fs::create_dir_all(cache)?;
     write_cache(&cache_file, &show)?;
     Ok(PhotoNode {
+        name: stem.clone(),
         show,
         output,
         notes,
@@ -832,6 +851,8 @@ enum Objective {
     V1,
     /// Round 2: what a grade does, not what the picture contains (see the `V2_*` constants).
     V2,
+    /// Round 3: the hand-written, scene-aware grading model (`refgrade-notes/07-grading-model-v3.md`).
+    V3,
 }
 
 /// V2 weights and scales. Tone: black floor, white ceiling, midtone contrast, and an anchor on the photo's own median.
@@ -904,9 +925,11 @@ struct Stats {
     hue_share: [f64; SECTORS],
     /// V2: the median C* of all pixels.
     median_chroma: f64,
+    /// V3: the element statistics, when the picture has a scene.
+    v3: Option<V3Stats>,
 }
 
-fn stats_of(px: &[Px]) -> Stats {
+fn stats_of(px: &[Px], scene: Option<&Scene>) -> Stats {
     let n = px.len();
     let mut idx: Vec<usize> = (0..n).collect();
     idx.sort_unstable_by(|&a, &b| px[a].lab[0].total_cmp(&px[b].lab[0]).then(a.cmp(&b)));
@@ -1019,6 +1042,7 @@ fn stats_of(px: &[Px]) -> Stats {
         hue_chroma,
         hue_share,
         median_chroma,
+        v3: scene.map(|sc| v3_stats(px, sc)),
     }
 }
 
@@ -1026,6 +1050,7 @@ fn stats_of(px: &[Px]) -> Stats {
 #[derive(Clone, Copy, Debug)]
 struct Terms {
     v2: bool,
+    v3: bool,
     // V1
     shape: f64,
     level: f64,
@@ -1041,6 +1066,11 @@ struct Terms {
     hue: f64,
     sector_chroma_ratio: f64,
     chroma_ratio: f64,
+    // V3 (floor, ceil, anchor and cast are shared with V2)
+    elem_colour: f64,
+    elem_exposure: f64,
+    separation: f64,
+    global_sat: f64,
     // both
     reg: f64,
     clip: f64,
@@ -1053,8 +1083,20 @@ impl Terms {
     /// The weighted total of the V2 terms in `mask` (V1 ignores it).
     fn total_masked(&self, mask: u8) -> f64 {
         let on = |m: u8| if mask & m != 0 { 1.0 } else { 0.0 };
-        let common = if self.v2 { V2_W_REG } else { W_REG } * self.reg + W_CLIP * self.clip;
-        if self.v2 {
+        let common =
+            if self.v2 || self.v3 { V2_W_REG } else { W_REG } * self.reg + W_CLIP * self.clip;
+        if self.v3 {
+            on(MASK_TONE)
+                * (self.floor
+                    + self.ceil
+                    + self.elem_exposure
+                    + self.separation
+                    + V2_W_ANCHOR * self.anchor)
+                + on(MASK_CAST) * V3_W_CAST * self.cast
+                + on(MASK_HUE) * self.elem_colour
+                + on(MASK_CHROMA) * self.global_sat
+                + common
+        } else if self.v2 {
             on(MASK_TONE)
                 * (V2_W_FLOOR * self.floor
                     + V2_W_CEIL * self.ceil
@@ -1076,7 +1118,16 @@ impl Terms {
         }
     }
     fn to_json(self) -> Value {
-        if self.v2 {
+        if self.v3 {
+            json!({
+                "objective": "v3",
+                "element_colour": self.elem_colour, "neutral_cast": self.cast, "black_floor": self.floor,
+                "white_ceiling": self.ceil, "element_exposure": self.elem_exposure,
+                "subject_separation": self.separation, "median_anchor": self.anchor,
+                "global_saturation": self.global_sat, "regulariser": self.reg, "clip": self.clip,
+                "weighted_total": self.total(),
+            })
+        } else if self.v2 {
             json!({
                 "objective": "v2",
                 "black_floor": self.floor, "white_ceiling": self.ceil, "midtone_contrast": self.contrast,
@@ -1112,18 +1163,18 @@ fn wrap_deg(d: f64) -> f64 {
 }
 
 /// The terms of `out` against `reference`. `anchor` is the ungraded photo's median L* (V2 keeps the photo's key).
-fn terms(
-    obj: Objective,
-    out: &Stats,
-    reference: &Stats,
-    anchor: f64,
-    x: &[f64; N_PARAMS],
-) -> Terms {
+fn terms(obj: Objective, out: &Stats, reference: &Stats, p0: &Stats, x: &[f64; N_PARAMS]) -> Terms {
+    let anchor = p0.median;
     let reg = x.iter().map(|v| v * v).sum::<f64>() / N_PARAMS as f64;
     let over = |o: f64, r: f64| ((o - r - CLIP_SLACK).max(0.0) / CLIP_SCALE).powi(2);
     let clip = over(out.hi_share, reference.hi_share) + over(out.lo_share, reference.lo_share);
     let mut t = Terms {
         v2: obj == Objective::V2,
+        v3: obj == Objective::V3,
+        elem_colour: 0.0,
+        elem_exposure: 0.0,
+        separation: 0.0,
+        global_sat: 0.0,
         shape: 0.0,
         level: 0.0,
         ab: 0.0,
@@ -1140,6 +1191,10 @@ fn terms(
         reg,
         clip,
     };
+    if obj == Objective::V3 {
+        terms_v3(out, reference, p0, None, &mut t);
+        return t;
+    }
     if obj == Objective::V2 {
         t.floor = (dead(out.floor - reference.floor, V2_FLOOR_BAND_L) / V2_FLOOR_L_SCALE).powi(2);
         t.ceil = (dead(out.ceil - reference.ceil, V2_CEIL_BAND_L) / V2_CEIL_L_SCALE).powi(2);
@@ -1214,13 +1269,670 @@ fn terms(
 }
 
 // ---------------------------------------------------------------------------------------------
+// V3: the hand-written, scene-aware grading model (`refgrade-notes/07-grading-model-v3.md`)
+// ---------------------------------------------------------------------------------------------
+
+/// Element ids of the label step, plus [`ELEM_SKIN`], which is a subset of `person`.
+const ELEM_SKY: usize = 1;
+const ELEM_VEGETATION: usize = 2;
+const ELEM_WATER: usize = 3;
+const ELEM_GROUND: usize = 4;
+const ELEM_ARCHITECTURE: usize = 5;
+const ELEM_INTERIOR: usize = 6;
+const ELEM_PERSON: usize = 7;
+const ELEM_OTHER_THING: usize = 8;
+const ELEM_SKIN: usize = 10;
+const N_ELEM: usize = 11;
+const ELEM_NAMES: [&str; N_ELEM] = [
+    "unlabelled",
+    "sky",
+    "vegetation",
+    "water",
+    "ground",
+    "architecture",
+    "interior",
+    "person",
+    "other_thing",
+    "other_stuff",
+    "skin",
+];
+
+/// An element with C* at or below this has no hue (the label step's statistics use pixels above it).
+const V3_HUE_MIN_CHROMA: f64 = 5.0;
+/// A person (or subject) element needs this share of the frame.
+const V3_PERSON_MIN_SHARE: f64 = 0.03;
+/// An element is eligible with this share of the frame in both images and this many sample pixels in the photo.
+const V3_ELEM_MIN_SHARE: f64 = 0.02;
+const V3_ELEM_MIN_SAMPLES: usize = 150;
+/// Hue reliability: an element's hue counts with `min(1, C_median / this)` in each image.
+const V3_HUE_RELIABLE_CHROMA: f64 = 12.0;
+/// Key mismatch: the reference is low key below this median L*, the photo high key above this.
+const V3_LOW_KEY_REF_L: f64 = 25.0;
+const V3_HIGH_KEY_PHOTO_L: f64 = 40.0;
+/// Element-exposure and separation weight under a key mismatch.
+const V3_KEY_MISMATCH_EXPOSURE_WEIGHT: f64 = 0.3;
+/// The floor's move fraction, normally and under a key mismatch.
+const V3_FLOOR_MOVE: f64 = 0.8;
+const V3_FLOOR_MOVE_KEY_MISMATCH: f64 = 0.4;
+const V3_CEIL_MOVE: f64 = 0.6;
+const V3_FLOOR_CEIL_CLAMP_L: f64 = 12.0;
+const V3_FLOOR_CEIL_SCALE_L: f64 = 2.0;
+const V3_FLOOR_CEIL_BAND_L: f64 = 1.0;
+/// Element exposure relative to the frame.
+const V3_EXPOSURE_MOVE: f64 = 0.5;
+const V3_EXPOSURE_CLAMP_L: f64 = 10.0;
+const V3_EXPOSURE_SCALE_L: f64 = 3.0;
+const V3_EXPOSURE_BAND_L: f64 = 2.0;
+/// Subject separation.
+const V3_SEP_MOVE: f64 = 0.6;
+const V3_SEP_CLAMP_L: f64 = 12.0;
+const V3_SEP_SCALE_L: f64 = 3.0;
+const V3_SEP_BAND_L: f64 = 2.0;
+/// Element colour: reliability clamp of the chroma ratio, scales and dead bands.
+const V3_RATIO_MIN: f64 = 0.45;
+const V3_RATIO_MAX: f64 = 1.6;
+const V3_HUE_ERR_SCALE_DEG: f64 = 10.0;
+const V3_CHROMA_ERR_SCALE: f64 = 4.0;
+const V3_HUE_BAND_DEG: f64 = 3.0;
+const V3_CHROMA_BAND: f64 = 1.0;
+/// Skin's chroma clamp.
+const V3_SKIN_C_MIN: f64 = 12.0;
+const V3_SKIN_C_MAX: f64 = 35.0;
+/// Global saturation.
+const V3_SAT_POWER: f64 = 0.6;
+const V3_SAT_MIN: f64 = 0.55;
+const V3_SAT_MAX: f64 = 1.4;
+const V3_SAT_SCALE: f64 = 0.05;
+const V3_SAT_BAND: f64 = 0.03;
+/// Neutral cast weight (the term itself is V2's).
+const V3_W_CAST: f64 = 1.0;
+/// Fallback skin: person pixels with L* 25..85, C* 8..45 and hue 20..80 degrees.
+const V3_FALLBACK_SKIN_L: (f64, f64) = (25.0, 85.0);
+const V3_FALLBACK_SKIN_C: (f64, f64) = (8.0, 45.0);
+const V3_FALLBACK_SKIN_HUE: (f64, f64) = (20.0, 80.0);
+/// A person component needs this share of the frame to get its own MediaPipe crop (implementation choice).
+const V3_SKIN_COMPONENT_MIN_SHARE: f64 = 0.005;
+/// Margin of the MediaPipe crop around a person's bounding box (implementation choice).
+const V3_SKIN_CROP_MARGIN: f64 = 1.15;
+/// A subject needs this share of the frame (implementation choice; the notes leave it open).
+const V3_SUBJECT_MIN_SHARE: f64 = 0.01;
+
+/// One element's colour model: (id, w_hue, cap in degrees, w_sat, hue window, w_term).
+struct ElemModel {
+    id: usize,
+    w_hue: f64,
+    cap_deg: f64,
+    w_sat: f64,
+    window: Option<(f64, f64)>,
+    w_term: f64,
+}
+
+const ELEM_MODELS: [ElemModel; 7] = [
+    ElemModel {
+        id: ELEM_SKY,
+        w_hue: 0.70,
+        cap_deg: 40.0,
+        w_sat: 0.80,
+        window: Some((170.0, 300.0)),
+        w_term: 1.5,
+    },
+    ElemModel {
+        id: ELEM_VEGETATION,
+        w_hue: 0.60,
+        cap_deg: 35.0,
+        w_sat: 0.80,
+        window: Some((70.0, 180.0)),
+        w_term: 1.2,
+    },
+    ElemModel {
+        id: ELEM_WATER,
+        w_hue: 0.60,
+        cap_deg: 35.0,
+        w_sat: 0.70,
+        window: Some((150.0, 285.0)),
+        w_term: 1.0,
+    },
+    ElemModel {
+        id: ELEM_GROUND,
+        w_hue: 0.50,
+        cap_deg: 30.0,
+        w_sat: 0.70,
+        window: None,
+        w_term: 1.0,
+    },
+    ElemModel {
+        id: ELEM_ARCHITECTURE,
+        w_hue: 0.30,
+        cap_deg: 25.0,
+        w_sat: 0.50,
+        window: None,
+        w_term: 0.6,
+    },
+    ElemModel {
+        id: ELEM_INTERIOR,
+        w_hue: 0.30,
+        cap_deg: 25.0,
+        w_sat: 0.50,
+        window: None,
+        w_term: 0.6,
+    },
+    ElemModel {
+        id: ELEM_SKIN,
+        w_hue: 0.35,
+        cap_deg: 15.0,
+        w_sat: 0.50,
+        window: Some((30.0, 70.0)),
+        w_term: 2.0,
+    },
+];
+/// Elements whose exposure relative to the frame is modelled.
+const EXPOSURE_ELEMS: [usize; 5] = [
+    ELEM_SKY,
+    ELEM_VEGETATION,
+    ELEM_WATER,
+    ELEM_GROUND,
+    ELEM_ARCHITECTURE,
+];
+
+/// What the labels say about the pixels of a picture: the element of each, whether it is skin, whether it is the subject.
+#[derive(Clone, Debug, Default)]
+struct Scene {
+    elem: Vec<u8>,
+    skin: Vec<bool>,
+    subject: Vec<bool>,
+    /// Where the skin came from.
+    skin_source: &'static str,
+}
+
+/// The statistics of one element, as the label step defines them.
+#[derive(Clone, Debug)]
+struct V3Stats {
+    share: [f64; N_ELEM],
+    count: [usize; N_ELEM],
+    light: [f64; N_ELEM],
+    /// Circular mean hue of the pixels with C* above [`V3_HUE_MIN_CHROMA`] (degrees), `None` without such pixels.
+    hue: [Option<f64>; N_ELEM],
+    chroma: [f64; N_ELEM],
+    subject_light: f64,
+    subject_count: usize,
+    background_light: f64,
+    background_count: usize,
+    /// Median C* of the labelled non-person pixels and their share of the frame.
+    nonperson_chroma: f64,
+    nonperson_share: f64,
+}
+
+fn median_of(v: &mut [f64]) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    v.sort_unstable_by(f64::total_cmp);
+    v[v.len() / 2]
+}
+
+fn v3_stats(px: &[Px], scene: &Scene) -> V3Stats {
+    let n = px.len();
+    let mut lights: Vec<Vec<f64>> = vec![Vec::new(); N_ELEM];
+    let mut chromas: Vec<Vec<f64>> = vec![Vec::new(); N_ELEM];
+    let mut hue_vec = [[0.0f64; 2]; N_ELEM];
+    let mut hue_n = [0usize; N_ELEM];
+    let (mut subj, mut bg): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
+    let mut np_c: Vec<f64> = Vec::new();
+    for (i, p) in px.iter().enumerate() {
+        let e = usize::from(scene.elem[i]);
+        let (a, b) = (p.lab[1], p.lab[2]);
+        let c = a.hypot(b);
+        let mut add = |k: usize| {
+            lights[k].push(p.lab[0]);
+            chromas[k].push(c);
+            if c > V3_HUE_MIN_CHROMA {
+                hue_vec[k][0] += a / c;
+                hue_vec[k][1] += b / c;
+                hue_n[k] += 1;
+            }
+        };
+        add(e);
+        if scene.skin[i] {
+            add(ELEM_SKIN);
+        }
+        if scene.subject[i] {
+            subj.push(p.lab[0]);
+        } else if e != 0 {
+            bg.push(p.lab[0]);
+        }
+        if e != 0 && e != ELEM_PERSON {
+            np_c.push(c);
+        }
+    }
+    let mut s = V3Stats {
+        share: [0.0; N_ELEM],
+        count: [0; N_ELEM],
+        light: [0.0; N_ELEM],
+        hue: [None; N_ELEM],
+        chroma: [0.0; N_ELEM],
+        subject_light: 0.0,
+        subject_count: subj.len(),
+        background_light: 0.0,
+        background_count: bg.len(),
+        nonperson_chroma: 0.0,
+        nonperson_share: np_c.len() as f64 / n as f64,
+    };
+    for k in 0..N_ELEM {
+        s.count[k] = lights[k].len();
+        s.share[k] = lights[k].len() as f64 / n as f64;
+        s.light[k] = median_of(&mut lights[k]);
+        s.chroma[k] = median_of(&mut chromas[k]);
+        if hue_n[k] > 0 {
+            s.hue[k] = Some(
+                hue_vec[k][1]
+                    .atan2(hue_vec[k][0])
+                    .to_degrees()
+                    .rem_euclid(360.0),
+            );
+        }
+    }
+    s.subject_light = median_of(&mut subj);
+    s.background_light = median_of(&mut bg);
+    s.nonperson_chroma = median_of(&mut np_c);
+    s
+}
+
+/// Connected components (4-connected) of a mask: (pixel list, bounding box x0, y0, x1, y1).
+fn components(mask: &[bool], w: usize, h: usize) -> Vec<(usize, [usize; 4])> {
+    let mut seen = vec![false; w * h];
+    let mut out = Vec::new();
+    for start in 0..w * h {
+        if !mask[start] || seen[start] {
+            continue;
+        }
+        let (mut count, mut bb) = (0usize, [w, h, 0usize, 0usize]);
+        let mut stack = vec![start];
+        seen[start] = true;
+        while let Some(i) = stack.pop() {
+            let (x, y) = (i % w, i / w);
+            count += 1;
+            bb = [bb[0].min(x), bb[1].min(y), bb[2].max(x), bb[3].max(y)];
+            for (nx, ny) in [
+                (x.wrapping_sub(1), y),
+                (x + 1, y),
+                (x, y.wrapping_sub(1)),
+                (x, y + 1),
+            ] {
+                if nx < w && ny < h && mask[ny * w + nx] && !seen[ny * w + nx] {
+                    seen[ny * w + nx] = true;
+                    stack.push(ny * w + nx);
+                }
+            }
+        }
+        out.push((count, bb));
+    }
+    out
+}
+
+/// The skin of a picture: MediaPipe Selfie Multiclass (body skin and face skin) intersected with the person element, run on
+/// one square crop per person component; or, without the network, the fallback rule of the notes.
+fn skin_mask(
+    display: &Img,
+    elem: &[u8],
+    seg: Option<&ym_ml::mediapipe::selfie::SelfieSegmenter>,
+    conv: &LabConv,
+) -> (Vec<bool>, &'static str) {
+    let (w, h) = (display.w, display.h);
+    let person: Vec<bool> = elem
+        .iter()
+        .map(|&e| usize::from(e) == ELEM_PERSON)
+        .collect();
+    let share = person.iter().filter(|&&p| p).count() as f64 / (w * h) as f64;
+    let mut skin = vec![false; w * h];
+    if share < V3_PERSON_MIN_SHARE {
+        return (skin, "none (person under 3 % of the frame)");
+    }
+    if let Some(seg) = seg {
+        let rgb8 = linear_to_rgb8(display);
+        if let Ok(src) = ym_ml::mediapipe::blazeface::Rgb8::new(w, h, &rgb8.data) {
+            let mut ok = true;
+            for (count, bb) in components(&person, w, h) {
+                if (count as f64) < V3_SKIN_COMPONENT_MIN_SHARE * (w * h) as f64 {
+                    continue;
+                }
+                let (bw, bh) = ((bb[2] - bb[0] + 1) as f64, (bb[3] - bb[1] + 1) as f64);
+                let roi = ym_ml::mediapipe::roi::Roi {
+                    center_px: [bb[0] as f64 + bw / 2.0, bb[1] as f64 + bh / 2.0],
+                    side_px: bw.max(bh) * V3_SKIN_CROP_MARGIN,
+                    rotation_rad: 0.0,
+                };
+                match seg.segment(&src, &roi, ym_ml::mediapipe::blazeface::Resample::Box) {
+                    Ok(map) => {
+                        for y in bb[1]..=bb[3] {
+                            for x in bb[0]..=bb[2] {
+                                let i = y * w + x;
+                                if !person[i] {
+                                    continue;
+                                }
+                                let [u, v] = roi.from_picture([x as f64 + 0.5, y as f64 + 0.5]);
+                                if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
+                                    continue;
+                                }
+                                use ym_ml::mediapipe::selfie::Class;
+                                let best = [
+                                    Class::Background,
+                                    Class::Hair,
+                                    Class::BodySkin,
+                                    Class::FaceSkin,
+                                    Class::Clothes,
+                                    Class::Others,
+                                ]
+                                .into_iter()
+                                .max_by(|a, b| map.prob(*a, u, v).total_cmp(&map.prob(*b, u, v)));
+                                skin[i] = matches!(best, Some(Class::BodySkin | Class::FaceSkin));
+                            }
+                        }
+                    }
+                    Err(_) => ok = false,
+                }
+            }
+            if ok {
+                return (
+                    skin,
+                    "MediaPipe Selfie Multiclass (body skin + face skin) intersected with person",
+                );
+            }
+        }
+        skin.fill(false);
+    }
+    for i in 0..w * h {
+        if !person[i] {
+            continue;
+        }
+        let p = conv.px([
+            f64::from(display.px[3 * i]),
+            f64::from(display.px[3 * i + 1]),
+            f64::from(display.px[3 * i + 2]),
+        ]);
+        let (l, a, b) = (p.lab[0], p.lab[1], p.lab[2]);
+        let (c, hue) = (a.hypot(b), b.atan2(a).to_degrees().rem_euclid(360.0));
+        skin[i] = (V3_FALLBACK_SKIN_L.0..=V3_FALLBACK_SKIN_L.1).contains(&l)
+            && (V3_FALLBACK_SKIN_C.0..=V3_FALLBACK_SKIN_C.1).contains(&c)
+            && (V3_FALLBACK_SKIN_HUE.0..=V3_FALLBACK_SKIN_HUE.1).contains(&hue);
+    }
+    (
+        skin,
+        "fallback rule (person pixels with L* 25..85, C* 8..45, hue 20..80)",
+    )
+}
+
+/// The subject of a picture: the person element if it covers at least 3 % of the frame, else the `other_thing` pixels in the
+/// central 60 % of the frame (when they cover at least [`V3_SUBJECT_MIN_SHARE`]).
+fn subject_mask(elem: &[u8], w: usize, h: usize) -> Vec<bool> {
+    let n = (w * h) as f64;
+    let person: Vec<bool> = elem
+        .iter()
+        .map(|&e| usize::from(e) == ELEM_PERSON)
+        .collect();
+    if person.iter().filter(|&&p| p).count() as f64 / n >= V3_PERSON_MIN_SHARE {
+        return person;
+    }
+    let central = |i: usize| {
+        let (x, y) = ((i % w) as f64 / w as f64, (i / w) as f64 / h as f64);
+        (0.2..0.8).contains(&x) && (0.2..0.8).contains(&y)
+    };
+    let thing: Vec<bool> = (0..w * h)
+        .map(|i| usize::from(elem[i]) == ELEM_OTHER_THING && central(i))
+        .collect();
+    if thing.iter().filter(|&&p| p).count() as f64 / n >= V3_SUBJECT_MIN_SHARE {
+        thing
+    } else {
+        vec![false; w * h]
+    }
+}
+
+/// Reads an indexed PNG of element ids.
+fn read_label_png(path: &Path) -> R<(usize, usize, Vec<u8>)> {
+    let mut dec = png::Decoder::new(std::io::Cursor::new(fs::read(path)?));
+    dec.set_transformations(png::Transformations::IDENTITY);
+    let mut reader = dec.read_info()?;
+    let mut buf = vec![0u8; reader.output_buffer_size().ok_or("label png too large")?];
+    let info = reader.next_frame(&mut buf)?;
+    let (w, h) = (info.width as usize, info.height as usize);
+    if info.bit_depth != png::BitDepth::Eight || info.color_type != png::ColorType::Indexed {
+        return Err(format!("{}: expected an 8-bit indexed label png", path.display()).into());
+    }
+    buf.truncate(w * h);
+    Ok((w, h, buf))
+}
+
+/// Nearest-neighbour resize of a label map, after cutting `crop` (top, bottom, left, right) off its edges.
+fn resize_labels(
+    src: &[u8],
+    sw: usize,
+    sh: usize,
+    crop: [usize; 4],
+    dw: usize,
+    dh: usize,
+) -> Vec<u8> {
+    let (cw, ch) = (sw - crop[2] - crop[3], sh - crop[0] - crop[1]);
+    let mut out = vec![0u8; dw * dh];
+    for y in 0..dh {
+        let sy = crop[0] + (((y as f64 + 0.5) / dh as f64) * ch as f64) as usize;
+        for x in 0..dw {
+            let sx = crop[2] + (((x as f64 + 0.5) / dw as f64) * cw as f64) as usize;
+            out[y * dw + x] = src[sy.min(sh - 1) * sw + sx.min(sw - 1)];
+        }
+    }
+    out
+}
+
+/// A scene for a picture of `w` by `h` whose display version is `display`.
+fn make_scene(
+    elem: Vec<u8>,
+    display: &Img,
+    seg: Option<&ym_ml::mediapipe::selfie::SelfieSegmenter>,
+    conv: &LabConv,
+) -> Scene {
+    let (skin, source) = skin_mask(display, &elem, seg, conv);
+    let subject = subject_mask(&elem, display.w, display.h);
+    Scene {
+        elem,
+        skin,
+        subject,
+        skin_source: source,
+    }
+}
+
+/// The photo's scene gathered at the sample pixels.
+fn gather_scene(scene: &Scene, idx: &[usize]) -> Scene {
+    Scene {
+        elem: idx.iter().map(|&i| scene.elem[i]).collect(),
+        skin: idx.iter().map(|&i| scene.skin[i]).collect(),
+        subject: idx.iter().map(|&i| scene.subject[i]).collect(),
+        skin_source: scene.skin_source,
+    }
+}
+
+fn wrap180(d: f64) -> f64 {
+    wrap_deg(d)
+}
+
+/// The V3 terms (`07-grading-model-v3.md` sections 2 and 3) of `out` against the reference, with the photo's own
+/// statistics `p0` as the base of every move. `diag` collects what each element's target was.
+fn terms_v3(
+    out: &Stats,
+    reference: &Stats,
+    p0: &Stats,
+    diag: Option<&mut Vec<Value>>,
+    t: &mut Terms,
+) {
+    let (Some(o), Some(r), Some(z)) = (&out.v3, &reference.v3, &p0.v3) else {
+        return;
+    };
+    let mut diag = diag;
+    let low_key_ref = reference.median < V3_LOW_KEY_REF_L;
+    let high_key_photo = p0.median > V3_HIGH_KEY_PHOTO_L;
+    let mismatch = low_key_ref && high_key_photo;
+    let exposure_weight = if mismatch {
+        V3_KEY_MISMATCH_EXPOSURE_WEIGHT
+    } else {
+        1.0
+    };
+    let floor_move = if mismatch {
+        V3_FLOOR_MOVE_KEY_MISMATCH
+    } else {
+        V3_FLOOR_MOVE
+    };
+    let eligible = |e: usize| {
+        r.share[e] >= V3_ELEM_MIN_SHARE
+            && z.share[e] >= V3_ELEM_MIN_SHARE
+            && z.count[e] >= V3_ELEM_MIN_SAMPLES
+    };
+    // 3.1 element colour
+    let mut colour = 0.0;
+    for m in &ELEM_MODELS {
+        let e = m.id;
+        if !eligible(e) {
+            continue;
+        }
+        let weight = m.w_term * z.share[e].sqrt();
+        let mut hue_term = 0.0;
+        let (mut hue_target, mut dh_used) = (None, 0.0);
+        if let (Some(rh), Some(zh)) = (r.hue[e], z.hue[e]) {
+            let rel = (r.chroma[e] / V3_HUE_RELIABLE_CHROMA).min(1.0)
+                * (z.chroma[e] / V3_HUE_RELIABLE_CHROMA).min(1.0);
+            let mut w_hue = m.w_hue;
+            let mut window = m.window;
+            if let (ELEM_SKY, Some((lo, hi))) = (e, m.window)
+                && !(lo..=hi).contains(&zh)
+            {
+                w_hue *= 0.5;
+                window = None;
+            }
+            let dh = wrap180(rh - zh).clamp(-m.cap_deg, m.cap_deg);
+            dh_used = dh;
+            let mut target = (zh + w_hue * rel * dh).rem_euclid(360.0);
+            if let Some((lo, hi)) = window {
+                target = target.clamp(lo, hi);
+            }
+            hue_target = Some(target);
+            if let Some(oh) = o.hue[e] {
+                hue_term =
+                    (dead(wrap180(oh - target), V3_HUE_BAND_DEG) / V3_HUE_ERR_SCALE_DEG).powi(2);
+            }
+        }
+        let ratio = (r.chroma[e] / z.chroma[e].max(1e-6)).clamp(V3_RATIO_MIN, V3_RATIO_MAX);
+        let mut c_target = z.chroma[e] * ratio.powf(m.w_sat);
+        if e == ELEM_SKIN {
+            c_target = c_target.clamp(V3_SKIN_C_MIN, V3_SKIN_C_MAX);
+        }
+        let c_term = (dead(o.chroma[e] - c_target, V3_CHROMA_BAND) / V3_CHROMA_ERR_SCALE).powi(2);
+        colour += weight * (hue_term + c_term);
+        if let Some(d) = diag.as_deref_mut() {
+            d.push(json!({ "element": ELEM_NAMES[e], "term": "colour", "photo_area_share": z.share[e],
+                "ref_hue": r.hue[e], "photo0_hue": z.hue[e], "hue_delta_used": dh_used, "hue_target": hue_target,
+                "ref_chroma": r.chroma[e], "photo0_chroma": z.chroma[e], "chroma_target": c_target,
+                "candidate_hue": o.hue[e], "candidate_chroma": o.chroma[e], "contribution": weight * (hue_term + c_term) }));
+        }
+    }
+    t.elem_colour = colour;
+    // 3.2 neutral cast: V2's term as it is.
+    let cast_only = terms_v2_cast(out, reference);
+    t.cast = cast_only;
+    // 3.3a black floor and white ceiling
+    let p2_target = p0.floor
+        + floor_move
+            * (reference.floor - p0.floor).clamp(-V3_FLOOR_CEIL_CLAMP_L, V3_FLOOR_CEIL_CLAMP_L);
+    let p98_target = p0.ceil
+        + V3_CEIL_MOVE
+            * (reference.ceil - p0.ceil).clamp(-V3_FLOOR_CEIL_CLAMP_L, V3_FLOOR_CEIL_CLAMP_L);
+    t.floor = (dead(out.floor - p2_target, V3_FLOOR_CEIL_BAND_L) / V3_FLOOR_CEIL_SCALE_L).powi(2);
+    t.ceil = (dead(out.ceil - p98_target, V3_FLOOR_CEIL_BAND_L) / V3_FLOOR_CEIL_SCALE_L).powi(2);
+    // 3.3b element exposure relative to the frame
+    let mut exposure = 0.0;
+    for &e in &EXPOSURE_ELEMS {
+        if !eligible(e) {
+            continue;
+        }
+        let off_ref = r.light[e] - reference.median;
+        let off_0 = z.light[e] - p0.median;
+        let target = off_0
+            + V3_EXPOSURE_MOVE * (off_ref - off_0).clamp(-V3_EXPOSURE_CLAMP_L, V3_EXPOSURE_CLAMP_L);
+        let off = o.light[e] - out.median;
+        let c = exposure_weight
+            * z.share[e].sqrt()
+            * (dead(off - target, V3_EXPOSURE_BAND_L) / V3_EXPOSURE_SCALE_L).powi(2);
+        exposure += c;
+        if let Some(d) = diag.as_deref_mut() {
+            d.push(json!({ "element": ELEM_NAMES[e], "term": "exposure", "offset_ref": off_ref, "offset_photo0": off_0,
+                "offset_target": target, "offset_candidate": off, "contribution": c }));
+        }
+    }
+    t.elem_exposure = exposure;
+    // 3.3c subject separation
+    let mut separation = 0.0;
+    if r.subject_count > 0
+        && r.background_count > 0
+        && z.subject_count >= V3_ELEM_MIN_SAMPLES
+        && z.background_count >= V3_ELEM_MIN_SAMPLES
+        && o.subject_count > 0
+    {
+        let sep_ref = r.subject_light - r.background_light;
+        let sep_0 = z.subject_light - z.background_light;
+        let target = sep_0 + V3_SEP_MOVE * (sep_ref - sep_0).clamp(-V3_SEP_CLAMP_L, V3_SEP_CLAMP_L);
+        let sep = o.subject_light - o.background_light;
+        separation = exposure_weight * (dead(sep - target, V3_SEP_BAND_L) / V3_SEP_SCALE_L).powi(2);
+        if let Some(d) = diag.as_deref_mut() {
+            d.push(json!({ "term": "separation", "sep_ref": sep_ref, "sep_photo0": sep_0, "target": target,
+                "candidate": sep, "contribution": separation }));
+        }
+    }
+    t.separation = separation;
+    // 3.3d exposure anchor: V2's
+    t.anchor = (dead((out.median - p0.median).abs(), V2_ANCHOR_DEAD_BAND_L) / L_SCALE).powi(2);
+    // 3.4 global saturation
+    let mut sat = 0.0;
+    if r.nonperson_share >= V3_ELEM_MIN_SHARE
+        && z.nonperson_share >= V3_ELEM_MIN_SHARE
+        && z.nonperson_chroma > 1e-6
+    {
+        let target = ((r.nonperson_chroma / z.nonperson_chroma).powf(V3_SAT_POWER))
+            .clamp(V3_SAT_MIN, V3_SAT_MAX);
+        let ratio = o.nonperson_chroma / z.nonperson_chroma;
+        sat = (dead(ratio - target, V3_SAT_BAND) / V3_SAT_SCALE).powi(2);
+        if let Some(d) = diag.as_deref_mut() {
+            d.push(json!({ "term": "global_saturation", "target_ratio": target, "candidate_ratio": ratio, "contribution": sat }));
+        }
+    }
+    t.global_sat = sat;
+    if let Some(d) = diag {
+        d.push(json!({ "term": "gates", "low_key_reference": low_key_ref, "high_key_photo": high_key_photo,
+            "key_mismatch": mismatch, "floor_move": floor_move, "p2_target": p2_target, "p98_target": p98_target,
+            "p2_candidate": out.floor, "p98_candidate": out.ceil }));
+    }
+}
+
+/// V2's neutral-cast term (dead band and scale as in V2).
+fn terms_v2_cast(out: &Stats, reference: &Stats) -> f64 {
+    let (mut sum, mut k) = (0.0, 0usize);
+    for b in 0..3 {
+        if out.neutral_share[b] >= V2_MIN_NEUTRAL_SHARE_PER_BAND
+            && reference.neutral_share[b] >= V2_MIN_NEUTRAL_SHARE_PER_BAND
+        {
+            let da = out.neutral_ab[b][0] - reference.neutral_ab[b][0];
+            let db = out.neutral_ab[b][1] - reference.neutral_ab[b][1];
+            sum += (dead(da.hypot(db), V2_CAST_BAND_AB) / V2_CAST_SCALE).powi(2);
+            k += 1;
+        }
+    }
+    if k > 0 { sum / k as f64 } else { 0.0 }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Samples, evaluation, optimiser
 // ---------------------------------------------------------------------------------------------
 
 /// A fixed stratified sample of a node picture: one pixel per cell of a grid, jittered by a seeded generator.
-fn stratified_sample(img: &Img, grid: (usize, usize), seed: u64) -> Vec<[f64; 3]> {
+fn stratified_sample(img: &Img, grid: (usize, usize), seed: u64) -> (Vec<[f64; 3]>, Vec<usize>) {
     let mut rng = Rng(seed);
     let mut out = Vec::with_capacity(grid.0 * grid.1);
+    let mut idx = Vec::with_capacity(grid.0 * grid.1);
     for gy in 0..grid.1 {
         for gx in 0..grid.0 {
             let fx = (gx as f64 + rng.unit()) / grid.0 as f64;
@@ -1228,9 +1940,10 @@ fn stratified_sample(img: &Img, grid: (usize, usize), seed: u64) -> Vec<[f64; 3]
             let x = ((fx * img.w as f64) as usize).min(img.w - 1);
             let y = ((fy * img.h as f64) as usize).min(img.h - 1);
             out.push(img.at(x, y));
+            idx.push(y * img.w + x);
         }
     }
-    out
+    (out, idx)
 }
 
 /// Evaluates candidates on a fixed sample.
@@ -1239,8 +1952,10 @@ struct Evaluator<'a> {
     lin: Vec<[f64; 3]>,
     reference: Stats,
     objective: Objective,
-    /// The ungraded photo's median L* (V2's anchor).
-    anchor: f64,
+    /// The ungraded photo's statistics (V2's anchor, V3's base of every move).
+    photo0: Stats,
+    /// V3: the photo's scene at the sample pixels.
+    scene: Option<Scene>,
     /// The V2 term groups the current stage minimises.
     mask: u8,
     conv: LabConv,
@@ -1267,11 +1982,11 @@ impl Evaluator<'_> {
                             *d = conv.px(render_pixel(&cand, output, *s));
                         }
                     });
-                stats_of(&self.buf)
+                stats_of(&self.buf, self.scene.as_ref())
             }
             // A candidate the chain refuses is worse than anything.
             Err(_) => {
-                let mut s = stats_of(&self.buf);
+                let mut s = stats_of(&self.buf, self.scene.as_ref());
                 s.median = 1e6;
                 s
             }
@@ -1281,7 +1996,7 @@ impl Evaluator<'_> {
     fn objective(&mut self, x: &[f64; N_PARAMS]) -> (f64, Terms) {
         let t0 = Instant::now();
         let s = self.stats(x);
-        let t = terms(self.objective, &s, &self.reference, self.anchor, x);
+        let t = terms(self.objective, &s, &self.reference, &self.photo0, x);
         self.evals += 1;
         self.eval_time += t0.elapsed();
         (t.total_masked(self.mask), t)
@@ -1359,7 +2074,12 @@ fn fit(ev: &mut Evaluator<'_>) -> FitResult {
     let mut log = Vec::new();
     for (name, range, frac, iters) in STAGES.iter().cloned() {
         ev.mask = match name {
+            // V3 (notes section 4): tone sees 3.3, the colour stages 3.1 + 3.2 + 3.4, hue-vs-hue 3.1.
             "tone" => MASK_TONE,
+            "colour per band" | "saturation and hue-vs-sat" if ev.objective == Objective::V3 => {
+                MASK_HUE | MASK_CAST | MASK_CHROMA
+            }
+            "hue-vs-hue" if ev.objective == Objective::V3 => MASK_HUE,
             "colour per band" => MASK_TONE | MASK_CAST,
             "saturation and hue-vs-sat" => MASK_TONE | MASK_CAST | MASK_CHROMA,
             _ => MASK_ALL,
@@ -1739,6 +2459,8 @@ struct Reference {
     /// Linear sRGB, fit size.
     fit: Img,
     bars: [usize; 4],
+    /// V3: the labels at the fit picture's pixels, when a label folder is given and has this picture.
+    scene: Option<Scene>,
 }
 
 fn load_reference(path: &Path) -> R<Reference> {
@@ -1753,15 +2475,49 @@ fn load_reference(path: &Path) -> R<Reference> {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let scene = match &ctx().labels {
+        Some(dir) => {
+            // `<film>__<stem>.png`, the film being the folder the still lives in (symlinks followed).
+            let real = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            let group = real
+                .parent()
+                .and_then(|d| d.file_name())
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let file = dir.join("labels").join(format!("{group}__{stem}.png"));
+            if file.exists() {
+                let (lw, lh, labels) = read_label_png(&file)?;
+                if (lw, lh) != (raw.w, raw.h) {
+                    return Err(format!(
+                        "{}: labels are {lw}x{lh}, the picture {}x{}",
+                        file.display(),
+                        raw.w,
+                        raw.h
+                    )
+                    .into());
+                }
+                let elem = resize_labels(&labels, lw, lh, bars, fit.w, fit.h);
+                Some(make_scene(elem, &fit, ctx().seg.as_ref(), &LabConv::new()))
+            } else {
+                None
+            }
+        }
+        None => None,
+    };
     Ok(Reference {
         stem,
         show8,
         fit,
         bars,
+        scene,
     })
 }
 
 fn picture_stats(conv: &LabConv, img: &Img) -> Stats {
+    picture_stats_scene(conv, img, None)
+}
+
+fn picture_stats_scene(conv: &LabConv, img: &Img, scene: Option<&Scene>) -> Stats {
     let px: Vec<Px> = (0..img.w * img.h)
         .map(|i| {
             conv.px(img.px[3 * i..3 * i + 3]
@@ -1772,7 +2528,7 @@ fn picture_stats(conv: &LabConv, img: &Img) -> Stats {
                 .unwrap_or([0.0; 3]))
         })
         .collect();
-    stats_of(&px)
+    stats_of(&px, scene)
 }
 
 /// One photo prepared for fitting against many references.
@@ -1782,21 +2538,40 @@ struct PhotoFit<'a> {
     fit_img: Img,
     lin_sample: Vec<[f64; 3]>,
     default_show: Img,
+    /// V3: the photo's labels at the fit picture's pixels and gathered at the sample pixels.
+    scene_fit: Option<Scene>,
+    scene_samples: Option<Scene>,
 }
 
 fn prepare_photo(photo: &PhotoNode) -> R<PhotoFit<'_>> {
     let output = make_output_chain(&photo.output)?;
     let (fw, fh) = fit_size(photo.show.w, photo.show.h, FIT_LONG_EDGE_PX);
     let fit_img = resize_area(&photo.show, fw, fh);
-    let lin_sample = stratified_sample(&fit_img, SAMPLE_GRID, SEED);
+    let (lin_sample, sample_idx) = stratified_sample(&fit_img, SAMPLE_GRID, SEED);
     let ident = Candidate::new(&to_real(&[0.0; N_PARAMS], 1.0), false)?;
     let default_show = render_image(&photo.show, &ident, &output);
+    let (mut scene_fit, mut scene_samples) = (None, None);
+    if let Some(dir) = &ctx().labels {
+        let file = dir
+            .join("labels")
+            .join(format!("photo__{}.png", photo.name));
+        if file.exists() {
+            let (lw, lh, labels) = read_label_png(&file)?;
+            let elem = resize_labels(&labels, lw, lh, [0; 4], fit_img.w, fit_img.h);
+            let display = resize_area(&default_show, fit_img.w, fit_img.h);
+            let sc = make_scene(elem, &display, ctx().seg.as_ref(), &LabConv::new());
+            scene_samples = Some(gather_scene(&sc, &sample_idx));
+            scene_fit = Some(sc);
+        }
+    }
     Ok(PhotoFit {
         photo,
         output,
         fit_img,
         lin_sample,
         default_show,
+        scene_fit,
+        scene_samples,
     })
 }
 
@@ -1814,15 +2589,21 @@ fn run_fit(
     strength: f64,
     with_hue: bool,
     objective: Objective,
+    ref_scene: Option<&Scene>,
 ) -> R<(FitResult, Stats)> {
     let conv = LabConv::new();
-    let ref_stats = picture_stats(&conv, reference_fit);
+    let v3 = objective == Objective::V3;
+    if v3 && (ref_scene.is_none() || pf.scene_samples.is_none()) {
+        return Err("objective v3 needs labels for the photo and the reference (--labels)".into());
+    }
+    let ref_stats = picture_stats_scene(&conv, reference_fit, if v3 { ref_scene } else { None });
     let mut ev = Evaluator {
         output: &pf.output,
         lin: pf.lin_sample.clone(),
         reference: ref_stats.clone(),
         objective,
-        anchor: 0.0,
+        photo0: ref_stats.clone(),
+        scene: if v3 { pf.scene_samples.clone() } else { None },
         mask: MASK_ALL,
         conv,
         with_hue,
@@ -1831,7 +2612,7 @@ fn run_fit(
         buf: vec![Px::default(); pf.lin_sample.len()],
         eval_time: Duration::ZERO,
     };
-    ev.anchor = ev.stats(&[0.0; N_PARAMS]).median;
+    ev.photo0 = ev.stats(&[0.0; N_PARAMS]);
     Ok((fit(&mut ev), ref_stats))
 }
 
@@ -1843,7 +2624,14 @@ fn run_pair(
     objective: Objective,
 ) -> R<PairOutcome> {
     let t0 = Instant::now();
-    let (fit_res, _) = run_fit(pf, &reference.fit, strength, with_hue, objective)?;
+    let (fit_res, _) = run_fit(
+        pf,
+        &reference.fit,
+        strength,
+        with_hue,
+        objective,
+        reference.scene.as_ref(),
+    )?;
     let mut x_scaled = fit_res.x;
     for v in &mut x_scaled {
         *v *= strength;
@@ -1870,6 +2658,7 @@ fn write_pair(
     strength: f64,
     with_hue: bool,
     objective: Objective,
+    round2: Option<&PairOutcome>,
 ) -> R<()> {
     fs::create_dir_all(dir)?;
     let default8 = linear_to_rgb8(&pf.default_show);
@@ -1877,38 +2666,78 @@ fn write_pair(
     let ref_show_lin = rgb8_to_linear(&reference.show8);
     let reinhard8 = linear_to_rgb8(&reinhard(&pf.default_show, &ref_show_lin));
     let aspect = pf.default_show.w as f64 / pf.default_show.h as f64;
-    write_sheet(
-        &dir.join("sheet.jpg"),
-        &reference.show8,
-        [&default8, &fitted8, &reinhard8],
-        aspect,
-    )?;
+    if let (Objective::V3, Some(r2)) = (objective, round2) {
+        let round2_8 = linear_to_rgb8(&r2.fitted_show);
+        write_sheet_v3(
+            &dir.join("sheet.jpg"),
+            reference,
+            [&default8, &round2_8, &fitted8],
+            pf,
+            aspect,
+        )?;
+    } else {
+        write_sheet(
+            &dir.join("sheet.jpg"),
+            &reference.show8,
+            [&default8, &fitted8, &reinhard8],
+            aspect,
+        )?;
+    }
     save_rgb8_jpeg(&fitted8, &dir.join("fitted.jpg"))?;
     save_rgb8_jpeg(&default8, &dir.join("default.jpg"))?;
     let conv = LabConv::new();
     let fitted_fit = resize_area(&o.fitted_show, pf.fit_img.w, pf.fit_img.h);
-    let ref_stats = picture_stats(&conv, &reference.fit);
+    let v3 = objective == Objective::V3;
+    let ref_stats = picture_stats_scene(
+        &conv,
+        &reference.fit,
+        if v3 { reference.scene.as_ref() } else { None },
+    );
     let default_fit = resize_area(&pf.default_show, pf.fit_img.w, pf.fit_img.h);
-    let def_stats = picture_stats(&conv, &default_fit);
-    let fit_stats = picture_stats(&conv, &fitted_fit);
+    let def_stats = picture_stats_scene(
+        &conv,
+        &default_fit,
+        if v3 { pf.scene_fit.as_ref() } else { None },
+    );
+    let fit_stats = picture_stats_scene(
+        &conv,
+        &fitted_fit,
+        if v3 { pf.scene_fit.as_ref() } else { None },
+    );
     let mut reg_zero = [0.0; N_PARAMS];
-    let before_full = terms(
-        objective,
-        &def_stats,
-        &ref_stats,
-        def_stats.median,
-        &reg_zero,
-    );
+    let before_full = terms(objective, &def_stats, &ref_stats, &def_stats, &reg_zero);
     reg_zero = o.x_scaled.map(|v| v / strength.max(1e-9));
-    let after_full = terms(
-        objective,
-        &fit_stats,
-        &ref_stats,
-        def_stats.median,
-        &reg_zero,
-    );
+    let after_full = terms(objective, &fit_stats, &ref_stats, &def_stats, &reg_zero);
+    let mut v3_diag_before = Vec::new();
+    let mut v3_diag_after = Vec::new();
+    if v3 {
+        let mut scratch = before_full;
+        terms_v3(
+            &def_stats,
+            &ref_stats,
+            &def_stats,
+            Some(&mut v3_diag_before),
+            &mut scratch,
+        );
+        let mut scratch = after_full;
+        terms_v3(
+            &fit_stats,
+            &ref_stats,
+            &def_stats,
+            Some(&mut v3_diag_after),
+            &mut scratch,
+        );
+    }
+    let skin_sources = json!({
+        "photo": pf.scene_fit.as_ref().map(|s| s.skin_source),
+        "reference": reference.scene.as_ref().map(|s| s.skin_source),
+    });
     let report = json!({
         "photo": photo_name,
+        "v3_diagnostics_before": v3_diag_before,
+        "v3_diagnostics_after": v3_diag_after,
+        "skin_source": skin_sources,
+        "round2_fit_seconds": round2.map(|r| r.fit.seconds),
         "reference": reference.stem,
         "strength": strength,
         "hue_step": with_hue,
@@ -1948,32 +2777,142 @@ fn write_pair(
     Ok(())
 }
 
-fn write_grid(path: &Path, pf: &PhotoFit<'_>, refs: &[(&Reference, &PairOutcome)]) -> R<()> {
+/// Colours of the label overlay, by element id; skin is drawn white.
+const LABEL_PALETTE: [[u8; 3]; N_ELEM] = [
+    [50, 50, 50],
+    [90, 150, 255],
+    [60, 200, 80],
+    [0, 200, 220],
+    [200, 150, 80],
+    [210, 90, 90],
+    [200, 80, 200],
+    [255, 220, 0],
+    [255, 120, 0],
+    [150, 150, 150],
+    [255, 255, 255],
+];
+
+/// A picture with its labels mixed in half and half (skin white), at the picture's own size.
+fn label_overlay(img: &Rgb8, scene: &Scene, sw: usize, sh: usize) -> Rgb8 {
+    let mut data = img.data.clone();
+    for y in 0..img.h {
+        for x in 0..img.w {
+            let (lx, ly) = ((x * sw / img.w).min(sw - 1), (y * sh / img.h).min(sh - 1));
+            let i = ly * sw + lx;
+            let k = if scene.skin[i] {
+                ELEM_SKIN
+            } else {
+                usize::from(scene.elem[i]).min(ELEM_SKIN)
+            };
+            let d = 3 * (y * img.w + x);
+            for c in 0..3 {
+                data[d + c] = ((u16::from(data[d + c]) + u16::from(LABEL_PALETTE[k][c])) / 2) as u8;
+            }
+        }
+    }
+    Rgb8 {
+        w: img.w,
+        h: img.h,
+        data,
+    }
+}
+
+/// The V3 sheet: Reference, Yellowmoon default, Round 2, Round 3, and under them a strip with the labels the model
+/// recognised in the reference and in the photo (and the palette).
+fn write_sheet_v3(
+    path: &Path,
+    reference: &Reference,
+    panels: [&Rgb8; 3],
+    pf: &PhotoFit<'_>,
+    photo_aspect: f64,
+) -> R<()> {
+    const GAP: usize = 8;
+    const BAND: usize = 30;
+    const STRIP_H: usize = 150;
+    let panel_h = (PANEL_W_PX as f64 / photo_aspect).round() as usize;
+    let (w, h) = (4 * PANEL_W_PX + 5 * GAP, panel_h + BAND + STRIP_H + 3 * GAP);
+    let mut c = Canvas::new(w, h, 18);
+    let labels = ["Reference", "Yellowmoon default", "Round 2", "Round 3"];
+    let all = [&reference.show8, panels[0], panels[1], panels[2]];
+    for (i, (img, label)) in all.iter().zip(labels).enumerate() {
+        let x = GAP + i * (PANEL_W_PX + GAP);
+        c.text(label, x, GAP + 4, 3, 235);
+        c.put_fit(img, x, GAP + BAND, PANEL_W_PX, panel_h);
+    }
+    let y = GAP + BAND + panel_h + GAP;
+    if let Some(sc) = &reference.scene {
+        let small = {
+            let (tw, th) = fit_size(reference.fit.w, reference.fit.h, 320);
+            linear_to_rgb8(&resize_area(&reference.fit, tw, th))
+        };
+        let ov = label_overlay(&small, sc, reference.fit.w, reference.fit.h);
+        c.put_fit(&ov, GAP, y, PANEL_W_PX, STRIP_H);
+    }
+    if let Some(sc) = &pf.scene_fit {
+        let small = {
+            let (tw, th) = fit_size(pf.fit_img.w, pf.fit_img.h, 320);
+            linear_to_rgb8(&resize_area(&pf.default_show, tw, th))
+        };
+        let ov = label_overlay(&small, sc, pf.fit_img.w, pf.fit_img.h);
+        c.put_fit(&ov, GAP + PANEL_W_PX + GAP, y, PANEL_W_PX, STRIP_H);
+    }
+    // The palette: one swatch per element in label order (sky, vegetation, water, ground, architecture, interior, person,
+    // other thing, other stuff, skin), under Round 2 and Round 3.
+    let x0 = GAP + 2 * (PANEL_W_PX + GAP);
+    for (k, id) in [1usize, 2, 3, 4, 5, 6, 7, 8, 9, 10].iter().enumerate() {
+        for yy in 0..40 {
+            for xx in 0..40 {
+                let d = 3 * ((y + 20 + yy) * c.w + x0 + 20 + k * 56 + xx);
+                c.data[d..d + 3].copy_from_slice(&LABEL_PALETTE[*id]);
+            }
+        }
+    }
+    c.save_jpeg(path)
+}
+
+fn write_grid(
+    path: &Path,
+    pf: &PhotoFit<'_>,
+    refs: &[(&Reference, &PairOutcome)],
+    round2: &[Option<PairOutcome>],
+) -> R<()> {
     const GAP: usize = 6;
     const LABEL: usize = 18;
     let cell_h = (GRID_CELL_W_PX as f64 * pf.default_show.h as f64 / pf.default_show.w as f64)
         .round() as usize;
     let thumb_h = (GRID_CELL_W_PX * 9 / 16).max(1);
-    let col_h = LABEL + thumb_h + GAP + cell_h;
+    let rows = if round2.iter().any(Option::is_some) {
+        2
+    } else {
+        1
+    };
+    let col_h = LABEL + thumb_h + rows * (GAP + cell_h);
     let cols = refs.len() + 1;
     let mut c = Canvas::new(GAP + cols * (GRID_CELL_W_PX + GAP), col_h + 2 * GAP, 18);
-    let x0 = GAP;
-    c.text("0", x0, GAP + 2, 2, 235);
-    c.put_fit(
-        &linear_to_rgb8(&pf.default_show),
-        x0,
-        GAP + LABEL + thumb_h + GAP,
-        GRID_CELL_W_PX,
-        cell_h,
-    );
+    let row_y = |r: usize| GAP + LABEL + thumb_h + GAP + r * (cell_h + GAP);
+    c.text("0", GAP, GAP + 2, 2, 235);
+    let default8 = linear_to_rgb8(&pf.default_show);
+    for r in 0..rows {
+        c.put_fit(&default8, GAP, row_y(r), GRID_CELL_W_PX, cell_h);
+    }
     for (i, (r, o)) in refs.iter().enumerate() {
         let x = GAP + (i + 1) * (GRID_CELL_W_PX + GAP);
         c.text(&format!("{}", i + 1), x, GAP + 2, 2, 235);
         c.put_fit(&r.show8, x, GAP + LABEL, GRID_CELL_W_PX, thumb_h);
+        // With round 2 given: its fit in the first row (Round 2), the main fit in the second (Round 3).
+        if let Some(Some(o2)) = round2.get(i) {
+            c.put_fit(
+                &linear_to_rgb8(&o2.fitted_show),
+                x,
+                row_y(0),
+                GRID_CELL_W_PX,
+                cell_h,
+            );
+        }
         c.put_fit(
             &linear_to_rgb8(&o.fitted_show),
             x,
-            GAP + LABEL + thumb_h + GAP,
+            row_y(rows - 1),
             GRID_CELL_W_PX,
             cell_h,
         );
@@ -2006,7 +2945,7 @@ fn selftest(
         let truth_cand = Candidate::new(&truth_real, true)?;
         let truth = render_image(&pf.fit_img, &truth_cand, &pf.output);
         let t0 = Instant::now();
-        let (fit_res, _) = run_fit(pf, &truth, 1.0, true, objective)?;
+        let (fit_res, _) = run_fit(pf, &truth, 1.0, true, objective, pf.scene_fit.as_ref())?;
         let fitted_real = to_real(&fit_res.x, 1.0);
         let fitted_cand = Candidate::new(&fitted_real, true)?;
         let fitted = render_image(&pf.fit_img, &fitted_cand, &pf.output);
@@ -2184,7 +3123,14 @@ fn e2(
                     let cand = Candidate::new(&to_real(x, 1.0), true)?;
                     let reference = render_image(&pfs[a].fit_img, &cand, &pfs[a].output);
                     let truth = render_image(&pfs[b].fit_img, &cand, &pfs[b].output);
-                    let (fr, _) = run_fit(&pfs[b], &reference, 1.0, true, obj)?;
+                    let (fr, _) = run_fit(
+                        &pfs[b],
+                        &reference,
+                        1.0,
+                        true,
+                        obj,
+                        pfs[a].scene_fit.as_ref(),
+                    )?;
                     let fitted_cand = Candidate::new(&to_real(&fr.x, 1.0), true)?;
                     let fitted = render_image(&pfs[b].fit_img, &fitted_cand, &pfs[b].output);
                     let ungraded = render_image(
@@ -2242,6 +3188,7 @@ struct Args {
     objective: Option<Objective>,
     e2: bool,
     keep_key: bool,
+    labels: Option<PathBuf>,
     grades: usize,
 }
 
@@ -2265,12 +3212,14 @@ fn parse_args() -> R<Args> {
             "--amplitude" => a.amplitude = val()?.parse()?,
             "--no-hue" => a.no_hue = true,
             "--e2" => a.e2 = true,
+            "--labels" => a.labels = Some(PathBuf::from(val()?)),
             "--keep-key" => a.keep_key = true,
             "--grades" => a.grades = val()?.parse()?,
             "--objective" => {
                 a.objective = Some(match val()?.as_str() {
                     "v1" => Objective::V1,
                     "v2" => Objective::V2,
+                    "v3" => Objective::V3,
                     other => return Err(format!("--objective takes v1 or v2, not {other}").into()),
                 })
             }
@@ -2316,6 +3265,26 @@ fn main() -> R<()> {
     if photos.is_empty() {
         return Err("no photos".into());
     }
+    // V3's inputs: the label folder, and the skin network when its weights are in the data folder.
+    let seg = ym_core::data_dir::find_data_dir().ok().and_then(|d| {
+        ym_ml::mediapipe::selfie::SelfieNet::load(&d.join("models").join("mediapipe"))
+            .ok()
+            .map(ym_ml::mediapipe::selfie::SelfieSegmenter::new)
+    });
+    if args.labels.is_some() {
+        eprintln!(
+            "skin: {}",
+            if seg.is_some() {
+                "MediaPipe Selfie Multiclass"
+            } else {
+                "fallback rule (no network weights)"
+            }
+        );
+    }
+    let _ = CTX.set(Ctx {
+        labels: args.labels.clone(),
+        seg,
+    });
     let core = open_core(&args.out)?;
     let cache = args.out.join("cache");
     let objective = args.objective.unwrap_or(Objective::V2);
@@ -2395,9 +3364,22 @@ fn main() -> R<()> {
             loaded.push(load_reference(r)?);
         }
         let mut outcomes = Vec::new();
+        let mut outcomes2: Vec<Option<PairOutcome>> = Vec::new();
         let mut index: BTreeMap<String, Value> = BTreeMap::new();
         for r in &loaded {
             let o = run_pair(&pf, r, args.strength, !args.no_hue, objective)?;
+            // Round 2 for comparison: the V2 fit of the same pair.
+            let o2 = if objective == Objective::V3 {
+                Some(run_pair(
+                    &pf,
+                    r,
+                    args.strength,
+                    !args.no_hue,
+                    Objective::V2,
+                )?)
+            } else {
+                None
+            };
             eprintln!(
                 "   {}: fit {:.2} s, {} evals, {:.2} ms/eval, objective {:.3} -> {:.3}",
                 r.stem,
@@ -2416,7 +3398,9 @@ fn main() -> R<()> {
                 args.strength,
                 !args.no_hue,
                 objective,
+                o2.as_ref(),
             )?;
+            outcomes2.push(o2);
             index.insert(
                 r.stem.clone(),
                 json!({ "fit_seconds": o.fit.seconds, "per_eval_ms": o.fit.per_eval_ms, "before": o.fit.before.total(), "after": o.fit.after.total() }),
@@ -2424,7 +3408,7 @@ fn main() -> R<()> {
             outcomes.push(o);
         }
         let pairs: Vec<(&Reference, &PairOutcome)> = loaded.iter().zip(&outcomes).collect();
-        write_grid(&photo_dir.join("grid.jpg"), &pf, &pairs)?;
+        write_grid(&photo_dir.join("grid.jpg"), &pf, &pairs, &outcomes2)?;
         let legend: Vec<Value> = loaded
             .iter()
             .enumerate()
