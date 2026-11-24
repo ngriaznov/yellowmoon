@@ -9,13 +9,18 @@ pub struct SplitEntry {
     pub raw: PathBuf,
     pub set: String,
     pub tags: Vec<String>,
+    /// The first content tag, for the per-tag tables.
+    pub primary_tag: String,
+    /// The label folder to pass as `--labels` for this photo, when the split file gives one.
+    pub labels: Option<PathBuf>,
 }
 
 /// Reads `split.json`: an array, or an object with a `photos` array, of entries with `raw` (or `path`), `set` and `tags`.
 pub fn read_split(path: &Path) -> R<Vec<SplitEntry>> {
     let v: Value = serde_json::from_str(&fs::read_to_string(path)?)?;
     let arr = v
-        .get("photos")
+        .get("items")
+        .or_else(|| v.get("photos"))
         .and_then(Value::as_array)
         .or_else(|| v.as_array())
         .ok_or("split.json: expected an array of photos")?;
@@ -31,7 +36,7 @@ pub fn read_split(path: &Path) -> R<Vec<SplitEntry>> {
             .and_then(Value::as_str)
             .unwrap_or("dev")
             .to_string();
-        let tags = e
+        let tags: Vec<String> = e
             .get("tags")
             .and_then(Value::as_array)
             .map(|t| {
@@ -40,10 +45,19 @@ pub fn read_split(path: &Path) -> R<Vec<SplitEntry>> {
                     .collect()
             })
             .unwrap_or_default();
+        let primary_tag = e
+            .get("primary_tag")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| tags.first().cloned())
+            .unwrap_or_else(|| "untagged".into());
+        let labels = e.get("labels").and_then(Value::as_str).map(PathBuf::from);
         out.push(SplitEntry {
             raw: PathBuf::from(raw),
             set,
             tags,
+            primary_tag,
+            labels,
         });
     }
     Ok(out)
@@ -67,6 +81,8 @@ pub fn builtin_split(photos: &[PathBuf]) -> Vec<SplitEntry> {
                 }
                 .into(),
                 tags: Vec::new(),
+                primary_tag: "untagged".into(),
+                labels: None,
             }
         })
         .collect()
@@ -83,6 +99,8 @@ const HARM_NAMES: [&str; 6] = [
 ];
 /// The Oklab purple band of the checks.
 const BAND: (f64, f64) = (300.0, 355.0);
+/// The least photo0 mean-vector C* at which a hue shift is tested (H2, H3).
+const HUE_MIN_CHROMA: f64 = 4.0;
 const SW_SAMPLES: usize = 4096;
 const SW_DIRECTIONS: usize = 32;
 const SW_SEED: u64 = 0x5EED_2026_1124;
@@ -153,9 +171,13 @@ fn harms(p0: &Pic<'_>, fit: &Pic<'_>, refp: &Pic<'_>) -> [(Option<f64>, bool); 6
             fit.mean_vec(|i, _| p0.skin(i)),
         )
     {
-        let dh = wrap_deg(b.0 - a.0).abs();
         let ratio = b.1 / a.1.max(1e-9);
-        out[1] = (Some(dh), dh > 10.0 || !(0.55..=1.25).contains(&ratio));
+        // Hue is only meaningful on a coloured area: below a mean-vector C* of 4 the hue shift is not tested.
+        let dh = (a.1 >= HUE_MIN_CHROMA).then(|| wrap_deg(b.0 - a.0).abs());
+        out[1] = (
+            dh,
+            dh.is_some_and(|d| d > 10.0) || !(0.55..=1.25).contains(&ratio),
+        );
     }
     // H3: memory colour (the larger hue move of sky and vegetation).
     let mut h3: Option<f64> = None;
@@ -169,8 +191,18 @@ fn harms(p0: &Pic<'_>, fit: &Pic<'_>, refp: &Pic<'_>) -> [(Option<f64>, bool); 6
                 fit.mean_vec(|i, _| p0.elem(i) == e),
             )
         {
-            let dh = wrap_deg(b.0 - a.0).abs();
-            h3 = Some(h3.map_or(dh, |v| v.max(dh)));
+            // Not sky when dark (median L* under 20); no hue test on a near-grey area.
+            let mut ls: Vec<f64> = (0..p0.px.len())
+                .filter(|&i| p0.elem(i) == e)
+                .map(|i| p0.px[i].lab[0])
+                .collect();
+            if e == ELEM_SKY && median_of(&mut ls) < 20.0 {
+                continue;
+            }
+            if a.1 >= HUE_MIN_CHROMA {
+                let dh = wrap_deg(b.0 - a.0).abs();
+                h3 = Some(h3.map_or(dh, |v| v.max(dh)));
+            }
         }
     }
     out[2] = (h3, h3.is_some_and(|v| v > 15.0));
@@ -469,6 +501,10 @@ pub struct EvalOpts<'a> {
     pub cache: &'a Path,
     pub strength: f64,
     pub with_hue: bool,
+    /// `(index, count)`: this process takes the photos whose position in the selected list is `index` modulo `count`.
+    pub shard: Option<(usize, usize)>,
+    /// No grids: fit and measure only.
+    pub no_grids: bool,
 }
 
 /// Runs the harness: every photo of the chosen set(s) against every reference.
@@ -504,15 +540,21 @@ pub fn run_eval(o: &EvalOpts<'_>) -> R<()> {
     let net = o.objective.net();
     let mut records: Vec<Value> = Vec::new();
     for (idx, e) in selected.iter().enumerate() {
+        if let Some((i, n)) = o.shard
+            && idx % n != i
+        {
+            continue;
+        }
         let pname = e
             .raw
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let want_grid = e.set == "dev" || sample.contains(&idx);
+        let want_grid = !o.no_grids && (e.set == "dev" || sample.contains(&idx));
         eprintln!("== {pname} ({})", e.set);
         let photo = load_photo(o.core, &e.raw, o.cache)?;
-        let pf = prepare_photo(&photo)?;
+        let labels = e.labels.as_deref().or(ctx().labels.as_deref());
+        let pf = prepare_photo_with(&photo, labels)?;
         let p0_img = render_fitted(&pf, &[0.0; N_PARAMS], 1.0, o.with_hue, false, false)?;
         let p0_px = picture_px(&conv, &p0_img);
         let p0_scene = pf.scene_fit.as_ref();
@@ -560,7 +602,7 @@ pub fn run_eval(o: &EvalOpts<'_>) -> R<()> {
                 harm_json.insert((*id).into(), json!({ "value": h[k].0, "flag": h[k].1 }));
             }
             let rec = json!({
-                "photo": pname, "set": e.set, "tags": e.tags, "reference": r.stem,
+                "photo": pname, "set": e.set, "tags": e.tags, "primary_tag": e.primary_tag, "reference": r.stem,
                 "fit_seconds": secs,
                 "harms": harm_json,
                 "any_harm": h.iter().any(|x| x.1),
@@ -588,35 +630,179 @@ pub fn run_eval(o: &EvalOpts<'_>) -> R<()> {
             write_grid(&gdir.join("grid.jpg"), &pf, &pairs, &prevs)?;
         }
     }
-    // The summaries.
+    write_summaries(&dir, &name, &mut records)
+}
+
+/// `--merge <run>...`: joins the `eval-<objective>/metrics.json` of several shard runs and writes the summaries to `out`.
+pub fn merge(runs: &[PathBuf], objective: &str, out: &Path) -> R<()> {
+    let mut records: Vec<Value> = Vec::new();
+    for r in runs {
+        let v: Value = serde_json::from_str(&fs::read_to_string(
+            r.join(format!("eval-{objective}")).join("metrics.json"),
+        )?)?;
+        records.extend(v.as_array().cloned().unwrap_or_default());
+    }
+    let dir = out.join(format!("eval-{objective}"));
+    fs::create_dir_all(&dir)?;
+    write_summaries(&dir, objective, &mut records)
+}
+
+/// Sorts the records (so shards and one process agree) and writes `metrics.json`, `summary.json` and `summary.md`.
+fn write_summaries(dir: &Path, name: &str, records: &mut [Value]) -> R<()> {
+    let key = |r: &Value| {
+        (
+            r["set"].as_str().unwrap_or("").to_string(),
+            r["photo"].as_str().unwrap_or("").to_string(),
+            r["reference"].as_str().unwrap_or("").to_string(),
+        )
+    };
+    records.sort_by_key(key);
     let mut sets: BTreeMap<String, Value> = BTreeMap::new();
+    let mut by_tag: BTreeMap<String, Value> = BTreeMap::new();
     for s in ["dev", "test"] {
         let recs: Vec<&Value> = records.iter().filter(|r| r["set"] == s).collect();
-        if !recs.is_empty() {
-            sets.insert(s.into(), summarise(&recs));
+        if recs.is_empty() {
+            continue;
+        }
+        sets.insert(s.into(), summarise(&recs));
+        let tags: BTreeSet<&str> = recs
+            .iter()
+            .map(|r| r["primary_tag"].as_str().unwrap_or("untagged"))
+            .collect();
+        let mut m = serde_json::Map::new();
+        for t in tags {
+            let tr: Vec<&Value> = recs
+                .iter()
+                .copied()
+                .filter(|r| r["primary_tag"] == t)
+                .collect();
+            m.insert(t.into(), summarise(&tr));
+        }
+        by_tag.insert(s.into(), Value::Object(m));
+    }
+    let refs: BTreeSet<&str> = records
+        .iter()
+        .map(|r| r["reference"].as_str().unwrap_or(""))
+        .collect();
+    let mut per_ref = serde_json::Map::new();
+    let mut per_ref_dev = serde_json::Map::new();
+    for r in refs {
+        let all: Vec<&Value> = records.iter().filter(|x| x["reference"] == r).collect();
+        per_ref.insert(r.to_string(), summarise(&all));
+        let dev: Vec<&Value> = all.iter().copied().filter(|x| x["set"] == "dev").collect();
+        if !dev.is_empty() {
+            per_ref_dev.insert(r.to_string(), summarise(&dev));
         }
     }
-    let mut per_ref = serde_json::Map::new();
-    for r in &refs {
-        let recs: Vec<&Value> = records
+    // The 10 worst dev fits: most flagged harms, then the least colour transfer.
+    let flags = |r: &Value| {
+        HARMS
             .iter()
-            .filter(|x| x["reference"] == r.stem.as_str())
-            .collect();
-        per_ref.insert(r.stem.clone(), summarise(&recs));
-    }
+            .filter(|h| r["harms"][**h]["flag"] == true)
+            .count()
+    };
+    let mut dev: Vec<&Value> = records.iter().filter(|r| r["set"] == "dev").collect();
+    dev.sort_by(|a, b| {
+        flags(b).cmp(&flags(a)).then(
+            a["T1"]
+                .as_f64()
+                .unwrap_or(1.0)
+                .total_cmp(&b["T1"].as_f64().unwrap_or(1.0)),
+        )
+    });
+    let worst: Vec<Value> = dev.iter().take(10).map(|r| (*r).clone()).collect();
     let per_ref = Value::Object(per_ref);
     fs::write(
         dir.join("metrics.json"),
-        serde_json::to_string_pretty(&records)?,
+        serde_json::to_string_pretty(&*records)?,
     )?;
     fs::write(
         dir.join("summary.json"),
-        serde_json::to_string_pretty(
-            &json!({ "objective": name, "sets": sets, "per_reference": per_ref }),
-        )?,
+        serde_json::to_string_pretty(&json!({
+            "objective": name, "sets": sets, "by_primary_tag": by_tag,
+            "per_reference": per_ref, "per_reference_dev": per_ref_dev, "worst_dev": worst,
+        }))?,
     )?;
-    fs::write(dir.join("summary.md"), summary_md(&name, &sets, &per_ref))?;
+    let mut md = summary_md(name, &sets, &per_ref);
+    md.push_str("\n## Dev: by primary tag\n\n");
+    md.push_str(&tag_table(by_tag.get("dev")));
+    md.push_str("\n## Test: by primary tag (aggregates only)\n\n");
+    md.push_str(&tag_table(by_tag.get("test")));
+    md.push_str("\n## Dev: per reference\n\n");
+    md.push_str(&ref_table(&Value::Object(per_ref_dev)));
+    md.push_str(
+        "\n## Dev: the 10 worst fits\n\n| Photo | Reference | Harms | T1 |\n|---|---|---|---|\n",
+    );
+    for r in &worst {
+        let hs: Vec<String> = HARMS
+            .iter()
+            .filter(|h| r["harms"][**h]["flag"] == true)
+            .map(|h| {
+                format!(
+                    "{h} {}",
+                    r["harms"][*h]["value"]
+                        .as_f64()
+                        .map_or("-".into(), |v| format!("{v:.3}"))
+                )
+            })
+            .collect();
+        md.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            r["photo"].as_str().unwrap_or(""),
+            r["reference"].as_str().unwrap_or(""),
+            hs.join(", "),
+            r["T1"].as_f64().map_or("-".into(), |v| format!("{v:.2}"))
+        ));
+    }
+    fs::write(dir.join("summary.md"), md)?;
     Ok(())
+}
+
+fn tag_table(m: Option<&Value>) -> String {
+    let mut s = String::from(
+        "| Tag | Photos | Fits | H1 | H2 | H3 | H4 | H5 | H6 | any | T1 | T2 | T3 |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
+    );
+    if let Some(o) = m.and_then(Value::as_object) {
+        for (t, v) in o {
+            s.push_str(&format!("| {t} | {} | {} ", v["photos"], v["fits"]));
+            for h in HARMS {
+                s.push_str(&format!("| {} ", pct(&v["fit_flag_share"][h])));
+            }
+            s.push_str(&format!("| {} ", pct(&v["fit_flag_share"]["any"])));
+            for t in ["T1", "T2", "T3"] {
+                s.push_str(&format!(
+                    "| {} ",
+                    v["transfer"][t]["mean"]
+                        .as_f64()
+                        .map_or("-".into(), |x| format!("{x:.3}"))
+                ));
+            }
+            s.push_str("|\n");
+        }
+    }
+    s
+}
+
+fn ref_table(m: &Value) -> String {
+    let mut s = String::from(
+        "| Reference | H1 | H2 | H3 | H4 | H5 | H6 | any | T1 |\n|---|---|---|---|---|---|---|---|---|\n",
+    );
+    if let Some(o) = m.as_object() {
+        for (r, v) in o {
+            s.push_str(&format!("| {r} "));
+            for h in HARMS {
+                s.push_str(&format!("| {} ", pct(&v["fit_flag_share"][h])));
+            }
+            s.push_str(&format!(
+                "| {} | {} |\n",
+                pct(&v["fit_flag_share"]["any"]),
+                v["transfer"]["T1"]["mean"]
+                    .as_f64()
+                    .map_or("-".into(), |x| format!("{x:.3}"))
+            ));
+        }
+    }
+    s
 }
 
 /// `--compare a b`: a side-by-side summary of two evaluation folders, written to `<out>/compare.md`.

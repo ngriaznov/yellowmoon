@@ -5452,6 +5452,11 @@ struct PhotoFit<'a> {
 }
 
 fn prepare_photo(photo: &PhotoNode) -> R<PhotoFit<'_>> {
+    prepare_photo_with(photo, ctx().labels.as_deref())
+}
+
+/// [`prepare_photo`] with the label folder given (the evaluation harness takes it per photo from the split file).
+fn prepare_photo_with<'a>(photo: &'a PhotoNode, labels: Option<&Path>) -> R<PhotoFit<'a>> {
     let output = make_output_chain(&photo.output)?;
     let (fw, fh) = fit_size(photo.show.w, photo.show.h, FIT_LONG_EDGE_PX);
     let fit_img = resize_area(&photo.show, fw, fh);
@@ -5460,7 +5465,7 @@ fn prepare_photo(photo: &PhotoNode) -> R<PhotoFit<'_>> {
     let default_show = render_image(&photo.show, &ident, &output);
     let (mut scene_fit, mut scene_samples) = (None, None);
     let (mut masks_fit, mut masks_show, mut mask_ok) = (None, None, [false; 7]);
-    if let Some(dir) = &ctx().labels {
+    if let Some(dir) = labels {
         let file = dir
             .join("labels")
             .join(format!("photo__{}.png", photo.name));
@@ -6330,6 +6335,9 @@ struct Args {
     set: Option<String>,
     prev: Option<Objective>,
     compare: Option<(PathBuf, PathBuf)>,
+    shard: Option<(usize, usize)>,
+    no_grids: bool,
+    merge: Vec<PathBuf>,
 }
 
 fn parse_objective(name: &str) -> R<Objective> {
@@ -6382,6 +6390,17 @@ fn parse_args() -> R<Args> {
             "--objective" => a.objective = Some(parse_objective(&val()?)?),
             "--prev" => a.prev = Some(parse_objective(&val()?)?),
             "--eval" => a.eval = true,
+            "--no-grids" => a.no_grids = true,
+            "--shard" => {
+                let v = val()?;
+                let (i, n) = v.split_once('/').ok_or("--shard takes i/n")?;
+                let (i, n): (usize, usize) = (i.parse()?, n.parse()?);
+                if n == 0 || i >= n {
+                    return Err("--shard i/n needs i < n".into());
+                }
+                a.shard = Some((i, n));
+            }
+            "--merge" => a.merge.push(PathBuf::from(val()?)),
             "--split" => a.split = Some(PathBuf::from(val()?)),
             "--set" => a.set = Some(val()?),
             "--compare" => {
@@ -6497,6 +6516,10 @@ fn main() -> R<()> {
             Err("network check failed".into())
         };
     }
+    if !args.merge.is_empty() {
+        let name = format!("{:?}", args.objective.unwrap_or(Objective::V2)).to_lowercase();
+        return eval::merge(&args.merge, &name, &args.out);
+    }
     if let Some((a, b)) = &args.compare {
         return eval::compare(a, b, &args.out);
     }
@@ -6550,6 +6573,8 @@ fn main() -> R<()> {
             cache: &cache,
             strength: args.strength,
             with_hue: !args.no_hue,
+            shard: args.shard,
+            no_grids: args.no_grids,
         });
     }
     if args.e2 {
