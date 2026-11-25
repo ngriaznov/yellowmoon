@@ -1085,6 +1085,31 @@ fn uniform_step_of(u: &ColorUniformNode) -> UniformStep {
     }
 }
 
+/// A Reference Grade node's parameters as the chain runs them (`docs/34` section 7.1): the corrector's trims, grade, colour warp and
+/// curves from the effective values (Strength applied once, [`ReferenceGradeNode::effective`]), then the hue curves and the element
+/// grades, with the node's `masks`. The plan makes this for every Reference Grade node; the fit makes it for each candidate, with no
+/// masks (a reference describes the whole picture, `docs/34` section 5.1).
+///
+/// # Errors
+///
+/// [`RenderError::Color`] for a curve `ym_color` refuses (settings validation normally stops these earlier).
+pub fn reference_node_params(
+    r: &crate::settings::ReferenceGradeNode,
+    masks: ym_color::mask::NodeMasks,
+) -> Result<NodeParams, RenderError> {
+    let e = r.effective();
+    Ok(NodeParams {
+        bypass: r.bypass,
+        trim: trim_of(&e.trim),
+        grade: grade_params_of(&e.grade, None),
+        warp: ColorWarp::to_color(&e.grade.color_warp),
+        curves: curves_of(&e.grade.curve)?,
+        masks,
+        uniform: None,
+        reference: Some(reference_step_of(&e)),
+    })
+}
+
 /// The chain's hue and element steps of a Reference Grade node, from its effective values (`docs/34` section 7.1).
 fn reference_step_of(e: &EffectiveReference) -> ReferenceStep {
     let grades = e.elements.all().map(|v| ElementGrade {
@@ -1391,19 +1416,9 @@ fn node_set(
                 // effective values (Strength applied once, `ReferenceGradeNode::effective`), then the hue curves and the element
                 // grades. A bypassed node and one with every step at its identity are skipped by the chain; its key output is
                 // still the mask of its Mask tab.
-                let e = r.effective();
                 others.insert(
                     id,
-                    NodeParams {
-                        bypass: r.bypass,
-                        trim: trim_of(&e.trim),
-                        grade: grade_params_of(&e.grade, None),
-                        warp: ColorWarp::to_color(&e.grade.color_warp),
-                        curves: curves_of(&e.grade.curve)?,
-                        masks: masks.remove(&id).unwrap_or_default(),
-                        uniform: None,
-                        reference: Some(reference_step_of(&e)),
-                    },
+                    reference_node_params(r, masks.remove(&id).unwrap_or_default())?,
                 );
             }
             Some(NodeKind::Blur) => {

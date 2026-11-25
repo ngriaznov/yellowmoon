@@ -1,0 +1,645 @@
+//! The Reference Grade fit through the core (`docs/34-reference-grade.md` sections 5 and 10, RG-06): a reference chosen and held per
+//! node for the session, the fit through the photo's real chain, its result written as one patch, and the properties of the "fit:
+//! properties" gate: the identity photo gives the identity, the fit is no worse than the neutral search, every number stays in
+//! range, the knots stay monotone, **one thread and many give the same bits and so do two runs**, and Cancel changes nothing.
+//!
+//! The pictures are synthetic (the test's own raw scenes) and the scene is a **fake scene model** (`SceneModel::fake_default`: sky
+//! above, vegetation and built surfaces in the middle, ground below, a subject disc with skin), so no weights are needed. The pure
+//! fit is tested in `ym_color::refgrade`; the real networks in `crates/ym-ml/tests`.
+mod common;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use common::*;
+use serde_json::json;
+use ym_core::app::{Core, CoreOptions};
+use ym_core::pipeline::thumbs::encode_png_rgb8;
+use ym_core::pipeline::{PhotoSource, SceneModel};
+use ym_core::reference_fit::{FitEvent, FitFailure, FitOutcome, FitStatus, apply_numbers};
+use ym_core::session::{OpenOptions, PhotoId};
+use ym_core::settings::{DevelopSettings, ReferenceGradeNode, SettingsPatch};
+use ym_gpu::queue::CancelToken;
+
+const MODEL: &str = "ILCE-7RM4";
+const PROFILE: &str = "sony-ilce-7rm4";
+const WIDTH: u32 = 640;
+const HEIGHT: u32 = 420;
+
+/// A fake scene with no skin: sky above, vegetation and built surfaces in the middle, ground below with a patch of water, and a
+/// subject disc in the centre. (A synthetic patchwork has no skin tones, which the skin walls would rightly object to.)
+fn scene_without_skin() -> Arc<SceneModel> {
+    use ym_ml::scene::{BUILT, GROUND, SKY, SUBJECT, VEGETATION, WATER};
+    SceneModel::fake(
+        "no skin",
+        false,
+        Arc::new(|w, h, _rgb, _| {
+            let mut bits = vec![0u8; w * h];
+            for y in 0..h {
+                for x in 0..w {
+                    let (u, v) = ((x as f64 + 0.5) / w as f64, (y as f64 + 0.5) / h as f64);
+                    let mut b = if v < 0.33 {
+                        SKY
+                    } else if v < 0.66 {
+                        if u < 0.5 { VEGETATION } else { BUILT }
+                    } else if u > 0.7 && v > 0.8 {
+                        WATER
+                    } else {
+                        GROUND
+                    };
+                    if (u - 0.5).hypot(v - 0.5) < 0.18 {
+                        b |= SUBJECT;
+                    }
+                    bits[y * w + x] = b;
+                }
+            }
+            Ok(bits)
+        }),
+    )
+}
+
+struct Rig {
+    core: Core,
+    _app: tempfile::TempDir,
+    folder: tempfile::TempDir,
+    ids: Vec<PhotoId>,
+}
+
+/// A core with `n` synthetic photos open and the fake scene model.
+fn rig(n: usize) -> Rig {
+    let app = tempfile::tempdir().expect("app root");
+    let folder = tempfile::tempdir().expect("photos");
+    for k in 0..n {
+        let scene = Scene::new(
+            WIDTH,
+            HEIGHT,
+            light(PROFILE, 4800.0 + 700.0 * k as f64),
+            Layout::Patchwork,
+            0.5,
+        )
+        .noise(2e-4, 2e-6)
+        .seed(21 + k as u64);
+        scene.write(folder.path(), &format!("DSC{:05}.ARW", k + 1), MODEL);
+    }
+    let mut options = CoreOptions::new(data_root(), app.path().to_path_buf());
+    options.render.scene_model = Some(scene_without_skin());
+    options.render.data_root = Some(data_root());
+    options.decode_threads = 2;
+    options.thumbnails = false;
+    let core = Core::open(options).expect("a core");
+    let out = core
+        .session
+        .open(&[folder.path().to_path_buf()], OpenOptions::default());
+    assert_eq!(out.added.len(), n);
+    settle(&core.session);
+    Rig {
+        core,
+        _app: app,
+        folder,
+        ids: out.added,
+    }
+}
+
+/// The photo's settings with a Reference Grade node (id 2) after Main, reading Main and read by the Output, with `body`'s fields.
+fn with_node(base: &DevelopSettings, body: serde_json::Value) -> DevelopSettings {
+    let mut n = json!({ "id": 2, "kind": "reference_grade", "pos": [2, 0.0] });
+    n.as_object_mut()
+        .expect("an object")
+        .extend(body.as_object().expect("an object").clone());
+    let mut doc = serde_json::to_value(base).expect("settings");
+    doc["nodes"] = json!({ "items": [ { "id": 1 }, n ], "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] });
+    serde_json::from_value::<DevelopSettings>(doc)
+        .expect("a document")
+        .validated()
+        .expect("a valid graph")
+        .0
+}
+
+impl Rig {
+    fn settings(&self, k: usize) -> DevelopSettings {
+        self.core.session.view(self.ids[k]).expect("view").settings
+    }
+
+    /// Adds the node to photo `k` (through a patch, as the app does).
+    fn add_node(&self, k: usize, body: serde_json::Value) {
+        let now = self.settings(k);
+        let next = with_node(&now, body);
+        self.core
+            .update_settings(self.ids[k], &SettingsPatch::between(&now, &next))
+            .expect("the node is added");
+    }
+
+    fn source(&self, k: usize) -> PhotoSource {
+        PhotoSource::from_session(&self.core.session, self.ids[k]).expect("a source")
+    }
+
+    fn node(&self, k: usize) -> ReferenceGradeNode {
+        self.settings(k)
+            .nodes
+            .reference_grade(2)
+            .expect("the node")
+            .clone()
+    }
+
+    /// The photo as it is shown (sRGB 8-bit, whole), through its own settings.
+    fn picture(&self, k: usize) -> ym_core::apple_auto::AdvisorPicture {
+        self.core
+            .renderer
+            .advisor_picture(&self.source(k), &CancelToken::new())
+            .expect("a picture")
+    }
+
+    /// A file holding a picture, as a reference.
+    fn file_of(&self, name: &str, p: &ym_core::apple_auto::AdvisorPicture) -> PathBuf {
+        let path = self.folder.path().join(name);
+        std::fs::write(
+            &path,
+            encode_png_rgb8(p.width, p.height, &p.rgb).expect("a png"),
+        )
+        .expect("write");
+        path
+    }
+}
+
+fn pool(threads: usize) -> rayon::ThreadPool {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .expect("a pool")
+}
+
+/// The mean CIELAB distance between two 8-bit pictures of one size.
+fn mean_delta_e(a: &[u8], b: &[u8]) -> f64 {
+    use ym_color::refgrade::measure::LabConv;
+    let conv = LabConv::new();
+    let lab = |p: &[u8]| {
+        conv.px_of_codes([
+            f64::from(p[0]) / 255.0,
+            f64::from(p[1]) / 255.0,
+            f64::from(p[2]) / 255.0,
+        ])
+        .lab
+    };
+    let n = a.len() / 3;
+    (0..n)
+        .map(|i| {
+            let (x, y) = (lab(&a[3 * i..3 * i + 3]), lab(&b[3 * i..3 * i + 3]));
+            ((x[0] - y[0]).powi(2) + (x[1] - y[1]).powi(2) + (x[2] - y[2]).powi(2)).sqrt()
+        })
+        .sum::<f64>()
+        / n as f64
+}
+
+fn fit_with(rig: &Rig, k: usize, threads: usize) -> Result<FitOutcome, FitFailure> {
+    pool(threads).install(|| {
+        rig.core
+            .reference_fit(rig.ids[k], 2, &CancelToken::new(), &mut |_| {})
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
+// The reference, held per node
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_reference_is_held_per_node_for_the_session_and_dropped_with_the_node() {
+    let r = rig(2);
+    r.add_node(0, json!({}));
+    let other = r.picture(1);
+    let path = r.file_of("ref.png", &other);
+    // Nothing chosen: the fit says so and writes nothing.
+    let before = r.settings(0);
+    assert_eq!(
+        r.core
+            .reference_fit(r.ids[0], 2, &CancelToken::new(), &mut |_| {})
+            .unwrap_err(),
+        FitFailure::NoReference
+    );
+    assert_eq!(r.settings(0), before);
+    // A file: the label is its name; the notes are the reference's.
+    let info = r
+        .core
+        .reference_choose_file(r.ids[0], 2, &path, None)
+        .expect("a reference");
+    assert_eq!(info.label, "ref.png");
+    assert!(info.notes.is_empty() && !info.grey);
+    assert_eq!(r.core.reference_info(r.ids[0], 2), Some(info));
+    // A node that is not a Reference Grade node cannot have one.
+    assert_eq!(
+        r.core
+            .reference_choose_file(r.ids[0], 1, &path, None)
+            .unwrap_err(),
+        FitFailure::NotReferenceGrade(1)
+    );
+    // A photo of the strip: not the photo being graded; its label is the caller's.
+    let same = r
+        .core
+        .reference_choose_photo(r.ids[0], 2, r.ids[0], "Photo 1 of 2", &CancelToken::new())
+        .unwrap_err();
+    assert_eq!(
+        same.to_string(),
+        "The reference can't be used: That's the photo you're grading. Choose another."
+    );
+    assert_eq!(
+        r.core.reference_info(r.ids[0], 2).map(|i| i.label),
+        Some("ref.png".into())
+    );
+    let snap = r
+        .core
+        .reference_choose_photo(r.ids[0], 2, r.ids[1], "Photo 2 of 2", &CancelToken::new())
+        .expect("a snapshot");
+    assert_eq!(snap.label, "Photo 2 of 2");
+    // An unreadable file keeps the earlier reference.
+    let junk = r.folder.path().join("junk.png");
+    std::fs::write(&junk, b"not a picture").unwrap();
+    let err = r
+        .core
+        .reference_choose_file(r.ids[0], 2, &junk, None)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "The reference can't be used: Yellowmoon reads JPEG, PNG and TIFF pictures. Save this one as one of those, then choose it again."
+    );
+    assert_eq!(
+        r.core.reference_info(r.ids[0], 2).map(|i| i.label),
+        Some("Photo 2 of 2".into())
+    );
+    // The reference is in no setting of the photo: the settings document has no word of it.
+    let doc = serde_json::to_string(&r.settings(0)).unwrap();
+    assert!(
+        !doc.contains("ref.png") && !doc.contains("Photo 2"),
+        "{doc}"
+    );
+    // Removing the node drops the reference; so does clear.
+    let now = r.settings(0);
+    let mut gone = now.clone();
+    gone.nodes = DevelopSettings::default().nodes;
+    r.core
+        .update_settings(r.ids[0], &SettingsPatch::between(&now, &gone))
+        .expect("the node is removed");
+    assert!(r.core.reference_info(r.ids[0], 2).is_none());
+    r.add_node(0, json!({}));
+    r.core
+        .reference_choose_file(r.ids[0], 2, &path, None)
+        .unwrap();
+    assert!(r.core.reference_clear(r.ids[0], 2) && !r.core.reference_clear(r.ids[0], 2));
+}
+
+// ---------------------------------------------------------------------------------------------
+// The fit
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn the_photos_own_picture_as_the_reference_gives_the_identity_and_already_close() {
+    let r = rig(1);
+    // The person's own fields are in the chain the fit matches through, and the fit leaves them alone.
+    r.add_node(
+        0,
+        json!({ "name": "Mine", "trim": { "exposure_ev": 0.1 }, "grade": { "contrast": 8 }, "strength": 70 }),
+    );
+    let own = r.picture(0);
+    let path = r.file_of("own.png", &own);
+    r.core
+        .reference_choose_file(r.ids[0], 2, &path, None)
+        .unwrap();
+    let before = r.node(0);
+    let out = fit_with(&r, 0, 2).expect("a fit");
+    assert_eq!(out.status, FitStatus::AlreadyClose);
+    assert_eq!(
+        out.status.text(),
+        "The photo is already close to the reference. Nothing was changed."
+    );
+    assert!(out.result.identity, "{:?}", out.result.x);
+    // The identity is written: the fitted fields are the node's defaults, and nothing else moved.
+    let after = r.node(0);
+    let mut identity = before.clone();
+    apply_numbers(
+        &mut identity,
+        &ym_color::refgrade::params::to_numbers(&[0.0; 49]),
+    );
+    assert_eq!(after, identity);
+    assert_eq!(after.grade.curve, ReferenceGradeNode::default().grade.curve);
+    assert!(after.hue_curves.is_default() && after.elements.is_default());
+    assert_eq!(out.result.total, out.result.identity_total);
+}
+
+/// The photo graded by a known grade of the node's own family, through the real chain, as a reference file for the ungraded photo.
+fn known_grade() -> serde_json::Value {
+    json!({
+        "grade": {
+            "saturation": 30,
+            "curve": { "luma": [[0, 0], [0.2136, 0.1836], [0.2784, 0.2784], [0.4080, 0.4380], [1, 1]],
+                       "red": [[0, 0], [0.2784, 0.2984], [1, 1]],
+                       "green": [[0, 0], [1, 1]],
+                       "blue": [[0, 0], [0.2784, 0.2584], [1, 1]] } },
+        "hue_curves": { "hue_vs_sat": [ { "hue_deg": 0, "value": 1.15 }, { "hue_deg": 120, "value": 0.9 }, { "hue_deg": 240, "value": 1.1 } ] },
+        "elements": { "sky": { "exposure_ev": -0.3, "hue_deg": 10, "chroma": 1.2 } }
+    })
+}
+
+#[test]
+fn a_known_grade_is_recovered_closer_than_the_identity() {
+    let r = rig(2);
+    // Photo 0 is the photo; photo 1 is the same scene graded (a second copy of the same raw, with the known grade), and its
+    // picture is the reference.
+    r.add_node(0, json!({}));
+    let ungraded = r.picture(0);
+    // The graded picture of photo 0's own raw: grade the same photo, take its picture, then set the grade back to the identity.
+    let identity_body = serde_json::to_value(r.node(0)).unwrap();
+    r.add_node(0, known_grade());
+    let graded = r.picture(0);
+    r.add_node(0, identity_body);
+    assert_eq!(
+        r.picture(0).rgb,
+        ungraded.rgb,
+        "the node at its identity is the ungraded photo"
+    );
+    let path = r.file_of("graded.png", &graded);
+    r.core
+        .reference_choose_file(r.ids[0], 2, &path, None)
+        .unwrap();
+
+    let identity_distance = mean_delta_e(&ungraded.rgb, &graded.rgb);
+    let out = fit_with(&r, 0, 4).expect("a fit");
+    assert_eq!(out.status, FitStatus::Fitted, "{:?}", out.result.x);
+    let fitted = r.picture(0);
+    let fitted_distance = mean_delta_e(&fitted.rgb, &graded.rgb);
+    println!(
+        "recovery: mean dE76 to the graded picture, identity {identity_distance:.3}, fitted {fitted_distance:.3}; objective {:.3} -> {:.3}; start {:?}; {} candidates",
+        out.result.identity_total, out.result.total, out.result.start, out.result.evals
+    );
+    // The bound: the fitted photo is at most 92 % as far from the graded picture as the ungraded one is (measured 88 % on this
+    // scene: the fit copies the look's statistics, never the picture's brightness or its pixels, `docs/34` section 16.8), and the
+    // objective falls to at most a third of the identity's (measured 21 %).
+    assert!(
+        fitted_distance < 0.92 * identity_distance,
+        "fitted {fitted_distance:.3} against the identity's {identity_distance:.3}"
+    );
+    assert!(
+        out.result.total < 0.33 * out.result.identity_total,
+        "{} against {}",
+        out.result.total,
+        out.result.identity_total
+    );
+    assert!(out.result.total <= out.result.neutral_total);
+    // The skin walls had no skin to look at and said so.
+    assert!(
+        out.notes
+            .iter()
+            .any(|n| n == "No skin was found, so Skin protection did nothing."),
+        "{:?}",
+        out.notes
+    );
+}
+
+/// The properties of a fit's result (`docs/34` section 10, "fit: properties"), on the recovery fit.
+#[test]
+fn a_fit_is_no_worse_than_the_neutral_search_keeps_its_numbers_in_range_and_its_knots_monotone() {
+    let r = rig(2);
+    r.add_node(0, json!({}));
+    let path = r.file_of("other.png", &r.picture(1));
+    r.core
+        .reference_choose_file(r.ids[0], 2, &path, None)
+        .unwrap();
+    let before = r.settings(0);
+    let mut events: Vec<FitEvent> = Vec::new();
+    let out = pool(4)
+        .install(|| {
+            r.core
+                .reference_fit(r.ids[0], 2, &CancelToken::new(), &mut |e| events.push(e))
+        })
+        .expect("a fit");
+    let res = &out.result;
+    // No worse than the neutral search, no worse than the identity; the lower of the two starts, a tie to neutral.
+    assert!(res.total <= res.neutral_total && res.total <= res.identity_total);
+    assert_eq!(res.total, res.neutral_total.min(res.look_total));
+    if res.look_total >= res.neutral_total {
+        assert_eq!(res.start, ym_color::refgrade::search::Start::Neutral);
+    }
+    // Every number in range; an element that failed the need test is exactly 0 in the neutral search.
+    assert!(res.x.iter().all(|v| (-1.0..=1.0).contains(v)));
+    let neutral = &res.searches[0];
+    for k in 0..6 {
+        if !neutral.need.local[k] {
+            assert_eq!(neutral.x[30 + 3 * k..33 + 3 * k], [0.0; 3], "element {k}");
+        }
+    }
+    if !neutral.need.local[6] {
+        assert_eq!(neutral.x[48], 0.0);
+    }
+    // The node as written: its curves hold end points, strictly increasing inputs and non-decreasing outputs; the hue curves are
+    // six knots at 0, 60, ... 300 or empty; the settings accepted every value without clamping (the patch went through validation).
+    let node = r.node(0);
+    for c in [
+        &node.grade.curve.luma,
+        &node.grade.curve.red,
+        &node.grade.curve.green,
+        &node.grade.curve.blue,
+    ] {
+        assert_eq!(
+            (c.first(), c.last()),
+            (Some(&[0.0, 0.0]), Some(&[1.0, 1.0]))
+        );
+        assert!(
+            c.windows(2)
+                .all(|w| w[1][0] > w[0][0] && w[1][1] >= w[0][1]),
+            "{c:?}"
+        );
+    }
+    for h in [&node.hue_curves.hue_vs_hue, &node.hue_curves.hue_vs_sat] {
+        assert!(
+            h.is_empty()
+                || h.iter().map(|p| p.hue_deg).collect::<Vec<_>>()
+                    == [0.0, 60.0, 120.0, 180.0, 240.0, 300.0]
+        );
+    }
+    let numbers = ym_color::refgrade::params::to_numbers(&res.x);
+    let mut want = before.nodes.reference_grade(2).unwrap().clone();
+    apply_numbers(&mut want, &numbers);
+    assert_eq!(node, want, "the node holds exactly the fit's numbers");
+    // One patch, one undo step, and the person's other fields stayed.
+    assert_eq!(SettingsPatch::between(&before, &r.settings(0)), out.applied);
+    r.core.update_settings(r.ids[0], &out.undo).expect("undo");
+    assert_eq!(r.settings(0), before);
+    // The events: the scene, then the three searches in order, never going back.
+    assert_eq!(events.first(), Some(&FitEvent::Scene));
+    assert_eq!(
+        events.first().map(FitEvent::text).as_deref(),
+        Some("Finding what is in the pictures…")
+    );
+    let searches: Vec<u8> = events
+        .iter()
+        .filter_map(|e| match e {
+            FitEvent::Search { search, .. } => Some(*search),
+            FitEvent::Scene => None,
+        })
+        .collect();
+    assert!(searches.windows(2).all(|w| w[0] <= w[1]));
+    assert_eq!(searches.first(), Some(&1));
+    assert_eq!(searches.last(), Some(&3));
+    assert_eq!(
+        events.iter().rev().find_map(|e| match e {
+            FitEvent::Search { search, of, .. } => Some(format!("Fitting… {search} of {of}")),
+            FitEvent::Scene => None,
+        }),
+        Some("Fitting… 3 of 3".to_owned())
+    );
+}
+
+/// One thread and many give the same bits, and so do two runs (`AGENTS.md` rule 8, `docs/34` section 5.7).
+#[test]
+fn one_thread_and_many_and_two_runs_give_the_same_bits() {
+    let r = rig(2);
+    r.add_node(0, json!({}));
+    let path = r.file_of("other.png", &r.picture(1));
+    r.core
+        .reference_choose_file(r.ids[0], 2, &path, None)
+        .unwrap();
+    let before = r.settings(0);
+    let run = |threads: usize| {
+        let out = fit_with(&r, 0, threads).expect("a fit");
+        let node = r.node(0);
+        r.core.update_settings(r.ids[0], &out.undo).expect("undo");
+        assert_eq!(r.settings(0), before);
+        (
+            out.result.x.map(f64::to_bits),
+            out.result.total.to_bits(),
+            out.result.evals,
+            node,
+        )
+    };
+    let one = run(1);
+    let many = run(4);
+    let again = run(3);
+    assert_eq!(one, many, "one thread and four");
+    assert_eq!(one, again, "one thread and three");
+    assert_eq!(run(1), one, "a second run on one thread");
+}
+
+/// Cancel changes nothing: the settings are those of before, the reference is still held, and the next fit runs.
+#[test]
+fn cancel_changes_nothing() {
+    let r = rig(2);
+    r.add_node(0, json!({}));
+    let path = r.file_of("other.png", &r.picture(1));
+    r.core
+        .reference_choose_file(r.ids[0], 2, &path, None)
+        .unwrap();
+    let before = r.settings(0);
+    // Cancelled while the scene is made, and in the middle of the second search.
+    for at in [0usize, 1, 2] {
+        let cancel = CancelToken::new();
+        let mut seen = 0usize;
+        let err = r
+            .core
+            .reference_fit(r.ids[0], 2, &cancel, &mut |e| {
+                let fire = match (at, e) {
+                    (0, FitEvent::Scene) => true,
+                    (1, FitEvent::Search { search: 1, .. }) => seen > 2,
+                    (2, FitEvent::Search { search: 2, .. }) => true,
+                    _ => false,
+                };
+                seen += 1;
+                if fire {
+                    cancel.cancel();
+                }
+            })
+            .unwrap_err();
+        assert_eq!(err, FitFailure::Cancelled, "cancelled at {at}");
+        assert_eq!(
+            err.to_string(),
+            "The fit was cancelled. Nothing was changed."
+        );
+        assert_eq!(r.settings(0), before, "cancelled at {at}");
+        assert!(r.core.reference_info(r.ids[0], 2).is_some());
+    }
+}
+
+/// Failures write nothing.
+#[test]
+fn a_node_that_is_not_in_the_picture_writes_nothing() {
+    let r = rig(2);
+    // A node nothing reads: not connected to the Output.
+    let now = r.settings(0);
+    let mut doc = serde_json::to_value(&now).unwrap();
+    doc["nodes"] = json!({ "items": [ { "id": 1 }, { "id": 2, "kind": "reference_grade", "pos": [2, 0.0] } ], "links": [
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] });
+    let next = serde_json::from_value::<DevelopSettings>(doc)
+        .unwrap()
+        .validated()
+        .unwrap()
+        .0;
+    r.core
+        .update_settings(r.ids[0], &SettingsPatch::between(&now, &next))
+        .expect("a graph");
+    let path = r.file_of("other.png", &r.picture(1));
+    r.core
+        .reference_choose_file(r.ids[0], 2, &path, None)
+        .unwrap();
+    let before = r.settings(0);
+    let err = fit_with(&r, 0, 2).unwrap_err();
+    assert_eq!(err, FitFailure::NotConnected, "{err:?}");
+    assert_eq!(r.settings(0), before);
+}
+
+/// Where the time of a fit goes, on this machine (a Linux figure; run with `--ignored --nocapture`): one candidate's render and its
+/// measures, and a whole fit at 1 and 4 threads.
+#[test]
+#[ignore = "timing: run by hand"]
+fn the_time_of_a_fit_and_of_its_parts() {
+    use std::time::Instant;
+    use ym_color::refgrade::measure::Px;
+    use ym_color::refgrade::search::CandidateRenderer;
+    let r = rig(2);
+    r.add_node(0, json!({}));
+    let path = r.file_of("graded.png", &r.picture(1));
+    r.core
+        .reference_choose_file(r.ids[0], 2, &path, None)
+        .unwrap();
+    let src = r.source(0);
+    let t = Instant::now();
+    let photo = r
+        .core
+        .renderer
+        .reference_fit_photo(&src, 2, &CancelToken::new())
+        .expect("a photo");
+    println!(
+        "the photo's side (the analysis picture, the scene, the soft masks, the states): {:.2} s",
+        t.elapsed().as_secs_f64()
+    );
+    let node = r.node(0);
+    for threads in [1usize, 4] {
+        let mut cand = ym_core::reference_fit::ChainCandidates::new(&photo, &node);
+        let mut out = vec![Px::default(); cand.sample_len()];
+        let mut x = [0.0; 49];
+        x[17] = 0.3;
+        x[24] = 0.2;
+        x[31] = 0.2;
+        let n = 100;
+        let t = Instant::now();
+        pool(threads).install(|| {
+            for _ in 0..n {
+                cand.render(&x, &mut out).unwrap();
+            }
+        });
+        println!(
+            "{threads} threads: one candidate's render of 8192 pixels {:.2} ms",
+            t.elapsed().as_secs_f64() * 1000.0 / n as f64
+        );
+    }
+    for threads in [1usize, 4] {
+        let t = Instant::now();
+        let out = fit_with(&r, 0, threads).expect("a fit");
+        println!(
+            "{threads} threads: a whole fit {:.1} s, {} candidates ({:.2} ms each); start {:?}",
+            t.elapsed().as_secs_f64(),
+            out.result.evals,
+            t.elapsed().as_secs_f64() * 1000.0 / out.result.evals as f64,
+            out.result.start
+        );
+    }
+}

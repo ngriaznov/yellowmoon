@@ -10,15 +10,18 @@ use super::measure::{
 };
 use super::network::{NETWORK_TEXT, Network, NetworkErrorKind, NetworkValues, input_names};
 use super::objective::{
-    Fixed, Terms, allowed_turn_deg, candidate_measure, clip_allowance, clip_over, clip_term, content_turn_share, terms,
-    turn_weight,
+    Fixed, Terms, allowed_turn_deg, candidate_measure, clip_allowance, clip_over, clip_term,
+    content_turn_share, terms, turn_weight,
 };
 use super::params::{N_PARAMS, Params, to_numbers};
 use super::search::{CandidateRenderer, FitError, FitSetup, Refused, Start, fit};
 use super::{SECTORS, sample_pixels};
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn shipped() -> Network {
@@ -75,11 +78,13 @@ fn every_refusal_of_the_grammar_names_the_line_and_the_name() {
     let (line, kind) = expect_refusal("# c\ntemplate t(x)\n{x}.a = lin( 1 )\n");
     assert_eq!((line, kind), (2, NetworkErrorKind::TemplateWithoutEnd));
     // A template value with a missing constant.
-    let (line, kind) = expect_refusal(
-        "const one k=1\ntemplate t(x)\n{x}.a = lin( {k} )\nend\napply t one two",
-    );
+    let (line, kind) =
+        expect_refusal("const one k=1\ntemplate t(x)\n{x}.a = lin( {k} )\nend\napply t one two");
     assert_eq!(line, 5);
-    assert!(matches!(kind, NetworkErrorKind::MissingConstant(_)), "{kind:?}");
+    assert!(
+        matches!(kind, NetworkErrorKind::MissingConstant(_)),
+        "{kind:?}"
+    );
     // An apply of a template that is not there.
     let (_, kind) = expect_refusal("apply nothing a b");
     assert_eq!(kind, NetworkErrorKind::UnknownTemplate("nothing".into()));
@@ -99,7 +104,10 @@ fn every_refusal_of_the_grammar_names_the_line_and_the_name() {
     let (_, kind) = expect_refusal("a = lin( 1 + )");
     assert_eq!(kind, NetworkErrorKind::SignWithoutTerm);
     let (_, kind) = expect_refusal("a = lin( 1 P.p2 )");
-    assert!(matches!(kind, NetworkErrorKind::ExpectedSign(_)), "{kind:?}");
+    assert!(
+        matches!(kind, NetworkErrorKind::ExpectedSign(_)),
+        "{kind:?}"
+    );
     let (_, kind) = expect_refusal("a lin( 1 )");
     assert_eq!(kind, NetworkErrorKind::NoEquals);
     // The text of an error says the line and the name.
@@ -212,13 +220,26 @@ fn the_network_check_of_the_proof_of_concept_passes_on_its_recorded_vectors() {
     let out1 = run(&net, &same);
     // Check 1: R identical to P gives P's own values.
     for k in [
-        "p2", "p98", "iqr_rel", "p50", "logsat", "tint_s_a", "tint_s_b", "tint_m_a", "tint_m_b", "tint_h_a", "tint_h_b", "sep",
+        "p2", "p98", "iqr_rel", "p50", "logsat", "tint_s_a", "tint_s_b", "tint_m_a", "tint_m_b",
+        "tint_h_a", "tint_h_b", "sep",
     ] {
-        close(out1.get(&format!("T.{k}")), same[&format!("P.{k}")], &format!("check 1, T.{k}"));
+        close(
+            out1.get(&format!("T.{k}")),
+            same[&format!("P.{k}")],
+            &format!("check 1, T.{k}"),
+        );
     }
     for e in ["sky", "vegetation", "ground"] {
-        close(out1.get(&format!("T.{e}.h")), same[&format!("P.{e}.h")], &format!("check 1, T.{e}.h"));
-        close(out1.get(&format!("T.{e}.logC")), same[&format!("P.{e}.logC")], &format!("check 1, T.{e}.logC"));
+        close(
+            out1.get(&format!("T.{e}.h")),
+            same[&format!("P.{e}.h")],
+            &format!("check 1, T.{e}.h"),
+        );
+        close(
+            out1.get(&format!("T.{e}.logC")),
+            same[&format!("P.{e}.logC")],
+            &format!("check 1, T.{e}.logC"),
+        );
         close(
             out1.get(&format!("T.{e}.off")),
             same[&format!("P.{e}.L")] - same["P.p50"],
@@ -227,7 +248,11 @@ fn the_network_check_of_the_proof_of_concept_passes_on_its_recorded_vectors() {
     }
     for j in [0, 3] {
         close(out1.get(&format!("T.s{j}.dh")), 0.0, "check 1, T.s.dh");
-        close(out1.get(&format!("T.s{j}.dlogC")), 0.0, "check 1, T.s.dlogC");
+        close(
+            out1.get(&format!("T.s{j}.dlogC")),
+            0.0,
+            "check 1, T.s.dlogC",
+        );
     }
     // Check 2: a teal sky (255 -> 205), a darker floor (6 -> 0), 1.35x saturation, a brighter sky (74 -> 84).
     let mut r = same.clone();
@@ -235,11 +260,18 @@ fn the_network_check_of_the_proof_of_concept_passes_on_its_recorded_vectors() {
     r.insert("R.logsat".into(), 15f64.ln() + 1.35f64.ln());
     r.insert("R.sky.h".into(), 205.0);
     r.insert("R.sky.L".into(), 84.0);
-    r.insert("D.sky.dh".into(), ((205.0f64 - 255.0 + 180.0).rem_euclid(360.0)) - 180.0);
+    r.insert(
+        "D.sky.dh".into(),
+        ((205.0f64 - 255.0 + 180.0).rem_euclid(360.0)) - 180.0,
+    );
     let out2 = run(&net, &r);
     close(out2.get("T.p2"), 6.0 - 4.8, "check 2, T.p2");
     close(out2.get("T.sky.h"), 255.0 - 0.85 * 40.0, "check 2, T.sky.h");
-    close(out2.get("T.logsat"), 15f64.ln() + 0.85 * 1.35f64.ln(), "check 2, T.logsat");
+    close(
+        out2.get("T.logsat"),
+        15f64.ln() + 0.85 * 1.35f64.ln(),
+        "check 2, T.logsat",
+    );
     close(out2.get("T.sky.off"), 27.0, "check 2, T.sky.off");
     close(out2.get("T.vegetation.h"), 120.0, "check 2, T.vegetation.h");
     close(out2.get("T.p98"), 94.0, "check 2, T.p98");
@@ -272,7 +304,11 @@ fn the_network_check_of_the_proof_of_concept_passes_on_its_recorded_vectors() {
     // Check 6: the reference's "sky" has median L* 10 (a black backdrop): the dark-sky rule shuts the sky's gate.
     let mut p6 = same.clone();
     p6.insert("R.sky.L".into(), 10.0);
-    close(run(&net, &p6).get("G.sky.matched"), 0.0, "check 6, G.sky.matched");
+    close(
+        run(&net, &p6).get("G.sky.matched"),
+        0.0,
+        "check 6, G.sky.matched",
+    );
     // Checks 7 and 8: the whites' chroma cap is 5 + 0.8 (|a*| + |b*|) of the reference's highlight tint, at most 14.
     let mut p7 = same.clone();
     p7.insert("R.tint_h_a".into(), 2.0);
@@ -281,12 +317,24 @@ fn the_network_check_of_the_proof_of_concept_passes_on_its_recorded_vectors() {
     let mut p8 = same.clone();
     p8.insert("R.tint_h_a".into(), -20.0);
     p8.insert("R.tint_h_b".into(), -20.0);
-    close(run(&net, &p8).get("T.hl_cmax"), 14.0, "check 8, T.hl_cmax (capped)");
-    close(out1.get("T.hl_cmax"), 5.0 + 0.8 * (0.5 + 1.5), "check 8, the reference's own highlight tint");
+    close(
+        run(&net, &p8).get("T.hl_cmax"),
+        14.0,
+        "check 8, T.hl_cmax (capped)",
+    );
+    close(
+        out1.get("T.hl_cmax"),
+        5.0 + 0.8 * (0.5 + 1.5),
+        "check 8, the reference's own highlight tint",
+    );
     // Checks 8 and 9 (v8): purple is allowed where the reference holds a tenth of its frame in magenta, and not where it holds none.
     let mut p9 = same.clone();
     p9.insert("R.magenta_share".into(), 0.10);
-    close(run(&net, &p9).get("T.purple_ok"), 1.0, "check 8 (v8), T.purple_ok");
+    close(
+        run(&net, &p9).get("T.purple_ok"),
+        1.0,
+        "check 8 (v8), T.purple_ok",
+    );
     close(out1.get("T.purple_ok"), 0.0, "check 9 (v8), T.purple_ok");
     // Check 10 (v8): a reference with highlight tint (a*, b*) = (-8, 4).
     let mut p10 = same.clone();
@@ -296,31 +344,67 @@ fn the_network_check_of_the_proof_of_concept_passes_on_its_recorded_vectors() {
     close(out10.get("T.white_a"), -6.4, "check 10, T.white_a");
     close(out10.get("T.white_b"), 3.2, "check 10, T.white_b");
     close(out10.get("T.white_tol"), 6.0, "check 10, T.white_tol");
-    close(out10.get("T.skin_drift"), 6.0, "check 10, T.skin_drift (no matched skin)");
+    close(
+        out10.get("T.skin_drift"),
+        6.0,
+        "check 10, T.skin_drift (no matched skin)",
+    );
     // Checks 11 and 12 (v9): the memory colours' limits depend on whether the reference matches them.
     let mut pu = same.clone();
     pu.insert("R.sky.share".into(), 0.0);
     pu.insert("R.vegetation.share".into(), 0.0);
     let out_u = run(&net, &pu);
     close(out_u.get("T.mem.sky_deg"), 10.0, "check 11, T.mem.sky_deg");
-    close(out_u.get("T.mem.vegetation_deg"), 12.0, "check 11, T.mem.vegetation_deg");
+    close(
+        out_u.get("T.mem.vegetation_deg"),
+        12.0,
+        "check 11, T.mem.vegetation_deg",
+    );
     close(out1.get("T.mem.sky_deg"), 45.0, "check 12, T.mem.sky_deg");
-    close(out1.get("T.mem.vegetation_deg"), 40.0, "check 12, T.mem.vegetation_deg");
+    close(
+        out1.get("T.mem.vegetation_deg"),
+        40.0,
+        "check 12, T.mem.vegetation_deg",
+    );
     // Checks 13 and 14 (v10): one pixel in a hundred may turn purple, a quarter where the reference holds magenta.
-    close(out1.get("T.purple_max_share"), 0.01, "check 13, T.purple_max_share");
-    close(run(&net, &p9).get("T.purple_max_share"), 0.25, "check 14, T.purple_max_share");
+    close(
+        out1.get("T.purple_max_share"),
+        0.01,
+        "check 13, T.purple_max_share",
+    );
+    close(
+        run(&net, &p9).get("T.purple_max_share"),
+        0.25,
+        "check 14, T.purple_max_share",
+    );
     // Checks 15 and 16 (v11): a turn of 10 degrees into the purple band, 45 where the reference holds purple.
-    close(out1.get("T.purple_rot_deg"), 10.0, "check 15, T.purple_rot_deg");
-    close(run(&net, &p9).get("T.purple_rot_deg"), 45.0, "check 16, T.purple_rot_deg");
+    close(
+        out1.get("T.purple_rot_deg"),
+        10.0,
+        "check 15, T.purple_rot_deg",
+    );
+    close(
+        run(&net, &p9).get("T.purple_rot_deg"),
+        45.0,
+        "check 16, T.purple_rot_deg",
+    );
     // Checks 17 and 18 (v11): skin chroma may rise 0.12 (log), 0.30 where the reference's skin is matched.
     let mut p17 = same.clone();
     p17.insert("P.skin.share".into(), 0.30);
     p17.insert("R.skin.share".into(), 0.30);
-    close(run(&net, &p17).get("T.skin_dlogC_max"), 0.30, "check 17, T.skin_dlogC_max");
+    close(
+        run(&net, &p17).get("T.skin_dlogC_max"),
+        0.30,
+        "check 17, T.skin_dlogC_max",
+    );
     let mut p18 = same.clone();
     p18.insert("P.skin.share".into(), 0.30);
     p18.insert("R.skin.share".into(), 0.0);
-    close(run(&net, &p18).get("T.skin_dlogC_max"), 0.12, "check 18, T.skin_dlogC_max");
+    close(
+        run(&net, &p18).get("T.skin_dlogC_max"),
+        0.12,
+        "check 18, T.skin_dlogC_max",
+    );
     // Checks 19 and 20 (v12): a strong colour may turn 20 degrees, 30 when unify is open; 3 % of the frame may turn further; a
     // reference may license 2 points of clipping.
     close(out1.get("T.turn_deg"), 20.0, "check 19, T.turn_deg");
@@ -364,15 +448,39 @@ fn the_allowed_turn_and_the_turn_weight_follow_section_5_4() {
     let shut = |c| allowed_turn_deg(c, 20.0, 25.0, 45.0);
     let open = |c| allowed_turn_deg(c, 30.0, 25.0, 45.0);
     for c in [8.0, 10.0, 12.0] {
-        assert!((shut(c) - 45.0).abs() < 1e-9 || shut(c) > 40.0, "C* {c}: {}", shut(c));
+        assert!(
+            (shut(c) - 45.0).abs() < 1e-9 || shut(c) > 40.0,
+            "C* {c}: {}",
+            shut(c)
+        );
     }
     assert!((shut(8.0) - 45.0).abs() < 1e-9);
-    assert!((shut(12.0) - 45.0).abs() < 0.5, "C* 12 shut: {}", shut(12.0));
-    assert!((shut(15.0) - 35.0).abs() < 0.5, "C* 15 shut: {}", shut(15.0));
-    assert!((shut(20.0) - 25.0).abs() < 0.5, "C* 20 shut: {}", shut(20.0));
+    assert!(
+        (shut(12.0) - 45.0).abs() < 0.5,
+        "C* 12 shut: {}",
+        shut(12.0)
+    );
+    assert!(
+        (shut(15.0) - 35.0).abs() < 0.5,
+        "C* 15 shut: {}",
+        shut(15.0)
+    );
+    assert!(
+        (shut(20.0) - 25.0).abs() < 0.5,
+        "C* 20 shut: {}",
+        shut(20.0)
+    );
     assert!((shut(25.0) - 20.0).abs() < 1e-9 && (shut(60.0) - 20.0).abs() < 1e-9);
-    assert!((open(15.0) - 45.0).abs() < 1e-9, "C* 15 open: {}", open(15.0));
-    assert!((open(20.0) - 39.0).abs() < 0.5, "C* 20 open: {}", open(20.0));
+    assert!(
+        (open(15.0) - 45.0).abs() < 1e-9,
+        "C* 15 open: {}",
+        open(15.0)
+    );
+    assert!(
+        (open(20.0) - 39.0).abs() < 0.5,
+        "C* 20 open: {}",
+        open(20.0)
+    );
     assert!((open(25.0) - 30.0).abs() < 1e-9 && (open(60.0) - 30.0).abs() < 1e-9);
     assert_eq!(shut(0.0), 45.0);
     // The weight ramps from the allowed turn to a whole pixel at T.turn_full (60): 30 degrees where 20 are allowed is a quarter.
@@ -389,12 +497,26 @@ fn the_allowed_turn_and_the_turn_weight_follow_section_5_4() {
 /// The share of a sample of one colour turned by `turn` degrees, over `total` pixels of which `n` are that colour.
 fn turned_share(c_star: f64, turn: f64, n: usize, total: usize) -> f64 {
     let p: Vec<Px> = (0..total)
-        .map(|i| if i < n { colour(c_star, 60.0 + turn) } else { colour(1.0, 0.0) })
+        .map(|i| {
+            if i < n {
+                colour(c_star, 60.0 + turn)
+            } else {
+                colour(1.0, 0.0)
+            }
+        })
         .collect();
-    let p_cstar: Vec<f64> = (0..total).map(|i| if i < n { c_star } else { 1.0 }).collect();
+    let p_cstar: Vec<f64> = (0..total)
+        .map(|i| if i < n { c_star } else { 1.0 })
+        .collect();
     let p_okh: Vec<f64> = (0..total).map(|i| if i < n { 60.0 } else { 0.0 }).collect();
     // Hue 60 in the photo: the candidate's Oklab hue is 60 + turn.
-    content_turn_share(&p, &p_cstar, &p_okh, &vec![true; total], (20.0, 25.0, 45.0, 60.0))
+    content_turn_share(
+        &p,
+        &p_cstar,
+        &p_okh,
+        &vec![true; total],
+        (20.0, 25.0, 45.0, 60.0),
+    )
 }
 
 #[test]
@@ -413,7 +535,13 @@ fn a_pale_pixel_turned_35_does_not_count_and_a_strong_one_turned_25_does() {
 
 #[test]
 fn a_turn_budget_costs_nothing_for_10_percent_turned_30_and_much_for_4_percent_reversed() {
-    let cost = |s: f64, limit: f64| if s > limit { 6.0 * ((s - limit) / 0.01f64).powi(2) } else { 0.0 };
+    let cost = |s: f64, limit: f64| {
+        if s > limit {
+            6.0 * ((s - limit) / 0.01f64).powi(2)
+        } else {
+            0.0
+        }
+    };
     // 10 % of strong colours turned 30 degrees: s = 10 * 0.25 / 100 = 0.025, under the 3 % budget.
     assert_eq!(cost(turned_share(40.0, 30.0, 10, 100), 0.03), 0.0);
     // 4 % that reverse count whole: s = 0.04, 6 ((0.04 - 0.03) / 0.01)^2 = 6.
@@ -454,13 +582,21 @@ fn pair() -> Pair {
     for i in 0..n {
         let u = i as f64 / n as f64;
         let (px, c, s) = if u < 0.30 {
-            (conv([0.35 + 0.1 * u, 0.55, 0.85 - 0.1 * u]), class::SKY, false)
+            (
+                conv([0.35 + 0.1 * u, 0.55, 0.85 - 0.1 * u]),
+                class::SKY,
+                false,
+            )
         } else if u < 0.55 {
             (conv([0.25, 0.45 + 0.1 * u, 0.20]), class::VEGETATION, false)
         } else if u < 0.65 {
             (conv([0.80, 0.55, 0.45 + 0.05 * u]), class::PERSON, true)
         } else if u < 0.80 {
-            (conv([0.92, 0.93, 0.92 - 0.05 * u]), class::ARCHITECTURE, false)
+            (
+                conv([0.92, 0.93, 0.92 - 0.05 * u]),
+                class::ARCHITECTURE,
+                false,
+            )
         } else {
             (conv([0.45 + 0.2 * u, 0.40, 0.30]), class::GROUND, false)
         };
@@ -491,7 +627,15 @@ fn pair() -> Pair {
 }
 
 fn fixed_for(pr: &Pair, skin_protection: bool) -> Fixed {
-    Fixed::new(&shipped(), &pr.p_px, &pr.scene, &pr.r_px, &pr.r_scene, skin_protection).expect("the fixed part")
+    Fixed::new(
+        &shipped(),
+        &pr.p_px,
+        &pr.scene,
+        &pr.r_px,
+        &pr.r_scene,
+        skin_protection,
+    )
+    .expect("the fixed part")
 }
 
 fn with_regularisers(mut t: Terms, f: &Fixed, c: &super::objective::CandidateMeasure) -> Terms {
@@ -545,7 +689,10 @@ fn the_look_only_total_is_the_full_total_minus_the_walls_and_the_clip_term() {
         );
         assert!(t.look_only_total() <= t.total() + 1e-12);
     }
-    assert!(saw_wall, "a wall or the clip term fired in at least one case");
+    assert!(
+        saw_wall,
+        "a wall or the clip term fired in at least one case"
+    );
     // A refused candidate keeps its full total, so it stays worse than anything.
     let refused = Terms {
         clip: super::objective::REFUSED_CLIP,
@@ -569,8 +716,19 @@ fn skin_protection_switches_the_three_skin_walls_and_nothing_else() {
     let c_on = candidate_measure(&cand, &pr.scene, &on);
     let c_off = candidate_measure(&cand, &pr.scene, &off);
     let (t_on, t_off) = (terms(&c_on, &on), terms(&c_off, &off));
-    assert!(t_on.guard_skin > 0.0 && t_on.guard_skin_drift > 0.0 && t_on.guard_skin_chroma > 0.0, "{:?}", t_on.named());
-    assert_eq!((t_off.guard_skin, t_off.guard_skin_drift, t_off.guard_skin_chroma), (0.0, 0.0, 0.0));
+    assert!(
+        t_on.guard_skin > 0.0 && t_on.guard_skin_drift > 0.0 && t_on.guard_skin_chroma > 0.0,
+        "{:?}",
+        t_on.named()
+    );
+    assert_eq!(
+        (
+            t_off.guard_skin,
+            t_off.guard_skin_drift,
+            t_off.guard_skin_chroma
+        ),
+        (0.0, 0.0, 0.0)
+    );
     // Every other term is the same.
     let rest = |t: &Terms| t.total() - t.guard_skin - t.guard_skin_drift - t.guard_skin_chroma;
     assert!((rest(&t_on) - rest(&t_off)).abs() < 1e-12);
@@ -609,19 +767,30 @@ fn a_purple_turn_costs_and_staying_put_does_not() {
     }
     let c = candidate_measure(&cand, &pr.scene, &f);
     let t = terms(&c, &f);
-    assert!(t.guard_purple > 0.0 && t.guard_purple_pixels > 0.0, "{:?}", t.named());
+    assert!(
+        t.guard_purple > 0.0 && t.guard_purple_pixels > 0.0,
+        "{:?}",
+        t.named()
+    );
     assert!(t.guard_hue > 0.0);
     let calm = terms(&candidate_measure(&pr.p_px, &pr.scene, &f), &f);
-    assert_eq!((calm.guard_purple, calm.guard_purple_pixels, calm.guard_hue), (0.0, 0.0, 0.0));
+    assert_eq!(
+        (calm.guard_purple, calm.guard_purple_pixels, calm.guard_hue),
+        (0.0, 0.0, 0.0)
+    );
 }
 
 #[test]
 fn measures_follow_their_definitions_on_a_picture_made_by_hand() {
     // 100 pixels, L* 0 to 99 in order: p2 at rank 0.02 * 99 = 1.98, p50 at 49.5, p98 at 97.02.
-    let px: Vec<Px> = (0..100).map(|i| px_of([i as f64, 0.0, 0.0], [0.0, 0.0])).collect();
+    let px: Vec<Px> = (0..100)
+        .map(|i| px_of([i as f64, 0.0, 0.0], [0.0, 0.0]))
+        .collect();
     let scene = PixelScene::blank(100);
     let m = measure(&px, &scene, &[false; 6]);
-    assert!((m.p2 - 1.98).abs() < 1e-9 && (m.p50 - 49.5).abs() < 1e-9 && (m.p98 - 97.02).abs() < 1e-9);
+    assert!(
+        (m.p2 - 1.98).abs() < 1e-9 && (m.p50 - 49.5).abs() < 1e-9 && (m.p98 - 97.02).abs() < 1e-9
+    );
     let (p75, p25) = (74.25, 24.75);
     assert!((m.iqr_rel - (p75 - p25) / (97.02 - 1.98)).abs() < 1e-9);
     // No colour at all: the overall chroma is ln(max(0, 1)) = 0, the cast 0, conc 0.
@@ -636,8 +805,15 @@ fn the_sector_exclusion_needs_both_pictures_at_two_percent() {
     let p = measure(&pr.p_px, &pr.scene, &[false; 6]);
     let r = measure(&pr.r_px, &pr.r_scene, &[false; 6]);
     let excl = sector_exclusions(&p, &r);
-    assert_eq!(excl, [true, true, false, true, true, false], "sky, vegetation, ground and built are in both; skin is never excluded");
-    let none = sector_exclusions(&p, &measure(&pr.r_px, &PixelScene::blank(pr.r_px.len()), &[false; 6]));
+    assert_eq!(
+        excl,
+        [true, true, false, true, true, false],
+        "sky, vegetation, ground and built are in both; skin is never excluded"
+    );
+    let none = sector_exclusions(
+        &p,
+        &measure(&pr.r_px, &PixelScene::blank(pr.r_px.len()), &[false; 6]),
+    );
     assert_eq!(none, [false; 6]);
     let inputs = network_inputs(&p, &r);
     assert_eq!(inputs.len(), input_names().len());
@@ -660,13 +836,25 @@ fn the_sample_is_8192_pixels_one_per_cell_seeded_and_the_same_every_time() {
         // The pixel lies in its cell, to the pixel (a cell is not a whole number of pixels).
         let (x0, x1) = (gx as f64 / 128.0 * 512.0, (gx + 1) as f64 / 128.0 * 512.0);
         let (y0, y1) = (gy as f64 / 64.0 * 341.0, (gy + 1) as f64 / 64.0 * 341.0);
-        assert!(x as f64 >= x0.floor() && x as f64 <= x1.floor(), "cell {n}: x {x}");
-        assert!(y as f64 >= y0.floor() && y as f64 <= y1.floor(), "cell {n}: y {y}");
+        assert!(
+            x as f64 >= x0.floor() && x as f64 <= x1.floor(),
+            "cell {n}: x {x}"
+        );
+        assert!(
+            y as f64 >= y0.floor() && y as f64 <= y1.floor(),
+            "cell {n}: y {y}"
+        );
     }
     // The first pixel is the one SplitMix64 seeded with 0x5EED_2026_1124 draws.
     let mut rng = super::SplitMix64(super::SAMPLE_SEED);
     let (u, v) = (rng.unit(), rng.unit());
-    assert_eq!(s[0], (((u / 128.0) * 512.0) as usize, ((v / 64.0) * 341.0) as usize));
+    assert_eq!(
+        s[0],
+        (
+            ((u / 128.0) * 512.0) as usize,
+            ((v / 64.0) * 341.0) as usize
+        )
+    );
     // Another picture size gives another sample.
     assert_ne!(sample_pixels(512, 300), s);
 }
@@ -689,7 +877,10 @@ fn the_identity_numbers_are_the_identity_and_a_curve_is_increasing_by_constructi
             for w in c.windows(2) {
                 assert!(w[1][0] > w[0][0] && w[1][1] >= w[0][1], "{c:?}");
             }
-            assert!(c.iter().all(|p| (0.0..=1.0).contains(&p[0]) && (0.0..=1.0).contains(&p[1])));
+            assert!(
+                c.iter()
+                    .all(|p| (0.0..=1.0).contains(&p[0]) && (0.0..=1.0).contains(&p[1]))
+            );
         }
         assert!(n.elements.iter().all(|e| (0.5..=1.6).contains(&e.chroma)));
         assert_eq!(n.luma.as_ref().map(Vec::len), Some(10));
@@ -730,7 +921,11 @@ impl CandidateRenderer for Toy {
         let (s, c) = turn.sin_cos();
         for (o, b) in out.iter_mut().zip(&self.base) {
             let (a, bb) = (b.lab[1], b.lab[2]);
-            let lab = [(b.lab[0] + lift).clamp(0.0, 100.0), chroma * (a * c - bb * s), chroma * (a * s + bb * c)];
+            let lab = [
+                (b.lab[0] + lift).clamp(0.0, 100.0),
+                chroma * (a * c - bb * s),
+                chroma * (a * s + bb * c),
+            ];
             *o = px_of(lab, b.ok);
         }
         Ok(())
@@ -743,7 +938,12 @@ fn setup_pair() -> (Toy, Fixed, PixelScene) {
     let r_px: Vec<Px> = pr
         .p_px
         .iter()
-        .map(|q| px_of([(q.lab[0] + 9.0).min(100.0), q.lab[1] * 1.3, q.lab[2] * 1.3], q.ok))
+        .map(|q| {
+            px_of(
+                [(q.lab[0] + 9.0).min(100.0), q.lab[1] * 1.3, q.lab[2] * 1.3],
+                q.ok,
+            )
+        })
         .collect();
     let f = Fixed::new(&shipped(), &pr.p_px, &pr.scene, &r_px, &pr.scene, true).unwrap();
     (
@@ -757,7 +957,11 @@ fn setup_pair() -> (Toy, Fixed, PixelScene) {
     )
 }
 
-fn run_fit(toy: &mut Toy, f: &Fixed, scene: &PixelScene) -> Result<super::search::FitResult, FitError> {
+fn run_fit(
+    toy: &mut Toy,
+    f: &Fixed,
+    scene: &PixelScene,
+) -> Result<super::search::FitResult, FitError> {
     let setup = FitSetup {
         fixed: f,
         scene,
@@ -770,11 +974,19 @@ fn run_fit(toy: &mut Toy, f: &Fixed, scene: &PixelScene) -> Result<super::search
 fn the_search_is_no_worse_than_the_identity_or_the_neutral_search_and_keeps_its_numbers_in_range() {
     let (mut toy, f, scene) = setup_pair();
     let r = run_fit(&mut toy, &f, &scene).expect("a fit");
-    assert!(r.total <= r.identity_total, "{} against the identity {}", r.total, r.identity_total);
+    assert!(
+        r.total <= r.identity_total,
+        "{} against the identity {}",
+        r.total,
+        r.identity_total
+    );
     assert!(r.total <= r.neutral_total && r.total <= r.look_total.max(r.neutral_total));
     assert_eq!(r.total, r.neutral_total.min(r.look_total));
     assert!(r.x.iter().all(|v| (-1.0..=1.0).contains(v)), "{:?}", r.x);
-    assert!(!r.identity, "the reference is brighter and more colourful: the fit moves");
+    assert!(
+        !r.identity,
+        "the reference is brighter and more colourful: the fit moves"
+    );
     assert!(r.total < r.identity_total);
     assert_eq!(r.searches.len(), 3);
     // Every golden pass of a search only lowers its objective.
@@ -801,7 +1013,11 @@ fn an_element_that_fails_the_need_test_keeps_its_numbers_at_exactly_zero() {
     // The toy chain cannot move an element on its own, so an element that failed the test has all three numbers at 0.
     for k in 0..6 {
         if !neutral.need.local[k] {
-            assert_eq!(neutral.x[30 + 3 * k..33 + 3 * k], [0.0, 0.0, 0.0], "element {k}");
+            assert_eq!(
+                neutral.x[30 + 3 * k..33 + 3 * k],
+                [0.0, 0.0, 0.0],
+                "element {k}"
+            );
         }
     }
     if !neutral.need.local[6] {
@@ -854,13 +1070,20 @@ fn cancel_stops_the_fit_between_candidates_and_a_refusing_chain_is_a_failure() {
     let err = fit(&setup, &mut toy, &cancel, &mut |_| {}).unwrap_err();
     assert_eq!(err, FitError::Cancelled);
     // It stopped within a candidate of the signal.
-    assert!(toy.calls <= 502, "{} renders after a cancel at 500", toy.calls);
+    assert!(
+        toy.calls <= 502,
+        "{} renders after a cancel at 500",
+        toy.calls
+    );
     let mut refusing = Toy {
         base: toy.base.clone(),
         calls: 0,
         refuse_all: true,
     };
-    assert_eq!(fit(&setup, &mut refusing, &|| false, &mut |_| {}).unwrap_err(), FitError::ChainRefused);
+    assert_eq!(
+        fit(&setup, &mut refusing, &|| false, &mut |_| {}).unwrap_err(),
+        FitError::ChainRefused
+    );
 }
 
 #[test]
@@ -873,8 +1096,20 @@ fn progress_names_the_search_and_the_stage_and_never_goes_back() {
     };
     let mut seen: Vec<super::search::FitProgress> = Vec::new();
     fit(&setup, &mut toy, &|| false, &mut |p| seen.push(p)).unwrap();
-    assert_eq!(seen.first().map(|p| (p.search, p.stage)), Some((1, super::search::Stage::Tone)));
-    assert_eq!(seen.last().map(|p| (p.search, p.stage)), Some((3, super::search::Stage::Polish)));
-    assert!(seen.windows(2).all(|w| w[0].fraction() <= w[1].fraction() && w[0].evals <= w[1].evals));
-    assert!(seen.iter().all(|p| p.searches == 3 && (0.0..=1.0).contains(&p.fraction())));
+    assert_eq!(
+        seen.first().map(|p| (p.search, p.stage)),
+        Some((1, super::search::Stage::Tone))
+    );
+    assert_eq!(
+        seen.last().map(|p| (p.search, p.stage)),
+        Some((3, super::search::Stage::Polish))
+    );
+    assert!(
+        seen.windows(2)
+            .all(|w| w[0].fraction() <= w[1].fraction() && w[0].evals <= w[1].evals)
+    );
+    assert!(
+        seen.iter()
+            .all(|p| p.searches == 3 && (0.0..=1.0).contains(&p.fraction()))
+    );
 }

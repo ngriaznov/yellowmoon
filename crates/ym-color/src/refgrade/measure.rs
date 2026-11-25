@@ -240,7 +240,10 @@ impl ElementMeasure {
     /// The mean-vector hue (degrees, 0 to 360) and chroma.
     #[must_use]
     pub fn mv(&self) -> (f64, f64) {
-        (circ_mean_deg(self.mv_a, self.mv_b), self.mv_a.hypot(self.mv_b))
+        (
+            circ_mean_deg(self.mv_a, self.mv_b),
+            self.mv_a.hypot(self.mv_b),
+        )
     }
 }
 
@@ -354,8 +357,10 @@ pub fn measure(px: &[Px], scene: &PixelScene, excl: &[bool; 6]) -> Measure {
         if e != SKY && e != PERSON {
             pool_b.push(c);
         }
-        if matches!(e, UNLABELLED | 4 | ARCHITECTURE | INTERIOR | OTHER_THING | OTHER_STUFF)
-            || (e == PERSON && !scene.skin[i])
+        if matches!(
+            e,
+            UNLABELLED | 4 | ARCHITECTURE | INTERIOR | OTHER_THING | OTHER_STUFF
+        ) || (e == PERSON && !scene.skin[i])
         {
             capable[usize::from(band[i])].push((c, a, b));
         }
@@ -364,7 +369,10 @@ pub fn measure(px: &[Px], scene: &PixelScene, excl: &[bool; 6]) -> Measure {
         } else if e != UNLABELLED {
             bg.push(p.lab[0]);
         }
-        if c > HUE_MIN_CHROMA && !scene.skin[i] && !(0..5).any(|k| excl[k] && scene.in_element(i, k)) {
+        if c > HUE_MIN_CHROMA
+            && !scene.skin[i]
+            && !(0..5).any(|k| excl[k] && scene.in_element(i, k))
+        {
             let h = b.atan2(a).to_degrees();
             let s = ((((h + 30.0).rem_euclid(360.0)) / 60.0) as usize) % SECTORS;
             sec_c[s].push(c);
@@ -392,7 +400,11 @@ pub fn measure(px: &[Px], scene: &PixelScene, excl: &[bool; 6]) -> Measure {
     };
     let (sum_a, sum_b, sum_c) = cast_set.iter().fold((0.0, 0.0, 0.0), |s, &i| {
         let p = &px[i];
-        (s.0 + p.lab[1], s.1 + p.lab[2], s.2 + p.lab[1].hypot(p.lab[2]))
+        (
+            s.0 + p.lab[1],
+            s.1 + p.lab[2],
+            s.2 + p.lab[1].hypot(p.lab[2]),
+        )
     });
     let cn = cast_set.len() as f64;
     let (cast_a, cast_b) = (sum_a / cn, sum_b / cn);
@@ -464,7 +476,11 @@ pub fn measure(px: &[Px], scene: &PixelScene, excl: &[bool; 6]) -> Measure {
         m.clothing = ElementMeasure {
             share: cl_l.len() as f64 / nf,
             l: median_of(&mut cl_l),
-            h: if cl_hn > 0 { circ_mean_deg(cl_x, cl_y) } else { 0.0 },
+            h: if cl_hn > 0 {
+                circ_mean_deg(cl_x, cl_y)
+            } else {
+                0.0
+            },
             c,
             logc: c.max(1.0).ln(),
             n: cl_hn,

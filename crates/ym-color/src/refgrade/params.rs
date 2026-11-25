@@ -122,7 +122,12 @@ pub fn to_numbers(x: &Params) -> Numbers {
         let pts: Vec<(f64, f64)> = RGB_STOPS
             .iter()
             .zip(xs)
-            .map(|(&s, &v)| (logc4_at_stops(s), logc4_at_stops(s + v * RGB_STOPS_RANGE).clamp(0.0, 1.0)))
+            .map(|(&s, &v)| {
+                (
+                    logc4_at_stops(s),
+                    logc4_at_stops(s + v * RGB_STOPS_RANGE).clamp(0.0, 1.0),
+                )
+            })
             .collect();
         *curve = Some(knots(&pts));
     }

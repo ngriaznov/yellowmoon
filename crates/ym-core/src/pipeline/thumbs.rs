@@ -169,7 +169,7 @@ pub fn thumbnail_size(image: (usize, usize), max_px: usize) -> (usize, usize) {
 
 /// The reduction a thumbnail of `max_px` is made from: the largest of 8, 4 and 2 that leaves the
 /// long edge at least twice the thumbnail, else full resolution.
-fn thumbnail_scale(out: (usize, usize), max_px: usize) -> usize {
+pub(super) fn thumbnail_scale(out: (usize, usize), max_px: usize) -> usize {
     let long = out.0.max(out.1);
     for k in [8usize, 4, 2] {
         if long / k >= 2 * max_px {

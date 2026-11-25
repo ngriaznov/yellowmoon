@@ -258,6 +258,29 @@ pub struct StageTrace {
     pub c13_encoded: Vec3,
 }
 
+/// One pixel's registers, key slots and buffers at some point of the plan's run, with the Input's picture it started from
+/// ([`ColorChain::state_before_node`]).
+#[derive(Debug, Clone)]
+pub struct PlanState {
+    registers: [[f64; 3]; PLAN_REGISTERS],
+    slots: [f64; PLAN_KEYS],
+    buffers: Vec<[f64; 3]>,
+    c8: LogC4,
+    c7: Vec3,
+}
+
+impl PlanState {
+    fn new(c8: LogC4, c7: Vec3, buffers: usize) -> Self {
+        Self {
+            registers: [[0.0; 3]; PLAN_REGISTERS],
+            slots: [0.0; PLAN_KEYS],
+            buffers: vec![[0.0; 3]; buffers],
+            c8,
+            c7,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 enum LookStage {
     /// Neutral, an identity look, or an intensity of 0: nothing runs.
@@ -568,11 +591,30 @@ impl ColorChain {
         c8: LogC4,
         c7: Vec3,
         at: PixelAt<'_>,
-        mut main: Option<&mut MainStages>,
+        main: Option<&mut MainStages>,
     ) -> LogC4 {
-        let mut registers = [[0.0f64; 3]; PLAN_REGISTERS];
-        let mut slots = [0.0f64; PLAN_KEYS];
-        let mut buffers = vec![[0.0f64; 3]; self.buffers];
+        let mut state = PlanState::new(c8, c7, self.buffers);
+        self.run_steps(&mut state, 0, self.steps.len(), at, main);
+        self.plan_result(&state)
+    }
+
+    /// The steps `from..to` of the plan on one pixel, from the state the earlier steps left (`run_nodes` is `0..len`).
+    fn run_steps(
+        &self,
+        state: &mut PlanState,
+        from: usize,
+        to: usize,
+        at: PixelAt<'_>,
+        mut main: Option<&mut MainStages>,
+    ) {
+        let PlanState {
+            registers,
+            slots,
+            buffers,
+            c8,
+            c7,
+        } = state;
+        let (c8, c7) = (*c8, *c7);
         let put = |o: Option<PictureOut>,
                    v: [f64; 3],
                    registers: &mut [[f64; 3]; PLAN_REGISTERS],
@@ -586,14 +628,19 @@ impl ColorChain {
                 }
             }
         };
-        for (step, node) in &self.steps {
+        for (step, node) in &self.steps[from..to] {
             if let Some(join) = &step.join {
-                let outs = self.run_join(step.node, join, (c8, c7), (&registers, &slots, &buffers));
+                let outs = self.run_join(
+                    step.node,
+                    join,
+                    (c8, c7),
+                    (&*registers, &*slots, buffers.as_slice()),
+                );
                 match outs {
-                    JoinOut::Picture(v) => put(step.picture_out, v, &mut registers, &mut buffers),
+                    JoinOut::Picture(v) => put(step.picture_out, v, registers, buffers),
                     JoinOut::Channels(c) => {
                         for (o, v) in join.channels.iter().zip(c) {
-                            put(*o, v, &mut registers, &mut buffers);
+                            put(*o, v, registers, buffers);
                         }
                     }
                 }
@@ -642,8 +689,8 @@ impl ColorChain {
                 };
                 (out, m, made)
             };
-            put(step.picture_out, out, &mut registers, &mut buffers);
-            put(step.graded_out, graded, &mut registers, &mut buffers);
+            put(step.picture_out, out, registers, buffers);
+            put(step.graded_out, graded, registers, buffers);
             if let Some(o) = step.key_out {
                 if let Some(s) = o.slot {
                     slots[usize::from(s)] = m;
@@ -653,13 +700,79 @@ impl ColorChain {
                 }
             }
         }
+    }
+
+    /// What the plan's result is, from the state its last step left.
+    fn plan_result(&self, state: &PlanState) -> LogC4 {
         match self.params.nodes.plan.result {
-            PlanResult::Picture(PictureRef::Input) => c8,
-            PlanResult::Picture(PictureRef::Register(r)) => LogC4(registers[usize::from(r)]),
-            PlanResult::Picture(PictureRef::Buffer(b)) => LogC4(buffers[usize::from(b)]),
-            PlanResult::Mask(KeyRef::Slot(s)) => LogC4([slots[usize::from(s)]; 3]),
-            PlanResult::Mask(KeyRef::Buffer(b)) => LogC4(buffers[usize::from(b)]),
+            PlanResult::Picture(PictureRef::Input) => state.c8,
+            PlanResult::Picture(PictureRef::Register(r)) => LogC4(state.registers[usize::from(r)]),
+            PlanResult::Picture(PictureRef::Buffer(b)) => LogC4(state.buffers[usize::from(b)]),
+            PlanResult::Mask(KeyRef::Slot(s)) => LogC4([state.slots[usize::from(s)]; 3]),
+            PlanResult::Mask(KeyRef::Buffer(b)) => LogC4(state.buffers[usize::from(b)]),
         }
+    }
+
+    /// The position of the step of node `id` in the plan (a node has one).
+    fn step_of(&self, id: u32) -> Option<usize> {
+        self.steps
+            .iter()
+            .position(|(s, _)| s.node == id && s.join.is_none())
+    }
+
+    /// The state of one pixel at the input of node `id`: C1 to C8, then every step of the plan before the node's own. The pixel's
+    /// picture at the node's input is the fixed part of a fit (`docs/34` section 2.2): it is made once, and
+    /// [`ColorChain::codes_from_node`] runs the node and what follows it for each candidate. `None` when the plan does not run the node.
+    #[must_use]
+    pub fn state_before_node(
+        &self,
+        camera_rgb: Vec3,
+        at: PixelAt<'_>,
+        id: u32,
+    ) -> Option<PlanState> {
+        let step = self.step_of(id)?;
+        let c6 = self.c1_to_c6(camera_rgb);
+        let c7 = self.tone.apply_rgb(c6);
+        let c8 = LinearAwg4(c7).to_logc4();
+        let mut state = PlanState::new(c8, c7, self.buffers);
+        self.run_steps(&mut state, 0, step, at, None);
+        Some(state)
+    }
+
+    /// The display code values in `[0, 1]` (not quantised, not dithered) of a pixel whose state at the input of node `id` is `state`
+    /// ([`ColorChain::state_before_node`]): the node and every step after it, the look (C10), the display rendering (C12) and the
+    /// encode (C13). With the same node as the chain's own, the same bits as [`ColorChain::apply_pixel_at`]. `None` when the plan does
+    /// not run the node.
+    #[must_use]
+    pub fn codes_from_node(&self, state: &PlanState, at: PixelAt<'_>, id: u32) -> Option<Vec3> {
+        let step = self.step_of(id)?;
+        let mut state = state.clone();
+        self.run_steps(&mut state, step, self.steps.len(), at, None);
+        let last = self.c10(self.plan_result(&state));
+        Some(self.encode(self.c12(last)))
+    }
+
+    /// Puts new parameters into the step of node `id` (a candidate of a fit): the plan, the look and the display stay as they are.
+    ///
+    /// # Errors
+    ///
+    /// [`DisplayError::MissingNode`] when the plan does not run the node.
+    pub fn replace_node(&mut self, id: u32, n: &NodeParams) -> Result<(), DisplayError> {
+        let step = self.step_of(id).ok_or(DisplayError::MissingNode(id))?;
+        self.steps[step].1 = PreparedNode::new(
+            n.bypass,
+            &n.trim,
+            &n.grade,
+            &n.warp,
+            &n.curves,
+            n.uniform.as_ref(),
+            n.reference.as_ref(),
+            &n.masks,
+        );
+        if id != crate::plan::MAIN_NODE {
+            self.params.nodes.others.insert(id, n.clone());
+        }
+        Ok(())
     }
 
     /// The seven element soft masks of a Reference Grade node at a pixel, from the render's planes; a mask of an element at the

@@ -6,6 +6,10 @@
 //! written again in Rust: `f64`, a fixed order, no I/O, no threads. The per-pixel work (the chain from the node's input to the
 //! display codes) is the caller's, passed in as a [`search::CandidateRenderer`].
 
+// The fit's loops index several per-element and per-band tables at once (the targets, the gates, the weights, the measures), as the
+// proof of concept lays them out; an index keeps those lines next to their definitions in the spec.
+#![allow(clippy::needless_range_loop)]
+
 pub mod measure;
 pub mod network;
 pub mod objective;

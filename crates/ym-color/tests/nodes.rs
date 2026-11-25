@@ -800,3 +800,56 @@ fn the_chain_clones_and_rebuilds_with_its_nodes() {
         assert_eq!(cloned.trace(px), c.trace(px));
     }
 }
+
+// ---- a fit's candidate: the chain resumed at a node's input (docs/34 section 2.2) -----------------------
+
+/// The state at a node's input, made once, and the node with every step after it run from it, give the same bits as the whole
+/// chain; and `replace_node` makes the chain it would have been built as.
+#[test]
+fn a_chain_resumed_at_a_nodes_input_is_the_whole_chain_bit_for_bit() {
+    let b = base();
+    let nodes = || {
+        vec![
+            spec(2, 1.0, 1, trim_node(1.0)),
+            spec(3, 2.0, 2, curve_node()),
+            spec(4, 3.0, 3, grade_node()),
+        ]
+    };
+    let c = nodes_chain(&b, nodes(), 4, Stop::Output);
+    for id in [2, 3, 4] {
+        for px in pixels() {
+            let state = c
+                .state_before_node(px, None, id)
+                .expect("the node is in the plan");
+            let codes = c.codes_from_node(&state, None, id).unwrap();
+            assert_eq!(codes, c.apply_pixel(px), "node {id}, {px:?}");
+        }
+    }
+    assert!(c.state_before_node([0.1; 3], None, 9).is_none());
+    // Replacing a node's parameters is building the chain with them, and leaves the state at its input as it was.
+    let mut swapped = c.clone();
+    swapped.replace_node(3, &grade_node()).unwrap();
+    let built = nodes_chain(
+        &b,
+        vec![
+            spec(2, 1.0, 1, trim_node(1.0)),
+            spec(3, 2.0, 2, grade_node()),
+            spec(4, 3.0, 3, grade_node()),
+        ],
+        4,
+        Stop::Output,
+    );
+    for px in pixels() {
+        assert_eq!(swapped.apply_pixel(px), built.apply_pixel(px), "{px:?}");
+        let state = c.state_before_node(px, None, 3).unwrap();
+        assert_eq!(
+            swapped.codes_from_node(&state, None, 3).unwrap(),
+            built.apply_pixel(px),
+            "{px:?}"
+        );
+    }
+    assert!(matches!(
+        swapped.replace_node(9, &grade_node()),
+        Err(DisplayError::MissingNode(9))
+    ));
+}

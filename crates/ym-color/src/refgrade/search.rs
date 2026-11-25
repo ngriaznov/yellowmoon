@@ -11,8 +11,8 @@ use super::objective::{
     CandidateMeasure, Fixed, GATE_OPEN, REFUSED_CLIP, Terms, candidate_measure, clip_term, terms,
 };
 use super::params::{
-    HUE_VS_HUE_START, N_GLOBAL, N_LOCAL, N_PARAMS, Numbers, Params, SATURATION_INDEX, SUBJECT_INDEX,
-    to_numbers,
+    HUE_VS_HUE_START, N_GLOBAL, N_LOCAL, N_PARAMS, Numbers, Params, SATURATION_INDEX,
+    SUBJECT_INDEX, to_numbers,
 };
 
 /// A chain that could not make the candidate's picture.
@@ -107,7 +107,10 @@ impl FitProgress {
     /// How far the fit is, 0 to 1, by stage: an estimate (the stages differ in cost; the fraction does not go back).
     #[must_use]
     pub fn fraction(&self) -> f64 {
-        let stage = Stage::ALL.iter().position(|&s| s == self.stage).unwrap_or(0);
+        let stage = Stage::ALL
+            .iter()
+            .position(|&s| s == self.stage)
+            .unwrap_or(0);
         let done = f64::from(self.search - 1) * 6.0 + stage as f64;
         (done / (f64::from(self.searches) * 6.0)).clamp(0.0, 1.0)
     }
@@ -195,7 +198,11 @@ type Pass = (f64, usize);
 const GLOBAL_STAGES: [(Stage, std::ops::Range<usize>, [Pass; 2]); 4] = [
     (Stage::Tone, 0..8, [(1.0, 8), (0.4, 6)]),
     (Stage::Colour, 8..17, [(1.0, 7), (0.4, 6)]),
-    (Stage::Saturation, SATURATION_INDEX..HUE_VS_HUE_START, [(1.0, 7), (0.4, 6)]),
+    (
+        Stage::Saturation,
+        SATURATION_INDEX..HUE_VS_HUE_START,
+        [(1.0, 7), (0.4, 6)],
+    ),
     (Stage::Hue, HUE_VS_HUE_START..N_GLOBAL, [(1.0, 7), (0.4, 6)]),
 ];
 /// The local stage's passes.
@@ -268,7 +275,11 @@ impl Evaluator<'_, '_> {
     fn objective(&mut self, x: &Params) -> Result<(f64, Terms), FitError> {
         let (t, _) = self.terms_of(x)?;
         self.evals += 1;
-        let total = if self.look_only { t.look_only_total() } else { t.total() };
+        let total = if self.look_only {
+            t.look_only_total()
+        } else {
+            t.total()
+        };
         Ok((total, t))
     }
 }
@@ -342,13 +353,18 @@ fn need_test(ev: &mut Evaluator<'_, '_>, x: &Params) -> Result<Need, FitError> {
         } else {
             0.0
         };
-        let logc_err = if matched { (em.logc - o.el_logc[k]).abs() } else { 0.0 };
+        let logc_err = if matched {
+            (em.logc - o.el_logc[k]).abs()
+        } else {
+            0.0
+        };
         let exposure_err = if exposure_on {
             ((em.l - cm.m.p50) - o.el_off[k]).abs()
         } else {
             0.0
         };
-        let want = matched && (hue_err > NEED_HUE_DEG || logc_err > NEED_LOGC || exposure_err > NEED_EXPOSURE_L);
+        let want = matched
+            && (hue_err > NEED_HUE_DEG || logc_err > NEED_LOGC || exposure_err > NEED_EXPOSURE_L);
         need.local[k] = want && mask_ok[k];
     }
     let sep_err = if o.subj > GATE_OPEN {

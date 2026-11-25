@@ -48,6 +48,7 @@ pub mod pipeline;
 pub mod preferences;
 pub mod presets;
 pub mod reference;
+pub mod reference_fit;
 pub mod scheduler;
 pub mod session;
 pub mod settings;

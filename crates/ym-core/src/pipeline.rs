@@ -48,6 +48,7 @@ use ym_export::ColorSpace;
 pub mod color;
 pub mod depth;
 pub mod faces;
+pub mod fit;
 pub mod frame;
 pub mod geometry;
 pub mod graph;

@@ -79,7 +79,10 @@ impl fmt::Display for NetworkError {
             K::ExpectedSign(t) => write!(f, "expected + or -, got {t}"),
             K::SignWithoutTerm => write!(f, "a sign with no term"),
             K::BadTerm(t) => write!(f, "{t} is not a number times a node"),
-            K::UnknownNode(n) => write!(f, "refers to {n}, which is not an input and not defined earlier"),
+            K::UnknownNode(n) => write!(
+                f,
+                "refers to {n}, which is not an input and not defined earlier"
+            ),
             K::DuplicateName => write!(f, "the name is defined twice"),
             K::BadConst(t) => write!(f, "bad constant row: {t}"),
             K::BadTemplate(t) => write!(f, "bad template line: {t}"),
@@ -87,7 +90,10 @@ impl fmt::Display for NetworkError {
             K::MissingConstant(t) => write!(f, "constant {t} is missing"),
             K::TemplateWithoutEnd => write!(f, "a template has no `end`"),
             K::ApplyWithoutName => write!(f, "`apply` without a template name"),
-            K::MissingOutput(n) => write!(f, "the fit needs the output {n}, which the file does not define"),
+            K::MissingOutput(n) => write!(
+                f,
+                "the fit needs the output {n}, which the file does not define"
+            ),
         }
     }
 }
@@ -316,7 +322,11 @@ impl Network {
                     .next()
                     .ok_or_else(|| err(at, None, NetworkErrorKind::ApplyWithoutName))?;
                 let (var, body) = templates.get(tname).ok_or_else(|| {
-                    err(at, None, NetworkErrorKind::UnknownTemplate(tname.to_owned()))
+                    err(
+                        at,
+                        None,
+                        NetworkErrorKind::UnknownTemplate(tname.to_owned()),
+                    )
                 })?;
                 for value in it {
                     for b in body {
@@ -338,7 +348,10 @@ impl Network {
                                 )),
                             ));
                         }
-                        lines.push(Line { text: s, source: at });
+                        lines.push(Line {
+                            text: s,
+                            source: at,
+                        });
                     }
                 }
             } else {
@@ -356,7 +369,11 @@ impl Network {
         for l in &lines {
             let n = parse_neuron(l, &input_index, &index)?;
             if index.contains_key(&n.name) || input_index.contains_key(&n.name) {
-                return Err(err(l.source, Some(&n.name), NetworkErrorKind::DuplicateName));
+                return Err(err(
+                    l.source,
+                    Some(&n.name),
+                    NetworkErrorKind::DuplicateName,
+                ));
             }
             index.insert(n.name.clone(), neurons.len());
             neurons.push(n);

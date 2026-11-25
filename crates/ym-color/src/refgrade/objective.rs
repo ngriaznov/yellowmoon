@@ -6,8 +6,8 @@
 //! [`terms`] turns the pair into [`Terms`], and [`Terms::total`] and [`Terms::look_only_total`] sum them.
 
 use super::measure::{
-    Measure, PRESENT_SHARE, PURPLE_BAND, PixelScene, Px, circ_mean_deg, measure,
-    network_inputs, oklab_hue, sector_exclusions, wrap_deg,
+    Measure, PRESENT_SHARE, PURPLE_BAND, PixelScene, Px, circ_mean_deg, measure, network_inputs,
+    oklab_hue, sector_exclusions, wrap_deg,
 };
 use super::network::{Network, NetworkError, NetworkErrorKind, NetworkValues};
 use super::{ELEMENT_NAMES, SECTORS};
@@ -244,7 +244,10 @@ impl Targets {
         };
         t.cast = [get("T.cast_a".into())?, get("T.cast_b".into())?];
         t.white = [get("T.white_a".into())?, get("T.white_b".into())?];
-        t.mem_deg = [get("T.mem.sky_deg".into())?, get("T.mem.vegetation_deg".into())?];
+        t.mem_deg = [
+            get("T.mem.sky_deg".into())?,
+            get("T.mem.vegetation_deg".into())?,
+        ];
         for (b, name) in ["s", "m", "h"].iter().enumerate() {
             for (c, cn) in ["a", "b"].iter().enumerate() {
                 t.tint[b][c] = get(format!("T.tint_{name}_{cn}"))?;
@@ -385,7 +388,11 @@ impl Fixed {
         let mut p_sec_logc = [0.0; SECTORS];
         for j in 0..SECTORS {
             cs[j].sort_unstable_by(f64::total_cmp);
-            let med = if cs[j].is_empty() { 0.0 } else { cs[j][cs[j].len() / 2] };
+            let med = if cs[j].is_empty() {
+                0.0
+            } else {
+                cs[j][cs[j].len() / 2]
+            };
             p_sec_logc[j] = med.max(1.0).ln();
         }
         let hl_scope: Vec<bool> = p_px
@@ -396,13 +403,18 @@ impl Fixed {
         let mut p_sec_ab = [[0.0; 2]; SECTORS];
         for j in 0..SECTORS {
             if sec_n[j] > 0 {
-                p_sec_ab[j] = [sec_sum[j][0] / sec_n[j] as f64, sec_sum[j][1] / sec_n[j] as f64];
+                p_sec_ab[j] = [
+                    sec_sum[j][0] / sec_n[j] as f64,
+                    sec_sum[j][1] / sec_n[j] as f64,
+                ];
             }
         }
         let dark_scope: Vec<bool> = p_px
             .iter()
             .enumerate()
-            .map(|(i, q)| !scene.skin[i] && q.lab[0] < DARK_L_MAX && q.lab[1].hypot(q.lab[2]) >= DARK_C_MIN)
+            .map(|(i, q)| {
+                !scene.skin[i] && q.lab[0] < DARK_L_MAX && q.lab[1].hypot(q.lab[2]) >= DARK_C_MIN
+            })
             .collect();
         let p_dark_ab = mean_ab(p_px, &dark_scope);
         let p_okh: Vec<f64> = p_px.iter().map(|q| oklab_hue(q.ok)).collect();
@@ -433,7 +445,9 @@ impl Fixed {
             .iter()
             .enumerate()
             .map(|(i, q)| {
-                !scene.skin[i] && q.lab[0] >= WHITES_L_MIN && q.lab[1].hypot(q.lab[2]) < WHITES_PIXEL_C_MAX
+                !scene.skin[i]
+                    && q.lab[0] >= WHITES_L_MIN
+                    && q.lab[1].hypot(q.lab[2]) < WHITES_PIXEL_C_MAX
             })
             .collect();
         Ok(Self {
@@ -472,7 +486,11 @@ pub fn allowed_turn_deg(c_star: f64, turn_deg: f64, cref: f64, cap: f64) -> f64 
     } else {
         1.0
     };
-    ratio.asin().to_degrees().max(turn_deg).min(cap.max(turn_deg))
+    ratio
+        .asin()
+        .to_degrees()
+        .max(turn_deg)
+        .min(cap.max(turn_deg))
 }
 
 /// The weight with which one pixel counts against the content turn budget. A hue turn of `dh_deg` degrees (an absolute value) that
@@ -546,7 +564,11 @@ fn whites_stats(px: &[Px], scope: &[bool], white: [f64; 2]) -> (f64, f64) {
         d += (q.lab[1] - white[0]).hypot(q.lab[2] - white[1]);
         n += 1;
     }
-    if n == 0 { (0.0, 0.0) } else { (c / n as f64, d / n as f64) }
+    if n == 0 {
+        (0.0, 0.0)
+    } else {
+        (c / n as f64, d / n as f64)
+    }
 }
 
 /// Measures a candidate's sample (`px`, with the photo's `scene`) against the pair's fixed part.
@@ -831,21 +853,34 @@ pub fn terms(c: &CandidateMeasure, f: &Fixed) -> Terms {
             continue;
         }
         let w = g * f.p.sec[j].share.sqrt();
-        t.sector_hue += SECTOR_HUE.2 * w * term(c.sec_shift[j] - o.sector_dh[j], SECTOR_HUE.0, SECTOR_HUE.1);
-        t.sector_chroma +=
-            SECTOR_CHROMA.2 * w * term(c.sec_dlogc[j] - o.sector_dlogc[j], SECTOR_CHROMA.0, SECTOR_CHROMA.1);
+        t.sector_hue +=
+            SECTOR_HUE.2 * w * term(c.sec_shift[j] - o.sector_dh[j], SECTOR_HUE.0, SECTOR_HUE.1);
+        t.sector_chroma += SECTOR_CHROMA.2
+            * w
+            * term(
+                c.sec_dlogc[j] - o.sector_dlogc[j],
+                SECTOR_CHROMA.0,
+                SECTOR_CHROMA.1,
+            );
     }
     for k in 0..6 {
         let (gm, gh) = (o.matched[k], o.hue_gate[k]);
         let w = ELEMENT_WEIGHT[k] * f.p.el[k].share.sqrt();
         let em = &m.el[k];
         if gh > 0.0 && em.has_hue {
-            t.element_hue += w * gh * term(wrap_deg(em.h - o.el_h[k]), ELEMENT_HUE.0, ELEMENT_HUE.1);
+            t.element_hue +=
+                w * gh * term(wrap_deg(em.h - o.el_h[k]), ELEMENT_HUE.0, ELEMENT_HUE.1);
         }
         if gm > 0.0 {
-            t.element_chroma += w * gm * term(em.logc - o.el_logc[k], ELEMENT_CHROMA.0, ELEMENT_CHROMA.1);
-            t.element_exposure +=
-                w * gm * term((em.l - m.p50) - o.el_off[k], ELEMENT_EXPOSURE.0, ELEMENT_EXPOSURE.1);
+            t.element_chroma +=
+                w * gm * term(em.logc - o.el_logc[k], ELEMENT_CHROMA.0, ELEMENT_CHROMA.1);
+            t.element_exposure += w
+                * gm
+                * term(
+                    (em.l - m.p50) - o.el_off[k],
+                    ELEMENT_EXPOSURE.0,
+                    ELEMENT_EXPOSURE.1,
+                );
         }
     }
     let g = o.unify;
@@ -860,7 +895,8 @@ pub fn terms(c: &CandidateMeasure, f: &Fixed) -> Terms {
     walls(&mut t, c, f);
     // The pixel guard of the purple wall.
     if c.np_share > o.purple_max_share {
-        t.guard_purple_pixels = PURPLE_PIXELS.0 * sq((c.np_share - o.purple_max_share) / PURPLE_PIXELS.1);
+        t.guard_purple_pixels =
+            PURPLE_PIXELS.0 * sq((c.np_share - o.purple_max_share) / PURPLE_PIXELS.1);
     }
     t
 }
@@ -941,7 +977,8 @@ fn walls(t: &mut Terms, c: &CandidateMeasure, f: &Fixed) {
         // The whites' direction: the mean per-pixel distance to the reference-given tint.
         let d = c.hl4_d;
         if d > o.white_tol {
-            t.guard_white_direction = WHITES_DIRECTION.0 * sq((d - o.white_tol) / WHITES_DIRECTION.1);
+            t.guard_white_direction =
+                WHITES_DIRECTION.0 * sq((d - o.white_tol) / WHITES_DIRECTION.1);
         }
     }
     let n_dark = f.dark_scope.iter().filter(|&&s| s).count() as f64;
@@ -980,7 +1017,8 @@ fn walls(t: &mut Terms, c: &CandidateMeasure, f: &Fixed) {
         }
         let ch = ch.rem_euclid(360.0);
         if dist(ch) < PURPLE_REACH_DEG && dist(ch) < dist(ph) {
-            t.guard_purple += PURPLE_APPROACH_WEIGHT * sq((PURPLE_REACH_DEG - dist(ch)) / DRIFT_SCALE_DEG) * ok;
+            t.guard_purple +=
+                PURPLE_APPROACH_WEIGHT * sq((PURPLE_REACH_DEG - dist(ch)) / DRIFT_SCALE_DEG) * ok;
         }
     }
     // Skin: the absolute wall and the drift wall, on the mean vector, and the chroma wall (the three of Skin protection).
@@ -988,9 +1026,12 @@ fn walls(t: &mut Terms, c: &CandidateMeasure, f: &Fixed) {
     if pe.share >= PRESENT_SHARE && me.n > 0 {
         let ((_, pc), (h, chroma)) = (pe.mv(), me.mv());
         let eh = (SKIN_HUE.0 - h).max(h - SKIN_HUE.1).max(0.0);
-        let ec = (SKIN_CHROMA.0 - chroma).max(chroma - SKIN_CHROMA.1).max(0.0);
+        let ec = (SKIN_CHROMA.0 - chroma)
+            .max(chroma - SKIN_CHROMA.1)
+            .max(0.0);
         if f.skin_protection {
-            t.guard_skin = SKIN_WEIGHT * (sq(eh / SKIN_ABSOLUTE_SCALE) + sq(ec / SKIN_ABSOLUTE_SCALE));
+            t.guard_skin =
+                SKIN_WEIGHT * (sq(eh / SKIN_ABSOLUTE_SCALE) + sq(ec / SKIN_ABSOLUTE_SCALE));
         }
         if pc >= MIN_MEAN_VECTOR && f.skin_protection {
             let (ph, h) = hues(5);

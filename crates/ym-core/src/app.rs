@@ -229,6 +229,8 @@ pub struct Core {
     memory: Arc<crate::memory::Guard>,
     /// The poll thread, while it runs ([`Core::start_memory_watch`]). Ended first when the core is dropped.
     watch: Mutex<Option<crate::memory::Watch>>,
+    /// The references of the Reference Grade nodes, held for the session and never saved (`docs/34` section 3.7).
+    pub(crate) references: crate::reference_fit::ReferenceHold,
 }
 
 /// What an advisor's change notification does: the session reads the availability again, then the
@@ -452,6 +454,7 @@ impl Core {
             auto_hub,
             memory,
             watch: Mutex::new(None),
+            references: crate::reference_fit::ReferenceHold::default(),
         })
     }
 
@@ -489,6 +492,7 @@ impl Core {
     pub fn close_session(&self) {
         let last = self.session.last_photo_id();
         self.session.close();
+        self.references.clear_all();
         self.renderer.scheduler().cancel_foreground();
         match last {
             Some(last) => self.renderer.retire_through(last),
@@ -506,6 +510,9 @@ impl Core {
     /// What was taken out is kept for [`Core::restore_photos`] until the next removal or the end of the session.
     pub fn remove_photos(&self, ids: &[PhotoId]) -> RemoveOutcome {
         let outcome = self.session.remove(ids);
+        for id in &outcome.removed {
+            self.references.clear_photo(*id);
+        }
         self.renderer.retire_photos(&outcome.removed);
         outcome
     }
@@ -810,6 +817,10 @@ impl Core {
         patch: &SettingsPatch,
     ) -> Result<crate::settings::ResolvedSettings, SessionError> {
         let resolved = self.session.update_settings(id, patch)?;
+        // A reference is held for a Reference Grade node: a node that is gone has none (`docs/34` section 3.7).
+        if !self.references.is_empty() {
+            self.references.prune(id, &resolved.settings);
+        }
         self.prepare_masks(id);
         Ok(resolved)
     }
