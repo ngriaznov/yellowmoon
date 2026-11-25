@@ -1,0 +1,449 @@
+# Reference Grade: the hand-written grading network, v14 (2026-11-25)
+#
+# v14 against v13 (read off a term-by-term diagnosis of dev fits where v13
+# lost the reference's cast; 20-model-v14.md):
+#   - NEW T.turn_full: the cost of a turn grows with how far it goes. A colour
+#     turned just past what it may turn counts as a sliver of a pixel; one
+#     turned to T.turn_full degrees (60, where a turn becomes a reversal)
+#     counts as a whole pixel. Moderate turns (20..60 deg) carry a cast and
+#     cost little; reversals cost as before.
+#
+# v13 against v12 (read off a dev-only ablation of v12; 18-v12-result-ablation.md,
+# 19-model-v13.md):
+#   - NEW T.turn_cref, T.turn_cap: a cast lives in weak colours. A strong
+#     colour (C* >= 25) still turns at most T.turn_deg; a weaker colour may
+#     turn as far as the same sideways move allows (C* * sin(turn) held at
+#     25 * sin(T.turn_deg)), never past 45 deg, well short of a reversal.
+#     A pale wall tinted by the light reads as a tint; the same angle on a
+#     saturated colour reads as another colour.
+#   (Code: the either-end purple turn of v12 (P1) is withdrawn. The content
+#   turn budget already keeps magenta from being pushed out of its family,
+#   and P1 on top of it made skin under coloured light turn 70..150 deg.)
+#
+# v12 against v11 (the first round read off the 56 dev photos of the
+# 130-photo evaluation set and judged on the 74 test photos; every change is a
+# general grading principle, none targets a photo):
+#   - NEW T.turn_deg, T.turn_share: content keeps its hue family. A colour with
+#     C* >= 8 in the photo may turn at most 20 deg (Oklab), 30 deg when unify
+#     is open; at most 3 % of the frame may turn further. A grade moves strong
+#     colours along chroma and lightness; big hue moves belong to near-greys
+#     (a cast), and a colour heading for a far hue goes through grey, not
+#     around the wheel (blue skies turned lilac on their way to gold).
+#   - NEW T.clip_extra: a grade doesn't destroy detail the photo has. New
+#     clipped white or crushed black may exceed the photo's own share by at
+#     most 2 points of the frame, and never the reference's share. (A
+#     reference's black night sky is its content, not a licence to crush.)
+#   (The measurement changes of this round, in 17-model-v12.md: turns count
+#   wherever they end, one hue space (Oklab) for every hue wall, opposite
+#   tints of the whites don't cancel, crushed black at L* < 2.5.)
+#
+#
+# v11 against v10 (the navy jacket still turns purple; a close-up face goes
+# pink under two references):
+#   - NEW T.purple_rot_deg: how far a colour may turn into or within the
+#     purple band. 10 deg normally; 45 deg when the reference holds purple.
+#     The objective now asks how far each colour turned, not only whether it
+#     entered the band: in CIELAB a dark navy already sits inside the band,
+#     so "entering" never fired. (The band is now measured in Oklab hue,
+#     300..355 deg; that is a measurement change, in 15-model-v11.md.)
+#   - NEW T.skin_dlogC_max: how much skin chroma may rise. 0.12 in log terms
+#     (about +13 %) when the reference's skin is not matched; up to 0.30
+#     (about +35 %) when it is. Pink faces came from chroma rising 27..37 %
+#     with the hue nearly unchanged.
+#
+# v10 against v9 (the navy jacket still turns purple: group averages hide it
+# among other dark colours):
+#   - NEW T.purple_max_share: the largest share of the photo's pixels that may
+#     newly turn purple or magenta. 1 % normally; up to 25 % when the
+#     reference itself holds purple (T.purple_ok). The objective now counts
+#     pixels, not group averages, so a jacket cannot hide in a group.
+#
+# v9 against v8
+# v9 against v8 (the owner: "right direction, continue"; remaining failures:
+# a dark navy jacket still goes purple, a field photo's sky turns lilac):
+#   - NEW memory-colour limits T.mem.sky_deg and T.mem.vegetation_deg: sky and
+#     foliage are colours everyone knows. When the reference gives no evidence
+#     for them (not matched), their hue may drift at most 10 deg (sky) and
+#     12 deg (foliage); when matched, up to the element's cap + 5.
+#   (The purple wall now also sees dark, low-chroma colours: clothing and a new
+#   "dark colours" group, with a chroma-weighted hue; that is a measurement
+#   change, in 13-model-v9.md.)
+#
+# v8 against v7
+# v8 against v7 (remaining failures of v7: content drifting into purple and
+# magenta, e.g. a navy jacket, lilac skies, a purple sofa; lavender haze on
+# whites; faces still tinted pink or yellow):
+#   - NEW T.purple_ok: film grades almost never push content into purple or
+#     magenta. The objective forbids moving a colour into hue 285..345 deg
+#     unless the reference itself holds at least 5..8 % of its frame there.
+#   - NEW T.white_a, T.white_b, T.white_tol: the photo's whites may take the
+#     reference's own highlight tint (0.8 of it, +-12), within a tolerance of
+#     3 + 0.25 * (|a*| + |b*|) (at most 6), and no other: creamy whites under a
+#     creamy reference, no lavender ever.
+#   - NEW T.skin_drift: skin hue may move at most 6 deg from the photo's own,
+#     10 deg when the reference's skin is matched and its hue reliable.
+#
+# v7 against v6:
+# v7 against v6 (two failures of v6: unify tinted bright whites, e.g. a white
+# monument went green under a green-cast reference; and skin gave way to the
+# frame cast, a face went pink under a cool reference):
+#   - the unify wall opens to 45 deg, not 55 (T.wall_deg = 25 + 20*G.unify);
+#   - NEW output T.hl_cmax: the most chroma a bright near-neutral pixel of the
+#     photo may take. 5 plus 0.8 of the reference's own highlight tint
+#     (|a*| + |b*|), at most 14: a reference with creamy whites allows creamy
+#     whites, a neutral one keeps them neutral.
+#   (The cast measurement now leaves out skin and pixels above L* 80, and the
+#   skin wall is much stronger; those are measurement and guard changes, in
+#   11-model-v7.md.)
+#
+# v6 against v5 (the owner: "Continue direction 5"; push the look harder while
+# keeping skin and content colours safe):
+#   - the look-carrying moves are stronger: ceiling 0.8, contrast 0.85,
+#     saturation 0.85 (ratio 0.5..1.5), tint +-20, sectors full weight with
+#     +-35 deg and chroma 0.5..1.7, sector gate 2..3 % (was 4..6 %);
+#   - element weights up (skin unchanged): sky 0.85/0.90, vegetation and water
+#     0.75, ground 0.65, built 0.45;
+#   - NEW "unify" rule: a reference whose whole frame leans to one colour
+#     (a teal room, an amber frame, warm dark interiors)
+#     pulls the photo's frame colour toward it, and opens the hue-drift wall
+#     from 25 to 55 deg (the wall limit is now a network output, T.wall_deg);
+#   - NEW dark-sky rule: a "sky" with median L* under about 18..22 (a black
+#     studio backdrop, a night sky) is not treated as sky.
+#
+# A feed-forward network whose every weight and bias is written by hand
+# (weight-space programming). It reads measurements of the photo (P, the
+# photo's default render) and the reference (R), and writes the grading
+# TARGETS and GATES. The solver then finds node settings that reach the
+# targets through the person's real chain. The network makes every grading
+# decision; the solver makes none.
+#
+# Format (one neuron per line):
+#   name = relu( bias + w*node + w*node ... )     or  lin( ... )
+#   - "node" is an input or a neuron defined on an earlier line.
+#   - A term without a number has weight 1; "- node" has weight -1.
+#   - {x} is a constant from the template's table; "-{x}" is its negative.
+#   - template NAME(var) ... end   defines a block; "apply NAME a b c" expands
+#     it once per value, with {var} replaced and the row of constants of that
+#     value in scope.
+#   - Every neuron whose name starts with "T." or "G." is an output.
+# Activations: relu(x) = max(0, x); lin(x) = x. Evaluated in f64, in file order.
+#
+# Building blocks used below (written out each time, no hidden functions):
+#   clamp(x, lo, hi)   = lo + relu(x - lo) - relu(x - hi)
+#   step(x >= t, width w) = relu((x - t)/w) - relu((x - t)/w - 1)
+#   min(x, y)          = x - relu(x - y)
+#   AND(a, b) on [0,1] = relu(a + b - 1)
+#   gate(m, g, M)      = relu(m - M(1-g)) - relu(-m - M(1-g))   for |m| <= M
+#                        (m when g = 1, 0 when g = 0)
+
+# ---------------------------------------------------------------- global
+
+# Key mismatch: a low-key reference (median L* <= 23..25) on a high-key photo
+# (median L* >= 40..42). Its exposure relationships are then content, not grade.
+glob.ka1 = relu( 12.5 - 0.5*R.p50 )
+glob.ka2 = relu( 11.5 - 0.5*R.p50 )
+glob.ka  = lin( 0 + glob.ka1 - glob.ka2 )
+glob.kb1 = relu( -20 + 0.5*P.p50 )
+glob.kb2 = relu( -21 + 0.5*P.p50 )
+glob.kb  = lin( 0 + glob.kb1 - glob.kb2 )
+G.key_mismatch = relu( -1 + glob.ka + glob.kb )
+
+# Black floor (p2 L*): move 0.8 of the difference, clipped to +-12;
+# only 0.4 of it under a key mismatch.
+glob.f1  = relu( 12 + R.p2 - P.p2 )
+glob.f2  = relu( -12 + R.p2 - P.p2 )
+glob.fc  = lin( -12 + glob.f1 - glob.f2 )
+glob.fkp = relu( -12 + glob.fc + 12*G.key_mismatch )
+glob.fkn = relu( -12 - glob.fc + 12*G.key_mismatch )
+T.p2     = lin( 0 + P.p2 + 0.8*glob.fc - 0.4*glob.fkp + 0.4*glob.fkn )
+
+# White ceiling (p98 L*): move 0.8 of the difference, clipped to +-12.
+glob.w1  = relu( 12 + R.p98 - P.p98 )
+glob.w2  = relu( -12 + R.p98 - P.p98 )
+T.p98    = lin( -9.6 + P.p98 + 0.8*glob.w1 - 0.8*glob.w2 )
+
+# Mid contrast (IQR over floor-to-ceiling spread): 0.85 of the difference, +-0.15.
+glob.i1  = relu( 0.15 + R.iqr_rel - P.iqr_rel )
+glob.i2  = relu( -0.15 + R.iqr_rel - P.iqr_rel )
+T.iqr_rel = lin( -0.1275 + P.iqr_rel + 0.85*glob.i1 - 0.85*glob.i2 )
+
+# Exposure anchor: the photo keeps its own median.
+T.p50    = lin( 0 + P.p50 )
+
+# Overall saturation (log median C* of labelled non-person, non-sky pixels):
+# 0.85 of the log ratio, the ratio clipped to 0.5..1.5.
+glob.s1  = relu( 0.6931 + R.logsat - P.logsat )
+glob.s2  = relu( -0.4055 + R.logsat - P.logsat )
+T.logsat = lin( -0.589135 + P.logsat + 0.85*glob.s1 - 0.85*glob.s2 )
+
+# Tint of near-neutral, neutral-capable pixels per L* band (shadows s,
+# mids m, highlights h; a* and b*): the full difference, clipped to +-20.
+template tint(c)
+tint.{c}.t1 = relu( 20 + R.tint_{c} - P.tint_{c} )
+tint.{c}.t2 = relu( -20 + R.tint_{c} - P.tint_{c} )
+T.tint_{c}  = lin( -20 + P.tint_{c} + tint.{c}.t1 - tint.{c}.t2 )
+end
+apply tint s_a s_b m_a m_b h_a h_b
+
+# Unify: the reference's whole frame leans to one colour. conc is the length
+# of the frame's mean (a*, b*) over its mean C* (0: colours cancel out, 1: every
+# pixel the same hue). Open when the reference's conc is >= 0.45..0.60 AND it is
+# at least 0.05..0.15 above the photo's.
+glob.u1  = relu( -3 + 6.666667*R.conc )
+glob.u2  = relu( -4 + 6.666667*R.conc )
+glob.ua  = lin( 0 + glob.u1 - glob.u2 )
+glob.v1  = relu( -0.5 + 10*R.conc - 10*P.conc )
+glob.v2  = relu( -1.5 + 10*R.conc - 10*P.conc )
+glob.ub  = lin( 0 + glob.v1 - glob.v2 )
+G.unify  = relu( -1 + glob.ua + glob.ub )
+
+# Frame cast (mean a*, b* of the whole frame): 0.8 of the difference, +-15,
+# only when unify is open.
+template cast(c)
+cast.{c}.d1 = relu( 15 + R.cast_{c} - P.cast_{c} )
+cast.{c}.d2 = relu( -15 + R.cast_{c} - P.cast_{c} )
+cast.{c}.dc = lin( -15 + cast.{c}.d1 - cast.{c}.d2 )
+cast.{c}.p  = relu( -12 + 0.8*cast.{c}.dc + 12*G.unify )
+cast.{c}.n  = relu( -12 - 0.8*cast.{c}.dc + 12*G.unify )
+T.cast_{c}  = lin( 0 + P.cast_{c} + cast.{c}.p - cast.{c}.n )
+end
+apply cast a b
+
+# The hue-drift wall's limit: 25 deg, opened to 45 deg when unify is open
+# (a unified palette has to move content colours, within reason).
+T.wall_deg = lin( 25 + 20*G.unify )
+
+# Highlight neutrality: the most chroma a bright near-neutral pixel of the
+# photo may take = 5 + 0.8 * (|R.tint_h_a| + |R.tint_h_b|), at most 14.
+hl.ap  = relu( 0 + R.tint_h_a )
+hl.an  = relu( 0 - R.tint_h_a )
+hl.bp  = relu( 0 + R.tint_h_b )
+hl.bn  = relu( 0 - R.tint_h_b )
+hl.raw = lin( 5 + 0.8*hl.ap + 0.8*hl.an + 0.8*hl.bp + 0.8*hl.bn )
+hl.over = relu( -14 + hl.raw )
+T.hl_cmax = lin( 0 + hl.raw - hl.over )
+
+# Whites take the reference's own highlight tint: 0.8 of it, clipped to +-12.
+template white(c)
+white.{c}.t1 = relu( 12 + R.tint_h_{c} )
+white.{c}.t2 = relu( -12 + R.tint_h_{c} )
+T.white_{c}  = lin( -9.6 + 0.8*white.{c}.t1 - 0.8*white.{c}.t2 )
+end
+apply white a b
+
+# ... within a tolerance of 3 + 0.25 * (|a*| + |b*|) of the reference's
+# highlight tint, at most 6.
+wt.raw  = lin( 3 + 0.25*hl.ap + 0.25*hl.an + 0.25*hl.bp + 0.25*hl.bn )
+wt.over = relu( -6 + wt.raw )
+T.white_tol = lin( 0 + wt.raw - wt.over )
+
+# Purple is allowed only if the reference holds at least 5..8 % of its frame
+# in Oklab hue 300..355 deg with C* > 8 (R.magenta_share; CIELAB 285..345
+# before v11).
+pu.1 = relu( -1.6666667 + 33.333333*R.magenta_share )
+pu.2 = relu( -2.6666667 + 33.333333*R.magenta_share )
+T.purple_ok = lin( 0 + pu.1 - pu.2 )
+
+# The share of pixels that may newly turn purple: 1 %, up to 25 % when the
+# reference holds purple.
+T.purple_max_share = lin( 0.01 + 0.24*T.purple_ok )
+
+# How far a colour may turn into or within the purple band: 10 deg, up to
+# 45 deg when the reference holds purple.
+T.purple_rot_deg = lin( 10 + 35*T.purple_ok )
+
+# ---------------------------------------------------------------- subject
+
+# Subject separation (subject median L* minus background median L*):
+# 0.6 of the difference, +-12, only if both have a subject and no key mismatch.
+subj.g  = relu( -1 + P.subj + R.subj - G.key_mismatch )
+subj.d1 = relu( 12 + R.sep - P.sep )
+subj.d2 = relu( -12 + R.sep - P.sep )
+subj.dc = lin( -12 + subj.d1 - subj.d2 )
+subj.p  = relu( -7.2 + 0.6*subj.dc + 7.2*subj.g )
+subj.n  = relu( -7.2 - 0.6*subj.dc + 7.2*subj.g )
+T.sep   = lin( 0 + P.sep + subj.p - subj.n )
+G.subj  = lin( 0 + subj.g )
+
+# ---------------------------------------------------------------- hue sectors
+# The look's palette on pixels no element covers (6 sectors of 60 deg).
+# Gate: both pictures hold at least 2..3 % of the frame in the sector.
+# Hue: the full mean hue difference, clipped to +-35 deg.
+# Chroma: the full log ratio, the ratio clipped to 0.5..1.7.
+
+template sector(j)
+s{j}.d    = relu( 0 + P.s{j}.share - R.s{j}.share )
+s{j}.min  = lin( 0 + P.s{j}.share - s{j}.d )
+s{j}.g1   = relu( -2 + 100*s{j}.min )
+s{j}.g2   = relu( -3 + 100*s{j}.min )
+G.s{j}    = lin( 0 + s{j}.g1 - s{j}.g2 )
+s{j}.h1   = relu( 35 + D.s{j}.dh )
+s{j}.h2   = relu( -35 + D.s{j}.dh )
+s{j}.hc   = lin( -35 + s{j}.h1 - s{j}.h2 )
+s{j}.hp   = relu( -35 + s{j}.hc + 35*G.s{j} )
+s{j}.hn   = relu( -35 - s{j}.hc + 35*G.s{j} )
+T.s{j}.dh = lin( 0 + s{j}.hp - s{j}.hn )
+s{j}.c1   = relu( 0.6931 + R.s{j}.logC - P.s{j}.logC )
+s{j}.c2   = relu( -0.5306 + R.s{j}.logC - P.s{j}.logC )
+s{j}.cc   = lin( -0.6931 + s{j}.c1 - s{j}.c2 )
+s{j}.cp   = relu( -0.70 + s{j}.cc + 0.70*G.s{j} )
+s{j}.cn   = relu( -0.70 - s{j}.cc + 0.70*G.s{j} )
+T.s{j}.dlogC = lin( 0 + s{j}.cp - s{j}.cn )
+end
+apply sector 0 1 2 3 4 5
+
+# ---------------------------------------------------------------- elements
+#
+# Per element: matched (both pictures hold >= 2..3 % of the frame), hue
+# reliability (min of the two median chromas / 12, clipped to 0..1), a hue
+# move toward the reference (w_hue of the difference, clipped to +-cap),
+# a chroma move (w_sat of the log ratio, ratio clipped to 0.45..1.6), and an
+# exposure move relative to the frame median (w_exp of the difference,
+# clipped to +-cap_exp; none under a key mismatch).
+#
+# Constants (why, from the reference stills the POC was read on):
+#   sky carries the look most (cyan-green, muted warm grey and natural blue
+#   skies); foliage next (yellow grass, dark muted foliage); water (a
+#   cyan-green sea); ground (sand and earth
+#   warmth); built surfaces are real-world colours, weak evidence; skin moves
+#   least and stays natural.
+#
+#              w_hue  cap  M_h    lo   hi   w_sat  M_s     w_exp cap_exp M_e
+# sky          0.85   40   34     175  285  0.90   0.7187  0.5   10      5
+# vegetation   0.75   35   26.25  70   180  0.90   0.7187  0.4   8       3.2
+# water        0.75   35   26.25  150  285  0.85   0.6787  0.4   8       3.2
+# ground       0.65   30   19.5   -    -    0.85   0.6787  0.4   8       3.2
+# built        0.45   25   11.25  -    -    0.65   0.5190  0.3   8       2.4
+# skin         0.35   15   5.25   30   70   0.50   0.3993  0.3   8       2.4
+# (M_h = w_hue*cap, M_s = w_sat*0.7985, M_e = w_exp*cap_exp: the big-M of each gate)
+
+const sky        w_hue=0.85 cap=40 M_h=34    lo=175 hi=285 w_sat=0.90 M_s=0.7187 w_exp=0.5 cap_exp=10 M_e=5
+const vegetation w_hue=0.75 cap=35 M_h=26.25 lo=70  hi=180 w_sat=0.90 M_s=0.7187 w_exp=0.4 cap_exp=8  M_e=3.2
+const water      w_hue=0.75 cap=35 M_h=26.25 lo=150 hi=285 w_sat=0.85 M_s=0.6787 w_exp=0.4 cap_exp=8  M_e=3.2
+const ground     w_hue=0.65 cap=30 M_h=19.5                w_sat=0.85 M_s=0.6787 w_exp=0.4 cap_exp=8  M_e=3.2
+const built      w_hue=0.45 cap=25 M_h=11.25               w_sat=0.65 M_s=0.5190 w_exp=0.3 cap_exp=8  M_e=2.4
+const skin       w_hue=0.35 cap=15 M_h=5.25  lo=30  hi=70  w_sat=0.50 M_s=0.3993 w_exp=0.3 cap_exp=8  M_e=2.4
+
+# Part A: both pictures hold the element (>= 2..3 % of the frame).
+template matched_raw(e)
+{e}.share_d   = relu( 0 + P.{e}.share - R.{e}.share )
+{e}.share_min = lin( 0 + P.{e}.share - {e}.share_d )
+{e}.g1        = relu( -2 + 100*{e}.share_min )
+{e}.g2        = relu( -3 + 100*{e}.share_min )
+{e}.m0        = lin( 0 + {e}.g1 - {e}.g2 )
+end
+apply matched_raw sky vegetation water ground built skin
+
+# Dark-sky rule: a "sky" counts only if its median L* is above about 18..22
+# in both pictures (a black studio backdrop or a night sky is not a sky).
+sky.lp1 = relu( -4.5 + 0.25*P.sky.L )
+sky.lp2 = relu( -5.5 + 0.25*P.sky.L )
+sky.litP = lin( 0 + sky.lp1 - sky.lp2 )
+sky.lr1 = relu( -4.5 + 0.25*R.sky.L )
+sky.lr2 = relu( -5.5 + 0.25*R.sky.L )
+sky.litR = lin( 0 + sky.lr1 - sky.lr2 )
+G.sky.matched = relu( -2 + sky.m0 + sky.litP + sky.litR )
+
+template matched_plain(e)
+G.{e}.matched = lin( 0 + {e}.m0 )
+end
+apply matched_plain vegetation water ground built skin
+
+# Part B: hue, chroma and exposure per element.
+template element(e)
+# hue reliability and the hue gate
+{e}.c_d       = relu( 0 + P.{e}.C - R.{e}.C )
+{e}.c_min     = lin( 0 + P.{e}.C - {e}.c_d )
+{e}.r1        = relu( 0 + 0.0833333*{e}.c_min )
+{e}.r2        = relu( -1 + 0.0833333*{e}.c_min )
+{e}.reliable  = lin( 0 + {e}.r1 - {e}.r2 )
+G.{e}.hue     = relu( -1 + G.{e}.matched + {e}.reliable )
+# hue move
+{e}.h1        = relu( {cap} + D.{e}.dh )
+{e}.h2        = relu( -{cap} + D.{e}.dh )
+{e}.dh_c      = lin( -{cap} + {e}.h1 - {e}.h2 )
+{e}.hp        = relu( -{M_h} + {w_hue}*{e}.dh_c + {M_h}*G.{e}.hue )
+{e}.hn        = relu( -{M_h} - {w_hue}*{e}.dh_c + {M_h}*G.{e}.hue )
+{e}.move_h    = lin( 0 + {e}.hp - {e}.hn )
+# chroma move (log)
+{e}.k1        = relu( 0.7985 + R.{e}.logC - P.{e}.logC )
+{e}.k2        = relu( -0.4700 + R.{e}.logC - P.{e}.logC )
+{e}.dl_c      = lin( -0.7985 + {e}.k1 - {e}.k2 )
+{e}.sp        = relu( -{M_s} + {w_sat}*{e}.dl_c + {M_s}*G.{e}.matched )
+{e}.sn        = relu( -{M_s} - {w_sat}*{e}.dl_c + {M_s}*G.{e}.matched )
+{e}.T_logC    = lin( 0 + P.{e}.logC + {e}.sp - {e}.sn )
+# exposure move, relative to the frame median
+{e}.e_gate    = relu( 0 + G.{e}.matched - G.key_mismatch )
+{e}.d1        = relu( {cap_exp} + R.{e}.L - R.p50 - P.{e}.L + P.p50 )
+{e}.d2        = relu( -{cap_exp} + R.{e}.L - R.p50 - P.{e}.L + P.p50 )
+{e}.dc        = lin( -{cap_exp} + {e}.d1 - {e}.d2 )
+{e}.ep        = relu( -{M_e} + {w_exp}*{e}.dc + {M_e}*{e}.e_gate )
+{e}.en        = relu( -{M_e} - {w_exp}*{e}.dc + {M_e}*{e}.e_gate )
+T.{e}.off     = lin( 0 + P.{e}.L - P.p50 + {e}.ep - {e}.en )
+end
+
+# Hue target inside a plausible window [lo, hi], widened to include the
+# photo's own hue when that is outside it (a sunset sky keeps being a sunset).
+template window(e)
+{e}.wl        = relu( {lo} - P.{e}.h )
+{e}.wh        = relu( -{hi} + P.{e}.h )
+{e}.lo        = lin( {lo} - {e}.wl )
+{e}.hi        = lin( {hi} + {e}.wh )
+{e}.x1        = relu( 0 + P.{e}.h + {e}.move_h - {e}.lo )
+{e}.x2        = relu( 0 + P.{e}.h + {e}.move_h - {e}.hi )
+T.{e}.h       = lin( 0 + {e}.lo + {e}.x1 - {e}.x2 )
+end
+
+# Hue target with no window (ground and built surfaces have any hue).
+template free(e)
+T.{e}.h       = lin( 0 + P.{e}.h + {e}.move_h )
+end
+
+# Chroma target passed through (all but skin).
+template chroma(e)
+T.{e}.logC    = lin( 0 + {e}.T_logC )
+end
+
+apply element sky vegetation water ground built skin
+apply window  sky vegetation water skin
+apply free    ground built
+apply chroma  sky vegetation water ground built
+
+# Skin chroma stays natural: C* 12..38 (ln 2.4849 .. 3.6376).
+skin.q1      = relu( -2.4849 + skin.T_logC )
+skin.q2      = relu( -3.6376 + skin.T_logC )
+T.skin.logC  = lin( 2.4849 + skin.q1 - skin.q2 )
+
+# Skin hue may drift 6 deg from the photo's own, 10 deg when the reference's
+# skin is matched with a reliable hue.
+T.skin_drift = lin( 6 + 4*G.skin.hue )
+
+# Skin chroma may rise at most 0.12 in log terms (about +13 %) above the
+# photo's own; up to 0.30 (about +35 %) when the reference's skin is matched.
+T.skin_dlogC_max = lin( 0.12 + 0.18*G.skin.matched )
+
+# Memory colours: the sky keeps its hue within 10 deg when unmatched, within
+# 45 deg (its cap 40 + 5) when matched; foliage within 12 deg, or 40 (35 + 5).
+T.mem.sky_deg        = lin( 10 + 35*G.sky.matched )
+T.mem.vegetation_deg = lin( 12 + 28*G.vegetation.matched )
+
+# ---------------------------------------------------------------- v12
+
+# Content keeps its hue family: the most a chromatic colour may turn, 20 deg,
+# 30 deg when unify is open; the share of the frame that may turn further.
+T.turn_deg   = lin( 20 + 10*G.unify )
+T.turn_share = lin( 0.03 + 0*G.unify )
+
+# New clipped white or crushed black beyond the photo's own share: at most
+# 2 points of the frame (and never beyond the reference's share; code).
+T.clip_extra = lin( 0.02 + 0*G.unify )
+
+# A cast lives in weak colours: the chroma at and above which a colour turns
+# at most T.turn_deg; weaker colours keep the same sideways move, up to
+# T.turn_cap degrees.
+T.turn_cref  = lin( 25 + 0*G.unify )
+T.turn_cap   = lin( 45 + 0*G.unify )
+
+# The cost of a turn grows with how far it goes: the turn at which a colour
+# counts as a whole pixel of the budget (a reversal).
+T.turn_full  = lin( 60 + 0*G.unify )

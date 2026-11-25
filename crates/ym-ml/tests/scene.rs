@@ -167,6 +167,7 @@ fn a_picture_goes_through_the_segmenter_to_the_scene_and_to_the_soft_planes() {
             width: w,
             height: h,
             bits: scene.bits.clone(),
+            classes: scene.classes.clone(),
         };
         let guide = lightness(&rgb);
         let planes = soft_masks_of_picture(&element_scene, &covering, &guide, w, h);

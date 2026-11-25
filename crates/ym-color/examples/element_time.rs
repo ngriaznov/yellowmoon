@@ -39,6 +39,7 @@ fn scene(w: usize, h: usize) -> ElementScene {
         })
         .collect();
     ElementScene {
+        classes: Vec::new(),
         key: 1,
         width: w,
         height: h,

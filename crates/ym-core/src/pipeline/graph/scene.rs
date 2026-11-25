@@ -132,12 +132,12 @@ pub(crate) struct SceneSlot {
 }
 
 impl SceneSlot {
-    /// Bytes the scene holds (a byte a pixel).
+    /// Bytes the scene holds (two bytes a pixel: the element bits and the segmenter's element number).
     pub(crate) fn bytes(&self) -> usize {
         lock(&self.state)
             .ready
             .as_ref()
-            .map_or(0, |e| e.scene.bits.len())
+            .map_or(0, |e| e.scene.bits.len() + e.scene.classes.len())
     }
 
     /// The person left the photo: nothing is wanted for it, and a run that was started in the background stops.
@@ -318,6 +318,7 @@ impl Renderer {
                 width: made.width,
                 height: made.height,
                 bits: made.bits,
+                classes: made.classes,
             }),
             ms,
         })
@@ -599,6 +600,7 @@ impl Renderer {
                 width: made.width,
                 height: made.height,
                 bits: made.bits,
+                classes: made.classes,
             }),
         })
     }

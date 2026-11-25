@@ -78,6 +78,10 @@ pub struct SceneBits {
     pub height: usize,
     /// `width * height` bytes, rows top to bottom, with the bits of [`SKY`] to [`SUBJECT`].
     pub bits: Vec<u8>,
+    /// `width * height` bytes: the segmenter's element number of every pixel ([`Element`] as its number: unlabelled 0, sky 1,
+    /// vegetation 2, water 3, ground 4, architecture 5, interior 6, person 7, other thing 8, other stuff 9). The bits fold these
+    /// into the grade's elements; the fit's measures (`docs/34` section 4b.4) need the finer table.
+    pub classes: Vec<u8>,
     /// Whether skin could be looked for: false when the MediaPipe weights were not there (the scene has no skin then).
     pub skin_available: bool,
 }
@@ -310,6 +314,7 @@ pub fn scene_from_labels(
         width,
         height,
         bits,
+        classes: elements,
         skin_available: selfie.is_some(),
     })
 }

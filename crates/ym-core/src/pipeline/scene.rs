@@ -330,10 +330,20 @@ impl SceneModel {
                 if bits.len() != width * height {
                     return Err(failed("the scene has the wrong size"));
                 }
+                // The fake draws bits only: its classes are read off them (as `ElementScene::class_at` does).
+                let classes = bits
+                    .iter()
+                    .map(|&b| {
+                        (0..5)
+                            .find(|&e| b >> e & 1 != 0)
+                            .map_or(if b & SKIN != 0 { 7 } else { 0 }, |e| e as u8 + 1)
+                    })
+                    .collect();
                 Ok(SceneBits {
                     width,
                     height,
                     bits,
+                    classes,
                     skin_available: *skin,
                 })
             }

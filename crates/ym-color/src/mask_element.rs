@@ -65,6 +65,10 @@ pub struct ElementScene {
     pub height: usize,
     /// `width * height` bytes, rows top to bottom.
     pub bits: Vec<u8>,
+    /// The segmenter's element number of every pixel (`width * height` bytes: unlabelled 0, sky 1, vegetation 2, water 3, ground 4,
+    /// architecture 5, interior 6, person 7, other thing 8, other stuff 9), which the fit's measures read (`docs/34` section 4b.4).
+    /// Empty for a scene made without them (the tests' stand-ins): [`ElementScene::class_at`] then reads them off the bits.
+    pub classes: Vec<u8>,
 }
 
 impl std::fmt::Debug for ElementScene {
@@ -97,6 +101,29 @@ impl ElementScene {
         let x = ((pos[0] * self.width as f64).floor().max(0.0) as usize).min(self.width - 1);
         let y = ((pos[1] * self.height as f64).floor().max(0.0) as usize).min(self.height - 1);
         self.bits[y * self.width + x]
+    }
+
+    /// The segmenter's element number at the place `pos` (fractions of the photo frame; nearest neighbour, as [`ElementScene::bits_at`]),
+    /// and whether the pixel is skin and whether it is the subject. A scene with no `classes` reads them off the bits: the five
+    /// class elements (built is architecture), skin as person, anything else unlabelled.
+    #[must_use]
+    pub fn class_at(&self, pos: [f64; 2]) -> (u8, bool, bool) {
+        if self.width == 0 || self.height == 0 {
+            return (0, false, false);
+        }
+        let x = ((pos[0] * self.width as f64).floor().max(0.0) as usize).min(self.width - 1);
+        let y = ((pos[1] * self.height as f64).floor().max(0.0) as usize).min(self.height - 1);
+        let i = y * self.width + x;
+        let bits = self.bits[i];
+        let skin = bits >> 5 & 1 != 0;
+        let subject = bits >> 6 & 1 != 0;
+        let class = match self.classes.get(i) {
+            Some(&c) => c,
+            None => (0..5)
+                .find(|&e| bits >> e & 1 != 0)
+                .map_or(if skin { 7 } else { 0 }, |e| e as u8 + 1),
+        };
+        (class, skin, subject)
     }
 
     /// The share of the grid's pixels that belong to element `e`.
@@ -492,6 +519,7 @@ mod tests {
             width: w,
             height: h,
             bits: (0..w * h).map(|i| f(i % w, i / w)).collect(),
+            classes: Vec::new(),
         }
     }
 
