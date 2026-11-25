@@ -1,0 +1,43 @@
+<!doctype html>
+<html class="dark" data-theme="dark" lang="en" style="background: rgb(15, 15, 16); color-scheme: dark; --cell-x: 0px; --cell-y: 75px; --cell-w: 1040px; --cell-h: 693.328125px;"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<meta content="dark" name="color-scheme"/>
+<title>Yellowmoon · Before and after</title>
+<link href="../../../mixers/html/app.css" rel="stylesheet"/>
+<link href="../../../nodes/html/nv.css" rel="stylesheet"/>
+<link href="../../../mixers/html/mixers.css" rel="stylesheet"/>
+<link href="../../../skin/html/skin.css" rel="stylesheet"/>
+<link href="../../../colour-uniform/html/cc.css" rel="stylesheet"/>
+<link href="../rg.css" rel="stylesheet"/>
+</head>
+<body><div class="mx-sheet sk-sheet"><h1 class="mx-sheet__title">Reference Grade · before and after</h1><p class="mx-sheet__sub"><b>The values are illustrative; no fit was run.</b> The photo and the reference are drawings (no photograph, no film still, nobody’s likeness). The result is the maths of <code>docs/34</code> §3, §4 and §4a applied by <code>rg_ref.py</code> with values chosen by hand, through soft masks taken from the drawing’s own element layers. The display transform is a simple filmic curve and the sRGB encoding, not the product’s.</p><section><div class="rg-tiles"><figure class="rg-tile "><img src="../assets/scene.jpg" alt="The photo"><figcaption><b>The photo</b>A drawn lakeside village. Nothing is graded.</figcaption></figure><figure class="rg-tile "><img src="../assets/reference.jpg" alt="The reference"><figcaption><b>The reference</b>A drawn harbour at dusk with a teal-and-amber grade. Different content on purpose: a reference is matched in its distributions, not pixel by pixel.</figcaption></figure><figure class="rg-tile "><img src="../assets/scene-fitted.jpg" alt="Fitted, Strength 100 %"><figcaption><b>Fitted, Strength 100 %</b>The global grade, the hue curves and the element grades. Luma is restored by the hue step.</figcaption></figure><figure class="rg-tile "><img src="../assets/scene-s50.jpg" alt="The same fit at Strength 50 %"><figcaption><b>The same fit at Strength 50 %</b>Every fitted value is halfway to the identity, with no re-fit (a ratio such as Chroma goes by a power).</figcaption></figure><figure class="rg-tile "><img src="../assets/scene-global.jpg" alt="Without the element grades"><figcaption><b>Without the element grades</b>The same fit with the Elements tab at the identity: the buildings, the sky and the skin keep the photo's own colour.</figcaption></figure><div class="rg-vals"><b>Values used (illustrative)</b><table><tr><th>Global</th><td>luma toe −0.35 stop, red and blue curves, saturation −6</td></tr><tr><th>Hue vs hue</th><td>120° +12°, 240° −10°, the others within ±6°</td></tr><tr><th>Hue vs saturation</th><td>60° ×1.15, 120° ×0.85, 240° ×1.12</td></tr><tr><th>Sky</th><td>−0.30 EV · −8° · 115 %</td></tr><tr><th>Vegetation</th><td>−0.10 EV · +12° · 80 %</td></tr><tr><th>Ground</th><td>+0.10 EV · +8° · 110 %</td></tr><tr><th>Built</th><td>0 EV · +6° · 110 %</td></tr><tr><th>Skin</th><td>+0.10 EV · +3° · 100 %</td></tr><tr><th>Subject</th><td>+0.20 EV</td></tr><tr><th>Water</th><td>left at the identity: under 2 % of the photo</td></tr></table></div></div></section></div>
+<script>
+(async function () {
+  try { await document.fonts.ready; await Promise.all(['400','600','700','800'].map(function (w) { return document.fonts.load(w + ' 14px Figtree'); })); } catch (e) {}
+  function seg() {
+    document.querySelectorAll('[data-slot="segmented-control"]').forEach(function (g) {
+      var on = g.querySelector('[data-state="on"]'); if (!on) return;
+      var th = g.querySelector('[data-slot="segmented-control-thumb"]');
+      g.style.setProperty('--indicator-x', on.offsetLeft + 'px'); g.style.setProperty('--indicator-y', on.offsetTop + 'px');
+      g.style.setProperty('--indicator-w', on.offsetWidth + 'px'); g.style.setProperty('--indicator-h', on.offsetHeight + 'px');
+      g.setAttribute('data-indicator-ready', 'true'); g.style.setProperty('--indicator-opacity', '1');
+    });
+    var tl = document.querySelector('[role="tablist"]');
+    if (tl) {
+      var a = tl.querySelector('[aria-selected="true"]'), r = document.createRange(); r.selectNodeContents(a);
+      var rb = r.getBoundingClientRect(), tb = tl.getBoundingClientRect();
+      tl.style.setProperty('--indicator-x', (rb.left - tb.left) + 'px'); tl.style.setProperty('--indicator-w', rb.width + 'px');
+      tl.style.setProperty('--indicator-opacity', '1'); tl.setAttribute('data-indicator-ready', 'true');
+    }
+  }
+  seg();
+  var sc = document.querySelector('.ym-tools__scroll'); if (sc) sc.scrollTop = 0;
+  var m = document.querySelector('[data-menu-anchor]');
+  if (m) { var t = document.querySelector(m.getAttribute('data-menu-anchor')); if (t) { var b = t.getBoundingClientRect(); if (m.hasAttribute('data-menu-match')) m.style.width = b.width + 'px'; var w = m.getBoundingClientRect();
+    if (m.getAttribute('data-menu-side') === 'tip') { m.style.left = (b.left + b.width / 2 - w.width / 2) + 'px'; m.style.top = (b.bottom + 8) + 'px'; }
+    else if (m.getAttribute('data-menu-side') === 'left') { var pl = document.querySelector('.ym-tools').getBoundingClientRect().left; m.style.left = (pl - 12 - w.width) + 'px'; m.style.top = (b.top - 6) + 'px'; }
+    else { var left = Math.min(b.right - w.width, 1440 - w.width - 8); m.style.left = Math.max(8, left) + 'px'; m.style.top = (b.bottom + 6) + 'px'; } } }
+  document.documentElement.setAttribute('data-ready', '1');
+})();
+</script></body></html>

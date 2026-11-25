@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yellowmoon Reference Grade node mockups</title>
+<style>
+@font-face { font-family: Figtree; font-weight: 300 900; src: url("../nodes/html/assets/fonts/figtree-latin-wght-normal.woff2") format("woff2"); }
+:root { color-scheme: dark; --bg:#0f0f10; --line:rgba(255,255,255,.14); --ink:#f2f2f2; --quiet:#a2a2a6; --yellow:#ffc20e; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 Figtree, system-ui, sans-serif; }
+header.top { position:sticky; top:0; z-index:5; background:rgba(15,15,16,.92); backdrop-filter: blur(10px); border-bottom:1px solid var(--line); padding:12px 16px; display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; }
+header.top h1 { font-size:15px; margin:0 12px 0 0; font-weight:800; }
+header.top small { color:var(--quiet); font-weight:600; margin-right:auto; }
+.chip { display:inline-grid; place-items:center; min-width:34px; height:28px; padding:0 8px; border-radius:9px; border:1px solid var(--line); color:var(--ink); text-decoration:none; font-weight:800; font-size:13px; }
+.chip:hover { border-color:var(--yellow); }
+main { max-width:1480px; margin:0 auto; padding:24px 16px 80px; }
+section { margin:0 0 72px; scroll-margin-top:64px; }
+.head { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+.head h2 { margin:0; font-size:22px; font-weight:800; }
+.num { display:inline-grid; place-items:center; min-width:38px; height:28px; border-radius:9px; background:rgba(255,255,255,.12); font-weight:800; font-size:14px; }
+.shot { display:block; border-radius:14px; overflow:hidden; border:1px solid var(--line); }
+.shot img { display:block; width:100%; height:auto; }
+.cap { max-width:960px; padding-top:14px; }
+.cap .what { font-size:17px; margin:0 0 8px; }
+.cap ul { margin:0 0 8px; padding-left:20px; color:#d4d4d8; }
+.cap li { margin:4px 0; }
+.note { max-width:960px; color:var(--quiet); }
+.nav { display:flex; gap:20px; margin:14px 0 0; font-weight:700; }
+.nav a { color:var(--ink); text-decoration:none; border-bottom:2px solid var(--line); padding-bottom:2px; }
+.nav a.next { border-color:var(--yellow); }
+</style></head>
+<body>
+<body>
+<header class="top"><h1>Yellowmoon · Reference Grade node, mockups (RG-07, 2026-11-25)</h1><small>Pictures only. The scene and the reference are synthetic drawings; the result is the node's maths with illustrative values. No fit was run. Click a picture to open its page.</small><a href="#s01" class="chip">01</a><a href="#s02" class="chip">02</a><a href="#s02b" class="chip">02b</a><a href="#s03" class="chip">03</a><a href="#s04" class="chip">04</a><a href="#s05" class="chip">05</a><a href="#s06" class="chip">06</a><a href="#s06b" class="chip">06b</a><a href="#s06c" class="chip">06c</a><a href="#s07" class="chip">07</a><a href="#s08" class="chip">08</a><a href="#s09" class="chip">09</a><a href="#s10" class="chip">10</a><a href="#s11" class="chip">11</a><a href="#s12" class="chip">12</a><a href="#sS" class="chip">S</a></header>
+<main>
+<p class="note">The spec is <a href="../../docs/34-reference-grade.md" style="color:var(--yellow)">docs/34</a>, §9 and §17. <a href="mockup-notes.md" style="color:var(--yellow)">mockup-notes.md</a> lists what the drawings decided and what they showed to be awkward. The owner reviews them in RG-H2.</p>
+<section id="s01"><div class="head"><span class="num">01</span><h2>The node and the Reference tab, empty</h2></div>
+<a class="shot" href="html/pages/01.html"><img src="01-empty.jpg" alt="The node and the Reference tab, empty" loading="lazy"></a>
+<div class="cap"><p class="what">Main, Match, Output; the node selected on its Reference tab. No reference yet: the chooser, a disabled Fit with its tooltip, Strength, Skin protection, and the line “Choose a picture to match.”</p><ul><li>A new node changes no pixel.</li><li>Seven tabs fit at 400 px; the row's type size is 12 px for this kind (docs/34 §9.1).</li></ul><p class="nav"><a href="html/pages/01.html">Open the page</a><a href="#s02" class="next">Next →</a></p></div></section>
+<section id="s02"><div class="head"><span class="num">02</span><h2>Choosing a reference: the file path</h2></div>
+<a class="shot" href="html/pages/02.html"><img src="02-choose-file.jpg" alt="Choosing a reference: the file path" loading="lazy"></a>
+<div class="cap"><p class="what">Choose reference… opens a two-item menu: Image file… (the system open dialog, which is not drawn) and Photo in the strip.</p><ul><li>The menu is the Add node menu's glasscn menu.</li></ul><p class="nav"><a href="html/pages/02.html">Open the page</a><a href="#s02b" class="next">Next →</a></p></div></section>
+<section id="s02b"><div class="head"><span class="num">02b</span><h2>Choosing a reference: the strip</h2></div>
+<a class="shot" href="html/pages/02b.html"><img src="02b-choose-from-strip.jpg" alt="Choosing a reference: the strip" loading="lazy"></a>
+<div class="cap"><p class="what">The strip turns into a chooser, like Pick colour: “Click a photo in the strip. Esc cancels.” The photo being graded and a photo still developing are off.</p><ul><li>The graph steps aside for the strip while the mode is on (the node view hides the strip otherwise; docs/23).</li></ul><p class="nav"><a href="html/pages/02b.html">Open the page</a><a href="#s03" class="next">Next →</a></p></div></section>
+<section id="s03"><div class="head"><span class="num">03</span><h2>Fitting</h2></div>
+<a class="shot" href="html/pages/03.html"><img src="03-fitting.jpg" alt="Fitting" loading="lazy"></a>
+<div class="cap"><p class="what">A progress bar and Cancel take the Fit button's place. The status line is the step: “Fitting… 2 of 3”. The picture does not change until the fit is done.</p><p class="nav"><a href="html/pages/03.html">Open the page</a><a href="#s04" class="next">Next →</a></p></div></section>
+<section id="s04"><div class="head"><span class="num">04</span><h2>Fitted</h2></div>
+<a class="shot" href="html/pages/04.html"><img src="04-fitted.jpg" alt="Fitted" loading="lazy"></a>
+<div class="cap"><p class="what">“Fitted to the reference.” The reference's thumbnail and name stay for the session. The picture shows the illustrative fit.</p><ul><li>The values are illustrative; no fit was run.</li></ul><p class="nav"><a href="html/pages/04.html">Open the page</a><a href="#s05" class="next">Next →</a></p></div></section>
+<section id="s05"><div class="head"><span class="num">05</span><h2>The Hue tab</h2></div>
+<a class="shot" href="html/pages/05.html"><img src="05-hue-tab.jpg" alt="The Hue tab" loading="lazy"></a>
+<div class="cap"><p class="what">Two periodic curves on the rainbow track: Hue vs hue (degrees) and Hue vs saturation (a log scale, detent at 1), each with Reset and a readout of the selected point.</p><ul><li>Fitted moves of a few degrees look almost flat on the spec's full axes (±180°, 0 to 8): see mockup-notes.md.</li></ul><p class="nav"><a href="html/pages/05.html">Open the page</a><a href="#s06" class="next">Next →</a></p></div></section>
+<section id="s06"><div class="head"><span class="num">06</span><h2>The Elements tab</h2></div>
+<a class="shot" href="html/pages/06.html"><img src="06-elements-tab.jpg" alt="The Elements tab" loading="lazy"></a>
+<div class="cap"><p class="what">One card per element in the order the grades run: Exposure, Hue and Chroma, the element's share of the photo and an eye that shows its mask. Water is under 2 %, so its card says “Not found in this photo.” and greys.</p><ul><li>Hue is ± the element's cap; Chroma is a percentage of the photo's own, 50 to 160.</li></ul><p class="nav"><a href="html/pages/06.html">Open the page</a><a href="#s06b" class="next">Next →</a></p></div></section>
+<section id="s06b"><div class="head"><span class="num">06b</span><h2>The Elements tab: all seven cards</h2></div>
+<a class="shot" href="html/pages/06b.html"><img src="06b-elements-sheet.jpg" alt="The Elements tab: all seven cards" loading="lazy"></a>
+<div class="cap"><p class="what">Sheet: Sky, Vegetation, Water (absent), Ground, Built, Skin and Subject, one with its mask shown and one while the scene is being made (“Looking at the photo…”).</p><p class="nav"><a href="html/pages/06b.html">Open the page</a><a href="#s06c" class="next">Next →</a></p></div></section>
+<section id="s06c"><div class="head"><span class="num">06c</span><h2>Showing an element's mask</h2></div>
+<a class="shot" href="html/pages/06c.html"><img src="06c-element-mask.jpg" alt="Showing an element's mask" loading="lazy"></a>
+<div class="cap"><p class="what">The eye in the Sky card is on: the photo shows the sky's soft mask in the mask accent.</p><ul><li>One eye at a time; the node's own Show mask button is not used.</li></ul><p class="nav"><a href="html/pages/06c.html">Open the page</a><a href="#s07" class="next">Next →</a></p></div></section>
+<section id="s07"><div class="head"><span class="num">07</span><h2>The look changed since the fit</h2></div>
+<a class="shot" href="html/pages/07.html"><img src="07-look-changed.jpg" alt="The look changed since the fit" loading="lazy"></a>
+<div class="cap"><p class="what">“The look changed since the fit. Fit again to match it with the new look.” Fit again carries the accent. No number moved.</p><p class="nav"><a href="html/pages/07.html">Open the page</a><a href="#s08" class="next">Next →</a></p></div></section>
+<section id="s08"><div class="head"><span class="num">08</span><h2>Edited by hand</h2></div>
+<a class="shot" href="html/pages/08.html"><img src="08-edited-by-hand.jpg" alt="Edited by hand" loading="lazy"></a>
+<div class="cap"><p class="what">“Edited by hand since the fit. Fit again to start over.” Here Vegetation's Hue and Chroma were moved by hand.</p><p class="nav"><a href="html/pages/08.html">Open the page</a><a href="#s09" class="next">Next →</a></p></div></section>
+<section id="s09"><div class="head"><span class="num">09</span><h2>Add node › Reference Grade</h2></div>
+<a class="shot" href="html/pages/09.html"><img src="09-add-node-menu.jpg" alt="Add node › Reference Grade" loading="lazy"></a>
+<div class="cap"><p class="what">The new item, “Matches the grade of a reference picture.”</p><ul><li>It sits after Blur, which is after Colour Uniform (see mockup-notes.md).</li></ul><p class="nav"><a href="html/pages/09.html">Open the page</a><a href="#s10" class="next">Next →</a></p></div></section>
+<section id="s10"><div class="head"><span class="num">10</span><h2>The simple view</h2></div>
+<a class="shot" href="html/pages/10.html"><img src="10-simple-view.jpg" alt="The simple view" loading="lazy"></a>
+<div class="cap"><p class="what">No Reference Grade controls. The notice counts the node and offers Open nodes.</p><p class="nav"><a href="html/pages/10.html">Open the page</a><a href="#s11" class="next">Next →</a></p></div></section>
+<section id="s11"><div class="head"><span class="num">11</span><h2>Every status line, note and error</h2></div>
+<a class="shot" href="html/pages/11.html"><img src="11-status-and-errors.jpg" alt="Every status line, note and error" loading="lazy"></a>
+<div class="cap"><p class="what">Sheet: the eleven status lines, the six notes and the seven errors of docs/34 §9.3, in the card.</p><ul><li>The unready-photo text is a tile tooltip, drawn in 02b.</li></ul><p class="nav"><a href="html/pages/11.html">Open the page</a><a href="#s12" class="next">Next →</a></p></div></section>
+<section id="s12"><div class="head"><span class="num">12</span><h2>Before and after</h2></div>
+<a class="shot" href="html/pages/12.html"><img src="12-before-after.jpg" alt="Before and after" loading="lazy"></a>
+<div class="cap"><p class="what">Sheet: the photo, the reference, the fitted result, the same fit at Strength 50 %, the result without the element grades, and the values used.</p><ul><li>The values are illustrative; no fit was run.</li></ul><p class="nav"><a href="html/pages/12.html">Open the page</a><a href="#sS" class="next">Next →</a></p></div></section>
+<section id="sS"><div class="head"><span class="num">S</span><h2>States</h2></div>
+<a class="shot" href="html/pages/states.html"><img src="states.jpg" alt="States" loading="lazy"></a>
+<div class="cap"><p class="what">Sheet: the node card (normal, selected, bypassed, dead), the glyph proposal at four sizes, three panel heads and the tooltip copy.</p><p class="nav"><a href="html/pages/states.html">Open the page</a></p></div></section>
+</main></body></html>
