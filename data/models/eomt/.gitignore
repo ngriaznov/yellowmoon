@@ -1,0 +1,4 @@
+# The EoMT small weights (about 48 MB) are too big for git. tools/fetch/eomt.sh downloads them from the release
+# `models-eomt-small-1` and checks them against SHA256SUMS; the build bundles them (docs/12). Never commit them.
+*.safetensors
+*.part

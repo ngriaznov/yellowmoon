@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Checks that the app bundle carries the licence texts its notices promise (the part of THIRD-PARTY.md that no generator can do).
 
-    python3 tools/licences/check_bundle.py [--require-weights [--depth-pending]] [--require-mediapipe] [REPO]
+    python3 tools/licences/check_bundle.py [--require-weights [--depth-pending]] [--require-mediapipe] [--require-eomt] [REPO]
 
 * ``src-tauri/tauri.conf.json`` ``bundle.resources`` lists ``NOTICE``, ``LICENSE`` and the generated ``THIRD-PARTY.md``
   (tools/licences/generate.py; the file is written by ``release.yml`` and by the CI job ``licences``).
@@ -24,6 +24,11 @@
   each of the three files (real hashes from the start: the conversion is deterministic), and in ``NOTICE`` item 14. The files are
   required only with ``--require-mediapipe``, which ``build.yml`` and ``release.yml`` pass once the release ``models-mediapipe-faces-1``
   exists (the ``mediapipe`` job of ``models.yml`` has run); a build without the flag has no face finder and says so.
+* The EoMT small weights (``data/models/eomt/``, RG-03, ``docs/34`` section 4b.1, ``docs/07``, ``docs/14``; the Mobile Perception Systems Lab at
+  TU/e, MIT, with DINOv2's Apache-2.0 backbone): the model card with both licences and the link to the authors' repository, a ``.gitignore``
+  for the weights, a ``SHA256SUMS`` line (a real hash from the start: the conversion is deterministic), and in ``NOTICE`` item 15. The weights
+  file is required only with ``--require-eomt``, which ``build.yml`` and ``release.yml`` pass once the release ``models-eomt-small-1`` exists
+  (the ``eomt`` job of ``models.yml`` has run); a build without the flag has no scene segmenter and says so.
 * The fixtures of the Film node's oracle (``crates/ym-film/tests/oracle/``, F-06) are checked like the data folders below: they are
   numbers computed from the CC BY-SA profiles, so they need ``LICENSE``, ``ATTRIBUTION.md`` and ``SHA256SUMS`` too.
 * ``bundle.resources`` carries ``data/film`` and ``NOTICE`` has the items for the spektrafilm profiles (Andrea Volpato, CC BY-SA 4.0,
@@ -51,7 +56,7 @@ REQUIRED_RESOURCES = {
     "LICENSE": "the Apache-2.0 text of Yellowmoon itself",
     "THIRD-PARTY.md": "the licence texts of the Rust crates, JavaScript packages and fonts (NOTICE item 8, About)",
     "data/film": "the film profiles and CIE tables with their CC BY-SA 4.0 licences (docs/24 section 6)",
-    "data/models": "the models, among them the SAM 2.1 small weights that tools/fetch/sam2.sh puts in data/models/sam2/ the depth weights that tools/fetch/depth.sh puts in data/models/depth/ and the MediaPipe face networks that tools/fetch/mediapipe.sh puts in data/models/mediapipe/ (docs/12)",
+    "data/models": "the models, among them the SAM 2.1 small weights that tools/fetch/sam2.sh puts in data/models/sam2/ the depth weights that tools/fetch/depth.sh puts in data/models/depth/, the EoMT small weights that tools/fetch/eomt.sh puts in data/models/eomt/ and the MediaPipe face networks that tools/fetch/mediapipe.sh puts in data/models/mediapipe/ (docs/12)",
 }
 
 #: The SAM 2.1 small weights (N-16): the folder, the file, and the pin a SHA256SUMS line has before the models workflow has run.
@@ -61,6 +66,10 @@ SAM2_PLACEHOLDER = "TBD-after-first-run"
 #: The Depth Anything V2-Small weights (D-02): the same layout, fetched by tools/fetch/depth.sh.
 DEPTH_DIR = Path("data") / "models" / "depth"
 DEPTH_WEIGHTS = "depth_anything_v2_vits.f16.safetensors"
+
+#: The EoMT small weights (RG-03): the folder and the file fetched by tools/fetch/eomt.sh.
+EOMT_DIR = Path("data") / "models" / "eomt"
+EOMT_WEIGHTS = "eomt_coco_panoptic_small.f16.safetensors"
 
 #: The MediaPipe face networks (S-08): the folder and the three files fetched by tools/fetch/mediapipe.sh.
 MEDIAPIPE_DIR = Path("data") / "models" / "mediapipe"
@@ -83,6 +92,9 @@ NOTICE_PHRASES = (
     ("Depth Anything V2-Small", "the name of the depth model (NOTICE item 13), Apache-2.0 section 4"),
     ("Lihe Yang", "the authors of the Depth Anything V2-Small weights (Apache-2.0), whose notice the licence requires in every copy"),
     ("github.com/DepthAnything/Depth-Anything-V2", "the link to the depth weights' source (Apache-2.0 section 4)"),
+    ("Mobile Perception Systems Lab at TU/e", "the copyright holder of the EoMT small weights (MIT), whose notice the licence requires in every copy"),
+    ("github.com/tue-mps/eomt", "the link to the EoMT weights' source (NOTICE item 15)"),
+    ("github.com/facebookresearch/dinov2", "the link to the DINOv2 backbone of EoMT (Apache-2.0 section 4)"),
     ("MediaPipe Authors", "the copyright holder of the MediaPipe face networks (Apache-2.0), whose notice the licence requires in every copy"),
     ("github.com/google-ai-edge/mediapipe", "the link to the MediaPipe networks' source (Apache-2.0 section 4)"),
     ("Andrea Volpato", "the author of the spektrafilm profiles (CC BY-SA 4.0), who must be named in every copy"),
@@ -202,6 +214,19 @@ def depth_problems(root: Path, require_weights: bool) -> list[str]:
     return model_problems(root, DEPTH_DIR, DEPTH_WEIGHTS, "github.com/DepthAnything/Depth-Anything-V2", "tools/fetch/depth.sh", "Depth masks", require_weights)
 
 
+def eomt_problems(root: Path, require_weights: bool) -> list[str]:
+    """The EoMT small weights' folder; the same rules as SAM's, and the model card must carry the authors' MIT licence as well as DINOv2's Apache-2.0."""
+    found = model_problems(root, EOMT_DIR, EOMT_WEIGHTS, "github.com/tue-mps/eomt", "tools/fetch/eomt.sh", "scene segmenter", require_weights)
+    try:
+        card = (root / EOMT_DIR / "MODEL_CARD.md").read_text(encoding="utf-8")
+    except OSError:
+        return found  # model_problems has said so
+    for phrase, why in (("MIT", "the licence of the EoMT weights"), ("github.com/facebookresearch/dinov2", "the source of the DINOv2 backbone")):
+        if phrase not in card:
+            found.append(f'{EOMT_DIR}/MODEL_CARD.md does not contain "{phrase}": {why}')
+    return found
+
+
 def mediapipe_problems(root: Path, require_files: bool) -> list[str]:
     """The MediaPipe face networks' folder: what is committed (card, ``.gitignore``, a SHA-256 line per file), and with ``require_files``
     the three fetched files as well. One folder, three files: each is checked like a single model's weights."""
@@ -243,11 +268,13 @@ def film_problems(root: Path) -> list[str]:
     return found
 
 
-def problems(root: Path, require_weights: bool = False, depth_pending: bool = False, require_mediapipe: bool = False) -> list[str]:
+def problems(
+    root: Path, require_weights: bool = False, depth_pending: bool = False, require_mediapipe: bool = False, require_eomt: bool = False
+) -> list[str]:
     """Everything that is missing, one sentence each.
 
     With ``depth_pending`` the depth weights are not required even under ``require_weights`` (their pin is still the placeholder).
-    The MediaPipe files are required only with ``require_mediapipe`` (the release exists).
+    The MediaPipe files are required only with ``require_mediapipe`` and the EoMT weights only with ``require_eomt`` (the releases exist).
     """
     found: list[str] = []
     config = root / "src-tauri" / "tauri.conf.json"
@@ -271,6 +298,7 @@ def problems(root: Path, require_weights: bool = False, depth_pending: bool = Fa
         found
         + sam2_problems(root, require_weights)
         + depth_problems(root, require_weights and not depth_pending)
+        + eomt_problems(root, require_eomt)
         + mediapipe_problems(root, require_mediapipe)
         + film_problems(root)
     )
@@ -280,13 +308,14 @@ def main(argv: list[str]) -> int:
     require_weights = "--require-weights" in argv
     depth_pending = "--depth-pending" in argv
     require_mediapipe = "--require-mediapipe" in argv
+    require_eomt = "--require-eomt" in argv
     paths = [arg for arg in argv if not arg.startswith("--")]
-    unknown = [arg for arg in argv if arg.startswith("--") and arg not in ("--require-weights", "--depth-pending", "--require-mediapipe")]
+    unknown = [arg for arg in argv if arg.startswith("--") and arg not in ("--require-weights", "--depth-pending", "--require-mediapipe", "--require-eomt")]
     if unknown or (depth_pending and not require_weights):
-        print(f"error: unknown option {unknown[0] if unknown else '--depth-pending without --require-weights'}; usage: check_bundle.py [--require-weights [--depth-pending]] [--require-mediapipe] [REPO]")
+        print(f"error: unknown option {unknown[0] if unknown else '--depth-pending without --require-weights'}; usage: check_bundle.py [--require-weights [--depth-pending]] [--require-mediapipe] [--require-eomt] [REPO]")
         return 2
     root = Path(paths[0]).resolve() if paths else REPO
-    found = problems(root, require_weights, depth_pending, require_mediapipe)
+    found = problems(root, require_weights, depth_pending, require_mediapipe, require_eomt)
     for line in found:
         print(f"error: {line}")
     for line in warnings(root):
@@ -299,7 +328,9 @@ def main(argv: list[str]) -> int:
             weights += "; the depth weights are NOT checked (--depth-pending: their pin is the placeholder)" if depth_pending else "; the depth weights are in place and match SHA256SUMS"
         if require_mediapipe:
             weights += "; the MediaPipe networks are in place and match SHA256SUMS"
-        print(f"bundle check: NOTICE, LICENSE, THIRD-PARTY.md, data/models and data/film are bundled; NOTICE carries the BSD, MIT, Meta, Depth Anything, MediaPipe, spektrafilm and CIE notices; the film data folders match their sums{weights}")
+        if require_eomt:
+            weights += "; the EoMT weights are in place and match SHA256SUMS"
+        print(f"bundle check: NOTICE, LICENSE, THIRD-PARTY.md, data/models and data/film are bundled; NOTICE carries the BSD, MIT, Meta, Depth Anything, EoMT, MediaPipe, spektrafilm and CIE notices; the film data folders match their sums{weights}")
     return 1 if found else 0
 
 

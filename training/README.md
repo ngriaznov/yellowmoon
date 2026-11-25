@@ -27,6 +27,7 @@ Python 3.12 is what CI uses; 3.13 gives the same numbers. Set `YM_TESTDATA` to m
 | `noise/` | per-body noise priors from public files (M2-01): see `noise/README.md` |
 | `crop/` | the learned Auto crop pilot: Open Images photos, FrameLite's crops as labels, a small student trained on Modal: see `crop/README.md` |
 | `jdd/` | joint demosaic + denoise network: data generator, training, export, model card (M2-04, M2-05): see `jdd/README.md` |
+| `eomt/` | the conversion of EoMT small's checkpoint (the scene segmenter of Reference Grade, RG-03) to the f16 safetensors file the Rust runtime reads: `export.py`, `requirements.txt`, `test_eomt.py`; the parity fixture script is `tools/eomt/parity_fixture.py`. CI only (`models.yml`, job `eomt`), not run by the app |
 | `synth/` | the synthetic golden set: spectral scenes, noise, ground truth (stand-in for the CC0 corpus): see `synth/README.md` |
 | `white_scale/` | the white scale of stand-in bodies (`docs/03`): our own reader of the camera's white-balance presets (`sr2.py`), the two references and the fit (`reference.py`, `fit.py`), the table that `build_registry` copies into the registry (`white_scale.json`), the published colour matrices it cross-checks with (`colour_matrices.json`) |
 | `other_makes/` | research only, not shipped: the Canon and Nikon curves of rawtoaces-data measured against the profile checks (`check.py`), with the published colour matrices of Canon and Nikon bodies it compares them with (`colour_matrices.json`); results in `research/canon-nikon-curves/` |

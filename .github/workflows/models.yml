@@ -1,19 +1,27 @@
-# Model weights that are too big for git (N-16, D-02, S-08, docs/07, docs/12). Three independent jobs; sam2 and depth convert one
+# Model weights that are too big for git (N-16, D-02, S-08, RG-03, docs/07, docs/12). Four independent jobs; sam2 and depth convert one
 # checkpoint to a f16 safetensors file, write the oracle fixtures for the runtime's gate, and publish both as assets of their own
-# GitHub release; mediapipe converts three TFLite files and publishes them (its parity fixtures are committed, not assets):
+# GitHub release; mediapipe converts three TFLite files and publishes them (its parity fixtures are committed, not assets); eomt
+# converts one checkpoint and publishes the weights (its parity fixture is committed too):
 #   sam2       Meta's SAM 2.1 small checkpoint (N-16, N-17)        release `models-sam2.1-small-1`
 #   depth      Depth Anything V2-Small (D-02, D-03)                 release `models-depth-anything-v2-small-1`
 #   mediapipe  Google's BlazeFace, Face Mesh V2, Selfie Multiclass  release `models-mediapipe-faces-1` (S-08, docs/27)
+#   eomt       EoMT small, COCO panoptic (RG-03, docs/34 4b.1)      release `models-eomt-small-1`
 #
-# How to run one (the job that runs follows the branch name, so the three never start each other):
+# How to run one (the job that runs follows the branch name, so the four never start each other):
 #   * push a branch named models/depth-<anything> to run ONLY the depth job, for example
 #         git push origin depth-mask:models/depth-anything-v2-small-1
 #   * push a branch named models/mediapipe-<anything> to run ONLY the mediapipe job, for example
 #         git push origin skin-retouch:models/mediapipe-faces-1
+#   * push a branch named models/eomt-<anything> to run ONLY the eomt job, for example
+#         git push origin rg-03-segmenter:models/eomt-small-1
 #   * push any other branch named models/<anything> to run ONLY the sam2 job (as before), for example
 #         git push origin nodes:models/sam2.1-small-1
 #   * or start it by hand (Actions > models > Run workflow, on a branch) and pick the job: `sam2` (the default), `depth`,
-#     `mediapipe`, `both` (sam2 and depth) or `all`.
+#     `mediapipe`, `eomt`, `both` (sam2 and depth) or `all` (sam2, depth and mediapipe; `eomt` is never started by `all`: publishing
+#     a release is a choice of the owner, made by naming it).
+# The eomt job needs no copying: the conversion is deterministic and the hash is already committed in data/models/eomt/SHA256SUMS; the
+# job fails, and publishes nothing, if the bytes it makes differ (as mediapipe's does). **The eomt job has not been run** (RG-03 wrote
+# it; the release `models-eomt-small-1` does not exist until the owner dispatches it).
 # The run's summary prints the two lines of the job's SHA256SUMS asset. Copy them into data/models/<name>/SHA256SUMS (the
 # weights) and tools/fetch/<name>.sha256 (the fixtures), <name> being sam2 or depth; from then on tools/fetch/<name>.sh
 # downloads and checks the weights for the builds (release.yml, build.yml). The mediapipe job needs no copying: the conversion
@@ -40,9 +48,9 @@ on:
   workflow_dispatch:
     inputs:
       job:
-        description: "Which job to run: sam2, depth, mediapipe, both (sam2 and depth) or all"
+        description: "Which job to run: sam2, depth, mediapipe, eomt, both (sam2 and depth) or all (sam2, depth, mediapipe)"
         type: choice
-        options: [sam2, depth, mediapipe, both, all]
+        options: [sam2, depth, mediapipe, eomt, both, all]
         default: sam2
 
 permissions:
@@ -50,8 +58,8 @@ permissions:
 
 jobs:
   sam2:
-    # Every models/** branch except models/depth-* and models/mediapipe-*, and a manual run for `sam2`, `both` or `all`.
-    if: ${{ (github.event_name == 'push' && !startsWith(github.ref_name, 'models/depth-') && !startsWith(github.ref_name, 'models/mediapipe-')) || (github.event_name == 'workflow_dispatch' && (inputs.job == 'sam2' || inputs.job == 'both' || inputs.job == 'all')) }}
+    # Every models/** branch except models/depth-*, models/mediapipe-* and models/eomt-*, and a manual run for `sam2`, `both` or `all`.
+    if: ${{ (github.event_name == 'push' && !startsWith(github.ref_name, 'models/depth-') && !startsWith(github.ref_name, 'models/mediapipe-') && !startsWith(github.ref_name, 'models/eomt-')) || (github.event_name == 'workflow_dispatch' && (inputs.job == 'sam2' || inputs.job == 'both' || inputs.job == 'all')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
     concurrency:
@@ -429,6 +437,149 @@ jobs:
           name: mediapipe-reports
           path: |
             dist/conversion_report.json
+            dist/SHA256SUMS
+          if-no-files-found: ignore
+          retention-days: 30
+
+  eomt:
+    # Branches models/eomt-* only, and a manual run for `eomt` (never for `all`). NOT RUN YET (RG-03): the job is written and checked
+    # by reading; the first run is the owner's dispatch.
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref_name, 'models/eomt-')) || (github.event_name == 'workflow_dispatch' && inputs.job == 'eomt') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: models-eomt
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: models-eomt-small-1
+      WEIGHTS: eomt_coco_panoptic_small.f16.safetensors
+      # The pinned revision of huggingface.co/tue-mps/coco_panoptic_eomt_small_640_2x (MIT); the same value, with the hashes of its
+      # three files, is in training/eomt/export.py.
+      CKPT_REVISION: 10f5326794a8ce7e0e975791033ae1c13aec3767
+      PYTHONUNBUFFERED: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            training/eomt/requirements.txt
+            .github/workflows/models.yml
+
+      - name: Install the pinned packages (CPU torch, then the pinned libraries)
+        run: |
+          python -m pip install --upgrade pip==24.3.1
+          # The CPU build of torch (a plain `pip install torch` pulls the CUDA build); the `+cpu` versions exist on this index only.
+          python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu torch==2.15.0+cpu torchvision==0.29.2+cpu
+          python -m pip install -r training/eomt/requirements.txt
+          python -m pip freeze | tee "$RUNNER_TEMP/pip-freeze.txt"
+
+      - name: Cache the checkpoint (96 MB)
+        uses: actions/cache@v4
+        with:
+          path: build/eomt/cache
+          key: eomt-source-${{ env.CKPT_REVISION }}-${{ hashFiles('training/eomt/export.py') }}
+          restore-keys: |
+            eomt-source-${{ env.CKPT_REVISION }}-
+
+      - name: Test the scripts (no torch needed)
+        run: python -m unittest training.eomt.test_eomt
+
+      - name: Convert the weights (export.py)
+        run: python -m training.eomt.export --out build/eomt
+
+      # The hash is committed (the conversion is deterministic); a different byte means a different converter, library or checkpoint,
+      # and that is a decision for the owner, not something to publish quietly.
+      - name: Compare with the committed pin
+        run: |
+          mkdir -p dist
+          cp "build/eomt/${WEIGHTS}" "dist/${WEIGHTS}"
+          (cd dist && sha256sum "${WEIGHTS}" > SHA256SUMS && cat SHA256SUMS && ls -l)
+          if ! diff -u data/models/eomt/SHA256SUMS dist/SHA256SUMS; then
+            echo "::error title=Hash differs::The converted file does not match data/models/eomt/SHA256SUMS (the difference is above). Nothing is published. If the change is meant, copy the new line into that file and use a new RELEASE_TAG."
+            exit 1
+          fi
+
+      # The parity fixture is committed (260 KB). Make it again from the weights just made and check that the pictures and the
+      # original model's label maps are the same pixels as the committed ones (the logits are floats: another CPU model can round
+      # them differently, so they are not compared here; the Rust gate compares them with stated bounds).
+      - name: Parity fixture (tools/eomt/parity_fixture.py), the original model on three pictures
+        run: |
+          python tools/eomt/parity_fixture.py --source build/eomt/cache --weights "build/eomt/${WEIGHTS}" --out build/eomt/fixture
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from PIL import Image
+          import numpy as np
+          new, old = Path("build/eomt/fixture"), Path("crates/ym-ml/tests/data/eomt")
+          bad = []
+          for name in ("meadow", "street", "shore"):
+              for suffix in (".png", ".classes.png"):
+                  a = np.asarray(Image.open(new / f"{name}{suffix}"))
+                  b = np.asarray(Image.open(old / f"{name}{suffix}"))
+                  if a.shape != b.shape or (a != b).any():
+                      bad.append(f"{name}{suffix}: {int((a != b).sum()) if a.shape == b.shape else 'another shape'} values differ")
+          a, b = json.loads((new / "parity.json").read_text()), json.loads((old / "parity.json").read_text())
+          for x, y in zip(a["images"], b["images"]):
+              if x["kept"] and [k["query"] for k in x["kept"]] != [k["query"] for k in y["kept"]]:
+                  bad.append(f"{x['name']}: the kept queries differ")
+          if a["id2label"] != b["id2label"] or a["weights_sha256"] != b["weights_sha256"]:
+              bad.append("the class names or the weights' hash differ")
+          print("\n".join(bad) or "the fixture equals the committed one (pictures, label maps, kept queries, class names)")
+          raise SystemExit(1 if bad else 0)
+          PY
+          {
+            echo "### EoMT small assets"
+            echo
+            echo "The weights' hash (equal to \`data/models/eomt/SHA256SUMS\`):"
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the release (a prerelease, never latest, never overwritten)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            mkdir -p "$RUNNER_TEMP/existing"
+            gh release download "$RELEASE_TAG" --pattern SHA256SUMS --dir "$RUNNER_TEMP/existing" --clobber
+            if diff -u "$RUNNER_TEMP/existing/SHA256SUMS" dist/SHA256SUMS; then
+              echo "Release $RELEASE_TAG exists with the same hash; nothing to upload." | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error title=Release exists::$RELEASE_TAG is already published with a different hash (above). Assets are never overwritten: if the new one is meant, use a new tag."
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --prerelease --latest=false \
+              --title "EoMT small weights (1)" \
+              --notes "Model asset for the build and the tests, not an app release. \`${WEIGHTS}\` is the EoMT small COCO panoptic checkpoint (tue-mps/coco_panoptic_eomt_small_640_2x, MIT, https://github.com/tue-mps/eomt; DINOv2 backbone, Apache-2.0) converted to f16 safetensors; see \`data/models/eomt/MODEL_CARD.md\`. Made by the \`models\` workflow from commit ${GITHUB_SHA}. Fetched by \`tools/fetch/eomt.sh\`; the app never downloads anything." \
+              "dist/${WEIGHTS}" "dist/SHA256SUMS"
+          fi
+          # The in-app updater reads the latest release; this one must not be it.
+          gh release view "$RELEASE_TAG" --json isPrerelease,tagName --jq '"\(.tagName) prerelease=\(.isPrerelease)"'
+          test "$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" = true
+          latest="$(gh release list --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // ""')"
+          if [ "$latest" = "$RELEASE_TAG" ]; then
+            echo "::error title=Latest release::$RELEASE_TAG is the latest release; the updater would read it."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eomt-reports
+          path: |
+            build/eomt/export_report.json
+            build/eomt/fixture/parity.json
             dist/SHA256SUMS
           if-no-files-found: ignore
           retention-days: 30

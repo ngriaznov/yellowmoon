@@ -45,6 +45,7 @@ BSD_NOTICE = (
     "The above copyright notice and this permission notice shall be included in all\n"
     "Copyright (c) Meta Platforms, Inc. and affiliates. https://github.com/facebookresearch/sam2\n"
     "Depth Anything V2-Small by Lihe Yang et al. https://github.com/DepthAnything/Depth-Anything-V2\n"
+    "EoMT small by the Mobile Perception Systems Lab at TU/e https://github.com/tue-mps/eomt, DINOv2 https://github.com/facebookresearch/dinov2\n"
     "Copyright 2021 The MediaPipe Authors https://github.com/google-ai-edge/mediapipe\n"
     "spektrafilm by Andrea Volpato https://github.com/andreavolpato/spektrafilm data/film/spektrafilm/LICENSE\n"
     "International Commission on Illumination (CIE) data/film/cie/LICENSE and a table computed from it data/film/upsampling/LICENSE\n"
@@ -252,6 +253,7 @@ class Config(unittest.TestCase):
 
 SAM2_WEIGHTS = "sam2.1_hiera_small.f16.safetensors"
 DEPTH_WEIGHTS = "depth_anything_v2_vits.f16.safetensors"
+EOMT_WEIGHTS = "eomt_coco_panoptic_small.f16.safetensors"
 MEDIAPIPE_FILES = ("blaze_face_full_range.f16.safetensors", "face_mesh_v2.f16.safetensors", "selfie_multiclass_256.f32.safetensors")
 #: A depth folder whose weights are fetched and match their pin (for the tests that are about SAM's weights).
 DEPTH_READY = {"depth_sums": f"{hashlib.sha256(b'depth').hexdigest()}  {DEPTH_WEIGHTS}\n", "depth_weights": b"depth"}
@@ -278,6 +280,10 @@ class Bundle(unittest.TestCase):
         mediapipe_ignore: str | None = "*.safetensors\n",
         mediapipe_sums: str | None = None,
         mediapipe_files: dict[str, bytes] | None = None,
+        eomt_card: str | None = "MIT; DINOv2, Apache-2.0, https://github.com/facebookresearch/dinov2; https://github.com/tue-mps/eomt\n",
+        eomt_ignore: str | None = "*.safetensors\n",
+        eomt_sums: str | None = None,
+        eomt_weights: bytes | None = None,
     ) -> None:
         (root / "src-tauri").mkdir(parents=True, exist_ok=True)
         resources = (
@@ -318,6 +324,18 @@ class Bundle(unittest.TestCase):
             (depth / "SHA256SUMS").write_text(depth_sums)
         if depth_weights is not None:
             (depth / DEPTH_WEIGHTS).write_bytes(depth_weights)
+        eomt = root / "data" / "models" / "eomt"
+        eomt.mkdir(parents=True, exist_ok=True)
+        if eomt_card is not None:
+            (eomt / "MODEL_CARD.md").write_text(eomt_card)
+        if eomt_ignore is not None:
+            (eomt / ".gitignore").write_text(eomt_ignore)
+        if eomt_sums is None:
+            eomt_sums = f"{hashlib.sha256(b'eomt').hexdigest()}  {EOMT_WEIGHTS}\n"
+        if eomt_sums:
+            (eomt / "SHA256SUMS").write_text(eomt_sums)
+        if eomt_weights is not None:
+            (eomt / EOMT_WEIGHTS).write_bytes(eomt_weights)
         mediapipe = root / "data" / "models" / "mediapipe"
         mediapipe.mkdir(parents=True, exist_ok=True)
         if mediapipe_card is not None:
@@ -519,6 +537,40 @@ class Bundle(unittest.TestCase):
             self.tree(root, mediapipe_files=files)
             self.assertEqual(check_bundle.problems(root, require_mediapipe=True), [])
             self.assertEqual(check_bundle.main(["--require-mediapipe", str(root)]), 0)
+
+    def test_the_eomt_notice_item_and_model_folder_are_checked(self):
+        for phrase in ("Mobile Perception Systems Lab at TU/e", "github.com/tue-mps/eomt", "github.com/facebookresearch/dinov2"):
+            with tempfile.TemporaryDirectory() as tmp:
+                self.tree(Path(tmp), notice=BSD_NOTICE.replace(phrase, "x"))
+                problems = check_bundle.problems(Path(tmp))
+            self.assertTrue(any(phrase in p for p in problems), (phrase, problems))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tree(Path(tmp), eomt_card=None, eomt_ignore=None, eomt_sums="")
+            problems = check_bundle.problems(Path(tmp))
+        for needle in ("data/models/eomt/MODEL_CARD.md", "data/models/eomt/.gitignore", f"data/models/eomt/SHA256SUMS has no line for {EOMT_WEIGHTS}"):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tree(Path(tmp), eomt_card="A model.\n", eomt_ignore="*.part\n")
+            problems = check_bundle.problems(Path(tmp))
+        for needle in ("Apache-2.0", "github.com/tue-mps/eomt", "MIT", "github.com/facebookresearch/dinov2"):
+            self.assertTrue(any("eomt/MODEL_CARD.md" in p and needle in p for p in problems), (needle, problems))
+        self.assertTrue(any("eomt/.gitignore" in p for p in problems), problems)
+
+    def test_the_eomt_weights_are_required_only_with_the_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tree(root)
+            self.assertEqual(check_bundle.problems(root), [])
+            missing = check_bundle.problems(root, require_eomt=True)
+            self.assertEqual(sum("is missing" in p and "tools/fetch/eomt.sh" in p for p in missing), 1, missing)
+            self.assertEqual(check_bundle.main(["--require-eomt", str(root)]), 1)
+            self.tree(root, eomt_weights=b"damaged")
+            wrong = check_bundle.problems(root, require_eomt=True)
+            self.assertEqual(len(wrong), 1, wrong)
+            self.assertIn("does not have the SHA-256", wrong[0])
+            self.tree(root, eomt_weights=b"eomt")
+            self.assertEqual(check_bundle.problems(root, require_eomt=True), [])
+            self.assertEqual(check_bundle.main(["--require-eomt", str(root)]), 0)
 
     def test_the_film_notice_items_must_be_in_the_notice(self):
         for phrase in ("Andrea Volpato", "github.com/andreavolpato/spektrafilm", "data/film/spektrafilm/LICENSE"):

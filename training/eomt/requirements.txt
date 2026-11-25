@@ -1,0 +1,14 @@
+# Pinned Python dependencies of training/eomt/export.py and tools/eomt/parity_fixture.py (CI only: .github/workflows/models.yml, job
+# `eomt`). CPU only. Everything here is for converting weights and writing test fixtures; nothing is a dependency of the app, `ym`
+# or any shipped crate (AGENTS.md rule 6).
+#
+# torch comes from the CPU index, in the workflow after this file (a plain `pip install torch` pulls the CUDA build):
+#   pip install --extra-index-url https://download.pytorch.org/whl/cpu torch==2.15.0+cpu torchvision==0.29.2+cpu
+# The reference implementation is Hugging Face's `EomtForUniversalSegmentation` and `EomtImageProcessor` (Apache-2.0, a port of the
+# authors' code in github.com/tue-mps/eomt, MIT). These are the versions the conversion and the fixtures were first made with (the
+# RG-03 session, 2026-11-25, on Linux with Python 3.13); the job has not run on the workflow's Python 3.11 yet.
+transformers==5.24.1
+safetensors==0.8.0
+numpy==2.5.5
+pillow==13.0.0
+scipy==1.18.1          # transformers' EomtLoss imports it when the model is built (training only; never used here)
