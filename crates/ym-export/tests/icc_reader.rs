@@ -22,7 +22,7 @@
 //! (a version 2.4 header, `desc` as a `textDescription`, P3-like colorants, a `para` sRGB curve); it is generated here, never
 //! Apple's file.
 
-use moxcms::{ColorProfile, Layout, TransformExecutor, TransformOptions};
+use moxcms::{ColorProfile, Layout, TransformOptions};
 use ym_color::consts::{Primaries, Vec3};
 use ym_color::encode::srgb_encode;
 use ym_color::icc::{Curve, IccError, RgbProfile, ToLinearSrgb};
@@ -434,7 +434,9 @@ fn the_conversion_agrees_with_the_closed_form_to_a_few_hundredths_of_a_code() {
         white: ym_color::consts::D65_XY,
     };
     let srgb_fn = |x: f64| ym_color::encode::srgb_decode(x);
-    let mut cases: Vec<(String, Vec<u8>, Primaries, Box<dyn Fn(f64) -> f64>)> = vec![
+    /// A fixture: its name, its bytes, the primaries it was made from and the formula of its curve.
+    type Case = (String, Vec<u8>, Primaries, Box<dyn Fn(f64) -> f64>);
+    let mut cases: Vec<Case> = vec![
         (
             "sRGB".into(),
             profile(ColorSpace::Srgb).to_vec(),

@@ -189,11 +189,11 @@ fn a_cancelled_snapshot_is_cancelled_and_leaves_nothing_behind() {
 // The scene of a reference
 // ---------------------------------------------------------------------------------------------
 
+/// The pictures a fake scene was given: width, height and the codes.
+type Seen = Arc<std::sync::Mutex<Vec<(usize, usize, Vec<u8>)>>>;
+
 /// A fake scene that counts its runs and keeps the last picture it was given: sky above a third, ground below.
-fn recording_scene(
-    runs: &Arc<AtomicUsize>,
-    seen: &Arc<std::sync::Mutex<Vec<(usize, usize, Vec<u8>)>>>,
-) -> Arc<SceneModel> {
+fn recording_scene(runs: &Arc<AtomicUsize>, seen: &Seen) -> Arc<SceneModel> {
     let (runs, seen) = (Arc::clone(runs), Arc::clone(seen));
     SceneModel::fake(
         "reference-fake",

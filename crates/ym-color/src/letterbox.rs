@@ -15,7 +15,7 @@
 //!    stay dark (mean below [`RINGING_MEAN_MAX`]), for the picture's edge.
 //! 3. **The step.** The picture's edge is the first line in that window whose mean is at least [`STEP_MEAN_CODES`] above the line
 //!    before it. No such line, no bar: a night frame's dark lines rise gradually (the largest rise between two lines in the
-//!    window on 199 local pictures was 7.0 codes), a real bar meets the picture in one line.
+//!    window on 195 local pictures was 7.0 codes; `docs/34` section 16.5), a real bar meets the picture in one line.
 //! 4. **The size.** The bar is at least [`MIN_BAR_PX`] lines and [`MIN_BAR_FRACTION`] of the side, and at most
 //!    [`MAX_BAR_FRACTION`] of it (the POC's 35 %). A longer dark run is not a bar and nothing is removed from that side.
 //!

@@ -44,9 +44,9 @@ fn colourful(w: usize, h: usize, seed: u64) -> Vec<u8> {
             let t = x as f64 / w as f64;
             let l = 70.0 + 130.0 * (y as f64 / h as f64);
             let rgb = [
-                l * (0.6 + 0.4 * (6.283 * t).sin()),
-                l * (0.6 + 0.4 * (6.283 * (t + 0.33)).sin()),
-                l * (0.6 + 0.4 * (6.283 * (t + 0.67)).sin()),
+                l * (0.6 + 0.4 * (std::f64::consts::TAU * t).sin()),
+                l * (0.6 + 0.4 * (std::f64::consts::TAU * (t + 0.33)).sin()),
+                l * (0.6 + 0.4 * (std::f64::consts::TAU * (t + 0.67)).sin()),
             ];
             for v in rgb {
                 d.push((v + 6.0 * rng.signed()).clamp(0.0, 255.0).round() as u8);
@@ -521,7 +521,14 @@ fn a_damaged_or_missing_file_is_unreadable_and_never_a_panic() {
     for (name, bytes) in [("png", &png), ("jpeg", &jpg), ("tiff", &tif)] {
         // A decoder that is not strict fills a cut picture's missing part with grey and the fit would measure the grey: a picture that
         // ends early is refused (PNG and TIFF refuse it themselves).
-        for cut in [8usize, 20, 100, bytes.len() / 4, bytes.len() / 2, bytes.len() * 9 / 10] {
+        for cut in [
+            8usize,
+            20,
+            100,
+            bytes.len() / 4,
+            bytes.len() / 2,
+            bytes.len() * 9 / 10,
+        ] {
             let r = ReferencePicture::from_bytes(&bytes[..cut]);
             assert!(
                 matches!(
