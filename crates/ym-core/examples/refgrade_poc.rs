@@ -78,6 +78,65 @@ struct Ctx {
     network9: Option<Network>,
     network10: Option<Network>,
     network11: Option<Network>,
+    /// The round-12 principles switched back to their v11 behaviour (`--ablate`).
+    ablate: Ablate,
+}
+
+/// Which of the round-12 principles P1 to P5 (`refgrade-notes/17-model-v12.md`) are switched back to their v11 behaviour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Ablate {
+    /// Index 0 is P1, index 4 is P5.
+    off: [bool; 5],
+}
+
+impl Ablate {
+    /// Parses `p1,p3`: a comma-separated list from `p1` to `p5`, each at most once.
+    fn parse(list: &str) -> R<Ablate> {
+        let mut a = Ablate::default();
+        for part in list.split(',') {
+            let part = part.trim().to_lowercase();
+            let k = match part.as_str() {
+                "p1" => 0,
+                "p2" => 1,
+                "p3" => 2,
+                "p4" => 3,
+                "p5" => 4,
+                other => {
+                    return Err(format!(
+                        "--ablate takes p1 to p5 separated by commas, not {other:?}"
+                    )
+                    .into());
+                }
+            };
+            if a.off[k] {
+                return Err(format!("--ablate lists {part} twice").into());
+            }
+            a.off[k] = true;
+        }
+        Ok(a)
+    }
+
+    /// Whether principle `n` (1 to 5) stays on.
+    fn on(&self, n: usize) -> bool {
+        !self.off[n - 1]
+    }
+
+    /// Whether nothing is switched off.
+    fn is_none(&self) -> bool {
+        self.off.iter().all(|&o| !o)
+    }
+
+    /// The label of a run: `base` as it is, or `base-no-p2` / `base-no-p1-p2-p3-p4-p5`.
+    fn label(&self, base: &str) -> String {
+        let mut s = base.to_string();
+        if !self.is_none() {
+            s.push_str("-no");
+            for (k, _) in self.off.iter().enumerate().filter(|&(_, &o)| o) {
+                s.push_str(&format!("-p{}", k + 1));
+            }
+        }
+        s
+    }
 }
 
 static CTX: std::sync::OnceLock<Ctx> = std::sync::OnceLock::new();
@@ -94,6 +153,7 @@ fn ctx() -> &'static Ctx {
         network9: None,
         network10: None,
         network11: None,
+        ablate: Ablate::default(),
     })
 }
 
@@ -2608,6 +2668,7 @@ impl Network {
 }
 
 /// The values of the network for one pair, by name.
+#[derive(Default)]
 struct NetOut {
     names: Vec<String>,
     vals: Vec<f64>,
@@ -3602,6 +3663,7 @@ fn network_inputs(p: &Meas, r: &Meas) -> BTreeMap<String, f64> {
 
 /// Everything fixed for one pair: the photo's and the reference's measurements, the network's answer, and the photo's
 /// pixels as they are ungraded.
+#[derive(Default)]
 struct V5Ctx {
     excl: [bool; 6],
     p: Meas,
@@ -3626,8 +3688,14 @@ struct V5Ctx {
     v10: bool,
     /// Whether the network is v11 (it also has `T.purple_rot_deg`): Oklab purple band, turn-based purple guards, skin chroma wall.
     v11: bool,
-    /// Whether the network is v12 (it also has `T.turn_deg`).
-    v12: bool,
+    /// Whether the network is v12 (it also has `T.turn_deg`), per principle: the network is v12 and `--ablate` leaves it on.
+    /// P1: turns count wherever they end. P2: the content turn budget. P3: one hue space and the stiffer memory wall.
+    /// P4: whites by pixel. P5: the clip allowance, the crush test and the stiffer clip term.
+    p1: bool,
+    p2: bool,
+    p3: bool,
+    p4: bool,
+    p5: bool,
     /// V12: P's whites for the chroma cap and the direction (L* >= 80, C* < 8, not skin).
     hl4_scope: Vec<bool>,
     /// V11: per sample pixel, P's Oklab hue and CIELAB C*, and whether it is not skin.
@@ -3658,10 +3726,18 @@ fn build_v5_ctx(
     scene: &Scene,
     r_px: &[Px],
     r_scene: &Scene,
+    ablate: Ablate,
 ) -> R<V5Ctx> {
     let v7 = net.index.contains_key("T.hl_cmax");
     let v11 = net.index.contains_key("T.purple_rot_deg");
     let v12 = net.index.contains_key("T.turn_deg");
+    let (p1, p2, p3, p4, p5) = (
+        v12 && ablate.on(1),
+        v12 && ablate.on(2),
+        v12 && ablate.on(3),
+        v12 && ablate.on(4),
+        v12 && ablate.on(5),
+    );
     let p0 = measure(p_px, scene, &[false; 6], v7, v11);
     let r0 = measure(r_px, r_scene, &[false; 6], v7, v11);
     let mut excl = [false; 6];
@@ -3763,7 +3839,11 @@ fn build_v5_ctx(
         })
         .collect();
     Ok(V5Ctx {
-        v12,
+        p1,
+        p2,
+        p3,
+        p4,
+        p5,
         hl4_scope,
         v7,
         v8: net.index.contains_key("T.purple_ok"),
@@ -3916,7 +3996,7 @@ fn turned_purple_share(px: &[Px], ctx: &V5Ctx, rot: f64) -> f64 {
     if px.is_empty() {
         return 0.0;
     }
-    if ctx.v12 {
+    if ctx.p1 {
         let n = px
             .iter()
             .enumerate()
@@ -3966,6 +4046,7 @@ fn newly_purple_share(px: &[Px], scope: &[bool]) -> f64 {
 }
 
 /// A candidate's measurements: the picture's, and per sector the mean hue shift and log chroma change against P on P's pixels.
+#[derive(Default)]
 struct CandMeas {
     m: Meas,
     sec_shift: [f64; SECTORS],
@@ -4050,7 +4131,7 @@ fn cand_meas(px: &[Px], scene: &Scene, ctx: &V5Ctx) -> CandMeas {
     } else {
         Vec::new()
     };
-    let (hl4_c, hl4_d) = if ctx.v12 {
+    let (hl4_c, hl4_d) = if ctx.p4 {
         hl4_stats(
             px,
             &ctx.hl4_scope,
@@ -4060,7 +4141,7 @@ fn cand_meas(px: &[Px], scene: &Scene, ctx: &V5Ctx) -> CandMeas {
     } else {
         (0.0, 0.0)
     };
-    let turn_share = if ctx.v12 {
+    let turn_share = if ctx.p2 {
         content_turn_share(px, ctx, ctx.out.get("T.turn_deg"))
     } else {
         0.0
@@ -4142,7 +4223,7 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
     let vec_hc = |a: f64, b: f64| (circ_mean_deg(a, b), a.hypot(b));
     // V12 (P3): one hue space. A group's hue is that of its mean Oklab (a, b); its chroma threshold stays in CIELAB.
     let hues = |gid: usize, ph: f64, ch: f64| {
-        if ctx.v12 {
+        if ctx.p3 {
             (oklab_hue(ctx.p_pg_ab[gid]), oklab_hue(c.pg_ab[gid]))
         } else {
             (ph, ch)
@@ -4176,7 +4257,7 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
         };
         if let Some(key) = key {
             let excess = (wrap_deg(ch - ph).abs() - o.get(key)).max(0.0);
-            let (w, scale) = if ctx.v12 { V12_MEM } else { V9_MEM };
+            let (w, scale) = if ctx.p3 { V12_MEM } else { V9_MEM };
             t.guard_mem += w * sq(excess / scale);
         }
     }
@@ -4206,7 +4287,7 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
         let (ch, cc) = vec_hc(c.hl_a, c.hl_b);
         // The highlight chroma cap, on the mean-vector chroma.
         // V12 (P4): the cap is on the mean per-pixel chroma of the whites.
-        let cc = if ctx.v12 { c.hl4_c } else { cc };
+        let cc = if ctx.p4 { c.hl4_c } else { cc };
         t.guard_hl = V7_HL_WEIGHT * sq((cc - o.get("T.hl_cmax")).max(0.0) / V7_HL_SCALE);
         if pc >= V7_HL_MIN_C {
             let (ph, ch) = hues(PG_HL, ph, ch);
@@ -4216,7 +4297,7 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
             groups.push((ph, pc, ch, PG_HL));
         }
         // The whites' direction.
-        let d = if ctx.v12 {
+        let d = if ctx.p4 {
             c.hl4_d
         } else {
             (c.hl_a - o.get("T.white_a")).hypot(c.hl_b - o.get("T.white_b"))
@@ -4267,7 +4348,7 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
         };
         if ctx.v11 {
             // V12 (P1): a turn counts wherever it ends, so a group that starts in the band counts too.
-            if in_band(ch) || (ctx.v12 && in_band(ph)) {
+            if in_band(ch) || (ctx.p1 && in_band(ph)) {
                 let excess = (wrap_deg(ch - ph).abs() - rot).max(0.0);
                 t.guard_purple += V11_TURN.0 * sq(excess / V11_TURN.1);
                 continue;
@@ -4301,7 +4382,7 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
         t.guard_skin =
             V7_GUARD_SKIN_WEIGHT * (sq(eh / V5_GUARD_SKIN_SCALE) + sq(ec / V5_GUARD_SKIN_SCALE));
         if pc >= V9_MIN_MV_C {
-            let (ph, h) = if ctx.v12 {
+            let (ph, h) = if ctx.p3 {
                 (oklab_hue(ctx.p_pg_ab[5]), oklab_hue(c.pg_ab[5]))
             } else {
                 (ph, h)
@@ -4315,7 +4396,7 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
         }
     }
     // V12 (P2): the content turn budget.
-    if ctx.v12 {
+    if ctx.p2 {
         let limit = o.get("T.turn_share");
         if c.turn_share > limit {
             t.guard_turn = V12_TURN.0 * sq((c.turn_share - limit) / V12_TURN.1);
@@ -4327,6 +4408,27 @@ fn guards_v9(t: &mut V5T, c: &CandMeas, ctx: &V5Ctx) {
         let excess = (m.el[0].mv().1 - limit).max(0.0);
         t.guard_sky = V5_GUARD_SKY_WEIGHT * sq(excess / V5_GUARD_SKY_SCALE);
     }
+}
+
+/// The clip term of a network objective for a candidate's measurements `m`.
+fn clip_term(ctx: &V5Ctx, m: &Meas) -> f64 {
+    let over = |o: f64, r: f64| ((o - r - CLIP_SLACK).max(0.0) / CLIP_SCALE).powi(2);
+    // V8: against the larger of the reference's and the photo's own share (a photo black in half its frame is not pushed to
+    // lift it).
+    let (rh, rl) = if ctx.v8 {
+        (ctx.r.hi.max(ctx.p.hi), ctx.r.lo.max(ctx.p.lo))
+    } else {
+        (ctx.r.hi, ctx.r.lo)
+    };
+    let mut clip = over(m.hi, rh) + over(m.lo, rl);
+    if ctx.p5 {
+        // V12 (P5): the reference may license at most `T.clip_extra` more than the photo has; crushed black is L* < 2.5; stiffer.
+        let extra = ctx.out.get("T.clip_extra");
+        let over12 = |o: f64, a: f64| ((o - a - CLIP_SLACK).max(0.0) / V12_CLIP_SCALE).powi(2);
+        clip = over12(m.hi, clip_allowance(ctx.p.hi, ctx.r.hi, extra))
+            + over12(m.lo25, clip_allowance(ctx.p.lo25, ctx.r.lo25, extra));
+    }
+    clip
 }
 
 /// The objective of `09` section 4 for a candidate.
@@ -4830,22 +4932,7 @@ impl Evaluator<'_> {
         }
         let cm = cand_meas(&self.buf, scene, ctx);
         t.t5 = terms_v5(&cm, ctx);
-        let over = |o: f64, r: f64| ((o - r - CLIP_SLACK).max(0.0) / CLIP_SCALE).powi(2);
-        // V8: against the larger of the reference's and the photo's own share (a photo black in half its frame is not pushed to
-        // lift it).
-        let (rh, rl) = if ctx.v8 {
-            (ctx.r.hi.max(ctx.p.hi), ctx.r.lo.max(ctx.p.lo))
-        } else {
-            (ctx.r.hi, ctx.r.lo)
-        };
-        t.clip = over(cm.m.hi, rh) + over(cm.m.lo, rl);
-        if ctx.v12 {
-            // V12 (P5): the reference may license at most `T.clip_extra` more than the photo has; crushed black is L* < 2.5; stiffer.
-            let extra = ctx.out.get("T.clip_extra");
-            let over12 = |o: f64, a: f64| ((o - a - CLIP_SLACK).max(0.0) / V12_CLIP_SCALE).powi(2);
-            t.clip = over12(cm.m.hi, clip_allowance(ctx.p.hi, ctx.r.hi, extra))
-                + over12(cm.m.lo25, clip_allowance(ctx.p.lo25, ctx.r.lo25, extra));
-        }
+        t.clip = clip_term(ctx, &cm.m);
         (t, Some(cm))
     }
 
@@ -5847,7 +5934,7 @@ fn run_fit(
         };
         let p_px = ev.buf.clone();
         let r_px = picture_px(&ev.conv, reference_fit);
-        let c = build_v5_ctx(net, &p_px, sc, &r_px, rs)?;
+        let c = build_v5_ctx(net, &p_px, sc, &r_px, rs, ctx().ablate)?;
         ev.v5 = Some(c);
     }
     Ok((fit(&mut ev), ref_stats))
@@ -6571,6 +6658,9 @@ struct Args {
     shard: Option<(usize, usize)>,
     no_grids: bool,
     merge: Vec<PathBuf>,
+    /// Round-12 principles switched back to v11 (`--ablate p1,p3`), and the photos to keep (`--only a,b`, by file stem).
+    ablate: Ablate,
+    only: Vec<String>,
 }
 
 fn parse_objective(name: &str) -> R<Objective> {
@@ -6598,6 +6688,7 @@ fn parse_args() -> R<Args> {
         grades: 5,
         ..Args::default()
     };
+    let mut ablate_given = false;
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         let mut val = || it.next().ok_or_else(|| format!("{k} needs a value"));
@@ -6635,6 +6726,19 @@ fn parse_args() -> R<Args> {
                 }
                 a.shard = Some((i, n));
             }
+            "--ablate" => {
+                if ablate_given {
+                    return Err("--ablate may be given once".into());
+                }
+                ablate_given = true;
+                a.ablate = Ablate::parse(&val()?)?;
+            }
+            "--only" => a.only.extend(
+                val()?
+                    .split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty()),
+            ),
             "--merge" => a.merge.push(PathBuf::from(val()?)),
             "--split" => a.split = Some(PathBuf::from(val()?)),
             "--set" => a.set = Some(val()?),
@@ -6645,6 +6749,9 @@ fn parse_args() -> R<Args> {
             "--selftest" => a.selftest = true,
             other => return Err(format!("unknown argument {other}").into()),
         }
+    }
+    if !a.ablate.is_none() && a.objective != Some(Objective::V12) {
+        return Err("--ablate needs --objective v12".into());
     }
     if a.out.as_os_str().is_empty()
         && let Some((_, b)) = &a.compare
@@ -6759,7 +6866,9 @@ fn main() -> R<()> {
         };
     }
     if !args.merge.is_empty() {
-        let name = format!("{:?}", args.objective.unwrap_or(Objective::V2)).to_lowercase();
+        let name = args
+            .ablate
+            .label(&format!("{:?}", args.objective.unwrap_or(Objective::V2)).to_lowercase());
         return eval::merge(&args.merge, &name, &args.out);
     }
     if let Some((a, b)) = &args.compare {
@@ -6796,6 +6905,7 @@ fn main() -> R<()> {
         network9,
         network10,
         network11,
+        ablate: args.ablate,
     });
     let core = open_core(&args.out)?;
     let cache = args.out.join("cache");
@@ -6818,6 +6928,8 @@ fn main() -> R<()> {
             with_hue: !args.no_hue,
             shard: args.shard,
             no_grids: args.no_grids,
+            ablate: args.ablate,
+            only: args.only.clone(),
         });
     }
     if args.e2 {
@@ -7147,6 +7259,155 @@ mod tests {
         assert!((clip_allowance(0.10, 0.01, 0.02) - 0.10).abs() < 1e-12);
         // A reference slightly above the photo licenses what it holds.
         assert!((clip_allowance(0.10, 0.11, 0.02) - 0.11).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ablate_parses_and_labels() {
+        assert_eq!(Ablate::default().label("v12"), "v12");
+        assert_eq!(Ablate::parse("p2").unwrap().label("v12"), "v12-no-p2");
+        // The order given does not matter, and spaces and capitals are forgiven.
+        assert_eq!(
+            Ablate::parse("P5, p1").unwrap().label("v12"),
+            "v12-no-p1-p5"
+        );
+        assert_eq!(
+            Ablate::parse("p1,p2,p3,p4,p5").unwrap().label("v12"),
+            "v12-no-p1-p2-p3-p4-p5"
+        );
+        let a = Ablate::parse("p3").unwrap();
+        assert!(a.on(1) && a.on(2) && !a.on(3) && a.on(4) && a.on(5));
+        assert!(Ablate::parse("p6").is_err());
+        assert!(Ablate::parse("").is_err());
+        assert!(Ablate::parse("p1,p1").is_err());
+    }
+
+    /// A context for the guard tests: v12 on with the given principles, everything else empty.
+    fn ablation_ctx(ablate: Ablate, vals: &[(&str, f64)]) -> V5Ctx {
+        let mut ctx = V5Ctx {
+            p1: ablate.on(1),
+            p2: ablate.on(2),
+            p3: ablate.on(3),
+            p4: ablate.on(4),
+            p5: ablate.on(5),
+            ..V5Ctx::default()
+        };
+        for (k, v) in vals {
+            ctx.out.map.insert((*k).to_string(), *v);
+        }
+        ctx
+    }
+
+    fn off(n: usize) -> Ablate {
+        Ablate::parse(&format!("p{n}")).unwrap()
+    }
+
+    #[test]
+    fn ablate_p1_turn_out_of_the_band_counts_only_with_p1() {
+        let conv = LabConv::new();
+        // A magenta pixel in photo0 (C* 30, Oklab hue 328) that the candidate turns to a saturated blue.
+        let blue = conv.px([0.1, 0.2, 0.9]);
+        assert!(blue.lab[1].hypot(blue.lab[2]) > V10_NP_C);
+        let mk = |a: Ablate| {
+            let mut ctx = ablation_ctx(a, &[]);
+            ctx.not_skin = vec![true];
+            ctx.p_cstar = vec![30.0];
+            ctx.p_okh = vec![328.0];
+            ctx
+        };
+        assert_eq!(
+            turned_purple_share(&[blue], &mk(Ablate::default()), 10.0),
+            1.0
+        );
+        assert_eq!(turned_purple_share(&[blue], &mk(off(1)), 10.0), 0.0);
+    }
+
+    #[test]
+    fn ablate_p2_turn_budget_only_with_p2() {
+        let vals = [("T.turn_share", 0.03)];
+        let c = CandMeas {
+            turn_share: 0.06,
+            ..CandMeas::default()
+        };
+        let run = |a: Ablate| {
+            let ctx = ablation_ctx(a, &vals);
+            let mut t = V5T::default();
+            guards_v9(&mut t, &c, &ctx);
+            t.guard_turn
+        };
+        assert!((run(Ablate::default()) - 6.0 * 9.0).abs() < 1e-9);
+        assert_eq!(run(off(2)), 0.0);
+    }
+
+    #[test]
+    fn ablate_p3_oklab_hue_wall_only_with_p3() {
+        // The whites' CIELAB mean vector does not move, but their Oklab mean turns by 90 degrees.
+        let vals = [("T.wall_deg", 20.0), ("T.hl_cmax", 20.0)];
+        let mut c = CandMeas {
+            hl_a: 10.0,
+            hl_b: 0.0,
+            pg_ab: vec![[0.1, 0.0]; PG_N],
+            ..CandMeas::default()
+        };
+        c.pg_ab[PG_HL] = [0.0, 0.1];
+        let run = |a: Ablate| {
+            let mut ctx = ablation_ctx(a, &vals);
+            ctx.hl_scope = vec![true; 10];
+            ctx.p_hl_a = 10.0;
+            ctx.p_hl_b = 0.0;
+            ctx.p_pg_ab = vec![[0.1, 0.0]; PG_N];
+            let mut t = V5T::default();
+            guards_v9(&mut t, &c, &ctx);
+            t.guard_hl
+        };
+        assert!(run(Ablate::default()) > 0.0);
+        assert_eq!(run(off(3)), 0.0);
+    }
+
+    #[test]
+    fn ablate_p4_opposite_tinted_whites_cancel_again() {
+        // The mean vector of the whites is neutral, the per-pixel chroma and distance are 12.
+        let vals = [("T.hl_cmax", 4.0), ("T.white_tol", 2.0)];
+        let c = CandMeas {
+            hl4_c: 12.0,
+            hl4_d: 12.0,
+            ..CandMeas::default()
+        };
+        let run = |a: Ablate| {
+            let mut ctx = ablation_ctx(a, &vals);
+            ctx.hl_scope = vec![true; 10];
+            let mut t = V5T::default();
+            guards_v9(&mut t, &c, &ctx);
+            (t.guard_hl, t.guard_white_dir)
+        };
+        let (cap, dir) = run(Ablate::default());
+        assert!(cap > 0.0 && dir > 0.0);
+        assert_eq!(run(off(4)), (0.0, 0.0));
+    }
+
+    #[test]
+    fn ablate_p5_clip_allowance_only_with_p5() {
+        // The photo holds 10 % clipped white, the reference 40 %; the candidate clips 20 %.
+        let mk = |a: Ablate| {
+            let mut ctx = ablation_ctx(a, &[("T.clip_extra", 0.02)]);
+            ctx.v8 = true;
+            ctx.p.hi = 0.10;
+            ctx.r.hi = 0.40;
+            ctx
+        };
+        let m = Meas {
+            hi: 0.20,
+            ..Meas::default()
+        };
+        assert!(clip_term(&mk(Ablate::default()), &m) > 0.0);
+        // v11: the larger of the two shares licenses it.
+        assert_eq!(clip_term(&mk(off(5)), &m), 0.0);
+        // Crushed black counts only with P5 (L* < 2.5), not under v11's test.
+        let crushed = Meas {
+            lo25: 0.20,
+            ..Meas::default()
+        };
+        assert!(clip_term(&mk(Ablate::default()), &crushed) > 0.0);
+        assert_eq!(clip_term(&mk(off(5)), &crushed), 0.0);
     }
 
     #[test]

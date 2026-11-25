@@ -505,11 +505,15 @@ pub struct EvalOpts<'a> {
     pub shard: Option<(usize, usize)>,
     /// No grids: fit and measure only.
     pub no_grids: bool,
+    /// The round-12 principles switched off: they label the output (`eval-v12-no-p2`).
+    pub ablate: Ablate,
+    /// Keep only the photos with these file stems (empty: all).
+    pub only: Vec<String>,
 }
 
 /// Runs the harness: every photo of the chosen set(s) against every reference.
 pub fn run_eval(o: &EvalOpts<'_>) -> R<()> {
-    let name = format!("{:?}", o.objective).to_lowercase();
+    let name = o.ablate.label(&format!("{:?}", o.objective).to_lowercase());
     let dir = o.out.join(format!("eval-{name}"));
     fs::create_dir_all(&dir)?;
     let refs: Vec<Reference> = expand(&o.references, &["jpg", "jpeg", "png"])
@@ -523,6 +527,12 @@ pub fn run_eval(o: &EvalOpts<'_>) -> R<()> {
         .split
         .iter()
         .filter(|e| o.set == "all" || e.set == o.set)
+        .filter(|e| {
+            o.only.is_empty()
+                || e.raw
+                    .file_stem()
+                    .is_some_and(|s| o.only.iter().any(|x| x.as_str() == s.to_string_lossy()))
+        })
         .collect();
     // The test photos whose grids go to the owner: a seeded sample of 12.
     let test: Vec<usize> = selected
