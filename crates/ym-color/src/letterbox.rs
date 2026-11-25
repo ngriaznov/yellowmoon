@@ -12,7 +12,7 @@
 //!    thresholds). The first run of such lines from an edge is the strict run.
 //! 2. **The ringing margin.** JPEG rings next to a hard edge: the last lines of a bar, up to one 4:2:0 block (16 lines) before the
 //!    picture, are no longer flat. After the strict run the rule looks on through up to [`RINGING_MARGIN_PX`] lines, as long as they
-//!    stay dark (mean below [`LINE_MEAN_MAX`]), for the picture's edge.
+//!    stay dark (mean below [`RINGING_MEAN_MAX`]), for the picture's edge.
 //! 3. **The step.** The picture's edge is the first line in that window whose mean is at least [`STEP_MEAN_CODES`] above the line
 //!    before it. No such line, no bar: a night frame's dark lines rise gradually (the largest rise between two lines in the
 //!    window on 199 local pictures was 7.0 codes), a real bar meets the picture in one line.
@@ -36,8 +36,11 @@ pub const MIN_BAR_FRACTION: f64 = 0.01;
 pub const MIN_BAR_PX: usize = 4;
 /// How many lines after the strict run are searched for the picture's edge (a 16-line 4:2:0 JPEG block).
 pub const RINGING_MARGIN_PX: usize = 16;
-/// The picture's first line has a mean at least this many codes above the bar's last line.
-pub const STEP_MEAN_CODES: f64 = 20.0;
+/// The picture's first line has a mean at least this many codes above the line before it.
+pub const STEP_MEAN_CODES: f64 = 16.0;
+/// A line in the ringing window may have a mean up to this and still be taken for the bar's own (the colour that 4:2:0 sampling
+/// and the ripples carry into the last lines of a bar); a line above it with no step ends the search.
+pub const RINGING_MEAN_MAX: f64 = 32.0;
 
 /// What a sample's 8-bit code is: `u8` is its own, `u16` is scaled to 0 to 255 by rounding.
 pub trait Sample: Copy + Send + Sync {
@@ -137,7 +140,7 @@ fn bar_length(lines: &dyn Fn(usize) -> Line, len: usize, n: u64) -> (usize, bool
         if m - previous >= STEP_MEAN_CODES {
             return (if (min..=cap).contains(&j) { j } else { 0 }, false);
         }
-        if m >= LINE_MEAN_MAX {
+        if m >= RINGING_MEAN_MAX {
             break;
         }
         previous = m;

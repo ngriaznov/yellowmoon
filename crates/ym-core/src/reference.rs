@@ -424,7 +424,9 @@ fn decode_jpeg(bytes: &[u8]) -> Result<Decoded, ReferenceError> {
     use zune_jpeg::zune_core::options::DecoderOptions;
 
     // The SIMD paths are off: the decoded bytes must not depend on which instructions the machine has (rule 8).
-    let options = DecoderOptions::default().set_use_unsafe(false);
+    let options = DecoderOptions::default()
+        .set_use_unsafe(false)
+        .set_strict_mode(true);
     let mut probe = JpegDecoder::new_with_options(ZCursor::new(bytes), options);
     probe.decode_headers().map_err(|e| {
         tracing::debug!(error = %e, "a reference JPEG's headers could not be read");
@@ -443,6 +445,7 @@ fn decode_jpeg(bytes: &[u8]) -> Result<Decoded, ReferenceError> {
     let orientation = probe.exif().map_or(1, |e| exif_orientation(e));
     let options = DecoderOptions::default()
         .set_use_unsafe(false)
+        .set_strict_mode(true)
         .jpeg_set_out_colorspace(out);
     let mut decoder = JpegDecoder::new_with_options(ZCursor::new(bytes), options);
     let data = decoder.decode().map_err(|e| {
