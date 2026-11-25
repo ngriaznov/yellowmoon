@@ -1271,6 +1271,16 @@ impl NodePlan {
                     step.node
                 ))
             })?;
+            // A Reference Grade node's hue curves and element grades have no kernel until RG-08 (`docs/34` section 7.2): the
+            // device refuses a live one, as it refuses any plan it cannot hold, and the CPU makes the frame with this reason
+            // (`RenderReport::cpu_reason`). The node's corrector steps alone run here like a corrector's, and a node at the
+            // identity (or bypassed) changes nothing.
+            if !n.bypass && n.reference.as_ref().is_some_and(|r| !r.is_identity()) {
+                return Err(GpuError::InvalidInput(format!(
+                    "node {} has hue curves or element grades, which the graphics card does not run yet",
+                    step.node
+                )));
+            }
             nodes.push((*step, Some(n)));
         }
         // The curve tables: four for each node that runs a curve, in plan order.

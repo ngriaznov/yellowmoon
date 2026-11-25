@@ -261,15 +261,24 @@ fn ten_photos() -> (Rig, PathBuf) {
         { "id": 7, "kind": "blur", "name": "Background", "pos": [4, 0], "type": "zoom",
           "zoom": { "amount": 35, "center": [0.25, 0.75] }, "respect_mask_edges": false,
           "masks": { "invert": false, "items": [
-            { "kind": "subject", "mode": "add", "invert": true, "enabled": true, "opacity": 1, "feather": 0.08 } ] } } ],
+            { "kind": "subject", "mode": "add", "invert": true, "enabled": true, "opacity": 1, "feather": 0.08 } ] } },
+        // A Reference Grade node with fitted-style numbers (RG-02): it travels in `settings` as stored.
+        { "id": 8, "kind": "reference_grade", "name": "Match", "pos": [5, 0], "strength": 80, "skin_protection": false,
+          "grade": { "saturation": { "kind": "manual", "value": -12 },
+                     "curve": { "luma": [[0, 0], [0.2784, 0.27], [1, 1]] } },
+          "hue_curves": { "hue_vs_hue": [ { "hue_deg": 0, "value": -4 }, { "hue_deg": 120, "value": 6 } ],
+                          "hue_vs_sat": [ { "hue_deg": 240, "value": 1.2 } ] },
+          "elements": { "sky": { "exposure_ev": -0.3, "hue_deg": 8, "chroma": 1.1 }, "subject": { "exposure_ev": 0.2 } } } ],
         "links": [
             { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
             { "from": { "node": 1, "port": "picture" }, "to": { "node": 6, "port": "picture" } },
             { "from": { "node": 6, "port": "picture" }, "to": { "node": 7, "port": "picture" } },
-            { "from": { "node": 7, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
+            { "from": { "node": 7, "port": "picture" }, "to": { "node": 8, "port": "picture" } },
+            { "from": { "node": 8, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
     let (u, _) = DevelopSettings::from_value(uniform, &LookId::neutral()).expect("a node");
     s.nodes.uniforms = u.nodes.uniforms;
     s.nodes.blurs = u.nodes.blurs;
+    s.nodes.references = u.nodes.references;
     s.nodes.links = u.nodes.links;
     s.main_mut().masks = every_mask();
     r.set(ids[2], s);
@@ -1405,6 +1414,65 @@ fn an_album_with_a_color_uniform_node_round_trips_and_an_older_build_refuses_it(
     assert!(matches!(
         Album::from_json(&old.to_string()),
         Err(AlbumError::Settings(_) | AlbumError::TooNew)
+    ));
+}
+
+/// RG-02: the Reference Grade node is in the file as `"kind": "reference_grade"` inside the photo's settings, as stored (the fitted
+/// numbers, Strength and Skin protection; nothing of a reference), with no change to the album's version; a build that does not
+/// know the kind refuses the album with the album's sentence.
+#[test]
+fn an_album_with_a_reference_grade_node_round_trips_and_an_older_build_refuses_it() {
+    let (a, path) = ten_photos();
+    a.core.album_save(&path).expect("saved");
+    let good = read_json(&path);
+    assert_eq!(good["yellowmoon_album"], json!(1), "the version stays 1");
+    let items = good["photos"][2]["settings"]["nodes"]["items"]
+        .as_array()
+        .expect("items");
+    let node = items
+        .iter()
+        .find(|i| i["kind"] == "reference_grade")
+        .expect("the node is in the file");
+    assert_eq!(node["strength"], json!(80.0));
+    assert_eq!(node["skin_protection"], json!(false));
+    assert_eq!(node["hue_curves"]["hue_vs_hue"][1]["value"], json!(6.0));
+    assert_eq!(node["elements"]["sky"]["hue_deg"], json!(8.0));
+    assert_eq!(node["elements"]["subject"]["exposure_ev"], json!(0.2));
+    let album = Album::from_json(&good.to_string()).expect("reads");
+    let n = album.photos[2]
+        .settings
+        .nodes
+        .reference_grade(8)
+        .expect("the node");
+    assert_eq!(n.hue_curves.hue_vs_sat[0].hue_deg, 240.0);
+    assert_eq!(
+        read_json_text(&album.to_json().expect("writes")),
+        good,
+        "the same document"
+    );
+    // The version of the pipeline that wrote it is recorded.
+    assert_eq!(good["written_by"]["pipeline"], json!("0.17.0"));
+    // An older build does not know the kind: the same document, with the kind as that build would see it.
+    let dir = tempfile::tempdir().unwrap();
+    let mut old = good.clone();
+    for item in old["photos"][2]["settings"]["nodes"]["items"]
+        .as_array_mut()
+        .unwrap()
+    {
+        if item["kind"] == "reference_grade" {
+            item["kind"] = json!("a_kind_from_a_later_build");
+        }
+    }
+    let file = dir.path().join("older.ymalbum");
+    std::fs::write(&file, old.to_string()).unwrap();
+    let e = a
+        .core
+        .album_open(&file, OpenOptions::default())
+        .expect_err("refused");
+    assert_eq!(e.to_string(), TOO_NEW_SENTENCE);
+    assert!(matches!(
+        Album::from_json(&old.to_string()),
+        Err(AlbumError::TooNew)
     ));
 }
 

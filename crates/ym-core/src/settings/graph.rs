@@ -28,6 +28,11 @@ use super::film::{
 };
 use super::masks::MaskSettings;
 use super::mixers::{MIXER_INPUTS, MixerNode, OPACITY_RANGE};
+use super::reference::{
+    DEFAULT_REFERENCE_NAME, ELEMENT_CHROMA_RANGE, ELEMENT_EXPOSURE_RANGE_EV, ELEMENT_HUE_CAPS_DEG,
+    ELEMENT_NAMES, ElementValues, HUE_VS_HUE_RANGE_DEG, HUE_VS_SAT_RANGE, HuePoint, MAX_HUE_POINTS,
+    ReferenceGradeNode, check_shape,
+};
 use super::uniform::{
     ColorUniformNode, TARGET_LIGHTNESS_RANGE_EV, TARGET_SATURATION_RANGE, UNIFORM_AMOUNT_RANGE,
     wrap_hue_deg,
@@ -159,6 +164,15 @@ pub enum GraphError {
     /// More masks in a node than the limit.
     #[error("A node can have up to 64 masks.")]
     TooManyMasks,
+    /// A Reference Grade node's `elements` names a member the node does not have.
+    #[error("A Reference Grade node has no element called “{0}”.")]
+    UnknownElement(String),
+    /// Two points of one hue curve are at the same hue.
+    #[error("Two points of a hue curve are at the same hue.")]
+    HuePointsCollide,
+    /// More points in a hue curve than the limit.
+    #[error("A hue curve can have up to 16 points.")]
+    TooManyHuePoints,
     /// More per-face settings in a Face Refinement node than the limit.
     #[error("A Face Refinement node can hold settings for up to 32 faces.")]
     TooManyFaces,
@@ -321,6 +335,8 @@ pub enum NodeKind {
     ColorUniform,
     /// A Blur node (`docs/33`).
     Blur,
+    /// A Reference Grade node (`docs/34`).
+    ReferenceGrade,
     /// A Parallel mixer (`docs/25`).
     Parallel,
     /// A Layer mixer (`docs/25`).
@@ -334,7 +350,7 @@ pub enum NodeKind {
 impl NodeKind {
     /// Every kind. The scheduler's footprint list (`pipeline::schedule::step_kind`) is an exhaustive `match` over the same
     /// kinds, and the random-graph test draws from this list (`docs/23` section 5.12).
-    pub const ALL: [NodeKind; 11] = [
+    pub const ALL: [NodeKind; 12] = [
         NodeKind::Input,
         NodeKind::Output,
         NodeKind::Corrector,
@@ -342,6 +358,7 @@ impl NodeKind {
         NodeKind::FaceRefinement,
         NodeKind::ColorUniform,
         NodeKind::Blur,
+        NodeKind::ReferenceGrade,
         NodeKind::Parallel,
         NodeKind::Layer,
         NodeKind::Splitter,
@@ -360,6 +377,7 @@ impl NodeKind {
             Self::FaceRefinement => "a face refinement node",
             Self::ColorUniform => "a Colour Uniform node",
             Self::Blur => "a Blur node",
+            Self::ReferenceGrade => "a Reference Grade node",
             Self::Parallel => "a parallel mixer",
             Self::Layer => "a layer mixer",
             Self::Splitter => "a splitter",
@@ -378,6 +396,7 @@ impl NodeKind {
             Self::FaceRefinement => "A face refinement node",
             Self::ColorUniform => "A Colour Uniform node",
             Self::Blur => "A Blur node",
+            Self::ReferenceGrade => "A Reference Grade node",
             Self::Parallel => "A parallel mixer",
             Self::Layer => "A layer mixer",
             Self::Splitter => "A splitter",
@@ -396,6 +415,7 @@ impl NodeKind {
             Self::FaceRefinement => "face_refinement",
             Self::ColorUniform => "color_uniform",
             Self::Blur => "blur",
+            Self::ReferenceGrade => "reference_grade",
             Self::Parallel => "parallel",
             Self::Layer => "layer",
             Self::Splitter => "splitter",
@@ -414,7 +434,8 @@ impl NodeKind {
             | Self::Film
             | Self::FaceRefinement
             | Self::ColorUniform
-            | Self::Blur => false,
+            | Self::Blur
+            | Self::ReferenceGrade => false,
         }
     }
 
@@ -424,7 +445,11 @@ impl NodeKind {
     pub fn is_numbered_extra(self) -> bool {
         matches!(
             self,
-            Self::Film | Self::FaceRefinement | Self::ColorUniform | Self::Blur
+            Self::Film
+                | Self::FaceRefinement
+                | Self::ColorUniform
+                | Self::Blur
+                | Self::ReferenceGrade
         ) || self.is_mixer_family()
     }
 
@@ -448,6 +473,7 @@ impl NodeKind {
             "face_refinement" => Ok(Self::FaceRefinement),
             "color_uniform" => Ok(Self::ColorUniform),
             "blur" => Ok(Self::Blur),
+            "reference_grade" => Ok(Self::ReferenceGrade),
             "parallel" => Ok(Self::Parallel),
             "layer" => Ok(Self::Layer),
             "splitter" => Ok(Self::Splitter),
@@ -662,7 +688,8 @@ pub fn ports_out(kind: NodeKind) -> &'static [Port] {
         | NodeKind::Film
         | NodeKind::FaceRefinement
         | NodeKind::ColorUniform
-        | NodeKind::Blur => &[Port::Picture, Port::Key],
+        | NodeKind::Blur
+        | NodeKind::ReferenceGrade => &[Port::Picture, Port::Key],
         NodeKind::Splitter => &[Port::Red, Port::Green, Port::Blue],
         NodeKind::Output => &[],
     }
@@ -677,7 +704,8 @@ pub fn ports_in(kind: NodeKind) -> &'static [Port] {
         | NodeKind::Film
         | NodeKind::FaceRefinement
         | NodeKind::ColorUniform
-        | NodeKind::Blur => &[Port::Picture, Port::Key],
+        | NodeKind::Blur
+        | NodeKind::ReferenceGrade => &[Port::Picture, Port::Key],
         NodeKind::Output | NodeKind::Splitter => &[Port::Picture],
         NodeKind::Parallel | NodeKind::Layer => mixer_inputs(),
         NodeKind::Combiner => &[Port::Red, Port::Green, Port::Blue],
@@ -963,6 +991,8 @@ pub struct NodeGraph {
     /// The Blur nodes by id (`docs/33`). They share the number space of the correctors, the Film nodes, the Face Refinement
     /// nodes and the Colour Uniform nodes.
     pub blurs: BTreeMap<u32, BlurNode>,
+    /// The Reference Grade nodes by id (`docs/34`). They share the number space of the other numbered nodes.
+    pub references: BTreeMap<u32, ReferenceGradeNode>,
     /// The nodes of `docs/25` (Parallel, Layer, Splitter, Combiner) by id. They share the number space of the
     /// correctors and the Film nodes, and count toward the 64.
     pub mixers: BTreeMap<u32, MixerNode>,
@@ -985,6 +1015,7 @@ impl NodeGraph {
             faces: BTreeMap::new(),
             uniforms: BTreeMap::new(),
             blurs: BTreeMap::new(),
+            references: BTreeMap::new(),
             mixers: BTreeMap::new(),
             output: OutputNode::with_look(look),
             links: Self::default_links(),
@@ -1074,6 +1105,17 @@ impl NodeGraph {
         self.blurs.get_mut(&id)
     }
 
+    /// The Reference Grade node with this id.
+    #[must_use]
+    pub fn reference_grade(&self, id: u32) -> Option<&ReferenceGradeNode> {
+        self.references.get(&id)
+    }
+
+    /// The Reference Grade node with this id, to change.
+    pub fn reference_grade_mut(&mut self, id: u32) -> Option<&mut ReferenceGradeNode> {
+        self.references.get_mut(&id)
+    }
+
     /// The node of `docs/25` with this id.
     #[must_use]
     pub fn mixer(&self, id: u32) -> Option<&MixerNode> {
@@ -1095,6 +1137,7 @@ impl NodeGraph {
             .or_else(|| self.faces.get(&id).map(|f| &f.masks))
             .or_else(|| self.uniforms.get(&id).map(|f| &f.masks))
             .or_else(|| self.blurs.get(&id).map(|f| &f.masks))
+            .or_else(|| self.references.get(&id).map(|f| &f.masks))
     }
 
     /// The mask rows of a numbered node, to change.
@@ -1114,6 +1157,9 @@ impl NodeGraph {
         if self.blurs.contains_key(&id) {
             return self.blurs.get_mut(&id).map(|f| &mut f.masks);
         }
+        if self.references.contains_key(&id) {
+            return self.references.get_mut(&id).map(|f| &mut f.masks);
+        }
         self.faces.get_mut(&id).map(|f| &mut f.masks)
     }
 
@@ -1125,6 +1171,7 @@ impl NodeGraph {
             .chain(self.faces.iter().map(|(id, f)| (*id, &f.masks)))
             .chain(self.uniforms.iter().map(|(id, f)| (*id, &f.masks)))
             .chain(self.blurs.iter().map(|(id, f)| (*id, &f.masks)))
+            .chain(self.references.iter().map(|(id, f)| (*id, &f.masks)))
     }
 
     /// The number of numbered nodes: the correctors (Main included), the Film nodes, the Face Refinement nodes and the
@@ -1136,6 +1183,7 @@ impl NodeGraph {
             + self.faces.len()
             + self.uniforms.len()
             + self.blurs.len()
+            + self.references.len()
             + self.mixers.len()
     }
 
@@ -1149,6 +1197,11 @@ impl NodeGraph {
             .chain(self.faces.keys().map(|id| (*id, NodeKind::FaceRefinement)))
             .chain(self.uniforms.keys().map(|id| (*id, NodeKind::ColorUniform)))
             .chain(self.blurs.keys().map(|id| (*id, NodeKind::Blur)))
+            .chain(
+                self.references
+                    .keys()
+                    .map(|id| (*id, NodeKind::ReferenceGrade)),
+            )
             .chain(self.mixers.iter().map(|(id, m)| (*id, m.kind())))
             .collect();
         v.sort_by_key(|(id, _)| *id);
@@ -1165,6 +1218,9 @@ impl NodeGraph {
             NodeId::Corrector(n) if self.faces.contains_key(&n) => Some(NodeKind::FaceRefinement),
             NodeId::Corrector(n) if self.uniforms.contains_key(&n) => Some(NodeKind::ColorUniform),
             NodeId::Corrector(n) if self.blurs.contains_key(&n) => Some(NodeKind::Blur),
+            NodeId::Corrector(n) if self.references.contains_key(&n) => {
+                Some(NodeKind::ReferenceGrade)
+            }
             NodeId::Corrector(n) if self.mixers.contains_key(&n) => {
                 self.mixers.get(&n).map(MixerNode::kind)
             }
@@ -1220,6 +1276,7 @@ impl NodeGraph {
                 .or_else(|| self.face_refinement(n).map(|f| f.pos))
                 .or_else(|| self.color_uniform(n).map(|f| f.pos))
                 .or_else(|| self.blur(n).map(|f| f.pos))
+                .or_else(|| self.reference_grade(n).map(|f| f.pos))
                 .or_else(|| self.mixer(n).map(MixerNode::pos)),
         }
     }
@@ -1243,6 +1300,9 @@ impl NodeGraph {
         }
         if self.blurs.contains_key(&id) {
             return self.blurs.get_mut(&id).map(|f| &mut f.pos);
+        }
+        if self.references.contains_key(&id) {
+            return self.references.get_mut(&id).map(|f| &mut f.pos);
         }
         self.mixers.get_mut(&id).map(MixerNode::pos_mut)
     }
@@ -1435,6 +1495,11 @@ impl Serialize for NodeGraph {
                         items.push(item(node, kind, f)?);
                     }
                 }
+                NodeKind::ReferenceGrade => {
+                    if let Some(f) = self.reference_grade(id) {
+                        items.push(item(node, kind, f)?);
+                    }
+                }
                 NodeKind::Corrector => {
                     if let Some(c) = self.corrector(id) {
                         items.push(item(node, kind, c)?);
@@ -1511,6 +1576,17 @@ pub(crate) fn node_fields(kind: NodeKind) -> &'static [&'static str] {
             "motion",
             "zoom",
             "respect_mask_edges",
+            "masks",
+        ],
+        NodeKind::ReferenceGrade => &[
+            "name",
+            "bypass",
+            "trim",
+            "grade",
+            "hue_curves",
+            "elements",
+            "strength",
+            "skin_protection",
             "masks",
         ],
         NodeKind::Parallel => &["name", "bypass"],
@@ -1595,6 +1671,7 @@ impl NodeGraph {
                         | NodeKind::FaceRefinement
                         | NodeKind::ColorUniform
                         | NodeKind::Blur
+                        | NodeKind::ReferenceGrade
                         | NodeKind::Parallel
                         | NodeKind::Layer
                         | NodeKind::Splitter
@@ -1608,9 +1685,11 @@ impl NodeGraph {
                 _ => return Err(GraphError::MissingFixed.into()),
             };
             for key in map.keys() {
+                // A Reference Grade node refuses any field it has not, a typo as well as a field of another kind
+                // (`docs/34` section 3.4).
                 if !COMMON_FIELDS.contains(&key.as_str())
                     && !node_fields(kind).contains(&key.as_str())
-                    && is_field_of_some_kind(key)
+                    && (is_field_of_some_kind(key) || kind == NodeKind::ReferenceGrade)
                 {
                     return Err(GraphError::UnknownField {
                         kind: kind.sentence(),
@@ -1672,6 +1751,15 @@ impl NodeGraph {
                     }
                     graph.blurs.insert(n, node);
                 }
+                NodeId::Corrector(n) if kind == NodeKind::ReferenceGrade => {
+                    let named = map.contains_key("name");
+                    check_shape(map.get("hue_curves"), map.get("elements"))?;
+                    let mut node: ReferenceGradeNode = read_node(map)?;
+                    if !named {
+                        node.name = DEFAULT_REFERENCE_NAME.to_owned();
+                    }
+                    graph.references.insert(n, node);
+                }
                 NodeId::Corrector(n) if kind == NodeKind::ColorUniform => {
                     let named = map.contains_key("name");
                     let mut node: ColorUniformNode = read_node(map)?;
@@ -1721,6 +1809,7 @@ impl NodeGraph {
             || !graph.faces.is_empty()
             || !graph.uniforms.is_empty()
             || !graph.blurs.is_empty()
+            || !graph.references.is_empty()
             || !graph.mixers.is_empty())
             && !placed.contains(&NodeId::Output)
         {
@@ -2276,6 +2365,98 @@ impl BlurNode {
     }
 }
 
+/// Sorts and checks one hue curve: at most [`MAX_HUE_POINTS`] points, each hue read modulo 360 (not reported), each value
+/// clamped to its range (reported), no two points at one hue. Returns whether a value was clamped.
+fn sanitise_hue_curve(
+    points: &mut [HuePoint],
+    path: &str,
+    range: (f64, f64),
+) -> Result<bool, SettingsError> {
+    if points.len() > MAX_HUE_POINTS {
+        return Err(GraphError::TooManyHuePoints.into());
+    }
+    let mut clamped = false;
+    for (i, p) in points.iter_mut().enumerate() {
+        if !p.hue_deg.is_finite() {
+            return Err(SettingsError::NotFinite(format!("{path}[{i}].hue_deg")));
+        }
+        p.hue_deg = wrap_hue_deg(p.hue_deg);
+        let (v, c) = clamp_to(&format!("{path}[{i}].value"), p.value, range)?;
+        p.value = v;
+        clamped |= c;
+    }
+    points.sort_by(|a, b| a.hue_deg.total_cmp(&b.hue_deg));
+    if points.windows(2).any(|w| w[0].hue_deg == w[1].hue_deg) {
+        return Err(GraphError::HuePointsCollide.into());
+    }
+    Ok(clamped)
+}
+
+impl ReferenceGradeNode {
+    fn sanitise(&mut self, s: &mut Sanitiser, id: u32, prefix: &str) -> Result<(), SettingsError> {
+        let node = NodeId::Corrector(id);
+        let trimmed: String = self.name.trim().chars().take(MAX_NAME_CHARS).collect();
+        let trimmed = trimmed.trim().to_owned();
+        self.name = if trimmed.is_empty() {
+            DEFAULT_REFERENCE_NAME.to_owned()
+        } else {
+            trimmed
+        };
+        clamp_pos(s, node, prefix, &mut self.pos)?;
+        // Auto belongs to Main (`docs/23` section 3.2): in this node's grade it is a manual 0, silently.
+        self.grade.make_manual();
+        self.trim.sanitise(s, node, prefix)?;
+        self.grade.sanitise(s, node, prefix)?;
+        let curves = &mut self.hue_curves;
+        let c1 = sanitise_hue_curve(
+            &mut curves.hue_vs_hue,
+            &format!("{prefix}.hue_curves.hue_vs_hue"),
+            HUE_VS_HUE_RANGE_DEG,
+        )?;
+        let c2 = sanitise_hue_curve(
+            &mut curves.hue_vs_sat,
+            &format!("{prefix}.hue_curves.hue_vs_sat"),
+            HUE_VS_SAT_RANGE,
+        )?;
+        s.note(node, SettingsField::HueCurves, c1 || c2);
+        let mut changed = false;
+        let mut one = |name: &str, e: &mut ElementValues, cap: f64| -> Result<(), SettingsError> {
+            for (field, v, range) in [
+                ("exposure_ev", &mut e.exposure_ev, ELEMENT_EXPOSURE_RANGE_EV),
+                ("hue_deg", &mut e.hue_deg, (-cap, cap)),
+                ("chroma", &mut e.chroma, ELEMENT_CHROMA_RANGE),
+            ] {
+                let (x, c) = clamp_to(&format!("{prefix}.elements.{name}.{field}"), *v, range)?;
+                *v = x;
+                changed |= c;
+            }
+            Ok(())
+        };
+        let names = ELEMENT_NAMES;
+        for ((name, e), cap) in names
+            .iter()
+            .zip(self.elements.six_mut())
+            .zip(ELEMENT_HUE_CAPS_DEG)
+        {
+            one(name, e, cap)?;
+        }
+        let (x, c) = clamp_to(
+            &format!("{prefix}.elements.subject.exposure_ev"),
+            self.elements.subject.exposure_ev,
+            ELEMENT_EXPOSURE_RANGE_EV,
+        )?;
+        self.elements.subject.exposure_ev = x;
+        changed |= c;
+        s.note(node, SettingsField::Elements, changed);
+        let (v, c) = clamp_to(&format!("{prefix}.strength"), self.strength, STRENGTH_RANGE)?;
+        self.strength = v;
+        s.note(node, SettingsField::Strength, c);
+        let changed = self.masks.sanitise(&format!("{prefix}.masks"))?;
+        s.note(node, SettingsField::Masks, changed);
+        Ok(())
+    }
+}
+
 impl MixerNode {
     fn sanitise(&mut self, s: &mut Sanitiser, id: u32, prefix: &str) -> Result<(), SettingsError> {
         let node = NodeId::Corrector(id);
@@ -2315,6 +2496,7 @@ impl NodeGraph {
                 + usize::from(self.faces.contains_key(id))
                 + usize::from(self.uniforms.contains_key(id))
                 + usize::from(self.blurs.contains_key(id))
+                + usize::from(self.references.contains_key(id))
                 + usize::from(self.mixers.contains_key(id))
         };
         if let Some(id) = self
@@ -2323,6 +2505,7 @@ impl NodeGraph {
             .chain(self.faces.keys())
             .chain(self.uniforms.keys())
             .chain(self.blurs.keys())
+            .chain(self.references.keys())
             .chain(self.mixers.keys())
             .find(|id| **id == MAIN_ID || owners(id) > 1)
         {
@@ -2341,6 +2524,8 @@ impl NodeGraph {
             } else if let Some(f) = self.color_uniform_mut(id) {
                 f.sanitise(s, id, &prefix)?;
             } else if let Some(f) = self.blur_mut(id) {
+                f.sanitise(s, id, &prefix)?;
+            } else if let Some(f) = self.reference_grade_mut(id) {
                 f.sanitise(s, id, &prefix)?;
             } else if let Some(m) = self.mixer_mut(id) {
                 m.sanitise(s, id, &prefix)?;

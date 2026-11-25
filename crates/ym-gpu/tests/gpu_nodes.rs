@@ -219,6 +219,7 @@ fn random_node(rng: &mut Rng, scale: f64) -> NodeParams {
         },
         curves: random_curves(rng),
         uniform: None,
+        reference: None,
     }
 }
 

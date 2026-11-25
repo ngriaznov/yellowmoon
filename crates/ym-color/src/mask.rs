@@ -125,6 +125,13 @@ pub trait RasterPlanes: Sync {
     fn film(&self, _node: u32, _x: usize, _y: usize) -> Option<[f32; 3]> {
         None
     }
+
+    /// The soft mask in [0, 1] of element `element` (0 sky, 1 vegetation, 2 water, 3 ground, 4 built, 5 skin, 6 subject) of the
+    /// Reference Grade node `node` at pixel `(x, y)` of the window (`docs/34` section 4a.3). A render with no element
+    /// planes for the node has none: 0, and the element step then does nothing.
+    fn element(&self, _node: u32, _element: usize, _x: usize, _y: usize) -> f64 {
+        0.0
+    }
 }
 
 /// Where a pixel is in the render's raster planes.

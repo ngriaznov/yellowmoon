@@ -9,6 +9,10 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ## [Unreleased]
 
+### Added
+
+- **Reference Grade, the node's format (not in the app yet).** A settings file can hold a `reference_grade` node: a corrector's trims and grade, two hue curves, seven element grades, a Strength and a Skin protection switch (`docs/34`). The hue curves run on the CPU and restore each pixel's brightness; the element grades wait for the scene masks, and the graphics card hands a node that uses either to the CPU. A node at its defaults changes no picture. An older Yellowmoon refuses a file that has the node. The pipeline version is 0.17.0.
+
 ## [0.2.4] - 2026-11-22
 
 The stable release that follows six pre-releases (0.2.4-beta.1 to 0.2.4-beta.6), so the app's updater offers it. If you are updating from 0.2.3, this is everything that is new since then. It adds **Face Refinement**, **Colour Uniform** and **Blur** nodes, **presets and albums** and **Mask Intersect**. The pipeline version is 0.16.0 (0.2.3 had 0.11.0), and **most photos look slightly different**, because the constants of the raw processing were re-derived (under Changed); a photo from a Sony NEX-5N or NEX-7, or one with bright lights and Anamorphic above 0, can change more. A settings file, preset or album that uses a new node or option needs this version: an older build refuses it.

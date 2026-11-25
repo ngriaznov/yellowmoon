@@ -64,8 +64,8 @@ use super::viewport::ViewportState;
 use crate::apple_auto::{AdvisorPicture, PICTURE_LONG_EDGE_PX};
 use crate::session::{PhotoId, PictureInput, PictureRenderer, ThumbnailInput, ThumbnailRenderer};
 use crate::settings::{
-    ColorWarp, Curves, DevelopSettings, MaskSettings, NodeGrade, NodeId, NodeKind, NodeLink,
-    NodeRef, NodeTrim,
+    ColorWarp, Curves, DevelopSettings, Elements, HueCurves, MaskSettings, NodeGrade, NodeId,
+    NodeKind, NodeLink, NodeRef, NodeTrim,
 };
 use ym_color::look::LookTransform;
 use ym_color::plan::Stop;
@@ -369,6 +369,38 @@ pub(crate) fn signal_source(
                     Tap::WarpInput => {
                         node.grade.curve = Curves::default();
                         node.grade.color_warp = ColorWarp::default();
+                        node.masks = MaskSettings::default();
+                    }
+                    Tap::NodeInput => node.bypass = true,
+                }
+            }
+            Ok((Cow::Owned(src.with_settings(settings)), Read::Last))
+        }
+        // A Reference Grade node (`docs/34` section 7.1): the signal at the node is a corrector's, with the node's hue curves and element
+        // grades (which come after the curve) taken out for the curve's and the warp's input.
+        Some(NodeId::Corrector(k))
+            if src.settings.nodes.kind_of(NodeId::Corrector(k))
+                == Some(NodeKind::ReferenceGrade) =>
+        {
+            let mut settings = settings_ending_at(&src.settings, k);
+            settings.output_mut().look = LookId::neutral();
+            if matches!(tap, Tap::CurveInput | Tap::WarpInput) {
+                let key_input = NodeRef::key(NodeId::Corrector(k));
+                settings.nodes.links.retain(|l| l.to != key_input);
+            }
+            if let Some(node) = settings.nodes.reference_grade_mut(k) {
+                match tap {
+                    Tap::CurveInput => {
+                        node.grade.curve = Curves::default();
+                        node.hue_curves = HueCurves::default();
+                        node.elements = Elements::default();
+                        node.masks = MaskSettings::default();
+                    }
+                    Tap::WarpInput => {
+                        node.grade.curve = Curves::default();
+                        node.grade.color_warp = ColorWarp::default();
+                        node.hue_curves = HueCurves::default();
+                        node.elements = Elements::default();
                         node.masks = MaskSettings::default();
                     }
                     Tap::NodeInput => node.bypass = true,

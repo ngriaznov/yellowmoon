@@ -90,6 +90,8 @@ export const NODE_TABS: Readonly<Record<PanelKind, readonly TabId[]>> = {
   face_refinement: ["face", "mask"],
   color_uniform: ["compress", "light", "color", "curve", "mask"],
   blur: ["blur", "mask"],
+  // RG-12 gives the node its Reference, Hue and Elements tabs (`docs/34` §9.1); until then it has the corrector's four, which edit its trim and grade.
+  reference_grade: ["light", "color", "curve", "mask"],
   output: ["look", "detail"],
   parallel: ["inputs"],
   layer: ["blend"],
@@ -110,6 +112,7 @@ export const FIRST_NODE_TAB: Readonly<Record<PanelKind, TabId>> = {
   face_refinement: "face",
   color_uniform: "compress",
   blur: "blur",
+  reference_grade: "light",
 };
 
 /**

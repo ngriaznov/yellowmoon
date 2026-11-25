@@ -116,6 +116,12 @@ export type Both = AllTrue<{
   blurMotion: Same<T.BlurMotion, B.BlurMotion>;
   blurZoom: Same<T.BlurZoom, B.BlurZoom>;
   blurNode: Same<T.BlurNode, B.BlurNode>;
+  huePoint: Same<T.HuePoint, B.HuePoint>;
+  hueCurves: Same<T.HueCurves, B.HueCurves>;
+  elementValues: Same<T.ElementValues, B.ElementValues>;
+  subjectValues: Same<T.SubjectValues, B.SubjectValues>;
+  elements: Same<T.Elements, B.Elements>;
+  referenceGradeNode: Same<T.ReferenceGradeNode, B.ReferenceGradeNode>;
   colorWarpPin: Same<T.ColorWarpPin, B.ColorWarpPin>;
   lensKind: Same<T.LensKind, B.LensKind>;
   lensSettings: Same<T.LensSettings, B.LensSettings>;

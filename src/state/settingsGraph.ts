@@ -12,6 +12,7 @@ import type {
   BrushStroke,
   Curves,
   DevelopSettings,
+  ElementValues,
   FaceSettings,
   GradePatch,
   LookId,
@@ -52,8 +53,10 @@ export type FaceRefinementItem = Extract<NodeItem, { kind: "face_refinement" }>;
 export type ColorUniformItem = Extract<NodeItem, { kind: "color_uniform" }>;
 /** A Blur node as an item of the graph (`docs/33`). */
 export type BlurItem = Extract<NodeItem, { kind: "blur" }>;
-/** A node that has a card in the node view and a number: a corrector (Main included), a Film node, a Face Refinement node, a Colour Uniform node or a Blur node. */
-export type CardItem = CorrectorItem | FilmItem | FaceRefinementItem | ColorUniformItem | BlurItem;
+/** A Reference Grade node as an item of the graph (`docs/34`). */
+export type ReferenceGradeItem = Extract<NodeItem, { kind: "reference_grade" }>;
+/** A node that has a card in the node view and a number: a corrector (Main included), a Film node, a Face Refinement node, a Colour Uniform node, a Blur node or a Reference Grade node. */
+export type CardItem = CorrectorItem | FilmItem | FaceRefinementItem | ColorUniformItem | BlurItem | ReferenceGradeItem;
 /** A node of `docs/25` as an item of the graph: a Parallel, a Layer, a Splitter or a Combiner. It has a glyph card and no number. */
 export type MixerItem = Extract<NodeItem, { kind: "parallel" | "layer" | "splitter" | "combiner" }>;
 
@@ -114,9 +117,14 @@ export function correctorsOf(settings: DevelopSettings): CorrectorItem[] {
   return settings.nodes.items.filter((item): item is CorrectorItem => item.kind === "corrector");
 }
 
-/** True for a node that has a card, a number and masks: a corrector, a Film node, a Face Refinement node, a Colour Uniform node or a Blur node. */
+/** True for a node that has a card, a number and masks: a corrector, a Film node, a Face Refinement node, a Colour Uniform node, a Blur node or a Reference Grade node. */
 export const isCardItem = (item: NodeItem | undefined): item is CardItem =>
-  item?.kind === "corrector" || item?.kind === "film" || item?.kind === "face_refinement" || item?.kind === "color_uniform" || item?.kind === "blur";
+  item?.kind === "corrector" ||
+  item?.kind === "film" ||
+  item?.kind === "face_refinement" ||
+  item?.kind === "color_uniform" ||
+  item?.kind === "blur" ||
+  item?.kind === "reference_grade";
 
 /**
  * The mask rows of a node, whatever its kind: every node that has a card has them (the same kinds as {@link isCardItem}, as the core's `masks_of`).
@@ -158,8 +166,10 @@ export function mainGradeOf(settings: DevelopSettings): NodeGrade {
  */
 export function gradeOf(settings: DevelopSettings, id: number): NodeGrade {
   const node = nodeOf(settings, id);
-  // A Colour Uniform node has the corrector's grade too (`docs/32` §12a.3); the core leaves it out at the neutral grade.
+  // A Colour Uniform node has the corrector's grade too (`docs/32` §12a.3); the core leaves it out at the neutral grade. A Reference Grade node
+  // writes its grade whole (`docs/34` §3.1).
   if (node?.kind === "color_uniform") return node.grade ?? neutralGrade();
+  if (node?.kind === "reference_grade") return node.grade;
   return node?.kind === "corrector" ? node.grade : mainOf(settings).grade;
 }
 
@@ -257,6 +267,8 @@ export type MixerPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "mode" | "o
 export type FaceRefinementPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "same_for_all" | "all" | "faces" | "protect" | "masks">;
 /** The fields of a Colour Uniform node a patch may set (`docs/32` section 5.3). */
 export type ColorUniformPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "target" | "compress" | "trim" | "grade" | "masks">;
+/** The fields of a Reference Grade node a patch may set (`docs/34` section 3.5). */
+export type ReferenceGradePatch = Pick<NodePatch, "pos" | "name" | "bypass" | "trim" | "grade" | "hue_curves" | "elements" | "strength" | "skin_protection" | "masks">;
 /** The fields of a Blur node a patch may set (`docs/33` section 5.3). */
 export type BlurPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "type" | "soft" | "lens" | "motion" | "zoom" | "respect_mask_edges" | "masks">;
 /** The fields of a Film node a patch may set. */
@@ -269,7 +281,7 @@ export type FilmPatch = Pick<NodePatch, "pos" | "name" | "bypass" | "film" | "pr
  */
 export function patchOf(node: typeof INPUT_ID, partial: InputPatch): SettingsPatch;
 export function patchOf(node: typeof OUTPUT_ID, partial: OutputPatch): SettingsPatch;
-export function patchOf(node: number, partial: CorrectorPatch | FilmPatch | FaceRefinementPatch | ColorUniformPatch | BlurPatch | MixerPatch): SettingsPatch;
+export function patchOf(node: number, partial: CorrectorPatch | FilmPatch | FaceRefinementPatch | ColorUniformPatch | BlurPatch | ReferenceGradePatch | MixerPatch): SettingsPatch;
 export function patchOf(node: NodeId, partial: NodePatch): SettingsPatch {
   return { nodes: { [String(node)]: partial } };
 }
@@ -454,6 +466,38 @@ export function newColorUniform(id: number, pos: NodePos, name = COLOR_UNIFORM_N
   };
 }
 
+/** The name a new Reference Grade node has (`docs/34` section 2.1). */
+export const REFERENCE_GRADE_NAME = "Match";
+
+/** The element grade at the identity: no exposure change, no hue turn, a ratio of 1. */
+const identityElement = (): ElementValues => ({ exposure_ev: 0, hue_deg: 0, chroma: 1 });
+
+/** A new Reference Grade node (`docs/34` section 3.1): every field written, all at the identity, Strength 100, Skin protection on, no masks. It changes no pixel. */
+export function newReferenceGrade(id: number, pos: NodePos, name = REFERENCE_GRADE_NAME): ReferenceGradeItem {
+  return {
+    kind: "reference_grade",
+    id,
+    name,
+    bypass: false,
+    pos,
+    trim: { exposure_ev: 0, temperature: 0, tint: 0 },
+    grade: neutralGrade(),
+    hue_curves: { hue_vs_hue: [], hue_vs_sat: [] },
+    elements: {
+      sky: identityElement(),
+      vegetation: identityElement(),
+      water: identityElement(),
+      ground: identityElement(),
+      built: identityElement(),
+      skin: identityElement(),
+      subject: { exposure_ev: 0 },
+    },
+    strength: 100,
+    skin_protection: true,
+    masks: { invert: false, items: [] },
+  };
+}
+
 /** The name a new Blur node has (`docs/33` section 4). */
 export const BLUR_NAME = "Blur";
 
@@ -560,7 +604,7 @@ export function inCanonicalOrder(items: readonly NodeItem[]): NodeItem[] {
 // ---------------------------------------------------------------------------
 
 /** The fields of a corrector patch that are partial objects whose own fields merge one by one. */
-const MERGED_FIELDS: ReadonlySet<string> = new Set(["trim", "grade", "film", "print", "halation", "grain"]);
+const MERGED_FIELDS: ReadonlySet<string> = new Set(["trim", "grade", "film", "print", "halation", "grain", "hue_curves"]);
 
 function foldRows(first: Record<string, MaskPatch> | undefined, second: Record<string, MaskPatch> | undefined): Record<string, MaskPatch> | undefined {
   if (!first) return second;
@@ -600,6 +644,11 @@ function foldNode(first: NodePatch, second: NodePatch): NodePatch {
       // The lights are a part of their own: a yellow and a magenta dragged in turn are both kept.
       const lights = isObject(earlier.lights) || isObject(value.lights) ? { ...(earlier.lights as object), ...(value.lights as object) } : undefined;
       out[field] = lights ? { ...earlier, ...value, lights } : { ...earlier, ...value };
+    } else if (field === "elements" && isObject(earlier) && isObject(value)) {
+      // The elements are members with fields of their own: a sky dragged and a skin dragged in turn are both kept, and so are two fields of one member.
+      const merged: Record<string, unknown> = { ...earlier };
+      for (const [member, values] of Object.entries(value)) merged[member] = isObject(merged[member]) && isObject(values) ? { ...merged[member], ...values } : values;
+      out[field] = merged;
     } else if (MERGED_FIELDS.has(field) && isObject(earlier) && isObject(value)) out[field] = { ...earlier, ...value };
     else if (field === "masks" && isObject(earlier) && isObject(value)) out[field] = foldMasks(earlier as MasksPatch, value as MasksPatch);
     else out[field] = value;
@@ -680,7 +729,7 @@ function applyGrade(grade: NodeGrade, patch: GradePatch): NodeGrade {
 
 /** A node with a node patch applied: whole fields replace, `rolloff`, `decode`, `lens`, `trim`, `grade` and `masks` merge their parts. */
 function applyNode(item: NodeItem, patch: NodePatch): NodeItem {
-  const { kind: _kind, rolloff, decode, lens, trim, grade, masks, film, print, halation, grain, all, protect, compress, soft, motion, zoom, ...fields } = patch;
+  const { kind: _kind, rolloff, decode, lens, trim, grade, masks, film, print, halation, grain, all, protect, compress, soft, motion, zoom, hue_curves, elements, ...fields } = patch;
   const next: Record<string, unknown> = { ...item };
   for (const [key, value] of Object.entries(fields)) if (value !== undefined) next[key] = value;
   if (item.kind === "input") {
@@ -721,6 +770,19 @@ function applyNode(item: NodeItem, patch: NodePatch): NodeItem {
     if (grade) next.grade = applyGrade(item.grade ?? neutralGrade(), grade);
     if (masks) next.masks = applyMasks(item.masks, masks);
   }
+  if (item.kind === "reference_grade") {
+    // `trim` and `grade` are a corrector's; `hue_curves` replaces a curve given and keeps the other; `elements` merges member by member and
+    // field by field, as the core does (`docs/34` section 3.5).
+    if (trim) next.trim = { ...item.trim, ...trim };
+    if (grade) next.grade = applyGrade(item.grade, grade);
+    if (hue_curves) next.hue_curves = { ...item.hue_curves, ...hue_curves };
+    if (elements) {
+      const merged: Record<string, unknown> = { ...item.elements };
+      for (const [member, values] of Object.entries(elements)) if (values) merged[member] = { ...(item.elements as unknown as Record<string, object>)[member], ...values };
+      next.elements = merged;
+    }
+    if (masks) next.masks = applyMasks(item.masks, masks);
+  }
   if (item.kind === "blur") {
     // Each type's group merges the parts it names, as the core does (`docs/33` section 5.3); `type` and `respect_mask_edges` replace.
     if (soft) next.soft = { ...item.soft, ...soft };
@@ -741,6 +803,7 @@ function addedNode(id: NodeId, patch: NodePatch, correctors: number): NodeItem {
   if (patch.kind === "face_refinement") return applyNode(newFaceRefinement(typeof id === "number" ? id : MAIN_ID, pos), patch);
   if (patch.kind === "blur") return applyNode(newBlur(typeof id === "number" ? id : MAIN_ID, pos), patch);
   if (patch.kind === "color_uniform") return applyNode(newColorUniform(typeof id === "number" ? id : MAIN_ID, pos), patch);
+  if (patch.kind === "reference_grade") return applyNode(newReferenceGrade(typeof id === "number" ? id : MAIN_ID, pos), patch);
   if (patch.kind === "parallel" || patch.kind === "layer" || patch.kind === "splitter" || patch.kind === "combiner") {
     return applyNode(newMixer(patch.kind, typeof id === "number" ? id : MAIN_ID, pos), patch);
   }

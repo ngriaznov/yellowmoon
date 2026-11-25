@@ -55,6 +55,7 @@ use crate::curve::CurveSet;
 use crate::encode::{OutputSpace, dither_8bit, quantize};
 use crate::gamut::{LinearAwg4, LinearRec709};
 use crate::grade::GradeParams;
+use crate::hue::ELEMENT_COUNT;
 use crate::logc::LogC4;
 use crate::look::{LookTransform, blend_display_linear, intensity_fraction};
 use crate::mask::{PixelAt, PreparedMasks};
@@ -189,6 +190,7 @@ impl ChainParams {
                 curves: self.curves.clone(),
                 masks: self.nodes.main.masks.clone(),
                 uniform: None,
+                reference: None,
             })
         } else {
             self.nodes.others.get(&id).cloned()
@@ -383,6 +385,7 @@ impl ColorChain {
                         &WarpParams::default(),
                         &CurveSet::default(),
                         None,
+                        None,
                         &crate::mask::NodeMasks::default(),
                     );
                     return Ok((*step, node));
@@ -397,6 +400,7 @@ impl ColorChain {
                     &n.warp,
                     &n.curves,
                     n.uniform.as_ref(),
+                    n.reference.as_ref(),
                     &n.masks,
                 );
                 Ok((*step, node))
@@ -593,7 +597,11 @@ impl ColorChain {
                 let need_mask = node.masks().blends(key.is_some()) || step.key_out.is_some();
                 Self::run_film(*film, node, v_in, linear, (key, need_mask), at, step.node)
             } else {
-                let made = node.apply(v_in, linear, stages).0;
+                // A Reference Grade node's seven soft masks at this pixel, read from the render's planes.
+                let planes = node
+                    .has_elements()
+                    .then(|| Self::element_masks(node, step.node, at));
+                let made = node.apply(v_in, linear, stages, planes.as_ref()).0;
                 // The mask: needed for the blend, and for the key output (also of a node that is skipped).
                 let blends = node.masks().blends(key.is_some());
                 let m = if (blends && !node.skips()) || step.key_out.is_some() {
@@ -632,6 +640,20 @@ impl ColorChain {
             PlanResult::Mask(KeyRef::Slot(s)) => LogC4([slots[usize::from(s)]; 3]),
             PlanResult::Mask(KeyRef::Buffer(b)) => LogC4(buffers[usize::from(b)]),
         }
+    }
+
+    /// The seven element soft masks of a Reference Grade node at a pixel, from the render's planes; a mask of an element at the
+    /// identity is not read (it makes no mask), and a pixel with no planes has every mask 0.
+    fn element_masks(node: &PreparedNode, id: u32, at: PixelAt<'_>) -> [f64; ELEMENT_COUNT] {
+        let mut masks = [0.0; ELEMENT_COUNT];
+        if let Some(spot) = at.and_then(|s| s.raster) {
+            for (e, m) in masks.iter_mut().enumerate() {
+                if node.element_is_live(e) {
+                    *m = spot.planes.element(id, e, spot.x, spot.y).clamp(0.0, 1.0);
+                }
+            }
+        }
+        masks
     }
 
     /// A mixer, a Splitter or a Combiner on one pixel (`docs/25` section 3): reads every input before anything is
@@ -797,6 +819,7 @@ impl ColorChain {
                 (None, Some(reach)) if is_blur => StepKind::Blur.declared(reach),
                 (None, Some(reach)) => StepKind::Film.declared(reach),
                 (None, None) if node.is_uniform() => StepKind::ColorUniform.declared(0),
+                (None, None) if node.is_reference() => StepKind::ReferenceGrade.declared(0),
                 (None, None) => StepKind::Corrector.declared(0),
             });
             if self.params.rasters.is_empty() {

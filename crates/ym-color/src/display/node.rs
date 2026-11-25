@@ -14,6 +14,7 @@ use crate::consts::Vec3;
 use crate::curve::{BakedCurves, CurveSet};
 use crate::gamut::LinearAwg4;
 use crate::grade::{Grade, GradeParams, grade_luma};
+use crate::hue::{ELEMENT_COUNT, ElementStep, HueStep};
 use crate::logc::LogC4;
 use crate::mask::{NodeMasks, PixelAt, PreparedMasks};
 use crate::plan::Plan;
@@ -38,6 +39,27 @@ pub struct NodeParams {
     /// A Colour Uniform node's step (`docs/32`): `Some` for a node of that kind, whatever its values (a node with no
     /// target or no amount is the identity and is skipped), `None` for a corrector.
     pub uniform: Option<UniformStep>,
+    /// A Reference Grade node's hue and element steps (`docs/34` section 7.1): `Some` for a node of that kind, whatever its
+    /// values (a node with both steps at the identity runs only its corrector steps), `None` for any other kind.
+    pub reference: Option<ReferenceStep>,
+}
+
+/// A Reference Grade node's own steps after the corrector's (`docs/34` sections 4 and 4a), in effective values (Strength
+/// already applied): the hue curves, then the element grades.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ReferenceStep {
+    /// The hue curves (step 6 of the node).
+    pub hue: HueStep,
+    /// The element grades (step 7 of the node), each through its soft mask.
+    pub elements: ElementStep,
+}
+
+impl ReferenceStep {
+    /// Whether both steps do nothing.
+    #[must_use]
+    pub fn is_identity(&self) -> bool {
+        self.hue.is_identity() && self.elements.is_identity()
+    }
 }
 
 /// A Colour Uniform node's target and amounts (`docs/32` section 3): what [`uniform::apply`] reads.
@@ -136,10 +158,17 @@ pub(super) struct PreparedNode {
     uniform: Option<(Target, Amounts)>,
     /// Whether the node is a Colour Uniform node (live or not): its step kind is `ColorUniform`.
     is_uniform: bool,
+    /// A Reference Grade node's live steps; `None` for any other kind and for a node whose hue and element steps are at the
+    /// identity.
+    reference: Option<ReferenceStep>,
+    /// Whether the node is a Reference Grade node (live or not): its step kind is `ReferenceGrade`.
+    is_reference: bool,
     masks: PreparedMasks,
 }
 
 impl PreparedNode {
+    // One argument per part of a node's parameters, as `NodeParams` lists them; a struct would only move the list.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         bypass: bool,
         trim: &Trim,
@@ -147,6 +176,7 @@ impl PreparedNode {
         warp: &WarpParams,
         curves: &CurveSet,
         uniform: Option<&UniformStep>,
+        reference: Option<&ReferenceStep>,
         masks: &NodeMasks,
     ) -> Self {
         let gain = trim.gain();
@@ -156,16 +186,20 @@ impl PreparedNode {
         let live = uniform
             .filter(|u| !u.is_identity())
             .and_then(|u| u.target.map(|t| (t, u.amounts)));
+        let live_reference = reference.filter(|r| !r.is_identity()).cloned();
         let skip = bypass
             || (gain.is_none()
                 && grade.is_none()
                 && warp.is_none()
                 && curves.is_none()
-                && live.is_none());
+                && live.is_none()
+                && live_reference.is_none());
         Self {
             skip,
             uniform: live,
             is_uniform: uniform.is_some(),
+            reference: live_reference,
+            is_reference: reference.is_some(),
             gain,
             grade,
             warp,
@@ -182,6 +216,25 @@ impl PreparedNode {
     /// Whether the node is a Colour Uniform node (`StepKind::ColorUniform`).
     pub(super) fn is_uniform(&self) -> bool {
         self.is_uniform
+    }
+
+    /// Whether the node is a Reference Grade node (`StepKind::ReferenceGrade`).
+    pub(super) fn is_reference(&self) -> bool {
+        self.is_reference
+    }
+
+    /// Whether the node's element grades are live: the chain then asks the render's planes for the element masks.
+    pub(super) fn has_elements(&self) -> bool {
+        self.reference
+            .as_ref()
+            .is_some_and(|r| !r.elements.is_identity())
+    }
+
+    /// Whether element `e` of the node is live (its effective grade is not the identity).
+    pub(super) fn element_is_live(&self, e: usize) -> bool {
+        self.reference
+            .as_ref()
+            .is_some_and(|r| r.elements.is_live(e))
     }
 
     /// The node's prepared mask rows.
@@ -210,12 +263,14 @@ impl PreparedNode {
     /// The node on one pixel: `v_in` is the picture it reads and `linear` that picture as linear
     /// AWG4 when it is known exactly (the Input's, which C7 made: no decode of an encode); the
     /// result is the node's LogC4 value before the mask blend. `main` receives the values after C9,
-    /// C9b and C11.
+    /// C9b and C11. `elements` holds a Reference Grade node's seven soft masks at the pixel (`docs/34` section 4a.3); `None`
+    /// is every mask 0, so the element step does nothing.
     pub(super) fn apply(
         &self,
         v_in: LogC4,
         linear: Option<Vec3>,
         main: Option<&mut MainStages>,
+        elements: Option<&[f64; ELEMENT_COUNT]>,
     ) -> LogC4 {
         if self.skip {
             return v_in;
@@ -254,6 +309,176 @@ impl PreparedNode {
         if let Some(stages) = main {
             *stages = MainStages { c9, c9b, c11: v };
         }
+        // 5. A Reference Grade node's hue curves (`docs/34` section 4.2), then its element grades (section 4a.2): the
+        // corrector's steps keep their order whole and these two come last.
+        if let Some(r) = &self.reference {
+            v = LogC4(r.hue.apply(v.0));
+            if let Some(masks) = elements {
+                v = LogC4(r.elements.apply(v.0, masks));
+            }
+        }
         v
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+    use crate::curve::Curve;
+    use crate::hue::{ElementGrade, SUBJECT};
+
+    fn masks() -> NodeMasks {
+        NodeMasks::default()
+    }
+
+    fn graded() -> (Trim, GradeParams, CurveSet) {
+        let trim = Trim {
+            exposure_ev: 0.3,
+            temperature: 12.0,
+            tint: -6.0,
+        };
+        let grade = GradeParams {
+            contrast: 14.0,
+            saturation: 18.0,
+            ..GradeParams::default()
+        };
+        let curves = CurveSet {
+            luma: Curve::new(&[(0.0, 0.0), (0.4, 0.45), (1.0, 1.0)]).unwrap(),
+            ..CurveSet::default()
+        };
+        (trim, grade, curves)
+    }
+
+    fn step() -> ReferenceStep {
+        let mut grades = [ElementGrade::IDENTITY; ELEMENT_COUNT];
+        grades[0] = ElementGrade {
+            exposure_ev: -0.4,
+            hue_deg: 25.0,
+            chroma: 1.3,
+        };
+        grades[SUBJECT].exposure_ev = 0.5;
+        ReferenceStep {
+            hue: HueStep::new(&[(20.0, 45.0), (200.0, -30.0)], &[(100.0, 1.6)]),
+            elements: ElementStep::new(grades),
+        }
+    }
+
+    fn node(reference: Option<&ReferenceStep>, with_grade: bool) -> PreparedNode {
+        let (trim, grade, curves) = graded();
+        let (trim, grade, curves) = if with_grade {
+            (trim, grade, curves)
+        } else {
+            (Trim::default(), GradeParams::default(), CurveSet::default())
+        };
+        PreparedNode::new(
+            false,
+            &trim,
+            &grade,
+            &WarpParams::default(),
+            &curves,
+            None,
+            reference,
+            &masks(),
+        )
+    }
+
+    fn samples() -> Vec<Vec3> {
+        let mut v = Vec::new();
+        for r in [0.1, 0.3, 0.5, 0.7] {
+            for g in [0.05, 0.35, 0.6] {
+                for b in [0.2, 0.4, 0.8] {
+                    v.push([r, g, b]);
+                }
+            }
+        }
+        v
+    }
+
+    const M: [f64; ELEMENT_COUNT] = [0.7, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+
+    #[test]
+    fn a_node_whose_steps_are_all_at_the_identity_is_skipped_and_changes_no_bit() {
+        let identity = ReferenceStep::default();
+        let n = PreparedNode::new(
+            false,
+            &Trim::default(),
+            &GradeParams::default(),
+            &WarpParams::default(),
+            &CurveSet::default(),
+            None,
+            Some(&identity),
+            &masks(),
+        );
+        assert!(n.skips() && n.is_reference());
+        for v in samples() {
+            assert_eq!(n.apply(LogC4(v), None, None, Some(&M)).0, v);
+        }
+        // A bypassed node passes its picture through whatever its steps are.
+        let live = step();
+        let bypassed = PreparedNode::new(
+            true,
+            &Trim::default(),
+            &GradeParams::default(),
+            &WarpParams::default(),
+            &CurveSet::default(),
+            None,
+            Some(&live),
+            &masks(),
+        );
+        assert!(bypassed.skips());
+        for v in samples() {
+            assert_eq!(bypassed.apply(LogC4(v), None, None, Some(&M)).0, v);
+        }
+        // A mask of 0 everywhere, or no planes at all, leaves the element step out: the hue step alone remains.
+        let hue_only = ReferenceStep {
+            hue: live.hue.clone(),
+            elements: ElementStep::default(),
+        };
+        let a = node(Some(&live), false);
+        let b = node(Some(&hue_only), false);
+        for v in samples() {
+            assert_eq!(
+                a.apply(LogC4(v), None, None, Some(&[0.0; ELEMENT_COUNT])).0,
+                b.apply(LogC4(v), None, None, None).0
+            );
+            assert_eq!(
+                a.apply(LogC4(v), None, None, None).0,
+                b.apply(LogC4(v), None, None, None).0
+            );
+        }
+    }
+
+    /// The order of `docs/34` section 2.3: the corrector's steps, then the hue curves, then the element grades.
+    #[test]
+    fn the_steps_run_in_the_order_of_the_spec_and_another_order_differs() {
+        let live = step();
+        let full = node(Some(&live), true);
+        let corrector = node(None, true);
+        let plain = node(None, false);
+        let mut worst_hue_first = 0.0f64;
+        let mut worst_elements_first = 0.0f64;
+        for v in samples() {
+            let got = full.apply(LogC4(v), None, None, Some(&M)).0;
+            let c11 = corrector.apply(LogC4(v), None, None, None).0;
+            let want = live.elements.apply(live.hue.apply(c11), &M);
+            for k in 0..3 {
+                assert!((got[k] - want[k]).abs() <= 1e-12, "{v:?}");
+            }
+            // The hue step before the corrector's steps.
+            let a = corrector
+                .apply(LogC4(live.hue.apply(v)), None, None, None)
+                .0;
+            let a = live.elements.apply(a, &M);
+            // The elements before the hue step.
+            let b = live.hue.apply(live.elements.apply(c11, &M));
+            for k in 0..3 {
+                worst_hue_first = worst_hue_first.max((got[k] - a[k]).abs());
+                worst_elements_first = worst_elements_first.max((got[k] - b[k]).abs());
+            }
+            // Without a Reference step the node is the corrector's.
+            assert_eq!(plain.apply(LogC4(v), None, None, None).0, v);
+        }
+        assert!(worst_hue_first > 1e-3, "{worst_hue_first}");
+        assert!(worst_elements_first > 1e-3, "{worst_elements_first}");
     }
 }

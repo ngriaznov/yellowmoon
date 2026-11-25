@@ -68,6 +68,8 @@ function article(kind: NodeKind): string {
       return "a Colour Uniform node";
     case "blur":
       return "a Blur node";
+    case "reference_grade":
+      return "a Reference Grade node";
     case "parallel":
       return "a parallel mixer";
     case "layer":
@@ -107,6 +109,7 @@ const FIELDS: Readonly<Record<NodeKind, ReadonlySet<string>>> = {
   face_refinement: new Set(["kind", "pos", "name", "bypass", "same_for_all", "all", "faces", "protect", "masks"]),
   color_uniform: new Set(["kind", "pos", "name", "bypass", "target", "compress", "trim", "grade", "masks"]),
   blur: new Set(["kind", "pos", "name", "bypass", "type", "soft", "lens", "motion", "zoom", "respect_mask_edges", "masks"]),
+  reference_grade: new Set(["kind", "pos", "name", "bypass", "trim", "grade", "hue_curves", "elements", "strength", "skin_protection", "masks"]),
   parallel: new Set(["kind", "pos", "name", "bypass"]),
   layer: new Set(["kind", "pos", "name", "bypass", "mode", "opacity"]),
   splitter: new Set(["kind", "pos", "name"]),
@@ -114,7 +117,7 @@ const FIELDS: Readonly<Record<NodeKind, ReadonlySet<string>>> = {
 };
 
 /** The kinds a patch may give a new numbered node (`docs/23` section 3.7, `docs/25` section 2.5). */
-const NUMBERED_KINDS: ReadonlySet<NodeKind> = new Set(["corrector", "film", "face_refinement", "color_uniform", "blur", "parallel", "layer", "splitter", "combiner"]);
+const NUMBERED_KINDS: ReadonlySet<NodeKind> = new Set(["corrector", "film", "face_refinement", "color_uniform", "blur", "reference_grade", "parallel", "layer", "splitter", "combiner"]);
 
 /** The parts of the Input's `lens` and of a Blur node's `lens` group (`docs/33` section 5.3). */
 const INPUT_LENS_PARTS: ReadonlySet<string> = new Set(["kind", "flares", "edges", "anamorphic"]);
@@ -171,6 +174,7 @@ export function portsOf(kind: NodeKind): [readonly Port[], readonly Port[]] {
     case "face_refinement":
     case "color_uniform":
     case "blur":
+    case "reference_grade":
       return [["picture", "key"], ["picture", "key"]];
     case "parallel":
     case "layer":

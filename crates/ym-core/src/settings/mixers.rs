@@ -190,7 +190,8 @@ impl MixerNode {
             | NodeKind::Film
             | NodeKind::FaceRefinement
             | NodeKind::ColorUniform
-            | NodeKind::Blur => None,
+            | NodeKind::Blur
+            | NodeKind::ReferenceGrade => None,
         }
     }
 
@@ -303,7 +304,8 @@ impl MixerNode {
             | NodeKind::Film
             | NodeKind::FaceRefinement
             | NodeKind::ColorUniform
-            | NodeKind::Blur => {
+            | NodeKind::Blur
+            | NodeKind::ReferenceGrade => {
                 return Ok(None);
             }
         }))

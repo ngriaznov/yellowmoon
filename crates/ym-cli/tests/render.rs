@@ -1259,6 +1259,24 @@ fn a_settings_file_that_does_not_parse_is_a_usage_error_and_nothing_is_rendered(
             r#"{ "nodes": { "items": [ { "id": 2, "kind": "blur", "zoom": { "center": [0.5] } } ] } }"#,
             "expected an array of length 2",
         ),
+        // The Reference Grade node (docs/34 section 3.4), each refusal with its sentence.
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "reference_grade", "reference": "a.jpg" } ] } }"#,
+            "A Reference Grade node has no field called “reference”.",
+        ),
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "reference_grade", "elements": { "ceiling": {} } } ] } }"#,
+            "A Reference Grade node has no element called “ceiling”.",
+        ),
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "corrector", "hue_curves": {} } ] } }"#,
+            "A corrector has no field called “hue_curves”.",
+        ),
+        (
+            r#"{ "nodes": { "items": [ { "id": 2, "kind": "reference_grade", "hue_curves": { "hue_vs_sat": [
+                { "hue_deg": 10, "value": 1 }, { "hue_deg": 370, "value": 2 } ] } } ] } }"#,
+            "Two points of a hue curve are at the same hue.",
+        ),
         // A typo whose value is an object must not pass for a photo's file name.
         (
             r#"{ "color_ballance": { "shadows": [0.1, 0.0] } }"#,
@@ -2589,6 +2607,60 @@ fn a_settings_file_with_a_colour_uniform_node_is_read_and_the_photo_renders() {
     assert_eq!(node["target"]["hue_deg"], 26.0);
     assert_eq!(node["compress"]["saturation"], 100.0);
     assert_eq!(node["compress"]["lightness"], 0.0);
+}
+
+/// A settings file with a Reference Grade node is read and checked and the photo is written; the record holds the node with every
+/// field, as the core reads it (the hue sorted and wrapped, the numbers clamped), and the graphics card is not needed for it.
+#[test]
+fn a_settings_file_with_a_reference_grade_node_is_read_and_the_photo_renders() {
+    let sb = Sandbox::new();
+    let arw = sb.arw("a.ARW");
+    let file = sb.root().join("reference.json");
+    std::fs::write(
+        &file,
+        r#"{ "nodes": {
+            "items": [ { "id": 2, "kind": "reference_grade", "strength": 150,
+                "grade": { "saturation": { "kind": "manual", "value": -12 } },
+                "hue_curves": { "hue_vs_hue": [ { "hue_deg": 380, "value": 200 }, { "hue_deg": 100, "value": 4 } ] },
+                "elements": { "sky": { "hue_deg": 90, "chroma": 1.2 }, "subject": { "exposure_ev": 0.2 } } } ],
+            "links": [
+                { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+                { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+                { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } }"#,
+    )
+    .expect("write");
+    let out = sb
+        .ym()
+        .args(["render", "--json", "--settings"])
+        .arg(&file)
+        .arg(&arw)
+        .assert()
+        .success();
+    let objects = json_lines(&out.get_output().stdout);
+    assert_eq!(objects.len(), 1);
+    let o = &objects[0];
+    assert_eq!(o["status"], "ok");
+    let path = o["output"].as_str().expect("output");
+    assert!(std::path::Path::new(path).exists(), "the photo was written");
+    let items = o["settings"]["nodes"]["items"].as_array().expect("items");
+    let node = items
+        .iter()
+        .find(|i| i["kind"] == "reference_grade")
+        .expect("the Reference Grade node is in the record");
+    assert_eq!(node["name"], "Match");
+    assert_eq!(node["strength"], 100.0);
+    assert_eq!(node["skin_protection"], true);
+    // Sorted by hue, the hue read modulo 360, the value held to 180.
+    assert_eq!(
+        node["hue_curves"]["hue_vs_hue"],
+        serde_json::json!([
+            { "hue_deg": 20.0, "value": 180.0 },
+            { "hue_deg": 100.0, "value": 4.0 }
+        ])
+    );
+    // The sky's turn is held to 40 degrees.
+    assert_eq!(node["elements"]["sky"]["hue_deg"], 40.0);
+    assert_eq!(node["elements"]["subject"]["exposure_ev"], 0.2);
 }
 
 /// A settings file with a Blur node is read and checked and the photo is written; the record holds the node as the document does.

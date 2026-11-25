@@ -246,7 +246,7 @@ fn the_cli_documentation_and_the_help_agree() {
     );
     assert!(
         paragraph.contains(
-            "other nodes (correctors, Colour Uniform nodes, Blur nodes, mixers, splitters and combiners, Face Refinement nodes, and Film nodes whose stocks `ym film list` shows)"
+            "other nodes (correctors, Colour Uniform nodes, Blur nodes, Reference Grade nodes, mixers, splitters and combiners, Face Refinement nodes, and Film nodes whose stocks `ym film list` shows)"
         ),
         "the paragraph names the mixers, splitters and combiners (docs/25 section 6)"
     );

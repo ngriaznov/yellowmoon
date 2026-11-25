@@ -1334,6 +1334,62 @@ export type DownloadFound = {
 	package_hint: PackageId | null,
 };
 
+/**  One element's values to change. Serialising leaves absent fields out (see [`NodePatch`]). */
+export type ElementPatch = {
+	/**  New exposure offset, stops. */
+	exposure_ev?: number | null,
+	/**  New hue turn, degrees. */
+	hue_deg?: number | null,
+	/**  New chroma ratio. */
+	chroma?: number | null,
+};
+
+/**  One element's grade (`docs/34` section 4a.1). */
+export type ElementValues = {
+	/**  The exposure offset in stops, -1 to 1. */
+	exposure_ev: number,
+	/**  The hue turn in degrees, within the element's cap (40, 35, 35, 30, 25, 15). */
+	hue_deg: number,
+	/**  The chroma ratio, 0.5 to 1.6. */
+	chroma: number,
+};
+
+/**  A Reference Grade node's element grades. */
+export type Elements = {
+	/**  The sky. */
+	sky: ElementValues,
+	/**  Trees, grass, flowers, plants. */
+	vegetation: ElementValues,
+	/**  Sea, river, other water. */
+	water: ElementValues,
+	/**  Sand, earth, road, rock, mountain, snow. */
+	ground: ElementValues,
+	/**  Buildings, walls, roofs and the surfaces of interiors. */
+	built: ElementValues,
+	/**  The skin of people. */
+	skin: ElementValues,
+	/**  The person, or the main object. */
+	subject: SubjectValues,
+};
+
+/**  A Reference Grade node's `elements` to change, member by member. Serialising leaves absent fields out (see [`NodePatch`]). */
+export type ElementsPatch = {
+	/**  The sky. */
+	sky?: ElementPatch | null,
+	/**  Vegetation. */
+	vegetation?: ElementPatch | null,
+	/**  Water. */
+	water?: ElementPatch | null,
+	/**  Ground. */
+	ground?: ElementPatch | null,
+	/**  Built surfaces. */
+	built?: ElementPatch | null,
+	/**  Skin. */
+	skin?: ElementPatch | null,
+	/**  The subject. */
+	subject?: SubjectPatch | null,
+};
+
 /**  `error { scope, message }`: an error that did not come back from a command (a background job). */
 export type ErrorEvent = {
 	/**  Where it came from. */
@@ -1811,6 +1867,33 @@ export type HistogramData = {
 	green: number[],
 	/**  Blue bins. */
 	blue: number[],
+};
+
+/**  A Reference Grade node's two hue curves. An empty list is the identity; at most 16 points each. */
+export type HueCurves = {
+	/**  Degrees the hue turns at each hue. */
+	hue_vs_hue: HuePoint[],
+	/**  The chroma multiplier at each hue. */
+	hue_vs_sat: HuePoint[],
+};
+
+/**
+ *  A Reference Grade node's `hue_curves` to change: a curve given replaces that curve. Serialising leaves absent fields out (see
+ *  [`NodePatch`]).
+ */
+export type HueCurvesPatch = {
+	/**  The new `hue_vs_hue` curve. */
+	hue_vs_hue?: HuePoint[] | null,
+	/**  The new `hue_vs_sat` curve. */
+	hue_vs_sat?: HuePoint[] | null,
+};
+
+/**  A point of a Reference Grade node's hue curve (`docs/34` section 4.1). */
+export type HuePoint = {
+	/**  The hue in degrees on the LogC4 chroma-plane axis; any number, read modulo 360. */
+	hue_deg: number,
+	/**  `hue_vs_hue`: degrees the hue turns, -180 to 180. `hue_vs_sat`: the chroma multiplier, 0 to 8. */
+	value: number,
 };
 
 /**  What to do when the target file exists. */
@@ -2803,6 +2886,10 @@ export type NodeItem =
 {
 	kind: "blur",
 } & BlurNode | 
+/**  A Reference Grade node. */
+{
+	kind: "reference_grade",
+} & ReferenceGradeNode | 
 /**  A Parallel mixer. */
 {
 	kind: "parallel",
@@ -2836,6 +2923,8 @@ export type NodeKind =
 "color_uniform" | 
 /**  A Blur node (`docs/33`). */
 "blur" | 
+/**  A Reference Grade node (`docs/34`). */
+"reference_grade" | 
 /**  A Parallel mixer (`docs/25`). */
 "parallel" | 
 /**  A Layer mixer (`docs/25`). */
@@ -2916,7 +3005,7 @@ export type NodePatch = {
 	halation?: HalationPatch | null,
 	/**  A Film node's grain to change. */
 	grain?: GrainPatch | null,
-	/**  New Strength of a Film node, percent. */
+	/**  New Strength of a Film node or a Reference Grade node, percent. */
 	strength?: number | null,
 	/**  A Face Refinement node's "Same for all faces" on or off. */
 	same_for_all?: boolean | null,
@@ -2940,6 +3029,12 @@ export type NodePatch = {
 	zoom?: BlurZoomPatch | null,
 	/**  A Blur node's Respect mask edges, on or off. */
 	respect_mask_edges?: boolean | null,
+	/**  A Reference Grade node's hue curves to change; a curve given replaces that curve. */
+	hue_curves?: HueCurvesPatch | null,
+	/**  A Reference Grade node's element grades to change, member by member. */
+	elements?: ElementsPatch | null,
+	/**  A Reference Grade node's Skin protection, on or off. */
+	skin_protection?: boolean | null,
 	/**  A Layer's new blend mode. */
 	mode?: BlendMode | null,
 	/**  A Layer's new opacity, 0 to 1. */
@@ -3618,6 +3713,35 @@ package_id: PackageId | null } |
 /**  The plain explanation. */
 reason: string };
 
+/**
+ *  A Reference Grade node: fits its own grade to a reference picture (`docs/34`). It carries a corrector's trims and grade, two
+ *  hue curves and the element grades, a Strength and the Skin protection switch. It writes every field.
+ */
+export type ReferenceGradeNode = {
+	/**  2 to 2147483647 (every numbered node shares the numbers). */
+	id: "input" | "output" | number,
+	/**  The card's name, 1 to 32 characters. */
+	name: string,
+	/**  A bypassed node passes its picture through. */
+	bypass: boolean,
+	/**  The card's place on the canvas, in grid units. */
+	pos: [number, number],
+	/**  The person's trims. */
+	trim: NodeTrim,
+	/**  The corrector's grade; a fit writes its curves and saturation. */
+	grade: NodeGrade,
+	/**  The hue curves. */
+	hue_curves: HueCurves,
+	/**  The element grades. */
+	elements: Elements,
+	/**  0 to 100, in percent. */
+	strength: number,
+	/**  Whether the next fit keeps skin from drifting. */
+	skin_protection: boolean,
+	/**  The masks: they limit where the whole node acts. */
+	masks: MaskSettings,
+};
+
 /**  Demosaic path of the last render. */
 export type RenderPath = 
 /**  The learned demosaic. */
@@ -3906,12 +4030,24 @@ export type StraightenKind =
 /**  No horizon or verticals that agree, or a tilt beyond 10°. */
 "unsure";
 
+/**  The subject's values to change. Serialising leaves absent fields out (see [`NodePatch`]). */
+export type SubjectPatch = {
+	/**  New exposure offset, stops. */
+	exposure_ev?: number | null,
+};
+
 /**  Where Auto crop's subject came from. */
 export type SubjectSource = 
 /**  The camera's focus point. */
 "camera" | 
 /**  The picture alone. */
 "picture";
+
+/**  The subject's grade: an exposure offset alone. */
+export type SubjectValues = {
+	/**  The exposure offset in stops, -1 to 1. */
+	exposure_ev: number,
+};
 
 /**  A Colour Uniform node's target colour, in the units the panel shows (`docs/32` section 5.1). */
 export type TargetValue = {

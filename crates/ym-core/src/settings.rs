@@ -81,6 +81,7 @@ mod graph;
 mod masks;
 mod mixers;
 mod patch;
+mod reference;
 mod uniform;
 
 pub use blur::{
@@ -117,9 +118,16 @@ pub use mixers::{
     SplitterNode,
 };
 pub use patch::{
-    BlurMotionPatch, BlurSoftPatch, BlurZoomPatch, COPY_LEAVES_OUT, FaceSettingsPatch,
-    FilmStockPatch, GradePatch, GrainPatch, HalationPatch, LightsPatch, NodePatch, PatchReport,
-    PrintPatch, ProtectPatch, SettingsPatch, TrimPatch, UniformAmountsPatch,
+    BlurMotionPatch, BlurSoftPatch, BlurZoomPatch, COPY_LEAVES_OUT, ElementPatch, ElementsPatch,
+    FaceSettingsPatch, FilmStockPatch, GradePatch, GrainPatch, HalationPatch, HueCurvesPatch,
+    LightsPatch, NodePatch, PatchReport, PrintPatch, ProtectPatch, SettingsPatch, SubjectPatch,
+    TrimPatch, UniformAmountsPatch,
+};
+pub use reference::{
+    DEFAULT_REFERENCE_NAME, ELEMENT_CHROMA_RANGE, ELEMENT_EXPOSURE_RANGE_EV, ELEMENT_HUE_CAPS_DEG,
+    ELEMENT_NAMES, EffectiveReference, ElementValues, Elements, HUE_VS_HUE_RANGE_DEG,
+    HUE_VS_SAT_RANGE, HueCurves, HuePoint, MAX_HUE_POINTS, ReferenceGradeNode, SubjectValues,
+    hue_pairs,
 };
 pub use uniform::{
     ColorUniformNode, TARGET_LIGHTNESS_RANGE_EV, TARGET_SATURATION_RANGE, TargetValue,
@@ -381,7 +389,7 @@ pub enum SettingsField {
     Halation,
     /// A Film node's `grain`.
     Grain,
-    /// A Film node's `strength`.
+    /// A Film node's or a Reference Grade node's `strength`.
     Strength,
     /// A Face Refinement node's `same_for_all`.
     SameForAll,
@@ -410,6 +418,12 @@ pub enum SettingsField {
     Zoom,
     /// A Blur node's `respect_mask_edges`.
     RespectMaskEdges,
+    /// A Reference Grade node's `hue_curves`.
+    HueCurves,
+    /// A Reference Grade node's `elements`.
+    Elements,
+    /// A Reference Grade node's `skin_protection`.
+    SkinProtection,
     /// A Layer's blend `mode`.
     Mode,
     /// A Layer's `opacity`.
@@ -419,7 +433,7 @@ pub enum SettingsField {
 impl SettingsField {
     /// Every field, in the order of the settings table (the Output's and the Input's, then the grade's,
     /// then the corrector's own).
-    pub const ALL: [SettingsField; 48] = [
+    pub const ALL: [SettingsField; 51] = [
         SettingsField::Look,
         SettingsField::LookIntensity,
         SettingsField::Exposure,
@@ -466,6 +480,9 @@ impl SettingsField {
         SettingsField::Motion,
         SettingsField::Zoom,
         SettingsField::RespectMaskEdges,
+        SettingsField::HueCurves,
+        SettingsField::Elements,
+        SettingsField::SkinProtection,
         SettingsField::Mode,
         SettingsField::Opacity,
     ];
@@ -520,6 +537,9 @@ impl SettingsField {
             Self::Motion => "motion",
             Self::Zoom => "zoom",
             Self::RespectMaskEdges => "respect_mask_edges",
+            Self::HueCurves => "hue_curves",
+            Self::Elements => "elements",
+            Self::SkinProtection => "skin_protection",
             Self::Mode => "mode",
             Self::Opacity => "opacity",
         }
@@ -633,6 +653,21 @@ impl SettingsField {
                     | Self::Zoom
                     | Self::RespectMaskEdges
             ),
+            NodeKind::ReferenceGrade => {
+                self.is_grade()
+                    || matches!(
+                        self,
+                        Self::Name
+                            | Self::Bypass
+                            | Self::Pos
+                            | Self::Masks
+                            | Self::Trim
+                            | Self::HueCurves
+                            | Self::Elements
+                            | Self::Strength
+                            | Self::SkinProtection
+                    )
+            }
             NodeKind::Parallel => matches!(self, Self::Name | Self::Bypass | Self::Pos),
             NodeKind::Layer => matches!(
                 self,
@@ -679,6 +714,9 @@ impl SettingsField {
             | Self::Motion
             | Self::Zoom
             | Self::RespectMaskEdges
+            | Self::HueCurves
+            | Self::Elements
+            | Self::SkinProtection
             | Self::Mode
             | Self::Opacity
             | Self::Contrast
@@ -2374,6 +2412,23 @@ impl ResolvedSettings {
                             masks: u.masks.clone(),
                         }),
                 )
+                // A Reference Grade node's trim and grade are read by the same tabs as a corrector's (`docs/34` section 3.5); it
+                // has no Auto.
+                .chain(
+                    settings
+                        .nodes
+                        .references
+                        .iter()
+                        .map(|(id, r)| ResolvedCorrector {
+                            id: *id,
+                            name: r.name.clone(),
+                            bypass: r.bypass,
+                            pos: r.pos,
+                            trim: r.trim,
+                            grade: GradeValues::of(&r.grade, &none),
+                            masks: r.masks.clone(),
+                        }),
+                )
                 .collect(),
             output: ResolvedOutput {
                 pos: settings.output().pos,
@@ -2556,6 +2611,9 @@ mod tests {
             F::Protect,
             F::Target,
             F::Compress,
+            F::HueCurves,
+            F::Elements,
+            F::SkinProtection,
             F::BlurType,
             F::Soft,
             F::BlurLens,
@@ -2584,6 +2642,6 @@ mod tests {
             assert_eq!(back, f);
         }
         assert_eq!(F::BlurLens.name(), F::Lens.name());
-        assert_eq!(SettingsField::ALL.len(), 48);
+        assert_eq!(SettingsField::ALL.len(), 51);
     }
 }

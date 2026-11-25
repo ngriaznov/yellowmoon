@@ -35,9 +35,10 @@ use ym_color::consts::Vec3;
 use ym_color::curve::{Curve, CurveSet};
 use ym_color::display::{
     BeforePoint, ChainParams, ColorChain, FilmStep, JoinParams, LookSetting, MainNode, NodeParams,
-    NodeSet, OutputTarget, Trim, UniformStep,
+    NodeSet, OutputTarget, ReferenceStep, Trim, UniformStep,
 };
 use ym_color::grade::{ColorBalance, GradeParams};
+use ym_color::hue::{ElementGrade, ElementStep, HueStep};
 use ym_color::look::LookTransform;
 use ym_color::mask::{MaskKind, MaskRow, NodeMasks};
 use ym_color::mask_depth::DepthSource;
@@ -66,8 +67,9 @@ use crate::auto::{AutoEstimates, as_shot_gains, as_shot_rggb};
 use crate::session::{PhotoId, PhotoView, PickedWhite, ThumbnailInput};
 use crate::settings::{
     AutoOr, BlendMode, BlurNode, BlurType, ColorUniformNode, ColorWarp, CurvePoint, Curves,
-    DevelopSettings, LensSettings, MIXER_INPUTS, MaskCombine, MaskMode, MaskSettings, MaskShape,
-    MaskSupport, MixerNode, NodeGrade, NodeGraph, NodeId, NodeKind, NodeTrim, ObjectMask, Port,
+    DevelopSettings, EffectiveReference, LensSettings, MIXER_INPUTS, MaskCombine, MaskMode,
+    MaskSettings, MaskShape, MaskSupport, MixerNode, NodeGrade, NodeGraph, NodeId, NodeKind,
+    NodeTrim, ObjectMask, Port, hue_pairs,
 };
 use crate::vision::VisionKind;
 
@@ -1033,6 +1035,22 @@ fn uniform_step_of(u: &ColorUniformNode) -> UniformStep {
     }
 }
 
+/// The chain's hue and element steps of a Reference Grade node, from its effective values (`docs/34` section 7.1).
+fn reference_step_of(e: &EffectiveReference) -> ReferenceStep {
+    let grades = e.elements.all().map(|v| ElementGrade {
+        exposure_ev: v.exposure_ev,
+        hue_deg: v.hue_deg,
+        chroma: v.chroma,
+    });
+    ReferenceStep {
+        hue: HueStep::new(
+            &hue_pairs(&e.hue_curves.hue_vs_hue),
+            &hue_pairs(&e.hue_curves.hue_vs_sat),
+        ),
+        elements: ElementStep::new(grades),
+    }
+}
+
 /// The graph as the plan compiler reads it: every corrector and Film node with its place, its picture source
 /// (the link into its picture input) and its key source, and the picture the Output reads. An input with no link
 /// is `None` (the compiler reads the Input's picture there). The mixers, Splitters and Combiners are
@@ -1050,7 +1068,8 @@ pub fn plan_graph(g: &NodeGraph) -> PlanGraph {
                 | NodeKind::Film
                 | NodeKind::FaceRefinement
                 | NodeKind::ColorUniform
-                | NodeKind::Blur => {}
+                | NodeKind::Blur
+                | NodeKind::ReferenceGrade => {}
                 NodeKind::Parallel
                 | NodeKind::Layer
                 | NodeKind::Splitter
@@ -1094,6 +1113,7 @@ pub fn plan_joins(g: &NodeGraph) -> Vec<PlanJoin> {
             Some(NodeKind::FaceRefinement) => g.face_refinement(n).is_some_and(|f| !f.bypass),
             Some(NodeKind::ColorUniform) => g.color_uniform(n).is_some_and(|f| !f.bypass),
             Some(NodeKind::Blur) => g.blur(n).is_some_and(|f| !f.bypass),
+            Some(NodeKind::ReferenceGrade) => g.reference_grade(n).is_some_and(|f| !f.bypass),
             _ => false,
         },
         PictureSource::Input | PictureSource::Split(..) => false,
@@ -1114,6 +1134,7 @@ pub fn plan_joins(g: &NodeGraph) -> Vec<PlanJoin> {
                 | NodeKind::FaceRefinement
                 | NodeKind::ColorUniform
                 | NodeKind::Blur
+                | NodeKind::ReferenceGrade
                 | NodeKind::Input
                 | NodeKind::Output => {
                     return None;
@@ -1308,6 +1329,30 @@ fn node_set(
                         curves: curves_of(&u.grade.curve)?,
                         masks: masks.remove(&id).unwrap_or_default(),
                         uniform: Some(uniform_step_of(u)),
+                        reference: None,
+                    },
+                );
+            }
+            Some(NodeKind::ReferenceGrade) => {
+                let Some(r) = s.nodes.reference_grade(id) else {
+                    continue;
+                };
+                // A corrector-like step (`docs/34` section 7.1): the corrector's trims, grade, colour warp and curves from the
+                // effective values (Strength applied once, `ReferenceGradeNode::effective`), then the hue curves and the element
+                // grades. A bypassed node and one with every step at its identity are skipped by the chain; its key output is
+                // still the mask of its Mask tab.
+                let e = r.effective();
+                others.insert(
+                    id,
+                    NodeParams {
+                        bypass: r.bypass,
+                        trim: trim_of(&e.trim),
+                        grade: grade_params_of(&e.grade, None),
+                        warp: ColorWarp::to_color(&e.grade.color_warp),
+                        curves: curves_of(&e.grade.curve)?,
+                        masks: masks.remove(&id).unwrap_or_default(),
+                        uniform: None,
+                        reference: Some(reference_step_of(&e)),
                     },
                 );
             }
@@ -1351,6 +1396,7 @@ fn node_set(
                         curves: curves_of(&c.grade.curve)?,
                         masks: masks.remove(&id).unwrap_or_default(),
                         uniform: None,
+                        reference: None,
                     },
                 );
             }
@@ -1539,6 +1585,22 @@ fn nodes_key(
                 grade_params_of(&u.grade, None),
                 Warp::new(&u.grade.color_warp.to_color()),
                 u.grade.curve,
+            );
+        } else if let Some(r) = s.nodes.reference_grade(id) {
+            // A Reference Grade node, by everything that makes its picture (not its name, place or Skin protection, which
+            // changes no pixel): Bypass, the stored trims, grade, hue curves and element grades with Strength (the effective
+            // values follow from them), and its masks. The floats print as their shortest round-trip text, so two values are
+            // two keys. The element planes have their own key, the photo's scene key (RG-04).
+            let _ = write!(
+                k,
+                "refgrade{id}:{}:{:x}:{:?}:{:?}:{:?}:{:?}:{:?};",
+                r.bypass,
+                r.strength.to_bits(),
+                r.trim,
+                r.grade,
+                r.hue_curves,
+                r.elements,
+                node_masks(&r.masks),
             );
         } else if let Some(b) = s.nodes.blur(id) {
             // A Blur node, by everything that makes its picture (not its name or place): Bypass, the type, every group (a
@@ -1901,5 +1963,173 @@ mod schedule_tests {
         assert_eq!(chain.film_reads().get(&3), Some(&vec![2]));
         assert_eq!(chain.film_reads().get(&2), Some(&vec![]));
         assert_eq!(chain.schedule(1.0, &|_| Some(25)).total_reach(), 50);
+    }
+}
+
+/// The Reference Grade node in the plan (`docs/34` section 7.1): its step kind, its live and dead state, its numbering, its
+/// effective values in the chain, and the key that must change with every number that makes the picture.
+#[cfg(test)]
+mod reference_plan_tests {
+    use super::*;
+    use serde_json::{Value, json};
+    use ym_color::schedule::StepKind;
+
+    fn graph(node: Value, extra: Vec<Value>) -> DevelopSettings {
+        let mut items = vec![json!({ "id": 1 })];
+        items.extend(extra);
+        let mut n = json!({ "id": 2, "kind": "reference_grade", "pos": [2, 0.0] });
+        n.as_object_mut()
+            .expect("an object")
+            .extend(node.as_object().expect("an object").clone());
+        items.push(n);
+        let doc = json!({ "nodes": { "items": items, "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
+        serde_json::from_value::<DevelopSettings>(doc)
+            .expect("a document")
+            .validated()
+            .expect("a valid graph")
+            .0
+    }
+
+    fn key(s: &DevelopSettings) -> String {
+        nodes_key(s, Stop::Output, None, None)
+    }
+
+    #[test]
+    fn the_node_is_a_corrector_like_step_with_its_own_kind_and_a_number() {
+        assert_eq!(
+            super::super::schedule::step_kind(NodeKind::ReferenceGrade),
+            Some(StepKind::ReferenceGrade)
+        );
+        let s = graph(
+            json!({ "hue_curves": { "hue_vs_sat": [ { "hue_deg": 90, "value": 1.4 } ] } }),
+            vec![],
+        );
+        let plan = node_plan(&s.nodes, Stop::Output).expect("a plan");
+        assert_eq!(plan.node_ids(), vec![1, 2]);
+        // The node is a live step with a picture and a key output, like a corrector's.
+        let (set, _, films, _) = node_set(&s, Stop::Output, None, None).expect("nodes");
+        assert!(films.is_empty(), "no spatial pass");
+        let params = set.others.get(&2).expect("the node's parameters");
+        let step = params.reference.as_ref().expect("a reference step");
+        assert!(!step.hue.is_identity() && step.elements.is_identity());
+        // A node with nothing set carries a step at its identity (the chain skips it).
+        let s = graph(json!({}), vec![]);
+        let (set, _, _, _) = node_set(&s, Stop::Output, None, None).expect("nodes");
+        assert!(
+            set.others[&2]
+                .reference
+                .as_ref()
+                .expect("a step")
+                .is_identity()
+        );
+        // A dead node (nothing reads it) is not a step.
+        let mut dead = graph(json!({}), vec![]);
+        dead.nodes.links.retain(|l| l.to.node != NodeId::Output);
+        dead.nodes.links.push(crate::settings::NodeLink::picture(
+            NodeId::MAIN,
+            NodeId::Output,
+        ));
+        let plan = node_plan(&dead.nodes, Stop::Output).expect("a plan");
+        assert_eq!(plan.node_ids(), vec![1]);
+    }
+
+    #[test]
+    fn the_chain_runs_the_effective_values_so_strength_is_applied_once() {
+        let node = json!({
+            "grade": { "saturation": { "kind": "manual", "value": -20 },
+                       "curve": { "luma": [[0, 0], [0.4, 0.5], [1, 1]] } },
+            "hue_curves": { "hue_vs_hue": [ { "hue_deg": 30, "value": 40 } ] },
+            "elements": { "sky": { "hue_deg": 20, "chroma": 1.5 } } });
+        let full = graph(node.clone(), vec![]);
+        let mut half_node = node;
+        half_node["strength"] = json!(50);
+        let half = graph(half_node, vec![]);
+        let get = |s: &DevelopSettings| {
+            let (set, _, _, _) = node_set(s, Stop::Output, None, None).expect("nodes");
+            set.others[&2].clone()
+        };
+        let (f, h) = (get(&full), get(&half));
+        assert!((f.grade.saturation + 20.0).abs() < 1e-12);
+        assert!((h.grade.saturation + 10.0).abs() < 1e-12);
+        let sky = |p: &NodeParams| p.reference.as_ref().expect("step").elements.grades()[0];
+        assert!((sky(&f).hue_deg - 20.0).abs() < 1e-12 && (sky(&f).chroma - 1.5).abs() < 1e-12);
+        assert!(
+            (sky(&h).hue_deg - 10.0).abs() < 1e-12
+                && (sky(&h).chroma - 1.5f64.sqrt()).abs() < 1e-12
+        );
+        // The hue table of the half-strength node is half as deep.
+        let top = |p: &NodeParams| {
+            p.reference
+                .as_ref()
+                .expect("step")
+                .hue
+                .hue_vs_hue()
+                .expect("a curve")
+                .values()[0]
+        };
+        assert!((top(&f) - 40.0).abs() < 1e-12 && (top(&h) - 20.0).abs() < 1e-12);
+        // The same numbers through the same function: the device's packing reads `effective` too.
+        let n = full.nodes.reference_grade(2).expect("the node");
+        assert_eq!(n.effective().elements.sky.hue_deg, 20.0);
+    }
+
+    #[test]
+    fn the_key_changes_with_every_value_that_makes_the_picture_and_with_nothing_else() {
+        let base = graph(json!({}), vec![]);
+        let k0 = key(&base);
+        let changed = |node: Value| key(&graph(node, vec![]));
+        for (what, node) in [
+            ("strength", json!({ "strength": 70 })),
+            ("bypass", json!({ "bypass": true })),
+            ("trim", json!({ "trim": { "tint": 3 } })),
+            (
+                "saturation",
+                json!({ "grade": { "saturation": { "kind": "manual", "value": 5 } } }),
+            ),
+            (
+                "curve",
+                json!({ "grade": { "curve": { "red": [[0, 0], [0.5, 0.52], [1, 1]] } } }),
+            ),
+            (
+                "hue_vs_hue",
+                json!({ "hue_curves": { "hue_vs_hue": [ { "hue_deg": 0, "value": 1 } ] } }),
+            ),
+            (
+                "hue_vs_sat",
+                json!({ "hue_curves": { "hue_vs_sat": [ { "hue_deg": 0, "value": 1.1 } ] } }),
+            ),
+            (
+                "an element",
+                json!({ "elements": { "water": { "chroma": 0.9 } } }),
+            ),
+            (
+                "the subject",
+                json!({ "elements": { "subject": { "exposure_ev": 0.1 } } }),
+            ),
+            (
+                "a mask",
+                json!({ "masks": { "items": [ { "kind": "radial" } ] } }),
+            ),
+        ] {
+            assert_ne!(changed(node), k0, "{what} is not in the key");
+        }
+        // A hue value is its own key: two values give two keys.
+        let a =
+            changed(json!({ "hue_curves": { "hue_vs_hue": [ { "hue_deg": 0, "value": 1 } ] } }));
+        let b = changed(
+            json!({ "hue_curves": { "hue_vs_hue": [ { "hue_deg": 0, "value": 1.0000001 } ] } }),
+        );
+        assert_ne!(a, b);
+        // The name, the place and Skin protection change no pixel and leave the key alone.
+        for node in [
+            json!({ "name": "Other" }),
+            json!({ "pos": [5, 1] }),
+            json!({ "skin_protection": false }),
+        ] {
+            assert_eq!(changed(node.clone()), k0, "{node}");
+        }
     }
 }

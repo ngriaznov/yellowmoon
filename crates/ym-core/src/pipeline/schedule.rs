@@ -31,6 +31,9 @@ pub fn step_kind(kind: NodeKind) -> Option<StepKind> {
         // A spatial step of its own, on the Film node's route, with a reach from its settings (`ym_color::blur::reach_px`,
         // `docs/33` sections 3.8 and 6).
         NodeKind::Blur => Some(StepKind::Blur),
+        // A corrector-like step of its own: per pixel, reads the picture, its masks and the planes of its live elements
+        // (`docs/34` section 7.1).
+        NodeKind::ReferenceGrade => Some(StepKind::ReferenceGrade),
         NodeKind::Parallel => Some(StepKind::Parallel),
         NodeKind::Layer => Some(StepKind::Layer),
         NodeKind::Splitter => Some(StepKind::Splitter),

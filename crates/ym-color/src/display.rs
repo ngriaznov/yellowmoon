@@ -67,7 +67,7 @@ pub use chain::{BeforePoint, ChainParams, ColorChain, LookSetting, StageTrace, V
 pub use dng_inverse::DNG_SCENE_LIMIT;
 pub use frame::{Frame, Layout};
 pub use mix::{BlendMode, JoinParams};
-pub use node::{FilmStep, MainNode, NodeParams, NodeSet, UniformStep};
+pub use node::{FilmStep, MainNode, NodeParams, NodeSet, ReferenceStep, UniformStep};
 pub use trim::Trim;
 
 use crate::encode::OutputSpace;

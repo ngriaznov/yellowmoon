@@ -378,6 +378,7 @@ export type NodeKind =
   | "face_refinement"
   | "color_uniform"
   | "blur"
+  | "reference_grade"
   | "parallel"
   | "layer"
   | "splitter"
@@ -784,6 +785,72 @@ export interface BlurNode {
   masks: MaskSettings;
 }
 
+/** A point of a Reference Grade node's hue curve (`docs/34` section 4.1). */
+export interface HuePoint {
+  /** The hue in degrees on the LogC4 chroma-plane axis (0 red, 60 yellow, 120 green, 180 cyan, 240 blue, 300 magenta); any finite number is read modulo 360 and stored in [0, 360). */
+  hue_deg: number;
+  /** `hue_vs_hue`: the degrees the hue turns, -180 to 180. `hue_vs_sat`: the chroma multiplier, 0 to 8. */
+  value: number;
+}
+
+/** A Reference Grade node's two hue curves: periodic, at most 16 points each, an empty list is the identity (`docs/34` section 4.1). */
+export interface HueCurves {
+  hue_vs_hue: HuePoint[];
+  hue_vs_sat: HuePoint[];
+}
+
+/** One element's grade (`docs/34` section 4a.1). */
+export interface ElementValues {
+  /** Stops, -1 to 1. */
+  exposure_ev: number;
+  /** Degrees, within the element's cap (sky 40, vegetation 35, water 35, ground 30, built 25, skin 15). */
+  hue_deg: number;
+  /** A ratio, 0.5 to 1.6; 1 is unchanged. */
+  chroma: number;
+}
+
+/** The subject's grade: an exposure offset alone. */
+export interface SubjectValues {
+  /** Stops, -1 to 1. */
+  exposure_ev: number;
+}
+
+/** A Reference Grade node's element grades. */
+export interface Elements {
+  sky: ElementValues;
+  vegetation: ElementValues;
+  water: ElementValues;
+  ground: ElementValues;
+  built: ElementValues;
+  skin: ElementValues;
+  subject: SubjectValues;
+}
+
+/**
+ * A Reference Grade node: fits its own grade to a reference picture (`docs/34`). It carries a corrector's trims and grade, two hue
+ * curves, the element grades, a Strength and the Skin protection switch, and it writes every field. The reference is never stored.
+ */
+export interface ReferenceGradeNode {
+  /** 2 to 2³¹ − 1; every numbered node shares the numbers. */
+  id: NodeId;
+  /** The card's name, 1 to 32 characters ("Match"). */
+  name: string;
+  /** A bypassed node passes its picture through. */
+  bypass: boolean;
+  pos: NodePos;
+  /** The person's trims; the fit does not write them. */
+  trim: NodeTrim;
+  /** A corrector's grade (Auto reads as a manual 0); the fit writes `curve` and `saturation`. */
+  grade: NodeGrade;
+  hue_curves: HueCurves;
+  elements: Elements;
+  /** 0 to 100, percent: how much of the fit is shown, with no re-fit (`docs/34` section 3.2). */
+  strength: number;
+  /** Whether the next fit keeps skin from drifting; changes no pixel by itself. */
+  skin_protection: boolean;
+  masks: MaskSettings;
+}
+
 /** How a Layer blends an input over the ones below it (`docs/25` section 3.3), computed in linear light. */
 export type BlendMode =
   | "normal"
@@ -840,6 +907,7 @@ export type NodeItem =
   | ({ kind: "face_refinement" } & FaceRefinementNode)
   | ({ kind: "color_uniform" } & ColorUniformNode)
   | ({ kind: "blur" } & BlurNode)
+  | ({ kind: "reference_grade" } & ReferenceGradeNode)
   | ({ kind: "parallel" } & ParallelNode)
   | ({ kind: "layer" } & LayerNode)
   | ({ kind: "splitter" } & SplitterNode)
@@ -961,7 +1029,7 @@ export interface NodePatch {
   print?: { paper?: string | null; exposure_ev?: number; lights?: Partial<PrintLights> };
   halation?: Partial<HalationSettings>;
   grain?: Partial<GrainSettings>;
-  /** A Film node's Strength, percent. */
+  /** A Film node's or a Reference Grade node's Strength, percent. */
   strength?: number;
   /** A Face Refinement node's "Same for all faces". */
   same_for_all?: boolean;
@@ -992,6 +1060,12 @@ export interface NodePatch {
   zoom?: Partial<BlurZoom>;
   /** A Blur node's Respect mask edges. */
   respect_mask_edges?: boolean;
+  /** A Reference Grade node's hue curves; a curve given replaces that curve, a curve left out stays. */
+  hue_curves?: Partial<HueCurves>;
+  /** A Reference Grade node's element grades, member by member; only the parts to change. */
+  elements?: { [K in keyof Elements]?: Partial<Elements[K]> };
+  /** A Reference Grade node's Skin protection. */
+  skin_protection?: boolean;
   /** A Layer's blend mode. */
   mode?: BlendMode;
   /** A Layer's opacity, 0 to 1. */

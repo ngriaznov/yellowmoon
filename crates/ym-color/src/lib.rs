@@ -25,6 +25,7 @@ pub mod encode;
 pub mod exposure;
 pub mod gamut;
 pub mod grade;
+pub mod hue;
 pub mod illum;
 pub mod logc;
 pub mod look;

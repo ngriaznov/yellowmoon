@@ -17,6 +17,9 @@ use super::graph::{
 };
 use super::masks::{BrushMask, BrushStroke, MasksPatch};
 use super::mixers::{BlendMode, MixerNode};
+use super::reference::{
+    ElementValues, Elements, HueCurves, HuePoint, ReferenceGradeNode, check_patch_shape,
+};
 use super::uniform::{ColorUniformNode, TargetValue};
 use super::{
     AutoOr, AutoSeeds, ColorBalancePatch, ColorWarp, ContrastSetting, Crop, CurvesPatch,
@@ -281,6 +284,211 @@ pub struct UniformAmountsPatch {
     /// New Lightness amount, percent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lightness: Option<f64>,
+}
+
+/// A Reference Grade node's `hue_curves` to change: a curve given replaces that curve whole, a curve left out stays.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HueCurvesPatch {
+    /// The new `hue_vs_hue` curve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hue_vs_hue: Option<Vec<HuePoint>>,
+    /// The new `hue_vs_sat` curve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hue_vs_sat: Option<Vec<HuePoint>>,
+}
+
+impl HueCurvesPatch {
+    /// The patch that carries both curves of `c`.
+    #[must_use]
+    pub fn whole(c: &HueCurves) -> Self {
+        Self {
+            hue_vs_hue: Some(c.hue_vs_hue.clone()),
+            hue_vs_sat: Some(c.hue_vs_sat.clone()),
+        }
+    }
+
+    fn apply(&self, to: &mut HueCurves) {
+        if let Some(v) = &self.hue_vs_hue {
+            to.hue_vs_hue.clone_from(v);
+        }
+        if let Some(v) = &self.hue_vs_sat {
+            to.hue_vs_sat.clone_from(v);
+        }
+    }
+
+    fn absorb(&mut self, other: Self) {
+        if other.hue_vs_hue.is_some() {
+            self.hue_vs_hue = other.hue_vs_hue;
+        }
+        if other.hue_vs_sat.is_some() {
+            self.hue_vs_sat = other.hue_vs_sat;
+        }
+    }
+}
+
+/// One element's values to change: a part left out keeps the node's value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ElementPatch {
+    /// The new exposure offset, in stops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure_ev: Option<f64>,
+    /// The new hue turn, in degrees (not for the subject).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hue_deg: Option<f64>,
+    /// The new chroma ratio (not for the subject).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chroma: Option<f64>,
+}
+
+impl ElementPatch {
+    /// The patch that carries all three values of `e`.
+    #[must_use]
+    pub fn whole(e: &ElementValues) -> Self {
+        Self {
+            exposure_ev: Some(e.exposure_ev),
+            hue_deg: Some(e.hue_deg),
+            chroma: Some(e.chroma),
+        }
+    }
+
+    fn apply(&self, to: &mut ElementValues) {
+        if let Some(v) = self.exposure_ev {
+            to.exposure_ev = v;
+        }
+        if let Some(v) = self.hue_deg {
+            to.hue_deg = v;
+        }
+        if let Some(v) = self.chroma {
+            to.chroma = v;
+        }
+    }
+
+    fn absorb(&mut self, other: Self) {
+        if other.exposure_ev.is_some() {
+            self.exposure_ev = other.exposure_ev;
+        }
+        if other.hue_deg.is_some() {
+            self.hue_deg = other.hue_deg;
+        }
+        if other.chroma.is_some() {
+            self.chroma = other.chroma;
+        }
+    }
+}
+
+/// The subject's values to change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubjectPatch {
+    /// The new exposure offset, in stops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure_ev: Option<f64>,
+}
+
+/// A Reference Grade node's `elements` to change, member by member: a member given takes the values it names, a member left
+/// out stays.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ElementsPatch {
+    /// The sky.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sky: Option<ElementPatch>,
+    /// Vegetation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vegetation: Option<ElementPatch>,
+    /// Water.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub water: Option<ElementPatch>,
+    /// Ground.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ground: Option<ElementPatch>,
+    /// Built surfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built: Option<ElementPatch>,
+    /// Skin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skin: Option<ElementPatch>,
+    /// The subject.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<SubjectPatch>,
+}
+
+impl ElementsPatch {
+    /// The patch that carries every value of `e`.
+    #[must_use]
+    pub fn whole(e: &Elements) -> Self {
+        Self {
+            sky: Some(ElementPatch::whole(&e.sky)),
+            vegetation: Some(ElementPatch::whole(&e.vegetation)),
+            water: Some(ElementPatch::whole(&e.water)),
+            ground: Some(ElementPatch::whole(&e.ground)),
+            built: Some(ElementPatch::whole(&e.built)),
+            skin: Some(ElementPatch::whole(&e.skin)),
+            subject: Some(SubjectPatch {
+                exposure_ev: Some(e.subject.exposure_ev),
+            }),
+        }
+    }
+
+    fn members(&self) -> [&Option<ElementPatch>; 6] {
+        [
+            &self.sky,
+            &self.vegetation,
+            &self.water,
+            &self.ground,
+            &self.built,
+            &self.skin,
+        ]
+    }
+
+    fn members_mut(&mut self) -> [&mut Option<ElementPatch>; 6] {
+        [
+            &mut self.sky,
+            &mut self.vegetation,
+            &mut self.water,
+            &mut self.ground,
+            &mut self.built,
+            &mut self.skin,
+        ]
+    }
+
+    fn apply(&self, to: &mut Elements) {
+        for (p, e) in self.members().into_iter().zip(to.six_mut()) {
+            if let Some(p) = p {
+                p.apply(e);
+            }
+        }
+        if let Some(v) = self.subject.and_then(|s| s.exposure_ev) {
+            to.subject.exposure_ev = v;
+        }
+    }
+
+    fn absorb(&mut self, other: Self) {
+        let theirs = other.members().map(|m| *m);
+        for (mine, theirs) in self.members_mut().into_iter().zip(theirs) {
+            match (mine.as_mut(), theirs) {
+                (Some(m), Some(t)) => m.absorb(t),
+                (None, Some(t)) => *mine = Some(t),
+                _ => {}
+            }
+        }
+        if let Some(t) = other.subject {
+            let mine = self.subject.get_or_insert_with(SubjectPatch::default);
+            if t.exposure_ev.is_some() {
+                mine.exposure_ev = t.exposure_ev;
+            }
+        }
+    }
+
+    /// Whether the patch names no member, or only members that say nothing.
+    fn says_nothing(&self) -> bool {
+        self.members()
+            .into_iter()
+            .all(|m| m.is_none_or(|p| p == ElementPatch::default()))
+            && self.subject.is_none_or(|s| s == SubjectPatch::default())
+    }
 }
 
 /// A Blur node's `soft` group to change: a partial object, each part read over what the node has.
@@ -604,6 +812,18 @@ pub struct NodePatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub respect_mask_edges: Option<bool>,
 
+    // A Reference Grade node (`docs/34` section 3.5); `name`, `bypass`, `trim`, `grade`, `strength` and `masks` above are its
+    // too.
+    /// The hue curves to change: a curve given replaces that curve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hue_curves: Option<HueCurvesPatch>,
+    /// The element grades to change, member by member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elements: Option<ElementsPatch>,
+    /// Skin protection on or off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skin_protection: Option<bool>,
+
     // A Layer (`docs/25` section 2.1); `name` and `bypass` above are the four mixer kinds' too.
     /// New blend mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -660,6 +880,9 @@ impl<'de> Deserialize<'de> for SettingsPatch {
                 };
                 super::masks::check_combine(node.get("masks"), &name)
                     .map_err(serde::de::Error::custom)?;
+                if let Some(elements) = node.get("elements") {
+                    check_patch_shape(elements).map_err(serde::de::Error::custom)?;
+                }
             }
         }
         let doc: PatchDocument = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
@@ -695,6 +918,7 @@ impl NodePatch {
             protect => "protect", target => "target", compress => "compress", mode => "mode",
             opacity => "opacity", blur_type => "type", soft => "soft", motion => "motion",
             zoom => "zoom", respect_mask_edges => "respect_mask_edges",
+            hue_curves => "hue_curves", elements => "elements", skin_protection => "skin_protection",
         );
         v
     }
@@ -741,6 +965,9 @@ impl NodePatch {
             SettingsField::RespectMaskEdges => self.respect_mask_edges.is_some(),
             SettingsField::Mode => self.mode.is_some(),
             SettingsField::Opacity => self.opacity.is_some(),
+            SettingsField::HueCurves => self.hue_curves.is_some(),
+            SettingsField::Elements => self.elements.is_some(),
+            SettingsField::SkinProtection => self.skin_protection.is_some(),
             grade_field => self
                 .grade
                 .as_ref()
@@ -827,6 +1054,16 @@ impl NodePatch {
             p.zoom = None;
         }
 
+        if p.hue_curves
+            .as_ref()
+            .is_some_and(|m| *m == HueCurvesPatch::default())
+        {
+            p.hue_curves = None;
+        }
+        if p.elements.as_ref().is_some_and(ElementsPatch::says_nothing) {
+            p.elements = None;
+        }
+
         p == NodePatch::default()
     }
 
@@ -876,7 +1113,20 @@ impl NodePatch {
             motion,
             zoom,
             respect_mask_edges,
+            skin_protection,
         );
+        if let Some(h) = other.hue_curves {
+            match &mut self.hue_curves {
+                Some(mine) => mine.absorb(h),
+                None => self.hue_curves = Some(h),
+            }
+        }
+        if let Some(e) = other.elements {
+            match &mut self.elements {
+                Some(mine) => mine.absorb(e),
+                None => self.elements = Some(e),
+            }
+        }
         if let Some(g) = other.grade {
             match &mut self.grade {
                 Some(mine) => mine.absorb(g),
@@ -1161,6 +1411,48 @@ impl NodePatch {
         for f in SettingsField::ALL {
             if f.belongs_to(NodeKind::ColorUniform)
                 && let Some(one) = Self::of_color_uniform_field(n, f)
+            {
+                p.absorb(one);
+            }
+        }
+        p
+    }
+
+    /// The patch that carries one field of a Reference Grade node.
+    fn of_reference_grade_field(n: &ReferenceGradeNode, field: SettingsField) -> Option<Self> {
+        let mut p = Self::default();
+        match field {
+            SettingsField::Name => p.name = Some(n.name.clone()),
+            SettingsField::Bypass => p.bypass = Some(n.bypass),
+            SettingsField::Pos => p.pos = Some(n.pos),
+            SettingsField::Masks => {
+                p.masks = Some(MasksPatch {
+                    invert: Some(n.masks.invert),
+                    combine: Some(n.masks.combine),
+                    items: Some(n.masks.items.clone()),
+                    edit: None,
+                });
+            }
+            SettingsField::HueCurves => p.hue_curves = Some(HueCurvesPatch::whole(&n.hue_curves)),
+            SettingsField::Elements => p.elements = Some(ElementsPatch::whole(&n.elements)),
+            SettingsField::Strength => p.strength = Some(n.strength),
+            SettingsField::SkinProtection => p.skin_protection = Some(n.skin_protection),
+            _ => return Self::of_graded_field(&n.trim, &n.grade, field),
+        }
+        Some(p)
+    }
+
+    /// A patch that holds every field of a Reference Grade node, with its `kind`, so that it adds the node when the photo does
+    /// not have it. A fit is one patch of this kind: its curves, saturation, hue curves and elements (`docs/34` section 3.5).
+    #[must_use]
+    pub fn whole_reference_grade(n: &ReferenceGradeNode) -> Self {
+        let mut p = Self {
+            kind: Some(NodeKind::ReferenceGrade),
+            ..Self::default()
+        };
+        for f in SettingsField::ALL {
+            if f.belongs_to(NodeKind::ReferenceGrade)
+                && let Some(one) = Self::of_reference_grade_field(n, f)
             {
                 p.absorb(one);
             }
@@ -1644,6 +1936,38 @@ impl NodePatch {
         Ok(())
     }
 
+    fn apply_reference_grade(
+        &self,
+        next: &mut ReferenceGradeNode,
+        id: u32,
+    ) -> Result<(), SettingsError> {
+        if let Some(v) = &self.name {
+            next.name.clone_from(v);
+        }
+        if let Some(v) = self.bypass {
+            next.bypass = v;
+        }
+        self.apply_graded(&mut next.trim, &mut next.grade);
+        // Auto belongs to Main (`docs/23` section 3.2): in this node's grade it reads as a manual 0.
+        next.grade.make_manual();
+        if let Some(h) = &self.hue_curves {
+            h.apply(&mut next.hue_curves);
+        }
+        if let Some(e) = &self.elements {
+            e.apply(&mut next.elements);
+        }
+        if let Some(v) = self.strength {
+            next.strength = v;
+        }
+        if let Some(v) = self.skin_protection {
+            next.skin_protection = v;
+        }
+        if let Some(m) = &self.masks {
+            m.apply(&mut next.masks, &NodeId::Corrector(id).to_string())?;
+        }
+        Ok(())
+    }
+
     fn apply_blur(&self, next: &mut BlurNode, id: u32) -> Result<(), SettingsError> {
         if let Some(v) = &self.name {
             next.name.clone_from(v);
@@ -1890,6 +2214,24 @@ impl DevelopSettings {
                     _ => true,
                 }
             }
+            NodeId::Corrector(n)
+                if a.references.contains_key(&n) || b.references.contains_key(&n) =>
+            {
+                let (Some(a), Some(b)) = (a.reference_grade(n), b.reference_grade(n)) else {
+                    return true;
+                };
+                match field {
+                    SettingsField::Name => a.name == b.name,
+                    SettingsField::Bypass => a.bypass == b.bypass,
+                    SettingsField::Pos => a.pos == b.pos,
+                    SettingsField::Masks => a.masks == b.masks,
+                    SettingsField::HueCurves => a.hue_curves == b.hue_curves,
+                    SettingsField::Elements => a.elements == b.elements,
+                    SettingsField::Strength => a.strength.to_bits() == b.strength.to_bits(),
+                    SettingsField::SkinProtection => a.skin_protection == b.skin_protection,
+                    _ => graded_same(&a.trim, &a.grade, &b.trim, &b.grade, field),
+                }
+            }
             NodeId::Corrector(n) if a.uniforms.contains_key(&n) || b.uniforms.contains_key(&n) => {
                 let (Some(a), Some(b)) = (a.color_uniform(n), b.color_uniform(n)) else {
                     return true;
@@ -2051,6 +2393,7 @@ impl DevelopSettings {
                         && next.nodes.faces.remove(n).is_none()
                         && next.nodes.uniforms.remove(n).is_none()
                         && next.nodes.blurs.remove(n).is_none()
+                        && next.nodes.references.remove(n).is_none()
                         && next.nodes.mixers.remove(n).is_none()
                     {
                         return Err(GraphError::PatchUnknownNode(id.to_string()).into());
@@ -2106,6 +2449,14 @@ impl DevelopSettings {
                         ColorUniformNode {
                             pos,
                             ..ColorUniformNode::default()
+                        },
+                    );
+                } else if actual == NodeKind::ReferenceGrade {
+                    next.nodes.references.insert(
+                        n,
+                        ReferenceGradeNode {
+                            pos,
+                            ..ReferenceGradeNode::default()
                         },
                     );
                 } else if actual == NodeKind::Blur {
@@ -2175,6 +2526,11 @@ impl DevelopSettings {
                         np.apply_blur(b, n)?;
                         if let Some(p) = np.pos {
                             b.pos = p;
+                        }
+                    } else if let Some(r) = next.nodes.reference_grade_mut(n) {
+                        np.apply_reference_grade(r, n)?;
+                        if let Some(p) = np.pos {
+                            r.pos = p;
                         }
                     } else if let Some(m) = next.nodes.mixer_mut(n) {
                         np.apply_mixer(m);
@@ -2415,6 +2771,10 @@ impl SettingsPatch {
                     .nodes
                     .color_uniform(n)
                     .and_then(|f| NodePatch::of_color_uniform_field(f, *field)),
+                NodeId::Corrector(n) if from.nodes.references.contains_key(&n) => from
+                    .nodes
+                    .reference_grade(n)
+                    .and_then(|f| NodePatch::of_reference_grade_field(f, *field)),
                 NodeId::Corrector(n) if from.nodes.blurs.contains_key(&n) => from
                     .nodes
                     .blur(n)
@@ -2460,6 +2820,8 @@ impl SettingsPatch {
                     patch.nodes.insert(id, NodePatch::whole_color_uniform(f));
                 } else if let Some(f) = to.nodes.blur(n) {
                     patch.nodes.insert(id, NodePatch::whole_blur(f));
+                } else if let Some(f) = to.nodes.reference_grade(n) {
+                    patch.nodes.insert(id, NodePatch::whole_reference_grade(f));
                 } else if let Some(m) = to.nodes.mixer(n) {
                     patch.nodes.insert(id, NodePatch::whole_mixer(m));
                 }
@@ -2614,6 +2976,15 @@ impl SettingsPatch {
                 .nodes
                 .insert(NodeId::Corrector(*id), NodePatch::whole_blur(&f));
         }
+        for (id, f) in &g.references {
+            let mut f = f.clone();
+            for row in &mut f.masks.items {
+                *row = row.emptied();
+            }
+            patch
+                .nodes
+                .insert(NodeId::Corrector(*id), NodePatch::whole_reference_grade(&f));
+        }
         for (id, m) in &g.mixers {
             patch
                 .nodes
@@ -2670,6 +3041,9 @@ fn defaults_for(node: NodeId, default_look: &LookId, kind: NodeKind) -> DevelopS
             }
             NodeKind::Blur => {
                 d.nodes.blurs.insert(n, BlurNode::default());
+            }
+            NodeKind::ReferenceGrade => {
+                d.nodes.references.insert(n, ReferenceGradeNode::default());
             }
             NodeKind::Parallel | NodeKind::Layer | NodeKind::Splitter | NodeKind::Combiner => {
                 if let Some(m) = MixerNode::new_of(kind) {

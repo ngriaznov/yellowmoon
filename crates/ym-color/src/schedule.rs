@@ -70,6 +70,9 @@ pub enum StepKind {
     Corrector,
     /// A Colour Uniform node (`docs/32` section 6): per pixel, like a corrector, with no planes of its own besides its masks.
     ColorUniform,
+    /// A Reference Grade node (`docs/34` section 7.1): per pixel, like a corrector; it reads the picture and the planes of
+    /// its live elements.
+    ReferenceGrade,
     /// A Film node that does something: spatial.
     Film,
     /// A Blur node that does something (`docs/33` section 3.8): spatial, like a Film node, with a reach from its settings. It
@@ -88,9 +91,10 @@ pub enum StepKind {
 impl StepKind {
     /// Every step kind. A `match`-checked list: [`StepKind::declared`] does not compile when a kind is missing, and the
     /// unit test below checks this list against it.
-    pub const ALL: [StepKind; 8] = [
+    pub const ALL: [StepKind; 9] = [
         StepKind::Corrector,
         StepKind::ColorUniform,
+        StepKind::ReferenceGrade,
         StepKind::Film,
         StepKind::Blur,
         StepKind::Parallel,
@@ -104,7 +108,7 @@ impl StepKind {
     #[must_use]
     pub fn declared(self, reach_px: usize) -> Declared {
         match self {
-            Self::Corrector | Self::ColorUniform => Declared {
+            Self::Corrector | Self::ColorUniform | Self::ReferenceGrade => Declared {
                 footprint: Footprint::PerPixel,
                 reads: Reads {
                     pictures: true,

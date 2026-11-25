@@ -127,7 +127,8 @@ fn emptied(s: &DevelopSettings) -> DevelopSettings {
         .chain(g.extra.values_mut().map(|c| &mut c.masks))
         .chain(g.films.values_mut().map(|f| &mut f.masks))
         .chain(g.uniforms.values_mut().map(|u| &mut u.masks))
-        .chain(g.blurs.values_mut().map(|b| &mut b.masks));
+        .chain(g.blurs.values_mut().map(|b| &mut b.masks))
+        .chain(g.references.values_mut().map(|r| &mut r.masks));
     for m in masks {
         for row in &mut m.items {
             *row = row.emptied_for_preset();
@@ -420,6 +421,73 @@ fn a_color_uniform_node_travels_with_the_nodes_group() {
     r.save("Light only", &[PresetGroup::Light], source);
     r.apply("Light only", &[target]);
     assert!(r.settings(target).nodes.uniforms.is_empty());
+    assert_eq!(r.settings(target).nodes.extra, own.nodes.extra);
+}
+
+/// RG-02: a Reference Grade node (fitted-style curves, saturation, hue curves, element grades, Strength, Skin protection and a mask
+/// row) is in the `nodes` group like any node, is saved from a photo that has it, applies the same numbers to another photo (it does
+/// not re-fit: there is nothing to fit from) and arrives with its Brush strokes emptied. The field test of `docs/30` section 14
+/// (every field is in one group) holds for the new fields: they are in the group that carries every other node whole.
+#[test]
+fn a_reference_grade_node_travels_with_the_nodes_group_and_applies_the_same_numbers() {
+    let r = rig(2);
+    let (source, target) = (r.ids[0], r.ids[1]);
+    let doc = json!({ "nodes": {
+        "items": [
+            { "id": 2, "kind": "reference_grade", "name": "Match", "pos": [1, 0],
+              "grade": { "saturation": { "kind": "manual", "value": -12 },
+                         "curve": { "luma": [[0, 0], [0.2784, 0.27], [1, 1]],
+                                    "blue": [[0, 0], [0.2784, 0.27], [1, 1]] } },
+              "hue_curves": { "hue_vs_hue": [ { "hue_deg": 0, "value": -4 }, { "hue_deg": 120, "value": 6 } ],
+                              "hue_vs_sat": [ { "hue_deg": 240, "value": 1.2 } ] },
+              "elements": { "sky": { "exposure_ev": -0.3, "hue_deg": 8, "chroma": 1.1 },
+                            "skin": { "hue_deg": 3 }, "subject": { "exposure_ev": 0.2 } },
+              "strength": 65, "skin_protection": false,
+              "masks": { "invert": false, "items": [
+                { "kind": "brush", "mode": "add", "strokes": [ { "size": 0.02, "points": [[0.1, 0.2], [0.3, 0.4]] } ] },
+                { "kind": "radial", "mode": "add" }
+              ] } } ],
+        "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } });
+    let (mut s, _) = DevelopSettings::from_value(doc, &r.core.looks.effective_default())
+        .expect("a graph with the node");
+    s.nodes.extra.clear();
+    r.set(source, s.clone());
+    let want = emptied(&r.settings(source));
+    let node = want.nodes.reference_grade(2).expect("the node");
+    assert_eq!(node.strength, 65.0);
+    assert!(!node.skin_protection);
+    assert_eq!(node.masks.items.len(), 2, "the rows stay");
+    // The group's own table has nothing for it: it is carried whole with the other nodes.
+    assert!(
+        PresetGroup::Nodes
+            .fields()
+            .iter()
+            .all(|(n, _)| !matches!(n, NodeId::Corrector(2)))
+    );
+    r.save("Match", &[PresetGroup::Nodes], source);
+    let mut own = DevelopSettings::with_look(r.core.looks.effective_default());
+    own.nodes.extra.insert(9, CorrectorNode::default());
+    r.set(target, own);
+    r.apply("Match", &[target]);
+    let after = r.settings(target);
+    assert_eq!(after.nodes.references, want.nodes.references);
+    assert_eq!(after.nodes.links, want.nodes.links);
+    assert!(after.nodes.extra.is_empty());
+    let json = serde_json::to_string(&after.nodes.references).unwrap();
+    assert!(
+        !json.contains("\"points\":[["),
+        "no Brush stroke arrives: {json}"
+    );
+    // Another group leaves the target's own nodes alone.
+    let mut own = DevelopSettings::with_look(r.core.looks.effective_default());
+    own.nodes.extra.insert(9, CorrectorNode::default());
+    r.set(target, own.clone());
+    r.save("Light only", &[PresetGroup::Light], source);
+    r.apply("Light only", &[target]);
+    assert!(r.settings(target).nodes.references.is_empty());
     assert_eq!(r.settings(target).nodes.extra, own.nodes.extra);
 }
 

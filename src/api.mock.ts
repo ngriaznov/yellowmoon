@@ -179,7 +179,7 @@ import {
   outputPatch,
   withoutLook,
 } from "./state/settingsGraph";
-import type { BlurItem, CardItem, ColorUniformItem, CorrectorItem, FaceRefinementItem, FilmItem, InputItem, MixerItem } from "./state/settingsGraph";
+import type { BlurItem, CardItem, ColorUniformItem, CorrectorItem, FaceRefinementItem, FilmItem, InputItem, MixerItem, ReferenceGradeItem } from "./state/settingsGraph";
 import { bytesToUrl } from "./state/photo";
 
 // ---------------------------------------------------------------------------
@@ -980,6 +980,47 @@ function clampBlur(s: BlurItem): BlurItem {
   };
 }
 
+/** The most hue turn of each element, in degrees (`docs/34` section 4a.1): the fit's own caps. */
+const ELEMENT_HUE_CAPS = { sky: 40, vegetation: 35, water: 35, ground: 30, built: 25, skin: 15 } as const;
+
+/**
+ * A Reference Grade node in its ranges (`docs/34` section 3.4): the name trimmed and cut, the corrector's trim and grade as another corrector's
+ * (no Auto), hue points read modulo 360 (not reported), sorted by hue, their values held to ±180 degrees (`hue_vs_hue`) and 0 to 8
+ * (`hue_vs_sat`), each element's values held to ±1 stop, its cap in degrees and a ratio of 0.5 to 1.6, Strength to 0 to 100.
+ */
+function clampReferenceGrade(s: ReferenceGradeItem): ReferenceGradeItem {
+  const name = s.name.trim().slice(0, 32);
+  const wrap = (v: number): number => ((v % 360) + 360) % 360 || 0;
+  const curve = (points: readonly { hue_deg: number; value: number }[], lo: number, hi: number) =>
+    points
+      .slice(0, 16)
+      .map((p) => ({ hue_deg: wrap(p.hue_deg), value: clamp(p.value, lo, hi) }))
+      .sort((a, b) => a.hue_deg - b.hue_deg);
+  const element = (v: ReferenceGradeItem["elements"]["sky"], cap: number) => ({
+    exposure_ev: clamp(v.exposure_ev, -1, 1),
+    hue_deg: clamp(v.hue_deg, -cap, cap),
+    chroma: clamp(v.chroma, 0.5, 1.6),
+  });
+  const e = s.elements;
+  return {
+    ...s,
+    name: name === "" ? "Match" : name,
+    trim: { exposure_ev: clamp(s.trim.exposure_ev, -4, 4), temperature: clamp(s.trim.temperature, -100, 100), tint: clamp(s.trim.tint, -100, 100) },
+    grade: clampGrade(s.grade, false),
+    hue_curves: { hue_vs_hue: curve(s.hue_curves.hue_vs_hue, -180, 180), hue_vs_sat: curve(s.hue_curves.hue_vs_sat, 0, 8) },
+    elements: {
+      sky: element(e.sky, ELEMENT_HUE_CAPS.sky),
+      vegetation: element(e.vegetation, ELEMENT_HUE_CAPS.vegetation),
+      water: element(e.water, ELEMENT_HUE_CAPS.water),
+      ground: element(e.ground, ELEMENT_HUE_CAPS.ground),
+      built: element(e.built, ELEMENT_HUE_CAPS.built),
+      skin: element(e.skin, ELEMENT_HUE_CAPS.skin),
+      subject: { exposure_ev: clamp(e.subject.exposure_ev, -1, 1) },
+    },
+    strength: clamp(s.strength, 0, 100),
+  };
+}
+
 /** A node of `docs/25` in its ranges: the name trimmed and cut (an empty one reads as the kind's name), a Layer's opacity 0 to 1. */
 function clampMixer(s: MixerItem): MixerItem {
   const name = s.name.trim().slice(0, 32);
@@ -997,6 +1038,7 @@ export function clampSettings(s: DevelopSettings): DevelopSettings {
     if (item.kind === "corrector") return clampCorrector(item);
     if (item.kind === "color_uniform") return clampColorUniform(item);
     if (item.kind === "blur") return clampBlur(item);
+    if (item.kind === "reference_grade") return clampReferenceGrade(item);
     return clampMixer(item);
   });
   return { nodes: { items, links: s.nodes.links } };
@@ -1077,6 +1119,10 @@ export function resolveSettings(photoId: PhotoId, settings: DevelopSettings, est
       ...settings.nodes.items
         .filter((item): item is ColorUniformItem => item.kind === "color_uniform")
         .map((item) => resolvedCorrector({ ...item, kind: "corrector" as const, trim: item.trim ?? { exposure_ev: 0, temperature: 0, tint: 0 }, grade: item.grade ?? neutralGrade() }, null)),
+      // A Reference Grade node writes its trim and grade whole (`docs/34` §3.5); it has no Auto.
+      ...settings.nodes.items
+        .filter((item): item is ReferenceGradeItem => item.kind === "reference_grade")
+        .map((item) => resolvedCorrector({ ...item, kind: "corrector" as const }, null)),
     ],
     output: { pos: output.pos, look: output.look, look_intensity: output.look_intensity, output_sharpening: output.output_sharpening },
   };

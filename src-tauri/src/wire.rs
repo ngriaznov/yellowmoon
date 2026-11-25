@@ -841,6 +841,8 @@ pub enum NodeKind {
     ColorUniform,
     /// A Blur node (`docs/33`).
     Blur,
+    /// A Reference Grade node (`docs/34`).
+    ReferenceGrade,
     /// A Parallel mixer (`docs/25`).
     Parallel,
     /// A Layer mixer (`docs/25`).
@@ -1558,6 +1560,89 @@ pub struct BlurNode {
     pub masks: MaskSettings,
 }
 
+/// A point of a Reference Grade node's hue curve (`docs/34` section 4.1).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct HuePoint {
+    /// The hue in degrees on the LogC4 chroma-plane axis; any number, read modulo 360.
+    pub hue_deg: Num,
+    /// `hue_vs_hue`: degrees the hue turns, -180 to 180. `hue_vs_sat`: the chroma multiplier, 0 to 8.
+    pub value: Num,
+}
+
+/// A Reference Grade node's two hue curves. An empty list is the identity; at most 16 points each.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct HueCurves {
+    /// Degrees the hue turns at each hue.
+    pub hue_vs_hue: Vec<HuePoint>,
+    /// The chroma multiplier at each hue.
+    pub hue_vs_sat: Vec<HuePoint>,
+}
+
+/// One element's grade (`docs/34` section 4a.1).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct ElementValues {
+    /// The exposure offset in stops, -1 to 1.
+    pub exposure_ev: Num,
+    /// The hue turn in degrees, within the element's cap (40, 35, 35, 30, 25, 15).
+    pub hue_deg: Num,
+    /// The chroma ratio, 0.5 to 1.6.
+    pub chroma: Num,
+}
+
+/// The subject's grade: an exposure offset alone.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct SubjectValues {
+    /// The exposure offset in stops, -1 to 1.
+    pub exposure_ev: Num,
+}
+
+/// A Reference Grade node's element grades.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub struct Elements {
+    /// The sky.
+    pub sky: ElementValues,
+    /// Trees, grass, flowers, plants.
+    pub vegetation: ElementValues,
+    /// Sea, river, other water.
+    pub water: ElementValues,
+    /// Sand, earth, road, rock, mountain, snow.
+    pub ground: ElementValues,
+    /// Buildings, walls, roofs and the surfaces of interiors.
+    pub built: ElementValues,
+    /// The skin of people.
+    pub skin: ElementValues,
+    /// The person, or the main object.
+    pub subject: SubjectValues,
+}
+
+/// A Reference Grade node: fits its own grade to a reference picture (`docs/34`). It carries a corrector's trims and grade, two
+/// hue curves and the element grades, a Strength and the Skin protection switch. It writes every field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ReferenceGradeNode {
+    /// 2 to 2147483647 (every numbered node shares the numbers).
+    pub id: NodeId,
+    /// The card's name, 1 to 32 characters.
+    pub name: String,
+    /// A bypassed node passes its picture through.
+    pub bypass: bool,
+    /// The card's place on the canvas, in grid units.
+    pub pos: [Num; 2],
+    /// The person's trims.
+    pub trim: NodeTrim,
+    /// The corrector's grade; a fit writes its curves and saturation.
+    pub grade: NodeGrade,
+    /// The hue curves.
+    pub hue_curves: HueCurves,
+    /// The element grades.
+    pub elements: Elements,
+    /// 0 to 100, in percent.
+    pub strength: Num,
+    /// Whether the next fit keeps skin from drifting.
+    pub skin_protection: bool,
+    /// The masks: they limit where the whole node acts.
+    pub masks: MaskSettings,
+}
+
 /// How a Layer blends an input over the ones below it (`docs/25` section 3.3), in linear light.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
@@ -1648,6 +1733,8 @@ pub enum NodeItem {
     ColorUniform(ColorUniformNode),
     /// A Blur node.
     Blur(BlurNode),
+    /// A Reference Grade node.
+    ReferenceGrade(ReferenceGradeNode),
     /// A Parallel mixer.
     Parallel(ParallelNode),
     /// A Layer mixer.
@@ -1964,6 +2051,70 @@ pub struct UniformAmountsPatch {
     pub lightness: Option<Num>,
 }
 
+/// A Reference Grade node's `hue_curves` to change: a curve given replaces that curve. Serialising leaves absent fields out (see
+/// [`NodePatch`]).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct HueCurvesPatch {
+    /// The new `hue_vs_hue` curve.
+    #[serde(default)]
+    pub hue_vs_hue: Option<Vec<HuePoint>>,
+    /// The new `hue_vs_sat` curve.
+    #[serde(default)]
+    pub hue_vs_sat: Option<Vec<HuePoint>>,
+}
+
+/// One element's values to change. Serialising leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct ElementPatch {
+    /// New exposure offset, stops.
+    #[serde(default)]
+    pub exposure_ev: Option<Num>,
+    /// New hue turn, degrees.
+    #[serde(default)]
+    pub hue_deg: Option<Num>,
+    /// New chroma ratio.
+    #[serde(default)]
+    pub chroma: Option<Num>,
+}
+
+/// The subject's values to change. Serialising leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct SubjectPatch {
+    /// New exposure offset, stops.
+    #[serde(default)]
+    pub exposure_ev: Option<Num>,
+}
+
+/// A Reference Grade node's `elements` to change, member by member. Serialising leaves absent fields out (see [`NodePatch`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct ElementsPatch {
+    /// The sky.
+    #[serde(default)]
+    pub sky: Option<ElementPatch>,
+    /// Vegetation.
+    #[serde(default)]
+    pub vegetation: Option<ElementPatch>,
+    /// Water.
+    #[serde(default)]
+    pub water: Option<ElementPatch>,
+    /// Ground.
+    #[serde(default)]
+    pub ground: Option<ElementPatch>,
+    /// Built surfaces.
+    #[serde(default)]
+    pub built: Option<ElementPatch>,
+    /// Skin.
+    #[serde(default)]
+    pub skin: Option<ElementPatch>,
+    /// The subject.
+    #[serde(default)]
+    pub subject: Option<SubjectPatch>,
+}
+
 /// A Blur node's `soft` group to change. Serialising leaves absent fields out (see [`NodePatch`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
@@ -2140,6 +2291,19 @@ serialize_present!(
 );
 serialize_present!(UniformAmountsPatch, hue, saturation, lightness);
 serialize_present!(BlurSoftPatch, radius);
+serialize_present!(HueCurvesPatch, hue_vs_hue, hue_vs_sat);
+serialize_present!(ElementPatch, exposure_ev, hue_deg, chroma);
+serialize_present!(SubjectPatch, exposure_ev);
+serialize_present!(
+    ElementsPatch,
+    sky,
+    vegetation,
+    water,
+    ground,
+    built,
+    skin,
+    subject
+);
 serialize_present!(BlurMotionPatch, length, angle_deg);
 serialize_present!(BlurZoomPatch, amount, center);
 serialize_present!(PrintPatch, paper, exposure_ev, lights);
@@ -2428,7 +2592,7 @@ pub struct NodePatch {
     /// A Film node's grain to change.
     #[serde(default)]
     pub grain: Option<GrainPatch>,
-    /// New Strength of a Film node, percent.
+    /// New Strength of a Film node or a Reference Grade node, percent.
     #[serde(default)]
     pub strength: Option<Num>,
     /// A Face Refinement node's "Same for all faces" on or off.
@@ -2465,6 +2629,15 @@ pub struct NodePatch {
     /// A Blur node's Respect mask edges, on or off.
     #[serde(default)]
     pub respect_mask_edges: Option<bool>,
+    /// A Reference Grade node's hue curves to change; a curve given replaces that curve.
+    #[serde(default)]
+    pub hue_curves: Option<HueCurvesPatch>,
+    /// A Reference Grade node's element grades to change, member by member.
+    #[serde(default)]
+    pub elements: Option<ElementsPatch>,
+    /// A Reference Grade node's Skin protection, on or off.
+    #[serde(default)]
+    pub skin_protection: Option<bool>,
     /// A Layer's new blend mode.
     #[serde(default)]
     pub mode: Option<BlendMode>,
@@ -2522,6 +2695,9 @@ impl Serialize for NodePatch {
             motion,
             zoom,
             respect_mask_edges,
+            hue_curves,
+            elements,
+            skin_protection,
         );
         if let Some(v) = &self.blur_type {
             map.serialize_entry("type", v)?;
