@@ -58,6 +58,10 @@ name = "faces_time"
 path = "examples/faces_time.rs"
 
 [[example]]
+name = "eomt_time"
+path = "examples/eomt_time.rs"
+
+[[example]]
 name = "bokeh_maps"
 path = "examples/bokeh_maps.rs"
 

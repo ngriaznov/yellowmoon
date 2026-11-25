@@ -27,6 +27,18 @@ pub(crate) struct Taps {
 /// the support, each weighted by `max(0, 1 - |distance / max(scale, 1)|)`; the weights are normalised to
 /// sum to 1.
 pub(crate) fn taps(n_in: usize, n_out: usize) -> Vec<Taps> {
+    taps_f64(n_in, n_out)
+        .into_iter()
+        .map(|(start, w)| Taps {
+            start,
+            weights: w.into_iter().map(|v| v as f32).collect(),
+        })
+        .collect()
+}
+
+/// [`taps`] with the weights in `f64`, as `(first input index, weights)` (the EoMT segmenter turns them into the fixed-point weights
+/// of the 8-bit resize kernel).
+pub(crate) fn taps_f64(n_in: usize, n_out: usize) -> Vec<(usize, Vec<f64>)> {
     let scale = n_in as f64 / n_out as f64;
     let support = if scale >= 1.0 { scale } else { 1.0 };
     let inv = if scale >= 1.0 { 1.0 / scale } else { 1.0 };
@@ -54,10 +66,7 @@ pub(crate) fn taps(n_in: usize, n_out: usize) -> Vec<Taps> {
                 w.iter_mut().for_each(|v| *v = 0.0);
                 w[near] = 1.0;
             }
-            Taps {
-                start: lo,
-                weights: w.into_iter().map(|v| v as f32).collect(),
-            }
+            (lo, w)
         })
         .collect()
 }

@@ -27,7 +27,7 @@ pub(crate) const PATCH_PX: usize = 14;
 /// `img_size=518` (line 407): the positional embedding is trained on a 37 x 37 grid.
 pub(crate) const POS_GRID: usize = 518 / PATCH_PX;
 /// `norm_layer = partial(nn.LayerNorm, eps=1e-6)` (line 95).
-const LN_EPS: f64 = 1e-6;
+pub(crate) const LN_EPS: f64 = 1e-6;
 /// `interpolate_offset=0.1` (line 414).
 const INTERPOLATE_OFFSET: f64 = 0.1;
 /// `intermediate_layer_idx['vits']` (`dpt.py` line 165).
@@ -35,7 +35,7 @@ pub(crate) const TAPS: [usize; 4] = [2, 5, 8, 11];
 
 /// A layer norm's weight and bias.
 #[derive(Debug)]
-struct Norm(Vec<f32>, Vec<f32>);
+pub(crate) struct Norm(pub(crate) Vec<f32>, pub(crate) Vec<f32>);
 
 impl Norm {
     fn load(w: &mut Tensors, prefix: &str) -> Result<Self> {
@@ -48,8 +48,12 @@ impl Norm {
 
 /// One transformer block (`dinov2_layers/block.py` lines 36 to 107): `x = x + ls1(attn(norm1(x)))`, then
 /// `x = x + ls2(mlp(norm2(x)))`.
+///
+/// It is the block of any ViT-S (384 wide, 6 heads of 64, an MLP of 1536 with the exact GELU, layer norms of epsilon 1e-6,
+/// global attention with no mask): the depth network loads it from DINOv2's tensor names, the EoMT segmenter (`crate::eomt`)
+/// from the names of Hugging Face's `Eomt` with `q`, `k` and `v` stacked, through [`Block::from_parts`].
 #[derive(Debug)]
-struct Block {
+pub(crate) struct Block {
     norm1: Norm,
     qkv: Packed,
     proj: Packed,
@@ -61,6 +65,31 @@ struct Block {
 }
 
 impl Block {
+    /// A block from its parts: `qkv` is `[3 * 384][384]` with the queries, keys and values stacked in that order (each
+    /// 6 heads of 64), `ls1` and `ls2` are the two LayerScale vectors.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_parts(
+        norm1: Norm,
+        qkv: Packed,
+        proj: Packed,
+        ls1: Vec<f32>,
+        norm2: Norm,
+        fc1: Packed,
+        fc2: Packed,
+        ls2: Vec<f32>,
+    ) -> Self {
+        Self {
+            norm1,
+            qkv,
+            proj,
+            ls1,
+            norm2,
+            fc1,
+            fc2,
+            ls2,
+        }
+    }
+
     fn load(w: &mut Tensors, index: usize) -> Result<Self> {
         let p = format!("pretrained.blocks.{index}");
         Ok(Self {
@@ -76,7 +105,7 @@ impl Block {
     }
 
     /// `x` holds `n` tokens of [`EMBED_DIM`] values; the block updates it in place.
-    fn forward(&self, x: &mut [f32], n: usize) {
+    pub(crate) fn forward(&self, x: &mut [f32], n: usize) {
         let c = EMBED_DIM;
         // Attention (`attention.py` lines 49 to 62; the xFormers path of `MemEffAttention` is not taken on CPU).
         let mut n1 = vec![0.0f32; n * c];

@@ -47,9 +47,9 @@ use crate::model::verify_sha256;
 pub use crate::model::{MlError, Result};
 use crate::sam2::Weights as Tensors;
 
-mod encoder;
+pub(crate) mod encoder;
 mod head;
-mod ops;
+pub(crate) mod ops;
 mod preprocess;
 
 pub use encoder::EncoderTrace;

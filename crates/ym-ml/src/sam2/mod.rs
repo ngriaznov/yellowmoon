@@ -60,7 +60,7 @@ use crate::model::{sha256_hex, verify_sha256};
 
 mod decoder;
 pub(crate) mod kernels;
-mod preprocess;
+pub(crate) mod preprocess;
 mod trunk;
 
 use decoder::{Kind, MaskDecoder, PromptEncoder, check_finite};
