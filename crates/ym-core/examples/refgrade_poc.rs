@@ -1022,6 +1022,9 @@ enum Objective {
     /// Round 14: network v14: v13 with a turn that counts in part, growing with how far it goes (`T.turn_full`,
     /// `refgrade-notes/20-model-v14.md`).
     V14,
+    /// Round 15: the v14 objective and network, searched twice (from neutral, and from the look-only optimum), keeping the
+    /// lower full objective (`refgrade-notes/21-model-v15.md`).
+    V15,
 }
 
 impl Objective {
@@ -1039,6 +1042,7 @@ impl Objective {
                 | Objective::V12
                 | Objective::V13
                 | Objective::V14
+                | Objective::V15
         )
     }
 }
@@ -1236,6 +1240,9 @@ fn stats_of(px: &[Px], scene: Option<&Scene>, dnh: Option<&DnhCtx>) -> Stats {
     }
 }
 
+/// The `clip` value of a candidate the colour chain refused.
+const REFUSED_CLIP: f64 = 1e6;
+
 /// The objective's terms, unweighted (each is 0 for a perfect match; an error of one "scale" counts about 1).
 #[derive(Clone, Copy, Debug)]
 struct Terms {
@@ -1333,6 +1340,32 @@ impl Terms {
                 + W_CHROMA * self.chroma
                 + common
         }
+    }
+    /// The total without the walls: every `guard_*` term and `clip` dropped (v15's look-only objective). A candidate the
+    /// chain refused (`clip` at [`REFUSED_CLIP`]) keeps its full total, so it stays worse than anything.
+    fn look_only_total(&self, mask: u8) -> f64 {
+        if !self.v5 || self.clip >= REFUSED_CLIP {
+            return self.total_masked(mask);
+        }
+        let mut t = *self;
+        t.clip = 0.0;
+        let g = &mut t.t5;
+        for v in [
+            &mut g.guard_hue,
+            &mut g.guard_skin,
+            &mut g.guard_sky,
+            &mut g.guard_hl,
+            &mut g.guard_purple,
+            &mut g.guard_white_dir,
+            &mut g.guard_skin_drift,
+            &mut g.guard_mem,
+            &mut g.guard_purple_px,
+            &mut g.guard_skin_chroma,
+            &mut g.guard_turn,
+        ] {
+            *v = 0.0;
+        }
+        t.total_masked(mask)
     }
     /// The V5 objective's terms as they enter `total()` (weights applied, every term group on), in the code's own names.
     /// Empty for the non-network objectives. Their sum equals `total()` up to rounding in the order of summation.
@@ -3853,10 +3886,12 @@ fn build_v5_ctx(
     let v12 = net.index.contains_key("T.turn_deg");
     // V13: P1 is withdrawn (always off, as with `--ablate p1`); P2 counts a turn against `allowed_turn_deg`, which needs
     // `T.turn_cref` and `T.turn_cap`, so a network without them is an error, not a silent v12.
-    let v14 = objective == Objective::V14;
+    let v14 = matches!(objective, Objective::V14 | Objective::V15);
     let v13 = objective == Objective::V13 || v14;
     if v14 && !net.index.contains_key("T.turn_full") {
-        return Err("objective v14 needs a network with T.turn_full (refgrade-v14.ywn)".into());
+        return Err(
+            "objective v14 and v15 need a network with T.turn_full (refgrade-v14.ywn)".into(),
+        );
     }
     if v13 && !(net.index.contains_key("T.turn_cap") && net.index.contains_key("T.turn_cref")) {
         return Err(
@@ -5046,6 +5081,8 @@ struct Evaluator<'a> {
     mask_ok: [bool; 7],
     /// The V2 term groups the current stage minimises.
     mask: u8,
+    /// V15: minimise the look-only objective (no `guard_*`, no `clip`) instead of the full one.
+    look_only: bool,
     conv: LabConv,
     with_hue: bool,
     strength: f64,
@@ -5110,7 +5147,7 @@ impl Evaluator<'_> {
             return (t, None);
         };
         if !ok {
-            t.clip = 1e6;
+            t.clip = REFUSED_CLIP;
             return (t, None);
         }
         let cm = cand_meas(&self.buf, scene, ctx);
@@ -5129,7 +5166,12 @@ impl Evaluator<'_> {
         };
         self.evals += 1;
         self.eval_time += t0.elapsed();
-        (t.total_masked(self.mask), t)
+        let total = if self.look_only {
+            t.look_only_total(self.mask)
+        } else {
+            t.total_masked(self.mask)
+        };
+        (total, t)
     }
 }
 
@@ -5199,9 +5241,14 @@ struct FitResult {
     stage_log: Vec<Value>,
     /// V5: the network's answer, the need test, the local grades, the guards that fired, and the text of the sheet's panel.
     extra: Value,
+    /// V15: which search produced `x` (`"neutral"` or `"look"`); `None` for every other objective.
+    search_start: Option<&'static str>,
 }
 
 fn fit(ev: &mut Evaluator<'_>) -> FitResult {
+    if ev.objective == Objective::V15 {
+        return fit_v15(ev);
+    }
     if ev.objective.net() {
         return fit_v5(ev);
     }
@@ -5248,6 +5295,7 @@ fn fit(ev: &mut Evaluator<'_>) -> FitResult {
         per_eval_ms: ev.eval_time.as_secs_f64() * 1000.0 / ev.evals.max(1) as f64,
         stage_log: log,
         extra: Value::Null,
+        search_start: None,
     }
 }
 
@@ -5303,10 +5351,56 @@ fn v5_need(ev: &mut Evaluator<'_>, x: &[f64; N_PARAMS]) -> ([bool; 7], Vec<Value
 
 /// The V5 fit: the global stages, the need test, the local stage, the joint polish.
 fn fit_v5(ev: &mut Evaluator<'_>) -> FitResult {
+    fit_v5_from(ev, [0.0; N_PARAMS])
+}
+
+/// V15: searches twice and keeps the grade with the lower full objective. (1) From neutral, exactly as v14. (2) From the
+/// look: the same search on the look-only objective from neutral, then the full objective from that point. A tie keeps (1).
+fn fit_v15(ev: &mut Evaluator<'_>) -> FitResult {
+    let t0 = Instant::now();
+    let neutral = fit_v5_from(ev, [0.0; N_PARAMS]);
+    ev.look_only = true;
+    let look_only = fit_v5_from(ev, [0.0; N_PARAMS]);
+    ev.look_only = false;
+    let from_look = fit_v5_from(ev, look_only.x);
+    let use_look = from_look.after.total() < neutral.after.total();
+    let tag = |log: &[Value], search: &str| -> Vec<Value> {
+        log.iter()
+            .cloned()
+            .map(|mut v| {
+                v["search"] = json!(search);
+                v
+            })
+            .collect()
+    };
+    let mut stage_log = tag(&neutral.stage_log, "neutral");
+    stage_log.extend(tag(&look_only.stage_log, "look-only"));
+    stage_log.extend(tag(&from_look.stage_log, "from look"));
+    let before = neutral.before;
+    let (chosen, search_start) = if use_look {
+        (from_look, "look")
+    } else {
+        (neutral, "neutral")
+    };
+    FitResult {
+        x: chosen.x,
+        before,
+        after: chosen.after,
+        evals: ev.evals,
+        seconds: t0.elapsed().as_secs_f64(),
+        per_eval_ms: ev.eval_time.as_secs_f64() * 1000.0 / ev.evals.max(1) as f64,
+        stage_log,
+        extra: chosen.extra,
+        search_start: Some(search_start),
+    }
+}
+
+/// The V5 search from `x0`: the global stages, the need test, the local stage, the joint polish.
+fn fit_v5_from(ev: &mut Evaluator<'_>, x0: [f64; N_PARAMS]) -> FitResult {
     let t0 = Instant::now();
     let strength = ev.strength;
     ev.strength = 1.0;
-    let mut x = [0.0f64; N_PARAMS];
+    let mut x = x0;
     ev.mask = MASK_ALL;
     let (_, before) = ev.objective(&x);
     let mut log = Vec::new();
@@ -5366,6 +5460,7 @@ fn fit_v5(ev: &mut Evaluator<'_>) -> FitResult {
         per_eval_ms: ev.eval_time.as_secs_f64() * 1000.0 / ev.evals.max(1) as f64,
         stage_log: log,
         extra,
+        search_start: None,
     }
 }
 
@@ -6085,6 +6180,7 @@ fn make_evaluator<'a>(
         },
         mask_ok: pf.mask_ok,
         mask: MASK_ALL,
+        look_only: false,
         conv,
         with_hue,
         strength,
@@ -6244,6 +6340,7 @@ fn write_pair(
             | Objective::V12
             | Objective::V13
             | Objective::V14
+            | Objective::V15
     ) && (round2.is_some()
         || round5.is_some()
         || round6.is_some()
@@ -6283,6 +6380,7 @@ fn write_pair(
         }
         rounds.push((
             match objective {
+                Objective::V15 => "Round 15",
                 Objective::V14 => "Round 14",
                 Objective::V13 => "Round 13",
                 Objective::V12 => "Round 12",
@@ -6881,7 +6979,8 @@ fn parse_objective(name: &str) -> R<Objective> {
         "v12" => Objective::V12,
         "v13" => Objective::V13,
         "v14" => Objective::V14,
-        other => return Err(format!("--objective takes v1 to v14, not {other}").into()),
+        "v15" => Objective::V15,
+        other => return Err(format!("--objective takes v1 to v15, not {other}").into()),
     })
 }
 
@@ -6959,10 +7058,10 @@ fn parse_args() -> R<Args> {
     if !a.ablate.is_none()
         && !matches!(
             a.objective,
-            Some(Objective::V12 | Objective::V13 | Objective::V14)
+            Some(Objective::V12 | Objective::V13 | Objective::V14 | Objective::V15)
         )
     {
-        return Err("--ablate needs --objective v12, v13 or v14".into());
+        return Err("--ablate needs --objective v12, v13, v14 or v15".into());
     }
     if a.out.as_os_str().is_empty()
         && let Some((_, b)) = &a.compare
@@ -7675,6 +7774,54 @@ mod tests {
         assert_eq!(turn_sample_cost(true, 10), 0.0);
         assert!((turn_sample_cost(false, 10) - 294.0).abs() < 1e-6);
         // 4 % that reverse (60 degrees and more) cost as in v13: weight 1 each.
+    }
+
+    #[test]
+    fn v15_look_only_total_is_the_full_total_minus_guards_and_clip() {
+        let mut t = blank_terms();
+        t.v5 = true;
+        t.reg = 0.3;
+        t.reg_local = 0.2;
+        t.clip = 4.0;
+        t.t5 = V5T {
+            floor: 1.0,
+            ceil: 2.0,
+            contrast: 0.5,
+            anchor: 0.7,
+            tint: 1.5,
+            frame_cast: 0.4,
+            sat: 0.9,
+            sec_hue: 0.6,
+            sec_chroma: 0.8,
+            el_hue: 1.1,
+            el_chroma: 1.2,
+            el_exp: 1.3,
+            subject: 1.4,
+            guard_hue: 3.0,
+            guard_skin: 5.0,
+            guard_sky: 7.0,
+            guard_hl: 11.0,
+            guard_purple: 13.0,
+            guard_white_dir: 17.0,
+            guard_skin_drift: 19.0,
+            guard_mem: 23.0,
+            guard_purple_px: 29.0,
+            guard_skin_chroma: 31.0,
+            guard_turn: 37.0,
+            ..V5T::default()
+        };
+        let walls: f64 = t
+            .weighted_named()
+            .iter()
+            .filter(|(n, _)| n.starts_with("guard_") || *n == "clip")
+            .map(|(_, v)| v)
+            .sum();
+        assert!(walls > 0.0);
+        let want = t.total() - walls;
+        assert!((t.look_only_total(MASK_ALL) - want).abs() < 1e-9);
+        // A refused candidate keeps its full total.
+        t.clip = REFUSED_CLIP;
+        assert_eq!(t.look_only_total(MASK_ALL), t.total());
     }
 
     #[test]

@@ -576,15 +576,20 @@ pub fn run_eval(o: &EvalOpts<'_>) -> R<()> {
         let mut outcomes: Vec<PairOutcome> = Vec::new();
         let mut prevs: Vec<Option<PairOutcome>> = Vec::new();
         for r in &refs {
-            let (x, secs) = if want_grid {
+            let (x, secs, search_start, final_obj) = if want_grid {
                 let out = run_pair(&pf, r, o.strength, o.with_hue, o.objective)?;
-                let (x, secs) = (out.fit.x, out.fit.seconds);
+                let (x, secs, start, obj) = (
+                    out.fit.x,
+                    out.fit.seconds,
+                    out.fit.search_start,
+                    out.fit.after.total(),
+                );
                 outcomes.push(out);
                 prevs.push(match o.prev {
                     Some(p) => Some(run_pair(&pf, r, o.strength, o.with_hue, p)?),
                     None => None,
                 });
-                (x, secs)
+                (x, secs, start, obj)
             } else {
                 let (f, _) = run_fit(
                     &pf,
@@ -594,7 +599,7 @@ pub fn run_eval(o: &EvalOpts<'_>) -> R<()> {
                     o.objective,
                     r.scene.as_ref(),
                 )?;
-                (f.x, f.seconds)
+                (f.x, f.seconds, f.search_start, f.after.total())
             };
             let fit_img = render_fitted(&pf, &x, o.strength, o.with_hue, false, net)?;
             let fit = Pic {
@@ -611,16 +616,21 @@ pub fn run_eval(o: &EvalOpts<'_>) -> R<()> {
             for (k, id) in HARMS.iter().enumerate() {
                 harm_json.insert((*id).into(), json!({ "value": h[k].0, "flag": h[k].1 }));
             }
-            let rec = json!({
+            let mut rec = json!({
                 "photo": pname, "set": e.set, "tags": e.tags, "primary_tag": e.primary_tag, "reference": r.stem,
                 "fit_seconds": secs,
                 "harms": harm_json,
                 "any_harm": h.iter().any(|x| x.1),
                 "T1": t[0], "T2": t[1], "T3": t[2],
             });
+            // v15 only: which search won (the records of every other objective carry no such field).
+            if let Some(start) = search_start {
+                rec["search_start"] = json!(start);
+            }
             eprintln!(
-                "   {}: any harm {}, T1 {}, T2 {}, T3 {}",
+                "   {}: objective {final_obj:.9} start {}, any harm {}, T1 {}, T2 {}, T3 {}",
                 r.stem,
+                search_start.unwrap_or("-"),
                 h.iter().any(|x| x.1),
                 t[0].map_or("-".into(), |v| format!("{v:.2}")),
                 t[1].map_or("-".into(), |v| format!("{v:.2}")),
