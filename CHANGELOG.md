@@ -11,7 +11,8 @@ moves the entries below from Unreleased into a dated section for that version.
 
 ### Added
 
-- **Reference Grade, the node's format (not in the app yet).** A settings file can hold a `reference_grade` node: a corrector's trims and grade, two hue curves, seven element grades, a Strength and a Skin protection switch (`docs/34`). The hue curves run on the CPU and restore each pixel's brightness; the element grades wait for the scene masks, and the graphics card hands a node that uses either to the CPU. A node at its defaults changes no picture. An older Yellowmoon refuses a file that has the node. The pipeline version is 0.17.0.
+- **Reference Grade, the node's format (not in the app yet).** A settings file can hold a `reference_grade` node: a corrector's trims and grade, two hue curves, seven element grades, a Strength and a Skin protection switch (`docs/34`). The hue curves run on the CPU and restore each pixel's brightness; the graphics card hands a node that uses either to the CPU. A node at its defaults changes no picture. An older Yellowmoon refuses a file that has the node. The pipeline version is 0.17.0.
+- **Reference Grade, the element masks (not in the app yet).** The element grades now act: a scene model (the segmenter EoMT small and MediaPipe's skin network, both in our own Rust code) finds sky, vegetation, water, ground, built surfaces, skin and the subject in the photo, once per photo and in memory only, and each element's grade is applied through a soft mask that follows the picture's edges (`docs/34` §4a.3). `ym` and the app write the same bytes. A copy without the scene weights draws the node without its elements, says so, and refuses to export ("This copy of Yellowmoon has no scene model, so the Elements of a Reference Grade node can't be made. Reinstall the app."). The graphics card still hands a live node to the CPU.
 
 ## [0.2.4] - 2026-11-22
 
