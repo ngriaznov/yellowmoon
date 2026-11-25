@@ -80,6 +80,7 @@ mod faces;
 mod lens;
 mod lens_device;
 mod object;
+mod scene;
 mod vision;
 
 pub use depth::DepthKey;
@@ -88,6 +89,7 @@ pub(crate) use faces::FoundFace;
 pub(crate) use faces::{FaceEntry, PLANS_KEPT, PlanKey, face_source};
 pub use faces::{FaceTimings, FacesKey};
 pub(crate) use object::plane_text;
+pub use scene::SceneKey;
 
 /// The note of a render whose demosaic method is not the adaptive ratio (the test-only switch of
 /// `RenderOptions::demosaic`): the device runs that one only.
@@ -228,6 +230,12 @@ pub struct RenderOptions {
     /// a kind this machine can make and a Depth row gets its mask; without it (`None`: the weights are missing, or the
     /// renderer was made without a core) a Depth row selects nothing in a view and fails an export with the `mask` error.
     pub depth_model: Option<Arc<crate::pipeline::depth::DepthModel>>,
+    /// The scene model of Reference Grade: EoMT small and MediaPipe's Selfie Multiclass (`data/models/eomt`, `data/models/mediapipe`,
+    /// `docs/34` section 4b), found by [`crate::app::Core::open`] (it reads nothing until a node's element grade needs it), or a
+    /// fake in the tests ([`crate::pipeline::SceneModel::fake`]). With it a Reference Grade node's element grades get their masks;
+    /// without it (`None`: the weights are missing, or the renderer was made without a core) the element step does nothing in a
+    /// view, which says so, and an export fails with the `mask` error.
+    pub scene_model: Option<Arc<crate::pipeline::scene::SceneModel>>,
     /// MediaPipe's face finder, face mesh and segmenter (`data/models/mediapipe`, `docs/27` decision 12), found by
     /// [`crate::app::Core::open`] (it reads nothing until a Face Refinement node needs it), or a fake in the tests
     /// ([`crate::pipeline::FaceModel::fake`]). With it a Face Refinement node retouches the faces of the photo; without it
@@ -380,6 +388,7 @@ impl Default for RenderOptions {
             bokeh_model: None,
             object_model: None,
             depth_model: None,
+            scene_model: None,
             face_model: None,
             vision: None,
             data_root: None,
@@ -732,6 +741,8 @@ pub struct PhotoGraph {
     vision: vision::VisionSlot,
     /// The photo's depth map and the worker's state (`depth::DepthSlot`).
     depth: depth::DepthSlot,
+    /// The photo's scene for the element masks of Reference Grade nodes and the worker's state (`scene::SceneSlot`).
+    scene: scene::SceneSlot,
     /// The photo's faces with their masks and blemish maps, and the worker's state (`faces::FaceSlot`).
     faces: faces::FaceSlot,
     /// Exports that are rendering the photo: while there is one, the raw words stay on the device
@@ -779,6 +790,7 @@ impl PhotoGraph {
             object: object::ObjectSlot::default(),
             vision: vision::VisionSlot::default(),
             depth: depth::DepthSlot::default(),
+            scene: scene::SceneSlot::default(),
             faces: faces::FaceSlot::default(),
             pins: AtomicU32::new(0),
         }
@@ -844,6 +856,7 @@ impl PhotoGraph {
             + self.object.bytes()
             + self.vision.bytes()
             + self.depth.bytes()
+            + self.scene.bytes()
             + self.faces.bytes()
             + st.lens_groups.as_ref().map_or(0, ByteLru::used)
             + st.lens_tiles.as_ref().map_or(0, ByteLru::used)
@@ -1122,6 +1135,8 @@ struct Inner {
     depth_listener: Mutex<Option<depth::DepthListener>>,
     /// Who hears when the face worker starts or ends its work for a photo (`Renderer::set_faces_listener`).
     faces_listener: Mutex<Option<faces::FacesListener>>,
+    /// Who hears when the scene worker starts or ends its work for a photo (`Renderer::set_scene_listener`).
+    scene_listener: Mutex<Option<scene::SceneListener>>,
 }
 
 /// Who hears when the Object encoder starts or stops working for a photo ([`Renderer::set_object_listener`]).
@@ -1235,6 +1250,7 @@ impl Renderer {
                 vision_listener: Mutex::new(None),
                 depth_listener: Mutex::new(None),
                 faces_listener: Mutex::new(None),
+                scene_listener: Mutex::new(None),
             }),
         };
         // The graphs' counted caches are given up when a reservation would otherwise be refused.
@@ -1563,6 +1579,7 @@ impl Renderer {
                 .is_none_or(|g| lock(&g.state).blur.is_none()))
             || (!crate::pipeline::color::vision_kinds(settings).is_empty()
                 && self.vision_working(id))
+            || (crate::pipeline::color::has_live_elements(settings) && self.scene_working(id))
             || (crate::pipeline::color::has_depth_row(settings) && self.depth_working(id))
             || (crate::pipeline::color::has_face_node(settings) && self.faces_working(id))
     }
@@ -2179,6 +2196,8 @@ pub(crate) struct Job<'a> {
     vision: vision::JobVision,
     /// What this request found out about the photo's Depth rows (`depth::JobDepth`).
     depth: depth::JobDepth,
+    /// What this request found out about the photo's scene for its Reference Grade nodes (`scene::JobScene`).
+    scene: scene::JobScene,
     /// What this request found out about the photo's Face Refinement nodes (`faces::JobFaces`).
     faces: faces::JobFaces,
 }
@@ -2264,6 +2283,7 @@ impl<'a> Job<'a> {
             object: object::JobObjects::default(),
             vision: vision::JobVision::default(),
             depth: depth::JobDepth::default(),
+            scene: scene::JobScene::default(),
             faces: faces::JobFaces::default(),
         }
     }

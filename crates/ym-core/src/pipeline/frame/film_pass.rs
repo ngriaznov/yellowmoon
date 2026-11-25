@@ -100,6 +100,10 @@ impl RasterPlanes for OwnedPlanes {
     fn film(&self, node: u32, x: usize, y: usize) -> Option<[f32; 3]> {
         self.view().film(node, x, y)
     }
+
+    fn element(&self, node: u32, element: usize, x: usize, y: usize) -> f64 {
+        self.view().element(node, element, x, y)
+    }
 }
 
 impl OwnedPlanes {
@@ -134,6 +138,22 @@ impl RasterPlanes for ChainPlanes<'_> {
     fn film(&self, node: u32, x: usize, y: usize) -> Option<[f32; 3]> {
         let plane = self.films.nodes.get(&node)?;
         plane.at(self.origin.0 + x as i64, self.origin.1 + y as i64)
+    }
+
+    fn element(&self, node: u32, element: usize, x: usize, y: usize) -> f64 {
+        let Some((planes, area)) = self.rasters else {
+            return 0.0;
+        };
+        let (ax, ay) = (self.origin.0 + x as i64, self.origin.1 + y as i64);
+        if ax < area.x || ay < area.y || ax >= area.x1() || ay >= area.y1() {
+            return 0.0;
+        }
+        planes.element(
+            node,
+            element,
+            (ax - area.x) as usize,
+            (ay - area.y) as usize,
+        )
     }
 }
 

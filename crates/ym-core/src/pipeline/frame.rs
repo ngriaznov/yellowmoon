@@ -90,6 +90,7 @@ use ym_color::display::{ColorChain, Frame, Layout, OutputTarget, View};
 use ym_color::mask::{
     PhotoFrame, PhotoMap, PhotoSpot, PixelAt, RasterPlanes, accent_display_linear,
 };
+use ym_color::mask_element::{ElementJob, element_planes};
 use ym_color::mask_raster::{Area, CpuPlanes, PlaneJob};
 use ym_color::uniform;
 use ym_gpu::cpu::magnify::{MagnifyMap, magnify_with};
@@ -743,6 +744,13 @@ impl RasterPlanes for Planes {
             Self::Film(p) => p.film(node, x, y),
         }
     }
+
+    fn element(&self, node: u32, element: usize, x: usize, y: usize) -> f64 {
+        match self {
+            Self::Raster(p) => p.element(node, element, x, y),
+            Self::Film(p) => p.element(node, element, x, y),
+        }
+    }
 }
 
 /// `frame` with the planes of its window, when the chain has any.
@@ -769,24 +777,25 @@ fn cpu_rasters(
     areas: (Area, Area, Area),
 ) -> Option<CpuPlanes> {
     let (frame, grown, window) = areas;
-    let grid = grid.filter(|_| chain.uses_rasters())?;
+    let grid = grid.filter(|_| chain.uses_planes())?;
     let photo = grid.photo_frame();
     let u_px = 1.0 / photo.pixel;
     let (w, h) = (sampled.img.width, sampled.img.height);
-    let guide: Option<Vec<f64>> = chain.rasters().needs_guide(u_px).then(|| {
-        let plane = w * h;
-        (0..plane)
-            .into_par_iter()
-            .map(|i| {
-                let d = &sampled.img.data;
-                chain.guide_pixel([
-                    f64::from(d[i]),
-                    f64::from(d[plane + i]),
-                    f64::from(d[2 * plane + i]),
-                ])
-            })
-            .collect()
-    });
+    let guide: Option<Vec<f64>> =
+        (chain.uses_rasters() && chain.rasters().needs_guide(u_px)).then(|| {
+            let plane = w * h;
+            (0..plane)
+                .into_par_iter()
+                .map(|i| {
+                    let d = &sampled.img.data;
+                    chain.guide_pixel([
+                        f64::from(d[i]),
+                        f64::from(d[plane + i]),
+                        f64::from(d[2 * plane + i]),
+                    ])
+                })
+                .collect()
+        });
     let map = GridPositions::new(grid, off);
     let outside = sampled.outside.as_deref();
     let position = |x: usize, y: usize| {
@@ -796,14 +805,50 @@ fn cpu_rasters(
             Some(map.position(x, y))
         }
     };
-    Some(chain.rasters().planes(&PlaneJob {
-        photo,
-        grown,
-        frame,
-        window,
-        position: &position,
-        guide: guide.as_deref(),
-    }))
+    let mut planes = if chain.uses_rasters() {
+        chain.rasters().planes(&PlaneJob {
+            photo,
+            grown,
+            frame,
+            window,
+            position: &position,
+            guide: guide.as_deref(),
+        })
+    } else {
+        CpuPlanes {
+            width: window.w,
+            height: window.h,
+            ..CpuPlanes::default()
+        }
+    };
+    // The soft masks of the Reference Grade nodes' live elements (`docs/34` section 4a.3): from the photo's scene and the
+    // lightness of the Input's picture at this grid, over the same window as the raster rows' planes.
+    if chain.uses_elements() {
+        let lightness: Vec<f32> = (0..w * h)
+            .into_par_iter()
+            .map(|i| {
+                let d = &sampled.img.data;
+                let plane = w * h;
+                chain.scene_guide_pixel([
+                    f64::from(d[i]),
+                    f64::from(d[plane + i]),
+                    f64::from(d[2 * plane + i]),
+                ])
+            })
+            .collect();
+        planes.elements = element_planes(
+            chain.element_rows(),
+            &ElementJob {
+                photo,
+                grown,
+                frame,
+                window,
+                position: &position,
+                guide: &lightness,
+            },
+        );
+    }
+    Some(planes)
 }
 
 /// The `w x h` pixels at `(x, y)` of a sampled picture, with their part of the mask of the pixels outside the photo.
@@ -892,7 +937,7 @@ fn raster_read(
         return Ok(None);
     }
     let films = chains.iter().any(|c| c.has_films());
-    let Some(grid) = grid.filter(|_| films || chains.iter().any(|c| c.uses_rasters())) else {
+    let Some(grid) = grid.filter(|_| films || chains.iter().any(|c| c.uses_planes())) else {
         return Ok(None);
     };
     let frame = view_frame(&read.view_to_final, job.final_size()?);
@@ -1213,7 +1258,7 @@ fn cpu_view_rasters(
     chain: &ColorChain,
     ctx: RasterCtx<'_>,
 ) -> Result<Option<CpuPlanes>, RenderError> {
-    let Some(rr) = ctx.read.filter(|_| chain.uses_rasters()) else {
+    let Some(rr) = ctx.read.filter(|_| chain.uses_planes()) else {
         return Ok(None);
     };
     let prepared = prepare_view(job, &rr.spec)?;
@@ -4337,7 +4382,16 @@ impl Renderer {
             },
         )?;
         let film_halo = film_render.as_ref().map_or(0, FilmRender::total_halo);
-        let halo_allowance = 160usize + job.lens_halo()? + bend + film_halo;
+        // The element masks' filter reads `2 r + 1` pixels beyond a tile (`ym_color::mask_element`, `docs/34` section 4a.3): `r` is 2 % of
+        // the photo's short side, so the allowance grows with the picture, and the ledger holds the tile's working planes for it.
+        let element_halo = grade_for_film
+            .chain
+            .element_rows()
+            .first()
+            .map_or(0, |row| {
+                ym_color::mask_element::element_halo(row.scene.radius(fw.max(fh) as f64))
+            });
+        let halo_allowance = 160usize + job.lens_halo()? + bend + film_halo + element_halo;
         let per_px = 12u64 * 12; // twelve f32 planes of working set per tile pixel, a generous bound
         let working = ((tile + halo_allowance) as u64).pow(2) * per_px;
         let frame_extra = job.frame()?.extra_bytes() as u64;

@@ -93,6 +93,9 @@ enum Depth {
     /// The deterministic fake face finder (S-11b): `FaceModel::fake_default()` for the app, `YELLOWMOON_TEST_FACES=fake` for the
     /// binary.
     FakeFaces,
+    /// The deterministic fake scene model of Reference Grade (RG-04): `SceneModel::fake_default()` for the app,
+    /// `YELLOWMOON_TEST_SCENE=fake` for the binary.
+    FakeScene,
 }
 
 /// The app's side: a core over its own app folder with one photo open.
@@ -186,6 +189,8 @@ impl App {
             (depth == Depth::Fake).then(ym_core::pipeline::DepthModel::fake_default);
         options.render.face_model =
             (depth == Depth::FakeFaces).then(ym_core::pipeline::FaceModel::fake_default);
+        options.render.scene_model =
+            (depth == Depth::FakeScene).then(ym_core::pipeline::SceneModel::fake_default);
         match auto {
             Auto::None => {}
             Auto::AppleFake => {
@@ -1069,6 +1074,9 @@ fn graph_leg_full(
     }
     if depth == Depth::FakeFaces {
         env_pairs.push(common::FAKE_FACES);
+    }
+    if depth == Depth::FakeScene {
+        env_pairs.push(common::FAKE_SCENE);
     }
     let env: &[(&str, &str)] = &env_pairs;
     let default_graph = app.export(
@@ -2057,6 +2065,91 @@ fn depth_masks_are_the_same_files_through_the_app_path_and_the_binary() {
         true,
         Depth::Fake,
         |_| {},
+    );
+}
+
+/// A Reference Grade node (RG-04) with a hue curve, a luma curve and element grades, a mask row, and a corrector before it.
+fn reference_doc(with_elements: bool) -> serde_json::Value {
+    let mut node = serde_json::json!({
+        "id": 3, "kind": "reference_grade", "pos": [3, 0.0],
+        "grade": { "saturation": { "kind": "manual", "value": -8 },
+                   "curve": { "luma": [[0, 0], [0.2136, 0.2236], [0.4, 0.4], [1, 1]] } },
+        "hue_curves": { "hue_vs_hue": [ { "hue_deg": 30, "value": 10 }, { "hue_deg": 210, "value": -12 } ] },
+        "strength": 80,
+        "masks": { "items": [ { "kind": "radial", "mode": "add", "invert": true, "feather": 0.4 } ] } });
+    if with_elements {
+        node["elements"] = serde_json::json!({
+            "sky": { "exposure_ev": 0.4, "hue_deg": 15, "chroma": 1.3 },
+            "ground": { "chroma": 0.8 },
+            "skin": { "exposure_ev": -0.2 },
+            "subject": { "exposure_ev": 0.3 } });
+    }
+    serde_json::json!({ "nodes": {
+        "items": [ { "id": 1 }, { "id": 2, "kind": "corrector", "pos": [2, 0.0], "trim": { "exposure_ev": 0.2 } }, node ],
+        "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": 3, "port": "picture" } },
+            { "from": { "node": 3, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] } })
+}
+
+/// Reference Grade's element masks (RG-04) with the deterministic fake scene on both sides (`SceneModel::fake_default` for the app,
+/// `YELLOWMOON_TEST_SCENE=fake` for the binary): the same files in JPEG, 16-bit TIFF and DNG, the node changes pixels, and the
+/// element grades change pixels beyond what the rest of the node does. The app makes its own scene at export time, as `ym` does,
+/// from the CPU reference picture. The CPU leg (the device refuses a live element grade until RG-08); runs on every platform.
+#[test]
+fn reference_grade_element_masks_are_the_same_files_through_the_app_path_and_the_binary() {
+    graph_leg_full(
+        "reference grade",
+        reference_doc(true),
+        2,
+        false,
+        None,
+        true,
+        Depth::FakeScene,
+        |app| {
+            // The element grades act: the same node without them makes another picture.
+            let dir = tempfile::tempdir().expect("tempdir");
+            let with = app.export(
+                ExportOptions {
+                    format: FormatKind::Tiff,
+                    bit_depth: BitDepth::Sixteen,
+                    ..ExportOptions::default()
+                },
+                &dir.path().join("with"),
+            );
+            let (bare, _) = DevelopSettings::from_value(
+                reference_doc(false),
+                &app.core.looks.effective_default(),
+            )
+            .expect("settings");
+            app.core
+                .session
+                .replace_settings(app.photo, bare)
+                .expect("replace");
+            let without = app.export(
+                ExportOptions {
+                    format: FormatKind::Tiff,
+                    bit_depth: BitDepth::Sixteen,
+                    ..ExportOptions::default()
+                },
+                &dir.path().join("without"),
+            );
+            assert!(
+                bytes(&with[0]) != bytes(&without[0]),
+                "the element grades changed no pixel"
+            );
+            // Put the settings back for the legs that follow.
+            let (full, _) = DevelopSettings::from_value(
+                reference_doc(true),
+                &app.core.looks.effective_default(),
+            )
+            .expect("settings");
+            app.core
+                .session
+                .replace_settings(app.photo, full)
+                .expect("replace");
+        },
     );
 }
 

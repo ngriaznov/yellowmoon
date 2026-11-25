@@ -434,6 +434,20 @@ impl AppApi {
                 }));
         }
         {
+            // The worker that makes the scene of the photo being looked at for the element grades of its Reference Grade nodes
+            // (`docs/34` section 4a.3, step 4): while it runs the viewport is busy and finding (`viewport_busy.finding`); when it ends
+            // the photo is drawn again with the element step. A failure is told by the frame's own note.
+            let shared = Arc::clone(&shared);
+            core.renderer
+                .set_scene_listener(Arc::new(move |id, phase| match phase {
+                    ym_core::pipeline::ScenePhase::Started => shared.masks_finding(true),
+                    ym_core::pipeline::ScenePhase::Finished { .. } => {
+                        shared.masks_finding(false);
+                        shared.estimates_changed(id);
+                    }
+                }));
+        }
+        {
             // The worker that finds the faces of the photo being looked at (`docs/27` decision 9): while it runs the viewport is busy and
             // finding (`viewport_busy.finding`, the Face Refinement node says "Finding faces…"); the page learns where the faces are
             // (`face_state`) when it starts and when it ends, and the photo is drawn again with the retouch.

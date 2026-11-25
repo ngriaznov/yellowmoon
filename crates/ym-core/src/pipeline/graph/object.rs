@@ -238,7 +238,9 @@ impl Renderer {
     /// ([`unmakeable_mask_with`]), `None` when the photo can be rendered with all its masks.
     #[must_use]
     pub fn unmakeable_mask(&self, s: &DevelopSettings) -> Option<String> {
-        unmakeable_mask_with(s, self.mask_support()).or_else(|| self.unmakeable_face_node(s))
+        unmakeable_mask_with(s, self.mask_support())
+            .or_else(|| self.unmakeable_face_node(s))
+            .or_else(|| self.unmakeable_reference_node(s))
     }
 
     /// The sentence for a Face Refinement node that does something in a photo of this computer when it has no face models
@@ -706,12 +708,16 @@ impl Job<'_> {
         let vision = self.vision_planes_for(settings, stop)?;
         let depth = self.depth_for(settings, stop)?;
         let faces = self.faces_for(settings, stop)?;
-        if vision.is_empty() && depth.is_none() && faces.is_none() {
+        let scene = self.scene_for(settings, stop)?;
+        if vision.is_empty() && depth.is_none() && faces.is_none() && scene.is_none() {
             return Ok(objects);
         }
         let mut merged = objects.map(|o| (*o).clone()).unwrap_or_default();
         if let Some(faces) = faces {
             merged.insert_faces(faces);
+        }
+        if let Some(scene) = scene {
+            merged.insert_scene(scene);
         }
         for (kind, plane) in vision {
             merged.insert_vision(kind, plane);

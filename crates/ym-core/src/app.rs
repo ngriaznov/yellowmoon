@@ -321,6 +321,17 @@ impl Core {
                     crate::pipeline::DepthModel::probe(&options.data_root)
                 };
         }
+        // The scene model of Reference Grade (EoMT small, with MediaPipe's Selfie Multiclass for skin): found here too (its weights
+        // load when a node's element grade first needs them). The test hook `YELLOWMOON_TEST_SCENE=fake` puts a fake scene in
+        // its place, for `ym` and the app alike.
+        if render.scene_model.is_none() {
+            render.scene_model =
+                if std::env::var(crate::pipeline::SceneModel::TEST_ENV).as_deref() == Ok("fake") {
+                    Some(crate::pipeline::SceneModel::fake_default())
+                } else {
+                    crate::pipeline::SceneModel::probe(&options.data_root)
+                };
+        }
         // MediaPipe's face models for the Face Refinement node: found here too (their weights load when a node first needs
         // them). The test hook `YELLOWMOON_TEST_FACES=fake` puts a fake finder in their place, for `ym` and the app alike.
         if render.face_model.is_none() {
@@ -405,6 +416,9 @@ impl Core {
             memory.register(Arc::clone(model) as Arc<dyn Unloadable>);
         }
         if let Some(model) = &models.depth_model {
+            memory.register(Arc::clone(model) as Arc<dyn Unloadable>);
+        }
+        if let Some(model) = &models.scene_model {
             memory.register(Arc::clone(model) as Arc<dyn Unloadable>);
         }
 
@@ -808,6 +822,26 @@ impl Core {
         self.prepare_vision(id);
         self.prepare_depth(id);
         self.prepare_faces(id);
+        self.prepare_scene(id);
+    }
+
+    /// Asks for the scene of the photo in the background when it is the photo being looked at and has a Reference Grade node with a
+    /// live element grade ([`Renderer::scene_prepare`]; `docs/34` section 4a.3, step 4). Returns at once; the picture and the
+    /// networks run on the worker, which waits 150 ms so that a drag of the Input's exposure makes one scene. Nothing happens for a
+    /// photo that is not current, one without such a node, and a copy of Yellowmoon with no scene model.
+    pub fn prepare_scene(&self, id: PhotoId) {
+        if self.session.current() != Some(id) || !self.renderer.scene_available() {
+            return;
+        }
+        let Ok(view) = self.session.view(id) else {
+            return;
+        };
+        if !crate::pipeline::color::has_live_elements(&view.settings) {
+            return;
+        }
+        if let Ok(src) = crate::pipeline::PhotoSource::from_session(&self.session, id) {
+            self.renderer.scene_prepare(&src);
+        }
     }
 
     /// Asks for the faces of the photo in the background when it is the photo being looked at and has a Face Refinement node

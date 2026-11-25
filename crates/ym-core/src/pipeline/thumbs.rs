@@ -1026,6 +1026,8 @@ impl Renderer {
             self.depth_leave(old);
             // And the face worker.
             self.faces_leave(old);
+            // And the scene worker.
+            self.scene_leave(old);
         }
         self.scheduler().navigate(photo)
     }

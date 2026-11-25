@@ -366,6 +366,10 @@ pub const NO_VISION: (&str, &str) = ("YELLOWMOON_TEST_VISION", "none");
 /// The environment variable and value that give `ym` the fake depth model (`ym_core::pipeline::DepthModel::TEST_ENV`).
 pub const FAKE_DEPTH: (&str, &str) = ("YELLOWMOON_TEST_DEPTH", "fake");
 
+/// The environment variable and value that give `ym` the fake scene model of Reference Grade
+/// (`ym_core::pipeline::SceneModel::TEST_ENV`).
+pub const FAKE_SCENE: (&str, &str) = ("YELLOWMOON_TEST_SCENE", "fake");
+
 /// The environment variable and value that give `ym` the fake face finder (`ym_core::pipeline::FaceModel::TEST_ENV`).
 pub const FAKE_FACES: (&str, &str) = ("YELLOWMOON_TEST_FACES", "fake");
 

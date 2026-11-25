@@ -245,6 +245,20 @@ fn doctor_json_has_the_same_parts() {
             "sha256": sha256_of("depth"),
         }));
     }
+    // The scene segmenter's weights (RG-03; a checkout has them only after `tools/fetch/eomt.sh`) are listed the same way, with
+    // their line of `eomt/SHA256SUMS`.
+    let eomt = "eomt_coco_panoptic_small.f16.safetensors";
+    if data_dir().join("models/eomt").join(eomt).is_file() {
+        let sums =
+            std::fs::read_to_string(data_dir().join("models/eomt/SHA256SUMS")).expect("eomt sums");
+        let sha256 = sums
+            .lines()
+            .filter_map(|l| l.split_once("  "))
+            .find(|(_, n)| n.trim() == eomt)
+            .map(|(h, _)| h.trim().to_owned())
+            .expect("a line for the file");
+        weights.push(serde_json::json!({ "file": format!("eomt/{eomt}"), "sha256": sha256 }));
+    }
     // The three MediaPipe files (Face Refinement) are listed the same way, in path order between depth and SAM 2, each with
     // its own line of `mediapipe/SHA256SUMS`; a checkout has them only after `tools/fetch/mediapipe.sh`.
     for name in [

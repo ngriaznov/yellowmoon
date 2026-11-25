@@ -2816,6 +2816,44 @@ fn cpu_renderer(tile: usize, threads: usize) -> Renderer {
     .expect("render thread")
 }
 
+/// [`cpu_renderer`] with a fake scene model, so that the element grades of a Reference Grade node have their masks (RG-04).
+fn cpu_scene_renderer(tile: usize, threads: usize) -> Renderer {
+    Renderer::new(
+        Arc::new(NeutralOnly),
+        RenderOptions {
+            threads,
+            full_tile_px: tile,
+            gpu: None,
+            gpu_stages: GpuStages::NONE,
+            vision: Some(VisionMasks::new(Arc::new(FakeVision::new()))),
+            scene_model: Some(ym_core::pipeline::SceneModel::fake_default()),
+            data_root: Some(data_root()),
+            ..RenderOptions::default()
+        },
+    )
+    .expect("render thread")
+}
+
+/// Waits for the scene worker of the photo (a viewer never waits for the scene: the element step does nothing until it is made),
+/// after the renderer is told the photo is the one looked at and a frame has asked for it.
+fn settle_scene(r: &Renderer, src: &PhotoSource, st: &ViewportState) {
+    if ym_core::pipeline::color::live_element_nodes(&src.settings, ym_color::plan::Stop::Output)
+        .is_empty()
+    {
+        return;
+    }
+    r.navigate(src.id);
+    let _ = frame(r, src, st);
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while r.scene_worker_alive(src.id) || !r.scene_ready(src) {
+        assert!(
+            std::time::Instant::now() < end,
+            "the scene worker did not end"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 fn full_bits(r: &Renderer, src: &PhotoSource, threads: usize) -> Vec<u32> {
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
@@ -4282,6 +4320,15 @@ fn reference_graphs() -> Vec<Graph> {
 }
 
 impl Graph {
+    /// Whether the graph has a Reference Grade node that is not bypassed and has a live element grade (what needs the scene).
+    fn reference_live_elements(&self) -> bool {
+        self.settings
+            .nodes
+            .references
+            .values()
+            .any(|r| !r.bypass && !r.effective().elements.is_default())
+    }
+
     /// Whether the graph has a Reference Grade node that is not bypassed and has a live hue curve or element grade (what the device
     /// refuses until RG-08).
     fn reference_live(&self) -> bool {
@@ -4336,8 +4383,12 @@ fn reference_grade_graphs_are_the_same_bits_whatever_the_tiles_and_the_threads()
     let d = Developed::new(&scene, MODEL);
     let plain = d.source();
     let plain_bits = full_bits(&cpu_renderer(256, 1), &plain, 1);
+    let mut elements_changed = 0;
     let configs = [(97usize, 1usize), (160, 3), (256, 4)];
-    let renderers: Vec<Renderer> = configs.iter().map(|&(t, n)| cpu_renderer(t, n)).collect();
+    let renderers: Vec<Renderer> = configs
+        .iter()
+        .map(|&(t, n)| cpu_scene_renderer(t, n))
+        .collect();
     let mut changed = 0;
     for g in reference_graphs() {
         let name = format!("seed {} graph {}", g.seed, g.index);
@@ -4361,15 +4412,38 @@ fn reference_grade_graphs_are_the_same_bits_whatever_the_tiles_and_the_threads()
             "{name}: a repeat is other bits"
         );
         let st = view(false, false, None);
+        for r in [&renderers[0], &renderers[2]] {
+            settle_scene(r, &src, &st);
+        }
         assert!(
             frame(&renderers[0], &src, &st).rgba == frame(&renderers[2], &src, &st).rgba,
             "{name}: the Fit frame depends on the threads"
         );
         changed += usize::from(first != plain_bits);
+        // The same graph with its element grades taken out: where a node has a live element grade the masks change a pixel.
+        if g.reference_live_elements() {
+            let mut doc = g.json.clone();
+            for item in doc["nodes"]["items"].as_array_mut().expect("items") {
+                if item["kind"] == "reference_grade" {
+                    item.as_object_mut().expect("a node").remove("elements");
+                }
+            }
+            let bare = serde_json::from_value::<DevelopSettings>(doc)
+                .expect("a document")
+                .validated()
+                .expect("a valid graph")
+                .0;
+            let bare_bits = full_bits(&renderers[0], &d.source().with_settings(bare), 1);
+            elements_changed += usize::from(first != bare_bits);
+        }
     }
     assert!(
         changed > 0,
         "no graph with a Reference Grade node changed a pixel"
+    );
+    assert!(
+        elements_changed > 0,
+        "no graph's element grades changed a pixel"
     );
 }
 
@@ -4385,7 +4459,7 @@ fn a_reference_grade_node_at_its_identity_changes_no_pixel() {
         .noise(2e-4, 2e-6)
         .seed(7);
     let d = Developed::new(&scene, MODEL);
-    let cpu = cpu_renderer(160, 2);
+    let cpu = cpu_scene_renderer(160, 2);
     let plain_bits = full_bits(&cpu, &d.source(), 2);
     let node = |body: Value| {
         let mut n = json!({ "id": 2, "kind": "reference_grade", "pos": [2, 0.0] });

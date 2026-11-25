@@ -250,12 +250,27 @@ pub struct ObjectPlanes {
     /// The photo's faces for the Face Refinement nodes of the plan (`docs/27` decision 13): `None` for a plan with no live
     /// node, a computer with no face model, and a viewer whose photo has none yet (the node then passes its picture through).
     faces: Option<Arc<super::graph::FaceEntry>>,
+    /// The photo's scene for the element masks of the Reference Grade nodes of the plan (`docs/34` section 4a.3): `None` for a plan
+    /// with no live element grade, a computer with no scene model, and a viewer whose photo has none yet (the element step then
+    /// does nothing).
+    scene: Option<Arc<ym_color::mask_element::ElementScene>>,
 }
 
 impl ObjectPlanes {
     /// Adds the plane of the rows that have this prompt.
     pub(crate) fn insert(&mut self, prompt: u64, plane: Arc<SourcePlane>) {
         self.planes.insert(prompt, plane);
+    }
+
+    /// Adds the photo's scene, which the Reference Grade nodes' element masks are made from.
+    pub(crate) fn insert_scene(&mut self, scene: Arc<ym_color::mask_element::ElementScene>) {
+        self.scene = Some(scene);
+    }
+
+    /// The photo's scene for the Reference Grade nodes' element masks.
+    #[must_use]
+    pub fn scene(&self) -> Option<&Arc<ym_color::mask_element::ElementScene>> {
+        self.scene.as_ref()
     }
 
     /// Adds the photo's faces, which the Face Refinement nodes retouch.
@@ -313,6 +328,7 @@ impl ObjectPlanes {
             && self.depth.is_none()
             && self.depth_show.is_none()
             && self.faces.is_none()
+            && self.scene.is_none()
     }
 
     /// The plane of an Object row, by what the row asks (its points and box). `None` for a row with none or whose

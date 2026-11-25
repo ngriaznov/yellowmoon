@@ -777,6 +777,56 @@ pub fn live_face_nodes(s: &DevelopSettings, stop: Stop) -> Vec<u32> {
         .collect()
 }
 
+/// The Reference Grade nodes of the plan that ends at `stop` with a live element grade (not bypassed, and some element's effective
+/// grade, Strength applied, not the identity), each with which elements are live, in the plan's order. The render then needs the
+/// photo's scene and makes the soft masks of those elements only (`docs/34` section 4a.3, step 5).
+#[must_use]
+pub fn live_element_nodes(
+    s: &DevelopSettings,
+    stop: Stop,
+) -> Vec<(u32, [bool; ym_color::hue::ELEMENT_COUNT])> {
+    let Ok(plan) = node_plan(&s.nodes, stop) else {
+        return Vec::new();
+    };
+    plan.node_ids()
+        .into_iter()
+        .filter_map(|id| {
+            let r = s.nodes.reference_grade(id).filter(|r| !r.bypass)?;
+            let step = reference_step_of(&r.effective());
+            let live = std::array::from_fn(|e| step.elements.is_live(e));
+            live.iter().any(|&l| l).then_some((id, live))
+        })
+        .collect()
+}
+
+/// The element rows of a chain: the live Reference Grade nodes of the plan that ends at `stop`, with the photo's `scene`. Empty
+/// when the scene is not there (the element step then does nothing).
+#[must_use]
+pub fn element_rows(
+    s: &DevelopSettings,
+    stop: Stop,
+    scene: Option<&Arc<ym_color::mask_element::ElementScene>>,
+) -> Vec<ym_color::mask_element::ElementRow> {
+    let Some(scene) = scene else {
+        return Vec::new();
+    };
+    live_element_nodes(s, stop)
+        .into_iter()
+        .map(|(node, live)| ym_color::mask_element::ElementRow {
+            node,
+            live,
+            scene: Arc::clone(scene),
+        })
+        .collect()
+}
+
+/// Whether the photo has a Reference Grade node with a live element grade in a node the Output needs: the core starts the scene
+/// worker in the background for the photo being looked at, and the node says "Finding…" while it runs.
+#[must_use]
+pub fn has_live_elements(s: &DevelopSettings) -> bool {
+    !live_element_nodes(s, Stop::Output).is_empty()
+}
+
 /// Whether the photo has a Face Refinement node anywhere in its graph, live or not, in a node the Output needs or not: the
 /// core starts the face worker in the background for the photo being looked at (`docs/27` decision 9), and the node's panel
 /// says "Finding faces…" while it runs.
@@ -1602,6 +1652,17 @@ fn nodes_key(
                 r.elements,
                 node_masks(&r.masks),
             );
+            // The element planes: named by the photo's scene (the segmenter's input, the weights and the rules' version) when the node
+            // has a live element grade and the scene is there; a scene not made yet, or no model, says "none".
+            if live_element_nodes(s, stop).iter().any(|(n, _)| *n == id) {
+                let _ = write!(
+                    k,
+                    "scene:{};",
+                    objects
+                        .and_then(|p| p.scene())
+                        .map_or_else(|| "none".to_owned(), |sc| format!("{:x}", sc.key))
+                );
+            }
         } else if let Some(b) = s.nodes.blur(id) {
             // A Blur node, by everything that makes its picture (not its name or place): Bypass, the type, every group (a
             // type's values are kept when another is chosen, but only the chosen type's make the picture; the key still
@@ -1837,6 +1898,7 @@ pub fn grade_plan_to(
     params.rasters = rasters;
     params.films = films;
     params.joins = joins;
+    params.elements = element_rows(s, stop, req.objects.and_then(|o| o.scene()));
     params.output = req.target;
     params.dither = req.dither;
     params.before = BeforePoint::CameraDefault;
