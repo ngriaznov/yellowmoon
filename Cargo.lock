@@ -11337,6 +11337,7 @@ version = "0.2.4"
 dependencies = [
  "fs4",
  "half",
+ "jpeg-encoder",
  "jsonschema",
  "libc",
  "png 0.18.1",
@@ -11346,6 +11347,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
+ "tiff",
  "tracing",
  "tracing-subscriber",
  "ym-color",

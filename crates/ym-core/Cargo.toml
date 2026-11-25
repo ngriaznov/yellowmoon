@@ -38,8 +38,14 @@ half.workspace = true
 # Parallel metadata probes when files are opened, and the 1/8 preview binning.
 rayon.workspace = true
 tracing.workspace = true
-# PNG bytes of the thumbnails and look tiles (MIT OR Apache-2.0, already in the workspace).
+# PNG bytes of the thumbnails and look tiles, and the PNG decoder of a reference picture (MIT OR Apache-2.0, already in the
+# workspace).
 png.workspace = true
+# The TIFF decoder of a reference picture (`reference`, `docs/34` section 6.1). MIT, already in the workspace.
+tiff.workspace = true
+# The JPEG decoder of a reference picture (`reference`). MIT OR Apache-2.0 OR Zlib, already in the lock file (it was a
+# dev-dependency of this crate and a dependency of `ym-agents`); with its SIMD paths off, so the pixels do not depend on the CPU.
+zune-jpeg = "0.5"
 # The short digest of Apple Auto's instructions in reports and `ym:AppleAuto` (`docs/19` section 7;
 # MIT OR Apache-2.0, already in the workspace).
 sha2.workspace = true
@@ -81,9 +87,9 @@ ym-lens = { workspace = true, features = ["test-support"] }
 # JSON Schema validation of settings documents against `schema/settings.schema.json` (MIT; default
 # features, which resolve references over HTTP and from files, are off, as in ym-profiles).
 jsonschema = { version = "0.58", default-features = false }
-# Decodes the embedded JPEG previews of real files for the auto-exposure comparison in
-# tests/real_files.rs (MIT OR Apache-2.0 OR Zlib; the same version as ym-color's dev-dependency).
-zune-jpeg = "0.5"
+# The JPEG encoder of the reference-loading tests (bars, ringing, orientation, a profile in a JPEG): MIT OR Apache-2.0, already
+# in the workspace.
+jpeg-encoder.workspace = true
 # Peak resident memory (`getrusage`) in the ignored 2000-file test (`tests/folders_2000.rs`, `docs/26` H-10).
 # MIT OR Apache-2.0 (docs/14); already in the build through `ym-ml`.
 libc = "0.2"

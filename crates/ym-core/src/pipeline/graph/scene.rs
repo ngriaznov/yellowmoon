@@ -42,6 +42,7 @@ use crate::pipeline::scene::{
     NO_SCENE_MODEL_SENTENCE, NO_SKIN_MODEL_SENTENCE, SCENE_FORMAT_VERSION,
     SCENE_MODEL_MISSING_NOTE, SKIN_MODEL_MISSING_NOTE, SceneModel, ScenePhase,
 };
+use crate::reference::ReferencePicture;
 use crate::session::PhotoId;
 use crate::settings::DevelopSettings;
 
@@ -63,6 +64,15 @@ pub struct SceneKey {
     pub text: String,
     /// The FNV-1a of the picture's key: the picture the workers share is kept under it.
     picture: u64,
+}
+
+/// The scene of a reference picture ([`Renderer::reference_scene`]).
+#[derive(Debug, Clone)]
+pub struct ReferenceScene {
+    /// The seven element bits at every pixel of the reference's scene picture.
+    pub scene: Arc<ElementScene>,
+    /// Whether skin could be looked for (the Selfie weights were there).
+    pub skin_available: bool,
 }
 
 /// The photo's scene with what it was made from.
@@ -530,6 +540,67 @@ impl Renderer {
         let graph = self.graph(src.id);
         self.ensure_scene_entry(&graph, &model, src, &key, false, cancel)
             .map(|e| Arc::clone(&e.scene))
+    }
+
+    /// The renderer that makes a strip photo's snapshot (`docs/34` section 6.4): this renderer's options without the graphics
+    /// device, the segmenter, SAM and Vision, and this renderer's looks, so the picture is made on the CPU reference path, the same
+    /// bytes on every machine, through the photo's own look.
+    pub(crate) fn snapshot_renderer(&self) -> Result<&Renderer, RenderError> {
+        self.inner
+            .snapshot_reference
+            .get_or_init(|| {
+                let mut options = (*self.options()).clone();
+                options.gpu = None;
+                options.object_model = None;
+                options.vision = None;
+                options.scene_model = None;
+                Renderer::new(Arc::clone(&self.inner.looks), options)
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    /// The scene of a **reference** picture (`docs/34` section 6, RG-05): the same segmenter, MediaPipe's skin and rules the photo's
+    /// scene uses (`ym_ml::scene`), on the reference's scene picture ([`ReferencePicture::scene`], at most 1024 px on the long
+    /// edge, as sRGB display codes). The soft masks of its elements at the analysis picture's size are
+    /// `ym_color::mask_element::soft_masks_of_picture` with the guide of the analysis picture (`docs/34` decision 44).
+    ///
+    /// Made again each call: the fit (RG-06) keeps the result for the session, and the key names the picture and the weights, so an
+    /// equal reference and an equal model are an equal scene.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Mask`] when there is no model or the scene cannot be made; [`RenderError::Cancelled`].
+    pub fn reference_scene(
+        &self,
+        reference: &ReferencePicture,
+        cancel: &CancelToken,
+    ) -> Result<ReferenceScene, RenderError> {
+        let model = self
+            .scene_model()
+            .ok_or_else(|| RenderError::Mask(NO_SCENE_MODEL_SENTENCE.to_owned()))?;
+        let picture = reference.scene();
+        let rgb = picture.srgb8();
+        let made = model.scene_of(&rgb, picture.width, picture.height, &|| {
+            cancel.is_cancelled()
+        })?;
+        if cancel.is_cancelled() {
+            return Err(RenderError::Cancelled);
+        }
+        let key = format!(
+            "reference:{:016x}|scene|{}|f{SCENE_FORMAT_VERSION}|r{RULES_VERSION}",
+            reference.digest(),
+            model.weights_id()
+        );
+        Ok(ReferenceScene {
+            skin_available: made.skin_available,
+            scene: Arc::new(ElementScene {
+                key: fnv(&key),
+                width: made.width,
+                height: made.height,
+                bits: made.bits,
+            }),
+        })
     }
 
     /// The sentence for a Reference Grade node that has a live element grade in a photo of this computer when it has no scene

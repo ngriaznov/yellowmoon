@@ -89,7 +89,7 @@ pub(crate) use faces::FoundFace;
 pub(crate) use faces::{FaceEntry, PLANS_KEPT, PlanKey, face_source};
 pub use faces::{FaceTimings, FacesKey};
 pub(crate) use object::plane_text;
-pub use scene::SceneKey;
+pub use scene::{ReferenceScene, SceneKey};
 
 /// The note of a render whose demosaic method is not the adaptive ratio (the test-only switch of
 /// `RenderOptions::demosaic`): the device runs that one only.
@@ -1121,6 +1121,9 @@ struct Inner {
     /// The renderer that makes SAM's pictures: no graphics device, so the pictures are the CPU reference path's
     /// (`Renderer::object_reference`).
     object_reference: std::sync::OnceLock<Result<Renderer, RenderError>>,
+    /// The renderer that makes a strip photo's snapshot for a reference (`docs/34` section 6.4, `Renderer::reference_snapshot`): no
+    /// graphics device, the same looks as this one, so the picture is the CPU reference path's and has the photo's own look.
+    snapshot_reference: std::sync::OnceLock<Result<Renderer, RenderError>>,
     /// The latest picture SAM and Vision read, with the hash of its key (`Renderer::object_key`): the Object worker and the
     /// Subject and People worker of a photo with rows of both kinds read the same 1024 px picture, made once
     /// (`Renderer::object_picture`). The lock is held while the picture is made, so the second worker waits for the first
@@ -1245,6 +1248,7 @@ impl Renderer {
                 lens_cameras: Mutex::new(HashMap::new()),
                 object_listener: Mutex::new(None),
                 object_reference: std::sync::OnceLock::new(),
+                snapshot_reference: std::sync::OnceLock::new(),
                 object_picture: Mutex::new(None),
                 object_pictures_made: AtomicU64::new(0),
                 vision_listener: Mutex::new(None),

@@ -81,7 +81,7 @@ pub use graph::{
     ComputeDevice, GpuReopener, PhotoGraph, RawPrefetch, RenderOptions, RenderReport, Renderer,
     StageCounters, StageRuns, StageTimings, ViewLimits,
 };
-pub use graph::{DepthKey, FaceTimings, FacesKey, SceneKey};
+pub use graph::{DepthKey, FaceTimings, FacesKey, ReferenceScene, SceneKey};
 pub use object::{
     MaskFound, NOTHING_FOUND_SENTENCE, NothingFound, ObjectModel, ObjectPhase, ObjectPlanes,
     ObjectPrompt,
@@ -93,7 +93,7 @@ pub use scene::{
 };
 pub use thumbs::{
     AdvisorPictures, ChromaScatter, HistogramData, NODE_THUMBNAIL_PX, NodeThumbnail,
-    PhotoThumbnails, settings_ending_at,
+    PhotoThumbnails, SnapshotError, settings_ending_at,
 };
 pub use viewport::{
     MapFrom, MaskStyle, MaskView, ViewportInput, ViewportMode, ViewportRect, ViewportState,

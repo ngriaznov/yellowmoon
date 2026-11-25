@@ -47,6 +47,7 @@ pub mod perf;
 pub mod pipeline;
 pub mod preferences;
 pub mod presets;
+pub mod reference;
 pub mod scheduler;
 pub mod session;
 pub mod settings;

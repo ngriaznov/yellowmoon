@@ -62,6 +62,7 @@ use super::graph::{Job, RenderOptions, Renderer, face_source};
 use super::object::{OBJECT_PICTURE_PX, object_source};
 use super::viewport::ViewportState;
 use crate::apple_auto::{AdvisorPicture, PICTURE_LONG_EDGE_PX};
+use crate::reference::{ReferenceError, ReferencePicture, SCENE_LONG_EDGE_PX};
 use crate::session::{PhotoId, PictureInput, PictureRenderer, ThumbnailInput, ThumbnailRenderer};
 use crate::settings::{
     ColorWarp, Curves, DevelopSettings, Elements, HueCurves, MaskSettings, NodeGrade, NodeId,
@@ -643,6 +644,35 @@ impl Renderer {
         cancel: &CancelToken,
     ) -> Result<AdvisorPicture, RenderError> {
         self.whole_picture(src, PICTURE_LONG_EDGE_PX, cancel)
+    }
+
+    /// A photo of the filmstrip as a **reference** (`docs/34` section 6.4, RG-05): `src` rendered through its own current settings,
+    /// look and estimates, whole, to sRGB display codes at [`SCENE_LONG_EDGE_PX`] on the long edge (a smaller photo is not
+    /// enlarged), on the CPU reference path of a renderer without a device (the path Auto's analysis picture takes), then reduced to
+    /// the scene and analysis pictures. The result is a snapshot: later edits to the photo do not change it. Nothing is kept by the
+    /// renderer; the photo's caches in the snapshot renderer are dropped.
+    ///
+    /// `graded` is the photo whose Reference Grade node is being fitted: it cannot be its own reference.
+    ///
+    /// # Errors
+    ///
+    /// [`SnapshotError::Reference`] with [`ReferenceError::SamePhoto`] when `src` is the graded photo; [`SnapshotError::Render`] for
+    /// unusable data or a cancelled job.
+    pub fn reference_snapshot(
+        &self,
+        graded: crate::session::PhotoId,
+        src: &PhotoSource,
+        cancel: &CancelToken,
+    ) -> Result<ReferencePicture, SnapshotError> {
+        if src.id == graded {
+            return Err(SnapshotError::Reference(ReferenceError::SamePhoto));
+        }
+        let renderer = self.snapshot_renderer().map_err(SnapshotError::Render)?;
+        let picture = renderer.whole_picture(src, SCENE_LONG_EDGE_PX, cancel);
+        renderer.forget(src.id);
+        let picture = picture.map_err(SnapshotError::Render)?;
+        ReferencePicture::from_snapshot(src.id, graded, picture.width, picture.height, &picture.rgb)
+            .map_err(SnapshotError::Reference)
     }
 
     /// SAM's picture of a photo (`docs/algorithms/06` section 5.7, [`object_source`]): the Input's picture, whole, in the photo
@@ -1251,6 +1281,17 @@ impl LookProvider for PictureLooks {
             _ => Err(LookProblem(format!("The look {id} is not in the library."))),
         }
     }
+}
+
+/// Why a strip photo could not become a reference ([`Renderer::reference_snapshot`]).
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum SnapshotError {
+    /// The photo cannot be a reference: it is the photo being graded.
+    #[error("{0}")]
+    Reference(ReferenceError),
+    /// The photo's picture could not be made.
+    #[error("{0}")]
+    Render(RenderError),
 }
 
 /// The session's [`PictureRenderer`] hook: Apple Auto's pictures (`docs/19` section 3), made by a
