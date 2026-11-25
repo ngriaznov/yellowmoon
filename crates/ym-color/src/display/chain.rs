@@ -52,13 +52,14 @@ use crate::camera_default::CameraDefault;
 use crate::consts::Vec3;
 use crate::consts::linalg::{self, Mat3};
 use crate::curve::CurveSet;
-use crate::encode::{OutputSpace, dither_8bit, quantize};
+use crate::encode::{OutputSpace, dither_8bit, max_code, quantize};
 use crate::gamut::{LinearAwg4, LinearRec709};
 use crate::grade::GradeParams;
 use crate::hue::ELEMENT_COUNT;
 use crate::logc::LogC4;
 use crate::look::{LookTransform, blend_display_linear, intensity_fraction};
 use crate::mask::{PixelAt, PreparedMasks};
+use crate::mask_element::{ElementRow, element_halo};
 use crate::mask_raster::RasterSet;
 use crate::plan::{
     JoinKind, JoinStep, KeyRef, PLAN_INPUTS, PLAN_KEYS, PLAN_REGISTERS, PictureOut, PictureRef,
@@ -172,6 +173,10 @@ pub struct ChainParams {
     /// Combiner needs no entry, and a mixer with none is a Parallel or Layer at its defaults (not bypassed, Normal,
     /// opacity 0 - set it). Empty for a photo without a mixer, which then runs exactly as it did.
     pub joins: BTreeMap<u32, JoinParams>,
+    /// The Reference Grade nodes of the plan that have a live element grade, each with the photo's scene its soft masks are
+    /// made from (`docs/34` section 4a.3): empty for a plan with none, or when the scene is not made. The render makes the
+    /// planes before the colour pass ([`ColorChain::uses_elements`]).
+    pub elements: Vec<ElementRow>,
 }
 
 impl ChainParams {
@@ -217,6 +222,7 @@ impl ChainParams {
             rasters: RasterSet::default(),
             films: BTreeMap::new(),
             joins: BTreeMap::new(),
+            elements: Vec::new(),
         }
     }
 }
@@ -301,6 +307,10 @@ pub struct ColorChain {
     buffers: usize,
     look: LookStage,
     display: PreparedDisplay,
+    /// C12 for sRGB, whatever the output: the picture the element masks' guide is the lightness of (`docs/34` section 4a.3).
+    guide_display: PreparedDisplay,
+    /// The element rows of the plan's nodes that have a live element.
+    elements: Vec<ElementRow>,
     output: OutputTarget,
     space: OutputSpace,
     dither: bool,
@@ -338,6 +348,9 @@ fn sanitize(c: f64) -> f64 {
 fn unit(x: f64) -> f64 {
     if x.is_nan() { 0.0 } else { x.clamp(0.0, 1.0) }
 }
+
+/// The linear value of each 8-bit sRGB code, for [`ColorChain::scene_guide_pixel`].
+static SRGB_CODE_LINEAR: std::sync::OnceLock<[f64; 256]> = std::sync::OnceLock::new();
 
 impl ColorChain {
     /// Prepares the chain.
@@ -426,6 +439,13 @@ impl ColorChain {
             buffers: plan.buffers.len(),
             look,
             display: PreparedDisplay::new(params.output),
+            guide_display: PreparedDisplay::new(OutputTarget::Srgb),
+            elements: params
+                .elements
+                .iter()
+                .filter(|r| r.live.iter().any(|&l| l) && plan.steps().any(|s| s.node == r.node))
+                .cloned()
+                .collect(),
             output: params.output,
             space: params.output.space(),
             dither: params.dither,
@@ -822,6 +842,13 @@ impl ColorChain {
                 (None, None) if node.is_reference() => StepKind::ReferenceGrade.declared(0),
                 (None, None) => StepKind::Corrector.declared(0),
             });
+            // A Reference Grade node with live elements reads the planes of its soft masks: made from the photo (the scene and the
+            // guide) and filtered over a window of `2 r + 1` pixels each side (`mask_element`), like a raster row's.
+            if let Some(row) = self.elements.iter().find(|r| r.node == step.node) {
+                declared.push(
+                    crate::mask::OpKind::Raster.declared(element_halo(row.scene.radius(u_px))),
+                );
+            }
             if self.params.rasters.is_empty() {
                 continue;
             }
@@ -929,11 +956,13 @@ impl ColorChain {
     // ---- single pixels -------------------------------------------------------------------------
 
     /// Whether any mask row of the plan's nodes reads the pixel's place in the photo (a Linear or a
-    /// Radial), or needs it to make its plane (a raster row): a render then needs the photo-frame position of
-    /// every pixel ([`Frame::with_photo`](super::Frame::with_photo)).
+    /// Radial), or needs it to make its plane (a raster row), or a Reference Grade node reads its element planes there: a
+    /// render then needs the photo-frame position of every pixel ([`Frame::with_photo`](super::Frame::with_photo)).
     #[must_use]
     pub fn uses_photo_position(&self) -> bool {
-        self.has_films() || self.steps.iter().any(|(_, n)| n.masks().needs_position())
+        self.has_films()
+            || self.uses_elements()
+            || self.steps.iter().any(|(_, n)| n.masks().needs_position())
     }
 
     /// Whether any mask row of the plan's nodes reads a raster plane that exists: the render then makes the planes of
@@ -943,6 +972,25 @@ impl ColorChain {
         // A raster row with no plane (a Background row before its map exists, an Object row with no point) is
         // in the nodes but not in the set: it selects nothing, and a chain with only such rows has no planes to make.
         !self.params.rasters.is_empty() && self.steps.iter().any(|(_, n)| n.masks().needs_rasters())
+    }
+
+    /// Whether the plan runs a Reference Grade node with a live element grade whose scene is there: the render then makes the
+    /// element planes of [`ColorChain::element_rows`] over its window before the colour pass ([`crate::mask_element`]).
+    #[must_use]
+    pub fn uses_elements(&self) -> bool {
+        !self.elements.is_empty()
+    }
+
+    /// Whether the render makes planes of any kind before the colour pass: raster rows or element masks.
+    #[must_use]
+    pub fn uses_planes(&self) -> bool {
+        self.uses_rasters() || self.uses_elements()
+    }
+
+    /// The Reference Grade nodes with live elements, with their scenes.
+    #[must_use]
+    pub fn element_rows(&self) -> &[ElementRow] {
+        &self.elements
     }
 
     /// The raster rows of the chain, in plane order.
@@ -959,6 +1007,33 @@ impl ColorChain {
         let c6 = self.c1_to_c6(camera_rgb);
         let c7 = self.tone.apply_rgb(c6);
         unit(PreparedMasks::luma_of(LogC4([0.0; 3]), Some(c7)))
+    }
+
+    /// The guide of the element masks for one camera pixel (`docs/34` section 4a.3, step 3): the CIELAB L\*, divided by 100, of
+    /// the Input's picture as `docs/23` section 4.7 renders it: C1 to C8, the Neutral look and the cine rendering to sRGB, no node,
+    /// no look the person chose, no output sharpening, rounded to 8-bit codes with no dither, as the picture the segmenter reads.
+    /// It depends on the output target and on nothing a node does, so grading a node never moves its own masks.
+    #[must_use]
+    pub fn scene_guide_pixel(&self, camera_rgb: Vec3) -> f32 {
+        let c6 = self.c1_to_c6(camera_rgb);
+        let c7 = self.tone.apply_rgb(c6);
+        let c8 = LinearAwg4(c7).to_logc4();
+        let linear = self.guide_display.display_linear(c8);
+        let coded = OutputSpace::Srgb.encode_clamped(linear);
+        // The 8-bit code's linear value, from a table of the 256 codes (the same `srgb_decode` of each code over 255).
+        let table = SRGB_CODE_LINEAR.get_or_init(|| {
+            std::array::from_fn(|c| {
+                OutputSpace::Srgb.decode_channel(c as f64 / f64::from(max_code(8)))
+            })
+        });
+        let decoded = coded.map(|c| table[usize::from(quantize(c, 8))]);
+        let y = 0.2126 * decoded[0] + 0.7152 * decoded[1] + 0.0722 * decoded[2];
+        let f = if y > 216.0 / 24389.0 {
+            y.cbrt()
+        } else {
+            (24389.0 / 27.0 * y + 16.0) / 116.0
+        };
+        unit((116.0 * f - 16.0) / 100.0) as f32
     }
 
     /// Every stage's value for one camera pixel whose place in the photo frame is not known: the mask

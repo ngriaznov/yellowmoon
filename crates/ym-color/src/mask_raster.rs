@@ -474,7 +474,7 @@ fn workers(pixels: usize) -> usize {
 
 /// Fills `out` (`rows` rows of `width`) by calling `f(row, row_slice)` for every row, on several threads for a
 /// large plane. Every row is computed from its own inputs, so the result does not depend on the thread count.
-fn par_rows<F>(out: &mut [f64], width: usize, f: F)
+pub(crate) fn par_rows<F>(out: &mut [f64], width: usize, f: F)
 where
     F: Fn(usize, &mut [f64]) + Sync,
 {
@@ -924,6 +924,9 @@ pub struct CpuPlanes {
     pub height: usize,
     /// The planes, in the order of [`RasterSet::rows`].
     pub planes: Vec<Vec<u16>>,
+    /// The soft masks of the Reference Grade nodes' live elements over the same window (`docs/34` section 4a.3); empty for a
+    /// chain with none. They are not raster rows: no mask row reads them, only the node's element step.
+    pub elements: crate::mask_element::ElementPlanes,
 }
 
 impl CpuPlanes {
@@ -942,6 +945,7 @@ impl CpuPlanes {
         if (self.width, self.height) == (extent_w, extent_h) {
             return self.clone();
         }
+        let elements = self.elements.placed(at, extent_w, extent_h);
         let planes = self
             .planes
             .iter()
@@ -959,6 +963,7 @@ impl CpuPlanes {
             width: extent_w,
             height: extent_h,
             planes,
+            elements,
         }
     }
 }
@@ -971,6 +976,10 @@ impl RasterPlanes for CpuPlanes {
             }
             _ => 0.0,
         }
+    }
+
+    fn element(&self, node: u32, element: usize, x: usize, y: usize) -> f64 {
+        self.elements.value(node, element, x, y)
     }
 }
 
@@ -986,6 +995,7 @@ impl RasterSet {
                 .iter()
                 .map(|r| r.plane_among(job, self.rows.len()))
                 .collect(),
+            elements: crate::mask_element::ElementPlanes::default(),
         }
     }
 }

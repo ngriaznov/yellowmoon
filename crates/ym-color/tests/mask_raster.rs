@@ -1048,6 +1048,7 @@ fn a_raster_row_reads_its_plane_through_the_frame() {
         width: w,
         height: h,
         planes: vec![vec![65535; w * h]],
+        ..CpuPlanes::default()
     };
     let all = render(Some(&full));
     assert_ne!(none, all, "the plane acts");
@@ -1056,6 +1057,7 @@ fn a_raster_row_reads_its_plane_through_the_frame() {
         width: w,
         height: h,
         planes: vec![vec![0; w * h]],
+        ..CpuPlanes::default()
     };
     assert_eq!(render(Some(&zero)), none);
     // Half a plane (the left half 1) changes the left half only.
@@ -1067,6 +1069,7 @@ fn a_raster_row_reads_its_plane_through_the_frame() {
                 .map(|i| if i % w < w / 2 { 65535 } else { 0 })
                 .collect(),
         ],
+        ..CpuPlanes::default()
     };
     let part = render(Some(&half));
     for y in 0..h {

@@ -19,4 +19,5 @@ pub mod eomt;
 pub mod mediapipe;
 pub mod model;
 pub mod sam2;
+pub mod scene;
 pub mod tiles;
