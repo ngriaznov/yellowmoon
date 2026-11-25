@@ -6,7 +6,7 @@
 #   pip install --extra-index-url https://download.pytorch.org/whl/cpu torch==2.15.0+cpu torchvision==0.29.2+cpu
 # The reference implementation is Hugging Face's `EomtForUniversalSegmentation` and `EomtImageProcessor` (Apache-2.0, a port of the
 # authors' code in github.com/tue-mps/eomt, MIT). These are the versions the conversion and the fixtures were first made with (the
-# RG-03 session, 2026-11-25, on Linux with Python 3.13); the job has not run on the workflow's Python 3.11 yet.
+# RG-03 session, 2026-11-25, on Linux with Python 3.13); the `eomt` job uses the same Python 3.13 (numpy 2.5 needs 3.12 or newer).
 transformers==5.24.1
 safetensors==0.8.0
 numpy==2.5.5
