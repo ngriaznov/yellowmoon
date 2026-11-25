@@ -4,9 +4,8 @@
 # training/eomt/export.py; the weights are the authors' checkpoint tue-mps/coco_panoptic_eomt_small_640_2x converted to f16
 # safetensors (MIT, with DINOv2's Apache-2.0 backbone; data/models/eomt/MODEL_CARD.md).
 #
-# STATUS (RG-03, 2026-11-25): THE RELEASE IS NOT PUBLISHED YET. The file's SHA-256 below was made by running export.py on the
-# checkpoint's pinned revision (it is byte-identical on every run), so the pin is real, but until the owner dispatches the `eomt` job
-# of models.yml this script finds nothing to download (exit 1, "could not download"). Tests that need the weights skip until then.
+# STATUS (RG-03, 2026-11-25): the release is published, and the download matches the pin (the file is byte-identical on every
+# export.py run). CI (the `eomt` job of ci.yml) and the build and release workflows run this script.
 #
 #   tools/fetch/eomt.sh            the weights -> data/models/eomt/   (what the build and the tests need)
 #   tools/fetch/eomt.sh --verify   check the file already on disk against its pin; download nothing
