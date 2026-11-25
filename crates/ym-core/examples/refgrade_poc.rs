@@ -1019,6 +1019,9 @@ enum Objective {
     /// Round 13: network v13: v12 with P1 withdrawn and a content turn budget that lets weak colours carry a cast
     /// (`refgrade-notes/19-model-v13.md`).
     V13,
+    /// Round 14: network v14: v13 with a turn that counts in part, growing with how far it goes (`T.turn_full`,
+    /// `refgrade-notes/20-model-v14.md`).
+    V14,
 }
 
 impl Objective {
@@ -1035,6 +1038,7 @@ impl Objective {
                 | Objective::V11
                 | Objective::V12
                 | Objective::V13
+                | Objective::V14
         )
     }
 }
@@ -3322,6 +3326,37 @@ fn network_check(net: &Network) -> R<bool> {
             );
         }
     }
+    if net.index.contains_key("T.turn_full") {
+        // The v14 vector: a turn counts in full from 60 degrees (the reversal line), whatever unify says.
+        let shut = NetOut::new(net, &r_same)?;
+        let mut p22 = r_same.clone();
+        set(&mut p22, "P.cast_a", 0.0);
+        set(&mut p22, "P.cast_b", 1.0);
+        set(&mut p22, "P.conc", 0.1);
+        set(&mut p22, "R.cast_a", 6.0);
+        set(&mut p22, "R.cast_b", 28.0);
+        set(&mut p22, "R.conc", 0.9);
+        let open = NetOut::new(net, &p22)?;
+        println!("== check 22 (v14): T.turn_full, unify shut and open");
+        for (out, unify) in [(&shut, 0.0), (&open, 1.0)] {
+            show(
+                "G.unify",
+                0.0,
+                out,
+                if unify == 0.0 { "0" } else { "1" },
+                (out.get("G.unify") - unify).abs() < 1e-9,
+                &mut ok,
+            );
+            show(
+                "T.turn_full",
+                0.0,
+                out,
+                "60",
+                (out.get("T.turn_full") - 60.0).abs() < 1e-9,
+                &mut ok,
+            );
+        }
+    }
     if net.index.contains_key("T.mem.sky_deg") {
         // The v9 vectors: the sky and foliage limits depend on whether the reference matches them.
         let out_m = NetOut::new(net, &r_same)?;
@@ -3775,6 +3810,8 @@ struct V5Ctx {
     p2: bool,
     /// V13: the content turn budget counts a turn against `allowed_turn_deg(C*)` instead of `T.turn_deg`; P1 is off.
     v13: bool,
+    /// V14: a turn past the allowed one counts by [`turn_weight`], not whole (`T.turn_full`); everything else is v13's.
+    v14: bool,
     p3: bool,
     p4: bool,
     p5: bool,
@@ -3816,7 +3853,11 @@ fn build_v5_ctx(
     let v12 = net.index.contains_key("T.turn_deg");
     // V13: P1 is withdrawn (always off, as with `--ablate p1`); P2 counts a turn against `allowed_turn_deg`, which needs
     // `T.turn_cref` and `T.turn_cap`, so a network without them is an error, not a silent v12.
-    let v13 = objective == Objective::V13;
+    let v14 = objective == Objective::V14;
+    let v13 = objective == Objective::V13 || v14;
+    if v14 && !net.index.contains_key("T.turn_full") {
+        return Err("objective v14 needs a network with T.turn_full (refgrade-v14.ywn)".into());
+    }
     if v13 && !(net.index.contains_key("T.turn_cap") && net.index.contains_key("T.turn_cref")) {
         return Err(
             "objective v13 needs a network with T.turn_cref and T.turn_cap (refgrade-v13.ywn)"
@@ -3932,6 +3973,7 @@ fn build_v5_ctx(
         .collect();
     Ok(V5Ctx {
         v13,
+        v14,
         p1,
         p2,
         p3,
@@ -4076,26 +4118,47 @@ fn allowed_turn_deg(c_star: f64, turn_deg: f64, cref: f64, cap: f64) -> f64 {
         .min(cap.max(turn_deg))
 }
 
+/// V14 (P2): the weight with which one pixel counts against the content turn budget. A hue turn of `dh_deg` degrees (an
+/// absolute value) that does not pass `allowed_deg` weighs 0; one of `full_deg` or more weighs 1; in between the weight
+/// grows linearly: `(dh - allowed) / (full - allowed)`. If `full_deg <= allowed_deg` there is no ramp and the weight is the
+/// step: 1 if `dh_deg` is past `allowed_deg`, else 0 (v13's count).
+fn turn_weight(dh_deg: f64, allowed_deg: f64, full_deg: f64) -> f64 {
+    if full_deg <= allowed_deg {
+        return if dh_deg > allowed_deg { 1.0 } else { 0.0 };
+    }
+    ((dh_deg - allowed_deg) / (full_deg - allowed_deg)).clamp(0.0, 1.0)
+}
+
 /// V12 (P2): the share of the sample's pixels that are strong colours in photo0 (C* at least [`V12_TURN_MIN_C`], not skin) and
 /// whose Oklab hue turned by more than `turn_deg`. With `cref_cap` (V13: `T.turn_cref`, `T.turn_cap`) the limit is
-/// [`allowed_turn_deg`] of the pixel's photo0 C* instead of `turn_deg`.
-fn content_turn_share(px: &[Px], ctx: &V5Ctx, turn_deg: f64, cref_cap: Option<(f64, f64)>) -> f64 {
+/// [`allowed_turn_deg`] of the pixel's photo0 C* instead of `turn_deg`. With `full_deg` (V14: `T.turn_full`) a pixel adds
+/// [`turn_weight`] instead of 1; the share is still over all sample pixels.
+fn content_turn_share(
+    px: &[Px],
+    ctx: &V5Ctx,
+    turn_deg: f64,
+    cref_cap: Option<(f64, f64)>,
+    full_deg: Option<f64>,
+) -> f64 {
     if px.is_empty() {
         return 0.0;
     }
-    let n = px
+    let sum: f64 = px
         .iter()
         .enumerate()
-        .filter(|&(i, q)| {
-            ctx.not_skin[i]
-                && ctx.p_cstar[i] >= V12_TURN_MIN_C
-                && wrap_deg(oklab_hue(q.ok) - ctx.p_okh[i]).abs()
-                    > cref_cap.map_or(turn_deg, |(cref, cap)| {
-                        allowed_turn_deg(ctx.p_cstar[i], turn_deg, cref, cap)
-                    })
+        .filter(|&(i, _)| ctx.not_skin[i] && ctx.p_cstar[i] >= V12_TURN_MIN_C)
+        .map(|(i, q)| {
+            let dh = wrap_deg(oklab_hue(q.ok) - ctx.p_okh[i]).abs();
+            let allowed = cref_cap.map_or(turn_deg, |(cref, cap)| {
+                allowed_turn_deg(ctx.p_cstar[i], turn_deg, cref, cap)
+            });
+            match full_deg {
+                Some(full) => turn_weight(dh, allowed, full),
+                None => f64::from(dh > allowed),
+            }
         })
-        .count();
-    n as f64 / px.len() as f64
+        .sum();
+    sum / px.len() as f64
 }
 
 /// V12 (P5): the share of a frame a grade may clip or crush: the photo's own, plus at most `extra` where the reference has more.
@@ -4261,6 +4324,7 @@ fn cand_meas(px: &[Px], scene: &Scene, ctx: &V5Ctx) -> CandMeas {
             ctx.out.get("T.turn_deg"),
             ctx.v13
                 .then(|| (ctx.out.get("T.turn_cref"), ctx.out.get("T.turn_cap"))),
+            ctx.v14.then(|| ctx.out.get("T.turn_full")),
         )
     } else {
         0.0
@@ -6179,6 +6243,7 @@ fn write_pair(
             | Objective::V11
             | Objective::V12
             | Objective::V13
+            | Objective::V14
     ) && (round2.is_some()
         || round5.is_some()
         || round6.is_some()
@@ -6218,6 +6283,7 @@ fn write_pair(
         }
         rounds.push((
             match objective {
+                Objective::V14 => "Round 14",
                 Objective::V13 => "Round 13",
                 Objective::V12 => "Round 12",
                 Objective::V11 => "Round 11",
@@ -6796,7 +6862,7 @@ struct Args {
     /// Round-12 principles switched back to v11 (`--ablate p1,p3`), and the photos to keep (`--only a,b`, by file stem).
     ablate: Ablate,
     only: Vec<String>,
-    /// `--diagnose <fits.json>`: scores the v11 and v13 fits under both objectives, term by term (`eval.rs`).
+    /// `--diagnose <fits.json>`: scores the v11 and `--objective` (v13 by default) fits under both objectives, term by term (`eval.rs`).
     diagnose: Option<PathBuf>,
 }
 
@@ -6814,7 +6880,8 @@ fn parse_objective(name: &str) -> R<Objective> {
         "v11" => Objective::V11,
         "v12" => Objective::V12,
         "v13" => Objective::V13,
-        other => return Err(format!("--objective takes v1 to v13, not {other}").into()),
+        "v14" => Objective::V14,
+        other => return Err(format!("--objective takes v1 to v14, not {other}").into()),
     })
 }
 
@@ -6889,8 +6956,13 @@ fn parse_args() -> R<Args> {
             other => return Err(format!("unknown argument {other}").into()),
         }
     }
-    if !a.ablate.is_none() && !matches!(a.objective, Some(Objective::V12 | Objective::V13)) {
-        return Err("--ablate needs --objective v12 or v13".into());
+    if !a.ablate.is_none()
+        && !matches!(
+            a.objective,
+            Some(Objective::V12 | Objective::V13 | Objective::V14)
+        )
+    {
+        return Err("--ablate needs --objective v12, v13 or v14".into());
     }
     if a.out.as_os_str().is_empty()
         && let Some((_, b)) = &a.compare
@@ -7063,6 +7135,7 @@ fn main() -> R<()> {
             cache: &cache,
             strength: args.strength,
             with_hue: !args.no_hue,
+            objective: args.objective.unwrap_or(Objective::V13),
             shard: args.shard,
         });
     }
@@ -7535,9 +7608,9 @@ mod tests {
         let conv = LabConv::new();
         let q = turned_px(&conv, 60.0, 35.0);
         let (v12, v13) = (turn_ctx(false, 12.0, 60.0), turn_ctx(true, 12.0, 60.0));
-        assert_eq!(content_turn_share(&[q], &v12, 20.0, None), 1.0);
+        assert_eq!(content_turn_share(&[q], &v12, 20.0, None, None), 1.0);
         assert_eq!(
-            content_turn_share(&[q], &v13, 20.0, Some((25.0, 45.0))),
+            content_turn_share(&[q], &v13, 20.0, Some((25.0, 45.0)), None),
             0.0
         );
     }
@@ -7547,11 +7620,61 @@ mod tests {
         let conv = LabConv::new();
         let q = turned_px(&conv, 60.0, 25.0);
         let (v12, v13) = (turn_ctx(false, 40.0, 60.0), turn_ctx(true, 40.0, 60.0));
-        assert_eq!(content_turn_share(&[q], &v12, 20.0, None), 1.0);
+        assert_eq!(content_turn_share(&[q], &v12, 20.0, None, None), 1.0);
         assert_eq!(
-            content_turn_share(&[q], &v13, 20.0, Some((25.0, 45.0))),
+            content_turn_share(&[q], &v13, 20.0, Some((25.0, 45.0)), None),
             1.0
         );
+    }
+
+    #[test]
+    fn v14_turn_weight_ramps_from_allowed_to_full() {
+        let near = |a: f64, b: f64| assert!((a - b).abs() < 1e-12, "{a} vs {b}");
+        for (dh, w) in [
+            (0.0, 0.0),
+            (20.0, 0.0),
+            (30.0, 0.25),
+            (40.0, 0.5),
+            (60.0, 1.0),
+            (90.0, 1.0),
+        ] {
+            near(turn_weight(dh, 20.0, 60.0), w);
+        }
+        // A weak colour allowed 45 degrees.
+        near(turn_weight(50.0, 45.0, 60.0), 1.0 / 3.0);
+        // No ramp (full not past allowed): the step.
+        assert_eq!(turn_weight(45.0, 45.0, 45.0), 0.0);
+        assert_eq!(turn_weight(46.0, 45.0, 30.0), 1.0);
+    }
+
+    /// 100 strong colours in photo0, `turned` of them turned 30 degrees, and the guard's cost at `T.turn_share` 0.03.
+    fn turn_sample_cost(v14: bool, turned: usize) -> f64 {
+        let conv = LabConv::new();
+        let px: Vec<Px> = (0..100)
+            .map(|i| turned_px(&conv, 60.0, if i < turned { 30.0 } else { 0.0 }))
+            .collect();
+        let mut ctx = ablation_ctx(Ablate::default(), &[("T.turn_share", 0.03)]);
+        ctx.v13 = true;
+        ctx.v14 = v14;
+        ctx.not_skin = vec![true; 100];
+        ctx.p_cstar = vec![40.0; 100];
+        ctx.p_okh = vec![60.0; 100];
+        let share = content_turn_share(&px, &ctx, 20.0, Some((25.0, 45.0)), v14.then_some(60.0));
+        let c = CandMeas {
+            turn_share: share,
+            ..CandMeas::default()
+        };
+        let mut t = V5T::default();
+        guards_v9(&mut t, &c, &ctx);
+        t.guard_turn
+    }
+
+    #[test]
+    fn v14_ten_percent_turned_30_costs_nothing_but_294_under_v13() {
+        // v14: s = 10 * 0.25 / 100 = 0.025, under 0.03. v13: s = 0.10, 6 * ((0.10 - 0.03) / 0.01)^2 = 294.
+        assert_eq!(turn_sample_cost(true, 10), 0.0);
+        assert!((turn_sample_cost(false, 10) - 294.0).abs() < 1e-6);
+        // 4 % that reverse (60 degrees and more) cost as in v13: weight 1 each.
     }
 
     #[test]
