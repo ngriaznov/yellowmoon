@@ -11371,6 +11371,7 @@ version = "0.2.4"
 dependencies = [
  "flate2",
  "jpeg-encoder",
+ "moxcms",
  "png 0.18.1",
  "proptest",
  "rayon",

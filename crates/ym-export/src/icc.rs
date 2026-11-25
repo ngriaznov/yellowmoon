@@ -259,6 +259,140 @@ fn build_profile(space: ColorSpace) -> Vec<u8> {
     out
 }
 
+// ---------------------------------------------------------------------------------------------
+// Profiles for the tests of the reference reader (`docs/34-reference-grade.md` section 6.3, RG-05)
+// ---------------------------------------------------------------------------------------------
+
+/// A tone curve tag of a [`fixture_profile`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum FixtureCurve {
+    /// `curv` with no entries: the identity.
+    Identity,
+    /// `curv` with one entry: a gamma (u8Fixed8).
+    Gamma(f64),
+    /// `curv` with a table of 16-bit entries.
+    Table(Vec<u16>),
+    /// `para` of this function type (0 to 4) with these parameters (`g, a, b, c, d, e, f`, as many as the type has).
+    Para(u16, Vec<f64>),
+}
+
+/// The layout of a [`fixture_profile`]: a version 4 profile like the exports', or the older structure of a profile written by an
+/// operating system's display tools (a version 2.4 header, `desc` as a `textDescription` and `cprt` as `text`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixtureLayout {
+    /// Version 4.3, `mluc` text (what [`profile`] writes).
+    V4,
+    /// Version 2.4, `desc` and `cprt` as v2 text types.
+    V2,
+}
+
+/// An RGB matrix/TRC profile with the given colorants (columns of the RGB-to-XYZ matrix, in the D50 connection space) and curves,
+/// for the tests of the reference reader (`ym_color::icc`) and of the loader built on it. **Not used by an export.** The bytes are
+/// deterministic. `extra` tags (a signature and its data) are written as they are, for the profiles that carry something the reader
+/// must refuse (a lookup table) or skip.
+#[must_use]
+pub fn fixture_profile(
+    description: &str,
+    layout: FixtureLayout,
+    colorants_d50: [Vec3; 3],
+    curves: [FixtureCurve; 3],
+    extra: &[([u8; 4], Vec<u8>)],
+) -> Vec<u8> {
+    let curve_tag = |c: &FixtureCurve| -> Vec<u8> {
+        match c {
+            FixtureCurve::Identity => tag_curv(&[]),
+            FixtureCurve::Gamma(g) => tag_curv(&[(g * 256.0).round() as u16]),
+            FixtureCurve::Table(t) => tag_curv(t),
+            FixtureCurve::Para(kind, params) => tag_para(*kind, params),
+        }
+    };
+    let (desc, cprt) = match layout {
+        FixtureLayout::V4 => (tag_mluc(description), tag_mluc(COPYRIGHT)),
+        FixtureLayout::V2 => (tag_text_description(description), tag_text(COPYRIGHT)),
+    };
+    let mut tags: Vec<([u8; 4], Vec<u8>)> = vec![
+        (*b"cprt", cprt),
+        (*b"desc", desc),
+        (*b"wtpt", tag_xyz(D50_PCS)),
+        (*b"rXYZ", tag_xyz(colorants_d50[0])),
+        (*b"gXYZ", tag_xyz(colorants_d50[1])),
+        (*b"bXYZ", tag_xyz(colorants_d50[2])),
+        (*b"rTRC", curve_tag(&curves[0])),
+        (*b"gTRC", curve_tag(&curves[1])),
+        (*b"bTRC", curve_tag(&curves[2])),
+    ];
+    tags.extend(extra.iter().cloned());
+    for (_, d) in &mut tags {
+        pad4(d);
+    }
+    tags.sort_by_key(|t| t.0);
+    let table_len = 4 + 12 * tags.len();
+    let mut offset = 128 + table_len;
+    let mut table = Vec::new();
+    let mut body = Vec::new();
+    for (sig, d) in &tags {
+        table.extend_from_slice(sig);
+        table.extend_from_slice(&(offset as u32).to_be_bytes());
+        table.extend_from_slice(&(d.len() as u32).to_be_bytes());
+        body.extend_from_slice(d);
+        offset += d.len();
+    }
+    let total = 128 + table_len + body.len();
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(&(total as u32).to_be_bytes());
+    out.extend_from_slice(&[0; 4]);
+    out.extend_from_slice(match layout {
+        FixtureLayout::V4 => &[0x04, 0x30, 0x00, 0x00],
+        FixtureLayout::V2 => &[0x02, 0x40, 0x00, 0x00],
+    });
+    out.extend_from_slice(b"mntr");
+    out.extend_from_slice(b"RGB ");
+    out.extend_from_slice(b"XYZ ");
+    for v in PROFILE_DATE {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    out.extend_from_slice(b"acsp");
+    out.extend_from_slice(&[0; 28]);
+    for v in D50_PCS {
+        out.extend_from_slice(&s15f16(v));
+    }
+    out.extend_from_slice(b"YMON");
+    out.extend_from_slice(&[0; 44]);
+    out.extend_from_slice(&(tags.len() as u32).to_be_bytes());
+    out.extend_from_slice(&table);
+    out.extend_from_slice(&body);
+    out
+}
+
+fn tag_curv(entries: &[u16]) -> Vec<u8> {
+    let mut d = b"curv\0\0\0\0".to_vec();
+    d.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+    for e in entries {
+        d.extend_from_slice(&e.to_be_bytes());
+    }
+    d
+}
+
+/// A version 2 `text` tag (ASCII, NUL-terminated).
+fn tag_text(text: &str) -> Vec<u8> {
+    let mut d = b"text\0\0\0\0".to_vec();
+    d.extend_from_slice(text.as_bytes());
+    d.push(0);
+    d
+}
+
+/// A version 2 `textDescription` tag: the ASCII text, an empty Unicode part and an empty ScriptCode part.
+fn tag_text_description(text: &str) -> Vec<u8> {
+    let mut d = b"desc\0\0\0\0".to_vec();
+    d.extend_from_slice(&(text.len() as u32 + 1).to_be_bytes());
+    d.extend_from_slice(text.as_bytes());
+    d.push(0);
+    d.extend_from_slice(&[0; 8]); // Unicode language code and count
+    d.extend_from_slice(&[0; 3]); // ScriptCode code and count
+    d.extend_from_slice(&[0; 67]); // the Macintosh description
+    d
+}
+
 /// MD5 (RFC 1321), used for the ICC profile ID.
 #[must_use]
 pub fn md5(data: &[u8]) -> [u8; 16] {

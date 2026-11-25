@@ -42,3 +42,6 @@ proptest.workspace = true
 tempfile.workspace = true
 # Decoders for round-trip tests only (already in the build through `tiff`).
 zune-jpeg = "0.5"
+# The independent oracle of the reference reader (`tests/icc_reader.rs`, docs/34 section 6.3): BSD-3-Clause OR Apache-2.0, already
+# in the lock file (through rawler, in `tools/oracle`). Tests only: never a dependency of a shipped build.
+moxcms = "0.8"
