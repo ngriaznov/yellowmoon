@@ -211,21 +211,21 @@ def knots(stops_out):
 
 
 SETTINGS = {
-    "luma": knots([(-6, -6.35), (-4, -4.35), (-2, -2.15), (-1, -1.05), (0, 0.0), (1, 1.1), (2, 2.15), (4, 3.9)]),   # a darker toe and floor, a lifted shoulder
-    "red": knots([(-3, -3.3), (0, 0.04), (3, 3.35)]),
-    "green": knots([(-3, -3.0), (0, 0.0), (3, 3.0)]),
-    "blue": knots([(-3, -2.55), (0, -0.08), (3, 2.7)]),
-    "sat": -6.0,
-    "hue_vs_hue": [(0, 3.0), (60, 5.0), (120, 12.0), (180, 6.0), (240, -10.0), (300, 0.0)],
-    "hue_vs_sat": [(0, 1.05), (60, 1.15), (120, 0.85), (180, 1.1), (240, 1.12), (300, 0.9)],
+    "luma": knots([(-6, -6.9), (-4, -4.8), (-2, -2.5), (-1, -1.2), (0, -0.05), (1, 1.2), (2, 2.3), (4, 4.1)]),   # a lower toe and floor, a lifted shoulder
+    "red": knots([(-3, -3.75), (0, 0.12), (3, 3.75)]),     # cooler shadows (less red), warmer highlights (more red)
+    "green": knots([(-3, -3.0), (0, 0.0), (3, 3.05)]),
+    "blue": knots([(-3, -2.3), (0, -0.12), (3, 2.2)]),     # deeper, bluer shadows; amber highlights
+    "sat": -4.0,
+    "hue_vs_hue": [(0, 10.0), (60, -8.0), (120, 22.0), (180, 10.0), (240, -14.0), (300, 0.0)],
+    "hue_vs_sat": [(0, 1.15), (60, 1.25), (120, 0.80), (180, 1.30), (240, 1.20), (300, 0.80)],
     "elements": {
-        "sky": {"exposure_ev": -0.30, "hue_deg": -8.0, "chroma": 1.15},
-        "vegetation": {"exposure_ev": -0.10, "hue_deg": 12.0, "chroma": 0.80},
+        "sky": {"exposure_ev": -0.45, "hue_deg": -14.0, "chroma": 1.25},
+        "vegetation": {"exposure_ev": -0.25, "hue_deg": 20.0, "chroma": 0.75},
         "water": {"exposure_ev": 0.0, "hue_deg": 0.0, "chroma": 1.0},
-        "ground": {"exposure_ev": 0.10, "hue_deg": 8.0, "chroma": 1.10},
-        "built": {"exposure_ev": 0.0, "hue_deg": 6.0, "chroma": 1.10},
-        "skin": {"exposure_ev": 0.10, "hue_deg": 3.0, "chroma": 1.0},
-        "subject": {"exposure_ev": 0.20},
+        "ground": {"exposure_ev": 0.10, "hue_deg": -6.0, "chroma": 1.30},
+        "built": {"exposure_ev": 0.0, "hue_deg": -8.0, "chroma": 1.25},
+        "skin": {"exposure_ev": 0.0, "hue_deg": -3.0, "chroma": 0.95},
+        "subject": {"exposure_ev": 0.25},
     },
 }
 
@@ -282,8 +282,8 @@ def main():
     save("scene-newlook.jpg", alt)
     # an 'edited by hand' picture: Hue of the vegetation pushed further by the person (+22), the rest unchanged
     ed = json.loads(json.dumps(SETTINGS))
-    ed["elements"]["vegetation"]["hue_deg"] = 22.0
-    ed["elements"]["vegetation"]["chroma"] = 0.75
+    ed["elements"]["vegetation"]["hue_deg"] = 32.0
+    ed["elements"]["vegetation"]["chroma"] = 0.60
     save("scene-edited.jpg", after(100, ed))
     # strip thumbnails: other photos of the same shoot (the scene seen from other places, darker or warmer) and the reference
     def crop(img, box):

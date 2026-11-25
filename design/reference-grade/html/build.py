@@ -38,13 +38,13 @@ REF_NAME = "harbour-dusk.jpg"
 
 # illustrative values (rg_demo.SETTINGS); the panel shows the stored numbers
 EL = {
-    "sky": dict(share=26, cap=40, exposure_ev=-0.30, hue_deg=-8, chroma=115),
-    "vegetation": dict(share=29, cap=35, exposure_ev=-0.10, hue_deg=12, chroma=80),
+    "sky": dict(share=26, cap=40, exposure_ev=-0.45, hue_deg=-14, chroma=125),
+    "vegetation": dict(share=29, cap=35, exposure_ev=-0.25, hue_deg=20, chroma=75),
     "water": dict(share=0.6, cap=35, exposure_ev=0, hue_deg=0, chroma=100),
-    "ground": dict(share=19, cap=30, exposure_ev=0.10, hue_deg=8, chroma=110),
-    "built": dict(share=8, cap=25, exposure_ev=0, hue_deg=6, chroma=110),
-    "skin": dict(share=3.3, cap=15, exposure_ev=0.10, hue_deg=3, chroma=100),
-    "subject": dict(share=18, exposure_ev=0.20),
+    "ground": dict(share=19, cap=30, exposure_ev=0.10, hue_deg=-6, chroma=130),
+    "built": dict(share=8, cap=25, exposure_ev=0, hue_deg=-8, chroma=125),
+    "skin": dict(share=3.3, cap=15, exposure_ev=0, hue_deg=-3, chroma=95),
+    "subject": dict(share=18, exposure_ev=0.25),
 }
 TITLES = {"sky": "Sky", "vegetation": "Vegetation", "water": "Water", "ground": "Ground", "built": "Built", "skin": "Skin", "subject": "Subject"}
 
@@ -273,8 +273,8 @@ def hue_card(kind, pts, sel=1, reset=True):
     )
 
 
-HUE_PTS = [(0, 3.0), (60, 5.0), (120, 12.0), (180, 6.0), (240, -10.0), (300, 0.0)]
-SAT_PTS = [(0, 1.05), (60, 1.15), (120, 0.85), (180, 1.1), (240, 1.12), (300, 0.9)]
+HUE_PTS = [(0, 10.0), (60, -8.0), (120, 22.0), (180, 10.0), (240, -14.0), (300, 0.0)]
+SAT_PTS = [(0, 1.15), (60, 1.25), (120, 0.80), (180, 1.30), (240, 1.20), (300, 0.80)]
 
 
 def hue_cards(hue=HUE_PTS, sat=SAT_PTS, reset=True):
@@ -633,12 +633,14 @@ def tile(src, title, line, cls=""):
 def before_after():
     vals = (
         '<div class="rg-vals"><b>Values used (illustrative)</b><table>'
-        '<tr><th>Global</th><td>luma toe −0.35 stop, red and blue curves, saturation −6</td></tr>'
-        '<tr><th>Hue vs hue</th><td>120° +12°, 240° −10°, the others within ±6°</td></tr>'
-        '<tr><th>Hue vs saturation</th><td>60° ×1.15, 120° ×0.85, 240° ×1.12</td></tr>'
-        '<tr><th>Sky</th><td>−0.30 EV · −8° · 115 %</td></tr><tr><th>Vegetation</th><td>−0.10 EV · +12° · 80 %</td></tr>'
-        '<tr><th>Ground</th><td>+0.10 EV · +8° · 110 %</td></tr><tr><th>Built</th><td>0 EV · +6° · 110 %</td></tr>'
-        '<tr><th>Skin</th><td>+0.10 EV · +3° · 100 %</td></tr><tr><th>Subject</th><td>+0.20 EV</td></tr>'
+        '<tr><th>Luma curve</th><td>toe −0.9 stop at −6, −0.8 at −4, −0.5 at −2; shoulder +0.2 at +1</td></tr>'
+        '<tr><th>Red, blue curves</th><td>red −0.75 stop in the shadows, +0.75 in the highlights; blue +0.7 in the shadows, −0.8 in the highlights</td></tr>'
+        '<tr><th>Saturation</th><td>−4</td></tr>'
+        '<tr><th>Hue vs hue</th><td>0° +10°, 60° −8°, 120° +22°, 180° +10°, 240° −14°, 300° 0°</td></tr>'
+        '<tr><th>Hue vs saturation</th><td>0° 115 %, 60° 125 %, 120° 80 %, 180° 130 %, 240° 120 %, 300° 80 %</td></tr>'
+        '<tr><th>Sky</th><td>−0.45 EV · −14° · 125 %</td></tr><tr><th>Vegetation</th><td>−0.25 EV · +20° · 75 %</td></tr>'
+        '<tr><th>Ground</th><td>+0.10 EV · −6° · 130 %</td></tr><tr><th>Built</th><td>0 EV · −8° · 125 %</td></tr>'
+        '<tr><th>Skin</th><td>0 EV · −3° · 95 %</td></tr><tr><th>Subject</th><td>+0.25 EV</td></tr>'
         '<tr><th>Water</th><td>left at the identity: under 2 % of the photo</td></tr></table></div>'
     )
     tiles = [
