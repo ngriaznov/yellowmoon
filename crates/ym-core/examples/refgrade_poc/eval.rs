@@ -866,3 +866,195 @@ pub fn compare(a: &Path, b: &Path, out: &Path) -> R<()> {
     fs::write(out.join("compare.md"), s)?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------------------------
+// --diagnose: why does one objective not choose the grade another found?
+// ---------------------------------------------------------------------------------------------
+
+/// The settings of `--diagnose`.
+pub struct DiagnoseOpts<'a> {
+    /// A json array of `{photo, reference, group, T3_v11, T3_v13}`.
+    pub fits: PathBuf,
+    pub split: Vec<SplitEntry>,
+    pub references: Vec<PathBuf>,
+    pub out: &'a Path,
+    pub core: &'a Core,
+    pub cache: &'a Path,
+    pub strength: f64,
+    pub with_hue: bool,
+    /// `(index, count)`: this process takes the photos whose position in the list of distinct photos is `index` modulo `count`.
+    pub shard: Option<(usize, usize)>,
+}
+
+/// An objective's terms at one candidate, as json: the total, every weighted term in the code's own names, and two diagnostics.
+fn terms_json(total: f64, t: &Terms) -> Value {
+    let mut m = serde_json::Map::new();
+    for (k, v) in t.weighted_named() {
+        m.insert(k.into(), json!(v));
+    }
+    json!({
+        "total": total,
+        "terms": m,
+        "sum_of_terms": t.weighted_named().iter().map(|(_, v)| v).sum::<f64>(),
+        "skin_dlogc": t.t5.skin_dlogc,
+        "np_share": t.t5.np_share,
+    })
+}
+
+/// `--diagnose <fits.json>`: for each listed fit, fits with objective v11 (v11 network) and v13 (v13 network), then scores both
+/// solutions under both objectives term by term, and measures T1 to T3 and the harms of both. Writes
+/// `<out>/diagnose-shard-<i>.json`.
+pub fn diagnose(o: &DiagnoseOpts<'_>) -> R<()> {
+    let list: Vec<Value> = serde_json::from_str(&fs::read_to_string(&o.fits)?)?;
+    // Distinct photos in order of first appearance.
+    let mut photos: Vec<String> = Vec::new();
+    for f in &list {
+        let p = f
+            .get("photo")
+            .and_then(Value::as_str)
+            .ok_or("fits.json: an entry has no `photo`")?;
+        if !photos.iter().any(|x| x == p) {
+            photos.push(p.to_string());
+        }
+    }
+    let ref_files = expand(&o.references, &["jpg", "jpeg", "png"]);
+    let conv = LabConv::new();
+    fs::create_dir_all(o.out)?;
+    let mut results: Vec<Value> = Vec::new();
+    for (pi, pname) in photos.iter().enumerate() {
+        if let Some((i, n)) = o.shard
+            && pi % n != i
+        {
+            continue;
+        }
+        let entry = o
+            .split
+            .iter()
+            .find(|e| {
+                e.raw
+                    .file_stem()
+                    .is_some_and(|s| s.to_string_lossy() == pname.as_str())
+            })
+            .ok_or_else(|| format!("{pname}: not in the split"))?;
+        eprintln!("== {pname}");
+        let photo = load_photo(o.core, &entry.raw, o.cache)?;
+        let labels = entry.labels.as_deref().or(ctx().labels.as_deref());
+        let pf = prepare_photo_with(&photo, labels)?;
+        let p0_img = render_fitted(&pf, &[0.0; N_PARAMS], 1.0, o.with_hue, false, false)?;
+        let p0_scene = pf.scene_fit.as_ref();
+        let p0 = Pic {
+            px: picture_px(&conv, &p0_img),
+            scene: p0_scene,
+        };
+        let p0_sample = sample_ab(&p0.px);
+        for f in list.iter().filter(|f| f["photo"].as_str() == Some(pname)) {
+            let rname = f["reference"].as_str().ok_or("fits.json: no `reference`")?;
+            let rpath = ref_files
+                .iter()
+                .find(|p| p.file_stem().is_some_and(|s| s.to_string_lossy() == rname))
+                .ok_or_else(|| format!("{rname}: no such reference file"))?;
+            let r = load_reference(rpath)?;
+            let refp = Pic {
+                px: picture_px(&conv, &r.fit),
+                scene: r.scene.as_ref(),
+            };
+            // The two fits, exactly as `--eval --objective v11` and `--eval --objective v13` run them.
+            let (fit11, _) = run_fit(
+                &pf,
+                &r.fit,
+                o.strength,
+                o.with_hue,
+                Objective::V11,
+                r.scene.as_ref(),
+            )?;
+            let (fit13, _) = run_fit(
+                &pf,
+                &r.fit,
+                o.strength,
+                o.with_hue,
+                Objective::V13,
+                r.scene.as_ref(),
+            )?;
+            // The two objectives, built once, at strength 1 and every term group on (as the fit's own final score).
+            let (mut ev11, _) = make_evaluator(
+                &pf,
+                &r.fit,
+                o.strength,
+                o.with_hue,
+                Objective::V11,
+                r.scene.as_ref(),
+            )?;
+            let (mut ev13, _) = make_evaluator(
+                &pf,
+                &r.fit,
+                o.strength,
+                o.with_hue,
+                Objective::V13,
+                r.scene.as_ref(),
+            )?;
+            for ev in [&mut ev11, &mut ev13] {
+                ev.strength = 1.0;
+                ev.mask = MASK_ALL;
+            }
+            let mut sols = serde_json::Map::new();
+            let mut t3s = [None; 2];
+            for (k, (label, fr)) in [("v11", &fit11), ("v13", &fit13)].into_iter().enumerate() {
+                let img = render_fitted(&pf, &fr.x, o.strength, o.with_hue, false, true)?;
+                let fp = Pic {
+                    px: picture_px(&conv, &img),
+                    scene: p0_scene,
+                };
+                let h = harms(&p0, &fp, &refp);
+                let t = transfers(&p0, &fp, &refp, &p0_sample);
+                t3s[k] = t[2];
+                let (tot13, t13) = ev13.objective(&fr.x);
+                let (tot11, t11) = ev11.objective(&fr.x);
+                let own = if label == "v11" { tot11 } else { tot13 };
+                let mut harm_json = serde_json::Map::new();
+                for (j, id) in HARMS.iter().enumerate() {
+                    harm_json.insert((*id).into(), json!({ "value": h[j].0, "flag": h[j].1 }));
+                }
+                sols.insert(
+                    label.into(),
+                    json!({
+                        "x": fr.x.to_vec(),
+                        "fit_seconds": fr.seconds,
+                        "T1": t[0], "T2": t[1], "T3": t[2],
+                        "any_harm": h.iter().any(|x| x.1),
+                        "harms": harm_json,
+                        "obj_v13": terms_json(tot13, &t13),
+                        "obj_v11": terms_json(tot11, &t11),
+                        // The fit's own final score against a fresh evaluation of the same objective: bit-identical when 0.
+                        "own_objective_vs_fit_after_abs_diff": (own - fr.after.total()).abs(),
+                    }),
+                );
+            }
+            let json_t3 = |k: &str| f.get(k).and_then(Value::as_f64);
+            let same = |a: Option<f64>, b: Option<f64>| match (a, b) {
+                (Some(a), Some(b)) => (a - b).abs() <= 1e-9 * a.abs().max(1.0),
+                _ => false,
+            };
+            let m11 = same(t3s[0], json_t3("T3_v11"));
+            let m13 = same(t3s[1], json_t3("T3_v13"));
+            eprintln!(
+                "   {rname}: T3 v11 {:?} (json {:?}, match {m11}), v13 {:?} (json {:?}, match {m13})",
+                t3s[0],
+                json_t3("T3_v11"),
+                t3s[1],
+                json_t3("T3_v13")
+            );
+            results.push(json!({
+                "photo": pname, "reference": rname, "group": f["group"],
+                "T3_json": { "v11": json_t3("T3_v11"), "v13": json_t3("T3_v13") },
+                "T3_matches_json": { "v11": m11, "v13": m13 },
+                "solutions": sols,
+            }));
+        }
+    }
+    let name = match o.shard {
+        Some((i, _)) => format!("diagnose-shard-{i}.json"),
+        None => "diagnose.json".into(),
+    };
+    fs::write(o.out.join(name), serde_json::to_string_pretty(&results)?)?;
+    Ok(())
+}

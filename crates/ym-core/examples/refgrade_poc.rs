@@ -1330,6 +1330,43 @@ impl Terms {
                 + common
         }
     }
+    /// The V5 objective's terms as they enter `total()` (weights applied, every term group on), in the code's own names.
+    /// Empty for the non-network objectives. Their sum equals `total()` up to rounding in the order of summation.
+    fn weighted_named(&self) -> Vec<(&'static str, f64)> {
+        if !self.v5 {
+            return Vec::new();
+        }
+        let t = &self.t5;
+        vec![
+            ("floor", t.floor),
+            ("ceil", t.ceil),
+            ("anchor", t.anchor),
+            ("contrast", t.contrast),
+            ("tint", t.tint),
+            ("frame_cast", t.frame_cast),
+            ("sat", t.sat),
+            ("sec_chroma", t.sec_chroma),
+            ("sec_hue", t.sec_hue),
+            ("el_hue", t.el_hue),
+            ("el_chroma", t.el_chroma),
+            ("el_exp", t.el_exp),
+            ("subject", t.subject),
+            ("guard_hue", t.guard_hue),
+            ("guard_skin", t.guard_skin),
+            ("guard_sky", t.guard_sky),
+            ("guard_hl", t.guard_hl),
+            ("guard_purple", t.guard_purple),
+            ("guard_white_dir", t.guard_white_dir),
+            ("guard_skin_drift", t.guard_skin_drift),
+            ("guard_mem", t.guard_mem),
+            ("guard_purple_px", t.guard_purple_px),
+            ("guard_skin_chroma", t.guard_skin_chroma),
+            ("guard_turn", t.guard_turn),
+            ("reg", V2_W_REG * self.reg),
+            ("reg_local", V2_W_REG * self.reg_local),
+            ("clip", W_CLIP * self.clip),
+        ]
+    }
     fn to_json(self) -> Value {
         if self.v5 {
             let t = self.t5;
@@ -5943,6 +5980,20 @@ fn run_fit(
     objective: Objective,
     ref_scene: Option<&Scene>,
 ) -> R<(FitResult, Stats)> {
+    let (mut ev, ref_stats) =
+        make_evaluator(pf, reference_fit, strength, with_hue, objective, ref_scene)?;
+    Ok((fit(&mut ev), ref_stats))
+}
+
+/// The evaluator of one (photo, reference) pair for an objective, ready to fit or to score a candidate (`--diagnose`).
+fn make_evaluator<'a>(
+    pf: &'a PhotoFit<'_>,
+    reference_fit: &Img,
+    strength: f64,
+    with_hue: bool,
+    objective: Objective,
+    ref_scene: Option<&Scene>,
+) -> R<(Evaluator<'a>, Stats)> {
     let conv = LabConv::new();
     let v5 = objective.net();
     let v3 = objective == Objective::V3 || v5;
@@ -6019,7 +6070,7 @@ fn run_fit(
         let c = build_v5_ctx(net, &p_px, sc, &r_px, rs, ctx().ablate, objective)?;
         ev.v5 = Some(c);
     }
-    Ok((fit(&mut ev), ref_stats))
+    Ok((ev, ref_stats))
 }
 
 /// Every pixel of a linear sRGB picture, measured.
@@ -6745,6 +6796,8 @@ struct Args {
     /// Round-12 principles switched back to v11 (`--ablate p1,p3`), and the photos to keep (`--only a,b`, by file stem).
     ablate: Ablate,
     only: Vec<String>,
+    /// `--diagnose <fits.json>`: scores the v11 and v13 fits under both objectives, term by term (`eval.rs`).
+    diagnose: Option<PathBuf>,
 }
 
 fn parse_objective(name: &str) -> R<Objective> {
@@ -6801,6 +6854,7 @@ fn parse_args() -> R<Args> {
             "--objective" => a.objective = Some(parse_objective(&val()?)?),
             "--prev" => a.prev = Some(parse_objective(&val()?)?),
             "--eval" => a.eval = true,
+            "--diagnose" => a.diagnose = Some(PathBuf::from(val()?)),
             "--no-grids" => a.no_grids = true,
             "--shard" => {
                 let v = val()?;
@@ -6995,6 +7049,23 @@ fn main() -> R<()> {
     let core = open_core(&args.out)?;
     let cache = args.out.join("cache");
     let objective = args.objective.unwrap_or(Objective::V2);
+    if let Some(fits) = &args.diagnose {
+        let split = match &args.split {
+            Some(p) => eval::read_split(p)?,
+            None => return Err("--diagnose needs --split".into()),
+        };
+        return eval::diagnose(&eval::DiagnoseOpts {
+            fits: fits.clone(),
+            split,
+            references: args.references.clone(),
+            out: &args.out,
+            core: &core,
+            cache: &cache,
+            strength: args.strength,
+            with_hue: !args.no_hue,
+            shard: args.shard,
+        });
+    }
     if args.eval {
         let split = match &args.split {
             Some(p) => eval::read_split(p)?,
