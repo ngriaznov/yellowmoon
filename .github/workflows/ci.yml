@@ -10,7 +10,7 @@
 # YM_REQUIRE_GPU (gpu-lavapipe, ml-backends), YM_REQUIRE_EXTERNAL_TOOLS (dng), YM_REQUIRE_ORACLE (oracle, dng),
 # YM_REQUIRE_FIXTURES (spectral-fixtures), YM_REQUIRE_SYNTHETIC (synthetic-set), YM_REQUIRE_ORT (ml-backends),
 # YM_REQUIRE_PARITY_BIN and YM_REQUIRE_FORCE_DEMOSAIC (parity), YM_REQUIRE_SAM2 (sam2, gpu-lavapipe, parity: SAM 2.1's weights are
-# fetched there and every Object test runs in one of them), YM_REQUIRE_DEPTH (depth: Depth Anything's weights and oracle fixtures), YM_REQUIRE_MEDIAPIPE (mediapipe: BlazeFace's weights and photos, once the release exists), and YM_REQUIRE_VISION (the macOS `rust` job's two Vision steps: the runner is
+# fetched there and every Object test runs in one of them), YM_REQUIRE_DEPTH (depth: Depth Anything's weights and oracle fixtures), YM_REQUIRE_MEDIAPIPE (mediapipe: BlazeFace's weights and photos, once the release exists), YM_REQUIRE_EOMT (eomt: the scene segmenter's weights, release models-eomt-small-1), and YM_REQUIRE_VISION (the macOS `rust` job's two Vision steps: the runner is
 # a Mac that runs Vision's requests, so "not supported" there is a failure). The rest of the macOS `rust` job sets none of them.
 name: CI
 
@@ -924,6 +924,32 @@ jobs:
         run: command -v zstd >/dev/null || sudo apt-get install -y zstd
       - run: tools/fetch/depth.sh --fixtures
       - run: cargo test -p ym-ml --release --test depth -- --nocapture --test-threads=1
+  # The scene segmenter (RG-03, docs/34 section 4b.1, docs/07): EoMT small against Hugging Face's EomtForUniversalSegmentation. The parity
+  # fixture is committed (crates/ym-ml/tests/data/eomt/); the weights (48 MB) are our own release asset `models-eomt-small-1`, fetched by
+  # tools/fetch/eomt.sh against the SHA-256 in data/models/eomt/SHA256SUMS and cached on that file's hash, as SAM 2.1's are.
+  # YM_REQUIRE_EOMT makes a missing file a failure instead of a SKIPPED line. The runtime is CPU code in a fixed order, so Linux gives
+  # the same bits as a Mac and the cheaper runner is enough (about 2 s per picture on 4 cores in release).
+  eomt:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      YM_REQUIRE_EOMT: "1"
+      # Release test builds have no debug fallback to the workspace data/ folder (ym-core data_dir.rs).
+      YELLOWMOON_DATA: ${{ github.workspace }}/data
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: EoMT small weights (cached by their pin)
+        uses: actions/cache@v4
+        with:
+          path: data/models/eomt/eomt_coco_panoptic_small.f16.safetensors
+          key: eomt-weights-${{ hashFiles('data/models/eomt/SHA256SUMS') }}
+      - run: tools/fetch/eomt.sh
+      - name: The segmenter against the original, and the same bits on 1, 2 and 8 threads (weights required)
+        run: cargo test -p ym-ml --release --test eomt -- --nocapture --test-threads=1
   # The BlazeFace port against Google's TFLite file (docs/27 S-08): the raw network on a synthetic input, 4 public photos against
   # MediaPipe's own face detector task and the TFLite interpreter, the finder's defaults, the same bits on 1 and 4 threads. The
   # fixtures are committed (crates/ym-ml/tests/fixtures/blazeface.json); the weights are the release `models-mediapipe-faces-1`

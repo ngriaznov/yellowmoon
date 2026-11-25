@@ -90,6 +90,35 @@ jobs:
       - name: Fetch the SAM 2.1 small weights
         run: tools/fetch/sam2.sh
 
+      # The EoMT small weights (about 48 MB; the scene segmenter of Reference Grade, RG-03) are a release asset of ours
+      # (models-eomt-small-1, made by the `eomt` job of models.yml), fetched into data/models/eomt/, which tauri.conf.json bundles
+      # with the rest of data/models, and checked against data/models/eomt/SHA256SUMS (tools/fetch/eomt.sh). A cached copy is checked too.
+      - name: Cache the EoMT small weights
+        uses: actions/cache@v4
+        with:
+          path: data/models/eomt/eomt_coco_panoptic_small.f16.safetensors
+          key: eomt-weights-${{ hashFiles('data/models/eomt/SHA256SUMS') }}
+
+      # Same reason as the SAM download above: the GitHub CLI goes through the API. It does nothing when the cache put the file
+      # there, and it never fails the step: tools/fetch/eomt.sh fetches next and checks the SHA-256 against the pin.
+      - name: Download the EoMT small weights with the GitHub CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          f=data/models/eomt/eomt_coco_panoptic_small.f16.safetensors
+          if [ -s "$f" ]; then
+            echo "$f is already on disk."
+            exit 0
+          fi
+          mkdir -p data/models/eomt
+          if ! command -v gh >/dev/null 2>&1 || ! gh release download models-eomt-small-1 --repo "$GITHUB_REPOSITORY" --pattern eomt_coco_panoptic_small.f16.safetensors --dir data/models/eomt --clobber; then
+            rm -f "$f"
+            echo "::warning title=GitHub CLI download failed::eomt_coco_panoptic_small.f16.safetensors was not downloaded with the GitHub CLI; the fetch script will try the plain download."
+          fi
+
+      - name: Fetch the EoMT small weights
+        run: tools/fetch/eomt.sh
+
       # The Depth Anything V2-Small weights (about 50 MB; the Depth mask, D-02) are a release asset of ours
       # (models-depth-anything-v2-small-1, made by the `depth` job of models.yml), fetched into data/models/depth/ and checked
       # against data/models/depth/SHA256SUMS (tools/fetch/depth.sh). Until that file holds a real SHA-256 (it holds the placeholder
@@ -203,9 +232,9 @@ jobs:
       - name: Licence texts of the dependencies (THIRD-PARTY.md, bundled next to NOTICE)
         run: |
           python3 tools/licences/generate.py
-          # --depth-pending only while the depth pin is the placeholder, --require-mediapipe only once the MediaPipe release
+          # --require-eomt like the SAM weights (the release models-eomt-small-1 exists), --depth-pending only while the depth pin is the placeholder, --require-mediapipe only once the MediaPipe release
           # exists (the Fetch steps above say so).
-          args=--require-weights
+          args="--require-weights --require-eomt"
           [ "${{ steps.depth.outputs.pinned }}" = true ] || args="$args --depth-pending"
           [ "${{ steps.mediapipe.outputs.published }}" = true ] && args="$args --require-mediapipe"
           python3 tools/licences/check_bundle.py $args
@@ -244,6 +273,9 @@ jobs:
           # The SAM 2.1 small weights are in the bundle (docs/12), and are the file that SHA256SUMS pins.
           test -s "$APP/Contents/Resources/data/models/sam2/sam2.1_hiera_small.f16.safetensors"
           (cd "$APP/Contents/Resources/data/models/sam2" && shasum -a 256 -c SHA256SUMS)
+          # The EoMT small weights too (RG-03), the file that SHA256SUMS pins.
+          test -s "$APP/Contents/Resources/data/models/eomt/eomt_coco_panoptic_small.f16.safetensors"
+          (cd "$APP/Contents/Resources/data/models/eomt" && shasum -a 256 -c SHA256SUMS)
           # The Depth Anything V2-Small weights too, once their pin is real (see the Fetch step).
           if [ "${{ steps.depth.outputs.pinned }}" = true ]; then
             test -s "$APP/Contents/Resources/data/models/depth/depth_anything_v2_vits.f16.safetensors"
