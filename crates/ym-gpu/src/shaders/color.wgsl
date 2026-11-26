@@ -879,32 +879,10 @@ fn elem_node(ni: u32, v: vec3<f32>, rpix: u32) -> vec3<f32> {
     return w;
 }
 
-// A Reference Grade node with a live hue or element step (docs/34 section 7.2, variant H1): a copy of the corrector's four steps of
-// `node_apply`, then the hue step, then the element step. Called only from the top of `node_apply` (`N_HUE` or `N_ELEM`), which returns
-// its value: every other node runs `node_apply`'s own body unchanged.
-fn rg_apply(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, bits: u32, rpix: u32) -> vec3<f32> {
+// A Reference Grade node's hue step and then its element step (docs/34 section 7.2, variant H2): the last block of `node_apply`, after the
+// corrector's four steps, which a Reference Grade node runs as any node does. Called only for a node with `N_HUE` or `N_ELEM`.
+fn rg_tail(ni: u32, v_in: vec3<f32>, bits: u32, rpix: u32) -> vec3<f32> {
     var v = v_in;
-    var lin = c7;
-    if ((bits & N_TRIM) != 0u) {
-        if (!from_input) {
-            lin = logc4_decode3(v_in);
-        }
-        lin = lin * nf(ni, R_GAIN).xyz;
-        v = logc4_encode3(lin);
-    }
-    if ((bits & N_GRADE) != 0u) {
-        if (!from_input && (bits & N_TRIM) == 0u) {
-            lin = logc4_decode3(v);
-        }
-        let l = logc4_encode(dot(Y_AWG4, lin));
-        v = c9_grade(v, l, ni);
-    }
-    if ((bits & N_WARP) != 0u) {
-        v = c9b_warp(v, ni);
-    }
-    if ((bits & N_CURVES) != 0u) {
-        v = c11_curves(v, ni);
-    }
     if ((bits & N_HUE) != 0u) {
         v = hue_node(ni, v);
     }
@@ -927,9 +905,6 @@ fn node_apply(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, stage: 
     }
     if ((bits & N_UNIFORM) != 0u && (bits & (N_TRIM | N_GRADE | N_WARP | N_CURVES)) != 0u) {
         return cu_graded_apply(ni, v_in, bits);
-    }
-    if ((bits & (N_HUE | N_ELEM)) != 0u) {
-        return rg_apply(ni, v_in, c7, from_input, bits, rpix);
     }
     var v = v_in;
     var lin = c7;
@@ -966,6 +941,10 @@ fn node_apply(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, stage: 
     // 5. A Colour Uniform node's pull (docs/32 section 3.3), the last step as on the CPU.
     if ((bits & N_UNIFORM) != 0u) {
         v = uniform_node(ni, v);
+    }
+    // 6. A Reference Grade node's hue and element steps (docs/34 section 7.2), after the corrector's four.
+    if ((bits & (N_HUE | N_ELEM)) != 0u) {
+        v = rg_tail(ni, v, bits, rpix);
     }
     return v;
 }
