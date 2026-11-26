@@ -119,15 +119,15 @@ jobs:
                 if [ "$rc" -eq 0 ]; then rm -f "$out/$name-$t-$i.log"; continue; fi
                 if [ "$rc" -ge 128 ]; then
                   crashes=$((crashes + 1))
-                  core=$(ls "$root"/cores/core.* 2>/dev/null | head -n 1)
+                  core=$(ls "$root"/cores/core.* 2>/dev/null | grep -v '/core\.timeout\.' | head -n 1)
                   {
                     echo "::group::CRASH $name $t run $i (exit $rc); last 15 lines of the log"
                     tail -n 15 "$out/$name-$t-$i.log" | cut -c1-300
                     if [ -n "$core" ]; then
                       gdb -batch -iex 'set debuginfod enabled on' -iex 'set pagination off' \
                         -ex 'p $_siginfo.si_signo' -ex 'p $_siginfo._sifields._sigfault.si_addr' -ex 'info registers rip rsp' -ex 'x/4i $pc' -ex 'info symbol $pc' \
-                        -ex 'info threads' -ex 'bt 30' -ex 'thread apply all bt 3' \
-                        "$root/bins/$name-$t" "$core" 2>&1 | cut -c1-400 | head -n 260
+                        -ex 'info threads' -ex 'bt 30' -ex 'info sharedlibrary' -ex 'thread apply all bt 3' \
+                        "$root/bins/$name-$t" "$core" 2>&1 | cut -c1-400 | head -n 400
                     else
                       echo "no core file"
                     fi
