@@ -21,7 +21,7 @@ pub struct Refused;
 
 /// The chain's candidate renderer: the photo's pixels from the node's input, through the node at the candidate's numbers, every
 /// per-pixel step after it, the Output and the display encode (`docs/34` section 2.2). It runs the chain on the 8192 sample pixels
-/// and returns each as a measured pixel ([`Px`](super::measure::Px)); the order of the pixels is the sample's, whatever the threads.
+/// and returns each as a measured pixel ([`Px`]); the order of the pixels is the sample's, whatever the threads.
 pub trait CandidateRenderer {
     /// The number of sample pixels.
     fn sample_len(&self) -> usize;

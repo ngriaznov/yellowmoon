@@ -1086,7 +1086,7 @@ fn uniform_step_of(u: &ColorUniformNode) -> UniformStep {
 }
 
 /// A Reference Grade node's parameters as the chain runs them (`docs/34` section 7.1): the corrector's trims, grade, colour warp and
-/// curves from the effective values (Strength applied once, [`ReferenceGradeNode::effective`]), then the hue curves and the element
+/// curves from the effective values (Strength applied once, `ReferenceGradeNode::effective`), then the hue curves and the element
 /// grades, with the node's `masks`. The plan makes this for every Reference Grade node; the fit makes it for each candidate, with no
 /// masks (a reference describes the whole picture, `docs/34` section 5.1).
 ///
