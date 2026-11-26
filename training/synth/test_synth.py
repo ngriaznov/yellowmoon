@@ -753,9 +753,10 @@ class Recipes(unittest.TestCase):
             elif e.get("group") == "node-uniform":
                 # the golden entries with a node on (docs/32 section 8): the same file as an entry of the set, settings of one node
                 self.assertEqual([i["kind"] for i in e["settings"]["nodes"]["items"]], ["color_uniform"])
-            elif e.get("group") == "node-blur":
-                # the golden entries with a Blur node on (docs/33 section 8): the same file as an entry of the set, one node
-                self.assertEqual([i["kind"] for i in e["settings"]["nodes"]["items"]], ["blur"])
+            elif e.get("group") == "node-reference-grade":
+                # the golden entry with a Reference Grade node on (docs/34): one node, full strength, no sidecar
+                self.assertEqual([i["kind"] for i in e["settings"]["nodes"]["items"]], ["reference_grade"])
+                self.assertEqual(e["settings"]["nodes"]["items"][0]["strength"], 100)
             else:
                 self.assertEqual(e["settings"], {})
             self.assertEqual((e["expected_hash"], e["reference"]), ("", ""))
