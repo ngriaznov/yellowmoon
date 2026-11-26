@@ -72,6 +72,9 @@ test.describe("Reference Grade", () => {
     const tools = page.getByRole("complementary", { name: "Tools" });
     await tools.getByRole("button", { name: "Show mask, Sky" }).click();
     await expect(tools.getByRole("button", { name: "Hide mask, Sky" })).toHaveAttribute("aria-pressed", "true");
+    // The pressed eye is the mask accent (#ff6fd2), as the mask rows' eye is, not the panel's green.
+    const eye = tools.getByRole("button", { name: "Hide mask, Sky" });
+    await expect(eye).toHaveCSS("color", "rgb(255, 111, 210)");
     // The view is the store's: it reached the viewport as the node's element 0, and no setting moved.
     await expect(page.locator("[data-mask-view], img[alt]").first()).toBeVisible();
     await settle(page);

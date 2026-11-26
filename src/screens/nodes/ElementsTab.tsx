@@ -86,6 +86,7 @@ function ElementCard({ store, rs, node, item, id, title, cap, last }: ElementCar
           <Button
             variant="header"
             className="ym-element__eye"
+            data-tool="eye"
             pressed={eye}
             disabled={noMask && !eye}
             aria-label={`${eye ? ELEMENTS_TEXT.eyeOn : ELEMENTS_TEXT.eye}, ${title}`}
