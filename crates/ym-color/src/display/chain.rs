@@ -344,6 +344,19 @@ pub struct ColorChain {
     dng_inverse: Option<DngDisplayInverse>,
 }
 
+/// One Reference Grade node's element planes in the layout of [`ColorChain::element_layout`].
+#[derive(Debug, Clone)]
+pub struct ElementPlaneRow {
+    /// The node's id.
+    pub node: u32,
+    /// The elements the colour pass reads a plane for: live in the row and not at the identity.
+    pub live: [bool; ELEMENT_COUNT],
+    /// The photo's scene the planes are made from.
+    pub scene: Arc<crate::mask_element::ElementScene>,
+    /// How many live elements the earlier entries have.
+    pub first: usize,
+}
+
 /// What a join step gives back.
 enum JoinOut {
     /// The picture output.
@@ -1104,6 +1117,48 @@ impl ColorChain {
     #[must_use]
     pub fn element_rows(&self) -> &[ElementRow] {
         &self.elements
+    }
+
+    /// How the element planes of the chain are laid out after its raster planes (`docs/34` section 7.2): one entry for each
+    /// element row, in [`ColorChain::element_rows`] order, with the elements that are live in the row **and** whose grade is
+    /// not the identity (the elements the colour pass reads a plane for). `first` counts the live elements of the earlier entries,
+    /// so the plane of the `k`-th live element of an entry is `raster rows + first + k`. The device records read this one list.
+    #[must_use]
+    pub fn element_layout(&self) -> Vec<ElementPlaneRow> {
+        let mut first = 0;
+        let mut out = Vec::with_capacity(self.elements.len());
+        for row in &self.elements {
+            let node = self.steps.iter().find(|(s, _)| s.node == row.node);
+            let mut live = [false; ELEMENT_COUNT];
+            if let Some((_, n)) = node {
+                for (e, l) in live.iter_mut().enumerate() {
+                    *l = row.live[e] && n.element_is_live(e);
+                }
+            }
+            let count = live.iter().filter(|&&l| l).count();
+            out.push(ElementPlaneRow {
+                node: row.node,
+                live,
+                scene: Arc::clone(&row.scene),
+                first,
+            });
+            first += count;
+        }
+        out
+    }
+
+    /// A chain of the same C1 to C8 with no node, no look and the sRGB cine rendering: its C12 is the picture the element
+    /// masks' guide is the lightness of (`docs/34` section 4a.3, step 3), which the device makes with a second colour pass
+    /// ([`ColorChain::scene_guide_pixel`] is its CPU twin).
+    ///
+    /// # Errors
+    ///
+    /// [`DisplayError::NonFiniteMatrix`], as [`ColorChain::new`].
+    pub fn scene_guide_chain(&self) -> Result<ColorChain, DisplayError> {
+        let mut p = ChainParams::new(self.params.matrix, self.params.tone);
+        p.output = OutputTarget::Srgb;
+        p.dither = false;
+        ColorChain::new(&p)
     }
 
     /// The raster rows of the chain, in plane order.

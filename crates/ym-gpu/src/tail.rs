@@ -518,7 +518,7 @@ fn prepare_tile(
         w,
         h,
     };
-    let planes = if chain.uses_rasters() {
+    let planes = if chain.uses_planes() {
         // The guide of Refine edges is a stage of the chain, which wants its Film pictures too (the window is the sampled
         // picture, whose first pixel is `grown`'s).
         let guide_chain = match &pictures {

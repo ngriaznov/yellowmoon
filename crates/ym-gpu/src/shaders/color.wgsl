@@ -808,19 +808,128 @@ fn cu_graded_apply(ni: u32, v_in: vec3<f32>, bits: u32) -> vec3<f32> {
     return v;
 }
 
+// A Reference Grade node's hue step (docs/34 section 4.2, ym_color::hue::HueStep::apply in f32). The record's R_HUE row holds, as u32,
+// x: the float index in `curves` of the node's two 1024-sample tables (hue_vs_hue in radians, then hue_vs_sat as a multiplier: a curve
+// that does nothing is a table of 0 or of 1, so the step has no test on which curves are live), y: the float index of the element blocks,
+// z: the number of live elements, w: the first of their raster planes. The hue is read with a `select`, so a pixel with no chroma
+// (r = 0) takes the same path as any other and moves by exactly 0; the scale and the rotation then move (p, q) only, and the Rec.709
+// luma of the input is put back with one shift of the three codes.
+fn hue_tab(base: u32, t: f32) -> f32 {
+    let u = t - floor(t);
+    let x = u * 1024.0;
+    let fl = floor(x);
+    let i0 = u32(fl) & 1023u;
+    let i1 = (i0 + 1u) & 1023u;
+    let a = curves[base + i0];
+    let b = curves[base + i1];
+    return a + (x - fl) * (b - a);
+}
+
+fn hue_node(ni: u32, v: vec3<f32>) -> vec3<f32> {
+    let base = nu(ni, R_HUE).x;
+    let p = dot(v, E1);
+    let q = dot(v, E2);
+    let r = sqrt(p * p + q * q);
+    let h = select(0.0, atan2(q, p), r > 0.0);
+    let t = h * 0.15915494309189535;
+    let delta = hue_tab(base, t);
+    let sigma = hue_tab(base + 1024u, t);
+    let turned = h + delta;
+    let p2 = r * sigma * cos(turned);
+    let q2 = r * sigma * sin(turned);
+    let o = v + (p2 - p) * E1 + (q2 - q) * E2;
+    return o + (dot(LUMA_709, v) - dot(LUMA_709, o));
+}
+
+// A Reference Grade node's element step (docs/34 section 4a.2, in the order of section 2.3): for each live element, in order, the soft mask
+// `a` is the element's u16 plane at the pixel (binding 7, the planes after the raster rows') and w <- w + a (local(w) - w). A block of
+// four f32 in `curves` holds the exposure shift in LogC4 code, cos and sin of the turn and the chroma ratio; the subject's block has a
+// chroma of 0 (the host wrote it): the exposure shift alone, with no round trip through the plane. An element with a plane of 0 at the
+// pixel is skipped, as on the CPU.
+fn elem_node(ni: u32, v: vec3<f32>, rpix: u32) -> vec3<f32> {
+    let rec = nu(ni, R_HUE);
+    var w = v;
+    for (var k = 0u; k < rec.z; k++) {
+        let plane = rec.w + k;
+        var code = 0u;
+        if (plane < CU.rst.w) {
+            let word = rasters[plane * CU.rst.x + (rpix >> 1u)];
+            code = (word >> ((rpix & 1u) * 16u)) & 0xffffu;
+        }
+        if (code != 0u) {
+            let a = f32(code) / 65535.0;
+            let b0 = rec.y + 4u * k;
+            let shift = curves[b0];
+            let ch = curves[b0 + 3u];
+            var l = w + vec3<f32>(shift);
+            if (ch != 0.0) {
+                let cs = curves[b0 + 1u];
+                let sn = curves[b0 + 2u];
+                let m = (w.x + w.y + w.z) / 3.0;
+                let p = dot(w, E1);
+                let q = dot(w, E2);
+                let p2 = ch * (cs * p - sn * q);
+                let q2 = ch * (sn * p + cs * q);
+                let mean = m + shift;
+                l = vec3<f32>(mean) + p2 * E1 + q2 * E2;
+            }
+            w = w + a * (l - w);
+        }
+    }
+    return w;
+}
+
+// A Reference Grade node with a live hue or element step (docs/34 section 7.2, variant H1): a copy of the corrector's four steps of
+// `node_apply`, then the hue step, then the element step. Called only from the top of `node_apply` (`N_HUE` or `N_ELEM`), which returns
+// its value: every other node runs `node_apply`'s own body unchanged.
+fn rg_apply(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, bits: u32, rpix: u32) -> vec3<f32> {
+    var v = v_in;
+    var lin = c7;
+    if ((bits & N_TRIM) != 0u) {
+        if (!from_input) {
+            lin = logc4_decode3(v_in);
+        }
+        lin = lin * nf(ni, R_GAIN).xyz;
+        v = logc4_encode3(lin);
+    }
+    if ((bits & N_GRADE) != 0u) {
+        if (!from_input && (bits & N_TRIM) == 0u) {
+            lin = logc4_decode3(v);
+        }
+        let l = logc4_encode(dot(Y_AWG4, lin));
+        v = c9_grade(v, l, ni);
+    }
+    if ((bits & N_WARP) != 0u) {
+        v = c9b_warp(v, ni);
+    }
+    if ((bits & N_CURVES) != 0u) {
+        v = c11_curves(v, ni);
+    }
+    if ((bits & N_HUE) != 0u) {
+        v = hue_node(ni, v);
+    }
+    if ((bits & N_ELEM) != 0u) {
+        v = elem_node(ni, v, rpix);
+    }
+    return v;
+}
+
 // One node on one pixel: its trims, C9, C9b and C11 (docs/23 section 1.3), each left out when its bit in `ctl.x` is clear,
 // the whole node when `N_SKIP` is set (bypassed, or every step at its identity). `v_in` is the picture the node reads;
 // `c7` is the linear AWG4 triple C8 was encoded from, which is the node's exact linear input when it reads the Input
 // (`from_input`: the luma of C9 is taken from it, with no decode of an encode); a node that reads another node's picture
 // decodes it. `stage` is 1, 2 or 3 to return Main's value after C9, C9b or C11 (the trace's stops), 0 otherwise.
 // The bits are decided on the host in f64, so no rounding here decides whether a step runs.
-fn node_apply(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, stage: u32) -> vec3<f32> {
+fn node_apply(ni: u32, v_in: vec3<f32>, c7: vec3<f32>, from_input: bool, stage: u32, rpix: u32) -> vec3<f32> {
     let bits = nu(ni, R_CTL).x;
     if ((bits & N_SKIP) != 0u) {
         return v_in;
     }
     if ((bits & N_UNIFORM) != 0u && (bits & (N_TRIM | N_GRADE | N_WARP | N_CURVES)) != 0u) {
         return cu_graded_apply(ni, v_in, bits);
+    }
+    if ((bits & (N_HUE | N_ELEM)) != 0u) {
+        return rg_apply(ni, v_in, c7, from_input, bits, rpix);
     }
     var v = v_in;
     var lin = c7;
@@ -1264,7 +1373,7 @@ fn run_nodes(c7: vec3<f32>, c8: vec3<f32>, pix: u32, pos: vec2<f32>, rpix: u32) 
             m_known = true;
         }
         if (!film && !(m_known && m == 0.0)) {
-            nv = node_apply(ni, v_in, c7, from_input, stage);
+            nv = node_apply(ni, v_in, c7, from_input, stage, rpix);
         }
         if (stage != 0u) {
             return NodesOut(nv, true);

@@ -63,7 +63,9 @@ pub mod node;
 mod transform;
 pub mod trim;
 
-pub use chain::{BeforePoint, ChainParams, ColorChain, LookSetting, PlanState, StageTrace, View};
+pub use chain::{
+    BeforePoint, ChainParams, ColorChain, ElementPlaneRow, LookSetting, PlanState, StageTrace, View,
+};
 pub use dng_inverse::DNG_SCENE_LIMIT;
 pub use frame::{Frame, Layout};
 pub use mix::{BlendMode, JoinParams};

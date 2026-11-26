@@ -1003,18 +1003,20 @@ pub fn vision_kinds(s: &DevelopSettings) -> Vec<VisionKind> {
     kinds
 }
 
-/// Whether the photo's plan has a node with a raster row: the render then makes the raster planes over its window
+/// Whether the photo's plan has a node with a raster row, or a live element grade: the render then makes the raster planes over its window
 /// before the colour pass, and a view too big for one device window is made on the CPU.
 #[must_use]
 pub fn uses_rasters(s: &DevelopSettings) -> bool {
     let Ok(plan) = node_plan(&s.nodes, Stop::Output) else {
         return false;
     };
-    plan.node_ids().into_iter().any(|id| {
-        s.nodes
-            .masks_of(id)
-            .is_some_and(|m| node_masks(m).prepare().needs_rasters())
-    })
+    // The element planes of a Reference Grade node are made by the same pass, beside the raster rows' (`docs/34` section 7.2).
+    has_live_elements(s)
+        || plan.node_ids().into_iter().any(|id| {
+            s.nodes
+                .masks_of(id)
+                .is_some_and(|m| node_masks(m).prepare().needs_rasters())
+        })
 }
 
 /// Whether the photo's plan has a Film node that does something (not bypassed, Strength above 0): the picture then has

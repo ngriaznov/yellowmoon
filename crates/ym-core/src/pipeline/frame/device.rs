@@ -744,7 +744,7 @@ fn prepared_for(
     // The raster masks of the nodes (`docs/23` section 5.5): their planes are made over the picture the colour pass
     // makes, from a sampled picture that goes on beyond it by the masks' receptive field, as far as the photo does.
     // The pixels of the picture that are paper have no plane.
-    if chain.uses_rasters()
+    if chain.uses_planes()
         && let Some(grown) = rasters
     {
         let r = &grown.read;

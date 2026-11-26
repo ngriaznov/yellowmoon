@@ -32,6 +32,11 @@
 //   5 UP        q = a G + b with a and b bilinearly upsampled from the coarse grid, quantised into outp.
 //   6 FINAL     q = a G + b at full resolution, quantised into outp.
 //   7 QUANT     work[a] quantised into outp.
+//   9 RESAMPLE_NN  as RESAMPLE, for an element's scene plane (docs/34 section 4a.3): the nearest pixel of S0 at the place of each pixel
+//               (floor(place * size), clamped), 1 where its code is not 0, else 0.
+//  10 SCENE_GUIDE  in place over a colour stage image bound as `work` (planes 0 to 2: display-linear sRGB; pa: x the plane's length, y, z
+//               its size, w its stride): plane 0 becomes the element guide, the CIELAB L* / 100 of the 8-bit sRGB codes of the pixel
+//               (ym_color::display::ColorChain::scene_guide_pixel).
 
 struct RU {
     op: vec4<u32>,    // x: the op; y: fold mode (0 mean, 1 max, 2 min); z: fold axis (0 x, 1 y); w: fold radius
@@ -67,6 +72,8 @@ const OP_UP: u32 = 5u;
 const OP_FINAL: u32 = 6u;
 const OP_QUANT: u32 = 7u;
 const OP_COMB: u32 = 8u;
+const OP_RESAMPLE_NN: u32 = 9u;
+const OP_SCENE_GUIDE: u32 = 10u;
 
 fn unit01(x: f32) -> f32 {
     if (is_nan_f(x)) {
@@ -208,6 +215,57 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             v = resample(vec2<f32>(samp[4u * RU_.samp.y + si], samp[5u * RU_.samp.y + si]));
         }
         store_d(x, y, v);
+        return;
+    }
+
+    if (op == OP_RESAMPLE_NN) {
+        if (x >= RU_.pd.y || y >= RU_.pd.z) {
+            return;
+        }
+        let si = (RU_.samp.w + u32(y)) * RU_.samp.x + RU_.samp.z + u32(x);
+        var v = 0.0;
+        if (samp[3u * RU_.samp.y + si] == 0.0) {
+            let sw = i32(RU_.s0.x);
+            let sh = i32(RU_.s0.y);
+            let i = clamp(i32(floor(samp[4u * RU_.samp.y + si] * f32(sw))), 0, sw - 1);
+            let j = clamp(i32(floor(samp[5u * RU_.samp.y + si] * f32(sh))), 0, sh - 1);
+            let idx = u32(j * sw + i);
+            let word = s0[idx >> 1u];
+            if (((word >> ((idx & 1u) * 16u)) & 0xffffu) != 0u) {
+                v = 1.0;
+            }
+        }
+        store_d(x, y, v);
+        return;
+    }
+
+    if (op == OP_SCENE_GUIDE) {
+        if (x >= RU_.pa.y || y >= RU_.pa.z) {
+            return;
+        }
+        let i = u32(y * RU_.pa.w + x);
+        let n = u32(RU_.pa.x);
+        let lin = vec3<f32>(work[i], work[n + i], work[2u * n + i]);
+        var dec = vec3<f32>(0.0);
+        for (var k = 0; k < 3; k++) {
+            let c = clamp(lin[k], 0.0, 1.0);
+            var e = 12.92 * c;
+            if (c > 0.0031308) {
+                e = 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+            }
+            let code = floor(clamp(e, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
+            var d = code / 12.92;
+            if (code > 0.04045) {
+                d = pow((code + 0.055) / 1.055, 2.4);
+            }
+            dec[k] = d;
+        }
+        let yl = 0.2126 * dec.x + 0.7152 * dec.y + 0.0722 * dec.z;
+        var f = (24389.0 / 27.0 * yl + 16.0) / 116.0;
+        if (yl > 216.0 / 24389.0) {
+            f = pow(yl, 1.0 / 3.0);
+        }
+        work[i] = clamp((116.0 * f - 16.0) / 100.0, 0.0, 1.0);
         return;
     }
 

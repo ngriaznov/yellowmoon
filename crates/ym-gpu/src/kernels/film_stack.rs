@@ -556,7 +556,7 @@ impl FilmStack {
             );
         }
         // The raster rows before the node: planes over the area the node reads.
-        let planes = if chain.uses_rasters() {
+        let planes = if chain.uses_planes() {
             let (Some(r), Some(frame)) = (rasters, photo.filter(|_| wide.planes == 6)) else {
                 return Err(GpuError::InvalidInput(
                     "film: a raster mask row before a Film node needs the photo frame and the six-plane picture"

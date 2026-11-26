@@ -120,6 +120,7 @@ use ym_color::grade::{
     BALANCE_CENTER_STOPS, GradeParams, ZONE_CENTER_STOPS, contrast_slope, logc4_at_stops,
     saturation_factor,
 };
+use ym_color::hue::{ELEMENT_STOP_CODE, HUE_TABLE_LEN};
 use ym_color::look::{LookInput, intensity_fraction};
 use ym_color::lut::Lut;
 use ym_color::mask::{MaskOp, OpKind, PhotoFrame};
@@ -294,6 +295,12 @@ pub(crate) const NODE_BLUR: u32 = 16384;
 /// has none of them) the kernel pulls the colour toward the target held in the record's grade rows ([`R_UNI_T`], [`R_UNI_K`],
 /// [`R_UNI_R`]). Set only for a live step: a node at its identity is [`NODE_SKIP`].
 pub(crate) const NODE_UNIFORM: u32 = 8192;
+/// The step is a Reference Grade node's with a live hue step (`N_HUE`, `docs/34` section 7.2): after the corrector's four steps the kernel
+/// turns and scales the colour by the two tables the record names ([`R_HUE`]), and restores the luma.
+pub(crate) const NODE_HUE: u32 = 32768;
+/// The step is a Reference Grade node's with live element grades (`N_ELEM`): the kernel grades each live element through its soft
+/// mask, a plane of the raster planes (`docs/34` section 4a, 7.2).
+pub(crate) const NODE_ELEM: u32 = 65536;
 /// The mask row is subtracted (`MF_SUBTRACT`, in `MaskOpU::head.y`).
 pub(crate) const MASK_SUBTRACT: u32 = 1;
 /// The mask row is inverted (`MF_INVERT`).
@@ -304,7 +311,7 @@ pub(crate) const REC_ROWS: u32 = (size_of::<NodeRecU>() / 16) as u32;
 pub(crate) const MASK_ROW_VEC4: u32 = (size_of::<MaskOpU>() / 16) as u32;
 
 /// The row (`vec4`) of each field of a node record: `R_*` in `color.wgsl`, written from [`NodeRecU`].
-pub(crate) fn record_rows() -> [(&'static str, u32); 16] {
+pub(crate) fn record_rows() -> [(&'static str, u32); 17] {
     let row = |bytes: usize| (bytes / 16) as u32;
     [
         ("R_CTL", row(offset_of!(NodeRecU, ctl))),
@@ -323,6 +330,7 @@ pub(crate) fn record_rows() -> [(&'static str, u32); 16] {
         ("R_UNI_T", row(offset_of!(NodeRecU, join)) + J_IN),
         ("R_UNI_K", row(offset_of!(NodeRecU, join)) + J_IN + 1),
         ("R_UNI_R", row(offset_of!(NodeRecU, join)) + J_AL),
+        ("R_HUE", row(offset_of!(NodeRecU, join)) + J_IN),
     ]
 }
 
@@ -845,7 +853,9 @@ struct CurveEntry {
     sets: Vec<CurveSet>,
     /// For each set, bit `i` set when its table `i` (luma, R, G, B) is not the identity.
     flags: Vec<u32>,
-    /// Four tables of [`TABLE_SIZE`] entries for each set, in order (a stand-in of four floats when there are
+    /// What follows the curve tables: the hue tables and the element blocks of the Reference Grade nodes (`docs/34` section 7.2).
+    extra: Vec<f32>,
+    /// Four tables of [`TABLE_SIZE`] entries for each set, in order, then `extra` (a stand-in of four floats when there are
     /// none: nothing reads it).
     buf: Arc<PooledBuffer>,
 }
@@ -947,14 +957,19 @@ impl ChainTables {
         &mut self,
         ctx: &GpuContext,
         sets: &[CurveSet],
+        extra: &[f32],
     ) -> Result<(Arc<PooledBuffer>, Vec<u32>), GpuError> {
-        if let Some(i) = self.curves.iter().position(|e| e.sets == sets) {
+        if let Some(i) = self
+            .curves
+            .iter()
+            .position(|e| e.sets == sets && e.extra == extra)
+        {
             let e = self.curves.remove(i);
             let out = (Arc::clone(&e.buf), e.flags.clone());
             self.curves.push(e);
             return Ok(out);
         }
-        let mut data = vec![0.0f32; 4 * TABLE_SIZE * sets.len().max(1)];
+        let mut data = vec![0.0f32; 4 * TABLE_SIZE * sets.len()];
         let mut flags = Vec::with_capacity(sets.len());
         for (k, set) in sets.iter().enumerate() {
             let baked = set.bake();
@@ -971,8 +986,9 @@ impl ChainTables {
             }
             flags.push(bits);
         }
-        if sets.is_empty() {
-            data.truncate(4);
+        data.extend_from_slice(extra);
+        if data.is_empty() {
+            data.resize(4, 0.0);
         }
         let buf = Arc::new(storage_buffer(
             ctx,
@@ -981,6 +997,7 @@ impl ChainTables {
         )?);
         self.curves.push(CurveEntry {
             sets: sets.to_vec(),
+            extra: extra.to_vec(),
             flags: flags.clone(),
             buf: Arc::clone(&buf),
         });
@@ -1179,6 +1196,98 @@ impl ChainTables {
     }
 }
 
+/// What the Reference Grade nodes of a plan put after the curve tables of binding 2, and in their records.
+struct ReferenceTables {
+    /// The floats that follow the curve tables: for each node with a live hue step its two tables, then for each node with live
+    /// element grades its blocks.
+    data: Vec<f32>,
+    /// For each node that does something on the device: the flag bits and its `R_HUE` row.
+    of_node: std::collections::BTreeMap<u32, ReferenceNode>,
+}
+
+struct ReferenceNode {
+    bits: u32,
+    row: [u32; 4],
+}
+
+/// The hue tables and element blocks of the Reference Grade nodes of `nodes` (plan order), as floats from `base` on in binding 2.
+/// A node's `R_HUE` row is x: the float index of its hue tables (`hue_vs_hue` in radians, then `hue_vs_sat`, 1024 each; a curve that does
+/// nothing is a table of 0 or of 1), y: the float index of its element blocks (four floats a live element: the exposure shift in LogC4
+/// code, the cosine and sine of the turn, the chroma ratio, 0 for an element that only shifts the exposure), z: its live elements,
+/// w: the first of their raster planes (after the chain's raster rows, in `ColorChain::element_layout` order).
+fn reference_tables(
+    chain: &ColorChain,
+    nodes: &[(ym_color::plan::Step, Option<ym_color::display::NodeParams>)],
+    base: usize,
+) -> ReferenceTables {
+    let layout = chain.element_layout();
+    let raster_rows = chain.rasters().rows.len();
+    let mut data: Vec<f32> = Vec::new();
+    let mut of_node = std::collections::BTreeMap::new();
+    let mut hue_at: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+    for (step, n) in nodes {
+        let Some(r) = n
+            .as_ref()
+            .filter(|n| !n.bypass)
+            .and_then(|n| n.reference.as_ref())
+        else {
+            continue;
+        };
+        if r.hue.is_identity() {
+            continue;
+        }
+        hue_at.insert(step.node, (base + data.len()) as u32);
+        match r.hue.hue_vs_hue() {
+            Some(t) => data.extend(t.values().iter().map(|&v| v.to_radians() as f32)),
+            None => data.extend(std::iter::repeat_n(0.0f32, HUE_TABLE_LEN)),
+        }
+        match r.hue.hue_vs_sat() {
+            Some(t) => data.extend(t.to_f32()),
+            None => data.extend(std::iter::repeat_n(1.0f32, HUE_TABLE_LEN)),
+        }
+    }
+    for (step, n) in nodes {
+        let Some(r) = n
+            .as_ref()
+            .filter(|n| !n.bypass)
+            .and_then(|n| n.reference.as_ref())
+        else {
+            continue;
+        };
+        let mut row = [0u32; 4];
+        let mut bits = 0;
+        if let Some(&at) = hue_at.get(&step.node) {
+            row[0] = at;
+            bits |= NODE_HUE;
+        }
+        if let Some(entry) = layout.iter().find(|l| l.node == step.node) {
+            let live = entry.live.iter().filter(|&&l| l).count();
+            if live > 0 {
+                row[1] = (base + data.len()) as u32;
+                row[2] = live as u32;
+                row[3] = (raster_rows + entry.first) as u32;
+                bits |= NODE_ELEM;
+                for (e, g) in r.elements.grades().iter().enumerate() {
+                    if !entry.live[e] {
+                        continue;
+                    }
+                    let shift = (g.exposure_ev * ELEMENT_STOP_CODE) as f32;
+                    if g.hue_deg == 0.0 && g.chroma == 1.0 {
+                        data.extend([shift, 1.0, 0.0, 0.0]);
+                    } else {
+                        let (sin, cos) = g.hue_deg.to_radians().sin_cos();
+                        data.extend([shift, cos as f32, sin as f32, g.chroma as f32]);
+                    }
+                }
+            }
+        }
+        if bits != 0 {
+            of_node.insert(step.node, ReferenceNode { bits, row });
+        }
+    }
+    ReferenceTables { data, of_node }
+}
+
 /// A pass of the plan in the node records: its first record and its number of steps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PassSpan {
@@ -1271,16 +1380,6 @@ impl NodePlan {
                     step.node
                 ))
             })?;
-            // A Reference Grade node's hue curves and element grades have no kernel until RG-08 (`docs/34` section 7.2): the
-            // device refuses a live one, as it refuses any plan it cannot hold, and the CPU makes the frame with this reason
-            // (`RenderReport::cpu_reason`). The node's corrector steps alone run here like a corrector's, and a node at the
-            // identity (or bypassed) changes nothing.
-            if !n.bypass && n.reference.as_ref().is_some_and(|r| !r.is_identity()) {
-                return Err(GpuError::InvalidInput(format!(
-                    "node {} has hue curves or element grades, which the graphics card does not run yet",
-                    step.node
-                )));
-            }
             nodes.push((*step, Some(n)));
         }
         // The curve tables: four for each node that runs a curve, in plan order.
@@ -1290,7 +1389,10 @@ impl NodePlan {
             .filter(|n| !n.bypass && !n.curves.is_identity())
             .map(|n| n.curves.clone())
             .collect();
-        let (curves, curve_bits) = tables.curves(ctx, &sets)?;
+        // A Reference Grade node's hue tables and element blocks follow the curve tables in the same buffer (`docs/34` section 7.2),
+        // so no existing node's table offset moves and a graph without the node has the bytes it had.
+        let reference = reference_tables(chain, &nodes, 4 * TABLE_SIZE * sets.len());
+        let (curves, curve_bits) = tables.curves(ctx, &sets, &reference.data)?;
         let mut next_set = 0usize;
         let mut records = Vec::with_capacity(nodes.len());
         let mut mask_rows: Vec<MaskOpU> = Vec::new();
@@ -1365,8 +1467,14 @@ impl NodePlan {
                 .uniform
                 .filter(|u| !u.is_identity())
                 .and_then(|u| u.target.map(|t| (t, u.amounts)));
+            let rg_live = reference.of_node.contains_key(&step.node);
             if n.bypass
-                || (gain.is_none() && !grade && warp.is_identity() && !curve && uni.is_none())
+                || (gain.is_none()
+                    && !grade
+                    && warp.is_identity()
+                    && !curve
+                    && uni.is_none()
+                    && !rg_live)
             {
                 bits |= NODE_SKIP;
             } else {
@@ -1409,6 +1517,14 @@ impl NodePlan {
                 if film.blur {
                     bits |= NODE_BLUR;
                 }
+            }
+            // A Reference Grade node's hue and element steps (`docs/34` section 7.2): the flags, and in the row `R_HUE` where its
+            // tables, its element blocks and its element planes are.
+            if let Some(rg) = reference.of_node.get(&step.node)
+                && bits & NODE_SKIP == 0
+            {
+                r.join[J_IN as usize] = rg.row;
+                bits |= rg.bits;
             }
             // The mask rows (`ym_color::mask`): the same rows, derived once, as the CPU reads. A node blends when
             // it has rows, an Invert or a key input.
@@ -1749,6 +1865,19 @@ impl PreparedChain {
         let mut chain = self.clone();
         chain.photo = Some(frame);
         chain
+    }
+
+    /// A chain prepared for `chain` that colours as this one does: the same arithmetic (`fast`) and photo frame. The element
+    /// planes' guide is made by one (`docs/34` section 4a.3).
+    ///
+    /// # Errors
+    ///
+    /// As [`PreparedChain::new`].
+    pub fn like(&self, ctx: &GpuContext, chain: &ColorChain) -> Result<Self, GpuError> {
+        let mut other = PreparedChain::new(ctx, chain)?;
+        other.base.flags[3] = self.base.flags[3];
+        other.photo = self.photo;
+        Ok(other)
     }
 
     /// The same chain for a **view**: the colour pass runs the plain f32 arithmetic it had before F-08d (the same bits as
@@ -2688,6 +2817,38 @@ mod tests {
         assert_eq!(MASK_ROW_VEC4, 4);
         assert_eq!(REC_ROWS, 83);
         assert_eq!(MAX_STEPS * 64 * size_of::<MaskOpU>(), 262_144);
+    }
+
+    /// RG-08 (`docs/34` section 7.2): a Reference Grade step keeps its hue tables, element blocks and element planes in one row of the
+    /// mixers' region (`R_HUE`, `R_JOIN + J_IN`), which a node of that kind never uses; the record did not grow, its two new flags are
+    /// free bits, and `R_HUE` is the row Colour Uniform keeps its target in (a node is one kind or the other).
+    #[test]
+    fn the_reference_step_lives_in_one_mixer_row_of_the_record() {
+        let rows: std::collections::BTreeMap<_, _> = record_rows().into_iter().collect();
+        let join = (offset_of!(NodeRecU, join) / 16) as u32;
+        assert_eq!(rows["R_HUE"], join + J_IN);
+        assert!(rows["R_HUE"] > join && rows["R_HUE"] < join + JOIN_ROWS as u32);
+        assert_eq!(size_of::<NodeRecU>(), 1328);
+        assert_eq!(NODE_HUE, 1 << 15);
+        assert_eq!(NODE_ELEM, 1 << 16);
+        let taken = [
+            NODE_SKIP,
+            NODE_TRIM,
+            NODE_GRADE,
+            NODE_WARP,
+            NODE_CURVES,
+            NODE_MAIN,
+            NODE_BLEND,
+            NODE_INVERT,
+            NODE_LUMA,
+            NODE_FILM,
+            NODE_FILM_LIVE,
+            NODE_JOIN,
+            NODE_FACE,
+            NODE_BLUR,
+            NODE_UNIFORM,
+        ];
+        assert!(taken.iter().all(|b| b & (NODE_HUE | NODE_ELEM) == 0));
     }
 
     /// CG-04 (`docs/32` section 12a.4): a Colour Uniform step uses the mixers' rows of the record, which a node of that kind never

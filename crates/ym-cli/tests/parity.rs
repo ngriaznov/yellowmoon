@@ -2096,7 +2096,7 @@ fn reference_doc(with_elements: bool) -> serde_json::Value {
 /// Reference Grade's element masks (RG-04) with the deterministic fake scene on both sides (`SceneModel::fake_default` for the app,
 /// `YELLOWMOON_TEST_SCENE=fake` for the binary): the same files in JPEG, 16-bit TIFF and DNG, the node changes pixels, and the
 /// element grades change pixels beyond what the rest of the node does. The app makes its own scene at export time, as `ym` does,
-/// from the CPU reference picture. The CPU leg (the device refuses a live element grade until RG-08); runs on every platform.
+/// from the CPU reference picture. The CPU leg; runs on every platform (the device leg is next).
 #[test]
 fn reference_grade_element_masks_are_the_same_files_through_the_app_path_and_the_binary() {
     graph_leg_full(
@@ -2150,6 +2150,22 @@ fn reference_grade_element_masks_are_the_same_files_through_the_app_path_and_the
                 .replace_settings(app.photo, full)
                 .expect("replace");
         },
+    );
+}
+
+/// The device leg of Reference Grade (RG-08): the hue step, the element step and the element planes run on the device (the scene is the
+/// CPU's fake, the planes are made by the raster pass), and the app and the binary write the same files.
+#[test]
+fn reference_grade_is_the_same_files_through_the_app_path_and_the_binary_on_the_device() {
+    graph_leg_full(
+        "reference grade",
+        reference_doc(true),
+        2,
+        true,
+        None,
+        true,
+        Depth::FakeScene,
+        |_| {},
     );
 }
 

@@ -35,7 +35,9 @@ use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use ym_color::display::ColorChain;
+use ym_color::hue::ELEMENT_COUNT;
 use ym_color::mask::PhotoFrame;
+use ym_color::mask_element::ELEMENT_EPS;
 use ym_color::mask_raster::{Area, RasterSet, RasterSteps, SourcePlane};
 
 use super::color::{PreparedChain, Stop};
@@ -87,6 +89,16 @@ enum Op {
     Final = 6,
     Quant = 7,
     Comb = 8,
+    ResampleNearest = 9,
+    SceneGuide = 10,
+}
+
+/// An element's scene plane on the device, with the radius of its guided filter.
+struct ElementSource {
+    s0: Arc<PooledBuffer>,
+    width: usize,
+    height: usize,
+    radius: usize,
 }
 
 /// How a window fold combines (`mode` of the SCAN and COMB ops).
@@ -157,6 +169,47 @@ impl std::fmt::Debug for RasterPlanes {
 }
 
 impl RasterPlanes {
+    /// Planes made on the host (`planes[k]` holds `width * height` u16 codes, row-major), uploaded as the colour pass reads them:
+    /// the CPU reference's own planes ([`ym_color::mask_raster::CpuPlanes`]) for a test or a caller that has them, so that the device
+    /// and the CPU chain read the same codes.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::InvalidInput`] when a plane is not `width * height` codes; the pool's errors.
+    pub fn from_codes(
+        ctx: &GpuContext,
+        width: usize,
+        height: usize,
+        planes: &[Vec<u16>],
+    ) -> Result<Self, GpuError> {
+        let stride = even(width);
+        let mut bytes = vec![0u8; planes.len() * stride * height * 2];
+        for (k, plane) in planes.iter().enumerate() {
+            if plane.len() != width * height {
+                return Err(GpuError::InvalidInput(format!(
+                    "a raster plane of {} codes for a {width} x {height} window",
+                    plane.len()
+                )));
+            }
+            for y in 0..height {
+                for x in 0..width {
+                    let at = (k * stride * height + y * stride + x) * 2;
+                    bytes[at..at + 2].copy_from_slice(&plane[y * width + x].to_le_bytes());
+                }
+            }
+        }
+        let buf = Arc::new(storage_buffer(ctx, "raster planes (host)", &bytes)?);
+        Ok(Self {
+            buf,
+            width,
+            height,
+            stride,
+            planes: planes.len(),
+            row0: 0,
+            rows_held: height,
+        })
+    }
+
     /// Words in one plane (two u16 codes to a word).
     #[must_use]
     pub fn plane_words(&self) -> usize {
@@ -502,6 +555,7 @@ impl Rec<'_, '_> {
         let label = match u.op[0] {
             0 => "mask raster resample",
             1 | 8 => "mask raster fold",
+            9 => "mask raster element resample",
             2 => "mask raster mul",
             3 => "mask raster coef",
             4 => "mask raster block",
@@ -620,6 +674,68 @@ fn floor_div(a: i64, b: i64) -> i64 {
 /// `ceil(a / b)` for a positive `b`.
 fn ceil_div(a: i64, b: i64) -> i64 {
     -((-a).div_euclid(b))
+}
+
+/// The guided filter at full resolution of the mask in plane 0 of the scratch, with the guide of the pass, quantised into the output
+/// window: seven planes of the grown window `g` (the mask, a temporary, the two scan planes, then three more from `rest`). The order of
+/// the means keeps at most four of them alive at once and reuses the mask's plane once it is spent. Rows that refine their edges and the
+/// element planes (`docs/34` section 4a.3) record the same ops.
+#[allow(clippy::too_many_arguments)] // the ops' own fields
+fn guided_full(
+    rec: &mut Rec<'_, '_>,
+    g: Area,
+    rest: usize,
+    origin: (i32, i32),
+    frame_fine: [i32; 4],
+    r: usize,
+    eps: f64,
+    te: Area,
+) -> Result<(), GpuError> {
+    let (gw, gh) = (g.w as i32, g.h as i32);
+    let n = g.w * g.h;
+    let slot = |k: usize| Slot {
+        off: (k * n) as i32,
+        w: gw,
+        h: gh,
+    };
+    let (p, t) = (slot(0), slot(1));
+    let more = |k: usize| Slot {
+        off: (rest + k * n) as i32,
+        w: gw,
+        h: gh,
+    };
+    let (s4, s5, s6) = (more(0), more(1), more(2));
+    // mean(guide * p) into s4, through s5 as the product.
+    rec.mul(slot(0), true, p, false, s5)?;
+    rec.mean(s5, t, s4, origin, frame_fine, r, false)?;
+    // mean(p) into s5 (the product is spent). p is spent after it.
+    rec.mean(p, t, s5, origin, frame_fine, r, false)?;
+    // mean(guide^2) into s6, through p's plane as the product.
+    rec.mul(slot(0), true, slot(0), true, p)?;
+    rec.mean(p, t, s6, origin, frame_fine, r, false)?;
+    // mean(guide) into p's plane. The guide is the first fold's input.
+    rec.fold(slot(0), t, origin, frame_fine, true, Fold::Mean, r, true)?;
+    rec.fold(t, p, origin, frame_fine, false, Fold::Mean, r, false)?;
+    // a (in place of s6) and b (in place of s4) from the means of the guide (p), of the mask (s5), of
+    // the guide squared (s6) and of the guide times the mask (s4).
+    {
+        let mut u = rec.base;
+        u.op[0] = Op::Coef as u32;
+        u.pa = p.vec();
+        u.pb = s5.vec();
+        u.pc = [s6.off, s4.off, 0, gw];
+        u.f[0] = eps as f32;
+        rec.dispatch(u, (g.w, g.h), false)?;
+    }
+    // a-bar into p's place, b-bar into s5's.
+    rec.mean(s6, t, p, origin, frame_fine, r, false)?;
+    rec.mean(s4, t, s5, origin, frame_fine, r, false)?;
+    let mut u = rec.base;
+    u.op[0] = Op::Final as u32;
+    u.pa = p.vec();
+    u.pb = s5.vec();
+    u.pc = [0, 0, 0, rec.guide_stride()];
+    rec.dispatch(u, (te.w, te.h), true)
 }
 
 /// The sampler's image the pass reads: one the caller made, or one the pass made (and keeps alive).
@@ -815,9 +931,15 @@ fn encode_rows<'p, 's>(
 ) -> Result<RasterPlanes, GpuError> {
     let ctx = passes.context();
     let set: &RasterSet = chain.rasters();
-    if set.is_empty() {
+    // The element planes of the Reference Grade nodes (`docs/34` sections 4a.3 and 7.2) follow the raster rows' in the same buffer.
+    let layout = chain.element_layout();
+    let n_elem: usize = layout
+        .iter()
+        .map(|l| l.live.iter().filter(|&&b| b).count())
+        .sum();
+    if set.is_empty() && n_elem == 0 {
         return Err(GpuError::InvalidInput(
-            "the chain has no raster row".to_owned(),
+            "the chain has no raster row and no element plane".to_owned(),
         ));
     }
     let e = job.extent;
@@ -876,7 +998,7 @@ fn encode_rows<'p, 's>(
     // The output.
     let plane_words = stride * e.h / 2;
     let plane_bytes = (plane_words * 4) as u64;
-    let out_bytes = (set.rows.len() * plane_words * 4) as u64;
+    let out_bytes = ((set.rows.len() + n_elem) * plane_words * 4) as u64;
     let list = passes.id();
     let cache = cache.filter(|_| !ctx.counters_shared().planes_kept_off());
     let usage = if cache.is_some() || tiled {
@@ -924,11 +1046,11 @@ fn encode_rows<'p, 's>(
         width: e.w,
         height: e.h,
         stride,
-        planes: set.rows.len(),
+        planes: set.rows.len() + n_elem,
         row0: 0,
         rows_held: e.h,
     };
-    if todo.is_empty() {
+    if todo.is_empty() && n_elem == 0 {
         return Ok(plane);
     }
     // A tile that no window pixel is in has no plane code but 0; a pass in tiles clears the planes first so that the
@@ -958,6 +1080,45 @@ fn encode_rows<'p, 's>(
         passes.hold(Arc::clone(&s0));
         sources.push((src, s0));
     }
+    // The elements' scene planes (one u16 plane for each live element, on the scene's own grid, uploaded once and kept with the
+    // raster rows' sources), their radii, and the chain that renders the guide's picture.
+    let mut elements: Vec<ElementSource> = Vec::with_capacity(n_elem);
+    for entry in &layout {
+        let scene = &entry.scene;
+        let radius = scene.radius(u_px);
+        for e in (0..ELEMENT_COUNT).filter(|&e| entry.live[e]) {
+            let data: Vec<u16> = scene
+                .bits
+                .iter()
+                .map(|&b| if b >> e & 1 != 0 { u16::MAX } else { 0 })
+                .collect();
+            let plane = SourcePlane {
+                key: scene
+                    .key
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                    .wrapping_add(e as u64 + 1),
+                width: scene.width,
+                height: scene.height,
+                data,
+            };
+            let s0 = source_buffer(ctx, &plane, set.rows.len() + n_elem)?;
+            passes.hold(Arc::clone(&s0));
+            elements.push(ElementSource {
+                s0,
+                width: scene.width,
+                height: scene.height,
+                radius,
+            });
+        }
+    }
+    let guide_prepared = if n_elem > 0 {
+        let guide_chain = chain
+            .scene_guide_chain()
+            .map_err(|e| GpuError::InvalidInput(format!("the element guide's chain: {e}")))?;
+        Some(prepared.like(ctx, &guide_chain)?)
+    } else {
+        None
+    };
     let frame_fine = [
         job.frame.x as i32,
         job.frame.y as i32,
@@ -994,6 +1155,7 @@ fn encode_rows<'p, 's>(
                     rest + COARSE_SLOTS * cw * ch
                 }
             })
+            .chain((n_elem > 0).then_some(rest + (FULL_SLOTS - 4) * n))
             .max()
             .unwrap_or(rest);
         (need, rest, scan_len, coarse)
@@ -1123,46 +1285,9 @@ fn encode_rows<'p, 's>(
                     rec.dispatch(u, (te.w, te.h), true)?;
                 }
                 Some(gf) if gf.step == 1 => {
-                    // Seven planes of the grown window: p, t and the two scan planes, then three more. The order of the
-                    // means keeps at most four of the means alive at once and reuses p's plane once p is spent.
-                    let more = |k: usize| Slot {
-                        off: (rest + k * n) as i32,
-                        w: gw,
-                        h: gh,
-                    };
-                    let (s4, s5, s6) = (more(0), more(1), more(2));
-                    let r = gf.samples;
-                    // mean(guide * p) into s4, through s5 as the product.
-                    rec.mul(slot(0), true, p, false, s5)?;
-                    rec.mean(s5, t, s4, origin, frame_fine, r, false)?;
-                    // mean(p) into s5 (the product is spent). p is spent after it.
-                    rec.mean(p, t, s5, origin, frame_fine, r, false)?;
-                    // mean(guide^2) into s6, through p's plane as the product.
-                    rec.mul(slot(0), true, slot(0), true, p)?;
-                    rec.mean(p, t, s6, origin, frame_fine, r, false)?;
-                    // mean(guide) into p's plane. The guide is the first fold's input.
-                    rec.fold(slot(0), t, origin, frame_fine, true, Fold::Mean, r, true)?;
-                    rec.fold(t, p, origin, frame_fine, false, Fold::Mean, r, false)?;
-                    // a (in place of s6) and b (in place of s4) from the means of the guide (p), of the mask (s5), of
-                    // the guide squared (s6) and of the guide times the mask (s4).
-                    {
-                        let mut u = rec.base;
-                        u.op[0] = Op::Coef as u32;
-                        u.pa = p.vec();
-                        u.pb = s5.vec();
-                        u.pc = [s6.off, s4.off, 0, gw];
-                        u.f[0] = gf.eps as f32;
-                        rec.dispatch(u, (g.w, g.h), false)?;
-                    }
-                    // a-bar into p's place, b-bar into s5's.
-                    rec.mean(s6, t, p, origin, frame_fine, r, false)?;
-                    rec.mean(s4, t, s5, origin, frame_fine, r, false)?;
-                    let mut u = rec.base;
-                    u.op[0] = Op::Final as u32;
-                    u.pa = p.vec();
-                    u.pb = s5.vec();
-                    u.pc = [0, 0, 0, rec.guide_stride()];
-                    rec.dispatch(u, (te.w, te.h), true)?;
+                    guided_full(
+                        &mut rec, g, rest, origin, frame_fine, gf.samples, gf.eps, te,
+                    )?;
                 }
                 Some(gf) => {
                     let s = gf.step as i64;
@@ -1228,6 +1353,113 @@ fn encode_rows<'p, 's>(
                     rec.dispatch(u, (te.w, te.h), true)?;
                 }
             }
+        }
+        // The element planes of the tile (`docs/34` section 4a.3): the scene's nearest pixel at the place of each pixel, the guided
+        // filter of the lightness of the Input's picture as the guide, quantised after the raster rows' planes.
+        if let Some(gp) = &guide_prepared {
+            let image = GpuImage::alloc(
+                ctx,
+                "element guide",
+                g.w,
+                g.h,
+                4,
+                Placement::whole(g.w, g.h),
+            )?;
+            gp.encode_stage(
+                passes,
+                sampled,
+                Rect::new(0, 0, g.w, g.h),
+                Stop::C12,
+                &image,
+                (0, 0),
+            )?;
+            {
+                let mut u = RasterU {
+                    pa: [image.plane_len() as i32, gw, gh, image.stride as i32],
+                    ..RasterU::default()
+                };
+                u.op[0] = Op::SceneGuide as u32;
+                let ub = passes.uniform("mask raster uniform", &u)?;
+                passes.dispatch(
+                    KernelId::MaskRaster,
+                    "mask raster scene guide",
+                    &[
+                        (0, ub.binding()),
+                        (1, image.buf.binding()),
+                        (2, sampled.buf.binding()),
+                        (3, sampled.buf.binding()),
+                        (4, sampled.buf.binding()),
+                        (5, out.binding()),
+                    ],
+                    (
+                        g.w.div_ceil(16).max(1) as u32,
+                        g.h.div_ceil(16).max(1) as u32,
+                        1,
+                    ),
+                )?;
+            }
+            let (_, rest, scan_len, _) = scratch_need(g);
+            let scans = [(2 * n) as i32, (2 * n + scan_len) as i32];
+            let origin = (g.x as i32, g.y as i32);
+            let win = [
+                (te.x - g.x) as i32,
+                (te.y - g.y) as i32,
+                te.w as i32,
+                te.h as i32,
+            ];
+            let ins = [
+                (w.x - g.x) as i32,
+                (w.y - g.y) as i32,
+                (w.x1() - g.x) as i32,
+                (w.y1() - g.y) as i32,
+            ];
+            let dest = ((te.y - e.y) as usize * stride + (te.x - e.x) as usize) as u32;
+            for (k, el) in elements.iter().enumerate() {
+                let base = RasterU {
+                    samp: [sampled.stride as u32, sampled.plane_len() as u32, 0, 0],
+                    s0: [el.width as u32, el.height as u32, 0, 0],
+                    outp: [
+                        stride as u32,
+                        plane_words as u32,
+                        (set.rows.len() + k) as u32,
+                        dest,
+                    ],
+                    win,
+                    ins,
+                    frame: frame_fine,
+                    ..RasterU::default()
+                };
+                let mut rec = Rec {
+                    passes,
+                    work: Arc::clone(&work),
+                    s0: Arc::clone(&el.s0),
+                    samp: sampled,
+                    guide: Some(&image),
+                    out: Arc::clone(&out),
+                    base,
+                    scans,
+                };
+                let mut u = rec.base;
+                u.op[0] = Op::ResampleNearest as u32;
+                u.pd = Slot {
+                    off: 0,
+                    w: gw,
+                    h: gh,
+                }
+                .vec();
+                rec.dispatch(u, (g.w, g.h), false)?;
+                guided_full(
+                    &mut rec,
+                    g,
+                    rest,
+                    origin,
+                    frame_fine,
+                    el.radius,
+                    ELEMENT_EPS,
+                    te,
+                )?;
+            }
+            let _ = passes.keep(image.buf);
         }
         // The tile's picture and guide must outlive the submission: the recorded passes read them until the list is
         // submitted. Dropped here they would go back to the pool, where a later allocation of the same list could write
