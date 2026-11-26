@@ -1,0 +1,157 @@
+# Diagnosis of the intermittent SIGSEGV in the gpu-lavapipe job (docs/STATUS.md "one-off crash in the lavapipe GPU job (2026-11-07)", and
+# the crashes of 2026-11-25 and 2026-11-26 on the Reference Grade branches). Eight jobs on ubuntu-latest (they land on several CPU types).
+# Each prints its CPU, builds the ym-core device test binaries render_before, mask_view, gpu_faults and render_nodes (feature
+# fault-injection, line tables) at MAIN_REV (main), RG_REV (the Reference Grade head) and, when set, FIX_REV, and runs each binary K times
+# with core dumps on. Every crash is opened with gdb: the crashing thread's top 30 frames, one line for every other thread. The workflow
+# always exits 0; the last step prints one summary line. Push to the branch diag-segv or dispatch it from there.
+name: Diag segv
+
+on:
+  push:
+    branches: [diag-segv]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        index: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      YM_REQUIRE_GPU: "1"
+      WGPU_BACKEND: vulkan
+      MAIN_REV: 87bf9afe155e29589ac74057842e4420b34015f2
+      RG_REV: 6e8f9d2fc063569ed8fe0cbd96ae3c87f3c679c6
+      FIX_REV: ""
+      K: "20"
+      CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Mesa lavapipe (software Vulkan) and gdb
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools gdb libc6-dbg
+      - name: CPU and adapter
+        run: |
+          mkdir -p diag-out
+          {
+            echo "## lscpu"
+            lscpu | grep -a -i -E "model name|vendor|cpu family|^model:|stepping|^CPU\(s\)"
+            echo "## vulkaninfo"
+            vulkaninfo --summary 2>&1
+            dpkg -l | grep -a -E "mesa-vulkan-drivers|llvm" | awk '{print $2, $3}'
+          } | tee diag-out/cpu.txt
+          cat diag-out/cpu.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the test binaries at each revision
+        run: |
+          set +e
+          root="$PWD"
+          mkdir -p "$root/bins" "$root/diag-out"
+          export CARGO_TARGET_DIR="$root/target"
+          cat > "$RUNNER_TEMP/cargo_json.py" <<'PY'
+          import json, sys
+          want = sys.argv[1]
+          exe = None
+          for line in sys.stdin:
+              try:
+                  m = json.loads(line)
+              except ValueError:
+                  continue
+              if m.get("reason") == "compiler-artifact" and m.get("target", {}).get("name") == want and m.get("executable"):
+                  exe = m["executable"]
+          if exe:
+              print(exe)
+          PY
+          build() {
+            local name="$1" rev="$2" dir t bin
+            [ -n "$rev" ] || return 0
+            dir="$root/../wt-$name"
+            git worktree add --detach "$dir" "$rev" > "$root/bins/$name.worktree.log" 2>&1 || { echo "BUILD FAILED $name: worktree" | tee -a "$GITHUB_STEP_SUMMARY"; return 1; }
+            ( cd "$dir" && rustup toolchain install > /dev/null 2>&1
+              cargo test --release -p ym-core --features fault-injection --test render_before --test mask_view --test gpu_faults --test render_nodes \
+                --no-run --message-format=json > "$root/bins/$name.build.json" 2> "$root/bins/$name.build.log"
+              echo "cargo exit: $?" >> "$root/bins/$name.build.log" )
+            for t in render_before mask_view gpu_faults render_nodes; do
+              bin=$(python3 -I "$RUNNER_TEMP/cargo_json.py" "$t" < "$root/bins/$name.build.json" | tail -n 1)
+              if [ -n "$bin" ] && [ -f "$bin" ]; then cp "$bin" "$root/bins/$name-$t"; chmod +x "$root/bins/$name-$t"
+              else echo "BUILD FAILED $name $t" | tee -a "$GITHUB_STEP_SUMMARY"; tail -n 30 "$root/bins/$name.build.log"; fi
+            done
+          }
+          build main "$MAIN_REV"
+          build rg "$RG_REV"
+          build fix "$FIX_REV"
+          ls -l "$root/bins"
+      - name: Run each binary K times with core dumps
+        run: |
+          set +e
+          root="$PWD"
+          out="$root/diag-out"
+          mkdir -p "$root/cores"
+          sudo systemctl stop apport 2>/dev/null
+          sudo sysctl -w kernel.core_pattern="$root/cores/core.%e.%p" > /dev/null
+          ulimit -c unlimited
+          export RUST_BACKTRACE=1
+          cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -n 1)
+          line="CPU $cpu"
+          for name in main rg fix; do
+            [ -x "$root/bins/$name-render_before" ] || continue
+            line="$line | $name:"
+            dir="$root/../wt-$name"
+            for t in render_before mask_view gpu_faults render_nodes; do
+              crashes=0; fails=0
+              for i in $(seq 1 "$K"); do
+                rm -f "$root"/cores/core.*
+                ( cd "$dir/crates/ym-core" && env CARGO_MANIFEST_DIR="$dir/crates/ym-core" YELLOWMOON_DATA="$dir/data" \
+                    timeout 900 "$root/bins/$name-$t" ) > "$out/$name-$t-$i.log" 2>&1
+                rc=$?
+                if [ "$rc" -eq 0 ]; then rm -f "$out/$name-$t-$i.log"; continue; fi
+                if [ "$rc" -ge 128 ]; then
+                  crashes=$((crashes + 1))
+                  core=$(ls "$root"/cores/core.* 2>/dev/null | head -n 1)
+                  {
+                    echo "::group::CRASH $name $t run $i (exit $rc); last 15 lines of the log"
+                    tail -n 15 "$out/$name-$t-$i.log" | cut -c1-300
+                    if [ -n "$core" ]; then
+                      gdb -batch -iex 'set debuginfod enabled on' -iex 'set pagination off' \
+                        -ex 'p $_siginfo.si_signo' -ex 'p $_siginfo._sifields._sigfault.si_addr' -ex 'info registers rip rsp' -ex 'x/4i $pc' -ex 'info symbol $pc' \
+                        -ex 'info threads' -ex 'bt 30' -ex 'thread apply all bt 3' \
+                        "$root/bins/$name-$t" "$core" 2>&1 | cut -c1-400 | head -n 260
+                    else
+                      echo "no core file"
+                    fi
+                    echo "::endgroup::"
+                  } | tee -a "$out/crashes.txt"
+                else
+                  fails=$((fails + 1))
+                  { echo "FAIL $name $t run $i exit $rc"; grep -a -E "^test .* FAILED|panicked" "$out/$name-$t-$i.log" | cut -c1-300 | head -n 5; } >> "$out/fails.txt"
+                fi
+                rm -f "$root"/cores/core.*
+              done
+              line="$line $t $crashes/$K"
+              [ "$fails" -eq 0 ] || line="$line (+$fails fail)"
+            done
+          done
+          echo "$line"
+          echo "### ${{ matrix.index }}: $line" >> "$GITHUB_STEP_SUMMARY"
+          { echo "$line"; cat "$out/fails.txt" 2>/dev/null; } > "$out/summary.txt"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-segv-${{ matrix.index }}
+          path: |
+            diag-out/
+            bins/*.log
+          if-no-files-found: warn
