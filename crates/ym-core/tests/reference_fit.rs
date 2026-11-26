@@ -784,6 +784,13 @@ fn pin_on_threads(r: &Rig) -> u64 {
 /// The fitted settings of four fixture fits, as the fit made them before RG-11 (the speed task): the same bits now, on 1 thread and
 /// on 4. A change to the fit's results changes these, and has to be a decision of its own (`AGENTS.md` rule 8, `docs/34` section 5.7).
 #[test]
+#[cfg_attr(
+    not(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    )),
+    ignore = "the pins are per platform (libm); none recorded for this target"
+)]
 fn four_fixture_fits_give_the_bits_they_gave_before_the_speed_task() {
     // The known grade, recovered.
     let r = rig(2);
@@ -821,13 +828,37 @@ fn four_fixture_fits_give_the_bits_they_gave_before_the_speed_task() {
     assert_eq!(got, PINNED_FITS, "{got:016x?}");
 }
 
+// The pins are per platform: the fit calls `ln`, `exp`, `cbrt`, `atan2`, `hypot` and `powf`, and Apple's libm and glibc can differ
+// in the last bit of each. On one machine the fit is deterministic (`one_thread_and_many_and_two_runs_give_the_same_bits`). The pins of a platform guard that
+// platform against regressions.
+
 /// The pins of [`four_fixture_fits_give_the_bits_they_gave_before_the_speed_task`]: recovery, a file, a photo of the strip, own fields.
+/// Linux x86_64: recorded at the base commit 6e8f9d2f, before RG-11, so they prove the speed work changed no bit.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const PINNED_FITS: [u64; 4] = [
     0xefe3_4191_2c9d_d6b7,
     0x30c7_6e01_a349_b55a,
     0x30c7_6e01_a349_b55a,
     0x9563_285a_8f7c_360f,
 ];
+
+/// The same pins on macOS aarch64: recorded by CI run 45888389844 at e1ed3a69, after RG-11. They still stand for "before": RG-11
+/// reorders no floating-point operation and moved each value's expression without changing it, so the same functions on the same
+/// platform give the same bits, as the Linux pins show. From now on they guard against regressions.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const PINNED_FITS: [u64; 4] = [
+    0xdc0b_9a47_d8f3_f21d,
+    0x08d3_0138_5763_dc11,
+    0x08d3_0138_5763_dc11,
+    0x2d11_551f_21a1_31e9,
+];
+
+/// No pins are recorded for other targets; the test is ignored there.
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+)))]
+const PINNED_FITS: [u64; 4] = [0; 4];
 
 /// The scenes are made once per photo and once per reference, and kept for the next fit (`docs/34` sections 4b.1 and 5.7, RG-11): a
 /// second fit of the same photo to the same reference asks the segmenter for nothing; a new reference is segmented once, and the
