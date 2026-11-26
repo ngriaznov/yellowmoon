@@ -10,6 +10,7 @@ import { cardName, chipText } from "../../state/graphOps";
 import { isCardItem, nodeOf } from "../../state/settingsGraph";
 import type { CardItem } from "../../state/settingsGraph";
 import { BlurGlyph } from "./BlurGlyph";
+import { ReferenceGlyph } from "./ReferenceGlyph";
 import { Port } from "./Port";
 import { useGraphUi } from "./graphUi";
 
@@ -68,7 +69,7 @@ function SlashGlyph() {
 }
 
 /** A glyph of the footer with the tooltip that names it. */
-function Tip({ text, glyph, className, children }: { text: string; glyph: "ai" | "mask" | "bypass" | "face" | "uniform" | "blur"; className?: string; children: React.ReactNode }) {
+function Tip({ text, glyph, className, children }: { text: string; glyph: "ai" | "mask" | "bypass" | "face" | "uniform" | "blur" | "reference"; className?: string; children: React.ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -201,6 +202,11 @@ export function NodeCard({ data }: NodeProps) {
                 {node.kind === "blur" ? (
                   <Tip text="Blur" glyph="blur" className="ym-gnode__face">
                     <BlurGlyph />
+                  </Tip>
+                ) : null}
+                {node.kind === "reference_grade" ? (
+                  <Tip text="Reference Grade" glyph="reference" className="ym-gnode__face">
+                    <ReferenceGlyph />
                   </Tip>
                 ) : null}
                 {glyphs.ai ? (

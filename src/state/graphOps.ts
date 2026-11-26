@@ -30,6 +30,8 @@ import {
   COLOR_UNIFORM_NAME,
   BLUR_NAME,
   newBlur,
+  REFERENCE_GRADE_NAME,
+  newReferenceGrade,
   DEFAULT_STOCK,
   nodeAsPatch,
   nodeOf,
@@ -429,6 +431,11 @@ export function addBlurNode(id: number, pos: NodePos, name = BLUR_NAME): Record<
   return { [String(id)]: nodeAsPatch(newBlur(id, clampPos(pos), name)) };
 }
 
+/** A new Reference Grade node (`docs/34` section 3.1): every field at the identity, Strength 100, Skin protection on, no masks, as a patch that adds it whole. */
+export function addReferenceGradeNode(id: number, pos: NodePos, name = REFERENCE_GRADE_NAME): Record<string, NodePatch> {
+  return { [String(id)]: nodeAsPatch(newReferenceGrade(id, clampPos(pos), name)) };
+}
+
 /** A new Film node (`docs/24` section 4.5), Portra 400 on its matching paper, as a patch that adds it whole. */
 export function addFilmNode(id: number, pos: NodePos, name = FILM_DEFAULT_NAME): Record<string, NodePatch> {
   return { [String(id)]: nodeAsPatch(newFilm(id, clampPos(pos), name)) };
@@ -441,7 +448,7 @@ export function addFilmNode(id: number, pos: NodePos, name = FILM_DEFAULT_NAME):
  * Output's incoming link. N's `pos` is the node's plus one unit to the right, the nodes downstream of N move one unit right (as far as
  * it takes to leave N its unit: none where a gap is), and N is selected. Refused at 64 nodes.
  */
-export function insertAfter(settings: DevelopSettings, selected: NodeId, options: { usedMax?: number; name?: string; kind?: "corrector" | "film" | "face_refinement" | "color_uniform" | "blur" } = {}): GraphOutcome {
+export function insertAfter(settings: DevelopSettings, selected: NodeId, options: { usedMax?: number; name?: string; kind?: "corrector" | "film" | "face_refinement" | "color_uniform" | "blur" | "reference_grade" } = {}): GraphOutcome {
   if (numberedOf(settings).length >= MAX_CORRECTORS) return refuse(GRAPH_OP_TEXT.tooMany);
   const links = settings.nodes.links;
   let after: NodeId = selected === INPUT_ID ? MAIN_ID : selected;
@@ -465,7 +472,9 @@ export function insertAfter(settings: DevelopSettings, selected: NodeId, options
           ? addColorUniformNode(id, slot.pos, options.name)
           : options.kind === "blur"
             ? addBlurNode(id, slot.pos, options.name)
-            : addNode(id, slot.pos, options.name);
+            : options.kind === "reference_grade"
+              ? addReferenceGradeNode(id, slot.pos, options.name)
+              : addNode(id, slot.pos, options.name);
   const nodes = { ...added, ...shifted(settings, downstreamOf(next, id), id, slot.delta) };
   return done({ nodes, links: next }, id);
 }
@@ -542,6 +551,11 @@ export function resetNode(settings: DevelopSettings, id: NodeId, defaults: { loo
     // The type and every type's values go back to the defaults, Zoom's centre too; the masks, the name, the bypass and the links stay (`docs/33` section 2.6).
     const { type, soft, lens, motion, zoom, respect_mask_edges } = newBlur(0, [0, 0]);
     patch = { type, soft, lens, motion, zoom, respect_mask_edges };
+  } else if (node.kind === "reference_grade") {
+    // The node's own fields (trim, grade, hue curves, element grades) go back to their defaults, Strength to 100 and Skin protection on; the masks, the name,
+    // the bypass and the links stay (`docs/34` section 3.5). The reference the core holds for the session stays too: it is not a setting.
+    const { trim, grade, hue_curves, elements, strength, skin_protection } = newReferenceGrade(0, [0, 0]);
+    patch = { trim, grade, hue_curves, elements, strength, skin_protection };
   } else if (node.kind === "layer") {
     // A Layer's Mode and Opacity; its inputs, name and bypass stay.
     patch = { mode: "normal", opacity: 1 };
@@ -835,6 +849,8 @@ export function headLine(settings: DevelopSettings, id: NodeId, states: Readonly
   // A Colour Uniform node's line is short, so it is not cut at 400 px: the corrector's mask text is not repeated (`docs/32` §2.6).
   if (node.kind === "color_uniform") return node.bypass ? "Bypassed" : states.get(node.id as number)?.live === false ? "Not connected" : "Colour Uniform";
   // A Blur node's line is its type (`docs/33` section 2.6).
+  // A Reference Grade node's line is its kind's name, as the menu says it (`docs/34` §2.1).
+  if (node.kind === "reference_grade") return node.bypass ? "Bypassed" : states.get(node.id as number)?.live === false ? "Not connected" : "Reference Grade";
   if (node.kind === "blur") return node.bypass ? "Bypassed" : states.get(node.id as number)?.live === false ? "Not connected" : BLUR_TYPE_NAME[node.type];
   const label = node.kind === "film" ? "Film" : node.kind === "face_refinement" ? "Faces" : "Corrector";
   if (node.bypass) return `${label} · bypassed`;
