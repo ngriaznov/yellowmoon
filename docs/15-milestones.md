@@ -555,7 +555,7 @@ Tasks (details below; the *Done when* of each is the gate of `docs/34` §10 that
 
 **[HUMAN] RG-H1 · Answer the questions of `docs/34` §14.** **Done 2026-11-25:** the owner chose to grade per element with a scene segmenter, accepted that a fit takes several seconds (with progress and Cancel), asked for a quality round on skin and tinted whites before release, and accepted every recommended default of the 18 questions.
 
-**[HUMAN] RG-H2 · Review the mock-ups** of RG-07 (the node, the Reference tab and its states, the chooser, the Hue tab, the Elements tab, the errors). RG-12 builds nothing before it.
+**[HUMAN] RG-H2 · Review the mock-ups** of RG-07 (the node, the Reference tab and its states, the chooser, the Hue tab, the Elements tab, the errors). RG-12 builds nothing before it. **Done 2026-11-26: approved with four answers** (the filmstrip takes the graph's place in chooser mode; the Hue plots open on a zoomed default view that fits the fitted values; Add node puts Reference Grade after Blur; the Reference tab's card title is dropped), recorded in `docs/34` §17, §9.4 and §2.1.
 
 **[HUMAN] RG-H3 · Time a fit on a Mac and try the build** (M0-H4). The fit's time on a Mac with all cores (several seconds is accepted; say if it is too long), the scene's time, the node's cost per megapixel on Metal, the Mac GPU CI suites for the hue and element steps, the file dialog and chooser mode in WKWebView, and a first try of the node on your own photographs.
 

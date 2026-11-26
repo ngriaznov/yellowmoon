@@ -74,7 +74,7 @@ A reference can be another photo in the filmstrip, rendered through that photo's
 | Masks | `masks` as a corrector's (`docs/23` §3.3): the Mask tab, Invert, the key input, Show mask. They limit where the grade acts. **The fit ignores them** (§5.1). The element masks of §4a.3 are the node's own, not mask rows, and the fit uses them |
 | Order inside the node | trims → C9 → C9b → C11 → **hue curves (new)** → **element grades (new)** → the mask blend (§2.3) |
 | Bypass | a bypassed node passes its picture through; its key output still carries `m` |
-| Add node | **Reference Grade**, after Colour Uniform and before the separator: "Matches the grade of a reference picture." Adds one node after the selected one, like Colour Uniform, selects it and opens its Reference tab. It does **not** open a file dialog by itself. Off at 64 nodes with "A photo can have up to 64 nodes." |
+| Add node | **Reference Grade**, after Blur (the owner's answer at RG-H2, 2026-11-26) and before the separator: "Matches the grade of a reference picture." Adds one node after the selected one, like Colour Uniform, selects it and opens its Reference tab. It does **not** open a file dialog by itself. Off at 64 nodes with "A photo can have up to 64 nodes." |
 | Auto | none |
 | More menu | a corrector's: Rename · Move earlier · Move later · Link picture to ▸ · Link key to ▸ · Remove link ▸ · Delete node |
 | Card | a corrector's card (112 × 84 px at 100 %: thumbnail, number chip, name, footer glyphs); the node's glyph is chosen in RG-07 |
@@ -711,7 +711,7 @@ Strings are in `src/` with the rest of the copy; no exclamation marks. A test pi
 
 ### 9.4 The Hue tab
 
-Two cards on the Curve card's plot widget, **taught a periodic x axis** (0° to 360° with the rainbow track the Hue slider of Colour Uniform uses): **Hue vs hue** (y: −180° to +180°, a detent at 0) and **Hue vs saturation** (y: 0 to 8, a detent at 1, the axis drawn on a log or a linear scale chosen in RG-07). Points are added by a click on the plot, dragged, removed by Delete or a double click, and moved by the arrow keys; at most 16 per curve ("A curve can have up to 16 points."). Each card has its own Reset. The plot's accessible names and the keyboard path follow the Curve card. The fit's knots are at fixed hues but the person's points are free.
+Two cards on the Curve card's plot widget, **taught a periodic x axis** (0° to 360° with the rainbow track the Hue slider of Colour Uniform uses): **Hue vs hue** (y: −180° to +180°, a detent at 0) and **Hue vs saturation** (y: 0 to 8, a detent at 1, the axis drawn on a log or a linear scale chosen in RG-07). Points are added by a click on the plot, dragged, removed by Delete or a double click, and moved by the arrow keys; at most 16 per curve ("A curve can have up to 16 points."). Each card has its own Reset. The plot's accessible names and the keyboard path follow the Curve card. The fit's knots are at fixed hues but the person's points are free. **The plots open on a zoomed default view that fits the fitted values, with the full range reachable** (hue vs hue ±180°, hue vs saturation ⅛ to 8; the owner's answer at RG-H2, 2026-11-26).
 
 ### 9.4a The Elements tab
 
@@ -1099,6 +1099,8 @@ Four shards of one thread each, **1 h 54 min** on the 4-core Linux machine, no f
 - **The owner's own photos** sat in the held-out set and were never looked at while designing; the POC gives them only as part of aggregate numbers.
 
 ## 17. Mock-ups
+
+**Approved by the owner on 2026-11-26 (RG-H2)**, on branch `rg-07-mockups` (`design/reference-grade/`), with four answers: (1) choosing from the filmstrip, the filmstrip takes the graph's place while the chooser mode is on, as drawn, not a bar over the graph; (2) the Hue tab's plots open on a zoomed default view that fits the fitted values, the full range reachable (§9.4); (3) Add node puts Reference Grade after Blur (§2.1); (4) the Reference tab's card title ("Reference") is dropped, the tab name and the panel head's line remain. RG-12 builds to them. Original brief:
 
 None yet. **RG-07** makes them in `design/reference-grade/` (pages at 1440 × 900 built from the app's DOM and CSS, shot to JPEGs, as `design/colour-uniform/` and `design/blur/`): the node card, the Reference tab in each state of §9.3 (including the progress while fitting), the chooser mode in the strip, the Hue tab, the Elements tab (the cards, an element not found in the photo, the scene being made) and the error notices. The pictures are synthetic scenes and references, with no film still and no likeness. The owner reviews them (**RG-H2**) before RG-12 builds the panel.
 
