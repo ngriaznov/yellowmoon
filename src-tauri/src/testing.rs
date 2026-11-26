@@ -126,6 +126,21 @@ impl Harness {
         )
     }
 
+    /// An app whose Reference Grade scene comes from `model` (a `SceneModel::fake_default`): a fit needs no weights.
+    pub(crate) fn with_scene(model: Arc<ym_core::pipeline::SceneModel>) -> Self {
+        Self::build_with_gpu(
+            WatchConfig::default(),
+            ProviderAdvisors::default(),
+            None,
+            None,
+            None,
+            FrameStore::new(),
+            None,
+            false,
+            Some(model),
+        )
+    }
+
     /// An app whose memory-pressure poll reads `source` (`docs/26` H-14); the other harnesses start no poll.
     pub(crate) fn with_pressure(source: ym_core::memory::PressureSource) -> Self {
         Self::build_with(
@@ -163,6 +178,7 @@ impl Harness {
             FrameStore::new(),
             None,
             true,
+            None,
         )
     }
 
@@ -209,6 +225,7 @@ impl Harness {
             frames,
             pressure,
             false,
+            None,
         )
     }
 
@@ -222,6 +239,7 @@ impl Harness {
         frames: FrameStore,
         pressure: Option<ym_core::memory::PressureSource>,
         gpu: bool,
+        scene: Option<Arc<ym_core::pipeline::SceneModel>>,
     ) -> Self {
         let photos = tempfile::tempdir().expect("photos");
         let app_root = tempfile::tempdir().expect("app root");
@@ -249,6 +267,7 @@ impl Harness {
             advisors,
             vision,
             depth,
+            scene,
             pressure,
         };
         // Only the folders of the test: `CliLink::new` also names the real `/usr/local/bin` and

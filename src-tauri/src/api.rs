@@ -36,15 +36,15 @@ use crate::viewport::{FrameSink, FrameStore, Viewport, core_id};
 use crate::wire::{
     AlbumSaved, AlbumState, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample, ChromaScatter,
     ChromaTap, CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthFar, DepthState,
-    ErrorScope, ExportEstimate, ExportJob, ExportJobId, FaceBox, FacePhase, FaceState,
-    FocusPlaneResult, FocusReason, HistogramData, ImportResult, LensInfo, Look, LookId, LookInput,
-    LooksImportProgress, LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind,
-    MaskView, MemoryNotice, NodeId, Num, ObjectState, OpenProgress, OpenSummary, Orientation,
-    PasteReport, PhotoId, PhotoProgress, PixelSample, Preferences, PreferencesPatch,
-    PresetApplyReport, PresetEntry, PresetGroup, PresetInspect, PresetList, PresetSource,
-    ResolvedSettings, SessionChange, SessionState, SettingsPatch, SourceRecognition,
-    ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, VisionState,
-    WatchStatus, convert,
+    ElementShare, ErrorScope, ExportEstimate, ExportJob, ExportJobId, FaceBox, FacePhase,
+    FaceState, FitProgress, FitReport, FitStep, FocusPlaneResult, FocusReason, HistogramData,
+    ImportResult, LensInfo, Look, LookId, LookInput, LooksImportProgress, LooksImportResult,
+    MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView, MemoryNotice, NodeId, Num,
+    ObjectState, OpenProgress, OpenSummary, Orientation, PasteReport, PhotoId, PhotoProgress,
+    PixelSample, Preferences, PreferencesPatch, PresetApplyReport, PresetEntry, PresetGroup,
+    PresetInspect, PresetList, PresetSource, ReferenceInfo, ReferenceKind, ResolvedSettings,
+    SessionChange, SessionState, SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo,
+    ViewportInput, ViewportMode, ViewportRect, VisionState, WatchStatus, convert,
 };
 use crate::wizard::{Downloads, recognise};
 
@@ -114,6 +114,9 @@ pub struct AppConfig {
     /// (`models/depth`, `ym_core::pipeline::DepthModel::probe`); the tests give a fake one so that Depth rows work without the
     /// weights.
     pub depth: Option<Arc<ym_core::pipeline::DepthModel>>,
+    /// The scene model of Reference Grade (`docs/34` section 4b): `None` in the app, which finds it in the data folder
+    /// (`ym_core::pipeline::SceneModel::probe`); the tests give a fake one so that a fit needs no weights.
+    pub scene: Option<Arc<ym_core::pipeline::SceneModel>>,
     /// Where the memory-pressure poll reads the level (`docs/26` H-14): the app gives this computer's
     /// (`ym_core::memory::system_pressure_source`, the macOS `sysctl`; always normal elsewhere); the tests give none (no poll
     /// thread) or a source of their own.
@@ -164,6 +167,7 @@ impl AppConfig {
             advisors: system_advisors(),
             vision: Some(ym_apple::system_vision()),
             depth: None,
+            scene: None,
             pressure: Some(ym_core::memory::system_pressure_source()),
         })
     }
@@ -186,6 +190,8 @@ pub struct AppApi {
     frames: Arc<FrameStore>,
     /// Orders "queue an export" against "restart the app": see [`AppApi::begin_restart`].
     lifecycle: Mutex<Lifecycle>,
+    /// The Reference Grade fits that run, by photo and node, so that `cancel_fit` can stop one (`docs/34` section 9.5).
+    fits: Mutex<std::collections::HashMap<(u32, u32), CancelToken>>,
 }
 
 /// Where the application is in its life, for [`AppApi::begin_restart`].
@@ -194,6 +200,27 @@ enum Lifecycle {
     Running,
     /// A restart into an update has begun: no export is queued from now on.
     Restarting,
+}
+
+/// The sentence a failed Reference Grade command shows in the card: the reference's own text without the "The reference can't be used:"
+/// that `ym` puts in front (`docs/34` section 9.3), and the core's sentence for the rest.
+fn fit_failure_error(e: ym_core::reference_fit::FitFailure) -> AppError {
+    use ym_core::reference_fit::FitFailure;
+    match e {
+        FitFailure::Reference(r) => AppError::new(ErrorScope::Render, r.to_string()),
+        FitFailure::Failed(detail) => {
+            tracing::error!(detail, "a Reference Grade fit failed");
+            AppError::new(ErrorScope::Render, FitFailure::Failed(detail).to_string())
+        }
+        other => AppError::new(ErrorScope::Render, other.to_string()),
+    }
+}
+
+/// The running fits, whatever happened to the lock.
+fn lock_fits(
+    fits: &Mutex<std::collections::HashMap<(u32, u32), CancelToken>>,
+) -> std::sync::MutexGuard<'_, std::collections::HashMap<(u32, u32), CancelToken>> {
+    fits.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The `AppError` for a session command that failed.
@@ -340,6 +367,7 @@ impl AppApi {
         options.advisors = config.advisors.clone();
         options.render.vision = config.vision.clone().map(ym_core::vision::VisionMasks::new);
         options.render.depth_model = config.depth.clone();
+        options.render.scene_model = config.scene.clone();
         if let Some(threads) = config.decode_threads {
             options.decode_threads = threads;
         }
@@ -513,6 +541,7 @@ impl AppApi {
             home: config.home.or_else(ym_export::naming::home_dir),
             frames,
             lifecycle: Mutex::new(Lifecycle::Running),
+            fits: Mutex::new(std::collections::HashMap::new()),
         }))
     }
 
@@ -1402,6 +1431,175 @@ impl AppApi {
         Ok(self
             .frames
             .put_look_tile(photo.0, &format!("face:{number}"), png))
+    }
+
+    // --- Reference Grade (`docs/34` section 9.5) ------------------------------------------------
+
+    /// What the card shows of the node's held reference: its label, the notes and a thumbnail on the `ym-frame` scheme.
+    fn reference_card(
+        &self,
+        photo: PhotoId,
+        node: u32,
+        info: &ym_core::reference_fit::ReferenceInfo,
+    ) -> Result<ReferenceInfo, AppError> {
+        let (w, h, rgb) = self
+            .core
+            .reference_thumbnail(core_id(photo), node, 256)
+            .ok_or_else(|| AppError::new(ErrorScope::Render, "Choose a reference first."))?;
+        let png = ym_core::pipeline::thumbs::encode_png_rgb8(w, h, &rgb).map_err(AppError::from)?;
+        let thumbnail = self
+            .frames
+            .put_look_tile(photo.0, &format!("reference:{node}"), png);
+        Ok(ReferenceInfo {
+            photo_id: photo,
+            node_id: node,
+            label: info.label.clone(),
+            source: match info.source {
+                ym_core::reference::ReferenceSource::File => ReferenceKind::File,
+                ym_core::reference::ReferenceSource::Photo(_) => ReferenceKind::Photo,
+            },
+            notes: info.notes.clone(),
+            grey: info.grey,
+            thumbnail,
+        })
+    }
+
+    /// `reference_choose_file(photo_id, node_id)`'s second half: reads the image file as the node's reference. The file is only read;
+    /// the core holds the reduced pictures for the session and nothing is written. `label` is what the card shows under the thumbnail
+    /// (the file's name when `None`).
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] whose message is the sentence of `docs/34` section 9.3 for a file that cannot be used.
+    pub fn reference_choose_path(
+        &self,
+        photo: PhotoId,
+        node: u32,
+        path: &Path,
+        label: Option<&str>,
+    ) -> Result<ReferenceInfo, AppError> {
+        let info = self
+            .core
+            .reference_choose_file(core_id(photo), node, path, label)
+            .map_err(fit_failure_error)?;
+        self.reference_card(photo, node, &info)
+    }
+
+    /// `reference_choose_photo(photo_id, node_id, other_id, label)`: another photo of the session as the node's reference, rendered
+    /// through its own settings (a snapshot). `label` is what the card says ("Photo 3 of 7").
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] with "That's the photo you're grading. Choose another." for the photo itself, and the core's sentence for a
+    /// photo that is not ready.
+    pub fn reference_choose_photo(
+        &self,
+        photo: PhotoId,
+        node: u32,
+        other: PhotoId,
+        label: &str,
+    ) -> Result<ReferenceInfo, AppError> {
+        let info = self
+            .core
+            .reference_choose_photo(
+                core_id(photo),
+                node,
+                core_id(other),
+                label,
+                &CancelToken::new(),
+            )
+            .map_err(fit_failure_error)?;
+        self.reference_card(photo, node, &info)
+    }
+
+    /// `fit_reference(photo_id, node_id)`: fits the node to its reference and writes the result as one patch. Blocks for the length of
+    /// the fit (several seconds), so it runs off the command thread; `fit_progress` events say where it is, and `cancel_fit` stops it.
+    /// A cancel is an answer (`cancelled`, nothing changed), not an error.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError`] whose message is the sentence of `docs/34` section 9.3.
+    pub fn fit_reference(&self, photo: PhotoId, node: u32) -> Result<FitReport, AppError> {
+        use ym_core::reference_fit::{FitEvent, FitFailure};
+        let token = CancelToken::new();
+        lock_fits(&self.fits).insert((photo.0, node), token.clone());
+        let emitter = Arc::clone(&self.emitter);
+        let mut last = 0.0_f64;
+        let mut progress = |event: FitEvent| {
+            let (step, search, of, fraction) = match event {
+                FitEvent::Scene => (FitStep::Scene, 0, 3, 0.0),
+                FitEvent::Search {
+                    search,
+                    of,
+                    fraction,
+                    ..
+                } => (FitStep::Search, u32::from(search), u32::from(of), fraction),
+            };
+            // The bar never goes back.
+            last = last.max(fraction.clamp(0.0, 1.0));
+            emitter.emit(AppEvent::FitProgress(FitProgress {
+                photo_id: photo,
+                node_id: node,
+                step,
+                search,
+                of,
+                fraction: Num(last),
+            }));
+        };
+        let result = self
+            .core
+            .reference_fit(core_id(photo), node, &token, &mut progress);
+        lock_fits(&self.fits).remove(&(photo.0, node));
+        let settings_now = || self.get_settings(photo);
+        match result {
+            Ok(outcome) => {
+                // The patch was applied inside the core: draw the photo again and refresh its thumbnail.
+                self.settings_changed(core_id(photo), true);
+                Ok(FitReport {
+                    photo_id: photo,
+                    node_id: node,
+                    status: match outcome.status {
+                        ym_core::reference_fit::FitStatus::Fitted => crate::wire::FitStatus::Fitted,
+                        ym_core::reference_fit::FitStatus::AlreadyClose => {
+                            crate::wire::FitStatus::AlreadyClose
+                        }
+                    },
+                    notes: outcome.notes,
+                    skin_found: outcome.skin_found,
+                    shares: outcome
+                        .found
+                        .iter()
+                        .map(|e| ElementShare {
+                            element: e.element.to_owned(),
+                            share: Num(e.photo_share),
+                        })
+                        .collect(),
+                    settings: settings_now()?,
+                })
+            }
+            Err(FitFailure::Cancelled) => Ok(FitReport {
+                photo_id: photo,
+                node_id: node,
+                status: crate::wire::FitStatus::Cancelled,
+                notes: Vec::new(),
+                skin_found: false,
+                shares: Vec::new(),
+                settings: settings_now()?,
+            }),
+            Err(e) => Err(fit_failure_error(e)),
+        }
+    }
+
+    /// `cancel_fit(photo_id, node_id)`: stops the node's fit between candidates. Nothing happens when none runs.
+    pub fn cancel_fit(&self, photo: PhotoId, node: u32) {
+        if let Some(token) = lock_fits(&self.fits).get(&(photo.0, node)) {
+            token.cancel();
+        }
+    }
+
+    /// `clear_reference(photo_id, node_id)`: lets go of the node's reference. Returns whether there was one.
+    pub fn clear_reference(&self, photo: PhotoId, node: u32) -> bool {
+        self.core.reference_clear(core_id(photo), node)
     }
 
     // --- Lens ---------------------------------------------------------------------------------

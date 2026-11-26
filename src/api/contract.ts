@@ -66,6 +66,10 @@ export type FromCore = AllTrue<{
   depthState: Assignable<B.DepthState, T.DepthState>;
   faceBox: Assignable<B.FaceBox, T.FaceBox>;
   faceState: Assignable<B.FaceState, T.FaceState>;
+  referenceInfo: Assignable<B.ReferenceInfo, T.ReferenceInfo>;
+  fitReport: Assignable<B.FitReport, T.FitReport>;
+  elementShare: Assignable<B.ElementShare, T.ElementShare>;
+  fitProgress: Assignable<B.FitProgress, T.FitProgress>;
   memoryNotice: Assignable<B.MemoryNotice, T.MemoryNotice>;
   displayOptions: Assignable<B.DisplayOptions, T.DisplayOptions>;
   depthFar: Assignable<B.DepthFar, T.DepthFar>;
@@ -132,6 +136,9 @@ export type Both = AllTrue<{
   maskKind: Same<T.MaskKind, B.MaskKind>;
   focusReason: Same<T.FocusReason, B.FocusReason>;
   facePhase: Same<T.FacePhase, B.FacePhase>;
+  referenceKind: Same<T.ReferenceKind, B.ReferenceKind>;
+  fitStatus: Same<T.FitStatus, B.FitStatus>;
+  fitStep: Same<T.FitStep, B.FitStep>;
   maskFindPrompt: Same<T.MaskFindPrompt, B.MaskFindPrompt>;
   mapFrom: Same<T.MapFrom, B.MapFrom>;
   chromaTap: Same<T.ChromaTap, B.ChromaTap>;

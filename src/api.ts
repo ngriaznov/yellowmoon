@@ -48,6 +48,7 @@ import type {
   ExportJob,
   ExportJobId,
   FaceState,
+  FitReport,
   FocusPlaneResult,
   HistogramData,
   LensInfo,
@@ -70,6 +71,7 @@ import type {
   PixelSample,
   Preferences,
   PreferencesPatch,
+  ReferenceInfo,
   ResolvedSettings,
   SessionChange,
   SessionState,
@@ -256,6 +258,27 @@ export interface Api {
    * before the faces are known and for a number the photo does not have.
    */
   faceCrop(photoId: PhotoId, number: number): Promise<string>;
+
+  /**
+   * `reference_choose_file` (`docs/34` §9.5): the system's open panel for a picture (JPEG, PNG or TIFF), then the file as the Reference Grade node's
+   * reference. Resolves `null` when the panel is cancelled. The file is only read; the core holds the reduced pictures for the session and the page gets a
+   * label, the notes and a small picture. Rejects with the sentence of §9.3 for a file that cannot be used.
+   */
+  referenceChooseFile(photoId: PhotoId, nodeId: number): Promise<ReferenceInfo | null>;
+  /**
+   * `reference_choose_photo` (`docs/34` §6.4, §9.5): another photo of the session as the node's reference, rendered through its own settings (a snapshot).
+   * `label` is what the card says under the picture ("Photo 3 of 7"). Rejects with "That's the photo you're grading. Choose another." for the photo itself.
+   */
+  referenceChoosePhoto(photoId: PhotoId, nodeId: number, otherId: PhotoId, label: string): Promise<ReferenceInfo>;
+  /**
+   * `fit_reference` (`docs/34` §9.5): fits the node to its reference and writes the result as one patch. Resolves when the fit ends (several seconds);
+   * `fit_progress` events say where it is. A cancel resolves with the status `cancelled` and the settings unchanged. Rejects with the sentence of §9.3.
+   */
+  fitReference(photoId: PhotoId, nodeId: number): Promise<FitReport>;
+  /** `cancel_fit`: stops the node's fit between candidates; `fit_reference` then resolves `cancelled`. Nothing happens when none runs. */
+  cancelFit(photoId: PhotoId, nodeId: number): Promise<void>;
+  /** `clear_reference`: lets go of the node's reference. The node's numbers stay as they are. */
+  clearReference(photoId: PhotoId, nodeId: number): Promise<void>;
 
   // --- Lens ----------------------------------------------------------------
 
@@ -513,6 +536,11 @@ export const tauriApi: Api = {
   retryDepth: (photoId) => unit(commands.retryDepth(photoId)),
   faceState: (photoId) => commands.faceState(photoId),
   faceCrop: (photoId, number) => commands.faceCrop(photoId, number),
+  referenceChooseFile: (photoId, nodeId) => commands.referenceChooseFile(photoId, nodeId),
+  referenceChoosePhoto: (photoId, nodeId, otherId, label) => commands.referenceChoosePhoto(photoId, nodeId, otherId, label),
+  fitReference: (photoId, nodeId) => commands.fitReference(photoId, nodeId),
+  cancelFit: (photoId, nodeId) => unit(commands.cancelFit(photoId, nodeId)),
+  clearReference: (photoId, nodeId) => unit(commands.clearReference(photoId, nodeId)),
 
   lensList: () => commands.lensList(),
   looksList: () => commands.looksList(),

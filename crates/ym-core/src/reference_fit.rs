@@ -710,6 +710,57 @@ impl Core {
         self.references.get(photo, node).map(|h| info_of(&h))
     }
 
+    /// The node's held reference as a small picture for its card: the scene picture (black bars already removed) reduced by a box
+    /// average so that its long edge is at most `long_edge_px`, as sRGB display codes, row by row: `(width, height, rgb8)`. `None`
+    /// when the node holds no reference. The picture is a view of what is held, made on demand; nothing is kept or written.
+    #[must_use]
+    pub fn reference_thumbnail(
+        &self,
+        photo: PhotoId,
+        node: u32,
+        long_edge_px: usize,
+    ) -> Option<(usize, usize, Vec<u8>)> {
+        let held = self.references.get(photo, node)?;
+        let scene = held.picture.scene();
+        let (w, h) = (scene.width, scene.height);
+        if w == 0 || h == 0 || long_edge_px == 0 {
+            return None;
+        }
+        let codes = scene.srgb8();
+        let scale = (long_edge_px as f64 / w.max(h) as f64).min(1.0);
+        let (tw, th) = (
+            ((w as f64 * scale).round() as usize).max(1),
+            ((h as f64 * scale).round() as usize).max(1),
+        );
+        let mut out = Vec::with_capacity(tw * th * 3);
+        for ty in 0..th {
+            let (y0, y1) = (
+                ty * h / th,
+                ((ty + 1) * h).div_ceil(th).min(h).max(ty * h / th + 1),
+            );
+            for tx in 0..tw {
+                let (x0, x1) = (
+                    tx * w / tw,
+                    ((tx + 1) * w).div_ceil(tw).min(w).max(tx * w / tw + 1),
+                );
+                let mut sum = [0u32; 3];
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let i = (y * w + x) * 3;
+                        for c in 0..3 {
+                            sum[c] += u32::from(codes[i + c]);
+                        }
+                    }
+                }
+                let n = ((y1 - y0) * (x1 - x0)) as u32;
+                for c in sum {
+                    out.push(((c + n / 2) / n) as u8);
+                }
+            }
+        }
+        Some((tw, th, out))
+    }
+
     /// Lets go of the node's reference (`clear_reference`). Returns whether there was one.
     pub fn reference_clear(&self, photo: PhotoId, node: u32) -> bool {
         self.references.clear(photo, node)

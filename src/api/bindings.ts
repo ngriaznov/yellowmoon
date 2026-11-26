@@ -202,6 +202,41 @@ export const commands = {
 	 */
 	faceCrop: (photoId: PhotoId, number: number) => __TAURI_INVOKE<string>("face_crop", { photoId, number }),
 	/**
+	 *  `reference_choose_file(photo_id, node_id)`: the system's open panel for a picture (JPEG, PNG or TIFF), then the file as the node's
+	 *  reference. `null` when the panel is cancelled. The file is only read; the core holds the reduced pictures for the session. A file
+	 *  that cannot be used is an error whose message is the sentence of `docs/34` section 9.3.
+	 */
+	referenceChooseFile: (photoId: PhotoId, nodeId: number) => __TAURI_INVOKE<{
+	/**  The photo whose node holds it. */
+	photo_id: PhotoId,
+	/**  The Reference Grade node. */
+	node_id: number,
+	/**  The name shown under the thumbnail: the file's name, or "Photo 3 of 7". */
+	label: string,
+	/**  Whether it is a file or a photo of the strip. */
+	source: ReferenceKind,
+	/**  The sentences of the notes, in a fixed order ("Black bars were removed from the reference."). */
+	notes: string[],
+	/**  The picture has no colour: it is matched in black and white. */
+	grey: boolean,
+	/**  The address of a PNG of the reference (at most 256 px wide), on the `ym-frame` scheme. */
+	thumbnail: string,
+} | null>("reference_choose_file", { photoId, nodeId }),
+	/**
+	 *  `reference_choose_photo(photo_id, node_id, other_id, label)`: another photo of the session as the node's reference, rendered through
+	 *  its own settings. `label` is what the card says under the thumbnail ("Photo 3 of 7").
+	 */
+	referenceChoosePhoto: (photoId: PhotoId, nodeId: number, otherId: PhotoId, label: string) => __TAURI_INVOKE<ReferenceInfo>("reference_choose_photo", { photoId, nodeId, otherId, label }),
+	/**
+	 *  `fit_reference(photo_id, node_id)`: fits the node to its reference and writes the result as one patch. It answers when the fit ends
+	 *  (several seconds); `fit_progress` events say where it is. A cancel answers `cancelled` with the settings unchanged.
+	 */
+	fitReference: (photoId: PhotoId, nodeId: number) => __TAURI_INVOKE<FitReport>("fit_reference", { photoId, nodeId }),
+	/**  `cancel_fit(photo_id, node_id)`: stops the node's fit between candidates; the fit then answers `cancelled`. */
+	cancelFit: (photoId: PhotoId, nodeId: number) => __TAURI_INVOKE<null>("cancel_fit", { photoId, nodeId }),
+	/**  `clear_reference(photo_id, node_id)`: lets go of the node's reference. The node's numbers stay as they are. */
+	clearReference: (photoId: PhotoId, nodeId: number) => __TAURI_INVOKE<null>("clear_reference", { photoId, nodeId }),
+	/**
 	 *  `lens_list()`: the lenses of the Lens card's menu, in menu order, with their names, lines and
 	 *  starting amounts. Empty when the lens data could not be loaded.
 	 */
@@ -406,6 +441,7 @@ export const events = {
 	exportBusy: makeEvent<ExportBusy>("export_busy"),
 	exportProgress: makeEvent<ExportProgress>("export_progress"),
 	faceState: makeEvent<FaceState>("face_state"),
+	fitProgress: makeEvent<FitProgress>("fit_progress"),
 	looksChanged: makeEvent<LooksChanged>("looks_changed"),
 	looksImportProgress: makeEvent<LooksImportProgress>("looks_import_progress"),
 	memoryNotice: makeEvent<MemoryNotice>("memory_notice"),
@@ -1344,6 +1380,14 @@ export type ElementPatch = {
 	chroma?: number | null,
 };
 
+/**  One element's share of the photo, as the last fit found it (`docs/34` section 9.4a). */
+export type ElementShare = {
+	/**  `sky`, `vegetation`, `water`, `ground`, `built` or `skin`. */
+	element: string,
+	/**  Its share of the photo, 0 to 1. */
+	share: number,
+};
+
 /**  One element's grade (`docs/34` section 4a.1). */
 export type ElementValues = {
 	/**  The exposure offset in stops, -1 to 1. */
@@ -1746,6 +1790,65 @@ export type FilmStockSettings = {
 	/**  Stops, -4 to 4; 0 is the Input's exposure. */
 	exposure_ev: number,
 };
+
+/**
+ *  `fit_progress { photo_id, node_id, step, search, of, fraction }` (addition, `docs/34` section 9.3): where a fit is. `search` and `of`
+ *  are 0 and 3 for the scene step, 1 to 3 and 3 for a search; `fraction` is how far the fit is, 0 to 1, and never goes back.
+ */
+export type FitProgress = {
+	/**  The photo. */
+	photo_id: PhotoId,
+	/**  The node. */
+	node_id: number,
+	/**  The step. */
+	step: FitStep,
+	/**  The search, 1 to 3; 0 while the scene is made. */
+	search: number,
+	/**  The number of searches (3). */
+	of: number,
+	/**  How far the fit is, 0 to 1. */
+	fraction: number,
+};
+
+/**
+ *  What `fit_reference` answers (`docs/34` section 9.5): how the fit ended, the notes, the elements' shares and, when it wrote a fit,
+ *  the photo's settings as they are now (the page records the one undo step from them).
+ */
+export type FitReport = {
+	/**  The photo. */
+	photo_id: PhotoId,
+	/**  The node. */
+	node_id: number,
+	/**  How the fit ended. */
+	status: FitStatus,
+	/**  The fit's notes, then the reference's own ("No skin was found, so Skin protection did nothing."). */
+	notes: string[],
+	/**  Whether skin was found in the photo. */
+	skin_found: boolean,
+	/**  The six elements' shares of the photo; empty when the fit was cancelled. */
+	shares: ElementShare[],
+	/**  The photo's settings after the fit (unchanged after a cancel). */
+	settings: ResolvedSettings,
+};
+
+/**
+ *  How a fit ended (`fit_reference`): it wrote a fit, found the photo already close (and wrote the identity), or was cancelled (and
+ *  wrote nothing).
+ */
+export type FitStatus = 
+/**  The node holds a fit. */
+"fitted" | 
+/**  The photo is already close to the reference; the fitted fields are the identity. */
+"already_close" | 
+/**  The person pressed Cancel. Nothing was changed. */
+"cancelled";
+
+/**  Which step a fit is at (`fit_progress`). */
+export type FitStep = 
+/**  Finding what is in the two pictures. */
+"scene" | 
+/**  Searching: `search` of `of`. */
+"search";
 
 /**
  *  The answer of `focus_plane` (`docs/23` section 9, Focus plane): with a limit, `far` as `sample_depth`'s and `reason` null;
@@ -3741,6 +3844,34 @@ export type ReferenceGradeNode = {
 	/**  The masks: they limit where the whole node acts. */
 	masks: MaskSettings,
 };
+
+/**
+ *  What the Reference tab shows of a reference the core holds for a node, for the session (`docs/34` section 9.5): a label, the
+ *  notes of section 9.3 and a thumbnail on the `ym-frame` scheme. The picture itself never crosses the bridge.
+ */
+export type ReferenceInfo = {
+	/**  The photo whose node holds it. */
+	photo_id: PhotoId,
+	/**  The Reference Grade node. */
+	node_id: number,
+	/**  The name shown under the thumbnail: the file's name, or "Photo 3 of 7". */
+	label: string,
+	/**  Whether it is a file or a photo of the strip. */
+	source: ReferenceKind,
+	/**  The sentences of the notes, in a fixed order ("Black bars were removed from the reference."). */
+	notes: string[],
+	/**  The picture has no colour: it is matched in black and white. */
+	grey: boolean,
+	/**  The address of a PNG of the reference (at most 256 px wide), on the `ym-frame` scheme. */
+	thumbnail: string,
+};
+
+/**  Where a held reference came from (`docs/34` section 3.7): a file the person chose, or a photo of the strip. */
+export type ReferenceKind = 
+/**  An image file (JPEG, PNG or TIFF). */
+"file" | 
+/**  Another photo of the session, rendered through its own settings. */
+"photo";
 
 /**  Demosaic path of the last render. */
 export type RenderPath = 

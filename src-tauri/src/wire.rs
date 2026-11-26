@@ -4136,6 +4136,107 @@ pub struct FaceState {
     pub message: Option<String>,
 }
 
+/// Where a held reference came from (`docs/34` section 3.7): a file the person chose, or a photo of the strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceKind {
+    /// An image file (JPEG, PNG or TIFF).
+    File,
+    /// Another photo of the session, rendered through its own settings.
+    Photo,
+}
+
+/// What the Reference tab shows of a reference the core holds for a node, for the session (`docs/34` section 9.5): a label, the
+/// notes of section 9.3 and a thumbnail on the `ym-frame` scheme. The picture itself never crosses the bridge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ReferenceInfo {
+    /// The photo whose node holds it.
+    pub photo_id: PhotoId,
+    /// The Reference Grade node.
+    pub node_id: u32,
+    /// The name shown under the thumbnail: the file's name, or "Photo 3 of 7".
+    pub label: String,
+    /// Whether it is a file or a photo of the strip.
+    pub source: ReferenceKind,
+    /// The sentences of the notes, in a fixed order ("Black bars were removed from the reference.").
+    pub notes: Vec<String>,
+    /// The picture has no colour: it is matched in black and white.
+    pub grey: bool,
+    /// The address of a PNG of the reference (at most 256 px wide), on the `ym-frame` scheme.
+    pub thumbnail: String,
+}
+
+/// How a fit ended (`fit_reference`): it wrote a fit, found the photo already close (and wrote the identity), or was cancelled (and
+/// wrote nothing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum FitStatus {
+    /// The node holds a fit.
+    Fitted,
+    /// The photo is already close to the reference; the fitted fields are the identity.
+    AlreadyClose,
+    /// The person pressed Cancel. Nothing was changed.
+    Cancelled,
+}
+
+/// One element's share of the photo, as the last fit found it (`docs/34` section 9.4a).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct ElementShare {
+    /// `sky`, `vegetation`, `water`, `ground`, `built` or `skin`.
+    pub element: String,
+    /// Its share of the photo, 0 to 1.
+    pub share: Num,
+}
+
+/// What `fit_reference` answers (`docs/34` section 9.5): how the fit ended, the notes, the elements' shares and, when it wrote a fit,
+/// the photo's settings as they are now (the page records the one undo step from them).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+pub struct FitReport {
+    /// The photo.
+    pub photo_id: PhotoId,
+    /// The node.
+    pub node_id: u32,
+    /// How the fit ended.
+    pub status: FitStatus,
+    /// The fit's notes, then the reference's own ("No skin was found, so Skin protection did nothing.").
+    pub notes: Vec<String>,
+    /// Whether skin was found in the photo.
+    pub skin_found: bool,
+    /// The six elements' shares of the photo; empty when the fit was cancelled.
+    pub shares: Vec<ElementShare>,
+    /// The photo's settings after the fit (unchanged after a cancel).
+    pub settings: ResolvedSettings,
+}
+
+/// Which step a fit is at (`fit_progress`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum FitStep {
+    /// Finding what is in the two pictures.
+    Scene,
+    /// Searching: `search` of `of`.
+    Search,
+}
+
+/// `fit_progress { photo_id, node_id, step, search, of, fraction }` (addition, `docs/34` section 9.3): where a fit is. `search` and `of`
+/// are 0 and 3 for the scene step, 1 to 3 and 3 for a search; `fraction` is how far the fit is, 0 to 1, and never goes back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "fit_progress")]
+pub struct FitProgress {
+    /// The photo.
+    pub photo_id: PhotoId,
+    /// The node.
+    pub node_id: u32,
+    /// The step.
+    pub step: FitStep,
+    /// The search, 1 to 3; 0 while the scene is made.
+    pub search: u32,
+    /// The number of searches (3).
+    pub of: u32,
+    /// How far the fit is, 0 to 1.
+    pub fraction: Num,
+}
+
 /// `memory_notice { message }` (addition, `docs/26` H-14): the computer is short of memory. `message` is the sentence the error bar shows
 /// as a notice ("Your Mac is short of memory, so Yellowmoon paused background work. Close other apps to speed it up again."), or null
 /// when the level is normal again and the sentence goes. Sent once on the way into the critical level and once when the level is
