@@ -1,0 +1,167 @@
+# RG-08 (docs/34 section 7.3, docs/17 section 11a): the `diag-alf` gate for the Reference Grade node's kernel change. The rule of
+# docs/STATUS.md (2026-11-20 and 2026-11-21, the llvmpipe miscompiles on AMD Zen 4 and 5) says a change to `node_apply` or `run_nodes`
+# in color.wgsl must pass this workflow before a release. RG-08 changed `node_apply`'s signature (one more argument, `rpix`) and put an
+# early return below its N_SKIP return (variant H1: a node with N_HUE or N_ELEM returns from `rg_apply`); the body below is main's.
+# Each of the eight jobs (they land on the four CPU types: AMD EPYC 9V74 and 9V45, EPYC 7763, Xeon Platinum 8573C) prints its CPU,
+# builds the test binaries gpu_alf_look, gpu_masks, gpu_chain, gpu_uniform and gpu_reference_grade at MAIN_REV (main) and at RG_REV (the
+# RG-08 commit) and runs each three times. gpu_reference_grade does not exist at main (that cell reads "nobuild"). The gate is 0 failures of
+# every test on every runner, reported in docs/STATUS.md. Edit the two revisions below, push the branch `diag-alf-rg08` or dispatch the
+# workflow from it (Actions > Diag alf RG-08 > Run workflow, branch diag-alf-rg08).
+name: Diag alf RG-08
+
+on:
+  push:
+    branches: [diag-alf-rg08]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        index: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      YM_REQUIRE_GPU: "1"
+      MAIN_REV: 87bf9afe155e29589ac74057842e4420b34015f2
+      RG_REV: f84e41f9cf35b9d324f94bbafbd650c439e1880c
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Mesa lavapipe (software Vulkan)
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools
+      - name: CPU and adapter
+        run: |
+          mkdir -p diag-out
+          {
+            echo "## lscpu"
+            lscpu | grep -a -i -E "model name|vendor|cpu family|^model:|stepping|^CPU\(s\)"
+            echo "flags:"
+            lscpu | grep -a -i "^flags" | tr ' ' '\n' | grep -a -E "^(avx512.*|fma|f16c|avx2|avx|sse4_2)$" | tr '\n' ' '
+            echo
+            echo "## vulkaninfo"
+            vulkaninfo --summary 2>&1
+          } | tee diag-out/cpu.txt
+          cat diag-out/cpu.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the test binaries at main and at the RG-08 commit
+        run: |
+          set +e
+          root="$PWD"
+          mkdir -p "$root/bins" "$root/diag-out"
+          export CARGO_TARGET_DIR="$root/target"
+          # "exe NAME" prints the executable of test target NAME from cargo's JSON; "errors" prints rendered compiler errors.
+          cat > "$RUNNER_TEMP/cargo_json.py" <<'PY'
+          import json, sys
+          mode = sys.argv[1]
+          want = sys.argv[2] if len(sys.argv) > 2 else ""
+          exe = None
+          for line in sys.stdin:
+              try:
+                  m = json.loads(line)
+              except ValueError:
+                  continue
+              if mode == "exe" and m.get("reason") == "compiler-artifact" and m.get("target", {}).get("name") == want and m.get("executable"):
+                  exe = m["executable"]
+              if mode == "errors" and m.get("reason") == "compiler-message" and m.get("message", {}).get("level") == "error":
+                  print(m["message"].get("rendered", ""))
+          if mode == "exe" and exe:
+              print(exe)
+          PY
+          fail() {
+            local name="$1" why="$2"
+            {
+              echo "BUILD FAILED $name: $why"
+              { cat "$root/bins/$name.worktree.log" "$root/bins/$name.build.log" "$root/bins/$name.errors.log"; } 2>/dev/null | tail -n 40
+            } | tee -a "$root/diag-out/build-failures.txt" >> "$GITHUB_STEP_SUMMARY"
+          }
+          build() {
+            local name="$1" rev="$2" dir bin t
+            : > "$root/bins/$name.worktree.log"
+            if [ "$rev" = HEAD ]; then dir="$root"; else
+              dir="$root/../wt-$name"
+              if ! git worktree add --detach "$dir" "$rev" > "$root/bins/$name.worktree.log" 2>&1; then
+                fail "$name" "git worktree add failed"; return 1
+              fi
+            fi
+            ( cd "$dir" && rustup toolchain install > "$root/bins/$name.toolchain.log" 2>&1
+              extra=""; [ "$name" = main ] || extra="--test gpu_reference_grade"
+              cargo test --release -p ym-gpu --test gpu_alf_look --test gpu_masks --test gpu_chain --test gpu_uniform $extra --no-run --message-format=json \
+                > "$root/bins/$name.build.json" 2> "$root/bins/$name.build.log"
+              echo "cargo exit: $?" >> "$root/bins/$name.build.log" )
+            python3 -I "$RUNNER_TEMP/cargo_json.py" errors < "$root/bins/$name.build.json" > "$root/bins/$name.errors.log"
+            for t in gpu_alf_look gpu_masks gpu_chain gpu_uniform gpu_reference_grade; do
+              bin=$(python3 -I "$RUNNER_TEMP/cargo_json.py" exe "$t" < "$root/bins/$name.build.json" | tail -n 1)
+              if [ -n "$bin" ] && [ -f "$bin" ]; then
+                cp "$bin" "$root/bins/$name-$t" && chmod +x "$root/bins/$name-$t"
+              elif [ "$name" = main ] && [ "$t" = gpu_reference_grade ]; then
+                :
+              else
+                fail "$name" "no $t executable in cargo JSON"
+              fi
+            done
+          }
+          build main "$MAIN_REV"
+          build rg08 "$RG_REV"
+          ls -l "$root/bins"
+      - name: Run the binaries
+        run: |
+          set +e
+          root="$PWD"
+          out="$root/diag-out"
+          # runs NAME TEST: three runs of one binary; prints "failed/3".
+          runs() {
+            local name="$1" t="$2" label="$3" failed=0 i dir
+            shift 3
+            [ -n "$label" ] || label="$name"
+            dir="$root/../wt-$name"
+            if [ ! -x "$root/bins/$name-$t" ]; then echo "nobuild"; return; fi
+            for i in 1 2 3; do
+              if ( cd "$dir/crates/ym-gpu" && env CARGO_MANIFEST_DIR="$dir/crates/ym-gpu" YELLOWMOON_DATA="$dir/data" "$@" "$root/bins/$name-$t" ) > "$out/$label-$t-$i.log" 2>&1; then
+                rm -f "$out/$label-$t-$i.log"
+              else
+                failed=$((failed + 1))
+                grep -a -E "^test .* FAILED|panicked|\|GPU - CPU\||mismatch|differ|left:|right:" "$out/$label-$t-$i.log" | cut -c1-300 | sed "s/^/  [$label $t run $i] /" >> "$out/failing-tests.txt"
+                if [ "$i" = 1 ]; then
+                  { echo "::group::$label $t run 1 (failed): last 60 lines"
+                    tail -n 60 "$out/$label-$t-$i.log" | cut -c1-400
+                    echo "::endgroup::"; } >&2
+                fi
+              fi
+            done
+            echo "$failed/3"
+          }
+          touch "$out/failing-tests.txt"
+          cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -n 1)
+          line="CPU $cpu"
+          for name in main rg08; do
+            line="$line | $name:"
+            for t in gpu_alf_look gpu_masks gpu_chain gpu_uniform gpu_reference_grade; do
+              r=$(runs $name $t "")
+              line="$line $t $r"
+            done
+          done
+          echo "$line"
+          { echo "$line"; echo "failing tests:"; cat "$out/failing-tests.txt"; cat "$out/build-failures.txt" 2>/dev/null; } > "$out/summary.txt"
+          echo "### ${{ matrix.index }}: $line" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-alf-${{ matrix.index }}
+          path: |
+            diag-out/
+            bins/*.log
+          if-no-files-found: warn
