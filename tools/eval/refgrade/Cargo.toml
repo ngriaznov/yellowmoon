@@ -1,0 +1,29 @@
+[package]
+name = "refgrade-eval"
+description = "The Reference Grade evaluation tool (docs/34 section 10.1): harms H1 to H6 and look transfer T1 to T3 of the product's fit on a local set of photos and reference stills, shards, a merge and the three acceptance rules of two runs. Test tooling, never shipped."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+name = "refgrade_eval"
+path = "src/lib.rs"
+
+[[bin]]
+name = "refgrade-eval"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+rayon.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+png = { workspace = true }
+ym-color.workspace = true
+ym-core.workspace = true
+ym-gpu.workspace = true

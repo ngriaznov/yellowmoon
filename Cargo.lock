@@ -7512,6 +7512,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "refgrade-eval"
+version = "0.2.4"
+dependencies = [
+ "anyhow",
+ "clap",
+ "png 0.18.1",
+ "rayon",
+ "serde_json",
+ "tempfile",
+ "ym-color",
+ "ym-core",
+ "ym-gpu",
+]
+
+[[package]]
 name = "regex"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

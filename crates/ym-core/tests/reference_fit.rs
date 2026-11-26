@@ -586,6 +586,82 @@ fn a_node_that_is_not_in_the_picture_writes_nothing() {
     assert_eq!(r.settings(0), before);
 }
 
+/// The evaluation tool's inputs (`docs/34` section 10.1, RG-10): the photo with **every pixel** of the analysis picture, and the
+/// held reference as the fit measures it. The pixels of the whole picture are the fit's own: a candidate rendered through both gives
+/// the same pixel at every place the fit's sample has.
+#[test]
+fn the_evaluation_photo_has_every_pixel_and_agrees_with_the_fits_sample() {
+    use ym_color::refgrade::measure::Px;
+    use ym_color::refgrade::search::CandidateRenderer;
+    let r = rig(2);
+    r.add_node(0, json!({}));
+    let cancel = CancelToken::new();
+    let sampled = r
+        .core
+        .renderer
+        .reference_fit_photo(&r.source(0), 2, &cancel)
+        .expect("the fit's photo");
+    let full = r
+        .core
+        .reference_eval_photo(r.ids[0], 2, &cancel)
+        .expect("the evaluation photo");
+    assert_eq!((full.width, full.height), (sampled.width, sampled.height));
+    assert_eq!(full.sample.len(), full.width * full.height);
+    assert_eq!(full.states.len(), full.sample.len());
+    assert_eq!(full.scene.len(), full.sample.len());
+    assert_eq!(full.sample[0], (0, 0));
+    assert_eq!(full.sample[full.width + 1], (1, 1));
+    assert_eq!(full.mask_ok, sampled.mask_ok);
+    // A candidate with a global grade and a sky grade, rendered through both.
+    let node = r.node(0);
+    let mut x = [0.0; 49];
+    x[3] = 0.4;
+    x[10] = -0.3;
+    x[17] = 0.3;
+    x[24] = 0.2;
+    x[31] = 0.2;
+    let mut a = ym_core::reference_fit::ChainCandidates::new(&sampled, &node);
+    let mut b = ym_core::reference_fit::ChainCandidates::new(&full, &node);
+    let (mut pa, mut pb) = (
+        vec![Px::default(); a.sample_len()],
+        vec![Px::default(); b.sample_len()],
+    );
+    a.render(&x, &mut pa).expect("a render");
+    b.render(&x, &mut pb).expect("a render");
+    for (i, &(px, py)) in sampled.sample.iter().enumerate() {
+        assert_eq!(pa[i], pb[py * full.width + px], "pixel ({px}, {py})");
+        assert_eq!(
+            sampled.scene.class[i],
+            full.scene.class[py * full.width + px]
+        );
+        assert_eq!(sampled.scene.skin[i], full.scene.skin[py * full.width + px]);
+    }
+    // The grade is not the identity somewhere (the test sees something).
+    let mut ident = vec![Px::default(); b.sample_len()];
+    b.render(&[0.0; 49], &mut ident).expect("a render");
+    assert!(pb.iter().zip(&ident).any(|(p, q)| p != q));
+    // The reference side: nothing before a reference is chosen, then every pixel of its analysis picture.
+    assert_eq!(
+        r.core.reference_measured(r.ids[0], 2, &cancel).unwrap_err(),
+        FitFailure::NoReference
+    );
+    let path = r.file_of("graded.png", &r.picture(1));
+    r.core
+        .reference_choose_file(r.ids[0], 2, &path, None)
+        .expect("a reference");
+    let m = r
+        .core
+        .reference_measured(r.ids[0], 2, &cancel)
+        .expect("the measured reference");
+    assert_eq!(m.px.len(), m.width * m.height);
+    assert_eq!(m.scene.len(), m.px.len());
+    assert!(m.width.max(m.height) <= 512);
+    // Asking again gives the same bits (the scene is made once and kept).
+    let again = r.core.reference_measured(r.ids[0], 2, &cancel).unwrap();
+    assert_eq!(m.px, again.px);
+    assert_eq!(m.scene, again.scene);
+}
+
 /// Where the time of a fit goes, on this machine (a Linux figure; run with `--ignored --nocapture`): one candidate's render and its
 /// measures, and a whole fit at 1 and 4 threads.
 #[test]

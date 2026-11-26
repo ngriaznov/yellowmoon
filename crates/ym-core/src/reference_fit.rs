@@ -214,6 +214,38 @@ impl std::fmt::Debug for HeldReference {
     }
 }
 
+impl HeldReference {
+    /// The reference's scene, made on the first call and kept for the next ones.
+    fn scene_for(
+        &self,
+        renderer: &Renderer,
+        cancel: &CancelToken,
+    ) -> Result<Arc<ReferenceScene>, RenderError> {
+        let mut slot = self.scene.lock().unwrap_or_else(PoisonError::into_inner);
+        match slot.as_ref() {
+            Some(s) => Ok(Arc::clone(s)),
+            None => {
+                let made = Arc::new(renderer.reference_scene(&self.picture, cancel)?);
+                *slot = Some(Arc::clone(&made));
+                Ok(made)
+            }
+        }
+    }
+}
+
+/// A held reference as the fit measures it: every pixel of its analysis picture and its scene (`docs/34` section 5.1).
+#[derive(Debug, Clone)]
+pub struct MeasuredReference {
+    /// The analysis picture's width in pixels.
+    pub width: usize,
+    /// Its height.
+    pub height: usize,
+    /// Every pixel, row-major, measured.
+    pub px: Vec<Px>,
+    /// The reference's element, skin and subject at each pixel.
+    pub scene: PixelScene,
+}
+
 /// What the card shows of a held reference: a label and the notes. The page never gets the picture itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferenceInfo {
@@ -470,17 +502,7 @@ pub fn fit_node(
     let net = network()?;
     progress(FitEvent::Scene);
     let photo = renderer.reference_fit_photo(src, node, cancel)?;
-    let reference_scene = {
-        let mut slot = held.scene.lock().unwrap_or_else(PoisonError::into_inner);
-        match slot.as_ref() {
-            Some(s) => Arc::clone(s),
-            None => {
-                let made = Arc::new(renderer.reference_scene(&held.picture, cancel)?);
-                *slot = Some(Arc::clone(&made));
-                made
-            }
-        }
-    };
+    let reference_scene = held.scene_for(renderer, cancel)?;
     if cancel.is_cancelled() {
         return Err(FitFailure::Cancelled);
     }
@@ -613,6 +635,49 @@ impl Core {
                 scene: Mutex::new(None),
             },
         ))
+    }
+
+    /// The photo as the evaluation tool measures it: `Renderer::reference_eval_photo` for the node of an open photo (every pixel of
+    /// the analysis picture, not the fit's sample). Made once per photo; `docs/34` section 10.1.
+    ///
+    /// # Errors
+    ///
+    /// [`FitFailure`], as for [`Core::reference_fit`].
+    pub fn reference_eval_photo(
+        &self,
+        photo: PhotoId,
+        node: u32,
+        cancel: &CancelToken,
+    ) -> Result<FitPhoto, FitFailure> {
+        let src = PhotoSource::from_session(&self.session, photo)?;
+        Ok(self.renderer.reference_eval_photo(&src, node, cancel)?)
+    }
+
+    /// The node's held reference as the fit measures it (its scene is made now when no fit has made it): the evaluation tool's
+    /// reference side. Nothing is written.
+    ///
+    /// # Errors
+    ///
+    /// [`FitFailure::NoReference`] when none is held, and the errors of the scene.
+    pub fn reference_measured(
+        &self,
+        photo: PhotoId,
+        node: u32,
+        cancel: &CancelToken,
+    ) -> Result<MeasuredReference, FitFailure> {
+        let held = self
+            .references
+            .get(photo, node)
+            .ok_or(FitFailure::NoReference)?;
+        let scene = held.scene_for(&self.renderer, cancel)?;
+        let (px, ps) = reference_side(&held.picture, &scene);
+        let a = held.picture.analysis();
+        Ok(MeasuredReference {
+            width: a.width,
+            height: a.height,
+            px,
+            scene: ps,
+        })
     }
 
     /// What the card shows of the node's held reference, when it has one.

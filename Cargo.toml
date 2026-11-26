@@ -24,6 +24,7 @@ members = [
     "tools/oracle",
     "tools/golden",
     "tools/dngfit",
+    "tools/eval/refgrade",
 ]
 
 [workspace.package]

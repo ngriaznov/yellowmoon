@@ -108,6 +108,34 @@ impl Renderer {
         node: u32,
         cancel: &CancelToken,
     ) -> Result<FitPhoto, RenderError> {
+        self.fit_photo_for(src, node, cancel, false)
+    }
+
+    /// The photo as [`Renderer::reference_fit_photo`] makes it, with **every pixel of the analysis picture** in the place of the
+    /// seeded sample of 8192: the evaluation tool's input (`docs/34` section 10.1), which measures the full renders of the photo
+    /// and of a fit, not the fit's sample. The pictures, the chain, the scene and the masks are the fit's own; only `sample`,
+    /// `spots`, `states` and `scene` are longer (row-major, one entry per pixel). It costs a plan run per pixel, so it is made once
+    /// per photo.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Renderer::reference_fit_photo`].
+    pub fn reference_eval_photo(
+        &self,
+        src: &PhotoSource,
+        node: u32,
+        cancel: &CancelToken,
+    ) -> Result<FitPhoto, RenderError> {
+        self.fit_photo_for(src, node, cancel, true)
+    }
+
+    fn fit_photo_for(
+        &self,
+        src: &PhotoSource,
+        node: u32,
+        cancel: &CancelToken,
+        every_pixel: bool,
+    ) -> Result<FitPhoto, RenderError> {
         if src
             .settings
             .nodes
@@ -138,7 +166,14 @@ impl Renderer {
         }
         let placeholder = src.with_settings(settings);
         let renderer = self.snapshot_renderer()?;
-        let result = renderer.fit_photo_on(&placeholder, node, &scene, skin_available, cancel);
+        let result = renderer.fit_photo_on(
+            &placeholder,
+            node,
+            &scene,
+            skin_available,
+            cancel,
+            every_pixel,
+        );
         renderer.forget(src.id);
         result
     }
@@ -150,6 +185,7 @@ impl Renderer {
         scene: &Arc<ElementScene>,
         skin_available: bool,
         cancel: &CancelToken,
+        every_pixel: bool,
     ) -> Result<FitPhoto, RenderError> {
         let mut job = Job::new(self, src, cancel)?.with_gpu_priority(Priority::Thumbnail);
         let image = job.final_size()?;
@@ -190,7 +226,13 @@ impl Renderer {
             ]
         };
         // The sample, its places in the photo and the plan's steps before the node.
-        let sample = sample_pixels(width, height);
+        let sample = if every_pixel {
+            (0..height)
+                .flat_map(|y| (0..width).map(move |x| (x, y)))
+                .collect()
+        } else {
+            sample_pixels(width, height)
+        };
         let spots: Vec<PhotoSpot<'static>> = sample
             .iter()
             .map(|&(x, y)| {
