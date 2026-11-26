@@ -5,9 +5,11 @@
 //! answer, the groups of the photo's own sample pixels); [`CandidateMeasure`] is what is measured on a candidate's picture;
 //! [`terms`] turns the pair into [`Terms`], and [`Terms::total`] and [`Terms::look_only_total`] sum them.
 
+use rayon::prelude::*;
+
 use super::measure::{
-    Measure, PRESENT_SHARE, PURPLE_BAND, PixelScene, Px, circ_mean_deg, measure, network_inputs,
-    oklab_hue, sector_exclusions, wrap_deg,
+    Measure, PRESENT_SHARE, PURPLE_BAND, PixelScene, Px, circ_mean_deg, measure, median_of,
+    network_inputs, oklab_hue, sector_exclusions, wrap_deg,
 };
 use super::network::{Network, NetworkError, NetworkErrorKind, NetworkValues};
 use super::{ELEMENT_NAMES, SECTORS};
@@ -294,7 +296,9 @@ pub struct Fixed {
     p_sec_ab: [[f64; 2]; SECTORS],
     dark_scope: Vec<bool>,
     p_dark_ab: [f64; 2],
-    hl4_scope: Vec<bool>,
+    hl4_pixels: Vec<u32>,
+    sector_pixels: Vec<u32>,
+    turn_pixels: Vec<(u32, f64)>,
     p_okh: Vec<f64>,
     p_cstar: Vec<f64>,
     not_skin: Vec<bool>,
@@ -320,7 +324,7 @@ fn mean_ab(px: &[Px], scope: &[bool]) -> [f64; 2] {
 
 /// The mean Oklab (a, b) of `px` over each group's pixels.
 fn pg_means(px: &[Px], pg: &[Vec<u32>]) -> Vec<[f64; 2]> {
-    pg.iter()
+    pg.par_iter()
         .map(|g| {
             if g.is_empty() {
                 return [0.0, 0.0];
@@ -441,13 +445,28 @@ impl Fixed {
             }
         }
         let p_pg_ab = pg_means(p_px, &pg);
-        let hl4_scope: Vec<bool> = p_px
+        let hl4_pixels: Vec<u32> = p_px
             .iter()
             .enumerate()
-            .map(|(i, q)| {
+            .filter(|&(i, q)| {
                 !scene.skin[i]
                     && q.lab[0] >= WHITES_L_MIN
                     && q.lab[1].hypot(q.lab[2]) < WHITES_PIXEL_C_MAX
+            })
+            .map(|(i, _)| i as u32)
+            .collect();
+        // The photo's pixels a candidate's sectors and content turns are measured on, and each turn's allowance: all fixed by the
+        // photo, so a candidate does not look at the rest.
+        let sector_pixels: Vec<u32> = (0..n as u32)
+            .filter(|&i| sector[i as usize] != 255)
+            .collect();
+        let turn_pixels: Vec<(u32, f64)> = (0..n)
+            .filter(|&i| not_skin[i] && p_cstar[i] >= TURN_MIN_C)
+            .map(|i| {
+                (
+                    i as u32,
+                    allowed_turn_deg(p_cstar[i], t.turn_deg, t.turn_cref, t.turn_cap),
+                )
             })
             .collect();
         Ok(Self {
@@ -465,7 +484,9 @@ impl Fixed {
             p_sec_ab,
             dark_scope,
             p_dark_ab,
-            hl4_scope,
+            hl4_pixels,
+            sector_pixels,
+            turn_pixels,
             p_okh,
             p_cstar,
             not_skin,
@@ -555,23 +576,123 @@ pub struct CandidateMeasure {
     turn_share: f64,
 }
 
-/// The mean per-pixel C\* over the whites in `scope`, and the mean per-pixel distance of their (a\*, b\*) to the target. Opposite
-/// tints do not cancel in either.
-fn whites_stats(px: &[Px], scope: &[bool], white: [f64; 2]) -> (f64, f64) {
-    let (mut c, mut d, mut n) = (0.0, 0.0, 0usize);
-    for (q, _) in px.iter().zip(scope).filter(|&(_, &s)| s) {
-        c += q.lab[1].hypot(q.lab[2]);
+/// The mean per-pixel C\* over the whites (the pixels at `scope`, in order), and the mean per-pixel distance of their (a\*, b\*) to
+/// the target. Opposite tints do not cancel in either.
+fn whites_stats(px: &[Px], scope: &[u32], white: [f64; 2]) -> (f64, f64) {
+    let (mut c, mut d) = (0.0, 0.0);
+    for &i in scope {
+        let q = &px[i as usize];
+        c += q.chroma;
         d += (q.lab[1] - white[0]).hypot(q.lab[2] - white[1]);
-        n += 1;
     }
-    if n == 0 {
+    if scope.is_empty() {
         (0.0, 0.0)
     } else {
-        (c / n as f64, d / n as f64)
+        (c / scope.len() as f64, d / scope.len() as f64)
     }
 }
 
-/// Measures a candidate's sample (`px`, with the photo's `scene`) against the pair's fixed part.
+/// The sector shifts and chroma medians, the new purple pixels, the groups' mean vectors, the whites and the content turn share:
+/// what [`candidate_measure`] takes besides [`measure`].
+struct Extras {
+    sec_shift: [f64; SECTORS],
+    sec_dlogc: [f64; SECTORS],
+    np_share: f64,
+    pg_ab: Vec<[f64; 2]>,
+    hl4_c: f64,
+    hl4_d: f64,
+    turn_share: f64,
+}
+
+/// [`content_turn_share`] on the photo's fixed pixel lists and allowances (`Fixed::turn_pixels`): the same sum of the same terms in
+/// the same order.
+fn turn_share_of(px: &[Px], f: &Fixed) -> f64 {
+    let full = f.t.turn_full;
+    let sum: f64 = f
+        .turn_pixels
+        .iter()
+        .map(|&(i, allowed)| {
+            let i = i as usize;
+            let dh = wrap_deg(px[i].ok_hue_deg - f.p_okh[i]).abs();
+            turn_weight(dh, allowed, full)
+        })
+        .sum();
+    sum / px.len() as f64
+}
+
+fn extras(px: &[Px], f: &Fixed) -> Extras {
+    let ((sectors, np_share), (pg_ab, (whites, turn_share))) = rayon::join(
+        || {
+            rayon::join(
+                || {
+                    let mut shift = [0.0f64; SECTORS];
+                    let mut cnt = [0usize; SECTORS];
+                    let mut cs: [Vec<f64>; SECTORS] = Default::default();
+                    for &i in &f.sector_pixels {
+                        let i = i as usize;
+                        let q = &px[i];
+                        let s = usize::from(f.sector[i]);
+                        shift[s] += wrap_deg(q.hue_deg - f.p_hue[i]);
+                        cnt[s] += 1;
+                        cs[s].push(q.chroma);
+                    }
+                    let mut sec_shift = [0.0; SECTORS];
+                    let mut sec_dlogc = [0.0; SECTORS];
+                    for j in 0..SECTORS {
+                        if cnt[j] > 0 {
+                            sec_shift[j] = shift[j] / cnt[j] as f64;
+                            let med = median_of(&mut cs[j]);
+                            sec_dlogc[j] = med.max(1.0).ln() - f.p_sec_logc[j];
+                        }
+                    }
+                    (sec_shift, sec_dlogc)
+                },
+                || {
+                    // The share of the sample's non-skin pixels that are newly purple: Oklab hue in the band, C* at least 4, and
+                    // either a grey in the photo (C* under 2) or a hue that turned by at least `T.purple_rot_deg`.
+                    let rot = f.t.purple_rot_deg;
+                    let np = px
+                        .iter()
+                        .enumerate()
+                        .filter(|&(i, q)| {
+                            if !f.not_skin[i] || q.chroma < PURPLE_MIN_C {
+                                return false;
+                            }
+                            let h = q.ok_hue_deg;
+                            (PURPLE_BAND.0..=PURPLE_BAND.1).contains(&h)
+                                && (f.p_cstar[i] < PURPLE_FROM_C
+                                    || wrap_deg(h - f.p_okh[i]).abs() >= rot)
+                        })
+                        .count();
+                    np as f64 / px.len() as f64
+                },
+            )
+        },
+        || {
+            rayon::join(
+                || pg_means(px, &f.pg),
+                || {
+                    rayon::join(
+                        || whites_stats(px, &f.hl4_pixels, f.t.white),
+                        || turn_share_of(px, f),
+                    )
+                },
+            )
+        },
+    );
+    Extras {
+        sec_shift: sectors.0,
+        sec_dlogc: sectors.1,
+        np_share,
+        pg_ab,
+        hl4_c: whites.0,
+        hl4_d: whites.1,
+        turn_share,
+    }
+}
+
+/// Measures a candidate's sample (`px`, with the photo's `scene`) against the pair's fixed part. The picture's own measures and the
+/// extra ones run side by side; each is a pass over the pixels in order, so the result is the same on any number of threads.
 ///
 /// # Panics
 ///
@@ -579,65 +700,16 @@ fn whites_stats(px: &[Px], scope: &[bool], white: [f64; 2]) -> (f64, f64) {
 #[must_use]
 pub fn candidate_measure(px: &[Px], scene: &PixelScene, f: &Fixed) -> CandidateMeasure {
     assert_eq!(px.len(), f.sample_len, "the candidate's sample");
-    let m = measure(px, scene, &f.excl);
-    let mut shift = [0.0f64; SECTORS];
-    let mut cnt = [0usize; SECTORS];
-    let mut cs: [Vec<f64>; SECTORS] = Default::default();
-    for (i, q) in px.iter().enumerate() {
-        let s = f.sector[i];
-        if s == 255 {
-            continue;
-        }
-        let s = usize::from(s);
-        let h = q.lab[2].atan2(q.lab[1]).to_degrees();
-        shift[s] += wrap_deg(h - f.p_hue[i]);
-        cnt[s] += 1;
-        cs[s].push(q.lab[1].hypot(q.lab[2]));
-    }
-    let mut sec_shift = [0.0; SECTORS];
-    let mut sec_dlogc = [0.0; SECTORS];
-    for j in 0..SECTORS {
-        if cnt[j] > 0 {
-            sec_shift[j] = shift[j] / cnt[j] as f64;
-            cs[j].sort_unstable_by(f64::total_cmp);
-            let med = cs[j][cs[j].len() / 2];
-            sec_dlogc[j] = med.max(1.0).ln() - f.p_sec_logc[j];
-        }
-    }
-    // The share of the sample's non-skin pixels that are newly purple: Oklab hue in the band, C* at least 4, and either a grey in the
-    // photo (C* under 2) or a hue that turned by at least `T.purple_rot_deg`.
-    let rot = f.t.purple_rot_deg;
-    let np = px
-        .iter()
-        .enumerate()
-        .filter(|&(i, q)| {
-            if !f.not_skin[i] || q.lab[1].hypot(q.lab[2]) < PURPLE_MIN_C {
-                return false;
-            }
-            let h = oklab_hue(q.ok);
-            (PURPLE_BAND.0..=PURPLE_BAND.1).contains(&h)
-                && (f.p_cstar[i] < PURPLE_FROM_C || wrap_deg(h - f.p_okh[i]).abs() >= rot)
-        })
-        .count();
-    let np_share = np as f64 / px.len() as f64;
-    let pg_ab = pg_means(px, &f.pg);
-    let (hl4_c, hl4_d) = whites_stats(px, &f.hl4_scope, f.t.white);
-    let turn_share = content_turn_share(
-        px,
-        &f.p_cstar,
-        &f.p_okh,
-        &f.not_skin,
-        (f.t.turn_deg, f.t.turn_cref, f.t.turn_cap, f.t.turn_full),
-    );
+    let (m, e) = rayon::join(|| measure(px, scene, &f.excl), || extras(px, f));
     CandidateMeasure {
         m,
-        sec_shift,
-        sec_dlogc,
-        np_share,
-        pg_ab,
-        hl4_c,
-        hl4_d,
-        turn_share,
+        sec_shift: e.sec_shift,
+        sec_dlogc: e.sec_dlogc,
+        np_share: e.np_share,
+        pg_ab: e.pg_ab,
+        hl4_c: e.hl4_c,
+        hl4_d: e.hl4_d,
+        turn_share: e.turn_share,
     }
 }
 
@@ -1052,5 +1124,149 @@ fn walls(t: &mut Terms, c: &CandidateMeasure, f: &Fixed) {
         let limit = (SKY_FACTOR * f.p.el[0].mv().1).max(o.el_logc[0].exp());
         let excess = (m.el[0].mv().1 - limit).max(0.0);
         t.guard_sky = SKY_WEIGHT * sq(excess / SKY_SCALE);
+    }
+}
+
+/// `candidate_measure` as it was before RG-11, expression by expression (the picture sorted whole, every statistic evaluated where
+/// it is used, the groups' means one after the other). The oracle of the equivalence test below.
+#[cfg(test)]
+mod by_old_code {
+    use super::super::measure::by_sorting::{measure_by_sorting, picture};
+    use super::*;
+
+    fn old_candidate_measure(px: &[Px], scene: &PixelScene, f: &Fixed) -> CandidateMeasure {
+        let m = measure_by_sorting(px, scene, &f.excl);
+        let mut shift = [0.0f64; SECTORS];
+        let mut cnt = [0usize; SECTORS];
+        let mut cs: [Vec<f64>; SECTORS] = Default::default();
+        for (i, q) in px.iter().enumerate() {
+            let s = f.sector[i];
+            if s == 255 {
+                continue;
+            }
+            let s = usize::from(s);
+            let h = q.lab[2].atan2(q.lab[1]).to_degrees();
+            shift[s] += wrap_deg(h - f.p_hue[i]);
+            cnt[s] += 1;
+            cs[s].push(q.lab[1].hypot(q.lab[2]));
+        }
+        let mut sec_shift = [0.0; SECTORS];
+        let mut sec_dlogc = [0.0; SECTORS];
+        for j in 0..SECTORS {
+            if cnt[j] > 0 {
+                sec_shift[j] = shift[j] / cnt[j] as f64;
+                cs[j].sort_unstable_by(f64::total_cmp);
+                let med = cs[j][cs[j].len() / 2];
+                sec_dlogc[j] = med.max(1.0).ln() - f.p_sec_logc[j];
+            }
+        }
+        let rot = f.t.purple_rot_deg;
+        let np = px
+            .iter()
+            .enumerate()
+            .filter(|&(i, q)| {
+                if !f.not_skin[i] || q.lab[1].hypot(q.lab[2]) < PURPLE_MIN_C {
+                    return false;
+                }
+                let h = oklab_hue(q.ok);
+                (PURPLE_BAND.0..=PURPLE_BAND.1).contains(&h)
+                    && (f.p_cstar[i] < PURPLE_FROM_C || wrap_deg(h - f.p_okh[i]).abs() >= rot)
+            })
+            .count();
+        let np_share = np as f64 / px.len() as f64;
+        let pg_ab: Vec<[f64; 2]> =
+            f.pg.iter()
+                .map(|g| {
+                    if g.is_empty() {
+                        return [0.0, 0.0];
+                    }
+                    let (mut a, mut b) = (0.0, 0.0);
+                    for &i in g {
+                        a += px[i as usize].ok[0];
+                        b += px[i as usize].ok[1];
+                    }
+                    [a / g.len() as f64, b / g.len() as f64]
+                })
+                .collect();
+        let mut hl4_scope = vec![false; px.len()];
+        for &i in &f.hl4_pixels {
+            hl4_scope[i as usize] = true;
+        }
+        let (mut c, mut d, mut n) = (0.0, 0.0, 0usize);
+        for (q, _) in px.iter().zip(&hl4_scope).filter(|&(_, &s)| s) {
+            c += q.lab[1].hypot(q.lab[2]);
+            d += (q.lab[1] - f.t.white[0]).hypot(q.lab[2] - f.t.white[1]);
+            n += 1;
+        }
+        let (hl4_c, hl4_d) = if n == 0 {
+            (0.0, 0.0)
+        } else {
+            (c / n as f64, d / n as f64)
+        };
+        let turn_share = content_turn_share(
+            px,
+            &f.p_cstar,
+            &f.p_okh,
+            &f.not_skin,
+            (f.t.turn_deg, f.t.turn_cref, f.t.turn_cap, f.t.turn_full),
+        );
+        CandidateMeasure {
+            m,
+            sec_shift,
+            sec_dlogc,
+            np_share,
+            pg_ab,
+            hl4_c,
+            hl4_d,
+            turn_share,
+        }
+    }
+
+    #[test]
+    fn the_candidate_measure_gives_the_bits_of_the_one_made_expression_by_expression() {
+        let net = Network::shipped().expect("the shipped network");
+        for (n, seed, coarse) in [(300usize, 21u64, true), (2048, 22, false), (8192, 23, true)] {
+            let (p_px, scene) = picture(n, seed.wrapping_mul(0x9E37_79B9_7F4A_7C15), coarse);
+            let (r_px, r_scene) = picture(n + 17, seed + 100, false);
+            let f = Fixed::new(&net, &p_px, &scene, &r_px, &r_scene, true).expect("a fixed part");
+            // The cases reach the paths: pixels in sectors, in the turn budget and in the whites.
+            assert!(
+                !f.sector_pixels.is_empty()
+                    && !f.turn_pixels.is_empty()
+                    && !f.hl4_pixels.is_empty()
+            );
+            // Candidates: the photo moved in lightness, turned in hue and scaled in chroma, so every wall and sector is reached.
+            for (lift, turn_deg, scale) in [
+                (0.0f64, 0.0f64, 1.0f64),
+                (6.0, 12.0, 1.3),
+                (-4.0, -35.0, 0.7),
+                (2.0, 80.0, 1.8),
+            ] {
+                let (sn, cs) = turn_deg.to_radians().sin_cos();
+                let cand: Vec<Px> = p_px
+                    .iter()
+                    .map(|q| {
+                        let (a, b) = (q.lab[1], q.lab[2]);
+                        let lab = [
+                            (q.lab[0] + lift).clamp(0.0, 100.0),
+                            scale * (a * cs - b * sn),
+                            scale * (a * sn + b * cs),
+                        ];
+                        let ok = [q.ok[0] * cs - q.ok[1] * sn, q.ok[0] * sn + q.ok[1] * cs];
+                        Px::new(lab, ok, lab[0] > 97.0, lab[0] < 2.5)
+                    })
+                    .collect();
+                let new = candidate_measure(&cand, &scene, &f);
+                let old = old_candidate_measure(&cand, &scene, &f);
+                assert_eq!(
+                    format!("{new:?}"),
+                    format!("{old:?}"),
+                    "{n} pixels, lift {lift}, turn {turn_deg}, scale {scale}"
+                );
+                // The objective built on it is the same too.
+                let (tn, to) = (terms(&new, &f), terms(&old, &f));
+                assert_eq!(format!("{tn:?}"), format!("{to:?}"));
+            }
+        }
     }
 }

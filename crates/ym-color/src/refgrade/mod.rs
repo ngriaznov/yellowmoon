@@ -3,7 +3,9 @@
 //! A hand-written network ([`network`]) reads measures ([`measure`]) of the photo and of a reference and writes targets and gates;
 //! an objective with its walls ([`objective`]) says how far a candidate picture is from them; a staged two-start search
 //! ([`search`]) moves the 49 numbers of [`params`] until the objective stops falling. This is round 15 of the proof of concept,
-//! written again in Rust: `f64`, a fixed order, no I/O, no threads. The per-pixel work (the chain from the node's input to the
+//! written again in Rust: `f64`, a fixed order, no I/O. The measures and the two independent searches run side by side on rayon's
+//! threads, but every sum is taken in pixel order and every search is a pure function of its inputs, so the bits do not depend on the
+//! thread count (`docs/34` section 5.7). The per-pixel work (the chain from the node's input to the
 //! display codes) is the caller's, passed in as a [`search::CandidateRenderer`].
 
 // The fit's loops index several per-element and per-band tables at once (the targets, the gates, the weights, the measures), as the

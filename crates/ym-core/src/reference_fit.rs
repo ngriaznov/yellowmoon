@@ -26,7 +26,7 @@ use ym_color::refgrade::network::Network;
 use ym_color::refgrade::objective::Fixed;
 use ym_color::refgrade::params::{ElementNumbers, Numbers, Params, to_numbers};
 use ym_color::refgrade::search::{
-    CandidateRenderer, FitError, FitProgress, FitResult, FitSetup, Refused, fit,
+    CandidateRenderer, FitError, FitProgress, FitResult, FitSetup, Refused, fit_parallel,
 };
 use ym_gpu::queue::CancelToken;
 
@@ -509,7 +509,7 @@ pub fn fit_node(
     node: u32,
     held: &HeldReference,
     cancel: &CancelToken,
-    progress: &mut dyn FnMut(FitEvent),
+    progress: &mut (dyn FnMut(FitEvent) + Send),
 ) -> Result<(FitResult, Vec<String>, Vec<ElementFound>), FitFailure> {
     let Some(base) = src.settings.nodes.reference_grade(node) else {
         return Err(FitFailure::NotReferenceGrade(node));
@@ -522,7 +522,9 @@ pub fn fit_node(
         return Err(FitFailure::Cancelled);
     }
     let (r_px, r_scene) = reference_side(&held.picture, &reference_scene);
+    // Two renderers, one for each of the two independent searches (`docs/34` section 5.7).
     let mut candidates = ChainCandidates::new(&photo, base);
+    let mut look_candidates = ChainCandidates::new(&photo, base);
     // The photo as it stands: the sample with the node at its identity.
     let mut p_px = vec![Px::default(); candidates.sample_len()];
     candidates
@@ -575,9 +577,10 @@ pub fn fit_node(
     if base.skin_protection && fixed.p.el[5].share < ym_color::refgrade::measure::PRESENT_SHARE {
         notes.push("No skin was found, so Skin protection did nothing.".to_owned());
     }
-    let result = fit(
+    let result = fit_parallel(
         &setup,
         &mut candidates,
+        &mut look_candidates,
         &|| cancel.is_cancelled(),
         &mut |p: FitProgress| {
             progress(FitEvent::Search {
@@ -736,7 +739,7 @@ impl Core {
         photo: PhotoId,
         node: u32,
         cancel: &CancelToken,
-        progress: &mut dyn FnMut(FitEvent),
+        progress: &mut (dyn FnMut(FitEvent) + Send),
     ) -> Result<FitOutcome, FitFailure> {
         let held = self
             .references

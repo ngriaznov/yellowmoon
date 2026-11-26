@@ -427,12 +427,7 @@ fn the_network_check_of_the_proof_of_concept_passes_on_its_recorded_vectors() {
 // ---------------------------------------------------------------------------------------------
 
 fn px_of(lab: [f64; 3], ok: [f64; 2]) -> Px {
-    Px {
-        lab,
-        ok,
-        hi: false,
-        lo25: lab[0] < 2.5,
-    }
+    Px::new(lab, ok, false, lab[0] < 2.5)
 }
 
 /// A pixel at CIELAB chroma `c` and an Oklab hue `h_deg` (the Oklab vector has unit length; only its angle matters).
@@ -1111,5 +1106,93 @@ fn progress_names_the_search_and_the_stage_and_never_goes_back() {
     assert!(
         seen.iter()
             .all(|p| p.searches == 3 && (0.0..=1.0).contains(&p.fraction()))
+    );
+}
+
+#[test]
+fn two_searches_side_by_side_give_the_bits_of_one_after_the_other() {
+    use super::search::fit_parallel;
+    let (mut one, f, scene) = setup_pair();
+    let (mut a, _, _) = setup_pair();
+    let (mut b, _, _) = setup_pair();
+    let setup = FitSetup {
+        fixed: &f,
+        scene: &scene,
+        mask_ok: [true; 7],
+    };
+    let seq = run_fit(&mut one, &f, &scene).unwrap();
+    let mut seen: Vec<super::search::FitProgress> = Vec::new();
+    for threads in [1usize, 2, 4] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        seen.clear();
+        let par = pool
+            .install(|| fit_parallel(&setup, &mut a, &mut b, &|| false, &mut |p| seen.push(p)))
+            .unwrap();
+        assert_eq!(
+            par.x.map(f64::to_bits),
+            seq.x.map(f64::to_bits),
+            "{threads} threads"
+        );
+        assert_eq!(par.total.to_bits(), seq.total.to_bits());
+        assert_eq!(par.neutral_total.to_bits(), seq.neutral_total.to_bits());
+        assert_eq!(par.look_total.to_bits(), seq.look_total.to_bits());
+        assert_eq!(par.identity_total.to_bits(), seq.identity_total.to_bits());
+        assert_eq!(par.evals, seq.evals);
+        assert_eq!(par.start, seq.start);
+        assert_eq!(par.need, seq.need);
+        for (p, s) in par.searches.iter().zip(&seq.searches) {
+            assert_eq!(p.x.map(f64::to_bits), s.x.map(f64::to_bits));
+            assert_eq!(p.after.total().to_bits(), s.after.total().to_bits());
+            assert_eq!(p.log, s.log);
+        }
+        // One line for the whole fit: it starts at "1 of 3", ends at "3 of 3" and never goes back.
+        assert_eq!(seen.len(), 18);
+        assert_eq!(seen.first().map(|p| p.search), Some(1));
+        assert_eq!(
+            seen.last().map(|p| (p.search, p.stage)),
+            Some((3, super::search::Stage::Polish))
+        );
+        assert!(
+            seen.windows(2)
+                .all(|w| w[0].fraction() <= w[1].fraction() && w[0].evals <= w[1].evals)
+        );
+    }
+}
+
+#[test]
+fn a_cancel_stops_both_searches_and_a_refusing_chain_is_a_failure() {
+    use super::search::fit_parallel;
+    let (mut a, f, scene) = setup_pair();
+    let (mut b, _, _) = setup_pair();
+    let setup = FitSetup {
+        fixed: &f,
+        scene: &scene,
+        mask_ok: [true; 7],
+    };
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let cancel = || calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) > 500;
+    let err = fit_parallel(&setup, &mut a, &mut b, &cancel, &mut |_| {}).unwrap_err();
+    assert_eq!(err, FitError::Cancelled);
+    assert!(
+        a.calls + b.calls <= 520,
+        "{} renders after a cancel at 500",
+        a.calls + b.calls
+    );
+    let mut refusing = Toy {
+        base: a.base.clone(),
+        calls: 0,
+        refuse_all: true,
+    };
+    let mut other = Toy {
+        base: a.base.clone(),
+        calls: 0,
+        refuse_all: true,
+    };
+    assert_eq!(
+        fit_parallel(&setup, &mut refusing, &mut other, &|| false, &mut |_| {}).unwrap_err(),
+        FitError::ChainRefused
     );
 }

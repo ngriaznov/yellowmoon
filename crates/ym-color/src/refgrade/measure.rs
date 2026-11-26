@@ -126,6 +126,29 @@ pub struct Px {
     pub hi: bool,
     /// L\* below 2.5.
     pub lo25: bool,
+    /// C\*: `lab[1].hypot(lab[2])`, made once with the pixel (the measures read it several times).
+    pub chroma: f64,
+    /// The CIELAB hue in degrees, -180 to 180: `lab[2].atan2(lab[1]).to_degrees()`.
+    pub hue_deg: f64,
+    /// The Oklab hue in degrees, 0 to 360: [`oklab_hue`] of `ok`.
+    pub ok_hue_deg: f64,
+}
+
+impl Px {
+    /// A pixel from its CIELAB and Oklab (a, b) values and its two flags; the derived chroma and hues are made here, with the
+    /// expressions the measures used to evaluate at each use, so the bits are the same (`docs/34` section 5.7).
+    #[must_use]
+    pub fn new(lab: [f64; 3], ok: [f64; 2], hi: bool, lo25: bool) -> Self {
+        Self {
+            lab,
+            ok,
+            hi,
+            lo25,
+            chroma: lab[1].hypot(lab[2]),
+            hue_deg: lab[2].atan2(lab[1]).to_degrees(),
+            ok_hue_deg: oklab_hue(ok),
+        }
+    }
 }
 
 /// Oklab (a, b) of a linear sRGB colour (Ottosson's matrices).
@@ -183,12 +206,12 @@ impl LabConv {
         let c = lin.map(|v| if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) });
         let xyz = linalg::mul_vec(&self.m, c);
         let lab = xyz_to_lab(xyz, self.white);
-        Px {
+        Px::new(
             lab,
-            lo25: lab[0] < CRUSH_L,
-            ok: oklab_ab(c),
-            hi: c.iter().any(|&v| v >= self.hi),
-        }
+            oklab_ab(c),
+            c.iter().any(|&v| v >= self.hi),
+            lab[0] < CRUSH_L,
+        )
     }
 
     /// A pixel of sRGB display codes (0 to 1): decoded to linear light, then [`LabConv::px`].
@@ -198,13 +221,14 @@ impl LabConv {
     }
 }
 
-/// The median of `v`, taken at `len / 2` of the sorted values (0 for an empty list).
-fn median_of(v: &mut [f64]) -> f64 {
+/// The median of `v`, taken at `len / 2` of the sorted values (0 for an empty list). The element is found by partitioning, not by
+/// sorting: it is the one a sort by `total_cmp` would have put there (equal elements have equal bits), and `v` is left in no order.
+pub(super) fn median_of(v: &mut [f64]) -> f64 {
     if v.is_empty() {
         return 0.0;
     }
-    v.sort_unstable_by(f64::total_cmp);
-    v[v.len() / 2]
+    let mid = v.len() / 2;
+    *v.select_nth_unstable_by(mid, f64::total_cmp).1
 }
 
 /// The circular mean, in degrees 0 to 360, of the unit vectors with sums `(sx, sy)`.
@@ -299,44 +323,101 @@ pub struct Measure {
     pub clothing: ElementMeasure,
 }
 
-/// Measures a picture (`docs/34` section 4b.4). `excl` are the elements left out of the sectors (skin always is).
-///
-/// # Panics
-///
-/// When `px` is empty or `scene` has another length: a mistake of the caller.
-#[must_use]
-pub fn measure(px: &[Px], scene: &PixelScene, excl: &[bool; 6]) -> Measure {
+/// The order of a picture's pixels by L\*: ties go to the lower index, so the order is a total one and whatever finds a rank in
+/// it finds the same pixel.
+fn by_lightness(a: &(f64, u32), b: &(f64, u32)) -> std::cmp::Ordering {
+    a.0.total_cmp(&b.0).then(a.1.cmp(&b.1))
+}
+
+/// The statistics of a picture that depend on the rank of each pixel's L\*: the percentiles and the terciles. They need a few
+/// order statistics, not the whole order: each is found by partitioning (`select_nth_unstable_by`), and the result is the
+/// element a full sort would have put at the rank, so the bits are the sorted order's.
+struct Ranks {
+    p2: f64,
+    p50: f64,
+    p98: f64,
+    iqr_rel: f64,
+    /// The first pixel (L\*, index) of the second and of the third tercile, when the picture has one: a pixel's band is the number
+    /// of these it is not below.
+    from_band: [Option<(f64, u32)>; 2],
+}
+
+impl Ranks {
+    fn of(px: &[Px]) -> Self {
+        let n = px.len();
+        let mut keys: Vec<(f64, u32)> = px
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.lab[0], i as u32))
+            .collect();
+        let pos = |q: f64| q / 100.0 * (n - 1) as f64;
+        // A pixel of rank `r` is in band `min(r * 3 / n, 2)`: the second band starts at rank ceil(n / 3), the third at ceil(2n / 3).
+        let band_starts = [n.div_ceil(3), (2 * n).div_ceil(3)];
+        let mut want: Vec<usize> = Vec::with_capacity(12);
+        for q in [2.0, 25.0, 50.0, 75.0, 98.0] {
+            want.push(pos(q).floor() as usize);
+            want.push(pos(q).ceil() as usize);
+        }
+        want.extend(band_starts.iter().copied().filter(|&r| r < n));
+        want.sort_unstable();
+        want.dedup();
+        let mut from = 0;
+        for &r in &want {
+            keys[from..].select_nth_unstable_by(r - from, by_lightness);
+            from = r + 1;
+        }
+        let l_at = |q: f64| {
+            let pos = pos(q);
+            let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
+            let (a, b) = (keys[lo].0, keys[hi].0);
+            a + (b - a) * (pos - lo as f64)
+        };
+        let (p2, p50, p98) = (l_at(2.0), l_at(50.0), l_at(98.0));
+        let iqr_rel = (l_at(75.0) - l_at(25.0)) / (p98 - p2).max(1.0);
+        Self {
+            p2,
+            p50,
+            p98,
+            iqr_rel,
+            from_band: band_starts.map(|r| keys.get(r).copied()),
+        }
+    }
+
+    /// The band, 0 to 2, of pixel `i` whose L\* is `l`.
+    fn band(&self, i: usize, l: f64) -> usize {
+        let key = (l, i as u32);
+        self.from_band
+            .iter()
+            .filter(|t| t.is_some_and(|t| by_lightness(&key, &t).is_ge()))
+            .count()
+    }
+}
+
+/// What one pass over the pixels in order gives: the measures that need no rank, and the pixels that may count as neutral
+/// (index, C\*, a\*, b\*, in order) for the terciles' tint.
+struct Scan {
+    m: Measure,
+    capable: Vec<(u32, f64, f64, f64)>,
+}
+
+/// The passes of [`measure`] that go over the pixels in order and need no rank. Every sum is taken in pixel order.
+fn scan(px: &[Px], scene: &PixelScene, excl: &[bool; 6]) -> Scan {
     use class::{ARCHITECTURE, INTERIOR, OTHER_STUFF, OTHER_THING, PERSON, SKY, UNLABELLED};
     let n = px.len();
-    assert!(n > 0 && scene.len() == n, "a picture and its scene");
-    let mut idx: Vec<usize> = (0..n).collect();
-    idx.sort_unstable_by(|&a, &b| px[a].lab[0].total_cmp(&px[b].lab[0]).then(a.cmp(&b)));
-    let l_at = |q: f64| {
-        let pos = q / 100.0 * (n - 1) as f64;
-        let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
-        let (a, b) = (px[idx[lo]].lab[0], px[idx[hi]].lab[0]);
-        a + (b - a) * (pos - lo as f64)
-    };
-    let (p2, p50, p98) = (l_at(2.0), l_at(50.0), l_at(98.0));
-    let iqr_rel = (l_at(75.0) - l_at(25.0)) / (p98 - p2).max(1.0);
-    let mut band = vec![0u8; n];
-    for (rank, &i) in idx.iter().enumerate() {
-        band[i] = ((rank * 3 / n).min(2)) as u8;
-    }
     let mut el_l: [Vec<f64>; 6] = Default::default();
     let mut el_c: [Vec<f64>; 6] = Default::default();
     let mut el_v = [[0.0f64; 2]; 6];
     let mut el_hn = [0usize; 6];
     let mut el_ab = [[0.0f64; 2]; 6];
     let (mut pool_a, mut pool_b): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
-    let mut capable: [Vec<(f64, f64, f64)>; 3] = Default::default();
+    let mut capable: Vec<(u32, f64, f64, f64)> = Vec::new();
     let (mut subj, mut bg): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
     let mut sec_c: [Vec<f64>; SECTORS] = Default::default();
     let mut sec_v = [[0.0f64; 2]; SECTORS];
     let (mut hi, mut lo25) = (0usize, 0usize);
     for (i, p) in px.iter().enumerate() {
         let (a, b) = (p.lab[1], p.lab[2]);
-        let c = a.hypot(b);
+        let c = p.chroma;
         let e = scene.class[i];
         for k in 0..6 {
             if scene.in_element(i, k) {
@@ -362,7 +443,7 @@ pub fn measure(px: &[Px], scene: &PixelScene, excl: &[bool; 6]) -> Measure {
             UNLABELLED | 4 | ARCHITECTURE | INTERIOR | OTHER_THING | OTHER_STUFF
         ) || (e == PERSON && !scene.skin[i])
         {
-            capable[usize::from(band[i])].push((c, a, b));
+            capable.push((i as u32, c, a, b));
         }
         if scene.subject[i] {
             subj.push(p.lab[0]);
@@ -373,8 +454,7 @@ pub fn measure(px: &[Px], scene: &PixelScene, excl: &[bool; 6]) -> Measure {
             && !scene.skin[i]
             && !(0..5).any(|k| excl[k] && scene.in_element(i, k))
         {
-            let h = b.atan2(a).to_degrees();
-            let s = ((((h + 30.0).rem_euclid(360.0)) / 60.0) as usize) % SECTORS;
+            let s = ((((p.hue_deg + 30.0).rem_euclid(360.0)) / 60.0) as usize) % SECTORS;
             sec_c[s].push(c);
             sec_v[s][0] += a / c;
             sec_v[s][1] += b / c;
@@ -400,11 +480,7 @@ pub fn measure(px: &[Px], scene: &PixelScene, excl: &[bool; 6]) -> Measure {
     };
     let (sum_a, sum_b, sum_c) = cast_set.iter().fold((0.0, 0.0, 0.0), |s, &i| {
         let p = &px[i];
-        (
-            s.0 + p.lab[1],
-            s.1 + p.lab[2],
-            s.2 + p.lab[1].hypot(p.lab[2]),
-        )
+        (s.0 + p.lab[1], s.1 + p.lab[2], s.2 + p.chroma)
     });
     let cn = cast_set.len() as f64;
     let (cast_a, cast_b) = (sum_a / cn, sum_b / cn);
@@ -413,10 +489,6 @@ pub fn measure(px: &[Px], scene: &PixelScene, excl: &[bool; 6]) -> Measure {
         cast_a,
         cast_b,
         conc,
-        p2,
-        p50,
-        p98,
-        iqr_rel,
         hi: hi as f64 / nf,
         lo25: lo25 as f64 / nf,
         ..Measure::default()
@@ -427,26 +499,6 @@ pub fn measure(px: &[Px], scene: &PixelScene, excl: &[bool; 6]) -> Measure {
         &mut pool_b
     };
     m.logsat = median_of(pool).max(1.0).ln();
-    for b in 0..3 {
-        let mut cs: Vec<f64> = capable[b].iter().map(|p| p.0).collect();
-        cs.sort_unstable_by(f64::total_cmp);
-        let floor_c = cs
-            .get((cs.len() as f64 * NEUTRAL_MIN_FRACTION) as usize)
-            .copied()
-            .unwrap_or(0.0);
-        let limit = NEUTRAL_CHROMA_MAX.max(floor_c);
-        let (mut sa, mut sb, mut k) = (0.0, 0.0, 0usize);
-        for &(c, a, bb) in &capable[b] {
-            if c <= limit {
-                sa += a;
-                sb += bb;
-                k += 1;
-            }
-        }
-        if k > 0 {
-            m.tint[b] = [sa / k as f64, sb / k as f64];
-        }
-    }
     // The magenta share and the clothing group (person minus skin).
     let mut mag = 0usize;
     let (mut cl_l, mut cl_c) = (Vec::new(), Vec::new());
@@ -454,8 +506,8 @@ pub fn measure(px: &[Px], scene: &PixelScene, excl: &[bool; 6]) -> Measure {
     let (mut cl_sa, mut cl_sb) = (0.0, 0.0);
     for (i, p) in px.iter().enumerate() {
         let (a, b) = (p.lab[1], p.lab[2]);
-        let c = a.hypot(b);
-        if c > 8.0 && (PURPLE_BAND.0..=PURPLE_BAND.1).contains(&oklab_hue(p.ok)) {
+        let c = p.chroma;
+        if c > 8.0 && (PURPLE_BAND.0..=PURPLE_BAND.1).contains(&p.ok_hue_deg) {
             mag += 1;
         }
         if scene.class[i] == PERSON && !scene.skin[i] {
@@ -527,6 +579,52 @@ pub fn measure(px: &[Px], scene: &PixelScene, excl: &[bool; 6]) -> Measure {
             };
         }
     }
+    Scan { m, capable }
+}
+
+/// Measures a picture (`docs/34` section 4b.4). `excl` are the elements left out of the sectors (skin always is).
+///
+/// The order statistics (the percentiles, the terciles) are found without sorting the picture, and the pass over the pixels runs
+/// beside them; every sum is taken in pixel order and every median is the element a sort would have put in the middle, so the
+/// result is the same, bit for bit, as the plain sorted version's (`measure_by_sorting` in the tests).
+///
+/// # Panics
+///
+/// When `px` is empty or `scene` has another length: a mistake of the caller.
+#[must_use]
+pub fn measure(px: &[Px], scene: &PixelScene, excl: &[bool; 6]) -> Measure {
+    assert!(
+        !px.is_empty() && scene.len() == px.len(),
+        "a picture and its scene"
+    );
+    let (ranks, Scan { mut m, capable }) = rayon::join(|| Ranks::of(px), || scan(px, scene, excl));
+    (m.p2, m.p50, m.p98, m.iqr_rel) = (ranks.p2, ranks.p50, ranks.p98, ranks.iqr_rel);
+    // The near-neutral pixels of each tercile, in pixel order.
+    let mut by_band: [Vec<(f64, f64, f64)>; 3] = Default::default();
+    for &(i, c, a, b) in &capable {
+        by_band[ranks.band(i as usize, px[i as usize].lab[0])].push((c, a, b));
+    }
+    for (b, group) in by_band.iter().enumerate() {
+        let mut cs: Vec<f64> = group.iter().map(|p| p.0).collect();
+        let rank = (cs.len() as f64 * NEUTRAL_MIN_FRACTION) as usize;
+        let floor_c = if rank < cs.len() {
+            *cs.select_nth_unstable_by(rank, f64::total_cmp).1
+        } else {
+            0.0
+        };
+        let limit = NEUTRAL_CHROMA_MAX.max(floor_c);
+        let (mut sa, mut sb, mut k) = (0.0, 0.0, 0usize);
+        for &(c, a, bb) in group {
+            if c <= limit {
+                sa += a;
+                sb += bb;
+                k += 1;
+            }
+        }
+        if k > 0 {
+            m.tint[b] = [sa / k as f64, sb / k as f64];
+        }
+    }
     m
 }
 
@@ -592,4 +690,315 @@ pub fn network_inputs(p: &Measure, r: &Measure) -> BTreeMap<String, f64> {
         m.insert(format!("D.s{j}.dh"), d);
     }
     m
+}
+
+/// The measures as they were made before RG-11: the picture sorted whole, every median taken from a sorted copy, every statistic
+/// evaluated where it is used. The oracle of the equivalence test below; the product's [`measure`] must give the same bits.
+#[cfg(test)]
+pub(super) mod by_sorting {
+    use super::*;
+
+    fn median_by_sorting(v: &mut [f64]) -> f64 {
+        if v.is_empty() {
+            return 0.0;
+        }
+        v.sort_unstable_by(f64::total_cmp);
+        v[v.len() / 2]
+    }
+
+    #[must_use]
+    pub(in crate::refgrade) fn measure_by_sorting(
+        px: &[Px],
+        scene: &PixelScene,
+        excl: &[bool; 6],
+    ) -> Measure {
+        use class::{ARCHITECTURE, INTERIOR, OTHER_STUFF, OTHER_THING, PERSON, SKY, UNLABELLED};
+        let n = px.len();
+        assert!(n > 0 && scene.len() == n, "a picture and its scene");
+        let mut idx: Vec<usize> = (0..n).collect();
+        idx.sort_unstable_by(|&a, &b| px[a].lab[0].total_cmp(&px[b].lab[0]).then(a.cmp(&b)));
+        let l_at = |q: f64| {
+            let pos = q / 100.0 * (n - 1) as f64;
+            let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
+            let (a, b) = (px[idx[lo]].lab[0], px[idx[hi]].lab[0]);
+            a + (b - a) * (pos - lo as f64)
+        };
+        let (p2, p50, p98) = (l_at(2.0), l_at(50.0), l_at(98.0));
+        let iqr_rel = (l_at(75.0) - l_at(25.0)) / (p98 - p2).max(1.0);
+        let mut band = vec![0u8; n];
+        for (rank, &i) in idx.iter().enumerate() {
+            band[i] = ((rank * 3 / n).min(2)) as u8;
+        }
+        let mut el_l: [Vec<f64>; 6] = Default::default();
+        let mut el_c: [Vec<f64>; 6] = Default::default();
+        let mut el_v = [[0.0f64; 2]; 6];
+        let mut el_hn = [0usize; 6];
+        let mut el_ab = [[0.0f64; 2]; 6];
+        let (mut pool_a, mut pool_b): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
+        let mut capable: [Vec<(f64, f64, f64)>; 3] = Default::default();
+        let (mut subj, mut bg): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
+        let mut sec_c: [Vec<f64>; SECTORS] = Default::default();
+        let mut sec_v = [[0.0f64; 2]; SECTORS];
+        let (mut hi, mut lo25) = (0usize, 0usize);
+        for (i, p) in px.iter().enumerate() {
+            let (a, b) = (p.lab[1], p.lab[2]);
+            let c = a.hypot(b);
+            let e = scene.class[i];
+            for k in 0..6 {
+                if scene.in_element(i, k) {
+                    el_ab[k][0] += a;
+                    el_ab[k][1] += b;
+                    el_l[k].push(p.lab[0]);
+                    el_c[k].push(c);
+                    if c > HUE_MIN_CHROMA {
+                        el_v[k][0] += a / c;
+                        el_v[k][1] += b / c;
+                        el_hn[k] += 1;
+                    }
+                }
+            }
+            if matches!(e, 2 | 3 | 4 | 5 | 6 | 8 | 9) {
+                pool_a.push(c);
+            }
+            if e != SKY && e != PERSON {
+                pool_b.push(c);
+            }
+            if matches!(
+                e,
+                UNLABELLED | 4 | ARCHITECTURE | INTERIOR | OTHER_THING | OTHER_STUFF
+            ) || (e == PERSON && !scene.skin[i])
+            {
+                capable[usize::from(band[i])].push((c, a, b));
+            }
+            if scene.subject[i] {
+                subj.push(p.lab[0]);
+            } else if e != UNLABELLED {
+                bg.push(p.lab[0]);
+            }
+            if c > HUE_MIN_CHROMA
+                && !scene.skin[i]
+                && !(0..5).any(|k| excl[k] && scene.in_element(i, k))
+            {
+                let h = b.atan2(a).to_degrees();
+                let s = ((((h + 30.0).rem_euclid(360.0)) / 60.0) as usize) % SECTORS;
+                sec_c[s].push(c);
+                sec_v[s][0] += a / c;
+                sec_v[s][1] += b / c;
+            }
+            hi += usize::from(p.hi);
+            lo25 += usize::from(p.lo25);
+        }
+        let nf = n as f64;
+        // The cast: pixels that are not skin and have L* 15 to 80 when they are at least a tenth of the picture; else every pixel that
+        // is not skin; else every pixel.
+        let mid: Vec<usize> = (0..n)
+            .filter(|&i| !scene.skin[i] && (CAST_L.0..=CAST_L.1).contains(&px[i].lab[0]))
+            .collect();
+        let cast_set: Vec<usize> = if mid.len() as f64 >= CAST_MIN_SHARE * nf {
+            mid
+        } else {
+            (0..n).filter(|&i| !scene.skin[i]).collect()
+        };
+        let cast_set = if cast_set.is_empty() {
+            (0..n).collect()
+        } else {
+            cast_set
+        };
+        let (sum_a, sum_b, sum_c) = cast_set.iter().fold((0.0, 0.0, 0.0), |s, &i| {
+            let p = &px[i];
+            (
+                s.0 + p.lab[1],
+                s.1 + p.lab[2],
+                s.2 + p.lab[1].hypot(p.lab[2]),
+            )
+        });
+        let cn = cast_set.len() as f64;
+        let (cast_a, cast_b) = (sum_a / cn, sum_b / cn);
+        let conc = cast_a.hypot(cast_b) / (sum_c / cn).max(1.0);
+        let mut m = Measure {
+            cast_a,
+            cast_b,
+            conc,
+            p2,
+            p50,
+            p98,
+            iqr_rel,
+            hi: hi as f64 / nf,
+            lo25: lo25 as f64 / nf,
+            ..Measure::default()
+        };
+        let pool = if pool_a.len() as f64 / nf >= 0.01 {
+            &mut pool_a
+        } else {
+            &mut pool_b
+        };
+        m.logsat = median_by_sorting(pool).max(1.0).ln();
+        for b in 0..3 {
+            let mut cs: Vec<f64> = capable[b].iter().map(|p| p.0).collect();
+            cs.sort_unstable_by(f64::total_cmp);
+            let floor_c = cs
+                .get((cs.len() as f64 * NEUTRAL_MIN_FRACTION) as usize)
+                .copied()
+                .unwrap_or(0.0);
+            let limit = NEUTRAL_CHROMA_MAX.max(floor_c);
+            let (mut sa, mut sb, mut k) = (0.0, 0.0, 0usize);
+            for &(c, a, bb) in &capable[b] {
+                if c <= limit {
+                    sa += a;
+                    sb += bb;
+                    k += 1;
+                }
+            }
+            if k > 0 {
+                m.tint[b] = [sa / k as f64, sb / k as f64];
+            }
+        }
+        // The magenta share and the clothing group (person minus skin).
+        let mut mag = 0usize;
+        let (mut cl_l, mut cl_c) = (Vec::new(), Vec::new());
+        let (mut cl_x, mut cl_y, mut cl_hn) = (0.0, 0.0, 0usize);
+        let (mut cl_sa, mut cl_sb) = (0.0, 0.0);
+        for (i, p) in px.iter().enumerate() {
+            let (a, b) = (p.lab[1], p.lab[2]);
+            let c = a.hypot(b);
+            if c > 8.0 && (PURPLE_BAND.0..=PURPLE_BAND.1).contains(&oklab_hue(p.ok)) {
+                mag += 1;
+            }
+            if scene.class[i] == PERSON && !scene.skin[i] {
+                cl_sa += a;
+                cl_sb += b;
+                cl_l.push(p.lab[0]);
+                cl_c.push(c);
+                if c > HUE_MIN_CHROMA {
+                    cl_x += a / c;
+                    cl_y += b / c;
+                    cl_hn += 1;
+                }
+            }
+        }
+        m.magenta_share = mag as f64 / nf;
+        if !cl_l.is_empty() {
+            let c = median_by_sorting(&mut cl_c);
+            m.clothing = ElementMeasure {
+                share: cl_l.len() as f64 / nf,
+                l: median_by_sorting(&mut cl_l),
+                h: if cl_hn > 0 {
+                    circ_mean_deg(cl_x, cl_y)
+                } else {
+                    0.0
+                },
+                c,
+                logc: c.max(1.0).ln(),
+                n: cl_hn,
+                has_hue: cl_hn > 0,
+                mv_a: cl_sa / cl_c.len() as f64,
+                mv_b: cl_sb / cl_c.len() as f64,
+            };
+        }
+        for k in 0..6 {
+            let cnt = el_l[k].len();
+            if cnt == 0 {
+                continue;
+            }
+            let c = median_by_sorting(&mut el_c[k]);
+            m.el[k] = ElementMeasure {
+                share: cnt as f64 / nf,
+                l: median_by_sorting(&mut el_l[k]),
+                h: if el_hn[k] > 0 {
+                    circ_mean_deg(el_v[k][0], el_v[k][1])
+                } else {
+                    0.0
+                },
+                c,
+                logc: c.max(1.0).ln(),
+                n: cnt,
+                has_hue: el_hn[k] > 0,
+                mv_a: el_ab[k][0] / cnt as f64,
+                mv_b: el_ab[k][1] / cnt as f64,
+            };
+        }
+        let enough = |v: &Vec<f64>| v.len() as f64 >= (0.01 * nf).max(30.0);
+        m.subj = enough(&subj) && enough(&bg);
+        if m.subj {
+            m.sep = median_by_sorting(&mut subj) - median_by_sorting(&mut bg);
+        }
+        for j in 0..SECTORS {
+            let cnt = sec_c[j].len();
+            if cnt > 0 {
+                m.sec[j] = SectorMeasure {
+                    share: cnt as f64 / nf,
+                    logc: median_by_sorting(&mut sec_c[j]).max(1.0).ln(),
+                    hue: circ_mean_deg(sec_v[j][0], sec_v[j][1]),
+                    n: cnt,
+                };
+            }
+        }
+        m
+    }
+
+    /// A small deterministic generator (xorshift), for the cases below.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn unit(&mut self) -> f64 {
+            (self.next() >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    /// A picture of `n` pixels with many ties (lightness and chroma on a coarse grid), every class, skin and subject.
+    pub(in crate::refgrade) fn picture(n: usize, seed: u64, coarse: bool) -> (Vec<Px>, PixelScene) {
+        let mut r = Rng(seed | 1);
+        let conv = LabConv::new();
+        let mut px = Vec::with_capacity(n);
+        let mut scene = PixelScene::blank(n);
+        for i in 0..n {
+            let q = |v: f64| if coarse { (v * 16.0).floor() / 16.0 } else { v };
+            let mut lin = [q(r.unit()), q(r.unit() * r.unit()), q(r.unit() * 0.6)];
+            if r.next().is_multiple_of(6) {
+                // A near-grey, bright pixel: the whites and the neutral pixels of the terciles.
+                let v = q(0.5 + 0.5 * r.unit());
+                lin = [v, v * (0.97 + 0.03 * r.unit()), v];
+            }
+            px.push(conv.px(lin));
+            scene.class[i] = (r.next() % 10) as u8;
+            scene.skin[i] = scene.class[i] == class::PERSON && r.next().is_multiple_of(3);
+            scene.subject[i] = r.next().is_multiple_of(5);
+        }
+        (px, scene)
+    }
+
+    #[test]
+    fn the_measure_without_sorting_the_picture_gives_the_bits_of_the_sorted_one() {
+        for (n, seed, coarse) in [
+            (1usize, 1u64, false),
+            (2, 2, false),
+            (3, 3, true),
+            (4, 4, true),
+            (5, 5, false),
+            (7, 6, true),
+            (31, 7, true),
+            (100, 8, false),
+            (101, 9, true),
+            (1000, 10, true),
+            (8192, 11, false),
+            (8192, 12, true),
+            (20_000, 13, true),
+        ] {
+            let (px, scene) = picture(n, seed.wrapping_mul(0x9E37_79B9_7F4A_7C15), coarse);
+            for excl in [[false; 6], [true, false, true, false, true, false]] {
+                let new = measure(&px, &scene, &excl);
+                let old = measure_by_sorting(&px, &scene, &excl);
+                assert_eq!(
+                    format!("{new:?}"),
+                    format!("{old:?}"),
+                    "{n} pixels, seed {seed}, coarse {coarse}, excl {excl:?}"
+                );
+            }
+        }
+    }
 }

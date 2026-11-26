@@ -15,6 +15,8 @@ serde.workspace = true
 serde_json.workspace = true
 # SHA-256 check of the illuminant model's tensors at load (illum). MIT OR Apache-2.0, already in the workspace.
 sha2.workspace = true
+# The Reference Grade fit's two searches run side by side (refgrade::search::fit_parallel). MIT OR Apache-2.0, already in the workspace.
+rayon.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

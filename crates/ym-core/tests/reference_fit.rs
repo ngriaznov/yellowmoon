@@ -719,3 +719,101 @@ fn the_time_of_a_fit_and_of_its_parts() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Pinned fits (RG-11: faster, and not one bit different)
+// ---------------------------------------------------------------------------------------------
+
+/// FNV-1a, 64 bit: a fixed, dependency-free hash for the pins (std's hashers promise nothing across releases).
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// A hash of everything a fit decides: its 49 numbers, its objective and the three searches' ends (as bits), the candidates it
+/// evaluated, which start won, and the node's fitted fields as the settings document writes them.
+fn pin_of(out: &FitOutcome, node: &ReferenceGradeNode) -> u64 {
+    let r = &out.result;
+    let mut bytes: Vec<u8> = Vec::new();
+    for v in r.x {
+        bytes.extend(v.to_bits().to_le_bytes());
+    }
+    for v in [r.total, r.identity_total, r.neutral_total, r.look_total] {
+        bytes.extend(v.to_bits().to_le_bytes());
+    }
+    for s in &r.searches {
+        for v in s.x {
+            bytes.extend(v.to_bits().to_le_bytes());
+        }
+        bytes.extend(s.after.total().to_bits().to_le_bytes());
+    }
+    bytes.extend((r.evals as u64).to_le_bytes());
+    bytes.push(u8::from(r.start == ym_color::refgrade::search::Start::Look));
+    let fitted =
+        json!({ "grade": node.grade, "hue_curves": node.hue_curves, "elements": node.elements });
+    bytes.extend(serde_json::to_vec(&fitted).expect("json"));
+    fnv1a(&bytes)
+}
+
+/// Fits photo 0 on 1 and on 4 threads, checks the two give one pin, and returns it.
+fn pin_on_threads(r: &Rig) -> u64 {
+    let before = r.settings(0);
+    let mut pins = Vec::new();
+    for threads in [1usize, 4] {
+        let out = fit_with(r, 0, threads).expect("a fit");
+        pins.push(pin_of(&out, &r.node(0)));
+        r.core.update_settings(r.ids[0], &out.undo).expect("undo");
+        assert_eq!(r.settings(0), before);
+    }
+    assert_eq!(pins[0], pins[1], "one thread and four");
+    pins[0]
+}
+
+/// The fitted settings of four fixture fits, as the fit made them before RG-11 (the speed task): the same bits now, on 1 thread and
+/// on 4. A change to the fit's results changes these, and has to be a decision of its own (`AGENTS.md` rule 8, `docs/34` section 5.7).
+#[test]
+fn four_fixture_fits_give_the_bits_they_gave_before_the_speed_task() {
+    // The known grade, recovered.
+    let r = rig(2);
+    r.add_node(0, json!({}));
+    let identity_body = serde_json::to_value(r.node(0)).unwrap();
+    r.add_node(0, known_grade());
+    let graded = r.picture(0);
+    r.add_node(0, identity_body);
+    let path = r.file_of("graded.png", &graded);
+    r.core
+        .reference_choose_file(r.ids[0], 2, &path, None)
+        .unwrap();
+    let recovery = pin_on_threads(&r);
+    // Another photo's picture as a file, and as a photo of the strip.
+    let path = r.file_of("other.png", &r.picture(1));
+    r.core
+        .reference_choose_file(r.ids[0], 2, &path, None)
+        .unwrap();
+    let other_file = pin_on_threads(&r);
+    r.core
+        .reference_choose_photo(r.ids[0], 2, r.ids[1], "Photo 2 of 2", &CancelToken::new())
+        .unwrap();
+    let other_photo = pin_on_threads(&r);
+    // The person's own fields in the chain, strength 70 and no skin protection.
+    r.add_node(
+        0,
+        json!({ "trim": { "exposure_ev": 0.1 }, "grade": { "contrast": 8 }, "strength": 70, "skin_protection": false }),
+    );
+    r.core
+        .reference_choose_file(r.ids[0], 2, &path, None)
+        .unwrap();
+    let own_fields = pin_on_threads(&r);
+    let got = [recovery, other_file, other_photo, own_fields];
+    println!("PINS {got:016x?}");
+    assert_eq!(got, PINNED_FITS, "{got:016x?}");
+}
+
+/// The pins of [`four_fixture_fits_give_the_bits_they_gave_before_the_speed_task`]: recovery, a file, a photo of the strip, own fields.
+const PINNED_FITS: [u64; 4] = [
+    0xefe3_4191_2c9d_d6b7,
+    0x30c7_6e01_a349_b55a,
+    0x30c7_6e01_a349_b55a,
+    0x9563_285a_8f7c_360f,
+];
