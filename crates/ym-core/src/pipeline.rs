@@ -93,7 +93,7 @@ pub use object::{
 pub use resident::{Clock, MODEL_IDLE, ModelSlot, Unload, Unloadable, monotonic_clock};
 pub use scene::{
     FakeScene, NO_SCENE_MODEL_SENTENCE, NO_SKIN_MODEL_SENTENCE, SCENE_FORMAT_VERSION, SceneModel,
-    ScenePhase,
+    ScenePhase, WeightsReport, WeightsState, weights_reports,
 };
 pub use thumbs::{
     AdvisorPictures, ChromaScatter, HistogramData, NODE_THUMBNAIL_PX, NodeThumbnail,

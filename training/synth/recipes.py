@@ -183,6 +183,7 @@ def manifest(full: bool = True) -> dict:
     entries.extend(motion_blur_entries(entries))
     entries.extend(lens_blur_entries(entries))
     entries.extend(mask_intersect_entries(entries))
+    entries.extend(reference_grade_entries(entries))
     return {"entries": entries}
 
 
@@ -405,5 +406,63 @@ def mask_intersect_entries(entries: list[dict]) -> list[dict]:
     entry = {k: v for k, v in base.items() if k != "sidecar"}
     entry["id"] = f"synthetic/node-mask-intersect__{UNIFORM_BASE}__lossless-l"
     entry["group"] = "node-mask-intersect"
+    entry["settings"] = {"nodes": {"items": [node], "links": links}}
+    return [entry]
+
+
+# The golden entry with a Reference Grade node on (RG-09, docs/34 section 10): the same ARW file as the entry of ``UNIFORM_BASE`` under
+# settings that add one Reference Grade node after Main, with fitted-style values (a luma and red, green and blue curves, a saturation,
+# both hue curves and element grades for the sky, the vegetation, the skin and the subject, Strength 100) and no mask row. The element
+# masks come from a **stand-in scene**, not the segmenter: the golden tool runs `ym` with `YELLOWMOON_TEST_SCENE=fake`
+# (`ym_core::pipeline::SceneModel::fake_default`, sky across the top third, vegetation and built surfaces in the middle, ground and a
+# patch of water below, a disc of subject with skin on its upper half), so the picture does not depend on the weights. A new entry, so
+# no existing hash moves; `expected.json` pins its picture from the pipeline version that has the node.
+def reference_grade_entries(entries: list[dict]) -> list[dict]:
+    """The golden entry with a Reference Grade node on: a copy of the entry of ``UNIFORM_BASE`` with settings that add the node
+    after Main. No sidecar (a node moves the picture from the scene's truth on purpose)."""
+    base = next(e for e in entries if e["id"] == f"synthetic/{UNIFORM_BASE}__lossless-l")
+    node = {
+        "id": 2,
+        "kind": "reference_grade",
+        "name": "Match",
+        "pos": [1, 0],
+        "grade": {
+            "saturation": {"kind": "manual", "value": -12},
+            "curve": {
+                "luma": [[0, 0], [0.2136, 0.2050], [0.2784, 0.2784], [0.4080, 0.4310], [1, 1]],
+                "red": [[0, 0], [0.2784, 0.2840], [1, 1]],
+                "green": [[0, 0], [0.2784, 0.2784], [1, 1]],
+                "blue": [[0, 0], [0.2784, 0.2700], [1, 1]],
+            },
+        },
+        "hue_curves": {
+            "hue_vs_hue": [
+                {"hue_deg": 0, "value": -4},
+                {"hue_deg": 120, "value": 6},
+                {"hue_deg": 240, "value": 0},
+            ],
+            "hue_vs_sat": [
+                {"hue_deg": 0, "value": 1.05},
+                {"hue_deg": 120, "value": 0.85},
+                {"hue_deg": 240, "value": 1},
+            ],
+        },
+        "elements": {
+            "sky": {"exposure_ev": -0.3, "hue_deg": 8, "chroma": 1.1},
+            "vegetation": {"exposure_ev": 0, "hue_deg": -6, "chroma": 0.9},
+            "skin": {"exposure_ev": 0, "hue_deg": 3, "chroma": 1},
+            "subject": {"exposure_ev": 0.2},
+        },
+        "strength": 100,
+        "skin_protection": True,
+    }
+    links = [
+        {"from": {"node": "input", "port": "picture"}, "to": {"node": 1, "port": "picture"}},
+        {"from": {"node": 1, "port": "picture"}, "to": {"node": 2, "port": "picture"}},
+        {"from": {"node": 2, "port": "picture"}, "to": {"node": "output", "port": "picture"}},
+    ]
+    entry = {k: v for k, v in base.items() if k != "sidecar"}
+    entry["id"] = f"synthetic/node-reference-grade__{UNIFORM_BASE}__lossless-l"
+    entry["group"] = "node-reference-grade"
     entry["settings"] = {"nodes": {"items": [node], "links": links}}
     return [entry]

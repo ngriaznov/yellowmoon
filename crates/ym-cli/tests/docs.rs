@@ -61,6 +61,10 @@ const OUTPUT_FLAGS: &[&str] = &["--look", "--intensity", "--output-sharpening"];
 /// Output and Run groups and the options every command has.
 const OTHER_FLAGS: &[&str] = &[
     "--settings",
+    "--reference",
+    "--reference-strength",
+    "--no-skin-protection",
+    "--reference-node",
     "--preset",
     "--recursive",
     "--profile",
@@ -330,8 +334,8 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
     let blocks = json_blocks(&doc[start..end]);
     assert_eq!(
         blocks.len(),
-        12,
-        "the complete small file, the per-file example, the Brush row, the Object row, the Parallel and the Splitter-and-Combiner examples of docs/25, the Face Refinement example of docs/27, the Colour Uniform example of docs/32, the Blur example of docs/33 and its two Blur the background examples (Depth and Subject) and the Mask Intersect example of this section"
+        13,
+        "the complete small file, the per-file example, the Brush row, the Object row, the Parallel and the Splitter-and-Combiner examples of docs/25, the Face Refinement example of docs/27, the Colour Uniform example of docs/32, the Blur example of docs/33 and its two Blur the background examples (Depth and Subject) the Mask Intersect example and the Reference Grade example of docs/34 section 3.1 of this section"
     );
 
     // The complete small file: read over the default graph, checked, and written back unchanged.
@@ -621,6 +625,31 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
             DevelopSettings::from_value(written, &LookId::neutral()).expect("reads again");
         assert_eq!(again, settings, "{kind}: written back unchanged");
     }
+    // The Reference Grade example (RG-09, `docs/34` section 3.1): a node of fitted-style values the core reads as written (no clamping),
+    // writes back unchanged, and `ym` takes as `--settings` (the next block of this test runs it).
+    let value: Value =
+        serde_json::from_str(&blocks[12]).expect("the Reference Grade example is JSON");
+    let (settings, clamped) = DevelopSettings::from_value(value, &LookId::neutral())
+        .expect("the Reference Grade example reads");
+    assert!(clamped.is_empty(), "{clamped:?}");
+    assert_eq!(
+        settings
+            .nodes
+            .kind_of(ym_core::settings::NodeId::Corrector(2)),
+        Some(ym_core::settings::NodeKind::ReferenceGrade)
+    );
+    let node = settings.nodes.reference_grade(2).expect("node 2");
+    assert_eq!(node.name, "Match");
+    assert_eq!(node.strength, 100.0);
+    assert!(node.skin_protection);
+    assert_eq!(node.hue_curves.hue_vs_hue.len(), 3);
+    assert_eq!(node.hue_curves.hue_vs_sat.len(), 3);
+    assert_eq!(node.grade.curve.luma.len(), 5);
+    assert_eq!(node.elements.sky.exposure_ev, -0.30);
+    assert_eq!(node.elements.subject.exposure_ev, 0.20);
+    let written = serde_json::to_value(&settings).expect("writes");
+    let (again, _) = DevelopSettings::from_value(written, &LookId::neutral()).expect("reads again");
+    assert_eq!(again, settings, "written back unchanged");
     // The unknown-kind sentence is quoted with “outside”, and “parallel” is a kind.
     let doc_text = read("docs/10-cli.md");
     assert!(doc_text.contains(
@@ -641,6 +670,7 @@ fn the_example_files_of_docs_10_are_settings_files_the_core_reads() {
         ("blur", &blocks[8]),
         ("blur-depth", &blocks[9]),
         ("blur-subject", &blocks[10]),
+        ("reference-grade", &blocks[12]),
     ] {
         let file = sb.root().join(format!("{label}.json"));
         std::fs::write(&file, text).expect("write");

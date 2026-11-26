@@ -25,3 +25,5 @@ synthetic/node-blur-soft-off__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossle
 synthetic/node-blur-motion__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l    # Motion Blur: Length 45 at 20 degrees, an inverted Radial row, Respect mask edges on
 synthetic/node-blur-lens__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l   # Blur: Lens, 6 blades, Highlights 60, a Radial row inverted (docs/33 section 8)
 synthetic/node-blur-zoom__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l   # Blur: Zoom, Amount 100, the centre at (0.3, 0.4), a Radial row inverted (docs/33 section 8)
+# The entry with a Reference Grade node on (RG-09): curves, both hue curves and element grades on the stand-in scene (YELLOWMOON_TEST_SCENE=fake)
+synthetic/node-reference-grade__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l   # Reference Grade: luma and RGB curves, saturation -12, hue curves, sky, vegetation, skin and subject grades

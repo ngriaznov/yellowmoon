@@ -219,29 +219,30 @@ mod tests {
         let default_set = select(&m, SetChoice::Synthetic, &[]);
         assert_eq!(
             default_set.len(),
-            71,
-            "the default synthetic set has 61 files, 4 entries with a Colour Uniform node on (one with a grade), 2 with a Soft Blur node on, 1 each with a Motion, Lens and Zoom Blur node on and 1 with Mask Intersect"
+            72,
+            "the default synthetic set has 61 files, 4 entries with a Colour Uniform node on (one with a grade), 2 with a Soft Blur node on, 1 each with a Motion, Lens and Zoom Blur node on, 1 with Mask Intersect and 1 with a Reference Grade node on"
         );
-        // Only the ten node entries have settings; the 61 files of the plain set are the default graph.
+        // Only the eleven node entries have settings; the 61 files of the plain set are the default graph.
         let with_settings: Vec<&str> = default_set
             .iter()
             .filter(|e| !e.settings.as_object().is_some_and(|o| o.is_empty()))
             .map(|e| e.id.as_str())
             .collect();
-        assert_eq!(with_settings.len(), 10, "{with_settings:?}");
+        assert_eq!(with_settings.len(), 11, "{with_settings:?}");
         assert!(
             with_settings
                 .iter()
                 .all(|id| id.starts_with("synthetic/node-uniform-")
                     || id.starts_with("synthetic/node-blur-")
-                    || id.starts_with("synthetic/node-mask-intersect"))
+                    || id.starts_with("synthetic/node-mask-intersect")
+                    || id.starts_with("synthetic/node-reference-grade"))
         );
-        // The node entries read the file of one plain entry, so `synthetic.sh` writes nothing new: ten entries, one file.
+        // The node entries read the file of one plain entry, so `synthetic.sh` writes nothing new: eleven entries, one file.
         for id in &with_settings {
             let e = default_set.iter().find(|e| e.id == *id).unwrap();
             assert_eq!(
                 default_set.iter().filter(|o| o.file == e.file).count(),
-                11,
+                12,
                 "{id}"
             );
         }

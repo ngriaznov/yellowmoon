@@ -2169,6 +2169,304 @@ fn reference_grade_is_the_same_files_through_the_app_path_and_the_binary_on_the_
     );
 }
 
+/// The synthetic reference picture of RG-09, written as a PNG: a teal sky over a green and ochre middle and a warm, dark ground, with a
+/// vertical ramp and a little structure, 384 x 288 so that its short side is over the minimum. Drawn here, so no picture is stored.
+fn write_reference_picture(path: &Path) {
+    let (w, h) = (384_usize, 288_usize);
+    let mut rgb = Vec::with_capacity(w * h * 3);
+    for y in 0..h {
+        for x in 0..w {
+            let (u, v) = (x as f64 / w as f64, y as f64 / h as f64);
+            let wave = 0.5 + 0.5 * (u * 23.0 + v * 7.0).sin();
+            let (r, g, b) = if v < 0.33 {
+                (40.0 + 30.0 * v, 140.0 + 60.0 * v, 190.0 + 40.0 * wave)
+            } else if v < 0.66 {
+                if u < 0.5 {
+                    (50.0 + 20.0 * wave, 120.0 + 50.0 * wave, 50.0)
+                } else {
+                    (170.0 + 40.0 * wave, 130.0 + 30.0 * wave, 80.0)
+                }
+            } else {
+                (
+                    110.0 - 60.0 * (v - 0.66),
+                    80.0 - 40.0 * (v - 0.66),
+                    60.0 + 10.0 * wave,
+                )
+            };
+            rgb.extend([r, g, b].map(|c: f64| c.round().clamp(0.0, 255.0) as u8));
+        }
+    }
+    let file = std::fs::File::create(path).expect("create the reference");
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .expect("png header")
+        .write_image_data(&rgb)
+        .expect("png data");
+}
+
+/// The photo's settings with a Reference Grade node (id 2) after Main, as the app's Add node makes it (`insertAfter` of
+/// `src/state/graphOps.ts`: the next id, one unit right of Main, put into the link that led to the Output; the Input, Main and the
+/// Output are left as they are), at `strength`.
+fn with_reference_node(base: &DevelopSettings, strength: f64) -> DevelopSettings {
+    let mut doc = serde_json::to_value(base).expect("settings");
+    let nodes = doc["nodes"].as_object_mut().expect("nodes");
+    nodes["items"]
+        .as_array_mut()
+        .expect("items")
+        .push(serde_json::json!(
+        { "id": 2, "kind": "reference_grade", "pos": [1, 0], "strength": strength }));
+    nodes["links"] = serde_json::json!([
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ]);
+    serde_json::from_value::<DevelopSettings>(doc)
+        .expect("a document")
+        .validated()
+        .expect("a valid graph")
+        .0
+}
+
+/// Whether this machine has the segmenter's weights (`data/models/eomt`, `tools/fetch/eomt.sh`): the test of the real network says so
+/// and passes without them, unless `YM_REQUIRE_EOMT` makes that a failure.
+fn eomt_weights() -> bool {
+    let there = ym_core::pipeline::weights_reports(&data_dir())
+        .iter()
+        .all(|w| w.state == ym_core::pipeline::WeightsState::Ready);
+    if !there {
+        assert!(
+            std::env::var_os("YM_REQUIRE_EOMT").is_none(),
+            "YM_REQUIRE_EOMT is set and the scene weights are missing or damaged"
+        );
+        eprintln!(
+            "\n* REAL SCENE MODEL TEST SKIPPED in parity: no weights (tools/fetch/eomt.sh)\n"
+        );
+    }
+    there
+}
+
+/// The paths of the values in which two JSON documents differ, with both values (at most 12), empty when they are equal.
+fn differences(a: &serde_json::Value, b: &serde_json::Value, at: &str, out: &mut Vec<String>) {
+    use serde_json::Value;
+    if out.len() >= 12 {
+        return;
+    }
+    match (a, b) {
+        (Value::Object(x), Value::Object(y)) => {
+            for key in x.keys().chain(y.keys().filter(|k| !x.contains_key(*k))) {
+                let (l, r) = (
+                    x.get(key).unwrap_or(&Value::Null),
+                    y.get(key).unwrap_or(&Value::Null),
+                );
+                differences(l, r, &format!("{at}.{key}"), out);
+            }
+        }
+        (Value::Array(x), Value::Array(y)) if x.len() == y.len() => {
+            for (i, (l, r)) in x.iter().zip(y).enumerate() {
+                differences(l, r, &format!("{at}[{i}]"), out);
+            }
+        }
+        _ if a == b => {}
+        _ => out.push(format!("{at}: {a} against {b}")),
+    }
+}
+
+/// A fit through the app's path (`Core::update_settings` for the node, `reference_choose_file`, `reference_fit`) and through
+/// `ym render --reference --reference-strength 70` on the same photo and the same reference picture: **the same fitted settings and the
+/// same files** in JPEG, 16-bit TIFF, 16-bit PNG and DNG. The scene is the deterministic fake on both sides (`scene` `FakeScene`) or the
+/// real network (`Data`); the device is attached on both sides when `device` is set (the fit itself is the CPU's either way).
+fn reference_fit_leg(device: bool, scene: Depth) {
+    let sb = Sandbox::new();
+    let arw = sb.arw_sized("DSC00001.ARW", 256, 192, 11);
+    let reference = sb.root().join("still.png");
+    write_reference_picture(&reference);
+    let slot = if device {
+        let slot = ym_apple::gpu_opener(GpuPolicy::On, MemoryBudget::detect()).open();
+        if slot.gpu().is_none() {
+            assert!(
+                !gpu_required_by_env(),
+                "YM_REQUIRE_GPU is set but no device opened: {:?}",
+                slot.missing_device_reason()
+            );
+            eprintln!("\n* GPU LEG SKIPPED in parity: no adapter\n");
+            return;
+        }
+        Some(slot)
+    } else {
+        None
+    };
+    let app = App::open_complete(
+        &data_dir(),
+        &[&arw],
+        DEFAULT_METHOD,
+        slot,
+        Auto::None,
+        None,
+        scene,
+    );
+    let tiff = || ExportOptions {
+        format: FormatKind::Tiff,
+        bit_depth: BitDepth::Sixteen,
+        ..ExportOptions::default()
+    };
+
+    // The app's path: Add node, Choose reference, Fit.
+    let now = app.core.session.view(app.photo).expect("view").settings;
+    app.core
+        .update_settings(
+            app.photo,
+            &SettingsPatch::between(&now, &with_reference_node(&now, 70.0)),
+        )
+        .expect("the node is added");
+    app.core
+        .reference_choose_file(app.photo, 2, &reference, None)
+        .expect("the reference is chosen");
+    let outcome = app
+        .core
+        .reference_fit(
+            app.photo,
+            2,
+            &ym_gpu::queue::CancelToken::new(),
+            &mut |_| {},
+        )
+        .expect("the fit");
+    assert_eq!(
+        outcome.status,
+        ym_core::reference_fit::FitStatus::Fitted,
+        "the synthetic reference is far enough from the photo for a fit: {:?}",
+        outcome.found
+    );
+    let fitted = app
+        .core
+        .session
+        .settings(app.photo)
+        .expect("settings")
+        .pinned_settings();
+    assert_eq!(
+        fitted.nodes.reference_grade(2).map(|n| n.strength),
+        Some(70.0),
+        "the fit leaves Strength alone"
+    );
+
+    let mut env_pairs: Vec<(&str, &str)> = Vec::new();
+    if device {
+        env_pairs.push(("YELLOWMOON_GPU", "on"));
+    }
+    if scene == Depth::FakeScene {
+        env_pairs.push(common::FAKE_SCENE);
+    }
+    let env: &[(&str, &str)] = &env_pairs;
+    let reference_arg = reference.to_str().expect("utf-8");
+    let mut tiff_of_the_fit: Option<Vec<PathBuf>> = None;
+
+    // The binary's report carries the same fitted settings as the app holds, and the fit's own facts.
+    {
+        let out = sb
+            .ym()
+            .envs(env.iter().copied())
+            .args([
+                "render",
+                "--json",
+                "--format",
+                "jpeg",
+                "--auto-provider",
+                "yellowmoon",
+            ])
+            .args(["--reference", reference_arg, "--reference-strength", "70"])
+            .arg(&arw)
+            .arg("--out")
+            .arg(sb.root().join("cli-json"))
+            .assert()
+            .success();
+        let line = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+        let v: serde_json::Value = serde_json::from_str(line.trim_end()).expect("JSON");
+        let app_settings = serde_json::to_value(&fitted).expect("settings");
+        let mut found = Vec::new();
+        differences(&v["settings"], &app_settings, "settings", &mut found);
+        assert!(
+            found.is_empty(),
+            "the binary fitted other settings than the app:\n{}",
+            found.join("\n")
+        );
+        assert_eq!(v["reference"]["status"], "fitted");
+        assert_eq!(v["reference"]["node"], 2);
+        assert_eq!(v["reference"]["elements"].as_array().map(Vec::len), Some(6));
+    }
+
+    for (name, options, flags) in [
+        ("jpeg", ExportOptions::default(), vec!["--format", "jpeg"]),
+        ("tiff16", tiff(), vec!["--format", "tiff", "--bits", "16"]),
+        (
+            "png16",
+            ExportOptions {
+                format: FormatKind::Png,
+                bit_depth: BitDepth::Sixteen,
+                ..ExportOptions::default()
+            },
+            vec!["--format", "png", "--bits", "16"],
+        ),
+        (
+            "dng",
+            ExportOptions {
+                format: FormatKind::Dng,
+                ..ExportOptions::default()
+            },
+            vec!["--format", "dng"],
+        ),
+    ] {
+        let from_app = app.export(options, &sb.root().join(format!("app-{name}")));
+        let mut args = flags;
+        args.extend(["--reference", reference_arg, "--reference-strength", "70"]);
+        let from_cli = cli_export_env(
+            &sb,
+            &[&arw],
+            &args,
+            &sb.root().join(format!("cli-{name}")),
+            env,
+        );
+        assert_same_files(&from_app, &from_cli, &format!("a fit, {name}"));
+        if name == "tiff16" {
+            tiff_of_the_fit = Some(from_app);
+        }
+    }
+    // The fit did something: the photo without the node is another picture (exported last, so that nothing the export leaves in the
+    // core's caches is there when the fit runs: the fit and the export are two steps of one person's session, and `ym` makes them
+    // in a fresh process).
+    app.core
+        .session
+        .replace_settings(app.photo, now)
+        .expect("replace");
+    let before = app.export(tiff(), &sb.root().join("app-before"));
+    assert!(
+        bytes(&tiff_of_the_fit.expect("the TIFF")[0]) != bytes(&before[0]),
+        "the fit changed no pixel"
+    );
+}
+
+/// The fit through the app and through `ym render --reference` (RG-09, `docs/34` section 10, *App against `ym`*), CPU, with the fake scene.
+#[test]
+fn a_reference_fit_is_the_same_settings_and_files_through_the_app_path_and_the_binary() {
+    reference_fit_leg(false, Depth::FakeScene);
+}
+
+/// The same with the device attached on both sides (the fit is the CPU's; the export runs the node on the device).
+#[test]
+fn a_reference_fit_is_the_same_settings_and_files_through_the_app_path_and_the_binary_on_the_device()
+ {
+    reference_fit_leg(true, Depth::FakeScene);
+}
+
+/// The real segmenter and MediaPipe's skin network on both sides, where the weights are (`data/models/eomt`, `data/models/mediapipe`):
+/// the same fit and the same files. Says so and passes without the weights (`YM_REQUIRE_EOMT=1` makes that a failure).
+#[test]
+fn a_reference_fit_is_the_same_through_the_app_path_and_the_binary_with_the_real_scene_model() {
+    if !eomt_weights() {
+        return;
+    }
+    reference_fit_leg(false, Depth::Data);
+}
+
 /// The device leg of the Depth masks: the colour pass and the raster pass run on the device, the map is the CPU's.
 #[test]
 fn depth_masks_are_the_same_files_through_the_app_path_and_the_binary_on_the_device() {

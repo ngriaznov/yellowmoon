@@ -77,6 +77,7 @@ pub enum Command {
 
 const H_INPUT: &str = "Photos";
 const H_LOOK: &str = "Look and display";
+const H_REFERENCE: &str = "Reference grade";
 const H_LIGHT: &str = "Light";
 const H_COLOR: &str = "Colour";
 const H_LENS: &str = "Lens";
@@ -88,7 +89,7 @@ const H_RUN: &str = "Run";
 /// Arguments of `ym render`.
 #[derive(Debug, Args)]
 #[command(
-    after_help = "Examples:\n  ym render ~/Pictures/2026-10-04 --look neutral --format jpeg --long-edge 3000 --out ~/Exports\n  fd -e ARW . /Volumes/A1 | ym render - --format tiff --bits 16 --out ~/Exports\n  ym render DSC04204.ARW --exposure-offset -0.5 --wb 5200,4\n\nSettings are a graph of nodes. The options set fields of three of them: the Input (--exposure, --exposure-offset, --wb, --light, --lens, --flares, --edges, --anamorphic, --nr, --sharpen, --rolloff, --no-neural, --no-highlight-recovery, --no-lens, --no-ca, --auto-crop), node 1, Main (--contrast, --brightness, --highlights, --shadows, --white, --black, --saturation) and the Output (--look, --intensity, --output-sharpening). Everything else goes in a JSON file given with --settings: other nodes (correctors, Colour Uniform nodes, Blur nodes, Reference Grade nodes, mixers, splitters and combiners, Face Refinement nodes, and Film nodes whose stocks `ym film list` shows), masks and links, colour balance, curves, crop, orientation, white pick. The file is a graph, for example {\"nodes\":{\"items\":[{\"id\":1,\"grade\":{\"contrast\":{\"kind\":\"manual\",\"value\":20}}}]}}; the `ym:Settings` of an export's XMP holds a photo's settings in that form. A file in the form of Yellowmoon 0.1 is refused. Options given alongside --settings override it. A file with several photos' settings is an object keyed by file name."
+    after_help = "Examples:\n  ym render ~/Pictures/2026-10-04 --look neutral --format jpeg --long-edge 3000 --out ~/Exports\n  fd -e ARW . /Volumes/A1 | ym render - --format tiff --bits 16 --out ~/Exports\n  ym render DSC04204.ARW --exposure-offset -0.5 --wb 5200,4\n  ym render DSC04204.ARW --reference still.jpg --reference-strength 80\n\nSettings are a graph of nodes. The options set fields of three of them: the Input (--exposure, --exposure-offset, --wb, --light, --lens, --flares, --edges, --anamorphic, --nr, --sharpen, --rolloff, --no-neural, --no-highlight-recovery, --no-lens, --no-ca, --auto-crop), node 1, Main (--contrast, --brightness, --highlights, --shadows, --white, --black, --saturation) and the Output (--look, --intensity, --output-sharpening). Everything else goes in a JSON file given with --settings: other nodes (correctors, Colour Uniform nodes, Blur nodes, Reference Grade nodes, mixers, splitters and combiners, Face Refinement nodes, and Film nodes whose stocks `ym film list` shows), masks and links, colour balance, curves, crop, orientation, white pick. The file is a graph, for example {\"nodes\":{\"items\":[{\"id\":1,\"grade\":{\"contrast\":{\"kind\":\"manual\",\"value\":20}}}]}}; the `ym:Settings` of an export's XMP holds a photo's settings in that form. A file in the form of Yellowmoon 0.1 is refused. Options given alongside --settings override it. A file with several photos' settings is an object keyed by file name. --reference matches the photos to a picture instead: it fits a Reference Grade node to it as the app's Fit does, adding a node after Main when the graph has none (--reference-strength, --no-skin-protection and --reference-node refine it)."
 )]
 pub struct RenderArgs {
     /// Files or folders to render; `-` reads file paths from stdin, one per line. Folders are walked
@@ -123,6 +124,22 @@ pub struct RenderArgs {
     /// orientation, white pick.
     #[arg(long, value_name = "FILE", help_heading = H_LOOK)]
     pub settings: Option<PathBuf>,
+
+    /// Match each photo to a picture: a JPEG, PNG or TIFF file. The grade is fitted to it, as the app's Fit does, and
+    /// written into a Reference Grade node after Main (one is added when the graph has none; with several, say which with
+    /// --reference-node). The fit takes a few seconds a photo and needs the scene model.
+    #[arg(long, value_name = "FILE", help_heading = H_REFERENCE)]
+    pub reference: Option<PathBuf>,
+    /// How much of the fitted grade is shown, 0 to 100 percent (default: the node's, 100 for a new one). It sets the node's
+    /// Strength.
+    #[arg(long, value_name = "PERCENT", value_parser = percent, requires = "reference", help_heading = H_REFERENCE)]
+    pub reference_strength: Option<f64>,
+    /// Fit without the walls that keep skin from drifting.
+    #[arg(long, requires = "reference", help_heading = H_REFERENCE)]
+    pub no_skin_protection: bool,
+    /// The Reference Grade node to fit, by its number, when the graph has more than one.
+    #[arg(long, value_name = "ID", value_parser = clap::value_parser!(u32).range(2..=64), requires = "reference", help_heading = H_REFERENCE)]
+    pub reference_node: Option<u32>,
 
     /// Exposure in stops (-4 to 4), or `auto`.
     #[arg(long, value_name = "auto|EV", value_parser = exposure, allow_negative_numbers = true, conflicts_with = "exposure_offset", help_heading = H_LIGHT)]

@@ -42,6 +42,7 @@ use crate::develop::{LensChoice, LoadedSettings, Overrides, SettingsFile};
 use crate::exit::{self, Failure};
 use crate::inputs::{self, Expanded, Problem};
 use crate::presets_cmd::preset_failure;
+use crate::reference_cmd::{self, ReferenceRun, Stop};
 use crate::report::{
     AppleAutoField, Object, develop_fields, render_error, render_low_space, render_ok,
     render_stopped,
@@ -622,6 +623,17 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
         ));
     }
 
+    // The reference of `--reference`: a file that cannot be used ends the run before any photo is opened (`docs/34` section 8).
+    let reference = args.reference.as_deref().map(|file| ReferenceRun {
+        file,
+        strength: args.reference_strength,
+        no_skin_protection: args.no_skin_protection,
+        node: args.reference_node,
+    });
+    if let Some(run) = &reference {
+        reference_cmd::check_file(run.file)?;
+    }
+
     // The photos: the album's, or the files and folders given.
     let album = album_path.as_deref().map(read_album).transpose()?;
     let Expanded {
@@ -807,9 +819,60 @@ fn run_checked(args: &RenderArgs, console: &mut Console) -> Result<u8, Failure> 
             &overrides,
             args.auto_crop,
         ) {
-            Ok((known, warning)) => {
+            Ok((mut known, warning)) => {
                 if let Some(warning) = warning {
                     console.warn(&format!("{}: {warning}", path_text(input)));
+                }
+                if let Some(run) = &reference {
+                    console.detail(&format!(
+                        "{}: fitting to {}.",
+                        path_text(input),
+                        path_text(run.file)
+                    ));
+                    match reference_cmd::fit_photo(&rt, id, run, console) {
+                        Ok(fitted) => {
+                            console.info(&reference_cmd::status_line(input, &fitted));
+                            plan.notes.extend(fitted.notes);
+                            known.insert("reference", fitted.json);
+                            // The settings of the report are the fitted ones: feed them back with `--settings` for the same file.
+                            if let Ok(resolved) = rt.core.session.settings(id) {
+                                known.insert(
+                                    "settings",
+                                    serde_json::to_value(resolved.pinned_settings())
+                                        .unwrap_or(serde_json::Value::Null),
+                                );
+                            }
+                        }
+                        Err(Stop::Photo {
+                            kind,
+                            message,
+                            detail,
+                        }) => {
+                            plan.result = Some(Outcome::Failed { kind: kind.into() });
+                            plan.photo = None;
+                            counts.failed.push(kind.into());
+                            report_failure(
+                                console,
+                                &mut stdout,
+                                args.json,
+                                input,
+                                Some(&known),
+                                kind,
+                                &message,
+                                detail.as_deref(),
+                            );
+                            continue;
+                        }
+                        Err(Stop::Usage(message)) => {
+                            core.close_session();
+                            return Err(Failure::usage(message));
+                        }
+                        Err(Stop::Interrupted) => {
+                            console.info("The fit was cancelled. Nothing was exported.");
+                            core.close_session();
+                            return Ok(exit::INTERRUPTED);
+                        }
+                    }
                 }
                 plan.known = Some(known);
                 by_photo.insert(id, i);

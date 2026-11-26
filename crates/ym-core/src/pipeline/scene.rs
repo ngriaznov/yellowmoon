@@ -40,6 +40,74 @@ pub const SCENE_MODEL_MISSING_NOTE: &str = "The scene model is missing, so the E
 /// The note of a viewer frame that has no skin mask for want of the skin model.
 pub const SKIN_MODEL_MISSING_NOTE: &str = "The skin model is missing, so the Skin of a Reference Grade node is not applied. Reinstall the app.";
 
+/// What a weights file of the scene model is: found and as its checksum says, not there, or there and not as the checksum says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeightsState {
+    /// The file is there and its SHA-256 is the one `SHA256SUMS` lists.
+    Ready,
+    /// The file (or its line in `SHA256SUMS`) is not there.
+    Missing,
+    /// The file is there and is not the one `SHA256SUMS` lists (truncated, changed).
+    Damaged,
+}
+
+impl WeightsState {
+    /// The word `ym doctor --json` writes: `ready`, `missing` or `damaged`.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Missing => "missing",
+            Self::Damaged => "damaged",
+        }
+    }
+}
+
+/// One weights file of the scene model as `ym doctor` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeightsReport {
+    /// The file's name under `models/`, with forward slashes (`eomt/eomt_coco_panoptic_small.f16.safetensors`).
+    pub name: String,
+    /// What the file is.
+    pub state: WeightsState,
+    /// The SHA-256 of the file when it is there (also when it is damaged).
+    pub sha256: Option<String>,
+}
+
+/// The state of the scene model's two weights files in a data folder: the segmenter's and MediaPipe's Selfie Multiclass (the skin
+/// network, without which the scene has no skin). The files are read and hashed (about 50 MB), not loaded.
+#[must_use]
+pub fn weights_reports(data_root: &Path) -> [WeightsReport; 2] {
+    let one = |dir: &str, file: &str| {
+        let folder = data_root.join("models").join(dir);
+        let name = format!("{dir}/{file}");
+        let path = folder.join(file);
+        let listed = listed_sha256(&folder, file);
+        if !path.is_file() {
+            return WeightsReport {
+                name,
+                state: WeightsState::Missing,
+                sha256: None,
+            };
+        }
+        let sha256 = ym_looks::manifest::hash_file(&path).ok();
+        let state = match (&listed, &sha256) {
+            (None, _) => WeightsState::Missing,
+            (Some(l), Some(h)) if l.eq_ignore_ascii_case(h) => WeightsState::Ready,
+            _ => WeightsState::Damaged,
+        };
+        WeightsReport {
+            name,
+            state,
+            sha256,
+        }
+    };
+    [
+        one("eomt", eomt::WEIGHTS_FILE),
+        one("mediapipe", selfie::WEIGHTS_FILE),
+    ]
+}
+
 /// What the scene worker is doing for a photo, as the renderer's listener hears it
 /// ([`Renderer::set_scene_listener`](super::Renderer::set_scene_listener)).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -475,5 +543,66 @@ impl SceneModel {
             classes: elements,
             skin_available,
         })
+    }
+}
+
+#[cfg(test)]
+mod weights_tests {
+    use super::*;
+
+    /// A data folder with `files` (folder, name, bytes) under `models/` and, for each folder, a `SHA256SUMS` that lists the file with
+    /// the hash of `listed` bytes.
+    fn data(files: &[(&str, &str, &[u8], &[u8])]) -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("a folder");
+        for (dir, name, bytes, listed) in files {
+            let folder = root.path().join("models").join(dir);
+            std::fs::create_dir_all(&folder).expect("a folder");
+            std::fs::write(folder.join(name), bytes).expect("a file");
+            let scratch = folder.join("listed.tmp");
+            std::fs::write(&scratch, listed).expect("a file");
+            let hash = ym_looks::manifest::hash_file(&scratch).expect("a hash");
+            std::fs::remove_file(&scratch).expect("remove");
+            std::fs::write(folder.join("SHA256SUMS"), format!("{hash}  {name}\n")).expect("sums");
+        }
+        root
+    }
+
+    #[test]
+    fn the_two_files_are_ready_missing_or_damaged_by_their_checksums() {
+        let none = tempfile::tempdir().expect("a folder");
+        let [seg, skin] = weights_reports(none.path());
+        assert_eq!(seg.name, format!("eomt/{}", eomt::WEIGHTS_FILE));
+        assert_eq!(skin.name, format!("mediapipe/{}", selfie::WEIGHTS_FILE));
+        assert_eq!(
+            (seg.state, skin.state),
+            (WeightsState::Missing, WeightsState::Missing)
+        );
+        assert_eq!((seg.sha256, skin.sha256), (None, None));
+
+        let good = data(&[
+            ("eomt", eomt::WEIGHTS_FILE, b"segmenter", b"segmenter"),
+            ("mediapipe", selfie::WEIGHTS_FILE, b"skin", b"skin"),
+        ]);
+        let [seg, skin] = weights_reports(good.path());
+        assert_eq!(
+            (seg.state, skin.state),
+            (WeightsState::Ready, WeightsState::Ready)
+        );
+        assert_eq!(seg.sha256.as_deref().map(str::len), Some(64));
+
+        // A file cut short is damaged, with the hash of what is there; a file with no line in the sums is missing.
+        let cut = data(&[
+            ("eomt", eomt::WEIGHTS_FILE, b"segm", b"segmenter"),
+            ("mediapipe", selfie::WEIGHTS_FILE, b"skin", b"skin"),
+        ]);
+        let [seg, skin] = weights_reports(cut.path());
+        assert_eq!(
+            (seg.state, skin.state),
+            (WeightsState::Damaged, WeightsState::Ready)
+        );
+        assert!(seg.sha256.is_some());
+        std::fs::write(cut.path().join("models/mediapipe/SHA256SUMS"), "").expect("sums");
+        assert_eq!(weights_reports(cut.path())[1].state, WeightsState::Missing);
+        assert_eq!(WeightsState::Damaged.word(), "damaged");
     }
 }

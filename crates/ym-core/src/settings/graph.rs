@@ -1241,6 +1241,89 @@ impl NodeGraph {
             .collect()
     }
 
+    /// The nodes the links lead to from `from`, `from` itself not counted unless a circle leads back to it.
+    fn downstream_of(&self, from: NodeId) -> BTreeSet<NodeId> {
+        let mut seen: BTreeSet<NodeId> = BTreeSet::new();
+        let mut todo = vec![from];
+        while let Some(node) = todo.pop() {
+            for link in self.links.iter().filter(|l| l.from.node == node) {
+                if seen.insert(link.to.node) {
+                    todo.push(link.to.node);
+                }
+            }
+        }
+        seen
+    }
+
+    /// Adds a Reference Grade node **after Main**, as Add node does in the graph editor (`docs/23` section 7.2, `docs/34`
+    /// section 8): it goes into the picture link that leaves Main and leads to the Output (else the first one that leaves Main), so
+    /// `Main -> T` becomes `Main -> N -> T`; with no such link it is linked after Main alone. Its id is one more than the largest
+    /// in the graph, its place is one unit to the right of Main and the nodes after it move right as far as it takes to leave it
+    /// its unit. The node is a default one (the identity, Strength 100, Skin protection on). Returns its id.
+    ///
+    /// # Errors
+    ///
+    /// [`GraphError::TooManyNodes`] at the limit of 64 nodes.
+    pub fn insert_reference_grade_after_main(&mut self) -> Result<u32, GraphError> {
+        if self.node_count() >= MAX_CORRECTORS {
+            return Err(GraphError::TooManyNodes);
+        }
+        let main = NodeId::MAIN;
+        let leaving: Vec<usize> = self
+            .links
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.from.node == main && l.from.port == Port::Picture)
+            .map(|(i, _)| i)
+            .collect();
+        let into = leaving
+            .iter()
+            .copied()
+            .find(|&i| {
+                let to = self.links[i].to.node;
+                to == NodeId::Output || self.downstream_of(to).contains(&NodeId::Output)
+            })
+            .or_else(|| leaving.first().copied());
+        let id = self
+            .numbered()
+            .iter()
+            .map(|(id, _)| *id)
+            .max()
+            .unwrap_or(MAIN_ID)
+            + 1;
+        let new = NodeId::Corrector(id);
+        let main_pos = self.main.pos;
+        let pos = [main_pos[0] + 1.0, main_pos[1]];
+        let before = into.map(|i| self.links[i].to.node);
+        let delta = before
+            .and_then(|b| self.pos(b).filter(|_| b != NodeId::Output))
+            .map_or(0.0, |p| (pos[0] + 1.0 - p[0]).max(0.0));
+        let node = ReferenceGradeNode {
+            pos,
+            ..ReferenceGradeNode::default()
+        };
+        let removed = into.map(|i| self.links.remove(i));
+        self.references.insert(id, node);
+        self.links.push(NodeLink::picture(main, new));
+        if let Some(link) = removed {
+            self.links.push(NodeLink {
+                from: NodeRef::picture(new),
+                to: link.to,
+            });
+        }
+        if delta > 0.0 {
+            for later in self.downstream_of(new) {
+                if let NodeId::Corrector(n) = later
+                    && let Some(p) = self.pos_mut(n)
+                {
+                    p[0] += delta;
+                }
+            }
+        }
+        self.sort_links();
+        Ok(id)
+    }
+
     /// Whether the graph has this node.
     #[must_use]
     pub fn has(&self, id: NodeId) -> bool {

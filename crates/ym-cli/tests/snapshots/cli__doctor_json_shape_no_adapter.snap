@@ -145,6 +145,20 @@ expression: shape(&v)
     "neural_available": "bool",
     "reason": "string"
   },
+  "scene_model": {
+    "available": "bool",
+    "segmenter": {
+      "file": "string",
+      "sha256": "string",
+      "state": "string"
+    },
+    "skin": "bool",
+    "skin_network": {
+      "file": "string",
+      "sha256": "string",
+      "state": "string"
+    }
+  },
   "system": {
     "arch": "string",
     "os": "string"

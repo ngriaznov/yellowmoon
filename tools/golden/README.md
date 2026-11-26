@@ -21,7 +21,7 @@ Golden-image tooling (`docs/13-testing.md`, section Golden images). Test tooling
 ```bash
 cargo build -p ym-cli                                  # the binary under test (target/debug/ym or target/release/ym)
 tools/fetch/synthetic.sh                               # the input files (testdata/synthetic), a few minutes, no download
-cargo run -p golden --release -- check                 # the default synthetic set (70 entries: 61 files, the three Colour Uniform entries, the two Soft Blur entries, the Motion, Lens and Zoom Blur entries, and the Mask Intersect entry), about 2 minutes on 4 cores
+cargo run -p golden --release -- check                 # the default synthetic set (72 entries: 61 files, the four Colour Uniform entries, the two Soft Blur entries, the Motion, Lens and Zoom Blur entries, the Mask Intersect entry and the Reference Grade entry), about 2 minutes on 4 cores
 cargo run -p golden --release -- check --set cc0       # the CC0 tier, once tools/fetch/golden.sh has fetched it
 cargo run -p golden --release -- check --filter D6500 --filter ILCE-1
 cargo run -p golden --release -- update --note "why the pictures changed"
@@ -33,6 +33,8 @@ cargo run -p golden --release -- update --note "why the pictures changed"
 `target/release/ym` and `target/debug/ym`), `--data DIR` (`YELLOWMOON_DATA` for a release build outside the workspace),
 `--testdata DIR` (else `$YM_TESTDATA`, else `testdata/`), `--refs DIR`, `--expected FILE`, `--jobs N`, `--report FILE`
 (everything as JSON), `--quiet`.
+
+**The scene.** Every render runs with `YELLOWMOON_TEST_SCENE=fake` (`ym_core::pipeline::SceneModel::fake_default`: sky across the top third, vegetation and built surfaces in the middle, ground and a patch of water below, a disc of subject with skin on its upper half), so the one entry whose element grades need a scene, `node-reference-grade` (RG-09), never depends on the segmenter's weights. No other entry reads it.
 
 **What a render is.** One `ym render --cpu --apple-auto off --json --quiet --settings <the entry's settings> --format png --bits 16 --colour-space srgb` (with `YELLOWMOON_GPU=off`: golden hashes pin the CPU reference, `docs/17-gpu.md` section 12; Apple Auto off: the golden pictures are Yellowmoon's own Auto on every machine, also on a Mac where Apple Intelligence could answer, `docs/19` section 7)
 process per file, in an empty `YELLOWMOON_HOME` (so the user's default look, display rendering and imported looks cannot

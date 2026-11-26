@@ -16,6 +16,7 @@ mod inputs;
 mod lenses_cmd;
 mod looks_cmd;
 mod presets_cmd;
+mod reference_cmd;
 mod render;
 mod report;
 mod runtime;

@@ -1098,3 +1098,81 @@ fn an_older_build_refuses_the_kind_with_the_unknown_kind_sentence() {
     ));
     assert_eq!(ym_core::version::PIPELINE_VERSION, "0.17.0");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Add node after Main, for `ym render --reference` (RG-09)
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_node_added_after_main_goes_into_the_link_that_leads_to_the_output_as_add_node_does() {
+    // The default graph: Input -> Main -> Output. The node is node 2, one unit right of Main, between Main and the Output.
+    let mut s = DevelopSettings::default();
+    let id = s
+        .nodes
+        .insert_reference_grade_after_main()
+        .expect("a node is added");
+    assert_eq!(id, 2);
+    let node = s.nodes.reference_grade(2).expect("the node");
+    assert_eq!(
+        *node,
+        ReferenceGradeNode {
+            pos: [1.0, 0.0],
+            ..ReferenceGradeNode::default()
+        }
+    );
+    assert_eq!(
+        s.nodes.links,
+        vec![
+            ym_core::settings::NodeLink::picture(NodeId::Input, NodeId::MAIN),
+            ym_core::settings::NodeLink::picture(NodeId::MAIN, rid(2)),
+            ym_core::settings::NodeLink::picture(rid(2), NodeId::Output),
+        ]
+    );
+    s.clone().validated().expect("the graph is valid");
+
+    // With a corrector after Main (node 2), the next id is 3, the node goes between Main and node 2, and node 2 moves right to leave it
+    // its unit.
+    let mut s = DevelopSettings::from_value(
+        doc(
+            vec![json!({ "id": 2, "kind": "corrector", "pos": [1, 0] })],
+            line(&[1, 2]),
+        ),
+        &LookId::neutral(),
+    )
+    .expect("settings")
+    .0;
+    let id = s.nodes.insert_reference_grade_after_main().expect("added");
+    assert_eq!(id, 3);
+    assert_eq!(s.nodes.reference_grade(3).map(|n| n.pos), Some([1.0, 0.0]));
+    assert_eq!(
+        s.nodes.pos(rid(2)),
+        Some([2.0, 0.0]),
+        "the node it goes before makes room"
+    );
+    assert_eq!(
+        s.nodes.links,
+        vec![
+            ym_core::settings::NodeLink::picture(NodeId::Input, NodeId::MAIN),
+            ym_core::settings::NodeLink::picture(NodeId::MAIN, rid(3)),
+            ym_core::settings::NodeLink::picture(rid(2), NodeId::Output),
+            ym_core::settings::NodeLink::picture(rid(3), rid(2)),
+        ]
+    );
+    s.validated().expect("the graph is valid");
+}
+
+#[test]
+fn a_node_cannot_be_added_past_sixty_four_nodes() {
+    let mut s = DevelopSettings::default();
+    for _ in 0..63 {
+        s.nodes
+            .insert_reference_grade_after_main()
+            .expect("room for 64 nodes");
+    }
+    assert_eq!(s.nodes.node_count(), 64);
+    assert_eq!(
+        s.nodes.insert_reference_grade_after_main(),
+        Err(GraphError::TooManyNodes)
+    );
+    s.validated().expect("64 nodes are valid");
+}

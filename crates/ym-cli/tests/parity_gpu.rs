@@ -73,6 +73,12 @@ impl App {
 
     /// [`App::open`] over the data folder `data`.
     fn open_with(files: &[&Path], data: PathBuf) -> Option<Self> {
+        Self::open_scene(files, data, false)
+    }
+
+    /// [`App::open_with`] with the deterministic fake scene model of Reference Grade (`SceneModel::fake_default`, the app's
+    /// `YELLOWMOON_TEST_SCENE=fake`) when `fake_scene` is set.
+    fn open_scene(files: &[&Path], data: PathBuf, fake_scene: bool) -> Option<Self> {
         let slot = ym_apple::gpu_opener(GpuPolicy::On, MemoryBudget::detect()).open();
         if !slot_has_device(&slot) {
             return None;
@@ -81,6 +87,7 @@ impl App {
         let mut options = CoreOptions::new(data, home.path().to_path_buf());
         // What the CLI does: no thumbnail renders competing with the export.
         options.thumbnails = false;
+        options.render.scene_model = fake_scene.then(ym_core::pipeline::SceneModel::fake_default);
         let core = Core::open(options).expect("core");
         core.attach_gpu(&slot);
         let paths: Vec<PathBuf> = files.iter().map(|p| p.to_path_buf()).collect();
@@ -547,6 +554,170 @@ fn blur_device_case(type_name: &str, body: serde_json::Value) {
         assert!(
             !notes.iter().any(|n| n.to_lowercase().contains("node")),
             "{type_name}: {notes:?}"
+        );
+    }
+}
+
+/// A Reference Grade fit (RG-09) through the app's path (`Core::update_settings` for the node, `reference_choose_file`, `reference_fit`)
+/// and through `ym render --reference` with the device on both sides, on a photo of six export tiles: the same fitted settings and the same
+/// bytes in a JPEG, a 16-bit TIFF, a 16-bit PNG and a DNG. The scene is the deterministic fake on both sides. The fit is the CPU's;
+/// the node's hue step, element step and element planes run on the device.
+#[test]
+fn a_reference_fit_is_byte_identical_through_the_app_path_and_the_binary_on_the_device() {
+    let _serial = serial();
+    let sb = Sandbox::new();
+    let arw = sb.arw_sized("fit.ARW", 2100, 1100, 9);
+    let reference = sb.root().join("still.png");
+    {
+        let (w, h) = (320_usize, 256_usize);
+        let mut rgb = Vec::with_capacity(w * h * 3);
+        for y in 0..h {
+            for x in 0..w {
+                let (u, v) = (x as f64 / w as f64, y as f64 / h as f64);
+                let wave = 0.5 + 0.5 * (u * 19.0 + v * 5.0).sin();
+                let (r, g, b) = if v < 0.4 {
+                    (30.0 + 40.0 * v, 130.0 + 50.0 * v, 180.0 + 50.0 * wave)
+                } else if v < 0.7 {
+                    (160.0 + 40.0 * wave, 110.0 + 40.0 * wave, 60.0 + 20.0 * u)
+                } else {
+                    (70.0 + 30.0 * wave, 90.0 + 30.0 * wave, 50.0)
+                };
+                rgb.extend([r, g, b].map(|c: f64| c.round().clamp(0.0, 255.0) as u8));
+            }
+        }
+        let file = std::fs::File::create(&reference).expect("create the reference");
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()
+            .expect("png header")
+            .write_image_data(&rgb)
+            .expect("png data");
+    }
+    let Some(app) = App::open_scene(&[&arw], data_dir(), true) else {
+        return;
+    };
+    // Add node after Main (what `insertAfter` of `src/state/graphOps.ts` writes), Choose reference, Fit.
+    let now = app.core.session.view(app.photo).expect("view").settings;
+    let mut doc = serde_json::to_value(&now).expect("settings");
+    let nodes = doc["nodes"].as_object_mut().expect("nodes");
+    nodes["items"]
+        .as_array_mut()
+        .expect("items")
+        .push(serde_json::json!({ "id": 2, "kind": "reference_grade", "pos": [1, 0] }));
+    nodes["links"] = serde_json::json!([
+        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+        { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+        { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ]);
+    let with_node = serde_json::from_value::<DevelopSettings>(doc)
+        .expect("a document")
+        .validated()
+        .expect("a valid graph")
+        .0;
+    app.core
+        .update_settings(app.photo, &SettingsPatch::between(&now, &with_node))
+        .expect("the node is added");
+    app.core
+        .reference_choose_file(app.photo, 2, &reference, None)
+        .expect("the reference is chosen");
+    let outcome = app
+        .core
+        .reference_fit(
+            app.photo,
+            2,
+            &ym_gpu::queue::CancelToken::new(),
+            &mut |_| {},
+        )
+        .expect("the fit");
+    assert_eq!(
+        outcome.status,
+        ym_core::reference_fit::FitStatus::Fitted,
+        "{:?}",
+        outcome.found
+    );
+    let fitted = app
+        .core
+        .session
+        .settings(app.photo)
+        .expect("settings")
+        .pinned_settings();
+    let reference_arg = reference.to_str().expect("utf-8");
+    let json = sb
+        .ym_data(&data_dir())
+        .env("YELLOWMOON_GPU", "on")
+        .env(common::FAKE_SCENE.0, common::FAKE_SCENE.1)
+        .args([
+            "render",
+            "--json",
+            "--format",
+            "jpeg",
+            "--apple-auto",
+            "off",
+        ])
+        .args(["--reference", reference_arg])
+        .arg(&arw)
+        .arg("--out")
+        .arg(sb.root().join("cli-json"))
+        .assert()
+        .success();
+    let line = String::from_utf8_lossy(&json.get_output().stdout).into_owned();
+    let v: serde_json::Value = serde_json::from_str(line.trim_end()).expect("JSON");
+    assert_eq!(
+        v["settings"],
+        serde_json::to_value(&fitted).expect("settings"),
+        "the binary fitted the settings the app fitted"
+    );
+    for (name, options, flags) in [
+        ("jpeg", ExportOptions::default(), vec!["--format", "jpeg"]),
+        (
+            "tiff16",
+            ExportOptions {
+                format: FormatKind::Tiff,
+                bit_depth: BitDepth::Sixteen,
+                ..ExportOptions::default()
+            },
+            vec!["--format", "tiff", "--bits", "16"],
+        ),
+        (
+            "png16",
+            ExportOptions {
+                format: FormatKind::Png,
+                bit_depth: BitDepth::Sixteen,
+                ..ExportOptions::default()
+            },
+            vec!["--format", "png", "--bits", "16"],
+        ),
+        (
+            "dng",
+            ExportOptions {
+                format: FormatKind::Dng,
+                ..ExportOptions::default()
+            },
+            vec!["--format", "dng"],
+        ),
+    ] {
+        let from_app = app.export(options, &sb.root().join(format!("app-{name}")));
+        let dir = sb.root().join(format!("cli-{name}"));
+        let out = sb
+            .ym_data(&data_dir())
+            .env("YELLOWMOON_GPU", "on")
+            .env(common::FAKE_SCENE.0, common::FAKE_SCENE.1)
+            .args(["render", "--apple-auto", "off"])
+            .arg(&arw)
+            .args(&flags)
+            .args(["--reference", reference_arg])
+            .arg("--out")
+            .arg(&dir)
+            .assert()
+            .success();
+        let from_cli: Vec<PathBuf> = String::from_utf8_lossy(&out.get_output().stdout)
+            .lines()
+            .map(PathBuf::from)
+            .collect();
+        assert_same_files(
+            &from_app,
+            &from_cli,
+            &format!("a fit on the device, {name}"),
         );
     }
 }

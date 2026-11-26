@@ -374,6 +374,9 @@ impl YmBinary {
             .arg(input)
             .env("YELLOWMOON_HOME", &home)
             .env("YELLOWMOON_GPU", device.env())
+            // The element masks of a Reference Grade node come from the deterministic stand-in scene, not the segmenter's weights
+            // (`docs/34` section 10): a picture of the golden set never depends on a model file. No other entry reads it.
+            .env("YELLOWMOON_TEST_SCENE", "fake")
             .stdin(Stdio::null());
         if let Some(data) = &self.data {
             cmd.env("YELLOWMOON_DATA", data);

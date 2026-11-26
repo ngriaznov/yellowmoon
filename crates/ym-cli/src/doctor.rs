@@ -23,7 +23,7 @@ use ym_core::auto_provider::{
 use ym_core::data_dir::find_data_dir;
 use ym_core::looks::{LookGroupInfo, LookService};
 use ym_core::pipeline::NeuralStatus;
-use ym_core::pipeline::{DepthModel, ObjectModel};
+use ym_core::pipeline::{DepthModel, ObjectModel, WeightsReport, WeightsState, weights_reports};
 use ym_core::preferences::PreferencesStore;
 use ym_core::scheduler::MemoryBudget;
 use ym_core::settings::{
@@ -88,6 +88,8 @@ struct Report {
     neural: NeuralStatus,
     auto: AutoReport,
     weights: Vec<ModelFile>,
+    /// The scene model of Reference Grade (RG-09): the segmenter's weights and MediaPipe's Selfie weights, each with its state.
+    scene: [WeightsReport; 2],
     /// What this machine can make (`mask_kinds()`): whether the SAM weights are there and load (checked against their
     /// checksum), and what this Mac's Vision framework said when each request was tried on a 64 x 64 picture.
     masks: MaskSupport,
@@ -241,9 +243,13 @@ fn build() -> Result<Report, Failure> {
     // else under `models/` (the demosaic network, `jdd/`) is a weight file.
     let object_sha256 = object_model_sha256(&data_folder);
     let depth_sha256 = depth_model_sha256(&data_folder);
+    // The scene model's two files are hashed once here and listed with the other weights from the same hashes.
+    let scene = weights_reports(&data_folder);
     let known: Vec<(&str, &str)> = [
         (OBJECT_WEIGHTS_NAME, object_sha256.as_deref()),
         (DEPTH_WEIGHTS_NAME, depth_sha256.as_deref()),
+        (scene[0].name.as_str(), scene[0].sha256.as_deref()),
+        (scene[1].name.as_str(), scene[1].sha256.as_deref()),
     ]
     .into_iter()
     .filter_map(|(name, sha256)| Some((name, sha256?)))
@@ -278,6 +284,7 @@ fn build() -> Result<Report, Failure> {
         neural: NeuralStatus::probe(Some(&data_folder)),
         auto: auto_report(&prefs.get()),
         weights,
+        scene,
         masks: MaskSupport::new(
             object_sha256.is_some(),
             // The probe, once: Vision answers for Subject and People, or the reason it cannot (not a Mac, macOS too old,
@@ -580,6 +587,49 @@ fn gpu_value(gpu: &Result<GpuInfo, String>) -> Value {
     }
 }
 
+/// The scene model of Reference Grade as `--json` says it (`docs/34` section 8): `available` (the segmenter's weights are ready),
+/// `skin` (MediaPipe's too), and each file with its `file`, `state` (`ready`, `missing` or `damaged`) and `sha256` (`null` when the
+/// file is not there).
+fn scene_value(scene: &[WeightsReport; 2]) -> Value {
+    let file =
+        |w: &WeightsReport| json!({ "file": w.name, "state": w.state.word(), "sha256": w.sha256 });
+    json!({
+        "available": scene[0].state == WeightsState::Ready,
+        "skin": scene[0].state == WeightsState::Ready && scene[1].state == WeightsState::Ready,
+        "segmenter": file(&scene[0]),
+        "skin_network": file(&scene[1]),
+    })
+}
+
+/// The row `Scene model`: `ready · segmenter sha256 1ff3664ebcff247f · skin sha256 5c0a22b1d4e3f607`, `ready, without skin (the skin weights are
+/// missing)`, or `not available (the segmenter's weights are missing)`; a file that is not what its checksum says is `damaged`.
+fn scene_text(scene: &[WeightsReport; 2]) -> String {
+    let [segmenter, skin] = scene;
+    let short_hash = |w: &WeightsReport| {
+        w.sha256
+            .as_deref()
+            .map_or_else(String::new, |h| short(h).to_owned())
+    };
+    if segmenter.state != WeightsState::Ready {
+        return format!(
+            "not available (the segmenter's weights are {})",
+            segmenter.state.word()
+        );
+    }
+    match skin.state {
+        WeightsState::Ready => format!(
+            "ready · segmenter sha256 {} · skin sha256 {}",
+            short_hash(segmenter),
+            short_hash(skin)
+        ),
+        other => format!(
+            "ready, without skin (the skin weights are {}) · segmenter sha256 {}",
+            other.word(),
+            short_hash(segmenter)
+        ),
+    }
+}
+
 fn model_values(files: &[ModelFile]) -> Value {
     Value::Array(
         files
@@ -712,6 +762,7 @@ fn to_json(r: &Report) -> Value {
         "apple_auto": apple_auto_value(&r.auto.status),
         "auto": auto_value(&r.auto),
         "model_weights": model_values(&r.weights),
+        "scene_model": scene_value(&r.scene),
         "masks": masks_value(r.masks),
         "illuminant_models": model_values(&r.illuminant_models),
         "film": film_value(&r.film),
@@ -887,6 +938,7 @@ fn to_text(r: &Report) -> String {
             );
         }
     }
+    row("Scene model", scene_text(&r.scene));
     row("Masks", masks_text(r.masks));
     row("Film", film_text(&r.film));
     for (i, m) in r.illuminant_models.iter().enumerate() {

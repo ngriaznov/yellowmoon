@@ -3132,6 +3132,194 @@
       },
       "expected_hash": "",
       "reference": ""
+    },
+    {
+      "id": "synthetic/node-reference-grade__chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l",
+      "tier": "synthetic",
+      "set": "default",
+      "group": "node-reference-grade",
+      "file": "synthetic/arw/chart__D6500__ILCE-7RM4__iso400__rggb__14b__lossless-l.ARW",
+      "scene": "chart",
+      "light": "D6500",
+      "body": "ILCE-7RM4",
+      "model_id": 375,
+      "iso": 400,
+      "cfa": "RGGB",
+      "bits": 14,
+      "variant": "lossless-l",
+      "settings": {
+        "nodes": {
+          "items": [
+            {
+              "id": 2,
+              "kind": "reference_grade",
+              "name": "Match",
+              "pos": [
+                1,
+                0
+              ],
+              "grade": {
+                "saturation": {
+                  "kind": "manual",
+                  "value": -12
+                },
+                "curve": {
+                  "luma": [
+                    [
+                      0,
+                      0
+                    ],
+                    [
+                      0.2136,
+                      0.205
+                    ],
+                    [
+                      0.2784,
+                      0.2784
+                    ],
+                    [
+                      0.408,
+                      0.431
+                    ],
+                    [
+                      1,
+                      1
+                    ]
+                  ],
+                  "red": [
+                    [
+                      0,
+                      0
+                    ],
+                    [
+                      0.2784,
+                      0.284
+                    ],
+                    [
+                      1,
+                      1
+                    ]
+                  ],
+                  "green": [
+                    [
+                      0,
+                      0
+                    ],
+                    [
+                      0.2784,
+                      0.2784
+                    ],
+                    [
+                      1,
+                      1
+                    ]
+                  ],
+                  "blue": [
+                    [
+                      0,
+                      0
+                    ],
+                    [
+                      0.2784,
+                      0.27
+                    ],
+                    [
+                      1,
+                      1
+                    ]
+                  ]
+                }
+              },
+              "hue_curves": {
+                "hue_vs_hue": [
+                  {
+                    "hue_deg": 0,
+                    "value": -4
+                  },
+                  {
+                    "hue_deg": 120,
+                    "value": 6
+                  },
+                  {
+                    "hue_deg": 240,
+                    "value": 0
+                  }
+                ],
+                "hue_vs_sat": [
+                  {
+                    "hue_deg": 0,
+                    "value": 1.05
+                  },
+                  {
+                    "hue_deg": 120,
+                    "value": 0.85
+                  },
+                  {
+                    "hue_deg": 240,
+                    "value": 1
+                  }
+                ]
+              },
+              "elements": {
+                "sky": {
+                  "exposure_ev": -0.3,
+                  "hue_deg": 8,
+                  "chroma": 1.1
+                },
+                "vegetation": {
+                  "exposure_ev": 0,
+                  "hue_deg": -6,
+                  "chroma": 0.9
+                },
+                "skin": {
+                  "exposure_ev": 0,
+                  "hue_deg": 3,
+                  "chroma": 1
+                },
+                "subject": {
+                  "exposure_ev": 0.2
+                }
+              },
+              "strength": 100,
+              "skin_protection": true
+            }
+          ],
+          "links": [
+            {
+              "from": {
+                "node": "input",
+                "port": "picture"
+              },
+              "to": {
+                "node": 1,
+                "port": "picture"
+              }
+            },
+            {
+              "from": {
+                "node": 1,
+                "port": "picture"
+              },
+              "to": {
+                "node": 2,
+                "port": "picture"
+              }
+            },
+            {
+              "from": {
+                "node": 2,
+                "port": "picture"
+              },
+              "to": {
+                "node": "output",
+                "port": "picture"
+              }
+            }
+          ]
+        }
+      },
+      "expected_hash": "",
+      "reference": ""
     }
   ]
 }

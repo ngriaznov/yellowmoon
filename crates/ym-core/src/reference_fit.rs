@@ -393,6 +393,17 @@ impl FitStatus {
     }
 }
 
+/// One element as the fit found it in the two pictures (`docs/34` section 4b): its share of each picture.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ElementFound {
+    /// The element's name: `sky`, `vegetation`, `water`, `ground`, `built` or `skin`.
+    pub element: &'static str,
+    /// Its share of the photo's analysis picture, 0 to 1.
+    pub photo_share: f64,
+    /// Its share of the reference's, 0 to 1.
+    pub reference_share: f64,
+}
+
 /// What a fit did.
 #[derive(Debug, Clone)]
 pub struct FitOutcome {
@@ -406,6 +417,10 @@ pub struct FitOutcome {
     pub undo: SettingsPatch,
     /// The fit's numbers, its objective and the three searches (for reports and tests).
     pub result: Box<FitResult>,
+    /// The six elements and their shares of the two pictures (`ym render --json`, the evaluation tool).
+    pub found: Vec<ElementFound>,
+    /// Whether skin was found in the photo (its share is at least 2 %): when not, Skin protection did nothing.
+    pub skin_found: bool,
 }
 
 /// Why a fit wrote nothing. The `Display` text is the sentence of `docs/34` section 9.3.
@@ -495,7 +510,7 @@ pub fn fit_node(
     held: &HeldReference,
     cancel: &CancelToken,
     progress: &mut dyn FnMut(FitEvent),
-) -> Result<(FitResult, Vec<String>), FitFailure> {
+) -> Result<(FitResult, Vec<String>, Vec<ElementFound>), FitFailure> {
     let Some(base) = src.settings.nodes.reference_grade(node) else {
         return Err(FitFailure::NotReferenceGrade(node));
     };
@@ -529,6 +544,15 @@ pub fn fit_node(
         scene: &photo.scene,
         mask_ok: photo.mask_ok,
     };
+    let found: Vec<ElementFound> = ["sky", "vegetation", "water", "ground", "built", "skin"]
+        .into_iter()
+        .zip(fixed.p.el.iter().zip(&fixed.r.el))
+        .map(|(element, (p, r))| ElementFound {
+            element,
+            photo_share: p.share,
+            reference_share: r.share,
+        })
+        .collect();
     let mut notes: Vec<String> = Vec::new();
     // Spatial nodes after this one (Film, Blur, Face Refinement) make their picture before the colour pass: the fit does not run them.
     {
@@ -564,7 +588,7 @@ pub fn fit_node(
             });
         },
     )?;
-    Ok((result, notes))
+    Ok((result, notes, found))
 }
 
 /// The settings with the node's fitted fields set to a fit's numbers.
@@ -719,7 +743,8 @@ impl Core {
             .get(photo, node)
             .ok_or(FitFailure::NoReference)?;
         let src = PhotoSource::from_session(&self.session, photo)?;
-        let (result, mut notes) = fit_node(&self.renderer, &src, node, &held, cancel, progress)?;
+        let (result, mut notes, found) =
+            fit_node(&self.renderer, &src, node, &held, cancel, progress)?;
         if cancel.is_cancelled() {
             return Err(FitFailure::Cancelled);
         }
@@ -737,12 +762,17 @@ impl Core {
         } else {
             FitStatus::Fitted
         };
+        let skin_found = found
+            .last()
+            .is_some_and(|e| e.photo_share >= ym_color::refgrade::measure::PRESENT_SHARE);
         Ok(FitOutcome {
             status,
             notes,
             applied,
             undo,
             result: Box::new(result),
+            found,
+            skin_found,
         })
     }
 }

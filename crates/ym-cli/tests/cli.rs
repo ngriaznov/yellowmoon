@@ -602,6 +602,10 @@ fn doctor_json_shape_snapshot_on_a_machine_with_no_adapter() {
                 .or_insert_with(|| serde_json::json!("weights_missing"));
         }
     }
+    // The scene model's two files have a hash where they are and none where they are not; the shape is the one of a machine with them.
+    for file in ["segmenter", "skin_network"] {
+        v["scene_model"][file]["sha256"] = serde_json::json!("0");
+    }
     insta::assert_json_snapshot!("doctor_json_shape_no_adapter", shape(&v));
 }
 
