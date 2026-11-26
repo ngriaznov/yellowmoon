@@ -3036,6 +3036,15 @@ html[data-glass="off"] *::after {
   width: 12px;
   height: 12px;
 }
+.ym-element__eye {
+  flex-shrink: 0;
+}
+/* The eye of a card is on in the mask accent, as the mask rows' eyes are (docs/34 §9.6). */
+.ym-element__eye[aria-pressed="true"] {
+  background: color-mix(in oklch, var(--mask) 24%, transparent);
+  color: var(--mask);
+  box-shadow: inset 0 0 0 1px var(--mask);
+}
 .ym-element__absent {
   margin: -2px 0 6px;
   font-size: 13px;

@@ -107,6 +107,7 @@ fn mask_view(node: u32) -> ViewportState {
         row: None,
         depth: false,
         face: None,
+        element: None,
     });
     st
 }

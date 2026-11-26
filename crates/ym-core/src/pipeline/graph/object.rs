@@ -713,6 +713,9 @@ impl Job<'_> {
             return Ok(objects);
         }
         let mut merged = objects.map(|o| (*o).clone()).unwrap_or_default();
+        if let Some(view) = self.element_view_for(stop) {
+            merged.set_element_view(view);
+        }
         if let Some(faces) = faces {
             merged.insert_faces(faces);
         }

@@ -198,6 +198,7 @@ fn mask_frame(r: &Renderer, src: &PhotoSource, state: &ViewportState) -> Rendere
         row: None,
         depth: false,
         face: None,
+        element: None,
     });
     r.viewport_frame(
         src,

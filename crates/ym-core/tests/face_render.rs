@@ -1012,6 +1012,7 @@ fn areas_view(face: Option<u32>, node: u32) -> ViewportState {
         row: None,
         depth: false,
         face,
+        element: None,
     });
     st
 }

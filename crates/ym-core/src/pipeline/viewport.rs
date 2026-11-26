@@ -129,6 +129,15 @@ pub struct MaskView {
     /// Refinement node ignores it.
     #[serde(default)]
     pub face: Option<u32>,
+    /// Show one element (`docs/34` section 9.6, RG-12b): with `node` naming a Reference Grade node, the frame shows the soft mask of
+    /// its element `element` (the same mask the node grades with, `docs/34` section 4a.3, made at the viewport's size), numbered as
+    /// the node's Elements tab and the settings number them, 0-based: 0 Sky, 1 Vegetation, 2 Water, 3 Ground, 4 Built, 5 Skin,
+    /// 6 Subject. `style` says how: Overlay tints the photo, Mask only shows the mask as grey. A view like the others: no patch,
+    /// no undo, nothing saved. It takes the node's own mask rows' place (`row` and `depth` mean nothing with it). A number past the
+    /// end, a node that is not a Reference Grade node, and a photo whose scene is not made yet (or a computer with no scene model)
+    /// leave the photo as it is. It is drawn on the CPU road.
+    #[serde(default)]
+    pub element: Option<u32>,
 }
 
 /// Pointer input over the photo (`viewport_input`). Coordinates are CSS pixels in the cell.

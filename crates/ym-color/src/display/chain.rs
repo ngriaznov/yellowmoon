@@ -177,6 +177,12 @@ pub struct ChainParams {
     /// made from (`docs/34` section 4a.3): empty for a plan with none, or when the scene is not made. The render makes the
     /// planes before the colour pass ([`ColorChain::uses_elements`]).
     pub elements: Vec<ElementRow>,
+    /// Show one element (`docs/34` section 9.6, RG-12b): with the plan ending at the mask of the Reference Grade node `.0`, the mask
+    /// the chain makes is that node's soft mask of element `.1` (`docs/34` section 4a.3, the one the node grades with) in place
+    /// of the node's own mask rows. The element must be live in [`ChainParams::elements`] for the render to make its plane;
+    /// a pixel with no plane is 0. `None` is the mask view of the node's own rows. A view of the CPU road only (the device records
+    /// do not read it), which is why the viewport never routes such a frame to the device.
+    pub element_view: Option<(u32, usize)>,
 }
 
 impl ChainParams {
@@ -223,6 +229,7 @@ impl ChainParams {
             films: BTreeMap::new(),
             joins: BTreeMap::new(),
             elements: Vec::new(),
+            element_view: None,
         }
     }
 }
@@ -705,6 +712,8 @@ impl ColorChain {
             put(step.picture_out, out, registers, buffers);
             put(step.graded_out, graded, registers, buffers);
             if let Some(o) = step.key_out {
+                // Show one element: the soft mask of the element stands for the node's mask in the key (the picture is unchanged).
+                let m = self.shown_element(step.node, at).unwrap_or(m);
                 if let Some(s) = o.slot {
                     slots[usize::from(s)] = m;
                 }
@@ -713,6 +722,19 @@ impl ColorChain {
                 }
             }
         }
+    }
+
+    /// The value of the element the mask view shows ([`ChainParams::element_view`]) at a pixel when node `id` is the viewed node: the
+    /// element's soft mask from the render's planes, 0 where there is no plane. `None` for any other node, or with no element view.
+    fn shown_element(&self, id: u32, at: PixelAt<'_>) -> Option<f64> {
+        let (node, element) = self.params.element_view?;
+        (node == id).then(|| {
+            at.and_then(|s| s.raster).map_or(0.0, |spot| {
+                spot.planes
+                    .element(id, element, spot.x, spot.y)
+                    .clamp(0.0, 1.0)
+            })
+        })
     }
 
     /// What the plan's result is, from the state its last step left.

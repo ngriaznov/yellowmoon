@@ -156,6 +156,7 @@ fn view(style: Option<MaskStyle>, node: u32) -> ViewportState {
         row: None,
         depth: false,
         face: None,
+        element: None,
     });
     st
 }
@@ -704,6 +705,7 @@ fn a_magnified_view_takes_the_overlay_too() {
                 row: None,
                 depth: false,
                 face: None,
+                element: None,
             });
             let (a, b) = (fresh(&on_gpu, &src, &st), fresh(&cpu, &src, &st));
             let (worst, mean) = differ(&a, &b);

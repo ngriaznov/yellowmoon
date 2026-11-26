@@ -2339,11 +2339,12 @@ impl<'a> Job<'a> {
         }
         let (v, g) = self.mask.as_ref()?;
         Some(format!(
-            "mask:{}:{:?}:{:?}:{}:{}",
+            "mask:{}:{:?}:{:?}:{}:{:?}:{}",
             v.node,
             v.style,
             v.row,
             v.depth,
+            v.element,
             g.as_ref()
                 .map(|g| format!("{:?}", g.key))
                 .unwrap_or_default()
@@ -2384,6 +2385,33 @@ impl<'a> Job<'a> {
         {
             self.mask = None;
             self.face_view = self.faces_for_view().map(|e| (face, e));
+            return Ok(());
+        }
+        // Show one element (`MaskView::element`): a Reference Grade node's soft mask of one element, in place of the node's own rows.
+        // A number past the end, or a node that is not a Reference Grade node, leaves the photo.
+        if let Some(element) = view.element {
+            let known = (element as usize) < ym_color::hue::ELEMENT_COUNT
+                && self.src.settings.nodes.reference_grade(view.node).is_some();
+            if !known {
+                self.mask = None;
+                return Ok(());
+            }
+            let view = MaskView {
+                row: None,
+                depth: false,
+                face: None,
+                ..view
+            };
+            // The plan below is made for this view (`Job::element_view_for` names the node and element to the planes).
+            self.mask = Some((view, None));
+            let plan = self.grade_to(target, true, PlanStop::Mask(view.node))?;
+            // No scene yet (the worker was started in the background) or no model on this computer: no plane can be made, and the
+            // photo stays as it is rather than showing an empty mask.
+            if !plan.chain.uses_elements() {
+                self.mask = None;
+                return Ok(());
+            }
+            self.mask = Some((view, Some(plan)));
             return Ok(());
         }
         // The page names the node it has selected; one the photo no longer has (it was deleted a moment ago, an
@@ -3491,8 +3519,9 @@ impl<'a> Job<'a> {
         if stages.is_empty() {
             return Ok(None);
         }
-        // Show skin areas is tinted on the CPU's pixels.
-        if self.face_view.is_some() {
+        // Show skin areas is tinted on the CPU's pixels, and an element view reads its planes on the CPU road.
+        if self.face_view.is_some() || self.mask.as_ref().is_some_and(|(v, _)| v.element.is_some())
+        {
             return Ok(None);
         }
         if self.g.view_gpu_failed.load(Ordering::SeqCst)

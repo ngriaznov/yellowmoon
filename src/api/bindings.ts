@@ -118,6 +118,12 @@ export const commands = {
 	depth?: boolean,
 	/**  Show skin areas (`docs/27` S-11c): with `node` naming a Face Refinement node, the frame shows face `face`'s skin areas tinted over the photo, whatever `style` says. */
 	face?: number | null,
+	/**
+	 *  Show one element (`docs/34` section 9.6): with `node` naming a Reference Grade node, the frame shows the soft mask of its element
+	 *  `element` (0 sky, 1 vegetation, 2 water, 3 ground, 4 built, 5 skin, 6 subject, as the settings number them), as `style` says.
+	 *  A number past the end, another kind of node, or a photo whose scene is not made yet leaves the photo.
+	 */
+	element?: number | null,
 } | null) => __TAURI_INVOKE<null>("viewport_set_mode", { mode, maskView }),
 	/**  `set_before(before)`: the photo before the look and the display transform. */
 	setBefore: (before: boolean) => __TAURI_INVOKE<null>("set_before", { before }),
@@ -2755,6 +2761,12 @@ export type MaskView = {
 	depth?: boolean,
 	/**  Show skin areas (`docs/27` S-11c): with `node` naming a Face Refinement node, the frame shows face `face`'s skin areas tinted over the photo, whatever `style` says. */
 	face?: number | null,
+	/**
+	 *  Show one element (`docs/34` section 9.6): with `node` naming a Reference Grade node, the frame shows the soft mask of its element
+	 *  `element` (0 sky, 1 vegetation, 2 water, 3 ground, 4 built, 5 skin, 6 subject, as the settings number them), as `style` says.
+	 *  A number past the end, another kind of node, or a photo whose scene is not made yet leaves the photo.
+	 */
+	element?: number | null,
 };
 
 /**

@@ -871,6 +871,7 @@ fn view(
         row,
         depth: false,
         face: None,
+        element: None,
     });
     st
 }

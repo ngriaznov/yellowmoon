@@ -155,7 +155,7 @@ import { scenePng, hexToRgb } from "./fixtures/png";
 import { layerAt, SCENES, type Scene } from "./fixtures/scenes";
 import { canvasOf, fitInCell, fitInside, imageAspectOf } from "./screens/crop/cropMath";
 import { copiedPatch, pastedOnto, refusalOfPatch, validateGraph } from "./fixtures/graph";
-import { hasBackgroundRow, hasObjectRow, maskViewSvg, masksOfView, MOCK_DEPTH, pickDepthFar, SCENES_WITH_PEOPLE, skinAreasSvg, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
+import { hasBackgroundRow, hasObjectRow, maskViewSvg, masksOfView, MOCK_DEPTH, pickDepthFar, SCENES_WITH_PEOPLE, skinAreasSvg, elementViewSvg, visionFoundIn, visionRowKinds } from "./fixtures/maskView";
 import { diffSettings } from "./state/history";
 import { changedGroups, MOCK_PRESET_RECIPES, patchFor, presetFromPhoto, presetFromRecipe, presetMatches } from "./fixtures/presets";
 import type { StoredPreset } from "./fixtures/presets";
@@ -2063,7 +2063,9 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     if (!view || viewport.before) return "";
     const node = nodeOf(rec.settings, view.node);
     const skin = node?.kind === "face_refinement" && typeof view.face === "number" ? view.face : null;
-    if (!node || (node.kind !== "corrector" && skin === null)) return "";
+    const element = node?.kind === "reference_grade" && typeof view.element === "number" ? view.element : null;
+    if (typeof view.element === "number" && element === null) return "";
+    if (!node || (node.kind !== "corrector" && skin === null && element === null)) return "";
     const { orientation, crop } = inputOf(rec.settings);
     const crossed = crop ? crop.rect.width / crop.rect.height : 1;
     const aspect = imageAspectOf(rec.summary.width_px, rec.summary.height_px, orientation) * crossed;
@@ -2083,6 +2085,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
       people: scene.people && options.maskKinds.includes("people") && (ready?.has("people") ?? false),
     };
     const depth = { on: view.depth === true, ready: depthReady.has(rec.summary.id) && depthFailure(rec.summary.id) === null };
+    if (element !== null) return elementViewSvg(element, view.style, { x: fit.x * width, y: fit.y * height, width: fit.width * width, height: fit.height * height }, frame);
     if (skin !== null) {
       const face = faceStateOf(rec.summary.id).faces.find((f) => f.number === skin);
       return face ? skinAreasSvg(face, frame) : "";

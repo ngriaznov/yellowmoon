@@ -799,6 +799,28 @@ pub fn live_element_nodes(
         .collect()
 }
 
+/// [`live_element_nodes`] for a plan that may end at an element view (`MaskView::element`, `docs/34` section 9.6): with `view` naming
+/// Reference Grade node `.0` and element `.1`, and `stop` the mask of that node, the one node with the one element live, whatever
+/// the node's grades, Strength and Bypass say (a view shows the mask, which does not depend on the grade, and the render makes only
+/// that plane). Any other plan, or an element past the end, is [`live_element_nodes`].
+#[must_use]
+pub fn live_element_nodes_viewing(
+    s: &DevelopSettings,
+    stop: Stop,
+    view: Option<(u32, usize)>,
+) -> Vec<(u32, [bool; ym_color::hue::ELEMENT_COUNT])> {
+    if let (Some((node, e)), Stop::Mask(m)) = (view, stop)
+        && node == m
+        && e < ym_color::hue::ELEMENT_COUNT
+        && s.nodes.reference_grade(node).is_some()
+    {
+        let mut live = [false; ym_color::hue::ELEMENT_COUNT];
+        live[e] = true;
+        return vec![(node, live)];
+    }
+    live_element_nodes(s, stop)
+}
+
 /// The element rows of a chain: the live Reference Grade nodes of the plan that ends at `stop`, with the photo's `scene`. Empty
 /// when the scene is not there (the element step then does nothing).
 #[must_use]
@@ -807,10 +829,21 @@ pub fn element_rows(
     stop: Stop,
     scene: Option<&Arc<ym_color::mask_element::ElementScene>>,
 ) -> Vec<ym_color::mask_element::ElementRow> {
+    element_rows_viewing(s, stop, scene, None)
+}
+
+/// [`element_rows`] for a plan that may end at an element view ([`live_element_nodes_viewing`]).
+#[must_use]
+pub fn element_rows_viewing(
+    s: &DevelopSettings,
+    stop: Stop,
+    scene: Option<&Arc<ym_color::mask_element::ElementScene>>,
+    view: Option<(u32, usize)>,
+) -> Vec<ym_color::mask_element::ElementRow> {
     let Some(scene) = scene else {
         return Vec::new();
     };
-    live_element_nodes(s, stop)
+    live_element_nodes_viewing(s, stop, view)
         .into_iter()
         .map(|(node, live)| ym_color::mask_element::ElementRow {
             node,
@@ -1671,7 +1704,15 @@ fn nodes_key(
             );
             // The element planes: named by the photo's scene (the segmenter's input, the weights and the rules' version) when the node
             // has a live element grade and the scene is there; a scene not made yet, or no model, says "none".
-            if live_element_nodes(s, stop).iter().any(|(n, _)| *n == id) {
+            let view = objects.and_then(|p| p.element_view());
+            if live_element_nodes_viewing(s, stop, view)
+                .iter()
+                .any(|(n, _)| *n == id)
+            {
+                // An element view makes one plane of the node: the element is part of the key.
+                if let Some((n, e)) = view.filter(|(n, _)| *n == id && stop == Stop::Mask(id)) {
+                    let _ = write!(k, "show{n}:{e};");
+                }
                 let _ = write!(
                     k,
                     "scene:{};",
@@ -1915,7 +1956,13 @@ pub fn grade_plan_to(
     params.rasters = rasters;
     params.films = films;
     params.joins = joins;
-    params.elements = element_rows(s, stop, req.objects.and_then(|o| o.scene()));
+    // An element view (`MaskView::element`): the plan that ends at the node's mask shows one element's soft mask.
+    let view = req
+        .objects
+        .and_then(|o| o.element_view())
+        .filter(|&(n, _)| stop == Stop::Mask(n));
+    params.elements = element_rows_viewing(s, stop, req.objects.and_then(|o| o.scene()), view);
+    params.element_view = view.filter(|_| !params.elements.is_empty());
     params.output = req.target;
     params.dither = req.dither;
     params.before = BeforePoint::CameraDefault;

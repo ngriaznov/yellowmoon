@@ -576,6 +576,114 @@ describe("the Elements tab", () => {
   });
 });
 
+describe("the eye of an Elements card (docs/34 §9.6)", () => {
+  const eyeOf = (title: string): HTMLElement => within(tools()).getByRole("button", { name: new RegExp(`^(Show|Hide) mask, ${title}$`) });
+  const views = (): unknown[] => vi.mocked(h!.api.viewportSetMode).mock.calls.map((c) => c[1] ?? null);
+  const NAMES = ["Sky", "Vegetation", "Water", "Ground", "Built", "Skin", "Subject"];
+
+  async function withEyes(): Promise<void> {
+    await setup(WITH_MATCH());
+    await openTab(h!, "Elements");
+    vi.spyOn(h!.api, "viewportSetMode");
+  }
+
+  it("is on each of the seven cards, off", async () => {
+    await withEyes();
+    for (const name of NAMES) expect(eyeOf(name)).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("sends the overlay view of the card's element, numbered as the settings number them, and ends it with a second click", async () => {
+    await withEyes();
+    await h!.user.click(eyeOf("Sky"));
+    await waitFor(() => expect(views().at(-1)).toEqual({ node: 2, style: "overlay", element: 0 }));
+    expect(eyeOf("Sky")).toHaveAttribute("aria-pressed", "true");
+    expect(eyeOf("Sky")).toHaveAccessibleName("Hide mask, Sky");
+    await h!.user.click(eyeOf("Sky"));
+    await waitFor(() => expect(views().at(-1)).toBeNull());
+    expect(h!.store.getState().elementEye).toBeNull();
+    // The numbers are the order of the cards.
+    for (const [i, name] of NAMES.entries()) {
+      await h!.user.click(eyeOf(name));
+      await waitFor(() => expect(views().at(-1)).toEqual({ node: 2, style: "overlay", element: i }));
+    }
+  });
+
+  it("is one view at a time: another eye, Show mask, a mask row's eye and the skin areas turn it off, and it turns them off", async () => {
+    await withEyes();
+    await h!.user.click(eyeOf("Sky"));
+    await h!.user.click(eyeOf("Skin"));
+    expect(h!.store.getState().elementEye).toBe(5);
+    expect(eyeOf("Sky")).toHaveAttribute("aria-pressed", "false");
+    expect(eyeOf("Skin")).toHaveAttribute("aria-pressed", "true");
+    h!.store.setMaskView({ on: true });
+    expect(h!.store.getState().elementEye).toBeNull();
+    await waitFor(() => expect(views().at(-1)).toEqual({ node: 2, style: "overlay" }));
+    await h!.user.click(eyeOf("Ground"));
+    expect(h!.store.getState().maskView.on).toBe(false);
+    h!.store.setMaskEye(0);
+    expect(h!.store.getState().elementEye).toBeNull();
+    await h!.user.click(eyeOf("Ground"));
+    expect(h!.store.getState().maskEye).toBeNull();
+  });
+
+  it("keeps the style of the View card, and keeps the eye when the style changes", async () => {
+    await withEyes();
+    h!.store.setMaskView({ style: "mask_only", on: false });
+    await h!.user.click(eyeOf("Water"));
+    await waitFor(() => expect(views().at(-1)).toEqual({ node: 2, style: "mask_only", element: 2 }));
+    h!.store.setMaskView({ style: "overlay" });
+    expect(h!.store.getState().elementEye).toBe(2);
+    await waitFor(() => expect(views().at(-1)).toEqual({ node: 2, style: "overlay", element: 2 }));
+  });
+
+  it("ends with another node, with the tab, with the photo and in the Before view", async () => {
+    await withEyes();
+    await h!.user.click(eyeOf("Sky"));
+    await waitFor(() => expect(h!.store.getState().elementEye).toBe(0));
+    await openTab(h!, "Hue");
+    await waitFor(() => expect(h!.store.getState().elementEye).toBeNull());
+    expect(views().at(-1)).toBeNull();
+
+    await openTab(h!, "Elements");
+    await h!.user.click(eyeOf("Sky"));
+    await waitFor(() => expect(h!.store.getState().elementEye).toBe(0));
+    fireEvent.click(screen.getByRole("button", { name: /^Node 1/ }));
+    await waitFor(() => expect(h!.store.getState().elementEye).toBeNull());
+    expect(views().at(-1)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Node 2, Match/ }));
+    await openTab(h!, "Elements");
+    await h!.user.click(eyeOf("Built"));
+    await waitFor(() => expect(h!.store.getState().elementEye).toBe(4));
+    const first = photoId();
+    await act(async () => {
+      await h!.store.setCurrent(first + 1);
+    });
+    await waitFor(() => expect(h!.store.getState().elementEye).toBeNull());
+
+    await act(async () => {
+      await h!.store.setCurrent(first);
+    });
+    h!.store.setElementEye(1);
+    expect(h!.store.getState().elementEye).toBe(1);
+    await act(async () => {
+      await h!.store.setBefore(true);
+    });
+    expect(h!.store.getState().elementEye).toBeNull();
+  });
+
+  it("is off, not gone, on an element that is not in the photo", async () => {
+    await setup();
+    await chooseFile();
+    await waitFor(() => expect(fitButton()).not.toHaveAttribute("aria-disabled", "true"));
+    await h!.user.click(fitButton());
+    await waitFor(() => expect(statusGroup()).toHaveTextContent("Fitted to the reference."));
+    await openTab(h!, "Elements");
+    expect(eyeOf("Water")).toHaveAttribute("aria-disabled", "true");
+    expect(eyeOf("Sky")).not.toHaveAttribute("aria-disabled", "true");
+  });
+});
+
 describe("Copy and Paste", () => {
   it("carry the node with its fitted values to another photo, which then says the values are kept", async () => {
     await setup(WITH_MATCH({ hue_curves: { hue_vs_hue: [{ hue_deg: 120, value: 12 }] } }));

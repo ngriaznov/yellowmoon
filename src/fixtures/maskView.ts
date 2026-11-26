@@ -496,6 +496,34 @@ export function turnMatrix(orientation: number, width: number, height: number): 
 }
 
 /**
+ * Where each element of a Reference Grade node is on the mock's flat scene (`docs/34` §9.6): a stand-in for the core's soft masks, as radial rows in the
+ * photo's frame. The numbers are the element numbers of `MaskView.element`: sky, vegetation, water, ground, built, skin, subject.
+ */
+const ELEMENT_SHAPES: ReadonlyArray<ReadonlyArray<{ centre: [number, number]; radii: [number, number] }>> = [
+  [{ centre: [0.5, 0.1], radii: [0.75, 0.24] }],
+  [
+    { centre: [0.2, 0.5], radii: [0.2, 0.22] },
+    { centre: [0.86, 0.55], radii: [0.16, 0.2] },
+  ],
+  [{ centre: [0.15, 0.72], radii: [0.1, 0.05] }],
+  [{ centre: [0.5, 0.9], radii: [0.7, 0.2] }],
+  [{ centre: [0.72, 0.45], radii: [0.2, 0.2] }],
+  [{ centre: [0.5, 0.38], radii: [0.07, 0.1] }],
+  [{ centre: [0.5, 0.62], radii: [0.2, 0.38] }],
+];
+
+/**
+ * Show one element (`MaskView.element`) as the browser build draws it: the element's stand-in shapes drawn the way a mask view draws a node's rows, so Overlay
+ * tints the accent and Mask only shows grey. An element the node does not have is an empty string.
+ */
+export function elementViewSvg(element: number, style: MaskStyle, box: MaskRect, photo?: MaskPhoto): string {
+  const shapes = ELEMENT_SHAPES[element];
+  if (!shapes) return "";
+  const items = shapes.map((shape) => ({ kind: "radial", mode: "add", invert: false, enabled: true, opacity: 1, center: shape.centre, radii: shape.radii, angle_deg: 0, feather: 0.5 })) as unknown as MaskSettings["items"];
+  return maskViewSvg(style, { invert: false, items }, box, photo);
+}
+
+/**
  * Show skin areas (`MaskView.face`) as the browser build draws it: a stand-in for the core's tints on the face's box (a share of the photo's frame): the skin in
  * pink, the two bands under the eyes in blue and the even-skin core as a dashed green outline (`docs/27` S-11b2). Drawn in the photo's own pixels, carried to the
  * picture by its map like the masks of a corrector.

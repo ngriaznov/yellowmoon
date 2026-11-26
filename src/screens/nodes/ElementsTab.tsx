@@ -1,6 +1,8 @@
+import { EyeIcon } from "lucide-react";
+import { useEffect } from "react";
 import { Spinner } from "@/components/glass/spinner";
 import type { ResolvedSettings } from "../../api/types";
-import { Card, formats, ResetLink, Slider } from "../../components";
+import { Button, Card, formats, ResetLink, Slider } from "../../components";
 import { useAppState } from "../../state/context";
 import { cardKey, NOT_FOUND_SHARE, shareOf, shareText } from "../../state/reference";
 import type { ElementName } from "../../state/reference";
@@ -12,6 +14,11 @@ import type { AppStore } from "../../state/store";
 export const ELEMENTS_TEXT = {
   notFound: "Not found in this photo.",
   looking: "Looking at the photo…",
+  eye: "Show mask",
+  eyeOn: "Hide mask",
+  eyeTip: "Show where this element is in the photo.",
+  eyeOnTip: "Hide the mask.",
+  eyeOffTip: "This element is not in the photo.",
 } as const;
 
 /** The seven cards, in the order the grades run (`docs/34` §2.3), with their names and the most each may turn the hue, in degrees (the fit's own caps, §4a.1). */
@@ -27,6 +34,9 @@ export const ELEMENT_CARDS: ReadonlyArray<{ id: ElementName | "subject"; title: 
 
 /** 20 → "+20°", −6 → "−6°", 0 → "0°". */
 const degrees = (v: number): string => `${formats.signed(v)}°`;
+
+/** The numbers of the cards as the core's `MaskView.element` numbers them (the order of {@link ELEMENT_CARDS}). */
+const elementNumber = (id: ElementName | "subject"): number => ELEMENT_CARDS.findIndex((c) => c.id === id);
 
 interface ElementCardProps {
   store: AppStore;
@@ -51,6 +61,10 @@ function ElementCard({ store, rs, node, item, id, title, cap, last }: ElementCar
   const share = id === "subject" ? null : shareOf(card, id);
   const absent = share !== null && share < NOT_FOUND_SHARE;
   const values = id === "subject" ? { exposure_ev: item.elements.subject.exposure_ev, hue_deg: 0, chroma: 1 } : item.elements[id];
+  const number = elementNumber(id);
+  const eye = useAppState((s) => s.elementEye === number);
+  // An element the photo has none of, or one the scene is still being made for, has no mask to show: its eye stays off.
+  const noMask = absent || looking;
   const changed = values.exposure_ev !== 0 || values.hue_deg !== 0 || values.chroma !== 1;
   const send = (partial: { exposure_ev?: number; hue_deg?: number; chroma?: number }, final = true): void =>
     void store.update(patchOf(node, { elements: { [id]: partial } }), final, rs.photo_id);
@@ -60,14 +74,26 @@ function ElementCard({ store, rs, node, item, id, title, cap, last }: ElementCar
       last={last}
       className="ym-element"
       tag={
-        looking ? (
-          <span className="ym-element__share" data-looking="">
-            <Spinner aria-hidden="true" />
-            {ELEMENTS_TEXT.looking}
-          </span>
-        ) : share !== null && !absent ? (
-          <span className="ym-element__share">{shareText(share)}</span>
-        ) : undefined
+        <>
+          {looking ? (
+            <span className="ym-element__share" data-looking="">
+              <Spinner aria-hidden="true" />
+              {ELEMENTS_TEXT.looking}
+            </span>
+          ) : share !== null && !absent ? (
+            <span className="ym-element__share">{shareText(share)}</span>
+          ) : null}
+          <Button
+            variant="header"
+            className="ym-element__eye"
+            pressed={eye}
+            disabled={noMask && !eye}
+            aria-label={`${eye ? ELEMENTS_TEXT.eyeOn : ELEMENTS_TEXT.eye}, ${title}`}
+            title={eye ? ELEMENTS_TEXT.eyeOnTip : absent ? ELEMENTS_TEXT.eyeOffTip : ELEMENTS_TEXT.eyeTip}
+            icon={<EyeIcon aria-hidden="true" />}
+            onClick={() => store.setElementEye(eye ? null : number)}
+          />
+        </>
       }
       action={
         changed ? (
@@ -113,6 +139,13 @@ function ElementCard({ store, rs, node, item, id, title, cap, last }: ElementCar
 
 /** A Reference Grade node's Elements tab (`docs/34` §9.4a): seven cards on the corrector's slider rows, in the order the grades run. */
 export function ElementsTab({ store, rs, node, item }: { store: AppStore; rs: ResolvedSettings; node: number; item: ReferenceGradeItem }) {
+  // The eye is the store's view state: it ends with the node, the photo, Before and Esc there, and with this tab here.
+  useEffect(
+    () => () => {
+      if (store.getState().elementEye !== null) store.setElementEye(null);
+    },
+    [store],
+  );
   return (
     <>
       {ELEMENT_CARDS.map((card, i) => (

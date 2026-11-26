@@ -15,7 +15,7 @@
 //!   does, as it moves the picture. It is dropped with the photo's graph.
 //! * **The soft masks are made at the size they are needed** (`ym_color::mask_element`): per render window, from the scene and the
 //!   guide, so that a fit, the viewer and an export each get their own size from the one scene, and only for the elements whose
-//!   effective grade is not the identity ([`live_element_nodes`]).
+//!   effective grade is not the identity ([`live_element_nodes`](crate::pipeline::color::live_element_nodes)).
 //! * **A viewer never waits.** A frame takes the scene the photo has for its picture and, for another picture's scene (the Input's
 //!   exposure moved), keeps the latest one meanwhile. For a photo with none yet it asks the worker for one in the background
 //!   ([`Renderer::scene_prepare`]: one worker per photo that waits [`PREPARE_DEBOUNCE`], so a drag of the Input's exposure makes one
@@ -37,7 +37,7 @@ use ym_ml::scene::RULES_VERSION;
 use super::object::fnv;
 use super::{Job, PhotoGraph, Renderer, lock};
 use crate::pipeline::RenderError;
-use crate::pipeline::color::{PhotoSource, live_element_nodes};
+use crate::pipeline::color::{PhotoSource, live_element_nodes_viewing};
 use crate::pipeline::scene::{
     NO_SCENE_MODEL_SENTENCE, NO_SKIN_MODEL_SENTENCE, SCENE_FORMAT_VERSION,
     SCENE_MODEL_MISSING_NOTE, SKIN_MODEL_MISSING_NOTE, SceneModel, ScenePhase,
@@ -632,6 +632,14 @@ impl Renderer {
 // ---------------------------------------------------------------------------------------------
 
 impl Job<'_> {
+    /// The Reference Grade node and element this request's mask view shows (`MaskView::element`) when the plan ends at that node's
+    /// mask: the plan of an element view. `None` for every other plan, the Output's included.
+    pub(crate) fn element_view_for(&self, stop: PlanStop) -> Option<(u32, usize)> {
+        let (view, _) = self.mask.as_ref()?;
+        let element = usize::try_from(view.element?).ok()?;
+        (stop == PlanStop::Mask(view.node)).then_some((view.node, element))
+    }
+
     /// The photo's scene for the plan that ends at `stop`, when that plan has a Reference Grade node with a live element grade.
     /// `None` for a plan with none, when this machine has no model (a viewer says so in the frame's notes and an export fails with
     /// the `mask` error), and (for a viewer) when the photo has no scene yet: the worker is started in the background and the
@@ -646,7 +654,7 @@ impl Job<'_> {
         settings: &DevelopSettings,
         stop: PlanStop,
     ) -> Result<Option<Arc<ElementScene>>, RenderError> {
-        let live = live_element_nodes(settings, stop);
+        let live = live_element_nodes_viewing(settings, stop, self.element_view_for(stop));
         if live.is_empty() {
             return Ok(None);
         }

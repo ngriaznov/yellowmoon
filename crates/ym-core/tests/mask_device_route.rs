@@ -186,6 +186,7 @@ fn view(zoom_100: bool, mask: Option<(MaskStyle, Option<u32>)>) -> ViewportState
         row,
         depth: false,
         face: None,
+        element: None,
     });
     st
 }
@@ -533,6 +534,7 @@ fn an_object_row_with_a_point_but_no_model_and_a_retina_cell() {
             row: None,
             depth: false,
             face: None,
+            element: None,
         });
         for pan in 0..2 {
             if pan == 1 {

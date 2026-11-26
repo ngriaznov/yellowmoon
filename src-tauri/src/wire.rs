@@ -3953,6 +3953,11 @@ pub struct MaskView {
     /// Show skin areas (`docs/27` S-11c): with `node` naming a Face Refinement node, the frame shows face `face`'s skin areas tinted over the photo, whatever `style` says.
     #[serde(default)]
     pub face: Option<u32>,
+    /// Show one element (`docs/34` section 9.6): with `node` naming a Reference Grade node, the frame shows the soft mask of its element
+    /// `element` (0 sky, 1 vegetation, 2 water, 3 ground, 4 built, 5 skin, 6 subject, as the settings number them), as `style` says.
+    /// A number past the end, another kind of node, or a photo whose scene is not made yet leaves the photo.
+    #[serde(default)]
+    pub element: Option<u32>,
 }
 
 /// A kind of mask row (`docs/23` section 3.3), as the row's `kind` is written: what `mask_kinds` lists and the Add

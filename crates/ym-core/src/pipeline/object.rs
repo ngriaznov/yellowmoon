@@ -254,9 +254,23 @@ pub struct ObjectPlanes {
     /// with no live element grade, a computer with no scene model, and a viewer whose photo has none yet (the element step then
     /// does nothing).
     scene: Option<Arc<ym_color::mask_element::ElementScene>>,
+    /// The element the request shows (`MaskView::element`, `docs/34` section 9.6): a Reference Grade node and the number of its
+    /// element. The plan that ends at that node's mask makes that element's soft mask and shows it.
+    element_view: Option<(u32, usize)>,
 }
 
 impl ObjectPlanes {
+    /// Names the element a mask view shows.
+    pub(crate) fn set_element_view(&mut self, view: (u32, usize)) {
+        self.element_view = Some(view);
+    }
+
+    /// The Reference Grade node and element a mask view shows, when the request is an element view.
+    #[must_use]
+    pub fn element_view(&self) -> Option<(u32, usize)> {
+        self.element_view
+    }
+
     /// Adds the plane of the rows that have this prompt.
     pub(crate) fn insert(&mut self, prompt: u64, plane: Arc<SourcePlane>) {
         self.planes.insert(prompt, plane);

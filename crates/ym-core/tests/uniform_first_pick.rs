@@ -114,6 +114,7 @@ fn selected(
         row: None,
         depth: false,
         face: None,
+        element: None,
     });
     let s = src.with_settings(graph(Some((centre.0, centre.1, width))));
     let f = r

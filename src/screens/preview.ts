@@ -8,7 +8,7 @@ import type { FaceBox, MaskKind, MaskView, PhotoSummary, ResolvedSettings } from
 import { sceneThroughFilms } from "../fixtures/film";
 import { developScene, flatScene, previewDataUrl } from "../fixtures/grade";
 import type { PreviewOptions } from "../fixtures/grade";
-import { maskViewSvg, masksOfView, skinAreasSvg, turnMatrix, visionFoundIn } from "../fixtures/maskView";
+import { elementViewSvg, maskViewSvg, masksOfView, skinAreasSvg, turnMatrix, visionFoundIn } from "../fixtures/maskView";
 import { isCardItem, nodeOf } from "../state/settingsGraph";
 import { SCENES, SVG_HEIGHT, SVG_WIDTH } from "../fixtures/scenes";
 import { photoName } from "../state/photo";
@@ -54,7 +54,11 @@ export function previewUrl(
   const over: PreviewOptions["over"] =
     mask && isCardItem(node)
       ? (box) =>
-          typeof mask.face === "number"
+          typeof mask.element === "number"
+            ? node.kind === "reference_grade"
+              ? elementViewSvg(mask.element, mask.style, box, { width: SVG_WIDTH, height: SVG_HEIGHT, matrix: turnMatrix(turn, SVG_WIDTH, SVG_HEIGHT) })
+              : ""
+            : typeof mask.face === "number"
             ? vision.face
               ? skinAreasSvg(vision.face, { width: SVG_WIDTH, height: SVG_HEIGHT, matrix: turnMatrix(turn, SVG_WIDTH, SVG_HEIGHT) })
               : ""

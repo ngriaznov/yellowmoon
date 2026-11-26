@@ -1501,6 +1501,7 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
                 row: None,
                 depth: false,
                 face: None,
+                element: None,
             }),
         )
         .expect("mask view");
@@ -1514,7 +1515,8 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
             style: CoreStyle::Overlay,
             row: None,
             depth: false,
-            face: None
+            face: None,
+            element: None
         })
     );
     assert_eq!(on.mode, zoomed.mode);
@@ -1532,6 +1534,8 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
                 // Show depth travels with the view (`docs/23` section 9).
                 depth: true,
                 face: None,
+                // The element eye of a Reference Grade node travels with it too (`docs/34` section 9.6).
+                element: Some(4),
             }),
         )
         .expect("mask view");
@@ -1544,7 +1548,8 @@ fn the_mask_view_is_set_with_the_mode_kept_and_dropped_with_none() {
             style: CoreStyle::MaskOnly,
             row: Some(3),
             depth: true,
-            face: None
+            face: None,
+            element: Some(4)
         })
     );
 
@@ -1577,6 +1582,7 @@ fn a_mask_view_belongs_to_its_photo() {
                 row: None,
                 depth: false,
                 face: None,
+                element: None,
             }),
         )
         .expect("mask view");
@@ -6860,6 +6866,7 @@ fn colour_uniform_pick_edit_delete_edit(gpu: bool, mask_view: Option<bool>) {
         row: Some(0),
         depth: false,
         face: None,
+        element: None,
     };
     if mask_view.is_some() {
         h.api
@@ -6959,6 +6966,7 @@ fn colour_uniform_churn(gpu: bool, rounds: usize) {
         row: Some(0),
         depth: false,
         face: None,
+        element: None,
     };
     for round in 0..rounds {
         h.api

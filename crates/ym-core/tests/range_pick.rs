@@ -156,6 +156,7 @@ fn mask_only() -> ViewportState {
         row: None,
         depth: false,
         face: None,
+        element: None,
     });
     st
 }

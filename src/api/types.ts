@@ -1754,6 +1754,12 @@ export interface MaskView {
    * the photo, whatever `style` says. Left out, or `null`, is the node's mask as usual.
    */
   face?: number | null;
+  /**
+   * Show one element (`docs/34` §9.6): with `node` naming a Reference Grade node, the frame shows the soft mask of its element `element` (0 sky,
+   * 1 vegetation, 2 water, 3 ground, 4 built, 5 skin, 6 subject, as the settings number them), as `style` says. A number past the end, another kind of
+   * node, or a photo whose scene is not made yet leaves the photo. Left out, or `null`, is the node's mask as usual.
+   */
+  element?: number | null;
 }
 
 /**

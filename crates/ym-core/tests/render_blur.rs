@@ -309,6 +309,7 @@ fn show_mask_does_not_run_the_blur() {
         row: None,
         depth: false,
         face: None,
+        element: None,
     });
     let masks = json!({ "items": [
         { "kind": "linear", "center": [0.5, 0.5], "angle_deg": 20, "feather": 0.4 } ] });
