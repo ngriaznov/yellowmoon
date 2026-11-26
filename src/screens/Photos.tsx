@@ -10,6 +10,7 @@ import type { FilmstripPhoto, PanelKind, TabId } from "../components";
 import { perfCount } from "../perf";
 import { useAppState, useCurrentPhoto, useCurrentSettings, useStore } from "../state/context";
 import { maskRowKinds } from "../state/maskRows";
+import { REFERENCE_TEXT } from "../state/reference";
 import { lookLabeller, looksInDisplayOrder } from "../state/looks";
 import { folderSubline, folderTitle, isReady, photoName } from "../state/photo";
 import { MASK_KIND_NAME } from "../state/graphOps";
@@ -342,7 +343,7 @@ export function Photos() {
   // A Film node has the corrector's panel until its own tabs are built (F-09, `docs/24` §4.1).
   const onKind: PanelKind = selectedItem ? panelKindOf(selectedItem.kind) : "corrector";
   // A corrector and a Film node both have masks (`docs/24` section 4.3).
-  const hasMasks = onKind === "corrector" || onKind === "film" || onKind === "face_refinement" || onKind === "color_uniform" || onKind === "blur";
+  const hasMasks = onKind === "corrector" || onKind === "film" || onKind === "face_refinement" || onKind === "color_uniform" || onKind === "blur" || onKind === "reference_grade";
   const nodeTab = nodeTabs[onKind];
   const nodeTabList = NODE_TABS[onKind];
   const onNodeNow = useLatest(onNode);
@@ -443,9 +444,14 @@ export function Photos() {
   const hiddenNodes = useAppState((s) => hiddenByPhoto(s.settings));
   // A Colour Uniform node that was just added opens on its Compress tab with Pick colour on (`docs/32` §4).
   // A Blur node that was just added opens on its Blur tab (`docs/33` §4).
-  const onAdded = useCallback((id: NodeId, kind: "color_uniform" | "blur"): void => {
+  // A Reference Grade node that was just added opens on its Reference tab and asks for nothing: no file dialog opens by itself (`docs/34` §2.1).
+  const onAdded = useCallback((id: NodeId, kind: "color_uniform" | "blur" | "reference_grade"): void => {
     if (kind === "blur") {
       setNodeTabs((was) => ({ ...was, blur: "blur" }));
+      return;
+    }
+    if (kind === "reference_grade") {
+      setNodeTabs((was) => ({ ...was, reference_grade: "reference" }));
       return;
     }
     setNodeTabs((was) => ({ ...was, color_uniform: "compress" }));
@@ -487,6 +493,32 @@ export function Photos() {
         };
       }),
     [photos, thumbnails, included, hiddenNodes],
+  );
+
+  // Choose reference › Photo in the strip (`docs/34` §9.2): the filmstrip takes the graph's place while the node is on its Reference tab in the node view.
+  // The photo being graded is off ("This photo"), and so is one still developing or that could not be opened ("Developing"), each with its tooltip.
+  const choosing = useAppState((s) => s.choosing);
+  const chooserOn =
+    choosing !== null && panel === "tools" && nodesOn && !cropping && choosing.photo === photo?.id && choosing.node === onNode && onKind === "reference_grade" && nodeTab === "reference";
+  useEffect(() => {
+    if (choosing !== null && !chooserOn) store.stopChoosingReference();
+  }, [store, choosing, chooserOn]);
+  const chooser = useMemo(
+    () =>
+      chooserOn
+        ? {
+            photos: strip.map((p) =>
+              p.id === photo?.id
+                ? { ...p, off: REFERENCE_TEXT.samePhoto, badge: REFERENCE_TEXT.chooserThisPhoto }
+                : p.status !== "ready"
+                  ? { ...p, off: REFERENCE_TEXT.notReady, badge: p.status === "developing" ? REFERENCE_TEXT.chooserDeveloping : undefined }
+                  : p,
+            ),
+            currentId: photo?.id ?? null,
+            onChoose: (id: number | string) => void store.chooseReferencePhoto(id as number),
+          }
+        : undefined,
+    [chooserOn, strip, photo?.id, store],
   );
 
   /** Leaving a photo ends a crop in progress without keeping it. */
@@ -934,6 +966,9 @@ export function Photos() {
           void store.pasteSettings("picked");
           return true;
         case "escape":
+          // A fit that runs is cancelled first (`docs/34` §9.2: "Cancel (Esc)"), then the strip's chooser ends.
+          if (store.cancelReferenceFit()) return true;
+          if (store.stopChoosingReference()) return true;
           if (picking) setPicking(null);
           else if (placing) {
             // The layer is going: the focus goes back to the Object row it was started from.
@@ -1187,6 +1222,7 @@ export function Photos() {
           graph={graph}
           thumbnailOf={thumbnailOf}
           dimmed={cropping || exporting}
+          chooser={chooser}
           maskOn={maskOn}
           onToggleMask={onToggleMask}
         />

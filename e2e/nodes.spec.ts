@@ -385,7 +385,7 @@ test.describe("the toolbar and the photo switcher", () => {
     await expect(page.locator(".ym-graph__canvas")).toHaveAttribute("data-selected-node", "1");
   });
 
-  test("the Add node menu opens upward over the photo, with Corrector, Film, Face Refinement, Colour Uniform and Blur, then the three mixer items, all on", async ({ page }) => {
+  test("the Add node menu opens upward over the photo, with Corrector, Film, Face Refinement, Colour Uniform, Blur and Reference Grade, then the three mixer items, all on", async ({ page }) => {
     await photos(page);
     await nodesButton(page).click();
     const button = page.getByRole("button", { name: "Add node" });
@@ -396,7 +396,7 @@ test.describe("the toolbar and the photo switcher", () => {
     await expect(menu).toBeVisible();
     const m = await box(menu);
     expect(m.y + m.height).toBeLessThanOrEqual(b.y + 1);
-    await expect(menu.getByRole("menuitem")).toHaveCount(8);
+    await expect(menu.getByRole("menuitem")).toHaveCount(9);
     await expect(menu.getByRole("menuitem").first()).toContainText("Corrector");
     await expect(menu.getByRole("menuitem").first()).toContainText("Grades all or part of the photo.");
     await expect(menu.getByRole("menuitem").nth(1)).toContainText("Film");
@@ -410,6 +410,9 @@ test.describe("the toolbar and the photo switcher", () => {
     await expect(menu.getByRole("menuitem").nth(4)).toContainText("Blur");
     await expect(menu.getByRole("menuitem").nth(4)).toContainText("Soft, lens, motion or zoom blur.");
     await expect(menu.getByRole("menuitem").nth(4)).not.toHaveAttribute("aria-disabled", "true");
+    await expect(menu.getByRole("menuitem").nth(5)).toContainText("Reference Grade");
+    await expect(menu.getByRole("menuitem").nth(5)).toContainText("Matches the grade of a reference picture.");
+    await expect(menu.getByRole("menuitem").nth(5)).not.toHaveAttribute("aria-disabled", "true");
     for (const [name, line] of [
       ["Parallel", "Grade branches side by side."],
       ["Layer", "Blend one branch over another."],

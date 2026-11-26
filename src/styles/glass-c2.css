@@ -53,9 +53,9 @@ html.dark {
 }
 /* A tab's accent is the accent of its controls: glasscn paints sliders, switches, toggles, the tab underline and the focus ring from
    --primary, so setting it on the tab's subtree is all it takes. */
-[data-tab="look"] { --primary: var(--tab-look); --primary-foreground: var(--tab-look-ink); --ring: var(--tab-look); }
+[data-tab="look"], [data-tab="reference"] { --primary: var(--tab-look); --primary-foreground: var(--tab-look-ink); --ring: var(--tab-look); }
 [data-tab="light"] { --primary: var(--tab-light); --primary-foreground: var(--tab-light-ink); --ring: var(--tab-light); }
-[data-tab="color"], [data-tab="compress"] { --primary: var(--tab-colour); --primary-foreground: var(--tab-colour-ink); --ring: var(--tab-colour); }
+[data-tab="color"], [data-tab="compress"], [data-tab="hue"], [data-tab="elements"] { --primary: var(--tab-colour); --primary-foreground: var(--tab-colour-ink); --ring: var(--tab-colour); }
 [data-tab="detail"], [data-tab="blur"] { --primary: var(--tab-detail); --primary-foreground: var(--tab-detail-ink); --ring: var(--tab-detail); }
 [data-tab="curve"] { --primary: var(--tab-curve); --primary-foreground: var(--tab-curve-ink); --ring: var(--tab-curve); }
 [data-tab="raw"] { --primary: var(--tab-raw); --primary-foreground: var(--tab-raw-ink); --ring: var(--tab-raw); }
@@ -2817,4 +2817,273 @@ html[data-glass="off"] *::after {
 /* The head's name is shown whole: "Face Refinement" is longer than the old names, so the line after it is what is cut (design/skin/mockup-notes, found while drawing 5). */
 .ym-nodehead__name {
   max-width: 100%;
+}
+
+/* ---- The Reference Grade node (docs/34 §9; RG-12) -------------------------------------------------------------------------------------- */
+/* The Reference tab: one card with no title (the owner's answer at RG-H2). The picture is letterboxed in a 128 px box, never cropped; with no reference
+   it is a chequered placeholder with an image glyph. */
+.ym-ref {
+  padding-top: 18px;
+}
+.ym-ref__thumb {
+  display: grid;
+  place-items: center;
+  height: 128px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #0b0b0c;
+  box-shadow: inset 0 0 0 1px var(--rim);
+}
+.ym-ref__thumb img {
+  display: block;
+  height: 100%;
+  width: auto;
+  max-width: 100%;
+  object-fit: contain;
+}
+.ym-ref__thumb[data-empty] {
+  background: repeating-conic-gradient(rgb(255 255 255 / 0.07) 0 25%, rgb(255 255 255 / 0.02) 0 50%) 0 0 / 16px 16px;
+  color: var(--glass-label-secondary);
+}
+.ym-ref__thumb[data-empty] svg {
+  width: 26px;
+  height: 26px;
+  opacity: 0.8;
+}
+.ym-ref__name {
+  margin: 6px 2px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--glass-label);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ym-ref__thumb[data-empty] + .ym-ref__name {
+  color: var(--glass-label-secondary);
+  font-weight: 500;
+}
+.ym-ref__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0 12px;
+}
+.ym-ref__choose {
+  flex: 1 1 auto;
+  min-width: 0;
+  justify-content: center;
+}
+.ym-ref__fit {
+  flex: 0 0 auto;
+  min-width: 104px;
+  justify-content: center;
+}
+/* Fit again after the look changed: the accent of docs/34 §2.2, a ring and a glow in the tab's yellow. An edit by hand has none. */
+.ym-ref__fit[data-accent] {
+  box-shadow: 0 0 0 2px var(--tab-look), 0 0 18px color-mix(in oklch, var(--tab-look) 55%, transparent);
+}
+.ym-ref__running {
+  margin-top: -2px;
+}
+.ym-ref__bar {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ym-ref__line.ym-row-note {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--glass-label-secondary);
+}
+.ym-ref__strength {
+  margin-top: 2px;
+}
+.ym-ref__skin {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 4px 2px 0;
+}
+.ym-ref__skin-text {
+  min-width: 0;
+}
+.ym-ref__skin-label {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--glass-label);
+}
+.ym-ref__status {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--rim);
+}
+.ym-ref__status-line {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--glass-label);
+}
+.ym-ref__note,
+.ym-ref__error {
+  align-items: flex-start;
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--glass-label-secondary);
+}
+.ym-ref__note svg,
+.ym-ref__error svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+}
+/* An error is a red-tinted notice with an alert glyph and no code, above the status line. */
+.ym-ref__error {
+  margin: 0 0 8px;
+  background: color-mix(in oklch, #ff453a 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, #ff453a 55%, transparent);
+  color: var(--glass-label);
+}
+.ym-ref__error svg {
+  color: #ff6a60;
+}
+/* The Reset beside Full range in a hue card's header. */
+.ym-card__header .ym-hue__zoom {
+  margin-left: auto;
+}
+
+/* The Hue tab: the Curve card's plot with a periodic x axis, the rainbow track of the Hue slider under it, the hue labels and the readout. */
+.ym-hue__body {
+  display: flex;
+  gap: 6px;
+}
+.ym-hue__yaxis {
+  position: relative;
+  flex: 0 0 34px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--glass-label-secondary);
+}
+.ym-hue__yaxis span {
+  position: absolute;
+  right: 2px;
+  transform: translateY(50%);
+  white-space: nowrap;
+}
+.ym-hue__plot {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: auto;
+  aspect-ratio: 320 / 170;
+}
+.ym-hue__detent {
+  stroke: color-mix(in oklch, var(--glass-label) 40%, transparent);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+  fill: none;
+}
+.ym-hue__rainbow {
+  height: 8px;
+  margin: 6px 0 0 40px;
+  border-radius: 4px;
+}
+.ym-hue__xaxis {
+  display: flex;
+  justify-content: space-between;
+  margin: 4px 0 0 40px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--glass-label-secondary);
+}
+.ym-hue__readout {
+  display: flex;
+  gap: 14px;
+  margin: 6px 0 2px;
+  min-height: 20px;
+  font-size: 13px;
+  color: var(--glass-label-secondary);
+}
+.ym-hue__readout b {
+  color: var(--glass-label);
+  font-weight: 700;
+}
+.ym-curve .ym-hue__point {
+  fill: var(--paper);
+  stroke: var(--curve-r);
+}
+.ym-curve .ym-hue__point[data-selected="true"] {
+  fill: var(--curve-r);
+}
+
+/* The Elements tab: a card per element with its share of the photo in the header. */
+.ym-element__share {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--glass-label-secondary);
+}
+.ym-element__share svg {
+  width: 12px;
+  height: 12px;
+}
+.ym-element__absent {
+  margin: -2px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--glass-label-secondary);
+}
+.ym-element__rows[data-absent] [data-slider],
+.ym-element__rows[data-absent] .ym-slider {
+  opacity: 0.75;
+}
+
+/* The strip as a chooser (docs/34 §9.2): it takes the graph's place, its tiles are 156 × 104 px, the one being graded and a photo still developing are off. */
+.ym-graph > .ym-filmstrip[data-mode="choose"] {
+  flex: 1 1 auto;
+  min-height: 0;
+  border-width: 0;
+  --strip-thumb-h: min(104px, calc(100cqh - 2 * var(--strip-inset)));
+}
+.ym-graph > .ym-filmstrip[data-mode="choose"] .ym-filmstrip__scroll {
+  padding-top: 28px;
+}
+.ym-screen[data-count="header"] .ym-filmstrip[data-mode="choose"] .ym-filmstrip__caption {
+  display: block;
+}
+.ym-filmstrip[data-mode="choose"] .ym-filmstrip__thumb[aria-disabled="true"] img {
+  opacity: 0.38;
+  filter: grayscale(0.55);
+}
+.ym-filmstrip[data-mode="choose"] .ym-filmstrip__thumb[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+.ym-filmstrip[data-mode="choose"] .ym-filmstrip__thumb:not([aria-disabled="true"]) {
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--tab-look) 55%, transparent);
+}
+.ym-filmstrip__badge {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  font-weight: 700;
+  background: rgb(20 20 22 / 0.88);
+  color: #f2f2f2;
+}
+.ym-graph__canvas[hidden] {
+  display: none;
+}
+.ym-graph__bar[data-dimmed] {
+  opacity: 0.75;
 }
