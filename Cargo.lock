@@ -11330,7 +11330,6 @@ name = "ym-color"
 version = "0.2.4"
 dependencies = [
  "proptest",
- "rayon",
  "serde",
  "serde_json",
  "sha2 0.11.0",
