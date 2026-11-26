@@ -1124,6 +1124,9 @@ struct Inner {
     /// The renderer that makes a strip photo's snapshot for a reference (`docs/34` section 6.4, `Renderer::reference_snapshot`): no
     /// graphics device, the same looks as this one, so the picture is the CPU reference path's and has the photo's own look.
     snapshot_reference: std::sync::OnceLock<Result<Renderer, RenderError>>,
+    /// What the evaluation tool changed in the scene of a fit (`pipeline::eval_scene`); only with the `eval-scene` feature.
+    #[cfg(feature = "eval-scene")]
+    eval_scene: Mutex<crate::pipeline::eval_scene::Slots>,
     /// The latest picture SAM and Vision read, with the hash of its key (`Renderer::object_key`): the Object worker and the
     /// Subject and People worker of a photo with rows of both kinds read the same 1024 px picture, made once
     /// (`Renderer::object_picture`). The lock is held while the picture is made, so the second worker waits for the first
@@ -1213,6 +1216,12 @@ impl std::fmt::Debug for Renderer {
 }
 
 impl Renderer {
+    /// EVALUATION ONLY: what the evaluation tool changed in the scene of a fit.
+    #[cfg(feature = "eval-scene")]
+    pub(super) fn eval_slots(&self) -> &Mutex<crate::pipeline::eval_scene::Slots> {
+        &self.inner.eval_scene
+    }
+
     /// A renderer that takes its looks from `looks`.
     ///
     /// # Errors
@@ -1249,6 +1258,8 @@ impl Renderer {
                 object_listener: Mutex::new(None),
                 object_reference: std::sync::OnceLock::new(),
                 snapshot_reference: std::sync::OnceLock::new(),
+                #[cfg(feature = "eval-scene")]
+                eval_scene: Mutex::new(crate::pipeline::eval_scene::Slots::default()),
                 object_picture: Mutex::new(None),
                 object_pictures_made: AtomicU64::new(0),
                 vision_listener: Mutex::new(None),

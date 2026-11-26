@@ -396,4 +396,84 @@ impl SceneModel {
             }
         }
     }
+
+    #[cfg(feature = "eval-scene")]
+    /// EVALUATION ONLY (`eval-scene`): the scene of a picture whose segmenter's elements are given, not made: the five class elements
+    /// from `elements` (the segmenter's element number of every pixel of the `width x height` grid), the subject by its rule and,
+    /// where the Selfie weights are there, skin inside `person` on `rgb` (the picture of that grid, 8 bits, sRGB), exactly as
+    /// `ym_ml::scene::scene_from_labels` makes them from a label map. The segmenter is not loaded.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::Mask`] when the skin network fails or `rgb` is not `width * height * 3` bytes.
+    pub(crate) fn scene_from_elements(
+        &self,
+        elements: Vec<u8>,
+        rgb: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Result<SceneBits, RenderError> {
+        use ym_ml::eomt::Element;
+        use ym_ml::mediapipe::blazeface::{PixelSource, Resample, Rgb8};
+        use ym_ml::scene::{element_bit, skin_mask, subject_mask};
+        let failed = |text: &str| RenderError::Mask(format!("The Elements can't be made: {text}."));
+        if elements.len() != width * height {
+            return Err(failed("the elements have the wrong size"));
+        }
+        let element = |n: u8| match n {
+            1 => Element::Sky,
+            2 => Element::Vegetation,
+            3 => Element::Water,
+            4 => Element::Ground,
+            5 => Element::Architecture,
+            6 => Element::Interior,
+            7 => Element::Person,
+            8 => Element::OtherThing,
+            9 => Element::OtherStuff,
+            _ => Element::Unlabelled,
+        };
+        let mut bits: Vec<u8> = elements.iter().map(|&n| element_bit(element(n))).collect();
+        let subject = subject_mask(&elements, width, height);
+        let (skin, skin_available) = match &self.net {
+            Net::Network {
+                selfie_dir,
+                selfie,
+                has_selfie: true,
+                ..
+            } => {
+                let net = selfie
+                    .get(|| {
+                        let net = SelfieNet::load(selfie_dir)?;
+                        Ok::<_, MlError>(SelfieSegmenter::new(net))
+                    })
+                    .map_err(|_| failed("the skin network could not be loaded"))?;
+                let src = Rgb8::new(width, height, rgb).map_err(|e| failed(&e.to_string()))?;
+                let person: Vec<bool> = elements.iter().map(|&n| n == 7).collect();
+                let skin = self
+                    .run(|| {
+                        skin_mask(&person, width, height, &|roi| {
+                            net.segment(&src as &dyn PixelSource, roi, Resample::Box)
+                        })
+                    })
+                    .map_err(|e| failed(&e.to_string()))?;
+                (skin, true)
+            }
+            _ => (vec![false; width * height], false),
+        };
+        for (i, b) in bits.iter_mut().enumerate() {
+            if subject[i] {
+                *b |= SUBJECT;
+            }
+            if skin[i] {
+                *b |= SKIN;
+            }
+        }
+        Ok(SceneBits {
+            width,
+            height,
+            bits,
+            classes: elements,
+            skin_available,
+        })
+    }
 }

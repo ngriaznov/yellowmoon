@@ -25,5 +25,5 @@ serde_json.workspace = true
 tempfile.workspace = true
 png = { workspace = true }
 ym-color.workspace = true
-ym-core.workspace = true
+ym-core = { workspace = true, features = ["eval-scene"] }
 ym-gpu.workspace = true

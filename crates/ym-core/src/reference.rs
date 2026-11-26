@@ -37,6 +37,37 @@ pub const SCENE_LONG_EDGE_PX: usize = 1024;
 /// The long edge of the analysis picture, in pixels (section 6.5, 5.1): the picture the fit measures.
 pub const ANALYSIS_LONG_EDGE_PX: usize = 512;
 
+/// EVALUATION ONLY (`eval-scene`): the black bars the loader cuts off the image file at `path`: top, bottom, left, right, in the
+/// pixels of the file's picture after its orientation. The evaluation carries the proof of concept's label map of the file to the
+/// same part of the picture.
+///
+/// # Errors
+///
+/// The errors of [`ReferencePicture::from_file`] that concern reading the file and its bars.
+#[cfg(feature = "eval-scene")]
+#[doc(hidden)]
+pub fn eval_bars_of_file(path: &Path) -> Result<[usize; 4], ReferenceError> {
+    fn bars<T: Sample + Into<u32>>(
+        data: Vec<T>,
+        width: usize,
+        height: usize,
+        channels: usize,
+        orientation: u16,
+    ) -> Result<[usize; 4], ReferenceError> {
+        let (data, width, height) = orient(data, width, height, channels, orientation);
+        match letterbox::find_bars(&data, width, height, channels) {
+            Letterbox::Empty => Err(ReferenceError::Empty),
+            Letterbox::Bars(b) => Ok([b.top, b.bottom, b.left, b.right]),
+        }
+    }
+    let bytes = std::fs::read(path).map_err(|_| ReferenceError::Unreadable)?;
+    let d = decode(&bytes)?;
+    match d.samples {
+        Samples::U8(data) => bars(data, d.width, d.height, d.channels, d.orientation),
+        Samples::U16(data) => bars(data, d.width, d.height, d.channels, d.orientation),
+    }
+}
+
 /// The shortest short side a reference may have after its black bars are removed (section 16.6).
 pub const MIN_SHORT_SIDE_PX: usize = 256;
 

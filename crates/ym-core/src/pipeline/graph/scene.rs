@@ -580,6 +580,10 @@ impl Renderer {
         let model = self
             .scene_model()
             .ok_or_else(|| RenderError::Mask(NO_SCENE_MODEL_SENTENCE.to_owned()))?;
+        #[cfg(feature = "eval-scene")]
+        if let Some(made) = self.eval_reference_scene(&model, reference)? {
+            return Ok(made);
+        }
         let picture = reference.scene();
         let rgb = picture.srgb8();
         let made = model.scene_of(&rgb, picture.width, picture.height, &|| {

@@ -147,6 +147,14 @@ impl Renderer {
             )));
         }
         // The photo's scene (the Input's picture: nothing a node says changes it), made now when the worker has not made it.
+        #[cfg(feature = "eval-scene")]
+        let eval = self.eval_photo();
+        #[cfg(feature = "eval-scene")]
+        let scene = match &eval {
+            Some(ev) => ev.scene_for_fit(self, src, cancel)?,
+            None => self.scene_of(src, cancel)?,
+        };
+        #[cfg(not(feature = "eval-scene"))]
         let scene = self.scene_of(src, cancel)?;
         let skin_available = self.scene_model().is_some_and(|m| m.skin_available());
         // The photo as the fit sees its nodes: the node under fit takes part (a hue curve stands in for its candidates) and is not
@@ -166,6 +174,17 @@ impl Renderer {
         }
         let placeholder = src.with_settings(settings);
         let renderer = self.snapshot_renderer()?;
+        #[cfg(feature = "eval-scene")]
+        let result = renderer.fit_photo_on(
+            &placeholder,
+            node,
+            &scene,
+            skin_available,
+            cancel,
+            every_pixel,
+            eval.as_ref().zip(self.scene_model()),
+        );
+        #[cfg(not(feature = "eval-scene"))]
         let result = renderer.fit_photo_on(
             &placeholder,
             node,
@@ -178,6 +197,7 @@ impl Renderer {
         result
     }
 
+    #[cfg_attr(feature = "eval-scene", allow(clippy::too_many_arguments))]
     fn fit_photo_on(
         &self,
         src: &PhotoSource,
@@ -186,6 +206,7 @@ impl Renderer {
         skin_available: bool,
         cancel: &CancelToken,
         every_pixel: bool,
+        #[cfg(feature = "eval-scene")] eval: super::eval_scene::Active<'_>,
     ) -> Result<FitPhoto, RenderError> {
         let mut job = Job::new(self, src, cancel)?.with_gpu_priority(Priority::Thumbnail);
         let image = job.final_size()?;
@@ -233,20 +254,18 @@ impl Renderer {
         } else {
             sample_pixels(width, height)
         };
-        let spots: Vec<PhotoSpot<'static>> = sample
-            .iter()
-            .map(|&(x, y)| {
-                view.spot_at(x, y).unwrap_or_else(|| {
-                    PhotoSpot::new(
-                        [
-                            (x as f64 + 0.5) / width as f64,
-                            (y as f64 + 0.5) / height as f64,
-                        ],
-                        PhotoFrame::new(width as f64, height as f64, 1.0),
-                    )
-                })
+        let spot_for = |x: usize, y: usize| -> PhotoSpot<'static> {
+            view.spot_at(x, y).unwrap_or_else(|| {
+                PhotoSpot::new(
+                    [
+                        (x as f64 + 0.5) / width as f64,
+                        (y as f64 + 0.5) / height as f64,
+                    ],
+                    PhotoFrame::new(width as f64, height as f64, 1.0),
+                )
             })
-            .collect();
+        };
+        let spots: Vec<PhotoSpot<'static>> = sample.iter().map(|&(x, y)| spot_for(x, y)).collect();
         let states: Vec<Option<PlanState>> = sample
             .par_iter()
             .zip(spots.par_iter())
@@ -260,6 +279,31 @@ impl Renderer {
                 "This Reference Grade node is not connected to the Output, so it does not change the picture.".to_owned(),
             )
         })?;
+        // EVALUATION ONLY: the photo's default render through the look gives the guide (and, with labels, the scene).
+        #[cfg(feature = "eval-scene")]
+        let (scene, guide_override) = match &eval {
+            Some((ev, model)) => {
+                let base = src
+                    .settings
+                    .nodes
+                    .reference_grade(node)
+                    .ok_or_else(|| RenderError::Color("The node is gone.".to_owned()))?;
+                let (made, guide) = ev.prepare(
+                    model,
+                    &chain,
+                    base,
+                    node,
+                    src.id,
+                    (width, height),
+                    &camera,
+                    &spot_for,
+                )?;
+                (made.unwrap_or_else(|| Arc::clone(scene)), Some(guide))
+            }
+            None => (Arc::clone(scene), None),
+        };
+        #[cfg(feature = "eval-scene")]
+        let scene = &scene;
         // The photo's scene at the sample pixels, by the place of each pixel in the photo.
         let mut ps = PixelScene::blank(sample.len());
         for (i, spot) in spots.iter().enumerate() {
@@ -276,6 +320,8 @@ impl Renderer {
                 .into_par_iter()
                 .map(|i| chain.scene_guide_pixel(camera(i)))
                 .collect();
+            #[cfg(feature = "eval-scene")]
+            let lightness: Vec<f32> = guide_override.map_or(lightness, |g| (*g).clone());
             let map = GridPositions::new(grid, (0, 0));
             let outside = sampled.outside.as_deref();
             let position = |x: usize, y: usize| {

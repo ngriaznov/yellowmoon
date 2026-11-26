@@ -47,6 +47,9 @@ use ym_export::ColorSpace;
 
 pub mod color;
 pub mod depth;
+#[cfg(feature = "eval-scene")]
+#[doc(hidden)]
+pub mod eval_scene;
 pub mod faces;
 pub mod fit;
 pub mod frame;

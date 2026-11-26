@@ -22,6 +22,7 @@ use ym_color::refgrade::measure::{PixelScene, Px, class};
 use ym_color::refgrade::search::{CandidateRenderer, Start};
 use ym_core::app::{Core, CoreOptions};
 use ym_core::pipeline::PhotoSource;
+use ym_core::pipeline::eval_scene::{EvalLabels, PhotoScene};
 use ym_core::pipeline::fit::FitPhoto;
 use ym_core::reference_fit::{ChainCandidates, FitEvent};
 use ym_core::session::{OpenOptions, PhotoId, PhotoStatus};
@@ -62,6 +63,72 @@ pub struct RunOpts {
     pub mask_check: bool,
     /// Render each photo's first fit through the real pipeline and compare it with the measured picture.
     pub audit: bool,
+    /// The scene the fits see (`docs/34` section 16.10: the ablation of RG-10). The product's own unless the run says otherwise.
+    pub scene: SceneMode,
+    /// For [`SceneMode::PocLabels`]: the folder of the references' label maps (`<dir>/labels/<folder of the still>__<stem>.png`).
+    pub reference_labels: Option<PathBuf>,
+}
+
+/// Which scene a run's fits see. Only the evaluation can change it (`ym-core`'s `eval-scene` feature, which only this tool turns on).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SceneMode {
+    /// The product as it is: the segmenter on the Input's picture, the Input's picture as the guide.
+    Product,
+    /// A1: the proof of concept's label maps for the photo and the reference, the photo's default render through the look as the guide.
+    PocLabels,
+    /// A2: the product's segmenter on the photo's default render through the look, that render as the guide.
+    DefaultRender,
+}
+
+impl SceneMode {
+    /// The name in the records and on the command line.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            SceneMode::Product => "product",
+            SceneMode::PocLabels => "poc-labels",
+            SceneMode::DefaultRender => "default-render",
+        }
+    }
+
+    /// Reads a name.
+    ///
+    /// # Errors
+    ///
+    /// A name that is none of the three.
+    pub fn parse(s: &str) -> Result<Self> {
+        match s {
+            "product" => Ok(SceneMode::Product),
+            "poc-labels" => Ok(SceneMode::PocLabels),
+            "default-render" => Ok(SceneMode::DefaultRender),
+            other => bail!("--scene is product, poc-labels or default-render, not {other}"),
+        }
+    }
+}
+
+/// The reference's label map (`<dir>/labels/<folder of the still>__<stem>.png`, the folder after the still's symlinks are followed) and
+/// the bars the product's loader cuts off the still.
+fn reference_labels(dir: &Path, still: &Path) -> Result<EvalLabels> {
+    let real = fs::canonicalize(still).unwrap_or_else(|_| still.to_path_buf());
+    let group = real
+        .parent()
+        .and_then(|d| d.file_name())
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let stem = real
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let file = dir.join("labels").join(format!("{group}__{stem}.png"));
+    let (width, height, elements) = read_label_png(&file)?;
+    let crop = ym_core::reference::eval_bars_of_file(still)
+        .map_err(|e| anyhow!("{}: {e}", still.display()))?;
+    Ok(EvalLabels {
+        width,
+        height,
+        elements,
+        crop,
+    })
 }
 
 /// The photos of a run: the split's entries of the set, filtered, then this shard's share.
@@ -420,6 +487,28 @@ pub fn run(opts: &RunOpts) -> Result<()> {
                 let now = core.session.view(id)?.settings;
                 let next = with_node(&now)?;
                 core.update_settings(id, &SettingsPatch::between(&now, &next))?;
+                // The ablation: another scene for this photo's fits (never set in a run of the product as it is).
+                match opts.scene {
+                    SceneMode::Product => {}
+                    SceneMode::PocLabels => {
+                        let file = entry
+                            .label_file()
+                            .filter(|f| f.is_file())
+                            .ok_or_else(|| anyhow!("{name}: no label map for the ablation"))?;
+                        let (width, height, elements) = read_label_png(&file)?;
+                        core.renderer
+                            .set_eval_photo_scene(Some(PhotoScene::Labels(EvalLabels {
+                                width,
+                                height,
+                                elements,
+                                crop: [0; 4],
+                            })));
+                    }
+                    SceneMode::DefaultRender => {
+                        core.renderer
+                            .set_eval_photo_scene(Some(PhotoScene::DefaultRender));
+                    }
+                }
                 let t0 = Instant::now();
                 let eval: FitPhoto = core
                     .reference_eval_photo(id, NODE, &cancel)
@@ -459,6 +548,13 @@ pub fn run(opts: &RunOpts) -> Result<()> {
                 for &k in &todo {
                     let rname = &ref_names[k];
                     let one = (|| -> Result<Value> {
+                        if opts.scene == SceneMode::PocLabels {
+                            let dir = opts.reference_labels.as_deref().ok_or_else(|| {
+                                anyhow!("--scene poc-labels needs --reference-labels")
+                            })?;
+                            core.renderer
+                                .set_eval_reference_labels(Some(reference_labels(dir, &refs[k])?));
+                        }
                         core.reference_choose_file(id, NODE, &refs[k], Some(rname))
                             .map_err(|e| anyhow!("{e}"))?;
                         let t = Instant::now();
@@ -490,6 +586,7 @@ pub fn run(opts: &RunOpts) -> Result<()> {
                             seconds,
                             fit.result.start,
                         );
+                        rec["scene_mode"] = json!(opts.scene.name());
                         rec["objective"] = json!(fit.result.total);
                         rec["identity"] = json!(fit.result.identity);
                         rec["evals"] = json!(fit.result.evals);
@@ -540,6 +637,8 @@ pub fn run(opts: &RunOpts) -> Result<()> {
                 }
                 Ok(())
             })();
+            core.renderer.set_eval_photo_scene(None);
+            core.renderer.set_eval_reference_labels(None);
             core.remove_photos(&[id]);
             result
         })();
@@ -697,6 +796,8 @@ mod tests {
             resume: false,
             mask_check: false,
             audit: false,
+            scene: SceneMode::Product,
+            reference_labels: None,
         };
         let names = |o: &RunOpts| -> Vec<String> {
             selected(o)

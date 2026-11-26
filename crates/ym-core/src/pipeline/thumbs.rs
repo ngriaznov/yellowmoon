@@ -675,6 +675,25 @@ impl Renderer {
             .map_err(SnapshotError::Reference)
     }
 
+    /// EVALUATION ONLY (`eval-scene`): `src` as it is (its settings and look), whole, at the segmenter's picture size
+    /// ([`OBJECT_PICTURE_PX`] on the long edge), sRGB, 8 bits, on the CPU reference path: the photo's default render through its
+    /// look, which the proof of concept's label maps were made from.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] for unusable data or a cancelled job.
+    #[cfg(feature = "eval-scene")]
+    pub(crate) fn eval_default_picture(
+        &self,
+        src: &PhotoSource,
+        cancel: &CancelToken,
+    ) -> Result<AdvisorPicture, RenderError> {
+        let renderer = self.snapshot_renderer()?;
+        let picture = renderer.whole_picture(src, super::object::OBJECT_PICTURE_PX, cancel);
+        renderer.forget(src.id);
+        picture
+    }
+
     /// SAM's picture of a photo (`docs/algorithms/06` section 5.7, [`object_source`]): the Input's picture, whole, in the photo
     /// frame, at [`OBJECT_PICTURE_PX`] on the long edge, Neutral look, no output sharpening, sRGB, 8 bits. Made on the CPU
     /// reference path by a renderer of its own that has no device, so that the features, the masks and the exports made from

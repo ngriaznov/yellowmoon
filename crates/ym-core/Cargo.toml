@@ -68,6 +68,11 @@ fault-injection = ["ym-gpu/fault-injection", "ym-export/fault-injection"]
 # `tests/render_film_device.rs::the_colour_pass_of_the_tail_is_close_to_the_cpus_before_output_sharpening`. Off by
 # default and never enabled by a shipped build.
 tail-probe = ["ym-gpu/tail-probe"]
+# EVALUATION-ONLY. Lets the evaluation tool of Reference Grade (`tools/eval/refgrade`, `docs/34` section 16.10) change the scene a fit
+# sees: another label map for the photo and the reference, or the segmenter on another picture, and another guide for the soft masks
+# (`pipeline::eval_scene`). Off by default; only `tools/eval/refgrade` turns it on (as `ym-cli` does for `force-demosaic`), so a build
+# of the app or of `ym` (`cargo build -p ym-cli`, the app's own build) has no such code, and nothing but that tool calls it.
+eval-scene = []
 
 # The macOS memory-pressure level, `sysctl kern.memorystatus_vm_pressure_level` (`docs/26` H-14). MIT OR Apache-2.0 (docs/14); already
 # in the build through `ym-ml`. Only on macOS: elsewhere the level is always normal.

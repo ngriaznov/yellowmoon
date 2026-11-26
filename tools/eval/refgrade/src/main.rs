@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use refgrade_eval::compare::compare;
 use refgrade_eval::report::{merge, read_records, write_mask_summary};
-use refgrade_eval::run::{RunOpts, default_renders, run};
+use refgrade_eval::run::{RunOpts, SceneMode, default_renders, run};
 use refgrade_eval::split::{owner_sample, read_split};
 
 #[derive(Parser)]
@@ -60,6 +60,13 @@ enum Cmd {
         /// Do not render each photo's first fit through the real pipeline for the audit.
         #[arg(long)]
         no_audit: bool,
+        /// The ablation of `docs/34` section 16.10 (dev only): `product` (the default), `poc-labels` (A1: the label maps of the proof
+        /// of concept for the photos and the references) or `default-render` (A2: the segmenter on the photo's default render).
+        #[arg(long, default_value = "product")]
+        scene: String,
+        /// With `--scene poc-labels`: the folder of the references' label maps.
+        #[arg(long)]
+        reference_labels: Option<PathBuf>,
     },
     /// Joins the shards of a run and writes `metrics.json`, `summary.json`, `summary.md` and the mask summary.
     Merge {
@@ -146,6 +153,8 @@ fn main() -> Result<()> {
             resume,
             no_mask_check,
             no_audit,
+            scene,
+            reference_labels,
         } => run(&RunOpts {
             split,
             set,
@@ -159,6 +168,8 @@ fn main() -> Result<()> {
             resume,
             mask_check: !no_mask_check,
             audit: !no_audit,
+            scene: SceneMode::parse(&scene)?,
+            reference_labels,
         }),
         Cmd::Merge { out, name, runs } => {
             let n = merge(&runs, &name, &out)?;
@@ -222,6 +233,8 @@ fn main() -> Result<()> {
             resume: false,
             mask_check: false,
             audit: false,
+            scene: SceneMode::Product,
+            reference_labels: None,
         }),
         Cmd::Sample { split } => {
             for name in owner_sample(&read_split(&split)?) {
