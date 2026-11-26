@@ -342,3 +342,55 @@ describe("Filmstrip remove menu", () => {
     expect(await screen.findByRole("tooltip", {}, { timeout: 2000 })).toHaveTextContent("4 nodes");
   });
 });
+
+describe("the strip as a chooser (mode choose, docs/34 §9.2)", () => {
+  const CHOOSE: FilmstripPhoto[] = [
+    { id: 1, name: "DSC04201", src: "a.png" },
+    { id: 2, name: "DSC04202", src: "b.png", off: "That's the photo you're grading. Choose another.", badge: "This photo" },
+    { id: 3, name: "DSC04203", src: "c.png" },
+    { id: 4, name: "DSC04204", status: "developing", off: "This photo isn't ready yet.", badge: "Developing" },
+  ];
+  const strip = (onSelect = vi.fn()) => render(<Filmstrip mode="choose" photos={CHOOSE} currentId={2} onSelect={onSelect} caption="Choose a reference · 2 of 4" />);
+
+  it("is a named strip of buttons that choose, with a caption, no pick and no menu", async () => {
+    const onSelect = vi.fn();
+    strip(onSelect);
+    expect(screen.getByRole("navigation", { name: "Choose a reference" })).toHaveTextContent("Choose a reference · 2 of 4");
+    await userEvent.setup().click(screen.getByRole("button", { name: "Choose DSC04203 as the reference" }));
+    expect(onSelect).toHaveBeenCalledWith(3);
+    fireEvent.click(screen.getByRole("button", { name: "Choose DSC04203 as the reference" }), { metaKey: true });
+    expect(onSelect).toHaveBeenCalledTimes(2);
+  });
+
+  it("puts the photos that cannot be chosen off with their reason and their badge, and does not choose them", async () => {
+    const onSelect = vi.fn();
+    strip(onSelect);
+    const own = screen.getByRole("button", { name: /^Can't choose DSC04202/ });
+    expect(own).toHaveAttribute("aria-disabled", "true");
+    expect(own).toHaveAccessibleName(expect.stringContaining("That's the photo you're grading. Choose another."));
+    expect(own).toHaveTextContent("This photo");
+    const developing = screen.getByRole("button", { name: /^Can't choose DSC04204/ });
+    expect(developing).toHaveTextContent("Developing");
+    const user = userEvent.setup();
+    await user.click(own);
+    await user.click(developing);
+    expect(onSelect).not.toHaveBeenCalled();
+    await user.hover(developing);
+    expect(await screen.findByRole("tooltip", {}, { timeout: 2000 })).toHaveTextContent("This photo isn't ready yet.");
+  });
+
+  it("takes the focus on the first photo that can be chosen; the arrows move it one tile at a time without choosing, off tiles included", async () => {
+    const onSelect = vi.fn();
+    strip(onSelect);
+    const tiles = screen.getAllByRole("button");
+    expect(tiles[0]).toHaveFocus();
+    const user = userEvent.setup();
+    await user.keyboard("{ArrowRight}");
+    expect(tiles[1]).toHaveFocus();
+    await user.keyboard("{ArrowRight}{ArrowLeft}{ArrowLeft}");
+    expect(tiles[0]).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith(1);
+  });
+});

@@ -31,6 +31,13 @@ export interface FilmstripPhoto {
    * carries the nodes glyph at its bottom left with these words as its tooltip, and its name says them too (`docs/23` §6).
    */
   nodes?: string;
+  /**
+   * Choose mode only: the photo cannot be chosen, and why (the tooltip of its tile: "This photo isn't ready yet."). The tile is off (`aria-disabled`) but
+   * stays a stop of the keyboard, so that it can say why.
+   */
+  off?: string;
+  /** Choose mode only: a badge on the tile ("This photo", "Developing"). */
+  badge?: string;
 }
 
 export interface FilmstripProps {
@@ -51,9 +58,10 @@ export interface FilmstripProps {
   /**
    * `browse` (default) is the Photos screen: clickable thumbnails and a caption, "4 of 12 · 3 picked".
    * `export` is the Export panel: not clickable, included photos have a 3 px border and the rest are
-   * dimmed, and the caption reads "3 to export".
+   * dimmed, and the caption reads "3 to export". `choose` is the chooser of a Reference Grade node's reference (`docs/34` §9.2): a click on a photo chooses it
+   * (`onSelect`), the photos with `off` are off with their reason as a tooltip, the arrows move the focus without choosing, and the strip has no menu and no picks.
    */
-  mode?: "browse" | "export";
+  mode?: "browse" | "export" | "choose";
   /** Replaces the caption line ("4 of 12 · 3 picked"). */
   caption?: ReactNode;
   /** Tab whose colour tints the strip, for a surface that follows the tab. Omit it for the brand colour. */
@@ -91,7 +99,7 @@ export function scrollOffsetToReveal(
  * The one line that says where you are in the folder: "4 of 12 · 3 picked", or "3 to export" in the Export panel. The strip
  * shows it as its caption; a header that wants to show the same line asks here, so the two never differ.
  */
-export function filmstripCaption(photos: readonly FilmstripPhoto[], currentId: number | string | null, mode: "browse" | "export" = "browse"): string {
+export function filmstripCaption(photos: readonly FilmstripPhoto[], currentId: number | string | null, mode: "browse" | "export" | "choose" = "browse"): string {
   if (mode === "export") return `${photos.filter((p) => p.included).length} to export`;
   const index = photos.findIndex((p) => p.id === currentId);
   return `${index >= 0 ? index + 1 : 0} of ${photos.length} · ${photos.filter((p) => p.picked).length} picked`;
@@ -137,7 +145,7 @@ function MenuAround({
 /** What `Thumb` draws for one photo. */
 interface ThumbProps {
   photo: FilmstripPhoto;
-  mode: "browse" | "export";
+  mode: "browse" | "export" | "choose";
   isCurrent: boolean;
   /** Browse mode: this thumbnail is the strip's one tab stop. */
   tabbable: boolean;
@@ -148,7 +156,7 @@ interface ThumbProps {
 }
 
 /** The words that name a photo, for its accessible name. */
-function describe(photo: FilmstripPhoto, mode: "browse" | "export"): string {
+function describe(photo: FilmstripPhoto, mode: "browse" | "export" | "choose"): string {
   return [
     photo.name,
     photo.status === "failed" ? "can't open" : photo.status === "developing" ? "developing" : null,
@@ -162,7 +170,7 @@ function describe(photo: FilmstripPhoto, mode: "browse" | "export"): string {
 
 /** Two photos draw the same: the fields `Thumb` reads, by value (the list is made again whenever anything about any photo changes). */
 const samePhoto = (a: FilmstripPhoto, b: FilmstripPhoto): boolean =>
-  a === b || (a.id === b.id && a.name === b.name && a.src === b.src && a.status === b.status && a.picked === b.picked && a.included === b.included && a.nodes === b.nodes);
+  a === b || (a.id === b.id && a.name === b.name && a.src === b.src && a.status === b.status && a.picked === b.picked && a.included === b.included && a.nodes === b.nodes && a.off === b.off && a.badge === b.badge);
 
 /** One thumbnail. Memoised by value, so a key press draws the two thumbnails that change and not the other hundreds. */
 const Thumb = memo(
@@ -207,6 +215,39 @@ const Thumb = memo(
         >
           {content}
         </span>
+      );
+    }
+    if (mode === "choose") {
+      // A tile of the chooser: a button that chooses the photo; a photo that cannot be chosen is off (`aria-disabled`, still a stop of the keyboard) and says
+      // why in a tooltip, on hover only (on focus it would take the first Esc, which ends the chooser).
+      const tile = (
+        <button
+          {...common}
+          type="button"
+          className="ym-filmstrip__thumb"
+          aria-label={`${photo.off ? "Can't choose" : "Choose"} ${describe(photo, mode)}${photo.off ? `. ${photo.off}` : " as the reference"}`}
+          aria-disabled={photo.off ? "true" : undefined}
+          aria-current={isCurrent ? "true" : "false"}
+          data-off={photo.off ? "" : undefined}
+          tabIndex={tabbable ? 0 : -1}
+          onClick={(event: MouseEvent<HTMLButtonElement>) => {
+            if (photo.off) event.preventDefault();
+            else onActivate(photo.id, false);
+          }}
+        >
+          {content}
+          {photo.badge ? <span className="ym-filmstrip__badge">{photo.badge}</span> : null}
+        </button>
+      );
+      return photo.off ? (
+        <Tooltip>
+          <TooltipTrigger asChild onFocus={(event) => event.preventDefault()}>
+            {tile}
+          </TooltipTrigger>
+          <TooltipContent>{photo.off}</TooltipContent>
+        </Tooltip>
+      ) : (
+        tile
       );
     }
     return (
@@ -265,7 +306,13 @@ export function Filmstrip({
   // Only the thumbnails in view and a margin are drawn once the folder is large (`docs/11` §Large folders).
   const win = useWindowedRange({ count: photos.length, axis: "x", list: scroller, scroller, itemSelector: ".ym-filmstrip__thumb", estimate: 120 });
   // The strip's one tab stop is the photo on screen; when that one is far off and not drawn, the first drawn thumbnail takes it.
-  const tabbableIndex = currentIndex >= win.start && currentIndex < win.end ? currentIndex : win.start;
+  const firstChoosable = photos.findIndex((p) => !p.off);
+  const tabbableIndex =
+    mode === "choose"
+      ? Math.max(win.start, firstChoosable < 0 ? 0 : firstChoosable)
+      : currentIndex >= win.start && currentIndex < win.end
+        ? currentIndex
+        : win.start;
   // The shell learns which photos are drawn, so that it can make again a thumbnail it let go of while the photo was out of sight.
   const drawnIds = win.windowed && !hidden ? photos.slice(win.start, win.end).flatMap((p) => (typeof p.id === "number" ? [p.id] : [])) : null;
   const drawnKey = drawnIds === null ? null : drawnIds.join(",");
@@ -344,6 +391,15 @@ export function Filmstrip({
   }, [currentId, hidden, currentIndex, scrollToIndex, win.start, win.end]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
+    if (mode === "choose" && !event.metaKey && !event.ctrlKey && !event.altKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+      // In the chooser the arrows only move the focus, one tile at a time; Return or Space chooses.
+      const at = (event.target as HTMLElement).closest<HTMLElement>("[data-photo-id]")?.dataset.photoId;
+      const from = at !== undefined ? photos.findIndex((p) => String(p.id) === at) : 0;
+      const next = photos[from + (event.key === "ArrowRight" ? 1 : -1)];
+      event.preventDefault();
+      if (next) refs.current.get(next.id)?.focus();
+      return;
+    }
     if (mode !== "browse" || event.metaKey || event.ctrlKey || event.altKey) return;
     const focused = (event.target as HTMLElement).closest<HTMLElement>("[data-photo-id]");
     const focusedId = focused?.dataset.photoId;
@@ -364,6 +420,22 @@ export function Filmstrip({
     }
   };
 
+  // The chooser takes the keyboard when it opens (`docs/34` §9.2): the focus goes to the first photo that can be chosen.
+  const firstId = firstChoosable >= 0 ? photos[firstChoosable]?.id : undefined;
+  const focusedChooser = useRef(false);
+  useEffect(() => {
+    if (mode !== "choose") {
+      focusedChooser.current = false;
+      return;
+    }
+    if (focusedChooser.current || firstId === undefined) return;
+    // The tiles are drawn once the strip has measured itself, so the first effect may find none: it tries again as they come.
+    const tile = refs.current.get(firstId);
+    if (!tile) return;
+    focusedChooser.current = true;
+    tile.focus({ preventScroll: true });
+  }, [mode, firstId, win.start, win.end]);
+
   const captionText = caption ?? filmstripCaption(photos, currentId, mode);
 
   const register = useCallback((id: number | string, node: HTMLElement | null) => {
@@ -377,11 +449,12 @@ export function Filmstrip({
 
   return (
     <nav
-      aria-label={label ?? (mode === "export" ? "Photos to export" : "Photos")}
+      aria-label={label ?? (mode === "export" ? "Photos to export" : mode === "choose" ? "Choose a reference" : "Photos")}
       aria-describedby={captionId}
       className={cx("ym-filmstrip", className)}
       hidden={hidden || undefined}
       data-tab={tab}
+      data-mode={mode === "browse" ? undefined : mode}
       onKeyDown={onKeyDown}
       onFocus={onFocusIn}
       onBlur={onFocusOut}

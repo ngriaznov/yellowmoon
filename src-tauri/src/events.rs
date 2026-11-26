@@ -38,7 +38,7 @@ use tauri_specta::Event;
 
 use crate::wire::{
     AlbumChanged, AppError, AutoStatusChanged, DepthState, DownloadFound, ErrorEvent, ExportBusy,
-    ExportProgress, FaceState, LooksChanged, LooksImportProgress, MemoryNotice,
+    ExportProgress, FaceState, FitProgress, LooksChanged, LooksImportProgress, MemoryNotice,
     NodeThumbnailsReady, ObjectState, OpenProgress, PhotoId, PhotoProgress, PresetsChanged,
     RenderStats, SettingsChanged, ThumbnailReady, ViewportBusy, ViewportFrame, VisionState,
 };
@@ -92,6 +92,8 @@ pub enum AppEvent {
     DepthState(DepthState),
     /// `face_state` (addition): the face worker started or ended its work for a photo, and where the faces are.
     FaceState(FaceState),
+    /// `fit_progress` (addition, `docs/34` section 9.3): where a Reference Grade fit is.
+    FitProgress(FitProgress),
     /// `memory_notice` (addition, `docs/26` H-14): the computer is short of memory (the sentence), or is not any more (none).
     MemoryNotice(MemoryNotice),
 }
@@ -122,6 +124,7 @@ impl AppEvent {
             Self::VisionState(_) => "vision_state",
             Self::DepthState(_) => "depth_state",
             Self::FaceState(_) => "face_state",
+            Self::FitProgress(_) => "fit_progress",
             Self::MemoryNotice(_) => "memory_notice",
         }
     }
@@ -187,6 +190,7 @@ fn send<R: Runtime>(app: &tauri::AppHandle<R>, event: AppEvent) {
         AppEvent::VisionState(e) => e.emit(app),
         AppEvent::DepthState(e) => e.emit(app),
         AppEvent::FaceState(e) => e.emit(app),
+        AppEvent::FitProgress(e) => e.emit(app),
         AppEvent::MemoryNotice(e) => e.emit(app),
     };
     if let Err(e) = sent {

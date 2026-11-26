@@ -1,6 +1,7 @@
 import { Maximize2Icon } from "lucide-react";
 import type { DevelopSettings, NodeId } from "../../api/types";
-import { Button } from "../../components";
+import { Button, Filmstrip } from "../../components";
+import type { FilmstripPhoto } from "../../components";
 import { GRAPH_OP_TEXT } from "../../state/graphOps";
 import { INPUT_ID, isCardItem, isGlyphItem, MAIN_ID, nodeOf, numberedOf, OUTPUT_ID } from "../../state/settingsGraph";
 import { AddNodeMenu } from "./AddNodeMenu";
@@ -29,6 +30,11 @@ export interface GraphAreaProps extends PhotoSwitcherProps {
   maskOn?: boolean;
   /** The toolbar's Show mask: the same as M. */
   onToggleMask?: () => void;
+  /**
+   * The strip is a chooser for a Reference Grade node's reference (`docs/34` §9.2): the filmstrip takes the canvas's place (the owner's answer at RG-H2) and
+   * the toolbar is dimmed and inert, as while Crop shows. `photos` are the strip's, with the photos that cannot be chosen marked `off`; `onChoose` takes the one clicked.
+   */
+  chooser?: { photos: readonly FilmstripPhoto[]; currentId: number | string | null; onChoose: (id: number | string) => void };
   /** The node view is closed but kept built (U-02): the area takes no room, is not drawn and is not drawn again. */
   hidden?: boolean;
 }
@@ -47,7 +53,7 @@ function deleteReason(id: NodeId, link: boolean): string | null {
  * the selected link first), with the sentence that says why when they are off; Show mask turns the core's mask view on and off (N-11; off on the Input and the Output). While Crop or
  * Export shows, the whole area is `inert` and dimmed.
  */
-export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, expanded, onToggleExpanded, dimmed, maskOn = false, onToggleMask, hidden = false, ...switcher }: GraphAreaProps) {
+export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, expanded, onToggleExpanded, dimmed, chooser, maskOn = false, onToggleMask, hidden = false, ...switcher }: GraphAreaProps) {
   const node = settings ? nodeOf(settings, selected) : undefined;
   const count = settings ? numberedOf(settings).length : 0;
   const isCard = isCardItem(node);
@@ -60,13 +66,14 @@ export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, ex
   const maskOffReason = isGlyphItem(node) ? GRAPH_OP_TEXT.glyphNoMask : GRAPH_OP_TEXT.noMask;
   return (
     <section aria-label="Node editor" className="ym-graph" data-dimmed={dimmed || undefined} inert={dimmed || hidden || undefined} hidden={hidden || undefined}>
-      <div role="group" aria-label="Graph tools" className="ym-graph__bar">
+      <div role="group" aria-label="Graph tools" className="ym-graph__bar" inert={chooser !== undefined || undefined} data-dimmed={chooser !== undefined || undefined}>
         <AddNodeMenu
           onAddCorrector={settings ? graph.addCorrector : undefined}
           onAddFilm={settings ? graph.addFilm : undefined}
           onAddFaceRefinement={settings ? graph.addFaceRefinement : undefined}
           onAddColorUniform={settings ? graph.addColorUniform : undefined}
           onAddBlur={settings ? graph.addBlur : undefined}
+          onAddReferenceGrade={settings ? graph.addReferenceGrade : undefined}
           onAddParallel={settings ? graph.addParallel : undefined}
           onAddLayer={settings ? graph.addLayer : undefined}
           onAddTrio={settings ? graph.addTrio : undefined}
@@ -99,7 +106,17 @@ export function GraphArea({ settings, photoKey, selected, graph, thumbnailOf, ex
           Expand
         </Button>
       </div>
-      <div className="ym-graph__canvas" data-graph data-selected-node={String(selected)}>
+      {chooser ? (
+        <Filmstrip
+          mode="choose"
+          photos={chooser.photos}
+          currentId={chooser.currentId}
+          onSelect={chooser.onChoose}
+          caption={`Choose a reference · ${Math.max(1, chooser.photos.findIndex((p) => p.id === chooser.currentId) + 1)} of ${chooser.photos.length}`}
+          tab="reference"
+        />
+      ) : null}
+      <div className="ym-graph__canvas" data-graph data-selected-node={String(selected)} hidden={chooser !== undefined || undefined}>
         {settings ? (
           <NodeGraph
             settings={settings}

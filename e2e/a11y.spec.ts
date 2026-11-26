@@ -794,6 +794,32 @@ test.describe("the node panel", () => {
     }
   });
 
+  test("a Reference Grade node: the Reference tab, the Hue plots, the Elements cards and the strip chooser are named, and the status line announces", async ({ browser }) => {
+    const cases: Array<[string, string[], string[]]> = [
+      ["98-reference-empty", ['button "Choose reference…"', 'button "Fit"', 'slider "Strength"', 'switch "Skin protection"', "Choose a picture to match."], ["progressbar"]],
+      ["99-reference-fitted", ['button "Fit again"', "Fitted to the reference.", "harbour-dusk.jpg"], ['button "Fit" ']],
+      ["100-reference-chooser", ['navigation "Choose a reference"', 'button "Choose DSC04201 as the reference"', "Click a photo in the strip. Esc cancels."], []],
+      ["101-reference-hue", ['group "Hue vs hue curve"', 'group "Hue vs saturation curve"', 'slider "Point 1 of 6"', 'button "Reset Hue vs hue"', 'button "Reset Hue vs saturation"'], []],
+      ["102-reference-elements", ['region "Sky"', 'region "Subject"', 'slider "Exposure (EV)"', 'slider "Chroma"', "Not found in this photo."], []],
+    ];
+    for (const [state, present, absent] of cases) {
+      const { page, context } = await openState(browser, state);
+      try {
+        const snapshot = await expectNamed(page, state);
+        expect(snapshot, state).toMatch(/- heading "Match" \[level=2\]/);
+        for (const text of present) expect(snapshot, `${state}: ${text}`).toContain(text);
+        for (const text of absent) expect(snapshot, `${state}: no ${text}`).not.toContain(text);
+        if (state === "98-reference-empty") {
+          // The status line is a polite status group, so a screen reader hears it change.
+          expect(await page.locator(".ym-ref__status").getAttribute("role")).toBe("status");
+          expect(await page.locator(".ym-ref__status").getAttribute("aria-live")).toBe("polite");
+        }
+      } finally {
+        await context.close();
+      }
+    }
+  });
+
   test("the Mask tab's rows are named like the cards: kind, 'mask' and what they say, and each row's controls are named", async ({ page }) => {
     await graded(page, "Light");
     await page.locator('[data-node-card="2"]').click();

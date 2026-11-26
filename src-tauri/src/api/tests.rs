@@ -7039,3 +7039,214 @@ fn churn_around_a_colour_uniform_node_leaves_the_preview_alive() {
 fn churn_around_a_colour_uniform_node_leaves_the_preview_alive_on_the_device() {
     colour_uniform_churn(true, 25);
 }
+
+// --- Reference Grade (`docs/34` section 9.5, RG-12) -------------------------------------------
+
+/// A photo's settings with a Reference Grade node 2 after Main.
+fn with_reference_node(h: &Harness) -> PhotoId {
+    let id = h.first();
+    let patch: SettingsPatch = serde_json::from_value(json!({
+        "nodes": { "2": { "kind": "reference_grade", "name": "Match", "pos": [1.0, 0.0] } },
+        "links": [
+            { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
+            { "from": { "node": 1, "port": "picture" }, "to": { "node": 2, "port": "picture" } },
+            { "from": { "node": 2, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ]
+    }))
+    .expect("patch");
+    h.api
+        .update_settings(id, &patch)
+        .expect("the node is added");
+    id
+}
+
+/// A 320 x 256 PNG of three colour bands, written into the harness's home folder.
+fn write_reference_png(h: &Harness, name: &str) -> PathBuf {
+    let (w, hgt) = (320usize, 256usize);
+    let mut rgb = Vec::with_capacity(w * hgt * 3);
+    for y in 0..hgt {
+        for x in 0..w {
+            let band = y * 3 / hgt;
+            let c = [[200u8, 120, 60], [60, 140, 90], [40, 90, 170]][band];
+            rgb.extend([c[0].saturating_add((x / 8) as u8 % 24), c[1], c[2]]);
+        }
+    }
+    let png = ym_core::pipeline::thumbs::encode_png_rgb8(w, hgt, &rgb).expect("a PNG");
+    let path = h.home.path().join(name);
+    std::fs::write(&path, png).expect("write the reference");
+    path
+}
+
+#[test]
+fn a_reference_file_is_held_for_the_node_and_the_card_gets_a_label_and_a_picture() {
+    let h = Harness::new();
+    h.open(2);
+    h.develop();
+    let id = with_reference_node(&h);
+    let path = write_reference_png(&h, "harbour-dusk.png");
+    let info = h
+        .api
+        .reference_choose_path(id, 2, &path, None)
+        .expect("the reference");
+    assert_eq!(info.label, "harbour-dusk.png");
+    assert_eq!(info.source, ReferenceKind::File);
+    assert!(info.notes.is_empty() && !info.grey);
+    assert_eq!((info.photo_id, info.node_id), (id, 2));
+    // The picture crosses the bridge as an address of a PNG, never as the file or its path.
+    let png = served(&h, &info.thumbnail);
+    assert_eq!(&png[1..4], b"PNG");
+    assert!(!info.thumbnail.contains("harbour"));
+    // Clearing lets go of it; a second clear finds nothing.
+    assert!(h.api.clear_reference(id, 2));
+    assert!(!h.api.clear_reference(id, 2));
+    // The original file is untouched.
+    assert!(path.exists());
+}
+
+#[test]
+fn a_reference_that_cannot_be_used_says_why_in_the_words_of_the_spec() {
+    let h = Harness::new();
+    h.open(2);
+    h.develop();
+    let id = with_reference_node(&h);
+    let say = |name: &str, bytes: &[u8]| {
+        let path = h.home.path().join(name);
+        std::fs::write(&path, bytes).expect("write");
+        h.api
+            .reference_choose_path(id, 2, &path, None)
+            .expect_err(name)
+            .message
+    };
+    assert_eq!(
+        say("damaged.png", b"\x89PNG\r\n\x1a\nnot really"),
+        "This file can't be read. It may be damaged. Choose another picture."
+    );
+    assert_eq!(
+        say("photo.heic", b"....ftypheic"),
+        "Yellowmoon reads JPEG, PNG and TIFF pictures. Save this one as one of those, then choose it again."
+    );
+    // A node that is not a Reference Grade node.
+    let path = write_reference_png(&h, "ok.png");
+    assert!(h.api.reference_choose_path(id, 1, &path, None).is_err());
+}
+
+#[test]
+fn a_photo_of_the_strip_is_a_reference_but_not_the_photo_being_graded() {
+    let h = Harness::new();
+    h.open(2);
+    let state = h.develop();
+    let id = with_reference_node(&h);
+    let other = state.photos[1].id;
+    let same = h
+        .api
+        .reference_choose_photo(id, 2, id, "Photo 1 of 2")
+        .expect_err("itself");
+    assert_eq!(
+        same.message,
+        "That's the photo you're grading. Choose another."
+    );
+    let info = h
+        .api
+        .reference_choose_photo(id, 2, other, "Photo 2 of 2")
+        .expect("the other photo");
+    assert_eq!(
+        (info.label.as_str(), info.source),
+        ("Photo 2 of 2", ReferenceKind::Photo)
+    );
+    assert_eq!(&served(&h, &info.thumbnail)[1..4], b"PNG");
+}
+
+#[test]
+fn a_fit_reports_its_steps_writes_one_patch_and_a_cancel_changes_nothing() {
+    let h = Harness::with_scene(ym_core::pipeline::SceneModel::fake_default());
+    h.open(2);
+    h.develop();
+    let id = with_reference_node(&h);
+    // Without a reference there is nothing to fit.
+    assert_eq!(
+        h.api
+            .fit_reference(id, 2)
+            .expect_err("no reference")
+            .message,
+        "Choose a reference first."
+    );
+    let path = write_reference_png(&h, "ref.png");
+    h.api
+        .reference_choose_path(id, 2, &path, None)
+        .expect("the reference");
+    let before = h.api.get_settings(id).expect("settings");
+
+    // A cancel, asked as soon as the fit says it began: the answer is `cancelled` and the settings are as they were.
+    let api = Arc::clone(&h.api);
+    let fit = std::thread::spawn(move || api.fit_reference(id, 2));
+    let began = h.events.wait_for(WAIT, |e| match e {
+        AppEvent::FitProgress(p) => Some(p.clone()),
+        _ => None,
+    });
+    let began = began.expect("a fit_progress event");
+    assert_eq!(
+        (began.photo_id, began.node_id, began.step),
+        (id, 2, FitStep::Scene)
+    );
+    h.api.cancel_fit(id, 2);
+    let cancelled = fit
+        .join()
+        .expect("the fit thread")
+        .expect("a cancel is an answer");
+    assert_eq!(cancelled.status, crate::wire::FitStatus::Cancelled);
+    assert!(cancelled.shares.is_empty());
+    assert_eq!(
+        cancelled.settings.settings, before.settings,
+        "a cancel changes nothing"
+    );
+
+    // Again, to the end: one patch of the node's fitted fields, the six shares and the settings as they are now.
+    let report = h.api.fit_reference(id, 2).expect("the fit");
+    assert!(matches!(
+        report.status,
+        crate::wire::FitStatus::Fitted | crate::wire::FitStatus::AlreadyClose
+    ));
+    assert_eq!(report.shares.len(), 6);
+    assert_eq!(report.shares[0].element, "sky");
+    assert_eq!(report.settings, h.api.get_settings(id).expect("settings"));
+    let steps: Vec<FitProgress> = h
+        .events
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            AppEvent::FitProgress(p) => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert!(steps.iter().any(|p| p.step == FitStep::Search && p.of == 3));
+    // The bar never goes back within a fit: from the last scene event on, which began the second fit.
+    let from = steps
+        .iter()
+        .rposition(|p| p.step == FitStep::Scene)
+        .expect("a scene event");
+    let fractions: Vec<f64> = steps[from..].iter().map(|p| p.fraction.0).collect();
+    assert!(fractions.windows(2).all(|w| w[0] <= w[1]), "{fractions:?}");
+}
+
+#[test]
+fn a_fit_that_ends_leaves_the_entry_of_a_newer_fit_of_the_same_node_so_it_can_still_be_cancelled() {
+    let registry = FitRegistry::default();
+    let (first, second) = (CancelToken::new(), CancelToken::new());
+    let one = registry.start(4, 2, &first);
+    let two = registry.start(4, 2, &second);
+    assert_ne!(one, two);
+    // The first fit ends: it takes out its own entry, which the second has replaced, so nothing is removed.
+    registry.finish(4, 2, one);
+    registry.cancel(4, 2);
+    assert!(second.is_cancelled() && !first.is_cancelled());
+    // The second ends: now the node has none, and a cancel is nothing.
+    registry.finish(4, 2, two);
+    let third = CancelToken::new();
+    registry.cancel(4, 2);
+    assert!(!third.is_cancelled());
+    // A different node is its own.
+    let other = CancelToken::new();
+    let id = registry.start(4, 3, &other);
+    registry.cancel(4, 2);
+    assert!(!other.is_cancelled());
+    registry.finish(4, 3, id);
+}

@@ -1844,6 +1844,63 @@ export interface FaceState {
   message: string | null;
 }
 
+/** Where a held reference came from (`docs/34` §3.7): an image file the person chose, or another photo of the strip. */
+export type ReferenceKind = "file" | "photo";
+
+/**
+ * What the Reference tab shows of a reference the core holds for a node, for the session (`docs/34` §9.5; the answer of `reference_choose_file` and
+ * `reference_choose_photo`): a label ("harbour-dusk.jpg", "Photo 3 of 7"), the sentences of the notes (§9.3) and the address of a small PNG of it on the
+ * `ym-frame` scheme. The picture itself never crosses the bridge, and nothing here is saved.
+ */
+export interface ReferenceInfo {
+  photo_id: PhotoId;
+  node_id: number;
+  label: string;
+  source: ReferenceKind;
+  notes: string[];
+  grey: boolean;
+  thumbnail: string;
+}
+
+/** How a fit ended: it wrote a fit, found the photo already close (and wrote the identity), or was cancelled (and wrote nothing). */
+export type FitStatus = "fitted" | "already_close" | "cancelled";
+
+/** One element's share of the photo as the last fit found it (`docs/34` §9.4a): `element` is `sky`, `vegetation`, `water`, `ground`, `built` or `skin`. */
+export interface ElementShare {
+  element: string;
+  share: number;
+}
+
+/**
+ * What `fit_reference` answers (`docs/34` §9.5): how the fit ended, the notes (the fit's own, then the reference's), whether skin was found, the elements'
+ * shares of the photo and the photo's settings as they are now, from which the page records the one undo step of the fit.
+ */
+export interface FitReport {
+  photo_id: PhotoId;
+  node_id: number;
+  status: FitStatus;
+  notes: string[];
+  skin_found: boolean;
+  shares: ElementShare[];
+  settings: ResolvedSettings;
+}
+
+/** Which step a fit is at: finding what is in the two pictures, or a search. */
+export type FitStep = "scene" | "search";
+
+/**
+ * `fit_progress` (addition, `docs/34` §9.3): where a Reference Grade fit is. `search` and `of` are 0 and 3 while the scene is made, then 1 to 3 of 3;
+ * `fraction` is how far the fit is, 0 to 1, and never goes back.
+ */
+export interface FitProgress {
+  photo_id: PhotoId;
+  node_id: number;
+  step: FitStep;
+  search: number;
+  of: number;
+  fraction: number;
+}
+
 /**
  * `depth_state` (addition): the core's depth worker for a photo has ended (`docs/23` §4.8). `failed` is the plain sentence of the failure ("The Depth mask can't
  * be made: …") or `null` when the map is ready. The Depth rows with the eye on say "Finding…" while it runs (`viewport_busy.finding`); when it ends the photo is
@@ -2429,6 +2486,8 @@ export interface ApiEvents {
   depth_state: DepthState;
   /** The face worker started or ended its work for a photo, and where the faces are (`docs/27` S-11b: the Face Refinement node says "Finding faces…"). */
   face_state: FaceState;
+  /** A Reference Grade fit is under way (`docs/34` §9.3): the page shows the step and the bar. */
+  fit_progress: FitProgress;
   /** The computer is short of memory and background work is paused (the sentence), or it is not any more (`null`). */
   memory_notice: MemoryNotice;
   /** One of the system's display options changed (Reduce Transparency, Reduce Motion, Increase Contrast; macOS only). */

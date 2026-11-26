@@ -83,6 +83,7 @@ import type {
   ExportJobId,
   FaceBox,
   FaceState,
+  FitReport,
   FocusPlaneResult,
   ExportOptions,
   GradeValues,
@@ -119,6 +120,7 @@ import type {
   PhotoSummary,
   PixelSample,
   Preferences,
+  ReferenceInfo,
   PreferencesPatch,
   Recognition,
   RenderStats,
@@ -181,6 +183,7 @@ import {
 } from "./state/settingsGraph";
 import type { BlurItem, CardItem, ColorUniformItem, CorrectorItem, FaceRefinementItem, FilmItem, InputItem, MixerItem, ReferenceGradeItem } from "./state/settingsGraph";
 import { bytesToUrl } from "./state/photo";
+import { fixedFitPatch, MOCK_FIT_STEP_MS, MOCK_REFERENCE_TEXT, MOCK_SHARES, referenceFileOutcome, referenceLabelOf, referencePicture } from "./fixtures/reference";
 
 // ---------------------------------------------------------------------------
 // Fixture constants
@@ -701,6 +704,12 @@ export interface MockApi extends Api {
   queueChoice(kind: "import", answer: string[] | null): void;
   /** The answer of the next New Preset from Exported Photo… panel: a path, or `null`. */
   queueChoice(kind: "exported", answer: string | null): void;
+  /**
+   * The answer of the next Choose reference › Image file… panel: the path of the file, or `null` for a cancelled panel. The file's name stands in for its
+   * content: `damaged`, `tiny` and `empty` in it raise the errors of `docs/34` §9.3, `bars`, `profile` and `grey` add its notes, and a name that ends in
+   * `.heic` (or another format the core does not read) is not supported. Without an answer the panel chooses `~/Pictures/harbour-dusk.jpg`.
+   */
+  queueChoice(kind: "reference", answer: string | null): void;
   /** Add (or replace) a synthetic file the recogniser can find, by file name. */
   addSource(fileName: string, fixture: SourceFixture): void;
   /** Take a synthetic file away, as if it had been deleted or moved: it is `missing` from now on. */
@@ -1909,7 +1918,8 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     save: Array<string | null>;
     import: Array<string[] | null>;
     exported: Array<string | null>;
-  } = { folder: [], files: [], open: [], save: [], import: [], exported: [] };
+    reference: Array<string | null>;
+  } = { folder: [], files: [], open: [], save: [], import: [], exported: [], reference: [] };
   let menuState: MenuState | null = null;
   const system: MockSystemLog = { opened: [], revealed: [], trashed: [], restarts: 0 };
   let cliLink: string | null = null;
@@ -1945,6 +1955,10 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     if (options.faces === "missing") return { photo_id: id, phase: "models_missing", faces: [], message: FACES_MODELS_MISSING };
     return faceStates.get(id) ?? { photo_id: id, phase: "finding", faces: [], message: null };
   };
+  /** The reference the mock holds for each Reference Grade node (`photo:node`), as the core holds it for the session: a label, the notes and a picture. */
+  const references = new Map<string, ReferenceInfo>();
+  /** The fits under way (`photo:node`): the timer of the step it is at and how to end it, so that `cancel_fit` and a reset can stop it. */
+  const fits = new Map<string, { timer: ReturnType<typeof setTimeout> | null; cancelled: boolean; finish: (cancelled: boolean) => void }>();
   /** The photos whose Object features the mock has "made" (`object_state` says "preparing" for a moment, once for each photo). */
   const objectReady = new Set<PhotoId>();
   /** The encoder of the photos that are getting ready: when it ends, and what waits for it (`mask_find`). */
@@ -3420,6 +3434,12 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     for (const timer of depthTimers.values()) clearTimeout(timer);
     depthTimers.clear();
     depthWaiting.clear();
+    references.clear();
+    for (const fit of [...fits.values()]) {
+      if (fit.timer !== null) clearTimeout(fit.timer);
+      fit.finish(true);
+    }
+    fits.clear();
     objectReady.clear();
     for (const entry of objectEncoders.values()) clearTimeout(entry.timer);
     objectEncoders.clear();
@@ -3457,6 +3477,7 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     choices.save = [];
     choices.import = [];
     choices.exported = [];
+    choices.reference = [];
     menuState = null;
     system.opened = [];
     system.revealed = [];
@@ -3892,6 +3913,96 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
         return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
       }),
 
+    referenceChooseFile: (photoId, nodeId) =>
+      run("referenceChooseFile", (): ReferenceInfo | null => {
+        const rec = photo(photoId);
+        if (nodeOf(rec.settings, nodeId)?.kind !== "reference_grade") fail("render", `Node ${nodeId} is not a Reference Grade node.`);
+        const path = choices.reference.length > 0 ? choices.reference.shift() : "~/Pictures/harbour-dusk.jpg";
+        if (path === null || path === undefined) return null;
+        const outcome = referenceFileOutcome(path);
+        if ("error" in outcome) fail("render", outcome.error);
+        const info: ReferenceInfo = {
+          photo_id: photoId,
+          node_id: nodeId,
+          label: referenceLabelOf(path),
+          source: "file",
+          notes: outcome.notes,
+          grey: outcome.grey,
+          thumbnail: referencePicture(path),
+        };
+        references.set(`${photoId}:${nodeId}`, info);
+        return info;
+      }),
+    referenceChoosePhoto: (photoId, nodeId, otherId, label) =>
+      run("referenceChoosePhoto", (): ReferenceInfo => {
+        const rec = photo(photoId);
+        if (nodeOf(rec.settings, nodeId)?.kind !== "reference_grade") fail("render", `Node ${nodeId} is not a Reference Grade node.`);
+        if (otherId === photoId) fail("render", MOCK_REFERENCE_TEXT.samePhoto);
+        const other = photo(otherId);
+        if (other.phase < 3 || other.skipReason) fail("render", MOCK_REFERENCE_TEXT.notReady);
+        const info: ReferenceInfo = { photo_id: photoId, node_id: nodeId, label, source: "photo", notes: [], grey: false, thumbnail: referencePicture(other.scene.name) };
+        references.set(`${photoId}:${nodeId}`, info);
+        return info;
+      }),
+    fitReference: (photoId, nodeId) =>
+      runAsync("fitReference", (): Promise<FitReport> => {
+        const rec = photo(photoId);
+        if (nodeOf(rec.settings, nodeId)?.kind !== "reference_grade") fail("render", `Node ${nodeId} is not a Reference Grade node.`);
+        const key = `${photoId}:${nodeId}`;
+        if (!references.has(key)) fail("render", MOCK_REFERENCE_TEXT.noReference);
+        return new Promise<FitReport>((resolve) => {
+          const progress = (step: "scene" | "search", search: number): void =>
+            emit("fit_progress", { photo_id: photoId, node_id: nodeId, step, search, of: 3, fraction: step === "scene" ? 0.05 : search / 3 - 0.1 });
+          const finish = (cancelled: boolean): void => {
+            fits.delete(key);
+            if (cancelled) {
+              resolve({ photo_id: photoId, node_id: nodeId, status: "cancelled", notes: [], skin_found: false, shares: [], settings: resolveSettings(photoId, rec.settings, estimates()) });
+              return;
+            }
+            // The fixed fit, as one patch of the node's fitted fields; the node's other fields are left alone.
+            rec.settings = patched(rec, { nodes: { [String(nodeId)]: fixedFitPatch() } });
+            albumEdited();
+            emitSoon("render_stats", RENDER_STATS);
+            scheduleThumbnail(rec);
+            if (rec === photos[current]) sendFrame();
+            resolve({
+              photo_id: photoId,
+              node_id: nodeId,
+              status: "fitted",
+              notes: references.get(key)?.notes ?? [],
+              skin_found: true,
+              shares: MOCK_SHARES.map((e) => ({ ...e })),
+              settings: resolveSettings(photoId, rec.settings, estimates()),
+            });
+          };
+          const run4 = { timer: null as ReturnType<typeof setTimeout> | null, cancelled: false, finish };
+          fits.set(key, run4);
+          let step = 0;
+          const next = (): void => {
+            if (!fits.has(key)) return;
+            if (step > 3) {
+              finish(false);
+              return;
+            }
+            progress(step === 0 ? "scene" : "search", step);
+            step += 1;
+            run4.timer = setTimeout(next, MOCK_FIT_STEP_MS / options.speed);
+          };
+          next();
+        });
+      }),
+    cancelFit: (photoId, nodeId) =>
+      run("cancelFit", () => {
+        const fit = fits.get(`${photoId}:${nodeId}`);
+        if (!fit) return;
+        if (fit.timer !== null) clearTimeout(fit.timer);
+        fit.finish(true);
+      }),
+    clearReference: (photoId, nodeId) =>
+      run("clearReference", () => {
+        references.delete(`${photoId}:${nodeId}`);
+      }),
+
     lensList: () => run("lensList", () => (options.lensesMissing ? [] : MOCK_LENSES.map((lens) => ({ ...lens })))),
     looksList: () => run("looksList", () => looks),
     lookThumbnail: (photoId, lookId) =>
@@ -4295,11 +4406,12 @@ export function createMockApi(initial: MockOptions = {}): MockApi {
     get system() {
       return system;
     },
-    queueChoice(kind: "folder" | "files" | "open" | "save" | "import" | "exported", answer: string | string[] | null) {
+    queueChoice(kind: "folder" | "files" | "open" | "save" | "import" | "exported" | "reference", answer: string | string[] | null) {
       if (kind === "folder") choices.folder.push(answer as string | null);
       else if (kind === "save") choices.save.push(answer as string | null);
       else if (kind === "import") choices.import.push(answer as string[] | null);
       else if (kind === "exported") choices.exported.push(answer as string | null);
+      else if (kind === "reference") choices.reference.push(answer as string | null);
       else if (kind === "open") choices.open.push(answer as string[]);
       else choices.files.push(answer as string[] | null);
     },

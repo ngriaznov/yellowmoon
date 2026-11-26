@@ -11,6 +11,11 @@ export interface TabBarProps {
   label?: string;
   /** The tabs, in bar order: the seven of the simple view by default, a node's own in the node view (`NODE_TABS`). */
   tabs?: readonly TabId[];
+  /**
+   * `small` sets the labels at 12 px with 2 px each side, one point below the other nodes': a Reference Grade node has seven tabs and 40 letters in its 400 px
+   * panel (`docs/34` §9.1). The fix for a row that clips is the type size of the kind, never a shorter label.
+   */
+  size?: "default" | "small";
   className?: string;
 }
 
@@ -28,12 +33,12 @@ export interface TabBarProps {
  * stop" starts empty, and the root's redirect was what made the first Tab work), so the selected tab names its own `tabIndex` too: it is the
  * one stop from the start, whatever was clicked before.
  */
-export const TabBar = memo(function TabBar({ value, onChange, label = "Tool tabs", tabs = TAB_IDS, className }: TabBarProps) {
+export const TabBar = memo(function TabBar({ value, onChange, label = "Tool tabs", tabs = TAB_IDS, size = "default", className }: TabBarProps) {
   return (
     <Tabs value={value} onValueChange={(next) => onChange(next as TabId)} className="block">
       <TabsList variant="line" tabIndex={-1} aria-label={label} data-tab={value} className={cx("flex w-full", className)}>
         {tabs.map((id) => (
-          <TabsTrigger key={id} value={id} id={tabDomId(id)} tabIndex={id === value ? 0 : -1} aria-controls={tabPanelDomId(id)} data-tab={id} className="px-1 text-[0.8125rem]">
+          <TabsTrigger key={id} value={id} id={tabDomId(id)} tabIndex={id === value ? 0 : -1} aria-controls={tabPanelDomId(id)} data-tab={id} className={size === "small" ? "text-xs group-data-[variant=line]/tabs-list:px-0.5!" : "px-1 text-[0.8125rem]"}>
             {tabInfo(id).label}
           </TabsTrigger>
         ))}

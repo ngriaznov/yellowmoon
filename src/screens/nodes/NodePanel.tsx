@@ -101,7 +101,7 @@ export function NodePanel({ store, photo, rs, node, tab, onTab, graph, pickingWh
         line={item.kind === "face_refinement" ? facesLine(faces) : undefined}
         more={more}
       />
-      <TabBar value={tab} onChange={onTab} tabs={NODE_TABS[panelKindOf(item.kind)]} />
+      <TabBar value={tab} onChange={onTab} tabs={NODE_TABS[panelKindOf(item.kind)]} size={item.kind === "reference_grade" ? "small" : "default"} />
       <div className="ym-tools__scroll" {...tabPanelProps(tab)}>
         <NodeTab
           key={String(node)}

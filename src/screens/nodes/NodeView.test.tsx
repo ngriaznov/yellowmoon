@@ -284,14 +284,14 @@ describe("layout A", () => {
 });
 
 describe("the Add node menu", () => {
-  it("opens upward from the button: Corrector, Film, Face Refinement, Colour Uniform, Blur, then Parallel, Layer and Splitter and combiner, all on, each with its line", async () => {
+  it("opens upward from the button: Corrector, Film, Face Refinement, Colour Uniform, Blur, Reference Grade, then Parallel, Layer and Splitter and combiner, all on, each with its line", async () => {
     await setup();
     await openNodeView();
     await h!.user.click(within(graph()).getByRole("button", { name: "Add node" }));
     const menu = await screen.findByRole("menu", { name: "Add node" });
     expect(menu).toHaveAttribute("data-side", "top");
     const items = within(menu).getAllByRole("menuitem");
-    expect(items.map((i) => i.querySelector(".ym-menu-line__name")?.textContent)).toEqual(["Corrector", "Film", "Face Refinement", "Colour Uniform", "Blur", "Parallel", "Layer", "Splitter and combiner"]);
+    expect(items.map((i) => i.querySelector(".ym-menu-line__name")?.textContent)).toEqual(["Corrector", "Film", "Face Refinement", "Colour Uniform", "Blur", "Reference Grade", "Parallel", "Layer", "Splitter and combiner"]);
     expect(within(items[0]!).getByText("Grades all or part of the photo.")).toBeInTheDocument();
     expect(within(items[1]!).getByText("Models a colour negative, a print and a scan.")).toBeInTheDocument();
     expect(items[1]).not.toHaveAttribute("aria-disabled");
@@ -299,9 +299,10 @@ describe("the Add node menu", () => {
     // The three items of `docs/25` are on, with their lines, and no "Later" tag.
     expect(within(items[3]!).getByText("Pulls colours toward one colour.")).toBeInTheDocument();
     expect(within(items[4]!).getByText("Soft, lens, motion or zoom blur.")).toBeInTheDocument();
-    expect(within(items[5]!).getByText("Grade branches side by side.")).toBeInTheDocument();
-    expect(within(items[6]!).getByText("Blend one branch over another.")).toBeInTheDocument();
-    expect(within(items[7]!).getByText("Split a picture, then join it again.")).toBeInTheDocument();
+    expect(within(items[5]!).getByText("Matches the grade of a reference picture.")).toBeInTheDocument();
+    expect(within(items[6]!).getByText("Grade branches side by side.")).toBeInTheDocument();
+    expect(within(items[7]!).getByText("Blend one branch over another.")).toBeInTheDocument();
+    expect(within(items[8]!).getByText("Split a picture, then join it again.")).toBeInTheDocument();
     for (const item of items) {
       expect(item).not.toHaveAttribute("aria-disabled");
       expect(within(item).queryByText("Later")).toBeNull();

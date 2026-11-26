@@ -29,6 +29,9 @@ import { FilmCard, GrainTab, HalationTab, PrintTab } from "./FilmTabs";
 import { MaskTab } from "./MaskTab";
 import { BlurTab } from "./BlurTab";
 import { UniformTab } from "./UniformTab";
+import { ElementsTab } from "./ElementsTab";
+import { HueTab } from "./HueTab";
+import { ReferenceTab } from "./ReferenceTab";
 import { ChannelsTab, LayerBlendTab, ParallelInputsTab } from "./MixerTabs";
 import type { NodeGraphActions } from "./useNodeGraph";
 
@@ -268,6 +271,26 @@ export function NodeTab({ store, photo, rs, node, tab, pickingWhite, onPickWhite
         return <CorrectorCurveTab store={store} photo={photo} rs={rs} node={node} />;
       default:
         return <UniformTab store={store} rs={rs} node={node} item={item} picking={pickingUniform} onPick={onPickUniform ?? (() => undefined)} />;
+    }
+  }
+  if (item?.kind === "reference_grade" && typeof node === "number") {
+    // Reference, Hue and Elements are the node's own; Light, Colour and Curve are a corrector's tabs, the same components on this node's trim and grade
+    // (`docs/34` §9.1), and Mask is a corrector's.
+    switch (tab) {
+      case "mask":
+        return <MaskTab store={store} rs={rs} node={node} pickingRange={pickingRange} onPickRange={onPickRange} pickingDepth={pickingDepth} onPickDepth={onPickDepth} />;
+      case "light":
+        return <CorrectorLightTab store={store} photo={photo} rs={rs} node={node} />;
+      case "color":
+        return <CorrectorColourTab store={store} photo={photo} rs={rs} node={node} pickingColor={pickingColor} onPickColor={onPickColor} />;
+      case "curve":
+        return <CorrectorCurveTab store={store} photo={photo} rs={rs} node={node} />;
+      case "hue":
+        return <HueTab store={store} rs={rs} node={node} item={item} />;
+      case "elements":
+        return <ElementsTab store={store} rs={rs} node={node} item={item} />;
+      default:
+        return <ReferenceTab store={store} rs={rs} node={node} item={item} />;
     }
   }
   if (item?.kind === "blur") {

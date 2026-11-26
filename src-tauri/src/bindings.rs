@@ -91,6 +91,7 @@ mod tests {
             "vision_state",
             "depth_state",
             "face_state",
+            "fit_progress",
             "display_options",
         ] {
             assert!(

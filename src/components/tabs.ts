@@ -9,10 +9,10 @@
 import type { NodeKind } from "../api/types";
 
 /** Tab ids. American spelling in identifiers; the label reads "Colour". `mask` is the corrector's Mask tab of the node view (`docs/23` §7.6). */
-export type TabId = "look" | "lens" | "light" | "color" | "detail" | "curve" | "raw" | "mask" | "film" | "face" | "print" | "halation" | "grain" | "inputs" | "blend" | "channels" | "compress" | "blur";
+export type TabId = "look" | "lens" | "light" | "color" | "detail" | "curve" | "raw" | "mask" | "film" | "face" | "print" | "halation" | "grain" | "inputs" | "blend" | "channels" | "compress" | "blur" | "reference" | "hue" | "elements";
 
 /** The tabs that only the node view has: the Mask tab, a Film node's four and the one tab of each of the nodes of `docs/25`. */
-export type NodeOnlyTabId = "mask" | "film" | "face" | "print" | "halation" | "grain" | "inputs" | "blend" | "channels" | "compress" | "blur";
+export type NodeOnlyTabId = "mask" | "film" | "face" | "print" | "halation" | "grain" | "inputs" | "blend" | "channels" | "compress" | "blur" | "reference" | "hue" | "elements";
 
 /** One tab: its id, the caps label and the blurb under the title (`design/mockups/photos.html`). */
 export interface TabInfo {
@@ -60,6 +60,16 @@ export const COMPRESS_TAB: TabInfo = { id: "compress", label: "Compress", blurb:
 /** The Blur tab of a Blur node (`docs/33` §2.6): the Detail tab's colour, as blur is detail. */
 export const BLUR_TAB: TabInfo = { id: "blur", label: "Blur", blurb: "Softens the photo, or the part the mask lets through." };
 
+/**
+ * The three tabs a Reference Grade node has of its own (`docs/34` §9.1): Reference takes the Look tab's yellow (the fit is the node's look), Hue and
+ * Elements the Colour tab's green. Light, Colour, Curve and Mask are a corrector's.
+ */
+export const REFERENCE_TABS: Readonly<Record<"reference" | "hue" | "elements", TabInfo>> = {
+  reference: { id: "reference", label: "Reference", blurb: "The picture to match, and the fit." },
+  hue: { id: "hue", label: "Hue", blurb: "Turns and scales each hue." },
+  elements: { id: "elements", label: "Elements", blurb: "Grades the sky, the foliage, the ground and the rest on their own." },
+};
+
 /** The one tab of a Parallel (Inputs), a Layer (Blend), a Splitter and a Combiner (Channels; `docs/25` §5.5): they take the Look tab's yellow. */
 export const MIXER_TABS: Readonly<Record<"inputs" | "blend" | "channels", TabInfo>> = {
   inputs: { id: "inputs", label: "Inputs", blurb: "Adds the change each input makes to the picture they start from." },
@@ -90,8 +100,8 @@ export const NODE_TABS: Readonly<Record<PanelKind, readonly TabId[]>> = {
   face_refinement: ["face", "mask"],
   color_uniform: ["compress", "light", "color", "curve", "mask"],
   blur: ["blur", "mask"],
-  // RG-12 gives the node its Reference, Hue and Elements tabs (`docs/34` §9.1); until then it has the corrector's four, which edit its trim and grade.
-  reference_grade: ["light", "color", "curve", "mask"],
+  // The Reference, Hue and Elements tabs are the node's own; Light, Colour, Curve and Mask are a corrector's, on its trim and grade (`docs/34` §9.1).
+  reference_grade: ["reference", "light", "color", "curve", "hue", "elements", "mask"],
   output: ["look", "detail"],
   parallel: ["inputs"],
   layer: ["blend"],
@@ -112,7 +122,7 @@ export const FIRST_NODE_TAB: Readonly<Record<PanelKind, TabId>> = {
   face_refinement: "face",
   color_uniform: "compress",
   blur: "blur",
-  reference_grade: "light",
+  reference_grade: "reference",
 };
 
 /**
@@ -132,7 +142,7 @@ export const NODE_FOR_SIMPLE_TAB: Readonly<Record<Exclude<TabId, NodeOnlyTabId>,
 
 /** The simple view's tab that stands for `tab`: itself when it is one of the seven, Light for the node view's own (Mask, a Film node's and the mixers'). */
 export function simpleTabOf(tab: TabId): Exclude<TabId, NodeOnlyTabId> {
-  return tab === "mask" || tab === "film" || tab === "face" || tab === "print" || tab === "halation" || tab === "grain" || tab === "inputs" || tab === "blend" || tab === "channels" || tab === "compress" || tab === "blur" ? "light" : tab;
+  return tab === "mask" || tab === "film" || tab === "face" || tab === "print" || tab === "halation" || tab === "grain" || tab === "inputs" || tab === "blend" || tab === "channels" || tab === "compress" || tab === "blur" || tab === "reference" || tab === "hue" || tab === "elements" ? "light" : tab;
 }
 
 /** The tab info for an id. */
@@ -140,7 +150,9 @@ export function tabInfo(id: TabId): TabInfo {
   const info =
     id === "mask"
       ? MASK_TAB
-      : id === "blur"
+      : id === "reference" || id === "hue" || id === "elements"
+        ? REFERENCE_TABS[id]
+        : id === "blur"
         ? BLUR_TAB
         : id === "compress"
         ? COMPRESS_TAB

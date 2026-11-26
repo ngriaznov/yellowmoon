@@ -78,6 +78,7 @@ import type {
   ObjectState,
   DepthState,
   FaceState,
+  FitProgress,
   VisionState,
   OpenProgress,
   OpenSummary,
@@ -91,6 +92,7 @@ import type {
   PixelSample,
   Preferences,
   PreferencesPatch,
+  ReferenceInfo,
   RenderStats,
   ResolvedCorrector,
   ResolvedInput,
@@ -123,6 +125,8 @@ import { applyProgress, startRun } from "../export/run";
 import { templateProblem } from "../export/template";
 import type { ExportRun } from "../export/run";
 import { diffSettings, PhotoHistory } from "./history";
+import { cardKey, EMPTY_CARD, fittedKey, lookKey, REFERENCE_TEXT } from "./reference";
+import type { FitRun, ReferenceCard } from "./reference";
 import type { HistoryEntry } from "./history";
 import { perfCount } from "../perf";
 import { stampTick } from "../perfTimeline";
@@ -375,6 +379,17 @@ export interface AppState {
    */
   uniformGrey: { photo: PhotoId; node: number; target: TargetValue } | null;
   /**
+   * What the page knows of each Reference Grade node's reference and fit, for the session (`docs/34` §3.7): the reference the core holds (its label, notes and
+   * small picture), a fit under way, the last fit's status, the look it was made under and the numbers it wrote (so that the status line can say the look changed
+   * or the numbers were edited), and the last error. Keyed by `cardKey` (photo and node). Never saved, never in the settings; the next session starts with none.
+   */
+  references: Record<string, ReferenceCard>;
+  /**
+   * The strip is a chooser for this node's reference (`docs/34` §9.2, §6.4): the filmstrip takes the graph's place and a click on a photo chooses it; Esc or
+   * choosing ends it. The window's, like a pick: nothing about it is undone or saved.
+   */
+  choosing: { photo: PhotoId; node: number } | null;
+  /**
    * The selected mask row of the node the node view is on (`docs/23` §7.6): an index into that node's `masks.items`, or null. It belongs to
    * the window, like `warpPin`: nothing about it is undone or copied, another node or photo starts with none, and an index past the end
    * counts as none. Its handles show on the photo, whatever tab the panel is on.
@@ -543,6 +558,8 @@ export function initialState(): AppState {
     chromaScatter: null,
     warpPin: null,
     uniformGrey: null,
+    references: {},
+    choosing: null,
     maskRow: null,
     brush: DEFAULT_BRUSH,
     brushTool: false,
@@ -656,7 +673,7 @@ export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): Resolve
       change(id, () => (next?.stored ?? stored) as CorrectorItem);
       values = { ...values, main: (next?.resolved ?? resolved) as ResolvedCorrector };
       if (next) auto = { ...auto, main: next.auto };
-    } else if (typeof id === "number" && nodeOf(settings, id)?.kind === "corrector") {
+    } else if (typeof id === "number" && (nodeOf(settings, id)?.kind === "corrector" || nodeOf(settings, id)?.kind === "reference_grade")) {
       // Another corrector (the node view's cards and panel): the fields that need no resolving, so that a card dropped where it was
       // moved, a name typed, a bypass pressed and a slider of its panel show at once. Its grade is plain numbers, with no Auto to
       // resolve (`docs/23` §3.2: Auto in a corrector other than Main is a manual 0), so it is direct too, and so are its masks (a row
@@ -667,6 +684,13 @@ export function applyDirect(rs: ResolvedSettings, patch: SettingsPatch): Resolve
       const next = node.grade && have ? directGrade(stored as CorrectorItem, resolved as ResolvedCorrector, withoutAuto(node.grade), NO_ESTIMATES, NO_FLAGS) : null;
       change(id, () => (next?.stored ?? stored) as CorrectorItem);
       if (have) values = { ...values, nodes: values.nodes.map((n) => (n.id === id ? ((next?.resolved ?? resolved) as ResolvedCorrector) : n)) };
+      // A Reference Grade node is a corrector's trim and grade and four fields of its own (`docs/34` §3.1), which are plain numbers too: the hue curves,
+      // the element grades, Strength and Skin protection fold in at once, as the core will.
+      if (nodeOf(settings, id)?.kind === "reference_grade") {
+        const { hue_curves, elements, strength, skin_protection } = node;
+        const own = { ...(hue_curves ? { hue_curves } : {}), ...(elements ? { elements } : {}), ...(strength !== undefined ? { strength } : {}), ...(skin_protection !== undefined ? { skin_protection } : {}) };
+        if (Object.keys(own).length > 0) settings = applyPatch(settings, { nodes: { [key]: own } });
+      }
     } else if (typeof id === "number" && (nodeOf(settings, id)?.kind === "film" || nodeOf(settings, id)?.kind === "face_refinement" || nodeOf(settings, id)?.kind === "blur")) {
       // A Film node (`docs/24`), a Face Refinement node (`docs/27`) or a Blur node (`docs/33`): its fields are plain numbers and ids, so the page folds the patch in at once, as the core will.
       settings = applyPatch(settings, { nodes: { [key]: node } });
@@ -1044,6 +1068,7 @@ export class AppStore {
       api.on("vision_state", (e) => this.onVisionState(e)),
       api.on("depth_state", (e) => this.onDepthState(e)),
       api.on("face_state", (e) => this.onFaceState(e)),
+      api.on("fit_progress", (e) => this.onFitProgress(e)),
       // The core says it once per stay at the critical level; Dismiss hides it until the core says it again.
       api.on("memory_notice", (e) => this.set({ memoryNotice: e.message })),
       // The system's Reduce Transparency, Reduce Motion and Increase Contrast become attributes of the root (`docs/28` A-P12).
@@ -4148,6 +4173,175 @@ export class AppStore {
     if (this.histogramWatchers > 0) void this.requestHistogram();
     if (this.readoutWatchers > 0) void this.refreshMiddleReadout();
     if (this.scatterWatchers > 0) void this.requestChromaScatter();
+  }
+
+  // --- Reference Grade (`docs/34` §9.2, §9.3, §9.5) ------------------------------------------------
+
+  /** Changes one node's card: what `change` returns replaces it. A card that is empty again is dropped. */
+  private setCard(photo: PhotoId, node: number, change: (card: ReferenceCard) => ReferenceCard): void {
+    const key = cardKey(photo, node);
+    const next = change(this.state.references[key] ?? EMPTY_CARD);
+    this.set({ references: { ...this.state.references, [key]: next } });
+  }
+
+  /** `fit_progress`: the step the fit is at. A late event of a fit that has ended is ignored. */
+  private onFitProgress(e: FitProgress): void {
+    if (!this.state.references[cardKey(e.photo_id, e.node_id)]?.fit) return;
+    const run: FitRun = e.step === "scene" ? { step: "scene" } : { step: "search", search: e.search, of: e.of, fraction: e.fraction };
+    this.setCard(e.photo_id, e.node_id, (card) => ({ ...card, fit: run }));
+  }
+
+  /** Whether the node of the photo has a Reference Grade node by this id (an undo may have taken it away). */
+  private referenceNode(photo: PhotoId, node: number): boolean {
+    const rs = this.state.settings[photo];
+    return rs !== undefined && nodeOf(rs.settings, node)?.kind === "reference_grade";
+  }
+
+  /** The sentence an error of a Reference Grade command carries (the card shows it as a notice, with no code). */
+  private referenceError(error: unknown): string {
+    return typeof error === "object" && error !== null && "message" in error && typeof (error as { message: unknown }).message === "string"
+      ? (error as { message: string }).message
+      : REFERENCE_TEXT.fitFailed;
+  }
+
+  /** The reference the core holds for the node, as the card shows it, with what the last choosing left cleared: the last fit, the error. */
+  private referenceChosen(photo: PhotoId, node: number, info: ReferenceInfo): void {
+    this.setCard(photo, node, (card) => ({ ...card, info, result: null, error: null }));
+  }
+
+  /**
+   * Choose reference… › Image file… (`docs/34` §9.2): the system's open panel, then the file as the node's reference. Nothing happens when the panel is
+   * cancelled. A file that cannot be used puts its sentence in the card (the reference the node already had stays).
+   */
+  async chooseReferenceFile(node: number): Promise<void> {
+    const photo = this.currentId();
+    if (photo === null || !this.referenceNode(photo, node)) return;
+    try {
+      const info = await this.api.referenceChooseFile(photo, node);
+      if (info) this.referenceChosen(photo, node, info);
+    } catch (error) {
+      this.setCard(photo, node, (card) => ({ ...card, error: this.referenceError(error) }));
+    }
+  }
+
+  /** Choose reference… › Photo in the strip: the filmstrip takes the graph's place until a photo is chosen or Esc is pressed (`docs/34` §9.2). */
+  startChoosingReference(node: number): void {
+    const photo = this.currentId();
+    if (photo === null || !this.referenceNode(photo, node)) return;
+    this.set({ choosing: { photo, node } });
+  }
+
+  /** Esc, a choice, another photo or another node ends the chooser. Reports whether it was on. */
+  stopChoosingReference(): boolean {
+    if (this.state.choosing === null) return false;
+    this.set({ choosing: null });
+    return true;
+  }
+
+  /**
+   * A photo of the strip as the node's reference (`docs/34` §6.4): the core renders it through its own settings and holds the snapshot. The label is its place
+   * in the strip ("Photo 3 of 7"). The chooser ends; the photo being graded refuses itself with the card's sentence.
+   */
+  async chooseReferencePhoto(other: PhotoId): Promise<void> {
+    const choosing = this.state.choosing;
+    if (choosing === null) return;
+    const { photo, node } = choosing;
+    this.set({ choosing: null });
+    const photos = this.state.session?.photos ?? [];
+    const place = photos.findIndex((p) => p.id === other);
+    const label = `Photo ${place + 1} of ${photos.length}`;
+    try {
+      const info = await this.api.referenceChoosePhoto(photo, node, other, label);
+      this.referenceChosen(photo, node, info);
+    } catch (error) {
+      this.setCard(photo, node, (card) => ({ ...card, error: this.referenceError(error) }));
+    }
+  }
+
+  /**
+   * Fit (and Fit again): fits the node to its reference (`docs/34` §5, §3.3). The card shows the step while it runs; the photo does not change until the fit is
+   * done, and a cancel changes nothing. The result is one patch of the fitted fields, which is one undo step; the page keeps the look and the numbers of the
+   * fit so that the status line can say when either has changed. Patches still on their way land first.
+   */
+  async fitReference(node: number): Promise<void> {
+    const photo = this.currentId();
+    if (photo === null || !this.referenceNode(photo, node) || this.state.references[cardKey(photo, node)]?.fit) return;
+    this.setCard(photo, node, (card) => ({ ...card, fit: { step: "scene" }, error: null }));
+    await this.whenIdle(photo);
+    // The fit is made under the Output's look as it is now: a look that changes while it runs makes the fit stale at once (`docs/34` §2.2).
+    const started = this.state.settings[photo];
+    if (!started) {
+      this.setCard(photo, node, (card) => ({ ...card, fit: null }));
+      return;
+    }
+    const startLook = lookKey(started.settings);
+    try {
+      const report = await this.api.fitReference(photo, node);
+      if (report.status === "cancelled") {
+        this.setCard(photo, node, (card) => ({ ...card, fit: null }));
+        return;
+      }
+      // A fit takes seconds and the panel stays live: Strength, a trim or another node may have changed meanwhile, each with its own undo step. The step of the
+      // fit is the difference between the settings the page holds when the result lands (patches on their way included) and the result, so it holds only
+      // what the fit wrote.
+      await this.whenIdle(photo);
+      const before = this.state.settings[photo]?.settings;
+      if (before) {
+        const entry = diffSettings(before, report.settings.settings);
+        if (entry) this.historyOf(photo).push(entry);
+      }
+      this.setSettings(photo, report.settings);
+      const item = nodeOf(report.settings.settings, node);
+      this.setCard(photo, node, (card) => ({
+        ...card,
+        fit: null,
+        sceneMissing: false,
+        result: {
+          status: report.status === "already_close" ? "already_close" : "fitted",
+          look: startLook,
+          fitted: item?.kind === "reference_grade" ? fittedKey(item) : "",
+          notes: report.notes,
+          shares: report.shares,
+        },
+      }));
+      this.syncHistoryFlags();
+    } catch (error) {
+      const message = this.referenceError(error);
+      this.setCard(photo, node, (card) => ({ ...card, fit: null, error: message, sceneMissing: card.sceneMissing || message === REFERENCE_TEXT.sceneMissing }));
+    }
+  }
+
+  /** Cancel (Esc) while a fit runs: the core stops between candidates and the fit resolves cancelled, with nothing changed. Reports whether a fit was running. */
+  cancelReferenceFit(): boolean {
+    const photo = this.currentId();
+    if (photo === null) return false;
+    const running = Object.entries(this.state.references).find(([key, card]) => card.fit && key.startsWith(`${photo}:`));
+    if (!running) return false;
+    const node = Number(running[0].slice(String(photo).length + 1));
+    void this.api.cancelFit(photo, node).catch((error) => this.fail(error));
+    return true;
+  }
+
+  /** Lets the core go of the node's reference; the node's numbers stay as they are (`clear_reference`, `docs/34` §9.5). */
+  async clearReference(node: number): Promise<void> {
+    const photo = this.currentId();
+    if (photo === null) return;
+    try {
+      await this.api.clearReference(photo, node);
+      this.setCard(photo, node, (card) => ({ ...card, info: null, result: null, error: null }));
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /** The card of the node of the current photo, or undefined. */
+  referenceCardOf(photo: PhotoId, node: number): ReferenceCard | undefined {
+    return this.state.references[cardKey(photo, node)];
+  }
+
+  /** Clears the card's error (the notice has a way to be dismissed by choosing again; nothing else clears it but the next choice or fit). */
+  dismissReferenceError(photo: PhotoId, node: number): void {
+    this.setCard(photo, node, (card) => ({ ...card, error: null }));
   }
 
   // --- Undo and redo ------------------------------------------------------------------------

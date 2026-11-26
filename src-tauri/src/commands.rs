@@ -18,13 +18,14 @@ use crate::system;
 use crate::wire::{
     self, AlbumSaved, AlbumState, AppError, AppInfo, ApplyScope, AutoStatus, ChromaSample,
     ChromaScatter, ChromaTap, CliLinkResult, CliLinkStatus, CropAspect, CropSuggestion, DepthFar,
-    ErrorScope, ExportEstimate, ExportJob, ExportJobId, FaceState, FilmCatalogue, FocusPlaneResult,
-    HistogramData, ImportResult, LensInfo, Look, LookId, LookInput, LooksImportResult, MapFrom,
-    MaskFindPrompt, MaskFindResult, MaskKind, MaskView, MenuState, NodeId, Num, OpenKind,
-    Orientation, PasteReport, PhotoId, PixelSample, Preferences, PreferencesPatch,
-    PresetApplyReport, PresetEntry, PresetExported, PresetGroup, PresetInspect, PresetList,
-    PresetSource, ResolvedSettings, SessionChange, SessionState, SettingsPatch, SourceRecognition,
-    ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode, ViewportRect, WatchStatus,
+    ErrorScope, ExportEstimate, ExportJob, ExportJobId, FaceState, FilmCatalogue, FitReport,
+    FocusPlaneResult, HistogramData, ImportResult, LensInfo, Look, LookId, LookInput,
+    LooksImportResult, MapFrom, MaskFindPrompt, MaskFindResult, MaskKind, MaskView, MenuState,
+    NodeId, Num, OpenKind, Orientation, PasteReport, PhotoId, PixelSample, Preferences,
+    PreferencesPatch, PresetApplyReport, PresetEntry, PresetExported, PresetGroup, PresetInspect,
+    PresetList, PresetSource, ReferenceInfo, ResolvedSettings, SessionChange, SessionState,
+    SettingsPatch, SourceRecognition, ThumbnailReady, ViewportInfo, ViewportInput, ViewportMode,
+    ViewportRect, WatchStatus,
 };
 
 /// The managed state: the command handlers, or why the application could not start.
@@ -516,6 +517,96 @@ pub async fn face_state(
     photo_id: PhotoId,
 ) -> Result<FaceState, AppError> {
     run(&state, move |api| api.face_state(photo_id)).await
+}
+
+// --- Reference Grade (`docs/34` section 9.5) ----------------------------------------------------
+
+/// `reference_choose_file(photo_id, node_id)`: the system's open panel for a picture (JPEG, PNG or TIFF), then the file as the node's
+/// reference. `null` when the panel is cancelled. The file is only read; the core holds the reduced pictures for the session. A file
+/// that cannot be used is an error whose message is the sentence of `docs/34` section 9.3.
+#[tauri::command]
+#[specta::specta]
+pub async fn reference_choose_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+    node_id: u32,
+) -> Result<Option<ReferenceInfo>, AppError> {
+    run(&state, move |api| {
+        let picked = app
+            .dialog()
+            .file()
+            .set_title("Choose a reference picture")
+            .add_filter("Pictures", &["jpg", "jpeg", "png", "tif", "tiff"])
+            .blocking_pick_file()
+            .and_then(|p| p.into_path().ok());
+        match picked {
+            Some(path) => api
+                .reference_choose_path(photo_id, node_id, &path, None)
+                .map(Some),
+            None => Ok(None),
+        }
+    })
+    .await
+}
+
+/// `reference_choose_photo(photo_id, node_id, other_id, label)`: another photo of the session as the node's reference, rendered through
+/// its own settings. `label` is what the card says under the thumbnail ("Photo 3 of 7").
+#[tauri::command]
+#[specta::specta]
+pub async fn reference_choose_photo(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+    node_id: u32,
+    other_id: PhotoId,
+    label: String,
+) -> Result<ReferenceInfo, AppError> {
+    run(&state, move |api| {
+        api.reference_choose_photo(photo_id, node_id, other_id, &label)
+    })
+    .await
+}
+
+/// `fit_reference(photo_id, node_id)`: fits the node to its reference and writes the result as one patch. It answers when the fit ends
+/// (several seconds); `fit_progress` events say where it is. A cancel answers `cancelled` with the settings unchanged.
+#[tauri::command]
+#[specta::specta]
+pub async fn fit_reference(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+    node_id: u32,
+) -> Result<FitReport, AppError> {
+    run(&state, move |api| api.fit_reference(photo_id, node_id)).await
+}
+
+/// `cancel_fit(photo_id, node_id)`: stops the node's fit between candidates; the fit then answers `cancelled`.
+#[tauri::command]
+#[specta::specta]
+pub async fn cancel_fit(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+    node_id: u32,
+) -> Result<(), AppError> {
+    run(&state, move |api| {
+        api.cancel_fit(photo_id, node_id);
+        Ok(())
+    })
+    .await
+}
+
+/// `clear_reference(photo_id, node_id)`: lets go of the node's reference. The node's numbers stay as they are.
+#[tauri::command]
+#[specta::specta]
+pub async fn clear_reference(
+    state: State<'_, AppState>,
+    photo_id: PhotoId,
+    node_id: u32,
+) -> Result<(), AppError> {
+    run(&state, move |api| {
+        api.clear_reference(photo_id, node_id);
+        Ok(())
+    })
+    .await
 }
 
 /// `face_crop(photo_id, number)` (`docs/27` S-11c): the picture of face `number` (1-based) for the Faces card. The answer is the address
@@ -1128,6 +1219,11 @@ pub fn builder() -> Builder<tauri::Wry> {
             retry_depth,
             face_state,
             face_crop,
+            reference_choose_file,
+            reference_choose_photo,
+            fit_reference,
+            cancel_fit,
+            clear_reference,
             lens_list,
             looks_list,
             look_thumbnail,
@@ -1202,6 +1298,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             wire::VisionState,
             wire::DepthState,
             wire::FaceState,
+            wire::FitProgress,
             wire::MemoryNotice,
             wire::DisplayOptions,
         ])

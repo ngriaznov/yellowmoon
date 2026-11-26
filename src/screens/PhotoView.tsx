@@ -25,6 +25,7 @@ import type { MaskHandlesTarget } from "./nodes/MaskHandles";
 import { PickLayer } from "./PickLayer";
 import type { PickMode } from "./PickLayer";
 import { PickDepthHint } from "./PickDepthHint";
+import { PickReferenceHint } from "./PickReferenceHint";
 import { PickWhiteHint } from "./PickWhiteHint";
 import { previewUrl } from "./preview";
 import { RenderingNote } from "./RenderingNote";
@@ -272,6 +273,7 @@ export const PhotoView = memo(function PhotoView({ store, photo, rs, lookName, b
         <>
           {picking === "white" ? <PickWhiteHint /> : null}
           {picking === "depth" ? <PickDepthHint /> : null}
+          <PickReferenceHint />
           <ObjectPill />
           <RenderingNote />
         </>
