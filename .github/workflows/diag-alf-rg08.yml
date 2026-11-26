@@ -32,7 +32,7 @@ jobs:
     env:
       YM_REQUIRE_GPU: "1"
       MAIN_REV: 87bf9afe155e29589ac74057842e4420b34015f2
-      RG_REV: f84e41f9cf35b9d324f94bbafbd650c439e1880c
+      RG_REV: 9e3d1f229750cdc0051e9bb7bd8d87c39a3005c0
       WGPU_BACKEND: vulkan
     steps:
       - uses: actions/checkout@v4
