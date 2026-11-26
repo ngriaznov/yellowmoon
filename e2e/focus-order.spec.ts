@@ -60,6 +60,11 @@ const STATE_NAMES = [
   "95-blur-motion",
   "96-blur-zoom",
   "97-blur-zoom-pick",
+  "98-reference-empty",
+  "99-reference-fitted",
+  "100-reference-chooser",
+  "101-reference-hue",
+  "102-reference-elements",
   "05-wizard-1-choose",
   "09-wizard-5-finish",
 ] as const;

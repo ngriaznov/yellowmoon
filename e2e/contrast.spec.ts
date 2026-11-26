@@ -69,6 +69,7 @@ const STATE_NAMES = [
   "78-mixers-parallel-inputs", "19-pixel-readout", "18-before-on", "85-presets-card", "86-dialog-save-preset", "87-dialog-replace-preset", "88-album-edited",
   "89-dialog-album-question", "90-uniform-compress", "91-uniform-pick-empty", "92-uniform-mask-tab",
   "93-blur-soft", "94-blur-lens", "95-blur-motion", "96-blur-zoom", "97-blur-zoom-pick",
+  "98-reference-empty", "99-reference-fitted", "100-reference-chooser", "101-reference-hue", "102-reference-elements",
 ] as const;
 const FIT_MENU = "fit-menu";
 const TOOLTIP = "tooltip";

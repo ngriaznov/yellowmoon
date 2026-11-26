@@ -413,6 +413,99 @@ export async function blurView(page: Page, opts: { type?: "soft" | "lens" | "mot
   await page.waitForTimeout(500);
 }
 
+/** The six hues of a fit's knots and the values of the fixed fit of the mock (`src/fixtures/reference.ts`), for the pages that start with one written. */
+export const REFERENCE_FITTED = {
+  hue_curves: {
+    hue_vs_hue: [0, 60, 120, 180, 240, 300].map((hue_deg, i) => ({ hue_deg, value: [-4, 6, 12, 4, -3, 2][i] })),
+    hue_vs_sat: [0, 60, 120, 180, 240, 300].map((hue_deg, i) => ({ hue_deg, value: [1.05, 1.08, 0.85, 1.12, 1.06, 0.92][i] })),
+  },
+  elements: {
+    sky: { exposure_ev: -0.45, hue_deg: -14, chroma: 1.25 },
+    vegetation: { exposure_ev: -0.25, hue_deg: 20, chroma: 0.75 },
+    ground: { exposure_ev: 0.1, hue_deg: -6, chroma: 1.1 },
+    skin: { exposure_ev: 0, hue_deg: 3, chroma: 0.95 },
+    subject: { exposure_ev: 0.2 },
+  },
+};
+
+/**
+ * The node view of the mockup's photo with a Reference Grade node (2, "Match") after Main, selected (`design/reference-grade/`), on `tab` (the node's
+ * first, Reference, by default). `state` takes the Reference tab to one of its pictures: `empty` (no reference), `chosen` (a file chosen, not fitted),
+ * `fitting` (the fit under way, held at its second search), `fitted`, `look-changed`, `edited`, an `error` (a file the core cannot read) or the strip
+ * `chooser`; `values` starts the node with the numbers of a fit and no reference (what a paste or a restart leaves).
+ */
+export async function referenceView(
+  page: Page,
+  opts: { tab?: "Reference" | "Light" | "Colour" | "Curve" | "Hue" | "Elements" | "Mask"; state?: "empty" | "chosen" | "fitting" | "fitted" | "look-changed" | "edited" | "error" | "chooser"; values?: boolean } = {},
+): Promise<void> {
+  const { tab = "Reference", state = "empty", values = false } = opts;
+  const link = (from: number | "input", to: number | "output") => ({ from: { node: from, port: "picture" }, to: { node: to, port: "picture" } });
+  await openApp(page, MOCKUP);
+  await configureMock(page, {
+    initialSettings: {
+      DSC04204: {
+        nodes: { "1": { grade: MOCKUP_GRADE }, "2": { kind: "reference_grade", name: "Match", pos: [1, 0], ...(values ? REFERENCE_FITTED : {}) } },
+        links: [link("input", 1), link(1, 2), link(2, "output")],
+      },
+    } as never,
+  });
+  await openPhotos(page);
+  await showUpdateReady(page);
+  await page.getByRole("tab", { name: "Light", exact: true }).click();
+  await page.getByRole("button", { name: "Nodes", exact: true }).click();
+  await page.getByRole("button", { name: /^Node 2, Match/ }).click();
+  await expect(page.getByRole("button", { name: /^Node 2, Match/ })).toHaveAttribute("aria-pressed", "true");
+  const tools = page.getByRole("complementary", { name: "Tools" });
+  await expect(tools.getByRole("tab", { name: "Reference", exact: true })).toHaveAttribute("aria-selected", "true");
+  const choose = async (path: string | null): Promise<void> => {
+    await page.evaluate((answer) => window.__yellowmoon!.mockApi.queueChoice("reference", answer), path);
+    await tools.getByRole("button", { name: "Choose reference…" }).click();
+    await page.getByRole("menuitem", { name: "Image file…" }).click();
+  };
+  const fit = async (): Promise<void> => {
+    await tools.getByRole("button", { name: /^Fit/ }).click();
+    await expect(tools.getByText("Fitted to the reference.")).toBeVisible();
+  };
+  if (state === "chosen" || state === "fitting" || state === "fitted" || state === "look-changed" || state === "edited") {
+    await choose("~/Pictures/harbour-dusk.jpg");
+    await expect(tools.getByTestId("reference-name")).toHaveText("harbour-dusk.jpg");
+  }
+  if (state === "fitting") {
+    // Held at the second search: the mock's steps are long, and the event the shell would send is sent by hand.
+    await configureMock(page, { speed: 0.01 });
+    await tools.getByRole("button", { name: /^Fit/ }).click();
+    await expect(tools.getByRole("progressbar", { name: "Fitting" })).toBeVisible();
+    await page.evaluate(() => window.__yellowmoon!.mockApi.emitEvent("fit_progress", { photo_id: 4, node_id: 2, step: "search", search: 2, of: 3, fraction: 0.55 }));
+    await expect(tools.getByText("Fitting… 2 of 3")).toBeVisible();
+  }
+  if (state === "fitted" || state === "look-changed" || state === "edited") await fit();
+  if (state === "look-changed") {
+    await page.evaluate(async () => {
+      await window.__yellowmoon!.mockApi.updateSettings(4, { nodes: { output: { look_intensity: 50 } } });
+      window.__yellowmoon!.mockApi.emitEvent("settings_changed", { photo_id: 4 });
+    });
+    await expect(tools.getByText("The look changed since the fit. Fit again to match it with the new look.")).toBeVisible();
+  }
+  if (state === "edited") {
+    await page.evaluate(async () => {
+      await window.__yellowmoon!.mockApi.updateSettings(4, { nodes: { "2": { elements: { vegetation: { hue_deg: 32, chroma: 0.6 } } } } });
+      window.__yellowmoon!.mockApi.emitEvent("settings_changed", { photo_id: 4 });
+    });
+    await expect(tools.getByText("Edited by hand since the fit. Fit again to start over.")).toBeVisible();
+  }
+  if (state === "error") {
+    await choose("~/Pictures/damaged.png");
+    await expect(tools.getByTestId("reference-error")).toBeVisible();
+  }
+  if (state === "chooser") {
+    await tools.getByRole("button", { name: "Choose reference…" }).click();
+    await page.getByRole("menuitem", { name: "Photo in the strip" }).click();
+    await expect(page.getByRole("navigation", { name: "Choose a reference" })).toBeVisible();
+  }
+  if (tab !== "Reference") await tools.getByRole("tab", { name: tab, exact: true }).click();
+  await page.waitForTimeout(500);
+}
+
 export const STATES: readonly PageState[] = [
   ["01-start-empty", (p) => start(p)],
   [
@@ -1227,6 +1320,12 @@ export const STATES: readonly PageState[] = [
   ["95-blur-motion", (p) => blurView(p, { type: "motion" })],
   ["96-blur-zoom", (p) => blurView(p, { type: "zoom", more: { zoom: { amount: 40, center: [0.35, 0.4] } } })],
   ["97-blur-zoom-pick", (p) => blurView(p, { type: "zoom", picking: true })],
+  // The Reference Grade node (docs/34, design/reference-grade): the Reference tab with no reference, fitted and with the strip as a chooser, the Hue tab and the Elements tab.
+  ["98-reference-empty", (p) => referenceView(p)],
+  ["99-reference-fitted", (p) => referenceView(p, { state: "fitted" })],
+  ["100-reference-chooser", (p) => referenceView(p, { state: "chooser" })],
+  ["101-reference-hue", (p) => referenceView(p, { state: "fitted", tab: "Hue" })],
+  ["102-reference-elements", (p) => referenceView(p, { state: "fitted", tab: "Elements" })],
 ];
 
 /** Opens one state in a new page of the browser, at the size of the screenshots. */

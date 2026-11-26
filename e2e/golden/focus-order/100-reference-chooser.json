@@ -1,0 +1,26 @@
+{
+  "state": "100-reference-chooser",
+  "end": "leaves",
+  "stops": [
+    {"role":"button","name":"Before","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Crop","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Nodes","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Add photos","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Fit 8%","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Update ready","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Export 3 ⌘E","outline":"solid","ring":"outline"},
+    {"role":"separator","name":"Resize the graph","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Choose DSC04201 as the reference","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Bypass this node","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Reset this node","outline":"solid","ring":"outline"},
+    {"role":"button","name":"More","outline":"solid","ring":"outline"},
+    {"role":"tab","name":"Reference","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Choose reference…","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Fit","outline":"solid","ring":"outline"},
+    {"role":"slider","name":"Strength","outline":"solid","ring":"outline"},
+    {"role":"textbox","name":"Strength value","outline":"solid","ring":"outline"},
+    {"role":"switch","name":"Skin protection","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Copy settings","outline":"solid","ring":"outline"},
+    {"role":"button","name":"Paste","outline":"solid","ring":"outline"}
+  ]
+}
