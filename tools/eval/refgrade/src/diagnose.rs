@@ -24,11 +24,11 @@ use ym_core::pipeline::PhotoSource;
 use ym_core::pipeline::eval_scene::{EvalLabels, PhotoScene};
 use ym_core::reference_fit::ChainCandidates;
 use ym_core::session::PhotoId;
-use ym_core::settings::{ReferenceGradeNode, SettingsPatch};
+use ym_core::settings::ReferenceGradeNode;
 use ym_gpu::queue::CancelToken;
 
 use crate::measure::{Pic, SceneRef, sample_ab, transfers};
-use crate::run::{NODE, open_core, open_photo, read_label_png, reference_labels, with_node};
+use crate::run::{NODE, add_node_patch, open_core, open_photo, read_label_png, reference_labels};
 use crate::run::{RunOpts, selected};
 use crate::split::reference_files;
 
@@ -93,8 +93,7 @@ pub fn diagnose(opts: &DiagOpts) -> Result<()> {
         let id: PhotoId = open_photo(&core, &entry.raw)?;
         let result = (|| -> Result<()> {
             let now = core.session.view(id)?.settings;
-            let next = with_node(&now)?;
-            core.update_settings(id, &SettingsPatch::between(&now, &next))?;
+            core.update_settings(id, &add_node_patch(&now)?)?;
             let file = entry
                 .label_file()
                 .filter(|f| f.is_file())

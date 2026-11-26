@@ -156,54 +156,40 @@ pub fn selected(opts: &RunOpts) -> Result<Vec<SplitEntry>> {
     Ok(mine)
 }
 
-/// The photo's settings with a Reference Grade node (id 2) after Main, reading Main and read by the Output.
-pub(crate) fn with_node(base: &DevelopSettings) -> Result<DevelopSettings> {
-    let mut doc = serde_json::to_value(base)?;
-    doc["nodes"] = json!({ "items": [ { "id": 1 }, { "id": NODE, "kind": "reference_grade", "pos": [2, 0.0] } ], "links": [
-        { "from": { "node": "input", "port": "picture" }, "to": { "node": 1, "port": "picture" } },
-        { "from": { "node": 1, "port": "picture" }, "to": { "node": NODE, "port": "picture" } },
-        { "from": { "node": NODE, "port": "picture" }, "to": { "node": "output", "port": "picture" } } ] });
-    let settings: DevelopSettings = serde_json::from_value(doc)?;
-    Ok(settings
-        .validated()
-        .map_err(|e| anyhow!("the graph is not valid: {e:?}"))?
-        .0)
-}
-
-/// The photo's settings with a Reference Grade node (id 2) inserted between Main and the Output, **keeping every other node as the photo has it**
-/// (the Input's, Main's and the Output's own settings, the Output's look included). The diagnosis of `docs/34` section 16.10 uses it to show
-/// what [`with_node`] drops; [`with_node`] itself is left as the RG-10 run used it.
-pub(crate) fn with_node_keeping(base: &DevelopSettings) -> Result<DevelopSettings> {
-    let mut doc = serde_json::to_value(base)?;
-    let items = doc["nodes"]["items"]
-        .as_array_mut()
-        .ok_or_else(|| anyhow!("no nodes"))?;
-    let out_pos = items
-        .iter()
-        .position(|n| n["id"] == "output")
-        .ok_or_else(|| anyhow!("no output node"))?;
-    let out_x = items[out_pos]["pos"][0].as_f64().unwrap_or(2.0) + 1.0;
-    items[out_pos]["pos"] = json!([out_x, 0.0]);
-    items.insert(
-        out_pos,
-        json!({ "id": NODE, "kind": "reference_grade", "pos": [out_x - 1.0, 0.0] }),
-    );
-    let links = doc["nodes"]["links"]
-        .as_array_mut()
-        .ok_or_else(|| anyhow!("no links"))?;
-    for l in links.iter_mut() {
-        if l["to"]["node"] == "output" {
-            l["to"]["node"] = json!(NODE);
+/// The patch the app sends for "Add node, Reference Grade" on a photo whose settings are `now`: the node (id [`NODE`]) added after Main
+/// and the Output's links moved to it, **leaving everything else as the photo has it** (the Input, Main, the Output and its look, Auto's
+/// settings). The photo's settings are the core's own (`Core::session.view`: what a photo opens with, the Output's look included), so the
+/// tool builds no graph of its own and cannot drift from the app (it did once: `docs/34` section 16.10.1).
+///
+/// # Errors
+///
+/// A graph with no Output node, or a patch the core does not read.
+pub(crate) fn add_node_patch(now: &DevelopSettings) -> Result<SettingsPatch> {
+    let doc = serde_json::to_value(now)?;
+    let correctors = doc["nodes"]["items"].as_array().map_or(1, |items| {
+        items
+            .iter()
+            .filter(|n| n["id"] != "input" && n["id"] != "output")
+            .count()
+    });
+    let links: Vec<Value> = {
+        let mut moved: Vec<Value> = Vec::new();
+        for l in &now.nodes.links {
+            let mut l = serde_json::to_value(l)?;
+            if l["to"]["node"] == "output" {
+                l["to"]["node"] = json!(NODE);
+            }
+            moved.push(l);
         }
-    }
-    links.push(
-        json!({ "from": { "node": NODE, "port": "picture" }, "to": { "node": "output", "port": "picture" } }),
-    );
-    let settings: DevelopSettings = serde_json::from_value(doc)?;
-    Ok(settings
-        .validated()
-        .map_err(|e| anyhow!("the graph is not valid: {e:?}"))?
-        .0)
+        moved.push(
+            json!({ "from": { "node": NODE, "port": "picture" }, "to": { "node": "output", "port": "picture" } }),
+        );
+        moved
+    };
+    Ok(serde_json::from_value(json!({
+        "nodes": { NODE.to_string(): { "kind": "reference_grade", "pos": [correctors as f64, 0.0] } },
+        "links": links,
+    }))?)
 }
 
 /// Opens the core of a run: the data folder, a private app folder, `threads` threads, no thumbnails.
@@ -521,8 +507,7 @@ pub fn run(opts: &RunOpts) -> Result<()> {
             let id = open_photo(&core, &entry.raw)?;
             let result = (|| -> Result<()> {
                 let now = core.session.view(id)?.settings;
-                let next = with_node(&now)?;
-                core.update_settings(id, &SettingsPatch::between(&now, &next))?;
+                core.update_settings(id, &add_node_patch(&now)?)?;
                 // The ablation: another scene for this photo's fits (never set in a run of the product as it is).
                 match opts.scene {
                     SceneMode::Product => {}
@@ -858,10 +843,58 @@ mod tests {
         assert_eq!(all.len(), 10);
     }
 
+    /// The tool's graph for a photo is the photo's own settings plus the node, and the Output keeps its look (the RG-10 run once lost it).
     #[test]
-    fn the_node_graph_is_main_then_one_reference_grade_node() {
-        let base = DevelopSettings::default();
-        let s = with_node(&base).expect("a valid graph");
-        assert!(s.nodes.reference_grade(NODE).is_some());
+    fn the_tools_graph_is_the_photos_default_settings_plus_the_node() {
+        // A photo as the app opens it: the default settings with the default look on the Output.
+        let mut now = DevelopSettings::default();
+        let look: SettingsPatch = serde_json::from_value(
+            json!({ "nodes": { "output": { "look": "builtin:signature" } } }),
+        )
+        .expect("a patch");
+        now.apply_patch(&look, None).expect("the look");
+        assert_eq!(now.output().look.to_string(), "builtin:signature");
+        let mut after = now.clone();
+        after
+            .apply_patch(&add_node_patch(&now).expect("a patch"), None)
+            .expect("the node");
+        // The Output keeps the photo's look; so does everything else of the Input, Main and the Output.
+        assert_eq!(after.output().look, now.output().look);
+        assert_eq!(after.output().look.to_string(), "builtin:signature");
+        assert!(after.nodes.reference_grade(NODE).is_some());
+        let json = |s: &DevelopSettings, id: &str| {
+            serde_json::to_value(s).expect("json")["nodes"]["items"]
+                .as_array()
+                .expect("items")
+                .iter()
+                .find(|n| n["id"] == id)
+                .cloned()
+                .expect("a node")
+        };
+        assert_eq!(json(&after, "input"), json(&now, "input"));
+        assert_eq!(json(&after, "output")["look"], json(&now, "output")["look"]);
+        let main = |s: &DevelopSettings| {
+            serde_json::to_value(s).expect("json")["nodes"]["items"]
+                .as_array()
+                .expect("items")
+                .iter()
+                .find(|n| n["id"] == 1)
+                .cloned()
+                .expect("main")
+        };
+        assert_eq!(main(&after), main(&now));
+        // Main, then the node, then the Output.
+        let links = serde_json::to_value(&after.nodes.links).expect("links");
+        let has = |from: Value, to: Value| {
+            links
+                .as_array()
+                .expect("links")
+                .iter()
+                .any(|l| l["from"]["node"] == from && l["to"]["node"] == to)
+        };
+        assert!(has(json!("input"), json!(1)));
+        assert!(has(json!(1), json!(NODE)));
+        assert!(has(json!(NODE), json!("output")));
+        assert!(!has(json!(1), json!("output")));
     }
 }

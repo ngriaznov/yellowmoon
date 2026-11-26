@@ -25,13 +25,12 @@ use ym_core::pipeline::color::reference_node_params;
 use ym_core::pipeline::eval_scene::{EvalLabels, PhotoScene};
 use ym_core::pipeline::fit::FitPhoto;
 use ym_core::reference_fit::apply_numbers;
-use ym_core::settings::{ReferenceGradeNode, SettingsPatch};
+use ym_core::settings::ReferenceGradeNode;
 use ym_gpu::queue::CancelToken;
 
 use crate::measure::{Pic, SceneRef, sample_ab, transfers};
 use crate::run::{
-    NODE, RunOpts, open_core, open_photo, read_label_png, reference_labels, with_node,
-    with_node_keeping,
+    NODE, RunOpts, add_node_patch, open_core, open_photo, read_label_png, reference_labels,
 };
 use crate::split::{read_split, reference_files};
 
@@ -250,20 +249,11 @@ pub fn stages(opts: &StageOpts) -> Result<()> {
         let id = open_photo(&core, &entry.raw)?;
         let one = (|| -> Result<Value> {
             let now = core.session.view(id)?.settings;
-            let next = if std::env::var("STAGES_KEEP_LOOK").is_ok() {
-                with_node_keeping(&now)?
-            } else {
-                with_node(&now)?
-            };
             fs::write(
                 opts.run.out.join(format!("{tag}__settings_before.json")),
                 serde_json::to_string_pretty(&now)?,
             )?;
-            fs::write(
-                opts.run.out.join(format!("{tag}__settings_after.json")),
-                serde_json::to_string_pretty(&next)?,
-            )?;
-            core.update_settings(id, &SettingsPatch::between(&now, &next))?;
+            core.update_settings(id, &add_node_patch(&now)?)?;
             let file = entry
                 .label_file()
                 .filter(|f| f.is_file())
